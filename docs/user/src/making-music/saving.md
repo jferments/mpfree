@@ -54,7 +54,9 @@ The data wheel moves through the list, **SHIFT** and the wheel through the place
 
 ### Pickers
 
-Where you need one kind of file, a narrower **picker** opens in the same place: a preset picker on the Synth tab (each turn of the wheel lets you play the next preset on the pads before you choose it), a sample picker on the Sample tab, and a project picker for Open. A picker only loads; renaming and deleting are in the full browser.
+Where you need one kind of file, a narrower **picker** opens in the same place: a preset picker on the Synth tab (each turn of the wheel lets you play the next preset on the pads before you choose it), the sound picker beside the pads on the Pads tab, and a project picker for Open. A picker only loads; renaming and deleting are in the full browser.
+
+In the next build, the Pads tab's picker is the first part of the browser you can use: it stays open beside the pads, with Load, Load to pad, Audition and Favourite. See [Sampling](sampling.md#the-pads-tab-sounds-onto-pads).
 
 ### Your own synth presets
 

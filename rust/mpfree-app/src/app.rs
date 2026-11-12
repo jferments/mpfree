@@ -59,6 +59,10 @@ pub const DOUBLE_PRESS_SECONDS: f64 = 0.4;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum View {
     Play,
+    /// The pads (the owner's pick, 12 Nov 2026 15:46Z): the pad bank beside
+    /// the browser (Browse) or the pad's settings (Pad); the sampler's
+    /// pad screens (`mpfree_sampler_ui::pads_tab`) and the browser.
+    Pads,
     /// Arrange: the time engine's launch grid, record settings and takes
     /// (the Clips tab until Jay renamed it, 12:55Z).
     Arrange,
@@ -117,6 +121,7 @@ pub enum View {
 pub fn tabs(dev: bool) -> Vec<View> {
     let mut t = vec![
         View::Play,
+        View::Pads,
         View::Arrange,
         View::Synth,
         View::Looper,
@@ -176,6 +181,12 @@ impl View {
         }
     }
 
+    /// The pages the sampler's screens draw: the Pads tab and the Sample
+    /// tab share the kit, the pad picked, edits and undo.
+    pub fn sampler(self) -> bool {
+        matches!(self, View::Sample | View::Pads)
+    }
+
     /// The tab's place in the header, which depends on debug mode.
     pub fn tab_index(self, debug: bool) -> Option<usize> {
         let v = self.tab_view()?;
@@ -185,6 +196,7 @@ impl View {
     pub fn name(self) -> &'static str {
         match self {
             View::Play => "Play",
+            View::Pads => "Pads",
             View::Arrange => "Arrange",
             View::Synth => "Synth",
             View::Looper => "Looper",
@@ -812,13 +824,33 @@ pub enum Effect {
     /// SAMPLE EDIT: the Sample tab opens on this editor.
     SampleEditor(crate::sample_page::Editor),
     /// PROG EDIT: the sound the pads play: the Synth tab while the synth
-    /// has them, otherwise Sample > Pads (the audio loop knows which).
+    /// has them, otherwise the Pads tab's Pad view (the audio loop knows
+    /// which).
     ProgEdit,
+    /// A control for the Pads tab's browser while it shows (Browse).
+    Browse(BrowseKey),
     /// SHIFT + PLAY START: the metronome on or off.
     Metronome,
     /// FILL on or off from the coming period: notes with the FILL and
     /// !FILL trig conditions follow it.
     Fill(bool),
+}
+
+/// What a control does to the Pads tab's browser (Browse view).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BrowseKey {
+    /// The wheel: the selection.
+    Wheel(i32),
+    /// SHIFT + wheel: the places.
+    Places(i32),
+    /// The wheel's push: open a folder, or Load.
+    Push,
+    /// -: up a folder.
+    Back,
+    /// +: into the folder.
+    Enter,
+    /// PLAY: hear the sound picked.
+    Play,
 }
 
 pub struct App {
@@ -839,6 +871,9 @@ pub struct App {
     timed: bool,
     shift: bool,
     repeat_held: bool,
+    /// The Pads tab shows the browser (its Browse view), as the screen
+    /// last said: the wheel, its push, - / + and PLAY go to the browser.
+    pads_browse: bool,
     /// ERASE is down: SHIFT and ERASE held, then TAP TEMPO, is the
     /// Console's chord.
     erase_held: bool,
@@ -1000,6 +1035,7 @@ impl App {
             timed,
             shift: false,
             repeat_held: false,
+            pads_browse: true,
             erase_held: false,
             repeat_pressed_at: None,
             latched: false,
@@ -1375,6 +1411,10 @@ impl App {
                 // Stopped already: the transport goes back to bar 1.
                 fx.push(Effect::Time(TimeAction::Transport(Command::Stop)));
             }
+        } else if note == button::PLAY && self.browsing() {
+            // On the Pads tab's browser PLAY hears the sound picked (as in
+            // the browser); PLAY START still starts the transport.
+            fx.push(Effect::Browse(BrowseKey::Play));
         } else if note == button::PLAY && self.rolling {
             // FILL while held; pressed twice, latched; pressed again, off.
             let double = self
@@ -1419,7 +1459,7 @@ impl App {
             fx.push(Effect::Time(TimeAction::Transport(Command::Record)));
         } else if Some(note) == self.map.overdub {
             fx.push(Effect::Time(TimeAction::Transport(Command::ToggleOverdub)));
-        } else if Some(note) == self.map.undo && self.view == View::Sample {
+        } else if Some(note) == self.map.undo && self.view.sampler() {
             fx.push(Effect::SampleUndo { redo: shift });
         } else if Some(note) == self.map.undo {
             fx.push(Effect::Time(if shift {
@@ -1467,6 +1507,8 @@ impl App {
             fx.extend(self.tap(t));
         } else if let Some(k) = self.map.bank_of(note) {
             fx.push(Effect::Bank { button: k, shift });
+        } else if Some(note) == self.map.data_push && self.browsing() {
+            fx.push(Effect::Browse(BrowseKey::Push));
         } else if Some(note) == self.map.data_push {
             fx.extend(self.wheel_push());
         } else if Some(note) == self.map.minus || Some(note) == self.map.plus {
@@ -1498,7 +1540,13 @@ impl App {
                 fx.extend(self.arp_mode_step(d));
             } else if self.view == View::Synth {
                 fx.push(Effect::SynthPage(d));
-            } else if self.view == View::Sample {
+            } else if self.browsing() {
+                fx.push(Effect::Browse(if d > 0 {
+                    BrowseKey::Enter
+                } else {
+                    BrowseKey::Back
+                }));
+            } else if self.view.sampler() {
                 fx.push(Effect::SamplePad(d));
             } else {
                 fx.push(Effect::Kit(d));
@@ -1743,8 +1791,12 @@ impl App {
             }],
             View::Synth if self.shift => vec![Effect::SynthPage(delta.signum())],
             View::Synth => vec![Effect::SynthWheel(delta)],
-            View::Sample if self.shift => vec![Effect::SamplePad(delta.signum())],
-            View::Sample => vec![Effect::SampleWheel(delta)],
+            View::Pads if self.pads_browse && self.shift => {
+                vec![Effect::Browse(BrowseKey::Places(delta.signum()))]
+            }
+            View::Pads if self.pads_browse => vec![Effect::Browse(BrowseKey::Wheel(delta))],
+            View::Sample | View::Pads if self.shift => vec![Effect::SamplePad(delta.signum())],
+            View::Sample | View::Pads => vec![Effect::SampleWheel(delta)],
             View::Play if self.shift => vec![Effect::Octave(delta.signum())],
             _ => vec![Effect::Kit(delta)],
         }
@@ -1764,6 +1816,7 @@ impl App {
             && matches!(
                 self.view,
                 View::Play
+                    | View::Pads
                     | View::Arrange
                     | View::Synth
                     | View::Looper
@@ -1919,6 +1972,17 @@ impl App {
     }
 
     /// Open a tab's page.
+    /// The Pads tab shows its browser (Browse) or the pad's settings
+    /// (Pad), as the screen says when its switch is tapped.
+    pub fn set_pads_browse(&mut self, on: bool) {
+        self.pads_browse = on;
+    }
+
+    /// The wheel, its push, - / + and PLAY go to the Pads tab's browser.
+    fn browsing(&self) -> bool {
+        self.view == View::Pads && self.pads_browse
+    }
+
     pub fn open_tab(&mut self, v: View) -> Vec<Effect> {
         if self.view == View::Guide {
             return Vec::new();
@@ -3695,14 +3759,15 @@ mod tests {
             tabs(false),
             vec![
                 View::Play,
+                View::Pads,
                 View::Arrange,
                 View::Synth,
                 View::Looper,
                 View::Sample
             ]
         );
-        assert_eq!(View::Sample.tab_index(true), Some(4));
-        assert_eq!(app.tab(4), vec![Effect::Show(View::Sample)]);
+        assert_eq!(View::Sample.tab_index(true), Some(5));
+        assert_eq!(app.tab(5), vec![Effect::Show(View::Sample)]);
         assert_eq!(app.view(), View::Sample);
         // The wheel zooms; SHIFT + wheel and - / + pick the pad.
         assert_eq!(app.wheel(2), vec![Effect::SampleWheel(2)]);
@@ -3727,6 +3792,44 @@ mod tests {
         assert_eq!(app.view(), View::Sample);
         app.tab(0);
         assert_eq!(press(&mut app, 92), vec![Effect::Time(TimeAction::Undo)]);
+    }
+
+    #[test]
+    fn the_pads_tab_follows_play_and_its_browser_takes_the_wheel_push_minus_plus_and_play() {
+        let mut app = ready();
+        assert_eq!(View::Pads.tab_index(false), Some(1));
+        assert_eq!(app.tab(1), vec![Effect::Show(View::Pads)]);
+        assert!(View::Pads.sampler() && View::Sample.sampler() && !View::Play.sampler());
+        app.map.minus = Some(40);
+        app.map.plus = Some(41);
+        app.map.data_push = Some(111);
+        // Browse (the view it opens on): the browser's.
+        assert_eq!(app.wheel(2), vec![Effect::Browse(BrowseKey::Wheel(2))]);
+        app.button(button::SHIFT, true, 0.0);
+        assert_eq!(app.wheel(-3), vec![Effect::Browse(BrowseKey::Places(-1))]);
+        app.button(button::SHIFT, false, 0.0);
+        assert_eq!(press(&mut app, 111), vec![Effect::Browse(BrowseKey::Push)]);
+        assert_eq!(press(&mut app, 41), vec![Effect::Browse(BrowseKey::Enter)]);
+        assert_eq!(press(&mut app, 40), vec![Effect::Browse(BrowseKey::Back)]);
+        assert_eq!(
+            press(&mut app, button::PLAY),
+            vec![Effect::Browse(BrowseKey::Play)]
+        );
+        // UNDO undoes the pads' edits, as on Sample.
+        assert_eq!(
+            press(&mut app, 92),
+            vec![Effect::SampleUndo { redo: false }]
+        );
+        // The Pad view: the Sample tab's controls.
+        app.set_pads_browse(false);
+        assert_eq!(app.wheel(2), vec![Effect::SampleWheel(2)]);
+        assert_eq!(press(&mut app, 41), vec![Effect::SamplePad(1)]);
+        assert!(press(&mut app, button::PLAY)
+            .contains(&Effect::Time(TimeAction::Transport(Command::Play))));
+        // Elsewhere PLAY is the transport's again.
+        app.set_pads_browse(true);
+        app.tab(0);
+        assert!(!press(&mut app, button::PLAY).contains(&Effect::Browse(BrowseKey::Play)));
     }
 
     #[test]
@@ -3799,6 +3902,7 @@ mod tests {
             tabs(false),
             vec![
                 View::Play,
+                View::Pads,
                 View::Arrange,
                 View::Synth,
                 View::Looper,
@@ -3807,9 +3911,9 @@ mod tests {
         );
         // The same names, in the same order, as the bar every preview draws.
         let names: Vec<&str> = tabs(true).iter().map(|v| v.name()).collect();
-        assert_eq!(names[..5], mpfree_ui::widgets::APP_TABS[..]);
-        assert_eq!(names[5], mpfree_ui::widgets::DEV_TAB);
-        assert_eq!(app.tab(5), vec![]);
+        assert_eq!(names[..6], mpfree_ui::widgets::APP_TABS[..]);
+        assert_eq!(names[6], mpfree_ui::widgets::DEV_TAB);
+        assert_eq!(app.tab(6), vec![]);
         app.open_tab(View::Prefs);
         let row = app
             .items()
@@ -3878,8 +3982,8 @@ mod tests {
         );
         app.button(button::SHIFT, false, 0.0);
         // Debug mode adds the Debug tab, whose pages SHIFT + wheel steps through.
-        assert_eq!(tabs(true)[5], View::Debug);
-        app.tab(5);
+        assert_eq!(tabs(true)[6], View::Debug);
+        app.tab(6);
         assert_eq!(app.view(), View::Debug);
         app.button(button::SHIFT, true, 0.0);
         app.wheel(1);
