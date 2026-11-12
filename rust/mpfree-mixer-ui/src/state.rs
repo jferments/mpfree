@@ -3,7 +3,9 @@
 
 use mpfree_fx::ids::mixer::{self as mx, output};
 use mpfree_fx::mpfree_node::Curve;
-use mpfree_fx::{gain_to_db, mixer_param_applies, strip_params, Mixer, StripId, BUSES, RETURNS};
+use mpfree_fx::{
+    gain_to_db, mixer_param_applies, strip_params, FreezeState, Mixer, StripId, BUSES, RETURNS,
+};
 
 /// Which strips the screen lists. The master is always on the right.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -17,14 +19,18 @@ pub enum MixView {
     Inputs,
     /// Submixes 1 to 8, then returns A to D.
     Buses,
+    /// The I/O view: where everything goes (see [`crate::io`]). Its strips
+    /// are every strip with an output: inputs, tracks, pads, submixes.
+    Io,
 }
 
 impl MixView {
-    pub const ALL: [MixView; 4] = [
+    pub const ALL: [MixView; 5] = [
         MixView::Tracks,
         MixView::Pads,
         MixView::Inputs,
         MixView::Buses,
+        MixView::Io,
     ];
 
     pub fn label(self) -> &'static str {
@@ -33,6 +39,7 @@ impl MixView {
             MixView::Pads => "Pads",
             MixView::Inputs => "Inputs",
             MixView::Buses => "Submixes",
+            MixView::Io => "I/O",
         }
     }
 
@@ -78,6 +85,16 @@ pub struct InputView {
     pub arm: bool,
 }
 
+/// A freeze or a print under way on a strip.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TakeView {
+    /// A print (to a new sample) rather than a freeze.
+    pub print: bool,
+    /// How far through the take, 0 to 1; `None` while it waits for the
+    /// loop's start.
+    pub done: Option<f32>,
+}
+
 /// One channel strip.
 #[derive(Clone, Debug, PartialEq)]
 pub struct StripView {
@@ -104,6 +121,10 @@ pub struct StripView {
     pub input: Option<InputView>,
     /// The strip's share of a period while profiling, per cent.
     pub cost_pct: Option<f32>,
+    /// It plays a take of its inserts in their place (a track or a pad).
+    pub frozen: bool,
+    /// A freeze or print of it under way (the app's, from its `Print`).
+    pub take: Option<TakeView>,
 }
 
 impl StripView {
@@ -133,7 +154,14 @@ impl StripView {
                 arm: false,
             }),
             cost_pct: None,
+            frozen: false,
+            take: None,
         }
+    }
+
+    /// Whether the strip can be frozen (a track or a pad channel).
+    pub fn can_freeze(&self) -> bool {
+        matches!(self.id, StripId::Track(_) | StripId::Pad(_))
     }
 
     /// Whether the strip has an output to choose (a return and the master
@@ -186,13 +214,19 @@ pub struct MixState {
     pub strips: Vec<StripView>,
     pub master: StripView,
     pub safety: SafetyView,
-    /// How many strips each view has, in [`MixView::ALL`] order.
+    /// How many strips each strip view has, in [`MixView::ALL`] order (the
+    /// I/O view shows no count).
     pub counts: [usize; 4],
     /// Tracks there are, for the output choices of inputs and pads.
     pub tracks: usize,
     pub selected: Option<StripId>,
     /// The whole mixer's share of a period while profiling, per cent.
     pub cost_pct: Option<f32>,
+    /// Whether a strip's menu offers Freeze, Thaw and Print. The app sets
+    /// it once it acts on those actions; until then a tap on the selected
+    /// strip's name does nothing more, and the hint is [`crate::MIXER_HINT`]
+    /// rather than [`crate::MIXER_HINT_TAKES`].
+    pub takes: bool,
 }
 
 impl Default for MixState {
@@ -211,6 +245,7 @@ impl Default for MixState {
             tracks: 16,
             selected: None,
             cost_pct: None,
+            takes: false,
         }
     }
 }
@@ -245,6 +280,12 @@ impl MixState {
                 .map(StripId::Bus)
                 .chain((0..RETURNS).map(StripId::Return))
                 .collect(),
+            MixView::Io => (0..m.inputs())
+                .map(StripId::Input)
+                .chain((0..m.tracks()).map(StripId::Track))
+                .chain((0..m.pads()).map(StripId::Pad))
+                .chain((0..BUSES).map(StripId::Bus))
+                .collect(),
         };
         let strips = ids.iter().map(|&s| read_strip(m, s, name)).collect();
         let master = read_strip(m, StripId::Master, name);
@@ -274,6 +315,7 @@ impl MixState {
             tracks: m.tracks(),
             selected: None,
             cost_pct,
+            takes: false,
         }
     }
 }
@@ -305,6 +347,7 @@ fn read_strip(m: &mut Mixer, s: StripId, name: &dyn Fn(StripId) -> String) -> St
         };
     }
     v.audible = m.is_audible(s);
+    v.frozen = matches!(m.freeze_state(s), FreezeState::FadingIn | FreezeState::On);
     let rate = m.rate();
     let profiling = m.profiling();
     let keys: Vec<Option<StripId>> = (0..m.chain(s).map_or(0, |c| c.len()))

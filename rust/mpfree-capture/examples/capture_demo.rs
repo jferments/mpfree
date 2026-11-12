@@ -224,7 +224,8 @@ fn to_sampler(engine: &mut Engine, offset: u32, event: Event) {
         },
         Event::NoteOff { note } => SEvent::NoteOff { pad: note },
         Event::AllOff => SEvent::AllOff,
-        Event::Lock { .. } | Event::Unlock { .. } => return,
+        Event::Pressure { note, value } => SEvent::Pressure { pad: note, value },
+        Event::Lock { .. } | Event::Lane { .. } | Event::Unlock { .. } => return,
     };
     engine.schedule(offset, ev);
 }
@@ -268,6 +269,9 @@ impl Session {
                 note,
                 velocity,
                 chance: 100,
+                cond: mpfree_seq::Cond::Always,
+                ratchet: 1,
+                touch: mpfree_seq::Touch::NONE,
             })
             .expect("in range");
         }
@@ -278,6 +282,9 @@ impl Session {
                 note: HAT,
                 velocity: if i % 2 == 0 { 80 } else { 58 },
                 chance: 100,
+                cond: mpfree_seq::Cond::Always,
+                ratchet: 1,
+                touch: mpfree_seq::Touch::NONE,
             })
             .expect("in range");
         }
@@ -288,6 +295,7 @@ impl Session {
             track: DRUMS,
             slot: 0,
             origin: 0,
+            start: 0,
         }];
         let mut live: Vec<(u64, Event)> = Vec::new();
         for &(tick, velocity) in &RIFF {

@@ -40,9 +40,18 @@
 //!   host launches it with [`Kept::launch`]. A phrase played in time keeps
 //!   its place against the song, so it goes on playing in time at once.
 //!   A free phrase starts on the next bar line.
+//!
+//! The Perform FX moves made over a phrase played in time go with it: the
+//! host takes them from its `mpfree_moves::MoveLog` ([`MoveLog::phrase`])
+//! and [`moves_for_clip`] puts them on the kept clip's ticks, for
+//! `Takes::capture_moves` to write into its lanes as part of the same
+//! capture.
+//!
+//! [`MoveLog::phrase`]: mpfree_seq::mpfree_moves::MoveLog::phrase
 #![forbid(unsafe_code)]
 
-use mpfree_play::{Event, Launch, Takes};
+use mpfree_play::{Event, Launch, MoveWrite, Takes};
+use mpfree_seq::mpfree_moves::{Gesture, Target};
 use mpfree_seq::{Clip, ModelError, Note, Project, MAX_CLIP_TICKS, MAX_NOTES, SLOTS};
 use mpfree_transport::time::{ceil_to, ticks_in, Meter, Tick};
 use mpfree_transport::Block;
@@ -268,8 +277,12 @@ impl Capture {
             velocity: 0,
         };
         match event {
-            // CAPTURE keeps what was played, not parameter locks.
-            Event::Lock { .. } | Event::Unlock { .. } => return,
+            // CAPTURE keeps the notes played, not parameter locks or (yet)
+            // pad pressure.
+            Event::Lock { .. }
+            | Event::Lane { .. }
+            | Event::Unlock { .. }
+            | Event::Pressure { .. } => return,
             // A MIDI-style note-on at velocity 0 is a release.
             Event::NoteOn { note, velocity: 0 } | Event::NoteOff { note } => {
                 let n = usize::from(note & 127);
@@ -412,6 +425,9 @@ impl Capture {
                         note: x.note,
                         velocity: x.velocity.max(1),
                         chance: 100,
+                        cond: mpfree_seq::Cond::Always,
+                        ratchet: 1,
+                        touch: mpfree_seq::Touch::NONE,
                     };
                     open[n] = Some((played.len(), x.at));
                     played.push(Played {
@@ -611,8 +627,49 @@ pub fn keep(
             track,
             slot,
             origin,
+            // Its passes count from where it was played.
+            start: phrase.song_start.unwrap_or(origin),
         }),
     })
+}
+
+/// The gestures (from `MoveLog::phrase`) that overlap song ticks
+/// `from..to` (the phrase CAPTURE kept, in time), on the ticks of `clip`
+/// playing from song tick `origin` on `track`: each as the target, map and
+/// points `Takes::capture_moves` writes. A parameter on the track gets a
+/// track-relative lane, any other a fixed one.
+pub fn moves_for_clip(
+    gestures: &[Gesture],
+    from: f64,
+    to: f64,
+    clip: &Clip,
+    origin: Tick,
+    track: u8,
+) -> Vec<MoveWrite> {
+    let song_len = clip.speed.to_song(clip.length as f64);
+    if song_len <= 0.0 {
+        return Vec::new();
+    }
+    gestures
+        .iter()
+        .filter_map(|g| {
+            let at0 = g.points.first()?.0;
+            let last = g.points.last()?.0;
+            let end = g.song + (last - at0);
+            if end < from || g.song >= to || g.song < origin as f64 {
+                return None;
+            }
+            let first = clip
+                .speed
+                .to_clip((g.song - origin as f64).rem_euclid(song_len));
+            let points = g
+                .points
+                .iter()
+                .map(|&(at, u, k)| (first + clip.speed.to_clip(at - at0), u, k))
+                .collect();
+            Some((Target::for_track(g.addr, track), g.map, points))
+        })
+        .collect()
 }
 
 #[cfg(test)]

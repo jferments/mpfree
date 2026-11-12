@@ -12,9 +12,12 @@ mpfree-grain = { path = "../mpfree-grain" }
 mpfree-stretch = { path = "../mpfree-stretch" }
 mpfree-prof = { path = "../mpfree-prof" }
 mpfree-node = { path = "../mpfree-node" }
+mpfree-lanes = { path = "../mpfree-lanes" }
+mpfree-flac = { path = "../mpfree-flac" }
 
 [dev-dependencies]
 mpfree-synth = { path = "../mpfree-synth" }
+mpfree-prof = { path = "../mpfree-prof", features = ["counting-alloc"] }
 
 [[bin]]
 name = "mpfree-sampler"

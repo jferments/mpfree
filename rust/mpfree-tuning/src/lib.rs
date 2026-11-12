@@ -133,6 +133,25 @@ impl Tuning {
         }
     }
 
+    /// A table tuning with every key's pitch in log2(Hz): what
+    /// [`Tuning::from_log2`] gives when every key has one, without its
+    /// allocation.
+    fn from_every_log2(mut pitch: impl FnMut(i32) -> f64) -> Tuning {
+        let mut log2 = [0.0f32; KEYS];
+        for (i, o) in log2.iter_mut().enumerate() {
+            let p = pitch(LOW_KEY + i as i32);
+            *o = if p.is_finite() {
+                p.clamp(LOG2_MIN, LOG2_MAX) as f32
+            } else {
+                0.0
+            };
+        }
+        Tuning {
+            map: Map::Table,
+            log2,
+        }
+    }
+
     /// [`Tuning::from_keys`] in log2(Hz), which can't overflow.
     pub(crate) fn from_log2(mut pitch: impl FnMut(i32) -> Option<f64>) -> Result<Tuning, Error> {
         let mut l = [0.0f64; KEYS];
@@ -261,9 +280,10 @@ impl Builtin {
         !matches!(self, Builtin::Equal12 | Builtin::Equal24)
     }
 
-    /// The scale above 1/1, for a table tuning.
-    pub fn scale(self) -> Option<scala::Scale> {
-        let ratios: &[(u64, u64)] = match self {
+    /// The 12 degrees above 1/1 in cents (the last is the octave), for a
+    /// table tuning; `None` for an equal one. Plain data: no allocation.
+    pub fn degrees(self) -> Option<[f64; 12]> {
+        let ratios: &[(u64, u64); 12] = match self {
             Builtin::Equal12 | Builtin::Equal24 => return None,
             Builtin::Meantone => {
                 // Fifths of 5^(1/4) from E-flat (-3) to G-sharp (8), folded
@@ -274,12 +294,9 @@ impl Builtin {
                     let pc = (7 * k).rem_euclid(12) as usize;
                     cents[pc] = (f64::from(k) * fifth).rem_euclid(1200.0);
                 }
-                let mut degrees = cents[1..].to_vec();
-                degrees.push(1200.0);
-                return Some(scala::Scale {
-                    description: "Quarter-comma meantone, Eb to G#".to_string(),
-                    cents: degrees,
-                });
+                let mut degrees = [1200.0f64; 12];
+                degrees[..11].copy_from_slice(&cents[1..]);
+                return Some(degrees);
             }
             Builtin::Just => &[
                 (16, 15),
@@ -310,31 +327,58 @@ impl Builtin {
                 (2, 1),
             ],
         };
+        Some(ratios.map(|(a, b)| 1200.0 * (a as f64 / b as f64).log2()))
+    }
+
+    /// The scale above 1/1, for a table tuning (as a Scala scale).
+    pub fn scale(self) -> Option<scala::Scale> {
+        let description = match self {
+            Builtin::Meantone => "Quarter-comma meantone, Eb to G#".to_string(),
+            b => b.name().to_string(),
+        };
         Some(scala::Scale {
-            description: self.name().to_string(),
-            cents: ratios
-                .iter()
-                .map(|&(a, b)| 1200.0 * (a as f64 / b as f64).log2())
-                .collect(),
+            description,
+            cents: self.degrees()?.to_vec(),
         })
     }
 
     /// The tuning with its 1/1 on pitch class `root` (0 = C to 11 = B,
     /// taken modulo 12) and the root at its 12-TET pitch for `a4_hz`, so
     /// the root sounds where it always did and the rest moves around it.
-    /// Equal tunings ignore the root.
+    /// Equal tunings ignore the root. Never allocates, so the audio thread
+    /// may call it; the result is the same, to the bit, as the scale and a
+    /// linear keyboard map through [`scala::tuning`].
     pub fn tuning(self, root: u8, a4_hz: f32) -> Tuning {
-        match self {
-            Builtin::Equal12 => Tuning::equal(12, a4_hz),
-            Builtin::Equal24 => Tuning::equal(24, a4_hz),
-            _ => {
-                let a4 = Tuning::equal(12, a4_hz);
-                let key = 60 + i32::from(root % 12);
-                let map = scala::KeyMap::linear(key, key, f64::from(a4.hz(key as f32)));
-                let scale = self.scale().expect("a table tuning has a scale");
-                scala::tuning(&scale, &map).expect("built-in tunings are valid")
-            }
-        }
+        let Some(degrees) = self.degrees() else {
+            return Tuning::equal(if self == Builtin::Equal24 { 24 } else { 12 }, a4_hz);
+        };
+        let key = 60 + i32::from(root % 12);
+        Tuning::linear(&degrees, key, root_hz(key, a4_hz))
+    }
+}
+
+/// Key `key`'s 12-TET pitch in Hz for A4 at `a4_hz` (clamped as
+/// [`Tuning::equal`] clamps it): where a tuning on that root puts it.
+pub fn root_hz(key: i32, a4_hz: f32) -> f64 {
+    f64::from(Tuning::equal(12, a4_hz).hz(key as f32))
+}
+
+impl Tuning {
+    /// Each key the next degree of `cents` (degrees above 1/1, the last
+    /// the period) from `key`, which plays 1/1 at `hz`: Scala's degree
+    /// arithmetic (`Scale::degree_cents`) with every key given a pitch, so
+    /// it never allocates.
+    pub(crate) fn linear(cents: &[f64], key: i32, hz: f64) -> Tuning {
+        let base = hz.log2();
+        let n = cents.len().max(1) as i64;
+        let period = cents.last().copied().unwrap_or(1200.0);
+        Tuning::from_every_log2(|k| {
+            let off = i64::from(k) - i64::from(key);
+            let i = off.rem_euclid(n) as usize;
+            let within = if i == 0 { 0.0 } else { cents[i - 1] };
+            let c = off.div_euclid(n) as f64 * period + within;
+            base + c / 1200.0
+        })
     }
 }
 
@@ -382,6 +426,29 @@ mod tests {
         assert_eq!(Tuning::equal(12, 5.0).hz(69.0), 100.0);
         assert!(Tuning::equal(12, f32::NAN).is_standard());
         assert_eq!(Tuning::equal(0, 440.0).hz(70.0), 880.0);
+    }
+
+    #[test]
+    fn built_in_tunings_match_their_scala_scales_to_the_bit() {
+        for b in Builtin::ALL {
+            for root in 0..12u8 {
+                for a4 in [415.0, 432.0, 440.0, 442.5, 466.0] {
+                    let got = b.tuning(root, a4);
+                    let want = match b.scale() {
+                        None => continue,
+                        Some(scale) => {
+                            let key = 60 + i32::from(root);
+                            let ref_hz = f64::from(Tuning::equal(12, a4).hz(key as f32));
+                            let map = scala::KeyMap::linear(key, key, ref_hz);
+                            scala::tuning(&scale, &map).unwrap()
+                        }
+                    };
+                    assert_eq!(got, want, "{} on {root} at {a4}", b.name());
+                }
+            }
+        }
+        assert_eq!(Builtin::Equal24.tuning(3, 432.0), Tuning::equal(24, 432.0));
+        assert_eq!(Builtin::Equal12.tuning(3, 440.0), Tuning::standard());
     }
 
     #[test]

@@ -160,6 +160,7 @@ fn session(clip: Clip, origin: i64) -> Session {
             track: 0,
             slot: 3,
             origin,
+            start: origin,
         }],
         armed: Some(0),
         commands: vec![(0, Command::Record)],
@@ -195,6 +196,9 @@ fn four_beats() -> Session {
             note: 10 + i as u8,
             velocity: 100,
             chance: 100,
+            cond: mpfree_seq::Cond::Always,
+            ratchet: 1,
+            touch: mpfree_seq::Touch::NONE,
         })
         .collect();
     let mut s = session(c, 0);
@@ -443,6 +447,9 @@ fn a_loop_jump_ends_the_replace_pass_and_a_new_take_replaces_again() {
             note: 20 + i as u8,
             velocity: 100,
             chance: 100,
+            cond: mpfree_seq::Cond::Always,
+            ratchet: 1,
+            touch: mpfree_seq::Touch::NONE,
         })
         .collect();
     let mut s = session(c, 0);
@@ -494,6 +501,9 @@ fn a_take_undoes_and_redoes_as_a_whole() {
             note: 20 + i as u8,
             velocity: 100,
             chance: 100,
+            cond: mpfree_seq::Cond::Always,
+            ratchet: 1,
+            touch: mpfree_seq::Touch::NONE,
         })
         .collect();
     let original = c.notes.clone();
@@ -551,6 +561,9 @@ fn a_late_note_joins_its_own_take() {
             note: 30,
             velocity: 100,
             chance: 100,
+            cond: mpfree_seq::Cond::Always,
+            ratchet: 1,
+            touch: mpfree_seq::Touch::NONE,
         },
         Note {
             tick: 1920,
@@ -558,6 +571,9 @@ fn a_late_note_joins_its_own_take() {
             note: 31,
             velocity: 100,
             chance: 100,
+            cond: mpfree_seq::Cond::Always,
+            ratchet: 1,
+            touch: mpfree_seq::Touch::NONE,
         },
     ];
     let mut s = session(c, 0);

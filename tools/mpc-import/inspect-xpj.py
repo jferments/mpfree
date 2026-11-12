@@ -20,7 +20,7 @@ For each project it prints:
 
 It only reads. It never prints an effect's or plugin's settings blob (only its
 length), and never prints audio. Everything here about Akai's format comes from
-community notes (docs/project/mpc-import.md), not from Akai: treat the type
+community notes (docs/dev/design/mpc-import.md), not from Akai: treat the type
 names and route codes it shows as unconfirmed.
 """
 import argparse

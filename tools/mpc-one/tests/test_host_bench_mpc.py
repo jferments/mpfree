@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Tests for host_bench_mpc.py against a fake test build. No device.
 
-As in test_hello_mpc.py, a fake ssh runs the tool's real remote scripts under
+As in test_app_mpc.py, a fake ssh runs the tool's real remote scripts under
 BusyBox applets against a fake root folder (setting the scripts' R='' root
 prefix to it), accepts only the test build's host key alias, and only while
 the fake MPC is "on the test build". Running the benchmark is the one other
@@ -22,18 +22,18 @@ import unittest
 HERE = os.path.dirname(os.path.abspath(__file__))
 TOOLS = os.path.dirname(HERE)
 HELPER = os.path.join(TOOLS, "host_bench_mpc.py")
-_spec = importlib.util.spec_from_file_location("test_hello_mpc", os.path.join(HERE, "test_hello_mpc.py"))
+_spec = importlib.util.spec_from_file_location("test_app_mpc", os.path.join(HERE, "test_app_mpc.py"))
 th = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(th)
 
 FAKE_SSH = th.FAKE_SSH.replace(
-    "program = 'exec \"$R/run/mpfree-hello/mpfree-hello\"'\n"
+    "program = 'exec \"$R/run/mpfree-app/mpfree\"'\n"
     "if program in script:\n"
     "    script = script.replace(program, 'exec \"$FAKE_PROGRAM\"')",
     "program = 'exec \"$R/run/mpfree-bench/$p\"'\n"
     "if program in script:\n"
     "    script = script.replace(program, 'exec \"$FAKE_PROGRAM\" \"$p\"')")
-assert FAKE_SSH != th.FAKE_SSH, "the fake ssh's program line moved in test_hello_mpc.py"
+assert FAKE_SSH != th.FAKE_SSH, "the fake ssh's program line moved in test_app_mpc.py"
 
 FAKE_BENCH = r'''#!/bin/sh
 build=$1; shift
@@ -44,6 +44,8 @@ case "$1" in
   --json) echo "Poly Init, 8 voices   400.0"; echo "{\"schema\": \"mpfree-bench/1\", \"build\": \"$build\"}" > "$2"
           echo "Wrote $2"; exit "$FAKE_BENCH_RC" ;;
   --afford) echo "Poly Supersaw  18.4  7.40  16+ (75)" ;;
+  --lanes) [ "$*" = "--lanes --lane-cores 3,2" ] || { echo "STOP: lanes args $*"; exit 1; }
+           echo "This thread: pinned to core 3."; echo "Lanes: a worker thread each; worker core: pinned to 2" ;;
 esac
 '''
 
@@ -76,7 +78,7 @@ class BenchTests(unittest.TestCase):
         standin = os.path.join(t, "bench-standin")
         th.write(standin, FAKE_BENCH, 0o755)
         self.env = {"PATH": fakebin + os.pathsep + os.environ.get("PATH", "/usr/bin:/bin"), "HOME": t,
-                    "MPFREE_HELLO_TEST": "1", "MPFREE_ACCEPT_BENCH": "YES", "FAKE_STAGE": self.stage,
+                    "MPFREE_APP_TEST": "1", "MPFREE_ACCEPT_BENCH": "YES", "FAKE_STAGE": self.stage,
                     "FAKE_LOG": self.log, "FAKE_ROOT": self.root, "FAKE_REMOTE_PATH": remote, "FAKE_SCREEN": screen,
                     "FAKE_APP": app, "FAKE_ACVS": "inactive", "FAKE_PROGRAM": standin, "FAKE_BENCH_RC": "0"}
         self.key = os.path.join(t, "key")
@@ -115,12 +117,17 @@ class BenchTests(unittest.TestCase):
         for text in ("static ARM EABI5 hard-float", "Poly Supersaw  18.4  7.40  16+ (75)", "CHECKS-OK", "default: copied; its hash on the MPC matches",
                      "a17: copied; its hash on the MPC matches", "biquad 9000.0", "Poly Init, 8 voices",
                      "----- default.json -----", "Poly Supersaw  18.4  7.40  16+ (75)", '{"schema": "mpfree-bench/1", "build": "a17"}',
+                     "This thread: pinned to core 3.", "Lanes: a worker thread each; worker core: pinned to 2",
                      "RESULT: both builds ran"):
             self.assertIn(text, res.stdout)
         self.assertEqual(self.lines("bench: "), ["default --calibrate", "default --json default.json", "default --afford",
-                                                 "a17 --calibrate", "a17 --json a17.json", "a17 --afford"])
-        # Read-only on services: only is-active, never a start or stop.
-        self.assertTrue(all(c.startswith("is-active ") for c in self.lines("systemctl: ")), self.lines("systemctl: "))
+                                                 "default --lanes --lane-cores 3,2",
+                                                 "a17 --calibrate", "a17 --json a17.json", "a17 --afford",
+                                                 "a17 --lanes --lane-cores 3,2"])
+        # Services: only our own pad player is stopped for the runs and started again after; Akai's are only read.
+        changes = [c for c in self.lines("systemctl: ") if not c.startswith("is-active ")]
+        self.assertEqual(changes, ["stop mpfree-test-app.service", "start mpfree-test-app.service"])
+        self.assertIn("pad player: active (started again)", res.stdout)
         for name, path in self.programs.items():
             with open(path, "rb") as a, open(f"{self.root}/run/mpfree-bench/{name}", "rb") as b:
                 self.assertEqual(hashlib.sha256(a.read()).digest(), hashlib.sha256(b.read()).digest())
@@ -151,12 +158,17 @@ class BenchTests(unittest.TestCase):
         self.assertEqual(res.returncode, 1)
         self.assertIn("default --json ended with exit code 3", res.stdout)
         self.assertEqual(self.lines("bench: "), ["default --calibrate", "default --json default.json"])
+        # A failed run still starts the pad player again.
+        changes = [c for c in self.lines("systemctl: ") if not c.startswith("is-active ")]
+        self.assertEqual(changes[-1], "start mpfree-test-app.service")
+        self.assertIn("(started again)", res.stdout)
 
     def test_q_stops_before_the_copy(self):
         res = self.run_helper(answers="q\n")
         self.assertEqual(res.returncode, 1)
         self.assertIn("STOP: stopped by you", res.stdout)
         self.assertFalse(os.path.exists(f"{self.root}/run/mpfree-bench"))
+        self.assertEqual([c for c in self.lines("systemctl: ") if not c.startswith("is-active ")], [])
 
 
 if __name__ == "__main__":

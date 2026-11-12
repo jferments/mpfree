@@ -7,19 +7,19 @@
 
 use mpfree_fx::ids::mixer::{self as mx, monitor, output, source};
 use mpfree_fx::mpfree_node::Ctx;
-use mpfree_fx::{ids, Cloud, Compressor, Delay, Drive, Eq, Mixer, MixerConfig, StripId};
+use mpfree_fx::{ids, Cloud, Compressor, Delay, Drive, Eq, Frozen, Mixer, MixerConfig, StripId};
 use mpfree_ui::widgets::{Chip, Header};
 use mpfree_ui::{Align, Fonts, Theme, Tone, Touch, Ui};
 
-use crate::state::{default_name, MixState, MixView};
-use crate::view::{MixerIcon, MixerView};
+use crate::state::{default_name, MixState, MixView, TakeView};
+use crate::view::{IoIcon, MixerIcon, MixerView};
 
 /// The music tabs, as the approved layout spec lists them.
 pub const TABS: [&str; 5] = ["Play", "Arrange", "Synth", "Looper", "Sample"];
 
-/// A preview page: the header with the mixer icon beside it, the mixer,
+/// A preview page: the header with the I/O and mixer icons beside it, the mixer,
 /// the hint line.
-const PREVIEW_LAYOUT: &str = "col(row(header:*, mixicon:64):60, mixer:*, hint:26)";
+const PREVIEW_LAYOUT: &str = "col(row(header:*, ioicon:56, mixicon:64):60, mixer:*, hint:26)";
 
 pub struct Sample {
     pub name: &'static str,
@@ -213,10 +213,22 @@ pub fn screen(fonts: Fonts, st: MixState) -> Result<Ui, String> {
         Chip::new("Night drive", Tone::Normal),
     ];
     ui.add("header", header);
-    ui.add("mixicon", MixerIcon { open: true });
+    let io = st.view == MixView::Io;
+    ui.add("ioicon", IoIcon { open: io });
+    ui.add("mixicon", MixerIcon { open: !io });
     ui.add(
         "hint",
-        mpfree_ui::widgets::Label::new(crate::MIXER_HINT, Tone::Dim, Align::Left),
+        mpfree_ui::widgets::Label::new(
+            if io {
+                crate::MIXER_HINT_IO
+            } else if st.takes {
+                crate::MIXER_HINT_TAKES
+            } else {
+                crate::MIXER_HINT
+            },
+            Tone::Dim,
+            Align::Left,
+        ),
     );
     ui.add(crate::MIXER, MixerView::new());
     ui.add_page(crate::MIXER_PAGE, PREVIEW_LAYOUT)?;
@@ -246,11 +258,14 @@ pub fn samples(fonts: impl Fn() -> Fonts) -> Result<Vec<Sample>, String> {
     let inputs = state(&mut m, MixView::Inputs);
     play(&mut m, 4);
     let buses = state(&mut m, MixView::Buses);
+    play(&mut m, 4);
+    let io = state(&mut m, MixView::Io);
     let mut out = vec![
         Sample { name: "mixer-tracks", about: "Track Mix while the song plays: the bass selected, its compressor keyed by the kick (SC), the vocal track muted, a pre-fader send on the chords, the mixer's own CPU share (Dev tools on)", ui: screen(fonts(), tracks.clone())? },
         Sample { name: "mixer-pads", about: "Pad Mix (SHIFT + TRACK MIX): eight pad channels into the kit track, the crash straight to the drum bus", ui: screen(fonts(), pads.clone())? },
         Sample { name: "mixer-inputs", about: "Inputs: the line input armed and heard through a compressor (Auto monitoring); the mic on input 2 into the vocal track, not monitored", ui: screen(fonts(), inputs)? },
         Sample { name: "mixer-submixes", about: "Submixes and returns: the drum bus with glue and drive, the music bus, the reverb and delay returns", ui: screen(fonts(), buses)? },
+        Sample { name: "mixer-io", about: "The I/O view, Audio: every strip with an output and where it goes, the inputs with their Source and Monitor (MIDI, Sync and CV join the list from their own crates)", ui: screen(fonts(), io)? },
     ];
     // Solo in place: the bass soloed; what does not reach the master with
     // it is dimmed.
@@ -281,7 +296,70 @@ pub fn samples(fonts: impl Fn() -> Fonts) -> Result<Vec<Sample>, String> {
         about: "The output picker on a pad channel: the master, a submix, any track, or nowhere",
         ui,
     });
+    // Freeze and print: the bass frozen (a take of its compressor and EQ
+    // playing in their place), the drum kit's freeze waiting for the
+    // loop's start, the kick printing to a new sample.
+    let bass = StripId::Track(3);
+    m.freeze(bass, bass_take())
+        .map_err(|_| "the bass would not freeze".to_string())?;
+    play(&mut m, 8);
+    let _ = state(&mut m, MixView::Tracks);
+    play(&mut m, 4);
+    let mut frozen = state(&mut m, MixView::Tracks);
+    frozen.takes = true;
+    if let Some(s) = frozen.strip_mut(StripId::Track(2)) {
+        s.take = Some(TakeView {
+            print: false,
+            done: None,
+        });
+    }
+    if let Some(s) = frozen.strip_mut(StripId::Track(0)) {
+        s.take = Some(TakeView {
+            print: true,
+            done: Some(0.35),
+        });
+    }
+    out.push(Sample {
+        name: "mixer-freeze-print",
+        about: "Freeze and print: the bass frozen (its effects rest; fader, pan and sends still work), the drum kit's freeze waiting for the loop's start, the kick printing to a new sample",
+        ui: screen(fonts(), frozen.clone())?,
+    });
+    // The selected strip's menu: a second tap on its name.
+    let mut ui = screen(fonts(), frozen)?;
+    let (x, y) = name_button(&ui, 3);
+    tap(&mut ui, x, y);
+    let _ = crate::take_actions(&mut ui);
+    out.push(Sample {
+        name: "mixer-strip-menu",
+        about:
+            "The bass's menu (a tap on the selected strip's name): Thaw, or Print to a new sample",
+        ui,
+    });
     Ok(out)
+}
+
+/// Four beats of the bass as its frozen take: its tone, at 92 BPM.
+fn bass_take() -> Frozen {
+    let frames = (4.0 * 60.0 / 92.0 * RATE as f64) as usize;
+    let hz = 55.0 * 4.0;
+    let wave: Vec<f32> = (0..frames)
+        .map(|k| 0.4 * (std::f32::consts::TAU * k as f32 * hz / RATE as f32).sin())
+        .collect();
+    Frozen {
+        left: wave.clone(),
+        right: wave,
+        origin: 0.0,
+        beats: 4.0,
+        bpm: 92.0,
+        rate: RATE,
+    }
+}
+
+/// Where strip `col`'s name is (the top of the strip).
+pub fn name_button(ui: &Ui, col: usize) -> (i32, i32) {
+    let r = ui.rect_of(crate::MIXER).expect("the mixer page");
+    let x = r.x + col as i32 * (crate::view::STRIP_W + 6) + crate::view::STRIP_W / 2;
+    (x, r.y + crate::view::HEAD_H + 8 + 6 + 15)
 }
 
 /// Where the page's next arrow is, for the samples and tests.
@@ -306,7 +384,7 @@ mod tests {
     #[test]
     fn the_samples_read_a_real_mixer_and_paint() {
         let s = samples(Fonts::embedded).unwrap();
-        assert_eq!(s.len(), 7);
+        assert_eq!(s.len(), 10);
         let mut st = MixState::default();
         for mut sample in s {
             let mut c = SoftCanvas::new(1280, 800);
@@ -324,6 +402,20 @@ mod tests {
                 assert_eq!(
                     sample.ui.get::<MixerView>(crate::MIXER).unwrap().picker(),
                     Some(StripId::Pad(2))
+                );
+            }
+            if sample.name == "mixer-freeze-print" {
+                let v = sample.ui.get::<MixerView>(crate::MIXER).unwrap().state();
+                assert!(
+                    v.strip(StripId::Track(3)).unwrap().frozen,
+                    "read from the mixer"
+                );
+                assert!(!v.strip(StripId::Track(4)).unwrap().frozen);
+            }
+            if sample.name == "mixer-strip-menu" {
+                assert_eq!(
+                    sample.ui.get::<MixerView>(crate::MIXER).unwrap().menu(),
+                    Some(StripId::Track(3))
                 );
             }
             if sample.name == "mixer-tracks-page-2" {

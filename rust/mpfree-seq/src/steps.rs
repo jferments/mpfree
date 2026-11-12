@@ -37,11 +37,17 @@
 //! with their step: tapping a step off takes its row's locks out, a nudge
 //! moves them, and pages added, copied or taken off carry them.
 //!
+//! **Euclidean fill.** [`Euclid`] spreads `hits` as evenly as they go
+//! over `steps` steps (the Euclidean rhythms, as on the Digitakt), turned
+//! on by `rotate`; [`Grid::euclid`] writes that pattern into one sound's
+//! row, repeated from the clip's first step, as one edit.
+//!
 //! Edits never change the clip themselves: they return an [`Edit`], the
 //! notes and locks to take out and to put in, for the control thread to
 //! apply as one undoable take (`Takes::edit` in `mpfree-play`).
 
-use crate::{Clip, Lock, Note, MAX_CLIP_TICKS, MIN_CLIP_TICKS};
+use crate::{Clip, Cond, Lock, Note, MAX_CLIP_TICKS, MAX_RATCHET, MIN_CLIP_TICKS};
+use mpfree_moves::{Moves, MovesError};
 use mpfree_param::RelAddr;
 use mpfree_transport::time::{Tick, PPQ};
 
@@ -68,13 +74,17 @@ pub struct Step {
     pub nudge: Tick,
     /// Percent, 1 to 100.
     pub chance: u8,
+    /// The trig condition (shown as `cond.to_string()`: "1:2", "FILL" ...).
+    pub cond: Cond,
+    /// Hits, 1 to `MAX_RATCHET`.
+    pub ratchet: u8,
     /// Notes of the sound in the step, 1 or more.
     pub notes: usize,
 }
 
 /// A change to a clip: take `erase` and `erase_locks` out, change the
-/// length from and to `length` when there is one, then put `add` and
-/// `add_locks` in.
+/// length from and to `length` when there is one, put `add` and
+/// `add_locks` in, then change the moves when `moves` says so.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Edit {
     pub erase: Vec<Note>,
@@ -82,6 +92,40 @@ pub struct Edit {
     pub length: Option<(Tick, Tick)>,
     pub erase_locks: Vec<Lock>,
     pub add_locks: Vec<Lock>,
+    /// A page added, taken off or copied takes the clip's moves along.
+    pub moves: Option<Box<MovesEdit>>,
+}
+
+/// The clip's moves before and after an [`Edit`]: kept whole, since a
+/// page edit moves every lane's points about (it is small next to the
+/// clip's notes, and made on the control thread).
+#[derive(Clone, Debug, PartialEq)]
+pub struct MovesEdit {
+    pub before: Moves,
+    pub after: Moves,
+}
+
+// A clip's moves hold only finite values (`Moves::check`), so equality is
+// total.
+impl Eq for MovesEdit {}
+
+/// The edit of `clip`'s moves that `f` makes, or None when it has none,
+/// makes no change or is refused (then the moves stay as they are).
+pub(crate) fn moves_edit(
+    clip: &Clip,
+    f: impl FnOnce(&mut Moves) -> Result<(), MovesError>,
+) -> Option<Box<MovesEdit>> {
+    if clip.moves.is_empty() {
+        return None;
+    }
+    let mut after = clip.moves.clone();
+    if f(&mut after).is_err() || after == clip.moves {
+        return None;
+    }
+    Some(Box::new(MovesEdit {
+        before: clip.moves.clone(),
+        after,
+    }))
 }
 
 impl Edit {
@@ -91,6 +135,7 @@ impl Edit {
             && self.length.is_none()
             && self.erase_locks.is_empty()
             && self.add_locks.is_empty()
+            && self.moves.is_none()
     }
 
     /// The edit that puts the clip back as it was.
@@ -101,6 +146,12 @@ impl Edit {
             length: self.length.map(|(a, b)| (b, a)),
             erase_locks: self.add_locks.clone(),
             add_locks: self.erase_locks.clone(),
+            moves: self.moves.as_ref().map(|m| {
+                Box::new(MovesEdit {
+                    before: m.after.clone(),
+                    after: m.before.clone(),
+                })
+            }),
         }
     }
 
@@ -109,6 +160,13 @@ impl Edit {
         self.add.extend(other.add);
         self.erase_locks.extend(other.erase_locks);
         self.add_locks.extend(other.add_locks);
+        self.moves = match (self.moves.take(), other.moves) {
+            (Some(mut a), Some(b)) => {
+                a.after = b.after;
+                Some(a)
+            }
+            (a, b) => a.or(b),
+        };
     }
 
     /// Take `old` out and put `new` in, unless they are the same.
@@ -132,6 +190,10 @@ pub enum Change {
     Nudge(Tick),
     /// Percent, 1 to 100.
     Chance(u8),
+    /// A trig condition; one out of range leaves the step as it is.
+    Cond(Cond),
+    /// Hits, kept within 1 to `MAX_RATCHET`.
+    Ratchet(u8),
 }
 
 impl Change {
@@ -144,6 +206,8 @@ impl Change {
             Change::Length(_) => 2,
             Change::Nudge(_) => 3,
             Change::Chance(_) => 4,
+            Change::Cond(_) => 6,
+            Change::Ratchet(_) => 7,
         };
         (kind << 56) | (u64::from(pitch) << 48) | (i as u64 & 0xFFFF_FFFF_FFFF)
     }
@@ -174,6 +238,65 @@ pub fn lock_key(sound: Option<u8>, i: usize, addr: RelAddr) -> u64 {
 
 /// No sound has this number: it names every sound of a step in a key.
 const ALL: u8 = 255;
+
+/// The most steps a Euclidean pattern spans: four pages.
+pub const MAX_EUCLID_STEPS: u8 = 64;
+
+/// A Euclidean rhythm: `hits` spread as evenly as they go over `steps`
+/// steps, the first on step 0, then the whole pattern turned `rotate`
+/// steps later. 3 of 8 is x..x..x. and 4 of 16 is a hit every beat.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Euclid {
+    /// 0 to `steps`.
+    pub hits: u8,
+    /// 1 to [`MAX_EUCLID_STEPS`].
+    pub steps: u8,
+    /// Steps later, 0 to `steps - 1`.
+    pub rotate: u8,
+}
+
+impl Default for Euclid {
+    /// A hit every beat in 1/16 steps.
+    fn default() -> Euclid {
+        Euclid {
+            hits: 4,
+            steps: 16,
+            rotate: 0,
+        }
+    }
+}
+
+impl Euclid {
+    /// In range: steps within 1 to [`MAX_EUCLID_STEPS`], hits no more than
+    /// the steps, rotate below them.
+    pub fn fit(self) -> Euclid {
+        let steps = self.steps.clamp(1, MAX_EUCLID_STEPS);
+        Euclid {
+            hits: self.hits.min(steps),
+            steps,
+            rotate: self.rotate % steps,
+        }
+    }
+
+    /// Whether step `i` of the pattern (any step: it repeats) has a hit.
+    /// Step `j` before the rotation has one when `j * hits mod steps` is
+    /// below `hits`: Bresenham's line, which spreads the hits as evenly as
+    /// the Euclidean algorithm does and starts on one.
+    pub fn hit(self, i: usize) -> bool {
+        let e = self.fit();
+        let (k, n) = (usize::from(e.hits), usize::from(e.steps));
+        let j = (i % n + n - usize::from(e.rotate)) % n;
+        j * k % n < k
+    }
+
+    /// The pattern as text, x for a hit and . for a rest (for the log).
+    pub fn pattern(self) -> String {
+        let e = self.fit();
+        (0..usize::from(e.steps))
+            .map(|i| if e.hit(i) { 'x' } else { '.' })
+            .collect()
+    }
+}
 
 impl Grid {
     /// Steps of `size` ticks, from a 1/32 to a whole note.
@@ -265,6 +388,8 @@ impl Grid {
                 len: n.len,
                 nudge,
                 chance: n.chance,
+                cond: n.cond,
+                ratchet: n.ratchet,
                 notes: 1,
             };
             *slot = Some(match *slot {
@@ -333,6 +458,9 @@ impl Grid {
                 Change::Velocity(v) => new.velocity = v.clamp(1, 127),
                 Change::Length(l) => new.len = l.clamp(1, MAX_CLIP_TICKS),
                 Change::Chance(c) => new.chance = c.clamp(1, 100),
+                Change::Cond(c) if c.ok() => new.cond = c,
+                Change::Cond(_) => {}
+                Change::Ratchet(r) => new.ratchet = r.clamp(1, MAX_RATCHET),
                 Change::Nudge(_) => {
                     let nudge = (self.place(clip.length, n.tick).1 + shift).clamp(lo, hi);
                     new.tick = self.tick(clip.length, i, nudge);
@@ -499,6 +627,26 @@ impl Grid {
                     .extend(self.moved_locks(clip, src, new, n + j));
             }
         }
+        // The moves are cut off with the steps, or the new steps repeat
+        // the moves of the steps they copy.
+        let size = self.size;
+        edit.moves = moves_edit(clip, |m| {
+            let new32 = u32::try_from(new).map_err(|_| MovesError::Bad)?;
+            if new < old {
+                m.truncate(new32)?;
+            }
+            if copy && steps > n {
+                let width = n.min(PAGE) as Tick;
+                let from = (n as Tick - width) * size;
+                let to = (n as Tick * size).min(old);
+                let mut at = n as Tick * size;
+                while at < new {
+                    m.copy_range(from as u32, to as u32, at as u32, new32)?;
+                    at += width * size;
+                }
+            }
+            Ok(())
+        });
         edit
     }
 
@@ -524,6 +672,16 @@ impl Grid {
                     .extend(self.moved_locks(clip, src, clip.length, dst));
             }
         }
+        // The page's moves come along, over the same ticks.
+        let page = PAGE as Tick * self.size;
+        let (a, b) = (
+            from as Tick * page,
+            ((from + 1) as Tick * page).min(clip.length),
+        );
+        let at = to as Tick * page;
+        edit.moves = moves_edit(clip, |m| {
+            m.copy_range(a as u32, b as u32, at as u32, clip.length as u32)
+        });
         edit
     }
 
@@ -652,6 +810,34 @@ impl Grid {
         }
     }
 
+    /// Write the Euclidean pattern `e` into the row of sound `pitch`,
+    /// repeated from the clip's first step to its last: a step with a hit
+    /// keeps its notes, or with none gets a note on its line, a step long,
+    /// `velocity` loud; a step without one loses its notes and their
+    /// locks. Empty when the row already is the pattern.
+    pub fn euclid(self, clip: &Clip, pitch: u8, e: Euclid, velocity: u8) -> Edit {
+        let e = e.fit();
+        let pitch = pitch.min(127);
+        let mut edit = Edit::default();
+        for i in 0..self.steps(clip.length) {
+            let notes = self.notes(clip, pitch, i);
+            match (e.hit(i), notes.is_empty()) {
+                (true, true) => edit.add.push(Note::new(
+                    self.tick(clip.length, i, 0),
+                    self.size,
+                    pitch,
+                    velocity.clamp(1, 127),
+                )),
+                (false, false) => {
+                    edit.erase.extend(notes);
+                    edit.erase_locks.extend(self.locks(clip, Some(pitch), i));
+                }
+                _ => {}
+            }
+        }
+        edit
+    }
+
     /// The sounds with notes in step `i`, lowest first.
     fn sounds_in(self, clip: &Clip, i: usize) -> Vec<u8> {
         let mut s: Vec<u8> = clip
@@ -683,9 +869,13 @@ impl Clip {
     /// unchanged and the error says which.
     pub fn apply(&mut self, edit: &Edit) -> Result<(), crate::ModelError> {
         let (notes, locks, length) = (self.notes.clone(), self.locks.clone(), self.length);
+        let moves = edit.moves.as_ref().map(|_| self.moves.clone());
         let result = self.apply_all(edit);
         if result.is_err() {
             (self.notes, self.locks, self.length) = (notes, locks, length);
+            if let Some(moves) = moves {
+                self.moves = moves;
+            }
         }
         result
     }
@@ -716,6 +906,12 @@ impl Clip {
         for l in &edit.add_locks {
             self.add_lock(*l)?;
         }
+        if let Some(m) = &edit.moves {
+            if self.moves != m.before {
+                return Err(crate::ModelError::BadMoves);
+            }
+            self.moves = m.after.clone();
+        }
         Ok(())
     }
 }
@@ -733,6 +929,89 @@ mod tests {
             .map(|&(tick, note)| Note::new(tick, 60, note, 100))
             .collect();
         c
+    }
+
+    #[test]
+    fn euclidean_patterns_spread_their_hits_evenly() {
+        let e = |hits, steps, rotate| Euclid {
+            hits,
+            steps,
+            rotate,
+        };
+        assert_eq!(e(3, 8, 0).pattern(), "x..x..x.");
+        assert_eq!(e(4, 16, 0).pattern(), "x...x...x...x...");
+        assert_eq!(e(5, 8, 0).pattern(), "x.x.xx.x");
+        assert_eq!(e(3, 8, 1).pattern(), ".x..x..x");
+        assert_eq!(e(0, 4, 0).pattern(), "....");
+        assert_eq!(e(4, 4, 0).pattern(), "xxxx");
+        // Out of range: hits cut to the steps, rotate wraps, steps capped.
+        assert_eq!(e(9, 4, 6).fit(), e(4, 4, 2));
+        assert_eq!(e(1, 0, 0).fit().steps, 1);
+        assert_eq!(e(1, 200, 0).fit().steps, MAX_EUCLID_STEPS);
+        // Every hits-of-steps pattern has exactly that many hits, and the
+        // gaps between them differ by at most one step (maximally even).
+        for n in 1..=32u8 {
+            for k in 0..=n {
+                let p = e(k, n, 0);
+                let at: Vec<usize> = (0..usize::from(n)).filter(|&i| p.hit(i)).collect();
+                assert_eq!(at.len(), usize::from(k), "{k} of {n}");
+                if k >= 2 {
+                    let gaps: Vec<usize> = (0..at.len())
+                        .map(|j| (at[(j + 1) % at.len()] + usize::from(n) - at[j]) % usize::from(n))
+                        .map(|g| if g == 0 { usize::from(n) } else { g })
+                        .collect();
+                    let (lo, hi) = (gaps.iter().min().unwrap(), gaps.iter().max().unwrap());
+                    assert!(hi - lo <= 1, "{k} of {n}: gaps {gaps:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_euclidean_fill_writes_one_row_and_undoes() {
+        use mpfree_param::{OnTrack, RelAddr};
+        let g = Grid::new(240).unwrap();
+        // Pad 2 on steps 0 and 1 (with a lock on step 1), pad 5 on step 2.
+        let mut c = clip(BAR, &[(0, 2), (250, 2), (480, 5)]);
+        c.notes[0].velocity = 90;
+        let cut = RelAddr::new(OnTrack::Inst, 1);
+        c.apply(&g.lock(&c, Some(2), 1, cut, 0.5)).unwrap();
+        let before = c.clone();
+        let e = Euclid {
+            hits: 3,
+            steps: 8,
+            rotate: 0,
+        };
+        let edit = g.euclid(&c, 2, e, 90);
+        c.apply(&edit).unwrap();
+        // x..x..x. twice: steps 0, 3, 6, 8, 11, 14. Step 0's note stays,
+        // step 1's goes with its lock, pad 5 is left alone.
+        let row: Vec<usize> = g
+            .row(&c, 2)
+            .iter()
+            .enumerate()
+            .filter_map(|(i, s)| s.map(|_| i))
+            .collect();
+        assert_eq!(row, vec![0, 3, 6, 8, 11, 14]);
+        assert!(c.notes.iter().any(|n| n.note == 5 && n.tick == 480));
+        assert!(c.locks.is_empty());
+        assert!(c
+            .notes
+            .iter()
+            .filter(|n| n.note == 2)
+            .all(|n| n.velocity == 90 && n.len >= 60));
+        assert!(g.euclid(&c, 2, e, 90).is_empty(), "already the pattern");
+        // Undo puts the row and its lock back.
+        c.apply(&edit.inverse()).unwrap();
+        let mut a = c.notes.clone();
+        let mut b = before.notes.clone();
+        a.sort_by_key(|n| (n.tick, n.note));
+        b.sort_by_key(|n| (n.tick, n.note));
+        assert_eq!((a, c.locks.clone()), (b, before.locks.clone()));
+        // A pattern longer than the clip is cut at its end.
+        let short = clip(4 * 240, &[]);
+        let edit = g.euclid(&short, 0, Euclid::default(), 100);
+        assert_eq!(edit.add.len(), 1);
     }
 
     #[test]
@@ -842,6 +1121,120 @@ mod tests {
         c.apply(&off).unwrap();
         assert_eq!(c.notes, vec![Note::new(960, 240, 36, 90)]);
         assert!(g.toggle(&c, 36, 16, 90).is_empty(), "past the last step");
+    }
+
+    /// Page edits take the clip's moves along: a copied page copies them,
+    /// a page added with copy repeats them, a page taken off cuts them
+    /// off, and the inverse puts them back.
+    #[test]
+    fn page_edits_take_the_moves_along() {
+        use mpfree_moves::{Kind, Map, Target};
+        use mpfree_param::OnTrack;
+        let g = Grid::new(240).unwrap();
+        let page = 16 * 240;
+        let mut c = clip(2 * page, &[(0, 36)]);
+        let target = Target::Track(RelAddr::new(OnTrack::Inst, 1));
+        // A sweep up over the first page's first beat, then let go.
+        c.moves
+            .put(
+                target,
+                Map::linear(0.0, 1.0),
+                &[
+                    (0.0, 0.0, Kind::Ramp),
+                    (960.0, 1.0, Kind::Ramp),
+                    (961.0, 1.0, Kind::End),
+                ],
+                2 * page as u32,
+            )
+            .unwrap();
+        let at = |c: &Clip, t: Tick| c.moves.lane(target).and_then(|l| l.value_at(t as f64));
+        assert_eq!(at(&c, 480), Some(0.5));
+        assert_eq!(at(&c, page + 480), None, "page 2 is free");
+
+        // Copy page 1 over page 2.
+        let e = g.copy_page(&c, 0, 1);
+        let before = c.clone();
+        c.apply(&e).unwrap();
+        assert_eq!(at(&c, page + 480), Some(0.5));
+        assert_eq!(at(&c, 480), Some(0.5), "page 1 keeps its own");
+        c.apply(&e.inverse()).unwrap();
+        assert_eq!(c, before, "the inverse puts the moves back");
+
+        // Add a page that copies the one before it (page 2, which is free).
+        c.apply(&g.copy_page(&c, 0, 1)).unwrap();
+        let e = g.add_page(&c, true);
+        c.apply(&e).unwrap();
+        assert_eq!(c.length, 3 * page);
+        assert_eq!(at(&c, 2 * page + 480), Some(0.5), "page 3 repeats page 2");
+        assert!(c.check().is_ok());
+
+        // Take two pages off: the moves end with the clip.
+        c.apply(&g.remove_page(&c)).unwrap();
+        c.apply(&g.remove_page(&c)).unwrap();
+        assert_eq!(c.length, page);
+        assert!(c.check().is_ok());
+        assert_eq!(at(&c, 480), Some(0.5));
+
+        // A clip with no moves gets no moves edit.
+        let plain = clip(page, &[(0, 36)]);
+        assert!(g.add_page(&plain, true).moves.is_none());
+        // An edit made for other moves is refused, and changes nothing.
+        let mut other = c.clone();
+        other.moves = mpfree_moves::Moves::new();
+        let e = g.copy_page(
+            &{
+                let mut two = c.clone();
+                two.apply(&g.add_page(&c, false)).unwrap();
+                two
+            },
+            0,
+            1,
+        );
+        if e.moves.is_some() {
+            let kept = other.clone();
+            assert!(other.apply(&e).is_err());
+            assert_eq!(other, kept);
+        }
+    }
+
+    #[test]
+    fn a_step_takes_a_trig_condition_and_a_ratchet() {
+        let g = Grid::new(240).unwrap();
+        let mut c = clip(BAR, &[(1440, 36), (1500, 36), (1440, 38)]);
+        let quarter = Cond::Every { a: 1, b: 4 };
+        let e = g.change(&c, 36, 6, Change::Cond(quarter));
+        assert_eq!(e.add.len(), 2, "every note of the step");
+        c.apply(&e).unwrap();
+        let e = g.change(&c, 36, 6, Change::Ratchet(20));
+        assert!(e.add.iter().all(|n| n.ratchet == MAX_RATCHET));
+        c.apply(&e).unwrap();
+        let s = g.row(&c, 36)[6].unwrap();
+        assert_eq!((s.cond, s.ratchet, s.notes), (quarter, MAX_RATCHET, 2));
+        assert_eq!(s.cond.to_string(), "1:4");
+        let other = g.row(&c, 38)[6].unwrap();
+        assert_eq!(
+            (other.cond, other.ratchet),
+            (Cond::Always, 1),
+            "only the step's sound"
+        );
+        assert!(
+            g.change(&c, 36, 6, Change::Cond(Cond::Every { a: 5, b: 4 }))
+                .is_empty(),
+            "out of range"
+        );
+        assert_eq!(g.change(&c, 36, 6, Change::Ratchet(0)).add[0].ratchet, 1);
+        assert!(
+            g.change(&c, 36, 6, Change::Cond(quarter)).is_empty(),
+            "already so"
+        );
+        // Each kind joins its own undo.
+        let keys = [
+            Change::Cond(Cond::Fill),
+            Change::Ratchet(2),
+            Change::Chance(50),
+        ]
+        .map(|ch| ch.key(36, 6));
+        assert!(keys[0] != keys[1] && keys[1] != keys[2] && keys[0] != keys[2]);
     }
 
     #[test]

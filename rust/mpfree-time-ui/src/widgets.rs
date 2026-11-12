@@ -1,6 +1,6 @@
 //! The widgets the time engine adds to mpfree-ui: the transport bar
-//! ([`TransportBar`]), the Clips launch grid ([`ClipGrid`]) and the takes
-//! list ([`TakeList`]). Like mpfree-ui's own widgets, each one only shows
+//! ([`TransportBar`]), the Clips launch grid ([`ClipGrid`]), the scene
+//! morph bar under it ([`MorphBar`]) and the takes list ([`TakeList`]). Like mpfree-ui's own widgets, each one only shows
 //! what the app put in its fields and reports touches; none of them knows
 //! about the transport, the clips or the audio thread.
 
@@ -449,6 +449,12 @@ pub struct ClipGrid {
     pub slots: usize,
     pub first_track: usize,
     pub first_row: usize,
+    /// The scene (row) playing, lit on its row button.
+    pub scene_playing: Option<usize>,
+    /// The scene launched and waiting for the next bar line.
+    pub scene_cued: Option<usize>,
+    /// Live to song armed: what the grid plays is recorded into the song.
+    pub song_rec: bool,
     /// What was drawn last, so a change redraws only the cells that changed.
     drawn: RefCell<Option<Drawn>>,
 }
@@ -459,11 +465,37 @@ struct Drawn {
     title: String,
     legend: String,
     tracks: Vec<GridTrack>,
+    scenes: (Option<usize>, Option<usize>),
+    song_rec: bool,
 }
 
 /// Tracks shown at once.
 pub const GRID_COLS: usize = 8;
-const LABEL_W: i32 = 26;
+/// The Rec song button's width (on the grid and the Song view).
+pub const REC_SONG_W: i32 = 112;
+
+/// The Rec song button: live to song, red while armed.
+pub fn rec_song_pill(cx: &mut PaintCx, r: Rect, on: bool) {
+    let t = cx.theme.clone();
+    cx.canvas
+        .fill_round_rect(r, 10, if on { t.bad } else { t.raised });
+    let ink = if on { t.text } else { t.text_dim };
+    cx.canvas.fill_round_rect(
+        Rect::new(r.x + 12, r.y + r.h / 2 - 5, 10, 10),
+        5,
+        if on { t.text } else { t.bad },
+    );
+    cx.text(
+        FontId::Bold,
+        t.size_small,
+        Rect::new(r.x + 28, r.y, r.w - 34, r.h),
+        Align::Left,
+        ink,
+        "Rec song",
+    );
+}
+/// The scene buttons' column: each row's number launches the row.
+const LABEL_W: i32 = 48;
 const HEAD_H: i32 = 28;
 const CELL_GAP: i32 = 6;
 const ROW_MIN_H: i32 = 76;
@@ -487,8 +519,50 @@ impl ClipGrid {
             slots,
             first_track: 0,
             first_row: 0,
+            scene_playing: None,
+            scene_cued: None,
+            song_rec: false,
             drawn: RefCell::new(None),
         }
+    }
+
+    /// Where row `slot`'s scene button is, if it is in view.
+    pub fn scene_rect(&self, r: Rect, slot: usize) -> Option<Rect> {
+        let g = self.geo(r);
+        if slot < self.first_row || slot >= self.first_row + g.rows || slot >= self.slots {
+            return None;
+        }
+        let row = (slot - self.first_row) as i32;
+        Some(Rect::new(
+            g.body.x,
+            g.cells_y + row * (g.row_h + CELL_GAP),
+            LABEL_W,
+            g.row_h,
+        ))
+    }
+
+    /// Where the Song button is: the right end of the title line.
+    pub fn song_rect(&self, r: Rect) -> Rect {
+        let head = r.inset(14).take_top(26).0;
+        Rect::new(head.right() - 72, head.y - 4, 72, 30)
+    }
+
+    /// Where the Rec song button is: left of the Song button.
+    pub fn rec_rect(&self, r: Rect) -> Rect {
+        let song = self.song_rect(r);
+        Rect::new(song.x - 8 - REC_SONG_W, song.y, REC_SONG_W, song.h)
+    }
+
+    /// Where the Edit button is (the note editor): left of Rec song.
+    pub fn edit_rect(&self, r: Rect) -> Rect {
+        let rec = self.rec_rect(r);
+        Rect::new(rec.x - 8 - 72, rec.y, 72, rec.h)
+    }
+
+    /// Where the Stop all button is: over the scene buttons.
+    pub fn stop_all_rect(&self, r: Rect) -> Rect {
+        let g = self.geo(r);
+        Rect::new(g.body.x, g.body.y, LABEL_W, HEAD_H)
     }
 
     fn geo(&self, r: Rect) -> Geo {
@@ -562,6 +636,8 @@ impl Widget for ClipGrid {
             || d.title != self.title
             || d.legend != self.legend
             || d.tracks.len() != self.tracks.len()
+            || d.scenes != (self.scene_playing, self.scene_cued)
+            || d.song_rec != self.song_rec
         {
             return None;
         }
@@ -589,8 +665,51 @@ impl Widget for ClipGrid {
             title: self.title.clone(),
             legend: self.legend.clone(),
             tracks: self.tracks.clone(),
+            scenes: (self.scene_playing, self.scene_cued),
+            song_rec: self.song_rec,
         });
-        cx.titled_panel(r, &self.title, &self.legend);
+        cx.titled_panel(r, &self.title, "");
+        // The legend, then Rec song and the Song button (the Song view of
+        // the page).
+        let song = self.song_rect(r);
+        let rec = self.rec_rect(r);
+        let edit = self.edit_rect(r);
+        let head = r.inset(14).take_top(26).0;
+        // The legend's parts that fit between the title and the buttons,
+        // dropping the first ones when it is too wide.
+        let title_w = cx.measure(FontId::Bold, t.size_small, &self.title.to_uppercase());
+        let room = edit.x - 12 - (head.x + title_w + 16);
+        let mut legend = self.legend.as_str();
+        while !legend.is_empty() && cx.measure(FontId::Sans, t.size_small, legend) > room {
+            legend = legend.split_once(" · ").map_or("", |(_, rest)| rest);
+        }
+        cx.text(
+            FontId::Sans,
+            t.size_small,
+            Rect::new(head.x, head.y, edit.x - head.x - 12, head.h),
+            Align::Right,
+            t.text_dim,
+            legend,
+        );
+        rec_song_pill(cx, rec, self.song_rec);
+        cx.canvas.fill_round_rect(edit, 10, t.raised);
+        cx.text(
+            FontId::Bold,
+            t.size_small,
+            edit,
+            Align::Center,
+            t.text,
+            "Edit ›",
+        );
+        cx.canvas.fill_round_rect(song, 10, t.raised);
+        cx.text(
+            FontId::Bold,
+            t.size_small,
+            song,
+            Align::Center,
+            t.text,
+            "Song ›",
+        );
         let g = self.geo(r);
         if self.tracks.is_empty() {
             let line = Rect::new(g.body.x, g.body.y, g.body.w, 30);
@@ -609,17 +728,35 @@ impl Widget for ClipGrid {
             if slot >= self.slots {
                 break;
             }
-            let y = g.cells_y + row as i32 * (g.row_h + CELL_GAP);
-            let label = Rect::new(g.body.x, y, LABEL_W, g.row_h);
+            let Some(b) = self.scene_rect(r, slot) else {
+                break;
+            };
+            // A scene button: a play mark over the row's number, lit while
+            // the scene plays, ringed while it waits for the bar line.
+            let playing = self.scene_playing == Some(slot);
+            let fill = if playing { t.good } else { t.raised };
+            let ink = if playing { t.bg } else { t.text_dim };
+            cx.canvas.fill_round_rect(b, 10, fill);
+            if self.scene_cued == Some(slot) {
+                cx.canvas.stroke_round_rect(b, 10, 2, t.warn);
+            }
+            let mx = b.x + b.w / 2;
+            let top = b.y + (b.h / 2 - 18).max(4);
+            play_symbol(cx.canvas, Rect::new(mx - 5, top, 10, 12), ink);
             cx.text(
                 FontId::Bold,
                 t.size_small,
-                label,
+                Rect::new(b.x, top + 14, b.w, 22),
                 Align::Center,
-                t.text_faint,
+                ink,
                 &format!("{}", slot + 1),
             );
         }
+        let stop = self.stop_all_rect(r);
+        cx.canvas.fill_round_rect(stop, 8, t.raised);
+        let (mx, my) = (stop.x + stop.w / 2, stop.y + stop.h / 2);
+        cx.canvas
+            .fill_round_rect(Rect::new(mx - 5, my - 5, 10, 10), 2, t.text_dim);
         for (ti, track) in self.tracks.iter().enumerate() {
             let Some(head) = self.head_rect(r, ti) else {
                 continue;
@@ -667,6 +804,29 @@ impl Widget for ClipGrid {
         if phase != Touch::Down {
             return None;
         }
+        // A row's scene button is Toggle(row); Stop all is Toggle(slots);
+        // the Song button Toggle(slots + 1); Rec song Toggle(slots + 2);
+        // Edit Toggle(slots + 3).
+        if self.song_rect(r).contains(x, y) {
+            return Some(EventKind::Toggle(self.slots + 1));
+        }
+        if self.rec_rect(r).contains(x, y) {
+            return Some(EventKind::Toggle(self.slots + 2));
+        }
+        if self.edit_rect(r).contains(x, y) {
+            return Some(EventKind::Toggle(self.slots + 3));
+        }
+        if self.tracks.is_empty() {
+            return None;
+        }
+        if self.stop_all_rect(r).contains(x, y) {
+            return Some(EventKind::Toggle(self.slots));
+        }
+        for slot in self.first_row..self.slots {
+            if self.scene_rect(r, slot).is_some_and(|b| b.contains(x, y)) {
+                return Some(EventKind::Toggle(slot));
+            }
+        }
         let tracks = self.first_track..(self.first_track + GRID_COLS).min(self.tracks.len());
         for track in tracks {
             if self.head_rect(r, track).is_some_and(|h| h.contains(x, y)) {
@@ -682,6 +842,164 @@ impl Widget for ClipGrid {
             }
         }
         None
+    }
+}
+
+/// The scene morph under the grid: the rows on A and B (a tap on a chip's
+/// left half steps it down, on its right half up: `Step { index: 0 or 1,
+/// delta }`), the crossfader between them (`Value`, while the finger is
+/// down), and Snap back, Keep and Save (`Tab(0)`, `Tab(1)`, `Tab(2)`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct MorphBar {
+    /// The rows on A and B, shown 1-based.
+    pub a: usize,
+    pub b: usize,
+    /// The crossfader, 0 (A) to 1 (B).
+    pub pos: f32,
+    /// A morph is loaded: the crossfader moves the parameters.
+    pub on: bool,
+    /// Parameters the morph moves, for the label.
+    pub params: usize,
+}
+
+const CHIP_W: i32 = 96;
+const MORPH_BUTTONS: [(&str, i32); 3] = [("Snap back", 104), ("Keep", 72), ("Save", 84)];
+
+impl Default for MorphBar {
+    fn default() -> MorphBar {
+        MorphBar {
+            a: 0,
+            b: 1,
+            pos: 0.0,
+            on: false,
+            params: 0,
+        }
+    }
+}
+
+impl MorphBar {
+    pub fn new() -> MorphBar {
+        MorphBar::default()
+    }
+
+    /// The A chip, the crossfader, the B chip and the three buttons.
+    pub fn parts(r: Rect) -> (Rect, Rect, Rect, [Rect; 3]) {
+        let inner = r.inset_xy(14, 8);
+        let gap = 8;
+        let buttons_w: i32 = MORPH_BUTTONS.iter().map(|b| b.1 + gap).sum();
+        let (buttons, rest) = inner.take_right(buttons_w);
+        let mut x = buttons.x + gap;
+        let mut bs = [Rect::new(0, 0, 0, 0); 3];
+        for (i, (_, w)) in MORPH_BUTTONS.iter().enumerate() {
+            bs[i] = Rect::new(x, inner.y, *w, inner.h);
+            x += w + gap;
+        }
+        let (a, rest) = rest.take_left(CHIP_W);
+        let (b, rest) = rest.take_right(CHIP_W);
+        let fader = rest.inset_xy(16, 0);
+        (a, fader, b, bs)
+    }
+
+    /// The label of the Save button: the row the crossfader is nearer.
+    pub fn save_row(&self) -> usize {
+        if self.pos < 0.5 {
+            self.a
+        } else {
+            self.b
+        }
+    }
+}
+
+impl Widget for MorphBar {
+    fn paint(&self, cx: &mut PaintCx, r: Rect) {
+        let t = cx.theme.clone();
+        cx.canvas.fill_round_rect(r.inset_xy(4, 2), 12, t.surface);
+        let (a, fader, b, buttons) = MorphBar::parts(r);
+        for (chip, side, row, near) in [
+            (a, "A", self.a, self.pos < 0.5),
+            (b, "B", self.b, self.pos >= 0.5),
+        ] {
+            cx.canvas.fill_round_rect(chip, 10, t.raised);
+            if self.on && near {
+                cx.canvas.stroke_round_rect(chip, 10, 2, t.accent);
+            }
+            cx.text(
+                FontId::Bold,
+                t.size_small,
+                chip,
+                Align::Center,
+                t.text,
+                &format!("‹  {side} {}  ›", row + 1),
+            );
+        }
+        // The crossfader: a track, the part from A filled while on, a knob.
+        let my = fader.y + fader.h / 2;
+        let track = Rect::new(fader.x, my - 3, fader.w, 6);
+        cx.canvas.fill_round_rect(track, 3, t.raised);
+        let x = fader.x + (self.pos.clamp(0.0, 1.0) * fader.w as f32).round() as i32;
+        let ink = if self.on { t.accent } else { t.text_faint };
+        if self.on {
+            cx.canvas
+                .fill_round_rect(Rect::new(fader.x, my - 3, x - fader.x, 6), 3, ink);
+        }
+        cx.canvas
+            .fill_round_rect(Rect::new(x - 9, fader.y + 4, 18, fader.h - 8), 6, ink);
+        let label = if self.on {
+            format!("Morph · {} parameters", self.params)
+        } else {
+            "Morph".to_string()
+        };
+        cx.text(
+            FontId::Sans,
+            t.size_small - 2.0,
+            Rect::new(fader.x, fader.y - 2, fader.w, 16),
+            Align::Center,
+            t.text_dim,
+            &label,
+        );
+        for (i, br) in buttons.iter().enumerate() {
+            let live = self.on || i == 2;
+            cx.canvas
+                .fill_round_rect(*br, 10, if live { t.raised } else { t.surface });
+            let word = if i == 2 {
+                format!("Save {}", if self.pos < 0.5 { "A" } else { "B" })
+            } else {
+                MORPH_BUTTONS[i].0.to_string()
+            };
+            cx.text(
+                FontId::Bold,
+                t.size_small,
+                *br,
+                Align::Center,
+                if live { t.text } else { t.text_faint },
+                &word,
+            );
+        }
+    }
+
+    fn touch(&mut self, _f: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
+        let (a, fader, b, buttons) = MorphBar::parts(r);
+        let slide = fader.inset_xy(-12, 0);
+        match phase {
+            Touch::Down => {
+                for (index, chip) in [a, b].iter().enumerate() {
+                    if chip.contains(x, y) {
+                        let delta = if x < chip.x + chip.w / 2 { -1 } else { 1 };
+                        return Some(EventKind::Step { index, delta });
+                    }
+                }
+                if let Some(i) = buttons.iter().position(|br| br.contains(x, y)) {
+                    return Some(EventKind::Tab(i));
+                }
+                slide.contains(x, y).then(|| {
+                    EventKind::Value(((x - fader.x) as f32 / fader.w.max(1) as f32).clamp(0.0, 1.0))
+                })
+            }
+            Touch::Move if slide.inset_xy(0, -40).contains(x, y) => Some(EventKind::Value(
+                ((x - fader.x) as f32 / fader.w.max(1) as f32).clamp(0.0, 1.0),
+            )),
+            _ => None,
+        }
     }
 }
 
@@ -855,16 +1173,29 @@ impl Widget for TakeList {
                 t.text_faint,
                 "No takes yet",
             );
-            let b = rest.take_top(24).0;
-            if b.bottom() <= limit {
+            // One line, or two in a narrow panel (Arrange beside the
+            // Q-Link column).
+            const HELP: &str = "REC records one; Capture keeps what you just played";
+            let lines: Vec<&str> = if cx.measure(FontId::Sans, t.size_small, HELP) <= body.w {
+                vec![HELP]
+            } else {
+                vec!["REC records one;", "Capture keeps what you played"]
+            };
+            let mut rest = rest;
+            for line in lines {
+                let (b, after) = rest.take_top(24);
+                if b.bottom() > limit {
+                    break;
+                }
                 cx.text(
                     FontId::Sans,
                     t.size_small,
                     b,
                     Align::Left,
                     t.text_faint,
-                    "REC records one; Capture keeps what you just played",
+                    line,
                 );
+                rest = after;
             }
         }
         let mut y = body.y;
@@ -1080,6 +1411,87 @@ mod tests {
         assert!(g
             .cell_rect(r, 2, 15)
             .is_some_and(|c| c.bottom() <= r.bottom()));
+    }
+
+    #[test]
+    fn the_morph_bar_steps_rows_slides_and_has_three_buttons() {
+        let mut m = MorphBar::new();
+        let r = Rect::new(12, 680, 830, 64);
+        let (a, fader, b, buttons) = MorphBar::parts(r);
+        assert!(a.right() < fader.x && fader.right() < b.x && b.right() < buttons[0].x);
+        assert!(fader.w > 200, "{fader:?}");
+        assert_eq!(
+            m.touch(1, Touch::Down, a.x + 4, a.y + 4, r),
+            Some(EventKind::Step {
+                index: 0,
+                delta: -1
+            })
+        );
+        assert_eq!(
+            m.touch(1, Touch::Down, b.right() - 4, b.y + 4, r),
+            Some(EventKind::Step { index: 1, delta: 1 })
+        );
+        let mid = fader.x + fader.w / 2;
+        assert_eq!(
+            m.touch(1, Touch::Down, mid, fader.y + 10, r),
+            Some(EventKind::Value(0.5))
+        );
+        assert_eq!(
+            m.touch(1, Touch::Move, fader.right() + 5, fader.y + 10, r),
+            Some(EventKind::Value(1.0)),
+            "a drag past the end holds at B"
+        );
+        for (i, br) in buttons.iter().enumerate() {
+            assert_eq!(
+                m.touch(1, Touch::Down, br.x + 4, br.y + 4, r),
+                Some(EventKind::Tab(i))
+            );
+        }
+        m.pos = 0.7;
+        assert_eq!(m.save_row(), 1);
+    }
+
+    #[test]
+    fn row_numbers_launch_scenes_and_the_corner_stops_all() {
+        let mut g = grid(3);
+        let r = Rect::new(12, 128, 814, 610);
+        let b = g.scene_rect(r, 2).unwrap();
+        let c = g.cell_rect(r, 0, 2).unwrap();
+        assert_eq!((b.y, b.h), (c.y, c.h), "beside its row");
+        assert!(b.right() < c.x && b.w >= 44, "{b:?} {c:?}");
+        assert_eq!(
+            g.touch(1, Touch::Down, b.x + 4, b.y + 4, r),
+            Some(EventKind::Toggle(2))
+        );
+        let s = g.stop_all_rect(r);
+        assert_eq!(
+            g.touch(1, Touch::Down, s.x + 4, s.y + 4, r),
+            Some(EventKind::Toggle(16))
+        );
+        let song = g.song_rect(r);
+        assert!(song.right() <= r.right() - 14 && song.y >= r.y, "{song:?}");
+        assert_eq!(
+            g.touch(1, Touch::Down, song.x + 4, song.y + 4, r),
+            Some(EventKind::Toggle(17))
+        );
+        let rec = g.rec_rect(r);
+        assert!(rec.right() < song.x, "{rec:?}");
+        assert_eq!(
+            g.touch(1, Touch::Down, rec.x + 4, rec.y + 4, r),
+            Some(EventKind::Toggle(18))
+        );
+        let edit = g.edit_rect(r);
+        assert!(edit.right() < rec.x, "{edit:?}");
+        assert_eq!(
+            g.touch(1, Touch::Down, edit.x + 4, edit.y + 4, r),
+            Some(EventKind::Toggle(19))
+        );
+        g.first_row = 2;
+        assert_eq!(
+            g.scene_rect(r, 2).map(|x| x.y),
+            g.cell_rect(r, 0, 2).map(|x| x.y)
+        );
+        assert!(g.scene_rect(r, 1).is_none());
     }
 
     #[test]

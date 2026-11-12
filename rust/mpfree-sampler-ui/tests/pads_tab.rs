@@ -140,7 +140,11 @@ fn the_map_shows_the_banks_pads_and_the_list_the_kits_sounds() {
         ("Put on A5", true)
     );
     let b = s.ui.get::<ButtonRow>(pads_tab::BUTTONS).unwrap();
-    assert_eq!(b.enabled, vec![true, false, true], "nothing copied yet");
+    assert_eq!(
+        b.enabled,
+        vec![true, false, true, true],
+        "nothing copied yet; the bank has sounds to map to keys"
+    );
 }
 
 #[test]
@@ -184,7 +188,7 @@ fn copy_paste_and_clear_are_one_undo_step_each() {
     let b = s.ui.get::<ButtonRow>(pads_tab::BUTTONS).unwrap();
     assert_eq!(
         (b.labels[1].as_str(), b.enabled.clone()),
-        ("Paste A5", vec![false, true, false])
+        ("Paste A5", vec![false, true, false, true])
     );
     let a = press(&mut s, Button::Paste).unwrap();
     apply(&mut s, &a);
@@ -327,4 +331,19 @@ fn every_pads_sample_screen_draws() {
         s.ui.paint(&mut c);
         assert!(!s.about.is_empty(), "{}", s.name);
     }
+}
+
+#[test]
+fn map_to_keys_names_the_banks_pads_with_a_sound() {
+    let mut s = pads(PAD);
+    let want: Vec<usize> = (0..16).filter(|&k| s.state.pads[k].is_some()).collect();
+    assert!(want.len() > 1 && want.len() < 16, "{want:?}");
+    assert_eq!(
+        press(&mut s, Button::MapToKeys),
+        Some(PadsAction::MapToKeys { pads: want })
+    );
+    // The action itself changes nothing: the app finds the notes.
+    let rev = s.project.revision();
+    apply(&mut s, &PadsAction::MapToKeys { pads: vec![0] });
+    assert_eq!(s.project.revision(), rev);
 }

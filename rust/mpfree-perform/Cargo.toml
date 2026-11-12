@@ -1,0 +1,19 @@
+[package]
+name = "mpfree-perform"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Scenes, follow actions and the scene morph: launch a row of clips on the bar line with its mutes, chain clips and scenes after some bars, and morph between two rows' stored values"
+
+[lib]
+name = "mpfree_perform"
+path = "src/lib.rs"
+
+[dependencies]
+mpfree-transport = { path = "../mpfree-transport" }
+mpfree-seq = { path = "../mpfree-seq" }
+mpfree-play = { path = "../mpfree-play" }
+mpfree-mod = { path = "../mpfree-mod" }
+
+[dev-dependencies]
+mpfree-node = { path = "../mpfree-node" }

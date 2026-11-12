@@ -195,7 +195,7 @@ fn journal_lines_parse_back() {
     let mut r = Rig::new("swipes");
     r.stroke(1, 640.0, 400.0, -12.0, 0.0, 20, 0, 0);
     let swipe = r.lines.iter().find(|l| l.contains("kind=swipe")).unwrap();
-    let journal = format!("[  123.456] mpfree-hello[201]: {swipe}");
+    let journal = format!("[  123.456] mpfree[201]: {swipe}");
     let (tag, kv) = parse_line(&journal).unwrap();
     assert_eq!(tag, "touch-gesture");
     assert!(kv.contains(&("step", "swipes")) && kv.contains(&("dir", "left")));
