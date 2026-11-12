@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""WORKSTATION ONLY: make drum kits for Hello MPC from Akai's factory content,
+"""WORKSTATION ONLY: make drum kits for mpfree from Akai's factory content,
 read from the owner's eMMC backup. It never contacts the MPC.
 
   python3 tools/mpc-one/offline-factory-kit.py [--backup FOLDER] [--program TEXT] [--kits N]
@@ -20,8 +20,8 @@ read from the owner's eMMC backup. It never contacts the MPC.
    converts them to 44.1 kHz stereo 16-bit (at most 10 s each), and deletes
    the copies.
 6. Writes a new folder ~/mpfree-work/factory-kit-<UTC>-XXXXXXXX/ with kits.bin
-   (for mpfree-hello's drums and play steps; format in
-   rust/mpfree-hello/src/kit.rs) and report.txt (file and sample names,
+   (for mpfree's drums and play steps; format in
+   rust/mpfree-app/src/kit.rs) and report.txt (file and sample names,
    formats and kit 1's program XML; no audio).
 
 The backup is opened only for reading. The kit is Akai's copyrighted content:
@@ -639,7 +639,7 @@ def main(argv):
                 f"{len(chosen['padnotes'])} pad notes), first 400 lines:")
             for line in chosen["xml"].splitlines()[:400]:
                 say("  | " + line)
-        say("\nRESULT: kits made. The Hello MPC tool copies the newest kits.bin into the test build's RAM.")
+        say("\nRESULT: kits made. The app tool (host_app_mpc.py) copies the newest kits.bin into the test build's RAM.")
         say("The kits and this report hold Akai's content: keep them private, never commit them.")
         return 0
     except Stop as err:

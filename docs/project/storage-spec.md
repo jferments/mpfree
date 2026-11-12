@@ -1,7 +1,7 @@
 # MPFree storage: where settings and user files are saved
 
 **Status:** APPROVED by Jay on 2026-11-11 at 09:30Z ("Yes, kept across rounds"). Built in round 7; until a stick with partition 4 is written, nothing is saved.
-**Owner:** the Hello MPC thread, which owns the app shell. The touch thread (calibration) and the arp thread (patterns) use this; nothing else picks its own place.
+**Owner:** the app thread (it was the Hello MPC thread), which owns the app shell. The touch thread (calibration) and the arp thread (patterns) use this; nothing else picks its own place.
 
 ## Where (rule zero)
 

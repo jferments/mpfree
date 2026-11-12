@@ -2,7 +2,7 @@
 //! operation runs here, never on the UI or audio thread. The UI sends a
 //! [`Job`] with a number and polls [`Worker::take`] each frame.
 
-use crate::{AudioInfo, Entry, Library, Loc, Snapshot, TrashItem, Version};
+use crate::{AudioInfo, Entry, Library, Loc, NewSample, Snapshot, TrashItem, Version};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 
@@ -39,6 +39,8 @@ pub enum Job {
         project: Loc,
         snap: Snapshot,
         keep: usize,
+        /// Sounds the parts name, written first where they aren't yet.
+        samples: Vec<NewSample>,
     },
     OpenProject(Loc),
     /// A project's earlier saves, newest first.
@@ -152,8 +154,9 @@ pub fn run(lib: &Library, job: Job) -> std::io::Result<Outcome> {
             project,
             snap,
             keep,
+            samples,
         } => {
-            lib.save_project(&project, &snap, keep)?;
+            lib.save_project_with(&project, &snap, keep, &samples)?;
             Outcome::Saved(project)
         }
         Job::OpenProject(l) => Outcome::Project(l.clone(), lib.open_project(&l)?),
