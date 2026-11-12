@@ -1,21 +1,26 @@
 <!--
 status: changing
-covers: rust/mpfree-app/src/app.rs
+covers: rust/mpfree-app/src/app.rs rust/mpfree-app/src/gui.rs
 checked: 2026-11-11 414faa1
 -->
 
 # Prefs
 
-Every row of Prefs (SHIFT + MENU) and what it changes.
+**Prefs** holds MPFree's settings. Press **SHIFT + MENU** to open it, and **MENU** to close it. Turn the data wheel or tap to pick a row, and press **–** or **+** (or tap the arrows) to change it. The panel on the right explains the row you picked.
 
-This chapter is not written yet. It will cover:
+{{shot: prefs | Prefs, with Pad velocity curve picked.}}
 
-- Pad velocity curve
-- Latch keeps pads
-- Audio buffer
-- Find the buttons again
-- Show developer tools
-- Map controls
-- Line input
-- System info
-- Touch screen
+| Row | What it does |
+|---|---|
+| **Pad velocity curve** | How hard you must hit a pad for a loud note. **Soft:** loud notes come easily. **Hard:** more of the pad's travel stays below the top, for more dynamics. **Linear** plays the pad's own value. FULL LEVEL and Half Level override it. |
+| **Latch keeps pads** | With Latch on, pads keep repeating after you let go. **Replace:** a fresh press starts a new set. **Toggle:** each press adds or removes that pad. |
+| **Audio buffer** | How much sound is queued ahead of the speakers. 3 periods is what the factory software uses; 2 plays about 3 ms sooner after a hit, with more risk of clicks. Changing it restarts the sound. |
+| **Find the buttons again** | Runs the button guide, which asks you to press MENU, NOTE REPEAT, TAP TEMPO, – and +, REC, OVERDUB, UNDO and PLAY START one at a time, so MPFree learns them. |
+| **Show developer tools** | Adds the Dev tab, for people building MPFree. |
+| **Map controls** | Teach MPFree the MPC's other buttons, one at a time: pick a control, press **+** and press the button (**–** skips it). It also turns on the developer tools. |
+| **Line input** | Turns the INPUTS on the back on or off. It is off every time MPFree starts. |
+| **System info** | MPFree's version, and details of the MPC it runs on. **MENU** goes back to Prefs. |
+| **Touch screen** | Opens the touchscreen's own rows: **Screen pad velocity** (the velocity of pads played on the screen, which can't sense how hard you tap), **Calibrate touch** (tap a target in each corner to check touches land where you touch; this version only reports the result) and **Touch lab** (a test page for touches). |
+
+> [!MPC]
+> On the MPC, **SHIFT + MENU** opens Preferences too, but MPFree's are far fewer: most settings live on the page they belong to, under **MENU**.
