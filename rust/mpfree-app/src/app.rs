@@ -351,6 +351,8 @@ pub struct ButtonMap {
     pub prog_edit: Option<u8>,
     pub q_link: Option<u8>,
     pub track_mute: Option<u8>,
+    /// The data dial's push, found with the control mapper.
+    pub data_push: Option<u8>,
 }
 
 impl ButtonMap {
@@ -464,6 +466,7 @@ impl ButtonMap {
             Job::ProgEdit => self.prog_edit,
             Job::QLink => self.q_link,
             Job::TrackMute => self.track_mute,
+            Job::DataPush => self.data_push,
         }
     }
 
@@ -493,6 +496,7 @@ impl ButtonMap {
             Job::ProgEdit => &mut self.prog_edit,
             Job::QLink => &mut self.q_link,
             Job::TrackMute => &mut self.track_mute,
+            Job::DataPush => &mut self.data_push,
         };
         *slot = code;
     }
@@ -653,12 +657,32 @@ pub enum Item {
     Synth(SynthItem),
 }
 
+/// A row whose + opens a page or does a thing once, rather than stepping
+/// a value: the wheel's push opens it straight away.
+fn opens_something(item: Item) -> bool {
+    matches!(
+        item,
+        Item::FindButtons
+            | Item::TouchSection
+            | Item::PrefsBack
+            | Item::CalibrateTouch
+            | Item::TouchLab
+            | Item::MapControls
+            | Item::SystemInfo
+            | Item::ClearLogs
+            | Item::ClearConsole
+    )
+}
+
 /// The menu on screen: its rows (name, value), the selected row and help.
 #[derive(Clone, Debug, PartialEq)]
 pub struct MenuView {
     pub title: String,
     pub rows: Vec<(String, String)>,
     pub selected: usize,
+    /// The wheel's push opened the selected row: the wheel changes its
+    /// value until the next push.
+    pub editing: bool,
     pub help_heading: String,
     pub help: Vec<String>,
 }
@@ -847,6 +871,8 @@ pub struct App {
     tap_light: bool,
     /// The part of Prefs on screen: the main rows or one of its sections.
     prefs_section: PrefsSection,
+    /// The wheel's push opened the selected menu row (see `wheel_push`).
+    menu_editing: bool,
     /// Theme files found in the themes folder at start (`files/themes/` in
     /// `--data`): the file name, which is what `settings.theme` holds, and
     /// the theme's own name for the Appearance row. After [`THEMES`].
@@ -1017,6 +1043,7 @@ impl App {
             mapper: mapper::Mapper::default(),
             swallowed: [false; 128],
             prefs_section: PrefsSection::Main,
+            menu_editing: false,
             theme_files: Vec::new(),
             tuning_files: Vec::new(),
             loop_muted: false,
@@ -1436,6 +1463,8 @@ impl App {
             fx.extend(self.tap(t));
         } else if let Some(k) = self.map.bank_of(note) {
             fx.push(Effect::Bank { button: k, shift });
+        } else if Some(note) == self.map.data_push {
+            fx.extend(self.wheel_push());
         } else if Some(note) == self.map.minus || Some(note) == self.map.plus {
             let d = if Some(note) == self.map.plus { 1 } else { -1 };
             if self.in_menu() {
@@ -1671,7 +1700,9 @@ impl App {
             // In a menu the wheel moves between rows and - / + change the
             // value, so menus work without touch; SHIFT + wheel also changes
             // the value, in case - and + are not known yet.
-            _ if self.in_menu() && self.shift => self.step_item(self.selected, delta.signum()),
+            _ if self.in_menu() && (self.shift || self.menu_editing) => {
+                self.step_item(self.selected, delta.signum())
+            }
             _ if self.in_menu() => {
                 let last = self.items().len() as i32 - 1;
                 self.select((self.selected as i32 + delta).clamp(0, last) as usize)
@@ -1724,6 +1755,7 @@ impl App {
     /// Show `v`. The page left is remembered for going back, unless it is
     /// a menu, the guide or the workspace (whose Back goes to the panel).
     fn show(&mut self, v: View) -> Vec<Effect> {
+        self.menu_editing = false;
         if self.view != v
             && matches!(
                 self.view,
@@ -2449,6 +2481,7 @@ impl App {
                 })
                 .collect(),
             selected,
+            editing: self.menu_editing,
             help_heading: name.to_string(),
             help: self
                 .item_help(items[selected])
@@ -2461,6 +2494,7 @@ impl App {
     /// From a Prefs section back to Prefs' main rows, on the row that opened it.
     fn leave_prefs_section(&mut self) -> Vec<Effect> {
         self.prefs_section = PrefsSection::Main;
+        self.menu_editing = false;
         self.selected = PREFS_ROWS
             .iter()
             .position(|&i| i == Item::TouchSection)
@@ -2474,6 +2508,29 @@ impl App {
             return Vec::new();
         }
         self.selected = i.min(self.items().len() - 1);
+        self.menu_editing = false;
+        vec![self.menu_view()]
+    }
+
+    /// The data dial's push. In a menu, on a row with a value: the wheel
+    /// now changes that value (as it turns), and the next push sets it and
+    /// gives the wheel back to the rows. On a row that opens something
+    /// (System info, Touch screen, Back…), it opens it, as + does (Jay,
+    /// 12 Nov 08:11Z). Elsewhere it does nothing yet.
+    pub fn wheel_push(&mut self) -> Vec<Effect> {
+        if !self.in_menu() {
+            return Vec::new();
+        }
+        if self.menu_editing {
+            self.menu_editing = false;
+            return vec![self.menu_view()];
+        }
+        let items = self.items();
+        let i = self.selected.min(items.len() - 1);
+        if opens_something(items[i]) {
+            return self.step_item(i, 1);
+        }
+        self.menu_editing = true;
         vec![self.menu_view()]
     }
 
@@ -3111,6 +3168,65 @@ mod tests {
         let mut next = App::new(44_100, false);
         next.restore(&kept, &mpfree_store::Settings::default());
         assert_eq!(next.settings.theme, "synthwave");
+    }
+
+    /// Jay, 12 Nov 08:11Z: in Prefs, a push of the wheel opens a row, the
+    /// wheel then picks its value, and a second push sets it and gives the
+    /// wheel back to the rows. A row that opens something opens at once.
+    #[test]
+    fn the_wheels_push_opens_a_row_for_the_wheel_and_a_second_push_sets_it() {
+        const PUSH: u8 = 111;
+        let mut app = App::new(44_100, false);
+        app.map.menu = Some(MENU);
+        // Found with Map controls, as on Jay's MPC One.
+        app.map.learn(mapper::Job::DataPush, Some(PUSH));
+        app.button(button::SHIFT, true, 0.0);
+        press(&mut app, MENU);
+        app.button(button::SHIFT, false, 0.0);
+        let at = row(&app, Item::Appearance);
+        let menu = |fx: &[Effect]| match fx.last() {
+            Some(Effect::Menu(m)) => m.clone(),
+            _ => panic!("{fx:?}"),
+        };
+        // The wheel walks the rows to Appearance.
+        let fx = app.select(0);
+        assert!(!menu(&fx).editing);
+        let fx = app.wheel(at as i32);
+        assert_eq!((menu(&fx).selected, menu(&fx).editing), (at, false));
+        // Push: the row opens, and the wheel now changes the theme.
+        let fx = press(&mut app, PUSH);
+        assert_eq!((menu(&fx).selected, menu(&fx).editing), (at, true));
+        let fx = app.wheel(1);
+        assert_eq!(menu(&fx).rows[at].1, "Console");
+        assert_eq!(menu(&fx).selected, at, "the row stays picked");
+        let fx = app.wheel(1);
+        assert_eq!(menu(&fx).rows[at].1, "Synthwave");
+        // Push again: set, and the wheel moves between rows again.
+        let fx = press(&mut app, PUSH);
+        assert!(!menu(&fx).editing);
+        assert_eq!(app.settings.theme, "synthwave");
+        let fx = app.wheel(-1);
+        assert_eq!((menu(&fx).selected, menu(&fx).editing), (at - 1, false));
+        // A tap on a row, or leaving Prefs, closes an open row.
+        app.select(at);
+        assert!(menu(&press(&mut app, PUSH)).editing);
+        let fx = app.select(0);
+        assert!(!menu(&fx).editing);
+        app.select(at);
+        assert!(menu(&press(&mut app, PUSH)).editing);
+        press(&mut app, MENU);
+        assert!(!matches!(app.menu_view(), Effect::Menu(m) if m.editing));
+        // System info opens on the push, as + opens it.
+        app.button(button::SHIFT, true, 0.0);
+        press(&mut app, MENU);
+        app.button(button::SHIFT, false, 0.0);
+        app.select(row(&app, Item::SystemInfo));
+        let fx = press(&mut app, PUSH);
+        assert!(fx.contains(&Effect::Show(View::System)), "{fx:?}");
+        // Off the menus the push does nothing yet.
+        press(&mut app, MENU);
+        app.show(View::Play);
+        assert!(press(&mut app, PUSH).is_empty());
     }
 
     #[test]

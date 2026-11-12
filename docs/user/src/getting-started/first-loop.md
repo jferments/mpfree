@@ -1,7 +1,7 @@
 <!--
 status: changing
 covers: rust/mpfree-looper rust/mpfree-app/src/looping.rs rust/mpfree-app/src/looper_page.rs rust/mpfree-app/src/play_page.rs
-checked: 2026-11-11 414faa1
+checked: 2026-11-12 b4f1d46
 -->
 
 # Your first loop
@@ -12,7 +12,7 @@ In this chapter you record a drum loop from the pads, add layers to it, and undo
 
 ## Open the Loop view
 
-On the **Play** page, tap **Loop** in the view switch. The loop takes the top of the screen, with its buttons under it: **Record**, **Overdub**, **Stop**, **Undo**, **Redo**, **Mute** and **Clear**.
+On the **Play** page, tap **Loop** in the view switch. The loop takes the top of the screen, with its buttons under it: **Record** (a red dot), **Overdub** (a red ring), **Play** (a triangle), **Stop** (a square), **Undo**, **Redo**, **Mute** and **Clear**.
 
 {{shot: play-loop | The Loop view with a loop of three layers playing: Drums, Bass and Chop. The speaker beside each layer's name mutes it.}}
 

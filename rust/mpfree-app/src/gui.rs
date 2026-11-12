@@ -104,7 +104,9 @@ const SHIFT_SAMPLE_HINT: &str =
 const SHIFT_MENU_HINT: &str =
     "SHIFT +   wheel: change the value   ·   MENU: Prefs   ·   STOP: back to bar 1";
 const OPTIONS_HINT: &str =
-    "Wheel or tap: pick a row   ·   - / +, SHIFT + wheel or the arrows: change it   ·   MENU: close";
+    "Wheel or tap: pick a row   ·   push the wheel, - / + or the arrows: change it   ·   MENU: close";
+/// A menu row the wheel's push opened.
+const OPTIONS_EDIT_HINT: &str = "Wheel: change it   ·   push the wheel: set it   ·   - / + or the arrows: change it   ·   MENU: close";
 const GUIDE_HINT: &str = "STOP: skip this button   ·   The pads still play while the guide is open";
 const LOADING_HINT: &str = "Tap the screen for the console";
 
@@ -559,6 +561,8 @@ pub struct Player {
     screen_row: String,
     /// The timed `play` step (STOP ends it) rather than the app.
     timed: bool,
+    /// The menu's selected row is open for the wheel (its push opened it).
+    menu_editing: bool,
     /// The Sample page's Play tab showed its keyboard (its hint says how
     /// to play it).
     sample_keys: bool,
@@ -742,6 +746,7 @@ impl Player {
             },
             screen_row: "-".to_string(),
             timed,
+            menu_editing: false,
             sample_keys: false,
             ready: false,
             view: View::Play,
@@ -1451,6 +1456,7 @@ impl Player {
                 View::Console => "The system log, as it comes   ·   MENU: pause or clear   ·   SHIFT + ERASE + TAP TEMPO: back"
                     .to_string(),
                 View::System => "Read when the page opens   ·   MENU: back to Prefs   ·   a tab: leave".to_string(),
+                View::Prefs | View::Options if self.menu_editing => OPTIONS_EDIT_HINT.to_string(),
                 View::Prefs | View::Options => OPTIONS_HINT.to_string(),
                 View::Mixer => mpfree_mixer_ui::MIXER_HINT.to_string(),
                 View::Chain => mpfree_chain_ui::CHAIN_HINT.to_string(),
@@ -1878,6 +1884,11 @@ impl Player {
                         .map(|(name, value)| OptionRow { name, value })
                         .collect();
                     o.selected = m.selected;
+                    o.editing = m.editing;
+                }
+                if self.menu_editing != m.editing {
+                    self.menu_editing = m.editing;
+                    self.refresh_hint();
                 }
                 if let Some(c) = self.ui.get_mut::<Card>("help") {
                     c.heading = m.help_heading;
@@ -2920,9 +2931,13 @@ impl Player {
                 })
             }
             (crate::looper_page::LOOP_STRIP, EventKind::Tab(i)) => {
-                match crate::looper_page::STRIP_TO_BUTTON.get(i).copied()? {
-                    Some(b) => Some(FromUi::Looper(b)),
-                    None => Some(FromUi::Time(TimeAction::Transport(
+                use crate::looper_page::StripPress;
+                match crate::looper_page::STRIP_PRESSES.get(i).copied()? {
+                    StripPress::Looper(b) => Some(FromUi::Looper(b)),
+                    StripPress::Play => Some(FromUi::Time(TimeAction::Transport(
+                        mpfree_transport::Command::Play,
+                    ))),
+                    StripPress::Stop => Some(FromUi::Time(TimeAction::Transport(
                         mpfree_transport::Command::Stop,
                     ))),
                 }
@@ -5417,6 +5432,60 @@ mod tests {
         let hint = &p.ui.get::<Label>("hint").unwrap().text;
         assert_eq!(hint, time_view::EDIT_TRACKER_HINT);
         assert!(hint.contains("SHIFT + wheel: scroll"));
+    }
+
+    /// Jay, 12 Nov 08:11Z: Record has a red dot, Stop a square and Play a
+    /// triangle. The Loop view's buttons, left to right, do their jobs, and
+    /// the Record button draws its dot in the theme's red.
+    #[test]
+    fn the_loop_strips_buttons_carry_their_symbols_and_play_and_stop_the_transport() {
+        use crate::looper_page::{LOOP_STRIP, STRIP_BUTTONS};
+        let mut p = sample_player(Fonts::embedded());
+        let tap = |p: &mut Player, (x, y): (i32, i32)| {
+            let down = p.touch(1, Touch::Down, x, y);
+            down.or(p.touch(1, Touch::Up, x, y))
+        };
+        let card = p.ui.rect_of(play_page::TRANSPORT).unwrap();
+        let (_, segs) = PlayTransport::switch(card);
+        tap(&mut p, (segs[2].x + 10, segs[2].y + 10));
+        sample_loop(&mut p);
+        let mut canvas = SoftCanvas::new(SCREEN.0, SCREEN.1);
+        p.ui.paint(&mut canvas);
+        let strip = p.ui.rect_of(LOOP_STRIP).unwrap();
+        // The buttons' row is the strip's bottom 44 px, inside its panel.
+        let y = strip.bottom() - 30;
+        let mut got: Vec<FromUi> = Vec::new();
+        for x in (strip.x..strip.right()).step_by(6) {
+            if let Some(m) = tap(&mut p, (x, y)) {
+                if got.last() != Some(&m) {
+                    got.push(m);
+                }
+            }
+        }
+        let transport = |c| FromUi::Time(TimeAction::Transport(c));
+        use crate::looper_page::{B_CLEAR, B_MUTE, B_OVERDUB, B_RECORD, B_REDO, B_UNDO};
+        assert_eq!(STRIP_BUTTONS.len(), 8);
+        assert_eq!(
+            got,
+            [
+                FromUi::Looper(B_RECORD),
+                FromUi::Looper(B_OVERDUB),
+                transport(mpfree_transport::Command::Play),
+                transport(mpfree_transport::Command::Stop),
+                FromUi::Looper(B_UNDO),
+                FromUi::Looper(B_REDO),
+                FromUi::Looper(B_MUTE),
+                FromUi::Looper(B_CLEAR),
+            ]
+        );
+        // The Record button (the row's first eighth) has the red dot.
+        let red = p.ui.theme.bad;
+        let w = strip.w / 8;
+        let reds = (strip.x..strip.x + w)
+            .flat_map(|x| (strip.bottom() - 44..strip.bottom()).map(move |y| (x, y)))
+            .filter(|&(x, y)| canvas.pixel(x, y) == red)
+            .count();
+        assert!(reds > 40, "{reds} red pixels in the Record button");
     }
 
     /// Mockup H: a speaker beside each loop layer's name; a tap mutes

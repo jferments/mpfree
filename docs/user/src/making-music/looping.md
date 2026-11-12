@@ -1,7 +1,7 @@
 <!--
 status: changing
 covers: rust/mpfree-looper rust/mpfree-app/src/looper_page.rs rust/mpfree-app/src/looper_tab.rs rust/mpfree-app/src/looping.rs
-checked: 2026-11-12 26b6821
+checked: 2026-11-12 b4f1d46
 -->
 
 # Recording loops
@@ -27,12 +27,14 @@ The looper holds a minute of stereo sound across all its layers (the Looper tab 
 
 ## The buttons
 
-These are on the Play page's Loop view. The MPC's own **REC**, **OVERDUB** and **UNDO** buttons do the same while the Looper tab is open, on the loop picked there:
+These are on the Play page's Loop view. Record has a red dot, Overdub a red ring, Play a green triangle and Stop a square. The MPC's own **REC**, **OVERDUB** and **UNDO** buttons do the same while the Looper tab is open, on the loop picked there:
 
 | Button | Empty loop | Recording the first pass | Playing |
 |---|---|---|---|
 | **Record** | Waits for the next bar line, then records. Press again before it starts to cancel. | With a free length: ends the loop on the next bar line. | Starts an overdub. |
 | **Overdub** | Nothing. | Goes straight on into an overdub when the first pass ends. | Starts an overdub; press again to stop adding. |
+| **Play** | Plays the transport, as **PLAY** does. | | |
+| **Stop** | Stops the transport, as **STOP** does. | | |
 | **Undo** | Nothing. | Throws the recording away. | Removes the newest layer (or the overdub in progress). |
 | **Redo** | Nothing. | Nothing. | Brings back the last layer undone. |
 | **Clear** | | | Deletes the whole loop, so you can start again. |
