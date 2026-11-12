@@ -6,7 +6,7 @@
 ## Transport
 
 - USB-MIDI 1.0 class device `09e8:0046`, bulk EP 0x01 OUT / 0x81 IN, 64-byte packets, 4-byte event packets.
-- Cable 0 = "Public", cable 1 = "Private", cable 2 = "MIDI Port" (external DIN/USB MIDI path; silent in this capture).
+- Cable 0 = "Public", cable 1 = "Private", cable 2 = "MIDI Port" (silent in this capture; on 2026-11-12 the 5-pin MIDI In jack's notes and clock arrived on cable 2 in, [below](#the-rear-jacks-under-akais-app-2026-11-12)).
 - **With Akai's app running, all physical controls arrive on cable 1.** Without it, they arrive on cable 0 ([below](#without-akais-app-hello-mpc-rounds-1-and-2-2026-11-10)). Button/encoder LEDs are written on cable 1; pad RGB colors on cable 0.
 - SysEx manufacturer `0x47` (Akai), device/product ID **`0x46`** for the MPC One.
 
@@ -90,3 +90,31 @@ In every Akai message above, byte 6 is the number of data bytes that follow it, 
 
 - Pad colours work without any session or setup: the pads lit, and hit colours showed while a pad was held. (The button lights were not reported either way.)
 - Replaying this sequence moves the controls to cable 1 with relative Q-Links, as under Akai's app. With nothing holding the controller, it accepted a new token at once (`02`), echoed the `64` messages and answered `41` exactly as above, and replied `01` to every later ping. After the setup, pads, Q-Link 1 (1/2 clockwise, 127/126/125 counter-clockwise), the wheel and the buttons arrived on cable 1, and only the identity replies came on cable 0.
+
+## The rear jacks under Akai's app (2026-11-12)
+
+> **Evidence type:** owner-run `collect-over-ssh.sh --midi-capture` with `MPFREE_CAPTURE_PHASES=midi-cv` (opt-in passive usbmon), 2026-11-12 06:05 UTC, stock 3.6.0, Akai's app running, a keyboard on the 5-pin MIDI In jack, nothing on the CV/Gate jacks. Report SHA-256 `4233c54b57427d0f90f4e3123e391d5c556b10f96ceec5647f0a81a0cb9decd4` (owner-local, not committed). Nothing was sent to the controller by MPFree.
+
+| Phase | What changed against idle |
+| --- | --- |
+| Keys on the keyboard on MIDI In | **IN cable 2**: note-on channel 6 (the keyboard's channel), note-on velocity 0 as note-off, notes 60 to 79 as played. Akai's app lit the pads on cable 0 in answer |
+| The keyboard's clock | **IN cable 2**: `F8` at 48 a second (120 BPM) for the whole capture, from the keyboard |
+| Pads on a MIDI track set to the MIDI Out jack | Only the pads (IN cable 1) and their colours (OUT cable 0). **Nothing went out on cable 2, or on any cable, as MIDI notes** |
+| Pads 1 and 13 on a CV track | **OUT cable 1, channel 16, CC 0, 1, 2 and 3**, first in the transfer, before the pad colours (below) |
+| Pad 1 held about 3 s on the CV track | The same four CCs at the press, CC 2 and 3 back to 0 at the release, nothing in between |
+| One CV track slider | Only CC 67 on channel 1 blinking 1/3 (a button light, as in Q-Link edits). No channel 16 CCs |
+
+CV messages seen (cable 1, `Bx` = `BF`):
+
+| Event | CC 0 | CC 1 | CC 2 | CC 3 |
+| --- | ---: | ---: | ---: | ---: |
+| Pad 1 down (velocity 127, and again at 37) | 76 | 101 | 127 | 127 |
+| Pad 13 down | 121 | 75 | 127 | 127 |
+| Either pad up | — | — | 0 | 0 |
+
+- **OBSERVED:** the 5-pin MIDI In jack is cable 2 in, under Akai's app.
+- **OBSERVED:** Akai's app drives the CV/Gate jacks through the controller, as CCs on cable 1, channel 16. Velocity did not change them.
+- **INFERENCE:** CC 0 and 1 are one output's value as two 7-bit halves (pad 1 gives 76 × 128 + 101 = 9829, pad 13 gives 121 × 128 + 75 = 15563), and CC 2 and 3 are the gate output at full scale. The numbering of the other outputs (CC 4 and up?) and the scaling (counts per volt, per semitone) are **UNKNOWN**: pad 13's note relative to pad 1's on Akai's CV track is not known, so the difference cannot be read as an octave.
+- **UNKNOWN:** how Akai's app sends to the MIDI Out jack. Nothing appeared on USB. Either the track was not sending (its output field was not recorded), or the jack is not driven over the controller's USB-MIDI. The second round (`MPFREE_CAPTURE_PHASES=cv-scale`) tries it again, with the field noted and a device on the jack.
+- Sending any of these CCs from MPFree is a **state-changing** write to the controller and waits for the owner's go ([midi-io](../design/midi-io.md), step M6).
+

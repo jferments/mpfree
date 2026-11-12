@@ -12,12 +12,15 @@ line with the phase the owner is performing, decodes USB-MIDI event packets
 
 Nothing is sent to the controller and nothing is written on the MPC.
 
-Two phase sets (--phases, or MPFREE_CAPTURE_PHASES in collect-over-ssh.sh):
+Phase sets (--phases, or MPFREE_CAPTURE_PHASES in collect-over-ssh.sh):
 - controller (default): the pads, Q-Links, wheel and buttons, as in 2026-11-10.
 - midi-cv: which USB-MIDI cable carries the DIN MIDI In and Out jacks, and
   whether the CV/Gate jacks are driven over USB-MIDI at all and in what
   form. The owner sets up a MIDI track and a CV track in Akai's app before
   starting (see MIDI_CV_SETUP); the capture itself only reads.
+- cv-scale: the second round. A keyboard on MIDI In plays known notes into
+  the CV track, so the CV messages can be matched to note numbers; one CV
+  output moved; the MIDI track's output tried again (CV_SCALE_SETUP).
 usbmon's text interface shows at most 32 data bytes per transfer, so longer
 transfers (for example big LED SysEx bursts) are marked as truncated.
 """
@@ -61,6 +64,22 @@ MIDI_CV_PHASES = (
                   "(s + Enter to skip if you cannot find it)."),
 )
 
+# Second round (after the 2026-11-12 midi-cv capture: DIN In is cable 2 in;
+# the CV track's notes went out as CCs on cable 1, channel 16; nothing went
+# out on cable 2). The keyboard on MIDI In plays known note numbers, which
+# the capture also sees on cable 2, so the CV values can be matched to
+# notes without knowing Akai's pad layout.
+CV_SCALE_PHASES = (
+    ("idle", "Touch NOTHING (baseline). Akai's app shows the CV track."),
+    ("cv_octaves", "On the keyboard on MIDI In, play one C, then the C an octave up, then the C "
+                   "another octave up, one key at a time."),
+    ("cv_semitones", "On the keyboard, play C, C sharp, D, D sharp, one key at a time."),
+    ("cv_out2", "Set the CV track to use the next CV outputs (the guide's Routing tab: the CV "
+                "field of each CV Out), then play one C on the keyboard (s + Enter to skip)."),
+    ("din_out", "Select the MIDI track (output MIDI Out, channel 1) and play a few keys on the "
+                "keyboard, then hit pads 1 and 13."),
+)
+
 # Shown before the capture starts: what to prepare in Akai's app. The menu
 # names are from the MPC 3.6 user guide (Track types, MIDI Tracks, CV
 # Tracks) and are not checked on this unit.
@@ -72,7 +91,18 @@ MIDI_CV_SETUP = (
     "  4. Optional: plug a keyboard or other MIDI device into the 5-pin MIDI In jack.",
 )
 
-PHASE_SETS = {"controller": PHASES, "midi-cv": MIDI_CV_PHASES}
+CV_SCALE_SETUP = (
+    "Before you press Enter, in Akai's app (stock 3.6, normal use, nothing saved):",
+    "  1. Keep the keyboard plugged into the 5-pin MIDI In jack.",
+    "  2. Keep (or make again) the MIDI track with its output on the MIDI Out jack, channel 1.",
+    "     Note down exactly what its output field says.",
+    "  3. Keep (or make again) the CV track, and select it.",
+    "  4. Optional: plug any MIDI device into the 5-pin MIDI Out jack, to see whether it hears notes.",
+    "  5. Do not save the project or change Preferences.",
+)
+
+PHASE_SETS = {"controller": PHASES, "midi-cv": MIDI_CV_PHASES, "cv-scale": CV_SCALE_PHASES}
+SETUPS = {"midi-cv": MIDI_CV_SETUP, "cv-scale": CV_SCALE_SETUP}
 
 CIN_LEN = {0x0: 3, 0x1: 3, 0x2: 2, 0x3: 3, 0x4: 3, 0x5: 1, 0x6: 2, 0x7: 3,
            0x8: 3, 0x9: 3, 0xA: 3, 0xB: 3, 0xC: 2, 0xD: 2, 0xE: 3, 0xF: 1}
@@ -182,8 +212,8 @@ def main(argv=None):
     ap.add_argument("--phases", choices=sorted(PHASE_SETS), default="controller")
     args = ap.parse_args(argv)
     phases = PHASE_SETS[args.phases]
-    if args.phases == "midi-cv":
-        for line in MIDI_CV_SETUP:
+    if args.phases in SETUPS:
+        for line in SETUPS[args.phases]:
             print(line, file=sys.stderr)
         try:
             input("Press Enter when that is set up (Ctrl+C stops, nothing has run on the MPC yet): ")

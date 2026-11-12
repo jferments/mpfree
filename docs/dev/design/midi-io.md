@@ -21,8 +21,10 @@ Device safety (rule zero) applies to every step below that touches the MPC. Each
 | The CV/Gate voltage range of the MPC One | **UNKNOWN**: the guide does not give it, and it warns that V/oct scaling differs between devices | guide glossary, "CV" |
 | The internal controller is USB `09e8:0046`, a standard USB-MIDI 1.0 device with three cables: 0 "Public", 1 "Private", 2 "MIDI Port". It has no audio streaming interface | OBSERVED | [audio-midi-survey](../hardware/audio-midi-survey.md) |
 | Akai's app routes only cable 2 through the ALSA sequencer, and every captured physical control is on cables 0 and 1 | OBSERVED | the same, and [midi-activity-map](../hardware/midi-activity-map.md) |
-| Cable 2 carries the DIN jacks | **DERIVED, not observed**: nothing was plugged into the jacks during any capture | — |
-| Akai's app holds no spidev, gpiochip or IIO device, so it drives the CV jacks through the controller, over USB-MIDI | **INFERENCE** | [resource-ownership](../hardware/resource-ownership.md) |
+| The 5-pin MIDI In jack is cable 2 in (notes and the keyboard's clock), under Akai's app | **OBSERVED** 2026-11-12 | [controller-protocol](../hardware/controller-protocol.md#the-rear-jacks-under-akais-app-2026-11-12) |
+| How the MIDI Out jack is driven | **UNKNOWN**: a MIDI track set to it sent nothing on USB in the first capture | the same |
+| Akai's app drives the CV/Gate jacks through the controller: CCs on cable 1, channel 16 (CC 0 to 3 for a CV track's pitch and gate) | **OBSERVED** 2026-11-12 | [controller-protocol](../hardware/controller-protocol.md#the-rear-jacks-under-akais-app-2026-11-12) |
+| CC pairs are one output's 14-bit value; the numbering of outputs 3 to 8 and the scaling (counts per volt and per semitone) | INFERENCE for the pairs; **UNKNOWN** for the rest | the same |
 | A USB keyboard on USB-A shows up as another ALSA card (snd-usb-audio is in the kernel, since card 0 uses it) | DERIVED, untested | — |
 
 ### The read-only check that settles the DIN cable and the CV path
@@ -45,7 +47,11 @@ The report counts messages per cable against idle, which shows:
 
 If the CV phases show no USB traffic, the CV is driven some other way. The next read-only step is then the device tree (`offline-dtb.py show` on the owner's saved tree) for a DAC or SPI node.
 
-**No MIDI port and no CV output is opened by MPFree until the owner has seen this result.**
+**First result (2026-11-12):** MIDI In is cable 2 in, and the CV jacks are driven by CCs on cable 1, channel 16. Nothing was seen for MIDI Out. Details are in [controller-protocol](../hardware/controller-protocol.md#the-rear-jacks-under-akais-app-2026-11-12).
+
+**Second round:** `MPFREE_CAPTURE_PHASES=cv-scale`, read-only in the same way. The keyboard on MIDI In plays known notes (C in three octaves, then four semitones) into the CV track, and the capture sees those note numbers on cable 2. That pins the CV value per semitone without knowing Akai's pad layout. The round also moves the CV track to its next outputs, to number them, and tries the MIDI track out again, with its output field noted and a device on the jack.
+
+**No MIDI port and no CV output is opened by MPFree until the owner has seen these results.**
 
 ## The crate: `mpfree-midi`
 
@@ -80,7 +86,7 @@ Tests: `cargo test -p mpfree-midi`. They cover:
 
 | Step | What | Touches the MPC | Waits on |
 |---|---|---|---|
-| M0 | The read-only `midi-cv` capture above | read-only (passive usbmon, stock 3.6) | the owner's run |
+| M0 | The read-only `midi-cv` capture above (done 2026-11-12), then the `cv-scale` round | read-only (passive usbmon, stock 3.6) | the owner's run of `cv-scale` |
 | M1 | `mpfree-midi`, host only | no | the owner's go to merge (code PR) |
 | M2 | App wiring for input. The app opens the DIN In cable (from M0) and USB keyboards **for reading**, routes them to the selected track, and shows a MIDI monitor on the Dev page and a MIDI page in Prefs (ports, input mode, clock source). The layout goes through the app thread | a device round on the test boot: opens MIDI inputs for reading | M0, the owner's go, the app thread |
 | M3 | MIDI tracks out. A seq destination for MIDI out, and the DIN Out cable written with paced bytes from a writer thread that sleeps to each message's frame (sub-period timing; to be measured on the unit) | **state-changing, RAM only**: sends note bytes on the DIN cable. Undo: power-cycle. No SysEx is ever sent there | M0 showing the out cable, the owner's go |
