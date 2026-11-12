@@ -51,7 +51,7 @@ The model is in `rust/mpfree-seq/src/arrange.rs`, song-mode playback in `rust/mp
 
 ## Live to song (T11, `mpfree-perform`)
 
-**Rec song** records what the launch grid plays into the song, so a jam becomes a song to edit. `SongRecorder` runs on the control thread. While it is armed and the transport plays, it follows each track:
+**Rec song** records what the launch grid plays into the song, so a jam becomes a song to edit. `SongRecorder` is control-side code. In the pad player, `TimeHost` feeds it from its period, which runs in the audio loop until edits move to a control thread. A period where nothing starts or stops allocates nothing (`tests/song_no_alloc.rs`), while a clip starting or stopping and writing the song at a stop allocate, like any edit there today. While it is armed and the transport plays, it follows each track:
 
 - **Launches and stops.** A clip that starts on a track becomes a placement linked to its slot, from that tick and at the right place in the clip. That covers a launch, a scene and a follow action. The placement ends where the track switches clip or stops.
 - **Mutes.** A muted stretch is left out of the song. The placement ends where the track is muted, and a new one starts where it is heard again, in phase with the clip. A scene's mutes come with its cue. A mute made by hand comes through `SongRecorder::mute`.
@@ -105,6 +105,7 @@ On the Clips page, the **Song ›** button at the right of the grid's title swap
   - a loop pass recording over the last;
   - a mute in the middle of a two-bar clip leaving a gap, and the clip coming back in phase;
   - morph moves going into the song's lane with their rows, and playing back.
+- `mpfree-perform/tests/song_no_alloc.rs` records 200 periods where nothing starts, at periods of 1 to 4096 frames, under a counting allocator: none of them allocates.
 - `mpfree-time-ui` tests cover the Song view's blocks, buttons and empty space, and swapping between the grid and the Song view.
 - `mpfree-hello`'s `rows_become_a_song_that_plays_and_goes_back_into_rows` runs it through `TimeHost` with the pads: Scenes → song, song mode, a launched clip taking a track over and the song playing on after its stop, Song → scenes, make unique and delete.
 - `mpfree-hello`'s `rec_song_records_the_grid_into_the_song` arms Rec song, launches two rows and stops. The song holds what was played and plays it back the same.

@@ -1,7 +1,7 @@
 //! Live to song (roadmap T11): what is played on the launch grid goes
 //! into the arrangement, so a jam becomes a song to edit.
 //!
-//! [`SongRecorder`] runs on the control thread. While it is armed and the
+//! [`SongRecorder`] is control-side code. While it is armed and the
 //! transport plays, it follows what each track plays from the session
 //! (the launch grid):
 //!
@@ -28,8 +28,12 @@
 //! while recording.
 //!
 //! The host calls [`SongRecorder::period`] after each period with the
-//! transport's block and the cues the player started in it. Nothing here
-//! runs on the audio thread.
+//! transport's block and the cues the player started in it. In the pad
+//! player that is `TimeHost`'s period, which runs in the audio loop until
+//! edits move to a control thread. A period where nothing starts or stops
+//! allocates nothing (`tests/song_no_alloc.rs`). A clip starting or
+//! stopping, a pass beginning or ending, and [`SongRecorder::finish`]
+//! allocate, like any edit there today.
 
 use mpfree_play::{Launch, Started};
 use mpfree_seq::arrange::MorphRows;
