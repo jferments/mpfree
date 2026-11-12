@@ -1,6 +1,6 @@
 //! The MPFree grain engine (sampler step S6).
 //!
-//! One engine serves both uses in the design (`docs/project/sampler-design.md`,
+//! One engine serves both uses in the design (`docs/dev/design/sampler-design.md`,
 //! "Granular"):
 //! - **Granular playback** of a region of a sample: [`Clip`].
 //! - **Granular effect** on a live signal: [`LiveBuffer`], a circular buffer
@@ -10,7 +10,7 @@
 //!
 //! A [`GrainVoice`] spawns grains from either, each with its own position,
 //! length, pitch, direction, pan and window, and mixes them into the output.
-//! Architecture: `docs/project/sampler-architecture.md` ("Granular engine").
+//! Architecture: `docs/dev/design/sampler-architecture.md` ("Granular engine").
 //!
 //! Real-time rules, checked by `tests/no_alloc.rs`:
 //! - Grains live in a fixed array ([`MAX_GRAINS`] per voice). A [`Budget`]

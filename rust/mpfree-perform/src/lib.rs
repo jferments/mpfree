@@ -1,4 +1,5 @@
-//! Scenes and follow actions on the control thread (roadmap T9).
+//! Scenes and follow actions (roadmap T9) and the scene morph (T10), on
+//! the control thread.
 //!
 //! The model is in `mpfree_seq::scenes`: scene `k` is row `k` of the
 //! launch grid, with its mutes and follow action; a clip can have a follow
@@ -26,9 +27,15 @@
 //!   with a chance between Next and Stay plays on for a random number of
 //!   passes. Again starts the same again (a new start to count from).
 //!
+//! [`morph`]: the scene morph (T10), two rows' stored values on the mod
+//! engine's scenes A and B.
+//!
 //! Nothing here runs on the audio thread; the player only sees the cues.
 
 #![forbid(unsafe_code)]
+
+pub mod morph;
+pub use morph::{save_scene, Loaded, SceneMorph};
 
 use mpfree_play::{anchored, Cue, Launch, PlayView, Started};
 use mpfree_seq::scenes::follow_target;
