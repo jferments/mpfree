@@ -118,4 +118,5 @@ The project keeps the rows' values (`Project::scenes`), so a saved morph comes b
 - A launch quantise setting (1 beat to 8 bars, or none) is still to come. Scenes and follows use the bar.
 - Clip follow actions count song bars. A clip at another speed still counts the song's bars, as Ableton does.
 - In a song loop shorter than a follow's time, the follow never comes due.
+- Scenes into a song and back are built: see [arrange.md](arrange.md).
 - A Q-Link for the crossfader, and the morph moving a pad's sound or an instrument (once those engines take parameter events).

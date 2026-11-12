@@ -3,7 +3,9 @@
 //! (five tracks, one of them through the arp, one recording, with loops,
 //! tempo changes, locates, punch in and out, stop and panic, parameter
 //! locks on every track, trig conditions, ratchets and FILL, and FX
-//! moves on every track and recorded from Perform FX gestures) at period
+//! moves on every track and recorded from Perform FX gestures, and song
+//! mode: a track playing only placements, one linked and one made unique,
+//! and a track going back to the song after its clip stops) at period
 //! sizes from 1 to 4096 frames.
 //!
 //! This test file is its own program, so its global allocator (the only
@@ -19,7 +21,7 @@ use mpfree_arp::{Engine, Mode, Rate, Settings};
 use mpfree_play::{ArpHost, Cue, Event, Launch, Out, PlayView, Player, Recorder, Sink, ALL};
 use mpfree_seq::mpfree_moves::{Input, Kind, Map, Target};
 use mpfree_seq::mpfree_param::{OnTrack, Owner, ParamAddr, RelAddr, Strip};
-use mpfree_seq::{Clip, Cond, Lock, Note, Project, Quantise, Speed, Track};
+use mpfree_seq::{Clip, Cond, Lock, Note, Placement, Project, Quantise, Speed, Track};
 use mpfree_transport::time::Swing;
 use mpfree_transport::{Block, Command, Transport};
 
@@ -64,6 +66,8 @@ struct Counter {
     arp: ArpHost,
     locks: u64,
     lanes: u64,
+    /// Notes on the song-only track.
+    song: u64,
 }
 impl Sink for Counter {
     fn send(&mut self, o: Out) {
@@ -72,6 +76,7 @@ impl Sink for Counter {
         self.events += 1;
         self.locks += u64::from(matches!(o.event, Event::Lock { .. }));
         self.lanes += u64::from(matches!(o.event, Event::Lane { .. }));
+        self.song += u64::from(o.track == 5 && matches!(o.event, Event::NoteOn { .. }));
         if o.dest == 0 || o.dest == ALL {
             self.arp.input(o.offset, o.event);
         }
@@ -164,6 +169,20 @@ fn playing_never_allocates() {
             start: (i as i64 - 2) * 480,
         });
     }
+    // Song mode: track 5 plays only placements (its clip linked, then a
+    // copy of track 0's from part way in, then a gap); track 4 has one and
+    // goes back to the song once its cue stops its clip.
+    let mut t5 = p.tracks[0].clone();
+    t5.dest = 5;
+    p.tracks.push(t5);
+    let song = &mut p.arrangement;
+    song.place(Placement::linked(5, 0, 0, 3000)).unwrap();
+    let mut own = Placement::linked(5, 9, 3000, 3700);
+    own.offset = 100;
+    song.place(own).unwrap();
+    song.place(Placement::linked(4, 4, 1000, 5000)).unwrap();
+    let tracks = p.tracks.clone();
+    p.arrangement.make_unique(&tracks, 2).unwrap();
     // Cues start on the first bar line, and the player carries them on its
     // own: this view is never compiled again.
     let cues = [
@@ -178,6 +197,7 @@ fn playing_never_allocates() {
     ];
     let mut view = PlayView::compile_cued(&p, &launches, &cues).unwrap();
     view.set_armed(Some(3));
+    view.set_song(&p, true).unwrap();
     let mut t = Transport::new(44_100, 120.0).unwrap();
     let mut player = Player::new();
     let mut block = Block::new();
@@ -194,6 +214,7 @@ fn playing_never_allocates() {
         arp: ArpHost::new(engine),
         locks: 0,
         lanes: 0,
+        song: 0,
     };
     let mut arp_notes = 0u64;
     let mut rec = Recorder::new();
@@ -314,4 +335,5 @@ fn playing_never_allocates() {
     assert_eq!(started, 2, "both cues started, once");
     assert!(sink.locks > 500, "{} locks", sink.locks);
     assert!(sink.lanes > 2000, "{} lane values", sink.lanes);
+    assert!(sink.song > 500, "{} song notes", sink.song);
 }
