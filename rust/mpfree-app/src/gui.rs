@@ -539,6 +539,12 @@ pub enum FromUi {
     /// the mix (the Rec tab's Source). The audio thread points the mixer's
     /// sampler capture point at it and starts the buffer afresh.
     SampleSource(crate::sampler::RecSource),
+    /// The Sample tab's FX tab on the playing kit's pad `pad`: the chain
+    /// editor on its channel, then the Drums track
+    /// ([`crate::modpanels::Panels::open_pad`]).
+    SampleFx {
+        pad: usize,
+    },
     /// A phrase chopped on the Sample page, for the armed track's first
     /// empty slot ([`crate::time::TimeHost::put_clip`]).
     SamplePhrase(Box<mpfree_seq::Clip>),
@@ -7996,6 +8002,31 @@ mod tests {
         );
         assert_eq!(p.page(), sample_page::PAGE);
         assert!(take(&mut p).is_empty());
+    }
+
+    #[test]
+    fn the_fx_tab_asks_for_the_chain_editor_on_the_pads_channel() {
+        use mpfree_sampler_ui::wave_tab::{BAR, FX_TAB};
+        use mpfree_sampler_ui::widgets::PadBar;
+        let pad = mpfree_sampler_ui::sample::PAD;
+        let mut p = sample_sampler(Fonts::embedded());
+        p.take_actions();
+        assert!(
+            p.ui.get::<PadBar>(BAR).unwrap().enabled[FX_TAB],
+            "FX is built"
+        );
+        let (page, editor) = (p.page().to_string(), p.sample.editor());
+        p.on_event(UiEvent {
+            widget: BAR.into(),
+            kind: EventKind::Tab(FX_TAB),
+        });
+        let (_, rest) = views(p.take_actions());
+        assert_eq!(rest, [FromUi::SampleFx { pad }]);
+        // The sampler's own page stays under the editor, for Back.
+        assert_eq!((p.page(), p.sample.editor()), (page.as_str(), editor));
+        assert!(events_log(&p)
+            .iter()
+            .any(|l| l == "sample: pad A5's effects: its own channel, then the Drums track"));
     }
 
     #[test]

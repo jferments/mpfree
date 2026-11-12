@@ -361,6 +361,16 @@ The kits are the sampler's part of a saved project (owner `sampler`, see `docs/d
 - The browser's Load puts a WAV, AIFF or FLAC file on the pad shown (one undo step); Load to pad holds it until the next pad hit (`SamplePage::load_file`). Both read and decode on their own thread (`sound_file::read`). A note (a file cut short) goes to the log before the sound lands: `sample: Loop: the file is cut short: its first 2304 frames`.
 - Not yet: kit files on their own (`LoadKit`), the factory kits from the browser, MP3 and Ogg.
 
+### The FX tab: the pad's chain (`mpfree-sampler-ui`, `mpfree-app`)
+
+Jay, 2026-11-12: stutter and bus FX on pads. Worked out with the FX thread (no reserved submixes, so no MPC routing is lost) and the app thread (layout spec 4b, the chain editor in Sample > FX).
+
+- The pad bar's **FX** (`wave_tab::FX_TAB`, now in `BUILT`) has no page of the sampler's own: `SamplePage::open` notes the pad, and `SamplePage::event` sends `FromUi::SampleFx { pad }` with the log line `sample: pad A5's effects: its own channel, then the Drums track`. The audio loop calls `Panels::open_pad(app, pad, DRUMS)`: the chain editor on `ChainHost::for_pad`, the pad's channel first and the Drums track second, in the Sample tab's place; `App::open_chain` remembers the Sample tab, so Back returns there.
+- **Stutter on one pad** is Perform FX (`mpfree_fx::Perform`) added to the pad's own channel; it follows the tempo on any strip (every chain gets the same `Ctx`), and its pads' Hold parameters (`ids::perform::hold(k)`) are knobs, Q-Links, locks and moves like any other. **Bus FX** are the Drums track's chain, and **one knob** is a macro (the chain editor puts a knob on Macros 1-8).
+- The pad channel is the playing kit's pad `p` (the mixer has 16, `mixing::PADS`); a pad past them opens nothing and the log says why.
+- Tests: `modpanels::tests::the_sample_tabs_fx_edits_the_pads_own_chain_and_goes_back_to_the_sample_tab` (Perform on pad 5's channel only, Drive on Drums, Back to Sample, pad 17 refused) and the app's `the_fx_tab_asks_for_the_chain_editor_on_the_pads_channel`.
+- Not yet: the pad bar above the editor (spec 4b draws the chain under Sample's pad bar; it takes the page's place for now), and hold buttons for Perform's pads (a layout change, for Jay).
+
 ## Granular engine (`mpfree-grain`)
 
 ```text

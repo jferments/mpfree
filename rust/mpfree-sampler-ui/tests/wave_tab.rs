@@ -530,10 +530,13 @@ fn tabs_taps_and_the_sample_screens() {
         "Grain opens"
     );
     s.ui.touch(5, Touch::Up, 0, 0);
+    let ev =
+        s.ui.touch(6, Touch::Down, fx_tab_r.x + 5, fx_tab_r.y + 5)
+            .unwrap();
     assert_eq!(
-        s.ui.touch(6, Touch::Down, fx_tab_r.x + 5, fx_tab_r.y + 5),
-        None,
-        "FX isn't built yet"
+        s.tab.action(&mut s.ui, &ev, &st),
+        Some(WaveAction::Tab(wave_tab::FX_TAB)),
+        "FX opens"
     );
     s.ui.touch(6, Touch::Up, 0, 0);
     // A tap on the wave plays the pad.
