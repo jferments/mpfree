@@ -1,7 +1,7 @@
 <!--
 status: changing
 covers: rust/mpfree-store rust/mpfree-library rust/mpfree-browser-ui rust/mpfree-app/src/app/saved.rs
-checked: 2026-11-12 a24dbc5
+checked: 2026-11-12 3c5a580
 -->
 
 # Saving your work
@@ -47,6 +47,8 @@ A **project** is everything in one song: its tempo, patterns and clips, loops, k
 - **The selected item** on the right: a sound's length and waveform, a project's tempo and when it was saved, and buttons to Load, Load to pad, Audition, Favourite, Rename, Copy, Cut and Delete.
 
 Moving onto a sound plays it once, so you can audition as you scroll. Delete always asks first and moves things to the Trash, which you empty yourself.
+
+**Load** puts a sound on the pad you are editing, and **Load to pad** on the next pad you hit. WAV, AIFF and FLAC files load, mono or stereo, at 8 to 192 kHz, whatever their name says. A file that was cut short, by a recorder that lost power say, loads the part it has. A FLAC file with a damaged part doesn't load at all, rather than play it as noise.
 
 The data wheel moves through the list, **SHIFT** and the wheel through the places, and pushing the wheel opens or loads. **–** and **+** go up a folder and into one.
 
