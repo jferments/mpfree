@@ -96,6 +96,32 @@ Future full integrated runs also incorporate this ARM return-contract
 analysis automatically, so the owner need not run another standalone
 process for later reports.
 
+## In-memory FF/61/7A synthetic response model (source-only)
+
+The branch now contains
+`tools/mpc-one/ff617a_synthetic_memory_model.py` and
+`tools/mpc-one/tests/test_ff617a_synthetic_memory_model.py`.
+Its 14 independent synthetic cases passed locally; the exact committed
+version still needs execution on the owner's workstation.
+
+The model does not open any device, invoke ioctl or create a USB server;
+it only parses caller-supplied Python `bytes` in memory. It checks:
+an observed six-value message-ID set, 24-byte header minimum, 16-bit
+declared length bound, 32-bit request-correlation field, a completion
+bit, explicit error-word presence, and unknown flags. The constructed
+`0xa55a...` values and `0x5aa5fc04` bound are rejected as incoming
+message identifiers.
+
+A synthetically matching frame is labeled **MATCHED_UNVERIFIED**,
+never interpreted as proof of AKAI acceptance or a permitted firmware
+command. The semantics of bit 2 are unresolved, so frames with it set
+are classified **UNKNOWN_FLAGS**. A bounded replay loop makes this
+useful for exercising rejection and status-handling rules without live
+USB/device access or a firmware interpreter.
+
+This is scaffolding for a future isolated fake transport, not an
+implementation of a verified physical Rockchip protocol.
+
 ## Project-level limits and next real milestones
 
 The static protocol understanding is now sufficient to plan an
