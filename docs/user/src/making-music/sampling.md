@@ -31,10 +31,26 @@ The **Wave** page shows the sample. Set where it **starts** and **ends**, and wh
 
 **Chopping** cuts a sample into slices, one per pad, so you can replay a drum break in a new order or pick out single hits.
 
-1. Pick a **Method**: **Transient** cuts at each hit, **Beat** on the beats, **Grid** into equal pieces, **Silence** at the gaps, and **Manual** leaves the cuts to you.
+1. Pick a **Method**: **Transient** cuts at each hit, **Beat** on the beats, **Grid** into equal pieces, **Silence** at the gaps, **Manual** leaves the cuts to you, and **Live** cuts where you play (below).
 2. Turn **Sensitivity** up for more slices, down for fewer.
 3. Tap a slice to hear it. **Split** and **Merge** add or remove a cut by hand; the Q-Links move the picked slice's start.
 4. Tap **Chop to** to put the slices on the pads, starting at the first pad you chose.
+
+### Live: chop by playing
+
+{{shot: sample-chop-live | Live chop: the break playing, with a cut dropped at each pad hit so far.}}
+
+**Live** chops the way you hear it: the sound plays, and every pad you hit drops a cut at that moment.
+
+1. Pick **Live** as the **Method**. The **Split** button becomes **Start**.
+2. Tap **Start**. The sound plays from its start, and any cuts already there are cleared.
+3. Hit any pad in time with the sound wherever a slice should begin. While live chop runs, the pads drop cuts instead of playing their own sounds.
+4. The take ends when the sound ends, or when you tap **Stop**. Then tap **Chop to** as usual, or **Start** again for a new take.
+
+**Pull to hits** (where **Sensitivity** is for the other methods) moves each cut onto the nearest drum hit within that many milliseconds, so a slightly early or late pad still cuts right on the hit; **Off** keeps each cut where you played it. With **Snap** on **Zero crossing**, a cut with no hit near it moves to the nearest point where the wave crosses zero, so its slice starts without a click. Nothing reaches the pads until you tap **Chop to**, so a take you don't like costs nothing: tap **Start** again.
+
+> [!TIP]
+> Live chop is quickest with a sound you know well: hit the pads where you would clap along, then fix any stray cut with **Split** and **Merge**.
 
 ## Play: how a pad sounds
 

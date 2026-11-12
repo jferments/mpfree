@@ -465,6 +465,17 @@ pub enum FromUi {
         start: u64,
         end: u64,
     },
+    /// Live chop on the Sample page's Chop tab: pad `pad`'s layer `layer`
+    /// plays source frames `start..end` once and the pads played live mark
+    /// cuts in it (`on`), or that stops.
+    SampleLiveChop {
+        kit: usize,
+        pad: usize,
+        layer: usize,
+        start: u64,
+        end: u64,
+        on: bool,
+    },
     /// Flatten on the Sample page's Rec tab: pad `pad` of kit `kit` hit
     /// at `velocity` (`down`) or let go, straight on the sampler (not
     /// through the pads' layout, Note Repeat or the arp), if kit `kit` is
@@ -566,6 +577,8 @@ pub struct Player {
     /// The Sample page's Play tab showed its keyboard, and a row that pad
     /// hits edit (each changes its hint).
     sample_keys: (bool, bool),
+    /// The Chop tab chopped live (its hint says how).
+    sample_live: bool,
     /// The app has taken over the pages (after loading).
     ready: bool,
     view: View,
@@ -748,6 +761,7 @@ impl Player {
             timed,
             menu_editing: false,
             sample_keys: (false, false),
+            sample_live: false,
             ready: false,
             view: View::Play,
             status,
@@ -1409,6 +1423,10 @@ impl Player {
                 View::Sample if self.sample.page() == sample_page::WARP_PAGE => {
                     "Tap a hit: pin it to the grid   ·   drag a pin along the beats   ·   Q-Links 1-4: pin, its beat, \
                      warp tempo, scroll   ·   Wheel: zoom   ·   UNDO: undo".to_string()
+                }
+                View::Sample if self.sample.chop_live_method() => {
+                    "Start plays the sound: hit pads in time to drop cuts   ·   Pull to hits: each onto the nearest hit   ·   \
+                     Stop ends the take   ·   then Chop to: onto the pads".to_string()
                 }
                 View::Sample if self.sample.page() == sample_page::CHOP_PAGE => {
                     "Hit a pad to chop it   ·   tap a slice: hear it   ·   Q-Links 1-4: slice, its start, setting, first pad   ·   \
@@ -2228,14 +2246,16 @@ impl Player {
         if self.sample.page() != before {
             self.sample_changed();
         }
-        // The keyboard came or went on the Play tab, or a row that pad hits
-        // edit was picked: its hint with it.
+        // The keyboard came or went on the Play tab, a row that pad hits
+        // edit was picked, or the Chop tab went live: its hint with it.
         let keys = (
             self.sample.play_keys_shown(),
             self.sample.play_takes_pads(&self.ui),
         );
-        if keys != self.sample_keys {
+        let live = self.sample.chop_live_method();
+        if keys != self.sample_keys || live != self.sample_live {
             self.sample_keys = keys;
+            self.sample_live = live;
             if self.view == View::Sample {
                 self.refresh_hint();
             }
@@ -5250,6 +5270,51 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         phrase.take_actions();
         out.push(("sample-chop-phrase", phrase));
     }
+    // Live chop on the same pad: Start pressed, the break playing halfway,
+    // and four pads hit so far.
+    {
+        use mpfree_sampler_ui::chop_tab::{Row, BUTTONS, LIST};
+        let mut live = sample_sampler(fonts());
+        live.on_event(UiEvent {
+            widget: mpfree_sampler_ui::wave_tab::BAR.into(),
+            kind: EventKind::Tab(mpfree_sampler_ui::chop_tab::TAB),
+        });
+        live.on_event(UiEvent {
+            widget: LIST.into(),
+            kind: EventKind::Step {
+                index: Row::ALL.iter().position(|r| *r == Row::Method).unwrap_or(0),
+                delta: -1,
+            },
+        });
+        live.on_event(UiEvent {
+            widget: BUTTONS.into(),
+            kind: EventKind::Tab(0),
+        });
+        let (project, _) = mpfree_sampler_ui::sample::project();
+        if let Some(r) = project
+            .pad(mpfree_sampler_ui::sample::PAD)
+            .and_then(|p| p.layers.first())
+            .map(|l| (l.region.start, l.region.end))
+        {
+            let (start, end) = r;
+            let len = end - start;
+            let mut heads = Playheads {
+                kit: 0,
+                len: 1,
+                marking: true,
+                marks_made: 4,
+                ..Playheads::default()
+            };
+            heads.pad[0] = mpfree_sampler_ui::sample::PAD as u8;
+            heads.frame[0] = (start + len * 9 / 16) as u32;
+            for (i, at) in [1u64, 3, 5, 8].into_iter().enumerate() {
+                heads.marks[i] = (start + len * at / 16) as u32;
+            }
+            live.apply(ToUi::SamplePlayheads(heads));
+        }
+        live.take_actions();
+        out.push(("sample-chop-live", live));
+    }
     let mut lab = sample_player(fonts());
     lab.apply(ToUi::Show(View::Prefs));
     lab.apply(ToUi::TouchLab);
@@ -7089,6 +7154,110 @@ mod tests {
         assert_eq!(p.page(), sample_page::PADS_PAGE, "A8 has no sound");
         p.apply(ToUi::PadDown { pad, velocity: 100 });
         assert_eq!(p.page(), sample_page::CHOP_PAGE);
+    }
+
+    #[test]
+    fn live_chop_drops_cuts_where_the_sampler_marked_them_and_ends_with_the_sound() {
+        use mpfree_sampler_ui::chop_tab::{self, Method, Row};
+        use mpfree_sampler_ui::widgets::{ButtonRow, PadBar};
+        let pad = mpfree_sampler_ui::sample::PAD;
+        let mut p = sample_sampler(Fonts::embedded());
+        let tap = |p: &mut Player, widget: &str, i: usize| {
+            let r = p.ui.rect_of(widget).unwrap();
+            let t = match widget {
+                chop_tab::BUTTONS => p.ui.get::<ButtonRow>(widget).unwrap().button_rect(r, i),
+                _ => p.ui.get::<PadBar>(widget).unwrap().tab_rect(r, i),
+            };
+            assert_eq!(p.touch(9, Touch::Down, t.x + 5, t.y + 5), None);
+            p.touch(9, Touch::Up, t.x + 5, t.y + 5);
+        };
+        let label =
+            |p: &Player| p.ui.get::<ButtonRow>(chop_tab::BUTTONS).unwrap().labels[0].clone();
+        tap(&mut p, mpfree_sampler_ui::wave_tab::BAR, chop_tab::TAB);
+        // Transient steps back round to Live, and the hint says how it goes.
+        let index = Row::ALL.iter().position(|r| *r == Row::Method).unwrap();
+        p.on_event(UiEvent {
+            widget: chop_tab::LIST.into(),
+            kind: EventKind::Step { index, delta: -1 },
+        });
+        assert_eq!(p.sample.chop().unwrap().0.method(), Method::Live);
+        assert!(p.sample.chop_live_method());
+        let hint = p.ui.get::<Label>("hint").unwrap().text.clone();
+        assert!(hint.contains("hit pads in time to drop cuts"), "{hint}");
+        p.take_actions();
+        // Start: the pad's region plays, marking.
+        assert_eq!(label(&p), "Start");
+        tap(&mut p, chop_tab::BUTTONS, 0);
+        let (start, end) = {
+            let (tab, st) = p.sample.chop().unwrap();
+            assert!(tab.live());
+            assert_eq!(tab.slices(), 1, "a take starts bare");
+            (st.region.start, st.region.end)
+        };
+        assert_eq!(
+            p.take_actions(),
+            vec![FromUi::SampleLiveChop {
+                kit: 0,
+                pad,
+                layer: 0,
+                start,
+                end,
+                on: true
+            }]
+        );
+        assert_eq!(label(&p), "Stop");
+        // Pads hit mark cuts on the audio thread; here they leave the pad
+        // being chopped where it is.
+        p.apply(ToUi::PadDown {
+            pad: 0,
+            velocity: 100,
+        });
+        p.apply(ToUi::PadUp(0));
+        assert_eq!(p.page(), sample_page::CHOP_PAGE);
+        assert!(p.sample.chop().unwrap().0.live());
+        // Two pads hit: the sampler's marks come back with the playheads
+        // and become cuts.
+        let len = end - start;
+        let mut heads = Playheads {
+            kit: 0,
+            marking: true,
+            marks_made: 2,
+            ..Playheads::default()
+        };
+        heads.marks[0] = (start + len / 4) as u32;
+        heads.marks[1] = (start + len * 3 / 4) as u32;
+        p.apply(ToUi::SamplePlayheads(heads));
+        assert_eq!(p.sample.chop().unwrap().0.slices(), 3);
+        // The same marks again add nothing; the sound over ends the take.
+        p.apply(ToUi::SamplePlayheads(heads));
+        assert_eq!(p.sample.chop().unwrap().0.slices(), 3);
+        heads.marking = false;
+        p.apply(ToUi::SamplePlayheads(heads));
+        assert!(!p.sample.chop().unwrap().0.live());
+        assert_eq!(label(&p), "Start");
+        assert!(matches!(
+            p.take_actions()[..],
+            [FromUi::SampleLiveChop { on: false, .. }]
+        ));
+        assert!(
+            events_log(&p)
+                .iter()
+                .any(|l| l == "sample: live chop over: the sound ended on pad A5: 2 cuts made"),
+            "{:?}",
+            events_log(&p)
+        );
+        // A new take, then the Wave tab: it stops, and the cuts it made stay
+        // for Chop to.
+        tap(&mut p, chop_tab::BUTTONS, 0);
+        p.take_actions();
+        tap(&mut p, chop_tab::BAR, mpfree_sampler_ui::wave_tab::TAB);
+        assert!(matches!(
+            p.take_actions()[..],
+            [FromUi::SampleLiveChop { on: false, .. }]
+        ));
+        assert!(events_log(&p)
+            .iter()
+            .any(|l| l == "sample: live chop stopped on pad A5: 0 cuts made"));
     }
 
     #[test]
