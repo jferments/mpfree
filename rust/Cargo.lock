@@ -571,6 +571,7 @@ version = "0.1.0"
 name = "mpfree-looper"
 version = "0.1.0"
 dependencies = [
+ "mpfree-stretch",
  "mpfree-transport",
 ]
 
