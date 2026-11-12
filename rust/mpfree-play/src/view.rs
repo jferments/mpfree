@@ -347,13 +347,16 @@ impl PlayView {
     }
 
     /// Compile `project` with the clips in `launches` playing and the
-    /// `cues` waiting for the next bar line.
+    /// `cues` waiting for the next bar line. It checks the tracks and the
+    /// clips it compiles, not the whole project: an edit's compile costs
+    /// what plays, and a clip out of range is refused when it is launched
+    /// or cued (`CompileError::Model`).
     pub fn compile_cued(
         project: &Project,
         launches: &[Launch],
         cues: &[Cue],
     ) -> Result<PlayView, CompileError> {
-        project.check().map_err(CompileError::Model)?;
+        project.check_tracks().map_err(CompileError::Model)?;
         let mut tracks: Vec<TrackView> = project
             .tracks
             .iter()
@@ -398,7 +401,8 @@ impl PlayView {
     /// Song mode on (the arrangement's placements compiled in: a track
     /// with no clip launched plays them on their ticks, and the song's own
     /// lanes play as [`crate::SONG_TRACK`]'s) or off. Call it on the
-    /// control thread after compiling, with the same project.
+    /// control thread after compiling, with the same project. With song
+    /// mode on it checks the arrangement and each clip it places, once.
     pub fn set_song(&mut self, project: &Project, on: bool) -> Result<(), CompileError> {
         for t in &mut self.tracks {
             t.regions.clear();
@@ -407,6 +411,23 @@ impl PlayView {
         self.song_lanes = None;
         if !on {
             return Ok(());
+        }
+        project
+            .arrangement
+            .check(&project.tracks)
+            .map_err(CompileError::Model)?;
+        // The slots placed (a placement's own clip is checked with the
+        // arrangement), each checked once however often it is placed.
+        let mut seen = [[false; SLOTS]; MAX_TRACKS];
+        for p in &project.arrangement.placements {
+            if let (Source::Slot(s), Some(clip)) = (&p.source, p.clip(&project.tracks)) {
+                if let Some(done) = seen.get_mut(p.track).and_then(|t| t.get_mut(*s)) {
+                    if !*done {
+                        clip.check().map_err(CompileError::Model)?;
+                        *done = true;
+                    }
+                }
+            }
         }
         let lanes = &project.arrangement.lanes;
         if !lanes.is_empty() {
@@ -635,6 +656,7 @@ fn clip_view(
         .and_then(Option::as_ref)
         .filter(|_| slot < SLOTS)
         .ok_or(CompileError::EmptySlot { track, slot })?;
+    clip.check().map_err(CompileError::Model)?;
     Ok(view_of(clip, t.swing, slot, origin, start))
 }
 
@@ -874,6 +896,57 @@ mod tests {
             Err(CompileError::TwoClips(0))
         );
         assert_eq!(PlayView::compile(&p, &[]).unwrap().notes(), 0);
+    }
+
+    #[test]
+    fn a_compile_checks_what_it_plays_not_the_whole_project() {
+        let mut p = project();
+        let l = |track, slot| Launch {
+            track,
+            slot,
+            origin: 0,
+            start: 0,
+        };
+        // A clip out of range in a slot nothing plays: the rest compiles.
+        let mut bad = Clip::new("bad", 3840);
+        bad.notes.push(Note::new(5000, 10, 1, 100));
+        p.tracks[1].slots[3] = Some(bad);
+        assert!(PlayView::compile(&p, &[l(0, 2)]).is_ok());
+        // Launched or cued, it is refused.
+        assert_eq!(
+            PlayView::compile(&p, &[l(1, 3)]),
+            Err(CompileError::Model(ModelError::BadNote(0)))
+        );
+        assert_eq!(
+            PlayView::compile_cued(
+                &p,
+                &[],
+                &[Cue {
+                    track: 1,
+                    slot: Some(3)
+                }]
+            ),
+            Err(CompileError::Model(ModelError::BadNote(0)))
+        );
+        // Placed in the song, it is refused once song mode is on.
+        let mut v = PlayView::compile(&p, &[]).unwrap();
+        p.arrangement
+            .placements
+            .push(mpfree_seq::Placement::linked(1, 3, 0, 3840));
+        assert!(v.set_song(&p, false).is_ok());
+        assert_eq!(
+            v.set_song(&p, true),
+            Err(CompileError::Model(ModelError::BadNote(0)))
+        );
+        // The tracks themselves are still checked.
+        p.tracks[0].swing = Some(Swing {
+            grid: 0,
+            amount: 50,
+        });
+        assert_eq!(
+            PlayView::compile(&p, &[]),
+            Err(CompileError::Model(ModelError::BadSwing))
+        );
     }
 
     #[test]

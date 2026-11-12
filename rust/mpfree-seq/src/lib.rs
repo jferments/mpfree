@@ -542,15 +542,8 @@ impl Project {
 
     /// Every track and clip in range.
     pub fn check(&self) -> Result<(), ModelError> {
-        if self.tracks.len() > MAX_TRACKS {
-            return Err(ModelError::TooManyTracks);
-        }
+        self.check_tracks()?;
         for t in &self.tracks {
-            if t.swing
-                .is_some_and(|s| Swing::new(s.grid, s.amount).is_none())
-            {
-                return Err(ModelError::BadSwing);
-            }
             for c in t.slots.iter().flatten() {
                 c.check()?;
             }
@@ -562,6 +555,23 @@ impl Project {
             s.check()?;
         }
         self.arrangement.check(&self.tracks)
+    }
+
+    /// The tracks alone, not their clips: no more than [`MAX_TRACKS`],
+    /// each swing in range. A play view checks this and then only the
+    /// clips it compiles, so an edit costs what plays, not the whole
+    /// project.
+    pub fn check_tracks(&self) -> Result<(), ModelError> {
+        if self.tracks.len() > MAX_TRACKS {
+            return Err(ModelError::TooManyTracks);
+        }
+        if self.tracks.iter().any(|t| {
+            t.swing
+                .is_some_and(|s| Swing::new(s.grid, s.amount).is_none())
+        }) {
+            return Err(ModelError::BadSwing);
+        }
+        Ok(())
     }
 
     /// Scene `row`, or `None` when the project keeps nothing for it (a
