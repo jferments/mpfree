@@ -72,17 +72,17 @@ These engineering milestones deliberately do **not** mark the Phase 1 or Phase 2
 ## Phase 2 — Playable instrument
 - [ ] Sample loading and pad mapping.
 - [ ] Velocity response and choke groups.
-- [ ] Transport and tempo.
+- [ ] Transport and tempo. (The transport, `mpfree-transport` (#46), runs in the app and ran on the MPC in round 7; TAP TEMPO, swing and following another device's MIDI clock (#239) are built. Tempo ramps are next. See [Transport](../design/transport.md).)
 - [ ] MIDI input/output and sync. (The jacks are mapped by read-only captures and the host engine `mpfree-midi` is merged, 2026-11-12; app wiring, notes out, clock and CV out are next. See [MIDI I/O](../design/midi-io.md).)
 - [ ] Project save/load, undo, and crash recovery.
 
 **Gate:** Record, save, reload, and perform a basic beat without a computer.
 
 ## Phase 3 — Distinctive sequencer
-- [ ] Per-track polymeter and independent clip lengths.
-- [ ] Microtiming, conditional triggers, probability, ratchets, parameter locks.
+- [ ] Per-track polymeter and independent clip lengths. (Built: clips of any length and speed play together (#47). See [Playback](../design/playback.md).)
+- [ ] Microtiming, conditional triggers, probability, ratchets, parameter locks. (Built on the workstation: nudge, chance, trig conditions, ratchets and parameter locks (#93, #122, #141), and pad pressure on notes (#206, #253). Not yet tried on the MPC. See [Steps](../design/steps.md).)
 - [ ] Fast step editing using pads + encoders; touchscreen is optional for core operations.
-- [ ] Clip launcher plus linear arranger with easy conversion between them.
+- [ ] Clip launcher plus linear arranger with easy conversion between them. (Built on the workstation: launch on the bar, scenes and follow actions, the scene morph, the Song view, scenes into a song and back, and live to song (#88, #155, #156, #160, #164). See [Arrange](../design/arrange.md).)
 - [ ] Nondestructive automation and modulation routing.
 
 **Gate:** Produce a multi-section composition that would be awkward in a conventional MPC workflow.
