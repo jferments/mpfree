@@ -204,12 +204,12 @@ impl App {
 
     pub fn arp_view(&self) -> Effect {
         Effect::Arp(ArpView {
-            settings: self.engine.settings(),
+            settings: self.arps.engine_at(self.track).settings(),
             pattern: self.pattern,
             pattern_index: self.pattern_index,
             pattern_changed: self.pattern_changed(),
-            notes: self.engine.active().as_slice().to_vec(),
-            step: self.engine.step(),
+            notes: self.arps.engine_at(self.track).active().as_slice().to_vec(),
+            step: self.arps.engine_at(self.track).step(),
             latched: self.latched,
             bpm: self.settings.bpm,
         })
@@ -218,13 +218,17 @@ impl App {
     /// Once a period, after `process`: the arp screens' view, if the step,
     /// the notes or a setting changed since they last heard.
     pub fn arp_poll(&mut self) -> Option<Effect> {
-        let step = self.engine.step();
-        if !self.arp_dirty && step == self.sent_step && *self.engine.active() == self.sent_notes {
+        let step = self.arps.engine_at(self.track).step();
+        if !self.arp_dirty
+            && step == self.sent_step
+            && *self.arps.engine_at(self.track).active() == self.sent_notes
+        {
             return None;
         }
         self.arp_dirty = false;
         self.sent_step = step;
-        self.sent_notes.clone_from(self.engine.active());
+        self.sent_notes
+            .clone_from(self.arps.engine_at(self.track).active());
         Some(self.arp_view())
     }
 
@@ -275,7 +279,7 @@ impl App {
 
     fn set_pattern(&mut self, p: Pattern) -> Vec<Effect> {
         self.pattern = p;
-        self.engine.set_pattern(p);
+        self.arps.engine_at_mut(self.track).set_pattern(p);
         self.arp_dirty = true;
         Vec::new()
     }
@@ -351,7 +355,7 @@ impl App {
     /// The wheel while NOTE REPEAT is held or on the panel: the order (Arp),
     /// the pattern (Pattern) or the rate.
     pub(super) fn arp_wheel(&mut self, delta: i32) -> Vec<Effect> {
-        match self.engine.settings().mode {
+        match self.arps.engine_at(self.track).settings().mode {
             Mode::Arp => {
                 let o = step_in(&Order::ALL, self.arp.order, delta);
                 if o == self.arp.order {
@@ -462,7 +466,7 @@ impl App {
         let mut fx = Vec::new();
         if on {
             let free = self.record_mode == RecordMode::FreeTime;
-            let notes = !self.engine.active().is_empty();
+            let notes = !self.arps.engine_at(self.track).active().is_empty();
             if free && !notes {
                 fx.push(Effect::Note("Free time plays the pattern over latched notes: latch some pads first (NOTE \
                                       REPEAT twice, then the pads). Recording in Step time instead."
@@ -540,7 +544,7 @@ impl App {
     /// time writes the step nearest the pattern's position now.
     pub(super) fn record_press(&mut self, slot: u8, velocity: u8) -> Vec<Effect> {
         let v = self.velocity(velocity);
-        let position = self.engine.position();
+        let position = self.arps.engine_at_mut(self.track).position();
         let Some(r) = self.recorder.as_mut() else {
             return Vec::new();
         };
@@ -572,7 +576,7 @@ impl App {
     /// A pad let go while recording: in Free time a pad held past the next
     /// step ties the steps it covered.
     pub(super) fn record_release(&mut self, slot: u8) -> Vec<Effect> {
-        let position = self.engine.position();
+        let position = self.arps.engine_at_mut(self.track).position();
         let Some(r) = self.recorder.as_mut() else {
             return Vec::new();
         };
@@ -722,6 +726,7 @@ impl App {
     /// period, before it, while the transport plays (the time engine gives
     /// the first span of the period). None, or no call, and the arp
     /// free-runs at the app's tempo.
+    #[cfg(test)]
     pub fn set_clock(&mut self, clock: Option<mpfree_arp::Clock>) {
         self.clock = clock;
     }
@@ -734,14 +739,18 @@ impl App {
                 if !self.swing_from_transport {
                     c.swing = None;
                 }
-                self.engine.sync(&c);
+                self.arps.engine_at_mut(self.track).sync(&c);
             }
-            None if self.engine.synced() => {
-                self.engine.sync(&mpfree_arp::Clock {
-                    playing: false,
-                    ..mpfree_arp::Clock::playing(0, 0, self.settings.bpm)
-                });
-                self.engine.set_tempo(self.settings.bpm);
+            None if self.arps.engine_at(self.track).synced() => {
+                self.arps
+                    .engine_at_mut(self.track)
+                    .sync(&mpfree_arp::Clock {
+                        playing: false,
+                        ..mpfree_arp::Clock::playing(0, 0, self.settings.bpm)
+                    });
+                self.arps
+                    .engine_at_mut(self.track)
+                    .set_tempo(self.settings.bpm);
             }
             None => {}
         }
@@ -941,6 +950,7 @@ impl App {
                     return Vec::new();
                 }
                 self.swing_from_transport = t;
+                self.update_engine();
                 return vec![Effect::Note(format!(
                     "arp swing from: {}",
                     if t { "transport" } else { "arp" }
@@ -1041,6 +1051,17 @@ impl App {
         self.arp_dirty = true;
     }
 
+    /// What the audio loop needs to treat the arps' notes as live playing
+    /// while `App::arps` is lent to the time engine: a copy, so it borrows
+    /// nothing. Allocates nothing.
+    pub fn live_map(&self) -> LiveMap {
+        LiveMap {
+            pad_level: self.pad_level,
+            curve: self.settings.curve,
+            layout: self.pad_layout,
+        }
+    }
+
     /// The arp's events carry MIDI notes (a pad layout is set) rather than
     /// pad slots.
     pub fn arp_plays_notes(&self) -> bool {
@@ -1063,7 +1084,9 @@ impl App {
 
     pub(crate) fn press_pad(&mut self, slot: usize, velocity: u8) {
         let Some(layout) = &self.pad_layout else {
-            self.engine.press(slot as u8, velocity);
+            self.arps
+                .engine_at_mut(self.track)
+                .press(slot as u8, velocity);
             return;
         };
         let Some(&pad) = layout.get(slot) else { return };
@@ -1071,7 +1094,7 @@ impl App {
         for &n in pad.notes() {
             let holds = &mut self.note_holds[usize::from(n)];
             if *holds == 0 {
-                self.engine.press(n, velocity);
+                self.arps.engine_at_mut(self.track).press(n, velocity);
             }
             *holds = holds.saturating_add(1);
         }
@@ -1080,7 +1103,7 @@ impl App {
 
     pub(crate) fn release_pad(&mut self, slot: usize) {
         if self.pad_layout.is_none() {
-            self.engine.release(slot as u8);
+            self.arps.engine_at_mut(self.track).release(slot as u8);
             return;
         }
         let Some(pad) = self.pad_pressed.get_mut(slot).map(std::mem::take) else {
@@ -1090,8 +1113,139 @@ impl App {
             let holds = &mut self.note_holds[usize::from(n)];
             *holds = holds.saturating_sub(1);
             if *holds == 0 {
-                self.engine.release(n);
+                self.arps.engine_at_mut(self.track).release(n);
             }
         }
+    }
+}
+
+// ------------------------------------------------------------ tracks
+
+/// One track's arp as the panel, the NOTE REPEAT band and Latch see it. The
+/// engine itself (notes held and latched, its pattern, its step) stays in
+/// `App::arps`; this is what the App keeps beside it.
+#[derive(Clone, Copy, Debug)]
+pub struct TrackUi {
+    arp: Settings,
+    arp_mode: Mode,
+    rate: Rate,
+    latched: bool,
+    scale_root: u8,
+    scale_pick: usize,
+    swing_from_transport: bool,
+    pattern_index: usize,
+    pub(super) pattern: Pattern,
+    mutations: u32,
+}
+
+impl Default for TrackUi {
+    fn default() -> Self {
+        TrackUi {
+            arp: Settings::default(),
+            arp_mode: Mode::Repeat,
+            rate: Rate::Sixteenth,
+            latched: false,
+            scale_root: 0,
+            scale_pick: 0,
+            swing_from_transport: true,
+            pattern_index: 0,
+            pattern: Pattern::default(),
+            mutations: 0,
+        }
+    }
+}
+
+impl App {
+    /// The armed track, whose arp the pads play and the arp screens show.
+    pub fn track(&self) -> usize {
+        self.track
+    }
+
+    /// The armed track changed (owner decision 2: one arp per track). Pads
+    /// held on the old track are let go there, unless its arp is latched,
+    /// which keeps playing. The panel, the band and Latch then show the new
+    /// track's arp, as it was left. Allocates nothing.
+    pub fn set_track(&mut self, track: usize) -> Vec<Effect> {
+        let track = track.min(mpfree_seq::MAX_TRACKS - 1);
+        if track == self.track {
+            return Vec::new();
+        }
+        if self.pad_layout.is_some() {
+            for slot in 0..16 {
+                self.release_pad(slot);
+            }
+        } else if !self.latched {
+            // Pad slots: what the old track's engine holds is the pads held.
+            for slot in 0..16u8 {
+                if self.arps.engine_at(self.track).active().contains(slot) {
+                    self.arps.engine_at_mut(self.track).release(slot);
+                }
+            }
+        }
+        self.track_ui[self.track] = TrackUi {
+            arp: self.arp,
+            arp_mode: self.arp_mode,
+            rate: self.settings.rate,
+            latched: self.latched,
+            scale_root: self.scale_root,
+            scale_pick: self.scale_pick,
+            swing_from_transport: self.swing_from_transport,
+            pattern_index: self.pattern_index,
+            pattern: self.pattern,
+            mutations: self.mutations,
+        };
+        self.track = track;
+        let u = self.track_ui[track];
+        self.arp = u.arp;
+        self.arp_mode = u.arp_mode;
+        self.settings.rate = u.rate;
+        self.latched = u.latched;
+        self.scale_root = u.scale_root;
+        self.scale_pick = u.scale_pick;
+        self.swing_from_transport = u.swing_from_transport;
+        self.pattern_index = u.pattern_index;
+        self.mutations = u.mutations;
+        let _ = self.set_pattern(u.pattern);
+        let mut fx = self.arp_changed();
+        fx.push(Effect::Note(format!(
+            "arp: track {} ({})",
+            track + 1,
+            mode_label(self.arp_mode)
+        )));
+        fx
+    }
+}
+
+/// The live treatment's inputs, copied out of the App each period
+/// ([`App::live_map`]).
+#[derive(Clone, Copy, Debug)]
+pub struct LiveMap {
+    pad_level: super::PadLevel,
+    curve: super::Curve,
+    layout: Option<[PadNotes; 16]>,
+}
+
+impl LiveMap {
+    /// The velocity a hit plays at, after Full or Half Level and the curve
+    /// (as `App::velocity`).
+    pub fn velocity(&self, v: u8) -> u8 {
+        match self.pad_level {
+            super::PadLevel::Full => 127,
+            super::PadLevel::Half => 64,
+            super::PadLevel::Off => self.curve.apply(v),
+        }
+    }
+
+    /// The arps' notes are MIDI notes (a synth pad layout), not pad slots.
+    pub fn plays_notes(&self) -> bool {
+        self.layout.is_some()
+    }
+
+    /// The first pad whose layout plays `note`.
+    pub fn pad_of_note(&self, note: u8) -> Option<usize> {
+        self.layout
+            .as_ref()?
+            .iter()
+            .position(|p| p.notes().contains(&note))
     }
 }

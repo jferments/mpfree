@@ -22,6 +22,7 @@ pub mod pointer;
 pub mod profile;
 pub mod route;
 pub mod touchlab;
+pub mod tuning;
 
 pub const ABS_X: u8 = 0;
 pub const ABS_Y: u8 = 1;

@@ -27,6 +27,12 @@
 //! and XY pad (`perform.rs`) on the master, before Master safety. Each
 //! rests (costs next to nothing) until it is used.
 //!
+//! Parameter locks: the clips' locks on strip controls and inserts go
+//! through the mod engine ([`MixHost::lock`], `modmix.rs`), and once a
+//! control has been locked the host's own turns of it go through the
+//! engine too ([`MixHost::set`]), so the end of a lock puts back the last
+//! turn.
+//!
 //! The screen: while the mixer panel shows ([`MixHost::show`]), the audio
 //! loop sends a [`MixState`] every [`STATE_EVERY`] (it takes the meters),
 //! and applies what the panel sends ([`MixHost::action`]).
@@ -40,9 +46,10 @@ use std::time::{Duration, Instant};
 use mpfree_fx::ids::mixer::output;
 use mpfree_fx::ids::mixer::{self as mx, monitor, source};
 use mpfree_fx::ids::{delay, dj_filter};
-use mpfree_fx::{Delay, DjFilter, Edit, Insert, Mixer, MixerConfig, StripId};
+use mpfree_fx::{Delay, DjFilter, Edit, Insert, Mixer, MixerConfig, StripId, CAPTURES};
 use mpfree_mixer_ui::{default_name, MixAction, MixState, MixView};
 use mpfree_node::{Ctx, Node, NodeEvent, Timed};
+use mpfree_play::mpfree_param::{Owner, ParamAddr};
 use mpfree_sampler::engine::PadOut;
 
 use crate::perform::ids as perf;
@@ -68,6 +75,10 @@ pub const DELAY_RETURN: usize = 0;
 const PERFORM_SLOT: usize = 0;
 /// A send this low is off.
 pub const SEND_OFF_DB: f32 = -60.0;
+/// The capture point the sampler resamples from (the Rec tab's Source):
+/// the last of the mixer's [`CAPTURES`], so the others stay free for
+/// print, stems and the looper.
+pub const SAMPLER_CAPTURE: usize = CAPTURES - 1;
 
 /// What the Play page's Q-Links and speakers show, read from the mixer (so
 /// the mixer panel's changes show there too).
@@ -145,6 +156,8 @@ pub fn name(s: StripId) -> String {
 
 pub struct MixHost {
     pub mixer: Mixer,
+    /// The mod engine between the clips' locks and the mixer.
+    pub modu: crate::modmix::ModMix,
     /// The highest the master fader goes (`--gain-db`).
     max_db: f32,
     monitor: bool,
@@ -203,6 +216,7 @@ impl MixHost {
         }
         MixHost {
             mixer,
+            modu: crate::modmix::ModMix::new(rate),
             max_db,
             monitor: false,
             line_open: false,
@@ -219,7 +233,7 @@ impl MixHost {
     pub fn play(&mut self, fx: PlayFx) {
         match fx {
             PlayFx::Strip { strip, id, value } => {
-                self.mixer.set(strip, id, value);
+                self.set(strip, id, value);
             }
             PlayFx::Filter { strip, position } => {
                 self.insert(strip, FILTER_SLOT, dj_filter::POSITION, position);
@@ -271,8 +285,37 @@ impl MixHost {
     }
 
     fn insert(&mut self, strip: StripId, slot: usize, id: u16, value: f32) {
+        let addr = crate::modmix::strip_of(strip).and_then(|s| {
+            let uid = self.mixer.chain(strip)?.uid(slot)?;
+            Some(ParamAddr::new(Owner::Insert(s, uid), id))
+        });
+        if addr.is_some_and(|a| self.modu.set(a, value)) {
+            return;
+        }
         self.mixer
             .queue_insert(strip, slot, Timed::new(0, NodeEvent::Param { id, value }));
+    }
+
+    /// Sets a strip control from the start of the next period: through the
+    /// mod engine once a lock has made it a target, else straight to the
+    /// mixer.
+    pub fn set(&mut self, strip: StripId, id: u16, value: f32) {
+        let addr = crate::modmix::strip_of(strip).map(|s| ParamAddr::new(Owner::Strip(s), id));
+        if !addr.is_some_and(|a| self.modu.set(a, value)) {
+            self.mixer.set(strip, id, value);
+        }
+    }
+
+    /// A clip's parameter lock (`value`) or its end (`None`), `offset`
+    /// frames into the coming period.
+    pub fn lock(&mut self, offset: u32, addr: ParamAddr, value: Option<f32>) {
+        self.modu.lock(&self.mixer, offset, addr, value);
+    }
+
+    /// A clip's move lane value (an FX move), `offset` frames into the
+    /// coming period.
+    pub fn lane(&mut self, offset: u32, addr: ParamAddr, value: f32) {
+        self.modu.lane(&self.mixer, offset, addr, value);
     }
 
     fn apply_mutes(&mut self) {
@@ -280,7 +323,7 @@ impl MixHost {
             let on = (self.pad_mutes | self.dropped) & (1 << p) != 0;
             let want = if on { 1.0 } else { 0.0 };
             if self.mixer.param(StripId::Pad(p), mx::MUTE) != want {
-                self.mixer.set(StripId::Pad(p), mx::MUTE, want);
+                self.set(StripId::Pad(p), mx::MUTE, want);
             }
         }
     }
@@ -316,10 +359,39 @@ impl MixHost {
         }
     }
 
+    /// Points the sampler's capture point at `src`, or frees it for the
+    /// line input. Takes effect from the next block; false if the mixer
+    /// has no such strip (the capture point is then free).
+    pub fn set_rec_source(&mut self, src: crate::sampler::RecSource) -> bool {
+        match src {
+            crate::sampler::RecSource::Line => {
+                self.mixer.set_capture(SAMPLER_CAPTURE, None);
+                true
+            }
+            crate::sampler::RecSource::Mix(strip, point) => {
+                let ok = self
+                    .mixer
+                    .set_capture(SAMPLER_CAPTURE, Some((strip, point)));
+                if !ok {
+                    self.mixer.set_capture(SAMPLER_CAPTURE, None);
+                }
+                ok
+            }
+        }
+    }
+
+    /// What the sampler's capture point took in the last period, and how
+    /// many frames late it hears the transport's block; None while it is
+    /// free.
+    pub fn rec_capture(&self) -> Option<(&[f32], &[f32], u32)> {
+        let (l, r) = self.mixer.capture(SAMPLER_CAPTURE)?;
+        let latency = self.mixer.capture_latency(SAMPLER_CAPTURE)?;
+        Some((l, r, latency))
+    }
+
     /// The Level (Q-Link 1, the slider): the master fader.
     pub fn set_level(&mut self, db: f32) {
-        self.mixer
-            .set(StripId::Master, mx::VOLUME, db.min(self.max_db));
+        self.set(StripId::Master, mx::VOLUME, db.min(self.max_db));
     }
 
     /// The master fader now, dB.
@@ -333,7 +405,7 @@ impl MixHost {
     pub fn follow(&mut self, line_open: bool, monitor_on: bool) {
         if line_open != self.line_open {
             self.line_open = line_open;
-            self.mixer.set(
+            self.set(
                 LINE,
                 mx::SOURCE,
                 if line_open {
@@ -345,7 +417,7 @@ impl MixHost {
         }
         if monitor_on != self.monitor {
             self.monitor = monitor_on;
-            self.mixer.set(
+            self.set(
                 LINE,
                 mx::MONITOR,
                 if monitor_on {
@@ -405,6 +477,7 @@ impl MixHost {
             hl[..PERIOD].copy_from_slice(line.0);
             hr[..PERIOD].copy_from_slice(line.1);
         }
+        self.modu.process(ctx, PERIOD, &mut self.mixer);
         self.mixer.process(ctx, left, right);
         let peak = left
             .iter()
@@ -432,7 +505,7 @@ impl MixHost {
                 value,
             } => {
                 let db = value.min(self.max_db);
-                self.mixer.set(StripId::Master, mx::VOLUME, db);
+                self.set(StripId::Master, mx::VOLUME, db);
                 self.state_at = None;
                 Some(db)
             }
@@ -449,7 +522,7 @@ impl MixHost {
                 None
             }
             MixAction::Set { strip, id, value } => {
-                self.mixer.set(strip, id, value);
+                self.set(strip, id, value);
                 None
             }
             MixAction::Select(s) => {
@@ -578,6 +651,64 @@ mod tests {
         h.set_level(-12.0);
         let (peak, _) = run(&mut h, 200, 0.5, 0.0);
         assert!((0.12..0.13).contains(&peak), "{peak}");
+    }
+
+    #[test]
+    fn the_samplers_capture_point_hears_the_strip_picked() {
+        use crate::sampler::RecSource;
+        use mpfree_fx::CapturePoint;
+        let mut h = MixHost::new(RATE, -6.0, -6.0);
+        assert!(h.rec_capture().is_none(), "free until a source is picked");
+        let master = RecSource::Mix(StripId::Master, CapturePoint::AfterSafety);
+        let pad1 = RecSource::Mix(StripId::Pad(0), CapturePoint::AfterFader);
+        // One period of pad 1 playing 0.5; what came out, and what the
+        // capture point took.
+        let z = [0f32; PERIOD];
+        let mut at = 0;
+        let mut once = |h: &mut MixHost| {
+            let d = tone(110.0, 0.5, at);
+            {
+                let mut pads = h.pads();
+                let (pl, pr) = pads.pad(0).unwrap();
+                pl[..PERIOD].copy_from_slice(&d);
+                pr[..PERIOD].copy_from_slice(&d);
+            }
+            let ctx = Ctx::new(RATE, at as u64);
+            let (mut l, mut r) = ([0f32; PERIOD], [0f32; PERIOD]);
+            h.period(&ctx, (&z, &z), (&z, &z), (&z, &z), &mut l, &mut r);
+            at += PERIOD;
+            let peak = |x: &[f32]| x.iter().fold(0f32, |m, v| m.max(v.abs()));
+            let cap = h.rec_capture().map(|(cl, cr, lat)| {
+                assert_eq!((cl.len(), cr.len()), (PERIOD, PERIOD));
+                (cl == l.as_slice() && cr == r.as_slice(), peak(cl), lat)
+            });
+            (peak(&l), cap)
+        };
+        assert!(h.set_rec_source(master));
+        for _ in 0..200 {
+            once(&mut h);
+        }
+        let (out, cap) = once(&mut h);
+        let (same, _, lat) = cap.unwrap();
+        assert!(same, "the master as heard is what comes out");
+        assert!((0.24..0.26).contains(&out), "{out}");
+        assert!(lat < RATE / 20, "{lat} frames late");
+        // Pad 1's channel after its fader: before the Level.
+        assert!(h.set_rec_source(pad1));
+        for _ in 0..50 {
+            once(&mut h);
+        }
+        let (_, cap) = once(&mut h);
+        let (same, peak, _) = cap.unwrap();
+        assert!(!same && (0.49..0.51).contains(&peak), "{peak}");
+        // Back to the line input: the capture point is free again.
+        assert!(h.set_rec_source(RecSource::Line));
+        once(&mut h);
+        assert!(h.rec_capture().is_none());
+        // A strip the mixer doesn't have.
+        let none = RecSource::Mix(StripId::Pad(40), CapturePoint::AfterFader);
+        assert!(!h.set_rec_source(none));
+        assert!(h.rec_capture().is_none());
     }
 
     #[test]
