@@ -18,6 +18,8 @@ class DirectBootSourceGuards(unittest.TestCase):
         self.assertIn("matches_published_37_byte_unlock_token",s)
         self.assertIn("pmu_boot_counter_register",s)
         self.assertIn("rom_download_magic",s)
+        self.assertIn("fastboot_command_table_expected_eight_entries",s)
+        self.assertIn("'0x0010fde8'",s)
 
     def test_source_does_not_execute_an_oem_fastboot_command(self):
         s=GHIDRA.read_text()
@@ -35,7 +37,11 @@ class DirectBootSourceGuards(unittest.TestCase):
                   "published_oem_token_binary_sha256_matches",
                   "MPFREE_VM_SECTION_direct_boot_rootfs",
                   "MPFREE_VM_SECTION_kernel_modules",
-                  "MPFREE_VM_SECTION_310_trustpoint_unit"):
+                  "MPFREE_VM_SECTION_310_trustpoint_unit",
+                  "MPFREE_VM_SECTION_boot_script_hex",
+                  "verify_uboot_script_wrapper.py",
+                  "security-310-utilities.json",
+                  "partition_guard_and_sparse_path_proven"):
             self.assertIn(x,s)
 
     def test_focus_syntax_and_no_physical_fastboot(self):
