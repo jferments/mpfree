@@ -1,16 +1,25 @@
 <!--
-status: planned
-covers: rust/mpfree-midi
-checked: 2026-11-12 7ecb7e4
+status: changing
+covers: rust/mpfree-midi rust/mpfree-app/src/midi_in.rs
+checked: 2026-11-12 b4f1d46
 -->
 
 # Playing other gear: MIDI, sync and CV
 
-The **MIDI IN** and **MIDI OUT** jacks, a USB keyboard on the **USB** port and the **CV/Gate** outputs connect MPFree to other instruments. MPFree doesn't use them yet. This page says what is coming, so you can plan your setup.
+The **MIDI IN** and **MIDI OUT** jacks, a USB keyboard on the **USB** port and the **CV/Gate** outputs connect MPFree to other instruments. Playing MPFree from a keyboard works now. The rest of this page is coming, so you can plan your setup.
 
 ## Playing MPFree from a keyboard
 
-Plug a keyboard into **MIDI IN**, or a USB keyboard into the **USB** port, and it plays the track on screen, just as the pads do. Its knobs and pedals can be learned (see MIDI Learn below).
+Plug a keyboard into **MIDI IN**, or a USB keyboard into the **USB** port, and it plays the armed track, just as the pads do. It listens on every MIDI channel, and you can plug a USB keyboard in or out while MPFree runs.
+
+- **With a synth on the pads,** each key plays its own note, through the arpeggiator, so **NOTE REPEAT** and Latch work from the keyboard too. A note held on a key and a pad ends when both let go.
+- **With a drum kit,** the keys that match the MPC's own pad notes hit the pads: C#2 is pad 1, C2 is pad 2, and so on. Other keys play nothing.
+- The pad velocity setting, and Full Level, shape the keys' velocity as they do the pads'.
+
+The keyboard's knobs and pedals are coming with MIDI Learn (below).
+
+> [!MPC]
+> On the MPC, MIDI input can also be set to play a track of its choosing per channel. In MPFree a keyboard plays the armed track; playing several tracks from one keyboard is coming.
 
 ## Playing a synth from a track
 
@@ -35,4 +44,4 @@ The **CV/Gate** jacks play modular synths: a track sends a pitch voltage and a g
 
 ## Seeing what comes in and goes out
 
-With **Show developer tools** on in [Prefs](../reference/prefs.md), the Dev tab's MIDI page lists every message in and out. It already shows the MPC's own pads, knobs and buttons; the MIDI jacks and USB keyboards are coming.
+With **Show developer tools** on in [Prefs](../reference/prefs.md), the Dev tab's MIDI page lists every message in, from the MPC's own pads, knobs and buttons, from **MIDI IN** and from USB keyboards. Clock from another device is counted rather than listed: the page says when it starts and stops arriving.

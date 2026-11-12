@@ -801,13 +801,22 @@ impl LooperPage {
 
     /// The new loop waveform (empty when the loop was cleared), on the
     /// Looper tab and on the Play page's strip.
+    /// While the first pass records, the wave grows with it and the
+    /// playhead follows its end.
     pub fn set_wave(&mut self, ui: &mut Ui, wave: Arc<LoopWave>) {
         let wave = Some(wave).filter(|w| w.frames > 0);
+        let live = live_place(&self.view, wave.as_ref());
         if let Some(e) = ui.get_mut::<LoopEditor>(EDITOR) {
             e.wave = wave.clone();
+            if let Some((at, bars)) = live {
+                (e.position, e.bars) = (Some(at), bars);
+            }
         }
         if let Some(s) = ui.get_mut::<LoopStrip>(LOOP_STRIP) {
             s.wave = wave;
+            if let Some((at, bars)) = live {
+                (s.position, s.bars) = (Some(at), bars);
+            }
         }
     }
 
@@ -988,8 +997,15 @@ impl LooperPage {
         let lit = self.history_open.then_some(TOOL_HISTORY);
         let trim_ticks = (editable(s) && s.ticks > 0).then_some(s.ticks);
         let note = empty_note(v);
-        let position = (!empty && s.frames > 0).then_some(s.position);
-        let bars = bars_of(s.ticks, v.beats_per_bar);
+        let live = live_place(
+            v,
+            ui.get::<LoopEditor>(EDITOR).and_then(|e| e.wave.as_ref()),
+        );
+        let position = match live {
+            Some((at, _)) => Some(at),
+            None => (!empty && s.frames > 0).then_some(s.position),
+        };
+        let bars = live.map_or_else(|| bars_of(s.ticks, v.beats_per_bar), |(_, b)| b);
         let picked = self.layer.min(s.layers.saturating_sub(1));
         let r = ui.rect_on(LOOPER_PAGE, EDITOR);
         if let Some(e) = ui.get_mut::<LoopEditor>(EDITOR) {
@@ -1218,7 +1234,18 @@ impl LooperPage {
             (if s.muted { "Unmute" } else { "Mute" }.to_string(), s.muted),
             ("Clear".to_string(), false),
         ];
-        let position = (!empty && s.frames > 0).then_some(s.position);
+        let live = live_place(
+            v,
+            ui.get::<LoopStrip>(LOOP_STRIP)
+                .and_then(|st| st.wave.as_ref()),
+        );
+        let position = match live {
+            Some((at, _)) => Some(at),
+            None => (!empty && s.frames > 0).then_some(s.position),
+        };
+        // The bar lines: the loop's, or while the first pass records, the
+        // ones its wave is drawn against.
+        let n_bars = live.map_or(n_bars, |(_, b)| b);
         if let Some(st) = ui.get_mut::<LoopStrip>(LOOP_STRIP) {
             if st.right != right
                 || st.right_wide != right_wide
@@ -1355,6 +1382,24 @@ fn setting_row(row: SetRow, v: &LooperView, set: &Settings, peak: f32, ready: bo
 }
 
 /// Bars in a loop of `ticks`, rounded (0 before it has a length).
+/// While the first pass records and `wave` is its wave so far: the
+/// playhead (how far the pass has got along the wave, 0 to 1) and the bars
+/// the wave is drawn against.
+fn live_place(v: &LooperView, wave: Option<&Arc<LoopWave>>) -> Option<(f32, usize)> {
+    if v.status.phase != Phase::Recording {
+        return None;
+    }
+    let w = wave?;
+    let at = w.live()?;
+    let bar = v.frames_per_beat * f64::from(v.beats_per_bar.max(1));
+    let bars = if bar > 0.0 {
+        (w.frames as f64 / bar).round().max(1.0) as usize
+    } else {
+        0
+    };
+    Some((at, bars))
+}
+
 fn bars_of(ticks: i64, beats_per_bar: u32) -> usize {
     if ticks <= 0 {
         return 0;

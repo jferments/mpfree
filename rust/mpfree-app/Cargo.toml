@@ -44,3 +44,6 @@ mpfree-prof = { path = "../mpfree-prof" }
 # Pinning the audio thread to a core (`--sound-cores`, cores.rs); the lanes
 # themselves live in the sampler and the mixer.
 mpfree-lanes = { path = "../mpfree-lanes" }
+# MIDI in from the 5-pin jack and USB keyboards (midi_in.rs): the router
+# that pairs note-offs with note-ons and the port table.
+mpfree-midi = { path = "../mpfree-midi" }

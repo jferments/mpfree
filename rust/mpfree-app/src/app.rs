@@ -939,8 +939,11 @@ pub struct App {
     /// What each held pad pressed into the arp (kept so a layout change
     /// while a pad is down still lets go of the right notes).
     pad_pressed: [PadNotes; 16],
-    /// How many held pads press each note (two chord pads can share one).
+    /// How many held pads and keys press each note (two chord pads, or a
+    /// pad and a key, can share one).
     note_holds: [u8; 128],
+    /// Keys held on a MIDI keyboard ([`App::key_down`]), by note.
+    keys_held: [bool; 128],
     /// The control mapper (Debug mode).
     mapper: mapper::Mapper,
     /// Buttons pressed while the mapper listened: their release is kept
@@ -1040,6 +1043,7 @@ impl App {
             pad_layout: None,
             pad_pressed: [PadNotes::default(); 16],
             note_holds: [0; 128],
+            keys_held: [false; 128],
             mapper: mapper::Mapper::default(),
             swallowed: [false; 128],
             prefs_section: PrefsSection::Main,
@@ -2946,6 +2950,46 @@ mod tests {
         app.set_pad_layout(None);
         assert!(app.eng().active().is_empty());
         assert!(!app.arp_plays_notes());
+    }
+
+    #[test]
+    fn keys_play_notes_and_share_holds_with_pads() {
+        use mpfree_arp::scale::pads::{layout, PadLayout, PadSetup};
+        use mpfree_arp::scale::{Scale, MAJOR};
+        let mut app = ready();
+        // With a kit (no pad layout) keys don't press notes here: the app
+        // hits pads by the MPC's pad notes instead.
+        app.key_down(60, 100);
+        assert!(app.eng().active().is_empty());
+        app.key_up(60);
+        let pads = layout(&PadSetup {
+            layout: PadLayout::Chords,
+            scale: Some(Scale::new(0, MAJOR)),
+            ..PadSetup::default()
+        });
+        app.set_pad_layout(Some(pads));
+        // A key plays its note, even one no pad has.
+        app.key_down(97, 90);
+        assert_eq!(notes(&mut app, 64), [97]);
+        // A second note-on for a held key is ignored; one note-off ends it.
+        app.key_down(97, 90);
+        app.key_up(97);
+        assert!(!app.eng().active().contains(97));
+        // Pad 1 holds C (48); the key on C keeps it after the pad lets go,
+        // and C ends only when both have let go.
+        app.pad_down(0, 100);
+        app.key_down(48, 100);
+        app.pad_up(0);
+        assert!(app.eng().active().contains(48), "the key still holds C");
+        app.key_up(48);
+        assert!(app.eng().active().is_empty());
+        // Keys held when the pads go back to a kit are let go.
+        app.key_down(50, 100);
+        app.set_pad_layout(None);
+        assert!(app.eng().active().is_empty());
+        app.set_pad_layout(Some(pads));
+        app.key_up(50);
+        assert!(app.eng().active().is_empty(), "nothing was left to let go");
     }
 
     fn ons(app: &mut App, frames: u32) -> Vec<(u32, u8, u8)> {
