@@ -1369,12 +1369,21 @@ mod tests {
         let morph = ui.rect_of(MORPH).unwrap();
         assert_eq!(morph.h, 64);
         assert!(morph.w >= 800, "{morph:?}");
-        // Every record setting is in view at once (58 px a row).
+        // Five record settings are in view at once (58 px a row); the
+        // sixth, Pad pressure, scrolls in when a row below the middle is
+        // picked (the list keeps the picked row in view).
         let record = ui.rect_of(RECORD).unwrap();
-        assert!(
-            record.h - 14 * 2 - 34 >= 58 * RECORD_ROWS.len() as i32,
-            "{record:?}"
-        );
+        assert!(record.h - 14 * 2 - 34 >= 58 * 5, "{record:?}");
+        let list = ui.get_mut::<OptionList>(RECORD).unwrap();
+        list.rows = (0..RECORD_ROWS.len())
+            .map(|k| OptionRow {
+                name: RECORD_ROWS[k].to_string(),
+                value: String::new(),
+            })
+            .collect();
+        assert!(list.row_rects(record, 5).is_none());
+        list.selected = 3;
+        assert!(list.row_rects(record, 5).is_some());
         // Three takes and the buttons.
         let takes = ui.rect_of(TAKES).unwrap();
         assert!(takes.h - 14 * 2 - 34 - 48 - 8 >= 3 * 38, "{takes:?}");
@@ -1656,6 +1665,27 @@ mod tests {
         );
         st.transport.bpm = MAX_BPM;
         assert_eq!(step(&st, 4, 1), None);
+        // Pad pressure flips for the armed track, either way; with none
+        // armed it shows a dash and does nothing.
+        st.armed = Some(1);
+        st.tracks[1].pressure = true;
+        assert_eq!(record_rows(&st)[5].value, "Recorded");
+        assert_eq!(
+            step(&st, 5, -1),
+            Some(TimeAction::RecordPressure {
+                track: 1,
+                on: false
+            })
+        );
+        st.tracks[1].pressure = false;
+        assert_eq!(record_rows(&st)[5].value, "Off");
+        assert_eq!(
+            step(&st, 5, 1),
+            Some(TimeAction::RecordPressure { track: 1, on: true })
+        );
+        st.armed = None;
+        assert_eq!(record_rows(&st)[5].value, "–");
+        assert_eq!(step(&st, 5, 1), None);
     }
 
     fn project() -> Project {
