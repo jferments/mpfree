@@ -9,6 +9,11 @@ description = "Audio tracks on the song timeline: linear recording from the line
 name = "mpfree_audiotracks"
 path = "src/lib.rs"
 
+[[bin]]
+name = "mpfree-disktest"
+path = "src/bin/disktest.rs"
+
 [dependencies]
 mpfree-transport = { path = "../mpfree-transport" }
 mpfree-stretch = { path = "../mpfree-stretch" }
+libc = "0.2"
