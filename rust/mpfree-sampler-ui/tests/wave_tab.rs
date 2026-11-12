@@ -481,7 +481,7 @@ fn tabs_taps_and_the_sample_screens() {
         pb.tab_rect(bar, chop_tab::TAB),
         pb.tab_rect(bar, play_tab::TAB),
         pb.tab_rect(bar, grain_tab::TAB),
-        pb.tab_rect(bar, 5),
+        pb.tab_rect(bar, wave_tab::FX_TAB),
     );
     assert_eq!(pb.active, wave_tab::TAB);
     assert_eq!(pb.tabs[0], "Wave", "the pads are the app's Pads tab now");
@@ -500,10 +500,13 @@ fn tabs_taps_and_the_sample_screens() {
         );
         s.ui.touch(id, Touch::Up, 0, 0);
     }
+    let ev =
+        s.ui.touch(6, Touch::Down, fx_tab_r.x + 5, fx_tab_r.y + 5)
+            .unwrap();
     assert_eq!(
-        s.ui.touch(6, Touch::Down, fx_tab_r.x + 5, fx_tab_r.y + 5),
-        None,
-        "FX isn't built yet"
+        s.tab.action(&mut s.ui, &ev, &st),
+        Some(WaveAction::Tab(wave_tab::FX_TAB)),
+        "FX opens"
     );
     s.ui.touch(6, Touch::Up, 0, 0);
     // A tap on the wave plays the pad.
