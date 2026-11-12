@@ -72,7 +72,7 @@ class V18EvidenceContracts(unittest.TestCase):
     def test_proprietary_bytes_only_guest_temporary_file(self):
         runner=(ROOT/"mpc-one/run_v18.py").read_text()
         self.assertIn("tempfile.TemporaryDirectory",runner)
-        self.assertIn("V17.package(output)",runner)
+        self.assertIn("archive,files=package_v18(output)",runner)
         self.assertIn("raw=temp/",runner)
         self.assertNotIn("usb-host",runner)
 
