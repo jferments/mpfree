@@ -9,12 +9,13 @@
 
 use crate::app::{Item, Settings};
 use crate::looper_tab::{
-    level_frac, level_text, LayerRow, LoopEditor, LoopList, LoopRow, LoopSettings, SettingRow,
-    UseLoop, EDITOR, LOOPS, LOOP_COLOURS, QLINKS, RECORDING, TOOLS, USE,
+    level_frac, level_text, HistoryList, LayerRow, LoopEditor, LoopList, LoopRow, LoopSettings,
+    SettingRow, UseLoop, EDITOR, LOOPS, LOOP_COLOURS, QLINKS, RECORDING, TOOLS, USE,
 };
 use crate::looping::{LoopSource, LoopWave, LooperView};
 use mpfree_looper::{
-    After, Command, Edit, LayerCommand, LayerInfo, Phase, Status, MAX_LAYERS, MAX_LOOPS, MAX_SEAM,
+    After, Command, Edit, History, LayerCommand, LayerInfo, Phase, Status, Step, MAX_LAYERS,
+    MAX_LOOPS, MAX_SEAM,
 };
 use mpfree_ui::draw;
 use mpfree_ui::qlink::{QLinkCard, QLinkColumn};
@@ -450,6 +451,65 @@ fn seam_frames(ms: f32, rate: u32) -> u32 {
 }
 
 /// A seam fade as text: "10 ms", "cut".
+/// The editor's Undo history tool: it opens the history in the layers'
+/// place.
+pub const TOOL_HISTORY: usize = 7;
+
+/// The trim handles' range, as a command while the loop can be edited.
+pub fn trim_command(from: i64, to: i64, s: &Status) -> Option<Command> {
+    (editable(s) && 0 <= from && from < to && to <= s.ticks)
+        .then_some(Command::Edit(Edit::Trim { from, to }))
+}
+
+/// An edit as the undo history names it.
+fn edit_text(e: Edit, rate: u32) -> String {
+    let sixteenths = |n: i32| {
+        if n.abs() == 1 {
+            "1/16".to_string()
+        } else {
+            format!("{} × 1/16", n.abs())
+        }
+    };
+    match e {
+        Edit::Half => "½ length".to_string(),
+        Edit::Double => "× 2".to_string(),
+        Edit::Reverse => "Reverse".to_string(),
+        Edit::Nudge(n) if n < 0 => format!("Nudge ← {}", sixteenths(n)),
+        Edit::Nudge(n) => format!("Nudge {} →", sixteenths(n)),
+        Edit::Trim { .. } => "Trim".to_string(),
+        Edit::SeamFade(f) => format!("Seam fade {}", seam_text(f as usize, rate)),
+    }
+}
+
+/// A step as the undo history names it: layers by their place in the
+/// loop now ("Layer 3"), when they are in it.
+fn step_text(s: Step, layers: &[Option<LayerInfo>], rate: u32) -> String {
+    let name = |id: u8| {
+        layers
+            .iter()
+            .position(|l| l.is_some_and(|l| l.id == id))
+            .map(|k| format!("Layer {}", k + 1))
+    };
+    match s {
+        Step::Overdub(id) => name(id).map_or("Overdub".to_string(), |n| format!("Overdub · {n}")),
+        Step::Delete(id) => {
+            name(id).map_or("Delete a layer".to_string(), |n| format!("Delete · {n}"))
+        }
+        Step::Edit(e) => edit_text(e, rate),
+        Step::Merge(_) => "Merge layers".to_string(),
+    }
+}
+
+/// The undo history as the editor lists it: Start (the first pass), the
+/// steps Undo takes back, oldest first, then the ones Redo brings back.
+pub fn history_list(h: &History, layers: &[Option<LayerInfo>], rate: u32) -> HistoryList {
+    let mut rows = vec!["Start: the first pass".to_string()];
+    rows.extend(h.done().iter().map(|&s| step_text(s, layers, rate)));
+    let now = rows.len() - 1;
+    rows.extend(h.redo().iter().map(|&s| step_text(s, layers, rate)));
+    HistoryList { rows, now }
+}
+
 pub fn seam_text(frames: usize, rate: u32) -> String {
     if frames == 0 {
         "cut".to_string()
@@ -555,6 +615,8 @@ pub struct LooperPage {
     /// A Q-Link was turned: the cards show what it set, not the view, for
     /// a moment (the looper takes a period or two to answer).
     turned: Option<Instant>,
+    /// The undo history is open in the editor.
+    history_open: bool,
 }
 
 impl LooperPage {
@@ -576,6 +638,7 @@ impl LooperPage {
             layer: 0,
             view: LooperView::default(),
             turned: None,
+            history_open: false,
         };
         p.update(ui, &LooperView::default(), &Settings::default());
         Ok(p)
@@ -615,6 +678,26 @@ impl LooperPage {
     /// The first empty loop, for New loop.
     pub fn first_empty(&self) -> Option<usize> {
         self.view.loops.iter().position(|l| l.phase == Phase::Empty)
+    }
+
+    /// The Undo history tool: open the history in the layers' place, or
+    /// close it.
+    pub fn toggle_history(&mut self, ui: &mut Ui) {
+        self.history_open = !self.history_open;
+        let v = self.view.clone();
+        self.refresh_editor(ui, &v);
+    }
+
+    pub fn history_open(&self) -> bool {
+        self.history_open
+    }
+
+    /// A tap on row `row` of the undo history: how many steps back (below
+    /// 0) or forward that is. None for now itself.
+    pub fn history_steps(&self, row: usize) -> Option<i32> {
+        let now = self.view.history.done().len();
+        let rows = now + self.view.history.redo().len();
+        (row != now && row <= rows).then(|| row as i32 - now as i32)
     }
 
     /// A tap on a layer's row: that layer goes on the Q-Links.
@@ -858,7 +941,16 @@ impl LooperPage {
                 }
             })
             .collect();
-        let tools = tools(s, v.rate);
+        let mut tools = tools(s, v.rate);
+        let h = &v.history;
+        if let Some(t) = tools.get_mut(TOOL_HISTORY) {
+            t.1 = self.history_open || !h.done().is_empty() || !h.redo().is_empty();
+        }
+        let history = self
+            .history_open
+            .then(|| history_list(h, &self.layers, v.rate));
+        let lit = self.history_open.then_some(TOOL_HISTORY);
+        let trim_ticks = (editable(s) && s.ticks > 0).then_some(s.ticks);
         let note = empty_note(v);
         let position = (!empty && s.frames > 0).then_some(s.position);
         let bars = bars_of(s.ticks, v.beats_per_bar);
@@ -873,6 +965,9 @@ impl LooperPage {
                 || e.position != position
                 || e.bars != bars
                 || e.picked != picked
+                || e.lit != lit
+                || e.history() != history.as_ref()
+                || e.trim_ticks != trim_ticks
             {
                 e.title = title;
                 e.right = right;
@@ -882,6 +977,9 @@ impl LooperPage {
                 e.position = position;
                 e.bars = bars;
                 e.picked = picked;
+                e.lit = lit;
+                e.set_history(history);
+                e.trim_ticks = trim_ticks;
                 if let Some(r) = r {
                     e.follow_in(r);
                 }
@@ -896,6 +994,7 @@ impl LooperPage {
         self.follow_takes(&v);
         if self.selected != v.selected {
             self.layer = 0;
+            self.history_open = false;
         }
         self.selected = v.selected;
         // A Q-Link turned a moment ago: keep what it set until the looper
@@ -1541,6 +1640,57 @@ mod tests {
     /// The editor's tools work while the loop plays and isn't recording:
     /// each asks for its looper command; seam fade steps up and round.
     #[test]
+    fn the_undo_history_names_its_steps_and_opens_in_the_editor() {
+        let v = two_loops();
+        let layers = v.layers;
+        let id = |k: usize| layers[k].unwrap().id;
+        let text = |s: Step| step_text(s, &layers, 44_100);
+        assert_eq!(text(Step::Overdub(id(1))), "Overdub · Layer 2");
+        assert_eq!(text(Step::Delete(id(2))), "Delete · Layer 3");
+        assert_eq!(text(Step::Delete(99)), "Delete a layer");
+        assert_eq!(text(Step::Edit(Edit::Nudge(-1))), "Nudge ← 1/16");
+        assert_eq!(text(Step::Edit(Edit::Nudge(2))), "Nudge 2 × 1/16 →");
+        assert_eq!(text(Step::Edit(Edit::SeamFade(441))), "Seam fade 10 ms");
+        assert_eq!(text(Step::Edit(Edit::Half)), "½ length");
+        assert_eq!(text(Step::Merge(id(0))), "Merge layers");
+        // With no steps the tool is faint; open, it is lit and lists Start.
+        let (mut ui, mut page) = page();
+        page.update(&mut ui, &v, &Settings::default());
+        let e = ui.get::<LoopEditor>(EDITOR).unwrap();
+        assert!(!e.tools[TOOL_HISTORY].1 && e.history().is_none());
+        // The loop plays, so the wave's ends trim it.
+        assert_eq!(e.trim_ticks, Some(4 * 4 * 960));
+        let s = &v.status;
+        assert_eq!(
+            trim_command(960, 3840, s),
+            Some(Command::Edit(Edit::Trim {
+                from: 960,
+                to: 3840
+            }))
+        );
+        assert_eq!(trim_command(960, 960, s), None);
+        assert_eq!(trim_command(0, 4 * 4 * 960 + 240, s), None);
+        page.toggle_history(&mut ui);
+        let e = ui.get::<LoopEditor>(EDITOR).unwrap();
+        assert_eq!(e.lit, Some(TOOL_HISTORY));
+        assert!(e.tools[TOOL_HISTORY].1, "open, it can be closed");
+        let h = e.history().unwrap();
+        assert_eq!(
+            (h.rows.as_slice(), h.now),
+            (&["Start: the first pass".to_string()][..], 0)
+        );
+        assert_eq!(page.history_steps(0), None, "now is no step");
+        ui.paint(&mut SoftCanvas::new(1280, 800));
+        // Picking another loop closes it.
+        let mut other = v.clone();
+        other.selected = 1;
+        other.status = v.loops[1];
+        page.update(&mut ui, &other, &Settings::default());
+        assert!(!page.history_open());
+        assert!(ui.get::<LoopEditor>(EDITOR).unwrap().history().is_none());
+    }
+
+    #[test]
     fn the_tools_ask_for_the_looper_edits_while_the_loop_plays() {
         let v = two_loops();
         let mut s = v.status;
@@ -1552,7 +1702,7 @@ mod tests {
         assert_eq!(cmd(3, &s), Some(Command::Edit(Edit::Nudge(-1))));
         assert_eq!(cmd(4, &s), Some(Command::Edit(Edit::Nudge(1))));
         assert_eq!(cmd(6, &s), Some(Command::Merge));
-        assert_eq!(cmd(7, &s), None, "the undo history comes later");
+        assert_eq!(cmd(7, &s), None, "the undo history is the page's own");
         // Seam fade: 10 ms, 50 ms, the longest, then a straight cut.
         let mut seams = Vec::new();
         for _ in 0..4 {

@@ -2143,6 +2143,10 @@ fn looper_action(
             out.note(&looper.resample_into(n));
             Vec::new()
         }
+        looping::LoopAction::Steps(n) => {
+            out.note(&looper.steps(n));
+            Vec::new()
+        }
         looping::LoopAction::Source(s) => {
             looper.source = s;
             out.note(&format!("looper: records from {}", s.name().to_lowercase()));
@@ -2697,6 +2701,9 @@ fn player_session(
                 }
                 gui::FromUi::LoopResample(n) => {
                     fx.push(app::Effect::Looper(looping::LoopAction::Resample(n)))
+                }
+                gui::FromUi::LoopSteps(n) => {
+                    fx.push(app::Effect::Looper(looping::LoopAction::Steps(n)))
                 }
                 gui::FromUi::Synth(SynthAction::Set { id, value }) => {
                     synth.set(id, value);

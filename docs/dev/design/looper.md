@@ -227,7 +227,7 @@ The plan, with rule zero (nothing state-changing on the device without the owner
 ## Next
 
 - Measure the round-trip latency on the MPC One, and check the R jack.
-- The Looper tab (the owner approved the direction 10:16Z): the engine side is done (layers, several loops, edits, merge, bounce and resample, the undo history, After recording and Fade old). The tab has the layers, the edit tools, merge, After recording, Fade old and the seam fade on Q3 and Q4, and Resample (round 10). Still to wire: the trim handles, the undo history, and a bounce to a pad (the sampler), to a WAV (`mpfree-store`) and to a clip.
+- The Looper tab (the owner approved the direction 10:16Z): the engine side is done (layers, several loops, edits, merge, bounce and resample, the undo history, After recording and Fade old). The tab has the layers, the edit tools, merge, the trim handles, the undo history, After recording, Fade old and the seam fade on Q3 and Q4, and Resample (round 10). Still to wire: a bounce to a pad (the sampler), to a WAV (`mpfree-store`) and to a clip.
 - Run `mpfree-bench --filter looper` on the MPC One for the device cost of 8 loops.
 - Wire `LoopHost::save` and `load` into the project browser's save and open (the browser is not in the app yet), and show `printed`, `fitting`, `loading` and the save's progress on the Looper tab.
 - A loop to an audio clip on Arrange.
