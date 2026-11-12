@@ -774,6 +774,24 @@ pub fn play_samples(fonts: impl Fn() -> Fonts) -> Result<Vec<PlaySample>, String
         z.held = vec![64];
     }
     out.push(s);
+
+    // The same layers overlapping by 12 velocities, crossfaded over them.
+    let (mut p, view) = layered_project();
+    if let Some(mut pad) = p.pad(PAD).cloned() {
+        for (l, (lo, hi)) in pad.layers.iter_mut().zip([(1, 69), (58, 115), (104, 127)]) {
+            (l.vel_lo, l.vel_hi) = (lo, hi);
+        }
+        pad.vel_fade = 12;
+        p.set_pad(PAD, Some(pad), None)
+            .map_err(|e| format!("{e:?}"))?;
+    }
+    let mut s = play_on(fonts(), p, view)?;
+    (s.name, s.about) = (
+        "play-fades",
+        "Three velocity layers overlapping by 12, crossfaded over the overlaps; the last hit at 64",
+    );
+    s.tab.set_velocity(&mut s.ui, Some(64));
+    out.push(s);
     Ok(out)
 }
 

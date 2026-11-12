@@ -217,6 +217,10 @@ fn arrows_change_the_pad_and_a_run_of_taps_on_one_row_is_one_undo_step() {
         (Row::Tune, 7, "+7 st"),
         (Row::Wow, 3, "30 %"),
         (Row::Wow, -5, "Off"),
+        (Row::VelFade, 1, "2"),
+        (Row::VelFade, 4, "12"),
+        (Row::VelFade, 20, "64"),
+        (Row::VelFade, -20, "Off"),
         (Row::Sustain, -8, "60 %"),
         (Row::Release, 2, "20 ms"),
         (Row::FilterEnv, 3, "+0.75 oct"),
@@ -591,6 +595,8 @@ fn keys_make_the_pad_a_keygroup_rooted_at_the_note_it_is_heard_at() {
     let before = s.state.settings.clone();
     // Nothing to step while Keys are off.
     assert_eq!(step(&mut s, Row::LowKey, 1), None);
+    assert_eq!(step(&mut s, Row::KeyFade, 1), None);
+    assert_eq!(row_value(&s, Row::KeyFade), "–");
     step_apply(&mut s, Row::Keys, 1);
     assert_eq!(s.state.settings.keys, Some(Keys::all(57)), "A3, as heard");
     assert_eq!(
@@ -612,6 +618,10 @@ fn keys_make_the_pad_a_keygroup_rooted_at_the_note_it_is_heard_at() {
         (Row::RootKey, 3, "C4"),
         (Row::LowKey, 100, "G4"),
         (Row::LowKey, -31, "C2"),
+        (Row::KeyFade, 1, "1 note"),
+        (Row::KeyFade, 2, "3 notes"),
+        (Row::KeyFade, 40, "24 notes"),
+        (Row::KeyFade, -21, "3 notes"),
     ] {
         step_apply(&mut s, row, delta);
         assert_eq!(row_value(&s, row), value, "{row:?} {delta:+}");
@@ -724,6 +734,26 @@ fn sixteen_levels_spread_the_pad_over_the_kits_pads() {
     step_apply(&mut s, Row::PadsPlay, 1);
     assert_eq!(s.project.pads_play(), PadsPlay::Pads);
     assert_eq!(row_value(&s, Row::LevelsBy), "–");
+}
+
+#[test]
+fn the_layer_map_cuts_each_layer_along_the_velocity_fade() {
+    use mpfree_sampler_ui::play_widgets::LayerMap;
+    let mut s = play(true);
+    assert_eq!(s.ui.get::<LayerMap>(play_tab::LAYERS).unwrap().fade, 0);
+    step_apply(&mut s, Row::VelFade, 4);
+    assert_eq!(s.state.settings.vel_fade, 8);
+    assert_eq!(s.ui.get::<LayerMap>(play_tab::LAYERS).unwrap().fade, 8);
+    // The middle layer (64-109) is cut at both ends, the lowest only at its top.
+    let mut c = SoftCanvas::new(sample::SCREEN.0, sample::SCREEN.1);
+    s.ui.paint(&mut c);
+    let r = s.ui.rect_of(play_tab::LAYERS).unwrap();
+    let m = s.ui.get::<LayerMap>(play_tab::LAYERS).unwrap();
+    let b = m.bar_rect(r, 1).unwrap();
+    let mid = c.pixel(b.x + b.w / 2, b.y + 3);
+    assert_ne!(c.pixel(b.x + 6, b.y + 3), mid, "cut at its low edge");
+    assert_ne!(c.pixel(b.right() - 3, b.y + 3), mid, "cut at its high edge");
+    assert_eq!(c.pixel(b.x + 6, b.bottom() - 3), mid, "full at the bottom");
 }
 
 /// The tab's keyboard and where it is.
@@ -865,4 +895,43 @@ fn the_keyboard_shows_while_the_pads_play_notes_and_marks_their_notes() {
     assert!(z.caption.contains("is not a keygroup"), "{}", z.caption);
     let mut c = SoftCanvas::new(sample::SCREEN.0, sample::SCREEN.1);
     s.ui.paint(&mut c);
+}
+
+#[test]
+fn key_fade_overlaps_the_kits_zones_and_the_keyboard_draws_their_curves() {
+    let mut s = play_samples(Fonts::embedded)
+        .unwrap()
+        .into_iter()
+        .find(|s| s.name == "play-keys")
+        .unwrap();
+    assert_eq!(row_value(&s, Row::KeyFade), "Off");
+    // One step for the whole kit: each zone fades over 4 notes and the
+    // ones that met overlap by 4.
+    let a = step(&mut s, Row::KeyFade, 4).unwrap();
+    assert_eq!(a, PlayAction::KeyFade(4));
+    apply(&mut s, &a);
+    assert_eq!(row_value(&s, Row::KeyFade), "4 notes");
+    let (z, r) = keyboard(&s);
+    assert!(z.zones.iter().all(|z| z.fade == 4));
+    let (a1, a2) = (z.zones[0].keys, z.zones[1].keys);
+    assert_eq!(a1.hi + 1 - a2.lo, 4, "{a1:?} {a2:?}");
+    // The bar is cut along the curve where it fades out, full elsewhere.
+    let mut c = SoftCanvas::new(sample::SCREEN.0, sample::SCREEN.1);
+    s.ui.paint(&mut c);
+    let i = z.zones.iter().position(|q| q.pad == 1).unwrap();
+    let zr = z.zone_rect(r, i).unwrap();
+    let mid = c.pixel(zr.x + zr.w / 2, zr.y + 2);
+    assert_ne!(
+        c.pixel(zr.right() - 3, zr.y + 2),
+        mid,
+        "cut at its top edge"
+    );
+    // Back to edge to edge, and a kit with no keygroup has nothing to fade.
+    let a = step(&mut s, Row::KeyFade, -4).unwrap();
+    apply(&mut s, &a);
+    let (z, _) = keyboard(&s);
+    assert_eq!(z.zones[0].keys.hi + 1, z.zones[1].keys.lo);
+    let mut plain = play(false);
+    assert_eq!(row_value(&plain, Row::KeyFade), "–");
+    assert_eq!(step(&mut plain, Row::KeyFade, 1), None);
 }
