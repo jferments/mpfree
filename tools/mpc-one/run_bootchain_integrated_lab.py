@@ -289,7 +289,7 @@ class Lab:
         ]
         with build_log.open("w") as log:
             for cmd in commands:
-                log.write("$ " + " ".join(cmd) + "\\n")
+                log.write("$ " + " ".join(cmd) + "\n")
                 p = subprocess.run(cmd, capture_output=True, text=True, timeout=90)
                 log.write(p.stdout + p.stderr)
                 if p.returncode:
@@ -298,14 +298,14 @@ class Lab:
             with disk.open("wb") as fh:
                 fh.truncate(24 * 1024 * 1024)
             cmd = [mke2fs, "-F", "-q", "-t", "ext4", "-d", str(staging), str(disk)]
-            log.write("$ " + " ".join(cmd) + "\\n")
+            log.write("$ " + " ".join(cmd) + "\n")
             p = subprocess.run(cmd, capture_output=True, text=True, timeout=90)
             log.write(p.stdout + p.stderr)
             if p.returncode:
                 raise RuntimeError("Synthetic ARM model ext4 construction failed; check " + build_log.name)
         with disk.open("rb") as handle:
             handle.seek(1080)
-            if handle.read(2) != b"\\x53\\xef":
+            if handle.read(2) != b"\x53\xef":
                 raise RuntimeError("Synthetic ext4 magic not recognized")
         self.stages["synthetic-usb-model-build"] = {
             "success": True, "binary_sha256": sha256(binary),
@@ -419,7 +419,6 @@ class Lab:
                 "echo MPFREE_VM_SECTION_completed",
                 "echo " + end,
             ])
-            ]
             # Only shell builtins and passive inspection tools. Do not run
             # az01-update, az01config, program-fuses, or AKAI init/services.
             # The guest's rootfs writes (such as mounts) are ephemeral.
@@ -624,251 +623,6 @@ class Lab:
             "- V11 Ghidra: updater verification states, function-pointer backend selectors, RockUSB framing.",
             "- QEMU: real ARMv7 Linux/userspace boot, virtual hardware boundary, loader dependencies and passive file inventory.",
             "- QEMU synthetic USB model: independent ARM executable tests interface descriptor selection on read-only guest fixture disk, not vendor code.",
-            "",
-            "## Still not proven",
-            "- Silicon MaskROM entry, unsigned owner-SPL execution, eMMC hardware restoration.",
-            "- Real RK3288 peripheral behavior, U-Boot Fastboot runtime authorization or safe physical flash writes.",
-            "- Live original updater state transitions: the guest did not execute vendor updater code.",
-            "",
-            "Use cross-evidence.json, session-summary.json, stage console logs and Ghidra JSON for the next analysis.",
-            "",
-        ]
-        (self.out / "RESEARCH-SUMMARY.md").write_text("\n".join(summary))
-        self.say("Cross-evidence synthesis complete: RESEARCH-SUMMARY.md / cross-evidence.json")
-
-    def package(self):
-        self.manifest["duration_seconds"] = round(time.time() - self.start, 1)
-        self.manifest["source_archives_imported"] = self.new_archives
-        self.manifest["safety_limitations"] = [
-            "No claimed silicon MaskROM proof, eMMC restore or original SPL execution.",
-            "Guest commands never invoke vendor maintenance or update executables.",
-            "Do not commit private Ghidra pseudocode or derived evidence to public GitHub.",
-            "QEMU TCG alone is not a hardened sandbox for unknown vendor binaries.",
-        ]
-        (self.out / "session-summary.json").write_text(
-            json.dumps(self.manifest, indent=2) + "\n")
-        rows = []
-        size = 0
-        for p in sorted(self.out.rglob("*")):
-            if p.is_symlink():
-                raise ValueError("Refusing symlink in output tree: " + str(p))
-            if p.is_dir():
-                continue
-            if not stat.S_ISREG(p.lstat().st_mode) or p.suffix.lower() not in ALLOWED:
-                raise ValueError("Unexpected artifact: " + str(p))
-            n = p.stat().st_size
-            size += n
-            if n > MAX_FILE or size > MAX_TOTAL:
-                raise ValueError("Large output, review report folder: " + str(p))
-            rows.append({
-                "name": p.relative_to(self.out).as_posix(),
-                "bytes": n,
-                "sha256": sha256(p),
-            })
-        index = {
-            "schema": "mpfree-bootchain-integrated-zip-index-v1",
-            "private": True, "files": rows,
-        }
-        path = self.out.with_suffix(".zip")
-        if path.exists():
-            raise FileExistsError("Refusing to overwrite: " + str(path))
-        with zipfile.ZipFile(path, "x", compression=zipfile.ZIP_DEFLATED,
-                             compresslevel=6, allowZip64=False) as z:
-            z.writestr("ZIP_INDEX.json", json.dumps(index, indent=2) + "\n")
-            for row in rows:
-                z.write(self.out / row["name"], arcname=row["name"])
-        with zipfile.ZipFile(path) as z:
-            if z.testzip():
-                raise RuntimeError("Final ZIP CRC verification failed")
-            if set(z.namelist()) != {r["name"] for r in rows} | {"ZIP_INDEX.json"}:
-                raise RuntimeError("Unexpected ZIP members")
-        (path.with_suffix(".zip.sha256")).write_text(
-            sha256(path) + "  " + path.name + "\n")
-        self.say("\n" + "=" * 75)
-        self.say("ONE ZIP TO UPLOAD: " + str(path))
-        self.say("SHA256: " + sha256(path))
-        self.say("Reports/log files: " + str(len(rows)))
-        self.say("Stages: " + json.dumps(self.stages, indent=2))
-        self.say("All results remain PRIVATE. Do not push this ZIP to the repository.")
-        self.say("=" * 75)
-        return path
-
-
-def main():
-    p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--prior-v10", type=Path, help="Optional known V10 SHA-indexed private ZIP")
-    p.add_argument("--qemu-boot-timeout", type=int, default=240)
-    p.add_argument("--qemu-probe-timeout", type=int, default=90)
-    args = p.parse_args()
-    if args.qemu_boot_timeout < 30 or args.qemu_probe_timeout < 15:
-        p.error("QEMU timeouts too small")
-    os.umask(0o077)
-    lab = Lab(args)
-    try:
-        lab.say("MPFree single-run research lab: offline Ghidra + ephemeral ARM QEMU")
-        lab.say("Source tree: " + str(ROOT))
-        lab.say("Output directory: " + str(lab.out))
-        lab.say("No actual MPC device, USB interface or updater executable will be used.")
-        try:
-            lab.static()
-        except Exception:
-            lab.say("STATIC ERROR: " + traceback.format_exc())
-            lab.notes.append("Static stage exception; subsequent QEMU and packaging continue.")
-        try:
-            lab.qemu()
-        except Exception:
-            lab.say("QEMU ERROR: " + traceback.format_exc())
-            lab.notes.append("QEMU stage exception; package available Ghidra data.")
-        try:
-            lab.synthesize()
-        except Exception:
-            lab.say("CROSS-EVIDENCE ERROR: " + traceback.format_exc())
-            lab.notes.append("Cross-evidence synthesis failed; source reports still packaged.")
-    finally:
-        try:
-            lab.full_file.flush()
-            lab.full_file.close()
-            lab.package()
-        except Exception:
-            print("PACKAGE ERROR: " + traceback.format_exc(), file=sys.stderr)
-            print("Unpacked output remains at: " + str(lab.out), file=sys.stderr)
-            raise
-
-
-if __name__ == "__main__":
-    main()
-, normalized)
-            ]
-            result["synthetic_usb_model_guest_pass"] = (
-                "MPFREE_USB_DESCRIPTOR_MODEL_PASS" in normalized
-                and "MPFREE_MODEL_EXEC_OK" in normalized
-            ) if synthetic_mock_enabled else None
-            if synthetic_mock_enabled:
-                self.stages["synthetic-usb-model-guest"] = {
-                    "success": result["synthetic_usb_model_guest_pass"],
-                    "tests_observed": len(result["synthetic_usb_model_test_results"]),
-                    "console": sections.get("synthetic_usb_model"),
-                }
-            result["guest_probes_acknowledged"] = probe_cursor
-            result["guest_probes_expected"] = len(lines)
-        except Exception as exc:
-            result["error"] = repr(exc)
-            self.say("QEMU probe exception: " + repr(exc))
-        finally:
-            if proc is not None and proc.poll() is None:
-                try:
-                    os.killpg(proc.pid, signal.SIGTERM)
-                    proc.wait(timeout=15)
-                except Exception:
-                    try:
-                        os.killpg(proc.pid, signal.SIGKILL)
-                    except ProcessLookupError:
-                        pass
-                    proc.wait(timeout=15)
-            if slave is not None:
-                os.close(slave)
-            if master is not None:
-                os.close(master)
-            (self.out / "qemu-probe-results.json").write_text(
-                json.dumps(result, indent=2) + "\n")
-            self.stages["qemu-guest"] = {
-                "success": result["success"],
-                "booted": result["booted"],
-                "probe_complete": result["probe_complete"],
-                "error": result.get("error"),
-                "console": guest.name,
-            }
-            self.say("QEMU RESULT: " + json.dumps(self.stages["qemu-guest"]))
-        return result["success"]
-
-    def synthesize(self):
-        """Correlate guest executable hashes with the verified static ELF inputs."""
-        static_path = self.out / "static" / "v11" / "v11-stage-manifest.json"
-        wide_path = self.out / "static" / "wide" / "manifest.json"
-        guest_path = self.out / "qemu-probe-results.json"
-        hashes_path = self.out / "qemu-guest-vendor_hashes.txt"
-        record = {
-            "schema": "mpfree-integrated-cross-evidence-v1",
-            "static_v11_manifest": static_path.is_file(),
-            "broad_static_manifest": wide_path.is_file(),
-            "qemu_guest_probe": guest_path.is_file(),
-            "match_tests": [],
-            "confirmed_boundaries": [
-                "Booting the QEMU guest does NOT execute MPC SPL, U-Boot, or MaskROM.",
-                "Guest loader --list does not execute the updater application entrypoint.",
-                "Any live physical recovery, ROM USB acceptance, fuse policy or DDR inference requires separate evidence.",
-            ],
-        }
-        if wide_path.is_file():
-            try:
-                src = json.loads(wide_path.read_text())
-                record["spl_ghidra_recognized_functions"] = src.get("p1_functions")
-                record["uboot_ghidra_recognized_functions"] = src.get("p3_functions")
-                record["wide_static_source_mode"] = src.get("source_mode")
-            except Exception as exc:
-                record["wide_parse_error"] = str(exc)
-        guest_hashes = {}
-        if hashes_path.is_file():
-            for line in hashes_path.read_text(errors="replace").splitlines():
-                found = re.match(r"^([a-f0-9]{64})[ \t]+(/\S+)", line.strip())
-                if found:
-                    guest_hashes[found.group(2)] = found.group(1)
-        if static_path.is_file():
-            try:
-                src = json.loads(static_path.read_text())
-                record["v11_static_stage_success"] = {
-                    k: v.get("success") for k, v in src.get("stages", {}).items()
-                }
-                expected = src.get("source_sha256", {})
-                for role, guest_name in (
-                    ("az01-update", "/usr/sbin/az01-update"),
-                    ("libaz01-prog", "/usr/lib/libaz01-prog.so.1.3"),
-                ):
-                    actual = guest_hashes.get(guest_name)
-                    want = expected.get(role)
-                    record["match_tests"].append({
-                        "role": role, "guest_path": guest_name,
-                        "guest_sha256": actual, "static_sha256": want,
-                        "match": actual == want if actual and want else None,
-                        "interpretation": (
-                            "Guest and static executable input match byte-for-byte"
-                            if actual and want and actual == want else
-                            "Cannot prove guest/static source identity; investigate missing or differing hashes"
-                        ),
-                    })
-            except Exception as exc:
-                record["v11_parse_error"] = str(exc)
-        else:
-            record["match_tests_note"] = "V11 report missing; no comparison asserted"
-        (self.out / "cross-evidence.json").write_text(json.dumps(record, indent=2) + "\n")
-        summary = [
-            "# MPFree integrated bootchain run",
-            "",
-            "This report is automatically derived from a single offline static/QEMU session.",
-            "All findings are private and firmware-derived; DO NOT commit this ZIP to GitHub.",
-            "",
-            "## Status",
-        ]
-        for name, stage in self.stages.items():
-            summary.append("- " + name + ": " +
-                           ("PASS" if stage.get("success") else "INCOMPLETE/FAIL") +
-                           (" (" + str(stage.get("error") or stage.get("reason")) + ")"
-                            if stage.get("error") or stage.get("reason") else ""))
-        summary += ["", "## Guest/static image consistency"]
-        if record["match_tests"]:
-            for entry in record["match_tests"]:
-                summary.append("- " + entry["role"] + ": " +
-                               ("MATCH" if entry["match"] is True else
-                                "MISMATCH" if entry["match"] is False else
-                                "NOT ESTABLISHED"))
-        else:
-            summary.append("- Not established; see cross-evidence.json.")
-        summary += [
-            "",
-            "## Research scope",
-            "- Broad Ghidra: SPL entry, DDR/FDT, ROM/boot choice, U-Boot/Fastboot, permission, RAM, recovery.",
-            "- V11 Ghidra: updater verification states, function-pointer backend selectors, RockUSB framing.",
-            "- QEMU: real ARMv7 Linux/userspace boot, virtual hardware boundary, loader dependencies and passive file inventory.",
             "",
             "## Still not proven",
             "- Silicon MaskROM entry, unsigned owner-SPL execution, eMMC hardware restoration.",
