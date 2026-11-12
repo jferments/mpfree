@@ -2604,6 +2604,7 @@ impl SamplePage {
         let spawned = std::thread::Builder::new()
             .name("sample-open".into())
             .spawn(move || {
+                let _ = crate::cores::background(); // off the sound's cores and priority
                 let r = save::from_text(&text, &mut |f| wav::read(f, &read(f)?));
                 let _ = tx.send(r);
             });
@@ -2636,6 +2637,7 @@ impl SamplePage {
         let spawned = std::thread::Builder::new()
             .name("sample-load".into())
             .spawn(move || {
+                let _ = crate::cores::background(); // off the sound's cores and priority
                 let _ = tx.send(read_sound(&path));
             });
         match spawned {
@@ -4027,6 +4029,7 @@ pub fn read_in_thread(path: PathBuf) -> std::io::Result<Receiver<Loaded>> {
     std::thread::Builder::new()
         .name("preview-load".into())
         .spawn(move || {
+            let _ = crate::cores::background(); // off the sound's cores and priority
             let _ = tx.send(read_one(&path));
         })?;
     Ok(rx)

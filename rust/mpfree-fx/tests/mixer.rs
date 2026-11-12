@@ -1073,16 +1073,35 @@ fn inserts_on_a_second_core_give_the_same_output_bit_for_bit() {
     }
 }
 
+/// Plays `s` again until a lane join comes back late, at most 50 times,
+/// and gives the late joins it saw. A wait of zero is late only when the
+/// lane has not finished by the join: from 1 % to 20 % of joins here, and
+/// fewer still with other tests on the cores, so one pass can have none.
+fn play_until_late(m: &mut Mixer, s: &Script, n: usize) -> u64 {
+    let before = m.stats().lane_late;
+    for _ in 0..50 {
+        play(m, s, n, &mut blocks(64));
+        if m.stats().lane_late > before {
+            break;
+        }
+    }
+    m.stats().lane_late - before
+}
+
 #[test]
 fn a_late_lane_leaves_its_strips_dry_until_their_inserts_come_back() {
     use std::time::Duration;
     let n = 20_000;
     let (mut m, s) = busy_for_lanes(7, n);
-    // A wait of zero: nearly every join is late, as on a lost period.
+    // A wait of zero: a join the lane hasn't finished by is late, as on a
+    // lost period.
     let setup = m.set_lane(Some(mpfree_lanes::Config::default()), Duration::ZERO);
     let threaded = setup.is_some_and(|s| s.threaded.is_ok());
     let out = play(&mut m, &s, n, &mut blocks(64)).out;
     assert!(out.0.iter().chain(&out.1).all(|v| v.is_finite()));
+    if threaded && m.stats().lane_late == 0 {
+        play_until_late(&mut m, &s, n);
+    }
     let late = m.stats().lane_late;
     println!(
         "zero wait: {late} late of {} posts (worker thread: {threaded})",
@@ -1117,7 +1136,7 @@ fn a_blocks_deadline_holds_for_every_join_in_it_and_only_that_block() {
         play(&mut m, &s, n, &mut blocks(64)).out
     };
     let (mut m, s) = busy_for_lanes(9, n);
-    // A wait of zero, which alone makes nearly every join late (above),
+    // A wait of zero, which alone makes some joins late (above),
     // and a far deadline given to each block: no join is late, and the
     // output is the same, bit for bit.
     let setup = m.set_lane(Some(mpfree_lanes::Config::default()), Duration::ZERO);
@@ -1133,9 +1152,11 @@ fn a_blocks_deadline_holds_for_every_join_in_it_and_only_that_block() {
     );
     // The deadline holds for one block: without a new one, the zero wait
     // is back.
-    play(&mut m, &s, n, &mut blocks(64));
     if threaded {
-        assert!(m.stats().lane_late > 0, "a zero wait is late again");
+        assert!(
+            play_until_late(&mut m, &s, n) > 0,
+            "a zero wait is late again"
+        );
     }
 }
 
