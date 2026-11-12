@@ -507,7 +507,7 @@ pub fn screen(
     // The top bar: Sample lit for its FX sub-tab; nothing lit over the
     // mixer or a page (as the mixer does).
     let mut header = Header::app(if place == Place::SampleFx {
-        APP_TABS[4]
+        APP_TABS[5]
     } else {
         ""
     });

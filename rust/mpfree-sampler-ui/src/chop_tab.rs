@@ -72,12 +72,12 @@ pub const WHEEL: &str = "smp-chop-wheel";
 
 /// The tab's page: as the Wave tab's, with the Chop list and its buttons
 /// beside the waveform.
-pub const LAYOUT: &str = "col(header:60, smp-chop-bar:60, smp-chop-overview:56, \
+pub const LAYOUT: &str = "col(header:60, row(smp-chop-bar:*, smp-send:330):60, smp-chop-overview:56, \
                           row(smp-chop-wave:*, col(smp-chop-list:*, smp-chop-buttons:64):360):*, \
                           row(smp-chop-q1, smp-chop-q2, smp-chop-q3, smp-chop-q4, smp-chop-wheel:210):88, hint:26)";
 
 /// The tab's place in [`TABS`].
-pub const TAB: usize = 3;
+pub const TAB: usize = 2;
 
 /// The hint line the app shows under the tab.
 pub const HINT: &str = "Tap a slice to pick and hear it · drag a marker to move a cut · Split, Merge, then Chop to pads (UNDO takes \
@@ -446,6 +446,7 @@ impl ChopTab {
     /// Adds the widgets and the page `name` to `ui` (the app adds `header`
     /// and `hint` first) and shows `st`.
     pub fn add(ui: &mut Ui, name: &str, st: &ChopState) -> Result<ChopTab, String> {
+        crate::send::add(ui);
         let mut bar = PadBar::new(&TABS);
         bar.enabled = TABS.iter().map(|t| wave_tab::BUILT.contains(t)).collect();
         bar.active = TAB;
