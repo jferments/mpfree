@@ -1,6 +1,6 @@
 //! The Synth tab's options (MENU on the Synth tab): which engine the pads
 //! play, and how the pads are laid out from a scale (owner, 2026-11-11;
-//! `docs/project/scales.md`, "The pads").
+//! `docs/dev/design/scales.md`, "The pads").
 //!
 //! - **Engine**: Poly, FM, Drums or Pluck. The other engine's notes finish
 //!   their release. Drums plays a sound on each pad from the kit's Pad 1
