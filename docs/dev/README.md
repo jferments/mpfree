@@ -57,7 +57,7 @@ Every design page opens with a **Status** line (proposal, approved, built, on ma
 
 - [Profiling and performance budgets](design/profiling.md): the shared profiling API, the ARM cost model, per-engine budgets and the bench (`rust/mpfree-prof`, `rust/mpfree-bench`).
 - [Concurrency](design/concurrency.md): using every core of the MPC One: where threads run today, the core plan, and lanes, which run part of each audio period on another core with a deadline (`rust/mpfree-lanes`, 2026-11-11).
-- [Offload](design/offload.md): render partitions on another computer over UDP, answered L periods later with the MPC as the only clock: the datagram, the server, the client, and `mpfree-offload measure` (`rust/mpfree-offload`, desktop prototype, 2026-11-12).
+- [Offload](design/offload.md): render partitions on another computer over UDP, answered L periods later with the MPC as the only clock: the datagram, the server, the client, `mpfree-offload measure`, and the offloaded node that falls back to a local Eco stand-in when the link drops (`rust/mpfree-offload`, desktop prototype, 2026-11-12).
 - [MPC One: first device numbers (round 7)](perf/mpc-one-round7.md): what the first on-device bench says about each engine's budget.
 
 ### Installing
