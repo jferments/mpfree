@@ -38,7 +38,7 @@ Every region fades in over `FADE` (64) frames from its start and plays on `FADE`
 
 A region sits on song ticks, so it stays on its bar when the tempo before it changes. Its audio plays sample for sample from the region's start, the way a DAW plays audio that is not warped. At a tempo other than the one it was recorded at, it doesn't stretch by itself, so a region longer than a bar drifts against the bars until the take is fitted (below).
 
-**Fitting a take to a new tempo** ([`stretch.rs`](../../rust/mpfree-audiotracks/src/stretch.rs)) keeps its pitch:
+**Fitting a take to a new tempo** ([`stretch.rs`](../../../rust/mpfree-audiotracks/src/stretch.rs)) keeps its pitch:
 
 1. A take remembers the tempo it was recorded at (`TakeInfo::bpm`), and `stretch::fit_ratio(recorded, now)` says how much longer it must be.
 2. Off the audio thread, the host reads the take with `read_take`, runs a `StretchJob` (the `mpfree-stretch` phase vocoder that keeps hits sharp) in steps on a worker, and loads the result under `free_take_id()` with `load_take`. The new take keeps the old one's anchor, so its frame 0 stays on the same tick.
@@ -62,7 +62,7 @@ Recording to the storage partition instead of RAM, so tracks can be as long as t
 
 ## Saved with the project
 
-[`save.rs`](../../rust/mpfree-audiotracks/src/save.rs) holds the audio tracks' part of a project (`parts/audiotracks.txt`): each track's settings and regions, and each take's place, with its audio named by file. The audio is a 32-bit float WAV a take, mono or stereo as recorded.
+[`save.rs`](../../../rust/mpfree-audiotracks/src/save.rs) holds the audio tracks' part of a project (`parts/audiotracks.txt`): each track's settings and regions, and each take's place, with its audio named by file. The audio is a 32-bit float WAV a take, mono or stereo as recorded.
 
 - **Saving.** `save_file()` gives the settings, regions and takes. It returns None while a track records or a take loads, leaves out tracks with nothing to keep, and allocates. `read_take(id, from, out)` reads a take's audio a piece at a time without allocating, so the app can read across periods. `save::to_text` and `save::wav` make the files. A take never changes once recorded, so a save read slowly can't tear.
 - **Opening.** Takes and tracks come back through `save::from_text` and `save::from_wav`, then:
