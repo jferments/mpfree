@@ -38,7 +38,7 @@ struct Run {
     mutes: Vec<bool>,
 }
 
-/// The host's part, as `mpfree-hello`'s TimeHost does it: actions go in
+/// The host's part, as `mpfree-app`'s TimeHost does it: actions go in
 /// before the period that starts at or after their frame, started cues are
 /// applied at once, and follow actions are checked after every period.
 fn run(
