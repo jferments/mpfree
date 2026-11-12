@@ -2346,8 +2346,13 @@ fn render_granular(
             v.grain_cents = cents;
         }
         g.render(&clip, budget, frame + at as u64, bl, br);
+        let follow = v.follow.moving;
         for k in 0..n {
-            let (l, r) = finish(v, rate, bl[k], br[k], 1.0);
+            let (l, r) = if follow {
+                finish::<true>(v, rate, bl[k], br[k], 1.0)
+            } else {
+                finish::<false>(v, rate, bl[k], br[k], 1.0)
+            };
             left[at + k] += l;
             right[at + k] += r;
             if !v.active {
@@ -2440,7 +2445,8 @@ fn retarget(v: &mut Voice, live: &[f32; PadField::COUNT], program: &[f32; Progra
 }
 
 /// One frame of following the live settings: the gain's step, and every
-/// [`FILTER_STEP`] frames the next steps ([`live_step`]).
+/// [`FILTER_STEP`] frames the next steps ([`live_step`]). Only the loops of
+/// a voice that is following call it ([`render_voice`]).
 #[inline(always)]
 fn follow_live(v: &mut Voice) {
     if v.follow.count == 0 {
@@ -2618,8 +2624,14 @@ fn retune(v: &mut Voice, f: Filter, e: f32, rate: f32) {
 /// from the region's fades. Marks the voice done when its kill fade or
 /// envelope ends.
 #[inline(always)]
-fn finish(v: &mut Voice, rate: f32, mut l: f32, mut r: f32, mut g: f32) -> (f32, f32) {
-    if v.follow.moving {
+fn finish<const FOLLOW: bool>(
+    v: &mut Voice,
+    rate: f32,
+    mut l: f32,
+    mut r: f32,
+    mut g: f32,
+) -> (f32, f32) {
+    if FOLLOW {
         follow_live(v);
     }
     if v.route.target != PressureTarget::Off {
@@ -2671,7 +2683,24 @@ fn finish(v: &mut Voice, rate: f32, mut l: f32, mut r: f32, mut g: f32) -> (f32,
     (l, r)
 }
 
+/// A sample voice's next `left.len()` frames, added into `left` and
+/// `right`. Whether it follows a live setting is settled once a call (only
+/// events start that, and they come between calls), so a voice that isn't
+/// following runs the loop it always did.
 fn render_voice(v: &mut Voice, rate: f32, left: &mut [f32], right: &mut [f32]) {
+    if v.follow.moving {
+        render_voice_as::<true>(v, rate, left, right);
+    } else {
+        render_voice_as::<false>(v, rate, left, right);
+    }
+}
+
+fn render_voice_as<const FOLLOW: bool>(
+    v: &mut Voice,
+    rate: f32,
+    left: &mut [f32],
+    right: &mut [f32],
+) {
     let Some(data) = v.data.clone() else {
         v.active = false;
         return;
@@ -2716,7 +2745,7 @@ fn render_voice(v: &mut Voice, rate: f32, left: &mut [f32], right: &mut [f32]) {
                 g *= f.shape(d as f32 / f.frames as f32);
             }
         }
-        let (l, r) = finish(v, rate, l, r, g);
+        let (l, r) = finish::<FOLLOW>(v, rate, l, r, g);
         *ol += l;
         *or += r;
 
