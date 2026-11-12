@@ -11,10 +11,11 @@ version for the code.
 
 The MPC One has four Cortex-A17 cores. The test build's kernel adds
 `isolcpus=2-3`, so Linux places a thread on cores 2 or 3 only if the thread
-asks for them. The pad player asks for no core anywhere, so the inference is
-that all its threads, the audio thread included, share cores 0 and 1 while
-cores 2 and 3 sit idle. Round 8 measures this with a read-only check (step 4
-of the round 8 profiling asks).
+asks for them. By default the pad player asks for no core anywhere, so the
+inference is that all its threads, the audio thread included, share cores 0
+and 1 while cores 2 and 3 sit idle. Round 8 measures this with a read-only
+check (step 4 of the round 8 profiling asks). `--sound-cores` (below) puts
+the sound on cores 3 and 2 instead, for the device rounds to compare.
 
 | Thread | What it does |
 | --- | --- |
@@ -26,13 +27,16 @@ of the round 8 profiling asks).
 
 ## The plan, in order
 
-1. **Pin the audio thread to core 3** (Hello thread, after round 8 confirms
-   where threads run). No parallel code needed.
+1. **Pin the audio thread to core 3.** No parallel code needed. Built:
+   `--sound-cores core3` (below), off by default until a device round has
+   measured it.
 2. **A control thread on core 1** (Hello thread): MIDI in, the screen's
    actions, lights and the session ping leave the timed period; the audio
    thread gets a ready list of timed events through a lock-free queue.
 3. **A second audio core** with lanes (`rust/mpfree-lanes`, below): half the
-   sampler's voices, the synth, mixer stages, then pipelined returns.
+   sampler's voices, the synth, mixer stages, then pipelined returns. Built
+   for the sampler and the mixer: `--sound-cores two` (below), off by default
+   until a device round has measured it.
 4. **Background work** on cores 0 and 1: loading at boot in parallel, looper
    bounce and Sample tab analysis on workers.
 
@@ -94,9 +98,54 @@ match lane.join(deadline) {
 user in the audio graph: pad channels' and tracks' inserts are split between
 the audio thread and a lane, stage by stage, with the same output bit for
 bit. Strips with sidechain keys and frozen strips stay on the audio thread;
-returns stay too, since they need every send first. The Hello thread turns
-it on in the app (core 2, SCHED_FIFO 69, a wait of about a period) once the
-device round has measured the handoff.
+returns stay too, since they need every send first. The app turns it on with
+`--sound-cores two` (core 2, SCHED_FIFO 69, a wait of a period; below).
+
+## In the app: `--sound-cores`
+
+`mpfree play` and `mpfree app` take `--sound-cores shared|core3|two`
+([`cores.rs`](../../../rust/mpfree-app/src/cores.rs)). The default is
+`shared`, which is how the app always ran, so nothing changes until a device
+round has compared the three and Jay picks the default.
+
+| Mode | The audio thread | Core 2 |
+| --- | --- | --- |
+| `shared` | SCHED_FIFO 70, wherever the kernel puts it (cores 0 and 1 on the test stick) | idle |
+| `core3` | pinned to core 3, SCHED_FIFO 70 | idle |
+| `two` | pinned to core 3, SCHED_FIFO 70 | two lanes at SCHED_FIFO 69: the sampler's second voice pool (`Engine::split`, half the voices) and about half the pad channels' and tracks' inserts (`Mixer::set_lane`, a wait of one period) |
+
+- **When.** The audio thread pins itself and splits the sampler just before
+  the sound card opens, and the mixer's lane starts right after the mixer is
+  made, all before the first period. Nothing changes while the sound plays.
+  An audio buffer change in Prefs reopens the sound card on the same thread,
+  which keeps its core.
+- **One core for both lanes.** Each lane has its own worker thread (the
+  sampler and the mixer each own theirs), both on core 2. They never run at
+  once: within a period the sampler's lane is joined before the mixer posts.
+  A late sampler lane can delay the mixer's, and both are counted.
+- **The sampler's wait.** The audio loop still calls `render_routed`, so each
+  part waits for the lane no longer than that part of the period lasts.
+- **Late is a fallback, and never silent** (Jay, 12 Nov): a late sampler
+  part leaves half the voices out of that part of the period; a late mixer
+  stage leaves those strips silent for the block. Both counts are on the Dev
+  tab's CPU by engine page (red once one is late), in the 30 s `status:`
+  line (`sound cores two: drum voices N parts on core 2, N late; mixer N
+  stages on core 2, N late`), and in a log line within a second of a late
+  one. A late part is a bug or an over-budget design to fix, not a setting
+  to tune away.
+- **What took.** The start lines (`sound cores: ...`) and the Dev page say
+  whether the pin and each lane's core and priority took. A refused pin or
+  priority is reported in red or amber and the sound plays on.
+- **Safety.** Only the program's own threads change: their allowed cores
+  (`sched_setaffinity`) and priority (`sched_setscheduler`), in RAM. Nothing
+  is written anywhere; quitting the program or a power-cycle undoes it.
+- **Tests.** `cores.rs` checks the modes, the rows and the late lines;
+  `rt_safety.rs` runs the sound path for 35 s on two cores (unpinned) with
+  no allocation on the audio thread.
+
+The device round that compares the modes adds `--sound-cores core3` and
+`--sound-cores two` runs of the play step to `host_app_mpc.py`, which only
+runs fixed commands (owned by the app rounds thread).
 
 `Mixer::set_pipelined_returns` is the returns' turn, as a prototype for Jay's
 call: the returns' inserts run on a lane one block behind, during the next

@@ -18,7 +18,7 @@
 //!   setup --seconds N  Akai's session and setup, replayed byte for byte
 //!   drums --seconds N [--gain-db G]
 //!                      plays the first kit in kits.bin from the pads
-//!   play --seconds N [--gain-db G] [--kits FILE]
+//!   play --seconds N [--gain-db G] [--kits FILE] [--sound-cores MODE]
 //!                      the pad player: Akai's session and setup, then every kit
 //!                      in kits.bin, picked with the wheel or the screen, played
 //!                      from the pads or the screen, level on Q-Link 1 (at most
@@ -30,7 +30,7 @@
 //!                      the loop and fades of the pad last hit, Q-Links 1-4 on
 //!                      the markers; Chop: slices put on the kit's pads; edits
 //!                      stay in memory); STOP ends it
-//!   app [--gain-db G] [--kits FILE] [--keep-screen] [--data DIR]
+//!   app [--gain-db G] [--kits FILE] [--keep-screen] [--data DIR] [--sound-cores MODE]
 //!                      the same pad player as a program that starts at power-on
 //!                      (the test stick's mpfree-app service) and runs until the
 //!                      power goes off: a loading page with a progress bar while
@@ -46,6 +46,11 @@
 //!                      44.1 kHz, 128-frame periods, 3 periods, as the stock app
 //!                      does) and logs every underrun and late period
 //!   --preview DIR      host only: draws sample screens to new PNG files in DIR
+//!
+//! `--sound-cores shared|core3|two` (play and app; shared by default) picks
+//! where the sound runs: as before, the audio thread alone on core 3, or
+//! core 3 plus lanes on core 2 for half the drum voices and part of the
+//! mixer's inserts (cores.rs). It changes only this program's threads.
 //!
 //! The screen is MPFree's GUI (crate mpfree-ui, screens in gui.rs). Every line
 //! also goes to stdout, which the workstation shows, and to the report file.
@@ -73,6 +78,7 @@ mod alsa;
 mod app;
 mod calibrate_page;
 mod chain_page;
+mod cores;
 mod debug_page;
 mod engines;
 mod gui;
@@ -150,6 +156,8 @@ struct Options {
     patterns: Option<PathBuf>,
     /// Where settings and found buttons are kept (`app` only; mpfree-store).
     data: Option<PathBuf>,
+    /// Where the sound runs (`play` and `app`; cores.rs).
+    sound_cores: cores::SoundCores,
 }
 
 fn parse_args(args: &[String]) -> Result<Options, String> {
@@ -169,6 +177,7 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
         keep_screen: false,
         patterns: None,
         data: None,
+        sound_cores: cores::SoundCores::Shared,
     };
     let mut it = args.iter();
     while let Some(arg) = it.next() {
@@ -209,6 +218,10 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
             "--keep-screen" => o.keep_screen = true,
             "--patterns" => o.patterns = Some(PathBuf::from(value()?)),
             "--data" => o.data = Some(PathBuf::from(value()?)),
+            "--sound-cores" => {
+                o.sound_cores = cores::SoundCores::parse(&value()?)
+                    .ok_or_else(|| format!("--sound-cores needs {}", cores::SoundCores::NAMES))?
+            }
             _ => return Err(format!("unknown argument {arg}")),
         }
     }
@@ -241,6 +254,9 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
     }
     if o.data.is_some() && o.command != "app" {
         return Err("--data goes with app".to_string());
+    }
+    if args.iter().any(|a| a == "--sound-cores") && o.command != "app" && o.command != "play" {
+        return Err("--sound-cores goes with app or play".to_string());
     }
     Ok(o)
 }
@@ -2536,6 +2552,9 @@ fn player_session(
     out.show(gui::ToUi::Time(Box::new(time.state())));
     let (mut shown_transport, mut transport_shown_at) = (time.info(), Instant::now());
     let mut periods = app.settings.periods;
+    // Where the sound runs (--sound-cores, cores.rs): this thread is the
+    // audio thread, and the sampler's lane starts before the sound does.
+    let mut cores = cores::Cores::start(o.sound_cores, &mut player);
     let mut play = Playback::start(open_acva(out, periods)?, periods)?;
     progress(out, 6, "Ready", "Have fun", 1.0);
     let max_db = o.gain_db;
@@ -2543,6 +2562,10 @@ fn player_session(
     out.show(gui::ToUi::Level { db: level_db });
     // The mixer sums everything; the Level is its master fader (mixing.rs).
     let mut mix = mixing::MixHost::new(RATE, level_db, max_db);
+    cores.start_mixer(&mut mix.mixer);
+    for line in cores.take_lines() {
+        out.say(&line);
+    }
     // The chain editor and the macros panel (layout spec 4b): the mixer's
     // insert row opens the editor; a long press on a macro card the panel.
     // The macros' values go out once for the Q-Link column's macro banks.
@@ -2636,6 +2659,8 @@ fn player_session(
     // loop allocates for it.
     let mut engines = engines::EngineProbes::new();
     out.show(gui::ToUi::Engines(engines.shared()));
+    let engine_shared = engines.shared();
+    cores.show(&engine_shared.cores);
     let mut i = 0u64;
     while i < total_periods {
         let t_read = Instant::now();
@@ -3707,6 +3732,10 @@ fn player_session(
                 "status: {}",
                 engines::log_line(&engines.lifetime())
             ));
+            out.note(&format!(
+                "status: {}",
+                cores.status(cores::Counts::read(&player, &mix.mixer))
+            ));
         }
         if last_timing.elapsed() >= Duration::from_millis(250) {
             last_timing = Instant::now();
@@ -3741,6 +3770,13 @@ fn player_session(
             }));
             window_peak = 0.0;
             engines.publish();
+            // The second core's late parts: on the Dev page, and in the log
+            // within a second (a fallback is never silent).
+            let counts = cores::Counts::read(&player, &mix.mixer);
+            cores.publish(&engine_shared.cores, counts);
+            if let Some(line) = cores.late_note(counts, last_timing) {
+                out.note(&line);
+            }
             // Prefs or found buttons changed: the store's thread writes them.
             for (owner, settings) in app.take_saves() {
                 if store.saves() {
@@ -3818,6 +3854,7 @@ fn player_session(
     }
     store.flush();
     out.say(&engines::log_line(&engines.lifetime()));
+    out.say(&cores.status(cores::Counts::read(&player, &mix.mixer)));
     if session {
         out.say("no more pings: the controller should drop the session by itself (inferred: within about 10 s)");
     }
@@ -4364,6 +4401,18 @@ mod tests {
             "the store saves patterns now"
         );
         assert!(parse_args(&args("play --seconds 5 --patterns /tmp/p.txt")).is_err());
+        // Where the sound runs: shared unless asked, and only for the pad player.
+        assert_eq!(
+            parse_args(&args("app")).unwrap().sound_cores,
+            cores::SoundCores::Shared
+        );
+        let o = parse_args(&args("play --seconds 120 --sound-cores two")).unwrap();
+        assert_eq!(o.sound_cores, cores::SoundCores::Two);
+        let o = parse_args(&args("app --sound-cores core3")).unwrap();
+        assert_eq!(o.sound_cores, cores::SoundCores::Core3);
+        assert!(parse_args(&args("app --sound-cores 2")).is_err());
+        assert!(parse_args(&args("app --sound-cores")).is_err());
+        assert!(parse_args(&args("click --seconds 5 --sound-cores two")).is_err());
     }
 
     #[test]
