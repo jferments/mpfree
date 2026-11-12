@@ -47,8 +47,9 @@ use mpfree_seq::arrange::{scene_length, scenes_to_song, song_to_scenes};
 use mpfree_seq::mpfree_moves::{Input, MoveLog};
 use mpfree_seq::steps::{Change, Grid, Step};
 use mpfree_seq::{Clip, ModelError, Project, Track, SLOTS};
+use mpfree_time_ui::editor::{EditAction, Editor};
 use mpfree_time_ui::view::{
-    bars_label, clips_after, MorphInfo, TimeAction, TimeState, TransportInfo,
+    bars_label, clips_after, EditInfo, MorphInfo, TimeAction, TimeState, TransportInfo,
 };
 use mpfree_transport::time::Tick;
 use mpfree_transport::{Block, Command, Mark, State, Transport};
@@ -309,6 +310,8 @@ pub struct TimeHost {
     /// for the log ([`TimeHost::take_song_note`]).
     song_note: Option<String>,
     scene_morph: SceneMorph,
+    /// The note editor on the Arrange page, while it is open.
+    editor: Option<Editor>,
     armed: Option<usize>,
     takes: Takes,
     click: Click,
@@ -405,6 +408,7 @@ impl TimeHost {
             song_rec: SongRecorder::default(),
             song_note: None,
             scene_morph: SceneMorph::default(),
+            editor: None,
             armed: Some(0),
             takes: Takes::default(),
             click: Click::new(rate),
@@ -673,6 +677,56 @@ impl TimeHost {
         }
     }
 
+    /// A touch on the note editor. Open takes the clip the Play page's
+    /// steps show (the armed track's); an edit is one undoable take (a
+    /// row turned or the velocity lane dragged joins one).
+    fn edit(&mut self, a: EditAction) -> Result<String, String> {
+        if a == EditAction::Open {
+            let (track, slot) = self.step_focus();
+            let name = self
+                .project
+                .tracks
+                .get(track)
+                .map_or_else(String::new, |t| t.name.clone());
+            let slot = slot.ok_or_else(|| format!("edit: {name} has no clip"))?;
+            let clip = self.project.clip(track, slot).ok_or("edit: no such clip")?;
+            let line = format!("edit: {} on {name}", clip.name);
+            self.editor = Some(Editor::new(track, slot, clip));
+            self.changed = true;
+            return Ok(line);
+        }
+        let Some(mut ed) = self.editor.take() else {
+            return Ok(String::new());
+        };
+        let Some(clip) = self.project.clip(ed.track, ed.slot) else {
+            self.changed = true;
+            return Err("edit: the clip is gone".into());
+        };
+        let done = ed.act(a, clip);
+        self.changed = true;
+        if done.close {
+            return Ok(done.line);
+        }
+        if !done.edit.is_empty() {
+            let applied = self
+                .takes
+                .edit(&mut self.project, ed.track, ed.slot, &done.edit, done.join)
+                .map_err(|e| format!("edit: {e:?}"));
+            if let Err(e) = applied {
+                self.editor = Some(ed);
+                return Err(e);
+            }
+            if let Some(clip) = self.project.clip(ed.track, ed.slot) {
+                ed.applied(clip, &done);
+            }
+            self.editor = Some(ed);
+            self.compile()?;
+        } else {
+            self.editor = Some(ed);
+        }
+        Ok(done.line)
+    }
+
     /// Carry out a touch on the time engine's screens. Returns a line for
     /// the log.
     pub fn act(&mut self, a: TimeAction) -> Result<String, String> {
@@ -833,6 +887,7 @@ impl TimeHost {
             | TimeAction::SaveScene(_) => {
                 Err("morph: needs the mixer's mod engine (TimeHost::morph)".into())
             }
+            TimeAction::Edit(e) => self.edit(e),
             TimeAction::SongView(on) => {
                 self.song_view = on;
                 self.changed = true;
@@ -1550,6 +1605,18 @@ impl TimeHost {
         st.song_on = self.song;
         st.selected = self.selected;
         st.song_rec = self.song_rec.armed();
+        st.edit = self.editor.as_ref().and_then(|ed| {
+            let clip = self.project.clip(ed.track, ed.slot)?;
+            let bar = clip
+                .speed
+                .to_clip(self.transport.meter().bar_ticks() as f64);
+            Some(Box::new(EditInfo {
+                editor: ed.clone(),
+                clip: clip.clone(),
+                track_name: self.project.tracks[ed.track].name.clone(),
+                bar: bar.round() as Tick,
+            }))
+        });
         st
     }
 
