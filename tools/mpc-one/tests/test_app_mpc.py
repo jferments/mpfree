@@ -39,7 +39,7 @@ LINKED_SRC = (os.path.join(REPO, "rust", "mpfree-touch", "src"), os.path.join(RE
 # reaches the pad player and is left out of the scan.
 NOT_LINKED = ("mpfree-prof/alloc.rs",)
 NEW = "6.18.44-fake-rt6"
-APPLETS = ("sh", "cat", "grep", "readlink", "ls", "df", "tail", "sha256sum", "rm", "mkdir", "mv", "chmod")
+APPLETS = ("sh", "cat", "grep", "readlink", "ls", "df", "tail", "sha256sum", "rm", "mkdir", "mv", "chmod", "sleep")
 
 FAKE_SSH = r'''#!/usr/bin/env python3
 import os, subprocess, sys
@@ -535,6 +535,38 @@ class AppTests(unittest.TestCase):
         res = self.run_helper("\nq\n", MPFREE_APP_STEPS="app")
         self.assertIn("partition 4: not mounted", res.stdout)
         self.assertIn("partition 4 grow: no /run/mpfree-data-grow.txt", res.stdout)
+
+    def test_app_step_reads_the_cores_after_the_dev_pages(self):
+        """Read-only, during play: the governor, the clock source, each app thread's cores and priority."""
+        write(self.app, "active\n")
+        r = self.root
+        write(f"{r}/sys/devices/system/cpu/online", "0-3\n")
+        write(f"{r}/sys/devices/system/cpu/isolated", "2-3\n")
+        write(f"{r}/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor", "interactive\n")
+        write(f"{r}/sys/devices/system/clocksource/clocksource0/current_clocksource", "arch_sys_counter\n")
+        write(f"{r}/proc/900/comm", "mpfree\n")
+        fields = " ".join(["S"] + ["0"] * 35 + ["1", "70", "1"] + ["0"] * 10)
+        for tid, name, cpus in (("900", "mpfree", "0-1"), ("903", "mpfree-screen", "0-1")):
+            write(f"{r}/proc/900/task/{tid}/comm", name + "\n")
+            write(f"{r}/proc/900/task/{tid}/stat", f"{tid} ({name}) {fields}\n")
+            write(f"{r}/proc/900/task/{tid}/status", f"Name:\t{name}\nCpus_allowed_list:\t{cpus}\n")
+        write(f"{r}/proc/stat", "cpu  10 0 10 100 0 0 0 0 0 0\ncpu0 5 0 5 50 0 0 0 0 0 0\n")
+        write(f"{r}/proc/interrupts", "           CPU0       CPU1\n 61:         42          0  ili2117\n")
+        answers = "\n\n" + "\n\n\n" * 2 + "q\n"
+        res = self.run_helper(answers, MPFREE_APP_STEPS="app")
+        out = res.stdout
+        for text in ("cores, clock and threads now (read-only):", "/sys/devices/system/cpu/isolated: 2-3",
+                     "/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor: interactive",
+                     "current_clocksource: arch_sys_counter", "app pid 900",
+                     "900 mpfree: allowed \t0-1 last_cpu=1 rt_priority=70 policy=1",
+                     "903 mpfree-screen: allowed \t0-1 last_cpu=1", "app processes: 1",
+                     "cpu0 5 0 5 50 0 0 0 0 0 0",
+                     "/sys/devices/system/cpu/cpu[0-3]/cpufreq/scaling_cur_freq: not there"):
+            self.assertIn(text, out)
+        self.assertEqual(out.count("cores, clock and threads now"), 1, "only after phase 2 so far")
+        self.assertNotIn(" 61:         42", out.split("cores, clock and threads now")[1].split("Phase 3")[0])
+        with open(self.report) as fh:
+            self.assertIn("|  61:         42          0  ili2117", fh.read())
 
     def test_app_step_summary_reads_the_whole_session(self):
         """Every phase skipped: the summary still shows the whole run, the touch interrupts and the status."""

@@ -251,6 +251,35 @@ else
   echo "partition 4 grow: no /run/mpfree-data-grow.txt"
 fi
 """
+# Read-only, during play (the profiling thread's round 8 asks 2 and 4): the cores, the cpufreq governor and
+# clock, the clock source, which core each of the app's threads runs on and its priority, two snapshots of
+# the per-core counters 2 s apart, and the interrupt table. It reads /sys and /proc only.
+CPU_PROBE = r"""R=''
+for f in "$R"/sys/devices/system/cpu/online "$R"/sys/devices/system/cpu/isolated \
+    "$R"/sys/devices/system/cpu/cpu[0-3]/cpufreq/scaling_governor \
+    "$R"/sys/devices/system/cpu/cpu[0-3]/cpufreq/scaling_cur_freq \
+    "$R"/sys/devices/system/cpu/cpu[0-3]/cpufreq/scaling_max_freq \
+    "$R"/sys/devices/system/clocksource/clocksource0/current_clocksource; do
+  if [ -e "$f" ]; then echo "${f#"$R"}: $(cat "$f" 2>&1)"; else echo "${f#"$R"}: not there"; fi
+done
+n=0
+for p in "$R"/proc/[0-9]*; do
+  [ "$(cat "$p/comm" 2>/dev/null)" = mpfree ] || continue
+  n=$((n + 1))
+  echo "app pid ${p##*/}, its threads (id name: allowed cores, last core, real-time priority, policy 1 = FIFO):"
+  for t in "$p"/task/[0-9]*; do
+    s=$(cat "$t/stat" 2>/dev/null) || continue
+    set -- ${s##*) }
+    a=$(grep '^Cpus_allowed_list:' "$t/status" 2>/dev/null)
+    echo "  ${t##*/} $(cat "$t/comm" 2>/dev/null): allowed ${a#Cpus_allowed_list:} last_cpu=${37} rt_priority=${38} policy=${39}"
+  done
+done
+echo "app processes: $n"
+grep '^cpu' "$R/proc/stat"
+sleep 2
+grep '^cpu' "$R/proc/stat"
+cat "$R/proc/interrupts"
+"""
 UPTIME = r"""R=''
 cat "$R/proc/uptime"
 """
@@ -529,6 +558,9 @@ APP_PHASES = (
       "repeat, then press STOP twice."],
      "Did the menus, the console chord, TAP TEMPO and STOP work, and did STOP silence everything?"),
 )
+# After these phases (the app has played for a while), the read-only CPU_PROBE runs.
+PROBE_AFTER = ("Developer pages: Performance, CPU by engine, Processes",
+               "Looper tab: record, layers, tools, undo history, trim")
 # The session summary at the end of the app step: every line that starts with one of these, from
 # power-on to the end (the last three status lines only).
 SUMMARY_PREFIXES = ("touchscreen: ", "touch-reader: ", "button guide done: ", "button guide: ", "developer tools: ",
@@ -656,10 +688,24 @@ def app_check(mpc, out, n, total):
         while (done := ask("  Go ahead. Press Enter when you are done (q stops here): ")) in ("again", "skip"):
             print("  Please press just Enter when you are done, or q.")
         summarize(out, app_lines(mpc, since))
+        if title in PROBE_AFTER:
+            cpu_probe(mpc, out)
         if done == "quit":
             raise Stop("stopped by you")
         note(out, question)
     session_summary(mpc, out)
+
+
+def cpu_probe(mpc, out):
+    """Read-only: the cores, clock and interrupts while the app plays; the whole table goes to the report."""
+    rc, text = mpc.run(CPU_PROBE, test=True)
+    lines = text.strip().splitlines() or [f"(no answer, exit code {rc})"]
+    out.say("    cores, clock and threads now (read-only):")
+    shown = [l for l in lines if not re.match(r"^\s*\d+:|^\s*CPU0", l)]
+    for line in shown[:40]:
+        out.say(f"      {line}")
+    for line in lines:
+        log_only(out, f"      | {line}")
 
 
 LINE_PHASES = (
