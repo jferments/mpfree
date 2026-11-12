@@ -1,4 +1,4 @@
-//! What the pad player keeps between starts (docs/project/storage-spec.md):
+//! What the pad player keeps between starts (docs/dev/design/storage-spec.md):
 //! the Prefs rows that are settings, as the store's "app" settings, and
 //! every control found with Map controls or the button guide, as its "map"
 //! settings. Line input is never kept: it is off at every start.

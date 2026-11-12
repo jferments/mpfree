@@ -63,7 +63,7 @@ fn the_answer_is_the_local_render_l_blocks_later_bit_for_bit() {
 #[test]
 fn a_lost_request_is_one_silent_block_and_the_stream_carries_on() {
     let srv = server(&["echo"]);
-    let lossy = relay(srv.addr, 9);
+    let lossy = relay(srv.addr, 9..10);
     let (mut remote, link) = connect(lossy.addr, Config::default()).unwrap();
     let (mut l, mut r) = (vec![0.0f32; N], vec![0.0f32; N]);
     let mut sent = Vec::new();

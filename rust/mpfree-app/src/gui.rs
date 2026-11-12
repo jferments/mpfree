@@ -27,6 +27,7 @@ use crate::app::{
     tabs, ArpView, GuideView, MapView, MenuView, PadLevel, Settings, Status, View, WorkspaceView,
 };
 use crate::calibrate_page::CalibrateView;
+use crate::chain_page::{ChainPage, Turned};
 use crate::debug_page::{AudioNumbers, DebugPages};
 use crate::looper_page::{LooperPage, LOOPER_PAGE};
 use crate::looping::{LoopWave, LooperView};
@@ -43,6 +44,9 @@ use mpfree_arp::{Mode, Pattern};
 use mpfree_arp_ui::view::{self as arp_view, ArpAction, ArpPanel, ArpState};
 use mpfree_arp_ui::widgets::SliderStack;
 use mpfree_arp_ui::workspace::{self, Editor, PatternWorkspace, Row, WsAction};
+use mpfree_chain_ui::{ChainAction, ChainState, MacroAction, MacrosState};
+use mpfree_fx_ui::FxState;
+use mpfree_play::mpfree_param::ParamAddr;
 use mpfree_sampler::model::Project;
 use mpfree_synth_ui::view as synth_view;
 use mpfree_synth_ui::{SynthAction, SynthPanel, SynthState};
@@ -257,6 +261,23 @@ pub enum ToUi {
     /// While the mixer is open: Q-Link `0` (or the wheel) turned by `1`
     /// detents, for the selected strip.
     MixerQLink(usize, i32),
+    /// What the chain editor shows (a few times a second while it is open,
+    /// and after each change), boxed as the mixer's state is.
+    Chain(Box<ChainState>),
+    /// The chain editor's selected effect's values, for its drawings (None:
+    /// none selected, or one the pages don't draw).
+    ChainFx(Option<Box<FxState>>),
+    /// What the macros panel shows and the macros' values (for the macro
+    /// banks of the Q-Link column too).
+    Macros(Box<MacrosState>),
+    /// On the chain editor or the macros panel: Q-Link `0` (or the wheel)
+    /// turned by `1` detents.
+    ChainQLink(usize, i32),
+    /// Learn armed on the chain editor: the next Q-Link turned takes this
+    /// knob.
+    ChainLearn(ParamAddr),
+    /// Q-LINK: the Q-Link column's next bank.
+    QLinkBank,
     Session(String, Tone),
     Timing(Timing),
     Show(View),
@@ -472,6 +493,17 @@ pub enum FromUi {
     Mixer(mpfree_mixer_ui::MixAction),
     /// The top bar's mixer icon: open or close the mixer (the app decides).
     MixerIcon,
+    /// A touch on the chain editor, or a Q-Link turned while its knobs
+    /// show (`modpanels::ChainHost::action`).
+    Chain(ChainAction),
+    /// A touch on the macros panel, or a macro bank's Q-Link turned
+    /// (`modpanels::MacrosHost::action`).
+    Macros(MacroAction),
+    /// A long press on a macro card: open the macros panel on this bank
+    /// (0: Macros 1-4, 1: 5-8).
+    OpenMacros(usize),
+    /// A Q-Link took the knob learn was armed for.
+    ChainLearned,
     /// The Play page: a filter, a send, a fader, a speaker, a throw or the
     /// XY pad, for the mixer (`mixing.rs`).
     PlayFx(PlayFx),
@@ -553,6 +585,9 @@ pub struct Player {
     /// The Play page: its view (the screen's own choice, kept while other
     /// tabs show), pattern, throws, timing and Q-Links.
     pub play: PlayPage,
+    /// The chain editor and the macros panel, and the Q-Link column's
+    /// macro banks. Boxed for the same reason as the Looper tab.
+    chain_page: Box<ChainPage>,
     /// When the CPU chip was last read.
     cpu_at: f32,
     /// Touch tuning: every finger goes through the filter first (the
@@ -657,6 +692,9 @@ impl Player {
         mpfree_mixer_ui::add(&mut ui).expect("mixer layout");
         ui.add_page(mpfree_mixer_ui::MIXER_PAGE, MIXER_LAYOUT)
             .expect("mixer layout");
+        // The chain editor in the mixer's place and the macros panel over
+        // the page, with the same Q-Link column (layout spec 4b).
+        ChainPage::add(&mut ui).expect("chain layouts");
         let _ = ui.show("Loading");
         let status = Status {
             shift: false,
@@ -703,6 +741,7 @@ impl Player {
             looper_page,
             looper: LooperView::default(),
             play: PlayPage::default(),
+            chain_page: Box::default(),
             cpu_at: 0.0,
             filter: Filter::new((size.0 as f32, size.1 as f32)),
             tuning: Tuning::default(),
@@ -848,10 +887,16 @@ impl Player {
 
     /// The Q-Link cards: what each knob does on the page shown. While NOTE
     /// REPEAT is held or the Arp panel is open they set the arp (as its
-    /// sliders show); on Play, Q-Link 1 is the level.
+    /// sliders show); on Play, Q-Link 1 is the level, unless Q-LINK shows a
+    /// macro bank; on the chain editor, the selected effect's knobs.
     fn refresh_qlinks(&mut self) {
         let arp = self.view == View::Arp || (self.view == View::Play && self.band_showing());
-        let (title, cards) = if self.view == View::Mixer {
+        // The chain editor, the macros panel, and Play on a macro bank.
+        let chain = (!arp && self.chain_page.drives(self.view))
+            .then(|| self.chain_page.cards(&self.ui.theme));
+        let (title, cards) = if let Some((title, cards)) = &chain {
+            (title.as_str(), cards.clone())
+        } else if self.view == View::Mixer {
             // The selected strip's Volume, Pan, Send A and Send B.
             let q = mpfree_mixer_ui::qlinks(&self.ui);
             let mut cards: [QLinkCard; 4] = Default::default();
@@ -904,6 +949,38 @@ impl Player {
             self.outbox.push(FromUi::Mixer(a));
         }
         self.refresh_qlinks();
+    }
+
+    /// Q-Link `k` (a knob, a drag on its card, or the wheel as Q-Link 1)
+    /// where the chain page's bindings drive the column: the chain editor's
+    /// knobs, a macro, or the knob a learn was waiting for. The card moves
+    /// at once; the mixer and the mod engine hear it.
+    fn chain_qlink(&mut self, k: usize, d: i32) {
+        if d == 0 || !self.chain_page.drives(self.view) {
+            return;
+        }
+        match self.chain_page.turn(k, d, self.status.shift) {
+            Some(Turned::Chain(a)) => self.outbox.push(FromUi::Chain(a)),
+            Some(Turned::Macro(a)) => self.outbox.push(FromUi::Macros(a)),
+            Some(Turned::Learned) => self.outbox.push(FromUi::ChainLearned),
+            None => {}
+        }
+        self.refresh_qlinks();
+    }
+
+    /// Q-LINK: the column's next bank where it has macro banks (Play, the
+    /// chain editor, the macros panel).
+    fn next_qlink_bank(&mut self) {
+        let play = self.view == View::Play && !self.band_showing();
+        if !(play || matches!(self.view, View::Chain | View::Macros)) {
+            return;
+        }
+        if let Some(Turned::Macro(a)) = self.chain_page.next_bank(self.view) {
+            self.outbox.push(FromUi::Macros(a));
+        }
+        println!("q-link bank: {}", self.chain_page.cards(&self.ui.theme).0);
+        self.refresh_qlinks();
+        self.refresh_hint();
     }
 
     /// One tap on the switch: the Play page shows view `v`.
@@ -1230,6 +1307,9 @@ impl Player {
         } else if self.view == View::Play && self.band_showing() {
             format!("Wheel: {wheel}   ·   - / +: Repeat, Arp, Pattern   ·   Q-Links: rate, gate, swing, octaves   ·   \
                      + MENU: Arp panel")
+        } else if self.view == View::Play && self.chain_page.drives(View::Play) {
+            format!("Q-Links: {}   ·   Q-LINK: next bank   ·   hold a macro's card: the macros panel   ·   \
+                     Wheel or tap: kit   ·   {stop}", self.chain_page.bind.title())
         } else {
             match self.view {
                 View::Play => format!("Tap All, Beats, Loop or Drum: the view   ·   Wheel or tap: kit   ·   Q-Link 1 or \
@@ -1295,6 +1375,8 @@ impl Player {
                 View::System => "Read when the page opens   ·   MENU: back to Prefs   ·   a tab: leave".to_string(),
                 View::Prefs | View::Options => OPTIONS_HINT.to_string(),
                 View::Mixer => mpfree_mixer_ui::MIXER_HINT.to_string(),
+                View::Chain => mpfree_chain_ui::CHAIN_HINT.to_string(),
+                View::Macros => mpfree_chain_ui::MACROS_HINT.to_string(),
                 View::Guide => GUIDE_HINT.to_string(),
                 View::Arp => format!("Wheel: {wheel}   ·   - / +: mode   ·   Q-Links: rate, gate, swing, octaves   ·   \
                                       MENU: options   ·   NOTE REPEAT + MENU: close"),
@@ -1607,11 +1689,20 @@ impl Player {
                 }
             }
             ToUi::PlayQLink(k, ticks) => {
-                if self.view == View::Play {
+                if self.chain_page.drives(self.view) {
+                    // Q-LINK shows a macro bank on Play.
+                    self.chain_qlink(k, ticks);
+                } else if self.view == View::Play {
                     self.play_qlink(k, ticks);
                 }
             }
             ToUi::QLinkTouch(k, on) => {
+                if !on && self.chain_page.drives(self.view) {
+                    // A knob of the effect lets go after a recorded move.
+                    if let Some(Turned::Chain(a)) = self.chain_page.released(k) {
+                        self.outbox.push(FromUi::Chain(a));
+                    }
+                }
                 for column in [play_page::QLINKS, crate::looper_tab::QLINKS] {
                     if let Some(q) = self
                         .ui
@@ -1670,6 +1761,32 @@ impl Player {
                 }
             }
             ToUi::MixerQLink(k, d) => self.mixer_qlink(k, d),
+            ToUi::Chain(st) => {
+                self.chain_page.set_chain(&mut self.ui, *st);
+                if self.view == View::Chain {
+                    self.refresh_qlinks();
+                }
+            }
+            ToUi::ChainFx(fx) => {
+                let theme = self.ui.theme.clone();
+                self.chain_page.set_fx(&mut self.ui, fx.map(|b| *b), &theme);
+            }
+            ToUi::Macros(st) => {
+                self.chain_page.set_macros(&mut self.ui, *st);
+                if self.chain_page.drives(self.view) {
+                    self.refresh_qlinks();
+                }
+            }
+            ToUi::ChainQLink(k, d) => {
+                if matches!(self.view, View::Chain | View::Macros) {
+                    self.chain_qlink(k, d);
+                }
+            }
+            ToUi::ChainLearn(addr) => {
+                self.chain_page.learn(addr);
+                self.refresh_qlinks();
+            }
+            ToUi::QLinkBank => self.next_qlink_bank(),
             ToUi::Show(v) => {
                 self.ready = true;
                 self.show_view(v);
@@ -2394,6 +2511,8 @@ impl Player {
             }
             View::Prefs => "Prefs".to_string(),
             View::Mixer => mpfree_mixer_ui::MIXER_PAGE.to_string(),
+            View::Chain => mpfree_chain_ui::CHAIN_PAGE.to_string(),
+            View::Macros => mpfree_chain_ui::MACROS_PAGE.to_string(),
             View::Options => "Options".to_string(),
             View::Guide => "Guide".to_string(),
             View::Arp => ARP_PAGE.to_string(),
@@ -2410,6 +2529,7 @@ impl Player {
         }
         self.switch_page(&page);
         self.view = v;
+        self.chain_page.entered(v);
         if now && !was {
             self.say("touch-tune-open".to_string());
             self.refresh_tune();
@@ -2552,6 +2672,9 @@ impl Player {
             }
             return None;
         }
+        if matches!(self.view, View::Play | View::Chain) {
+            self.watch_card_press(finger, phase, x, y);
+        }
         let action = self
             .ui
             .touch(finger, phase, x, y)
@@ -2562,6 +2685,24 @@ impl Player {
             self.print_sample_lines();
         }
         action
+    }
+
+    /// A finger on a Q-Link card, for the long press on a macro card that
+    /// opens the macros panel ([`ChainPage::held`], from `tick`).
+    fn watch_card_press(&mut self, finger: u64, phase: Touch, x: i32, y: i32) {
+        match phase {
+            Touch::Down => {
+                let card = self
+                    .ui
+                    .rect_of(play_page::QLINKS)
+                    .and_then(|r| QLinkColumn::card_at(r, x, y));
+                if card.is_some() {
+                    self.chain_page.press(finger, card, y);
+                }
+            }
+            Touch::Move => self.chain_page.moved(finger, y),
+            Touch::Up | Touch::Cancel => self.chain_page.lifted(finger),
+        }
     }
 
     /// A touch meant something: hand it to the audio thread, which decides.
@@ -2651,6 +2792,12 @@ impl Player {
                 None
             }
             (play_page::QLINKS, EventKind::Step { index, delta })
+                if self.chain_page.drives(self.view) && !self.band_showing() =>
+            {
+                self.chain_qlink(index, delta);
+                None
+            }
+            (play_page::QLINKS, EventKind::Step { index, delta })
                 if self.view == View::Play && !self.band_showing() =>
             {
                 self.play_qlink(index, delta);
@@ -2705,6 +2852,27 @@ impl Player {
                 self.refresh_qlinks();
                 first
             }
+            (mpfree_chain_ui::CHAIN, _) => {
+                let mut acts = mpfree_chain_ui::take_chain_actions(&mut self.ui)
+                    .into_iter()
+                    .map(FromUi::Chain);
+                let first = acts.next();
+                self.outbox.extend(acts);
+                first
+            }
+            (mpfree_chain_ui::MACROS_W, _) => {
+                let acts = mpfree_chain_ui::take_macro_actions(&mut self.ui);
+                for a in &acts {
+                    if let MacroAction::Bank(b) = a {
+                        self.chain_page.panel_bank(*b);
+                        self.refresh_qlinks();
+                    }
+                }
+                let mut acts = acts.into_iter().map(FromUi::Macros);
+                let first = acts.next();
+                self.outbox.extend(acts);
+                first
+            }
             ("header", EventKind::Select(mpfree_ui::widgets::MIXER_ICON)) => {
                 Some(FromUi::MixerIcon)
             }
@@ -2744,6 +2912,12 @@ impl Player {
 
     /// Advance animations by `dt` seconds.
     pub fn tick(&mut self, dt: f32) {
+        // A finger held still on a macro card opens the macros panel.
+        if self.chain_page.drives(self.view) && !self.band_showing() {
+            if let Some(bank) = self.chain_page.held(dt) {
+                self.outbox.push(FromUi::OpenMacros(bank));
+            }
+        }
         // A take records on, whatever shows; it lands on its pad here.
         let before = self.sample.page();
         self.sample
@@ -2817,7 +2991,7 @@ use mpfree_touch_evdev::{parse_input_event, EVENT_SIZE};
 /// screen pixels. M13's reader: seeded from the kernel's slot state at open,
 /// resynced after an overflow, and still working (unseeded) if those queries
 /// fail. The profile comes from `mpfree_touch::profile::MPC_ONE`, which a test
-/// checks against docs/hardware/data/mpc-one-touch-profile.json.
+/// checks against docs/dev/hardware/data/mpc-one-touch-profile.json.
 pub struct TouchIn {
     reader: TouchReader<Box<dyn TouchSource + Send>>,
     events: Vec<PointerEvent>,
@@ -3820,6 +3994,8 @@ pub fn apply_effects(p: &mut Player, fx: Vec<crate::app::Effect>) {
             | Effect::Metronome
             | Effect::Mixer(_) => {}
             Effect::MixerTurn { knob, delta } => p.apply(ToUi::MixerQLink(knob, delta)),
+            Effect::ChainTurn { knob, delta } => p.apply(ToUi::ChainQLink(knob, delta)),
+            Effect::QLinkBank => p.apply(ToUi::QLinkBank),
         }
     }
 }
@@ -4057,6 +4233,31 @@ fn sample_looper(fonts: Fonts) -> Result<Player, String> {
     Ok(p)
 }
 
+/// The chain editor (`View::Chain`) or the macros panel (`View::Macros`)
+/// with the chain-ui crate's sample song: the drum bus chain, Drive
+/// selected and its Tone touched, as the audio thread sends them.
+fn sample_panels(p: &mut Player, view: View) {
+    use mpfree_chain_ui::sample::{Song, DRUMS};
+    use mpfree_play::mpfree_param::Owner;
+    let song = Song::new();
+    p.apply(ToUi::Show(view));
+    if view == View::Chain {
+        let tone = song
+            .drums
+            .uid(1)
+            .map(|uid| ParamAddr::new(Owner::Insert(DRUMS, uid), mpfree_fx::ids::drive::TONE));
+        let mut st = song.chain_state(DRUMS, 1, 0, tone);
+        st.back = Some("Mixer".into());
+        let fx = song
+            .chain(DRUMS)
+            .node(1)
+            .map(|n| Box::new(FxState::from_node(n, "", Color::rgb(0), 120.0, 44_100)));
+        p.apply(ToUi::Chain(Box::new(st)));
+        p.apply(ToUi::ChainFx(fx));
+    }
+    p.apply(ToUi::Macros(Box::new(song.macros_state(0))));
+}
+
 pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> {
     let mut out = Vec::new();
     let mut loading = Player::new(fonts(), SCREEN, false, None);
@@ -4120,6 +4321,21 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     mixer.apply(ToUi::Show(View::Mixer));
     mixer.apply(ToUi::Mixer(Box::new(st)));
     out.push(("mixer", mixer));
+    // The FX chain editor in the mixer's place (a strip's insert row): the
+    // drum bus, Drive selected, Tone touched; and the macros panel over the
+    // page (a long press on a macro card), layout spec 4b.
+    for (name, view) in [("chain", View::Chain), ("macros", View::Macros)] {
+        let mut p = sample_player(fonts());
+        sample_panels(&mut p, view);
+        out.push((name, p));
+    }
+    // Q-LINK on Play: Macros 1-4 in the Q-Link column.
+    let mut macros = sample_player(fonts());
+    macros.apply(ToUi::Macros(Box::new(
+        mpfree_chain_ui::sample::Song::new().macros_state(0),
+    )));
+    macros.apply(ToUi::QLinkBank);
+    out.push(("play-macros", macros));
     let mut debug = sample_player(fonts());
     debug.apply(ToUi::Show(View::Debug));
     out.push(("debug", debug));
@@ -4326,6 +4542,17 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     match sample_clips(fonts()) {
         Ok(p) => out.push(("clips", p)),
         Err(e) => eprintln!("clips sample: {e}"),
+    }
+    // The Arrange page's Song view: rows made into a song, song mode on,
+    // Rec song armed.
+    match mpfree_time_ui::sample::song_state() {
+        Ok(state) => {
+            let mut p = quiet_player(fonts());
+            p.apply(ToUi::Time(Box::new(state)));
+            p.apply(ToUi::Show(View::Arrange));
+            out.push(("arrange-song", p));
+        }
+        Err(e) => eprintln!("arrange-song sample: {e}"),
     }
     match sample_looper(fonts()) {
         Ok(p) => out.push(("looper", p)),
@@ -5364,6 +5591,141 @@ mod tests {
         app.button(mpfree_controller::mpc_one::button::SHIFT, false, 0.0);
         let fx = app.tab(2);
         assert!(fx.contains(&crate::app::Effect::Mixer(None)), "{fx:?}");
+    }
+
+    /// A strip's insert row: the chain editor takes the mixer's place with
+    /// the same Q-Link column, on the selected effect's first four knobs;
+    /// Q-LINK steps to Macros 1-4; a long press on a macro card opens the
+    /// macros panel; Back goes back to the mixer on the view it showed.
+    #[test]
+    fn the_chain_editor_takes_the_mixers_place_and_the_q_links_turn_its_knobs() {
+        use crate::app::Effect;
+        use mpfree_mixer_ui::{MixView, MIXER_PAGE};
+        let mut p = sample_player(Fonts::embedded());
+        let mut app = sample_app();
+        app.map.learn(crate::app::mapper::Job::TrackMix, Some(70));
+        app.map.learn(crate::app::mapper::Job::QLink, Some(71));
+        app.button(mpfree_controller::mpc_one::button::SHIFT, true, 0.0);
+        apply_effects(&mut p, app.button(70, true, 0.0));
+        app.button(70, false, 0.0);
+        app.button(mpfree_controller::mpc_one::button::SHIFT, false, 0.0);
+        assert_eq!(p.page(), MIXER_PAGE);
+        // The audio thread opens the editor (`Panels::open_insert`).
+        let fx = app.open_chain();
+        assert!(fx.contains(&Effect::Mixer(None)), "{fx:?}");
+        apply_effects(&mut p, fx);
+        sample_panels(&mut p, View::Chain);
+        assert_eq!(p.page(), mpfree_chain_ui::CHAIN_PAGE);
+        assert_eq!(p.ui.get::<Header>("header").unwrap().active, usize::MAX);
+        let q = p.ui.get::<QLinkColumn>(play_page::QLINKS).unwrap();
+        assert!(q.title.starts_with("Q-Links · "), "{}", q.title);
+        assert!(!q.cards[1].is_free(), "{:?}", q.cards);
+        // The wheel is Q-Link 1: the effect's first knob, for the chain.
+        apply_effects(&mut p, app.wheel(1));
+        let sent = p.take_actions();
+        assert!(
+            matches!(sent.as_slice(), [FromUi::Chain(ChainAction::Set { .. })]),
+            "{sent:?}"
+        );
+        // Q-LINK: Macros 1-4; a turn moves macro 2.
+        let fx = app.button(71, true, 0.0);
+        app.button(71, false, 0.0);
+        assert_eq!(fx, vec![Effect::QLinkBank]);
+        apply_effects(&mut p, fx);
+        let q = p.ui.get::<QLinkColumn>(play_page::QLINKS).unwrap();
+        assert_eq!(q.title, "Q-Links · Macros 1-4");
+        assert_eq!(q.cards[1].scope, "Macro 2");
+        p.apply(ToUi::ChainQLink(1, 3));
+        let sent = p.take_actions();
+        assert!(
+            matches!(
+                sent.as_slice(),
+                [FromUi::Macros(MacroAction::Macro { m: 1, .. })]
+            ),
+            "{sent:?}"
+        );
+        // A finger held still on macro 3's card opens the macros panel on
+        // Macros 1-4; a drag on it turns it instead.
+        p.ui.paint(&mut SoftCanvas::new(SCREEN.0, SCREEN.1));
+        let r = p.ui.rect_of(play_page::QLINKS).unwrap();
+        let c = QLinkColumn::card_rects(r)[2];
+        let (x, y) = (c.x + c.w / 2, c.y + c.h / 2);
+        p.touch(5, Touch::Down, x, y);
+        p.tick(0.3);
+        assert!(p.take_actions().is_empty());
+        p.tick(0.3);
+        assert_eq!(p.take_actions(), vec![FromUi::OpenMacros(0)]);
+        p.touch(5, Touch::Up, x, y);
+        p.touch(6, Touch::Down, x, y);
+        p.touch(6, Touch::Move, x, y - 3 * mpfree_ui::qlink::DRAG_DETENT);
+        p.tick(1.0);
+        let sent = p.take_actions();
+        assert!(
+            matches!(
+                sent.as_slice(),
+                [FromUi::Macros(MacroAction::Macro { m: 2, .. })]
+            ),
+            "{sent:?}"
+        );
+        p.touch(6, Touch::Up, x, y);
+        // The panel over the editor; its Back comes back to the editor...
+        apply_effects(&mut p, app.open_macros());
+        assert_eq!(p.page(), mpfree_chain_ui::MACROS_PAGE);
+        assert_eq!(
+            p.ui.get::<QLinkColumn>(play_page::QLINKS).unwrap().title,
+            "Q-Links · Macros 1-4"
+        );
+        apply_effects(&mut p, app.close_macros(MixView::Pads));
+        assert_eq!(p.page(), mpfree_chain_ui::CHAIN_PAGE);
+        // ...and the editor's goes back to the mixer, on Pad Mix again.
+        let fx = app.close_chain(MixView::Pads);
+        assert_eq!(fx.first(), Some(&Effect::Mixer(Some(MixView::Pads))));
+        apply_effects(&mut p, fx);
+        assert_eq!(p.page(), MIXER_PAGE);
+    }
+
+    /// Q-LINK on Play: Macros 1-4, Macros 5-8, then Play's own knobs; the
+    /// knobs turn the macros meanwhile. Other pages keep their Q-Links.
+    #[test]
+    fn q_link_steps_plays_column_through_the_macro_banks() {
+        use crate::app::Effect;
+        let mut p = sample_player(Fonts::embedded());
+        let mut app = sample_app();
+        app.map.learn(crate::app::mapper::Job::QLink, Some(71));
+        p.apply(ToUi::Macros(Box::new(
+            mpfree_chain_ui::sample::Song::new().macros_state(0),
+        )));
+        let title = |p: &Player| {
+            p.ui.get::<QLinkColumn>(play_page::QLINKS)
+                .unwrap()
+                .title
+                .clone()
+        };
+        assert_eq!(title(&p), "Q-Links · Play");
+        let mut q_link = |p: &mut Player| {
+            let fx = app.button(71, true, 0.0);
+            app.button(71, false, 0.0);
+            apply_effects(p, fx);
+        };
+        q_link(&mut p);
+        assert_eq!(title(&p), "Q-Links · Macros 1-4");
+        p.apply(ToUi::PlayQLink(3, 1));
+        let sent = p.take_actions();
+        assert!(
+            matches!(
+                sent.as_slice(),
+                [FromUi::Macros(MacroAction::Macro { m: 3, .. })]
+            ),
+            "{sent:?}"
+        );
+        q_link(&mut p);
+        assert_eq!(title(&p), "Q-Links · Macros 5-8");
+        q_link(&mut p);
+        assert_eq!(title(&p), "Q-Links · Play");
+        // On the Synth tab Q-LINK does nothing yet.
+        apply_effects(&mut p, app.tab(2));
+        let fx = app.button(71, true, 0.0);
+        assert!(!fx.contains(&Effect::QLinkBank), "{fx:?}");
     }
 
     #[test]
@@ -6766,6 +7128,85 @@ mod tests {
             p.ui.get::<InputView>(rec_tab::VIEW).unwrap().note,
             rec_tab::OFF_NOTE
         );
+    }
+
+    #[test]
+    fn bars_printed_to_a_pad_loop_and_land_warped_at_the_project_tempo() {
+        use mpfree_sampler_ui::rec_tab::{self, Row, Skip, TailAt};
+        use mpfree_sampler_ui::sample::feed_input;
+        let mut p = sample_sampler(Fonts::embedded());
+        let ev = |p: &mut Player, widget: &str, kind: EventKind| {
+            p.on_event(UiEvent {
+                widget: widget.into(),
+                kind,
+            })
+        };
+        let take = |p: &mut Player| {
+            let (sent, rest) = views(p.take_actions());
+            for v in sent {
+                p.apply(ToUi::SampleViewBack(v));
+            }
+            rest
+        };
+        let step = |p: &mut Player, row: Row, delta: i32| {
+            let index = Row::ALL.iter().position(|r| *r == row).unwrap();
+            p.on_event(UiEvent {
+                widget: rec_tab::LIST.into(),
+                kind: EventKind::Step { index, delta },
+            })
+        };
+        ev(
+            &mut p,
+            mpfree_sampler_ui::wave_tab::BAR,
+            EventKind::Tab(rec_tab::TAB),
+        );
+        // Resample the master: one bar from the next bar line, as a loop.
+        step(&mut p, Row::Source, 1);
+        take(&mut p);
+        let mut acts = take(&mut p);
+        let Some(FromUi::SampleInput(Some(mut feed))) = acts.pop() else {
+            panic!("the input's writer");
+        };
+        step(&mut p, Row::Start, 2);
+        step(&mut p, Row::End, 2);
+        step(&mut p, Row::Length, -2);
+        step(&mut p, Row::Tail, 2);
+        let tab = p.sample.rec_settings().unwrap();
+        assert_eq!((tab.bars, tab.tail), (1, TailAt::Loop));
+        feed_input(&mut feed.0, 2.0, 0.4, true);
+        p.tick(0.033);
+        ev(&mut p, rec_tab::BUTTONS, EventKind::Tab(0));
+        feed_input(&mut feed.0, 6.0, 0.4, true);
+        p.tick(0.033);
+        let log = events_log(&p);
+        assert!(
+            log.iter().any(|l| l
+                == "sample: take armed for pad A6: start next bar, end 1 bar then loop, left + right"),
+            "{log:?}"
+        );
+        // The drums were already playing: their ringing is in its start,
+        // so the bar is cut as it was, and it follows the project tempo.
+        let tempo = p.sample.tempo();
+        let line = format!(
+            "sample: recorded as a loop, cut: it was going round: Master take 1, 2.61 s stereo on \
+             pad A6, warped at {tempo:.1} BPM"
+        );
+        assert!(log.contains(&line), "{line}\n{log:?}");
+        let region = |p: &Player, pad: usize| {
+            p.sample.project(0).unwrap().pad(pad).unwrap().layers[0]
+                .region
+                .clone()
+        };
+        let r = region(&p, 5);
+        assert_eq!(r.warp.map(|w| w.bpm), Some(tempo as f32));
+        // Skip back by bars lands warped too; by seconds it doesn't.
+        step(&mut p, Row::SkipBack, 4);
+        assert_eq!(p.sample.rec_settings().unwrap().skip, Skip::Bars(1));
+        ev(&mut p, rec_tab::BUTTONS, EventKind::Tab(1));
+        assert_eq!(region(&p, 6).warp.map(|w| w.bpm), Some(tempo as f32));
+        step(&mut p, Row::SkipBack, -4);
+        ev(&mut p, rec_tab::BUTTONS, EventKind::Tab(1));
+        assert_eq!(region(&p, 7).warp, None);
     }
 
     #[test]

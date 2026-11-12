@@ -1,6 +1,6 @@
 //! The mixer: inputs, pad channels, tracks, submixes, send returns and the
 //! master, ending in Master safety. It covers the routing of the MPC 3.6
-//! mixer (see `docs/project/fx.md`, "Mixer").
+//! mixer (see `docs/dev/design/fx.md`, "Mixer").
 //!
 //! The signal runs in fixed stages, so nothing can feed back:
 //!
@@ -100,6 +100,21 @@
 //! play their input dry, without inserts, until their inserts come back;
 //! meanwhile edits wait and their inserts take no events
 //! ([`Mixer::queue_insert`] says false).
+//!
+//! **Returns a block late** ([`Mixer::set_pipelined_returns`], off by
+//! default): the returns' inserts can run on another core one block
+//! behind, so the reverb leaves the audio core. At the start of each block
+//! the mixer hands a lane the returns' inserts with the input they had the
+//! block before, and runs the pad channels, tracks and submixes itself
+//! while the lane works; at the returns it takes back that output and keeps
+//! this block's input for the next. Every return is then heard one block
+//! later than the dry signal, which latency compensation does not hide.
+//! Insert controls and edits act when the processed audio is heard, since
+//! the inserts are home between blocks. A return goes only if its inserts
+//! have no sidechain key and it keys nothing; otherwise it runs here, on
+//! time. The block length must stay the same; when it changes, the returns
+//! lose that block. If the lane is later than the wait, the returns are
+//! silent for that block and the next, and the late output is dropped.
 //!
 //! **Real-time safe:** building the mixer, [`Mixer::chain_mut`] and
 //! [`Insert::new`] allocate and belong on the control thread; everything
@@ -547,6 +562,11 @@ pub struct MixerStats {
     pub lane_posts: u64,
     /// Of those, the ones that came back later than the lane's wait.
     pub lane_late: u64,
+    /// Blocks whose returns' inserts went to the second core
+    /// ([`Mixer::set_pipelined_returns`]).
+    pub pipe_posts: u64,
+    /// Of those, the ones that came back later than the lane's wait.
+    pub pipe_late: u64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -1269,6 +1289,8 @@ pub struct Mixer {
     probe: Probe,
     /// Inserts on a second core, when on.
     split: Option<Box<Split>>,
+    /// Returns a block late on a second core, when on.
+    pipe: Option<Box<Pipe>>,
 }
 
 impl Mixer {
@@ -1338,6 +1360,7 @@ impl Mixer {
             profiling: false,
             probe: Probe::new(u64::MAX),
             split: None,
+            pipe: None,
         };
         m.reorder();
         m.aud = topo.audible(&m.sw);
@@ -1524,7 +1547,10 @@ impl Mixer {
     pub fn set_key(&mut self, s: StripId, slot: usize, key: Option<StripId>) -> bool {
         let topo = self.plan.topo;
         let Some(k) = topo.order(s) else { return false };
-        if slot >= self.strips[k].chain.len() || self.split.as_ref().is_some_and(|sp| sp.away) {
+        if slot >= self.strips[k].chain.len()
+            || self.split.as_ref().is_some_and(|sp| sp.away)
+            || self.pipe.as_ref().is_some_and(|pp| pp.away)
+        {
             return false;
         }
         let tag = match key {
@@ -1826,6 +1852,71 @@ impl Mixer {
         self.split
             .as_ref()
             .is_some_and(|sp| sp.away && sp.held.get(k))
+            || self
+                .pipe
+                .as_ref()
+                .is_some_and(|pp| pp.away && pp.out.get(k))
+    }
+
+    /// Runs the returns' inserts one block late on another core with a
+    /// lane (see the module docs), or stops that with `None` (the block of
+    /// return audio the lane held is dropped). `wait` is how long the mixer
+    /// waits for the lane at the returns; about a period. Says how the lane
+    /// started. Control thread: starts or stops a thread, and waits up to a
+    /// second for inserts still on the lane before stopping it.
+    pub fn set_pipelined_returns(
+        &mut self,
+        lane: Option<LaneConfig>,
+        wait: Duration,
+    ) -> Option<Setup> {
+        if let Some(mut old) = self.pipe.take() {
+            if old.posted || old.away {
+                if let Ok(job) = old.lane.join(Instant::now() + Duration::from_secs(1)) {
+                    pipe_give_back(job, &old.out, &mut self.strips);
+                }
+            }
+        }
+        let cfg = lane?;
+        let slots = self.strips.first().map_or(8, |st| st.chain.capacity());
+        let topo = self.plan.topo;
+        let parts = (0..RETURNS)
+            .map(|r| {
+                let mut chain = Chain::with_capacity(slots);
+                chain.prepare(self.rate, self.max_block);
+                Part {
+                    k: topo.ret(r) as u16,
+                    chain,
+                    buf: [vec![0.0; self.max_block], vec![0.0; self.max_block]],
+                }
+            })
+            .collect();
+        let job = Returns {
+            parts,
+            go: [false; RETURNS],
+            len: 0,
+            ctx: CtxCopy::default(),
+        };
+        let lane = Lane::new(job, cfg);
+        let setup = lane.setup().clone();
+        self.pipe = Some(Box::new(Pipe {
+            lane,
+            wait,
+            held: Bits::default(),
+            out: Bits::default(),
+            ran: Bits::default(),
+            posted: false,
+            away: false,
+            block: 0,
+            len: 0,
+            ctx: CtxCopy::default(),
+        }));
+        Some(setup)
+    }
+
+    /// Whether the returns run a block late on a second core
+    /// ([`Mixer::set_pipelined_returns`]).
+    pub fn pipelined_returns(&self) -> bool {
+        self.pipe.is_some()
     }
 
     pub fn stats(&self) -> MixerStats {
@@ -2103,10 +2194,15 @@ impl Mixer {
         self.rolling = ctx.playing;
         // Inserts away on a late lane come back first if they are done;
         // until they are, edits and latency changes wait.
-        let away = match self.split.as_mut() {
+        let mut away = match self.split.as_mut() {
             Some(sp) if sp.away => !reclaim(sp, &mut self.strips),
             _ => false,
         };
+        if let Some(pp) = self.pipe.as_mut() {
+            if pp.away && !pipe_reclaim(pp, &mut self.strips) {
+                away = true;
+            }
+        }
         if !away {
             self.apply_edits();
             self.align(false);
@@ -2133,6 +2229,7 @@ impl Mixer {
             fz_step,
             ring_quiet,
             split,
+            pipe,
             ..
         } = self;
         let (fz_step, ring_quiet) = (*fz_step, *ring_quiet);
@@ -2146,7 +2243,8 @@ impl Mixer {
             [usize::MAX; 2]
         };
         let mut keyed = Bits::default();
-        if lane_stages[0] != usize::MAX || lane_stages[1] != usize::MAX {
+        let piping = pipe.as_ref().is_some_and(|pp| !pp.away);
+        if lane_stages[0] != usize::MAX || lane_stages[1] != usize::MAX || piping {
             for st in strips.iter() {
                 for slot in 0..st.chain.len() {
                     if let Some(j) = st.chain.key(slot) {
@@ -2156,6 +2254,19 @@ impl Mixer {
             }
         }
         let mut remote = Bits::default();
+        // Returns a block late: which returns go this block, and the lane
+        // starts on the input they kept last block.
+        let mut late = Bits::default();
+        let pipe_on = pipe.is_some();
+        match pipe.as_deref_mut() {
+            // Away: those returns are silent until their inserts are back.
+            Some(pp) if pp.away => late = pp.out,
+            Some(pp) => {
+                late = pipe_pick(strips, &topo, &keyed);
+                pipe_post(pp, strips, &late, len, stats);
+            }
+            None => {}
+        }
         // With no capture point in use, nothing needs to look for one.
         let caps: &mut [Capture] = if caps.iter().any(|c| c.src.is_some()) {
             caps
@@ -2178,7 +2289,7 @@ impl Mixer {
         for (i, &k) in order.iter().enumerate() {
             let k = k as usize;
             // With no lane (the usual case) nothing here looks at one.
-            let lane_did = match split.as_deref_mut() {
+            let mut lane_did = match split.as_deref_mut() {
                 None => false,
                 Some(sp) => {
                     if lane_stages.contains(&i) && !sp.away {
@@ -2196,6 +2307,12 @@ impl Mixer {
                     did
                 }
             };
+            if pipe_on && late.get(k) {
+                if let Some(pp) = pipe.as_deref_mut() {
+                    pipe_turn(pp, strips, k, caps, len, stats);
+                    lane_did = true;
+                }
+            }
             let (lo, rest) = strips.split_at_mut(k);
             let Some((st, hi)) = rest.split_first_mut() else {
                 break;
@@ -2352,6 +2469,20 @@ impl Mixer {
             if let Some(span) = span {
                 st.probe.stop(span, len as u32);
             }
+        }
+        if let Some(pp) = pipe.as_deref_mut() {
+            if pp.posted {
+                // Never reached: every posted return has its turn above.
+                pipe_join(pp, strips, stats);
+            }
+            pp.ctx = CtxCopy {
+                rate: base.rate,
+                frame: base.frame,
+                bpm: base.bpm,
+                beats: base.beats,
+                playing: base.playing,
+            };
+            pp.len = len;
         }
         mpfree_node::Node::process(safety, &base, &[], left, right);
         let m = topo.master();
@@ -2586,6 +2717,212 @@ fn reclaim(sp: &mut Split, strips: &mut [Strip]) -> bool {
     job.n = 0;
     sp.held = Bits::default();
     sp.away = false;
+    true
+}
+
+/// The lane's job for returns a block late: each return's inserts and the
+/// block they work on (last block's input, then its output).
+struct Returns {
+    /// One per return, in order; `k` is the return's strip.
+    parts: Vec<Part>,
+    /// The parts to run this time.
+    go: [bool; RETURNS],
+    len: usize,
+    ctx: CtxCopy,
+}
+
+impl Job for Returns {
+    fn run(&mut self, _block: u64) {
+        let c = self.ctx;
+        let ctx = Ctx {
+            rate: c.rate,
+            frame: c.frame,
+            bpm: c.bpm,
+            beats: c.beats,
+            playing: c.playing,
+            sidechain: None,
+        };
+        let len = self.len;
+        for (p, &go) in self.parts.iter_mut().zip(&self.go) {
+            if go {
+                let [l, r] = &mut p.buf;
+                p.chain.process(&ctx, &mut l[..len], &mut r[..len]);
+            }
+        }
+    }
+}
+
+/// Returns a block late on a second core ([`Mixer::set_pipelined_returns`]).
+struct Pipe {
+    lane: Lane<Returns>,
+    wait: Duration,
+    /// Returns whose last block's input the job keeps, waiting to be run.
+    held: Bits,
+    /// Returns whose inserts are on the lane (posted, or away).
+    out: Bits,
+    /// Returns the lane ran this block (their parts hold last block's
+    /// output once joined).
+    ran: Bits,
+    /// Posted this block and not joined yet.
+    posted: bool,
+    /// A join was late: the lane still has those returns' inserts.
+    away: bool,
+    block: u64,
+    /// The last block's length and context, which the held input belongs to.
+    len: usize,
+    ctx: CtxCopy,
+}
+
+/// The returns that go a block late this block: inserts to run, no
+/// sidechain key in them, and keying nothing.
+fn pipe_pick(strips: &[Strip], topo: &Topo, keyed: &Bits) -> Bits {
+    let mut out = Bits::default();
+    for r in 0..RETURNS {
+        let k = topo.ret(r);
+        let st = &strips[k];
+        let n = st.chain.len();
+        if n > 0 && !keyed.get(k) && (0..n).all(|slot| st.chain.key(slot).is_none()) {
+            out.set(k, true);
+        }
+    }
+    out
+}
+
+/// Hands the lane the inserts of the returns in `late` that kept an input
+/// last block, with that input, and posts them. Returns that kept none
+/// (just picked) start keeping one at their turn this block.
+fn pipe_post(pp: &mut Pipe, strips: &mut [Strip], late: &Bits, len: usize, stats: &mut MixerStats) {
+    let Some(job) = pp.lane.job() else {
+        return;
+    };
+    let mut any = false;
+    for (r, p) in job.parts.iter_mut().enumerate() {
+        let k = p.k as usize;
+        // Only a return whose kept input is as long as this block runs; a
+        // change of length drops it.
+        let go = late.get(k) && pp.held.get(k) && pp.len == len;
+        job.go[r] = go;
+        pp.ran.set(k, go);
+        if go {
+            std::mem::swap(&mut strips[k].chain, &mut p.chain);
+            pp.out.set(k, true);
+            any = true;
+        }
+    }
+    pp.held = Bits::default();
+    if !any {
+        return;
+    }
+    job.len = pp.len;
+    job.ctx = pp.ctx;
+    pp.block += 1;
+    if pp.lane.post(pp.block).is_ok() {
+        pp.posted = true;
+        stats.pipe_posts += 1;
+    } else if let Some(job) = pp.lane.job() {
+        // Never reached (the lane only refuses while away).
+        pipe_give_back(job, &pp.out, strips);
+        pp.out = Bits::default();
+    }
+}
+
+/// Takes the returns' inserts back from the lane, with last block's output
+/// in the parts. Late: they stay away.
+fn pipe_join(pp: &mut Pipe, strips: &mut [Strip], stats: &mut MixerStats) {
+    pp.posted = false;
+    match pp.lane.join(Instant::now() + pp.wait) {
+        Ok(job) => {
+            pipe_give_back(job, &pp.out, strips);
+            pp.out = Bits::default();
+        }
+        Err(_) => {
+            pp.away = true;
+            stats.pipe_late += 1;
+        }
+    }
+}
+
+/// Puts the inserts of the returns in `out` back in their strips; the
+/// parts keep their blocks.
+fn pipe_give_back(job: &mut Returns, out: &Bits, strips: &mut [Strip]) {
+    for (p, go) in job.parts.iter_mut().zip(job.go.iter_mut()) {
+        if out.get(p.k as usize) {
+            std::mem::swap(&mut strips[p.k as usize].chain, &mut p.chain);
+        }
+        *go = false;
+    }
+}
+
+/// Return `k`'s turn with returns a block late: joins the lane if it is
+/// still out, then [`pipe_swap`]. Kept out of line so the mixer's loop
+/// stays as lean as without it.
+#[inline(never)]
+fn pipe_turn(
+    pp: &mut Pipe,
+    strips: &mut [Strip],
+    k: usize,
+    caps: &mut [Capture],
+    len: usize,
+    stats: &mut MixerStats,
+) {
+    if pp.posted {
+        pipe_join(pp, strips, stats);
+    }
+    pipe_swap(pp, &mut strips[k], k, caps, len, stats);
+}
+
+/// At return `k`'s turn: checks and captures this block's input, then
+/// swaps it for last block's output (or silence, when there is none) and
+/// keeps it for the next block. With the lane away the input is dropped
+/// and the return is silent.
+fn pipe_swap(
+    pp: &mut Pipe,
+    st: &mut Strip,
+    k: usize,
+    caps: &mut [Capture],
+    len: usize,
+    stats: &mut MixerStats,
+) {
+    guard(st, len, stats);
+    take(caps, k, CapturePoint::BeforeInserts, &st.buf, 0, len);
+    let job = if pp.away { None } else { pp.lane.job() };
+    let Some(job) = job else {
+        for b in &mut st.buf {
+            b[..len].fill(0.0);
+        }
+        return;
+    };
+    let Some(r) = job.parts.iter().position(|p| p.k as usize == k) else {
+        return;
+    };
+    let p = &mut job.parts[r];
+    if !pp.ran.get(k) {
+        // Nothing ran for it (just picked, or the length changed): silent
+        // this block.
+        for b in &mut p.buf {
+            b[..len].fill(0.0);
+        }
+    }
+    std::mem::swap(&mut st.buf, &mut p.buf);
+    pp.held.set(k, true);
+}
+
+/// After a late join: if the lane is done, the returns get their inserts
+/// back and the late output is dropped. True when nothing is away any more.
+fn pipe_reclaim(pp: &mut Pipe, strips: &mut [Strip]) -> bool {
+    let Some(job) = pp.lane.job() else {
+        return false;
+    };
+    pipe_give_back(job, &pp.out, strips);
+    for p in &mut job.parts {
+        for b in &mut p.buf {
+            b.fill(0.0);
+        }
+    }
+    pp.out = Bits::default();
+    pp.held = Bits::default();
+    pp.ran = Bits::default();
+    pp.away = false;
     true
 }
 

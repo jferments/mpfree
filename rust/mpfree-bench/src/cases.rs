@@ -2,6 +2,7 @@
 //! block by block at the MPC's period. Setup allocates; the block function
 //! must not.
 
+use mpfree_audiotracks::{AudioTracks, Command as TrackCommand, Input as TrackInput, MAX_TRACKS};
 use mpfree_fx::ids;
 use mpfree_fx::{
     CapturePoint, Chain, Character, Chorus, Cloud, Comb, Compressor, Crush, Delay, DjFilter, Drive,
@@ -570,18 +571,26 @@ enum Inserts {
 /// track, drums and bass into submixes, sends to two returns, and the
 /// inserts `with` names.
 fn mixer(name: &str, rate: u32, tracks: usize, pads: usize, with: Inserts) -> Case {
-    mixer_with(name, rate, tracks, pads, with, None)
+    mixer_with(name, rate, tracks, pads, with, Second::None)
 }
 
-/// A mixer case, with the pad and track inserts partly on a lane when
-/// `lane` is given (`Mixer::set_lane`).
+/// What a [`mixer_with`] case runs on a second core.
+enum Second {
+    None,
+    /// Pad and track inserts partly on a lane (`Mixer::set_lane`).
+    Tracks(LaneConfig),
+    /// The returns a block late on a lane (`Mixer::set_pipelined_returns`).
+    Returns(LaneConfig),
+}
+
+/// A mixer case, with some of its work on a second core as `second` says.
 fn mixer_with(
     name: &str,
     rate: u32,
     tracks: usize,
     pads: usize,
     with: Inserts,
-    lane: Option<LaneConfig>,
+    second: Second,
 ) -> Case {
     let inserts = with != Inserts::None;
     use ids::mixer::{self as mx, output};
@@ -633,8 +642,14 @@ fn mixer_with(
             .set_param(1, ids::compressor::SIDECHAIN, 1.0);
         m.set_key(StripId::Track(1), 1, Some(StripId::Track(0)));
     }
-    if let Some(cfg) = lane {
-        m.set_lane(Some(cfg), Duration::from_nanos(10 * MPC.ns()));
+    match second {
+        Second::None => {}
+        Second::Tracks(cfg) => {
+            m.set_lane(Some(cfg), Duration::from_nanos(10 * MPC.ns()));
+        }
+        Second::Returns(cfg) => {
+            m.set_pipelined_returns(Some(cfg), Duration::from_nanos(10 * MPC.ns()));
+        }
     }
     let frozen = with == Inserts::SongFrozen;
     // Two beats of each frozen track, at 120 BPM.
@@ -1089,6 +1104,8 @@ pub fn all(rate: u32) -> Vec<Case> {
     v.push(measured(|| looper(rate, 60)));
     v.push(measured(|| looper_loops(rate, 60, false)));
     v.push(measured(|| looper_loops(rate, 60, true)));
+    v.push(measured(|| audio_tracks(rate, 0)));
+    v.push(measured(|| audio_tracks(rate, 2)));
     v.push(measured(|| song(rate)));
     v
 }
@@ -1726,6 +1743,117 @@ fn looper_loops(rate: u32, seconds: u32, edited: bool) -> Case {
     }
 }
 
+/// Audio tracks on the song timeline: every track with 8 bars recorded at
+/// 120 BPM in three loop passes, comped so a region boundary (a crossfade
+/// between two takes) falls on every beat, playing in a loop over the 8
+/// bars, with `recording` of them recording the input again (punching in
+/// and out every 2 bars) while the rest play.
+fn audio_tracks(rate: u32, recording: usize) -> Case {
+    const BARS: i64 = 8;
+    let bar = 4 * i64::from(PPQ);
+    let beat = i64::from(PPQ);
+    let song_end = BARS * bar;
+    let mut t = Transport::new(rate, 120.0).expect("transport");
+    // 8 bars at 120 BPM: 16 s a pass; three passes on 8 mono tracks are
+    // 384 s of mono, and the recording tracks need more on top.
+    let mut a = AudioTracks::new(rate, 300);
+    let mut block = TBlock::new();
+    let n = MAX_BLOCK;
+    let (mut line_in, mut out) = (vec![0.0f32; 2 * n], vec![0.0f32; 2 * n]);
+    let prog = program(rate);
+    let (mut l, mut r) = (vec![0.0f32; n], vec![0.0f32; n]);
+    let mut frame = 0u64;
+    let mut step = |frame: &mut u64,
+                    t: &mut Transport,
+                    a: &mut AudioTracks,
+                    line_in: &mut Vec<f32>,
+                    out: &mut Vec<f32>| {
+        prog.play(*frame, &mut l, &mut r);
+        for (i, (x, y)) in l.iter().zip(r.iter()).enumerate() {
+            input_frame(line_in, i, *x, *y);
+        }
+        out.fill(0.0);
+        t.process(n as u32, &mut block);
+        let map = *t.tempo_map();
+        a.process(&block, &map, line_in, out);
+        *frame += n as u64;
+    };
+    // Record three passes on every track at once.
+    for k in 0..MAX_TRACKS {
+        a.command(TrackCommand::SetInput(k, TrackInput::Left));
+        a.command(TrackCommand::Arm(k, true));
+    }
+    t.command(0, T::SetLoop(Some((0, song_end))));
+    t.command(0, T::Record);
+    let pass = (16 * rate) as u64;
+    while frame < 3 * pass + 2 * n as u64 {
+        step(&mut frame, &mut t, &mut a, &mut line_in, &mut out);
+    }
+    t.command(frame, T::Stop);
+    for k in 0..MAX_TRACKS {
+        a.command(TrackCommand::Arm(k, false));
+    }
+    step(&mut frame, &mut t, &mut a, &mut line_in, &mut out);
+    // Comp: beat i of track k plays pass (i + k) % 3.
+    let takes: Vec<_> = a.takes().collect();
+    for k in 0..MAX_TRACKS {
+        for i in 0..BARS * 4 {
+            let p = ((i as usize + k) % 3) as u16;
+            if let Some(tk) = takes.iter().find(|x| x.track == k && x.pass == p) {
+                a.command(TrackCommand::Comp {
+                    take: tk.id,
+                    from: i * beat,
+                    to: (i + 1) * beat,
+                });
+            }
+        }
+        // Apply the queue (it holds 64) before the next track.
+        step(&mut frame, &mut t, &mut a, &mut line_in, &mut out);
+    }
+    for k in 0..recording {
+        a.command(TrackCommand::Arm(k, true));
+    }
+    a.command(TrackCommand::ClearHistory);
+    t.command(frame, T::PlayStart);
+    let punch_every = 4 * u64::from(rate); // 2 bars
+    let mut next_punch = frame + punch_every;
+    let mut tr = t;
+    Case {
+        name: format!(
+            "Audio tracks: {} playing comped takes{}",
+            MAX_TRACKS - recording,
+            if recording > 0 {
+                format!(", {recording} recording")
+            } else {
+                String::new()
+            }
+        ),
+        module: "looper",
+        what: "8-bar song loop, a crossfade between takes on every beat",
+        block: Box::new(move |b, ol, or| {
+            let n = ol.len();
+            if recording > 0 && frame >= next_punch {
+                next_punch += punch_every;
+                tr.command(frame, T::Record);
+            }
+            prog.play(b * n as u64, ol, or);
+            for (i, (x, y)) in ol.iter().zip(or.iter()).enumerate() {
+                input_frame(&mut line_in, i, *x, *y);
+            }
+            out[..2 * n].fill(0.0);
+            tr.process(n as u32, &mut block);
+            let map = *tr.tempo_map();
+            a.process(&block, &map, &line_in[..2 * n], &mut out[..2 * n]);
+            frame += n as u64;
+            for (i, (x, y)) in ol.iter_mut().zip(or.iter_mut()).enumerate() {
+                *x = out[2 * i];
+                *y = out[2 * i + 1];
+            }
+        }),
+        mem_bytes: 0,
+    }
+}
+
 fn input_frame(buf: &mut [f32], i: usize, l: f32, r: f32) {
     buf[2 * i] = l;
     buf[2 * i + 1] = r;
@@ -2161,7 +2289,7 @@ pub fn lanes(rate: u32, worker: Option<usize>) -> Vec<Case> {
                 12,
                 8,
                 Inserts::Song,
-                None,
+                Second::None,
             )
         }),
         measured(|| {
@@ -2171,7 +2299,37 @@ pub fn lanes(rate: u32, worker: Option<usize>) -> Vec<Case> {
                 12,
                 8,
                 Inserts::Song,
-                Some(config(false)),
+                Second::Tracks(config(false)),
+            )
+        }),
+        measured(|| {
+            mixer_with(
+                "Mixer, a song's inserts, returns a block late on 2 cores",
+                rate,
+                12,
+                8,
+                Inserts::Song,
+                Second::Returns(config(false)),
+            )
+        }),
+        measured(|| {
+            mixer_with(
+                "Mixer, a song's inserts, Eco reverb, one core",
+                rate,
+                12,
+                8,
+                Inserts::SongEco,
+                Second::None,
+            )
+        }),
+        measured(|| {
+            mixer_with(
+                "Mixer, a song's inserts, Eco reverb, returns a block late on 2 cores",
+                rate,
+                12,
+                8,
+                Inserts::SongEco,
+                Second::Returns(config(false)),
             )
         }),
         measured(|| {
@@ -2412,6 +2570,7 @@ mod tests {
     #[test]
     fn a_split_on_two_cores_sounds_exactly_like_the_split_on_one() {
         let lane = || Some(LaneConfig::default());
+        let tracks = || Second::Tracks(LaneConfig::default());
         // The bench's ten periods (29 ms) are too short for a debug build on
         // a busy test runner, where the worker can wait that long for a
         // core; a late block would leave the lane's part out and fail the
@@ -2434,8 +2593,8 @@ mod tests {
             600,
         );
         same_blocks(
-            mixer_with("one", 44_100, 12, 8, Inserts::Song, None),
-            mixer_with("two", 44_100, 12, 8, Inserts::Song, lane()),
+            mixer_with("one", 44_100, 12, 8, Inserts::Song, Second::None),
+            mixer_with("two", 44_100, 12, 8, Inserts::Song, tracks()),
             600,
         );
     }
@@ -2443,7 +2602,7 @@ mod tests {
     #[test]
     fn the_lane_cases_cover_one_core_and_two() {
         let mut cases = lanes(44_100, None);
-        assert_eq!(cases.len(), 13);
+        assert_eq!(cases.len(), 16);
         assert!(cases.iter().any(|c| c.name.contains("one core")));
         assert!(cases.iter().any(|c| c.name.contains("2 cores")));
         for c in &mut cases {
