@@ -18,8 +18,8 @@ use crate::scale::{Scale, Snap, CHROMATIC, MAJOR};
 /// Clock resolution: ticks per quarter note.
 pub const PPQ: u32 = 960;
 /// Events one `process` call can return; more are dropped and counted.
-/// As many as can be pending, so a panic's 128 note-offs and the notes
-/// pressed right after it fit in one call.
+/// As many as can be pending, so a panic's note-offs (at most 128, one per
+/// sounding note) and the notes pressed right after it fit in one call.
 pub const MAX_EVENTS: usize = MAX_PENDING;
 /// Notes waiting to start or stop.
 const MAX_PENDING: usize = 256;
@@ -718,6 +718,9 @@ pub struct Engine {
     /// The arp's own swing even while the transport plays with swing
     /// (Options > Swing from: Arp). [`Engine::set_own_swing`].
     own_swing: bool,
+    /// The notes it has started and not yet ended (bit `n` for note `n`),
+    /// so a panic or a hush ends just those.
+    sounding: u128,
 }
 
 impl Engine {
@@ -732,6 +735,7 @@ impl Engine {
             running: false,
             hushed: false,
             own_swing: false,
+            sounding: 0,
             next_step: 0.0,
             step: 0,
             arp_counter: 0,
@@ -902,12 +906,7 @@ impl Engine {
     /// STOP silences a latched arp and keeps the latch.
     pub fn hush(&mut self) {
         self.hushed = true;
-        self.queued = 0;
-        self.running = false;
-        let at = self.now as f64;
-        for n in 0..128u8 {
-            self.queue_at(at, EventKind::Off { note: n });
-        }
+        self.end_sounding();
     }
 
     /// Plays again after [`Engine::hush`]; nothing happens if not hushed.
@@ -949,18 +948,34 @@ impl Engine {
         self.hushed
     }
 
-    /// Stops everything at the start of the next period: all notes off,
-    /// nothing held or latched.
+    /// Stops everything at the start of the next period: every note it
+    /// has sounding ends, nothing held or latched.
     pub fn panic(&mut self) {
         self.hushed = false;
-        self.queued = 0;
         self.notes.clear_all();
+        self.end_sounding();
+    }
+
+    /// Drops what is queued and ends, at the start of the next period,
+    /// every note it has started and not ended: at most 128 note-offs, and
+    /// none from an arp that plays nothing (so a panic sent to all 16
+    /// tracks' arps costs only what they sound).
+    fn end_sounding(&mut self) {
+        self.queued = 0;
         self.running = false;
         let at = self.now as f64;
-        for n in 0..128u8 {
-            // One per note is more than MAX_PENDING allows only if 128 > 256; it isn't.
+        let mut s = self.sounding;
+        while s != 0 {
+            let n = s.trailing_zeros() as u8;
+            s &= s - 1;
+            // At most 128, under MAX_PENDING.
             self.queue_at(at, EventKind::Off { note: n });
         }
+    }
+
+    /// The notes it has started and not yet ended (bit `n` for note `n`).
+    pub fn sounding(&self) -> u128 {
+        self.sounding
     }
 
     /// Runs one period of `frames` frames and returns its events in `out`.
@@ -1467,6 +1482,10 @@ impl Engine {
             self.queued -= 1;
             self.queue[b] = self.queue[self.queued];
             let offset = (p.at - start).max(0.0).floor() as u32;
+            match p.kind {
+                EventKind::On { note, .. } => self.sounding |= 1 << (note & 127),
+                EventKind::Off { note } => self.sounding &= !(1 << (note & 127)),
+            }
             out.push(Event {
                 offset,
                 kind: p.kind,
@@ -1580,6 +1599,8 @@ mod tests {
             2,
             "latched, it repeats"
         );
+        // The third repeat starts, and is sounding when it is hushed.
+        assert_eq!(ons(&run(&mut e, 64, 64)), [(STEP * 2, 3)]);
         e.hush();
         let got = run(&mut e, STEP * 4, 128);
         assert!(ons(&got).is_empty(), "hushed, nothing plays");
@@ -1868,14 +1889,60 @@ mod tests {
         let mut e = engine(Mode::Repeat);
         e.set_latch(LatchMode::Replace);
         e.press(1, 100);
+        e.press(7, 100);
         run(&mut e, 128, 128);
+        assert_eq!(e.sounding(), 1 << 1 | 1 << 7, "both started");
         e.panic();
         let got = run(&mut e, STEP * 2, 128);
-        assert_eq!(got.len(), 128);
-        assert!(got
-            .iter()
-            .all(|(t, k)| *t == 128 && matches!(k, EventKind::Off { .. })));
-        assert!(e.active().is_empty());
+        assert_eq!(
+            got,
+            [
+                (128, EventKind::Off { note: 1 }),
+                (128, EventKind::Off { note: 7 })
+            ],
+            "the notes it sounds end, and only those"
+        );
+        assert!(e.active().is_empty() && e.sounding() == 0 && e.idle());
+        // Nothing sounding: a panic sends nothing.
+        e.panic();
+        assert!(run(&mut e, STEP * 2, 128).is_empty());
+    }
+
+    /// Whatever it plays, a panic ends exactly what is still sounding:
+    /// started and not ended.
+    #[test]
+    fn panic_ends_what_sounds_at_any_moment() {
+        for stop_at in [1, 300, STEP / 2, STEP - 1, STEP + 7, 3 * STEP + 100] {
+            let mut e = engine(Mode::Repeat);
+            e.press(60, 100);
+            e.press(64, 90);
+            let mut on = [false; 128];
+            let mut t = 0;
+            while t < stop_at {
+                let n = 128.min(stop_at - t);
+                for (_, k) in run(&mut e, n, n as u32) {
+                    match k {
+                        EventKind::On { note, .. } => on[usize::from(note)] = true,
+                        EventKind::Off { note } => on[usize::from(note)] = false,
+                    }
+                }
+                t += n;
+            }
+            e.panic();
+            for (_, k) in run(&mut e, STEP * 4, 128) {
+                match k {
+                    EventKind::Off { note } => {
+                        assert!(
+                            on[usize::from(note)],
+                            "{stop_at}: ended {note}, not sounding"
+                        );
+                        on[usize::from(note)] = false;
+                    }
+                    EventKind::On { .. } => panic!("{stop_at}: a note after the panic"),
+                }
+            }
+            assert!(on.iter().all(|&o| !o), "{stop_at}: a note left hanging");
+        }
     }
 
     #[test]
