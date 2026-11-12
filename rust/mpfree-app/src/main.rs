@@ -93,6 +93,7 @@ mod kit;
 mod looper_page;
 mod looper_tab;
 mod looping;
+mod midi_in;
 mod mixing;
 mod modmix;
 mod modpanels;
@@ -982,6 +983,10 @@ fn describe_event(e: &ControlEvent) -> String {
 /// The controller's three USB-MIDI cables, as ALSA RawMIDI subdevices of
 /// midiC<card>D0, with a word each subdevice's name must contain.
 const MIDI_PORTS: [(u32, &str); 3] = [(0, "Public"), (1, "Private"), (2, "MIDI Port")];
+/// The cable that is the 5-pin MIDI In and Out jacks, not the MPC's own
+/// controls (the owner's read-only captures, 2026-11-12). What comes in on
+/// it is music for `midi_in`, never pads, knobs or buttons.
+const MUSIC_CABLE: u32 = 2;
 /// Lines shown per listening step; everything is still counted after that.
 const MAX_SHOWN: u64 = 300;
 
@@ -1065,6 +1070,9 @@ fn message_line(
 
 struct PortIn {
     name: &'static str,
+    /// The 5-pin MIDI In ([`MUSIC_CABLE`]): its bytes go to `midi_in` as
+    /// they came, not through the controller's decoder.
+    music: bool,
     file: File,
     parser: Parser,
     bytes: u64,
@@ -1092,6 +1100,7 @@ fn open_inputs(card: u32, out: &mut Out) -> Result<Vec<PortIn>, String> {
         }
         inputs.push(PortIn {
             name: word,
+            music: sub == MUSIC_CABLE,
             file,
             parser: Parser::default(),
             bytes: 0,
@@ -1145,11 +1154,14 @@ fn send_all(file: &mut File, msg: &[u8]) -> io::Result<()> {
     Ok(())
 }
 
-/// One message that came in: which input, its bytes, and what it means if known.
+/// One message that came in: which input, its bytes, and what it means if
+/// known. From the 5-pin MIDI In (`music`), the bytes as read, unparsed and
+/// with no event.
 struct Incoming {
     port: usize,
     bytes: Vec<u8>,
     event: Option<ControlEvent>,
+    music: bool,
 }
 
 /// The controller's inputs and outputs for the steps that send something.
@@ -1266,6 +1278,19 @@ impl Ports {
             };
             self.inputs[i].bytes += n as u64;
             let name = self.inputs[i].name;
+            if self.inputs[i].music {
+                // MIDI In: the caller hands these to `midi_in`, which logs
+                // them (clock counted, not listed).
+                if n > 0 {
+                    got.push(Incoming {
+                        port: i,
+                        bytes: buf[..n].to_vec(),
+                        event: None,
+                        music: true,
+                    });
+                }
+                continue;
+            }
             for &b in &buf[..n] {
                 let Some(msg) = self.inputs[i].parser.feed(b) else {
                     continue;
@@ -1290,6 +1315,7 @@ impl Ports {
                     port: i,
                     bytes,
                     event,
+                    music: false,
                 });
             }
         }
@@ -1322,6 +1348,171 @@ impl Ports {
             ));
         }
     }
+}
+
+// ---------------------------------------------------------------- USB keyboards
+
+/// A USB-MIDI device the scanner thread opened for reading.
+struct UsbFound {
+    card: u32,
+    name: String,
+    file: File,
+}
+
+/// One open USB keyboard in the audio loop.
+struct UsbIn {
+    card: u32,
+    port: mpfree_midi::port::PortId,
+    file: File,
+}
+
+/// USB-MIDI keyboards on the USB-A socket, read only. A thread looks at
+/// `/proc/asound/cards` every two seconds and opens each new MIDI card's
+/// first input (never an output); the audio loop reads them without
+/// blocking, as it reads the controller. A read error (the keyboard was
+/// unplugged) closes it and lets go of its keys. A card that can't be
+/// opened is logged once and tried again only after it goes away and comes
+/// back.
+struct UsbKeys {
+    found: Receiver<Result<UsbFound, String>>,
+    open: Vec<UsbIn>,
+    /// Tells the scanner thread to end (when the session ends).
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl Drop for UsbKeys {
+    fn drop(&mut self) {
+        self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+const USB_SCAN: Duration = Duration::from_secs(2);
+
+impl UsbKeys {
+    /// Start the scanner. `skip` holds the MPC's own cards (the
+    /// controller and the sound card).
+    fn start(skip: Vec<u32>) -> UsbKeys {
+        let (tx, rx) = sync_channel(8);
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let stopped = stop.clone();
+        thread::Builder::new()
+            .name("usb-midi-scan".into())
+            .spawn(move || {
+                // Cards seen last time (open or not): a card is tried once
+                // each time it appears.
+                let mut seen: Vec<u32> = Vec::new();
+                while !stopped.load(std::sync::atomic::Ordering::Relaxed) {
+                    let now = midi_in::usb_midi_cards(&cards(), &skip, |n| {
+                        Path::new(&format!("/dev/snd/midiC{n}D0")).exists()
+                    });
+                    for (card, name) in &now {
+                        if seen.contains(card) {
+                            continue;
+                        }
+                        let found = match alsa::open_rawmidi(*card, 0, alsa::Direction::Input) {
+                            Ok((file, info)) if info.stream == alsa::RAWMIDI_STREAM_INPUT => {
+                                Ok(UsbFound {
+                                    card: *card,
+                                    name: name.clone(),
+                                    file,
+                                })
+                            }
+                            Ok(_) => Err(format!(
+                                "USB MIDI {name} (card {card}): its first port is not an input; not used"
+                            )),
+                            Err(e) => Err(format!(
+                                "USB MIDI {name} (card {card}): could not open its input: {e}"
+                            )),
+                        };
+                        if tx.send(found).is_err() {
+                            return;
+                        }
+                    }
+                    seen = now.into_iter().map(|(c, _)| c).collect();
+                    thread::sleep(USB_SCAN);
+                }
+            })
+            .ok();
+        UsbKeys {
+            found: rx,
+            open: Vec::new(),
+            stop,
+        }
+    }
+
+    /// Take newly opened keyboards and read every open one. Never blocks.
+    fn poll(
+        &mut self,
+        music: &mut midi_in::MusicIn,
+        buf: &mut [u8],
+        t: f64,
+        keys: &mut Vec<midi_in::Key>,
+        out: &mut Out,
+    ) {
+        while let Ok(found) = self.found.try_recv() {
+            match found {
+                Ok(f) => match music.plugged(&f.name) {
+                    Some(port) => {
+                        out.midi(&format!(
+                            "+{t:.3} s {}: plugged in (USB, card {}); listening, read only",
+                            f.name, f.card
+                        ));
+                        self.open.push(UsbIn {
+                            card: f.card,
+                            port,
+                            file: f.file,
+                        });
+                    }
+                    None => out.midi(&format!(
+                        "+{t:.3} s {}: plugged in, but every MIDI port number is taken; not used",
+                        f.name
+                    )),
+                },
+                Err(e) => out.midi(&format!("+{t:.3} s {e}")),
+            }
+        }
+        let mut k = 0;
+        while k < self.open.len() {
+            let gone = match self.open[k].file.read(buf) {
+                Ok(0) => false,
+                Ok(n) => {
+                    let port = self.open[k].port;
+                    music.bytes(port, &buf[..n], t, keys, &mut |l| out.midi(&l));
+                    false
+                }
+                Err(e) if e.kind() == ErrorKind::WouldBlock || e.raw_os_error() == Some(EAGAIN) => {
+                    false
+                }
+                Err(e) => {
+                    let u = &self.open[k];
+                    out.midi(&format!(
+                        "+{t:.3} s {}: gone (card {}: {e}); its keys let go",
+                        music.label(u.port),
+                        u.card
+                    ));
+                    true
+                }
+            };
+            if gone {
+                let u = self.open.swap_remove(k);
+                music.unplugged(u.port, keys);
+            } else {
+                k += 1;
+            }
+        }
+    }
+}
+
+/// The notes that play pads 1 to 16 from a keyboard, as the Synth tab
+/// names notes: the notes the MPC's own pads send (`mpc_one::PAD_NOTES`,
+/// Akai's classic pad map).
+fn pad_note_names() -> String {
+    mpc_one::PAD_NOTES
+        .iter()
+        .enumerate()
+        .map(|(i, &n)| format!("pad {} {}", i + 1, synth::note_name(n)))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 fn pad_colours(colours: &[[u8; 3]; 16]) -> Vec<[u8; 12]> {
@@ -2771,6 +2962,18 @@ fn player_session(
     out.show(gui::ToUi::Engines(engines.shared()));
     let engine_shared = engines.shared();
     cores.show(&engine_shared.cores);
+    // MIDI from outside (midi_in.rs): the 5-pin MIDI In (cable 2, already
+    // open with the controller's other cables) and USB keyboards, read only,
+    // as keys for the armed track.
+    let mut music = midi_in::MusicIn::new();
+    let mut usb = UsbKeys::start(
+        [Some(audio), midi_card().ok()]
+            .into_iter()
+            .flatten()
+            .collect(),
+    );
+    let mut keys: Vec<midi_in::Key> = Vec::with_capacity(64);
+    let mut key_misses = 0u64;
     let mut i = 0u64;
     while i < total_periods {
         let t_read = Instant::now();
@@ -3021,7 +3224,67 @@ fn player_session(
             view_back = out.try_show(m).err();
         }
         ports.show_pressure = app.settings.show_pressure;
-        for m in ports.poll(out, &mut buf)? {
+        let mut got = ports.poll(out, &mut buf)?;
+        let mt = ports.t();
+        got.retain(|m| {
+            if m.music {
+                music.bytes(midi_in::DIN, &m.bytes, mt, &mut keys, &mut |l| out.midi(&l));
+            }
+            !m.music
+        });
+        usb.poll(&mut music, &mut buf, mt, &mut keys, out);
+        music.tick(mt, &mut |l| out.midi(&l));
+        // Keys play the armed track: by note while the pads play notes (a
+        // synth pad layout), else as the pad the MPC gives that note.
+        let key_notes = synth_on && app.arp_plays_notes();
+        for k in keys.drain(..) {
+            let pad_event = match k {
+                midi_in::Key::Down { note, velocity } if key_notes => {
+                    app.key_down(note, velocity);
+                    None
+                }
+                midi_in::Key::Up { note } if key_notes => {
+                    app.key_up(note);
+                    None
+                }
+                midi_in::Key::Pressure { note, value } if key_notes => {
+                    synth.pressure_note(note, value);
+                    None
+                }
+                midi_in::Key::Down { note, velocity } => {
+                    mpc_one::pad_index(note).map(|pad| ControlEvent::PadDown { pad, velocity })
+                }
+                midi_in::Key::Up { note } => {
+                    mpc_one::pad_index(note).map(|pad| ControlEvent::PadUp { pad })
+                }
+                midi_in::Key::Pressure { note, value } => {
+                    mpc_one::pad_index(note).map(|pad| ControlEvent::PadPressure {
+                        pad,
+                        pressure: value,
+                    })
+                }
+            };
+            match pad_event {
+                Some(event) => got.push(Incoming {
+                    port: MUSIC_CABLE as usize,
+                    bytes: Vec::new(),
+                    event: Some(event),
+                    music: true,
+                }),
+                None if !key_notes && matches!(k, midi_in::Key::Down { .. }) => {
+                    key_misses += 1;
+                    if key_misses == 1 {
+                        out.midi(&format!(
+                            "+{mt:.3} s a key with no pad: with a kit, keys play the pads by the MPC's pad notes ({}); \
+                             other notes are counted",
+                            pad_note_names()
+                        ));
+                    }
+                }
+                None => {}
+            }
+        }
+        for m in got {
             if let Some((token, status)) = akai::session_reply(&m.bytes) {
                 if token == akai::SESSION_TOKEN && status == akai::SESSION_RUNNING {
                     last_reply = Instant::now();
@@ -3927,6 +4190,13 @@ fn player_session(
         .push(format!("{periods} periods: {summary}"));
     ports.quiet = false;
     ports.counts(out);
+    for line in music.summary() {
+        out.say(&line);
+    }
+    if key_misses > 0 {
+        out.say(&format!("MIDI in: {key_misses} keys had no pad in the kit"));
+    }
+    drop(usb);
     let kits_used: Vec<String> = used
         .iter()
         .enumerate()
@@ -4041,7 +4311,12 @@ fn pads(o: &Options) -> Result<(), String> {
                     for &b in &buf[..n] {
                         if let Some(msg) = port.parser.feed(b) {
                             port.messages += 1;
-                            let event = mpc_one::decode(&msg);
+                            // MIDI In carries a keyboard, not the MPC's controls.
+                            let event = if port.music {
+                                None
+                            } else {
+                                mpc_one::decode(&msg)
+                            };
                             let (bytes, truncated) = message_bytes(&msg);
                             match event {
                                 Some(ControlEvent::PadDown { .. }) => pad_hits += 1,
@@ -4850,6 +5125,9 @@ mod tests {
         assert_eq!(MIDI_PORTS.map(|p| p.0), [0, 1, 2]);
         assert_eq!(MIDI_PORTS[mpc_one::Port::Public as usize].1, "Public");
         assert_eq!(MIDI_PORTS[mpc_one::Port::Private as usize].1, "Private");
+        // The 5-pin MIDI In is the third cable, and only it is music.
+        assert_eq!(MIDI_PORTS[MUSIC_CABLE as usize].1, "MIDI Port");
+        assert!(pad_note_names().starts_with("pad 1 C#2, pad 2 C2"));
     }
 
     #[test]
