@@ -33,6 +33,9 @@ pub(crate) struct Slot {
     pub state: State,
     /// The planning round that last wanted it.
     pub last: u64,
+    /// Its blocks' peaks are kept (a chunk read from the disk has none:
+    /// the disk side keeps those).
+    pub noted: bool,
 }
 
 const EMPTY: u64 = u64::MAX;
@@ -80,6 +83,7 @@ impl Pool {
                     chunk: 0,
                     state: State::Free,
                     last: 0,
+                    noted: false,
                 };
                 n
             ],
@@ -195,6 +199,7 @@ impl Pool {
             chunk,
             state,
             last: self.clock,
+            noted: state == State::Dirty,
         };
         self.insert(key(take, chunk), s);
         Some(s as usize)

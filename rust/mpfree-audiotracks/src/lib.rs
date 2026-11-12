@@ -55,6 +55,7 @@
 
 #![forbid(unsafe_code)]
 
+mod disk;
 pub mod host;
 mod pool;
 pub mod save;
@@ -799,7 +800,8 @@ impl AudioTracks {
         while s < end {
             let off = s % CHUNK;
             let count = (CHUNK - off).min(end - s);
-            if let Some(slot) = self.pool.readable(id, (s / CHUNK) as u32) {
+            let slot = self.pool.readable(id, (s / CHUNK) as u32);
+            if let Some(slot) = slot.filter(|&sl| self.pool.slots[sl].noted) {
                 let (l, h) = self.pool.range_peaks(slot * CHUNK + off, count);
                 lo = lo.min(l);
                 hi = hi.max(h);
@@ -1269,7 +1271,14 @@ impl AudioTracks {
             loading: true,
             ..NO_TAKE
         };
-        for c in 0..need.div_ceil(CHUNK) as u32 {
+        // Streaming: chunks are taken as the audio copies in (each written
+        // chunk makes room again), so only the first is needed now.
+        let chunks = if self.streaming {
+            1
+        } else {
+            need.div_ceil(CHUNK)
+        };
+        for c in 0..chunks as u32 {
             if self.pool.alloc(f.id, c, SlotState::Dirty, true).is_none() {
                 self.pool.release_take(f.id);
                 self.takes[id] = NO_TAKE;
@@ -1343,17 +1352,28 @@ impl AudioTracks {
                 let at = done + w;
                 let off = at % CHUNK;
                 let c = (CHUNK - off).min(count - w);
-                let Some(slot) = self.pool.find(id, (at / CHUNK) as u32) else {
-                    break;
+                let c_at = (at / CHUNK) as u32;
+                let slot = match self.pool.find(id, c_at) {
+                    Some(slot) => slot as usize,
+                    None => match self.pool.alloc(id, c_at, SlotState::Dirty, true) {
+                        Some(slot) => slot,
+                        // Streaming, every chunk waiting to be written:
+                        // go on next period.
+                        None => break,
+                    },
                 };
-                let b = slot as usize * CHUNK + off;
+                let b = slot * CHUNK + off;
                 self.pool.data[b..b + c].copy_from_slice(&audio[at..at + c]);
                 self.pool.note(b, c);
                 w += c;
             }
+            let count = w;
             tk.frames = (done + count) / ch;
-            budget -= count.max(1);
             let total = audio.len();
+            if count == 0 && done < total {
+                break;
+            }
+            budget -= count.max(1);
             let finished = done + count == total;
             if finished {
                 tk.loading = false;
@@ -1691,18 +1711,34 @@ impl AudioTracks {
     /// (nothing changed) if it is no longer wanted (the take was
     /// forgotten, or the chunk is there already).
     pub fn fill(&mut self, take: u16, chunk: u32, data: &[f32]) -> bool {
+        self.fill_part(take, chunk, 0, data, true)
+    }
+
+    /// Part of [`AudioTracks::fill`], so a chunk can copy in over several
+    /// periods: `data` goes at sample `from` of the chunk; with `last` the
+    /// rest of the chunk is cleared and it plays from now on. False
+    /// (nothing changed) if the chunk is no longer wanted.
+    pub fn fill_part(
+        &mut self,
+        take: u16,
+        chunk: u32,
+        from: usize,
+        data: &[f32],
+        last: bool,
+    ) -> bool {
         let Some(s) = self.pool.find(take, chunk).map(|s| s as usize) else {
             return false;
         };
-        if self.pool.slots[s].state != SlotState::Loading {
+        if self.pool.slots[s].state != SlotState::Loading || from > CHUNK {
             return false;
         }
-        let n = data.len().min(CHUNK);
-        let b = s * CHUNK;
+        let n = data.len().min(CHUNK - from);
+        let b = s * CHUNK + from;
         self.pool.data[b..b + n].copy_from_slice(&data[..n]);
-        self.pool.data[b + n..b + CHUNK].fill(0.0);
-        self.pool.note(b, CHUNK);
-        self.pool.slots[s].state = SlotState::Clean;
+        if last {
+            self.pool.data[b + n..s * CHUNK + CHUNK].fill(0.0);
+            self.pool.slots[s].state = SlotState::Clean;
+        }
         true
     }
 
