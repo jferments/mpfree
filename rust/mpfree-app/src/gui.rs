@@ -5123,15 +5123,15 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     crate::cores::sample(&probes.shared().cores);
     // A few slow periods outside the engines, the longest part name, so
     // the picture shows the widest the row gets.
-    let parts = &probes.shared().parts;
-    parts.slow.store(12_345, std::sync::atomic::Ordering::Relaxed);
-    parts
-        .worst_ns
-        .store(12_340_000, std::sync::atomic::Ordering::Relaxed);
-    parts.worst_part.store(
-        crate::parts::MIDI_IN as u64,
-        std::sync::atomic::Ordering::Relaxed,
-    );
+    {
+        use std::sync::atomic::Ordering::Relaxed;
+        let parts = &probes.shared().parts;
+        parts.slow.store(12_345, Relaxed);
+        parts.worst_ns.store(12_340_000, Relaxed);
+        parts
+            .worst_part
+            .store(crate::parts::MIDI_IN as u64, Relaxed);
+    }
     eng.apply(ToUi::Engines(probes.shared()));
     eng.apply(ToUi::Show(View::Engines));
     eng.refresh_engines();
