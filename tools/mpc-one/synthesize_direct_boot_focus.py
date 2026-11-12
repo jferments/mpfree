@@ -84,6 +84,21 @@ def build(read):
         "loadpin_oneshot_present_3_10":
             d["boot"]["services"]["/usr/lib/systemd/system/az0x-loadpin-trustpoints.service"]["firmware310"]["present"],
     }
+    checks["flash_partition_capacity_guard"] = (
+        "FUN_00110084" in body("0x001100c8")
+        and "local_8c < uVar4" in body("0x001100c8")
+        and "iVar1 + 0x68" in body("0x001100c8"))
+    checks["flash_sparse_four_chunk_kinds"] = (
+        "FUN_0010fde8" in body("0x001100c8")
+        and all(("case 0x" + code) in body("0x0010fde8")
+                for code in ("cac1","cac2","cac3","cac4")))
+    checks["sparse_raw_fill_partition_bound"] = (
+        "(uint)(param_1[1] + param_1[2]) < iVar11 + uVar2"
+        in body("0x0010fde8"))
+    checks["erase_partition_block_range_guard"] = (
+        "FUN_00110084" in body("0x00110270")
+        and "local_8c < uVar5" in body("0x00110270")
+        and "iVar2 + 0x6c" in body("0x00110270"))
     probe=u.get("direct_boot_probe") or {}
     # New Ghidra byte-level facts are distinct from existing xref evidence.
     checks["literal_pool_both_pointers_equal"] = (
@@ -145,6 +160,22 @@ def build(read):
     q("External media","Does U-Boot scan MMC1?",yes(checks["mmc1_in_saved_targets"]),"Saved boot_targets includes mmc0 mmc1.","Check whether runtime enables the removable controller.")
     q("External media","Is MMC1 disabled in U-Boot DTB?",yes(checks["mmc1_disabled_in_embedded_fdt"]),"MMC1 ff0c0000 disabled in embedded FDT.","Trace driver startup and runtime DTS fixups.")
     q("External media","Can owner boot SD without persistent environment change?","unknown","No proof of SD boot or interactive nonpersistent selection on MPC One.","Find safe serial/boot mechanism; no P2 writes.")
+    q("Storage safety","Does raw Fastboot flash check a partition capacity?",
+      yes(checks["flash_partition_capacity_guard"]),
+      "Function 0x1100c8 resolves a partition and compares aligned requested extent against its available count before the storage write callback.",
+      "Trace integer overflow, partition lookup and actual eMMC physical-range mapping.")
+    q("Storage safety","Does this U-Boot recognize Android sparse images?",
+      yes(checks["flash_sparse_four_chunk_kinds"]),
+      "0x10fde8 has RAW/FILL/DONT_CARE/CRC32 chunk-type branches, and a separate raw/fill output-range check.",
+      "Analyze chunk-count arithmetic and missing/invalid sparse metadata cases.")
+    q("Storage safety","Does sparse image raw/fill output have a capacity condition?",
+      yes(checks["sparse_raw_fill_partition_bound"]),
+      "0x10fde8 compares accumulated write end against partition-end for selected chunk types; other paths still require inspection.",
+      "Verify all chunk types, integer overflow and final extent handling with ARM instructions.")
+    q("Storage safety","Does partition erase have an aligned extent guard?",
+      yes(checks["erase_partition_block_range_guard"]),
+      "0x110270 computes aligned start/end values, checks partition extent and invokes erase callback.",
+      "Trace every callback and distinguish physical block addresses from filesystem names.")
     q("Independent rootfs","Are 3.6 and 3.10 boot scripts unchanged?",yes(checks["stock_scripts_equal_3_6_and_3_10"]),"Normalized scripts equal and call bootz.","Test matching rootfs boot layout in disposable ARM QEMU.")
     q("Independent rootfs","Does openAZ0x have MPC ACVA configuration?","upstream-only","meta-az0x supports acva config, but author marks MPC hardware untested.","Compare kernel 6.18.44 owner rootfs vs openAZ0x 6.18.26 default.")
     q("Independent rootfs","Can MPFree preserve P1/P2/P3?","architecture-supported","Vendor U-Boot loads kernel and DTB from rootfs partition P6.","Qualify P6-only image offline and test kexec before installing.")
