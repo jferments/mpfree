@@ -31,6 +31,15 @@ def read(image,path):
         raise RuntimeError("Unable to read expected owner boot data "+path+
                            " "+proc.stderr.decode(errors="replace")[:200])
     return proc.stdout
+def directory(image,location):
+    """Read metadata-only directory listing from a regular-file owner ext4 image."""
+    proc=subprocess.run(["debugfs","-R","ls -l "+location,str(image)],
+                        capture_output=True,timeout=60,check=False)
+    if proc.returncode or len(proc.stdout)>1024*1024:
+        return {"error":"directory inaccessible or unexpectedly large"}
+    text=proc.stdout.decode("utf-8","replace")
+    return {"path":location,"sha256":H(proc.stdout),
+            "lines":[line.strip() for line in text.splitlines() if line.strip()][:3000]}
 def parse_dtb(blob):
     if len(blob)<40:raise ValueError("FDT too short")
     h=struct.unpack_from(">10I",blob)
@@ -150,6 +159,10 @@ def audit(rootfs):
         "sha256":H(payload["kernel"]),"bytes":len(payload["kernel"]),
         "arm_zimage_magic":payload["kernel"][0x24:0x28]==b"\x18\x28\x6f\x01",
         "raw_kernel_not_included":True}
+    directories=("/boot","/lib/modules","/etc/init.d","/etc/systemd/system",
+                 "/etc/udev/rules.d","/lib/firmware","/usr/lib/firmware")
+    data["rootfs_runtime_inventory"]={
+        name:directory(img,name) for name in directories}
     data["candidate_memory_crossings"]=ranges(data)
     data["limitations"]=[
        "This parses actual owner DTBs and boot script, but does not emulate RK3288.",
