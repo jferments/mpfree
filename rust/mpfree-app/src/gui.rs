@@ -51,9 +51,9 @@ use mpfree_play::mpfree_param::ParamAddr;
 use mpfree_sampler::model::Project;
 use mpfree_synth_ui::view as synth_view;
 use mpfree_synth_ui::{SynthAction, SynthPanel, SynthState};
+use mpfree_time_ui::editor::Lens;
 use mpfree_time_ui::view::{
-    self as time_view, TimePage, TimeState, TransportInfo, CLIPS_HINT, CLIPS_PAGE, EDIT_HINT,
-    SONG_HINT,
+    self as time_view, TimePage, TimeState, TransportInfo, CLIPS_HINT, CLIPS_PAGE, SONG_HINT,
 };
 use mpfree_time_ui::TimeAction;
 use mpfree_touch::mt::Phase;
@@ -1375,7 +1375,10 @@ impl Player {
             match self.view {
                 View::Play => format!("Tap All, Beats, Loop or Drum: the view   ·   Wheel or tap: kit   ·   Q-Link 1 or \
                                        the master bar: level   ·   NOTE REPEAT: repeat   ·   MENU: options   ·   {stop}"),
-                View::Arrange if self.time.edit.is_some() => EDIT_HINT.to_string(),
+                View::Arrange if self.time.edit.is_some() => {
+                    time_view::edit_hint(self.time.edit.as_ref().map_or(Lens::Grid, |e| e.editor.lens))
+                        .to_string()
+                }
                 View::Arrange if self.time.song_view => SONG_HINT.to_string(),
                 View::Arrange => CLIPS_HINT.to_string(),
                 View::Looper if self.looper_page.history_open() => format!("Tap a step: back or forward to it   ·   \
@@ -2113,8 +2116,9 @@ impl Player {
                 self.refresh_arp();
             }
             ToUi::Time(st) => {
-                let swapped = st.song_view != self.time.song_view
-                    || st.edit.is_some() != self.time.edit.is_some();
+                // The lens the note editor shows, if it is open.
+                let lens = |t: &TimeState| t.edit.as_ref().map(|e| e.editor.lens);
+                let swapped = st.song_view != self.time.song_view || lens(&st) != lens(&self.time);
                 self.time = *st;
                 self.sample.set_tempo(self.time.transport.bpm);
                 self.time_page.update(&mut self.ui, &self.time);
@@ -4629,7 +4633,6 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     }
     // The note editor on the Arrange page: the piano roll, the list, then
     // the tracker on a bar of drums.
-    use mpfree_time_ui::editor::Lens;
     for (name, lens) in [
         ("arrange-notes", Some(Lens::Grid)),
         ("arrange-notes-list", Some(Lens::List)),
@@ -5379,6 +5382,16 @@ mod tests {
             tap(&mut p, (tc.x + tc.w / 2, tc.y + tc.h / 2)),
             Some(FromUi::Time(TimeAction::Edit(EditAction::Button(7))))
         );
+        // The list and the tracker have hint lines of their own, which say
+        // SHIFT + wheel scrolls them.
+        let mut st = p.time.clone();
+        if let Some(e) = st.edit.as_mut() {
+            e.editor.lens = Lens::Tracker;
+        }
+        p.apply(ToUi::Time(Box::new(st)));
+        let hint = &p.ui.get::<Label>("hint").unwrap().text;
+        assert_eq!(hint, time_view::EDIT_TRACKER_HINT);
+        assert!(hint.contains("SHIFT + wheel: scroll"));
     }
 
     /// Mockup H: a speaker beside each loop layer's name; a tap mutes

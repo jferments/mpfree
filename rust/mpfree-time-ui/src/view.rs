@@ -70,9 +70,24 @@ pub const SONG_HINT: &str =
 /// of the grid, and the Edit options in place of the record settings.
 pub const EDIT_LAYOUT: &str =
     "col(header:60, transport:44, row(notes:*, col(edit-options:*, takes:240):430):*, hint:26)";
-/// The hint line under the note editor.
+/// The hint line under the note editor's piano roll.
 pub const EDIT_HINT: &str =
     "Tap a note to pick it, drag to move   ·   Tool: select, draw, erase   ·   TC corrects the picked notes (all if none)   ·   wheel: the option picked";
+/// The hint line under the note editor's list.
+pub const EDIT_LIST_HINT: &str =
+    "Tap a row to pick its note   ·   SHIFT + wheel: scroll   ·   TC corrects the picked notes (all if none)   ·   wheel: the option picked";
+/// The hint line under the note editor's tracker.
+pub const EDIT_TRACKER_HINT: &str =
+    "Tap a row to pick its note   ·   Draw: tap an empty step   ·   SHIFT + wheel: scroll   ·   wheel: the option picked";
+
+/// The hint line under the note editor showing `lens`.
+pub fn edit_hint(lens: Lens) -> &'static str {
+    match lens {
+        Lens::Grid => EDIT_HINT,
+        Lens::List => EDIT_LIST_HINT,
+        Lens::Tracker => EDIT_TRACKER_HINT,
+    }
+}
 /// The record settings, top to bottom.
 pub const RECORD_ROWS: [&str; 5] = [
     "Armed track",
