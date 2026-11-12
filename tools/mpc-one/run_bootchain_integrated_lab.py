@@ -914,6 +914,11 @@ class Lab:
                 "fastboot_dispatch_table_eight_entries",
                 "fastboot_boot_command_callback_resolved",
                 "fastboot_download_command_callback_resolved",
+                "all_eight_fastboot_prefixes_exact_and_unique",
+                "getvar_has_no_local_permission_call",
+                "continue_has_no_local_permission_call",
+                "reboot_has_no_local_permission_call",
+                "reboot_mode_clear_and_one_nine_branch",
             )
             dispatch_proof = all(direct["checks"].get(key) is True
                                  for key in dispatch_checks)
@@ -938,7 +943,7 @@ class Lab:
             self.stages["direct-boot-focus-evidence"] = {
                 "success":(passed and literal_proof and dispatch_proof
                            and storage_guard_proof
-                           and len(direct["questions"])>=32 and topic_count==8),
+                           and len(direct["questions"])>=37 and topic_count==8),
                 "questions":len(direct["questions"]),"topics":topic_count,
                 "required_static_checks_passed":passed,
                 "new_literal_pointer_and_token_proof":literal_proof,
