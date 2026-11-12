@@ -484,6 +484,9 @@ pub enum FromUi {
     /// The Looper tab: a command for the picked loop (an edit tool, Fade
     /// old, the seam fade, After recording).
     LoopCommand(mpfree_looper::Command),
+    /// The Looper tab's undo history: back (below 0) or forward this many
+    /// steps.
+    LoopSteps(i32),
     /// Use the loop's Resample: pick loop `n` (empty) and record the
     /// other loops into it, as heard.
     LoopResample(usize),
@@ -1151,6 +1154,21 @@ impl Player {
                         out.push(FromUi::LooperSetting(item, d));
                     }
                 }
+                LoopAct::Tool(crate::looper_page::TOOL_HISTORY) => {
+                    self.looper_page.toggle_history(&mut self.ui);
+                    self.refresh_hint();
+                }
+                LoopAct::Trim(from, to) => {
+                    if let Some(c) = crate::looper_page::trim_command(from, to, &self.looper.status)
+                    {
+                        out.push(FromUi::LoopCommand(c));
+                    }
+                }
+                LoopAct::Step(row) => {
+                    if let Some(n) = self.looper_page.history_steps(row) {
+                        out.push(FromUi::LoopSteps(n));
+                    }
+                }
                 LoopAct::Tool(i) => {
                     let rate = self.looper.rate;
                     if let Some(c) = crate::looper_page::tool_command(i, &self.looper.status, rate)
@@ -1331,6 +1349,8 @@ impl Player {
                 View::Play => format!("Tap All, Beats, Loop or Drum: the view   ·   Wheel or tap: kit   ·   Q-Link 1 or \
                                        the master bar: level   ·   NOTE REPEAT: repeat   ·   MENU: options   ·   {stop}"),
                 View::Arrange => CLIPS_HINT.to_string(),
+                View::Looper if self.looper_page.history_open() => format!("Tap a step: back or forward to it   ·   \
+                                         drag: scroll   ·   Undo history: close   ·   UNDO: undo (SHIFT: redo)   ·   {stop}"),
                 View::Looper => format!("Tap a loop or a layer: pick it   ·   Q-Links: layer level and pan, Fade old, \
                                          seam fade   ·   REC: record   ·   OVERDUB: overdub   ·   UNDO: undo (SHIFT: redo)   ·   \
                                          {stop}"),
@@ -4548,6 +4568,15 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     }
     match sample_looper(fonts()) {
         Ok(p) => out.push(("looper", p)),
+        Err(e) => eprintln!("looper sample: {e}"),
+    }
+    // The same with the undo history open: the bass and the chop overdubs.
+    match sample_looper(fonts()) {
+        Ok(mut p) => {
+            p.looper_page.toggle_history(&mut p.ui);
+            p.refresh_hint();
+            out.push(("looper-history", p));
+        }
         Err(e) => eprintln!("looper sample: {e}"),
     }
     // The synth on the pads (the kit list's last entry), then its page.
