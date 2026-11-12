@@ -2,12 +2,14 @@
 //! characters that slows, spirals in and settles into "MPFree OS v0.1" in
 //! shaded ASCII art.
 //!
-//! The letters are drawn as a grid of terminal cells (VT323, a terminal
-//! face). Each cell of the final picture is shaded twice: its *character* is
-//! picked from a long ramp by how much ink and light it has (` .:-=+*#%@`
-//! and many in between), and its *colour* from a ramp from deep teal in the
-//! shadows through phosphor green to pale mint where the light catches the
-//! upper-left edges. A drop shadow of dim characters sits under the letters.
+//! The title is the blade letters of the other startup screens (see
+//! [`crate::blade`]), drawn at full size and then turned into a grid of
+//! terminal cells (VT323 characters), one character per cell and none
+//! overlapping. Each cell's *character* is the one whose own shape and
+//! density best match the ink in that cell, so edges follow the letters and
+//! the lit side gets denser characters than the shadow side. Its *colour*
+//! runs from pale mint at the top of the letters through phosphor green to
+//! teal at the bottom, lifted where the light from the upper left falls.
 //!
 //! Timeline:
 //! - 0.0 s: thousands of characters swirl round the centre, flickering
@@ -20,6 +22,7 @@
 //! Every particle's place and character come from the time and its seed,
 //! so any frame can be drawn on its own.
 
+use crate::blade;
 use crate::gfx::{self, add, hash, hex, mix3, over, pack, scale, smoothstep, Mask};
 use crate::Scene;
 use mpfree_ui::SoftCanvas;
@@ -27,9 +30,13 @@ use std::f32::consts::{PI, TAU};
 
 const CW: usize = 8;
 const CH: usize = 13;
+/// Each cell is matched to a character as a SX x SY grid of ink.
+const SX: usize = 4;
+const SY: usize = 6;
+/// The characters the picture may use (space included, for empty cells).
+const PALETTE: &[u8] =
+    b" .,:;'`\"-_~=+*^<>/\\|()[]{}!?ilIjtfrxnuvczoaesYTLJCUQOZXVAKHNMWE#%&@$80db";
 const BG: u32 = 0x020604;
-/// Light to dark ink, for the shading.
-const RAMP: &[u8] = b".'`^\",:;Il!i><~+_-?][}{1)(|/tfjrxnuvczXYUJCLQ0OZmwqpdbkhao*#MW&8%B@$";
 /// What the swirl flickers through.
 const CHAOS: &[u8] = b"0123456789ABCDEF<>/\\|{}[]()#$%&*+=-~^:;!?@xXoO";
 const PROMPT: &str = "> MPFree OS v0.1 :: console ready";
@@ -64,45 +71,6 @@ pub struct Console {
 
 fn glyph_index(c: u8) -> usize {
     (c.clamp(32, 126) - 32) as usize
-}
-
-/// The banner text as a mask at roughly `cols` cells wide; cells are taller
-/// than wide, so the mask is sampled `CH / CW` times more coarsely down.
-/// It fits in `cols` x `max_rows` cells; strokes are thickened first so the
-/// terminal face's thin lines hold enough characters to shade.
-fn banner(
-    font: &fontdue::Font,
-    text: &str,
-    cols: usize,
-    max_rows: usize,
-) -> (Vec<f32>, usize, usize) {
-    let m = gfx::text_mask(font, 260.0, 30.0, text).padded(6).dilated(4);
-    let mut sx = m.w as f32 / cols as f32;
-    if m.h as f32 / (sx * CH as f32 / CW as f32) > max_rows as f32 {
-        sx = m.h as f32 / (max_rows as f32 * CH as f32 / CW as f32);
-    }
-    let cols = ((m.w as f32 / sx).ceil() as usize).max(1);
-    let sy = sx * CH as f32 / CW as f32;
-    let rows = ((m.h as f32 / sy).ceil() as usize).max(1);
-    let mut cov = vec![0.0f32; cols * rows];
-    for r in 0..rows {
-        for c in 0..cols {
-            let (x0, y0) = ((c as f32 * sx) as usize, (r as f32 * sy) as usize);
-            let (x1, y1) = (
-                (((c + 1) as f32 * sx) as usize).min(m.w),
-                (((r + 1) as f32 * sy) as usize).min(m.h),
-            );
-            let (mut sum, mut n) = (0u32, 0u32);
-            for y in y0..y1 {
-                for x in x0..x1 {
-                    sum += m.at(x, y) as u32;
-                    n += 1;
-                }
-            }
-            cov[r * cols + c] = sum as f32 / (n.max(1) * 255) as f32;
-        }
-    }
-    (cov, cols, rows)
 }
 
 /// A place on one of three spiral arms (radius, angle), so the swirl reads
@@ -148,28 +116,92 @@ impl Console {
             glyphs.push(g);
         }
 
-        // The picture: "MPFree" big, "OS v0.1" under it, in terminal letters.
-        let (big, bc, br) = banner(&term, crate::TITLE, cols * 86 / 100, rows * 46 / 100);
-        let (small, sc, sr) = banner(
-            &term,
-            &format!("OS {}", crate::VERSION),
-            cols * 56 / 100,
-            rows * 24 / 100,
-        );
-        let total = br + 2 + sr;
-        let top = rows.saturating_sub(total + 4) / 2;
-        let mut grid = vec![0.0f32; cols * rows];
-        for (cov, bw, bh, c0, r0) in [
-            (&big, bc, br, (cols - bc) / 2, top),
-            (&small, sc, sr, (cols - sc) / 2, top + br + 2),
-        ] {
-            for r in 0..bh {
-                for c in 0..bw {
-                    let (gc, gr) = (c0 + c, r0 + r);
-                    if gc < cols && gr < rows {
-                        grid[gr * cols + gc] = cov[r * bw + c];
-                    }
+        // The picture: "MPFree OS" and "v0.1" in the blade letters the other
+        // startup screens use, drawn at full size, then turned into
+        // characters cell by cell. Each cell gets the character whose own
+        // shape best matches the ink in that cell (so edges follow the
+        // letters with / \ | _ and the like), scaled by how lit the cell is
+        // (so the light side gets denser characters than the shadow side).
+        let s = h as f32 / 800.0;
+        let title = format!("{} OS", crate::TITLE);
+        let style = blade::Style {
+            seed: 3,
+            weight: 1.45,
+            ..Default::default()
+        };
+        let mut cap = 190.0 * s;
+        let mut tm = blade::render(&title, cap, style);
+        let max_w = w as f32 * 0.88;
+        if tm.w as f32 > max_w {
+            cap *= max_w / tm.w as f32;
+            tm = blade::render(&title, cap, style);
+        }
+        let vm = blade::render(crate::VERSION, cap * 0.5, blade::Style { seed: 5, ..style });
+        let gap = CH * 2;
+        let total = tm.h + gap + vm.h;
+        let top = (h.saturating_sub(total + CH * 6) / 2) / CH * CH;
+        let mut ink = Mask::new(w, h);
+        let mut place = |m: &Mask, y: usize| {
+            let x0 = (w.saturating_sub(m.w) / 2) / CW * CW;
+            for yy in 0..m.h.min(h.saturating_sub(y)) {
+                for xx in 0..m.w.min(w - x0) {
+                    ink.a[(y + yy) * w + x0 + xx] = m.a[yy * m.w + xx];
                 }
+            }
+        };
+        place(&tm, top);
+        let vtop = (top + tm.h + gap) / CH * CH;
+        place(&vm, vtop);
+        let title_rows = (top / CH, (top + tm.h).div_ceil(CH));
+        // Each cell as a SX x SY grid of ink amounts, and every character's
+        // shape the same way.
+        let feat = |m: &Mask, x0: usize, y0: usize, out: &mut [f32; SX * SY]| {
+            for j in 0..SY {
+                for i in 0..SX {
+                    let (ax, bx) = (x0 + i * CW / SX, x0 + (i + 1) * CW / SX);
+                    let (ay, by) = (y0 + j * CH / SY, y0 + (j + 1) * CH / SY);
+                    let mut sum = 0u32;
+                    for y in ay..by {
+                        for x in ax..bx {
+                            sum += m.a[y * m.w + x] as u32;
+                        }
+                    }
+                    out[j * SX + i] = sum as f32 / (((bx - ax) * (by - ay)).max(1) * 255) as f32;
+                }
+            }
+        };
+        // Each character's density, and its shape with the density taken
+        // out (mean removed, scaled to unit spread), so the two can be
+        // matched separately.
+        let shape_of = |f: &[f32; SX * SY]| {
+            let n = f.len() as f32;
+            let mean = f.iter().sum::<f32>() / n;
+            let sd = (f.iter().map(|v| (v - mean).powi(2)).sum::<f32>() / n).sqrt();
+            let mut out = [0.0f32; SX * SY];
+            if sd > 0.02 {
+                for (o, v) in out.iter_mut().zip(f) {
+                    *o = (v - mean) / sd;
+                }
+            }
+            (mean, out)
+        };
+        let shapes: Vec<(u8, f32, [f32; SX * SY])> = PALETTE
+            .iter()
+            .map(|&c| {
+                let mut f = [0.0; SX * SY];
+                feat(&glyphs[glyph_index(c)], 0, 0, &mut f);
+                let (d, sh) = shape_of(&f);
+                (c, d, sh)
+            })
+            .collect();
+        let densest = shapes.iter().map(|s| s.1).fold(0.0f32, f32::max);
+        let mut cells = vec![[0.0f32; SX * SY]; cols * rows];
+        let mut grid = vec![0.0f32; cols * rows];
+        for r in 0..rows {
+            for c in 0..cols {
+                let f = &mut cells[r * cols + c];
+                feat(&ink, c * CW, r * CH, f);
+                grid[r * cols + c] = f.iter().sum::<f32>() / f.len() as f32;
             }
         }
         // Light from the upper left: the slope of a softened copy, so edges
@@ -202,21 +234,40 @@ impl Console {
             for c in 0..cols {
                 let v = grid[r * cols + c];
                 let (ci, ri) = (c as i32, r as i32);
-                let shadow = v < 0.12 && r > 0 && c > 0 && grid[(r - 1) * cols + c - 1] > 0.4;
-                if v < 0.12 && !shadow {
+                if v < 0.04 {
                     continue;
                 }
-                let (ch, color) = if shadow {
-                    (b".:;"[(next() % 3) as usize], SHADE[0])
-                } else {
+                let (ch, color) = {
                     let light = ((sv(ci + 1, ri + 1) - sv(ci - 1, ri - 1)) * 1.6).clamp(-1.0, 1.0);
-                    let depth = sv(ci, ri);
-                    // How much ink: coverage, deeper inside, brighter towards the light.
-                    let ink = (v * 0.55 + depth * 0.45 + light * 0.25).clamp(0.0, 1.0);
-                    let jitter = (next() % 7) as i32 - 3;
-                    let k = ((ink * (RAMP.len() - 1) as f32) as i32 + jitter)
-                        .clamp(0, RAMP.len() as i32 - 1) as usize;
-                    let tone = (0.15 + ink * 0.55 + light * 0.45).clamp(0.0, 0.999)
+                    // How dense the characters get: lit cells darker ink, the
+                    // shadow side lighter.
+                    let (_, want) = shape_of(&cells[r * cols + c]);
+                    let target = densest * v * (0.6 + 0.4 * light).clamp(0.2, 1.0);
+                    let mut best = (f32::MAX, b' ');
+                    for (g, d, f) in &shapes {
+                        let shape: f32 = want
+                            .iter()
+                            .zip(f)
+                            .map(|(a, b)| (a - b).powi(2))
+                            .sum::<f32>();
+                        let e = (d - target).powi(2) * 400.0 + shape * 0.02;
+                        if e < best.0 {
+                            best = (e, *g);
+                        }
+                    }
+                    if best.1 == b' ' {
+                        continue;
+                    }
+                    // Colour: pale mint at the top of the letters to deep
+                    // teal at the bottom, lifted where the light falls.
+                    let (r0, r1) = title_rows;
+                    let down = if (r0..r1).contains(&r) {
+                        (r - r0) as f32 / (r1 - r0).max(1) as f32
+                    } else {
+                        0.35
+                    };
+                    let tone = (0.2 + (1.0 - down) * 0.6 + light * 0.3 + v * 0.15)
+                        .clamp(0.0, 0.999)
                         * (SHADE.len() - 1) as f32;
                     let (i, f) = (tone as usize, tone.fract());
                     let col = pack(mix3(
@@ -224,7 +275,7 @@ impl Console {
                         hex(SHADE[(i + 1).min(SHADE.len() - 1)]),
                         f,
                     ));
-                    (RAMP[k], col)
+                    (best.1, col)
                 };
                 let d = (((c as f32 - cx).powi(2) + ((r as f32 - cy) * 1.6).powi(2)).sqrt()
                     / max_d)
@@ -254,7 +305,7 @@ impl Console {
                 seed: next(),
             });
         }
-        let prompt_row = (top + total + 4).min(rows.saturating_sub(2));
+        let prompt_row = ((vtop + vm.h) / CH + 3).min(rows.saturating_sub(2));
         Console {
             w,
             h,

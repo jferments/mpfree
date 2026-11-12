@@ -1256,6 +1256,13 @@ impl Player {
     fn set_settings(&mut self, s: Settings) {
         let resumed = self.settings.console_paused && !s.console_paused;
         let retab = self.settings.debug_mode != s.debug_mode;
+        // Prefs > Appearance picked a theme: switch to it now. (A theme file
+        // from --theme is not a built-in name and stays as it is.)
+        if self.settings.theme != s.theme {
+            if let Some(t) = Theme::builtin(&s.theme) {
+                self.ui.set_theme(t);
+            }
+        }
         self.settings = s;
         // The sampler keeps the line input only while it is on.
         let line = self.settings.line_input;
@@ -3581,6 +3588,15 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         }
     }
     out.push(("prefs-touch", touch));
+    // Prefs with the Appearance row selected, stepped to Synthwave.
+    let mut look = sample_player(fonts());
+    let mut l = crate::app::App::new(44_100, false);
+    let mut fx = l.open_tab(View::Prefs);
+    let at = l.row_of(crate::app::Item::Appearance).unwrap_or(0);
+    fx.extend(l.step_item(at, 1));
+    fx.extend(l.step_item(at, 1));
+    apply_effects(&mut look, fx);
+    out.push(("prefs-appearance", look));
     // The guide from Prefs ("Find the buttons again"), PLAY pressed when it
     // asks for MENU.
     let mut guide = sample_player(fonts());
@@ -6474,6 +6490,22 @@ mod tests {
             .unwrap();
         p.apply(ToUi::SynthMeters(vec![(i, 3.0)]));
         assert_eq!(p.synth.as_ref().unwrap().state.values[i], 3.0);
+    }
+
+    #[test]
+    fn appearance_switches_the_theme_live() {
+        let mut p = sample_player(Fonts::embedded());
+        let pick = |name: &str| Settings {
+            theme: name.to_string(),
+            ..Settings::default()
+        };
+        p.apply(ToUi::Settings(pick("console")));
+        assert_eq!(p.ui.theme, Theme::builtin("console").unwrap());
+        // A name that is not built in (a theme file from --theme) leaves it.
+        p.apply(ToUi::Settings(pick("/run/mpfree-data/mine.theme")));
+        assert_eq!(p.ui.theme, Theme::builtin("console").unwrap());
+        p.apply(ToUi::Settings(pick("default")));
+        assert_eq!(p.ui.theme, Theme::dark());
     }
 
     #[test]

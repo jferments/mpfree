@@ -285,7 +285,8 @@ The pad player (`play` and `app`) carries Poly, FM, Drums, Pluck and Wavetable; 
 
 ## Next
 
-- Tunings and expression: Tone routing in Poly, FM and Wavetable (two slots on the pressure targets, on the Pressure page), Tuning and A4 rows on the Synth tab, a tuning per track slot. Then Q-Link banks, a preset file format, the sampler as a node and the instrument browser (plan doc "Four synth features: plan").
+- Tunings and expression: Tone routing in Poly, FM and Wavetable (two slots on the pressure targets, on the Pressure page), Tuning and A4 rows on the Synth tab, a tuning per track slot. Then Q-Link banks, the sampler as a node and the instrument browser (plan doc "Four synth features: plan").
+- Presets as files: the format is built ([Sound presets](presets.md)); next, the catalogue and Save and Load with the browser page.
 - A track host: built in `rust/mpfree-track` ([Track host](track-host.md)); next, wiring it into the pad player.
 - The Sample tab's "Make a wavetable": see [Wavetable synth](wavetable.md).
 - Plugin hosting: the CLAP host and its sandbox process are built ([Plugins](plugins.md)); next, ARM builds of free plugins (P3).
