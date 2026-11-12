@@ -1,0 +1,14 @@
+/* MPFree manual: status banners, "Coming from an MPC" boxes and screenshots. */
+:root { --mpf-accent: #6aa6ff; --mpf-mpc: #f2b544; --mpf-warn: #ff8a65; }
+.mpf-status { border-radius: 8px; padding: .6em 1em; margin: 0 0 1.4em; font-size: .92em;
+  border-left: 4px solid var(--mpf-warn); background: color-mix(in srgb, var(--mpf-warn) 12%, transparent); }
+.mpf-status.planned { border-left-color: #9e9e9e; background: color-mix(in srgb, #9e9e9e 14%, transparent); }
+.mpf-status strong { text-transform: uppercase; letter-spacing: .04em; font-size: .85em; margin-right: .4em; }
+.mpf-box { border-radius: 8px; padding: .2em 1em; margin: 1.2em 0; border-left: 4px solid var(--mpf-accent);
+  background: color-mix(in srgb, var(--mpf-accent) 10%, transparent); }
+.mpf-box.mpc { border-left-color: var(--mpf-mpc); background: color-mix(in srgb, var(--mpf-mpc) 12%, transparent); }
+.mpf-box.warning { border-left-color: var(--mpf-warn); background: color-mix(in srgb, var(--mpf-warn) 12%, transparent); }
+.mpf-box > .mpf-box-title { font-weight: 600; margin: .6em 0 .2em; }
+figure.mpf-shot { margin: 1.2em 0; }
+figure.mpf-shot img { width: 100%; border-radius: 10px; box-shadow: 0 2px 12px rgba(0,0,0,.35); }
+figure.mpf-shot figcaption { font-size: .88em; opacity: .8; margin-top: .4em; }

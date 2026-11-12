@@ -242,7 +242,7 @@ pub fn session_rows(s: &Snapshot) -> Vec<(String, String, Tone)> {
     ));
     rows.push((
         "Budgets".to_string(),
-        "a proposal: docs/project/profiling.md".to_string(),
+        "a proposal: docs/dev/design/profiling.md".to_string(),
         Tone::Dim,
     ));
     rows

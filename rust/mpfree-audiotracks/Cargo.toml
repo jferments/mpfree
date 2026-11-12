@@ -1,0 +1,13 @@
+[package]
+name = "mpfree-audiotracks"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Audio tracks on the song timeline: linear recording from the line input onto tracks, a take per pass of a loop recording, swipe comping between takes, crossfaded punch in and out, input latency compensation; one memory, no allocation while running"
+
+[lib]
+name = "mpfree_audiotracks"
+path = "src/lib.rs"
+
+[dependencies]
+mpfree-transport = { path = "../mpfree-transport" }

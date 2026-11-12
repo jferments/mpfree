@@ -495,6 +495,11 @@ impl MixHost {
         self.state_at = None;
     }
 
+    /// The mixer view the panel shows, if it is open.
+    pub fn shown(&self) -> Option<MixView> {
+        self.shown
+    }
+
     /// What the panel sent. Returns the master fader's new level when it
     /// moved, so the Play page's Level follows.
     pub fn action(&mut self, a: &MixAction) -> Option<f32> {

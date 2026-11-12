@@ -58,7 +58,7 @@ pub fn scene(kind: Startup, w: i32, h: i32) -> Option<Box<dyn Scene>> {
 
 /// The startup screen for the theme the user picked in Prefs > Appearance,
 /// read from the data folder the app saves to (`--data`,
-/// docs/project/storage-spec.md): `settings/app.conf`, key `theme`. That is
+/// docs/dev/design/storage-spec.md): `settings/app.conf`, key `theme`. That is
 /// a built-in name, or a theme file in the themes folder
 /// (`files/themes/NAME.theme`), whose `startup` (or its base's) is used.
 /// Gives the built-in theme whose startup screen that is ("console",
