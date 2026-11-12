@@ -453,6 +453,8 @@ pub struct ClipGrid {
     pub scene_playing: Option<usize>,
     /// The scene launched and waiting for the next bar line.
     pub scene_cued: Option<usize>,
+    /// Live to song armed: what the grid plays is recorded into the song.
+    pub song_rec: bool,
     /// What was drawn last, so a change redraws only the cells that changed.
     drawn: RefCell<Option<Drawn>>,
 }
@@ -464,10 +466,34 @@ struct Drawn {
     legend: String,
     tracks: Vec<GridTrack>,
     scenes: (Option<usize>, Option<usize>),
+    song_rec: bool,
 }
 
 /// Tracks shown at once.
 pub const GRID_COLS: usize = 8;
+/// The Rec song button's width (on the grid and the Song view).
+pub const REC_SONG_W: i32 = 112;
+
+/// The Rec song button: live to song, red while armed.
+pub fn rec_song_pill(cx: &mut PaintCx, r: Rect, on: bool) {
+    let t = cx.theme.clone();
+    cx.canvas
+        .fill_round_rect(r, 10, if on { t.bad } else { t.raised });
+    let ink = if on { t.text } else { t.text_dim };
+    cx.canvas.fill_round_rect(
+        Rect::new(r.x + 12, r.y + r.h / 2 - 5, 10, 10),
+        5,
+        if on { t.text } else { t.bad },
+    );
+    cx.text(
+        FontId::Bold,
+        t.size_small,
+        Rect::new(r.x + 28, r.y, r.w - 34, r.h),
+        Align::Left,
+        ink,
+        "Rec song",
+    );
+}
 /// The scene buttons' column: each row's number launches the row.
 const LABEL_W: i32 = 48;
 const HEAD_H: i32 = 28;
@@ -495,6 +521,7 @@ impl ClipGrid {
             first_row: 0,
             scene_playing: None,
             scene_cued: None,
+            song_rec: false,
             drawn: RefCell::new(None),
         }
     }
@@ -518,6 +545,12 @@ impl ClipGrid {
     pub fn song_rect(&self, r: Rect) -> Rect {
         let head = r.inset(14).take_top(26).0;
         Rect::new(head.right() - 72, head.y - 4, 72, 30)
+    }
+
+    /// Where the Rec song button is: left of the Song button.
+    pub fn rec_rect(&self, r: Rect) -> Rect {
+        let song = self.song_rect(r);
+        Rect::new(song.x - 8 - REC_SONG_W, song.y, REC_SONG_W, song.h)
     }
 
     /// Where the Stop all button is: over the scene buttons.
@@ -598,6 +631,7 @@ impl Widget for ClipGrid {
             || d.legend != self.legend
             || d.tracks.len() != self.tracks.len()
             || d.scenes != (self.scene_playing, self.scene_cued)
+            || d.song_rec != self.song_rec
         {
             return None;
         }
@@ -626,19 +660,23 @@ impl Widget for ClipGrid {
             legend: self.legend.clone(),
             tracks: self.tracks.clone(),
             scenes: (self.scene_playing, self.scene_cued),
+            song_rec: self.song_rec,
         });
         cx.titled_panel(r, &self.title, "");
-        // The legend, then the Song button (the Song view of the page).
+        // The legend, then Rec song and the Song button (the Song view of
+        // the page).
         let song = self.song_rect(r);
+        let rec = self.rec_rect(r);
         let head = r.inset(14).take_top(26).0;
         cx.text(
             FontId::Sans,
             t.size_small,
-            Rect::new(head.x, head.y, song.x - head.x - 12, head.h),
+            Rect::new(head.x, head.y, rec.x - head.x - 12, head.h),
             Align::Right,
             t.text_dim,
             &self.legend,
         );
+        rec_song_pill(cx, rec, self.song_rec);
         cx.canvas.fill_round_rect(song, 10, t.raised);
         cx.text(
             FontId::Bold,
@@ -743,9 +781,12 @@ impl Widget for ClipGrid {
             return None;
         }
         // A row's scene button is Toggle(row); Stop all is Toggle(slots);
-        // the Song button Toggle(slots + 1).
+        // the Song button Toggle(slots + 1); Rec song Toggle(slots + 2).
         if self.song_rect(r).contains(x, y) {
             return Some(EventKind::Toggle(self.slots + 1));
+        }
+        if self.rec_rect(r).contains(x, y) {
+            return Some(EventKind::Toggle(self.slots + 2));
         }
         if self.tracks.is_empty() {
             return None;
@@ -1391,6 +1432,12 @@ mod tests {
         assert_eq!(
             g.touch(1, Touch::Down, song.x + 4, song.y + 4, r),
             Some(EventKind::Toggle(17))
+        );
+        let rec = g.rec_rect(r);
+        assert!(rec.right() < song.x, "{rec:?}");
+        assert_eq!(
+            g.touch(1, Touch::Down, rec.x + 4, rec.y + 4, r),
+            Some(EventKind::Toggle(18))
         );
         g.first_row = 2;
         assert_eq!(

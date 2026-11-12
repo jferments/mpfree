@@ -11,6 +11,10 @@
 //! - **Pad layout**: the bank playing's layout, Chromatic (the scale lit),
 //!   In key or Chord pads. Banks A to H start as `DEFAULT_BANKS`.
 //! - **In key rows**: in sequence, or a fourth apart.
+//! - **Tuning**, **Tuning root** and **A4**: how notes become pitches for
+//!   every engine but Drums: 12-TET, just intonation, Pythagorean,
+//!   quarter-comma meantone or 24-TET quarter tones, the root the table
+//!   tunings are pure on, and A4 from 380 to 480 Hz.
 //!
 //! The app keeps these and hands them to the synth as
 //! [`Effect::SynthPads`]; the audio loop applies them. The pads panel's
@@ -18,7 +22,7 @@
 //! buttons picking a bank's layout ([`App::synth_bank`]) change them too.
 
 use super::{App, Effect, Item};
-use crate::synth::{Engine, BANKS};
+use crate::synth::{Builtin, Engine, A4_MAX, A4_MIN, BANKS};
 use mpfree_arp::scale::pads::{InKeyRows, PadLayout};
 use mpfree_arp::scale::{Scale, NOTE_NAMES, SCALES};
 
@@ -30,16 +34,22 @@ pub enum SynthItem {
     Root,
     Layout,
     Rows,
+    Tuning,
+    TuningRoot,
+    A4,
 }
 
 /// The options menu opened from the Synth tab: the synth's own rows, then
 /// the Play rows as before.
-pub(super) const SYNTH_OPTIONS: [Item; 9] = [
+pub(super) const SYNTH_OPTIONS: [Item; 12] = [
     Item::Synth(SynthItem::Engine),
     Item::Synth(SynthItem::Scale),
     Item::Synth(SynthItem::Root),
     Item::Synth(SynthItem::Layout),
     Item::Synth(SynthItem::Rows),
+    Item::Synth(SynthItem::Tuning),
+    Item::Synth(SynthItem::TuningRoot),
+    Item::Synth(SynthItem::A4),
     Item::Rate,
     Item::Tempo,
     Item::PadLevel,
@@ -106,6 +116,16 @@ impl App {
                 },
             ),
             SynthItem::Rows => ("In key rows", p.rows.label().to_string()),
+            SynthItem::Tuning => ("Tuning", p.tuning.builtin.name().to_string()),
+            SynthItem::TuningRoot => (
+                "Tuning root",
+                if p.tuning.builtin.has_root() {
+                    NOTE_NAMES[usize::from(p.tuning.root % 12)].to_string()
+                } else {
+                    format!("{} (not used)", NOTE_NAMES[usize::from(p.tuning.root % 12)])
+                },
+            ),
+            SynthItem::A4 => ("A4", format!("{} Hz", p.tuning.a4_hz)),
         }
     }
 
@@ -144,6 +164,25 @@ impl App {
                 "notes) above the row below, so a chord keeps",
                 "one shape.",
             ],
+            SynthItem::Tuning => vec![
+                "How notes become pitches: 12-TET (the usual),",
+                "just intonation (pure thirds and fifths on",
+                "the root), Pythagorean (pure fifths),",
+                "quarter-comma meantone (pure thirds) or",
+                "24-TET (each pad a quarter tone). Drums keep",
+                "their own pitch. Held notes follow at once.",
+            ],
+            SynthItem::TuningRoot => vec![
+                "The note just intonation, Pythagorean and",
+                "meantone are pure on. It keeps its usual",
+                "pitch and the others move around it. The",
+                "equal tunings don't use it.",
+            ],
+            SynthItem::A4 => vec![
+                "The pitch of the A above middle C, 380 to",
+                "480 Hz: 440 is the usual, 432 and 442 are",
+                "common, 415 is baroque pitch.",
+            ],
         }
     }
 
@@ -176,6 +215,19 @@ impl App {
             }
             SynthItem::Rows => {
                 self.synth_pads.rows = step_in(&InKeyRows::ALL, self.synth_pads.rows, d)
+            }
+            SynthItem::Tuning => {
+                let t = &mut self.synth_pads.tuning;
+                t.builtin = step_in(&Builtin::ALL, t.builtin, d);
+            }
+            SynthItem::TuningRoot => {
+                let t = &mut self.synth_pads.tuning;
+                t.root = (i32::from(t.root % 12) + d).clamp(0, 11) as u8;
+            }
+            SynthItem::A4 => {
+                let t = &mut self.synth_pads.tuning;
+                t.a4_hz =
+                    (i32::from(t.a4_hz) + d).clamp(i32::from(A4_MIN), i32::from(A4_MAX)) as u16;
             }
         }
         if (self.synth_pads, self.pad_scale_pick, self.pad_scale_root) == before {
