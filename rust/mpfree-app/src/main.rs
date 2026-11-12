@@ -3037,6 +3037,13 @@ fn player_session(
         },
     }
     app.pattern_file = store.saves();
+    // The Synth tab's options, now that the owner's scales (above) and the
+    // tuning files are known. The synth takes them with the first period.
+    let (notes, synth_fx) = app.restore_synth(&store.settings(app::saved::SYNTH));
+    for line in notes {
+        out.say(&line);
+    }
+    fx.extend(synth_fx);
     let (mut left, mut right) = ([0f32; PERIOD], [0f32; PERIOD]);
     // Each engine's period, for its track, and the pads' sound for the looper.
     let (mut drums_l, mut drums_r) = ([0f32; PERIOD], [0f32; PERIOD]);
