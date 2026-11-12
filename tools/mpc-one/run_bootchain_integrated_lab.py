@@ -910,20 +910,29 @@ class Lab:
             )
             literal_proof = all(direct["checks"].get(key) is True
                                 for key in exact_checks)
+            dispatch_checks = (
+                "fastboot_dispatch_table_eight_entries",
+                "fastboot_boot_command_callback_resolved",
+                "fastboot_download_command_callback_resolved",
+            )
+            dispatch_proof = all(direct["checks"].get(key) is True
+                                 for key in dispatch_checks)
             record["direct_boot_focus"] = {
                 "report": "direct-boot-focus.json",
                 "questions":len(direct["questions"]),
                 "topics":topic_count,
                 "required_owner_evidence":passed,
                 "literal_pointer_and_token_proven":literal_proof,
+                "eight_entry_fastboot_dispatch_proven":dispatch_proof,
                 "permission_pointer_probe":direct.get("probe",{}),
             }
             self.stages["direct-boot-focus-evidence"] = {
-                "success":(passed and literal_proof
-                           and len(direct["questions"])>=26 and topic_count==7),
+                "success":(passed and literal_proof and dispatch_proof
+                           and len(direct["questions"])>=28 and topic_count==7),
                 "questions":len(direct["questions"]),"topics":topic_count,
                 "required_static_checks_passed":passed,
                 "new_literal_pointer_and_token_proof":literal_proof,
+                "new_boot_and_download_dispatch_proof":dispatch_proof,
             }
         except Exception as exc:
             record["direct_boot_focus_error"]=str(exc)
@@ -1086,6 +1095,8 @@ class Lab:
                            str(direct["required_owner_evidence"]))
             summary.append("- Exact U-Boot OEM token and shared permission pointer proof: " +
                            str(direct["literal_pointer_and_token_proven"]))
+            summary.append("- Eight-entry Fastboot boot/download dispatch proof: " +
+                           str(direct["eight_entry_fastboot_dispatch_proven"]))
             summary.append("- See direct-boot-focus.md for individual evidence, limitations and follow-ups.")
             summary.append("- No Fastboot commands sent; no rootfs, eMMC or device modified.")
         summary += ["", "## ARM guest P6 boot/kernel/module compatibility"]
