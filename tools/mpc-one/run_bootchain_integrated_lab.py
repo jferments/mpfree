@@ -796,13 +796,18 @@ class Lab:
                 ]
                 r0_checked = sum(bool(call["immediate_r0_test"]) for call in arm_sites)
                 r0_copied = sum(bool(call["r0_copies"]) for call in arm_sites)
+                r0_returned = sum(
+                    bool(call["r0_preserved_to_normal_return"]) for call in arm_sites
+                )
                 cmp_only = sum(bool(call["immediate_r0_compare"]) for call in arm_sites)
                 self.stages["arm-return-contract-evidence"] = {
-                    "success": r0_checked >= 6 and r0_copied >= 2,
+                    "success": (r0_checked >= 6 and r0_copied >= 2
+                                and r0_returned >= 3),
                     "captured_status_test_callsites": r0_checked,
                     "explicit_cmp_callsites": cmp_only,
                     "subs_zero_test_callsites": r0_checked - cmp_only,
                     "r0_captured_for_later_use": r0_copied,
+                    "normal_fallthrough_return_passthroughs": r0_returned,
                     "functions": len(arm_report["functions"]),
                 }
                 record["arm_return_contract_evidence"] = {
@@ -811,6 +816,7 @@ class Lab:
                     "explicit_cmp_callsites": cmp_only,
                     "subs_zero_test_callsites": r0_checked - cmp_only,
                     "r0_copy_callsites": r0_copied,
+                    "normal_fallthrough_r0_passthroughs": r0_returned,
                     "safety": "Read-only static-derived facts, no vendor execution",
                 }
             except Exception as exc:
@@ -857,8 +863,11 @@ class Lab:
                            str(arm["status_test_callsites"]))
             summary.append("- CMP/other explicit comparisons: " + str(arm["explicit_cmp_callsites"]) +
                            "; SUBS-zero flag tests: " + str(arm["subs_zero_test_callsites"]))
-            summary.append("- Additional BL callsites preserving r0 for deferred handling: " +
+            summary.append("- Additional BL callsites copying r0 for deferred handling: " +
                            str(arm["r0_copy_callsites"]))
+            summary.append("- Normal fallthrough paths returning the callee r0 unchanged: " +
+                           str(arm["normal_fallthrough_r0_passthroughs"]))
+            summary.append("- Return passthrough proves only the normal fallthrough, not all branches.")
             summary.append("- See arm-return-contracts.json and .md for addresses and caveats.")
         summary += ["", "## Guest/static image consistency"]
         if record["match_tests"]:
