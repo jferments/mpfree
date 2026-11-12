@@ -705,6 +705,68 @@ fn cv_pitch_and_gate_follow_a_mono_line() {
     assert_eq!(at(2), vec![(0, 0.0), (10, 8.0), (20, 64.0 / 127.0 * 8.0)]);
 }
 
+/// A sequence's notes back to back: the gate drops for GATE_GAP_MS
+/// between them, so the envelope starts again; the pitch moves at once.
+#[test]
+fn cv_gate_drops_between_notes_that_touch() {
+    let mut cv = CvEngine::new(48_000);
+    let ch = RefCell::new(Vec::new());
+    let mut emit = |c: CvChange| ch.borrow_mut().push(c);
+    let pitch = CvAssign::Pitch {
+        track: 0,
+        scale: Scale::VoltsPerOctave(1.0),
+        zero_note: 36,
+        bend_semis: 0,
+        priority: Priority::Last,
+    };
+    let gate = CvAssign::Gate {
+        track: 0,
+        volts: 5.0,
+        retrigger_ms: 0.0,
+    };
+    cv.set_assign(0, pitch, 0, &mut emit);
+    cv.set_assign(1, gate, 0, &mut emit);
+    let on = |note| Msg::NoteOn {
+        ch: 0,
+        note,
+        vel: 100,
+    };
+    let off = |note| Msg::NoteOff {
+        ch: 0,
+        note,
+        vel: 0,
+    };
+    cv.track_msg(0, on(48), 0, &mut emit);
+    cv.track_msg(0, off(48), 40, &mut emit);
+    cv.track_msg(0, on(60), 40, &mut emit);
+    cv.end_period(128, &mut emit);
+    // The gap ends at frame 136, offset 8 in the next period, before
+    // that note ends; the next starts a frame later, with no gap.
+    cv.track_msg(0, off(60), 10, &mut emit);
+    cv.track_msg(0, on(48), 11, &mut emit);
+    cv.end_period(128, &mut emit);
+    let at = |o: u8| -> Vec<(u32, f32)> {
+        ch.borrow()
+            .iter()
+            .filter(|c| c.out == o)
+            .map(|c| (c.offset, c.volts))
+            .collect()
+    };
+    // 2 ms at 48 kHz is 96 frames.
+    assert_eq!(
+        at(1),
+        vec![
+            (0, 0.0),
+            (0, 5.0),
+            (40, 0.0),
+            (8, 5.0),
+            (10, 0.0),
+            (11, 5.0)
+        ]
+    );
+    assert_eq!(at(0), vec![(0, 0.0), (0, 1.0), (40, 2.0), (11, 1.0)]);
+}
+
 #[test]
 fn cv_priority_hz_per_volt_and_calibration() {
     let mut cv = CvEngine::new(48_000);
