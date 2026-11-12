@@ -372,7 +372,14 @@ class Lab:
                                 os.write(master, wire)
                                 time.sleep(0.065)
                             self.say("QEMU guest shell detected. Sent passive probes.")
-                        if sent and re.search(r"(?m)^" + re.escape(end) + r"\r?$", data):
+                        # PL011/PTY serial output commonly uses CRCRLF, not bare LF.
+                        # Check the actual echoed result after normalization; do
+                        # not confuse the shell's displayed "echo MARKER" command
+                        # with execution of the command itself.
+                        if sent and re.search(
+                            r"(?m)^" + re.escape(end) + r"[ \t]*(?:\n|$)",
+                            data.replace("\r", ""),
+                        ):
                             result["probe_complete"] = True
                             result["success"] = True
                             break
