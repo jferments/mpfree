@@ -28,6 +28,10 @@ High: samples, tempo and meter, notes. Medium-high: drum programs, mixer levels 
 
 Every import writes a report of what came across exactly, what was approximated and what was dropped. Saving needs MPFree's own project format (roadmap: "Project save/load").
 
+## Inspecting projects
+
+`tools/mpc-import/inspect-xpj.py PATH` reads a `.xpj`, a folder of them, or the `mpc-projects.zip` below. For each project it prints the format and header lines, a summary (tempo, tracks and programs, pads and layers, inserts by name, sequences with their clips, notes and automation ids, songs, and samples missing from ProjectData), and an importer checklist: each field stages 1 to 3 will read, flagged `MISSING` or `TYPE` when it differs from the public 3.7 notes. `--shape` adds every field path with its types and counts. It never prints a settings blob (only its length) or audio, so its report is safe to share in the thread.
+
 ## Getting test projects out of the eMMC backup
 
 `tools/mpc-one/offline-mpc-projects.py` runs on the workstation only. It reads the newest `~/mpfree-backups/mpc-one-emmc-*/mmcblk0.img` with debugfs (read-only, nothing mounted, no sudo), finds the `data` partition (p8, the MPC's Internal drive), and lists every `.xpj` project and `.xpa` archive with its format line. With `--copy 1,3` or `--copy all` it copies only those projects' `.xpj` and `_[ProjectData]` folders into `~/mpfree-work/mpc-projects-<UTC>-*/`, checks each file's size, and writes `SHA256SUMS` and `mpc-projects.zip`. Nothing else on the partition is copied.
