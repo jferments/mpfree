@@ -33,6 +33,12 @@
 //! a lock of the same parameter on the same tick and row, and a turn that
 //! spans many periods stays one lock in the take.
 //!
+//! Perform FX gestures recorded as moves ([`Recorder::taken_moves`]) go in
+//! with [`Takes::put_move`]: each replaces what its lane had over the
+//! ticks it covers, and the take keeps what it replaced, so undo puts the
+//! lane back exactly. A step edit that moves lanes (a page copied, a clip
+//! made longer or shorter) keeps the lanes before and after.
+//!
 //! Most of this allocates. Recording does not, once a take has begun:
 //! a new take's lists start with room for [`TAKE_ROOM`] notes and locks
 //! each, so [`Takes::add`], [`Takes::erase`] and the lock versions only
@@ -44,12 +50,33 @@
 //! [`Player::erased_locks`]: crate::Player::erased_locks
 //! [`Recorder::taken`]: crate::Recorder::taken
 //! [`Recorder::taken_locks`]: crate::Recorder::taken_locks
+//! [`Recorder::taken_moves`]: crate::Recorder::taken_moves
 
-use mpfree_seq::steps::Edit;
+use mpfree_seq::mpfree_moves::{Kind, Map, Point, Target};
+use mpfree_seq::steps::{Edit, MovesEdit};
 use mpfree_seq::{Clip, Lock, ModelError, Note, Project};
 use mpfree_transport::time::Tick;
 
-use crate::{Erased, ErasedLock, Taken, TakenLock};
+use crate::{Erased, ErasedLock, Taken, TakenLock, TakenMove};
+
+/// A gesture to write into a clip's lanes: its target, map and points (as
+/// for `Moves::put`).
+pub type MoveWrite = (Target, Map, Vec<(f64, f32, Kind)>);
+
+/// A gesture a take wrote into a clip's lane, and what it replaced there.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MovePut {
+    pub track: usize,
+    pub slot: usize,
+    pub target: Target,
+    pub map: Map,
+    /// As written (`Moves::put`), for redo.
+    pub points: Vec<(f64, f32, Kind)>,
+    pub len: u32,
+    /// What the lane had: (from, to, points) over clip ticks `from..to`,
+    /// for undo (`Moves::restore`).
+    pub saved: Vec<(u32, u32, Vec<Point>)>,
+}
 
 /// Takes kept for undo when no limit is given.
 pub const DEFAULT_LIMIT: usize = 32;
@@ -80,6 +107,10 @@ pub struct Take {
     /// Parameter locks an edit put in and took out, as (track, slot, lock).
     pub locks_added: Vec<(usize, usize, Lock)>,
     pub locks_erased: Vec<(usize, usize, Lock)>,
+    /// Gestures recorded or captured into lanes, in order.
+    pub moves: Vec<MovePut>,
+    /// Lanes an edit moved, as (track, slot, before and after).
+    pub moves_edited: Vec<(usize, usize, MovesEdit)>,
 }
 
 /// The takes that can be undone, oldest first, and the ones that can be
@@ -168,6 +199,60 @@ impl Takes {
             (None, None) => take.locks_added.push((k.track, k.slot, new)),
         }
         Ok(old)
+    }
+
+    /// Write a recorded gesture into its clip's lane (replacing what the
+    /// lane had over the ticks it covers) and remember it with its take.
+    /// `BadSlot` if the clip is gone or is no longer `k.len` ticks long;
+    /// `BadMoves` if the lane is full or the points are not in order.
+    /// Nothing changes on an error.
+    pub fn put_move(
+        &mut self,
+        project: &mut Project,
+        k: &TakenMove,
+        points: &[(f64, f32, Kind)],
+    ) -> Result<(), ModelError> {
+        let c = clip(project, k.track, k.slot).ok_or(ModelError::BadSlot)?;
+        let put = write_move(c, k.track, k.slot, k.target, k.map, points, k.len)?;
+        self.entry(k.take).moves.push(put);
+        Ok(())
+    }
+
+    /// CAPTURE's moves: write `gestures` (target, map and points, as for
+    /// [`Takes::put_move`]) into clip `slot` of `track`, joining capture
+    /// `number`, which must be the latest take. All go in or none. The
+    /// number of gestures written.
+    pub fn capture_moves(
+        &mut self,
+        project: &mut Project,
+        track: usize,
+        slot: usize,
+        number: u32,
+        gestures: &[MoveWrite],
+    ) -> Result<usize, ModelError> {
+        if !self
+            .done
+            .last()
+            .is_some_and(|t| t.captured && t.number == number && self.undone.is_empty())
+        {
+            return Err(ModelError::BadSlot);
+        }
+        let c = clip(project, track, slot).ok_or(ModelError::BadSlot)?;
+        let before = c.moves.clone();
+        let len = u32::try_from(c.length).map_err(|_| ModelError::ClipLength)?;
+        let mut puts = Vec::with_capacity(gestures.len());
+        for (target, map, points) in gestures {
+            match write_move(c, track, slot, *target, *map, points, len) {
+                Ok(p) => puts.push(p),
+                Err(e) => {
+                    c.moves = before;
+                    return Err(e);
+                }
+            }
+        }
+        let n = puts.len();
+        self.done.last_mut().expect("checked").moves.extend(puts);
+        Ok(n)
     }
 
     /// Remove an erased note from its clip and remember it with its take.
@@ -284,6 +369,7 @@ impl Takes {
         };
         let joins = join.is_some()
             && edit.length.is_none()
+            && edit.moves.is_none()
             && self.undone.is_empty()
             && self.done.last().is_some_and(|t| {
                 t.edited && t.join == join && t.resized.is_empty() && same_clip(t)
@@ -307,6 +393,8 @@ impl Takes {
                 .extend(edit.erase_locks.iter().map(|&l| (track, slot, l)));
             take.locks_added
                 .extend(edit.add_locks.iter().map(|&l| (track, slot, l)));
+            take.moves_edited
+                .extend(edit.moves.as_deref().map(|m| (track, slot, m.clone())));
             return Ok(number);
         }
         let take = self.done.last_mut().expect("checked");
@@ -376,6 +464,19 @@ impl Takes {
                 c.remove_lock(lock);
             }
         }
+        for put in take.moves.iter().rev() {
+            if let Some(c) = clip(project, put.track, put.slot) {
+                for (from, to, old) in put.saved.iter().rev() {
+                    let _ = c.moves.restore(put.target, put.map, *from, *to, old);
+                }
+            }
+        }
+        // The lanes first: the length then checks them.
+        for (track, slot, m) in take.moves_edited.iter().rev() {
+            if let Some(c) = clip(project, *track, *slot) {
+                c.moves = m.before.clone();
+            }
+        }
         for &(track, slot, from, to) in take.resized.iter().rev() {
             resize(project, track, slot, to, from);
         }
@@ -402,7 +503,7 @@ impl Takes {
 
     /// Redo the latest undone take. Its number, or None.
     pub fn redo(&mut self, project: &mut Project) -> Option<u32> {
-        let take = self.undone.pop()?;
+        let mut take = self.undone.pop()?;
         for (track, slot, made) in &take.made {
             // A slot filled meanwhile keeps its clip.
             if let Some(s) = slot_mut(project, *track, *slot).filter(|s| s.is_none()) {
@@ -419,6 +520,11 @@ impl Takes {
                 c.remove_lock(lock);
             }
         }
+        for (track, slot, m) in &take.moves_edited {
+            if let Some(c) = clip(project, *track, *slot) {
+                c.moves = m.after.clone();
+            }
+        }
         for &(track, slot, from, to) in &take.resized {
             resize(project, track, slot, from, to);
         }
@@ -430,6 +536,21 @@ impl Takes {
         for (track, slot, lock) in &take.locks_added {
             if let Some(c) = clip(project, *track, *slot) {
                 let _ = c.add_lock(*lock);
+            }
+        }
+        for put in &mut take.moves {
+            if let Some(c) = clip(project, put.track, put.slot) {
+                if let Ok(again) = write_move(
+                    c,
+                    put.track,
+                    put.slot,
+                    put.target,
+                    put.map,
+                    &put.points,
+                    put.len,
+                ) {
+                    put.saved = again.saved;
+                }
             }
         }
         let n = take.number;
@@ -501,6 +622,36 @@ impl Takes {
         self.done.push(take);
         self.done.last_mut().expect("just pushed")
     }
+}
+
+/// Write a gesture into clip `c`'s lane, keeping what it replaces.
+fn write_move(
+    c: &mut Clip,
+    track: usize,
+    slot: usize,
+    target: Target,
+    map: Map,
+    points: &[(f64, f32, Kind)],
+    len: u32,
+) -> Result<MovePut, ModelError> {
+    if i64::from(len) != c.length {
+        return Err(ModelError::BadSlot);
+    }
+    let mut saved = Vec::new();
+    c.moves
+        .put_saving(target, map, points, len, |from, to, old| {
+            saved.push((from, to, old.to_vec()))
+        })
+        .map_err(|_| ModelError::BadMoves)?;
+    Ok(MovePut {
+        track,
+        slot,
+        target,
+        map,
+        points: points.to_vec(),
+        len,
+        saved,
+    })
 }
 
 /// Make a clip `from` ticks long `to` ticks long, unless it has changed
