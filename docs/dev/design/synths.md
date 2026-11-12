@@ -53,6 +53,8 @@ A six-operator FM synth in the DX7's mould. It is DX7-style, not a bit-exact clo
 
 Timing: operators run every frame. Envelopes, pitch and the LFO run once every 16 frames, on frames divisible by 16, with operator gains ramped across each step.
 
+A knob (`set_param`) reworks only what it feeds. An operator or global knob reads the voice settings again; a pressure shaper setting (mode, threshold, curve and so on) works out the 128-step pressure curve; a pressure slot's target or depth works out just the slots. Before 12 November every knob also worked out the curve, which costs more than everything else together: on a desktop a knob turn took about 1.55 µs, now 0.15 µs (0.07 µs for a slot), against about 9 µs to render 32 frames of 8 voices. That matters when a Q-Link, a macro or an LFO in the mod matrix moves an FM parameter every few frames.
+
 **On the Synth tab** FM has its own pages: Algo (algorithm, feedback, transpose, level, voices), Mod (LFO and pitch envelope), Pressure (see below), Op 1 to Op 6 (each operator's frequency, level, envelope and velocity; the Q-Links turn output, coarse, fine and velocity) and Kbd 1-2, 3-4 and 5-6 (keyboard scaling, two operators a page). Every FM parameter is on exactly one page.
 
 Every FM page has a visual strip, drawn from the values:
@@ -202,7 +204,7 @@ Poly, FM, Wavetable and Pluck play every note through their tuning; a sounding n
   - parameter descriptions and every preset value are valid
   - every preset plays a chord between -30 and -1 dBFS and is silent at the end
   - a tempo-synced square LFO on the level changes on the beat
-- `mpfree-synth/tests/fm.rs`, 18 tests:
+- `mpfree-synth/tests/fm.rs`, 20 tests:
   - the same busy phrase test as Poly (chords, feedback, the pitch envelope, the LFO, pressure, bend, automation, more notes than voices, AllOff, mono) is bit-identical at every block size
   - A4 at 440 Hz; the Init voice peaks near -12 dBFS; instruments add to the buffer; voices end after release and AllOff
   - every algorithm has the DX7's carriers, and every route feeds downward or through its feedback loop
@@ -212,6 +214,7 @@ Poly, FM, Wavetable and Pluck play every note through their tuning; a sounding n
   - the voice limit holds and stealing makes no click; mono plays legato and returns to the held key
   - extreme settings stay finite; descriptions and presets are valid; every preset plays a chord at a sane level and ends
   - a DX7 bank written from the presets loads back and plays
+  - after 60 random knob turns on each preset, the engine plays bit-identically to one given the same values at once (so a knob that reworks only what it feeds leaves nothing stale)
 - `mpfree-synth/tests/pressure.rs`, 11 tests:
   - every preset of both engines keeps a chord between -30 and -1 dBFS unpressed and fully pressed
   - a level slot is a swell, never a boost: with it, full pressure peaks no higher than without it
