@@ -30,9 +30,9 @@
 55126	Flanger
 434564	Grains FX (dense)
 116998	Lo-fi
-298475	Looper (60 s), 8 loops of 3 layers playing
-412030	Looper (60 s), 8 loops of 3 layers playing, half edited
-25533	Looper (60 s), overdubbing
+298517	Looper (60 s), 8 loops of 3 layers playing
+412072	Looper (60 s), 8 loops of 3 layers playing, half edited
+25519	Looper (60 s), overdubbing
 28961	Master safety
 210177	Mixer, 12 tracks and 8 pads, routing only
 1418967	Mixer, 12 tracks and 8 pads, with a song's inserts
@@ -66,7 +66,7 @@
 1450386	Sampler, 20 pads + master grains
 721322	Sampler, the 16 sample pads alone
 235221	Sampler, the 4 granular pads alone
-3313880	Song: sampler, 2 synths, mixer+FX, time, looper
+3313866	Song: sampler, 2 synths, mixer+FX, time, looper
 7422	Time: transport, 8 clips, arp
 53635	Track host alone, 16 tracks, 8 events each per block
 406148	Track host, 4 Poly tracks of 4 voices
