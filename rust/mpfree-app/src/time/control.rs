@@ -33,6 +33,7 @@ use mpfree_time_ui::view::{
 use mpfree_transport::time::Tick;
 use mpfree_transport::{Block, Command, State};
 
+use super::follow::FollowCounts;
 use super::link::{Counts, PeriodEnd, Rx, ToAudio, ToControl, Tracks, Tx};
 use super::{take_name, StepAction, StepClip, StepsData, NEW_CLIP_BARS, RECORD_ROOM, STEP_TICKS};
 
@@ -80,6 +81,8 @@ pub struct TimeControl {
     info: TransportInfo,
     /// The audio half's counts, as of its last period.
     counts: Counts,
+    /// What following another device's clock put right or lost.
+    follow: FollowCounts,
     /// The current period's spans, copied from the audio half's.
     block: Box<Block>,
     /// The next span starts a new period's copy.
@@ -152,6 +155,7 @@ impl TimeControl {
             pending: None,
             info,
             counts: Counts::default(),
+            follow: FollowCounts::default(),
             block: Box::new(Block::new()),
             fresh: true,
             spans_lost: 0,
@@ -237,6 +241,7 @@ impl TimeControl {
                         self.spans_lost += 1;
                     }
                 }
+                ToControl::Follow(c) => self.follow = c,
                 ToControl::Period(end) => self.period(end),
                 ToControl::Done(v) => drop(v),
             }
@@ -1202,6 +1207,15 @@ impl TimeControl {
                 "; between the halves: {lost} messages lost, {} late views compiled again, \
                  {} views kept unfreed, {} transport commands refused",
                 c.behind, c.kept, c.refused
+            ));
+        }
+        // Following another device's clock, when it had to put anything right.
+        let f = &self.follow;
+        if f.any() {
+            line.push_str(&format!(
+                "; following a clock: {} jumps to its position, {} times its clock \
+                 stopped while it played, {} commands refused",
+                f.jumps, f.lost, f.refused
             ));
         }
         line
