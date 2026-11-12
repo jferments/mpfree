@@ -48,6 +48,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod host;
 pub mod save;
 pub mod stretch;
 
