@@ -367,6 +367,7 @@ version = "0.1.0"
 dependencies = [
  "mpfree-arp",
  "mpfree-arp-ui",
+ "mpfree-browser-ui",
  "mpfree-capture",
  "mpfree-chain-ui",
  "mpfree-controller",
@@ -375,6 +376,7 @@ dependencies = [
  "mpfree-fx-ui",
  "mpfree-instruments",
  "mpfree-lanes",
+ "mpfree-library",
  "mpfree-looper",
  "mpfree-midi",
  "mpfree-midi-clock",

@@ -52,19 +52,20 @@ pub const WHEEL: &str = "smp-wheel";
 /// waveform beside the Region list, the Q-Link cards and the wheel card,
 /// and the app's hint line.
 pub const LAYOUT: &str =
-    "col(header:60, smp-bar:60, smp-overview:56, row(smp-wave:*, smp-region:360):*, \
+    "col(header:60, row(smp-bar:*, smp-send:330):60, smp-overview:56, row(smp-wave:*, smp-region:360):*, \
                           row(smp-q1, smp-q2, smp-q3, smp-q4, smp-wheel:210):88, hint:26)";
 
-/// The pad editor's tabs: Pads (the kit's pads, to pick one and set it
-/// up) first, then the editors for the pad picked.
-pub const TABS: [&str; 8] = ["Pads", "Wave", "Warp", "Chop", "Play", "Grain", "FX", "Rec"];
+/// The pad editor's tabs: the editors for the pad picked. The kit's pads
+/// (to pick one and set it up) are the app's own Pads tab since 12 Nov
+/// 2026 ([`crate::pads_tab`]).
+pub const TABS: [&str; 7] = ["Wave", "Warp", "Chop", "Play", "Grain", "FX", "Rec"];
 /// The tabs built so far; the others are drawn faint.
-pub const BUILT: [&str; 8] = ["Pads", "Wave", "Warp", "Chop", "Play", "Grain", "FX", "Rec"];
+pub const BUILT: [&str; 7] = ["Wave", "Warp", "Chop", "Play", "Grain", "FX", "Rec"];
 /// The FX tab's place in [`TABS`]: it opens the app's chain editor on the
 /// pad's channel (no page of the sampler's own).
-pub const FX_TAB: usize = 6;
+pub const FX_TAB: usize = 5;
 /// The Wave tab's place in [`TABS`].
-pub const TAB: usize = 1;
+pub const TAB: usize = 0;
 
 /// The hint line the app shows under the tab.
 pub const HINT: &str = "Drag markers by their tabs · drag to scroll, pinch or turn the wheel to zoom · tap the wave to \
@@ -479,6 +480,7 @@ impl WaveTab {
     /// Adds the widgets and the page `name` to `ui` (the app adds `header`
     /// and `hint` first) and shows `st`.
     pub fn add(ui: &mut Ui, name: &str, st: &WaveState) -> Result<WaveTab, String> {
+        crate::send::add(ui);
         let mut bar = PadBar::new(&TABS);
         bar.enabled = TABS.iter().map(|t| BUILT.contains(t)).collect();
         bar.active = TAB;

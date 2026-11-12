@@ -17,7 +17,7 @@ The **Play** page is MPFree's home: the place for finger drumming, making beats 
 | **Loop** | Live looping | The loop, large, with its buttons; the throws and the XY pad |
 | **Drum** | Practising finger drumming | Your timing beside the XY pad, and the throws |
 
-There are no pads on the Play page: you play the real ones, and the room goes to the pattern, the loop and the effects. The pads' own settings and sounds are on the Sample tab.
+There are no pads on the Play page: you play the real ones, and the room goes to the pattern, the loop and the effects. The pads' own settings and sounds are on the Pads tab, next to Play.
 
 {{shot: play | The All view.}}
 

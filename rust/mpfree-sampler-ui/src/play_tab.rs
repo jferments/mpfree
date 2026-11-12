@@ -64,14 +64,14 @@ pub const WHEEL: &str = "smp-play-wheel";
 
 /// The tab's page: the layer map, the envelope over the filter, and the Pad
 /// list, between the pad bar and the Q-Link cards.
-pub const LAYOUT: &str = "col(header:60, smp-play-bar:60, \
+pub const LAYOUT: &str = "col(header:60, row(smp-play-bar:*, smp-send:330):60, \
                           row(smp-play-layers:*, col(smp-play-env:3*, smp-play-filter:2*):*, smp-play-list:340):*, \
                           row(smp-play-q1, smp-play-q2, smp-play-q3, smp-play-q4, smp-play-wheel:210):88, hint:26)";
 
 /// The page while the pad is a keygroup or the pads play notes: the
 /// keyboard over the layer map and the envelope (a layout file can set it
 /// under the page's name with `.keys` after it).
-pub const KEYS_LAYOUT: &str = "col(header:60, smp-play-bar:60, \
+pub const KEYS_LAYOUT: &str = "col(header:60, row(smp-play-bar:*, smp-send:330):60, \
                                row(col(smp-play-keys:236, row(smp-play-layers:*, col(smp-play-env:3*, smp-play-filter:2*):*):*):*, smp-play-list:340):*, \
                                row(smp-play-q1, smp-play-q2, smp-play-q3, smp-play-q4, smp-play-wheel:210):88, hint:26)";
 
@@ -79,7 +79,7 @@ pub const KEYS_LAYOUT: &str = "col(header:60, smp-play-bar:60, \
 pub const KEY_VELOCITY: u8 = 100;
 
 /// The tab's place in [`TABS`].
-pub const TAB: usize = 4;
+pub const TAB: usize = 3;
 
 /// The hint line the app shows under the tab.
 pub const HINT: &str = "Drag a layer's edges for its velocities · drag the envelope's points and the filter's dot · tap a \
@@ -542,6 +542,7 @@ impl PlayTab {
     /// Adds the widgets and the page `name` to `ui` (the app adds `header`
     /// and `hint` first) and shows `st`.
     pub fn add(ui: &mut Ui, name: &str, st: &PlayState) -> Result<PlayTab, String> {
+        crate::send::add(ui);
         let mut bar = PadBar::new(&TABS);
         bar.enabled = TABS.iter().map(|t| wave_tab::BUILT.contains(t)).collect();
         bar.active = TAB;
