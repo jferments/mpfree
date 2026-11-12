@@ -52,7 +52,8 @@ use mpfree_sampler::model::Project;
 use mpfree_synth_ui::view as synth_view;
 use mpfree_synth_ui::{SynthAction, SynthPanel, SynthState};
 use mpfree_time_ui::view::{
-    self as time_view, TimePage, TimeState, TransportInfo, CLIPS_HINT, CLIPS_PAGE, SONG_HINT,
+    self as time_view, TimePage, TimeState, TransportInfo, CLIPS_HINT, CLIPS_PAGE, EDIT_HINT,
+    SONG_HINT,
 };
 use mpfree_time_ui::TimeAction;
 use mpfree_touch::mt::Phase;
@@ -1374,6 +1375,7 @@ impl Player {
             match self.view {
                 View::Play => format!("Tap All, Beats, Loop or Drum: the view   ·   Wheel or tap: kit   ·   Q-Link 1 or \
                                        the master bar: level   ·   NOTE REPEAT: repeat   ·   MENU: options   ·   {stop}"),
+                View::Arrange if self.time.edit.is_some() => EDIT_HINT.to_string(),
                 View::Arrange if self.time.song_view => SONG_HINT.to_string(),
                 View::Arrange => CLIPS_HINT.to_string(),
                 View::Looper if self.looper_page.history_open() => format!("Tap a step: back or forward to it   ·   \
@@ -2111,14 +2113,16 @@ impl Player {
                 self.refresh_arp();
             }
             ToUi::Time(st) => {
-                let swapped = st.song_view != self.time.song_view;
+                let swapped = st.song_view != self.time.song_view
+                    || st.edit.is_some() != self.time.edit.is_some();
                 self.time = *st;
                 self.sample.set_tempo(self.time.transport.bpm);
                 self.time_page.update(&mut self.ui, &self.time);
                 self.play.set_transport(self.time.transport);
                 self.refresh_play();
                 if swapped {
-                    // The Song view has its own hint line.
+                    // The Song view and the note editor have their own
+                    // hint lines.
                     self.refresh_hint();
                 }
             }
@@ -2137,20 +2141,21 @@ impl Player {
                 delta,
                 scroll: true,
             } => {
-                self.time_page.scroll(&self.ui, delta);
+                if let Some(a) = self.time_page.scroll(&self.ui, delta) {
+                    self.outbox.push(FromUi::Time(a));
+                }
                 self.time_page.update(&mut self.ui, &self.time);
             }
             ToUi::ClipsWheel {
                 delta,
                 scroll: false,
             } => {
-                // The row last touched (the armed track to begin with).
-                let index = self
-                    .ui
-                    .get::<OptionList>(time_view::RECORD)
-                    .map_or(0, |l| l.selected);
+                // The row last touched (the armed track to begin with), of
+                // the record settings or, in the note editor, its options.
+                let list = self.time_page.wheel_list(&self.ui);
+                let index = self.ui.get::<OptionList>(list).map_or(0, |l| l.selected);
                 let ev = UiEvent {
-                    widget: time_view::RECORD.to_string(),
+                    widget: list.to_string(),
                     kind: EventKind::Step { index, delta },
                 };
                 if let Some(a) = time_view::action(&ev, &self.time) {
@@ -2971,7 +2976,9 @@ impl Player {
                 | time_view::RECORD
                 | time_view::TAKES
                 | time_view::MORPH
-                | time_view::SONG,
+                | time_view::SONG
+                | time_view::NOTES
+                | time_view::EDIT_OPTIONS,
                 _,
             ) => time_view::action(&ev, &self.time).map(FromUi::Time),
             _ => None,
@@ -4620,6 +4627,18 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         Ok(p) => out.push(("clips", p)),
         Err(e) => eprintln!("clips sample: {e}"),
     }
+    // The note editor on the Arrange page: the piano roll, then the list.
+    for (name, list) in [("arrange-notes", false), ("arrange-notes-list", true)] {
+        match mpfree_time_ui::sample::notes_state(list) {
+            Ok(state) => {
+                let mut p = quiet_player(fonts());
+                p.apply(ToUi::Time(Box::new(state)));
+                p.apply(ToUi::Show(View::Arrange));
+                out.push((name, p));
+            }
+            Err(e) => eprintln!("{name} sample: {e}"),
+        }
+    }
     // The Arrange page's Song view: rows made into a song, song mode on,
     // Rec song armed.
     match mpfree_time_ui::sample::song_state() {
@@ -4999,6 +5018,55 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         mapped.take_actions();
         out.push(("sample-keys-mapped", mapped));
     }
+    // The same instrument with Key fade at 4 notes: the zones that met now
+    // overlap by 4 and crossfade, the Key fade row picked.
+    {
+        let mut faded = sample_sampler(fonts());
+        let (mut project, _) = mpfree_sampler_ui::sample::project();
+        let pad = mpfree_sampler_ui::sample::PAD;
+        if let Some(sound) = project.pad(pad).cloned() {
+            for (k, name) in ["Pluck C2", "Pluck G2", "Pluck C3", "Pluck G3", "Pluck C4"]
+                .into_iter()
+                .enumerate()
+            {
+                let mut q = sound.clone();
+                q.name = name.to_string();
+                let _ = project.set_pad(k, Some(q), None);
+            }
+        }
+        faded.apply(ToUi::SampleKits {
+            projects: vec![project],
+            rate: mpfree_sampler_ui::sample::RATE,
+        });
+        let ev = |p: &mut Player, widget: &str, kind: EventKind| {
+            p.on_event(UiEvent {
+                widget: widget.into(),
+                kind,
+            });
+        };
+        use mpfree_sampler_ui::play_tab::{Row, LIST};
+        use mpfree_sampler_ui::widgets::SettingList;
+        use mpfree_sampler_ui::{pads_tab, play_tab};
+        ev(
+            &mut faded,
+            mpfree_sampler_ui::wave_tab::BAR,
+            EventKind::Tab(pads_tab::TAB),
+        );
+        ev(&mut faded, pads_tab::BUTTONS, EventKind::Tab(3));
+        ev(&mut faded, pads_tab::BAR, EventKind::Tab(play_tab::TAB));
+        let index = Row::ALL
+            .iter()
+            .position(|r| *r == Row::KeyFade)
+            .unwrap_or(0);
+        if let Some(list) = faded.ui.get_mut::<SettingList>(LIST) {
+            list.selected = index;
+        }
+        ev(&mut faded, LIST, EventKind::Select(index));
+        ev(&mut faded, LIST, EventKind::Step { index, delta: 4 });
+        faded.apply(ToUi::SampleLift);
+        faded.take_actions();
+        out.push(("sample-keys-crossfade", faded));
+    }
     // The Play tab with the pads playing 16 Levels of the pad, by tune.
     {
         use mpfree_sampler_ui::play_tab::{Row, LIST};
@@ -5259,6 +5327,47 @@ mod tests {
         assert_eq!(
             tap(&mut p, (back.x + back.w / 2, back.y + back.h / 2)),
             Some(FromUi::Time(TimeAction::SongView(false)))
+        );
+        // Edit › on the grid opens the note editor.
+        use mpfree_time_ui::editor::{EditAction, Editor, NoteGrid};
+        p.time.song_view = false;
+        p.time_page.update(&mut p.ui, &p.time);
+        p.ui.paint(&mut SoftCanvas::new(1280, 800));
+        let clips = p.ui.rect_of(time_view::CLIPS).unwrap();
+        let edit =
+            p.ui.get::<ClipGrid>(time_view::CLIPS)
+                .unwrap()
+                .edit_rect(clips);
+        assert_eq!(
+            tap(&mut p, (edit.x + edit.w / 2, edit.y + edit.h / 2)),
+            Some(FromUi::Time(TimeAction::Edit(EditAction::Open)))
+        );
+        // Open, the piano roll takes the grid's place: a tap on a note
+        // picks it, and TC corrects the timing.
+        let mut clip = mpfree_seq::Clip::new("Beat", 3840);
+        clip.notes = vec![
+            mpfree_seq::Note::new(0, 240, 0, 100),
+            mpfree_seq::Note::new(970, 240, 1, 90),
+        ];
+        p.time.edit = Some(Box::new(time_view::EditInfo {
+            editor: Editor::new(0, 0, &clip),
+            clip,
+            track_name: "Track 1".into(),
+            bar: 3840,
+        }));
+        p.time_page.update(&mut p.ui, &p.time);
+        p.ui.paint(&mut SoftCanvas::new(1280, 800));
+        let area = p.ui.rect_of(time_view::NOTES).unwrap();
+        let grid = p.ui.get::<NoteGrid>(time_view::NOTES).unwrap();
+        let note = grid.note_rect(area, 1).unwrap();
+        let tc = grid.button_rects(area)[7];
+        assert_eq!(
+            tap(&mut p, (note.x + note.w / 2, note.y + note.h / 2)),
+            Some(FromUi::Time(TimeAction::Edit(EditAction::Note(1))))
+        );
+        assert_eq!(
+            tap(&mut p, (tc.x + tc.w / 2, tc.y + tc.h / 2)),
+            Some(FromUi::Time(TimeAction::Edit(EditAction::Button(7))))
         );
     }
 
@@ -6404,7 +6513,7 @@ mod tests {
     }
 
     #[test]
-    fn load_puts_a_wav_on_the_pad_shown_and_load_to_pad_on_the_next_hit() {
+    fn load_puts_a_sound_on_the_pad_shown_and_load_to_pad_on_the_next_hit() {
         use mpfree_sampler::model::Source;
         use mpfree_sampler::wav;
         let dir = std::env::temp_dir().join(format!("mpfree-sample-load-{}", std::process::id()));
@@ -6445,12 +6554,30 @@ mod tests {
         assert_eq!(p.sample.assigning(), None);
         assert_eq!(p.sample.project(0).unwrap().pad(9).unwrap().name, "Rim");
         assert_eq!(p.kits[0].pads[9].as_deref(), Some("Rim"));
+        // A FLAC loads too, onto the pad shown (now the one just hit),
+        // known by what it holds; one cut short says so.
+        let flac = std::fs::read(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../mpfree-flac/tests/data/s16-stereo-auto.flac"
+        ))
+        .unwrap();
+        std::fs::write(dir.join("Loop.flac"), &flac[..flac.len() * 3 / 4]).unwrap();
+        p.sample.load_file(dir.join("Loop.flac"), false);
+        tick_until(&mut p, |p| p.kits[0].pads[9].as_deref() == Some("Loop"));
+        let log = events_log(&p);
+        assert!(log
+            .iter()
+            .any(|l| l == "sample: Loop: the file is cut short: its first 2304 frames"));
+        assert!(log
+            .iter()
+            .any(|l| l == "sample: loaded: Loop, 52 ms stereo on pad A10"));
         // What it can't load, it says.
+        std::fs::write(dir.join("Pad.aif"), b"not a sound").unwrap();
         p.sample.load_file(dir.join("Pad.aif"), false);
         tick_until(&mut p, |p| {
             events_log(p)
                 .iter()
-                .any(|l| l == "sample: not loaded (only WAV files load for now, not .aif)")
+                .any(|l| l == "sample: not loaded (not a WAV, AIFF or FLAC file)")
         });
         std::fs::remove_dir_all(&dir).unwrap();
     }
@@ -6938,6 +7065,72 @@ mod tests {
         p.apply(ToUi::PadUp(0));
         assert_eq!(p.sample.play().unwrap().1.pad, pad);
         assert_eq!(p.page(), sample_page::PLAY_PAGE);
+    }
+
+    #[test]
+    fn key_fade_is_the_kits_and_vel_fade_the_pads_each_one_undo_step() {
+        use mpfree_sampler_ui::play_tab::{self, Row, LIST};
+        let pad = mpfree_sampler_ui::sample::PAD;
+        let mut p = sample_sampler(Fonts::embedded());
+        let ev = |p: &mut Player, widget: &str, kind: EventKind| {
+            p.on_event(UiEvent {
+                widget: widget.into(),
+                kind,
+            })
+        };
+        let index = |row: Row| Row::ALL.iter().position(|r| *r == row).unwrap();
+        let step = |p: &mut Player, row: Row, delta: i32| {
+            ev(
+                p,
+                LIST,
+                EventKind::Step {
+                    index: index(row),
+                    delta,
+                },
+            );
+            p.apply(ToUi::SampleLift);
+        };
+        ev(
+            &mut p,
+            mpfree_sampler_ui::wave_tab::BAR,
+            EventKind::Tab(play_tab::TAB),
+        );
+        let settings = |p: &Player| p.sample.project(0).unwrap().pad(pad).unwrap().clone();
+        // No keygroup yet: Key fade has nothing to fade.
+        step(&mut p, Row::KeyFade, 1);
+        assert_eq!(settings(&p).key_fade, 0);
+        // Keys on, then Key fade: the kit's keygroups fade over 2 notes.
+        step(&mut p, Row::Keys, 1);
+        let (sent, _) = views(p.take_actions());
+        p.apply(ToUi::SampleViewBack(sent.into_iter().next().unwrap()));
+        step(&mut p, Row::KeyFade, 2);
+        assert_eq!(settings(&p).key_fade, 2);
+        assert!(
+            events_log(&p).iter().any(|l| l
+                == "sample: kit 1 (Breaks): key fade 2 notes, the zones that meet crossfade over them"),
+            "{:?}",
+            events_log(&p)
+        );
+        let (sent, _) = views(p.take_actions());
+        assert_eq!(sent.len(), 1, "the kit sounds with the fade");
+        p.apply(ToUi::SampleViewBack(sent.into_iter().next().unwrap()));
+        // Vel fade is the pad's own, with a line of its own.
+        step(&mut p, Row::VelFade, 4);
+        assert_eq!(settings(&p).vel_fade, 8);
+        assert!(
+            events_log(&p)
+                .iter()
+                .any(|l| l == "sample: kit 1 (Breaks) pad A5 Break 92: vel fade Off -> 8"),
+            "{:?}",
+            events_log(&p)
+        );
+        // UNDO: the velocity fade, then the key fade.
+        p.apply(ToUi::SampleUndo(false));
+        assert_eq!(settings(&p).vel_fade, 0);
+        assert_eq!(settings(&p).key_fade, 2);
+        p.apply(ToUi::SampleUndo(false));
+        assert_eq!(settings(&p).key_fade, 0);
+        assert!(settings(&p).keys.is_some());
     }
 
     #[test]
