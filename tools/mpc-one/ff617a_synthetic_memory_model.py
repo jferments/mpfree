@@ -1,7 +1,11 @@
 """FF/61/7A synthetic in-memory response validation model (NOT vendor code).
 
 No USB, networking, disk access, loader execution or real device transport.
-Only observations backed by the owner's SHA-pinned Ghidra audit are modeled.
+The six-ID allowlist in this file is a *deliberate MPFree fail-closed
+policy*, NOT an observed vendor protocol acceptance condition. Original
+0x1a314 compares an incoming identifier with the requested identifier;
+the six known constants select trace names. For a separate, closer
+control-flow approximation see ff617a_offline_error_model.py.
 A matching synthetic frame is NOT proof the real backend would accept it.
 """
 from __future__ import annotations
@@ -12,6 +16,7 @@ import struct
 
 MIN_HEADER = 24
 MAX_SYNTHETIC_FRAME = 1024 * 1024
+# This is a defensive POLICY allowlist, not the vendor's match gate.
 OBSERVED_COMPARED_IDS = frozenset((
     0x5AA5FE01, 0x5AA5FD02, 0x5AA5FC03,
     0x5AA5FB04, 0x5AA5FA05, 0x5AA5F906,
