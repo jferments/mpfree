@@ -725,7 +725,8 @@ class Lab:
                     ff_module.render_markdown(frame_report) + "\n")
                 record["ff617a_framing_evidence"] = {
                     "report": "usb-ff617a-framing.json",
-                    "magic_words": len(frame_report["magic_evidence"]["code_points"]),
+                    "magic_words": len(
+                        frame_report["magic_evidence"]["equality_matched_message_identifiers"]),
                     "all_known_identifiers_seen": frame_report["magic_evidence"]["eight_known_values_present"],
                     "ioctls_verified": all(
                         item["seen_in_verified_pseudocode"]
