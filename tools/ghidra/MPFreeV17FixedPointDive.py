@@ -159,6 +159,45 @@ def varnode(v):
                 x["def_inputs"]=[str(d.getInput(j))[:100] for j in range(d.getNumInputs())]
     except Exception:pass
     return x
+def possible_constant_targets(v,depth=0,seen=None):
+    """Bounded recursive Ghidra High P-code backtrace. Candidates, NOT proofs."""
+    if v is None or depth>=9:return set()
+    if seen is None:seen=set()
+    identity=id(v)
+    if identity in seen:return set()
+    seen=seen|{identity}
+    if v.isConstant():return {int(v.getOffset())&0xffffffff}
+    defn=v.getDef()
+    if defn is None:return set()
+    op=str(defn.getMnemonic())
+    if op in ("COPY","CAST","INT_ZEXT","INT_SEXT","SUBPIECE","INDIRECT"):
+        if defn.getNumInputs():return possible_constant_targets(defn.getInput(0),depth+1,seen)
+    if op=="MULTIEQUAL":
+        union=set()
+        for j in range(min(8,defn.getNumInputs())):
+            union|=possible_constant_targets(defn.getInput(j),depth+1,seen)
+        return set(list(union)[:24])
+    if op in ("INT_ADD","PTRSUB","INT_SUB","PTRADD"):
+        if defn.getNumInputs()<2:return set()
+        left=possible_constant_targets(defn.getInput(0),depth+1,seen)
+        right=possible_constant_targets(defn.getInput(1),depth+1,seen)
+        if not left or not right:return set()
+        multiplier=1
+        if op=="PTRADD" and defn.getNumInputs()>=3:
+            vals=possible_constant_targets(defn.getInput(2),depth+1,seen)
+            if vals:multiplier=min(vals)
+        combined=set()
+        for a in list(left)[:12]:
+            for b in list(right)[:12]:
+                v=(a-b if op=="INT_SUB" else a+b*multiplier)&0xffffffff
+                combined.add(v)
+        return set(list(combined)[:24])
+    if op=="LOAD" and defn.getNumInputs()>=2:
+        addresses=possible_constant_targets(defn.getInput(1),depth+1,seen)
+        return {int.from_bytes(raw[a-base:a-base+4],"little")
+                for a in addresses if base<=a<=base+size-4}
+    return set()
+
 try:
     with details.open("w") as doc,effects.open("w") as effect_out:
         for idx,entry in enumerate(target_ids):
@@ -282,44 +321,6 @@ while defined_data_iterator is not None and defined_data_iterator.hasNext():
     except Exception:continue
 # New evidence: distinguish all discovered inline function pointer tables,
 # MMIO/reboot candidates and indirect dispatch sites.
-def possible_constant_targets(v,depth=0,seen=None):
-    """Bounded recursive Ghidra High P-code backtrace. Candidates, NOT proofs."""
-    if v is None or depth>=9:return set()
-    if seen is None:seen=set()
-    identity=id(v)
-    if identity in seen:return set()
-    seen=seen|{identity}
-    if v.isConstant():return {int(v.getOffset())&0xffffffff}
-    defn=v.getDef()
-    if defn is None:return set()
-    op=str(defn.getMnemonic())
-    if op in ("COPY","CAST","INT_ZEXT","INT_SEXT","SUBPIECE","INDIRECT"):
-        if defn.getNumInputs():return possible_constant_targets(defn.getInput(0),depth+1,seen)
-    if op=="MULTIEQUAL":
-        union=set()
-        for j in range(min(8,defn.getNumInputs())):
-            union|=possible_constant_targets(defn.getInput(j),depth+1,seen)
-        return set(list(union)[:24])
-    if op in ("INT_ADD","PTRSUB","INT_SUB","PTRADD"):
-        if defn.getNumInputs()<2:return set()
-        left=possible_constant_targets(defn.getInput(0),depth+1,seen)
-        right=possible_constant_targets(defn.getInput(1),depth+1,seen)
-        if not left or not right:return set()
-        multiplier=1
-        if op=="PTRADD" and defn.getNumInputs()>=3:
-            vals=possible_constant_targets(defn.getInput(2),depth+1,seen)
-            if vals:multiplier=min(vals)
-        combined=set()
-        for a in list(left)[:12]:
-            for b in list(right)[:12]:
-                v=(a-b if op=="INT_SUB" else a+b*multiplier)&0xffffffff
-                combined.add(v)
-        return set(list(combined)[:24])
-    if op=="LOAD" and defn.getNumInputs()>=2:
-        addresses=possible_constant_targets(defn.getInput(1),depth+1,seen)
-        return {int.from_bytes(raw[a-base:a-base+4],"little")
-                for a in addresses if base<=a<=base+size-4}
-    return set()
 report={
  "schema":"mpfree-v17-full-fixedpoint-high-pcode-v1",
  "role":role,"timestamp_utc":datetime.now(timezone.utc).isoformat(),
@@ -328,6 +329,7 @@ report={
  "direct_unique_edges":sum(len(v) for v in edges.values()),
  "unresolved_instruction_calls":unresolved,
  "statistics":dict(count),
+ "function_coverage":{"processed":len(target_ids),"decompiled":count["function_decompiled"],"failed":count["decompile_failed"],"successful_ratio":round(count["function_decompiled"]/max(1,len(target_ids)),4)},
  "elapsed_seconds":round(time.monotonic()-start_time,2),
  "domain_graphs":domains,
  "candidate_function_pointer_tables":tables,
