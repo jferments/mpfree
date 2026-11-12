@@ -37,6 +37,14 @@ mod matrix, automation ───────┘               slot 1: FM   ─> 
 
 `swap` never allocates. It refuses only when there is no such slot, or when an instrument is still ringing and the retired list is full; it hands the new instrument back in both cases.
 
+## Tuning
+
+Each slot has its own tuning: how its instrument turns notes into pitch ([Synths](synths.md), "Tunings and per-note expression"). `set_tuning(slot, &tuning)` gives the slot a tuning, and `tuning(slot)` reads it back. It starts as 12-TET at A4 = 440 Hz.
+
+- **The slot keeps it.** An instrument swapped in later takes the slot's tuning as `swap` puts it in, so changing a track's sound doesn't drop back to 12-TET. An instrument still ringing out after a swap keeps the tuning it had.
+- **Live changes.** A change applies from the next block. Sounding notes move to the new tuning, smoothed where the engine smooths pitch.
+- **Real time.** Like the rest of the host, it never allocates. A `Tuning` is about 1 KB of plain data, copied into the slot and into the node (`Node::set_tuning`), so it may run on the audio thread. Instruments without notes ignore it.
+
 ## STOP
 
 `stop()` ends every note and fades every slot out over 10 ms (`STOP_FADE`, 441 frames at 44.1 kHz). When the fade ends, every instrument is reset and instruments still ringing out are retired, so nothing rings on after STOP.
@@ -60,8 +68,8 @@ On the 4-core cloud workstation VM (release build, 2026-11-11), the host alone t
 
 `cargo test --locked -p mpfree-track` (from `rust/`):
 
-- `tests/host.rs`: a slot plays into its own track and only there, and routing moves it; a note held by two sources ends with the last of them; the same events give the same samples in blocks of 1, 31, 64, 128 and 1000 frames; a swapped-out instrument rings out, goes quiet and comes back to be dropped; STOP silences every slot within 10 ms; a node that outputs NaN is reset and counted; a full queue counts what it drops, and long blocks are counted; Poly and FM go through the real mixer and out of the master.
-- `tests/no_alloc.rs`: 3000 periods of notes, sequencer notes, parameters, swaps, `AllOff` and STOP with Poly and FM into the real mixer, under a counting allocator. The audio thread's part makes no allocation and no free.
+- `tests/host.rs`: a slot plays into its own track and only there, and routing moves it; a note held by two sources ends with the last of them; the same events give the same samples in blocks of 1, 31, 64, 128 and 1000 frames; a swapped-out instrument rings out, goes quiet and comes back to be dropped; STOP silences every slot within 10 ms; a slot's tuning reaches its instrument and the next one swapped in (bit-identical to a Poly tuned directly, the other slot unchanged), and a change while a note sounds retunes it; a node that outputs NaN is reset and counted; a full queue counts what it drops, and long blocks are counted; Poly and FM go through the real mixer and out of the master.
+- `tests/no_alloc.rs`: 3000 periods of notes, sequencer notes, parameters, tunings, swaps, `AllOff` and STOP with Poly and FM into the real mixer, under a counting allocator. The audio thread's part makes no allocation and no free.
 
 ## Next
 
