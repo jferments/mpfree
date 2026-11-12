@@ -121,7 +121,7 @@ Approved by Jay at 22:34Z (the mod thread's card, "Approve as proposed"). The mo
   - With nothing selected, the row is the Song view's own.
 - **Take lanes (comping):**
   - Takes opens the track's takes as thin lanes (about 28 px each) under its lane, newest first. They borrow height from the other lanes.
-  - The Song view gains a vertical lane scroll: SHIFT + wheel, or a drag on the name column.
+  - The Song view gains a vertical lane scroll: a drag on the name column. SHIFT + wheel keeps scrolling the bars, as it already did on the Song view (12 Nov 06:45Z, time thread and app thread).
   - Swiping across a take lane plays that stretch on the track, snapped to the grid (SHIFT + swipe is free). Tapping a whole take lane uses that take everywhere it has audio.
 - **Buttons:**
   - REC records an armed audio track in song mode as the transport records. There is no new button.
