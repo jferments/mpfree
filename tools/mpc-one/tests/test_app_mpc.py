@@ -536,6 +536,45 @@ class AppTests(unittest.TestCase):
         self.assertIn("partition 4: not mounted", res.stdout)
         self.assertIn("partition 4 grow: no /run/mpfree-data-grow.txt", res.stdout)
 
+    def test_app_step_reads_the_gpu_and_display_read_only(self):
+        """Read-only: the GPU's libraries, the release, /dev/dri, the panel's mode, who holds /dev/dri,
+        Panfrost, and debugfs only where it is already there; a missing path says so."""
+        write(self.app, "active\n")
+        r = self.root
+        res = self.run_helper("\nq\n", MPFREE_APP_STEPS="app")
+        for text in ("gpu: no libEGL, libGLESv2, libgbm, libdrm or /usr/lib/dri",
+                     "gpu: /etc/os-release not there", "gpu: /dev/dri not there",
+                     "gpu: no /sys/class/drm/card*-* connectors", "gpu: nothing has /dev/dri open",
+                     "gpu: panfrost driver not there",
+                     "gpu: debugfs dri/0 not there (it is not mounted for this)"):
+            self.assertIn(text, res.stdout)
+        write(f"{r}/usr/lib/libEGL.so.1.0.0", "")
+        os.symlink("libEGL.so.1.0.0", f"{r}/usr/lib/libEGL.so.1")
+        write(f"{r}/usr/lib/dri/rockchip_dri.so", "")
+        write(f"{r}/etc/os-release", 'NAME="Akai"\nVERSION_ID=3.10.0\nHOME_URL=x\n')
+        write(f"{r}/dev/dri/card0", "")
+        write(f"{r}/sys/class/drm/card0-DSI-1/status", "connected\n")
+        write(f"{r}/sys/class/drm/card0-DSI-1/modes", "800x1280\n")
+        os.makedirs(f"{r}/proc/412/fd", exist_ok=True)
+        write(f"{r}/proc/412/comm", "weston\n")
+        os.symlink("/dev/dri/card0", f"{r}/proc/412/fd/7")
+        for name in ("bind", "uevent", "ff9a0000.gpu"):
+            write(f"{r}/sys/bus/platform/drivers/panfrost/{name}", "")
+        write(f"{r}/sys/kernel/debug/dri/0/state", "".join(f"plane[{i}]: x\n" for i in range(100)))
+        res = self.run_helper("\nq\n", MPFREE_APP_STEPS="app")
+        out = res.stdout
+        for text in ("gpu: /usr/lib/libEGL.so.1 -> libEGL.so.1.0.0", "gpu: /usr/lib/libEGL.so.1.0.0",
+                     "gpu: /usr/lib/dri/rockchip_dri.so", 'gpu: os-release NAME="Akai"',
+                     "gpu: os-release VERSION_ID=3.10.0", "gpu: /dev/dri/card0",
+                     "gpu: /sys/class/drm/card0-DSI-1: connected, modes: 800x1280",
+                     "gpu: /dev/dri is open in pid 412 (weston)",
+                     "gpu: panfrost driver bound to: ff9a0000.gpu",
+                     "gpu: debugfs dri/0 state (first 80 lines):",
+                     "(the GPU read's other 80 lines are in the report)"):
+            self.assertIn(text, out)
+        self.assertNotIn("HOME_URL", out)
+        self.assertNotIn("plane[0]", out, "debugfs lines go to the report only")
+
     def test_app_step_reads_the_cores_after_the_dev_pages(self):
         """Read-only, during play: the governor, the clock source, each app thread's cores and priority."""
         write(self.app, "active\n")

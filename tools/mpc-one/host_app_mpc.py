@@ -251,6 +251,59 @@ else
   echo "partition 4 grow: no /run/mpfree-data-grow.txt"
 fi
 """
+# Read-only (the profiling thread's GPU asks, /mnt/project-files/hello-mpc/gpu-inventory-asks.md): the GPU's
+# libraries, the release, the display nodes and the panel's mode, which programs hold /dev/dri, whether the
+# Panfrost driver is bound, and the display state from debugfs only where it is already mounted (nothing is
+# mounted). It opens no device node and changes nothing; a path that isn't there prints "not there".
+GPU_STATE = r"""R=''
+n=0
+for f in "$R"/usr/lib/libEGL* "$R"/usr/lib/libGLESv2* "$R"/usr/lib/libgbm* "$R"/usr/lib/libdrm* \
+    "$R"/usr/lib/*/libEGL* "$R"/usr/lib/*/libGLESv2* "$R"/usr/lib/*/libgbm* "$R"/usr/lib/dri/*; do
+  if [ -L "$f" ]; then echo "gpu: ${f#"$R"} -> $(readlink "$f")"; n=$((n + 1))
+  elif [ -e "$f" ]; then echo "gpu: ${f#"$R"}"; n=$((n + 1)); fi
+done
+[ "$n" -gt 0 ] || echo "gpu: no libEGL, libGLESv2, libgbm, libdrm or /usr/lib/dri"
+if [ -f "$R/etc/os-release" ]; then
+  grep -E '^(NAME|VERSION|VERSION_ID|PRETTY_NAME)=' "$R/etc/os-release" | while IFS= read -r l; do echo "gpu: os-release $l"; done
+else
+  echo "gpu: /etc/os-release not there"
+fi
+if [ -d "$R/dev/dri" ]; then
+  ls "$R/dev/dri" | while IFS= read -r d; do echo "gpu: /dev/dri/$d"; done
+else
+  echo "gpu: /dev/dri not there"
+fi
+n=0
+for c in "$R"/sys/class/drm/card*-*; do
+  [ -d "$c" ] || continue
+  n=$((n + 1))
+  st=$(cat "$c/status" 2>&1)
+  m=""
+  if [ -f "$c/modes" ]; then while IFS= read -r l; do m="$m $l"; done < "$c/modes"; fi
+  echo "gpu: ${c#"$R"}: $st, modes:${m:- none}"
+done
+[ "$n" -gt 0 ] || echo "gpu: no /sys/class/drm/card*-* connectors"
+n=0
+for p in "$R"/proc/[0-9]*; do
+  if ls -l "$p/fd" 2>/dev/null | grep -q '/dev/dri/'; then
+    echo "gpu: /dev/dri is open in pid ${p##*/} ($(cat "$p/comm" 2>/dev/null))"; n=$((n + 1))
+  fi
+done
+[ "$n" -gt 0 ] || echo "gpu: nothing has /dev/dri open"
+if [ -d "$R/sys/bus/platform/drivers/panfrost" ]; then
+  b=$(ls "$R/sys/bus/platform/drivers/panfrost" | grep -v -E '^(bind|unbind|uevent|module|new_id|remove_id)$')
+  echo "gpu: panfrost driver bound to: ${b:-nothing}"
+else
+  echo "gpu: panfrost driver not there"
+fi
+if [ -d "$R/sys/kernel/debug/dri/0" ]; then
+  echo "gpu: debugfs dri/0 state (first 80 lines):"
+  n=0
+  while IFS= read -r l && [ "$n" -lt 80 ]; do echo "gpu:   $l"; n=$((n + 1)); done < "$R/sys/kernel/debug/dri/0/state"
+else
+  echo "gpu: debugfs dri/0 not there (it is not mounted for this)"
+fi
+"""
 # Read-only, during play (the profiling thread's round 8 asks 2 and 4): the cores, the cpufreq governor and
 # clock, the clock source, which core each of the app's threads runs on and its priority, two snapshots of
 # the per-core counters 2 s apart, and the interrupt table. It reads /sys and /proc only.
@@ -664,6 +717,15 @@ def app_check(mpc, out, n, total):
     rc, data = mpc.run(DATA_STATE, test=True)
     for line in (data.strip() or f"partition 4: no answer, exit code {rc}").splitlines():
         out.say(f"  {line}")
+    rc, data = mpc.run(GPU_STATE, test=True)
+    lines = (data.strip() or f"gpu: no answer, exit code {rc}").splitlines()
+    shown = [line for line in lines if not line.startswith("gpu:   ")][:24]
+    for line in shown:
+        out.say(f"  {line}")
+    if len(shown) < len(lines):
+        out.say(f"  (the GPU read's other {len(lines) - len(shown)} lines are in the report)")
+        for line in lines:
+            log_only(out, f"  | {line}")
     answer = ready(out, "First, what the screen did from power-on.")
     if answer == "quit":
         raise Stop("stopped by you")
