@@ -99,7 +99,8 @@ Each case is an 8-bar song loop with every track comped so that two takes crossf
 - **Save:** `save()` waits until nothing records or loads, has the worker make room for every take, then reads the takes at `READ_SPEED` (64 frames for each frame that plays). `saving()` says how far it has got. `take_saved()` gives the result, ready for `save::to_text` and `save::wav`.
 - **Open:** `load(saved)` puts the takes and tracks back. Each take copies in over the next periods. Anything that can't be put back is named in the error, and the rest loads.
 - **Fit to tempo:** `fit(id, bpm)` reads the take, stretches it on the worker, loads the result under a free id and swaps it in as one undo step. `fitting()` names the take while it runs. `fits` and `fits_failed` count the outcomes, so a failed fit is shown, not hidden.
-- **Tests** (`tests/host.rs`): a save made across periods opens in a fresh host and plays back sample for sample; a save asked for while recording waits for the recording to end; a fit at half the tempo fills the bar, and Undo goes back.
+- **Waveforms:** `wave(id, columns)` reads a take's peak table into up to `columns` columns (at most `MAX_COLUMNS`, 4096) at `WAVE_SPEED` (1024 frames of the take for each frame that plays). `take_wave()` gives a `TakeWave`: the lowest and highest sample of each column. A column covers whole blocks of the table, so a short take gets fewer columns. The pool lives with the tracks on the audio thread, so this is how the screen sees it. For a take that is recording, ask again as it grows.
+- **Tests** (`tests/host.rs`): a save made across periods opens in a fresh host and plays back sample for sample; a save asked for while recording waits for the recording to end; a fit at half the tempo fills the bar, and Undo goes back; a waveform matches the take's samples column by column, and asking again replaces a wave not yet done.
 
 ## Joining the rest of MPFree
 
@@ -117,6 +118,5 @@ Each case is an 8-bar song loop with every track comped so that two takes crossf
 
 - Recording to disk, for tracks longer than the RAM pool.
 - Fitting takes on its own when the tempo changes. The host fits one take when asked; deciding when to ask is the app's call.
-- A peak overview the screen can read. `peaks()` reads the pool, which lives with the tracks on the audio thread.
 - The pad player's wiring and the Song view's audio lanes and take lanes. Saving is built in the engine (above); the project browser writes the files once it is in the app.
 - Device runs. Opening the line input on the MPC needs Jay's go, step by step (rule zero).

@@ -19,6 +19,9 @@
 //! - **Fit to tempo:** [`AudioHost::fit`] reads a take, stretches it on the
 //!   worker to the tempo now (see [`crate::stretch`]), loads the result
 //!   and swaps it in, as one undo step.
+//! - **Waveforms:** [`AudioHost::wave`] reads a take's peaks into columns
+//!   for the screen ([`TakeWave`]), at [`WAVE_SPEED`]. The pool lives with
+//!   the tracks on the audio thread, so this is how the screen sees it.
 //!
 //! The channels to the worker are `std::sync::mpsc`: a message now and
 //! then can allocate a block of the channel, as in the looper's host. A
@@ -31,10 +34,30 @@ use mpfree_transport::Block;
 
 use crate::save::Saved;
 use crate::stretch::{fit_ratio, StretchJob};
-use crate::{AudioTracks, Command, TakeInfo};
+use crate::{AudioTracks, Command, TakeInfo, PEAK_BLOCK};
 
 /// Frames of a take a save or a fit reads for each frame that plays.
 pub const READ_SPEED: usize = 64;
+
+/// Frames of a take a waveform covers for each frame that plays (it reads
+/// the peak table, one entry for each [`PEAK_BLOCK`] samples, so this is
+/// about 4 entries a frame for a mono take).
+pub const WAVE_SPEED: usize = 1024;
+
+/// The most columns a waveform has.
+pub const MAX_COLUMNS: usize = 4096;
+
+/// A take's waveform for the screen: the lowest and highest sample of each
+/// column of `frames_per_column` frames, over its channels.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TakeWave {
+    pub id: u16,
+    /// Frames of the take it covers (a recording take grows: ask again).
+    pub frames: usize,
+    pub channels: usize,
+    pub frames_per_column: usize,
+    pub columns: Vec<(f32, f32)>,
+}
 
 enum ToWorker {
     /// Room for every take's audio in a save.
@@ -48,14 +71,25 @@ enum ToWorker {
         bpm: f64,
         id: u16,
     },
+    /// Room for a waveform of this many columns.
+    Wave(usize),
     Drop(Vec<f32>),
     DropSaved(Saved),
+    DropWave(TakeWave),
 }
 
 enum FromWorker {
     Sized(Saved),
     Buffer(Vec<f32>),
     Stretched(Option<(crate::save::TakeFile, Command)>),
+    Wave(Vec<(f32, f32)>),
+}
+
+enum Waving {
+    /// Waiting for room for `columns` columns.
+    Sizing { id: u16, columns: usize },
+    /// Column `at` is next.
+    Reading { wave: TakeWave, at: usize },
 }
 
 enum Saving {
@@ -101,6 +135,8 @@ pub struct AudioHost {
     saving: Option<Saving>,
     saved: Option<Saved>,
     fitting: Option<Fitting>,
+    waving: Option<Waving>,
+    wave: Option<TakeWave>,
     /// Fits swapped in, and ones that could not be made or loaded.
     pub fits: u64,
     pub fits_failed: u64,
@@ -139,12 +175,17 @@ impl AudioHost {
                                 });
                             FromWorker::Stretched(out)
                         }
+                        ToWorker::Wave(n) => FromWorker::Wave(Vec::with_capacity(n)),
                         ToWorker::Drop(v) => {
                             drop(v);
                             continue;
                         }
                         ToWorker::DropSaved(s) => {
                             drop(s);
+                            continue;
+                        }
+                        ToWorker::DropWave(w) => {
+                            drop(w);
                             continue;
                         }
                     };
@@ -161,6 +202,8 @@ impl AudioHost {
             saving: None,
             saved: None,
             fitting: None,
+            waving: None,
+            wave: None,
             fits: 0,
             fits_failed: 0,
         }
@@ -265,6 +308,29 @@ impl AudioHost {
         }
     }
 
+    /// Start reading take `id`'s waveform into about `columns` columns
+    /// (1 to [`MAX_COLUMNS`]; fewer for a short take, as a column covers
+    /// whole blocks of the peak table). The result comes in
+    /// [`AudioHost::take_wave`]. Asking again replaces a wave not yet
+    /// done. False if the take is not there or there is no worker.
+    pub fn wave(&mut self, id: u16, columns: usize) -> bool {
+        if self.tx.is_none() || self.tracks.take(id).is_none() {
+            return false;
+        }
+        if let Some(Waving::Reading { wave, .. }) = self.waving.take() {
+            self.send(ToWorker::DropWave(wave));
+        }
+        let columns = columns.clamp(1, MAX_COLUMNS);
+        self.send(ToWorker::Wave(columns));
+        self.waving = Some(Waving::Sizing { id, columns });
+        true
+    }
+
+    /// A finished waveform.
+    pub fn take_wave(&mut self) -> Option<TakeWave> {
+        self.wave.take()
+    }
+
     fn tend(&mut self, frames: usize) {
         while let Some(v) = self.tracks.take_returned() {
             self.send(ToWorker::Drop(v));
@@ -291,6 +357,25 @@ impl AudioHost {
                     other => {
                         self.fitting = other;
                         self.send(ToWorker::Drop(audio));
+                    }
+                },
+                FromWorker::Wave(columns) => match self.waving.take() {
+                    Some(Waving::Sizing { id, columns: n }) if columns.capacity() >= n => {
+                        match self.start_wave(id, n, columns) {
+                            Some(w) => self.waving = Some(w),
+                            None => self.waving = None,
+                        }
+                    }
+                    other => {
+                        // Room for a wave asked for before the last one.
+                        self.waving = other;
+                        self.send(ToWorker::DropWave(TakeWave {
+                            id: 0,
+                            frames: 0,
+                            channels: 0,
+                            frames_per_column: 0,
+                            columns,
+                        }));
                     }
                 },
                 FromWorker::Stretched(out) => {
@@ -322,6 +407,61 @@ impl AudioHost {
         let budget = READ_SPEED * frames.max(1);
         self.tend_save(budget);
         self.tend_fit(budget);
+        self.tend_wave(WAVE_SPEED * frames.max(1));
+    }
+
+    /// The wave for take `id` in `n` columns, into `columns` (empty, with
+    /// room for `n`); None (the room going to the worker) if the take has
+    /// gone.
+    fn start_wave(&mut self, id: u16, n: usize, columns: Vec<(f32, f32)>) -> Option<Waving> {
+        let wave = |frames, channels, fpc| TakeWave {
+            id,
+            frames,
+            channels,
+            frames_per_column: fpc,
+            columns,
+        };
+        let Some(t) = self.tracks.take(id) else {
+            self.send(ToWorker::DropWave(wave(0, 0, 0)));
+            return None;
+        };
+        // Whole blocks of the table to a column.
+        let step = (PEAK_BLOCK / t.channels.max(1)).max(1);
+        let fpc = t.frames.div_ceil(n).div_ceil(step).max(1) * step;
+        Some(Waving::Reading {
+            wave: wave(t.frames, t.channels, fpc),
+            at: 0,
+        })
+    }
+
+    fn tend_wave(&mut self, budget: usize) {
+        if !matches!(self.waving, Some(Waving::Reading { .. })) {
+            return;
+        }
+        let Some(Waving::Reading { mut wave, mut at }) = self.waving.take() else {
+            return;
+        };
+        let mut left = budget;
+        while at < wave.frames && left > 0 {
+            let to = (at + wave.frames_per_column).min(wave.frames);
+            match self.tracks.peaks(wave.id, at, to) {
+                Some(p) => wave.columns.push(p),
+                None => {
+                    // Forgotten while it was read.
+                    self.send(ToWorker::DropWave(wave));
+                    return;
+                }
+            }
+            left = left.saturating_sub(to - at);
+            at = to;
+        }
+        if at >= wave.frames {
+            if let Some(old) = self.wave.replace(wave) {
+                self.send(ToWorker::DropWave(old));
+            }
+        } else {
+            self.waving = Some(Waving::Reading { wave, at });
+        }
     }
 
     fn tend_save(&mut self, budget: usize) {
