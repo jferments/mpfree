@@ -216,7 +216,7 @@ it copies the two builds to `/run/mpfree-bench`, runs each with fixed
 arguments (`--calibrate`, `--json <build>.json`, then `--afford`), and prints the output
 and the JSON into the results log. It starts, stops and changes no service,
 and the benchmark opens no device. It runs as an ordinary process, so the pad
-player's real-time audio thread always comes first. Like host_hello_mpc.py it
+player's real-time audio thread always comes first. Like host_app_mpc.py it
 uses only the test build's own host key, so on stock 3.6 it runs nothing.
 It needs `MPFREE_ACCEPT_BENCH=YES` and a terminal; each step waits for
 Enter. Its tests (`tests/test_host_bench_mpc.py`) run it against a fake test
@@ -239,11 +239,11 @@ paths, and runs only on Jay's go. Its results become
 Jay asked (2026-11-11) for tools in the Dev tools menu to see which
 processes use resources and how much CPU each FX, synth, and the audio
 playback and processing use. The Hello MPC thread owns the Dev tab and
-agreed both pages; their wiring into mpfree-hello rides with round 7. The
+agreed both pages; their wiring into mpfree-app rides with round 7. The
 data side is here:
 
 - **Processes**: `procs::ProcTable::sample()` once a second on the screen
-  thread. Every process on the MPC (Akai's `MPC` if it runs, `mpfree-hello`,
+  thread. Every process on the MPC (Akai's `MPC` if it runs, `mpfree-app`,
   system services) with CPU, memory, threads and scheduling (normal, FIFO
   80, …), busiest first, plus total and per-core CPU; a tap shows one
   process's threads (`ProcTable::threads`).

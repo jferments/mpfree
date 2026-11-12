@@ -30,4 +30,4 @@ Fonts: the built-in Inter and JetBrains Mono from `mpfree-ui` (SIL OFL 1.1).
 
 Fonts: VT323 (SIL OFL 1.1) is bundled unmodified in `fonts/` with its licence, for the console screen only. The Synthwave and Spaceship titles use blade letters drawn as polygons in `src/blade.rs` (no font file).
 
-On the MPC One, `mpfree-startup --framebuffer` plays the default theme's screen on `/dev/fb0` and leaves its last frame showing. It writes only to the framebuffer and its sysfs `pan` file, never to storage.
+On the MPC One, `mpfree-startup --framebuffer` plays the default theme's screen on `/dev/fb0` and leaves its last frame showing (with `--data /run/mpfree-data`, the screen of the theme picked in Prefs > Appearance; read only). It writes only to the framebuffer and its sysfs `pan` file, never to storage.
