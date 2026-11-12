@@ -2,7 +2,7 @@
 
 The app is called mpfree. Phase 1 called it Hello MPC, and its crate was `mpfree-hello` until 2026-11-11; it is now [`rust/mpfree-app`](../../../rust/mpfree-app), and the program is `mpfree`.
 
-**Status:** round 3 ran on 2026-11-10, and every Phase 1 part now works on the test build: the screen, touch, pads, Q-Links, wheel, buttons, pad lights, and sound from the pads. A factory drum kit played from the pads with 0 underruns, and Akai's setup, replayed, moved the controls to the Private port with relative Q-Links ([results](#round-3-results-2026-11-10)). Round 4 ran [the pad player](#round-4-the-pad-player-and-mpfrees-first-gui), MPFree's first GUI: 323 hits in 120 s with 0 underruns and 8.7 ms from pad to sound ([results](#round-4-results-2026-11-10)). Round 5, [straight into the pad player at power-on](#round-5-straight-into-the-pad-player), is ready to run.
+**Status:** round 3 ran on 2026-11-10, and every Phase 1 part now works on the test build: the screen, touch, pads, Q-Links, wheel, buttons, pad lights, and sound from the pads. A factory drum kit played from the pads with 0 underruns, and Akai's setup, replayed, moved the controls to the Private port with relative Q-Links ([results](#round-3-results-2026-11-10)). Round 4 ran [the pad player](#round-4-the-pad-player-and-mpfrees-first-gui), MPFree's first GUI: 323 hits in 120 s with 0 underruns and 8.7 ms from pad to sound ([results](#round-4-results-2026-11-10)). Round 5, [straight into the pad player at power-on](#round-5-straight-into-the-pad-player), is ready to run. Rounds 8 to 10 are built and tested on the workstation but have not run on the MPC yet ([what they add](#rounds-8-to-10-the-app-as-it-stands)).
 
 Phase 1 is the first time MPFree's own code drives the MPC One's hardware: the screen, the touchscreen, the pads and the audio output. It runs on the [kexec test build](../hardware/kexec-test-boot.md): Akai's 3.10.0 system started from the USB stick, with Akai's app blocked and the eMMC and SD card hidden from it. A power-cycle brings back stock 3.6.0.
 
@@ -300,3 +300,19 @@ With the developer tools on, the Dev strip has a **Touch** page between Map cont
 6. It writes a new folder `~/mpfree-work/factory-kit-<UTC>-XXXXXXXX/` holding `kits.bin` (every kit with its name; the format is in [`kit.rs`](../../../rust/mpfree-app/src/kit.rs)) and `report.txt` (file and sample names, formats and kit 1's program XML; no audio).
 
 The kits are Akai's copyrighted content, under the [factory content policy](../project/factory-content-policy.md): it stays in `~/mpfree-work` and in the test build's RAM. They are never committed or shared, and `results.py` copies only `report.txt` into a round's zip.
+
+## Rounds 8 to 10: the app as it stands
+
+None of rounds 8 to 10 has run on the MPC yet; they are tested on the workstation (unit tests, the golden screens from `mpfree --preview DIR`, and the bench). The [layout spec](../project/layout-spec.md) has every page in detail; this is the short list of what to try.
+
+- **Round 8 (#106): the Play page.** No big pads: the transport bar with the view switch (All, Beats, Loop, Drum), the loop strip, the pattern with a speaker per lane, mini pads, eight throws, the XY pad, the thin master bar and the Q-Link column on the right. Clips became **Arrange**.
+- **Round 9 (#136): the Looper tab and the control map.** The Looper tab edits and sets up the loops (mockup J): the loops and their layers, the wave, the tools row, Q-Links for the layer's level and pan. Every mode button goes to the page with the same job (MAIN, STEP SEQ, NEXT SEQ, SAMPLER, SAMPLE EDIT, PROG EDIT), SHIFT + STOP goes back to bar 1, SHIFT + REC is Capture, SHIFT + PLAY START the metronome, SHIFT + 16 LEVEL the synth pads' Chromatic | In key. The Console is hold SHIFT + hold ERASE + TAP TEMPO. Buttons without a measured note work once Map controls (Dev tab) has found them.
+- **Round 10 (#186 and the PR after it):**
+  - **The FX chain editor** opens from a mixer strip's insert row (or its "+", with the effect picker up), in the mixer's place; Back returns to the mixer. The Q-Links turn the effect's first four knobs.
+  - **Q-LINK** steps the Q-Link column through Macros 1-4 and Macros 5-8 on Play and in the chain editor. Holding a macro card still for half a second opens the **macros panel**.
+  - **The Looper tab's tools work:** ½ length, × 2, Reverse, the nudges, the seam fade and Merge layers; **Undo history** lists every step and goes back or forward to any of them; **trim handles** on the wave cut the loop by 1/16 notes. Q3 is Fade old and Q4 the seam fade. After recording (play or overdub) and Use the loop > Resample work.
+  - **FILL:** PLAY while the transport plays is FILL while held; pressed twice it latches until PLAY again or STOP.
+  - **Perform FX on Play:** the throws and the XY pad play `mpfree_fx::Perform` on the master (the XY pad is its DJ filter across and its echo up, and glides home when let go). The FX mix Q-Link is Perform's mix.
+  - **TRACK MUTE:** the pads become mute keys over any page: pads 1-8 mute tracks 1-8 (green plays, red muted). SHIFT + TRACK MUTE does the same for the kit's pads. Press it again to play the pads.
+
+Still to come in the app: hold MAIN + pad to pick a track, SHIFT + NEXT SEQ for a Perform FX page, the Looper's bounce rows (To a pad, To a clip, Save loop), Sample > FX, the browser overlay, and the audio tracks lanes in Arrange (waiting on the owner's layout call).

@@ -145,8 +145,9 @@ Approved by Jay at 22:34Z (the mod thread's card, "Approve as proposed"). The mo
   - PROG EDIT: the sound the pads play: the Synth tab while the synth has them, otherwise Sample > Pads.
   - SHIFT + 16 LEVEL: the synth pads' Chromatic | In key switch.
   - Q-LINK: the Q-Link column's next bank on Play, the chain editor and the macros panel (section 4b).
+- **TRACK MUTE** (control map decision 5): the pads become mute keys over whatever page shows, and the page stays. Pads 1-8 mute and unmute tracks 1-8 at once (their clips keep their place); a pad is lit green while its track plays a clip, dim green with nothing launched, red while muted, and pads 9-16 are dark. **SHIFT + TRACK MUTE** does the same for the playing kit's pads (the speakers on Play): lit in the kit's colour while a pad plays, red while muted, dark without a sound. The same press again leaves, and the other one switches. The hint line says what the pads are, and the button is lit while they are mute keys. A pad held when TRACK MUTE is pressed still lets go as a note.
 - **Found with Map controls first:** ERASE, Q-LINK and the mode buttons have no measured note yet, so each works once Map controls has found it (TRACK MUTE, NEXT SEQ, STEP SEQ, SAMPLER, SAMPLE EDIT, PROG EDIT and the data dial's push have rows since round 9).
-- **Still to come from the control map:** TRACK MUTE (the pads as mute keys); hold MAIN + pad to pick a track; SHIFT + NEXT SEQ (Perform FX); 16 LEVEL, COPY, TC, BROWSE and the data dial's push.
+- **Still to come from the control map:** hold MAIN + pad to pick a track; SHIFT + NEXT SEQ (Perform FX); 16 LEVEL, COPY, TC, BROWSE and the data dial's push.
 
 ## 7. How changes happen
 
@@ -178,6 +179,7 @@ Approved by Jay at 22:34Z (the mod thread's card, "Approve as proposed"). The mo
 | #75 Sample tab (merged) | Play, Clips, Synth, Sample, (Debug), Console, Prefs |
 | Round 7 | Play, Clips, Synth, Looper, Sample, (Dev); Prefs on SHIFT + MENU |
 | Round 8 (merged) | Play, Arrange, Synth, Looper, Sample, (Dev); Prefs on SHIFT + MENU |
-| Round 9 (this spec) | No tab change (the Looper tab becomes mockup J's editor) |
+| Round 9 (merged) | No tab change (the Looper tab becomes mockup J's editor) |
+| Round 10 | No tab change: the chain editor and the macros panel take the mixer's place or open over the page (section 4b); TRACK MUTE works over any page |
 | #72 themes, arp b1aa92e | No tab change (#72 restyles the drawing only) |
 | Preview pictures (not the app) | synth-ui "Steps, Clips, Looper, Arrange, Synth, Mix"; time-ui "Play, Clips, Debug, Console, Prefs"; sampler-ui "Play, Sample, Debug, Prefs"; arp-ui "Play, Debug, Console, Prefs"; wave preview "Record, Sound, Perform, Browse" |

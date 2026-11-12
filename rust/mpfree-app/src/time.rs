@@ -1066,6 +1066,38 @@ impl TimeHost {
         self.player.set_fill(on, offset);
     }
 
+    /// TRACK MUTE's keys (control map decision 5): mute track `t` now, or
+    /// let it play again. Its clip keeps its place, so it comes back in
+    /// time; a scene's mutes set it again when the scene starts.
+    pub fn toggle_mute(&mut self, t: usize) -> Result<String, String> {
+        let Some(track) = self.project.tracks.get_mut(t) else {
+            return Err(format!("no track {}", t + 1));
+        };
+        track.mute = !track.mute;
+        if let Err(e) = self.compile() {
+            self.project.tracks[t].mute ^= true;
+            return Err(e);
+        }
+        let track = &self.project.tracks[t];
+        Ok(format!(
+            "track mute: {} {}",
+            track.name,
+            if track.mute { "muted" } else { "plays" }
+        ))
+    }
+
+    /// Whether track `t` is muted (None: no such track), for TRACK MUTE's
+    /// pad lights.
+    pub fn muted(&self, t: usize) -> Option<bool> {
+        self.project.tracks.get(t).map(|tr| tr.mute)
+    }
+
+    /// Whether track `t` has a clip launched (playing, or waiting for the
+    /// transport), for TRACK MUTE's pad lights.
+    pub fn launched(&self, t: usize) -> bool {
+        self.launches.iter().any(|l| l.track == t)
+    }
+
     /// FILL, as of the last period, for the button's light.
     #[allow(dead_code)]
     pub fn fill(&self) -> bool {
@@ -2142,6 +2174,49 @@ mod tests {
         run(&mut h, &mut pads, 6 * BAR, &[]);
         assert!(h.state().launches.is_empty());
         assert!(h.act(TimeAction::LaunchScene(SLOTS)).is_err());
+        assert_eq!(h.dropped(), 0);
+    }
+
+    /// TRACK MUTE's keys: track 2 muted halfway through bar 1 goes quiet
+    /// from there, and unmuted in bar 3 it plays on in time.
+    #[test]
+    fn a_track_mute_key_silences_the_track_and_lets_it_back_in_time() {
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut pads = Fake::default();
+        let beats = |note: u8| {
+            let mut c = Clip::new("beat", 3840);
+            c.notes = (0..4)
+                .map(|b| mpfree_seq::Note::new(b * 960, 100, note, 100))
+                .collect();
+            c
+        };
+        for (t, note) in [(0, 4), (1, 30)] {
+            h.project.tracks[t].slots[0] = Some(beats(note));
+            h.act(TimeAction::Launch { track: t, slot: 0 }).unwrap();
+        }
+        h.command(Command::Play);
+        run(&mut h, &mut pads, BAR / 2 - 1000, &[]);
+        assert_eq!(h.toggle_mute(1).unwrap(), "track mute: Track 2 muted");
+        assert_eq!(
+            (h.muted(1), h.muted(0), h.muted(TRACKS)),
+            (Some(true), Some(false), None)
+        );
+        assert!(h.launched(1) && !h.launched(2));
+        assert!(h.state().tracks[1].mute);
+        run(&mut h, &mut pads, 2 * BAR - 1000, &[]);
+        assert_eq!(h.toggle_mute(1).unwrap(), "track mute: Track 2 plays");
+        run(&mut h, &mut pads, 3 * BAR - 1000, &[]);
+        let at = |pad: usize| {
+            pads.hits
+                .iter()
+                .filter(|&&(_, p, _)| p == pad)
+                .map(|&(f, _, _)| (f + BAR / 8) / (BAR / 4))
+                .collect::<Vec<u64>>()
+        };
+        // Track 1 on every beat; track 2 on beats 1 and 2, then bar 3.
+        assert_eq!(at(4), (0..12).collect::<Vec<u64>>());
+        assert_eq!(at(30), [0, 1, 8, 9, 10, 11]);
+        assert!(h.toggle_mute(TRACKS).is_err());
         assert_eq!(h.dropped(), 0);
     }
 

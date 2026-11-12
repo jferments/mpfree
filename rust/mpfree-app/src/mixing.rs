@@ -345,6 +345,12 @@ impl MixHost {
             .min(0.0)
     }
 
+    /// The pads muted by their speakers or SHIFT + TRACK MUTE (a bit
+    /// each; Drop drums' are not counted).
+    pub fn pad_mutes(&self) -> u16 {
+        self.pad_mutes
+    }
+
     /// What the Play page shows. Cheap: a few reads.
     pub fn play_levels(&self) -> PlayLevels {
         let m = &self.mixer;
