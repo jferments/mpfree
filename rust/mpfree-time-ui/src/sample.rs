@@ -9,11 +9,12 @@
 
 use crate::view::{
     bars_label, clips_after, with_transport, TimeAction, TimePage, TimeState, TransportInfo,
-    CLIPS_HINT, CLIPS_PAGE, TRANSPORT,
+    CLIPS_HINT, CLIPS_PAGE, SONG_HINT, TRANSPORT,
 };
 use crate::widgets::TransportBar;
 use mpfree_capture::{keep, Capture, Kept, Now};
 use mpfree_play::{Cue, Event, Launch, Out, PlayView, Player, Recorder, Sink, Takes};
+use mpfree_seq::arrange::{scene_length, scenes_to_song};
 use mpfree_seq::{Clip, Note, Project, Track};
 use mpfree_transport::time::Tick;
 use mpfree_transport::{Block, Command, Transport};
@@ -558,6 +559,39 @@ fn clips_sample(
     })
 }
 
+/// The Clips page's Song view: rows 1 to 5 made into a song, the third
+/// placement on the drums made unique and selected, song mode on, playing
+/// at 5.3.
+fn song_sample(fonts: Fonts) -> Result<Sample, String> {
+    let mut s = playing()?;
+    let rows: Vec<(usize, Tick)> = (0..5)
+        .filter(|&r| s.project.row_filled(r))
+        .map(|r| (r, scene_length(&s.project, r, BAR)))
+        .collect();
+    let mut song = scenes_to_song(&s.project, &rows, 0).map_err(|e| format!("{e:?}"))?;
+    song.make_unique(&s.project.tracks, 2)
+        .map_err(|e| format!("{e:?}"))?;
+    s.project.arrangement = song;
+    s.project.scene_mut(1).ok_or("no row 2")?.name = "Verse".into();
+    s.project.arrangement.markers[1].name = "Verse".into();
+    let mut ui = app_ui(fonts, "Clips", SONG_HINT);
+    let page = TimePage::add_to(&mut ui)?;
+    ui.show(CLIPS_PAGE)?;
+    let mut state = s.state();
+    state.chips = vec![arp_chip()];
+    state.song_view = true;
+    state.song_on = true;
+    state.selected = Some(2);
+    page.update(&mut ui, &state);
+    Ok(Sample {
+        name: "clips-song",
+        about: "Clips page, Song view: rows 1 to 5 as a song, a drum placement made unique \
+                and selected, song mode on at 5.3",
+        ui,
+        state,
+    })
+}
+
 /// The pad player's Play page with the bar under the header.
 fn play_sample(fonts: Fonts, s: &Session) -> Result<Sample, String> {
     let mut ui = app_ui(fonts, "Play", PLAY_HINT);
@@ -694,6 +728,7 @@ pub fn samples(fonts: impl Fn() -> Fonts) -> Result<Vec<Sample>, String> {
             &captured()?,
             0,
         )?,
+        song_sample(fonts())?,
     ];
     // A narrow look at the bar alone, while recording.
     let rec = recording()?;
@@ -731,7 +766,7 @@ mod tests {
     #[test]
     fn every_sample_draws() {
         let samples = samples(Fonts::embedded).unwrap();
-        assert_eq!(samples.len(), 9);
+        assert_eq!(samples.len(), 10);
         for mut s in samples {
             let (w, h) = s.ui.size();
             let mut c = SoftCanvas::new(w, h);
@@ -740,6 +775,21 @@ mod tests {
             let surface = Theme::dark().surface;
             assert!((0..h).any(|y| c.pixel(w / 2, y) == surface), "{}", s.name);
         }
+    }
+
+    #[test]
+    fn the_song_sample_shows_rows_as_a_song() {
+        let s = samples(Fonts::embedded).unwrap();
+        let song = s.iter().find(|s| s.name == "clips-song").unwrap();
+        let st = &song.state;
+        assert!(st.song_view && st.song_on);
+        let names: Vec<&str> = st.markers.iter().map(|m| m.1.as_str()).collect();
+        assert_eq!(names[..2], ["Scene 1", "Verse"]);
+        assert!(st.placements[2].unique);
+        assert_eq!(
+            song.ui.layout_of(CLIPS_PAGE),
+            Some(crate::view::SONG_LAYOUT)
+        );
     }
 
     #[test]

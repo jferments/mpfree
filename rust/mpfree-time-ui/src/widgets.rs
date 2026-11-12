@@ -514,6 +514,12 @@ impl ClipGrid {
         ))
     }
 
+    /// Where the Song button is: the right end of the title line.
+    pub fn song_rect(&self, r: Rect) -> Rect {
+        let head = r.inset(14).take_top(26).0;
+        Rect::new(head.right() - 72, head.y - 4, 72, 30)
+    }
+
     /// Where the Stop all button is: over the scene buttons.
     pub fn stop_all_rect(&self, r: Rect) -> Rect {
         let g = self.geo(r);
@@ -621,7 +627,27 @@ impl Widget for ClipGrid {
             tracks: self.tracks.clone(),
             scenes: (self.scene_playing, self.scene_cued),
         });
-        cx.titled_panel(r, &self.title, &self.legend);
+        cx.titled_panel(r, &self.title, "");
+        // The legend, then the Song button (the Song view of the page).
+        let song = self.song_rect(r);
+        let head = r.inset(14).take_top(26).0;
+        cx.text(
+            FontId::Sans,
+            t.size_small,
+            Rect::new(head.x, head.y, song.x - head.x - 12, head.h),
+            Align::Right,
+            t.text_dim,
+            &self.legend,
+        );
+        cx.canvas.fill_round_rect(song, 10, t.raised);
+        cx.text(
+            FontId::Bold,
+            t.size_small,
+            song,
+            Align::Center,
+            t.text,
+            "Song ›",
+        );
         let g = self.geo(r);
         if self.tracks.is_empty() {
             let line = Rect::new(g.body.x, g.body.y, g.body.w, 30);
@@ -716,7 +742,11 @@ impl Widget for ClipGrid {
         if phase != Touch::Down {
             return None;
         }
-        // A row's scene button is Toggle(row); Stop all is Toggle(slots).
+        // A row's scene button is Toggle(row); Stop all is Toggle(slots);
+        // the Song button Toggle(slots + 1).
+        if self.song_rect(r).contains(x, y) {
+            return Some(EventKind::Toggle(self.slots + 1));
+        }
         if self.tracks.is_empty() {
             return None;
         }
@@ -1355,6 +1385,12 @@ mod tests {
         assert_eq!(
             g.touch(1, Touch::Down, s.x + 4, s.y + 4, r),
             Some(EventKind::Toggle(16))
+        );
+        let song = g.song_rect(r);
+        assert!(song.right() <= r.right() - 14 && song.y >= r.y, "{song:?}");
+        assert_eq!(
+            g.touch(1, Touch::Down, song.x + 4, song.y + 4, r),
+            Some(EventKind::Toggle(17))
         );
         g.first_row = 2;
         assert_eq!(

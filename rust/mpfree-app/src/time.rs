@@ -43,9 +43,10 @@
 use mpfree_capture::{keep, moves_for_clip, Capture, Now, Pending};
 use mpfree_perform::{Perform, SceneMorph, When};
 use mpfree_play::{Cue, Event, Launch, Out, PlayView, Player, Recorder, Sink, Takes, TrackArps};
+use mpfree_seq::arrange::{scene_length, scenes_to_song, song_to_scenes};
 use mpfree_seq::mpfree_moves::{Input, MoveLog};
 use mpfree_seq::steps::{Change, Grid, Step};
-use mpfree_seq::{Clip, Project, Track, SLOTS};
+use mpfree_seq::{Clip, ModelError, Project, Track, SLOTS};
 use mpfree_time_ui::view::{
     bars_label, clips_after, MorphInfo, TimeAction, TimeState, TransportInfo,
 };
@@ -295,6 +296,13 @@ pub struct TimeHost {
     /// The morph bar, and the morph on the mixer's mod engine
     /// ([`TimeHost::morph`]).
     morph: MorphInfo,
+    /// Song mode: the arrangement plays on the tracks with no clip
+    /// launched.
+    song: bool,
+    /// The Arrange page shows the Song view, and the placement selected
+    /// on it.
+    song_view: bool,
+    selected: Option<usize>,
     scene_morph: SceneMorph,
     armed: Option<usize>,
     takes: Takes,
@@ -386,6 +394,9 @@ impl TimeHost {
             cues: Vec::new(),
             perform: Perform::default(),
             morph: MorphInfo::default(),
+            song: false,
+            song_view: false,
+            selected: None,
             scene_morph: SceneMorph::default(),
             armed: Some(0),
             takes: Takes::default(),
@@ -420,6 +431,8 @@ impl TimeHost {
         let mut v = PlayView::compile_cued(&self.project, &self.launches, &self.cues)
             .map_err(|e| format!("clips: {e:?}"))?;
         v.set_armed(self.armed);
+        v.set_song(&self.project, self.song)
+            .map_err(|e| format!("song: {e:?}"))?;
         // A scene's mutes switch with its cues.
         self.perform.dress(&mut v);
         // Room to record into the armed track's clips without allocating.
@@ -789,6 +802,104 @@ impl TimeHost {
             | TimeAction::SaveScene(_) => {
                 Err("morph: needs the mixer's mod engine (TimeHost::morph)".into())
             }
+            TimeAction::SongView(on) => {
+                self.song_view = on;
+                self.changed = true;
+                Ok(if on { "song view" } else { "clips view" }.into())
+            }
+            TimeAction::SongMode(on) => {
+                self.song = on;
+                if let Err(e) = self.compile() {
+                    self.song = !on;
+                    return Err(e);
+                }
+                Ok(if on { "song on" } else { "song off" }.into())
+            }
+            TimeAction::SelectPlacement(i) => {
+                self.selected = i.filter(|&i| i < self.project.arrangement.placements.len());
+                self.changed = true;
+                Ok(String::new())
+            }
+            TimeAction::ScenesToSong
+            | TimeAction::SongToScenes
+            | TimeAction::MakeUnique(_)
+            | TimeAction::DeletePlacement(_) => {
+                let bar = info.meter.bar_ticks();
+                let before = self.project.clone();
+                let line = match self.edit_song(a, bar) {
+                    Ok(line) => line,
+                    Err(e) => {
+                        self.project = before;
+                        return Err(e);
+                    }
+                };
+                if let Err(e) = self.compile() {
+                    self.project = before;
+                    self.compile()?;
+                    return Err(e);
+                }
+                Ok(line)
+            }
+        }
+    }
+
+    /// The Song view's edits of the arrangement (and, for Song → scenes,
+    /// the rows). A line for the log.
+    fn edit_song(&mut self, a: TimeAction, bar: Tick) -> Result<String, String> {
+        let song = &mut self.project.arrangement;
+        match a {
+            TimeAction::ScenesToSong => {
+                // Every row with a clip, in order, after the song's end.
+                let rows: Vec<(usize, Tick)> = (0..SLOTS)
+                    .filter(|&r| self.project.row_filled(r))
+                    .map(|r| (r, scene_length(&self.project, r, bar)))
+                    .collect();
+                if rows.is_empty() {
+                    return Err("scenes → song: no row has a clip".into());
+                }
+                let end = self.project.arrangement.end();
+                let at = (end + bar - 1) / bar.max(1) * bar;
+                let add = scenes_to_song(&self.project, &rows, at)
+                    .map_err(|e| format!("scenes → song: {e:?}"))?;
+                // New placements shift the indices.
+                self.selected = None;
+                let song = &mut self.project.arrangement;
+                for p in add.placements {
+                    song.place(p).map_err(|e| format!("scenes → song: {e:?}"))?;
+                }
+                for m in add.markers {
+                    song.mark(m.at, &m.name)
+                        .map_err(|e| format!("scenes → song: {e:?}"))?;
+                }
+                Ok(format!(
+                    "scenes → song: {} rows from bar {}",
+                    rows.len(),
+                    at / bar.max(1) + 1
+                ))
+            }
+            TimeAction::SongToScenes => match song_to_scenes(&mut self.project, bar) {
+                Ok(rows) if rows.is_empty() => Ok("song → scenes: the song is empty".into()),
+                Ok(rows) => Ok(format!(
+                    "song → scenes: rows {} to {}",
+                    rows[0] + 1,
+                    rows[rows.len() - 1] + 1
+                )),
+                Err(ModelError::NoRoom) => {
+                    Err("song → scenes: not enough empty rows in a run".into())
+                }
+                Err(e) => Err(format!("song → scenes: {e:?}")),
+            },
+            TimeAction::MakeUnique(i) => {
+                song.make_unique(&self.project.tracks, i)
+                    .map_err(|e| format!("make unique: {e:?}"))?;
+                Ok(format!("placement {} is its own copy", i + 1))
+            }
+            TimeAction::DeletePlacement(i) => {
+                song.remove(i).ok_or("delete: no such placement")?;
+                self.selected = None;
+                Ok(format!("placement {} deleted", i + 1))
+            }
+            _ => Ok(String::new()),
         }
     }
 
@@ -1392,6 +1503,9 @@ impl TimeHost {
         st.scene_playing = self.perform.playing().map(|p| p.row);
         st.scene_cued = self.perform.cued();
         st.morph = self.morph;
+        st.song_view = self.song_view;
+        st.song_on = self.song;
+        st.selected = self.selected;
         st
     }
 
@@ -2217,6 +2331,76 @@ mod tests {
         assert_eq!(at(4), (0..12).collect::<Vec<u64>>());
         assert_eq!(at(30), [0, 1, 8, 9, 10, 11]);
         assert!(h.toggle_mute(TRACKS).is_err());
+        assert_eq!(h.dropped(), 0);
+    }
+
+    /// Two one-bar rows become a song (Scenes → song), which plays in song
+    /// mode; a clip launched on track 1 takes it over, and the song plays
+    /// on there after it stops. The song goes back into rows (Song →
+    /// scenes), and a placement is made unique and deleted.
+    #[test]
+    fn rows_become_a_song_that_plays_and_goes_back_into_rows() {
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut pads = Fake::default();
+        let one_bar = |note: u8| {
+            let mut c = Clip::new("beat", 3840);
+            c.notes = vec![mpfree_seq::Note::new(0, 100, note, 100)];
+            c
+        };
+        for (t, base) in [(0, 4), (1, 30)] {
+            h.project.tracks[t].slots[0] = Some(one_bar(base));
+            h.project.tracks[t].slots[1] = Some(one_bar(base + 1));
+        }
+        h.project.tracks[0].slots[5] = Some(one_bar(9));
+        h.project.scene_mut(1).unwrap().name = "Drop".into();
+        // Row 6 has a clip too: three rows, bars 1, 2 and 3.
+        assert_eq!(
+            h.act(TimeAction::ScenesToSong).unwrap(),
+            "scenes → song: 3 rows from bar 1"
+        );
+        let st = h.state();
+        assert_eq!(st.placements.len(), 5);
+        let names: Vec<&str> = st.markers.iter().map(|m| m.1.as_str()).collect();
+        assert_eq!(names, ["Scene 1", "Drop", "Scene 6"]);
+        assert!(!st.song_on);
+        h.act(TimeAction::SongMode(true)).unwrap();
+        assert!(h.state().song_on);
+        h.command(Command::Play);
+        run(&mut h, &mut pads, BAR / 2, &[]);
+        // Track 1 plays row 1's clip in place of the song in bar 2, to its
+        // stop on bar 3, where the song plays on (row 6).
+        h.act(TimeAction::Launch { track: 0, slot: 0 }).unwrap();
+        run(&mut h, &mut pads, BAR + BAR / 2, &[]);
+        h.act(TimeAction::StopClip(0)).unwrap();
+        run(&mut h, &mut pads, 4 * BAR - 1000, &[]);
+        let hits: Vec<(u64, usize)> = pads.hits.iter().map(|&(f, p, _)| (f, p)).collect();
+        let want = [(0, 4), (0, 30), (BAR, 4), (BAR, 31), (2 * BAR, 9)];
+        assert_eq!(hits.len(), want.len(), "{hits:?}");
+        for ((f, p), (at, pad)) in hits.iter().zip(want) {
+            assert!(f.abs_diff(at) <= 23 && *p == pad, "{hits:?}");
+        }
+        // Back into rows: the first run of three empty rows is 3 to 5.
+        assert_eq!(
+            h.act(TimeAction::SongToScenes).unwrap(),
+            "song → scenes: rows 3 to 5"
+        );
+        let p = &h.project;
+        assert_eq!(p.tracks[0].slots[2], p.tracks[0].slots[0]);
+        assert_eq!(p.tracks[1].slots[3], p.tracks[1].slots[1]);
+        assert_eq!(p.tracks[0].slots[4], p.tracks[0].slots[5]);
+        assert_eq!(p.scene(3).unwrap().name, "Drop");
+        // A placement made unique keeps its clip when the slot changes.
+        h.act(TimeAction::SelectPlacement(Some(0))).unwrap();
+        assert_eq!(h.state().selected, Some(0));
+        h.act(TimeAction::MakeUnique(0)).unwrap();
+        assert!(h.state().placements[0].unique);
+        h.act(TimeAction::DeletePlacement(4)).unwrap();
+        let st = h.state();
+        assert_eq!((st.placements.len(), st.selected), (4, None));
+        assert!(h.act(TimeAction::DeletePlacement(9)).is_err());
+        assert_eq!(h.state().placements.len(), 4);
+        h.act(TimeAction::SongView(true)).unwrap();
+        assert!(h.state().song_view);
         assert_eq!(h.dropped(), 0);
     }
 
