@@ -295,6 +295,24 @@ impl EngineView {
         self.pads.get(pad)?.as_ref()?.layers.get(layer)
     }
 
+    /// Pad `pad`'s own value of a live setting: what [`Event::PadLive`]
+    /// with NaN gives back. `None` for an empty pad, and for Cutoff and
+    /// Resonance on a pad whose filter is off.
+    pub fn pad_own(&self, pad: usize, field: PadField) -> Option<f32> {
+        let p = self.pads.get(pad)?.as_ref()?;
+        let filter = (p.filter.kind != FilterKind::Off).then_some(p.filter);
+        match field {
+            PadField::Level => Some(p.level_db),
+            PadField::Pan => Some(p.pan),
+            PadField::Tune => Some(p.tune_cents as f32),
+            PadField::Cutoff => filter.map(|f| f.cutoff_hz),
+            PadField::Resonance => filter.map(|f| f.resonance),
+            PadField::Attack => Some(p.amp.attack_ms),
+            PadField::Decay => Some(p.amp.decay_ms),
+            PadField::Release => Some(p.amp.release_ms),
+        }
+    }
+
     pub fn empty() -> EngineView {
         EngineView {
             revision: 0,

@@ -23,15 +23,23 @@
 //! back to [`SamplerControl::take_old`] to be dropped there: the audio
 //! thread never allocates or frees. Playing voices finish as they started.
 //!
-//! **Parameters** follow Drums' kit ids: Level (dB, smoothed, on its
-//! frame) and Pad 1 note. Per-pad settings (level, pan, tune, filter,
-//! envelope) come next, through the engine's live settings.
+//! **Parameters.** The kit's follow Drums' ids: Level (dB, smoothed, on
+//! its frame) and Pad 1 note, plus Tune and Cutoff, which move every pad
+//! at once ([`Event::ProgramLive`]). Pads 1 to 16 each have Level, Pan,
+//! Tune, Cutoff, Resonance, Attack, Decay and Release at ids `pad * 16 +
+//! field` ([`pad_id`]), as Drums lays out its pads. These are **offsets
+//! on the pad's own settings** (the ones edited on the Sample tab): at
+//! their defaults the pad plays as it is, and a knob, a p-lock or a
+//! modulation moves it from there. Each change goes to the engine as an
+//! [`Event::PadLive`] on its frame; playing voices glide to Level, Pan,
+//! Cutoff and Resonance, and the rest reach the next hit. When a new view
+//! comes in, the offsets go onto its pads' own settings.
 
 use std::sync::mpsc::{sync_channel, Receiver, SyncSender, TryRecvError, TrySendError};
 
 use mpfree_node::{Ctx, Curve, Kind, Node, NodeEvent, NodeInfo, ParamInfo, Smooth, Timed, Unit};
 
-use crate::engine::{Engine, EngineView, Event};
+use crate::engine::{Engine, EngineView, Event, PadField, ProgramField};
 use crate::model::{PadsPlay, PADS};
 
 /// The node's id and name.
@@ -41,14 +49,53 @@ pub static INFO: NodeInfo = NodeInfo {
     kind: Kind::Instrument,
 };
 
-/// Parameter ids, the same as Drums' kit settings.
+/// Kit parameter ids, the same as Drums' kit settings where they share one.
 pub mod ids {
     /// The kit's level, in dB.
     pub const LEVEL: u16 = 300;
     /// The note pad 1 plays; pad n plays `BASE_NOTE + n - 1`.
     pub const BASE_NOTE: u16 = 301;
+    /// Every pad's tune moves by this many semitones (playing voices too).
+    pub const TUNE: u16 = 302;
+    /// Every filter's cutoff moves by this many octaves; below 0 a pad
+    /// without a filter gets a low-pass, so the whole kit darkens.
+    pub const CUTOFF: u16 = 303;
     /// Read-only: voices sounding now.
     pub const METER_VOICES: u16 = 310;
+}
+
+/// Pads with settings on the node: pads 1 to 16 (bank A).
+pub const LIVE_PADS: usize = 16;
+/// Id stride between pads, as on Drums.
+pub const STRIDE: u16 = 16;
+
+/// A pad's settings: add to `pad * STRIDE` ([`pad_id`]). The order is
+/// [`PadField::ALL`]'s.
+pub mod field {
+    /// dB on the pad's own level.
+    pub const LEVEL: u16 = 0;
+    /// Percent of the way to a side, on the pad's own pan.
+    pub const PAN: u16 = 1;
+    /// Semitones on the pad's own tune (new hits).
+    pub const TUNE: u16 = 2;
+    /// Octaves on the pad's own cutoff. Below 0, a pad whose filter is off
+    /// gets a low-pass; above 0 it stays open.
+    pub const CUTOFF: u16 = 3;
+    /// Percent added to the pad's own resonance (where there is a filter).
+    pub const RESONANCE: u16 = 4;
+    /// The amp envelope's attack, decay and release, as a percentage of
+    /// the pad's own (new hits). A time of 0 is taken as 1 ms, so a pad
+    /// with no attack can still be given one.
+    pub const ATTACK: u16 = 5;
+    pub const DECAY: u16 = 6;
+    pub const RELEASE: u16 = 7;
+    /// Fields per pad.
+    pub const COUNT: usize = 8;
+}
+
+/// The id of `field` on pad `pad` (0 to 15).
+pub const fn pad_id(pad: usize, field: u16) -> u16 {
+    pad as u16 * STRIDE + field
 }
 
 /// The default for "Pad 1 note" (C1 on the MPC's pads, as on Drums).
@@ -58,7 +105,52 @@ pub const VIEW_QUEUE: usize = 2;
 /// How long a Level change takes, in ms.
 const LEVEL_MS: f32 = 10.0;
 
-pub static PARAMS: &[ParamInfo] = &[
+const GROUPS: [&str; LIVE_PADS] = [
+    "Pad 1", "Pad 2", "Pad 3", "Pad 4", "Pad 5", "Pad 6", "Pad 7", "Pad 8", "Pad 9", "Pad 10",
+    "Pad 11", "Pad 12", "Pad 13", "Pad 14", "Pad 15", "Pad 16",
+];
+
+/// The shortest time a time setting scales from, in ms.
+const TIME_FLOOR_MS: f32 = 1.0;
+/// Where a pad without a filter gets its low-pass from (the engine's open
+/// filter).
+const OPEN_HZ: f32 = 22_000.0;
+
+/// A pad setting's name, range, default, unit and curve.
+type Spec = (&'static str, f32, f32, f32, Unit, Curve);
+
+const fn pad_param(pad: usize, f: u16) -> ParamInfo {
+    let (name, min, max, default, unit, curve): Spec = match f {
+        field::LEVEL => ("Level", -60.0, 12.0, 0.0, Unit::Db, Curve::Linear),
+        field::PAN => ("Pan", -100.0, 100.0, 0.0, Unit::Percent, Curve::Linear),
+        field::TUNE => ("Tune", -24.0, 24.0, 0.0, Unit::Semitones, Curve::Linear),
+        field::CUTOFF => ("Cutoff", -8.0, 8.0, 0.0, Unit::Octaves, Curve::Linear),
+        field::RESONANCE => (
+            "Resonance",
+            -100.0,
+            100.0,
+            0.0,
+            Unit::Percent,
+            Curve::Linear,
+        ),
+        field::ATTACK => ("Attack", 1.0, 10_000.0, 100.0, Unit::Percent, Curve::Log),
+        field::DECAY => ("Decay", 1.0, 10_000.0, 100.0, Unit::Percent, Curve::Log),
+        _ => ("Release", 1.0, 10_000.0, 100.0, Unit::Percent, Curve::Log),
+    };
+    ParamInfo {
+        id: pad_id(pad, f),
+        name,
+        group: GROUPS[pad],
+        min,
+        max,
+        default,
+        unit,
+        curve,
+        readonly: false,
+    }
+}
+
+const KIT: &[ParamInfo] = &[
     ParamInfo {
         id: ids::LEVEL,
         name: "Level",
@@ -82,6 +174,28 @@ pub static PARAMS: &[ParamInfo] = &[
         readonly: false,
     },
     ParamInfo {
+        id: ids::TUNE,
+        name: "Tune",
+        group: "Kit",
+        min: -24.0,
+        max: 24.0,
+        default: 0.0,
+        unit: Unit::Semitones,
+        curve: Curve::Linear,
+        readonly: false,
+    },
+    ParamInfo {
+        id: ids::CUTOFF,
+        name: "Cutoff",
+        group: "Kit",
+        min: -8.0,
+        max: 8.0,
+        default: 0.0,
+        unit: Unit::Octaves,
+        curve: Curve::Linear,
+        readonly: false,
+    },
+    ParamInfo {
         id: ids::METER_VOICES,
         name: "Voices on",
         group: "Kit",
@@ -93,6 +207,62 @@ pub static PARAMS: &[ParamInfo] = &[
         readonly: true,
     },
 ];
+
+const N_PAD_PARAMS: usize = LIVE_PADS * field::COUNT;
+const N_PARAMS: usize = N_PAD_PARAMS + KIT.len();
+
+const fn build() -> [ParamInfo; N_PARAMS] {
+    let mut out = [KIT[0]; N_PARAMS];
+    let mut i = 0;
+    while i < N_PAD_PARAMS {
+        out[i] = pad_param(i / field::COUNT, (i % field::COUNT) as u16);
+        i += 1;
+    }
+    let mut k = 0;
+    while k < KIT.len() {
+        out[N_PAD_PARAMS + k] = KIT[k];
+        k += 1;
+    }
+    out
+}
+
+/// Every parameter: Pad 1 to Pad 16, then Kit.
+pub static PARAMS: [ParamInfo; N_PARAMS] = build();
+
+/// The pad and field of a pad setting's id.
+fn pad_field(id: u16) -> Option<(usize, usize)> {
+    let (pad, f) = (usize::from(id / STRIDE), usize::from(id % STRIDE));
+    (pad < LIVE_PADS && f < field::COUNT).then_some((pad, f))
+}
+
+/// A parameter's description, by id.
+fn info(id: u16) -> Option<&'static ParamInfo> {
+    match pad_field(id) {
+        Some((pad, f)) => Some(&PARAMS[pad * field::COUNT + f]),
+        None => PARAMS[N_PAD_PARAMS..].iter().find(|p| p.id == id),
+    }
+}
+
+/// What a pad setting at `offset` asks of the engine, given the pad's own
+/// value (`NaN` where it has none): the live value, or NaN for the pad's
+/// own.
+fn live_value(f: usize, own: f32, offset: f32) -> f32 {
+    let field = PadField::ALL[f];
+    if offset == PARAMS[f].default {
+        return f32::NAN;
+    }
+    match field {
+        PadField::Level => own + offset,
+        PadField::Pan => own + offset / 100.0,
+        PadField::Tune => own + offset * 100.0,
+        PadField::Cutoff if own.is_nan() && offset > 0.0 => f32::NAN,
+        PadField::Cutoff => (if own.is_nan() { OPEN_HZ } else { own }) * offset.exp2(),
+        PadField::Resonance => (if own.is_nan() { 0.0 } else { own }) + offset / 100.0,
+        PadField::Attack | PadField::Decay | PadField::Release => {
+            own.max(TIME_FLOOR_MS) * offset / 100.0
+        }
+    }
+}
 
 /// Where a held note went, so its note-off follows it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -143,6 +313,13 @@ pub struct SamplerNode {
     gain: Smooth,
     base: u8,
     held: [Held; 128],
+    /// Pads 1 to 16's settings (offsets on their own), by field.
+    pads: [[f32; field::COUNT]; LIVE_PADS],
+    /// The view's own values of them (NaN where a pad has none).
+    own: [[f32; field::COUNT]; LIVE_PADS],
+    /// The kit's Tune (semitones) and Cutoff (octaves).
+    tune: f32,
+    cutoff: f32,
 }
 
 impl SamplerNode {
@@ -153,6 +330,7 @@ impl SamplerNode {
         let (old_tx, old_rx) = sync_channel(VIEW_QUEUE);
         let mut engine = Engine::new(rate, voices);
         let play = view.pads_play();
+        let own = own_values(&view);
         engine.set_view(view);
         let mut gain = Smooth::new(1.0);
         gain.set_time(rate, LEVEL_MS);
@@ -166,6 +344,10 @@ impl SamplerNode {
             gain,
             base: DEFAULT_BASE_NOTE,
             held: [Held::No; 128],
+            pads: std::array::from_fn(|_| std::array::from_fn(|f| PARAMS[f].default)),
+            own,
+            tune: 0.0,
+            cutoff: 0.0,
         };
         let control = SamplerControl {
             views: views_tx,
@@ -193,11 +375,21 @@ impl SamplerNode {
         match self.views.try_recv() {
             Ok(view) => {
                 self.play = view.pads_play();
+                self.own = own_values(&view);
                 let old = self.engine.set_view(view);
                 if let Err(TrySendError::Full(o) | TrySendError::Disconnected(o)) =
                     self.old.try_send(old)
                 {
                     self.parked = Some(o);
+                }
+                // The new view starts from its pads' own settings: put the
+                // offsets back on them.
+                for pad in 0..LIVE_PADS {
+                    for f in 0..field::COUNT {
+                        if let Some(ev) = self.pad_event(pad, f) {
+                            self.engine.apply(ev);
+                        }
+                    }
                 }
             }
             Err(TryRecvError::Empty | TryRecvError::Disconnected) => {}
@@ -245,8 +437,13 @@ impl SamplerNode {
                 self.engine.schedule(offset, Event::AllOff);
                 self.held = [Held::No; 128];
             }
-            // Level is applied on its frame by `process`; the rest now.
-            NodeEvent::Param { id, value } if id != ids::LEVEL => self.set(id, value),
+            // Level is applied on its frame by `process`; the rest go to
+            // the engine on theirs.
+            NodeEvent::Param { id, value } if id != ids::LEVEL => {
+                if let Some(ev) = self.set(id, value) {
+                    self.engine.schedule(offset, ev);
+                }
+            }
             // Bend, and anything newer, is for pitched synths.
             _ => {}
         }
@@ -265,20 +462,63 @@ impl SamplerNode {
         }
     }
 
-    fn set(&mut self, id: u16, value: f32) {
-        let Some(p) = PARAMS.iter().find(|p| p.id == id && !p.readonly) else {
-            return;
-        };
+    /// Keeps a setting, and gives the engine event it makes, if any.
+    fn set(&mut self, id: u16, value: f32) -> Option<Event> {
+        let p = info(id).filter(|p| !p.readonly)?;
         let v = p.clamp(value);
+        if let Some((pad, f)) = pad_field(id) {
+            self.pads[pad][f] = v;
+            return Some(self.pad_event(pad, f).unwrap_or(Event::PadLive {
+                pad: pad as u8,
+                field: PadField::ALL[f],
+                value: f32::NAN,
+            }));
+        }
         match id {
             ids::LEVEL => {
                 self.level_db = v;
                 self.gain.target = db_gain(v);
+                None
             }
-            ids::BASE_NOTE => self.base = v as u8,
-            _ => {}
+            ids::BASE_NOTE => {
+                self.base = v as u8;
+                None
+            }
+            ids::TUNE => {
+                self.tune = v;
+                Some(Event::ProgramLive {
+                    field: ProgramField::Tune,
+                    value: v * 100.0,
+                })
+            }
+            ids::CUTOFF => {
+                self.cutoff = v;
+                Some(Event::ProgramLive {
+                    field: ProgramField::Cutoff,
+                    value: v,
+                })
+            }
+            _ => None,
         }
     }
+
+    /// The engine event that puts pad `pad`'s setting `f` on its own value,
+    /// or `None` if it is at its default (the pad plays as it is).
+    fn pad_event(&self, pad: usize, f: usize) -> Option<Event> {
+        let value = live_value(f, self.own[pad][f], self.pads[pad][f]);
+        (!value.is_nan()).then_some(Event::PadLive {
+            pad: pad as u8,
+            field: PadField::ALL[f],
+            value,
+        })
+    }
+}
+
+/// Pads 1 to 16's own values of every field in `view` (NaN where none).
+fn own_values(view: &EngineView) -> [[f32; field::COUNT]; LIVE_PADS] {
+    std::array::from_fn(|pad| {
+        std::array::from_fn(|f| view.pad_own(pad, PadField::ALL[f]).unwrap_or(f32::NAN))
+    })
 }
 
 fn db_gain(db: f32) -> f32 {
@@ -295,19 +535,26 @@ impl Node for SamplerNode {
     }
 
     fn params(&self) -> &'static [ParamInfo] {
-        PARAMS
+        &PARAMS
     }
 
     fn set_param(&mut self, id: u16, value: f32) {
-        self.set(id, value);
+        if let Some(ev) = self.set(id, value) {
+            self.engine.apply(ev);
+        }
     }
 
     fn param(&self, id: u16) -> f32 {
+        if let Some((pad, f)) = pad_field(id) {
+            return self.pads[pad][f];
+        }
         match id {
             ids::LEVEL => self.level_db,
             ids::BASE_NOTE => f32::from(self.base),
+            ids::TUNE => self.tune,
+            ids::CUTOFF => self.cutoff,
             ids::METER_VOICES => self.engine.active_voices() as f32,
-            _ => 0.0,
+            _ => f32::NAN,
         }
     }
 
@@ -315,10 +562,10 @@ impl Node for SamplerNode {
     /// host at another rate makes a new node.
     fn prepare(&mut self, _rate: u32, _max_block: usize) {}
 
-    /// Releases every voice at once (the engine has no harder stop yet) and
-    /// forgets the held notes.
+    /// Stops every voice at once ([`Engine::stop_all`]), drops the notes
+    /// waiting and forgets the held ones. The settings stay.
     fn reset(&mut self) {
-        self.engine.apply(Event::AllOff);
+        self.engine.stop_all();
         self.held = [Held::No; 128];
         self.gain.snap(self.gain.target);
     }
@@ -342,7 +589,8 @@ impl Node for SamplerNode {
         while at < n {
             while let Some(t) = params.next_if(|t| t.offset as usize <= at) {
                 if let NodeEvent::Param { id, value } = t.ev {
-                    self.set(id, value);
+                    // Level makes no engine event: it is the gain below.
+                    let _ = self.set(id, value);
                 }
             }
             let to = params.peek().map_or(n, |t| (t.offset as usize).min(n));
