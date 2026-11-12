@@ -146,6 +146,35 @@ impl Cond {
         }
     }
 
+    /// Every condition in the order a wheel steps through them: always,
+    /// then 1:2 to 8:8 (by the number of passes, then the pass), then
+    /// FILL, !FILL, PRE, !PRE, NEI, !NEI, 1ST and !1ST.
+    pub fn all() -> Vec<Cond> {
+        let mut out = vec![Cond::Always];
+        for b in 2..=8 {
+            out.extend((1..=b).map(|a| Cond::Every { a, b }));
+        }
+        out.extend([
+            Cond::Fill,
+            Cond::NotFill,
+            Cond::Pre,
+            Cond::NotPre,
+            Cond::Nei,
+            Cond::NotNei,
+            Cond::First,
+            Cond::NotFirst,
+        ]);
+        out
+    }
+
+    /// The condition `d` places on in [`Cond::all`], stopping at either
+    /// end (one out of range steps from always).
+    pub fn step(self, d: i32) -> Cond {
+        let all = Cond::all();
+        let at = all.iter().position(|&c| c == self).unwrap_or(0) as i32;
+        all[(at + d).clamp(0, all.len() as i32 - 1) as usize]
+    }
+
     /// The condition alone (fill, the pass, the last results given):
     /// whether the note plays, before its chance. `pass` counts from 1 at
     /// the clip's start (0 and below before it); `pre` and `nei` are the
@@ -677,6 +706,16 @@ mod tests {
         .map(|c| c.to_string())
         .collect();
         assert_eq!(shown, ["3:8", "!FILL", "PRE", "1ST", ""]);
+        // The wheel's order: always, the 35 A:B conditions, then the rest.
+        let all = Cond::all();
+        assert_eq!(all.len(), 44);
+        assert!(all.iter().all(|c| c.ok()));
+        assert_eq!(Cond::Always.step(1), every(1, 2));
+        assert_eq!(every(2, 2).step(1), every(1, 3));
+        assert_eq!(every(8, 8).step(1), Cond::Fill);
+        assert_eq!(Cond::NotFirst.step(1), Cond::NotFirst, "stops at the end");
+        assert_eq!(Cond::Always.step(-1), Cond::Always);
+        assert_eq!(Cond::Fill.step(-2), every(7, 8));
         // Out of range: refused by the clip.
         assert!(!every(0, 2).ok() && !every(3, 2).ok() && !every(1, 9).ok() && every(8, 8).ok());
         let mut c = Clip::new("c", 3840);
