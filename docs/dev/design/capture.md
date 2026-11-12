@@ -1,6 +1,6 @@
 # Capture: keep what you just played
 
-**Status:** roadmap step T3's last part, 2026-11-11. The engine is [`rust/mpfree-capture`](../../../rust/mpfree-capture). The Clips page's Capture button is in [`rust/mpfree-time-ui`](../../../rust/mpfree-time-ui), and take undo for captures is in [`rust/mpfree-play`](../../../rust/mpfree-play) (`Takes`). The pad player runs it in `TimeHost` (`rust/mpfree-app/src/time.rs`). All of it is tested on the host. Nothing here has run on the MPC yet.
+**Status:** roadmap step T3's last part, 2026-11-11. The engine is [`rust/mpfree-capture`](../../../rust/mpfree-capture). The Clips page's Capture button is in [`rust/mpfree-time-ui`](../../../rust/mpfree-time-ui), and take undo for captures is in [`rust/mpfree-play`](../../../rust/mpfree-play) (`Takes`). The pad player runs it in `TimeHost` (`rust/mpfree-app/src/time.rs`), on its control half ([time-threads.md](time-threads.md)), fed the pad notes and gestures the audio half takes. All of it is tested on the host. Nothing here has run on the MPC yet.
 
 You play the pads without recording, then decide you liked it. CAPTURE keeps it. The MPC's own Retro Rec does the same thing into the selected track (MPC 3.6 user guide, page 67).
 
