@@ -13,8 +13,10 @@
 //! - **In key rows**: in sequence, or a fourth apart.
 //! - **Tuning**, **Tuning root** and **A4**: how notes become pitches for
 //!   every engine but Drums: 12-TET, just intonation, Pythagorean,
-//!   quarter-comma meantone or 24-TET quarter tones, the root the table
-//!   tunings are pure on, and A4 from 380 to 480 Hz.
+//!   quarter-comma meantone or 24-TET quarter tones, then the musician's
+//!   Scala files ([`App::tuning_files`]); the root the table tunings are
+//!   pure on, and A4 from 380 to 480 Hz. A file's keyboard map, when it
+//!   has one, sets the root and pitch itself.
 //!
 //! The app keeps these and hands them to the synth as
 //! [`Effect::SynthPads`]; the audio loop applies them. The pads panel's
@@ -56,6 +58,19 @@ pub(super) const SYNTH_OPTIONS: [Item; 12] = [
     Item::Latch,
 ];
 
+/// The longest value a row shows, as long as the longest built-in one.
+const VALUE_CHARS: usize = 20;
+
+/// `name`, cut to [`VALUE_CHARS`] with an ellipsis when it is longer.
+fn fit(name: &str) -> String {
+    if name.chars().count() <= VALUE_CHARS {
+        return name.to_string();
+    }
+    let mut s: String = name.chars().take(VALUE_CHARS - 1).collect();
+    s.push('…');
+    s
+}
+
 fn step_in<T: Copy + PartialEq>(all: &[T], now: T, d: i32) -> T {
     let at = all.iter().position(|&x| x == now).unwrap_or(0) as i32;
     all[(at + d).clamp(0, all.len() as i32 - 1) as usize]
@@ -88,8 +103,30 @@ impl App {
         }
     }
 
+    /// The Tuning row's choice: the built-in tunings, then the files.
+    fn tuning_choice(&self) -> usize {
+        let t = &self.synth_pads.tuning;
+        match t.file {
+            Some(f) if usize::from(f) < self.tuning_files.len() => {
+                Builtin::ALL.len() + usize::from(f)
+            }
+            _ => Builtin::ALL
+                .iter()
+                .position(|&b| b == t.builtin)
+                .unwrap_or(0),
+        }
+    }
+
+    /// The tuning file picked, as (name, whether its map sets root and A4).
+    fn tuning_file(&self) -> Option<&(String, bool)> {
+        self.tuning_files
+            .get(usize::from(self.synth_pads.tuning.file?))
+    }
+
     pub(super) fn synth_item_text(&self, item: SynthItem) -> (&'static str, String) {
         let p = &self.synth_pads;
+        let file = self.tuning_file();
+        let mapped = file.is_some_and(|f| f.1);
         match item {
             SynthItem::Engine => ("Engine", p.engine.name().to_string()),
             SynthItem::Scale => (
@@ -116,16 +153,34 @@ impl App {
                 },
             ),
             SynthItem::Rows => ("In key rows", p.rows.label().to_string()),
-            SynthItem::Tuning => ("Tuning", p.tuning.builtin.name().to_string()),
-            SynthItem::TuningRoot => (
-                "Tuning root",
-                if p.tuning.builtin.has_root() {
-                    NOTE_NAMES[usize::from(p.tuning.root % 12)].to_string()
-                } else {
-                    format!("{} (not used)", NOTE_NAMES[usize::from(p.tuning.root % 12)])
+            SynthItem::Tuning => (
+                "Tuning",
+                match file {
+                    Some((name, _)) => fit(name),
+                    None => p.tuning.builtin.name().to_string(),
                 },
             ),
-            SynthItem::A4 => ("A4", format!("{} Hz", p.tuning.a4_hz)),
+            SynthItem::TuningRoot => {
+                let root = NOTE_NAMES[usize::from(p.tuning.root % 12)];
+                (
+                    "Tuning root",
+                    if mapped {
+                        "set by its .kbm".to_string()
+                    } else if file.is_some() || p.tuning.builtin.has_root() {
+                        root.to_string()
+                    } else {
+                        format!("{root} (not used)")
+                    },
+                )
+            }
+            SynthItem::A4 => (
+                "A4",
+                if mapped {
+                    "set by its .kbm".to_string()
+                } else {
+                    format!("{} Hz", p.tuning.a4_hz)
+                },
+            ),
         }
     }
 
@@ -169,19 +224,23 @@ impl App {
                 "just intonation (pure thirds and fifths on",
                 "the root), Pythagorean (pure fifths),",
                 "quarter-comma meantone (pure thirds) or",
-                "24-TET (each pad a quarter tone). Drums keep",
-                "their own pitch. Held notes follow at once.",
+                "24-TET (each pad a quarter tone). Scala .scl",
+                "files in files/tunings/ come after them.",
+                "Drums keep their own pitch. Held notes follow",
+                "at once.",
             ],
             SynthItem::TuningRoot => vec![
-                "The note just intonation, Pythagorean and",
-                "meantone are pure on. It keeps its usual",
-                "pitch and the others move around it. The",
-                "equal tunings don't use it.",
+                "The note just intonation, Pythagorean,",
+                "meantone and a tuning file start on. It keeps",
+                "its usual pitch and the others move around",
+                "it. The equal tunings don't use it, and a",
+                "file's .kbm keyboard map sets its own.",
             ],
             SynthItem::A4 => vec![
                 "The pitch of the A above middle C, 380 to",
                 "480 Hz: 440 is the usual, 432 and 442 are",
-                "common, 415 is baroque pitch.",
+                "common, 415 is baroque pitch. A file's .kbm",
+                "keyboard map sets its own.",
             ],
         }
     }
@@ -217,8 +276,13 @@ impl App {
                 self.synth_pads.rows = step_in(&InKeyRows::ALL, self.synth_pads.rows, d)
             }
             SynthItem::Tuning => {
+                let last = Builtin::ALL.len() + self.tuning_files.len() - 1;
+                let at = (self.tuning_choice() as i32 + d).clamp(0, last as i32) as usize;
                 let t = &mut self.synth_pads.tuning;
-                t.builtin = step_in(&Builtin::ALL, t.builtin, d);
+                match Builtin::ALL.get(at) {
+                    Some(&b) => (t.builtin, t.file) = (b, None),
+                    None => t.file = Some((at - Builtin::ALL.len()) as u8),
+                }
             }
             SynthItem::TuningRoot => {
                 let t = &mut self.synth_pads.tuning;
