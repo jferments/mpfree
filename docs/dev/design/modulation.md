@@ -154,13 +154,11 @@ Previews: `cargo run -p mpfree-chain-ui --bin mpfree-chain-preview` (workstation
 
 ## What is left
 
-As of 2026-11-11 (late evening) the engine, the bindings, both panels, the engine in the app's audio loop and what the panels' actions do there are written and tested; step locks on mixer strips and their effects reach the sound. What the user can't do yet is open the panels in the app. In order:
+As of 2026-11-12 the engine, the bindings, both panels, the engine in the app's audio loop and what the panels' actions do there are written and tested; step locks on mixer strips and their effects reach the sound; and the panels are on the app's screens from the mixer and the Q-Link column (round 10, the app thread). In order:
 
-1. **The panels in the app's screens** (the mod thread, after the app thread's round 9, PR #136, and its rename of `mpfree-app` to `mpfree-app` land, so the two don't edit the same Q-Link arm in `main.rs`):
-   - What the actions do is written and tested (`modpanels.rs`, above). What's left is the screens: the panels' pages in `gui.rs` with `ToUi` and `FromUi` messages for their states and actions, `MixAction::OpenInsert { strip, slot }` and `AddInsert` to `ChainHost::from_mixer`, `ChainOut::Back` to the mixer, `ChainOut::OpenPage` to `mpfree-fx-ui`'s effect page, and the set-up saved with `ModMix::save` in the store.
-   - The sampler adds "FX" to `mpfree_sampler_ui::wave_tab::BUILT`, and the FX sub-tab shows the chain editor.
-   - The Q-Link column takes `Bindings::with_macros`; when a macro bank shows, the Q-Link arm sends the turns there first and falls through otherwise (the app thread's suggestion). A long press on a macro card opens the macros panel.
-   - These add app screens, so they also wait for the golden screen checks (PR #112).
+1. **The rest of the panels in the app** (the app thread):
+   - Built in round 10: the chain editor in the mixer's place from a strip's insert row (`MixAction::OpenInsert`) or "+" (`AddInsert`), with Back to the mixer view it showed (`ChainOut::Back`); the macros panel from a finger held on a macro card, with Back to the page it opened over; the Q-Link column on `Bindings::with_macros`, Q-LINK stepping its banks on Play and the editor, and a learn taking the next Q-Link turned (`ChainOut::Learn`). The audio loop's side is `modpanels::Panels`; the screen's is `chain_page.rs`.
+   - Left: `ChainOut::OpenPage` to `mpfree-fx-ui`'s effect page (a hint says it comes with the FX pages); the sampler's FX sub-tab ("FX" in `mpfree_sampler_ui::wave_tab::BUILT`, `ChainHost::for_pad`); and the set-up kept in the store (`ModMix::save` and the learned Q-Links), once the mixer's chains are kept too.
 2. **Locks on pads and instruments:** the sampler and the track host take parameter events by address; then `modmix.rs` routes `Owner::Pad` and `Owner::Inst` as it routes strips and inserts.
 3. **Move lanes:** the player sends a lane's values as `Event::Lane` (the transport and FX threads), and the host passes them on as `ModEvent::Lane`.
 4. **Recording a Q-Link turn as a lock:** while a track records, the Q-Link turn also goes to `TimeHost::knob` and to the engine as `ModEvent::hand(.., recording: true)`, with `Untouch` 500 ms after the last detent until Q-Link touch is confirmed.

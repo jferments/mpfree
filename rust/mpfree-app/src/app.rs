@@ -99,6 +99,14 @@ pub enum View {
     /// The mixer (mpfree-mixer-ui), over the page under the top bar: TRACK
     /// MIX or the bar's mixer icon (Jay, 09:17Z). Not a tab.
     Mixer,
+    /// The FX chain editor (mpfree-chain-ui) in the mixer's place: a strip's
+    /// insert row or its "+" opens it, and its Back goes back to the mixer
+    /// (layout spec 4b, Jay 22:34Z). Not a tab.
+    Chain,
+    /// The macros and morph panel over the page under the top bar: a long
+    /// press on a macro card in the Q-Link column (layout spec 4b). Not a
+    /// tab; its Back goes back to the page it opened over.
+    Macros,
 }
 
 /// The header's tabs, in the order of the approved layout spec
@@ -156,7 +164,13 @@ impl View {
             View::Perf | View::Engines | View::Procs | View::Map | View::Touch | View::Console => {
                 Some(View::Debug)
             }
-            View::Options | View::Guide | View::Prefs | View::System | View::Mixer => None,
+            View::Options
+            | View::Guide
+            | View::Prefs
+            | View::System
+            | View::Mixer
+            | View::Chain
+            | View::Macros => None,
             v => Some(v),
         }
     }
@@ -188,6 +202,8 @@ impl View {
             View::Touch => "Touch",
             View::System => "System info",
             View::Mixer => "Mixer",
+            View::Chain => "FX chain",
+            View::Macros => "Macros",
         }
     }
 }
@@ -307,6 +323,7 @@ pub struct ButtonMap {
     pub sampler: Option<u8>,
     pub sample_edit: Option<u8>,
     pub prog_edit: Option<u8>,
+    pub q_link: Option<u8>,
 }
 
 impl ButtonMap {
@@ -418,6 +435,7 @@ impl ButtonMap {
             Job::Sampler => self.sampler,
             Job::SampleEdit => self.sample_edit,
             Job::ProgEdit => self.prog_edit,
+            Job::QLink => self.q_link,
         }
     }
 
@@ -445,6 +463,7 @@ impl ButtonMap {
             Job::Sampler => &mut self.sampler,
             Job::SampleEdit => &mut self.sample_edit,
             Job::ProgEdit => &mut self.prog_edit,
+            Job::QLink => &mut self.q_link,
         };
         *slot = code;
     }
@@ -651,6 +670,15 @@ pub enum Effect {
         knob: usize,
         delta: i32,
     },
+    /// While the chain editor or the macros panel is open: Q-Link `knob`
+    /// (or the wheel, as Q-Link 1) turned by `delta`, for the knobs the
+    /// Q-Link column shows there.
+    ChainTurn {
+        knob: usize,
+        delta: i32,
+    },
+    /// Q-LINK: the Q-Link column's next bank.
+    QLinkBank,
     /// The wheel on the Synth page: turn the selected knob.
     SynthWheel(i32),
     /// SHIFT + wheel, - or + on the Synth page: the next or previous page.
@@ -753,6 +781,10 @@ pub struct App {
     view: View,
     /// The page to go back to from Console, Options or the guide.
     back: View,
+    /// What the chain editor's Back goes back to (the mixer, or the page
+    /// it opened on), and the macros panel's.
+    chain_back: View,
+    macros_back: View,
     selected: usize,
     /// The buttons the guide asks for this time, and which one it is on.
     guide_steps: Vec<GuideStep>,
@@ -884,6 +916,8 @@ impl App {
             pad_level: PadLevel::Off,
             view: View::Play,
             back: View::Play,
+            chain_back: View::Mixer,
+            macros_back: View::Play,
             selected: 0,
             guide_steps: Vec::new(),
             guide: 0,
@@ -1372,6 +1406,14 @@ impl App {
             fx
         } else if is(m.prog_edit) {
             vec![Effect::ProgEdit]
+        } else if is(m.q_link) {
+            // Q-LINK: the column's next bank (Macros 1-4, 5-8, the page's
+            // own knobs), where the column has macro banks (layout spec 4b).
+            if matches!(self.view, View::Play | View::Chain | View::Macros) {
+                vec![Effect::QLinkBank]
+            } else {
+                Vec::new()
+            }
         } else if is(m.sixteen_level) {
             // SHIFT + 16 LEVEL: the synth pads' Chromatic | In key switch.
             // 16 LEVEL itself comes with 16 Levels for kits.
@@ -1505,6 +1547,8 @@ impl App {
             View::Pattern => vec![Effect::WorkspaceWheel(delta)],
             // The mixer: the wheel is the selected strip's volume (Q-Link 1).
             View::Mixer => vec![Effect::MixerTurn { knob: 0, delta }],
+            // The chain editor and the macros panel: the wheel is Q-Link 1.
+            View::Chain | View::Macros => vec![Effect::ChainTurn { knob: 0, delta }],
             // On the Debug tab SHIFT + wheel picks the page; on Map controls
             // the wheel picks the control.
             View::Debug
@@ -1613,6 +1657,56 @@ impl App {
             0,
             Effect::Mixer(Some(if pads { MixView::Pads } else { MixView::Tracks })),
         );
+        fx
+    }
+
+    /// The mixer's insert row or "+": the chain editor takes the mixer's
+    /// place (or the page's, from elsewhere), and its Back comes back here.
+    pub fn open_chain(&mut self) -> Vec<Effect> {
+        if matches!(self.view, View::Guide | View::Chain) {
+            return Vec::new();
+        }
+        self.chain_back = self.view;
+        self.show(View::Chain)
+    }
+
+    /// The chain editor's Back: to the mixer it took the place of, on the
+    /// mixer view `mix` it showed, or to the page it opened on.
+    pub fn close_chain(&mut self, mix: mpfree_mixer_ui::MixView) -> Vec<Effect> {
+        if self.view != View::Chain {
+            return Vec::new();
+        }
+        self.back_to(self.chain_back, mix)
+    }
+
+    /// A long press on a macro card: the macros panel over the page.
+    pub fn open_macros(&mut self) -> Vec<Effect> {
+        if matches!(self.view, View::Guide | View::Macros) {
+            return Vec::new();
+        }
+        self.macros_back = self.view;
+        self.show(View::Macros)
+    }
+
+    /// The macros panel's Back: to the page it opened over.
+    pub fn close_macros(&mut self, mix: mpfree_mixer_ui::MixView) -> Vec<Effect> {
+        if self.view != View::Macros {
+            return Vec::new();
+        }
+        self.back_to(self.macros_back, mix)
+    }
+
+    /// Back from the chain editor or the macros panel to `v`: the mixer
+    /// opens again on its view `mix`.
+    fn back_to(&mut self, v: View, mix: mpfree_mixer_ui::MixView) -> Vec<Effect> {
+        let v = match v {
+            View::Guide | View::Options | View::Prefs => self.back,
+            v => v,
+        };
+        let mut fx = self.show(v);
+        if v == View::Mixer {
+            fx.insert(0, Effect::Mixer(Some(mix)));
+        }
         fx
     }
 
