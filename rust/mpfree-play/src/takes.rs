@@ -62,7 +62,7 @@
 
 use mpfree_seq::mpfree_moves::{Kind, Map, Point, Target};
 use mpfree_seq::steps::{Edit, MovesEdit};
-use mpfree_seq::{Clip, Lock, ModelError, Note, Project, Touch, TouchPoint};
+use mpfree_seq::{touch_room, Clip, Lock, ModelError, Note, Project, Touch, TouchPoint};
 use mpfree_transport::time::Tick;
 
 use crate::recorded::Rec;
@@ -382,21 +382,43 @@ impl Takes {
 
     /// CAPTURE into a clip that holds notes already (the one that was
     /// playing): add `notes` to clip `slot` of `track`, as a take of its
-    /// own. The capture's number. All the notes go in or none: `BadSlot` if
-    /// the clip is gone, `TooManyNotes` or `BadNote` (its index in
-    /// `notes`) if one does not fit.
+    /// own, with their pressure: each note's `touch` names its run in
+    /// `touch`, which goes into the clip first (`Clip::touch`). The
+    /// capture's number, and the pressure values the clip had no room for
+    /// (then every note goes in without its pressure). All the notes go in
+    /// or none: `BadSlot` if the clip is gone, `TooManyNotes` or `BadNote`
+    /// (its index in `notes`) if one does not fit.
     pub fn capture_notes(
         &mut self,
         project: &mut Project,
         track: usize,
         slot: usize,
         notes: &[Note],
-    ) -> Result<u32, ModelError> {
+        touch: &[TouchPoint],
+    ) -> Result<(u32, usize), ModelError> {
         let c = clip(project, track, slot).ok_or(ModelError::BadSlot)?;
-        let before = c.notes.len();
+        let (before, had) = (c.notes.len(), c.touch.len());
+        let room = !touch.is_empty() && touch_room(had, touch);
+        let lost = if room || touch.is_empty() {
+            0
+        } else {
+            touch.len()
+        };
+        let mut notes = notes.to_vec();
+        for n in &mut notes {
+            if room && !n.touch.is_none() {
+                n.touch.first += had as u32;
+            } else {
+                n.touch = Touch::NONE;
+            }
+        }
+        if room {
+            c.touch.extend_from_slice(touch);
+        }
         for (i, n) in notes.iter().enumerate() {
             if let Err(e) = c.add_note(*n) {
                 c.notes.truncate(before);
+                c.touch.truncate(had);
                 return Err(match e {
                     ModelError::BadNote(_) => ModelError::BadNote(i),
                     e => e,
@@ -405,7 +427,7 @@ impl Takes {
         }
         let take = self.next_capture();
         take.added.extend(notes.iter().map(|&n| (track, slot, n)));
-        Ok(take.number)
+        Ok((take.number, lost))
     }
 
     /// Edit clip `slot` of `track`: `edit`'s notes to take out come out
@@ -895,21 +917,52 @@ mod tests {
             ratchet: 1,
             touch: mpfree_seq::Touch::NONE,
         };
+        let pressed = |tick, first| Note {
+            touch: Touch { first, len: 2 },
+            ..n(tick)
+        };
+        let point = |at, value| TouchPoint { at, value };
+        let touch = [point(0, 50), point(5, 70), point(0, 20), point(3, 10)];
         assert_eq!(
-            t.capture_notes(&mut p, 0, 0, &[n(0), n(5000)]),
+            t.capture_notes(&mut p, 0, 0, &[n(0), pressed(5000, 0)], &touch[..2]),
             Err(ModelError::BadNote(1))
         );
-        assert!(ticks(&p).is_empty() && t.done().is_empty());
+        let c = p.clip(0, 0).unwrap();
+        assert!(ticks(&p).is_empty() && c.touch.is_empty() && t.done().is_empty());
         assert_eq!(
-            t.capture_notes(&mut p, 0, 3, &[n(0)]),
+            t.capture_notes(&mut p, 0, 3, &[n(0)], &[]),
             Err(ModelError::BadSlot)
         );
-        assert_eq!(t.capture_notes(&mut p, 0, 0, &[n(0), n(960)]), Ok(1));
+        assert_eq!(
+            t.capture_notes(&mut p, 0, 0, &[n(0), n(960)], &[]),
+            Ok((1, 0))
+        );
         assert_eq!(ticks(&p), vec![0, 960]);
         assert_eq!(t.undo(&mut p), Some(1));
         assert!(ticks(&p).is_empty());
         assert_eq!(t.redo(&mut p), Some(1));
         assert_eq!(ticks(&p), vec![0, 960]);
+        // With pressure: it goes after the clip's own, and the notes name
+        // it there.
+        clip(&mut p, 0, 0).unwrap().touch.push(point(0, 1));
+        assert_eq!(
+            t.capture_notes(&mut p, 0, 0, &[pressed(100, 0), pressed(200, 2)], &touch),
+            Ok((2, 0))
+        );
+        let c = p.clip(0, 0).unwrap();
+        assert_eq!(c.touch_of(&c.notes[2]), &touch[..2]);
+        assert_eq!(c.touch_of(&c.notes[3]), &touch[2..]);
+        // A clip with no room left: the notes go in without it, counted.
+        let c = clip(&mut p, 0, 0).unwrap();
+        c.touch
+            .resize(mpfree_seq::MAX_TOUCH_POINTS - 3, point(0, 0));
+        assert_eq!(
+            t.capture_notes(&mut p, 0, 0, &[pressed(300, 0), pressed(400, 2)], &touch),
+            Ok((3, 4))
+        );
+        let c = p.clip(0, 0).unwrap();
+        assert_eq!(c.touch.len(), mpfree_seq::MAX_TOUCH_POINTS - 3);
+        assert!(c.notes[4..].iter().all(|n| n.touch.is_none()));
     }
 
     #[test]

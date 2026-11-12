@@ -31,6 +31,13 @@
 //!   30 ms while the structure swaps.
 //! - Width is mid/side on the wet signal; Freeze mutes the input and holds
 //!   the tail (feedback 1, the EQ in the loop bypassed).
+//! - **Lead** ([`Node::lead_in`]): all wet, the reverb can take its input
+//!   late by up to its pre-delay and still sound on time, reading the
+//!   pre-delay that much nearer. The mixer uses it to run a return a block
+//!   late on another core. Starting puts out a block from what the
+//!   pre-delay holds without taking input; stopping takes a block of input
+//!   without putting anything out. Both are exact: the output is the
+//!   on-time output, bit for bit, at every quality (`tests/late_returns.rs`).
 
 use std::f32::consts::{LN_10, PI};
 
@@ -1365,8 +1372,34 @@ impl Side {
         }
     }
 
+    /// The input's low and high cut, in place, with per-frame coefficients
+    /// (one each for a constant run).
+    #[inline]
+    fn filter_in(&mut self, x: &mut [f32], low: &[f32], high: &[f32]) {
+        for v in x.iter_mut().zip(low).zip(high) {
+            let ((x, &lo), &hi) = v;
+            // Low cut: a one-pole high-pass (input minus its low-pass).
+            self.low_cut = flush((1.0 - lo) * *x + lo * self.low_cut);
+            let v = *x - self.low_cut;
+            self.high_cut = flush((1.0 - hi) * v + hi * self.high_cut);
+            *x = self.high_cut;
+        }
+    }
+
+    /// Input only ([`Cloud::lead_out`]): filters `x` with fixed
+    /// coefficients and writes it to the pre-delay, reading nothing.
+    fn write(&mut self, x: &mut [f32], lo: f32, hi: f32) {
+        let n = x.len();
+        self.filter_in(x, &[lo; CHUNK][..n], &[hi; CHUNK][..n]);
+        self.pre.push_run(x);
+    }
+
     /// One chunk: `x` is this side's input; adds the early signal to
-    /// `early` and the late signal to `late`.
+    /// `early` and the late signal to `late`. `lag` is how many frames the
+    /// input is behind (the lead, [`Cloud::lead_in`]): the pre-delay reads
+    /// that much nearer. With `hold` the chunk takes no input (`x` is
+    /// ignored) and reads from what the pre-delay already has; the caller
+    /// has added the chunk's frames to `lag`.
     #[inline]
     #[allow(clippy::too_many_arguments)]
     fn run(
@@ -1376,26 +1409,25 @@ impl Side {
         c: &Character,
         f: &Frames,
         eq: &Eq,
+        lag: usize,
+        hold: bool,
         early: &mut [f32],
         late: &mut [f32],
     ) {
         let n = x.len();
-        for v in x.iter_mut().zip(&f.low[..n]).zip(&f.high[..n]) {
-            let ((x, &lo), &hi) = v;
-            // Low cut: a one-pole high-pass (input minus its low-pass).
-            self.low_cut = flush((1.0 - lo) * *x + lo * self.low_cut);
-            let v = *x - self.low_cut;
-            self.high_cut = flush((1.0 - hi) * v + hi * self.high_cut);
-            *x = self.high_cut;
+        if !hold {
+            self.filter_in(x, &f.low[..n], &f.high[..n]);
+            // Writes before reads: frame k's read sits n - 1 - k frames
+            // further back from the end of the chunk.
+            self.pre.push_run(x);
         }
-        // Writes before reads: frame k's read sits n - 1 - k frames further
-        // back from the end of the chunk.
-        self.pre.push_run(x);
         for (k, x) in x.iter_mut().enumerate() {
             // The fraction comes from the pre-delay alone, so any chunking
-            // rounds it the same way.
+            // rounds it the same way, late or not.
             let r = Read::new(f.pre[k] + 1.0, 1.0, self.pre.len() - CHUNK);
-            *x = self.pre.lin(r.d + n - 1 - k, r.t);
+            *x = self
+                .pre
+                .lin((r.d + n - 1 - k).saturating_sub(lag).max(1), r.t);
         }
         if c.taps > 0 {
             self.taps.push_run(x);
@@ -1590,6 +1622,17 @@ pub struct Cloud {
     /// Network frames run silent (the dip at 0) while a change of rate
     /// waits: it waits until Eco's resamplers hold only silence.
     quiet: u32,
+    /// The lead ([`Node::lead_in`]): frames at the node's rate that the
+    /// input is behind, taken off the pre-delay's read.
+    lead: u32,
+    /// The lead in network frames (half at Eco), and how far the reads move
+    /// in; it grows frame by frame while `hold` runs.
+    lag: usize,
+    /// Running [`Node::lead_in`]: the network takes no input.
+    hold: bool,
+    /// While holding at Eco: the down-sampler's pairing as if it had taken
+    /// the input (its real state waits for the late input).
+    vheld: usize,
     eco: Box<EcoRate>,
     size: Smooth,
     log_decay: Smooth,
@@ -1677,6 +1720,10 @@ impl Cloud {
             dip: 1.0,
             dip_step: 0.0,
             quiet: 0,
+            lead: 0,
+            lag: 0,
+            hold: false,
+            vheld: 0,
             eco: Box::new(EcoRate::new()),
             size: Smooth::new(v[1]),
             log_decay: Smooth::new(v[2].log2()),
@@ -1740,6 +1787,47 @@ impl Cloud {
         }
     }
 
+    /// `lead` frames at the node's rate in network frames.
+    fn lag_for(&self, lead: u32) -> usize {
+        (u64::from(lead) * u64::from(self.rate) / u64::from(self.host.max(1))) as usize
+    }
+
+    /// Input only, for [`Node::lead_out`]: through the input mix, Eco's
+    /// down-sampler and the input filters into the pre-delay, with the
+    /// values as they stand; the network does not move.
+    fn write_only(&mut self, left: &[f32], right: &[f32]) {
+        let cm = 0.5 * self.c.input_mix;
+        let inp = 1.0 - self.frozen.value;
+        let (lo, hi) = (self.low_a, self.high_a);
+        let eco = self.q == ECO;
+        let mut at = 0;
+        while at < left.len() {
+            let (mut xl, mut xr) = ([0.0f32; CHUNK], [0.0f32; CHUNK]);
+            let mut m = 0;
+            let end = (at + CHUNK).min(left.len());
+            // As the network takes it: Eco halves the rate first, then the
+            // input mix and freeze apply at the network's rate.
+            for i in at..end {
+                let (l, r) = if eco {
+                    match self.eco.down(left[i], right[i]) {
+                        Some(v) => v,
+                        None => continue,
+                    }
+                } else {
+                    (left[i], right[i])
+                };
+                xl[m] = (l * (1.0 - cm) + r * cm) * inp;
+                xr[m] = (r * (1.0 - cm) + l * cm) * inp;
+                m += 1;
+            }
+            let [a, b] = &mut *self.sides;
+            a.write(&mut xl[..m], lo, hi);
+            b.write(&mut xr[..m], lo, hi);
+            self.lag = self.lag.saturating_sub(m);
+            at = end;
+        }
+    }
+
     /// Sets the network's rate for quality `q` and everything timed by it.
     /// The mix glides at the node's rate: at Eco it is applied outside the
     /// network.
@@ -1785,6 +1873,7 @@ impl Cloud {
                 side.restart();
             }
             self.eco.reset();
+            self.lag = self.lag_for(self.lead);
         }
         self.quiet = 0;
         let old = self.c;
@@ -1942,11 +2031,18 @@ impl Cloud {
         let c = &self.c;
         let cm = 0.5 * c.input_mix;
         let (mut xl, mut xr) = ([0.0f32; CHUNK], [0.0f32; CHUNK]);
-        for k in 0..n {
-            let inp = 1.0 - f.freeze[k];
-            xl[k] = (left[k] * (1.0 - cm) + right[k] * cm) * inp;
-            xr[k] = (right[k] * (1.0 - cm) + left[k] * cm) * inp;
+        let hold = self.hold;
+        if hold {
+            // No input: the reads move nearer by the chunk.
+            self.lag += n;
+        } else {
+            for k in 0..n {
+                let inp = 1.0 - f.freeze[k];
+                xl[k] = (left[k] * (1.0 - cm) + right[k] * cm) * inp;
+                xr[k] = (right[k] * (1.0 - cm) + left[k] * cm) * inp;
+            }
         }
+        let lag = self.lag;
         let (mut el, mut ll, mut er, mut lr) = (
             [0.0f32; CHUNK],
             [0.0f32; CHUNK],
@@ -1955,8 +2051,8 @@ impl Cloud {
         );
         let eq = self.eq;
         let [a, b] = &mut *self.sides;
-        a.run(&mut xl[..n], at, c, &f, &eq, &mut el, &mut ll);
-        b.run(&mut xr[..n], at, c, &f, &eq, &mut er, &mut lr);
+        a.run(&mut xl[..n], at, c, &f, &eq, lag, hold, &mut el, &mut ll);
+        b.run(&mut xr[..n], at, c, &f, &eq, lag, hold, &mut er, &mut lr);
         for k in 0..n {
             let (wl, wr) = (ll[k] + early[k] * el[k], lr[k] + early[k] * er[k]);
             let (m, s) = (0.5 * (wl + wr), 0.5 * (wl - wr) * width[k]);
@@ -1979,14 +2075,22 @@ impl Cloud {
     /// [`ECO_DELAY`] frames later than at the other qualities.
     fn run_eco(&mut self, left: &mut [f32], right: &mut [f32]) -> usize {
         let room = (UPDATE - self.tick) as usize;
-        let take = (2 * room - self.eco.held).min(left.len());
+        let held = if self.hold { self.vheld } else { self.eco.held };
+        let take = (2 * room - held).min(left.len());
         let (mut hl, mut hr) = ([0.0f32; CHUNK], [0.0f32; CHUNK]);
         let mut m = 0;
-        for i in 0..take {
-            if let Some((l, r)) = self.eco.down(left[i], right[i]) {
-                hl[m] = l;
-                hr[m] = r;
-                m += 1;
+        if self.hold {
+            // The network frames the input would have made; the
+            // down-sampler waits for that input, late.
+            m = (held + take) / 2;
+            self.vheld = (held + take) % 2;
+        } else {
+            for i in 0..take {
+                if let Some((l, r)) = self.eco.down(left[i], right[i]) {
+                    hl[m] = l;
+                    hr[m] = r;
+                    m += 1;
+                }
             }
         }
         let mut k = 0;
@@ -2080,6 +2184,43 @@ impl Node for Cloud {
         self.eco.reset();
         self.update(false);
         self.filters();
+        self.lead = 0;
+        self.lag = 0;
+    }
+    fn can_lead(&self, frames: u32) -> bool {
+        // Mix must be all wet: any dry signal would come out late.
+        if self.v[12] < 100.0 || self.mix.value != 1.0 {
+            return false;
+        }
+        // At Eco the lead is whole network frames, two at the node's rate.
+        let eco = self.q == ECO || self.want_q == ECO;
+        if eco && !frames.is_multiple_of(2) {
+            return false;
+        }
+        // The pre-delay, as it is and as it glides to: the late input must
+        // still be in time for the nearest read.
+        let ms = self.pre.value.min(self.pre.target);
+        (ms * self.host as f32 / 1000.0).floor() >= frames as f32
+    }
+    fn lead(&self) -> u32 {
+        self.lead
+    }
+    fn lead_in(&mut self, ctx: &Ctx, events: &[Timed], left: &mut [f32], right: &mut [f32]) {
+        let len = left.len().min(right.len());
+        left.fill(0.0);
+        right.fill(0.0);
+        self.hold = true;
+        self.vheld = self.eco.held;
+        self.process(ctx, events, &mut left[..len], &mut right[..len]);
+        self.hold = false;
+        self.lead += len as u32;
+        self.lag = self.lag_for(self.lead);
+    }
+    fn lead_out(&mut self, _ctx: &Ctx, left: &[f32], right: &[f32]) {
+        let len = left.len().min(right.len());
+        self.write_only(&left[..len], &right[..len]);
+        self.lead = self.lead.saturating_sub(len as u32);
+        self.lag = self.lag_for(self.lead);
     }
     fn process(&mut self, _ctx: &Ctx, events: &[Timed], left: &mut [f32], right: &mut [f32]) {
         let len = left.len().min(right.len());

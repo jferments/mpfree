@@ -2364,6 +2364,11 @@ fn sampler_status(player: &sampler::Player, time: &RenderTime) -> String {
 /// shows bar.beat.tick; state changes go at once).
 const TRANSPORT_EVERY: Duration = Duration::from_millis(33);
 
+/// Whether the mixer is open on its I/O view.
+fn io_shown(mix: &mixing::MixHost) -> bool {
+    mix.shown() == Some(mpfree_mixer_ui::MixView::Io)
+}
+
 /// Whether `view` shows the loop's playhead: the Looper tab, or the Play
 /// page with its loop strip.
 fn strip_shown(view: app::View) -> bool {
@@ -3185,6 +3190,7 @@ fn player_session(
     // What the mixer's I/O view shows and edits (MIDI, Sync and CV). The
     // loop only ever try_locks it (MusicIn::sync).
     let io_model = midi_in::io_model();
+    out.show(gui::ToUi::IoModel(io_model.clone()));
     // MIDI Out (midi_out.rs): tracks whose "Plays on" is the 5-pin jacks play
     // there. State-changing on the MPC (note bytes on cable 2, never SysEx),
     // so it opens only with --midi-out until a device round has checked it.
@@ -3341,6 +3347,8 @@ fn player_session(
                     }
                 }
                 gui::FromUi::MixerIcon => fx.extend(app.toggle_mixer(false)),
+                gui::FromUi::IoIcon => fx.extend(app.toggle_io(io_shown(&mix))),
+                gui::FromUi::OpenIo => fx.extend(app.open_io()),
                 // The Play page: filters, sends, faders, speakers, throws, XY.
                 gui::FromUi::PlayFx(p) => mix.play(p),
                 gui::FromUi::Steps(a) => match time.step_action(a) {
@@ -3827,6 +3835,12 @@ fn player_session(
         let mut stop = false;
         let mut later = Vec::new();
         for e in fx.drain(..) {
+            // - and + on the mixer step the I/O view's row; on a strips view
+            // they step the kit, as elsewhere.
+            let e = match e {
+                app::Effect::MixerStep(d) if !io_shown(&mix) => app::Effect::Kit(d),
+                e => e,
+            };
             match e {
                 app::Effect::Light(note, value) if akai::app_lights(note) => {
                     // Through CV out's writer while it shares the port.
@@ -3908,8 +3922,15 @@ fn player_session(
                     }
                 }
                 app::Effect::Mixer(v) => mix.show(v),
-                app::Effect::MixerTurn { knob, delta } => {
-                    out.show(gui::ToUi::MixerQLink(knob, delta))
+                // The wheel on the mixer: Q-Link 1 on a strips view, the
+                // section's selection on the I/O view.
+                app::Effect::MixerWheel(d) => out.show(if io_shown(&mix) {
+                    gui::ToUi::IoInput(mpfree_mixer_ui::IoInput::Wheel(d))
+                } else {
+                    gui::ToUi::MixerQLink(0, d)
+                }),
+                app::Effect::MixerStep(d) => {
+                    out.show(gui::ToUi::IoInput(mpfree_mixer_ui::IoInput::Step(d)))
                 }
                 app::Effect::ChainTurn { knob, delta } => {
                     out.show(gui::ToUi::ChainQLink(knob, delta))
