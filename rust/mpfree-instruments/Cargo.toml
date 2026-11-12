@@ -1,0 +1,13 @@
+[package]
+name = "mpfree-instruments"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "MIT"
+description = "Sound presets for MPFree's instruments: any node's settings as plain key = value text and back, for user presets in the library"
+
+[dependencies]
+mpfree-node = { path = "../mpfree-node" }
+
+[dev-dependencies]
+mpfree-synth = { path = "../mpfree-synth" }
