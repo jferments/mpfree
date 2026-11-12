@@ -1,6 +1,6 @@
 # Synths: the node interface, Poly, FM, Drums, Pluck, Wavetable and pad pressure
 
-**Status:** 2026-11-11, host-only and tested. The code is [`rust/mpfree-node`](../../../rust/mpfree-node) (the interface every instrument and effect uses) and [`rust/mpfree-synth`](../../../rust/mpfree-synth) (native synths: Poly, FM, Drums, Pluck and Wavetable; Drums and Pluck merged in PR #97, Wavetable in PR #99). Poly plays on the pads (see "In the pad player"); FM, Drums, Pluck and Wavetable are not on the pads yet, and none has run its own cost bench on the MPC. The full design, the roadmap and the mockups are in the design doc "MPFree synths and plugins: design" and in mpfree-claude (`synths/mockups/`, `skill-tree/synth-skill-tree.html`).
+**Status:** 2026-11-12, at the synth thread's handoff (mpfree main `0ada61a`). The code is [`rust/mpfree-node`](../../../rust/mpfree-node) (the interface every instrument and effect uses), [`rust/mpfree-synth`](../../../rust/mpfree-synth) (native synths: Poly, FM, Drums, Pluck and Wavetable), [`rust/mpfree-tuning`](../../../rust/mpfree-tuning) and [`rust/mpfree-synth-ui`](../../../rust/mpfree-synth-ui) (the Synth tab). All five engines play on the pads since round 8, with scales, pad layouts and tunings (see "In the pad player"), and the Synth tab's options are kept between starts. Round 7's bench timed the engines on the MPC (1 to 11 % of a period at 8 voices); the same-output cost passes since (PR #118, #137, #197) have not been timed on the device yet. The full design, the roadmap and the mockups are in the design doc "MPFree synths and plugins: design" and in mpfree-claude (`synths/mockups/`, `skill-tree/synth-skill-tree.html`, and the handoff `handoffs/2026-11-12-synth-thread.md`).
 
 ## The node interface (`mpfree-node`)
 
@@ -188,7 +188,7 @@ Poly, FM, Wavetable and Pluck play every note through their tuning; a sounding n
 
 A tuning per track slot is in the track host (`TrackHost::set_tuning`, see [Track host](track-host.md)); nothing calls the host yet.
 
-**Not yet.** Tone routing in the native engines, and MPE from MIDI input (no MIDI port is open yet). The sequencer and the arp can send slides now. Choosing a built-in tuning or a tuning file is on the Synth tab's options (see [In the pad player](#in-the-pad-player-rustmpfree-app)).
+**Not yet.** Tone routing in the native engines, and MPE from MIDI input: MIDI in ([MIDI in and out](midi-io.md)) plays notes and poly pressure on the armed track, but does not read pitch bend or CCs yet (so no per-note bend or CC74 for MPE), and nothing sends Tone. The sequencer and the arp can send slides now. Choosing a built-in tuning or a tuning file is on the Synth tab's options (see [In the pad player](#in-the-pad-player-rustmpfree-app)).
 
 ## Tests
 
@@ -293,8 +293,12 @@ The pad player (`play` and `app`) carries Poly, FM, Drums, Pluck and Wavetable; 
 
 ## Next
 
-- Tunings and expression: Tone routing in Poly, FM and Wavetable (two slots on the pressure targets, on the Pressure page). Then Q-Link banks, the sampler as a node and the instrument browser (plan doc "Four synth features: plan").
-- Presets as files: the format is built ([Sound presets](presets.md)); next, the catalogue and Save and Load with the browser page.
-- A track host: built in `rust/mpfree-track` ([Track host](track-host.md)); next, wiring it into the pad player.
+In the order the synth thread left them at its handoff (12 Nov 2026):
+
+- **Preset Save and the picker on the Synth tab.** The format and the picker's side are built ([Sound presets](presets.md)), and the app links `mpfree-library` since the Pads tab (PR #250). Left: a Save button that takes `Synth::save_preset` (the engine's folder name and the file's text, with the Q-Link sets as `extra` lines) and writes it to `library/Instruments/<engine>/<name>.preset` through `mpfree-library`; the Synth tab opening the browser's preset picker; and `BrowseAction::TryPreset`, `RevertPreset` and `LoadPreset` wired to `Synth::try_preset`, `revert_preset` and `load_preset_file` (the Pads tab's browser says "a preset is not wired" today).
+- **Tone routing**, once MPE comes in over MIDI: two slots on the pressure targets in Poly, FM and Wavetable, on the Pressure page.
+- **The track host in the app** (the app thread's wiring): built in `rust/mpfree-track` with a tuning per slot ([Track host](track-host.md)); the Synth tab's instrument moves into a slot, and the app's Q-Link column shows the sound's Q-Link sets (`qsets::to_banks`).
+- **Every engine timed on the MPC** in the next live test: the synth's 30 s status line gives render time per period. Set each engine's voice count from it.
+- **Small fixes:** note names differ by an octave between the app (note 60 = C4) and FM's keyboard scaling card (note 60 = C3); Pluck's Position makes comb notches of about 7 dB (a fix changes the sound, so it waits on Jay).
 - The Sample tab's "Make a wavetable": see [Wavetable synth](wavetable.md).
-- Plugin hosting: the CLAP host and its sandbox process are built ([Plugins](plugins.md)); next, ARM builds of free plugins (P3).
+- Plugin hosting: the CLAP host and its sandbox process are built ([Plugins](plugins.md)); next, ARM builds of free plugins (P3), once Jay picks the formats and the pack (decisions 3 to 5).
