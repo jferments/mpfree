@@ -23,6 +23,25 @@ def make_script(commands: str, timestamp: int = 4) -> bytes:
     return header + payload
 
 
+def official_fixture(image: bytes, include_full_sha: bool = True) -> dict:
+    import hashlib
+    size = int.from_bytes(image[12:16], "big")
+    assert len(image) == 64 + size
+    script_len = int.from_bytes(image[64:68], "big")
+    row = {
+        "commands": image[72:72 + script_len].decode("utf-8").rstrip("\n"),
+        "sha256": hashlib.sha256(image[72:72 + script_len]).hexdigest(),
+        "header": {
+            "header_sha256": hashlib.sha256(image[:64]).hexdigest(),
+            "image_bytes": len(image),
+            "multi_image_script_length": script_len,
+        },
+    }
+    if include_full_sha:
+        row["image_sha256"] = hashlib.sha256(image).hexdigest()
+    return row
+
+
 def simulated_od(image: bytes) -> str:
     lines = ["~ # od -v -b /boot/boot.scr.uimg"]
     for offset in range(0, len(image), 16):
@@ -36,34 +55,51 @@ class ScriptWrapperTests(unittest.TestCase):
     def test_matching_image_and_payload(self):
         commands = "\nbootz 0x2000000 - 0x1f00000\n"
         image = make_script(commands)
-        report = M.compare_guest_to_update(simulated_od(image), {
-            "commands": commands,
-            "sha256": __import__("hashlib").sha256(image).hexdigest(),
-        })
+        report = M.compare_guest_to_update(
+            simulated_od(image), official_fixture(image))
         self.assertTrue(report["header_crc32_verified"])
         self.assertTrue(report["payload_crc32_verified"])
         self.assertTrue(report["script_commands_match_official"])
         self.assertTrue(report["full_image_matches_official"])
+        self.assertTrue(report["canonical_header_and_script_bytes_match_official"])
+        self.assertTrue(report["raw_script_sha256_matches_official"])
 
     def test_only_header_timestamp_differs(self):
         commands = "\nbootz 0x2000000 - 0x1f00000\n"
         first = make_script(commands, timestamp=10)
         other = make_script(commands, timestamp=11)
-        report = M.compare_guest_to_update(simulated_od(other), {
-            "commands": commands,
-            "sha256": __import__("hashlib").sha256(first).hexdigest(),
-        })
+        report = M.compare_guest_to_update(
+            simulated_od(other), official_fixture(first))
         self.assertTrue(report["script_commands_match_official"])
         self.assertFalse(report["full_image_matches_official"])
+        self.assertTrue(report["raw_script_sha256_matches_official"])
+        self.assertFalse(report["header_sha256_matches_official"])
+        self.assertFalse(report["canonical_header_and_script_bytes_match_official"])
         self.assertTrue(report["different_image_even_if_commands_match"])
+
+    def test_full_image_hash_must_not_be_misread_as_payload_hash(self):
+        image = make_script("bootz 0x2000000\n")
+        record = official_fixture(image, include_full_sha=False)
+        report = M.compare_guest_to_update(simulated_od(image), record)
+        self.assertIsNone(report["full_image_matches_official"])
+        self.assertTrue(report["header_sha256_matches_official"])
+        self.assertTrue(report["raw_script_sha256_matches_official"])
+        self.assertTrue(report["canonical_header_and_script_bytes_match_official"])
+        self.assertEqual(report["source_official_sha256_field_means"],
+                         "raw_script_data_not_uimage")
+
+    def test_official_raw_payload_hash_difference_fails_closed(self):
+        image = make_script("bootz 0x2000000\n")
+        record = official_fixture(image, include_full_sha=False)
+        record["sha256"] = "f" * 64
+        report = M.compare_guest_to_update(simulated_od(image), record)
+        self.assertFalse(report["canonical_header_and_script_bytes_match_official"])
 
     def test_different_commands_are_not_hidden(self):
         original = "\nbootz 0x2000000\n"
         guest = make_script("\nbootm 0x2000000\n")
-        report = M.compare_guest_to_update(simulated_od(guest), {
-            "commands": original,
-            "sha256": "f" * 64,
-        })
+        report = M.compare_guest_to_update(
+            simulated_od(guest), official_fixture(make_script(original)))
         self.assertFalse(report["script_commands_match_official"])
         self.assertTrue(report["command_diff_excerpt"])
 
