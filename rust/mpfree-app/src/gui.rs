@@ -2727,7 +2727,8 @@ impl Player {
                 | time_view::CLIPS
                 | time_view::RECORD
                 | time_view::TAKES
-                | time_view::MORPH,
+                | time_view::MORPH
+                | time_view::SONG,
                 _,
             ) => time_view::action(&ev, &self.time).map(FromUi::Time),
             _ => None,
@@ -4876,6 +4877,19 @@ mod tests {
         assert_eq!(
             tap(&mut p, (save.x + save.w / 2, save.y + save.h / 2)),
             Some(FromUi::Time(TimeAction::SaveScene(0)))
+        );
+        // The Song view in the grid's place: its Clips button goes back.
+        p.time.song_view = true;
+        p.time_page.update(&mut p.ui, &p.time);
+        p.ui.paint(&mut SoftCanvas::new(1280, 800));
+        let song = p.ui.rect_of(time_view::SONG).unwrap();
+        let back =
+            p.ui.get::<mpfree_time_ui::song::SongLanes>(time_view::SONG)
+                .unwrap()
+                .button_rects(song)[0];
+        assert_eq!(
+            tap(&mut p, (back.x + back.w / 2, back.y + back.h / 2)),
+            Some(FromUi::Time(TimeAction::SongView(false)))
         );
     }
 
