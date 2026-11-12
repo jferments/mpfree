@@ -55,6 +55,20 @@ def fixture():
                 "fastboot_ram_boot_to_bootm":{"direct_call_path_found":True},
                 "image_classifier_to_fit_verify":{"direct_call_path_found":True}}}}},
         "p1":{}, "p3":{}, "ledger":{},
+        "fdt":{"uboot_stage_fdt":[{
+            "selected_dts_lines":[
+                'mmc0 = "/dwmmc@ff0f0000";',
+                'mmc1 = "/dwmmc@ff0c0000";',
+                'dwmmc@ff0c0000 {',
+                'status = "disabled";',
+                '};',
+                'dwmmc@ff0f0000 {',
+                'status = "okay";',
+                'bus-width = <0x08>;',
+                'non-removable;',
+                '};',
+            ],
+        }]},
         "spl":{"analyzed_functions":{"0xff705350":{
             "pseudocode":"synthetic","machine_instruction_evidence":[{"text":"b"}]}}},
         "updater":{"analyzed_functions":{}},
@@ -108,6 +122,19 @@ class BroadMatrixTests(unittest.TestCase):
                           if "write-permission gated" in x["question"])
         self.assertEqual(alias["status"], "unresolved")
         self.assertEqual(permission["status"], "unresolved")
+
+    def test_embedded_fdt_exposes_disabled_sdmmc(self):
+        data = fixture()
+        report = build(data)
+        row = next(x for x in report["questions"]
+                   if "enable its SDMMC boot target" in x["question"])
+        self.assertEqual(row["status"], "static-supported")
+        data["fdt"]["uboot_stage_fdt"][0]["selected_dts_lines"][
+            3] = 'status = "okay";'
+        changed = build(data)
+        row = next(x for x in changed["questions"]
+                   if "enable its SDMMC boot target" in x["question"])
+        self.assertEqual(row["status"], "unresolved")
 
     def test_invalid_boot_environment_does_not_claim_valid(self):
         data = fixture()
