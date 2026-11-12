@@ -404,6 +404,8 @@ pub struct SamplePage {
     auto_job: Option<AutoJob>,
     /// The last instrument made, or why not, in a line.
     auto_last: String,
+    /// The FX tab was tapped on this pad: the app opens its chain editor.
+    fx_open: Option<usize>,
     /// A project's kits being read and decoded ([`SamplePage::open_part`]).
     opening: Option<Receiver<Result<Opened, String>>>,
     /// A file being read for the browser's Load (true: Load to pad).
@@ -479,6 +481,7 @@ impl SamplePage {
             auto_request: None,
             auto_job: None,
             auto_last: String::new(),
+            fx_open: None,
             opening: None,
             loading: None,
             assign: None,
@@ -1059,6 +1062,19 @@ impl SamplePage {
     /// A touch on one of the editor's widgets. Taps that play the pad go
     /// in `out`, for the audio thread.
     pub fn event(&mut self, ui: &mut Ui, ev: &UiEvent, out: &mut Vec<FromUi>) {
+        self.event_on(ui, ev, out);
+        // The FX tab: the chain editor on the pad's channel, in the page's
+        // place (the audio loop owns the mixer it edits).
+        if let Some(pad) = self.fx_open.take() {
+            self.lines.push(format!(
+                "sample: pad {}'s effects: its own channel, then the Drums track",
+                self.pad_text(self.kit, pad)
+            ));
+            out.push(FromUi::SampleFx { pad });
+        }
+    }
+
+    fn event_on(&mut self, ui: &mut Ui, ev: &UiEvent, out: &mut Vec<FromUi>) {
         if ev.widget.starts_with(CHOP_PREFIX) {
             let (Some(tab), Some(st)) = (self.chop.as_mut(), self.chop_state.as_ref()) else {
                 return;
@@ -1143,6 +1159,11 @@ impl SamplePage {
             play_tab::TAB => Editor::Play,
             grain_tab::TAB => Editor::Grain,
             rec_tab::TAB => Editor::Rec,
+            // The pad's effects: the app's chain editor, on its channel.
+            wave_tab::FX_TAB => {
+                self.fx_open = Some(self.pad);
+                return;
+            }
             _ => return,
         };
         self.open_editor(ui, editor);

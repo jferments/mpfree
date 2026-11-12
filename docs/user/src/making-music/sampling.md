@@ -1,7 +1,7 @@
 <!--
 status: changing
 covers: rust/mpfree-sampler rust/mpfree-sampler-ui rust/mpfree-grain rust/mpfree-app/src/sample_page.rs rust/mpfree-app/src/sampler.rs
-checked: 2026-11-12 ae9c39c
+checked: 2026-11-12 ac6fc10
 -->
 
 # Sampling
@@ -51,6 +51,15 @@ The **Play** page shapes how the picked pad sounds each time you hit it:
 {{shot: sample-grain | The Grain page: tiny grains of the sound play at once, around the position you pick.}}
 
 **Granular** playback plays the sound as a cloud of tiny overlapping pieces (grains). It can freeze a moment, stretch it into a pad, or scatter it into texture. Touch the square to move the **position** in the sound and the **size** of the grains together, and use the Q-Links for **position**, **size**, **density** and **pitch**. **Scan speed** moves through the sound on its own.
+
+## FX: effects on one pad, or on the whole kit
+
+**FX**, in the Sample tab's row of pages, opens the **chain editor** (see [Mixing and effects](mixing-and-effects.md#the-chain-editor)) on the pad you are editing, in the Sample tab's place. **Back** comes back to the Sample tab.
+
+- **The pad's own effects.** The editor opens on the pad's own channel, so an effect added there plays on that pad alone. Add **Perform FX** for stutters, beat repeats, tape stops and reverse on just that pad, in time with the tempo. Each of its 16 pads is a page in the editor, with its effect, its length and a **Hold** switch: Hold on plays it, off lets it go.
+- **The whole kit's effects.** The switch at the top goes to **Drums**, the track every pad plays into, so an effect there plays on the whole kit, like a bus effect on the SP-404. To make it a one-knob effect, put its knobs on a macro (see [Macros](mixing-and-effects.md#macros)), and that macro's Q-Link plays them all at once.
+
+The effects belong to the pad's place in the kit, not to its sound: put another sound on the pad and it plays through the same effects. Only bank A's 16 pads have a channel of their own for now. **FX** on a pad past them says so in the log.
 
 ## Playing a kit on keys
 
