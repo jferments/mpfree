@@ -249,12 +249,125 @@ def mpfree_v11_entrypoint():
             except Exception as e:record['error']=type(e).__name__+': '+str(e)[:180]
             details[key]=record
     finally:decoder.dispose()
+    # Explicit P3 direct-boot/protocol research. Read literal-pool values and
+    # original bytes from the SHA-verified saved project. No code execution.
+    direct_boot={}
+    if role=='uboot':
+        def read_word(pos):
+            try:
+                block=mem.getBlock(A(pos))
+                if not block or not block.isInitialized():return None
+                return int(mem.getInt(A(pos))) & 0xffffffff
+            except Exception:
+                return None
+        def read_cstr(pos,limit=96):
+            try:
+                block=mem.getBlock(A(pos))
+                if not block or not block.isInitialized():return None
+                outchars=[]
+                for i in range(limit):
+                    byte=int(mem.getByte(A(pos+i))) & 255
+                    if byte==0:break
+                    if byte<32 or byte>126:return None
+                    outchars.append(chr(byte))
+                return ''.join(outchars)
+            except Exception:
+                return None
+        locations={
+            'permission_read_literal':0x0012284c,
+            'permission_write_literal':0x00122928,
+            'oem_unlock_string_literal':0x00122924,
+            'oem_prefix_string_literal':0x00122918,
+            'download_destination_global_literal':0x001226fc,
+        }
+        ptrs={}
+        for name,address in locations.items():
+            value=read_word(address)
+            entry={'literal_pool_address':addr_hex(address),
+                   'loaded_pointer':addr_hex(value) if value is not None else None}
+            if value is not None and 'string' in name:
+                decoded=read_cstr(value)
+                entry['ascii_length']=len(decoded) if decoded is not None else None
+                entry['ascii_sha256']=hashlib.sha256(decoded.encode('ascii')).hexdigest() if decoded is not None else None
+                entry['matches_published_37_byte_unlock_token']=bool(
+                    decoded is not None and len(decoded)==37 and
+                    entry['ascii_sha256']=='f10b2ec4fa713c1f1d1f584934f501a150119acede06e6012006aa1352e8121c')
+            ptrs[name]=entry
+        rptr=ptrs['permission_read_literal'].get('loaded_pointer')
+        wptr=ptrs['permission_write_literal'].get('loaded_pointer')
+        global_refs=[]
+        for address in (0x0014d690,):
+            try:
+                for ref in rm.getReferencesTo(A(address)):
+                    inst=listing.getInstructionContaining(ref.getFromAddress())
+                    fn=fm.getFunctionContaining(ref.getFromAddress())
+                    if len(global_refs)>=100:break
+                    global_refs.append({
+                        'from':str(ref.getFromAddress()),
+                        'type':str(ref.getReferenceType()),
+                        'function':str(fn.getEntryPoint()) if fn else None,
+                        'instruction':str(inst) if inst else None,
+                    })
+            except Exception:
+                pass
+        # Look for raw register/magic occurrences in original P3 bytes.
+        # Negative findings mean only 'no contiguous 32-bit literal found'.
+        import struct
+        raw=bytearray()
+        off=0
+        while off<363649:
+            take=min(32768,363649-off)
+            chunk=JArray(JByte)(take)
+            if int(mem.getBytes(A(0x100000+off),chunk,0,take))!=take:
+                raise RuntimeError('Cannot read P3 for direct-boot constant scan')
+            raw.extend(int(x)&255 for x in chunk)
+            off+=take
+        constants={
+            'pmu_boot_counter_register':0xff7300a0,
+            'pmu_reboot_mode_register':0xff730094,
+            'bootcount_upper16_magic':0xb0010000,
+            'rom_download_magic':0xef08a53c,
+            'fastboot_permission_global':0x0014d690,
+        }
+        hits={}
+        for label,value in constants.items():
+            where=[]
+            for endian,packed in (('little',struct.pack('<I',value)),
+                                  ('big',struct.pack('>I',value))):
+                offset=0
+                while len(where)<32:
+                    pos=raw.find(packed,offset)
+                    if pos<0:break
+                    where.append({'address':addr_hex(0x100000+pos),
+                                  'byte_order':endian})
+                    offset=pos+1
+            hits[label]=where
+        direct_boot={
+            'schema':'mpfree-p3-directboot-literal-evidence-v1',
+            'permission_read_slot':ptrs['permission_read_literal'],
+            'permission_write_slot':ptrs['permission_write_literal'],
+            'oem_token_slot':ptrs['oem_unlock_string_literal'],
+            'oem_prefix_slot':ptrs['oem_prefix_string_literal'],
+            'other_literal_slots':ptrs,
+            'permission_read_write_pointer_equal':bool(rptr is not None and rptr==wptr),
+            'permission_read_write_pointer_is_prior_global':bool(
+                rptr=='0x0014d690' and wptr=='0x0014d690'),
+            'permission_global_xrefs':global_refs,
+            'raw_word_occurrences':hits,
+            'notes':[
+                'Literal slot dereference verified from original U-Boot bytes.',
+                'Token comparison proves code/data relationship only, no authorization command sent.',
+                'No PMU literal does not rule out indirect/computed address construction.',
+                'Read-only, no firmware code executed and no device accessed.',
+            ],
+        }
     out={'schema':'mpfree-v11-backend-selector-and-boot-recovery-static','role':role,
          'source_sha256_prechecked_by_launcher':expect,
          'boot_stage_memory_sha_verified':role in ('spl','uboot'),
          'ghidra_image_base':addr_hex(base),
          'verified_raw_table_candidates':tables,
          'analyzed_functions':details,
+         'direct_boot_probe':direct_boot,
          'decompiled':sum('pseudocode' in x for x in details.values()),
          'restrictions':[
            'ELF table labels are hypotheses until assigned by proven runtime selector.',
