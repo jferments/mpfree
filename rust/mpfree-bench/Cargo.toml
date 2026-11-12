@@ -17,6 +17,7 @@ mpfree-seq = { path = "../mpfree-seq" }
 mpfree-play = { path = "../mpfree-play" }
 mpfree-arp = { path = "../mpfree-arp" }
 mpfree-looper = { path = "../mpfree-looper" }
+mpfree-audiotracks = { path = "../mpfree-audiotracks" }
 mpfree-mod = { path = "../mpfree-mod" }
 mpfree-param = { path = "../mpfree-param" }
 mpfree-track = { path = "../mpfree-track" }

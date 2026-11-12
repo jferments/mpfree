@@ -1,0 +1,589 @@
+{
+  "schema_version": 1,
+  "schema_note": "Single-owner MPC One survey; OBSERVED from read-only procfs/sysfs/ALSA/udev, or DERIVED where explicitly indicated. Not a universal board or firmware specification.",
+  "provenance": {
+    "collected_utc": "2026-11-09T05:00:46Z",
+    "firmware_ui_reported": "3.6.0",
+    "kernel": "6.6.95-az01-2025-06-27-rt55",
+    "distribution": "az01",
+    "distribution_version": "5.0.8",
+    "source_report_sha256": "4172d29e33359eee106cfcf03665d3a94cd4e4deed75d009a1fe1065ea53850b",
+    "raw_report_in_repo": false,
+    "hardware_serial_redacted": true,
+    "surveys": [
+      {
+        "collected_utc": "2026-11-09T05:00:46Z",
+        "sha256": "4172d29e33359eee106cfcf03665d3a94cd4e4deed75d009a1fe1065ea53850b",
+        "local_only": true,
+        "document": "docs/dev/hardware/survey-2026-11-09.md"
+      },
+      {
+        "collected_utc": "2026-11-09T05:21:06Z",
+        "sha256": "d25be98aea6e90cc0328c0af4d29c505106dcd26704da7dc1f6f5bd59cec317e",
+        "local_only": true,
+        "document": "docs/dev/hardware/resource-ownership.md"
+      },
+      {
+        "collected_utc": "2026-11-09T05:30:31Z",
+        "sha256": "1ea9eb27f837e5602cd5548db71622adf2f8c6aef52553f2aafd22e035a34b76",
+        "local_only": true,
+        "document": "docs/dev/hardware/audio-runtime.md"
+      },
+      {
+        "collected_utc": "2026-11-09T06:01:06Z",
+        "sha256": "92687a46ab7d04d81ba6bf05486e29e6f67f73e66c0c9ea0ad7e136e20eee45d",
+        "local_only": true,
+        "document": "docs/dev/hardware/ethernet-usb.md",
+        "kind": "passive_io"
+      },
+      {
+        "collected_utc": "2026-11-09T06:01:16Z",
+        "sha256": "6d206eba95640a385b58ea76f36ea91723591b44fada7155a5fff9de14679d01",
+        "local_only": true,
+        "document": "docs/dev/hardware/ethernet-usb.md",
+        "kind": "active_ssh_benchmark"
+      }
+    ]
+  },
+  "board": {
+    "model": "Akai Professional MPC One",
+    "compatible": [
+      "inmusic,acva",
+      "inmusic,az01",
+      "rockchip,rk3288"
+    ],
+    "confidence": "OBSERVED"
+  },
+  "cpu": {
+    "isa": "armv7l",
+    "logical_cpus": 4,
+    "implementer_hex": "0x41",
+    "part_hex": "0xc0d",
+    "revision": 1,
+    "features": [
+      "neon",
+      "vfp",
+      "vfpv3",
+      "vfpv4",
+      "lpae",
+      "idiva",
+      "idivt"
+    ],
+    "midr_family_note": "RK3288 part 0xC0D: Cortex-A12 vs Cortex-A17 nomenclature ambiguous in external cpuinfo sources",
+    "confidence": "OBSERVED",
+    "clock_at_survey": {
+      "governor": "performance",
+      "cur_khz": 1608000,
+      "max_khz": 1608000,
+      "all_4_logical_cpus": true,
+      "confidence": "OBSERVED"
+    }
+  },
+  "memory": {
+    "reported_total_kb": 2067188,
+    "reported_available_kb": 882876,
+    "reported_mlocked_kb": 1039452,
+    "reported_unevictable_kb": 1051660,
+    "swap_kb": 0,
+    "point_in_time": true,
+    "confidence": "OBSERVED"
+  },
+  "storage": {
+    "device": "mmcblk0",
+    "size_gib_approx": 7.3,
+    "partitions": [
+      {
+        "number": 1,
+        "name": "uboot-spl",
+        "size_kib": 64,
+        "mount": null
+      },
+      {
+        "number": 2,
+        "name": "env",
+        "size_kib": 8,
+        "mount": null
+      },
+      {
+        "number": 3,
+        "name": "uboot",
+        "size_kib": 384,
+        "mount": null
+      },
+      {
+        "number": 4,
+        "name": "splash",
+        "size_kib": 4096,
+        "mount": null
+      },
+      {
+        "number": 5,
+        "name": "recoverysplash",
+        "size_kib": 4096,
+        "mount": null
+      },
+      {
+        "number": 6,
+        "name": "rootfs",
+        "size_kib": 512000,
+        "mount": "/",
+        "filesystem": "ext4",
+        "readonly": true
+      },
+      {
+        "number": 7,
+        "name": "content",
+        "size_kib": 4194304,
+        "mount": "/media/acvs-content",
+        "filesystem": "ext4",
+        "readonly": false
+      },
+      {
+        "number": 8,
+        "name": "data",
+        "size_kib": 2921775,
+        "mounts": [
+          "/data",
+          "/media/az01-internal"
+        ],
+        "filesystem": "ext4",
+        "readonly": false
+      }
+    ],
+    "boot_regions": [
+      {
+        "name": "mmcblk0boot0",
+        "size_kib": 4096
+      },
+      {
+        "name": "mmcblk0boot1",
+        "size_kib": 4096
+      }
+    ],
+    "overlays": [
+      {
+        "mount": "/etc",
+        "persistent_upperdir": "/data/system/etc/overlay"
+      },
+      {
+        "mount": "/var",
+        "persistent_upperdir": "/data/system/var/overlay"
+      }
+    ],
+    "boot_recovery_procedure_verified": false,
+    "confidence": "OBSERVED"
+  },
+  "audio": {
+    "alsa_cards": [
+      {
+        "card_index": 0,
+        "name": "MIDI",
+        "type": "USB-Audio",
+        "device": "MPC One MIDI"
+      },
+      {
+        "card_index": 1,
+        "name": "ACVA",
+        "type": "vendor ASoC/PCM",
+        "playback_device": "/dev/snd/pcmC1D0p",
+        "capture_device": "/dev/snd/pcmC1D0c"
+      }
+    ],
+    "kernel_modules": [
+      "snd_soc_inmusic_jp07",
+      "snd_soc_rockchip_inmusic_jp07",
+      "snd_soc_rockchip_i2s"
+    ],
+    "sample_rates_verified": true,
+    "audio_owner_verified": true,
+    "confidence": "OBSERVED",
+    "alsa_pcm_at_survey": {
+      "playback": {
+        "node": "/dev/snd/pcmC1D0p",
+        "subdevices_count": 1,
+        "subdevices_avail": 0,
+        "held_by": "acvs.service"
+      },
+      "capture": {
+        "node": "/dev/snd/pcmC1D0c",
+        "subdevices_count": 1,
+        "subdevices_avail": 0,
+        "held_by": "acvs.service"
+      },
+      "negotiated_format_rate_channels_verified": false,
+      "shared_access_possible_verified": false,
+      "confidence": "OBSERVED"
+    },
+    "active_pcm_snapshot": {
+      "sampling_date_utc": "2026-11-09T05:30:31Z",
+      "playback": {
+        "card": 1,
+        "device": 0,
+        "access": "RW_INTERLEAVED",
+        "format": "S32_LE",
+        "channels": 2,
+        "rate_hz": 44100,
+        "period_frames": 128,
+        "buffer_frames": 384,
+        "avail_min_frames": 128,
+        "start_threshold": 1610612736,
+        "stop_threshold": 384,
+        "state": "RUNNING",
+        "owner_unit": "acvs.service"
+      },
+      "capture": {
+        "card": 1,
+        "device": 0,
+        "access": "RW_INTERLEAVED",
+        "format": "S32_LE",
+        "channels": 2,
+        "rate_hz": 44100,
+        "period_frames": 128,
+        "buffer_frames": 256,
+        "avail_min_frames": 128,
+        "start_threshold": 1073741824,
+        "stop_threshold": 256,
+        "state": "RUNNING",
+        "owner_unit": "acvs.service"
+      },
+      "period_ms": 2.9024943310657596,
+      "playback_buffer_ms": 8.707482993197278,
+      "capture_buffer_ms": 5.804988662131519,
+      "full_driver_capabilities_tested": false,
+      "end_to_end_latency_measured": false,
+      "confidence": "OBSERVED"
+    },
+    "sample_rate_scope": "only the stock application's negotiated 44100 Hz, NOT the driver's full capability matrix"
+  },
+  "midi": {
+    "device": "/dev/snd/midiC0D0",
+    "interfaces": [
+      {
+        "address": "hw:0,0,0",
+        "label": "MPC Studio Live Public"
+      },
+      {
+        "address": "hw:0,0,1",
+        "label": "MPC Studio Live Private"
+      },
+      {
+        "address": "hw:0,0,2",
+        "label": "MPC Studio Live MIDI Port"
+      }
+    ],
+    "pad_protocol_verified": false,
+    "confidence": "OBSERVED",
+    "usb_device": {
+      "vendor_id": "09e8",
+      "product_id": "0046",
+      "manufacturer": "Akai Pro",
+      "product": "MPC One MIDI",
+      "speed_mbit_s": 12,
+      "bnum_interfaces": 2
+    },
+    "factory_application_open_fd_count_at_survey": 3,
+    "open_fds_do_not_establish_rawmidi_port_mapping": true,
+    "kernel_rawmidi_byte_counters_at_snapshot": {
+      "output": [
+        6036856,
+        29775,
+        0
+      ],
+      "input": [
+        0,
+        49837,
+        0
+      ],
+      "input1_overruns": 0,
+      "rate_measurement": false,
+      "message_semantics_identified": false
+    },
+    "usb_interfaces": [
+      {
+        "interface": "1-1:1.0",
+        "class_hex": "01",
+        "subclass_hex": "01",
+        "protocol_hex": "00",
+        "endpoints": 0,
+        "bound_driver": "snd-usb-audio"
+      },
+      {
+        "interface": "1-1:1.1",
+        "class_hex": "01",
+        "subclass_hex": "03",
+        "protocol_hex": "00",
+        "endpoints": 2,
+        "bound_driver": "snd-usb-audio"
+      }
+    ],
+    "alsa_sequencer_clients_at_survey": [
+      {
+        "id": 0,
+        "label": "System"
+      },
+      {
+        "id": 16,
+        "label": "MPC One MIDI"
+      },
+      {
+        "id": 128,
+        "label": "JUCE"
+      },
+      {
+        "id": 129,
+        "label": "MPC"
+      }
+    ],
+    "alsa_seq_connections_at_survey": [
+      "16:2 -> 129:0",
+      "129:2 -> 16:2",
+      "128:3 -> 129:1",
+      "128:2 -> 129:4",
+      "129:3 -> 128:1",
+      "129:5 -> 128:0"
+    ]
+  },
+  "display": {
+    "framebuffer": "/dev/fb0",
+    "framebuffer_driver_name": "rockchipdrmfb",
+    "drm_cards": [
+      "/dev/dri/card0",
+      "/dev/dri/card1"
+    ],
+    "drm_connector": "card0-DSI-1",
+    "render_node": "/dev/dri/renderD128",
+    "backlight_name": "mipi-backlight",
+    "gpu_kernel_irq_label": "panfrost-gpu",
+    "display_mode_verified": true,
+    "confidence": "OBSERVED",
+    "drm_mode_px": {
+      "width": 800,
+      "height": 1280,
+      "orientation_correction_verified": false
+    },
+    "virtual_framebuffer_px": {
+      "width": 800,
+      "height": 3840,
+      "bits_per_pixel": 32
+    },
+    "gpu": {
+      "driver": "panfrost",
+      "dt_compatible": [
+        "rockchip,rk3288-mali",
+        "arm,mali-t760"
+      ],
+      "confidence": "OBSERVED"
+    }
+  },
+  "input": {
+    "touch": {
+      "name": "ILI2117 Touchscreen",
+      "device": "/dev/input/event0",
+      "sysfs_path": "/devices/platform/ff160000.i2c/i2c-4/4-0026/input/input0"
+    },
+    "gpio_keys": {
+      "name": "gpio-keys",
+      "device": "/dev/input/event1"
+    },
+    "touch_axes_verified": false,
+    "confidence": "OBSERVED",
+    "factory_app_holds_evdev": [
+      {
+        "node": "/dev/input/event0",
+        "device": "ILI2117 Touchscreen"
+      },
+      {
+        "node": "/dev/input/event1",
+        "device": "gpio-keys"
+      }
+    ]
+  },
+  "factory_application": {
+    "binary": "/usr/bin/MPC",
+    "binary_size_bytes": 106115596,
+    "launcher_path": "/usr/bin/az01-launch-MPC",
+    "service": "acvs.service",
+    "service_state": "active running",
+    "main_pid_verified": true,
+    "hardware_fd_ownership_verified": true,
+    "confidence": "OBSERVED",
+    "verified_service_main_pid_command": "systemctl show acvs.service -p MainPID",
+    "process_pid_transient_not_to_hardcode": true,
+    "open_device_nodes": [
+      "/dev/dri/card0",
+      "/dev/snd/seq",
+      "/dev/snd/midiC0D0",
+      "/dev/snd/controlC1",
+      "/dev/snd/pcmC1D0p",
+      "/dev/snd/pcmC1D0c",
+      "/dev/input/event0",
+      "/dev/input/event1"
+    ],
+    "related_running_units": [
+      {
+        "service": "az01-network-midi.service",
+        "exec_start": "/usr/bin/start-remote-midi.sh"
+      },
+      {
+        "service": "az01-script-runner.service",
+        "exec_start": "/usr/bin/az01-script-runner"
+      }
+    ],
+    "process": {
+      "exe_symlink": "/usr/bin/MPC",
+      "main_pid_at_snapshot": 311,
+      "threads": 38,
+      "virtual_size_kb": 1044072,
+      "locked_virtual_kb": 1040052,
+      "resident_kb": 1043768,
+      "high_water_rss_kb": 1047696,
+      "main_thread_cpus_allowed_list": "0",
+      "thread_scheduling_policies_verified": false,
+      "uses_juce_named_threads": true,
+      "audio_worker_names": [
+        "AudioWorker0",
+        "AudioWorker1",
+        "AudioWorker2",
+        "AudioWorker3"
+      ],
+      "confidence": "OBSERVED"
+    },
+    "service_properties": {
+      "type": "simple",
+      "restart": "always",
+      "requires": [
+        "sysinit.target",
+        "system.slice"
+      ],
+      "wants": [
+        "az01-script-runner.service"
+      ],
+      "note": "future stop/restore must account for Restart=always"
+    }
+  },
+  "unknowns": [
+    "All supported ALSA formats/rates/channels beyond the observed 44.1kHz stereo S32_LE",
+    "Physical codec, routing, end-to-end playback/capture latency, and xruns under load",
+    "Actual pad/encoder/private MIDI messages and safe LED feedback protocol",
+    "Thread priority/scheduler policy and per-audio-worker CPU affinity",
+    "Touchscreen coordinate rotation, absolute ranges and UI composition",
+    "Full boot ROM/U-Boot chain and tested recovery if Linux cannot boot",
+    "PT_INTERP and minimum glibc symbol versions for an independent sysroot",
+    "Inter-model and inter-firmware compatibility",
+    "Ethernet supported advertisement/EEE/PTP/offloads under current PHY (ethtool not installed)",
+    "Native UDP packet-delay distribution and worst-case jitter under ARM CPU load",
+    "USB device-mode ECM/NCM/UAC kernel feature availability and safe function binding",
+    "Real effective USB 2.0 payload goodput and external port contention"
+  ],
+  "references": [
+    "docs/dev/hardware/survey-2026-11-09.md",
+    "docs/dev/guides/developer-access.md",
+    "docs/dev/hardware/resource-ownership.md",
+    "docs/dev/hardware/audio-runtime.md",
+    "docs/dev/hardware/ethernet-usb.md",
+    "docs/dev/research/auxiliary-compute.md"
+  ],
+  "abi": {
+    "installed_loader": "/lib/ld-linux-armhf.so.3",
+    "installed_alsa_lib": "/usr/lib/libasound.so.2",
+    "mpc_elf_header": {
+      "magic": "7f454c46",
+      "class": "ELF32",
+      "endianness": "little",
+      "type": "ET_DYN",
+      "machine": "EM_ARM",
+      "eabi_version": 5,
+      "flags_hex": "0x05000400",
+      "abi_float": "hard",
+      "confidence": "OBSERVED"
+    },
+    "mpc_elf_interpreter_verified": false,
+    "glibc_symbol_versions_verified": false,
+    "confidence": "OBSERVED"
+  },
+  "network": {
+    "ethernet": {
+      "linux_name": "end0",
+      "operstate": "up",
+      "carrier": 1,
+      "link_speed_mbit_s": 1000,
+      "duplex": "full",
+      "mtu": 1500,
+      "mac_controller": "ff290000.ethernet",
+      "mac_driver": "rk_gmac-dwmac",
+      "phy": "Realtek RTL8211E Gigabit Ethernet",
+      "phy_id": "0x001cc915",
+      "phy_interface": "rgmii",
+      "mdio_node": "stmmac-0:01",
+      "rx_errors_at_survey": 0,
+      "tx_errors_at_survey": 0,
+      "rx_dropped_at_survey": 0,
+      "tx_dropped_at_survey": 0,
+      "confidence": "OBSERVED"
+    },
+    "short_benchmark": {
+      "icmp_echo_packets": 20,
+      "icmp_received": 20,
+      "rtt_min_ms": 0.251,
+      "rtt_avg_ms": 0.272,
+      "rtt_max_ms": 0.315,
+      "rtt_mdev_ms": 0.015,
+      "ssh_data_bytes_per_direction": 4194304,
+      "ssh_mpc_to_host_mbit_s": 126.66,
+      "ssh_host_to_mpc_mbit_s": 47.05,
+      "ssh_compression_enabled": false,
+      "network_phy_capacity_inferred_from_benchmark": false,
+      "udp_jitter_measured": false,
+      "one_way_audio_latency_measured": false,
+      "confidence": "OBSERVED SHORT TEST"
+    }
+  },
+  "usb": {
+    "root_hubs": [
+      {
+        "bus": 1,
+        "controller": "dwc2_hsotg",
+        "root_hub_speed_mbit_s": 480,
+        "attached": {
+          "usb_path": "1-1",
+          "vendor_id": "09e8",
+          "product_id": "0046",
+          "device": "MPC One MIDI",
+          "negotiated_speed_mbit_s": 12
+        }
+      },
+      {
+        "bus": 2,
+        "controller": "ehci_hcd",
+        "root_hub_speed_mbit_s": 480,
+        "attached": {
+          "usb_path": "2-1",
+          "vendor_id": "154b",
+          "product_id": "1006",
+          "device": "PNY USB 3.2.1 FD",
+          "negotiated_speed_mbit_s": 480
+        }
+      },
+      {
+        "bus": 3,
+        "controller": "ohci_hcd",
+        "root_hub_speed_mbit_s": 12
+      }
+    ],
+    "gadget_udc": {
+      "name": "ff580000.usb",
+      "driver": "dwc2",
+      "state": "not attached",
+      "current_speed": "UNKNOWN",
+      "maximum_speed": "high-speed",
+      "is_otg": 0,
+      "configfs_usb_gadget_directory_exists": true,
+      "physical_usb_b_port_link_verified": false,
+      "ecm_ncm_function_available_verified": false,
+      "usb_audio_function_available_verified": false,
+      "confidence": "OBSERVED CURRENT KERNEL STATE"
+    },
+    "host_to_host_usb_safe": false,
+    "high_speed_port_payload_performance_measured": false
+  }
+}

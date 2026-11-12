@@ -1,5 +1,5 @@
 # Local MPC research output — may contain device IDs, UUIDs and proprietary paths.
-# Only publish reviewed, redacted evidence under docs/hardware/.
+# Only publish reviewed, redacted evidence under docs/dev/hardware/.
 research/
 **/research/raw/
 *.img
@@ -28,3 +28,4 @@ cmake-build-*/
 rust/target/
 rust/mpfree-splash-gl/target/
 /splash-font-*
+docs/user/build/

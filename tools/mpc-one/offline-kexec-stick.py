@@ -45,7 +45,7 @@ What changes in the COPY of the root filesystem (the image itself is only read):
     /dev/fb0 for 6 seconds, in the --splash-font font if one is given, and
     the log display starts when it ends; it writes only the framebuffer
   - only with --app: the pad player starts at power-on instead of the log
-    display. Our program mpfree-hello (rust/mpfree-hello, built for ARM
+    display. Our program mpfree (rust/mpfree-app, built for ARM
     beforehand) runs `app`: a loading screen (over the galaxy, with --splash)
     with a progress bar, then the pad player. The Dev tab's Console (or
     SHIFT + ERASE + TAP TEMPO, once ERASE is found with Map controls) shows
@@ -53,10 +53,10 @@ What changes in the COPY of the root filesystem (the image itself is only read):
     go on partition 3, which it mounts read-only. Partition 4 is mounted
     read-write (nosuid, nodev, noexec) at /run/mpfree-data and passed with
     --data; the pad player saves its settings and files only there
-    (docs/project/storage-spec.md), and if it does not mount, nothing is
+    (docs/dev/design/storage-spec.md), and if it does not mount, nothing is
     saved. If the program stops with an error, the log display starts
     instead. Besides the screen, the controller, the sound card and
-    partition 4, it writes only /run/mpfree-hello (RAM)
+    partition 4, it writes only /run/mpfree-app (RAM)
   - a service that records the Ethernet details (read-only-ethernet.sh, the
     same script collect-over-ssh.sh --ethernet runs on 3.6) before the network
     starts and after, and if eth0 failed to start, starts it again at 20, 45
@@ -87,7 +87,7 @@ Optional inputs:
                       EABI5 hard-float executable built like the screen log
   --splash-font FILE  a TrueType or OpenType font for its title (only with
                       --splash); without it the title uses built-in letters
-  --app FILE          the pad player (mpfree-hello), built like the screen log
+  --app FILE          the pad player (mpfree), built like the screen log
   --kits FILE         its drum kits (only with --app); default: kits.bin in
                       the newest ~/mpfree-work/factory-kit-*/ folder. They are
                       Akai's sounds: the stick stays private
@@ -134,7 +134,7 @@ GROW_PROGRAM = "/usr/sbin/resize2fs"  # in the version's root filesystem, if it 
 DATA_NAME = "mpfree-test-data"      # its GPT name; write-test-stick.py looks for it
 ETHERNET = "/ethernet@ff290000"
 # The PHY's ID as 3.6.0 reads it on the reference unit (/sys/bus/mdio_bus/devices/stmmac-0:01/phy_id
-# 0x001cc915, Realtek RTL8211E; docs/hardware/ethernet-usb.md).
+# 0x001cc915, Realtek RTL8211E; docs/dev/hardware/ethernet-usb.md).
 PHY_ID_COMPATIBLE = "ethernet-phy-id001c.c915"
 PANEL = "/mipi@ff960000/panel@0"
 SCREEN_LOG_BUILT = os.path.join(REPO_ROOT, "rust", "target", "armv7-unknown-linux-gnueabihf", "release",
@@ -248,7 +248,7 @@ while :; do
   {{ ip addr; ip route; }} > "$d/network.txt" 2>&1
   cat /proc/cmdline > "$d/cmdline.txt" 2>&1
   cp /run/mpfree-test-eth/*.txt "$d/" 2>/dev/null
-  cp /run/mpfree-hello/hello.txt "$d/" 2>/dev/null
+  cp /run/mpfree-app/report.txt "$d/" 2>/dev/null
   sync
   sleep 10
 done
@@ -316,10 +316,10 @@ if grep -q ' /run/mpfree-data ' /proc/mounts ||
     ( {grow} "$data" > /run/mpfree-data-grow.txt 2>&1 ||
         echo "mpfree-test-app: partition 4's filesystem did not grow; see /run/mpfree-data-grow.txt" > /dev/kmsg ) &
   fi
-  exec /etc/mpfree-test/mpfree-hello app --kits /run/mpfree-kits/kits.bin{keep} --data /run/mpfree-data
+  exec /etc/mpfree-test/mpfree app --kits /run/mpfree-kits/kits.bin{keep} --data /run/mpfree-data
 fi
 echo "mpfree-test-app: the data partition did not mount, so nothing is saved" > /dev/kmsg
-exec /etc/mpfree-test/mpfree-hello app --kits /run/mpfree-kits/kits.bin{keep}
+exec /etc/mpfree-test/mpfree app --kits /run/mpfree-kits/kits.bin{keep}
 """
 APP_UNIT = """[Unit]
 Description=MPFree test boot: the pad player, from power-on
@@ -579,7 +579,7 @@ def app_inputs(args, work):
         return None, None, None, None
     path = os.path.realpath(args.app)
     if not os.path.isfile(path):
-        raise Stop(f"missing {path}: build the pad player (mpfree-hello) first")
+        raise Stop(f"missing {path}: build the pad player (mpfree) first")
     program = static_arm_program(path)
     kits = args.kits
     if not kits:
@@ -821,7 +821,7 @@ def build_rootfs(img, scratch, pubkey, host_key, log_uuid, screen_log, rotation,
             SPLASH_UNIT.format(rotation=rotation, seconds=SPLASH_SECONDS, font=font_args,
                                timeout=SPLASH_SECONDS + 14), 0o644)
     if app is not None:
-        add("/etc/mpfree-test/mpfree-hello", app, 0o755)
+        add("/etc/mpfree-test/mpfree", app, 0o755)
         add("/etc/mpfree-test/start-app.sh",
             APP_SCRIPT.format(kits_uuid=kits_uuid, data_uuid=data_uuid, grow=GROW_PROGRAM,
                               keep=" --keep-screen" if splash_program else ""), 0o755)
@@ -992,7 +992,7 @@ def main(argv):
     ap.add_argument("--image", help="the version's rootfs image (default: found as described above)")
     ap.add_argument("--splash", help="the startup-screen program (mpfree-splash, static ARM)")
     ap.add_argument("--splash-font", help="a .ttf or .otf font for the startup screen's title (with --splash)")
-    ap.add_argument("--app", help="the pad player (mpfree-hello, static ARM), started at power-on")
+    ap.add_argument("--app", help="the pad player (mpfree, static ARM), started at power-on")
     ap.add_argument("--kits", help="its drum kits (kits.bin; default: the newest factory-kit-* folder's)")
     args = ap.parse_args(argv)
     for tool in ("debugfs", "e2fsck", "mke2fs", "sfdisk", "ssh-keygen"):

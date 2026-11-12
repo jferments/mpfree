@@ -2,6 +2,7 @@
 //! block by block at the MPC's period. Setup allocates; the block function
 //! must not.
 
+use mpfree_audiotracks::{AudioTracks, Command as TrackCommand, Input as TrackInput, MAX_TRACKS};
 use mpfree_fx::ids;
 use mpfree_fx::{
     CapturePoint, Chain, Character, Chorus, Cloud, Comb, Compressor, Crush, Delay, DjFilter, Drive,
@@ -1103,6 +1104,8 @@ pub fn all(rate: u32) -> Vec<Case> {
     v.push(measured(|| looper(rate, 60)));
     v.push(measured(|| looper_loops(rate, 60, false)));
     v.push(measured(|| looper_loops(rate, 60, true)));
+    v.push(measured(|| audio_tracks(rate, 0)));
+    v.push(measured(|| audio_tracks(rate, 2)));
     v.push(measured(|| song(rate)));
     v
 }
@@ -1735,6 +1738,117 @@ fn looper_loops(rate: u32, seconds: u32, edited: bool) -> Case {
             let f = g.frame;
             input(rate, f, &mut g.seed, l, r);
             g.period(l, r);
+        }),
+        mem_bytes: 0,
+    }
+}
+
+/// Audio tracks on the song timeline: every track with 8 bars recorded at
+/// 120 BPM in three loop passes, comped so a region boundary (a crossfade
+/// between two takes) falls on every beat, playing in a loop over the 8
+/// bars, with `recording` of them recording the input again (punching in
+/// and out every 2 bars) while the rest play.
+fn audio_tracks(rate: u32, recording: usize) -> Case {
+    const BARS: i64 = 8;
+    let bar = 4 * i64::from(PPQ);
+    let beat = i64::from(PPQ);
+    let song_end = BARS * bar;
+    let mut t = Transport::new(rate, 120.0).expect("transport");
+    // 8 bars at 120 BPM: 16 s a pass; three passes on 8 mono tracks are
+    // 384 s of mono, and the recording tracks need more on top.
+    let mut a = AudioTracks::new(rate, 300);
+    let mut block = TBlock::new();
+    let n = MAX_BLOCK;
+    let (mut line_in, mut out) = (vec![0.0f32; 2 * n], vec![0.0f32; 2 * n]);
+    let prog = program(rate);
+    let (mut l, mut r) = (vec![0.0f32; n], vec![0.0f32; n]);
+    let mut frame = 0u64;
+    let mut step = |frame: &mut u64,
+                    t: &mut Transport,
+                    a: &mut AudioTracks,
+                    line_in: &mut Vec<f32>,
+                    out: &mut Vec<f32>| {
+        prog.play(*frame, &mut l, &mut r);
+        for (i, (x, y)) in l.iter().zip(r.iter()).enumerate() {
+            input_frame(line_in, i, *x, *y);
+        }
+        out.fill(0.0);
+        t.process(n as u32, &mut block);
+        let map = *t.tempo_map();
+        a.process(&block, &map, line_in, out);
+        *frame += n as u64;
+    };
+    // Record three passes on every track at once.
+    for k in 0..MAX_TRACKS {
+        a.command(TrackCommand::SetInput(k, TrackInput::Left));
+        a.command(TrackCommand::Arm(k, true));
+    }
+    t.command(0, T::SetLoop(Some((0, song_end))));
+    t.command(0, T::Record);
+    let pass = (16 * rate) as u64;
+    while frame < 3 * pass + 2 * n as u64 {
+        step(&mut frame, &mut t, &mut a, &mut line_in, &mut out);
+    }
+    t.command(frame, T::Stop);
+    for k in 0..MAX_TRACKS {
+        a.command(TrackCommand::Arm(k, false));
+    }
+    step(&mut frame, &mut t, &mut a, &mut line_in, &mut out);
+    // Comp: beat i of track k plays pass (i + k) % 3.
+    let takes: Vec<_> = a.takes().collect();
+    for k in 0..MAX_TRACKS {
+        for i in 0..BARS * 4 {
+            let p = ((i as usize + k) % 3) as u16;
+            if let Some(tk) = takes.iter().find(|x| x.track == k && x.pass == p) {
+                a.command(TrackCommand::Comp {
+                    take: tk.id,
+                    from: i * beat,
+                    to: (i + 1) * beat,
+                });
+            }
+        }
+        // Apply the queue (it holds 64) before the next track.
+        step(&mut frame, &mut t, &mut a, &mut line_in, &mut out);
+    }
+    for k in 0..recording {
+        a.command(TrackCommand::Arm(k, true));
+    }
+    a.command(TrackCommand::ClearHistory);
+    t.command(frame, T::PlayStart);
+    let punch_every = 4 * u64::from(rate); // 2 bars
+    let mut next_punch = frame + punch_every;
+    let mut tr = t;
+    Case {
+        name: format!(
+            "Audio tracks: {} playing comped takes{}",
+            MAX_TRACKS - recording,
+            if recording > 0 {
+                format!(", {recording} recording")
+            } else {
+                String::new()
+            }
+        ),
+        module: "looper",
+        what: "8-bar song loop, a crossfade between takes on every beat",
+        block: Box::new(move |b, ol, or| {
+            let n = ol.len();
+            if recording > 0 && frame >= next_punch {
+                next_punch += punch_every;
+                tr.command(frame, T::Record);
+            }
+            prog.play(b * n as u64, ol, or);
+            for (i, (x, y)) in ol.iter().zip(or.iter()).enumerate() {
+                input_frame(&mut line_in, i, *x, *y);
+            }
+            out[..2 * n].fill(0.0);
+            tr.process(n as u32, &mut block);
+            let map = *tr.tempo_map();
+            a.process(&block, &map, &line_in[..2 * n], &mut out[..2 * n]);
+            frame += n as u64;
+            for (i, (x, y)) in ol.iter_mut().zip(or.iter_mut()).enumerate() {
+                *x = out[2 * i];
+                *y = out[2 * i + 1];
+            }
         }),
         mem_bytes: 0,
     }
