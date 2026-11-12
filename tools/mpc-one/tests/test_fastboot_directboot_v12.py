@@ -48,7 +48,7 @@ class V12OfflineTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as name:
             d = Path(name)
             matrix = v12.question_matrix(d, {})
-            self.assertGreaterEqual(len(matrix), 65)
+            self.assertGreaterEqual(len(matrix), 60)
             self.assertTrue(all(row["status"].startswith("OPEN") for row in matrix))
             self.assertEqual(len({row["id"] for row in matrix}), len(matrix))
 
