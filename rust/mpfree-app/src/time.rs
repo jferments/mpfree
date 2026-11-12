@@ -19,6 +19,13 @@
 //! as recorded and the track records what the arp played
 //! ([`TimeHost::pad`]).
 //!
+//! Pad pressure comes in through [`TimeHost::pad_pressure`]: while the
+//! armed track records and records pressure (`Track::record_touch`, the
+//! Record list's "Pad pressure" row), it is thinned onto the pads' notes
+//! and kept in the clip with them; clips play it back to the pads
+//! ([`Pads::pressure_at`]) as the raw value, which each instrument's
+//! pressure curve shapes.
+//!
 //! Perform FX gestures (the XY pad, the DJ knob, a pad's Hold) come in
 //! through [`TimeHost::gesture`]: while recording they become moves in the
 //! armed track's clip (FX moves, played back as lane values), and the
@@ -146,6 +153,9 @@ pub trait Pads {
     fn hit_at(&mut self, pad: usize, velocity: u8, offset: u32) -> bool;
     fn release_at(&mut self, pad: usize, offset: u32);
     fn stop_all(&mut self);
+    /// A clip's recorded pressure on `pad`'s sounding note, the raw value
+    /// 0 to 127, `offset` frames into the period.
+    fn pressure_at(&mut self, pad: usize, value: u8, offset: u32);
     /// A note one of the per-track arps played ([`TimeHost::period_arps`]):
     /// the pads through their track's arp, a latched arp, or a clip that
     /// plays through its arp. It is live playing, so the pad player gives
@@ -166,6 +176,10 @@ pub trait Pads {
                 self.stop_all();
                 None
             }
+            Event::Pressure { note, value } => {
+                self.pressure_at(usize::from(note), value, o.offset);
+                None
+            }
             Event::Lock { .. } | Event::Lane { .. } | Event::Unlock { .. } => None,
         }
     }
@@ -180,6 +194,9 @@ impl Pads for crate::sampler::Player {
     }
     fn stop_all(&mut self) {
         crate::sampler::Player::stop_all(self)
+    }
+    fn pressure_at(&mut self, pad: usize, value: u8, offset: u32) {
+        crate::sampler::Player::pressure_at(self, pad, value, offset)
     }
 }
 
@@ -341,6 +358,8 @@ pub struct TimeHost {
     /// ([`TimeHost::lanes`]).
     lanes: Vec<LaneOut>,
     locks_dropped: u64,
+    /// Recorded pressure a clip had no room for (`MAX_TOUCH_POINTS`).
+    touch_lost: u64,
 }
 
 /// A step's parameter lock (`value`) or its end (`None`), `offset` frames
@@ -421,6 +440,7 @@ impl TimeHost {
             locks: Vec::with_capacity(MAX_LOCKS),
             lanes: Vec::with_capacity(MAX_LOCKS),
             locks_dropped: 0,
+            touch_lost: 0,
         };
         host.compile()?;
         Ok(host)
@@ -464,6 +484,7 @@ impl TimeHost {
                 {
                     c.notes.reserve(RECORD_ROOM);
                     c.locks.reserve(RECORD_ROOM);
+                    c.touch.reserve(mpfree_play::TOUCH_ROOM);
                 }
             }
         }
@@ -704,6 +725,17 @@ impl TimeHost {
                 None => Ok("redo: nothing to redo".into()),
             },
             TimeAction::Capture => self.keep(),
+            TimeAction::RecordPressure { track, on } => {
+                if !self.set_record_touch(track, on) {
+                    return Err(format!("pad pressure: no track {}", track + 1));
+                }
+                let name = &self.project.tracks[track].name;
+                Ok(if on {
+                    format!("pad pressure: {name} records it")
+                } else {
+                    format!("pad pressure: {name} leaves it out")
+                })
+            }
             TimeAction::Arm(track) => {
                 self.armed = track.filter(|&t| t < self.project.tracks.len());
                 self.compile()?;
@@ -1204,6 +1236,41 @@ impl TimeHost {
         }
     }
 
+    /// Pad `pad`'s pressure (0 to 127, raw) in the coming period, at
+    /// `offset`: recorded onto the pad's held note while the armed track
+    /// records and records pressure (`Track::record_touch`). The pads'
+    /// notes go in through [`TimeHost::pad`] or [`TimeHost::pad_pressed`]
+    /// first, so a value on their offset comes after them.
+    pub fn pad_pressure(&mut self, offset: u32, pad: u8, value: u8) {
+        let on = self
+            .armed
+            .and_then(|t| self.project.tracks.get(t))
+            .is_some_and(|t| t.record_touch);
+        if on && pad < 16 {
+            self.recorder
+                .input(offset, Event::Pressure { note: pad, value });
+        }
+    }
+
+    /// "Record pad pressure" for `track` (`Track::record_touch`). False if
+    /// there is no such track.
+    pub fn set_record_touch(&mut self, track: usize, on: bool) -> bool {
+        let Some(t) = self.project.tracks.get_mut(track) else {
+            return false;
+        };
+        if t.record_touch != on {
+            t.record_touch = on;
+            self.changed = true;
+        }
+        true
+    }
+
+    /// Pressure values lost: past the recorder's tables, or a clip with
+    /// no room left (should stay 0).
+    pub fn touch_dropped(&self) -> u64 {
+        self.recorder.touch_dropped() + self.touch_lost
+    }
+
     /// A knob moved in the coming period, at `offset`: parameter `addr` is
     /// now `value`. While the transport records and `addr` is on the armed
     /// track, it becomes a parameter lock on the step it belongs to (see
@@ -1396,6 +1463,9 @@ impl TimeHost {
                 }
                 Event::NoteOff { note } => pads.release_at(usize::from(note), o.offset),
                 Event::AllOff => pads.stop_all(),
+                Event::Pressure { note, value } => {
+                    pads.pressure_at(usize::from(note), value, o.offset)
+                }
                 // Parameter locks go to the mod engine in the mixer
                 // (`MixHost::lock`), which the audio loop hands them to.
                 Event::Lock { addr, value } => Self::lock_out(
@@ -1479,9 +1549,15 @@ impl TimeHost {
         }
         for i in 0..self.recorder.taken().len() {
             let k = self.recorder.taken()[i];
-            if self.takes.add(&mut self.project, &k).is_ok() {
+            let points = self.recorder.touch_points(&k.note);
+            if let Ok((note, kept)) = self.takes.add_touched(&mut self.project, &k, points) {
                 recorded = true;
-                compile |= !self.view.add_note(k.track, k.slot, &k.note);
+                if !kept {
+                    self.touch_lost += points.len() as u64;
+                }
+                // Its pressure first: the note names it in the view too.
+                compile |= !self.view.add_touch(k.track, k.slot, note.touch, points);
+                compile |= !self.view.add_note(k.track, k.slot, &note);
             }
         }
         for i in 0..self.recorder.taken_locks().len() {
@@ -1593,12 +1669,14 @@ impl TimeHost {
     pub fn describe(&self) -> String {
         let t = &self.transport;
         format!(
-            "time: {:?} at {}, {:.1} BPM, {} takes, {} notes or locks lost to full tables",
+            "time: {:?} at {}, {:.1} BPM, {} takes, {} notes or locks lost to full tables, \
+             {} pressure values lost",
             t.state(),
             t.meter().position(t.position()),
             t.bpm(),
             self.takes.done().len(),
-            self.dropped()
+            self.dropped(),
+            self.touch_dropped()
         )
     }
 }
@@ -1726,6 +1804,8 @@ mod tests {
         hits: Vec<(u64, usize, u8)>,
         frame: u64,
         stops: usize,
+        /// (absolute frame, pad, value)
+        pressure: Vec<(u64, usize, u8)>,
     }
 
     impl Pads for Fake {
@@ -1737,6 +1817,10 @@ mod tests {
         fn release_at(&mut self, _pad: usize, _offset: u32) {}
         fn stop_all(&mut self) {
             self.stops += 1;
+        }
+        fn pressure_at(&mut self, pad: usize, value: u8, offset: u32) {
+            self.pressure
+                .push((self.frame + u64::from(offset), pad, value));
         }
     }
 
@@ -1843,6 +1927,106 @@ mod tests {
         assert!(lanes > 20, "{lanes}");
         assert_eq!(h.act(TimeAction::Undo).unwrap(), "undo: take 1");
         assert_eq!(lane(&h), None);
+        assert_eq!(h.dropped(), 0);
+    }
+
+    /// Pad pressure while recording goes on the pad's note in the clip
+    /// (the Record list's "Pad pressure" row is on for a new track), plays
+    /// back to the pads on the next pass, and is left out with the row off.
+    #[test]
+    fn pad_pressure_while_recording_goes_on_its_note_and_plays_back() {
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut pads = Fake::default();
+        h.command(Command::SetLoop(Some((0, 3840))));
+        h.act(TimeAction::NewClip { track: 0, slot: 0 }).unwrap();
+        assert!(h.state().tracks[0].pressure);
+        // A pad held while pressed harder, then let up, and its pressure.
+        let play = |h: &mut TimeHost,
+                    pads: &mut Fake,
+                    to: u64,
+                    pad: u8,
+                    held: (u64, u64),
+                    squeeze: &[(u64, u8)]| {
+            while pads.frame < to {
+                let end = pads.frame + u64::from(PERIOD);
+                let here = |at: u64| {
+                    (pads.frame..end)
+                        .contains(&at)
+                        .then(|| (at - pads.frame) as u32)
+                };
+                if let Some(o) = here(held.0) {
+                    h.pad(
+                        o,
+                        Event::NoteOn {
+                            note: pad,
+                            velocity: 100,
+                        },
+                    );
+                }
+                for &(at, value) in squeeze {
+                    if let Some(o) = here(at) {
+                        h.pad_pressure(o, pad, value);
+                    }
+                }
+                if let Some(o) = here(held.1) {
+                    h.pad(o, Event::NoteOff { note: pad });
+                }
+                h.period(PERIOD, pads);
+                pads.frame = end;
+            }
+        };
+        let squeeze = [(12_000u64, 40u8), (20_000, 90), (30_000, 20)];
+        play(&mut h, &mut pads, BAR - 1000, 5, (10_000, 40_000), &squeeze);
+        let clip = h.project.clip(0, 0).unwrap();
+        assert_eq!(clip.notes.len(), 1);
+        let values: Vec<u8> = clip
+            .touch_of(&clip.notes[0])
+            .iter()
+            .map(|p| p.value)
+            .collect();
+        assert_eq!(values, [40, 90, 20]);
+        // The view took it in place, as a compile would have.
+        assert_eq!(h.view, {
+            let mut v = PlayView::compile_cued(&h.project, &h.launches, &h.cues).unwrap();
+            v.set_armed(h.armed);
+            v.make_room(RECORD_ROOM, RECORD_ROOM);
+            v
+        });
+        // Recording off: the next pass plays it back to the pads, each value
+        // a bar after it was played (to a tick).
+        h.act(TimeAction::Transport(Command::Record)).unwrap();
+        pads.pressure.clear();
+        run(&mut h, &mut pads, 2 * BAR - 1000, &[]);
+        let back: Vec<(usize, u8)> = pads.pressure.iter().map(|p| (p.1, p.2)).collect();
+        assert_eq!(back, [(5, 40), (5, 90), (5, 20)]);
+        for (p, &(at, _)) in pads.pressure.iter().zip(&squeeze) {
+            assert!(p.0.abs_diff(at + BAR) <= 23, "{} vs {}", p.0, at + BAR);
+        }
+        // With the row off, a take keeps the notes but not their pressure.
+        assert_eq!(
+            h.act(TimeAction::RecordPressure {
+                track: 0,
+                on: false
+            })
+            .unwrap(),
+            "pad pressure: Track 1 leaves it out"
+        );
+        assert!(!h.state().tracks[0].pressure);
+        run(&mut h, &mut pads, 2 * BAR, &[]);
+        h.act(TimeAction::Transport(Command::Record)).unwrap();
+        let s2 = 2 * BAR;
+        play(
+            &mut h,
+            &mut pads,
+            3 * BAR - 1000,
+            6,
+            (s2 + 10_000, s2 + 30_000),
+            &[(s2 + 15_000, 99)],
+        );
+        let clip = h.project.clip(0, 0).unwrap();
+        let six = clip.notes.iter().find(|n| n.note == 6).unwrap();
+        assert!(six.touch.is_none() && clip.touch_of(six).is_empty());
+        assert_eq!(h.touch_dropped(), 0);
         assert_eq!(h.dropped(), 0);
     }
 
@@ -2266,6 +2450,7 @@ mod tests {
                     chance: 100,
                     cond: mpfree_seq::Cond::Always,
                     ratchet: 1,
+                    touch: mpfree_seq::Touch::NONE,
                 })
                 .collect();
             c

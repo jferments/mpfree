@@ -28,6 +28,10 @@
 //! locks (a lock set on a step, a step's locks going with it) undo and
 //! redo with its notes.
 //!
+//! A recorded note's pad pressure goes in with it ([`Takes::add_touched`]):
+//! into the clip's pressure first, which only ever grows, so undo and
+//! redo of the note need not touch it.
+//!
 //! Knob moves recorded as locks ([`Recorder::taken_locks`]) go in with
 //! [`Takes::add_lock`], with the take they were recorded in: each replaces
 //! a lock of the same parameter on the same tick and row, and a turn that
@@ -54,7 +58,7 @@
 
 use mpfree_seq::mpfree_moves::{Kind, Map, Point, Target};
 use mpfree_seq::steps::{Edit, MovesEdit};
-use mpfree_seq::{Clip, Lock, ModelError, Note, Project};
+use mpfree_seq::{Clip, Lock, ModelError, Note, Project, Touch, TouchPoint};
 use mpfree_transport::time::Tick;
 
 use crate::{Erased, ErasedLock, Taken, TakenLock, TakenMove};
@@ -152,6 +156,30 @@ impl Takes {
         clip.add_note(k.note)?;
         self.entry(k.take).added.push((k.track, k.slot, k.note));
         Ok(())
+    }
+
+    /// [`Takes::add`] for a recorded note with its pad pressure, `points`
+    /// (`Recorder::touch_points`): they go into the clip first
+    /// (`Clip::add_touch`) and the note names them there. Pressure the
+    /// clip has no room for is left off the note (the second value says
+    /// so); the note still goes in. The note as added. Undo and redo take
+    /// the note out and put it back; its pressure stays in the clip, so
+    /// the note keeps it.
+    pub fn add_touched(
+        &mut self,
+        project: &mut Project,
+        k: &Taken,
+        points: &[TouchPoint],
+    ) -> Result<(Note, bool), ModelError> {
+        let c = clip(project, k.track, k.slot).ok_or(ModelError::BadSlot)?;
+        let mut note = k.note;
+        let (touch, kept) = match c.add_touch(points) {
+            Ok(t) => (t, true),
+            Err(_) => (Touch::NONE, false),
+        };
+        note.touch = touch;
+        self.add(project, &Taken { note, ..*k })?;
+        Ok((note, kept))
     }
 
     /// Put a recorded lock in its clip, in place of a lock of the same
@@ -698,6 +726,7 @@ mod tests {
                 chance: 100,
                 cond: mpfree_seq::Cond::Always,
                 ratchet: 1,
+                touch: mpfree_seq::Touch::NONE,
             },
             take,
         }
@@ -756,6 +785,7 @@ mod tests {
             chance: 100,
             cond: mpfree_seq::Cond::Always,
             ratchet: 1,
+            touch: mpfree_seq::Touch::NONE,
         })
         .unwrap();
         assert_eq!(t.capture_clip(&mut p, 0, 1, c.clone()), Ok(1));
@@ -782,6 +812,7 @@ mod tests {
                 chance: 100,
                 cond: mpfree_seq::Cond::Always,
                 ratchet: 1,
+                touch: mpfree_seq::Touch::NONE,
             })
             .unwrap();
         assert_eq!(t.undo(&mut p), Some(1));
@@ -817,6 +848,7 @@ mod tests {
             chance: 100,
             cond: mpfree_seq::Cond::Always,
             ratchet: 1,
+            touch: mpfree_seq::Touch::NONE,
         };
         assert_eq!(
             t.capture_notes(&mut p, 0, 0, &[n(0), n(5000)]),
