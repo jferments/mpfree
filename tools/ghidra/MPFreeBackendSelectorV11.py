@@ -299,10 +299,71 @@ def mpfree_v11_entrypoint():
                 'original_word_proves_execution':False,
                 'runtime_target_unverified':True,
             }
+        # SPL: resolve previously hidden FIRST indirect jump, then
+        # inspect the SECOND indirect pointer without claiming execution.
+        # Read bounded media tables as opaque 32-bit words, not guessed
+        # eMMC/SD priorities until values and references are checked.
+        extended={}
+        if role=='spl':
+            def original_word(pos):
+                try:
+                    b=mem.getBlock(A(pos))
+                    if b and b.isInitialized():
+                        return int(mem.getInt(A(pos))) & 0xffffffff
+                except Exception:
+                    pass
+                return None
+            table_words={}
+            for name, pointer_slot, count in (
+                ('device_order',0xff7053fc,5),
+                ('device_mapping',0xff705404,10)):
+                address=original_word(pointer_slot)
+                words=[]
+                if address is not None:
+                    for n in range(count):
+                        value=original_word(address+n*4)
+                        words.append({
+                            'address':addr_hex(address+n*4),
+                            'word':addr_hex(value) if value is not None else None})
+                table_words[name]={'origin_slot':addr_hex(pointer_slot),
+                                   'table_start':addr_hex(address) if address is not None else None,
+                                   'entries':words,
+                                   'interpretation_not_verified':True}
+            context=original_word(0xff70540c)
+            handoff_slot=context+0xc if context is not None else None
+            handoff_value=original_word(handoff_slot) if handoff_slot is not None else None
+            entry=original_word(0xff705274)
+            extended={
+                'first_indirect_call_slot':'0xff705274',
+                'first_indirect_call_target':addr_hex(entry & 0xfffffffe) if entry is not None else None,
+                'first_indirect_thumb_bit':bool(entry & 1) if entry is not None else None,
+                'first_indirect_call_matches_boot_selector':entry==0xff705351,
+                'boot_selector_decomp_reaches_indirect_context':
+                    'FUN_ff705310(DAT_ff70540c)' in details.get(
+                        '0xff705350',{}).get('pseudocode',''),
+                'indirect_handoff_context_address':addr_hex(context) if context is not None else None,
+                'indirect_handoff_function_pointer_slot':addr_hex(handoff_slot) if handoff_slot is not None else None,
+                'indirect_handoff_original_word':addr_hex(handoff_value) if handoff_value is not None else None,
+                'indirect_handoff_original_word_is_runtime_proof':False,
+                'opaque_media_table_words':table_words,
+            }
+        elif role=='az01-update':
+            # GOT/PLT veneers are LINKAGE references. A mapped
+            # stub address isn't necessarily the implementation.
+            extended={'trampoline_candidates':{
+                label:{
+                    'imported_plt_or_got_candidate':True,
+                    'actual_shared_object_resolved':False,
+                    'original_linkage_slot_address':item['slot'],
+                    'candidate_code_address':item['original_word'],
+                }
+                for label,item in original_pointers.items()
+            }}
         direct_boot={
             'schema':'mpfree-original-stage-pointer-audit-v1',
             'role':role,
             'original_image_pointers':original_pointers,
+            'extended_stage_evidence':extended,
             'does_not_run_vendor_code':True,
             'indirect_spl_handoff_target_proven':False,
             'live_updater_trampoline_target_proven':False,
@@ -467,6 +528,15 @@ def mpfree_v11_entrypoint():
             ('getvar_adc_key_string',0x00100fb0),
             ('getvar_adc_operation0_failure_string',0x00100fb8),
             ('getvar_adc_operation1_failure_string',0x00100fbc),
+            ('getvar_power_source_reference_error_string',0x00100fc0),
+            ('getvar_power_source_scale',0x00100fc4),
+            ('getvar_power_source_threshold_1',0x00100fc8),
+            ('getvar_power_source_label_1_string',0x00100fcc),
+            ('getvar_power_source_threshold_2',0x00100fd0),
+            ('getvar_power_source_label_2_string',0x00100fd4),
+            ('getvar_power_source_threshold_3',0x00100fd8),
+            ('getvar_power_source_label_3_string',0x00100fdc),
+            ('getvar_power_source_label_4_string',0x00100fe0),
         ):
             value=read_word(slot)
             reboot_mode_literal_map[label]={
