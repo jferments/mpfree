@@ -313,6 +313,15 @@ class Lab:
                 "echo MPFREE_VM_SECTION_init_and_libraries",
                 "cat /etc/os-release 2>&1 || true",
                 "ls -l /lib/ld-linux-armhf.so.3 /lib/libc.so.6 /usr/lib/libaz01-prog.so.1.3 2>&1",
+                "echo MPFREE_VM_SECTION_elf_linker_dependencies",
+                "if test -x /lib/ld-linux-armhf.so.3; then /lib/ld-linux-armhf.so.3 --list /usr/sbin/az01-update 2>&1; fi",
+                "if test -x /lib/ld-linux-armhf.so.3; then /lib/ld-linux-armhf.so.3 --list /usr/sbin/init 2>&1; fi",
+                "echo MPFREE_VM_SECTION_boot_and_services",
+                "cat /etc/fstab 2>&1 || true",
+                "ls -l /boot /etc/systemd/system/multi-user.target.wants 2>&1",
+                "echo MPFREE_VM_SECTION_security_state",
+                "cat /proc/sys/kernel/kexec_load_disabled 2>&1 || true",
+                "cat /sys/kernel/security/lsm 2>&1 || true",
                 "echo MPFREE_VM_SECTION_virtual_devices",
                 "ls -l /dev/vda /dev/mmcblk0 /dev/bus/usb /sys/bus/usb/devices 2>&1",
                 "echo MPFREE_VM_SECTION_available_tools",
@@ -372,10 +381,17 @@ class Lab:
                         os.write(master, b"\n")
                 transcript = data.splitlines()
             result["serial_log"] = guest.name
-            result["observed_sections"] = [
-                s.strip() for s in re.findall(r"MPFREE_VM_SECTION_([a-z_]+)", data)
-            ]
-            result["observed_sections"] = sorted(set(result["observed_sections"]))
+            normalized = data.replace("\r", "")
+            split_sections = re.split(r"(?m)^MPFREE_VM_SECTION_([a-z_]+)[ ]*$", normalized)
+            sections = {}
+            for k in range(1, len(split_sections) - 1, 2):
+                section = split_sections[k]
+                body = split_sections[k + 1]
+                section_file = self.out / ("qemu-guest-" + section + ".txt")
+                section_file.write_text(body)
+                sections[section] = section_file.name
+            result["observed_sections"] = sorted(sections)
+            result["section_files"] = sections
             result["guest_probe_commands"] = lines
         except Exception as exc:
             result["error"] = repr(exc)
