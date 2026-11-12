@@ -295,6 +295,7 @@ class Lab:
         It is NOT AKAI's updater and never opens USB/eMMC or host devices.
         """
         source = regular(ROOT / "tools/mpc-one/usb_descriptor_mock_model.c")
+        endpoint_source = regular(ROOT / "tools/mpc-one/usb_endpoint_mock_model.c")
         cc = shutil.which("arm-linux-gnueabihf-gcc")
         mke2fs = shutil.which("mkfs.ext4") or shutil.which("mke2fs")
         if not cc or not mke2fs:
@@ -305,12 +306,16 @@ class Lab:
         staging = folder / "staging"
         staging.mkdir(mode=0o700)
         binary = staging / "usb_descriptor_model"
+        endpoint_binary = staging / "usb_endpoint_model"
         disk = folder / "usb-model.ext4"
         build_log = self.out / "qemu-synthetic-model-build.log"
         commands = [
             [cc, "-std=c11", "-O2", "-static", "-s",
              "-Wall", "-Wextra", "-Werror",
              "-o", str(binary), str(source)],
+            [cc, "-std=c11", "-O2", "-static", "-s",
+             "-Wall", "-Wextra", "-Werror",
+             "-o", str(endpoint_binary), str(endpoint_source)],
         ]
         with build_log.open("w") as log:
             for cmd in commands:
@@ -320,6 +325,7 @@ class Lab:
                 if p.returncode:
                     raise RuntimeError("Synthetic ARM test model compile failed; check " + build_log.name)
             binary.chmod(0o555)
+            endpoint_binary.chmod(0o555)
             with disk.open("wb") as fh:
                 fh.truncate(24 * 1024 * 1024)
             cmd = [mke2fs, "-F", "-q", "-t", "ext4", "-d", str(staging), str(disk)]
@@ -335,6 +341,8 @@ class Lab:
         self.stages["synthetic-usb-model-build"] = {
             "success": True, "binary_sha256": sha256(binary),
             "model_source_sha256": sha256(source),
+            "endpoint_binary_sha256": sha256(endpoint_binary),
+            "endpoint_source_sha256": sha256(endpoint_source),
             "guest_disk_regular_file": True,
             "host_build_log": build_log.name,
         }
@@ -435,6 +443,8 @@ class Lab:
                     "mkdir -p /mnt/mpfree-usb-model",
                     "mount -t ext4 -o ro /dev/vda /mnt/mpfree-usb-model 2>&1",
                     "if /mnt/mpfree-usb-model/usb_descriptor_model 2>&1; then echo MPFREE_MODEL_EXEC_OK; else echo MPFREE_MODEL_EXEC_FAIL; fi",
+                    "echo MPFREE_VM_SECTION_synthetic_usb_endpoint",
+                    "if /mnt/mpfree-usb-model/usb_endpoint_model 2>&1; then echo MPFREE_ENDPOINT_EXEC_OK; else echo MPFREE_ENDPOINT_EXEC_FAIL; fi",
                 ])
             else:
                 lines.append("echo MPFREE_MODEL_SKIPPED")
@@ -531,15 +541,38 @@ class Lab:
                     r'(?m)^(\{"test":.*\})[ \t]*$', normalized
                 )
             ]
+            descriptor_results = [
+                row for row in result["synthetic_usb_model_test_results"]
+                if not row["test"].startswith("endpoint_")
+            ]
+            endpoint_results = [
+                row for row in result["synthetic_usb_model_test_results"]
+                if row["test"].startswith("endpoint_")
+            ]
+            result["synthetic_usb_descriptor_test_results"] = descriptor_results
+            result["synthetic_usb_endpoint_test_results"] = endpoint_results
             result["synthetic_usb_model_guest_pass"] = (
                 "MPFREE_USB_DESCRIPTOR_MODEL_PASS" in normalized
                 and "MPFREE_MODEL_EXEC_OK" in normalized
+                and len(descriptor_results) == 13
+                and all(row.get("pass") is True for row in descriptor_results)
+            ) if synthetic_mock_enabled else None
+            result["synthetic_usb_endpoint_guest_pass"] = (
+                "MPFREE_USB_ENDPOINT_MODEL_PASS" in normalized
+                and "MPFREE_ENDPOINT_EXEC_OK" in normalized
+                and len(endpoint_results) == 21
+                and all(row.get("pass") is True for row in endpoint_results)
             ) if synthetic_mock_enabled else None
             if synthetic_mock_enabled:
                 self.stages["synthetic-usb-model-guest"] = {
                     "success": result["synthetic_usb_model_guest_pass"],
-                    "tests_observed": len(result["synthetic_usb_model_test_results"]),
+                    "tests_observed": len(descriptor_results),
                     "console": sections.get("synthetic_usb_model"),
+                }
+                self.stages["synthetic-usb-endpoint-guest"] = {
+                    "success": result["synthetic_usb_endpoint_guest_pass"],
+                    "tests_observed": len(endpoint_results),
+                    "console": sections.get("synthetic_usb_endpoint"),
                 }
             result["guest_probes_acknowledged"] = probe_cursor
             result["guest_probes_expected"] = len(lines)
@@ -664,7 +697,7 @@ class Lab:
             "- Broad Ghidra: SPL entry, DDR/FDT, ROM/boot choice, U-Boot/Fastboot, permission, RAM, recovery.",
             "- V11 Ghidra: updater verification states, function-pointer backend selectors, RockUSB framing.",
             "- QEMU: real ARMv7 Linux/userspace boot, virtual hardware boundary, loader dependencies and passive file inventory.",
-            "- QEMU synthetic USB model: independent ARM executable tests interface descriptor selection on read-only guest fixture disk, not vendor code.",
+            "- QEMU synthetic USB models: independent ARM executables test interface selection (13 cases) and endpoint discovery (21 cases) on a read-only guest fixture disk, not vendor code.",
             "",
             "## Still not proven",
             "- Silicon MaskROM entry, unsigned owner-SPL execution, eMMC hardware restoration.",
