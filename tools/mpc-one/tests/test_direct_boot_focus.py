@@ -35,7 +35,12 @@ def fixture():
             "elfs":{"/usr/bin/az01-bootloader-sig":{"firmware310":{"present":True}}},
             "services":{"/usr/lib/systemd/system/az0x-loadpin-trustpoints.service":{
                 "firmware310":{"present":True}}}},
-        "env":{"p2":{"boot_related_variables":{"boot_targets":"mmc0 mmc1"}}},
+        "env":{"p2":{"boot_related_variables":{
+            "boot_targets":"mmc0 mmc1",
+            "loadaddr":"0x00800800",
+            "fdt_addr_r":"0x01f00000",
+            "kernel_addr_r":"0x02000000",
+            "ramdisk_addr_r":"0x04000000"}}},
         "fdt":{"uboot_stage_fdt":[{"selected_dts_lines":dtb}]},
         "spl":{},"update":{}
     }
@@ -47,7 +52,14 @@ def run(data):
 class DirectBootFocusTests(unittest.TestCase):
     def test_seven_topics_and_exact_sha(self):
         report=run(fixture())
-        self.assertEqual(len(report["questions"]),25)
+        self.assertEqual(len(report["questions"]),26)
+        self.assertEqual(
+            report["nominal_memory_address_gaps"]["fdt_addr_r"][
+                "from_fastboot_load_base_bytes"], 24115200)
+        self.assertEqual(
+            report["nominal_memory_address_gaps"]["kernel_addr_r"][
+                "from_fastboot_load_base_bytes"], 25163776)
+        self.assertFalse(report["fastboot_download_memory_safe_proven"])
         self.assertEqual(len({x["topic"] for x in report["questions"]}),7)
         self.assertEqual(report["private_source_sha256"],M.UBOOT_SHA)
         self.assertFalse(report["vendor_code_executed"])
