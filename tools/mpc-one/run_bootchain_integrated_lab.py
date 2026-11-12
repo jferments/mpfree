@@ -1041,6 +1041,48 @@ class Lab:
                 "success": False,
                 "error": "Guest boot layout files unavailable",
             }
+        # Independent 3.10 userspace security utility static pass.
+        # These are small vendor binaries, so analyze their pre-existing
+        # SHA-verified ARM disassembly only; NEVER run their entrypoints.
+        try:
+            security_module = load_module(
+                "tools/mpc-one/synthesize_310_security_utilities.py",
+                "mpfree_310_security_static",
+            )
+            source_compare = json.loads((
+                self.out / "static" / "wide" /
+                "firmware-3.10-bootchain-v4-compare.json"
+            ).read_text())
+            security_report = security_module.inspect_310(source_compare)
+            (self.out / "security-310-utilities.json").write_text(
+                json.dumps(security_report, indent=2) + "\n")
+            (self.out / "security-310-utilities.md").write_text(
+                security_module.markdown(security_report))
+            signature = security_report["bootloader_sig"]
+            loadpin = security_report["loadpin_trustpoints"]
+            code_evidence = (
+                signature["rc4_observed_length_512"]
+                and signature["memcmp_observed_length_32"]
+                and bool(signature["sha256_function_calls"]["SHA256_Update@plt"])
+                and loadpin["ioctl_request"] == "0x40044c00"
+            )
+            record["security_310_utilities"] = {
+                "report": "security-310-utilities.json",
+                "code_evidence_verified": bool(code_evidence),
+                "actual_kernel_enforcement_proven": False,
+            }
+            self.stages["security-310-utilities-static"] = {
+                "success": bool(code_evidence),
+                "rc4_512_sha256_digest_comparison": (
+                    signature["rc4_observed_length_512"]
+                    and signature["memcmp_observed_length_32"]),
+                "loadpin_verity_ioctl": loadpin["ioctl_request"],
+            }
+        except Exception as exc:
+            record["security_310_utilities_error"] = str(exc)
+            self.stages["security-310-utilities-static"] = {
+                "success":False,"error":str(exc)}
+            self.notes.append("Security 3.10 utility static audit: "+str(exc))
         (self.out / "cross-evidence.json").write_text(json.dumps(record, indent=2) + "\n")
         summary = [
             "# MPFree integrated bootchain run",
@@ -1128,6 +1170,14 @@ class Lab:
             summary.append("- Modules inventory includes 6.18.44: " +
                            str(compat["observed_modules_kernel_6_18_44"]))
             summary.append("- Vendor P6 inspected only; no independent MPFree image tested.")
+        summary += ["", "## 3.10 LoadPin / bootloader digest static evidence"]
+        security = record.get("security_310_utilities")
+        if security:
+            summary.append("- Static ARM evidence for RC4/SHA256 and LoadPin ioctl: " +
+                           str(security["code_evidence_verified"]))
+            summary.append("- Linux LoadPin ioctl 0x40044c00 sets trusted dm-verity digests.")
+            summary.append("- Kernel enforcement and vendor tool invocation were NOT tested.")
+            summary.append("- See security-310-utilities.json and .md for details.")
         summary += ["", "## Guest/static image consistency"]
         if record["match_tests"]:
             for entry in record["match_tests"]:
