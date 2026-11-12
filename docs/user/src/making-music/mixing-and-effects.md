@@ -14,7 +14,7 @@ Press **TRACK MIX**, or tap the small mixer icon at the top right of the screen.
 
 {{shot: mixer | The mixer, shown here with example tracks from the preview: inserts at the top of each strip, sends A to D, pan, the fader and meter, mute and solo, and where the strip goes. The master is on the right, ending in Master safety.}}
 
-Along the top are the mixer's four views:
+Along the top are the mixer's five views:
 
 | View | Shows |
 |---|---|
@@ -22,6 +22,7 @@ Along the top are the mixer's four views:
 | **Pads** | A strip for each of the kit's 16 pads, so you can set the kick's level or put an effect on just the snare. |
 | **Inputs** | The line input. |
 | **Submixes** | Eight submixes for grouping, then the four send returns A to D. |
+| **I/O** | Where everything goes, as a list: see [The I/O view](#the-io-view). |
 
 The **< >** buttons page through the strips when there are more than fit. The chip beside them shows how much of the MPC's processor the mixer and its effects are using.
 
@@ -37,6 +38,17 @@ From top to bottom, each strip has:
 - **The output**: where the strip goes. A pad goes to its track; a track to the master or a submix; a submix to the master or a higher-numbered submix.
 
 Drag a fader, pan or send with your finger, and tap M, S or the output to change them.
+
+## The I/O view
+
+**I/O** shows the project's routing in one place instead of strip by strip. The master stays on the right; down the left is a list of sections, and the section you pick fills the rest.
+
+- **Audio** has a row for every strip that has an output: the inputs, the tracks, the pad channels and the submixes, each with where it goes. An input's row also has its **Source** and **Monitor**.
+- Tap a row to select that strip (the Q-Links follow it). Tap its output to open the same picker as on the strip. Tap an input's Source or Monitor to step through the choices.
+- Turn the **data wheel** to move the selection up and down the list, and press **-** or **+** to step the selected row's output.
+- An output of **None (silent)** shows in amber, so a strip that goes nowhere is easy to spot.
+
+MIDI, Sync and CV will join the list as their own sections.
 
 ## Using the Q-Links in the mixer
 

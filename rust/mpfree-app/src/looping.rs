@@ -39,6 +39,7 @@ use mpfree_looper::{
 };
 use mpfree_transport::Block;
 use mpfree_ui::wave::{Peaks, WaveColumn};
+use std::ops::Range;
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::Arc;
 
@@ -52,9 +53,23 @@ pub const CAPTURE_BUFFER: u32 = 2 * PERIOD as u32;
 const MAX_ERRORS: u32 = 3;
 /// Columns of the loop's waveform.
 pub const WAVE_COLUMNS: usize = 600;
-/// Loop frames turned into waveform columns per period (about 1 % of a
-/// period's time on the MPC; a 4 s loop takes about 0.1 s).
-const WAVE_FRAMES_PER_PERIOD: usize = 8192;
+/// Layer-frames of the loop turned into waveform columns per period,
+/// whatever the loop's length or layers: a small fixed share of the
+/// period (about 6 µs on the build workstation, so roughly 1 to 2 % of a
+/// period on the MPC), so the wave never makes the sound late. A two-bar
+/// loop at 120 BPM takes a quarter of a second. All the loops' layers
+/// together hold at most `LoopHost::new`'s seconds, so the longest wave
+/// (the app's 60 s) takes under 4 s.
+const WAVE_BUDGET: usize = 2048;
+/// The fewest and most frames of each layer read in a period (16 layers
+/// of the fewest are the budget).
+const WAVE_MIN: usize = WAVE_BUDGET / MAX_LAYERS;
+const WAVE_SLICE: usize = WAVE_BUDGET;
+/// Periods between the live waveform's updates while the first pass
+/// records (about 35 ms).
+const LIVE_EVERY: u64 = 12;
+/// Waves the audio thread makes again in place (see `WavePool`).
+const WAVES: usize = 4;
 
 /// Where the looper records from.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -324,9 +339,22 @@ impl LineIn {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct LoopWave {
     pub frames: u64,
+    /// While the first pass records: how many of its frames the columns
+    /// hold so far, from the start (`frames` is then the length it is
+    /// drawn against). None once the loop is whole.
+    pub recorded: Option<u64>,
     pub columns: Vec<[WaveColumn; 2]>,
     /// `layers[k][col]`: layer k's peak in that column, 0 to 1.
     pub layers: Vec<Vec<f32>>,
+}
+
+impl LoopWave {
+    /// While the first pass records: how far it has got along the wave,
+    /// 0 to 1, for the playhead.
+    pub fn live(&self) -> Option<f32> {
+        let r = self.recorded?;
+        (self.frames > 0).then(|| (r as f32 / self.frames as f32).min(1.0))
+    }
 }
 
 impl Peaks for LoopWave {
@@ -362,17 +390,179 @@ impl Peaks for LoopWave {
     }
 }
 
-/// Builds a [`LoopWave`] a slice at a time.
+/// One column of one channel as it fills: min, max, sum of squares and
+/// frames.
+type Acc = (f32, f32, f32, u32);
+
+const NO_ACC: Acc = (f32::MAX, f32::MIN, 0.0, 0);
+
+fn acc_merge(a: Acc, b: Acc) -> Acc {
+    (a.0.min(b.0), a.1.max(b.1), a.2 + b.2, a.3 + b.3)
+}
+
+fn column(a: Acc) -> WaveColumn {
+    if a.3 == 0 {
+        WaveColumn::default()
+    } else {
+        WaveColumn {
+            min: a.0,
+            max: a.1,
+            rms: (a.2 / a.3 as f32).sqrt(),
+        }
+    }
+}
+
+/// The columns frames `from..from + n` of a wave of `len` frames fall in
+/// (column `c` starts at frame `ceil(c * len / WAVE_COLUMNS)`), each with
+/// its frames, counted from `from`.
+fn runs(from: usize, n: usize, len: usize) -> impl Iterator<Item = (usize, Range<usize>)> {
+    let (start, end, len) = (from as u64, (from + n) as u64, len.max(1) as u64);
+    let cols = WAVE_COLUMNS as u64;
+    let mut f = start;
+    std::iter::from_fn(move || {
+        if f >= end {
+            return None;
+        }
+        let col = (f * cols / len).min(cols - 1);
+        let stop = if col + 1 < cols {
+            ((col + 1) * len).div_ceil(cols).min(end)
+        } else {
+            end
+        };
+        let r = (f - start) as usize..(stop - start) as usize;
+        f = stop;
+        Some((col as usize, r))
+    })
+}
+
+// The two below keep four lanes (two frames' left and right) apart, so
+// that each step does not wait for the one before: about four times
+// quicker than one running min, max and sum.
+
+/// The peak (either side) of `x`, from `p`.
+fn peak_of(p: f32, x: &[[f32; 2]]) -> f32 {
+    let mut m = [0.0f32; 4];
+    let pairs = x.chunks_exact(2);
+    for v in pairs.remainder() {
+        for (m, v) in m.iter_mut().zip(v) {
+            *m = if v.abs() > *m { v.abs() } else { *m };
+        }
+    }
+    for p in pairs {
+        let v = [p[0][0], p[0][1], p[1][0], p[1][1]];
+        for (m, v) in m.iter_mut().zip(v) {
+            *m = if v.abs() > *m { v.abs() } else { *m };
+        }
+    }
+    m.iter().fold(p, |a, &b| a.max(b))
+}
+
+/// `a` (left, right) with the frames `x` added.
+fn acc_run(a: [Acc; 2], x: &[[f32; 2]]) -> [Acc; 2] {
+    let mut lo = [f32::MAX; 4];
+    let mut hi = [f32::MIN; 4];
+    let mut sq = [0.0f32; 4];
+    let pairs = x.chunks_exact(2);
+    for v in pairs.remainder() {
+        for i in 0..2 {
+            lo[i] = if v[i] < lo[i] { v[i] } else { lo[i] };
+            hi[i] = if v[i] > hi[i] { v[i] } else { hi[i] };
+            sq[i] += v[i] * v[i];
+        }
+    }
+    for p in pairs {
+        let v = [p[0][0], p[0][1], p[1][0], p[1][1]];
+        for i in 0..4 {
+            lo[i] = if v[i] < lo[i] { v[i] } else { lo[i] };
+            hi[i] = if v[i] > hi[i] { v[i] } else { hi[i] };
+            sq[i] += v[i] * v[i];
+        }
+    }
+    let ch = |c: usize| {
+        let a = a[c];
+        (
+            a.0.min(lo[c]).min(lo[c + 2]),
+            a.1.max(hi[c]).max(hi[c + 2]),
+            a.2 + sq[c] + sq[c + 2],
+            a.3 + x.len() as u32,
+        )
+    };
+    [ch(0), ch(1)]
+}
+
+/// The waves sent to the screen, each made again in place once the screen
+/// has let go of it, so that the audio thread never allocates one.
+struct WavePool {
+    waves: Vec<Arc<LoopWave>>,
+    /// Layer rows no wave is using.
+    spare: Vec<Vec<f32>>,
+    /// Times the screen still held every wave, so the next one waited a
+    /// period (should stay 0: the screen keeps one, and one or two may be
+    /// on their way).
+    waits: u64,
+}
+
+impl WavePool {
+    fn new() -> WavePool {
+        let wave = || {
+            Arc::new(LoopWave {
+                frames: 0,
+                recorded: None,
+                columns: vec![[WaveColumn::default(); 2]; WAVE_COLUMNS],
+                layers: Vec::with_capacity(MAX_LAYERS),
+            })
+        };
+        WavePool {
+            waves: (0..WAVES).map(|_| wave()).collect(),
+            spare: (0..WAVES * MAX_LAYERS)
+                .map(|_| vec![0.0; WAVE_COLUMNS])
+                .collect(),
+            waits: 0,
+        }
+    }
+
+    /// A wave with `layers` layer rows, as `fill` makes it; None (counted)
+    /// while the screen holds every wave.
+    fn make(&mut self, layers: usize, fill: impl FnOnce(&mut LoopWave)) -> Option<Arc<LoopWave>> {
+        let Some(i) = self
+            .waves
+            .iter_mut()
+            .position(|w| Arc::get_mut(w).is_some())
+        else {
+            self.waits += 1;
+            return None;
+        };
+        let w = Arc::get_mut(&mut self.waves[i]).expect("only the pool holds it");
+        let layers = layers.min(MAX_LAYERS);
+        while w.layers.len() > layers {
+            self.spare.extend(w.layers.pop());
+        }
+        while w.layers.len() < layers {
+            match self.spare.pop() {
+                Some(row) => w.layers.push(row),
+                None => break,
+            }
+        }
+        fill(w);
+        Some(Arc::clone(&self.waves[i]))
+    }
+}
+
+/// Builds the loop's [`LoopWave`] a slice at a time: [`WAVE_BUDGET`]
+/// layer-frames a period, each layer read a block at a time.
 struct WaveBuilder {
     /// What the wave is of: the loop's length, layers and phase, and which
     /// loop.
     of: (usize, usize, Phase, usize),
     at: usize,
     frames: usize,
-    acc: Vec<[(f32, f32, f32, u32); 2]>,
-    /// Each layer's peak per column (made at the start, so the audio
-    /// thread never allocates for it).
+    layers: usize,
+    acc: Vec<[Acc; 2]>,
+    /// Each layer's peak per column.
     peaks: Vec<Vec<f32>>,
+    /// One slice of one layer, and of the layers summed.
+    buf: Vec<[f32; 2]>,
+    sum: Vec<[f32; 2]>,
     building: bool,
 }
 
@@ -382,90 +572,171 @@ impl WaveBuilder {
             of: (0, 0, Phase::Empty, 0),
             at: 0,
             frames: 0,
-            acc: vec![[(0.0, 0.0, 0.0, 0); 2]; WAVE_COLUMNS],
-            peaks: vec![vec![0.0; WAVE_COLUMNS]; mpfree_looper::MAX_LAYERS],
+            layers: 0,
+            acc: vec![[NO_ACC; 2]; WAVE_COLUMNS],
+            peaks: vec![vec![0.0; WAVE_COLUMNS]; MAX_LAYERS],
+            buf: vec![[0.0; 2]; WAVE_SLICE],
+            sum: vec![[0.0; 2]; WAVE_SLICE],
             building: false,
         }
     }
 
-    fn start(&mut self, frames: usize, of: (usize, usize, Phase, usize)) {
+    fn start(&mut self, frames: usize, layers: usize, of: (usize, usize, Phase, usize)) {
         self.of = of;
         self.frames = frames;
+        self.layers = layers.min(MAX_LAYERS);
         self.at = 0;
         self.building = frames > 0;
-        for c in self.acc.iter_mut() {
-            *c = [(f32::MAX, f32::MIN, 0.0, 0); 2];
-        }
+        self.acc.fill([NO_ACC; 2]);
         for l in self.peaks.iter_mut() {
             l.fill(0.0);
         }
     }
 
-    /// One slice; the finished wave when the last slice is done.
-    fn step(&mut self, looper: &Looper, layers: usize) -> Option<LoopWave> {
+    /// One slice: true once every slice is done and the wave is ready
+    /// ([`WaveBuilder::finish`]).
+    fn step(&mut self, looper: &Looper) -> bool {
         if !self.building {
-            return None;
+            return false;
         }
         let len = self.frames;
-        let end = (self.at + WAVE_FRAMES_PER_PERIOD).min(len);
-        for k in 0..layers.min(self.peaks.len()) {
-            if let Some(l) = looper.layer(k) {
+        if self.at < len {
+            let from = self.at;
+            let n = (WAVE_BUDGET / self.layers.max(1))
+                .clamp(WAVE_MIN, WAVE_SLICE)
+                .min(len - from);
+            let sum = &mut self.sum[..n];
+            sum.fill([0.0; 2]);
+            for k in 0..self.layers {
+                let Some(l) = looper.layer(k) else { continue };
+                if l.len() < 2 * (from + n) {
+                    continue;
+                }
+                let buf = &mut self.buf[..n];
+                l.read(from, buf);
                 let peaks = &mut self.peaks[k];
-                for f in self.at..end {
-                    let p = l[2 * f].abs().max(l[2 * f + 1].abs());
-                    let col = f * WAVE_COLUMNS / len;
-                    peaks[col] = peaks[col].max(p);
+                for (c, r) in runs(from, n, len) {
+                    peaks[c] = peak_of(peaks[c], &buf[r]);
+                }
+                for (s, x) in sum.iter_mut().zip(buf.iter()) {
+                    s[0] += x[0];
+                    s[1] += x[1];
                 }
             }
-        }
-        for f in self.at..end {
-            let col = f * WAVE_COLUMNS / len;
-            for ch in 0..2 {
-                let mut v = 0.0;
-                for k in 0..layers {
-                    if let Some(l) = looper.layer(k) {
-                        v += l[2 * f + ch];
-                    }
-                }
-                let a = &mut self.acc[col][ch];
-                a.0 = a.0.min(v);
-                a.1 = a.1.max(v);
-                a.2 += v * v;
-                a.3 += 1;
+            for (c, r) in runs(from, n, len) {
+                self.acc[c] = acc_run(self.acc[c], &sum[r]);
             }
+            self.at += n;
         }
-        self.at = end;
-        if end < len {
-            return None;
-        }
+        self.at >= len
+    }
+
+    /// The finished wave, in one of `pool`'s; None while the screen holds
+    /// them all (it is ready again next period).
+    fn finish(&mut self, pool: &mut WavePool) -> Option<Arc<LoopWave>> {
+        let w = pool.make(self.layers, |w| {
+            w.frames = self.frames as u64;
+            w.recorded = None;
+            for (to, a) in w.columns.iter_mut().zip(&self.acc) {
+                *to = [column(a[0]), column(a[1])];
+            }
+            for (to, p) in w.layers.iter_mut().zip(&self.peaks) {
+                for (t, v) in to.iter_mut().zip(p) {
+                    *t = v.min(1.0);
+                }
+            }
+        })?;
         self.building = false;
-        let columns = self
-            .acc
-            .iter()
-            .map(|c| {
-                let col = |a: (f32, f32, f32, u32)| {
-                    if a.3 == 0 {
-                        WaveColumn::default()
-                    } else {
-                        WaveColumn {
-                            min: a.0,
-                            max: a.1,
-                            rms: (a.2 / a.3 as f32).sqrt(),
-                        }
-                    }
-                };
-                [col(c[0]), col(c[1])]
-            })
-            .collect();
-        let layers = self.peaks[..self.of.1.min(self.peaks.len())]
-            .iter()
-            .map(|l| l.iter().map(|p| p.min(1.0)).collect())
-            .collect();
-        Some(LoopWave {
-            frames: len as u64,
-            columns,
-            layers,
-        })
+        Some(w)
+    }
+}
+
+/// The first pass's waveform as it records, the new frames each period.
+struct LiveWave {
+    /// The loop whose first pass it is (None: not making one).
+    of: Option<usize>,
+    /// The frames the columns span: the pass's length when its bars are
+    /// set, or two bars; twice that each time the pass gets to the end.
+    scale: usize,
+    /// Frames of the pass in the columns, and as many as when last sent.
+    done: usize,
+    sent: usize,
+    acc: Vec<[Acc; 2]>,
+    peaks: Vec<f32>,
+    buf: Vec<[f32; 2]>,
+}
+
+impl LiveWave {
+    fn new() -> LiveWave {
+        LiveWave {
+            of: None,
+            scale: 0,
+            done: 0,
+            sent: 0,
+            acc: vec![[NO_ACC; 2]; WAVE_COLUMNS],
+            peaks: vec![0.0; WAVE_COLUMNS],
+            buf: vec![[0.0; 2]; WAVE_SLICE],
+        }
+    }
+
+    fn start(&mut self, n: usize, scale: usize) {
+        self.of = Some(n);
+        self.scale = scale.max(WAVE_COLUMNS);
+        self.done = 0;
+        self.sent = 0;
+        self.acc.fill([NO_ACC; 2]);
+        self.peaks.fill(0.0);
+    }
+
+    /// Twice the frames in the same columns: each pair becomes one.
+    fn widen(&mut self) {
+        let half = WAVE_COLUMNS / 2;
+        for c in 0..half {
+            let (a, b) = (self.acc[2 * c], self.acc[2 * c + 1]);
+            self.acc[c] = [acc_merge(a[0], b[0]), acc_merge(a[1], b[1])];
+            self.peaks[c] = self.peaks[2 * c].max(self.peaks[2 * c + 1]);
+        }
+        self.acc[half..].fill([NO_ACC; 2]);
+        self.peaks[half..].fill(0.0);
+        self.scale *= 2;
+    }
+
+    /// The pass's frames since the last step (a slice at most; the rest
+    /// next period), `recorded` frames of it being written.
+    fn step(&mut self, pass: &mpfree_looper::LayerView, recorded: usize) {
+        let n = recorded.saturating_sub(self.done).min(WAVE_SLICE);
+        if n == 0 || pass.len() < 2 * (self.done + n) {
+            return;
+        }
+        while self.done + n > self.scale {
+            self.widen();
+        }
+        let buf = &mut self.buf[..n];
+        pass.read(self.done, buf);
+        for (c, r) in runs(self.done, n, self.scale) {
+            let x = &buf[r];
+            self.peaks[c] = peak_of(self.peaks[c], x);
+            self.acc[c] = acc_run(self.acc[c], x);
+        }
+        self.done += n;
+    }
+
+    /// The wave so far, in one of `pool`'s.
+    fn make(&mut self, pool: &mut WavePool) -> Option<Arc<LoopWave>> {
+        let w = pool.make(1, |w| {
+            w.frames = self.scale as u64;
+            w.recorded = Some(self.done as u64);
+            for (to, a) in w.columns.iter_mut().zip(&self.acc) {
+                *to = [column(a[0]), column(a[1])];
+            }
+            if let Some(row) = w.layers.first_mut() {
+                for (t, v) in row.iter_mut().zip(&self.peaks) {
+                    *t = v.min(1.0);
+                }
+            }
+        })?;
+        self.sent = self.done;
+        Some(w)
     }
 }
 
@@ -539,9 +810,16 @@ pub struct LoopHost {
     /// (without the mixer: [`LoopHost::period`]).
     pub clipped: u64,
     wave: WaveBuilder,
+    /// The first pass's wave while it records.
+    live: LiveWave,
+    waves: WavePool,
+    /// The screen shows a wave (not the empty one).
+    wave_shown: bool,
     /// The recorded source's peaks since the last view.
     meter: [f32; 2],
+    /// The song's meter and tempo as the last period played.
     beats_per_bar: u32,
+    bpm: f64,
     rate: u32,
     printer: Printer,
     /// A save of the loops under way, and one done.
@@ -833,8 +1111,12 @@ impl LoopHost {
             last,
             clipped: 0,
             wave: WaveBuilder::new(),
+            live: LiveWave::new(),
+            waves: WavePool::new(),
+            wave_shown: false,
             meter: [0.0; 2],
             beats_per_bar: 4,
+            bpm: 120.0,
             rate,
             printer: Printer::new(rate),
             saving: None,
@@ -1328,6 +1610,7 @@ impl LoopHost {
         self.pads_r = [0.0; PERIOD];
         if let Some(span) = block.spans().first() {
             self.beats_per_bar = u32::from(span.meter.beats);
+            self.bpm = span.bpm;
         }
         self.out.fill(0.0);
         self.looper.process(block, &self.input, &mut self.out);
@@ -1388,6 +1671,11 @@ impl LoopHost {
                 if self.monitor { "on" } else { "off" }, st.refused, st.aborted, st.dropped_commands, self.clipped,
                 if s.printed { "a print plays (pitch kept at this tempo); " } else { "" },
                 self.printer.made, self.printer.stale, self.printer.failed)
+            + &if self.waves.waits > 0 {
+                format!("; {} waveforms waited a period for the screen", self.waves.waits)
+            } else {
+                String::new()
+            }
     }
 
     /// What the Looper tab shows; takes the meter's peaks.
@@ -1405,7 +1693,7 @@ impl LoopHost {
         let frames_per_beat = if s.ticks > 0 {
             s.frames as f64 * 960.0 / s.ticks as f64
         } else {
-            44_100.0 * 60.0 / bpm.max(1.0)
+            f64::from(self.rate) * 60.0 / bpm.max(1.0)
         };
         let mut layers = [None; MAX_LAYERS];
         for (k, l) in layers.iter_mut().enumerate() {
@@ -1438,21 +1726,71 @@ impl LoopHost {
 
     /// One slice of the loop's waveform; the finished wave when it is
     /// done. The wave starts again when the loop, its layers or the phase
-    /// change, and every `refresh` periods while overdubbing.
+    /// change, and every `refresh` periods while overdubbing. While the
+    /// selected loop's first pass records, its wave so far instead, every
+    /// [`LIVE_EVERY`] periods. Costs at most [`WAVE_BUDGET`] layer-frames
+    /// a period, and never allocates: the waves are made again in place
+    /// once the screen lets go of them.
     pub fn wave_step(&mut self, period: u64, refresh: u64) -> Option<Arc<LoopWave>> {
+        let sel = self.looper.selected();
         let s = self.looper.status();
-        let of = (s.frames, s.layers, s.phase, self.looper.selected());
+        if s.phase == Phase::Recording {
+            return self.live_step(sel, &s, period);
+        }
+        self.live.of = None;
+        let of = (s.frames, s.layers, s.phase, sel);
+        let changed = of != self.wave.of;
+        if s.frames == 0 {
+            if self.wave_shown {
+                // Cleared, thrown away or another loop: the empty wave
+                // (next period again if the screen holds every wave).
+                let w = self.waves.make(0, |w| {
+                    w.frames = 0;
+                    w.recorded = None;
+                })?;
+                self.wave_shown = false;
+                self.wave.start(0, 0, of);
+                return Some(w);
+            }
+            if changed {
+                self.wave.start(0, 0, of);
+            }
+            return None;
+        }
         let overdubbing =
             s.phase == Phase::Overdubbing && refresh > 0 && period.is_multiple_of(refresh);
-        if of != self.wave.of || overdubbing && !self.wave.building {
-            if s.frames == 0 {
-                let was_empty = self.wave.of.0 == 0;
-                self.wave.start(0, of);
-                return (!was_empty).then(|| Arc::new(LoopWave::default()));
-            }
-            self.wave.start(s.frames, of);
+        if changed || overdubbing && !self.wave.building {
+            self.wave.start(s.frames, s.layers, of);
         }
-        self.wave.step(&self.looper, s.layers).map(Arc::new)
+        if !self.wave.step(&self.looper) {
+            return None;
+        }
+        let w = self.wave.finish(&mut self.waves)?;
+        self.wave_shown = true;
+        Some(w)
+    }
+
+    /// The selected loop's first pass, recording: its new frames into the
+    /// live wave, and the wave so far when due.
+    fn live_step(&mut self, sel: usize, s: &Status, period: u64) -> Option<Arc<LoopWave>> {
+        if self.live.of != Some(sel) {
+            let bar = frames_at(
+                960 * i64::from(self.beats_per_bar.max(1)),
+                self.bpm.max(1.0),
+                self.rate,
+            );
+            self.live
+                .start(sel, bar * s.bars.map_or(2, |b| b.max(1) as usize));
+        }
+        if let Some(pass) = self.looper.first_pass(sel) {
+            self.live.step(&pass, s.recorded);
+        }
+        if !period.is_multiple_of(LIVE_EVERY) || self.live.done == self.live.sent {
+            return None;
+        }
+        let w = self.live.make(&mut self.waves)?;
+        self.wave_shown = true;
+        Some(w)
     }
 }
 
@@ -1546,6 +1884,7 @@ mod tests {
         let w = LoopWave {
             layers: Vec::new(),
             frames: 1000,
+            recorded: None,
             columns: (0..10)
                 .map(|i| {
                     let v = i as f32 / 10.0;
@@ -2073,5 +2412,283 @@ mod tests {
         assert_eq!(saved.loops[0].1.layers[0].level, 0.5);
         // A load into a loop that is not empty keeps what it has.
         assert!(h.load(saved).contains("loops 1 were not empty"));
+    }
+
+    // ------------------------------------------------------------ the wave
+
+    /// A host to record the pads into at 120 BPM (a bar is 88 200 frames,
+    /// 689 periods and a bit), its first pass `bars` long.
+    fn wave_rig(bars: Option<u32>) -> (LoopHost, Transport, Block) {
+        let mut h = LoopHost::new(44_100, 20);
+        let t = Transport::new(44_100, 120.0).unwrap();
+        h.command(Command::SetBars(bars));
+        h.command(Command::SetLatency(0));
+        (h, t, Block::new())
+    }
+
+    /// One period, the pads playing `input` (by song frame, from `n`).
+    fn wave_period(
+        h: &mut LoopHost,
+        t: &mut Transport,
+        b: &mut Block,
+        n: &mut u64,
+        input: fn(u64) -> (f32, f32),
+    ) {
+        assert!(t.process(PERIOD as u32, b));
+        let (mut l, mut r) = ([0.0; PERIOD], [0.0; PERIOD]);
+        for f in 0..PERIOD {
+            (l[f], r[f]) = input(*n + f as u64);
+        }
+        *n += PERIOD as u64;
+        h.take_pads(&l, &r);
+        h.period(b, &mut l, &mut r);
+        h.changes(String::new);
+    }
+
+    /// The wave of `layers`' first `upto` frames, drawn against `len`,
+    /// worked out frame by frame from indexing: the columns, and each
+    /// layer's peaks.
+    fn wave_by_frame(
+        layers: &[mpfree_looper::LayerView],
+        len: usize,
+        upto: usize,
+    ) -> (Vec<[WaveColumn; 2]>, Vec<Vec<f32>>) {
+        let mut acc = vec![[NO_ACC; 2]; WAVE_COLUMNS];
+        let mut peaks = vec![vec![0.0f32; WAVE_COLUMNS]; layers.len()];
+        for f in 0..upto {
+            let c = f * WAVE_COLUMNS / len;
+            for ch in 0..2 {
+                let mut v = 0.0;
+                for (k, l) in layers.iter().enumerate() {
+                    let x = l[2 * f + ch];
+                    v += x;
+                    peaks[k][c] = peaks[k][c].max(x.abs());
+                }
+                acc[c][ch] = acc_merge(acc[c][ch], (v, v, v * v, 1));
+            }
+        }
+        let columns = acc.iter().map(|a| [column(a[0]), column(a[1])]).collect();
+        (columns, peaks)
+    }
+
+    /// `w`'s first `cols` columns are `want`'s.
+    fn same_columns(w: &LoopWave, want: &(Vec<[WaveColumn; 2]>, Vec<Vec<f32>>), cols: usize) {
+        assert_eq!(w.layers.len(), want.1.len());
+        for c in 0..cols {
+            for ch in 0..2 {
+                let (a, b) = (w.columns[c][ch], want.0[c][ch]);
+                assert_eq!((a.min, a.max), (b.min, b.max), "column {c}, channel {ch}");
+                assert!(
+                    (a.rms - b.rms).abs() <= 1e-4,
+                    "column {c}: rms {} vs {}",
+                    a.rms,
+                    b.rms
+                );
+            }
+            for (k, p) in want.1.iter().enumerate() {
+                assert_eq!(w.layers[k][c], p[c].min(1.0), "layer {k}, column {c}");
+            }
+        }
+    }
+
+    /// The loop's wave is built a small slice a period (the budget's
+    /// frames shared by the layers), and is what the layers hold, frame
+    /// for frame.
+    #[test]
+    fn the_wave_takes_a_small_slice_a_period_and_is_the_layers() {
+        let (mut h, mut t, mut b) = wave_rig(Some(1));
+        h.command(Command::Record);
+        t.command(0, T::Play);
+        let mut n = 0;
+        while h.looper.status().phase != Phase::Playing {
+            wave_period(&mut h, &mut t, &mut b, &mut n, pads_at);
+        }
+        h.command(Command::Overdub);
+        for _ in 0..700 {
+            wave_period(&mut h, &mut t, &mut b, &mut n, |f| {
+                (0.3 * ((f % 313) as f32 / 313.0), 0.2)
+            });
+        }
+        h.command(Command::Overdub);
+        while h.looper.status().phase != Phase::Playing {
+            wave_period(&mut h, &mut t, &mut b, &mut n, |_| (0.0, 0.0));
+        }
+        let s = h.looper.status();
+        assert_eq!((s.frames, s.layers), (88_200, 2));
+        let mut calls = 0;
+        let w = loop {
+            wave_period(&mut h, &mut t, &mut b, &mut n, |_| (0.0, 0.0));
+            calls += 1;
+            if let Some(w) = h.wave_step(calls, 0) {
+                break w;
+            }
+        };
+        // 1 024 frames of each layer a period.
+        assert_eq!(calls, 88_200usize.div_ceil(WAVE_BUDGET / 2) as u64);
+        assert_eq!(
+            (w.frames, w.recorded, w.columns.len()),
+            (88_200, None, WAVE_COLUMNS)
+        );
+        let layers = [h.looper.layer(0).unwrap(), h.looper.layer(1).unwrap()];
+        same_columns(&w, &wave_by_frame(&layers, 88_200, 88_200), WAVE_COLUMNS);
+        // Nothing changes: no new wave.
+        for p in 0..200 {
+            wave_period(&mut h, &mut t, &mut b, &mut n, |_| (0.0, 0.0));
+            assert!(h.wave_step(p, 0).is_none());
+        }
+    }
+
+    /// While the first pass records, its wave grows with it every few
+    /// periods, drawn against the pass's length, and the whole loop's
+    /// wave follows once it ends.
+    #[test]
+    fn the_first_pass_shows_as_it_records() {
+        let (mut h, mut t, mut b) = wave_rig(Some(2));
+        h.command(Command::Record);
+        t.command(0, T::Play);
+        let mut n = 0;
+        // When each live wave came, and how far it had got (the screen
+        // keeps only the last wave).
+        let mut live: Vec<(u64, u64)> = Vec::new();
+        let mut whole = None;
+        let mut checked = false;
+        for p in 0..1_600u64 {
+            wave_period(&mut h, &mut t, &mut b, &mut n, pads_at);
+            let Some(w) = h.wave_step(p, 0) else { continue };
+            let s = h.looper.status();
+            let Some(r) = w.recorded else {
+                whole = Some(w);
+                continue;
+            };
+            assert_eq!(s.phase, Phase::Recording);
+            assert!(r as usize <= s.recorded, "{r} of {}", s.recorded);
+            assert_eq!(w.frames, 2 * 88_200, "drawn against the 2 bars");
+            assert_eq!(w.live(), Some(r as f32 / w.frames as f32));
+            if !checked && r > 88_200 {
+                // The columns it has filled are the pass so far.
+                let pass = h.looper.first_pass(0).unwrap();
+                let want = wave_by_frame(&[pass], 2 * 88_200, r as usize);
+                same_columns(&w, &want, r as usize * WAVE_COLUMNS / (2 * 88_200));
+                checked = true;
+            }
+            live.push((p, r));
+        }
+        assert!(checked);
+        assert!(live.len() > 100, "{} live waves", live.len());
+        for pair in live.windows(2) {
+            assert_eq!(pair[1].0 - pair[0].0, LIVE_EVERY);
+            assert!(pair[1].1 > pair[0].1);
+        }
+        let w = whole.expect("the whole loop's wave");
+        assert_eq!(
+            (w.frames, w.recorded, w.layers.len()),
+            (2 * 88_200, None, 1)
+        );
+        assert_eq!(h.waves.waits, 0);
+    }
+
+    /// A free-length first pass is drawn against two bars, then four once
+    /// it gets past two, and so on: the columns it had are kept, in pairs.
+    #[test]
+    fn a_free_length_pass_widens_its_wave() {
+        let (mut h, mut t, mut b) = wave_rig(None);
+        h.command(Command::Record);
+        t.command(0, T::Play);
+        let mut n = 0;
+        let mut last = None;
+        for p in 0..(3 * 690) {
+            wave_period(&mut h, &mut t, &mut b, &mut n, pads_at);
+            if let Some(w) = h.wave_step(p, 0) {
+                if p < 2 * 680 {
+                    assert_eq!(w.frames, 2 * 88_200, "period {p}");
+                }
+                last = Some(w);
+            }
+        }
+        assert_eq!(h.looper.status().phase, Phase::Recording);
+        let w = last.unwrap();
+        assert_eq!(w.frames, 4 * 88_200);
+        let r = w.recorded.unwrap() as usize;
+        assert!(r > 2 * 88_200);
+        let pass = h.looper.first_pass(0).unwrap();
+        let want = wave_by_frame(&[pass], 4 * 88_200, r);
+        same_columns(&w, &want, r * WAVE_COLUMNS / (4 * 88_200));
+    }
+
+    /// The wave goes when the loop does: cleared, or its first pass
+    /// thrown away (stopped before the end) while its wave was shown.
+    #[test]
+    fn the_wave_empties_when_the_loop_does() {
+        for clear in [true, false] {
+            let (mut h, mut t, mut b) = wave_rig(Some(1));
+            h.command(Command::Record);
+            t.command(0, T::Play);
+            let mut n = 0;
+            let until = if clear { 1_000 } else { 300 };
+            let mut shown = None;
+            for p in 0..until {
+                wave_period(&mut h, &mut t, &mut b, &mut n, pads_at);
+                if let Some(w) = h.wave_step(p, 0) {
+                    shown = Some(w);
+                }
+            }
+            assert!(shown.is_some_and(|w| w.frames > 0));
+            if clear {
+                h.command(Command::Clear);
+            } else {
+                assert!(t.command(n, T::Stop));
+            }
+            let mut empty = None;
+            for p in until..until + 400 {
+                wave_period(&mut h, &mut t, &mut b, &mut n, |_| (0.0, 0.0));
+                if let Some(w) = h.wave_step(p, 0) {
+                    assert!(empty.is_none(), "one empty wave");
+                    empty = Some(w);
+                }
+            }
+            assert_eq!(h.looper.status().phase, Phase::Empty);
+            let w = empty.expect("the empty wave");
+            assert_eq!(w.frames, 0, "clear {clear}");
+        }
+    }
+
+    /// Making waves never allocates on the audio thread, while the first
+    /// pass records, overdubs refresh it and a clear empties it: the
+    /// waves are made again in place once the screen lets go of them.
+    #[test]
+    fn making_waves_never_allocates() {
+        let (mut h, mut t, mut b) = wave_rig(Some(1));
+        h.command(Command::Record);
+        t.command(0, T::Play);
+        let mut n = 0;
+        let mut shown: Option<Arc<LoopWave>> = None;
+        let (mut calls, mut waves, mut live) = (0, 0, 0);
+        for p in 0..2_400u64 {
+            match p {
+                900 | 1_700 => {
+                    h.command(Command::Overdub);
+                }
+                2_300 => {
+                    h.command(Command::Clear);
+                }
+                _ => {}
+            }
+            wave_period(&mut h, &mut t, &mut b, &mut n, pads_at);
+            let ((), c) = crate::sys::alloc_count::calls(|| {
+                if let Some(w) = h.wave_step(p, 64) {
+                    waves += 1;
+                    live += usize::from(w.recorded.is_some());
+                    shown = Some(w);
+                }
+            });
+            calls += c;
+        }
+        assert!(
+            live > 40 && waves > live + 5,
+            "{live} live of {waves} waves"
+        );
+        assert_eq!(shown.map(|w| w.frames), Some(0), "cleared");
+        assert_eq!(calls, 0, "allocations or frees making waves");
+        assert_eq!(h.waves.waits, 0);
     }
 }

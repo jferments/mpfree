@@ -1369,6 +1369,54 @@ mod tests {
             .collect()
     }
 
+    /// STOP while stopped (the transport's panic) silences everything,
+    /// every track's arp included, and costs only what sounds. In the
+    /// 12 Nov live test each such STOP lost 512 notes in the time engine
+    /// and 1 025 in the arps, when each of the 16 arps ended all 128 notes.
+    #[test]
+    fn a_panic_through_the_arps_loses_nothing() {
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut pads = Fake::default();
+        let mut arps = arp_up(0);
+        let period = |h: &mut TimeHost, pads: &mut Fake, arps: &mut TrackArps| {
+            h.period_arps(PERIOD, pads, arps);
+            pads.frame += u64::from(PERIOD);
+        };
+        assert!(h.command(Command::Play));
+        for note in [4, 7] {
+            arps.pad(
+                0,
+                0,
+                Event::NoteOn {
+                    note,
+                    velocity: 100,
+                },
+            );
+        }
+        for _ in 0..200 {
+            period(&mut h, &mut pads, &mut arps);
+        }
+        assert!(!pads.hits.is_empty(), "the arp plays");
+        assert!(h.command(Command::Stop));
+        for _ in 0..20 {
+            period(&mut h, &mut pads, &mut arps);
+        }
+        assert_eq!(pads.stops, 0, "the first STOP lets sounds ring");
+        assert!(h.command(Command::Stop));
+        for _ in 0..20 {
+            period(&mut h, &mut pads, &mut arps);
+        }
+        assert_eq!(pads.stops, 1, "the second silences everything");
+        assert_eq!((h.dropped(), arps.dropped()), (0, 0));
+        assert!(arps.engine_at(0).idle() && arps.engine_at(0).sounding() == 0);
+        // Again and again, as on the MPC: still nothing lost.
+        for _ in 0..5 {
+            assert!(h.command(Command::Stop));
+            period(&mut h, &mut pads, &mut arps);
+        }
+        assert_eq!((pads.stops, h.dropped(), arps.dropped()), (6, 0, 0));
+    }
+
     /// The live pads through a track's arp, while the transport plays: the
     /// arp steps on the transport's sixteenths (period_arps hands every arp
     /// the clock), its notes reach the pads as live playing, and the armed
