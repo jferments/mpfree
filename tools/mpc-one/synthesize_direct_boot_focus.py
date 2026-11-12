@@ -183,7 +183,8 @@ def build(read):
         for x in observed_usb
     )
     checks["ff617a_is_not_proven_rockusb"] = (
-        str(d["framing"].get("protocol_family","")).lower().startswith("unknown")
+        str(d["framing"].get("protocol_family","")).lower().startswith(
+            ("unknown","unidentified"))
         and any(x.get("usb_descriptor",{}).get("subclass") == "0x61"
                 and "Unknown" in x.get("upstream_protocol_family","")
                 for x in observed_usb)
