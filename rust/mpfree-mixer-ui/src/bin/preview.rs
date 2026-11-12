@@ -1,5 +1,5 @@
 //! mpfree-mixer-preview: WORKSTATION ONLY. Draws the mixer's sample
-//! screens (Track Mix, Pad Mix, Inputs, Submixes and returns, a solo, the
+//! screens (Track Mix, Pad Mix, Inputs, Submixes and returns, the I/O view, a solo, the
 //! second page, the output picker) as PNG files, with a real mixer playing
 //! a song's routing behind each one, so the screens can be looked at
 //! before they go on the MPC. Opens no device.

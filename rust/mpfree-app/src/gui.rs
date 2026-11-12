@@ -8938,9 +8938,10 @@ mod tests {
     }
 
     /// The GPU seam (mpfree_ui::record): every sample screen recorded as a
-    /// display list and played back is the same picture, bit for bit, as
-    /// drawn straight; and what each list would send to a renderer in
-    /// another process (`--nocapture` prints the table).
+    /// display list, sent through the wire format (as `--display-lists`
+    /// writes it and a renderer in another process reads it) and played
+    /// back is the same picture, bit for bit, as drawn straight; and what
+    /// each list sends (`--nocapture` prints the table).
     #[test]
     fn every_sample_screen_plays_back_the_same_from_its_display_list() {
         std::thread::Builder::new()
@@ -8956,11 +8957,23 @@ mod tests {
                     let mut straight = SoftCanvas::new(SCREEN.0, SCREEN.1);
                     a.ui.paint(&mut straight);
                     let mut rec = mpfree_ui::record::Recorder::new(SCREEN.0, SCREEN.1);
+                    let mut copy = mpfree_ui::record::Store::new(usize::MAX);
+                    let mut wire = Vec::new();
+                    // Sent as bytes, read back, and played from the copy.
+                    let mut send = |rec: &mut mpfree_ui::record::Recorder,
+                                    played: &mut SoftCanvas| {
+                        wire.clear();
+                        rec.encode_frame(&mut wire);
+                        let (frame, _) = mpfree_ui::record::Frame::decode(&wire).unwrap();
+                        assert_eq!(frame.ops, rec.ops());
+                        copy.apply(&frame);
+                        mpfree_ui::record::replay(&frame.ops, &copy, played);
+                    };
                     rec.begin_frame();
                     b.ui.paint(&mut rec);
                     let first = rec.stats();
                     let mut played = SoftCanvas::new(SCREEN.0, SCREEN.1);
-                    rec.replay(&mut played);
+                    send(&mut rec, &mut played);
                     assert!(
                         straight.px == played.px,
                         "{name}: the played-back picture differs"
@@ -8972,7 +8985,7 @@ mod tests {
                     rec.begin_frame();
                     b.ui.paint(&mut rec);
                     let next = rec.stats();
-                    rec.replay(&mut played);
+                    send(&mut rec, &mut played);
                     assert!(straight.px == played.px, "{name}: the next frame differs");
                     sent += first.sent_bytes();
                     eprintln!(

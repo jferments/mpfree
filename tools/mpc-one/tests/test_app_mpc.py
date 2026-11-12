@@ -919,6 +919,9 @@ class StaticTests(unittest.TestCase):
             # the host-only preview pictures (never on the MPC)
             "OpenOptions::new().write(true).create_new(true).open(path).and_then(|mut f| f.write_all(&png))"
             ".map_err(|e| format!(\"{}: {e}\", path.display()))?;",
+            # the host-only display lists for the GPU benchmark (--display-lists, never on the MPC)
+            "OpenOptions::new().write(true).create_new(true).open(&path).and_then(|mut f| f.write_all(&bytes))"
+            ".map_err(|e| format!(\"{}: {e}\", path.display()))?;",
             # the ACVA playback device
             "let file = OpenOptions::new().read(true).write(true).custom_flags(sys::O_NONBLOCK).open(path)?;",
             # the ACVA capture device (the line input), opened only when the owner turns Line input on

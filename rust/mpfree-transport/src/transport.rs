@@ -336,6 +336,25 @@ impl Block {
         &self.markers[..self.n_markers]
     }
 
+    /// Start a copy of another block's spans, `start_frame` and `frames`
+    /// as its own, to fill with [`Block::copy_span`]: for a host whose
+    /// bookkeeping runs a little later on another thread, from the spans
+    /// the audio thread sent it. The markers are not copied.
+    pub fn start_copy(&mut self, start_frame: u64, frames: u32) {
+        self.clear(start_frame, frames);
+    }
+
+    /// The copy's next span, as the other block has it. False if the
+    /// block is full.
+    pub fn copy_span(&mut self, s: Span) -> bool {
+        if self.n_spans == MAX_SPANS {
+            return false;
+        }
+        self.spans[self.n_spans] = s;
+        self.n_spans += 1;
+        true
+    }
+
     fn clear(&mut self, start: u64, frames: u32) {
         self.start_frame = start;
         self.frames = frames;
@@ -1189,5 +1208,29 @@ mod tests {
         let b = run(&mut t, 128);
         assert_eq!(b.markers().len(), 4);
         assert_eq!(b.markers()[0].frame, 384);
+    }
+
+    /// A block rebuilt from another's spans, as a host on another thread
+    /// rebuilds it, has the same spans; a full one refuses more.
+    #[test]
+    fn a_block_copied_span_by_span_has_the_same_spans() {
+        let mut t = Transport::new(44_100, 120.0).unwrap();
+        t.command(0, Command::Play);
+        t.command(300, Command::SetTempo(140.0));
+        let b = run(&mut t, 8192);
+        assert!(b.spans().len() >= 2, "{:?}", b.spans());
+        let mut copy = Block::new();
+        copy.start_copy(b.start_frame, b.frames);
+        for s in b.spans() {
+            assert!(copy.copy_span(*s));
+        }
+        assert_eq!(copy.spans(), b.spans());
+        assert_eq!((copy.start_frame, copy.frames), (b.start_frame, b.frames));
+        assert!(copy.markers().is_empty());
+        copy.start_copy(0, 128);
+        assert!(copy.spans().is_empty());
+        let s = b.spans()[0];
+        assert!((0..MAX_SPANS).all(|_| copy.copy_span(s)));
+        assert!(!copy.copy_span(s));
     }
 }

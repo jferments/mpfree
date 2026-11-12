@@ -419,6 +419,405 @@ impl Canvas for Recorder {
     }
 }
 
+// ------------------------------------------------------------ the wire format
+
+/// The first bytes of every encoded frame.
+const WIRE_MAGIC: [u8; 4] = *b"MPDL";
+const WIRE_VERSION: u16 = 1;
+/// Header: magic, version, 2 spare bytes, w, h, the frame's length.
+const WIRE_HEADER: usize = 4 + 2 + 2 + 4 + 4 + 4;
+/// The most pixels one mask or image may have (a 4096 x 4096 picture), so
+/// junk cannot ask for gigabytes.
+const WIRE_MAX_PIXELS: usize = 4096 * 4096;
+
+/// A mask or an image as a frame carries it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Item {
+    Mask(Mask),
+    Image(Image),
+}
+
+/// One frame as a renderer in another process receives it: the store's
+/// changes since the last frame, then the list. [`Store::apply`] keeps a
+/// copy of the sender's store up to date from it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Frame {
+    /// The canvas size.
+    pub w: i32,
+    pub h: i32,
+    /// Ids the sender's store let go.
+    pub dropped: Vec<u32>,
+    /// New masks and images, with their ids.
+    pub added: Vec<(u32, Item)>,
+    pub ops: Vec<Op>,
+}
+
+impl Recorder {
+    /// Appends this frame to `out` in the wire format: the store's changes
+    /// since the last call (it calls [`Store::take_changes`]) and the list.
+    pub fn encode_frame(&mut self, out: &mut Vec<u8>) {
+        let (added, dropped) = self.store.take_changes();
+        encode_frame(
+            self.w,
+            self.h,
+            &self.ops,
+            &self.store,
+            &added,
+            &dropped,
+            out,
+        );
+    }
+}
+
+fn put_u32(out: &mut Vec<u8>, v: u32) {
+    out.extend_from_slice(&v.to_le_bytes());
+}
+
+fn put_i32(out: &mut Vec<u8>, v: i32) {
+    out.extend_from_slice(&v.to_le_bytes());
+}
+
+fn put_rect(out: &mut Vec<u8>, r: Rect) {
+    for v in [r.x, r.y, r.w, r.h] {
+        put_i32(out, v);
+    }
+}
+
+fn put_color(out: &mut Vec<u8>, c: Color) {
+    out.extend_from_slice(&[c.r, c.g, c.b, c.a]);
+}
+
+/// Appends one frame to `out`, all numbers little-endian. An id in `added`
+/// that `store` no longer holds (added and dropped since the last frame) is
+/// left out; it is in `dropped` too.
+pub fn encode_frame(
+    w: i32,
+    h: i32,
+    ops: &[Op],
+    store: &Store,
+    added: &[u32],
+    dropped: &[u32],
+    out: &mut Vec<u8>,
+) {
+    let start = out.len();
+    out.extend_from_slice(&WIRE_MAGIC);
+    out.extend_from_slice(&WIRE_VERSION.to_le_bytes());
+    out.extend_from_slice(&[0, 0]);
+    put_i32(out, w);
+    put_i32(out, h);
+    put_u32(out, 0); // the length, filled in at the end
+    put_u32(out, dropped.len() as u32);
+    for id in dropped {
+        put_u32(out, *id);
+    }
+    let items: Vec<(u32, Result<&Mask, &Image>)> = added
+        .iter()
+        .filter_map(|id| match (store.mask(*id), store.image(*id)) {
+            (Some(m), _) => Some((*id, Ok(m))),
+            (_, Some(i)) => Some((*id, Err(i))),
+            _ => None,
+        })
+        .collect();
+    put_u32(out, items.len() as u32);
+    for (id, item) in items {
+        put_u32(out, id);
+        match item {
+            Ok(m) => {
+                out.push(0);
+                put_u32(out, m.w as u32);
+                put_u32(out, m.h as u32);
+                out.extend_from_slice(&m.data);
+            }
+            Err(img) => {
+                out.push(1);
+                put_u32(out, img.w as u32);
+                put_u32(out, img.h as u32);
+                for p in &img.px {
+                    put_u32(out, *p);
+                }
+            }
+        }
+    }
+    put_u32(out, ops.len() as u32);
+    for op in ops {
+        match *op {
+            Op::Clip(r) => {
+                out.push(0);
+                put_rect(out, r);
+            }
+            Op::Fill(r, c) => {
+                out.push(1);
+                put_rect(out, r);
+                put_color(out, c);
+            }
+            Op::FillRound { r, radius, c } => {
+                out.push(2);
+                put_rect(out, r);
+                put_i32(out, radius);
+                put_color(out, c);
+            }
+            Op::StrokeRound {
+                r,
+                radius,
+                width,
+                c,
+            } => {
+                out.push(3);
+                put_rect(out, r);
+                put_i32(out, radius);
+                put_i32(out, width);
+                put_color(out, c);
+            }
+            Op::Mask { x, y, id, c } => {
+                out.push(4);
+                put_i32(out, x);
+                put_i32(out, y);
+                put_u32(out, id);
+                put_color(out, c);
+            }
+            Op::Image { x, y, id } => {
+                out.push(5);
+                put_i32(out, x);
+                put_i32(out, y);
+                put_u32(out, id);
+            }
+        }
+    }
+    let len = (out.len() - start) as u32;
+    out[start + 16..start + 20].copy_from_slice(&len.to_le_bytes());
+}
+
+/// Reads the wire format, refusing (never panicking on) anything short,
+/// oversized or unknown.
+struct Reader<'a> {
+    b: &'a [u8],
+    at: usize,
+}
+
+impl<'a> Reader<'a> {
+    fn take(&mut self, n: usize) -> Result<&'a [u8], String> {
+        let end = self
+            .at
+            .checked_add(n)
+            .filter(|e| *e <= self.b.len())
+            .ok_or_else(|| format!("the frame ends early, at byte {}", self.at))?;
+        let s = &self.b[self.at..end];
+        self.at = end;
+        Ok(s)
+    }
+
+    fn u8(&mut self) -> Result<u8, String> {
+        Ok(self.take(1)?[0])
+    }
+
+    fn u32(&mut self) -> Result<u32, String> {
+        let s = self.take(4)?;
+        Ok(u32::from_le_bytes([s[0], s[1], s[2], s[3]]))
+    }
+
+    fn i32(&mut self) -> Result<i32, String> {
+        Ok(self.u32()? as i32)
+    }
+
+    fn rect(&mut self) -> Result<Rect, String> {
+        Ok(Rect::new(
+            self.i32()?,
+            self.i32()?,
+            self.i32()?,
+            self.i32()?,
+        ))
+    }
+
+    fn color(&mut self) -> Result<Color, String> {
+        let s = self.take(4)?;
+        Ok(Color {
+            r: s[0],
+            g: s[1],
+            b: s[2],
+            a: s[3],
+        })
+    }
+
+    /// A count of things at least `each` bytes long, checked against what
+    /// is left so junk cannot reserve memory it does not carry.
+    fn count(&mut self, each: usize) -> Result<usize, String> {
+        let n = self.u32()? as usize;
+        if n.saturating_mul(each) > self.b.len() - self.at {
+            return Err(format!("a count of {n} is more than the frame holds"));
+        }
+        Ok(n)
+    }
+
+    fn size(&mut self) -> Result<(usize, usize), String> {
+        let (w, h) = (self.u32()? as usize, self.u32()? as usize);
+        if w.saturating_mul(h) > WIRE_MAX_PIXELS || w > i32::MAX as usize || h > i32::MAX as usize {
+            return Err(format!("a {w} x {h} item is too big"));
+        }
+        Ok((w, h))
+    }
+}
+
+impl Frame {
+    /// Reads one frame from the start of `bytes`, and how many bytes it
+    /// took (frames can follow each other, as in a file).
+    pub fn decode(bytes: &[u8]) -> Result<(Frame, usize), String> {
+        let mut r = Reader { b: bytes, at: 0 };
+        if r.take(4)? != WIRE_MAGIC {
+            return Err("not a display list (no MPDL at the start)".into());
+        }
+        let v = r.take(2)?;
+        let version = u16::from_le_bytes([v[0], v[1]]);
+        if version != WIRE_VERSION {
+            return Err(format!(
+                "display list version {version}; this build reads {WIRE_VERSION}"
+            ));
+        }
+        r.take(2)?;
+        let (w, h) = (r.i32()?, r.i32()?);
+        let len = r.u32()? as usize;
+        if len < WIRE_HEADER || len > bytes.len() {
+            return Err(format!(
+                "the frame says it is {len} bytes; {} are here",
+                bytes.len()
+            ));
+        }
+        // Read only this frame's bytes from here on.
+        r.b = &bytes[..len];
+        let mut f = Frame {
+            w,
+            h,
+            ..Frame::default()
+        };
+        for _ in 0..r.count(4)? {
+            f.dropped.push(r.u32()?);
+        }
+        for _ in 0..r.count(13)? {
+            let id = r.u32()?;
+            let kind = r.u8()?;
+            let (w, h) = r.size()?;
+            let item = match kind {
+                0 => Item::Mask(Mask {
+                    w,
+                    h,
+                    data: r.take(w * h)?.to_vec(),
+                }),
+                1 => {
+                    let raw = r.take(w * h * 4)?;
+                    let px = raw
+                        .as_chunks::<4>()
+                        .0
+                        .iter()
+                        .map(|p| u32::from_le_bytes(*p))
+                        .collect();
+                    Item::Image(Image {
+                        w: w as i32,
+                        h: h as i32,
+                        px,
+                    })
+                }
+                k => return Err(format!("unknown item kind {k}")),
+            };
+            f.added.push((id, item));
+        }
+        for _ in 0..r.count(13)? {
+            let op = match r.u8()? {
+                0 => Op::Clip(r.rect()?),
+                1 => Op::Fill(r.rect()?, r.color()?),
+                2 => Op::FillRound {
+                    r: r.rect()?,
+                    radius: r.i32()?,
+                    c: r.color()?,
+                },
+                3 => Op::StrokeRound {
+                    r: r.rect()?,
+                    radius: r.i32()?,
+                    width: r.i32()?,
+                    c: r.color()?,
+                },
+                4 => Op::Mask {
+                    x: r.i32()?,
+                    y: r.i32()?,
+                    id: r.u32()?,
+                    c: r.color()?,
+                },
+                5 => Op::Image {
+                    x: r.i32()?,
+                    y: r.i32()?,
+                    id: r.u32()?,
+                },
+                t => return Err(format!("unknown drawing call {t}")),
+            };
+            f.ops.push(op);
+        }
+        if r.at != len {
+            return Err(format!("{} bytes left over in the frame", len - r.at));
+        }
+        Ok((f, len))
+    }
+
+    /// The frames one after another in `bytes` (a file of them).
+    pub fn decode_all(mut bytes: &[u8]) -> Result<Vec<Frame>, String> {
+        let mut frames = Vec::new();
+        while !bytes.is_empty() {
+            let (f, n) = Frame::decode(bytes)?;
+            frames.push(f);
+            bytes = &bytes[n..];
+        }
+        Ok(frames)
+    }
+}
+
+impl Store {
+    /// Brings a copy of the sender's store up to date with a received frame:
+    /// drops what the sender dropped and keeps the new items under the
+    /// sender's ids. For the receiving side only: the copy never interns.
+    pub fn apply(&mut self, frame: &Frame) {
+        for id in &frame.dropped {
+            if let Some(e) = self.masks.remove(id) {
+                self.bytes -= e.bytes;
+            }
+            if let Some(e) = self.images.remove(id) {
+                self.bytes -= e.bytes;
+            }
+        }
+        for (id, item) in &frame.added {
+            self.next = self.next.max(id.wrapping_add(1));
+            match item {
+                Item::Mask(m) => {
+                    let bytes = m.data.len();
+                    self.bytes += bytes;
+                    if let Some(old) = self.masks.insert(
+                        *id,
+                        Entry {
+                            item: m.clone(),
+                            hash: 0,
+                            bytes,
+                            used: 0,
+                        },
+                    ) {
+                        self.bytes -= old.bytes;
+                    }
+                }
+                Item::Image(img) => {
+                    let bytes = img.px.len() * 4;
+                    self.bytes += bytes;
+                    if let Some(old) = self.images.insert(
+                        *id,
+                        Entry {
+                            item: img.clone(),
+                            hash: 0,
+                            bytes,
+                            used: 0,
+                        },
+                    ) {
+                        self.bytes -= old.bytes;
+                    }
+                }
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -512,5 +911,72 @@ mod tests {
         let mut direct = SoftCanvas::new(W, H);
         direct.blend_mask(0, 0, 20, 20, &[5; 400], Color::rgb(0x010203));
         assert_eq!(frames.last().unwrap(), &direct.px);
+    }
+
+    #[test]
+    fn sent_as_bytes_a_frame_plays_back_the_same_from_the_copy() {
+        // Frames sent one after another, as to a renderer in another
+        // process, with a store small enough to drop entries on the way.
+        let mut rec = Recorder::with_budget(W, H, 600);
+        let mut copy = Store::new(usize::MAX);
+        let mut wire = Vec::new();
+        let mut direct = SoftCanvas::new(W, H);
+        let mut played = SoftCanvas::new(W, H);
+        for k in 0..5u8 {
+            rec.begin_frame();
+            draw(&mut rec, k);
+            let mask = vec![k * 40; 300];
+            rec.blend_mask(1, 1, 20, 15, &mask, Color::rgb(0x102030));
+            draw(&mut direct, k);
+            direct.blend_mask(1, 1, 20, 15, &mask, Color::rgb(0x102030));
+            let before = wire.len();
+            rec.encode_frame(&mut wire);
+            let (frame, n) = Frame::decode(&wire[before..]).unwrap();
+            assert_eq!(n, wire.len() - before);
+            assert_eq!((frame.w, frame.h), (W, H));
+            assert_eq!(frame.ops, rec.ops());
+            copy.apply(&frame);
+            replay(&frame.ops, &copy, &mut played);
+            assert_eq!(direct.px, played.px, "frame {k}");
+        }
+        // The copy holds what the sender holds, no more.
+        assert_eq!(copy.len(), rec.store().len());
+        assert_eq!(copy.bytes(), rec.store().bytes());
+        // A file of frames reads back as the same frames.
+        let all = Frame::decode_all(&wire).unwrap();
+        assert_eq!(all.len(), 5);
+        assert!(
+            all.iter().any(|f| !f.dropped.is_empty()),
+            "something dropped"
+        );
+    }
+
+    #[test]
+    fn junk_is_refused_not_panicked_on() {
+        let mut rec = Recorder::new(W, H);
+        rec.begin_frame();
+        draw(&mut rec, 3);
+        let mut wire = Vec::new();
+        rec.encode_frame(&mut wire);
+        assert!(Frame::decode(&wire).is_ok());
+        // Every cut short, and every byte changed, either reads or says why.
+        for n in 0..wire.len() {
+            assert!(Frame::decode(&wire[..n]).is_err(), "cut at {n}");
+        }
+        for i in 0..wire.len() {
+            for flip in [0x01u8, 0x80, 0xFF] {
+                let mut bad = wire.clone();
+                bad[i] ^= flip;
+                let _ = Frame::decode(&bad);
+            }
+        }
+        // Counts and sizes far past the bytes are refused before allocating.
+        let mut big = wire[..WIRE_HEADER].to_vec();
+        big.extend_from_slice(&u32::MAX.to_le_bytes());
+        let n = big.len() as u32;
+        big[16..20].copy_from_slice(&n.to_le_bytes());
+        assert!(Frame::decode(&big).is_err());
+        assert!(Frame::decode(b"NOPE").is_err());
+        assert!(Frame::decode_all(&[]).unwrap().is_empty());
     }
 }

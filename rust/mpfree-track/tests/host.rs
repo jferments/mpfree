@@ -1,7 +1,7 @@
 //! The track host with real instruments (Poly and FM) and the real mixer.
 
 use mpfree_fx::{Mixer, MixerConfig};
-use mpfree_node::{Ctx, Kind, Node, NodeEvent, NodeInfo, ParamInfo, Timed};
+use mpfree_node::{Ctx, Kind, Node, NodeEvent, NodeInfo, ParamInfo, Timed, Tuning};
 use mpfree_play::{Event, Out, Sink, ALL};
 use mpfree_synth::{Fm, Poly};
 use mpfree_track::{
@@ -444,4 +444,81 @@ fn into_the_mixer_and_out_of_the_master() {
         peak > 0.01 && peak <= 1.0,
         "FM through track 2 to the master: {peak}"
     );
+}
+
+/// `frames` of a Poly tuned directly to `tuning`, holding `note`, in
+/// blocks of `block`: what a slot in that tuning must play.
+fn poly_in(tuning: &Tuning, note: u8, frames: usize, block: usize) -> Vec<f32> {
+    let mut p = Poly::new(RATE);
+    p.prepare(RATE, 1024);
+    p.set_tuning(tuning);
+    let mut out = Vec::new();
+    let (mut l, mut r) = (vec![0.0; block], vec![0.0; block]);
+    let mut at = 0;
+    while at < frames {
+        let on = [Timed::new(
+            0,
+            NodeEvent::NoteOn {
+                note,
+                velocity: 100,
+            },
+        )];
+        let ev: &[Timed] = if at == 0 { &on } else { &[] };
+        l.fill(0.0);
+        r.fill(0.0);
+        p.process(&ctx(at as u64), ev, &mut l, &mut r);
+        out.extend_from_slice(&l);
+        at += block;
+    }
+    out
+}
+
+#[test]
+fn a_slots_tuning_reaches_its_instrument_and_the_next_one_swapped_in() {
+    let quarter = Tuning::equal(24, 440.0);
+    let mut host = TrackHost::new(2, RATE, 1024);
+    // Tuned while empty: the instrument swapped in takes the slot's tuning.
+    host.set_tuning(0, &quarter);
+    host.set_tuning(9, &quarter); // no such slot: nothing happens
+    assert!(host.tuning(0) == Some(&quarter));
+    assert!(host.tuning(1).is_some_and(Tuning::is_standard));
+    assert!(host.tuning(9).is_none());
+    host.swap(0, Some(poly())).unwrap();
+    host.swap(1, Some(poly())).unwrap();
+    host.note_on(0, 0, 72, 100);
+    host.note_on(1, 0, 72, 100);
+    let mut out = Split::new(2, 128);
+    let (mut zero, mut one) = (Vec::new(), Vec::new());
+    for b in 0..40u64 {
+        out.clear();
+        host.render(&ctx(b * 128), 128, &mut out);
+        zero.extend_from_slice(&out.tracks[0].0);
+        one.extend_from_slice(&out.tracks[1].0);
+    }
+    assert!(
+        zero == poly_in(&quarter, 72, 40 * 128, 128),
+        "slot 0 in quarter tones"
+    );
+    assert!(
+        one == poly_in(&Tuning::standard(), 72, 40 * 128, 128),
+        "slot 1 as before"
+    );
+    assert!(zero != one);
+    // Back to the standard tuning while the note sounds: slot 0 follows.
+    host.set_tuning(0, &Tuning::standard());
+    assert!(host.tuning(0).is_some_and(Tuning::is_standard));
+    let mut later = Vec::new();
+    for b in 40..400u64 {
+        out.clear();
+        host.render(&ctx(b * 128), 128, &mut out);
+        later.extend_from_slice(&out.tracks[0].0);
+    }
+    let rising = |x: &[f32]| x.windows(2).filter(|w| w[0] < 0.0 && w[1] >= 0.0).count();
+    let tail = &later[later.len() - 22_050..];
+    let theirs = &poly_in(&Tuning::standard(), 72, 400 * 128, 128)[400 * 128 - 22_050..];
+    let quarters = &poly_in(&quarter, 72, 400 * 128, 128)[400 * 128 - 22_050..];
+    let (a, b, q) = (rising(tail), rising(theirs), rising(quarters));
+    // A quarter-tone C5 is an eighth of an octave lower, about 8 % fewer.
+    assert!(b.abs_diff(q) > 25, "the two tunings differ: {b} vs {q}");
+    assert!(a.abs_diff(b) <= 5, "retuned to C5: {a} vs {b} crossings");
 }
