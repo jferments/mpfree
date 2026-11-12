@@ -25,6 +25,7 @@ mpfree-time-ui = { path = "../mpfree-time-ui" }
 mpfree-capture = { path = "../mpfree-capture" }
 mpfree-node = { path = "../mpfree-node" }
 mpfree-synth = { path = "../mpfree-synth" }
+mpfree-tuning = { path = "../mpfree-tuning" }
 mpfree-synth-ui = { path = "../mpfree-synth-ui" }
 mpfree-instruments = { path = "../mpfree-instruments" }
 mpfree-sampler-ui = { path = "../mpfree-sampler-ui" }

@@ -543,6 +543,7 @@ dependencies = [
  "mpfree-touch",
  "mpfree-touch-evdev",
  "mpfree-transport",
+ "mpfree-tuning",
  "mpfree-ui",
 ]
 
