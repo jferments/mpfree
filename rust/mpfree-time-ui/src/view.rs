@@ -23,13 +23,14 @@
 //! same way. Tapping what is cued takes the cue back. While stopped, a tap
 //! launches or stops at once.
 
+use crate::editor::{drop_of, edit_rows, pads, EditAction, Editor, NoteBox, NoteGrid};
 use crate::song::{SongBlock, SongLanes, NONE, REC};
 use crate::widgets::{
     BarButton, BarItem, CellState, ClipGrid, GridCell, GridTrack, MorphBar, Run, TakeItem,
     TakeList, TransportBar, GRID_COLS,
 };
 use mpfree_play::{anchored, Cue, Launch, Take, Takes};
-use mpfree_seq::{Project, Source, Speed, SLOTS};
+use mpfree_seq::{Clip, Project, Source, Speed, SLOTS};
 use mpfree_transport::time::{Meter, Swing, Tick, MAX_BPM, MIN_BPM, PPQ};
 use mpfree_transport::transport::MAX_COUNT_IN;
 use mpfree_transport::{Command, State, Transport};
@@ -43,6 +44,9 @@ pub const RECORD: &str = "record";
 pub const TAKES: &str = "takes";
 pub const MORPH: &str = "morph";
 pub const SONG: &str = "song";
+/// The note editor and its Edit options.
+pub const NOTES: &str = "notes";
+pub const EDIT_OPTIONS: &str = "edit-options";
 /// The page's name, for the header tab.
 pub const CLIPS_PAGE: &str = "Clips";
 /// The bar in a layout spec: 44 pixels under the header.
@@ -59,6 +63,13 @@ pub const CLIPS_HINT: &str =
 /// The hint line under the Song view.
 pub const SONG_HINT: &str =
     "Tap a block to pick it   ·   Song on: the song plays where no clip is launched   ·   Scenes → song adds the rows at its end   ·   wheel: bars";
+/// The same page with the note editor (a piano roll or a list) in place
+/// of the grid, and the Edit options in place of the record settings.
+pub const EDIT_LAYOUT: &str =
+    "col(header:60, transport:44, row(notes:*, col(edit-options:*, takes:240):430):*, hint:26)";
+/// The hint line under the note editor.
+pub const EDIT_HINT: &str =
+    "Tap a note to pick it, drag to move   ·   Tool: select, draw, erase   ·   TC corrects the picked notes (all if none)   ·   wheel: the option picked";
 /// The record settings, top to bottom.
 pub const RECORD_ROWS: [&str; 6] = [
     "Armed track",
@@ -253,6 +264,18 @@ pub struct TimeState {
     /// Live to song armed: what the grid plays goes into the song. The app
     /// sets it.
     pub song_rec: bool,
+    /// The note editor, when it is open. The app sets it.
+    pub edit: Option<Box<EditInfo>>,
+}
+
+/// The note editor as the screens show it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct EditInfo {
+    pub editor: Editor,
+    pub clip: Clip,
+    pub track_name: String,
+    /// A bar, in the clip's ticks.
+    pub bar: Tick,
 }
 
 /// A placement as the screens show it.
@@ -358,6 +381,7 @@ impl TimeState {
                 .collect(),
             selected: None,
             song_rec: false,
+            edit: None,
         }
     }
 
@@ -456,6 +480,8 @@ pub enum TimeAction {
     /// grid plays is recorded into the song
     /// (`mpfree_perform::SongRecorder`).
     RecSong(bool),
+    /// A touch on the note editor (`crate::editor`).
+    Edit(EditAction),
 }
 
 /// Where a clip launched now starts: on the next bar line while the
@@ -592,8 +618,30 @@ pub fn action(ev: &UiEvent, st: &TimeState) -> Option<TimeAction> {
             r if r < SLOTS => TimeAction::LaunchScene(r),
             SLOTS => TimeAction::StopAll,
             r if r == SLOTS + 2 => TimeAction::RecSong(!st.song_rec),
+            r if r == SLOTS + 3 => TimeAction::Edit(EditAction::Open),
             _ => TimeAction::SongView(true),
         }),
+        (NOTES, kind) => Some(TimeAction::Edit(match *kind {
+            EventKind::Tab(k) => EditAction::Button(k),
+            EventKind::Select(i) => EditAction::Note(i),
+            EventKind::Cell { row, col } => EditAction::Empty {
+                tick: col as Tick,
+                note: u8::try_from(row).ok()?,
+            },
+            EventKind::Marker { frame, .. } => {
+                let (ticks, notes) = drop_of(frame);
+                EditAction::Drop { ticks, notes }
+            }
+            EventKind::Value(v) => EditAction::Velocity(v),
+            _ => return None,
+        })),
+        (EDIT_OPTIONS, EventKind::Step { index, delta }) => {
+            Some(TimeAction::Edit(EditAction::Row {
+                row: *index,
+                delta: *delta,
+            }))
+        }
+        (EDIT_OPTIONS, EventKind::Select(i)) => Some(TimeAction::Edit(EditAction::PickRow(*i))),
         (SONG, EventKind::Tab(k)) => match k {
             0 => Some(TimeAction::SongView(false)),
             1 => Some(TimeAction::SongMode(!st.song_on)),
@@ -985,6 +1033,56 @@ pub fn song_lanes(st: &TimeState, first_bar: i64) -> SongLanes {
     }
 }
 
+/// The note editor's roll or list for `e`, with the playhead where the
+/// clip plays now (if it is launched).
+pub fn note_grid(e: &EditInfo, st: &TimeState) -> NoteGrid {
+    let ed = &e.editor;
+    let c = &e.clip;
+    let playhead = st
+        .launches
+        .iter()
+        .find(|l| (l.track, l.slot) == (ed.track, ed.slot))
+        .filter(|_| c.length > 0 && st.transport.position >= 0)
+        .map(|l| {
+            let at = c.speed.to_clip((st.transport.position - l.origin) as f64);
+            (at.floor() as Tick).rem_euclid(c.length)
+        });
+    let selected = |i: usize| ed.sel.contains(&i);
+    let n_sel = ed.sel.iter().filter(|&&i| i < c.notes.len()).count();
+    let mut g = NoteGrid::new();
+    g.title = format!("Edit · {} · {}", c.name, e.track_name);
+    g.legend = format!(
+        "{} notes · {} picked · {}",
+        c.notes.len(),
+        n_sel,
+        if ed.list { "list" } else { "grid" }
+    );
+    g.notes = c
+        .notes
+        .iter()
+        .enumerate()
+        .map(|(i, n)| NoteBox {
+            tick: n.tick,
+            len: n.len,
+            note: n.note,
+            velocity: n.velocity,
+            selected: selected(i),
+        })
+        .collect();
+    g.length = c.length;
+    g.bar = e.bar;
+    g.low = ed.low;
+    g.pads = pads(c);
+    g.playhead = playhead;
+    g.snap = ed.snap_ticks();
+    g.snap_name = ed.snap_name().to_string();
+    g.tool = ed.tool;
+    g.list = ed.list;
+    g.first = ed.first;
+    g.color = track_color(ed.track);
+    g
+}
+
 // ---------------------------------------------------------------- the page
 
 /// The Clips page and the transport bar in the app's [`Ui`]: the app adds
@@ -1010,6 +1108,8 @@ impl TimePage {
         ui.add(TAKES, TakeList::new("Takes"));
         ui.add(MORPH, MorphBar::new());
         ui.add(SONG, SongLanes::new());
+        ui.add(NOTES, NoteGrid::new());
+        ui.add(EDIT_OPTIONS, OptionList::new("Edit"));
         ui.add_page(CLIPS_PAGE, CLIPS_LAYOUT)?;
         Ok(TimePage::default())
     }
@@ -1023,15 +1123,30 @@ impl TimePage {
     }
 
     /// Scroll the grid `delta` rows down (up if negative), or on the Song
-    /// view the timeline `delta` bars on.
-    pub fn scroll(&mut self, ui: &Ui, delta: i32) {
+    /// view the timeline `delta` bars on. In the note editor the editor
+    /// scrolls: the action for the app.
+    pub fn scroll(&mut self, ui: &Ui, delta: i32) -> Option<TimeAction> {
+        if ui.layout_of(CLIPS_PAGE) == Some(EDIT_LAYOUT) {
+            return Some(TimeAction::Edit(EditAction::Scroll(delta)));
+        }
         if ui.layout_of(CLIPS_PAGE) == Some(SONG_LAYOUT) {
             self.first_bar = (self.first_bar + i64::from(delta)).max(0);
-            return;
+            return None;
         }
         let rows = self.visible_rows(ui).max(1);
         let last = SLOTS.saturating_sub(rows) as i64;
         self.first_row = (self.first_row as i64 + i64::from(delta)).clamp(0, last) as usize;
+        None
+    }
+
+    /// The options list the wheel steps: the Edit options in the note
+    /// editor, else the record settings.
+    pub fn wheel_list(&self, ui: &Ui) -> &'static str {
+        if ui.layout_of(CLIPS_PAGE) == Some(EDIT_LAYOUT) {
+            EDIT_OPTIONS
+        } else {
+            RECORD
+        }
     }
 
     /// Show `st`. Widgets whose contents did not change are left alone, so
@@ -1094,8 +1209,10 @@ impl TimePage {
                 g.song_rec = st.song_rec;
             }
         }
-        // The grid or the song, as the app has it.
-        let want = if st.song_view {
+        // The grid, the song or the note editor, as the app has it.
+        let want = if st.edit.is_some() {
+            EDIT_LAYOUT
+        } else if st.song_view {
             SONG_LAYOUT
         } else {
             CLIPS_LAYOUT
@@ -1120,6 +1237,22 @@ impl TimePage {
         if ui.get::<MorphBar>(MORPH).is_some_and(|b| *b != bar) {
             if let Some(b) = ui.get_mut::<MorphBar>(MORPH) {
                 *b = bar;
+            }
+        }
+        if let Some(e) = &st.edit {
+            let grid = note_grid(e, st);
+            if ui.get::<NoteGrid>(NOTES).is_some_and(|g| !g.same(&grid)) {
+                if let Some(g) = ui.get_mut::<NoteGrid>(NOTES) {
+                    g.show(grid);
+                }
+            }
+            let rows = edit_rows(&e.editor, &e.clip);
+            if let Some(l) = ui.get_mut::<OptionList>(EDIT_OPTIONS) {
+                if l.rows != rows || l.selected != e.editor.row {
+                    l.rows = rows;
+                    l.selected = e.editor.row;
+                    l.right = "wheel or arrows".to_string();
+                }
             }
         }
         let rows = record_rows(st);
