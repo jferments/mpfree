@@ -1178,9 +1178,15 @@ class Lab:
             self.stages["spl-updater-pointer-evidence"] = {
                 "success":(len(pointers["spl"]["original_image_pointers"])>=5
                            and len(pointers["az01-update"][
-                               "original_image_pointers"])>=3),
+                               "original_image_pointers"])>=3
+                           and all(
+                               v["pointers_resolved_from_image"] >= 1
+                               for v in pointers.values())),
                 "original_words_reported":sum(len(x["original_image_pointers"])
                                                for x in pointers.values()),
+                "resolved_original_words_by_stage":{
+                    role: v["pointers_resolved_from_image"]
+                    for role, v in pointers.items()},
                 "original_code_executed":False,
             }
         except Exception as exc:
