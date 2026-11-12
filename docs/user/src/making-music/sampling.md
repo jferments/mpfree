@@ -1,7 +1,7 @@
 <!--
 status: changing
 covers: rust/mpfree-sampler rust/mpfree-sampler-ui rust/mpfree-grain rust/mpfree-app/src/sample_page.rs rust/mpfree-app/src/sampler.rs
-checked: 2026-11-12 ae9c39c
+checked: 2026-11-12 ac6fc10
 -->
 
 # Sampling
@@ -45,6 +45,18 @@ The **Play** page shapes how the picked pad sounds each time you hit it:
 - **Layers:** different sounds for soft and hard hits. Drag a layer's edges to set its velocity range.
 - **Envelope:** how the volume rises and falls: **attack**, **hold**, **decay**, **sustain** and **release**. Drag the points on the drawing, or use the Q-Links.
 - **Filter:** darken or thin out the sound. Drag the dot.
+
+### Scenes: mangle, morph and go back
+
+{{shot: sample-play-scenes | The scene strip on the Play page: scenes A and B stored, the crossfader 40 % of the way to B.}}
+
+The strip above the Q-Links on the **Play** page holds two **scenes** of the whole kit, as on the Octatrack:
+
+- **Store A** keeps every pad of the kit as it is now: its sound, trim, level, tune, filter, envelope, everything. **Store B** keeps a second version. Make A, change some pads (tune the snare down, close the hats' filter, push the kick), then make B.
+- The **crossfader** morphs the kit from A to B as it plays: each pad's level, pan, tune, filter and envelope times move between their values in A and in B. Settings that are the same in both scenes stay as they are. Sliding it changes nothing in the kit itself, so you can perform with it freely.
+- **Return to A** puts every pad back exactly as A stored it and sets the crossfader to A. Mangle the kit as much as you like, then return. **UNDO** takes the return back.
+
+The scenes are saved with the kit.
 
 ## Grain: stretch and smear
 

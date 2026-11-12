@@ -3159,6 +3159,7 @@ fn player_session(
                     }
                 }
                 gui::FromUi::SampleKey { .. } => {}
+                gui::FromUi::SamplePadLive { kit, values } => player.pad_live(kit, &values),
                 gui::FromUi::SampleView(mut swap) => {
                     if player.swap_view(&mut swap) {
                         views_swapped += 1;
