@@ -1,7 +1,7 @@
 <!--
 status: changing
 covers: rust/mpfree-sampler rust/mpfree-sampler-ui rust/mpfree-app/src/sample_page.rs
-checked: 2026-11-12 b9b7477
+checked: 2026-11-12 2469645
 -->
 
 # Sampling
@@ -34,6 +34,18 @@ While the pad is a keygroup, or the pads play notes, the Play page shows a keybo
 - Press the keys to hear the kit. The line under the keys shows the 16 notes the pads play.
 
 The Keys rows in the Pad list do the same with numbers: Keys makes one pad a keygroup, Low key, High key and Root key set its range, and Pads play switches the pads between their own sounds and notes.
+
+### Crossfades
+
+Where one zone ends and the next begins, the sound can switch at a hard edge or blend from one sample into the other. The same goes for a pad's velocity layers, from soft to hard.
+
+- **Key fade**, a row of the Pad list, sets the blend for the whole kit: every keygroup fades in and out over that many notes, and where two zones meet they are moved to overlap by as much, so one fades out while the next fades in. The level stays even across the blend.
+- **Vel fade** does the same for the picked pad's velocity layers. Round robins keep taking turns while their layers blend.
+- Set either one back to Off and the edges go back to where they met. Each change is one UNDO.
+
+The keyboard and the layer map draw each fade as a curve at the ends of its bar.
+
+{{shot: sample-keys-crossfade | Key fade at 4 notes: the zones that met now overlap and blend over four keys.}}
 
 > [!MPC]
 > On an MPC a keygroup instrument is a program type of its own. In MPFree keygroups are pads of an ordinary kit, so any kit can become one with Map to keys.

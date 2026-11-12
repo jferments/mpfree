@@ -7,12 +7,17 @@ use mpfree_analysis::note_name;
 use mpfree_sampler::model::Keys;
 use mpfree_ui::{Align, Color, EventKind, FontId, PaintCx, Rect, Touch, Widget};
 
+use crate::play_widgets::fade_cut;
+
 /// One keygroup on the keyboard.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Zone {
     /// The pad, as the kit numbers them from 0.
     pub pad: usize,
     pub keys: Keys,
+    /// Its key fade, in notes: the bar is cut down along the fade's curve
+    /// inside each edge (none at the ends of the keyboard).
+    pub fade: u8,
     /// What the zone is called on the keyboard (`A3`).
     pub label: String,
     pub color: Color,
@@ -273,6 +278,17 @@ impl Widget for KeyZones {
             let on = Some(i) == picked;
             let fill = z.color.mix(t.surface, if on { 0.35 } else { 0.7 });
             cx.canvas.fill_round_rect(zr, 6, fill);
+            if z.fade > 0 {
+                let (k, f) = (z.keys, z.fade);
+                if k.lo > 0 {
+                    let to = b.span(k.lo.saturating_add(f).min(127)).0;
+                    fade_cut(cx, zr, b.span(k.lo).0, to, true, t.surface);
+                }
+                if k.hi < 127 {
+                    let from = b.span(k.hi.saturating_sub(f)).1;
+                    fade_cut(cx, zr, from, b.span(k.hi).1, false, t.surface);
+                }
+            }
             if on {
                 cx.canvas.stroke_round_rect(zr, 6, 2, z.color);
                 // Handles on both edges.
@@ -527,6 +543,7 @@ mod tests {
         let zone = |pad, lo, hi| Zone {
             pad,
             keys: Keys { lo, hi, root: lo },
+            fade: 0,
             label: String::new(),
             color: Color::rgb(0),
         };
