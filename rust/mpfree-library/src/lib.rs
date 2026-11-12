@@ -35,7 +35,7 @@ pub mod worker;
 
 pub use audio::{read_info, AudioFormat, AudioInfo};
 pub use name::{clean_name, natural_cmp, unique_folder_name, unique_name, valid_name};
-pub use project::{Meta, Part, Snapshot, Version};
+pub use project::{Meta, NewSample, Part, SampleData, Snapshot, Version};
 pub use worker::{Done, Job, Outcome, Worker};
 
 use std::fs::{self, DirBuilder, File, OpenOptions};

@@ -28,6 +28,7 @@ enum What {
     Off(u8),
     Lock(ParamAddr, f32),
     Unlock(ParamAddr),
+    Lane(ParamAddr, f32),
     AllOff,
 }
 
@@ -39,6 +40,7 @@ fn what(log: &[Out]) -> Vec<(u64, u16, What)> {
                 Event::NoteOff { note } => What::Off(note),
                 Event::Lock { addr, value } => What::Lock(addr, value),
                 Event::Unlock { addr } => What::Unlock(addr),
+                Event::Lane { addr, value } => What::Lane(addr, value),
                 Event::AllOff => What::AllOff,
             };
             (o.frame, o.track, w)

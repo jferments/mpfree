@@ -48,7 +48,7 @@ pub const BAR_SPEC: &str = "transport:44";
 pub const CLIPS_LAYOUT: &str =
     "col(header:60, transport:44, row(clips:*, col(record:*, takes:240):430):*, hint:26)";
 pub const CLIPS_HINT: &str =
-    "Tap a clip: it plays from the next bar, or stops   ·   + records into an empty slot   ·   a track's name arms it";
+    "Tap a clip: it plays from the next bar, or stops   ·   a row's number plays the whole row   ·   + records into an empty slot   ·   a track's name arms it";
 /// The record settings, top to bottom.
 pub const RECORD_ROWS: [&str; 5] = [
     "Armed track",
@@ -220,6 +220,10 @@ pub struct TimeState {
     /// What Capture would keep now, such as "2 bars"; None when nothing
     /// was played since the last capture. The app sets it.
     pub capture: Option<String>,
+    /// The scene (row) playing, and the one waiting for the next bar line
+    /// (`mpfree_perform::Perform`). The app sets them.
+    pub scene_playing: Option<usize>,
+    pub scene_cued: Option<usize>,
 }
 
 impl TimeState {
@@ -260,6 +264,8 @@ impl TimeState {
             undone: takes.undone().iter().map(TakeRow::of).collect(),
             chips: Vec::new(),
             capture: None,
+            scene_playing: None,
+            scene_cued: None,
         }
     }
 
@@ -314,6 +320,11 @@ pub enum TimeAction {
     /// Keep what was just played (CAPTURE): into the armed track's playing
     /// clip, or as a new clip (see `mpfree_capture::keep`).
     Capture,
+    /// Play a whole row of the grid (a scene) from the next bar line, with
+    /// its mutes (`mpfree_perform::Perform::launch_scene`).
+    LaunchScene(usize),
+    /// Stop every track on the next bar line.
+    StopAll,
 }
 
 /// Where a clip launched now starts: on the next bar line while the
@@ -422,6 +433,11 @@ pub fn action(ev: &UiEvent, st: &TimeState) -> Option<TimeAction> {
             BarButton::Undo => TimeAction::Undo,
         }),
         (TRANSPORT, EventKind::Select(i)) => Some(TimeAction::Chip(*i)),
+        (CLIPS, EventKind::Toggle(row)) => Some(if *row < SLOTS {
+            TimeAction::LaunchScene(*row)
+        } else {
+            TimeAction::StopAll
+        }),
         (CLIPS, EventKind::Tab(track)) => Some(TimeAction::Arm(if st.armed == Some(*track) {
             None
         } else {
@@ -824,6 +840,7 @@ impl TimePage {
                 && g.legend == legend
                 && g.first_row == self.first_row
                 && g.first_track == self.first_track
+                && (g.scene_playing, g.scene_cued) == (st.scene_playing, st.scene_cued)
         });
         if !same_grid {
             if let Some(g) = ui.get_mut::<ClipGrid>(CLIPS) {
@@ -832,6 +849,8 @@ impl TimePage {
                 g.legend = legend;
                 g.first_row = self.first_row;
                 g.first_track = self.first_track;
+                g.scene_playing = st.scene_playing;
+                g.scene_cued = st.scene_cued;
             }
         }
         let rows = record_rows(st);
@@ -1005,6 +1024,14 @@ mod tests {
         assert_eq!(
             action(&ev(CLIPS, EventKind::Tab(0)), &st),
             Some(TimeAction::Arm(Some(0)))
+        );
+        assert_eq!(
+            action(&ev(CLIPS, EventKind::Toggle(4)), &st),
+            Some(TimeAction::LaunchScene(4))
+        );
+        assert_eq!(
+            action(&ev(CLIPS, EventKind::Toggle(SLOTS)), &st),
+            Some(TimeAction::StopAll)
         );
         assert_eq!(
             action(&ev(CLIPS, EventKind::Tab(2)), &st),
@@ -1437,6 +1464,13 @@ mod tests {
             drawn,
             vec![ui.rect_of(TRANSPORT).unwrap()],
             "one tick on: only the bar"
+        );
+        st.scene_cued = Some(1);
+        page.update(&mut ui, &st);
+        assert_eq!(
+            ui.paint(&mut c),
+            vec![ui.rect_of(CLIPS).unwrap()],
+            "a scene cued: the grid"
         );
     }
 }
