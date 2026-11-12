@@ -631,9 +631,9 @@ pub fn keys_clip() -> Clip {
 }
 
 /// The note editor on "Keys" (Chords, slot 2) over the playing session,
-/// the melody selected: the piano roll, or the list with `list`. The app's
-/// `--preview` draws it for the manual.
-pub fn notes_state(list: bool) -> Result<TimeState, String> {
+/// the melody selected, through `lens`. The app's `--preview` draws it for
+/// the manual.
+pub fn notes_state(lens: crate::editor::Lens) -> Result<TimeState, String> {
     let mut s = playing()?;
     let keys = keys_clip();
     s.project.tracks[CHORDS].slots[1] = Some(keys.clone());
@@ -647,11 +647,80 @@ pub fn notes_state(list: bool) -> Result<TimeState, String> {
         .filter(|(_, n)| n.note >= 67 && n.len < BEAT)
         .map(|(i, _)| i)
         .collect();
-    editor.list = list;
+    editor.lens = lens;
     state.edit = Some(Box::new(crate::view::EditInfo {
         editor,
         clip: keys,
         track_name: "Chords".into(),
+        bar: BAR,
+    }));
+    Ok(state)
+}
+
+/// A bar of drums with a step's every setting in use: a nudged hat, a
+/// ghost snare at 50 %, a 1:2 hat, a ratchet, a FILL open hat and a lock
+/// on the second snare (what the tracker shows).
+pub fn tracker_clip() -> Clip {
+    use mpfree_seq::mpfree_param::{OnTrack, RelAddr};
+    use mpfree_seq::Cond;
+    let mut c = clip(
+        "Boom bap",
+        BAR,
+        &[
+            (0, 0, 120),
+            (1680, 0, 100),
+            (960, 1, 110),
+            (2880, 1, 115),
+            (3600, 1, 40),
+            (2160, 3, 90),
+        ],
+    );
+    for k in 0..8 {
+        let mut n = Note::new(k * 480, SIXTEENTH, 2, if k % 2 == 0 { 84 } else { 62 });
+        match k {
+            3 => n.tick += 18,
+            5 => n.cond = Cond::Every { a: 1, b: 2 },
+            7 => n.ratchet = 3,
+            _ => {}
+        }
+        c.add_note(n).expect("sample hat in range");
+    }
+    for n in c.notes.iter_mut() {
+        match (n.note, n.tick) {
+            (1, 3600) => n.chance = 50,
+            (3, _) => n.cond = Cond::Fill,
+            _ => {}
+        }
+    }
+    let lock = mpfree_seq::Lock::new(2880, Some(1), RelAddr::new(OnTrack::Pad(1), 3), 0.4);
+    c.locks.push(lock);
+    c.check().expect("sample clip in range");
+    c
+}
+
+/// The note editor's tracker on [`tracker_clip`] in place of Drums' first
+/// clip while it plays, the second snare picked and the Euclidean rows on
+/// show. The app's `--preview` draws it for the manual.
+pub fn tracker_state() -> Result<TimeState, String> {
+    let mut s = playing()?;
+    let drums = tracker_clip();
+    s.project.tracks[DRUMS].slots[0] = Some(drums.clone());
+    let mut state = s.state();
+    let mut editor = crate::editor::Editor::new(DRUMS, 0, &drums);
+    editor.sel = drums
+        .notes
+        .iter()
+        .enumerate()
+        .filter(|(_, n)| n.note == 1 && n.tick == 2880)
+        .map(|(i, _)| i)
+        .collect();
+    editor.sound = 1;
+    editor.lens = crate::editor::Lens::Tracker;
+    editor.row = crate::editor::EUCLID_ROW + 1;
+    state.edit = Some(Box::new(crate::view::EditInfo {
+        editor,
+        clip: drums,
+        track_name: "Drums".into(),
         bar: BAR,
     }));
     Ok(state)

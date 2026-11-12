@@ -4627,9 +4627,19 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         Ok(p) => out.push(("clips", p)),
         Err(e) => eprintln!("clips sample: {e}"),
     }
-    // The note editor on the Arrange page: the piano roll, then the list.
-    for (name, list) in [("arrange-notes", false), ("arrange-notes-list", true)] {
-        match mpfree_time_ui::sample::notes_state(list) {
+    // The note editor on the Arrange page: the piano roll, the list, then
+    // the tracker on a bar of drums.
+    use mpfree_time_ui::editor::Lens;
+    for (name, lens) in [
+        ("arrange-notes", Some(Lens::Grid)),
+        ("arrange-notes-list", Some(Lens::List)),
+        ("arrange-notes-tracker", None),
+    ] {
+        let state = match lens {
+            Some(lens) => mpfree_time_ui::sample::notes_state(lens),
+            None => mpfree_time_ui::sample::tracker_state(),
+        };
+        match state {
             Ok(state) => {
                 let mut p = quiet_player(fonts());
                 p.apply(ToUi::Time(Box::new(state)));

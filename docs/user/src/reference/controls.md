@@ -52,7 +52,7 @@ On the current test build, some buttons (REC, OVERDUB, UNDO, PLAY START, TRACK M
 | Control | What it does | When |
 |---|---|---|
 | **Data wheel** | Changes the picked row of the Record settings, or of the Edit options while the note editor is open. | Works |
-| **SHIFT + data wheel** | Scrolls the clip grid, the song, or the note editor's roll or list. | Works |
+| **SHIFT + data wheel** | Scrolls the clip grid, the song, or the note editor's roll, list or tracker. | Works |
 
 ## Mode buttons
 

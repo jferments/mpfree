@@ -424,6 +424,39 @@ pub fn set_velocity(clip: &Clip, sel: &[usize], v: u8) -> Edit {
     })
 }
 
+/// Change the `sel` notes' chance by `by` percent, each kept within 1 to
+/// 100.
+pub fn chance(clip: &Clip, sel: &[usize], by: i32) -> Edit {
+    map(clip, sel, |n| {
+        Some(Note {
+            chance: (i32::from(n.chance) + by).clamp(1, 100) as u8,
+            ..n
+        })
+    })
+}
+
+/// Step the `sel` notes' trig conditions `d` places along
+/// [`Cond::all`](crate::Cond::all), each from its own.
+pub fn condition(clip: &Clip, sel: &[usize], d: i32) -> Edit {
+    map(clip, sel, |n| {
+        Some(Note {
+            cond: n.cond.step(d),
+            ..n
+        })
+    })
+}
+
+/// Change the `sel` notes' ratchet by `by` hits, each kept within 1 to
+/// [`MAX_RATCHET`](crate::MAX_RATCHET).
+pub fn ratchet(clip: &Clip, sel: &[usize], by: i32) -> Edit {
+    map(clip, sel, |n| {
+        Some(Note {
+            ratchet: (i32::from(n.ratchet) + by).clamp(1, i32::from(crate::MAX_RATCHET)) as u8,
+            ..n
+        })
+    })
+}
+
 /// Take the `sel` notes out, with their own locks.
 pub fn delete(clip: &Clip, sel: &[usize]) -> Edit {
     let erase: Vec<Note> = picked(clip, sel).map(|(_, n)| n).collect();
@@ -888,6 +921,21 @@ mod tests {
         assert_eq!(by(&d, 36).velocity, 1);
         let d = applied(&c, &set_velocity(&c, &[1], 64));
         assert_eq!(by(&d, 38).velocity, 64);
+        // Chance, condition and ratchet, each kept in range.
+        let d = applied(&c, &chance(&c, &[0], -30));
+        assert_eq!((by(&d, 36).chance, by(&d, 38).chance), (70, 100));
+        assert_eq!(by(&applied(&c, &chance(&c, &[0], -300)), 36).chance, 1);
+        assert!(chance(&c, &[0], 5).is_empty(), "already 100 %");
+        let d = applied(&c, &condition(&c, &[0, 1], 2));
+        assert!(d
+            .notes
+            .iter()
+            .all(|n| n.cond == crate::Cond::Every { a: 2, b: 2 }));
+        assert!(condition(&c, &[0], -1).is_empty(), "always is the first");
+        let d = applied(&c, &ratchet(&c, &[1], 3));
+        assert_eq!(by(&d, 38).ratchet, 4);
+        let d = applied(&c, &ratchet(&c, &[1], 30));
+        assert_eq!(by(&d, 38).ratchet, crate::MAX_RATCHET);
         let d = applied(&c, &delete(&c, &[1]));
         assert_eq!(d.notes.len(), 1);
         let d = applied(&c, &add(&c, Note::new(960, 120, 42, 90)));
