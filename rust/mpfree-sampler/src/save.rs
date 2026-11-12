@@ -756,6 +756,8 @@ fn visit_pad<F: Fields>(f: &mut F, p: &mut Pad) {
         polyphony,
         mute_group,
         chokes,
+        links,
+        latch,
         amp,
         filter,
         filter_env,
@@ -775,6 +777,8 @@ fn visit_pad<F: Fields>(f: &mut F, p: &mut Pad) {
     f.num("polyphony", polyphony);
     f.opt_num("mute_group", mute_group);
     f.list("chokes", chokes);
+    f.list("links", links);
+    f.flag("latch", latch);
     f.scope("amp", |f| visit_envelope(f, amp));
     f.scope("filter", |f| {
         let Filter {

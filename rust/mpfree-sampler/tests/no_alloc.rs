@@ -1,7 +1,8 @@
 //! The engine's real-time calls (render, apply, schedule) and the rolling
 //! recording buffer's writer must not allocate
 //! or free. A counting global allocator checks that across a busy session:
-//! loops, layers, chokes, stealing, filters, sample-accurate events,
+//! loops, layers, chokes, links, latched pads, stealing, filters,
+//! sample-accurate events,
 //! slice auditions,
 //! granular pads, pad pressure, and swapping prebuilt views (the pad player
 //! switches kits that way).
@@ -130,6 +131,13 @@ fn render_and_events_never_allocate() {
             root: 60,
         });
         pad.chokes = vec![(i + 1) % 16];
+        // Some play others too, and some latch.
+        pad.links = if i % 3 == 0 {
+            vec![(i + 5) % 16, (i + 9) % 16]
+        } else {
+            Vec::new()
+        };
+        pad.latch = i % 5 == 1;
         // Half of them wobble like worn tape.
         pad.wow = if i % 2 == 1 { 0.8 } else { 0.0 };
         pad.filter = Filter {
