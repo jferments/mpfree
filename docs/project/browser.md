@@ -83,7 +83,7 @@ browser.save(Snapshot::from_parts(meta, &[&transport, ...]), now_utc);
 The sampler's part comes with the sounds it names, which the save writes into the project's `samples/` first where they aren't there yet (`Library::save_project_with`; a sound that can't be written leaves the last save standing):
 
 ```rust
-let (text, sounds) = sample_page.save_part();                   // SamplePage in mpfree-hello
+let (text, sounds) = sample_page.save_part();                   // SamplePage in mpfree-app
 snap.parts.push(("sampler".into(), text));
 let samples = sounds
     .into_iter()
