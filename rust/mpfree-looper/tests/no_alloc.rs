@@ -13,7 +13,6 @@
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 use mpfree_looper::{After, Command as L, Edit as E, LayerCommand as Lc, Looper, Phase, MAX_LOOPS};
 use mpfree_transport::{Block, Command as T, Transport};
@@ -21,13 +20,18 @@ use mpfree_transport::{Block, Command as T, Transport};
 struct Counting;
 thread_local! {
     static WATCH: Cell<bool> = const { Cell::new(false) };
+    // Each test thread counts its own calls.
+    static CALLS: Cell<usize> = const { Cell::new(0) };
 }
-static CALLS: AtomicUsize = AtomicUsize::new(0);
 
 fn count() {
     if WATCH.with(Cell::get) {
-        CALLS.fetch_add(1, Ordering::Relaxed);
+        CALLS.with(|c| c.set(c.get() + 1));
     }
+}
+
+fn calls() -> usize {
+    CALLS.with(Cell::get)
 }
 fn watch(on: bool) {
     WATCH.with(|w| w.set(on));
@@ -66,7 +70,7 @@ fn commands_and_periods_never_allocate() {
     watch(true);
     drop(std::hint::black_box(vec![0u8; 16]));
     watch(false);
-    assert_eq!(CALLS.swap(0, Ordering::SeqCst), 2);
+    assert_eq!(CALLS.with(|c| c.replace(0)), 2);
 
     let sizes = [1usize, 7, 128, 333, 4096, 64, 256];
     let script = [
@@ -238,7 +242,7 @@ fn commands_and_periods_never_allocate() {
     }
     watch(false);
     assert_eq!(
-        CALLS.load(Ordering::SeqCst),
+        calls(),
         0,
         "allocations or frees in the looper's real-time calls"
     );
@@ -271,4 +275,70 @@ fn bounce(l: &mut Looper, i: u64, want: &mut bool, spare: &mut Option<Vec<f32>>,
         *n += 1;
         *spare = Some(b.audio);
     }
+}
+
+/// Saving reads a loop's layers and loading copies a saved loop in, both
+/// without allocating (only [`Looper::loop_file`], which makes the list of
+/// layers, does, and the host drops what [`Looper::take_loaded`] gives
+/// back away from the audio thread). Clear calls a second load off.
+#[test]
+fn saving_and_loading_never_allocate() {
+    const RATE: u32 = 44_100;
+    let mut t = Transport::new(RATE, 120.0).unwrap();
+    let mut l = Looper::new(RATE, 30);
+    let mut b = Block::new();
+    let input: Vec<f32> = (0..2 * 4096)
+        .map(|i| ((i % 97) as f32 - 48.0) / 200.0)
+        .collect();
+    let mut out = vec![0.0f32; 2 * 4096];
+    l.command(L::SetBars(Some(1)));
+    l.command(L::Record);
+    t.command(0, T::Play);
+    let mut period = |t: &mut Transport, l: &mut Looper, n: usize| {
+        assert!(t.process(n as u32, &mut b));
+        l.process(&b, &input[..2 * n], &mut out[..2 * n]);
+    };
+    while l.status().phase != Phase::Playing {
+        period(&mut t, &mut l, 128);
+    }
+    period(&mut t, &mut l, 512);
+    let mut f = l.loop_file(0).expect("savable");
+    let frames = f.frames;
+    for y in &mut f.layers {
+        y.audio = vec![0.0; 2 * frames];
+    }
+    let again = f.clone();
+    watch(true);
+    for (k, y) in f.layers.iter_mut().enumerate() {
+        for (i, piece) in y.audio.chunks_mut(2 * 777).enumerate() {
+            assert!(l.read_layer(0, k, 777 * i, piece).is_some());
+        }
+    }
+    l.load(4, f).unwrap();
+    for (i, &n) in [1usize, 7, 128, 333, 4096, 64]
+        .iter()
+        .cycle()
+        .take(400)
+        .enumerate()
+    {
+        period(&mut t, &mut l, n);
+        if i == 200 {
+            assert_eq!(l.loop_status(4).unwrap().phase, Phase::Playing);
+        }
+    }
+    watch(false);
+    let loaded = l.take_loaded(4).expect("loaded");
+    watch(true);
+    l.select_loop(5);
+    l.load(5, again).unwrap();
+    period(&mut t, &mut l, 64);
+    l.command(L::Clear);
+    for _ in 0..20 {
+        period(&mut t, &mut l, 128);
+    }
+    watch(false);
+    assert_eq!(l.loop_status(5).unwrap().phase, Phase::Empty);
+    assert!(l.take_loaded(5).is_some());
+    drop(loaded);
+    assert_eq!(calls(), 0, "allocated while saving or loading");
 }
