@@ -101,12 +101,18 @@ bit. Strips with sidechain keys and frozen strips stay on the audio thread;
 returns stay too, since they need every send first. The app turns it on with
 `--sound-cores two` (core 2, SCHED_FIFO 69, a wait of a period; below).
 
-## In the app: `--sound-cores`
+## In the app: Prefs "Sound cores" and `--sound-cores`
 
-`mpfree play` and `mpfree app` take `--sound-cores shared|core3|two`
+Prefs has a "Sound cores" row (Shared, Core 3, Cores 3 and 2), kept in the
+"app" settings on the stick's data partition as `sound-cores =
+shared|core3|two` and used from the next start; while it differs from what
+runs, the row says "(next start)". `mpfree play` and `mpfree app` also take
+`--sound-cores shared|core3|two` for one run, which is not kept
 ([`cores.rs`](../../../rust/mpfree-app/src/cores.rs)). The default is
 `shared`, which is how the app always ran, so nothing changes until a device
-round has compared the three and Jay picks the default.
+round has compared the three and Jay picks the default. The device round
+runs Shared, sets Cores 3 and 2 in Prefs, and runs again after the second
+boot it already makes to check saved settings.
 
 | Mode | The audio thread | Core 2 |
 | --- | --- | --- |
@@ -137,15 +143,18 @@ round has compared the three and Jay picks the default.
   whether the pin and each lane's core and priority took. A refused pin or
   priority is reported in red or amber and the sound plays on.
 - **Safety.** Only the program's own threads change: their allowed cores
-  (`sched_setaffinity`) and priority (`sched_setscheduler`), in RAM. Nothing
-  is written anywhere; quitting the program or a power-cycle undoes it.
+  (`sched_setaffinity`) and priority (`sched_setscheduler`), in RAM. The
+  only thing written is the Prefs row's line in the app's settings on the
+  stick's data partition (never the MPC's own storage). Setting the row
+  back to Shared undoes it from the next start; on the workstation,
+  removing that line or `write-test-stick.py --fresh-data` does too.
 - **Tests.** `cores.rs` checks the modes, the rows and the late lines;
   `rt_safety.rs` runs the sound path for 35 s on two cores (unpinned) with
   no allocation on the audio thread.
 
-The device round that compares the modes adds `--sound-cores core3` and
-`--sound-cores two` runs of the play step to `host_app_mpc.py`, which only
-runs fixed commands (owned by the app rounds thread).
+The device round that compares the modes is the app thread's live test
+runbook. Its app check picks up the `sound cores: ` and `status: sound
+cores ` lines.
 
 `Mixer::set_pipelined_returns` is the returns' turn, as a prototype for Jay's
 call: the returns' inserts run on a lane one block behind, during the next
