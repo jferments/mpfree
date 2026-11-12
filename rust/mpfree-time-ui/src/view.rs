@@ -498,7 +498,7 @@ pub enum TimeAction {
     Redo,
     /// Arm a track for recording, or none.
     Arm(Option<usize>),
-    /// "Pad pressure" for a track: whether recording keeps the pads'
+    /// "Pressure" (pad pressure) for a track: whether recording keeps the pads'
     /// pressure on its notes (`Track::record_touch`).
     RecordPressure {
         track: usize,
@@ -1548,7 +1548,7 @@ mod tests {
         assert_eq!(morph.h, 64);
         assert!(morph.w >= 800, "{morph:?}");
         // Five record settings are in view at once (58 px a row); the
-        // sixth, Pad pressure, scrolls in when a row below the middle is
+        // sixth, Pressure, scrolls in when a row below the middle is
         // picked (the list keeps the picked row in view).
         let record = ui.rect_of(RECORD).unwrap();
         assert!(record.h - 14 * 2 - 34 >= 58 * 5, "{record:?}");

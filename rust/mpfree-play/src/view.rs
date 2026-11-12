@@ -17,7 +17,10 @@
 //! [`crate::Player::started`]. The control thread then makes the new clip
 //! the track's launch with [`Started::apply`] and compiles again. Until
 //! that view arrives, the player and the recorder carry the switch
-//! themselves, so nothing depends on when it arrives.
+//! themselves, so nothing depends on when it arrives. A host that compiles
+//! on another thread says which switches each view shows
+//! ([`PlayView::set_includes`]), so a view a little late, or one that cues
+//! the same clip again, is never taken for the switch.
 
 use std::ops::Range;
 
@@ -25,10 +28,12 @@ use mpfree_param::RelAddr;
 use mpfree_seq::arrange::SONG_LANE_LEN;
 use mpfree_seq::mpfree_moves::{Kind, Map, Moves, Target};
 use mpfree_seq::{
-    Clip, DestId, Lock, ModelError, Note, Project, Quantise, Source, Speed, Touch, TouchPoint,
-    MAX_TRACKS, SLOTS,
+    touch_fits, Clip, DestId, Lock, ModelError, Note, Project, Quantise, Source, Speed, Touch,
+    TouchPoint, MAX_LOCKS, MAX_NOTES, MAX_TRACKS, SLOTS,
 };
 use mpfree_transport::time::{ceil_to, Swing, Tick};
+
+use crate::recorded::{Includes, Rec};
 
 /// The slot number the song's own lanes go by, past any placement's.
 pub(crate) const SONG_SLOT: usize = usize::MAX;
@@ -291,6 +296,48 @@ impl ClipView {
         true
     }
 
+    /// A recorded note with its pressure `points`, decided here as the
+    /// clip decides it (`Takes::add_touched`): the pressure goes on the
+    /// end of the clip's when it fits (else the note has none), then the
+    /// note goes in if the clip can hold it. False only when there is no
+    /// room in place.
+    fn record_note(&mut self, mut n: Note, points: &[TouchPoint]) -> bool {
+        n.touch = Touch::NONE;
+        if !points.is_empty() && touch_fits(self.touch.len(), points) {
+            let touch = Touch {
+                first: self.touch.len() as u32,
+                len: points.len() as u32,
+            };
+            if !self.add_touch(touch, points) {
+                return false;
+            }
+            n.touch = touch;
+        }
+        if self.notes.len() >= MAX_NOTES || !n.fits(self.length, &self.touch) {
+            return true;
+        }
+        self.add_note(&n)
+    }
+
+    /// A recorded lock, decided here as the clip decides it
+    /// (`Takes::add_lock`): in the place of the lock in its place, else
+    /// as the newest, when the clip can hold it. False only when there is
+    /// no room in place.
+    fn record_lock(&mut self, l: &Lock) -> bool {
+        if !l.fits(self.length) {
+            return true;
+        }
+        let old = self
+            .locks
+            .iter()
+            .find(|x| x.src.same_place(l))
+            .map(|x| x.src);
+        if old.is_none() && self.locks.len() >= MAX_LOCKS {
+            return true;
+        }
+        self.add_lock(l, old.as_ref())
+    }
+
     /// A recorded gesture written into this clip's moves in place, as
     /// `Takes::put_move` writes it into the clip. False when its lane is
     /// new or has no room left.
@@ -344,8 +391,9 @@ impl TrackView {
 }
 
 /// The project compiled for playback. Build it on the control thread; the
-/// audio thread only reads it.
-#[derive(Clone, Debug, Default, PartialEq)]
+/// audio thread only reads it. Two views are equal when they play the
+/// same: what each says it includes is left out.
+#[derive(Clone, Debug, Default)]
 pub struct PlayView {
     pub(crate) tracks: Vec<TrackView>,
     pub(crate) armed: Option<usize>,
@@ -353,6 +401,15 @@ pub struct PlayView {
     pub(crate) song: bool,
     /// The song's own lanes (the morph), played in song mode.
     pub(crate) song_lanes: Option<ClipView>,
+    /// What it includes, when its host says ([`PlayView::set_includes`]).
+    pub(crate) includes: Option<Includes>,
+}
+
+impl PartialEq for PlayView {
+    fn eq(&self, other: &Self) -> bool {
+        (&self.tracks, self.armed, self.song, &self.song_lanes)
+            == (&other.tracks, other.armed, other.song, &other.song_lanes)
+    }
 }
 
 impl PlayView {
@@ -367,13 +424,16 @@ impl PlayView {
     }
 
     /// Compile `project` with the clips in `launches` playing and the
-    /// `cues` waiting for the next bar line.
+    /// `cues` waiting for the next bar line. It checks the tracks and the
+    /// clips it compiles, not the whole project: an edit's compile costs
+    /// what plays, and a clip out of range is refused when it is launched
+    /// or cued (`CompileError::Model`).
     pub fn compile_cued(
         project: &Project,
         launches: &[Launch],
         cues: &[Cue],
     ) -> Result<PlayView, CompileError> {
-        project.check().map_err(CompileError::Model)?;
+        project.check_tracks().map_err(CompileError::Model)?;
         let mut tracks: Vec<TrackView> = project
             .tracks
             .iter()
@@ -412,13 +472,15 @@ impl PlayView {
             armed: None,
             song: false,
             song_lanes: None,
+            includes: None,
         })
     }
 
     /// Song mode on (the arrangement's placements compiled in: a track
     /// with no clip launched plays them on their ticks, and the song's own
     /// lanes play as [`crate::SONG_TRACK`]'s) or off. Call it on the
-    /// control thread after compiling, with the same project.
+    /// control thread after compiling, with the same project. With song
+    /// mode on it checks the arrangement and each clip it places, once.
     pub fn set_song(&mut self, project: &Project, on: bool) -> Result<(), CompileError> {
         for t in &mut self.tracks {
             t.regions.clear();
@@ -427,6 +489,23 @@ impl PlayView {
         self.song_lanes = None;
         if !on {
             return Ok(());
+        }
+        project
+            .arrangement
+            .check(&project.tracks)
+            .map_err(CompileError::Model)?;
+        // The slots placed (a placement's own clip is checked with the
+        // arrangement), each checked once however often it is placed.
+        let mut seen = [[false; SLOTS]; MAX_TRACKS];
+        for p in &project.arrangement.placements {
+            if let (Source::Slot(s), Some(clip)) = (&p.source, p.clip(&project.tracks)) {
+                if let Some(done) = seen.get_mut(p.track).and_then(|t| t.get_mut(*s)) {
+                    if !*done {
+                        clip.check().map_err(CompileError::Model)?;
+                        *done = true;
+                    }
+                }
+            }
         }
         let lanes = &project.arrangement.lanes;
         if !lanes.is_empty() {
@@ -487,6 +566,49 @@ impl PlayView {
 
     pub fn armed(&self) -> Option<usize> {
         self.armed
+    }
+
+    /// Say what this view includes: the recorded changes made to the
+    /// project it was compiled from, and the cues started on each track
+    /// that it shows as launches (see [`crate::recorded`]). Call it on the
+    /// control thread before handing the view over. A view with this set
+    /// stops a switch the player carries once it shows as many switches on
+    /// that track as the player has made.
+    pub fn set_includes(&mut self, includes: Includes) {
+        self.includes = Some(includes);
+    }
+
+    /// What it includes, if its host said.
+    pub fn includes(&self) -> Option<Includes> {
+        self.includes
+    }
+
+    /// Make recorded change `rec` to this view in place, deciding as the
+    /// project decides it (`Takes::record`), with a note's pressure
+    /// `touch` or a gesture's `moves`. Real-time safe. False when the view
+    /// has no room for it in place; then compile instead. A change to a
+    /// clip the view does not show, or an erase of a note or lock it no
+    /// longer holds (an edit took it out), needs nothing.
+    pub fn record(&mut self, rec: &Rec, touch: &[TouchPoint], moves: &[(f64, f32, Kind)]) -> bool {
+        let (track, slot) = rec.clip();
+        let mut shown = self.shown(track, slot).into_iter().flatten();
+        match rec {
+            Rec::Note(k) => shown.all(|c| c.record_note(k.note, touch)),
+            Rec::Lock(k) => shown.all(|c| c.record_lock(&k.lock)),
+            Rec::Erase(e) => {
+                for c in shown {
+                    c.remove_note(&e.note);
+                }
+                true
+            }
+            Rec::EraseLock(e) => {
+                for c in shown {
+                    c.remove_lock(&e.lock);
+                }
+                true
+            }
+            Rec::Move(k) => shown.all(|c| c.put_move(k.target, k.map, moves, k.len)),
+        }
     }
 
     pub fn tracks(&self) -> usize {
@@ -692,6 +814,7 @@ fn clip_view(
         .and_then(Option::as_ref)
         .filter(|_| slot < SLOTS)
         .ok_or(CompileError::EmptySlot { track, slot })?;
+    clip.check().map_err(CompileError::Model)?;
     Ok(view_of(clip, t.swing, slot, origin, start))
 }
 
@@ -740,26 +863,40 @@ struct Switch {
 /// they agree on which clip plays, for any period size and whenever the
 /// new view arrives.
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct Switches([Option<Switch>; MAX_TRACKS]);
+pub(crate) struct Switches {
+    on: [Option<Switch>; MAX_TRACKS],
+    /// Switches made on each track so far, for a view that says how many
+    /// it shows ([`Includes::switches`]).
+    made: [u32; MAX_TRACKS],
+}
 
 impl Switches {
     pub fn new() -> Switches {
-        Switches([None; MAX_TRACKS])
+        Switches {
+            on: [None; MAX_TRACKS],
+            made: [0; MAX_TRACKS],
+        }
     }
 
-    /// Forget the switches the view has caught up with: its cue is gone
-    /// (the control thread applied it, or took it back).
+    /// Forget the switches the view has caught up with. A view that says
+    /// what it includes has caught up once it shows as many switches on
+    /// the track as were made; any other once its cue is gone (the control
+    /// thread applied it, or took it back).
     pub fn follow(&mut self, view: &PlayView) {
-        for (i, s) in self.0.iter_mut().enumerate() {
-            if let Some(sw) = *s {
-                if view
+        for (i, s) in self.on.iter_mut().enumerate() {
+            let Some(sw) = *s else {
+                continue;
+            };
+            let shown = match view.includes {
+                Some(inc) => inc.switches[i] >= self.made[i],
+                None => view
                     .tracks
                     .get(i)
                     .and_then(|t| t.cue.as_ref())
-                    .is_none_or(|c| c.slot != sw.slot)
-                {
-                    *s = None;
-                }
+                    .is_none_or(|c| c.slot != sw.slot),
+            };
+            if shown {
+                *s = None;
             }
         }
     }
@@ -773,7 +910,7 @@ impl Switches {
         ticks: &Range<Tick>,
         bar: Tick,
     ) -> Option<Tick> {
-        if self.0.get(track).is_none_or(Option::is_some) {
+        if self.on.get(track).is_none_or(Option::is_some) {
             return None;
         }
         view.tracks.get(track)?.cue.as_ref()?;
@@ -788,12 +925,13 @@ impl Switches {
             .clip
             .as_ref()
             .map_or(at, |c| anchored(at, c.length, c.speed));
-        *self.0.get_mut(track)? = Some(Switch {
+        *self.on.get_mut(track)? = Some(Switch {
             slot: cue.slot,
             origin,
             start: at,
             mute: cue.mute,
         });
+        self.made[track] = self.made[track].wrapping_add(1);
         Some(Started {
             track,
             slot: cue.slot,
@@ -806,7 +944,7 @@ impl Switches {
     /// Whether `track` is muted now: as its cue set it when that started,
     /// else as the view has it.
     pub fn muted(&self, view: &PlayView, track: usize) -> bool {
-        match self.0.get(track).copied().flatten().and_then(|s| s.mute) {
+        match self.on.get(track).copied().flatten().and_then(|s| s.mute) {
             Some(m) => m,
             None => view.tracks.get(track).is_some_and(|t| t.mute),
         }
@@ -825,7 +963,7 @@ impl Switches {
         track: usize,
     ) -> Option<(&'a ClipView, Tick, Tick)> {
         let t = view.tracks.get(track)?;
-        match self.0.get(track).copied().flatten() {
+        match self.on.get(track).copied().flatten() {
             Some(sw) => t
                 .cue
                 .as_ref()?
@@ -935,6 +1073,57 @@ mod tests {
             Err(CompileError::TwoClips(0))
         );
         assert_eq!(PlayView::compile(&p, &[]).unwrap().notes(), 0);
+    }
+
+    #[test]
+    fn a_compile_checks_what_it_plays_not_the_whole_project() {
+        let mut p = project();
+        let l = |track, slot| Launch {
+            track,
+            slot,
+            origin: 0,
+            start: 0,
+        };
+        // A clip out of range in a slot nothing plays: the rest compiles.
+        let mut bad = Clip::new("bad", 3840);
+        bad.notes.push(Note::new(5000, 10, 1, 100));
+        p.tracks[1].slots[3] = Some(bad);
+        assert!(PlayView::compile(&p, &[l(0, 2)]).is_ok());
+        // Launched or cued, it is refused.
+        assert_eq!(
+            PlayView::compile(&p, &[l(1, 3)]),
+            Err(CompileError::Model(ModelError::BadNote(0)))
+        );
+        assert_eq!(
+            PlayView::compile_cued(
+                &p,
+                &[],
+                &[Cue {
+                    track: 1,
+                    slot: Some(3)
+                }]
+            ),
+            Err(CompileError::Model(ModelError::BadNote(0)))
+        );
+        // Placed in the song, it is refused once song mode is on.
+        let mut v = PlayView::compile(&p, &[]).unwrap();
+        p.arrangement
+            .placements
+            .push(mpfree_seq::Placement::linked(1, 3, 0, 3840));
+        assert!(v.set_song(&p, false).is_ok());
+        assert_eq!(
+            v.set_song(&p, true),
+            Err(CompileError::Model(ModelError::BadNote(0)))
+        );
+        // The tracks themselves are still checked.
+        p.tracks[0].swing = Some(Swing {
+            grid: 0,
+            amount: 50,
+        });
+        assert_eq!(
+            PlayView::compile(&p, &[]),
+            Err(CompileError::Model(ModelError::BadSwing))
+        );
     }
 
     #[test]
