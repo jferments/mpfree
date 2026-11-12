@@ -17,8 +17,8 @@ from pathlib import Path
 import hashlib,json,os,re,time
 
 args=list(getScriptArgs())
-if len(args)!=1 or not Path(str(args[0])).is_absolute():
-    raise RuntimeError("Expected one absolute private output directory")
+if len(args)!=3 or any(not Path(str(x)).is_absolute() for x in args):
+    raise RuntimeError("Expected private output directory, temporary P3 image, and ready marker")
 folder=Path(str(args[0]))
 folder.mkdir(parents=True,exist_ok=True)
 os.umask(0o077)
@@ -44,6 +44,22 @@ for off in range(0,length,32768):
 raw=bytes(raw)
 if hashlib.sha256(raw).hexdigest()!=expected:
     raise RuntimeError("Owner P3 SHA256 mismatch")
+# Export only the owner-verified bytes into a short-lived private directory,
+# never into ZIP or GitHub. Signal readiness before lengthy Ghidra census.
+raw_output=Path(str(args[1]))
+ready_marker=Path(str(args[2]))
+if raw_output.is_symlink() or ready_marker.is_symlink():
+    raise RuntimeError("Refusing symlink for private P3 image export")
+raw_output.parent.mkdir(parents=True,exist_ok=True)
+with raw_output.open("xb") as handle:
+    handle.write(raw)
+    handle.flush()
+    os.fsync(handle.fileno())
+if hashlib.sha256(raw_output.read_bytes()).hexdigest()!=expected:
+    raise RuntimeError("Private image export SHA mismatch")
+ready_marker.write_text(expected+"\n")
+print("V20 private owner P3 image verified; QEMU experiment can start now")
+
 fm=P.getFunctionManager()
 listing=P.getListing()
 refs=P.getReferenceManager()
@@ -216,7 +232,7 @@ try:
                          "relevant_offsets":[H(x) for x in sorted(match)],
                          "instruction":instruction_row(pc)}
                     if kind in ("CALLIND","BRANCHIND"):
-                        row["target_dependency"]=op_tree(target,max_depth=11) if False else op_tree(target)
+                        row["target_dependency"]=op_tree(target)
                         result_row["indirect_calls"].append(row)
                         indirect.append({"function":H(entry),"site":H(pc),"dependency":row["target_dependency"]})
                         stats["indirect_sites"]+=1
