@@ -4543,6 +4543,18 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         Ok(p) => out.push(("clips", p)),
         Err(e) => eprintln!("clips sample: {e}"),
     }
+    // The note editor on the Arrange page: the piano roll, then the list.
+    for (name, list) in [("arrange-notes", false), ("arrange-notes-list", true)] {
+        match mpfree_time_ui::sample::notes_state(list) {
+            Ok(state) => {
+                let mut p = quiet_player(fonts());
+                p.apply(ToUi::Time(Box::new(state)));
+                p.apply(ToUi::Show(View::Arrange));
+                out.push((name, p));
+            }
+            Err(e) => eprintln!("{name} sample: {e}"),
+        }
+    }
     // The Arrange page's Song view: rows made into a song, song mode on,
     // Rec song armed.
     match mpfree_time_ui::sample::song_state() {
@@ -5124,6 +5136,47 @@ mod tests {
         assert_eq!(
             tap(&mut p, (back.x + back.w / 2, back.y + back.h / 2)),
             Some(FromUi::Time(TimeAction::SongView(false)))
+        );
+        // Edit › on the grid opens the note editor.
+        use mpfree_time_ui::editor::{EditAction, Editor, NoteGrid};
+        p.time.song_view = false;
+        p.time_page.update(&mut p.ui, &p.time);
+        p.ui.paint(&mut SoftCanvas::new(1280, 800));
+        let clips = p.ui.rect_of(time_view::CLIPS).unwrap();
+        let edit =
+            p.ui.get::<ClipGrid>(time_view::CLIPS)
+                .unwrap()
+                .edit_rect(clips);
+        assert_eq!(
+            tap(&mut p, (edit.x + edit.w / 2, edit.y + edit.h / 2)),
+            Some(FromUi::Time(TimeAction::Edit(EditAction::Open)))
+        );
+        // Open, the piano roll takes the grid's place: a tap on a note
+        // picks it, and TC corrects the timing.
+        let mut clip = mpfree_seq::Clip::new("Beat", 3840);
+        clip.notes = vec![
+            mpfree_seq::Note::new(0, 240, 0, 100),
+            mpfree_seq::Note::new(970, 240, 1, 90),
+        ];
+        p.time.edit = Some(Box::new(time_view::EditInfo {
+            editor: Editor::new(0, 0, &clip),
+            clip,
+            track_name: "Track 1".into(),
+            bar: 3840,
+        }));
+        p.time_page.update(&mut p.ui, &p.time);
+        p.ui.paint(&mut SoftCanvas::new(1280, 800));
+        let area = p.ui.rect_of(time_view::NOTES).unwrap();
+        let grid = p.ui.get::<NoteGrid>(time_view::NOTES).unwrap();
+        let note = grid.note_rect(area, 1).unwrap();
+        let tc = grid.button_rects(area)[7];
+        assert_eq!(
+            tap(&mut p, (note.x + note.w / 2, note.y + note.h / 2)),
+            Some(FromUi::Time(TimeAction::Edit(EditAction::Note(1))))
+        );
+        assert_eq!(
+            tap(&mut p, (tc.x + tc.w / 2, tc.y + tc.h / 2)),
+            Some(FromUi::Time(TimeAction::Edit(EditAction::Button(7))))
         );
     }
 
