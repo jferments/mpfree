@@ -31,5 +31,44 @@ class SerialCompletionTests(unittest.TestCase):
                                                "MPFREE_VM_DONE_expected"))
 
 
+
+class SyntheticDriveRoutingTests(unittest.TestCase):
+    def sample_command(self):
+        return [
+            "qemu-system-arm", "-snapshot", "-machine", "virt",
+            "-kernel", "/tmp/kernel-zImage",
+            "-append", "console=ttyAMA0 root=/dev/vda rw rootwait init=/bin/sh",
+            "-drive", "if=none,id=mpfree0,format=qcow2,file=/tmp/root.qcow2",
+            "-device", "virtio-blk-device,drive=mpfree0",
+        ]
+
+    def test_second_virtio_mmio_disk_moves_root_to_vdb(self):
+        """Regression for private 2026-11-12 log: 24MiB vda, 431MiB vdb."""
+        original = self.sample_command()
+        updated = LAB.qemu_storage_for_synthetic_model(original, "/tmp/model.ext4")
+        self.assertEqual(original[original.index("-append") + 1].split()[1],
+                         "root=/dev/vda")
+        self.assertIn("root=/dev/vdb", updated[updated.index("-append") + 1])
+        self.assertEqual(
+            [v for v in updated if v.startswith("virtio-blk-device,drive=")],
+            ["virtio-blk-device,drive=mpfree0",
+             "virtio-blk-device,drive=mpfreemock"],
+        )
+        self.assertIn("if=none,id=mpfreemock,format=raw,readonly=on,file=/tmp/model.ext4",
+                      updated)
+
+    def test_refuses_unknown_existing_root_mapping(self):
+        cmd = self.sample_command()
+        cmd[cmd.index("-append") + 1] = "root=/dev/vdb init=/bin/sh"
+        with self.assertRaises(ValueError):
+            LAB.qemu_storage_for_synthetic_model(cmd, "/tmp/model.ext4")
+
+    def test_refuses_duplicate_mock_disk(self):
+        cmd = LAB.qemu_storage_for_synthetic_model(self.sample_command(),
+                                                    "/tmp/model.ext4")
+        with self.assertRaises(ValueError):
+            LAB.qemu_storage_for_synthetic_model(cmd, "/tmp/model.ext4")
+
+
 if __name__ == "__main__":
     unittest.main()
