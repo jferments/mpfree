@@ -21,7 +21,11 @@ fn sine(seconds: f64, hz: f64) -> Source {
 
 fn warped_pad(s: &Source, bpm: f32, method: WarpMethod) -> Pad {
     let mut r = Region::whole(s);
-    r.warp = Some(Warp { bpm, method });
+    r.warp = Some(Warp {
+        bpm,
+        method,
+        pins: Vec::new(),
+    });
     Pad::new("loop", Layer::new(r))
 }
 
@@ -327,7 +331,7 @@ fn process_makes_a_new_source_in_the_layers_place_and_undo_brings_it_back() {
     let l = r.sustain_loop.unwrap();
     assert_eq!((l.start, l.end, l.crossfade), (3675, 33_075, 83));
     assert_eq!(r.fade_out.frames, 368);
-    assert!((r.warp.unwrap().bpm - 120.0).abs() < 0.01);
+    assert!((r.warp.as_ref().unwrap().bpm - 120.0).abs() < 0.01);
     // At 120 BPM the processed region needs no stretching at all.
     let k = Warps::new(120.0).key_for(r, 0).unwrap();
     assert_eq!(k.frames, 33_075);

@@ -335,3 +335,113 @@ fn a_through_tracks_locks_go_around_its_arp() {
     );
     assert_eq!(arps.dropped(), 0);
 }
+
+/// An idle arp skips its periods; the notes it plays once a pad wakes it are
+/// the same as from an arp run every period, with the transport rolling or
+/// stopped.
+#[test]
+fn an_idle_arp_that_skips_its_periods_plays_the_same_when_woken() {
+    for rolling in [true, false] {
+        let mut t = Transport::new(44_100, 120.0).unwrap();
+        if rolling {
+            t.command(0, Command::Play);
+        }
+        let mut arps = TrackArps::new(44_100, 120.0);
+        let bass = 3;
+        arps.engine(bass).unwrap().set_settings(up_sixteenths());
+        let mut reference = mpfree_play::ArpHost::new(mpfree_arp::Engine::new(44_100, 120.0));
+        reference.engine.set_settings(up_sixteenths());
+        let (mut block, mut got, mut want) = (Block::new(), Log::default(), Vec::new());
+        let mut periods = 0u32;
+        while t.frame() < 66_150 {
+            let n = 100 + (periods * 37) % 300;
+            periods += 1;
+            t.process(n, &mut block);
+            let start = block.start_frame;
+            // Pressed 0.7 s in (mid-period), let go 0.4 s later.
+            for (at, e) in [
+                (
+                    30_870u64,
+                    Event::NoteOn {
+                        note: 45,
+                        velocity: 100,
+                    },
+                ),
+                (48_510, Event::NoteOff { note: 45 }),
+            ] {
+                if (start..start + u64::from(n)).contains(&at) {
+                    arps.pad(bass, (at - start) as u32, e);
+                    reference.input((at - start) as u32, e);
+                }
+            }
+            arps.through_sink();
+            arps.finish(&block, &mut got);
+            reference.process(&block, &mut |offset, kind| {
+                want.push((start + u64::from(offset), kind))
+            });
+        }
+        let got: Vec<_> = got
+            .0
+            .iter()
+            .filter(|o| usize::from(o.track) == bass)
+            .map(|o| (o.frame, o.event))
+            .collect();
+        let want: Vec<_> = want
+            .iter()
+            .map(|&(f, k)| {
+                (
+                    f,
+                    match k {
+                        mpfree_arp::EventKind::On { note, velocity } => {
+                            Event::NoteOn { note, velocity }
+                        }
+                        mpfree_arp::EventKind::Off { note } => Event::NoteOff { note },
+                    },
+                )
+            })
+            .collect();
+        assert!(want.len() >= 6, "rolling {rolling}: {want:?}");
+        assert_eq!(got, want, "rolling {rolling}");
+    }
+}
+
+/// `finish_with` says which notes an arp played (the pads through it, or a
+/// through track's clip) and which the player passed on as recorded.
+#[test]
+fn finish_with_marks_what_the_arps_played() {
+    let mut arps = TrackArps::new(44_100, 120.0);
+    arps.engine(KEYS).unwrap().set_settings(up_sixteenths());
+    arps.set_through(KEYS, true);
+    let mut t = Transport::new(44_100, 120.0).unwrap();
+    t.command(0, Command::Play);
+    let view = view();
+    let mut player = Player::new();
+    let mut block = Block::new();
+    let mut seen: Vec<(u16, u8, bool)> = Vec::new();
+    while t.frame() < 11_025 {
+        t.process(128, &mut block);
+        if block.start_frame == 0 {
+            // A live hit on track 3, through its (Direct) arp.
+            arps.pad(
+                3,
+                5,
+                Event::NoteOn {
+                    note: 7,
+                    velocity: 80,
+                },
+            );
+        }
+        player.process(&view, &block, &mut arps.through_sink());
+        arps.finish_with(&block, |o, arp| {
+            if let Event::NoteOn { note, .. } = o.event {
+                seen.push((o.track, note, arp));
+            }
+        });
+    }
+    // The keys' clip through its arp, the kick as recorded, the pad live.
+    assert!(seen.contains(&(KEYS as u16, 60, true)));
+    assert!(seen.contains(&(KEYS as u16, 64, true)));
+    assert!(seen.contains(&(DRUMS as u16, 36, false)));
+    assert!(seen.contains(&(3, 7, true)));
+    assert_eq!(seen.iter().filter(|s| !s.2).count(), 1, "{seen:?}");
+}

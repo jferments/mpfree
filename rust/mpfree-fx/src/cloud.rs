@@ -36,7 +36,7 @@ use std::f32::consts::{LN_10, PI};
 
 use mpfree_node::{Ctx, Curve, Kind, Node, NodeEvent, NodeInfo, ParamInfo, Smooth, Timed, Unit};
 
-use crate::oversample::{Down2, Up2};
+use crate::oversample::{IirDown2, IirUp2};
 use crate::svf::Segs;
 use crate::{defaults, flush, lerp, Preset};
 
@@ -1432,23 +1432,33 @@ impl Side {
     }
 }
 
-/// Taps of Eco's half-band resamplers: flat to about 0.19 of the node's
-/// rate, so the reverb keeps up to about 8.5 kHz at 44.1 kHz and 9 kHz at
-/// 48 kHz.
-const ECO_TAPS: usize = 63;
+/// Eco's half-band resamplers: polyphase IIR, [`ECO_SECTIONS`] first-order
+/// all-passes each, flat to 0.19 of the node's rate (the reverb keeps up to
+/// about 8.5 kHz at 44.1 kHz and 9 kHz at 48 kHz) and 85 dB down from 0.31.
+/// About six multiplies a pair each way where a 63-tap FIR took about 33;
+/// their phase is not linear, which a reverb's wet signal does not mind.
+const ECO_SECTIONS: usize = 6;
+/// Their transition half-width, a fraction of the node's rate.
+const ECO_TBW: f64 = 0.06;
 /// How much later the wet signal comes out at Eco, node frames: both
-/// half-bands, plus one pair waiting to be complete.
-pub(crate) const ECO_DELAY: usize = ECO_TAPS - 1 + 2;
+/// half-bands' group delay at low frequencies (about 3 and 2), plus one
+/// pair waiting to be complete.
+pub(crate) const ECO_DELAY: usize = 7;
+/// How long Eco's resamplers ring after their input stops, node frames:
+/// the up-sampler's impulse falls under -100 dB by 229 node frames and the
+/// down-sampler's by 212. Added to the tail.
+const ECO_RING: usize = 448;
 /// Silent network frames a change of rate waits for: the up-sampler's
-/// history, so nothing it still holds is cut off.
-const ECO_DRAIN: u32 = ECO_TAPS as u32 / 2 + 1;
+/// ring, so nothing it still holds is cut off (115 network frames to
+/// -100 dB).
+const ECO_DRAIN: u32 = 128;
 
 /// Eco's resamplers: the input down to the network's half rate and the wet
 /// signal back up, with a two-frame queue between the pairs the network
 /// takes and the frames the node gives back.
 struct EcoRate {
-    down: [Down2; 2],
-    up: [Up2; 2],
+    down: [IirDown2; 2],
+    up: [IirUp2; 2],
     /// The first frame of a pair still waiting for its second.
     first: (f32, f32),
     held: usize,
@@ -1465,8 +1475,14 @@ const QUEUE: usize = 2 * CHUNK + 4;
 impl EcoRate {
     fn new() -> EcoRate {
         let mut e = EcoRate {
-            down: [Down2::new(ECO_TAPS), Down2::new(ECO_TAPS)],
-            up: [Up2::new(ECO_TAPS), Up2::new(ECO_TAPS)],
+            down: [
+                IirDown2::new(ECO_SECTIONS, ECO_TBW),
+                IirDown2::new(ECO_SECTIONS, ECO_TBW),
+            ],
+            up: [
+                IirUp2::new(ECO_SECTIONS, ECO_TBW),
+                IirUp2::new(ECO_SECTIONS, ECO_TBW),
+            ],
             first: (0.0, 0.0),
             held: 0,
             queue: [[0.0; QUEUE]; 2],
@@ -2101,7 +2117,7 @@ impl Node for Cloud {
             + ring(LATE_FB, c.late_ms, c.late_stages)
             + 0.1;
         let eco = if self.want_q == ECO {
-            ECO_DELAY as f32 / self.host as f32
+            (ECO_DELAY + ECO_RING) as f32 / self.host as f32
         } else {
             0.0
         };

@@ -22,18 +22,34 @@
 //!   way: the screen thread names the pad, the audio thread copies that
 //!   pad's grains into it ([`Player::fill_cloud`]) about 25 times a second
 //!   and sends it back.
+//! - While its source comes in (the line input while it is on, or a point
+//!   in the mix: resampling), the Sample page makes the sampler's input
+//!   buffer and sends its writing end here once, in a [`RecFeed`]; each
+//!   period [`RecFeed::period`] appends the source and marks the
+//!   transport's bar lines in it. When the source goes, the box goes back
+//!   to the screen thread, which frees it.
+
+use std::time::Instant;
 
 use mpfree_sampler::dsp::Ahdsr;
-use mpfree_sampler::engine::{Engine, EngineView, Event, GrainView, PadOut, MAX_GRAINS};
+use mpfree_sampler::engine::{
+    Engine, EngineView, Event, GrainView, LaneConfig, LaneSetup, LaneStats, PadOut, MAX_GRAINS,
+};
 use mpfree_sampler::model::{
     GrainParams, Layer, Pad, PlayMode, PressureRoute, PressureTarget, Project, Region, Source,
 };
 
+use mpfree_fx::{CapturePoint, StripId};
+use mpfree_sampler::record::Feed;
+use mpfree_transport::time::frames_between;
+use mpfree_transport::Block;
+
 use crate::kit::{Kit, Sound, MAX_KITS, MAX_VOICES};
+use crate::looping::PERIOD;
 
 /// The engine pans a centred sound −3 dB a side. Pads are raised by this
 /// much, so a kit plays at the level the round 3 mixer played it.
-const CENTRE_DB: f32 = 3.010_3;
+pub const CENTRE_DB: f32 = 3.010_3;
 
 /// What each row of the Grains kit's pads changes with pressure: target,
 /// depth.
@@ -51,6 +67,11 @@ pub struct Counters {
     pub dropped_events: u64,
     pub peak_grains: usize,
     pub skipped_grains: u64,
+    /// Split ([`Player::split`]): parts of periods the lane rendered half
+    /// the voices for, and the ones it was late for (that half unheard for
+    /// the part). Both 0 unsplit.
+    pub lane_parts: u64,
+    pub lane_late: u64,
 }
 
 pub struct Player {
@@ -471,6 +492,8 @@ impl Player {
             dropped_events: s.dropped_events,
             peak_grains: self.peak_grains,
             skipped_grains: s.skipped_grains,
+            lane_parts: s.lane_parts,
+            lane_late: s.lane_late,
         }
     }
 
@@ -498,6 +521,109 @@ impl Player {
     pub fn render_routed(&mut self, frames: usize, out: &mut impl PadOut) {
         self.engine.render_routed(frames, out);
         self.peak_grains = self.peak_grains.max(self.engine.live_grains());
+    }
+
+    /// [`Player::render_routed`], waiting for the lane's voices (once
+    /// split) until `deadline` at most: past it their sound is left out of
+    /// that part of the period, and no event is lost (see
+    /// [`Engine::render_routed_until`]).
+    // Not called yet: the audio loop turns the split on behind the Dev
+    // switch (app rounds thread).
+    #[allow(dead_code)]
+    pub fn render_routed_until(&mut self, frames: usize, out: &mut impl PadOut, deadline: Instant) {
+        self.engine.render_routed_until(frames, out, deadline);
+        self.peak_grains = self.peak_grains.max(self.engine.live_grains());
+    }
+
+    /// Splits the engine's voices over two cores: half render on a lane
+    /// (a worker thread, pinned and real-time as `config` asks) while the
+    /// audio thread renders the rest (see [`Engine::split`]). Allocates
+    /// and starts a thread: call it before the sound starts. Returns what
+    /// the lane got (threaded, pinned, FIFO), or None with fewer than 2
+    /// voices.
+    // Not called yet: the audio loop turns the split on behind the Dev
+    // switch (app rounds thread).
+    #[allow(dead_code)]
+    pub fn split(&mut self, config: LaneConfig) -> Option<LaneSetup> {
+        self.engine.split(config).cloned()
+    }
+
+    /// The lane's counters once split (posted, joined, late, busy, worker
+    /// allocations); [`Player::counters`] has the engine's lane parts and
+    /// late parts.
+    // Not called yet: the audio loop turns the split on behind the Dev
+    // switch (app rounds thread).
+    #[allow(dead_code)]
+    pub fn lane_stats(&self) -> Option<LaneStats> {
+        self.engine.lane_stats()
+    }
+}
+
+/// What the sampler records from (steps CAP and RESAMP): the line input,
+/// or a point in the mix taken by the mixer's capture point
+/// ([`crate::mixing::SAMPLER_CAPTURE`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum RecSource {
+    /// The line input, as it comes in (before the mixer).
+    #[default]
+    Line,
+    /// A strip of the mixer at a capture point.
+    Mix(StripId, CapturePoint),
+}
+
+/// The audio thread's end of the sampler's input (steps CAP and RESAMP):
+/// the rolling buffer's writer and the bar lines. It travels boxed, so the
+/// channels move a pointer and the audio thread never frees the buffer.
+pub struct RecFeed(pub Feed);
+
+impl RecFeed {
+    /// One period: marks the bar lines the transport's `block` crosses
+    /// (from bar 1 on, not the count-in) at their frames in the buffer,
+    /// `latency` frames later (a point in the mix hears the block that
+    /// much late), then appends the period's input. Never allocates, locks
+    /// or waits.
+    pub fn period(&mut self, block: &Block, left: &[f32], right: &[f32], latency: u32) {
+        let base = self.0.audio.written() + u64::from(latency);
+        let mut bar = None;
+        for span in block.spans() {
+            if !span.state.rolling() {
+                continue;
+            }
+            let ticks = span.meter.bar_ticks();
+            for (tick, offset) in span.lines(ticks) {
+                if tick >= 0 {
+                    self.0.bars.mark(base + u64::from(offset));
+                }
+            }
+            bar = Some(frames_between(0, ticks, span.bpm, span.rate));
+        }
+        self.0.bars.set_bar(bar);
+        let n = left.len().min(right.len()).min(PERIOD);
+        self.0.audio.push_planar(&left[..n], &right[..n]);
+    }
+
+    /// The input comes from another source from now on: Skip back and
+    /// takes stop here.
+    pub fn restart(&mut self) {
+        self.0.restart();
+    }
+
+    /// Frames appended since it started.
+    pub fn written(&self) -> u64 {
+        self.0.audio.written()
+    }
+}
+
+impl PartialEq for RecFeed {
+    /// A feed is only ever itself: there is one writer per buffer.
+    fn eq(&self, other: &Self) -> bool {
+        std::ptr::eq(self, other)
+    }
+}
+
+impl std::fmt::Debug for RecFeed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "RecFeed({} frames)", self.written())
     }
 }
 
@@ -634,6 +760,51 @@ mod tests {
             assert_eq!(*peak > 0.05, pad == 0 || pad == 5, "pad {pad}: peak {peak}");
         }
         assert_eq!((dry.playing(), routed.playing()), (0, 0));
+    }
+
+    #[test]
+    fn a_split_player_plays_as_one_core_does_and_counts_its_lane() {
+        let (mut ka, mut kb) = (kits(), kits());
+        let mut one = Player::new(&mut ka, &NOTES, 44_100).unwrap();
+        let mut two = Player::new(&mut kb, &NOTES, 44_100).unwrap();
+        assert_eq!(one.lane_stats(), None);
+        let setup = two
+            .split(LaneConfig {
+                name: "test-pads".into(),
+                ..LaneConfig::default()
+            })
+            .unwrap();
+        assert!(setup.threaded.is_ok(), "{setup:?}");
+        let (mut ca, mut cb) = (
+            Channels([[[0.0; 128]; 2]; 16]),
+            Channels([[[0.0; 128]; 2]; 16]),
+        );
+        let far = || Instant::now() + std::time::Duration::from_secs(5);
+        for period in 0..40 {
+            if period % 3 == 1 {
+                for p in [&mut one, &mut two] {
+                    assert!(p.hit_at(0, 110, 7));
+                    assert!(p.hit_at(5, 90, 64));
+                }
+            }
+            one.render_routed(128, &mut ca);
+            two.render_routed_until(128, &mut cb, far());
+            for (a, b) in ca.0.iter_mut().zip(cb.0.iter_mut()) {
+                for k in 0..128 {
+                    assert!((a[0][k] - b[0][k]).abs() < 1e-5, "period {period}");
+                    assert!((a[1][k] - b[1][k]).abs() < 1e-5, "period {period}");
+                }
+                *a = [[0.0; 128]; 2];
+                *b = [[0.0; 128]; 2];
+            }
+        }
+        let c = two.counters();
+        assert!(c.lane_parts > 0 && c.lane_late == 0, "{c:?}");
+        assert_eq!(two.lane_stats().unwrap().posted, c.lane_parts);
+        assert_eq!(
+            (one.counters().lane_parts, one.playing()),
+            (0, two.playing())
+        );
     }
 
     #[test]
@@ -906,5 +1077,37 @@ mod tests {
                 "velocity {v}: {level} vs {want}"
             );
         }
+    }
+
+    #[test]
+    fn the_feed_marks_each_bar_line_at_its_frame_and_appends_the_input() {
+        use mpfree_sampler::record::input;
+        use mpfree_transport::{Command, Transport};
+
+        let rate = 44_100;
+        let mut t = Transport::new(rate, 120.0).unwrap();
+        let (feed, inp) = input(10, rate);
+        let mut feed = RecFeed(feed);
+        let mut block = Block::new();
+        // Play from frame 1 000; a 4/4 bar at 120 BPM is 88 200 frames.
+        t.command(1_000, Command::Play);
+        let (l, r) = ([0.25f32; PERIOD], [-0.25f32; PERIOD]);
+        for _ in 0..1_500 {
+            assert!(t.process(PERIOD as u32, &mut block));
+            feed.period(&block, &l, &r, 0);
+        }
+        assert_eq!(feed.written(), 1_500 * PERIOD as u64);
+        let lines: Vec<u64> = (0..4).map_while(|n| inp.bars.back(n)).collect();
+        assert_eq!(lines, [1_000 + 2 * 88_200, 1_000 + 88_200, 1_000]);
+        assert_eq!(inp.bars.bar_frames(), Some(88_200.0));
+        assert_eq!(inp.last_frames(1).unwrap(), [0.25, -0.25]);
+        // Stopped: no bar length, and no more lines.
+        t.command(t.frame(), Command::Stop);
+        for _ in 0..800 {
+            t.process(PERIOD as u32, &mut block);
+            feed.period(&block, &l, &r, 0);
+        }
+        assert_eq!(inp.bars.bar_frames(), None);
+        assert_eq!(inp.bars.count(), 3);
     }
 }
