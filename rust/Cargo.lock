@@ -374,6 +374,7 @@ dependencies = [
  "mpfree-fx",
  "mpfree-fx-ui",
  "mpfree-instruments",
+ "mpfree-lanes",
  "mpfree-looper",
  "mpfree-mixer-ui",
  "mpfree-mod",
@@ -591,6 +592,15 @@ version = "0.1.0"
 dependencies = [
  "mpfree-stretch",
  "mpfree-transport",
+]
+
+[[package]]
+name = "mpfree-midi"
+version = "0.1.0"
+dependencies = [
+ "mpfree-controller",
+ "mpfree-midi-clock",
+ "mpfree-param",
 ]
 
 [[package]]

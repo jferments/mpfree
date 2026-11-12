@@ -47,7 +47,7 @@ use mpfree_synth::{Drums, Fm, Pluck, Poly, Preset, Wavetable};
 use mpfree_synth_ui::format::value_line;
 use mpfree_synth_ui::SynthState;
 pub use mpfree_tuning::Builtin;
-use mpfree_tuning::Tuning;
+use mpfree_tuning::{root_hz, scala, Tuning};
 use mpfree_ui::Color;
 use std::time::{Duration, Instant};
 
@@ -146,12 +146,76 @@ impl Engine {
 pub const A4_MIN: u16 = 380;
 pub const A4_MAX: u16 = 480;
 
-/// The synth's tuning, from the Synth tab's options: a built-in tuning, its
-/// root for the tunings that have one (0 = C to 11 = B) and A4 in whole Hz.
-/// Every engine but Drums plays through it.
+/// The most tuning files the tunings folder offers.
+pub const MAX_TUNING_FILES: usize = 64;
+
+/// A tuning from a Scala file the musician put in the tunings folder
+/// (files/tunings/ on the data partition): its scale (`NAME.scl`) and,
+/// with a keyboard map beside it (`NAME.kbm`), the tuning the map fixes.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TuningFile {
+    /// The file's name without `.scl`, as the options menu shows it.
+    pub name: String,
+    scale: scala::Scale,
+    /// The tuning the keyboard map gives, root and pitch included; None
+    /// without a map.
+    mapped: Option<Tuning>,
+}
+
+impl TuningFile {
+    /// Reads a scale and its keyboard map, if there is one, or says why
+    /// not. Allocates: call it before the sound starts.
+    pub fn parse(name: &str, scl: &str, kbm: Option<&str>) -> Result<TuningFile, String> {
+        let scale = scala::parse_scl(scl).map_err(|e| e.to_string())?;
+        let mapped = match kbm {
+            Some(text) => {
+                let map = scala::parse_kbm(text).map_err(|e| format!("its .kbm: {e}"))?;
+                Some(scala::tuning(&scale, &map).map_err(|e| e.to_string())?)
+            }
+            None => None,
+        };
+        Ok(TuningFile {
+            name: name.to_string(),
+            scale,
+            mapped,
+        })
+    }
+
+    /// Whether a keyboard map sets the root and the pitch, so the Tuning
+    /// root and A4 options don't apply.
+    pub fn mapped(&self) -> bool {
+        self.mapped.is_some()
+    }
+
+    /// Notes in one repeat of the scale (12 for most).
+    pub fn notes(&self) -> usize {
+        self.scale.len()
+    }
+
+    /// The tuning: the keyboard map's, or else the scale with its 1/1 on
+    /// pitch class `root` (0 = C, in octave 4), which keeps its 12-TET
+    /// pitch for `a4_hz`, and each key the next note of the scale, as the
+    /// built-in tunings do. Never allocates.
+    pub fn tuning(&self, root: u8, a4_hz: f32) -> Tuning {
+        match &self.mapped {
+            Some(t) => t.clone(),
+            None => {
+                let key = 60 + i32::from(root % 12);
+                self.scale.rooted(key, root_hz(key, a4_hz))
+            }
+        }
+    }
+}
+
+/// The synth's tuning, from the Synth tab's options: a built-in tuning or
+/// a tuning file, its root for the tunings that have one (0 = C to 11 = B)
+/// and A4 in whole Hz. Every engine but Drums plays through it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TuningPick {
     pub builtin: Builtin,
+    /// A tuning file (its place in the synth's list,
+    /// [`Synth::tuning_files`]), which plays instead of `builtin`.
+    pub file: Option<u8>,
     pub root: u8,
     pub a4_hz: u16,
 }
@@ -160,6 +224,7 @@ impl Default for TuningPick {
     fn default() -> Self {
         TuningPick {
             builtin: Builtin::Equal12,
+            file: None,
             root: 0,
             a4_hz: 440,
         }
@@ -167,15 +232,33 @@ impl Default for TuningPick {
 }
 
 impl TuningPick {
-    /// The tuning itself. Never allocates.
-    pub fn tuning(&self) -> Tuning {
-        self.builtin
-            .tuning(self.root % 12, f32::from(self.a4_hz.clamp(A4_MIN, A4_MAX)))
+    /// The tuning file picked, out of `files`.
+    pub fn file<'a>(&self, files: &'a [TuningFile]) -> Option<&'a TuningFile> {
+        files.get(usize::from(self.file?))
     }
 
-    /// "Just (5-limit) on D, A4 432 Hz"; "12-TET" on its own at 440.
-    pub fn label(&self) -> String {
-        let root = if self.builtin.has_root() {
+    /// The tuning itself, with `files` the tuning files offered. Never
+    /// allocates.
+    pub fn tuning(&self, files: &[TuningFile]) -> Tuning {
+        let a4 = f32::from(self.a4_hz.clamp(A4_MIN, A4_MAX));
+        match self.file(files) {
+            Some(f) => f.tuning(self.root % 12, a4),
+            None => self.builtin.tuning(self.root % 12, a4),
+        }
+    }
+
+    /// "Just (5-limit) on D, A4 432 Hz"; "12-TET" on its own at 440; a
+    /// tuning file by its name ("werckmeister3 on C"), alone when its
+    /// keyboard map sets the root and the pitch.
+    pub fn label(&self, files: &[TuningFile]) -> String {
+        let (name, has_root, fixed) = match self.file(files) {
+            Some(f) => (f.name.as_str(), true, f.mapped()),
+            None => (self.builtin.name(), self.builtin.has_root(), false),
+        };
+        if fixed {
+            return name.to_string();
+        }
+        let root = if has_root {
             format!(" on {}", NOTE_NAMES[usize::from(self.root % 12)])
         } else {
             String::new()
@@ -185,7 +268,7 @@ impl TuningPick {
         } else {
             format!(", A4 {} Hz", self.a4_hz)
         };
-        format!("{}{root}{a4}", self.builtin.name())
+        format!("{name}{root}{a4}")
     }
 }
 
@@ -306,6 +389,8 @@ pub struct Synth {
     /// The sound from before the preset picker's first try, to put back if
     /// the picker is cancelled ([`Synth::try_preset`]).
     audition: Option<SoundPreset>,
+    /// The tuning files offered after the built-in tunings.
+    tuning_files: Vec<TuningFile>,
 }
 
 /// The factory presets of an engine other than FM (whose list is built).
@@ -436,6 +521,7 @@ impl Synth {
             resets: 0,
             meters,
             audition: None,
+            tuning_files: Vec::new(),
         }
     }
 
@@ -497,6 +583,11 @@ impl Synth {
         let retune = settings.tuning != self.settings.tuning;
         self.settings = settings;
         self.settings.bank %= BANKS;
+        if self.settings.tuning.file(&self.tuning_files).is_none() {
+            // Not a file this synth has: the built-in tuning plays, and
+            // the settings (and so the log line) say so.
+            self.settings.tuning.file = None;
+        }
         if retune {
             self.retune();
         }
@@ -504,10 +595,35 @@ impl Synth {
         switched
     }
 
+    /// The tuning files to offer after the built-in tunings (at most
+    /// [`MAX_TUNING_FILES`]; the rest are left out). A pick of a file
+    /// moves to the new list's file in its place, or to its built-in
+    /// tuning when there is none. Allocates and frees: call it before the
+    /// sound starts.
+    pub fn set_tuning_files(&mut self, mut files: Vec<TuningFile>) {
+        files.truncate(MAX_TUNING_FILES);
+        self.tuning_files = files;
+        if self.settings.tuning.file(&self.tuning_files).is_none() {
+            self.settings.tuning.file = None;
+        }
+        self.retune();
+    }
+
+    /// The tuning files offered after the built-in tunings.
+    pub fn tuning_files(&self) -> &[TuningFile] {
+        &self.tuning_files
+    }
+
+    /// The tuning playing, for the log: "12-TET", "Just (5-limit) on D",
+    /// a file's name.
+    pub fn tuning_label(&self) -> String {
+        self.settings.tuning.label(&self.tuning_files)
+    }
+
     /// Hands every engine the tuning picked; sounding notes move to it on
     /// their next control step. Drums ignore tunings. Never allocates.
     fn retune(&mut self) {
-        let t = self.settings.tuning.tuning();
+        let t = self.settings.tuning.tuning(&self.tuning_files);
         self.poly.set_tuning(&t);
         self.fm.set_tuning(&t);
         self.drums.set_tuning(&t);
@@ -1877,6 +1993,7 @@ mod tests {
             builtin: Builtin::Just,
             root: 0,
             a4_hz: 440,
+            file: None,
         };
         let a432 = TuningPick {
             a4_hz: 432,
@@ -1907,25 +2024,114 @@ mod tests {
                 if engine == Engine::Drums {
                     assert_eq!(tuned, plain, "Drums keep their own pitch");
                 } else {
-                    assert_ne!(tuned, plain, "{engine:?} ignored {}", t.label());
+                    assert_ne!(tuned, plain, "{engine:?} ignored {}", t.label(&[]));
                 }
             }
         }
-        assert_eq!(TuningPick::default().label(), "12-TET");
+        assert_eq!(TuningPick::default().label(&[]), "12-TET");
         assert_eq!(
             TuningPick {
                 root: 2,
                 a4_hz: 432,
                 ..just
             }
-            .label(),
+            .label(&[]),
             "Just (5-limit) on D, A4 432 Hz"
+        );
+    }
+
+    /// Just intonation as a Scala file, and a Dorian scale with a keyboard
+    /// map that puts A4 at 432 Hz.
+    const JUST_SCL: &str =
+        "! just.scl\nJust\n12\n16/15\n9/8\n6/5\n5/4\n4/3\n45/32\n3/2\n8/5\n5/3\n9/5\n15/8\n2/1\n";
+    const DORIAN_SCL: &str = "Dorian, just\n7\n9/8\n6/5\n4/3\n3/2\n5/3\n9/5\n2/1\n";
+    const DORIAN_KBM: &str = "12\n0\n127\n62\n69\n432.0\n7\n0\nx\n1\n2\nx\n3\nx\n4\nx\n5\n6\nx\n";
+
+    fn tuning_files() -> Vec<TuningFile> {
+        vec![
+            TuningFile::parse("just", JUST_SCL, None).unwrap(),
+            TuningFile::parse("dorian", DORIAN_SCL, Some(DORIAN_KBM)).unwrap(),
+        ]
+    }
+
+    #[test]
+    fn a_tuning_file_plays_on_the_root_and_a4_picked_unless_its_map_sets_them() {
+        let files = tuning_files();
+        assert!(!files[0].mapped() && files[1].mapped());
+        assert_eq!((files[0].notes(), files[1].notes()), (12, 7));
+        let pick = |file: Option<u8>, root: u8, a4_hz: u16| TuningPick {
+            builtin: Builtin::Just,
+            file,
+            root,
+            a4_hz,
+        };
+        // A .scl alone is the built-in tuning it spells, to the bit.
+        for (root, a4) in [(0, 440), (2, 432), (11, 480)] {
+            assert_eq!(
+                pick(Some(0), root, a4).tuning(&files),
+                pick(None, root, a4).tuning(&files)
+            );
+        }
+        // A keyboard map fixes the root and the pitch.
+        let fixed = pick(Some(1), 0, 440).tuning(&files);
+        assert_eq!(pick(Some(1), 5, 400).tuning(&files), fixed);
+        assert!((fixed.hz(69.0) - 432.0).abs() < 1e-3);
+        // A file that isn't there plays the built-in tuning.
+        assert_eq!(
+            pick(Some(9), 2, 440).tuning(&files),
+            pick(None, 2, 440).tuning(&files)
+        );
+        assert_eq!(pick(Some(0), 2, 432).label(&files), "just on D, A4 432 Hz");
+        assert_eq!(pick(Some(1), 2, 432).label(&files), "dorian");
+
+        // On the synth: pad 5 plays as with the built-in tuning.
+        let play = |files: Vec<TuningFile>, t: TuningPick| {
+            let mut s = Synth::new(44_100);
+            s.set_tuning_files(files);
+            with(&mut s, |p| p.tuning = t);
+            let mut frame = 0;
+            s.note_on(4, 100, 0);
+            (run(&mut s, &mut frame, 60, 128), s)
+        };
+        let (builtin, _) = play(Vec::new(), pick(None, 2, 432));
+        let (file, s) = play(tuning_files(), pick(Some(0), 2, 432));
+        assert_eq!(file, builtin);
+        assert_eq!(s.tuning_label(), "just on D, A4 432 Hz");
+        assert_eq!(s.tuning_files().len(), 2);
+        let (plain, _) = play(Vec::new(), TuningPick::default());
+        let (dorian, s) = play(tuning_files(), pick(Some(1), 0, 440));
+        assert_ne!(dorian, plain);
+        assert_eq!(s.tuning_label(), "dorian");
+        // A pick of a file the synth doesn't have falls to its built-in
+        // tuning, and the settings say so.
+        let (missing, s) = play(tuning_files(), pick(Some(7), 2, 432));
+        assert_eq!(missing, builtin);
+        assert_eq!(s.settings().tuning.file, None);
+        // A new list without the file picked does the same.
+        let mut s = Synth::new(44_100);
+        s.set_tuning_files(tuning_files());
+        with(&mut s, |p| p.tuning = pick(Some(1), 2, 432));
+        assert_eq!(s.settings().tuning.file, Some(1));
+        s.set_tuning_files(tuning_files()[..1].to_vec());
+        assert_eq!(s.settings().tuning.file, None);
+        assert_eq!(s.tuning_label(), "Just (5-limit) on D, A4 432 Hz");
+    }
+
+    #[test]
+    fn bad_tuning_files_say_why() {
+        let e = TuningFile::parse("x", "desc\n2\n3/2\n", None).unwrap_err();
+        assert!(e.contains("2 notes promised"), "{e}");
+        let e = TuningFile::parse("x", DORIAN_SCL, Some("12\n0\n127\n60\n")).unwrap_err();
+        assert!(
+            e.starts_with("its .kbm: ") && e.contains("reference key"),
+            "{e}"
         );
     }
 
     #[test]
     fn the_audio_threads_part_never_allocates() {
         let mut s = Synth::new(44_100);
+        s.set_tuning_files(tuning_files());
         let (mut l, mut r) = ([0f32; 128], [0f32; 128]);
         let minor = scale("Minor", 9);
         let mut bars = [0f32; 16];
@@ -1964,9 +2170,12 @@ mod tests {
                     set.scale = if p % 2 == 0 { minor } else { None };
                     set.bank = p / 211 % BANKS;
                     set.engine = Engine::ALL[p / 300 % ENGINES];
-                    // A new tuning is worked out on this thread too.
+                    // A new tuning is worked out on this thread too,
+                    // tuning files (with and without a map) among them.
+                    let pick = p / 211 % (Builtin::ALL.len() + 2);
                     set.tuning = TuningPick {
-                        builtin: Builtin::ALL[p / 211 % Builtin::ALL.len()],
+                        builtin: Builtin::ALL[pick % Builtin::ALL.len()],
+                        file: pick.checked_sub(Builtin::ALL.len()).map(|f| f as u8),
                         root: (p % 12) as u8,
                         a4_hz: A4_MIN + (p % 100) as u16,
                     };

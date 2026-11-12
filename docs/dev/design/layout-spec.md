@@ -141,10 +141,11 @@ Approved by Jay at 22:34Z (the mod thread's card, "Approve as proposed"). The mo
   3. Audio buffer
   4. Find the buttons again
   5. Show developer tools
-  6. Map controls
-  7. Line input
-  8. System info
-  9. Touch screen (opens its own rows)
+  6. Sound cores (Shared, Core 3, Cores 3 and 2, Cores 3, 2 and 1 (a test Jay asked for on 12 Nov): where the sound runs from the next start; asked for by the profiling thread, agreed by the app thread on 12 Nov, added on Jay's go in its pull request)
+  7. Map controls
+  8. Line input
+  9. System info
+  10. Touch screen (opens its own rows)
 - **The Touch screen rows** ("Prefs · Touch screen", approved in the touch thread at 08:13Z, #69):
   1. Back
   2. Screen pad velocity
