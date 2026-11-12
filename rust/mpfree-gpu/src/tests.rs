@@ -106,8 +106,10 @@ fn software(nw: usize, nh: usize, rotation: Rotation, k: u32) -> (Vec<u32>, Reco
     let mut bytes = Vec::new();
     layout.rows(&soft, 0, nh, &mut bytes);
     let px = bytes
-        .chunks_exact(4)
-        .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]) & 0xFF_FFFF)
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|b| u32::from_le_bytes(*b) & 0xFF_FFFF)
         .collect();
     let mut rec = Recorder::new(w, h);
     rec.begin_frame();

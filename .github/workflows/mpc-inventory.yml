@@ -1263,6 +1263,7 @@ jobs:
     timeout-minutes: 60
     env:
       RUSTUP_TOOLCHAIN: stable
+      MPFREE_CLIPPY_TOOLCHAIN: "1.97.0"
       MPFREE_CARGO_TARGET_BUDGET_GIB: 15
     steps:
       - name: Clear the last job's /tmp files (self-hosted only)
@@ -1287,12 +1288,16 @@ jobs:
       - name: Install Rust stable (self-hosted only; GitHub's hosts have it)
         if: runner.environment == 'self-hosted'
         run: rustup toolchain install stable --profile minimal --component clippy
+      - name: Install the lint job's pinned clippy
+        run: rustup toolchain install "$MPFREE_CLIPPY_TOOLCHAIN" --profile minimal --component clippy
       - name: Install Mesa (GitHub-hosted only; the runners have it)
         run: |
           [ "$RUNNER_ENVIRONMENT" = self-hosted ] || sudo apt-get update -qq
           [ "$RUNNER_ENVIRONMENT" = self-hosted ] || sudo apt-get install -y --no-install-recommends libegl1 libegl-mesa0 libgles2 libgl1-mesa-dri
       - name: Clippy
-        run: cargo clippy --manifest-path rust/mpfree-gpu/Cargo.toml --all-targets --locked -- -D warnings
+        # The same pinned clippy as the lint job, so a new stable's lints do
+        # not turn this job red by themselves.
+        run: cargo "+$MPFREE_CLIPPY_TOOLCHAIN" clippy --manifest-path rust/mpfree-gpu/Cargo.toml --all-targets --locked -- -D warnings
       - name: The GPU's frame against the software path's
         # The tests fail, saying why, if EGL or the GPU is missing: they never
         # pass without drawing.
