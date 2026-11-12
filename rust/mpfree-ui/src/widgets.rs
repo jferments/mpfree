@@ -49,6 +49,10 @@ pub struct Header {
     /// the chips (layout spec, section 2): `Some(open)`, lit while the
     /// mixer is open. A tap gives `Select(MIXER_ICON)`.
     pub mixer_icon: Option<bool>,
+    /// The I/O icon (an arrow in over an arrow out) just left of the mixer
+    /// icon (layout spec, section 2): `Some(open)`, lit while the mixer's
+    /// I/O view shows. A tap gives `Select(IO_ICON)`.
+    pub io_icon: Option<bool>,
     /// Where each chip was last drawn (chip index, rect), for taps: a chip's
     /// width depends on its text, which only painting can measure.
     drawn_chips: RefCell<Vec<(usize, Rect)>>,
@@ -56,6 +60,8 @@ pub struct Header {
 
 /// What a tap on the header's mixer icon gives: `Select(MIXER_ICON)`.
 pub const MIXER_ICON: usize = usize::MAX;
+/// What a tap on the header's I/O icon gives: `Select(IO_ICON)`.
+pub const IO_ICON: usize = usize::MAX - 1;
 /// The mixer icon's size.
 const ICON_W: i32 = 44;
 
@@ -73,6 +79,7 @@ impl Header {
             active: 0,
             chips: Vec::new(),
             mixer_icon: None,
+            io_icon: None,
             drawn_chips: RefCell::new(Vec::new()),
         }
     }
@@ -87,6 +94,15 @@ impl Header {
             side,
             side,
         ))
+    }
+
+    /// Where the I/O icon sits, when the bar has one: left of the mixer
+    /// icon, or at the right edge without one.
+    pub fn io_icon_rect(&self, r: Rect) -> Option<Rect> {
+        self.io_icon?;
+        let right = self.icon_rect(r).map_or(r.right(), |b| b.x - 8);
+        let side = ICON_W.min(r.h);
+        Some(Rect::new(right - side, r.y + (r.h - side) / 2, side, side))
     }
 
     /// The pad player's bar ([`APP_TABS`]) with the tab named `active` lit
@@ -163,10 +179,33 @@ impl Widget for Header {
                     .fill_round_rect(Rect::new(x - 3, ky, 8, 6), 2, ink);
             }
         }
-        // Chips from the right edge (or the icon) leftwards; stop before
+        // The I/O icon left of it: an arrow in (pointing right) over an
+        // arrow out (pointing left).
+        if let (Some(b), Some(open)) = (self.io_icon_rect(r), self.io_icon) {
+            cx.canvas
+                .fill_round_rect(b, 10, if open { t.raised } else { t.surface });
+            if open {
+                let bar = Rect::new(b.x + 10, b.bottom() - 4, b.w - 20, 3);
+                cx.canvas.fill_round_rect(bar, 1, t.accent);
+            }
+            let ink = if open { t.text } else { t.text_dim };
+            let (x0, x1) = (b.x + 10, b.right() - 10);
+            for (y, right) in [(b.y + 15, true), (b.bottom() - 17, false)] {
+                cx.canvas.fill_rect(Rect::new(x0, y, x1 - x0, 2), ink);
+                for k in 0..5 {
+                    let h = 2 + 2 * (4 - k);
+                    let x = if right { x1 - 5 + k } else { x0 + 4 - k };
+                    cx.canvas.fill_rect(Rect::new(x, y + 1 - h / 2, 1, h), ink);
+                }
+            }
+        }
+        // Chips from the right edge (or the icons) leftwards; stop before
         // the tabs.
         let limit = self.tab_rect(r, self.tabs.len()).x;
-        let mut right = self.icon_rect(r).map_or(r.right(), |b| b.x - 8);
+        let mut right = self
+            .io_icon_rect(r)
+            .or(self.icon_rect(r))
+            .map_or(r.right(), |b| b.x - 8);
         let h = 34.min(r.h);
         let mut drawn = self.drawn_chips.borrow_mut();
         drawn.clear();
@@ -204,6 +243,9 @@ impl Widget for Header {
         }
         if self.icon_rect(r).is_some_and(|b| b.contains(x, y)) {
             return Some(EventKind::Select(MIXER_ICON));
+        }
+        if self.io_icon_rect(r).is_some_and(|b| b.contains(x, y)) {
+            return Some(EventKind::Select(IO_ICON));
         }
         let drawn = self.drawn_chips.borrow();
         drawn
@@ -1602,6 +1644,34 @@ mod tests {
             "the chip is left of the icon"
         );
         let e = ui.touch(1, Touch::Down, icon.x + 10, icon.y + 10).unwrap();
+        assert_eq!(e.kind, EventKind::Select(MIXER_ICON));
+    }
+
+    #[test]
+    fn the_io_icon_sits_left_of_the_mixer_icon_and_the_chips_move_left_again() {
+        let mut ui = Ui::new(Theme::dark(), Fonts::embedded(), 1280, 800);
+        let mut h = Header::new(&["Play", "Arrange"]);
+        h.chips = vec![Chip::new("Kit 1 of 6 · Bank A", Tone::Accent)];
+        h.mixer_icon = Some(false);
+        h.io_icon = Some(true);
+        ui.add("header", h);
+        ui.add("rest", Label::new("", Tone::Dim, Align::Left));
+        ui.add_page("p", "col(header:60, rest:*)").unwrap();
+        ui.paint(&mut SoftCanvas::new(1280, 800));
+        let r = ui.rect_of("header").unwrap();
+        let h = ui.get::<Header>("header").unwrap();
+        let (mixer, io) = (h.icon_rect(r).unwrap(), h.io_icon_rect(r).unwrap());
+        assert_eq!(mixer.right(), r.right());
+        assert_eq!(io.right(), mixer.x - 8, "just left of the mixer icon");
+        assert!(
+            h.chip_rect(0).unwrap().right() < io.x,
+            "the chip is left of both"
+        );
+        let e = ui.touch(1, Touch::Down, io.x + 10, io.y + 10).unwrap();
+        assert_eq!(e.kind, EventKind::Select(IO_ICON));
+        let e = ui
+            .touch(2, Touch::Down, mixer.x + 10, mixer.y + 10)
+            .unwrap();
         assert_eq!(e.kind, EventKind::Select(MIXER_ICON));
     }
 }

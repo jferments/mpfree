@@ -270,6 +270,9 @@ pub enum ToUi {
     /// While the mixer is open: Q-Link `0` (or the wheel) turned by `1`
     /// detents, for the selected strip.
     MixerQLink(usize, i32),
+    /// While the mixer's I/O view shows: the data wheel, - or +, for the
+    /// section showing.
+    IoInput(mpfree_mixer_ui::IoInput),
     /// What the chain editor shows (a few times a second while it is open,
     /// and after each change), boxed as the mixer's state is.
     Chain(Box<ChainState>),
@@ -287,6 +290,14 @@ pub enum ToUi {
     ChainLearn(ParamAddr),
     /// Q-LINK: the Q-Link column's next bank.
     QLinkBank,
+    /// The tempo follows an outside clock arriving on this port ("MIDI
+    /// In"), or none does: the bar's tempo chip (layout spec, section 4d).
+    ClockFrom(Option<String>),
+    /// The model the mixer's I/O view's MIDI, Sync and CV sections show
+    /// and edit, shared with the audio loop (midi_in.rs, midi_out.rs),
+    /// which only ever try_locks it. Once, at start: the sections join the
+    /// I/O view after Audio.
+    IoModel(mpfree_midi_ui::Shared),
     Session(String, Tone),
     Timing(Timing),
     Show(View),
@@ -551,6 +562,12 @@ pub enum FromUi {
     Mixer(mpfree_mixer_ui::MixAction),
     /// The top bar's mixer icon: open or close the mixer (the app decides).
     MixerIcon,
+    /// The top bar's I/O icon: open the mixer on its I/O view, or close it
+    /// (the app decides).
+    IoIcon,
+    /// Open the mixer's I/O view on the section already picked (the tempo
+    /// chip: Sync); it never closes it.
+    OpenIo,
     /// A touch on the chain editor, or a Q-Link turned while its knobs
     /// show (`modpanels::ChainHost::action`).
     Chain(ChainAction),
@@ -602,6 +619,13 @@ pub struct Player {
     sample_keys: (bool, bool),
     /// The Chop tab chopped live (its hint says how).
     sample_live: bool,
+    /// The view the mixer last said it shows (its state), if it ever did.
+    mix_view: Option<mpfree_mixer_ui::MixView>,
+    /// The I/O view's sections after Audio, by title, in their order there
+    /// (Audio is 0, these 1 on): [`add_io_sections`].
+    io_sections: Vec<String>,
+    /// Time the screen has run, for the I/O sections' ticks.
+    io_clock: Duration,
     /// The app has taken over the pages (after loading).
     ready: bool,
     view: View,
@@ -636,6 +660,10 @@ pub struct Player {
     qlink_focus: Option<usize>,
     /// Where the arp chip is in the header's chips.
     arp_chip: Option<usize>,
+    /// Where an outside clock comes from, while the tempo follows one.
+    clock_from: Option<String>,
+    /// The tempo chip's place among the header's chips, while it shows.
+    tempo_chip: Option<usize>,
     /// Fingers on the screen: a page change lets go of them first, so a pad
     /// held on the screen never sticks.
     fingers: Vec<u64>,
@@ -683,6 +711,7 @@ impl Player {
         let names: Vec<&str> = tabs(false).iter().map(|v| v.name()).collect();
         let mut header = Header::new(&names);
         header.mixer_icon = Some(false);
+        header.io_icon = Some(false);
         ui.add("header", header);
         let mut loading = Loading::new("MPFree", "Pad player");
         loading.set_backdrop(backdrop);
@@ -770,6 +799,9 @@ impl Player {
         mpfree_mixer_ui::add(&mut ui).expect("mixer layout");
         ui.add_page(mpfree_mixer_ui::MIXER_PAGE, MIXER_LAYOUT)
             .expect("mixer layout");
+        // The I/O view's MIDI, Sync and CV sections join when the model
+        // they edit arrives (ToUi::IoModel).
+        let io_sections = Vec::new();
         // The chain editor in the mixer's place and the macros panel over
         // the page, with the same Q-Link column (layout spec 4b).
         ChainPage::add(&mut ui).expect("chain layouts");
@@ -798,6 +830,9 @@ impl Player {
             menu_editing: false,
             sample_keys: (false, false),
             sample_live: false,
+            mix_view: None,
+            io_sections,
+            io_clock: Duration::ZERO,
             ready: false,
             view: View::Play,
             status,
@@ -817,6 +852,8 @@ impl Player {
             arp,
             qlink_focus: None,
             arp_chip: None,
+            clock_from: None,
+            tempo_chip: None,
             fingers: Vec::new(),
             outbox: Vec::new(),
             time_page,
@@ -985,6 +1022,17 @@ impl Player {
             .then(|| self.chain_page.cards(&self.ui.theme));
         let (title, cards) = if let Some((title, cards)) = &chain {
             (title.as_str(), cards.clone())
+        } else if let Some(knobs) = self
+            .io_showing()
+            .then(|| mpfree_mixer_ui::io_qlinks(&self.ui))
+            .flatten()
+        {
+            // An I/O section's own knobs.
+            let mut cards: [QLinkCard; 4] = Default::default();
+            for (card, k) in cards.iter_mut().zip(&knobs).filter(|(_, k)| k.enabled) {
+                *card = QLinkCard::new(&k.label, "I/O", &k.text, k.pos);
+            }
+            ("Q-Links · I/O", cards)
         } else if self.view == View::Mixer {
             // The selected strip's Volume, Pan, Send A and Send B.
             let q = mpfree_mixer_ui::qlinks(&self.ui);
@@ -1031,11 +1079,59 @@ impl Player {
         }
     }
 
+    /// Whether the mixer shows its I/O view.
+    pub fn io_showing(&self) -> bool {
+        self.view == View::Mixer && self.mix_view == Some(mpfree_mixer_ui::MixView::Io)
+    }
+
+    /// The data wheel, - or + while the I/O view shows: the section's.
+    fn io_input(&mut self, ev: mpfree_mixer_ui::IoInput) {
+        if !self.io_showing() {
+            return;
+        }
+        mpfree_mixer_ui::io_input(&mut self.ui, ev);
+        self.after_io();
+    }
+
+    /// After a key, a Q-Link or a tick on the I/O view: Audio's routing
+    /// changes go to the mixer, and the cards and the hint follow the
+    /// section (it may have opened or closed a detail).
+    fn after_io(&mut self) {
+        for a in mpfree_mixer_ui::take_actions(&mut self.ui) {
+            self.outbox.push(FromUi::Mixer(a));
+        }
+        // The sections keep their own settings; the app reads them where
+        // they live, so the list of who changed is only a cue to redraw.
+        let _ = mpfree_mixer_ui::take_io_changes(&mut self.ui);
+        self.refresh_qlinks();
+        self.refresh_hint();
+    }
+
+    /// Opens the mixer's I/O view on the section titled `title` (the tempo
+    /// chip: "Sync"). False, and nothing opens, when there is no such
+    /// section.
+    pub fn open_io_section(&mut self, title: &str) -> bool {
+        let Some(i) = self.io_sections.iter().position(|t| t == title) else {
+            return false;
+        };
+        if !mpfree_mixer_ui::io_select(&mut self.ui, i + 1) {
+            return false;
+        }
+        self.outbox.push(FromUi::OpenIo);
+        true
+    }
+
     /// Q-Link `k` (a knob, a drag on its card, or the wheel as Q-Link 1)
     /// while the mixer is open: the selected strip's Volume, Pan, Send A or
     /// Send B moves on the panel at once, and the mixer hears it.
     fn mixer_qlink(&mut self, k: usize, d: i32) {
         if self.view != View::Mixer || d == 0 {
+            return;
+        }
+        // An I/O section with its own Q-Link cards takes the turn.
+        if self.io_showing() && mpfree_mixer_ui::io_qlinks(&self.ui).is_some() {
+            mpfree_mixer_ui::io_qlink_turn(&mut self.ui, k, d, self.status.shift);
+            self.after_io();
             return;
         }
         if let Some(a) = mpfree_mixer_ui::qlink_turn(&mut self.ui, k, d, self.status.shift) {
@@ -1373,6 +1469,17 @@ impl Player {
             )),
             None => {}
         }
+        // While an outside clock sets the tempo, the tempo chip says so,
+        // with a green dot (layout spec, section 4d); a tap opens the I/O
+        // view at Sync.
+        self.tempo_chip = None;
+        if let Some(port) = &self.clock_from {
+            self.tempo_chip = Some(chips.len());
+            chips.push(Chip::new(
+                format!("{:.1} from {port}", self.status.bpm),
+                Tone::Good,
+            ));
+        }
         // The level is on the master bar and the tempo on the transport, so
         // the header keeps to the chips that change how the pads play. The
         // arp chip shows while the arp, a repeat or a pattern is on (a tap
@@ -1524,7 +1631,8 @@ impl Player {
                 View::System => "Read when the page opens   ·   MENU: back to Prefs   ·   a tab: leave".to_string(),
                 View::Prefs | View::Options if self.menu_editing => OPTIONS_EDIT_HINT.to_string(),
                 View::Prefs | View::Options => OPTIONS_HINT.to_string(),
-                View::Mixer => mpfree_mixer_ui::MIXER_HINT.to_string(),
+                View::Mixer => mpfree_mixer_ui::io_hint(&self.ui)
+                    .unwrap_or_else(|| mpfree_mixer_ui::MIXER_HINT.to_string()),
                 View::Chain => mpfree_chain_ui::CHAIN_HINT.to_string(),
                 View::Macros => mpfree_chain_ui::MACROS_HINT.to_string(),
                 View::Guide => GUIDE_HINT.to_string(),
@@ -1917,12 +2025,20 @@ impl Player {
             }
             // Nothing until the panel is in the Ui (mpfree_mixer_ui::add).
             ToUi::Mixer(st) => {
+                let turned = self.mix_view != Some(st.view);
+                self.mix_view = Some(st.view);
                 mpfree_mixer_ui::update(&mut self.ui, *st);
                 if self.view == View::Mixer {
                     self.refresh_qlinks();
+                    if turned {
+                        // On the I/O view or off it: the icons and the hint.
+                        self.mark_tab();
+                        self.refresh_hint();
+                    }
                 }
             }
             ToUi::MixerQLink(k, d) => self.mixer_qlink(k, d),
+            ToUi::IoInput(ev) => self.io_input(ev),
             ToUi::Chain(st) => {
                 self.chain_page.set_chain(&mut self.ui, *st);
                 if self.view == View::Chain {
@@ -1949,6 +2065,17 @@ impl Player {
                 self.refresh_qlinks();
             }
             ToUi::QLinkBank => self.next_qlink_bank(),
+            ToUi::ClockFrom(port) => {
+                if self.clock_from != port {
+                    self.clock_from = port;
+                    self.refresh_chips();
+                }
+            }
+            ToUi::IoModel(model) => {
+                if self.io_sections.is_empty() {
+                    self.io_sections = add_io_sections(&mut self.ui, &model);
+                }
+            }
             ToUi::Show(v) => {
                 self.ready = true;
                 self.show_view(v);
@@ -2887,11 +3014,17 @@ impl Player {
     /// The header highlights the page's tab, or none (Prefs, menus, the guide).
     fn mark_tab(&mut self) {
         let tab = self.view.tab_index(self.settings.debug_mode);
-        let mixer = Some(self.view == View::Mixer);
+        // One icon lit: the I/O icon on the I/O view, the mixer's on the
+        // others.
+        let io = self.io_showing();
+        let mixer = Some(self.view == View::Mixer && !io);
         if let Some(h) = self.ui.get_mut::<Header>("header") {
             h.active = tab.unwrap_or(usize::MAX);
             if h.mixer_icon != mixer {
                 h.mixer_icon = mixer;
+            }
+            if h.io_icon.is_some() && h.io_icon != Some(io) {
+                h.io_icon = Some(io);
             }
         }
     }
@@ -3185,6 +3318,11 @@ impl Player {
                     .map(FromUi::Mixer);
                 let first = acts.next();
                 self.outbox.extend(acts);
+                if self.io_showing() {
+                    // A section picked, or a detail opened: its hint.
+                    let _ = mpfree_mixer_ui::take_io_changes(&mut self.ui);
+                    self.refresh_hint();
+                }
                 self.refresh_qlinks();
                 first
             }
@@ -3212,6 +3350,7 @@ impl Player {
             ("header", EventKind::Select(mpfree_ui::widgets::MIXER_ICON)) => {
                 Some(FromUi::MixerIcon)
             }
+            ("header", EventKind::Select(mpfree_ui::widgets::IO_ICON)) => Some(FromUi::IoIcon),
             (play_page::SYNTH_PADS_HEAD, EventKind::Tab(i)) => {
                 Some(FromUi::PadsLayout { in_key: i == 1 })
             }
@@ -3219,6 +3358,14 @@ impl Player {
             ("options", EventKind::Step { index, delta }) => Some(FromUi::MenuStep(index, delta)),
             ("guide", EventKind::Tab(i)) => Some(FromUi::GuideButton(i)),
             ("header", EventKind::Select(i)) if Some(i) == self.arp_chip => Some(FromUi::ArpChip),
+            ("header", EventKind::Select(i)) if Some(i) == self.tempo_chip => {
+                // The I/O view at Sync; before the Sync section exists, the
+                // I/O view as it was left.
+                if !self.open_io_section(IO_SYNC) {
+                    self.outbox.push(FromUi::OpenIo);
+                }
+                None
+            }
             (w, _) if w.starts_with("arp-ws-") => {
                 // The editor changes at once; the app hears the new pattern.
                 let a = self.workspace.action(&ev);
@@ -3248,6 +3395,12 @@ impl Player {
 
     /// Advance animations by `dt` seconds.
     pub fn tick(&mut self, dt: f32) {
+        // The I/O section showing updates its live values (lights, the
+        // clock's tempo); it marks what it needs drawn.
+        self.io_clock += Duration::from_secs_f32(dt.max(0.0));
+        if self.io_showing() {
+            mpfree_mixer_ui::io_tick(&mut self.ui, self.io_clock);
+        }
         // The XY pad glides home after the finger lifts.
         if let Some(fx) = self.play.tick_xy(dt * 1000.0) {
             self.outbox.push(FromUi::PlayFx(fx));
@@ -4345,7 +4498,16 @@ pub fn apply_effects(p: &mut Player, fx: Vec<crate::app::Effect>) {
             | Effect::Metronome
             | Effect::Fill(_)
             | Effect::Mixer(_) => {}
-            Effect::MixerTurn { knob, delta } => p.apply(ToUi::MixerQLink(knob, delta)),
+            Effect::MixerWheel(d) => p.apply(if p.io_showing() {
+                ToUi::IoInput(mpfree_mixer_ui::IoInput::Wheel(d))
+            } else {
+                ToUi::MixerQLink(0, d)
+            }),
+            Effect::MixerStep(d) => {
+                if p.io_showing() {
+                    p.apply(ToUi::IoInput(mpfree_mixer_ui::IoInput::Step(d)));
+                }
+            }
             Effect::ChainTurn { knob, delta } => p.apply(ToUi::ChainQLink(knob, delta)),
             Effect::QLinkBank => p.apply(ToUi::QLinkBank),
         }
@@ -4655,6 +4817,23 @@ fn pads_browse(fonts: Fonts) -> Result<Player, String> {
     built
 }
 
+/// The I/O view's Sync section's title.
+const IO_SYNC: &str = mpfree_midi_ui::SYNC;
+
+/// The mixer's I/O view's sections after Audio (layout spec, section 2):
+/// MIDI, Sync and CV (`mpfree-midi-ui`), all on `model`. Returns their
+/// titles in order, Audio being 0 and these 1 on, so the tempo chip can
+/// open Sync by its title ([`Player::open_io_section`]).
+fn add_io_sections(ui: &mut Ui, model: &mpfree_midi_ui::Shared) -> Vec<String> {
+    let sections = mpfree_midi_ui::sections(model);
+    let mut titles = Vec::new();
+    for s in sections {
+        titles.push(s.label().to_string());
+        mpfree_mixer_ui::add_io_section(ui, s);
+    }
+    titles
+}
+
 pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> {
     let mut out = Vec::new();
     let mut loading = Player::new(fonts(), SCREEN, false, None);
@@ -4715,9 +4894,37 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
             i.cost_pct = i.cost_pct.map(|_| 1.5);
         }
     }
+    let mut io_state = mpfree_mixer_ui::MixState::from_mixer(
+        &mut m,
+        mpfree_mixer_ui::MixView::Io,
+        &mpfree_mixer_ui::sample::name,
+    );
+    io_state.selected = Some(mpfree_fx::StripId::Track(1));
+    io_state.cost_pct = io_state.cost_pct.map(|_| 18.0);
+    for (k, v) in io_state
+        .strips
+        .iter_mut()
+        .chain([&mut io_state.master])
+        .enumerate()
+    {
+        v.cost_pct = v.cost_pct.map(|_| 0.5 + k as f32 * 0.25);
+        for i in &mut v.inserts {
+            i.cost_pct = i.cost_pct.map(|_| 1.5);
+        }
+    }
     mixer.apply(ToUi::Show(View::Mixer));
     mixer.apply(ToUi::Mixer(Box::new(st)));
     out.push(("mixer", mixer));
+    // The mixer's I/O view (the I/O icon lit), while the tempo follows a
+    // clock on MIDI In: the tempo chip with its green dot.
+    let mut io = sample_player(fonts());
+    io.apply(ToUi::IoModel(std::sync::Arc::new(std::sync::Mutex::new(
+        mpfree_midi_ui::sample::rig(),
+    ))));
+    io.apply(ToUi::ClockFrom(Some("MIDI In".to_string())));
+    io.apply(ToUi::Show(View::Mixer));
+    io.apply(ToUi::Mixer(Box::new(io_state)));
+    out.push(("mixer-io", io));
     // The FX chain editor in the mixer's place (a strip's insert row): the
     // drum bus, Drive selected, Tone touched; and the macros panel over the
     // page (a long press on a macro card), layout spec 4b.
@@ -6318,6 +6525,106 @@ mod tests {
         app.button(mpfree_controller::mpc_one::button::SHIFT, false, 0.0);
         let fx = app.tab(2);
         assert!(fx.contains(&crate::app::Effect::Mixer(None)), "{fx:?}");
+    }
+
+    #[test]
+    fn the_io_icon_opens_the_mixers_io_view_and_the_tempo_chip_opens_it_too() {
+        use mpfree_mixer_ui::{MixState, MixView, MIXER_HINT_IO, MIXER_PAGE};
+        let mut p = sample_player(Fonts::embedded());
+        let mut app = sample_app();
+        // The I/O icon sits left of the mixer icon and asks the app.
+        p.ui.paint(&mut SoftCanvas::new(SCREEN.0, SCREEN.1));
+        let r = p.ui.rect_of("header").unwrap();
+        let h = p.ui.get::<Header>("header").unwrap();
+        let (io, mixer) = (h.io_icon_rect(r).unwrap(), h.icon_rect(r).unwrap());
+        assert!(io.right() < mixer.x);
+        assert_eq!(
+            p.touch(1, Touch::Down, io.x + 10, io.y + 10),
+            Some(FromUi::IoIcon)
+        );
+        // From Play: the mixer opens on I/O.
+        let fx = app.toggle_io(false);
+        assert_eq!(
+            fx.first(),
+            Some(&crate::app::Effect::Mixer(Some(MixView::Io)))
+        );
+        apply_effects(&mut p, fx);
+        assert_eq!(p.page(), MIXER_PAGE);
+        let mut m = mpfree_mixer_ui::sample::song_mixer();
+        let st = MixState::from_mixer(&mut m, MixView::Io, &mpfree_mixer_ui::sample::name);
+        p.apply(ToUi::Mixer(Box::new(st)));
+        // One icon lit, the I/O view's hint.
+        let h = p.ui.get::<Header>("header").unwrap();
+        assert_eq!((h.io_icon, h.mixer_icon), (Some(true), Some(false)));
+        assert_eq!(p.ui.get::<Label>("hint").unwrap().text, MIXER_HINT_IO);
+        assert!(p.io_showing());
+        // The wheel is the I/O view's now, not Q-Link 1's: nothing is sent
+        // to the mixer for a turn of the selection.
+        let fx = app.wheel(1);
+        assert_eq!(fx, [crate::app::Effect::MixerWheel(1)]);
+        apply_effects(&mut p, fx);
+        assert!(
+            !p.take_actions()
+                .iter()
+                .any(|a| matches!(a, FromUi::Mixer(mpfree_mixer_ui::MixAction::Set { .. }))),
+            "the wheel moved no fader"
+        );
+        // - and + on the mixer are the I/O view's too.
+        let mut fx = Vec::new();
+        app.map.learn(crate::app::mapper::Job::Plus, Some(55));
+        fx.extend(app.button(55, true, 0.0));
+        assert_eq!(fx, [crate::app::Effect::MixerStep(1)]);
+        // The I/O icon again closes it, back to Play.
+        let fx = app.toggle_io(p.io_showing());
+        assert_eq!(fx.first(), Some(&crate::app::Effect::Mixer(None)));
+        apply_effects(&mut p, fx);
+        assert_eq!(p.page(), "Play");
+        let h = p.ui.get::<Header>("header").unwrap();
+        assert_eq!((h.io_icon, h.mixer_icon), (Some(false), Some(false)));
+        // While an outside clock sets the tempo, the tempo chip shows; a
+        // tap opens the I/O view (at Sync once that section is there).
+        p.apply(ToUi::ClockFrom(Some("MIDI In".into())));
+        let chips = &p.ui.get::<Header>("header").unwrap().chips;
+        let at = chips
+            .iter()
+            .position(|c| c.text.ends_with("from MIDI In"))
+            .expect("the tempo chip");
+        p.ui.paint(&mut SoftCanvas::new(SCREEN.0, SCREEN.1));
+        let cr = p.ui.get::<Header>("header").unwrap().chip_rect(at).unwrap();
+        assert_eq!(p.touch(2, Touch::Down, cr.x + 5, cr.y + 5), None);
+        assert_eq!(p.take_actions(), [FromUi::OpenIo]);
+        assert!(!p.open_io_section("Sync"), "no Sync section yet");
+        // The model arrives (once, at start): MIDI, Sync and CV join the
+        // list after Audio, and the chip's tap opens Sync. A second model
+        // adds nothing.
+        let model = std::sync::Arc::new(std::sync::Mutex::new(mpfree_midi_ui::sample::rig()));
+        p.apply(ToUi::IoModel(model.clone()));
+        p.apply(ToUi::IoModel(model));
+        assert_eq!(
+            p.io_sections,
+            [
+                mpfree_midi_ui::MIDI,
+                mpfree_midi_ui::SYNC,
+                mpfree_midi_ui::CV
+            ]
+        );
+        assert!(p.open_io_section("Sync"));
+        let v =
+            p.ui.get::<mpfree_mixer_ui::MixerView>(mpfree_mixer_ui::MIXER);
+        assert_eq!(v.map(|v| v.io_section()), Some(2), "Audio, MIDI, Sync");
+        let fx = app.open_io();
+        assert_eq!(
+            fx.first(),
+            Some(&crate::app::Effect::Mixer(Some(MixView::Io)))
+        );
+        p.apply(ToUi::ClockFrom(None));
+        assert!(!p
+            .ui
+            .get::<Header>("header")
+            .unwrap()
+            .chips
+            .iter()
+            .any(|c| c.text.contains("from MIDI In")));
     }
 
     /// A strip's insert row: the chain editor takes the mixer's place with
