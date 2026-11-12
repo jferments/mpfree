@@ -2138,6 +2138,12 @@ fn sampler_status(player: &sampler::Player, time: &RenderTime) -> String {
 /// How often the screen hears the song position while it moves (the bar
 /// shows bar.beat.tick; state changes go at once).
 const TRANSPORT_EVERY: Duration = Duration::from_millis(33);
+
+/// Whether `view` shows the loop's playhead: the Looper tab, or the Play
+/// page with its loop strip.
+fn strip_shown(view: app::View) -> bool {
+    matches!(view, app::View::Looper | app::View::Play)
+}
 /// How often the Play page's master meter and Q-Link values are sent.
 const METER_EVERY: Duration = Duration::from_millis(50);
 /// How often the Sample page's playheads are sent while it shows.
@@ -3684,6 +3690,9 @@ fn player_session(
         // The loop, for its track; the line input comes with it.
         let t_loop = Instant::now();
         let line_note = looper.run(time.block(), &mut loop_l, &mut loop_r);
+        // The strip's waveform, built a slice at a time: its cost counts in
+        // the looper's stage, so the stage numbers show it.
+        let loop_wave = looper.wave_step(i, LOOP_WAVE_PERIODS);
         let loop_took = t_loop.elapsed();
         loop_time.add(loop_took);
         engines.add(engines::LOOPER, loop_took);
@@ -3766,10 +3775,13 @@ fn player_session(
         for line in looper.changes(|| time.position_text()) {
             out.note(&line);
         }
-        if let Some(wave) = looper.wave_step(i, LOOP_WAVE_PERIODS) {
+        if let Some(wave) = loop_wave {
             out.show(gui::ToUi::LoopWave(wave));
         }
-        if app.view() == app::View::Looper && loop_shown_at.elapsed() >= TRANSPORT_EVERY {
+        // The Looper tab and the Play page's strip follow the loop as often
+        // as the transport card, so the playhead moves smoothly; elsewhere
+        // four times a second is enough.
+        if strip_shown(app.view()) && loop_shown_at.elapsed() >= TRANSPORT_EVERY {
             loop_shown_at = Instant::now();
             out.show(gui::ToUi::Looper(Box::new(looper.view(app.settings.bpm))));
         }
@@ -3903,7 +3915,7 @@ fn player_session(
                     }
                 }
             }
-            if app.view() != app::View::Looper {
+            if !strip_shown(app.view()) {
                 out.show(gui::ToUi::Looper(Box::new(looper.view(app.settings.bpm))));
             }
             let meters = synth.meters();
