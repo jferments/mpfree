@@ -89,6 +89,8 @@ Tap an effect in a strip's insert row to open the **chain editor** on it, in the
 
 The Q-Links turn the selected effect's first four knobs, and the data wheel works as Q-Link 1. **‹ Mixer** goes back to the mixer as you left it.
 
+The Sample tab's **FX** opens the chain editor too, on the pad you are editing (its own channel, then the Drums track), and Back goes back to the Sample tab (see [Sampling](sampling.md#fx-effects-on-one-pad-or-on-the-whole-kit)).
+
 {{shot: chain | The chain editor on the drum bus, with Drive selected.}}
 
 ## Macros
