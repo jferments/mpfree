@@ -23,7 +23,7 @@ Every page in MPFree is laid out the same way, so once you know one, you know th
 | **Looper** | Setting up and editing loops. |
 | **Sample** | Recording, chopping and shaping the sound on one pad. |
 
-**The status chips** on the right show what is going on: the kit and pad bank, whether Full Level is on, and anything that needs your attention. The small **mixer icon** at the far right opens the mixer.
+**The status chips** on the right show what is going on: the kit and pad bank, whether Full Level is on, and anything that needs your attention. The small **mixer icon** at the far right opens the mixer, and the **I/O icon** just left of it opens the mixer's I/O view, where the project's audio, MIDI, sync and CV are routed. While the tempo follows a clock from another device, a tempo chip such as **120.0 from MIDI In** shows it, with a green dot.
 
 ## The transport bar
 
@@ -45,7 +45,7 @@ Some things are not tabs. They open over the page you are on, and close the same
 
 - **Options:** press **MENU** for the current page's settings, such as the repeat rate or the tempo on the Play page.
 - **Prefs:** press **SHIFT + MENU** for MPFree's settings. See [Prefs](../reference/prefs.md).
-- **The mixer:** press **TRACK MIX**, or tap the mixer icon.
+- **The mixer:** press **TRACK MIX**, or tap the mixer icon. The I/O icon beside it opens the mixer's [I/O view](../making-music/mixing-and-effects.md#the-io-view).
 - **The Arp panel:** hold **NOTE REPEAT** and press **MENU**.
 
 {{shot: options | Play's options, opened with MENU. Turn the wheel or tap to pick a row; – and + change it.}}

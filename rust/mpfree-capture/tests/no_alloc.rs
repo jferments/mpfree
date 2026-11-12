@@ -94,6 +94,13 @@ fn capturing_never_allocates() {
                     };
                     c.input(off, ev);
                 }
+                // Pressure on the held pads, every 8 frames, sometimes
+                // one step (left to settle).
+                if f % 8 == 4 {
+                    let note = (f / 32 % 16) as u8;
+                    let value = [40, 41, 90, 20][(f / 8 % 4) as usize];
+                    c.input(off, Event::Pressure { note, value });
+                }
             }
             assert!(t.process(period, &mut block));
             c.process(&block);

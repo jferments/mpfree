@@ -1068,8 +1068,24 @@ impl TimeControl {
             1 => " and 1 move".into(),
             n => format!(" and {n} moves"),
         };
+        // Pressure left off is counted with the recorder's (the status
+        // line), and said here.
+        self.touch_lost += k.touch_lost as u64;
+        let mut pressure = String::new();
+        if k.touch > 0 {
+            pressure = format!(" with {} pressure values", k.touch);
+        }
+        if k.touch_lost > 0 {
+            pressure += &format!(
+                "; {} pressure values left off, the clip has no room for them",
+                k.touch_lost
+            );
+        }
+        if phrase.touch_cut && k.touch > 0 {
+            pressure += "; the first notes' pressure was older than the history keeps";
+        }
         Ok(format!(
-            "capture {}: {} notes{moved}, {}, {into} slot {} of {}",
+            "capture {}: {} notes{moved}{pressure}, {}, {into} slot {} of {}",
             k.take,
             k.notes,
             bars_label(k.bars),
