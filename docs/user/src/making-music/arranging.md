@@ -1,7 +1,7 @@
 <!--
 status: changing
 covers: rust/mpfree-seq/src/scenes.rs rust/mpfree-seq/src/arrange.rs rust/mpfree-perform rust/mpfree-time-ui/src/song.rs rust/mpfree-time-ui/src/widgets.rs
-checked: 2026-11-12 2519ebb
+checked: 2026-11-12 ae9c39c
 -->
 
 # Arranging a song
