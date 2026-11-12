@@ -783,13 +783,19 @@ impl Fm {
     fn update_pressure(&mut self) {
         let shape = PressureShape::from_params(PRESS_BASE, |id| self.values[id as usize]);
         self.press_c = shape.coefs(self.rate as f32 / CTRL as f32);
+        self.update_slots();
+    }
+
+    /// Works out the pressure slots' targets and depths, for the shaper's
+    /// mode as it stands (a slot's knob needs no new curve).
+    fn update_slots(&mut self) {
         let slots: [Slot; 4] = std::array::from_fn(|n| Slot {
             target: self.v(press_target(n)) as u8,
             depth: self.v(press_depth(n)) / 100.0,
         });
         // Off: pressure does nothing, and a level swell plays at the preset's
         // full level (not at its resting dip).
-        self.depths = if shape.mode == PressureMode::Off {
+        self.depths = if self.press_c.mode == PressureMode::Off {
             Depths::default()
         } else {
             Depths::from_slots(&slots)
@@ -800,7 +806,16 @@ impl Fm {
         self.values[id as usize]
     }
 
+    /// The whole patch and the pressure shaper from the values (a preset).
     fn read_patch(&mut self) {
+        self.read_voice();
+        self.update_pressure();
+    }
+
+    /// The operators, routing, level, LFO and voicing from the values: all
+    /// but the pressure shaper, whose 128-step curve costs more than the
+    /// rest together, so a knob that isn't a pressure setting skips it.
+    fn read_voice(&mut self) {
         let u = |id: u16| self.values[id as usize].max(0.0) as u8;
         let mut ops = [OpParams::default(); 6];
         for (k, o) in ops.iter_mut().enumerate() {
@@ -855,7 +870,6 @@ impl Fm {
             mono: self.v(VOICE_MODE) >= 0.5,
             bend_range: self.v(BEND_RANGE),
         };
-        self.update_pressure();
     }
 
     // ---- notes ----
@@ -1348,7 +1362,15 @@ impl Node for Fm {
             return;
         }
         self.values[id as usize] = p.clamp(value);
-        self.read_patch();
+        // Each knob reworks only what it feeds: a slot its target and
+        // depth, a shaper setting the curve, anything else the voice.
+        if id >= press_target(0) {
+            self.update_slots();
+        } else if id >= PRESS_BASE {
+            self.update_pressure();
+        } else {
+            self.read_voice();
+        }
         if id == VOICE_MODE {
             self.all_off();
         }
