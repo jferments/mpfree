@@ -123,8 +123,10 @@ pub const STRIP_W: i32 = 104;
 pub const MASTER_W: i32 = 150;
 const GAP: i32 = 6;
 const CHIP_W: i32 = 150;
+/// The narrowest a strip view's chip gets ("Submixes" and its count).
+const MIN_CHIP_W: i32 = 124;
 /// The I/O view's chip, after the four strip views.
-const IO_CHIP_W: i32 = 90;
+const IO_CHIP_W: i32 = 76;
 const ARROW_W: i32 = 52;
 const PAGE_W: i32 = 120;
 
@@ -247,18 +249,22 @@ fn layout(r: Rect) -> Layout {
     let per_page = ((strips.w + GAP) / (STRIP_W + GAP)).max(1) as usize;
     let ch = 36.min(head.h);
     let cy = head.y + (head.h - ch) / 2;
-    let chips = std::array::from_fn(|i| {
-        let w = if MixView::ALL[i] == MixView::Io {
-            IO_CHIP_W
-        } else {
-            CHIP_W
-        };
-        Rect::new(head.x + i as i32 * (CHIP_W + 8), cy, w, ch)
-    });
     let next = Rect::new(head.right() - ARROW_W, cy, ARROW_W, ch);
     let page = Rect::new(next.x - PAGE_W, cy, PAGE_W, ch);
     let prev = Rect::new(page.x - ARROW_W, cy, ARROW_W, ch);
     let cost = Rect::new(prev.x - 12 - 170, cy, 170, ch);
+    // The view chips share what is left of the cost chip: narrower when
+    // the panel is (the Q-Link column beside it), never under MIN_CHIP_W.
+    let room = cost.x - 12 - head.x - 4 * 8 - IO_CHIP_W;
+    let chip_w = (room / 4).clamp(MIN_CHIP_W, CHIP_W);
+    let chips = std::array::from_fn(|i| {
+        let w = if MixView::ALL[i] == MixView::Io {
+            IO_CHIP_W
+        } else {
+            chip_w
+        };
+        Rect::new(head.x + i as i32 * (chip_w + 8), cy, w, ch)
+    });
     Layout {
         chips,
         prev,
@@ -2907,6 +2913,12 @@ mod io_tests {
             l.chips[4].right() < l.cost.x,
             "the chips clear the head's right side"
         );
+        // Beside the app's Q-Link column the panel is about 1088 wide.
+        for w in [1280, 1088, 1040] {
+            let l = layout(Rect::new(0, 60, w, 714));
+            assert!(l.chips[4].right() < l.cost.x, "{w}: clear of the cost chip");
+            assert!(l.chips[3].right() < l.chips[4].x, "{w}");
+        }
         tap(&mut ui, mid(l.chips[4]));
         assert_eq!(
             crate::take_actions(&mut ui),
