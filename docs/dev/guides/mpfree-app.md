@@ -320,7 +320,7 @@ Still to come in the app: hold MAIN + pad to pick a track, SHIFT + NEXT SEQ for 
 
 ### The live test
 
-The app check (`MPFREE_APP_STEPS=app` with `collect-over-ssh.sh --app`, read-only) has eighteen phases, in this order, because later phases use the buttons the first one maps. The 12 Nov run skipped most of them, so the next run repeats them all with what has merged since:
+The app check (`MPFREE_APP_STEPS=app` with `collect-over-ssh.sh --app`, read-only) has nineteen phases, in this order, because later phases use the buttons the first one maps. The 12 Nov run skipped most of them, so the next run repeats them all with what has merged since:
 
 1. Developer tools and Map controls: REC, OVERDUB, PLAY, PLAY START, UNDO, ERASE, TAP TEMPO, the PAD BANK buttons, TRACK MIX, TRACK MUTE, Q-LINK, DATA DIAL PUSH and the six mode buttons first.
 2. The Dev pages.
@@ -336,9 +336,10 @@ The app check (`MPFREE_APP_STEPS=app` with `collect-over-ssh.sh --app`, read-onl
 12. The mixer, the chain editor, the I/O view (Audio, MIDI, Sync, CV; MIDI out is off in this build), the Q-LINK banks and the macros panel.
 13. The Pads tab: the pads, Browse, Pad, Copy, Paste, Clear, and Map to keys.
 14. The Sample tab: Wave, Chop, live chop, Stops, Also plays, Latch and Send to pad.
-15. Prefs (every row, the wheel's push), System info and saving.
-16. A MIDI keyboard on the 5-pin MIDI IN, if there is one: kit pads and the synth from the keys. Never a USB keyboard while the stick holds the running system.
-17. Touch: the Touch lab, Calibrate touch, and Dev > Touch (Save writes only the stick's partition 4).
-18. Menus, the Console chord, TAP TEMPO and STOP.
+15. The Sample tab's scenes (Store A, Store B, the crossfader, Return to A) and FX (the chain editor on the pad's channel and on Drums).
+16. Prefs (every row, the wheel's push), System info and saving.
+17. A MIDI keyboard on the 5-pin MIDI IN, if there is one: kit pads and the synth from the keys. Never a USB keyboard while the stick holds the running system.
+18. Touch: the Touch lab, Calibrate touch, and Dev > Touch (Save writes only the stick's partition 4).
+19. Menus, the Console chord, TAP TEMPO and STOP.
 
 At the start the tool also reads, read-only, partition 4's size and free space and the first lines of `/run/mpfree-data-grow.txt` (`partition 4: …` and `partition 4 grow: …`), which shows whether 3.10's `resize2fs` grew it to fill the stick. Then it reads, read-only, what the GPU work needs (`gpu: …` lines, for the profiling thread's GPU plan): the EGL, GLES, GBM and DRM libraries and `/usr/lib/dri`, the release from `/etc/os-release`, the `/dev/dri` nodes, each display connector's status and modes, which programs hold `/dev/dri` open, whether the Panfrost driver is bound, and the display state from debugfs only where debugfs is already mounted. It opens no device node, mounts nothing, and puts the debugfs lines in the report only. The interrupt table comes from the core probe after phases 2 and 11. It prints `start-up: the app was playing N s after power-on`, read from the log line that starts with `playing ` (Perform FX and the wavetables allocate about 18 MB at startup). The line input step (state-changing, its own go) now checks the left and the right jack one at a time; round 7 checked only the left.
