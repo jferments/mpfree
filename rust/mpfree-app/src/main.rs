@@ -3078,6 +3078,8 @@ fn player_session(
     // I/O view's names taken at this generation of the model.
     let mut learn_misses = 0u64;
     let mut learn_names_gen: Option<u64> = None;
+    // A followed clock's tempo for the app, taken at the next turn.
+    let mut followed_tempo: Option<f64> = None;
     out.show(gui::ToUi::Macros(Box::new(panels.macros_state(&mix))));
     let mut shown_levels = mix.play_levels();
     out.show(gui::ToUi::PlayLevels(shown_levels));
@@ -3824,6 +3826,16 @@ fn player_session(
             }
         }
         fx.extend(app.tick(t));
+        if let Some(bpm) = followed_tempo.take() {
+            let bpm = (bpm * 10.0).round() / 10.0;
+            // Without the log line set_tempo writes: the tempo follows
+            // another device's, and the log would fill.
+            fx.extend(
+                app.set_tempo(bpm)
+                    .into_iter()
+                    .filter(|e| !matches!(e, app::Effect::Note(_))),
+            );
+        }
         let mut stop = false;
         let mut later = Vec::new();
         for e in fx.drain(..) {
@@ -4130,9 +4142,28 @@ fn player_session(
         }
         let time_span = Span::start();
         app.set_rolling(time.info().state.rolling());
+        // Another device's clock, when the project's tempo is from a port
+        // (M4): the leader's bytes read this period go to the follower
+        // before the transport runs, as read at the period's top.
+        music.leader_clock(|follow, bytes| {
+            time.follow(follow);
+            if !bytes.is_empty() {
+                let frame = time.next_frame();
+                time.clock_in(frame, bytes);
+            }
+        });
+        // Ignored while a followed clock arrives.
         time.follow_tempo(app.settings.bpm);
         // The transport runs first; the clips and the arps follow its clock.
         time.advance(PERIOD as u32);
+        // A followed clock's tempo becomes the app's (the tempo chip, Note
+        // Repeat, the arps, tempo-synced effects) when it has moved more
+        // than 0.08 BPM from it, so the chip doesn't flicker.
+        if let Some(bpm) = time.followed_bpm() {
+            if (bpm - app.settings.bpm).abs() > 0.08 {
+                followed_tempo = Some(bpm);
+            }
+        }
         // MIDI Out takes the project's track outputs, and sends programs as
         // the song starts, before this period's notes.
         midi_out.sync(&io_model, time.info().state.rolling());
