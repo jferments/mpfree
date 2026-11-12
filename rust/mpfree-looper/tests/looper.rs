@@ -186,6 +186,37 @@ fn the_first_pass_starts_on_the_bar_and_plays_back_sample_for_sample() {
     }
 }
 
+/// The first pass can be read while it records, for a waveform that
+/// grows as it records: as far as it has got, and only then.
+#[test]
+fn the_first_pass_reads_as_it_records() {
+    let mut r = Rig::new(10, 128);
+    r.cmd(L::SetBars(Some(1)));
+    r.cmd(L::Record);
+    r.at(START, T::Play);
+    r.run(START - 10, &noise);
+    assert_eq!(r.l.status().recorded, 0);
+    assert!(r.l.first_pass(0).is_none(), "nothing yet while armed");
+    r.run(START + 5_000, &noise);
+    let s = r.l.status();
+    assert_eq!(
+        (s.phase, s.recorded, s.frames),
+        (Phase::Recording, 5_000, 0)
+    );
+    let pass = r.l.first_pass(0).expect("the pass so far");
+    assert_eq!(pass.len(), 2 * 5_000);
+    let mut got = vec![[0.0; 2]; 5_000];
+    pass.read(0, &mut got);
+    for (j, x) in got.iter().enumerate() {
+        assert_eq!(*x, noise(START + j as u64), "frame {j}");
+    }
+    assert!(r.l.first_pass(1).is_none(), "another loop records nothing");
+    r.run(START + BAR as u64 + 1, &noise);
+    assert_eq!(r.l.status().phase, Phase::Playing);
+    assert_eq!(r.l.status().recorded, 0);
+    assert!(r.l.first_pass(0).is_none(), "the pass has ended");
+}
+
 #[test]
 fn input_latency_is_made_up_for() {
     const LAT: u64 = 300;
@@ -382,6 +413,45 @@ fn stop_fades_out_and_play_fades_back_in() {
     r.run(p + 2_000, &z);
     assert!(r.max_step(p - 10, p + 2_000) <= 0.25 / FADE as f32 + 1e-5);
     assert!((r.left(p + 1_000) - 0.25).abs() < 1e-4);
+}
+
+/// The playhead stops with the transport: once the loop has faded out,
+/// its position waits where the transport will start again (and at the
+/// loop's start after a second STOP goes back to bar 1), and PLAY carries
+/// on from there without a jump.
+#[test]
+fn the_playhead_stops_with_the_transport() {
+    let mut r = Rig::new(10, 128);
+    record_one_bar(&mut r, &sine);
+    let z = dc(0.0);
+    let s = START + BAR as u64 + 7_777;
+    r.at(s, T::Stop);
+    r.run(s + 2 * FADE as u64, &z);
+    let held = r.l.status().position;
+    // Where the transport stopped, in the loop: 7777 frames into its bar.
+    let want = (7_777.0 / BAR as f64) as f32;
+    assert!((held - want).abs() < 0.01, "{held} vs {want}");
+    r.run(s + 3 * BAR as u64, &z);
+    assert_eq!(
+        r.l.status().position,
+        held,
+        "the playhead moved while stopped"
+    );
+    // PLAY goes on from there, with no jump in the sound.
+    let p = r.frame + 100;
+    r.at(p, T::Play);
+    r.run(p + 2_000, &z);
+    assert!(r.max_step(p - 10, p + 2_000) < 0.01);
+    let moved = r.l.status().position;
+    assert!(moved > held && moved - held < 0.1, "{held} -> {moved}");
+    // A second STOP goes back to bar 1: the playhead goes to the loop's
+    // start.
+    let q = r.frame + 100;
+    r.at(q, T::Stop);
+    r.at(q + 3 * FADE as u64, T::Stop);
+    r.run(q + 6 * FADE as u64, &z);
+    let back = r.l.status().position;
+    assert!(!(0.001..=0.999).contains(&back), "{back}");
 }
 
 #[test]
@@ -2071,4 +2141,47 @@ fn resample_records_the_other_loops_sample_for_sample() {
         })
     });
     assert!(n > 10_000);
+}
+
+/// A layer read in bulk (`LayerView::read`) is what indexing it gives,
+/// frame for frame: played whole, an overdub that covers part of the loop,
+/// and after edits that cut the audio into pieces (reverse, nudge).
+#[test]
+fn a_layer_read_in_bulk_is_what_indexing_gives() {
+    let mut r = Rig::new(10, 128);
+    let z = dc(0.0);
+    let bar = BAR as u64;
+    record_one_bar(&mut r, &noise);
+    // An overdub over part of the second bar: its audio is partly written.
+    let o = START + bar + 5_000;
+    r.run(o, &z);
+    r.overdub(7_000, &sine);
+    let same = |r: &Rig, what: &str| {
+        for k in 0..r.l.status().layers {
+            let w = r.l.layer(k).unwrap();
+            let frames = w.len() / 2;
+            let mut out = vec![[9.0f32; 2]; frames];
+            // In uneven pieces, across block edges.
+            let mut from = 0;
+            for n in [1usize, 1_023, 1_024, 3_000, 77].iter().cycle() {
+                if from >= frames {
+                    break;
+                }
+                let n = (*n).min(frames - from);
+                w.read(from, &mut out[from..from + n]);
+                from += n;
+            }
+            for (f, y) in out.iter().enumerate() {
+                assert_eq!(*y, [w[2 * f], w[2 * f + 1]], "{what}: layer {k} frame {f}");
+            }
+        }
+    };
+    assert_eq!(r.l.status().layers, 2);
+    same(&r, "as recorded");
+    r.cmd(L::Edit(E::Reverse));
+    r.run(r.frame + bar, &z);
+    same(&r, "reversed");
+    r.cmd(L::Edit(E::Nudge(1)));
+    r.run(r.frame + bar, &z);
+    same(&r, "reversed and nudged");
 }

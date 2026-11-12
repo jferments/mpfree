@@ -69,6 +69,18 @@ cargo run --release --manifest-path rust/mpfree-gpu/Cargo.toml --bin mpfree-gpu-
 - `compute [--iterations N]` runs an FIR filter over a stereo block on the
   GPU (upload, run, read back; OpenGL ES 3.1 compute shader) and on one CPU
   core, for one period with 64 and 1024 taps and for 32 periods.
+- `panel DIR [--hold-ms N] [--frames N]` puts the GPU's pictures on the
+  panel: each page is drawn on the GPU, read back and written to
+  `/dev/fb0` (through `mpfree_ui::fb::FbTarget`, as the app's screen
+  writes: whole frames, `0,0` to the sysfs `pan` file, nothing created, no
+  display setting changed) and held for N ms (1500). It reads the
+  framebuffer back once to check it holds what was written. Then the
+  busiest page is drawn and copied to the panel N times (60) the GPU's way
+  (draw, read back, copy) and software's (draw, turn and copy), timed.
+  `--fb PATH --sysfs DIR` name another framebuffer, for tests: with a
+  plain 4,096,000-byte file and a folder holding `modes`
+  (`U:800x1280p-0`), `stride` (3200), `bits_per_pixel` (32) and an empty
+  `pan`, it runs on any workstation.
 
 For the MPC it is built for ARM against the MPC's C library (dynamically
 linked: it opens the MPC's `libEGL.so.1` and `libGLESv2.so.2` itself):
@@ -83,10 +95,11 @@ CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER=arm-linux-gnueabihf-gcc \
 That build loads with `/lib/ld-linux-armhf.so.3`, links only `libc.so.6` and
 `libgcc_s.so.1`, and asks for nothing newer than glibc 2.34 (the MPC has
 2.39). `tools/mpc-one/host_gpu_mpc.py` checks all that, copies it and the
-pages into the test build's RAM, and runs it there, offscreen. On
-2026-11-12 the ARM build ran every step under qemu-arm with Ubuntu's ARM
-Mesa (llvmpipe), with the GPU's pictures within 2 levels of software; the
-times there are an emulator's and mean nothing.
+pages into the test build's RAM, and runs it there: offscreen, then (step 6)
+on the panel. On 2026-11-12 the ARM build ran every step under qemu-arm
+with Ubuntu's ARM Mesa (llvmpipe), with the GPU's pictures within 2 levels
+of software and, for the panel step, a fake framebuffer that read back what
+was written; the times there are an emulator's and mean nothing.
 
 ## Not yet
 
@@ -94,3 +107,5 @@ times there are an emulator's and mean nothing.
   shared memory (the wire format in `mpfree_ui::record` is that feed).
 - Showing the frame on the panel without reading it back (DRM/KMS page
   flips): it changes the display settings in RAM and waits for Jay's go.
+  Until then the panel gets the GPU's frame by reading it back and copying
+  it, as `panel` does.

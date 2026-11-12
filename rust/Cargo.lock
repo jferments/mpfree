@@ -376,6 +376,7 @@ dependencies = [
  "mpfree-instruments",
  "mpfree-lanes",
  "mpfree-looper",
+ "mpfree-midi",
  "mpfree-mixer-ui",
  "mpfree-mod",
  "mpfree-node",
