@@ -362,6 +362,40 @@ name = "mpfree-analysis"
 version = "0.1.0"
 
 [[package]]
+name = "mpfree-app"
+version = "0.1.0"
+dependencies = [
+ "mpfree-arp",
+ "mpfree-arp-ui",
+ "mpfree-capture",
+ "mpfree-chain-ui",
+ "mpfree-controller",
+ "mpfree-core",
+ "mpfree-fx",
+ "mpfree-fx-ui",
+ "mpfree-instruments",
+ "mpfree-looper",
+ "mpfree-mixer-ui",
+ "mpfree-mod",
+ "mpfree-node",
+ "mpfree-perform",
+ "mpfree-play",
+ "mpfree-prof",
+ "mpfree-sampler",
+ "mpfree-sampler-ui",
+ "mpfree-screen-log",
+ "mpfree-seq",
+ "mpfree-store",
+ "mpfree-synth",
+ "mpfree-synth-ui",
+ "mpfree-time-ui",
+ "mpfree-touch",
+ "mpfree-touch-evdev",
+ "mpfree-transport",
+ "mpfree-ui",
+]
+
+[[package]]
 name = "mpfree-arp"
 version = "0.1.0"
 dependencies = [
@@ -377,10 +411,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "mpfree-audiotracks"
+version = "0.1.0"
+dependencies = [
+ "mpfree-transport",
+]
+
+[[package]]
 name = "mpfree-bench"
 version = "0.1.0"
 dependencies = [
  "mpfree-arp",
+ "mpfree-audiotracks",
  "mpfree-fx",
  "mpfree-grain",
  "mpfree-lanes",
@@ -514,40 +556,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "mpfree-hello"
-version = "0.1.0"
-dependencies = [
- "mpfree-arp",
- "mpfree-arp-ui",
- "mpfree-capture",
- "mpfree-chain-ui",
- "mpfree-controller",
- "mpfree-core",
- "mpfree-fx",
- "mpfree-fx-ui",
- "mpfree-instruments",
- "mpfree-looper",
- "mpfree-mixer-ui",
- "mpfree-mod",
- "mpfree-node",
- "mpfree-perform",
- "mpfree-play",
- "mpfree-prof",
- "mpfree-sampler",
- "mpfree-sampler-ui",
- "mpfree-screen-log",
- "mpfree-seq",
- "mpfree-store",
- "mpfree-synth",
- "mpfree-synth-ui",
- "mpfree-time-ui",
- "mpfree-touch",
- "mpfree-touch-evdev",
- "mpfree-transport",
- "mpfree-ui",
-]
-
-[[package]]
 name = "mpfree-instruments"
 version = "0.1.0"
 dependencies = [
@@ -571,6 +579,7 @@ version = "0.1.0"
 name = "mpfree-looper"
 version = "0.1.0"
 dependencies = [
+ "mpfree-stretch",
  "mpfree-transport",
 ]
 
@@ -632,6 +641,8 @@ version = "0.1.0"
 name = "mpfree-perform"
 version = "0.1.0"
 dependencies = [
+ "mpfree-mod",
+ "mpfree-node",
  "mpfree-play",
  "mpfree-seq",
  "mpfree-transport",

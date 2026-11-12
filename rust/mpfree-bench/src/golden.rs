@@ -16,7 +16,7 @@
 //!
 //!     MPFREE_GOLDEN_BLESS=1 cargo test -p mpfree-bench golden
 //!
-//! (docs/guides/testing-and-ci.md).
+//! (docs/dev/guides/testing-and-ci.md).
 
 use crate::cases::{self, Case};
 use std::fmt::Write as _;

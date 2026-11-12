@@ -1,0 +1,25 @@
+# Names used in the user manual. check_docs.py reads this file.
+#
+# [retired]: names MPFree no longer uses. A retired name anywhere in
+# docs/user/src fails the check, with the name to use instead. When the app
+# renames something, add the old name here and the check lists every page to fix.
+# Keys are matched as whole words, case-sensitively; quote names with spaces.
+#
+# [names]: the current names, for reference and the glossary. Keep them in
+# step with the layout spec (docs/dev/design/layout-spec.md).
+
+[retired]
+"Clips tab" = "Arrange tab (renamed 2026-11-11)"
+"Clips page" = "Arrange page (renamed 2026-11-11)"
+"Sound tab" = "Synth tab"
+"Debug tab" = "Dev tab"
+"Console tab" = "the Console (hold SHIFT, hold ERASE, press TAP TEMPO)"
+"Prefs tab" = "Prefs (SHIFT + MENU; it is not a tab)"
+"Mix tab" = "the mixer (TRACK MIX)"
+"MPCFree" = "MPFree"
+
+[names]
+tabs = ["Play", "Arrange", "Synth", "Looper", "Sample", "Dev"]
+play_views = ["All", "Beats", "Loop", "Drum"]
+sample_pages = ["Pads", "Wave", "Chop", "Play", "Grain", "FX"]
+overlays = ["Prefs", "the mixer", "the Arp panel", "the button guide"]
