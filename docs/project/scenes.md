@@ -73,7 +73,15 @@ On the Clips page, the morph bar sits under the grid:
 
 The grid shows 5 rows at a time over the bar, down from 6.
 
-**Not wired yet in the pad player.** The morph needs the mod engine in the app (`modmix.rs`, on main). The rows can be picked already. Moving the crossfader, Snap back, Keep and Save log that the mod engine is not there yet. They will be wired once this branch has main.
+**In the pad player** the morph runs on the mixer's mod engine (`ModMix` in `modmix.rs`), the same one that holds the clips' parameter locks. The Clips page's morph actions go to `TimeHost::morph`, which the main loop calls with the mixer's `ModMix` (`time_action` in `main.rs`):
+
+- **Loading** (`ModMix::morph_load`) makes every mixer parameter either row stores a target first, with the value the mixer has now, so a row can move a strip's level, pan or sends, or an insert's controls. A row's values for a pad's sound or an instrument are counted and left out (as a lock on one is unrouted), and the log says how many.
+- **Other rows while morphing** go on A and B at once: turns made so far are written back into the old rows first, and Snap back still goes to the sound from before the morph.
+- **The crossfader** sends the morph position to the engine (`ModMix::morph_to`), which glides it as it does any other parameter.
+- **Snap back and Keep** (`ModMix::morph_end`) write the turns made while morphing back into the rows, then send the values `snap_back` or `keep` return.
+- **Save** stores the mixer as it is into the row (`ModMix::save_scene`).
+
+The project keeps the rows' values (`Project::scenes`), so a saved morph comes back with the project.
 
 ## Tests
 
@@ -102,6 +110,7 @@ The grid shows 5 rows at a time over the bar, down from 6.
   - saving a row (3 parameters and 8 macros);
   - a turn written back into the nearer row;
   - values for parameters the engine lacks being counted.
+- `mpfree-hello`'s `the_scene_morph_moves_the_mixer_between_two_rows_and_snaps_back` (`modmix.rs`) morphs two strips' levels on the real mixer, one held by only one row, through A, B and halfway, then snaps back, keeps and saves a row. `the_morph_bar_runs_the_scene_morph_on_the_mixers_mod_engine` (`time.rs`) does the same through the morph bar's actions, rows changed while morphing included.
 
 ## Not yet
 
@@ -109,4 +118,4 @@ The grid shows 5 rows at a time over the bar, down from 6.
 - A launch quantise setting (1 beat to 8 bars, or none) is still to come. Scenes and follows use the bar.
 - Clip follow actions count song bars. A clip at another speed still counts the song's bars, as Ableton does.
 - In a song loop shorter than a follow's time, the follow never comes due.
-- The morph in the pad player (see above), and a Q-Link for the crossfader.
+- A Q-Link for the crossfader, and the morph moving a pad's sound or an instrument (once those engines take parameter events).
