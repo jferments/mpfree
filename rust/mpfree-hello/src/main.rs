@@ -2241,8 +2241,14 @@ fn synth_pads_note(synth: &synth::Synth) -> String {
     let pad1 = synth
         .root(0)
         .map_or("no note".to_string(), synth::note_name);
+    let tuning = synth.settings().tuning;
+    let tuning = if tuning == synth::TuningPick::default() {
+        String::new()
+    } else {
+        format!(", tuned {}", tuning.label())
+    };
     format!(
-        "pads: {} synth, {layout}{} (pad 1 = {pad1}; SHIFT + wheel on Play: octave)",
+        "pads: {} synth, {layout}{}{tuning} (pad 1 = {pad1}; SHIFT + wheel on Play: octave)",
         synth.engine().name(),
         synth.range_text()
     )
