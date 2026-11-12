@@ -323,6 +323,13 @@ impl TimeControl {
         self.capture.dropped()
     }
 
+    /// Messages this half lost on the way between the halves: to the
+    /// audio half's full queue (a view among them is sent again), and
+    /// spans past a period copy's room. Should stay 0.
+    pub fn lost(&self) -> u64 {
+        self.tx.full() + self.spans_lost
+    }
+
     /// Recorded pressure a clip had no room for.
     pub fn touch_lost(&self) -> u64 {
         self.touch_lost
@@ -1189,7 +1196,7 @@ impl TimeControl {
             c.touch_dropped + self.touch_lost
         );
         // The fallbacks between the halves, when there are any.
-        let lost = c.lost + self.tx.full() + self.spans_lost;
+        let lost = c.lost + self.lost();
         if lost + c.behind + c.kept + c.refused > 0 {
             line.push_str(&format!(
                 "; between the halves: {lost} messages lost, {} late views compiled again, \

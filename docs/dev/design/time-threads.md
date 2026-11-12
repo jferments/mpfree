@@ -54,12 +54,15 @@ The pad player's audio loop calls the audio half directly for what it hands the 
 
 `TimeHost` keeps the API `main.rs` used. A call on the control half (an action, a step edit, a capture, a mute) is followed by the audio half taking what it sent, and a period by the control half taking the period's news and the audio half taking any view it compiled (a cue that started, a follow action, a recording with no room left). So on one thread nothing plays differently, and the old time tests pass with only their field paths changed (`h.control.project`, `h.audio.view`).
 
+`TimeHost::split` hands over the two halves, already linked, for step 3: the audio loop keeps `TimeAudio` and calls it as the facade does (the pads' input, `advance`, `dress_arps` and `run`, then the hits, locks and click), and the control thread keeps `TimeControl` and calls `poll` every few ms and after each screen or MIDI event. The queue to the audio half holds 256 messages and the one back 8192 (`link::TO_AUDIO`, `link::TO_CONTROL`). Neither half ever waits: a full queue hands the message back to its sender, which counts it (`Counts::lost` for the audio half's, `TimeControl::lost` for the control half's; a view waits and is sent again).
+
 What passing between the halves lost goes in the status line when it is not 0 (`TimeHost::describe`): messages lost to a full queue (either way, and spans past a copy's room), late views compiled again, views kept unfreed, and transport commands the transport's queue refused.
 
 ### Tests
 
 - `recording_with_the_control_half_late_loses_and_doubles_nothing` (time.rs) records the pads, their pressure and a knob into a looping clip at periods of 16 to 4096 frames, with the control half waking 0 to 20 ms apart at random and half the times compiling a view from what it knew when it last woke. Every view the audio half swaps in plays just like the one it replaces, every time the control half has caught up the view playing is a fresh compile of its project, and the clip, the takes, the notes played back and the pressure are just what they are with the halves in step. About 30 views a run catch up recorded changes; nothing is lost, sent back or compiled again.
 - `follow_actions_land_on_their_bar_lines_with_the_control_half_late` runs every follow action (stay, again, next, previous, first, last, any, other, stop) on 1-bar clips at 300 BPM, at 64, 128 and 512 frames, with the control half up to 20 ms late: each lands on its bar line, playing just what it plays in step.
+- `the_halves_split_onto_two_threads_play_what_the_control_half_launches` splits the host and runs the control half on a real thread, polling every millisecond: the clip it launches plays from the first period the commands reach, on the bar lines, and nothing is lost.
 - `mpfree-play`'s `tests/catch_up.rs` and `tests/cue.rs` test the catch-up and the switches alone.
 
 ## Steps
@@ -68,5 +71,5 @@ What passing between the halves lost goes in the status line when it is not 0 (`
 2. Done, in two parts:
    - **2a:** recorded changes numbered (`mpfree_play::Rec`) and made to the view and the project alike (`PlayView::record`, `Takes::record`), views that say what they include (`Includes`), the switch count, and the catch-up (`Recent`). See [playback.md](playback.md#compiling-playview).
    - **2b:** the queues, the messages and the two halves behind the facade, still on one thread, with the tests above.
-3. The app thread runs the control half on its control thread: `main.rs` makes the queues, keeps `TimeAudio` in the audio loop and gives `TimeControl` to the control thread, which polls it every few ms and on each screen or MIDI event. Round tests on the MPC compare the audio thread's worst period with launches, undo and capture in a big project, before and after.
+3. The app thread runs the control half on its control thread. `main.rs` has none yet (the controller poll, the app's effects and the logging run in the audio loop), so it first gets one, which takes `TimeControl` from `TimeHost::split` with them, and the audio loop keeps the engines, `TimeAudio` and the queues. Round tests on the MPC compare the audio thread's worst period with launches, undo and capture in a big project, before and after.
 4. Song edits and capture lose their project clones, since the control half can afford them.

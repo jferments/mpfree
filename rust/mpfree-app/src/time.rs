@@ -64,7 +64,7 @@
 
 mod audio;
 mod control;
-mod link;
+pub mod link;
 
 use mpfree_play::{Event, Out, Sink, TrackArps};
 use mpfree_seq::mpfree_moves::Input;
@@ -75,8 +75,8 @@ use mpfree_transport::time::Tick;
 use mpfree_transport::{Block, Command, Transport};
 use std::f32::consts::TAU;
 
-use audio::TimeAudio;
-use control::TimeControl;
+pub use audio::TimeAudio;
+pub use control::TimeControl;
 use link::Tracks;
 
 /// Tracks in a new project.
@@ -357,6 +357,29 @@ impl TimeHost {
         };
         host.audio.receive();
         Ok(host)
+    }
+
+    /// The two halves, linked, for a host that runs the control half on
+    /// its own thread (the plan's step 3). The audio loop keeps the
+    /// [`TimeAudio`] and calls it as this facade does: the pads' input,
+    /// [`TimeAudio::advance`], then [`TimeAudio::run`] (after
+    /// [`TimeAudio::dress_arps`] with the per-track arps), the hits, locks
+    /// and click. The control thread keeps the [`TimeControl`], calls
+    /// [`TimeControl::poll`] every few ms and after each screen or MIDI
+    /// event, and makes the edits.
+    ///
+    /// The queue to the audio half holds [`link::TO_AUDIO`] messages and
+    /// the one back [`link::TO_CONTROL`] (a busy second of periods). Neither half
+    /// ever waits: a full queue hands the message back to its sender,
+    /// which counts it ([`link::Counts::lost`] in [`TimeAudio::counts`] for the
+    /// audio half's, [`TimeControl::lost`] for the control half's; a view
+    /// waits and is sent again). [`TimeControl::describe`] puts every
+    /// count in the status line once one is not 0.
+    #[allow(dead_code)] // The app thread's control thread takes it (step 3).
+    pub fn split(self) -> (TimeControl, TimeAudio) {
+        let mut audio = self.audio;
+        audio.metronome = self.metronome;
+        (self.control, audio)
     }
 
     /// The audio half takes what the control half sent, and passes `r` on.
@@ -2257,5 +2280,73 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// Split, the halves run on two threads: the control half on its own,
+    /// launching a clip and starting the transport, then polling every
+    /// millisecond; the audio half here. The clip plays from the period
+    /// the commands reach, on the bar lines, and nothing is lost.
+    #[test]
+    fn the_halves_split_onto_two_threads_play_what_the_control_half_launches() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut c = Clip::new("beat", 3840);
+        c.notes = vec![mpfree_seq::Note::new(0, 100, 7, 100)];
+        h.control.project.tracks[0].slots[0] = Some(c);
+        let (mut control, mut audio) = h.split();
+        let done = Arc::new(AtomicBool::new(false));
+        let stop = done.clone();
+        let thread = std::thread::spawn(move || {
+            control
+                .act(TimeAction::Launch { track: 0, slot: 0 })
+                .unwrap();
+            control.act(TimeAction::Transport(Command::Play)).unwrap();
+            while !stop.load(Ordering::Relaxed) {
+                control.poll();
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            control.poll();
+            control
+        });
+        let mut pads = Fake::default();
+        // Periods go by, a millisecond apart, while the control thread
+        // starts.
+        let t0 = std::time::Instant::now();
+        while !audio.info().state.rolling() {
+            assert!(t0.elapsed().as_secs() < 10, "never started");
+            audio.run(PERIOD, &mut pads, None);
+            pads.frame += u64::from(PERIOD);
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        let start = pads.frame - u64::from(PERIOD);
+        let end = start + 2 * BAR - 1000;
+        while pads.frame < end {
+            audio.run(PERIOD, &mut pads, None);
+            pads.frame += u64::from(PERIOD);
+        }
+        done.store(true, Ordering::Relaxed);
+        let control = thread.join().unwrap();
+        let hits: Vec<(u64, usize)> = pads.hits.iter().map(|&(f, p, _)| (f, p)).collect();
+        assert_eq!(hits.len(), 2, "{hits:?}");
+        assert_eq!(hits[1].0 - hits[0].0, BAR, "{hits:?}");
+        assert_eq!(
+            hits[0],
+            (start, 7),
+            "the first note on the first frame played"
+        );
+        assert!(control.launched(0));
+        let c = audio.counts();
+        assert_eq!(
+            (
+                c.dropped,
+                c.lost,
+                c.behind,
+                c.kept,
+                c.refused,
+                control.lost()
+            ),
+            (0, 0, 0, 0, 0, 0)
+        );
     }
 }
