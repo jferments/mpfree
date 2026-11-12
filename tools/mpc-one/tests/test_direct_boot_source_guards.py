@@ -39,10 +39,21 @@ class DirectBootSourceGuards(unittest.TestCase):
                   "MPFREE_VM_SECTION_kernel_modules",
                   "MPFREE_VM_SECTION_310_trustpoint_unit",
                   "MPFREE_VM_SECTION_boot_script_hex",
+                  "od -v -b /boot/boot.scr.uimg",
                   "verify_uboot_script_wrapper.py",
                   "security-310-utilities.json",
                   "partition_guard_and_sparse_path_proven"):
             self.assertIn(x,s)
+
+    def test_script_decoder_is_strict_busybox_octal_not_gnu_od(self):
+        decoder = ROOT / "tools/mpc-one/verify_uboot_script_wrapper.py"
+        source = decoder.read_text()
+        ast.parse(source, filename=str(decoder))
+        self.assertIn("decode_od_bytes", source)
+        self.assertIn("BUSYBOX_OCTAL_LINE", source)
+        self.assertIn("Non-contiguous BusyBox od byte offsets", source)
+        self.assertIn("terminal_offset", source)
+        self.assertNotIn("od -An -v -tx1", RUNNER.read_text())
 
     def test_focus_syntax_and_no_physical_fastboot(self):
         s=FOCUS.read_text()
