@@ -22,7 +22,7 @@ def fixture():
             "indirect_handoff_original_word":None,
             "opaque_media_table_words":{
                 "device_order":{"entries":[{"word":"0x%08x"%i} for i in range(5)]},
-                "device_mapping":{"entries":[{"word":"0x%08x"%i} for i in range(10)]},
+                "device_mapping":{"entries":[{"word":"0x%08x"%i} for i in range(8)]},
             },
         },
     }
