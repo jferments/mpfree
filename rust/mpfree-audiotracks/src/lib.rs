@@ -37,11 +37,18 @@
 //!   otherwise; [`Monitor::In`] always hears the input as well;
 //!   [`Monitor::Off`] never does.
 //! - **One memory.** Takes share one pool of samples, asked for once in
-//!   [`AudioTracks::new`]. A recording writes into the largest free room;
-//!   when two record at once, a new one takes half of the room another is
-//!   still filling, so several tracks can record together with no
-//!   planning. A take holds up to [`MAX_EXTENTS`] stretches of the pool;
-//!   nothing is ever moved. [`Command::Forget`] gives a take back.
+//!   [`AudioTracks::new`], in chunks of [`CHUNK`] samples: a recording
+//!   takes one chunk at a time, so several tracks record together with no
+//!   planning, and nothing is ever moved. [`Command::Forget`] gives a take
+//!   back.
+//! - **Streaming.** With [`AudioTracks::stream`] on, the memory is a cache
+//!   in front of the disk: recorded chunks go out to be written
+//!   ([`Io::Write`]) and can then make room for others, and the chunks the
+//!   next seconds of the song need are asked for ahead ([`Io::Read`]),
+//!   with the loop's start and the first chunk of each region kept when
+//!   there is room. The audio thread only ever reads memory; a chunk not
+//!   there in time plays silence and is counted ([`Stats::missed`]). The
+//!   host's disk thread does the reading and writing (see [`host`]).
 //!
 //! [`AudioTracks::command`] and [`AudioTracks::process`] never allocate,
 //! lock or panic, and give the same output for any period size.
@@ -49,8 +56,13 @@
 #![forbid(unsafe_code)]
 
 pub mod host;
+mod pool;
 pub mod save;
 pub mod stretch;
+
+pub use pool::CHUNK;
+use pool::{Pool, State as SlotState};
+use std::collections::VecDeque;
 
 use save::{Saved, TakeFile, TrackFile};
 
@@ -64,9 +76,6 @@ pub const MAX_TRACKS: usize = 8;
 pub const MAX_TAKES: usize = 256;
 /// Regions on one track at most.
 pub const MAX_REGIONS: usize = 256;
-/// Stretches of the pool one take can hold. A recording that would need
-/// more stops there.
-pub const MAX_EXTENTS: usize = 32;
 /// Frames of the crossfade at each region's start and past its end (about
 /// 1.5 ms at 44.1 kHz).
 pub const FADE: usize = 64;
@@ -79,17 +88,21 @@ pub const HISTORY: usize = 32;
 const QUEUE: usize = 64;
 /// The most frames the tracks run in one go.
 const RUN: usize = 128;
-/// The smallest room worth recording into, in samples (even).
-const MIN_ROOM: usize = 4096;
 /// Samples in one block of the peak table: the waveform overview keeps the
-/// lowest and highest sample of every block of the pool. Every stretch of
-/// the pool starts and ends on a block's edge, so a block never holds two
-/// takes.
+/// lowest and highest sample of every block of the pool. A chunk is whole
+/// blocks, so a block never holds two takes.
 pub const PEAK_BLOCK: usize = 256;
-
-fn round_up(n: usize) -> usize {
-    n.div_ceil(PEAK_BLOCK) * PEAK_BLOCK
-}
+/// Disk requests waiting for the host, at most.
+pub const IO_QUEUE: usize = 1024;
+/// Streaming: how far ahead of the playhead chunks are asked for, and how
+/// much of the loop's start and of each region's start is kept, in
+/// seconds.
+pub const AHEAD_SECONDS: f64 = 4.0;
+pub const HEAD_SECONDS: f64 = 1.0;
+/// Streaming: reads asked for in one planning round at most.
+const READS_PER_PLAN: usize = 64;
+/// Streaming: frames between planning rounds (and at once after a jump).
+const PLAN_FRAMES: usize = 1024;
 
 fn min_max(xs: &[f32]) -> (f32, f32) {
     xs.iter()
@@ -256,8 +269,7 @@ pub struct TakeInfo {
     pub frames: usize,
     pub channels: usize,
     pub recording: bool,
-    /// The recording stopped early because the memory was full or the take
-    /// held [`MAX_EXTENTS`] stretches.
+    /// The recording stopped early because the memory was full.
     pub cut_short: bool,
 }
 
@@ -270,6 +282,29 @@ pub struct Stats {
     pub dropped: u32,
     /// Recordings cut short by a full memory or [`MAX_TAKES`].
     pub full: u32,
+    /// Streaming: frames that should have played but whose chunk was not
+    /// in memory in time (they played silence).
+    pub missed: u64,
+    /// Streaming: chunks the disk could not read or write.
+    pub read_errors: u32,
+    pub write_errors: u32,
+    /// Streaming: disk requests dropped because the queue was full.
+    pub io_dropped: u32,
+}
+
+/// A request for the host's disk thread, in order (see [`AudioTracks::take_io`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Io {
+    /// Read chunk `chunk` of the take's file, then give it with
+    /// [`AudioTracks::fill`] (or [`AudioTracks::fill_failed`]).
+    Read { take: u16, chunk: u32 },
+    /// Chunk `chunk` of the take is recorded (the last one may be short):
+    /// copy it with [`AudioTracks::chunk`], write it, then tell
+    /// [`AudioTracks::written`] (or [`AudioTracks::write_failed`]).
+    Write { take: u16, chunk: u32 },
+    /// The take's recording ended; every chunk has been asked for. Finish
+    /// its file ([`AudioTracks::take`] gives its length).
+    Finish { take: u16 },
 }
 
 /// The memory gauge, in samples (a stereo frame is two).
@@ -277,146 +312,6 @@ pub struct Stats {
 pub struct Memory {
     pub used: usize,
     pub capacity: usize,
-}
-
-/// A stretch of the pool, in samples; start and length are whole
-/// [`PEAK_BLOCK`]s.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct Ext {
-    start: usize,
-    len: usize,
-}
-
-const NO_EXT: Ext = Ext { start: 0, len: 0 };
-
-/// One memory for every take: free stretches sorted by start, merged when
-/// they meet, all on [`PEAK_BLOCK`] edges. The list is made big enough once
-/// that it never grows. `peaks` holds each block's lowest and highest
-/// sample, kept as the audio is written.
-struct Pool {
-    data: Vec<f32>,
-    free: Vec<Ext>,
-    used: usize,
-    peaks: Vec<(f32, f32)>,
-}
-
-impl Pool {
-    fn new(samples: usize) -> Pool {
-        let samples = samples / PEAK_BLOCK * PEAK_BLOCK;
-        let mut free = Vec::with_capacity(MAX_TAKES * MAX_EXTENTS + MAX_TRACKS + 2);
-        if samples > 0 {
-            free.push(Ext {
-                start: 0,
-                len: samples,
-            });
-        }
-        let mut data = vec![0.0; samples];
-        // Touch every page now, so the audio thread never waits for the
-        // system to map one in the middle of a recording (a zeroed
-        // allocation is mapped lazily).
-        for i in (0..data.len()).step_by(1024) {
-            data[i] = std::hint::black_box(0.0);
-        }
-        Pool {
-            data,
-            free,
-            used: 0,
-            peaks: vec![(0.0, 0.0); samples / PEAK_BLOCK],
-        }
-    }
-
-    /// Samples `start..start + len` were just written: their blocks' peaks
-    /// take them in. A take writes each stretch in order from its start,
-    /// so a write that begins on a block's edge is that block's first and
-    /// replaces what an earlier take left there.
-    fn note(&mut self, start: usize, len: usize) {
-        let mut p = start;
-        let end = start + len;
-        while p < end {
-            let b = p / PEAK_BLOCK;
-            let to = end.min((b + 1) * PEAK_BLOCK);
-            let (lo, hi) = min_max(&self.data[p..to]);
-            let pk = &mut self.peaks[b];
-            *pk = if p.is_multiple_of(PEAK_BLOCK) {
-                (lo, hi)
-            } else {
-                (pk.0.min(lo), pk.1.max(hi))
-            };
-            p = to;
-        }
-    }
-
-    /// The lowest and highest sample of `start..start + len`, from the
-    /// table for whole blocks.
-    fn range_peaks(&self, start: usize, len: usize) -> (f32, f32) {
-        let (mut lo, mut hi) = (f32::MAX, f32::MIN);
-        let mut p = start;
-        let end = start + len;
-        while p < end {
-            let b = p / PEAK_BLOCK;
-            let to = end.min((b + 1) * PEAK_BLOCK);
-            let (l, h) = if p.is_multiple_of(PEAK_BLOCK) && to == (b + 1) * PEAK_BLOCK {
-                self.peaks[b]
-            } else {
-                min_max(&self.data[p..to])
-            };
-            lo = lo.min(l);
-            hi = hi.max(h);
-            p = to;
-        }
-        (lo, hi)
-    }
-
-    fn largest(&self) -> Option<usize> {
-        let mut best = None;
-        let mut len = 0;
-        for (i, e) in self.free.iter().enumerate() {
-            if e.len > len {
-                len = e.len;
-                best = Some(i);
-            }
-        }
-        best
-    }
-
-    fn take(&mut self, i: usize) -> Ext {
-        let e = self.free.remove(i);
-        self.used += e.len;
-        e
-    }
-
-    fn give(&mut self, e: Ext) {
-        if e.len == 0 {
-            return;
-        }
-        self.used -= e.len;
-        let i = self.free.partition_point(|f| f.start < e.start);
-        let joins_prev = i > 0 && {
-            let p = self.free[i - 1];
-            p.start + p.len == e.start
-        };
-        let joins_next = i < self.free.len() && e.start + e.len == self.free[i].start;
-        match (joins_prev, joins_next) {
-            (true, true) => {
-                let n = self.free.remove(i);
-                self.free[i - 1].len += e.len + n.len;
-            }
-            (true, false) => self.free[i - 1].len += e.len,
-            (false, true) => {
-                self.free[i].start = e.start;
-                self.free[i].len += e.len;
-            }
-            (false, false) => {
-                if self.free.len() < self.free.capacity() {
-                    self.free.insert(i, e);
-                } else {
-                    // Cannot happen: the list holds one more than every
-                    // stretch a take can own. Leak rather than allocate.
-                    self.used += e.len;
-                }
-            }
-        }
-    }
 }
 
 #[derive(Clone, Copy)]
@@ -430,10 +325,6 @@ struct Take {
     anchor: f64,
     /// Frames written.
     frames: usize,
-    ext: [Ext; MAX_EXTENTS],
-    n_ext: usize,
-    /// Samples written into the last stretch.
-    wpos: usize,
     recording: bool,
     cut_short: bool,
     /// Its saved audio is still copying in: it plays nothing yet.
@@ -449,45 +340,44 @@ const NO_TAKE: Take = Take {
     pass: 0,
     anchor: 0.0,
     frames: 0,
-    ext: [NO_EXT; MAX_EXTENTS],
-    n_ext: 0,
-    wpos: 0,
     recording: false,
     cut_short: false,
     loading: false,
 };
 
 impl Take {
-    /// Adds `gain`-weighted frames `k..k + n` of the take into the
+    /// Adds `gain`-weighted frames `k..k + n` of take `id` into the
     /// interleaved stereo `out` (n frames); frames the take does not have
-    /// add nothing. `gain(j)` is the gain of frame `j` of the run.
-    fn add_into(&self, data: &[f32], k: i64, out: &mut [f32], gain: &impl Fn(usize) -> f32) {
+    /// add nothing. `gain(j)` is the gain of frame `j` of the run. The
+    /// frames whose chunk is not in memory: they add nothing either.
+    fn add_into(
+        &self,
+        pool: &Pool,
+        id: u16,
+        k: i64,
+        out: &mut [f32],
+        gain: &impl Fn(usize) -> f32,
+    ) -> usize {
         let n = out.len() / 2;
         let ch = self.channels as usize;
-        let mut j = 0usize;
+        let mut missed = 0;
         // Skip frames before the take.
-        if k < 0 {
-            j = ((-k) as usize).min(n);
-        }
-        let mut base = 0usize; // first frame of stretch e
-        for e in &self.ext[..self.n_ext] {
-            if j >= n {
+        let mut j = if k < 0 { ((-k) as usize).min(n) } else { 0 };
+        while j < n {
+            let at = (k + j as i64) as usize; // take frame
+            if at >= self.frames {
                 break;
             }
-            let frames_in = e.len / ch;
-            let have = if base + frames_in > self.frames {
-                self.frames.saturating_sub(base)
-            } else {
-                frames_in
-            };
-            let at = k + j as i64; // take frame
-            if at as usize >= base + have {
-                base += frames_in;
+            let s = at * ch;
+            let off = s % CHUNK;
+            let count = ((CHUNK - off) / ch).min(n - j).min(self.frames - at);
+            let Some(slot) = pool.readable(id, (s / CHUNK) as u32) else {
+                missed += count;
+                j += count;
                 continue;
-            }
-            let from = at as usize - base;
-            let count = (have - from).min(n - j);
-            let src = &data[e.start + from * ch..e.start + (from + count) * ch];
+            };
+            let b = slot * CHUNK + off;
+            let src = &pool.data[b..b + count * ch];
             let dst = &mut out[2 * j..2 * (j + count)];
             if ch == 1 {
                 for (i, (d, s)) in dst.chunks_exact_mut(2).zip(src).enumerate() {
@@ -503,24 +393,25 @@ impl Take {
                 }
             }
             j += count;
-            base += frames_in;
         }
+        missed
     }
 
-    fn sample(&self, data: &[f32], k: usize, c: usize) -> Option<f32> {
+    fn sample(&self, pool: &Pool, id: u16, k: usize, c: usize) -> Option<f32> {
         if k >= self.frames {
             return None;
         }
         let ch = self.channels as usize;
-        let mut base = 0;
-        for e in &self.ext[..self.n_ext] {
-            let frames_in = e.len / ch;
-            if k < base + frames_in {
-                return Some(data[e.start + (k - base) * ch + c.min(ch - 1)]);
-            }
-            base += frames_in;
-        }
-        None
+        let s = k * ch + c.min(ch - 1);
+        let slot = pool.readable(id, (s / CHUNK) as u32)?;
+        Some(pool.data[slot * CHUNK + s % CHUNK])
+    }
+
+    /// Samples in chunk `c` (the last one may be short).
+    fn chunk_len(&self, c: u32) -> usize {
+        (self.frames * self.channels as usize)
+            .saturating_sub(c as usize * CHUNK)
+            .min(CHUNK)
     }
 }
 
@@ -749,6 +640,16 @@ pub struct AudioTracks {
     /// thread.
     returned: Vec<Vec<f32>>,
     fade: [f32; FADE + 1],
+    /// Streaming (see the module notes).
+    streaming: bool,
+    io: VecDeque<Io>,
+    /// Where the song is (tick, tempo, rolling), at the end of the last run.
+    at_tick: f64,
+    at_bpm: f64,
+    loop_range: Option<(Tick, Tick)>,
+    /// Frames since the last planning round, and whether one is due now.
+    plan_wait: usize,
+    replan: bool,
 }
 
 impl AudioTracks {
@@ -788,6 +689,13 @@ impl AudioTracks {
             loads: Vec::with_capacity(MAX_TAKES),
             returned: Vec::with_capacity(MAX_TAKES),
             fade: fade_table(),
+            streaming: false,
+            io: VecDeque::with_capacity(IO_QUEUE),
+            at_tick: 0.0,
+            at_bpm: 120.0,
+            loop_range: None,
+            plan_wait: 0,
+            replan: false,
         }
     }
 
@@ -812,8 +720,8 @@ impl AudioTracks {
 
     pub fn memory(&self) -> Memory {
         Memory {
-            used: self.pool.used,
-            capacity: self.pool.data.len(),
+            used: self.pool.used(),
+            capacity: self.pool.capacity(),
         }
     }
 
@@ -869,14 +777,14 @@ impl AudioTracks {
     /// Frame `k`, channel `c` of a take (a mono take answers for both).
     pub fn sample(&self, id: u16, k: usize, c: usize) -> Option<f32> {
         let t = self.takes.get(id as usize).filter(|t| t.live)?;
-        t.sample(&self.pool.data, k, c)
+        t.sample(&self.pool, id, k, c)
     }
 
     /// The lowest and highest sample of frames `from..to` of a take, over
     /// its channels: for a waveform on the screen. It reads the peak table
     /// for whole blocks of [`PEAK_BLOCK`] samples, so a long stretch costs
     /// little; it works while the take records (up to what is written) and
-    /// does not allocate. A host shares the result with the screen thread
+    /// does not allocate. Only chunks in memory count: None if none is. A host shares the result with the screen thread
     /// as it shares the rest of the state.
     pub fn peaks(&self, id: u16, from: usize, to: usize) -> Option<(f32, f32)> {
         let t = self.takes.get(id as usize).filter(|t| t.live)?;
@@ -886,24 +794,20 @@ impl AudioTracks {
         }
         let ch = t.channels as usize;
         let (mut lo, mut hi) = (f32::MAX, f32::MIN);
-        let mut base = 0;
-        for e in &t.ext[..t.n_ext] {
-            let frames_in = e.len / ch;
-            let a = from.max(base);
-            let b = to.min(base + frames_in);
-            if a < b {
-                let (l, h) = self
-                    .pool
-                    .range_peaks(e.start + (a - base) * ch, (b - a) * ch);
+        let mut any = false;
+        let (mut s, end) = (from * ch, to * ch);
+        while s < end {
+            let off = s % CHUNK;
+            let count = (CHUNK - off).min(end - s);
+            if let Some(slot) = self.pool.readable(id, (s / CHUNK) as u32) {
+                let (l, h) = self.pool.range_peaks(slot * CHUNK + off, count);
                 lo = lo.min(l);
                 hi = hi.max(h);
+                any = true;
             }
-            base += frames_in;
-            if base >= to {
-                break;
-            }
+            s += count;
         }
-        Some((lo, hi))
+        any.then_some((lo, hi))
     }
 
     /// Steps Undo can take back and Redo can bring back.
@@ -952,7 +856,7 @@ impl AudioTracks {
         u32le(&mut w, bytes as u32);
         for k in 0..t.frames {
             for c in 0..ch {
-                let s = t.sample(&self.pool.data, k, c).unwrap_or(0.0);
+                let s = t.sample(&self.pool, id, k, c).unwrap_or(0.0);
                 w.extend_from_slice(&s.to_le_bytes());
             }
         }
@@ -1193,10 +1097,7 @@ impl AudioTracks {
                 if !ok || self.in_use(id) {
                     return self.refuse();
                 }
-                let t = self.takes[id as usize];
-                for e in &t.ext[..t.n_ext] {
-                    self.pool.give(*e);
-                }
+                self.pool.release_take(id);
                 self.takes[id as usize] = NO_TAKE;
             }
             Command::Swap { old, new, ratio } => {
@@ -1305,8 +1206,10 @@ impl AudioTracks {
     }
 
     /// Copy frames `from..` of a take into `out` (interleaved, the take's
-    /// channels), as many as fit: the number of frames copied, or None if
-    /// the take is not there, records or is loading. Does not allocate.
+    /// channels), as many as fit and are in memory: the number of frames
+    /// copied, or None if the take is not there, records or is loading, or
+    /// its frame `from` is not in memory (streaming: read its file
+    /// instead). Does not allocate.
     pub fn read_take(&self, id: u16, from: usize, out: &mut [f32]) -> Option<usize> {
         let t = self
             .takes
@@ -1315,25 +1218,18 @@ impl AudioTracks {
         let ch = t.channels as usize;
         let want = (out.len() / ch).min(t.frames.saturating_sub(from));
         let mut done = 0;
-        let mut base = 0;
-        for e in &t.ext[..t.n_ext] {
-            if done == want {
+        while done < want {
+            let s = (from + done) * ch;
+            let off = s % CHUNK;
+            let count = ((CHUNK - off) / ch).min(want - done);
+            let Some(slot) = self.pool.readable(id, (s / CHUNK) as u32) else {
                 break;
-            }
-            let frames_in = e.len / ch;
-            let at = from + done;
-            if at >= base + frames_in {
-                base += frames_in;
-                continue;
-            }
-            let k = at - base;
-            let count = (frames_in - k).min(want - done);
-            out[done * ch..(done + count) * ch]
-                .copy_from_slice(&self.pool.data[e.start + k * ch..e.start + (k + count) * ch]);
+            };
+            let b = slot * CHUNK + off;
+            out[done * ch..(done + count) * ch].copy_from_slice(&self.pool.data[b..b + count * ch]);
             done += count;
-            base += frames_in;
         }
-        Some(done)
+        (done > 0 || want == 0).then_some(done)
     }
 
     /// Put a saved take back, under its own id: its memory is taken now,
@@ -1373,28 +1269,9 @@ impl AudioTracks {
             loading: true,
             ..NO_TAKE
         };
-        let need = round_up(need);
-        loop {
-            let have: usize = self.takes[id].ext[..self.takes[id].n_ext]
-                .iter()
-                .map(|e| e.len)
-                .sum();
-            if have >= need {
-                let tk = &mut self.takes[id];
-                let last = &mut tk.ext[tk.n_ext - 1];
-                let rest = Ext {
-                    start: last.start + last.len - (have - need),
-                    len: have - need,
-                };
-                last.len -= rest.len;
-                self.pool.give(rest);
-                break;
-            }
-            if !self.grow(id) {
-                let t = self.takes[id];
-                for e in &t.ext[..t.n_ext] {
-                    self.pool.give(*e);
-                }
+        for c in 0..need.div_ceil(CHUNK) as u32 {
+            if self.pool.alloc(f.id, c, SlotState::Dirty, true).is_none() {
+                self.pool.release_take(f.id);
                 self.takes[id] = NO_TAKE;
                 return Err(f);
             }
@@ -1460,29 +1337,46 @@ impl AudioTracks {
             let ch = tk.channels as usize;
             let done = tk.frames * ch;
             let count = (audio.len() - done).min(budget);
-            // Write samples done..done + count across the stretches.
-            let mut base = 0;
+            // Write samples done..done + count across the chunks.
             let mut w = 0;
-            for e in &tk.ext[..tk.n_ext] {
-                if w == count {
-                    break;
-                }
+            while w < count {
                 let at = done + w;
-                if at >= base + e.len {
-                    base += e.len;
-                    continue;
-                }
-                let k = at - base;
-                let c = (e.len - k).min(count - w);
-                self.pool.data[e.start + k..e.start + k + c].copy_from_slice(&audio[at..at + c]);
-                self.pool.note(e.start + k, c);
+                let off = at % CHUNK;
+                let c = (CHUNK - off).min(count - w);
+                let Some(slot) = self.pool.find(id, (at / CHUNK) as u32) else {
+                    break;
+                };
+                let b = slot as usize * CHUNK + off;
+                self.pool.data[b..b + c].copy_from_slice(&audio[at..at + c]);
+                self.pool.note(b, c);
                 w += c;
-                base += e.len;
             }
             tk.frames = (done + count) / ch;
             budget -= count.max(1);
-            if done + count == audio.len() {
+            let total = audio.len();
+            let finished = done + count == total;
+            if finished {
                 tk.loading = false;
+            }
+            if self.streaming {
+                // Streaming: every chunk copied in goes to be written.
+                for c in done / CHUNK..(done + count) / CHUNK {
+                    self.ask(Io::Write {
+                        take: id,
+                        chunk: c as u32,
+                    });
+                }
+                if finished {
+                    if !total.is_multiple_of(CHUNK) {
+                        self.ask(Io::Write {
+                            take: id,
+                            chunk: (total / CHUNK) as u32,
+                        });
+                    }
+                    self.ask(Io::Finish { take: id });
+                }
+            }
+            if finished {
                 let (_, audio) = self.loads.remove(0);
                 if self.returned.len() < self.returned.capacity() {
                     self.returned.push(audio);
@@ -1514,7 +1408,11 @@ impl AudioTracks {
             recording: true,
             ..NO_TAKE
         };
-        if !self.grow(id) {
+        if self
+            .pool
+            .alloc(id as u16, 0, SlotState::Dirty, true)
+            .is_none()
+        {
             self.takes[id] = NO_TAKE;
             self.stats.full += 1;
             self.tracks[t].blocked = true;
@@ -1572,72 +1470,36 @@ impl AudioTracks {
         }
     }
 
-    /// The take stops recording: the unwritten end of its last stretch goes
-    /// back to the pool.
+    /// The take stops recording. Streaming: its last, short chunk goes to
+    /// be written, and its file to be finished.
     fn close(&mut self, id: usize) {
         let tk = &mut self.takes[id];
         if !tk.recording {
             return;
         }
         tk.recording = false;
-        if tk.n_ext > 0 {
-            let last = &mut tk.ext[tk.n_ext - 1];
-            let used = round_up(tk.wpos).min(last.len);
-            let rest = Ext {
-                start: last.start + used,
-                len: last.len - used,
-            };
-            last.len = used;
-            if used == 0 {
-                tk.n_ext -= 1;
+        let samples = tk.frames * tk.channels as usize;
+        if samples == 0 {
+            // Nothing was written: its first chunk goes back.
+            self.pool.release_take(id as u16);
+        }
+        if self.streaming {
+            if !samples.is_multiple_of(CHUNK) {
+                self.ask(Io::Write {
+                    take: id as u16,
+                    chunk: (samples / CHUNK) as u32,
+                });
             }
-            self.pool.give(rest);
+            self.ask(Io::Finish { take: id as u16 });
         }
     }
 
-    /// Room for take `id` to go on writing: the largest free stretch, or
-    /// half of what another recording has not filled yet, whichever is
-    /// bigger. False if there is none worth having.
-    fn grow(&mut self, id: usize) -> bool {
-        if self.takes[id].n_ext == MAX_EXTENTS {
-            return false;
-        }
-        let free = self.pool.largest();
-        let free_len = free.map_or(0, |i| self.pool.free[i].len);
-        let mut steal: Option<(usize, usize)> = None;
-        for (k, o) in self.takes.iter().enumerate() {
-            if k != id && o.live && o.recording && o.n_ext > 0 {
-                let rest =
-                    (o.ext[o.n_ext - 1].len - round_up(o.wpos)) / 2 / PEAK_BLOCK * PEAK_BLOCK;
-                if rest > steal.map_or(0, |s| s.1) {
-                    steal = Some((k, rest));
-                }
-            }
-        }
-        let ext = if steal.map_or(0, |s| s.1) > free_len {
-            let (k, half) = steal.unwrap_or((0, 0));
-            if half < MIN_ROOM {
-                return false;
-            }
-            let o = &mut self.takes[k];
-            let last = &mut o.ext[o.n_ext - 1];
-            last.len -= half;
-            Ext {
-                start: last.start + last.len,
-                len: half,
-            }
+    fn ask(&mut self, r: Io) {
+        if self.io.len() < self.io.capacity() {
+            self.io.push_back(r);
         } else {
-            if free_len < MIN_ROOM {
-                return false;
-            }
-            let Some(i) = free else { return false };
-            self.pool.take(i)
-        };
-        let tk = &mut self.takes[id];
-        tk.ext[tk.n_ext] = ext;
-        tk.n_ext += 1;
-        tk.wpos = 0;
-        true
+            self.stats.io_dropped += 1;
+        }
     }
 
     /// Append input frames to a recording take. False if the memory ran
@@ -1645,27 +1507,23 @@ impl AudioTracks {
     fn write(&mut self, id: usize, input: &[f32], sel: Input) -> bool {
         let mut j = 0;
         let n = input.len() / 2;
+        let ch = self.takes[id].channels as usize;
         while j < n {
-            let ch = self.takes[id].channels as usize;
-            let room = {
-                let tk = &self.takes[id];
-                if tk.n_ext == 0 {
-                    0
-                } else {
-                    (tk.ext[tk.n_ext - 1].len - tk.wpos) / ch
-                }
+            let s = self.takes[id].frames * ch;
+            let (c, off) = ((s / CHUNK) as u32, s % CHUNK);
+            let slot = match self.pool.find(id as u16, c) {
+                Some(slot) => slot as usize,
+                None => match self.pool.alloc(id as u16, c, SlotState::Dirty, true) {
+                    Some(slot) => slot,
+                    None => {
+                        self.takes[id].cut_short = true;
+                        return false;
+                    }
+                },
             };
-            if room == 0 {
-                if !self.grow(id) {
-                    self.takes[id].cut_short = true;
-                    return false;
-                }
-                continue;
-            }
-            let count = room.min(n - j);
-            let tk = &mut self.takes[id];
-            let e = tk.ext[tk.n_ext - 1];
-            let dst = &mut self.pool.data[e.start + tk.wpos..e.start + tk.wpos + count * ch];
+            let count = ((CHUNK - off) / ch).min(n - j);
+            let b = slot * CHUNK + off;
+            let dst = &mut self.pool.data[b..b + count * ch];
             let src = &input[2 * j..2 * (j + count)];
             match sel {
                 Input::Stereo => dst.copy_from_slice(src),
@@ -1685,10 +1543,15 @@ impl AudioTracks {
                     }
                 }
             }
-            self.pool.note(e.start + tk.wpos, count * ch);
-            tk.wpos += count * ch;
-            tk.frames += count;
+            self.pool.note(b, count * ch);
+            self.takes[id].frames += count;
             j += count;
+            if self.streaming && off + count * ch == CHUNK {
+                self.ask(Io::Write {
+                    take: id as u16,
+                    chunk: c,
+                });
+            }
         }
         true
     }
@@ -1753,6 +1616,244 @@ impl AudioTracks {
             m += 1;
         }
         self.mix(n, out);
+        if self.streaming {
+            self.plan_wait += n;
+            if self.replan || self.plan_wait >= PLAN_FRAMES {
+                self.plan(map);
+            }
+        }
+    }
+
+    // ---- streaming -----------------------------------------------------
+
+    /// Turn streaming on or off (see the module notes). Only while no take
+    /// is there: false (nothing changed) otherwise.
+    pub fn stream(&mut self, on: bool) -> bool {
+        if self.takes.iter().any(|t| t.live) {
+            return false;
+        }
+        self.streaming = on;
+        self.io.clear();
+        self.replan = on;
+        true
+    }
+
+    pub fn streaming(&self) -> bool {
+        self.streaming
+    }
+
+    /// The next request for the disk thread, oldest first.
+    pub fn take_io(&mut self) -> Option<Io> {
+        self.io.pop_front()
+    }
+
+    /// The loop, for keeping its start in memory (the transport's
+    /// [`Mark::LoopSet`] does the same; this is for a loop set before the
+    /// tracks were made).
+    pub fn set_loop(&mut self, r: Option<(Tick, Tick)>) {
+        if r != self.loop_range {
+            self.loop_range = r;
+            self.replan = true;
+        }
+    }
+
+    /// The samples of chunk `chunk` of a take while it is in memory (the
+    /// last chunk may be short), for [`Io::Write`].
+    pub fn chunk(&self, take: u16, chunk: u32) -> Option<&[f32]> {
+        let t = self.takes.get(take as usize).filter(|t| t.live)?;
+        let slot = self.pool.readable(take, chunk)?;
+        let len = t.chunk_len(chunk);
+        (len > 0).then(|| &self.pool.data[slot * CHUNK..slot * CHUNK + len])
+    }
+
+    /// Chunk `chunk` of a take is on the disk now: its memory can make
+    /// room for others. A chunk still being recorded (not yet asked to be
+    /// written) is left as it is.
+    pub fn written(&mut self, take: u16, chunk: u32) {
+        let Some(t) = self.takes.get(take as usize).filter(|t| t.live) else {
+            return;
+        };
+        let full = t.chunk_len(chunk) == CHUNK || !t.recording;
+        if let Some(s) = self.pool.find(take, chunk) {
+            let sl = &mut self.pool.slots[s as usize];
+            if sl.state == SlotState::Dirty && full {
+                sl.state = SlotState::Clean;
+            }
+        }
+    }
+
+    /// The chunk could not be written: it stays in memory (counted).
+    pub fn write_failed(&mut self, _take: u16, _chunk: u32) {
+        self.stats.write_errors += 1;
+    }
+
+    /// The disk thread's answer to [`Io::Read`]: the chunk's samples. False
+    /// (nothing changed) if it is no longer wanted (the take was
+    /// forgotten, or the chunk is there already).
+    pub fn fill(&mut self, take: u16, chunk: u32, data: &[f32]) -> bool {
+        let Some(s) = self.pool.find(take, chunk).map(|s| s as usize) else {
+            return false;
+        };
+        if self.pool.slots[s].state != SlotState::Loading {
+            return false;
+        }
+        let n = data.len().min(CHUNK);
+        let b = s * CHUNK;
+        self.pool.data[b..b + n].copy_from_slice(&data[..n]);
+        self.pool.data[b + n..b + CHUNK].fill(0.0);
+        self.pool.note(b, CHUNK);
+        self.pool.slots[s].state = SlotState::Clean;
+        true
+    }
+
+    /// The chunk could not be read: its slot goes back (counted; asked for
+    /// again when next wanted).
+    pub fn fill_failed(&mut self, take: u16, chunk: u32) {
+        self.stats.read_errors += 1;
+        if let Some(s) = self.pool.find(take, chunk).map(|s| s as usize) {
+            if self.pool.slots[s].state == SlotState::Loading {
+                self.pool.release(s);
+            }
+        }
+    }
+
+    /// Streaming: put back a take whose audio is on the disk, under its own
+    /// id; its chunks are read as the song needs them. Does not allocate.
+    /// Gives `f` back if not streaming, the id is past the last or in use,
+    /// the track past the last, or the take empty.
+    pub fn add_take(&mut self, f: TakeFile) -> Result<(), TakeFile> {
+        let id = f.id as usize;
+        if !self.streaming
+            || id >= MAX_TAKES
+            || self.takes[id].live
+            || f.track >= MAX_TRACKS
+            || !(1..=2).contains(&f.channels)
+            || f.frames == 0
+            || !f.anchor.is_finite()
+        {
+            return Err(f);
+        }
+        self.pool.release_take(f.id);
+        self.takes[id] = Take {
+            live: true,
+            track: f.track as u8,
+            channels: f.channels as u8,
+            group: f.group,
+            pass: f.pass,
+            bpm: if f.bpm.is_finite() && f.bpm > 0.0 {
+                f.bpm
+            } else {
+                0.0
+            },
+            anchor: f.anchor,
+            frames: f.frames,
+            ..NO_TAKE
+        };
+        self.groups = self.groups.max(f.group);
+        self.replan = true;
+        Ok(())
+    }
+
+    /// Chunks not yet written to the disk (recorded or loaded here), and
+    /// chunks waiting to be read.
+    pub fn unwritten(&self) -> usize {
+        self.pool
+            .slots
+            .iter()
+            .filter(|s| s.state == SlotState::Dirty)
+            .count()
+    }
+
+    /// One planning round: hold (and ask the disk for) the chunks the next
+    /// [`AHEAD_SECONDS`] of the song play, then the loop's start, then the
+    /// start of each region, nearest first, while there is room.
+    fn plan(&mut self, map: &TempoMap) {
+        self.plan_wait = 0;
+        self.replan = false;
+        self.pool.clock += 1;
+        let mut reads = READS_PER_PLAN.min(self.io.capacity() - self.io.len());
+        let rate = f64::from(self.rate);
+        let ahead = AHEAD_SECONDS * rate;
+        let head = HEAD_SECONDS * rate;
+        let at = self.at_tick;
+        // The first quarter for every track, then the rest.
+        self.want_window(map, at, ahead / 4.0, &mut reads);
+        self.want_window(map, at, ahead, &mut reads);
+        if let Some((ls, le)) = self.loop_range {
+            if at < le as f64 {
+                self.want_window(map, ls as f64, head, &mut reads);
+            }
+        }
+        // Region starts, at most a quarter of the memory.
+        let mut room = self.pool.len() / 4;
+        for t in 0..MAX_TRACKS {
+            let tr = &self.tracks[t];
+            let first = tr.regions().partition_point(|r| (r.end as f64) < at);
+            for i in (first..tr.n).chain(0..first) {
+                let r = self.tracks[t].regions[i];
+                let end = frames_from(map, r.start as f64, r.end as f64, self.rate).min(head);
+                let held = self.want_frames(r.take, r.src, r.src + end as i64, &mut reads);
+                room = room.saturating_sub(held);
+                if room == 0 {
+                    return;
+                }
+            }
+        }
+    }
+
+    /// Hold the chunks every track plays from tick `t0` for `frames`.
+    fn want_window(&mut self, map: &TempoMap, t0: f64, frames: f64, reads: &mut usize) {
+        let rate = self.rate;
+        let t1 = tick_after(map, t0, frames, rate);
+        let tail = mpfree_transport::time::ticks_in(FADE as f64, self.at_bpm, rate) + 1.0;
+        for t in 0..MAX_TRACKS {
+            let first = self.tracks[t]
+                .regions()
+                .partition_point(|r| r.end as f64 + tail <= t0);
+            for i in first..self.tracks[t].n {
+                let r = self.tracks[t].regions[i];
+                if r.start as f64 >= t1 {
+                    break;
+                }
+                let a = frames_from(map, r.start as f64, t0.max(r.start as f64), rate);
+                let b = frames_from(map, r.start as f64, t1.min(r.end as f64), rate) + FADE as f64;
+                self.want_frames(r.take, r.src + a as i64, r.src + b.ceil() as i64, reads);
+            }
+        }
+    }
+
+    /// Hold the chunks of take frames `a..b`; how many it holds.
+    fn want_frames(&mut self, take: u16, a: i64, b: i64, reads: &mut usize) -> usize {
+        let Some(t) = self
+            .takes
+            .get(take as usize)
+            .filter(|t| t.live && !t.loading)
+        else {
+            return 0;
+        };
+        let ch = t.channels as usize;
+        let b = (b.max(0) as usize).min(t.frames);
+        let a = a.max(0) as usize;
+        if a >= b {
+            return 0;
+        }
+        let mut held = 0;
+        for c in (a * ch / CHUNK) as u32..=((b * ch - 1) / CHUNK) as u32 {
+            if let Some(s) = self.pool.find(take, c) {
+                self.pool.slots[s as usize].last = self.pool.clock;
+                held += 1;
+            } else if *reads > 0
+                && self
+                    .pool
+                    .alloc(take, c, SlotState::Loading, false)
+                    .is_some()
+            {
+                *reads -= 1;
+                held += 1;
+                self.ask(Io::Read { take, chunk: c });
+            }
+        }
+        held
     }
 
     /// A loop jump or a locate while recording: each recording track ends
@@ -1762,8 +1863,18 @@ impl AudioTracks {
         let end = match mark {
             Mark::Looped { end, .. } => end as f64,
             Mark::Located { from, .. } => from as f64,
+            Mark::LoopSet(r) => {
+                self.loop_range = r;
+                self.replan = true;
+                return;
+            }
+            Mark::Started { .. } | Mark::Stopped { .. } | Mark::Rewound | Mark::Tempo(_) => {
+                self.replan = true;
+                return;
+            }
             _ => return,
         };
+        self.replan = true;
         for t in 0..MAX_TRACKS {
             if let Some(rec) = self.tracks[t].rec {
                 let tk = self.takes[rec.take as usize];
@@ -1778,6 +1889,8 @@ impl AudioTracks {
         let recording_state = span.state == State::Recording;
         let rolling = matches!(span.state, State::Playing | State::Recording);
         let tick0 = span.tick_at(f);
+        self.at_tick = span.tick_at(f + len as u64);
+        self.at_bpm = span.bpm;
         for t in 0..MAX_TRACKS {
             let want = self.active && recording_state && self.tracks[t].armed;
             if !want {
@@ -1891,8 +2004,10 @@ impl AudioTracks {
             takes,
             pool,
             fade,
+            stats,
             ..
         } = self;
+        let missed = &mut stats.missed;
         let tr = &mut tracks[t];
         let first = tr
             .regions()
@@ -1940,9 +2055,10 @@ impl AudioTracks {
             if e0 >= plain_from && e0 + len as i64 <= len_f - fo {
                 // The whole run is past the fades: one gain.
                 let g = r.gain;
-                tk.add_into(&pool.data, r.src + e0, dst, &|_| g);
+                *missed += tk.add_into(pool, r.take, r.src + e0, dst, &|_| g) as u64;
             } else {
-                tk.add_into(&pool.data, r.src + e0, dst, &|j| gain_at(e0 + j as i64));
+                *missed +=
+                    tk.add_into(pool, r.take, r.src + e0, dst, &|j| gain_at(e0 + j as i64)) as u64;
             }
         }
     }
