@@ -29,7 +29,7 @@ def data_fs(size, fill=b"\x11", label=b"MPFREE-DATA"):
     data = bytearray(fill * size)
     struct.pack_into("<I", data, 1024 + 0x04, size // 1024)
     struct.pack_into("<I", data, 1024 + 0x18, 0)
-    struct.pack_into("<I", data, 1024 + 0x60, 0)
+    struct.pack_into("<III", data, 1024 + 0x5C, 0, 0, 0)     # no features, so no superblock checksum
     data[1024 + 0x38:1024 + 0x3A] = b"\x53\xef"
     data[1024 + 0x78:1024 + 0x88] = label.ljust(16, b"\0")
     return bytes(data)
@@ -309,7 +309,8 @@ class DataPartitionTests(WriterTests):
         """The stick holds the image's partitions 1 to 3, `data` at the start of partition 4, and a partition
         table (both copies) with partition 4 running to the end of the stick."""
         disk = self.contents(dev)
-        self.assertEqual(disk[2048 * 512:6144 * 512], self.image[2048 * 512:6144 * 512])
+        # From the end of the main table to the end of partition 3, the gap before partition 1 included.
+        self.assertEqual(disk[34 * 512:6144 * 512], self.image[34 * 512:6144 * 512])
         self.assertEqual(disk[self.START * 512:self.START * 512 + len(data)], data)
         want = [(1, 2048, 2048, "mpfree-test-root"), (2, 4096, 1024, "mpfree-test-log"),
                 (3, 5120, 1024, "mpfree-test-kits"), (4, self.START, self.END - self.START + 1, "mpfree-test-data")]
@@ -404,6 +405,28 @@ class DataPartitionTests(WriterTests):
                 self.assertIn("moving" if cut < 6 else "so it stays in place", res.stdout)
                 self.assert_written(dev, old)
 
+    def test_two_different_data_partitions_stop_after_a_copy(self):
+        """A stick written with this layout, then by an older tool (old layout, newer settings): the one at
+        START is stale. Neither is chosen silently: the table's one is copied, and nothing is written."""
+        stale, newer = data_fs(1 << 20, fill=b"\x22"), data_fs(1 << 20, fill=b"\x33")
+        struct.pack_into("<I", newer := bytearray(newer), 1024 + 0x30, 1794355200)   # 2026-11-11 00:00 UTC
+        newer = bytes(newer)
+        dev = self.old_stick(newer)
+        disk = bytearray(self.contents(dev))
+        disk[self.START * 512:self.START * 512 + len(stale)] = stale
+        write(dev, bytes(disk))
+        res = self.writer()
+        self.assertEqual(res.returncode, 1, res.stdout)
+        [copy] = self.copies()
+        self.assertIn("the stick has two different MPFree data partitions", res.stdout)
+        self.assertIn("at 3 MiB (last written 2026-11-11 00:00 UTC), which the MPC used last", res.stdout)
+        self.assertIn(f"A copy of the second is in {copy}: run with --data-from that file", res.stdout)
+        self.assertEqual(self.contents(copy), newer)
+        self.assertEqual(self.contents(dev), bytes(disk), "nothing written on the stick")
+        res = self.writer("WRITE\n", "--data-from", copy)
+        self.assertEqual(res.returncode, 0, res.stdout)
+        self.assert_written(dev, newer)
+
     def test_a_stick_without_one_starts_empty(self):
         dev = self.disk("sdb", "8:16", self.STICK)
         res = self.writer()
@@ -427,6 +450,11 @@ class DataPartitionTests(WriterTests):
         res = self.writer("WRITE\n", "--data-from", saved)
         self.assertEqual(res.returncode, 0, res.stdout)
         self.assertIn(f"Partition 4 comes from {saved} (--data-from).", res.stdout)
+        self.assert_written(dev, self.contents(saved))
+        # A copy whose filesystem is smaller than the partition it came from goes back too.
+        write(saved, data_fs(1 << 20, fill=b"\x44") + bytes(1 << 20))
+        res = self.writer("WRITE\n", "--data-from", saved)
+        self.assertEqual(res.returncode, 0, res.stdout)
         self.assert_written(dev, self.contents(saved))
         for bad in (data_fs(2 << 20)[:1 << 20], data_fs(1 << 20, label=b"SOMETHING")):
             with self.subTest(len(bad)):

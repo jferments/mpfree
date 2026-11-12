@@ -32,7 +32,10 @@ at boot. What goes in partition 4:
     starts;
   - the stick has none (the first time): the image's empty one.
 A partition 4 with that name that is not MPFree's stops the tool before
-anything is written.
+anything is written. So does a stick with two different MPFree data
+partitions (one where it goes, another in its partition table, from a round
+written with an older tool): a copy of the table's one is saved first, for
+--data-from.
   --fresh-data         erase the saved settings too: partition 4 starts empty
   --data-from FILE     use FILE (such as a saved data-from-old-stick-*.img)
                        for partition 4 instead of the stick's
@@ -45,7 +48,7 @@ stick pulled, the workstation stopped):
      Its first 4 KiB, which name it, are cleared first and written last, the
      superblock's first sector very last; a superblock with a wrong checksum
      is never taken for MPFree's;
-  2. partitions 1 to 3;
+  2. partitions 1 to 3, and the zeros before partition 1;
   3. the backup partition table at the end of the stick, then the main one at
      the start. Until then the stick keeps its old table.
 A data partition left in place is never written. If a write is cut off,
@@ -443,14 +446,18 @@ def data_plan(fd, info, image, image_data, new_data, data_mode):
         return data_file(data_mode[5:], sectors * SECTOR), False
     # Keep: the stick's own, in place if it is where this image's starts.
     head = read_all(fd, HEAD, first * SECTOR)
+    old = data_partition(gpt_partitions(fd))
     if is_data_head(head):
         if fs_bytes(head) > sectors * SECTOR:
             raise Stop(f"the MPFREE-DATA filesystem at partition 4 is {fs_bytes(head)} bytes, more than the "
                        f"{sectors * SECTOR} this stick has room for; nothing written")
+        if old is not None and old[0] != first:
+            other = read_all(fd, HEAD, old[0] * SECTOR)
+            if is_data_head(other) and fs_uuid(other) != fs_uuid(head):
+                two_data_partitions(fd, image, head, old, other)
         print(f"partition 4: the stick's MPFree data partition is already where it goes, so it stays in place "
               f"({fs_bytes(head)} bytes of filesystem); it is not written")
         return None, False
-    old = data_partition(gpt_partitions(fd))
     if old is None:
         print("partition 4: the stick has no MPFree data partition, so the saved settings start empty")
         return empty(), False
@@ -471,11 +478,40 @@ def data_plan(fd, info, image, image_data, new_data, data_mode):
     return data, True
 
 
+def fs_uuid(head):
+    """The ext4's own UUID (made new by mke2fs; the same in a copy or a moved one)."""
+    return head[1024 + 0x68:1024 + 0x78]
+
+
+def written(head):
+    """When the ext4 was last written, from its superblock."""
+    stamp = struct.unpack_from("<I", head, 1024 + 0x30)[0]
+    return time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime(stamp)) if stamp else "never"
+
+
+def two_data_partitions(fd, image, head, old, other):
+    """The stick holds MPFree's data partition where it goes and a different one (not a copy of it) where its
+    partition table says: from a round written with an older tool after this layout. The table's is the one
+    the MPC used last. Save a copy of it and stop, nothing written on the stick."""
+    first, sectors = old
+    copy = None
+    if sectors * SECTOR <= MAX_CARRY:
+        data = read_all(fd, sectors * SECTOR, first * SECTOR)
+        if is_data_fs(data, sectors * SECTOR) and fs_bytes(data) <= len(data):
+            copy = save_copy(image, data)
+    raise Stop("the stick has two different MPFree data partitions: one where partition 4 goes (last written "
+               f"{written(head)}) and the one its partition table names, at {first * SECTOR >> 20} MiB (last written "
+               f"{written(other)}), which the MPC used last. Nothing written on the stick. "
+               + (f"A copy of the second is in {copy}: run with --data-from that file to keep it, "
+                  if copy else "It is too big to copy here: ")
+               + "or with --fresh-data to start empty")
+
+
 def data_file(path, room):
     """A saved data partition (--data-from): MPFree's ext4, whole, and no bigger than partition 4."""
     with open(path, "rb") as fh:
         data = fh.read(min(room, MAX_CARRY) + 1)
-    if not is_data_head(data) or len(data) > min(room, MAX_CARRY) or fs_bytes(data) != len(data):
+    if not is_data_head(data) or len(data) > min(room, MAX_CARRY) or fs_bytes(data) > len(data):
         raise Stop(f"{path} is not a whole MPFREE-DATA partition copy of at most {min(room, MAX_CARRY)} bytes")
     return data
 
@@ -556,7 +592,7 @@ def root_write(name, size, image, want, data_mode="none"):
     if not TEST_ROOT and f"{os.major(st.st_rdev)}:{os.minor(st.st_rdev)}" != info["dev"]:
         raise Stop(f"{dev} is not the device sysfs describes; nothing written")
     fd = os.open(dev, os.O_RDWR | os.O_EXCL | getattr(os, "O_CLOEXEC", 0))
-    copy = None
+    copy, started = None, False
     try:
         if image_data is None:
             # No data partition: the image as it is, from the first byte.
@@ -573,7 +609,9 @@ def root_write(name, size, image, want, data_mode="none"):
             elif data_mode.startswith("file:"):
                 copy = data_mode[5:]
                 print(f"partition 4: {len(content)} bytes from {copy}")
-            start = min(f for n, f, _, _ in parts if n != 4) * SECTOR
+            # From the end of the main table (so the gap before partition 1 holds the image's zeros, not what
+            # the stick had) to the end of partition 3. The main table itself is written last.
+            start = len(main)
             end = max(f + count for n, f, count, _ in parts if n != 4) * SECTOR
             writes, checks = [], []
             if content is not None:
@@ -595,6 +633,7 @@ def root_write(name, size, image, want, data_mode="none"):
         total = sum(length for _, length, _ in writes)
         print(f"writing {total} bytes to /dev/{name} ...", flush=True)
         done, last = 0, time.time()
+        started = True
         with open(image, "rb") as src:
             for offset, length, data in writes:
                 if data is not None:
@@ -636,7 +675,9 @@ def root_write(name, size, image, want, data_mode="none"):
             except OSError:
                 pass
     except (Stop, OSError):
-        if copy:
+        if not started:
+            pass                    # stopped before the first write: the stick is as it was
+        elif copy:
             print(f"Your saved settings are in {copy}: write again with --data-from that file.")
         elif data_mode == "keep" and image_data is not None:
             print("Your saved settings, if the stick had them where they go, are still on it: run this again.")
