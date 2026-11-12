@@ -104,6 +104,11 @@ impl FbLayout {
 
     /// The bytes of whole native rows [first, end): `stride` bytes per row,
     /// the visible pixels from `canvas` and zeros in any padding after them.
+    ///
+    /// Turned 90 or 270 degrees, a native row is a column of the canvas, so
+    /// it reads the canvas in bands of [`BAND`] native rows: for each native
+    /// column, the band's pixels sit side by side in one canvas row, which
+    /// the cache serves in one or two lines instead of one line per pixel.
     pub fn rows(&self, canvas: &SoftCanvas, first: usize, end: usize, out: &mut Vec<u8>) {
         let (lw, lh) = self.logical_size();
         assert_eq!(
@@ -112,26 +117,67 @@ impl FbLayout {
             "canvas does not match the screen"
         );
         let g = &self.geometry;
-        let bpp = g.bytes_per_pixel();
+        let (bpp, stride, format) = (g.bytes_per_pixel(), g.stride, g.format);
         let lw = lw as usize;
         out.clear();
-        out.resize((end - first) * g.stride, 0);
-        for (k, ny) in (first..end).enumerate() {
-            let row = &mut out[k * g.stride..k * g.stride + g.width * bpp];
-            for nx in 0..g.width {
-                let (lx, ly) = logical(g, self.rotation, nx, ny);
-                let p = canvas.px[ly * lw + lx];
-                match g.format {
-                    PixelFormat::Xrgb8888 => {
-                        row[nx * 4..nx * 4 + 4].copy_from_slice(&p.to_le_bytes())
-                    }
-                    PixelFormat::Rgb565 => {
-                        let (r, gg, b) = ((p >> 16) & 0xFF, (p >> 8) & 0xFF, p & 0xFF);
-                        let v = ((r >> 3) << 11 | (gg >> 2) << 5 | (b >> 3)) as u16;
-                        row[nx * 2..nx * 2 + 2].copy_from_slice(&v.to_le_bytes());
+        out.resize((end - first) * stride, 0);
+        let px = &canvas.px;
+        match self.rotation {
+            Rotation::Deg0 | Rotation::Deg180 => {
+                for (k, ny) in (first..end).enumerate() {
+                    let row = &mut out[k * stride..k * stride + g.width * bpp];
+                    let (_, ly) = logical(g, self.rotation, 0, ny);
+                    let src = &px[ly * lw..ly * lw + lw];
+                    if self.rotation == Rotation::Deg0 {
+                        for (nx, &p) in src.iter().enumerate() {
+                            put(row, nx * bpp, p, format);
+                        }
+                    } else {
+                        for (nx, &p) in src.iter().rev().enumerate() {
+                            put(row, nx * bpp, p, format);
+                        }
                     }
                 }
             }
+            Rotation::Deg90 | Rotation::Deg270 => {
+                let up = self.rotation == Rotation::Deg90;
+                let mut ny0 = first;
+                while ny0 < end {
+                    let band = BAND.min(end - ny0);
+                    let base = (ny0 - first) * stride;
+                    for nx in 0..g.width {
+                        // Deg90: lx = ny, rising down the band; Deg270:
+                        // lx = h - 1 - ny, falling.
+                        let (lx0, ly) = logical(g, self.rotation, nx, ny0);
+                        let src = if up {
+                            &px[ly * lw + lx0..ly * lw + lx0 + band]
+                        } else {
+                            &px[ly * lw + lx0 + 1 - band..ly * lw + lx0 + 1]
+                        };
+                        for k in 0..band {
+                            let p = if up { src[k] } else { src[band - 1 - k] };
+                            put(out, base + k * stride + nx * bpp, p, format);
+                        }
+                    }
+                    ny0 += band;
+                }
+            }
+        }
+    }
+}
+
+/// Native rows read together when the picture is turned 90 or 270 degrees.
+const BAND: usize = 16;
+
+/// One XRGB8888 pixel at `off` in `out`, in the framebuffer's format.
+#[inline]
+fn put(out: &mut [u8], off: usize, p: u32, format: PixelFormat) {
+    match format {
+        PixelFormat::Xrgb8888 => out[off..off + 4].copy_from_slice(&p.to_le_bytes()),
+        PixelFormat::Rgb565 => {
+            let (r, g, b) = ((p >> 16) & 0xFF, (p >> 8) & 0xFF, p & 0xFF);
+            let v = ((r >> 3) << 11 | (g >> 2) << 5 | (b >> 3)) as u16;
+            out[off..off + 2].copy_from_slice(&v.to_le_bytes());
         }
     }
 }
@@ -278,6 +324,100 @@ mod tests {
             x2 = ((end % line) * 8).div_ceil(bits);
         }
         (x1, y1, x2.max(x1), y2)
+    }
+
+    /// The bytes `rows` wrote before it read in bands: one pixel at a time.
+    fn rows_one_by_one(
+        layout: &FbLayout,
+        canvas: &SoftCanvas,
+        first: usize,
+        end: usize,
+    ) -> Vec<u8> {
+        let g = &layout.geometry;
+        let lw = canvas.width() as usize;
+        let mut out = vec![0u8; (end - first) * g.stride];
+        for (k, ny) in (first..end).enumerate() {
+            for nx in 0..g.width {
+                let (lx, ly) = logical(g, layout.rotation, nx, ny);
+                put(
+                    &mut out,
+                    k * g.stride + nx * g.bytes_per_pixel(),
+                    canvas.px[ly * lw + lx],
+                    g.format,
+                );
+            }
+        }
+        out
+    }
+
+    fn noise_canvas(w: i32, h: i32) -> SoftCanvas {
+        let mut c = SoftCanvas::new(w, h);
+        let mut x = 0x2545F491u32;
+        for p in c.px.iter_mut() {
+            x ^= x << 13;
+            x ^= x >> 17;
+            x ^= x << 5;
+            *p = x & 0xFF_FFFF;
+        }
+        c
+    }
+
+    #[test]
+    fn banded_rows_are_the_same_bytes_as_one_pixel_at_a_time() {
+        for rot in [
+            Rotation::Deg0,
+            Rotation::Deg90,
+            Rotation::Deg180,
+            Rotation::Deg270,
+        ] {
+            for bpp in [32, 16] {
+                // Sizes that are not a multiple of the band, with padding.
+                let (nw, nh) = (37usize, 53usize);
+                let g = Geometry::new(nw, nh, nw * bpp as usize / 8 + 12, bpp).unwrap();
+                let layout = FbLayout {
+                    geometry: g,
+                    rotation: rot,
+                };
+                let (w, h) = layout.logical_size();
+                let c = noise_canvas(w, h);
+                for (first, end) in [(0, nh), (0, 1), (5, 6), (3, 40), (16, 33), (50, 53)] {
+                    let mut out = Vec::new();
+                    layout.rows(&c, first, end, &mut out);
+                    assert!(
+                        out == rows_one_by_one(&layout, &c, first, end),
+                        "{rot:?} {bpp} bpp rows {first}..{end}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// `cargo test --release -p mpfree-ui rows_speed -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn rows_speed() {
+        let g = Geometry::new(800, 1280, 3200, 32).unwrap();
+        let layout = FbLayout {
+            geometry: g,
+            rotation: Rotation::Deg270,
+        };
+        let (w, h) = layout.logical_size();
+        let c = noise_canvas(w, h);
+        let mut out = Vec::new();
+        let n = 30;
+        let t = std::time::Instant::now();
+        for _ in 0..n {
+            layout.rows(&c, 0, 1280, &mut out);
+        }
+        let banded = t.elapsed() / n;
+        let t = std::time::Instant::now();
+        for _ in 0..n {
+            std::hint::black_box(rows_one_by_one(&layout, &c, 0, 1280));
+        }
+        let single = t.elapsed() / n;
+        eprintln!(
+            "a whole 800x1280 frame turned 270: banded {banded:?}, one pixel at a time {single:?}"
+        );
     }
 
     #[test]

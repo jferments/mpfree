@@ -8769,6 +8769,60 @@ mod tests {
             .unwrap();
     }
 
+    /// The GPU seam (mpfree_ui::record): every sample screen recorded as a
+    /// display list and played back is the same picture, bit for bit, as
+    /// drawn straight; and what each list would send to a renderer in
+    /// another process (`--nocapture` prints the table).
+    #[test]
+    fn every_sample_screen_plays_back_the_same_from_its_display_list() {
+        std::thread::Builder::new()
+            .stack_size(8 << 20)
+            .spawn(|| {
+                let direct = sample_screens(Fonts::embedded);
+                let recorded = sample_screens(Fonts::embedded);
+                let mut sent = 0usize;
+                eprintln!(
+                    "screen                     ops  masks  new items  KiB sent  next frame KiB"
+                );
+                for ((name, mut a), (_, mut b)) in direct.into_iter().zip(recorded) {
+                    let mut straight = SoftCanvas::new(SCREEN.0, SCREEN.1);
+                    a.ui.paint(&mut straight);
+                    let mut rec = mpfree_ui::record::Recorder::new(SCREEN.0, SCREEN.1);
+                    rec.begin_frame();
+                    b.ui.paint(&mut rec);
+                    let first = rec.stats();
+                    let mut played = SoftCanvas::new(SCREEN.0, SCREEN.1);
+                    rec.replay(&mut played);
+                    assert!(
+                        straight.px == played.px,
+                        "{name}: the played-back picture differs"
+                    );
+                    // The next frame, a tick later, as the screen loop paints it.
+                    a.tick(0.033);
+                    b.tick(0.033);
+                    a.ui.paint(&mut straight);
+                    rec.begin_frame();
+                    b.ui.paint(&mut rec);
+                    let next = rec.stats();
+                    rec.replay(&mut played);
+                    assert!(straight.px == played.px, "{name}: the next frame differs");
+                    sent += first.sent_bytes();
+                    eprintln!(
+                        "{name:<26} {:>4} {:>6} {:>10} {:>9.1} {:>15.1}",
+                        first.ops,
+                        first.masks,
+                        first.new_items,
+                        first.sent_bytes() as f64 / 1024.0,
+                        next.sent_bytes() as f64 / 1024.0
+                    );
+                }
+                assert!(sent > 0);
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
     #[test]
     fn input_events_parse_for_this_build() {
         let mut b = vec![0u8; EVENT_SIZE];
