@@ -77,7 +77,7 @@ def main():
     src=ext4_image(args.rootfs)
     workspace=safe_workspace(args.workspace)
     overlay=workspace/(args.name+".qcow2")
-    tools={x:shutil.which(x) for x in ("qemu-system-arm","qemu-img","debugfs","qemu-arm-static")}
+    tools={x:shutil.which(x) for x in ("qemu-system-arm","qemu-img","debugfs","qemu-arm","qemu-arm-static")}
     report={
        "source":str(src),"image_bytes":src.stat().st_size,
        "source_kind":"RAW ext4 filesystem; NOT an RK3288 bootable disk/ROM image",
