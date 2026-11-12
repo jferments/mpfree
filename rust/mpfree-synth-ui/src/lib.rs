@@ -7,6 +7,8 @@
 //! - [`pages`]: which parameters go on which page. Native engines name
 //!   their pages (Poly: Osc, Filter, Env, LFO, Voice); any other node, such
 //!   as a hosted plugin or an effect, gets pages from its parameter groups.
+//! - [`qsets`]: the Q-Link sets a sound carries (Poly: Tone, Env, Filter
+//!   env, Motion, Mix, Osc), saved with its preset.
 //! - [`widgets`]: the title bar with page tabs, the visual strip, the tile
 //!   grid of knobs, choices and switches, and the Q-Link strip.
 //! - [`visual`]: Poly's drawn visuals (oscillators, filter response,
@@ -31,6 +33,7 @@ pub mod fm_visual;
 pub mod format;
 pub mod kit_visual;
 pub mod pages;
+pub mod qsets;
 pub mod sample;
 pub mod view;
 pub mod visual;
