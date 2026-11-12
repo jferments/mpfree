@@ -149,6 +149,25 @@ def build(read):
         confirmed("fastboot 0" in env["az01_recovercmd"]),
         "az01_bootcmd branches on dorecovery into az01_recovercmd/fastboot 0.",
         "Trace reboot-flag to runtime recovery behavior.","static/wide/storage-env-boot-dtb.json")
+    reboot_code=functions.get("0x00100fe4",{}).get("pseudocode","")
+    reboot_modes=all(part in reboot_code for part in (
+        "(*DAT_0010114c & 0xffffff00) == DAT_00101150",
+        "if (uVar4 == 1)", "if (uVar4 == 9) goto LAB_00101096;",
+        "*DAT_00101154 = 1;", "*puVar1 = 0;"))
+    row("U-Boot","Does this exact U-Boot handle loader and Fastboot reboot-mode suffixes?",
+        confirmed(reboot_modes),
+        "Original U-Boot 0x100FE4 checks the high-byte prefix, then low-byte values 1/9, sets a recovery variable and clears the consumed word.",
+        "Resolve exact mode register, prefix and runtime path; no MaskROM claim.",
+        "static/v11/v11-ghidra-uboot.json")
+    threshold=all(part in reboot_code for part in (
+        "FUN_001147f0(10,0,&local_20)",
+        "FUN_00115f30(local_20,1,local_1c)",
+        "if (local_1c[0] < 100)"))
+    row("U-Boot","Is there a separate below-100 recovery condition?",
+        confirmed(threshold),
+        "The same U-Boot routine sets the recovery flag if a helper-supplied value is below 100. Its identity is not established as a boot counter.",
+        "Trace source helpers and persistence before labeling this a boot-failure counter.",
+        "static/v11/v11-ghidra-uboot.json")
     row("U-Boot","Are extlinux and external script fallback configured?","static-supported",
         "Saved U-Boot environment scans extlinux.conf and boot.scr.uimg/boot.scr in mmc targets.",
         "Check which device can actually provide a verified reversible boot path.","static/wide/storage-env-boot-dtb.json")
@@ -187,6 +206,11 @@ def build(read):
         confirmed(scripts["normalized_commands_equal"]),
         "Normalized 3.6 and 3.10 boot script commands match.",
         "Trace userspace/kernel/device-tree differences.","static/wide/firmware-3.10-bootchain-v4-compare.json")
+    row("Update","Does official boot-script SHA describe the complete legacy uImage?",
+        "static-supported",
+        "No: 3.10 comparison stores raw script payload SHA under sha256, the 64-byte header SHA separately, and the 535-byte total length in header.image_bytes. Comparing this sha256 to guest complete-image hash is invalid.",
+        "Verify original script header and payload independently against any guest copy, including terminating newline.",
+        "static/wide/firmware-3.10-bootchain-v4-compare.json")
     names=("/boot/rk3288-az01-acva.dtb","/boot/rk3288-az01-acva-c.dtb")
     changes=[diff["board_dtbs"][name]["boot_node_diff"]["changed_boot_nodes"] for name in names]
     aliases=sum(any("mode-update = <0x5242c301>" in "\n".join(x.get("after",[]))
