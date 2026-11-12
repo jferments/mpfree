@@ -1,6 +1,6 @@
 <!--
 status: changing
-covers: rust/mpfree-sampler rust/mpfree-sampler-ui rust/mpfree-hello/src/sample_page.rs
+covers: rust/mpfree-sampler rust/mpfree-sampler-ui rust/mpfree-app/src/sample_page.rs
 checked: 2026-11-11 414faa1
 -->
 

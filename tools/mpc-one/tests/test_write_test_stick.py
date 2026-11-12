@@ -20,11 +20,16 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 TOOL = os.path.join(os.path.dirname(HERE), "write-test-stick.py")
 IMAGE = bytes(range(256)) * 4096 * 3          # 3 MiB, not a multiple of the 4 MiB chunk
 MIB = 1 << 20
+SBIN_PATH = "/usr/sbin:/usr/bin:/sbin:/bin"
 
 
 def data_fs(size, fill=b"\x11", label=b"MPFREE-DATA"):
-    """Bytes that pass for partition 4's ext4: the superblock's magic and label, the rest `fill`."""
+    """Bytes that pass for partition 4's ext4: the superblock's magic, label and size (1 KiB blocks), the
+    rest `fill`."""
     data = bytearray(fill * size)
+    struct.pack_into("<I", data, 1024 + 0x04, size // 1024)
+    struct.pack_into("<I", data, 1024 + 0x18, 0)
+    struct.pack_into("<III", data, 1024 + 0x5C, 0, 0, 0)     # no features, so no superblock checksum
     data[1024 + 0x38:1024 + 0x3A] = b"\x53\xef"
     data[1024 + 0x78:1024 + 0x88] = label.ljust(16, b"\0")
     return bytes(data)
@@ -50,6 +55,11 @@ def gpt_disk(sectors, parts, fill=b"\0"):
     head[56:72] = uuid.uuid4().bytes_le
     struct.pack_into("<QIII", head, 72, 2, 128, 128, zlib.crc32(entries))
     struct.pack_into("<I", head, 16, zlib.crc32(head))
+    mbr = bytearray(512)
+    mbr[446 + 4] = 0xEE
+    struct.pack_into("<II", mbr, 446 + 8, 1, min(sectors - 1, 0xFFFFFFFF))
+    mbr[510:512] = b"\x55\xaa"
+    disk[0:512] = mbr
     disk[512:604] = head
     disk[1024:1024 + len(entries)] = entries
     return bytes(disk)
@@ -211,86 +221,306 @@ class WriterTests(unittest.TestCase):
         self.assertEqual(self.contents(dev), b"\xee" * 16 * MIB)
 
 
+def backup_gpt_ok(disk):
+    """True when the disk's last sector holds a valid backup GPT header whose entries check out."""
+    sectors = len(disk) // 512
+    head = disk[-512:]
+    if head[:8] != b"EFI PART":
+        return False
+    size, crc = struct.unpack_from("<II", head, 12)
+    if zlib.crc32(head[:16] + bytes(4) + head[20:size]) != crc:
+        return False
+    mine, other = struct.unpack_from("<QQ", head, 24)
+    table_lba, count, entry_size, table_crc = struct.unpack_from("<QIII", head, 72)
+    table = disk[table_lba * 512:table_lba * 512 + count * entry_size]
+    return mine == sectors - 1 and other == 1 and zlib.crc32(table) == table_crc
+
+
+def partx(path):
+    """[(number, first sector, sectors, name)] as util-linux reads the disk's GPT, or None without partx."""
+    if not shutil.which("partx", path=SBIN_PATH):
+        if os.environ.get("MPFREE_REQUIRE_OFFLINE_TOOLS") == "1":
+            raise AssertionError("partx is required (MPFREE_REQUIRE_OFFLINE_TOOLS=1)")
+        return None
+    out = subprocess.run(["partx", "--show", "--noheadings", "-o", "NR,START,SECTORS,NAME", path],
+                         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                         env={**os.environ, "PATH": SBIN_PATH})
+    assert out.returncode == 0, out.stdout
+    return [(int(a), int(b), int(c), d) for a, b, c, d in (line.split() for line in out.stdout.splitlines())]
+
+
+def real_ext4(path, size, label="MPFREE-DATA"):
+    """A real ext4 made by mke2fs (with metadata_csum, so its superblock has a checksum), or None."""
+    if not shutil.which("mke2fs", path=SBIN_PATH):
+        if os.environ.get("MPFREE_REQUIRE_OFFLINE_TOOLS") == "1":
+            raise AssertionError("mke2fs is required (MPFREE_REQUIRE_OFFLINE_TOOLS=1)")
+        return None
+    res = subprocess.run(["mke2fs", "-q", "-F", "-t", "ext4", "-O", "^has_journal,metadata_csum", "-L", label,
+                          path, f"{size // 1024}k"], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                         env={**os.environ, "PATH": SBIN_PATH})
+    assert res.returncode == 0, res.stdout
+    with open(path, "rb") as fh:
+        return fh.read()
+
+
 class DataPartitionTests(WriterTests):
-    """Partition 4 (saved settings) carried from the stick being erased into the new image."""
-    NEW = data_fs(1 << 20)                      # the image's empty one, 1 MiB here (64 MiB on a real stick)
+    """Partition 4 (saved settings): left in place, moved from the old layout with a copy first, or empty;
+    and what a write cut off at each step leaves."""
+    NEW = data_fs(1 << 20)                      # the image's empty one, 1 MiB here (64 MiB in a real stick.img)
+    START = 8192                                # where the image's partition 4 starts (1 GiB in a real one)
+    OLD_START = 6144                            # where the old layout put it: straight after partition 3
+    STICK = 16 * MIB >> 9
+    END = 30719                                 # the last 1 MiB boundary before the stick's backup table
+    MOVE_WRITES = 9                             # 6 for partition 4, 1 for partitions 1 to 3, 2 for the tables
+    KEEP_WRITES = 3
 
     def setUp(self):
         super().setUp()
         self.folder = os.path.join(self.work, "kexec-stick-20260101T000000Z-abc")
-        self.image = gpt_disk(8192, stick_layout(6144, self.NEW))
+        self.image = gpt_disk(12288, stick_layout(self.START, self.NEW))
         write(os.path.join(self.folder, "stick.img"), self.image)
         write(os.path.join(self.folder, "SHA256SUMS"), f"{hashlib.sha256(self.image).hexdigest()}  stick.img\n")
+        self.cut = None
 
-    def old_stick(self, data, first=10240, extra=()):
-        dev = self.disk("sdb", "8:16", 16 * MIB >> 9)
-        write(dev, gpt_disk(16 * MIB >> 9, stick_layout(first, data, extra), fill=b"\xee"))
+    def writer(self, answer="WRITE\n", *args):
+        env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "MPFREE_TEST_ROOT": self.root,
+               "MPFREE_WORK_DIR": self.work, "HOME": self.root}
+        if self.cut is not None:
+            env["MPFREE_TEST_CUT_AFTER"] = str(self.cut)
+        return subprocess.run([sys.executable, "-I", TOOL, *args], input=answer, env=env, text=True,
+                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=60)
+
+    def old_stick(self, data, first=None, sectors=None):
+        """A stick written by an earlier round: the old layout (partition 4 straight after partition 3) by
+        default, or this layout with first=START."""
+        first = self.OLD_START if first is None else first
+        dev = os.path.join(self.root, "dev/sdb")
+        if not os.path.exists(dev):
+            self.disk("sdb", "8:16", self.STICK)
+        size = (sectors or len(data) // 512) * 512
+        layout = stick_layout(first, data.ljust(size, b"\0"))
+        write(dev, gpt_disk(self.STICK, layout, fill=b"\xee"))
         return dev
 
-    def expected(self, data):
-        return self.image[:6144 * 512] + data + self.image[6144 * 512 + len(data):]
+    def copies(self):
+        return sorted(glob.glob(os.path.join(self.folder, "data-from-old-stick-*.img")))
 
-    def test_the_old_sticks_settings_are_carried_over_and_copied_first(self):
+    def assert_written(self, dev, data):
+        """The stick holds the image's partitions 1 to 3, `data` at the start of partition 4, and a partition
+        table (both copies) with partition 4 running to the end of the stick."""
+        disk = self.contents(dev)
+        # From the end of the main table to the end of partition 3, the gap before partition 1 included.
+        self.assertEqual(disk[34 * 512:6144 * 512], self.image[34 * 512:6144 * 512])
+        self.assertEqual(disk[self.START * 512:self.START * 512 + len(data)], data)
+        want = [(1, 2048, 2048, "mpfree-test-root"), (2, 4096, 1024, "mpfree-test-log"),
+                (3, 5120, 1024, "mpfree-test-kits"), (4, self.START, self.END - self.START + 1, "mpfree-test-data")]
+        self.assertEqual(self.tool().gpt_partitions(os.open(dev, os.O_RDONLY)), want)
+        self.assertTrue(backup_gpt_ok(disk), "the backup partition table checks out")
+        found = partx(dev)
+        if found is not None:
+            self.assertEqual(found, want, "util-linux reads the same table")
+
+    def tool(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("write_test_stick", TOOL)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+
+    def test_left_in_place_when_it_is_already_where_it_goes(self):
+        saved = data_fs(2 << 20, fill=b"\x22")
+        dev = self.old_stick(saved, first=self.START, sectors=self.END - self.START + 1)
+        before = self.contents(dev)[self.START * 512:(self.END + 1) * 512]
+        res = self.writer()
+        self.assertEqual(res.returncode, 0, res.stdout)
+        self.assertIn("Partition 4 (saved settings and files) fills the rest of the stick.", res.stdout)
+        self.assertIn("already where it goes, so it stays in place (2097152 bytes of filesystem); it is not written",
+                      res.stdout)
+        self.assertIn("they match stick.img's partitions 1 to 3, partition 4 and a partition table", res.stdout)
+        self.assert_written(dev, saved)
+        self.assertEqual(self.contents(dev)[self.START * 512:(self.END + 1) * 512], before, "not one byte changed")
+        self.assertEqual(self.copies(), [])
+
+    def test_left_in_place_survives_a_cut_off_write_anywhere(self):
+        saved = data_fs(2 << 20, fill=b"\x22")
+        for cut in range(self.KEEP_WRITES):
+            with self.subTest(cut=cut):
+                dev = self.old_stick(saved, first=self.START, sectors=2048 * 4)
+                before = self.contents(dev)[self.START * 512:(self.END + 1) * 512]
+                self.cut = cut
+                res = self.writer()
+                self.assertEqual(res.returncode, 1, res.stdout)
+                self.assertIn("the write was cut off (test)", res.stdout)
+                self.assertIn("are still on it: run this again", res.stdout)
+                self.assertEqual(self.contents(dev)[self.START * 512:(self.END + 1) * 512], before)
+                self.cut = None
+                res = self.writer()
+                self.assertEqual(res.returncode, 0, res.stdout)
+                self.assertIn("so it stays in place", res.stdout)
+                self.assert_written(dev, saved)
+
+    def test_the_old_layouts_partition_is_copied_first_then_moved(self):
         old = data_fs(1 << 20, fill=b"\x22")
         dev = self.old_stick(old)
         res = self.writer()
         self.assertEqual(res.returncode, 0, res.stdout)
-        self.assertIn("Partition 4 (your saved settings and mapped buttons) is kept from this stick", res.stdout)
-        self.assertIn(f"partition 4: carrying over {len(old)} bytes", res.stdout)
-        self.assertIn("they match stick.img with the saved partition 4", res.stdout)
-        self.assertEqual(self.contents(dev)[:len(self.image)], self.expected(old))
-        [copy] = glob.glob(os.path.join(self.folder, "data-from-old-stick-*.img"))
+        [copy] = self.copies()
+        self.assertIn(f"partition 4: moving {len(old)} bytes (sha256 {hashlib.sha256(old).hexdigest()}) to where "
+                      f"it now starts; a copy is in {copy}", res.stdout)
+        self.assertIn(f"partition 4: {(self.END - self.START + 1) * 512} bytes, from 4 MiB to the end", res.stdout)
+        self.assert_written(dev, old)
         self.assertEqual(self.contents(copy), old)
         self.assertEqual(os.stat(copy).st_mode & 0o777, 0o600)
+        # The next round finds it in place.
+        res = self.writer()
+        self.assertEqual(res.returncode, 0, res.stdout)
+        self.assertIn("so it stays in place", res.stdout)
+        self.assert_written(dev, old)
+        self.assertEqual(len(self.copies()), 1)
+
+    def test_moving_survives_a_cut_off_write_anywhere(self):
+        """After a cut at any write, running again ends with the old settings in place, and the copy saved
+        before the first write holds them too."""
+        old = data_fs(1 << 20, fill=b"\x22")
+        for cut in range(self.MOVE_WRITES):
+            with self.subTest(cut=cut):
+                for path in self.copies():
+                    os.unlink(path)
+                dev = self.old_stick(old)
+                table = self.contents(dev)[:34 * 512]
+                self.cut = cut
+                res = self.writer()
+                self.assertEqual(res.returncode, 1, res.stdout)
+                self.assertIn("the write was cut off (test)", res.stdout)
+                if cut < self.MOVE_WRITES - 1:
+                    self.assertEqual(self.contents(dev)[:34 * 512], table, "the main table is written last")
+                [copy] = self.copies()
+                self.assertIn(f"Your saved settings are in {copy}: write again with --data-from", res.stdout)
+                self.assertEqual(self.contents(copy), old)
+                self.cut = None
+                res = self.writer()
+                self.assertEqual(res.returncode, 0, res.stdout)
+                # Cut off before partition 4's superblock was whole: still moved from where it was;
+                # after: already in place.
+                self.assertIn("moving" if cut < 6 else "so it stays in place", res.stdout)
+                self.assert_written(dev, old)
+
+    def test_two_different_data_partitions_stop_after_a_copy(self):
+        """A stick written with this layout, then by an older tool (old layout, newer settings): the one at
+        START is stale. Neither is chosen silently: the table's one is copied, and nothing is written."""
+        stale, newer = data_fs(1 << 20, fill=b"\x22"), data_fs(1 << 20, fill=b"\x33")
+        struct.pack_into("<I", newer := bytearray(newer), 1024 + 0x30, 1794355200)   # 2026-11-11 00:00 UTC
+        newer = bytes(newer)
+        dev = self.old_stick(newer)
+        disk = bytearray(self.contents(dev))
+        disk[self.START * 512:self.START * 512 + len(stale)] = stale
+        write(dev, bytes(disk))
+        res = self.writer()
+        self.assertEqual(res.returncode, 1, res.stdout)
+        [copy] = self.copies()
+        self.assertIn("the stick has two different MPFree data partitions", res.stdout)
+        self.assertIn("at 3 MiB (last written 2026-11-11 00:00 UTC), which the MPC used last", res.stdout)
+        self.assertIn(f"A copy of the second is in {copy}: run with --data-from that file", res.stdout)
+        self.assertEqual(self.contents(copy), newer)
+        self.assertEqual(self.contents(dev), bytes(disk), "nothing written on the stick")
+        res = self.writer("WRITE\n", "--data-from", copy)
+        self.assertEqual(res.returncode, 0, res.stdout)
+        self.assert_written(dev, newer)
 
     def test_a_stick_without_one_starts_empty(self):
-        dev = self.disk("sdb", "8:16", 16 * MIB >> 9)
+        dev = self.disk("sdb", "8:16", self.STICK)
         res = self.writer()
         self.assertEqual(res.returncode, 0, res.stdout)
         self.assertIn("the stick has no MPFree data partition, so the saved settings start empty", res.stdout)
-        self.assertIn("they match stick.img (sha256", res.stdout)
-        self.assertEqual(self.contents(dev)[:len(self.image)], self.image)
-        self.assertEqual(glob.glob(os.path.join(self.folder, "data-from-old-stick-*")), [])
+        self.assert_written(dev, self.NEW)
+        self.assertEqual(self.copies(), [])
 
     def test_fresh_data_starts_empty(self):
-        dev = self.old_stick(data_fs(1 << 20, fill=b"\x22"))
+        dev = self.old_stick(data_fs(2 << 20, fill=b"\x22"), first=self.START)
         res = self.writer("WRITE\n", "--fresh-data")
         self.assertEqual(res.returncode, 0, res.stdout)
         self.assertIn("Partition 4 starts empty (--fresh-data)", res.stdout)
-        self.assertEqual(self.contents(dev)[:len(self.image)], self.image)
+        self.assert_written(dev, self.NEW)
+        self.assertEqual(self.copies(), [])
 
     def test_data_from_a_saved_copy(self):
-        dev = self.disk("sdb", "8:16", 16 * MIB >> 9)
+        dev = self.disk("sdb", "8:16", self.STICK)
         saved = os.path.join(self.root, "saved.img")
-        write(saved, data_fs(1 << 20, fill=b"\x33"))
+        write(saved, data_fs(2 << 20, fill=b"\x33"))
         res = self.writer("WRITE\n", "--data-from", saved)
         self.assertEqual(res.returncode, 0, res.stdout)
-        self.assertEqual(self.contents(dev)[:len(self.image)], self.expected(self.contents(saved)))
-        write(saved, data_fs(1 << 19))
+        self.assertIn(f"Partition 4 comes from {saved} (--data-from).", res.stdout)
+        self.assert_written(dev, self.contents(saved))
+        # A copy whose filesystem is smaller than the partition it came from goes back too.
+        write(saved, data_fs(1 << 20, fill=b"\x44") + bytes(1 << 20))
         res = self.writer("WRITE\n", "--data-from", saved)
-        self.assertEqual(res.returncode, 1, res.stdout)
-        self.assertIn("is not a 1048576-byte MPFREE-DATA partition copy", res.stdout)
+        self.assertEqual(res.returncode, 0, res.stdout)
+        self.assert_written(dev, self.contents(saved))
+        for bad in (data_fs(2 << 20)[:1 << 20], data_fs(1 << 20, label=b"SOMETHING")):
+            with self.subTest(len(bad)):
+                write(saved, bad)
+                res = self.writer("WRITE\n", "--data-from", saved)
+                self.assertEqual(res.returncode, 1, res.stdout)
+                self.assertIn("is not a whole MPFREE-DATA partition copy of at most", res.stdout)
 
     def test_a_partition_4_that_is_not_ours_stops_before_writing(self):
-        for data, problem in ((data_fs(1 << 19, fill=b"\x22"), "is 1024 sectors, not this build's 2048"),
-                              (data_fs(1 << 20, label=b"SOMETHING"), "is not an MPFREE-DATA ext4")):
-            with self.subTest(problem):
-                dev = self.old_stick(data)
+        cases = ((data_fs(1 << 20, label=b"SOMETHING"), self.OLD_START, "is not an MPFREE-DATA ext4"),
+                 (data_fs(1 << 20, label=b"SOMETHING"), self.START, "is not an MPFREE-DATA ext4"),
+                 (data_fs(12 << 20, fill=b"\x22"), self.OLD_START, "bigger than the room for it"))
+        for data, first, problem in cases:
+            with self.subTest(problem, first=first):
+                dev = self.old_stick(data, first=first)
                 before = self.contents(dev)
                 res = self.writer()
                 self.assertEqual(res.returncode, 1, res.stdout)
                 self.assertIn(problem, res.stdout)
                 self.assertIn("Run with --fresh-data", res.stdout)
                 self.assertEqual(self.contents(dev), before)
-                shutil.rmtree(os.path.join(self.root, "sys"))
-                os.unlink(dev)
-                os.makedirs(os.path.join(self.root, "sys/block"))
-                self.disk("nvme0n1", "259:0", 512 << 30 >> 9, removable="0", usb=False)
+                self.assertEqual(self.copies(), [])
+
+    def test_a_stick_too_small_for_the_layout_is_not_written(self):
+        dev = self.disk("sdb", "8:16", (6 * MIB >> 9) - 2048)
+        res = self.writer()
+        self.assertEqual(res.returncode, 1, res.stdout)
+        self.assertIn("smaller than stick.img needs", res.stdout)
+        self.assertEqual(self.contents(dev), b"\xee" * ((6 * MIB) - MIB))
+
+    def test_a_real_ext4_with_a_checksum(self):
+        made = real_ext4(os.path.join(self.root, "real.img"), 2 << 20)
+        if made is None:
+            self.skipTest("needs mke2fs")
+        tool = self.tool()
+        self.assertTrue(struct.unpack_from("<I", made, 1024 + 0x64)[0] & 0x400, "metadata_csum")
+        self.assertTrue(tool.is_data_head(made[:4096]))
+        self.assertEqual(tool.fs_bytes(made[:4096]), len(made))
+        # Moved from the old layout, it is still a clean filesystem.
+        dev = self.old_stick(made)
+        res = self.writer()
+        self.assertEqual(res.returncode, 0, res.stdout)
+        self.assert_written(dev, made)
+        moved = os.path.join(self.root, "moved.img")
+        write(moved, self.contents(dev)[self.START * 512:self.START * 512 + len(made)])
+        fsck = subprocess.run(["e2fsck", "-fn", moved], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                              env={**os.environ, "PATH": SBIN_PATH})
+        self.assertEqual(fsck.returncode, 0, fsck.stdout)
+        # A superblock half written (one of its sectors old) is not taken for MPFree's.
+        for offset in (1024 + 0x100, 1024 + 0x300):
+            torn = bytearray(made[:4096])
+            torn[offset] ^= 0xFF
+            self.assertFalse(tool.is_data_head(bytes(torn)), offset)
+        torn = bytearray(made)
+        torn[1024 + 0x300] ^= 0xFF
+        dev = self.old_stick(bytes(torn), first=self.START)
+        before = self.contents(dev)
+        res = self.writer()
+        self.assertEqual(res.returncode, 1, res.stdout)
+        self.assertIn("is not an MPFREE-DATA ext4", res.stdout)
+        self.assertEqual(self.contents(dev), before)
 
     def test_an_image_without_a_data_partition_has_nothing_to_keep(self):
         write(os.path.join(self.folder, "stick.img"), IMAGE)
         write(os.path.join(self.folder, "SHA256SUMS"), f"{hashlib.sha256(IMAGE).hexdigest()}  stick.img\n")
-        self.disk("sdb", "8:16", 16 * MIB >> 9)
+        self.disk("sdb", "8:16", self.STICK)
         res = self.writer("WRITE\n", "--fresh-data")
         self.assertEqual(res.returncode, 1, res.stdout)
         self.assertIn("has no data partition (built without --app)", res.stdout)
@@ -308,13 +538,18 @@ class StaticTests(unittest.TestCase):
     def test_no_device_name_from_the_user_and_one_write_path(self):
         with open(TOOL) as fh:
             code = fh.read()
+        # One place writes the stick (write_at), opened once, exclusively.
         self.assertEqual(code.count("os.write("), 1)
         self.assertEqual(code.count("os.O_RDWR"), 1)
-        self.assertIn("os.O_EXCL", code)
+        self.assertIn("os.O_RDWR | os.O_EXCL", code)
+        self.assertEqual(code.count("write_at("), 3, "its definition and its two callers in root_write")
         # The only other file it writes: the copy of the old partition 4, new, private, in the build folder.
         self.assertEqual(code.count("os.O_WRONLY"), 1)
         self.assertIn("os.O_WRONLY | os.O_CREAT | os.O_EXCL", code)
-        self.assertIn("os.path.join(os.path.dirname(image), time.strftime(\"data-from-old-stick-", code)
+        self.assertIn('time.strftime("data-from-old-stick-', code)
+        self.assertIn("path = os.path.join(os.path.dirname(image), stamp", code)
+        # The cut-off hook for the tests only works under the fake root.
+        self.assertIn('CUT_AFTER = int(os.environ.get("MPFREE_TEST_CUT_AFTER", "-1")) if TEST_ROOT else -1', code)
         self.assertNotIn("ssh", code.replace("sha", ""))
         self.assertNotIn("/dev/mmc", code)
 

@@ -27,6 +27,7 @@ Every design page opens with a **Status** line (proposal, approved, built, on ma
 
 - [Transport](design/transport.md): the time engine's clock that the sequencer, looper, arp and sampler follow: ticks, tempo map, loop, count-in, punch, and the same output for any period size (engine in `rust/mpfree-transport`, 2026-11-11).
 - [Playback](design/playback.md): clips of any length on the transport: the model, compiling, sample-exact playback, note-offs, a track through the arp, the clip recorder with replace, overdub and take undo, and a WAV renderer (engine in `rust/mpfree-seq` and `rust/mpfree-play`, 2026-11-11).
+- [Scenes and follow actions](design/scenes.md): a row of the launch grid launched together on the bar line, with its mutes switching there, and follow actions that chain clips and scenes (`rust/mpfree-perform`, 2026-11-11).
 - [Step sequencer](design/steps.md): steps as a grid over a clip: velocity, length, nudge, chance, pages and chords (`rust/mpfree-seq`).
 - [Capture](design/capture.md): keep what was just played, even without recording: the always-on history, the last phrase cut to whole bars, a new clip in place or notes into the playing clip, undo, the Capture button, and a WAV demo (`rust/mpfree-capture`, 2026-11-11).
 - [Looper](design/looper.md): up to eight audio loops on the transport, recorded from the line input or the pads, with layers, overdub and shared memory (`rust/mpfree-looper`).
@@ -37,6 +38,7 @@ Every design page opens with a **Status** line (proposal, approved, built, on ma
 ### Sound: instruments, effects, mixing, modulation
 
 - [Synths](design/synths.md): the node interface every instrument and effect uses, and the native synths: Poly (subtractive), FM (DX7-style, with DX7 banks), Drums (a model per pad: kick, snare, clap, hats, toms, percussion, with choke groups and kits) and Pluck (Karplus-Strong strings and modal mallets), pad pressure, the Synth tab, demos and costs (`rust/mpfree-node`, `rust/mpfree-synth`, `rust/mpfree-synth-ui`, 2026-11-11).
+- [Sound presets](design/presets.md): any instrument's sound saved as a plain-text preset file and loaded back to the bit, with settings by name, so old and new presets load (`rust/mpfree-instruments`, 2026-11-11).
 - [Wavetable synth](design/wavetable.md): the third native synth: table oscillators scanned by Position, warps, band-limited tables, factory tables, WAV and sample import, memory and device cost estimates (`rust/mpfree-synth`, 2026-11-11).
 - [Track host](design/track-host.md): each track's instrument fed by the sequencer, the pads and the arp and rendered into its mixer track: slots, routing, notes counted per source, sample-exact parameters, swaps that ring out, STOP, and no allocation on the audio thread (`rust/mpfree-track`, 2026-11-11).
 - [Plugins: the CLAP host](design/plugins.md): CLAP instruments and effects as nodes on a track or in an insert chain: loading `.clap` files, parameters, sample-exact events, state, the main and audio threads, and our own test plugins (`rust/mpfree-clap`), and the sandbox that runs each plugin in its own process with a deadline each block and a restart after a crash (`rust/mpfree-plughost`, 2026-11-11).
@@ -53,6 +55,7 @@ Every design page opens with a **Status** line (proposal, approved, built, on ma
 
 - [Profiling and performance budgets](design/profiling.md): the shared profiling API, the ARM cost model, per-engine budgets and the bench (`rust/mpfree-prof`, `rust/mpfree-bench`).
 - [Concurrency](design/concurrency.md): using every core of the MPC One: where threads run today, the core plan, and lanes, which run part of each audio period on another core with a deadline (`rust/mpfree-lanes`, 2026-11-11).
+- [Offload](design/offload.md): render partitions on another computer over UDP, answered L periods later with the MPC as the only clock: the datagram, the server, the client, and `mpfree-offload measure` (`rust/mpfree-offload`, desktop prototype, 2026-11-12).
 - [MPC One: first device numbers (round 7)](perf/mpc-one-round7.md): what the first on-device bench says about each engine's budget.
 
 ### Installing
@@ -69,7 +72,7 @@ Every design page opens with a **Status** line (proposal, approved, built, on ma
 - [Developer access](guides/developer-access.md): getting root SSH over direct Ethernet, and the safety runbook.
 - [Survey tools](guides/survey-tools.md): running read-only surveys and milestone tests from a workstation.
 - [USB autorun reference](guides/usb-autorun-reference.md): the exact lab tooling used to first get SSH. Not a general installer.
-- [Hello MPC](guides/hello-mpc.md): Phase 1 on the kexec test build: our own program on the screen, touchscreen, pads, pad lights and audio output, with factory drum kits read from the backup, and the pad player with MPFree's first GUI, one step at a time (`--hello`).
+- [mpfree on the test build](guides/mpfree-app.md): the app on the kexec test build (Phase 1 called it Hello MPC): our own program on the screen, touchscreen, pads, pad lights and audio output, with factory drum kits read from the backup, and the pad player with MPFree's first GUI, one step at a time (`--app`).
 - [Audio and MIDI diagnostics](guides/audio-midi-diagnostics.md): the `--audio-midi`, `--midi-activity` and `--midi-capture` modes, what each reads and why.
 - [Device modifications](hardware/device-modifications.md): every persistent change made to the reference MPC One (currently persistent SSH, MOD-001/MOD-002), with verification and undo steps.
 
@@ -93,6 +96,7 @@ Every design page opens with a **Status** line (proposal, approved, built, on ma
 | M14 | [Swipes, release velocity, fling and hold jitter](milestones/m14-gestures.md) | Workstation, CI (device tuning pending) |
 | M15 | [Touch lab: owner-paced touch steps and journal lines](milestones/m15-touch-lab.md) | Workstation, CI; page in the pad player (Prefs, Touch lab) |
 | M16 | ["Calibrate touch": orientation from four corner taps](milestones/m16-calibrate-touch.md) | Workstation, CI; page in the pad player (Prefs, Calibrate touch) |
+| M17 | [The Dev tab's Touch page: measuring and tuning touch](milestones/m17-touch-tuning.md) | Workstation, CI; page in the pad player (Dev, Touch) |
 | GPU | [Panfrost offscreen GLES qualification](milestones/gpu-panfrost-offscreen.md), [kit](../../tools/mpc-one/gpu-qualification/README.md) | MPC One |
 
 M4 was host-only safety tooling and the [handoff state-machine simulator](../../rust/mpfree-handoff-model/src/lib.rs); it has no separate report. See the [roadmap](project/roadmap.md).

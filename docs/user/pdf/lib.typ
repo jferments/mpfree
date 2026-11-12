@@ -33,7 +33,7 @@
   block(width: 100%, inset: (x: 12pt, y: 8pt), radius: 4pt, fill: c.lighten(90%),
     stroke: (left: 3pt + c), text(size: 9pt, body))
 }
-// A screenshot drawn by mpfree-hello --preview.
+// A screenshot drawn by mpfree --preview.
 #let shot(path, caption) = figure(
   box(radius: 4pt, clip: true, stroke: 0.5pt + rule-c, image(path, width: 100%)),
   caption: if caption == [] { none } else { caption },

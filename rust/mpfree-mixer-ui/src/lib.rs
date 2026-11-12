@@ -42,8 +42,9 @@ pub mod view;
 pub use qlinks::{QLinkView, QLinks};
 pub use state::{
     default_name, InputView, InsertView, MixState, MixView, SafetyView, SendView, StripView,
+    TakeView,
 };
-pub use view::{MixAction, MixerIcon, MixerView};
+pub use view::{MixAction, MixerIcon, MixerView, StripMenu};
 
 use mpfree_fx::Mixer;
 use mpfree_ui::Ui;
@@ -56,6 +57,9 @@ pub const MIXER_PAGE: &str = "mixer";
 pub const MIXER_LAYOUT: &str = "col(header:60, mixer:*, hint:26)";
 /// The hint line while the mixer is open.
 pub const MIXER_HINT: &str = "Drag a fader, pan or send  ·  tap M, S or an output  ·  a strip's name selects it for the Q-Links  ·  TRACK MIX closes  ·  SHIFT + TRACK MIX: pads";
+/// The hint line once the app offers Freeze, Thaw and Print
+/// ([`MixState::takes`]).
+pub const MIXER_HINT_TAKES: &str = "Drag a fader, pan or send  ·  tap M, S or an output  ·  a strip's name selects it (again: Freeze, Print)  ·  TRACK MIX closes  ·  SHIFT + TRACK MIX: pads";
 
 /// Adds the mixer widget and its page. The app's `header` and `hint`
 /// widgets must be there already (the page uses them).

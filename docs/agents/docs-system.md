@@ -20,7 +20,7 @@ A new page goes in one of those folders and gets a line in that folder's index (
 
 The manual describes the same buttons, tabs and screens many times. If each mention is typed by hand, a rename means hunting through every chapter. So:
 
-- **Screenshots are drawn from the code, never captured by hand.** `mpfree-hello --preview DIR` draws every page of the app from the current source. The manual build runs it and uses those pictures, so a rebuilt manual always shows today's screens. A page asks for one with `{{shot: play-beats}}`. If a screen is renamed or removed, the build stops and names the page that asked for it. To add a picture the manual needs, add a screen to `gui::sample_screens` in `rust/mpfree-hello/src/gui.rs` (the same list the golden screen checks use).
+- **Screenshots are drawn from the code, never captured by hand.** `mpfree --preview DIR` draws every page of the app from the current source. The manual build runs it and uses those pictures, so a rebuilt manual always shows today's screens. A page asks for one with `{{shot: play-beats}}`. If a screen is renamed or removed, the build stops and names the page that asked for it. To add a picture the manual needs, add a screen to `gui::sample_screens` in `rust/mpfree-app/src/gui.rs` (the same list the golden screen checks use).
 - **Button combinations live in one table:** `docs/user/src/reference/controls.md`. Chapters describe what a button is for in their own words; the exact chord ("hold SHIFT, hold ERASE, press TAP TEMPO") is written once there and linked.
 - **Names live in one list:** `docs/user/terms.toml` holds the names of tabs, pages and controls, and the names that were retired (Clips is now Arrange, Sound is Synth, the Debug tab is Dev). `check_docs.py` fails on a retired name anywhere in the manual, so a rename is one edit to `terms.toml` and the check lists every page to fix.
 - **"Coming from an MPC" notes are written where they belong** (in the chapter, as a `> [!MPC]` box) and the build collects every one of them into the appendix "Coming from an MPC". Nobody keeps that appendix by hand.
@@ -32,7 +32,7 @@ Every page in `docs/user/src/` and `docs/dev/design/` starts with a header comme
 ```markdown
 <!--
 status: changing
-covers: rust/mpfree-hello/src/play_page.rs rust/mpfree-hello/src/play_widgets.rs
+covers: rust/mpfree-app/src/play_page.rs rust/mpfree-app/src/play_widgets.rs
 checked: 2026-11-11 414faa1
 -->
 ```

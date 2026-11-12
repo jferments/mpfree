@@ -413,7 +413,7 @@ impl Sink for Route<'_> {
                 Event::NoteOff { note } => SEvent::NoteOff { pad: note },
                 Event::AllOff => SEvent::AllOff,
                 // The demo's beat has no parameter locks.
-                Event::Lock { .. } | Event::Unlock { .. } => return,
+                Event::Lock { .. } | Event::Lane { .. } | Event::Unlock { .. } => return,
             };
             e.schedule(o.offset, ev);
         }
@@ -433,6 +433,7 @@ fn play(
             track: 0,
             slot: 0,
             origin: 0,
+            start: 0,
         }],
     )
     .expect("the beat compiles");

@@ -59,14 +59,16 @@ corners       = chamfer
 - `Theme::check()` warns when text is hard to read (WCAG contrast under 4.5:1 for text, 3:1 for dim text and accents). The built-in themes pass; a test keeps it that way.
 - Every built-in theme is written out in full in [`rust/mpfree-ui/themes/`](../../../rust/mpfree-ui/themes) as a starting point, and `cargo run -p mpfree-ui --example theme_file -- NAME` prints one. A test keeps those files in step with the code.
 
-Today `mpfree-hello --theme NAME|FILE` picks the theme (for `--preview` and on the device). A theme picker in Prefs, and a themes folder on the stick, come next.
+The pad player's Prefs has one **Appearance** row whose value is the theme in use. Its arrows (or - / +, or SHIFT + wheel) step through Default, Console, Synthwave and Spaceship. Each step switches the screen at once (`Ui::set_theme`) and keeps it in the store's "app" settings as `theme`, so it comes back at the next start. `mpfree --theme NAME|FILE` still picks the theme for one run (for `--preview` and on the device) and wins over the saved one.
+
+**Themes folder.** Theme files put in `files/themes/` on the data partition (`/run/mpfree-data/files/themes/` on the stick), named `NAME.theme` (lower case, digits, `.`, `_`, `-`), join the Appearance row after Spaceship, in name order, at most 32. The row shows the theme's `name` (or the file name when it has none or reuses a built-in theme's name). The app only reads the folder: a file that doesn't parse is left out with a log line (`themes: broken.theme left out: theme line 1: ...`), and `themes: found ...` lists the rest. Picking one keeps its file name as `theme`; if the file is gone at the next start, the default theme shows and the log says the saved theme was skipped.
 
 ## The built-in themes
 
 | Theme | Look | Effects | Startup screen |
 | --- | --- | --- | --- |
 | Default | The current dark studio look, blue accent. | none | Synthwave's startup screen (Jay, 2026-11-11, from round 8). The app keeps the default look. The spiral galaxy (`mpfree-splash`) stays available. |
-| Console | Phosphor green on near-black, in the normal UI font. | Cut corners, outline and text glow, scanline backdrop, kit colours tinted green. | A chaotic swirl of characters in many shades of green settles, arm by arm, into "MPFree" and "OS v0.1" drawn in characters with a terminal font (VT323), shaded by character density and colour; then a prompt types out. Scanlines and bloom. |
+| Console | Phosphor green on near-black, in the normal UI font. | Cut corners, outline and text glow, scanline backdrop, kit colours tinted green. | A chaotic swirl of characters in many shades of green settles, arm by arm, into "MPFree OS" and "v0.1" in the same blade letters as the other screens, drawn as a grid of terminal characters (VT323), one per cell with none overlapping, each picked to match the shape and shading of its cell; then a prompt types out. Scanlines and bloom. |
 | Synthwave | Hot pink and cyan on deep violet. | Strong neon glow on outlines, translucent panels over a grid. | A striped sun rises over rolling, wavy neon hills and a racing grid; "MPFree OS" in MPFree's own blade letters (angular, leaning strokes with torn, jagged starts and knife-point ends), yellow to pink over a hard drop shadow, is cut on over the sun and a pink slash whips under it; then "v0.1" flickers on below. No palm trees, no stripes in the letters. |
 | Spaceship | Black, white and violet, thin lines. | Cut corners, soft glow, a faint dot grid. | A purple spiral galaxy in open space with a sci-fi computer overlay analysing it (no ship in view): heading tape, corner brackets, translucent panels (radar scanner, spectrum, navigation, target), a scan line that tags stars with callouts, a reticle that locks on the core; then "MPFree OS" in the same blade letters, white to violet, and "v0.1". |
 
@@ -78,7 +80,7 @@ Each scene draws everything that never moves once (sky, mountains, palm trees, t
 
 | Scene | Set-up | Frame (average) |
 | --- | --- | --- |
-| Console | 7 ms | 8.0 ms |
+| Console | 16 ms | 7.6 ms |
 | Synthwave | 17 ms | 4.4 ms |
 | Spaceship | 35 ms | 4.9 ms |
 
@@ -86,7 +88,7 @@ The RK3288 is several times slower per core; the estimate is 10 to 50 ms a frame
 
 The galaxy splash stays in `mpfree-splash`. The Spaceship galaxy is a different, cheaper particle galaxy under a HUD, so the two do not duplicate each other; if the splash thread wants one galaxy engine with a palette, Spaceship can switch to it.
 
-`mpfree-startup --framebuffer [--theme NAME] [--rotation 270] [--seconds N]` plays a scene on `/dev/fb0` in real time and exits with its last frame showing, for the app's loading page (`app --keep-screen`). It writes only to the framebuffer device and its sysfs `pan` file, as `mpfree-splash` does, and never to storage. Without `--theme` it plays the default theme's startup screen (synthwave).
+`mpfree-startup --framebuffer [--theme NAME] [--rotation 270] [--seconds N]` plays a scene on `/dev/fb0` in real time and exits with its last frame showing, for the app's loading page (`app --keep-screen`). It writes only to the framebuffer device and its sysfs `pan` file, as `mpfree-splash` does, and never to storage. Without `--theme` it plays the default theme's startup screen (synthwave), or, with `--data DIR`, the startup screen of the theme picked in Prefs > Appearance (for a themes-folder file, its `startup` key or its base's). `--data` reads only `settings/app.conf` and that theme file, follows no symlinks and never writes; anything missing or odd shows synthwave.
 
 ## Layouts: rearranging pages
 
@@ -117,7 +119,7 @@ Next steps for composability, in order:
 
 ## Retrofitting the other UI crates
 
-What is automatic, for any crate that draws through `PaintCx`: colours that come from the theme, corner shapes, glow, backdrop, font roles. Screens were checked in all four themes with `mpfree-hello --preview DIR --theme NAME`.
+What is automatic, for any crate that draws through `PaintCx`: colours that come from the theme, corner shapes, glow, backdrop, font roles. Screens were checked in all four themes with `mpfree --preview DIR --theme NAME`.
 
 What each crate should change (small, mechanical):
 
@@ -130,7 +132,6 @@ What each crate should change (small, mechanical):
 
 ## Later
 
-- Theme picker in Prefs (live switch with `Ui::set_theme`), themes folder on the stick.
-- Startup screens in the boot path: `--framebuffer` is ready; the test stick runs `mpfree-splash` today, and the Hello thread switches it to `mpfree-startup` for round 8.
+- Startup screens in the boot path: `--framebuffer` and `--data` are ready; the test stick runs `mpfree-splash` before the data partition is mounted, so the app thread decides when to switch it to `mpfree-startup --data /run/mpfree-data`.
 - With the GLES canvas, the same effects become shaders (bloom, scanlines, real blur) with no theme or widget changes.
 - Optional per-theme sounds (UI clicks) and pad-light palettes.

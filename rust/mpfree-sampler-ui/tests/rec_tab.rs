@@ -100,8 +100,11 @@ fn the_tab_shows_the_input_the_bar_lines_and_what_skip_back_keeps() {
     assert!(v.note.is_empty() && v.threshold.is_none());
     assert_eq!(v.caption, "40.00 s held");
     let (labels, enabled) = buttons(&s);
-    assert_eq!(labels, ["Record", "Skip back 10 s", "Auto-sample"]);
-    assert_eq!(enabled, [true, true, true]);
+    assert_eq!(
+        labels,
+        ["Record", "Skip back 10 s", "Flatten", "Auto-sample"]
+    );
+    assert_eq!(enabled, [true, true, true, true]);
     let list = s.ui.get::<SettingList>(rec_tab::LIST).unwrap();
     let rows: Vec<(&str, &str)> = list
         .rows
@@ -121,6 +124,8 @@ fn the_tab_shows_the_input_the_bar_lines_and_what_skip_back_keeps() {
             ("Silence for", "1 s"),
             ("Skip back", "10 s"),
             ("Onto", "Next empty"),
+            ("Flatten velocity", "127"),
+            ("Flatten hold", "1 s"),
         ]
     );
 }
@@ -133,11 +138,14 @@ fn a_take_on_the_next_bar_is_drawn_as_it_grows_and_the_button_stops_it() {
     assert!(v.bars.contains(&take.start), "it started on a bar line");
     assert!(take.label.starts_with("● "));
     let (labels, enabled) = buttons(&s);
-    assert_eq!(labels, ["Stop", "Skip back 2 bars", "Auto-sample"]);
+    assert_eq!(
+        labels,
+        ["Stop", "Skip back 2 bars", "Flatten", "Auto-sample"]
+    );
     assert_eq!(
         enabled,
-        [true, false, false],
-        "no Auto-sample while a take records"
+        [true, false, false, false],
+        "no Flatten or Auto-sample while a take records"
     );
     // Two whole bars back from the latest bar line.
     let skip = v.skip.as_ref().unwrap();
@@ -151,7 +159,8 @@ fn a_take_on_the_next_bar_is_drawn_as_it_grows_and_the_button_stops_it() {
 fn record_then_stop_puts_the_take_onto_the_next_empty_pad() {
     let mut s = screen("rec");
     let (mut project, _) = kit_project();
-    assert_eq!(press(&mut s, 2), Some(RecAction::Auto));
+    assert_eq!(press(&mut s, 2), Some(RecAction::Flatten));
+    assert_eq!(press(&mut s, 3), Some(RecAction::Auto));
     assert_eq!(press(&mut s, 0), Some(RecAction::Record));
     // The app makes the take from the tab's settings and polls it.
     s.recording = Some(s.tab.settings.recording(&s.input, bar_frames()));
@@ -159,7 +168,8 @@ fn record_then_stop_puts_the_take_onto_the_next_empty_pad() {
     run(&mut s, 1.5);
     assert!(s.tab.recording());
     assert_eq!(buttons(&s).0[0], "Stop");
-    assert_eq!(press(&mut s, 2), None, "Auto-sample waits for the take");
+    assert_eq!(press(&mut s, 2), None, "Flatten waits for the take");
+    assert_eq!(press(&mut s, 3), None, "Auto-sample waits for the take");
     assert_eq!(press(&mut s, 0), Some(RecAction::Stop));
     s.recording.as_mut().unwrap().stop(&s.input);
     let to = s.input.now();
@@ -259,8 +269,9 @@ fn with_the_line_input_off_the_tab_says_where_to_turn_it_on() {
         .note
         .starts_with("The line input is off: Looper tab, MENU, Line input"));
     assert!(v.skip.is_none());
-    // Auto-sample needs no input: it plays the synth.
-    assert_eq!(buttons(&s).1, [false, false, true]);
+    // Flatten and Auto-sample need no line input: Flatten resamples the
+    // pad's channel, Auto-sample plays the synth.
+    assert_eq!(buttons(&s).1, [false, false, true, true]);
 }
 
 #[test]
@@ -314,5 +325,66 @@ fn the_master_screen_shows_what_it_resamples() {
     let skip = v.skip.as_ref().unwrap();
     assert_eq!(skip.label, "Skip back 4 bars");
     assert!(((skip.end - skip.start) as f64 - 4.0 * bar_frames()).abs() <= 2.0);
-    assert_eq!(buttons(&s).0, ["Record", "Skip back 4 bars", "Auto-sample"]);
+    assert_eq!(
+        buttons(&s).0,
+        ["Record", "Skip back 4 bars", "Flatten", "Auto-sample"]
+    );
+}
+
+#[test]
+fn flatten_says_what_it_resamples_and_records_the_pad_until_it_is_silent() {
+    let mut s = screen("rec-flatten");
+    let bar = s.ui.get::<PadBar>(rec_tab::BAR).unwrap();
+    assert_eq!(bar.title, "Flattening A5 onto A10");
+    assert_eq!(
+        bar.subtitle,
+        "velocity 127 · held 1 s · until 1 s of silence"
+    );
+    assert_eq!(
+        s.ui.get::<InputView>(rec_tab::VIEW).unwrap().title,
+        "Pad A5 channel"
+    );
+    // While it runs: Stop ends it, nothing else starts.
+    let (labels, enabled) = buttons(&s);
+    assert_eq!(labels[0], "Stop");
+    assert_eq!(enabled, [true, false, false, false]);
+    assert_eq!(press(&mut s, 0), Some(RecAction::Stop));
+    assert_eq!(press(&mut s, 2), None);
+    assert_eq!(press(&mut s, 3), None);
+    // It started on the sound (2 ms before it), not when it was armed.
+    let rec = s.recording.as_ref().unwrap();
+    let v = s.ui.get::<InputView>(rec_tab::VIEW).unwrap();
+    let take = v.take.as_ref().unwrap();
+    assert_eq!(Some(take.start), rec.started_at());
+    let silent = (3.0 * f64::from(RATE) / 128.0).round() as u64 * 128;
+    assert_eq!(rec.armed_at(), silent);
+    assert!(take.start >= rec.armed_at());
+    // The sound stops: a second of silence (the Silence row) ends it,
+    // after the last loud frame.
+    let loud_until = s.input.now();
+    feed_input(&mut s.feed, 1.2, 0.0, false);
+    let r = s.recording.as_mut().unwrap();
+    r.poll(&s.input).unwrap();
+    let Progress::Done { frames } = r.progress() else {
+        panic!("{:?}", r.progress());
+    };
+    let end = r.started_at().unwrap() + frames;
+    assert!(
+        end <= loud_until && end + u64::from(RATE) / 2 > loud_until,
+        "{end} {loud_until}"
+    );
+    // The rows that set it.
+    step(&mut s, Row::FlattenVelocity, -2);
+    step(&mut s, Row::FlattenHold, 2);
+    assert_eq!(
+        (
+            s.tab.settings.flatten_velocity,
+            s.tab.settings.flatten_hold_ms
+        ),
+        (110, 4000)
+    );
+    step(&mut s, Row::FlattenHold, -9);
+    assert_eq!(s.tab.settings.flatten_hold_ms, 100);
+    let list = s.ui.get::<SettingList>(rec_tab::LIST).unwrap();
+    assert_eq!(list.rows[11].value, "100 ms");
 }

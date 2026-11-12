@@ -1,6 +1,6 @@
 <!--
 status: planned
-covers: rust/mpfree-hello tools/mpc-one/offline-kexec-stick.py
+covers: rust/mpfree-app tools/mpc-one/offline-kexec-stick.py
 checked: 2026-11-11 414faa1
 -->
 

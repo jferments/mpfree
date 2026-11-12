@@ -1,6 +1,6 @@
 <!--
 status: planned
-covers: rust/mpfree-controller rust/mpfree-hello/src/app.rs
+covers: rust/mpfree-controller rust/mpfree-app/src/app.rs
 checked: 2026-11-11 414faa1
 -->
 

@@ -16,7 +16,7 @@ MPFree aims to be an offline, hardware-first sampler, sequencer and arranger tha
 
 Development happens on one MPC One running firmware 3.6.0, reached over a direct Ethernet link with root SSH.
 
-**The app.** The pad player (`mpfree-hello`) is MPFree's first app and runs on the MPC from the test stick: its own touchscreen GUI (tabs Play, Arrange, Synth, Looper, Sample), the pads and their lights, audio out and the line input through ALSA, a drum kit player with Note Repeat, Latch and an arpeggiator, the transport and clip recorder, an audio looper, the sampler, and native synths and effects. Round 7 of on-device testing (2026-11-11) ran the looper from the pads and the line input with no underruns, about 8.7 ms from pad to sound, and left the eMMC unchanged. Engines that are built and tested on the workstation but not yet tried on the device are listed in the [developer docs](docs/dev/README.md), each with its status.
+**The app.** The pad player (`mpfree-app`, the program `mpfree`) is MPFree's first app and runs on the MPC from the test stick: its own touchscreen GUI (tabs Play, Arrange, Synth, Looper, Sample), the pads and their lights, audio out and the line input through ALSA, a drum kit player with Note Repeat, Latch and an arpeggiator, the transport and clip recorder, an audio looper, the sampler, and native synths and effects. Round 7 of on-device testing (2026-11-11) ran the looper from the pads and the line input with no underruns, about 8.7 ms from pad to sound, and left the eMMC unchanged. Engines that are built and tested on the workstation but not yet tried on the device are listed in the [developer docs](docs/dev/README.md), each with its status.
 
 **The foundations** (earlier milestones):
 
@@ -58,13 +58,13 @@ python3 tests/check_cpp_rust_wav_parity.py --cpp build/mpfree-render --rust rust
 
 CI runs all of this and more (clippy, the ARMv7 cross-build tested under qemu, the device tools against fakes) on every pull request, on self-hosted runners. See [Testing and CI](docs/dev/guides/testing-and-ci.md) for what each job checks, the rules for tests, coverage, and the plan for the regression suite.
 
-None of this touches the MPC. To work with a device, start with [developer access](docs/dev/guides/developer-access.md), the [survey tools guide](docs/dev/guides/survey-tools.md) and the [Hello MPC guide](docs/dev/guides/hello-mpc.md). To build the user manual, see [docs/user](docs/user/README.md).
+None of this touches the MPC. To work with a device, start with [developer access](docs/dev/guides/developer-access.md), the [survey tools guide](docs/dev/guides/survey-tools.md) and the [guide to the app on the test build](docs/dev/guides/mpfree-app.md). To build the user manual, see [docs/user](docs/user/README.md).
 
 ## Repository layout
 
 | Path | Contents |
 |---|---|
-| `rust/` | Cargo workspace: the app (`mpfree-hello`) and its GUI toolkit (`mpfree-ui`), the engines (transport, sequencer, looper, sampler, synths, effects, mixer, modulation, arp) and their screens, touch and display, profiling, on-device smoke tests and the handoff model |
+| `rust/` | Cargo workspace: the app (`mpfree-app`) and its GUI toolkit (`mpfree-ui`), the engines (transport, sequencer, looper, sampler, synths, effects, mixer, modulation, arp) and their screens, touch and display, profiling, on-device smoke tests and the handoff model |
 | `src/`, `tests/` | C++ reference engine kept for parity, and Python/C++ tests |
 | `tools/mpc-one/` | Workstation scripts that survey or test the MPC over SSH, plus the GPU qualification kit |
 | `docs/` | `user/` the user manual, `dev/` developer docs, `agents/` rules for AI agents, `tools/` the docs checks and manual build; see the [docs index](docs/README.md) |

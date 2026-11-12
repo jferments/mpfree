@@ -1,6 +1,6 @@
 <!--
 status: changing
-covers: rust/mpfree-hello/src/app.rs
+covers: rust/mpfree-app/src/app.rs
 checked: 2026-11-11 414faa1
 -->
 

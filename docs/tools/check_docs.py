@@ -4,7 +4,7 @@ the manual's extensions. Needs only Python 3. Exit 1 on a problem.
 
     python3 docs/tools/check_docs.py
     python3 docs/tools/check_docs.py --shots DIR   # also check {{shot: ...}} names against
-                                                   # the screens `mpfree-hello --preview DIR` drew
+                                                   # the screens `mpfree --preview DIR` drew
 
 The rules are in docs/agents/docs-system.md.
 """
@@ -137,7 +137,7 @@ def check_manual(errors, warnings, shots_dir):
             if not sm:
                 errors.append(f"{where}: unknown {{{{{inner}}}}} (use shot:, build or mpc-notes)")
             elif drawn is not None and sm.group(1) not in drawn:
-                errors.append(f"{where}: screen '{sm.group(1)}' is not drawn by mpfree-hello --preview")
+                errors.append(f"{where}: screen '{sm.group(1)}' is not drawn by mpfree --preview")
         for m in re.finditer(r"^>\s*\[!([A-Z]+)\]", prose, re.M):
             if m.group(1) not in mp.BOX_TITLES:
                 errors.append(f"{where}: unknown box [!{m.group(1)}]")

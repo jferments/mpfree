@@ -1,6 +1,6 @@
 <!--
 status: changing
-covers: rust/mpfree-synth rust/mpfree-synth-ui rust/mpfree-hello/src/synth.rs
+covers: rust/mpfree-synth rust/mpfree-synth-ui rust/mpfree-app/src/synth.rs
 checked: 2026-11-11 414faa1
 -->
 

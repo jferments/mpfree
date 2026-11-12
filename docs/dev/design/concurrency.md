@@ -18,7 +18,7 @@ of the round 8 profiling asks).
 
 | Thread | What it does |
 | --- | --- |
-| `mpfree-hello` (main) | The audio loop, SCHED_FIFO 70: the screen's actions, controller MIDI, lights, the transport and arp, the sampler, the synth, the looper, the mixer, the ALSA write |
+| `mpfree-app` (main) | The audio loop, SCHED_FIFO 70: the screen's actions, controller MIDI, lights, the transport and arp, the sampler, the synth, the looper, the mixer, the ALSA write |
 | `mpfree-screen` | Touch, the raster, the framebuffer |
 | `mpfree-store` | Saved settings and patterns |
 | `mpfree-journal` | The console's log |
@@ -70,7 +70,8 @@ match lane.join(deadline) {
 - **Deadlines, like the plugin sandbox.** `join` never waits past its
   deadline. Late, it says `Late`; the job comes back by itself, and until it
   does `post` says `Busy`. The caller picks the fallback. The plugin sandbox
-  and the remote offload server keep the same contract.
+  and the remote offload server ([Offload](offload.md)) keep the same
+  contract.
 - **Waiting.** The joiner spins, then sleeps on the word (a futex on Linux)
   until the deadline; by default it spins all the way, since the audio
   thread has nothing else to do. The worker sleeps between blocks
@@ -87,6 +88,16 @@ match lane.join(deadline) {
 - **Linux first.** Other systems poll with short sleeps instead of a futex,
   and report that pinning and SCHED_FIFO are not supported yet.
 
+## The mixer's inserts on a second core
+
+`Mixer::set_lane` (mpfree-fx, see [fx.md](fx.md), "The mixer") is the first
+user in the audio graph: pad channels' and tracks' inserts are split between
+the audio thread and a lane, stage by stage, with the same output bit for
+bit. Strips with sidechain keys and frozen strips stay on the audio thread;
+returns stay too, since they need every send first. The Hello thread turns
+it on in the app (core 2, SCHED_FIFO 69, a wait of about a period) once the
+device round has measured the handoff.
+
 ## Measuring it: `mpfree-bench --lanes`
 
 ```text
@@ -95,8 +106,9 @@ cargo run --release -p mpfree-bench -- --lanes [--lane-cores A,B] [--quick]
 
 Runs only the lane cases: the handoff alone (an empty job, the worker
 sleeping or spinning), the sampler case as one engine, as two engines of 12
-voices on one core, and as two engines on two cores, and the sampler with
-Poly Init's 8-voice chords on one core and on two. On the MPC,
+voices on one core, and as two engines on two cores, the bench song's mixer
+with every insert on one core and with its track inserts split over two,
+and the sampler with Poly Init's 8-voice chords on one core and on two. On the MPC,
 `--lane-cores 3,2` pins the bench's own thread to core 3 and the workers to
 core 2. A test checks that the two-core cases make exactly the same sound as
 the one-core ones.

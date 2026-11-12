@@ -40,6 +40,8 @@ pub const FORMAT: &str = "mpfree-data 1";
 pub const MAX_FILE: usize = 1 << 20;
 /// The longest owner, file name or settings key.
 pub const MAX_NAME: usize = 64;
+/// The most file names [`Store::list`] gives.
+pub const MAX_LIST: usize = 256;
 
 /// An owner or file name the store accepts: 1 to [`MAX_NAME`] of
 /// `[a-z0-9._-]`, not starting with `.` and not ending in `.part`.
@@ -263,6 +265,37 @@ impl Store {
         self.read_at(&["files", owner], name, owner)
     }
 
+    /// The names of `owner`'s files (plain files with a [`valid_name`];
+    /// no folders, links or `.part` leftovers), sorted, at most
+    /// [`MAX_LIST`]. Only reads the folder; empty if there is none.
+    pub fn list(&self, owner: &str) -> Vec<String> {
+        let Some(inner) = self.inner.as_ref() else {
+            return Vec::new();
+        };
+        if !valid_name(owner) {
+            return Vec::new();
+        }
+        let mut path = inner.dir.clone();
+        for f in ["files", owner] {
+            path.push(f);
+            if !fs::symlink_metadata(&path).is_ok_and(|m| m.is_dir()) {
+                return Vec::new();
+            }
+        }
+        let Ok(entries) = fs::read_dir(&path) else {
+            return Vec::new();
+        };
+        let mut names: Vec<String> = entries
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_type().is_ok_and(|t| t.is_file()))
+            .filter_map(|e| e.file_name().into_string().ok())
+            .filter(|n| valid_name(n))
+            .collect();
+        names.sort();
+        names.truncate(MAX_LIST);
+        names
+    }
+
     /// Queues `owner`'s file `name` to be saved with `bytes`.
     pub fn write(&self, owner: &str, name: &str, bytes: Vec<u8>) -> Result<(), String> {
         if !valid_name(owner) || !valid_name(name) {
@@ -478,6 +511,22 @@ mod tests {
         let lines = Arc::new(Mutex::new(Vec::new()));
         let l = lines.clone();
         (Store::at(dir, move |s| l.lock().unwrap().push(s)), lines)
+    }
+
+    #[test]
+    fn list_gives_plain_files_only() {
+        let d = temp();
+        let (s, _) = store(&d);
+        assert!(s.list("themes").is_empty(), "no folder yet");
+        let t = d.join("files/themes");
+        fs::create_dir_all(t.join("sub")).unwrap();
+        for n in ["sunrise.theme", "a.theme", "Bad.theme", "x.part", ".hidden"] {
+            fs::write(t.join(n), "base = console\n").unwrap();
+        }
+        std::os::unix::fs::symlink(t.join("a.theme"), t.join("link.theme")).unwrap();
+        assert_eq!(s.list("themes"), vec!["a.theme", "sunrise.theme"]);
+        assert!(s.list("../files").is_empty());
+        assert!(Store::none().list("themes").is_empty());
     }
 
     #[test]

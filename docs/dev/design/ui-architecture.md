@@ -1,6 +1,6 @@
 # UI architecture
 
-**Status:** 2026-11-10. The toolkit is [`rust/mpfree-ui`](../../../rust/mpfree-ui); its first app is the Hello MPC pad player ([`gui.rs`](../../../rust/mpfree-hello/src/gui.rs) draws it, [`app.rs`](../../../rust/mpfree-hello/src/app.rs) decides what buttons and touches do). It first ran on the MPC in [round 4](../guides/hello-mpc.md#round-4-results-2026-11-10); round 5 starts it at power-on.
+**Status:** 2026-11-10. The toolkit is [`rust/mpfree-ui`](../../../rust/mpfree-ui); its first app is the Hello MPC pad player ([`gui.rs`](../../../rust/mpfree-app/src/gui.rs) draws it, [`app.rs`](../../../rust/mpfree-app/src/app.rs) decides what buttons and touches do). It first ran on the MPC in [round 4](../guides/mpfree-app.md#round-4-results-2026-11-10); round 5 starts it at power-on.
 
 ## What the owner asked for
 
@@ -75,7 +75,7 @@ Measured on the workstation (x86, one core): a full 1280×800 paint takes about 
 ## Testing without the MPC
 
 - Unit tests cover layouts, drawing (pixels inside their rectangles, anti-aliased corners), text fitting, the framebuffer's rotation, widget touches and partial redraws. CI runs them on the workstation and as 32-bit ARM under qemu.
-- `mpfree-hello --preview DIR` draws every screen with sample data into PNG files. CI runs it for ARM under qemu. When checked on 2026-11-10, the ARM pictures matched the workstation's pixel for pixel.
+- `mpfree --preview DIR` draws every screen with sample data into PNG files. CI runs it for ARM under qemu. When checked on 2026-11-10, the ARM pictures matched the workstation's pixel for pixel.
 
 ## Next
 

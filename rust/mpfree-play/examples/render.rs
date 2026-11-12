@@ -582,7 +582,7 @@ impl EventLog {
             Event::NoteOff { note } => (0, note, 0),
             Event::AllOff => (2, 0, 0),
             // The demo has no parameter locks (and its hash stays).
-            Event::Lock { .. } | Event::Unlock { .. } => return,
+            Event::Lock { .. } | Event::Lane { .. } | Event::Unlock { .. } => return,
         };
         if kind == 1 {
             self.notes += 1;
@@ -640,7 +640,7 @@ fn to_sampler(engine: &mut Engine, o: &Out) {
         },
         Event::NoteOff { note } => SEvent::NoteOff { pad: note },
         Event::AllOff => SEvent::AllOff,
-        Event::Lock { .. } | Event::Unlock { .. } => return,
+        Event::Lock { .. } | Event::Lane { .. } | Event::Unlock { .. } => return,
     };
     engine.schedule(o.offset, ev);
 }
@@ -680,6 +680,8 @@ fn notes(list: &[(i64, i64, u8, u8)]) -> Vec<Note> {
             note,
             velocity,
             chance: 100,
+            cond: mpfree_seq::Cond::Always,
+            ratchet: 1,
         })
         .collect()
 }
@@ -765,6 +767,8 @@ fn song() -> (Project, Vec<Launch>) {
                 note: n,
                 velocity: 85,
                 chance: 100,
+                cond: mpfree_seq::Cond::Always,
+                ratchet: 1,
             })
         })
         .collect();
@@ -786,6 +790,7 @@ fn song() -> (Project, Vec<Launch>) {
             track,
             slot: 0,
             origin: origin[track],
+            start: origin[track],
         })
         .collect();
     (p, launches)

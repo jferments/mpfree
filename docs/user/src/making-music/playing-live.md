@@ -1,6 +1,6 @@
 <!--
 status: changing
-covers: rust/mpfree-hello/src/play_page.rs rust/mpfree-hello/src/play_widgets.rs rust/mpfree-hello/src/perform.rs
+covers: rust/mpfree-app/src/play_page.rs rust/mpfree-app/src/play_widgets.rs rust/mpfree-app/src/perform.rs
 checked: 2026-11-11 414faa1
 -->
 

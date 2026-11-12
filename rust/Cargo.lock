@@ -362,6 +362,40 @@ name = "mpfree-analysis"
 version = "0.1.0"
 
 [[package]]
+name = "mpfree-app"
+version = "0.1.0"
+dependencies = [
+ "mpfree-arp",
+ "mpfree-arp-ui",
+ "mpfree-capture",
+ "mpfree-chain-ui",
+ "mpfree-controller",
+ "mpfree-core",
+ "mpfree-fx",
+ "mpfree-fx-ui",
+ "mpfree-instruments",
+ "mpfree-looper",
+ "mpfree-mixer-ui",
+ "mpfree-mod",
+ "mpfree-node",
+ "mpfree-perform",
+ "mpfree-play",
+ "mpfree-prof",
+ "mpfree-sampler",
+ "mpfree-sampler-ui",
+ "mpfree-screen-log",
+ "mpfree-seq",
+ "mpfree-store",
+ "mpfree-synth",
+ "mpfree-synth-ui",
+ "mpfree-time-ui",
+ "mpfree-touch",
+ "mpfree-touch-evdev",
+ "mpfree-transport",
+ "mpfree-ui",
+]
+
+[[package]]
 name = "mpfree-arp"
 version = "0.1.0"
 dependencies = [
@@ -386,6 +420,7 @@ dependencies = [
  "mpfree-lanes",
  "mpfree-looper",
  "mpfree-mod",
+ "mpfree-moves",
  "mpfree-node",
  "mpfree-param",
  "mpfree-play",
@@ -470,6 +505,7 @@ version = "0.1.0"
 name = "mpfree-fx"
 version = "0.1.0"
 dependencies = [
+ "mpfree-lanes",
  "mpfree-node",
  "mpfree-prof",
 ]
@@ -512,35 +548,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "mpfree-hello"
+name = "mpfree-instruments"
 version = "0.1.0"
 dependencies = [
- "mpfree-arp",
- "mpfree-arp-ui",
- "mpfree-capture",
- "mpfree-chain-ui",
- "mpfree-controller",
- "mpfree-core",
- "mpfree-fx",
- "mpfree-fx-ui",
- "mpfree-looper",
- "mpfree-mixer-ui",
- "mpfree-mod",
  "mpfree-node",
- "mpfree-play",
- "mpfree-prof",
- "mpfree-sampler",
- "mpfree-sampler-ui",
- "mpfree-screen-log",
- "mpfree-seq",
- "mpfree-store",
  "mpfree-synth",
- "mpfree-synth-ui",
- "mpfree-time-ui",
- "mpfree-touch",
- "mpfree-touch-evdev",
- "mpfree-transport",
- "mpfree-ui",
 ]
 
 [[package]]
@@ -583,6 +595,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "mpfree-moves"
+version = "0.1.0"
+dependencies = [
+ "mpfree-node",
+ "mpfree-param",
+ "mpfree-transport",
+]
+
+[[package]]
 name = "mpfree-network"
 version = "0.1.0"
 
@@ -594,8 +615,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "mpfree-offload"
+version = "0.1.0"
+dependencies = [
+ "mpfree-fx",
+ "mpfree-lanes",
+ "mpfree-node",
+ "mpfree-prof",
+]
+
+[[package]]
 name = "mpfree-param"
 version = "0.1.0"
+
+[[package]]
+name = "mpfree-perform"
+version = "0.1.0"
+dependencies = [
+ "mpfree-play",
+ "mpfree-seq",
+ "mpfree-transport",
+]
 
 [[package]]
 name = "mpfree-play"
@@ -641,6 +681,7 @@ dependencies = [
  "mpfree-analysis",
  "mpfree-core",
  "mpfree-grain",
+ "mpfree-lanes",
  "mpfree-node",
  "mpfree-prof",
  "mpfree-stretch",
@@ -668,6 +709,7 @@ version = "0.1.0"
 name = "mpfree-seq"
 version = "0.1.0"
 dependencies = [
+ "mpfree-moves",
  "mpfree-param",
  "mpfree-transport",
 ]
@@ -696,6 +738,7 @@ version = "0.1.0"
 dependencies = [
  "fontdue",
  "mpfree-screen-log",
+ "mpfree-store",
  "mpfree-ui",
 ]
 
