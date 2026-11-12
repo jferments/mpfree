@@ -1,5 +1,5 @@
 //! The audio thread's part of the host never allocates or frees: notes,
-//! parameters, swaps (instruments made beforehand), ring-outs, STOP and
+//! parameters, tunings, swaps (instruments made beforehand), ring-outs, STOP and
 //! the sequencer's sink, with Poly and FM, into the real mixer.
 
 use mpfree_fx::{Mixer, MixerConfig};
@@ -36,6 +36,11 @@ fn the_audio_threads_part_never_allocates() {
             })
         })
         .collect();
+    let tunings = [
+        mpfree_node::Tuning::equal(24, 440.0),
+        mpfree_node::Tuning::equal(12, 432.0),
+        mpfree_node::Tuning::standard(),
+    ];
     host.swap(0, spare[0].take()).unwrap();
     host.swap(1, spare[1].take()).unwrap();
     host.set_profiling(true);
@@ -89,6 +94,9 @@ fn the_audio_threads_part_never_allocates() {
                 mpfree_synth::fm_params::FEEDBACK,
                 (p % 8) as f32,
             );
+        }
+        if p % 450 == 0 {
+            host.set_tuning((p / 450) % 3, &tunings[(p / 450) % 3]);
         }
         if p % 600 == 300 {
             let k = 2 + (p / 600) % 6;
