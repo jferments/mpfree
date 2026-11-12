@@ -38,8 +38,8 @@ use crate::kit_visual as kv;
 use crate::pages::{plan, qlink_targets, tile_label, Page};
 use crate::visual;
 use crate::widgets::{
-    Card, CardNode, QCell, QLinkStrip, Tile, TileGrid, TileKind, TitleBar, Trace, Visuals,
-    QLINK_COLORS,
+    Card, CardNode, QCell, QLinkStrip, Tile, TileGrid, TileKind, TitleBar, Trace, Visuals, ON_FILL,
+    QLINK_COLORS, TEXT, TEXT_DIM,
 };
 use mpfree_node::pressure::{field, FIELDS};
 use mpfree_node::{Curve, Node, NodeInfo, ParamInfo};
@@ -616,7 +616,7 @@ fn tile(st: &SynthState, page: &str, i: usize, qlink: Option<usize>) -> Tile {
     };
     let color = match (qlink, &kind) {
         (Some(q), _) => QLINK_COLORS[q % 4],
-        (None, TileKind::Knob { .. }) => Color::rgb(0x98A1B3),
+        (None, TileKind::Knob { .. }) => TEXT_DIM,
         (None, _) => QLINK_COLORS[0],
     };
     Tile {
@@ -684,8 +684,7 @@ fn pressure_cards(st: &SynthState, base: u16) -> Strip {
 fn poly_cards(st: &SynthState, page: &str) -> Strip {
     let v = |id: u16| st.value(id);
     let (blue, green, amber) = (QLINK_COLORS[0], QLINK_COLORS[1], QLINK_COLORS[2]);
-    let white = Color::rgb(0xE9ECF2);
-    let grey = Color::rgb(0x98A1B3);
+    let (white, grey) = (TEXT, TEXT_DIM);
     let trace = |pts: Vec<(f32, f32)>, color: Color, fill: bool, dashed: bool| Trace {
         pts,
         color,
@@ -1023,9 +1022,9 @@ fn wt_cards(st: &SynthState, page: &str) -> Strip {
 /// Carriers' colour, modulators' colour, and the text on both.
 const CARRIER: Color = QLINK_COLORS[1];
 const MODULATOR: Color = QLINK_COLORS[0];
-const ON_BOX: Color = Color::rgb(0x0B0E14);
-const LINE: Color = Color::rgb(0x98A1B3);
-const WHITE: Color = Color::rgb(0xE9ECF2);
+const ON_BOX: Color = ON_FILL;
+const LINE: Color = TEXT_DIM;
+const WHITE: Color = TEXT;
 
 fn line(pts: Vec<(f32, f32)>, color: Color) -> Trace {
     Trace {
