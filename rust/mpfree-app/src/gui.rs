@@ -6742,6 +6742,85 @@ mod tests {
     }
 
     #[test]
+    fn bars_printed_to_a_pad_loop_and_land_warped_at_the_project_tempo() {
+        use mpfree_sampler_ui::rec_tab::{self, Row, Skip, TailAt};
+        use mpfree_sampler_ui::sample::feed_input;
+        let mut p = sample_sampler(Fonts::embedded());
+        let ev = |p: &mut Player, widget: &str, kind: EventKind| {
+            p.on_event(UiEvent {
+                widget: widget.into(),
+                kind,
+            })
+        };
+        let take = |p: &mut Player| {
+            let (sent, rest) = views(p.take_actions());
+            for v in sent {
+                p.apply(ToUi::SampleViewBack(v));
+            }
+            rest
+        };
+        let step = |p: &mut Player, row: Row, delta: i32| {
+            let index = Row::ALL.iter().position(|r| *r == row).unwrap();
+            p.on_event(UiEvent {
+                widget: rec_tab::LIST.into(),
+                kind: EventKind::Step { index, delta },
+            })
+        };
+        ev(
+            &mut p,
+            mpfree_sampler_ui::wave_tab::BAR,
+            EventKind::Tab(rec_tab::TAB),
+        );
+        // Resample the master: one bar from the next bar line, as a loop.
+        step(&mut p, Row::Source, 1);
+        take(&mut p);
+        let mut acts = take(&mut p);
+        let Some(FromUi::SampleInput(Some(mut feed))) = acts.pop() else {
+            panic!("the input's writer");
+        };
+        step(&mut p, Row::Start, 2);
+        step(&mut p, Row::End, 2);
+        step(&mut p, Row::Length, -2);
+        step(&mut p, Row::Tail, 2);
+        let tab = p.sample.rec_settings().unwrap();
+        assert_eq!((tab.bars, tab.tail), (1, TailAt::Loop));
+        feed_input(&mut feed.0, 2.0, 0.4, true);
+        p.tick(0.033);
+        ev(&mut p, rec_tab::BUTTONS, EventKind::Tab(0));
+        feed_input(&mut feed.0, 6.0, 0.4, true);
+        p.tick(0.033);
+        let log = events_log(&p);
+        assert!(
+            log.iter().any(|l| l
+                == "sample: take armed for pad A6: start next bar, end 1 bar then loop, left + right"),
+            "{log:?}"
+        );
+        // The drums were already playing: their ringing is in its start,
+        // so the bar is cut as it was, and it follows the project tempo.
+        let tempo = p.sample.tempo();
+        let line = format!(
+            "sample: recorded as a loop, cut: it was going round: Master take 1, 2.61 s stereo on \
+             pad A6, warped at {tempo:.1} BPM"
+        );
+        assert!(log.contains(&line), "{line}\n{log:?}");
+        let region = |p: &Player, pad: usize| {
+            p.sample.project(0).unwrap().pad(pad).unwrap().layers[0]
+                .region
+                .clone()
+        };
+        let r = region(&p, 5);
+        assert_eq!(r.warp.map(|w| w.bpm), Some(tempo as f32));
+        // Skip back by bars lands warped too; by seconds it doesn't.
+        step(&mut p, Row::SkipBack, 4);
+        assert_eq!(p.sample.rec_settings().unwrap().skip, Skip::Bars(1));
+        ev(&mut p, rec_tab::BUTTONS, EventKind::Tab(1));
+        assert_eq!(region(&p, 6).warp.map(|w| w.bpm), Some(tempo as f32));
+        step(&mut p, Row::SkipBack, -4);
+        ev(&mut p, rec_tab::BUTTONS, EventKind::Tab(1));
+        assert_eq!(region(&p, 7).warp, None);
+    }
+
+    #[test]
     fn flatten_records_the_pads_own_channel_as_it_plays_once_and_keeps_it_on_the_next_pad() {
         use crate::sampler::{RecSource, CENTRE_DB};
         use mpfree_fx::{CapturePoint, StripId};
