@@ -72,6 +72,17 @@ def build(read):
             d["boot"]["services"]["/usr/lib/systemd/system/az0x-loadpin-trustpoints.service"]["firmware310"]["present"],
     }
     probe=u.get("direct_boot_probe") or {}
+    # New Ghidra byte-level facts are distinct from existing xref evidence.
+    checks["literal_pool_both_pointers_equal"] = (
+        probe.get("permission_read_write_pointer_equal") if probe else None
+    )
+    checks["literal_pool_both_point_to_global"] = (
+        probe.get("permission_read_write_pointer_is_prior_global") if probe else None
+    )
+    checks["published_oem_token_binary_sha256_matches"] = (
+        probe.get("oem_token_slot",{}).get(
+            "matches_published_37_byte_unlock_token") if probe else None
+    )
     rows=[]
     def q(topic,question,result,evidence,next_step):
         rows.append({"id":"DB%03d"%(len(rows)+1),"topic":topic,
