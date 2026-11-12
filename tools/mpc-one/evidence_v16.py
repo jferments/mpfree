@@ -249,9 +249,9 @@ def evidence(v14,v15,dynamic=None,live=None):
         if id in ('FASTBOOT-02','FASTBOOT-03','FASTBOOT-05'):
             for t in ('oem_exact','oem_typo','oem_shell_denied','oem_env_denied'):add_dynamic(t)
         if id in ('FASTBOOT-04','FASTBOOT_RUNTIME-06','FASTBOOT_RUNTIME-12'):
-            for t in ('permission_0','permission_1','permission_2'):add_dynamic(t)
+            for t in ('permission_0','permission_1','permission_2','flash_denied','erase_denied'):add_dynamic(t)
         if id in ('FASTBOOT_RUNTIME-07','FASTBOOT_RUNTIME-08'):
-            for t in ('classify_legacy','classify_fdt','classify_invalid'):add_dynamic(t)
+            for t in ('classify_legacy','classify_fdt','classify_invalid','fdt_valid','fdt_bad_magic','fdt_old_version','fdt_incompatible'):add_dynamic(t)
         if id in ('FASTBOOT_RUNTIME-04','FASTBOOT_RUNTIME-05'):
             for t in ('receive_one','receive_31','receive_256','receive_4096','receive_clip'):add_dynamic(t)
         if id in ('FASTBOOT_RUNTIME-06','FASTBOOT_RUNTIME-10'):
