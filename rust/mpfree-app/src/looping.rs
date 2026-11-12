@@ -909,6 +909,7 @@ impl Printer {
         let spawned = std::thread::Builder::new()
             .name("mpfree-print".into())
             .spawn(move || {
+                let _ = crate::cores::background(); // off the sound's cores and priority
                 for m in jobs {
                     let reply = match m {
                         ToPrinter::Buffer(n) => FromPrinter::Buffer(Vec::with_capacity(n)),

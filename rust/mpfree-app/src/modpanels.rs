@@ -16,7 +16,9 @@
 //! What each action does:
 //!
 //! - Chain edits go to the mixer: `Edit::Insert` (the effect made by
-//!   `mpfree_fx_ui::make`, at the end of the chain), `Edit::Move`,
+//!   `mpfree_fx_ui::make`, at the end of the chain; in the app it is made
+//!   on the builder thread and goes in a few periods later,
+//!   `MixHost::add_insert`), `Edit::Move`,
 //!   `Edit::Remove` (the engine forgets the removed effect's parameters),
 //!   and bypass with `Mixer::set_on`. The editor keeps the same effect
 //!   selected across a move, and selects an added one when it lands.
@@ -39,7 +41,7 @@
 #![allow(dead_code)]
 
 use mpfree_chain_ui::{ChainAction, ChainState, MacroAction, MacrosState};
-use mpfree_fx::{strip_params, Edit, Insert, StripId};
+use mpfree_fx::{strip_params, Edit, StripId};
 use mpfree_mod::{Change, MacroMap, MapCurve, Row};
 use mpfree_node::{NodeEvent, Timed};
 use mpfree_play::mpfree_param::{Owner, ParamAddr, Strip};
@@ -52,6 +54,7 @@ use crate::app::{App, Effect, View};
 use crate::gui::ToUi;
 use crate::mixing::{self, MixHost, SLOTS};
 use crate::modmix::{strip_id, strip_of};
+#[cfg(test)]
 use crate::PERIOD;
 
 /// A new matrix row's depth.
@@ -237,25 +240,16 @@ impl ChainHost {
             }
             ChainAction::Add(id) => {
                 self.picking = false;
-                if len + h.mixer.edits_pending() >= SLOTS {
+                if len + h.mixer.edits_pending() + h.inserts_building() >= SLOTS {
                     return ChainOut::Refused("The chain is full");
                 }
-                let Some(node) = mpfree_fx_ui::make(id) else {
-                    return ChainOut::Refused("No such effect");
-                };
-                let insert = Insert::new(node, h.mixer.rate(), PERIOD);
-                if h.mixer
-                    .edit(Edit::Insert {
-                        strip: sid,
-                        at: len,
-                        insert,
-                    })
-                    .is_err()
-                {
-                    return ChainOut::Refused("The mixer is busy");
+                // Built off the audio thread in the app (control.rs), then
+                // put in at the end of the chain.
+                if let Err(why) = h.add_insert(sid, id) {
+                    return ChainOut::Refused(why);
                 }
-                // It lands once its strip ducks (about 10 ms); until then
-                // the old selection stays.
+                // It lands once it is built and its strip ducks (about 10
+                // ms); until then the old selection stays.
                 if self.landing.is_none() {
                     self.landing = h
                         .mixer
