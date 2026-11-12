@@ -72,6 +72,33 @@ def instructions_for(function: dict) -> list[dict]:
     return out
 
 
+def normal_fallthrough_return_preserves_r0(instructions: list[dict], call_index: int) -> dict | None:
+    """Conservative straight-line, normal-return-path observation only.
+
+    A conditional branch can leave the path (e.g. canary failure); this
+    verifies ONLY the fallthrough path. Do not confuse with all-path
+    return-value propagation. Reject intervening calls, unconditional
+    jumps, and instructions writing r0.
+    """
+    for distance, ins in enumerate(instructions[call_index + 1:call_index + 49], 1):
+        text = ins["text"]
+        if re.match(r"^ldr\\s+pc,\\[sp\\]", text) or re.match(r"^bx\\s+lr$", text):
+            return {"return_address": ins["address"],
+                    "instructions_after_call": distance,
+                    "all_paths_verified": False}
+        if re.match(r"^pop\\s+\\{[^}]*\\bpc\\b[^}]*\\}$", text):
+            return {"return_address": ins["address"],
+                    "instructions_after_call": distance,
+                    "all_paths_verified": False}
+        if CALL.match(text) or re.match(r"^b\\s+", text):
+            return None
+        # Exclude flag tests and stores that READ r0 but do not replace it.
+        if (re.match(r"^[a-z][a-z0-9.]*\\s+r0(?:,|\\s|$)", text)
+                and not re.match(r"^(?:str|strb|strh|cmp|cmn|tst|teq)\\b", text)):
+            return None
+    return None
+
+
 def scan_callsite(caller_addr: str, instructions: list[dict], target: str) -> list[dict]:
     observed = []
     for pos, inst in enumerate(instructions):
@@ -100,6 +127,10 @@ def scan_callsite(caller_addr: str, instructions: list[dict], target: str) -> li
                     "destination_register": matched.group(1),
                     "instructions_after_call": distance,
                 })
+        passthrough = None
+        if not immediate_test and not copies:
+            passthrough = normal_fallthrough_return_preserves_r0(
+                instructions, pos)
         observed.append({
             "caller": caller_addr, "callee": target, "bl_address": inst["address"],
             "next_three": next_ins,
@@ -109,6 +140,7 @@ def scan_callsite(caller_addr: str, instructions: list[dict], target: str) -> li
             "conditional_branch_after_compare": conditional_branch,
             "sub_zero_destination": subs_zero.group(1) if subs_zero else None,
             "r0_copies": copies,
+            "r0_preserved_to_normal_return": passthrough,
             "observation": (
                 "Return status tested by " + test_kind + " and conditional branch"
                 if conditional_branch else
@@ -116,6 +148,8 @@ def scan_callsite(caller_addr: str, instructions: list[dict], target: str) -> li
                 if immediate_test else
                 "Returned r0 copied into register; downstream use not yet traced"
                 if copies else
+                "Return register r0 preserved along normal fallthrough to epilogue"
+                if passthrough else
                 "BL call observed; subsequent r0 use requires further analysis"
             ),
         })
@@ -174,6 +208,10 @@ def summarize(ghidra: dict, index_check: dict, framing: dict | None = None) -> d
             "callers_copying_r0": sorted({
                 c["caller"] for c in callsites if c["r0_copies"]
             }),
+            "callers_preserving_r0_to_normal_return": sorted({
+                c["caller"] for c in callsites
+                if c["r0_preserved_to_normal_return"]
+            }),
             "instruction_evidence_sha256": hashlib.sha256(
                 json.dumps(fn.get("machine_instruction_evidence", []), sort_keys=True).encode()
             ).hexdigest() if ins else None,
@@ -193,6 +231,7 @@ def summarize(ghidra: dict, index_check: dict, framing: dict | None = None) -> d
             "Ghidra void inference is contradicted where a caller BL is followed by CMP r0 or SUBS rx,r0,#0 and a conditional branch.",
             "SUBS rx,r0,#0 tests condition flags AND copies the return value; do not mistake it for unused r0.",
             "CPY/MOV rx,r0 demonstrates return-value capture, not yet a verified downstream status check.",
+            "Fallthrough-preserved r0 to a normal epilogue verifies one path only; exception/branch paths remain distinct.",
             "Only captured instruction evidence is assessed; missing callsites are not proof of absent callers.",
             "A written r0 value is only a candidate return until its control flow to an epilogue is checked.",
             "No actual AKAI updater code was executed and no device was accessed.",
@@ -214,7 +253,10 @@ def to_markdown(report: dict) -> str:
                       "- Callers immediately testing r0 (CMP/TST/CMN/TEQ or SUBS-zero): " +
                       (", ".join(item["callers_immediately_testing_r0"]) or "none in captured evidence"),
                       "- Callers copying r0: " +
-                      (", ".join(item["callers_copying_r0"]) or "none in captured evidence")])
+                      (", ".join(item["callers_copying_r0"]) or "none in captured evidence"),
+                      "- Callers preserving r0 to a normal return: " +
+                      (", ".join(item["callers_preserving_r0_to_normal_return"])
+                       or "none in captured evidence")])
         for site in item["r0_constant_writes"]:
             lines.append(f"- r0 write {site['address']}: {site['instruction']} (int32 {site['value_int32']})")
         for call in item["observed_callsites"]:
@@ -256,6 +298,10 @@ def generate(input_zip: Path, output_zip: Path) -> dict:
                 for fn in report["functions"]),
             "r0_copy_callsites": sum(
                 len([c for c in fn["observed_callsites"] if c["r0_copies"]])
+                for fn in report["functions"]),
+            "normal_fallthrough_r0_passthrough_callsites": sum(
+                len([c for c in fn["observed_callsites"]
+                     if c["r0_preserved_to_normal_return"]])
                 for fn in report["functions"])}
 
 
