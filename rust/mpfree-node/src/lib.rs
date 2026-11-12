@@ -41,6 +41,9 @@ pub use pressure::{
     PressureShape,
 };
 
+/// How notes become frequencies (see [`Node::set_tuning`]).
+pub use mpfree_tuning::Tuning;
+
 /// The most frames a host passes in one call.
 pub const MAX_BLOCK: usize = 8192;
 
@@ -64,6 +67,17 @@ pub enum NodeEvent {
     Bend {
         value: f32,
     },
+    /// One note's own expression, MPE style: only voices playing `note`
+    /// move. See [`Expr`] for each kind's value. An expression for a note
+    /// that isn't sounding is kept for that note's next note-on, so a value
+    /// sent just before a note starts it in place. A note-off puts the
+    /// note's slide and tone back to neutral for its next note-on (the voice
+    /// keeps its values through its release).
+    Expression {
+        note: u8,
+        kind: Expr,
+        value: f32,
+    },
     /// Ends every note with its release. Silences nothing abruptly.
     AllOff,
     /// Sets a parameter on this frame (automation, a parameter lock).
@@ -71,6 +85,47 @@ pub enum NodeEvent {
         id: u16,
         value: f32,
     },
+}
+
+/// What a [`NodeEvent::Expression`] moves. Values out of range are
+/// clamped; not a number is ignored.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Expr {
+    /// The note's own pitch offset in semitones, -48 to 48 (0 neutral): a
+    /// slide between steps, a pitch lock on one note of a chord, an MPE
+    /// finger slide. It adds to the bend for every note. Nodes smooth it
+    /// over a few milliseconds, so senders ramp a long glide themselves.
+    Slide,
+    /// Timbre, 0 to 1 (0 neutral): MPE's Y axis. Each instrument routes it
+    /// to the destinations it offers, like pressure.
+    Tone,
+    /// Release velocity, 0 to 1 (0.5 when nothing sends one), for the
+    /// note's coming note-off. Instruments that don't use it ignore it.
+    Release,
+}
+
+impl Expr {
+    /// The value range: a value is clamped into it.
+    pub fn range(self) -> (f32, f32) {
+        match self {
+            Expr::Slide => (-48.0, 48.0),
+            Expr::Tone | Expr::Release => (0.0, 1.0),
+        }
+    }
+
+    /// The value with no effect.
+    pub fn neutral(self) -> f32 {
+        match self {
+            Expr::Slide | Expr::Tone => 0.0,
+            Expr::Release => 0.5,
+        }
+    }
+
+    /// `value` clamped into range, or `None` for not a number.
+    pub fn clamp(self, value: f32) -> Option<f32> {
+        let (lo, hi) = self.range();
+        (!value.is_nan()).then(|| value.clamp(lo, hi))
+    }
 }
 
 /// A [`NodeEvent`] at a frame offset inside the block.
@@ -288,6 +343,14 @@ pub trait Node: Send {
     /// Frames of delay the node adds (look-ahead), for compensation.
     fn latency(&self) -> u32 {
         0
+    }
+    /// Sets how notes become frequencies, from the next frame processed.
+    /// The node copies it (a [`Tuning`] is plain data), so this may run on
+    /// the audio thread between blocks. Sounding notes move to the new
+    /// tuning, smoothed where pitch is. Effects and anything without notes
+    /// keep the default, which does nothing.
+    fn set_tuning(&mut self, tuning: &Tuning) {
+        let _ = tuning;
     }
 }
 
