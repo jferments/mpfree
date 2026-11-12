@@ -107,7 +107,7 @@ class ArmReturnContractTests(unittest.TestCase):
                 self.assertFalse(result["r0_copies"])
                 self.assertEqual(
                     result["r0_preserved_to_normal_return"]["return_address"],
-                    "0x" + return_at)
+                    LAB.normalize_addr(return_at))
                 self.assertFalse(
                     result["r0_preserved_to_normal_return"]["all_paths_verified"])
 
