@@ -1,5 +1,5 @@
 //! The 16 pads laid out from a scale, for a synth on the pads (owner,
-//! 2026-11-11, docs/project/scales.md):
+//! 2026-11-11, docs/dev/design/scales.md):
 //!
 //! - **Chromatic** (the default): pad 1 is C3 and each pad a semitone up, as
 //!   in round 6. With a scale picked, the pads keep their notes and only

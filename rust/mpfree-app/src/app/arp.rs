@@ -1,5 +1,5 @@
 //! The arp in the pad player: what the quick band, the Arp panel and the
-//! pattern workspace do (the design is in `docs/project/arpeggiator.md`).
+//! pattern workspace do (the design is in `docs/dev/design/arpeggiator.md`).
 //!
 //! - **NOTE REPEAT held**: the pads play through the arp in its mode
 //!   (Repeat, Arp or Pattern; Repeat if the panel picked Direct). The wheel
@@ -715,7 +715,7 @@ impl App {
         }
         format!(
             "# MPFree arp patterns, saved by the pad player. One per line: Name = pattern;\n\
-                 # your scales after [scales]. The syntax is in docs/project/arpeggiator.md.\n{}",
+                 # your scales after [scales]. The syntax is in docs/dev/design/arpeggiator.md.\n{}",
             lib.to_text()
         )
     }
@@ -1026,7 +1026,7 @@ impl App {
 // ------------------------------------------------------------ pad layouts
 
 /// The synth's pad layout feeding the arp (agreed hook with the app and
-/// synth threads, docs/project/scales.md "The arp on a pad layout"). Without
+/// synth threads, docs/dev/design/scales.md "The arp on a pad layout"). Without
 /// a layout the arp is fed pad slots 0..15 as before (a kit, or the synth's
 /// plain chromatic pads: slot 0 counts as C). With one, each pad presses its
 /// layout notes (a chord pad presses every note of its chord, root last),

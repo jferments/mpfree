@@ -13,7 +13,7 @@
 //! top-level tab: the app shows the panel and the band in its Play page's
 //! right-hand column, so the pads never move, and puts [`chip`] in its
 //! header. The
-//! design is in the arpeggiator design doc (`docs/project/arpeggiator.md`).
+//! design is in the arpeggiator design doc (`docs/dev/design/arpeggiator.md`).
 //!
 //! The screens do not own the engine. The app copies what they need into an
 //! [`ArpState`] (from [`ArpState::from_engine`]), calls [`ArpPanel::update`]

@@ -1,7 +1,7 @@
 //! The sampler's project model: sources, regions, chop sets, layers, pads,
 //! the master effect and the undo log. Owned by the control thread; never touched by the
 //! audio thread, which gets an [`crate::engine::EngineView`] built from it.
-//! Design: `docs/project/sampler-design.md` and `sampler-architecture.md`.
+//! Design: `docs/dev/design/sampler-design.md` and `sampler-architecture.md`.
 
 use std::sync::Arc;
 
