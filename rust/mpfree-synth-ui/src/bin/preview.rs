@@ -4,18 +4,21 @@
 //! Opens no device.
 //!
 //! Options: `--out DIR` (default ~/mpfree-work/synth-preview-<UTC>; must be a
-//! new or empty folder), `--font FILE`, `--bold-font FILE`, `--mono-font FILE`.
+//! new or empty folder), `--theme NAME` (default, console, synthwave or
+//! spaceship; default if left out), `--font FILE`, `--bold-font FILE`,
+//! `--mono-font FILE`.
 
 #![forbid(unsafe_code)]
 
 use mpfree_synth_ui::sample::samples;
-use mpfree_ui::{Fonts, SoftCanvas};
+use mpfree_ui::{Fonts, SoftCanvas, Theme};
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
 struct Options {
     out: Option<PathBuf>,
+    theme: Theme,
     font: Option<PathBuf>,
     bold: Option<PathBuf>,
     mono: Option<PathBuf>,
@@ -24,6 +27,7 @@ struct Options {
 fn parse_args(args: &[String]) -> Result<Options, String> {
     let mut o = Options {
         out: None,
+        theme: Theme::dark(),
         font: None,
         bold: None,
         mono: None,
@@ -37,6 +41,16 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
         };
         match a.as_str() {
             "--out" => o.out = Some(value()?),
+            "--theme" => {
+                let name = value()?;
+                let name = name.to_string_lossy();
+                o.theme = Theme::builtin(&name).ok_or_else(|| {
+                    format!(
+                        "no theme {name}; pick one of {}",
+                        mpfree_ui::theme::BUILTIN.join(", ")
+                    )
+                })?;
+            }
             "--font" => o.font = Some(value()?),
             "--bold-font" => o.bold = Some(value()?),
             "--mono-font" => o.mono = Some(value()?),
@@ -107,6 +121,7 @@ fn run(o: &Options) -> Result<PathBuf, String> {
         .map(|s| (s.name, s.about, s.ui))
         .collect();
     for (name, about, mut ui) in screens {
+        ui.set_theme(o.theme.clone());
         let (w, h) = ui.size();
         let mut canvas = SoftCanvas::new(w, h);
         ui.paint(&mut canvas);
@@ -136,7 +151,7 @@ fn main() {
             if !e.is_empty() {
                 eprintln!("mpfree-synth-preview: {e}");
             }
-            eprintln!("usage: mpfree-synth-preview [--out NEW_DIR] [--font FILE] [--bold-font FILE] [--mono-font FILE]");
+            eprintln!("usage: mpfree-synth-preview [--out NEW_DIR] [--theme NAME] [--font FILE] [--bold-font FILE] [--mono-font FILE]");
             std::process::exit(if e.is_empty() { 0 } else { 2 });
         }
     }

@@ -86,6 +86,7 @@ mod app;
 mod calibrate_page;
 mod chain_page;
 mod cores;
+mod cv_out;
 mod debug_page;
 mod engines;
 mod gui;
@@ -101,6 +102,7 @@ mod modpanels;
 mod perf;
 mod play_page;
 mod play_widgets;
+mod port_writer;
 mod preview;
 mod qlink_touch;
 #[cfg(test)]
@@ -174,6 +176,9 @@ struct Options {
     /// Open the 5-pin MIDI Out jack, so tracks set to play on it do
     /// (`app` only; midi_out.rs). Off until a device round has checked it.
     midi_out: bool,
+    /// Drive the CV/gate jacks (CV 1 to 4) from the project's CV outputs
+    /// (`app` only; cv_out.rs). Off until a device round has checked it.
+    cv_out: bool,
 }
 
 fn parse_args(args: &[String]) -> Result<Options, String> {
@@ -196,6 +201,7 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
         data: None,
         sound_cores: None,
         midi_out: false,
+        cv_out: false,
     };
     let mut it = args.iter();
     while let Some(arg) = it.next() {
@@ -237,6 +243,7 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
             "--keep-screen" => o.keep_screen = true,
             "--patterns" => o.patterns = Some(PathBuf::from(value()?)),
             "--midi-out" => o.midi_out = true,
+            "--cv-out" => o.cv_out = true,
             "--data" => o.data = Some(PathBuf::from(value()?)),
             "--sound-cores" => {
                 o.sound_cores =
@@ -276,6 +283,9 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
     }
     if o.midi_out && o.command != "app" {
         return Err("--midi-out goes with app".to_string());
+    }
+    if o.cv_out && o.command != "app" {
+        return Err("--cv-out goes with app".to_string());
     }
     if o.data.is_some() && o.command != "app" {
         return Err("--data goes with app".to_string());
@@ -2391,6 +2401,8 @@ struct SeqPads<'a> {
     silent: u64,
     /// Tracks whose "Plays on" is MIDI Out play there instead.
     midi: &'a mut midi_out::MidiOut,
+    /// The CV/gate outputs follow the tracks' notes wherever they play.
+    cv: &'a mut cv_out::CvOut,
 }
 
 /// The notes pad `pad` plays on MIDI Out: the synth's pad layout while the
@@ -2450,6 +2462,7 @@ impl time::Pads for SeqPads<'_> {
     fn live(&mut self, o: &mpfree_play::Out) -> Option<mpfree_play::Event> {
         use mpfree_play::Event;
         let notes = self.synth.is_some() && self.live.plays_notes();
+        self.cv_live(o, notes);
         if self.midi.takes(o.track) {
             return self.live_out(o, notes);
         }
@@ -2529,10 +2542,9 @@ impl time::Pads for SeqPads<'_> {
             }
             _ => 0,
         };
-        let taken = self.midi.send(
-            o,
-            midi_out::NoteIs::Pad(pad_notes(self.synth.as_deref(), pad)),
-        );
+        let is = midi_out::NoteIs::Pad(pad_notes(self.synth.as_deref(), pad));
+        self.cv.send(o, is);
+        let taken = self.midi.send(o, is);
         if let (true, Event::NoteOn { velocity, .. }) = (taken, o.event) {
             if let Some(f) = self.flashes.get_mut(pad) {
                 *f = velocity.max(1);
@@ -2543,6 +2555,33 @@ impl time::Pads for SeqPads<'_> {
 }
 
 impl SeqPads<'_> {
+    /// An arp's note to the CV outputs, with the pads' velocity curve, as
+    /// MIDI Out would read it (`notes`: MIDI notes from a synth pad
+    /// layout; else pads).
+    fn cv_live(&mut self, o: &mpfree_play::Out, notes: bool) {
+        use midi_out::NoteIs;
+        use mpfree_play::Event;
+        let (event, pad) = match o.event {
+            Event::NoteOn { note, velocity } => (
+                Event::NoteOn {
+                    note,
+                    velocity: self.live.velocity(velocity),
+                },
+                usize::from(note),
+            ),
+            e => (e, 16),
+        };
+        let is = match (notes, event) {
+            (true, _) => NoteIs::Note,
+            (false, Event::NoteOn { .. }) if pad < 16 => {
+                NoteIs::Pad(pad_notes(self.synth.as_deref(), pad))
+            }
+            // A pad's note-off and pressure go to what its note-on sent.
+            (false, _) => NoteIs::Pad(&[]),
+        };
+        self.cv.send(&mpfree_play::Out { event, ..*o }, is);
+    }
+
     /// An arp's note on a track that plays on MIDI Out: sent there with
     /// the pads' velocity curve, shown on the pads, and recorded as
     /// [`time::Pads::live`] would record it (`notes`: the arp's notes are
@@ -3145,6 +3184,28 @@ fn player_session(
             )),
         }
     }
+    // CV out (cv_out.rs): CV 1 to 4 follow the project's CV outputs.
+    // State-changing on the MPC (control changes on cable 1, never SysEx),
+    // so it opens only with --cv-out until a device round with a meter has
+    // checked it. Its writer has a copy of the Private port, and the
+    // button lights go through it while it is open.
+    let mut cv_out = cv_out::CvOut::new(RATE, MIDI_OUT_LEAD);
+    if o.cv_out {
+        match ports.private.as_ref().map(File::try_clone) {
+            Some(Ok(port)) => match cv_out.open(port, started) {
+                Ok(()) => out.midi(&format!(
+                    "CV out open: CV 1 to {} follow the project's CV outputs, {:.1} ms after \
+                     their frame is made; CV {} to 8 wait for a check",
+                    cv_out::CHECKED_OUTS,
+                    MIDI_OUT_LEAD.as_secs_f64() * 1000.0,
+                    cv_out::CHECKED_OUTS + 1,
+                )),
+                Err(e) => out.midi(&format!("CV out not started: {e}")),
+            },
+            Some(Err(e)) => out.midi(&format!("CV out not opened: {e}")),
+            None => out.midi("CV out not opened: the Private port is not open"),
+        }
+    }
     let mut usb = UsbKeys::start(
         [Some(audio), midi_card().ok()]
             .into_iter()
@@ -3153,6 +3214,9 @@ fn player_session(
     );
     let mut keys: Vec<midi_in::Key> = Vec::with_capacity(64);
     let mut key_misses = 0u64;
+    // The lanes' deadline for this period (cores.rs): when the sound card's
+    // queue would run dry, less a period. The buffer starts full.
+    let mut lane_until = cores::lane_deadline(Instant::now(), None, periods);
     let mut i = 0u64;
     while i < total_periods {
         let t_read = Instant::now();
@@ -3222,6 +3286,10 @@ fn player_session(
                 }
                 gui::FromUi::Mixer(mpfree_mixer_ui::MixAction::AddInsert { strip }) => {
                     fx.extend(panels.open_insert(&mut app, &mix, strip, None))
+                }
+                // The Sample tab's FX: the chain editor on the pad's channel.
+                gui::FromUi::SampleFx { pad } => {
+                    fx.extend(panels.open_pad(&mut app, pad, mixing::DRUMS))
                 }
                 gui::FromUi::Chain(a) => {
                     let recording = time.info().state == mpfree_transport::State::Recording;
@@ -3348,6 +3416,7 @@ fn player_session(
                     }
                 }
                 gui::FromUi::SampleKey { .. } => {}
+                gui::FromUi::SamplePadLive { kit, values } => player.pad_live(kit, &values),
                 // The Pads tab's switch: the browser or the pad's settings.
                 gui::FromUi::PadsView(v) => {
                     app.set_pads_browse(v == mpfree_sampler_ui::pads_tab::BROWSE)
@@ -3463,6 +3532,7 @@ fn player_session(
         usb.poll(&mut music, &mut buf, mt, &mut keys, out);
         music.tick(mt, &mut |l| out.midi(&l));
         midi_out.tick(&mut |l| out.midi(&l));
+        cv_out.tick(&mut |l| out.midi(&l));
         music.sync(&io_model, mt);
         // Keys play the armed track: by note while the pads play notes (a
         // synth pad layout), else as the pad the MPC gives that note.
@@ -3691,7 +3761,11 @@ fn player_session(
             };
             match e {
                 app::Effect::Light(note, value) if akai::app_lights(note) => {
-                    ports.send(true, &akai::button_light(note, value))?
+                    // Through CV out's writer while it shares the port.
+                    let light = akai::button_light(note, value);
+                    if !cv_out.light(&light) {
+                        ports.send(true, &light)?
+                    }
                 }
                 app::Effect::Light(note, _) => {
                     if !unlit[note as usize & 0x7F] {
@@ -3911,6 +3985,7 @@ fn player_session(
                 p as f64 * period_time().as_secs_f64() * 1e3
             ));
             play = Playback::start(open_acva(out, p)?, p)?;
+            lane_until = cores::lane_deadline(Instant::now(), None, p);
             pending.clear();
         }
         // Drums' Pad 1 note, a pad's sound or another kit: the pad grid
@@ -3980,7 +4055,10 @@ fn player_session(
                     app::LIGHT_OFF
                 };
                 if akai::app_lights(note) {
-                    ports.send(true, &akai::button_light(note, value))?;
+                    let light = akai::button_light(note, value);
+                    if !cv_out.light(&light) {
+                        ports.send(true, &light)?;
+                    }
                 } else if !unlit[note as usize & 0x7F] {
                     unlit[note as usize & 0x7F] = true;
                     out.note(&format!(
@@ -3998,6 +4076,10 @@ fn player_session(
         // the song starts, before this period's notes.
         midi_out.sync(&io_model, time.info().state.rolling());
         midi_out.clock(time.block());
+        // CV out takes the outputs' jobs; run, reset and clock follow the
+        // transport.
+        cv_out.sync(&io_model);
+        cv_out.clock(time.block());
         // The armed track is the one the pads and the arp screens play.
         let armed = time.armed().unwrap_or(0);
         if armed != app.track() {
@@ -4019,9 +4101,11 @@ fn player_session(
             n_live: 0,
             silent: 0,
             midi: &mut midi_out,
+            cv: &mut cv_out,
         };
         time.period_arps(PERIOD as u32, &mut seq, &mut app.arps);
         seq.midi.period_end(PERIOD as u32, t_read);
+        seq.cv.period_end(PERIOD as u32, t_read);
         // The time engine: the transport, the clips and every track's arp
         // (the pads' notes start here; their sounds are the sampler's or
         // the synth's).
@@ -4183,7 +4267,9 @@ fn player_session(
         // frame and tempo, and it renders below as before.
         synth.start(i * PERIOD as u64, app.settings.bpm);
         let mut pads = mix.pads();
-        player.render_routed(PERIOD, &mut pads);
+        // With the drums split (Cores 3 and 2), the lane's voices are waited
+        // for until the period's deadline at most.
+        player.render_routed_until(PERIOD, &mut pads, lane_until);
         let played = pads.played();
         mix.drums(played, &mut drums_l, &mut drums_r);
         let t_synth = Instant::now();
@@ -4191,9 +4277,11 @@ fn player_session(
         engines.add(engines::SAMPLER, t_synth - t_render);
         synth_l.fill(0.0);
         synth_r.fill(0.0);
-        // Renders here, or (with a synth lane) waits for the lane and adds
-        // what it made; then the time is only the wait.
-        synth.finish(&mut synth_l, &mut synth_r);
+        // Renders here, or (with a synth lane) waits for the lane until the
+        // period's deadline and adds what it made; then the time is only
+        // the wait. Past the deadline the synth is left out of this period
+        // (counted, cores.rs) and comes back after the write.
+        synth.finish(lane_until, &mut synth_l, &mut synth_r);
         let synth_took = t_synth.elapsed();
         synth_time.add(synth_took);
         engines.add(engines::SYNTH, synth_took);
@@ -4234,6 +4322,9 @@ fn player_session(
         let t_mix = Span::start();
         mix.follow(looper.line.is_open(), looper.monitor);
         let ctx = mixing::ctx(RATE, i * PERIOD as u64, app.settings.bpm, time.block());
+        // The mixer's lanes (each stage's inserts, the returns) keep the
+        // same deadline.
+        mix.mixer.set_lane_deadline(Some(lane_until));
         let (p, caught) = mix.period(
             &ctx,
             (&synth_l, &synth_r),
@@ -4322,22 +4413,33 @@ fn player_session(
         let xruns = play.xruns;
         engines.stop(engines::PERIOD, period_span);
         play.write(&frames, i)?;
-        if !pending.is_empty() {
-            let written = Instant::now();
-            match play.pcm.delay() {
-                // An underrun in this write dropped the period: no timing for it.
-                Ok(d) if play.xruns == xruns => {
-                    for t in pending.drain(..) {
-                        lat.add(hit_latency_ms(written - t, d));
-                    }
+        // How much the card has queued now sets the next period's deadline
+        // for the lanes, and times the hits of this period.
+        let written = Instant::now();
+        let delay = play.pcm.delay();
+        lane_until = cores::lane_deadline(
+            written,
+            delay.as_ref().ok().map(|&d| i64::from(d)),
+            play.queued,
+        );
+        // A synth left out of this period (late) comes back before anything
+        // plays it again.
+        synth.settle(lane_until);
+        match delay {
+            // An underrun in this write dropped the period: no timing for it.
+            Ok(d) if play.xruns == xruns => {
+                for t in pending.drain(..) {
+                    lat.add(hit_latency_ms(written - t, d));
                 }
-                Ok(_) => pending.clear(),
-                Err(e) => {
-                    pending.clear();
-                    if !delay_error {
-                        delay_error = true;
-                        out.note(&format!("PCM delay: {e} (no timing)"));
-                    }
+            }
+            Ok(_) => pending.clear(),
+            Err(e) => {
+                pending.clear();
+                if !delay_error {
+                    delay_error = true;
+                    out.note(&format!(
+                        "PCM delay: {e} (no timing; the lanes' deadline assumes a full buffer)"
+                    ));
                 }
             }
         }
@@ -4477,6 +4579,14 @@ fn player_session(
     let summary = midi_out.summary();
     if !midi_out.close() {
         out.say("MIDI Out: the last messages may not have been written");
+    }
+    for line in summary {
+        out.say(&line);
+    }
+    // CV 1 to 4 go to 0 V before the port lets go.
+    let summary = cv_out.summary();
+    if !cv_out.close() {
+        out.say("CV out: the last values may not have been written");
     }
     for line in summary {
         out.say(&line);
@@ -5192,6 +5302,9 @@ mod tests {
         assert!(!parse_args(&args("app")).unwrap().midi_out);
         assert!(parse_args(&args("app --midi-out")).unwrap().midi_out);
         assert!(parse_args(&args("play --seconds 5 --midi-out")).is_err());
+        assert!(!parse_args(&args("app")).unwrap().cv_out);
+        assert!(parse_args(&args("app --cv-out")).unwrap().cv_out);
+        assert!(parse_args(&args("pads --cv-out")).is_err());
         // Where the sound runs: Prefs' setting unless asked for this run, and
         // only for the pad player.
         assert_eq!(parse_args(&args("app")).unwrap().sound_cores, None);

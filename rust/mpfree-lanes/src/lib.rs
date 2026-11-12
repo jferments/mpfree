@@ -33,8 +33,14 @@
 //!
 //! Pinning ([`Config::core`]) and SCHED_FIFO ([`Config::fifo`]) are asked
 //! for by the worker itself when it starts; what happened is in
-//! [`Lane::setup`]. Neither failing stops the lane. They change only this
-//! process's own thread, and end with it.
+//! [`Lane::setup`]. They change only this process's own thread, and end
+//! with it. Neither failing stops the lane. By default the worker then runs
+//! where and how it can; with [`Config::strict`] it stops before touching
+//! the job and the lane runs jobs on the calling thread instead. That is
+//! the safe choice for the audio thread: a worker that could not be pinned
+//! keeps the core set of the thread that made it, which on the MPC is the
+//! audio thread's own core 3, so it would fight the audio thread for that
+//! core while the audio thread waits for it.
 
 #![deny(unsafe_code)]
 
@@ -83,6 +89,11 @@ pub struct Config {
     /// The audio thread has nothing else to do while it waits, so the
     /// default spins all the way.
     pub join_spin: Duration,
+    /// Run on the worker only with the core and priority asked for: if
+    /// [`Config::core`] or [`Config::fifo`] cannot be had, the worker stops
+    /// before it touches the job and the lane runs jobs on the calling
+    /// thread ([`Setup::threaded`] says why). Off: the worker runs anyway.
+    pub strict: bool,
 }
 
 impl Default for Config {
@@ -94,6 +105,7 @@ impl Default for Config {
             fifo: None,
             worker_spin: Duration::ZERO,
             join_spin: Duration::MAX,
+            strict: false,
         }
     }
 }
@@ -205,21 +217,39 @@ impl<J: Job> Lane<J> {
             job: UnsafeCell::new(job),
         });
         let (tx, rx) = mpsc::channel();
-        let (core, fifo) = (config.core, config.fifo);
+        let (core, fifo, strict) = (config.core, config.fifo, config.strict);
         let theirs = Arc::clone(&shared);
         let spawned = std::thread::Builder::new()
             .name(config.name.clone())
             .spawn(move || {
                 let pinned = core.map(|c| os::pin(c).map(|()| c));
                 let fifo = fifo.map(|p| os::fifo(p).map(|()| p));
+                let missed =
+                    strict && (matches!(pinned, Some(Err(_))) || matches!(fifo, Some(Err(_))));
                 let _ = tx.send((pinned, fifo));
-                worker(&theirs);
+                // Strict and short of its core or priority: stop without
+                // touching the job, so the lane can take it back.
+                if !missed {
+                    worker(&theirs);
+                }
             });
         match spawned {
             Ok(thread) => {
                 let (pinned, fifo) = rx
                     .recv()
                     .unwrap_or((None, Some(Err("the worker stopped while starting".into()))));
+                if let Some(why) = strict.then(|| missing(&pinned, &fifo)).flatten() {
+                    // The worker has returned (or is returning) without
+                    // running the job; once it has, its Arc is gone.
+                    let _ = thread.join();
+                    let job = match Arc::try_unwrap(shared) {
+                        Ok(s) => s.job.into_inner(),
+                        Err(_) => unreachable!("the worker has ended"),
+                    };
+                    let mut lane = Self::here(job, config, Err(why));
+                    (lane.setup.pinned, lane.setup.fifo) = (pinned, fifo);
+                    return lane;
+                }
                 Self {
                     runs: Runs::Worker {
                         shared,
@@ -391,6 +421,21 @@ impl<J: Job> Drop for Lane<J> {
             let _ = t.join();
         }
     }
+}
+
+/// What a strict lane could not have (its core, its priority), or None.
+fn missing(
+    pinned: &Option<Result<usize, String>>,
+    fifo: &Option<Result<i32, String>>,
+) -> Option<String> {
+    let mut why = Vec::new();
+    if let Some(Err(e)) = pinned {
+        why.push(format!("not pinned: {e}"));
+    }
+    if let Some(Err(e)) = fifo {
+        why.push(format!("no SCHED_FIFO: {e}"));
+    }
+    (!why.is_empty()).then(|| format!("strict lane, {}", why.join("; ")))
 }
 
 /// Spins, then sleeps, until the state is DONE or the deadline passes.
@@ -729,6 +774,73 @@ mod tests {
             lane.join(soon()).unwrap();
             assert_eq!(seen.load(Ordering::Relaxed), core);
         }
+    }
+
+    #[test]
+    fn a_strict_lane_without_its_core_runs_its_jobs_here() {
+        let me = std::thread::current().id();
+        let ran = Arc::new(AtomicUsize::new(0));
+        let r = Arc::clone(&ran);
+        let mut lane = Lane::new(
+            move |_b: u64| {
+                assert_eq!(std::thread::current().id(), me, "on the calling thread");
+                r.fetch_add(1, Ordering::Relaxed);
+            },
+            Config {
+                core: Some(100_000),
+                strict: true,
+                ..Config::default()
+            },
+        );
+        assert!(!lane.threaded());
+        let why = lane.setup().threaded.clone().unwrap_err();
+        assert!(why.starts_with("strict lane, not pinned: "), "{why}");
+        assert!(matches!(lane.setup().pinned, Some(Err(_))));
+        for b in 0..10 {
+            lane.post(b).unwrap();
+            lane.join(Instant::now()).unwrap();
+        }
+        assert_eq!(ran.load(Ordering::Relaxed), 10);
+        // The same output as a worker would give.
+        let mut tone = Lane::new(
+            Tone::new(),
+            Config {
+                core: Some(100_000),
+                strict: true,
+                ..Config::default()
+            },
+        );
+        check(&mut tone, 50);
+    }
+
+    #[test]
+    fn a_strict_lane_with_nothing_to_ask_for_has_its_worker() {
+        let mut lane = Lane::new(
+            Tone::new(),
+            Config {
+                strict: true,
+                ..Config::default()
+            },
+        );
+        assert!(lane.threaded(), "{:?}", lane.setup());
+        check(&mut lane, 50);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_strict_lane_that_gets_its_core_has_its_worker() {
+        let core = *os::allowed_cores().last().expect("some core");
+        let mut lane = Lane::new(
+            Tone::new(),
+            Config {
+                core: Some(core),
+                strict: true,
+                ..Config::default()
+            },
+        );
+        assert!(lane.threaded(), "{:?}", lane.setup());
+        assert_eq!(lane.setup().pinned, Some(Ok(core)));
+        check(&mut lane, 50);
     }
 
     #[test]

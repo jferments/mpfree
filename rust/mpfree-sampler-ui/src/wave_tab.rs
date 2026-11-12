@@ -60,7 +60,10 @@ pub const LAYOUT: &str =
 /// 2026 ([`crate::pads_tab`]).
 pub const TABS: [&str; 7] = ["Wave", "Warp", "Chop", "Play", "Grain", "FX", "Rec"];
 /// The tabs built so far; the others are drawn faint.
-pub const BUILT: [&str; 6] = ["Wave", "Warp", "Chop", "Play", "Grain", "Rec"];
+pub const BUILT: [&str; 7] = ["Wave", "Warp", "Chop", "Play", "Grain", "FX", "Rec"];
+/// The FX tab's place in [`TABS`]: it opens the app's chain editor on the
+/// pad's channel (no page of the sampler's own).
+pub const FX_TAB: usize = 5;
 /// The Wave tab's place in [`TABS`].
 pub const TAB: usize = 0;
 

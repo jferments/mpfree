@@ -8,7 +8,10 @@
 //! mixer's "+" opens it with the picker up, the Sample tab's FX sub-tab
 //! opens [`ChainHost::for_pad`], and a long press on a macro card opens
 //! the macros panel ([`MacrosHost`]). The mixer's insert row, its "+" and
-//! the long press are wired (round 10); Sample > FX comes with the sampler.
+//! the long press are wired (round 10), and Sample > FX
+//! ([`Panels::open_pad`]): stutters and repeats on one pad are Perform FX
+//! on its own channel, bus effects the Drums track's chain with a macro as
+//! their one knob.
 //!
 //! What each action does:
 //!
@@ -573,6 +576,27 @@ impl Panels {
         app.open_chain()
     }
 
+    /// The Sample tab's FX sub-tab: the chain editor on the playing kit's
+    /// pad `pad`'s channel, with the track it plays into (`track`) as its
+    /// second scope, in the Sample tab's place; its Back comes back to the
+    /// Sample tab. A pad past the mixer's pad channels opens nothing and
+    /// says so.
+    pub fn open_pad(&mut self, app: &mut App, pad: usize, track: usize) -> Vec<Effect> {
+        let host = (pad < mixing::PADS)
+            .then(|| ChainHost::for_pad(pad, track))
+            .flatten();
+        let Some(h) = host else {
+            return vec![Effect::Note(format!(
+                "chain: pad {} has no channel of its own in the mixer (only the first {} do)",
+                pad + 1,
+                mixing::PADS
+            ))];
+        };
+        self.chain = Some(h);
+        self.sent_at = None;
+        app.open_chain()
+    }
+
     /// A long press on a macro card: the macros panel on `bank` (0:
     /// Macros 1-4, 1: 5-8) over the page.
     pub fn open_macros(&mut self, app: &mut App, mix: &mut MixHost, bank: usize) -> Vec<Effect> {
@@ -718,6 +742,75 @@ mod tests {
 
     fn drums() -> StripId {
         StripId::Track(DRUMS)
+    }
+
+    /// The Sample tab's FX: the chain editor on the pad's own channel, so an
+    /// effect added there (Perform FX: stutters, repeats, stops) plays on
+    /// that pad alone, and on the Drums track for every pad; Back goes back
+    /// to the Sample tab.
+    #[test]
+    fn the_sample_tabs_fx_edits_the_pads_own_chain_and_goes_back_to_the_sample_tab() {
+        let mut r = Rig::new();
+        let mut app = App::new(RATE, false);
+        app.start();
+        app.open_tab(View::Sample);
+        let mut p = Panels::new();
+        p.open_pad(&mut app, 4, DRUMS);
+        assert_eq!(app.view(), View::Chain);
+        let mut sent = Vec::new();
+        p.poll(app.view(), &r.h, 120.0, Instant::now(), &mut |m| {
+            sent.push(m)
+        });
+        let title = sent.iter().find_map(|m| match m {
+            ToUi::Chain(st) => Some((st.title.clone(), st.scopes.clone())),
+            _ => None,
+        });
+        assert_eq!(
+            title,
+            Some((
+                "Pad 5 FX".to_string(),
+                vec!["Pad 5".to_string(), "Drums".to_string()]
+            ))
+        );
+        let len = |r: &Rig, s: StripId| r.h.mixer.chain(s).map_or(0, |c| c.len());
+        let drums_before = len(&r, drums());
+        let mut quiet = |_: ToUi| {};
+        p.chain(
+            &mut app,
+            &mut r.h,
+            &ChainAction::Add("mpfree.fx.perform"),
+            false,
+            &mut quiet,
+        );
+        r.run(20);
+        assert_eq!(len(&r, StripId::Pad(4)), 1, "Perform on pad 5's channel");
+        assert_eq!(len(&r, StripId::Pad(3)), 0);
+        assert_eq!(len(&r, drums()), drums_before);
+        p.chain(
+            &mut app,
+            &mut r.h,
+            &ChainAction::Scope(1),
+            false,
+            &mut quiet,
+        );
+        p.chain(
+            &mut app,
+            &mut r.h,
+            &ChainAction::Add("mpfree.fx.drive"),
+            false,
+            &mut quiet,
+        );
+        r.run(20);
+        assert_eq!(len(&r, drums()), drums_before + 1, "Drive on the Drums bus");
+        p.chain(&mut app, &mut r.h, &ChainAction::Back, false, &mut quiet);
+        assert_eq!(app.view(), View::Sample);
+        // A pad past the 16 channels opens nothing and says why.
+        let fx = p.open_pad(&mut app, 16, DRUMS);
+        assert!(
+            matches!(&fx[..], [Effect::Note(n)] if n.contains("only the first 16")),
+            "{fx:?}"
+        );
+        assert_eq!(app.view(), View::Sample);
     }
 
     /// The audio loop's side: the mixer's insert row opens the editor in the
