@@ -649,6 +649,7 @@ dependencies = [
  "mpfree-analysis",
  "mpfree-core",
  "mpfree-grain",
+ "mpfree-lanes",
  "mpfree-node",
  "mpfree-prof",
  "mpfree-stretch",
