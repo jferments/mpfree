@@ -917,6 +917,14 @@ class Lab:
             )
             dispatch_proof = all(direct["checks"].get(key) is True
                                  for key in dispatch_checks)
+            storage_checks = (
+                "flash_partition_capacity_guard",
+                "flash_sparse_four_chunk_kinds",
+                "sparse_raw_fill_partition_bound",
+                "erase_partition_block_range_guard",
+            )
+            storage_guard_proof = all(direct["checks"].get(key) is True
+                                      for key in storage_checks)
             record["direct_boot_focus"] = {
                 "report": "direct-boot-focus.json",
                 "questions":len(direct["questions"]),
@@ -924,15 +932,18 @@ class Lab:
                 "required_owner_evidence":passed,
                 "literal_pointer_and_token_proven":literal_proof,
                 "eight_entry_fastboot_dispatch_proven":dispatch_proof,
+                "partition_guard_and_sparse_path_proven":storage_guard_proof,
                 "permission_pointer_probe":direct.get("probe",{}),
             }
             self.stages["direct-boot-focus-evidence"] = {
                 "success":(passed and literal_proof and dispatch_proof
-                           and len(direct["questions"])>=28 and topic_count==7),
+                           and storage_guard_proof
+                           and len(direct["questions"])>=32 and topic_count==8),
                 "questions":len(direct["questions"]),"topics":topic_count,
                 "required_static_checks_passed":passed,
                 "new_literal_pointer_and_token_proof":literal_proof,
                 "new_boot_and_download_dispatch_proof":dispatch_proof,
+                "raw_sparse_and_erase_guard_proof":storage_guard_proof,
             }
         except Exception as exc:
             record["direct_boot_focus_error"]=str(exc)
@@ -1097,6 +1108,8 @@ class Lab:
                            str(direct["literal_pointer_and_token_proven"]))
             summary.append("- Eight-entry Fastboot boot/download dispatch proof: " +
                            str(direct["eight_entry_fastboot_dispatch_proven"]))
+            summary.append("- Raw/sparse/erase partition guard evidence: " +
+                           str(direct["partition_guard_and_sparse_path_proven"]))
             summary.append("- See direct-boot-focus.md for individual evidence, limitations and follow-ups.")
             summary.append("- No Fastboot commands sent; no rootfs, eMMC or device modified.")
         summary += ["", "## ARM guest P6 boot/kernel/module compatibility"]
