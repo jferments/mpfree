@@ -830,6 +830,41 @@ class Lab:
                     "success": False, "error": str(exc)}
                 record["arm_return_contract_evidence_error"] = str(exc)
                 self.notes.append("ARM return contracts: " + str(exc))
+        # Seven-track evidence matrix, not just USB. Derive from source
+        # Ghidra + boot + update reports; no original vendor execution.
+        try:
+            matrix_module = load_module(
+                "tools/mpc-one/synthesize_wide_research_matrix.py",
+                "mpfree_multitrack_questions",
+            )
+            matrix = matrix_module.build(
+                lambda rel: (self.out / rel).read_bytes()
+            )
+            (self.out / "wide-research-matrix.json").write_text(
+                json.dumps(matrix, indent=2) + "\n")
+            (self.out / "wide-research-matrix.md").write_text(
+                matrix_module.markdown(matrix))
+            matrix_tracks = len(set(
+                q["track"] for q in matrix["questions"]))
+            matrix_count = len(matrix["questions"])
+            record["wide_research_matrix"] = {
+                "report": "wide-research-matrix.json",
+                "questions": matrix_count,
+                "tracks": matrix_tracks,
+                "counts": matrix["counts"],
+                "hardware_gated": matrix["counts"]["hardware-gated"],
+                "no_vendor_execution": True,
+            }
+            self.stages["wide-multitrack-question-evidence"] = {
+                "success": matrix_count >= 35 and matrix_tracks >= 6,
+                "questions": matrix_count, "tracks": matrix_tracks,
+            }
+        except Exception as exc:
+            record["wide_research_matrix_error"] = str(exc)
+            self.stages["wide-multitrack-question-evidence"] = {
+                "success": False, "error": str(exc),
+            }
+            self.notes.append("Wide multi-track question synthesis: " + str(exc))
         (self.out / "cross-evidence.json").write_text(json.dumps(record, indent=2) + "\n")
         summary = [
             "# MPFree integrated bootchain run",
@@ -877,6 +912,15 @@ class Lab:
                            str(arm["normal_fallthrough_r0_passthroughs"]))
             summary.append("- Return passthrough proves only the normal fallthrough, not all branches.")
             summary.append("- See arm-return-contracts.json and .md for addresses and caveats.")
+        summary += ["", "## Broad ROM / SPL / U-Boot / Update / USB / Recovery question matrix"]
+        wide = record.get("wide_research_matrix")
+        if wide:
+            summary.append("- Questions tracked: " + str(wide["questions"]) +
+                           "; tracks: " + str(wide["tracks"]))
+            for label, count in wide["counts"].items():
+                summary.append("- " + label + ": " + str(count))
+            summary.append("- See wide-research-matrix.md for findings, evidence and next actions.")
+            summary.append("- Physical MaskROM, fuse policy and independent restore remain unproven.")
         summary += ["", "## Guest/static image consistency"]
         if record["match_tests"]:
             for entry in record["match_tests"]:
