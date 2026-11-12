@@ -52,13 +52,12 @@ Positions use the transport's tempo map (`process` takes it), so a tempo map wit
 
 All takes share one pool of samples, asked for once in `AudioTracks::new(rate, seconds)`: `seconds` of stereo, or twice that of mono takes. Its pages are touched there, so the audio thread never waits for the system to map one in. 300 s of stereo at 44.1 kHz is 106 MB.
 
-- A recording writes into the largest free stretch. When two record at once, a new one takes half of the stretch another is still filling, whichever is larger, so tracks can start recording at any moment with no planning. A take holds up to 32 stretches (`MAX_EXTENTS`), and nothing is ever moved.
-- When a recording ends, the part of its last stretch it did not fill goes back, joined to free neighbours.
+- The pool is cut into equal chunks of 32,768 samples (`CHUNK`, 128 KiB; 0.74 s of mono at 44.1 kHz). A take is any number of chunks, each in any free slot, found through a small table made once ([`pool.rs`](../../../rust/mpfree-audiotracks/src/pool.rs)). A recording takes one chunk at a time, so any number of tracks can start recording at any moment with no planning, and nothing is ever moved. The last chunk of a take is usually part-filled.
 - A recording that runs out of memory stops there. What was written stays, with its region; the take is marked `cut_short` and counted in `Stats::full`. The track records again at the next punch in.
 - `memory()` is the gauge (`used`, `capacity`, in samples).
-- **Waveforms.** The pool keeps the lowest and highest sample of every block of 256 samples (`PEAK_BLOCK`) as audio is written or loaded. `peaks(id, from, to)` reads the table for whole blocks, so a screen column covering a second of audio costs about 170 reads instead of 44,100. It works while a take records, up to what has been written, and doesn't allocate. Every stretch of the pool starts and ends on a block edge, so a block never mixes two takes. Memory is therefore handed out in blocks of 256 samples (5.8 ms of mono), and the pool is cut down to whole blocks. The host shares the peaks with the screen thread the way it shares the rest of the state, as the looper's waveform does.
+- **Waveforms.** The pool keeps the lowest and highest sample of every block of 256 samples (`PEAK_BLOCK`) as audio is recorded or loaded. `peaks(id, from, to)` reads the table for whole blocks, so a screen column covering a second of audio costs about 170 reads instead of 44,100. It works while a take records, up to what has been written, and doesn't allocate. A chunk is whole blocks, so a block never mixes two takes. Chunks read back from the disk while streaming have no peaks here; the disk side keeps those (below). The host gives the screen waveforms (`wave`, below).
 
-Recording past the RAM pool, onto the stick's data partition, is the chosen next step: see "Streaming from the stick" below.
+Without streaming, the pool is the whole limit, as a tape that ends. With streaming it is a cache in front of the disk; see "Streaming from the stick".
 
 ## Saved with the project
 
@@ -102,7 +101,51 @@ Each case is an 8-bar song loop with every track comped so that two takes crossf
 - **Waveforms:** `wave(id, columns)` reads a take's peak table into up to `columns` columns (at most `MAX_COLUMNS`, 4096) at `WAVE_SPEED` (1024 frames of the take for each frame that plays). `take_wave()` gives a `TakeWave`: the lowest and highest sample of each column. A column covers whole blocks of the table, so a short take gets fewer columns. The pool lives with the tracks on the audio thread, so this is how the screen sees it. For a take that is recording, ask again as it grows.
 - **Tests** (`tests/host.rs`): a save made across periods opens in a fresh host and plays back sample for sample; a save asked for while recording waits for the recording to end; a fit at half the tempo fills the bar, and Undo goes back; a waveform matches the take's samples column by column, and asking again replaces a wave not yet done.
 
-## Streaming from the stick: measuring the disk first
+## Streaming from the stick
+
+Jay chose (2026-11-12) to stream takes from the stick's data partition rather than hold them all in RAM. The memory becomes a cache: recorded chunks are written out behind the recording, and the chunks the next seconds of the song need are read ahead of the playhead. The audio thread only ever touches memory, so streaming adds no latency.
+
+**The engine** (`AudioTracks::stream(true)`, only while no take is there):
+
+- Each chunk is **dirty** (recorded or loaded here, not yet on the disk), **clean** (the same as the disk has) or **loading** (waiting for the disk). Only clean chunks can make room for others, the one wanted longest ago first, so nothing recorded is ever lost to make room.
+- A full chunk of a recording, and the last part-filled one when it ends, is asked to be written (`Io::Write`, then `Io::Finish` for the file). A load (a fitted take) is written out the same way as it copies in, a chunk at a time, so it needs only a little memory.
+- Every 1,024 frames, and at once after a start, stop, locate, loop jump or tempo change, a planning round holds the chunks every track plays in the next 4 s (`AHEAD_SECONDS`; the first second for all tracks before the rest), then the first second of the loop when one is set (`HEAD_SECONDS`), then the first second of each region, nearest the playhead first, up to a quarter of the memory. Held chunks not in memory are asked for (`Io::Read`), at most 64 a round. The host answers with `fill_part`, a part a period.
+- A chunk that isn't in memory when it should play is silence, counted in `Stats::missed` (frames). Disk errors are counted in `read_errors` and `write_errors`. Like every fallback, these are shown, not hidden.
+- `add_take` puts back a saved take whose audio is in its file; its chunks are read as the song needs them.
+
+**The host** (`AudioHost::streaming(rate, seconds, dir)`) adds a disk thread, `mpfree-audiotracks-disk` ([`disk.rs`](../../../rust/mpfree-audiotracks/src/disk.rs)):
+
+- **Files.** Each take recorded here gets a new file name, `<stamp>-<n>.wav`, never reused, so a save that names a file always finds that audio. The file is a 32-bit float WAV, written a chunk at a time at its place and finished (header lengths, fsync) when the take ends, with a small `.peaks` file beside it holding the lowest and highest sample of every 1,024 samples.
+- **Copies.** Each period copies at most `COPY_SAMPLES` (8,192 samples, 32 KiB) into or out of the tracks' memory, read chunks first. That is about 94 chunks a second at 128-frame periods, against about 60 a second for 8 stereo tracks recording while 8 more play. It keeps the audio thread's cost small and steady. Reads go out as soon as a buffer is free; writes and finishes keep their order. The 32 chunk buffers are made once.
+- **Save.** `save()` waits until nothing records, loads or is unwritten. `take_saved()` then gives the text with each take's file name and no audio, because the audio is already in the files in `dir`.
+- **Open.** `load(saved)` opens and checks each take's file on the disk thread: it must be there, at the right rate and channel count, and long enough. The waveform table comes from the `.peaks` file, or from reading the take if that file is missing. Each take is put back once its file checks out. `opening()` counts the takes still being checked. A take whose file is missing or wrong is named in `open_errors`; its regions stay and play nothing.
+- **Fit.** The take's audio is read from its file, stretched on the worker, and loaded. The load streams into a new file, then the result is swapped in. Takes over `FIT_MAX_SAMPLES` (about 6 minutes of stereo at 44.1 kHz) are refused, because the stretch holds the whole take in memory.
+- **Waveforms.** `wave` asks the disk thread, which builds the columns from its table. The end of a recording that isn't on the disk yet comes from the tracks' own table.
+- `disk_stats()` gives the reads, writes and errors, and the longest single call. The test hook `delay_us` makes the disk slow or stalling.
+
+**Tests:**
+- `tests/stream.rs` (a fake disk with a chosen delay):
+  - 40 s recorded into 6 s of memory is kept whole and plays back sample for sample;
+  - a disk 2 s slow misses nothing in steady play;
+  - one 8 s slow is heard as counted misses;
+  - three comped loop passes stream exactly as they play in memory;
+  - a loop over the middle of a long take plays every pass.
+- `tests/host_stream.rs` (real files):
+  - the long recording lands in its WAV whole and plays back from it;
+  - a save opens in a fresh host and plays the same;
+  - a missing file is reported;
+  - a 5 s stall never holds up the periods and is heard as counted misses;
+  - a fit and a waveform work from the files.
+- `tests/no_alloc.rs` also covers a streaming session.
+
+**Cost.** The bench case "Audio tracks: 8 streaming comped takes" is the in-memory case with 60 s of memory: three passes in play on every track are 24 streams at once, the worst case for the cache. It costs 58,151 instructions a block against about 44,400 fully in memory, which is the planning plus the copies. Looking chunks up costs the in-memory cases 1.8 %.
+
+**Limits.**
+- The memory has to hold the read-ahead for every stream in play: tracks × takes playing at once × 4 s. With 60 s of stereo memory that is about 7 s of audio per stream for 8 tracks of 3 passes each.
+- After a jump to a place whose chunks aren't in memory, past the first second of each region and the loop's start, play is silent until the disk answers. That silence is counted.
+- Files of forgotten takes stay in the folder. Clearing out files no save names is not built yet.
+
+### Measuring the disk first
 
 Jay chose (2026-11-12) to stream takes from the stick's data partition rather than hold them all in RAM: a small RAM buffer in front of the take files, a disk thread reading ahead of the playhead and writing behind a recording, and the first second or so of every region kept in RAM so jumps between comped takes and locates play at once. The audio thread only ever touches RAM, so streaming adds no latency. The risk is the stick pausing: a pause longer than the buffer would lose audio, which is counted and shown.
 
@@ -126,7 +169,8 @@ How big the buffer must be depends on the stick, so `mpfree-disktest` measures i
 
 ## Not built yet
 
-- Streaming takes from the stick (chosen; the engine and the host's disk thread are being built, sized by the disk test above).
+- The app's wiring for streaming: the folder per project on `/run/mpfree-data`, the memory size, and showing `missed` and the disk errors on screen.
+- Clearing out take files that no save names.
 - Fitting takes on its own when the tempo changes. The host fits one take when asked; deciding when to ask is the app's call.
 - The pad player's wiring and the Song view's audio lanes and take lanes. Saving is built in the engine (above); the project browser writes the files once it is in the app.
 - Device runs. Opening the line input on the MPC needs Jay's go, step by step (rule zero).

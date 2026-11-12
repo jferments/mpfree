@@ -6,7 +6,7 @@
 //!
 //! 22.05 kHz at 240 BPM in 4/4 makes a bar exactly 22 050 frames (1 s).
 
-use mpfree_audiotracks::{AudioTracks, Command as A, Input, Monitor, FADE, PEAK_BLOCK};
+use mpfree_audiotracks::{AudioTracks, Command as A, Input, Monitor, CHUNK, FADE};
 use mpfree_transport::{Block, Command as T, Transport};
 
 const RATE: u32 = 22_050;
@@ -370,8 +370,8 @@ fn two_tracks_record_at_once_into_one_memory() {
         assert_eq!(r.a.sample(t1.id, k, 0), Some(-sig(START + k as u64)));
     }
     // Both mono takes together: a bar and a crossfade each.
-    // Each take's memory ends on a peak block's edge.
-    let each = (BAR as usize + FADE).div_ceil(PEAK_BLOCK) * PEAK_BLOCK;
+    // Memory goes in whole chunks.
+    let each = (BAR as usize + FADE).div_ceil(CHUNK) * CHUNK;
     assert_eq!(r.a.memory().used, 2 * each);
     // Track 1 alone (solo) plays the right input on both sides.
     r.cmd(A::Solo(1, true));
@@ -393,9 +393,9 @@ fn a_full_memory_cuts_the_take_short_and_keeps_it() {
     let t = r.a.take(0).unwrap();
     assert!(t.cut_short);
     assert!(!t.recording);
-    // 1 s of stereo, cut to whole peak blocks.
+    // 1 s of stereo, cut to whole chunks.
     assert_eq!(t.frames, r.a.memory().capacity / 2);
-    assert_eq!(r.a.memory().capacity, 44_100 / PEAK_BLOCK * PEAK_BLOCK);
+    assert_eq!(r.a.memory().capacity, 44_100 / CHUNK * CHUNK);
     assert_eq!(r.a.stats().full, 1);
     assert_eq!(r.a.memory().used, r.a.memory().capacity);
     let end = (t.frames as f64 * BAR_TICKS as f64 / BAR as f64).round() as i64;
