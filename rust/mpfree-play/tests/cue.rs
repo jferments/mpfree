@@ -172,6 +172,7 @@ fn session(frames: u64) -> Session {
             track: 0,
             slot: 0,
             origin: 0,
+            start: 0,
         }],
         armed: None,
         commands: vec![(0, Command::Play)],
@@ -232,7 +233,8 @@ fn a_launch_waits_for_the_bar_line_and_starts_the_clip_from_its_top() {
             vec![Launch {
                 track: 0,
                 slot: 1,
-                origin
+                origin,
+                start: BAR,
             }],
             vec![]
         )
@@ -330,6 +332,7 @@ fn cues_on_two_tracks_start_on_the_same_bar_line() {
         track: 1,
         slot: 1,
         origin: 0,
+        start: 0,
     });
     s.cues = vec![
         (

@@ -22,8 +22,12 @@
 //! parameter without the track ([`mpfree_param::RelAddr`]), so a clip
 //! copied to another track locks that track's sound.
 //!
-//! Trig conditions, ratchets, audio clips, scenes and the arrangement come
-//! in later roadmap steps.
+//! A note can also have a **trig condition** ([`Cond`]: play on pass A of
+//! every B, only during a fill, only if the track's last conditional note
+//! played, and so on) and a **ratchet** (it plays several times, evenly
+//! spread over its length). The player (`mpfree-play`) decides them.
+//!
+//! Audio clips, scenes and the arrangement come in later roadmap steps.
 #![forbid(unsafe_code)]
 
 pub mod steps;
@@ -59,6 +63,108 @@ pub struct Note {
     pub velocity: u8,
     /// The chance it plays on each pass, in percent: 1 to 100 (always).
     pub chance: u8,
+    /// When it plays: [`Cond::Always`], or a trig condition. Checked
+    /// before the chance.
+    pub cond: Cond,
+    /// It plays this many times, 1 to [`MAX_RATCHET`], evenly spread over
+    /// its length, each hit lasting `len / ratchet`. 1 is a plain note.
+    pub ratchet: u8,
+}
+
+/// The most hits a ratchet makes.
+pub const MAX_RATCHET: u8 = 8;
+
+/// A trig condition, the Elektron way: when a note plays. Passes count
+/// from the clip's start on its track (pass 1 starts there), by song
+/// position. A note is *conditional* when its condition is `Every`,
+/// `Fill`, `First` or their opposites, or it is `Always` with a chance
+/// below 100 %: whether it played is its track's last result, which `Pre`
+/// and `Nei` read ([`Cond::sets_last`]). Notes on `Pre` or `Nei` do not
+/// set it, so a chain of them all follow the same note.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum Cond {
+    #[default]
+    Always,
+    /// On pass `a` of every `b`: `2 <= b <= 8`, `1 <= a <= b` (1:2 plays
+    /// on passes 1, 3, 5 ...).
+    Every { a: u8, b: u8 },
+    /// Only while fill is on.
+    Fill,
+    /// Only while fill is off.
+    NotFill,
+    /// Only if the track's last conditional note played.
+    Pre,
+    /// Only if the track's last conditional note did not play.
+    NotPre,
+    /// Only if the last conditional note of the track to the left played.
+    Nei,
+    /// Only if the last conditional note of the track to the left did not
+    /// play (or there is no track to the left).
+    NotNei,
+    /// Only on the clip's first pass.
+    First,
+    /// On every pass but the first.
+    NotFirst,
+}
+
+impl Cond {
+    /// Whether a note with this condition and `chance` (percent) is
+    /// conditional: whether it played becomes its track's last result.
+    /// Not for `Pre` and `Nei` (and their opposites), which read it.
+    pub fn sets_last(self, chance: u8) -> bool {
+        match self {
+            Cond::Always => chance < 100,
+            Cond::Pre | Cond::NotPre | Cond::Nei | Cond::NotNei => false,
+            _ => true,
+        }
+    }
+
+    /// In range.
+    pub fn ok(self) -> bool {
+        match self {
+            Cond::Every { a, b } => (2..=8).contains(&b) && (1..=b).contains(&a),
+            _ => true,
+        }
+    }
+
+    /// The condition alone (fill, the pass, the last results given):
+    /// whether the note plays, before its chance. `pass` counts from 1 at
+    /// the clip's start (0 and below before it); `pre` and `nei` are the
+    /// track's and its left neighbour's last results (`nei` None: no
+    /// neighbour).
+    pub fn holds(self, pass: i64, fill: bool, pre: bool, nei: Option<bool>) -> bool {
+        match self {
+            Cond::Always => true,
+            Cond::Every { a, b } => (pass - 1).rem_euclid(i64::from(b.max(1))) == i64::from(a) - 1,
+            Cond::Fill => fill,
+            Cond::NotFill => !fill,
+            Cond::Pre => pre,
+            Cond::NotPre => !pre,
+            Cond::Nei => nei == Some(true),
+            Cond::NotNei => nei != Some(true),
+            Cond::First => pass == 1,
+            Cond::NotFirst => pass != 1,
+        }
+    }
+}
+
+impl std::fmt::Display for Cond {
+    /// As the Steps screen shows it: "", "1:2", "FILL", "!FILL", "PRE",
+    /// "!PRE", "NEI", "!NEI", "1ST", "!1ST".
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Cond::Always => Ok(()),
+            Cond::Every { a, b } => write!(f, "{a}:{b}"),
+            Cond::Fill => f.write_str("FILL"),
+            Cond::NotFill => f.write_str("!FILL"),
+            Cond::Pre => f.write_str("PRE"),
+            Cond::NotPre => f.write_str("!PRE"),
+            Cond::Nei => f.write_str("NEI"),
+            Cond::NotNei => f.write_str("!NEI"),
+            Cond::First => f.write_str("1ST"),
+            Cond::NotFirst => f.write_str("!1ST"),
+        }
+    }
 }
 
 impl Note {
@@ -71,7 +177,15 @@ impl Note {
             note,
             velocity,
             chance: 100,
+            cond: Cond::Always,
+            ratchet: 1,
         }
+    }
+
+    /// Whether it is conditional ([`Cond::sets_last`]): whether it played
+    /// is what `Cond::Pre` and `Cond::Nei` read.
+    pub fn conditional(&self) -> bool {
+        self.cond.sets_last(self.chance)
     }
 }
 
@@ -195,7 +309,8 @@ pub struct Clip {
 pub enum ModelError {
     ClipLength,
     TooManyNotes,
-    /// A note's tick, length, note number, velocity or chance is out of range.
+    /// A note's tick, length, note number, velocity, chance, condition or
+    /// ratchet is out of range.
     BadNote(usize),
     BadSpeed,
     BadSwing,
@@ -287,6 +402,8 @@ impl Clip {
             && n.note <= 127
             && (1..=127).contains(&n.velocity)
             && (1..=100).contains(&n.chance)
+            && n.cond.ok()
+            && (1..=MAX_RATCHET).contains(&n.ratchet)
     }
 
     /// Every value in range.
@@ -341,6 +458,13 @@ pub struct Track {
     /// none of its own.
     pub swing: Option<Swing>,
     pub mute: bool,
+    /// "Clips through the arp": the track's clips play through its arp,
+    /// as the live pads do, and recording keeps the pads as pressed (on:
+    /// melodic tracks, which record the chord). Off (the default; drum
+    /// tracks), the clips play as recorded and recording keeps what the
+    /// arp played. Either way a part is never arpeggiated twice
+    /// (`mpfree_play::TrackArps`).
+    pub through_arp: bool,
     pub slots: [Option<Clip>; SLOTS],
 }
 
@@ -351,6 +475,7 @@ impl Track {
             dest,
             swing: None,
             mute: false,
+            through_arp: false,
             slots: Default::default(),
         }
     }
@@ -403,6 +528,8 @@ mod tests {
             note: 0,
             velocity: 100,
             chance: 100,
+            cond: Cond::Always,
+            ratchet: 1,
         });
         assert_eq!(c.check(), Ok(()));
         c.notes.push(Note {
@@ -411,6 +538,8 @@ mod tests {
             note: 0,
             velocity: 100,
             chance: 100,
+            cond: Cond::Always,
+            ratchet: 1,
         });
         assert_eq!(c.check(), Err(ModelError::BadNote(1)));
         c.notes[1].tick = 100;
@@ -430,6 +559,61 @@ mod tests {
     }
 
     #[test]
+    fn trig_conditions_and_ratchets() {
+        let every = |a, b| Cond::Every { a, b };
+        // 1:2 on odd passes, 2:2 on even ones, 3:4 on 3, 7, -1 ...
+        let on = |c: Cond| -> Vec<i64> {
+            (-3..=8)
+                .filter(|&p| c.holds(p, false, false, None))
+                .collect()
+        };
+        assert_eq!(on(every(1, 2)), vec![-3, -1, 1, 3, 5, 7]);
+        assert_eq!(on(every(2, 2)), vec![-2, 0, 2, 4, 6, 8]);
+        assert_eq!(on(every(3, 4)), vec![-1, 3, 7]);
+        assert_eq!(on(Cond::First), vec![1]);
+        assert_eq!(on(Cond::NotFirst).len(), 11);
+        assert!(
+            Cond::Fill.holds(1, true, false, None) && !Cond::NotFill.holds(1, true, false, None)
+        );
+        assert!(Cond::Pre.holds(1, false, true, None) && Cond::NotPre.holds(1, false, false, None));
+        assert!(Cond::Nei.holds(1, false, false, Some(true)));
+        assert!(
+            !Cond::Nei.holds(1, false, false, None) && Cond::NotNei.holds(1, false, false, None)
+        );
+        // Which notes set the last result that PRE and NEI read.
+        assert!(!Cond::Always.sets_last(100) && Cond::Always.sets_last(99));
+        assert!(
+            every(1, 2).sets_last(100) && Cond::Fill.sets_last(100) && Cond::First.sets_last(100)
+        );
+        assert!(!Cond::Pre.sets_last(50) && !Cond::NotNei.sets_last(100));
+        let shown: Vec<String> = [
+            every(3, 8),
+            Cond::NotFill,
+            Cond::Pre,
+            Cond::First,
+            Cond::Always,
+        ]
+        .iter()
+        .map(|c| c.to_string())
+        .collect();
+        assert_eq!(shown, ["3:8", "!FILL", "PRE", "1ST", ""]);
+        // Out of range: refused by the clip.
+        assert!(!every(0, 2).ok() && !every(3, 2).ok() && !every(1, 9).ok() && every(8, 8).ok());
+        let mut c = Clip::new("c", 3840);
+        let mut n = Note::new(0, 240, 36, 100);
+        n.cond = every(1, 1);
+        c.notes.push(n);
+        assert_eq!(c.check(), Err(ModelError::BadNote(0)));
+        c.notes[0].cond = every(1, 2);
+        c.notes[0].ratchet = MAX_RATCHET + 1;
+        assert_eq!(c.check(), Err(ModelError::BadNote(0)));
+        c.notes[0].ratchet = MAX_RATCHET;
+        assert_eq!(c.check(), Ok(()));
+        c.notes[0].ratchet = 0;
+        assert_eq!(c.check(), Err(ModelError::BadNote(0)));
+    }
+
+    #[test]
     fn recorded_notes_are_checked_as_they_are_added() {
         let mut c = Clip::new("take", 960);
         assert_eq!(
@@ -438,7 +622,9 @@ mod tests {
                 len: 2000,
                 note: 3,
                 velocity: 1,
-                chance: 100
+                chance: 100,
+                cond: Cond::Always,
+                ratchet: 1,
             }),
             Ok(())
         );
@@ -448,7 +634,9 @@ mod tests {
                 len: 10,
                 note: 3,
                 velocity: 100,
-                chance: 100
+                chance: 100,
+                cond: Cond::Always,
+                ratchet: 1,
             }),
             Err(ModelError::BadNote(1))
         );
@@ -458,7 +646,9 @@ mod tests {
                 len: 0,
                 note: 3,
                 velocity: 100,
-                chance: 100
+                chance: 100,
+                cond: Cond::Always,
+                ratchet: 1,
             }),
             Err(ModelError::BadNote(1))
         );
@@ -469,7 +659,9 @@ mod tests {
                 len: 1,
                 note: 0,
                 velocity: 1,
-                chance: 100
+                chance: 100,
+                cond: Cond::Always,
+                ratchet: 1,
             };
             MAX_NOTES
         ];
@@ -479,7 +671,9 @@ mod tests {
                 len: 1,
                 note: 0,
                 velocity: 1,
-                chance: 100
+                chance: 100,
+                cond: Cond::Always,
+                ratchet: 1,
             }),
             Err(ModelError::TooManyNotes)
         );
@@ -490,7 +684,9 @@ mod tests {
             len: 1,
             note: 0,
             velocity: 1,
-            chance: 100
+            chance: 100,
+            cond: Cond::Always,
+            ratchet: 1,
         }));
         assert_eq!(c.notes.len(), MAX_NOTES - 1);
         assert!(!c.remove_note(&Note {
@@ -498,7 +694,9 @@ mod tests {
             len: 1,
             note: 0,
             velocity: 1,
-            chance: 100
+            chance: 100,
+            cond: Cond::Always,
+            ratchet: 1,
         }));
     }
 

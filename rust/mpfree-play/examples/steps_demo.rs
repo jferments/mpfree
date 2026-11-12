@@ -433,6 +433,7 @@ fn play(
             track: 0,
             slot: 0,
             origin: 0,
+            start: 0,
         }],
     )
     .expect("the beat compiles");
