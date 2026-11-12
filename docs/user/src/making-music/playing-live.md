@@ -1,7 +1,7 @@
 <!--
 status: changing
 covers: rust/mpfree-app/src/play_page.rs rust/mpfree-app/src/play_widgets.rs rust/mpfree-app/src/mixing.rs rust/mpfree-fx/src/perform.rs
-checked: 2026-11-12 26b6821
+checked: 2026-11-12 1a6eb01
 -->
 
 # Playing live
@@ -12,10 +12,12 @@ The **Play** page is MPFree's home: the place for finger drumming, making beats 
 
 | View | Made for | What's on it |
 |---|---|---|
-| **All** | Everything at once (the home view) | The loop, the pattern beside a small pad map, the throws and the XY pad |
-| **Beats** | Programming and editing patterns | The whole pattern, every row, with the pad map and all eight throws |
-| **Loop** | Live looping | The loop, large, with its buttons; the pad map, four throws and the XY pad |
-| **Drum** | Practising finger drumming | Your timing, the XY pad, the pad map and the throws |
+| **All** | Everything at once (the home view) | The loop, the pattern across the page, the throws and the XY pad |
+| **Beats** | Programming and editing patterns | The whole pattern, every row, with all eight throws under it |
+| **Loop** | Live looping | The loop, large, with its buttons; the throws and the XY pad |
+| **Drum** | Practising finger drumming | Your timing beside the XY pad, and the throws |
+
+There are no pads on the Play page: you play the real ones, and the room goes to the pattern, the loop and the effects. The pads' own settings and sounds are on the Sample tab.
 
 {{shot: play | The All view.}}
 

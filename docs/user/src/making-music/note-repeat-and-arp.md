@@ -1,7 +1,7 @@
 <!--
 status: changing
 covers: rust/mpfree-arp rust/mpfree-arp-ui rust/mpfree-scale rust/mpfree-app/src/app/arp.rs
-checked: 2026-11-12 a24dbc5
+checked: 2026-11-12 1a6eb01
 -->
 
 # Note Repeat, Latch and the arpeggiator
@@ -48,7 +48,7 @@ Latched pads stay lit on the MPC, and the top bar says so.
 
 ## The Arp panel
 
-The **Arp panel** opens beside the pads with **NOTE REPEAT + MENU**, or by tapping the arp chip in the top bar. The same again closes it. While it is open, the pads play through the arp in the mode its tabs pick, and you don't need to hold NOTE REPEAT.
+The **Arp panel** opens on the Play page, in place of the view under the transport bar, with **NOTE REPEAT + MENU**, or by tapping the arp chip in the top bar. The same again closes it. While it is open, the pads play through the arp in the mode its tabs pick, and you don't need to hold NOTE REPEAT.
 
 {{shot: arp-panel | The Arp panel in Arp mode: the order (Up), the four Q-Link settings as sliders, and the notes being played along the bottom, here 1-3-5 and the same an octave up.}}
 
@@ -160,4 +160,4 @@ Drag a cell up or down, or select it and turn the data wheel, to change it. **Ro
 > Saved patterns are kept on the MPFree stick, so they are still there after you switch off. See [Saving your work](saving.md).
 
 > [!MPC]
-> On the MPC, Note Repeat and the Arpeggiator are separate, and the arpeggiator is a full-screen editor. In MPFree they are one engine: NOTE REPEAT's – and + switch between repeat, arp and pattern while you play, and the Arp panel sits next to the pads instead of replacing the screen. Latch is a double press of NOTE REPEAT. MPFree's patterns (steps with ratchets, chance, ties and octave jumps) have no equivalent on the MPC.
+> On the MPC, Note Repeat and the Arpeggiator are separate, and the arpeggiator is a full-screen editor. In MPFree they are one engine: NOTE REPEAT's – and + switch between repeat, arp and pattern while you play, and the Arp panel takes the Play page's view while the transport bar, the master bar and the Q-Links stay on screen. Latch is a double press of NOTE REPEAT. MPFree's patterns (steps with ratchets, chance, ties and octave jumps) have no equivalent on the MPC.

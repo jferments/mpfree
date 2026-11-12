@@ -9,18 +9,19 @@
 //!   the view switch at its right end, the view under it, and beside them,
 //!   from under the top bar to the hint line, the master meter (66 px) and
 //!   the four Q-Link cards (168 px) next to the MPC's Q-Link knobs;
-//! - **All** (home, F): the looper strip, the pattern beside the pads, and
-//!   the throws beside the XY pad;
-//! - **Beats** (G): the whole pattern, then the pads and the throws;
-//! - **Loop** (H): the loop big with its buttons, then the pads, the
-//!   throws and the XY pad;
-//! - **Drum** (I): your timing beside the XY pad, then the pads and the
-//!   throws.
+//! - **All** (home, F): the looper strip, the pattern, and the throws
+//!   beside the XY pad;
+//! - **Beats** (G): the whole pattern, then the throws;
+//! - **Loop** (H): the loop big with its buttons, then the throws and the
+//!   XY pad;
+//! - **Drum** (I): your timing beside the XY pad, then the throws.
 //!
-//! The panels are in `play_widgets`. The arp's panel goes into the same
-//! frame ([`framed`]): its column takes the view's left and the pads the
-//! right. NOTE REPEAT's slim strip takes the top of the view's first panel
-//! ([`PlayView::quick_layout`]), so the pads never move when it comes and
+//! No view has a pads panel since 12 Nov (Jay's pick A, 15:45Z): the
+//! pattern, the loop and your timing take its room, and the pads have
+//! their own tab. The panels are in `play_widgets`. The arp's panel goes
+//! into the same frame ([`framed`]) and takes the view. NOTE REPEAT's slim
+//! strip takes the top of the view's first panel
+//! ([`PlayView::quick_layout`]), so nothing else moves when it comes and
 //! goes.
 
 use crate::mixing::{self, PlayFx, PlayLevels, ThrowFx};
@@ -114,18 +115,12 @@ impl PlayView {
         let strip = crate::looper_page::LOOP_STRIP;
         match self {
             PlayView::All => format!(
-                "{strip}:150, row({}, {PADS}:{HOME_PADS_W}):*, row({THROWS}:*, {XY}:280):120",
+                "{strip}:150, {}, row({THROWS}:*, {XY}:280):120",
                 first(STEPS)
             ),
-            PlayView::Beats => format!("{}, row({PADS}:300, {THROWS}:*):196", first(STEPS)),
-            PlayView::Loop => format!(
-                "{}, row({PADS}:300, {THROWS}:*, {XY}:300):196",
-                first(strip)
-            ),
-            PlayView::Drum => format!(
-                "row({}, {XY}:330):*, row({PADS}:300, {THROWS}:*):196",
-                first(TIMING)
-            ),
+            PlayView::Beats => format!("{}, {THROWS}:196", first(STEPS)),
+            PlayView::Loop => format!("{}, row({THROWS}:*, {XY}:300):196", first(strip)),
+            PlayView::Drum => format!("row({}, {XY}:330):*, {THROWS}:196", first(TIMING)),
         }
     }
 
@@ -139,10 +134,6 @@ impl PlayView {
     }
 }
 
-/// The mini pads' width on the home view (All), which the arp's panel
-/// keeps, so the pads stay put when it opens.
-const HOME_PADS_W: i32 = 270;
-
 /// The Play frame around `body` (one or more panels, top to bottom): the
 /// transport card over it, the master meter and the Q-Link cards beside.
 pub fn frame(body: &str) -> String {
@@ -154,9 +145,9 @@ pub fn frame(body: &str) -> String {
 
 /// A layout written for the old Play page, `col(header:60, BODY, hint:26)`,
 /// in the frame: the arp's panel and band. When BODY is the pads beside a
-/// column (`row(pads:*, col(...):W):*`), the column takes the view's left
-/// and the pads the right. A layout already in the frame comes back as it
-/// is.
+/// column (`row(pads:*, col(...):W):*`), the column takes the whole view:
+/// Play has no pads panel (Jay, 12 Nov 15:45Z). A layout already in the
+/// frame comes back as it is.
 pub fn framed(layout: &str) -> String {
     if layout.contains(TRANSPORT) {
         return layout.to_string();
@@ -172,9 +163,7 @@ pub fn framed(layout: &str) -> String {
         .and_then(|r| r.strip_suffix("):*"))
         .and_then(|r| r.rsplit_once(':'));
     match side {
-        Some((column, width)) if width.parse::<i32>().is_ok() => {
-            frame(&format!("row({column}:*, {PADS}:{HOME_PADS_W}):*"))
-        }
+        Some((column, width)) if width.parse::<i32>().is_ok() => frame(&format!("{column}:*")),
         _ => frame(body),
     }
 }
@@ -1325,42 +1314,44 @@ mod tests {
         let all = PlayView::All.layout();
         let strip = crate::looper_page::LOOP_STRIP;
         assert_eq!(rect(&all, strip), Rect::new(12, 180, 998, 150));
-        assert_eq!(rect(&all, STEPS), Rect::new(12, 342, 716, 276));
-        assert_eq!(rect(&all, PADS), Rect::new(740, 342, 270, 276));
+        // The pattern fills the room the mini pads had (Jay, 12 Nov 15:45Z).
+        assert_eq!(rect(&all, STEPS), Rect::new(12, 342, 998, 276));
         assert_eq!(rect(&all, THROWS), Rect::new(12, 630, 706, 120));
         assert_eq!(rect(&all, XY), Rect::new(730, 630, 280, 120));
         let beats = PlayView::Beats.layout();
         assert_eq!(rect(&beats, STEPS), Rect::new(12, 180, 998, 362));
-        assert_eq!(rect(&beats, PADS), Rect::new(12, 554, 300, 196));
-        assert_eq!(rect(&beats, THROWS), Rect::new(324, 554, 686, 196));
+        assert_eq!(rect(&beats, THROWS), Rect::new(12, 554, 998, 196));
         let lp = PlayView::Loop.layout();
         assert_eq!(rect(&lp, strip), Rect::new(12, 180, 998, 362));
-        assert_eq!(rect(&lp, PADS), Rect::new(12, 554, 300, 196));
-        assert_eq!(rect(&lp, THROWS), Rect::new(324, 554, 374, 196));
+        assert_eq!(rect(&lp, THROWS), Rect::new(12, 554, 686, 196));
         assert_eq!(rect(&lp, XY), Rect::new(710, 554, 300, 196));
         let drum = PlayView::Drum.layout();
         assert_eq!(rect(&drum, TIMING), Rect::new(12, 180, 656, 362));
         assert_eq!(rect(&drum, XY), Rect::new(680, 180, 330, 362));
-        assert_eq!(rect(&drum, PADS), Rect::new(12, 554, 300, 196));
-        assert_eq!(rect(&drum, THROWS), Rect::new(324, 554, 686, 196));
+        assert_eq!(rect(&drum, THROWS), Rect::new(12, 554, 998, 196));
+        // No view has a pads panel.
+        for v in PlayView::ALL {
+            for spec in [v.layout(), v.quick_layout()] {
+                assert!(!slots(&spec).iter().any(|(n, _)| n == PADS), "{spec}");
+            }
+        }
     }
 
     #[test]
-    fn the_band_never_moves_the_pads() {
+    fn the_band_never_moves_the_panels_below_it() {
         for v in PlayView::ALL {
             let (plain, band) = (v.layout(), v.quick_layout());
-            assert_eq!(rect(&plain, PADS), rect(&band, PADS), "{v:?}");
+            assert_eq!(rect(&plain, THROWS), rect(&band, THROWS), "{v:?}");
             assert_eq!(rect(&band, arp_view::MINI).h, arp_view::MINI_H, "{v:?}");
         }
     }
 
     #[test]
-    fn the_arp_panel_takes_the_left_and_the_pads_stay_right() {
+    fn the_arp_panel_takes_the_view() {
         let spec = framed(arp_view::ARP_LAYOUT);
-        let pads = rect(&spec, PADS);
-        assert_eq!((pads.right(), pads.w), (1010, HOME_PADS_W));
+        assert!(!slots(&spec).iter().any(|(n, _)| n == PADS), "{spec}");
         let list = rect(&spec, arp_view::LIST);
-        assert!(list.right() < pads.x && list.w >= 460, "{list:?}");
+        assert_eq!((list.x, list.right()), (12, 1010), "{list:?}");
         assert_eq!(rect(&spec, QLINKS), Rect::new(1100, 84, COLUMN_WIDTH, 666));
         assert_eq!(framed(&spec), spec, "framing twice changes nothing");
         // Any other page body still gets the frame.

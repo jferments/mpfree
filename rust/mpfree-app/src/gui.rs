@@ -5680,11 +5680,12 @@ mod tests {
         // Each view fits under the transport card, left of the master.
         for v in PlayView::ALL {
             tap(&mut p, seg(v.index()));
-            let pads = p.ui.rect_of(play_page::PADS).unwrap();
+            let throws = p.ui.rect_of(play_page::THROWS).unwrap();
             assert!(
-                pads.y > 168 && pads.bottom() <= 750 && pads.right() <= 1010,
-                "{v:?}: {pads:?}"
+                throws.y > 168 && throws.bottom() <= 750 && throws.right() <= 1010,
+                "{v:?}: {throws:?}"
             );
+            assert!(p.ui.rect_of(play_page::PADS).is_none(), "{v:?}: no pads");
         }
         tap(&mut p, seg(0));
         assert_eq!(p.page(), "Play");
@@ -6161,13 +6162,7 @@ mod tests {
     fn the_pads_heading_switches_the_synth_to_in_key() {
         let mut p = sample_player(Fonts::embedded());
         let synth_kit = sample_kits().len();
-        // A kit: its bank and name, no switch.
-        let m = p.ui.get::<MiniPads>(play_page::PADS).unwrap();
-        assert_eq!(
-            (m.title.as_str(), m.right.as_str(), m.synth),
-            ("Pads · Bank A", "Classic House", None)
-        );
-        // The synth with a scale: the switch, on Play and on the Synth tab.
+        // The synth with a scale: the switch, on the Synth tab's heading.
         let mut s = crate::synth::Synth::new(44_100);
         let mut set = s.settings();
         set.scale = mpfree_arp::scale::by_name("Minor")
@@ -6178,18 +6173,6 @@ mod tests {
             view: s.kit_view(),
         });
         p.apply(ToUi::Kit(synth_kit));
-        let r = p.ui.rect_of(play_page::PADS).unwrap();
-        let [_, in_key] =
-            p.ui.get::<MiniPads>(play_page::PADS)
-                .unwrap()
-                .parts(r)
-                .1
-                .unwrap();
-        assert_eq!(
-            p.touch(1, Touch::Down, in_key.x + 10, in_key.y + 10),
-            Some(FromUi::PadsLayout { in_key: true })
-        );
-        p.touch(1, Touch::Up, in_key.x + 10, in_key.y + 10);
         p.apply(ToUi::Show(View::Synth));
         let head = p.ui.rect_of(play_page::SYNTH_PADS_HEAD).unwrap();
         assert_eq!(
@@ -6198,7 +6181,12 @@ mod tests {
                 .title,
             "Pads · Bank A"
         );
-        let [chromatic, _] = PadsBar::halves(head);
+        let [chromatic, in_key] = PadsBar::halves(head);
+        assert_eq!(
+            p.touch(1, Touch::Down, in_key.x + 10, in_key.y + 10),
+            Some(FromUi::PadsLayout { in_key: true })
+        );
+        p.touch(1, Touch::Up, in_key.x + 10, in_key.y + 10);
         assert_eq!(
             p.touch(2, Touch::Down, chromatic.x + 10, chromatic.y + 10),
             Some(FromUi::PadsLayout { in_key: false })
@@ -6213,11 +6201,12 @@ mod tests {
             Some(mpfree_ui::Rect::new(0, 0, 1280, 800))
         );
         p.apply(ToUi::Show(View::Play));
-        // The Play page (mockup F): no big pads; the transport card on
-        // top, the master meter and the Q-Link cards at the right edge,
-        // beside the knobs.
-        let pads = p.ui.rect_of(play_page::PADS).unwrap();
-        assert!(pads.w == 270 && pads.h > 250, "{pads:?}");
+        // The Play page (mockup F, pick A): no pads at all; the transport
+        // card on top, the pattern across the room, the master meter and
+        // the Q-Link cards at the right edge, beside the knobs.
+        assert!(p.ui.rect_of(play_page::PADS).is_none());
+        let steps = p.ui.rect_of(play_page::STEPS).unwrap();
+        assert!(steps.w == 998 && steps.h > 250, "{steps:?}");
         assert_eq!(
             p.ui.rect_of(play_page::TRANSPORT).map(|r| (r.y, r.h)),
             Some((84, 84))
@@ -6277,10 +6266,11 @@ mod tests {
         assert_eq!(p.touch_page(), None);
         // Kernel times reach the lab without upsetting ordinary touches.
         p.set_touch_time(123);
-        let pads = p.ui.rect_of("pads").unwrap();
+        let header = p.ui.rect_of("header").unwrap();
+        let tab1 = p.ui.get::<Header>("header").unwrap().tab_rect(header, 1);
         assert_eq!(
-            p.touch(2, Touch::Down, pads.x + 20, pads.bottom() - 20),
-            Some(FromUi::Pad { pad: 0, down: true })
+            p.touch(2, Touch::Down, tab1.x + 20, tab1.y + 20),
+            Some(FromUi::Tab(1))
         );
     }
 
@@ -6423,19 +6413,12 @@ mod tests {
     #[test]
     fn touches_become_actions_once_ready() {
         let mut p = sample_player(Fonts::embedded());
-        let pads = p.ui.rect_of("pads").unwrap();
-        // Pad 1 sits bottom left.
-        assert_eq!(
-            p.touch(1, Touch::Down, pads.x + 20, pads.bottom() - 20),
-            Some(FromUi::Pad { pad: 0, down: true })
-        );
-        assert_eq!(
-            p.touch(1, Touch::Up, pads.x + 20, pads.bottom() - 20),
-            Some(FromUi::Pad {
-                pad: 0,
-                down: false
-            })
-        );
+        // A step of the pattern on Play: on, then nothing more on the lift.
+        let steps = p.ui.rect_of(play_page::STEPS).unwrap();
+        assert!(p
+            .touch(1, Touch::Down, steps.x + steps.w / 2, steps.y + steps.h / 2)
+            .is_some());
+        p.touch(1, Touch::Up, steps.x + steps.w / 2, steps.y + steps.h / 2);
         let header = p.ui.rect_of("header").unwrap();
         let tab1 = p.ui.get::<Header>("header").unwrap().tab_rect(header, 1);
         // The second tab: the app decides; the page stays until it says.
@@ -6445,7 +6428,7 @@ mod tests {
         );
         assert_eq!(p.page(), "Play");
         p.apply(ToUi::Show(View::Debug));
-        assert!(p.ui.rect_of("midi").is_some() && p.ui.rect_of("pads").is_none());
+        assert!(p.ui.rect_of("midi").is_some() && p.ui.rect_of(play_page::STEPS).is_none());
         // A menu row's arrow steps its value.
         let mut app = sample_app();
         let fx = app.button(mpfree_controller::mpc_one::button::MENU, true, 0.0);
@@ -8774,15 +8757,15 @@ mod tests {
     fn the_quick_band_comes_with_note_repeat_and_the_chip_opens_the_panel() {
         use mpfree_controller::mpc_one::button::NOTE_REPEAT;
         let mut p = sample_player(Fonts::embedded());
-        let pads = p.ui.rect_of("pads").unwrap();
+        let throws = p.ui.rect_of(play_page::THROWS).unwrap();
         let mut app = sample_app();
         let fx = app.button(NOTE_REPEAT, true, 0.0);
         apply_effects(&mut p, fx);
         assert_eq!(p.page(), QUICK_PAGE);
-        // A slim strip at the top of the view's first panel; the pads, the
-        // transport, the master bar and the Q-Links stay put, and the cards
-        // turn to the arp's.
-        assert_eq!(p.ui.rect_of("pads").unwrap(), pads);
+        // A slim strip at the top of the view's first panel; the throws,
+        // the transport, the master bar and the Q-Links stay put, and the
+        // cards turn to the arp's.
+        assert_eq!(p.ui.rect_of(play_page::THROWS).unwrap(), throws);
         for name in [play_page::MASTER, play_page::QLINKS, play_page::TRANSPORT] {
             assert!(p.ui.rect_of(name).is_some(), "{name} stays");
         }
@@ -8833,12 +8816,9 @@ mod tests {
         fx.extend(app.arp_poll());
         apply_effects(&mut p, fx);
         assert_eq!(p.page(), ARP_PAGE);
-        let panel_pads = p.ui.rect_of("pads").unwrap();
-        assert_eq!(
-            (panel_pads.x, panel_pads.w),
-            (pads.x, pads.w),
-            "the panel takes the left; the pads stay right"
-        );
+        // The panel takes the whole view; there are no pads on Play.
+        assert!(p.ui.rect_of(play_page::PADS).is_none());
+        assert!(p.ui.rect_of(arp_view::MODES).unwrap().x < 100);
         assert_eq!(
             p.ui.get::<Header>("header").unwrap().active,
             0,
@@ -8859,6 +8839,10 @@ mod tests {
     #[test]
     fn a_page_change_lets_go_of_pads_held_on_the_screen() {
         let mut p = sample_player(Fonts::embedded());
+        // Play has no pads now (Jay, 12 Nov); a page with them stands in.
+        p.ui.add_page("pads-test", "col(header:60, pads:*, hint:26)")
+            .unwrap();
+        p.ui.show("pads-test").unwrap();
         let pads = p.ui.rect_of("pads").unwrap();
         assert_eq!(
             p.touch(1, Touch::Down, pads.x + 20, pads.bottom() - 20),
