@@ -497,6 +497,8 @@ fn step_text(s: Step, layers: &[Option<LayerInfo>], rate: u32) -> String {
         }
         Step::Edit(e) => edit_text(e, rate),
         Step::Merge(_) => "Merge layers".to_string(),
+        // Overdub or Record over a print fits the loop to the tempo.
+        Step::Fit(_) => "Fit to the tempo".to_string(),
     }
 }
 
