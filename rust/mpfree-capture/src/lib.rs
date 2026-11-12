@@ -29,6 +29,13 @@
 //!   whole bars long, at most [`MAX_BARS`]: a longer phrase keeps its last
 //!   bars.
 //! - A note ends where its pad was released; a note still held ends now.
+//! - A note keeps the pad pressure played on it ([`Phrase::touch`]),
+//!   thinned as recording thins it (`mpfree_play::Recorder`): a value 2
+//!   or more steps from the last one kept at once, a one-step value once
+//!   it has lasted 10 ms. The history keeps [`MAX_TOUCH_HITS`] values
+//!   apart from the notes, in their own ring, so pressure never pushes
+//!   notes out; a phrase whose first notes' pressure is older than that
+//!   says so ([`Phrase::touch_cut`]).
 //!
 //! [`keep`] puts a phrase into the project as a take of its own, so UNDO
 //! takes it back:
@@ -40,6 +47,10 @@
 //!   host launches it with [`Kept::launch`]. A phrase played in time keeps
 //!   its place against the song, so it goes on playing in time at once.
 //!   A free phrase starts on the next bar line.
+//! - The notes keep their pressure when the track records pressure
+//!   (`Track::record_touch`). Pressure a playing clip has no room for is
+//!   left off its notes and counted ([`Kept::touch_lost`]); the notes
+//!   still go in.
 //!
 //! The Perform FX moves made over a phrase played in time go with it: the
 //! host takes them from its `mpfree_moves::MoveLog` ([`MoveLog::phrase`])
@@ -50,17 +61,29 @@
 //! [`MoveLog::phrase`]: mpfree_seq::mpfree_moves::MoveLog::phrase
 #![forbid(unsafe_code)]
 
+use mpfree_play::record::{TOUCH_SETTLE_MS, TOUCH_STEP};
 use mpfree_play::{Event, Launch, MoveWrite, Takes};
 use mpfree_seq::mpfree_moves::{Gesture, Target};
-use mpfree_seq::{Clip, ModelError, Note, Project, MAX_CLIP_TICKS, MAX_NOTES, SLOTS};
+use mpfree_seq::{
+    Clip, ModelError, Note, Project, Touch, TouchPoint, MAX_CLIP_TICKS, MAX_NOTES,
+    MAX_TOUCH_POINTS, SLOTS,
+};
 use mpfree_transport::time::{ceil_to, ticks_in, Meter, Tick};
-use mpfree_transport::Block;
+use mpfree_transport::{Block, Span};
 
 /// Note starts and ends kept in the history: 8192 notes, about 8 minutes
 /// of 1/16 notes on two pads at 120 BPM.
 pub const MAX_HITS: usize = 16384;
 /// Notes one period can bring.
 pub const MAX_INPUT: usize = 256;
+/// Pad pressure values the history keeps, after thinning: about 30 s of
+/// all 16 pads pressed and moving at once, far more of ordinary playing.
+pub const MAX_TOUCH_HITS: usize = 32768;
+/// Pressure values one period can bring (their own room, so they never
+/// crowd out notes).
+pub const MAX_TOUCH_INPUT: usize = 512;
+// A whole phrase's pressure always fits in a new clip.
+const _: () = assert!(MAX_TOUCH_HITS <= MAX_TOUCH_POINTS);
 /// A silence of this many bars ends a phrase.
 pub const GAP_BARS: i64 = 1;
 /// The longest phrase CAPTURE keeps, in bars; a longer one keeps its last
@@ -93,6 +116,34 @@ const NO_HIT: Hit = Hit {
     note: 0,
     velocity: 0,
 };
+
+/// One pad pressure value kept in the history.
+#[derive(Clone, Copy, Debug)]
+struct TouchHit {
+    /// On the capture clock, in ticks.
+    at: f64,
+    /// Note starts and ends pushed before it: it came after hit
+    /// `after - 1` and before hit `after`.
+    after: u64,
+    note: u8,
+    value: u8,
+}
+
+const NO_TOUCH: TouchHit = TouchHit {
+    at: 0.0,
+    after: 0,
+    note: 0,
+    value: 0,
+};
+
+/// A held note's pressure thinning, as the recorder's.
+#[derive(Clone, Copy, Debug, Default)]
+struct Thin {
+    /// The last value kept (0 when the note starts).
+    kept: u8,
+    /// A one-step value and the frame it came on, kept once it lasts.
+    wait: Option<(u8, u64)>,
+}
 
 /// The phrase being played, kept up to date as notes come.
 #[derive(Clone, Copy, Debug)]
@@ -127,8 +178,15 @@ pub struct Played {
 /// The last phrase, as clip notes.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Phrase {
-    /// In the order they were played.
+    /// In the order they were played. A note's `touch` names its pressure
+    /// in [`Phrase::touch`].
     pub played: Vec<Played>,
+    /// Every note's pad pressure, one run a note, each timed in ticks from
+    /// its note's start, as a clip keeps it (`Clip::touch`).
+    pub touch: Vec<TouchPoint>,
+    /// Some of the first notes' pressure was older than the history keeps
+    /// ([`MAX_TOUCH_HITS`]), so it is cut short.
+    pub touch_cut: bool,
     /// Whole bars.
     pub length: Tick,
     /// Ticks in a bar.
@@ -148,6 +206,11 @@ impl Phrase {
     pub fn bars(&self) -> i64 {
         self.length / self.bar.max(1)
     }
+
+    /// Note `n`'s pressure (a note of this phrase), empty for none.
+    pub fn touch_of(&self, n: &Note) -> &[TouchPoint] {
+        self.touch.get(n.touch.range()).unwrap_or(&[])
+    }
 }
 
 pub struct Capture {
@@ -157,6 +220,14 @@ pub struct Capture {
     pushed: u64,
     input: [(u32, Event); MAX_INPUT],
     n_input: usize,
+    touch: Box<[TouchHit]>,
+    /// Pressure values ever kept; value `n` is at `n % MAX_TOUCH_HITS`
+    /// while `n + MAX_TOUCH_HITS > touch_pushed`.
+    touch_pushed: u64,
+    /// (offset, pad, value), in offset order.
+    touch_input: [(u32, u8, u8); MAX_TOUCH_INPUT],
+    n_touch_input: usize,
+    thin: [Thin; 128],
     /// The capture clock at the end of the last period.
     clock: f64,
     /// While rolling: clock = song + shift, a whole number of bars.
@@ -182,13 +253,18 @@ impl Default for Capture {
 }
 
 impl Capture {
-    /// An empty history. Allocates the ring once.
+    /// An empty history. Allocates the rings once.
     pub fn new() -> Capture {
         Capture {
             hits: vec![NO_HIT; MAX_HITS].into_boxed_slice(),
             pushed: 0,
             input: [(0, Event::AllOff); MAX_INPUT],
             n_input: 0,
+            touch: vec![NO_TOUCH; MAX_TOUCH_HITS].into_boxed_slice(),
+            touch_pushed: 0,
+            touch_input: [(0, 0, 0); MAX_TOUCH_INPUT],
+            n_touch_input: 0,
+            thin: [Thin::default(); 128],
             clock: 0.0,
             shift: 0,
             rolling: false,
@@ -205,8 +281,25 @@ impl Capture {
 
     /// A note for the coming [`Capture::process`] call, at `offset` in the
     /// period. They may come in any order; they are kept in offset order,
-    /// and notes on the same offset keep the order they came in.
+    /// and notes on the same offset keep the order they came in. A pad's
+    /// pressure ([`Event::Pressure`], the pad and its raw value) has its
+    /// own room and comes after the notes on its offset; it is kept while
+    /// its pad's note is held.
     pub fn input(&mut self, offset: u32, event: Event) {
+        if let Event::Pressure { note, value } = event {
+            if self.n_touch_input == MAX_TOUCH_INPUT {
+                self.dropped += 1;
+                return;
+            }
+            let mut i = self.n_touch_input;
+            while i > 0 && self.touch_input[i - 1].0 > offset {
+                self.touch_input[i] = self.touch_input[i - 1];
+                i -= 1;
+            }
+            self.touch_input[i] = (offset, note, value);
+            self.n_touch_input += 1;
+            return;
+        }
         if self.n_input == MAX_INPUT {
             self.dropped += 1;
             return;
@@ -223,6 +316,7 @@ impl Capture {
     /// Put the period's notes on the clock, by the transport's `block`.
     pub fn process(&mut self, block: &Block) {
         let mut next = 0;
+        let mut next_touch = 0;
         for span in block.spans() {
             let bar = span.meter.bar_ticks();
             let timed = span.state.rolling();
@@ -240,23 +334,42 @@ impl Capture {
             }
             self.bar = bar;
             let end = span.offset + span.len;
-            while next < self.n_input && self.input[next].0 < end {
+            loop {
+                let note = (next < self.n_input)
+                    .then(|| self.input[next].0)
+                    .filter(|&o| o < end);
+                // Pressure after the notes on its offset.
+                let touch = (next_touch < self.n_touch_input)
+                    .then(|| self.touch_input[next_touch].0)
+                    .filter(|&o| o < end);
+                if let Some(t) = touch {
+                    if note.is_none_or(|a| t < a) {
+                        let (offset, pad, value) = self.touch_input[next_touch];
+                        next_touch += 1;
+                        let frame = span.frame + u64::from(offset.saturating_sub(span.offset));
+                        self.touch_value(span, timed, frame, pad, value);
+                        continue;
+                    }
+                }
+                if note.is_none() {
+                    break;
+                }
                 let (offset, event) = self.input[next];
                 next += 1;
                 let frame = span.frame + u64::from(offset.saturating_sub(span.offset));
-                let (at, song) = if timed {
-                    let song = span.tick_at(frame);
-                    // Never before the clock: a jump's first frame can
-                    // fall a fraction of a tick early.
-                    ((song + self.shift as f64).max(self.clock), song)
-                } else {
-                    (
-                        self.clock + ticks_in((frame - span.frame) as f64, span.bpm, span.rate),
-                        0.0,
-                    )
-                };
+                // Pressure whose time came before this note is kept first.
+                match event {
+                    Event::NoteOn { note, .. } | Event::NoteOff { note } => {
+                        self.settle(usize::from(note & 127), span, timed, frame + 1);
+                    }
+                    Event::AllOff => self.settle_all(span, timed, frame + 1),
+                    _ => {}
+                }
+                let (at, song) = self.place(span, timed, frame);
                 self.hit(at, song, bar as u32, timed, event);
             }
+            // One-step values whose time is up within this span.
+            self.settle_all(span, timed, span.frame + u64::from(span.len));
             if timed {
                 self.clock = span.tick_at(span.frame + u64::from(span.len)) + self.shift as f64;
             } else {
@@ -265,7 +378,80 @@ impl Capture {
         }
         // Offsets past the period's end are the host's mistake.
         self.dropped += (self.n_input - next) as u64;
+        self.dropped += (self.n_touch_input - next_touch) as u64;
         self.n_input = 0;
+        self.n_touch_input = 0;
+    }
+
+    /// Where `frame` of `span` is: on the capture clock, and the song tick
+    /// (0 when stopped). `self.clock` is the clock at the span's start.
+    fn place(&self, span: &Span, timed: bool, frame: u64) -> (f64, f64) {
+        if timed {
+            let song = span.tick_at(frame);
+            // Never before the clock: a jump's first frame can fall a
+            // fraction of a tick early.
+            ((song + self.shift as f64).max(self.clock), song)
+        } else {
+            (
+                self.clock + ticks_in((frame - span.frame) as f64, span.bpm, span.rate),
+                0.0,
+            )
+        }
+    }
+
+    /// Pad `pad`'s pressure `value` on `frame` of `span`: thinned onto its
+    /// held note (see the crate's notes).
+    fn touch_value(&mut self, span: &Span, timed: bool, frame: u64, pad: u8, value: u8) {
+        let n = usize::from(pad & 127);
+        if !self.held[n] {
+            return;
+        }
+        // A one-step value whose time came before this one is kept first.
+        self.settle(n, span, timed, frame + 1);
+        let v = value.min(127);
+        let t = &mut self.thin[n];
+        if v.abs_diff(t.kept) >= TOUCH_STEP {
+            t.wait = None;
+            self.keep_touch(n, span, timed, frame, v);
+        } else if v == t.kept {
+            t.wait = None;
+        } else if t.wait.is_none_or(|(w, _)| w != v) {
+            t.wait = Some((v, frame));
+        }
+    }
+
+    /// Keep held note `n`'s waiting one-step value if its time is up
+    /// before frame `before` (its time falls in `span`).
+    fn settle(&mut self, n: usize, span: &Span, timed: bool, before: u64) {
+        let Some((v, from)) = self.thin[n].wait else {
+            return;
+        };
+        let due = from + u64::from(span.rate) * u64::from(TOUCH_SETTLE_MS) / 1000;
+        if due < before {
+            self.thin[n].wait = None;
+            self.keep_touch(n, span, timed, due.max(span.frame), v);
+        }
+    }
+
+    fn settle_all(&mut self, span: &Span, timed: bool, before: u64) {
+        for n in 0..128 {
+            if self.held[n] && self.thin[n].wait.is_some() {
+                self.settle(n, span, timed, before);
+            }
+        }
+    }
+
+    /// Keep `value` on held note `n`, on `frame` of `span`.
+    fn keep_touch(&mut self, n: usize, span: &Span, timed: bool, frame: u64, value: u8) {
+        self.thin[n].kept = value;
+        let (at, _) = self.place(span, timed, frame);
+        self.touch[(self.touch_pushed % MAX_TOUCH_HITS as u64) as usize] = TouchHit {
+            at,
+            after: self.pushed,
+            note: n as u8,
+            value,
+        };
+        self.touch_pushed += 1;
     }
 
     fn hit(&mut self, at: f64, song: f64, bar: u32, timed: bool, event: Event) {
@@ -277,8 +463,8 @@ impl Capture {
             velocity: 0,
         };
         match event {
-            // CAPTURE keeps the notes played, not parameter locks or (yet)
-            // pad pressure.
+            // CAPTURE keeps the notes played, not parameter locks; pressure
+            // has its own queue.
             Event::Lock { .. }
             | Event::Lane { .. }
             | Event::Unlock { .. }
@@ -290,6 +476,7 @@ impl Capture {
                     return;
                 }
                 self.held[n] = false;
+                self.thin[n].wait = None;
                 self.n_held -= 1;
                 if self.n_held == 0 {
                     self.quiet_since = at;
@@ -312,6 +499,8 @@ impl Capture {
                     self.held[n] = true;
                     self.n_held += 1;
                 }
+                // A new note's pressure starts again, as recording's does.
+                self.thin[n] = Thin::default();
                 let seq = self.pushed;
                 match &mut self.head {
                     Some(p) if !new => {
@@ -339,6 +528,7 @@ impl Capture {
                 }
                 self.quiet_since = at;
                 self.held = [false; 128];
+                self.thin = [Thin::default(); 128];
                 self.n_held = 0;
             }
         }
@@ -346,7 +536,8 @@ impl Capture {
         self.pushed += 1;
     }
 
-    /// Notes lost because the input table was full. It should stay 0.
+    /// Notes and pressure values lost because the input tables were full.
+    /// It should stay 0.
     pub fn dropped(&self) -> u64 {
         self.dropped
     }
@@ -406,12 +597,40 @@ impl Capture {
         };
         let length = (tick(h.last_at, start) / bar + 1) * bar;
         let mut played: Vec<Played> = Vec::new();
+        // Each played note's pressure, as it comes.
+        let mut runs: Vec<Vec<TouchPoint>> = Vec::new();
         // Per note: its index in `played` and its start on the clock.
         let mut open: [Option<(usize, f64)>; 128] = [None; 128];
         let close = |played: &mut Vec<Played>, o: (usize, f64), end: f64| {
             played[o.0].note.len = ((end - o.1).round() as Tick).clamp(1, MAX_CLIP_TICKS);
         };
+        // Pressure kept after the phrase's first note start: each value
+        // goes on the note its pad held then.
+        let touch_hit = |seq: u64| &self.touch[(seq % MAX_TOUCH_HITS as u64) as usize];
+        let touch_oldest = self.touch_pushed.saturating_sub(MAX_TOUCH_HITS as u64);
+        let mut ts = touch_oldest;
+        while ts < self.touch_pushed && touch_hit(ts).after <= first {
+            ts += 1;
+        }
+        // Values pushed out of the ring came before the oldest one kept.
+        let touch_cut = touch_oldest > 0 && touch_hit(touch_oldest).after > first;
+        let take_touch = |upto: u64,
+                          ts: &mut u64,
+                          open: &[Option<(usize, f64)>; 128],
+                          runs: &mut Vec<Vec<TouchPoint>>| {
+            while *ts < self.touch_pushed && touch_hit(*ts).after <= upto {
+                let x = *touch_hit(*ts);
+                *ts += 1;
+                if let Some((i, from)) = open[usize::from(x.note & 127)] {
+                    let run = &mut runs[i];
+                    let at =
+                        ((x.at - from).round().max(0.0) as u32).max(run.last().map_or(0, |p| p.at));
+                    run.push(TouchPoint { at, value: x.value });
+                }
+            }
+        };
         for s in first..self.pushed {
+            take_touch(s, &mut ts, &open, &mut runs);
             let x = *hit(s);
             match x.kind {
                 Kind::On => {
@@ -434,6 +653,7 @@ impl Capture {
                         note,
                         song: h.timed.then_some(x.song),
                     });
+                    runs.push(Vec::new());
                 }
                 Kind::Off => {
                     if let Some(o) = open[usize::from(x.note)].take() {
@@ -447,12 +667,25 @@ impl Capture {
                 }
             }
         }
+        take_touch(self.pushed, &mut ts, &open, &mut runs);
         // Still held: it ends now.
         for o in open.iter_mut().filter_map(Option::take) {
             close(&mut played, o, self.clock);
         }
         if played.len() > MAX_NOTES {
-            played.drain(..played.len() - MAX_NOTES);
+            let over = played.len() - MAX_NOTES;
+            played.drain(..over);
+            runs.drain(..over);
+        }
+        let mut touch = Vec::with_capacity(runs.iter().map(Vec::len).sum());
+        for (p, run) in played.iter_mut().zip(&runs) {
+            if !run.is_empty() {
+                p.note.touch = Touch {
+                    first: touch.len() as u32,
+                    len: run.len() as u32,
+                };
+                touch.extend_from_slice(run);
+            }
         }
         // The clock and the song differ by whole bars, so this is the bar
         // line the phrase starts on, in the song as its first note was.
@@ -462,6 +695,8 @@ impl Capture {
         });
         Some(Phrase {
             played,
+            touch,
+            touch_cut,
             length,
             bar,
             song_start,
@@ -484,6 +719,8 @@ impl Capture {
     /// loaded. The clock goes on.
     pub fn clear(&mut self) {
         self.pushed = 0;
+        self.touch_pushed = 0;
+        self.thin = [Thin::default(); 128];
         self.held = [false; 128];
         self.n_held = 0;
         self.quiet_since = f64::NEG_INFINITY;
@@ -518,6 +755,11 @@ pub struct Kept {
     /// A new clip, and the launch that plays it (it replaces the track's
     /// launch). None when the notes went into the clip that was playing.
     pub launch: Option<Launch>,
+    /// Pressure values kept on the notes.
+    pub touch: usize,
+    /// Pressure values the playing clip had no room for, left off its
+    /// notes. It should stay 0.
+    pub touch_lost: usize,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -550,6 +792,7 @@ pub fn keep(
         return Err(KeepError::NoTrack(track));
     }
     let bars = phrase.bars();
+    let with_touch = project.tracks[track].record_touch;
     // Over the clip that was playing: from where each note was played.
     let playing = launches
         .iter()
@@ -558,6 +801,8 @@ pub fn keep(
     if let (Some(first), Some((l, clip))) = (phrase.played[0].song, playing) {
         if first >= l.origin as f64 {
             let song_len = clip.speed.to_song(clip.length as f64);
+            // The notes' pressure, on the clip's ticks as their lengths.
+            let mut touch: Vec<TouchPoint> = Vec::new();
             let notes: Vec<Note> = phrase
                 .played
                 .iter()
@@ -572,16 +817,30 @@ pub fn keep(
                     }
                     let len = (clip.speed.to_clip(p.note.len as f64).round() as Tick)
                         .clamp(1, MAX_CLIP_TICKS);
-                    Some(Note {
+                    let run = phrase.touch_of(&p.note);
+                    let mut note = Note {
                         tick: tick.max(0),
                         len,
+                        touch: Touch::NONE,
                         ..p.note
-                    })
+                    };
+                    if with_touch && !run.is_empty() {
+                        note.touch = Touch {
+                            first: touch.len() as u32,
+                            len: run.len() as u32,
+                        };
+                        let mut last = 0;
+                        touch.extend(run.iter().map(|x| {
+                            last = (clip.speed.to_clip(f64::from(x.at)).round() as u32).max(last);
+                            TouchPoint { at: last, ..*x }
+                        }));
+                    }
+                    Some(note)
                 })
                 .collect();
             let n = notes.len();
-            let take = takes
-                .capture_notes(project, track, l.slot, &notes)
+            let (take, touch_lost) = takes
+                .capture_notes(project, track, l.slot, &notes, &touch)
                 .map_err(KeepError::Model)?;
             return Ok(Kept {
                 track,
@@ -590,6 +849,8 @@ pub fn keep(
                 notes: n,
                 bars,
                 launch: None,
+                touch: touch.len() - touch_lost,
+                touch_lost,
             });
         }
     }
@@ -598,6 +859,13 @@ pub fn keep(
         .ok_or(KeepError::NoSlot(track))?;
     let mut clip = Clip::new(name, phrase.length);
     clip.notes = phrase.notes();
+    if with_touch {
+        clip.touch = phrase.touch.clone();
+    } else {
+        for n in &mut clip.notes {
+            n.touch = Touch::NONE;
+        }
+    }
     let n = clip.notes.len();
     let origin = match phrase.song_start {
         // In time: on the song's bar where it was played, moved back by
@@ -614,6 +882,7 @@ pub fn keep(
         None if now.rolling => now.meter.next_bar(now.position),
         None => floor_to(now.position, now.meter.bar_ticks()),
     };
+    let clip_touch = clip.touch.len();
     let take = takes
         .capture_clip(project, track, slot, clip)
         .map_err(KeepError::Model)?;
@@ -630,6 +899,8 @@ pub fn keep(
             // Its passes count from where it was played.
             start: phrase.song_start.unwrap_or(origin),
         }),
+        touch: clip_touch,
+        touch_lost: 0,
     })
 }
 

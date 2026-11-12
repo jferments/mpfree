@@ -6,7 +6,9 @@
 //! size.
 
 use mpfree_play::{Event, Launch, Out, PlayView, Player, Recorder, Sink, Taken, Takes};
-use mpfree_seq::{Clip, Note, Project, Quantise, Speed, Touch, TouchPoint, Track};
+use mpfree_seq::{
+    Clip, Note, Placement, Project, Quantise, Source, Speed, Touch, TouchPoint, Track,
+};
 use mpfree_transport::{Block, Command, Transport};
 
 /// Frames per tick at 120 BPM and 44.1 kHz.
@@ -250,6 +252,51 @@ fn pressure_plays_on_its_note_wherever_quantise_puts_it() {
     ];
     for size in SIZES {
         let r = run(&s, size);
+        assert_eq!(heard(&r, 7), want, "size {size}");
+    }
+}
+
+/// Live to song places the clips it heard, linked to their slots, so
+/// their pressure plays from the song too; a placement's own copy (made
+/// unique) plays its own.
+#[test]
+fn a_song_placement_plays_its_clips_pressure() {
+    const BAR: i64 = 3840;
+    let mut p = session(pressed_clip()).project;
+    p.arrangement
+        .place(Placement::linked(0, 0, BAR, BAR))
+        .unwrap();
+    let mut own = Placement::linked(0, 0, 3 * BAR, BAR);
+    own.source = Source::Own(Box::new(pressed_clip()));
+    p.arrangement.place(own).unwrap();
+    let mut want = vec![];
+    for bar in [BAR, 3 * BAR] {
+        want.extend([
+            (frame(bar + 150), press(7)),
+            (frame(bar + 150), squeeze(7, 20)),
+            (frame(bar + 390), squeeze(7, 60)),
+            (frame(bar + 630), squeeze(7, 100)),
+            (frame(bar + 1110), lift(7)),
+        ]);
+    }
+    for size in SIZES {
+        let mut t = Transport::new(44_100, 120.0).unwrap();
+        assert!(t.command(0, Command::Play));
+        let mut view = PlayView::compile(&p, &[]).unwrap();
+        view.set_song(&p, true).unwrap();
+        let (mut player, mut block, mut log) = (Player::new(), Block::new(), Log::default());
+        let end = frame(5 * BAR);
+        while t.frame() < end {
+            let n = size.min((end - t.frame()) as u32);
+            t.process(n, &mut block);
+            player.process(&view, &block, &mut log);
+        }
+        let r = Run {
+            taken: vec![],
+            played: log.0,
+            project: p.clone(),
+            touch_dropped: 0,
+        };
         assert_eq!(heard(&r, 7), want, "size {size}");
     }
 }
