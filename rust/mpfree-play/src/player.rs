@@ -1195,12 +1195,15 @@ impl Player {
     ) {
         let mut kept = 0;
         for j in 0..self.n_held {
-            let mut h = self.held[j];
-            if !f(&h) {
-                self.held[kept] = h;
+            if !f(&self.held[j]) {
+                // Kept: moved down only past ones taken out.
+                if kept != j {
+                    self.held[kept] = self.held[j];
+                }
                 kept += 1;
                 continue;
             }
+            let mut h = self.held[j];
             match h.under.filter(|_| hand_back) {
                 Some(value) => {
                     out.send(Out {
