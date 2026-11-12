@@ -21,7 +21,7 @@
 //!
 //! Pad pressure comes in through [`TimeHost::pad_pressure`]: while the
 //! armed track records and records pressure (`Track::record_touch`, the
-//! Record list's "Pad pressure" row), it is thinned onto the pads' notes
+//! Record list's "Pressure" row), it is thinned onto the pads' notes
 //! and kept in the clip with them; clips play it back to the pads
 //! ([`Pads::pressure_at`]) as the raw value, which each instrument's
 //! pressure curve shapes.
@@ -39,21 +39,26 @@
 //!
 //! Edits (launches, takes, arming, a capture) compile a new play view in
 //! the loop. That allocates, but only on an edit, not every period; moving
-//! it to a control thread is a later step. Recording is not an edit of
-//! that kind: each recorded or erased note or lock goes into the clip and
-//! into the play view in place, in room set aside when the view was
-//! compiled ([`RECORD_ROOM`]), so a recording period neither compiles nor
-//! allocates. The screens hear about those notes at most four times a
-//! second ([`TimeHost::take_changed`]). Every track plays the current
-//! kit.
+//! it to a control thread is the plan in docs/dev/design/time-threads.md.
+//! Recording is not an edit of that kind: each recorded or erased note,
+//! lock or gesture is a numbered change (`mpfree_play::Rec`) made to the
+//! play view in place, in room set aside when the view was compiled
+//! ([`RECORD_ROOM`]), and to the clip, each deciding alike, so a recording
+//! period neither compiles nor allocates. Each view says how many changes
+//! and how many started cues it includes (`PlayView::set_includes`). The
+//! screens hear about recorded notes at most four times a second
+//! ([`TimeHost::take_changed`]). Every track plays the current kit.
 
 use mpfree_capture::{keep, moves_for_clip, Capture, Now, Pending};
 use mpfree_perform::{Perform, SceneMorph, SongRecorder, When};
-use mpfree_play::{Cue, Event, Launch, Out, PlayView, Player, Recorder, Sink, Takes, TrackArps};
+use mpfree_play::{
+    Cue, Event, Includes, Launch, Out, PlayView, Player, Rec, Recorder, Sink, Takes, TrackArps,
+};
 use mpfree_seq::arrange::{scene_length, scenes_to_song, song_to_scenes};
+use mpfree_seq::mpfree_moves::Kind;
 use mpfree_seq::mpfree_moves::{Input, MoveLog};
 use mpfree_seq::steps::{Change, Grid, Step};
-use mpfree_seq::{Clip, ModelError, Project, Track, SLOTS};
+use mpfree_seq::{Clip, ModelError, Project, TouchPoint, Track, SLOTS};
 use mpfree_time_ui::editor::{EditAction, Editor};
 use mpfree_time_ui::view::{
     bars_label, clips_after, AudioAction, EditInfo, MorphInfo, RegionId, TimeAction, TimeState,
@@ -367,6 +372,9 @@ pub struct TimeHost {
     locks_dropped: u64,
     /// Recorded pressure a clip had no room for (`MAX_TOUCH_POINTS`).
     touch_lost: u64,
+    /// What the views include: the recorded changes made so far, and the
+    /// started cues applied on each track.
+    includes: Includes,
 }
 
 /// A step's parameter lock (`value`) or its end (`None`), `offset` frames
@@ -450,6 +458,7 @@ impl TimeHost {
             lanes: Vec::with_capacity(MAX_LOCKS),
             locks_dropped: 0,
             touch_lost: 0,
+            includes: Includes::default(),
         };
         host.compile()?;
         Ok(host)
@@ -471,6 +480,7 @@ impl TimeHost {
             .map_err(|e| format!("song: {e:?}"))?;
         // A scene's mutes switch with its cues.
         self.perform.dress(&mut v);
+        v.set_includes(self.includes);
         // Room to record into the armed track's clips without allocating.
         v.make_room(RECORD_ROOM, RECORD_ROOM);
         if let Some(t) = self.armed {
@@ -1587,6 +1597,9 @@ impl TimeHost {
             let st = self.player.started()[i];
             self.perform.started(&mut self.project, &st);
             st.apply(&mut self.launches, &mut self.cues);
+            if let Some(n) = self.includes.switches.get_mut(st.track) {
+                *n = n.wrapping_add(1);
+            }
             compile = true;
         }
         // Follow actions coming due are cued for their bar lines.
@@ -1603,51 +1616,33 @@ impl TimeHost {
                 )
                 .changed();
         }
-        // Recorded and erased notes and locks go into the clips and, in
-        // place, into the view, unless it has no room left.
+        // Recorded and erased notes, locks and gestures go into the view
+        // in place (unless it has no room left) and into the clips, each
+        // deciding alike, numbered in this order.
         let mut recorded = false;
-        for i in 0..self.player.erased().len() {
-            let e = self.player.erased()[i];
-            if self.takes.erase(&mut self.project, &e) {
-                recorded = true;
-                compile |= !self.view.remove_note(e.track, e.slot, &e.note);
-            }
+        let mut made = Made {
+            takes: &mut self.takes,
+            project: &mut self.project,
+            view: &mut self.view,
+            includes: &mut self.includes,
+            touch_lost: &mut self.touch_lost,
+            changed: &mut recorded,
+            compile: &mut compile,
+        };
+        for e in self.player.erased() {
+            made.make(Rec::Erase(*e), &[], &[]);
         }
-        for i in 0..self.player.erased_locks().len() {
-            let e = self.player.erased_locks()[i];
-            if self.takes.erase_lock(&mut self.project, &e) {
-                recorded = true;
-                compile |= !self.view.remove_lock(e.track, e.slot, &e.lock);
-            }
+        for e in self.player.erased_locks() {
+            made.make(Rec::EraseLock(*e), &[], &[]);
         }
-        for i in 0..self.recorder.taken().len() {
-            let k = self.recorder.taken()[i];
-            let points = self.recorder.touch_points(&k.note);
-            if let Ok((note, kept)) = self.takes.add_touched(&mut self.project, &k, points) {
-                recorded = true;
-                if !kept {
-                    self.touch_lost += points.len() as u64;
-                }
-                // Its pressure first: the note names it in the view too.
-                compile |= !self.view.add_touch(k.track, k.slot, note.touch, points);
-                compile |= !self.view.add_note(k.track, k.slot, &note);
-            }
+        for k in self.recorder.taken() {
+            made.make(Rec::Note(*k), self.recorder.touch_points(&k.note), &[]);
         }
-        for i in 0..self.recorder.taken_locks().len() {
-            let k = self.recorder.taken_locks()[i];
-            if let Ok(old) = self.takes.add_lock(&mut self.project, &k) {
-                recorded = true;
-                compile |= !self.view.add_lock(k.track, k.slot, &k.lock, old.as_ref());
-            }
+        for k in self.recorder.taken_locks() {
+            made.make(Rec::Lock(*k), &[], &[]);
         }
         for k in self.recorder.taken_moves() {
-            let points = self.recorder.move_points(k);
-            if self.takes.put_move(&mut self.project, k, points).is_ok() {
-                recorded = true;
-                compile |= !self
-                    .view
-                    .put_move(k.track, k.slot, k.target, k.map, points, k.len);
-            }
+            made.make(Rec::Move(*k), &[], self.recorder.move_points(k));
         }
         // The transport stopped: what live to song recorded goes into the
         // song (it compiles).
@@ -1764,6 +1759,30 @@ impl TimeHost {
             self.dropped(),
             self.touch_dropped()
         )
+    }
+}
+
+/// Where a period's recorded changes go: the view in place and the
+/// project, deciding alike (`PlayView::record`, `Takes::record`).
+struct Made<'a> {
+    takes: &'a mut Takes,
+    project: &'a mut Project,
+    view: &'a mut PlayView,
+    includes: &'a mut Includes,
+    touch_lost: &'a mut u64,
+    /// A clip changed.
+    changed: &'a mut bool,
+    /// The view had no room in place: compile.
+    compile: &'a mut bool,
+}
+
+impl Made<'_> {
+    fn make(&mut self, rec: Rec, touch: &[TouchPoint], moves: &[(f64, f32, Kind)]) {
+        self.includes.recorded += 1;
+        *self.compile |= !self.view.record(&rec, touch, moves);
+        let done = self.takes.record(self.project, &rec, touch, moves);
+        *self.changed |= done.changed;
+        *self.touch_lost += done.touch_lost as u64;
     }
 }
 
@@ -2017,7 +2036,7 @@ mod tests {
     }
 
     /// Pad pressure while recording goes on the pad's note in the clip
-    /// (the Record list's "Pad pressure" row is on for a new track), plays
+    /// (the Record list's "Pressure" row is on for a new track), plays
     /// back to the pads on the next pass, and is left out with the row off.
     #[test]
     fn pad_pressure_while_recording_goes_on_its_note_and_plays_back() {
@@ -2558,6 +2577,11 @@ mod tests {
         run(&mut h, &mut pads, 4 * BAR - 1000, &[]);
         let st = h.state();
         assert_eq!((st.launch(0).map(|l| l.slot), st.cues.len()), (Some(1), 0));
+        // The view says it shows the one switch made on track 1.
+        assert_eq!(
+            h.view.includes().map(|i| i.switches[..2].to_vec()),
+            Some(vec![1, 0])
+        );
         let hits: Vec<(u64, usize)> = pads.hits.iter().map(|&(f, p, _)| (f, p)).collect();
         let want = [
             (0, 4),
@@ -3026,6 +3050,8 @@ mod tests {
         let mut fresh = PlayView::compile_cued(&h.project, &h.launches, &h.cues).unwrap();
         fresh.set_armed(h.armed);
         assert_eq!(h.view, fresh, "the view in place is what compiling gives");
+        // Every recorded note was a numbered change.
+        assert!(h.includes.recorded >= notes as u64, "{:?}", h.includes);
         // 5.5 bars of 2 s: the notes at most 4 times a second (44), and the
         // Capture button once a bar; one each note would be 176.
         assert!((10..=52).contains(&told), "told the screens {told} times");
