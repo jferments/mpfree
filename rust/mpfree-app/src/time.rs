@@ -2574,6 +2574,62 @@ mod tests {
         assert!((lane.value_at(at(2 * BAR - 1500)).unwrap() - 1.0).abs() < 1e-3);
     }
 
+    /// The note editor on the focused clip: Edit opens it; Timing Correct
+    /// with nothing selected moves every note to the 1/16 grid; a tap
+    /// selects a note and Delete takes it out; each is one take that Undo
+    /// puts back; ‹ Clips closes it.
+    #[test]
+    fn the_note_editor_edits_the_focused_clip_through_the_take_history() {
+        use mpfree_seq::Note;
+        use mpfree_time_ui::editor::EditAction as E;
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        assert_eq!(
+            h.act(TimeAction::Edit(E::Open)).unwrap_err(),
+            "edit: Track 1 has no clip"
+        );
+        let mut c = Clip::new("Beat", 3840);
+        c.notes = vec![
+            Note::new(10, 100, 0, 100),
+            Note::new(970, 100, 1, 90),
+            Note::new(1930, 100, 0, 110),
+        ];
+        h.project.tracks[0].slots[0] = Some(c.clone());
+        assert_eq!(
+            h.act(TimeAction::Edit(E::Open)).unwrap(),
+            "edit: Beat on Track 1"
+        );
+        assert!(h.state().edit.is_some());
+        // The clip's notes in time order (an undo may put them back in
+        // another order, which plays the same).
+        let sorted = |h: &TimeHost| -> Vec<Note> {
+            let mut n = h.project.clip(0, 0).unwrap().notes.clone();
+            n.sort_by_key(|n| (n.tick, n.note));
+            n
+        };
+        let ticks = |h: &TimeHost| -> Vec<Tick> { sorted(h).iter().map(|n| n.tick).collect() };
+        assert_eq!(
+            h.act(TimeAction::Edit(E::Button(7))).unwrap(),
+            "edit: timing correct moved 3 notes"
+        );
+        assert_eq!(ticks(&h), [0, 960, 1920]);
+        h.act(TimeAction::Edit(E::Note(1))).unwrap();
+        assert_eq!(
+            h.act(TimeAction::Edit(E::Button(6))).unwrap(),
+            "edit: 1 notes deleted"
+        );
+        assert_eq!(ticks(&h), [0, 1920]);
+        // Each edit is a take of its own.
+        h.act(TimeAction::Undo).unwrap();
+        assert_eq!(ticks(&h), [0, 960, 1920]);
+        h.act(TimeAction::Undo).unwrap();
+        assert_eq!(sorted(&h), c.notes);
+        assert_eq!(
+            h.act(TimeAction::Edit(E::Button(0))).unwrap(),
+            "edit: closed"
+        );
+        assert!(h.state().edit.is_none());
+    }
+
     /// Pads played over bars 2 and 3 without recording; Capture keeps them
     /// as a new clip in the armed track that plays on in its place, and
     /// Undo takes it back.

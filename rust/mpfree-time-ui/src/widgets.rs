@@ -675,13 +675,21 @@ impl Widget for ClipGrid {
         let rec = self.rec_rect(r);
         let edit = self.edit_rect(r);
         let head = r.inset(14).take_top(26).0;
+        // The legend's parts that fit between the title and the buttons,
+        // dropping the first ones when it is too wide.
+        let title_w = cx.measure(FontId::Bold, t.size_small, &self.title.to_uppercase());
+        let room = edit.x - 12 - (head.x + title_w + 16);
+        let mut legend = self.legend.as_str();
+        while !legend.is_empty() && cx.measure(FontId::Sans, t.size_small, legend) > room {
+            legend = legend.split_once(" · ").map_or("", |(_, rest)| rest);
+        }
         cx.text(
             FontId::Sans,
             t.size_small,
             Rect::new(head.x, head.y, edit.x - head.x - 12, head.h),
             Align::Right,
             t.text_dim,
-            &self.legend,
+            legend,
         );
         rec_song_pill(cx, rec, self.song_rec);
         cx.canvas.fill_round_rect(edit, 10, t.raised);

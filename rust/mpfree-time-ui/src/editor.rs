@@ -169,17 +169,19 @@ pub struct Editor {
 }
 
 impl Editor {
-    /// The editor on clip `slot` of `track`: the roll starts at the
-    /// clip's lowest note (an octave from C), or on the pads.
+    /// The editor on clip `slot` of `track`: the roll starts at the C
+    /// under the clip's lowest note, or at the lowest note itself when
+    /// starting from the C would leave its highest notes off the roll
+    /// (about [`ROLL_ROWS`] rows show); or on the pads.
     pub fn new(track: usize, slot: usize, clip: &Clip) -> Editor {
         let low = if pads(clip) {
             0
         } else {
-            clip.notes
-                .iter()
-                .map(|n| n.note)
-                .min()
-                .map_or(48, |n| n - n % 12)
+            let min = clip.notes.iter().map(|n| n.note).min().unwrap_or(48);
+            let max = clip.notes.iter().map(|n| n.note).max().unwrap_or(48);
+            let c = min - min % 12;
+            let low = if max >= c + ROLL_ROWS { min } else { c };
+            low.min(128 - ROLL_ROWS)
         };
         Editor {
             track,
@@ -303,10 +305,12 @@ impl Editor {
                 };
                 let e = notes::timing_correct(clip, self.tc, &which);
                 let n = e.add.len();
+                // The selection stays as it was: the corrected notes when
+                // some were selected, none after correcting them all.
                 (
                     e,
                     None,
-                    true,
+                    !none,
                     true,
                     format!("edit: timing correct moved {n} notes"),
                 )
@@ -633,6 +637,8 @@ const VEL_H: i32 = 64;
 const TOOLS_H: i32 = 48;
 const GAP: i32 = 6;
 const ROW_H: i32 = 18;
+/// About how many rows the roll shows on the Arrange page.
+pub const ROLL_ROWS: u8 = 22;
 const LIST_H: i32 = 34;
 /// The list's columns: number, position, note, velocity, length, chance.
 const LIST_COLS: [(&str, i32); 6] = [
@@ -1141,6 +1147,9 @@ mod tests {
         let mut c = clip(&[(0, 240, 48), (480, 240, 50), (960, 240, 52)]);
         let mut ed = Editor::new(1, 0, &c);
         assert_eq!(ed.low, 48);
+        // From G2 to D#4 does not fit from C2: the roll starts at G2.
+        let wide = clip(&[(0, 240, 55), (480, 240, 75)]);
+        assert_eq!(Editor::new(1, 0, &wide).low, 55);
         ed.act(EditAction::Note(1), &c);
         assert_eq!(ed.sel, vec![1]);
         ed.act(EditAction::Button(4), &c);

@@ -46,6 +46,13 @@ On the current test build, some buttons (REC, OVERDUB, UNDO, PLAY START, TRACK M
 | **NOTE REPEAT** twice, or **SHIFT + NOTE REPEAT** | Latch: repeat keeps going after you let go. Press again to stop. | Works |
 | **NOTE REPEAT + MENU** | Opens the Arp panel. | Works |
 
+## Arrange tab
+
+| Control | What it does | When |
+|---|---|---|
+| **Data wheel** | Changes the picked row of the Record settings, or of the Edit options while the note editor is open. | Works |
+| **SHIFT + data wheel** | Scrolls the clip grid, the song, or the note editor's roll or list. | Works |
+
 ## Mode buttons
 
 The mode buttons along the top of the MPC go to the MPFree page that does the same job.
