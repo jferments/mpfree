@@ -42,6 +42,7 @@
 //! apply as one undoable take (`Takes::edit` in `mpfree-play`).
 
 use crate::{Clip, Cond, Lock, Note, MAX_CLIP_TICKS, MAX_RATCHET, MIN_CLIP_TICKS};
+use mpfree_moves::{Moves, MovesError};
 use mpfree_param::RelAddr;
 use mpfree_transport::time::{Tick, PPQ};
 
@@ -77,8 +78,8 @@ pub struct Step {
 }
 
 /// A change to a clip: take `erase` and `erase_locks` out, change the
-/// length from and to `length` when there is one, then put `add` and
-/// `add_locks` in.
+/// length from and to `length` when there is one, put `add` and
+/// `add_locks` in, then change the moves when `moves` says so.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Edit {
     pub erase: Vec<Note>,
@@ -86,6 +87,40 @@ pub struct Edit {
     pub length: Option<(Tick, Tick)>,
     pub erase_locks: Vec<Lock>,
     pub add_locks: Vec<Lock>,
+    /// A page added, taken off or copied takes the clip's moves along.
+    pub moves: Option<Box<MovesEdit>>,
+}
+
+/// The clip's moves before and after an [`Edit`]: kept whole, since a
+/// page edit moves every lane's points about (it is small next to the
+/// clip's notes, and made on the control thread).
+#[derive(Clone, Debug, PartialEq)]
+pub struct MovesEdit {
+    pub before: Moves,
+    pub after: Moves,
+}
+
+// A clip's moves hold only finite values (`Moves::check`), so equality is
+// total.
+impl Eq for MovesEdit {}
+
+/// The edit of `clip`'s moves that `f` makes, or None when it has none,
+/// makes no change or is refused (then the moves stay as they are).
+fn moves_edit(
+    clip: &Clip,
+    f: impl FnOnce(&mut Moves) -> Result<(), MovesError>,
+) -> Option<Box<MovesEdit>> {
+    if clip.moves.is_empty() {
+        return None;
+    }
+    let mut after = clip.moves.clone();
+    if f(&mut after).is_err() || after == clip.moves {
+        return None;
+    }
+    Some(Box::new(MovesEdit {
+        before: clip.moves.clone(),
+        after,
+    }))
 }
 
 impl Edit {
@@ -95,6 +130,7 @@ impl Edit {
             && self.length.is_none()
             && self.erase_locks.is_empty()
             && self.add_locks.is_empty()
+            && self.moves.is_none()
     }
 
     /// The edit that puts the clip back as it was.
@@ -105,6 +141,12 @@ impl Edit {
             length: self.length.map(|(a, b)| (b, a)),
             erase_locks: self.add_locks.clone(),
             add_locks: self.erase_locks.clone(),
+            moves: self.moves.as_ref().map(|m| {
+                Box::new(MovesEdit {
+                    before: m.after.clone(),
+                    after: m.before.clone(),
+                })
+            }),
         }
     }
 
@@ -113,6 +155,13 @@ impl Edit {
         self.add.extend(other.add);
         self.erase_locks.extend(other.erase_locks);
         self.add_locks.extend(other.add_locks);
+        self.moves = match (self.moves.take(), other.moves) {
+            (Some(mut a), Some(b)) => {
+                a.after = b.after;
+                Some(a)
+            }
+            (a, b) => a.or(b),
+        };
     }
 
     /// Take `old` out and put `new` in, unless they are the same.
@@ -514,6 +563,26 @@ impl Grid {
                     .extend(self.moved_locks(clip, src, new, n + j));
             }
         }
+        // The moves are cut off with the steps, or the new steps repeat
+        // the moves of the steps they copy.
+        let size = self.size;
+        edit.moves = moves_edit(clip, |m| {
+            let new32 = u32::try_from(new).map_err(|_| MovesError::Bad)?;
+            if new < old {
+                m.truncate(new32)?;
+            }
+            if copy && steps > n {
+                let width = n.min(PAGE) as Tick;
+                let from = (n as Tick - width) * size;
+                let to = (n as Tick * size).min(old);
+                let mut at = n as Tick * size;
+                while at < new {
+                    m.copy_range(from as u32, to as u32, at as u32, new32)?;
+                    at += width * size;
+                }
+            }
+            Ok(())
+        });
         edit
     }
 
@@ -539,6 +608,16 @@ impl Grid {
                     .extend(self.moved_locks(clip, src, clip.length, dst));
             }
         }
+        // The page's moves come along, over the same ticks.
+        let page = PAGE as Tick * self.size;
+        let (a, b) = (
+            from as Tick * page,
+            ((from + 1) as Tick * page).min(clip.length),
+        );
+        let at = to as Tick * page;
+        edit.moves = moves_edit(clip, |m| {
+            m.copy_range(a as u32, b as u32, at as u32, clip.length as u32)
+        });
         edit
     }
 
@@ -698,9 +777,13 @@ impl Clip {
     /// unchanged and the error says which.
     pub fn apply(&mut self, edit: &Edit) -> Result<(), crate::ModelError> {
         let (notes, locks, length) = (self.notes.clone(), self.locks.clone(), self.length);
+        let moves = edit.moves.as_ref().map(|_| self.moves.clone());
         let result = self.apply_all(edit);
         if result.is_err() {
             (self.notes, self.locks, self.length) = (notes, locks, length);
+            if let Some(moves) = moves {
+                self.moves = moves;
+            }
         }
         result
     }
@@ -730,6 +813,12 @@ impl Clip {
         }
         for l in &edit.add_locks {
             self.add_lock(*l)?;
+        }
+        if let Some(m) = &edit.moves {
+            if self.moves != m.before {
+                return Err(crate::ModelError::BadMoves);
+            }
+            self.moves = m.after.clone();
         }
         Ok(())
     }
@@ -857,6 +946,80 @@ mod tests {
         c.apply(&off).unwrap();
         assert_eq!(c.notes, vec![Note::new(960, 240, 36, 90)]);
         assert!(g.toggle(&c, 36, 16, 90).is_empty(), "past the last step");
+    }
+
+    /// Page edits take the clip's moves along: a copied page copies them,
+    /// a page added with copy repeats them, a page taken off cuts them
+    /// off, and the inverse puts them back.
+    #[test]
+    fn page_edits_take_the_moves_along() {
+        use mpfree_moves::{Kind, Map, Target};
+        use mpfree_param::OnTrack;
+        let g = Grid::new(240).unwrap();
+        let page = 16 * 240;
+        let mut c = clip(2 * page, &[(0, 36)]);
+        let target = Target::Track(RelAddr::new(OnTrack::Inst, 1));
+        // A sweep up over the first page's first beat, then let go.
+        c.moves
+            .put(
+                target,
+                Map::linear(0.0, 1.0),
+                &[
+                    (0.0, 0.0, Kind::Ramp),
+                    (960.0, 1.0, Kind::Ramp),
+                    (961.0, 1.0, Kind::End),
+                ],
+                2 * page as u32,
+            )
+            .unwrap();
+        let at = |c: &Clip, t: Tick| c.moves.lane(target).and_then(|l| l.value_at(t as f64));
+        assert_eq!(at(&c, 480), Some(0.5));
+        assert_eq!(at(&c, page + 480), None, "page 2 is free");
+
+        // Copy page 1 over page 2.
+        let e = g.copy_page(&c, 0, 1);
+        let before = c.clone();
+        c.apply(&e).unwrap();
+        assert_eq!(at(&c, page + 480), Some(0.5));
+        assert_eq!(at(&c, 480), Some(0.5), "page 1 keeps its own");
+        c.apply(&e.inverse()).unwrap();
+        assert_eq!(c, before, "the inverse puts the moves back");
+
+        // Add a page that copies the one before it (page 2, which is free).
+        c.apply(&g.copy_page(&c, 0, 1)).unwrap();
+        let e = g.add_page(&c, true);
+        c.apply(&e).unwrap();
+        assert_eq!(c.length, 3 * page);
+        assert_eq!(at(&c, 2 * page + 480), Some(0.5), "page 3 repeats page 2");
+        assert!(c.check().is_ok());
+
+        // Take two pages off: the moves end with the clip.
+        c.apply(&g.remove_page(&c)).unwrap();
+        c.apply(&g.remove_page(&c)).unwrap();
+        assert_eq!(c.length, page);
+        assert!(c.check().is_ok());
+        assert_eq!(at(&c, 480), Some(0.5));
+
+        // A clip with no moves gets no moves edit.
+        let plain = clip(page, &[(0, 36)]);
+        assert!(g.add_page(&plain, true).moves.is_none());
+        // An edit made for other moves is refused, and changes nothing.
+        let mut other = c.clone();
+        other.moves = mpfree_moves::Moves::new();
+        let e = g.copy_page(
+            &{
+                let mut two = c.clone();
+                two.apply(&g.add_page(&c, false)).unwrap();
+                two
+            },
+            0,
+            1,
+        );
+        if e.moves.is_some() {
+            let kept = other.clone();
+            assert!(other.apply(&e).is_err());
+            assert_eq!(other, kept);
+        }
     }
 
     #[test]

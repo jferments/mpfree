@@ -1,20 +1,20 @@
 #!/usr/bin/env python3
-"""Phase 1 "Hello MPC" on the kexec test build. RAM ONLY on the MPC.
+"""mpfree, the app, on the kexec test build. RAM ONLY on the MPC.
 
-Run it through `collect-over-ssh.sh --hello`, after `--kexec-boot` has started
+Run it through `collect-over-ssh.sh --app`, after `--kexec-boot` has started
 the test build from the USB stick. It talks only to the test build: it uses
 the newest ~/mpfree-work/kexec-stick-* folder's known_hosts, so stock 3.6 (a
 different host key) is refused before anything runs. Step by step, each
 started by you pressing Enter:
 
   1. Workstation, read-only: checks that the program
-     (rust/target/armv7-unknown-linux-gnueabihf/release/mpfree-hello) is a
+     (rust/target/armv7-unknown-linux-gnueabihf/release/mpfree) is a
      static ARM EABI5 hard-float executable, and finds the test build's folder.
   2. Test build, read-only: checks it is the test build (release, no MMC
      device, kexec off, / read-only), that /run has room and allows programs,
      that Akai's app is not running, and lists who holds the sound, MIDI,
      touch and screen devices.
-  3. Test build RAM: copies the program to /run/mpfree-hello and checks its
+  3. Test build RAM: copies the program to /run/mpfree-app and checks its
      hash there. Nothing else is written; a power-cycle clears it. Skipped
      when the only steps are app and line, which need no copy.
   app: READ-ONLY. The pad player that a stick built with --app starts at
@@ -34,7 +34,7 @@ started by you pressing Enter:
   4. inventory: the program lists sound cards, MIDI and input devices, the
      framebuffer and real-time limits (read-only).
   5. screen: stops the test build's own log display (mpfree-test-screen, our
-     service; started again at the end) and draws the Hello MPC card.
+     service; started again at the end) and draws the mpfree card.
   6. touch: shows your touches on the screen for 10 s (reads only, no grab).
   7. pads: listens on all three of the controller's MIDI ports for 15 s and
      shows every message in hex. Only if no pad hit arrived, it offers a
@@ -42,7 +42,7 @@ started by you pressing Enter:
   8. lights: sends Akai's startup pad colours and button lights, then your
      project's pad colours, and lights each pad brighter while you hold it.
   9. drums: plays the first factory drum kit made by offline-factory-kit.py
-     from the pads for 30 s. The kits file is copied into /run/mpfree-hello
+     from the pads for 30 s. The kits file is copied into /run/mpfree-app
      with the program. Turn the volume knob down first.
  10. setup: asks the controller for a session, as Akai's app does, then sends
      the app's setup messages byte for byte (you type SEND first), lights the
@@ -55,14 +55,14 @@ started by you pressing Enter:
      within 20 s it plays without Akai's setup. Turn the volume knob down first.
  12. click: plays a 120 BPM click on the ACVA output for 10 s, quietly, and
      counts underruns and late periods. Turn the volume knob down first.
-  MPFREE_HELLO_STEPS picks the steps after the copy, by name, comma-separated
+  MPFREE_APP_STEPS picks the steps after the copy, by name, comma-separated
   (default: inventory,screen,touch,pads,click). They always run in the order
   app, line, then the numbered ones above. After lights, drums, setup and play it
   checks that the controller still has its normal USB id. The first step that
   draws on the screen stops the log display or the pad player (our own
   services), since both would draw on /dev/fb0. At the end it starts again
   whichever it stopped, and copies the program's own report
-  (/run/mpfree-hello/hello.txt) into this report.
+  (/run/mpfree-app/report.txt) into this report.
 
 lights, drums, setup and play send the controller only what Akai's app sent it in
 the capture of 2026-11-10 (see docs/hardware/controller-protocol.md), plus pad
@@ -90,11 +90,11 @@ _spec = importlib.util.spec_from_file_location("host_kexec_boot", os.path.join(H
 kexec = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(kexec)
 
-PROGRAM_BUILT = os.path.join(REPO_ROOT, "rust", "target", "armv7-unknown-linux-gnueabihf", "release", "mpfree-hello")
+PROGRAM_BUILT = os.path.join(REPO_ROOT, "rust", "target", "armv7-unknown-linux-gnueabihf", "release", "mpfree")
 PROGRAM_MAX = 16 << 20
 KIT_MAX = 48 << 20
 KIT_MAGIC = b"MPFKITS1"
-REMOTE_DIR = "/run/mpfree-hello"
+REMOTE_DIR = "/run/mpfree-app"
 STEPS = ("app", "line", "inventory", "screen", "touch", "pads", "lights", "drums", "setup", "play", "click")
 # The steps that use the pad player started at power-on: no copy, and they run before anything stops it.
 APP_STEPS = ("app", "line")
@@ -103,7 +103,7 @@ CONTROLLER_ID = "09e8:0046"
 SETUP_WORD = "SEND"
 LINE_WORD = "LINE"
 # Tests set this so the prompts can be answered without a terminal.
-TESTING = os.environ.get("MPFREE_HELLO_TEST") == "1"
+TESTING = os.environ.get("MPFREE_APP_TEST") == "1"
 
 # The only program runs this tool asks for: fixed arguments, nothing from the command line.
 PHASES = {
@@ -183,20 +183,20 @@ done
 [ "$n" = 0 ] && say "  none"
 [ "$fail" = 0 ] && say CHECKS-OK || say CHECKS-STOP
 """
-# Writes only into /run/mpfree-hello (RAM). A report from an earlier run in this boot is kept.
+# Writes only into /run/mpfree-app (RAM). A report from an earlier run in this boot is kept.
 PREPARE = r"""R=''
 umask 077
-d="$R/run/mpfree-hello"
+d="$R/run/mpfree-app"
 [ -d "$d" ] || mkdir "$d" || exit 1
-rm -f "$d/mpfree-hello" "$d/mpfree-hello.part" "$d/kit.bin" "$d/kit.bin.part" "$d/kits.bin" "$d/kits.bin.part"
+rm -f "$d/mpfree" "$d/mpfree.part" "$d/kit.bin" "$d/kit.bin.part" "$d/kits.bin" "$d/kits.bin.part"
 """
-RECEIVE = r"""R=''; umask 077; cat > "$R/run/mpfree-hello/mpfree-hello.part" && chmod 700 "$R/run/mpfree-hello/mpfree-hello.part" && mv "$R/run/mpfree-hello/mpfree-hello.part" "$R/run/mpfree-hello/mpfree-hello" """
-RECEIVE_KIT = r"""R=''; umask 077; cat > "$R/run/mpfree-hello/kits.bin.part" && mv "$R/run/mpfree-hello/kits.bin.part" "$R/run/mpfree-hello/kits.bin" """
+RECEIVE = r"""R=''; umask 077; cat > "$R/run/mpfree-app/mpfree.part" && chmod 700 "$R/run/mpfree-app/mpfree.part" && mv "$R/run/mpfree-app/mpfree.part" "$R/run/mpfree-app/mpfree" """
+RECEIVE_KIT = r"""R=''; umask 077; cat > "$R/run/mpfree-app/kits.bin.part" && mv "$R/run/mpfree-app/kits.bin.part" "$R/run/mpfree-app/kits.bin" """
 HASH = r"""R=''
-sha256sum "$R/run/mpfree-hello/mpfree-hello"
+sha256sum "$R/run/mpfree-app/mpfree"
 """
 HASH_KIT = r"""R=''
-sha256sum "$R/run/mpfree-hello/kits.bin"
+sha256sum "$R/run/mpfree-app/kits.bin"
 """
 # Read-only: the controller's USB id, to see it is still in its normal MIDI mode.
 CONTROLLER = r"""R=''
@@ -209,8 +209,8 @@ done
 [ "$found" = 1 ] || echo "controller: not found"
 """
 RUN = r"""R=''
-cd "$R/run/mpfree-hello" || exit 1
-exec "$R/run/mpfree-hello/mpfree-hello" @@ARGS@@
+cd "$R/run/mpfree-app" || exit 1
+exec "$R/run/mpfree-app/mpfree" @@ARGS@@
 """
 # Our own log display and pad player only (whichever runs); Akai's units are not touched.
 SCREEN_STOP = r"""R=''
@@ -261,7 +261,7 @@ TOUCH_IRQ = r"""R=''
 grep -i 'ili' "$R/proc/interrupts" 2>/dev/null || echo "no ILI2117 line in /proc/interrupts"
 """
 REPORT = r"""R=''
-cat "$R/run/mpfree-hello/hello.txt" 2>/dev/null || echo "(no report file)"
+cat "$R/run/mpfree-app/report.txt" 2>/dev/null || echo "(no report file)"
 """
 
 
@@ -348,7 +348,7 @@ def chosen_steps(text):
     names = [n.strip() for n in text.split(",") if n.strip()]
     unknown = [n for n in names if n not in STEPS]
     if unknown or not names:
-        raise Stop(f"MPFREE_HELLO_STEPS: unknown step(s) {', '.join(unknown) or '(none given)'}; "
+        raise Stop(f"MPFREE_APP_STEPS: unknown step(s) {', '.join(unknown) or '(none given)'}; "
                    f"choose from {','.join(STEPS)}")
     return [n for n in STEPS if n in names]
 
@@ -512,11 +512,12 @@ def app_lines(mpc, since):
         if not m or float(m.group(1)) < since:
             continue
         rest = m.group(2)
-        # "mpfree-hello[211]: text" or "systemd[1]: text": keep the text, and who wrote it if not the app.
+        # "mpfree[211]: text" or "systemd[1]: text": keep the text, and who wrote it if not the app
+        # (a stick built before the rename names the app "mpfree-hello").
         ident, sep, message = rest.partition(": ")
         if not sep:
             message = rest
-        elif not ident.startswith("mpfree-hello"):
+        elif ident.partition("[")[0] not in ("mpfree", "mpfree-hello"):
             message = f"({ident}) {message}"
         lines.append((float(m.group(1)), message))
     return lines
@@ -741,12 +742,12 @@ def main(argv):
     p.add_argument("--user", default="root")
     p.add_argument("--key", required=True)
     p.add_argument("--work", required=True)
-    p.add_argument("--program", default=os.environ.get("MPFREE_HELLO", PROGRAM_BUILT))
+    p.add_argument("--program", default=os.environ.get("MPFREE_APP", PROGRAM_BUILT))
     p.add_argument("--report")
     args = p.parse_args(argv)
     out = kexec.Out(args.report)
-    out.say("MPFree Hello MPC on the test build (changes RAM on the MPC only)")
-    steps = chosen_steps(os.environ.get("MPFREE_HELLO_STEPS", DEFAULT_STEPS))
+    out.say("mpfree on the test build (changes RAM on the MPC only)")
+    steps = chosen_steps(os.environ.get("MPFREE_APP_STEPS", DEFAULT_STEPS))
     # The app and line steps use the pad player started at power-on; the program is copied only for the others.
     copy = any(n not in APP_STEPS for n in steps)
     total = (3 if copy else 2) + len(steps)
@@ -755,12 +756,12 @@ def main(argv):
     out.say(f"  steps: {', '.join(steps)}")
     program = os.path.realpath(args.program)
     if not os.path.isfile(program):
-        raise Stop(f"missing {program}: build it first (see docs/guides/hello-mpc.md)")
+        raise Stop(f"missing {program}: build it first (see docs/guides/mpfree-app.md)")
     with open(program, "rb") as fh:
         data = fh.read(PROGRAM_MAX + 1)
     problem = arm_static_problem(data)
     if problem:
-        raise Stop(f"{program} is {problem}; rebuild it as docs/guides/hello-mpc.md shows")
+        raise Stop(f"{program} is {problem}; rebuild it as docs/guides/mpfree-app.md shows")
     digest = hashlib.sha256(data).hexdigest()
     out.say(f"  program: {program}")
     out.say(f"  {len(data)} bytes, sha256 {digest}, static ARM EABI5 hard-float")
@@ -774,7 +775,7 @@ def main(argv):
     kit = kit_digest = None
     need_kits = [n for n in ("drums", "play") if n in steps]
     if need_kits:
-        kit = os.environ.get("MPFREE_HELLO_KIT") or newest_kit(os.path.realpath(args.work))
+        kit = os.environ.get("MPFREE_APP_KIT") or newest_kit(os.path.realpath(args.work))
         if not kit:
             out.say("  no factory kits found (make them with offline-factory-kit.py); left out: "
                     + ", ".join(need_kits))
@@ -845,10 +846,10 @@ def main(argv):
                 if step(i, "Inventory (read-only)", "Lists the sound, MIDI, input and screen devices."):
                     run_phase(mpc, out, "inventory")
             elif name == "screen":
-                if step(i, "Screen: our log display stops (it starts again at the end), then the Hello MPC card",
+                if step(i, "Screen: our log display stops (it starts again at the end), then the mpfree card",
                         "Watch the MPC's screen."):
                     drawn("screen")
-                    note(out, "Is the Hello MPC card on the screen, and the right way up?")
+                    note(out, "Is the mpfree card on the screen, and the right way up?")
             elif name == "touch":
                 if step(i, "Touch: 10 s, one finger and then two (read-only)", "Have a finger ready."):
                     drawn("touch")
@@ -940,7 +941,7 @@ def main(argv):
             out.say(f"\nStarting the {name} again:")
             rc, text = mpc.run(script, test=True)
             out.say(f"  {text.strip() or f'(no answer, exit code {rc})'}")
-    out.say(f"\nThe program's own report ({REMOTE_DIR}/hello.txt):")
+    out.say(f"\nThe program's own report ({REMOTE_DIR}/report.txt):")
     rc, text = mpc.run(REPORT, test=True)
     for line in text.splitlines():
         out.say(f"  | {line}")
