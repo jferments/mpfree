@@ -37,6 +37,16 @@ This is not strictly read-only, so it is opt-in. It reads the kernel's usbmon te
 
 The host tool walks through ten phases (single pad soft/hard, pads 1-16 in order, pressure, Q-Links, data wheel, SHIFT, FULL LEVEL, play/stop) and decodes USB-MIDI packets and SysEx for each phase. usbmon text shows at most 32 data bytes per transfer, so long LED bursts are marked as truncated.
 
+`MPFREE_CAPTURE_PHASES=midi-cv` swaps in six phases about the rear jacks instead: idle, notes into the 5-pin MIDI In jack, pads on a MIDI track whose output is the MIDI Out jack, pads on a CV track, one held note on the CV track, and one CV slider. Before anything runs on the MPC, the tool lists what to set up in Akai's app (a new MIDI track and a new CV track, nothing saved, Preferences unchanged). The report adds, for each phase, the messages per direction and cable next to the idle phase's count. It answers which USB-MIDI cable carries the DIN jacks under Akai's app, and whether the CV/Gate jacks are driven over USB-MIDI at all. Nothing needs to be plugged into the CV/Gate jacks.
+
+```bash
+MPFREE_ACCEPT_USBMON=YES MPFREE_CAPTURE_PHASES=midi-cv bash tools/mpc-one/collect-over-ssh.sh --midi-capture
+```
+
+`MPFREE_CAPTURE_PHASES=cv-scale` is the second round. With the keyboard on MIDI In and the CV track selected, you play C in three octaves, then C, C sharp, D and D sharp. Then you move the CV track to its next outputs and play one C. Last, you play the MIDI track (output MIDI Out) from the keyboard and the pads. Because the keyboard's note numbers show on cable 2, each CV message can be matched to its note.
+
+`MPFREE_CAPTURE_PHASES=midi-out` is the third round, for the MIDI Out jack only. Set it up once a synth on MIDI Out is heard playing from a MIDI track (in Akai's app that took the track's MIDI Out routing as well as its MIDI Output Ch). Then you play C, E and G on the keyboard into the MIDI track, hold one key for about 3 s, hit pad 1 softly and hard and pad 13 once, and, only if Sync is already ticked for that port in Akai's Preferences, press PLAY and STOP. The report shows which cable and channel the notes leave on.
+
 ## What comes next (not in this phase)
 
 These need separate, explicit opt-in steps, each with its own undo plan:
