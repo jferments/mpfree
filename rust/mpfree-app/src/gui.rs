@@ -24,7 +24,8 @@
 //! `app.rs` decides, and touches only report what was touched.
 
 use crate::app::{
-    tabs, ArpView, GuideView, MapView, MenuView, PadLevel, Settings, Status, View, WorkspaceView,
+    tabs, ArpView, GuideView, MapView, MenuView, MuteKeys, PadLevel, Settings, Status, View,
+    WorkspaceView,
 };
 use crate::calibrate_page::CalibrateView;
 use crate::chain_page::{ChainPage, Turned};
@@ -88,13 +89,19 @@ pub const GUIDE_LAYOUT: &str = "col(header:60, row(guide:*, found:400):*, hint:2
 const CONSOLE_HINT: &str =
     "Switch the MPC off with its power switch to return to the stock firmware";
 const SHIFT_HINT: &str =
-    "SHIFT +   wheel: synth octave   ·   FULL LEVEL: Half Level   ·   NOTE REPEAT: Latch   ·   MENU: Prefs   ·   STOP: console";
+    "SHIFT +   wheel: synth octave   ·   FULL LEVEL: Half Level   ·   NOTE REPEAT: Latch   ·   MENU: Prefs   ·   STOP: back to bar 1";
+/// TRACK MUTE's keys, over whatever page shows (control map decision 5).
+const TRACK_MUTE_HINT: &str = "TRACK MUTE:   pads 1-8 mute and unmute tracks 1-8   ·   green: playing, red: muted   ·   \
+                               SHIFT + TRACK MUTE: the kit's pads   ·   TRACK MUTE: the pads play again";
+const PAD_MUTE_HINT: &str =
+    "SHIFT + TRACK MUTE:   a pad mutes and unmutes itself in the kit   ·   red: muted   ·   \
+                             TRACK MUTE: tracks   ·   SHIFT + TRACK MUTE: the pads play again";
 const SHIFT_SYNTH_HINT: &str =
-    "SHIFT +   wheel: page   ·   FULL LEVEL: Half Level   ·   NOTE REPEAT: Latch   ·   MENU: Prefs   ·   STOP: console";
+    "SHIFT +   wheel: page   ·   FULL LEVEL: Half Level   ·   NOTE REPEAT: Latch   ·   MENU: Prefs   ·   STOP: back to bar 1";
 const SHIFT_SAMPLE_HINT: &str =
-    "SHIFT +   wheel: pad   ·   Q-Links: finer   ·   UNDO: redo   ·   MENU: Prefs   ·   STOP: console";
+    "SHIFT +   wheel: pad   ·   Q-Links: finer   ·   UNDO: redo   ·   MENU: Prefs   ·   STOP: back to bar 1";
 const SHIFT_MENU_HINT: &str =
-    "SHIFT +   wheel: change the value   ·   MENU: Prefs   ·   STOP: console";
+    "SHIFT +   wheel: change the value   ·   MENU: Prefs   ·   STOP: back to bar 1";
 const OPTIONS_HINT: &str =
     "Wheel or tap: pick a row   ·   - / +, SHIFT + wheel or the arrows: change it   ·   MENU: close";
 const GUIDE_HINT: &str = "STOP: skip this button   ·   The pads still play while the guide is open";
@@ -709,6 +716,7 @@ impl Player {
             latched: false,
             rate: "1/16",
             bpm: 120.0,
+            mute_keys: MuteKeys::Off,
         };
         let mut p = Player {
             ui,
@@ -1337,6 +1345,10 @@ impl Player {
             SHIFT_SAMPLE_HINT.to_string()
         } else if self.status.shift && self.ready {
             SHIFT_HINT.to_string()
+        } else if self.status.mute_keys == MuteKeys::Tracks {
+            TRACK_MUTE_HINT.to_string()
+        } else if self.status.mute_keys == MuteKeys::Pads {
+            PAD_MUTE_HINT.to_string()
         } else if self.view == View::Play && self.band_showing() && self.status.latched {
             format!("Latched: {}   ·   NOTE REPEAT: let go   ·   hold NOTE REPEAT for the wheel, - / + and Q-Links   ·   \
                      {stop}", crate::app::mode_label(mode))
@@ -3426,6 +3438,7 @@ pub fn sample_player(fonts: Fonts) -> Player {
         latched: false,
         rate: "1/16",
         bpm: 120.0,
+        mute_keys: MuteKeys::Off,
     }));
     for (pad, v) in [(0usize, 112u8), (5, 87), (10, 64)] {
         p.apply(ToUi::PadDown { pad, velocity: v });
@@ -3743,6 +3756,7 @@ pub fn sample_play(fonts: Fonts, v: PlayView) -> Player {
         latched: false,
         rate: "1/16",
         bpm: 92.0,
+        mute_keys: MuteKeys::Off,
     }));
     sample_loop(&mut p);
     if v == PlayView::Loop {
@@ -4598,6 +4612,7 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         latched: false,
         rate: "1/16",
         bpm: 120.0,
+        mute_keys: MuteKeys::Off,
     }));
     play_synth.apply(ToUi::Kit(synth_kit));
     for (pad, v) in [(0usize, 96u8), (4, 90), (7, 101)] {
@@ -4630,6 +4645,7 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         latched: false,
         rate: "1/16",
         bpm: 120.0,
+        mute_keys: MuteKeys::Off,
     }));
     chords.apply(ToUi::KitChanged {
         kit: synth_kit,
@@ -8077,6 +8093,7 @@ mod tests {
             latched: true,
             rate: "1/8",
             bpm: 96.0,
+            mute_keys: MuteKeys::Off,
         };
         p.apply(ToUi::Status(s.clone()));
         assert_eq!(p.ui.get::<Label>("hint").unwrap().text, SHIFT_HINT);
@@ -8104,13 +8121,24 @@ mod tests {
             "the level is on the slider: {chips:?}"
         );
         s.shift = false;
-        p.apply(ToUi::Status(s));
+        p.apply(ToUi::Status(s.clone()));
         assert!(p
             .ui
             .get::<Label>("hint")
             .unwrap()
             .text
             .contains("NOTE REPEAT: repeat"));
+        // TRACK MUTE: the hint says what the pads are now, on any page.
+        for (keys, hint) in [
+            (MuteKeys::Tracks, TRACK_MUTE_HINT),
+            (MuteKeys::Pads, PAD_MUTE_HINT),
+        ] {
+            s.mute_keys = keys;
+            p.apply(ToUi::Status(s.clone()));
+            assert_eq!(p.ui.get::<Label>("hint").unwrap().text, hint);
+        }
+        s.mute_keys = MuteKeys::Off;
+        p.apply(ToUi::Status(s));
         p.apply(ToUi::PadFlash {
             pad: 3,
             velocity: 90,

@@ -72,6 +72,9 @@ pub enum Job {
     /// Q-LINK: the Q-Link column's next bank, Macros 1-4, Macros 5-8, then
     /// the page's own knobs again (on Play and the chain editor).
     QLink,
+    /// TRACK MUTE: the pads mute tracks 1-8 over any page (SHIFT: the
+    /// playing kit's pads), until it is pressed again.
+    TrackMute,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -116,7 +119,7 @@ pub const CONTROLS: [Control; 42] = [
     c("+", Job::Plus),
     c("Q-LINK", Job::QLink),
     // The mode buttons the hardware control map gives a page (Jay, 20:40Z).
-    c("TRACK MUTE", Job::None),
+    c("TRACK MUTE", Job::TrackMute),
     c("NEXT SEQ", Job::NextSeq),
     c("STEP SEQ", Job::StepSeq),
     c("SAMPLER", Job::Sampler),
