@@ -21,6 +21,10 @@ Phase sets (--phases, or MPFREE_CAPTURE_PHASES in collect-over-ssh.sh):
 - cv-scale: the second round. A keyboard on MIDI In plays known notes into
   the CV track, so the CV messages can be matched to note numbers; one CV
   output moved; the MIDI track's output tried again (CV_SCALE_SETUP).
+- midi-out: the third round, once a synth on the 5-pin MIDI Out jack has
+  been heard playing from a MIDI track (Akai's MIDI Out routing set): which
+  cable carries MIDI Out, and how notes, a held note, pad velocities and
+  (optionally) clock leave on it (MIDI_OUT_SETUP).
 usbmon's text interface shows at most 32 data bytes per transfer, so longer
 transfers (for example big LED SysEx bursts) are marked as truncated.
 """
@@ -80,6 +84,20 @@ CV_SCALE_PHASES = (
                 "keyboard, then hit pads 1 and 13."),
 )
 
+# Third round (after the owner found the MIDI track's routing that makes a
+# synth on the MIDI Out jack play, 2026-11-12). The keyboard on MIDI In
+# (cable 2 in) plays known notes into the MIDI track, so each one can be
+# matched to what goes out.
+MIDI_OUT_PHASES = (
+    ("idle", "Touch NOTHING (baseline). Akai's app shows the MIDI track."),
+    ("out_keys", "With the MIDI track selected, play C, then E, then G on the keyboard, one key "
+                 "at a time. The synth on MIDI Out should sound."),
+    ("out_hold", "HOLD one key on the keyboard for about 3 s, then let go."),
+    ("out_pads", "Hit pad 1 softly, then pad 1 hard, then pad 13 once."),
+    ("out_clock", "Only if Sync is already ticked for the MIDI Out port (Preferences > MIDI / "
+                  "Sync): press PLAY, wait 3 s, press STOP. Otherwise s + Enter to skip."),
+)
+
 # Shown before the capture starts: what to prepare in Akai's app. The menu
 # names are from the MPC 3.6 user guide (Track types, MIDI Tracks, CV
 # Tracks) and are not checked on this unit.
@@ -101,8 +119,16 @@ CV_SCALE_SETUP = (
     "  5. Do not save the project or change Preferences.",
 )
 
-PHASE_SETS = {"controller": PHASES, "midi-cv": MIDI_CV_PHASES, "cv-scale": CV_SCALE_PHASES}
-SETUPS = {"midi-cv": MIDI_CV_SETUP, "cv-scale": CV_SCALE_SETUP}
+MIDI_OUT_SETUP = (
+    "Before you press Enter, in Akai's app (stock 3.6, normal use, nothing saved):",
+    "  1. Keep the keyboard on the 5-pin MIDI In jack and the synth on the 5-pin MIDI Out jack.",
+    "  2. Keep the MIDI track routed the way that made the synth play, and select it.",
+    "  3. Do not save the project or change Preferences.",
+)
+
+PHASE_SETS = {"controller": PHASES, "midi-cv": MIDI_CV_PHASES, "cv-scale": CV_SCALE_PHASES,
+              "midi-out": MIDI_OUT_PHASES}
+SETUPS = {"midi-cv": MIDI_CV_SETUP, "cv-scale": CV_SCALE_SETUP, "midi-out": MIDI_OUT_SETUP}
 
 CIN_LEN = {0x0: 3, 0x1: 3, 0x2: 2, 0x3: 3, 0x4: 3, 0x5: 1, 0x6: 2, 0x7: 3,
            0x8: 3, 0x9: 3, 0xA: 3, 0xB: 3, 0xC: 2, 0xD: 2, 0xE: 3, 0xF: 1}

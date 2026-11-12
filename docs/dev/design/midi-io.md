@@ -53,7 +53,7 @@ If the CV phases show no USB traffic, the CV is driven some other way. The next 
 
 **Second round (2026-11-12):** `MPFREE_CAPTURE_PHASES=cv-scale`, read-only in the same way. The keyboard on MIDI In played known notes (C in three octaves, then four semitones) into the CV track, and the capture saw those note numbers on cable 2, so no pad layout was needed. Result: a CV track's pitch is `floor((note − 36) × 16383 / 60)`, and Akai's CV ports 3 and 4 are the next CC pairs (CC 4 to 7). A MIDI track again sent nothing on USB. Details are in [controller-protocol](../hardware/controller-protocol.md#second-round-the-cv-scale-and-the-next-outputs-2026-11-12), and the bytes are in `cv_wire`, below.
 
-**Still open for M0:** the MIDI Out jack. The next step is to read the MIDI track's MIDI Output Port field and the Output Ports list in Akai's Preferences > MIDI / Sync, then capture again with the port set and a device on the jack. The CV volts per count need a meter on a jack while MPFree sends a known value, which is state-changing and belongs to M6.
+**Still open for M0:** the MIDI Out jack. In both rounds the MIDI track had only its MIDI Output Ch set; the owner then found that the track's MIDI Out routing also had to be set (to "MPC", 1), and a synth on the jack played. The third round, `MPFREE_CAPTURE_PHASES=midi-out` (read-only in the same way), captures it: notes from the keyboard into the MIDI track, a held note, pads soft and hard, and clock if Sync is already on for the port. The CV volts per count need a meter on a jack while MPFree sends a known value, which is state-changing and belongs to M6.
 
 **No MIDI port and no CV output is opened by MPFree until the owner has seen these results.**
 
@@ -109,3 +109,7 @@ Tests: `cargo test -p mpfree-midi`. They cover:
 4. Learned CCs start as absolute with jump. Learned keys start as momentary.
 5. Clock out is off and the clock source is none (internal) until set in Prefs.
 6. Running status is on for DIN out, which saves a byte on each repeated status.
+
+## A rule for the MIDI screens (the owner, 2026-11-12)
+
+Akai's MIDI track has two settings with nearly the same name on the same screen, "MIDI Output Ch" and a "MIDI Out" routing, and both have to be set before a note leaves the jack. MPFree does not do that. Each track has **one** MIDI output setting, port and channel together, and no two settings on a screen share a name or look alike while doing different things. If a track would send nothing (no port, or a port that is unplugged), the field says so in place.
