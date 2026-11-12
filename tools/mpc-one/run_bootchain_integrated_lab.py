@@ -42,6 +42,31 @@ def guest_marker_seen(transcript, marker):
     return re.search(r"(?m)^" + re.escape(marker) + r"[ \t]*(?:\n|$)", normalized) is not None
 
 
+def qemu_storage_for_synthetic_model(command, mock_disk):
+    """Wire two ARM virtio-MMIO disks using observed QEMU device enumeration.
+
+    With the existing root-drive device followed by the fixture device in
+    -device arguments, this QEMU ARM virt kernel enumerates the final virtio
+    disk as /dev/vda (synthetic) and the first one as /dev/vdb (rootfs).
+    Verified from the owner's 2026-11-12 serial log. Do NOT silently assume
+    the original root=/dev/vda is still correct when adding the second disk.
+    """
+    argv = list(command)
+    if argv.count("-append") != 1:
+        raise ValueError("Unexpected QEMU kernel argument layout")
+    idx = argv.index("-append") + 1
+    if argv[idx].count("root=/dev/vda") != 1 or "root=/dev/vdb" in argv[idx]:
+        raise ValueError("Unexpected QEMU root target; refusing unverified device mapping")
+    if any("mpfreemock" in arg for arg in argv):
+        raise ValueError("Synthetic disk already attached")
+    argv[idx] = argv[idx].replace("root=/dev/vda", "root=/dev/vdb")
+    argv.extend([
+        "-drive", "if=none,id=mpfreemock,format=raw,readonly=on,file=" + str(mock_disk),
+        "-device", "virtio-blk-device,drive=mpfreemock",
+    ])
+    return argv
+
+
 def stamp():
     return time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
 
@@ -344,12 +369,10 @@ class Lab:
             synthetic_mock_enabled = False
             try:
                 mock_disk = self.prepare_synthetic_usb_model()
-                # Another QEMU virtio regular-file drive only. Do not attach
-                # physical disks; Linux guest mounts the fixture read-only.
-                command.extend([
-                    "-drive", "if=none,id=mpfreemock,format=raw,readonly=on,file=" + str(mock_disk),
-                    "-device", "virtio-blk-device,drive=mpfreemock",
-                ])
+                # QEMU ARM virt enumerated the newly attached fixture as
+                # vda and the original cloned rootfs as vdb in the owner's
+                # latest serial log. Configure the root argument accordingly.
+                command = qemu_storage_for_synthetic_model(command, mock_disk)
                 synthetic_mock_enabled = True
             except Exception as exc:
                 self.notes.append("Synthetic USB model not prepared: " + str(exc))
@@ -410,7 +433,7 @@ class Lab:
             if synthetic_mock_enabled:
                 lines.extend([
                     "mkdir -p /mnt/mpfree-usb-model",
-                    "mount -t ext4 -o ro /dev/vdb /mnt/mpfree-usb-model 2>&1",
+                    "mount -t ext4 -o ro /dev/vda /mnt/mpfree-usb-model 2>&1",
                     "if /mnt/mpfree-usb-model/usb_descriptor_model 2>&1; then echo MPFREE_MODEL_EXEC_OK; else echo MPFREE_MODEL_EXEC_FAIL; fi",
                 ])
             else:
@@ -460,6 +483,12 @@ class Lab:
                         log.write(text)
                         log.flush()
                         data += text
+                        if re.search(r"Kernel panic - not syncing|Requested init /bin/sh failed", data[-12000:]):
+                            result["error"] = (
+                                "QEMU guest kernel panic before probe; inspect serial log. "
+                                "Likely wrong virtual rootfs selection or missing init."
+                            )
+                            break
                         if len(data) > 8 * 1024 * 1024:
                             data = data[-8 * 1024 * 1024:]
                         if not sent and re.search(r"(?:^|[\r\n])(?:/ # |# |~ # )", data[-4000:]):
