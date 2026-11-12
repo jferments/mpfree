@@ -44,6 +44,16 @@ def build(read):
     context=stage_ptr["stage_handoff_param"]["original_word"]
     second_slot=("0x%08x" % (int(context,16)+12)) if context else None
     followup=stage_ext.get("indirect_handoff_original_word")
+    media_tables=stage_ext.get("opaque_media_table_words",{})
+    mapping=media_tables.get("device_mapping",{})
+    order=media_tables.get("device_order",{})
+    contiguous=(
+        bool(mapping.get("table_start") and order.get("table_start"))
+        and int(mapping["table_start"],16)+4*len(
+            mapping.get("entries",[])) == int(order["table_start"],16)
+        and len(mapping.get("entries",[]))==8
+        and len(order.get("entries",[]))==5
+    )
     decoder_checks={
         "initial_spl_indirect_function_pointer_matches_selector":first_matches,
         "selector_calls_device_loader":("FUN_ff7054a4()" in selector),
@@ -61,6 +71,7 @@ def build(read):
         "eight_media_mapping_entries_captured":len(
             stage_ext.get("opaque_media_table_words",{}).get(
                 "device_mapping",{}).get("entries",[]))==8,
+        "mapping_table_ends_at_device_order_start":contiguous,
     }
     literals=u.get("direct_boot_probe",{}).get(
         "reboot_mode_original_literal_slots",{})
@@ -128,7 +139,8 @@ def build(read):
             "next_handoff_function_slot":second_slot,
             "next_handoff_word_original_image":followup,
             "next_handoff_runtime_target_proven":False,
-            "opaque_media_tables":stage_ext.get("opaque_media_table_words",{}),
+            "opaque_media_tables":media_tables,
+            "mapping_and_order_tables_adjacent_no_overlap":contiguous,
             "checks":decoder_checks,
         },
         "fastboot_getvar_power_source":power_source,
