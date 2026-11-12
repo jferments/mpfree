@@ -68,7 +68,7 @@ def audit(archive: Path) -> dict:
         "passed_checks": checks,
         "success": (
             all(v is True for v in checks.values())
-            and len(focus["questions"]) >= 41
+            and len(focus["questions"]) >= 42
             and len({q["topic"] for q in focus["questions"]}) == 9
         ),
         "full_official_uboot_image_hash_available": rootfs_script[
