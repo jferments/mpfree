@@ -3,7 +3,8 @@
 //! allocator checks that across a busy session: recording on several
 //! tracks at once, punch in and out, loop recording, locates, a tempo
 //! change, comping, every edit, undo and redo, forgetting takes, a full
-//! memory, latency changes and stops, at period sizes from 1 to 4096.
+//! memory, latency changes and stops, a take loaded from a save and takes
+//! read for one, at period sizes from 1 to 4096.
 //!
 //! This test file is its own program, so its global allocator (the only
 //! unsafe code here, a pass-through to the system allocator) does not
@@ -14,6 +15,7 @@ use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use mpfree_audiotracks::save::TakeFile;
 use mpfree_audiotracks::{AudioTracks, Command as A, Input, Monitor, MAX_TRACKS};
 use mpfree_transport::{Block, Command as T, Transport};
 
@@ -159,6 +161,21 @@ fn commands_and_periods_never_allocate() {
         t.process(period as u32, &mut b);
         let map = *t.tempo_map();
         a.process(&b, &map, &input, &mut out);
+        let mut load = Some(TakeFile {
+            id: 200,
+            track: 5,
+            group: 9,
+            pass: 0,
+            anchor: 100.5,
+            frames: 30_000,
+            channels: 1,
+            file: String::new(),
+            audio: vec![0.25; 30_000],
+        });
+        // Whatever load_take gives back is kept here, so it is not freed
+        // while watching.
+        let mut held = None;
+        let mut piece = [0.0f32; 512];
         let mut frame = period as u64;
         let mut next = 0;
         let end = 16 * BAR;
@@ -174,6 +191,11 @@ fn commands_and_periods_never_allocate() {
                 }
                 next += 1;
             }
+            if frame >= BAR && load.is_some() {
+                held = Some(a.load_take(load.take().unwrap()));
+            }
+            let _ = a.read_take(0, 1000, &mut piece);
+            let _ = a.loading();
             t.process(period as u32, &mut b);
             let map = *t.tempo_map();
             out.fill(0.0);
@@ -193,6 +215,8 @@ fn commands_and_periods_never_allocate() {
             frame += period as u64;
         }
         assert_eq!(CALLS.load(Ordering::Relaxed), 0, "period {period}");
+        assert!(matches!(held, Some(Ok(()))), "period {period}");
+        assert!(a.take_returned().is_some(), "period {period}");
         assert!(a.takes().count() > 3, "period {period}");
     }
 }
