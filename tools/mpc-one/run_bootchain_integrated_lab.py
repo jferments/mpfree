@@ -1194,6 +1194,63 @@ class Lab:
             self.stages["spl-updater-pointer-evidence"] = {
                 "success":False,"error":str(exc)}
             self.notes.append("SPL/update pointer audit: " + str(exc))
+        # Resolve SPL's FIRST indirect call (Thumb selector), inspect
+        # SECOND context-pointer call and boot-media tables, identify
+        # Fastboot power-source ADC, and classify 3.10 ELF PLT veneers
+        # as linkage, not vendor updater implementation execution.
+        try:
+            indirect = load_module(
+                "tools/mpc-one/synthesize_stage_indirection.py",
+                "mpfree_stage_indirection_static",
+            )
+            indirect_report = indirect.build(
+                lambda path: (self.out / path).read_bytes()
+            )
+            (self.out / "cross-stage-indirection.json").write_text(
+                json.dumps(indirect_report, indent=2) + "\n")
+            (self.out / "cross-stage-indirection.md").write_text(
+                indirect.markdown(indirect_report))
+            spl_checks = indirect_report["spl"]["checks"]
+            power = indirect_report["fastboot_getvar_power_source"]
+            update = indirect_report["updater_import_linkage"]
+            supported = (
+                spl_checks["initial_spl_indirect_function_pointer_matches_selector"]
+                and spl_checks["selector_passes_context_to_indirect_handler"]
+                and spl_checks["second_handoff_indirect_dereference_observed"]
+                and spl_checks["second_handoff_slot_is_context_plus_0x0c"]
+                and spl_checks["five_device_order_entries_captured"]
+                and spl_checks["ten_media_mapping_entries_captured"]
+                and power["power_source_key_verified"]
+                and power["fastboot_getvar_dispatches_to_adc_probe"]
+                and power["saradc_channel_0_used"]
+                and len(update)==3
+                and all(v["stub_decompilation_bad_or_missing"]
+                        and not v["dynamic_library_implementation_resolved"]
+                        for v in update.values())
+            )
+            record["cross_stage_indirection"] = {
+                "report":"cross-stage-indirection.json",
+                "initial_spl_to_boot_selector_static":indirect_report["spl"][
+                    "first_indirect_boot_selector_proven"],
+                "second_spl_handoff_runtime_proven":False,
+                "power_source_getvar_key":power["getvar_query_key"],
+                "updater_library_implementation_resolved":False,
+                "no_physical_execution":True,
+            }
+            self.stages["cross-stage-indirection-evidence"] = {
+                "success":bool(supported),
+                "first_spl_boot_selector_resolved":indirect_report["spl"][
+                    "first_indirect_boot_selector_proven"],
+                "opaque_spl_media_table_words":sum(len(v.get("entries",[]))
+                    for v in indirect_report["spl"]["opaque_media_tables"].values()),
+                "power_source_adc_key":power["getvar_query_key"],
+                "updater_actual_implementation_resolved":False,
+            }
+        except Exception as exc:
+            record["cross_stage_indirection_error"] = str(exc)
+            self.stages["cross-stage-indirection-evidence"] = {
+                "success":False,"error":str(exc)}
+            self.notes.append("Cross-stage indirection: "+str(exc))
         (self.out / "cross-evidence.json").write_text(json.dumps(record, indent=2) + "\n")
         summary = [
             "# MPFree integrated bootchain run",
@@ -1310,6 +1367,16 @@ class Lab:
             summary.append("- Updater original-image callback/trampoline slots: " +
                            str(cross_stage["updater_entries"]))
             summary.append("- Original-word evidence only; ROM load and updater execution not tested.")
+        summary += ["", "## SPL Thumb entry, power-source ADC and updater linkage"]
+        indirect = record.get("cross_stage_indirection")
+        if indirect:
+            summary.append("- Initial SPL indirect branch reaches boot selector: " +
+                           str(indirect["initial_spl_to_boot_selector_static"]))
+            summary.append("- Next SPL context-based handoff has NOT been run or verified.")
+            summary.append("- Fastboot getvar query on ADC channel 0: " +
+                           str(indirect["power_source_getvar_key"]))
+            summary.append("- Updater linkage stubs are not library implementations.")
+            summary.append("- See cross-stage-indirection.json and .md.")
         summary += ["", "## Guest/static image consistency"]
         if record["match_tests"]:
             for entry in record["match_tests"]:
