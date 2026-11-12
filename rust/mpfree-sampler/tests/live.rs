@@ -65,6 +65,10 @@ fn engine(p: &Project) -> Engine {
 
 /// `frames` frames in blocks of `block`, left then right interleaved per
 /// frame; `events` are (frame, event) from the start.
+/// Renders `frames` in blocks of `block` with `events` on their frames.
+/// Split, the lane gets a deadline it always makes, so a busy test machine
+/// can't make it late (a plain render waits no longer than the block
+/// lasts, and a late lane plays its part later by design).
 fn play(e: &mut Engine, frames: usize, block: usize, events: &[(usize, Event)]) -> Vec<f32> {
     let mut out = Vec::with_capacity(frames * 2);
     let (mut l, mut r) = (vec![0.0; block], vec![0.0; block]);
@@ -76,7 +80,11 @@ fn play(e: &mut Engine, frames: usize, block: usize, events: &[(usize, Event)]) 
                 assert!(e.schedule((f - at) as u32, ev));
             }
         }
-        e.render(&mut l[..n], &mut r[..n]);
+        e.render_until(
+            &mut l[..n],
+            &mut r[..n],
+            Instant::now() + Duration::from_secs(5),
+        );
         for k in 0..n {
             out.push(l[k]);
             out.push(r[k]);

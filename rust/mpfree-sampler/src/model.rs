@@ -1116,6 +1116,21 @@ impl Pad {
             wow: 0.0,
         }
     }
+
+    /// The pad `old` with `layer` as its only layer and named `name` (its
+    /// envelopes, filter, mute group and the rest kept), or a new pad when
+    /// there was none: what [`Project::put_source`] puts.
+    pub fn replacing(name: &str, layer: Layer, old: Option<&Pad>) -> Pad {
+        match old {
+            Some(old) => Pad {
+                name: name.to_string(),
+                layers: vec![layer],
+                select: LayerSelect::All,
+                ..old.clone()
+            },
+            None => Pad::new(name, layer),
+        }
+    }
 }
 
 /// One step that can be undone: a pad replaced, a source added, or the
@@ -1512,15 +1527,7 @@ impl Project {
     /// keeps its other settings (level, envelopes, filter, keys) with this
     /// one layer. Returns the source's id.
     pub fn put_source(&mut self, pad: usize, s: Source) -> Result<SourceId, ModelError> {
-        self.put_source_as(pad, s, |name, layer, old| match old {
-            Some(old) => Pad {
-                name: name.to_string(),
-                layers: vec![layer],
-                select: LayerSelect::All,
-                ..old.clone()
-            },
-            None => Pad::new(name, layer),
-        })
+        self.put_source_as(pad, s, Pad::replacing)
     }
 
     /// [`Project::put_source`], with the pad made by `make` from the
