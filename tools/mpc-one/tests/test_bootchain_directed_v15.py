@@ -76,7 +76,7 @@ class V15Regression(unittest.TestCase):
         self.assertIn("ENTRY_THUMB",source)
         self.assertIn("MAP_FIXED_NOREPLACE",source)
         self.assertIn("RESPONSE_ADDR",source)
-        self.assertIn("mpfree_v15",str(SCRIPT))
+        self.assertIn("run_bootchain_directed_v15",str(SCRIPT))
         # The guest only runs a bounded function slice; not any update CLI.
         self.assertNotIn("fastboot flash ",source)
         self.assertNotIn("az01-update",source)
