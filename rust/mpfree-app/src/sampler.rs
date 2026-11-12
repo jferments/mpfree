@@ -416,6 +416,34 @@ impl Player {
         true
     }
 
+    /// Plays `note` on the playing kit's keygroups, `offset` frames into
+    /// the next render, as a key of a keyboard would (the Play tab's
+    /// keyboard). Returns false at velocity 0.
+    pub fn key_at(&mut self, note: u8, velocity: u8, offset: u32) -> bool {
+        let velocity = engine_velocity(velocity);
+        if velocity == 0 {
+            return false;
+        }
+        self.engine.schedule(
+            offset,
+            Event::Key {
+                note: note.min(127),
+                velocity,
+            },
+        );
+        true
+    }
+
+    /// The key `note` was let go, `offset` frames into the next render.
+    pub fn key_off_at(&mut self, note: u8, offset: u32) {
+        self.engine.schedule(
+            offset,
+            Event::KeyOff {
+                note: note.min(127),
+            },
+        );
+    }
+
     /// The pad was let go, `offset` frames into the next render. One-shot
     /// sounds ignore it; a Grains pad stops making grains and fades out.
     pub fn release_at(&mut self, pad: usize, offset: u32) {
@@ -1010,6 +1038,29 @@ mod tests {
         };
         assert!(player.swap_view(&mut swap));
         assert!(!player.hit_at(empty, 100, 0));
+    }
+
+    #[test]
+    fn keys_play_the_kits_keygroups_once_it_is_mapped_to_keys() {
+        let mut kits = kits();
+        let mut player = Player::new(&mut kits, &NOTES, 44_100).unwrap();
+        let mut projects = player.take_projects();
+        let loud = |p: &mut Player| run(p, 8).0.iter().any(|s| s.abs() > 0.01);
+        // No keygroups yet: a key plays nothing.
+        assert!(player.key_at(60, 100, 0));
+        assert!(!loud(&mut player));
+        let pads: Vec<usize> = (0..16).filter(|&p| player.sounds(0)[p]).collect();
+        let roots: Vec<(usize, u8)> = pads.iter().map(|&p| (p, 48 + p as u8)).collect();
+        projects[0].map_to_keys(&roots).unwrap();
+        let mut swap = ViewSwap {
+            kit: 0,
+            view: Some(EngineView::build(&projects[0], 44_100)),
+        };
+        assert!(player.swap_view(&mut swap));
+        assert!(player.key_at(60, 100, 0));
+        assert!(loud(&mut player));
+        player.key_off_at(60, 0);
+        assert!(!player.key_at(60, 0, 0), "velocity 0 plays nothing");
     }
 
     #[test]

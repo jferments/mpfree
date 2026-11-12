@@ -22,11 +22,15 @@
 use std::ops::Range;
 
 use mpfree_param::RelAddr;
+use mpfree_seq::arrange::SONG_LANE_LEN;
 use mpfree_seq::mpfree_moves::{Kind, Map, Moves, Target};
 use mpfree_seq::{
     Clip, DestId, Lock, ModelError, Note, Project, Quantise, Source, Speed, MAX_TRACKS, SLOTS,
 };
 use mpfree_transport::time::{ceil_to, Swing, Tick};
+
+/// The slot number the song's own lanes go by, past any placement's.
+pub(crate) const SONG_SLOT: usize = usize::MAX;
 
 /// A clip playing on a track: which slot, and the song tick where its first
 /// pass starts. Before `origin` the clip is silent; from it on, it loops.
@@ -327,6 +331,8 @@ pub struct PlayView {
     pub(crate) armed: Option<usize>,
     /// Song mode: a track with no clip launched plays its placements.
     pub(crate) song: bool,
+    /// The song's own lanes (the morph), played in song mode.
+    pub(crate) song_lanes: Option<ClipView>,
 }
 
 impl PlayView {
@@ -385,19 +391,40 @@ impl PlayView {
             tracks,
             armed: None,
             song: false,
+            song_lanes: None,
         })
     }
 
     /// Song mode on (the arrangement's placements compiled in: a track
-    /// with no clip launched plays them on their ticks) or off. Call it on
-    /// the control thread after compiling, with the same project.
+    /// with no clip launched plays them on their ticks, and the song's own
+    /// lanes play as [`crate::SONG_TRACK`]'s) or off. Call it on the
+    /// control thread after compiling, with the same project.
     pub fn set_song(&mut self, project: &Project, on: bool) -> Result<(), CompileError> {
         for t in &mut self.tracks {
             t.regions.clear();
         }
         self.song = on;
+        self.song_lanes = None;
         if !on {
             return Ok(());
+        }
+        let lanes = &project.arrangement.lanes;
+        if !lanes.is_empty() {
+            // One long pass from tick 0 that never loops.
+            let len = Tick::from(SONG_LANE_LEN);
+            self.song_lanes = Some(ClipView {
+                slot: SONG_SLOT,
+                origin: 0,
+                start: 0,
+                length: len,
+                speed: Speed::NORMAL,
+                quantise: None,
+                song_len: len as f64,
+                swing: None,
+                notes: Vec::new(),
+                locks: Vec::new(),
+                moves: lanes.clone(),
+            });
         }
         for (i, p) in project.arrangement.placements.iter().enumerate() {
             let track = project

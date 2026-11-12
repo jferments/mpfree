@@ -18,10 +18,12 @@ use std::cell::Cell;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use mpfree_arp::{Engine, Mode, Rate, Settings};
-use mpfree_play::{ArpHost, Cue, Event, Launch, Out, PlayView, Player, Recorder, Sink, ALL};
+use mpfree_play::{
+    ArpHost, Cue, Event, Launch, Out, PlayView, Player, Recorder, Sink, ALL, SONG_TRACK,
+};
 use mpfree_seq::mpfree_moves::{Input, Kind, Map, Target};
 use mpfree_seq::mpfree_param::{OnTrack, Owner, ParamAddr, RelAddr, Strip};
-use mpfree_seq::{Clip, Cond, Lock, Note, Placement, Project, Quantise, Speed, Track};
+use mpfree_seq::{Clip, Cond, Lock, MorphRows, Note, Placement, Project, Quantise, Speed, Track};
 use mpfree_transport::time::Swing;
 use mpfree_transport::{Block, Command, Transport};
 
@@ -68,6 +70,8 @@ struct Counter {
     lanes: u64,
     /// Notes on the song-only track.
     song: u64,
+    /// The song's own lane's values (the morph).
+    morph: u64,
 }
 impl Sink for Counter {
     fn send(&mut self, o: Out) {
@@ -77,6 +81,7 @@ impl Sink for Counter {
         self.locks += u64::from(matches!(o.event, Event::Lock { .. }));
         self.lanes += u64::from(matches!(o.event, Event::Lane { .. }));
         self.song += u64::from(o.track == 5 && matches!(o.event, Event::NoteOn { .. }));
+        self.morph += u64::from(o.track == SONG_TRACK && matches!(o.event, Event::Lane { .. }));
         if o.dest == 0 || o.dest == ALL {
             self.arp.input(o.offset, o.event);
         }
@@ -183,6 +188,14 @@ fn playing_never_allocates() {
     song.place(Placement::linked(4, 4, 1000, 5000)).unwrap();
     let tracks = p.tracks.clone();
     p.arrangement.make_unique(&tracks, 2).unwrap();
+    // The morph swept up and down every two bars, on the song's lane.
+    let sweep: Vec<(f64, f32, Kind)> = (0..400)
+        .map(|i| (f64::from(i) * 480.0, (i % 16) as f32 / 15.0, Kind::Ramp))
+        .collect();
+    let rows = [MorphRows { at: 0, a: 0, b: 1 }];
+    p.arrangement
+        .put_morph(&sweep, &rows, 0, 400 * 480)
+        .unwrap();
     // Cues start on the first bar line, and the player carries them on its
     // own: this view is never compiled again.
     let cues = [
@@ -215,6 +228,7 @@ fn playing_never_allocates() {
         locks: 0,
         lanes: 0,
         song: 0,
+        morph: 0,
     };
     let mut arp_notes = 0u64;
     let mut rec = Recorder::new();
@@ -336,4 +350,5 @@ fn playing_never_allocates() {
     assert!(sink.locks > 500, "{} locks", sink.locks);
     assert!(sink.lanes > 2000, "{} lane values", sink.lanes);
     assert!(sink.song > 500, "{} song notes", sink.song);
+    assert!(sink.morph > 100, "{} morph values", sink.morph);
 }

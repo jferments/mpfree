@@ -8,7 +8,10 @@
 //!   the pad picked plays it while the finger is down. Pads held on the
 //!   hardware light up.
 //! - **Copy**, **Paste** and **Clear** work on the pad picked, each one undo
-//!   step.
+//!   step. **Map to keys** makes the bank's pads one keygroup instrument:
+//!   each pad at its sound's own note (from its keygroup, its name or the
+//!   pitch heard, worked out by the app), reaching halfway to its
+//!   neighbours, and the pads then play notes; one undo step.
 //! - The **Pad** list holds the settings a pad is set up with: its sound,
 //!   play mode, voices, mute group, level, pan and tune. Stepping Sound puts
 //!   the kit's next or previous sound on the pad.
@@ -52,7 +55,7 @@ pub const TAB: usize = 0;
 
 /// The hint line the app shows under the tab.
 pub const HINT: &str =
-    "Tap a pad to pick it, again to hear it · Copy, Paste, Clear · pick a sound, then Put it on \
+    "Tap a pad to pick it, again to hear it · Copy, Paste, Clear, Map to keys · pick a sound, then Put it on \
                         the pad · Q-Links: level, pan, tune, voices";
 
 /// Gesture ids the tab hands out start here, clear of other screens'.
@@ -127,10 +130,16 @@ pub enum Button {
     Copy,
     Paste,
     Clear,
+    MapToKeys,
 }
 
 impl Button {
-    pub const ALL: [Button; 3] = [Button::Copy, Button::Paste, Button::Clear];
+    pub const ALL: [Button; 4] = [
+        Button::Copy,
+        Button::Paste,
+        Button::Clear,
+        Button::MapToKeys,
+    ];
 }
 
 /// A sound in the kit.
@@ -216,6 +225,10 @@ pub enum PadsAction {
         after: Option<Box<Pad>>,
         gesture: Option<u64>,
     },
+    /// Map to keys: the app makes `pads` (the bank's pads with a sound) a
+    /// keygroup instrument at their sounds' notes
+    /// ([`mpfree_sampler::keymap`], `Project::map_to_keys`).
+    MapToKeys { pads: Vec<usize> },
     /// Open the editor's tab `i` of [`TABS`].
     Tab(usize),
 }
@@ -327,7 +340,10 @@ impl PadsTab {
         bar.active = TAB;
         ui.add(BAR, bar);
         ui.add(MAP, PadMap::new("Pads"));
-        ui.add(BUTTONS, ButtonRow::new(&["Copy", "Paste", "Clear"]));
+        ui.add(
+            BUTTONS,
+            ButtonRow::new(&["Copy", "Paste", "Clear", "Map to keys"]),
+        );
         ui.add(LIST, SettingList::new("Pad"));
         ui.add(SOUNDS, ListView::new("Sounds in the kit"));
         let mut put = ButtonRow::new(&["Put on pad"]);
@@ -442,7 +458,13 @@ impl PadsTab {
             .map(|(from, _)| format!("Paste {}", pad_text(self.bank, *from)));
         if let Some(b) = ui.get_mut::<ButtonRow>(BUTTONS) {
             b.labels[1] = paste.unwrap_or_else(|| "Paste".into());
-            b.enabled = vec![picked.is_some(), self.copied.is_some(), picked.is_some()];
+            let sounds = st.pads.iter().any(Option::is_some);
+            b.enabled = vec![
+                picked.is_some(),
+                self.copied.is_some(),
+                picked.is_some(),
+                sounds,
+            ];
         }
         let rows = Row::ALL
             .iter()
@@ -540,6 +562,13 @@ impl PadsTab {
                     after: None,
                     gesture: None,
                 })
+            }
+            Button::MapToKeys => {
+                let pads: Vec<usize> = (0..st.pads.len())
+                    .filter(|&k| st.pads[k].is_some())
+                    .map(|k| st.first + k)
+                    .collect();
+                (!pads.is_empty()).then_some(PadsAction::MapToKeys { pads })
             }
         }
     }
