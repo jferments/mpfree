@@ -47,7 +47,12 @@ matched all 28 saved variables.
 `mmc0` aliases `dwmmc@ff0f0000`, an active 8-bit, non-removable
 controller characteristic of eMMC. `mmc1` aliases
 `dwmmc@ff0c0000`, but that controller is explicitly
-`status = "disabled"` in the embedded U-Boot FDT.
+`status = "disabled"` in the embedded U-Boot FDT. Additionally,
+`mmc2` at `ff0d0000` and `mmc3` at `ff0e0000` are both
+disabled. Only the non-removable eMMC controller is explicitly enabled
+among these four MMC nodes. The embedded SPL FDT likewise explicitly
+configures the eMMC controller. Neither observation proves physical
+SD-card absence, but removable-media boot is not established.
 Thus U-Boot's configured fallback target is not obviously usable,
 even though `mmc1` appears in boot_targets. This is static evidence:
 runtime board code or overlays might alter the device state.
