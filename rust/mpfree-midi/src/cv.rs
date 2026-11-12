@@ -5,12 +5,12 @@
 //! user guide: rear panel, item 13, and the specifications page).
 //!
 //! This is the musical half: which voltage each output should be at, and
-//! when. It knows nothing of how the MPC makes the voltage. That is still
-//! **unknown** (the owner's read-only capture is to show whether Akai's
-//! app drives the jacks over the controller's USB-MIDI, and how), and so
-//! is the One's voltage range (the guide does not give it). The hardware
-//! half will take [`CvChange`]s and clamp to the real range once both
-//! are measured; nothing here assumes a range.
+//! when. How the MPC makes the voltage is in [`crate::cv_wire`]: Akai's
+//! app sends 14-bit CC pairs to the controller (captured 2026-11-12). The
+//! One's voltage range is still **unknown** (the guide does not give it
+//! and no meter has been on a jack), so nothing here assumes a range; the
+//! hardware layer will turn [`CvChange`]s into counts once it is
+//! measured.
 //!
 //! Each output has a [`CvAssign`]: a track's pitch (1 V/oct or Hz/V, with
 //! last, lowest or highest note priority), its gate, a trigger, velocity,

@@ -10,15 +10,19 @@
 //!   clock pulse leaves.
 //! - [`learn`]: MIDI Learn onto any `mpfree_param::ParamAddr`.
 //! - [`cv`]: the eight CV/gate outputs as voltages.
+//! - [`cv_wire`]: the bytes Akai's app sends to the controller to set the
+//!   CV jacks (channel 16 CC pairs on cable 1), as captured.
 //!
 //! MIDI clock bytes are `mpfree-midi-clock`'s; how the transport follows
 //! another device's clock is the time engine's. Which ALSA device each
-//! port is, and opening it, is the app's, after the owner's go: the DIN
-//! jacks' USB-MIDI cable and the way the CV jacks are driven are still to
-//! be confirmed by a read-only capture (docs/dev/design/midi-io.md).
+//! port is, and opening it, is the app's, after the owner's go. The owner's
+//! read-only captures showed the DIN In jack on USB-MIDI cable 2 and the
+//! CV jacks driven by CCs on cable 1; the DIN Out jack is not found yet
+//! (docs/dev/design/midi-io.md).
 #![forbid(unsafe_code)]
 
 pub mod cv;
+pub mod cv_wire;
 pub mod input;
 pub mod learn;
 pub mod msg;

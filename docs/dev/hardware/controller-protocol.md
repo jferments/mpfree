@@ -30,6 +30,7 @@
 | Button LEDs | CC on cable 1, channel 1, **CC number = button note number** | Values 0–4 seen. 0 = off; 1 and 3 dominate (dim/bright, inferred). TAP TEMPO (CC 53) blinks 1/3 at the tempo; CC 67 (UNDO, per prior art) toggled 1/3 during Q-Link edits. The pad player uses 1 for off and 3 for on, as the app does |
 | Pad RGB | SysEx on cable 0: `F0 47 7F 46 65 00 04 <pad 0–15> <R> <G> <B> F7` | 7-bit color components; pad index is 0-based in display order |
 | `5A` setup message | SysEx on cable 0: `F0 47 7F 46 5A 00 20 …` (32-byte payload) | Sent twice at the app's startup; full bytes [below](#akais-app-at-startup-hello-mpc-round-2-2026-11-10). Meaning unknown (the earlier guess, bulk pad colours, is not supported by the bytes) |
+| CV/Gate jacks | CC pairs on cable 1, **channel 16**: output 1 on CC 0 and 1, output 2 on CC 2 and 3, and so on, high 7 bits first | One 14-bit value per output. A CV track's pitch is `floor((note − 36) × 16383 / 60)`, its gate 16383 or 0. Volts per count not measured ([below](#second-round-the-cv-scale-and-the-next-outputs-2026-11-12)) |
 | Session ping | Host → cable 0: `F0 47 00 46 52 00 04 <token> F7` every 4–5 s | Controller answers on cable 1: `F0 47 7F 46 53 00 05 <token> <status> F7`. The app picks a new 4-byte token at each start and keeps it for the whole run ([below](#akais-app-at-startup-hello-mpc-round-2-2026-11-10)) |
 
 ## Comparison with prior art
@@ -114,7 +115,36 @@ CV messages seen (cable 1, `Bx` = `BF`):
 
 - **OBSERVED:** the 5-pin MIDI In jack is cable 2 in, under Akai's app.
 - **OBSERVED:** Akai's app drives the CV/Gate jacks through the controller, as CCs on cable 1, channel 16. Velocity did not change them.
-- **INFERENCE:** CC 0 and 1 are one output's value as two 7-bit halves (pad 1 gives 76 × 128 + 101 = 9829, pad 13 gives 121 × 128 + 75 = 15563), and CC 2 and 3 are the gate output at full scale. The numbering of the other outputs (CC 4 and up?) and the scaling (counts per volt, per semitone) are **UNKNOWN**: pad 13's note relative to pad 1's on Akai's CV track is not known, so the difference cannot be read as an octave.
-- **UNKNOWN:** how Akai's app sends to the MIDI Out jack. Nothing appeared on USB. Either the track was not sending (its output field was not recorded), or the jack is not driven over the controller's USB-MIDI. The second round (`MPFREE_CAPTURE_PHASES=cv-scale`) tries it again, with the field noted and a device on the jack.
-- Sending any of these CCs from MPFree is a **state-changing** write to the controller and waits for the owner's go ([midi-io](../design/midi-io.md), step M6).
+- At the time this looked like two 7-bit halves of one value per output (pad 1: 76 × 128 + 101 = 9829, pad 13: 121 × 128 + 75 = 15563), with the scaling unknown because Akai's pad notes were not known. The second round below settles both.
+- **UNKNOWN** after round 1: how Akai's app sends to the MIDI Out jack. Nothing appeared on USB. The second round tried again.
+
+### Second round: the CV scale and the next outputs (2026-11-12)
+
+> **Evidence type:** owner-run `collect-over-ssh.sh --midi-capture` with `MPFREE_CAPTURE_PHASES=cv-scale`, 2026-11-12 06:25 UTC, stock 3.6.0, Akai's app running, the same keyboard on MIDI In, nothing on the CV/Gate jacks. Tool at branch commit `3313621`, clean. Report SHA-256 `771c890710116f27dd3b7533c4076d849932e600df247ab8b1b2442c6dca7690` (owner-local, not committed). Nothing was sent to the controller by MPFree.
+
+The keyboard played known notes into a CV track, and the capture saw each note number on cable 2 next to the CCs Akai's app sent, so no pad layout is needed. Value = CC high × 128 + CC low:
+
+| Note in (cable 2) | CC 0 | CC 1 | Value | `floor((note − 36) × 16383 / 60)` |
+| ---: | ---: | ---: | ---: | ---: |
+| 48 (C) | 25 | 76 | 3276 | 3276 |
+| 60 (C) | 51 | 25 | 6553 | 6553 |
+| 72 (C) | 76 | 101 | 9829 | 9829 |
+| 61 (C♯) | 53 | 42 | 6826 | 6826 |
+| 62 (D) | 55 | 59 | 7099 | 7099 |
+| 63 (D♯) | 57 | 76 | 7372 | 7372 |
+
+Every note gave CC 2 and 3 at 127 at the key down and 0 at the key up, as in round 1. Round 1's pads fit the same formula: pad 1 was note 72 and pad 13 note 93, so Akai's CV-track pads are not 12 semitones apart.
+
+| Phase | What changed against idle |
+| --- | --- |
+| The CV track moved to its next outputs, one C (60) | **CC 4 and 5** = 51, 25 (6553, the pitch of note 60) and **CC 6 and 7** = 127, 127 at the key down; CC 6 and 7 back to 0 at the key up. Nothing on CC 0 to 3 |
+| Keys and pads 1 and 13 on a MIDI track (output meant to be the MIDI Out jack) | The keys on cable 2 in and the pads on cable 1 in (channel 10 notes and pressure), as usual. **Nothing out on cable 2, and no change on any OUT cable**, the same as round 1 |
+
+- **OBSERVED:** each CV output is one 14-bit value (0 to 16383) sent as two CCs on cable 1, channel 16, the high 7 bits first. The first output is CC 0 and 1, the second CC 2 and 3, the third CC 4 and 5, the fourth CC 6 and 7.
+- **OBSERVED:** a CV track's pitch is `floor((note − 36) × 16383 / 60)`: 0 at note 36, about 273 per semitone, 16383 five octaves up (note 96). Its gate is 16383 while the note is held and 0 after.
+- **INFERENCE:** outputs five to eight are CC 8 to 15, and notes outside 36 to 96 clamp to the ends.
+- **INFERENCE:** full scale is 5 V. Five octaves over the full range fits 1 V/oct at 0 to 5 V, but no meter has been on a jack, so the volts per count are **UNKNOWN** until one is.
+- **UNKNOWN:** which jack, and tip or ring, each output number is.
+- **UNKNOWN:** how Akai's app sends to the MIDI Out jack. In both rounds a MIDI track sent nothing over USB. The track's MIDI Output Port field, and the Output Ports list in Preferences > MIDI / Sync (the port's Track tick, guide "Preferences", "MIDI / Sync"), were not recorded, so a wrong setting has not been ruled out. Akai's app holds no serial device ([resource-ownership](resource-ownership.md)), so a path other than the controller's USB-MIDI would be a surprise.
+- The bytes are written down as code in `rust/mpfree-midi/src/cv_wire.rs`, with tests holding every value above. Sending any of these CCs from MPFree is a **state-changing** write to the controller and waits for the owner's go ([midi-io](../design/midi-io.md), step M6).
 
