@@ -11,6 +11,11 @@
 //! an input), and the output (a tap opens the picker). An input strip
 //! trades its last two insert rows for its Source and Monitor.
 //!
+//! Once the app offers takes ([`MixState::takes`]), a tap on the selected
+//! strip's name opens its menu: Freeze or Thaw (a track or a pad), Print
+//! to a new sample, or Cancel while a take is under way. A frozen strip shows "Frozen" over its inserts, and a take
+//! under way shows there with its progress.
+//!
 //! The widget keeps a copy of what it shows and moves it under the finger
 //! at once; what the touches mean goes into a queue of [`MixAction`]s
 //! (see [`crate::take_actions`]) for the app to send to the mixer.
@@ -21,7 +26,7 @@ use mpfree_fx::ids::mixer::{self as mx, output};
 use mpfree_fx::{StripId, BUSES, SILENT_DB};
 use mpfree_ui::{Align, Color, EventKind, FontId, PaintCx, Rect, Theme, Tone, Touch, Widget};
 
-use crate::state::{choice, output_label, peak_db, MixState, MixView, StripView};
+use crate::state::{choice, output_label, peak_db, MixState, MixView, StripView, TakeView};
 
 /// What a touch on the mixer meant, for the app to apply.
 #[derive(Clone, Debug, PartialEq)]
@@ -38,6 +43,76 @@ pub enum MixAction {
     AddInsert { strip: StripId },
     /// A view was picked: show its strips.
     View(MixView),
+    /// Freeze the strip: take one pass of the loop through its inserts
+    /// (`mpfree_fx::Print` with `PrintJob::freeze`), then
+    /// `Mixer::freeze` it with the take.
+    Freeze(StripId),
+    /// Back to the strip's live inserts (`Mixer::thaw`).
+    Thaw(StripId),
+    /// Print the strip, with its inserts and their tail, to a new sample.
+    Print(StripId),
+    /// Stop the strip's freeze or print under way; nothing changes.
+    CancelTake(StripId),
+}
+
+/// What a strip's menu offers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StripMenu {
+    Freeze,
+    Thaw,
+    Print,
+    Cancel,
+}
+
+impl StripMenu {
+    /// What the strip `s`'s menu offers, in order.
+    pub fn items(s: &StripView) -> Vec<StripMenu> {
+        if s.take.is_some() {
+            return vec![StripMenu::Cancel];
+        }
+        let mut v = Vec::new();
+        if s.can_freeze() {
+            v.push(if s.frozen {
+                StripMenu::Thaw
+            } else {
+                StripMenu::Freeze
+            });
+        }
+        v.push(StripMenu::Print);
+        v
+    }
+
+    /// The button's label and the line under it.
+    pub fn text(self, s: &StripView) -> (&'static str, &'static str) {
+        match self {
+            StripMenu::Freeze => (
+                "Freeze",
+                "Takes the next pass through its effects and plays that instead, to free CPU",
+            ),
+            StripMenu::Thaw => ("Thaw", "Back to its live effects"),
+            StripMenu::Print => (
+                "Print to a new sample",
+                "Records the next pass with its effects and their tail",
+            ),
+            StripMenu::Cancel => (
+                if s.take.is_some_and(|t| t.print) {
+                    "Cancel the print"
+                } else {
+                    "Cancel the freeze"
+                },
+                "Stops the take; nothing changes",
+            ),
+        }
+    }
+
+    fn action(self, id: StripId) -> MixAction {
+        match self {
+            StripMenu::Freeze => MixAction::Freeze(id),
+            StripMenu::Thaw => MixAction::Thaw(id),
+            StripMenu::Print => MixAction::Print(id),
+            StripMenu::Cancel => MixAction::CancelTake(id),
+        }
+    }
 }
 
 /// The panel's own top row.
@@ -231,6 +306,14 @@ fn parts(s: Rect) -> Parts {
     }
 }
 
+/// A strip's insert rows as one area (an input's first two: the last two
+/// are its Source and Monitor).
+fn insert_area(p: &Parts, s: &StripView) -> Rect {
+    let n = if s.input.is_some() { 2 } else { 4 };
+    let (a, b) = (p.inserts[0], p.inserts[n - 1]);
+    Rect::new(a.x, a.y, a.w, b.bottom() - a.y)
+}
+
 /// The fader's travel inside its area: (top, bottom) of the cap's centre.
 fn travel(f: Rect) -> (i32, i32) {
     (f.y + 10, f.bottom() - 10)
@@ -312,6 +395,8 @@ pub struct MixerView {
     first: usize,
     /// The strip whose output picker is open.
     picker: Option<StripId>,
+    /// The strip whose menu is open.
+    menu: Option<StripId>,
     grabs: Vec<(u64, Grab)>,
     actions: Vec<MixAction>,
     dirty: Cell<Dirty>,
@@ -331,6 +416,7 @@ impl MixerView {
             state: MixState::default(),
             first: 0,
             picker: None,
+            menu: None,
             grabs: Vec::new(),
             actions: Vec::new(),
             dirty: Cell::new(Dirty::All),
@@ -372,6 +458,9 @@ impl MixerView {
         } else {
             Dirty::All
         };
+        if st.view != self.state.view || !st.takes {
+            self.menu = None;
+        }
         if st.view != self.state.view {
             self.first = 0;
             self.picker = None;
@@ -415,6 +504,11 @@ impl MixerView {
 
     pub fn picker(&self) -> Option<StripId> {
         self.picker
+    }
+
+    /// The strip whose menu is open.
+    pub fn menu(&self) -> Option<StripId> {
+        self.menu
     }
 
     fn mark(&self, d: Dirty) {
@@ -483,8 +577,54 @@ impl MixerView {
             .map(|(_, b)| b)
     }
 
+    fn menu_rect(&self, l: &Layout, s: StripId) -> Rect {
+        let n = self.state.strip(s).map_or(1, |v| StripMenu::items(v).len()) as i32;
+        let (w, h) = (620.min(l.strips.w), 18 + 30 + 10 + n * 64 + 8);
+        Rect::new(
+            l.strips.x + (l.strips.w - w) / 2,
+            l.strips.y + (l.strips.h - h) / 3,
+            w,
+            h,
+        )
+    }
+
+    fn menu_buttons(&self, l: &Layout, s: StripId) -> Vec<(StripMenu, Rect)> {
+        let Some(v) = self.state.strip(s) else {
+            return Vec::new();
+        };
+        let area = self.menu_rect(l, s).inset(18).take_top(40).1;
+        StripMenu::items(v)
+            .into_iter()
+            .enumerate()
+            .map(|(i, m)| (m, Rect::new(area.x, area.y + i as i32 * 64, area.w, 56)))
+            .collect()
+    }
+
+    /// Where the open menu shows `item`.
+    pub fn menu_button(&self, r: Rect, item: StripMenu) -> Option<Rect> {
+        let s = self.menu?;
+        self.menu_buttons(&layout(r), s)
+            .into_iter()
+            .find(|(m, _)| *m == item)
+            .map(|(_, b)| b)
+    }
+
     fn down(&mut self, finger: u64, x: i32, y: i32, r: Rect) {
         let l = layout(r);
+        if let Some(s) = self.menu {
+            let pick = self
+                .menu_buttons(&l, s)
+                .into_iter()
+                .find(|(_, b)| b.contains(x, y))
+                .map(|(m, _)| m);
+            if let Some(m) = pick {
+                self.push(m.action(s));
+                self.menu = None;
+            } else if !self.menu_rect(&l, s).contains(x, y) {
+                self.menu = None;
+            }
+            return;
+        }
         if let Some(s) = self.picker {
             let pick = self
                 .picker_buttons(&l, s)
@@ -536,8 +676,14 @@ impl MixerView {
             return;
         };
         if p.name.contains(x, y) {
-            self.state.selected = Some(id);
-            self.push(MixAction::Select(id));
+            if self.state.selected == Some(id) {
+                if self.state.takes {
+                    self.menu = Some(id);
+                }
+            } else {
+                self.state.selected = Some(id);
+                self.push(MixAction::Select(id));
+            }
             return;
         }
         for (i, row) in p.inserts.iter().enumerate() {
@@ -911,6 +1057,7 @@ impl MixerView {
                 );
             }
         }
+        self.paint_freeze(cx, s, insert_area(&p, s));
         // Sends, or Master safety on the master.
         if master {
             self.paint_safety(cx, p.send_area);
@@ -1276,14 +1423,125 @@ impl MixerView {
         }
     }
 
+    fn paint_menu(&self, cx: &mut PaintCx, l: &Layout, s: StripId) {
+        let t = cx.theme.clone();
+        let Some(v) = self.state.strip(s) else {
+            return;
+        };
+        let mr = self.menu_rect(l, s);
+        cx.canvas.fill_round_rect(mr.inset(-2), 16, t.outline);
+        cx.canvas.fill_round_rect(mr, 14, t.surface);
+        let head = mr.inset(18).take_top(30).0;
+        cx.text(
+            FontId::Bold,
+            t.size_title,
+            head,
+            Align::Left,
+            t.text,
+            &v.name,
+        );
+        cx.text(
+            FontId::Sans,
+            t.size_small,
+            head,
+            Align::Right,
+            t.text_dim,
+            "Tap outside to close",
+        );
+        for (m, b) in self.menu_buttons(l, s) {
+            let (label, line) = m.text(v);
+            cx.canvas.fill_round_rect(b, 10, t.raised);
+            let inner = b.inset_xy(16, 7);
+            let (top, bottom) = inner.take_top(24);
+            cx.text(FontId::Bold, t.size_body, top, Align::Left, t.text, label);
+            cx.text(
+                FontId::Sans,
+                t.size_small,
+                bottom,
+                Align::Left,
+                t.text_dim,
+                line,
+            );
+        }
+    }
+
+    /// Over a strip's insert rows: "Frozen", or a take under way.
+    fn paint_freeze(&self, cx: &mut PaintCx, s: &StripView, area: Rect) {
+        let t = cx.theme.clone();
+        if s.take.is_none() && !s.frozen {
+            return;
+        }
+        cx.canvas
+            .fill_round_rect(area, 8, t.surface.mix(t.accent, 0.12));
+        cx.canvas.stroke_round_rect(area, 8, 1, t.accent);
+        let inner = area.inset_xy(8, 8);
+        let (title, rest) = inner.take_top(24);
+        match s.take {
+            Some(TakeView { print, done }) => {
+                cx.text(
+                    FontId::Bold,
+                    t.size_small,
+                    title,
+                    Align::Left,
+                    t.accent,
+                    if print { "Printing" } else { "Freezing" },
+                );
+                let line = match done {
+                    None => "Next loop".to_string(),
+                    Some(d) => format!("{:.0} %", (d * 100.0).clamp(0.0, 100.0)),
+                };
+                cx.text(
+                    FontId::Sans,
+                    t.size_small,
+                    rest.take_top(22).0,
+                    Align::Left,
+                    t.text_dim,
+                    &line,
+                );
+                let bar = Rect::new(inner.x, inner.bottom() - 6, inner.w, 6);
+                cx.canvas.fill_round_rect(bar, 3, t.raised);
+                if let Some(d) = done {
+                    let w = ((bar.w as f32) * d.clamp(0.0, 1.0)) as i32;
+                    if w > 0 {
+                        cx.canvas
+                            .fill_round_rect(Rect::new(bar.x, bar.y, w, bar.h), 3, t.accent);
+                    }
+                }
+            }
+            None => {
+                cx.text(
+                    FontId::Bold,
+                    t.size_small,
+                    title,
+                    Align::Left,
+                    t.accent,
+                    "Frozen",
+                );
+                let n = s.inserts.len();
+                cx.text(
+                    FontId::Sans,
+                    t.size_small,
+                    rest.take_top(22).0,
+                    Align::Left,
+                    t.text_dim,
+                    &format!("{n} effect{}", if n == 1 { "" } else { "s" }),
+                );
+            }
+        }
+    }
+
     /// The rectangles the meters (and, while profiling, the costs) fill.
     fn meter_parts(&self, r: Rect) -> Vec<Rect> {
         let l = layout(r);
         let profiling = self.state.cost_pct.is_some();
         let mut v: Vec<Rect> = Vec::new();
-        let mut add = |sr: Rect, master: bool| {
+        let mut add = |sr: Rect, master: bool, s: &StripView| {
             let p = parts(sr);
             v.push(fader_columns(p.fader, master).2);
+            if s.take.is_some() {
+                // A take's progress.
+                v.push(insert_area(&p, s));
+            }
             if master {
                 v.push(p.send_area);
                 v.push(p.buttons);
@@ -1292,16 +1550,19 @@ impl MixerView {
                 v.extend(p.inserts);
             }
         };
-        for (_, sr) in self.shown(&l) {
-            add(sr, false);
+        for (i, sr) in self.shown(&l) {
+            add(sr, false, &self.state.strips[i]);
         }
-        add(l.master, true);
+        add(l.master, true, &self.state.master);
         if profiling {
             v.push(l.cost);
         }
         if self.picker.is_some() {
             // The picker covers the strips: draw it again over them.
             v.push(MixerView::picker_rect(&l).inset(-2));
+        }
+        if let Some(s) = self.menu {
+            v.push(self.menu_rect(&l, s).inset(-2));
         }
         v
     }
@@ -1354,6 +1615,10 @@ fn strip_meters(st: &MixState) -> MixState {
     let clear = |v: &mut StripView| {
         v.peak = [0.0; 2];
         v.cost_pct = None;
+        // A take's progress is drawn like a meter; its start and end are not.
+        if let Some(TakeView { done: Some(d), .. }) = v.take.as_mut() {
+            *d = 0.0;
+        }
         for i in &mut v.inserts {
             i.cost_pct = None;
         }
@@ -1440,6 +1705,9 @@ impl Widget for MixerView {
         if let Some(s) = self.picker {
             self.paint_picker(cx, &l, s);
         }
+        if let Some(s) = self.menu {
+            self.paint_menu(cx, &l, s);
+        }
     }
 
     fn touch(&mut self, finger: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
@@ -1467,7 +1735,7 @@ impl Widget for MixerView {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::{default_name, InsertView, SendView};
+    use crate::state::{default_name, InsertView, SendView, TakeView};
     use mpfree_fx::RETURNS;
     use mpfree_ui::{Fonts, SoftCanvas, Ui};
 
@@ -1766,11 +2034,140 @@ mod tests {
     }
 
     #[test]
+    fn a_selected_strips_name_opens_its_menu_for_freeze_and_print() {
+        let mut ui = ui(state(12));
+        let r = ui.rect_of(crate::MIXER).unwrap();
+        let (x, y) = mid(strip_parts(&ui, 0).name);
+        let tap = |ui: &mut Ui, x: i32, y: i32| {
+            ui.touch(1, Touch::Down, x, y);
+            ui.touch(1, Touch::Up, x, y);
+        };
+        tap(&mut ui, x, y);
+        assert_eq!(
+            crate::take_actions(&mut ui),
+            vec![MixAction::Select(StripId::Track(0))],
+            "the first tap selects"
+        );
+        tap(&mut ui, x, y);
+        assert_eq!(
+            ui.get::<MixerView>(crate::MIXER).unwrap().menu(),
+            None,
+            "no menu until the app offers takes"
+        );
+        let mut on = state(12);
+        on.selected = Some(StripId::Track(0));
+        on.takes = true;
+        crate::update(&mut ui, on);
+        tap(&mut ui, x, y);
+        let v = ui.get::<MixerView>(crate::MIXER).unwrap();
+        assert_eq!(
+            v.menu(),
+            Some(StripId::Track(0)),
+            "then the second tap opens the menu"
+        );
+        assert!(v.menu_button(r, StripMenu::Thaw).is_none());
+        let b = v.menu_button(r, StripMenu::Freeze).unwrap();
+        assert!(v.menu_button(r, StripMenu::Print).is_some());
+        tap(&mut ui, b.x + 10, b.y + 10);
+        assert_eq!(
+            crate::take_actions(&mut ui),
+            vec![MixAction::Freeze(StripId::Track(0))]
+        );
+        assert_eq!(ui.get::<MixerView>(crate::MIXER).unwrap().menu(), None);
+
+        // Under way: only Cancel. Frozen: Thaw and Print.
+        let mut st = state(12);
+        st.selected = Some(StripId::Track(0));
+        st.takes = true;
+        st.strips[0].take = Some(TakeView {
+            print: false,
+            done: Some(0.4),
+        });
+        crate::update(&mut ui, st.clone());
+        tap(&mut ui, x, y);
+        let v = ui.get::<MixerView>(crate::MIXER).unwrap();
+        assert!(v.menu_button(r, StripMenu::Freeze).is_none());
+        let b = v.menu_button(r, StripMenu::Cancel).unwrap();
+        tap(&mut ui, b.x + 10, b.y + 10);
+        assert_eq!(
+            crate::take_actions(&mut ui),
+            vec![MixAction::CancelTake(StripId::Track(0))]
+        );
+        st.strips[0].take = None;
+        st.strips[0].frozen = true;
+        crate::update(&mut ui, st);
+        tap(&mut ui, x, y);
+        let v = ui.get::<MixerView>(crate::MIXER).unwrap();
+        let b = v.menu_button(r, StripMenu::Thaw).unwrap();
+        tap(&mut ui, b.x + 10, b.y + 10);
+        assert_eq!(
+            crate::take_actions(&mut ui),
+            vec![MixAction::Thaw(StripId::Track(0))]
+        );
+
+        // The master prints but does not freeze; a tap outside closes.
+        let l = layout(r);
+        let mp = parts(l.master);
+        let (mx_, my_) = mid(mp.name);
+        tap(&mut ui, mx_, my_);
+        tap(&mut ui, mx_, my_);
+        let v = ui.get::<MixerView>(crate::MIXER).unwrap();
+        assert_eq!(v.menu(), Some(StripId::Master));
+        assert!(v.menu_button(r, StripMenu::Freeze).is_none());
+        let b = v.menu_button(r, StripMenu::Print).unwrap();
+        let _ = b;
+        tap(&mut ui, r.x + 4, r.bottom() - 4);
+        assert_eq!(ui.get::<MixerView>(crate::MIXER).unwrap().menu(), None);
+        assert_eq!(
+            crate::take_actions(&mut ui),
+            vec![MixAction::Select(StripId::Master)]
+        );
+    }
+
+    #[test]
+    fn a_takes_progress_redraws_like_a_meter() {
+        let mut st = state(12);
+        st.strips[2].take = Some(TakeView {
+            print: true,
+            done: Some(0.1),
+        });
+        let mut ui = ui(st.clone());
+        let mut c = SoftCanvas::new(1280, 800);
+        ui.paint(&mut c);
+        st.strips[2].take = Some(TakeView {
+            print: true,
+            done: Some(0.6),
+        });
+        crate::update(&mut ui, st.clone());
+        let damage = ui.paint(&mut c);
+        let r = ui.rect_of(crate::MIXER).unwrap();
+        let area: i64 = damage.iter().map(|d| i64::from(d.w) * i64::from(d.h)).sum();
+        assert!(area > 0 && area < i64::from(r.w) * i64::from(r.h) / 3);
+        st.strips[2].take = None;
+        st.strips[2].frozen = true;
+        crate::update(&mut ui, st);
+        assert_eq!(
+            ui.paint(&mut c),
+            vec![r],
+            "the end of a take redraws the panel"
+        );
+    }
+
+    #[test]
     fn every_view_paints() {
         let mut st = state(16);
         st.cost_pct = Some(0.8);
         st.selected = Some(StripId::Track(1));
         st.strips[2].audible = false;
+        st.strips[3].frozen = true;
+        st.strips[4].take = Some(TakeView {
+            print: false,
+            done: None,
+        });
+        st.master.take = Some(TakeView {
+            print: true,
+            done: Some(0.5),
+        });
         st.strips[0].inserts.extend((0..5).map(|i| InsertView {
             name: format!("Fx {i}"),
             on: i % 2 == 0,

@@ -6,7 +6,7 @@
     python3 docs/tools/build_manual.py --shots DIR     # use screens already drawn
 
 Screenshots come from the code: unless --shots is given, this builds
-mpfree-hello and runs `mpfree-hello --preview` to draw every page as it is now.
+mpfree-app and runs `mpfree --preview` to draw every page as it is now.
 
 Needs: Python 3 with Pillow (to shrink the screenshots), cargo, and for the
 outputs mdbook (`cargo install mdbook`), pandoc 3.1 or newer and typst
@@ -37,8 +37,8 @@ def draw_shots(out):
     raw = os.path.join(out, "shots-raw")
     shutil.rmtree(raw, ignore_errors=True)
     run(["cargo", "build", "--manifest-path", os.path.join(mp.ROOT, "rust", "Cargo.toml"),
-         "--release", "--locked", "-p", "mpfree-hello"])
-    exe = os.path.join(mp.ROOT, "rust", "target", "release", "mpfree-hello")
+         "--release", "--locked", "-p", "mpfree-app"])
+    exe = os.path.join(mp.ROOT, "rust", "target", "release", "mpfree")
     run([exe, "--preview", raw], stdout=subprocess.DEVNULL)
     return raw
 
@@ -204,7 +204,7 @@ def build_pdf(out, src_pdf, shots, toc):
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--out", default=OUT_DEFAULT)
-    ap.add_argument("--shots", help="a folder of screens from `mpfree-hello --preview`")
+    ap.add_argument("--shots", help="a folder of screens from `mpfree --preview`")
     ap.add_argument("--no-site", action="store_true")
     ap.add_argument("--no-pdf", action="store_true")
     a = ap.parse_args()
@@ -223,9 +223,9 @@ def main():
     shutil.rmtree(shots, ignore_errors=True)
     missing = shrink_shots(raw, shots, wanted)
     if missing:
-        sys.exit("STOP: these screens are asked for but mpfree-hello --preview no longer draws "
+        sys.exit("STOP: these screens are asked for but mpfree --preview no longer draws "
                  f"them: {', '.join(missing)}. Fix the page or add the screen "
-                 "(rust/mpfree-hello/src/gui.rs, sample_screens).")
+                 "(rust/mpfree-app/src/gui.rs, sample_screens).")
     if not a.no_site:
         site = build_site(out, prepare(out, "html", pages, notes), shots)
         print(f"website: {os.path.join(site, 'index.html')}")

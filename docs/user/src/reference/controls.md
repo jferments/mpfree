@@ -1,6 +1,6 @@
 <!--
 status: changing
-covers: rust/mpfree-hello/src/app.rs rust/mpfree-controller docs/dev/design/layout-spec.md
+covers: rust/mpfree-app/src/app.rs rust/mpfree-controller docs/dev/design/layout-spec.md
 checked: 2026-11-11 414faa1
 -->
 

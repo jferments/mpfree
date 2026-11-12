@@ -4,7 +4,7 @@ and turning the manual's few extensions into HTML (mdBook) or Pandoc Markdown
 
 The extensions, all in docs/user/src:
   <!-- status/covers/checked header -->   at the top of every page
-  {{shot: NAME}} or {{shot: NAME | Caption}}   a screen drawn by mpfree-hello --preview
+  {{shot: NAME}} or {{shot: NAME | Caption}}   a screen drawn by mpfree --preview
   {{build}}                                 the commit and date this copy was built from
   {{mpc-notes}}                             every "Coming from an MPC" box, collected
   > [!MPC] / [!NOTE] / [!TIP] / [!WARNING]  boxes (GitHub shows the last three natively)

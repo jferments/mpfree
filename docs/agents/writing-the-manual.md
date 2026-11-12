@@ -36,4 +36,4 @@ A musician who has never used an MPC, holding one. They want to make music, not 
 
 ## Screens
 
-Screens come from `mpfree-hello --preview`, which draws each page with sample data. To show a screen the manual needs (a menu open, a view with data in it), add it to `gui::sample_screens` in `rust/mpfree-hello/src/gui.rs`, in the same pull request. Never commit a hand-made screenshot or photo of the screen: it goes stale the next time the page is redrawn.
+Screens come from `mpfree --preview`, which draws each page with sample data. To show a screen the manual needs (a menu open, a view with data in it), add it to `gui::sample_screens` in `rust/mpfree-app/src/gui.rs`, in the same pull request. Never commit a hand-made screenshot or photo of the screen: it goes stale the next time the page is redrawn.

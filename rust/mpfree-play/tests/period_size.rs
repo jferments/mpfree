@@ -5,12 +5,15 @@
 //! own swing, quantised notes, long overlapping notes that play by
 //! chance (40, 70 and 100 %) and a muted track. Parameter locks ride
 //! along: on notes, between them (trigless), on a pad, after swing and
-//! quantise, and on the muted track (which sends none).
+//! quantise, and on the muted track (which sends none). So do FX moves:
+//! ramps, holds and ends on the slow, fast and muted clips, one of them
+//! under a parameter lock.
 //! It is cut into periods of 1 to 8192 frames and random sizes; every
 //! event must match. Every note must also end before it starts again.
 
 use mpfree_play::{Event, Launch, Out, PlayView, Player, Sink};
-use mpfree_seq::mpfree_param::{OnTrack, RelAddr};
+use mpfree_seq::mpfree_moves::{Kind, Map, Target};
+use mpfree_seq::mpfree_param::{OnTrack, Owner, ParamAddr, RelAddr};
 use mpfree_seq::{Clip, Lock, Note, Project, Quantise, Speed, Track};
 use mpfree_transport::time::{Segment, Swing, TempoMap};
 use mpfree_transport::transport::MAX_PERIOD;
@@ -34,6 +37,8 @@ fn notes(step: i64, count: i64, len: i64, pitch: impl Fn(i64) -> u8) -> Vec<Note
             note: pitch(i),
             velocity: 1 + (i * 37 % 127) as u8,
             chance: 100,
+            cond: mpfree_seq::Cond::Always,
+            ratchet: 1,
         })
         .collect()
 }
@@ -51,6 +56,7 @@ fn session() -> PlayView {
             track: p.tracks.len() - 1,
             slot,
             origin,
+            start: origin,
         }
     };
     let mut launches = vec![];
@@ -67,6 +73,7 @@ fn session() -> PlayView {
     let mut c = Clip::new("", 1680);
     c.speed = Speed::new(3, 4).unwrap();
     c.notes = notes(240, 7, 300, |i| 40 + i as u8);
+    moves(&mut c, Target::Track(RelAddr::new(OnTrack::Inst, 5)));
     launches.push(add("poly", c, 960, false));
     // Double speed with its own 1/8 swing.
     let mut c = Clip::new("", 1920);
@@ -77,6 +84,9 @@ fn session() -> PlayView {
         Lock::new(320, None, RelAddr::new(OnTrack::Inst, 12), 900.0),
         Lock::new(480, None, RelAddr::new(OnTrack::Inst, 12), 450.0),
     ];
+    // A lane on the parameter the locks hold, and a fixed one.
+    moves(&mut c, Target::Track(RelAddr::new(OnTrack::Inst, 12)));
+    moves(&mut c, Target::Fixed(ParamAddr::new(Owner::Macro(1), 0)));
     launches.push(add("fast", c, -3840, false));
     // Loose notes, quantised at 70 %, long and overlapping on one pitch,
     // each with a chance of 40, 70 or 100 %.
@@ -89,6 +99,8 @@ fn session() -> PlayView {
             note: 36,
             velocity: 90,
             chance: 40 + (i % 3) as u8 * 30,
+            cond: mpfree_seq::Cond::Always,
+            ratchet: 1,
         })
         .collect();
     c.locks = vec![Lock::new(
@@ -102,8 +114,28 @@ fn session() -> PlayView {
     let mut c = Clip::new("", 960);
     c.notes = notes(120, 8, 60, |_| 9);
     c.locks = vec![Lock::new(0, None, RelAddr::new(OnTrack::Inst, 1), 2.0)];
+    moves(&mut c, Target::Track(RelAddr::new(OnTrack::Inst, 1)));
     launches.push(add("muted", c, 0, true));
     PlayView::compile(&p, &launches).unwrap()
+}
+
+/// Ramps, holds and ends across the clip, with a gesture that runs over
+/// its end.
+fn moves(c: &mut Clip, target: Target) {
+    let len = c.length as u32;
+    let mut pts: Vec<(f64, f32, Kind)> = (0..len / 97)
+        .map(|k| {
+            let kind = [Kind::Ramp, Kind::Ramp, Kind::Step, Kind::Ramp, Kind::End][k as usize % 5];
+            (f64::from(k * 97 + 3), ((k * 13) % 11) as f32 / 10.0, kind)
+        })
+        .collect();
+    pts.retain(|p| p.0 < f64::from(len) - 40.0);
+    pts.push((f64::from(len) - 20.0, 0.5, Kind::Ramp));
+    pts.push((f64::from(len) + 30.0, 0.9, Kind::Ramp));
+    pts.push((f64::from(len) + 60.0, 0.0, Kind::End));
+    c.moves
+        .put(target, Map::linear(-1.0, 1.0), &pts, len)
+        .unwrap();
 }
 
 fn script(t: &mut Transport) {
@@ -223,6 +255,7 @@ fn the_same_events_for_every_period_size() {
     assert_eq!(locks(4), 0, "the muted track locks nothing");
     let mut locked = std::collections::HashSet::new();
     let mut sounding = std::collections::HashSet::new();
+    let mut lanes = 0;
     for e in &reference {
         match e.3 {
             Event::Lock { addr, .. } => {
@@ -238,12 +271,35 @@ fn the_same_events_for_every_period_size() {
                 "{e:?} ends a silent note"
             ),
             Event::AllOff => assert!(sounding.is_empty()),
+            // A move holds its parameter as a lock does (and takes it back
+            // from one).
+            Event::Lane { addr, .. } => {
+                assert_ne!(e.1, 4, "the muted track sends no moves");
+                locked.insert((e.1, addr));
+                lanes += 1;
+            }
         }
     }
     assert!(reference.iter().any(|e| e.3 == Event::AllOff));
+    assert!(lanes > 500, "{lanes} lane values");
 
     for n in [1, 2, 7, 64, 127, 333, 1024, 4096, MAX_PERIOD] {
-        assert!(run(&view, || n) == reference, "period size {n} differs");
+        let got = run(&view, || n);
+        if got != reference {
+            let k = got
+                .iter()
+                .zip(&reference)
+                .position(|(a, b)| a != b)
+                .unwrap_or(got.len().min(reference.len()));
+            let lo = k.saturating_sub(4);
+            panic!(
+                "period size {n} differs at event {k} of {} / {}:\n got  {:?}\n want {:?}",
+                got.len(),
+                reference.len(),
+                &got[lo..(k + 4).min(got.len())],
+                &reference[lo..(k + 4).min(reference.len())]
+            );
+        }
     }
     for seed in [3u64, 0x5eed, 987_654_321] {
         assert!(

@@ -24,6 +24,6 @@ cargo install --locked mdbook typst-cli      # once; pandoc 3.1+ and Pillow from
 python3 docs/tools/build_manual.py           # draws the screens, then builds both
 ```
 
-The website lands in `docs/user/build/site/index.html` and the PDF in `docs/user/build/mpfree-manual.pdf`. `--no-pdf` and `--no-site` build one of them; `--shots DIR` reuses screens already drawn with `mpfree-hello --preview DIR`.
+The website lands in `docs/user/build/site/index.html` and the PDF in `docs/user/build/mpfree-manual.pdf`. `--no-pdf` and `--no-site` build one of them; `--shots DIR` reuses screens already drawn with `mpfree --preview DIR`.
 
 The build stops if a page asks for a screen that MPFree no longer draws, so a renamed or removed screen can't leave a stale picture behind.

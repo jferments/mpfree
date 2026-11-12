@@ -48,7 +48,7 @@ pub const BAR_SPEC: &str = "transport:44";
 pub const CLIPS_LAYOUT: &str =
     "col(header:60, transport:44, row(clips:*, col(record:*, takes:240):430):*, hint:26)";
 pub const CLIPS_HINT: &str =
-    "Tap a clip: it plays from the next bar, or stops   ·   + records into an empty slot   ·   a track's name arms it";
+    "Tap a clip: it plays from the next bar, or stops   ·   a row's number plays the whole row   ·   + records into an empty slot   ·   a track's name arms it";
 /// The record settings, top to bottom.
 pub const RECORD_ROWS: [&str; 5] = [
     "Armed track",
@@ -220,6 +220,10 @@ pub struct TimeState {
     /// What Capture would keep now, such as "2 bars"; None when nothing
     /// was played since the last capture. The app sets it.
     pub capture: Option<String>,
+    /// The scene (row) playing, and the one waiting for the next bar line
+    /// (`mpfree_perform::Perform`). The app sets them.
+    pub scene_playing: Option<usize>,
+    pub scene_cued: Option<usize>,
 }
 
 impl TimeState {
@@ -260,6 +264,8 @@ impl TimeState {
             undone: takes.undone().iter().map(TakeRow::of).collect(),
             chips: Vec::new(),
             capture: None,
+            scene_playing: None,
+            scene_cued: None,
         }
     }
 
@@ -314,6 +320,11 @@ pub enum TimeAction {
     /// Keep what was just played (CAPTURE): into the armed track's playing
     /// clip, or as a new clip (see `mpfree_capture::keep`).
     Capture,
+    /// Play a whole row of the grid (a scene) from the next bar line, with
+    /// its mutes (`mpfree_perform::Perform::launch_scene`).
+    LaunchScene(usize),
+    /// Stop every track on the next bar line.
+    StopAll,
 }
 
 /// Where a clip launched now starts: on the next bar line while the
@@ -372,6 +383,7 @@ pub fn clips_after(
             track,
             slot,
             origin: anchored(bar, clip.length, clip.speed),
+            start: bar,
         });
     }
     (launches, cues)
@@ -400,6 +412,7 @@ pub fn launches_after(launches: &[Launch], action: &TimeAction, t: &TransportInf
                 track,
                 slot,
                 origin: launch_origin(t),
+                start: launch_origin(t),
             });
         }
         TimeAction::StopClip(track) => out.retain(|l| l.track != track),
@@ -420,6 +433,11 @@ pub fn action(ev: &UiEvent, st: &TimeState) -> Option<TimeAction> {
             BarButton::Undo => TimeAction::Undo,
         }),
         (TRANSPORT, EventKind::Select(i)) => Some(TimeAction::Chip(*i)),
+        (CLIPS, EventKind::Toggle(row)) => Some(if *row < SLOTS {
+            TimeAction::LaunchScene(*row)
+        } else {
+            TimeAction::StopAll
+        }),
         (CLIPS, EventKind::Tab(track)) => Some(TimeAction::Arm(if st.armed == Some(*track) {
             None
         } else {
@@ -822,6 +840,7 @@ impl TimePage {
                 && g.legend == legend
                 && g.first_row == self.first_row
                 && g.first_track == self.first_track
+                && (g.scene_playing, g.scene_cued) == (st.scene_playing, st.scene_cued)
         });
         if !same_grid {
             if let Some(g) = ui.get_mut::<ClipGrid>(CLIPS) {
@@ -830,6 +849,8 @@ impl TimePage {
                 g.legend = legend;
                 g.first_row = self.first_row;
                 g.first_track = self.first_track;
+                g.scene_playing = st.scene_playing;
+                g.scene_cued = st.scene_cued;
             }
         }
         let rows = record_rows(st);
@@ -882,6 +903,8 @@ mod tests {
                 note: 1,
                 velocity: 100,
                 chance: 100,
+                cond: mpfree_seq::Cond::Always,
+                ratchet: 1,
             })
             .unwrap();
             t.slots[0] = Some(c);
@@ -893,11 +916,13 @@ mod tests {
                 track: 0,
                 slot: 0,
                 origin: 0,
+                start: 0,
             },
             Launch {
                 track: 1,
                 slot: 1,
                 origin: 5 * BAR,
+                start: 5 * BAR,
             },
         ];
         let t = TransportInfo {
@@ -965,6 +990,7 @@ mod tests {
             track: 2,
             slot: 0,
             origin: 0,
+            start: 0,
         });
         assert_eq!(cell_of(&st, 2, 0).state, CellState::Playing);
         st.transport.state = State::Recording;
@@ -998,6 +1024,14 @@ mod tests {
         assert_eq!(
             action(&ev(CLIPS, EventKind::Tab(0)), &st),
             Some(TimeAction::Arm(Some(0)))
+        );
+        assert_eq!(
+            action(&ev(CLIPS, EventKind::Toggle(4)), &st),
+            Some(TimeAction::LaunchScene(4))
+        );
+        assert_eq!(
+            action(&ev(CLIPS, EventKind::Toggle(SLOTS)), &st),
+            Some(TimeAction::StopAll)
         );
         assert_eq!(
             action(&ev(CLIPS, EventKind::Tab(2)), &st),
@@ -1162,7 +1196,8 @@ mod tests {
                 Some(&Launch {
                     track: 2,
                     slot: 4,
-                    origin: 5 * BAR
+                    origin: 5 * BAR,
+                    start: 5 * BAR,
                 }),
                 0
             )
@@ -1198,12 +1233,14 @@ mod tests {
                 Launch {
                     track: 1,
                     slot: 1,
-                    origin: 5 * BAR
+                    origin: 5 * BAR,
+                    start: 5 * BAR,
                 },
                 Launch {
                     track: 0,
                     slot: 1,
-                    origin
+                    origin,
+                    start: 3 * BAR,
                 }
             ]
         );
@@ -1213,7 +1250,8 @@ mod tests {
             vec![Launch {
                 track: 0,
                 slot: 1,
-                origin
+                origin,
+                start: 3 * BAR,
             }]
         );
     }
@@ -1235,6 +1273,7 @@ mod tests {
             track: 2,
             slot: 0,
             origin: 0,
+            start: 0,
         });
         let q = cell_of(&st, 0, 1);
         assert_eq!((q.state, q.foot.as_str()), (CellState::Queued, "from 6.1"));
@@ -1276,12 +1315,14 @@ mod tests {
                 Launch {
                     track: 1,
                     slot: 1,
-                    origin: 5 * BAR
+                    origin: 5 * BAR,
+                    start: 5 * BAR,
                 },
                 Launch {
                     track: 0,
                     slot: 1,
-                    origin: 5 * BAR
+                    origin: 5 * BAR,
+                    start: 5 * BAR,
                 }
             ]
         );
@@ -1291,7 +1332,8 @@ mod tests {
             vec![Launch {
                 track: 0,
                 slot: 1,
-                origin: 5 * BAR
+                origin: 5 * BAR,
+                start: 5 * BAR,
             }]
         );
         // On a bar line: now. Stopped: from the start of the bar.
@@ -1422,6 +1464,13 @@ mod tests {
             drawn,
             vec![ui.rect_of(TRANSPORT).unwrap()],
             "one tick on: only the bar"
+        );
+        st.scene_cued = Some(1);
+        page.update(&mut ui, &st);
+        assert_eq!(
+            ui.paint(&mut c),
+            vec![ui.rect_of(CLIPS).unwrap()],
+            "a scene cued: the grid"
         );
     }
 }

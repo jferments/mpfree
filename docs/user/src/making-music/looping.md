@@ -1,6 +1,6 @@
 <!--
 status: changing
-covers: rust/mpfree-looper rust/mpfree-hello/src/looper_page.rs
+covers: rust/mpfree-looper rust/mpfree-app/src/looper_page.rs
 checked: 2026-11-11 414faa1
 -->
 

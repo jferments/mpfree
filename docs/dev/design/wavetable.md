@@ -96,7 +96,7 @@ Preview screens: `mpfree-synth-preview` (synth-wt-*.png).
 
 In the pad player (round 8) Wavetable is the fifth Engine choice in the
 Synth tab's options (MENU), after Poly, FM, Drums and Pluck, and plays the
-pad layouts as Poly and FM do ([synths.md](synths.md#in-the-pad-player-rustmpfree-hello)).
+pad layouts as Poly and FM do ([synths.md](synths.md#in-the-pad-player-rustmpfree-app)).
 
 ## Demo
 

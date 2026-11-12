@@ -3,7 +3,7 @@
 //! Reads `/dev/input/event0` (the MPC One's ILI2117) read-only and
 //! non-blocking, **without `EVIOCGRAB`**, so Akai's app keeps receiving every
 //! event when it runs alongside. It closes two gaps the hand-rolled reader in
-//! `mpfree-hello` had:
+//! `mpfree-app` had:
 //!
 //! 1. **Seeding at open.** The kernel sends `ABS_MT_SLOT` only when the slot
 //!    changes, so a fresh reader that assumes slot 0 can file the first

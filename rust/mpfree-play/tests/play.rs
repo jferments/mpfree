@@ -36,6 +36,7 @@ fn view(clips: Vec<Clip>) -> PlayView {
             track: i,
             slot: 0,
             origin: 0,
+            start: 0,
         });
     }
     PlayView::compile(&p, &launches).unwrap()
@@ -76,6 +77,7 @@ fn short(log: &[Out]) -> Vec<(u64, u16, u8, u8)> {
             Event::AllOff => (o.frame, o.track, 2, 0),
             Event::Lock { .. } => (o.frame, o.track, 3, 0),
             Event::Unlock { .. } => (o.frame, o.track, 4, 0),
+            Event::Lane { .. } => (o.frame, o.track, 5, 0),
         })
         .collect()
 }
@@ -204,6 +206,7 @@ fn a_clip_starts_at_its_origin() {
             track: 0,
             slot: 5,
             origin: 1920,
+            start: 1920,
         }],
     )
     .unwrap();
@@ -301,6 +304,7 @@ fn muted_tracks_and_count_ins_are_silent() {
             track: 0,
             slot: 0,
             origin: 0,
+            start: 0,
         }],
     )
     .unwrap();
