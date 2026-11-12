@@ -16,8 +16,8 @@
 //! MIDI clock bytes are `mpfree-midi-clock`'s; how the transport follows
 //! another device's clock is the time engine's. Which ALSA device each
 //! port is, and opening it, is the app's, after the owner's go. The owner's
-//! read-only captures showed the DIN In jack on USB-MIDI cable 2 and the
-//! CV jacks driven by CCs on cable 1; the DIN Out jack is not found yet
+//! read-only captures showed both DIN jacks on USB-MIDI cable 2 (In and
+//! Out) and the CV jacks driven by CCs on cable 1
 //! (docs/dev/design/midi-io.md).
 #![forbid(unsafe_code)]
 
