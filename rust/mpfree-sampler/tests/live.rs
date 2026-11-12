@@ -460,3 +460,89 @@ fn stop_all_leaves_nothing_playing_or_waiting() {
     assert_eq!((e.active_voices(), e.live_grains()), (0, 0));
     assert!(l.iter().chain(&r).all(|x| *x == 0.0));
 }
+
+#[test]
+fn a_glide_that_starts_again_after_landing_is_the_same_for_any_block_size() {
+    // A sine with no filter of its own: the program's cutoff darkens it and
+    // opens it again (and the pad's level dips and comes back), long after
+    // the first glide has landed and also before it lands.
+    let data: Vec<f32> = (0..22_050)
+        .flat_map(|i| {
+            let x = (i as f32 * 330.0 * std::f32::consts::TAU / RATE as f32).sin() * 0.5;
+            [x, x]
+        })
+        .collect();
+    let s = Source::new("sine", RATE, 2, data).unwrap();
+    let mut r = Region::whole(&s);
+    r.mode = PlayMode::OneShot;
+    let p = kit(&s, Pad::new("sine", Layer::new(r)));
+    let cutoff = |value| Event::ProgramLive {
+        field: ProgramField::Cutoff,
+        value,
+    };
+    for back in [1_100, 3_000, 6_000, 9_000] {
+        // The program's cutoff, then the pad's own level.
+        for (down, up) in [
+            (cutoff(-1.0), cutoff(0.0)),
+            (
+                live(0, PadField::Level, -12.0),
+                live(0, PadField::Level, f32::NAN),
+            ),
+        ] {
+            let events = [(0, hit(0)), (1_000, down), (back, up)];
+            let want = play(&mut engine(&p), 12_000, 128, &events);
+            for block in [1, 7, 64, 100, 1000] {
+                let got = play(&mut engine(&p), 12_000, block, &events);
+                assert_eq!(
+                    first_difference(&got, &want),
+                    None,
+                    "{up:?} at {back}, blocks of {block}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn the_view_tells_each_pads_own_values() {
+    let s = noise(10_000, 9);
+    let mut pad = plain(&s);
+    pad.level_db = -6.0;
+    pad.pan = 0.25;
+    pad.tune_cents = -120;
+    pad.amp = Ahdsr {
+        attack_ms: 4.0,
+        hold_ms: 0.0,
+        decay_ms: 80.0,
+        sustain: 0.5,
+        release_ms: 300.0,
+    };
+    let mut p = kit(&s, pad);
+    let v = EngineView::build(&p, RATE);
+    let own = |v: &EngineView, f| v.pad_own(0, f);
+    assert_eq!(own(&v, PadField::Level), Some(-6.0));
+    assert_eq!(own(&v, PadField::Pan), Some(0.25));
+    assert_eq!(own(&v, PadField::Tune), Some(-120.0));
+    assert_eq!(own(&v, PadField::Attack), Some(4.0));
+    assert_eq!(own(&v, PadField::Decay), Some(80.0));
+    assert_eq!(own(&v, PadField::Release), Some(300.0));
+    // No filter: nothing of its own for Cutoff and Resonance.
+    assert_eq!(own(&v, PadField::Cutoff), None);
+    assert_eq!(own(&v, PadField::Resonance), None);
+    p.edit_pad(0, None, |pd| {
+        pd.filter = Filter {
+            kind: FilterKind::HighPass,
+            poles: 2,
+            cutoff_hz: 900.0,
+            resonance: 0.3,
+            env_octaves: 0.0,
+        }
+    })
+    .unwrap();
+    let v = EngineView::build(&p, RATE);
+    assert_eq!(own(&v, PadField::Cutoff), Some(900.0));
+    assert_eq!(own(&v, PadField::Resonance), Some(0.3));
+    // A pad without a sound has none.
+    assert!(PadField::ALL.iter().all(|&f| v.pad_own(9, f).is_none()));
+    assert!(v.pad_own(99, PadField::Level).is_none());
+}
