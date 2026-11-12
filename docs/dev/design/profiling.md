@@ -319,7 +319,7 @@ data side is here:
   period's span leaves out), and each screen action, MIDI event and effect.
   A period whose parts take half a period or more is slow: counted, on this
   page under the budgets ("Slow periods outside the engines", red once there
-  is one, with its worst and the part that took most), and said in a
+  is one, with its worst, and below it the part that took most), and said in a
   `control: slow period at +T s: ...` line (at most one a second, the rest
   counted) that names the slowest part and the slowest single action,
   event or effect by its debug text, cut to 48 bytes without allocating.
