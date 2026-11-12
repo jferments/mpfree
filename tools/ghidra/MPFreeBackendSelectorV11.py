@@ -77,6 +77,7 @@ def mpfree_v11_entrypoint():
             except Exception:
                 pass
     tables=[]
+    table_xref_targets=set()
     if backend_file!='none':
         doc=json.loads(Path(backend_file).read_text())
         if doc.get('source_sha256')!=expect or doc.get('role')!=role:
@@ -84,7 +85,7 @@ def mpfree_v11_entrypoint():
         for t in doc.get('tables',[])[:35]:
             table_va=int(t['base_vaddr'],16)
             table_abs=base+table_va
-            xrefs=[];slots=[]
+            xrefs=[];slots=[];source_functions=set()
             for delta in (0,4,8,0x18,0x1c,0x20,0x2c,0x34):
                 pos=table_abs+delta
                 b=mem.getBlock(A(pos))
@@ -106,6 +107,11 @@ def mpfree_v11_entrypoint():
                 refs=[]
                 for ref in rm.getReferencesTo(A(pos)):
                     refs.append(str(ref.getFromAddress()))
+                    source_fn=fm.getFunctionContaining(ref.getFromAddress())
+                    if source_fn:
+                        entry=source_fn.getEntryPoint().getOffset()
+                        source_functions.add(entry)
+                        table_xref_targets.add(entry)
                     if len(refs)>=25:break
                 xrefs+=refs
                 slots.append({'relative':delta,'absolute':addr_hex(pos),
@@ -116,8 +122,13 @@ def mpfree_v11_entrypoint():
                            'raw_header':t['header_words'],
                            'raw_callbacks':t['callbacks'],
                            'code_xrefs_to_table_or_slots':xrefs[:60],
+                           'xref_source_functions':[addr_hex(i) for i in sorted(source_functions)],
                            'observed_ghidra_slots':slots,
                            'table_assignment_proven':False})
+    # Investigate the containing functions of actual references to candidate
+    # tables; these are where backend selection/assignment may occur. Never
+    # invent a new function starting at an arbitrary interior xref address.
+    selected.update(table_xref_targets)
     # Recover every relocation-backed callback function before decompiling.
     # May change only temporary imported ELF programs, never P1/P3.
     if role in ('az01-update','libaz01-prog'):
