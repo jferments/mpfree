@@ -44,6 +44,25 @@ class DirectBootSourceGuards(unittest.TestCase):
         self.assertNotIn("subprocess.", source)
         self.assertNotIn("os.system(", source)
 
+    def test_elf_linkage_audit_is_sha_checked_and_never_runs_vendor_elf(self):
+        parser = ROOT / "tools/mpc-one/offline_elf_linkage_audit.py"
+        src = parser.read_text()
+        ast.parse(src, filename=str(parser))
+        runner = RUNNER.read_text()
+        launcher = (ROOT / "tools/mpc-one/run_boot_updater_v11.py").read_text()
+        for key in ("validate_elf(blob,expected_sha)",
+                    "subprocess.run(", '["-W","-r","-s","-d"]'):
+            # The argument list is intentionally fixed, without shell.
+            if key.startswith("["):
+                self.assertIn('"readelf"', src)
+            else:
+                self.assertIn(key,src)
+        self.assertIn("offline_elf_linkage_audit.py", launcher)
+        self.assertIn("elf-relocation-crosscheck.json", runner)
+        self.assertIn("updater_stubs_are_not_implementations", runner)
+        self.assertNotIn("shell=True", src)
+        self.assertNotIn("os.system(", src)
+
     def test_adc_source_present_and_pointer_proof_is_required(self):
         source = GHIDRA.read_text()
         runner = RUNNER.read_text()
