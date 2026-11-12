@@ -30,6 +30,8 @@
 #define FDT_CHECK ((uintptr_t)0x00127a1du)
 #define BOOT ((uintptr_t)0x00122965u)
 #define USB_EXIT ((uintptr_t)0x00121dd1u)
+#define FLASH ((uintptr_t)0x00122c5du)
+#define ERASE ((uintptr_t)0x00122bf9u)
 #define RECEIVE ((uintptr_t)0x00122a11u)
 #define USB_DATA ((uintptr_t)0x00800000u)
 static void* map_at(uintptr_t addr, size_t length) {
@@ -79,6 +81,17 @@ static int cmp(const char *a,const char *b,unsigned n) {
 static int permission(void) {return ((int(*)(void))PERMISSION)();}
 static void oem(uintptr_t ctx){((void(*)(uintptr_t,uintptr_t))OEM)(0,ctx);}
 static int classify(uintptr_t input){return ((int(*)(uintptr_t))CLASSIFY)(input);}
+static int fdt_verify(uintptr_t input){return ((int(*)(uintptr_t))FDT_CHECK)(input);}
+static void flash_or_erase(uintptr_t code,uintptr_t desc){
+    ((void(*)(uintptr_t,uintptr_t))code)(0,desc);
+}
+static void fdt_header(uintptr_t addr){
+    memset((void*)addr,0,64);
+    unsigned char *p=(unsigned char*)addr;
+    p[0]=0xd0;p[1]=0x0d;p[2]=0xfe;p[3]=0xed;
+    p[20]=0;p[21]=0;p[22]=0;p[23]=17;
+    p[24]=0;p[25]=0;p[26]=0;p[27]=16;
+}
 static void boot(void){((void(*)(void))BOOT)();}
 static void usb_exit(void){((void(*)(void))USB_EXIT)();}
 static void receive(uintptr_t context,uintptr_t packet){((void(*)(uintptr_t,uintptr_t))RECEIVE)(context,packet);}
@@ -166,21 +179,38 @@ int main(int argc,char**argv){
         return result(name,(*flag!=0)==expect,
                       *flag?"authorization-flag-was-set":"authorization-flag-remained-zero");
     }
-    if(!strncmp(name,"classify_",9)){
+    if(!strncmp(name,"classify_",9) || !strncmp(name,"fdt_",4)){
         uintptr_t payload=HEAP+0x800u;
-        put32(payload,0xffffffffu);
+        memset((void*)payload,0,64);
         if(!strcmp(name,"classify_legacy")){
             put32(payload,get32(0x0010e3acu));
+        }else if(!strcmp(name,"classify_fdt") || !strcmp(name,"fdt_valid") ||
+                 !strcmp(name,"fdt_old_version") || !strcmp(name,"fdt_incompatible")){
+            fdt_header(payload);
+        }else if(!strcmp(name,"classify_invalid") || !strcmp(name,"fdt_bad_magic")){
+            put32(payload,0xffffffffu);
         }
-        if(!strcmp(name,"classify_fdt")){
-            if(!replace_guest_stub(FDT_CHECK&~1u,0))return 3;
-        } else if(!strcmp(name,"classify_invalid")){
-            if(!replace_guest_stub(FDT_CHECK&~1u,1))return 3;
+        if(!strcmp(name,"fdt_old_version"))((uint8_t*)payload)[23]=15;
+        if(!strcmp(name,"fdt_incompatible"))((uint8_t*)payload)[27]=18;
+        int actual=0,expected=0;
+        if(!strncmp(name,"fdt_",4)){
+            actual=fdt_verify(payload);
+            expected=!strcmp(name,"fdt_valid")?0:1;
+            return result(name,(actual==0)==(expected==0),
+                          "actual-vendor-fdt-header-verifier");
         }
-        int code=classify(payload);
-        int expected=(!strcmp(name,"classify_legacy"))?1:
-            (!strcmp(name,"classify_fdt"))?2:0;
-        return result(name,code==expected,"actual-vendor-image-type-dispatch");
+        actual=classify(payload);
+        expected=(!strcmp(name,"classify_legacy"))?1:
+                 (!strcmp(name,"classify_fdt"))?2:0;
+        return result(name,actual==expected,"actual-vendor-unmodified-image-classifier");
+    }
+    if(!strcmp(name,"flash_denied") || !strcmp(name,"erase_denied")){
+        uintptr_t param=HEAP+0x500u;
+        put32(param,HEAP+0x600u);
+        *flag=0u;
+        flash_or_erase(!strcmp(name,"flash_denied")?FLASH:ERASE,param);
+        return result(name,*flag==0u && get32(param)==HEAP+0x600u,
+                      "real-vendor-handler-denied-before-storage-branch");
     }
     if(!strncmp(name,"receive_",8)){
         /* Exercise actual USB receive parser + actual in-memory copy only.
