@@ -13,7 +13,8 @@
 //! - Map controls: every MPC One control in a list, found, skipped or still
 //!   to find, and a card for the one picked (`app::mapper`).
 //!
-//! - Console: the system log (the same page SHIFT + STOP opens), here with
+//! - Touch: test, measure and tune the touchscreen (`touch_dev.rs`).
+//! - Console: the system log (the page SHIFT + ERASE + TAP TEMPO opens), here with
 //!   the strip.
 //!
 //! A strip under the header switches between the pages.
@@ -160,6 +161,7 @@ impl DebugPages {
                 "CPU by engine",
                 "Processes",
                 "Map controls",
+                "Touch",
                 "Console",
             ]),
         );
@@ -204,6 +206,19 @@ impl DebugPages {
         ui.add_page(ENGINES_PAGE, ENGINES_LAYOUT)?;
         ui.add_page(PROCS_PAGE, PROCS_LAYOUT)?;
         ui.add_page(MAP_PAGE, MAP_LAYOUT)?;
+        ui.add(
+            crate::touch_dev::TEST,
+            crate::touch_dev::TouchTest::default(),
+        );
+        ui.add(
+            crate::touch_dev::TUNE,
+            crate::touch_dev::TuneList::default(),
+        );
+        ui.add_page(crate::touch_dev::PAGE, crate::touch_dev::LAYOUT)?;
+        ui.add_page(
+            crate::touch_dev::TARGETS_PAGE,
+            crate::touch_dev::TARGETS_LAYOUT,
+        )?;
         ui.add_page(CONSOLE_PAGE, CONSOLE_LAYOUT)?;
         let mut d = DebugPages {
             history: VecDeque::new(),
@@ -225,6 +240,7 @@ impl DebugPages {
             View::Engines => Some(ENGINES_PAGE),
             View::Procs => Some(PROCS_PAGE),
             View::Map => Some(MAP_PAGE),
+            View::Touch => Some(crate::touch_dev::PAGE),
             View::Console => Some(CONSOLE_PAGE),
             _ => None,
         }

@@ -35,7 +35,7 @@
 //!                      (the test stick's mpfree-app service) and runs until the
 //!                      power goes off: a loading page with a progress bar while
 //!                      it waits for the controller and the sound card, then the
-//!                      player; STOP silences, SHIFT + STOP shows the system log
+//!                      player; STOP silences, SHIFT + ERASE + TAP TEMPO shows the system log
 //!                      (journalctl -f, read-only); --keep-screen keeps the
 //!                      startup screen's last frame behind the loading card;
 //!                      --data DIR keeps settings and found buttons there
@@ -77,6 +77,7 @@ mod engines;
 mod gui;
 mod kit;
 mod looper_page;
+mod looper_tab;
 mod looping;
 mod mixing;
 mod modmix;
@@ -93,6 +94,7 @@ mod synth;
 mod sys;
 mod sysinfo;
 mod time;
+mod touch_dev;
 mod touchlab_page;
 
 use mpfree_controller::midi::{Message, Parser};
@@ -397,6 +399,51 @@ fn load_theme(o: &Options) -> Result<Theme, String> {
         )
     })?;
     Theme::parse(&text).map_err(|e| format!("{name}: {e}"))
+}
+
+/// The most theme files the themes folder offers.
+const MAX_THEME_FILES: usize = 32;
+
+/// The themes folder's `NAME.theme` files that parse, in name order (at
+/// most [`MAX_THEME_FILES`]), each with its theme. A theme without its own
+/// `name`, or named like a built-in one, is shown by its file name. A file
+/// that doesn't parse is left out with a line saying why (the second list,
+/// lines for the log). Only reads.
+fn load_theme_files(store: &mpfree_store::Store) -> (Vec<(String, Theme)>, Vec<String>) {
+    let (mut found, mut notes) = (Vec::new(), Vec::new());
+    for file in store.list(app::THEMES_FOLDER) {
+        let Some(stem) = file.strip_suffix(".theme").filter(|s| !s.is_empty()) else {
+            continue;
+        };
+        if found.len() == MAX_THEME_FILES {
+            notes.push(format!(
+                "themes: only the first {MAX_THEME_FILES} theme files are offered"
+            ));
+            break;
+        }
+        let text = store
+            .read(app::THEMES_FOLDER, &file)
+            .and_then(|b| String::from_utf8(b).ok());
+        match text.map(|t| Theme::parse(&t)) {
+            Some(Ok(mut t)) => {
+                if app::THEMES
+                    .iter()
+                    .any(|b| b.1.eq_ignore_ascii_case(t.name.trim()))
+                    || t.name.trim().is_empty()
+                {
+                    t.name = stem.to_string();
+                }
+                found.push((file, t));
+            }
+            Some(Err(e)) => notes.push(format!("themes: {file} left out: {e}")),
+            None => notes.push(format!("themes: {file} left out: not readable text")),
+        }
+    }
+    if !found.is_empty() {
+        let names: Vec<&str> = found.iter().map(|(_, t)| t.name.as_str()).collect();
+        notes.push(format!("themes: found {}", names.join(", ")));
+    }
+    (found, notes)
 }
 
 /// The built-in fonts, or files given with --font, --bold-font, --mono-font.
@@ -1963,7 +2010,18 @@ struct SeqPads<'a> {
     synth: Option<&'a mut synth::Synth>,
     flashes: [u8; 16],
     hits: u64,
+    /// The live treatment's inputs (velocity curve, pad layout).
+    live: app::LiveMap,
+    /// The pads the arps' notes started this period, and their velocity,
+    /// for the screen (pad down, or a repeat's flash).
+    live_hits: [(u8, u8); MAX_LIVE_HITS],
+    n_live: usize,
+    /// Arp notes on a pad with no sound.
+    silent: u64,
 }
+
+/// Pad notes from the arps one period can show; more still sound.
+const MAX_LIVE_HITS: usize = 64;
 
 impl time::Pads for SeqPads<'_> {
     fn hit_at(&mut self, pad: usize, velocity: u8, offset: u32) -> bool {
@@ -1993,6 +2051,73 @@ impl time::Pads for SeqPads<'_> {
         match self.synth.as_mut() {
             Some(s) => s.all_off(),
             None => self.player.stop_all(),
+        }
+    }
+
+    /// An arp's note: the pads played live (through the armed track's arp,
+    /// a latched arp, or a clip through its arp). It gets the velocity
+    /// curve; with a synth pad layout it is a MIDI note for the synth and
+    /// its pad (if any) is what shows and records; otherwise it is a pad.
+    /// Returns what the armed track records as heard.
+    fn live(&mut self, o: &mpfree_play::Out) -> Option<mpfree_play::Event> {
+        use mpfree_play::Event;
+        let notes = self.synth.is_some() && self.live.plays_notes();
+        match o.event {
+            Event::NoteOn { note, velocity } => {
+                let v = self.live.velocity(velocity);
+                let pad = if notes {
+                    // A note no pad has (an arp octave up, a scale run)
+                    // still plays; only a pad's own note shows and records.
+                    if let Some(s) = self.synth.as_mut() {
+                        s.note_on_note(note, v, o.offset);
+                    }
+                    self.hits += 1;
+                    self.live.pad_of_note(note)?
+                } else {
+                    let pad = usize::from(note);
+                    if pad >= 16 {
+                        return None;
+                    }
+                    match self.synth.as_mut() {
+                        Some(s) => {
+                            s.note_on(pad, v, o.offset);
+                            self.hits += 1;
+                        }
+                        None if self.player.hit_at(pad, v, o.offset) => self.hits += 1,
+                        None => self.silent += 1,
+                    }
+                    pad
+                };
+                if self.n_live < MAX_LIVE_HITS {
+                    self.live_hits[self.n_live] = (pad as u8, v);
+                    self.n_live += 1;
+                }
+                Some(Event::NoteOn {
+                    note: pad as u8,
+                    velocity: v,
+                })
+            }
+            Event::NoteOff { note } if notes => {
+                if let Some(s) = self.synth.as_mut() {
+                    s.note_off_note(note, o.offset);
+                }
+                let pad = self.live.pad_of_note(note)?;
+                Some(Event::NoteOff { note: pad as u8 })
+            }
+            Event::NoteOff { note } => {
+                // The synth's note ends; a Grains pad stops when let go;
+                // one-shot sounds ignore it.
+                match self.synth.as_mut() {
+                    Some(s) => s.note_off(usize::from(note), o.offset),
+                    None => self.player.release_at(usize::from(note), o.offset),
+                }
+                Some(o.event)
+            }
+            Event::AllOff => {
+                self.stop_all();
+                None
+            }
+            Event::Lock { .. } | Event::Unlock { .. } => None,
         }
     }
 }
@@ -2044,6 +2169,10 @@ fn looper_action(
         }
         looping::LoopAction::Layer(id, c) => {
             out.note(&looper.layer_command(id, c));
+            Vec::new()
+        }
+        looping::LoopAction::Select(n) => {
+            out.note(&looper.select(n));
             Vec::new()
         }
     }
@@ -2275,11 +2404,29 @@ fn player_session(
         }
         None => mpfree_store::Store::none(),
     };
+    // The themes folder: theme files the user put in files/themes/ (read
+    // only), offered in Prefs > Appearance after the built-in themes. Listed
+    // before restore so a saved theme file comes back.
+    let (theme_files, notes) = load_theme_files(&store);
+    for line in notes {
+        out.say(&line);
+    }
+    app.theme_files = theme_files
+        .iter()
+        .map(|(f, t)| (f.clone(), t.name.clone()))
+        .collect();
+    out.show(gui::ToUi::ThemeFiles(theme_files));
     for line in app.restore(
         &store.settings(app::saved::APP),
         &store.settings(app::saved::MAP),
     ) {
         out.say(&line);
+    }
+    // Touch tuning (the Dev tab's Touch page), kept as the "touch" settings.
+    let touch = store.settings(app::saved::TOUCH);
+    if !touch.is_empty() {
+        let t = mpfree_touch::tuning::Tuning::from_lookup(|k| touch.get_f64(k));
+        out.show(gui::ToUi::TouchTuning(t));
     }
     // --theme wins over the saved theme for this run; otherwise the screen
     // switches to the saved one (Prefs > Appearance).
@@ -2365,7 +2512,6 @@ fn player_session(
     let (mut pads_l, mut pads_r) = ([0f32; PERIOD], [0f32; PERIOD]);
     let mut frames = [0i32; PERIOD * 2];
     let mut buf = [0u8; 256];
-    let mut events = mpfree_arp::Events::new();
     let total_periods = if timed {
         o.seconds * RATE as u64 / PERIOD as u64
     } else {
@@ -2415,7 +2561,11 @@ fn player_session(
         while let Ok(a) = from_ui.try_recv() {
             match a {
                 gui::FromUi::Pad { pad, down: true } if pad < 16 => {
-                    fx.extend(app.pad_down(pad, app.settings.screen_velocity));
+                    let v = app.settings.screen_velocity;
+                    if let Some(ev) = app.pressed_event(pad, v, true) {
+                        time.pad_pressed(0, ev);
+                    }
+                    fx.extend(app.pad_down(pad, v));
                     held[pad] = true;
                     awaiting[pad] = true;
                     screen_hits += 1;
@@ -2424,6 +2574,9 @@ fn player_session(
                     }
                 }
                 gui::FromUi::Pad { pad, down: false } if pad < 16 => {
+                    if let Some(ev) = app.pressed_event(pad, 0, false) {
+                        time.pad_pressed(0, ev);
+                    }
                     fx.extend(app.pad_up(pad));
                     held[pad] = false;
                     awaiting[pad] = false;
@@ -2472,6 +2625,17 @@ fn player_session(
                 gui::FromUi::ArpChip => fx.extend(app.toggle_panel()),
                 gui::FromUi::Time(a) => fx.extend(time_action(out, &mut time, &mut app, a)),
                 gui::FromUi::DebugPage(k) => fx.extend(app.debug_page(k)),
+                gui::FromUi::SaveTouch(t) => {
+                    let mut settings = mpfree_store::Settings::default();
+                    for (k, v) in t.to_pairs() {
+                        settings.set_str(k, &v);
+                    }
+                    if !store.saves() {
+                        out.note("touch tuning: not saved (no data folder); it stays until the power goes off");
+                    } else if let Err(e) = store.save_settings(app::saved::TOUCH, &settings) {
+                        out.note(&format!("not saved: {}: {e}", app::saved::TOUCH));
+                    }
+                }
                 gui::FromUi::MapRow(k) => fx.extend(app.map_row(k)),
                 gui::FromUi::MapButton(k) => fx.extend(app.map_button(k)),
                 gui::FromUi::Looper(k) => fx.extend(app.looper_tap(k)),
@@ -2481,6 +2645,13 @@ fn player_session(
                 gui::FromUi::LoopLayer { id, command } => {
                     fx.push(app::Effect::Looper(looping::LoopAction::Layer(id, command)))
                 }
+                gui::FromUi::LoopPick(n) => {
+                    fx.push(app::Effect::Looper(looping::LoopAction::Select(n)))
+                }
+                gui::FromUi::LoopLevel(v) => fx.push(app::Effect::Looper(
+                    looping::LoopAction::Command(mpfree_looper::Command::SetLevel(v)),
+                )),
+                gui::FromUi::LooperSetting(item, d) => fx.extend(app.looper_setting(item, d)),
                 gui::FromUi::Synth(SynthAction::Set { id, value }) => {
                     synth.set(id, value);
                     if let Some(line) = param_log.set(&synth, id, value, t_read) {
@@ -2496,6 +2667,19 @@ fn player_session(
                 } => {
                     player.audition(kit, pad, layer, start, end, app.settings.screen_velocity);
                 }
+                gui::FromUi::SampleHit {
+                    kit,
+                    pad,
+                    velocity,
+                    down,
+                } if kit == player.kit() => {
+                    if down {
+                        player.hit_at(pad, velocity, 0);
+                    } else {
+                        player.release_at(pad, 0);
+                    }
+                }
+                gui::FromUi::SampleHit { .. } => {}
                 gui::FromUi::SampleView(mut swap) => {
                     if player.swap_view(&mut swap) {
                         views_swapped += 1;
@@ -2577,6 +2761,9 @@ fn player_session(
             match m.event {
                 Some(ControlEvent::PadDown { pad, velocity }) if (pad as usize) < 16 => {
                     let pad = pad as usize;
+                    if let Some(ev) = app.pressed_event(pad, velocity, true) {
+                        time.pad_pressed(0, ev);
+                    }
                     fx.extend(app.pad_down(pad, velocity));
                     held[pad] = true;
                     awaiting[pad] = true;
@@ -2585,6 +2772,9 @@ fn player_session(
                     }
                 }
                 Some(ControlEvent::PadUp { pad }) if (pad as usize) < 16 => {
+                    if let Some(ev) = app.pressed_event(pad as usize, 0, false) {
+                        time.pad_pressed(0, ev);
+                    }
                     fx.extend(app.pad_up(pad as usize));
                     held[pad as usize] = false;
                     awaiting[pad as usize] = false;
@@ -2614,7 +2804,7 @@ fn player_session(
                     // While the mixer is open they move the selected strip.
                     if matches!(
                         page,
-                        app::View::Synth | app::View::Sample | app::View::Mixer
+                        app::View::Synth | app::View::Sample | app::View::Mixer | app::View::Looper
                     ) && knob < 4
                     {
                         let k = knob as usize;
@@ -2628,6 +2818,8 @@ fn player_session(
                             out.show(gui::ToUi::SynthQLink(k, ticks));
                         } else if ticks != 0 && page == app::View::Mixer {
                             out.show(gui::ToUi::MixerQLink(k, ticks));
+                        } else if ticks != 0 && page == app::View::Looper {
+                            out.show(gui::ToUi::LooperQLink(k, ticks));
                         } else if ticks != 0 {
                             out.show(gui::ToUi::SampleQLink(k, ticks));
                         }
@@ -2795,6 +2987,8 @@ fn player_session(
                 app::Effect::ClearConsole => out.show(gui::ToUi::ClearConsole),
                 app::Effect::TouchLab => out.show(gui::ToUi::TouchLab),
                 app::Effect::CalibrateTouch => out.show(gui::ToUi::CalibrateTouch),
+                app::Effect::TouchWheel(d) => out.show(gui::ToUi::TouchWheel(d)),
+                app::Effect::TouchStep(d) => out.show(gui::ToUi::TouchStep(d)),
                 app::Effect::Arp(v) => out.show(gui::ToUi::Arp(Box::new(v))),
                 app::Effect::Patterns(list) => out.show(gui::ToUi::Patterns(list)),
                 app::Effect::Workspace(w) => out.show(gui::ToUi::Workspace(Box::new(w))),
@@ -2804,6 +2998,25 @@ fn player_session(
                     out.show(gui::ToUi::ClipsWheel { delta, scroll })
                 }
                 app::Effect::Map(m) => out.show(gui::ToUi::Map(Box::new(m))),
+                app::Effect::PlayView(v) => out.show(gui::ToUi::PlayView(v)),
+                app::Effect::SampleEditor(e) => out.show(gui::ToUi::SampleEditor(e)),
+                // PROG EDIT: the sound the pads play (Jay, 20:40Z).
+                app::Effect::ProgEdit => {
+                    let synth_now = kit_to.map_or(synth_on, |k| k == synth_kit);
+                    if synth_now {
+                        later.extend(app.open_tab(app::View::Synth));
+                    } else {
+                        out.show(gui::ToUi::SampleEditor(sample_page::Editor::Pads));
+                        later.extend(app.open_tab(app::View::Sample));
+                    }
+                }
+                app::Effect::Metronome => {
+                    time.metronome = !time.metronome;
+                    out.note(&format!(
+                        "SHIFT + PLAY START: metronome {}",
+                        if time.metronome { "on" } else { "off" }
+                    ));
+                }
                 // A PAD BANK button: banks A-H are kits 1-8 (9-16 and the
                 // Grains kit are banks A-H again, from kit 9 on).
                 // While the synth has the pads, PAD BANK A-H picks a bank's
@@ -2949,82 +3162,38 @@ fn player_session(
         let time_span = Span::start();
         app.set_rolling(time.info().state.rolling());
         time.follow_tempo(app.settings.bpm);
-        // The transport runs first, so the arp can follow this period's
-        // clock (TimeHost::arp_clock); the clips play and record after.
+        // The transport runs first; the clips and the arps follow its clock.
         time.advance(PERIOD as u32);
-        // The arp follows this period's transport (None while stopped: it runs on its own).
-        app.set_clock(time.arp_clock());
-        app.process(PERIOD as u32, &mut events);
-        engines.stop(engines::TIME, time_span);
+        // The armed track is the one the pads and the arp screens play.
+        let armed = time.armed().unwrap_or(0);
+        if armed != app.track() {
+            fx.extend(app.set_track(armed));
+        }
         if let Some(app::Effect::Arp(v)) = app.arp_poll() {
             out.show(gui::ToUi::Arp(Box::new(v)));
         }
-        // With the synth on the pads the arp's events carry MIDI notes (its
-        // pad layout); the screen and the clips get the pad a note is on.
-        let notes = synth_on && app.arp_plays_notes();
-        for ev in events.as_slice() {
-            let (slot, velocity) = match ev.kind {
-                mpfree_arp::EventKind::On { note, velocity } => (note, velocity),
-                mpfree_arp::EventKind::Off { note } if notes => {
-                    synth.note_off_note(note, ev.offset);
-                    if let Some(pad) = app.pad_of_note(note) {
-                        time.pad(ev.offset, mpfree_play::Event::NoteOff { note: pad as u8 });
-                    }
-                    continue;
-                }
-                // The synth's note ends; a Grains pad stops when let go; one-shot sounds ignore it.
-                mpfree_arp::EventKind::Off { note } if synth_on => {
-                    synth.note_off(note as usize, ev.offset);
-                    time.pad(ev.offset, mpfree_play::Event::NoteOff { note });
-                    continue;
-                }
-                mpfree_arp::EventKind::Off { note } => {
-                    player.release_at(note as usize, ev.offset);
-                    time.pad(ev.offset, mpfree_play::Event::NoteOff { note });
-                    continue;
-                }
-            };
-            let v = app.velocity(velocity);
-            let pad = if notes {
-                // A note no pad has (an arp octave up, a scale run) still
-                // plays; only a pad's own note shows and records.
-                synth.note_on_note(slot, v, ev.offset);
-                hits += 1;
-                let Some(pad) = app.pad_of_note(slot) else {
-                    continue;
-                };
-                time.pad(
-                    ev.offset,
-                    mpfree_play::Event::NoteOn {
-                        note: pad as u8,
-                        velocity: v,
-                    },
-                );
-                pad
-            } else {
-                slot as usize
-            };
-            if pad >= 16 {
-                continue;
-            }
-            if !notes {
-                // Recorded into the armed track while the transport records.
-                time.pad(
-                    ev.offset,
-                    mpfree_play::Event::NoteOn {
-                        note: slot,
-                        velocity: v,
-                    },
-                );
-                if synth_on {
-                    synth.note_on(pad, v, ev.offset);
-                    hits += 1;
-                } else if player.hit_at(pad, v, ev.offset) {
-                    hits += 1;
-                } else {
-                    silent_hits += 1;
-                }
-            }
+        // The clips and every track's arp (the pads go through the armed
+        // track's) play into the kit or the synth: the clips as recorded,
+        // the arps' notes as live playing (SeqPads::live).
+        let mut seq = SeqPads {
+            player: &mut player,
+            synth: synth_on.then_some(&mut synth),
+            flashes: [0; 16],
+            hits: 0,
+            live: app.live_map(),
+            live_hits: [(0, 0); MAX_LIVE_HITS],
+            n_live: 0,
+            silent: 0,
+        };
+        time.period_arps(PERIOD as u32, &mut seq, &mut app.arps);
+        // The time engine: the transport, the clips and every track's arp
+        // (the pads' notes start here; their sounds are the sampler's or
+        // the synth's).
+        engines.stop(engines::TIME, time_span);
+        // The pads' own hits: the first sound of a press shows the pad
+        // down; the arp's repeats flash it.
+        for &(pad, v) in &seq.live_hits[..seq.n_live] {
+            let pad = usize::from(pad);
             if awaiting[pad] {
                 awaiting[pad] = false;
                 out.show(gui::ToUi::PadDown { pad, velocity: v });
@@ -3035,14 +3204,7 @@ fn player_session(
                 out.show(gui::ToUi::PadFlash { pad, velocity: v });
             }
         }
-        // The clips play the kit's pads; the screen's pads flash with them.
-        let mut seq = SeqPads {
-            player: &mut player,
-            synth: synth_on.then_some(&mut synth),
-            flashes: [0; 16],
-            hits: 0,
-        };
-        time.period(PERIOD as u32, &mut seq);
+        silent_hits += seq.silent;
         hits += seq.hits;
         // The clips' parameter locks: to the mixer's mod engine, on their
         // frames of this period.
@@ -3300,8 +3462,8 @@ fn player_session(
                     } else {
                         latched.join(" ")
                     },
-                    events.dropped,
-                    app.engine.overflow
+                    app.arps.dropped(),
+                    app.arps.overflow()
                 ));
             }
             window_repeats = 0;
@@ -3315,7 +3477,7 @@ fn player_session(
                                in {} periods, at most {voices} sounds at once, peak {:.1} dBFS, {clipped} periods \
                                clipped; pad to sound {}; note engine dropped {} events, overflow {}; {}; {}",
                               totals.xruns + play.xruns, totals.periods + play.periods,
-                              20.0 * peak.max(1e-6).log10(), lat.describe(), events.dropped, app.engine.overflow,
+                              20.0 * peak.max(1e-6).log10(), lat.describe(), app.arps.dropped(), app.arps.overflow(),
                               sampler_status(&player, &render_time), time.describe()));
             out.note(&format!("status: {}", synth_status(&synth, &synth_time)));
             out.note(&format!(
@@ -3355,7 +3517,7 @@ fn player_session(
                         synth_max_us,
                         worst_us: (render_time.max + synth_time.max).as_secs_f32() * 1e6,
                         steals: c.steals,
-                        dropped: c.dropped_events + events.dropped,
+                        dropped: c.dropped_events + app.arps.dropped(),
                         peak_grains: c.peak_grains,
                     }
                 },
@@ -3408,7 +3570,8 @@ fn player_session(
     out.say(&format!("buttons: {}", app.map.describe()));
     out.say(&format!(
         "note engine: {repeats} repeats, {} events dropped, {} notes that could not be queued",
-        events.dropped, app.engine.overflow
+        app.arps.dropped(),
+        app.arps.overflow()
     ));
     out.say(&format!("play done ({stopped_by}): {hits} hits played ({screen_hits} from the screen), {silent_hits} on \
                       pads without a sound, kits used {}, level {level_db:.1} dB, at most {voices} sounds at once, \
@@ -3881,6 +4044,45 @@ mod tests {
 
     fn args(s: &str) -> Vec<String> {
         s.split_whitespace().map(String::from).collect()
+    }
+
+    #[test]
+    fn the_themes_folder_offers_theme_files_that_parse() {
+        let d = std::env::temp_dir().join(format!("mpfree-hello-themes-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        let t = d.join("files/themes");
+        fs::create_dir_all(&t).unwrap();
+        fs::write(d.join("FORMAT"), "mpfree-data 1\n").unwrap();
+        fs::write(
+            t.join("sunrise.theme"),
+            "base = synthwave\nname = Sunrise\n",
+        )
+        .unwrap();
+        fs::write(t.join("plain.theme"), "base = console\n").unwrap();
+        fs::write(t.join("broken.theme"), "accent = blue\n").unwrap();
+        fs::write(t.join("notes.txt"), "not a theme\n").unwrap();
+        let store = mpfree_store::Store::at(&d, |_| {});
+        let (found, notes) = load_theme_files(&store);
+        let names: Vec<(&str, &str)> = found
+            .iter()
+            .map(|(f, t)| (f.as_str(), t.name.as_str()))
+            .collect();
+        // Named like a built-in theme (Console, from its base): its file name.
+        assert_eq!(
+            names,
+            vec![("plain.theme", "plain"), ("sunrise.theme", "Sunrise")]
+        );
+        assert!(
+            notes
+                .iter()
+                .any(|n| n.starts_with("themes: broken.theme left out")),
+            "{notes:?}"
+        );
+        assert!(
+            notes.iter().any(|n| n == "themes: found plain, Sunrise"),
+            "{notes:?}"
+        );
+        let _ = fs::remove_dir_all(&d);
     }
 
     #[test]

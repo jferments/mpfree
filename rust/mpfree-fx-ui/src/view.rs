@@ -14,6 +14,7 @@
 //! crate docs); the panel fills whatever area its layout gets, with the
 //! app's own `header` and `hint`.
 
+use crate::lock::Locks;
 use crate::pages::{plan, qlinks, Page};
 use crate::state::{preset_values, FxState, Scratch};
 use crate::visual::{self, has_visuals};
@@ -53,6 +54,10 @@ pub enum FxAction {
     /// Load preset `i`: send [`crate::preset_values`] to the node (the
     /// panel shows its values already).
     Preset(usize),
+    /// Lock mode: lock parameter `id` at `value` on the held steps.
+    Lock { id: u16, value: f32 },
+    /// Lock mode: take the held steps' lock on `id` off.
+    Unlock { id: u16 },
 }
 
 pub struct FxPanel {
@@ -65,6 +70,8 @@ pub struct FxPanel {
     card_pages: Vec<String>,
     node_pages: Vec<String>,
     scratch: Scratch,
+    /// Lock mode: the held step and its locks.
+    locks: Option<Locks>,
     pub state: FxState,
 }
 
@@ -85,6 +92,7 @@ impl FxPanel {
             card_pages: Vec::new(),
             node_pages: Vec::new(),
             scratch: Scratch::None,
+            locks: None,
             state: state.clone(),
         };
         panel.load(ui, state)?;
@@ -187,11 +195,57 @@ impl FxPanel {
         self.turn(ui, i, ticks)
     }
 
+    /// Lock mode on (a step held, with its locks on this effect) or off
+    /// (`None`). See [`crate::lock`].
+    pub fn set_locks(&mut self, ui: &mut Ui, locks: Option<Locks>) {
+        self.locks = locks;
+        self.refresh(ui);
+    }
+
+    /// The held step and its locks, in lock mode.
+    pub fn locks(&self) -> Option<&Locks> {
+        self.locks.as_ref()
+    }
+
+    /// Lock mode: takes the selected tile's lock off the held step.
+    pub fn unlock(&mut self, ui: &mut Ui) -> Option<FxAction> {
+        let id = self.state.params[self.focus?].id;
+        if !self.locks.as_mut()?.take(id) {
+            return None;
+        }
+        self.refresh(ui);
+        Some(FxAction::Unlock { id })
+    }
+
+    /// Lock mode: takes every lock the held step has on the effect off.
+    pub fn unlock_all(&mut self, ui: &mut Ui) -> Vec<FxAction> {
+        let Some(l) = self.locks.as_mut() else {
+            return Vec::new();
+        };
+        let out = l
+            .values
+            .drain(..)
+            .map(|(id, _)| FxAction::Unlock { id })
+            .collect();
+        self.refresh(ui);
+        out
+    }
+
+    /// Parameter `i`'s value as the page shows it: the held step's lock in
+    /// lock mode, else the effect's own.
+    fn shown(&self, i: usize) -> f32 {
+        let id = self.state.params[i].id;
+        self.locks
+            .as_ref()
+            .and_then(|l| l.get(id))
+            .unwrap_or(self.state.values[i])
+    }
+
     /// Turns parameter `i` by `ticks` detents: one step for whole numbers
     /// and choices, 1/[`DETENTS`] of the range along its curve otherwise.
     fn turn(&mut self, ui: &mut Ui, i: usize, ticks: i32) -> Option<FxAction> {
         let p = &self.state.params[i];
-        let v = self.state.values[i];
+        let v = self.shown(i);
         let new = match p.curve {
             Curve::Stepped | Curve::Choice(_) | Curve::Toggle => v + ticks as f32,
             _ => p.from_unit(p.to_unit(v) + ticks as f32 / DETENTS),
@@ -201,6 +255,16 @@ impl FxPanel {
     }
 
     fn set(&mut self, ui: &mut Ui, i: usize, v: f32) -> Option<FxAction> {
+        if let Some(l) = self.locks.as_mut() {
+            let p = self.state.params[i];
+            let v = p.clamp(v);
+            if p.readonly || l.get(p.id) == Some(v) {
+                return None;
+            }
+            l.put(p.id, v);
+            self.refresh(ui);
+            return Some(FxAction::Lock { id: p.id, value: v });
+        }
         let set = self.state.set(i, v);
         if set.is_some() {
             self.scratch.sync(&self.state);
@@ -269,7 +333,7 @@ impl FxPanel {
             (TILES, EventKind::Step { index, delta }) => {
                 let i = tile_param(self, *index)?;
                 self.focus = Some(i);
-                let v = self.state.values[i] + *delta as f32;
+                let v = self.shown(i) + *delta as f32;
                 self.set(ui, i, v)
             }
             (QLINKS, EventKind::Select(n)) => {
@@ -277,7 +341,9 @@ impl FxPanel {
                 self.refresh(ui);
                 None
             }
-            (PRESETS, EventKind::Select(i)) if *i < self.state.presets.len() => {
+            (PRESETS, EventKind::Select(i))
+                if *i < self.state.presets.len() && self.locks.is_none() =>
+            {
                 for (id, v) in preset_values(&self.state, *i) {
                     if let Some(k) = self.state.index(id) {
                         self.state.values[k] = v;
@@ -295,7 +361,11 @@ impl FxPanel {
 
     /// Puts the state into the widgets.
     pub fn refresh(&mut self, ui: &mut Ui) {
-        let st = &self.state;
+        // In lock mode the page shows what the held step plays.
+        let over = self.locks.as_ref().map(|l| l.over(&self.state));
+        self.scratch.sync(over.as_ref().unwrap_or(&self.state));
+        let st = over.as_ref().unwrap_or(&self.state);
+        let locks = self.locks.as_ref();
         let page = self.pages.get(self.page).cloned().unwrap_or(Page {
             name: String::new(),
             params: Vec::new(),
@@ -308,7 +378,10 @@ impl FxPanel {
                 Some(p) => format!("{} · {}", st.info.name, p),
                 None => st.info.name.to_string(),
             };
-            w.subtitle = subtitle(st);
+            w.subtitle = match locks {
+                Some(l) => format!("Locking {}", l.line()),
+                None => subtitle(st),
+            };
             // A one-page effect needs no tab.
             w.tabs = if self.pages.len() > 1 {
                 self.pages.iter().map(|p| p.name.clone()).collect()
@@ -329,15 +402,21 @@ impl FxPanel {
         let theme = ui.theme.clone();
         if let Some(w) = ui.get_mut::<TileGrid>(TILES) {
             w.title = page.name.clone();
-            w.caption = if qtargets.is_empty() {
-                String::new()
-            } else {
-                "Q-Links turn the marked tiles · drag to turn".to_string()
+            w.caption = match locks {
+                Some(l) => format!("{}: a turn locks it · amber tiles are locked", l.held),
+                None if qtargets.is_empty() => String::new(),
+                None => "Q-Links turn the marked tiles · drag to turn".to_string(),
             };
             w.tiles = page
                 .params
                 .iter()
-                .map(|&i| tile(st, &page, i, qtargets.iter().position(|&q| q == i), &theme))
+                .map(|&i| {
+                    let mut t = tile(st, &page, i, qtargets.iter().position(|&q| q == i), &theme);
+                    if locks.is_some_and(|l| l.get(st.params[i].id).is_some()) {
+                        t.color = theme.warn;
+                    }
+                    t
+                })
                 .collect();
             w.selected = self
                 .focus

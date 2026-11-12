@@ -536,6 +536,7 @@ fn about(id: &str) -> &'static str {
         "mpfree.fx.flanger" => "Jet sweeps",
         "mpfree.fx.phaser" => "Swirling notches",
         "mpfree.fx.lofi" => "Wear, wow and noise",
+        "mpfree.fx.character" => "Console, tape, iron, soften",
         "mpfree.fx.compressor" => "Glue and pump",
         "mpfree.fx.cloud" => "Plate, room, hall, cloud",
         "mpfree.fx.master_safety" => "Keeps the output from clipping",

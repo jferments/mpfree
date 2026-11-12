@@ -122,6 +122,11 @@ impl TouchLabView {
         }
     }
 
+    /// The gesture thresholds the lab's steps use (from the next step).
+    pub fn set_config(&mut self, c: GestureConfig) {
+        self.config = c;
+    }
+
     /// Start over at the first step (each time the lab is opened).
     pub fn reset(&mut self) {
         self.go_to(0);
@@ -380,7 +385,7 @@ impl Default for TouchLabView {
     }
 }
 
-fn describe(g: &Gesture) -> String {
+pub(crate) fn describe(g: &Gesture) -> String {
     match *g {
         Gesture::Tap { x, y, .. } => format!("tap at {x:.0}, {y:.0}"),
         Gesture::LongPress { .. } => "long press".to_string(),

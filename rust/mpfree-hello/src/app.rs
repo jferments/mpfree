@@ -33,15 +33,16 @@ pub mod mapper;
 pub mod saved;
 mod synth_pads;
 
-pub use arp::{built_in_patterns, mode_label, ArpItem, ArpView, WorkspaceView};
+pub use arp::{built_in_patterns, mode_label, ArpItem, ArpView, LiveMap, WorkspaceView};
 pub use mapper::{Code, MapView, Mark};
 use mpfree_arp::scale::pads::Pad as PadNotes;
 pub use synth_pads::SynthItem;
 
 use crate::looping::{LoopAction, LoopSource};
-use mpfree_arp::{Engine, Events, LatchMode, Mode, Pattern, Rate, RecordMode, Recorder};
+use mpfree_arp::{Events, LatchMode, Mode, Pattern, Rate, RecordMode, Recorder};
 use mpfree_controller::mpc_one::button;
 use mpfree_looper::Command as LoopCommand;
+use mpfree_play::TrackArps;
 use mpfree_time_ui::TimeAction;
 use mpfree_transport::Command;
 
@@ -89,6 +90,9 @@ pub enum View {
     Procs,
     /// Debug mode: the control mapper (on the Debug tab).
     Map,
+    /// Debug mode: test, measure and tune the touchscreen (on the Debug tab;
+    /// `touch_dev.rs`).
+    Touch,
     /// Prefs > System info: the program's version, the system and the
     /// hardware (on the Prefs tab).
     System,
@@ -133,12 +137,13 @@ pub fn bank_letter(kit: usize) -> char {
 }
 
 /// The Debug tab's pages, in the order of its strip.
-pub const DEBUG_PAGES: [View; 6] = [
+pub const DEBUG_PAGES: [View; 7] = [
     View::Debug,
     View::Perf,
     View::Engines,
     View::Procs,
     View::Map,
+    View::Touch,
     View::Console,
 ];
 
@@ -148,7 +153,7 @@ impl View {
     pub fn tab_view(self) -> Option<View> {
         match self {
             View::Arp | View::Pattern => Some(View::Play),
-            View::Perf | View::Engines | View::Procs | View::Map | View::Console => {
+            View::Perf | View::Engines | View::Procs | View::Map | View::Touch | View::Console => {
                 Some(View::Debug)
             }
             View::Options | View::Guide | View::Prefs | View::System | View::Mixer => None,
@@ -180,6 +185,7 @@ impl View {
             View::Engines => "CPU by engine",
             View::Procs => "Processes",
             View::Map => "Map controls",
+            View::Touch => "Touch",
             View::System => "System info",
             View::Mixer => "Mixer",
         }
@@ -291,6 +297,16 @@ pub struct ButtonMap {
     pub bank: [Option<u8>; 4],
     /// TRACK MIX (SHIFT: PAD MIX), found with the control mapper.
     pub track_mix: Option<u8>,
+    /// The mode buttons and the rest of the hardware control map (Jay,
+    /// 20:40Z), found with the control mapper.
+    pub erase: Option<u8>,
+    pub main: Option<u8>,
+    pub sixteen_level: Option<u8>,
+    pub next_seq: Option<u8>,
+    pub step_seq: Option<u8>,
+    pub sampler: Option<u8>,
+    pub sample_edit: Option<u8>,
+    pub prog_edit: Option<u8>,
 }
 
 impl ButtonMap {
@@ -358,6 +374,15 @@ impl ButtonMap {
             .iter()
             .find(|&&s| self.get(s) == Some(note))
             .map(|s| s.short())
+            .or_else(|| {
+                mapper::CONTROLS
+                    .iter()
+                    .find(|c| {
+                        !matches!(c.job, mapper::Job::None | mapper::Job::Fixed(_))
+                            && self.of(c.job) == Some(note)
+                    })
+                    .map(|c| c.name)
+            })
     }
 
     /// Which PAD BANK button a note is (0 = A/E), once found.
@@ -385,6 +410,14 @@ impl ButtonMap {
             Job::PlayStart => self.play_start,
             Job::Bank(k) => self.bank[k as usize & 3],
             Job::TrackMix => self.track_mix,
+            Job::Erase => self.erase,
+            Job::Main => self.main,
+            Job::SixteenLevel => self.sixteen_level,
+            Job::NextSeq => self.next_seq,
+            Job::StepSeq => self.step_seq,
+            Job::Sampler => self.sampler,
+            Job::SampleEdit => self.sample_edit,
+            Job::ProgEdit => self.prog_edit,
         }
     }
 
@@ -404,6 +437,14 @@ impl ButtonMap {
             Job::PlayStart => &mut self.play_start,
             Job::Bank(k) => &mut self.bank[k as usize & 3],
             Job::TrackMix => &mut self.track_mix,
+            Job::Erase => &mut self.erase,
+            Job::Main => &mut self.main,
+            Job::SixteenLevel => &mut self.sixteen_level,
+            Job::NextSeq => &mut self.next_seq,
+            Job::StepSeq => &mut self.step_seq,
+            Job::Sampler => &mut self.sampler,
+            Job::SampleEdit => &mut self.sample_edit,
+            Job::ProgEdit => &mut self.prog_edit,
         };
         *slot = code;
     }
@@ -501,6 +542,10 @@ pub const THEMES: [(&str, &str); 4] = [
     ("synthwave", "Synthwave"),
     ("spaceship", "Spaceship"),
 ];
+
+/// The store owner whose files are the themes folder: theme files the
+/// user puts in `files/themes/` on the data partition, named `NAME.theme`.
+pub const THEMES_FOLDER: &str = "themes";
 
 /// Which part of Prefs is on screen.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -652,6 +697,10 @@ pub enum Effect {
     TouchLab,
     /// Open the Calibrate touch page (four corner taps).
     CalibrateTouch,
+    /// The Dev tab's Touch page: the wheel picks a value (by detents)...
+    TouchWheel(i32),
+    /// ...and - / + step it (or run the action picked).
+    TouchStep(i32),
     /// For the time engine (transport, clips, takes).
     Time(TimeAction),
     /// What the Map controls page shows.
@@ -664,16 +713,38 @@ pub enum Effect {
     },
     /// For the looper and the line input.
     Looper(LoopAction),
+    /// MAIN on the Play page (None: the next view) and STEP SEQ (Beats).
+    PlayView(Option<crate::play_page::PlayView>),
+    /// SAMPLE EDIT: the Sample tab opens on this editor.
+    SampleEditor(crate::sample_page::Editor),
+    /// PROG EDIT: the sound the pads play: the Synth tab while the synth
+    /// has them, otherwise Sample > Pads (the audio loop knows which).
+    ProgEdit,
+    /// SHIFT + PLAY START: the metronome on or off.
+    Metronome,
 }
 
 pub struct App {
     pub settings: Settings,
     pub map: ButtonMap,
-    pub engine: Engine,
+    /// One arp per track (owner decision 2). The pads play the armed
+    /// track's ([`App::set_track`]); the arp panel, the NOTE REPEAT band and
+    /// Latch show and change it. The time engine borrows these for each
+    /// period (`TimeHost::period_arps`), so clips through an arp and a
+    /// latched arp on another track keep playing.
+    pub arps: TrackArps,
+    /// The armed track: the one the pads and the arp screens play.
+    track: usize,
+    /// Each track's arp panel state while another track is armed
+    /// ([`App::set_track`] swaps it in and out).
+    track_ui: [arp::TrackUi; mpfree_seq::MAX_TRACKS],
     /// The `play` step: STOP ends it. The app: STOP stops the sounds.
     timed: bool,
     shift: bool,
     repeat_held: bool,
+    /// ERASE is down: SHIFT and ERASE held, then TAP TEMPO, is the
+    /// Console's chord.
+    erase_held: bool,
     /// When NOTE REPEAT was last pressed to hold, for the double press
     /// that latches.
     repeat_pressed_at: Option<f64>,
@@ -693,6 +764,10 @@ pub struct App {
     tap_light: bool,
     /// The part of Prefs on screen: the main rows or one of its sections.
     prefs_section: PrefsSection,
+    /// Theme files found in the themes folder at start (`files/themes/` in
+    /// `--data`): the file name, which is what `settings.theme` holds, and
+    /// the theme's own name for the Appearance row. After [`THEMES`].
+    pub theme_files: Vec<(String, String)>,
     /// The mode the Arp panel picked. NOTE REPEAT and Latch turn on Repeat
     /// when it is Direct.
     arp_mode: Mode,
@@ -790,17 +865,20 @@ const PREFS_TOUCH_ROWS: &[Item] = &[
 impl App {
     pub fn new(sample_rate: u32, timed: bool) -> App {
         let settings = Settings::default();
-        let engine = Engine::new(sample_rate, settings.bpm);
+        let arps = TrackArps::new(sample_rate, settings.bpm);
         let patterns = arp::built_in_patterns();
         let pattern = patterns.first().map(|(_, p)| *p).unwrap_or_default();
-        let sent_notes = engine.active().clone();
+        let sent_notes = arps.engine_at(0).active().clone();
         let mut app = App {
             settings,
             map: ButtonMap::measured(),
-            engine,
+            arps,
+            track: 0,
+            track_ui: [arp::TrackUi::default(); mpfree_seq::MAX_TRACKS],
             timed,
             shift: false,
             repeat_held: false,
+            erase_held: false,
             repeat_pressed_at: None,
             latched: false,
             pad_level: PadLevel::Off,
@@ -841,11 +919,16 @@ impl App {
             mapper: mapper::Mapper::default(),
             swallowed: [false; 128],
             prefs_section: PrefsSection::Main,
+            theme_files: Vec::new(),
             loop_muted: false,
             save_dirty: false,
             saved: Default::default(),
         };
-        app.engine.set_pattern(pattern);
+        // Every track's arp starts on the first pattern, as the panel does.
+        for t in 0..mpfree_seq::MAX_TRACKS {
+            app.arps.engine_at_mut(t).set_pattern(pattern);
+            app.track_ui[t].pattern = pattern;
+        }
         app.update_engine();
         app
     }
@@ -895,6 +978,17 @@ impl App {
 
     // ------------------------------------------------------------ pads
 
+    /// The armed track's arp engine: the one the pads play.
+    #[cfg(test)]
+    pub fn eng(&self) -> &mpfree_arp::Engine {
+        self.arps.engine_at(self.track)
+    }
+
+    #[cfg(test)]
+    pub fn eng_mut(&mut self) -> &mut mpfree_arp::Engine {
+        self.arps.engine_at_mut(self.track)
+    }
+
     /// A pad pressed: it plays, and writes a step while recording a pattern.
     pub fn pad_down(&mut self, slot: usize, velocity: u8) -> Vec<Effect> {
         if !self.free_time_recording() {
@@ -903,6 +997,30 @@ impl App {
             self.press_pad(slot, velocity.max(1));
         }
         self.record_press(slot as u8, velocity)
+    }
+
+    /// What a pad press gives the clip recorder "as pressed" (a track whose
+    /// clips play through its arp records the pads before the arp): the
+    /// pad, at the velocity it plays at. None while the pads only write
+    /// pattern steps (Free time).
+    pub fn pressed_event(
+        &self,
+        slot: usize,
+        velocity: u8,
+        down: bool,
+    ) -> Option<mpfree_play::Event> {
+        if self.free_time_recording() || slot >= 16 {
+            return None;
+        }
+        let note = slot as u8;
+        Some(if down {
+            mpfree_play::Event::NoteOn {
+                note,
+                velocity: self.live_map().velocity(velocity.max(1)),
+            }
+        } else {
+            mpfree_play::Event::NoteOff { note }
+        })
     }
 
     pub fn pad_up(&mut self, slot: usize) -> Vec<Effect> {
@@ -914,13 +1032,15 @@ impl App {
 
     pub fn pressure(&mut self, slot: usize, value: u8) {
         if self.pad_layout.is_none() {
-            self.engine.pressure(slot as u8, value);
+            self.arps
+                .engine_at_mut(self.track)
+                .pressure(slot as u8, value);
             return;
         }
         // Every note of a chord pad gets the pad's pressure.
         if let Some(p) = self.pad_pressed.get(slot).copied() {
             for &n in p.notes() {
-                self.engine.pressure(n, value);
+                self.arps.engine_at_mut(self.track).pressure(n, value);
             }
         }
     }
@@ -930,17 +1050,23 @@ impl App {
     /// free-runs at the app's tempo without one.
     pub fn process(&mut self, frames: u32, out: &mut Events) {
         self.sync_arp();
-        self.engine.process(frames, out);
+        self.arps.engine_at_mut(self.track).process(frames, out);
     }
 
     /// Pads the engine keeps playing (held, or latched). With a pad layout:
     /// a pad any of whose notes is held or latched.
     pub fn active(&self, slot: usize) -> bool {
         match &self.pad_layout {
-            None => self.engine.active().contains(slot as u8),
-            Some(l) => l
-                .get(slot)
-                .is_some_and(|p| p.notes().iter().any(|&n| self.engine.active().contains(n))),
+            None => self
+                .arps
+                .engine_at(self.track)
+                .active()
+                .contains(slot as u8),
+            Some(l) => l.get(slot).is_some_and(|p| {
+                p.notes()
+                    .iter()
+                    .any(|&n| self.arps.engine_at(self.track).active().contains(n))
+            }),
         }
     }
 
@@ -952,23 +1078,29 @@ impl App {
     /// The engine makes notes of its own (Repeat, Arp or Pattern), so a hit
     /// may sound later than the press, and latched pads stay lit.
     pub fn generating(&self) -> bool {
-        self.engine.settings().mode != Mode::Direct
+        self.arps.engine_at(self.track).settings().mode != Mode::Direct
     }
 
     fn update_engine(&mut self) {
         let mut s = self.arp;
         s.mode = self.engine_mode();
         s.rate = self.settings.rate;
-        self.engine.set_settings(s);
+        self.arps.engine_at_mut(self.track).set_settings(s);
         let latch = if self.latched {
             self.settings.latch_mode
         } else {
             LatchMode::Off
         };
-        if self.engine.latch() != latch {
-            self.engine.set_latch(latch);
+        if self.arps.engine_at(self.track).latch() != latch {
+            self.arps.engine_at_mut(self.track).set_latch(latch);
         }
-        self.engine.set_tempo(self.settings.bpm);
+        self.arps
+            .engine_at_mut(self.track)
+            .set_own_swing(!self.swing_from_transport);
+        // Every track's arp free-runs at the app's tempo while stopped.
+        for t in 0..mpfree_seq::MAX_TRACKS {
+            self.arps.engine_at_mut(t).set_tempo(self.settings.bpm);
+        }
         self.arp_dirty = true;
     }
 
@@ -1034,6 +1166,9 @@ impl App {
             return fx;
         }
         if !pressed {
+            if Some(note) == self.map.erase {
+                self.erase_held = false;
+            }
             if Some(note) == self.map.note_repeat && self.repeat_held {
                 self.repeat_held = false;
                 fx.extend(self.arp_changed());
@@ -1067,10 +1202,17 @@ impl App {
                 PadLevel::Half => "pad level: Half Level (every hit 64)".to_string(),
             }));
         } else if note == button::STOP {
-            if shift {
-                fx.extend(self.toggle(View::Console));
-            } else if self.timed {
+            if self.timed {
                 fx.push(Effect::Quit);
+            } else if shift {
+                // The MPC's SHIFT + STOP: stop, silence everything and go
+                // back to bar 1 (Jay, 20:40Z). The Console has a chord of
+                // its own: SHIFT + ERASE + TAP TEMPO.
+                fx.extend(self.stop());
+                fx.push(Effect::Time(TimeAction::Transport(Command::StopAndRewind)));
+                fx.push(Effect::Note(
+                    "SHIFT + STOP: stopped, back to bar 1".to_string(),
+                ));
             } else if self.rolling {
                 // The transport stops; sounds ring out and latched pads keep
                 // going, so a second STOP is what silences everything.
@@ -1082,13 +1224,20 @@ impl App {
                 fx.push(Effect::Time(TimeAction::Transport(Command::Stop)));
             }
         } else if note == button::PLAY {
-            self.engine.resume();
+            self.arps.engine_at_mut(self.track).resume();
             fx.push(Effect::Time(TimeAction::Transport(Command::Play)));
+        } else if Some(note) == self.map.play_start && shift {
+            fx.push(Effect::Metronome);
         } else if Some(note) == self.map.play_start {
-            self.engine.resume();
+            self.arps.engine_at_mut(self.track).resume();
             fx.push(Effect::Time(TimeAction::Transport(Command::PlayStart)));
         } else if Some(note) == self.map.track_mix {
             fx.extend(self.toggle_mixer(shift));
+        } else if let Some(e) = self.mode_button(note, shift) {
+            fx.extend(e);
+        } else if shift && Some(note) == self.map.rec {
+            // SHIFT + REC: Capture, on every page (Jay, 20:40Z).
+            fx.push(Effect::Time(TimeAction::Capture));
         } else if self.view == View::Looper && Some(note) == self.map.rec {
             fx.extend(self.looper_tap(crate::looper_page::B_RECORD));
         } else if self.view == View::Looper && Some(note) == self.map.overdub {
@@ -1142,6 +1291,11 @@ impl App {
             } else if self.view != View::Pattern {
                 fx.extend(self.toggle(View::Options));
             }
+        } else if Some(note) == self.map.tap_tempo && shift && self.erase_held {
+            // The Console's chord: hold SHIFT and ERASE, then press TAP
+            // TEMPO. Nothing else uses it, so a developer opens the Console
+            // only on purpose (Jay, 22:12Z); the press is no tempo tap.
+            fx.extend(self.toggle(View::Console));
         } else if Some(note) == self.map.tap_tempo {
             fx.extend(self.tap(t));
         } else if let Some(k) = self.map.bank_of(note) {
@@ -1150,6 +1304,9 @@ impl App {
             let d = if Some(note) == self.map.plus { 1 } else { -1 };
             if self.in_menu() {
                 fx.extend(self.step_item(self.selected, d));
+            } else if self.view == View::Touch && !shift {
+                // The value picked on the Touch page, one step.
+                fx.push(Effect::TouchStep(d));
             } else if self.view == View::Map && !shift {
                 // + listens for the selected control, - skips it.
                 fx.extend(if d > 0 {
@@ -1159,7 +1316,13 @@ impl App {
                 });
             } else if matches!(
                 self.view,
-                View::Debug | View::Perf | View::Engines | View::Procs | View::Map | View::Console
+                View::Debug
+                    | View::Perf
+                    | View::Engines
+                    | View::Procs
+                    | View::Map
+                    | View::Touch
+                    | View::Console
             ) {
                 fx.extend(self.debug_step(d));
             } else if self.repeat_held || self.view == View::Arp {
@@ -1175,6 +1338,70 @@ impl App {
         fx
     }
 
+    /// The mode buttons and ERASE, as the hardware control map has them
+    /// (Jay, 20:40Z): each goes to the page with the same job. None when
+    /// `note` is not one of them.
+    fn mode_button(&mut self, note: u8, shift: bool) -> Option<Vec<Effect>> {
+        use crate::play_page::PlayView;
+        let m = self.map;
+        let is = |b: Option<u8>| b == Some(note);
+        let fx = if is(m.erase) {
+            // ERASE and SHIFT + ERASE wait for live erase and the FX lock
+            // mode (with a step held); alone they do nothing. Held with
+            // SHIFT, TAP TEMPO opens the Console.
+            self.erase_held = true;
+            return Some(Vec::new());
+        } else if is(m.main) {
+            // MAIN: Play; on Play, the next view (All, Beats, Loop, Drum).
+            if self.view == View::Play {
+                vec![Effect::PlayView(None)]
+            } else {
+                self.show(View::Play)
+            }
+        } else if is(m.step_seq) {
+            let mut fx = self.go(View::Play);
+            fx.push(Effect::PlayView(Some(PlayView::Beats)));
+            fx
+        } else if is(m.next_seq) {
+            self.go(View::Arrange)
+        } else if is(m.sampler) {
+            self.go(if shift { View::Looper } else { View::Sample })
+        } else if is(m.sample_edit) {
+            let mut fx = vec![Effect::SampleEditor(crate::sample_page::Editor::Wave)];
+            fx.extend(self.go(View::Sample));
+            fx
+        } else if is(m.prog_edit) {
+            vec![Effect::ProgEdit]
+        } else if is(m.sixteen_level) {
+            // SHIFT + 16 LEVEL: the synth pads' Chromatic | In key switch.
+            // 16 LEVEL itself comes with 16 Levels for kits.
+            if !shift {
+                return Some(Vec::new());
+            }
+            let in_key = self.synth_pads.layout() != mpfree_arp::scale::pads::PadLayout::InKey;
+            let mut fx = self.synth_pick_layout(in_key);
+            if fx.iter().any(|e| matches!(e, Effect::SynthPads(_))) {
+                fx.push(Effect::Note(format!(
+                    "SHIFT + 16 LEVEL: synth pads {}",
+                    if in_key { "In key" } else { "Chromatic" }
+                )));
+            }
+            fx
+        } else {
+            return None;
+        };
+        Some(fx)
+    }
+
+    /// A page from a mode button: shown, unless it shows already.
+    fn go(&mut self, v: View) -> Vec<Effect> {
+        if self.view == v {
+            Vec::new()
+        } else {
+            self.show(v)
+        }
+    }
+
     /// STOP in the app, with the transport stopped: every sound stops. A
     /// latched arp still playing is silenced and keeps its latch (design
     /// decision 5); STOP again, or STOP with nothing latched, lets go of
@@ -1182,10 +1409,10 @@ impl App {
     fn stop(&mut self) -> Vec<Effect> {
         if self.latched
             && self.generating()
-            && !self.engine.hushed()
-            && !self.engine.active().is_empty()
+            && !self.arps.engine_at(self.track).hushed()
+            && !self.arps.engine_at(self.track).active().is_empty()
         {
-            self.engine.hush();
+            self.arps.engine_at_mut(self.track).hush();
             let mut fx = vec![
                 Effect::StopSounds,
                 Effect::Note("STOP: arp silenced, latch kept (STOP again clears it)".to_string()),
@@ -1195,7 +1422,7 @@ impl App {
             return fx;
         }
         self.latched = false;
-        self.engine.panic();
+        self.arps.engine_at_mut(self.track).panic();
         self.update_engine();
         let mut fx = vec![
             Effect::StopSounds,
@@ -1280,7 +1507,13 @@ impl App {
             View::Mixer => vec![Effect::MixerTurn { knob: 0, delta }],
             // On the Debug tab SHIFT + wheel picks the page; on Map controls
             // the wheel picks the control.
-            View::Debug | View::Perf | View::Engines | View::Procs | View::Map | View::Console
+            View::Debug
+            | View::Perf
+            | View::Engines
+            | View::Procs
+            | View::Map
+            | View::Touch
+            | View::Console
                 if self.shift =>
             {
                 self.debug_step(delta.signum())
@@ -1289,6 +1522,8 @@ impl App {
                 self.mapper.move_by(delta);
                 vec![Effect::Map(self.mapper.view())]
             }
+            // The Touch page: the wheel picks a value to tune.
+            View::Touch => vec![Effect::TouchWheel(delta)],
             // NOTE REPEAT held or the Arp panel: the rate, order or pattern.
             _ if self.repeat_held || self.view == View::Arp => self.arp_wheel(delta),
             View::Arrange => vec![Effect::ClipsWheel {
@@ -1328,6 +1563,7 @@ impl App {
                     | View::Engines
                     | View::Procs
                     | View::Map
+                    | View::Touch
             )
         {
             self.back = self.view;
@@ -1431,7 +1667,7 @@ impl App {
     // ------------------------------------------------------------ debug mode
 
     /// A tap on the Dev tab's strip: MIDI, Performance, Map controls or
-    /// Console (the Console alone also opens with SHIFT + STOP).
+    /// Console (SHIFT + ERASE + TAP TEMPO opens the Console too).
     pub fn debug_page(&mut self, i: usize) -> Vec<Effect> {
         match DEBUG_PAGES.get(i) {
             Some(&v) if self.settings.debug_mode => self.show(v),
@@ -1460,7 +1696,13 @@ impl App {
         if !on
             && matches!(
                 self.back,
-                View::Debug | View::Perf | View::Engines | View::Procs | View::Map | View::Console
+                View::Debug
+                    | View::Perf
+                    | View::Engines
+                    | View::Procs
+                    | View::Map
+                    | View::Touch
+                    | View::Console
             )
         {
             self.back = View::Play;
@@ -1657,11 +1899,30 @@ impl App {
             (_, View::Debug | View::Perf | View::Engines | View::Procs | View::Map) => {
                 &[Item::ShowPressure, Item::MidiLog, Item::ClearLogs]
             }
+            // The full-screen touch checks, also in Prefs > Touch screen.
+            (_, View::Touch) => &[Item::CalibrateTouch, Item::TouchLab],
             (_, View::Console) => &[Item::ConsoleFollow, Item::ClearConsole],
             (_, View::Arp) => &arp::ARP_OPTIONS,
             (_, View::Synth) => &synth_pads::SYNTH_OPTIONS,
             _ => &[Item::Rate, Item::Tempo, Item::PadLevel, Item::Latch],
         }
+    }
+
+    /// Every theme Prefs > Appearance offers, in order: (what
+    /// `settings.theme` holds, the row's text). The built-in themes, then
+    /// the themes folder's files.
+    pub fn theme_choices(&self) -> impl Iterator<Item = (&str, &str)> {
+        THEMES.iter().copied().chain(
+            self.theme_files
+                .iter()
+                .map(|(f, n)| (f.as_str(), n.as_str())),
+        )
+    }
+
+    /// True when `theme` is one Appearance offers (built in or in the
+    /// themes folder), so it is kept and restored.
+    pub fn offers_theme(&self, theme: &str) -> bool {
+        self.theme_choices().any(|t| t.0 == theme)
     }
 
     fn item_text(&self, item: Item) -> (&'static str, String) {
@@ -1688,8 +1949,7 @@ impl App {
             Item::TouchSection => ("Touch screen", "Open".to_string()),
             Item::Appearance => (
                 "Appearance",
-                THEMES
-                    .iter()
+                self.theme_choices()
                     .find(|t| t.0 == s.theme)
                     .map(|t| t.1)
                     .unwrap_or("Theme file")
@@ -1917,7 +2177,15 @@ impl App {
             (View::Prefs, _) => "Prefs".to_string(),
             (_, View::Arp) => "Arp options".to_string(),
             (_, View::Debug) => "MIDI log options".to_string(),
-            (_, b @ (View::Perf | View::Engines | View::Procs | View::Map | View::Console)) => {
+            (
+                _,
+                b @ (View::Perf
+                | View::Engines
+                | View::Procs
+                | View::Map
+                | View::Touch
+                | View::Console),
+            ) => {
                 format!("{} options", b.name())
             }
             (_, b) => format!("{} options", b.tab_view().unwrap_or(View::Play).name()),
@@ -1969,6 +2237,27 @@ impl App {
         let items = self.items();
         let i = i.min(items.len() - 1);
         self.selected = i;
+        self.apply_item(items[i], delta)
+    }
+
+    /// A row of the Looper tab's Recording and input panel stepped by
+    /// `delta` (a tap steps +1): the same settings as the looper's options
+    /// menu. Only the looper's own rows step here.
+    pub fn looper_setting(&mut self, item: Item, delta: i32) -> Vec<Effect> {
+        match item {
+            Item::LoopSource
+            | Item::LineInput
+            | Item::LoopMonitor
+            | Item::LoopBars
+            | Item::LoopLatency
+            | Item::LoopLevel => self.apply_item(item, delta),
+            _ => Vec::new(),
+        }
+    }
+
+    /// Step `item` by `delta`'s sign; the settings (and the menu, when it
+    /// shows) follow.
+    fn apply_item(&mut self, item: Item, delta: i32) -> Vec<Effect> {
         let d = delta.signum();
         let mut fx = Vec::new();
         self.save_dirty = true;
@@ -1976,8 +2265,14 @@ impl App {
             let at = all.iter().position(|&x| x == now).unwrap_or(0) as i32;
             all[(at + d).clamp(0, all.len() as i32 - 1) as usize]
         }
+        // Appearance steps through these (the theme files can't be borrowed
+        // while the settings are).
+        let themes: Vec<String> = match item {
+            Item::Appearance => self.theme_choices().map(|t| t.0.to_string()).collect(),
+            _ => Vec::new(),
+        };
         let s = &mut self.settings;
-        match items[i] {
+        match item {
             Item::Curve => s.curve = cycle(&Curve::ALL, s.curve, d),
             Item::ScreenVelocity => {
                 s.screen_velocity = (s.screen_velocity as i32 + 10 * d).clamp(10, 127) as u8
@@ -2014,12 +2309,12 @@ impl App {
             }
             Item::Appearance => {
                 // A theme file from --theme counts as before the first.
-                let at = THEMES.iter().position(|t| t.0 == s.theme);
+                let at = themes.iter().position(|t| *t == s.theme);
                 let next = match at {
-                    Some(i) => (i as i32 + d).clamp(0, THEMES.len() as i32 - 1) as usize,
+                    Some(i) => (i as i32 + d).clamp(0, themes.len() as i32 - 1) as usize,
                     None => 0,
                 };
-                s.theme = THEMES[next].0.to_string();
+                s.theme = themes[next].clone();
             }
             Item::PrefsBack => return self.leave_prefs_section(),
             Item::CalibrateTouch => return vec![Effect::CalibrateTouch],
@@ -2115,7 +2410,9 @@ impl App {
             Item::Synth(a) => fx.extend(self.step_synth_item(a, d)),
         }
         fx.push(Effect::Settings(self.settings.clone()));
-        fx.push(self.menu_view());
+        if self.in_menu() {
+            fx.push(self.menu_view());
+        }
         fx
     }
 
@@ -2312,12 +2609,9 @@ mod tests {
         app.pad_down(2, 100);
         app.pad_up(0);
         for &n in &three {
-            assert!(
-                app.engine.active().contains(n),
-                "{n} is still held by pad 3"
-            );
+            assert!(app.eng().active().contains(n), "{n} is still held by pad 3");
         }
-        assert!(!app.engine.active().contains(48), "C was only pad 1's");
+        assert!(!app.eng().active().contains(48), "C was only pad 1's");
         assert!(app.active(2) && !app.active(1));
         assert_eq!(app.pad_of_note(48), Some(0));
         // A layout change while pad 3 is down: its pressure still goes to
@@ -2330,11 +2624,11 @@ mod tests {
         assert_eq!(app.pad_held_notes(2), held.as_slice());
         app.pad_up(2);
         assert!(app.pad_held_notes(2).is_empty());
-        assert!(app.engine.active().is_empty(), "nothing left held");
+        assert!(app.eng().active().is_empty(), "nothing left held");
         // Back to slots: held pads are let go.
         app.pad_down(5, 100);
         app.set_pad_layout(None);
-        assert!(app.engine.active().is_empty());
+        assert!(app.eng().active().is_empty());
         assert!(!app.arp_plays_notes());
     }
 
@@ -2440,20 +2734,83 @@ mod tests {
         assert!(ons(&mut app, 20_000).is_empty());
     }
 
+    /// One arp per track: arming another track gives the panel that
+    /// track's arp, and a latched arp on the old track keeps running.
     #[test]
-    fn stop_ends_the_timed_step_and_shift_stop_toggles_the_console() {
-        let mut timed = App::new(44_100, true);
-        assert_eq!(press(&mut timed, button::STOP), vec![Effect::Quit]);
+    fn another_track_gets_its_own_arp_and_a_latched_one_keeps_running() {
         let mut app = ready();
         app.button(button::SHIFT, true, 0.0);
-        assert_eq!(
-            press(&mut app, button::STOP),
-            vec![Effect::Show(View::Console)]
-        );
-        assert_eq!(
-            press(&mut app, button::STOP),
-            vec![Effect::Show(View::Play)]
-        );
+        press(&mut app, REPEAT);
+        app.button(button::SHIFT, false, 0.0);
+        app.pad_down(4, 90);
+        app.pad_up(4);
+        assert!(app.repeating() && app.active(4));
+        let fx = app.set_track(2);
+        assert!(fx.contains(&Effect::Note(format!(
+            "arp: track 3 ({})",
+            mode_label(app.arp_mode)
+        ))));
+        assert_eq!(app.track(), 2);
+        // Track 3's panel: not latched, nothing held.
+        assert!(!app.repeating() && !app.active(4));
+        assert!(ons(&mut app, 11_100).is_empty(), "track 3's arp is quiet");
+        // Track 1's arp still holds and plays its latched pad.
+        let old = app.arps.engine_at(0);
+        assert!(old.latch() != LatchMode::Off && old.active().contains(4));
+        let mut ev = Events::new();
+        let mut n = 0;
+        for _ in 0..100 {
+            app.arps.engine_at_mut(0).process(111, &mut ev);
+            n += ev
+                .as_slice()
+                .iter()
+                .filter(|e| matches!(e.kind, EventKind::On { .. }))
+                .count();
+        }
+        assert_eq!(n, 3, "still repeating");
+        // Back on track 1: its panel and latch again; STOP twice lets go.
+        app.set_track(0);
+        assert!(app.repeating() && app.active(4));
+        press(&mut app, button::STOP);
+        press(&mut app, button::STOP);
+        assert!(!app.repeating());
+        assert!(app.set_track(0).is_empty(), "same track: nothing to do");
+    }
+
+    #[test]
+    fn stop_ends_the_timed_step() {
+        let mut timed = App::new(44_100, true);
+        assert_eq!(press(&mut timed, button::STOP), vec![Effect::Quit]);
+        let mut held_shift = App::new(44_100, true);
+        held_shift.button(button::SHIFT, true, 0.0);
+        assert_eq!(press(&mut held_shift, button::STOP), vec![Effect::Quit]);
+    }
+
+    /// The Console's chord (Jay, 22:12Z: nothing else may use it): hold
+    /// SHIFT, hold ERASE, press TAP TEMPO. Nothing fires on the way in, and
+    /// the press is no tempo tap.
+    #[test]
+    fn shift_erase_tap_tempo_toggles_the_console_and_nothing_else_does() {
+        const ERASE: u8 = 52;
+        let mut app = ready();
+        app.map.learn(mapper::Job::Erase, Some(ERASE));
+        let tap = app.map.tap_tempo.unwrap();
+        app.button(button::SHIFT, true, 0.0);
+        assert!(app.button(ERASE, true, 0.0).is_empty());
+        assert_eq!(press(&mut app, tap), vec![Effect::Show(View::Console)]);
+        assert!(app.taps.is_empty(), "no tempo tap");
+        assert_eq!(press(&mut app, tap), vec![Effect::Show(View::Play)]);
+        // Without SHIFT, or once ERASE is let go, TAP TEMPO taps.
+        app.button(button::SHIFT, false, 0.0);
+        press(&mut app, tap);
+        assert_eq!(app.taps.len(), 1);
+        app.button(button::SHIFT, true, 0.0);
+        app.button(ERASE, false, 0.0);
+        assert!(!press(&mut app, tap)
+            .iter()
+            .any(|e| matches!(e, Effect::Show(View::Console))));
+        // SHIFT + STOP is the MPC's now, never the Console.
+        assert!(!press(&mut app, button::STOP).contains(&Effect::Show(View::Console)));
     }
 
     /// Where `item` sits in the menu on screen.
@@ -2495,6 +2852,43 @@ mod tests {
         let mut next = App::new(44_100, false);
         next.restore(&kept, &mpfree_store::Settings::default());
         assert_eq!(next.settings.theme, "synthwave");
+    }
+
+    #[test]
+    fn appearance_offers_the_themes_folder_after_the_built_ins() {
+        let mut app = App::new(44_100, false);
+        app.theme_files = vec![("sunrise.theme".into(), "Sunrise".into())];
+        app.map.menu = Some(MENU);
+        app.button(button::SHIFT, true, 0.0);
+        press(&mut app, MENU);
+        app.button(button::SHIFT, false, 0.0);
+        let at = row(&app, Item::Appearance);
+        let value = |fx: &[Effect]| match fx.last() {
+            Some(Effect::Menu(m)) => m.rows[at].1.clone(),
+            _ => panic!("{fx:?}"),
+        };
+        for _ in 0..3 {
+            app.step_item(at, 1);
+        }
+        // Past Spaceship: the theme file, by its own name, then the end.
+        assert_eq!(value(&app.step_item(at, 1)), "Sunrise");
+        assert_eq!(app.settings.theme, "sunrise.theme");
+        assert_eq!(value(&app.step_item(at, 1)), "Sunrise");
+        // Kept by its file name, and restored while the file is there.
+        let kept = app.app_settings();
+        assert_eq!(kept.get_str("theme"), Some("sunrise.theme"));
+        let mut next = App::new(44_100, false);
+        next.theme_files = app.theme_files.clone();
+        next.restore(&kept, &mpfree_store::Settings::default());
+        assert_eq!(next.settings.theme, "sunrise.theme");
+        // Gone from the folder: the default theme, and the log says so.
+        let mut gone = App::new(44_100, false);
+        let notes = gone.restore(&kept, &mpfree_store::Settings::default());
+        assert_eq!(gone.settings.theme, "default");
+        assert!(
+            notes.iter().any(|n| n.contains("theme = sunrise.theme")),
+            "{notes:?}"
+        );
     }
 
     #[test]
@@ -3038,11 +3432,11 @@ mod tests {
         assert!(fx.contains(&Effect::Note(
             "STOP: arp silenced, latch kept (STOP again clears it)".into()
         )));
-        assert!(app.latched && app.engine.hushed() && app.active(2));
+        assert!(app.latched && app.eng().hushed() && app.active(2));
         assert!(notes(&mut app, 4 * 5513).is_empty(), "silent");
         // PLAY carries on with the same latch.
         press(&mut app, button::PLAY);
-        assert!(!app.engine.hushed());
+        assert!(!app.eng().hushed());
         assert!(notes(&mut app, 4 * 5513).contains(&2));
         // STOP, then STOP again: the latch goes.
         press(&mut app, button::STOP);
@@ -3077,17 +3471,17 @@ mod tests {
     #[test]
     fn note_repeat_turns_on_the_arp_mode_the_panel_picked() {
         let mut app = ready();
-        assert_eq!(app.engine.settings().mode, Mode::Direct);
+        assert_eq!(app.eng().settings().mode, Mode::Direct);
         // Hold NOTE REPEAT: Repeat, and - / + pick the mode, the wheel the order.
         app.button(REPEAT, true, 0.0);
-        assert_eq!(app.engine.settings().mode, Mode::Repeat);
+        assert_eq!(app.eng().settings().mode, Mode::Repeat);
         press(&mut app, button::PLUS);
-        assert_eq!(app.engine.settings().mode, Mode::Arp);
+        assert_eq!(app.eng().settings().mode, Mode::Arp);
         app.wheel(1);
-        assert_eq!(app.engine.settings().order, Order::ALL[1]);
+        assert_eq!(app.eng().settings().order, Order::ALL[1]);
         let fx = app.button(REPEAT, false, 0.0);
         assert!(fx.contains(&Effect::Light(REPEAT, LIGHT_OFF)));
-        assert_eq!(app.engine.settings().mode, Mode::Direct);
+        assert_eq!(app.eng().settings().mode, Mode::Direct);
         assert_eq!(
             app.wheel(1),
             vec![Effect::Kit(1)],
@@ -3154,20 +3548,20 @@ mod tests {
         app.button(MENU, false, 0.0);
         assert_eq!(app.view(), View::Arp);
         // The panel plays the pads through its mode, Repeat to begin with.
-        assert_eq!(app.engine.settings().mode, Mode::Repeat);
+        assert_eq!(app.eng().settings().mode, Mode::Repeat);
         assert!(app.generating());
         // - / + walk its tabs, Direct included.
         let fx = press(&mut app, button::MINUS);
-        assert_eq!(app.engine.settings().mode, Mode::Direct);
+        assert_eq!(app.eng().settings().mode, Mode::Direct);
         assert!(fx.contains(&Effect::Light(REPEAT, LIGHT_OFF)));
         press(&mut app, button::PLUS);
         press(&mut app, button::PLUS);
         press(&mut app, button::PLUS);
-        assert_eq!(app.engine.settings().mode, Mode::Pattern);
+        assert_eq!(app.eng().settings().mode, Mode::Pattern);
         // The wheel picks a pattern, the Q-Links rate, gate, swing and octaves.
         app.wheel(2);
         assert_eq!(app.pattern_index, 2);
-        assert_eq!(*app.engine.pattern(), app.patterns[2].1);
+        assert_eq!(*app.eng().pattern(), app.patterns[2].1);
         assert_eq!(
             app.qlink(1, 5, None),
             Some(vec![
@@ -3175,19 +3569,19 @@ mod tests {
                 Effect::Light(REPEAT, LIGHT_ON)
             ])
         );
-        assert_eq!(app.engine.settings().gate, 60);
+        assert_eq!(app.eng().settings().gate, 60);
         assert_eq!(
             app.qlink(3, 3, None),
             Some(Vec::new()),
             "octaves need a longer turn"
         );
         app.qlink(3, 1, None);
-        assert_eq!(app.engine.settings().octaves, 2);
+        assert_eq!(app.eng().settings().octaves, 2);
         app.qlink(0, 3, None);
         assert_eq!(app.settings.rate, Rate::SixteenthTriplet);
         app.qlink(2, 0, Some(127));
         assert_eq!(
-            app.engine.settings().swing,
+            app.eng().settings().swing,
             75,
             "absolute positions without Akai's session"
         );
@@ -3249,21 +3643,21 @@ mod tests {
             |app: &App, a: ArpItem| app.items().iter().position(|&i| i == Item::Arp(a)).unwrap();
         // Accent level steps by 8, down from 127.
         let fx = app.step_item(row(&app, ArpItem::Accent), -1);
-        assert_eq!(app.engine.settings().accent, 119);
+        assert_eq!(app.eng().settings().accent, 119);
         assert!(fx.contains(&Effect::Note("arp accent level: 119".to_string())));
         // Scale: Off, then the named scales; the root moves it.
         app.step_item(row(&app, ArpItem::Scale), 1);
         app.step_item(row(&app, ArpItem::Scale), 1);
-        assert_eq!(app.engine.settings().scale, Some(Scale::new(0, DORIAN)));
+        assert_eq!(app.eng().settings().scale, Some(Scale::new(0, DORIAN)));
         app.step_item(row(&app, ArpItem::Root), 1);
         let fx = app.step_item(row(&app, ArpItem::Root), 1);
-        assert_eq!(app.engine.settings().scale, Some(Scale::new(2, DORIAN)));
+        assert_eq!(app.eng().settings().scale, Some(Scale::new(2, DORIAN)));
         assert!(fx.contains(&Effect::Note("arp scale: D Dorian".to_string())));
         assert!(
             matches!(fx.last(), Some(Effect::Menu(m)) if m.rows[3].1 == "D" && m.rows[2].1 == "Dorian")
         );
         app.step_item(row(&app, ArpItem::Scale), 1);
-        assert_eq!(app.engine.settings().scale, Some(Scale::new(2, PHRYGIAN)));
+        assert_eq!(app.eng().settings().scale, Some(Scale::new(2, PHRYGIAN)));
         // A scale with other notes coming down keeps them when the root moves.
         let classical = mpfree_arp::scale::SCALES
             .iter()
@@ -3273,7 +3667,7 @@ mod tests {
             app.step_item(row(&app, ArpItem::Scale), 1);
         }
         app.step_item(row(&app, ArpItem::Root), 1);
-        let s = app.engine.settings().scale.unwrap();
+        let s = app.eng().settings().scale.unwrap();
         assert_eq!(
             (s.root, s.mask, s.down),
             (
@@ -3285,44 +3679,44 @@ mod tests {
         app.step_item(row(&app, ArpItem::Root), -1);
         // Out-of-key notes: below, above, nearest, not played.
         let fx = app.step_item(row(&app, ArpItem::Snap), 1);
-        assert_eq!(app.engine.settings().snap, Snap::Up);
+        assert_eq!(app.eng().settings().snap, Snap::Up);
         assert!(fx.contains(&Effect::Note(
             "arp out-of-key notes: note above".to_string()
         )));
         for _ in 0..5 {
             app.step_item(row(&app, ArpItem::Snap), 1);
         }
-        assert_eq!(app.engine.settings().snap, Snap::Skip);
+        assert_eq!(app.eng().settings().snap, Snap::Skip);
         // A chord on each pad, and a scale run.
         app.step_item(row(&app, ArpItem::Chord), 1);
         let fx = app.step_item(row(&app, ArpItem::Chord), 1);
-        assert_eq!(app.engine.settings().chord, mpfree_arp::Chord::Triad);
+        assert_eq!(app.eng().settings().chord, mpfree_arp::Chord::Triad);
         assert!(fx.contains(&Effect::Note(
             "arp chord on each pad: triad (1 3 5)".to_string()
         )));
         app.step_item(row(&app, ArpItem::Run), 1);
-        assert!(app.engine.settings().run);
+        assert!(app.eng().settings().run);
         app.step_item(row(&app, ArpItem::Run), -1);
         // Held chords take turns: a progression.
         app.step_item(row(&app, ArpItem::Turns), 1);
         app.step_item(row(&app, ArpItem::Turns), 1);
         let fx = app.step_item(row(&app, ArpItem::Turns), 1);
-        assert_eq!(app.engine.settings().turns, mpfree_arp::Turns::Bar);
+        assert_eq!(app.eng().settings().turns, mpfree_arp::Turns::Bar);
         assert!(fx.contains(&Effect::Note(
             "arp chords take turns: every bar".to_string()
         )));
         for _ in 0..4 {
             app.step_item(row(&app, ArpItem::Turns), -1);
         }
-        assert_eq!(app.engine.settings().turns, mpfree_arp::Turns::Off);
+        assert_eq!(app.eng().settings().turns, mpfree_arp::Turns::Off);
         app.step_item(row(&app, ArpItem::Chord), -5);
         app.step_item(row(&app, ArpItem::Chord), -1);
-        assert_eq!(app.engine.settings().chord, mpfree_arp::Chord::Off);
+        assert_eq!(app.eng().settings().chord, mpfree_arp::Chord::Off);
         // Off keeps the root for next time.
         for _ in 0..classical {
             app.step_item(row(&app, ArpItem::Scale), -1);
         }
-        assert_eq!(app.engine.settings().scale, None);
+        assert_eq!(app.eng().settings().scale, None);
         assert_eq!(
             app.step_item(row(&app, ArpItem::Scale), -1)
                 .iter()
@@ -3333,20 +3727,20 @@ mod tests {
         );
         app.step_item(row(&app, ArpItem::Scale), 1);
         assert_eq!(
-            app.engine.settings().scale,
+            app.eng().settings().scale,
             Some(Scale::new(2, mpfree_arp::scale::MAJOR))
         );
         // Strum in tens of percent; New notes restart on and off.
         app.step_item(row(&app, ArpItem::Strum), 1);
-        assert_eq!(app.engine.settings().strum, 10);
+        assert_eq!(app.eng().settings().strum, 10);
         app.step_item(row(&app, ArpItem::Retrigger), 1);
-        assert!(app.engine.settings().retrigger);
+        assert!(app.eng().settings().retrigger);
         // The panel's own settings leave them alone.
         app.arp_action(ArpAction::Settings(mpfree_arp::Settings {
             gate: 80,
             ..app.arp
         }));
-        let s = app.engine.settings();
+        let s = app.eng().settings();
         assert_eq!(
             (s.accent, s.strum, s.retrigger, s.gate),
             (119, 10, true, 80)
@@ -3468,7 +3862,7 @@ mod tests {
             .iter()
             .any(|e| matches!(e, Effect::Workspace(w) if !w.open && w.recording)));
         assert_eq!(
-            app.engine.settings().mode,
+            app.eng().settings().mode,
             Mode::Direct,
             "pads sound as pressed while recording"
         );
@@ -3506,7 +3900,7 @@ mod tests {
             "a hard hit"
         );
         assert_eq!(
-            app.engine.settings().mode,
+            app.eng().settings().mode,
             Mode::Repeat,
             "the panel's mode again"
         );
@@ -3555,13 +3949,13 @@ mod tests {
             .any(|e| matches!(e, Effect::Workspace(w) if w.free_time && w.recording)));
         assert_eq!(app.recorder.unwrap().mode(), RecordMode::FreeTime);
         assert_eq!(
-            app.engine.settings().mode,
+            app.eng().settings().mode,
             Mode::Pattern,
             "the pattern keeps playing"
         );
         let _ = ons(&mut app, 3 * 5513 + 400);
         // Pad 2 (the 2nd held note), hit hard, lands on the step nearest now.
-        let at = (app.engine.position().round() as usize) % 4;
+        let at = (app.eng_mut().position().round() as usize) % 4;
         let fx = app.pad_down(1, 127);
         assert!(
             fx.iter()
@@ -3577,7 +3971,7 @@ mod tests {
             }
         ));
         assert_eq!(
-            *app.engine.pattern(),
+            *app.eng().pattern(),
             app.pattern,
             "the engine plays it at once"
         );
@@ -3588,7 +3982,7 @@ mod tests {
             .collect();
         assert_eq!(active, [0, 4], "record pads don't change the latched chord");
         // Held across two more steps: ties after it.
-        let at = (app.engine.position().round() as usize) % 4;
+        let at = (app.eng_mut().position().round() as usize) % 4;
         app.pad_down(12, 90);
         let _ = ons(&mut app, 2 * 5513);
         let fx = app.pad_up(12);
@@ -3602,7 +3996,7 @@ mod tests {
         // Back to Step time restarts the recording there.
         app.workspace_action(WsAction::RecordMode(RecordMode::Step));
         assert_eq!(app.recorder.unwrap().mode(), RecordMode::Step);
-        assert_eq!(app.engine.settings().mode, Mode::Direct);
+        assert_eq!(app.eng().settings().mode, Mode::Direct);
         for pad in [0, 1] {
             app.pad_down(pad, 100);
             app.pad_up(pad);
@@ -3631,7 +4025,7 @@ mod tests {
             "keeps its place"
         );
         assert_eq!(
-            *app.engine.pattern(),
+            *app.eng().pattern(),
             Pattern::parse("x x .").unwrap(),
             "the pattern in use is reloaded"
         );
@@ -3690,7 +4084,7 @@ mod tests {
         }
         let fx = app.step_item(row, 1);
         assert_eq!(
-            app.engine.settings().scale,
+            app.eng().settings().scale,
             Some(mpfree_arp::Scale::new(0, mpfree_arp::scale::MELODIC_MINOR))
         );
         assert!(
@@ -3706,7 +4100,7 @@ mod tests {
         app.arp_action(ArpAction::Button(PatternButton::Edit));
         let edited = Pattern::parse("1 . 2! _").unwrap();
         app.workspace_action(WsAction::Changed(edited));
-        assert_eq!(*app.engine.pattern(), edited);
+        assert_eq!(*app.eng().pattern(), edited);
         assert!(matches!(app.arp_view(), Effect::Arp(v) if v.pattern_changed));
         app.workspace_action(WsAction::Record(true));
         assert!(app.recorder.is_some());
@@ -3823,5 +4217,84 @@ mod tests {
             vec![Effect::Kit(1)],
             "the wheel picks kits on Play"
         );
+    }
+
+    /// The mode buttons, ERASE and the SHIFT combos from the hardware
+    /// control map (Jay, 20:40Z), once Map controls has found them.
+    #[test]
+    fn the_mode_buttons_go_to_the_page_with_the_same_job() {
+        use crate::play_page::PlayView;
+        use crate::sample_page::Editor;
+        use mapper::Job;
+        const SHIFT: u8 = button::SHIFT;
+        let mut app = ready();
+        let jobs = [
+            (Job::Erase, 60),
+            (Job::Main, 61),
+            (Job::SixteenLevel, 62),
+            (Job::NextSeq, 63),
+            (Job::StepSeq, 64),
+            (Job::Sampler, 65),
+            (Job::SampleEdit, 66),
+            (Job::ProgEdit, 67),
+        ];
+        // Not found yet: nothing.
+        assert!(press(&mut app, 65).is_empty());
+        for (job, n) in jobs {
+            app.map.learn(job, Some(n));
+            assert_eq!(app.map.of(job), Some(n));
+        }
+        assert_eq!(app.map.name(65), Some("SAMPLER"));
+        assert_eq!(app.map.name(67), Some("PROG EDIT"));
+        let shifted = |app: &mut App, n: u8| held(app, SHIFT, |a| press(a, n));
+        // SAMPLER: Sample; SHIFT + SAMPLER: Looper.
+        assert!(press(&mut app, 65).contains(&Effect::Show(View::Sample)));
+        assert!(shifted(&mut app, 65).contains(&Effect::Show(View::Looper)));
+        assert_eq!(app.view(), View::Looper);
+        // MAIN: Play, and on Play the next view.
+        assert!(press(&mut app, 61).contains(&Effect::Show(View::Play)));
+        assert_eq!(press(&mut app, 61), [Effect::PlayView(None)]);
+        // STEP SEQ: Play's Beats view; NEXT SEQ: Arrange.
+        assert_eq!(
+            press(&mut app, 64),
+            [Effect::PlayView(Some(PlayView::Beats))]
+        );
+        assert!(press(&mut app, 63).contains(&Effect::Show(View::Arrange)));
+        let fx = press(&mut app, 64);
+        assert!(fx.contains(&Effect::Show(View::Play)));
+        assert!(fx.contains(&Effect::PlayView(Some(PlayView::Beats))));
+        // SAMPLE EDIT: the Wave editor; PROG EDIT: the audio loop decides.
+        let fx = press(&mut app, 66);
+        assert_eq!(fx[0], Effect::SampleEditor(Editor::Wave));
+        assert!(fx.contains(&Effect::Show(View::Sample)));
+        assert_eq!(press(&mut app, 67), [Effect::ProgEdit]);
+        // ERASE and SHIFT + ERASE do nothing yet (Jay, 22:12Z).
+        assert!(press(&mut app, 60).is_empty());
+        assert!(shifted(&mut app, 60).is_empty());
+        // SHIFT + 16 LEVEL: Chromatic | In key (here: no scale yet).
+        assert!(press(&mut app, 62).is_empty());
+        assert!(shifted(&mut app, 62)
+            .iter()
+            .any(|e| matches!(e, Effect::Note(n) if n.contains("pick a scale first"))));
+    }
+
+    #[test]
+    fn shift_stop_goes_back_to_bar_1_and_shift_rec_captures() {
+        const SHIFT: u8 = button::SHIFT;
+        let mut app = ready();
+        let fx = held(&mut app, SHIFT, |a| press(a, button::STOP));
+        assert!(fx.contains(&Effect::Time(TimeAction::Transport(Command::StopAndRewind))));
+        assert!(fx.contains(&Effect::StopSounds));
+        assert!(!fx.contains(&Effect::Show(View::Console)));
+        // SHIFT + REC (90 here): Capture, on the Looper tab too.
+        for v in [View::Play, View::Looper] {
+            app.open_tab(v);
+            assert_eq!(
+                held(&mut app, SHIFT, |a| press(a, 90)),
+                [Effect::Time(TimeAction::Capture)]
+            );
+        }
+        // SHIFT + PLAY START (93): the metronome.
+        assert_eq!(held(&mut app, SHIFT, |a| press(a, 93)), [Effect::Metronome]);
     }
 }
