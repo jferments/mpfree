@@ -954,6 +954,15 @@ pub struct Pad {
     pub mute_group: Option<u8>,
     /// Pads this one stops when hit (one-way choke: the closed hat stops the open hat).
     pub chokes: Vec<usize>,
+    /// Pads a hit on this one also plays, at the same velocity (one way,
+    /// as the MPC's Simultaneous Play): each linked pad does what a hit on
+    /// it does, with its own layers, chokes and latch, and lets go when
+    /// this pad does. A linked pad's own links are not followed.
+    pub links: Vec<usize>,
+    /// Latch: a hit starts the pad and lifting it lets nothing go; the
+    /// next hit lets it go (a loop plays its tail, grains stop, a held
+    /// sound releases). For loops, grain clouds and drones in any play mode.
+    pub latch: bool,
     pub amp: Ahdsr,
     pub filter: Filter,
     pub filter_env: Ahdsr,
@@ -1175,6 +1184,8 @@ impl Pad {
             polyphony: 8,
             mute_group: None,
             chokes: Vec::new(),
+            links: Vec::new(),
+            latch: false,
             amp: Ahdsr::OPEN,
             filter: Filter::default(),
             filter_env: Ahdsr::OPEN,
@@ -1344,6 +1355,7 @@ impl Project {
             || pad.key_fade > MAX_KEY_FADE
             || pad.vel_fade > MAX_VEL_FADE
             || pad.chokes.iter().any(|&c| c >= PADS)
+            || pad.links.iter().any(|&c| c >= PADS)
             || pad.mute_group.is_some_and(|g| !(1..=16).contains(&g))
             || !depth.is_finite()
             || depth.abs() > 1.0

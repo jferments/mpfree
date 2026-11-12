@@ -196,7 +196,7 @@ An edited layer finds its pieces with a cursor that starts from the last one (on
 ## Listening
 
 ```text
-cargo run --release -p mpfree-looper --example render -- [--period N] [--out FILE]
+cargo run --release -p mpfree-looper --example looper_render -- [--period N] [--out FILE]
 ```
 
 Writes `~/mpfree-work/looper-demo.wav` (45.5 s). A player plays into the line input at 96 BPM, 640 frames late. One bar of count-in, then a two-bar loop builds up: a distorted saw bass (the first pass), crushed drums (overdub), a saturated pulse lead (overdub), Undo (the lead fades out), Redo (it is back), distorted power-chord stabs on the off-beats (overdub), then a stop under a final live hit. The distortion is in the sounds, on purpose; the master is plain gain, peak -2.1 dBFS, no clipped samples. It prints each press and phase, and exits with an error if the first pass does not line up or anything clips.

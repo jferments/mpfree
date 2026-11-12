@@ -31,10 +31,26 @@ The **Wave** page shows the sample. Set where it **starts** and **ends**, and wh
 
 **Chopping** cuts a sample into slices, one per pad, so you can replay a drum break in a new order or pick out single hits.
 
-1. Pick a **Method**: **Transient** cuts at each hit, **Beat** on the beats, **Grid** into equal pieces, **Silence** at the gaps, and **Manual** leaves the cuts to you.
+1. Pick a **Method**: **Transient** cuts at each hit, **Beat** on the beats, **Grid** into equal pieces, **Silence** at the gaps, **Manual** leaves the cuts to you, and **Live** cuts where you play (below).
 2. Turn **Sensitivity** up for more slices, down for fewer.
 3. Tap a slice to hear it. **Split** and **Merge** add or remove a cut by hand; the Q-Links move the picked slice's start.
 4. Tap **Chop to** to put the slices on the pads, starting at the first pad you chose.
+
+### Live: chop by playing
+
+{{shot: sample-chop-live | Live chop: the break playing, with a cut dropped at each pad hit so far.}}
+
+**Live** chops the way you hear it: the sound plays, and every pad you hit drops a cut at that moment.
+
+1. Pick **Live** as the **Method**. The **Split** button becomes **Start**.
+2. Tap **Start**. The sound plays from its start, and any cuts already there are cleared.
+3. Hit any pad in time with the sound wherever a slice should begin. While live chop runs, the pads drop cuts instead of playing their own sounds.
+4. The take ends when the sound ends, or when you tap **Stop**. Then tap **Chop to** as usual, or **Start** again for a new take.
+
+**Pull to hits** (where **Sensitivity** is for the other methods) moves each cut onto the nearest drum hit within that many milliseconds, so a slightly early or late pad still cuts right on the hit; **Off** keeps each cut where you played it. With **Snap** on **Zero crossing**, a cut with no hit near it moves to the nearest point where the wave crosses zero, so its slice starts without a click. Nothing reaches the pads until you tap **Chop to**, so a take you don't like costs nothing: tap **Start** again.
+
+> [!TIP]
+> Live chop is quickest with a sound you know well: hit the pads where you would clap along, then fix any stray cut with **Split** and **Merge**.
 
 ## Play: how a pad sounds
 
@@ -45,6 +61,23 @@ The **Play** page shapes how the picked pad sounds each time you hit it:
 - **Layers:** different sounds for soft and hard hits. Drag a layer's edges to set its velocity range.
 - **Envelope:** how the volume rises and falls: **attack**, **hold**, **decay**, **sustain** and **release**. Drag the points on the drawing, or use the Q-Links.
 - **Filter:** darken or thin out the sound. Drag the dot.
+
+### Pads that stop, play or hold others
+
+{{shot: sample-play-links | The Play page's Pad list with Also plays picked: hits on A1 and A3 put them on it, so a hit on A5 plays all three, and A5 latches.}}
+
+Three rows of the Play page's **Pad** list set how a pad works with the others, and with your hands:
+
+- **Stops:** the pads this one cuts off when you hit it. It works one way: the closed hi-hat stops the open one, and the open one leaves the closed one alone. (A **mute group** cuts both ways.)
+- **Also plays:** the pads that play whenever you hit this one, at the same strength, as the MPC's Simultaneous Play does: a kick with its own sub, a stab with a noise burst, a chord from three pads. Each plays as a hit on it would, with its own layers, stops and latch, and lets go when you let go of this pad. The pads it plays don't play their own Also plays pads in turn. While the pads play notes or 16 Levels, Also plays does nothing.
+- **Latch:** at **On**, a hit starts the pad and it plays on after you let go; the next hit stops it. A loop keeps looping and plays its tail when it stops, a grain cloud keeps going, a long pad or a drone holds, and your hands are free for the rest. A latched pad stays lit on the MPC.
+
+To fill in **Stops** or **Also plays**, tap the row, then hit the pads you want: each hit adds a pad, and a second hit takes it out again. Every hit is one step for **UNDO**. Tap another row when you are done, and hits pick the pad to edit again. The arrows and the wheel work too: a step up adds the next pad, a step down takes the last one out.
+
+> [!TIP]
+> Note Repeat plays a pad again on every step, so a latched pad would turn on and off with each one. Keep Latch for pads you hold, and Note Repeat for pads you roll.
+
+**FULL LEVEL** and Half Level play every hit at full or at half strength, sampled pads included (see [Buttons and controls](../reference/controls.md)).
 
 ### Scenes: mangle, morph and go back
 
@@ -63,6 +96,18 @@ The scenes are saved with the kit.
 {{shot: sample-grain | The Grain page: tiny grains of the sound play at once, around the position you pick.}}
 
 **Granular** playback plays the sound as a cloud of tiny overlapping pieces (grains). It can freeze a moment, stretch it into a pad, or scatter it into texture. Touch the square to move the **position** in the sound and the **size** of the grains together, and use the Q-Links for **position**, **size**, **density** and **pitch**. **Scan speed** moves through the sound on its own.
+
+## Auto-sample: a synth or your gear onto the pads
+
+**Auto-sample** plays an instrument note by note, records every note and makes a playable instrument of it on the kit's pads: one pad a note, each covering the keys around it, with velocity layers and round robins if you ask for them. Open it with the **Auto-sample** button on the Sample tab's **Rec** page, set the notes and layers in the list, and tap **Start**. The bar says how many takes it makes, how long it takes and how much memory, before anything starts. **Cancel** stops and keeps the notes done, and one UNDO takes the whole instrument off.
+
+The **Source** row says what plays:
+
+- **The Synth tab's patch.** MPFree plays a copy of it, much faster than real time, so a whole instrument takes seconds.
+- **External gear**, on a MIDI channel from 1 to 16. MPFree plays your synth through **MIDI OUT** and records it from the line input, in real time. Connect the synth's audio out to the line input, set it to the channel you picked and turn the line input on. MPFree first plays the middle note twice to hear how loud the synth is and how late it answers, so no note starts late or cut off. If the line input stops or you switch the Rec page to another source while it runs, it stops, lets go of the note and keeps the notes done.
+
+> [!NOTE]
+> **External gear** appears in the Source row once MIDI OUT is set up for it, which comes with the MIDI setup (see [Playing other gear](midi-and-cv.md)).
 
 ## Playing a kit on keys
 

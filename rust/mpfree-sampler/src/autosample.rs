@@ -21,6 +21,9 @@
 //! - [`render`] and [`Job`]: auto-sample one of MPFree's own instruments
 //!   (any [`Node`]) offline, as fast as it renders, on a worker thread
 //!   that shares nothing with the audio thread.
+//! - [`Gear`] and [`Job::start_gear`]: auto-sample external gear in real
+//!   time, its notes sent as MIDI ([`Cue::midi`]) and its sound read back
+//!   from the sampler's input as it comes in.
 //!
 //! Nothing here runs on the audio thread. Compared with the MPC's Auto
 //! Sampler, Elektron's Tonverk and Logic's Auto Sampler in the sampler's
@@ -30,11 +33,12 @@ use crate::model::{
     Fade, FadeCurve, Keys, Layer, LayerSelect, Loop, LoopMode, ModelError, Pad, PlayMode, Project,
     Region, Source, KEYGROUP_POLYPHONY, MAX_LAYERS,
 };
+use crate::record::RollingReader;
 use mpfree_analysis::note_name;
 use mpfree_node::{Ctx, Node, NodeEvent};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 /// Velocity layers a plan may have (the MPC's limit).
 pub const MAX_VELOCITY_LAYERS: usize = 8;
@@ -368,6 +372,20 @@ pub enum Cue {
     AllOff,
 }
 
+impl Cue {
+    /// The cue as a MIDI message on `channel` (0 to 15): a note on, a
+    /// note off (release velocity 64), or All Notes Off (controller 123).
+    /// A note on is never velocity 0, which would be a note off.
+    pub fn midi(self, channel: u8) -> [u8; 3] {
+        let ch = channel & 0x0f;
+        match self {
+            Cue::NoteOn { note, velocity } => [0x90 | ch, note & 0x7f, velocity.clamp(1, 127)],
+            Cue::NoteOff { note } => [0x80 | ch, note & 0x7f, 64],
+            Cue::AllOff => [0xb0 | ch, 123, 0],
+        }
+    }
+}
+
 /// A [`Cue`] at a frame offset inside the block.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Timed {
@@ -528,6 +546,11 @@ impl Session {
 
     pub fn state(&self) -> State {
         self.state
+    }
+
+    /// Frames fed so far, gaps and tests included.
+    pub fn frames(&self) -> u64 {
+        self.now
     }
 
     fn running(&self) -> bool {
@@ -1056,6 +1079,204 @@ pub fn render(
     }
 }
 
+// ---------------------------------------------------------- external gear
+
+/// Frames a gear session moves on at a time (about 5 ms at 48 kHz). A
+/// block's notes go out as soon as the block before it has come in.
+pub const GEAR_BLOCK: usize = 256;
+/// Level and timing tests a gear session opens with: its latency is the
+/// longest of the two.
+pub const GEAR_TESTS: u8 = 2;
+/// A gear session stops when its input hasn't moved for this long (the
+/// audio stopped).
+pub const GEAR_STALL_MS: u64 = 1_000;
+
+/// Why a gear session stopped before its end (other than a cancel).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GearError {
+    /// The sampler's input was switched to another source.
+    InputChanged,
+    /// The input stopped coming in.
+    InputStopped,
+    /// The session fell so far behind its input that the input was
+    /// overwritten.
+    FellBehind,
+}
+
+impl std::fmt::Display for GearError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            GearError::InputChanged => "the sampler's input changed source",
+            GearError::InputStopped => "the line input stopped coming in",
+            GearError::FellBehind => "it fell behind the line input",
+        })
+    }
+}
+
+impl std::error::Error for GearError {}
+
+/// External gear for a [`Session`]: its notes go out as MIDI on one
+/// channel, and its sound comes back through the sampler's input (the line
+/// input's rolling buffer, [`crate::record::Input`]), read by frame number
+/// as it is written.
+///
+/// [`Gear::step`] moves the session on, a [`GEAR_BLOCK`] at a time, as far
+/// as the input has come. Each cue goes out once the input has reached its
+/// frame, never before, so the gear's sound always lands after the frame
+/// its take starts from. How late it lands (an audio period or so, the
+/// cable and the gear's own latency) is what the session's timing test
+/// measures, and each take starts at its own attack ([`build`]), so none of
+/// it shifts a note. A stereo input recorded mono is the average of its
+/// two sides.
+pub struct Gear {
+    input: RollingReader,
+    channel: u8,
+    pos: u64,
+    restarts: u64,
+    sent: bool,
+    /// The block's cues not yet sent, at their frames.
+    due: Vec<(u64, Cue)>,
+    sounding: Option<u8>,
+    block: Vec<f32>,
+    mixed: Vec<f32>,
+}
+
+impl Gear {
+    /// Gear on MIDI `channel` (0 to 15) whose sound comes back on `input`
+    /// from now on.
+    pub fn new(input: RollingReader, channel: u8) -> Gear {
+        Gear {
+            pos: input.written(),
+            restarts: input.restarts(),
+            channel: channel & 0x0f,
+            sent: false,
+            due: Vec::with_capacity(4),
+            sounding: None,
+            block: Vec::with_capacity(GEAR_BLOCK * input.channels().max(1)),
+            mixed: Vec::with_capacity(GEAR_BLOCK * 2),
+            input,
+        }
+    }
+
+    pub fn channel(&self) -> u8 {
+        self.channel
+    }
+
+    /// Moves `session` on as far as the input has come, sending each
+    /// message through `send`. An error means the session can't go on:
+    /// cancel it and [`Gear::let_go`].
+    pub fn step(
+        &mut self,
+        session: &mut Session,
+        send: &mut dyn FnMut([u8; 3]),
+    ) -> Result<(), GearError> {
+        if self.input.restarts() != self.restarts {
+            return Err(GearError::InputChanged);
+        }
+        let mono = session.plan().channels == 1;
+        let ch = self.input.channels().max(1);
+        while matches!(session.state(), State::Testing | State::Recording) {
+            if !self.sent {
+                let pos = self.pos;
+                self.due.extend(
+                    session
+                        .cues(GEAR_BLOCK)
+                        .iter()
+                        .map(|t| (pos + t.at as u64, t.cue)),
+                );
+                self.sent = true;
+            }
+            // Each cue goes out once its frame has come in, never before.
+            let written = self.input.written();
+            while let Some(&(at, cue)) = self.due.first() {
+                if at > written {
+                    break;
+                }
+                self.due.remove(0);
+                match cue {
+                    Cue::NoteOn { note, .. } => self.sounding = Some(note),
+                    Cue::NoteOff { note } if self.sounding == Some(note) => self.sounding = None,
+                    _ => {}
+                }
+                send(cue.midi(self.channel));
+            }
+            let end = self.pos + GEAR_BLOCK as u64;
+            if written < end {
+                break;
+            }
+            self.block.clear();
+            if self.input.copy(self.pos, end, &mut self.block).is_err() {
+                return Err(if self.input.restarts() != self.restarts {
+                    GearError::InputChanged
+                } else {
+                    GearError::FellBehind
+                });
+            }
+            self.mixed.clear();
+            for f in self.block.chunks(ch) {
+                let (l, r) = (f[0], f[ch.min(2) - 1]);
+                if mono {
+                    self.mixed.push(0.5 * (l + r));
+                } else {
+                    self.mixed.extend([l, r]);
+                }
+            }
+            session.feed(&self.mixed);
+            self.pos = end;
+            self.sent = false;
+        }
+        Ok(())
+    }
+
+    /// Lets go of the gear: the note it is playing off, then All Notes Off
+    /// on its channel.
+    pub fn let_go(&mut self, send: &mut dyn FnMut([u8; 3])) {
+        self.due.clear();
+        if let Some(note) = self.sounding.take() {
+            send(Cue::NoteOff { note }.midi(self.channel));
+        }
+        send(Cue::AllOff.midi(self.channel));
+    }
+
+    /// Plays `session` to its end on this thread, looking at the input
+    /// every millisecond, until it is done or `keep_going` says to stop
+    /// (which cancels it). It also stops, cancelled, when the input
+    /// changes source or doesn't move for [`GEAR_STALL_MS`]. Either way the
+    /// gear is let go of at the end. Returns why it stopped early, if not
+    /// cancelled.
+    pub fn run(
+        &mut self,
+        session: &mut Session,
+        send: &mut dyn FnMut([u8; 3]),
+        keep_going: &mut dyn FnMut(&Session) -> bool,
+    ) -> Option<GearError> {
+        let mut seen = (self.input.written(), Instant::now());
+        let stopped = loop {
+            if !matches!(session.state(), State::Testing | State::Recording) {
+                break None;
+            }
+            if !keep_going(session) {
+                session.cancel();
+                break None;
+            }
+            if let Err(e) = self.step(session, send) {
+                session.cancel();
+                break Some(e);
+            }
+            let w = self.input.written();
+            if w != seen.0 {
+                seen = (w, Instant::now());
+            } else if seen.1.elapsed() >= Duration::from_millis(GEAR_STALL_MS) {
+                session.cancel();
+                break Some(GearError::InputStopped);
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        };
+        self.let_go(send);
+        stopped
+    }
+}
+
 /// What a [`Job`] made, and how long it took.
 #[derive(Debug)]
 pub struct Finished {
@@ -1066,7 +1287,9 @@ pub struct Finished {
     pub state: State,
     pub latency: Option<u64>,
     pub clipped: bool,
-    /// Seconds of audio rendered, gaps included.
+    /// Why a gear session stopped before its end, other than a cancel.
+    pub stopped: Option<GearError>,
+    /// Seconds of audio rendered or recorded, gaps included.
     pub audio_seconds: f64,
     /// Seconds spent rendering and recording.
     pub render_seconds: f64,
@@ -1074,12 +1297,14 @@ pub struct Finished {
     pub build_seconds: f64,
 }
 
-/// An offline auto-sample on its own worker thread: [`render`], then
-/// [`build`]. The thread runs at normal priority, below the audio
-/// thread's real-time one, and touches nothing the audio thread uses: the
-/// node is a copy made for it (a fresh instrument with the patch's
-/// values). Poll [`Job::progress`], then [`Job::finish`] once
-/// [`Job::is_finished`].
+/// An auto-sample on its own worker thread: the session played
+/// ([`render`] for one of MPFree's instruments, [`Gear::run`] for external
+/// gear), then [`build`]. The thread runs at normal priority, below the
+/// audio thread's real-time one, and touches nothing the audio thread
+/// uses: a node is a copy made for it (a fresh instrument with the patch's
+/// values), and gear is heard through the input's rolling buffer, which
+/// the audio thread only writes. Poll [`Job::progress`], then
+/// [`Job::finish`] once [`Job::is_finished`].
 pub struct Job {
     handle: Option<std::thread::JoinHandle<Finished>>,
     cancel: Arc<AtomicBool>,
@@ -1089,9 +1314,35 @@ pub struct Job {
 
 impl Job {
     /// Checks the plan (on this thread, so a refused plan says why at
-    /// once) and starts auto-sampling `node` with one level test.
+    /// once) and starts auto-sampling `node` offline with one level test.
     pub fn start(plan: Plan, mut node: Box<dyn Node>) -> Result<Job, PlanError> {
-        let mut session = Session::new(plan, 1)?;
+        let session = Session::new(plan, 1)?;
+        Ok(Job::spawn(session, move |session, keep_going| {
+            render(session, node.as_mut(), keep_going);
+            None
+        }))
+    }
+
+    /// Checks the plan and starts auto-sampling external `gear` in real
+    /// time, with [`GEAR_TESTS`] level tests, its MIDI going out through
+    /// `send`.
+    pub fn start_gear(
+        plan: Plan,
+        mut gear: Gear,
+        mut send: Box<dyn FnMut([u8; 3]) + Send>,
+    ) -> Result<Job, PlanError> {
+        let session = Session::new(plan, GEAR_TESTS)?;
+        Ok(Job::spawn(session, move |session, keep_going| {
+            gear.run(session, send.as_mut(), keep_going)
+        }))
+    }
+
+    fn spawn(
+        mut session: Session,
+        play: impl FnOnce(&mut Session, &mut dyn FnMut(&Session) -> bool) -> Option<GearError>
+            + Send
+            + 'static,
+    ) -> Job {
         let total = session.progress().total;
         let cancel = Arc::new(AtomicBool::new(false));
         let done = Arc::new(AtomicUsize::new(0));
@@ -1100,19 +1351,15 @@ impl Job {
             .name("autosample".into())
             .spawn(move || {
                 let t = Instant::now();
-                let mut frames = 0u64;
-                render(&mut session, node.as_mut(), |s| {
+                let stopped = play(&mut session, &mut |s: &Session| {
                     d.store(s.progress().done, Ordering::Relaxed);
-                    let go = !c.load(Ordering::Relaxed);
-                    if go {
-                        frames += OFFLINE_BLOCK as u64;
-                    }
-                    go
+                    !c.load(Ordering::Relaxed)
                 });
                 let render_seconds = t.elapsed().as_secs_f64();
                 d.store(session.progress().done, Ordering::Relaxed);
                 let state = session.state();
                 let rate = session.plan().rate;
+                let frames = session.frames();
                 let rec = session.finish();
                 let t = Instant::now();
                 let instrument = build(&rec);
@@ -1121,18 +1368,19 @@ impl Job {
                     state,
                     latency: rec.latency,
                     clipped: rec.clipped,
+                    stopped,
                     audio_seconds: frames as f64 / f64::from(rate),
                     render_seconds,
                     build_seconds: t.elapsed().as_secs_f64(),
                 }
             })
             .expect("the auto-sample thread starts");
-        Ok(Job {
+        Job {
             handle: Some(handle),
             cancel,
             done,
             total,
-        })
+        }
     }
 
     /// Takes done and takes in all.
@@ -1160,7 +1408,8 @@ impl Job {
 }
 
 impl Drop for Job {
-    /// A job dropped unfinished is cancelled; its thread ends on its own.
+    /// A job dropped unfinished is cancelled; its thread ends on its own
+    /// (a gear job letting go of the gear first).
     fn drop(&mut self) {
         self.cancel();
     }

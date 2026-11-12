@@ -36,7 +36,7 @@ checked: 2026-11-12 ae9c39c
 
 **Kit** — A set of drum sounds, one per pad, across the pad banks.
 
-**Latch** — Keep Note Repeat or the arpeggiator playing after you let go of the pads.
+**Latch** — Keep Note Repeat or the arpeggiator playing after you let go of the pads. A sampled pad also has a Latch of its own: a hit starts it and the next hit stops it.
 
 **Layer** — One recording in a loop. The first pass is the first layer; every overdub adds another.
 

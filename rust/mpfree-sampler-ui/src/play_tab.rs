@@ -48,7 +48,7 @@ use std::sync::Arc;
 use mpfree_analysis::note_name;
 use mpfree_sampler::model::{
     Ahdsr, Filter, FilterKind, Keys, LayerSelect, Levels, ModelError, Pad, PadsPlay, PlayMode,
-    PressureTarget, Project, Source, KEYGROUP_POLYPHONY, MAX_KEY_FADE, MAX_VEL_FADE,
+    PressureTarget, Project, Source, KEYGROUP_POLYPHONY, MAX_KEY_FADE, MAX_VEL_FADE, PADS,
 };
 use mpfree_ui::widgets::Fader;
 use mpfree_ui::{Color, EventKind, Ui, UiEvent};
@@ -138,6 +138,12 @@ const LAYER_COLORS: [u32; 8] = [
 pub enum Row {
     Polyphony,
     MuteGroup,
+    /// The pads a hit on this one stops (one-way chokes).
+    Chokes,
+    /// The pads a hit on this one plays too.
+    Links,
+    /// Whether a hit starts the pad and the next lets it go.
+    Latch,
     /// How layers whose velocities match a hit are picked.
     Layers,
     Level,
@@ -178,9 +184,12 @@ pub enum Row {
 }
 
 impl Row {
-    pub const ALL: [Row; 29] = [
+    pub const ALL: [Row; 32] = [
         Row::Polyphony,
         Row::MuteGroup,
+        Row::Chokes,
+        Row::Links,
+        Row::Latch,
         Row::Layers,
         Row::Level,
         Row::Pan,
@@ -214,6 +223,9 @@ impl Row {
         match self {
             Row::Polyphony => "Polyphony",
             Row::MuteGroup => "Mute group",
+            Row::Chokes => "Stops",
+            Row::Links => "Also plays",
+            Row::Latch => "Latch",
             Row::Layers => "Layers",
             Row::Level => "Level",
             Row::Pan => "Pan",
@@ -840,7 +852,11 @@ impl PlayTab {
             .iter()
             .map(|r| Setting {
                 name: r.label().into(),
-                value: st.value_text(*r),
+                value: match r {
+                    Row::Chokes => pads_text(self.bank, &p.chokes),
+                    Row::Links => pads_text(self.bank, &p.links),
+                    _ => st.value_text(*r),
+                },
             })
             .collect();
         if let Some(list) = ui.get_mut::<SettingList>(LIST) {
@@ -1095,6 +1111,41 @@ impl PlayTab {
         a
     }
 
+    /// Whether a hit on a pad edits the row picked rather than picking
+    /// the pad: the Stops and Also plays rows.
+    pub fn takes_pads(&self, ui: &Ui) -> bool {
+        matches!(self.row(ui), Row::Chokes | Row::Links)
+    }
+
+    /// Pad `pad` was hit while [`PlayTab::takes_pads`]: it goes into the
+    /// set the row picked edits, or out of it if it was there, as an undo
+    /// step of its own. The pad shown itself changes nothing.
+    pub fn pad_hit(&mut self, ui: &Ui, st: &PlayState, pad: usize) -> Option<PlayAction> {
+        let row = self.row(ui);
+        if pad == st.pad || pad >= PADS || !matches!(row, Row::Chokes | Row::Links) {
+            return None;
+        }
+        let mut p = st.settings.clone();
+        let set = if row == Row::Chokes {
+            &mut p.chokes
+        } else {
+            &mut p.links
+        };
+        match set.iter().position(|&x| x == pad) {
+            Some(i) => {
+                set.remove(i);
+            }
+            None => {
+                set.push(pad);
+                set.sort_unstable();
+            }
+        }
+        self.lift();
+        let a = self.edit(st, Key::Row(row), p);
+        self.lift();
+        a
+    }
+
     /// The action for changed settings (None if nothing changed), in the
     /// undo step of the edit being made, or a new one.
     fn edit(&mut self, st: &PlayState, key: Key, after: Pad) -> Option<PlayAction> {
@@ -1135,6 +1186,17 @@ impl PlayTab {
             let play = st.pads_play_stepped(row, delta);
             return (play != st.pads_play).then_some(PlayAction::PadsPlay(play));
         }
+        if matches!(row, Row::Chokes | Row::Links) {
+            // A pad never stops or plays itself: steps go past it.
+            let mut p = st.settings.clone();
+            let set = if row == Row::Chokes {
+                &mut p.chokes
+            } else {
+                &mut p.links
+            };
+            step_pads(set, delta, Some(st.pad));
+            return self.edit(st, Key::Row(row), p);
+        }
         let mut p = stepped(&st.settings, row, delta, st.granular());
         // Keys turned on play the sound as heard at its own note.
         if let (None, Some(k)) = (st.settings.keys, p.keys.as_mut()) {
@@ -1164,6 +1226,9 @@ pub fn stepped(p: &Pad, row: Row, delta: i32, granular: bool) -> Pad {
                 g => Some(g as u8),
             };
         }
+        Row::Chokes => step_pads(&mut p.chokes, delta, None),
+        Row::Links => step_pads(&mut p.links, delta, None),
+        Row::Latch => p.latch = !p.latch,
         Row::Layers => {
             let all = [LayerSelect::All, LayerSelect::Cycle, LayerSelect::Random];
             let i = all.iter().position(|s| *s == p.select).unwrap_or(0);
@@ -1361,6 +1426,9 @@ pub fn value_text(p: &Pad, row: Row) -> String {
         Row::MuteGroup => p
             .mute_group
             .map_or_else(|| "Off".into(), |g| format!("Group {g}")),
+        Row::Chokes => pads_text(None, &p.chokes),
+        Row::Links => pads_text(None, &p.links),
+        Row::Latch => if p.latch { "On" } else { "Off" }.into(),
         Row::Layers => select_label(p.select).into(),
         Row::Level => format!("{:+.1} dB", p.level_db),
         Row::Pan => pan_text(p.pan),
@@ -1402,6 +1470,36 @@ pub fn value_text(p: &Pad, row: Row) -> String {
 
 fn percent(x: f32) -> i32 {
     (x * 100.0).round() as i32
+}
+
+/// A set of pads as the list shows it: "Off", or their names in order.
+pub fn pads_text(bank: Option<char>, pads: &[usize]) -> String {
+    if pads.is_empty() {
+        return "Off".into();
+    }
+    let names: Vec<String> = pads.iter().map(|&p| pad_text(bank, p)).collect();
+    names.join(" ")
+}
+
+/// A pad set stepped by an arrow or the wheel: a step up adds the next
+/// pad after the highest one in it (wrapping round to the first), never
+/// `own`; a step down takes the highest out. Hitting pads is the quicker
+/// way ([`PlayTab::pad_hit`]). The set stays sorted.
+fn step_pads(set: &mut Vec<usize>, delta: i32, own: Option<usize>) {
+    for _ in 0..delta.unsigned_abs() {
+        if delta > 0 {
+            let from = set.last().map_or(0, |&p| p + 1);
+            let next = (0..PADS)
+                .map(|i| (from + i) % PADS)
+                .find(|p| !set.contains(p) && Some(*p) != own);
+            if let Some(next) = next {
+                set.push(next);
+                set.sort_unstable();
+            }
+        } else {
+            set.pop();
+        }
+    }
 }
 
 pub fn voices_text(n: u8) -> String {
@@ -1512,6 +1610,13 @@ pub fn describe(a: &Pad, b: &Pad) -> String {
         value_text(a, Row::MuteGroup),
         value_text(b, Row::MuteGroup),
     );
+    for row in [Row::Chokes, Row::Links, Row::Latch] {
+        diff(
+            &row.label().to_lowercase(),
+            value_text(a, row),
+            value_text(b, row),
+        );
+    }
     diff(
         "layers",
         select_label(a.select).into(),

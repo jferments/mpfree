@@ -1,6 +1,8 @@
 //! Perform FX: effects played live from pads. Hold a pad and its effect
 //! starts on the next grid line; let go and the sound snaps back, while an
-//! echo keeps ringing out. Sixteen slots, one per hardware pad.
+//! echo keeps ringing out. Sixteen slots, one per hardware pad on the
+//! master; their pages are "Slot 1" to "Slot 16" (not "Pad", which on a
+//! pad's own channel names the kit pad the chain belongs to).
 //!
 //! - **Time effects** take over the sound: stutter (loop what comes next),
 //!   beat repeat (loop what just played), reverse, half speed, tape stop,
@@ -322,22 +324,22 @@ const L_4BARS: u8 = 13;
 /// throws: stutters and repeats, stops, reverse, pitch, a gate, sweeps,
 /// crush, a riser, an echo throw and a wash throw.
 static PARAMS: [ParamInfo; COUNT] = bank![
-    (0, "Pad 1", Fx::Stutter, L_16, 100.0),
-    (1, "Pad 2", Fx::Repeat, L_8, 100.0),
-    (2, "Pad 3", Fx::TapeStop, L_4, 100.0),
-    (3, "Pad 4", Fx::Brake, L_2, 100.0),
-    (4, "Pad 5", Fx::Reverse, L_4, 100.0),
-    (5, "Pad 6", Fx::HalfSpeed, L_4, 100.0),
-    (6, "Pad 7", Fx::PitchDrop, L_2, 50.0),
-    (7, "Pad 8", Fx::Gate, L_16, 80.0),
-    (8, "Pad 9", Fx::HpSweep, L_BAR, 70.0),
-    (9, "Pad 10", Fx::Echo, L_8D, 55.0),
-    (10, "Pad 11", Fx::LpSweep, L_BAR, 70.0),
-    (11, "Pad 12", Fx::Crush, L_16, 80.0),
-    (12, "Pad 13", Fx::Riser, L_4BARS, 60.0),
-    (13, "Pad 14", Fx::Stutter, L_32, 100.0),
-    (14, "Pad 15", Fx::Repeat, L_4, 100.0),
-    (15, "Pad 16", Fx::Wash, L_BAR, 70.0),
+    (0, "Slot 1", Fx::Stutter, L_16, 100.0),
+    (1, "Slot 2", Fx::Repeat, L_8, 100.0),
+    (2, "Slot 3", Fx::TapeStop, L_4, 100.0),
+    (3, "Slot 4", Fx::Brake, L_2, 100.0),
+    (4, "Slot 5", Fx::Reverse, L_4, 100.0),
+    (5, "Slot 6", Fx::HalfSpeed, L_4, 100.0),
+    (6, "Slot 7", Fx::PitchDrop, L_2, 50.0),
+    (7, "Slot 8", Fx::Gate, L_16, 80.0),
+    (8, "Slot 9", Fx::HpSweep, L_BAR, 70.0),
+    (9, "Slot 10", Fx::Echo, L_8D, 55.0),
+    (10, "Slot 11", Fx::LpSweep, L_BAR, 70.0),
+    (11, "Slot 12", Fx::Crush, L_16, 80.0),
+    (12, "Slot 13", Fx::Riser, L_4BARS, 60.0),
+    (13, "Slot 14", Fx::Stutter, L_32, 100.0),
+    (14, "Slot 15", Fx::Repeat, L_4, 100.0),
+    (15, "Slot 16", Fx::Wash, L_BAR, 70.0),
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

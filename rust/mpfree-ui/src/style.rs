@@ -148,9 +148,13 @@ impl Styled<'_> {
         match self.shaped(r, radius) {
             Corners::Round => self.inner.stroke_round_rect(r, radius, width, c),
             Corners::Square => self.inner.stroke_round_rect(r, 0, width, c),
-            Corners::Chamfer => {
-                stroke_chamfer(self.inner, r, radius.clamp(0, r.w.min(r.h) / 2), width, c)
-            }
+            Corners::Chamfer => stroke_chamfer(
+                self.inner,
+                r,
+                radius.clamp(0, (r.w.min(r.h) / 2).max(0)),
+                width,
+                c,
+            ),
         }
     }
 }
@@ -181,7 +185,9 @@ impl Canvas for Styled<'_> {
         match self.shaped(r, radius) {
             Corners::Round => self.inner.fill_round_rect(r, radius, c),
             Corners::Square => self.inner.fill_rect(r, c),
-            Corners::Chamfer => fill_chamfer(self.inner, r, radius.clamp(0, r.w.min(r.h) / 2), c),
+            Corners::Chamfer => {
+                fill_chamfer(self.inner, r, radius.clamp(0, (r.w.min(r.h) / 2).max(0)), c)
+            }
         }
     }
 

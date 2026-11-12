@@ -94,12 +94,14 @@ mod looper_page;
 mod looper_tab;
 mod looping;
 mod midi_in;
+mod midi_out;
 mod mixing;
 mod modmix;
 mod modpanels;
 mod perf;
 mod play_page;
 mod play_widgets;
+mod qlink_touch;
 #[cfg(test)]
 mod rt_safety;
 mod sample_page;
@@ -168,6 +170,9 @@ struct Options {
     /// Where the sound runs for this run (`play` and `app`; cores.rs);
     /// else Prefs' saved "Sound cores".
     sound_cores: Option<cores::SoundCores>,
+    /// Open the 5-pin MIDI Out jack, so tracks set to play on it do
+    /// (`app` only; midi_out.rs). Off until a device round has checked it.
+    midi_out: bool,
 }
 
 fn parse_args(args: &[String]) -> Result<Options, String> {
@@ -189,6 +194,7 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
         patterns: None,
         data: None,
         sound_cores: None,
+        midi_out: false,
     };
     let mut it = args.iter();
     while let Some(arg) = it.next() {
@@ -229,6 +235,7 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
             "--kits" => o.kits = PathBuf::from(value()?),
             "--keep-screen" => o.keep_screen = true,
             "--patterns" => o.patterns = Some(PathBuf::from(value()?)),
+            "--midi-out" => o.midi_out = true,
             "--data" => o.data = Some(PathBuf::from(value()?)),
             "--sound-cores" => {
                 o.sound_cores =
@@ -265,6 +272,9 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
     }
     if o.patterns.is_some() && o.command != "app" {
         return Err("--patterns goes with app".to_string());
+    }
+    if o.midi_out && o.command != "app" {
+        return Err("--midi-out goes with app".to_string());
     }
     if o.data.is_some() && o.command != "app" {
         return Err("--data goes with app".to_string());
@@ -987,6 +997,12 @@ const MIDI_PORTS: [(u32, &str); 3] = [(0, "Public"), (1, "Private"), (2, "MIDI P
 /// controls (the owner's read-only captures, 2026-11-12). What comes in on
 /// it is music for `midi_in`, never pads, knobs or buttons.
 const MUSIC_CABLE: u32 = 2;
+/// How long after a period is made its sound is heard: the sound card's
+/// buffer (PERIODS periods). MIDI Out sends each message that much after
+/// its frame is made, so the jack lines up with the sound. To be measured
+/// on the MPC.
+const MIDI_OUT_LEAD: Duration =
+    Duration::from_micros(PERIODS as u64 * PERIOD as u64 * 1_000_000 / RATE as u64);
 /// Lines shown per listening step; everything is still counted after that.
 const MAX_SHOWN: u64 = 300;
 
@@ -2336,6 +2352,12 @@ fn sampler_status(player: &sampler::Player, time: &RenderTime) -> String {
 /// How often the screen hears the song position while it moves (the bar
 /// shows bar.beat.tick; state changes go at once).
 const TRANSPORT_EVERY: Duration = Duration::from_millis(33);
+
+/// Whether `view` shows the loop's playhead: the Looper tab, or the Play
+/// page with its loop strip.
+fn strip_shown(view: app::View) -> bool {
+    matches!(view, app::View::Looper | app::View::Play)
+}
 /// How often the Play page's master meter and Q-Link values are sent.
 const METER_EVERY: Duration = Duration::from_millis(50);
 /// How often the Sample page's playheads are sent while it shows.
@@ -2361,6 +2383,17 @@ struct SeqPads<'a> {
     n_live: usize,
     /// Arp notes on a pad with no sound.
     silent: u64,
+    /// Tracks whose "Plays on" is MIDI Out play there instead.
+    midi: &'a mut midi_out::MidiOut,
+}
+
+/// The notes pad `pad` plays on MIDI Out: the synth's pad layout while the
+/// synth has the pads, else the MPC's own pad note.
+fn pad_notes(synth: Option<&synth::Synth>, pad: usize) -> &[u8] {
+    match synth {
+        Some(s) => s.notes(pad),
+        None => midi_out::kit_notes(pad),
+    }
 }
 
 /// Pad notes from the arps one period can show; more still sound.
@@ -2411,6 +2444,9 @@ impl time::Pads for SeqPads<'_> {
     fn live(&mut self, o: &mpfree_play::Out) -> Option<mpfree_play::Event> {
         use mpfree_play::Event;
         let notes = self.synth.is_some() && self.live.plays_notes();
+        if self.midi.takes(o.track) {
+            return self.live_out(o, notes);
+        }
         match o.event {
             Event::NoteOn { note, velocity } => {
                 let v = self.live.velocity(velocity);
@@ -2432,7 +2468,8 @@ impl time::Pads for SeqPads<'_> {
                             s.note_on(pad, v, o.offset);
                             self.hits += 1;
                         }
-                        None if self.player.hit_at(pad, v, o.offset) => self.hits += 1,
+                        // While live chop takes cuts, a hit marks one.
+                        None if self.player.live_hit_at(pad, v, o.offset) => self.hits += 1,
                         None => self.silent += 1,
                     }
                     pad
@@ -2458,16 +2495,104 @@ impl time::Pads for SeqPads<'_> {
                 // one-shot sounds ignore it.
                 match self.synth.as_mut() {
                     Some(s) => s.note_off(usize::from(note), o.offset),
-                    None => self.player.release_at(usize::from(note), o.offset),
+                    None => self.player.live_release_at(usize::from(note), o.offset),
                 }
                 Some(o.event)
             }
             Event::AllOff => {
+                self.midi.all_off(o.offset);
                 self.stop_all();
                 None
             }
             Event::Pressure { note, value } => {
                 self.pressure_at(usize::from(note), value, o.offset);
+                None
+            }
+            Event::Lock { .. } | Event::Lane { .. } | Event::Unlock { .. } => None,
+        }
+    }
+
+    /// A clip's event on a track that plays on MIDI Out: sent there, and
+    /// the pads don't play it (its pad still flashes). A panic ends MIDI
+    /// Out's notes and goes on to the pads.
+    fn out(&mut self, o: &mpfree_play::Out) -> bool {
+        use mpfree_play::Event;
+        let pad = match o.event {
+            Event::NoteOn { note, .. } | Event::NoteOff { note } | Event::Pressure { note, .. } => {
+                usize::from(note)
+            }
+            _ => 0,
+        };
+        let taken = self.midi.send(
+            o,
+            midi_out::NoteIs::Pad(pad_notes(self.synth.as_deref(), pad)),
+        );
+        if let (true, Event::NoteOn { velocity, .. }) = (taken, o.event) {
+            if let Some(f) = self.flashes.get_mut(pad) {
+                *f = velocity.max(1);
+            }
+        }
+        taken
+    }
+}
+
+impl SeqPads<'_> {
+    /// An arp's note on a track that plays on MIDI Out: sent there with
+    /// the pads' velocity curve, shown on the pads, and recorded as
+    /// [`time::Pads::live`] would record it (`notes`: the arp's notes are
+    /// MIDI notes, from a synth pad layout).
+    fn live_out(&mut self, o: &mpfree_play::Out, notes: bool) -> Option<mpfree_play::Event> {
+        use midi_out::NoteIs;
+        use mpfree_play::Event;
+        match o.event {
+            Event::NoteOn { note, velocity } => {
+                let v = self.live.velocity(velocity);
+                let played = mpfree_play::Out {
+                    event: Event::NoteOn { note, velocity: v },
+                    ..*o
+                };
+                let pad = if notes {
+                    self.midi.send(&played, NoteIs::Note);
+                    self.live.pad_of_note(note)?
+                } else {
+                    let pad = usize::from(note);
+                    if pad >= 16 {
+                        return None;
+                    }
+                    let is = NoteIs::Pad(pad_notes(self.synth.as_deref(), pad));
+                    self.midi.send(&played, is);
+                    pad
+                };
+                if self.n_live < MAX_LIVE_HITS {
+                    self.live_hits[self.n_live] = (pad as u8, v);
+                    self.n_live += 1;
+                }
+                Some(Event::NoteOn {
+                    note: pad as u8,
+                    velocity: v,
+                })
+            }
+            Event::NoteOff { note } if notes => {
+                self.midi.send(o, NoteIs::Note);
+                let pad = self.live.pad_of_note(note)?;
+                Some(Event::NoteOff { note: pad as u8 })
+            }
+            Event::NoteOff { .. } => {
+                self.midi.send(o, NoteIs::Pad(&[]));
+                Some(o.event)
+            }
+            Event::Pressure { .. } => {
+                let is = if notes {
+                    NoteIs::Note
+                } else {
+                    NoteIs::Pad(&[])
+                };
+                self.midi.send(o, is);
+                None
+            }
+            Event::AllOff => {
+                self.midi.all_off(o.offset);
+                time::Pads::stop_all(self);
                 None
             }
             Event::Lock { .. } | Event::Lane { .. } | Event::Unlock { .. } => None,
@@ -2937,6 +3062,8 @@ fn player_session(
         (0u64, Instant::now(), Instant::now(), false);
     let mut last_timing = Instant::now();
     let mut last_status = Instant::now();
+    // The Q-Links' touch sensors chatter: a release counts after 150 ms off.
+    let mut touch_hold = qlink_touch::TouchHold::default();
     let started = Instant::now();
     let mut stopped_by = "time";
     // Pads held (on the controller or the screen), pressed but not yet sounded
@@ -2969,6 +3096,25 @@ fn player_session(
     // What the mixer's I/O view shows and edits (MIDI, Sync and CV). The
     // loop only ever try_locks it (MusicIn::sync).
     let io_model = midi_in::io_model();
+    // MIDI Out (midi_out.rs): tracks whose "Plays on" is the 5-pin jacks play
+    // there. State-changing on the MPC (note bytes on cable 2, never SysEx),
+    // so it opens only with --midi-out until a device round has checked it.
+    let mut midi_out = midi_out::MidiOut::new(RATE, MIDI_OUT_LEAD);
+    if o.midi_out {
+        match midi_card().and_then(|card| open_output(card, MUSIC_CABLE, "MIDI Port", out)) {
+            Ok(port) => match midi_out.open(port, started) {
+                Ok(()) => out.midi(&format!(
+                    "MIDI Out open: tracks set to play on MIDI play there, {:.1} ms after \
+                     their frame is made (the sound's lead)",
+                    MIDI_OUT_LEAD.as_secs_f64() * 1000.0
+                )),
+                Err(e) => out.midi(&format!("MIDI Out not started: {e}")),
+            },
+            Err(e) => out.midi(&format!(
+                "MIDI Out not opened: {e}; tracks set to play on MIDI play on the pads"
+            )),
+        }
+    }
     let mut usb = UsbKeys::start(
         [Some(audio), midi_card().ok()]
             .into_iter()
@@ -3133,6 +3279,17 @@ fn player_session(
                 } => {
                     player.audition(kit, pad, layer, start, end, app.settings.screen_velocity);
                 }
+                gui::FromUi::SampleLiveChop {
+                    kit,
+                    pad,
+                    layer,
+                    start,
+                    end,
+                    on,
+                } => {
+                    let v = app.settings.screen_velocity;
+                    player.live_chop(kit, pad, layer, start, end, on, v);
+                }
                 gui::FromUi::SampleHit {
                     kit,
                     pad,
@@ -3238,6 +3395,7 @@ fn player_session(
         });
         usb.poll(&mut music, &mut buf, mt, &mut keys, out);
         music.tick(mt, &mut |l| out.midi(&l));
+        midi_out.tick(&mut |l| out.midi(&l));
         music.sync(&io_model, mt);
         // Keys play the armed track: by note while the pads play notes (a
         // synth pad layout), else as the pad the MPC gives that note.
@@ -3424,15 +3582,14 @@ fn player_session(
                     fx.extend(app.button(note, pressed, t))
                 }
                 // A finger on a Q-Link lights its card. The control mapper names the
-                // Q-Links; letting go ends a turn on the Sample page (one undo step).
+                // Q-Links. The release waits until the finger has been off for 150 ms
+                // (the sensor chatters; qlink_touch.rs), below.
                 Some(ControlEvent::QLinkTouch { knob, touched }) if (knob as usize) < 4 => {
-                    out.show(gui::ToUi::QLinkTouch(knob as usize, touched));
-                    if touched {
+                    if touch_hold.event(knob as usize, touched, t) {
+                        out.show(gui::ToUi::QLinkTouch(knob as usize, true));
                         fx.extend(app.known_control(app::Code::Button(
                             mpc_one::QLINK_TOUCH_NOTES[knob as usize],
                         )));
-                    } else if app.view() == app::View::Sample {
-                        out.show(gui::ToUi::SampleLift);
                     }
                 }
                 None if m.bytes.len() == 3 && m.bytes[0] == 0xB0 => {
@@ -3444,6 +3601,14 @@ fn player_session(
                 if let Some(&cc) = mpc_one::QLINK_TURN_CC.get(knob as usize) {
                     fx.extend(app.known_control(app::Code::Cc(cc)));
                 }
+            }
+        }
+        // Letting go of a Q-Link unlights its card, and ends a turn on the
+        // Sample page (one undo step).
+        for (k, _) in touch_hold.due(t).iter().enumerate().filter(|(_, &d)| d) {
+            out.show(gui::ToUi::QLinkTouch(k, false));
+            if app.view() == app::View::Sample {
+                out.show(gui::ToUi::SampleLift);
             }
         }
         fx.extend(app.tick(t));
@@ -3745,6 +3910,10 @@ fn player_session(
         time.follow_tempo(app.settings.bpm);
         // The transport runs first; the clips and the arps follow its clock.
         time.advance(PERIOD as u32);
+        // MIDI Out takes the project's track outputs, and sends programs as
+        // the song starts, before this period's notes.
+        midi_out.sync(&io_model, time.info().state.rolling());
+        midi_out.clock(time.block());
         // The armed track is the one the pads and the arp screens play.
         let armed = time.armed().unwrap_or(0);
         if armed != app.track() {
@@ -3765,8 +3934,10 @@ fn player_session(
             live_hits: [(0, 0); MAX_LIVE_HITS],
             n_live: 0,
             silent: 0,
+            midi: &mut midi_out,
         };
         time.period_arps(PERIOD as u32, &mut seq, &mut app.arps);
+        seq.midi.period_end(PERIOD as u32, t_read);
         // The time engine: the transport, the clips and every track's arp
         // (the pads' notes start here; their sounds are the sampler's or
         // the synth's).
@@ -3882,12 +4053,15 @@ fn player_session(
             )?;
             lit = [false; 16];
         }
-        // Pad lights: lit while held, or while the arp keeps them going (latched, or held on its grid).
+        // Pad lights: lit while held, while the arp keeps them going (latched, or held on its grid),
+        // or while a pad set to Latch in the sampler plays on.
+        let latched = if synth_on { 0 } else { player.latched_pads() };
         for pad in 0..16 {
             if mute_shown.is_some() {
                 break;
             }
-            let want = held[pad] || (app.generating() && app.active(pad));
+            let want =
+                held[pad] || (app.generating() && app.active(pad)) || latched & (1 << pad) != 0;
             if want != lit[pad] {
                 lit[pad] = want;
                 let colour = if want {
@@ -3950,6 +4124,9 @@ fn player_session(
         // The loop, for its track; the line input comes with it.
         let t_loop = Instant::now();
         let line_note = looper.run(time.block(), &mut loop_l, &mut loop_r);
+        // The strip's waveform, built a slice at a time: its cost counts in
+        // the looper's stage, so the stage numbers show it.
+        let loop_wave = looper.wave_step(i, LOOP_WAVE_PERIODS);
         let loop_took = t_loop.elapsed();
         loop_time.add(loop_took);
         engines.add(engines::LOOPER, loop_took);
@@ -4032,10 +4209,13 @@ fn player_session(
         for line in looper.changes(|| time.position_text()) {
             out.note(&line);
         }
-        if let Some(wave) = looper.wave_step(i, LOOP_WAVE_PERIODS) {
+        if let Some(wave) = loop_wave {
             out.show(gui::ToUi::LoopWave(wave));
         }
-        if app.view() == app::View::Looper && loop_shown_at.elapsed() >= TRANSPORT_EVERY {
+        // The Looper tab and the Play page's strip follow the loop as often
+        // as the transport card, so the playhead moves smoothly; elsewhere
+        // four times a second is enough.
+        if strip_shown(app.view()) && loop_shown_at.elapsed() >= TRANSPORT_EVERY {
             loop_shown_at = Instant::now();
             out.show(gui::ToUi::Looper(Box::new(looper.view(app.settings.bpm))));
         }
@@ -4119,6 +4299,7 @@ fn player_session(
                 "status: {}",
                 cores.status(cores::Counts::read(&player, &mix.mixer, &synth))
             ));
+            out.note(&format!("status: {}", touch_hold.describe()));
         }
         if last_timing.elapsed() >= Duration::from_millis(250) {
             last_timing = Instant::now();
@@ -4168,7 +4349,7 @@ fn player_session(
                     }
                 }
             }
-            if app.view() != app::View::Looper {
+            if !strip_shown(app.view()) {
                 out.show(gui::ToUi::Looper(Box::new(looper.view(app.settings.bpm))));
             }
             let meters = synth.meters();
@@ -4196,6 +4377,14 @@ fn player_session(
     ports.quiet = false;
     ports.counts(out);
     for line in music.summary() {
+        out.say(&line);
+    }
+    // The notes still on end before the port lets go.
+    let summary = midi_out.summary();
+    if !midi_out.close() {
+        out.say("MIDI Out: the last messages may not have been written");
+    }
+    for line in summary {
         out.say(&line);
     }
     if key_misses > 0 {
@@ -4905,6 +5094,10 @@ mod tests {
             "the store saves patterns now"
         );
         assert!(parse_args(&args("play --seconds 5 --patterns /tmp/p.txt")).is_err());
+        // MIDI Out opens only when asked, and only for the app.
+        assert!(!parse_args(&args("app")).unwrap().midi_out);
+        assert!(parse_args(&args("app --midi-out")).unwrap().midi_out);
+        assert!(parse_args(&args("play --seconds 5 --midi-out")).is_err());
         // Where the sound runs: Prefs' setting unless asked for this run, and
         // only for the pad player.
         assert_eq!(parse_args(&args("app")).unwrap().sound_cores, None);
