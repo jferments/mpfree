@@ -8,20 +8,45 @@ checked: 2026-11-12 ac6fc10
 
 **Sampling** means taking a recording (a drum break, a chord from a record, your own voice) and playing it from the pads. The **Sample** tab is where you shape it: trim it, chop it into pieces across the pads, and decide how each pad plays.
 
-The Sample tab always works on one pad at a time. **Hit a pad** to pick it; its name and sound are at the top left of the page. The tab has a page for each job, along the top right: **Pads**, **Wave**, **Chop**, **Play**, **Grain** and **FX**.
+The Sample tab always works on one pad at a time. **Hit a pad** to pick it; its name and sound are at the top left of the page. The tab has a page for each job, along the top: **Wave**, **Warp**, **Chop**, **Play**, **Grain**, **FX** and **Rec**. Beside them, two buttons work from any page: **Send to pad** and **Chop to pads** (see [below](#send-to-pad-and-chop-to-pads)).
+
+Which sound is on which pad is the job of the **Pads** tab, next to Play: it shows the whole bank with the browser beside it.
 
 > [!NOTE]
 > Recording a new sample from the inputs or from MPFree's own sound onto a pad is coming to the Sample tab soon. Until then, loops recorded with the looper and the sounds in your kits are what you sample from.
 
-## Pads: which sound is on which pad
+## The Pads tab: sounds onto pads
 
-{{shot: sample-pads | The Pads page: the kit's pads on the left, the picked pad's settings in the middle, and the sounds in the kit on the right.}}
+The pads are the heart of an MPC, so they have a tab of their own, next to Play. On the left are the 16 pads of the bank, laid out as on the MPC (pad 1 at the bottom left), each with its name and how it plays. Tap a pad to pick it, and tap it again to hear it; a pad you hit lights up. Under the pads, **Copy**, **Paste** and **Clear** move pads around, and **Map to keys** turns the bank into a keyboard instrument (see [Playing a kit on keys](#playing-a-kit-on-keys)).
 
-The **Pads** page shows the 16 pads of the bank and what each holds. Tap a pad to pick it (tap again to hear it). For the picked pad you set its **sound**, how it plays (**Mode**: **One shot** plays to the end, **Gate** only while you hold the pad, **Toggle** starts and stops with each hit, **Loop** repeats its loop region, **Granular** plays it as grains), how many notes can ring at once (**Polyphony**), a **mute group** (pads in the same group cut each other off, like an open and a closed hi-hat), and its **level**, **pan** and **tune**. **Copy**, **Paste** and **Clear** move pads around; **Put on** places the sound picked on the right onto the pad.
+The switch at the top right shows **Browse** or **Pad** beside the pads.
+
+{{shot: pads-browse | The Pads tab's Browse view: the bank on the left, the browser beside it in Samples / Drums, and Kick 01 picked, with its waveform and buttons.}}
+
+**Browse** finds sounds on the stick. Pick a place on the left (**Samples**, **Recordings**, **Recent** or **Favourites**), open folders, and pick a sound to see its length, format and waveform. Then:
+
+- **Load** puts it on the pad picked; **Load to pad** puts it on the next pad you hit.
+- **Audition**, or **PLAY**, lets you hear it first, at the level Q-Link 3 sets.
+- **Favourite** stars it, so it is in Favourites next time.
+
+The data wheel, its push, **–** and **+** move through the browser too; see [Buttons and controls](../reference/controls.md#pads-tab). Browse needs the test stick's data partition; without it, the view says so and the Pad view still works.
+
+{{shot: pads-pad | The Pads tab's Pad view: the picked pad's settings in the middle, and the sounds in the kit on the right.}}
+
+**Pad** sets up the pad picked: its **sound**, how it plays (**Mode**: **One shot** plays to the end, **Gate** only while you hold the pad, **Toggle** starts and stops with each hit, **Loop** repeats its loop region, **Granular** plays it as grains), how many notes can ring at once (**Polyphony**), a **mute group** (pads in the same group cut each other off, like an open and a closed hi-hat), and its **level**, **pan** and **tune**. Q-Links 1 to 4 turn level, pan, tune and voices. **Put on** places the sound picked on the right onto the pad.
+
+## Send to pad and Chop to pads
+
+The two buttons at the top right of every Sample page:
+
+- **Send to pad** copies the pad you are editing, its sound and every edit, onto the next pad you hit. The button says **Hit a pad** while it waits; press it again to call it off. One UNDO takes the copy back.
+- **Chop to pads** opens the Chop page, so you can check the cuts first. Press it again there (or the Chop page's own button) to put the slices on the pads.
+
+Both buttons are faint while the pad picked has no sound.
 
 ## Wave: trim and loop
 
-{{shot: sample | The Wave page: the whole sample at the top, the zoomed region below, and the region's settings on the right.}}
+{{shot: sample | The Wave page: the whole sample at the top, the zoomed region below, and the region's settings on the right. Send to pad and Chop to pads are at the top right.}}
 
 The **Wave** page shows the sample. Set where it **starts** and **ends**, and where its **loop** starts and ends, with the four Q-Links. Turn the data wheel to zoom in. Tap the wave to hear it. On the right, set the region's **gain**, **tune**, **crossfade** (smooths a loop's seam), **warp** (play in time with the tempo) and **reverse**.
 
@@ -113,7 +138,7 @@ The **Source** row says what plays:
 
 A kit's pads can play notes instead of their own sounds, so a bank of sampled notes plays like a keyboard instrument. A pad that plays notes is a *keygroup*: it covers a range of keys and plays its sound higher or lower for each key away from its root note.
 
-**Map to keys**, on the Sample tab's Pads page, does this for the whole bank at once. MPFree finds each pad's note: from its keygroup if it is one already, else from a note in its name ("Pluck C3", "Bass_F#1"), else from the pitch it hears in the sound. It then spreads the pads over the keyboard, each one reaching halfway to its neighbours, and the pads play notes from the C at or below the lowest. A pad with no note to find is left as it was. One UNDO takes the whole mapping back.
+**Map to keys**, under the pads on the Pads tab, does this for the whole bank at once. MPFree finds each pad's note: from its keygroup if it is one already, else from a note in its name ("Pluck C3", "Bass_F#1"), else from the pitch it hears in the sound. It then spreads the pads over the keyboard, each one reaching halfway to its neighbours, and the pads play notes from the C at or below the lowest. A pad with no note to find is left as it was. One UNDO takes the whole mapping back.
 
 Notes are named with middle C as C4. Some libraries call middle C "C3"; when a name and the pitch MPFree hears are the same note, it uses the octave it hears.
 
@@ -143,4 +168,4 @@ The keyboard and the layer map draw each fade as a curve at the ends of its bar.
 > On an MPC a keygroup instrument is a program type of its own. In MPFree keygroups are pads of an ordinary kit, so any kit can become one with Map to keys.
 
 > [!MPC]
-> The MPC's Sampler, Sample Edit and Program Edit modes are all on one tab in MPFree, always on the pad you last hit. **SAMPLER** opens the Sample tab, **SAMPLE EDIT** its Wave page, and **PROG EDIT** its Pads page (in the next build). **UNDO** takes back any edit on the Sample tab.
+> The MPC's Sampler, Sample Edit and Program Edit modes are all on one tab in MPFree, always on the pad you last hit. **SAMPLER** opens the Sample tab, **SAMPLE EDIT** its Wave page, and **PROG EDIT** the Pads tab's Pad view (in the next build). **UNDO** takes back any edit on the Sample and Pads tabs.

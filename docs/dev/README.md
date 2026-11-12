@@ -21,6 +21,7 @@ Every design page opens with a **Status** line (proposal, approved, built, on ma
 - [Layout spec](design/layout-spec.md): the approved screen layout: top bar, tabs, the Play page and its views, the Looper tab, Prefs, and what every hardware button does. Changes need the owner's approval.
 - [UI themes and modular layouts](design/ui-themes.md): themes, effects and layout files in `mpfree-ui`, and the themed startup screens (`mpfree-startup`).
 - [The browser and projects](design/browser.md): BROWSE, the library, project folders and saving (`rust/mpfree-library`, `rust/mpfree-browser-ui`).
+- [Importing MPC projects](design/mpc-import.md): what MPC project files hold, how confidently each part maps onto MPFree, the staged importer, the inspector (`tools/mpc-import/inspect-xpj.py`) and the workstation tool that copies your own projects out of the eMMC backup (`tools/mpc-one/offline-mpc-projects.py`, 2026-11-12).
 - [Storage](design/storage-spec.md): where settings and user files are saved (the test stick's fourth partition; the eMMC and SD card are never written).
 
 ### Time: transport, sequencer, looper

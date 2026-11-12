@@ -478,6 +478,40 @@ fn the_sample_picker_loads_one_sound_for_the_pad() {
 }
 
 #[test]
+fn the_pads_tab_browser_stays_open_and_offers_both_loads() {
+    let (mut b, _) = browser();
+    b.open_picker(Pick::Pads);
+    assert_eq!(b.screen().title, "Sounds");
+    assert_eq!(
+        place_labels(&b),
+        ["Samples", "Recordings", "Recent", "Favourites"]
+    );
+    assert!(b.screen().list_buttons.is_empty(), "nothing to cancel");
+    select(&mut b, "Rhodes chord.wav");
+    b.take_actions();
+    let buttons = b.screen().detail.buttons;
+    assert!(buttons.contains(&Button::Load) && buttons.contains(&Button::LoadToPad));
+    assert!(!buttons.contains(&Button::Delete) && !buttons.contains(&Button::Cancel));
+    // Load: for the pad picked; it stays where it is.
+    b.push();
+    let a = b.take_actions();
+    assert!(
+        matches!(&a[0], BrowseAction::LoadSample { loc, .. } if loc.name() == "Rhodes chord.wav"),
+        "{a:?}"
+    );
+    assert!(!a.contains(&BrowseAction::PickerClosed { loaded: true }));
+    assert!(b.picking().is_some());
+    assert_eq!(b.screen().path, "Samples");
+    // Load to pad: for the next pad hit.
+    b.input(Input::Button(Button::LoadToPad));
+    assert!(matches!(
+        &b.take_actions()[0],
+        BrowseAction::LoadToPad { .. }
+    ));
+    assert!(b.picking().is_some());
+}
+
+#[test]
 fn opening_a_project_over_unsaved_work_asks_first() {
     let (mut b, _) = browser();
     b.open_picker(Pick::Project);

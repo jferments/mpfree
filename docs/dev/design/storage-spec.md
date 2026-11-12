@@ -34,7 +34,7 @@
   - 1 MiB per file, and the partition's size caps the total.
   - Reads happen at start only.
   - Saves never happen on the audio thread. They go to one `mpfree-store` writer thread, which logs `saved: arp/patterns.txt (812 bytes)` or why it failed.
-- **Static test:** `mpfree-store` is the only code that writes files, and only under the folder it was given. `start-app.sh` is the only place that names that folder.
+- **Static test:** `mpfree-store` and `mpfree-library` are the only code that writes files, each only under the folder it was given, and each write site is listed in `tools/mpc-one/tests/test_app_mpc.py`. `start-app.sh` is the only place that names that folder.
 
 ## What is saved (first version)
 
@@ -43,4 +43,5 @@
 - **Touch tuning** (the touch thread, #145): `settings/touch.conf`, written by Save on Dev > Touch. Keys are `mpfree_touch::tuning::Param::key` (offset-x, offset-y, scale-x, scale-y, hold-filter-px, tap-slop-px, tap-max-ms, long-press-ms, swipe-min-px, swipe-min-speed). Each value is clamped to its bounds when read, so a damaged file can't make touch unusable ([M17](../milestones/m17-touch-tuning.md)).
 - **Arp patterns** (the arp thread): `files/arp/patterns.txt`, the patterns and custom scales Save keeps. `--save-patterns` is gone; `--patterns FILE` only reads a library for one start.
 - **Themes folder** (the themes thread): `files/themes/NAME.theme`, theme files the user adds; the app only reads them and offers them in Prefs > Appearance. The picked theme is `theme` in the app settings.
-- **Tunings folder** (the synth thread): `files/tunings/NAME.scl`, Scala scales the user adds, each with an optional keyboard map `NAME.kbm`; the app only reads them, at start, and offers them on the Synth tab's Tuning row. The pick isn't saved yet (no Synth tab option is).
+- **Synth tab options** (the synth thread): `settings/synth.conf`, written when an option changes (`App::synth_settings`): `engine` (poly, fm, drums, pluck, wavetable), `scale` (off or the scale's name, built in or the owner's), `scale-root` (C to B), `in-key-rows` (sequence, fourths), `bank-a` to `bank-h` (chromatic, in-key, chords), `tuning` (12-tet, just, pythagorean, meantone, 24-tet, or `file NAME`), `tuning-root` and `a4` (380 to 480). Read once at start after the owner's scales and the tuning files (`App::restore_synth`); a word not understood, or a scale or tuning file that is gone, is left out with a log line and that option keeps its default. The bank playing and the octave are not kept.
+- **Tunings folder** (the synth thread): `files/tunings/NAME.scl`, Scala scales the user adds, each with an optional keyboard map `NAME.kbm`; the app only reads them, at start, and offers them on the Synth tab's Tuning row. The pick is kept with the Synth tab's options, by file name.

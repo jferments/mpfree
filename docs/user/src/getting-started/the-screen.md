@@ -17,10 +17,11 @@ Every page in MPFree is laid out the same way, so once you know one, you know th
 | Tab | What it is for |
 |---|---|
 | **Play** | The home page: finger drumming, beats and live looping. |
+| **Pads** | The kit's 16 pads beside the browser: put sounds on pads and set each pad up. |
 | **Arrange** | Clips: recording them, keeping takes and launching them. |
 | **Synth** | MPFree's synths and their sounds. |
 | **Looper** | Setting up and editing loops. |
-| **Sample** | Recording, chopping and shaping samples on the pads. |
+| **Sample** | Recording, chopping and shaping the sound on one pad. |
 
 **The status chips** on the right show what is going on: the kit and pad bank, whether Full Level is on, and anything that needs your attention. The small **mixer icon** at the far right opens the mixer.
 

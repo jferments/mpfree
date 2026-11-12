@@ -49,7 +49,7 @@ pub const WHEEL: &str = "smp-auto-wheel";
 
 /// The page: the keyboard beside the list, the buttons under them, as the
 /// Rec tab's.
-pub const LAYOUT: &str = "col(header:60, smp-auto-bar:60, \
+pub const LAYOUT: &str = "col(header:60, row(smp-auto-bar:*, smp-send:330):60, \
                           row(smp-auto-view:*, smp-auto-list:340):*, \
                           row(smp-auto-buttons:*, smp-auto-wheel:340):88, hint:26)";
 
@@ -455,6 +455,7 @@ impl AutoTab {
     /// Adds the widgets and the page `name` to `ui` (the app adds `header`
     /// and `hint` first) and shows `st`.
     pub fn add(ui: &mut Ui, name: &str, st: &AutoState) -> Result<AutoTab, String> {
+        crate::send::add(ui);
         let mut bar = PadBar::new(&TABS);
         bar.enabled = TABS.iter().map(|t| wave_tab::BUILT.contains(t)).collect();
         bar.active = rec_tab::TAB;

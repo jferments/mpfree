@@ -64,6 +64,11 @@ pub enum Pick {
     /// Projects. Opening one replaces the work in progress, so it asks
     /// first when that has changed since it was last saved.
     Project,
+    /// The Pads tab's browser beside the pad bank (the owner's pick, 12 Nov
+    /// 2026): sounds, as [`Pick::Sample`], but it stays open. Load hands
+    /// the file over for the pad picked ([`BrowseAction::LoadSample`]),
+    /// Load to pad for the next pad hit ([`BrowseAction::LoadToPad`]).
+    Pads,
 }
 
 impl Pick {
@@ -71,7 +76,7 @@ impl Pick {
     pub fn sources(&self) -> Vec<usize> {
         let places: &[Place] = match self {
             Pick::Preset { .. } => &[Place::Instruments],
-            Pick::Sample => &[Place::Samples, Place::Recordings],
+            Pick::Sample | Pick::Pads => &[Place::Samples, Place::Recordings],
             Pick::Project => &[Place::Projects],
         };
         SOURCES
@@ -92,7 +97,7 @@ impl Pick {
             Pick::Preset { engine } => Loc::top(Place::Instruments)
                 .join(engine)
                 .unwrap_or_else(|_| Loc::top(Place::Instruments)),
-            Pick::Sample => Loc::top(Place::Samples),
+            Pick::Sample | Pick::Pads => Loc::top(Place::Samples),
             Pick::Project => Loc::top(Place::Projects),
         }
     }
@@ -103,6 +108,7 @@ impl Pick {
             Pick::Preset { engine } if !engine.is_empty() => format!("{engine} presets"),
             Pick::Preset { .. } => "Presets".into(),
             Pick::Sample => "Load a sound".into(),
+            Pick::Pads => "Sounds".into(),
             Pick::Project => "Open a project".into(),
         }
     }
@@ -116,7 +122,7 @@ impl Pick {
                     && loc.place == Place::Instruments
                     && (engine.is_empty() || preset_engine(loc) == *engine)
             }
-            Pick::Sample => {
+            Pick::Sample | Pick::Pads => {
                 matches!(r.kind, Kind::Folder | Kind::Audio(_))
                     && matches!(loc.place, Place::Samples | Place::Recordings)
             }
@@ -125,10 +131,27 @@ impl Pick {
     }
 
     fn allows(&self, b: Button) -> bool {
-        matches!(
-            b,
-            Button::Load | Button::Open | Button::Audition | Button::Favourite | Button::Cancel
-        )
+        match self {
+            // It stays open: nothing to cancel, and both loads.
+            Pick::Pads => matches!(
+                b,
+                Button::Load
+                    | Button::LoadToPad
+                    | Button::Open
+                    | Button::Audition
+                    | Button::Favourite
+            ),
+            _ => matches!(
+                b,
+                Button::Load | Button::Open | Button::Audition | Button::Favourite | Button::Cancel
+            ),
+        }
+    }
+
+    /// Whether loading something closes it (every picker but the Pads
+    /// tab's).
+    fn closes_on_load(&self) -> bool {
+        *self != Pick::Pads
     }
 }
 
@@ -1370,7 +1393,7 @@ impl Browser {
                             false,
                         ));
                         self.remember(loc);
-                        if self.pick.is_some() {
+                        if self.pick.as_ref().is_some_and(Pick::closes_on_load) {
                             self.close_pick(true);
                         }
                     }
@@ -1700,6 +1723,8 @@ impl Browser {
             filter: self.filter,
             detail: self.detail(),
             list_buttons: match src {
+                // The Pads tab's stays open: nothing to cancel.
+                _ if self.pick == Some(Pick::Pads) => Vec::new(),
                 _ if self.pick.is_some() => vec![Button::Cancel],
                 // Nothing to make or paste in a search or a project's saves.
                 _ if self.mode != Mode::Folder => Vec::new(),
