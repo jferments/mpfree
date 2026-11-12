@@ -16,7 +16,13 @@
 //!   step it; the **wheel** steps the row picked.
 //! - **Keys** make the pad a keygroup: it plays the notes from Low key to
 //!   High key, a semitone higher for each note above Root key (the sound's
-//!   own pitch, as heard, when Keys turn on). **Pads play** is the kit's:
+//!   own pitch, as heard, when Keys turn on). While the pad is a keygroup or
+//!   the pads play notes, a **keyboard** spans the top of the tab with every
+//!   keygroup of the kit over the keys it plays: the pad picked has handles
+//!   to drag its lowest and highest key and its root, a tap on another zone
+//!   picks that pad ([`PlayAction::Pick`]), and keys pressed on it play the
+//!   kit as notes ([`PlayAction::Note`]); the 16 pads' notes are marked
+//!   under the keys. **Pads play** is the kit's:
 //!   each pad its own sound; notes, pad 1 the note in **Pads from** and
 //!   each pad a semitone up, played by the keygroups that hold them; or
 //!   **16 Levels** of the pad, each pad a step of what **Levels by** says
@@ -35,11 +41,12 @@ use std::sync::Arc;
 use mpfree_analysis::note_name;
 use mpfree_sampler::model::{
     Ahdsr, Filter, FilterKind, Keys, LayerSelect, Levels, ModelError, Pad, PadsPlay, PlayMode,
-    PressureTarget, Project, Source, KEYGROUP_POLYPHONY,
+    PressureTarget, Project, Source, KEYGROUP_POLYPHONY, MAX_KEY_FADE, MAX_VEL_FADE,
 };
 use mpfree_ui::{Color, EventKind, Ui, UiEvent};
 
 use crate::chop_tab::pad_text;
+use crate::keys_widgets::{KeyZones, Zone};
 use crate::play_widgets::{EnvelopeView, FilterCurve, LayerBar, LayerMap};
 use crate::source::SourceView;
 use crate::wave_tab::{self, duration_text, mode_label, pad_color, TABS};
@@ -51,6 +58,7 @@ pub const LAYERS: &str = "smp-play-layers";
 pub const ENV: &str = "smp-play-env";
 pub const FILTER: &str = "smp-play-filter";
 pub const LIST: &str = "smp-play-list";
+pub const KEYS: &str = "smp-play-keys";
 pub const QLINKS: [&str; 4] = ["smp-play-q1", "smp-play-q2", "smp-play-q3", "smp-play-q4"];
 pub const WHEEL: &str = "smp-play-wheel";
 
@@ -60,6 +68,16 @@ pub const LAYOUT: &str = "col(header:60, smp-play-bar:60, \
                           row(smp-play-layers:*, col(smp-play-env:3*, smp-play-filter:2*):*, smp-play-list:340):*, \
                           row(smp-play-q1, smp-play-q2, smp-play-q3, smp-play-q4, smp-play-wheel:210):88, hint:26)";
 
+/// The page while the pad is a keygroup or the pads play notes: the
+/// keyboard over the layer map and the envelope (a layout file can set it
+/// under the page's name with `.keys` after it).
+pub const KEYS_LAYOUT: &str = "col(header:60, smp-play-bar:60, \
+                               row(col(smp-play-keys:236, row(smp-play-layers:*, col(smp-play-env:3*, smp-play-filter:2*):*):*):*, smp-play-list:340):*, \
+                               row(smp-play-q1, smp-play-q2, smp-play-q3, smp-play-q4, smp-play-wheel:210):88, hint:26)";
+
+/// The velocity a key pressed on the keyboard plays at.
+pub const KEY_VELOCITY: u8 = 100;
+
 /// The tab's place in [`TABS`].
 pub const TAB: usize = 4;
 
@@ -67,10 +85,18 @@ pub const TAB: usize = 4;
 pub const HINT: &str = "Drag a layer's edges for its velocities · drag the envelope's points and the filter's dot · tap a \
                         row, then the wheel changes it · SHIFT + Q-Link: finer";
 
+/// The hint line while the keyboard shows.
+pub const KEYS_HINT: &str =
+    "Drag the pad's zone edges and root dot · tap a zone to pick its pad · press keys to hear \
+                             them · tap a row, then the wheel changes it";
+
 /// The highest note pad 1 may play, so that pad 16 is a MIDI note.
 const MAX_PADS_FROM: u8 = 127 - 15;
 /// Voices a pad may hold, as the arrows step them.
 const POLYPHONY: [u8; 10] = [1, 2, 3, 4, 6, 8, 12, 16, 24, 32];
+/// The Vel fade row's steps, up to [`MAX_VEL_FADE`].
+const VEL_FADES: [u8; 11] = [0, 2, 4, 6, 8, 12, 16, 24, 32, 48, 64];
+const _: () = assert!(VEL_FADES[VEL_FADES.len() - 1] == MAX_VEL_FADE);
 /// Envelope times the arrows step through, in ms.
 const TIMES_MS: [f32; 15] = [
     0.0, 1.0, 2.0, 5.0, 10.0, 20.0, 50.0, 100.0, 200.0, 500.0, 1000.0, 2000.0, 5000.0, 10_000.0,
@@ -112,6 +138,9 @@ pub enum Row {
     HighKey,
     /// The note the pad plays its sound as recorded.
     RootKey,
+    /// The kit's: the notes over which its keygroups fade, the zones that
+    /// meet overlapping by as much, so they crossfade.
+    KeyFade,
     /// The kit's: what the pads play, their sounds or notes.
     PadsPlay,
     /// The kit's: the note pad 1 plays, when the pads play notes.
@@ -120,6 +149,8 @@ pub enum Row {
     LevelsBy,
     VelToLevel,
     VelToStart,
+    /// The velocities over which each layer fades in and out at its edges.
+    VelFade,
     Pressure,
     Depth,
     Attack,
@@ -134,7 +165,7 @@ pub enum Row {
 }
 
 impl Row {
-    pub const ALL: [Row; 27] = [
+    pub const ALL: [Row; 29] = [
         Row::Polyphony,
         Row::MuteGroup,
         Row::Layers,
@@ -146,11 +177,13 @@ impl Row {
         Row::LowKey,
         Row::HighKey,
         Row::RootKey,
+        Row::KeyFade,
         Row::PadsPlay,
         Row::PadsFrom,
         Row::LevelsBy,
         Row::VelToLevel,
         Row::VelToStart,
+        Row::VelFade,
         Row::Pressure,
         Row::Depth,
         Row::Attack,
@@ -177,11 +210,13 @@ impl Row {
             Row::LowKey => "Low key",
             Row::HighKey => "High key",
             Row::RootKey => "Root key",
+            Row::KeyFade => "Key fade",
             Row::PadsPlay => "Pads play",
             Row::PadsFrom => "Pads from",
             Row::LevelsBy => "Levels by",
             Row::VelToLevel => "Vel → level",
             Row::VelToStart => "Vel → start",
+            Row::VelFade => "Vel fade",
             Row::Pressure => "Pressure",
             Row::Depth => "Depth",
             Row::Attack => "Attack",
@@ -202,7 +237,10 @@ impl Row {
 
     /// Whether the row is the kit's, not the pad's.
     pub fn of_kit(self) -> bool {
-        matches!(self, Row::PadsPlay | Row::PadsFrom | Row::LevelsBy)
+        matches!(
+            self,
+            Row::PadsPlay | Row::PadsFrom | Row::LevelsBy | Row::KeyFade
+        )
     }
 }
 
@@ -249,8 +287,17 @@ pub struct LayerSound {
     pub view: Arc<SourceView>,
 }
 
+/// One keygroup of the kit, for the keyboard.
+#[derive(Clone, Debug, PartialEq)]
+pub struct KeyZone {
+    pub pad: usize,
+    pub keys: Keys,
+    /// Its key fade, in notes.
+    pub fade: u8,
+}
+
 /// Everything the tab shows: one pad, all its settings, each layer's
-/// sound, and what the kit's pads play.
+/// sound, what the kit's pads play and the kit's keygroups.
 #[derive(Clone)]
 pub struct PlayState {
     pub pad: usize,
@@ -258,6 +305,10 @@ pub struct PlayState {
     /// Layer k's sound, in layer order.
     pub sounds: Vec<LayerSound>,
     pub pads_play: PadsPlay,
+    /// Every pad of the kit that is a keygroup, in pad order.
+    pub zones: Vec<KeyZone>,
+    /// The key fade the kit's keygroups share (None when they differ).
+    pub key_fade: Option<u8>,
 }
 
 impl PlayState {
@@ -284,12 +335,30 @@ impl PlayState {
                 })
             })
             .collect::<Option<Vec<_>>>()?;
+        let zones = (0..mpfree_sampler::model::PADS)
+            .filter_map(|pad| {
+                let q = p.pad(pad)?;
+                Some(KeyZone {
+                    pad,
+                    keys: q.keys?,
+                    fade: q.key_fade,
+                })
+            })
+            .collect();
         Some(PlayState {
             pad,
             settings,
             sounds,
             pads_play: p.pads_play(),
+            zones,
+            key_fade: p.key_fade(),
         })
+    }
+
+    /// Whether the tab shows the keyboard: the pad is a keygroup, or the
+    /// kit's pads play notes.
+    pub fn shows_keys(&self) -> bool {
+        self.settings.keys.is_some() || matches!(self.pads_play, PadsPlay::Keys { .. })
     }
 
     /// The first layer's sound's own note, as heard, if it has a clear
@@ -307,6 +376,13 @@ impl PlayState {
             (Row::PadsFrom, PadsPlay::Keys { from }) => note_name(from),
             (Row::LevelsBy, PadsPlay::Levels { by, .. }) => by.label().into(),
             (Row::PadsFrom | Row::LevelsBy, _) => "–".into(),
+            (Row::KeyFade, _) => match (!self.zones.is_empty(), self.key_fade) {
+                (false, _) => "–".into(),
+                (true, None) => "Mixed".into(),
+                (true, Some(0)) => "Off".into(),
+                (true, Some(1)) => "1 note".into(),
+                (true, Some(n)) => format!("{n} notes"),
+            },
             _ => value_text(&self.settings, row),
         }
     }
@@ -379,6 +455,15 @@ pub enum PlayAction {
     },
     /// What the kit's pads play, changed (one undo step).
     PadsPlay(PadsPlay),
+    /// The kit's key fade, set: every keygroup fades over this many notes
+    /// and the zones that meet overlap by it (one undo step).
+    KeyFade(u8),
+    /// Pad `pad` picked (a tap on its zone on the keyboard): every tab
+    /// edits it from now on.
+    Pick(usize),
+    /// A key on the keyboard pressed (`down`) or let go: play the kit's
+    /// keygroups at `note`, at [`KEY_VELOCITY`], as a keyboard would.
+    Note { note: u8, down: bool },
     /// Open the editor's tab `i` of [`TABS`].
     Tab(usize),
 }
@@ -394,7 +479,8 @@ impl PlayAction {
                 gesture,
             } => (pad, after, gesture),
             PlayAction::PadsPlay(play) => return p.set_pads_play(*play),
-            PlayAction::Tab(_) => return Ok(()),
+            PlayAction::KeyFade(fade) => return p.set_key_fade(*fade),
+            PlayAction::Tab(_) | PlayAction::Pick(_) | PlayAction::Note { .. } => return Ok(()),
         };
         let now = p.pad(*pad).ok_or(ModelError::BadPad)?;
         if now.layers.len() != after.layers.len() {
@@ -418,6 +504,9 @@ enum Key {
     Env(usize),
     /// The filter's dot.
     Cutoff,
+    /// The pad's zone on the keyboard: its lowest key (0), highest (1) or
+    /// root (2).
+    Zone(usize),
 }
 
 /// The Play tab's widgets and what their touches mean. It keeps the layer
@@ -433,6 +522,8 @@ pub struct PlayTab {
     shown_pad: Option<usize>,
     gesture: Option<(Key, u64)>,
     next_gesture: u64,
+    /// Whether the page has the keyboard.
+    keys_shown: bool,
 }
 
 impl PlayTab {
@@ -450,6 +541,7 @@ impl PlayTab {
         env.right = "drag the points".into();
         ui.add(ENV, env);
         ui.add(FILTER, FilterCurve::new("Filter"));
+        ui.add(KEYS, KeyZones::new("Keys"));
         let mut list = SettingList::new("Pad");
         list.right = "the whole pad".into();
         ui.add(LIST, list);
@@ -471,6 +563,7 @@ impl PlayTab {
             shown_pad: None,
             gesture: None,
             next_gesture: GESTURE_BASE,
+            keys_shown: false,
         };
         tab.update(ui, st);
         Ok(tab)
@@ -511,7 +604,37 @@ impl PlayTab {
             self.last_velocity = None;
         }
         self.layer = self.layer.min(st.settings.layers.len().saturating_sub(1));
+        self.show_keys(ui, st.shows_keys());
         self.show(ui, st);
+    }
+
+    /// Whether the page shows the keyboard.
+    pub fn keys_shown(&self) -> bool {
+        self.keys_shown
+    }
+
+    /// The hint line for the page as it is.
+    pub fn hint(&self) -> &'static str {
+        if self.keys_shown {
+            KEYS_HINT
+        } else {
+            HINT
+        }
+    }
+
+    /// Lays the page out with the keyboard, or without it.
+    fn show_keys(&mut self, ui: &mut Ui, on: bool) {
+        if on == self.keys_shown {
+            return;
+        }
+        let spec = if on {
+            ui.layout_for(&format!("{}.keys", self.name), KEYS_LAYOUT)
+        } else {
+            ui.layout_for(&self.name, LAYOUT)
+        };
+        if ui.set_layout(&self.name, &spec).is_ok() {
+            self.keys_shown = on;
+        }
     }
 
     fn show(&self, ui: &mut Ui, st: &PlayState) {
@@ -578,6 +701,7 @@ impl PlayTab {
                 .collect();
             m.selected = self.layer;
             m.last_velocity = self.last_velocity;
+            m.fade = p.vel_fade;
         }
         if let Some(e) = ui.get_mut::<EnvelopeView>(ENV) {
             e.env = p.amp;
@@ -618,6 +742,9 @@ impl PlayTab {
                 );
             }
         }
+        if let Some(z) = ui.get_mut::<KeyZones>(KEYS) {
+            self.show_zones(z, st);
+        }
         let rows = Row::ALL
             .iter()
             .map(|r| Setting {
@@ -629,6 +756,67 @@ impl PlayTab {
             list.rows = rows;
         }
         self.show_cards(ui, st);
+    }
+
+    fn show_zones(&self, z: &mut KeyZones, st: &PlayState) {
+        z.zones = st
+            .zones
+            .iter()
+            .map(|k| {
+                // The pad picked shows its settings as they are now.
+                let keys = if k.pad == st.pad {
+                    st.settings.keys.unwrap_or(k.keys)
+                } else {
+                    k.keys
+                };
+                Zone {
+                    pad: k.pad,
+                    keys,
+                    fade: k.fade,
+                    label: pad_text(self.bank, k.pad),
+                    color: pad_color(k.pad),
+                }
+            })
+            .collect();
+        z.picked = st.settings.keys.map(|_| st.pad);
+        z.pads_from = match st.pads_play {
+            PadsPlay::Keys { from } => Some(from),
+            _ => None,
+        };
+        // Whole octaves round the roots, the pad's zone and the pads' notes.
+        let mut notes: Vec<u8> = z.zones.iter().map(|z| z.keys.root).collect();
+        if let Some(k) = st.settings.keys {
+            notes.extend([
+                k.root,
+                k.lo.max(k.root.saturating_sub(24)),
+                k.hi.min(k.root.saturating_add(24)),
+            ]);
+        }
+        if let Some(from) = z.pads_from {
+            notes.extend([from, from.saturating_add(15).min(127)]);
+        }
+        let lo = notes.iter().copied().min().unwrap_or(48);
+        let hi = notes.iter().copied().max().unwrap_or(72);
+        z.show_range(lo, hi);
+        let n = z.zones.len();
+        z.right = match n {
+            0 => "no keygroups".into(),
+            1 => "1 keygroup".into(),
+            n => format!("{n} keygroups"),
+        };
+        z.caption = match st.settings.keys {
+            Some(k) => format!(
+                "{}: {}–{}, root {} · drag its edges and root",
+                pad_text(self.bank, st.pad),
+                note_name(k.lo),
+                note_name(k.hi),
+                note_name(k.root)
+            ),
+            None => format!(
+                "{} is not a keygroup: Keys On makes it one · tap a zone to pick its pad",
+                pad_text(self.bank, st.pad)
+            ),
+        };
     }
 
     fn show_cards(&self, ui: &mut Ui, st: &PlayState) {
@@ -678,6 +866,22 @@ impl PlayTab {
                 self.layer = (*k).min(st.settings.layers.len() - 1);
                 self.show(ui, st);
                 None
+            }
+            (KEYS, EventKind::Select(pad)) => (*pad != st.pad).then_some(PlayAction::Pick(*pad)),
+            (KEYS, EventKind::Pad { index, down }) => Some(PlayAction::Note {
+                note: u8::try_from(*index).ok()?.min(127),
+                down: *down,
+            }),
+            (KEYS, EventKind::Marker { index, frame }) => {
+                let mut after = st.settings.clone();
+                let k = after.keys.as_mut()?;
+                let note = (*frame).min(127) as u8;
+                match index {
+                    0 => k.lo = note.min(k.hi),
+                    1 => k.hi = note.max(k.lo),
+                    _ => k.root = note,
+                }
+                self.edit(st, Key::Zone(*index), after)
             }
             (LAYERS, EventKind::Marker { index, frame }) => {
                 let (k, high) = (index / 2, index % 2 == 1);
@@ -802,6 +1006,14 @@ impl PlayTab {
         if delta == 0 {
             return None;
         }
+        if row == Row::KeyFade {
+            if st.zones.is_empty() {
+                return None;
+            }
+            let now = i32::from(st.key_fade.unwrap_or(0));
+            let fade = (now + delta).clamp(0, i32::from(MAX_KEY_FADE)) as u8;
+            return (st.key_fade != Some(fade)).then_some(PlayAction::KeyFade(fade));
+        }
         if row.of_kit() {
             let play = st.pads_play_stepped(row, delta);
             return (play != st.pads_play).then_some(PlayAction::PadsPlay(play));
@@ -879,8 +1091,16 @@ pub fn stepped(p: &Pad, row: Row, delta: i32, granular: bool) -> Pad {
                 }
             }
         }
-        // The kit's rows: see [`PlayState::pads_play_stepped`].
-        Row::PadsPlay | Row::PadsFrom | Row::LevelsBy => {}
+        Row::VelFade => {
+            let i = nearest(
+                VEL_FADES.iter().map(|&v| f32::from(v)),
+                f32::from(p.vel_fade),
+            );
+            p.set_vel_fade(VEL_FADES[shift(i, delta, VEL_FADES.len())]);
+        }
+        // The kit's rows: see [`PlayState::pads_play_stepped`] and
+        // [`PlayAction::KeyFade`].
+        Row::PadsPlay | Row::PadsFrom | Row::LevelsBy | Row::KeyFade => {}
         Row::VelToLevel => {
             p.vel_to_level = round_to(p.vel_to_level + d * 0.05, 0.05).clamp(0.0, 1.0)
         }
@@ -1036,9 +1256,19 @@ pub fn value_text(p: &Pad, row: Row) -> String {
         Row::LowKey => p.keys.map_or_else(|| "–".into(), |k| note_name(k.lo)),
         Row::HighKey => p.keys.map_or_else(|| "–".into(), |k| note_name(k.hi)),
         Row::RootKey => p.keys.map_or_else(|| "–".into(), |k| note_name(k.root)),
+        Row::KeyFade => match (p.keys, p.key_fade) {
+            (None, _) => "–".into(),
+            (Some(_), 0) => "Off".into(),
+            (Some(_), 1) => "1 note".into(),
+            (Some(_), n) => format!("{n} notes"),
+        },
         Row::PadsPlay | Row::PadsFrom | Row::LevelsBy => String::new(),
         Row::VelToLevel => format!("{} %", percent(p.vel_to_level)),
         Row::VelToStart => format!("{} %", percent(p.vel_to_start)),
+        Row::VelFade => match p.vel_fade {
+            0 => "Off".into(),
+            n => n.to_string(),
+        },
         Row::Pressure => pressure_label(p.pressure.target).into(),
         Row::Depth => format!("{:+} %", (p.pressure.depth * 100.0).round() as i32),
         Row::Attack => ms_text(p.amp.attack_ms),
@@ -1188,6 +1418,7 @@ pub fn describe(a: &Pad, b: &Pad) -> String {
         Row::RootKey,
         Row::VelToLevel,
         Row::VelToStart,
+        Row::VelFade,
         Row::Pressure,
         Row::Depth,
         Row::Attack,

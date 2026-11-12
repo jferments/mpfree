@@ -23,12 +23,14 @@
 //! same way. Tapping what is cued takes the cue back. While stopped, a tap
 //! launches or stops at once.
 
+use crate::editor::{drop_of, edit_rows, pads, EditAction, Editor, NoteBox, NoteGrid};
+use crate::song::{SongBlock, SongLanes, NONE, REC};
 use crate::widgets::{
     BarButton, BarItem, CellState, ClipGrid, GridCell, GridTrack, MorphBar, Run, TakeItem,
     TakeList, TransportBar, GRID_COLS,
 };
 use mpfree_play::{anchored, Cue, Launch, Take, Takes};
-use mpfree_seq::{Project, Speed, SLOTS};
+use mpfree_seq::{Clip, Project, Source, Speed, SLOTS};
 use mpfree_transport::time::{Meter, Swing, Tick, MAX_BPM, MIN_BPM, PPQ};
 use mpfree_transport::transport::MAX_COUNT_IN;
 use mpfree_transport::{Command, State, Transport};
@@ -41,6 +43,10 @@ pub const CLIPS: &str = "clips";
 pub const RECORD: &str = "record";
 pub const TAKES: &str = "takes";
 pub const MORPH: &str = "morph";
+pub const SONG: &str = "song";
+/// The note editor and its Edit options.
+pub const NOTES: &str = "notes";
+pub const EDIT_OPTIONS: &str = "edit-options";
 /// The page's name, for the header tab.
 pub const CLIPS_PAGE: &str = "Clips";
 /// The bar in a layout spec: 44 pixels under the header.
@@ -49,8 +55,21 @@ pub const BAR_SPEC: &str = "transport:44";
 /// settings over the takes.
 pub const CLIPS_LAYOUT: &str =
     "col(header:60, transport:44, row(col(clips:*, morph:64):*, col(record:*, takes:240):430):*, hint:26)";
+/// The same page in its Song view: the timeline in place of the grid.
+pub const SONG_LAYOUT: &str =
+    "col(header:60, transport:44, row(col(song:*, morph:64):*, col(record:*, takes:240):430):*, hint:26)";
 pub const CLIPS_HINT: &str =
     "Tap a clip: it plays from the next bar, or stops   ·   a row's number plays the whole row   ·   + records into an empty slot   ·   a track's name arms it";
+/// The hint line under the Song view.
+pub const SONG_HINT: &str =
+    "Tap a block to pick it   ·   Song on: the song plays where no clip is launched   ·   Scenes → song adds the rows at its end   ·   wheel: bars";
+/// The same page with the note editor (a piano roll or a list) in place
+/// of the grid, and the Edit options in place of the record settings.
+pub const EDIT_LAYOUT: &str =
+    "col(header:60, transport:44, row(notes:*, col(edit-options:*, takes:240):430):*, hint:26)";
+/// The hint line under the note editor.
+pub const EDIT_HINT: &str =
+    "Tap a note to pick it, drag to move   ·   Tool: select, draw, erase   ·   TC corrects the picked notes (all if none)   ·   wheel: the option picked";
 /// The record settings, top to bottom.
 pub const RECORD_ROWS: [&str; 5] = [
     "Armed track",
@@ -228,6 +247,43 @@ pub struct TimeState {
     pub scene_cued: Option<usize>,
     /// The scene morph. The app sets it.
     pub morph: MorphInfo,
+    /// The page shows the song (the timeline) in place of the grid. The
+    /// app sets it.
+    pub song_view: bool,
+    /// Song mode: the song plays on tracks with no clip launched. The app
+    /// sets it.
+    pub song_on: bool,
+    /// The arrangement's placements and markers.
+    pub placements: Vec<PlacementInfo>,
+    pub markers: Vec<(Tick, String)>,
+    /// The placement selected on the Song view. The app sets it.
+    pub selected: Option<usize>,
+    /// Live to song armed: what the grid plays goes into the song. The app
+    /// sets it.
+    pub song_rec: bool,
+    /// The note editor, when it is open. The app sets it.
+    pub edit: Option<Box<EditInfo>>,
+}
+
+/// The note editor as the screens show it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct EditInfo {
+    pub editor: Editor,
+    pub clip: Clip,
+    pub track_name: String,
+    /// A bar, in the clip's ticks.
+    pub bar: Tick,
+}
+
+/// A placement as the screens show it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PlacementInfo {
+    pub track: usize,
+    pub start: Tick,
+    pub length: Tick,
+    /// Its clip's name ("(empty)" for a slot emptied since).
+    pub name: String,
+    pub unique: bool,
 }
 
 /// The scene morph as the screen shows it (`mpfree_perform::SceneMorph`).
@@ -297,6 +353,31 @@ impl TimeState {
             scene_playing: None,
             scene_cued: None,
             morph: MorphInfo::default(),
+            song_view: false,
+            song_on: false,
+            placements: project
+                .arrangement
+                .placements
+                .iter()
+                .map(|p| PlacementInfo {
+                    track: p.track,
+                    start: p.start,
+                    length: p.length,
+                    name: p
+                        .clip(&project.tracks)
+                        .map_or_else(|| "(empty)".to_string(), |c| c.name.clone()),
+                    unique: matches!(p.source, Source::Own(_)),
+                })
+                .collect(),
+            markers: project
+                .arrangement
+                .markers
+                .iter()
+                .map(|m| (m.at, m.name.clone()))
+                .collect(),
+            selected: None,
+            song_rec: false,
+            edit: None,
         }
     }
 
@@ -370,6 +451,27 @@ pub enum TimeAction {
     KeepMorph,
     /// Store every parameter's value now in this row, for the morph.
     SaveScene(usize),
+    /// Show the Song view (the timeline) or the grid.
+    SongView(bool),
+    /// Song mode on or off: the song plays on tracks with no clip launched.
+    SongMode(bool),
+    /// The rows with clips, in order, onto the end of the song
+    /// (`mpfree_seq::arrange::scenes_to_song`).
+    ScenesToSong,
+    /// The song's sections into a run of empty rows, chained by follow
+    /// actions (`mpfree_seq::arrange::song_to_scenes`).
+    SongToScenes,
+    /// Select a placement on the Song view, or none.
+    SelectPlacement(Option<usize>),
+    /// Give a placement its own copy of its clip.
+    MakeUnique(usize),
+    DeletePlacement(usize),
+    /// Live to song on or off: while on and the transport plays, what the
+    /// grid plays is recorded into the song
+    /// (`mpfree_perform::SongRecorder`).
+    RecSong(bool),
+    /// A touch on the note editor (`crate::editor`).
+    Edit(EditAction),
 }
 
 /// Where a clip launched now starts: on the next bar line while the
@@ -502,11 +604,47 @@ pub fn action(ev: &UiEvent, st: &TimeState) -> Option<TimeAction> {
         } else {
             st.morph.b
         })),
-        (CLIPS, EventKind::Toggle(row)) => Some(if *row < SLOTS {
-            TimeAction::LaunchScene(*row)
-        } else {
-            TimeAction::StopAll
+        (CLIPS, EventKind::Toggle(row)) => Some(match *row {
+            r if r < SLOTS => TimeAction::LaunchScene(r),
+            SLOTS => TimeAction::StopAll,
+            r if r == SLOTS + 2 => TimeAction::RecSong(!st.song_rec),
+            r if r == SLOTS + 3 => TimeAction::Edit(EditAction::Open),
+            _ => TimeAction::SongView(true),
         }),
+        (NOTES, kind) => Some(TimeAction::Edit(match *kind {
+            EventKind::Tab(k) => EditAction::Button(k),
+            EventKind::Select(i) => EditAction::Note(i),
+            EventKind::Cell { row, col } => EditAction::Empty {
+                tick: col as Tick,
+                note: u8::try_from(row).ok()?,
+            },
+            EventKind::Marker { frame, .. } => {
+                let (ticks, notes) = drop_of(frame);
+                EditAction::Drop { ticks, notes }
+            }
+            EventKind::Value(v) => EditAction::Velocity(v),
+            _ => return None,
+        })),
+        (EDIT_OPTIONS, EventKind::Step { index, delta }) => {
+            Some(TimeAction::Edit(EditAction::Row {
+                row: *index,
+                delta: *delta,
+            }))
+        }
+        (EDIT_OPTIONS, EventKind::Select(i)) => Some(TimeAction::Edit(EditAction::PickRow(*i))),
+        (SONG, EventKind::Tab(k)) => match k {
+            0 => Some(TimeAction::SongView(false)),
+            1 => Some(TimeAction::SongMode(!st.song_on)),
+            2 => Some(TimeAction::ScenesToSong),
+            3 => Some(TimeAction::SongToScenes),
+            4 => st.selected.map(TimeAction::MakeUnique),
+            5 => st.selected.map(TimeAction::DeletePlacement),
+            &REC => Some(TimeAction::RecSong(!st.song_rec)),
+            _ => None,
+        },
+        (SONG, EventKind::Select(i)) => {
+            Some(TimeAction::SelectPlacement((*i != NONE).then_some(*i)))
+        }
         (CLIPS, EventKind::Tab(track)) => Some(TimeAction::Arm(if st.armed == Some(*track) {
             None
         } else {
@@ -824,6 +962,104 @@ pub fn take_items(st: &TimeState) -> (Vec<TakeItem>, Option<usize>) {
     (items, current)
 }
 
+/// The Song view for `st`, from bar `first_bar` (0-based): 16 bars.
+pub fn song_lanes(st: &TimeState, first_bar: i64) -> SongLanes {
+    let t = &st.transport;
+    let bar = t.meter.bar_ticks();
+    let end = st
+        .placements
+        .iter()
+        .map(|p| p.start + p.length)
+        .max()
+        .unwrap_or(0);
+    let bars = (end + bar - 1) / bar.max(1);
+    SongLanes {
+        title: "Song".to_string(),
+        legend: if bars == 0 {
+            "empty: Scenes → song makes one from the rows".to_string()
+        } else {
+            format!("{bars} bars · from bar {}", first_bar + 1)
+        },
+        tracks: st
+            .tracks
+            .iter()
+            .enumerate()
+            .map(|(i, tr)| (tr.name.clone(), track_color(i)))
+            .collect(),
+        blocks: st
+            .placements
+            .iter()
+            .enumerate()
+            .map(|(index, p)| SongBlock {
+                index,
+                track: p.track,
+                start: p.start,
+                length: p.length,
+                name: p.name.clone(),
+                unique: p.unique,
+            })
+            .collect(),
+        markers: st.markers.clone(),
+        bar,
+        first_bar,
+        bars: 16,
+        playhead: Some(t.position),
+        selected: st.selected,
+        on: st.song_on,
+        rec: st.song_rec,
+    }
+}
+
+/// The note editor's roll or list for `e`, with the playhead where the
+/// clip plays now (if it is launched).
+pub fn note_grid(e: &EditInfo, st: &TimeState) -> NoteGrid {
+    let ed = &e.editor;
+    let c = &e.clip;
+    let playhead = st
+        .launches
+        .iter()
+        .find(|l| (l.track, l.slot) == (ed.track, ed.slot))
+        .filter(|_| c.length > 0 && st.transport.position >= 0)
+        .map(|l| {
+            let at = c.speed.to_clip((st.transport.position - l.origin) as f64);
+            (at.floor() as Tick).rem_euclid(c.length)
+        });
+    let selected = |i: usize| ed.sel.contains(&i);
+    let n_sel = ed.sel.iter().filter(|&&i| i < c.notes.len()).count();
+    let mut g = NoteGrid::new();
+    g.title = format!("Edit · {} · {}", c.name, e.track_name);
+    g.legend = format!(
+        "{} notes · {} picked · {}",
+        c.notes.len(),
+        n_sel,
+        if ed.list { "list" } else { "grid" }
+    );
+    g.notes = c
+        .notes
+        .iter()
+        .enumerate()
+        .map(|(i, n)| NoteBox {
+            tick: n.tick,
+            len: n.len,
+            note: n.note,
+            velocity: n.velocity,
+            selected: selected(i),
+        })
+        .collect();
+    g.length = c.length;
+    g.bar = e.bar;
+    g.low = ed.low;
+    g.pads = pads(c);
+    g.playhead = playhead;
+    g.snap = ed.snap_ticks();
+    g.snap_name = ed.snap_name().to_string();
+    g.tool = ed.tool;
+    g.list = ed.list;
+    g.first = ed.first;
+    g.color = track_color(ed.track);
+    g
+}
+
 // ---------------------------------------------------------------- the page
 
 /// The Clips page and the transport bar in the app's [`Ui`]: the app adds
@@ -835,6 +1071,8 @@ pub struct TimePage {
     pub first_row: usize,
     /// The first track shown.
     pub first_track: usize,
+    /// The first bar the Song view shows (0-based).
+    pub first_bar: i64,
 }
 
 impl TimePage {
@@ -846,6 +1084,9 @@ impl TimePage {
         ui.add(RECORD, OptionList::new("Record"));
         ui.add(TAKES, TakeList::new("Takes"));
         ui.add(MORPH, MorphBar::new());
+        ui.add(SONG, SongLanes::new());
+        ui.add(NOTES, NoteGrid::new());
+        ui.add(EDIT_OPTIONS, OptionList::new("Edit"));
         ui.add_page(CLIPS_PAGE, CLIPS_LAYOUT)?;
         Ok(TimePage::default())
     }
@@ -858,11 +1099,31 @@ impl TimePage {
         }
     }
 
-    /// Scroll the grid `delta` rows down (up if negative).
-    pub fn scroll(&mut self, ui: &Ui, delta: i32) {
+    /// Scroll the grid `delta` rows down (up if negative), or on the Song
+    /// view the timeline `delta` bars on. In the note editor the editor
+    /// scrolls: the action for the app.
+    pub fn scroll(&mut self, ui: &Ui, delta: i32) -> Option<TimeAction> {
+        if ui.layout_of(CLIPS_PAGE) == Some(EDIT_LAYOUT) {
+            return Some(TimeAction::Edit(EditAction::Scroll(delta)));
+        }
+        if ui.layout_of(CLIPS_PAGE) == Some(SONG_LAYOUT) {
+            self.first_bar = (self.first_bar + i64::from(delta)).max(0);
+            return None;
+        }
         let rows = self.visible_rows(ui).max(1);
         let last = SLOTS.saturating_sub(rows) as i64;
         self.first_row = (self.first_row as i64 + i64::from(delta)).clamp(0, last) as usize;
+        None
+    }
+
+    /// The options list the wheel steps: the Edit options in the note
+    /// editor, else the record settings.
+    pub fn wheel_list(&self, ui: &Ui) -> &'static str {
+        if ui.layout_of(CLIPS_PAGE) == Some(EDIT_LAYOUT) {
+            EDIT_OPTIONS
+        } else {
+            RECORD
+        }
     }
 
     /// Show `st`. Widgets whose contents did not change are left alone, so
@@ -911,6 +1172,7 @@ impl TimePage {
                 && g.first_row == self.first_row
                 && g.first_track == self.first_track
                 && (g.scene_playing, g.scene_cued) == (st.scene_playing, st.scene_cued)
+                && g.song_rec == st.song_rec
         });
         if !same_grid {
             if let Some(g) = ui.get_mut::<ClipGrid>(CLIPS) {
@@ -921,6 +1183,24 @@ impl TimePage {
                 g.first_track = self.first_track;
                 g.scene_playing = st.scene_playing;
                 g.scene_cued = st.scene_cued;
+                g.song_rec = st.song_rec;
+            }
+        }
+        // The grid, the song or the note editor, as the app has it.
+        let want = if st.edit.is_some() {
+            EDIT_LAYOUT
+        } else if st.song_view {
+            SONG_LAYOUT
+        } else {
+            CLIPS_LAYOUT
+        };
+        if ui.layout_of(CLIPS_PAGE).is_some_and(|l| l != want) {
+            let _ = ui.set_layout(CLIPS_PAGE, want);
+        }
+        let lanes = song_lanes(st, self.first_bar);
+        if ui.get::<SongLanes>(SONG).is_some_and(|l| *l != lanes) {
+            if let Some(l) = ui.get_mut::<SongLanes>(SONG) {
+                *l = lanes;
             }
         }
         let m = st.morph;
@@ -934,6 +1214,22 @@ impl TimePage {
         if ui.get::<MorphBar>(MORPH).is_some_and(|b| *b != bar) {
             if let Some(b) = ui.get_mut::<MorphBar>(MORPH) {
                 *b = bar;
+            }
+        }
+        if let Some(e) = &st.edit {
+            let grid = note_grid(e, st);
+            if ui.get::<NoteGrid>(NOTES).is_some_and(|g| !g.same(&grid)) {
+                if let Some(g) = ui.get_mut::<NoteGrid>(NOTES) {
+                    g.show(grid);
+                }
+            }
+            let rows = edit_rows(&e.editor, &e.clip);
+            if let Some(l) = ui.get_mut::<OptionList>(EDIT_OPTIONS) {
+                if l.rows != rows || l.selected != e.editor.row {
+                    l.rows = rows;
+                    l.selected = e.editor.row;
+                    l.right = "wheel or arrows".to_string();
+                }
             }
         }
         let rows = record_rows(st);
@@ -1124,6 +1420,82 @@ mod tests {
         assert_eq!(
             action(&ev(CLIPS, EventKind::Toggle(SLOTS)), &st),
             Some(TimeAction::StopAll)
+        );
+    }
+
+    #[test]
+    fn the_song_view_swaps_in_for_the_grid_and_its_buttons_act() {
+        let mut ui = Ui::new(Theme::dark(), Fonts::embedded(), 1280, 800);
+        ui.add("header", Header::new(&["Play", "Clips"]));
+        ui.add("hint", Label::new("", Tone::Dim, Align::Center));
+        let mut page = TimePage::add_to(&mut ui).unwrap();
+        ui.show(CLIPS_PAGE).unwrap();
+        let mut st = state();
+        assert_eq!(
+            action(&ev(CLIPS, EventKind::Toggle(SLOTS + 1)), &st),
+            Some(TimeAction::SongView(true))
+        );
+        st.song_view = true;
+        st.placements.push(PlacementInfo {
+            track: 0,
+            start: 3840,
+            length: 7680,
+            name: "Boom".into(),
+            unique: false,
+        });
+        page.update(&mut ui, &st);
+        assert!(ui.rect_of(SONG).is_some() && ui.rect_of(CLIPS).is_none());
+        let lanes = ui.get::<SongLanes>(SONG).unwrap();
+        assert_eq!(
+            (lanes.blocks.len(), lanes.legend.as_str()),
+            (1, "3 bars · from bar 1")
+        );
+        page.scroll(&ui, 4);
+        assert_eq!(page.first_bar, 4, "the wheel scrolls bars");
+        let song = |k: EventKind, st: &TimeState| action(&ev(SONG, k), st);
+        assert_eq!(
+            song(EventKind::Tab(0), &st),
+            Some(TimeAction::SongView(false))
+        );
+        assert_eq!(
+            song(EventKind::Tab(1), &st),
+            Some(TimeAction::SongMode(true))
+        );
+        assert_eq!(song(EventKind::Tab(2), &st), Some(TimeAction::ScenesToSong));
+        assert_eq!(song(EventKind::Tab(3), &st), Some(TimeAction::SongToScenes));
+        assert_eq!(song(EventKind::Tab(4), &st), None, "nothing selected");
+        assert_eq!(
+            song(EventKind::Select(0), &st),
+            Some(TimeAction::SelectPlacement(Some(0)))
+        );
+        assert_eq!(
+            song(EventKind::Select(NONE), &st),
+            Some(TimeAction::SelectPlacement(None))
+        );
+        st.selected = Some(0);
+        assert_eq!(
+            song(EventKind::Tab(4), &st),
+            Some(TimeAction::MakeUnique(0))
+        );
+        assert_eq!(
+            song(EventKind::Tab(5), &st),
+            Some(TimeAction::DeletePlacement(0))
+        );
+        // Rec song, on the Song view and on the grid.
+        assert_eq!(
+            song(EventKind::Tab(REC), &st),
+            Some(TimeAction::RecSong(true))
+        );
+        st.song_rec = true;
+        page.update(&mut ui, &st);
+        assert!(ui.get::<SongLanes>(SONG).unwrap().rec);
+        st.song_view = false;
+        page.update(&mut ui, &st);
+        assert!(ui.rect_of(CLIPS).is_some() && ui.rect_of(SONG).is_none());
+        assert!(ui.get::<ClipGrid>(CLIPS).unwrap().song_rec);
+        assert_eq!(
+            action(&ev(CLIPS, EventKind::Toggle(SLOTS + 2)), &st),
+            Some(TimeAction::RecSong(false))
         );
     }
 

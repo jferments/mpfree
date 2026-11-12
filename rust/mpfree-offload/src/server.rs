@@ -13,8 +13,8 @@ use std::time::{Duration, Instant};
 use mpfree_node::{Ctx, Kind as NodeKind, Node, Timed};
 
 use crate::wire::{
-    self, Block, Header, Kind, WireError, FLAG_GAP, FLAG_RESET, MAX_DATAGRAM, MAX_EVENTS,
-    MAX_FRAMES,
+    self, Block, Header, Kind, WireError, FLAG_CLEAR, FLAG_GAP, FLAG_RESET, MAX_DATAGRAM,
+    MAX_EVENTS, MAX_FRAMES,
 };
 
 /// Why a datagram got no answer.
@@ -53,11 +53,16 @@ pub struct PartitionStats {
     pub restarts: u64,
     /// Times the node gave a sample that wasn't finite and was reset.
     pub resets: u64,
+    /// Times a request asked for the node to be reset (a run of CLEAR
+    /// flags counts once).
+    pub cleared: u64,
 }
 
 struct Partition {
     node: Box<dyn Node>,
     next: Option<u64>,
+    /// Whether the last request carried CLEAR.
+    clearing: bool,
     l: Vec<f32>,
     r: Vec<f32>,
     events: Vec<Timed>,
@@ -89,6 +94,7 @@ impl Server {
         self.parts.push(Partition {
             node,
             next: None,
+            clearing: false,
             l: vec![0.0; MAX_FRAMES],
             r: vec![0.0; MAX_FRAMES],
             events: Vec::with_capacity(MAX_EVENTS),
@@ -150,6 +156,12 @@ impl Server {
             _ => {}
         }
         p.next = Some(h.seq.saturating_add(1));
+        let clear = h.flags & FLAG_CLEAR != 0;
+        if clear && !p.clearing {
+            p.node.reset();
+            p.stats.cleared += 1;
+        }
+        p.clearing = clear;
         let started = Instant::now();
         let n = h.frames as usize;
         render(p, &block, rate, n);
@@ -339,6 +351,24 @@ mod tests {
         assert_eq!(h.flags, 0);
         let st = s.stats(0).unwrap();
         assert_eq!((st.answered, st.restarts, st.stale), (4, 1, 0));
+    }
+
+    #[test]
+    fn a_run_of_clear_flags_resets_the_node_once() {
+        let mut s = Server::new(44_100);
+        s.add(Box::new(Gain(1.0)));
+        for (seq, clear) in [false, true, true, true, false, true]
+            .into_iter()
+            .enumerate()
+        {
+            let mut d = request(seq as u64, &[]);
+            if clear {
+                d[28..30].copy_from_slice(&FLAG_CLEAR.to_le_bytes());
+            }
+            let (h, _) = left(s.answer(&d).unwrap());
+            assert_eq!(h.flags, 0, "block {seq}");
+        }
+        assert_eq!(s.stats(0).unwrap().cleared, 2);
     }
 
     #[test]

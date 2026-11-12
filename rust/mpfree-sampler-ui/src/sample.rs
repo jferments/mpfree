@@ -695,6 +695,9 @@ fn play_on(fonts: Fonts, project: Project, view: Arc<SourceView>) -> Result<Play
     let state = PlayState::from_project(&project, PAD, |_| view.clone()).ok_or("no pad")?;
     let mut ui = app_ui_with(fonts, &project, play_tab::HINT);
     let tab = PlayTab::add(&mut ui, PLAY_PAGE, &state)?;
+    if let Some(h) = ui.get_mut::<Label>("hint") {
+        h.text = tab.hint().into();
+    }
     ui.show(PLAY_PAGE)?;
     Ok(PlaySample {
         name: "play",
@@ -746,6 +749,48 @@ pub fn play_samples(fonts: impl Fn() -> Fonts) -> Result<Vec<PlaySample>, String
         let st = s.state.clone();
         s.tab.update(&mut s.ui, &st);
     }
+    out.push(s);
+
+    // A kit mapped to keys: eight pads, each a sound named by its note,
+    // spread halfway to each other; pad A5's zone picked, E4 held.
+    let (mut p, view) = project();
+    let pad = p.pad(PAD).ok_or("no pad")?.clone();
+    let notes = [36u8, 43, 48, 55, 60, 67, 72, 79];
+    for (k, &note) in notes.iter().enumerate() {
+        let mut q = pad.clone();
+        q.name = format!("Keys {}", mpfree_analysis::note_name(note));
+        p.set_pad(k, Some(q), None).map_err(|e| format!("{e:?}"))?;
+    }
+    let roots: Vec<(usize, u8)> = notes.iter().copied().enumerate().collect();
+    p.map_to_keys(&roots).map_err(|e| format!("{e:?}"))?;
+    let mut s = play_on(fonts(), p, view)?;
+    (s.name, s.about) = (
+        "play-keys",
+        "A kit mapped to keys: eight keygroups over the keyboard, pad A5's zone picked with its handles, E4 held",
+    );
+    if let Some(z) =
+        s.ui.get_mut::<crate::keys_widgets::KeyZones>(play_tab::KEYS)
+    {
+        z.held = vec![64];
+    }
+    out.push(s);
+
+    // The same layers overlapping by 12 velocities, crossfaded over them.
+    let (mut p, view) = layered_project();
+    if let Some(mut pad) = p.pad(PAD).cloned() {
+        for (l, (lo, hi)) in pad.layers.iter_mut().zip([(1, 69), (58, 115), (104, 127)]) {
+            (l.vel_lo, l.vel_hi) = (lo, hi);
+        }
+        pad.vel_fade = 12;
+        p.set_pad(PAD, Some(pad), None)
+            .map_err(|e| format!("{e:?}"))?;
+    }
+    let mut s = play_on(fonts(), p, view)?;
+    (s.name, s.about) = (
+        "play-fades",
+        "Three velocity layers overlapping by 12, crossfaded over the overlaps; the last hit at 64",
+    );
+    s.tab.set_velocity(&mut s.ui, Some(64));
     out.push(s);
     Ok(out)
 }

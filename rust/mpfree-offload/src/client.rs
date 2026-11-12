@@ -23,7 +23,9 @@ use std::time::{Duration, Instant};
 use mpfree_lanes::os;
 use mpfree_node::Timed;
 
-use crate::wire::{self, Header, Kind, FLAG_GAP, FLAG_RESET, MAX_DATAGRAM, MAX_EVENTS, MAX_FRAMES};
+use crate::wire::{
+    self, Header, Kind, FLAG_CLEAR, FLAG_GAP, FLAG_RESET, MAX_DATAGRAM, MAX_EVENTS, MAX_FRAMES,
+};
 
 /// Requests waiting for the sender thread.
 pub const RING: usize = 16;
@@ -31,6 +33,9 @@ pub const RING: usize = 16;
 pub const TABLE: usize = 64;
 /// The longest latency a link takes, in periods.
 pub const MAX_LATENCY: u32 = (TABLE - RING) as u32;
+/// Requests in a row that carry CLEAR after [`Remote::clear`], so a lost
+/// datagram or two don't lose it.
+pub const CLEAR_REQUESTS: u32 = 4;
 const WORDS: usize = MAX_DATAGRAM / 4;
 /// Round trips the receiver keeps for [`Link::close`] (about 48 minutes of
 /// periods at 44.1 kHz); later ones are counted but not kept.
@@ -157,6 +162,8 @@ pub struct Remote {
     shared: Arc<Shared>,
     cfg: Config,
     seq: u64,
+    /// Requests still to carry CLEAR.
+    clear_left: u32,
     scratch: [u8; MAX_DATAGRAM],
     stats: RemoteStats,
 }
@@ -178,6 +185,26 @@ impl Remote {
     /// The partition's latency in frames, for delay compensation.
     pub fn latency_frames(&self) -> u32 {
         self.cfg.latency * self.cfg.frames as u32
+    }
+
+    /// Asks the server to reset the node before the next block it renders
+    /// (a stop or a project load). The next [`CLEAR_REQUESTS`] requests
+    /// carry the CLEAR flag, and the server resets on the first of them
+    /// that arrives. The answers to blocks sent before this still come
+    /// back, L periods of them: [`crate::offloaded::Offloaded`] plays those
+    /// as silence.
+    pub fn clear(&mut self) {
+        self.clear_left = CLEAR_REQUESTS;
+    }
+
+    /// Requests handed over and not yet taken by the sender thread (for
+    /// tests that play blocks faster than the period and must not outrun
+    /// the ring).
+    pub fn queued(&self) -> u64 {
+        let sh = &*self.shared;
+        sh.head
+            .load(Ordering::Acquire)
+            .saturating_sub(sh.tail.load(Ordering::Acquire))
     }
 
     /// Whether block `seq`'s answer has come back and is still kept (for
@@ -231,7 +258,11 @@ impl Remote {
     fn send(&mut self, seq: u64, frame: u64, events: &[Timed], left: &[f32], right: &[f32]) {
         let keep = events.len().min(MAX_EVENTS);
         self.stats.events_dropped += (events.len() - keep) as u64;
-        let header = Header::request(self.cfg.partition, seq, frame, self.cfg.frames);
+        let mut header = Header::request(self.cfg.partition, seq, frame, self.cfg.frames);
+        if self.clear_left > 0 {
+            self.clear_left -= 1;
+            header.flags |= FLAG_CLEAR;
+        }
         let audio = self.cfg.send_audio.then_some((left, right));
         let len = match wire::encode(&mut self.scratch, &header, &events[..keep], audio) {
             Ok(len) => len,
@@ -359,6 +390,7 @@ pub fn connect(server: SocketAddr, cfg: Config) -> io::Result<(Remote, Link)> {
         shared: shared.clone(),
         cfg,
         seq: 0,
+        clear_left: 0,
         scratch: [0; MAX_DATAGRAM],
         stats: RemoteStats::default(),
     };
