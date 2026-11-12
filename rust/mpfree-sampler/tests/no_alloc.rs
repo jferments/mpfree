@@ -1,7 +1,8 @@
 //! The engine's real-time calls (render, apply, schedule) and the rolling
 //! recording buffer's writer must not allocate
 //! or free. A counting global allocator checks that across a busy session:
-//! loops, layers, chokes, stealing, filters, sample-accurate events,
+//! loops, layers, chokes, links, latched pads, stealing, filters,
+//! sample-accurate events,
 //! slice auditions,
 //! granular pads, pad pressure, and swapping prebuilt views (the pad player
 //! switches kits that way).
@@ -130,6 +131,13 @@ fn render_and_events_never_allocate() {
             root: 60,
         });
         pad.chokes = vec![(i + 1) % 16];
+        // Some play others too, and some latch.
+        pad.links = if i % 3 == 0 {
+            vec![(i + 5) % 16, (i + 9) % 16]
+        } else {
+            Vec::new()
+        };
+        pad.latch = i % 5 == 1;
         // Half of them wobble like worn tape.
         pad.wow = if i % 2 == 1 { 0.8 } else { 0.0 };
         pad.filter = Filter {
@@ -378,6 +386,22 @@ fn render_and_events_never_allocate() {
                     velocity: 100,
                 },
             );
+        }
+        // Live chop: on for the audition, marks, and off again.
+        if block % 7 == 3 {
+            e.schedule(
+                block % 128,
+                Event::LiveChop {
+                    pad: Some((block % 20) as u8),
+                },
+            );
+        }
+        if block % 3 == 1 {
+            e.schedule(block * 29 % 128, Event::Mark);
+            let _ = (e.marking(), e.mark(e.marks_made().saturating_sub(1)));
+        }
+        if block % 70 == 69 {
+            e.schedule(0, Event::LiveChop { pad: None });
         }
         // Live settings: knobs turned, p-locks on hits, cleared again, and
         // the program's offsets.

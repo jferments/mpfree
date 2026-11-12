@@ -526,6 +526,20 @@ impl Transport {
         self.tick_now(self.frame)
     }
 
+    /// [`Transport::position`] with the fraction (for following another
+    /// device's clock, where a tick is half a millisecond).
+    pub fn position_exact(&self) -> f64 {
+        if !self.state.rolling() {
+            return self.position as f64;
+        }
+        self.anchor_tick as f64
+            + ticks_in(
+                self.frame as f64 - self.anchor_frame as f64,
+                self.bpm,
+                self.rate,
+            )
+    }
+
     /// Replace the tempo map, while stopped. Building a map is not real-time
     /// work; copying one in is.
     pub fn set_tempo_map(&mut self, map: TempoMap) -> Result<(), ConfigError> {
@@ -1232,5 +1246,19 @@ mod tests {
         let s = b.spans()[0];
         assert!((0..MAX_SPANS).all(|_| copy.copy_span(s)));
         assert!(!copy.copy_span(s));
+    }
+
+    #[test]
+    fn the_exact_position_has_the_fraction_the_position_rounds_up() {
+        let mut t = Transport::new(44_100, 120.0).unwrap();
+        t.command(0, Command::Locate(1000));
+        run(&mut t, 64);
+        assert_eq!(t.position_exact(), 1000.0, "stopped: where it stands");
+        t.command(t.frame(), Command::Play);
+        run(&mut t, 100);
+        // 100 frames at 120 BPM: 100 * 1920 / 44100 ticks.
+        let want = 1000.0 + 100.0 * 1920.0 / 44_100.0;
+        assert!((t.position_exact() - want).abs() < 1e-9);
+        assert_eq!(t.position(), want.ceil() as Tick);
     }
 }

@@ -1,5 +1,6 @@
-//! The Rec tab's Auto-sample mode: play the Synth tab's patch note by
-//! note, record each note and make a keygroup instrument of it, as the
+//! The Rec tab's Auto-sample mode: play the Synth tab's patch, or external
+//! gear over MIDI, note by note, record each note and make a keygroup
+//! instrument of it, as the
 //! MPC's Auto Sampler (the keyboard on its Sampler page), Elektron's
 //! Tonverk and Logic's Auto Sampler do.
 //!
@@ -8,20 +9,25 @@
 //!   highest stretch to the ends), the velocity layers on a 1 to 127 axis,
 //!   and, while it runs, the note playing and how far it has got.
 //! - The **Auto-sample** list holds the plan: the source (the Synth tab's
-//!   patch, by its engine and preset), lowest and highest note, every how many
+//!   patch, by its engine and preset, or external gear on a MIDI channel),
+//!   lowest and highest note, every how many
 //!   semitones, velocity layers and how they spread, round robins, how
 //!   long each note is held and may ring, loops, channels and normalize.
 //!   The bar says what it will make and its cost before anything starts.
 //!   An instrument has a pad a note, so at most 16 notes (a kit's pads);
 //!   it goes onto the first run of empty pads, or over the whole kit.
 //! - **Start** has the app run it ([`mpfree_sampler::autosample::Job`]):
-//!   offline, many times faster than real time, on a worker thread. The
-//!   first button then cancels it, keeping the notes done. The instrument
-//!   lands as one undo step, and the kit's pads then play notes.
+//!   the synth offline, many times faster than real time, on a worker
+//!   thread ([`AutoAction::Start`]); gear in real time, its notes sent
+//!   over the MIDI out and its sound recorded from the line input
+//!   ([`AutoAction::StartGear`]). The first button then cancels it,
+//!   keeping the notes done. The instrument lands as one undo step, and
+//!   the kit's pads then play notes.
 //! - **Rec** goes back to recording.
 //!
-//! External gear (MIDI out to it, its sound into the line input) is a
-//! later source, once the MPC's MIDI out is proven.
+//! External gear is offered only once the app says which MIDI out it can
+//! play it through ([`AutoState::gear`]); until then the Source row has
+//! the synth alone.
 
 use mpfree_analysis::note_name;
 use mpfree_sampler::autosample::{zones, Plan, VelocityCurve, MAX_ROUND_ROBINS};
@@ -49,8 +55,8 @@ pub const LAYOUT: &str = "col(header:60, smp-auto-bar:60, \
 
 /// The hint line the app shows under the page.
 pub const HINT: &str =
-    "Auto-sample plays the synth note by note and makes a keygroup of it · tap a row, then the \
-                        wheel changes it · UNDO takes the instrument off";
+    "Auto-sample plays the synth or your gear note by note and makes a keygroup of it · tap a \
+                        row, then the wheel changes it · UNDO takes the instrument off";
 
 const HOLDS_MS: [u32; 9] = [100, 250, 500, 1000, 2000, 3000, 5000, 10_000, 20_000];
 const TAILS_MS: [u32; 8] = [0, 500, 1000, 2000, 4000, 8000, 12_000, 20_000];
@@ -60,6 +66,10 @@ const CURVES: [VelocityCurve; 3] = [
     VelocityCurve::Exp,
     VelocityCurve::Log,
 ];
+
+/// What an instrument sampled from external gear is called (its pads
+/// "Gear C2" and on).
+pub const GEAR_NAME: &str = "Gear";
 
 /// Where the instrument goes on the kit.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -86,6 +96,9 @@ pub struct AutoSettings {
     pub mono: bool,
     pub normalize: bool,
     pub onto: Onto,
+    /// External gear's MIDI channel (0 to 15) when the source is the gear;
+    /// None: the Synth tab's patch.
+    pub gear: Option<u8>,
 }
 
 impl Default for AutoSettings {
@@ -107,6 +120,7 @@ impl Default for AutoSettings {
             mono: p.channels == 1,
             normalize: p.normalize,
             onto: Onto::EmptyPads,
+            gear: None,
         }
     }
 }
@@ -138,6 +152,15 @@ impl AutoSettings {
             normalize: self.normalize,
             rate,
             ..Plan::default()
+        }
+    }
+
+    /// What the instrument is called: the synth's patch (`synth`), or
+    /// "Gear".
+    pub fn name(&self, synth: Option<&str>) -> String {
+        match self.gear {
+            Some(_) => GEAR_NAME.to_string(),
+            None => synth.unwrap_or("Auto").to_string(),
         }
     }
 
@@ -228,7 +251,10 @@ fn seconds_text(ms: u32) -> String {
 /// A row's value as the list shows it. `synth`: the source's name.
 pub fn value_text(s: &AutoSettings, row: Row, synth: Option<&str>) -> String {
     match row {
-        Row::Source => synth.map_or_else(|| "no synth".to_string(), str::to_string),
+        Row::Source => match s.gear {
+            Some(ch) => format!("Gear · MIDI ch {}", ch + 1),
+            None => synth.map_or_else(|| "no synth".to_string(), str::to_string),
+        },
         Row::Lowest => note_name(s.lo),
         Row::Highest => note_name(s.hi),
         Row::Every => match s.every {
@@ -281,7 +307,14 @@ fn step_u8(now: u8, delta: i32, lo: u8, hi: u8) -> u8 {
 pub fn stepped(s: &AutoSettings, row: Row, delta: i32) -> AutoSettings {
     let mut s = *s;
     match row {
-        Row::Source => {}
+        // The synth, then the gear on channels 1 to 16.
+        Row::Source => {
+            let at = s.gear.map_or(0, |ch| i32::from(ch) + 1);
+            s.gear = match (at + delta).clamp(0, 16) {
+                0 => None,
+                k => Some((k - 1) as u8),
+            };
+        }
         Row::Lowest => {
             s.lo = step_u8(s.lo, delta, 0, 127);
             s.hi = s.hi.max(s.lo);
@@ -341,6 +374,10 @@ pub struct AutoState {
     /// of empty pads long enough, or more notes than pads).
     pub target: Option<usize>,
     pub running: Option<Running>,
+    /// The MIDI out external gear is played through, by name ("MIDI Out
+    /// (DIN)"); None when the app has none, and the Source row offers only
+    /// the synth.
+    pub gear: Option<String>,
     /// The last instrument made, or why not, in a line.
     pub last: String,
     pub rate: u32,
@@ -351,6 +388,9 @@ pub struct AutoState {
 pub enum AutoAction {
     /// Start with this plan (the app names it after the synth).
     Start(Plan),
+    /// Start with this plan on external gear: its notes on MIDI `channel`
+    /// (0 to 15) through the MIDI out, its sound from the line input.
+    StartGear { plan: Plan, channel: u8 },
     /// Stop, keeping the notes done.
     Cancel,
     /// Back to the Rec tab's recording.
@@ -407,6 +447,7 @@ pub struct AutoTab {
     pub bank: Option<char>,
     pub settings: AutoSettings,
     synth: Option<String>,
+    gear: Option<String>,
     running: bool,
 }
 
@@ -432,6 +473,7 @@ impl AutoTab {
             bank: None,
             settings: AutoSettings::default(),
             synth: st.synth.clone(),
+            gear: st.gear.clone(),
             running: false,
         };
         tab.update(ui, st);
@@ -462,16 +504,25 @@ impl AutoTab {
     /// Shows `st` and the settings.
     pub fn update(&mut self, ui: &mut Ui, st: &AutoState) {
         self.synth = st.synth.clone();
+        self.gear = st.gear.clone();
         self.running = st.running.is_some();
         let s = self.settings;
-        let plan = s.plan(st.synth.as_deref().unwrap_or("Auto"), st.rate);
+        let plan = s.plan(&s.name(st.synth.as_deref()), st.rate);
         let est = plan.estimate();
         let fault = plan.check().err();
         let pads = self.pads_text(st);
+        // What plays: the synth's patch, or the gear on its channel.
+        let source = match s.gear {
+            Some(_) => st.gear.as_ref().map(|_| "the gear".to_string()),
+            None => st.synth.clone(),
+        };
         if let Some(bar) = ui.get_mut::<PadBar>(BAR) {
             bar.color = pad_color(st.target.unwrap_or(st.pad));
             bar.active = rec_tab::TAB;
-            bar.title = match (&st.synth, &pads) {
+            bar.title = match (&source, &pads) {
+                (None, _) if s.gear.is_some() => {
+                    "Auto-sample: no MIDI out for the gear".to_string()
+                }
                 (None, _) => "Auto-sample: the synth isn't up yet".to_string(),
                 (Some(n), Some(p)) => format!("Auto-sample {n} onto pads {p}"),
                 (Some(_), None) => no_room(&s, st).0,
@@ -502,6 +553,13 @@ impl AutoTab {
                 value: value_text(&s, *r, st.synth.as_deref()),
             })
             .collect();
+        let gear_line = match (s.gear, &st.gear) {
+            (Some(ch), Some(out)) => Some(format!(
+                "Plays MIDI channel {} on {out} and records the line input: the gear's audio out goes to the line input",
+                ch + 1
+            )),
+            _ => None,
+        };
         if let Some(list) = ui.get_mut::<SettingList>(LIST) {
             list.rows = rows;
             list.right = pads.clone().unwrap_or_default();
@@ -509,10 +567,11 @@ impl AutoTab {
         let ranges = plan.velocity_ranges();
         let notes = plan.notes();
         if let Some(v) = ui.get_mut::<KeyMapView>(VIEW) {
-            v.title = st
-                .synth
-                .clone()
-                .unwrap_or_else(|| "Auto-sample".to_string());
+            v.title = match (s.gear, &st.synth) {
+                (Some(ch), _) => format!("Gear · MIDI channel {}", ch + 1),
+                (None, Some(n)) => n.clone(),
+                (None, None) => "Auto-sample".to_string(),
+            };
             v.right = format!(
                 "{} notes, {}",
                 notes.len(),
@@ -551,14 +610,17 @@ impl AutoTab {
                         "each pad plays its note's keys · the dot is the note sampled".to_string();
                 }
             }
-            v.note = match (&st.synth, &fault) {
+            v.note = match (&source, &fault) {
+                (None, _) if s.gear.is_some() => {
+                    "External gear needs a MIDI out; the synth can be sampled meanwhile".to_string()
+                }
                 (None, _) => "The Synth tab's patch shows here once the synth is up".to_string(),
                 (_, Some(e)) => e.to_string(),
                 _ if st.target.is_none() => no_room(&s, st).1,
-                _ => String::new(),
+                _ => gear_line.unwrap_or_default(),
             };
         }
-        let can = st.synth.is_some() && st.target.is_some() && fault.is_none();
+        let can = source.is_some() && st.target.is_some() && fault.is_none();
         if let Some(b) = ui.get_mut::<ButtonRow>(BUTTONS) {
             b.labels = vec![
                 if self.running { "Cancel" } else { "Start" }.to_string(),
@@ -572,7 +634,14 @@ impl AutoTab {
     fn show_wheel(&self, ui: &mut Ui) {
         let row = self.row(ui);
         let text = match row {
-            Row::Source => "Source: the Synth tab's patch (external gear comes later)".to_string(),
+            Row::Source if self.gear.is_none() => {
+                "Source: the Synth tab's patch (external gear once there is a MIDI out)".to_string()
+            }
+            Row::Source => format!(
+                "Source: {} · the synth, or gear on a MIDI channel of {}",
+                value_text(&self.settings, row, self.synth.as_deref()),
+                self.gear.as_deref().unwrap_or_default()
+            ),
             _ => format!(
                 "{}: {}",
                 row.label(),
@@ -590,9 +659,16 @@ impl AutoTab {
             (BAR, EventKind::Tab(i)) => Some(AutoAction::Tab(*i)),
             (BUTTONS, EventKind::Tab(0)) if self.running => Some(AutoAction::Cancel),
             (BUTTONS, EventKind::Tab(0)) => {
-                let name = st.synth.clone()?;
                 st.target?;
-                let plan = self.settings.plan(&name, st.rate);
+                let s = self.settings;
+                if let Some(channel) = s.gear {
+                    st.gear.as_ref()?;
+                    let plan = s.plan(GEAR_NAME, st.rate);
+                    plan.check().ok()?;
+                    return Some(AutoAction::StartGear { plan, channel });
+                }
+                let name = st.synth.clone()?;
+                let plan = s.plan(&name, st.rate);
                 plan.check().ok()?;
                 Some(AutoAction::Start(plan))
             }
@@ -624,7 +700,17 @@ impl AutoTab {
             }
             return;
         }
-        self.settings = stepped(&self.settings, row, delta);
+        // Gear is offered only with a MIDI out to play it through; back to
+        // the synth is always there.
+        let next = stepped(&self.settings, row, delta);
+        if next.gear.is_some() && st.gear.is_none() {
+            if let Some(card) = ui.get_mut::<InfoCard>(WHEEL) {
+                card.text =
+                    "External gear needs a MIDI out, which comes with the MIDI setup".to_string();
+            }
+            return;
+        }
+        self.settings = next;
         self.update(ui, st);
     }
 

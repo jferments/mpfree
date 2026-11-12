@@ -104,7 +104,9 @@ const SHIFT_SAMPLE_HINT: &str =
 const SHIFT_MENU_HINT: &str =
     "SHIFT +   wheel: change the value   ·   MENU: Prefs   ·   STOP: back to bar 1";
 const OPTIONS_HINT: &str =
-    "Wheel or tap: pick a row   ·   - / +, SHIFT + wheel or the arrows: change it   ·   MENU: close";
+    "Wheel or tap: pick a row   ·   push the wheel, - / + or the arrows: change it   ·   MENU: close";
+/// A menu row the wheel's push opened.
+const OPTIONS_EDIT_HINT: &str = "Wheel: change it   ·   push the wheel: set it   ·   - / + or the arrows: change it   ·   MENU: close";
 const GUIDE_HINT: &str = "STOP: skip this button   ·   The pads still play while the guide is open";
 const LOADING_HINT: &str = "Tap the screen for the console";
 
@@ -463,6 +465,17 @@ pub enum FromUi {
         start: u64,
         end: u64,
     },
+    /// Live chop on the Sample page's Chop tab: pad `pad`'s layer `layer`
+    /// plays source frames `start..end` once and the pads played live mark
+    /// cuts in it (`on`), or that stops.
+    SampleLiveChop {
+        kit: usize,
+        pad: usize,
+        layer: usize,
+        start: u64,
+        end: u64,
+        on: bool,
+    },
     /// Flatten on the Sample page's Rec tab: pad `pad` of kit `kit` hit
     /// at `velocity` (`down`) or let go, straight on the sampler (not
     /// through the pads' layout, Note Repeat or the arp), if kit `kit` is
@@ -565,9 +578,13 @@ pub struct Player {
     screen_row: String,
     /// The timed `play` step (STOP ends it) rather than the app.
     timed: bool,
-    /// The Sample page's Play tab showed its keyboard (its hint says how
-    /// to play it).
-    sample_keys: bool,
+    /// The menu's selected row is open for the wheel (its push opened it).
+    menu_editing: bool,
+    /// The Sample page's Play tab showed its keyboard, and a row that pad
+    /// hits edit (each changes its hint).
+    sample_keys: (bool, bool),
+    /// The Chop tab chopped live (its hint says how).
+    sample_live: bool,
     /// The app has taken over the pages (after loading).
     ready: bool,
     view: View,
@@ -748,7 +765,9 @@ impl Player {
             },
             screen_row: "-".to_string(),
             timed,
-            sample_keys: false,
+            menu_editing: false,
+            sample_keys: (false, false),
+            sample_live: false,
             ready: false,
             view: View::Play,
             status,
@@ -1411,6 +1430,10 @@ impl Player {
                     "Tap a hit: pin it to the grid   ·   drag a pin along the beats   ·   Q-Links 1-4: pin, its beat, \
                      warp tempo, scroll   ·   Wheel: zoom   ·   UNDO: undo".to_string()
                 }
+                View::Sample if self.sample.chop_live_method() => {
+                    "Start plays the sound: hit pads in time to drop cuts   ·   Pull to hits: each onto the nearest hit   ·   \
+                     Stop ends the take   ·   then Chop to: onto the pads".to_string()
+                }
                 View::Sample if self.sample.page() == sample_page::CHOP_PAGE => {
                     "Hit a pad to chop it   ·   tap a slice: hear it   ·   Q-Links 1-4: slice, its start, setting, first pad   ·   \
                      Wheel: zoom   ·   UNDO: undo".to_string()
@@ -1418,6 +1441,10 @@ impl Player {
                 View::Sample if self.sample.page() == sample_page::PADS_PAGE => {
                     "Hit or tap a pad to pick it, tap again to hear it   ·   Q-Links 1-4: level, pan, tune, voices   ·   \
                      Wheel: the row picked   ·   UNDO: undo".to_string()
+                }
+                View::Sample if self.sample.play_takes_pads(&self.ui) => {
+                    "Hit pads to add them to the row picked or take them out   ·   Wheel: the next pad   ·   \
+                     tap another row when done   ·   UNDO: undo".to_string()
                 }
                 View::Sample if self.sample.page() == sample_page::PLAY_PAGE && self.sample.play_keys_shown() => {
                     "Press keys to hear the kit   ·   drag the pad's zone edges and root   ·   tap a zone: its pad   ·   \
@@ -1436,8 +1463,8 @@ impl Player {
                      record next to it   ·   UNDO: take a take off".to_string()
                 }
                 View::Sample if self.sample.page() == sample_page::AUTO_PAGE => {
-                    "Start samples the Synth tab's patch onto the pads named   ·   tap a row: the wheel changes it   ·   \
-                     UNDO: take the instrument off".to_string()
+                    "Start samples the Synth tab's patch or your gear onto the pads named   ·   tap a row: the wheel \
+                     changes it   ·   UNDO: take the instrument off".to_string()
                 }
                 View::Sample => format!("Hit a pad with a sound to edit it   ·   - / +: next pad with a sound   ·   {stop}"),
                 View::Debug => format!("Every MIDI message in and out, newest at the bottom   ·   SHIFT + wheel or - / +: \
@@ -1457,6 +1484,7 @@ impl Player {
                 View::Console => "The system log, as it comes   ·   MENU: pause or clear   ·   SHIFT + ERASE + TAP TEMPO: back"
                     .to_string(),
                 View::System => "Read when the page opens   ·   MENU: back to Prefs   ·   a tab: leave".to_string(),
+                View::Prefs | View::Options if self.menu_editing => OPTIONS_EDIT_HINT.to_string(),
                 View::Prefs | View::Options => OPTIONS_HINT.to_string(),
                 View::Mixer => mpfree_mixer_ui::MIXER_HINT.to_string(),
                 View::Chain => mpfree_chain_ui::CHAIN_HINT.to_string(),
@@ -1675,8 +1703,8 @@ impl Player {
                 }
                 // The Sample page edits the pad hit last, and the Play
                 // page's Tune and Decay turn it.
-                self.sample.hit(pad);
-                self.sample.hit_velocity(&mut self.ui, pad, velocity);
+                let shown = self.view == View::Sample;
+                self.sample.press(&mut self.ui, pad, velocity, shown);
                 self.sample_changed();
                 if self.play.last_pad != pad {
                     self.play.last_pad = pad;
@@ -1884,6 +1912,11 @@ impl Player {
                         .map(|(name, value)| OptionRow { name, value })
                         .collect();
                     o.selected = m.selected;
+                    o.editing = m.editing;
+                }
+                if self.menu_editing != m.editing {
+                    self.menu_editing = m.editing;
+                    self.refresh_hint();
                 }
                 if let Some(c) = self.ui.get_mut::<Card>("help") {
                     c.heading = m.help_heading;
@@ -2219,10 +2252,16 @@ impl Player {
         if self.sample.page() != before {
             self.sample_changed();
         }
-        // The keyboard came or went on the Play tab: its hint with it.
-        let keys = self.sample.play_keys_shown();
-        if keys != self.sample_keys {
+        // The keyboard came or went on the Play tab, a row that pad hits
+        // edit was picked, or the Chop tab went live: its hint with it.
+        let keys = (
+            self.sample.play_keys_shown(),
+            self.sample.play_takes_pads(&self.ui),
+        );
+        let live = self.sample.chop_live_method();
+        if keys != self.sample_keys || live != self.sample_live {
             self.sample_keys = keys;
+            self.sample_live = live;
             if self.view == View::Sample {
                 self.refresh_hint();
             }
@@ -2926,9 +2965,13 @@ impl Player {
                 })
             }
             (crate::looper_page::LOOP_STRIP, EventKind::Tab(i)) => {
-                match crate::looper_page::STRIP_TO_BUTTON.get(i).copied()? {
-                    Some(b) => Some(FromUi::Looper(b)),
-                    None => Some(FromUi::Time(TimeAction::Transport(
+                use crate::looper_page::StripPress;
+                match crate::looper_page::STRIP_PRESSES.get(i).copied()? {
+                    StripPress::Looper(b) => Some(FromUi::Looper(b)),
+                    StripPress::Play => Some(FromUi::Time(TimeAction::Transport(
+                        mpfree_transport::Command::Play,
+                    ))),
+                    StripPress::Stop => Some(FromUi::Time(TimeAction::Transport(
                         mpfree_transport::Command::Stop,
                     ))),
                 }
@@ -5111,6 +5154,41 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         faded.take_actions();
         out.push(("sample-keys-crossfade", faded));
     }
+    // The Play tab with Also plays picked: hits on A1 and A3 added them,
+    // and the pad latches.
+    {
+        use mpfree_sampler_ui::play_tab::{self, Row, LIST};
+        use mpfree_sampler_ui::widgets::SettingList;
+        let mut links = sample_sampler(fonts());
+        links.on_event(UiEvent {
+            widget: mpfree_sampler_ui::wave_tab::BAR.into(),
+            kind: EventKind::Tab(play_tab::TAB),
+        });
+        let index = |row: Row| Row::ALL.iter().position(|r| *r == row).unwrap_or(0);
+        for (row, step) in [(Row::Latch, 1), (Row::Links, 0)] {
+            if let Some(list) = links.ui.get_mut::<SettingList>(LIST) {
+                list.selected = index(row);
+            }
+            let kind = if step == 0 {
+                EventKind::Select(index(row))
+            } else {
+                EventKind::Step {
+                    index: index(row),
+                    delta: step,
+                }
+            };
+            links.on_event(UiEvent {
+                widget: LIST.into(),
+                kind,
+            });
+        }
+        for pad in [0, 2] {
+            links.apply(ToUi::PadDown { pad, velocity: 100 });
+            links.apply(ToUi::PadUp(pad));
+        }
+        links.take_actions();
+        out.push(("sample-play-links", links));
+    }
     // The Play tab with the pads playing 16 Levels of the pad, by tune.
     {
         use mpfree_sampler_ui::play_tab::{Row, LIST};
@@ -5197,6 +5275,51 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         });
         phrase.take_actions();
         out.push(("sample-chop-phrase", phrase));
+    }
+    // Live chop on the same pad: Start pressed, the break playing halfway,
+    // and four pads hit so far.
+    {
+        use mpfree_sampler_ui::chop_tab::{Row, BUTTONS, LIST};
+        let mut live = sample_sampler(fonts());
+        live.on_event(UiEvent {
+            widget: mpfree_sampler_ui::wave_tab::BAR.into(),
+            kind: EventKind::Tab(mpfree_sampler_ui::chop_tab::TAB),
+        });
+        live.on_event(UiEvent {
+            widget: LIST.into(),
+            kind: EventKind::Step {
+                index: Row::ALL.iter().position(|r| *r == Row::Method).unwrap_or(0),
+                delta: -1,
+            },
+        });
+        live.on_event(UiEvent {
+            widget: BUTTONS.into(),
+            kind: EventKind::Tab(0),
+        });
+        let (project, _) = mpfree_sampler_ui::sample::project();
+        if let Some(r) = project
+            .pad(mpfree_sampler_ui::sample::PAD)
+            .and_then(|p| p.layers.first())
+            .map(|l| (l.region.start, l.region.end))
+        {
+            let (start, end) = r;
+            let len = end - start;
+            let mut heads = Playheads {
+                kit: 0,
+                len: 1,
+                marking: true,
+                marks_made: 4,
+                ..Playheads::default()
+            };
+            heads.pad[0] = mpfree_sampler_ui::sample::PAD as u8;
+            heads.frame[0] = (start + len * 9 / 16) as u32;
+            for (i, at) in [1u64, 3, 5, 8].into_iter().enumerate() {
+                heads.marks[i] = (start + len * at / 16) as u32;
+            }
+            live.apply(ToUi::SamplePlayheads(heads));
+        }
+        live.take_actions();
+        out.push(("sample-chop-live", live));
     }
     let mut lab = sample_player(fonts());
     lab.apply(ToUi::Show(View::Prefs));
@@ -5425,6 +5548,60 @@ mod tests {
         assert!(hint.contains("SHIFT + wheel: scroll"));
     }
 
+    /// Jay, 12 Nov 08:11Z: Record has a red dot, Stop a square and Play a
+    /// triangle. The Loop view's buttons, left to right, do their jobs, and
+    /// the Record button draws its dot in the theme's red.
+    #[test]
+    fn the_loop_strips_buttons_carry_their_symbols_and_play_and_stop_the_transport() {
+        use crate::looper_page::{LOOP_STRIP, STRIP_BUTTONS};
+        let mut p = sample_player(Fonts::embedded());
+        let tap = |p: &mut Player, (x, y): (i32, i32)| {
+            let down = p.touch(1, Touch::Down, x, y);
+            down.or(p.touch(1, Touch::Up, x, y))
+        };
+        let card = p.ui.rect_of(play_page::TRANSPORT).unwrap();
+        let (_, segs) = PlayTransport::switch(card);
+        tap(&mut p, (segs[2].x + 10, segs[2].y + 10));
+        sample_loop(&mut p);
+        let mut canvas = SoftCanvas::new(SCREEN.0, SCREEN.1);
+        p.ui.paint(&mut canvas);
+        let strip = p.ui.rect_of(LOOP_STRIP).unwrap();
+        // The buttons' row is the strip's bottom 44 px, inside its panel.
+        let y = strip.bottom() - 30;
+        let mut got: Vec<FromUi> = Vec::new();
+        for x in (strip.x..strip.right()).step_by(6) {
+            if let Some(m) = tap(&mut p, (x, y)) {
+                if got.last() != Some(&m) {
+                    got.push(m);
+                }
+            }
+        }
+        let transport = |c| FromUi::Time(TimeAction::Transport(c));
+        use crate::looper_page::{B_CLEAR, B_MUTE, B_OVERDUB, B_RECORD, B_REDO, B_UNDO};
+        assert_eq!(STRIP_BUTTONS.len(), 8);
+        assert_eq!(
+            got,
+            [
+                FromUi::Looper(B_RECORD),
+                FromUi::Looper(B_OVERDUB),
+                transport(mpfree_transport::Command::Play),
+                transport(mpfree_transport::Command::Stop),
+                FromUi::Looper(B_UNDO),
+                FromUi::Looper(B_REDO),
+                FromUi::Looper(B_MUTE),
+                FromUi::Looper(B_CLEAR),
+            ]
+        );
+        // The Record button (the row's first eighth) has the red dot.
+        let red = p.ui.theme.bad;
+        let w = strip.w / 8;
+        let reds = (strip.x..strip.x + w)
+            .flat_map(|x| (strip.bottom() - 44..strip.bottom()).map(move |y| (x, y)))
+            .filter(|&(x, y)| canvas.pixel(x, y) == red)
+            .count();
+        assert!(reds > 40, "{reds} red pixels in the Record button");
+    }
+
     /// Mockup H: a speaker beside each loop layer's name; a tap mutes
     /// that layer (by its id, for the looper), and the next view shows it
     /// crossed out and grey.
@@ -5617,11 +5794,12 @@ mod tests {
         // Each view fits under the transport card, left of the master.
         for v in PlayView::ALL {
             tap(&mut p, seg(v.index()));
-            let pads = p.ui.rect_of(play_page::PADS).unwrap();
+            let throws = p.ui.rect_of(play_page::THROWS).unwrap();
             assert!(
-                pads.y > 168 && pads.bottom() <= 750 && pads.right() <= 1010,
-                "{v:?}: {pads:?}"
+                throws.y > 168 && throws.bottom() <= 750 && throws.right() <= 1010,
+                "{v:?}: {throws:?}"
             );
+            assert!(p.ui.rect_of(play_page::PADS).is_none(), "{v:?}: no pads");
         }
         tap(&mut p, seg(0));
         assert_eq!(p.page(), "Play");
@@ -6098,13 +6276,7 @@ mod tests {
     fn the_pads_heading_switches_the_synth_to_in_key() {
         let mut p = sample_player(Fonts::embedded());
         let synth_kit = sample_kits().len();
-        // A kit: its bank and name, no switch.
-        let m = p.ui.get::<MiniPads>(play_page::PADS).unwrap();
-        assert_eq!(
-            (m.title.as_str(), m.right.as_str(), m.synth),
-            ("Pads · Bank A", "Classic House", None)
-        );
-        // The synth with a scale: the switch, on Play and on the Synth tab.
+        // The synth with a scale: the switch, on the Synth tab's heading.
         let mut s = crate::synth::Synth::new(44_100);
         let mut set = s.settings();
         set.scale = mpfree_arp::scale::by_name("Minor")
@@ -6115,18 +6287,6 @@ mod tests {
             view: s.kit_view(),
         });
         p.apply(ToUi::Kit(synth_kit));
-        let r = p.ui.rect_of(play_page::PADS).unwrap();
-        let [_, in_key] =
-            p.ui.get::<MiniPads>(play_page::PADS)
-                .unwrap()
-                .parts(r)
-                .1
-                .unwrap();
-        assert_eq!(
-            p.touch(1, Touch::Down, in_key.x + 10, in_key.y + 10),
-            Some(FromUi::PadsLayout { in_key: true })
-        );
-        p.touch(1, Touch::Up, in_key.x + 10, in_key.y + 10);
         p.apply(ToUi::Show(View::Synth));
         let head = p.ui.rect_of(play_page::SYNTH_PADS_HEAD).unwrap();
         assert_eq!(
@@ -6135,7 +6295,12 @@ mod tests {
                 .title,
             "Pads · Bank A"
         );
-        let [chromatic, _] = PadsBar::halves(head);
+        let [chromatic, in_key] = PadsBar::halves(head);
+        assert_eq!(
+            p.touch(1, Touch::Down, in_key.x + 10, in_key.y + 10),
+            Some(FromUi::PadsLayout { in_key: true })
+        );
+        p.touch(1, Touch::Up, in_key.x + 10, in_key.y + 10);
         assert_eq!(
             p.touch(2, Touch::Down, chromatic.x + 10, chromatic.y + 10),
             Some(FromUi::PadsLayout { in_key: false })
@@ -6150,11 +6315,12 @@ mod tests {
             Some(mpfree_ui::Rect::new(0, 0, 1280, 800))
         );
         p.apply(ToUi::Show(View::Play));
-        // The Play page (mockup F): no big pads; the transport card on
-        // top, the master meter and the Q-Link cards at the right edge,
-        // beside the knobs.
-        let pads = p.ui.rect_of(play_page::PADS).unwrap();
-        assert!(pads.w == 270 && pads.h > 250, "{pads:?}");
+        // The Play page (mockup F, pick A): no pads at all; the transport
+        // card on top, the pattern across the room, the master meter and
+        // the Q-Link cards at the right edge, beside the knobs.
+        assert!(p.ui.rect_of(play_page::PADS).is_none());
+        let steps = p.ui.rect_of(play_page::STEPS).unwrap();
+        assert!(steps.w == 998 && steps.h > 250, "{steps:?}");
         assert_eq!(
             p.ui.rect_of(play_page::TRANSPORT).map(|r| (r.y, r.h)),
             Some((84, 84))
@@ -6214,10 +6380,11 @@ mod tests {
         assert_eq!(p.touch_page(), None);
         // Kernel times reach the lab without upsetting ordinary touches.
         p.set_touch_time(123);
-        let pads = p.ui.rect_of("pads").unwrap();
+        let header = p.ui.rect_of("header").unwrap();
+        let tab1 = p.ui.get::<Header>("header").unwrap().tab_rect(header, 1);
         assert_eq!(
-            p.touch(2, Touch::Down, pads.x + 20, pads.bottom() - 20),
-            Some(FromUi::Pad { pad: 0, down: true })
+            p.touch(2, Touch::Down, tab1.x + 20, tab1.y + 20),
+            Some(FromUi::Tab(1))
         );
     }
 
@@ -6360,19 +6527,12 @@ mod tests {
     #[test]
     fn touches_become_actions_once_ready() {
         let mut p = sample_player(Fonts::embedded());
-        let pads = p.ui.rect_of("pads").unwrap();
-        // Pad 1 sits bottom left.
-        assert_eq!(
-            p.touch(1, Touch::Down, pads.x + 20, pads.bottom() - 20),
-            Some(FromUi::Pad { pad: 0, down: true })
-        );
-        assert_eq!(
-            p.touch(1, Touch::Up, pads.x + 20, pads.bottom() - 20),
-            Some(FromUi::Pad {
-                pad: 0,
-                down: false
-            })
-        );
+        // A step of the pattern on Play: on, then nothing more on the lift.
+        let steps = p.ui.rect_of(play_page::STEPS).unwrap();
+        assert!(p
+            .touch(1, Touch::Down, steps.x + steps.w / 2, steps.y + steps.h / 2)
+            .is_some());
+        p.touch(1, Touch::Up, steps.x + steps.w / 2, steps.y + steps.h / 2);
         let header = p.ui.rect_of("header").unwrap();
         let tab1 = p.ui.get::<Header>("header").unwrap().tab_rect(header, 1);
         // The second tab: the app decides; the page stays until it says.
@@ -6382,7 +6542,7 @@ mod tests {
         );
         assert_eq!(p.page(), "Play");
         p.apply(ToUi::Show(View::Debug));
-        assert!(p.ui.rect_of("midi").is_some() && p.ui.rect_of("pads").is_none());
+        assert!(p.ui.rect_of("midi").is_some() && p.ui.rect_of(play_page::STEPS).is_none());
         // A menu row's arrow steps its value.
         let mut app = sample_app();
         let fx = app.button(mpfree_controller::mpc_one::button::MENU, true, 0.0);
@@ -7003,6 +7163,110 @@ mod tests {
     }
 
     #[test]
+    fn live_chop_drops_cuts_where_the_sampler_marked_them_and_ends_with_the_sound() {
+        use mpfree_sampler_ui::chop_tab::{self, Method, Row};
+        use mpfree_sampler_ui::widgets::{ButtonRow, PadBar};
+        let pad = mpfree_sampler_ui::sample::PAD;
+        let mut p = sample_sampler(Fonts::embedded());
+        let tap = |p: &mut Player, widget: &str, i: usize| {
+            let r = p.ui.rect_of(widget).unwrap();
+            let t = match widget {
+                chop_tab::BUTTONS => p.ui.get::<ButtonRow>(widget).unwrap().button_rect(r, i),
+                _ => p.ui.get::<PadBar>(widget).unwrap().tab_rect(r, i),
+            };
+            assert_eq!(p.touch(9, Touch::Down, t.x + 5, t.y + 5), None);
+            p.touch(9, Touch::Up, t.x + 5, t.y + 5);
+        };
+        let label =
+            |p: &Player| p.ui.get::<ButtonRow>(chop_tab::BUTTONS).unwrap().labels[0].clone();
+        tap(&mut p, mpfree_sampler_ui::wave_tab::BAR, chop_tab::TAB);
+        // Transient steps back round to Live, and the hint says how it goes.
+        let index = Row::ALL.iter().position(|r| *r == Row::Method).unwrap();
+        p.on_event(UiEvent {
+            widget: chop_tab::LIST.into(),
+            kind: EventKind::Step { index, delta: -1 },
+        });
+        assert_eq!(p.sample.chop().unwrap().0.method(), Method::Live);
+        assert!(p.sample.chop_live_method());
+        let hint = p.ui.get::<Label>("hint").unwrap().text.clone();
+        assert!(hint.contains("hit pads in time to drop cuts"), "{hint}");
+        p.take_actions();
+        // Start: the pad's region plays, marking.
+        assert_eq!(label(&p), "Start");
+        tap(&mut p, chop_tab::BUTTONS, 0);
+        let (start, end) = {
+            let (tab, st) = p.sample.chop().unwrap();
+            assert!(tab.live());
+            assert_eq!(tab.slices(), 1, "a take starts bare");
+            (st.region.start, st.region.end)
+        };
+        assert_eq!(
+            p.take_actions(),
+            vec![FromUi::SampleLiveChop {
+                kit: 0,
+                pad,
+                layer: 0,
+                start,
+                end,
+                on: true
+            }]
+        );
+        assert_eq!(label(&p), "Stop");
+        // Pads hit mark cuts on the audio thread; here they leave the pad
+        // being chopped where it is.
+        p.apply(ToUi::PadDown {
+            pad: 0,
+            velocity: 100,
+        });
+        p.apply(ToUi::PadUp(0));
+        assert_eq!(p.page(), sample_page::CHOP_PAGE);
+        assert!(p.sample.chop().unwrap().0.live());
+        // Two pads hit: the sampler's marks come back with the playheads
+        // and become cuts.
+        let len = end - start;
+        let mut heads = Playheads {
+            kit: 0,
+            marking: true,
+            marks_made: 2,
+            ..Playheads::default()
+        };
+        heads.marks[0] = (start + len / 4) as u32;
+        heads.marks[1] = (start + len * 3 / 4) as u32;
+        p.apply(ToUi::SamplePlayheads(heads));
+        assert_eq!(p.sample.chop().unwrap().0.slices(), 3);
+        // The same marks again add nothing; the sound over ends the take.
+        p.apply(ToUi::SamplePlayheads(heads));
+        assert_eq!(p.sample.chop().unwrap().0.slices(), 3);
+        heads.marking = false;
+        p.apply(ToUi::SamplePlayheads(heads));
+        assert!(!p.sample.chop().unwrap().0.live());
+        assert_eq!(label(&p), "Start");
+        assert!(matches!(
+            p.take_actions()[..],
+            [FromUi::SampleLiveChop { on: false, .. }]
+        ));
+        assert!(
+            events_log(&p)
+                .iter()
+                .any(|l| l == "sample: live chop over: the sound ended on pad A5: 2 cuts made"),
+            "{:?}",
+            events_log(&p)
+        );
+        // A new take, then the Wave tab: it stops, and the cuts it made stay
+        // for Chop to.
+        tap(&mut p, chop_tab::BUTTONS, 0);
+        p.take_actions();
+        tap(&mut p, chop_tab::BAR, mpfree_sampler_ui::wave_tab::TAB);
+        assert!(matches!(
+            p.take_actions()[..],
+            [FromUi::SampleLiveChop { on: false, .. }]
+        ));
+        assert!(events_log(&p)
+            .iter()
+            .any(|l| l == "sample: live chop stopped on pad A5: 0 cuts made"));
+    }
+
+    #[test]
     fn to_keys_puts_slices_on_notes_and_the_play_tab_turns_the_pads_back() {
         use mpfree_sampler::model::{Keys, PadsPlay};
         use mpfree_sampler_ui::chop_tab::{self, Row};
@@ -7252,6 +7516,92 @@ mod tests {
         p.apply(ToUi::SampleUndo(false));
         assert_eq!(settings(&p).key_fade, 0);
         assert!(settings(&p).keys.is_some());
+    }
+
+    #[test]
+    fn hits_on_pads_edit_stops_and_also_plays_and_latch_is_a_row() {
+        use mpfree_sampler_ui::play_tab::{self, Row, LIST};
+        use mpfree_sampler_ui::widgets::SettingList;
+        let pad = mpfree_sampler_ui::sample::PAD;
+        let mut p = sample_sampler(Fonts::embedded());
+        let ev = |p: &mut Player, widget: &str, kind: EventKind| {
+            p.on_event(UiEvent {
+                widget: widget.into(),
+                kind,
+            })
+        };
+        let index = |row: Row| Row::ALL.iter().position(|r| *r == row).unwrap();
+        ev(
+            &mut p,
+            mpfree_sampler_ui::wave_tab::BAR,
+            EventKind::Tab(play_tab::TAB),
+        );
+        let settings = |p: &Player| p.sample.project(0).unwrap().pad(pad).unwrap().clone();
+        let hint = |p: &Player| p.ui.get::<Label>("hint").unwrap().text.clone();
+        // A tap on a row picks it, as the list does.
+        let pick = |p: &mut Player, row: Row| {
+            p.ui.get_mut::<SettingList>(LIST).unwrap().selected = index(row);
+            ev(p, LIST, EventKind::Select(index(row)));
+        };
+        assert!(
+            hint(&p).starts_with("Hit a pad: its velocity"),
+            "{}",
+            hint(&p)
+        );
+        // Also plays picked: the hint says pad hits edit it.
+        pick(&mut p, Row::Links);
+        assert!(hint(&p).starts_with("Hit pads to add them"), "{}", hint(&p));
+        for k in [0, 2, pad] {
+            p.apply(ToUi::PadDown {
+                pad: k,
+                velocity: 100,
+            });
+            p.apply(ToUi::PadUp(k));
+        }
+        assert_eq!(settings(&p).links, [0, 2], "the pad itself is not added");
+        assert_eq!(p.sample.play().unwrap().1.pad, pad, "the pad shown stays");
+        assert!(
+            events_log(&p)
+                .iter()
+                .any(|l| l == "sample: kit 1 (Breaks) pad A5 Break 92: also plays A1 -> A1 A3"),
+            "{:?}",
+            events_log(&p)
+        );
+        let (sent, _) = views(p.take_actions());
+        assert_eq!(sent.len(), 1, "the kit sounds with its links");
+        p.apply(ToUi::SampleViewBack(sent.into_iter().next().unwrap()));
+        // UNDO takes one hit back.
+        p.apply(ToUi::SampleUndo(false));
+        assert_eq!(settings(&p).links, [0]);
+        // Stops takes pads the same way; Latch is a row.
+        pick(&mut p, Row::Chokes);
+        p.apply(ToUi::PadDown {
+            pad: 7,
+            velocity: 100,
+        });
+        assert_eq!(settings(&p).chokes, [7]);
+        pick(&mut p, Row::Latch);
+        ev(
+            &mut p,
+            LIST,
+            EventKind::Step {
+                index: index(Row::Latch),
+                delta: 1,
+            },
+        );
+        assert!(settings(&p).latch);
+        assert!(
+            hint(&p).starts_with("Hit a pad: its velocity"),
+            "{}",
+            hint(&p)
+        );
+        // Another row picked: hits pick the pad shown again.
+        p.apply(ToUi::PadDown {
+            pad: 0,
+            velocity: 100,
+        });
+        assert_eq!(settings(&p).chokes, [7]);
+        assert_eq!(p.page(), sample_page::PADS_PAGE, "A1 has no sound yet");
     }
 
     #[test]
@@ -8030,6 +8380,177 @@ mod tests {
     }
 
     #[test]
+    fn auto_sample_plays_external_gear_over_midi_and_records_it_from_the_line_input() {
+        use mpfree_sampler_ui::auto_tab::{self, Row};
+        use mpfree_sampler_ui::rec_tab;
+        use mpfree_sampler_ui::widgets::{ButtonRow, PadBar, SettingList};
+        use std::sync::{Arc, Mutex};
+        let mut p = sample_sampler(Fonts::embedded());
+        let ev = |p: &mut Player, widget: &str, kind: EventKind| {
+            p.on_event(UiEvent {
+                widget: widget.into(),
+                kind,
+            })
+        };
+        let step = |p: &mut Player, row: Row, delta: i32| {
+            ev(
+                p,
+                auto_tab::LIST,
+                EventKind::Step {
+                    index: row.index(),
+                    delta,
+                },
+            );
+        };
+        let source = |p: &Player| {
+            p.ui.get::<SettingList>(auto_tab::LIST).unwrap().rows[Row::Source.index()]
+                .value
+                .clone()
+        };
+        let title = |p: &Player| p.ui.get::<PadBar>(auto_tab::BAR).unwrap().title.clone();
+        ev(
+            &mut p,
+            mpfree_sampler_ui::wave_tab::BAR,
+            EventKind::Tab(rec_tab::TAB),
+        );
+        ev(&mut p, rec_tab::BUTTONS, EventKind::Tab(3));
+        // No MIDI out yet: the Source row keeps the synth.
+        step(&mut p, Row::Source, 1);
+        assert_eq!(source(&p), "Poly Pluck");
+        // The app opens a MIDI out for gear: the gear on channel 2, an
+        // octave apart, one layer, short notes onto A1-A4.
+        let sent = Arc::new(Mutex::new(Vec::<Vec<u8>>::new()));
+        let to = sent.clone();
+        p.sample.set_gear(
+            &mut p.ui,
+            Some(sample_page::GearOut {
+                name: "MIDI Out (DIN)".into(),
+                send: Arc::new(move |m: &[u8]| to.lock().unwrap().push(m.to_vec())),
+            }),
+        );
+        step(&mut p, Row::Source, 2);
+        assert_eq!(source(&p), "Gear · MIDI ch 2");
+        step(&mut p, Row::Every, 9);
+        step(&mut p, Row::Layers, -2);
+        step(&mut p, Row::Hold, -3);
+        step(&mut p, Row::Tail, -2);
+        assert_eq!(title(&p), "Auto-sample the gear onto pads A1–A4");
+        // The line input is off: Start says so and sends nothing.
+        ev(&mut p, auto_tab::BUTTONS, EventKind::Tab(0));
+        assert!(!p.sample.auto_running());
+        assert!(events_log(&p)
+            .iter()
+            .any(|l| l == "sample: auto-sample of the gear not started (the line input is off)"));
+        assert!(sent.lock().unwrap().is_empty());
+        // On: its writer goes to the audio thread (here, this test).
+        let mut s = p.settings.clone();
+        s.line_input = true;
+        p.apply(ToUi::Settings(s));
+        let (views_sent, mut acts) = views(p.take_actions());
+        for v in views_sent {
+            p.apply(ToUi::SampleViewBack(v));
+        }
+        let Some(FromUi::SampleInput(Some(mut feed))) = acts.pop() else {
+            panic!("the input's writer");
+        };
+        assert!(p.ui.get::<ButtonRow>(auto_tab::BUTTONS).unwrap().enabled[0]);
+        ev(&mut p, auto_tab::BUTTONS, EventKind::Tab(0));
+        assert!(p.sample.auto_running());
+        let log = events_log(&p);
+        assert!(
+            log.iter().any(|l| l
+                == "sample: auto-sample Gear (MIDI channel 2 on MIDI Out (DIN)) started: 4 notes (C2 to C5), 4 \
+                    takes, 4 s of notes, up to 2 MB"),
+            "{log:?}"
+        );
+        // The gear: a sine for each note held, falling away when let go,
+        // heard on the line input. The audio thread writes 256 frames at a
+        // time, about twice as fast as real time.
+        let rate = 48_000.0f32;
+        let (mut held, mut env, mut phase) = (None::<u8>, 0.0f32, 0.0f32);
+        let mut midi = Vec::new();
+        let t = Instant::now();
+        while p.sample.auto_running() {
+            assert!(t.elapsed() < Duration::from_secs(60), "it finishes");
+            for m in sent.lock().unwrap().drain(..) {
+                assert_eq!(m.len(), 3);
+                assert_eq!(m[0] & 0x0f, 1, "channel 2");
+                match m[0] & 0xf0 {
+                    0x90 => held = Some(m[1]),
+                    0x80 if held == Some(m[1]) => held = None,
+                    _ => {}
+                }
+                midi.push(m);
+            }
+            let hz = held.map(|n| 440.0 * ((f32::from(n) - 69.0) / 12.0).exp2());
+            let mut l = [0.0f32; 256];
+            for x in l.iter_mut() {
+                env = match hz {
+                    Some(_) => (env + 0.01).min(1.0),
+                    None => env * 0.999,
+                };
+                phase = (phase + hz.unwrap_or(0.0) / rate).fract();
+                *x = 0.3 * env * (std::f32::consts::TAU * phase).sin();
+            }
+            feed.0.audio.push_planar(&l, &l);
+            std::thread::sleep(Duration::from_millis(2));
+            p.tick(0.033);
+        }
+        // What the job sent after the last look, before it ended: once it
+        // has landed, everything it sent is in.
+        midi.extend(sent.lock().unwrap().drain(..));
+        assert!(midi.iter().all(|m| m[0] & 0x0f == 1), "channel 2");
+        // Two level tests and four notes, each on and off, then All Notes Off.
+        let ons = midi.iter().filter(|m| m[0] == 0x91).count();
+        let offs = midi.iter().filter(|m| m[0] == 0x81).count();
+        assert_eq!((ons, offs), (6, 6));
+        assert_eq!(midi.last().map(|m| m.as_slice()), Some(&[0xb1, 123, 0][..]));
+        let log = events_log(&p);
+        assert!(
+            log.iter().any(|l| l.starts_with(
+                "sample: auto-sampled Gear onto kit 1 (Breaks) pads A1 to A4: 4 notes, 4 takes, 0 looped, "
+            ) && l.contains("s of notes recorded")),
+            "{log:?}"
+        );
+        let pad_name = |pad: usize| {
+            p.sample
+                .project(0)
+                .unwrap()
+                .pad(pad)
+                .map(|pd| pd.name.clone())
+        };
+        assert_eq!(pad_name(0).as_deref(), Some("Gear C2"));
+        assert_eq!(pad_name(3).as_deref(), Some("Gear C5"));
+        // Again, onto the next empty pads, then Cancel: the job lets go of
+        // the gear (its note off, then All Notes Off) and ends.
+        ev(&mut p, auto_tab::BUTTONS, EventKind::Tab(0));
+        assert!(p.sample.auto_running());
+        let t = Instant::now();
+        while sent.lock().unwrap().is_empty() {
+            assert!(
+                t.elapsed() < Duration::from_secs(10),
+                "the first note goes out"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        ev(&mut p, auto_tab::BUTTONS, EventKind::Tab(0));
+        while p.sample.auto_running() {
+            assert!(t.elapsed() < Duration::from_secs(10), "it stops");
+            std::thread::sleep(Duration::from_millis(5));
+            p.tick(0.033);
+        }
+        let sent = sent.lock().unwrap();
+        assert_eq!(
+            sent.iter().map(|m| m.as_slice()).collect::<Vec<_>>(),
+            [&[0x91, 60, 127][..], &[0x81, 60, 64], &[0xb1, 123, 0]],
+            "the first test note, let go"
+        );
+        assert!(events_log(&p)
+            .iter()
+            .any(|l| l == "sample: auto-sample cancelled, keeping the notes done"));
+    }
+
+    #[test]
     fn auto_sample_plays_a_copy_of_the_synth_onto_empty_pads_and_undo_takes_it_off() {
         use mpfree_sampler::model::PadsPlay;
         use mpfree_sampler_ui::auto_tab::{self, Row};
@@ -8736,15 +9257,15 @@ mod tests {
     fn the_quick_band_comes_with_note_repeat_and_the_chip_opens_the_panel() {
         use mpfree_controller::mpc_one::button::NOTE_REPEAT;
         let mut p = sample_player(Fonts::embedded());
-        let pads = p.ui.rect_of("pads").unwrap();
+        let throws = p.ui.rect_of(play_page::THROWS).unwrap();
         let mut app = sample_app();
         let fx = app.button(NOTE_REPEAT, true, 0.0);
         apply_effects(&mut p, fx);
         assert_eq!(p.page(), QUICK_PAGE);
-        // A slim strip at the top of the view's first panel; the pads, the
-        // transport, the master bar and the Q-Links stay put, and the cards
-        // turn to the arp's.
-        assert_eq!(p.ui.rect_of("pads").unwrap(), pads);
+        // A slim strip at the top of the view's first panel; the throws,
+        // the transport, the master bar and the Q-Links stay put, and the
+        // cards turn to the arp's.
+        assert_eq!(p.ui.rect_of(play_page::THROWS).unwrap(), throws);
         for name in [play_page::MASTER, play_page::QLINKS, play_page::TRANSPORT] {
             assert!(p.ui.rect_of(name).is_some(), "{name} stays");
         }
@@ -8795,12 +9316,9 @@ mod tests {
         fx.extend(app.arp_poll());
         apply_effects(&mut p, fx);
         assert_eq!(p.page(), ARP_PAGE);
-        let panel_pads = p.ui.rect_of("pads").unwrap();
-        assert_eq!(
-            (panel_pads.x, panel_pads.w),
-            (pads.x, pads.w),
-            "the panel takes the left; the pads stay right"
-        );
+        // The panel takes the whole view; there are no pads on Play.
+        assert!(p.ui.rect_of(play_page::PADS).is_none());
+        assert!(p.ui.rect_of(arp_view::MODES).unwrap().x < 100);
         assert_eq!(
             p.ui.get::<Header>("header").unwrap().active,
             0,
@@ -8821,6 +9339,10 @@ mod tests {
     #[test]
     fn a_page_change_lets_go_of_pads_held_on_the_screen() {
         let mut p = sample_player(Fonts::embedded());
+        // Play has no pads now (Jay, 12 Nov); a page with them stands in.
+        p.ui.add_page("pads-test", "col(header:60, pads:*, hint:26)")
+            .unwrap();
+        p.ui.show("pads-test").unwrap();
         let pads = p.ui.rect_of("pads").unwrap();
         assert_eq!(
             p.touch(1, Touch::Down, pads.x + 20, pads.bottom() - 20),

@@ -931,3 +931,77 @@ fn key_fade_overlaps_the_kits_zones_and_the_keyboard_draws_their_curves() {
     assert_eq!(row_value(&plain, Row::KeyFade), "–");
     assert_eq!(step(&mut plain, Row::KeyFade, 1), None);
 }
+
+#[test]
+fn stops_also_plays_and_latch() {
+    let mut s = play(false);
+    for row in [Row::Chokes, Row::Links, Row::Latch] {
+        assert_eq!(row_value(&s, row), "Off", "{row:?}");
+    }
+    // Arrows and the wheel: a step up adds the pad after the highest, never
+    // the pad shown (A5); a step down takes the highest out.
+    for (delta, value) in [
+        (1, "A1"),
+        (3, "A1 A2 A3 A4"),
+        (1, "A1 A2 A3 A4 A6"),
+        (-2, "A1 A2 A3"),
+    ] {
+        step_apply(&mut s, Row::Links, delta);
+        assert_eq!(row_value(&s, Row::Links), value, "{delta:+}");
+    }
+    assert_eq!(s.state.settings.links, [0, 1, 2]);
+    step_apply(&mut s, Row::Links, -3);
+    assert_eq!(row_value(&s, Row::Links), "Off");
+    assert_eq!(step(&mut s, Row::Links, -1), None, "nothing to take out");
+
+    // Latch: any step turns it over.
+    step_apply(&mut s, Row::Latch, 1);
+    assert_eq!(row_value(&s, Row::Latch), "On");
+    assert!(s.state.settings.latch);
+    step_apply(&mut s, Row::Latch, 1);
+    assert_eq!(row_value(&s, Row::Latch), "Off");
+
+    // With Stops or Also plays picked, a hit adds a pad or takes it out,
+    // an undo step each; the pad shown changes nothing.
+    let pick = |s: &mut PlaySample, row: Row| {
+        s.ui.get_mut::<SettingList>(play_tab::LIST)
+            .unwrap()
+            .selected = Row::ALL.iter().position(|r| *r == row).unwrap();
+    };
+    pick(&mut s, Row::Level);
+    assert!(!s.tab.takes_pads(&s.ui));
+    let st = s.state.clone();
+    assert_eq!(
+        s.tab.pad_hit(&s.ui, &st, 3),
+        None,
+        "Level doesn't take pads"
+    );
+    pick(&mut s, Row::Chokes);
+    assert!(s.tab.takes_pads(&s.ui));
+    let before = s.state.settings.clone();
+    let mut gestures = Vec::new();
+    for pad in [3, 9, PAD, 3] {
+        let st = s.state.clone();
+        let a = s.tab.pad_hit(&s.ui, &st, pad);
+        if pad == PAD {
+            assert_eq!(a, None, "a pad never stops itself");
+            continue;
+        }
+        let a = a.unwrap();
+        gestures.push(gesture(&a));
+        apply(&mut s, &a);
+    }
+    gestures.dedup();
+    assert_eq!(gestures.len(), 3, "each hit is its own undo step");
+    assert_eq!(row_value(&s, Row::Chokes), "A10");
+    assert_eq!(describe(&before, &s.state.settings), "stops Off -> A10");
+    pick(&mut s, Row::Links);
+    let st = s.state.clone();
+    let a = s.tab.pad_hit(&s.ui, &st, 0).unwrap();
+    apply(&mut s, &a);
+    assert_eq!(s.state.settings.links, [0]);
+    assert!(s.project.undo());
+    assert!(s.project.pad(PAD).unwrap().links.is_empty());
+    assert!(s.project.undo());
+    assert_eq!(s.project.pad(PAD).unwrap().chokes, [3, 9]);
+}
