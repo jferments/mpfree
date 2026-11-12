@@ -18,7 +18,7 @@ of the round 8 profiling asks).
 
 | Thread | What it does |
 | --- | --- |
-| `mpfree-hello` (main) | The audio loop, SCHED_FIFO 70: the screen's actions, controller MIDI, lights, the transport and arp, the sampler, the synth, the looper, the mixer, the ALSA write |
+| `mpfree-app` (main) | The audio loop, SCHED_FIFO 70: the screen's actions, controller MIDI, lights, the transport and arp, the sampler, the synth, the looper, the mixer, the ALSA write |
 | `mpfree-screen` | Touch, the raster, the framebuffer |
 | `mpfree-store` | Saved settings and patterns |
 | `mpfree-journal` | The console's log |
@@ -70,7 +70,8 @@ match lane.join(deadline) {
 - **Deadlines, like the plugin sandbox.** `join` never waits past its
   deadline. Late, it says `Late`; the job comes back by itself, and until it
   does `post` says `Busy`. The caller picks the fallback. The plugin sandbox
-  and the remote offload server keep the same contract.
+  and the remote offload server ([Offload](offload.md)) keep the same
+  contract.
 - **Waiting.** The joiner spins, then sleeps on the word (a futex on Linux)
   until the deadline; by default it spins all the way, since the audio
   thread has nothing else to do. The worker sleeps between blocks

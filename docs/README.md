@@ -24,6 +24,7 @@ Start with the [project README](../README.md) for what MPFree is and where it st
 - [Plugins: the CLAP host](project/plugins.md): CLAP instruments and effects as nodes on a track or in an insert chain: loading `.clap` files, parameters, sample-exact events, state, the main and audio threads, and our own test plugins (`rust/mpfree-clap`), and the sandbox that runs each plugin in its own process with a deadline each block and a restart after a crash (`rust/mpfree-plughost`, 2026-11-11).
 - [Wavetable synth](project/wavetable.md): the third native synth: table oscillators scanned by Position, warps, band-limited tables, factory tables, WAV and sample import, memory and device cost estimates (`rust/mpfree-synth`, 2026-11-11).
 - [Concurrency](project/concurrency.md): using every core of the MPC One: where threads run today, the core plan, and lanes, which run part of each audio period on another core with a deadline (`rust/mpfree-lanes`, 2026-11-11).
+- [Offload](project/offload.md): render partitions on another computer over UDP, answered L periods later with the MPC as the only clock: the datagram, the server, the client, and `mpfree-offload measure` (`rust/mpfree-offload`, desktop prototype, 2026-11-12).
 
 ## Decisions
 
@@ -39,7 +40,7 @@ Start with the [project README](../README.md) for what MPFree is and where it st
 - [Developer access](guides/developer-access.md): getting root SSH over direct Ethernet, and the safety runbook.
 - [Survey tools](guides/survey-tools.md): running read-only surveys and milestone tests from a workstation.
 - [USB autorun reference](guides/usb-autorun-reference.md): the exact lab tooling used to first get SSH. Not a general installer.
-- [Hello MPC](guides/hello-mpc.md): Phase 1 on the kexec test build: our own program on the screen, touchscreen, pads, pad lights and audio output, with factory drum kits read from the backup, and the pad player with MPFree's first GUI, one step at a time (`--hello`).
+- [mpfree on the test build](guides/mpfree-app.md): the app on the kexec test build (Phase 1 called it Hello MPC): our own program on the screen, touchscreen, pads, pad lights and audio output, with factory drum kits read from the backup, and the pad player with MPFree's first GUI, one step at a time (`--app`).
 - [Audio and MIDI diagnostics](guides/audio-midi-diagnostics.md): the `--audio-midi`, `--midi-activity` and `--midi-capture` modes, what each reads and why.
 - [Device modifications](hardware/device-modifications.md): every persistent change made to the reference MPC One (currently persistent SSH, MOD-001/MOD-002), with verification and undo steps.
 

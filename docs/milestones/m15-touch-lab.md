@@ -1,6 +1,6 @@
 # M15: Touch lab
 
-**Status:** the steps, the judging and the journal lines are built and tested on the workstation (`rust/mpfree-touch/src/touchlab.rs`), and so is the on-screen page in the pad player (`rust/mpfree-hello/src/touchlab_page.rs`, PR #53). The lab rides in the round after round 5 as one more phase of the app check; the Hello MPC runbook will carry the commands. Nothing here touches the device by itself: the page only reads the touchscreen the pad player already has open (no grab) and prints lines.
+**Status:** the steps, the judging and the journal lines are built and tested on the workstation (`rust/mpfree-touch/src/touchlab.rs`), and so is the on-screen page in the pad player (`rust/mpfree-app/src/touchlab_page.rs`, PR #53). The lab rides in the round after round 5 as one more phase of the app check; the Hello MPC runbook will carry the commands. Nothing here touches the device by itself: the page only reads the touchscreen the pad player already has open (no grab) and prints lines.
 
 ## What the lab is for
 
