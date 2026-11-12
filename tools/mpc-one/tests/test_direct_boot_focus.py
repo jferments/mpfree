@@ -28,7 +28,13 @@ def fixture():
                  "0x00122cf8":{"pseudocode":"mpf_fastboot_response()"},
                  "0x00122d38":{"pseudocode":"mpf_fastboot_response()"},
                  "0x00122948":{"pseudocode":"mpf_fastboot_response()"},
-                 "0x00100fe4":{"pseudocode":(
+                 "0x00100fe4":{
+                     "machine_instruction_evidence":[
+                         {"address":"0010110c","text":"cmp r3,#0x63"},
+                         {"address":"0010110e","text":"ittt ls"},
+                         {"address":"00101114","text":"strb.ls r2,[r3,#0x0]"},
+                     ],
+                     "pseudocode":(
                      "if ((*DAT_0010114c & 0xffffff00) == DAT_00101150) { "
                      "uVar4 = *DAT_0010114c & 0xff; "
                      "if (uVar4 == 1) { *DAT_00101154 = 1; } "
@@ -46,7 +52,14 @@ def fixture():
                  "0x00110270":{"pseudocode":(
                      "FUN_00110084; if (local_8c < uVar5) {}; iVar2 + 0x6c")},
              }},
-        "p3":{"globals":{"0x0014d690":{"references":[
+        "p3":{"strings":[
+            {"text":"Recovery button ADC not found",
+             "xrefs":[{"from":"001010aa"}]},
+            {"text":"Failed to start recovery button ADC channel",
+             "xrefs":[{"from":"001010f0"}]},
+            {"text":"Failed to read recovery button ADC channel",
+             "xrefs":[{"from":"00101100"}]},
+        ],"globals":{"0x0014d690":{"references":[
             {"from":"0012289e","type":"WRITE"},
             {"from":"00122838","type":"READ"}]}}},
         "boot":{"boot_script":{"firmware310":{
@@ -82,7 +95,7 @@ def run(data):
 class DirectBootFocusTests(unittest.TestCase):
     def test_nine_topics_and_exact_sha(self):
         report=run(fixture())
-        self.assertEqual(len(report["questions"]),41)
+        self.assertEqual(len(report["questions"]),42)
         self.assertEqual(
             report["nominal_memory_address_gaps"]["fdt_addr_r"][
                 "from_fastboot_load_base_bytes"], 24115200)
@@ -90,7 +103,7 @@ class DirectBootFocusTests(unittest.TestCase):
             report["nominal_memory_address_gaps"]["kernel_addr_r"][
                 "from_fastboot_load_base_bytes"], 25163776)
         self.assertFalse(report["fastboot_download_memory_safe_proven"])
-        self.assertEqual(len({x["topic"] for x in report["questions"]}),9)
+        self.assertEqual(len({x["topic"] for x in report["questions"]}),10)
         self.assertEqual(report["private_source_sha256"],M.UBOOT_SHA)
         self.assertFalse(report["vendor_code_executed"])
         self.assertFalse(report["physical_fastboot_commands_sent"])
@@ -202,6 +215,17 @@ class DirectBootFocusTests(unittest.TestCase):
         self.assertIn("0xff/0x61/0x7a", result["host_usb_descriptor_classes"])
         d["framing"]["protocol_family"] = "RockUSB proven"
         self.assertFalse(run(d)["checks"]["ff617a_is_not_proven_rockusb"])
+
+    def test_recovery_adc_original_arm_and_errors_prevent_bootcounter_mislabel(self):
+        d = fixture()
+        result = run(d)
+        self.assertTrue(result["checks"]["stock_recovery_adc_diagnostic_xrefs"])
+        self.assertTrue(result["checks"]["stock_recovery_adc_unsigned_le99_original_arm"])
+        self.assertIn("Recovery button", {q["topic"] for q in result["questions"]})
+        d["u"]["analyzed_functions"]["0x00100fe4"][
+            "machine_instruction_evidence"][1]["text"] = "ittt hi"
+        self.assertFalse(run(d)["checks"][
+            "stock_recovery_adc_unsigned_le99_original_arm"])
 
     def test_wrong_original_uboot_rejected(self):
         d=fixture()
