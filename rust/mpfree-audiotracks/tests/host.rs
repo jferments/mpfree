@@ -67,10 +67,15 @@ impl Rig {
     }
 
     /// Run periods until `done`, giving the worker time between them.
+    #[track_caller]
     fn run_until(&mut self, mut done: impl FnMut(&mut Rig) -> bool) {
         let t0 = Instant::now();
         while !done(self) {
-            assert!(t0.elapsed() < Duration::from_secs(60), "timed out");
+            assert!(
+                t0.elapsed() < Duration::from_secs(60),
+                "timed out at frame {}",
+                self.frame
+            );
             self.period(P);
             std::thread::sleep(Duration::from_micros(200));
         }
@@ -191,4 +196,53 @@ fn a_fit_through_the_host_fills_the_bar_at_the_new_tempo() {
     r.h.command(A::Undo);
     r.run_to(r.frame + 10);
     assert_eq!(r.h.tracks.regions(0)[0].take, 0);
+}
+
+#[test]
+fn a_waveform_read_through_the_host_matches_the_take() {
+    let mut r = Rig::new();
+    r.record_bar();
+    assert!(!r.h.wave(9, 100), "no such take");
+    assert!(r.h.wave(0, 100));
+    let mut w = None;
+    r.run_until(|r| {
+        w = r.h.take_wave();
+        w.is_some()
+    });
+    let w = w.unwrap();
+    let t = r.h.tracks.take(0).unwrap();
+    assert_eq!((w.id, w.frames, w.channels), (0, t.frames, t.channels));
+    assert_eq!(w.frames_per_column % (256 / t.channels), 0);
+    assert!((80..=100).contains(&w.columns.len()), "{}", w.columns.len());
+    assert_eq!(w.columns.len(), t.frames.div_ceil(w.frames_per_column));
+    // Each column against the samples themselves.
+    for (c, &(lo, hi)) in w.columns.iter().enumerate() {
+        let a = c * w.frames_per_column;
+        let b = (a + w.frames_per_column).min(t.frames);
+        let (mut l, mut h) = (f32::MAX, f32::MIN);
+        for k in a..b {
+            for ch in 0..t.channels {
+                let s = r.h.tracks.sample(0, k, ch).unwrap();
+                l = l.min(s);
+                h = h.max(s);
+            }
+        }
+        assert_eq!((lo, hi), (l, h), "column {c}");
+    }
+    // A tone at 0.5: the middle columns reach near it.
+    assert!(w.columns[w.columns.len() / 2].1 > 0.45);
+    // Asking again replaces a wave not yet done; one result comes.
+    assert!(r.h.wave(0, 50));
+    assert!(r.h.wave(0, 20));
+    let mut w = None;
+    r.run_until(|r| {
+        w = r.h.take_wave();
+        w.is_some()
+    });
+    assert!(w.unwrap().columns.len() <= 20);
+    for _ in 0..50 {
+        r.period(P);
+        std::thread::sleep(Duration::from_micros(200));
+        assert!(r.h.take_wave().is_none());
+    }
 }
