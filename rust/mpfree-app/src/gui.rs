@@ -509,6 +509,13 @@ pub enum FromUi {
         velocity: u8,
         down: bool,
     },
+    /// The scene crossfader's values for kit `kit`'s pads (`pad`, field,
+    /// value; NaN back to the pad's own), while that kit is the one
+    /// playing (`mpfree_sampler::scene`).
+    SamplePadLive {
+        kit: usize,
+        values: Vec<(u8, mpfree_sampler::engine::PadField, f32)>,
+    },
     /// A key pressed (`down`) or let go on the Play tab's keyboard: kit
     /// `kit`'s keygroups play `note`, while that kit is the one playing.
     SampleKey {
@@ -5182,6 +5189,42 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     });
     play.take_actions();
     out.push(("sample-play", play));
+    // The scene strip: A stored, the pad turned down, B stored, and the
+    // crossfader 40 % of the way to B.
+    {
+        use mpfree_sampler_ui::play_tab::{Row, FADER, LIST, SCENES};
+        let mut scenes = sample_sampler(fonts());
+        scenes.on_event(UiEvent {
+            widget: mpfree_sampler_ui::wave_tab::BAR.into(),
+            kind: EventKind::Tab(mpfree_sampler_ui::play_tab::TAB),
+        });
+        let tap = |p: &mut Player, widget: &str, kind: EventKind| {
+            p.on_event(UiEvent {
+                widget: widget.into(),
+                kind,
+            });
+        };
+        tap(&mut scenes, SCENES, EventKind::Tab(0));
+        let level = Row::ALL.iter().position(|r| *r == Row::Level).unwrap_or(0);
+        for _ in 0..4 {
+            tap(
+                &mut scenes,
+                LIST,
+                EventKind::Step {
+                    index: level,
+                    delta: -1,
+                },
+            );
+        }
+        scenes.apply(ToUi::SampleLift);
+        tap(&mut scenes, SCENES, EventKind::Tab(1));
+        if let Some(f) = scenes.ui.get_mut::<mpfree_ui::widgets::Fader>(FADER) {
+            f.value = 0.4;
+        }
+        tap(&mut scenes, FADER, EventKind::Value(0.4));
+        scenes.take_actions();
+        out.push(("sample-play-scenes", scenes));
+    }
     // The Grain tab on the same pad, set to play grains: the engine's own
     // cloud 1.5 s after a hit, as the audio thread sends it.
     let mut grain = sample_sampler(fonts());
@@ -7371,6 +7414,88 @@ mod tests {
                 FromUi::Pad { pad, down: false }
             ]
         );
+    }
+
+    #[test]
+    fn scenes_morph_the_playing_kit_and_return_puts_the_pads_back() {
+        use mpfree_sampler::engine::PadField;
+        use mpfree_sampler_ui::play_tab::{Row, FADER, LIST, SCENES};
+        let pad = mpfree_sampler_ui::sample::PAD;
+        let mut p = sample_sampler(Fonts::embedded());
+        let ev = |p: &mut Player, widget: &str, kind: EventKind| {
+            p.on_event(UiEvent {
+                widget: widget.into(),
+                kind,
+            });
+        };
+        ev(
+            &mut p,
+            mpfree_sampler_ui::wave_tab::BAR,
+            EventKind::Tab(mpfree_sampler_ui::play_tab::TAB),
+        );
+        let level = Row::ALL.iter().position(|r| *r == Row::Level).unwrap();
+        let turn_down = |p: &mut Player| {
+            p.on_event(UiEvent {
+                widget: LIST.into(),
+                kind: EventKind::Step {
+                    index: level,
+                    delta: -1,
+                },
+            });
+            p.apply(ToUi::SampleLift);
+        };
+        let level_db = |p: &Player| p.sample.project(0).unwrap().pad(pad).unwrap().level_db;
+        let a_db = level_db(&p);
+        ev(&mut p, SCENES, EventKind::Tab(0));
+        assert!(events_log(&p)
+            .iter()
+            .any(|l| l == "sample: kit 1 (Breaks): scene A stored (1 pad)"));
+        turn_down(&mut p);
+        let b_db = level_db(&p);
+        assert!(b_db < a_db);
+        ev(&mut p, SCENES, EventKind::Tab(1));
+        // The engine takes the turned-down kit's view (B as it plays).
+        let (sent, _) = views(p.take_actions());
+        assert_eq!(sent.len(), 1);
+        p.apply(ToUi::SampleViewBack(sent.into_iter().next().unwrap()));
+        // Half way: the pad's level between A's and B's, for the playing kit.
+        ev(&mut p, FADER, EventKind::Value(0.5));
+        let (sent, rest) = views(p.take_actions());
+        assert!(sent.is_empty(), "the kit doesn't change");
+        assert_eq!(
+            rest,
+            [FromUi::SamplePadLive {
+                kit: 0,
+                values: vec![(pad as u8, PadField::Level, (a_db + b_db) / 2.0)]
+            }]
+        );
+        // An edit while morphing: its view, then the values again.
+        turn_down(&mut p);
+        let mangled = level_db(&p);
+        let (sent, rest) = views(p.take_actions());
+        assert_eq!(sent.len(), 1);
+        assert!(matches!(&rest[..], [FromUi::SamplePadLive { kit: 0, .. }]));
+        p.apply(ToUi::SampleViewBack(sent.into_iter().next().unwrap()));
+        // Return to A: the values let go and the pad is A's again.
+        ev(&mut p, SCENES, EventKind::Tab(2));
+        let (sent, rest) = views(p.take_actions());
+        assert_eq!(sent.len(), 1);
+        match &rest[..] {
+            [FromUi::SamplePadLive { kit: 0, values }] => {
+                assert!(!values.is_empty() && values.iter().all(|v| v.2.is_nan()))
+            }
+            r => panic!("{r:?}"),
+        }
+        assert_eq!(level_db(&p), a_db);
+        assert!(events_log(&p)
+            .iter()
+            .any(|l| l == "sample: kit 1 (Breaks): back to scene A (1 pad put back)"));
+        p.apply(ToUi::SampleViewBack(sent.into_iter().next().unwrap()));
+        // No more values after the next view; UNDO takes the return back.
+        p.apply(ToUi::SampleUndo(false));
+        assert_eq!(level_db(&p), mangled);
+        let (sent, rest) = views(p.take_actions());
+        assert_eq!((sent.len(), rest.len()), (1, 0));
     }
 
     #[test]

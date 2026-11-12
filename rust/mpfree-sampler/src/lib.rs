@@ -36,6 +36,7 @@ pub mod node;
 pub mod phrase;
 pub mod record;
 pub mod save;
+pub mod scene;
 pub mod sound_file;
 pub mod warp;
 pub mod wav;

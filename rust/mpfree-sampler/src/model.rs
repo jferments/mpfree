@@ -1281,6 +1281,9 @@ pub struct Project {
     redo: Vec<Undo>,
     /// Bumps on every change; the engine view records which one it was built from.
     revision: u64,
+    /// Scenes A and B: the pads as stored, to morph between and go back
+    /// to ([`crate::scene`]). Storing one is not an edit (no undo step).
+    pub scenes: [Option<crate::scene::Scene>; 2],
 }
 
 impl Project {
@@ -1336,7 +1339,7 @@ impl Project {
             .collect()
     }
 
-    fn check_pad(&self, pad: &Pad) -> Result<(), ModelError> {
+    pub(crate) fn check_pad(&self, pad: &Pad) -> Result<(), ModelError> {
         if pad.layers.len() > MAX_LAYERS {
             return Err(ModelError::TooManyLayers);
         }
@@ -1722,6 +1725,38 @@ impl Project {
         });
         self.push_undo(Undo::Group(steps));
         Ok(())
+    }
+
+    /// The pads back as `scene` stored them, as one undo step: every pad
+    /// that differs from it is put back (or cleared). A stored pad whose
+    /// sounds the kit no longer has is left as it is. Returns how many
+    /// pads changed and how many were left for that.
+    pub fn return_to(&mut self, scene: &crate::scene::Scene) -> (usize, usize) {
+        let mut steps = Vec::new();
+        let mut left = 0;
+        for i in 0..PADS {
+            let want = scene.pad(i);
+            if self.pad(i) == want {
+                continue;
+            }
+            if let Some(p) = want {
+                if self.check_pad(p).is_err() {
+                    left += 1;
+                    continue;
+                }
+            }
+            let before = std::mem::replace(&mut self.pads[i], want.cloned());
+            steps.push(Undo::Pad {
+                index: i,
+                before: before.map(Box::new),
+                gesture: None,
+            });
+        }
+        let n = steps.len();
+        if n > 0 {
+            self.push_undo(Undo::Group(steps));
+        }
+        (n, left)
     }
 
     pub fn pads_play(&self) -> PadsPlay {
