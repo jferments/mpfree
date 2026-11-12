@@ -24,7 +24,7 @@ use std::cell::Cell;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use mpfree_sampler::dsp::{Ahdsr, Filter, FilterKind};
-use mpfree_sampler::engine::{Engine, EngineView, Event, PadOut};
+use mpfree_sampler::engine::{Engine, EngineView, Event, PadField, PadOut, ProgramField};
 use mpfree_sampler::model::*;
 use mpfree_sampler::record::{bar_lines, rolling};
 
@@ -379,6 +379,35 @@ fn render_and_events_never_allocate() {
                 },
             );
         }
+        // Live settings: knobs turned, p-locks on hits, cleared again, and
+        // the program's offsets.
+        e.schedule(
+            block * 13 % 128,
+            Event::PadLive {
+                pad: (block % 20) as u8,
+                field: PadField::ALL[(block % 8) as usize],
+                value: live_value(block),
+            },
+        );
+        if block % 9 == 4 {
+            e.schedule(
+                block % 128,
+                Event::ProgramLive {
+                    field: ProgramField::ALL[(block % 3) as usize],
+                    value: (block % 7) as f32 - 3.0,
+                },
+            );
+        }
+        if block % 11 == 5 {
+            e.apply(Event::PadLive {
+                pad: (block % 20) as u8,
+                field: PadField::ALL[(block / 11 % 8) as usize],
+                value: f32::NAN,
+            });
+        }
+        if block % 500 == 377 {
+            e.stop_all();
+        }
         if block % 300 == 299 {
             e.apply(Event::AllOff);
         }
@@ -449,4 +478,10 @@ fn render_and_events_never_allocate() {
         spawned_before_dry > 100,
         "the master effect made grains: {spawned_before_dry}"
     );
+}
+
+/// A value for a live setting: in range for some fields, out of range
+/// (clamped) for others, the way a careless caller might send it.
+fn live_value(block: u32) -> f32 {
+    (block * 37 % 2000) as f32 - 500.0
 }
