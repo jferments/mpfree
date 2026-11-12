@@ -611,3 +611,67 @@ shares. This is a layered risk reduction, never 100% guarantee.
 
 Full research plan and limits:
 \`docs/hardware/qemu-arm-virtual-test-lab.md\`.
+
+
+## V8 owner Ghidra evidence and V9 next questions (2026-11-11)
+
+The owner ZIP \`bootchain-wide-20261112T004329Z-v8-3641449.zip\`
+passed ZIP integrity and all **14** indexed SHA256 checks.
+Unlike the earlier failed V8 run, all four directed Ghidra reports
+were produced with correct roles and source hashes:
+az01-update 60 recognized/60 selected, libaz01-prog
+423/340, SPL 213/180, U-Boot 1050/260. Some recognized
+functions are PLT stubs or disassembly placeholders; pseudocode
+coverage is NOT verified semantic correctness.
+
+### New evidence (static, no device contact)
+
+- az01_open_image recognizes AZ01, AZ0x, and D0 0D FE ED
+  (flattened device tree / FIT magic) and calls format-specific
+  handlers. The format-specific trust policy is not yet traced.
+- az01_write_image calls az01_verify_image(image,2), compatibility
+  checks, prepare_to_write, and partition iteration. Verify-state
+  and flag semantics remain ambiguous, so don't claim every
+  possible backend writer is authenticated.
+- az01_write_partition_image treats image type 1 as a bootloader
+  write, distinguishes type 0/2, and handles xz/LZMA-compressed
+  content. Exact destination and ordering require tracing.
+- az01_write_bootloader, az01_write_partition and az01_stream_partition
+  dispatch through context backend function pointer offsets
+  +0x18, +0x1c, +0x20, respectively. The backend vtable
+  origin and selector remain unresolved.
+- A SHA256/OpenSSL EVP_DigestVerify implementation exists; the
+  signature length passed at its concrete call is 0x100 bytes.
+  Do not assume it dominates every write path.
+- libaz01-prog also has RockUSB source and protocol strings:
+  rockusb.c, rockusb_write_block, uboot-spl, write-boot,
+  getvar, oem flash-bootloader, USB enumeration paths;
+  and both kexec zImage and reboot update/loader arguments.
+  Protocol presence does NOT prove real silicon MaskROM entry.
+- ramfs-update.squashfs has 272 listed paths, predominantly
+  BusyBox utilities and armhf libraries. Its actual boot/init
+  process still needs path/type/symlink and caller tracing.
+
+### New boot questions
+
+| ID | Question | Proposed evidence |
+| --- | --- | --- |
+| Q201 | What is the U-Boot-independent silicon ROM USB discovery path? | Find RockUSB host driver state/VID/PID/protocol in libaz01-prog, then passive owner USB observation |
+| Q202 | Can SD boot be selected transiently while mmc0 succeeds? | Trace SPL device order and U-Boot console/bootflow code, no saveenv |
+| Q203 | What is the initial Fastboot authorization state and who can change it? | Data-flow through permission flag and OEM dispatch; no device writes |
+| Q204 | Can an MPFree loader execute if Akai P1/P3 are destroyed? | True ROM access, independent loader, full readback and sacrificial restore demonstration |
+
+Updater questions U23–U36 are enumerated with provenance in
+\`tools/mpc-one/run_boot_updater_v9.py\` and explained in
+\`docs/hardware/bootchain-v9-updater-vm-handoff-2026-11-11.md\`.
+
+### VM kernel update
+
+The first Linux 7.0 ARM build failed in an unrelated TI Keystone
+QMSS driver with \`knav_qdev\` undeclared. This error has been
+reported independently by Linux ARM build testers. Our generic
+QEMU virt kernel has no need for CONFIG_KEYSTONE_NAVIGATOR_QMSS;
+the builder now disables that driver and ARCH_KEYSTONE before
+olddefconfig, while preserving ARM virt/PL011/virtio/ext4.
+This change affects only the guest build configuration, not
+the Linux source or workstation kernel.
