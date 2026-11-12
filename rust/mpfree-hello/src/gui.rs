@@ -7434,11 +7434,22 @@ mod tests {
 
     #[test]
     fn every_sample_screen_draws() {
-        for (name, mut p) in sample_screens(Fonts::embedded) {
-            let mut c = SoftCanvas::new(SCREEN.0, SCREEN.1);
-            let d = p.ui.paint(&mut c);
-            assert_eq!(d.len(), 1, "{name}: a first paint covers the screen");
-        }
+        // sample_screens builds every screen's Player in one frame, which in
+        // a debug build outgrows the 2 MiB test thread (the binary's
+        // --screens runs on the 8 MiB main thread), so draw them on a thread
+        // with the main thread's stack.
+        std::thread::Builder::new()
+            .stack_size(8 << 20)
+            .spawn(|| {
+                for (name, mut p) in sample_screens(Fonts::embedded) {
+                    let mut c = SoftCanvas::new(SCREEN.0, SCREEN.1);
+                    let d = p.ui.paint(&mut c);
+                    assert_eq!(d.len(), 1, "{name}: a first paint covers the screen");
+                }
+            })
+            .unwrap()
+            .join()
+            .unwrap();
     }
 
     #[test]
