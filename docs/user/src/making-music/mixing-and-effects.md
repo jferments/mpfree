@@ -1,7 +1,7 @@
 <!--
 status: changing
 covers: rust/mpfree-fx rust/mpfree-mixer-ui rust/mpfree-fx-ui rust/mpfree-chain-ui rust/mpfree-app/src/chain_page.rs rust/mpfree-app/src/mixing.rs rust/mpfree-fx/src/perform.rs
-checked: 2026-11-12 ae9c39c
+checked: 2026-11-12 db9b6ff
 -->
 
 # Mixing and effects
@@ -48,7 +48,7 @@ Drag a fader, pan or send with your finger, and tap M, S or the output to change
 - Turn the **data wheel** to move the selection up and down the list, and press **-** or **+** to step the selected row's output.
 - An output of **None (silent)** shows in amber, so a strip that goes nowhere is easy to spot.
 
-MIDI, Sync and CV will join the list as their own sections.
+MIDI, Sync and CV will join the list as their own sections: see [Playing other gear](midi-and-cv.md) for what each one sets.
 
 ## Using the Q-Links in the mixer
 
