@@ -118,7 +118,19 @@ impl OutQueue {
     /// In frame order; real-time bytes first among equal frames; otherwise
     /// the order they were pushed (a stable insertion sort, no allocation).
     pub fn sort(&mut self) {
-        let key = |t: &Timed| (t.offset, !t.is_realtime());
+        self.sort_by(|t| (t.offset, !t.is_realtime()));
+    }
+
+    /// In frame order only, in the order they were pushed among equal
+    /// frames. For a caller that pushes the clock first, where the order
+    /// matters: Stop, Song Position, Continue, then the pulse (Continue is
+    /// a real-time byte and Song Position isn't, so [`OutQueue::sort`]
+    /// would swap them).
+    pub fn sort_by_frame(&mut self) {
+        self.sort_by(|t| (t.offset, false));
+    }
+
+    fn sort_by(&mut self, key: impl Fn(&Timed) -> (u32, bool)) {
         for i in 1..self.len {
             let mut j = i;
             while j > 0 && key(&self.buf[j - 1]) > key(&self.buf[j]) {
@@ -360,6 +372,25 @@ mod tests {
 
     fn queues() -> Vec<OutQueue> {
         (0..MAX_PORTS).map(|_| OutQueue::new()).collect()
+    }
+
+    #[test]
+    fn sort_by_frame_keeps_the_order_pushed() {
+        let mut q = OutQueue::new();
+        q.push(Timed::msg(
+            20,
+            Msg::NoteOn {
+                ch: 0,
+                note: 60,
+                vel: 100,
+            },
+        ));
+        q.push(Timed::raw(10, &[0xF2, 16, 0]));
+        q.push(Timed::realtime(10, 0xFB));
+        q.push(Timed::realtime(10, 0xF8));
+        q.sort_by_frame();
+        let firsts: Vec<u8> = q.as_slice().iter().map(|t| t.bytes()[0]).collect();
+        assert_eq!(firsts, [0xF2, 0xFB, 0xF8, 0x90]);
     }
 
     #[test]
