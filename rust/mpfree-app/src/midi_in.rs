@@ -51,11 +51,13 @@ use mpfree_midi::learn::{Input, LearnMap, Saved, Write};
 use mpfree_midi::msg::Msg;
 pub use mpfree_midi::port::DIN;
 use mpfree_midi::port::{PortId, Ports, MAX_PORTS};
-use mpfree_midi::setup::PortInput;
+use mpfree_midi::setup::{PortInput, TempoSource};
 use mpfree_midi_clock::ClockIn;
 use mpfree_midi_ui::{PortLive, Shared};
 use mpfree_node::ParamInfo;
 use mpfree_play::mpfree_param::ParamAddr;
+
+use crate::time::Follow;
 
 /// The clock's frames are microseconds of the app's clock.
 const CLOCK_RATE: u32 = 1_000_000;
@@ -95,6 +97,10 @@ const LEARN_LOOK_S: f64 = 0.05;
 /// How long after a learned control set a parameter Learn leaves it
 /// alone: the mixer may not have taken the value yet.
 const LEARN_QUIET_S: f64 = 0.25;
+
+/// The followed port's clock bytes kept for the time engine in one
+/// period: at 300 BPM a pulse comes every 8 ms, so a few at most.
+const LEADER_BYTES: usize = 64;
 
 /// What a learned control last set a parameter to (0 to 1), and when.
 #[derive(Clone, Copy, Debug)]
@@ -162,6 +168,18 @@ pub struct MusicIn {
     learn_sets: Vec<LearnedSet>,
     /// When Learn next reads where its parameters stand.
     next_look: f64,
+    /// Following another device's clock (the project's "Tempo from" a
+    /// port): what follows, and the port (None while it isn't plugged in).
+    follow: Option<Follow>,
+    leader: Option<PortId>,
+    /// The leader's clock, Start, Continue, Stop and Song Position bytes
+    /// since the time engine last took them.
+    leader_bytes: [u8; LEADER_BYTES],
+    leader_len: usize,
+    /// Song Position data bytes still to come from the leader.
+    leader_sp: u8,
+    /// Leader bytes past [`LEADER_BYTES`] in a period, dropped.
+    leader_dropped: u64,
 }
 
 impl Default for MusicIn {
@@ -196,6 +214,66 @@ impl MusicIn {
             unkept: 0,
             learn_sets: Vec::with_capacity(mpfree_midi::setup::MAX_LEARNED),
             next_look: 0.0,
+            follow: None,
+            leader: None,
+            leader_bytes: [0; LEADER_BYTES],
+            leader_len: 0,
+            leader_sp: 0,
+            leader_dropped: 0,
+        }
+    }
+
+    /// Once a period, before the transport runs: what following another
+    /// device's clock does (None: not following) and the leader's clock
+    /// bytes since the last call, for `TimeHost::follow` and
+    /// `TimeHost::clock_in`.
+    pub fn leader_clock(&mut self, f: impl FnOnce(Option<Follow>, &[u8])) {
+        f(self.follow, &self.leader_bytes[..self.leader_len]);
+        self.leader_len = 0;
+    }
+
+    /// The followed port's name for the tempo chip ("MIDI In" for the
+    /// 5-pin jack, a USB device's own name), while the project's tempo is
+    /// from a port and that port is plugged in.
+    pub fn leader_name(&self) -> Option<&str> {
+        let id = self.leader?;
+        let p = self.ports.all().iter().find(|p| p.id == id)?;
+        Some(if p.name == mpfree_midi::setup::DIN_NAME {
+            "MIDI In"
+        } else {
+            &p.name
+        })
+    }
+
+    /// Keeps what the time engine's follower reads of a leader's byte:
+    /// clock, Start, Continue, Stop, and Song Position with its two data
+    /// bytes. Anything else is left out (and ends a Song Position cut
+    /// short, which the follower is told).
+    fn keep_leader_byte(&mut self, b: u8) {
+        let keep = match b {
+            0xF8 | 0xFA | 0xFB | 0xFC => true,
+            0xF2 => {
+                self.leader_sp = 2;
+                true
+            }
+            0x00..=0x7F if self.leader_sp > 0 => {
+                self.leader_sp -= 1;
+                true
+            }
+            0x80..=0xF7 if self.leader_sp > 0 => {
+                self.leader_sp = 0;
+                true
+            }
+            _ => false,
+        };
+        if !keep {
+            return;
+        }
+        if self.leader_len < LEADER_BYTES {
+            self.leader_bytes[self.leader_len] = b;
+            self.leader_len += 1;
+        } else {
+            self.leader_dropped += 1;
         }
     }
 
@@ -309,6 +387,25 @@ impl MusicIn {
             let learned = std::mem::take(&mut m.setup.learn);
             self.build_learn(&learned);
             m.setup.learn = learned;
+            // "Tempo from" a port: follow its clock, by name, so a USB
+            // device plugged in later is found.
+            let leader = match &m.setup.tempo {
+                TempoSource::Internal => None,
+                TempoSource::Port(n) => Some(n),
+            };
+            self.follow = leader.map(|_| Follow {
+                start_stop: m.setup.follow_start_stop,
+                position: m.setup.follow_position,
+            });
+            let was = self.leader;
+            self.leader =
+                leader.and_then(|n| self.ports.all().iter().find(|p| &p.name == n).map(|p| p.id));
+            if self.leader != was {
+                self.leader_len = 0;
+                self.leader_sp = 0;
+            }
+            // The app follows a clock now (M4).
+            m.live.built.clock_in = true;
             self.applied = Some(m.gen);
         }
         if self.ports_changed {
@@ -401,7 +498,17 @@ impl MusicIn {
         if p >= MAX_PORTS {
             return;
         }
-        let label = self.label(port);
+        if self.leader == Some(port) {
+            for &b in data {
+                self.keep_leader_byte(b);
+            }
+        }
+        // Borrowed, not built: a followed clock reads here every period.
+        let label: std::borrow::Cow<str> = match self.ports.get(port) {
+            _ if port == DIN => "MIDI In".into(),
+            Some(p) => p.name.as_str().into(),
+            None => self.label(port).into(),
+        };
         let learn_only = self.input[p] == PortInput::LearnOnly;
         let learns = self.input[p] != PortInput::PlaysTracks;
         let frame = (t.max(0.0) * f64::from(CLOCK_RATE)) as u64;
@@ -414,9 +521,14 @@ impl MusicIn {
                     s.last_tick = t;
                     if !s.clock_running {
                         s.clock_running = true;
+                        let follows = if self.leader == Some(port) {
+                            "MPFree follows it"
+                        } else {
+                            "not followed: the tempo isn't from this port"
+                        };
                         log(format!(
-                            "+{t:.3} s {label}: clock arriving (each tick is counted, not listed; \
-                             nothing follows it yet)"
+                            "+{t:.3} s {label}: clock arriving (each tick is counted, not \
+                             listed); {follows}"
                         ));
                     }
                 }
@@ -551,6 +663,12 @@ impl MusicIn {
             lines.push(format!(
                 "I/O view: {} periods skipped its update because the screen held it",
                 self.busy
+            ));
+        }
+        if self.leader_dropped > 0 {
+            lines.push(format!(
+                "Clock in: {} bytes from the followed port dropped (more than {LEADER_BYTES} in a period)",
+                self.leader_dropped
             ));
         }
         if self.unkept > 0 {
@@ -982,6 +1100,140 @@ mod tests {
         let (keys, _) = run(&mut m, usb, &[0xB2, 75, 1, 0x92, 60, 90]);
         assert_eq!(keys.len(), 1);
         assert_eq!(m.learning().count(), 0);
+    }
+
+    /// The project's tempo from the 5-pin jacks, following start, stop
+    /// and position.
+    fn following_din() -> Shared {
+        let s = model();
+        {
+            let mut m = s.lock().unwrap();
+            m.setup.tempo = TempoSource::Port(mpfree_midi::setup::DIN_NAME.into());
+            m.gen += 1;
+        }
+        s
+    }
+
+    fn leader_bytes(m: &mut MusicIn) -> (Option<Follow>, Vec<u8>) {
+        let mut got = (None, Vec::new());
+        m.leader_clock(|f, b| got = (f, b.to_vec()));
+        got
+    }
+
+    /// With the tempo from a port, its clock, Start, Continue, Stop and
+    /// Song Position go to the time engine once a period, and nothing
+    /// else does; another port's clock doesn't; with MPFree's own tempo,
+    /// nothing follows.
+    #[test]
+    fn the_followed_port_hands_its_clock_on() {
+        let mut m = MusicIn::new();
+        let usb = m.plugged("Beatstep Pro").unwrap();
+        let s = following_din();
+        m.sync(&s, 0.0);
+        assert!(s.lock().unwrap().live.built.clock_in);
+        // The tempo chip names the jack.
+        assert_eq!(m.leader_name(), Some("MIDI In"));
+        let all = Follow {
+            start_stop: true,
+            position: true,
+        };
+        // A note, Song Position bar 3 (32 sixteenths) with a clock inside
+        // it, Continue, active sensing, a clock; a Song Position cut short.
+        run(
+            &mut m,
+            DIN,
+            &[
+                0x90, 60, 100, 0xF2, 0x20, 0xF8, 0x00, 0xFB, 0xFE, 0xF8, 0xF2, 0x01, 0x80,
+            ],
+        );
+        run(&mut m, usb, &[0xF8, 0xFA]);
+        assert_eq!(
+            leader_bytes(&mut m),
+            (
+                Some(all),
+                vec![0xF2, 0x20, 0xF8, 0x00, 0xFB, 0xF8, 0xF2, 0x01, 0x80]
+            )
+        );
+        assert_eq!(leader_bytes(&mut m), (Some(all), vec![]));
+        {
+            let mut v = s.lock().unwrap();
+            v.setup.follow_position = false;
+            v.gen += 1;
+        }
+        m.sync(&s, 0.1);
+        run(&mut m, DIN, &[0xFC]);
+        assert_eq!(
+            leader_bytes(&mut m),
+            (
+                Some(Follow {
+                    start_stop: true,
+                    position: false
+                }),
+                vec![0xFC]
+            )
+        );
+        {
+            let mut v = s.lock().unwrap();
+            v.setup.tempo = TempoSource::Internal;
+            v.gen += 1;
+        }
+        m.sync(&s, 0.2);
+        run(&mut m, DIN, &[0xF8]);
+        assert_eq!(leader_bytes(&mut m), (None, vec![]));
+        assert_eq!(m.leader_name(), None);
+        // A USB device is named as it names itself.
+        {
+            let mut v = s.lock().unwrap();
+            v.setup.tempo = TempoSource::Port("Beatstep Pro".into());
+            v.gen += 1;
+        }
+        m.sync(&s, 0.3);
+        assert_eq!(m.leader_name(), Some("Beatstep Pro"));
+    }
+
+    /// The app's turn each period, as main.rs takes it: a keyboard's
+    /// clock at 100 BPM read once a period, through MusicIn to the time
+    /// engine's follower, sets the tempo and starts the transport.
+    #[test]
+    fn a_clock_on_the_jacks_sets_the_tempo_and_starts_the_song() {
+        const RATE: u32 = 44_100;
+        const PERIOD: u32 = 128;
+        let mut m = MusicIn::new();
+        let s = following_din();
+        m.sync(&s, 0.0);
+        let mut time = crate::time::TimeHost::new(RATE, 120.0).unwrap();
+        let pulse = 60.0 * f64::from(RATE) / (100.0 * 24.0);
+        let mut next = 1000.0;
+        let mut pulses = 0;
+        let mut frame = 0u64;
+        let mut keys = Vec::new();
+        while pulses < 24 * 12 {
+            let mut b = Vec::new();
+            while next < (frame + u64::from(PERIOD)) as f64 {
+                if pulses == 24 {
+                    b.push(0xFA);
+                }
+                b.push(0xF8);
+                pulses += 1;
+                next += pulse;
+            }
+            let t = frame as f64 / f64::from(RATE);
+            m.bytes(DIN, &b, t, &mut keys, &mut |_| {});
+            m.leader_clock(|f, b| {
+                time.follow(f);
+                if !b.is_empty() {
+                    let at = time.next_frame();
+                    time.clock_in(at, b);
+                }
+            });
+            time.follow_tempo(120.0);
+            time.advance(PERIOD);
+            frame += u64::from(PERIOD);
+        }
+        let bpm = time.followed_bpm().expect("following");
+        assert!((bpm - 100.0).abs() < 0.1, "{bpm}");
+        assert!(time.info().state.rolling(), "{:?}", time.info().state);
+        assert!(keys.is_empty());
     }
 
     fn info(curve: mpfree_node::Curve, min: f32, max: f32) -> ParamInfo {

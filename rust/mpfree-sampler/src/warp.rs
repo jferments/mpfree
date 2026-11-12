@@ -385,6 +385,8 @@ impl Worker {
         let handle = std::thread::Builder::new()
             .name("mpfree-stretch".into())
             .spawn(move || {
+                // Off the sound's cores and priority when started by the audio thread.
+                let _ = mpfree_lanes::os::background();
                 for (g, key, spec) in jobs {
                     let stale = || current.load(Ordering::Relaxed) != g;
                     let t = Instant::now();

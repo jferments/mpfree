@@ -1,6 +1,6 @@
 # MIDI clock (`rust/mpfree-midi-clock`)
 
-MIDI clock in and out for MPFree, as bytes. It opens no port. Which MIDI port the MPC sends and listens on, and whether it may, goes through the Hello MPC thread and needs the owner's go. Like the transport, it never allocates while running, so it can sit in the audio thread.
+MIDI clock in and out for MPFree, as bytes. It opens no port itself: the app's MIDI out sends its clock, and the app's MIDI in hands the followed port's bytes to the time engine (see [MIDI I/O](midi-io.md), M4). Sending on the MPC needs the owner's go. Like the transport, it never allocates while running, so it can sit in the audio thread.
 
 Ticks are the transport's: 960 per quarter note. A clock pulse (`F8`, 24 per quarter note) is 40 ticks, and a Song Position step (a sixteenth) is 240.
 
@@ -39,7 +39,7 @@ How the transport follows another device's clock is the time engine's: see [Foll
 
 ## Following: the time engine
 
-The time engine's audio half follows another device's clock (`rust/mpfree-app/src/time/follow.rs`). The app gives it three things:
+The time engine's audio half follows another device's clock (`rust/mpfree-app/src/time/follow.rs`). The app gives it three things, from the port the project's **Tempo from** names (`MusicIn::leader_clock` in `midi_in.rs`, see [M4: clock in](midi-io.md#m4-clock-in)):
 
 - `TimeHost::follow(Option<Follow>)`: `Follow { start_stop, position }` from the project's MIDI setup, or None for MPFree's own tempo. It is cheap to call every period; only a change starts again from nothing known.
 - `TimeHost::clock_in(frame, bytes)`: every byte read from the followed port, before `advance`, with `frame` = `TimeHost::next_frame()`. The time engine runs its own `ClockIn` on them and skips anything else. The options decide what follows, so the app doesn't filter.

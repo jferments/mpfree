@@ -77,8 +77,10 @@ pub struct Config {
     pub core: Option<usize>,
     /// SCHED_FIFO priority for the worker (on the MPC: 69, one below the
     /// audio thread's 70). None keeps what the worker inherits: a Linux
-    /// thread starts with the policy of the thread that made it, so a lane
-    /// made on the audio thread after it went real-time is real-time too.
+    /// thread starts with the policy of the thread that made it, unless
+    /// that thread asked for SCHED_RESET_ON_FORK, as mpfree-app's audio
+    /// thread does (then the worker starts at the normal policy). Its cores
+    /// are always inherited.
     pub fifo: Option<i32>,
     /// How long the worker spins for the next block after finishing one,
     /// before it sleeps. Zero: it sleeps at once (kind to the core, costs a
@@ -774,6 +776,26 @@ mod tests {
             lane.join(soon()).unwrap();
             assert_eq!(seen.load(Ordering::Relaxed), core);
         }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_helper_thread_goes_to_the_background_cores_at_normal_priority() {
+        let core = *os::allowed_cores().first().expect("some core");
+        os::set_background(&[core]);
+        assert_eq!(os::background_cores(), vec![core]);
+        let got = std::thread::spawn(|| os::background().map(|()| os::allowed_cores()))
+            .join()
+            .unwrap();
+        os::set_background(&[]);
+        assert_eq!(got, Ok(vec![core]));
+        assert!(os::background_cores().is_empty());
+        // None named: only the policy changes.
+        let all = os::allowed_cores();
+        let got = std::thread::spawn(|| os::background().map(|()| os::allowed_cores()))
+            .join()
+            .unwrap();
+        assert_eq!(got, Ok(all));
     }
 
     #[test]
