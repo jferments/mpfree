@@ -101,6 +101,13 @@
 //! meanwhile edits wait and their inserts take no events
 //! ([`Mixer::queue_insert`] says false).
 //!
+//! **One deadline per block** ([`Mixer::set_lane_deadline`]): the host can
+//! give the next block one deadline that every lane join in it keeps (each
+//! stage's inserts and the returns), in place of a wait that starts again
+//! at each join. The audio loop sets it from the sound card's queue, so
+//! however many stages are late in a block, the mixer never waits past the
+//! point where the card would run dry.
+//!
 //! **Returns a block late** ([`Mixer::set_pipelined_returns`], off by
 //! default): the returns' inserts can run on another core one block
 //! behind, so the reverb leaves the audio core. At the start of each block
@@ -1291,6 +1298,8 @@ pub struct Mixer {
     split: Option<Box<Split>>,
     /// Returns a block late on a second core, when on.
     pipe: Option<Box<Pipe>>,
+    /// The next block's deadline for every lane join ([`Mixer::set_lane_deadline`]).
+    deadline: Option<Instant>,
 }
 
 impl Mixer {
@@ -1361,6 +1370,7 @@ impl Mixer {
             probe: Probe::new(u64::MAX),
             split: None,
             pipe: None,
+            deadline: None,
         };
         m.reorder();
         m.aud = topo.audible(&m.sw);
@@ -1797,8 +1807,10 @@ impl Mixer {
     /// Runs pad channels' and tracks' inserts partly on another core with
     /// a lane (see the module docs), or stops that with `None`. `wait` is
     /// how long the mixer waits for the lane each stage before it plays
-    /// those strips without their inserts; set it to about a period (the
-    /// lane is late only when the period is lost anyway). Says how the
+    /// those strips without their inserts, unless
+    /// [`Mixer::set_lane_deadline`] gave the block one deadline; set it to
+    /// about a period (the lane is late only when the period is lost
+    /// anyway). Says how the
     /// lane started (its thread, pinning and priority). Control thread:
     /// starts or stops a thread, and waits up to a second for inserts still
     /// on the lane before stopping it.
@@ -1834,12 +1846,22 @@ impl Mixer {
         self.split = Some(Box::new(Split {
             lane,
             wait,
+            until: None,
             held: Bits::default(),
             posted: false,
             away: false,
             block: 0,
         }));
         Some(setup)
+    }
+
+    /// The next [`Mixer::process`]'s deadline for every lane join in it
+    /// (each stage's inserts, and the returns a block late): past it, those
+    /// strips are handled as late. It holds for that one block; without
+    /// one, each join waits its lane's own wait from when it starts. No
+    /// allocation.
+    pub fn set_lane_deadline(&mut self, deadline: Option<Instant>) {
+        self.deadline = deadline;
     }
 
     /// Whether inserts run partly on a second core ([`Mixer::set_lane`]).
@@ -1861,7 +1883,9 @@ impl Mixer {
     /// Runs the returns' inserts one block late on another core with a
     /// lane (see the module docs), or stops that with `None` (the block of
     /// return audio the lane held is dropped). `wait` is how long the mixer
-    /// waits for the lane at the returns; about a period. Says how the lane
+    /// waits for the lane at the returns, unless
+    /// [`Mixer::set_lane_deadline`] gave the block one deadline; about a
+    /// period. Says how the lane
     /// started. Control thread: starts or stops a thread, and waits up to a
     /// second for inserts still on the lane before stopping it.
     pub fn set_pipelined_returns(
@@ -1901,6 +1925,7 @@ impl Mixer {
         self.pipe = Some(Box::new(Pipe {
             lane,
             wait,
+            until: None,
             held: Bits::default(),
             out: Bits::default(),
             ran: Bits::default(),
@@ -2192,6 +2217,14 @@ impl Mixer {
         }
         let whole = self.profiling.then(Span::start);
         self.rolling = ctx.playing;
+        // This block's deadline, if the host set one, for every join in it.
+        let until = self.deadline.take();
+        if let Some(sp) = self.split.as_mut() {
+            sp.until = until;
+        }
+        if let Some(pp) = self.pipe.as_mut() {
+            pp.until = until;
+        }
         // Inserts away on a late lane come back first if they are done;
         // until they are, edits and latency changes wait.
         let mut away = match self.split.as_mut() {
@@ -2567,6 +2600,8 @@ impl Job for Chains {
 struct Split {
     lane: Lane<Chains>,
     wait: Duration,
+    /// This block's deadline from the host, in place of `wait`.
+    until: Option<Instant>,
     /// The strips whose inserts are on the lane (posted, or away).
     held: Bits,
     /// Posted this stage and not joined yet.
@@ -2676,7 +2711,8 @@ fn post(
 /// the strips keep the spare chains and silent blocks for this block.
 fn join(sp: &mut Split, strips: &mut [Strip], stats: &mut MixerStats) {
     sp.posted = false;
-    match sp.lane.join(Instant::now() + sp.wait) {
+    let deadline = sp.until.unwrap_or_else(|| Instant::now() + sp.wait);
+    match sp.lane.join(deadline) {
         Ok(job) => {
             give_back(job, strips);
             sp.held = Bits::default();
@@ -2756,6 +2792,8 @@ impl Job for Returns {
 struct Pipe {
     lane: Lane<Returns>,
     wait: Duration,
+    /// This block's deadline from the host, in place of `wait`.
+    until: Option<Instant>,
     /// Returns whose last block's input the job keeps, waiting to be run.
     held: Bits,
     /// Returns whose inserts are on the lane (posted, or away).
@@ -2830,7 +2868,8 @@ fn pipe_post(pp: &mut Pipe, strips: &mut [Strip], late: &Bits, len: usize, stats
 /// in the parts. Late: they stay away.
 fn pipe_join(pp: &mut Pipe, strips: &mut [Strip], stats: &mut MixerStats) {
     pp.posted = false;
-    match pp.lane.join(Instant::now() + pp.wait) {
+    let deadline = pp.until.unwrap_or_else(|| Instant::now() + pp.wait);
+    match pp.lane.join(deadline) {
         Ok(job) => {
             pipe_give_back(job, &pp.out, strips);
             pp.out = Bits::default();

@@ -227,7 +227,7 @@ impl DebugPages {
         };
         d.show_audio(ui);
         d.show_proc(ui);
-        DebugPages::set_engines(ui, &[(None, None); 6], Vec::new());
+        DebugPages::set_engines(ui, &[(None, None); engines::STAGES.len()], Vec::new());
         DebugPages::set_procs(ui, &procs::ProcView::default());
         Ok(d)
     }
