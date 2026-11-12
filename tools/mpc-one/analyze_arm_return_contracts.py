@@ -28,7 +28,12 @@ TARGETS = {
 }
 CALL = re.compile(r"^bl(?:x)?\s+(0x[0-9a-f]+)$", re.I)
 SET_R0 = re.compile(r"^(mov|mvn)\s+r0,#(0x[0-9a-f]+|\d+)$", re.I)
-CHECK_R0 = re.compile(r"^(cmp|cmn|tst)\s+r0,", re.I)
+CHECK_R0 = re.compile(r"^(cmp|cmn|tst|teq)\s+r0,", re.I)
+SUBS_R0_ZERO = re.compile(r"^subs\s+(r(?:1[0-2]|[0-9])),r0,#(?:0x0|0)$", re.I)
+COPY_R0 = re.compile(r"^(?:cpy|mov)\s+(r(?:1[0-2]|[0-9])),r0$", re.I)
+CONDITIONAL_BRANCH = re.compile(
+    r"^b(?:ne|eq|lt|le|ge|gt|hi|ls|cs|cc|mi|pl|vs|vc)\s", re.I
+)
 
 
 def validate_index(archive: zipfile.ZipFile) -> dict:
@@ -74,18 +79,45 @@ def scan_callsite(caller_addr: str, instructions: list[dict], target: str) -> li
         if not called or normalize_addr(called.group(1)) != target:
             continue
         next_ins = instructions[pos + 1: pos + 4]
-        immediate_check = bool(next_ins and CHECK_R0.match(next_ins[0]["text"]))
-        conditional_branch = bool(immediate_check and len(next_ins) > 1 and
-                                  re.match(r"^b(?:ne|eq|lt|le|ge|gt|hi|ls|cs|cc|mi|pl|vs|vc)\s",
-                                           next_ins[1]["text"]))
+        first = next_ins[0]["text"] if next_ins else ""
+        explicit_compare = bool(CHECK_R0.match(first))
+        subs_zero = SUBS_R0_ZERO.match(first)
+        immediate_test = explicit_compare or subs_zero is not None
+        test_kind = ("explicit_flags_test" if explicit_compare else
+                     "subs_zero_flags_test" if subs_zero else "not_observed")
+        conditional_branch = bool(
+            immediate_test and len(next_ins) > 1 and
+            CONDITIONAL_BRANCH.match(next_ins[1]["text"])
+        )
+        copies = []
+        for distance, instruction in enumerate(next_ins[:2], 1):
+            matched = COPY_R0.match(instruction["text"])
+            if matched:
+                # A close copy of r0 is evidence that the return is preserved,
+                # not proof its value is subsequently checked or propagated.
+                copies.append({
+                    "address": instruction["address"],
+                    "destination_register": matched.group(1),
+                    "instructions_after_call": distance,
+                })
         observed.append({
             "caller": caller_addr, "callee": target, "bl_address": inst["address"],
             "next_three": next_ins,
-            "immediate_r0_compare": immediate_check,
+            "immediate_r0_compare": explicit_compare,
+            "immediate_r0_test": immediate_test,
+            "r0_test_kind": test_kind,
             "conditional_branch_after_compare": conditional_branch,
-            "observation": ("Result in r0 compared and branched on" if conditional_branch else
-                            "Result in r0 compared" if immediate_check else
-                            "BL call observed; subsequent r0 use requires further analysis"),
+            "sub_zero_destination": subs_zero.group(1) if subs_zero else None,
+            "r0_copies": copies,
+            "observation": (
+                "Return status tested by " + test_kind + " and conditional branch"
+                if conditional_branch else
+                "Return status tested by " + test_kind
+                if immediate_test else
+                "Returned r0 copied into register; downstream use not yet traced"
+                if copies else
+                "BL call observed; subsequent r0 use requires further analysis"
+            ),
         })
     return observed
 
@@ -133,7 +165,15 @@ def summarize(ghidra: dict, index_check: dict, framing: dict | None = None) -> d
             "machine_listing_truncated": bool(fn.get("instruction_capture_limited", False)),
             "r0_constant_writes": detect_return_register_writes(ins),
             "observed_callsites": callsites,
-            "callers_immediately_comparing_r0": sorted({c["caller"] for c in callsites if c["immediate_r0_compare"]}),
+            "callers_immediately_comparing_r0": sorted({
+                c["caller"] for c in callsites if c["immediate_r0_compare"]
+            }),
+            "callers_immediately_testing_r0": sorted({
+                c["caller"] for c in callsites if c["immediate_r0_test"]
+            }),
+            "callers_copying_r0": sorted({
+                c["caller"] for c in callsites if c["r0_copies"]
+            }),
             "instruction_evidence_sha256": hashlib.sha256(
                 json.dumps(fn.get("machine_instruction_evidence", []), sort_keys=True).encode()
             ).hexdigest() if ins else None,
@@ -150,7 +190,9 @@ def summarize(ghidra: dict, index_check: dict, framing: dict | None = None) -> d
         ),
         "interpretation_limits": [
             "ARM AAPCS normally returns integer status in r0; actual callers must be examined.",
-            "Ghidra void inference is contradicted where a caller BL is followed by CMP r0 and a conditional branch.",
+            "Ghidra void inference is contradicted where a caller BL is followed by CMP r0 or SUBS rx,r0,#0 and a conditional branch.",
+            "SUBS rx,r0,#0 tests condition flags AND copies the return value; do not mistake it for unused r0.",
+            "CPY/MOV rx,r0 demonstrates return-value capture, not yet a verified downstream status check.",
             "Only captured instruction evidence is assessed; missing callsites are not proof of absent callers.",
             "A written r0 value is only a candidate return until its control flow to an epilogue is checked.",
             "No actual AKAI updater code was executed and no device was accessed.",
@@ -169,8 +211,10 @@ def to_markdown(report: dict) -> str:
         lines.extend(["", "### " + item["function"] + " — " + item["role"],
                       "- Ghidra inferred void return: " + str(item["ghidra_void_signature"]),
                       "- Captured ARM instructions: " + str(item["machine_instructions_captured"]),
-                      "- Callers immediately comparing r0: " +
-                      (", ".join(item["callers_immediately_comparing_r0"]) or "none in captured evidence")])
+                      "- Callers immediately testing r0 (CMP/TST/CMN/TEQ or SUBS-zero): " +
+                      (", ".join(item["callers_immediately_testing_r0"]) or "none in captured evidence"),
+                      "- Callers copying r0: " +
+                      (", ".join(item["callers_copying_r0"]) or "none in captured evidence")])
         for site in item["r0_constant_writes"]:
             lines.append(f"- r0 write {site['address']}: {site['instruction']} (int32 {site['value_int32']})")
         for call in item["observed_callsites"]:
@@ -206,6 +250,12 @@ def generate(input_zip: Path, output_zip: Path) -> dict:
             "functions": len(report["functions"]),
             "immediate_r0_compare_callsites": sum(
                 len([c for c in fn["observed_callsites"] if c["immediate_r0_compare"]])
+                for fn in report["functions"]),
+            "immediate_r0_test_callsites": sum(
+                len([c for c in fn["observed_callsites"] if c["immediate_r0_test"]])
+                for fn in report["functions"]),
+            "r0_copy_callsites": sum(
+                len([c for c in fn["observed_callsites"] if c["r0_copies"]])
                 for fn in report["functions"])}
 
 
