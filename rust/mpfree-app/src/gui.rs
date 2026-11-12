@@ -6788,7 +6788,7 @@ mod tests {
             "sample: recorded as a loop, cut: it was going round: Master take 1, 2.61 s stereo on \
              pad A6, warped at {tempo:.1} BPM"
         );
-        assert!(log.iter().any(|l| *l == line), "{line}\n{log:?}");
+        assert!(log.contains(&line), "{line}\n{log:?}");
         let region = |p: &Player, pad: usize| {
             p.sample.project(0).unwrap().pad(pad).unwrap().layers[0]
                 .region
