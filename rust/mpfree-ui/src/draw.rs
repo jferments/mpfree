@@ -178,6 +178,94 @@ pub fn speaker(cx: &mut PaintCx, x: i32, y: i32, c: Color, muted: bool) {
     }
 }
 
+/// The transport symbols a button carries beside its name, as on the MPC's
+/// own panel and every recorder: Record a filled circle, Overdub a ring,
+/// Play a triangle, Stop a square (Jay, 12 Nov 08:11Z).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Symbol {
+    Record,
+    Overdub,
+    Play,
+    Stop,
+}
+
+impl Symbol {
+    /// The symbol a button named `label` carries, if any.
+    pub fn for_label(label: &str) -> Option<Symbol> {
+        match label {
+            "Record" | "Rec" => Some(Symbol::Record),
+            "Overdub" => Some(Symbol::Overdub),
+            "Play" => Some(Symbol::Play),
+            "Stop" => Some(Symbol::Stop),
+            _ => None,
+        }
+    }
+
+    /// Its colour on an unlit button: red to record, green to play, the
+    /// text's colour to stop.
+    pub fn colour(self, t: &Theme) -> Color {
+        match self {
+            Symbol::Record | Symbol::Overdub => t.bad,
+            Symbol::Play => t.good,
+            Symbol::Stop => t.text,
+        }
+    }
+}
+
+/// A transport symbol centred on (x, y), `size` pixels across.
+pub fn symbol(cx: &mut PaintCx, sym: Symbol, x: i32, y: i32, size: i32, c: Color) {
+    let h = (size / 2).max(2);
+    let square = Rect::new(x - h, y - h, 2 * h, 2 * h);
+    match sym {
+        Symbol::Record => cx.canvas.fill_round_rect(square, h, c),
+        Symbol::Overdub => cx.canvas.stroke_round_rect(square, h, 2, c),
+        Symbol::Stop => cx.canvas.fill_rect(square.inset(1), c),
+        Symbol::Play => {
+            // Pointing right, row by row: as wide as 1.7 of its half height.
+            let w = h * 17 / 10;
+            for dy in -h..h {
+                let from_mid = if dy < 0 { -dy - 1 } else { dy };
+                let len = ((h - from_mid) * 2 * w / (2 * h)).max(1);
+                cx.canvas.fill_rect(Rect::new(x - w / 2, y + dy, len, 1), c);
+            }
+        }
+    }
+}
+
+/// A button's name with its transport symbol (if it has one) before it,
+/// the two centred together in `r`.
+#[allow(clippy::too_many_arguments)]
+pub fn symbol_label(
+    cx: &mut PaintCx,
+    r: Rect,
+    sym: Option<Symbol>,
+    font: FontId,
+    px: f32,
+    ink: Color,
+    sym_colour: Color,
+    label: &str,
+) {
+    let Some(sym) = sym else {
+        cx.text(font, px, r, Align::Center, ink, label);
+        return;
+    };
+    let size = (px as i32).clamp(8, 14);
+    let gap = 7;
+    let tw = cx.measure(font, px, label);
+    let total = size + gap + tw;
+    let x0 = r.x + (r.w - total).max(0) / 2;
+    symbol(cx, sym, x0 + size / 2, r.y + r.h / 2, size, sym_colour);
+    let tx = x0 + size + gap;
+    cx.text(
+        font,
+        px,
+        Rect::new(tx, r.y, (r.right() - tx).max(0), r.h),
+        Align::Left,
+        ink,
+        label,
+    );
+}
+
 /// The square a speaker centred on (x, y) answers taps in.
 pub fn speaker_hit(x: i32, y: i32) -> Rect {
     Rect::new(x - 16, y - 16, 32, 32)
