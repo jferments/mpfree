@@ -1354,6 +1354,34 @@ impl SamplePage {
                 self.lines.push(format!("sample: {kit}: {what}"));
                 self.refresh(ui);
             }
+            PlayAction::KeyFade(fade) => {
+                self.lift();
+                let kit = self.kit;
+                let Some(project) = self.projects.get_mut(kit) else {
+                    return;
+                };
+                let what = match a.apply(project) {
+                    Ok(()) => {
+                        self.edits += 1;
+                        if let Some(d) = self.dirty.get_mut(kit) {
+                            *d = true;
+                        }
+                        match fade {
+                            0 => "key fade off, the zones edge to edge".to_string(),
+                            1 => {
+                                "key fade 1 note, the zones that meet crossfade over it".to_string()
+                            }
+                            n => format!(
+                                "key fade {n} notes, the zones that meet crossfade over them"
+                            ),
+                        }
+                    }
+                    Err(e) => format!("key fade not changed ({e:?})"),
+                };
+                let kit = self.kit_text_of(kit);
+                self.lines.push(format!("sample: {kit}: {what}"));
+                self.refresh(ui);
+            }
             PlayAction::Pad { pad, gesture, .. } => {
                 let (kit, pad, gesture) = (self.kit, *pad, *gesture);
                 if self.gesture.as_ref().is_some_and(|g| g.id != gesture) {
