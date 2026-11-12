@@ -1,21 +1,56 @@
 <!--
 status: changing
-covers: rust/mpfree-sampler rust/mpfree-sampler-ui rust/mpfree-app/src/sample_page.rs
-checked: 2026-11-12 b9b7477
+covers: rust/mpfree-sampler rust/mpfree-sampler-ui rust/mpfree-grain rust/mpfree-app/src/sample_page.rs rust/mpfree-app/src/sampler.rs
+checked: 2026-11-12 2469645
 -->
 
 # Sampling
 
-Record a sample, chop it across the pads, and shape how each pad plays, on the Sample tab.
+**Sampling** means taking a recording (a drum break, a chord from a record, your own voice) and playing it from the pads. The **Sample** tab is where you shape it: trim it, chop it into pieces across the pads, and decide how each pad plays.
 
-This chapter is not written yet. It will cover:
+The Sample tab always works on one pad at a time. **Hit a pad** to pick it; its name and sound are at the top left of the page. The tab has a page for each job, along the top right: **Pads**, **Wave**, **Chop**, **Play**, **Grain** and **FX**.
 
-- Recording a sample
-- The Wave page
-- Chopping: by hits, by beats, by hand
-- How a pad plays
-- Grain
-- Pad effects
+> [!NOTE]
+> Recording a new sample from the inputs or from MPFree's own sound onto a pad is coming to the Sample tab soon. Until then, loops recorded with the looper and the sounds in your kits are what you sample from.
+
+## Pads: which sound is on which pad
+
+{{shot: sample-pads | The Pads page: the kit's pads on the left, the picked pad's settings in the middle, and the sounds in the kit on the right.}}
+
+The **Pads** page shows the 16 pads of the bank and what each holds. Tap a pad to pick it (tap again to hear it). For the picked pad you set its **sound**, how it plays (**Mode**: **One shot** plays to the end, **Gate** only while you hold the pad, **Toggle** starts and stops with each hit, **Loop** repeats its loop region, **Granular** plays it as grains), how many notes can ring at once (**Polyphony**), a **mute group** (pads in the same group cut each other off, like an open and a closed hi-hat), and its **level**, **pan** and **tune**. **Copy**, **Paste** and **Clear** move pads around; **Put on** places the sound picked on the right onto the pad.
+
+## Wave: trim and loop
+
+{{shot: sample | The Wave page: the whole sample at the top, the zoomed region below, and the region's settings on the right.}}
+
+The **Wave** page shows the sample. Set where it **starts** and **ends**, and where its **loop** starts and ends, with the four Q-Links. Turn the data wheel to zoom in. Tap the wave to hear it. On the right, set the region's **gain**, **tune**, **crossfade** (smooths a loop's seam), **warp** (play in time with the tempo) and **reverse**.
+
+## Chop: slice across the pads
+
+{{shot: sample-chop | The Chop page: the break cut into 15 slices at its hits, ready to put on pads A2 to A16.}}
+
+**Chopping** cuts a sample into slices, one per pad, so you can replay a drum break in a new order or pick out single hits.
+
+1. Pick a **Method**: **Transient** cuts at each hit, **Beat** on the beats, **Grid** into equal pieces, **Silence** at the gaps, and **Manual** leaves the cuts to you.
+2. Turn **Sensitivity** up for more slices, down for fewer.
+3. Tap a slice to hear it. **Split** and **Merge** add or remove a cut by hand; the Q-Links move the picked slice's start.
+4. Tap **Chop to** to put the slices on the pads, starting at the first pad you chose.
+
+## Play: how a pad sounds
+
+{{shot: sample-play | The Play page: velocity layers, the volume envelope drawn over the sound, and the filter.}}
+
+The **Play** page shapes how the picked pad sounds each time you hit it:
+
+- **Layers:** different sounds for soft and hard hits. Drag a layer's edges to set its velocity range.
+- **Envelope:** how the volume rises and falls: **attack**, **hold**, **decay**, **sustain** and **release**. Drag the points on the drawing, or use the Q-Links.
+- **Filter:** darken or thin out the sound. Drag the dot.
+
+## Grain: stretch and smear
+
+{{shot: sample-grain | The Grain page: tiny grains of the sound play at once, around the position you pick.}}
+
+**Granular** playback plays the sound as a cloud of tiny overlapping pieces (grains). It can freeze a moment, stretch it into a pad, or scatter it into texture. Touch the square to move the **position** in the sound and the **size** of the grains together, and use the Q-Links for **position**, **size**, **density** and **pitch**. **Scan speed** moves through the sound on its own.
 
 ## Playing a kit on keys
 
@@ -37,3 +72,6 @@ The Keys rows in the Pad list do the same with numbers: Keys makes one pad a key
 
 > [!MPC]
 > On an MPC a keygroup instrument is a program type of its own. In MPFree keygroups are pads of an ordinary kit, so any kit can become one with Map to keys.
+
+> [!MPC]
+> The MPC's Sampler, Sample Edit and Program Edit modes are all on one tab in MPFree, always on the pad you last hit. **SAMPLER** opens the Sample tab, **SAMPLE EDIT** its Wave page, and **PROG EDIT** its Pads page (in the next build). **UNDO** takes back any edit on the Sample tab.

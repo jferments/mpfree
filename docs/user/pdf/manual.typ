@@ -25,7 +25,7 @@
     #text(fill: rgb("#c9d1dc"), size: 24pt)[User Manual]
   ]
   #place(top + left, dx: 2.2cm, dy: 11.2cm)[
-    #box(width: 16.6cm, clip: true, radius: 6pt, image("shots/play.png", width: 100%))
+    #box(width: 16.6cm, clip: true, radius: 6pt, image("shots/play-all-loop.png", width: 100%))
   ]
   #place(bottom + left, dx: 2.2cm, dy: -2.2cm)[
     #text(fill: rgb("#8b95a5"), size: 9.5pt)[
