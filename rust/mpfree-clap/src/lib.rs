@@ -852,6 +852,17 @@ fn key_of(p: &ParamSpec) -> OwnedParamKey {
     )
 }
 
+/// A plugin's range as [`ParamInfo::clamp`] needs it: finite ends (0 and 1
+/// stand in for one that is not), the lower first, and the default inside.
+/// `f32::clamp` panics on a NaN or reversed range, and a plugin (or a
+/// sandboxed plugin process) may report anything.
+fn safe_range(p: &ParamSpec) -> (f32, f32, f32) {
+    let finite = |x: f32, or: f32| if x.is_finite() { x } else { or };
+    let (a, b) = (finite(p.min, 0.0), finite(p.max, 1.0));
+    let (min, max) = if a <= b { (a, b) } else { (b, a) };
+    (min, max, finite(p.default, min).clamp(min, max))
+}
+
 /// The `'static` descriptions for a plugin's parameter list; their ids are
 /// their positions. Each distinct (plugin, list) is leaked once, for the
 /// life of the program.
@@ -869,24 +880,27 @@ pub fn intern_params(plugin_id: &str, list: Vec<ParamSpec>) -> &'static [ParamIn
     let infos: Vec<ParamInfo> = list
         .iter()
         .enumerate()
-        .map(|(i, p)| ParamInfo {
-            id: i as u16,
-            name: leak(&p.name),
-            group: leak(&p.group),
-            min: p.min,
-            max: p.max,
-            default: p.default,
-            unit: Unit::None,
-            curve: match &p.curve {
-                CurveSpec::Linear => Curve::Linear,
-                CurveSpec::Stepped => Curve::Stepped,
-                CurveSpec::Toggle => Curve::Toggle,
-                CurveSpec::Choice(names) => {
-                    let names: Vec<&'static str> = names.iter().map(|n| leak(n)).collect();
-                    Curve::Choice(Box::leak(names.into_boxed_slice()))
-                }
-            },
-            readonly: p.readonly,
+        .map(|(i, p)| {
+            let (min, max, default) = safe_range(p);
+            ParamInfo {
+                id: i as u16,
+                name: leak(&p.name),
+                group: leak(&p.group),
+                min,
+                max,
+                default,
+                unit: Unit::None,
+                curve: match &p.curve {
+                    CurveSpec::Linear => Curve::Linear,
+                    CurveSpec::Stepped => Curve::Stepped,
+                    CurveSpec::Toggle => Curve::Toggle,
+                    CurveSpec::Choice(names) => {
+                        let names: Vec<&'static str> = names.iter().map(|n| leak(n)).collect();
+                        Curve::Choice(Box::leak(names.into_boxed_slice()))
+                    }
+                },
+                readonly: p.readonly,
+            }
         })
         .collect();
     let infos: &'static [ParamInfo] = Box::leak(infos.into_boxed_slice());

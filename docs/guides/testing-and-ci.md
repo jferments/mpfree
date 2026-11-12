@@ -31,6 +31,7 @@ filters, so the check always reports.
 | `lint` | `cargo clippy --workspace --all-targets` with warnings as errors, and `cargo fmt --check`, on a pinned toolchain | ~1 min |
 | `rust` | All workspace tests in debug and release; the `mpfree-bench` no-allocation check; host self-tests and fixed-output renders; C++/Rust WAV parity; the ARMv7 hard-float cross-build, ELF checks, and ARM tests and previews under qemu | ~2-3 min warm |
 | `splash-gl` | SDL3/GLES startup screen built from source and rendered headless with Mesa | ~1 min warm |
+| `instructions` | Instructions per 128-frame block for every `mpfree-bench` case under callgrind, against `rust/mpfree-bench/instructions.txt`; fails when a case rises more than 5 % (see [profiling](../project/profiling.md#instruction-counts-the-instructions-ci-job)) | ~2 min warm |
 | `coverage` | Line coverage per crate (report only, never fails a PR); on `main` and by hand | ~5 min |
 
 The coverage table appears in the run's summary page, and the lcov file is
@@ -40,7 +41,7 @@ the upload fails without failing the run.
 ### Where it runs
 
 GitHub-hosted Actions minutes ran out on 2026-11-11. Since then every job runs
-on two self-hosted runners, `mpfree-ci` and `mpfree-ci-2` (label `mpfree-ci`),
+on four self-hosted runners, `mpfree-ci` to `mpfree-ci-4` (label `mpfree-ci`),
 inside the CI VM `project-after-ci` that also runs Project After's and
 PlantGen's CI. The setup, resource limits, job guard and undo are documented in
 jferments/ci-infrastructure `docs/mpfree-runner.md`.
@@ -63,8 +64,13 @@ Things that differ from GitHub's hosts, and that the workflow handles:
 - Only Jay's own pushes and PRs from this repository's branches run. The
   VM's job guard refuses forks and other actors.
 
-Two runners means at most two jobs at once; the rest queue. A run waiting for
-a runner is waiting, not failed.
+Four runners means at most four jobs at once; the rest queue. A run waiting
+for a runner is waiting, not failed. GitHub's list of runs can show a run as
+queued while its jobs are already running: to see what the runners are doing,
+look at the jobs of each run, not the run's status.
+
+If the account's artifact storage is full, the coverage job's lcov upload
+fails without failing the run (the table is in the run summary anyway).
 
 ## Running it locally
 
@@ -186,12 +192,21 @@ In order. Each step is its own PR.
    looper. Half a minute of that may not allocate or free once. Recording
    into a clip is left out: each finished note is an edit, and the clips are
    compiled again on that thread. Bench timings are not a gate, because
-   wall-clock speed on a shared VM varies from run to run. The stable way to
-   gate on CPU cost later is to count instructions per engine (valgrind or
-   qemu-arm's instruction counter) and fail on a regression past a set
-   margin; that needs the tool installed on the runners first.
-5. **Fuzz and property tests** for everything that reads files or device
-   input: WAV, MIDI, touch events, kit files, the DX7 sysex importer.
+   wall-clock speed on a shared VM varies from run to run. CPU cost is gated
+   by instruction counts instead: the `instructions` job counts every bench
+   case's instructions per block under callgrind and fails when one rises
+   more than 5 % above its committed baseline.
+5. **Damaged input** (done): every reader of files and device input has a
+   `tests/robust_*.rs` that feeds it thousands of damaged copies of good
+   input (bits flipped, fields set to edge values, cut short, grown,
+   repeated) and checks the answer is an error or something safe to use,
+   never a panic: WAV in the sampler and wavetables, DX7 sysex (then played
+   in the FM engine), kits files, the plugin process's wire messages and
+   parameter ranges, touchscreen events, MIDI from the controller, arp
+   patterns and libraries (they must write back to what they read), and
+   settings files. The damage comes from `rust/test-support/mutate.rs`,
+   which needs no crate and no nightly toolchain, and the same seed gives
+   the same cases everywhere. A new reader gets the same kind of test.
 6. **End-to-end headless scenarios** under qemu ARMv7: scripted pad and touch
    input in, audio and screen fingerprints out.
 7. **Nightly long run:** soak tests and sanitizers. This needs the VM's job
