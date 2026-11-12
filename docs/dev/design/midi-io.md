@@ -99,10 +99,10 @@ Tests: `cargo test -p mpfree-midi`. They cover:
 |---|---|---|---|
 | M0 | The read-only `midi-cv`, `cv-scale` and `midi-out` captures above (all done 2026-11-12) | read-only (passive usbmon, stock 3.6) | done |
 | M1 | `mpfree-midi`, host only | no | done: PR #177, merged 2026-11-12 (train 14, main `7ecb7e4`) |
-| M2 | App wiring for input. The app reads the DIN In cable (from M0) and USB keyboards **for reading**, plays them on the armed track and logs them on the Dev tab's MIDI page (built, see [M2: keyboards in](#m2-keyboards-in)). The settings (ports, input mode, clock source) go in the mixer's I/O view, which waits on the FX and app threads | a device round on the test boot: opens MIDI inputs for reading | input built; device round and the I/O view to come |
+| M2 | App wiring for input. The app reads the DIN In cable (from M0) and USB keyboards **for reading**, plays them on the armed track and logs them on the Dev tab's MIDI page (built, see [M2: keyboards in](#m2-keyboards-in)). The settings (ports, input mode, clock source) are in the mixer's I/O view (on screen since #252) | a device round on the test boot: opens MIDI inputs for reading | input and the I/O view built; the device round to come |
 | M3 | MIDI tracks out. A seq destination for MIDI out, and cable 2 out written with paced bytes from a writer thread that sleeps to each message's frame (sub-period timing; to be measured on the unit, aiming under Akai's 5 to 8 ms) | **state-changing, RAM only**: sends note bytes on cable 2 to the MIDI Out jack. Undo: power-cycle. No SysEx is ever sent there | built on the host behind `mpfree app --midi-out` (see [M3: tracks out](#m3-tracks-out)); the device round waits on the owner's go |
-| M4 | Clock out (DIN, USB) from the transport, and clock in, with the transport following it | as M3 for out | clock out on the 5-pin jacks built on the host (see [M4: clock out](#m4-clock-out)); clock in is the time engine thread's follower (`TimeHost::follow`, `clock_in`), wired here when it lands; the device round waits on the owner's go |
-| M5 | MIDI Learn: the chain editor's Learn arms it, a control on a keyboard takes the knob, learned controls are the project's (`MidiSetup::learn`) and listed in the I/O view's MIDI section | as M2 (reads only) | built on the host (see [M5: MIDI Learn](#m5-midi-learn)); on the MPC it rides on the M2 round; the list on screen and keeping them with the project wait on the app thread wiring the I/O view and the `midi` part |
+| M4 | Clock out (DIN, USB) from the transport, and clock in, with the transport following it | as M3 for out | clock out on the 5-pin jacks built on the host (see [M4: clock out](#m4-clock-out)); clock in wired to the time engine thread's follower (see [M4: clock in](#m4-clock-in)), read only on the MPC; the device round waits on the owner's go |
+| M5 | MIDI Learn: the chain editor's Learn arms it, a control on a keyboard takes the knob, learned controls are the project's (`MidiSetup::learn`) and listed in the I/O view's MIDI section | as M2 (reads only) | built on the host (see [M5: MIDI Learn](#m5-midi-learn)); on the MPC it rides on the M2 round; keeping them with the project waits on the app thread's `midi` part |
 | M6 | CV out: a hardware layer that sends `cv_wire` CC pairs on cable 1 from `CvEngine`'s changes, then a first output test with a multimeter on one jack (known counts, read the volts, find which jack each output is), then a calibration page | **state-changing, RAM only**: sends control changes on cable 1 (channel 16, CC 0 to 7). Undo: power-cycle. No SysEx | CV 1 to 4 built on the host behind `mpfree app --cv-out` (see [M6: CV out](#m6-cv-out)); the meter round, CV 5 to 8 and tuning wait on the owner's go |
 | Later | USB-B as a USB-MIDI device to a computer (the UDC gadget: rule zero, not before the boot work allows it); MIDI file import and export (the arp already writes MIDI files) | — | — |
 
@@ -179,6 +179,19 @@ Built 2026-11-12 in `MidiOut::clock` (`rust/mpfree-app/src/midi_out.rs`), on the
 - **Order.** The clock is queued before the period's notes, and the queue is sorted by frame only (`OutQueue::sort_by_frame`), keeping the order pushed: Song Position must come before Continue, which `OutQueue::sort` (real-time bytes first) would swap.
 - **Tests.** Start and 48 pulses a second at 120 BPM while playing, nothing while stopped; Always; a locate; a count-in; turned on and off while playing; and `rt_safety` plays a clip on MIDI Out with clock on for 4,000 periods with no allocation.
 
+## M4: clock in
+
+Built 2026-11-12 in `MusicIn` (`rust/mpfree-app/src/midi_in.rs`) and the app's loop, on the time engine thread's follower (`rust/mpfree-app/src/time/follow.rs`, described in [midi-clock.md](midi-clock.md)). It only reads, from the ports M2 already reads, so it needs no round of its own.
+
+- **The setting.** The I/O view's Sync section: "Tempo from" MPFree or a port (by name, so a USB device plugged in later is found), and "Start and stop" and "Position" (both on by default). `MusicIn::sync` turns them into `time::Follow` on each generation of the model, and sets `Built::clock_in`, so the Sync section's rows no longer say following isn't built.
+- **The leader's bytes.** `MusicIn::bytes` keeps the followed port's clock (F8), Start, Continue, Stop and Song Position with its two data bytes, in a 64-byte buffer for the period; anything else is left out, and a status byte that cuts a Song Position short is kept so the follower drops it too. Past 64 bytes in a period (more than any clock sends) bytes are counted at exit.
+- **Each period**, before `TimeHost::advance`: `MusicIn::leader_clock` hands the options and the bytes to `TimeHost::follow` and `TimeHost::clock_in`, at `TimeHost::next_frame()` (read at the period's top, so up to a period late, about half a period on average). `follow_tempo` with the app's tempo is ignored while the clock arrives.
+- **The tempo.** After `advance`, `TimeHost::followed_bpm()` becomes the app's tempo (`App::set_tempo`, rounded to 0.1 BPM, without its log line) when it has moved more than 0.08 BPM from it, so the tempo chip, Note Repeat, the arps and tempo-synced effects follow the leader without flicker. While `followed_bpm()` is Some, the loop sends `ToUi::ClockFrom(Some(name))`, and `None` when it ends, only when it changes: `MusicIn::leader_name` gives "MIDI In" for the 5-pin jack and a USB device's own name, and the tempo chip reads "120.0 from MIDI In" (layout spec, section 4d). When the clock stops arriving the follower lets go and the transport keeps the last tempo.
+- **The log.** "clock arriving …; MPFree follows it" (or "not followed: the tempo isn't from this port") once per port; the time engine's status line counts jumps to the leader's position and lost clocks.
+- **Sound path.** No allocation: the bytes go through a fixed buffer, and `MusicIn::bytes` borrows the port's name for its log lines instead of building one.
+- **Tests.** `the_followed_port_hands_its_clock_on` (what is kept, from which port, with which options) and `a_clock_on_the_jacks_sets_the_tempo_and_starts_the_song` (a 100 BPM clock with Start through `MusicIn` and the follower, as the loop runs it: 100 BPM within 0.1, and playing). The follower's own timing tests are the time engine's.
+- **Not yet.** Thru; following from USB-B (a computer).
+
 ## M5: MIDI Learn
 
 Built 2026-11-12. Host-tested only. On the MPC it only reads (the same inputs as M2), so it needs no round of its own.
@@ -213,7 +226,7 @@ The device round (the owner's go first, with exact steps and undo): with nothing
 
 ## A project's settings and the I/O view's sections
 
-Built 2026-11-12, not yet wired into the app (that waits on the app thread, which owns `gui.rs`):
+Built 2026-11-12, and on screen since the app thread's #252 (the I/O icon; `ToUi::IoModel` hands the sections the model the sound loop shares):
 
 - **`mpfree_midi::setup::MidiSetup`**: a project's MIDI, sync and CV settings. Ports are named, not numbered (`DIN_NAME`, "MIDI", for the 5-pin jacks), so a project names "Digitakt" and the app finds it when it is plugged in. Each track has one output setting, `TrackOut` (port and channel together, with program and bank). Each port has its input (Plays tracks, Learn only, Both; Both by default), clock out (Off, While playing, Always; Off by default) and thru (off by default). The tempo is MPFree's own or a port's clock, with follow start/stop and follow position. Each of the 8 CV outputs has a `CvAssign`. The text is `key = value` lines after `mpfree-midi 1`, only what differs from the defaults; a line that can't be read is skipped and named in a warning, never dropped silently.
 - **`rust/mpfree-midi-ui`**: the MIDI, Sync and CV sections of the mixer's I/O view, through `mpfree_mixer_ui::IoSection`. They share an `IoModel`: the setup, `Live` facts the app fills in (ports plugged in and when each last received something, track names, clock arriving, CV volts) and `Built`, which says which parts of MIDI this build has. A setting whose part isn't working in this run is kept and says so on its own row ("sends nothing: MIDI out is off", "thru does nothing yet", "sends nothing: no output to Keystep 37 yet"), as does one for a device that isn't plugged in, following the owner's rule. A tap on a setting changes it (a choice steps, "Plays on" opens a picker with the port and the channel on one page); the wheel selects a row, - and + step the selected setting, and the Q-Links take the row's settings. `MidiPart` is the project's `midi` part (`parts/midi.txt`); lines it couldn't read are counted on the MIDI section and named in the log.
@@ -236,3 +249,23 @@ Where they live (the owner, 2026-11-12): MIDI and sync are **project** settings,
 | MIDI log | the Dev tab's MIDI page | in and out per port, filters by port and kind, clock timing and counts |
 
 The six decisions in the design doc's "Decisions for Jay" table are settled: where the settings live changed as above, and the other five (clock out per port, Learn scopes, port input names, live note timing, thru default) were agreed as recommended.
+
+## What's left
+
+At the thread's handoff (2026-11-12), M1 to M6 are built on the host, and nothing has been tried on an MPC since the M0 captures.
+
+- **Waiting on the app thread.** The project's `midi` part (`MidiPart`), so `MidiSetup` is saved with the project: ports, track outputs, CV jobs, Tempo from and learned controls. Until it lands they can be set in the I/O view (on screen since #252, with the tempo chip's `ToUi::ClockFrom`), but they last until MPFree quits.
+- **Device rounds, each with the owner's own go.**
+  - M2, read-only: keyboards in. MIDI Learn and clock in only read, so they ride on it.
+  - M3 and M4: notes and clock out of the MIDI Out jack (cable 2), with `--midi-out`.
+  - M6: a meter on the CV jacks, with `--cv-out`, to learn which jack is which output and the volts at full scale.
+- **After the meter round.** CV 5 to 8 (CC 8 to 15 by the pattern, never seen), the measured full scale in `cv_wire::counts`, and a tuning page for each output.
+- **Not built yet.**
+  - Thru, and USB devices as outputs.
+  - MIDI Learn from any value on the screen (SHIFT + a touch, in the layout spec), and from synth parameters, which are counted as misses for now.
+  - A range, direction and takeover for each mapping on screen, and mappings kept outside a project.
+  - One keyboard playing several tracks by channel.
+  - A delay per port in Prefs.
+  - USB-B as a MIDI device to a computer, which needs its own rule zero review.
+  - Filters on the Dev tab's MIDI page.
+  - Stamping clock bytes half a period earlier (see [midi-clock.md](midi-clock.md), Timing).
