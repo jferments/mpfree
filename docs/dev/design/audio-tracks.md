@@ -36,7 +36,15 @@ Every region fades in over `FADE` (64) frames from its start and plays on `FADE`
 
 ## Time
 
-A region sits on song ticks, so it stays on its bar when the tempo before it changes. Its audio plays sample for sample from the region's start, the way a DAW plays audio that is not warped. At a tempo other than the one it was recorded at, it does not stretch, so a region longer than a bar drifts against the bars. Time-stretching a take to a new tempo is a later step, using `mpfree-stretch` (phase vocoder on a worker, already on main) to print a stretched copy.
+A region sits on song ticks, so it stays on its bar when the tempo before it changes. Its audio plays sample for sample from the region's start, the way a DAW plays audio that is not warped. At a tempo other than the one it was recorded at, it doesn't stretch by itself, so a region longer than a bar drifts against the bars until the take is fitted (below).
+
+**Fitting a take to a new tempo** ([`stretch.rs`](../../rust/mpfree-audiotracks/src/stretch.rs)) keeps its pitch:
+
+1. A take remembers the tempo it was recorded at (`TakeInfo::bpm`), and `stretch::fit_ratio(recorded, now)` says how much longer it must be.
+2. Off the audio thread, the host reads the take with `read_take`, runs a `StretchJob` (the `mpfree-stretch` phase vocoder that keeps hits sharp) in steps on a worker, and loads the result under `free_take_id()` with `load_take`. The new take keeps the old one's anchor, so its frame 0 stays on the same tick.
+3. Once it has copied in, `Command::Swap { old, new, ratio }` plays it wherever the old take played, with each region's `src` scaled by the ratio, as one undo step. The old take stays until it is forgotten, so Undo goes back to it.
+
+The stretch is one ratio over the whole take. That is right for a take recorded at one tempo and played at one tempo. A test records a 441 Hz tone at 240 BPM, halves the tempo and fits the take: the take then fills its bar again, still at 441 Hz.
 
 Positions use the transport's tempo map (`process` takes it), so a tempo map with steps plays audio in the right place: `frames_from` and `tick_after` walk the map's segments.
 
@@ -98,6 +106,6 @@ Each case is an 8-bar song loop with every track comped so that two takes crossf
 ## Not built yet
 
 - Recording to disk, for tracks longer than the RAM pool.
-- Time-stretch to a new tempo (with `mpfree-stretch`).
+- Fitting takes on its own when the tempo changes: the host runs the stretch worker (as `LoopHost` does for loop prints).
 - The pad player's wiring and the Song view's audio lanes and take lanes. Saving is built in the engine (above); the project browser writes the files once it is in the app.
 - Device runs. Opening the line input on the MPC needs Jay's go, step by step (rule zero).

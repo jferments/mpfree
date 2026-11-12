@@ -11,7 +11,7 @@
 //! rate=44100
 //! track=0 input=left monitor=auto level=1 pan=0 muted=0 solo=0
 //! region start=0 end=3840 take=3 src=0 gain=1 fade_in=0 fade_out=0
-//! take=3 track=0 group=1 pass=0 anchor=-12.5 frames=44100 channels=1 file=3f0c.wav
+//! take=3 track=0 group=1 pass=0 bpm=120 anchor=-12.5 frames=44100 channels=1 file=3f0c.wav
 //! ```
 //!
 //! A line is `key=value` words; `file=` comes last and takes the rest of
@@ -53,6 +53,8 @@ pub struct TakeFile {
     pub track: usize,
     pub group: u16,
     pub pass: u16,
+    /// The tempo it was recorded at (0: not known).
+    pub bpm: f64,
     pub anchor: f64,
     pub frames: usize,
     pub channels: usize,
@@ -116,8 +118,8 @@ pub fn to_text(saved: &Saved) -> String {
     }
     for k in &saved.takes {
         s.push_str(&format!(
-            "take={} track={} group={} pass={} anchor={} frames={} channels={} file={}\n",
-            k.id, k.track, k.group, k.pass, k.anchor, k.frames, k.channels, k.file
+            "take={} track={} group={} pass={} bpm={} anchor={} frames={} channels={} file={}\n",
+            k.id, k.track, k.group, k.pass, k.bpm, k.anchor, k.frames, k.channels, k.file
         ));
     }
     s
@@ -247,6 +249,10 @@ pub fn from_text(text: &str) -> Result<Saved, String> {
                 track,
                 group: num(&kv, "group", n)?,
                 pass: num(&kv, "pass", n)?,
+                bpm: num(&kv, "bpm", n)
+                    .ok()
+                    .filter(|b: &f64| b.is_finite() && *b > 0.0)
+                    .unwrap_or(0.0),
                 anchor,
                 frames,
                 channels,
@@ -364,6 +370,7 @@ mod tests {
             track,
             group: 2,
             pass: id,
+            bpm: 97.5,
             anchor: -12.345_678_9,
             frames: 44_100,
             channels: 1 + id as usize % 2,

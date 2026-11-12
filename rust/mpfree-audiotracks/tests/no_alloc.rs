@@ -166,6 +166,7 @@ fn commands_and_periods_never_allocate() {
             track: 5,
             group: 9,
             pass: 0,
+            bpm: 120.0,
             anchor: 100.5,
             frames: 30_000,
             channels: 1,
