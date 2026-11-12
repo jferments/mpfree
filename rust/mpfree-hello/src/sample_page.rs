@@ -48,9 +48,19 @@
 //!   pads, one undo step. The app makes the copy
 //!   ([`SamplePage::take_auto_request`], [`SamplePage::start_auto`]); the
 //!   audio thread is never asked for anything.
-//! - Edits live in memory until the power goes off: nothing is saved yet.
+//! - Saving: the kits go into a project as the sampler's part
+//!   ([`SamplePage::save_part`]: their text, and every sound they use for
+//!   the project's `samples/`, kept losslessly as WAV and named by the
+//!   sound, so the same sound is one file). Opening a project
+//!   ([`SamplePage::open_part`]) reads and decodes its sounds on a thread of
+//!   its own; the kits change on a later [`SamplePage::tick`], and what
+//!   couldn't be used is said in the log. The browser's Load puts a WAV
+//!   file on the pad shown, and Load to pad on the next pad hit
+//!   ([`SamplePage::load_file`]).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
+use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -63,7 +73,9 @@ use mpfree_sampler::model::{
 };
 use mpfree_sampler::phrase::Phrase;
 use mpfree_sampler::record::{self, Input, Looped, Progress, Recording};
+use mpfree_sampler::save::{self, Opened};
 use mpfree_sampler::warp::{CopyKey, Done, Warps, Worker};
+use mpfree_sampler::wav;
 use mpfree_sampler_ui::auto_tab::{
     self, AutoAction, AutoSettings, AutoState, AutoTab, Onto, Running,
 };
@@ -291,6 +303,10 @@ pub fn input_bytes(rate: u32) -> u64 {
     u64::from(INPUT_SECONDS) * u64::from(rate) * 2 * 4
 }
 
+/// Gives a sound file's bytes from its name in a project's `samples/`
+/// ([`SamplePage::open_part`]).
+pub type ReadSample = Box<dyn Fn(&str) -> Result<Vec<u8>, String> + Send>;
+
 pub struct SamplePage {
     projects: Vec<Project>,
     names: Vec<String>,
@@ -321,8 +337,8 @@ pub struct SamplePage {
     cloud: Option<Box<Cloud>>,
     /// The last cloud shown had grains, a playhead or grains on other pads.
     cloud_shown: bool,
-    /// A kit whose pads were renamed or replaced, for the Play page.
-    renamed: Option<usize>,
+    /// Kits whose pads were renamed or replaced, for the Play page.
+    renamed: Vec<usize>,
     /// The kit or pad changed since the page was last built.
     stale: bool,
     /// Kits whose new view the audio thread doesn't have yet.
@@ -387,6 +403,14 @@ pub struct SamplePage {
     auto_job: Option<AutoJob>,
     /// The last instrument made, or why not, in a line.
     auto_last: String,
+    /// A project's kits being read and decoded ([`SamplePage::open_part`]).
+    opening: Option<Receiver<Result<Opened, String>>>,
+    /// A file being read for the browser's Load (true: Load to pad).
+    loading: Option<(Receiver<Result<Source, String>>, bool)>,
+    /// A sound Load to pad put on the next pad hit.
+    assign: Option<Source>,
+    /// The kit an opened project was playing, for the app to switch to.
+    wanted_kit: Option<usize>,
 }
 
 impl SamplePage {
@@ -416,7 +440,7 @@ impl SamplePage {
             grain_state: None,
             cloud: Some(Box::default()),
             cloud_shown: false,
-            renamed: None,
+            renamed: Vec::new(),
             stale: true,
             dirty: Vec::new(),
             in_flight: false,
@@ -454,6 +478,10 @@ impl SamplePage {
             auto_request: None,
             auto_job: None,
             auto_last: String::new(),
+            opening: None,
+            loading: None,
+            assign: None,
+            wanted_kit: None,
         };
         p.show_empty(ui);
         Ok(p)
@@ -529,6 +557,11 @@ impl SamplePage {
     /// The pad hit last was hit at `velocity` (after [`SamplePage::hit`]):
     /// the Play tab's layer map shows it.
     pub fn hit_velocity(&mut self, ui: &mut Ui, pad: usize, velocity: u8) {
+        if let Some(src) = self.assign.take() {
+            // Load to pad: this hit picks the pad.
+            let kit = self.kit;
+            self.keep(ui, kit, pad, src, "loaded");
+        }
         let pad = self.played(pad);
         self.light(ui, pad, true);
         if pad != self.pad {
@@ -1069,7 +1102,7 @@ impl SamplePage {
                         if let Some(d) = self.dirty.get_mut(kit) {
                             *d = true;
                         }
-                        self.renamed = Some(kit);
+                        self.mark_renamed(kit);
                         let n = bounds.len() - 1;
                         let to = if n == 1 {
                             self.pad_text(kit, pads.start)
@@ -1165,7 +1198,7 @@ impl SamplePage {
                         if let Some(d) = self.dirty.get_mut(kit) {
                             *d = true;
                         }
-                        self.renamed = Some(kit);
+                        self.mark_renamed(kit);
                     }
                     Err(e) => self.lines.push(format!(
                         "sample: edit of pad {} not made ({e:?})",
@@ -1296,10 +1329,21 @@ impl SamplePage {
         }
     }
 
-    /// The kit whose pads were renamed or replaced since the last call, with
+    /// Kit `kit`'s pad names changed: the Play page is told
+    /// ([`SamplePage::take_renamed`]).
+    fn mark_renamed(&mut self, kit: usize) {
+        if !self.renamed.contains(&kit) {
+            self.renamed.push(kit);
+        }
+    }
+
+    /// A kit whose pads were renamed or replaced since the last call, with
     /// its pads' names, for the Play page.
     pub fn take_renamed(&mut self) -> Option<(usize, Vec<Option<String>>)> {
-        let kit = self.renamed.take()?;
+        if self.renamed.is_empty() {
+            return None;
+        }
+        let kit = self.renamed.remove(0);
         let p = self.projects.get(kit)?;
         Some((
             kit,
@@ -1675,7 +1719,7 @@ impl SamplePage {
             if let Some(d) = self.dirty.get_mut(kit) {
                 *d = true;
             }
-            self.renamed = Some(kit);
+            self.mark_renamed(kit);
             self.lines
                 .push(format!("sample: {what} in {}", self.kit_text()));
             self.refresh(ui);
@@ -1960,7 +2004,7 @@ impl SamplePage {
                 if let Some(d) = self.dirty.get_mut(kit) {
                     *d = true;
                 }
-                self.renamed = Some(kit);
+                self.mark_renamed(kit);
                 let text = format!(
                     "{name}, {} {} on pad {}",
                     duration_text(frames, rate),
@@ -1980,6 +2024,171 @@ impl SamplePage {
                 self.refresh(ui);
             }
             Err(e) => self.lines.push(format!("sample: {what} not kept ({e:?})")),
+        }
+    }
+
+    // ------------------------------------------------------------ saves
+
+    /// The sampler's part of a saved project (its owner is `sampler`): the
+    /// kits as text, and each sound they use once, by its file name in the
+    /// project's `samples/`. The app hands the sounds to the library's save
+    /// (`mpfree_library::NewSample` writing [`wav::write`]), which writes
+    /// the ones the project hasn't got yet before the part.
+    #[allow(dead_code)] // the app's browser wiring calls it
+    pub fn save_part(&self) -> (String, Vec<(String, Source)>) {
+        let kits: Vec<(&str, &Project)> = self
+            .projects
+            .iter()
+            .enumerate()
+            .map(|(k, p)| (self.names.get(k).map_or("", String::as_str), p))
+            .collect();
+        let text = save::to_text(&kits, self.kit, &wav::file_name);
+        let mut seen = HashSet::new();
+        let mut sounds = Vec::new();
+        for s in self.projects.iter().flat_map(|p| p.sources()) {
+            if seen.insert(s.id()) {
+                sounds.push((wav::file_name(s), s.clone()));
+            }
+        }
+        (text, sounds)
+    }
+
+    /// Opens the sampler's part of a project (`text`, as
+    /// [`SamplePage::save_part`] made it). The sounds are read (`read` gives
+    /// a file's bytes from the project's `samples/`) and decoded on a
+    /// thread of their own; the kits change on a later
+    /// [`SamplePage::tick`], each kit in its place, and the log says what
+    /// couldn't be used. A take or auto-sample under way is dropped then,
+    /// as when the kits are loaded.
+    #[allow(dead_code)] // the app's browser wiring calls it
+    pub fn open_part(&mut self, text: String, read: ReadSample) {
+        let (tx, rx) = mpsc::channel();
+        let spawned = std::thread::Builder::new()
+            .name("sample-open".into())
+            .spawn(move || {
+                let r = save::from_text(&text, &mut |f| wav::read(f, &read(f)?));
+                let _ = tx.send(r);
+            });
+        match spawned {
+            Ok(_) => {
+                self.opening = Some(rx);
+                self.lines
+                    .push("sample: opening the project's kits".to_string());
+            }
+            Err(e) => self
+                .lines
+                .push(format!("sample: the project's kits weren't opened ({e})")),
+        }
+    }
+
+    /// The kit the project just opened was playing, once, for the app to
+    /// switch the pads to.
+    pub fn take_wanted_kit(&mut self) -> Option<usize> {
+        self.wanted_kit.take()
+    }
+
+    /// The browser's Load (`to_pad` false: onto the pad shown, one undo
+    /// step) and Load to pad (`to_pad`: onto the next pad hit). The WAV
+    /// file is read and decoded on a thread of its own and lands on a
+    /// later [`SamplePage::tick`]. A Load while another is under way
+    /// replaces it.
+    #[allow(dead_code)] // the app's browser wiring calls it
+    pub fn load_file(&mut self, path: PathBuf, to_pad: bool) {
+        let (tx, rx) = mpsc::channel();
+        let spawned = std::thread::Builder::new()
+            .name("sample-load".into())
+            .spawn(move || {
+                let _ = tx.send(read_sound(&path));
+            });
+        match spawned {
+            Ok(_) => self.loading = Some((rx, to_pad)),
+            Err(e) => self.lines.push(format!("sample: not loaded ({e})")),
+        }
+    }
+
+    /// A sound Load to pad is holding for the next pad hit.
+    #[allow(dead_code)] // the app's browser wiring calls it
+    pub fn assigning(&self) -> Option<&str> {
+        self.assign.as_ref().map(|s| s.name.as_str())
+    }
+
+    fn poll_open(&mut self, ui: &mut Ui) {
+        let Some(rx) = &self.opening else { return };
+        let r = match rx.try_recv() {
+            Ok(r) => r,
+            Err(TryRecvError::Empty) => return,
+            Err(TryRecvError::Disconnected) => Err("its thread stopped".to_string()),
+        };
+        self.opening = None;
+        match r {
+            Ok(o) => self.apply_opened(ui, o),
+            Err(e) => self
+                .lines
+                .push(format!("sample: the project's kits weren't opened ({e})")),
+        }
+    }
+
+    /// Puts the kits of an opened project in place of the ones here, kit
+    /// by kit; their views go to the audio thread as edits' do.
+    fn apply_opened(&mut self, ui: &mut Ui, o: Opened) {
+        for n in &o.notes {
+            self.lines.push(format!("sample: {n}"));
+        }
+        let have = self.projects.len();
+        if o.kits.len() > have {
+            self.lines.push(format!(
+                "sample: the project has {} kits; the first {have} opened",
+                o.kits.len()
+            ));
+        }
+        let mut projects = std::mem::take(&mut self.projects);
+        let mut names = self.names.clone();
+        let mut opened = Vec::new();
+        for (k, (name, p)) in o.kits.into_iter().enumerate().take(have) {
+            projects[k] = p;
+            if let (Some(n), false) = (names.get_mut(k), name.is_empty()) {
+                *n = name;
+            }
+            opened.push(k);
+        }
+        let rate = self.rate;
+        self.set_kits(ui, projects, rate);
+        self.set_names(names);
+        for &k in &opened {
+            self.dirty[k] = true;
+            self.mark_renamed(k);
+        }
+        if o.kit < have && o.kit != self.kit {
+            self.wanted_kit = Some(o.kit);
+        }
+        self.lines.push(match opened.len() {
+            1 => "sample: 1 kit opened".to_string(),
+            n => format!("sample: {n} kits opened"),
+        });
+    }
+
+    fn poll_load(&mut self, ui: &mut Ui) {
+        let Some((rx, to_pad)) = &self.loading else {
+            return;
+        };
+        let to_pad = *to_pad;
+        let r = match rx.try_recv() {
+            Ok(r) => r,
+            Err(TryRecvError::Empty) => return,
+            Err(TryRecvError::Disconnected) => Err("its thread stopped".to_string()),
+        };
+        self.loading = None;
+        match r {
+            Ok(src) if to_pad => {
+                self.lines
+                    .push(format!("sample: hit a pad to put {} on it", src.name));
+                self.assign = Some(src);
+            }
+            Ok(src) => {
+                let (kit, pad) = (self.kit, self.pad);
+                self.keep(ui, kit, pad, src, "loaded");
+            }
+            Err(e) => self.lines.push(format!("sample: not loaded ({e})")),
         }
     }
 
@@ -2156,7 +2365,7 @@ impl SamplePage {
                         if let Some(d) = self.dirty.get_mut(kit) {
                             *d = true;
                         }
-                        self.renamed = Some(kit);
+                        self.mark_renamed(kit);
                         let text = format!(
                             "{name}, {} on pad {}",
                             duration_text(frames, rate),
@@ -2442,7 +2651,7 @@ impl SamplePage {
                 if let Some(d) = self.dirty.get_mut(kit) {
                     *d = true;
                 }
-                self.renamed = Some(kit);
+                self.mark_renamed(kit);
                 let pads = if n == 1 {
                     self.pad_text(kit, to)
                 } else {
@@ -2524,6 +2733,8 @@ impl SamplePage {
             self.feed_rec(ui, dt);
         }
         self.poll_auto(ui, showing);
+        self.poll_open(ui);
+        self.poll_load(ui);
     }
 
     /// The line input turned on or off (its row on the Looper tab's MENU).
@@ -3001,6 +3212,29 @@ fn phrase_clip(name: &str, p: &Phrase, first_pad: usize) -> Result<Clip, String>
     }
     clip.check().map_err(|e| format!("{e:?}"))?;
     Ok(clip)
+}
+
+/// A sound file for the browser's Load: WAV only for now (AIFF, FLAC and
+/// the rest say so), and no bigger than the sampler holds in memory.
+#[allow(dead_code)] // reached through load_file
+fn read_sound(path: &Path) -> Result<Source, String> {
+    let ext = path
+        .extension()
+        .map(|e| e.to_string_lossy().to_ascii_lowercase())
+        .unwrap_or_default();
+    if ext != "wav" && ext != "wave" {
+        return Err(format!("only WAV files load for now, not .{ext}"));
+    }
+    let len = std::fs::metadata(path).map_err(|e| e.to_string())?.len();
+    if len > wav::MAX_SAMPLES as u64 * 8 + (1 << 20) {
+        return Err("too long to hold in memory".to_string());
+    }
+    let name = path
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
+    wav::read(&name, &bytes)
 }
 
 #[cfg(test)]

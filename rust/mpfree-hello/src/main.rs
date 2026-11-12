@@ -2117,7 +2117,7 @@ impl time::Pads for SeqPads<'_> {
                 self.stop_all();
                 None
             }
-            Event::Lock { .. } | Event::Unlock { .. } => None,
+            Event::Lock { .. } | Event::Lane { .. } | Event::Unlock { .. } => None,
         }
     }
 }
@@ -3210,6 +3210,9 @@ fn player_session(
         // frames of this period.
         for &(offset, addr, value) in time.locks() {
             mix.lock(offset, addr, value);
+        }
+        for &(offset, addr, value) in time.lanes() {
+            mix.lane(offset, addr, value);
         }
         time.clear_locks();
         // The Play page: where the hits fell (Drum view), and the pattern.

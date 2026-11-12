@@ -113,6 +113,7 @@ The owner chose the Elektron way on 11 Nov (12:21Z; design https://claude.ai/art
 - **Locks go with their steps.** Toggling a step off, entering a chord over it, nudging it, or adding, copying or taking off a page carries the step's locks along with its notes, in the same `Edit` (`erase_locks`, `add_locks`). A nudge moves them with the note.
 - **Undo.** Lock edits are takes like note edits. A Q-Link turned on a held step passes `lock_key(sound, i, addr)` as the join key, so the whole turn is one UNDO.
 - **Recording.** Knob moves while recording become locks on the step they belong to. See [playback.md](playback.md#knob-moves-become-locks).
+- **FX moves go with the pages.** A clip's moves (Perform FX automation, see [playback.md](playback.md#fx-moves)) are on its ticks too. Copying a page copies the moves over its ticks; making a clip longer with copy repeats the last pages' moves, and making it shorter cuts them. The `Edit` keeps the lanes before and after (`Edit::moves`, a `MovesEdit`), so UNDO and REDO put them back, and `Clip::apply` refuses an edit whose `before` is not the clip's moves. A step's lock beats a lane on its step when they play.
 - **With conditions and chance.** A note its condition or chance leaves out leaves out its own locks too: the locks on its tick and row, and a whole-step lock only when every note on its tick is left out. So a 1:2 step with a filter lock opens the filter only on the passes it plays. Trigless locks always play. A left-out note ends nothing, so the lock before it keeps holding.
 
 ## Tests
