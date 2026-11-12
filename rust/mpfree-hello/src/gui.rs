@@ -263,6 +263,9 @@ pub enum ToUi {
     Guide(GuideView),
     Status(Status),
     Settings(Settings),
+    /// The themes folder's theme files, read at start: the file name
+    /// (what `Settings::theme` holds when one is picked) and the theme.
+    ThemeFiles(Vec<(String, Theme)>),
     ClearLogs,
     ClearConsole,
     /// The synth: its parameters, values and presets (at the start, and
@@ -493,6 +496,8 @@ pub struct Player {
     view: View,
     status: Status,
     settings: Settings,
+    /// The themes folder's themes, for Prefs > Appearance.
+    theme_files: Vec<(String, Theme)>,
     session: (String, Tone),
     /// Lines for the Console page come from the system log (the app); in the
     /// timed step there is none, so the step's own lines go there.
@@ -661,6 +666,7 @@ impl Player {
             view: View::Play,
             status,
             settings: Settings::default(),
+            theme_files: Vec::new(),
             session: ("Starting".to_string(), Tone::Dim),
             console_from_lines: timed,
             console_backlog: VecDeque::new(),
@@ -1288,9 +1294,16 @@ impl Player {
         let resumed = self.settings.console_paused && !s.console_paused;
         let retab = self.settings.debug_mode != s.debug_mode;
         // Prefs > Appearance picked a theme: switch to it now. (A theme file
-        // from --theme is not a built-in name and stays as it is.)
+        // from --theme is neither built in nor in the themes folder, and the
+        // screen keeps it.)
         if self.settings.theme != s.theme {
-            if let Some(t) = Theme::builtin(&s.theme) {
+            let file = || {
+                self.theme_files
+                    .iter()
+                    .find(|(f, _)| *f == s.theme)
+                    .map(|(_, t)| t.clone())
+            };
+            if let Some(t) = Theme::builtin(&s.theme).or_else(file) {
                 self.ui.set_theme(t);
             }
         }
@@ -1605,6 +1618,7 @@ impl Player {
                 self.refresh_qlinks();
             }
             ToUi::Settings(s) => self.set_settings(s),
+            ToUi::ThemeFiles(t) => self.theme_files = t,
             ToUi::ClearLogs => {
                 for name in ["midi", "events"] {
                     let title = self
@@ -7195,6 +7209,21 @@ mod tests {
         assert_eq!(p.ui.theme, Theme::builtin("console").unwrap());
         p.apply(ToUi::Settings(pick("default")));
         assert_eq!(p.ui.theme, Theme::dark());
+    }
+
+    #[test]
+    fn appearance_switches_to_a_themes_folder_theme() {
+        let mut p = sample_player(Fonts::embedded());
+        let mine = Theme::parse("base = synthwave\nname = Sunrise\naccent = #FF6C11\n").unwrap();
+        p.apply(ToUi::ThemeFiles(vec![(
+            "sunrise.theme".into(),
+            mine.clone(),
+        )]));
+        p.apply(ToUi::Settings(Settings {
+            theme: "sunrise.theme".into(),
+            ..Settings::default()
+        }));
+        assert_eq!(p.ui.theme, mine);
     }
 
     #[test]
