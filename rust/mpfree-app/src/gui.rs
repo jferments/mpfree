@@ -24,7 +24,8 @@
 //! `app.rs` decides, and touches only report what was touched.
 
 use crate::app::{
-    tabs, ArpView, GuideView, MapView, MenuView, PadLevel, Settings, Status, View, WorkspaceView,
+    tabs, ArpView, GuideView, MapView, MenuView, MuteKeys, PadLevel, Settings, Status, View,
+    WorkspaceView,
 };
 use crate::calibrate_page::CalibrateView;
 use crate::chain_page::{ChainPage, Turned};
@@ -89,13 +90,19 @@ pub const GUIDE_LAYOUT: &str = "col(header:60, row(guide:*, found:400):*, hint:2
 const CONSOLE_HINT: &str =
     "Switch the MPC off with its power switch to return to the stock firmware";
 const SHIFT_HINT: &str =
-    "SHIFT +   wheel: synth octave   ·   FULL LEVEL: Half Level   ·   NOTE REPEAT: Latch   ·   MENU: Prefs   ·   STOP: console";
+    "SHIFT +   wheel: synth octave   ·   FULL LEVEL: Half Level   ·   NOTE REPEAT: Latch   ·   MENU: Prefs   ·   STOP: back to bar 1";
+/// TRACK MUTE's keys, over whatever page shows (control map decision 5).
+const TRACK_MUTE_HINT: &str = "TRACK MUTE:   pads 1-8 mute and unmute tracks 1-8   ·   green: playing, red: muted   ·   \
+                               SHIFT + TRACK MUTE: the kit's pads   ·   TRACK MUTE: the pads play again";
+const PAD_MUTE_HINT: &str =
+    "SHIFT + TRACK MUTE:   a pad mutes and unmutes itself in the kit   ·   red: muted   ·   \
+                             TRACK MUTE: tracks   ·   SHIFT + TRACK MUTE: the pads play again";
 const SHIFT_SYNTH_HINT: &str =
-    "SHIFT +   wheel: page   ·   FULL LEVEL: Half Level   ·   NOTE REPEAT: Latch   ·   MENU: Prefs   ·   STOP: console";
+    "SHIFT +   wheel: page   ·   FULL LEVEL: Half Level   ·   NOTE REPEAT: Latch   ·   MENU: Prefs   ·   STOP: back to bar 1";
 const SHIFT_SAMPLE_HINT: &str =
-    "SHIFT +   wheel: pad   ·   Q-Links: finer   ·   UNDO: redo   ·   MENU: Prefs   ·   STOP: console";
+    "SHIFT +   wheel: pad   ·   Q-Links: finer   ·   UNDO: redo   ·   MENU: Prefs   ·   STOP: back to bar 1";
 const SHIFT_MENU_HINT: &str =
-    "SHIFT +   wheel: change the value   ·   MENU: Prefs   ·   STOP: console";
+    "SHIFT +   wheel: change the value   ·   MENU: Prefs   ·   STOP: back to bar 1";
 const OPTIONS_HINT: &str =
     "Wheel or tap: pick a row   ·   - / +, SHIFT + wheel or the arrows: change it   ·   MENU: close";
 const GUIDE_HINT: &str = "STOP: skip this button   ·   The pads still play while the guide is open";
@@ -466,6 +473,14 @@ pub enum FromUi {
         velocity: u8,
         down: bool,
     },
+    /// A key pressed (`down`) or let go on the Play tab's keyboard: kit
+    /// `kit`'s keygroups play `note`, while that kit is the one playing.
+    SampleKey {
+        kit: usize,
+        note: u8,
+        velocity: u8,
+        down: bool,
+    },
     /// The Debug tab's strip: MIDI, Performance or Map controls.
     DebugPage(usize),
     /// A control tapped in the mapper's list (listen for it).
@@ -482,8 +497,15 @@ pub enum FromUi {
     },
     /// The Looper tab: pick loop `n` for the controls.
     LoopPick(usize),
-    /// The Looper tab: the picked loop's level, 0 to 2 (Q-Link 3).
-    LoopLevel(f32),
+    /// The Looper tab: a command for the picked loop (an edit tool, Fade
+    /// old, the seam fade, After recording).
+    LoopCommand(mpfree_looper::Command),
+    /// The Looper tab's undo history: back (below 0) or forward this many
+    /// steps.
+    LoopSteps(i32),
+    /// Use the loop's Resample: pick loop `n` (empty) and record the
+    /// other loops into it, as heard.
+    LoopResample(usize),
     /// The Looper tab's Recording and input panel: a setting stepped (the
     /// same settings as the looper's options menu).
     LooperSetting(crate::app::Item, i32),
@@ -537,6 +559,9 @@ pub struct Player {
     screen_row: String,
     /// The timed `play` step (STOP ends it) rather than the app.
     timed: bool,
+    /// The Sample page's Play tab showed its keyboard (its hint says how
+    /// to play it).
+    sample_keys: bool,
     /// The app has taken over the pages (after loading).
     ready: bool,
     view: View,
@@ -703,6 +728,7 @@ impl Player {
             latched: false,
             rate: "1/16",
             bpm: 120.0,
+            mute_keys: MuteKeys::Off,
         };
         let mut p = Player {
             ui,
@@ -716,6 +742,7 @@ impl Player {
             },
             screen_row: "-".to_string(),
             timed,
+            sample_keys: false,
             ready: false,
             view: View::Play,
             status,
@@ -1067,15 +1094,17 @@ impl Player {
             }
         }
         if let Some(xy) = self.ui.get::<XyPad>(play_page::XY) {
-            let mut label = String::new();
             let mut probe = XyPad::default();
             self.play.fill_xy(&mut probe);
-            if xy.label != probe.label {
-                label = probe.label;
-            }
-            if !label.is_empty() {
+            // A finger on the pad puts the dot; otherwise it glides home.
+            let at = (!xy.on).then_some((probe.x, probe.y));
+            let changed = xy.label != probe.label || at.is_some_and(|a| a != (xy.x, xy.y));
+            if changed {
                 if let Some(xy) = self.ui.get_mut::<XyPad>(play_page::XY) {
-                    xy.label = label;
+                    xy.label = probe.label;
+                    if let Some((x, y)) = at {
+                        (xy.x, xy.y) = (x, y);
+                    }
                 }
             }
         }
@@ -1087,17 +1116,14 @@ impl Player {
     }
 
     /// A Q-Link on the Play page (no arp): what it turns there.
-    /// The Looper tab and the Play strip from the last looper view; Q-Link
-    /// 4's card is the Play page's line level.
+    /// The Looper tab and the Play strip from the last looper view.
     fn refresh_looper(&mut self) {
         self.looper_page
             .update(&mut self.ui, &self.looper, &self.settings);
-        let card = self.play.card(Knob::LineLevel, None);
-        self.looper_page.set_line_card(&mut self.ui, card);
     }
 
-    /// A Q-Link on the Looper tab: the picked layer's level and pan, the
-    /// loop's level, the line input's level.
+    /// A Q-Link on the Looper tab: the picked layer's level and pan, how
+    /// much each overdub fades the old layers, the seam fade.
     fn looper_qlink(&mut self, k: usize, ticks: i32) {
         use crate::looper_page::LoopTurn;
         let fine = self.status.shift;
@@ -1110,13 +1136,14 @@ impl Player {
                     });
                 }
             }
-            Some(LoopTurn::Level(v)) => self.outbox.push(FromUi::LoopLevel(v)),
-            Some(LoopTurn::Line(t)) => {
-                if let Some(Turn::Fx(fx)) = self.play.turn_knob(Knob::LineLevel, t, fine) {
-                    self.outbox.push(FromUi::PlayFx(fx));
-                }
-                let card = self.play.card(Knob::LineLevel, None);
-                self.looper_page.set_line_card(&mut self.ui, card);
+            Some(LoopTurn::FadeOld(k)) => self
+                .outbox
+                .push(FromUi::LoopCommand(mpfree_looper::Command::SetFadeOld(k))),
+            Some(LoopTurn::Seam(f)) => {
+                self.outbox
+                    .push(FromUi::LoopCommand(mpfree_looper::Command::Edit(
+                        mpfree_looper::Edit::SeamFade(f),
+                    )))
             }
             None => {}
         }
@@ -1142,13 +1169,43 @@ impl Player {
                     }
                 }
                 LoopAct::Setting(i, d) => {
-                    if let Some((item, d)) = crate::looper_page::setting_item(i, d, &self.settings)
+                    if let Some(c) = crate::looper_page::setting_command(i, &self.looper.status) {
+                        out.push(FromUi::LoopCommand(c));
+                    } else if let Some((item, d)) =
+                        crate::looper_page::setting_item(i, d, &self.settings)
                     {
                         out.push(FromUi::LooperSetting(item, d));
                     }
                 }
-                // The looper's edits and bounce come with its next part.
-                LoopAct::Tool(_) | LoopAct::Use(_) => {}
+                LoopAct::Tool(crate::looper_page::TOOL_HISTORY) => {
+                    self.looper_page.toggle_history(&mut self.ui);
+                    self.refresh_hint();
+                }
+                LoopAct::Trim(from, to) => {
+                    if let Some(c) = crate::looper_page::trim_command(from, to, &self.looper.status)
+                    {
+                        out.push(FromUi::LoopCommand(c));
+                    }
+                }
+                LoopAct::Step(row) => {
+                    if let Some(n) = self.looper_page.history_steps(row) {
+                        out.push(FromUi::LoopSteps(n));
+                    }
+                }
+                LoopAct::Tool(i) => {
+                    let rate = self.looper.rate;
+                    if let Some(c) = crate::looper_page::tool_command(i, &self.looper.status, rate)
+                    {
+                        out.push(FromUi::LoopCommand(c));
+                    }
+                }
+                LoopAct::Use(crate::looper_page::USE_RESAMPLE) => {
+                    if let Some(n) = self.looper_page.first_empty() {
+                        out.push(FromUi::LoopResample(n));
+                    }
+                }
+                // The bounce to a pad, a clip or a file comes next.
+                LoopAct::Use(_) => {}
             }
         }
         let mut it = out.into_iter();
@@ -1301,6 +1358,10 @@ impl Player {
             SHIFT_SAMPLE_HINT.to_string()
         } else if self.status.shift && self.ready {
             SHIFT_HINT.to_string()
+        } else if self.status.mute_keys == MuteKeys::Tracks {
+            TRACK_MUTE_HINT.to_string()
+        } else if self.status.mute_keys == MuteKeys::Pads {
+            PAD_MUTE_HINT.to_string()
         } else if self.view == View::Play && self.band_showing() && self.status.latched {
             format!("Latched: {}   ·   NOTE REPEAT: let go   ·   hold NOTE REPEAT for the wheel, - / + and Q-Links   ·   \
                      {stop}", crate::app::mode_label(mode))
@@ -1317,8 +1378,10 @@ impl Player {
                 View::Arrange if self.time.edit.is_some() => EDIT_HINT.to_string(),
                 View::Arrange if self.time.song_view => SONG_HINT.to_string(),
                 View::Arrange => CLIPS_HINT.to_string(),
-                View::Looper => format!("Tap a loop or a layer: pick it   ·   Q-Links: layer level and pan, loop level, \
-                                         line   ·   REC: record   ·   OVERDUB: overdub   ·   UNDO: undo (SHIFT: redo)   ·   \
+                View::Looper if self.looper_page.history_open() => format!("Tap a step: back or forward to it   ·   \
+                                         drag: scroll   ·   Undo history: close   ·   UNDO: undo (SHIFT: redo)   ·   {stop}"),
+                View::Looper => format!("Tap a loop or a layer: pick it   ·   Q-Links: layer level and pan, Fade old, \
+                                         seam fade   ·   REC: record   ·   OVERDUB: overdub   ·   UNDO: undo (SHIFT: redo)   ·   \
                                          {stop}"),
                 View::Synth => format!("Pads play {}   ·   Q-Links 1-4: the marked knobs   ·   Wheel: the selected knob   ·   \
                                         - / +: page   ·   MENU: engine, scale   ·   {stop}",
@@ -1338,6 +1401,10 @@ impl Player {
                 View::Sample if self.sample.page() == sample_page::PADS_PAGE => {
                     "Hit or tap a pad to pick it, tap again to hear it   ·   Q-Links 1-4: level, pan, tune, voices   ·   \
                      Wheel: the row picked   ·   UNDO: undo".to_string()
+                }
+                View::Sample if self.sample.page() == sample_page::PLAY_PAGE && self.sample.play_keys_shown() => {
+                    "Press keys to hear the kit   ·   drag the pad's zone edges and root   ·   tap a zone: its pad   ·   \
+                     Q-Links 1-4: Attack, Decay, Cutoff, Resonance   ·   Wheel: the row picked   ·   UNDO: undo".to_string()
                 }
                 View::Sample if self.sample.page() == sample_page::PLAY_PAGE => {
                     "Hit a pad: its velocity shows on the layers   ·   Q-Links 1-4: Attack, Decay, Cutoff, Resonance   ·   \
@@ -2134,6 +2201,14 @@ impl Player {
         if self.sample.page() != before {
             self.sample_changed();
         }
+        // The keyboard came or went on the Play tab: its hint with it.
+        let keys = self.sample.play_keys_shown();
+        if keys != self.sample_keys {
+            self.sample_keys = keys;
+            if self.view == View::Sample {
+                self.refresh_hint();
+            }
+        }
     }
 
     /// The Sample page's log lines, to the terminal (the system log) and
@@ -2912,6 +2987,11 @@ impl Player {
 
     /// Advance animations by `dt` seconds.
     pub fn tick(&mut self, dt: f32) {
+        // The XY pad glides home after the finger lifts.
+        if let Some(fx) = self.play.tick_xy(dt * 1000.0) {
+            self.outbox.push(FromUi::PlayFx(fx));
+            self.refresh_play();
+        }
         // A finger held still on a macro card opens the macros panel.
         if self.chain_page.drives(self.view) && !self.band_showing() {
             if let Some(bank) = self.chain_page.held(dt) {
@@ -3396,6 +3476,7 @@ pub fn sample_player(fonts: Fonts) -> Player {
         latched: false,
         rate: "1/16",
         bpm: 120.0,
+        mute_keys: MuteKeys::Off,
     }));
     for (pad, v) in [(0usize, 112u8), (5, 87), (10, 64)] {
         p.apply(ToUi::PadDown { pad, velocity: v });
@@ -3713,6 +3794,7 @@ pub fn sample_play(fonts: Fonts, v: PlayView) -> Player {
         latched: false,
         rate: "1/16",
         bpm: 92.0,
+        mute_keys: MuteKeys::Off,
     }));
     sample_loop(&mut p);
     if v == PlayView::Loop {
@@ -3765,7 +3847,7 @@ pub fn sample_play(fonts: Fonts, v: PlayView) -> Player {
     match v {
         PlayView::All => {
             p.play.throw(2, true);
-            p.play.xy = (0.68, 0.62, true);
+            p.play.xy.touch(0.68, 0.62);
         }
         PlayView::Beats => {
             p.play.selected = Some((0, 6));
@@ -3774,20 +3856,21 @@ pub fn sample_play(fonts: Fonts, v: PlayView) -> Player {
         }
         PlayView::Loop => {
             p.play.throw(2, true);
-            p.play.xy = (0.68, 0.62, true);
+            p.play.xy.touch(0.68, 0.62);
         }
         PlayView::Drum => {
             sample_hits(&mut p);
             p.play.throw(2, true);
             p.apply(ToUi::QLinkTouch(2, true));
-            p.play.xy = (0.68, 0.62, true);
+            p.play.xy.touch(0.68, 0.62);
         }
     }
     if let Some(xy) = p.ui.get_mut::<XyPad>(play_page::XY) {
-        (xy.x, xy.y, xy.on) = p.play.xy;
+        (xy.x, xy.y) = p.play.xy.position();
+        xy.on = p.play.xy.touched();
         if xy.on {
             // The finger's way up to where it is, as the mockups draw it.
-            let (x, y, _) = p.play.xy;
+            let (x, y) = p.play.xy.position();
             let trail: Vec<(f32, f32)> = (0..10)
                 .map(|k| {
                     let f = k as f32 / 10.0;
@@ -3992,6 +4075,7 @@ pub fn apply_effects(p: &mut Player, fx: Vec<crate::app::Effect>) {
             | Effect::SynthPads(_)
             | Effect::ProgEdit
             | Effect::Metronome
+            | Effect::Fill(_)
             | Effect::Mixer(_) => {}
             Effect::MixerTurn { knob, delta } => p.apply(ToUi::MixerQLink(knob, delta)),
             Effect::ChainTurn { knob, delta } => p.apply(ToUi::ChainQLink(knob, delta)),
@@ -4570,6 +4654,15 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         Ok(p) => out.push(("looper", p)),
         Err(e) => eprintln!("looper sample: {e}"),
     }
+    // The same with the undo history open: the bass and the chop overdubs.
+    match sample_looper(fonts()) {
+        Ok(mut p) => {
+            p.looper_page.toggle_history(&mut p.ui);
+            p.refresh_hint();
+            out.push(("looper-history", p));
+        }
+        Err(e) => eprintln!("looper sample: {e}"),
+    }
     // The synth on the pads (the kit list's last entry), then its page.
     let synth_kit = sample_kits().len();
     let mut play_synth = sample_player(fonts());
@@ -4580,6 +4673,7 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         latched: false,
         rate: "1/16",
         bpm: 120.0,
+        mute_keys: MuteKeys::Off,
     }));
     play_synth.apply(ToUi::Kit(synth_kit));
     for (pad, v) in [(0usize, 96u8), (4, 90), (7, 101)] {
@@ -4612,6 +4706,7 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         latched: false,
         rate: "1/16",
         bpm: 120.0,
+        mute_keys: MuteKeys::Off,
     }));
     chords.apply(ToUi::KitChanged {
         kit: synth_kit,
@@ -4875,6 +4970,53 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         });
         keys.take_actions();
         out.push(("sample-play-keys", keys));
+    }
+    // A bank mapped to keys on the Pads tab: five pads named by their
+    // notes, one keygroup instrument; the Play tab's keyboard with A5's
+    // zone picked and E3 held.
+    {
+        let mut mapped = sample_sampler(fonts());
+        let (mut project, _) = mpfree_sampler_ui::sample::project();
+        let pad = mpfree_sampler_ui::sample::PAD;
+        if let Some(sound) = project.pad(pad).cloned() {
+            for (k, name) in ["Pluck C2", "Pluck G2", "Pluck C3", "Pluck G3", "Pluck C4"]
+                .into_iter()
+                .enumerate()
+            {
+                let mut q = sound.clone();
+                q.name = name.to_string();
+                let _ = project.set_pad(k, Some(q), None);
+            }
+        }
+        mapped.apply(ToUi::SampleKits {
+            projects: vec![project],
+            rate: mpfree_sampler_ui::sample::RATE,
+        });
+        let ev = |p: &mut Player, widget: &str, kind: EventKind| {
+            p.on_event(UiEvent {
+                widget: widget.into(),
+                kind,
+            });
+        };
+        use mpfree_sampler_ui::{pads_tab, play_tab};
+        ev(
+            &mut mapped,
+            mpfree_sampler_ui::wave_tab::BAR,
+            EventKind::Tab(pads_tab::TAB),
+        );
+        ev(&mut mapped, pads_tab::BUTTONS, EventKind::Tab(3));
+        ev(&mut mapped, pads_tab::BAR, EventKind::Tab(play_tab::TAB));
+        let held = mapped.ui.rect_of(play_tab::KEYS).and_then(|r| {
+            mapped
+                .ui
+                .get::<mpfree_sampler_ui::keys_widgets::KeyZones>(play_tab::KEYS)?
+                .key_point(r, 52)
+        });
+        if let Some((x, y)) = held {
+            mapped.touch(3, Touch::Down, x, y);
+        }
+        mapped.take_actions();
+        out.push(("sample-keys-mapped", mapped));
     }
     // The Play tab with the pads playing 16 Levels of the pad, by tune.
     {
@@ -5309,10 +5451,11 @@ mod tests {
             ),
             "{acts:?}"
         );
-        p.apply(ToUi::LooperQLink(2, 1));
+        // Q3 sets how much each overdub fades the old layers.
+        p.apply(ToUi::LooperQLink(2, -1));
         assert!(matches!(
             p.take_actions().as_slice(),
-            [FromUi::LoopLevel(_)]
+            [FromUi::LoopCommand(mpfree_looper::Command::SetFadeOld(_))]
         ));
         // Line input, right half: on.
         let r = p.ui.rect_of(RECORDING).unwrap();
@@ -7842,6 +7985,147 @@ mod tests {
     }
 
     #[test]
+    fn map_to_keys_makes_the_bank_one_instrument_and_the_play_tab_plays_its_keys() {
+        use mpfree_sampler::model::PadsPlay;
+        use mpfree_sampler_ui::keys_widgets::KeyZones;
+        use mpfree_sampler_ui::widgets::PadBar;
+        use mpfree_sampler_ui::{pads_tab, play_tab};
+        let pad = mpfree_sampler_ui::sample::PAD;
+        let mut p = sample_sampler(Fonts::embedded());
+        let ev = |p: &mut Player, widget: &str, kind: EventKind| {
+            p.on_event(UiEvent {
+                widget: widget.into(),
+                kind,
+            })
+        };
+        // A1-A3 play the loop under names with notes; A5 keeps "Break 92",
+        // whose pitch is heard as G#1.
+        let (mut project, _) = mpfree_sampler_ui::sample::project();
+        let sound = project.pad(pad).unwrap().clone();
+        for (k, name) in ["Keys C2", "Keys G2", "Keys C3"].into_iter().enumerate() {
+            let mut q = sound.clone();
+            q.name = name.to_string();
+            project.set_pad(k, Some(q), None).unwrap();
+        }
+        p.apply(ToUi::SampleKits {
+            projects: vec![project],
+            rate: mpfree_sampler_ui::sample::RATE,
+        });
+        let keys = |p: &Player, pad: usize| p.sample.project(0).unwrap().pad(pad).unwrap().keys;
+        ev(
+            &mut p,
+            mpfree_sampler_ui::wave_tab::BAR,
+            EventKind::Tab(pads_tab::TAB),
+        );
+        assert_eq!(p.page(), sample_page::PADS_PAGE);
+        p.take_actions();
+        // Map to keys: each pad at its sound's note, spread halfway to the
+        // next; the pads play notes; the log says where the notes came from.
+        ev(&mut p, pads_tab::BUTTONS, EventKind::Tab(3));
+        let roots: Vec<Option<u8>> = [0, 1, 2, pad]
+            .into_iter()
+            .map(|k| keys(&p, k).map(|z| z.root))
+            .collect();
+        assert_eq!(roots, vec![Some(36), Some(43), Some(48), Some(32)]);
+        assert_eq!(
+            [keys(&p, pad).unwrap().lo, keys(&p, 0).unwrap().lo],
+            [0, 34]
+        );
+        assert_eq!(keys(&p, 2).unwrap().hi, 127);
+        assert!(matches!(
+            p.sample.project(0).unwrap().pads_play(),
+            PadsPlay::Keys { .. }
+        ));
+        assert!(
+            events_log(&p).iter().any(|l| l
+                == "sample: kit 1 (Breaks): mapped to keys: 4 pads from G#1 to C3 \
+                    (3 by its name, 1 by its pitch), the pads play notes"),
+            "{:?}",
+            events_log(&p)
+        );
+        let (sent, _) = views(p.take_actions());
+        assert_eq!(sent.len(), 1);
+        p.apply(ToUi::SampleViewBack(sent.into_iter().next().unwrap()));
+        // The Play tab shows the kit's keyboard, with its own hint.
+        ev(&mut p, pads_tab::BAR, EventKind::Tab(play_tab::TAB));
+        assert_eq!(p.page(), sample_page::PLAY_PAGE);
+        assert!(p.sample.play_keys_shown());
+        assert!(p
+            .ui
+            .get::<Label>("hint")
+            .unwrap()
+            .text
+            .starts_with("Press keys to hear the kit"));
+        assert_eq!(p.ui.get::<KeyZones>(play_tab::KEYS).unwrap().zones.len(), 4);
+        // A key plays the kit's keygroups while held.
+        let r = p.ui.rect_of(play_tab::KEYS).unwrap();
+        let (x, y) =
+            p.ui.get::<KeyZones>(play_tab::KEYS)
+                .unwrap()
+                .key_point(r, 45)
+                .unwrap();
+        p.touch(3, Touch::Down, x, y);
+        p.touch(3, Touch::Up, x, y);
+        let keys_sent: Vec<(usize, u8, u8, bool)> = p
+            .take_actions()
+            .into_iter()
+            .filter_map(|a| match a {
+                FromUi::SampleKey {
+                    kit,
+                    note,
+                    velocity,
+                    down,
+                } => Some((kit, note, velocity, down)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            keys_sent,
+            vec![
+                (0, 45, play_tab::KEY_VELOCITY, true),
+                (0, 45, play_tab::KEY_VELOCITY, false)
+            ]
+        );
+        // A tap on A1's zone picks A1.
+        let z = p.ui.get::<KeyZones>(play_tab::KEYS).unwrap();
+        let i = z.zones.iter().position(|z| z.pad == 0).unwrap();
+        let zr = z.zone_rect(r, i).unwrap();
+        p.touch(3, Touch::Down, zr.x + zr.w / 2, zr.y + zr.h / 2);
+        p.touch(3, Touch::Up, zr.x + zr.w / 2, zr.y + zr.h / 2);
+        assert_eq!(
+            p.ui.get::<PadBar>(play_tab::BAR).unwrap().title,
+            "Pad A1 · Keys C2"
+        );
+        // Dragging its right edge to G#2 is one undo step.
+        let z = p.ui.get::<KeyZones>(play_tab::KEYS).unwrap();
+        let zr = z.zone_rect(r, i).unwrap();
+        let (to, _) = z.key_point(r, 44).unwrap();
+        let edge = zr.x + zr.w;
+        p.touch(3, Touch::Down, edge, zr.y + zr.h / 2);
+        p.touch(3, Touch::Move, (edge + to) / 2, zr.y + zr.h / 2);
+        p.touch(3, Touch::Move, to, zr.y + zr.h / 2);
+        p.touch(3, Touch::Up, to, zr.y + zr.h / 2);
+        p.apply(ToUi::SampleLift);
+        assert_eq!(keys(&p, 0).unwrap().hi, 44);
+        p.apply(ToUi::SampleUndo(false));
+        assert_eq!(keys(&p, 0).unwrap().hi, 39);
+        // One more UNDO takes the whole mapping back.
+        p.apply(ToUi::SampleUndo(false));
+        assert!([0, 1, 2, pad].iter().all(|&k| keys(&p, k).is_none()));
+        assert!(matches!(
+            p.sample.project(0).unwrap().pads_play(),
+            PadsPlay::Pads
+        ));
+        assert!(!p.sample.play_keys_shown());
+        assert!(p
+            .ui
+            .get::<Label>("hint")
+            .unwrap()
+            .text
+            .starts_with("Hit a pad: its velocity shows"));
+    }
+
+    #[test]
     fn with_drums_on_the_pads_the_synth_tab_follows_the_pad_hit_last() {
         let mut p = sample_player(Fonts::embedded());
         let synth_kit = sample_kits().len();
@@ -8112,6 +8396,7 @@ mod tests {
             latched: true,
             rate: "1/8",
             bpm: 96.0,
+            mute_keys: MuteKeys::Off,
         };
         p.apply(ToUi::Status(s.clone()));
         assert_eq!(p.ui.get::<Label>("hint").unwrap().text, SHIFT_HINT);
@@ -8139,13 +8424,24 @@ mod tests {
             "the level is on the slider: {chips:?}"
         );
         s.shift = false;
-        p.apply(ToUi::Status(s));
+        p.apply(ToUi::Status(s.clone()));
         assert!(p
             .ui
             .get::<Label>("hint")
             .unwrap()
             .text
             .contains("NOTE REPEAT: repeat"));
+        // TRACK MUTE: the hint says what the pads are now, on any page.
+        for (keys, hint) in [
+            (MuteKeys::Tracks, TRACK_MUTE_HINT),
+            (MuteKeys::Pads, PAD_MUTE_HINT),
+        ] {
+            s.mute_keys = keys;
+            p.apply(ToUi::Status(s.clone()));
+            assert_eq!(p.ui.get::<Label>("hint").unwrap().text, hint);
+        }
+        s.mute_keys = MuteKeys::Off;
+        p.apply(ToUi::Status(s));
         p.apply(ToUi::PadFlash {
             pad: 3,
             velocity: 90,
