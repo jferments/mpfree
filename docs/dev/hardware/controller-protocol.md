@@ -6,7 +6,7 @@
 ## Transport
 
 - USB-MIDI 1.0 class device `09e8:0046`, bulk EP 0x01 OUT / 0x81 IN, 64-byte packets, 4-byte event packets.
-- Cable 0 = "Public", cable 1 = "Private", cable 2 = "MIDI Port" (silent in this capture; on 2026-11-12 the 5-pin MIDI In jack's notes and clock arrived on cable 2 in, [below](#the-rear-jacks-under-akais-app-2026-11-12)).
+- Cable 0 = "Public", cable 1 = "Private", cable 2 = "MIDI Port" (silent in this capture). On 2026-11-12 cable 2 turned out to be **both 5-pin jacks**: MIDI In is cable 2 in and MIDI Out is cable 2 out, under Akai's app ([below](#the-rear-jacks-under-akais-app-2026-11-12)).
 - **With Akai's app running, all physical controls arrive on cable 1.** Without it, they arrive on cable 0 ([below](#without-akais-app-hello-mpc-rounds-1-and-2-2026-11-10)). Button/encoder LEDs are written on cable 1; pad RGB colors on cable 0.
 - SysEx manufacturer `0x47` (Akai), device/product ID **`0x46`** for the MPC One.
 
@@ -145,6 +145,26 @@ Every note gave CC 2 and 3 at 127 at the key down and 0 at the key up, as in rou
 - **INFERENCE:** ports 5 to 8 are CC 8 to 15, and notes outside 36 to 96 clamp to the ends.
 - **INFERENCE:** full scale is 5 V. Five octaves over the full range fits 1 V/oct at 0 to 5 V, but no meter has been on a jack, so the volts per count are **UNKNOWN** until one is.
 - **UNKNOWN:** which jack, and tip or ring, each port number is.
-- **UNKNOWN:** how Akai's app sends to the MIDI Out jack. In both rounds a MIDI track sent nothing over USB. The track's MIDI Output Port field, and the Output Ports list in Preferences > MIDI / Sync (the port's Track tick, guide "Preferences", "MIDI / Sync"), were not recorded, so a wrong setting has not been ruled out. Akai's app holds no serial device ([resource-ownership](resource-ownership.md)), so a path other than the controller's USB-MIDI would be a surprise.
+- **Found in the third round (below):** why the MIDI track sent nothing in rounds 1 and 2. Only its MIDI Output Ch was set; its MIDI Out routing had to be set as well.
 - The bytes are written down as code in `rust/mpfree-midi/src/cv_wire.rs`, with tests holding every value above. Sending any of these CCs from MPFree is a **state-changing** write to the controller and waits for the owner's go ([midi-io](../design/midi-io.md), step M6).
 
+### Third round: the MIDI Out jack (2026-11-12)
+
+> **Evidence type:** owner-run `collect-over-ssh.sh --midi-capture` with `MPFREE_CAPTURE_PHASES=midi-out`, 2026-11-12 07:06 UTC, stock 3.6.0, Akai's app running, the keyboard on MIDI In and a synth on MIDI Out, which the owner heard play. Tool at branch commit `50e4a11`, clean. Report SHA-256 `8803ee78b8cdd5b8d406e192efc157cfabf43879c3c032eabc6d5e3e6618cc13` (owner-local, not committed). Nothing was sent to the controller by MPFree.
+
+Before this round the owner set the MIDI track's MIDI Out routing (to "MPC", 1) as well as its MIDI Output Ch (1). Rounds 1 and 2 had only the channel set, which is why nothing went out then.
+
+| Phase | In | Out on **cable 2** |
+| --- | --- | --- |
+| C, E, G on the keyboard | cable 2: note-on channel 6, then note-on velocity 0 | note-on **channel 1**, same note and velocity; the release as a real note-off `80 nn 00` |
+| One key held about 3 s | the same | note-on, then the note-off 3.1 s later; nothing in between |
+| Pad 1 soft, pad 1 hard, pad 13 | cable 1: channel 10 notes 37 and 49 with pressure | note-on channel 1, **notes 72 and 93** (the MIDI track's pad notes), velocity 12, 127 and 17 for 13, 127 and 17 in; the pad's pressure as poly pressure `A0` on that note; a note-off at the release |
+| PLAY, then STOP | cable 1: the PLAY and STOP buttons | only `B0 40 00` (sustain off, channel 1) at STOP. **No clock, start or stop** |
+
+- **OBSERVED:** the 5-pin MIDI Out jack is **cable 2 out**, under Akai's app. The keyboard's notes and the pads came out there on the track's channel, and the synth on the jack played them.
+- **OBSERVED:** Akai's app took 5.1 to 8.1 ms from a message arriving (cable 2, or a pad on cable 1) to sending it on cable 2 (usbmon times on the host, all 26 messages out). MPFree should do better than that.
+- **OBSERVED:** Akai's app sends note-offs as `80 nn 00` even when the keyboard sent note-on velocity 0. It passes pad pressure on as poly pressure, but drops some steps: the closing 0 was not sent, and neither was a 127 just after a hit at 127. It did not pass the keyboard's clock through to MIDI Out.
+- **OBSERVED:** round 1's CV-track pads were notes 72 and 93 by the CV formula. Pads 1 and 13 on this MIDI track sent the same notes, 72 and 93.
+- **UNKNOWN:** why pad velocity 13 went out as 12 while 127 and 17 went out unchanged (a pad curve in Akai's app, perhaps).
+- **UNKNOWN:** clock out. PLAY and STOP sent no clock, start or stop. Whether Sync was ticked for the port in Preferences > MIDI / Sync was not recorded.
+- Writing to cable 2 from MPFree is a **state-changing** write to the controller (notes leave the jack) and waits for the owner's go ([midi-io](../design/midi-io.md), step M3).
