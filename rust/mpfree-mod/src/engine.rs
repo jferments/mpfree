@@ -119,12 +119,37 @@ pub enum ModEvent {
         addr: ParamAddr,
         value: f32,
     },
-    /// A parameter lock: replaces the value until [`ModEvent::Unlock`].
+    /// A step's parameter lock: replaces the value until
+    /// [`ModEvent::Unlock`].
     Lock {
         addr: ParamAddr,
         value: f32,
     },
+    /// A move lane's value (a recorded knob, XY pad or Perform FX move):
+    /// takes the lock's place, as a lock would, but any hand beats it.
+    /// [`ModEvent::Unlock`] ends it too.
+    Lane {
+        addr: ParamAddr,
+        value: f32,
+    },
     Unlock {
+        addr: ParamAddr,
+    },
+    /// A hand on the control (a finger on the XY pad or the DJ knob, a
+    /// Q-Link turned on a parameter with a lane, any of them while
+    /// recording): the target follows it until [`ModEvent::Untouch`].
+    /// It beats a lane's value always, and a step's lock only when
+    /// `over_locks` (while recording); otherwise a locked step keeps its
+    /// lock under the hand. Locks and lanes keep landing underneath, so
+    /// the hand lets go to whatever they hold by then. The last touch
+    /// wins. [`ModEvent::hand`] picks the event for a move.
+    Touch {
+        addr: ParamAddr,
+        value: f32,
+        over_locks: bool,
+    },
+    /// The hand let go.
+    Untouch {
         addr: ParamAddr,
     },
     /// A host source's value, 0 to 1.
@@ -134,6 +159,28 @@ pub enum ModEvent {
     },
     /// A note started: LFOs with Retrigger on restart.
     Trigger,
+}
+
+impl ModEvent {
+    /// The event for a hand moving `addr`'s control to `value`, by the
+    /// rule Jay picked on 2026-11-11: a hand always beats a move lane, and
+    /// beats a step's lock only while recording; a parameter with no
+    /// lane, not recording, is simply set (a locked step keeps its lock,
+    /// as on Elektron machines, and the turn stays when the hand lets
+    /// go). `lane`: the playing clip has a move lane on `addr`.
+    /// `recording`: `addr`'s track is recording. After a `Touch`, send
+    /// [`ModEvent::Untouch`] when the hand lets go.
+    pub fn hand(addr: ParamAddr, value: f32, lane: bool, recording: bool) -> ModEvent {
+        if recording || lane {
+            ModEvent::Touch {
+                addr,
+                value,
+                over_locks: recording,
+            }
+        } else {
+            ModEvent::Set { addr, value }
+        }
+    }
 }
 
 /// A [`ModEvent`] at a frame offset inside the block.
@@ -168,8 +215,9 @@ pub struct ModStats {
     pub ticks: u64,
     /// Parameter events sent on.
     pub sent: u64,
-    /// Locks and sets for parameters that were not targets: passed on
-    /// as they came (an unlock of one cannot restore anything).
+    /// Sets, locks and touches for parameters that were not targets:
+    /// passed on as they came (an unlock of one cannot restore
+    /// anything).
     pub unregistered: u64,
 }
 
@@ -184,8 +232,13 @@ struct Target {
     /// ln(min) and ln(max / min) for a log curve, so a position turns
     /// into a value with one `exp`.
     log: Option<(f32, f32)>,
-    /// A lock's value and knob position.
+    /// A lock's (or a lane's) value and knob position.
     lock: Option<(f32, f32)>,
+    /// The lock is a lane's value, which any hand beats.
+    lane: bool,
+    /// A hand's value and knob position, and whether it beats a step's
+    /// lock.
+    touch: Option<(f32, f32, bool)>,
     /// Scene A and B knob positions.
     scene: [Option<f32>; 2],
     /// The macro and map that move it.
@@ -211,6 +264,8 @@ impl Target {
             base_u: info.to_unit(base),
             log: log_consts(&info),
             lock: None,
+            lane: false,
+            touch: None,
             scene: [None; 2],
             mac: None,
             rows: 0,
@@ -454,12 +509,12 @@ impl ModEngine {
         true
     }
 
-    /// Targets with nothing moving them (no macro, row, lock or scene).
-    /// The host may remove them to make room.
+    /// Targets with nothing moving them (no macro, row, lock, touch or
+    /// scene). The host may remove them to make room.
     pub fn idle_targets(&self) -> impl Iterator<Item = ParamAddr> + '_ {
         self.targets[INTERNAL..]
             .iter()
-            .filter(|t| !t.moving() && t.lock.is_none())
+            .filter(|t| !t.moving() && t.lock.is_none() && t.touch.is_none())
             .map(|t| t.addr)
     }
 
@@ -494,6 +549,12 @@ impl ModEngine {
     pub fn is_locked(&self, addr: ParamAddr) -> bool {
         self.find(addr)
             .is_some_and(|i| self.targets[i].lock.is_some())
+    }
+
+    /// A hand holds it ([`ModEvent::Touch`] without its `Untouch` yet).
+    pub fn is_touched(&self, addr: ParamAddr) -> bool {
+        self.find(addr)
+            .is_some_and(|i| self.targets[i].touch.is_some())
     }
 
     /// How far modulation can move a target's knob now, as positions
@@ -747,6 +808,242 @@ impl ModEngine {
         self.targets[MORPH].pos
     }
 
+    // ---- Changes as messages ------------------------------------------------
+
+    /// Applies a [`Change`] (the host queues them from the control thread
+    /// to the audio thread). Real-time safe while there is room.
+    pub fn change(&mut self, c: Change) -> Result<(), ModError> {
+        match c {
+            Change::Target { addr, info, value } => self.add_target(addr, info, value),
+            Change::RemoveTarget(addr) => {
+                self.remove_target(addr);
+                Ok(())
+            }
+            Change::Map { m, map } => self.map(m as usize, map),
+            Change::Unmap(addr) => {
+                self.unmap(addr);
+                Ok(())
+            }
+            Change::AddRow(row) => self.add_row(row).map(|_| ()),
+            Change::Depth { row, depth } => {
+                self.set_depth(row as usize, depth);
+                Ok(())
+            }
+            Change::RemoveRow(row) => {
+                self.remove_row(row as usize);
+                Ok(())
+            }
+            Change::Capture(which) => {
+                self.capture_scene(which as usize);
+                Ok(())
+            }
+            Change::ClearScenes => {
+                self.clear_scenes();
+                Ok(())
+            }
+        }
+    }
+
+    // ---- Saving -------------------------------------------------------------
+
+    /// The engine's set-up as `key = value` lines, for a project or
+    /// `mpfree-store`: the macros' values and their maps, the matrix rows,
+    /// both scenes, the morph position, and every LFO and follower
+    /// setting. The targets' own values belong to the nodes that own them
+    /// (saved with those), so they are not here. Allocates: control thread.
+    pub fn save(&self) -> String {
+        use std::fmt::Write as _;
+        let mut out = String::new();
+        for m in 0..MACROS {
+            let _ = writeln!(out, "macro.{m} = {}", self.targets[FIRST_MACRO + m].base);
+        }
+        let _ = writeln!(out, "morph = {}", self.targets[MORPH].base);
+        for m in 0..MACROS {
+            for (k, map) in self.macro_maps(m).enumerate() {
+                let _ = writeln!(
+                    out,
+                    "map.{m}.{k} = {} {} {} {}",
+                    map.target,
+                    map.from,
+                    map.to,
+                    curve_text(map.curve)
+                );
+            }
+        }
+        for (i, r) in self.rows().enumerate() {
+            let _ = writeln!(
+                out,
+                "row.{i} = {} {} {} {}",
+                source_text(r.source),
+                r.via.map_or("-".to_string(), source_text),
+                r.target,
+                r.depth
+            );
+        }
+        // Scenes by address, so the text doesn't depend on the order the
+        // targets were added in.
+        let mut scenes: Vec<String> = self.targets[FIRST_MACRO..]
+            .iter()
+            .filter(|t| t.scene != [None, None])
+            .map(|t| {
+                let v =
+                    |u: Option<f32>| u.map_or("-".to_string(), |u| t.info.from_unit(u).to_string());
+                format!("scene.{} = {} {}\n", t.addr, v(t.scene[0]), v(t.scene[1]))
+            })
+            .collect();
+        scenes.sort();
+        scenes.iter().for_each(|l| out.push_str(l));
+        for n in 0..LFOS + FOLLOWERS {
+            let params: &[ParamInfo] = if n < LFOS {
+                &LFO_PARAMS
+            } else {
+                &FOLLOWER_PARAMS
+            };
+            for p in params {
+                let addr = ParamAddr::new(Owner::Mod(n as u8), p.id);
+                if let Some(v) = self.source_param(addr) {
+                    let _ = writeln!(out, "source.{addr} = {v}");
+                }
+            }
+        }
+        out
+    }
+
+    /// Takes back what [`ModEngine::save`] wrote, in place of the macros'
+    /// maps, the rows and the scenes the engine had. `target` gives a
+    /// parameter's description and its value now (from the node that owns
+    /// it) so the engine can look after it; a line about a parameter it
+    /// does not know is skipped. Returns how many lines were skipped.
+    /// Allocates: control thread (or a fresh engine before it starts).
+    pub fn load(
+        &mut self,
+        text: &str,
+        target: &dyn Fn(ParamAddr) -> Option<(ParamInfo, f32)>,
+    ) -> usize {
+        while self.remove_row(self.rows.len().wrapping_sub(1)).is_some() {}
+        for m in 0..MACROS {
+            for k in 0..MACRO_TARGETS {
+                if let Some(map) = self.maps[m][k] {
+                    let addr = self.targets[map.target as usize].addr;
+                    self.unmap(addr);
+                }
+            }
+        }
+        self.clear_scenes();
+        let mut skipped = 0;
+        for line in text.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            if self.load_line(line, target).is_none() {
+                skipped += 1;
+            }
+        }
+        skipped
+    }
+
+    fn load_line(
+        &mut self,
+        line: &str,
+        target: &dyn Fn(ParamAddr) -> Option<(ParamInfo, f32)>,
+    ) -> Option<()> {
+        let (key, value) = line.split_once('=')?;
+        let (key, value) = (key.trim(), value.trim());
+        let mut words = value.split_whitespace();
+        // A target, registered with its node's description if need be.
+        let known = |e: &mut ModEngine, a: ParamAddr| -> Option<()> {
+            if e.find(a).is_some() {
+                return Some(());
+            }
+            let (info, v) = target(a)?;
+            e.add_target(a, info, v).ok()
+        };
+        let (head, rest) = key.split_once('.').unwrap_or((key, ""));
+        match head {
+            "morph" => {
+                let v: f32 = value.parse().ok()?;
+                self.targets[MORPH].set_base(v);
+                self.targets[MORPH].dirty = true;
+            }
+            "macro" => {
+                let m: usize = rest.parse().ok()?;
+                let v: f32 = value.parse().ok()?;
+                let t = self
+                    .targets
+                    .get_mut(FIRST_MACRO + m)
+                    .filter(|_| m < MACROS)?;
+                t.set_base(v);
+                t.dirty = true;
+            }
+            "map" => {
+                let m: usize = rest.split('.').next()?.parse().ok()?;
+                let addr: ParamAddr = words.next()?.parse().ok()?;
+                let from: f32 = words.next()?.parse().ok()?;
+                let to: f32 = words.next()?.parse().ok()?;
+                let curve = parse_curve(words.next()?)?;
+                known(self, addr)?;
+                self.map(
+                    m,
+                    MacroMap {
+                        target: addr,
+                        from,
+                        to,
+                        curve,
+                    },
+                )
+                .ok()?;
+            }
+            "row" => {
+                let source = parse_source(words.next()?)?;
+                let via = match words.next()? {
+                    "-" => None,
+                    w => Some(parse_source(w)?),
+                };
+                let addr: ParamAddr = words.next()?.parse().ok()?;
+                let depth: f32 = words.next()?.parse().ok()?;
+                known(self, addr)?;
+                self.add_row(Row {
+                    source,
+                    via,
+                    target: addr,
+                    depth,
+                })
+                .ok()?;
+            }
+            "scene" => {
+                let addr: ParamAddr = rest.parse().ok()?;
+                let a = words.next()?;
+                let b = words.next()?;
+                if !matches!(addr.owner, Owner::Macro(_)) {
+                    known(self, addr)?;
+                }
+                for (which, w) in [a, b].into_iter().enumerate() {
+                    let v = match w {
+                        "-" => None,
+                        w => Some(w.parse::<f32>().ok()?),
+                    };
+                    self.set_scene_value(addr, which, v).ok()?;
+                }
+            }
+            "source" => {
+                let addr: ParamAddr = rest.parse().ok()?;
+                let v: f32 = value.parse().ok()?;
+                let Owner::Mod(n) = addr.owner else {
+                    return None;
+                };
+                let n = n as usize;
+                if n < LFOS {
+                    self.lfos[n].set_param(addr.param, v);
+                } else {
+                    self.followers.get_mut(n - LFOS)?.set_param(addr.param, v);
+                }
+            }
+            _ => return None,
+        }
+        Some(())
+    }
+
     // ---- Audio thread -------------------------------------------------------
 
     /// Runs one block of `len` frames starting at `ctx.frame`: applies
@@ -848,11 +1145,38 @@ impl ModEngine {
                 }
                 t.dirty = true;
             }
-            ModEvent::Lock { addr, value } => match self.find(addr) {
+            ModEvent::Lock { addr, value } | ModEvent::Lane { addr, value } => {
+                match self.find(addr) {
+                    Some(i) => {
+                        let t = &mut self.targets[i];
+                        let v = t.info.clamp(value);
+                        t.lock = Some((v, t.info.to_unit(v)));
+                        t.lane = matches!(ev, ModEvent::Lane { .. });
+                        t.dirty = true;
+                    }
+                    None => {
+                        self.stats.unregistered += 1;
+                        self.pass = Some((addr, value));
+                    }
+                }
+            }
+            ModEvent::Unlock { addr } => {
+                if let Some(i) = self.find(addr) {
+                    let t = &mut self.targets[i];
+                    if t.lock.take().is_some() {
+                        t.dirty = true;
+                    }
+                }
+            }
+            ModEvent::Touch {
+                addr,
+                value,
+                over_locks,
+            } => match self.find(addr) {
                 Some(i) => {
                     let t = &mut self.targets[i];
                     let v = t.info.clamp(value);
-                    t.lock = Some((v, t.info.to_unit(v)));
+                    t.touch = Some((v, t.info.to_unit(v), over_locks));
                     t.dirty = true;
                 }
                 None => {
@@ -860,10 +1184,10 @@ impl ModEngine {
                     self.pass = Some((addr, value));
                 }
             },
-            ModEvent::Unlock { addr } => {
+            ModEvent::Untouch { addr } => {
                 if let Some(i) = self.find(addr) {
                     let t = &mut self.targets[i];
-                    if t.lock.take().is_some() {
+                    if t.touch.take().is_some() {
                         t.dirty = true;
                     }
                 }
@@ -960,8 +1284,9 @@ impl ModEngine {
     }
 
     /// Target `i`'s knob position from its layers, and its exact value
-    /// when a single plain value decides it (the base or a lock with no
-    /// rows), so an unmodulated parameter goes out exactly as it was set.
+    /// when a single plain value decides it (the base, a lock or a touch
+    /// with no rows), so an unmodulated parameter goes out exactly as it
+    /// was set.
     #[inline]
     fn eval(&self, i: usize) -> (f32, Option<f32>) {
         let t = &self.targets[i];
@@ -981,6 +1306,13 @@ impl ModEngine {
         if let Some((l, lu)) = t.lock {
             u = lu;
             exact = Some(l);
+        }
+        if let Some((h, hu, over_locks)) = t.touch {
+            // A step's lock keeps its value under a hand, unless recording.
+            if over_locks || t.lane || t.lock.is_none() {
+                u = hu;
+                exact = Some(h);
+            }
         }
         if t.rows > 0 {
             u += t.offset;
@@ -1016,6 +1348,78 @@ impl ModEngine {
             );
         }
     }
+}
+
+/// A change to the engine's set-up as a small `Copy` message, so the
+/// control thread can queue it to the audio thread, which applies it with
+/// [`ModEngine::change`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Change {
+    /// [`ModEngine::add_target`].
+    Target {
+        addr: ParamAddr,
+        info: ParamInfo,
+        value: f32,
+    },
+    RemoveTarget(ParamAddr),
+    /// Macro `m` takes (or changes) a target.
+    Map {
+        m: u8,
+        map: MacroMap,
+    },
+    Unmap(ParamAddr),
+    AddRow(Row),
+    Depth {
+        row: u8,
+        depth: f32,
+    },
+    RemoveRow(u8),
+    /// Store the values as they are now as scene A (0) or B (1).
+    Capture(u8),
+    ClearScenes,
+}
+
+/// "lfo3", "fol1", "macro2", "host0", as [`ModEngine::save`] writes them.
+pub fn source_text(s: Source) -> String {
+    match s {
+        Source::Lfo(n) => format!("lfo{n}"),
+        Source::Follower(n) => format!("fol{n}"),
+        Source::Macro(n) => format!("macro{n}"),
+        Source::Host(n) => format!("host{n}"),
+    }
+}
+
+pub fn parse_source(s: &str) -> Option<Source> {
+    let split = s.find(|c: char| c.is_ascii_digit())?;
+    let (name, n) = s.split_at(split);
+    let n: u8 = n.parse().ok()?;
+    let src = match name {
+        "lfo" => Source::Lfo(n),
+        "fol" => Source::Follower(n),
+        "macro" => Source::Macro(n),
+        "host" => Source::Host(n),
+        _ => return None,
+    };
+    src.valid().then_some(src)
+}
+
+fn curve_text(c: MapCurve) -> &'static str {
+    match c {
+        MapCurve::Linear => "linear",
+        MapCurve::Exp => "exp",
+        MapCurve::Log => "log",
+        MapCurve::S => "s",
+    }
+}
+
+fn parse_curve(s: &str) -> Option<MapCurve> {
+    Some(match s {
+        "linear" => MapCurve::Linear,
+        "exp" => MapCurve::Exp,
+        "log" => MapCurve::Log,
+        "s" => MapCurve::S,
+        _ => return None,
+    })
 }
 
 fn log_consts(info: &ParamInfo) -> Option<(f32, f32)> {
