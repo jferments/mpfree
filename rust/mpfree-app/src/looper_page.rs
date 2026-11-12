@@ -97,18 +97,43 @@ struct StripLook {
 
 /// The strip's widget name.
 pub const LOOP_STRIP: &str = "play-loop";
-/// The buttons under the loop in the Loop view, in tap order. "Stop" stops
-/// the transport; the others are the Looper tab's ([`BUTTONS`]).
-pub const STRIP_BUTTONS: [&str; 7] = ["Record", "Overdub", "Stop", "Undo", "Redo", "Mute", "Clear"];
-/// The Looper tab's button for each of [`STRIP_BUTTONS`] (None: Stop).
-pub const STRIP_TO_BUTTON: [Option<usize>; 7] = [
-    Some(B_RECORD),
-    Some(B_OVERDUB),
+/// The buttons under the loop in the Loop view, in tap order. "Play" and
+/// "Stop" are the transport's; the others are the Looper tab's presses.
+pub const STRIP_BUTTONS: [&str; 8] = [
+    "Record", "Overdub", "Play", "Stop", "Undo", "Redo", "Mute", "Clear",
+];
+/// What a tap on one of [`STRIP_BUTTONS`] does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StripPress {
+    /// One of the looper's presses (`B_RECORD`…), as `App::looper_tap` takes them.
+    Looper(usize),
+    /// The transport's PLAY.
+    Play,
+    /// The transport's STOP.
+    Stop,
+}
+/// Each of [`STRIP_BUTTONS`]' job.
+pub const STRIP_PRESSES: [StripPress; 8] = [
+    StripPress::Looper(B_RECORD),
+    StripPress::Looper(B_OVERDUB),
+    StripPress::Play,
+    StripPress::Stop,
+    StripPress::Looper(B_UNDO),
+    StripPress::Looper(B_REDO),
+    StripPress::Looper(B_MUTE),
+    StripPress::Looper(B_CLEAR),
+];
+/// Each of [`STRIP_BUTTONS`]' symbol. The Record button keeps its dot
+/// whatever it says (Cancel, End), since it is still the record button.
+pub const STRIP_SYMBOLS: [Option<draw::Symbol>; 8] = [
+    Some(draw::Symbol::Record),
+    Some(draw::Symbol::Overdub),
+    Some(draw::Symbol::Play),
+    Some(draw::Symbol::Stop),
     None,
-    Some(B_UNDO),
-    Some(B_REDO),
-    Some(B_MUTE),
-    Some(B_CLEAR),
+    None,
+    None,
+    None,
 ];
 /// The layers' colours, layer 1 first.
 pub const LAYER_COLOURS: [Color; 8] = [
@@ -313,11 +338,15 @@ impl Widget for LoopStrip {
         }
         *self.speakers.borrow_mut() = speakers;
         if let Some(row) = btns {
-            for (br, (label, on)) in self.button_rects(row).iter().zip(&self.buttons) {
+            for (i, (br, (label, on))) in
+                self.button_rects(row).iter().zip(&self.buttons).enumerate()
+            {
                 let lit = if label == "Overdub" || label == "Stop dub" {
                     t.warn
                 } else if label == "Mute" || label == "Unmute" {
                     t.text_dim
+                } else if label == "Play" {
+                    t.good
                 } else {
                     t.bad
                 };
@@ -330,7 +359,12 @@ impl Widget for LoopStrip {
                 } else {
                     t.text
                 };
-                cx.text(FontId::Bold, 14.0, *br, Align::Center, ink, label);
+                let sym = STRIP_SYMBOLS.get(i).copied().flatten();
+                let sym_ink = match sym {
+                    Some(s) if !*on => s.colour(&t),
+                    _ => ink,
+                };
+                draw::symbol_label(cx, *br, sym, FontId::Bold, 14.0, ink, sym_ink, label);
             }
         }
         *self.drawn.borrow_mut() = Some((r, self.look(), play.unwrap_or(-1)));
@@ -1177,6 +1211,7 @@ impl LooperPage {
                 matches!(s.phase, Phase::Armed | Phase::Recording),
             ),
             ("Overdub".to_string(), s.phase == Phase::Overdubbing),
+            ("Play".to_string(), false),
             ("Stop".to_string(), false),
             ("Undo".to_string(), false),
             ("Redo".to_string(), false),

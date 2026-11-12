@@ -1,7 +1,7 @@
 <!--
 status: changing
 covers: rust/mpfree-app/src/app.rs rust/mpfree-controller docs/dev/design/layout-spec.md
-checked: 2026-11-12 b9b7477
+checked: 2026-11-12 b4f1d46
 -->
 
 # Buttons and controls
@@ -71,7 +71,8 @@ The mode buttons along the top of the MPC go to the MPFree page that does the sa
 | **Q-LINK** | Steps the Q-Links through Macros 1-4, Macros 5-8 and the page's own knobs (the Play page, Arrange and the chain editor). See [Mixing and effects](../making-music/mixing-and-effects.md#macros). | Next build |
 | **ERASE** | Live erase while recording. | Planned |
 | **BROWSE** | Opens or closes the browser. **SHIFT + BROWSE** saves the project. See [Saving your work](../making-music/saving.md). | Planned |
-| **COPY**, **TC**, the data wheel's push | Not assigned yet. | Planned |
+| **The data wheel's push** | In Prefs and the options menus: opens the picked row, so the wheel changes its value; press again to set it. Works once Map controls has found it. | Next build |
+| **COPY**, **TC** | Not assigned yet. | Planned |
 
 ## For developers
 

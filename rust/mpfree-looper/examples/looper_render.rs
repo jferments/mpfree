@@ -3,7 +3,7 @@
 //! the MPC. It never touches any device; it only writes one WAV file.
 //!
 //! ```text
-//! cargo run --release -p mpfree-looper --example render -- [--period N] [--out FILE]
+//! cargo run --release -p mpfree-looper --example looper_render -- [--period N] [--out FILE]
 //! ```
 //!
 //! A player plays into the line input at 96 BPM, and what they play reaches

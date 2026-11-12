@@ -176,7 +176,7 @@ From the owner's results zip (clone at `a0b136f`):
 
 The owner asked (2026-11-10) to go from the loading screen to the app without running a command and without the console on screen, with a progress bar and plain messages while it starts, a button to switch to the raw console, pad velocity, Full Level and Half Level, Latch with Note Repeat, and MENU and SHIFT + MENU for options and Prefs.
 
-**At power-on.** A stick built with `offline-kexec-stick.py --app` ([the kexec test boot](../hardware/kexec-test-boot.md#tools-in-order)) starts the pad player instead of the log display: the galaxy for 6 s, then a loading page over it with a progress bar and what it is doing (loading the drum kits, finding the pads and buttons, finding the sound card, connecting, lighting the pads, starting the sound), then the pad player. If something fails, the loading page says what, and a tap shows the console. The drum kits are on the stick's partition 3, mounted read-only. If the program stops with an error, the log display starts instead.
+**At power-on.** A stick built with `offline-kexec-stick.py --app` ([the kexec test boot](../hardware/kexec-test-boot.md#tools-in-order)) starts the pad player instead of the log display: the startup screen for 6 s (Synthwave's, from `mpfree-startup`; the galaxy on sticks built before 12 Nov), then a loading page over it with a progress bar and what it is doing (loading the drum kits, finding the pads and buttons, finding the sound card, connecting, lighting the pads, starting the sound), then the pad player. If something fails, the loading page says what, and a tap shows the console. The drum kits are on the stick's partition 3, mounted read-only. If the program stops with an error, the log display starts instead.
 
 **Controls** (logic in [`app.rs`](../../../rust/mpfree-app/src/app.rs), with tests):
 
@@ -188,7 +188,7 @@ The owner asked (2026-11-10) to go from the loading screen to the app without ru
 | NOTE REPEAT twice, or SHIFT + NOTE REPEAT | Latch: pads keep playing after you let go; new pads replace them. NOTE REPEAT once more turns it off. The two presses must come within 0.4 s. Uses the [`mpfree-arp`](../design/arpeggiator.md) engine |
 | NOTE REPEAT + MENU, or the arp chip | The Arp panel beside the pads (mode, rate, order, pattern, Q-Links), and from it the pattern workspace |
 | MENU | The current page's options (on the Arp panel: accent level, scale, scale root, strum, new notes restart, swing from); again to close. SHIFT + MENU: Prefs |
-| In a menu | The wheel or a tap picks a row; − / +, SHIFT + wheel or the arrows change it |
+| In a menu | The wheel or a tap picks a row; − / +, SHIFT + wheel or the arrows change it. The wheel's push (`Job::DataPush`, found with Map controls) opens the row: the wheel then changes it, and a second push sets it; on a row that opens something it opens it |
 | TAP TEMPO | Sets the tempo; its light blinks with it |
 | Wheel, − / + | The kit (outside menus) |
 | Q-Link 1, the slider | The level |

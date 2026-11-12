@@ -1,7 +1,7 @@
 <!--
 status: changing
 covers: rust/mpfree-sampler rust/mpfree-sampler-ui rust/mpfree-grain rust/mpfree-app/src/sample_page.rs rust/mpfree-app/src/sampler.rs
-checked: 2026-11-12 2469645
+checked: 2026-11-12 b4f1d46
 -->
 
 # Sampling
