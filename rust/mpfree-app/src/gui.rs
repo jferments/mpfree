@@ -8115,6 +8115,10 @@ mod tests {
             std::thread::sleep(Duration::from_millis(2));
             p.tick(0.033);
         }
+        // What the job sent after the last look, before it ended: once it
+        // has landed, everything it sent is in.
+        midi.extend(sent.lock().unwrap().drain(..));
+        assert!(midi.iter().all(|m| m[0] & 0x0f == 1), "channel 2");
         // Two level tests and four notes, each on and off, then All Notes Off.
         let ons = midi.iter().filter(|m| m[0] == 0x91).count();
         let offs = midi.iter().filter(|m| m[0] == 0x81).count();
