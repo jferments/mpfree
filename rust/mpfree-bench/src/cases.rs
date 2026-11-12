@@ -2013,12 +2013,20 @@ pub fn lanes(rate: u32, worker: Option<usize>) -> Vec<Case> {
                 SamplerPads::All,
             )
         }),
-        measured(|| split_sampler("Sampler as 2 x 12 voices, one core", rate, None)),
+        measured(|| {
+            split_sampler(
+                "Sampler as 2 x 12 voices, one core",
+                rate,
+                None,
+                lane_wait(),
+            )
+        }),
         measured(|| {
             split_sampler(
                 "Sampler as 2 x 12 voices, 2 cores, worker sleeps",
                 rate,
                 Some(config(false)),
+                lane_wait(),
             )
         }),
         measured(|| {
@@ -2026,6 +2034,15 @@ pub fn lanes(rate: u32, worker: Option<usize>) -> Vec<Case> {
                 "Sampler as 2 x 12 voices, 2 cores, worker spins",
                 rate,
                 Some(config(true)),
+                lane_wait(),
+            )
+        }),
+        measured(|| {
+            beside(
+                "Sampler 24 voices + Poly Init 8 voices, 1 core",
+                rate,
+                None,
+                lane_wait(),
             )
         }),
         measured(|| {
@@ -2048,21 +2065,24 @@ pub fn lanes(rate: u32, worker: Option<usize>) -> Vec<Case> {
                 Some(config(false)),
             )
         }),
-        measured(|| beside("Sampler 24 voices + Poly Init 8 voices, 1 core", rate, None)),
         measured(|| {
             beside(
                 "Sampler 24 voices + Poly Init 8 voices, 2 cores",
                 rate,
                 Some(config(false)),
+                lane_wait(),
             )
         }),
     ]
 }
 
 /// How long a lane case waits for its lane: ten periods, so the numbers
-/// show the real time a split takes rather than a cut-off.
-fn lane_deadline() -> Instant {
-    Instant::now() + Duration::from_nanos(10 * MPC.ns())
+/// show the real time a split takes rather than a cut-off. A join that
+/// misses it leaves the lane's part out of that block, and the lane's next
+/// block too while it finishes, so the case stops matching its one-core
+/// twin; the sound tests wait far longer for that reason.
+fn lane_wait() -> Duration {
+    Duration::from_nanos(10 * MPC.ns())
 }
 
 /// A lane with nothing to do: the handoff alone (post, wake, run, say
@@ -2075,7 +2095,7 @@ fn handoff(name: &str, config: LaneConfig) -> Case {
         what: "an empty job posted and joined every block",
         block: Box::new(move |b, _l, _r| {
             if lane.post(b).is_ok() {
-                let _ = lane.join(lane_deadline());
+                let _ = lane.join(Instant::now() + lane_wait());
             }
         }),
         mem_bytes: 0,
@@ -2137,8 +2157,9 @@ impl Job for Part<Chords> {
 
 /// The [`sampler`] case split in two by pad (even pads here, odd pads on
 /// the lane), 12 voices each, every hit to both. `lane` None: the lane runs
-/// on this thread, which is the same work on one core.
-fn split_sampler(name: &str, rate: u32, lane: Option<LaneConfig>) -> Case {
+/// on this thread, which is the same work on one core. Each block waits up
+/// to `wait` for the lane.
+fn split_sampler(name: &str, rate: u32, lane: Option<LaneConfig>, wait: Duration) -> Case {
     let mut here = sampler_engine(rate, false, SamplerPads::All, 12, |p| p % 2 == 0);
     let there = Part::new(SamplerPart {
         e: sampler_engine(rate, false, SamplerPads::All, 12, |p| p % 2 == 1),
@@ -2169,7 +2190,7 @@ fn split_sampler(name: &str, rate: u32, lane: Option<LaneConfig>) -> Case {
             r.fill(0.0);
             here.render(l, r);
             if posted {
-                if let Ok(j) = lane.join(lane_deadline()) {
+                if let Ok(j) = lane.join(Instant::now() + wait) {
                     j.mix_into(l, r);
                 }
             }
@@ -2179,8 +2200,9 @@ fn split_sampler(name: &str, rate: u32, lane: Option<LaneConfig>) -> Case {
 }
 
 /// The [`sampler`] case and Poly Init playing 8-voice chords: both here
-/// (`lane` None), or Poly on a lane beside the sampler.
-fn beside(name: &str, rate: u32, lane: Option<LaneConfig>) -> Case {
+/// (`lane` None), or Poly on a lane beside the sampler. Each block waits up
+/// to `wait` for the lane.
+fn beside(name: &str, rate: u32, lane: Option<LaneConfig>, wait: Duration) -> Case {
     let mut here = sampler_engine(rate, false, SamplerPads::All, 24, |_| true);
     let poly = Part::new(Chords::new(
         rate,
@@ -2207,7 +2229,7 @@ fn beside(name: &str, rate: u32, lane: Option<LaneConfig>) -> Case {
             r.fill(0.0);
             here.render(l, r);
             if posted {
-                if let Ok(j) = lane.join(lane_deadline()) {
+                if let Ok(j) = lane.join(Instant::now() + wait) {
                     j.mix_into(l, r);
                 }
             }
@@ -2254,14 +2276,20 @@ mod tests {
     #[test]
     fn a_split_on_two_cores_sounds_exactly_like_the_split_on_one() {
         let lane = || Some(LaneConfig::default());
+        // The bench's ten periods (29 ms) are too short for a debug build on
+        // a busy test runner, where the worker can wait that long for a
+        // core; a late block would leave the lane's part out and fail the
+        // comparison for a reason that is not the sound. So wait as long as
+        // it takes, within reason.
+        let wait = Duration::from_secs(60);
         same_blocks(
-            split_sampler("one", 44_100, None),
-            split_sampler("two", 44_100, lane()),
+            split_sampler("one", 44_100, None, wait),
+            split_sampler("two", 44_100, lane(), wait),
             600,
         );
         same_blocks(
-            beside("one", 44_100, None),
-            beside("two", 44_100, lane()),
+            beside("one", 44_100, None, wait),
+            beside("two", 44_100, lane(), wait),
             600,
         );
         same_blocks(

@@ -452,6 +452,9 @@ pub struct Settings {
     pub loop_latency: u32,
     pub loop_latency_set: bool,
     pub loop_level_db: f32,
+    /// Prefs > Appearance: the theme in use, a built-in name (see
+    /// [`THEMES`]); `--theme` can also set a theme file for one run.
+    pub theme: String,
 }
 
 impl Settings {
@@ -485,8 +488,25 @@ impl Default for Settings {
             loop_latency: crate::looping::estimated_latency(3),
             loop_latency_set: false,
             loop_level_db: 0.0,
+            theme: "default".to_string(),
         }
     }
+}
+
+/// The themes Prefs > Appearance offers: the built-in name and its row.
+/// The same names, in the same order, as `mpfree_ui::theme::BUILTIN`.
+pub const THEMES: [(&str, &str); 4] = [
+    ("default", "Default"),
+    ("console", "Console"),
+    ("synthwave", "Synthwave"),
+    ("spaceship", "Spaceship"),
+];
+
+/// Which part of Prefs is on screen.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PrefsSection {
+    Main,
+    Touch,
 }
 
 /// One row of a menu.
@@ -499,6 +519,8 @@ pub enum Item {
     FindButtons,
     /// Prefs: opens the touch screen section.
     TouchSection,
+    /// Prefs: the theme in use; the arrows step through [`THEMES`].
+    Appearance,
     /// The touch screen section: back to the other Prefs.
     PrefsBack,
     CalibrateTouch,
@@ -669,8 +691,8 @@ pub struct App {
     /// When the tempo's beats started (seconds), for the TAP TEMPO light.
     beat_zero: f64,
     tap_light: bool,
-    /// Prefs shows its touch screen section rather than the main rows.
-    prefs_touch: bool,
+    /// The part of Prefs on screen: the main rows or one of its sections.
+    prefs_section: PrefsSection,
     /// The mode the Arp panel picked. NOTE REPEAT and Latch turn on Repeat
     /// when it is Direct.
     arp_mode: Mode,
@@ -743,7 +765,8 @@ pub struct App {
 }
 
 /// Prefs' main rows. The touch screen settings sit in their own section,
-/// opened by the last row; Line input and System info go just before it.
+/// opened by the last row; Line input, System info and Appearance (the
+/// theme) go just before it.
 const PREFS_ROWS: &[Item] = &[
     Item::Curve,
     Item::LatchMode,
@@ -753,6 +776,7 @@ const PREFS_ROWS: &[Item] = &[
     Item::MapControls,
     Item::LineInput,
     Item::SystemInfo,
+    Item::Appearance,
     Item::TouchSection,
 ];
 /// Prefs' touch screen section.
@@ -816,7 +840,7 @@ impl App {
             note_holds: [0; 128],
             mapper: mapper::Mapper::default(),
             swallowed: [false; 128],
-            prefs_touch: false,
+            prefs_section: PrefsSection::Main,
             loop_muted: false,
             save_dirty: false,
             saved: Default::default(),
@@ -1106,7 +1130,8 @@ impl App {
             if self.repeat_held {
                 // NOTE REPEAT + MENU opens and closes the Arp panel.
                 fx.extend(self.toggle_panel());
-            } else if !shift && self.view == View::Prefs && self.prefs_touch {
+            } else if !shift && self.view == View::Prefs && self.prefs_section != PrefsSection::Main
+            {
                 // MENU in a Prefs section: back to the main rows.
                 fx.extend(self.leave_prefs_section());
             } else if shift {
@@ -1325,7 +1350,7 @@ impl App {
         self.view = v;
         if self.in_menu() {
             self.selected = 0;
-            self.prefs_touch = false;
+            self.prefs_section = PrefsSection::Main;
             fx.push(self.menu_view());
         }
         fx.push(Effect::Show(v));
@@ -1619,7 +1644,7 @@ impl App {
 
     fn items(&self) -> &'static [Item] {
         match (self.view, self.back) {
-            (View::Prefs, _) if self.prefs_touch => PREFS_TOUCH_ROWS,
+            (View::Prefs, _) if self.prefs_section == PrefsSection::Touch => PREFS_TOUCH_ROWS,
             (View::Prefs, _) => PREFS_ROWS,
             (_, View::Looper) => &[
                 Item::LoopSource,
@@ -1661,6 +1686,15 @@ impl App {
             ),
             Item::FindButtons => ("Find the buttons again", "Start".to_string()),
             Item::TouchSection => ("Touch screen", "Open".to_string()),
+            Item::Appearance => (
+                "Appearance",
+                THEMES
+                    .iter()
+                    .find(|t| t.0 == s.theme)
+                    .map(|t| t.1)
+                    .unwrap_or("Theme file")
+                    .to_string(),
+            ),
             Item::PrefsBack => ("Back to Prefs", "Back".to_string()),
             Item::CalibrateTouch => ("Calibrate touch", "Start".to_string()),
             Item::TouchLab => ("Touch lab", "Open".to_string()),
@@ -1760,6 +1794,13 @@ impl App {
                 "Ask for MENU, NOTE REPEAT, TAP TEMPO, - and +,",
                 "REC, OVERDUB, UNDO and PLAY START again,",
                 "one at a time.",
+            ],
+            Item::Appearance => vec![
+                "The theme: the colours and the panels' style.",
+                "The arrows, - / + or SHIFT + wheel step through",
+                "Default, Console, Synthwave and Spaceship; the",
+                "screen changes at once. The layout and the font",
+                "stay the same. It is kept for the next start.",
             ],
             Item::TouchSection => vec![
                 "The touch screen's settings: screen pad",
@@ -1870,7 +1911,9 @@ impl App {
         let items = self.items();
         let selected = self.selected.min(items.len() - 1);
         let title = match (self.view, self.back) {
-            (View::Prefs, _) if self.prefs_touch => "Prefs · Touch screen".to_string(),
+            (View::Prefs, _) if self.prefs_section == PrefsSection::Touch => {
+                "Prefs · Touch screen".to_string()
+            }
             (View::Prefs, _) => "Prefs".to_string(),
             (_, View::Arp) => "Arp options".to_string(),
             (_, View::Debug) => "MIDI log options".to_string(),
@@ -1901,7 +1944,7 @@ impl App {
 
     /// From a Prefs section back to Prefs' main rows, on the row that opened it.
     fn leave_prefs_section(&mut self) -> Vec<Effect> {
-        self.prefs_touch = false;
+        self.prefs_section = PrefsSection::Main;
         self.selected = PREFS_ROWS
             .iter()
             .position(|&i| i == Item::TouchSection)
@@ -1965,9 +2008,18 @@ impl App {
                 return vec![self.guide_view(), Effect::Show(View::Guide)];
             }
             Item::TouchSection => {
-                self.prefs_touch = true;
+                self.prefs_section = PrefsSection::Touch;
                 self.selected = 1;
                 return vec![self.menu_view()];
+            }
+            Item::Appearance => {
+                // A theme file from --theme counts as before the first.
+                let at = THEMES.iter().position(|t| t.0 == s.theme);
+                let next = match at {
+                    Some(i) => (i as i32 + d).clamp(0, THEMES.len() as i32 - 1) as usize,
+                    None => 0,
+                };
+                s.theme = THEMES[next].0.to_string();
             }
             Item::PrefsBack => return self.leave_prefs_section(),
             Item::CalibrateTouch => return vec![Effect::CalibrateTouch],
@@ -2407,6 +2459,48 @@ mod tests {
     /// Where `item` sits in the menu on screen.
     fn row(app: &App, item: Item) -> usize {
         app.row_of(item).expect("row shown")
+    }
+
+    #[test]
+    fn prefs_appearance_steps_through_the_themes() {
+        let mut app = App::new(44_100, false);
+        app.map.menu = Some(MENU);
+        app.button(button::SHIFT, true, 0.0);
+        press(&mut app, MENU);
+        app.button(button::SHIFT, false, 0.0);
+        let at = row(&app, Item::Appearance);
+        let value = |fx: &[Effect]| match fx.last() {
+            Some(Effect::Menu(m)) => m.rows[at].1.clone(),
+            _ => panic!("{fx:?}"),
+        };
+        // One row, its value the theme in use.
+        let fx = app.select(at);
+        assert_eq!(value(&fx), "Default");
+        // + steps to the next theme and hands the GUI the new settings.
+        let fx = app.step_item(at, 1);
+        assert!(
+            fx.iter()
+                .any(|e| matches!(e, Effect::Settings(s) if s.theme == "console")),
+            "{fx:?}"
+        );
+        assert_eq!(value(&fx), "Console");
+        app.step_item(at, 1);
+        assert_eq!(value(&app.step_item(at, 1)), "Spaceship");
+        // It stops at the ends.
+        assert_eq!(value(&app.step_item(at, 1)), "Spaceship");
+        assert_eq!(value(&app.step_item(at, -1)), "Synthwave");
+        // It is kept, and comes back at the next start.
+        let kept = app.app_settings();
+        assert_eq!(kept.get_str("theme"), Some("synthwave"));
+        let mut next = App::new(44_100, false);
+        next.restore(&kept, &mpfree_store::Settings::default());
+        assert_eq!(next.settings.theme, "synthwave");
+    }
+
+    #[test]
+    fn appearance_offers_every_built_in_theme() {
+        let names: Vec<&str> = THEMES.iter().map(|t| t.0).collect();
+        assert_eq!(names, mpfree_ui::theme::BUILTIN);
     }
 
     #[test]
