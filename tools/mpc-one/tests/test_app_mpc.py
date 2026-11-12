@@ -39,7 +39,7 @@ LINKED_SRC = (os.path.join(REPO, "rust", "mpfree-touch", "src"), os.path.join(RE
 # reaches the pad player and is left out of the scan.
 NOT_LINKED = ("mpfree-prof/alloc.rs",)
 NEW = "6.18.44-fake-rt6"
-APPLETS = ("sh", "cat", "grep", "readlink", "ls", "df", "tail", "sha256sum", "rm", "mkdir", "mv", "chmod")
+APPLETS = ("sh", "cat", "grep", "readlink", "ls", "df", "tail", "sha256sum", "rm", "mkdir", "mv", "chmod", "sleep")
 
 FAKE_SSH = r'''#!/usr/bin/env python3
 import os, subprocess, sys
@@ -470,12 +470,13 @@ class AppTests(unittest.TestCase):
         out = res.stdout
         for text in ("steps: app", "[3/3] The pad player that started at power-on (read-only",
                      "pad player (mpfree-test-app.service): active", "(systemd[1]) Started MPFree test boot",
-                     "pad player: 6 kits, 81 sounds", "your answer: loading ok", "Phase 1 of 12: Developer tools and Map controls",
+                     "pad player: 6 kits, 81 sounds", "start-up: the app was playing 9.5 s after power-on",
+                     "your answer: loading ok", "Phase 1 of 16: Developer tools and Map controls",
                      "button guide: MENU is button 11", "buttons pressed (note numbers): 11",
-                     "Phase 2 of 12: Developer pages: Performance, CPU by engine, Processes", "pads hit (pad:velocity as played): 1:18 1:124",
+                     "Phase 2 of 16: Developer pages: Performance, CPU by engine, Processes", "pads hit (pad:velocity as played): 1:18 1:124",
                      "buttons pressed (note numbers): 39", "pad level: Full Level (every hit 127)",
                      "data wheel: +1", "session pings and replies: 1", "your answer: soft and hard differ",
-                     "Phase 4 of 12: Grains", "repeat: 16 hits in the last second on pads 1 2; latched: 1 2; "
+                     "Phase 4 of 16: Play page: the four views and the mode buttons", "repeat: 16 hits in the last second on pads 1 2; latched: 1 2; "
                      "engine dropped 0 events, overflow 0", "STOP: stopped by you"):
             self.assertIn(text, out)
         # Phase 1's lines are not shown again in phase 2.
@@ -497,17 +498,75 @@ class AppTests(unittest.TestCase):
     def test_app_step_all_phases_and_the_status(self):
         write(self.app, "active\n")
         self.add_journal([(130.0, "mpfree[211]: status: 60 hits (0 from the screen), 40 repeats, 0 underruns")])
-        answers = "\n\n" + "\n\n\n" * 12
+        answers = "\n\n" + "\n\n\n" * 16
         res = self.run_helper(answers, MPFREE_APP_STEPS="app")
         self.assertEqual(res.returncode, 0, res.stdout)
-        self.assertIn("Phase 7 of 12: Arrange: record, overdub and undo", res.stdout)
-        self.assertIn("Phase 8 of 12: Audio looper: loop the pads", res.stdout)
-        self.assertIn("Phase 9 of 12: Sample tab: Wave and Chop", res.stdout)
-        self.assertIn("Phase 10 of 12: Prefs, System info and saving", res.stdout)
-        self.assertIn("Phase 12 of 12: Menus, console and STOP", res.stdout)
+        for title in ("Phase 5 of 16: Throws, the XY pad (Perform FX) and FILL",
+                      "Phase 6 of 16: Arrange: clips, takes, Capture, the song and the morph",
+                      "Phase 7 of 16: TRACK MUTE and SHIFT + TRACK MUTE",
+                      "Phase 11 of 16: Looper tab: record, layers, tools, undo history, trim",
+                      "Phase 12 of 16: Mixer, effect chains and macros",
+                      "Phase 13 of 16: Sample tab: Pads, Wave and Chop",
+                      "Phase 15 of 16: Touch: Touch lab, Calibrate touch and the Dev Touch page",
+                      "Phase 16 of 16: Menus, console and STOP"):
+            self.assertIn(title, res.stdout)
+        self.assertIn("start-up: no playing line yet", res.stdout)
         self.assertIn("The app's latest status", res.stdout)
         self.assertIn("    status: 60 hits (0 from the screen), 40 repeats, 0 underruns", res.stdout)
         self.assertIn("RESULT: all steps ran", res.stdout)
+
+    def test_app_step_reads_partition_4_and_its_grow(self):
+        """Read-only: partition 4's size and free space, and what the online grow at power-on said."""
+        write(self.app, "active\n")
+        r = self.root
+        with open(f"{r}/proc/mounts", "a") as fh:
+            fh.write("/dev/sda4 /run/mpfree-data ext4 rw,nosuid,nodev,noexec,noatime 0 0\n")
+        os.makedirs(f"{r}/run/mpfree-data", exist_ok=True)
+        write(f"{r}/run/mpfree-data-grow.txt", "resize2fs 1.47.0 (5-Feb-2023)\n"
+              "The filesystem on /dev/sda4 is now 7520000 (4k) blocks long.\n")
+        res = self.run_helper("\nq\n", MPFREE_APP_STEPS="app")
+        self.assertRegex(res.stdout, r"partition 4: \d+ KiB, \d+ KiB used, \d+ KiB free")
+        self.assertIn("partition 4 grow:\n    resize2fs 1.47.0 (5-Feb-2023)\n"
+                      "    The filesystem on /dev/sda4 is now 7520000 (4k) blocks long.", res.stdout)
+        os.remove(f"{r}/run/mpfree-data-grow.txt")
+        with open(f"{r}/proc/mounts") as fh:
+            mounts = fh.read().replace("/dev/sda4 /run/mpfree-data ext4 rw,nosuid,nodev,noexec,noatime 0 0\n", "")
+        write(f"{r}/proc/mounts", mounts)
+        res = self.run_helper("\nq\n", MPFREE_APP_STEPS="app")
+        self.assertIn("partition 4: not mounted", res.stdout)
+        self.assertIn("partition 4 grow: no /run/mpfree-data-grow.txt", res.stdout)
+
+    def test_app_step_reads_the_cores_after_the_dev_pages(self):
+        """Read-only, during play: the governor, the clock source, each app thread's cores and priority."""
+        write(self.app, "active\n")
+        r = self.root
+        write(f"{r}/sys/devices/system/cpu/online", "0-3\n")
+        write(f"{r}/sys/devices/system/cpu/isolated", "2-3\n")
+        write(f"{r}/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor", "interactive\n")
+        write(f"{r}/sys/devices/system/clocksource/clocksource0/current_clocksource", "arch_sys_counter\n")
+        write(f"{r}/proc/900/comm", "mpfree\n")
+        fields = " ".join(["S"] + ["0"] * 35 + ["1", "70", "1"] + ["0"] * 10)
+        for tid, name, cpus in (("900", "mpfree", "0-1"), ("903", "mpfree-screen", "0-1")):
+            write(f"{r}/proc/900/task/{tid}/comm", name + "\n")
+            write(f"{r}/proc/900/task/{tid}/stat", f"{tid} ({name}) {fields}\n")
+            write(f"{r}/proc/900/task/{tid}/status", f"Name:\t{name}\nCpus_allowed_list:\t{cpus}\n")
+        write(f"{r}/proc/stat", "cpu  10 0 10 100 0 0 0 0 0 0\ncpu0 5 0 5 50 0 0 0 0 0 0\n")
+        write(f"{r}/proc/interrupts", "           CPU0       CPU1\n 61:         42          0  ili2117\n")
+        answers = "\n\n" + "\n\n\n" * 2 + "q\n"
+        res = self.run_helper(answers, MPFREE_APP_STEPS="app")
+        out = res.stdout
+        for text in ("cores, clock and threads now (read-only):", "/sys/devices/system/cpu/isolated: 2-3",
+                     "/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor: interactive",
+                     "current_clocksource: arch_sys_counter", "app pid 900",
+                     "900 mpfree: allowed \t0-1 last_cpu=1 rt_priority=70 policy=1",
+                     "903 mpfree-screen: allowed \t0-1 last_cpu=1", "app processes: 1",
+                     "cpu0 5 0 5 50 0 0 0 0 0 0",
+                     "/sys/devices/system/cpu/cpu[0-3]/cpufreq/scaling_cur_freq: not there"):
+            self.assertIn(text, out)
+        self.assertEqual(out.count("cores, clock and threads now"), 1, "only after phase 2 so far")
+        self.assertNotIn(" 61:         42", out.split("cores, clock and threads now")[1].split("Phase 3")[0])
+        with open(self.report) as fh:
+            self.assertIn("|  61:         42          0  ili2117", fh.read())
 
     def test_app_step_summary_reads_the_whole_session(self):
         """Every phase skipped: the summary still shows the whole run, the touch interrupts and the status."""
@@ -583,7 +642,7 @@ class AppTests(unittest.TestCase):
         for text in ("steps: line", "[3/3] The line input (STATE-CHANGING on the MPC, RAM only",
                      "pad player (mpfree-test-app.service): active", "the line input before (read-only):",
                      "    ACVA is card 1", "    --- card1/pcm0c/sub0/status", "    --- card1/pcm0p/sub0/hw_params",
-                     "Undo: Line input Off", "answer: LINE", "Phase 1 of 3: Line input on, and its meter",
+                     "Undo: Line input Off", "answer: LINE", "Phase 1 of 3: Line input on, and which jack is which",
                      "line input: on: /dev/snd/pcmC1D0c, rate 44100", "the line input now (read-only):",
                      "your answer: meter moved, L left", "Phase 2 of 3: Loop the line input",
                      "looper: loop of 2 bars at 3.1.000", "Phase 3 of 3: Line input off", "your answer: off ok",
