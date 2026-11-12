@@ -43,11 +43,18 @@ impl Form for Sync {
 
     fn banner(&self, m: &IoModel) -> Option<String> {
         let b = m.live.built;
-        (!b.clock_in || !b.clock_out).then(|| {
-            "Following and sending clock aren't in this build yet: what you set \
-             here is kept with the project."
-                .to_string()
-        })
+        let what = match (b.clock_in, b.clock_out) {
+            (true, true) => return None,
+            (false, false) => {
+                "Following another device's clock isn't built yet, and \
+                 sending clock is off with MIDI out"
+            }
+            (false, true) => "Following another device's clock isn't built yet",
+            (true, false) => "Sending clock is off with MIDI out",
+        };
+        Some(format!(
+            "{what}: what you set here is kept with the project."
+        ))
     }
 
     fn rows(&self, m: &IoModel, _now: Duration) -> Vec<Row> {
@@ -128,7 +135,7 @@ impl Form for Sync {
                 (None, _) => row.note("not plugged in: its settings are kept", Tone::Warn),
                 (_, ClockOut::Off) => row.note("sends no clock", Tone::Faint),
                 (_, _) if !built.clock_out => {
-                    row.note("sends nothing yet: no clock out", Tone::Warn)
+                    row.note("sends nothing: MIDI out is off", Tone::Warn)
                 }
                 (_, ClockOut::WhilePlaying) => {
                     row.note("clock, start and stop while playing", Tone::Normal)
@@ -254,6 +261,24 @@ mod tests {
         assert_eq!(s.lock().unwrap().setup.tempo, TempoSource::Internal);
     }
 
+    /// The banner says which half of clock isn't working, if either.
+    #[test]
+    fn the_banner_names_what_is_missing() {
+        let s = model();
+        let banner = |s: &crate::Shared| Sync.banner(&s.lock().unwrap());
+        assert!(banner(&s).unwrap().starts_with(
+            "Following another device's clock isn't built yet, and sending clock is off"
+        ));
+        s.lock().unwrap().live.built.clock_out = true;
+        assert_eq!(
+            banner(&s).unwrap(),
+            "Following another device's clock isn't built yet: what you set here is \
+             kept with the project."
+        );
+        s.lock().unwrap().live.built.clock_in = true;
+        assert_eq!(banner(&s), None);
+    }
+
     #[test]
     fn follow_settings_only_work_while_following() {
         let s = model();
@@ -298,10 +323,7 @@ mod tests {
             s.lock().unwrap().setup.port(DIN_NAME).clock_out,
             ClockOut::WhilePlaying
         );
-        assert_eq!(
-            row(&s, "clock:MIDI").note,
-            "sends nothing yet: no clock out"
-        );
+        assert_eq!(row(&s, "clock:MIDI").note, "sends nothing: MIDI out is off");
         Sync.step(&mut s.lock().unwrap(), "clock:MIDI", 0, 1);
         Sync.step(&mut s.lock().unwrap(), "clock:MIDI", 0, 1);
         assert!(s.lock().unwrap().setup.ports.is_empty());

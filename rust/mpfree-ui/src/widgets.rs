@@ -1056,6 +1056,9 @@ pub struct OptionList {
     pub right: String,
     pub rows: Vec<OptionRow>,
     pub selected: usize,
+    /// The selected row is open for the wheel: its value box is outlined
+    /// and its arrows lit, until the wheel's push sets it.
+    pub editing: bool,
 }
 
 const OPTION_H: i32 = 58;
@@ -1075,6 +1078,7 @@ impl OptionList {
             right: String::new(),
             rows: Vec::new(),
             selected: 0,
+            editing: false,
         }
     }
 
@@ -1160,16 +1164,21 @@ impl Widget for OptionList {
                 &self.rows[k].name,
             );
             let boxr = value.inset_xy(0, 7);
+            let open = on && self.editing;
             cx.canvas
                 .fill_round_rect(boxr, 10, if on { t.surface } else { t.raised });
+            if open {
+                cx.canvas.stroke_round_rect(boxr, 10, 2, t.accent);
+            }
             let (left, mid) = boxr.take_left(arrow);
             let (right, mid) = mid.take_right(arrow);
+            let arrows = if open { t.accent } else { t.text_dim };
             cx.text(
                 FontId::Bold,
                 t.size_title + 4.0,
                 left,
                 Align::Center,
-                t.text_dim,
+                arrows,
                 "‹",
             );
             cx.text(
@@ -1177,7 +1186,7 @@ impl Widget for OptionList {
                 t.size_title + 4.0,
                 right,
                 Align::Center,
-                t.text_dim,
+                arrows,
                 "›",
             );
             cx.text(

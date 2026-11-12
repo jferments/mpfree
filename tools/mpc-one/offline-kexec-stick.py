@@ -40,13 +40,16 @@ What changes in the COPY of the root filesystem (the image itself is only read):
     mpfree-screen-log (rust/mpfree-screen-log, built for ARM beforehand) reads
     `journalctl -f` and draws it on /dev/fb0, turned by the panel's rotation
     from the device tree; it writes only the framebuffer
-  - only with --splash: a startup screen first. Our program mpfree-splash
-    (rust/mpfree-splash, built for ARM beforehand) draws the galaxy on
-    /dev/fb0 for 6 seconds, in the --splash-font font if one is given, and
-    the log display starts when it ends; it writes only the framebuffer
+  - only with --splash: a startup screen first. Our program mpfree-startup
+    (rust/mpfree-startup, built for ARM beforehand) plays the default theme's
+    startup screen (synthwave) on /dev/fb0 for 6 seconds, and the log display
+    starts when it ends; it writes only the framebuffer and the framebuffer's
+    sysfs `pan` file (a mode set; nothing is stored). The older mpfree-splash
+    (the galaxy, with an optional --splash-font) takes the same place
   - only with --app: the pad player starts at power-on instead of the log
     display. Our program mpfree (rust/mpfree-app, built for ARM
-    beforehand) runs `app`: a loading screen (over the galaxy, with --splash)
+    beforehand) runs `app`: a loading screen (over the startup screen's last
+    frame, with --splash)
     with a progress bar, then the pad player. The Dev tab's Console (or
     SHIFT + ERASE + TAP TEMPO, once ERASE is found with Map controls) shows
     the system log on the screen. Its drum kits (kits.bin from offline-factory-kit.py)
@@ -83,10 +86,11 @@ Inputs, found automatically:
                       --target armv7-unknown-linux-gnueabihf -p mpfree-screen-log
 
 Optional inputs:
-  --splash FILE       the startup-screen program (mpfree-splash), a static ARM
-                      EABI5 hard-float executable built like the screen log
-  --splash-font FILE  a TrueType or OpenType font for its title (only with
-                      --splash); without it the title uses built-in letters
+  --splash FILE       the startup-screen program (mpfree-startup, or the older
+                      mpfree-splash), a static ARM EABI5 hard-float executable
+                      built like the screen log
+  --splash-font FILE  only for mpfree-splash: a TrueType or OpenType font for
+                      its title (only with --splash); mpfree-startup has none
   --app FILE          the pad player (mpfree), built like the screen log
   --kits FILE         its drum kits (only with --app); default: kits.bin in
                       the newest ~/mpfree-work/factory-kit-*/ folder. They are
@@ -990,8 +994,8 @@ def make_stick(fs_image, out_path, root_uuid, log_uuid, scratch, kits_image=None
 def main(argv):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--image", help="the version's rootfs image (default: found as described above)")
-    ap.add_argument("--splash", help="the startup-screen program (mpfree-splash, static ARM)")
-    ap.add_argument("--splash-font", help="a .ttf or .otf font for the startup screen's title (with --splash)")
+    ap.add_argument("--splash", help="the startup-screen program (mpfree-startup, or the older mpfree-splash; static ARM)")
+    ap.add_argument("--splash-font", help="only for mpfree-splash: a .ttf or .otf font for its title (with --splash)")
     ap.add_argument("--app", help="the pad player (mpfree, static ARM), started at power-on")
     ap.add_argument("--kits", help="its drum kits (kits.bin; default: the newest factory-kit-* folder's)")
     args = ap.parse_args(argv)
@@ -1095,7 +1099,8 @@ def main(argv):
                 OUT.say(f"startup screen font: {os.path.realpath(args.splash_font)} ({len(splash[2])} bytes, "
                         f"sha256 {hashlib.sha256(splash[2]).hexdigest()})")
             else:
-                OUT.say("startup screen font: none given, so the title uses built-in letters")
+                OUT.say("startup screen font: none given (mpfree-startup uses none; mpfree-splash draws its title "
+                        "in built-in letters)")
         else:
             OUT.say("startup screen: none (no --splash)")
         kits_uuid = str(uuid.uuid4()) if app else None

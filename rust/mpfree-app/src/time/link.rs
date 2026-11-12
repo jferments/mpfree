@@ -21,6 +21,8 @@ use mpfree_seq::{DestId, TouchPoint, MAX_TRACKS};
 use mpfree_time_ui::view::TransportInfo;
 use mpfree_transport::{Command, Span};
 
+use super::follow::FollowCounts;
+
 /// Messages the audio half's queue holds: a busy second of periods
 /// (spans, notes and recorded changes), with the control half late.
 pub const TO_CONTROL: usize = 8192;
@@ -179,6 +181,9 @@ pub enum ToControl {
     Compile,
     /// One of the period's spans, in order.
     Span(Span),
+    /// What following another device's clock put right or lost, when it
+    /// changed (before the period's end).
+    Follow(FollowCounts),
     /// The period ended.
     Period(PeriodEnd),
     /// A view the audio half no longer plays, to free here.

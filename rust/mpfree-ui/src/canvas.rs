@@ -131,8 +131,10 @@ fn coverage(r: Rect, radius: f32, px: i32, py: i32) -> f32 {
     (radius - d + 0.5).clamp(0.0, 1.0)
 }
 
+/// The corner radius that fits `r`. A rect with no room (a widget laid
+/// out narrower than it draws can hand one over) gets 0, never a panic.
 fn radius_for(r: Rect, radius: i32) -> i32 {
-    radius.clamp(0, r.w.min(r.h) / 2)
+    radius.clamp(0, (r.w.min(r.h) / 2).max(0))
 }
 
 impl Canvas for SoftCanvas {
@@ -260,6 +262,22 @@ mod tests {
         assert_eq!(c.pixel(20, 0), W); // top edge between the corners
         let edge = c.pixel(1, 4).r; // on the arc: partly covered
         assert!(edge > 0 && edge < 255, "{edge}");
+    }
+
+    #[test]
+    fn a_rect_with_no_room_draws_nothing_and_never_panics() {
+        // A widget laid out narrower than it draws (the Play page's timing
+        // histogram in a 300 px slot) handed over bars of width -1.
+        let mut c = SoftCanvas::new(40, 40);
+        for r in [
+            Rect::new(5, 5, -1, 20),
+            Rect::new(5, 5, 20, -3),
+            Rect::new(5, 5, 0, 0),
+        ] {
+            c.fill_round_rect(r, 8, W);
+            c.stroke_round_rect(r, 8, 2, W);
+        }
+        assert!(c.px.iter().all(|&p| p == 0));
     }
 
     #[test]

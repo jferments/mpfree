@@ -738,7 +738,7 @@ def app_check(mpc, out, n, total):
     summarize(out, start_lines)
     ready_at = next((t for t, m in start_lines if m.startswith("playing ")), None)
     out.say(f"  start-up: {f'the app was playing {ready_at:.1f} s after power-on' if ready_at is not None else 'no playing line yet'}")
-    note(out, "Did the loading screen show over the galaxy with a progress bar and messages, then the pad player, "
+    note(out, "Did the synthwave startup screen play, then the loading screen over it with a progress bar and messages, then the pad player, "
               "filling the whole screen with no log at the edges?")
     if not text.strip().endswith(": active"):
         out.say("  The pad player is not running, so the other phases are left out. Its log is above; if it")
@@ -882,8 +882,11 @@ def session_summary(mpc, out):
     touch_interrupts(mpc, out, "now")
     out.say("\n  The app's latest status (every 30 s: hits, underruns, timing, voices, the engines' counters):")
     statuses = [m for _, m in lines if m.startswith("status: ")]
-    # Every 30 s: the pad player's line, the synth's and the looper's.
-    for message in statuses[-3:] or ["(none yet: the first comes 30 s after the app starts playing)"]:
+    # Every 30 s a set of lines, the pad player's first ("status: N hits"), then the synth's, the
+    # looper's, the engines' and the rest: the latest whole set.
+    starts = [i for i, m in enumerate(statuses) if re.match(r"status: \d+ hits", m)]
+    latest = statuses[starts[-1]:] if starts else statuses[-3:]
+    for message in latest or ["(none yet: the first comes 30 s after the app starts playing)"]:
         out.say(f"    {message}")
     perf = [m for _, m in lines if m.startswith("perf: ")]
     out.say(f"  The developer tools' process numbers ({len(perf)} perf lines; the latest):")

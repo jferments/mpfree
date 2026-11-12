@@ -657,3 +657,137 @@ fn mono_plans_record_one_channel() {
     assert!(inst.sources.iter().all(|s| s.channels() == 1));
     assert!(inst.bytes() > 0);
 }
+
+// ------------------------------------------------------------ external gear
+
+/// What the gear makes of a MIDI message on `channel`.
+fn cue_of(m: [u8; 3], channel: u8) -> Cue {
+    assert_eq!(m[0] & 0x0f, channel, "{m:02x?}");
+    match (m[0] & 0xf0, m[1], m[2]) {
+        (0x90, note, velocity) => {
+            assert!(velocity > 0);
+            Cue::NoteOn { note, velocity }
+        }
+        (0x80, note, _) => Cue::NoteOff { note },
+        (0xb0, 123, 0) => Cue::AllOff,
+        _ => panic!("{m:02x?}"),
+    }
+}
+
+/// The line input as the audio thread writes it, `period` frames at a
+/// time, with the fake synth on it: what the gear was sent before each
+/// period sounds in it (`latency` and `jitter` later, as the Fake plays).
+fn play_gear(
+    session: &mut Session,
+    gear: &mut Gear,
+    writer: &mut mpfree_sampler::record::RollingWriter,
+    synth: &mut Fake,
+    period: usize,
+    channel: u8,
+) -> Vec<[u8; 3]> {
+    let mut sent = Vec::new();
+    let mut periods = 0;
+    while matches!(session.state(), State::Testing | State::Recording) {
+        let mut now = Vec::new();
+        gear.step(session, &mut |m| now.push(m)).unwrap();
+        let cues: Vec<Timed> = now
+            .iter()
+            .map(|m| Timed {
+                at: 0,
+                cue: cue_of(*m, channel),
+            })
+            .collect();
+        sent.extend(now);
+        writer.push(&synth.render(period, &cues, 2));
+        periods += 1;
+        assert!(periods < 1_000_000, "the session never ended");
+    }
+    gear.let_go(&mut |m| sent.push(m));
+    sent
+}
+
+#[test]
+fn gear_is_played_over_midi_and_recorded_from_the_line_input() {
+    assert_eq!(
+        Cue::NoteOn {
+            note: 60,
+            velocity: 0
+        }
+        .midi(2),
+        [0x92, 60, 1]
+    );
+    assert_eq!(Cue::NoteOff { note: 60 }.midi(18), [0x82, 60, 64]);
+    assert_eq!(Cue::AllOff.midi(15), [0xbf, 123, 0]);
+    // The audio thread's periods (100 frames) needn't match the gear's
+    // blocks; the gear answers 300 frames and some jitter late.
+    let (mut writer, reader) = mpfree_sampler::record::rolling(2, 10 * RATE as usize);
+    writer.push(&vec![0.0; 2 * 4_000]);
+    let mut session = Session::new(small(), GEAR_TESTS).unwrap();
+    let mut gear = Gear::new(reader, 2);
+    assert_eq!(gear.channel(), 2);
+    let mut synth = Fake::new(300, 80);
+    let sent = play_gear(&mut session, &mut gear, &mut writer, &mut synth, 100, 2);
+    assert_eq!(session.state(), State::Done);
+    // Two tests and six takes, each a note on and its note off, then All
+    // Notes Off.
+    let cues: Vec<Cue> = sent.iter().map(|m| cue_of(*m, 2)).collect();
+    assert_eq!(cues.len(), 2 * 8 + 1);
+    for pair in cues[..16].chunks(2) {
+        match pair {
+            [Cue::NoteOn { note, .. }, Cue::NoteOff { note: off }] => assert_eq!(note, off),
+            p => panic!("{p:?}"),
+        }
+    }
+    assert_eq!(cues[16], Cue::AllOff);
+    let rec = session.finish();
+    assert!(rec.complete && !rec.clipped);
+    // The latency is the Fake's, plus up to a period for the cue to leave.
+    let latency = rec.latency.unwrap();
+    assert!((300..=380 + 100).contains(&latency), "{latency}");
+    let inst = build(&rec).unwrap();
+    assert_eq!((inst.pads.len(), inst.sources.len()), (3, 6));
+    let pre = (0.002 * RATE as f32).round() as usize;
+    for s in &inst.sources {
+        let at = first_over(s.data(), 2, peak(s.data()) * 0.01);
+        assert!(at.abs_diff(pre) <= 2, "{}: attack at {at}", s.name);
+    }
+}
+
+#[test]
+fn gear_lets_go_when_the_input_changes_source_or_stops() {
+    let (mut writer, reader) = mpfree_sampler::record::rolling(2, RATE as usize);
+    let mut session = Session::new(small(), GEAR_TESTS).unwrap();
+    let mut gear = Gear::new(reader.clone(), 0);
+    let mut sent = Vec::new();
+    gear.step(&mut session, &mut |m| sent.push(m)).unwrap();
+    assert_eq!(sent, [[0x90, 60, 127]], "the first test's note");
+    // The Rec tab's source changes: the session can't go on.
+    writer.push(&vec![0.1; 2 * 300]);
+    writer.restart();
+    writer.push(&vec![0.1; 2 * 300]);
+    assert_eq!(
+        gear.step(&mut session, &mut |m| sent.push(m)),
+        Err(GearError::InputChanged)
+    );
+    gear.let_go(&mut |m| sent.push(m));
+    assert_eq!(&sent[1..], [[0x80, 60, 64], [0xb0, 123, 0]]);
+    // On its thread: no input comes in, so after a second it stops, lets
+    // the note go and keeps nothing.
+    let (tx, rx) = std::sync::mpsc::channel();
+    let started = std::time::Instant::now();
+    let job = Job::start_gear(
+        small(),
+        Gear::new(reader, 5),
+        Box::new(move |m| {
+            tx.send(m).unwrap();
+        }),
+    )
+    .unwrap();
+    let f = job.finish();
+    assert!(started.elapsed().as_millis() >= u128::from(GEAR_STALL_MS));
+    assert_eq!(f.stopped, Some(GearError::InputStopped));
+    assert_eq!(f.state, State::Cancelled);
+    assert!(f.instrument.is_err());
+    let sent: Vec<[u8; 3]> = rx.try_iter().collect();
+    assert_eq!(sent, [[0x95, 60, 127], [0x85, 60, 64], [0xb5, 123, 0]]);
+}
