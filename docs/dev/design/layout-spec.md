@@ -70,7 +70,8 @@ Built in round 8 (PR #106) to Jay's approved mockups F to I (10:05Z), with real 
 - **The hint line** starts where the panels do (left-aligned, as the mockups).
 - **NOTE REPEAT's strip** takes the top of the view's first panel, so nothing else moves.
 - **The Arp panel** takes the view's left, and the mini pads stay where the home view has them.
-- **Still to come:** half length and double on the loop strip (looper edit tools, #122); the FX thread's Perform engine in place of the stand-in (#116 merged; the swap is in round 9's queue); Macros 1-4 and 5-8 as Q-Link banks (section 4b).
+- **Macro banks:** Q-LINK steps the Q-Link column to Macros 1-4, then Macros 5-8, then back to the view's own knobs; Play keeps its bank while other pages show. A finger held on a macro card opens the macros panel (section 4b).
+- **Still to come:** half length and double on the loop strip (looper edit tools, #122); the FX thread's Perform engine in place of the stand-in (#116 merged; the swap is in round 9's queue).
 
 ## 4a. The Looper tab
 
@@ -95,6 +96,7 @@ Approved by Jay at 22:34Z (the mod thread's card, "Approve as proposed"). The mo
 - **Macros:** the Q-Link column can show "Macros 1-4" or "Macros 5-8" as a bank, on Play and while the chain editor is open. A long press on a macro card opens the full Macros and Morph panel (8 macros, up to 8 targets each, and a morph between two saved scenes A and B) over the page and under the top bar, as the mixer does. Play keeps its four views and no tab is added.
 - **Q-Links:** the column is the width the page gives it (168 px), not a wider one. While the chain editor is open they default to the selected effect's first four knobs, with Macros 1-4 and 5-8 as banks. Their cards use the mixer's card shape. A Q-Link the user learns to a knob belongs to the page it was learned on; Macros 1-8 work on every page.
 - **The Q-Link hook:** the app routes Q-Link turns per page in one place (main.rs, the `QLinkTurn` arm). A macro bank, when shown, takes the turns there first.
+- **Built (round 10):** a strip's insert row opens the editor on that effect, and its "+" opens it with the effect picker up; it takes the mixer's place with no tab lit, and Back opens the mixer again on the view it showed (Track Mix, Pad Mix and so on). The wheel is Q-Link 1. Q-LINK steps the column through the effect's knobs, Macros 1-4 and Macros 5-8; a learn takes the next Q-Link turned. A finger held for half a second on a macro card (Play or the editor) opens the macros panel on that card's bank, and its Back goes back to the page it opened over. Still to come: Sample > FX (the sampler's sub-tab), the effect's own page from a tap on its name, and keeping the macro set-up and learned Q-Links in the store.
 
 ## 5. Prefs (SHIFT + MENU)
 
@@ -141,8 +143,9 @@ Approved by Jay at 22:34Z (the mod thread's card, "Approve as proposed"). The mo
   - SAMPLE EDIT: Sample, on its Wave editor.
   - PROG EDIT: the sound the pads play: the Synth tab while the synth has them, otherwise Sample > Pads.
   - SHIFT + 16 LEVEL: the synth pads' Chromatic | In key switch.
-- **Found with Map controls first:** ERASE and the mode buttons have no measured note yet, so each works once Map controls has found it (TRACK MUTE, NEXT SEQ, STEP SEQ, SAMPLER, SAMPLE EDIT, PROG EDIT and the data dial's push have rows since round 9).
-- **Still to come from the control map:** FILL (hold PLAY while the transport plays; double-press latches) when the trig conditions land; TRACK MUTE (the pads as mute keys); hold MAIN + pad to pick a track; Q-LINK (macro banks); SHIFT + NEXT SEQ (Perform FX); 16 LEVEL, COPY, TC, BROWSE and the data dial's push.
+  - Q-LINK: the Q-Link column's next bank on Play, the chain editor and the macros panel (section 4b).
+- **Found with Map controls first:** ERASE, Q-LINK and the mode buttons have no measured note yet, so each works once Map controls has found it (TRACK MUTE, NEXT SEQ, STEP SEQ, SAMPLER, SAMPLE EDIT, PROG EDIT and the data dial's push have rows since round 9).
+- **Still to come from the control map:** FILL (hold PLAY while the transport plays; double-press latches) when the trig conditions land; TRACK MUTE (the pads as mute keys); hold MAIN + pad to pick a track; SHIFT + NEXT SEQ (Perform FX); 16 LEVEL, COPY, TC, BROWSE and the data dial's push.
 
 ## 7. How changes happen
 
