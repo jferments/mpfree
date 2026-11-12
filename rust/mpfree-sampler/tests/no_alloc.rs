@@ -379,6 +379,22 @@ fn render_and_events_never_allocate() {
                 },
             );
         }
+        // Live chop: on for the audition, marks, and off again.
+        if block % 7 == 3 {
+            e.schedule(
+                block % 128,
+                Event::LiveChop {
+                    pad: Some((block % 20) as u8),
+                },
+            );
+        }
+        if block % 3 == 1 {
+            e.schedule(block * 29 % 128, Event::Mark);
+            let _ = (e.marking(), e.mark(e.marks_made().saturating_sub(1)));
+        }
+        if block % 70 == 69 {
+            e.schedule(0, Event::LiveChop { pad: None });
+        }
         // Live settings: knobs turned, p-locks on hits, cleared again, and
         // the program's offsets.
         e.schedule(
