@@ -837,9 +837,10 @@ impl LoopHost {
     /// room, and each loop's layers are read as they play ([`SAVE_SPEED`]
     /// frames for each frame), with no glitch. A loop that changes while
     /// it is read starts the save again. [`LoopHost::take_saved`] gives
-    /// it when done, with each layer's audio (name the files, then write
-    /// the text: `loop_project::write`). Allocates only the list of loops,
-    /// here and when it starts again.
+    /// it when done, with each layer's audio: the project keeps the text
+    /// (`mpfree_looper::save::to_text`, each layer naming its file) and a
+    /// WAV a layer (`save::wav`). Allocates only the list of loops, here
+    /// and when it starts again.
     // The project browser calls this (not wired into the app yet).
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn save(&mut self) -> String {
@@ -888,7 +889,8 @@ impl LoopHost {
         self.saved.take()
     }
 
-    /// Load saved loops (`loop_project::read`) into the loops they came
+    /// Load saved loops (`save::from_text`, each layer's audio from its
+    /// WAV with `save::from_wav`) into the loops they came
     /// from, which must be empty: each copies in while silent, then fades
     /// in, in time with the song. A loop that is not empty keeps what it
     /// has (its saved one is dropped on the worker).
@@ -1756,5 +1758,146 @@ mod tests {
     fn the_latency_estimate_is_the_output_buffer_and_one_period() {
         assert_eq!(estimated_latency(3), 512);
         assert_eq!(estimated_latency(2), 384);
+    }
+
+    /// A host with a one-bar loop of two layers (the second at a quarter
+    /// level), playing at 120 BPM.
+    fn saving_host() -> (LoopHost, Transport, Block) {
+        let mut h = LoopHost::new(44_100, 20);
+        let mut t = Transport::new(44_100, 120.0).unwrap();
+        let mut b = Block::new();
+        h.command(Command::SetBars(Some(1)));
+        h.command(Command::Record);
+        t.command(0, T::Play);
+        let mut f = 0u64;
+        let mut period = |h: &mut LoopHost, t: &mut Transport, b: &mut Block, hz: f64| {
+            assert!(t.process(PERIOD as u32, b));
+            let (mut l, mut r) = ([0.0; PERIOD], [0.0; PERIOD]);
+            for i in 0..PERIOD {
+                l[i] = 0.3
+                    * ((f + i as u64) as f64 * hz * std::f64::consts::TAU / 44_100.0).sin() as f32;
+                r[i] = -l[i];
+            }
+            h.take_pads(&l, &r);
+            let (mut l, mut r) = ([0.0; PERIOD], [0.0; PERIOD]);
+            h.period(b, &mut l, &mut r);
+            f += PERIOD as u64;
+        };
+        while h.looper.status().phase != Phase::Playing {
+            period(&mut h, &mut t, &mut b, 441.0);
+        }
+        h.command(Command::Overdub);
+        for _ in 0..200 {
+            period(&mut h, &mut t, &mut b, 882.0);
+        }
+        h.command(Command::Overdub);
+        for _ in 0..800 {
+            period(&mut h, &mut t, &mut b, 0.0);
+        }
+        let id = h.looper.layer_info(1).unwrap().id;
+        h.looper.layer_command(id, LayerCommand::Level(0.25));
+        (h, t, b)
+    }
+
+    /// `periods` periods with no input: the output, interleaved.
+    fn run_host(h: &mut LoopHost, t: &mut Transport, b: &mut Block, periods: usize) -> Vec<f32> {
+        let mut out = Vec::new();
+        for _ in 0..periods {
+            assert!(t.process(PERIOD as u32, b));
+            let (mut l, mut r) = ([0.0; PERIOD], [0.0; PERIOD]);
+            h.period(b, &mut l, &mut r);
+            out.extend(l.iter().zip(&r).flat_map(|(a, b)| [*a, *b]));
+        }
+        out
+    }
+
+    /// Run until the save is done.
+    fn saved_from(h: &mut LoopHost, t: &mut Transport, b: &mut Block) -> Saved {
+        let start = std::time::Instant::now();
+        loop {
+            run_host(h, t, b, 1);
+            if let Some(s) = h.take_saved() {
+                return s;
+            }
+            std::thread::sleep(std::time::Duration::from_micros(100));
+            assert!(start.elapsed().as_secs() < 60, "the save did not finish");
+        }
+    }
+
+    #[test]
+    fn loops_saved_with_the_project_load_back_and_play_the_same() {
+        use mpfree_looper::save::{from_text, from_wav, to_text, wav};
+        let (mut h, mut t, mut b) = saving_host();
+        assert_eq!(h.save(), "looper: saving the loops");
+        let mut saved = saved_from(&mut h, &mut t, &mut b);
+        assert!(h.saving().is_none());
+        assert_eq!(saved.loops.len(), 1);
+        assert_eq!(saved.loops[0].1.layers.len(), 2);
+        assert_eq!(saved.loops[0].1.layers[1].level, 0.25);
+        // As the project keeps them: the text, and a WAV a layer.
+        let mut files = Vec::new();
+        for (n, f) in &mut saved.loops {
+            for (k, y) in f.layers.iter_mut().enumerate() {
+                y.file = format!("loop {} layer {}.wav", *n + 1, k + 1);
+                files.push((y.file.clone(), wav(&y.audio[..2 * f.frames], saved.rate)));
+            }
+        }
+        let mut back = from_text(&to_text(&saved)).unwrap();
+        for (_, f) in &mut back.loops {
+            for y in &mut f.layers {
+                let bytes = &files.iter().find(|(n, _)| *n == y.file).unwrap().1;
+                let (audio, rate) = from_wav(bytes).unwrap();
+                assert_eq!(rate, 44_100);
+                y.audio = audio;
+            }
+        }
+        for ((_, a), (_, c)) in saved.loops.iter().zip(&back.loops) {
+            assert_eq!(a.frames, c.frames);
+            for (x, y) in a.layers.iter().zip(&c.layers) {
+                assert_eq!(x.audio[..2 * a.frames], y.audio[..]);
+                assert_eq!((x.level, &x.file), (y.level, &y.file));
+            }
+        }
+        // Into a fresh host at the same song frame: it plays as the first
+        // one does, a bar on.
+        let (mut h2, mut t2) = (
+            LoopHost::new(44_100, 20),
+            Transport::new(44_100, 120.0).unwrap(),
+        );
+        let mut b2 = Block::new();
+        t2.command(0, T::Play);
+        let skip = (t.frame() / PERIOD as u64) as usize;
+        run_host(&mut h2, &mut t2, &mut b2, skip);
+        assert_eq!(t2.frame(), t.frame());
+        assert!(h2.load(back).starts_with("looper: loading loops 1"));
+        let a = run_host(&mut h, &mut t, &mut b, 1500);
+        let c = run_host(&mut h2, &mut t2, &mut b2, 1500);
+        assert_eq!(h2.looper.status().phase, Phase::Playing);
+        let n = a.len();
+        let worst = (n - 2 * 88_200..n)
+            .map(|i| (a[i] - c[i]).abs())
+            .fold(0.0, f32::max);
+        assert!(worst < 1e-5, "differs by {worst}");
+    }
+
+    #[test]
+    fn a_loop_changing_while_it_is_read_starts_the_save_again() {
+        let (mut h, mut t, mut b) = saving_host();
+        h.save();
+        // Wait for the reading to start, then change a layer's mix.
+        let start = std::time::Instant::now();
+        while h.saving() == Some(0.0) {
+            run_host(&mut h, &mut t, &mut b, 1);
+            std::thread::sleep(std::time::Duration::from_micros(100));
+            assert!(start.elapsed().as_secs() < 60);
+        }
+        let id = h.looper.layer_info(0).unwrap().id;
+        h.looper.layer_command(id, LayerCommand::Level(0.5));
+        run_host(&mut h, &mut t, &mut b, 2);
+        assert_eq!(h.save_restarts, 1);
+        let saved = saved_from(&mut h, &mut t, &mut b);
+        assert_eq!(saved.loops[0].1.layers[0].level, 0.5);
+        // A load into a loop that is not empty keeps what it has.
+        assert!(h.load(saved).contains("loops 1 were not empty"));
     }
 }
