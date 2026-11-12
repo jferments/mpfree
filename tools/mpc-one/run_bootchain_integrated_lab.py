@@ -1252,6 +1252,70 @@ class Lab:
             self.stages["cross-stage-indirection-evidence"] = {
                 "success":False,"error":str(exc)}
             self.notes.append("Cross-stage indirection: "+str(exc))
+        # Exact ELF ARM relocation metadata from the SHA-verified
+        # updater and libaz01-prog. A matching symbol import/export
+        # is not proof of dynamic binding, verification or actual IO.
+        try:
+            elf_files={
+                role:self.out/"static"/"v11"/(
+                    "v11-elf-linkage-"+role+".json")
+                for role in ("az01-update","libaz01-prog")
+            }
+            els={role:json.loads(path.read_text())
+                 for role,path in elf_files.items()}
+            for role,report in els.items():
+                if (report.get("role")!=role or
+                    report.get("vendor_executable_executed") is not False):
+                    raise ValueError("Unexpected ELF metadata report: "+role)
+            imported=set(els["az01-update"]["az01_import_symbols"])
+            exported=set(els["libaz01-prog"]["az01_export_symbols"])
+            names=(
+                "az01_usb_update_mode","az01_apply_image",
+                "az01_download_image",
+            )
+            target=[]
+            for name in names:
+                offsets=els["az01-update"]["target_symbol_evidence"][
+                    name]["relocation_offsets"]
+                target.append({
+                    "symbol":name,
+                    "imported_by_updater":name in imported,
+                    "defined_by_libaz01_prog":name in exported,
+                    "updater_relocation_offsets":offsets,
+                    "actual_runtime_binding_tested":False,
+                })
+            result={
+                "schema":"mpfree-owner-elf-relocation-crosscheck-v1",
+                "owner_sources_sha256":{
+                    role:r["source_sha256_verified"] for role,r in els.items()},
+                "updater_needed_libraries":els["az01-update"]["needed_sonames"],
+                "updater_vs_library_import_export_intersection":sorted(
+                    imported&exported)[:100],
+                "target_update_functions":target,
+                "verified_from_elf_metadata_only":True,
+                "vendor_executable_or_shared_object_executed":False,
+                "updater_stubs_are_not_implementations":True,
+            }
+            (self.out/"elf-relocation-crosscheck.json").write_text(
+                json.dumps(result,indent=2)+"\n")
+            record["elf_relocation_crosscheck"]={
+                "report":"elf-relocation-crosscheck.json",
+                "matched_target_symbols":sum(
+                    v["imported_by_updater"] and
+                    v["defined_by_libaz01_prog"] for v in target),
+                "live_binding_proven":False,
+            }
+            self.stages["elf-relocation-crosscheck"]={
+                "success":True,
+                "matched_target_imports_and_exports":record[
+                    "elf_relocation_crosscheck"]["matched_target_symbols"],
+                "live_vendor_execution":False,
+            }
+        except Exception as exc:
+            record["elf_relocation_crosscheck_error"]=str(exc)
+            self.stages["elf-relocation-crosscheck"]={
+                "success":False,"error":str(exc)}
+            self.notes.append("ELF relocation crosscheck: "+str(exc))
         (self.out / "cross-evidence.json").write_text(json.dumps(record, indent=2) + "\n")
         summary = [
             "# MPFree integrated bootchain run",
@@ -1378,6 +1442,13 @@ class Lab:
                            str(indirect["power_source_getvar_key"]))
             summary.append("- Updater linkage stubs are not library implementations.")
             summary.append("- See cross-stage-indirection.json and .md.")
+        summary += ["", "## Firmware updater ARM ELF linkage metadata"]
+        links = record.get("elf_relocation_crosscheck")
+        if links:
+            summary.append("- Updater symbols also exported by libaz01-prog: " +
+                           str(links["matched_target_symbols"]) + "/3 targets.")
+            summary.append("- Read-only ELF metadata; actual linker bindings and updater execution unproven.")
+            summary.append("- See elf-relocation-crosscheck.json for explicit relocation offsets.")
         summary += ["", "## Guest/static image consistency"]
         if record["match_tests"]:
             for entry in record["match_tests"]:
