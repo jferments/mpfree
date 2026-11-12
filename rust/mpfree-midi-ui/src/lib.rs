@@ -55,12 +55,14 @@ pub struct PortLive {
     pub last_in: Option<Duration>,
 }
 
-/// Which parts of MIDI this build has. A setting whose part is missing
+/// Which parts of MIDI work in this run. A setting whose part is missing
 /// is kept and says on its row that it does nothing yet.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Built {
-    /// Tracks play out of MIDI ports (and thru works).
+    /// Tracks play out of the 5-pin MIDI Out jack.
     pub notes_out: bool,
+    /// A port's thru works.
+    pub thru: bool,
     /// The tempo can follow another device's clock.
     pub clock_in: bool,
     /// Ports send clock.

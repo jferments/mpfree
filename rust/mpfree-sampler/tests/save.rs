@@ -124,6 +124,8 @@ fn busy_kit() -> Project {
     pad.wow = 0.3;
     pad.key_fade = 3;
     pad.vel_fade = 12;
+    pad.links = vec![3, 5];
+    pad.latch = true;
     p.set_pad(0, Some(pad), None).unwrap();
     // A granular pad with every grain setting, synced.
     let mut g = Region::whole(&b);

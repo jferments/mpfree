@@ -623,3 +623,103 @@ fn put_on_files_exports_the_pad_and_its_slices_where_the_app_can_write() {
         Some(ChopAction::ToPads { .. })
     ));
 }
+
+#[test]
+fn live_chop_drops_cuts_where_pads_are_played_snapped_to_hits() {
+    let mut s = chop();
+    let st = s.state.clone();
+    let transients = s.tab.bounds(&st);
+    // Transient steps back round to Live, which keeps the cuts.
+    step(&mut s, Row::Method, -1);
+    assert_eq!(s.tab.method(), Method::Live);
+    assert_eq!(s.tab.bounds(&st), transients, "picking Live keeps the cuts");
+    let (labels, enabled) = buttons(&s);
+    assert_eq!(labels[0], "Start");
+    assert!(enabled[0]);
+    // Start: the region plays once and the old cuts go.
+    let a = press(&mut s, Button::Split).unwrap();
+    assert_eq!(
+        a,
+        ChopAction::Live {
+            pad: PAD,
+            layer: 0,
+            start: st.region.start,
+            end: st.region.end,
+            on: true
+        }
+    );
+    assert!(s.tab.live());
+    assert_eq!(s.tab.slices(), 1);
+    assert_eq!(buttons(&s).0[0], "Stop");
+    // Each mark moves onto the nearest hit within 40 ms; a mark far from
+    // any hit stays where it is (on a zero crossing); one outside the
+    // region or too near a cut is dropped.
+    let hits = st.source.onsets.as_ref().unwrap().pick(0.6);
+    let inside: Vec<u64> = hits
+        .iter()
+        .copied()
+        .filter(|&h| h > st.region.start + 2000 && h + 2000 < st.region.end)
+        .collect();
+    let (h1, h2) = (inside[0], inside[2]);
+    let ms = u64::from(RATE) / 1000;
+    let lone = (h1 + inside[1]) / 2;
+    let kept = s.tab.live_marks(
+        &mut s.ui,
+        &st,
+        &[
+            h1 + 25 * ms,
+            h2 - 10 * ms,
+            h1 + 26 * ms,
+            st.region.end + 100,
+        ],
+    );
+    assert_eq!(kept, 2, "the third is the first again, the fourth past End");
+    assert_eq!(s.tab.bounds(&st)[1..3], [h1, h2]);
+    assert_eq!(s.tab.selected(), 2, "the slice the newest cut starts");
+    // Pull to hits Off and zero-crossing Snap Off: a cut lands where the
+    // sound was.
+    step(&mut s, Row::Amount, -4);
+    step(&mut s, Row::Snap, 1);
+    assert_eq!(s.tab.live_marks(&mut s.ui, &st, &[lone]), 1);
+    assert!(s.tab.bounds(&st).contains(&lone));
+    assert_eq!(s.tab.method(), Method::Live);
+    // Merge takes one out and stays Live; Stop ends the take.
+    press(&mut s, Button::Merge);
+    assert_eq!(s.tab.method(), Method::Live);
+    assert_eq!(s.tab.slices(), 3);
+    let a = press(&mut s, Button::Split).unwrap();
+    assert!(matches!(a, ChopAction::Live { on: false, .. }));
+    assert!(!s.tab.live());
+    assert_eq!(
+        s.tab.live_marks(&mut s.ui, &st, &[lone + 5000]),
+        0,
+        "not live"
+    );
+    assert_eq!(buttons(&s).0[0], "Start");
+}
+
+#[test]
+fn live_chop_ends_with_its_sound_or_another_method() {
+    let mut s = chop();
+    let st = s.state.clone();
+    method(&mut s, Method::Live);
+    press(&mut s, Button::Split);
+    s.tab.live_ended(&mut s.ui, &st);
+    assert!(!s.tab.live());
+    assert_eq!(buttons(&s).0[0], "Start");
+    press(&mut s, Button::Split);
+    // Another method while live: the step tells the app to stop.
+    let index = Row::ALL.iter().position(|r| *r == Row::Method).unwrap();
+    let ev = UiEvent {
+        widget: chop_tab::LIST.into(),
+        kind: EventKind::Step { index, delta: 1 },
+    };
+    let a = s.tab.action(&mut s.ui, &ev, &st);
+    assert!(
+        matches!(a, Some(ChopAction::Live { on: false, .. })),
+        "{a:?}"
+    );
+    assert!(!s.tab.live());
+    assert_eq!(s.tab.method(), Method::Transient);
+    assert_eq!(buttons(&s).0[0], "Split");
+}

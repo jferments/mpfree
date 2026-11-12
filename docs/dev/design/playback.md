@@ -260,7 +260,7 @@ A take is undone and redone as a whole: the notes it recorded come out and the n
 
 ## Listening
 
-`cargo run --release -p mpfree-play --example render` plays a demo beat through the transport, the player, the arp and the real sampler engine (`mpfree-sampler`), and writes `~/mpfree-work/play-demo.wav`. The beat is 84 BPM with heavy 1/16 swing: a four-bar loop played three times, then a final hit that rings out. The sounds are saturated and bit-crushed:
+`cargo run --release -p mpfree-play --example play_render` plays a demo beat through the transport, the player, the arp and the real sampler engine (`mpfree-sampler`), and writes `~/mpfree-work/play-demo.wav`. The beat is 84 BPM with heavy 1/16 swing: a four-bar loop played three times, then a final hit that rings out. The sounds are saturated and bit-crushed:
 
 - drums, with ghost snares at low velocity
 - hats at double speed with their own swing, and a 1/32 roll
