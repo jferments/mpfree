@@ -269,8 +269,9 @@ mod tests {
         let r = row(&a, Item::DebugMode);
         a.step_item(r, 1);
         a.map.learn(Job::Rec, Some(73));
-        a.mapper.marks[CONTROLS.iter().position(|c| c.name == "ERASE").unwrap()] =
+        a.mapper.marks[CONTROLS.iter().position(|c| c.name == "COPY").unwrap()] =
             Mark::Found(Code::Button(52));
+        a.map.learn(Job::Sampler, Some(56));
         a.mapper.marks[CONTROLS.iter().position(|c| c.name == "TC").unwrap()] = Mark::Skipped;
         a.save_dirty = true;
         let saves = a.take_saves();
@@ -283,7 +284,8 @@ mod tests {
         assert_eq!(app.get_str("audio-buffer"), Some("2"));
         assert_eq!(app.get_bool("developer-tools"), Some(true));
         assert_eq!(map.get_str("rec"), Some("button 73"));
-        assert_eq!(map.get_str("erase"), Some("button 52"));
+        assert_eq!(map.get_str("copy"), Some("button 52"));
+        assert_eq!(map.get_str("sampler"), Some("button 56"));
         assert_eq!(map.get_str("tc"), Some("skipped"));
         assert_eq!(
             map.get_str("menu"),
@@ -300,7 +302,7 @@ mod tests {
             (b.settings.curve, b.settings.periods, b.settings.debug_mode),
             (a.settings.curve, 2, true)
         );
-        assert_eq!(b.map.rec, Some(73));
+        assert_eq!((b.map.rec, b.map.sampler), (Some(73), Some(56)));
         assert_eq!(b.map_settings(), map);
         assert!(
             notes[0].starts_with("saved settings: pad curve "),

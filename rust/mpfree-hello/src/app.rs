@@ -297,6 +297,16 @@ pub struct ButtonMap {
     pub bank: [Option<u8>; 4],
     /// TRACK MIX (SHIFT: PAD MIX), found with the control mapper.
     pub track_mix: Option<u8>,
+    /// The mode buttons and the rest of the hardware control map (Jay,
+    /// 20:40Z), found with the control mapper.
+    pub erase: Option<u8>,
+    pub main: Option<u8>,
+    pub sixteen_level: Option<u8>,
+    pub next_seq: Option<u8>,
+    pub step_seq: Option<u8>,
+    pub sampler: Option<u8>,
+    pub sample_edit: Option<u8>,
+    pub prog_edit: Option<u8>,
 }
 
 impl ButtonMap {
@@ -364,6 +374,15 @@ impl ButtonMap {
             .iter()
             .find(|&&s| self.get(s) == Some(note))
             .map(|s| s.short())
+            .or_else(|| {
+                mapper::CONTROLS
+                    .iter()
+                    .find(|c| {
+                        !matches!(c.job, mapper::Job::None | mapper::Job::Fixed(_))
+                            && self.of(c.job) == Some(note)
+                    })
+                    .map(|c| c.name)
+            })
     }
 
     /// Which PAD BANK button a note is (0 = A/E), once found.
@@ -391,6 +410,14 @@ impl ButtonMap {
             Job::PlayStart => self.play_start,
             Job::Bank(k) => self.bank[k as usize & 3],
             Job::TrackMix => self.track_mix,
+            Job::Erase => self.erase,
+            Job::Main => self.main,
+            Job::SixteenLevel => self.sixteen_level,
+            Job::NextSeq => self.next_seq,
+            Job::StepSeq => self.step_seq,
+            Job::Sampler => self.sampler,
+            Job::SampleEdit => self.sample_edit,
+            Job::ProgEdit => self.prog_edit,
         }
     }
 
@@ -410,6 +437,14 @@ impl ButtonMap {
             Job::PlayStart => &mut self.play_start,
             Job::Bank(k) => &mut self.bank[k as usize & 3],
             Job::TrackMix => &mut self.track_mix,
+            Job::Erase => &mut self.erase,
+            Job::Main => &mut self.main,
+            Job::SixteenLevel => &mut self.sixteen_level,
+            Job::NextSeq => &mut self.next_seq,
+            Job::StepSeq => &mut self.step_seq,
+            Job::Sampler => &mut self.sampler,
+            Job::SampleEdit => &mut self.sample_edit,
+            Job::ProgEdit => &mut self.prog_edit,
         };
         *slot = code;
     }
@@ -678,6 +713,15 @@ pub enum Effect {
     },
     /// For the looper and the line input.
     Looper(LoopAction),
+    /// MAIN on the Play page (None: the next view) and STEP SEQ (Beats).
+    PlayView(Option<crate::play_page::PlayView>),
+    /// SAMPLE EDIT: the Sample tab opens on this editor.
+    SampleEditor(crate::sample_page::Editor),
+    /// PROG EDIT: the sound the pads play: the Synth tab while the synth
+    /// has them, otherwise Sample > Pads (the audio loop knows which).
+    ProgEdit,
+    /// SHIFT + PLAY START: the metronome on or off.
+    Metronome,
 }
 
 pub struct App {
@@ -698,6 +742,9 @@ pub struct App {
     timed: bool,
     shift: bool,
     repeat_held: bool,
+    /// ERASE is down: SHIFT and ERASE held, then TAP TEMPO, is the
+    /// Console's chord.
+    erase_held: bool,
     /// When NOTE REPEAT was last pressed to hold, for the double press
     /// that latches.
     repeat_pressed_at: Option<f64>,
@@ -831,6 +878,7 @@ impl App {
             timed,
             shift: false,
             repeat_held: false,
+            erase_held: false,
             repeat_pressed_at: None,
             latched: false,
             pad_level: PadLevel::Off,
@@ -1118,6 +1166,9 @@ impl App {
             return fx;
         }
         if !pressed {
+            if Some(note) == self.map.erase {
+                self.erase_held = false;
+            }
             if Some(note) == self.map.note_repeat && self.repeat_held {
                 self.repeat_held = false;
                 fx.extend(self.arp_changed());
@@ -1151,10 +1202,17 @@ impl App {
                 PadLevel::Half => "pad level: Half Level (every hit 64)".to_string(),
             }));
         } else if note == button::STOP {
-            if shift {
-                fx.extend(self.toggle(View::Console));
-            } else if self.timed {
+            if self.timed {
                 fx.push(Effect::Quit);
+            } else if shift {
+                // The MPC's SHIFT + STOP: stop, silence everything and go
+                // back to bar 1 (Jay, 20:40Z). The Console has a chord of
+                // its own: SHIFT + ERASE + TAP TEMPO.
+                fx.extend(self.stop());
+                fx.push(Effect::Time(TimeAction::Transport(Command::StopAndRewind)));
+                fx.push(Effect::Note(
+                    "SHIFT + STOP: stopped, back to bar 1".to_string(),
+                ));
             } else if self.rolling {
                 // The transport stops; sounds ring out and latched pads keep
                 // going, so a second STOP is what silences everything.
@@ -1168,11 +1226,18 @@ impl App {
         } else if note == button::PLAY {
             self.arps.engine_at_mut(self.track).resume();
             fx.push(Effect::Time(TimeAction::Transport(Command::Play)));
+        } else if Some(note) == self.map.play_start && shift {
+            fx.push(Effect::Metronome);
         } else if Some(note) == self.map.play_start {
             self.arps.engine_at_mut(self.track).resume();
             fx.push(Effect::Time(TimeAction::Transport(Command::PlayStart)));
         } else if Some(note) == self.map.track_mix {
             fx.extend(self.toggle_mixer(shift));
+        } else if let Some(e) = self.mode_button(note, shift) {
+            fx.extend(e);
+        } else if shift && Some(note) == self.map.rec {
+            // SHIFT + REC: Capture, on every page (Jay, 20:40Z).
+            fx.push(Effect::Time(TimeAction::Capture));
         } else if self.view == View::Looper && Some(note) == self.map.rec {
             fx.extend(self.looper_tap(crate::looper_page::B_RECORD));
         } else if self.view == View::Looper && Some(note) == self.map.overdub {
@@ -1226,6 +1291,11 @@ impl App {
             } else if self.view != View::Pattern {
                 fx.extend(self.toggle(View::Options));
             }
+        } else if Some(note) == self.map.tap_tempo && shift && self.erase_held {
+            // The Console's chord: hold SHIFT and ERASE, then press TAP
+            // TEMPO. Nothing else uses it, so a developer opens the Console
+            // only on purpose (Jay, 22:12Z); the press is no tempo tap.
+            fx.extend(self.toggle(View::Console));
         } else if Some(note) == self.map.tap_tempo {
             fx.extend(self.tap(t));
         } else if let Some(k) = self.map.bank_of(note) {
@@ -1266,6 +1336,70 @@ impl App {
             }
         }
         fx
+    }
+
+    /// The mode buttons and ERASE, as the hardware control map has them
+    /// (Jay, 20:40Z): each goes to the page with the same job. None when
+    /// `note` is not one of them.
+    fn mode_button(&mut self, note: u8, shift: bool) -> Option<Vec<Effect>> {
+        use crate::play_page::PlayView;
+        let m = self.map;
+        let is = |b: Option<u8>| b == Some(note);
+        let fx = if is(m.erase) {
+            // ERASE and SHIFT + ERASE wait for live erase and the FX lock
+            // mode (with a step held); alone they do nothing. Held with
+            // SHIFT, TAP TEMPO opens the Console.
+            self.erase_held = true;
+            return Some(Vec::new());
+        } else if is(m.main) {
+            // MAIN: Play; on Play, the next view (All, Beats, Loop, Drum).
+            if self.view == View::Play {
+                vec![Effect::PlayView(None)]
+            } else {
+                self.show(View::Play)
+            }
+        } else if is(m.step_seq) {
+            let mut fx = self.go(View::Play);
+            fx.push(Effect::PlayView(Some(PlayView::Beats)));
+            fx
+        } else if is(m.next_seq) {
+            self.go(View::Arrange)
+        } else if is(m.sampler) {
+            self.go(if shift { View::Looper } else { View::Sample })
+        } else if is(m.sample_edit) {
+            let mut fx = vec![Effect::SampleEditor(crate::sample_page::Editor::Wave)];
+            fx.extend(self.go(View::Sample));
+            fx
+        } else if is(m.prog_edit) {
+            vec![Effect::ProgEdit]
+        } else if is(m.sixteen_level) {
+            // SHIFT + 16 LEVEL: the synth pads' Chromatic | In key switch.
+            // 16 LEVEL itself comes with 16 Levels for kits.
+            if !shift {
+                return Some(Vec::new());
+            }
+            let in_key = self.synth_pads.layout() != mpfree_arp::scale::pads::PadLayout::InKey;
+            let mut fx = self.synth_pick_layout(in_key);
+            if fx.iter().any(|e| matches!(e, Effect::SynthPads(_))) {
+                fx.push(Effect::Note(format!(
+                    "SHIFT + 16 LEVEL: synth pads {}",
+                    if in_key { "In key" } else { "Chromatic" }
+                )));
+            }
+            fx
+        } else {
+            return None;
+        };
+        Some(fx)
+    }
+
+    /// A page from a mode button: shown, unless it shows already.
+    fn go(&mut self, v: View) -> Vec<Effect> {
+        if self.view == v {
+            Vec::new()
+        } else {
+            self.show(v)
+        }
     }
 
     /// STOP in the app, with the transport stopped: every sound stops. A
@@ -1533,7 +1667,7 @@ impl App {
     // ------------------------------------------------------------ debug mode
 
     /// A tap on the Dev tab's strip: MIDI, Performance, Map controls or
-    /// Console (the Console alone also opens with SHIFT + STOP).
+    /// Console (SHIFT + ERASE + TAP TEMPO opens the Console too).
     pub fn debug_page(&mut self, i: usize) -> Vec<Effect> {
         match DEBUG_PAGES.get(i) {
             Some(&v) if self.settings.debug_mode => self.show(v),
@@ -2103,6 +2237,27 @@ impl App {
         let items = self.items();
         let i = i.min(items.len() - 1);
         self.selected = i;
+        self.apply_item(items[i], delta)
+    }
+
+    /// A row of the Looper tab's Recording and input panel stepped by
+    /// `delta` (a tap steps +1): the same settings as the looper's options
+    /// menu. Only the looper's own rows step here.
+    pub fn looper_setting(&mut self, item: Item, delta: i32) -> Vec<Effect> {
+        match item {
+            Item::LoopSource
+            | Item::LineInput
+            | Item::LoopMonitor
+            | Item::LoopBars
+            | Item::LoopLatency
+            | Item::LoopLevel => self.apply_item(item, delta),
+            _ => Vec::new(),
+        }
+    }
+
+    /// Step `item` by `delta`'s sign; the settings (and the menu, when it
+    /// shows) follow.
+    fn apply_item(&mut self, item: Item, delta: i32) -> Vec<Effect> {
         let d = delta.signum();
         let mut fx = Vec::new();
         self.save_dirty = true;
@@ -2117,7 +2272,7 @@ impl App {
             _ => Vec::new(),
         };
         let s = &mut self.settings;
-        match items[i] {
+        match item {
             Item::Curve => s.curve = cycle(&Curve::ALL, s.curve, d),
             Item::ScreenVelocity => {
                 s.screen_velocity = (s.screen_velocity as i32 + 10 * d).clamp(10, 127) as u8
@@ -2255,7 +2410,9 @@ impl App {
             Item::Synth(a) => fx.extend(self.step_synth_item(a, d)),
         }
         fx.push(Effect::Settings(self.settings.clone()));
-        fx.push(self.menu_view());
+        if self.in_menu() {
+            fx.push(self.menu_view());
+        }
         fx
     }
 
@@ -2621,19 +2778,39 @@ mod tests {
     }
 
     #[test]
-    fn stop_ends_the_timed_step_and_shift_stop_toggles_the_console() {
+    fn stop_ends_the_timed_step() {
         let mut timed = App::new(44_100, true);
         assert_eq!(press(&mut timed, button::STOP), vec![Effect::Quit]);
+        let mut held_shift = App::new(44_100, true);
+        held_shift.button(button::SHIFT, true, 0.0);
+        assert_eq!(press(&mut held_shift, button::STOP), vec![Effect::Quit]);
+    }
+
+    /// The Console's chord (Jay, 22:12Z: nothing else may use it): hold
+    /// SHIFT, hold ERASE, press TAP TEMPO. Nothing fires on the way in, and
+    /// the press is no tempo tap.
+    #[test]
+    fn shift_erase_tap_tempo_toggles_the_console_and_nothing_else_does() {
+        const ERASE: u8 = 52;
         let mut app = ready();
+        app.map.learn(mapper::Job::Erase, Some(ERASE));
+        let tap = app.map.tap_tempo.unwrap();
         app.button(button::SHIFT, true, 0.0);
-        assert_eq!(
-            press(&mut app, button::STOP),
-            vec![Effect::Show(View::Console)]
-        );
-        assert_eq!(
-            press(&mut app, button::STOP),
-            vec![Effect::Show(View::Play)]
-        );
+        assert!(app.button(ERASE, true, 0.0).is_empty());
+        assert_eq!(press(&mut app, tap), vec![Effect::Show(View::Console)]);
+        assert!(app.taps.is_empty(), "no tempo tap");
+        assert_eq!(press(&mut app, tap), vec![Effect::Show(View::Play)]);
+        // Without SHIFT, or once ERASE is let go, TAP TEMPO taps.
+        app.button(button::SHIFT, false, 0.0);
+        press(&mut app, tap);
+        assert_eq!(app.taps.len(), 1);
+        app.button(button::SHIFT, true, 0.0);
+        app.button(ERASE, false, 0.0);
+        assert!(!press(&mut app, tap)
+            .iter()
+            .any(|e| matches!(e, Effect::Show(View::Console))));
+        // SHIFT + STOP is the MPC's now, never the Console.
+        assert!(!press(&mut app, button::STOP).contains(&Effect::Show(View::Console)));
     }
 
     /// Where `item` sits in the menu on screen.
@@ -4040,5 +4217,84 @@ mod tests {
             vec![Effect::Kit(1)],
             "the wheel picks kits on Play"
         );
+    }
+
+    /// The mode buttons, ERASE and the SHIFT combos from the hardware
+    /// control map (Jay, 20:40Z), once Map controls has found them.
+    #[test]
+    fn the_mode_buttons_go_to_the_page_with_the_same_job() {
+        use crate::play_page::PlayView;
+        use crate::sample_page::Editor;
+        use mapper::Job;
+        const SHIFT: u8 = button::SHIFT;
+        let mut app = ready();
+        let jobs = [
+            (Job::Erase, 60),
+            (Job::Main, 61),
+            (Job::SixteenLevel, 62),
+            (Job::NextSeq, 63),
+            (Job::StepSeq, 64),
+            (Job::Sampler, 65),
+            (Job::SampleEdit, 66),
+            (Job::ProgEdit, 67),
+        ];
+        // Not found yet: nothing.
+        assert!(press(&mut app, 65).is_empty());
+        for (job, n) in jobs {
+            app.map.learn(job, Some(n));
+            assert_eq!(app.map.of(job), Some(n));
+        }
+        assert_eq!(app.map.name(65), Some("SAMPLER"));
+        assert_eq!(app.map.name(67), Some("PROG EDIT"));
+        let shifted = |app: &mut App, n: u8| held(app, SHIFT, |a| press(a, n));
+        // SAMPLER: Sample; SHIFT + SAMPLER: Looper.
+        assert!(press(&mut app, 65).contains(&Effect::Show(View::Sample)));
+        assert!(shifted(&mut app, 65).contains(&Effect::Show(View::Looper)));
+        assert_eq!(app.view(), View::Looper);
+        // MAIN: Play, and on Play the next view.
+        assert!(press(&mut app, 61).contains(&Effect::Show(View::Play)));
+        assert_eq!(press(&mut app, 61), [Effect::PlayView(None)]);
+        // STEP SEQ: Play's Beats view; NEXT SEQ: Arrange.
+        assert_eq!(
+            press(&mut app, 64),
+            [Effect::PlayView(Some(PlayView::Beats))]
+        );
+        assert!(press(&mut app, 63).contains(&Effect::Show(View::Arrange)));
+        let fx = press(&mut app, 64);
+        assert!(fx.contains(&Effect::Show(View::Play)));
+        assert!(fx.contains(&Effect::PlayView(Some(PlayView::Beats))));
+        // SAMPLE EDIT: the Wave editor; PROG EDIT: the audio loop decides.
+        let fx = press(&mut app, 66);
+        assert_eq!(fx[0], Effect::SampleEditor(Editor::Wave));
+        assert!(fx.contains(&Effect::Show(View::Sample)));
+        assert_eq!(press(&mut app, 67), [Effect::ProgEdit]);
+        // ERASE and SHIFT + ERASE do nothing yet (Jay, 22:12Z).
+        assert!(press(&mut app, 60).is_empty());
+        assert!(shifted(&mut app, 60).is_empty());
+        // SHIFT + 16 LEVEL: Chromatic | In key (here: no scale yet).
+        assert!(press(&mut app, 62).is_empty());
+        assert!(shifted(&mut app, 62)
+            .iter()
+            .any(|e| matches!(e, Effect::Note(n) if n.contains("pick a scale first"))));
+    }
+
+    #[test]
+    fn shift_stop_goes_back_to_bar_1_and_shift_rec_captures() {
+        const SHIFT: u8 = button::SHIFT;
+        let mut app = ready();
+        let fx = held(&mut app, SHIFT, |a| press(a, button::STOP));
+        assert!(fx.contains(&Effect::Time(TimeAction::Transport(Command::StopAndRewind))));
+        assert!(fx.contains(&Effect::StopSounds));
+        assert!(!fx.contains(&Effect::Show(View::Console)));
+        // SHIFT + REC (90 here): Capture, on the Looper tab too.
+        for v in [View::Play, View::Looper] {
+            app.open_tab(v);
+            assert_eq!(
+                held(&mut app, SHIFT, |a| press(a, 90)),
+                [Effect::Time(TimeAction::Capture)]
+            );
+        }
+        // SHIFT + PLAY START (93): the metronome.
+        assert_eq!(held(&mut app, SHIFT, |a| press(a, 93)), [Effect::Metronome]);
     }
 }

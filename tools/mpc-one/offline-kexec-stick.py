@@ -47,8 +47,9 @@ What changes in the COPY of the root filesystem (the image itself is only read):
   - only with --app: the pad player starts at power-on instead of the log
     display. Our program mpfree-hello (rust/mpfree-hello, built for ARM
     beforehand) runs `app`: a loading screen (over the galaxy, with --splash)
-    with a progress bar, then the pad player. SHIFT + STOP shows the system
-    log on the screen. Its drum kits (kits.bin from offline-factory-kit.py)
+    with a progress bar, then the pad player. The Dev tab's Console (or
+    SHIFT + ERASE + TAP TEMPO, once ERASE is found with Map controls) shows
+    the system log on the screen. Its drum kits (kits.bin from offline-factory-kit.py)
     go on partition 3, which it mounts read-only. Partition 4 is mounted
     read-write (nosuid, nodev, noexec) at /run/mpfree-data and passed with
     --data; the pad player saves its settings and files only there

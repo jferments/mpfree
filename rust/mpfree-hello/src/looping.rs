@@ -21,7 +21,9 @@
 //! MPC: it waits for the owner's go in the round 6 runbook.
 
 use crate::alsa;
-use mpfree_looper::{Command, LayerCommand, LayerInfo, Looper, Phase, Stats, Status, MAX_LAYERS};
+use mpfree_looper::{
+    Command, LayerCommand, LayerInfo, Looper, Memory, Phase, Stats, Status, MAX_LAYERS, MAX_LOOPS,
+};
 use mpfree_transport::Block;
 use mpfree_ui::wave::{Peaks, WaveColumn};
 use std::sync::Arc;
@@ -76,6 +78,9 @@ pub enum LoopAction {
     /// A layer's control (its speaker): the layer by its id
     /// ([`LayerInfo::id`]), which stays the same through undo and redo.
     Layer(u8, LayerCommand),
+    /// Pick loop `n` (0 to [`MAX_LOOPS`] - 1): the buttons, the layers'
+    /// controls and the screens act on it from the next period.
+    Select(usize),
 }
 
 /// What the line input counted since it was opened.
@@ -340,8 +345,9 @@ impl Peaks for LoopWave {
 
 /// Builds a [`LoopWave`] a slice at a time.
 struct WaveBuilder {
-    /// What the wave is of: the loop's length, layers and phase.
-    of: (usize, usize, Phase),
+    /// What the wave is of: the loop's length, layers and phase, and which
+    /// loop.
+    of: (usize, usize, Phase, usize),
     at: usize,
     frames: usize,
     acc: Vec<[(f32, f32, f32, u32); 2]>,
@@ -354,7 +360,7 @@ struct WaveBuilder {
 impl WaveBuilder {
     fn new() -> WaveBuilder {
         WaveBuilder {
-            of: (0, 0, Phase::Empty),
+            of: (0, 0, Phase::Empty, 0),
             at: 0,
             frames: 0,
             acc: vec![[(0.0, 0.0, 0.0, 0); 2]; WAVE_COLUMNS],
@@ -363,7 +369,7 @@ impl WaveBuilder {
         }
     }
 
-    fn start(&mut self, frames: usize, of: (usize, usize, Phase)) {
+    fn start(&mut self, frames: usize, of: (usize, usize, Phase, usize)) {
         self.of = of;
         self.frames = frames;
         self.at = 0;
@@ -463,6 +469,13 @@ pub struct LooperView {
     /// The loop's layers in play order (the first pass first) with their
     /// mix, for the speakers; None past the last.
     pub layers: [Option<LayerInfo>; MAX_LAYERS],
+    /// Every loop, for the Looper tab's list; `status` is `loops[selected]`.
+    pub loops: [Status; MAX_LOOPS],
+    pub selected: usize,
+    /// The memory all the loops share (frames).
+    pub memory: Memory,
+    /// Frames per second, for the lengths in seconds.
+    pub rate: u32,
 }
 
 impl Default for LooperView {
@@ -479,6 +492,10 @@ impl Default for LooperView {
             beats_per_bar: 4,
             frames_per_beat: 0.0,
             layers: [None; MAX_LAYERS],
+            loops: [l.status(); MAX_LOOPS],
+            selected: 0,
+            memory: l.memory(),
+            rate: 44_100,
         }
     }
 }
@@ -503,6 +520,7 @@ pub struct LoopHost {
     /// The recorded source's peaks since the last view.
     meter: [f32; 2],
     beats_per_bar: u32,
+    rate: u32,
 }
 
 impl LoopHost {
@@ -526,6 +544,7 @@ impl LoopHost {
             wave: WaveBuilder::new(),
             meter: [0.0; 2],
             beats_per_bar: 4,
+            rate,
         }
     }
 
@@ -604,6 +623,29 @@ impl LoopHost {
             return format!("looper: {what}: NOT done, the command queue is full");
         }
         format!("looper: {what}")
+    }
+
+    /// Pick loop `n` for the presses and controls after this, with its
+    /// `looper:` line for the log ("loop 2 picked (empty)").
+    pub fn select(&mut self, n: usize) -> String {
+        let n = n.min(MAX_LOOPS - 1);
+        let what = match self.looper.loop_status(n) {
+            Some(s) if s.phase == Phase::Empty => "empty".to_string(),
+            Some(s) => format!(
+                "{} layer{}, {:?}",
+                s.layers,
+                if s.layers == 1 { "" } else { "s" },
+                s.phase
+            ),
+            None => "not there".to_string(),
+        };
+        if !self.looper.select_loop(n) {
+            return format!(
+                "looper: loop {} ({what}): NOT picked, the command queue is full",
+                n + 1
+            );
+        }
+        format!("looper: loop {} picked ({what})", n + 1)
     }
 
     /// A layer's control, by the layer's id, with its `looper:` line for
@@ -790,6 +832,12 @@ impl LoopHost {
         for (k, l) in layers.iter_mut().enumerate() {
             *l = self.looper.layer_info(k);
         }
+        let mut loops = [s; MAX_LOOPS];
+        for (n, l) in loops.iter_mut().enumerate() {
+            if let Some(st) = self.looper.loop_status(n) {
+                *l = st;
+            }
+        }
         LooperView {
             status: s,
             stats: self.looper.stats(),
@@ -801,6 +849,10 @@ impl LoopHost {
             beats_per_bar: self.beats_per_bar,
             frames_per_beat,
             layers,
+            loops,
+            selected: self.looper.selected(),
+            memory: self.looper.memory(),
+            rate: self.rate,
         }
     }
 
@@ -809,7 +861,7 @@ impl LoopHost {
     /// change, and every `refresh` periods while overdubbing.
     pub fn wave_step(&mut self, period: u64, refresh: u64) -> Option<Arc<LoopWave>> {
         let s = self.looper.status();
-        let of = (s.frames, s.layers, s.phase);
+        let of = (s.frames, s.layers, s.phase, self.looper.selected());
         let overdubbing =
             s.phase == Phase::Overdubbing && refresh > 0 && period.is_multiple_of(refresh);
         if of != self.wave.of || overdubbing && !self.wave.building {

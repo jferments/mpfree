@@ -35,7 +35,7 @@
 //!                      (the test stick's mpfree-app service) and runs until the
 //!                      power goes off: a loading page with a progress bar while
 //!                      it waits for the controller and the sound card, then the
-//!                      player; STOP silences, SHIFT + STOP shows the system log
+//!                      player; STOP silences, SHIFT + ERASE + TAP TEMPO shows the system log
 //!                      (journalctl -f, read-only); --keep-screen keeps the
 //!                      startup screen's last frame behind the loading card;
 //!                      --data DIR keeps settings and found buttons there
@@ -77,6 +77,7 @@ mod engines;
 mod gui;
 mod kit;
 mod looper_page;
+mod looper_tab;
 mod looping;
 mod mixing;
 mod modmix;
@@ -2170,6 +2171,10 @@ fn looper_action(
             out.note(&looper.layer_command(id, c));
             Vec::new()
         }
+        looping::LoopAction::Select(n) => {
+            out.note(&looper.select(n));
+            Vec::new()
+        }
     }
 }
 
@@ -2640,6 +2645,13 @@ fn player_session(
                 gui::FromUi::LoopLayer { id, command } => {
                     fx.push(app::Effect::Looper(looping::LoopAction::Layer(id, command)))
                 }
+                gui::FromUi::LoopPick(n) => {
+                    fx.push(app::Effect::Looper(looping::LoopAction::Select(n)))
+                }
+                gui::FromUi::LoopLevel(v) => fx.push(app::Effect::Looper(
+                    looping::LoopAction::Command(mpfree_looper::Command::SetLevel(v)),
+                )),
+                gui::FromUi::LooperSetting(item, d) => fx.extend(app.looper_setting(item, d)),
                 gui::FromUi::Synth(SynthAction::Set { id, value }) => {
                     synth.set(id, value);
                     if let Some(line) = param_log.set(&synth, id, value, t_read) {
@@ -2792,7 +2804,7 @@ fn player_session(
                     // While the mixer is open they move the selected strip.
                     if matches!(
                         page,
-                        app::View::Synth | app::View::Sample | app::View::Mixer
+                        app::View::Synth | app::View::Sample | app::View::Mixer | app::View::Looper
                     ) && knob < 4
                     {
                         let k = knob as usize;
@@ -2806,6 +2818,8 @@ fn player_session(
                             out.show(gui::ToUi::SynthQLink(k, ticks));
                         } else if ticks != 0 && page == app::View::Mixer {
                             out.show(gui::ToUi::MixerQLink(k, ticks));
+                        } else if ticks != 0 && page == app::View::Looper {
+                            out.show(gui::ToUi::LooperQLink(k, ticks));
                         } else if ticks != 0 {
                             out.show(gui::ToUi::SampleQLink(k, ticks));
                         }
@@ -2984,6 +2998,25 @@ fn player_session(
                     out.show(gui::ToUi::ClipsWheel { delta, scroll })
                 }
                 app::Effect::Map(m) => out.show(gui::ToUi::Map(Box::new(m))),
+                app::Effect::PlayView(v) => out.show(gui::ToUi::PlayView(v)),
+                app::Effect::SampleEditor(e) => out.show(gui::ToUi::SampleEditor(e)),
+                // PROG EDIT: the sound the pads play (Jay, 20:40Z).
+                app::Effect::ProgEdit => {
+                    let synth_now = kit_to.map_or(synth_on, |k| k == synth_kit);
+                    if synth_now {
+                        later.extend(app.open_tab(app::View::Synth));
+                    } else {
+                        out.show(gui::ToUi::SampleEditor(sample_page::Editor::Pads));
+                        later.extend(app.open_tab(app::View::Sample));
+                    }
+                }
+                app::Effect::Metronome => {
+                    time.metronome = !time.metronome;
+                    out.note(&format!(
+                        "SHIFT + PLAY START: metronome {}",
+                        if time.metronome { "on" } else { "off" }
+                    ));
+                }
                 // A PAD BANK button: banks A-H are kits 1-8 (9-16 and the
                 // Grains kit are banks A-H again, from kit 9 on).
                 // While the synth has the pads, PAD BANK A-H picks a bank's
