@@ -116,9 +116,10 @@ static int receive_canary(const char *name){
     unsigned n=0,declared=0;
     if(sscanf(name,"v17_receive_%u_%u",&n,&declared)!=2||n>8192||declared>8192)
         return result(name,false,"invalid-receive-parameters");
-    unsigned fmt=0,log=0;
+    unsigned fmt=0,log=0,remaining_callback=0;
     if(!intercept(0x0012dbf4u,0,&fmt)||
-       !intercept(0x0012e96au,0,&log)||!seal())return 4;
+       !intercept(0x0012e96au,0,&log)||
+       !intercept(0x0012247cu,0x20,&remaining_callback)||!seal())return 4;
     uintptr_t source=HEAP+0x2000,context=HEAP+0x400;
     uintptr_t descriptor=HEAP+0x600,vtable=HEAP+0x800;
     uintptr_t output=USB_DATA+0x800;
