@@ -21,8 +21,10 @@ def fixture():
             "indirect_handoff_function_pointer_slot":"0xff70a250",
             "indirect_handoff_original_word":None,
             "opaque_media_table_words":{
-                "device_order":{"entries":[{"word":"0x%08x"%i} for i in range(5)]},
-                "device_mapping":{"entries":[{"word":"0x%08x"%i} for i in range(8)]},
+                "device_order":{"table_start":"0xff709c70",
+                                "entries":[{"word":"0x%08x"%i} for i in range(5)]},
+                "device_mapping":{"table_start":"0xff709c50",
+                                  "entries":[{"word":"0x%08x"%i} for i in range(8)]},
             },
         },
     }
