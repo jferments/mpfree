@@ -1963,7 +1963,18 @@ struct SeqPads<'a> {
     synth: Option<&'a mut synth::Synth>,
     flashes: [u8; 16],
     hits: u64,
+    /// The live treatment's inputs (velocity curve, pad layout).
+    live: app::LiveMap,
+    /// The pads the arps' notes started this period, and their velocity,
+    /// for the screen (pad down, or a repeat's flash).
+    live_hits: [(u8, u8); MAX_LIVE_HITS],
+    n_live: usize,
+    /// Arp notes on a pad with no sound.
+    silent: u64,
 }
+
+/// Pad notes from the arps one period can show; more still sound.
+const MAX_LIVE_HITS: usize = 64;
 
 impl time::Pads for SeqPads<'_> {
     fn hit_at(&mut self, pad: usize, velocity: u8, offset: u32) -> bool {
@@ -1993,6 +2004,73 @@ impl time::Pads for SeqPads<'_> {
         match self.synth.as_mut() {
             Some(s) => s.all_off(),
             None => self.player.stop_all(),
+        }
+    }
+
+    /// An arp's note: the pads played live (through the armed track's arp,
+    /// a latched arp, or a clip through its arp). It gets the velocity
+    /// curve; with a synth pad layout it is a MIDI note for the synth and
+    /// its pad (if any) is what shows and records; otherwise it is a pad.
+    /// Returns what the armed track records as heard.
+    fn live(&mut self, o: &mpfree_play::Out) -> Option<mpfree_play::Event> {
+        use mpfree_play::Event;
+        let notes = self.synth.is_some() && self.live.plays_notes();
+        match o.event {
+            Event::NoteOn { note, velocity } => {
+                let v = self.live.velocity(velocity);
+                let pad = if notes {
+                    // A note no pad has (an arp octave up, a scale run)
+                    // still plays; only a pad's own note shows and records.
+                    if let Some(s) = self.synth.as_mut() {
+                        s.note_on_note(note, v, o.offset);
+                    }
+                    self.hits += 1;
+                    self.live.pad_of_note(note)?
+                } else {
+                    let pad = usize::from(note);
+                    if pad >= 16 {
+                        return None;
+                    }
+                    match self.synth.as_mut() {
+                        Some(s) => {
+                            s.note_on(pad, v, o.offset);
+                            self.hits += 1;
+                        }
+                        None if self.player.hit_at(pad, v, o.offset) => self.hits += 1,
+                        None => self.silent += 1,
+                    }
+                    pad
+                };
+                if self.n_live < MAX_LIVE_HITS {
+                    self.live_hits[self.n_live] = (pad as u8, v);
+                    self.n_live += 1;
+                }
+                Some(Event::NoteOn {
+                    note: pad as u8,
+                    velocity: v,
+                })
+            }
+            Event::NoteOff { note } if notes => {
+                if let Some(s) = self.synth.as_mut() {
+                    s.note_off_note(note, o.offset);
+                }
+                let pad = self.live.pad_of_note(note)?;
+                Some(Event::NoteOff { note: pad as u8 })
+            }
+            Event::NoteOff { note } => {
+                // The synth's note ends; a Grains pad stops when let go;
+                // one-shot sounds ignore it.
+                match self.synth.as_mut() {
+                    Some(s) => s.note_off(usize::from(note), o.offset),
+                    None => self.player.release_at(usize::from(note), o.offset),
+                }
+                Some(o.event)
+            }
+            Event::AllOff => {
+                self.stop_all();
+                None
+            }
+            Event::Lock { .. } | Event::Unlock { .. } => None,
         }
     }
 }
@@ -2365,7 +2443,6 @@ fn player_session(
     let (mut pads_l, mut pads_r) = ([0f32; PERIOD], [0f32; PERIOD]);
     let mut frames = [0i32; PERIOD * 2];
     let mut buf = [0u8; 256];
-    let mut events = mpfree_arp::Events::new();
     let total_periods = if timed {
         o.seconds * RATE as u64 / PERIOD as u64
     } else {
@@ -2415,7 +2492,11 @@ fn player_session(
         while let Ok(a) = from_ui.try_recv() {
             match a {
                 gui::FromUi::Pad { pad, down: true } if pad < 16 => {
-                    fx.extend(app.pad_down(pad, app.settings.screen_velocity));
+                    let v = app.settings.screen_velocity;
+                    if let Some(ev) = app.pressed_event(pad, v, true) {
+                        time.pad_pressed(0, ev);
+                    }
+                    fx.extend(app.pad_down(pad, v));
                     held[pad] = true;
                     awaiting[pad] = true;
                     screen_hits += 1;
@@ -2424,6 +2505,9 @@ fn player_session(
                     }
                 }
                 gui::FromUi::Pad { pad, down: false } if pad < 16 => {
+                    if let Some(ev) = app.pressed_event(pad, 0, false) {
+                        time.pad_pressed(0, ev);
+                    }
                     fx.extend(app.pad_up(pad));
                     held[pad] = false;
                     awaiting[pad] = false;
@@ -2577,6 +2661,9 @@ fn player_session(
             match m.event {
                 Some(ControlEvent::PadDown { pad, velocity }) if (pad as usize) < 16 => {
                     let pad = pad as usize;
+                    if let Some(ev) = app.pressed_event(pad, velocity, true) {
+                        time.pad_pressed(0, ev);
+                    }
                     fx.extend(app.pad_down(pad, velocity));
                     held[pad] = true;
                     awaiting[pad] = true;
@@ -2585,6 +2672,9 @@ fn player_session(
                     }
                 }
                 Some(ControlEvent::PadUp { pad }) if (pad as usize) < 16 => {
+                    if let Some(ev) = app.pressed_event(pad as usize, 0, false) {
+                        time.pad_pressed(0, ev);
+                    }
                     fx.extend(app.pad_up(pad as usize));
                     held[pad as usize] = false;
                     awaiting[pad as usize] = false;
@@ -2949,82 +3039,38 @@ fn player_session(
         let time_span = Span::start();
         app.set_rolling(time.info().state.rolling());
         time.follow_tempo(app.settings.bpm);
-        // The transport runs first, so the arp can follow this period's
-        // clock (TimeHost::arp_clock); the clips play and record after.
+        // The transport runs first; the clips and the arps follow its clock.
         time.advance(PERIOD as u32);
-        // The arp follows this period's transport (None while stopped: it runs on its own).
-        app.set_clock(time.arp_clock());
-        app.process(PERIOD as u32, &mut events);
-        engines.stop(engines::TIME, time_span);
+        // The armed track is the one the pads and the arp screens play.
+        let armed = time.armed().unwrap_or(0);
+        if armed != app.track() {
+            fx.extend(app.set_track(armed));
+        }
         if let Some(app::Effect::Arp(v)) = app.arp_poll() {
             out.show(gui::ToUi::Arp(Box::new(v)));
         }
-        // With the synth on the pads the arp's events carry MIDI notes (its
-        // pad layout); the screen and the clips get the pad a note is on.
-        let notes = synth_on && app.arp_plays_notes();
-        for ev in events.as_slice() {
-            let (slot, velocity) = match ev.kind {
-                mpfree_arp::EventKind::On { note, velocity } => (note, velocity),
-                mpfree_arp::EventKind::Off { note } if notes => {
-                    synth.note_off_note(note, ev.offset);
-                    if let Some(pad) = app.pad_of_note(note) {
-                        time.pad(ev.offset, mpfree_play::Event::NoteOff { note: pad as u8 });
-                    }
-                    continue;
-                }
-                // The synth's note ends; a Grains pad stops when let go; one-shot sounds ignore it.
-                mpfree_arp::EventKind::Off { note } if synth_on => {
-                    synth.note_off(note as usize, ev.offset);
-                    time.pad(ev.offset, mpfree_play::Event::NoteOff { note });
-                    continue;
-                }
-                mpfree_arp::EventKind::Off { note } => {
-                    player.release_at(note as usize, ev.offset);
-                    time.pad(ev.offset, mpfree_play::Event::NoteOff { note });
-                    continue;
-                }
-            };
-            let v = app.velocity(velocity);
-            let pad = if notes {
-                // A note no pad has (an arp octave up, a scale run) still
-                // plays; only a pad's own note shows and records.
-                synth.note_on_note(slot, v, ev.offset);
-                hits += 1;
-                let Some(pad) = app.pad_of_note(slot) else {
-                    continue;
-                };
-                time.pad(
-                    ev.offset,
-                    mpfree_play::Event::NoteOn {
-                        note: pad as u8,
-                        velocity: v,
-                    },
-                );
-                pad
-            } else {
-                slot as usize
-            };
-            if pad >= 16 {
-                continue;
-            }
-            if !notes {
-                // Recorded into the armed track while the transport records.
-                time.pad(
-                    ev.offset,
-                    mpfree_play::Event::NoteOn {
-                        note: slot,
-                        velocity: v,
-                    },
-                );
-                if synth_on {
-                    synth.note_on(pad, v, ev.offset);
-                    hits += 1;
-                } else if player.hit_at(pad, v, ev.offset) {
-                    hits += 1;
-                } else {
-                    silent_hits += 1;
-                }
-            }
+        // The clips and every track's arp (the pads go through the armed
+        // track's) play into the kit or the synth: the clips as recorded,
+        // the arps' notes as live playing (SeqPads::live).
+        let mut seq = SeqPads {
+            player: &mut player,
+            synth: synth_on.then_some(&mut synth),
+            flashes: [0; 16],
+            hits: 0,
+            live: app.live_map(),
+            live_hits: [(0, 0); MAX_LIVE_HITS],
+            n_live: 0,
+            silent: 0,
+        };
+        time.period_arps(PERIOD as u32, &mut seq, &mut app.arps);
+        // The time engine: the transport, the clips and every track's arp
+        // (the pads' notes start here; their sounds are the sampler's or
+        // the synth's).
+        engines.stop(engines::TIME, time_span);
+        // The pads' own hits: the first sound of a press shows the pad
+        // down; the arp's repeats flash it.
+        for &(pad, v) in &seq.live_hits[..seq.n_live] {
+            let pad = usize::from(pad);
             if awaiting[pad] {
                 awaiting[pad] = false;
                 out.show(gui::ToUi::PadDown { pad, velocity: v });
@@ -3035,14 +3081,7 @@ fn player_session(
                 out.show(gui::ToUi::PadFlash { pad, velocity: v });
             }
         }
-        // The clips play the kit's pads; the screen's pads flash with them.
-        let mut seq = SeqPads {
-            player: &mut player,
-            synth: synth_on.then_some(&mut synth),
-            flashes: [0; 16],
-            hits: 0,
-        };
-        time.period(PERIOD as u32, &mut seq);
+        silent_hits += seq.silent;
         hits += seq.hits;
         // The clips' parameter locks: to the mixer's mod engine, on their
         // frames of this period.
@@ -3300,8 +3339,8 @@ fn player_session(
                     } else {
                         latched.join(" ")
                     },
-                    events.dropped,
-                    app.engine.overflow
+                    app.arps.dropped(),
+                    app.arps.overflow()
                 ));
             }
             window_repeats = 0;
@@ -3315,7 +3354,7 @@ fn player_session(
                                in {} periods, at most {voices} sounds at once, peak {:.1} dBFS, {clipped} periods \
                                clipped; pad to sound {}; note engine dropped {} events, overflow {}; {}; {}",
                               totals.xruns + play.xruns, totals.periods + play.periods,
-                              20.0 * peak.max(1e-6).log10(), lat.describe(), events.dropped, app.engine.overflow,
+                              20.0 * peak.max(1e-6).log10(), lat.describe(), app.arps.dropped(), app.arps.overflow(),
                               sampler_status(&player, &render_time), time.describe()));
             out.note(&format!("status: {}", synth_status(&synth, &synth_time)));
             out.note(&format!(
@@ -3355,7 +3394,7 @@ fn player_session(
                         synth_max_us,
                         worst_us: (render_time.max + synth_time.max).as_secs_f32() * 1e6,
                         steals: c.steals,
-                        dropped: c.dropped_events + events.dropped,
+                        dropped: c.dropped_events + app.arps.dropped(),
                         peak_grains: c.peak_grains,
                     }
                 },
@@ -3408,7 +3447,8 @@ fn player_session(
     out.say(&format!("buttons: {}", app.map.describe()));
     out.say(&format!(
         "note engine: {repeats} repeats, {} events dropped, {} notes that could not be queued",
-        events.dropped, app.engine.overflow
+        app.arps.dropped(),
+        app.arps.overflow()
     ));
     out.say(&format!("play done ({stopped_by}): {hits} hits played ({screen_hits} from the screen), {silent_hits} on \
                       pads without a sound, kits used {}, level {level_db:.1} dB, at most {voices} sounds at once, \
