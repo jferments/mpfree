@@ -1,7 +1,8 @@
 //! What the pad player keeps between starts (docs/dev/design/storage-spec.md):
-//! the Prefs rows that are settings, as the store's "app" settings, and
-//! every control found with Map controls or the button guide, as its "map"
-//! settings. Line input is never kept: it is off at every start.
+//! the Prefs rows that are settings, as the store's "app" settings, every
+//! control found with Map controls or the button guide, as its "map"
+//! settings, and the Synth tab's options, as its "synth" settings
+//! (`synth_pads.rs`). Line input is never kept: it is off at every start.
 //!
 //! [`App::restore`] runs once at start, before the sound starts (the audio
 //! buffer is one of the settings). After that, Prefs and the mapper mark the
@@ -16,6 +17,10 @@ use mpfree_store::Settings;
 
 pub const APP: &str = "app";
 pub const MAP: &str = "map";
+/// The Synth tab's options ([`App::synth_settings`]).
+pub const SYNTH: &str = "synth";
+/// Where the "synth" text last handed to the store is kept.
+pub(super) const SYNTH_SLOT: usize = 2;
 /// The arp's owner name in the store, and its pattern library file there
 /// (the patterns Save keeps and the owner's own scales).
 pub const ARP: &str = "arp";
@@ -210,7 +215,13 @@ impl App {
             ));
         }
         // What was just read is what the store holds: nothing to save yet.
-        self.saved = [self.app_settings().to_text(), self.map_settings().to_text()];
+        // The Synth tab's options come back later (`restore_synth`); until
+        // then they are the defaults.
+        self.saved = [
+            self.app_settings().to_text(),
+            self.map_settings().to_text(),
+            self.synth_settings().to_text(),
+        ];
         self.save_dirty = false;
         notes
     }
@@ -223,9 +234,13 @@ impl App {
         }
         self.save_dirty = false;
         let mut out = Vec::new();
-        for (slot, (owner, settings)) in [(APP, self.app_settings()), (MAP, self.map_settings())]
-            .into_iter()
-            .enumerate()
+        for (slot, (owner, settings)) in [
+            (APP, self.app_settings()),
+            (MAP, self.map_settings()),
+            (SYNTH, self.synth_settings()),
+        ]
+        .into_iter()
+        .enumerate()
         {
             let text = settings.to_text();
             if text != self.saved[slot] {
