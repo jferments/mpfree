@@ -29,6 +29,7 @@ pub mod autosample;
 pub mod chop;
 pub mod dsp;
 pub mod engine;
+pub mod export;
 pub mod keymap;
 pub mod model;
 pub mod node;
