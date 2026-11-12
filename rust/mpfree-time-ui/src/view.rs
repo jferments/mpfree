@@ -24,11 +24,12 @@
 //! launches or stops at once.
 
 use crate::editor::{drop_of, edit_rows, pads, EditAction, Editor, NoteBox, NoteGrid};
-use crate::song::{SongBlock, SongLanes, NONE, REC};
+use crate::song::{AudioLane, SongBlock, SongLanes, ADD_AUDIO, AUDIO_BUTTONS, NONE, PANEL, REC};
 use crate::widgets::{
     BarButton, BarItem, CellState, ClipGrid, GridCell, GridTrack, MorphBar, Run, TakeItem,
     TakeList, TransportBar, GRID_COLS,
 };
+use mpfree_audiotracks::host::TakeWave;
 use mpfree_play::{anchored, Cue, Launch, Take, Takes};
 use mpfree_seq::{Clip, Project, Source, Speed, SLOTS};
 use mpfree_transport::time::{Meter, Swing, Tick, MAX_BPM, MIN_BPM, PPQ};
@@ -96,6 +97,13 @@ pub fn with_transport(layout: &str) -> Option<String> {
 
 pub fn track_color(track: usize) -> Color {
     Color::rgb(TRACK_COLORS[track % TRACK_COLORS.len()])
+}
+
+/// Audio tracks' colours, by audio track: the track colours in another
+/// order (teal and amber first, as the mockups have them).
+pub fn audio_color(track: usize) -> Color {
+    const ORDER: [usize; 8] = [6, 0, 2, 5, 1, 4, 3, 7];
+    track_color(ORDER[track % ORDER.len()])
 }
 
 // ---------------------------------------------------------------- state
@@ -263,6 +271,42 @@ pub struct TimeState {
     pub song_rec: bool,
     /// The note editor, when it is open. The app sets it.
     pub edit: Option<Box<EditInfo>>,
+    /// The audio tracks' lanes on the Song view (layout spec 4c), under
+    /// the MIDI lanes: one for each audio track with a region or armed,
+    /// in order. Build their blocks with [`crate::song::audio_blocks`].
+    /// The app sets them.
+    pub audio: Vec<AudioLane>,
+    /// The audio takes' waveforms read so far (`AudioHost::wave`), a take
+    /// each. The app sets them.
+    pub waves: Vec<TakeWave>,
+    /// The audio region picked on the Song view. The app sets it; it and
+    /// `selected` are never both set (see [`TimeState::pick`]).
+    pub region: Option<RegionId>,
+    /// The audio tracks' memory: seconds free and seconds in all, for the
+    /// Song view's legend. The app sets it.
+    pub audio_free: Option<(f64, f64)>,
+    /// Audio tracks counters to show while they are not zero, such as
+    /// ("dropped", 2) or ("read errors", 1): the engine's `Stats` and the
+    /// streaming counts. Fallbacks and losses are always shown. The app
+    /// sets them.
+    pub audio_counts: Vec<(String, u32)>,
+}
+
+/// An audio region: region `index` of audio track `track`
+/// (`AudioTracks::regions(track)[index]`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RegionId {
+    pub track: usize,
+    pub index: usize,
+}
+
+/// What is picked on the Song view: the selection's kind decides the
+/// bottom row's buttons and the Q-Links.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Pick {
+    /// A placement, by its index in the arrangement.
+    Placement(usize),
+    Region(RegionId),
 }
 
 /// The note editor as the screens show it.
@@ -378,7 +422,20 @@ impl TimeState {
             selected: None,
             song_rec: false,
             edit: None,
+            audio: Vec::new(),
+            waves: Vec::new(),
+            region: None,
+            audio_free: None,
+            audio_counts: Vec::new(),
         }
+    }
+
+    /// What is picked on the Song view, and its kind. A region wins if
+    /// both were ever set.
+    pub fn pick(&self) -> Option<Pick> {
+        self.region
+            .map(Pick::Region)
+            .or(self.selected.map(Pick::Placement))
     }
 
     pub fn clip(&self, track: usize, slot: usize) -> Option<&ClipInfo> {
@@ -472,6 +529,36 @@ pub enum TimeAction {
     RecSong(bool),
     /// A touch on the note editor (`crate::editor`).
     Edit(EditAction),
+    /// A touch on the Song view's audio lanes, for the audio tracks
+    /// (`mpfree_audiotracks`).
+    Audio(AudioAction),
+}
+
+/// What a touch on the Song view's audio lanes asks for (layout spec 4c).
+/// The app turns them into `mpfree_audiotracks::Command`s and its panel.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AudioAction {
+    /// The header's arm dot: arm or disarm the audio track.
+    Arm {
+        track: usize,
+        on: bool,
+    },
+    /// The header's name or input chip: open the track's panel (Arm,
+    /// Input, Monitor, level, pan, mute, solo, Takes) over the lanes.
+    Panel(usize),
+    /// "+ Audio": show the next audio track's lane.
+    Add,
+    /// Pick a region, or none. Picking one drops the placement picked.
+    Pick(Option<RegionId>),
+    /// The bottom row with a region picked: Split (at the playhead),
+    /// Erase, Fades, Gain, Takes (the track's take lanes) and Undo (SHIFT
+    /// + Undo redoes).
+    Split(RegionId),
+    Erase(RegionId),
+    Fades(RegionId),
+    Gain(RegionId),
+    Takes(usize),
+    Undo,
 }
 
 /// Where a clip launched now starts: on the next bar line while the
@@ -632,6 +719,31 @@ pub fn action(ev: &UiEvent, st: &TimeState) -> Option<TimeAction> {
             }))
         }
         (EDIT_OPTIONS, EventKind::Select(i)) => Some(TimeAction::Edit(EditAction::PickRow(*i))),
+        (SONG, EventKind::Tab(k)) if *k < AUDIO_BUTTONS.len() && st.region.is_some() => {
+            let r = st.region?;
+            Some(TimeAction::Audio(match k {
+                0 => AudioAction::Split(r),
+                1 => AudioAction::Erase(r),
+                2 => AudioAction::Fades(r),
+                3 => AudioAction::Gain(r),
+                4 => AudioAction::Takes(r.track),
+                _ => AudioAction::Undo,
+            }))
+        }
+        (SONG, EventKind::Tab(ADD_AUDIO)) => Some(TimeAction::Audio(AudioAction::Add)),
+        (SONG, EventKind::Toggle(track)) => Some(TimeAction::Audio(AudioAction::Arm {
+            track: *track,
+            on: !st.audio.iter().any(|l| l.track == *track && l.armed),
+        })),
+        (SONG, EventKind::Cell { row, col: PANEL }) => {
+            Some(TimeAction::Audio(AudioAction::Panel(*row)))
+        }
+        (SONG, EventKind::Cell { row, col }) => {
+            Some(TimeAction::Audio(AudioAction::Pick(Some(RegionId {
+                track: *row,
+                index: *col,
+            }))))
+        }
         (SONG, EventKind::Tab(k)) => match k {
             0 => Some(TimeAction::SongView(false)),
             1 => Some(TimeAction::SongMode(!st.song_on)),
@@ -962,24 +1074,41 @@ pub fn take_items(st: &TimeState) -> (Vec<TakeItem>, Option<usize>) {
     (items, current)
 }
 
-/// The Song view for `st`, from bar `first_bar` (0-based): 16 bars.
+/// "0:42": seconds, to the nearest, as minutes and seconds.
+pub fn min_sec(seconds: f64) -> String {
+    let s = seconds.max(0.0).round() as u64;
+    format!("{}:{:02}", s / 60, s % 60)
+}
+
+/// The Song view for `st`, from bar `first_bar` (0-based): 16 bars. The
+/// waveforms are left out: [`TimePage::update`] copies `st.waves` only
+/// when they change, as they can be large.
 pub fn song_lanes(st: &TimeState, first_bar: i64) -> SongLanes {
     let t = &st.transport;
     let bar = t.meter.bar_ticks();
-    let end = st
-        .placements
+    let placed = st.placements.iter().map(|p| p.start + p.length);
+    let audio = st
+        .audio
         .iter()
-        .map(|p| p.start + p.length)
-        .max()
-        .unwrap_or(0);
+        .flat_map(|l| l.blocks.iter().map(|b| b.end).chain(l.recording));
+    let end = placed.chain(audio).max().unwrap_or(0);
     let bars = (end + bar - 1) / bar.max(1);
+    let mut legend = if bars == 0 {
+        "empty: Scenes → song makes one from the rows".to_string()
+    } else {
+        format!("{bars} bars · from bar {}", first_bar + 1)
+    };
+    if let Some((free, all)) = st.audio_free {
+        legend += &format!(" · Audio {} of {} free", min_sec(free), min_sec(all));
+    }
+    for (what, n) in st.audio_counts.iter().filter(|c| c.1 > 0) {
+        legend += &format!(" · {n} {what}");
+    }
+    let alert = st.audio_counts.iter().any(|c| c.1 > 0);
     SongLanes {
         title: "Song".to_string(),
-        legend: if bars == 0 {
-            "empty: Scenes → song makes one from the rows".to_string()
-        } else {
-            format!("{bars} bars · from bar {}", first_bar + 1)
-        },
+        legend,
+        alert,
         tracks: st
             .tracks
             .iter()
@@ -1007,6 +1136,9 @@ pub fn song_lanes(st: &TimeState, first_bar: i64) -> SongLanes {
         selected: st.selected,
         on: st.song_on,
         rec: st.song_rec,
+        audio: st.audio.clone(),
+        region: st.region.map(|r| (r.track, r.index)),
+        ..SongLanes::default()
     }
 }
 
@@ -1197,10 +1329,20 @@ impl TimePage {
         if ui.layout_of(CLIPS_PAGE).is_some_and(|l| l != want) {
             let _ = ui.set_layout(CLIPS_PAGE, want);
         }
-        let lanes = song_lanes(st, self.first_bar);
-        if ui.get::<SongLanes>(SONG).is_some_and(|l| *l != lanes) {
+        let mut lanes = song_lanes(st, self.first_bar);
+        let (same, same_waves) = ui.get::<SongLanes>(SONG).map_or((true, true), |l| {
+            let waves = crate::song::same_waves(&l.waves, &st.waves);
+            lanes.keep_scroll(l);
+            lanes.waves = Vec::new();
+            let mut was = l.clone_without_waves();
+            was.keep_scroll(l);
+            (was == lanes, waves)
+        });
+        if !(same && same_waves) {
             if let Some(l) = ui.get_mut::<SongLanes>(SONG) {
+                let waves = std::mem::take(&mut l.waves);
                 *l = lanes;
+                l.waves = if same_waves { waves } else { st.waves.clone() };
             }
         }
         let m = st.morph;
@@ -1497,6 +1639,140 @@ mod tests {
             action(&ev(CLIPS, EventKind::Toggle(SLOTS + 2)), &st),
             Some(TimeAction::RecSong(false))
         );
+    }
+
+    /// Layout spec 4c: the audio lanes' taps, the selection's kind, and
+    /// the bottom row with a region picked.
+    #[test]
+    fn the_audio_lanes_ask_for_audio_actions() {
+        use crate::song::{AudioBlock, AudioLane};
+        let mut st = state();
+        st.song_view = true;
+        st.audio = vec![AudioLane {
+            track: 2,
+            name: "Vocal".into(),
+            color: audio_color(2),
+            armed: true,
+            input: "L".into(),
+            level: 0.3,
+            blocks: vec![AudioBlock {
+                start: 0,
+                end: BAR,
+                take: 0,
+                tag: String::new(),
+                src: 0,
+                frames: 88_200.0,
+                fade_in: 0,
+                fade_out: 0,
+            }],
+            recording: None,
+        }];
+        let song = |k: EventKind, st: &TimeState| action(&ev(SONG, k), st);
+        let audio = |a: AudioAction| Some(TimeAction::Audio(a));
+        let r = RegionId { track: 2, index: 0 };
+        assert_eq!(
+            song(EventKind::Cell { row: 2, col: 0 }, &st),
+            audio(AudioAction::Pick(Some(r)))
+        );
+        assert_eq!(
+            song(EventKind::Cell { row: 2, col: PANEL }, &st),
+            audio(AudioAction::Panel(2))
+        );
+        assert_eq!(
+            song(EventKind::Toggle(2), &st),
+            audio(AudioAction::Arm {
+                track: 2,
+                on: false
+            }),
+            "armed: the dot disarms"
+        );
+        assert_eq!(
+            song(EventKind::Toggle(5), &st),
+            audio(AudioAction::Arm { track: 5, on: true })
+        );
+        assert_eq!(
+            song(EventKind::Tab(ADD_AUDIO), &st),
+            audio(AudioAction::Add)
+        );
+        // Nothing picked: the Song view's own row.
+        assert_eq!(st.pick(), None);
+        assert_eq!(
+            song(EventKind::Tab(0), &st),
+            Some(TimeAction::SongView(false))
+        );
+        st.selected = Some(1);
+        assert_eq!(st.pick(), Some(Pick::Placement(1)));
+        // A region picked: its row, whatever was picked before.
+        st.region = Some(r);
+        assert_eq!(st.pick(), Some(Pick::Region(r)));
+        let row = [
+            AudioAction::Split(r),
+            AudioAction::Erase(r),
+            AudioAction::Fades(r),
+            AudioAction::Gain(r),
+            AudioAction::Takes(2),
+            AudioAction::Undo,
+        ];
+        for (k, want) in row.into_iter().enumerate() {
+            assert_eq!(song(EventKind::Tab(k), &st), audio(want), "button {k}");
+        }
+        // Rec song and empty space still do what they did.
+        assert_eq!(
+            song(EventKind::Tab(REC), &st),
+            Some(TimeAction::RecSong(true))
+        );
+        assert_eq!(
+            song(EventKind::Select(NONE), &st),
+            Some(TimeAction::SelectPlacement(None))
+        );
+        // The widget shows the lane, the pick and the memory legend.
+        st.audio_free = Some((31.4, 60.0));
+        st.audio_counts = vec![("dropped".into(), 0), ("read errors".into(), 2)];
+        let lanes = song_lanes(&st, 0);
+        assert_eq!(lanes.region, Some((2, 0)));
+        assert_eq!(lanes.audio.len(), 1);
+        assert!(
+            lanes
+                .legend
+                .ends_with("Audio 0:31 of 1:00 free · 2 read errors"),
+            "{}",
+            lanes.legend
+        );
+        assert!(lanes.alert, "a loss shows in the warning colour");
+        assert!(lanes.waves.is_empty(), "update copies the waves");
+    }
+
+    /// The waveforms reach the widget, and are copied again only when they
+    /// change; the lanes' scroll survives an update.
+    #[test]
+    fn the_song_view_keeps_its_waves_and_scroll() {
+        use mpfree_audiotracks::host::TakeWave;
+        let mut ui = Ui::new(Theme::dark(), Fonts::embedded(), 1280, 800);
+        ui.add("header", Header::new(&["Play", "Arrange"]));
+        ui.add("hint", Label::new("", Tone::Dim, Align::Center));
+        let page = TimePage::add_to(&mut ui).unwrap();
+        ui.show(CLIPS_PAGE).unwrap();
+        let mut st = state();
+        st.song_view = true;
+        st.waves = vec![TakeWave {
+            id: 0,
+            frames: 1000,
+            channels: 1,
+            frames_per_column: 10,
+            columns: vec![(-0.5, 0.5); 100],
+        }];
+        page.update(&mut ui, &st);
+        assert_eq!(ui.get::<SongLanes>(SONG).unwrap().waves.len(), 1);
+        ui.get_mut::<SongLanes>(SONG).unwrap().first_lane = 1;
+        st.transport.position += 100;
+        page.update(&mut ui, &st);
+        let l = ui.get::<SongLanes>(SONG).unwrap();
+        assert_eq!((l.waves.len(), l.first_lane), (1, 1));
+        assert_eq!(l.playhead, Some(st.transport.position));
+        st.waves[0].frames = 1200;
+        st.waves[0].columns.push((0.0, 0.0));
+        page.update(&mut ui, &st);
+        assert_eq!(ui.get::<SongLanes>(SONG).unwrap().waves[0].frames, 1200);
     }
 
     #[test]
