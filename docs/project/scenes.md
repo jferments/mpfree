@@ -109,4 +109,5 @@ The grid shows 5 rows at a time over the bar, down from 6.
 - A launch quantise setting (1 beat to 8 bars, or none) is still to come. Scenes and follows use the bar.
 - Clip follow actions count song bars. A clip at another speed still counts the song's bars, as Ableton does.
 - In a song loop shorter than a follow's time, the follow never comes due.
+- Scenes into a song and back are built: see [arrange.md](arrange.md).
 - The morph in the pad player (see above), and a Q-Link for the crossfader.

@@ -20,7 +20,7 @@ These are plain values, edited on the control thread and checked with `check()`.
 - **Quantise is non-destructive.** Notes keep their recorded ticks, and quantise (grid and strength) applies on playback, so it can be changed or undone later.
 - **Swing:** the clip's own swing wins, then the track's, then the transport's.
 
-Parameter locks, trig conditions and ratchets are in the model too (see [steps.md](steps.md)). So are FX moves: a clip's `moves` holds a lane of points per parameter (the FX thread's `mpfree-moves`), see "FX moves" below. Audio clips, scenes and the arrangement come in later steps. They add to this model without changing it.
+Parameter locks, trig conditions and ratchets are in the model too (see [steps.md](steps.md)). So are FX moves: a clip's `moves` holds a lane of points per parameter (the FX thread's `mpfree-moves`), see "FX moves" below. Scenes ([scenes.md](scenes.md)) and the arrangement ([arrange.md](arrange.md)) add to this model without changing it. Audio clips come in a later step.
 
 ## Compiling (`PlayView`)
 
@@ -49,6 +49,7 @@ A clip launched while the music plays does not cut in at once. It waits for the 
 - **Then it keeps its place against the song.** A started clip's origin is `anchored`: the bar line, moved back by whole passes to before any position the song can reach (`EARLIEST`, about 12 days at 120 BPM). So after a loop jump back or a locate it plays on in phase, and doesn't go silent until it reaches the bar line again.
 - **The control thread catches up.** `Player::started()` names each switch (track, slot, the tick, the new origin). The app applies it with `Started::apply`, which makes the clip the track's launch (starting on that tick) and removes the cue, and compiles again. Until that view arrives, the player and the recorder carry the switch themselves, so when the view arrives changes nothing that plays.
 - **Recording.** On the armed track, notes held at the switch end on its bar line, in the clip that was playing. Notes played from that tick on go into the new clip. A switch ends a replace pass, and the take goes on as overdub.
+- **Song mode.** `PlayView::set_song(project, on)` adds the arrangement's placements as regions on each track. A track with no clip launched plays the song, and a launched clip takes the track over until it stops: see [arrange.md](arrange.md).
 - **A mute with the cue.** A cue can carry its track's mute (`PlayView::set_cue_mute`, for a scene's mutes). The player switches the track's mute on the cue's bar line, and `Started::mute` tells the app. Scenes and follow actions use this: see [scenes.md](scenes.md).
 
 ## Playing (`Player::process`)
@@ -256,6 +257,7 @@ The time engine's screens, as [`mpfree-ui`](ui-architecture.md) widgets:
   - tapping what is cued takes the cue back.
 
   - tapping a row's number launches the row as a scene, and the square over the row numbers stops every track ([scenes.md](scenes.md)).
+  - the Song › button swaps the grid for the Song view, the arrangement on a timeline ([arrange.md](arrange.md)).
 
   While stopped, a tap launches or stops at once. A clip launched while stopped plays as if it had started on the bar line before the position, wherever the song goes after. `clips_after` works out the launches and cues after a tap.
 - **The record settings** set the armed track, the record mode, the count-in (0 to 4 bars), the loop (off, 1, 2, 4, 8 or 16 bars from bar 1) and the tempo.
