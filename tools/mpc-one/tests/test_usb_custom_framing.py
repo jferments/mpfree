@@ -21,7 +21,28 @@ def fake_ghidra():
         "0x5aa5fa05 0x5aa5f906 if (value < 0x5aa5fc04) synthetic"
     )
     funcs["0x0001a8d0"]["pseudocode"] = "0xa55a0101 0xa55a0202"
-    funcs["0x0001d644"]["pseudocode"] = "0x802c550a 0x4004550d"
+    funcs["0x0001d644"]["pseudocode"] = "void FUN_0001d644() { 0x802c550a 0x4004550d; }"
+    funcs["0x0001a314"]["pseudocode"] = """
+int FUN_0001a314(void) {
+    0x5aa5fe01; 0x5aa5fd02; 0x5aa5fc03;
+    0x5aa5fb04; 0x5aa5fa05; 0x5aa5f906;
+    if (local_30 < 0x18 || local_30 < *(ushort *)(param_4 + 0x16)) {}
+    if ((*(int *)(param_4 + 4) != *(int *)(param_2 + 4)) ||
+        (*(int *)(param_4 + 0x10) != *(int *)(param_2 + 0x10))) {}
+    if ((uVar1 & 1) == 0) {}
+    if ((uVar1 & 2) == 0) {}
+    if (*(int *)(param_4 + 0x18) == 1) return -0xb;
+    return -9;
+}"""
+    funcs["0x0001a674"]["pseudocode"] = (
+        "void FUN_0001a674(void) {0x5aa5fe01; 0x5aa5fd02; "
+        "0x5aa5fc03; 0x5aa5fb04; 0x5aa5fa05; 0x5aa5f906;"
+        "if (value < 0x5aa5fc04) {} }"
+    )
+    funcs["0x0001a8d0"]["pseudocode"] = (
+        "uStack_30 = 0xa55a0101; uStack_30 = 0xa55a0202;"
+    )
+    funcs["0x0001aabc"]["pseudocode"] = "void FUN_0001aabc(void) {}"
     return {
         "schema": "mpfree-v11-backend-selector-and-boot-recovery-static",
         "role": "libaz01-prog",
@@ -67,6 +88,10 @@ class FramingTests(unittest.TestCase):
         report = FRAMING.validated_report(fake_ghidra(), "source-hash")
         self.assertTrue(report["magic_evidence"]["eight_known_values_present"])
         self.assertEqual(len(report["magic_evidence"]["code_points"]), 9)
+        self.assertEqual(len(report["magic_evidence"]["constructed_outgoing_control_values"]), 2)
+        self.assertEqual(len(report["magic_evidence"]["equality_matched_message_identifiers"]), 6)
+        self.assertTrue(all(report["response_validation_checks"].values()))
+        self.assertEqual(len(report["decompiler_return_type_warnings"]), 3)
         self.assertEqual(
             len(report["magic_evidence"]["equality_matched_message_identifiers"]), 8)
         self.assertEqual(report["magic_evidence"]["comparison_only_range_bounds"],
@@ -77,6 +102,8 @@ class FramingTests(unittest.TestCase):
         self.assertIn("UNIDENTIFIED", report["protocol_family"])
         self.assertIn("0x5aa5fe01", md)
         self.assertIn("USBDEVFS_SUBMITURB", md)
+        self.assertIn("Constructed outgoing value (NOT equality-tested): 0xa55a0101", md)
+        self.assertIn("completion_flag_bit0_required: True", md)
         self.assertNotIn("synthetic placeholder", md)
 
     def test_rejects_bad_source_or_table_or_role(self):
