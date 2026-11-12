@@ -76,6 +76,32 @@ def ghidra(role, dst):
             handle.write("ERROR:\n" + traceback.format_exc()[-2000:])
     return result
 
+
+def run_boot_assets(dst, rootfs):
+    """Inspect actual owner /boot without mounting or changing the ext4 input."""
+    stage = {"stage": "boot_assets", "success": False,
+             "read_only": True, "vendor_executed": False}
+    log = dst / "offline-boot-assets-v13-console.log"
+    report = dst / "offline-boot-assets-v13.json"
+    try:
+        v12.regular(rootfs)
+        cmd = ["python3", str(ROOT / "tools/mpc-one/offline_fastboot_boot_assets_v13.py"),
+               str(rootfs), str(report)]
+        with log.open("w") as file:
+            process = subprocess.run(cmd, stdout=file, stderr=subprocess.STDOUT,
+                                     timeout=120, check=False)
+        if process.returncode:
+            raise RuntimeError("Offline boot asset extraction exit " + str(process.returncode))
+        data = json.loads(report.read_text())
+        if data.get("schema") != "mpfree-v13-offline-boot-assets" or not data.get("read_only"):
+            raise RuntimeError("Unexpected private asset-report format")
+        stage.update({"success": True, "files": len(data["files"]), "report": report.name})
+    except Exception as exc:
+        stage["error"] = str(exc)
+        with log.open("a") as file:
+            file.write("\n" + traceback.format_exc()[-1800:])
+    return stage
+
 def load_previous_questions(dst, previous):
     """Import QUESTION TEXT only from an existing SHA-verified V12 ZIP.
     Do not copy proprietary firmware reports or assume 'LEAD' means answered.
@@ -262,10 +288,11 @@ def main():
                 "ghidra_p3": (ghidra, ("p3", dst)),
                 "offline_rootfs": (v12.run_offline_rootfs, (dst, args.rootfs, args.backup)),
                 "native_synthetic": (v12.run_native_model, (dst, Path(td))),
+                "boot_assets": (run_boot_assets, (dst, args.rootfs)),
             }
             if not args.skip_qemu:
                 jobs["qemu_synthetic"] = (v12.run_qemu, (dst, Path(td), args))
-            with ThreadPoolExecutor(max_workers=5) as pool:
+            with ThreadPoolExecutor(max_workers=6) as pool:
                 future_map = {pool.submit(fn, *params): key
                               for key, (fn, params) in jobs.items()}
                 for fut in as_completed(future_map):
