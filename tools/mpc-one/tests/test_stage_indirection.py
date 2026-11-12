@@ -87,6 +87,8 @@ class StageIndirectionTests(unittest.TestCase):
         self.assertTrue(data["spl"]["checks"]["second_handoff_indirect_dereference_observed"])
         self.assertTrue(data["spl"]["checks"]["second_handoff_slot_is_context_plus_0x0c"])
         self.assertFalse(data["spl"]["next_handoff_runtime_target_proven"])
+        self.assertTrue(data["spl"]["checks"][
+            "mapping_table_ends_at_device_order_start"])
 
     def test_wrong_thumb_pointer_does_not_prove_selector(self):
         data=fixture()
