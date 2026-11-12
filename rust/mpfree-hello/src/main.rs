@@ -76,6 +76,7 @@ mod debug_page;
 mod engines;
 mod gui;
 mod kit;
+mod loop_project;
 mod looper_page;
 mod looper_tab;
 mod looping;
