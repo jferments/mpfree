@@ -1,14 +1,14 @@
 <!--
 status: changing
 covers: rust/mpfree-midi rust/mpfree-midi-ui/src/learn.rs rust/mpfree-app/src/midi_in.rs rust/mpfree-app/src/cv_out.rs
-checked: 2026-11-12 34d34b4
+checked: 2026-11-12 870b4ce
 -->
 
 # Playing other gear: MIDI, sync and CV
 
-The **MIDI IN** and **MIDI OUT** jacks, a USB keyboard on the **USB** port and the **CV/Gate** outputs connect MPFree to other instruments. Playing MPFree from a keyboard and [MIDI Learn](#midi-learn) work now. Following another device's clock works too, once the I/O view is on the MPC's screen. Playing gear from **MIDI OUT** and the CV outputs stay off until they've been checked on an MPC One. This page says what each will do, so you can plan your setup.
+The **MIDI IN** and **MIDI OUT** jacks, a USB keyboard on the **USB** port and the **CV/Gate** outputs connect MPFree to other instruments. Playing MPFree from a keyboard and [MIDI Learn](#midi-learn) work now. Following another device's clock works too. Playing gear from **MIDI OUT** and the CV outputs stay off until they've been checked on an MPC One. This page says what each will do, so you can plan your setup.
 
-All of these settings are in one place: the mixer's [I/O view](mixing-and-effects.md#the-io-view), opened with the I/O icon beside the mixer icon, in its **MIDI**, **Sync** and **CV** sections. A row whose part isn't working yet says so, and keeps what you set.
+All of these settings are in one place: the mixer's [I/O view](mixing-and-effects.md#the-io-view), opened with the I/O icon beside the mixer icon, in its **MIDI**, **Sync** and **CV** sections. A row whose part isn't working yet says so, and keeps what you set. For now these settings last until MPFree quits; saving them with the project is coming.
 
 ## Playing MPFree from a keyboard
 
@@ -34,14 +34,12 @@ If a track would send nothing, because no port is picked or the device is unplug
 
 MPFree can follow another device's MIDI clock. In the mixer's I/O view, under **Sync**, set **Tempo from** to the port the device is plugged into:
 
-- Its tempo becomes MPFree's, on the tempo chip too, and moves when it moves.
+- Its tempo becomes MPFree's and moves when it moves. The top bar shows a tempo chip such as **120.0 from MIDI In**, with a green dot, until its clock stops.
 - With **Start and stop** on, its Start and Stop start and stop MPFree.
 - With **Position** on, MPFree plays from the same bar as the device, and goes back in step if it drifts away.
 - If its clock stops arriving, MPFree keeps playing at the last tempo.
 
 MPFree can also send its own clock from **MIDI OUT**, so a drum machine or an arpeggiator plays in time with it. Each port's **Clock out** is **Off**, **While playing** or **Always**.
-
-The Sync settings come to the MPC's screen with the I/O view.
 
 ## MIDI Learn
 
@@ -62,7 +60,7 @@ Each learned control is listed in the mixer's I/O view, under **MIDI** and then 
 
 Tap **Forget** to take a learned control off. A row in amber says why its control does nothing: the device isn't plugged in, or its port is set to **Plays tracks**, which keeps every message for playing. A port set to **Learn only** turns knobs but plays no notes.
 
-Still to come: the I/O view on the MPC (until then MIDI Learn works, but the list isn't shown), keeping learned controls with the project (for now they last until MPFree quits), learning any value on the screen rather than only effect knobs, a range for each control so a fader's top can stop at 0 dB, and a control that waits until it reaches the knob's value before taking over.
+Still to come: keeping learned controls with the project (for now they last until MPFree quits), learning any value on the screen rather than only effect knobs, a range for each control so a fader's top can stop at 0 dB, and a control that waits until it reaches the knob's value before taking over.
 
 ## CV and gate
 
@@ -74,7 +72,7 @@ The **CV/Gate** jacks play modular synths. Each of the eight outputs has one job
 - a **clock** at the rate you pick, **run** (high while the song plays) or **reset** (a pulse when the song starts from the top);
 - or a **fixed** voltage.
 
-The outputs are set in the mixer's I/O view, under CV, and are kept with the project. A track that drives CV still plays its own sound too, so turn it down in the mixer if you only want the module.
+The outputs are set in the mixer's I/O view, under CV. A track that drives CV still plays its own sound too, so turn it down in the mixer if you only want the module.
 
 When one note ends just as the next starts, as a sequence's notes do, the gate drops for 2 ms between them, so the module's envelope starts again. Hold two notes at once for a legato line instead.
 
