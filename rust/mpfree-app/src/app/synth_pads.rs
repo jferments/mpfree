@@ -22,11 +22,17 @@
 //! [`Effect::SynthPads`]; the audio loop applies them. The pads panel's
 //! Chromatic | In key switch ([`App::synth_pick_layout`]) and the PAD BANK
 //! buttons picking a bank's layout ([`App::synth_bank`]) change them too.
+//!
+//! They are kept between starts as the store's "synth" settings
+//! ([`App::synth_settings`], put back by [`App::restore_synth`]): every row
+//! above, and each bank's layout. The bank playing and the octave are not
+//! kept: the pads start on bank A, pad 1 at C3.
 
 use super::{App, Effect, Item};
 use crate::synth::{Builtin, Engine, A4_MAX, A4_MIN, BANKS};
 use mpfree_arp::scale::pads::{InKeyRows, PadLayout};
 use mpfree_arp::scale::{Scale, NOTE_NAMES, SCALES};
+use mpfree_store::Settings;
 
 /// The Synth tab's rows in its options menu.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -57,6 +63,47 @@ pub(super) const SYNTH_OPTIONS: [Item; 12] = [
     Item::PadLevel,
     Item::Latch,
 ];
+
+/// Each bank's key in the "synth" settings.
+const BANK_KEYS: [&str; BANKS] = [
+    "bank-a", "bank-b", "bank-c", "bank-d", "bank-e", "bank-f", "bank-g", "bank-h",
+];
+
+fn layout_key(l: PadLayout) -> &'static str {
+    match l {
+        PadLayout::Chromatic => "chromatic",
+        PadLayout::InKey => "in-key",
+        PadLayout::Chords => "chords",
+    }
+}
+
+fn rows_key(r: InKeyRows) -> &'static str {
+    match r {
+        InKeyRows::Sequence => "sequence",
+        InKeyRows::Fourths => "fourths",
+    }
+}
+
+fn builtin_key(b: Builtin) -> &'static str {
+    match b {
+        Builtin::Equal12 => "12-tet",
+        Builtin::Just => "just",
+        Builtin::Pythagorean => "pythagorean",
+        Builtin::Meantone => "meantone",
+        Builtin::Equal24 => "24-tet",
+    }
+}
+
+/// A note name ("C#", any case) as 0 to 11.
+fn note_of(v: &str) -> Option<u8> {
+    NOTE_NAMES
+        .iter()
+        .position(|n| n.eq_ignore_ascii_case(v))
+        .map(|i| i as u8)
+}
+
+/// The tuning file prefix in the "synth" settings: `tuning = file NAME`.
+const FILE_PREFIX: &str = "file ";
 
 /// The longest value a row shows, as long as the longest built-in one.
 const VALUE_CHARS: usize = 20;
@@ -279,10 +326,13 @@ impl App {
                 let last = Builtin::ALL.len() + self.tuning_files.len() - 1;
                 let at = (self.tuning_choice() as i32 + d).clamp(0, last as i32) as usize;
                 let t = &mut self.synth_pads.tuning;
-                match Builtin::ALL.get(at) {
-                    Some(&b) => (t.builtin, t.file) = (b, None),
-                    None => t.file = Some((at - Builtin::ALL.len()) as u8),
-                }
+                // With a file picked, the built-in tuning is 12-TET: what
+                // plays if the file were missing, and what a kept file
+                // pick comes back with.
+                (t.builtin, t.file) = match Builtin::ALL.get(at) {
+                    Some(&b) => (b, None),
+                    None => (Builtin::Equal12, Some((at - Builtin::ALL.len()) as u8)),
+                };
             }
             SynthItem::TuningRoot => {
                 let t = &mut self.synth_pads.tuning;
@@ -297,6 +347,7 @@ impl App {
         if (self.synth_pads, self.pad_scale_pick, self.pad_scale_root) == before {
             return Vec::new();
         }
+        self.save_dirty = true;
         vec![Effect::SynthPads(self.synth_pads)]
     }
 
@@ -318,6 +369,7 @@ impl App {
             return Vec::new();
         }
         self.synth_pads.set_layout(want);
+        self.save_dirty = true;
         vec![Effect::SynthPads(self.synth_pads)]
     }
 
@@ -330,5 +382,149 @@ impl App {
         }
         self.synth_pads.bank = bank;
         vec![Effect::SynthPads(self.synth_pads)]
+    }
+
+    /// The "synth" settings: the Synth tab's options and each bank's
+    /// layout, as words (`engine = fm`, `scale = Minor`, `bank-b = in-key`,
+    /// `tuning = just` or `tuning = file werckmeister3`).
+    pub fn synth_settings(&self) -> Settings {
+        let p = &self.synth_pads;
+        let mut out = Settings::default();
+        out.set_str("engine", &p.engine.name().to_lowercase());
+        let scale = match self.pad_scale_entry(self.pad_scale_choice()) {
+            None => "off",
+            Some((name, ..)) => name,
+        };
+        // A name the settings can't hold is left out (and so not put back).
+        out.set_str("scale", scale);
+        out.set_str(
+            "scale-root",
+            NOTE_NAMES[usize::from(self.pad_scale_root % 12)],
+        );
+        out.set_str("in-key-rows", rows_key(p.rows));
+        for (key, (layout, _)) in BANK_KEYS.iter().zip(p.banks) {
+            out.set_str(key, layout_key(layout));
+        }
+        let t = &p.tuning;
+        match self.tuning_file() {
+            Some((name, _)) => out.set_str("tuning", &format!("{FILE_PREFIX}{name}")),
+            None => out.set_str("tuning", builtin_key(t.builtin)),
+        };
+        out.set_str("tuning-root", NOTE_NAMES[usize::from(t.root % 12)]);
+        out.set_i64("a4", i64::from(t.a4_hz));
+        out
+    }
+
+    /// Puts back the Synth tab's options kept as the "synth" settings. Call
+    /// it once at start, after the owner's scales (the arp's patterns file)
+    /// and the tuning files are known. Returns the lines for the log (what
+    /// was put back, and anything left out: a word not understood, a scale
+    /// or tuning file that is gone) and the effect that hands the synth its
+    /// settings (none when nothing was kept).
+    pub fn restore_synth(&mut self, s: &Settings) -> (Vec<String>, Vec<Effect>) {
+        let mut skipped = Vec::new();
+        let mut scale = None;
+        for (k, v) in s.iter() {
+            let p = &mut self.synth_pads;
+            let ok = match k {
+                "engine" => Engine::ALL
+                    .iter()
+                    .find(|e| e.name().eq_ignore_ascii_case(v))
+                    .map(|&e| p.engine = e)
+                    .is_some(),
+                // Looked up once the root is known.
+                "scale" => {
+                    scale = Some(v);
+                    true
+                }
+                "scale-root" => note_of(v).map(|n| self.pad_scale_root = n).is_some(),
+                "in-key-rows" => InKeyRows::ALL
+                    .iter()
+                    .find(|&&r| rows_key(r) == v)
+                    .map(|&r| p.rows = r)
+                    .is_some(),
+                "tuning" => match v.strip_prefix(FILE_PREFIX) {
+                    Some(name) => self
+                        .tuning_files
+                        .iter()
+                        .position(|(n, _)| n == name)
+                        .and_then(|i| u8::try_from(i).ok())
+                        .map(|i| (p.tuning.builtin, p.tuning.file) = (Builtin::Equal12, Some(i)))
+                        .is_some(),
+                    None => Builtin::ALL
+                        .iter()
+                        .find(|&&b| builtin_key(b) == v)
+                        .map(|&b| (p.tuning.builtin, p.tuning.file) = (b, None))
+                        .is_some(),
+                },
+                "tuning-root" => note_of(v).map(|n| p.tuning.root = n).is_some(),
+                "a4" => s
+                    .get_i64(k)
+                    .filter(|n| (i64::from(A4_MIN)..=i64::from(A4_MAX)).contains(n))
+                    .map(|n| p.tuning.a4_hz = n as u16)
+                    .is_some(),
+                k => match BANK_KEYS.iter().position(|&b| b == k) {
+                    Some(b) => PadLayout::ALL
+                        .iter()
+                        .find(|&&l| layout_key(l) == v)
+                        .map(|&l| p.banks[b].0 = l)
+                        .is_some(),
+                    None => false,
+                },
+            };
+            if !ok {
+                skipped.push(format!("{k} = {v}"));
+            }
+        }
+        if let Some(name) = scale {
+            let found = if name == "off" {
+                Some(0)
+            } else {
+                (1..self.pad_scale_choices())
+                    .find(|&i| self.pad_scale_entry(i).is_some_and(|(n, ..)| n == name))
+            };
+            match found {
+                Some(i) => {
+                    self.pad_scale_pick = i;
+                    let root = self.pad_scale_root;
+                    self.synth_pads.scale = self
+                        .pad_scale_entry(i)
+                        .map(|(_, up, down)| Scale::with_down(root, up, down));
+                }
+                None => skipped.push(format!("scale = {name}")),
+            }
+        } else if let Some(sc) = self.synth_pads.scale {
+            // No scale kept: the root still moves the one picked.
+            self.synth_pads.scale = Some(Scale::with_down(self.pad_scale_root, sc.mask, sc.down));
+        }
+        let mut notes = Vec::new();
+        if !s.is_empty() {
+            let text = |item| self.synth_item_text(item).1;
+            notes.push(format!(
+                "saved synth options: {}, scale {} on {}, pad layout {}, tuning {} (root {}, A4 {})",
+                text(SynthItem::Engine),
+                text(SynthItem::Scale),
+                text(SynthItem::Root),
+                text(SynthItem::Layout),
+                text(SynthItem::Tuning),
+                text(SynthItem::TuningRoot),
+                text(SynthItem::A4),
+            ));
+        }
+        if !skipped.is_empty() {
+            notes.push(format!(
+                "saved synth options left out (not understood, or the scale or tuning file is gone): {}",
+                skipped.join(", ")
+            ));
+        }
+        // What was just read is what the store holds. If something was left
+        // out, the next save (after any change) writes what is in use.
+        self.saved[super::saved::SYNTH_SLOT] = s.to_text();
+        let fx = if s.is_empty() {
+            Vec::new()
+        } else {
+            vec![Effect::SynthPads(self.synth_pads)]
+        };
+        (notes, fx)
     }
 }
