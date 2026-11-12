@@ -341,7 +341,17 @@ class Lab:
             boot_deadline = time.monotonic() + self.args.qemu_boot_timeout
             idle_deadline = None
             sent = False
+            probe_cursor = 0
+            awaiting_marker = None
             data = ""
+
+            def send_guest_probe(index):
+                # Two guest shell commands: requested inspection, then a
+                # unique completion ACK. Only send the next inspection
+                # after the preceding ACK was actually printed.
+                marker = "MPFREE_VM_ACK_" + token + "_" + str(index)
+                os.write(master, (lines[index] + "\n" + "echo " + marker + "\n").encode("utf-8"))
+                return marker
             with guest.open("w", encoding="utf-8", errors="replace") as log:
                 while True:
                     now = time.monotonic()
@@ -368,24 +378,24 @@ class Lab:
                         data += text
                         if len(data) > 8 * 1024 * 1024:
                             data = data[-8 * 1024 * 1024:]
-                        if not sent and re.search(r"(?:^|[\r\n])(?:/ # |# )", data[-4000:]):
+                        if not sent and re.search(r"(?:^|[\r\n])(?:/ # |# |~ # )", data[-4000:]):
                             result["booted"] = True
                             sent = True
                             idle_deadline = time.monotonic() + self.args.qemu_probe_timeout
-                            for line in lines:
-                                wire = (line + "\n").encode("utf-8")
-                                # pty user input: keep under terminal line length
-                                os.write(master, wire)
-                                time.sleep(0.065)
-                            self.say("QEMU guest shell detected. Sent passive probes.")
-                        # PL011/PTY serial output commonly uses CRCRLF, not bare LF.
-                        # Check the actual echoed result after normalization; do
-                        # not confuse the shell's displayed "echo MARKER" command
-                        # with execution of the command itself.
-                        if sent and guest_marker_seen(data, end):
-                            result["probe_complete"] = True
-                            result["success"] = True
-                            break
+                            awaiting_marker = send_guest_probe(probe_cursor)
+                            self.say("QEMU guest shell detected. Running passive probes sequentially.")
+                        elif sent and awaiting_marker and guest_marker_seen(data, awaiting_marker):
+                            probe_cursor += 1
+                            if probe_cursor == len(lines):
+                                # The last command emits an independent DONE
+                                # marker, followed by its own ACK marker.
+                                result["probe_complete"] = guest_marker_seen(data, end)
+                                result["success"] = result["probe_complete"]
+                                if not result["success"]:
+                                    result["error"] = "Final ACK reached without guest DONE marker"
+                                break
+                            awaiting_marker = send_guest_probe(probe_cursor)
+                            idle_deadline = time.monotonic() + self.args.qemu_probe_timeout
                     if not sent and now + 5 > boot_deadline:
                         # Final harmless shell-input nudge for nonstandard prompt.
                         os.write(master, b"\n")
@@ -403,6 +413,8 @@ class Lab:
             result["observed_sections"] = sorted(sections)
             result["section_files"] = sections
             result["guest_probe_commands"] = lines
+            result["guest_probes_acknowledged"] = probe_cursor
+            result["guest_probes_expected"] = len(lines)
         except Exception as exc:
             result["error"] = repr(exc)
             self.say("QEMU probe exception: " + repr(exc))
