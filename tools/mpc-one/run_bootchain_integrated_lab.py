@@ -499,7 +499,20 @@ class Lab:
             result["guest_probe_commands"] = lines
             result["synthetic_usb_model_test_results"] = [
                 json.loads(match) for match in re.findall(
-                    r'(?m)^({"test":.*})
+                    r'(?m)^(\{"test":.*\})[ \t]*$', normalized
+                )
+            ]
+            result["synthetic_usb_model_guest_pass"] = (
+                "MPFREE_USB_DESCRIPTOR_MODEL_PASS" in normalized
+                and "MPFREE_MODEL_EXEC_OK" in normalized
+            ) if synthetic_mock_enabled else None
+            if synthetic_mock_enabled:
+                self.stages["synthetic-usb-model-guest"] = {
+                    "success": result["synthetic_usb_model_guest_pass"],
+                    "tests_observed": len(result["synthetic_usb_model_test_results"]),
+                    "console": sections.get("synthetic_usb_model"),
+                }
+            result["guest_probes_acknowledged"] = probe_cursor
             result["guest_probes_expected"] = len(lines)
         except Exception as exc:
             result["error"] = repr(exc)
