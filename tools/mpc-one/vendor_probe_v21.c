@@ -118,13 +118,12 @@ static int v21_transfer(const char *name){
     unsigned variant=0;
     if(sscanf(name,"v21_transfer_%u",&variant)!=1||variant>5)
         return result(name,false,"invalid-transfer-probe");
-    unsigned initial=0,lookup=0,ready=0,load=0,extent=0;
+    unsigned initial=0,lookup=0,ready=0,load=0;
     unsigned align=0,callback=0,done=0,logger=0;
     if(!intercept(0x0010b732u,0,&initial) ||
        !intercept(0x0011c3acu,0,&lookup) ||
        !intercept(0x0011daf4u,0,&ready) ||
        !intercept(0x0010cdf4u,0,&load) ||
-       !intercept(0x0010b728u,0,&extent) ||
        !intercept(0x0012ee08u,16u,&align) ||
        !intercept(0x0010d14cu,0,&done) ||
        !intercept(0x0012e96au,0,&logger) ||
@@ -170,8 +169,11 @@ static int v21_transfer(const char *name){
     int rc=vendor();
     v21_phase=4;
     unsigned expected_calls=(variant==3)?2u:1u;
+    /* Unlike V20, run the genuine FUN_0010b728. It only initializes the
+       caller-owned stack extent to 0x18000 and returns success, eliminating
+       uninitialized extent data from the synthetic guest fixture. */
     bool ok=(calls(callback)==expected_calls && calls(lookup)==1 &&
-             calls(ready)==1 && calls(load)==1 && calls(extent)==1);
+             calls(ready)==1 && calls(load)==1);
     /* Successful callback returning expected transfer length => status 0;
        different return => status 1. */
     int want_rc=(variant==1||variant==4)?1:0;
@@ -181,9 +183,9 @@ static int v21_transfer(const char *name){
            "\"want_return\":%d,\"callback_calls\":%u,"
            "\"expected_calls\":%u,\"lookup_calls\":%u,"
            "\"ready_calls\":%u,\"load_calls\":%u,"
-           "\"extent_calls\":%u,\"completion_log_calls\":%u}\n",
+           "\"extent_original_owner_function\":true,\"completion_log_calls\":%u}\n",
            name,rc,want_rc,calls(callback),expected_calls,
-           calls(lookup),calls(ready),calls(load),calls(extent),calls(done));
+           calls(lookup),calls(ready),calls(load),calls(done));
     return result(name,ok,"actual-owner-backend-indirect-call-with-fake-media");
 }
 int main(int argc,char **argv){
