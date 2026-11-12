@@ -32,6 +32,7 @@ pub mod geom;
 pub mod layout;
 pub mod png;
 pub mod qlink;
+pub mod record;
 pub mod style;
 pub mod text;
 pub mod theme;
