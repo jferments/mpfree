@@ -124,8 +124,10 @@ class BenchTests(unittest.TestCase):
                                                  "default --lanes --lane-cores 3,2",
                                                  "a17 --calibrate", "a17 --json a17.json", "a17 --afford",
                                                  "a17 --lanes --lane-cores 3,2"])
-        # Read-only on services: only is-active, never a start or stop.
-        self.assertTrue(all(c.startswith("is-active ") for c in self.lines("systemctl: ")), self.lines("systemctl: "))
+        # Services: only our own pad player is stopped for the runs and started again after; Akai's are only read.
+        changes = [c for c in self.lines("systemctl: ") if not c.startswith("is-active ")]
+        self.assertEqual(changes, ["stop mpfree-test-app.service", "start mpfree-test-app.service"])
+        self.assertIn("pad player: active (started again)", res.stdout)
         for name, path in self.programs.items():
             with open(path, "rb") as a, open(f"{self.root}/run/mpfree-bench/{name}", "rb") as b:
                 self.assertEqual(hashlib.sha256(a.read()).digest(), hashlib.sha256(b.read()).digest())
@@ -156,12 +158,17 @@ class BenchTests(unittest.TestCase):
         self.assertEqual(res.returncode, 1)
         self.assertIn("default --json ended with exit code 3", res.stdout)
         self.assertEqual(self.lines("bench: "), ["default --calibrate", "default --json default.json"])
+        # A failed run still starts the pad player again.
+        changes = [c for c in self.lines("systemctl: ") if not c.startswith("is-active ")]
+        self.assertEqual(changes[-1], "start mpfree-test-app.service")
+        self.assertIn("(started again)", res.stdout)
 
     def test_q_stops_before_the_copy(self):
         res = self.run_helper(answers="q\n")
         self.assertEqual(res.returncode, 1)
         self.assertIn("STOP: stopped by you", res.stdout)
         self.assertFalse(os.path.exists(f"{self.root}/run/mpfree-bench"))
+        self.assertEqual([c for c in self.lines("systemctl: ") if not c.startswith("is-active ")], [])
 
 
 if __name__ == "__main__":

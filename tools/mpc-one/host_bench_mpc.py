@@ -36,8 +36,10 @@ file (the --afford and --lanes runs write nothing), into /run/mpfree-bench
 ends with the process. It
 runs as an ordinary process (no real-time priority), so the pad player's
 audio thread (SCHED_FIFO), if it is running, always comes first: the
-benchmark cannot make it underrun. It
-starts, stops and changes no service.
+benchmark cannot make it underrun. For a clean run, after the copy it stops
+our own pad player and log display (mpfree-test-app and mpfree-test-screen,
+RAM state only; Akai's services are never touched) and starts whichever was
+running again at the end, also when a run fails or you stop it.
 
 Nothing here writes to the eMMC (the test build cannot see it), the U-Boot
 environment, the SD card or the stick. To go back: switch the MPC off with its
@@ -160,6 +162,7 @@ def main(argv):
         raise Stop("the test build is not ready; nothing was changed on it")
 
     signal.signal(signal.SIGINT, signal.default_int_handler)
+    stopped = []
     try:
         out.say(f"\n[3/{total}] Copy both builds into the test build's RAM ({REMOTE_DIR})")
         if app.ready(out, "Copies two programs of about 1.3 MB each.") != "go":
@@ -176,6 +179,17 @@ def main(argv):
                 raise Stop(f"{name} on the MPC does not match the build")
             out.say(f"  {name}: copied; its hash on the MPC matches")
 
+        # A clean run (the profiling thread's ask): our own pad player is stopped so its real-time audio
+        # thread does not preempt the benchmark. It is started again at the end, whatever happens.
+        stopped = []
+        rc, text = mpc.run(app.SCREEN_STOP, test=True)
+        if "pad player: was active" in text:
+            stopped.append(app.APP_START)
+        if "log display: was active" in text:
+            stopped.append(app.SCREEN_START)
+        for line in text.strip().splitlines():
+            out.say(f"  {line}")
+        out.say("  (for a clean run; whichever was running starts again at the end)")
         for n, (name, _, _) in enumerate(programs, start=4):
             out.say(f"\n[{n}/{total}] The {name} build: the reference kernels, every engine, then one core vs two (only computes)")
             answer = app.ready(out, "Takes about 10 to 15 minutes; the MPC can stay as it is.")
@@ -197,6 +211,9 @@ def main(argv):
     except (Stop, KeyboardInterrupt) as err:
         out.say(f"\nSTOP: {str(err) or 'interrupted (Ctrl-C)'}")
         result = 1
+    for script in stopped:
+        rc, text = mpc.run(script, test=True)
+        out.say(f"  {text.strip() or f'no answer, exit code {rc}'} (started again)")
     out.say("\nRESULT: " + ("both builds ran (numbers above)." if result == 0 else "stopped early."))
     out.say("NEXT: carry on with the round, or switch the MPC off with its power switch, take out the stick,")
     out.say("wait 10 s, switch it on, and run the boot-map block to confirm nothing on the eMMC changed.")
