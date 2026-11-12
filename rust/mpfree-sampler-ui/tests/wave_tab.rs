@@ -230,7 +230,7 @@ fn markers_never_cross_and_the_region_stays_valid() {
         let r = p.pad(PAD).unwrap().layers[0].region.clone();
         let m = Mark::ALL[rand(4) as usize];
         let to = rand(frames + 2000);
-        let n = moved(&r, m, to, frames);
+        let n = moved(&r, m, to, frames, RATE);
         if let Some(l) = n.sustain_loop {
             assert!(
                 n.start + u64::from(l.crossfade) <= l.start && l.start < l.end && l.end <= n.end,
@@ -475,12 +475,13 @@ fn tabs_taps_and_the_sample_screens() {
     let mut s = sample();
     let bar = s.ui.rect_of(wave_tab::BAR).unwrap();
     let pb = s.ui.get::<PadBar>(wave_tab::BAR).unwrap();
-    let (pads_tab_r, chop_tab_r, play_tab_r, grain_tab_r, fx_tab_r) = (
+    let (pads_tab_r, warp_tab_r, chop_tab_r, play_tab_r, grain_tab_r, fx_tab_r) = (
         pb.tab_rect(bar, 0),
         pb.tab_rect(bar, 2),
         pb.tab_rect(bar, 3),
         pb.tab_rect(bar, 4),
         pb.tab_rect(bar, 5),
+        pb.tab_rect(bar, 6),
     );
     assert_eq!(pb.active, wave_tab::TAB);
     let st = s.state.clone();
@@ -494,11 +495,20 @@ fn tabs_taps_and_the_sample_screens() {
     );
     s.ui.touch(1, Touch::Up, 0, 0);
     let ev =
-        s.ui.touch(2, Touch::Down, chop_tab_r.x + 5, chop_tab_r.y + 5)
+        s.ui.touch(7, Touch::Down, warp_tab_r.x + 5, warp_tab_r.y + 5)
             .unwrap();
     assert_eq!(
         s.tab.action(&mut s.ui, &ev, &st),
         Some(WaveAction::Tab(2)),
+        "Warp opens"
+    );
+    s.ui.touch(7, Touch::Up, 0, 0);
+    let ev =
+        s.ui.touch(2, Touch::Down, chop_tab_r.x + 5, chop_tab_r.y + 5)
+            .unwrap();
+    assert_eq!(
+        s.tab.action(&mut s.ui, &ev, &st),
+        Some(WaveAction::Tab(3)),
         "Chop opens"
     );
     s.ui.touch(2, Touch::Up, 0, 0);
@@ -507,7 +517,7 @@ fn tabs_taps_and_the_sample_screens() {
             .unwrap();
     assert_eq!(
         s.tab.action(&mut s.ui, &ev, &st),
-        Some(WaveAction::Tab(3)),
+        Some(WaveAction::Tab(4)),
         "Play opens"
     );
     s.ui.touch(4, Touch::Up, 0, 0);
@@ -516,7 +526,7 @@ fn tabs_taps_and_the_sample_screens() {
             .unwrap();
     assert_eq!(
         s.tab.action(&mut s.ui, &ev, &st),
-        Some(WaveAction::Tab(4)),
+        Some(WaveAction::Tab(5)),
         "Grain opens"
     );
     s.ui.touch(5, Touch::Up, 0, 0);

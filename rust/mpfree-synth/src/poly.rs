@@ -15,11 +15,12 @@
 //! blocks. Each voice's gain is ramped across a control step.
 
 use mpfree_node::{
-    Ctx, Kind, Node, NodeEvent, NodeInfo, ParamInfo, Pressure, PressureChord, PressureCoefs,
-    PressureMode, PressureShape, Smooth, Timed,
+    Ctx, Expr, Kind, Node, NodeEvent, NodeInfo, ParamInfo, Pressure, PressureChord, PressureCoefs,
+    PressureMode, PressureShape, Smooth, Timed, Tuning,
 };
 
 use crate::dsp::*;
+use crate::expr::{expr_coef, NoteExprs, VoiceExpr};
 use crate::params::*;
 use crate::pressure::{swell_gain, Depths, Slot};
 
@@ -89,6 +90,8 @@ struct Voice {
     press: Pressure,
     /// The pressure this voice uses, 0 to 1: its own, the chord's or none.
     pv: f32,
+    /// Its note's own slide and tone.
+    ex: VoiceExpr,
     kill_gain: f32,
     kill_step: f32,
     /// The inputs the phase increments and the filter coefficients were
@@ -132,6 +135,7 @@ impl Voice {
             noise: 0.0,
             press: Pressure::new(),
             pv: 0.0,
+            ex: VoiceExpr::default(),
             kill_gain: 1.0,
             kill_step: 0.0,
             pitch_key: [NO_KEY; 6],
@@ -207,6 +211,12 @@ pub struct Poly {
     /// Each stack's pan gains for the unison count and spread in `pan_key`.
     pans: [(f32, f32); UNISON_MAX],
     pan_key: [u32; 2],
+    /// How notes become frequencies.
+    tuning: Tuning,
+    /// Each note's slide and tone for its next note-on, and the voices'
+    /// smoothing coefficient.
+    exprs: NoteExprs,
+    expr_c: f32,
     /// Work buffers for one render pass (each frame written before read).
     scratch: Scratch,
     /// Notes that did not fit anywhere (should stay 0).
@@ -271,6 +281,9 @@ impl Poly {
             vib: 0.0,
             pans: [(1.0, 1.0); UNISON_MAX],
             pan_key: [NO_KEY; 2],
+            tuning: Tuning::standard(),
+            exprs: NoteExprs::new(),
+            expr_c: 1.0,
             scratch: Scratch {
                 gain: [0.0; SEG],
                 stack: [0.0; SEG],
@@ -409,6 +422,7 @@ impl Poly {
             s.snap(s.target);
         }
         sm.bend.set_time(cr, 4.0);
+        self.expr_c = expr_coef(cr as f32);
     }
 
     // ---- notes ----
@@ -443,12 +457,18 @@ impl Poly {
             } else {
                 self.last_pitch
             };
+            let ex = self.exprs.on(note);
             let v = &mut self.voices[0];
             let fresh = v.state == State::Free || v.state == State::Kill;
             if fresh {
                 Self::fresh(v);
             }
             v.press.start();
+            if legato {
+                v.ex.retarget(ex);
+            } else {
+                v.ex.start(ex);
+            }
             v.note = note;
             v.target = f32::from(note);
             v.pitch = if glide && (mode == 1 || legato) {
@@ -505,12 +525,14 @@ impl Poly {
             }
         };
         let unison = (self.v(UNISON) as usize).clamp(1, UNISON_MAX);
+        let ex = self.exprs.on(note);
         let v = &mut self.voices[slot];
         let fresh = !v.sounding();
         if fresh {
             Self::fresh(v);
         }
         v.press.start();
+        v.ex.start(ex);
         v.note = note;
         v.vel = vel;
         v.target = f32::from(note);
@@ -584,6 +606,7 @@ impl Poly {
     }
 
     fn note_off(&mut self, note: u8) {
+        self.exprs.off(note);
         self.stack_remove(note);
         let mode = self.v(VOICE_MODE) as u8;
         let glide = self.v(GLIDE) > 0.0;
@@ -595,6 +618,7 @@ impl Poly {
             if self.stack_len > 0 {
                 // Back to the newest note still held, without a retrigger.
                 let back = self.stack[self.stack_len - 1];
+                v.ex.retarget(self.exprs.on(back));
                 v.note = back;
                 v.target = f32::from(back);
                 if !glide {
@@ -622,6 +646,7 @@ impl Poly {
 
     fn all_off(&mut self) {
         self.stack_len = 0;
+        self.exprs.clear();
         for v in &mut self.voices {
             if v.state == State::On {
                 Self::release(v);
@@ -633,6 +658,18 @@ impl Poly {
         for v in &mut self.voices {
             if v.sounding() && v.note == note {
                 v.press.set(value);
+            }
+        }
+    }
+
+    /// One note's own slide or tone: its held voices glide to it.
+    fn expression(&mut self, note: u8, kind: Expr, value: f32) {
+        let Some(value) = self.exprs.set(note, kind, value) else {
+            return;
+        };
+        for v in &mut self.voices {
+            if v.state == State::On && v.note == note {
+                v.ex.aim(kind, value);
             }
         }
     }
@@ -651,6 +688,7 @@ impl Poly {
             }
             NodeEvent::AllOff => self.all_off(),
             NodeEvent::Param { id, value } => self.set_param(id, value),
+            NodeEvent::Expression { note, kind, value } => self.expression(note, kind, value),
         }
     }
 
@@ -792,6 +830,8 @@ impl Poly {
             self.pan_key = pan_key;
         }
         let pans = self.pans;
+        let expr_c = self.expr_c;
+        let tuning = &self.tuning;
 
         let v = &mut self.voices[i];
         let p = v.pv;
@@ -799,7 +839,11 @@ impl Poly {
         if (v.target - v.pitch).abs() < 1e-4 {
             v.pitch = v.target;
         }
+        v.ex.step(expr_c);
         let mut base = v.pitch + bend + vib;
+        if v.ex.slide != 0.0 {
+            base += v.ex.slide;
+        }
         if d.any {
             base += p * (d.get(target::PITCH) * 12.0 + d.get(target::VIBRATO) * vib_p);
         }
@@ -819,10 +863,10 @@ impl Poly {
                     0.0
                 };
                 let cents = pos * detune;
-                v.dt1[u] = (note_hz(base + o1 + cents) / rate).min(0.45);
-                v.dt2[u] = (note_hz(base + o2 - cents * 0.7) / rate).min(0.45);
+                v.dt1[u] = (tuning.hz(base + o1 + cents) / rate).min(0.45);
+                v.dt2[u] = (tuning.hz(base + o2 - cents * 0.7) / rate).min(0.45);
             }
-            v.dt_sub = (note_hz(base + o1 - 12.0) / rate).min(0.45);
+            v.dt_sub = (tuning.hz(base + o1 - 12.0) / rate).min(0.45);
             v.pitch_key = pitch_key;
         }
         for (u, &(l, r)) in pans[..unison].iter().enumerate() {
@@ -1065,6 +1109,7 @@ impl Node for Poly {
         self.update_envs();
         self.reset_smoothers();
         self.stack_len = 0;
+        self.exprs.clear();
         self.lfo_phase = 0.0;
         self.vib_phase = 0.0;
         self.chord.clear();
@@ -1109,5 +1154,16 @@ impl Node for Poly {
     fn tail_frames(&self) -> u32 {
         let ms = self.v(AMP_R).max(KILL_MS);
         (ms * 0.001 * self.rate as f32 * 1.5) as u32
+    }
+
+    fn set_tuning(&mut self, tuning: &Tuning) {
+        if self.tuning == *tuning {
+            return;
+        }
+        self.tuning.clone_from(tuning);
+        // Every voice works its pitch out again on its next control step.
+        for v in &mut self.voices {
+            v.pitch_key = [NO_KEY; 6];
+        }
     }
 }
