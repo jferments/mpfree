@@ -123,7 +123,13 @@ LINUX_FS_TYPE = "0FC63DAF-8483-4772-8E79-3D69D8477DE4"
 SECTOR = 512
 ALIGN = 2048                        # 1 MiB, in sectors
 LOG_SIZE = 32 << 20
-DATA_SIZE = 64 << 20                # partition 4, the pad player's saved settings and files
+DATA_SIZE = 64 << 20                # partition 4's filesystem as made here, the pad player's saved settings and files
+# Partition 4 starts at the same place on every build, 1 GiB in, so write-test-stick.py can leave it in
+# place from round to round. It is small in stick.img; write-test-stick.py makes it fill the stick (plan
+# decision 1, Jay 2026-11-12) and the filesystem grows to fill it at boot (APP_SCRIPT).
+DATA_START = (1 << 30) // 512
+DATA_GROW_TO = 256 << 30             # ... up to this size, online (make_data_fs)
+GROW_PROGRAM = "/usr/sbin/resize2fs"  # in the version's root filesystem, if it has one
 DATA_NAME = "mpfree-test-data"      # its GPT name; write-test-stick.py looks for it
 ETHERNET = "/ethernet@ff290000"
 # The PHY's ID as 3.6.0 reads it on the reference unit (/sys/bus/mdio_bus/devices/stmmac-0:01/phy_id
@@ -303,6 +309,12 @@ while [ ! -e "$data" ] && [ "$i" -lt 5 ]; do sleep 1; i=$((i + 1)); done
 mkdir -p /run/mpfree-data
 if grep -q ' /run/mpfree-data ' /proc/mounts ||
     mount -t ext4 -o rw,nosuid,nodev,noexec,noatime "$data" /run/mpfree-data; then
+  # Partition 4 fills the stick but its filesystem may be smaller: grow it to fill the partition, online
+  # (the kernel does it while mounted, and writes only partition 4). When it already fills it, nothing changes.
+  if [ -x {grow} ]; then
+    ( {grow} "$data" > /run/mpfree-data-grow.txt 2>&1 ||
+        echo "mpfree-test-app: partition 4's filesystem did not grow; see /run/mpfree-data-grow.txt" > /dev/kmsg ) &
+  fi
   exec /etc/mpfree-test/mpfree-hello app --kits /run/mpfree-kits/kits.bin{keep} --data /run/mpfree-data
 fi
 echo "mpfree-test-app: the data partition did not mount, so nothing is saved" > /dev/kmsg
@@ -621,8 +633,10 @@ def make_data_fs(scratch):
     """Partition 4: an empty ext4 with a journal (the pad player writes it, and the MPC is switched off
     without unmounting it), labelled MPFREE-DATA, owned by root. Returns its path."""
     path = os.path.join(scratch, "data.img")
-    res = run(["mke2fs", "-q", "-F", "-t", "ext4", "-L", "MPFREE-DATA", "-E", "root_owner=0:0", path,
-               f"{DATA_SIZE // 1024}k"])
+    # 4 KiB blocks and room in its block group table to grow online to 256 GiB (write-test-stick.py's
+    # largest stick): without resize=, mke2fs leaves room for 1024 times its size, 64 GiB.
+    res = run(["mke2fs", "-q", "-F", "-t", "ext4", "-b", "4096", "-L", "MPFREE-DATA",
+               "-E", f"root_owner=0:0,resize={DATA_GROW_TO // 4096}", path, f"{DATA_SIZE // 1024}k"])
     if res.returncode != 0:
         raise Stop("mke2fs failed for the data partition:\n" + res.stdout)
     with open(path, "rb") as fh:
@@ -808,7 +822,7 @@ def build_rootfs(img, scratch, pubkey, host_key, log_uuid, screen_log, rotation,
     if app is not None:
         add("/etc/mpfree-test/mpfree-hello", app, 0o755)
         add("/etc/mpfree-test/start-app.sh",
-            APP_SCRIPT.format(kits_uuid=kits_uuid, data_uuid=data_uuid,
+            APP_SCRIPT.format(kits_uuid=kits_uuid, data_uuid=data_uuid, grow=GROW_PROGRAM,
                               keep=" --keep-screen" if splash_program else ""), 0o755)
         add("/etc/systemd/system/mpfree-test-app.service",
             APP_UNIT.format(after=" mpfree-test-splash.service" if splash_program else ""), 0o644)
@@ -924,7 +938,10 @@ def make_stick(fs_image, out_path, root_uuid, log_uuid, scratch, kits_image=None
     kits_sectors = -(-os.path.getsize(kits_image) // SECTOR // ALIGN) * ALIGN if kits_image else 0
     if (kits_image is None) != (data_image is None):
         raise Stop("the kits and data partitions come together (with --app)")
-    data_start = kits_start + kits_sectors
+    data_start = DATA_START if data_image else kits_start + kits_sectors
+    if kits_start + kits_sectors > data_start:
+        raise Stop(f"partitions 1 to 3 need {(kits_start + kits_sectors) * SECTOR >> 20} MiB, past where partition 4 "
+                   f"starts ({DATA_START * SECTOR >> 20} MiB)")
     data_sectors = DATA_SIZE // SECTOR if data_image else 0
     total = data_start + data_sectors + ALIGN
     with open(out_path, "xb") as fh:
@@ -1088,13 +1105,21 @@ def main(argv):
                     + (", over the startup screen" if splash[0] else ""))
             OUT.say(f"drum kits: {kits_path} ({struct.unpack_from('<I', kits, 8)[0]} kits, {len(kits)} bytes, "
                     f"sha256 {hashlib.sha256(kits).hexdigest()}), on partition 3, mounted read-only")
-            OUT.say(f"saved settings and files: partition 4 ({DATA_SIZE >> 20} MiB, empty here), mounted "
-                    "read-write at /run/mpfree-data; write-test-stick.py carries the old stick's over")
+            OUT.say(f"saved settings and files: partition 4 (at {DATA_START * SECTOR >> 20} MiB, {DATA_SIZE >> 20} MiB "
+                    "and empty here), mounted read-write at /run/mpfree-data; write-test-stick.py leaves the old "
+                    "stick's in place or carries it over, and makes the partition fill the stick")
         else:
             OUT.say("pad player: none (no --app); the log display starts at power-on")
         root_note, stubbed, absent, links, written = build_rootfs(img, scratch, pubkey, host_key, log_uuid,
                                                                   screen_log, rotation, splash, app, kits_uuid,
                                                                   data_uuid)
+        if app:
+            if img.kind(GROW_PROGRAM) in ("regular", "symlink"):
+                OUT.say(f"partition 4: {GROW_PROGRAM} is in this version, so its filesystem grows at boot to fill "
+                        "the partition")
+            else:
+                OUT.say(f"partition 4: this version has no {GROW_PROGRAM}, so its filesystem stays "
+                        f"{DATA_SIZE >> 20} MiB at boot even where write-test-stick.py makes the partition bigger")
         for path in links:
             OUT.say(f"link     {path} -> {img.link(path)}")
         for path in written:
@@ -1117,7 +1142,7 @@ def main(argv):
             OUT.say(f"partition 3 kits PARTUUID {kits_uuid} (ext4 without a journal, only /kits.bin, "
                     f"sha256 {sha256(kits_image)})")
             OUT.say(f"partition 4 data PARTUUID {data_uuid} ({DATA_NAME}, ext4 with a journal, label "
-                    f"MPFREE-DATA, {DATA_SIZE >> 20} MiB, empty)")
+                    f"MPFREE-DATA, at {DATA_START * SECTOR >> 20} MiB, {DATA_SIZE >> 20} MiB, empty)")
         shutil.copyfile(zimage, os.path.join(outdir, "zImage"))
         cmdline = (f"root=PARTUUID={root_uuid} rootwait=60 ro panic=10 rfkill.default_state=0 "
                    "sysctl.kernel.kexec_load_disabled=1")
