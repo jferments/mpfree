@@ -363,7 +363,7 @@ class KexecStickTests(unittest.TestCase):
     def test_pad_player_at_power_on(self):
         splash = os.path.join(self.tmp, "mpfree-splash")
         write(splash, fake_elf(), 0o755)
-        app = os.path.join(self.tmp, "mpfree-hello")
+        app = os.path.join(self.tmp, "mpfree")
         write(app, fake_elf() + os.urandom(5000), 0o755)
         self.kits_file("factory-kit-20260101T000000Z-old", count=1, size=1000)
         kits = self.kits_file("factory-kit-20260102T000000Z-new")
@@ -388,8 +388,9 @@ class KexecStickTests(unittest.TestCase):
         self.assertEqual(table[2]["start"], table[1]["start"] + table[1]["size"])
         self.assertEqual(table[2]["start"] % 2048, 0)
         self.assertEqual(table[3]["uuid"].lower(), data_uuid)
-        self.assertEqual(table[3]["start"], table[2]["start"] + table[2]["size"])
-        self.assertEqual(table[3]["start"] % 2048, 0)
+        # Partition 4 starts 1 GiB in on every build, so write-test-stick.py can leave it in place.
+        self.assertEqual(table[3]["start"], (1 << 30) // 512)
+        self.assertLess(table[2]["start"] + table[2]["size"], table[3]["start"])
         self.assertEqual(table[3]["size"], (64 << 20) // 512)
         self.assertEqual(os.path.getsize(stick), (table[3]["start"] + table[3]["size"] + 2048) * 512)
 
@@ -400,6 +401,13 @@ class KexecStickTests(unittest.TestCase):
         stats = self.dfs(data_img, "stats")
         self.assertIn("has_journal", re.search(r"^Filesystem features:(.*)$", stats, re.M).group(1))
         self.assertRegex(stats, r"Filesystem volume name:\s+MPFREE-DATA\n")
+        # Room to grow online to 256 GiB: (group descriptor blocks + reserved ones) * 64 descriptors of
+        # 64 bytes per 4 KiB block * 128 MiB per group.
+        self.assertRegex(stats, r"Block size:\s+4096\n")
+        self.assertIn("resize_inode", re.search(r"^Filesystem features:(.*)$", stats, re.M).group(1))
+        reserved = int(re.search(r"Reserved GDT blocks:\s+(\d+)", stats).group(1))
+        self.assertGreaterEqual((1 + reserved) * 64 * (128 << 20), 256 << 30)
+        self.assertIn("partition 4: this version has no /usr/sbin/resize2fs", res.stdout)
         self.assertEqual(sorted(n for n in self.dfs(data_img, "ls -p /").split("/") if n.strip() and
                                 not n.strip().isdigit() and n.strip() not in (".", "..")), ["lost+found"])
         # write-test-stick.py finds it the same way when it carries the old stick's over.
@@ -443,18 +451,18 @@ class KexecStickTests(unittest.TestCase):
         script = self.dfs(root_img, "cat /etc/mpfree-test/start-app.sh")
         self.assertIn(f"dev=/dev/disk/by-partuuid/{kits_uuid}\n", script)
         self.assertIn(f"data=/dev/disk/by-partuuid/{data_uuid}\n", script)
-        self.assertIn("exec /etc/mpfree-test/mpfree-hello app --kits /run/mpfree-kits/kits.bin --keep-screen "
+        self.assertIn("exec /etc/mpfree-test/mpfree app --kits /run/mpfree-kits/kits.bin --keep-screen "
                       "--data /run/mpfree-data\n", script)
         self.assertIn('mount -t ext4 -o ro,nosuid,nodev,noexec "$dev" /run/mpfree-kits', script)
-        self.assertIn("exec /etc/mpfree-test/mpfree-hello app --kits /run/mpfree-kits/kits.bin --keep-screen\n", script)
+        self.assertIn("exec /etc/mpfree-test/mpfree app --kits /run/mpfree-kits/kits.bin --keep-screen\n", script)
         copy = os.path.join(self.tmp, "app-copy")
-        run(["debugfs", "-R", f"dump /etc/mpfree-test/mpfree-hello {copy}", root_img])
+        run(["debugfs", "-R", f"dump /etc/mpfree-test/mpfree {copy}", root_img])
         self.assertEqual(sha(copy), sha(app))
-        self.assertRegex(self.dfs(root_img, "stat /etc/mpfree-test/mpfree-hello"), r"Type: regular\s+Mode:\s+0755")
-        self.assertIn("cp /run/mpfree-hello/hello.txt", self.dfs(root_img, "cat /etc/mpfree-test/save-logs.sh"))
+        self.assertRegex(self.dfs(root_img, "stat /etc/mpfree-test/mpfree"), r"Type: regular\s+Mode:\s+0755")
+        self.assertIn("cp /run/mpfree-app/report.txt", self.dfs(root_img, "cat /etc/mpfree-test/save-logs.sh"))
 
     def test_pad_player_without_splash_and_its_checks(self):
-        app = os.path.join(self.tmp, "mpfree-hello")
+        app = os.path.join(self.tmp, "mpfree")
         write(app, fake_elf(), 0o755)
         kits = self.kits_file("elsewhere", count=2)
         res = self.build("--app", app, "--kits", kits)
@@ -462,7 +470,7 @@ class KexecStickTests(unittest.TestCase):
         [folder] = self.outputs()
         root_img = os.path.join(self.tmp, "p1.img")
         self.partition(os.path.join(self.work, folder, "stick.img"), 1, root_img)
-        self.assertIn("exec /etc/mpfree-test/mpfree-hello app --kits /run/mpfree-kits/kits.bin\n",
+        self.assertIn("exec /etc/mpfree-test/mpfree app --kits /run/mpfree-kits/kits.bin\n",
                       self.dfs(root_img, "cat /etc/mpfree-test/start-app.sh"))
         self.assertIn("After=systemd-journald.service systemd-udevd.service\n",
                       self.dfs(root_img, "cat /etc/systemd/system/mpfree-test-app.service"))
@@ -572,7 +580,8 @@ class StaticTests(unittest.TestCase):
         if busybox:
             for script in (tool.ETHERNET_SCRIPT, tool.LOG_SCRIPT.format(log_uuid="00000000-0000-0000-0000-000000000000"),
                            tool.APP_SCRIPT.format(kits_uuid="00000000-0000-0000-0000-000000000000",
-                                                  data_uuid="00000000-0000-0000-0000-000000000001", keep="")):
+                                                  data_uuid="00000000-0000-0000-0000-000000000001", keep="",
+                                                  grow=tool.GROW_PROGRAM)):
                 res = subprocess.run([busybox, "sh", "-n"], input=script, text=True, capture_output=True)
                 self.assertEqual(res.returncode, 0, res.stderr)
         lines = [line.strip() for line in tool.ETHERNET_SCRIPT.splitlines() if not line.lstrip().startswith("#")]
@@ -606,9 +615,16 @@ class StaticTests(unittest.TestCase):
         ])
         self.assertEqual(tool.APP_SCRIPT.count("rw"), 1)
         self.assertIn("data=/dev/disk/by-partuuid/{data_uuid}\n", tool.APP_SCRIPT)
+        # Growing partition 4's filesystem to fill the partition, online, after it is mounted: the only
+        # other change, and it touches only "$data".
+        grow = [line for line in lines if "{grow}" in line]
+        self.assertEqual(grow, ["if [ -x {grow} ]; then",
+                                '( {grow} "$data" > /run/mpfree-data-grow.txt 2>&1 ||'])
+        self.assertEqual(tool.GROW_PROGRAM, "/usr/sbin/resize2fs")
+        self.assertLess(tool.APP_SCRIPT.index("/run/mpfree-data; then"), tool.APP_SCRIPT.index("{grow}"))
         for line in lines:
-            for target in re.findall(r">\s*(\S+)", line):
-                self.assertEqual(target, "/dev/kmsg", line)
+            for target in re.findall(r">\s*(\S+)", line.replace("2>&1", "")):
+                self.assertIn(target, ("/dev/kmsg", "/run/mpfree-data-grow.txt"), line)
         for forbidden in ("/dev/mmc", "/dev/sd", "remount"):
             self.assertNotIn(forbidden, tool.APP_SCRIPT)
 

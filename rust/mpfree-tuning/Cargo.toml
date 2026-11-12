@@ -1,0 +1,12 @@
+[package]
+name = "mpfree-tuning"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Tunings for MPFree's instruments: a note number to Hz, 12-TET by default (bit-identical to the old formula), equal and table tunings, built-in historical tunings, Scala .scl/.kbm files"
+
+[lib]
+name = "mpfree_tuning"
+path = "src/lib.rs"
+
+[dependencies]

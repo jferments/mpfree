@@ -1013,3 +1013,85 @@ fn profiling_times_the_mixer_its_strips_and_their_inserts_only_when_on() {
     play(&mut m, &script, 1024, &mut blocks(128));
     assert_eq!(m.probe().lifetime().blocks, blocks_run);
 }
+
+/// The busy mixer with inserts on more tracks and pad channels, so a lane
+/// has work: an EQ and a compressor on tracks 1, 3 and 5, a drive on pads
+/// 0 and 2 (track 2 is keyed by track 4, so those two stay).
+fn busy_for_lanes(seed: u64, n: usize) -> (Mixer, Script) {
+    let (mut m, s) = busy(seed, n);
+    for t in [1, 3, 5] {
+        let c = m.chain_mut(StripId::Track(t)).unwrap();
+        c.push(Box::new(Eq::new()));
+        c.set_param(0, ids::eq::gain(1), 4.0);
+        c.push(Box::new(Compressor::new()));
+    }
+    for p in [0, 2] {
+        m.chain_mut(StripId::Pad(p))
+            .unwrap()
+            .push(Box::new(Drive::new()));
+    }
+    (m, s)
+}
+
+#[test]
+fn inserts_on_a_second_core_give_the_same_output_bit_for_bit() {
+    use std::time::Duration;
+    let n = 30_000;
+    let reference = {
+        let (mut m, s) = busy_for_lanes(5, n);
+        play(&mut m, &s, n, &mut blocks(128)).out
+    };
+    assert!(peak(&reference.0) > 0.05);
+    for (name, threaded) in [("on this thread", false), ("on a worker", true)] {
+        let (mut m, s) = busy_for_lanes(5, n);
+        let cfg = mpfree_lanes::Config {
+            threaded,
+            ..mpfree_lanes::Config::default()
+        };
+        assert!(m.set_lane(Some(cfg), Duration::from_secs(1)).is_some());
+        assert!(m.lane_on());
+        let mut rng = Lcg(3);
+        let got = play(&mut m, &s, n, &mut || 1 + rng.next() as usize % 512).out;
+        close(name, &got, &reference, 0.0);
+        let st = m.stats();
+        assert!(st.lane_posts > 0, "{name}: the lane had inserts");
+        assert_eq!(st.lane_late, 0, "{name}");
+        assert!(m.set_lane(None, Duration::ZERO).is_none());
+        assert!(!m.lane_on());
+    }
+}
+
+#[test]
+fn a_late_lane_leaves_its_strips_dry_until_their_inserts_come_back() {
+    use std::time::Duration;
+    let n = 20_000;
+    let (mut m, s) = busy_for_lanes(7, n);
+    // A wait of zero: nearly every join is late, as on a lost period.
+    let setup = m.set_lane(Some(mpfree_lanes::Config::default()), Duration::ZERO);
+    let threaded = setup.is_some_and(|s| s.threaded.is_ok());
+    let out = play(&mut m, &s, n, &mut blocks(64)).out;
+    assert!(out.0.iter().chain(&out.1).all(|v| v.is_finite()));
+    let late = m.stats().lane_late;
+    println!(
+        "zero wait: {late} late of {} posts (worker thread: {threaded})",
+        m.stats().lane_posts
+    );
+    if threaded {
+        assert!(late > 0, "a zero wait is late");
+    }
+    // A normal wait: the inserts come back and stay.
+    m.set_lane(
+        Some(mpfree_lanes::Config::default()),
+        Duration::from_secs(1),
+    );
+    let out = play(&mut m, &s, n, &mut blocks(64)).out;
+    assert!(out.0.iter().chain(&out.1).all(|v| v.is_finite()));
+    assert!(peak(&out.0) > 0.05);
+    assert_eq!(m.stats().lane_late, late, "no more late joins");
+    for t in [1, 3, 5] {
+        assert_eq!(m.chain(StripId::Track(t)).unwrap().len(), 2, "track {t}");
+    }
+    for p in [0, 2] {
+        assert_eq!(m.chain(StripId::Pad(p)).unwrap().len(), 1, "pad {p}");
+    }
+}

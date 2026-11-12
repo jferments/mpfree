@@ -23,7 +23,7 @@ use mpfree_ui::{Align, Color, Fonts, Theme, Tone, Ui};
 
 /// The screen as the pad player sees it (the MPC One's panel, turned).
 pub const SCREEN: (i32, i32) = (1280, 800);
-/// The pad player's Play page (`mpfree-hello`'s `PLAY_LAYOUT`), before the
+/// The pad player's Play page (`mpfree-app`'s `PLAY_LAYOUT`), before the
 /// bar goes in.
 pub const APP_PLAY_LAYOUT: &str =
     "col(header:60, row(pads:*, col(kits:*, level:96, timing:232):460):*, hint:26)";
