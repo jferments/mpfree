@@ -2,9 +2,9 @@
 //! a real library in a scratch folder.
 
 use mpfree_browser_ui::sample::{fill, samples, FACTORY};
-use mpfree_browser_ui::state::{Key, Modal, SOURCES};
+use mpfree_browser_ui::state::{when, Key, Modal, SOURCES};
 use mpfree_browser_ui::{
-    step, BrowseAction, Browser, BrowserView, Button, Filter, Input, Pick, BROWSER,
+    step, BrowseAction, Browser, BrowserView, Button, Filter, Input, Pick, Sort, BROWSER,
 };
 use mpfree_library::{Library, Loc, Meta, Place, Snapshot};
 use mpfree_ui::{Fonts, SoftCanvas, Touch};
@@ -506,4 +506,134 @@ fn opening_a_project_over_unsaved_work_asks_first() {
     b.push();
     assert_eq!(b.screen().modal, Modal::None);
     assert!(b.picking().is_none());
+}
+
+#[test]
+fn earlier_saves_of_a_project_open_in_its_place() {
+    let (mut b, lib) = browser();
+    b.go_source(src("Projects"));
+    select(&mut b, "Night drive");
+    assert!(b.screen().detail.buttons.contains(&Button::Versions));
+    b.input(Input::Button(Button::Versions));
+    let s = b.screen();
+    assert_eq!(s.path, "Night drive / Earlier saves");
+    assert!(s.can_go_back);
+    assert!(s.list_buttons.is_empty());
+    assert_eq!(
+        names(&b),
+        [
+            format!("Saved {}", when(1_794_430_600)),
+            format!("Saved {}", when(1_794_430_000))
+        ]
+    );
+    assert_eq!(s.detail.kind, "Earlier save");
+    assert_eq!(s.detail.buttons, [Button::Open]);
+    // The row stands for the project's folder: Delete and the rest do nothing.
+    let night = Loc::new(Place::Projects, &["Night drive"]).unwrap();
+    b.erase();
+    b.input(Input::Button(Button::Rename));
+    b.input(Input::Button(Button::Favourite));
+    assert_eq!(b.screen().modal, Modal::None);
+    assert!(lib.open_project(&night).is_ok());
+    b.take_actions();
+    // The older one: its parts go to the app, and saving it makes it the newest.
+    b.dial(1);
+    b.push();
+    let a = b.take_actions();
+    assert!(a.iter().any(|x| matches!(x,
+        BrowseAction::ProjectOpened { loc, snap } if *loc == night && snap.part("transport") == Some("bpm = 90\n"))));
+    assert!(b
+        .screen()
+        .status
+        .unwrap()
+        .0
+        .contains("SHIFT + BROWSE saves it as the newest"));
+    assert_eq!(b.project(), Some(&night));
+    // Not the newest save, so opening another one asks first.
+    b.dial(-1);
+    b.push();
+    assert!(matches!(&b.screen().modal, Modal::Confirm { text, .. } if text.contains("Unsaved")));
+    b.input(Input::ConfirmNo);
+    // Back to the projects, Night drive still selected.
+    b.back();
+    assert_eq!(b.screen().path, "Projects");
+    assert_eq!(
+        b.screen().rows[b.screen().selected.unwrap()].name,
+        "Night drive"
+    );
+    // A project saved once has none yet.
+    select(&mut b, "Sunday chops");
+    b.input(Input::Button(Button::Versions));
+    assert!(names(&b).is_empty());
+    assert!(b.screen().detail.kind.starts_with("No earlier saves yet"));
+}
+
+#[test]
+fn search_looks_through_the_whole_library_but_not_the_trash() {
+    let (mut b, _) = browser();
+    b.go_source(src("Projects"));
+    b.input(Input::Search);
+    assert!(
+        matches!(&b.screen().modal, Modal::Keyboard { title, .. } if title == "Search the library for")
+    );
+    for c in "kick".chars() {
+        b.input(Input::Key(Key::Char(c)));
+    }
+    b.input(Input::Key(Key::Done));
+    let s = b.screen();
+    assert_eq!(s.path, "Search: \u{201c}kick\u{201d}");
+    assert_eq!(names(&b), ["Kick 01.wav", "Kick 02.wav"]);
+    assert_eq!(s.rows[0].detail, "Samples / Drums");
+    assert_eq!(s.status.unwrap().0, "2 found");
+    assert!(s.can_go_back);
+    // Rename and Cut belong to the folder view.
+    assert!(!s.detail.buttons.contains(&Button::Rename));
+    assert!(s.detail.buttons.contains(&Button::Load));
+    // Filters still apply.
+    b.input(Input::Filter(Filter::Projects));
+    assert!(names(&b).is_empty());
+    b.input(Input::Filter(Filter::All));
+    // Again, with the same text ready to change.
+    b.input(Input::Search);
+    assert!(matches!(&b.screen().modal, Modal::Keyboard { text, .. } if text == "kick"));
+    for _ in 0..4 {
+        b.input(Input::Key(Key::Backspace));
+    }
+    for c in "zzz".chars() {
+        b.input(Input::Key(Key::Char(c)));
+    }
+    b.input(Input::Key(Key::Done));
+    assert!(names(&b).is_empty());
+    assert_eq!(
+        b.screen().status.unwrap().0,
+        "Nothing called \u{201c}zzz\u{201d}"
+    );
+    b.back();
+    assert_eq!(b.screen().path, "Projects");
+    assert_eq!(names(&b), ["Live set", "Night drive", "Sunday chops"]);
+}
+
+#[test]
+fn newest_first_puts_the_last_changed_first_after_folders() {
+    let (mut b, lib) = browser();
+    let drums = Loc::new(Place::Samples, &["Drums"]).unwrap();
+    let t = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_794_000_000);
+    for (i, n) in ["Rim.wav", "Clap.wav"].iter().enumerate() {
+        let f = std::fs::File::options()
+            .write(true)
+            .open(lib.file_path(&drums.join(n).unwrap()).unwrap())
+            .unwrap();
+        f.set_modified(t + std::time::Duration::from_secs(86_400 * 400 + i as u64))
+            .unwrap();
+    }
+    b.go_source(src("Samples"));
+    select(&mut b, "Drums");
+    b.push();
+    assert_eq!(b.screen().sort, Sort::Name);
+    let by_name = names(&b);
+    b.input(Input::Sort);
+    assert_eq!(b.screen().sort, Sort::Newest);
+    assert_eq!(names(&b)[..2], ["Clap.wav", "Rim.wav"]);
+    b.input(Input::Sort);
+    assert_eq!(names(&b), by_name);
 }

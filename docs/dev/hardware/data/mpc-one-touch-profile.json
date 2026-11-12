@@ -1,0 +1,52 @@
+{
+  "schema_version": 1,
+  "schema_note": "MPC One touch profile measured by the M12 read-only capture on one unit. OBSERVED values come from the capture; DERIVED values come from mpfree-touch-analyze. Single-device evidence, not a universal specification.",
+  "device": "MPC One ILI2117 (I2C 4-0026, /dev/input/event0)",
+  "provenance": {
+    "collected_utc": "2026-11-10T02:42:59Z",
+    "firmware_ui_reported": "3.6.0",
+    "capture_tool": "mpfree-touch-capture (M12, PR #22, owner-paced 10-step run)",
+    "analyzer": "mpfree-touch-analyze, status=PASS",
+    "capture_report_sha256": "b5a9f78eaec1372e1ac664a5ed67021fafce3b7f0d16acecb4a542235e4558b8",
+    "events_log_sha256": "f45a520dc84b7cf7d545aa239d95a3e528a3af5dfd4debea15056d6dac9933f4",
+    "raw_logs_in_repo": false,
+    "emmc_p1_p6_writes_during_capture": 0,
+    "document": "docs/dev/milestones/m12-touch-capture.md"
+  },
+  "raw_x": [0, 2048],
+  "raw_y": [0, 2048],
+  "slots": 10,
+  "logical": [1280, 800],
+  "orientation": {
+    "swap_xy": true,
+    "flip_x": true,
+    "flip_y": false,
+    "note": "DERIVED: the only one of 8 orientations that fit all four corners and both drags. Raw X runs top to bottom and raw Y runs right to left, as you face the MPC in its playing position. Apply as in rust/mpfree-touch/src/pointer.rs: swap first, then the flips."
+  },
+  "corner_margin": {
+    "left": 0.041,
+    "right": 0.052,
+    "top": 0.087,
+    "bottom": 0.045,
+    "note": "DERIVED: how far the owner's corner touches landed from each edge, as a fraction of the axis. The drags covered the full 0-2048 raw range on both axes, so the touch area covers the whole screen."
+  },
+  "corners_logical": {
+    "top_left": [46, 52],
+    "top_right": [1212, 70],
+    "bottom_right": [1229, 769],
+    "bottom_left": [52, 763]
+  },
+  "report_interval_us": {
+    "median_while_moving": 8843,
+    "note": "OBSERVED: about 113 Hz while a finger moves. A finger held still produces almost no events, because the kernel only passes on changed values."
+  },
+  "simultaneous_contacts_observed": 10,
+  "reported_axes": {
+    "multitouch": ["ABS_MT_SLOT", "ABS_MT_TRACKING_ID", "ABS_MT_POSITION_X", "ABS_MT_POSITION_Y"],
+    "single_touch_emulation": ["ABS_X", "ABS_Y", "BTN_TOUCH"],
+    "not_reported": ["ABS_MT_PRESSURE", "ABS_MT_TOUCH_MAJOR"],
+    "note": "OBSERVED in the capture: no pressure or contact size, positions only."
+  },
+  "hold_jitter_std_raw": null,
+  "hold_jitter_note": "Not measured. The 3 s centre hold produced only 12 position samples (std about 2.3 and 3.5 raw units), because a still finger sends almost no events. Treat jitter as unknown; a later test can measure it with deliberate tiny movements."
+}

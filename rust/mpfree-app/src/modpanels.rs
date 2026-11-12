@@ -7,8 +7,8 @@
 //! row opens [`ChainHost::from_mixer`] on its slot with "‹ Mixer", the
 //! mixer's "+" opens it with the picker up, the Sample tab's FX sub-tab
 //! opens [`ChainHost::for_pad`], and a long press on a macro card opens
-//! the macros panel ([`MacrosHost`]). Until then nothing calls this
-//! module but its tests.
+//! the macros panel ([`MacrosHost`]). The mixer's insert row, its "+" and
+//! the long press are wired (round 10); Sample > FX comes with the sampler.
 //!
 //! What each action does:
 //!
@@ -31,8 +31,8 @@
 //! Building a state, adding an effect (its node allocates) and removing one
 //! allocate; they run between periods, as the mixer panel's edits do.
 
-// The app's screens call this after round 9 (see above); the tests use all
-// of it now.
+// Sample > FX (`for_pad`) and the audio-thread picture are for later; the
+// tests use them now.
 #![allow(dead_code)]
 
 use mpfree_chain_ui::{ChainAction, ChainState, MacroAction, MacrosState};
@@ -41,6 +41,12 @@ use mpfree_mod::{Change, MacroMap, MapCurve, Row};
 use mpfree_node::{NodeEvent, Timed};
 use mpfree_play::mpfree_param::{Owner, ParamAddr, Strip};
 
+use std::time::{Duration, Instant};
+
+use mpfree_mixer_ui::MixView;
+
+use crate::app::{App, Effect, View};
+use crate::gui::ToUi;
 use crate::mixing::{self, MixHost, SLOTS};
 use crate::modmix::{strip_id, strip_of};
 use crate::PERIOD;
@@ -314,6 +320,28 @@ impl ChainHost {
         ChainOut::Shown
     }
 
+    /// The selected effect's values, for the drawings the screen makes in
+    /// its own theme (`ChainPage::set_fx`). None with no effect selected,
+    /// or one the pages don't draw.
+    pub fn fx_state(
+        &self,
+        h: &MixHost,
+        st: &ChainState,
+        bpm: f64,
+    ) -> Option<mpfree_fx_ui::FxState> {
+        let n = h.mixer.chain(self.sid())?.node(st.selected?)?;
+        if !mpfree_fx_ui::visual::has_visuals(n.info().id) {
+            return None;
+        }
+        Some(mpfree_fx_ui::FxState::from_node(
+            n,
+            "",
+            mpfree_ui::Color::rgb(0),
+            bpm,
+            h.mixer.rate(),
+        ))
+    }
+
     /// The selected effect's drawings for the page shown, in theme `t`
     /// (`mpfree_chain_ui::set_chain_picture`).
     pub fn picture(
@@ -489,6 +517,162 @@ impl MacrosHost {
     }
 }
 
+/// How often the open panel's state goes to the screen: its values move
+/// with LFOs, followers and the morph, not only with touches.
+pub const PANELS_EVERY: Duration = Duration::from_millis(100);
+
+/// The panels in the audio loop: the chain the editor shows, the macros
+/// panel's bank, the mixer view the editor took the place of (its Back
+/// opens the mixer there again), and when the screen last had their
+/// states. Building a state allocates; it runs between periods, as the
+/// mixer panel's does.
+pub struct Panels {
+    chain: Option<ChainHost>,
+    macros: MacrosHost,
+    over_mix: MixView,
+    sent_at: Option<Instant>,
+}
+
+impl Default for Panels {
+    fn default() -> Self {
+        Panels::new()
+    }
+}
+
+impl Panels {
+    pub fn new() -> Panels {
+        Panels {
+            chain: None,
+            macros: MacrosHost::new(0),
+            over_mix: MixView::Tracks,
+            sent_at: None,
+        }
+    }
+
+    /// The macros' values, for the Q-Link column's macro banks (at the
+    /// start; the panels send them again while they show).
+    pub fn macros_state(&self, mix: &MixHost) -> MacrosState {
+        self.macros.state(mix)
+    }
+
+    /// The mixer's insert row (`slot`) or its "+" (None, the picker up):
+    /// the chain editor in the mixer's place.
+    pub fn open_insert(
+        &mut self,
+        app: &mut App,
+        mix: &MixHost,
+        strip: StripId,
+        slot: Option<usize>,
+    ) -> Vec<Effect> {
+        let Some(h) = ChainHost::from_mixer(strip, slot) else {
+            return Vec::new();
+        };
+        self.over_mix = mix.shown().unwrap_or(MixView::Tracks);
+        self.chain = Some(h);
+        self.sent_at = None;
+        app.open_chain()
+    }
+
+    /// A long press on a macro card: the macros panel on `bank` (0:
+    /// Macros 1-4, 1: 5-8) over the page.
+    pub fn open_macros(&mut self, app: &mut App, mix: &mut MixHost, bank: usize) -> Vec<Effect> {
+        if app.view() == View::Mixer {
+            self.over_mix = mix.shown().unwrap_or(MixView::Tracks);
+        }
+        self.macros.action(mix, &MacroAction::Bank(bank), false);
+        self.sent_at = None;
+        app.open_macros()
+    }
+
+    /// A chain editor action (a touch, or a Q-Link on its knobs).
+    /// `show` takes what the screen needs past the next state (a learn).
+    pub fn chain(
+        &mut self,
+        app: &mut App,
+        mix: &mut MixHost,
+        a: &ChainAction,
+        recording: bool,
+        show: &mut impl FnMut(ToUi),
+    ) -> Vec<Effect> {
+        let Some(h) = self.chain.as_mut() else {
+            return Vec::new();
+        };
+        self.sent_at = None;
+        match h.action(mix, a, recording) {
+            ChainOut::Shown => Vec::new(),
+            ChainOut::OpenPage { .. } => vec![Effect::Note(
+                "chain: an effect's own page comes with the FX pages; its knobs are on the editor"
+                    .to_string(),
+            )],
+            ChainOut::Learn(addr) => {
+                show(ToUi::ChainLearn(addr));
+                Vec::new()
+            }
+            ChainOut::Back => app.close_chain(self.over_mix),
+            ChainOut::Refused(why) => vec![Effect::Note(format!("chain: {why}"))],
+        }
+    }
+
+    /// A Q-Link took the knob learn was armed for.
+    pub fn learned(&mut self) {
+        if let Some(h) = self.chain.as_mut() {
+            h.learned();
+            self.sent_at = None;
+        }
+    }
+
+    /// A macros panel action (a touch, or a Q-Link on a macro bank).
+    pub fn macros(
+        &mut self,
+        app: &mut App,
+        mix: &mut MixHost,
+        a: &MacroAction,
+        recording: bool,
+    ) -> Vec<Effect> {
+        let out = self.macros.action(mix, a, recording);
+        if !matches!(a, MacroAction::Macro { .. }) {
+            // A turn shows on its card at once; the rest needs the state.
+            self.sent_at = None;
+        }
+        match out {
+            MacroOut::Shown => Vec::new(),
+            MacroOut::Back => app.close_macros(self.over_mix),
+            MacroOut::Refused(why) => vec![Effect::Note(format!("macros: {why}"))],
+        }
+    }
+
+    /// While the chain editor or the macros panel shows (`view`): its
+    /// state, every [`PANELS_EVERY`] and at once after a change. The chain
+    /// editor sends its effect's values for the drawings too, and both send
+    /// the macros' values. `bpm`: for synced effects' drawings.
+    pub fn poll(
+        &mut self,
+        view: View,
+        mix: &MixHost,
+        bpm: f64,
+        now: Instant,
+        show: &mut impl FnMut(ToUi),
+    ) {
+        if !matches!(view, View::Chain | View::Macros)
+            || self
+                .sent_at
+                .is_some_and(|t| now.duration_since(t) < PANELS_EVERY)
+        {
+            return;
+        }
+        self.sent_at = Some(now);
+        if view == View::Chain {
+            if let Some(h) = self.chain.as_mut() {
+                let st = h.state(mix);
+                let fx = h.fx_state(mix, &st, bpm);
+                show(ToUi::Chain(Box::new(st)));
+                show(ToUi::ChainFx(fx.map(Box::new)));
+            }
+        }
+        show(ToUi::Macros(Box::new(self.macros.state(mix))));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -534,6 +718,103 @@ mod tests {
 
     fn drums() -> StripId {
         StripId::Track(DRUMS)
+    }
+
+    /// The audio loop's side: the mixer's insert row opens the editor in the
+    /// mixer's place, its states go out at once and then every
+    /// [`PANELS_EVERY`] while it shows, a learn reaches the screen, and Back
+    /// opens the mixer on the view it showed. The macros panel the same.
+    #[test]
+    fn the_panels_open_from_the_mixer_send_their_states_and_go_back() {
+        let mut r = Rig::new();
+        let mut app = App::new(RATE, false);
+        app.start();
+        let mut p = Panels::new();
+        for e in app.toggle_mixer(true) {
+            if let Effect::Mixer(v) = e {
+                r.h.show(v);
+            }
+        }
+        assert_eq!(r.h.shown(), Some(MixView::Pads));
+        let fx = p.open_insert(&mut app, &r.h, drums(), Some(0));
+        assert_eq!(app.view(), View::Chain);
+        assert!(fx.contains(&Effect::Mixer(None)), "{fx:?}");
+        r.h.show(None);
+        let kinds = |sent: &[ToUi]| {
+            sent.iter()
+                .map(|m| match m {
+                    ToUi::Chain(st) => format!("chain {}", st.title),
+                    ToUi::ChainFx(_) => "picture".to_string(),
+                    ToUi::Macros(st) => format!("macros {}", st.bank),
+                    ToUi::ChainLearn(_) => "learn".to_string(),
+                    _ => "other".to_string(),
+                })
+                .collect::<Vec<_>>()
+        };
+        let t0 = Instant::now();
+        let mut sent = Vec::new();
+        p.poll(app.view(), &r.h, 120.0, t0, &mut |m| sent.push(m));
+        assert_eq!(kinds(&sent), ["chain Drums FX", "picture", "macros 0"]);
+        sent.clear();
+        p.poll(app.view(), &r.h, 120.0, t0 + PANELS_EVERY / 2, &mut |m| {
+            sent.push(m)
+        });
+        assert!(sent.is_empty(), "not yet");
+        // Learn on the knob last touched: the screen arms it.
+        let st = p.chain.as_mut().unwrap().state(&r.h);
+        let knob = st.params[0].addr;
+        p.chain(
+            &mut app,
+            &mut r.h,
+            &ChainAction::Focus(knob),
+            false,
+            &mut |m| sent.push(m),
+        );
+        p.chain(
+            &mut app,
+            &mut r.h,
+            &ChainAction::Learn(knob),
+            false,
+            &mut |m| sent.push(m),
+        );
+        assert_eq!(kinds(&sent), ["learn"]);
+        sent.clear();
+        p.learned();
+        // A change shows at once.
+        p.poll(app.view(), &r.h, 120.0, t0 + PANELS_EVERY / 2, &mut |m| {
+            sent.push(m)
+        });
+        assert_eq!(sent.len(), 3);
+        sent.clear();
+        // Back: the mixer again, on Pad Mix.
+        let fx = p.chain(&mut app, &mut r.h, &ChainAction::Back, false, &mut |m| {
+            sent.push(m)
+        });
+        assert_eq!(
+            fx.first(),
+            Some(&Effect::Mixer(Some(MixView::Pads))),
+            "{fx:?}"
+        );
+        assert_eq!(app.view(), View::Mixer);
+        r.h.show(Some(MixView::Pads));
+        p.poll(app.view(), &r.h, 120.0, t0 + PANELS_EVERY * 3, &mut |m| {
+            sent.push(m)
+        });
+        assert!(sent.is_empty(), "nothing while the panels are shut");
+        // The macros panel over the mixer, on Macros 5-8; Back to Pad Mix.
+        p.open_macros(&mut app, &mut r.h, 1);
+        assert_eq!(app.view(), View::Macros);
+        p.poll(app.view(), &r.h, 120.0, t0 + PANELS_EVERY * 3, &mut |m| {
+            sent.push(m)
+        });
+        assert_eq!(kinds(&sent), ["macros 1"]);
+        let fx = p.macros(&mut app, &mut r.h, &MacroAction::Back, false);
+        assert_eq!(
+            fx.first(),
+            Some(&Effect::Mixer(Some(MixView::Pads))),
+            "{fx:?}"
+        );
+        assert_eq!(app.view(), View::Mixer);
     }
 
     #[test]

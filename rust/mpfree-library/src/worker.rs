@@ -2,7 +2,7 @@
 //! operation runs here, never on the UI or audio thread. The UI sends a
 //! [`Job`] with a number and polls [`Worker::take`] each frame.
 
-use crate::{AudioInfo, Entry, Library, Loc, NewSample, Snapshot, TrashItem};
+use crate::{AudioInfo, Entry, Library, Loc, NewSample, Snapshot, TrashItem, Version};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 
@@ -43,6 +43,12 @@ pub enum Job {
         samples: Vec<NewSample>,
     },
     OpenProject(Loc),
+    /// A project's earlier saves, newest first.
+    Versions(Loc),
+    /// One earlier save of a project, by its id.
+    OpenVersion(Loc, String),
+    /// Names holding this text, anywhere in the library, at most this many.
+    Search(String, usize),
     /// A whole new file (a recording, a kit), off the UI thread.
     WriteNew {
         folder: Loc,
@@ -65,6 +71,11 @@ pub enum Outcome {
     Read(Loc, Vec<u8>),
     Saved(Loc),
     Project(Loc, Snapshot),
+    Versions(Loc, Vec<Version>),
+    /// An earlier save, read: the project, the version's id, its parts.
+    Version(Loc, String, Snapshot),
+    /// What a search found: the text searched for, then each hit.
+    Found(String, Vec<(Loc, Entry)>),
     /// The Trash emptied: bytes freed.
     Emptied(u64),
 }
@@ -149,6 +160,12 @@ pub fn run(lib: &Library, job: Job) -> std::io::Result<Outcome> {
             Outcome::Saved(project)
         }
         Job::OpenProject(l) => Outcome::Project(l.clone(), lib.open_project(&l)?),
+        Job::Versions(l) => Outcome::Versions(l.clone(), lib.versions(&l)?),
+        Job::OpenVersion(l, id) => {
+            let snap = lib.open_version(&l, &id)?;
+            Outcome::Version(l, id, snap)
+        }
+        Job::Search(q, max) => Outcome::Found(q.clone(), lib.search(&q, max)?),
         Job::Restore(id) => Outcome::At(lib.restore(&id)?),
         Job::EmptyTrash => Outcome::Emptied(lib.empty_trash()?),
         Job::WriteNew {
