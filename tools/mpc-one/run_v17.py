@@ -250,6 +250,106 @@ def real_vendor_guest(out,raw,temp,ghidra_future,args):
         result.update({"success":False,"error":repr(e),"trace":traceback.format_exc()[-2200:]})
     return result
 
+def directed_new_findings(out,stages):
+    """Interpret actual V17 per-function P-code and guest trace, not old keyword scores."""
+    findings={"schema":"mpfree-v17-concrete-new-evidence",
+              "source":"new V17 fixed-point High P-code + real ARM guest",
+              "facts":{},"side_effect_call_paths":[],
+              "explicit_unresolved":[],
+              "hardware_proof":False}
+    program={}
+    for role in ("p1","p3"):
+        source=out/("deep-"+role)/("V17-"+role+"-HIGH-PCODE-FUNCTIONS.jsonl")
+        if source.is_file():
+            rows=[]
+            with source.open() as f:
+                for line in f:
+                    if line.strip():rows.append(json.loads(line))
+            program[role]={x["entry"]:x for x in rows}
+            gh=program[role]
+            new_writes=[]
+            callind=[]
+            for entry,row in gh.items():
+                for op in row.get("pcode_effects",[]):
+                    if op["kind"]=="STORE":
+                        x=op.get("candidate_address_constants",[])
+                        if x and any(v in x for v in ("0x0014d690",
+                            "0xff730094","0xff7300a0")):
+                            new_writes.append({"function":entry,"pc":op["pc"],
+                                               "candidate_addresses":x})
+                    if op["kind"]=="CALLIND" and op.get("static_indirect_target_candidates"):
+                        callind.append({"function":entry,"pc":op["pc"],
+                                        "candidates":op["static_indirect_target_candidates"]})
+            findings["facts"][role+"_identified_store_candidates"]={
+                "kind":"NEW_STATIC_CANDIDATES",
+                "count":len(new_writes),"instances":new_writes[:500],
+                "not_runtime_proof":True}
+            findings["facts"][role+"_new_computed_call_targets"]={
+                "kind":"NEW_STATIC_CALLBACK_RESOLUTION_CANDIDATES",
+                "count":len(callind),"instances":callind[:800]}
+    def path(graph,src,dst):
+        if src not in graph or dst not in graph:return None
+        from collections import deque
+        todo=deque([[src]]);seen={src}
+        while todo:
+            way=todo.popleft()
+            if way[-1]==dst:return way
+            for nxt in graph[way[-1]].get("direct_callees",()):
+                if nxt not in seen:
+                    seen.add(nxt);todo.append(way+[nxt])
+        return None
+    p3=program.get("p3",{})
+    for src,dst,label in [
+        ("0x00122854","0x00110484","OEM to command interpreter"),
+        ("0x00122854","0x0010b74c","OEM to persistence backend"),
+        ("0x001226b4","0x00101744","Fastboot completion to bootm"),
+        ("0x001226b4","0x0011622a","Fastboot completion to reset"),
+        ("0x00122980","0x00122834","download authorization"),
+        ("0x00122a10","0x0012247c","receive next-transfer callback"),
+        ("0x00122c5c","0x001100c8","flash storage handler"),
+        ("0x00122bf8","0x00110270","erase storage handler"),
+        ("0x00110484","0x001095f8","U-Boot command dispatch"),
+    ]:
+        route=path(p3,src,dst)
+        findings["side_effect_call_paths"].append(
+            {"name":label,"path":route,"direct_graph_path_proven":bool(route),
+             "note":"Absent direct path does not disprove indirect reachability."})
+    details=out/"v17-owner-full-boot-and-dtb.json"
+    if details.is_file():
+        boot=json.loads(details.read_text())
+        commands=boot.get("script",{}).get("script_commands",[])
+        findings["facts"]["real_stock_boot_script"]={
+            "kind":"ACTUAL_ROOTFS_BOOT_ASSET",
+            "header_crc":boot["script"].get("header_crc_valid"),
+            "payload_crc":boot["script"].get("payload_crc_valid"),
+            "commands":commands,
+            "contains_bootz":any("bootz" in x for x in commands),
+            "hardcoded_uuid":any("uuid=" in x.lower() or "partuuid" in x.lower()
+                                 for x in commands)}
+        findings["facts"]["complete_acva_variation"]={
+            "kind":"NEW_FULL_FDT_DIFF",
+            "differences":len(boot["dtb_complete_differences"]),
+            "changed_paths":[x.get("node") for x in boot["dtb_complete_differences"]][:500]}
+        for variant,key in (("acva","acva"),("acva_c","acva-c")):
+            nodes=boot[variant]["nodes"]
+            modes=[{"node":name,"properties":props} for name,props in nodes.items()
+                   if "reboot" in name.lower() or "reboot" in " ".join(props).lower()]
+            findings["facts"]["reboot_modes_"+key]={"matches":modes[:80]}
+    serial=out/"v17-qemu-vendor-function-console.log"
+    traces=[]
+    if serial.is_file():
+        with serial.open(errors="replace") as f:
+            for line in f:
+                if line.startswith('{"trace":'):
+                    try:traces.append(json.loads(line))
+                    except ValueError:pass
+    findings["facts"]["actual_vendor_guest_instrumentation"]={
+        "kind":"NEW_REAL_ARM_CODE_EXPERIMENTS_WITH_MOCKED_SIDE_EFFECTS",
+        "trace_rows":len(traces),"records":traces[:2000],
+        "limits":"These instructions execute inside ARM-virt only, not actual MPC hardware."}
+    report(out/"V17-CONCRETE-NEW-FINDINGS.json",findings)
+    return findings
+
 def evidence_ledger(out,prior,stages):
     """Per-question evidence/remaining blockers. No status based on keyword hits."""
     priorzip=load_zip(prior)
@@ -432,6 +532,10 @@ def main():
     except Exception:
         stages["uncaught"]={"success":False,"trace":traceback.format_exc()[-4000:]}
     finally:
+        try:
+            directed_new_findings(outfile,stages)
+        except Exception:
+            (outfile/"V17-FINDINGS-ERROR.log").write_text(traceback.format_exc())
         try:
             summary=evidence_ledger(outfile,prior,stages)
         except Exception:
