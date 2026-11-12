@@ -90,7 +90,7 @@ use mpfree_seq::{Cond, DestId, Lock, Note, MAX_TRACKS};
 use mpfree_transport::time::{Swing, Tick};
 use mpfree_transport::{Block, Mark, Marker, Span, State};
 
-use crate::view::{ClipView, PlayView, Started, Switches};
+use crate::view::{ClipView, PlayView, Started, Switches, TrackView};
 
 /// Notes sounding at once, across all tracks.
 pub const MAX_ACTIVE: usize = 256;
@@ -658,9 +658,19 @@ impl Player {
             let switch = self.switches.due(view, i, &ticks, bar);
             let before = switch.map_or(ticks.clone(), |at| ticks.start..at);
             let playing = self.switches.playing_from(view, i);
+            // Song mode: a track with no clip launched plays its
+            // placements.
+            let song = view.song && playing.is_none();
+            let region = if song {
+                track
+                    .region_at(ticks.start)
+                    .map(|r| (r.clip.slot, r.clip.start))
+            } else {
+                None
+            };
             // A clip started since the last span (a launch, not a cue):
             // the track's last result starts again.
-            let now = playing.map(|(c, _, start)| (c.slot, start));
+            let now = playing.map(|(c, _, start)| (c.slot, start)).or(region);
             if let (Some(seen), Some(last)) = (self.seen.get_mut(i), self.last.get_mut(i)) {
                 if *seen != now {
                     *seen = now;
@@ -668,7 +678,7 @@ impl Player {
                 }
             }
             // A track gone quiet lets its locks and ratchets go at once.
-            if muted || playing.is_none() {
+            if muted || (playing.is_none() && region.is_none()) {
                 if self.held[..self.n_held]
                     .iter()
                     .any(|h| usize::from(h.track) == i)
@@ -693,6 +703,8 @@ impl Player {
                 } else {
                     self.collect_moves(clip, origin, i, track.dest, &before);
                 }
+            } else if song && !muted {
+                self.collect_song(track, i, &before, switch, span.swing);
             }
             let Some(at) = switch else { continue };
             // A track starts one cue a call at most, and there are at most
@@ -745,6 +757,9 @@ impl Player {
                 } else {
                     self.collect_moves(clip, origin, i, track.dest, &(at..ticks.end));
                 }
+            } else if view.song && playing.is_none() && !self.switches.muted(view, i) {
+                // Stopped: the track goes back to the song.
+                self.collect_song(track, i, &(at..ticks.end), None, span.swing);
             }
         }
         // In tick order; equal ticks keep track order, then note order. An
@@ -1331,6 +1346,66 @@ impl Player {
             let from = (ticks.start - origin).max(0) as f64;
             self.replacing = Some((from / clip.song_len).floor() as i64);
             self.replaced = true;
+        }
+    }
+
+    /// The track's placements over `ticks` (song mode): each one's notes,
+    /// locks and moves in its own stretch, ending at its end (or `cut`,
+    /// whichever is first). Where one starts the track's last result
+    /// starts again; where one ends, its ratchets and locks end, as at a
+    /// cue's switch.
+    fn collect_song(
+        &mut self,
+        track: &TrackView,
+        i: usize,
+        ticks: &Range<Tick>,
+        cut: Option<Tick>,
+        swing: Swing,
+    ) {
+        let t = i as u16;
+        let first = track.regions.partition_point(|r| r.end <= ticks.start);
+        for r in &track.regions[first..] {
+            if r.clip.start >= ticks.end {
+                break;
+            }
+            let part = ticks.start.max(r.clip.start)..ticks.end.min(r.end);
+            if ticks.contains(&r.clip.start) {
+                self.push_start(Start {
+                    tick: r.clip.start,
+                    track: t,
+                    reset: true,
+                    ..NO_START
+                });
+            }
+            let end = cut.map_or(r.end, |c| c.min(r.end));
+            let clip = &r.clip;
+            self.collect(
+                clip,
+                clip.origin,
+                clip.start,
+                t,
+                track.dest,
+                swing,
+                &part,
+                None,
+                true,
+                Some(end),
+            );
+            if clip.moves.is_empty() {
+                self.forget_moves(i);
+            } else {
+                self.collect_moves(clip, clip.origin, i, track.dest, &part);
+            }
+            if ticks.contains(&r.end) {
+                self.cut_hits(t, r.end);
+                self.end_locks(r.end, t, track.dest);
+                self.push_start(Start {
+                    tick: r.end,
+                    track: t,
+                    reset: true,
+                    ..NO_START
+                });
+            }
         }
     }
 

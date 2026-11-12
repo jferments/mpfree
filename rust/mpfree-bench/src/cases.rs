@@ -571,18 +571,26 @@ enum Inserts {
 /// track, drums and bass into submixes, sends to two returns, and the
 /// inserts `with` names.
 fn mixer(name: &str, rate: u32, tracks: usize, pads: usize, with: Inserts) -> Case {
-    mixer_with(name, rate, tracks, pads, with, None)
+    mixer_with(name, rate, tracks, pads, with, Second::None)
 }
 
-/// A mixer case, with the pad and track inserts partly on a lane when
-/// `lane` is given (`Mixer::set_lane`).
+/// What a [`mixer_with`] case runs on a second core.
+enum Second {
+    None,
+    /// Pad and track inserts partly on a lane (`Mixer::set_lane`).
+    Tracks(LaneConfig),
+    /// The returns a block late on a lane (`Mixer::set_pipelined_returns`).
+    Returns(LaneConfig),
+}
+
+/// A mixer case, with some of its work on a second core as `second` says.
 fn mixer_with(
     name: &str,
     rate: u32,
     tracks: usize,
     pads: usize,
     with: Inserts,
-    lane: Option<LaneConfig>,
+    second: Second,
 ) -> Case {
     let inserts = with != Inserts::None;
     use ids::mixer::{self as mx, output};
@@ -634,8 +642,14 @@ fn mixer_with(
             .set_param(1, ids::compressor::SIDECHAIN, 1.0);
         m.set_key(StripId::Track(1), 1, Some(StripId::Track(0)));
     }
-    if let Some(cfg) = lane {
-        m.set_lane(Some(cfg), Duration::from_nanos(10 * MPC.ns()));
+    match second {
+        Second::None => {}
+        Second::Tracks(cfg) => {
+            m.set_lane(Some(cfg), Duration::from_nanos(10 * MPC.ns()));
+        }
+        Second::Returns(cfg) => {
+            m.set_pipelined_returns(Some(cfg), Duration::from_nanos(10 * MPC.ns()));
+        }
     }
     let frozen = with == Inserts::SongFrozen;
     // Two beats of each frozen track, at 120 BPM.
@@ -2275,7 +2289,7 @@ pub fn lanes(rate: u32, worker: Option<usize>) -> Vec<Case> {
                 12,
                 8,
                 Inserts::Song,
-                None,
+                Second::None,
             )
         }),
         measured(|| {
@@ -2285,7 +2299,37 @@ pub fn lanes(rate: u32, worker: Option<usize>) -> Vec<Case> {
                 12,
                 8,
                 Inserts::Song,
-                Some(config(false)),
+                Second::Tracks(config(false)),
+            )
+        }),
+        measured(|| {
+            mixer_with(
+                "Mixer, a song's inserts, returns a block late on 2 cores",
+                rate,
+                12,
+                8,
+                Inserts::Song,
+                Second::Returns(config(false)),
+            )
+        }),
+        measured(|| {
+            mixer_with(
+                "Mixer, a song's inserts, Eco reverb, one core",
+                rate,
+                12,
+                8,
+                Inserts::SongEco,
+                Second::None,
+            )
+        }),
+        measured(|| {
+            mixer_with(
+                "Mixer, a song's inserts, Eco reverb, returns a block late on 2 cores",
+                rate,
+                12,
+                8,
+                Inserts::SongEco,
+                Second::Returns(config(false)),
             )
         }),
         measured(|| {
@@ -2526,6 +2570,7 @@ mod tests {
     #[test]
     fn a_split_on_two_cores_sounds_exactly_like_the_split_on_one() {
         let lane = || Some(LaneConfig::default());
+        let tracks = || Second::Tracks(LaneConfig::default());
         // The bench's ten periods (29 ms) are too short for a debug build on
         // a busy test runner, where the worker can wait that long for a
         // core; a late block would leave the lane's part out and fail the
@@ -2548,8 +2593,8 @@ mod tests {
             600,
         );
         same_blocks(
-            mixer_with("one", 44_100, 12, 8, Inserts::Song, None),
-            mixer_with("two", 44_100, 12, 8, Inserts::Song, lane()),
+            mixer_with("one", 44_100, 12, 8, Inserts::Song, Second::None),
+            mixer_with("two", 44_100, 12, 8, Inserts::Song, tracks()),
             600,
         );
     }
@@ -2557,7 +2602,7 @@ mod tests {
     #[test]
     fn the_lane_cases_cover_one_core_and_two() {
         let mut cases = lanes(44_100, None);
-        assert_eq!(cases.len(), 13);
+        assert_eq!(cases.len(), 16);
         assert!(cases.iter().any(|c| c.name.contains("one core")));
         assert!(cases.iter().any(|c| c.name.contains("2 cores")));
         for c in &mut cases {

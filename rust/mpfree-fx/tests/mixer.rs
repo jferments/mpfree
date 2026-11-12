@@ -1095,3 +1095,132 @@ fn a_late_lane_leaves_its_strips_dry_until_their_inserts_come_back() {
         assert_eq!(m.chain(StripId::Pad(p)).unwrap().len(), 1, "pad {p}");
     }
 }
+
+/// A mixer whose only way to the master is through the returns: track 0
+/// goes nowhere and sends to a delay on return A and the Cloud reverb (Eco)
+/// on return B.
+fn returns_only(n: usize) -> (Mixer, Script) {
+    let mut m = mixer(small());
+    m.set_now(StripId::Track(0), mx::OUTPUT, output::NONE);
+    m.set_now(StripId::Track(0), mx::send(0), -6.0);
+    m.set_now(StripId::Track(0), mx::send(1), -6.0);
+    m.chain_mut(StripId::Return(0))
+        .unwrap()
+        .push(Box::new(Delay::new()));
+    let c = m.chain_mut(StripId::Return(1)).unwrap();
+    c.push(Box::new(Cloud::new()));
+    c.set_param(0, ids::cloud::QUALITY, 2.0);
+    let mut rng = Lcg(41);
+    let x: Vec<f32> = (0..n)
+        .map(|i| {
+            if (i / 2000) % 3 == 0 {
+                0.4 * (rng.unit() * 2.0 - 1.0)
+            } else {
+                0.0
+            }
+        })
+        .collect();
+    let s = Script {
+        feeds: vec![(StripId::Track(0), mono(x))],
+        line: None,
+        events: Vec::new(),
+        caps: Vec::new(),
+    };
+    (m, s)
+}
+
+#[test]
+fn pipelined_returns_are_the_same_output_one_block_late() {
+    use std::time::Duration;
+    let (n, b) = (24_000, 128);
+    let reference = {
+        let (mut m, s) = returns_only(n);
+        play(&mut m, &s, n, &mut blocks(b)).out
+    };
+    assert!(peak(&reference.0) > 0.01);
+    for (name, threaded) in [("on this thread", false), ("on a worker", true)] {
+        let (mut m, s) = returns_only(n);
+        let cfg = mpfree_lanes::Config {
+            threaded,
+            ..mpfree_lanes::Config::default()
+        };
+        assert!(m
+            .set_pipelined_returns(Some(cfg), Duration::from_secs(1))
+            .is_some());
+        assert!(m.pipelined_returns());
+        let got = play(&mut m, &s, n, &mut blocks(b)).out;
+        // The first block is silent, then it is the reference a block late.
+        assert!(got.0[..b].iter().chain(&got.1[..b]).all(|&v| v == 0.0));
+        let late = (got.0[b..].to_vec(), got.1[b..].to_vec());
+        let want = (reference.0[..n - b].to_vec(), reference.1[..n - b].to_vec());
+        close(name, &late, &want, 0.0);
+        let st = m.stats();
+        assert_eq!(st.pipe_posts as usize, n / b - 1, "{name}");
+        assert_eq!(st.pipe_late, 0, "{name}");
+        // The inserts are home between blocks.
+        assert_eq!(m.chain(StripId::Return(1)).unwrap().len(), 1);
+        assert!(m.set_pipelined_returns(None, Duration::ZERO).is_none());
+        assert!(!m.pipelined_returns());
+    }
+}
+
+#[test]
+fn pipelined_returns_take_insert_controls_and_play_with_everything_else() {
+    use std::time::Duration;
+    let n = 30_000;
+    let (mut m, s) = busy(9, n);
+    assert!(m
+        .set_pipelined_returns(
+            Some(mpfree_lanes::Config::default()),
+            Duration::from_secs(1)
+        )
+        .is_some());
+    let mut rng = Lcg(5);
+    let out = play(&mut m, &s, n / 2, &mut || 1 + rng.next() as usize % 512).out;
+    assert!(out.0.iter().chain(&out.1).all(|v| v.is_finite()));
+    assert!(peak(&out.0) > 0.05);
+    // Between blocks the returns' inserts are home: knob turns and bypass
+    // reach them.
+    assert!(m.queue_insert(
+        StripId::Return(0),
+        0,
+        Timed::new(
+            0,
+            NodeEvent::Param {
+                id: ids::delay::FEEDBACK,
+                value: 10.0
+            }
+        )
+    ));
+    m.set_on(StripId::Return(1), 0, false);
+    let out = play(&mut m, &s, n / 2, &mut blocks(256)).out;
+    assert!(out.0.iter().chain(&out.1).all(|v| v.is_finite()));
+    let st = m.stats();
+    assert!(st.pipe_posts > 0);
+    assert_eq!(st.pipe_late, 0);
+    assert_eq!(st.dropped_events, 0);
+}
+
+#[test]
+fn a_late_pipeline_silences_the_returns_until_their_inserts_come_back() {
+    use std::time::Duration;
+    let n = 20_000;
+    let (mut m, s) = returns_only(n);
+    let setup = m.set_pipelined_returns(Some(mpfree_lanes::Config::default()), Duration::ZERO);
+    let threaded = setup.is_some_and(|s| s.threaded.is_ok());
+    let out = play(&mut m, &s, n, &mut blocks(64)).out;
+    assert!(out.0.iter().chain(&out.1).all(|v| v.is_finite()));
+    let late = m.stats().pipe_late;
+    if threaded {
+        assert!(late > 0, "a zero wait is late");
+    }
+    m.set_pipelined_returns(
+        Some(mpfree_lanes::Config::default()),
+        Duration::from_secs(1),
+    );
+    let out = play(&mut m, &s, n, &mut blocks(64)).out;
+    assert!(peak(&out.0) > 0.01);
+    assert_eq!(m.stats().pipe_late, late, "no more late joins");
+    assert_eq!(m.chain(StripId::Return(0)).unwrap().len(), 1);
+    assert_eq!(m.chain(StripId::Return(1)).unwrap().len(), 1);
+}
