@@ -668,6 +668,46 @@ class Lab:
                 record["v11_parse_error"] = str(exc)
         else:
             record["match_tests_note"] = "V11 report missing; no comparison asserted"
+        # Derive a protocol-specific evidence map from verified V11 Ghidra
+        # output without copying any decompiled proprietary source into Git.
+        library_report = self.out / "static" / "v11" / "v11-ghidra-libaz01-prog.json"
+        if library_report.is_file():
+            try:
+                module = load_module(
+                    "tools/mpc-one/synthesize_usb_backend_protocols.py",
+                    "mpfree_private_usb_evidence",
+                )
+                blob = library_report.read_bytes()
+                protocol = module.summarize(json.loads(blob), hashlib.sha256(blob).hexdigest())
+                (self.out / "usb-protocol-evidence.json").write_text(
+                    json.dumps(protocol, indent=2) + "\n")
+                (self.out / "usb-protocol-evidence.md").write_text(
+                    module.render_markdown(protocol))
+                record["usb_protocol_evidence"] = {
+                    "report": "usb-protocol-evidence.json",
+                    "interfaces": len(protocol["verified_backend_interfaces"]),
+                    "identifications": [
+                        {"descriptor": e["usb_descriptor"],
+                         "family": e["upstream_protocol_family"],
+                         "constructor_confirmed": e["initializer_references_table"]}
+                        for e in protocol["verified_backend_interfaces"]
+                    ],
+                    "limits": "Static and upstream reference only; no original vendor code executed.",
+                }
+                self.stages["usb-protocol-evidence"] = {
+                    "success": True, "interfaces": len(protocol["verified_backend_interfaces"]),
+                }
+            except Exception as exc:
+                record["usb_protocol_evidence_error"] = str(exc)
+                self.stages["usb-protocol-evidence"] = {
+                    "success": False, "error": str(exc),
+                }
+                self.notes.append("USB protocol evidence synthesis: " + str(exc))
+        else:
+            record["usb_protocol_evidence_error"] = "V11 library report unavailable"
+            self.stages["usb-protocol-evidence"] = {
+                "success": False, "error": "V11 library report unavailable",
+            }
         (self.out / "cross-evidence.json").write_text(json.dumps(record, indent=2) + "\n")
         summary = [
             "# MPFree integrated bootchain run",
@@ -682,6 +722,13 @@ class Lab:
                            ("PASS" if stage.get("success") else "INCOMPLETE/FAIL") +
                            (" (" + str(stage.get("error") or stage.get("reason")) + ")"
                             if stage.get("error") or stage.get("reason") else ""))
+        summary += ["", "## USB protocol identity (offline static + upstream)"]
+        for entry in record.get("usb_protocol_evidence", {}).get("identifications", []):
+            desc = entry["descriptor"]
+            summary.append("- " + "/".join(desc[k] for k in ("class", "subclass", "protocol"))
+                           + ": " + entry["family"]
+                           + " (constructor-xref=" + str(entry["constructor_confirmed"]) + ")")
+        summary.append("- Physical target runtime stage, ROM state and write authorization unproven.")
         summary += ["", "## Guest/static image consistency"]
         if record["match_tests"]:
             for entry in record["match_tests"]:
