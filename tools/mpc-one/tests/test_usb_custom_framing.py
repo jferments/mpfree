@@ -98,7 +98,12 @@ class FramingTests(unittest.TestCase):
         self.assertTrue(all(report["response_validation_checks"].values()))
         self.assertEqual(len(report["decompiler_return_type_warnings"]), 3)
         self.assertEqual(
-            len(report["magic_evidence"]["equality_matched_message_identifiers"]), 8)
+            set(report["magic_evidence"]["equality_matched_message_identifiers"]),
+            {"0x5aa5fe01", "0x5aa5fd02", "0x5aa5fc03",
+             "0x5aa5fb04", "0x5aa5fa05", "0x5aa5f906"})
+        self.assertEqual(
+            set(report["magic_evidence"]["constructed_outgoing_control_values"]),
+            {"0xa55a0101", "0xa55a0202"})
         self.assertEqual(report["magic_evidence"]["comparison_only_range_bounds"],
                          ["0x5aa5fc04"])
         self.assertTrue(all(item["seen_in_verified_pseudocode"]
