@@ -574,6 +574,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "mpfree-midi"
+version = "0.1.0"
+dependencies = [
+ "mpfree-controller",
+ "mpfree-midi-clock",
+ "mpfree-param",
+]
+
+[[package]]
 name = "mpfree-midi-clock"
 version = "0.1.0"
 
