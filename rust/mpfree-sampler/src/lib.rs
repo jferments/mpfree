@@ -14,6 +14,8 @@
 //!   instrument at their sounds' notes.
 //! - [`save`]: the kits as a saved project's text; [`wav`]: their sounds as
 //!   WAV files, kept losslessly, and WAV files read from the library.
+//! - [`sound_file`]: any sound file from the library, WAV, AIFF
+//!   ([`aiff`]) or FLAC, known by what it holds.
 //! - [`Sampler`] and [`PreparedSample`] below: the first prototype (M3/M6),
 //!   kept for `mpfree-headless` and the `mpfree-sampler` CLI; its WAV loader
 //!   also feeds [`model::Source::from_prepared`].
@@ -22,6 +24,7 @@
 //! prepared memory. Design: `docs/dev/design/sampler-design.md`.
 #![forbid(unsafe_code)]
 
+pub mod aiff;
 pub mod autosample;
 pub mod chop;
 pub mod dsp;
@@ -32,6 +35,7 @@ pub mod node;
 pub mod phrase;
 pub mod record;
 pub mod save;
+pub mod sound_file;
 pub mod warp;
 pub mod wav;
 
