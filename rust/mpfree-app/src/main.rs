@@ -47,11 +47,12 @@
 //!                      does) and logs every underrun and late period
 //!   --preview DIR      host only: draws sample screens to new PNG files in DIR
 //!
-//! `--sound-cores shared|core3|two` (play and app) picks where the sound
-//! runs for this run, in place of Prefs' saved "Sound cores" (shared by
-//! default): as before, the audio thread alone on core 3, or core 3 plus
-//! lanes on core 2 for half the drum voices and part of the mixer's inserts
-//! (cores.rs). It changes only this program's threads.
+//! `--sound-cores shared|core3|two|three` (play and app) picks where the
+//! sound runs for this run, in place of Prefs' saved "Sound cores" (shared
+//! by default): as before, the audio thread alone on core 3, core 3 plus
+//! lanes on core 2 for half the drum voices and part of the mixer's
+//! inserts, or (a test) those plus the synth on a lane on core 1 (cores.rs).
+//! It changes only this program's threads.
 //!
 //! The screen is MPFree's GUI (crate mpfree-ui, screens in gui.rs). Every line
 //! also goes to stdout, which the workstation shows, and to the report file.
@@ -2385,7 +2386,9 @@ fn player_session(
         ));
     }
     // The synth: one more entry after the kits, and the Synth tab.
-    let mut synth = synth::Synth::new(RATE);
+    // The synth sits in a slot that can hand it to its own lane (Prefs
+    // "Sound cores": Cores 3, 2 and 1); between periods it is always here.
+    let mut synth = cores::SynthSlot::new(synth::Synth::new(RATE));
     out.say(&format!("synth: {}, preset {}, as kit list entry {} ({}); the Synth tab edits it and picks Poly or FM",
                      synth.engine().name(), synth.preset_name(), kits.len() + 1, synth.range_text()));
     out.show(gui::ToUi::Kits(kit_views(&kits, &synth)));
@@ -2560,7 +2563,7 @@ fn player_session(
     // for this run; cores.rs): this thread is the audio thread, and the
     // sampler's lane starts before the sound does.
     let sound_cores = o.sound_cores.unwrap_or(app.settings.sound_cores);
-    let mut cores = cores::Cores::start(sound_cores, &mut player);
+    let mut cores = cores::Cores::start(sound_cores, &mut player, &mut synth);
     app.set_sound_cores_now(sound_cores);
     let mut play = Playback::start(open_acva(out, periods)?, periods)?;
     progress(out, 6, "Ready", "Have fun", 1.0);
@@ -3545,6 +3548,10 @@ fn player_session(
         player.set_tempo(time.info().bpm);
         // Each pad of the playing kit into its pad channel (Pad Mix); they
         // all go to the Drums track.
+        // With a synth lane (Cores 3, 2 and 1) the synth starts on its core
+        // now and renders beside the drums; otherwise this only notes the
+        // frame and tempo, and it renders below as before.
+        synth.start(i * PERIOD as u64, app.settings.bpm);
         let mut pads = mix.pads();
         player.render_routed(PERIOD, &mut pads);
         let played = pads.played();
@@ -3554,12 +3561,9 @@ fn player_session(
         engines.add(engines::SAMPLER, t_synth - t_render);
         synth_l.fill(0.0);
         synth_r.fill(0.0);
-        synth.render(
-            i * PERIOD as u64,
-            app.settings.bpm,
-            &mut synth_l,
-            &mut synth_r,
-        );
+        // Renders here, or (with a synth lane) waits for the lane and adds
+        // what it made; then the time is only the wait.
+        synth.finish(&mut synth_l, &mut synth_r);
         let synth_took = t_synth.elapsed();
         synth_time.add(synth_took);
         engines.add(engines::SYNTH, synth_took);
@@ -3741,7 +3745,7 @@ fn player_session(
             ));
             out.note(&format!(
                 "status: {}",
-                cores.status(cores::Counts::read(&player, &mix.mixer))
+                cores.status(cores::Counts::read(&player, &mix.mixer, &synth))
             ));
         }
         if last_timing.elapsed() >= Duration::from_millis(250) {
@@ -3779,7 +3783,7 @@ fn player_session(
             engines.publish();
             // The second core's late parts: on the Dev page, and in the log
             // within a second (a fallback is never silent).
-            let counts = cores::Counts::read(&player, &mix.mixer);
+            let counts = cores::Counts::read(&player, &mix.mixer, &synth);
             cores.publish(&engine_shared.cores, counts);
             if let Some(line) = cores.late_note(counts, last_timing) {
                 out.note(&line);
@@ -3861,7 +3865,7 @@ fn player_session(
     }
     store.flush();
     out.say(&engines::log_line(&engines.lifetime()));
-    out.say(&cores.status(cores::Counts::read(&player, &mix.mixer)));
+    out.say(&cores.status(cores::Counts::read(&player, &mix.mixer, &synth)));
     if session {
         out.say("no more pings: the controller should drop the session by itself (inferred: within about 10 s)");
     }
@@ -4415,6 +4419,8 @@ mod tests {
         assert_eq!(o.sound_cores, Some(cores::SoundCores::Two));
         let o = parse_args(&args("app --sound-cores core3")).unwrap();
         assert_eq!(o.sound_cores, Some(cores::SoundCores::Core3));
+        let o = parse_args(&args("app --sound-cores three")).unwrap();
+        assert_eq!(o.sound_cores, Some(cores::SoundCores::Three));
         assert!(parse_args(&args("app --sound-cores 2")).is_err());
         assert!(parse_args(&args("app --sound-cores")).is_err());
         assert!(parse_args(&args("click --seconds 5 --sound-cores two")).is_err());

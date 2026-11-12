@@ -103,22 +103,43 @@ returns stay too, since they need every send first. The app turns it on with
 
 ## In the app: Prefs "Sound cores" and `--sound-cores`
 
-Prefs has a "Sound cores" row (Shared, Core 3, Cores 3 and 2), kept in the
-"app" settings on the stick's data partition as `sound-cores =
-shared|core3|two` and used from the next start; while it differs from what
-runs, the row says "(next start)". `mpfree play` and `mpfree app` also take
-`--sound-cores shared|core3|two` for one run, which is not kept
-([`cores.rs`](../../../rust/mpfree-app/src/cores.rs)). The default is
-`shared`, which is how the app always ran, so nothing changes until a device
-round has compared the three and Jay picks the default. The device round
-runs Shared, sets Cores 3 and 2 in Prefs, and runs again after the second
-boot it already makes to check saved settings.
+Prefs has a "Sound cores" row (Shared, Core 3, Cores 3 and 2, Cores 3, 2
+and 1), kept in the "app" settings on the stick's data partition as
+`sound-cores = shared|core3|two|three` and used from the next start; while
+it differs from what runs, the row says "(next start)". `mpfree play` and
+`mpfree app` also take `--sound-cores shared|core3|two|three` for one run,
+which is not kept ([`cores.rs`](../../../rust/mpfree-app/src/cores.rs)).
+The default is `shared`, which is how the app always ran, so nothing
+changes until a device round has compared the modes and Jay picks the
+default. The device round runs Shared, sets Cores 3 and 2 in Prefs, and
+runs again after the second boot it already makes to check saved settings;
+`three` is a test Jay asked for (12 Nov), run the same way.
 
-| Mode | The audio thread | Core 2 |
-| --- | --- | --- |
-| `shared` | SCHED_FIFO 70, wherever the kernel puts it (cores 0 and 1 on the test stick) | idle |
-| `core3` | pinned to core 3, SCHED_FIFO 70 | idle |
-| `two` | pinned to core 3, SCHED_FIFO 70 | two lanes at SCHED_FIFO 69: the sampler's second voice pool (`Engine::split`, half the voices) and about half the pad channels' and tracks' inserts (`Mixer::set_lane`, a wait of one period) |
+| Mode | The audio thread | Core 2 | Core 1 |
+| --- | --- | --- | --- |
+| `shared` | SCHED_FIFO 70, wherever the kernel puts it (cores 0 and 1 on the test stick) | idle | shared with the rest |
+| `core3` | pinned to core 3, SCHED_FIFO 70 | idle | the rest |
+| `two` | pinned to core 3, SCHED_FIFO 70 | two lanes at SCHED_FIFO 69: the sampler's second voice pool (`Engine::split`, half the voices) and about half the pad channels' and tracks' inserts (`Mixer::set_lane`, a wait of one period) | the rest |
+| `three` (a test) | pinned to core 3, SCHED_FIFO 70 | as `two` | the synth's lane at SCHED_FIFO 69 (`SynthSlot`), beside the rest |
+
+Core 0 is never asked for: Linux on ARM sends hardware interrupts to core 0
+unless something moves them (an assumption for the MPC until a read-only
+look at `/proc/interrupts` on the unit), and the screen and the rest live
+there. Jay (12 Nov): keep one core for interrupts.
+
+- **`three`: the synth beside the drums.** The app's synth is a separate
+  engine from the sampler, so it is the one part that can run at the same
+  time as both halves of the drums. Each period the audio thread posts the
+  synth to its lane on core 1, renders its half of the drums while the
+  lane on core 2 renders the other half, then joins the synth and adds its
+  output, bit for bit what the audio thread would have made. Core 1 is not
+  kept free by the kernel (only 2 and 3 are), so the synth runs ahead of
+  the ordinary threads there and shares the core with any interrupts sent
+  to it; what that costs is what the test measures. A late synth is waited
+  for, not left out: nothing is dropped, the period runs long, and it is
+  counted like the fallbacks (`synth N periods on core 1, N late`). With
+  the synth on its lane, the CPU by engine page's synth row is only the
+  audio thread's wait for it.
 
 - **When.** The audio thread pins itself and splits the sampler just before
   the sound card opens, and the mixer's lane starts right after the mixer is
@@ -136,9 +157,10 @@ boot it already makes to check saved settings.
   stage leaves those strips silent for the block. Both counts are on the Dev
   tab's CPU by engine page (red once one is late), in the 30 s `status:`
   line (`sound cores two: drum voices N parts on core 2, N late; mixer N
-  stages on core 2, N late`), and in a log line within a second of a late
-  one. A late part is a bug or an over-budget design to fix, not a setting
-  to tune away.
+  stages on core 2, N late`, and `three` adds `; synth N periods on core 1,
+  N late`), and in a log line within a second of a late one (`sound cores:
+  late: ...`). A late part is a bug or an over-budget design to fix, not a
+  setting to tune away.
 - **What took.** The start lines (`sound cores: ...`) and the Dev page say
   whether the pin and each lane's core and priority took. A refused pin or
   priority is reported in red or amber and the sound plays on.
@@ -148,9 +170,14 @@ boot it already makes to check saved settings.
   stick's data partition (never the MPC's own storage). Setting the row
   back to Shared undoes it from the next start; on the workstation,
   removing that line or `write-test-stick.py --fresh-data` does too.
-- **Tests.** `cores.rs` checks the modes, the rows and the late lines;
-  `rt_safety.rs` runs the sound path for 35 s on two cores (unpinned) with
-  no allocation on the audio thread.
+- **Tests.** `cores.rs` checks the modes, the rows and the late lines, and
+  that the synth on its lane sounds the same bit for bit; `rt_safety.rs`
+  runs the sound path for 35 s on two cores, and with the synth on three
+  (unpinned), with no allocation on the sound path.
+- **Other devices.** The cores above are the MPC One's. The MPC Gen 2 (8
+  cores, 4 GB, bookmarked by Jay 12 Nov for later) would get its own plan:
+  more lanes (each synth, the mixer and the returns on cores of their own),
+  still with one core kept for interrupts and one for the screen.
 
 The device round that compares the modes is the app thread's live test
 runbook. Its app check picks up the `sound cores: ` and `status: sound
