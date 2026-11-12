@@ -29,6 +29,10 @@ const WIRE_BYTES: usize = 6;
 /// thread (70) and its lanes (69), above everything at the normal policy,
 /// so each message still leaves on its moment.
 const WRITER_FIFO: i32 = 60;
+/// Whether the writer asks for [`WRITER_FIFO`]: on the MPC's ABI, but not
+/// in the unit tests, which CI runs as 32-bit ARM under qemu without the
+/// right to raise a priority (the refusal's log line would join theirs).
+const ASK_FIFO: bool = crate::sys::IS_DEVICE_ABI && !cfg!(test);
 
 /// One message (or a pair written together), and when its frame is heard.
 #[derive(Clone, Copy, Debug)]
@@ -104,7 +108,7 @@ impl Writer {
                 // no longer inherits its SCHED_FIFO (sys::realtime), so on
                 // the MPC it asks for its own, just below the lanes.
                 let _ = crate::cores::background();
-                if crate::sys::IS_DEVICE_ABI {
+                if ASK_FIFO {
                     if let Err(e) = mpfree_lanes::os::fifo(WRITER_FIFO) {
                         let _ = say.log.send(format!(
                             "{}: the writer runs at normal priority ({e})",
