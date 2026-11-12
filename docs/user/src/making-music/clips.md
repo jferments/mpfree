@@ -22,9 +22,11 @@ A clip's border tells you what it's doing: a ring going round as it plays one pa
 
 ## The Q-Links on Arrange
 
-The four Q-Link cards run down the right edge of Arrange, in the same place as on the Play page, so the knobs never move between the two. With nothing picked, they're the armed track's **level**, **pan**, **send A** and **send B**. Turn a knob, or drag up or down on its card. **Q-LINK** steps the cards to Macros 1-4 and Macros 5-8, as on Play.
+The four Q-Link cards run down the right edge of Arrange, in the same place as on the Play page, so the knobs never move between the two. They do the same as on Play: the knobs of the Play view you picked last, as the cards show (see [The Q-Links on the Play page](playing-live.md#the-q-links-on-the-play-page)). Turn a knob, or drag up or down on its card. **Q-LINK** steps the cards to Macros 1-4 and Macros 5-8, and Play and Arrange share the bank.
 
-Coming: with an audio region picked in the Song view, the cards become the track's level and pan and the region's gain and fade.
+Coming:
+- With an audio region picked in the Song view, the cards become the audio track's level and pan, and the region's gain and fade.
+- The sequencer tracks have no mixer strips of their own yet (they all play the kit), so their own level and pan aren't on the knobs.
 
 ## Recording a clip
 

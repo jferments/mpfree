@@ -916,8 +916,12 @@ impl Player {
     /// REPEAT is held or the Arp panel is open they set the arp (as its
     /// sliders show); on Play, Q-Link 1 is the level, unless Q-LINK shows a
     /// macro bank; on the chain editor, the selected effect's knobs.
+    /// Arrange has the same column with Play's knobs and banks (layout spec
+    /// section 4c: every sequencer track plays the kit, so there is no
+    /// track strip of its own to turn yet).
     fn refresh_qlinks(&mut self) {
-        let arp = self.view == View::Arp || (self.view == View::Play && self.band_showing());
+        let play_like = matches!(self.view, View::Play | View::Arrange);
+        let arp = self.view == View::Arp || (play_like && self.band_showing());
         // The chain editor, the macros panel, and Play on a macro bank.
         let chain = (!arp && self.chain_page.drives(self.view))
             .then(|| self.chain_page.cards(&self.ui.theme));
@@ -955,7 +959,11 @@ impl Player {
             let knobs = self.play.knobs();
             let pad = self.sample.pad_knobs(self.play.last_pad);
             let cards: [QLinkCard; 4] = std::array::from_fn(|i| self.play.card(knobs[i], pad));
-            ("Q-Links · Play", cards)
+            if self.view == View::Arrange {
+                ("Q-Links · Arrange", cards)
+            } else {
+                ("Q-Links · Play", cards)
+            }
         };
         if let Some(q) = self.ui.get_mut::<QLinkColumn>(play_page::QLINKS) {
             if q.title != title || q.cards != cards {
@@ -998,7 +1006,7 @@ impl Player {
     /// Q-LINK: the column's next bank where it has macro banks (Play, the
     /// chain editor, the macros panel).
     fn next_qlink_bank(&mut self) {
-        let play = self.view == View::Play && !self.band_showing();
+        let play = matches!(self.view, View::Play | View::Arrange) && !self.band_showing();
         if !(play || matches!(self.view, View::Chain | View::Macros)) {
             return;
         }
@@ -1757,9 +1765,9 @@ impl Player {
             }
             ToUi::PlayQLink(k, ticks) => {
                 if self.chain_page.drives(self.view) {
-                    // Q-LINK shows a macro bank on Play.
+                    // Q-LINK shows a macro bank on Play or Arrange.
                     self.chain_qlink(k, ticks);
-                } else if self.view == View::Play {
+                } else if matches!(self.view, View::Play | View::Arrange) {
                     self.play_qlink(k, ticks);
                 }
             }
@@ -2747,7 +2755,7 @@ impl Player {
             }
             return None;
         }
-        if matches!(self.view, View::Play | View::Chain) {
+        if matches!(self.view, View::Play | View::Arrange | View::Chain) {
             self.watch_card_press(finger, phase, x, y);
         }
         let action = self
@@ -2873,7 +2881,7 @@ impl Player {
                 None
             }
             (play_page::QLINKS, EventKind::Step { index, delta })
-                if self.view == View::Play && !self.band_showing() =>
+                if matches!(self.view, View::Play | View::Arrange) && !self.band_showing() =>
             {
                 self.play_qlink(index, delta);
                 None
@@ -5971,6 +5979,73 @@ mod tests {
         apply_effects(&mut p, app.tab(2));
         let fx = app.button(71, true, 0.0);
         assert!(!fx.contains(&Effect::QLinkBank), "{fx:?}");
+    }
+
+    /// Arrange has Play's column (layout spec 4c): the same knobs, turned
+    /// by the Q-Links and by a drag on a card, and Q-LINK steps the same
+    /// macro banks, which Play then still shows.
+    #[test]
+    fn arrange_has_plays_q_links_and_their_banks() {
+        let mut p = sample_player(Fonts::embedded());
+        let mut app = sample_app();
+        app.map.learn(crate::app::mapper::Job::QLink, Some(71));
+        p.apply(ToUi::Macros(Box::new(
+            mpfree_chain_ui::sample::Song::new().macros_state(0),
+        )));
+        let title = |p: &Player| {
+            p.ui.get::<QLinkColumn>(play_page::QLINKS)
+                .unwrap()
+                .title
+                .clone()
+        };
+        let cards = |p: &Player| {
+            p.ui.get::<QLinkColumn>(play_page::QLINKS)
+                .unwrap()
+                .cards
+                .clone()
+        };
+        let play_cards = cards(&p);
+        apply_effects(&mut p, app.tab(1));
+        assert_eq!(p.view, View::Arrange);
+        assert_eq!(title(&p), "Q-Links · Arrange");
+        assert_eq!(cards(&p), play_cards, "Play's knobs");
+        let r =
+            p.ui.rect_of(play_page::QLINKS)
+                .expect("the column is on Arrange");
+        assert_eq!((r.x, r.w), (1100, 168), "at the right edge, 168 px");
+        // Q-Link 1 is Play's first knob, and a turn of it does what it does on Play.
+        p.apply(ToUi::PlayQLink(0, 6));
+        assert!(
+            !p.take_actions().is_empty(),
+            "a turn on Arrange does something"
+        );
+        // A drag on a card is a turn too.
+        let ev = mpfree_ui::UiEvent {
+            widget: play_page::QLINKS.to_string(),
+            kind: mpfree_ui::EventKind::Step { index: 0, delta: 2 },
+        };
+        let _ = p.on_event(ev);
+        assert!(
+            !p.take_actions().is_empty(),
+            "a card drag on Arrange does something"
+        );
+        // Q-LINK steps the macro banks on Arrange.
+        let fx = app.button(71, true, 0.0);
+        app.button(71, false, 0.0);
+        apply_effects(&mut p, fx);
+        assert_eq!(title(&p), "Q-Links · Macros 1-4");
+        p.apply(ToUi::PlayQLink(3, 1));
+        let sent = p.take_actions();
+        assert!(
+            matches!(
+                sent.as_slice(),
+                [FromUi::Macros(MacroAction::Macro { m: 3, .. })]
+            ),
+            "{sent:?}"
+        );
+        // Play shares the bank.
+        apply_effects(&mut p, app.tab(0));
+        assert_eq!(title(&p), "Q-Links · Macros 1-4");
     }
 
     #[test]
