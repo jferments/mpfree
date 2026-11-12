@@ -35,6 +35,12 @@ MAX_TOTAL = 384 * 1024 * 1024
 DEFAULT_V10 = WORK / "bootchain-wide-20261112T014736Z-v10-3708829.zip"
 
 
+def guest_marker_seen(transcript, marker):
+    """Match a completed guest command, ignoring PTY CRCRLF normalization."""
+    normalized = transcript.replace("\r", "")
+    return re.search(r"(?m)^" + re.escape(marker) + r"[ \t]*(?:\n|$)", normalized) is not None
+
+
 def stamp():
     return time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
 
@@ -376,10 +382,7 @@ class Lab:
                         # Check the actual echoed result after normalization; do
                         # not confuse the shell's displayed "echo MARKER" command
                         # with execution of the command itself.
-                        if sent and re.search(
-                            r"(?m)^" + re.escape(end) + r"[ \t]*(?:\n|$)",
-                            data.replace("\r", ""),
-                        ):
+                        if sent and guest_marker_seen(data, end):
                             result["probe_complete"] = True
                             result["success"] = True
                             break
