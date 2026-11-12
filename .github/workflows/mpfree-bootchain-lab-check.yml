@@ -1,0 +1,36 @@
+name: MPFree bootchain lab checks
+
+on:
+  push:
+    branches:
+      - research/wide-bootchain-audit-20261111
+    paths:
+      - "tools/mpc-one/run_bootchain_integrated_lab.py"
+      - "tools/mpc-one/usb_descriptor_mock_model.c"
+      - "tools/mpc-one/tests/test_integrated_qemu_serial.py"
+      - "tools/mpc-one/tests/test_usb_descriptor_mock_model.py"
+      - ".github/workflows/mpfree-bootchain-lab-check.yml"
+  pull_request:
+    paths:
+      - "tools/mpc-one/run_bootchain_integrated_lab.py"
+      - "tools/mpc-one/usb_descriptor_mock_model.c"
+      - "tools/mpc-one/tests/test_integrated_qemu_serial.py"
+      - "tools/mpc-one/tests/test_usb_descriptor_mock_model.py"
+
+jobs:
+  offline-host-tests:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile Python syntax
+        run: |
+          python3 -m py_compile tools/mpc-one/run_bootchain_integrated_lab.py
+          python3 -m py_compile tools/mpc-one/tests/test_integrated_qemu_serial.py
+          python3 -m py_compile tools/mpc-one/tests/test_usb_descriptor_mock_model.py
+      - name: QEMU serial parser regression
+        run: python3 -m unittest discover -s tools/mpc-one/tests -p 'test_integrated_qemu_serial.py' -v
+      - name: Synthetic USB interface model regression
+        run: python3 -m unittest discover -s tools/mpc-one/tests -p 'test_usb_descriptor_mock_model.py' -v
