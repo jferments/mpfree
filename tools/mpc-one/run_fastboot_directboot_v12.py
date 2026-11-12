@@ -387,10 +387,10 @@ def run_qemu(dst: Path, temp_root: Path, args):
                             os.write(master, (line + "\n").encode())
                         sent = True
                         cmd_deadline = time.monotonic() + args.qemu_probe_timeout
-                    if sent and token in transcript and "MPFREE_V12_SYNTH_PASS" in transcript:
+                    if sent and re.search(r"(?m)^" + re.escape(token) + r"[ \t]*$", transcript.replace("\r", "")) and "MPFREE_V12_SYNTH_PASS" in transcript:
                         result["guest_model"] = True
                         break
-                    if sent and token in transcript:
+                    if sent and re.search(r"(?m)^" + re.escape(token) + r"[ \t]*$", transcript.replace("\r", "")):
                         result["error"] = "Guest synthetic model did not pass"
                         break
         rows = []
