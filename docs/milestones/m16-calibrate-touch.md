@@ -1,6 +1,6 @@
 # M16: "Calibrate touch", orientation from four corner taps
 
-**Status:** the logic (`rust/mpfree-touch/src/corners.rs`) and a page in the pad player (`rust/mpfree-hello/src/calibrate_page.rs`) are built and tested on the workstation. The page reports and logs the result only: nothing writes a settings file, and the mapping in use doesn't change.
+**Status:** the logic (`rust/mpfree-touch/src/corners.rs`) and a page in the pad player (`rust/mpfree-app/src/calibrate_page.rs`) are built and tested on the workstation. The page reports and logs the result only: nothing writes a settings file, and the mapping in use doesn't change.
 
 ## Why
 

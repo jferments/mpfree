@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tests for host_hello_mpc.py (collect-over-ssh.sh --hello) against a fake test build. No device.
+"""Tests for host_app_mpc.py (collect-over-ssh.sh --app) against a fake test build. No device.
 
 The fake ssh runs the tool's real remote scripts under BusyBox applets (as on
 the MPC) against a fake root folder, setting the scripts' R='' root prefix to
@@ -27,15 +27,15 @@ import unittest
 HERE = os.path.dirname(os.path.abspath(__file__))
 TOOLS = os.path.dirname(HERE)
 REPO = os.path.dirname(os.path.dirname(TOOLS))
-HELPER = os.path.join(TOOLS, "host_hello_mpc.py")
+HELPER = os.path.join(TOOLS, "host_app_mpc.py")
 WRAPPER = os.path.join(TOOLS, "collect-over-ssh.sh")
-HELLO_SRC = os.path.join(REPO, "rust", "mpfree-hello", "src")
+APP_SRC = os.path.join(REPO, "rust", "mpfree-app", "src")
 UI_SRC = os.path.join(REPO, "rust", "mpfree-ui", "src")
 # Library code from the other crates the program links (their own programs, main.rs and bin/, are not part of it).
 LINKED_SRC = (os.path.join(REPO, "rust", "mpfree-touch", "src"), os.path.join(REPO, "rust", "mpfree-screen-log", "src"),
               os.path.join(REPO, "rust", "mpfree-prof", "src"), os.path.join(REPO, "rust", "mpfree-store", "src"))
 # mpfree-prof/alloc.rs holds the counting allocator, the crate's only unsafe code. It compiles only with the
-# crate's counting-alloc feature, which mpfree-hello does not enable (mpfree-bench does), so it never
+# crate's counting-alloc feature, which mpfree does not enable (mpfree-bench does), so it never
 # reaches the pad player and is left out of the scan.
 NOT_LINKED = ("mpfree-prof/alloc.rs",)
 NEW = "6.18.44-fake-rt6"
@@ -65,7 +65,7 @@ sh = os.path.join(os.environ["FAKE_REMOTE_PATH"], "sh")
 script = sys.stdin.read() if command == "sh -s" else command
 assert script.startswith("R=''"), "every remote script starts with R=''"
 script = f"R='{root}'" + script[len("R=''"):]
-program = 'exec "$R/run/mpfree-hello/mpfree-hello"'
+program = 'exec "$R/run/mpfree-app/mpfree"'
 if program in script:
     script = script.replace(program, 'exec "$FAKE_PROGRAM"')
 sys.exit(subprocess.run([sh, "-c", script], env=env, stdin=None if command == "sh -s" else sys.stdin).returncode)
@@ -108,10 +108,10 @@ cat "$FAKE_JOURNAL"
 
 FAKE_PROGRAM = r'''#!/bin/sh
 echo "program: $*" >> "$FAKE_LOG"
-echo "===== mpfree-hello $1 =====" >> "$FAKE_REPORT"
+echo "===== mpfree $1 =====" >> "$FAKE_REPORT"
 case "$1" in
   inventory) echo "audio card for the click: 1 (ACVA)"; echo "inventory done" ;;
-  screen) echo "Hello MPC."; echo "screen: card drawn" ;;
+  screen) echo "mpfree."; echo "screen: card drawn" ;;
   touch) echo "touch: 1 contact(s): slot 0: x 100 y 200"; echo "touch done: 40 events, 10 frames, 3 lines shown" ;;
   pads)
     case "$*" in *--keepalive*) echo "sent keep-alive 1"; h=$FAKE_PADS_KEEPALIVE ;; *) h=$FAKE_PADS ;; esac
@@ -190,7 +190,7 @@ def logical_lines(code):
             i += 1
     return "\n".join(re.sub(r",([)\]])", r"\1", ln) for ln in out) + "\n"
 
-class HelloTests(unittest.TestCase):
+class AppTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.busybox = shutil.which("busybox")
@@ -200,7 +200,7 @@ class HelloTests(unittest.TestCase):
             raise unittest.SkipTest("BusyBox not installed")
 
     def setUp(self):
-        self.tmp = tempfile.mkdtemp(prefix="mpfree-hello-test-")
+        self.tmp = tempfile.mkdtemp(prefix="mpfree-test-")
         t = self.tmp
         self.work, self.log, self.stage = os.path.join(t, "work"), os.path.join(t, "log"), os.path.join(t, "stage")
         self.root, self.report = os.path.join(t, "root310"), os.path.join(t, "report.txt")
@@ -222,15 +222,15 @@ class HelloTests(unittest.TestCase):
         program_standin = os.path.join(t, "program-standin")
         write(program_standin, FAKE_PROGRAM, 0o755)
         self.env = {"PATH": fakebin + os.pathsep + os.environ.get("PATH", "/usr/bin:/bin"),
-                    "HOME": t, "MPFREE_HELLO_TEST": "1", "FAKE_STAGE": self.stage, "FAKE_LOG": self.log,
+                    "HOME": t, "MPFREE_APP_TEST": "1", "FAKE_STAGE": self.stage, "FAKE_LOG": self.log,
                     "FAKE_ROOT": self.root, "FAKE_REMOTE_PATH": remote, "FAKE_SCREEN": self.screen,
                     "FAKE_PROGRAM": program_standin, "FAKE_ACVS": "inactive", "FAKE_PADS": "3",
                     "FAKE_PADS_KEEPALIVE": "2", "FAKE_CLICK_RC": "0", "FAKE_APP": self.app,
                     "FAKE_JOURNAL": self.journal, "FAKE_CLOCK": self.clock,
-                    "FAKE_REPORT": os.path.join(self.root, "run/mpfree-hello/hello.txt")}
+                    "FAKE_REPORT": os.path.join(self.root, "run/mpfree-app/report.txt")}
         self.key = os.path.join(t, "key")
         write(self.key, "fake key\n", 0o600)
-        self.program = os.path.join(t, "mpfree-hello")
+        self.program = os.path.join(t, "mpfree")
         write(self.program, arm_elf(), 0o755)
         self.build()
         self.make_root()
@@ -284,7 +284,7 @@ class HelloTests(unittest.TestCase):
                      "inventory done", "pad player: was inactive, now inactive",
                      "log display: was active, now inactive", "screen: card drawn", "touch done:",
                      "3 pad hits arrived without the keep-alive, so it is not sent.", "click done:",
-                     "Starting the log display again:", "log display: active", "| ===== mpfree-hello click =====",
+                     "Starting the log display again:", "log display: active", "| ===== mpfree click =====",
                      "RESULT: all steps ran", "NEXT: switch the MPC off with its power switch"):
             self.assertIn(text, out)
         self.assertEqual(self.log_lines("program: "),
@@ -297,10 +297,10 @@ class HelloTests(unittest.TestCase):
                           "is-active mpfree-test-screen.service", "stop mpfree-test-screen.service",
                           "is-active mpfree-test-screen.service",
                           "start mpfree-test-screen.service", "is-active mpfree-test-screen.service"])
-        with open(self.program, "rb") as a, open(f"{self.root}/run/mpfree-hello/mpfree-hello", "rb") as b:
+        with open(self.program, "rb") as a, open(f"{self.root}/run/mpfree-app/mpfree", "rb") as b:
             self.assertEqual(hashlib.sha256(a.read()).digest(), hashlib.sha256(b.read()).digest())
-        self.assertEqual(os.stat(f"{self.root}/run/mpfree-hello/mpfree-hello").st_mode & 0o777, 0o700)
-        self.assertFalse(os.path.exists(f"{self.root}/run/mpfree-hello/mpfree-hello.part"))
+        self.assertEqual(os.stat(f"{self.root}/run/mpfree-app/mpfree").st_mode & 0o777, 0o700)
+        self.assertFalse(os.path.exists(f"{self.root}/run/mpfree-app/mpfree.part"))
         with open(self.report) as fh:
             self.assertIn("RESULT: all steps ran", fh.read())
 
@@ -328,7 +328,7 @@ class HelloTests(unittest.TestCase):
         self.assertIn("your answer: yes, both fingers", res.stdout)
         # inventory only: nothing draws, so the log display is never stopped.
         write(self.log, "")
-        res = self.run_helper("\n", MPFREE_HELLO_STEPS="inventory")
+        res = self.run_helper("\n", MPFREE_APP_STEPS="inventory")
         self.assertEqual(res.returncode, 0, res.stdout)
         self.assertEqual(self.log_lines("program: "), ["inventory"])
         self.assertNotIn("stop mpfree-test-screen.service", self.log_lines("systemctl: "))
@@ -361,7 +361,7 @@ class HelloTests(unittest.TestCase):
         kit = self.kit()
         # lights: Enter + answer; drums: Enter + answer; setup: a wrong word, then SEND + answer.
         res = self.run_helper("\nall pads lit\n\nkick on pad 1\nsend\nSEND\nbuttons lit\n",
-                              MPFREE_HELLO_STEPS="drums,setup,lights")
+                              MPFREE_APP_STEPS="drums,setup,lights")
         self.assertEqual(res.returncode, 0, res.stdout)
         out = res.stdout
         for text in ("steps: lights, drums, setup", f"drum kits: {kit}", "2 kits, 112 bytes",
@@ -373,36 +373,36 @@ class HelloTests(unittest.TestCase):
         self.assertEqual(out.count("controller: 09e8:0046"), 3)
         self.assertEqual(self.log_lines("program: "),
                          ["lights --seconds 15", "drums --seconds 30 --gain-db -12", "setup --seconds 20"])
-        with open(kit, "rb") as a, open(f"{self.root}/run/mpfree-hello/kits.bin", "rb") as b:
+        with open(kit, "rb") as a, open(f"{self.root}/run/mpfree-app/kits.bin", "rb") as b:
             self.assertEqual(a.read(), b.read())
-        self.assertEqual(os.stat(f"{self.root}/run/mpfree-hello/kits.bin").st_mode & 0o777, 0o600)
+        self.assertEqual(os.stat(f"{self.root}/run/mpfree-app/kits.bin").st_mode & 0o777, 0o600)
         # Without the screen step, the first drawing step stops the log display; it is started again at the end.
         self.assertEqual([l for l in self.log_lines("systemctl: ") if "mpfree-test-screen" in l and "is-active" not in l],
                          ["stop mpfree-test-screen.service", "start mpfree-test-screen.service"])
 
     def test_setup_can_be_skipped_and_drums_needs_a_kit(self):
-        res = self.run_helper("s\n", MPFREE_HELLO_STEPS="setup,drums")
+        res = self.run_helper("s\n", MPFREE_APP_STEPS="setup,drums")
         self.assertEqual(res.returncode, 0, res.stdout)
         self.assertIn("no factory kits found (make them with offline-factory-kit.py); left out: drums", res.stdout)
         self.assertIn("steps: drums, setup", res.stdout)
         self.assertNotIn("[5/", res.stdout)
         self.assertEqual(self.log_lines("program: "), [])
-        self.assertFalse(os.path.exists(f"{self.root}/run/mpfree-hello/kits.bin"))
+        self.assertFalse(os.path.exists(f"{self.root}/run/mpfree-app/kits.bin"))
         # A file from round 3 (one kit, the old format) is not taken.
         self.kit(b"MPFKIT01" + b"\x01" * 100)
         write(self.log, "")
-        res = self.run_helper("", MPFREE_HELLO_STEPS="drums")
+        res = self.run_helper("", MPFREE_APP_STEPS="drums")
         self.assertEqual(res.returncode, 1, res.stdout)
         self.assertIn("is not a kits file", res.stdout)
         self.assertEqual(self.log_lines("ssh["), [])
-        res = self.run_helper("", MPFREE_HELLO_STEPS="pads,format")
+        res = self.run_helper("", MPFREE_APP_STEPS="pads,format")
         self.assertEqual(res.returncode, 1, res.stdout)
         self.assertIn("unknown step(s) format", res.stdout)
 
     def test_play_needs_send_and_the_kits(self):
         kit = self.kit()
         # play: a wrong word, then SEND + answer.
-        res = self.run_helper("go\nSEND\nkits and level followed\n", MPFREE_HELLO_STEPS="play")
+        res = self.run_helper("go\nSEND\nkits and level followed\n", MPFREE_APP_STEPS="play")
         self.assertEqual(res.returncode, 0, res.stdout)
         out = res.stdout
         for text in ("steps: play", f"drum kits: {kit}", "drum kits copied; their hash on the MPC matches",
@@ -415,19 +415,19 @@ class HelloTests(unittest.TestCase):
                          ["stop mpfree-test-screen.service", "start mpfree-test-screen.service"])
         # s skips it: nothing runs and the log display is never stopped.
         write(self.log, "")
-        res = self.run_helper("s\n", MPFREE_HELLO_STEPS="play")
+        res = self.run_helper("s\n", MPFREE_APP_STEPS="play")
         self.assertEqual(res.returncode, 0, res.stdout)
         self.assertEqual(self.log_lines("program: "), [])
         self.assertNotIn("stop mpfree-test-screen.service", self.log_lines("systemctl: "))
         # q stops.
-        res = self.run_helper("q\n", MPFREE_HELLO_STEPS="play")
+        res = self.run_helper("q\n", MPFREE_APP_STEPS="play")
         self.assertEqual(res.returncode, 1, res.stdout)
         self.assertIn("STOP: stopped by you", res.stdout)
         self.assertEqual(self.log_lines("program: "), [])
         # Without kits, play is left out with drums.
         shutil.rmtree(os.path.dirname(kit))
         write(self.log, "")
-        res = self.run_helper("", MPFREE_HELLO_STEPS="drums,play")
+        res = self.run_helper("", MPFREE_APP_STEPS="drums,play")
         self.assertEqual(res.returncode, 1, res.stdout)
         self.assertIn("left out: drums, play", res.stdout)
         self.assertIn("STOP: no steps left to run; nothing was sent to the MPC", res.stdout)
@@ -444,28 +444,28 @@ class HelloTests(unittest.TestCase):
         write(self.app, "active\n")
         write(self.screen, "inactive\n")
         self.add_journal([(5.1, "systemd[1]: Started MPFree test boot: the pad player, from power-on."),
-                      (6.0, "mpfree-hello[211]: pad player: 6 kits, 81 sounds"),
-                      (9.5, "mpfree-hello[211]: playing until the power goes off: ...")])
+                      (6.0, "mpfree[211]: pad player: 6 kits, 81 sounds"),
+                      (9.5, "mpfree[211]: playing until the power goes off: ...")])
         # The start-up read moves the fake clock to 110; phase k starts at 100 + 10 k and its lines are due
         # at 110 + 10 k.
-        self.add_journal([(111.0, "mpfree-hello[211]: +40.100 s Private: 90 0B 7F = button 11 pressed"),
-                      (111.1, "mpfree-hello[211]: button guide: MENU is button 11")], at=120)
-        self.add_journal([(121.0, "mpfree-hello[211]: +50.000 s Private: 99 25 12 = pad 1 down, velocity 18"),
-                      (121.1, "mpfree-hello[211]: +50.100 s Private: 89 25 00 = pad 1 up"),
-                      (121.5, "mpfree-hello[211]: +50.500 s Private: 99 25 7C = pad 1 down, velocity 124"),
-                      (122.0, "mpfree-hello[211]: +51.000 s Private: 90 27 7F = button 39 pressed"),
-                      (122.1, "mpfree-hello[211]: pad level: Full Level (every hit 127)"),
-                      (123.0, "mpfree-hello[211]: +52.000 s Private: B0 64 01 = data wheel +1"),
-                      (123.5, "mpfree-hello[211]: +52.500 s -> Public: F0 47 00 46 52 00 04 15 21 6D 43 F7 = session ping")],
+        self.add_journal([(111.0, "mpfree[211]: +40.100 s Private: 90 0B 7F = button 11 pressed"),
+                      (111.1, "mpfree[211]: button guide: MENU is button 11")], at=120)
+        self.add_journal([(121.0, "mpfree[211]: +50.000 s Private: 99 25 12 = pad 1 down, velocity 18"),
+                      (121.1, "mpfree[211]: +50.100 s Private: 89 25 00 = pad 1 up"),
+                      (121.5, "mpfree[211]: +50.500 s Private: 99 25 7C = pad 1 down, velocity 124"),
+                      (122.0, "mpfree[211]: +51.000 s Private: 90 27 7F = button 39 pressed"),
+                      (122.1, "mpfree[211]: pad level: Full Level (every hit 127)"),
+                      (123.0, "mpfree[211]: +52.000 s Private: B0 64 01 = data wheel +1"),
+                      (123.5, "mpfree[211]: +52.500 s -> Public: F0 47 00 46 52 00 04 15 21 6D 43 F7 = session ping")],
                      at=130)
-        self.add_journal([(141.0, "mpfree-hello[211]: Latch on"),
-                      (143.0, "mpfree-hello[211]: repeat: 16 hits in the last second on pads 1 2; latched: 1 2; "
+        self.add_journal([(141.0, "mpfree[211]: Latch on"),
+                      (143.0, "mpfree[211]: repeat: 16 hits in the last second on pads 1 2; latched: 1 2; "
                               "engine dropped 0 events, overflow 0"),
-                      (150.0, "mpfree-hello[211]: status: 60 hits (0 from the screen), 40 repeats, 0 underruns in "
+                      (150.0, "mpfree[211]: status: 60 hits (0 from the screen), 40 repeats, 0 underruns in "
                               "20000 periods, ...")], at=150)
         # Start-up: Enter + note; phases 1 to 3: Enter, Enter when done, note; phase 4: Enter, then q.
         answers = "\nloading ok\n" + "\n\nguide ok\n" + "\n\nsoft and hard differ\n" + "\n\nrepeat ok\n" + "\nq\n"
-        res = self.run_helper(answers, MPFREE_HELLO_STEPS="app")
+        res = self.run_helper(answers, MPFREE_APP_STEPS="app")
         self.assertEqual(res.returncode, 1, res.stdout)
         out = res.stdout
         for text in ("steps: app", "[3/3] The pad player that started at power-on (read-only",
@@ -486,7 +486,7 @@ class HelloTests(unittest.TestCase):
             report = fh.read()
         self.assertIn("| [   121.500] +50.500 s Private: 99 25 7C = pad 1 down, velocity 124", report)
         # Nothing was copied, started or stopped; only reads.
-        self.assertFalse(os.path.exists(f"{self.root}/run/mpfree-hello"))
+        self.assertFalse(os.path.exists(f"{self.root}/run/mpfree-app"))
         self.assertEqual(self.log_lines("program: "), [])
         self.assertEqual([l for l in self.log_lines("systemctl: ") if not l.startswith("is-active ")], [])
         self.assertTrue(all(l.startswith("-b -u mpfree-test-app.service -o short-monotonic")
@@ -496,9 +496,9 @@ class HelloTests(unittest.TestCase):
 
     def test_app_step_all_phases_and_the_status(self):
         write(self.app, "active\n")
-        self.add_journal([(130.0, "mpfree-hello[211]: status: 60 hits (0 from the screen), 40 repeats, 0 underruns")])
+        self.add_journal([(130.0, "mpfree[211]: status: 60 hits (0 from the screen), 40 repeats, 0 underruns")])
         answers = "\n\n" + "\n\n\n" * 12
-        res = self.run_helper(answers, MPFREE_HELLO_STEPS="app")
+        res = self.run_helper(answers, MPFREE_APP_STEPS="app")
         self.assertEqual(res.returncode, 0, res.stdout)
         self.assertIn("Phase 7 of 12: Arrange: record, overdub and undo", res.stdout)
         self.assertIn("Phase 8 of 12: Audio looper: loop the pads", res.stdout)
@@ -513,25 +513,25 @@ class HelloTests(unittest.TestCase):
         """Every phase skipped: the summary still shows the whole run, the touch interrupts and the status."""
         write(self.app, "active\n")
         write(f"{self.root}/proc/interrupts", " 61:        42          0  rockchip_gpio_irq   6 Edge      ili2117\n")
-        self.add_journal([(10.5, "mpfree-hello[211]: touchscreen: /dev/input/event0 (ILI2117 Touchscreen); read-only, not grabbed"),
-                          (11.0, "mpfree-hello[211]: touch-reader: seeded=yes contacts=0 events=0"),
-                          (12.0, "mpfree-hello[211]: saved settings: pad curve Hard, screen velocity 100, latch "
+        self.add_journal([(10.5, "mpfree[211]: touchscreen: /dev/input/event0 (ILI2117 Touchscreen); read-only, not grabbed"),
+                          (11.0, "mpfree[211]: touch-reader: seeded=yes contacts=0 events=0"),
+                          (12.0, "mpfree[211]: saved settings: pad curve Hard, screen velocity 100, latch "
                                  "replace, audio buffer 3 periods, developer tools on"),
-                          (12.5, "mpfree-hello[211]: saving: settings and found buttons are kept in /run/mpfree-data"),
-                          (20.0, "mpfree-hello[211]: +9.000 s Private: 99 25 40 = pad 1 down, velocity 64"),
-                          (20.5, "mpfree-hello[211]: +9.500 s Private: 90 27 7F = button 39 pressed"),
-                          (20.6, "mpfree-hello[211]: pad level: Full Level (every hit 127)"),
-                          (30.0, "mpfree-hello[211]: button guide done: MENU = button 123, REC = button 7"),
-                          (31.0, "mpfree-hello[211]: developer tools: on"),
-                          (32.0, "mpfree-hello[211]: map: PAD BANK A/E = button 35"),
-                          (33.0, "mpfree-hello[211]: bank: B (kit 2: Lo-fi)"),
-                          (34.0, "mpfree-hello[211]: perf: cpu 30.1 % of a core (mpfree-hello (812) 25.0)"),
-                          (35.0, "mpfree-hello[211]: time: transport: Record"),
-                          (40.0, "mpfree-hello[211]: touch-lab: step=taps result=pass downs=5 note=ok"),
-                          (45.0, "mpfree-hello[211]: touch-calibrate: result=match"),
-                          (60.0, "mpfree-hello[211]: status: 1 hits (0 from the screen), 0 underruns; sampler: render mean 90 us")])
+                          (12.5, "mpfree[211]: saving: settings and found buttons are kept in /run/mpfree-data"),
+                          (20.0, "mpfree[211]: +9.000 s Private: 99 25 40 = pad 1 down, velocity 64"),
+                          (20.5, "mpfree[211]: +9.500 s Private: 90 27 7F = button 39 pressed"),
+                          (20.6, "mpfree[211]: pad level: Full Level (every hit 127)"),
+                          (30.0, "mpfree[211]: button guide done: MENU = button 123, REC = button 7"),
+                          (31.0, "mpfree[211]: developer tools: on"),
+                          (32.0, "mpfree[211]: map: PAD BANK A/E = button 35"),
+                          (33.0, "mpfree[211]: bank: B (kit 2: Lo-fi)"),
+                          (34.0, "mpfree[211]: perf: cpu 30.1 % of a core (mpfree (812) 25.0)"),
+                          (35.0, "mpfree[211]: time: transport: Record"),
+                          (40.0, "mpfree[211]: touch-lab: step=taps result=pass downs=5 note=ok"),
+                          (45.0, "mpfree[211]: touch-calibrate: result=match"),
+                          (60.0, "mpfree[211]: status: 1 hits (0 from the screen), 0 underruns; sampler: render mean 90 us")])
         answers = "\n\n" + "s\n" * 12
-        res = self.run_helper(answers, MPFREE_HELLO_STEPS="app")
+        res = self.run_helper(answers, MPFREE_APP_STEPS="app")
         self.assertEqual(res.returncode, 0, res.stdout)
         out = res.stdout
         for text in ("touch interrupts at the start: 61: 42 0 rockchip_gpio_irq 6 Edge ili2117",
@@ -543,7 +543,7 @@ class HelloTests(unittest.TestCase):
                      "    button guide done: MENU = button 123, REC = button 7", "    time: transport: Record",
                      "    developer tools: on", "    map: PAD BANK A/E = button 35", "    bank: B (kit 2: Lo-fi)",
                      "The developer tools' process numbers (1 perf lines; the latest):",
-                     "    perf: cpu 30.1 % of a core (mpfree-hello (812) 25.0)",
+                     "    perf: cpu 30.1 % of a core (mpfree (812) 25.0)",
                      "    touch-lab: step=taps result=pass downs=5 note=ok",
                      "    touch-calibrate: result=match",
                      "pad hits from the controller: 1; buttons pressed: 39",
@@ -567,17 +567,17 @@ class HelloTests(unittest.TestCase):
         """The line step reads the capture device's state and the log; the pad player does the opening."""
         write(self.app, "active\n")
         self.make_acva()
-        self.add_journal([(101.0, "mpfree-hello[211]: line input: on: /dev/snd/pcmC1D0c, rate 44100, channels 2, "
+        self.add_journal([(101.0, "mpfree[211]: line input: on: /dev/snd/pcmC1D0c, rate 44100, channels 2, "
                                   "period 128 frames, buffer 256 frames"),
-                          (101.1, "mpfree-hello[211]: looper: records from line input")], at=110)
-        self.add_journal([(111.0, "mpfree-hello[211]: looper: Record: armed, the first pass starts on the next bar line "
+                          (101.1, "mpfree[211]: looper: records from line input")], at=110)
+        self.add_journal([(111.0, "mpfree[211]: looper: Record: armed, the first pass starts on the next bar line "
                                   "(2 bars)"),
-                          (115.0, "mpfree-hello[211]: looper: loop of 2 bars at 3.1.000: 176400 frames (4.00 s), playing")],
+                          (115.0, "mpfree[211]: looper: loop of 2 bars at 3.1.000: 176400 frames (4.00 s), playing")],
                          at=120)
-        self.add_journal([(121.0, "mpfree-hello[211]: line input: off (2000 periods, 0 short, 0 frames dropped, "
+        self.add_journal([(121.0, "mpfree[211]: line input: off (2000 periods, 0 short, 0 frames dropped, "
                                   "0 overruns, 0 errors)")], at=130)
         answers = "LINE\n" + "\n\nmeter moved, L left\n" + "\n\nloop ok\n" + "\n\noff ok\n"
-        res = self.run_helper(answers, MPFREE_HELLO_STEPS="line")
+        res = self.run_helper(answers, MPFREE_APP_STEPS="line")
         self.assertEqual(res.returncode, 0, res.stdout)
         out = res.stdout
         for text in ("steps: line", "[3/3] The line input (STATE-CHANGING on the MPC, RAM only",
@@ -594,7 +594,7 @@ class HelloTests(unittest.TestCase):
         self.assertNotIn("rockchiphdmi", out)
         # Nothing was copied, started or stopped; only reads.
         self.assertNotIn("Copy the program", out)
-        self.assertFalse(os.path.exists(f"{self.root}/run/mpfree-hello"))
+        self.assertFalse(os.path.exists(f"{self.root}/run/mpfree-app"))
         self.assertEqual(self.log_lines("program: "), [])
         self.assertEqual([l for l in self.log_lines("systemctl: ") if not l.startswith("is-active ")], [])
         with open(self.app) as fh:
@@ -603,7 +603,7 @@ class HelloTests(unittest.TestCase):
     def test_line_step_needs_the_word_and_the_pad_player(self):
         write(self.app, "active\n")
         self.make_acva()
-        res = self.run_helper("line\ns\n", MPFREE_HELLO_STEPS="line")
+        res = self.run_helper("line\ns\n", MPFREE_APP_STEPS="line")
         self.assertEqual(res.returncode, 0, res.stdout)
         self.assertIn("Please type LINE exactly, or s, or q.", res.stdout)
         self.assertIn("answer: s", res.stdout)
@@ -612,7 +612,7 @@ class HelloTests(unittest.TestCase):
         # Without the pad player, after the app step, it reads and stops there; no ACVA card, it says so.
         write(self.app, "inactive\n")
         shutil.rmtree(f"{self.root}/proc/asound")
-        res = self.run_helper("\nit showed an error\n", MPFREE_HELLO_STEPS="line,app")
+        res = self.run_helper("\nit showed an error\n", MPFREE_APP_STEPS="line,app")
         self.assertEqual(res.returncode, 0, res.stdout)
         out = res.stdout
         self.assertLess(out.index("[3/4] The pad player that started at power-on"), out.index("[4/4] The line input"))
@@ -622,8 +622,8 @@ class HelloTests(unittest.TestCase):
         self.assertNotIn("Copy the program", out)
 
     def test_app_step_when_the_app_is_not_running(self):
-        self.add_journal([(7.0, "mpfree-hello[211]: STOP: no sound card called ACVA after 30 s")])
-        res = self.run_helper("\nit showed an error\n", MPFREE_HELLO_STEPS="app")
+        self.add_journal([(7.0, "mpfree[211]: STOP: no sound card called ACVA after 30 s")])
+        res = self.run_helper("\nit showed an error\n", MPFREE_APP_STEPS="app")
         self.assertEqual(res.returncode, 0, res.stdout)
         self.assertIn("pad player (mpfree-test-app.service): inactive", res.stdout)
         self.assertIn("STOP: no sound card called ACVA after 30 s", res.stdout)
@@ -633,7 +633,7 @@ class HelloTests(unittest.TestCase):
     def test_other_steps_stop_the_app_and_start_it_again(self):
         write(self.app, "active\n")
         write(self.screen, "inactive\n")
-        res = self.run_helper("\nok\n", MPFREE_HELLO_STEPS="screen")
+        res = self.run_helper("\nok\n", MPFREE_APP_STEPS="screen")
         self.assertEqual(res.returncode, 0, res.stdout)
         self.assertIn("pad player: was active, now inactive", res.stdout)
         self.assertIn("log display: was inactive, now inactive", res.stdout)
@@ -650,7 +650,7 @@ class HelloTests(unittest.TestCase):
             self.make_root()
         finally:
             del os.environ["FAKE_USB_PRODUCT"]
-        res = self.run_helper("\n\n\n", MPFREE_HELLO_STEPS="lights,click")
+        res = self.run_helper("\n\n\n", MPFREE_APP_STEPS="lights,click")
         self.assertEqual(res.returncode, 1, res.stdout)
         self.assertIn("controller: 09e8:0047", res.stdout)
         self.assertIn("STOP: the controller's USB id changed", res.stdout)
@@ -661,7 +661,7 @@ class HelloTests(unittest.TestCase):
         res = self.run_helper()
         self.assertEqual(res.returncode, 1, res.stdout)
         self.assertIn("the test build did not answer", res.stdout)
-        self.assertFalse(os.path.exists(f"{self.root}/run/mpfree-hello"))
+        self.assertFalse(os.path.exists(f"{self.root}/run/mpfree-app"))
         self.assertEqual(self.log_lines("program: "), [])
 
     def test_checks_stop_before_anything_is_copied(self):
@@ -674,7 +674,7 @@ class HelloTests(unittest.TestCase):
             self.assertEqual(res.returncode, 1, res.stdout)
             self.assertIn(f"PROBLEM: {problem}", res.stdout)
             self.assertIn("the test build is not ready; nothing was changed on it", res.stdout)
-            self.assertFalse(os.path.exists(f"{self.root}/run/mpfree-hello"))
+            self.assertFalse(os.path.exists(f"{self.root}/run/mpfree-app"))
         self.assertEqual(self.log_lines("program: "), [])
 
     def test_bad_programs_stop_before_contacting_the_mpc(self):
@@ -692,26 +692,26 @@ class HelloTests(unittest.TestCase):
 
     def test_wrapper_needs_a_terminal_and_the_opt_in(self):
         env = dict(self.env, MPC_KEY=self.key)
-        res = subprocess.run(["bash", WRAPPER, "--hello"], input="", env=env, text=True,
+        res = subprocess.run(["bash", WRAPPER, "--app"], input="", env=env, text=True,
                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=60)
         self.assertEqual(res.returncode, 1, res.stdout)
         self.assertIn("run it from a terminal", res.stdout)
         master, slave = pty.openpty()
         try:
-            res = subprocess.run(["bash", WRAPPER, "--hello"], stdin=slave, env=env, text=True,
+            res = subprocess.run(["bash", WRAPPER, "--app"], stdin=slave, env=env, text=True,
                                  stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=60)
         finally:
             os.close(slave)
             os.close(master)
         self.assertEqual(res.returncode, 1, res.stdout)
-        self.assertIn("MPFREE_ACCEPT_HELLO=YES", res.stdout)
+        self.assertIn("MPFREE_ACCEPT_APP=YES", res.stdout)
         self.assertEqual(self.log_lines("ssh["), [])
 
 
 class StaticTests(unittest.TestCase):
     def test_remote_scripts_change_only_ram(self):
         import importlib.util
-        spec = importlib.util.spec_from_file_location("host_hello_mpc", HELPER)
+        spec = importlib.util.spec_from_file_location("host_app_mpc", HELPER)
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
         names = ("CHECK", "PREPARE", "RECEIVE", "RECEIVE_KIT", "HASH", "HASH_KIT", "RUN", "SCREEN_STOP", "SCREEN_START",
@@ -727,8 +727,8 @@ class StaticTests(unittest.TestCase):
             self.assertIsNone(re.search(r"(^|[;&|(]\s*|systemctl\s+)(reboot|poweroff|halt)\b", text, re.M), name)
         writes = [ln for t in scripts.values() for ln in t.splitlines() if re.search(r"(^|[^2])>[^&]", ln)]
         self.assertEqual(writes, [mod.RECEIVE, mod.RECEIVE_KIT], writes)
-        self.assertIn('cat > "$R/run/mpfree-hello/mpfree-hello.part"', mod.RECEIVE)
-        self.assertIn('cat > "$R/run/mpfree-hello/kits.bin.part"', mod.RECEIVE_KIT)
+        self.assertIn('cat > "$R/run/mpfree-app/mpfree.part"', mod.RECEIVE)
+        self.assertIn('cat > "$R/run/mpfree-app/kits.bin.part"', mod.RECEIVE_KIT)
         services = re.findall(r"systemctl (stop|start|restart|enable|disable|mask|unmask|kill) (\S+)",
                               " ".join(scripts.values()))
         self.assertEqual(sorted(services), [("start", "mpfree-test-app.service"), ("start", "mpfree-test-screen.service"),
@@ -746,8 +746,8 @@ class StaticTests(unittest.TestCase):
     def program_sources(self):
         """(name, code) for every Rust file built into the program, without its test module (tests never
         reach the MPC; test code may write temporary files)."""
-        files = [(f"mpfree-hello/{os.path.relpath(os.path.join(d, n), HELLO_SRC)}", os.path.join(d, n))
-                 for d, _, names in sorted(os.walk(HELLO_SRC)) for n in sorted(names) if n.endswith(".rs")]
+        files = [(f"mpfree-app/{os.path.relpath(os.path.join(d, n), APP_SRC)}", os.path.join(d, n))
+                 for d, _, names in sorted(os.walk(APP_SRC)) for n in sorted(names) if n.endswith(".rs")]
         files += [(f"mpfree-ui/{n}", os.path.join(UI_SRC, n)) for n in sorted(os.listdir(UI_SRC))]
         for d in LINKED_SRC:
             crate = os.path.basename(os.path.dirname(d))
@@ -795,13 +795,13 @@ class StaticTests(unittest.TestCase):
                     self.assertNotIn(needle, line, f"{name}: {line.strip()}")
         with open(os.path.join(HERE, "..", "offline-kexec-stick.py")) as fh:
             stick = fh.read()
-        self.assertIn("exec /etc/mpfree-test/mpfree-hello app --kits /run/mpfree-kits/kits.bin{keep}", stick)
+        self.assertIn("exec /etc/mpfree-test/mpfree app --kits /run/mpfree-kits/kits.bin{keep}", stick)
         self.assertNotIn("--save-patterns", stick)
         texts = [line for _, line in found]
         expected = (
-            # the program's own report in /run/mpfree-hello (Out::new and the STOP line in main)
-            "OpenOptions::new().create(true).append(true).mode(0o644).open(Path::new(REPORT_DIR).join(\"hello.txt\")).ok()",
-            "if let Ok(mut f) = OpenOptions::new().create(true).append(true).open(Path::new(REPORT_DIR).join(\"hello.txt\")) {",
+            # the program's own report in /run/mpfree-app (Out::new and the STOP line in main)
+            "OpenOptions::new().create(true).append(true).mode(0o644).open(Path::new(REPORT_DIR).join(\"report.txt\")).ok()",
+            "if let Ok(mut f) = OpenOptions::new().create(true).append(true).open(Path::new(REPORT_DIR).join(\"report.txt\")) {",
             # the framebuffer and its sysfs pan file (mpfree-ui's FbTarget)
             "let file = OpenOptions::new().write(true).open(fb).map_err(|e| format!(\"{}: {e}\", fb.display()))?;",
             "let _ = OpenOptions::new().write(true).open(sysfs.join(\"pan\")).and_then(|mut f| f.write_all(b\"0,0\\n\"));",
@@ -819,7 +819,7 @@ class StaticTests(unittest.TestCase):
         )
         self.assertEqual(sorted(texts), sorted(expected), "\n".join(texts))
         files = {name for name, _ in found}
-        self.assertEqual(files, {"mpfree-hello/main.rs", "mpfree-hello/alsa.rs", "mpfree-ui/fb.rs", "mpfree-store/lib.rs"},
+        self.assertEqual(files, {"mpfree-app/main.rs", "mpfree-app/alsa.rs", "mpfree-ui/fb.rs", "mpfree-store/lib.rs"},
                          files)
         # Folders are made only by the store, and only start-app.sh names the folder it is given.
         for name, code in self.program_sources():
@@ -840,12 +840,12 @@ class StaticTests(unittest.TestCase):
     def test_arp_patterns_are_saved_only_through_the_store(self):
         """The pad player has no --save-patterns any more: Save keeps the arp's patterns in mpfree-store
         (arp/patterns.txt under --data), and --patterns FILE is only read."""
-        main = dict(self.program_sources())["mpfree-hello/main.rs"]
+        main = dict(self.program_sources())["mpfree-app/main.rs"]
         self.assertNotIn('"--save-patterns"', main)
         self.assertNotIn("fn write_patterns", main)
         self.assertIn("store.write(app::saved::ARP, app::saved::ARP_PATTERNS, text.into_bytes())", main)
         with open(os.path.join(os.path.dirname(HERE), "offline-kexec-stick.py")) as fh:
-            starts = [ln for ln in fh.read().splitlines() if "mpfree-hello app" in ln]
+            starts = [ln for ln in fh.read().splitlines() if "mpfree app" in ln]
         self.assertEqual(len(starts), 2, starts)   # with the data partition mounted, and without
         for start in starts:
             self.assertNotIn("--save-patterns", start)
@@ -853,15 +853,15 @@ class StaticTests(unittest.TestCase):
     def test_unsafe_code_only_in_sys(self):
         """The C calls (ioctl, fcntl, sched_setscheduler, mlockall) are the only unsafe code in MPFree's own source."""
         for name, code in self.program_sources():
-            if name == "mpfree-hello/main.rs":
+            if name == "mpfree-app/main.rs":
                 self.assertIn("#![deny(unsafe_code)]", code)
             if name in ("mpfree-ui/lib.rs", "mpfree-touch/lib.rs", "mpfree-screen-log/lib.rs"):
                 self.assertIn("#![forbid(unsafe_code)]", code, name)
-            if name != "mpfree-hello/sys.rs":
+            if name != "mpfree-app/sys.rs":
                 self.assertNotIn("unsafe {", code, name)
                 self.assertNotIn("unsafe extern", code, name)
                 self.assertNotIn("allow(unsafe_code)", code, name)
-        with open(os.path.join(HELLO_SRC, "sys.rs")) as fh:
+        with open(os.path.join(APP_SRC, "sys.rs")) as fh:
             sys_rs = fh.read()
         self.assertEqual(sorted(set(re.findall(r"\bfn (\w+)\(", sys_rs.split("extern \"C\" {")[1].split("}")[0]))),
                          ["fcntl", "ioctl", "mlockall", "sched_setscheduler"])
