@@ -431,6 +431,8 @@ class Lab:
                 "echo MPFREE_VM_SECTION_direct_boot_rootfs",
                 "ls -la /boot 2>&1",
                 "for p in /boot/boot.scr.uimg /boot/zImage /boot/rk3288-az01-acva.dtb /boot/rk3288-az01-acva-c.dtb; do if test -f \"$p\"; then sha256sum \"$p\" 2>&1; else echo MISSING_BOOT_ASSET:\"$p\"; fi; done",
+                "echo MPFREE_VM_SECTION_boot_script_hex",
+                "od -An -v -tx1 /boot/boot.scr.uimg 2>&1",
                 "echo MPFREE_VM_SECTION_kernel_modules",
                 "ls -la /lib/modules /lib/firmware 2>&1",
                 "echo MPFREE_VM_SECTION_310_trustpoint_unit",
@@ -534,7 +536,7 @@ class Lab:
                 transcript = data.splitlines()
             result["serial_log"] = guest.name
             normalized = data.replace("\r", "")
-            split_sections = re.split(r"(?m)^MPFREE_VM_SECTION_([a-z_]+)[ ]*$", normalized)
+            split_sections = re.split(r"(?m)^MPFREE_VM_SECTION_([a-z0-9_]+)[ ]*$", normalized)
             sections = {}
             for k in range(1, len(split_sections) - 1, 2):
                 section = split_sections[k]
