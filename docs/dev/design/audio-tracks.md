@@ -91,6 +91,16 @@ Recording to the storage partition instead of RAM, so tracks can be as long as t
 
 Each case is an 8-bar song loop with every track comped so that two takes crossfade on every beat. Using round 7's calibration (the MPC is roughly 6.6 to 10 times slower), 8 tracks should cost about 1 % of a period on average and about 3 % at the 99th percentile. That is an estimate, not a device number. The worst blocks on the cloud VM vary from run to run.
 
+## In the app: the host
+
+[`host.rs`](../../../rust/mpfree-audiotracks/src/host.rs) is what the app wires in. `AudioHost` owns the tracks (on the audio thread) and a worker thread, `mpfree-audiotracks`, that makes and drops every big buffer, so the audio loop never allocates audio memory.
+
+- **Each period:** `period(block, map, input, out)` runs the tracks on the transport's block, then tends the save, the fit and the buffers handed back by loads.
+- **Save:** `save()` waits until nothing records or loads, has the worker make room for every take, then reads the takes at `READ_SPEED` (64 frames for each frame that plays). `saving()` says how far it has got. `take_saved()` gives the result, ready for `save::to_text` and `save::wav`.
+- **Open:** `load(saved)` puts the takes and tracks back. Each take copies in over the next periods. Anything that can't be put back is named in the error, and the rest loads.
+- **Fit to tempo:** `fit(id, bpm)` reads the take, stretches it on the worker, loads the result under a free id and swaps it in as one undo step. `fitting()` names the take while it runs. `fits` and `fits_failed` count the outcomes, so a failed fit is shown, not hidden.
+- **Tests** (`tests/host.rs`): a save made across periods opens in a fresh host and plays back sample for sample; a save asked for while recording waits for the recording to end; a fit at half the tempo fills the bar, and Undo goes back.
+
 ## Joining the rest of MPFree
 
 - **The arrangement.** Audio tracks keep their own regions on song ticks, next to the arrangement's MIDI placements (PR #160), so the two are independent. The Song view can draw each audio track as one more lane, with its take lanes under it for comping. `SetActive(false)` silences the tracks when the song is not playing (clip launch mode), if that is what the time engine wants.
@@ -106,6 +116,7 @@ Each case is an 8-bar song loop with every track comped so that two takes crossf
 ## Not built yet
 
 - Recording to disk, for tracks longer than the RAM pool.
-- Fitting takes on its own when the tempo changes: the host runs the stretch worker (as `LoopHost` does for loop prints).
+- Fitting takes on its own when the tempo changes. The host fits one take when asked; deciding when to ask is the app's call.
+- A peak overview the screen can read. `peaks()` reads the pool, which lives with the tracks on the audio thread.
 - The pad player's wiring and the Song view's audio lanes and take lanes. Saving is built in the engine (above); the project browser writes the files once it is in the app.
 - Device runs. Opening the line input on the MPC needs Jay's go, step by step (rule zero).
