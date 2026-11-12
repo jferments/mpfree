@@ -68,10 +68,11 @@ use mpfree_node::Node;
 use mpfree_sampler::autosample::{Finished, Job, Plan};
 use mpfree_sampler::engine::EngineView;
 use mpfree_sampler::model::{
-    ChannelPick, Fade, LoopMode, Pad, PadsPlay, PlayMode, Project, Region, Source, SourceId,
+    ChannelPick, Fade, LoopMode, Pad, PadsPlay, PlayMode, Project, Region, Source, SourceId, Warp,
+    WARP_BPM,
 };
 use mpfree_sampler::phrase::Phrase;
-use mpfree_sampler::record::{self, Input, Progress, Recording};
+use mpfree_sampler::record::{self, Input, Looped, Progress, Recording};
 use mpfree_sampler::save::{self, Opened};
 use mpfree_sampler::warp::{CopyKey, Done, Warps, Worker};
 use mpfree_sampler::wav;
@@ -184,6 +185,8 @@ struct Take {
     kit: usize,
     pad: usize,
     pick: record::Pick,
+    /// Whole bars at the tempo: it lands warped at the project tempo.
+    bars: bool,
 }
 
 /// A Flatten running (the Rec tab's third button): the pad's own mixer
@@ -229,6 +232,28 @@ fn flatten_lift(f: &Flatten) -> FromUi {
         pad: f.pad,
         velocity: f.velocity,
         down: f.toggle,
+    }
+}
+
+/// What a finished take did after its bars, for its log line: "recorded",
+/// with how long it rang out or how it was made a loop.
+fn take_what(rec: &Recording) -> String {
+    let (Some(cut), Progress::Done { frames }) = (rec.cut_frames(), rec.progress()) else {
+        return "recorded".to_string();
+    };
+    let rate = rec.rate();
+    match (rec.tail(), rec.looped()) {
+        (record::Tail::Ring(_), _) => format!(
+            "recorded, rang out {}",
+            duration_text(frames.saturating_sub(cut), rate)
+        ),
+        (_, Some(Looped::GoingRound)) => "recorded as a loop, cut: it was going round".to_string(),
+        (_, Some(Looped::Folded { frames })) => format!(
+            "recorded as a loop, {} of ringing folded onto its start",
+            duration_text(frames, rate)
+        ),
+        (_, Some(Looped::SecondTime)) => "recorded as a loop, its second time round".to_string(),
+        _ => "recorded".to_string(),
     }
 }
 
@@ -1883,9 +1908,11 @@ impl SamplePage {
             self.pad_text(self.kit, pad),
             rec_tab::value_text(&settings, rec_tab::Row::Start, &st.sources).to_lowercase(),
             match settings.end {
-                rec_tab::EndAt::Length => {
-                    rec_tab::value_text(&settings, rec_tab::Row::Length, &st.sources)
-                }
+                rec_tab::EndAt::Length => format!(
+                    "{} then {}",
+                    rec_tab::value_text(&settings, rec_tab::Row::Length, &st.sources),
+                    rec_tab::value_text(&settings, rec_tab::Row::Tail, &st.sources).to_lowercase()
+                ),
                 _ => rec_tab::value_text(&settings, rec_tab::Row::End, &st.sources).to_lowercase(),
             },
             settings.pick.label().to_lowercase(),
@@ -1899,6 +1926,7 @@ impl SamplePage {
             kit: self.kit,
             pad,
             pick: settings.pick,
+            bars: settings.in_bars(),
         });
         self.feed_rec(ui, 0.0);
     }
@@ -1924,8 +1952,10 @@ impl SamplePage {
         let what = format!("skip back {}", settings.skip.label());
         let rate = input.rate;
         let name = self.take_name();
+        // Whole bars follow the project tempo.
+        let bpm = matches!(settings.skip, Skip::Bars(_)).then(|| self.tempo());
         match data.and_then(|d| settings.pick.source(&name, rate, d)) {
-            Ok(src) => self.keep(ui, self.kit, pad, src, &what),
+            Ok(src) => self.keep_warped(ui, self.kit, pad, src, &what, bpm),
             Err(e) => self.lines.push(format!("sample: {what} not kept ({e:?})")),
         }
     }
@@ -1941,13 +1971,34 @@ impl SamplePage {
     /// Puts a recorded sound on pad `pad` of kit `kit` (one undo step) and
     /// picks that pad.
     fn keep(&mut self, ui: &mut Ui, kit: usize, pad: usize, src: Source, what: &str) {
+        self.keep_warped(ui, kit, pad, src, what, None);
+    }
+
+    /// [`Self::keep`], warped at `bpm` when given (whole bars played at
+    /// that tempo: they follow the project's from then on).
+    fn keep_warped(
+        &mut self,
+        ui: &mut Ui,
+        kit: usize,
+        pad: usize,
+        src: Source,
+        what: &str,
+        bpm: Option<f64>,
+    ) {
         let (name, frames, rate, ch) = (src.name.clone(), src.frames(), src.rate(), src.channels());
         let Some(project) = self.projects.get_mut(kit) else {
             self.lines
                 .push(format!("sample: {what} not kept (the kit is gone)"));
             return;
         };
-        match project.put_source(pad, src) {
+        let warp = bpm.map(|b| Warp::new((b as f32).clamp(*WARP_BPM.start(), *WARP_BPM.end())));
+        let warped = warp
+            .as_ref()
+            .map(|w| format!(", warped at {:.1} BPM", w.bpm));
+        match project.put_source_as(pad, src, |name, mut layer, old| {
+            layer.region.warp = warp;
+            Pad::replacing(name, layer, old)
+        }) {
             Ok(_) => {
                 self.edits += 1;
                 if let Some(d) = self.dirty.get_mut(kit) {
@@ -1960,7 +2011,10 @@ impl SamplePage {
                     if ch == 2 { "stereo" } else { "mono" },
                     self.pad_text(kit, pad)
                 );
-                self.lines.push(format!("sample: {what}: {text}"));
+                self.lines.push(format!(
+                    "sample: {what}: {text}{}",
+                    warped.unwrap_or_default()
+                ));
                 self.last_take = text;
                 if kit == self.kit {
                     self.lift();
@@ -2249,6 +2303,7 @@ impl SamplePage {
                     kit: f.kit,
                     pad: f.target,
                     pick: record::Pick::Stereo,
+                    bars: false,
                 });
                 self.hits.push(hit);
                 if let Some(f) = self.flatten.as_mut() {
@@ -2650,8 +2705,10 @@ impl SamplePage {
                 Ok(Progress::Done { .. }) => {
                     if let Some(t) = self.take.take() {
                         let name = self.take_name();
+                        let what = take_what(&t.rec);
+                        let bpm = t.bars.then(|| self.tempo());
                         match t.rec.finish(&name, t.pick) {
-                            Some(Ok(src)) => self.keep(ui, t.kit, t.pad, src, "recorded"),
+                            Some(Ok(src)) => self.keep_warped(ui, t.kit, t.pad, src, &what, bpm),
                             Some(Err(e)) => {
                                 self.lines.push(format!("sample: take not kept ({e:?})"))
                             }
@@ -2790,6 +2847,12 @@ impl SamplePage {
     /// The project tempo (the transport's).
     pub fn tempo(&self) -> f64 {
         self.warps.tempo()
+    }
+
+    /// The Rec tab's settings, once it has been opened.
+    #[cfg(test)]
+    pub fn rec_settings(&self) -> Option<rec_tab::RecSettings> {
+        self.rec.as_ref().map(|t| t.settings)
     }
 
     /// Whether kit `kit` has a warped pad.
