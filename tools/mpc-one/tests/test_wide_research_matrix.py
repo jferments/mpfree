@@ -62,6 +62,12 @@ def fixture():
                 'dwmmc@ff0c0000 {',
                 'status = "disabled";',
                 '};',
+                'dwmmc@ff0d0000 {',
+                'status = "disabled";',
+                '};',
+                'dwmmc@ff0e0000 {',
+                'status = "disabled";',
+                '};',
                 'dwmmc@ff0f0000 {',
                 'status = "okay";',
                 'bus-width = <0x08>;',
@@ -131,6 +137,14 @@ class BroadMatrixTests(unittest.TestCase):
         self.assertEqual(row["status"], "static-supported")
         data["fdt"]["uboot_stage_fdt"][0]["selected_dts_lines"][
             3] = 'status = "okay";'
+        changed = build(data)
+        row = next(x for x in changed["questions"]
+                   if "enable its SDMMC boot target" in x["question"])
+        self.assertEqual(row["status"], "unresolved")
+        # Revert first controller and enable an unused non-eMMC controller.
+        data = fixture()
+        data["fdt"]["uboot_stage_fdt"][0]["selected_dts_lines"][
+            6] = 'status = "okay";'
         changed = build(data)
         row = next(x for x in changed["questions"]
                    if "enable its SDMMC boot target" in x["question"])
