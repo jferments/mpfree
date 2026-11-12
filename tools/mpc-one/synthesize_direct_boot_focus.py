@@ -18,6 +18,8 @@ SOURCE={
     "fdt":"static/wide/p1-p3-embedded-fdt-crossstage.json",
     "spl":"static/v11/v11-ghidra-spl.json",
     "update":"static/v11/v11-ghidra-az01-update.json",
+    "usb":"usb-protocol-evidence.json",
+    "framing":"usb-ff617a-framing.json",
 }
 UBOOT_SHA="b4d3940c9a6a7b75590c094278aa3735c5f97e84885a9f4780dd922d27d27b7a"
 def build(read):
@@ -159,6 +161,33 @@ def build(read):
         "if (uVar4 != 9)" in reboot_code and
         "*DAT_00101154 = 1;" in reboot_code
     )
+    observed_usb = d["usb"].get("verified_backend_interfaces", [])
+    backend_classes = {
+        (x.get("usb_descriptor",{}).get("class"),
+         x.get("usb_descriptor",{}).get("subclass"),
+         x.get("usb_descriptor",{}).get("protocol"))
+        for x in observed_usb
+    }
+    checks["all_three_host_usb_selector_families_verified"] = (
+        len(observed_usb) == 3 and backend_classes == {
+            ("0xff", "0x42", "0x03"),
+            ("0xff", "0x61", "0x7a"),
+            ("0xff", "0x06", "0x05"),
+        } and all(x.get("initializer_references_table")
+                  for x in observed_usb)
+    )
+    checks["fastboot_host_backend_has_okay_fail_literals"] = any(
+        x.get("usb_descriptor",{}).get("subclass") == "0x42"
+        and "OKAY" in x.get("marker_interpretation","")
+        and "FAIL" in x.get("marker_interpretation","")
+        for x in observed_usb
+    )
+    checks["ff617a_is_not_proven_rockusb"] = (
+        str(d["framing"].get("protocol_family","")).lower().startswith("unknown")
+        and any(x.get("usb_descriptor",{}).get("subclass") == "0x61"
+                and "Unknown" in x.get("upstream_protocol_family","")
+                for x in observed_usb)
+    )
     rows=[]
     def q(topic,question,result,evidence,next_step):
         rows.append({"id":"DB%03d"%(len(rows)+1),"topic":topic,
@@ -239,10 +268,24 @@ def build(read):
     q("3.10 policy","Does 3.10 add a bootloader signature utility?",yes(checks["az01_bootloader_sig_present_3_10"]),"az01-bootloader-sig added in 3.10.","Trace whether updater/boot scripts call it.")
     q("3.10 policy","Does 3.10 add an early LoadPin service?",yes(checks["loadpin_oneshot_present_3_10"]),"az0x-loadpin-trustpoints systemd oneshot exists.","Trace kernel enforcement and service dependency.")
     q("3.10 policy","Does the OEM Fastboot grant bypass RSA cryptography?","no","Fastboot permission is separate from updater authentication and kernel verification.","Trace actual normal bootz path without confusing security layers.")
+    q("USB transport","Do host updater libraries select three distinct USB descriptor families?",
+      yes(checks["all_three_host_usb_selector_families_verified"]),
+      "Verified host library tables target FF/42/03 Fastboot-compatible, FF/06/05 RockUSB-compatible and FF/61/7A unknown vendor protocol.",
+      "Prove which device-side endpoint is live at each MPC boot state without issuing writes.")
+    q("USB transport","Does host Fastboot-compatible backend recognize OKAY/FAIL markers?",
+      yes(checks["fastboot_host_backend_has_okay_fail_literals"]),
+      "Host updater Fastboot callback uses observed OKAY/FAIL response markers; it is not proof of communication with installed U-Boot.",
+      "Compare source-side response framing to device-side Fastboot callback with synthetic fixtures.")
+    q("USB transport","Is FF/61/7A proven to be a RockUSB or MaskROM interface?",
+      "no" if checks["ff617a_is_not_proven_rockusb"] else "unresolved",
+      "Host static evidence labels FF/61/7A an unknown vendor-framed response protocol. The separate FF/06/05 interface is RockUSB-compatible.",
+      "Keep VID/PID and boot-stage identity distinct; no physical passthrough.")
     q("MaskROM/recovery","Does official MPC One Fastboot recovery work without rootfs?","public-reported","RedHate documents entering stock U-Boot Fastboot via hardware buttons.","Do read-only enumeration on owner's unit after explicit approval.")
     q("MaskROM/recovery","Does Fastboot guarantee recovery after SPL/P3 corruption?","no","Fastboot requires working vendor SPL and U-Boot.","Prove immutable RK3288 ROM entry and independent restore before altering P1/P3.")
     return {"schema":SCHEMA,"checks":checks,"questions":rows,
             "probe":probe,"fastboot_dispatch_entries":dispatch_entries,
+            "host_usb_descriptor_classes":sorted(
+                ["%s/%s/%s" % (a,b,c) for a,b,c in backend_classes]),
             "private_source_sha256":UBOOT_SHA,
             "fastboot_load_base_address": "0x%08x" % load_base,
             "nominal_memory_address_gaps":nominal_memory_gaps,
