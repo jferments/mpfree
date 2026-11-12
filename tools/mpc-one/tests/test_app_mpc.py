@@ -33,7 +33,54 @@ APP_SRC = os.path.join(REPO, "rust", "mpfree-app", "src")
 UI_SRC = os.path.join(REPO, "rust", "mpfree-ui", "src")
 # Library code from the other crates the program links (their own programs, main.rs and bin/, are not part of it).
 LINKED_SRC = (os.path.join(REPO, "rust", "mpfree-touch", "src"), os.path.join(REPO, "rust", "mpfree-screen-log", "src"),
-              os.path.join(REPO, "rust", "mpfree-prof", "src"), os.path.join(REPO, "rust", "mpfree-store", "src"))
+              os.path.join(REPO, "rust", "mpfree-prof", "src"), os.path.join(REPO, "rust", "mpfree-store", "src"),
+              os.path.join(REPO, "rust", "mpfree-library", "src"), os.path.join(REPO, "rust", "mpfree-browser-ui", "src"))
+# The two writers the storage spec allows (approved by Jay 12 Nov 00:56Z): mpfree-store under the folder it is
+# given (settings/ and files/), and mpfree-library under the library/ folder in it. The library is linked since
+# the Pads tab's browser (12 Nov 2026); its write sites are reviewed line by line below.
+LIBRARY_NEEDLES = (
+    # Reviewed by the app thread, 12 Nov 2026. Every path is the library's root joined with a place's folder and
+    # names checked by valid_name (Library::path), or a .part / temp / trash slot beside one; links are refused
+    # (symlink_metadata, O_NOFOLLOW). The Pads tab's browser reaches none of these: its picker refuses every
+    # button but Load, Load to pad, Open, Audition and Favourite (Pick::allows), which read; Recent and
+    # Favourites are saved through mpfree-store. At start, Library::at makes library/ and its place folders
+    # when they are missing (mkdir, the DirBuilder check below), on the --data folder only.
+    ("mpfree-library/lib.rs", "fs::rename(&part, fp.join(&name))?;"),                  # write_new: .part renamed in
+    ("mpfree-library/lib.rs", "let _ = fs::remove_file(&part);"),                       # write_new, copy: a cut-off .part
+    ("mpfree-library/lib.rs", "fs::rename(&p, &tp)?;"),                                 # rename in place
+    ("mpfree-library/lib.rs", "let r = copy_tree(&src, &tmp, 0).and_then(|_| fs::rename(&tmp, &dst));"),  # copy a folder
+    ("mpfree-library/lib.rs", "let _ = fs::remove_dir_all(&tmp);"),                     # copy: a cut-off temp folder
+    ("mpfree-library/lib.rs", "let r = copy_file(&src, &part).and_then(|_| fs::rename(&part, &dst));"),  # copy a file
+    ("mpfree-library/lib.rs", "fs::rename(&src, dst_dir.join(&name))?;"),               # move_to
+    ("mpfree-library/lib.rs", "fs::rename(&src, slot.join(loc.name()))?;"),             # delete: into a Trash slot
+    ("mpfree-library/lib.rs", "let _ = fs::remove_dir_all(&slot);"),                    # delete: a slot left half made
+    ("mpfree-library/lib.rs", "fs::rename(slot.join(&item.name), dst_dir.join(&name))?;"),  # restore from the Trash
+    ("mpfree-library/lib.rs", "let _ = fs::remove_file(slot.join(\"origin.txt\"));"),   # restore: the slot's note
+    ("mpfree-library/lib.rs", "let _ = fs::remove_dir(&slot);"),                        # restore: the empty slot
+    ("mpfree-library/lib.rs", "fs::remove_dir_all(&p)?;"),                              # empty_trash (Prefs), Trash only
+    ("mpfree-library/lib.rs", "fs::remove_file(&p)?;"),                                 # empty_trash (Prefs), Trash only
+    ("mpfree-library/project.rs", "fs::remove_dir_all(&new)?;"),                        # project save: a stale parts.new
+    ("mpfree-library/project.rs", "fs::rename(&parts, v.join(PARTS))?;"),               # project save: old parts kept
+    ("mpfree-library/project.rs", "fs::rename(&new, &parts)?;"),                        # project save: new parts in
+    ("mpfree-library/project.rs", "fs::rename(&part, dir.join(PROJECT_FILE))?;"),       # project save: project.txt in
+    ("mpfree-library/project.rs", "let _ = fs::remove_file(dir.join(format!(\"{PROJECT_FILE}.part\")));"),
+    ("mpfree-library/project.rs", "let _ = fs::remove_dir_all(dir.join(VERSIONS).join(&old.id));"),  # versions past 5
+    ("mpfree-library/project.rs", "fs::rename(&tmp, &dst)?;"),                          # project samples copied in
+    ("mpfree-library/project.rs", "fs::remove_file(&tmp)?;"),
+    ("mpfree-library/project.rs", "let _ = fs::remove_file(&tmp);"),
+    ("mpfree-library/project.rs", "fs::rename(&tmp, &dst)"),                            # a part file written
+)
+LIBRARY_OPENS = (
+    "let mut f = OpenOptions::new().write(true).create(true).truncate(true).mode(0o644).custom_flags(0x20000) "
+    "// O_NOFOLLOW.open(&part)?;",                                                      # write_new's .part
+    "let mut f = OpenOptions::new().write(true).create_new(true).mode(0o644).open(slot.join(\"origin.txt\"))?;",
+    "let mut o = OpenOptions::new().write(true).create_new(true).mode(0o644).open(dst)?;",  # copy_file
+    "let mut f = OpenOptions::new().write(true).create(true).truncate(true).mode(0o644).custom_flags(0x20000) "
+    "// O_NOFOLLOW.open(path)?;",                                                       # project.txt
+    "} let mut o = OpenOptions::new().write(true).create(true).truncate(true).mode(0o644).open(&tmp)?;",
+    "let mut f = OpenOptions::new().write(true).create(true).truncate(true).mode(0o644).custom_flags(0x20000) "
+    "// O_NOFOLLOW.open(&tmp)?; {",
+)
 # mpfree-prof/alloc.rs holds the counting allocator, the crate's only unsafe code. It compiles only with the
 # crate's counting-alloc feature, which mpfree does not enable (mpfree-bench does), so it never
 # reaches the pad player and is left out of the scan.
@@ -868,6 +915,7 @@ class StaticTests(unittest.TestCase):
         for name, path in files:
             with open(path) as fh:
                 text = fh.read()
+            text = text.replace("#[cfg(test)]\npub(crate) mod tests {", "#[cfg(test)]\nmod tests {")
             marker = "#[cfg(test)]\nmod tests {"
             self.assertLessEqual(text.count(marker), 1, name)
             if marker in text:
@@ -893,7 +941,10 @@ class StaticTests(unittest.TestCase):
                     # and a .part left by a cut-off save removed first. Only under the folder given with --data.
                     ("mpfree-store/lib.rs", "match fs::remove_file(&part) {"),
                     ("mpfree-store/lib.rs", "fs::rename(&part, &path)?;"),
-                    ("mpfree-store/lib.rs", "let _ = fs::remove_file(&part);")}
+                    ("mpfree-store/lib.rs", "let _ = fs::remove_file(&part);"),
+                    # The host-only Pads tab picture (--preview and --display-lists, never on the MPC): the scratch
+                    # library pads_browse made a moment before in the workstation's temp folder, removed again.
+                    ("mpfree-app/gui.rs", "let _ = std::fs::remove_dir_all(&dir);")} | set(LIBRARY_NEEDLES)
         for name, code in self.program_sources():
             for line in code.splitlines():
                 if re.search(r"\.(write|append|create|create_new|truncate)\(true\)", line):
@@ -931,13 +982,14 @@ class StaticTests(unittest.TestCase):
             # mpfree-store's NAME.part, made new (never through a link) under the --data folder
             "let mut f = OpenOptions::new().write(true).create_new(true).mode(0o644).open(&part)?;",
         )
+        expected += LIBRARY_OPENS
         self.assertEqual(sorted(texts), sorted(expected), "\n".join(texts))
         files = {name for name, _ in found}
-        self.assertEqual(files, {"mpfree-app/main.rs", "mpfree-app/alsa.rs", "mpfree-ui/fb.rs", "mpfree-store/lib.rs"},
-                         files)
-        # Folders are made only by the store, and only start-app.sh names the folder it is given.
+        self.assertEqual(files, {"mpfree-app/main.rs", "mpfree-app/alsa.rs", "mpfree-ui/fb.rs", "mpfree-store/lib.rs",
+                                 "mpfree-library/lib.rs", "mpfree-library/project.rs"}, files)
+        # Folders are made only by the store and the library, and only start-app.sh names the folder they are given.
         for name, code in self.program_sources():
-            if name != "mpfree-store/lib.rs":
+            if name not in ("mpfree-store/lib.rs", "mpfree-library/lib.rs"):
                 self.assertNotIn("DirBuilder", code, name)
             for line in code.splitlines():
                 if not line.lstrip().startswith("//"):

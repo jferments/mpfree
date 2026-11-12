@@ -1,6 +1,6 @@
 # The browser and projects
 
-**Status:** built on the workstation (crates `mpfree-library` and `mpfree-browser-ui`), not yet in the pad player. The design, its research and the open decisions are in the plan doc: https://claude.ai/artifact/DQbPuih2LPA4pUkQUx3QyW. Controls decision 13 (Jay, 2026-11-11): BROWSE opens the browser, SHIFT + BROWSE saves the project.
+**Status:** built (crates `mpfree-library` and `mpfree-browser-ui`). In the pad player since 12 Nov 2026 as the Pads tab's Browse view (`Pick::Pads`, layout spec section 4e); the full browser over every page (BROWSE) is not wired yet. The design, its research and the open decisions are in the plan doc: https://claude.ai/artifact/DQbPuih2LPA4pUkQUx3QyW. Controls decision 13 (Jay, 2026-11-11): BROWSE opens the browser, SHIFT + BROWSE saves the project.
 
 ## What it does
 
@@ -104,11 +104,13 @@ if let Some(text) = snap.part("sampler") {
 
 `BrowseAction`s for the app: `LoadSample` / `LoadToPad` / `LoadKit` / `LoadFactoryKit` (to the sampler thread's loader), `LoadPreset` (with the engine's folder name, to the synth thread's `mpfree-instruments`), `TryPreset` / `RevertPreset` / `PickerClosed` (pickers), `Audition` / `StopAudition` (the preview path), `ProjectOpened` (give each engine its part), `ProjectSaved`, `SaveRequested` (Save as got a name: call `save`), `SaveLists` (write it to the store as `files/browser/lists.txt`).
 
-When `mpfree-library` is linked into the pad player, `tools/mpc-one/tests/test_app_mpc.py` needs `rust/mpfree-library/src` in `LINKED_SRC`, and its write sites (all in `lib.rs` and `project.rs`, all under the library folder) added to the reviewed list.
+`mpfree-library` and `mpfree-browser-ui` are linked into the pad player, so `tools/mpc-one/tests/test_app_mpc.py` reads them (`LINKED_SRC`) and lists the library's write sites, all in `lib.rs` and `project.rs` and all under the library folder, line by line (`LIBRARY_NEEDLES`, `LIBRARY_OPENS`). A change to one of them changes that list in the same pull request.
+
+**In the pad player (the Pads tab).** With `--data`, the app sends the screen thread the folder and the saved lists (`ToUi::Library`); the screen opens `Library::at` (which makes `library/` and its place folders when missing) and a `Browser` on the library's worker thread, opened with `Pick::Pads`. `mpfree_browser_ui::step` runs each tick while Browse shows and after each touch. Its actions: `LoadSample` and `LoadToPad` go to `SamplePage::load_file`; `Audition` reads the file on a thread (`sample_page::read_in_thread`) and hands the sound to the audio thread in a box (`FromUi::Preview`, `mpfree-app/src/preview.rs`), which mixes it into the main out at the preview level and gives the box back to be freed on the screen thread (`ToUi::PreviewBack`); `StopAudition` fades it out over 256 frames (`FromUi::PreviewStop`); `SaveLists` goes to the store (`files/browser/lists.txt`). The others are logged as not wired on the Pads tab. Without `--data`, the Browse view shows a card that says so.
 
 ## Not yet
 
-- The pad player wiring (Hello MPC thread). The sampler's side is ready: its part, its sounds, Load and Load to pad (above).
+- The full browser over every page (BROWSE, SHIFT + BROWSE to save) and the other pickers in the pad player (app thread). The Pads tab's picker is wired (above).
 - `LoadKit` and `LoadFactoryKit`: a kit file's format and saving a kit on its own come later (sampler thread).
 - Each engine's part (`transport`, `clips`, `sampler`, `synth`, `mixer`, `fx`, `mod`, `arp`, `looper` ...): each thread adds its own.
 - Autosave.

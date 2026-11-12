@@ -510,3 +510,22 @@ fn live_notes_on_a_midi_out_track_go_out_and_record_as_their_pad() {
         [0x90, PAD_NOTES[2], v, 0x80, PAD_NOTES[2], 64]
     );
 }
+
+#[test]
+fn the_browsers_preview_mixes_and_stops_without_allocating() {
+    let data: Vec<f32> = (0..2 * 44_100).map(|i| (i as f32 * 0.01).sin()).collect();
+    let src = mpfree_sampler::model::Source::new("Preview", 48_000, 2, data).unwrap();
+    // The box comes from the screen thread; only mixing and stopping are
+    // the audio thread's.
+    let mut p = Box::new(crate::preview::Preview::new(&src, -6.0));
+    let (mut l, mut r) = ([0.0f32; PERIOD], [0.0f32; PERIOD]);
+    let (done, calls) = crate::sys::alloc_count::calls(|| {
+        for _ in 0..100 {
+            p.mix(RATE, &mut l, &mut r);
+        }
+        p.stop();
+        (0..10).any(|_| p.mix(RATE, &mut l, &mut r))
+    });
+    assert!(done, "the stop faded out");
+    assert_eq!(calls, 0, "allocations or frees mixing the preview");
+}
