@@ -24,6 +24,22 @@ class MPFreeV8Tests(unittest.TestCase):
             with self.subTest(name=name):
                 f=ROOT/name
                 ast.parse(f.read_text(encoding='utf8'),filename=str(f))
+    def test_ghidra_pyghidra_globals_are_locally_scoped(self):
+        # Ghidra 12.2 headless maps script-level assignments into a Java
+        # attribute proxy; for-loop targets may collide with its properties.
+        g=ROOT/'tools/ghidra/MPFreeDirectedBootUpdaterV8.py'
+        tree=ast.parse(g.read_text(encoding='utf8'),filename=str(g))
+        names=[n.name for n in tree.body if isinstance(n,(ast.FunctionDef,ast.AsyncFunctionDef))]
+        self.assertIn('mpfree_v8_entrypoint',names)
+        self.assertFalse(any(isinstance(n,(ast.For,ast.While)) for n in tree.body))
+        self.assertIn('mpfree_v8_entrypoint()',g.read_text(encoding='utf8'))
+
+    def test_ramfs_includes_full_path_inventory(self):
+        source=(ROOT/'tools/mpc-one/run_boot_updater_v8.py').read_text()
+        self.assertIn("result['all_paths']",source)
+        self.assertIn("result['total_listed_paths']",source)
+        self.assertIn('inspect_paths[:120]',source)
+
     def test_kernel_builder_bash_valid(self):
         f=ROOT/'tools/mpc-one/build_qemu_arm_kernel.sh'
         p=subprocess.run(['bash','-n',str(f)],capture_output=True,text=True)
