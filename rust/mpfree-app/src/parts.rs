@@ -345,14 +345,15 @@ fn ms(d: Duration) -> String {
 pub fn rows(shared: &PartsShared) -> Vec<(String, String, Tone)> {
     let get = |a: &AtomicU64| a.load(Ordering::Relaxed);
     let slow = get(&shared.slow);
-    let value = if slow == 0 {
-        "none".to_string()
+    // Two rows, so the part's name is never cut at the page's edge.
+    let (value, part) = if slow == 0 {
+        ("none".to_string(), "none".to_string())
     } else {
         let worst = get(&shared.worst_ns) as f64 / 1e6;
         let part = get(&shared.worst_part) as usize;
-        format!(
-            "{slow}, worst {worst:.2} ms, most in {}",
-            PARTS.get(part).copied().unwrap_or("?")
+        (
+            format!("{slow} · worst {worst:.2} ms"),
+            PARTS.get(part).copied().unwrap_or("?").to_string(),
         )
     };
     let bad = |n: u64| if n == 0 { Tone::Normal } else { Tone::Bad };
@@ -368,6 +369,7 @@ pub fn rows(shared: &PartsShared) -> Vec<(String, String, Tone)> {
             value,
             bad(slow),
         ),
+        ("Most of the worst one in".to_string(), part, bad(slow)),
         (
             "Controller output: refused · dropped · stalls".to_string(),
             format!("{failed} · {dropped} · {stalls}"),
@@ -436,9 +438,18 @@ mod tests {
         assert_eq!(shared.parts.slow.load(Ordering::Relaxed), 1);
         let (label, value, tone) = row(&shared);
         assert_eq!(label, "Slow periods outside the engines");
-        assert!(value.starts_with("1, worst "), "{value}");
-        assert!(value.ends_with("most in app and effects"), "{value}");
+        assert!(value.starts_with("1 · worst "), "{value}");
+        assert!(value.ends_with(" ms"), "{value}");
         assert_eq!(tone, Tone::Bad);
+        let part = rows(&shared.parts).remove(1);
+        assert_eq!(
+            part,
+            (
+                "Most of the worst one in".to_string(),
+                "app and effects".to_string(),
+                Tone::Bad
+            )
+        );
         assert_eq!(p.total(), Duration::ZERO, "the next period starts empty");
         // A second slow period within the second is counted, not said, and
         // the next line says so.
@@ -477,13 +488,14 @@ mod tests {
     fn the_controller_output_row_turns_red_on_any_trouble() {
         let shared = PartsShared::default();
         let r = rows(&shared);
-        assert_eq!(r[1].1, "0 · 0 · 0");
-        assert_eq!(r[1].2, Tone::Normal);
+        assert_eq!((r[1].1.as_str(), r[1].2), ("none", Tone::Normal));
+        assert_eq!(r[2].1, "0 · 0 · 0");
+        assert_eq!(r[2].2, Tone::Normal);
         shared.set_counts(0, 3, 1, 2);
         let r = rows(&shared);
-        assert_eq!(r[1].1, "0 · 3 · 1");
-        assert_eq!(r[1].2, Tone::Bad);
-        assert_eq!((r[2].1.as_str(), r[2].2), ("2", Tone::Bad));
+        assert_eq!(r[2].1, "0 · 3 · 1");
+        assert_eq!(r[2].2, Tone::Bad);
+        assert_eq!((r[3].1.as_str(), r[3].2), ("2", Tone::Bad));
     }
 
     #[test]
