@@ -257,9 +257,14 @@ for row in pointer_candidates:
 if len(current)>=2:tables.append(current)
 # Ghidra-defined non-auth strings and both data/code references.
 strings=[]
-it=listing.getDefinedData(True)
-while it.hasNext():
-    datum=it.next()
+defined_data_error=None
+try:
+    defined_data_iterator=listing.getDefinedData(True)
+except Exception as exc:
+    defined_data_error=str(exc)[:500]
+    defined_data_iterator=None
+while defined_data_iterator is not None and defined_data_iterator.hasNext():
+    datum=defined_data_iterator.next()
     try:
         val=datum.getValue()
         if not isinstance(val,(str,)) and val.__class__.__name__ not in ("String","JString"):
@@ -328,6 +333,7 @@ report={
  "candidate_function_pointer_tables":tables,
  "candidate_pointer_sites":pointer_candidates,
  "defined_strings":strings,
+ "defined_data_scan_error":defined_data_error,
  "topic_function_index":interesting_nodes,
  "function_report":details.name,
  "dataflow_report":effects.name,
