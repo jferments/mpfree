@@ -2315,9 +2315,9 @@ impl App {
                 "Which of the MPC's cores make the sound,",
                 "from the next start. Shared: as before.",
                 "Core 3: the audio on a core of its own.",
-                "Cores 3 and 2: half the drum voices and",
-                "some mixer effects on a second core. The",
-                "Dev tab's CPU by engine page shows it.",
+                "Cores 3 and 2: some drums and effects on",
+                "core 2 too. Cores 3, 2 and 1 (a test): and",
+                "the synth on core 1. Dev > CPU by engine.",
             ],
             Item::MapControls => vec![
                 "Find the numbers of the MPC's buttons, one at",
@@ -3160,7 +3160,20 @@ mod tests {
             "sound cores: core3 from the next start (now shared)".into()
         )));
         assert_eq!(value(&app.step_item(at, 1)).1, "Cores 3 and 2 (next start)");
-        assert_eq!(value(&app.step_item(at, 1)).1, "Cores 3 and 2 (next start)");
+        assert_eq!(
+            value(&app.step_item(at, 1)).1,
+            "Cores 3, 2 and 1 (next start)"
+        );
+        assert_eq!(
+            value(&app.step_item(at, 1)).1,
+            "Cores 3, 2 and 1 (next start)",
+            "the last value"
+        );
+        assert_eq!(app.settings.sound_cores, SoundCores::Three);
+        assert_eq!(
+            value(&app.step_item(at, -1)).1,
+            "Cores 3 and 2 (next start)"
+        );
         assert_eq!(app.settings.sound_cores, SoundCores::Two);
         // Kept, and what the next start runs: then the row says no more.
         let kept = app.app_settings();

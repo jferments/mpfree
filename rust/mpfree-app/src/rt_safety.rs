@@ -3,8 +3,9 @@
 //! the transport and clips, the sampler (each pad into its mixer channel) or
 //! the synth, the looper, the mixer and the click, out to the period's
 //! samples. None of it may allocate or free while nothing is edited,
-//! with the sound on one core or on two (`--sound-cores two`: the
-//! sampler's and the mixer's lanes, cores.rs).
+//! with the sound on one core, on two (`--sound-cores two`: the
+//! sampler's and the mixer's lanes, cores.rs) or on three (`three`: the
+//! synth's lane too).
 //!
 //! Left out, because they are the device's or the screen's: reading MIDI
 //! and the screen's queue, the log lines and the screen updates (`out.note`,
@@ -27,7 +28,7 @@ struct Rig {
     app: app::App,
     time: time::TimeHost,
     player: sampler::Player,
-    synth: synth::Synth,
+    synth: cores::SynthSlot,
     looper: looping::LoopHost,
     mix: mixing::MixHost,
     events: Events,
@@ -67,7 +68,7 @@ impl Rig {
         app.arp_action(ArpAction::Mode(Mode::Arp));
         Rig {
             player: sampler::Player::new(&mut kits, &PAD_NOTES, RATE).unwrap(),
-            synth: synth::Synth::new(RATE),
+            synth: cores::SynthSlot::new(synth::Synth::new(RATE)),
             looper: looping::LoopHost::new(RATE, 20),
             // The device's default: 6 dB under a -12 dB maximum.
             mix: mixing::MixHost::new(RATE, -18.0, -12.0),
@@ -194,7 +195,7 @@ impl Rig {
         }
         let mut seq = SeqPads {
             player,
-            synth: synth_on.then_some(&mut *synth),
+            synth: synth_on.then_some(&mut **synth),
             flashes: [0; 16],
             hits: 0,
             live: app.live_map(),
@@ -207,6 +208,7 @@ impl Rig {
         time.clear_hits();
         // The pads, each into its mixer channel, and on to the Drums track.
         player.set_tempo(time.info().bpm);
+        synth.start(i * PERIOD as u64, app.settings.bpm);
         let mut pads = mix.pads();
         player.render_routed(PERIOD, &mut pads);
         let played = pads.played();
@@ -215,7 +217,7 @@ impl Rig {
         let [synth_l, synth_r] = synth_out;
         synth_l.fill(0.0);
         synth_r.fill(0.0);
-        synth.render(i * PERIOD as u64, app.settings.bpm, synth_l, synth_r);
+        synth.finish(synth_l, synth_r);
         let [pads_l, pads_r] = pads_out;
         for f in 0..PERIOD {
             pads_l[f] = drums_l[f] + synth_l[f];
@@ -247,7 +249,7 @@ fn steady_play_never_allocates(synth_on: bool, sound_cores: cores::SoundCores) {
     let mut rig = Rig::new(synth_on);
     // Before the sound starts, as player_session does (it allocates and
     // starts the lanes' threads).
-    let mut c = cores::Cores::start_unpinned(sound_cores, &mut rig.player);
+    let mut c = cores::Cores::start_unpinned(sound_cores, &mut rig.player, &mut rig.synth);
     c.start_mixer(&mut rig.mix.mixer);
     // Setup, which may allocate: a new clip on track 1, which starts
     // recording the pads, and the looper recording its first bar.
@@ -300,13 +302,15 @@ fn steady_play_never_allocates(synth_on: bool, sound_cores: cores::SoundCores) {
     );
     assert!(rig.peak > 0.01, "silent: peak {}", rig.peak);
     assert!(rig.peak.is_finite());
-    // On two cores the lane took its half of the voices. (Late parts are
-    // allowed here: under qemu or a busy machine the lane can be slow, and
-    // a late part allocates nothing either.)
-    let n = cores::Counts::read(&rig.player, &rig.mix.mixer);
+    // On two cores the lane took its half of the voices; on three the synth
+    // played every period on its lane. (Late parts are allowed here: under
+    // qemu or a busy machine a lane can be slow, and a late part allocates
+    // nothing either.)
+    let n = cores::Counts::read(&rig.player, &rig.mix.mixer, &rig.synth);
     match sound_cores {
         cores::SoundCores::Two if !synth_on => assert!(n.voice_parts > 100, "{n:?}"),
         cores::SoundCores::Two => {}
+        cores::SoundCores::Three => assert_eq!(n.synth_periods, i, "{n:?}"),
         _ => assert_eq!(n, cores::Counts::default()),
     }
 }
@@ -324,4 +328,9 @@ fn the_sound_path_never_allocates_with_the_synth() {
 #[test]
 fn the_sound_path_never_allocates_on_two_cores() {
     steady_play_never_allocates(false, cores::SoundCores::Two);
+}
+
+#[test]
+fn the_sound_path_never_allocates_on_three_cores_with_the_synth() {
+    steady_play_never_allocates(true, cores::SoundCores::Three);
 }
