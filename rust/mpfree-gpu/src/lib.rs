@@ -747,7 +747,7 @@ impl Renderer {
         for ny in 0..h {
             // GL's row 0 is the bottom one.
             let src = &bytes[(h - 1 - ny) * w * 4..(h - ny) * w * 4];
-            for (nx, p) in src.chunks_exact(4).enumerate() {
+            for (nx, p) in src.as_chunks::<4>().0.iter().enumerate() {
                 out[ny * w + nx] = (p[0] as u32) << 16 | (p[1] as u32) << 8 | p[2] as u32;
             }
         }
