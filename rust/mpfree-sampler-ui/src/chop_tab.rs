@@ -8,7 +8,11 @@
 //!   (where the hits start, at a sensitivity), **Beat** (on the source's
 //!   beat grid, a slice every 16th, 8th, beat, two beats or bar), **Grid**
 //!   (equal slices), **Silence** (one slice per sound, below a threshold)
-//!   and **Manual** (the cuts as they are). Changing the method or its
+//!   and **Manual** (the cuts as they are), and **Live**: **Start** plays
+//!   the region once and every pad played meanwhile drops a cut where the
+//!   sound is (the sampler marks it to the frame, [`ChopAction::Live`]),
+//!   moved onto the nearest hit within the **Pull to hits** window; Stop,
+//!   or the sound's end, ends it. Changing the method or its
 //!   setting chops again; moving, splitting or merging a slice by hand turns
 //!   the method to Manual, so nothing undoes the hand edits behind the
 //!   user's back.
@@ -103,6 +107,10 @@ const BEAT_LENGTHS: [(f64, &str); 5] = [
 const SENSITIVITY_STEP: u8 = 5;
 const THRESHOLD_RANGE_DB: (i32, i32) = (-72, -12);
 const THRESHOLD_STEP_DB: i32 = 3;
+/// Live: how far a cut may move to the nearest hit, in ms (0 is Off).
+const HIT_WINDOWS_MS: [u16; 5] = [0, 10, 20, 40, 80];
+/// Live: the sensitivity the hits it snaps to are found at.
+const LIVE_HITS_SENSITIVITY: f32 = 0.6;
 
 /// How the tab cuts.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -113,15 +121,18 @@ pub enum Method {
     Grid,
     Silence,
     Manual,
+    /// Cuts dropped by hitting pads while the sound plays.
+    Live,
 }
 
 impl Method {
-    pub const ALL: [Method; 5] = [
+    pub const ALL: [Method; 6] = [
         Method::Transient,
         Method::Beat,
         Method::Grid,
         Method::Silence,
         Method::Manual,
+        Method::Live,
     ];
 
     pub fn label(self) -> &'static str {
@@ -131,6 +142,7 @@ impl Method {
             Method::Grid => "Grid",
             Method::Silence => "Silence",
             Method::Manual => "Manual",
+            Method::Live => "Live",
         }
     }
 
@@ -141,7 +153,7 @@ impl Method {
             Method::Beat => ChopMode::Beat,
             Method::Grid => ChopMode::Grid,
             Method::Silence => ChopMode::Silence,
-            Method::Manual => ChopMode::Manual,
+            Method::Manual | Method::Live => ChopMode::Manual,
         }
     }
 }
@@ -291,6 +303,18 @@ pub enum ChopAction {
         start: u64,
         end: u64,
     },
+    /// Live chop: play source frames `start..end` of pad `pad`'s layer
+    /// `layer` once, and let the pads played meanwhile mark cuts in it
+    /// (`on`); or stop that. The app sends the marks back
+    /// ([`ChopTab::live_marks`]) and says when the sound ended
+    /// ([`ChopTab::live_ended`]).
+    Live {
+        pad: usize,
+        layer: usize,
+        start: u64,
+        end: u64,
+        on: bool,
+    },
     /// Open the editor's tab `i` of [`TABS`].
     Tab(usize),
 }
@@ -392,6 +416,13 @@ pub struct ChopTab {
     grid: usize,
     /// Silence: dBFS.
     threshold_db: i32,
+    /// Live: an index into [`HIT_WINDOWS_MS`].
+    hit_window: usize,
+    /// Live chop is on: the hits its cuts snap to.
+    live: Option<Vec<u64>>,
+    /// Live chop was stopped by a change here: the app hears of it with
+    /// the next action.
+    stop_due: bool,
     /// Snap cuts made by hand, and by Beat and Grid, to zero crossings.
     snap: bool,
     /// Slice starts strictly inside the region, sorted.
@@ -449,6 +480,9 @@ impl ChopTab {
             beat_len: 2,
             grid: 8,
             threshold_db: SilenceSettings::default().threshold_db as i32,
+            hit_window: 3,
+            live: None,
+            stop_due: false,
             snap: true,
             cuts: Vec::new(),
             selected: 0,
@@ -517,6 +551,67 @@ impl ChopTab {
         })
     }
 
+    /// Whether live chop is on (Start pressed, the sound not yet over).
+    pub fn live(&self) -> bool {
+        self.live.is_some()
+    }
+
+    /// Live chop stopped here (another method, pad or region): the
+    /// [`ChopAction::Live`] that tells the app, once.
+    pub fn take_stop(&mut self, st: &ChopState) -> Option<ChopAction> {
+        std::mem::take(&mut self.stop_due).then_some(ChopAction::Live {
+            pad: st.pad,
+            layer: st.layer,
+            start: st.region.start,
+            end: st.region.end,
+            on: false,
+        })
+    }
+
+    /// Live chop's cuts, where the sound was at each pad played (source
+    /// frames): each moves onto the nearest hit within the Pull to hits
+    /// window, or else onto a zero crossing if Snap says so, and is kept if
+    /// it falls inside the region, apart from the other cuts. The slice it
+    /// starts is picked. Returns how many were kept.
+    pub fn live_marks(&mut self, ui: &mut Ui, st: &ChopState, marks: &[u64]) -> usize {
+        let Some(hits) = self.live.as_ref() else {
+            return 0;
+        };
+        let window = u64::from(HIT_WINDOWS_MS[self.hit_window]) * u64::from(st.rate) / 1000;
+        let gap = st.min_slice();
+        let (rs, re) = (st.region.start, st.region.end);
+        let mut kept = 0;
+        for &m in marks {
+            let near = hits
+                .iter()
+                .copied()
+                .filter(|h| h.abs_diff(m) <= window)
+                .min_by_key(|h| h.abs_diff(m));
+            // A hit is cut where Transient would cut it; the rest go onto
+            // a zero crossing if Snap says so.
+            let c = near.unwrap_or_else(|| self.snapped(st, m, 0, None));
+            let apart = self.cuts.iter().all(|&x| x.abs_diff(c) >= gap);
+            if c < rs + gap || c + gap > re || !apart || self.slices() >= MAX_CUT_SLICES {
+                continue;
+            }
+            let at = self.cuts.partition_point(|&x| x < c);
+            self.cuts.insert(at, c);
+            self.selected = at + 1;
+            kept += 1;
+        }
+        if kept > 0 {
+            self.show(ui, st);
+        }
+        kept
+    }
+
+    /// The sound live chop played ended: Start again starts a new take.
+    pub fn live_ended(&mut self, ui: &mut Ui, st: &ChopState) {
+        if self.live.take().is_some() {
+            self.show(ui, st);
+        }
+    }
+
     /// The waveform's view.
     pub fn view(&self, ui: &Ui) -> Option<WaveView> {
         ui.get::<Waveform>(WAVE).map(Waveform::view)
@@ -538,7 +633,11 @@ impl ChopTab {
             if self.method == Method::Beat && st.frames_per_beat().is_none() {
                 self.method = Method::Transient;
             }
-            if self.method == Method::Manual && same_source {
+            if self.live.take().is_some() {
+                // Another pad or region: live chop stops.
+                self.stop_due = true;
+            }
+            if matches!(self.method, Method::Manual | Method::Live) && same_source {
                 // Keep the hand-made cuts that are still inside.
                 let (lo, hi) = (
                     st.region.start + wave_tab::MIN_FRAMES,
@@ -549,7 +648,11 @@ impl ChopTab {
                 if self.method == Method::Manual {
                     self.method = Method::Transient;
                 }
-                self.cuts = self.chop(st);
+                self.cuts = match self.method {
+                    // Live cuts are made on the sound: a new one starts bare.
+                    Method::Live => Vec::new(),
+                    _ => self.chop(st),
+                };
             }
             self.selected = 0;
         }
@@ -561,7 +664,7 @@ impl ChopTab {
     fn chop(&self, st: &ChopState) -> Vec<u64> {
         let (rs, re) = (st.region.start, st.region.end);
         let raw: Vec<u64> = match self.method {
-            Method::Manual => return self.cuts.clone(),
+            Method::Manual | Method::Live => return self.cuts.clone(),
             Method::Transient => st
                 .source
                 .onsets
@@ -666,11 +769,18 @@ impl ChopTab {
         let range = pads.clone().map(|p| self.range_text(&p));
         if let Some(b) = ui.get_mut::<ButtonRow>(BUTTONS) {
             let (s0, s1) = (bounds[self.selected], bounds[self.selected + 1]);
+            let live = self.method == Method::Live;
             b.enabled = vec![
-                s1 - s0 >= 2 * wave_tab::MIN_FRAMES && n < MAX_CUT_SLICES,
+                live || s1 - s0 >= 2 * wave_tab::MIN_FRAMES && n < MAX_CUT_SLICES,
                 n > 1,
                 pads.is_some(),
             ];
+            b.labels[0] = match (live, self.live.is_some()) {
+                (false, _) => "Split",
+                (true, false) => "Start",
+                (true, true) => "Stop",
+            }
+            .into();
             b.labels[2] = match (&range, self.put(st)) {
                 (None, _) => format!("Max {BANK} slices"),
                 (Some(t), Put::Pads) => format!("Chop to {t}"),
@@ -724,6 +834,14 @@ impl ChopTab {
                 )
             }
             Method::Manual => ("Setting", "—".into(), 0.0),
+            Method::Live => (
+                "Pull to hits",
+                match HIT_WINDOWS_MS[self.hit_window] {
+                    0 => "Off".into(),
+                    ms => format!("{ms} ms"),
+                },
+                self.hit_window as f32 / (HIT_WINDOWS_MS.len() - 1) as f32,
+            ),
         }
     }
 
@@ -885,7 +1003,7 @@ impl ChopTab {
                 let row = *Row::ALL.get(*index)?;
                 self.step(st, row, *delta);
                 self.show(ui, st);
-                None
+                self.take_stop(st)
             }
             (BUTTONS, EventKind::Tab(i)) => self.press(ui, st, *Button::ALL.get(*i)?),
             _ => None,
@@ -896,6 +1014,29 @@ impl ChopTab {
     pub fn press(&mut self, ui: &mut Ui, st: &ChopState, b: Button) -> Option<ChopAction> {
         let bounds = self.bounds(st);
         match b {
+            Button::Split if self.method == Method::Live => {
+                let on = self.live.is_none();
+                self.live = on.then(|| {
+                    st.source
+                        .onsets
+                        .as_ref()
+                        .map_or_else(Vec::new, |o| o.pick(LIVE_HITS_SENSITIVITY))
+                });
+                if on {
+                    // A new take: the old cuts go.
+                    self.cuts.clear();
+                    self.selected = 0;
+                }
+                self.stop_due = false;
+                self.show(ui, st);
+                Some(ChopAction::Live {
+                    pad: st.pad,
+                    layer: st.layer,
+                    start: st.region.start,
+                    end: st.region.end,
+                    on,
+                })
+            }
             Button::Split => {
                 let (s0, s1) = (bounds[self.selected], bounds[self.selected + 1]);
                 let min = wave_tab::MIN_FRAMES;
@@ -903,7 +1044,7 @@ impl ChopTab {
                 if self.slices() < MAX_CUT_SLICES && mid >= s0 + min && mid + min <= s1 {
                     let at = self.cuts.partition_point(|&c| c < mid);
                     self.cuts.insert(at, mid);
-                    self.method = Method::Manual;
+                    self.hand_edited();
                 }
                 self.show(ui, st);
                 None
@@ -914,7 +1055,7 @@ impl ChopTab {
                     let cut = self.selected.max(1) - 1;
                     self.cuts.remove(cut);
                     self.selected = cut;
-                    self.method = Method::Manual;
+                    self.hand_edited();
                 }
                 self.show(ui, st);
                 None
@@ -936,6 +1077,14 @@ impl ChopTab {
         }
     }
 
+    /// A cut made, moved or taken out by hand: the method becomes Manual
+    /// (Live stays Live, its cuts being hand-made too).
+    fn hand_edited(&mut self) {
+        if self.method != Method::Live {
+            self.method = Method::Manual;
+        }
+    }
+
     /// Moves cut `i` as near `to` as its neighbours allow; the method
     /// becomes Manual.
     fn move_cut(&mut self, st: &ChopState, i: usize, to: u64) {
@@ -947,7 +1096,7 @@ impl ChopTab {
             let to = to.clamp(lo, hi);
             if to != self.cuts[i] {
                 self.cuts[i] = to;
-                self.method = Method::Manual;
+                self.hand_edited();
             }
         }
     }
@@ -964,6 +1113,9 @@ impl ChopTab {
                     .collect();
                 let i = all.iter().position(|m| *m == self.method).unwrap_or(0) as i32;
                 self.method = all[(i + d).rem_euclid(all.len() as i32) as usize];
+                if self.live.take().is_some() {
+                    self.stop_due = true;
+                }
                 self.rechop(st);
             }
             Row::Amount => self.turn_amount(st, d),
@@ -1013,6 +1165,12 @@ impl ChopTab {
                 self.threshold_db = (self.threshold_db + delta * THRESHOLD_STEP_DB).clamp(lo, hi);
             }
             Method::Manual => return,
+            Method::Live => {
+                self.hit_window = (self.hit_window as i32 + delta)
+                    .clamp(0, HIT_WINDOWS_MS.len() as i32 - 1)
+                    as usize;
+                return;
+            }
         }
         self.rechop(st);
     }
