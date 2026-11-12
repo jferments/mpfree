@@ -174,6 +174,18 @@ pub trait Pads {
     /// A clip's recorded pressure on `pad`'s sounding note, the raw value
     /// 0 to 127, `offset` frames into the period.
     fn pressure_at(&mut self, pad: usize, value: u8, offset: u32);
+    /// A track that plays somewhere other than the pads (one on MIDI
+    /// OUT) is offered each event the clips play first: notes, a panic's
+    /// `AllOff`, pressure, and the locks and lanes. True when it took the
+    /// event, so neither the pads nor the mixer's mod engine get it.
+    /// False leaves it to go on as usual (an `AllOff` should, so the pads
+    /// stop too). The arps' notes, the live pads among them, go to
+    /// [`Pads::live`] instead, which sees the whole event and says what
+    /// records. By default nothing is taken.
+    fn out(&mut self, o: &Out) -> bool {
+        let _ = o;
+        false
+    }
     /// A note one of the per-track arps played ([`TimeHost::period_arps`]):
     /// the pads through their track's arp, a latched arp, or a clip that
     /// plays through its arp. It is live playing, so the pad player gives
@@ -2396,5 +2408,139 @@ mod tests {
             ),
             (0, 0, 0, 0, 0, 0)
         );
+    }
+
+    /// The pads, with one track playing somewhere else (as a track on MIDI
+    /// OUT does): its events are taken, every `AllOff` is seen and left
+    /// to the pads too.
+    #[derive(Default)]
+    struct Routed {
+        pads: Fake,
+        track: u16,
+        /// (absolute frame, event) of what was taken.
+        taken: Vec<(u64, Event)>,
+        all_off: usize,
+    }
+
+    impl Pads for Routed {
+        fn hit_at(&mut self, pad: usize, velocity: u8, offset: u32) -> bool {
+            self.pads.hit_at(pad, velocity, offset)
+        }
+        fn release_at(&mut self, pad: usize, offset: u32) {
+            self.pads.release_at(pad, offset)
+        }
+        fn stop_all(&mut self) {
+            self.pads.stop_all()
+        }
+        fn pressure_at(&mut self, pad: usize, value: u8, offset: u32) {
+            self.pads.pressure_at(pad, value, offset)
+        }
+        fn out(&mut self, o: &Out) -> bool {
+            if o.event == Event::AllOff {
+                self.all_off += 1;
+                return false;
+            }
+            if o.track != self.track {
+                return false;
+            }
+            self.taken
+                .push((self.pads.frame + u64::from(o.offset), o.event));
+            true
+        }
+    }
+
+    /// A track that plays elsewhere takes its clip's notes: they never
+    /// reach the pads, while the other track's do; a panic's AllOff is
+    /// offered to it and still stops the pads.
+    #[test]
+    fn a_track_playing_elsewhere_takes_its_clips_notes_from_the_pads() {
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        for (t, note) in [(0, 4), (1, 9)] {
+            let mut c = Clip::new("beat", 3840);
+            c.notes = vec![mpfree_seq::Note::new(0, 100, note, 100)];
+            h.control.project.tracks[t].slots[0] = Some(c);
+            h.act(TimeAction::Launch { track: t, slot: 0 }).unwrap();
+        }
+        let mut r = Routed {
+            track: 1,
+            ..Routed::default()
+        };
+        h.command(Command::Play);
+        while r.pads.frame < 2 * BAR - 1000 {
+            h.period(PERIOD, &mut r);
+            r.pads.frame += u64::from(PERIOD);
+        }
+        let hits: Vec<(u64, usize)> = r.pads.hits.iter().map(|&(f, p, _)| (f, p)).collect();
+        assert_eq!(hits, vec![(0, 4), (BAR, 4)]);
+        let ons: Vec<(u64, Event)> = r
+            .taken
+            .iter()
+            .copied()
+            .filter(|(_, e)| matches!(e, Event::NoteOn { .. }))
+            .collect();
+        let on = Event::NoteOn {
+            note: 9,
+            velocity: 100,
+        };
+        assert_eq!(ons, vec![(0, on), (BAR, on)]);
+        let offs = r
+            .taken
+            .iter()
+            .filter(|(_, e)| *e == Event::NoteOff { note: 9 })
+            .count();
+        assert_eq!((offs, r.taken.len()), (2, 4), "{:?}", r.taken);
+        // STOP, then STOP again: the panic.
+        h.command(Command::Stop);
+        h.period(PERIOD, &mut r);
+        h.command(Command::Stop);
+        h.period(PERIOD, &mut r);
+        assert!(r.all_off > 0);
+        assert_eq!(r.pads.stops, 1);
+        assert_eq!(h.dropped(), 0);
+    }
+
+    /// The arps' notes (the live pads through the armed track's arp) are
+    /// not offered to `out`, even on a track that plays elsewhere: they go
+    /// to `Pads::live`, which sees the whole event and says what the
+    /// armed track records (here the default: each note as played).
+    #[test]
+    fn the_arps_notes_go_to_live_not_out() {
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut arps = arp_up(0);
+        let mut r = Routed {
+            track: 0,
+            ..Routed::default()
+        };
+        h.command(Command::SetLoop(Some((0, 2 * 3840))));
+        h.act(TimeAction::NewClip { track: 0, slot: 0 }).unwrap();
+        while r.pads.frame < 2 * BAR {
+            let f = r.pads.frame;
+            let at = |x: u64| {
+                (f..f + u64::from(PERIOD))
+                    .contains(&x)
+                    .then(|| (x - f) as u32)
+            };
+            if let Some(o) = at(1000) {
+                arps.pad(
+                    0,
+                    o,
+                    Event::NoteOn {
+                        note: 4,
+                        velocity: 100,
+                    },
+                );
+            }
+            if let Some(o) = at(BAR / 2) {
+                arps.pad(0, o, Event::NoteOff { note: 4 });
+            }
+            h.period_arps(PERIOD, &mut r, &mut arps);
+            r.pads.frame += u64::from(PERIOD);
+        }
+        assert!(r.taken.is_empty(), "{:?}", r.taken);
+        let ons = r.pads.hits.len();
+        assert!((6..=8).contains(&ons), "{:?}", r.pads.hits);
+        let clip = h.control.project.tracks[0].slots[0].as_ref().unwrap();
+        assert_eq!(clip.notes.len(), ons, "every note recorded as played");
+        assert_eq!(h.dropped() + arps.dropped(), 0);
     }
 }
