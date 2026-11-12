@@ -723,20 +723,42 @@ class Lab:
                     json.dumps(frame_report, indent=2) + "\n")
                 (self.out / "usb-ff617a-framing.md").write_text(
                     ff_module.render_markdown(frame_report) + "\n")
+                observed = frame_report["response_validation_checks"]
+                instructions = sum(
+                    item["instruction_evidence"]["captured"]
+                    for item in frame_report["focused_function_evidence"])
+                identified_ids = frame_report["magic_evidence"]
                 record["ff617a_framing_evidence"] = {
                     "report": "usb-ff617a-framing.json",
-                    "magic_words": len(
-                        frame_report["magic_evidence"]["equality_matched_message_identifiers"]),
-                    "all_known_identifiers_seen": frame_report["magic_evidence"]["eight_known_values_present"],
+                    "compared_message_identifiers": len(
+                        identified_ids["equality_matched_message_identifiers"]),
+                    "constructed_outgoing_values": len(
+                        identified_ids["constructed_outgoing_control_values"]),
+                    "range_bound_values": len(
+                        identified_ids["comparison_only_range_bounds"]),
+                    "all_response_checks_observed": all(observed.values()),
+                    "response_checks": observed,
+                    "machine_instructions_captured": instructions,
+                    "decompiler_signature_warnings": len(
+                        frame_report["decompiler_return_type_warnings"]),
                     "ioctls_verified": all(
                         item["seen_in_verified_pseudocode"]
                         for item in frame_report["linux_usbdevfs_ioctls"]),
                     "protocol_identity": "UNKNOWN",
                     "no_original_vendor_execution": True,
                 }
+                evidence = record["ff617a_framing_evidence"]
                 self.stages["ff617a-framing-evidence"] = {
-                    "success": True,
-                    "magic_words": record["ff617a_framing_evidence"]["magic_words"],
+                    "success": (
+                        evidence["all_response_checks_observed"] and
+                        evidence["machine_instructions_captured"] > 0 and
+                        evidence["ioctls_verified"] and
+                        evidence["compared_message_identifiers"] == 6 and
+                        evidence["constructed_outgoing_values"] == 2
+                    ),
+                    "compared_ids": evidence["compared_message_identifiers"],
+                    "constructed_values": evidence["constructed_outgoing_values"],
+                    "arm_instructions": instructions,
                 }
             except Exception as exc:
                 record["ff617a_framing_error"] = str(exc)
@@ -773,9 +795,13 @@ class Lab:
         summary += ["", "## FF/61/7A custom-framed USB backend"]
         framing = record.get("ff617a_framing_evidence")
         if framing:
-            summary.append("- Distinct 32-bit message identifiers: " + str(framing["magic_words"]))
+            summary.append("- Equality-compared message IDs: " + str(framing["compared_message_identifiers"]))
+            summary.append("- Outgoing constructed control words: " + str(framing["constructed_outgoing_values"]))
+            summary.append("- Range bound (not a command): " + str(framing["range_bound_values"]))
+            summary.append("- ARM instructions captured in Ghidra: " + str(framing["machine_instructions_captured"]))
+            summary.append("- Response predicates verified: " + str(framing["all_response_checks_observed"]))
             summary.append("- Linux usbdevfs async URB constants present: " + str(framing["ioctls_verified"]))
-            summary.append("- See usb-ff617a-framing.json for callgraph, header-field and callback evidence.")
+            summary.append("- See usb-ff617a-framing.json for detailed provenance and type-inference warnings.")
             summary.append("- Protocol identity UNKNOWN; no original vendor code executed.")
         summary += ["", "## Guest/static image consistency"]
         if record["match_tests"]:
