@@ -256,6 +256,7 @@ def mpfree_v11_entrypoint():
             except Exception as e:record['error']=type(e).__name__+': '+str(e)[:180]
             details[key]=record
     finally:decoder.dispose()
+    direct_boot={}
     # Other independent research tracks. Original-memory words only,
     # never execute SPL handoff, update trampolines or ARM MMIO operations.
     if role in ('spl','az01-update'):
@@ -308,7 +309,6 @@ def mpfree_v11_entrypoint():
         }
     # Explicit P3 direct-boot/protocol research. Read literal-pool values and
     # original bytes from the SHA-verified saved project. No code execution.
-    direct_boot={}
     if role=='uboot':
         def read_word(pos):
             try:
