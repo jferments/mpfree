@@ -306,11 +306,12 @@ fn preview_never_overwrites_a_picture() {
         eprintln!("skipped: {REPORT_DIR} exists, and a STOP line would be appended there");
         return;
     }
+    // A picture already there (the first one the preview writes), so the
+    // preview stops at once rather than after drawing every screen twice.
     let dir = folder("again");
-    assert!(hello(&["--preview", dir.to_str().unwrap()])
-        .status
-        .success());
-    let before = std::fs::read(dir.join("console.png")).unwrap();
+    std::fs::create_dir_all(&dir).unwrap();
+    let before = b"a picture from an earlier run".to_vec();
+    std::fs::write(dir.join("console.png"), &before).unwrap();
     let out = hello(&["--preview", dir.to_str().unwrap()]);
     assert_eq!(out.status.code(), Some(1));
     let stdout = String::from_utf8_lossy(&out.stdout);

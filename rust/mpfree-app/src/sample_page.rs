@@ -47,7 +47,10 @@
 //!   than real time, and makes a keygroup instrument of it on the kit's
 //!   pads, one undo step. The app makes the copy
 //!   ([`SamplePage::take_auto_request`], [`SamplePage::start_auto`]); the
-//!   audio thread is never asked for anything.
+//!   audio thread is never asked for anything. External gear is the other
+//!   source, once the app gives a MIDI out ([`SamplePage::set_gear`]): its
+//!   notes go out on a MIDI channel from the job's thread and its sound is
+//!   read back from the line input's rolling buffer in real time.
 //! - Saving: the kits go into a project as the sampler's part
 //!   ([`SamplePage::save_part`]: their text, and every sound they use for
 //!   the project's `samples/`, kept losslessly as WAV and named by the
@@ -65,7 +68,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use mpfree_node::Node;
-use mpfree_sampler::autosample::{Finished, Job, Plan};
+use mpfree_sampler::autosample::{Finished, Gear, Job, Plan, PlanError};
 use mpfree_sampler::engine::EngineView;
 use mpfree_sampler::keymap::{self, RootFrom};
 use mpfree_sampler::model::{
@@ -180,6 +183,17 @@ pub enum Editor {
     Auto,
 }
 
+/// Live chop under way: the pad whose sound plays, the cuts read so far,
+/// and whether the sound has been heard marking yet.
+struct LiveRun {
+    kit: usize,
+    pad: usize,
+    layer: usize,
+    seen: u64,
+    heard: bool,
+    kept: usize,
+}
+
 /// A take being recorded, and the pad it goes onto.
 struct Take {
     rec: Recording,
@@ -263,6 +277,8 @@ struct AutoJob {
     job: Job,
     kit: usize,
     onto: Onto,
+    /// External gear, played in real time (else the synth, offline).
+    gear: bool,
     /// The notes it samples, low to high, and takes a note.
     notes: Vec<u8>,
     per_note: usize,
@@ -279,6 +295,19 @@ impl AutoJob {
         }
     }
 }
+
+/// A MIDI out the Auto-sample mode can play external gear through: its
+/// name as the page shows it ("MIDI Out (DIN)") and how a message goes out
+/// on it. The app gives it once that MIDI out is open
+/// ([`SamplePage::set_gear`]); the job sends from its own thread.
+#[derive(Clone)]
+pub struct GearOut {
+    pub name: String,
+    pub send: MidiSend,
+}
+
+/// Sends one MIDI message out of a port, from any thread.
+pub type MidiSend = Arc<dyn Fn(&[u8]) + Send + Sync>;
 
 /// What the Rec tab's Source row offers, by name: the line input, then the
 /// mix as heard (the master after Master safety), each track, the delay's
@@ -388,8 +417,13 @@ pub struct SamplePage {
     want_back: bool,
     take: Option<Take>,
     flatten: Option<Flatten>,
-    /// Hits and lifts for the audio thread (Flatten).
+    /// Hits and lifts for the audio thread (Flatten), and live chop's
+    /// stop.
     hits: Vec<FromUi>,
+    /// Live chop on the Chop tab, while it runs.
+    live: Option<LiveRun>,
+    /// The cuts the sampler has marked so far (from the playheads).
+    marks_seen: u64,
     /// Takes made, for their names.
     takes: u32,
     /// The last take, said in a line on the tab.
@@ -404,6 +438,9 @@ pub struct SamplePage {
     auto_job: Option<AutoJob>,
     /// The last instrument made, or why not, in a line.
     auto_last: String,
+    /// The MIDI out external gear is auto-sampled through, when the app
+    /// has one open.
+    gear_out: Option<GearOut>,
     /// A project's kits being read and decoded ([`SamplePage::open_part`]).
     opening: Option<Receiver<Result<Opened, String>>>,
     /// A file being read for the browser's Load (true: Load to pad).
@@ -471,6 +508,8 @@ impl SamplePage {
             take: None,
             flatten: None,
             hits: Vec::new(),
+            live: None,
+            marks_seen: 0,
             takes: 0,
             last_take: String::new(),
             auto: None,
@@ -479,6 +518,7 @@ impl SamplePage {
             auto_request: None,
             auto_job: None,
             auto_last: String::new(),
+            gear_out: None,
             opening: None,
             loading: None,
             assign: None,
@@ -541,12 +581,45 @@ impl SamplePage {
     /// A pad was hit: the tab edits it (or, with the pads playing notes,
     /// the keygroup that plays its note) from now on.
     pub fn hit(&mut self, pad: usize) {
+        if self.live.is_some() {
+            // Live chop: the hit marks a cut and the pad stays.
+            return;
+        }
         if self.auditioning == Some(pad) {
             // Its own release lets it go.
             self.auditioning = None;
         }
         let pad = self.played(pad);
         self.pick(pad);
+    }
+
+    /// Pad `pad` was hit at `velocity`. With the Play tab on screen
+    /// (`shown`) at its Stops or Also plays row, the pad goes into that
+    /// set or out of it (an undo step each); otherwise the tab edits the
+    /// pad hit from now on ([`SamplePage::hit`]) and shows its velocity
+    /// ([`SamplePage::hit_velocity`]).
+    pub fn press(&mut self, ui: &mut Ui, pad: usize, velocity: u8, shown: bool) {
+        if shown && self.play_takes_pads(ui) && self.assign.is_none() {
+            let a = match (self.play.as_mut(), self.play_state.as_ref()) {
+                (Some(tab), Some(st)) => tab.pad_hit(ui, st, pad),
+                _ => None,
+            };
+            if let Some(a) = a {
+                self.lift();
+                let mut out = Vec::new();
+                self.act_play(ui, a, &mut out);
+                self.lift();
+            }
+            return;
+        }
+        self.hit(pad);
+        self.hit_velocity(ui, pad, velocity);
+    }
+
+    /// Whether the Play tab shows, at a row that pad hits edit (Stops or
+    /// Also plays): the hint says so.
+    pub fn play_takes_pads(&self, ui: &Ui) -> bool {
+        self.page() == PLAY_PAGE && self.play.as_ref().is_some_and(|t| t.takes_pads(ui))
     }
 
     /// Picks pad `pad` itself (a tap on its cell or its zone), whatever
@@ -569,6 +642,10 @@ impl SamplePage {
     /// The pad hit last was hit at `velocity` (after [`SamplePage::hit`]):
     /// the Play tab's layer map shows it.
     pub fn hit_velocity(&mut self, ui: &mut Ui, pad: usize, velocity: u8) {
+        if self.live.is_some() {
+            self.light(ui, self.played(pad), true);
+            return;
+        }
         if let Some(src) = self.assign.take() {
             // Load to pad: this hit picks the pad.
             let kit = self.kit;
@@ -720,6 +797,16 @@ impl SamplePage {
         self.chop_state = None;
         if self.editor == Editor::Chop {
             self.refresh_chop(ui, bank);
+        }
+        // Another tab, pad or region: live chop stops.
+        let stopped = match (self.chop.as_mut(), self.chop_state.as_ref()) {
+            (Some(tab), Some(st)) if self.editor == Editor::Chop => {
+                tab.take_stop(st).is_some() || !tab.live()
+            }
+            _ => true,
+        };
+        if stopped && self.live.is_some() {
+            self.stop_live("stopped");
         }
         self.play_state = None;
         if self.editor == Editor::Play {
@@ -1160,6 +1247,36 @@ impl SamplePage {
     fn act_chop(&mut self, ui: &mut Ui, a: ChopAction, out: &mut Vec<FromUi>) {
         match &a {
             ChopAction::Tab(i) => self.open(ui, *i),
+            &ChopAction::Live {
+                pad,
+                layer,
+                start,
+                end,
+                on: true,
+            } => {
+                let kit = self.kit;
+                self.live = Some(LiveRun {
+                    kit,
+                    pad,
+                    layer,
+                    seen: self.marks_seen,
+                    heard: false,
+                    kept: 0,
+                });
+                out.push(FromUi::SampleLiveChop {
+                    kit,
+                    pad,
+                    layer,
+                    start,
+                    end,
+                    on: true,
+                });
+                self.lines.push(format!(
+                    "sample: live chop on pad {}: hit pads in time to drop cuts",
+                    self.pad_text(kit, pad)
+                ));
+            }
+            ChopAction::Live { on: false, .. } => self.stop_live("stopped"),
             &ChopAction::Audition {
                 pad,
                 layer,
@@ -1835,7 +1952,39 @@ impl SamplePage {
         if let Some(pad) = self.auditioning.take() {
             out.push(FromUi::Pad { pad, down: false });
         }
+        if self.live.is_some() {
+            self.stop_live("stopped");
+        }
         self.lift();
+    }
+
+    /// Live chop ends: the sound stops (the audio thread hears of it with
+    /// the next actions) and the log says how many cuts it made.
+    fn stop_live(&mut self, why: &str) {
+        let Some(run) = self.live.take() else { return };
+        self.hits.push(FromUi::SampleLiveChop {
+            kit: run.kit,
+            pad: run.pad,
+            layer: run.layer,
+            start: 0,
+            end: 0,
+            on: false,
+        });
+        let n = run.kept;
+        self.lines.push(format!(
+            "sample: live chop {why} on pad {}: {n} cut{} made",
+            self.pad_text(run.kit, run.pad),
+            if n == 1 { "" } else { "s" }
+        ));
+    }
+
+    /// Whether the Chop tab chops live (its hint says how).
+    pub fn chop_live_method(&self) -> bool {
+        self.page() == CHOP_PAGE
+            && self
+                .chop
+                .as_ref()
+                .is_some_and(|t| t.method() == mpfree_sampler_ui::chop_tab::Method::Live)
     }
 
     /// UNDO (or redo) in the playing kit.
@@ -2573,6 +2722,7 @@ impl SamplePage {
             pads,
             target: auto_tab::target(settings.onto, settings.notes(), pads, has),
             running: self.auto_job.as_ref().map(AutoJob::running),
+            gear: self.gear_out.as_ref().map(|g| g.name.clone()),
             last: self.auto_last.clone(),
             rate: self.rate,
         }
@@ -2626,6 +2776,7 @@ impl SamplePage {
                     self.auto_request = Some(plan);
                 }
             }
+            AutoAction::StartGear { plan, channel } => self.start_gear(ui, plan, channel),
             AutoAction::Cancel => {
                 if let Some(j) = self.auto_job.as_ref() {
                     j.job.cancel();
@@ -2667,6 +2818,65 @@ impl SamplePage {
             self.refresh_auto_state(ui);
             return;
         };
+        self.begin_auto(ui, plan, String::new(), |plan| Job::start(plan, node));
+    }
+
+    /// The MIDI out external gear is auto-sampled through (None: there is
+    /// none, and the Auto-sample mode offers the synth alone). A gear
+    /// auto-sample already running keeps the one it started with.
+    #[allow(dead_code)] // the app's MIDI out wiring calls it, after the MIDI out check
+    pub fn set_gear(&mut self, ui: &mut Ui, out: Option<GearOut>) {
+        self.gear_out = out;
+        self.refresh_auto_state(ui);
+    }
+
+    /// Starts auto-sampling external gear in real time: `plan`'s notes on
+    /// MIDI `channel` (0 to 15) through the gear's MIDI out, its sound
+    /// from the line input, for the kit the pads play now.
+    fn start_gear(&mut self, ui: &mut Ui, plan: Plan, channel: u8) {
+        if self.auto_job.is_some() {
+            return;
+        }
+        let why = match (&self.gear_out, &self.input) {
+            (None, _) => Some("there is no MIDI out for the gear".to_string()),
+            _ if self.source != RecSource::Line => Some(format!(
+                "the Rec tab records {}, not the line input",
+                self.source_name()
+            )),
+            (_, None) => Some("the line input is off".to_string()),
+            _ => None,
+        };
+        if let Some(why) = why {
+            self.auto_last = format!("Not started: {why}");
+            self.lines.push(format!(
+                "sample: auto-sample of the gear not started ({why})"
+            ));
+            self.refresh_auto_state(ui);
+            return;
+        }
+        let (Some(out), Some(input)) = (self.gear_out.clone(), self.input.as_ref()) else {
+            return;
+        };
+        let gear = Gear::new(input.audio.clone(), channel);
+        let how = format!(" (MIDI channel {} on {})", channel + 1, out.name);
+        let send = out.send;
+        self.begin_auto(ui, plan, how, move |plan| {
+            Job::start_gear(plan, gear, Box::new(move |m: [u8; 3]| send(&m[..])))
+        });
+        if let Some(j) = self.auto_job.as_mut() {
+            j.gear = true;
+        }
+    }
+
+    /// Starts an auto-sample job with `start` and says so (`how`: what
+    /// plays it, after the instrument's name), or says why not.
+    fn begin_auto(
+        &mut self,
+        ui: &mut Ui,
+        plan: Plan,
+        how: String,
+        start: impl FnOnce(Plan) -> Result<Job, PlanError>,
+    ) {
         let onto = self
             .auto
             .as_ref()
@@ -2675,7 +2885,7 @@ impl SamplePage {
         let per_note = plan.velocities.len() * usize::from(plan.round_robins);
         let est = plan.estimate();
         let text = format!(
-            "sample: auto-sample {} started: {} notes ({} to {}), {} takes, {:.0} s of notes, up to {:.0} MB",
+            "sample: auto-sample {}{how} started: {} notes ({} to {}), {} takes, {:.0} s of notes, up to {:.0} MB",
             plan.name,
             notes.len(),
             mpfree_sampler_ui::note_name(notes.first().copied().unwrap_or(plan.lo)),
@@ -2684,7 +2894,7 @@ impl SamplePage {
             est.seconds,
             est.bytes_most as f64 / 1e6
         );
-        match Job::start(plan, node) {
+        match start(plan) {
             Ok(job) => {
                 self.lines.push(text);
                 self.auto_last.clear();
@@ -2692,6 +2902,7 @@ impl SamplePage {
                     job,
                     kit: self.kit,
                     onto,
+                    gear: false,
                     notes,
                     per_note,
                 });
@@ -2730,25 +2941,40 @@ impl SamplePage {
         let Some(j) = self.auto_job.take() else {
             return;
         };
-        let (kit, onto) = (j.kit, j.onto);
+        let (kit, onto, gear) = (j.kit, j.onto, j.gear);
         let f = j.job.finish();
-        self.land_auto(ui, kit, onto, f);
+        self.land_auto(ui, kit, onto, gear, f);
     }
 
     /// Puts a finished auto-sample's instrument on kit `kit` (one undo
     /// step) and picks its first pad, or says why not.
-    fn land_auto(&mut self, ui: &mut Ui, kit: usize, onto: Onto, f: Finished) {
-        let what = format!(
-            "{:.1} s of notes rendered in {:.2} s, built in {:.2} s{}",
-            f.audio_seconds,
-            f.render_seconds,
-            f.build_seconds,
-            if f.clipped { ", it clipped (kept)" } else { "" }
-        );
+    fn land_auto(&mut self, ui: &mut Ui, kit: usize, onto: Onto, gear: bool, f: Finished) {
+        let clipped = if f.clipped { ", it clipped (kept)" } else { "" };
+        let what = if gear {
+            format!(
+                "{:.1} s of notes recorded, built in {:.2} s{clipped}",
+                f.audio_seconds, f.build_seconds
+            )
+        } else {
+            format!(
+                "{:.1} s of notes rendered in {:.2} s, built in {:.2} s{clipped}",
+                f.audio_seconds, f.render_seconds, f.build_seconds
+            )
+        };
+        // Something other than Cancel stopped the gear: said, and the notes
+        // done are kept.
+        if let Some(why) = f.stopped {
+            self.lines.push(format!(
+                "sample: auto-sample stopped: {why}; keeping the notes done"
+            ));
+        }
         let inst = match f.instrument {
             Ok(i) => i,
             Err(e) => {
-                self.auto_last = format!("Nothing made: {e}");
+                self.auto_last = match f.stopped {
+                    Some(why) => format!("Stopped: {why}"),
+                    None => format!("Nothing made: {e}"),
+                };
                 self.lines
                     .push(format!("sample: auto-sample made nothing ({e}; {what})"));
                 self.refresh_auto_state(ui);
@@ -3120,6 +3346,7 @@ impl SamplePage {
 
     /// Where the playing kit's voices are; the shown pad's are drawn.
     pub fn set_playheads(&mut self, ui: &mut Ui, heads: &Playheads) {
+        self.live_heads(ui, heads);
         let frames: Vec<u64> = if usize::from(heads.kit) == self.kit && self.state.is_some() {
             heads.of(self.pad).collect()
         } else {
@@ -3149,6 +3376,36 @@ impl SamplePage {
             Editor::Play | Editor::Pads | Editor::Grain | Editor::Rec | Editor::Auto => {}
         }
         self.shown_heads = frames;
+    }
+
+    /// Live chop's cuts and its end, from the playheads: the cuts made
+    /// since the last go onto the Chop tab; the sound over (it was heard
+    /// marking, and isn't now) ends it.
+    fn live_heads(&mut self, ui: &mut Ui, heads: &Playheads) {
+        self.marks_seen = heads.marks_made;
+        let Some(run) = self.live.as_mut() else {
+            return;
+        };
+        if usize::from(heads.kit) != run.kit {
+            return;
+        }
+        let marks: Vec<u64> = (run.seen..heads.marks_made)
+            .filter_map(|i| heads.mark(i))
+            .collect();
+        run.seen = heads.marks_made;
+        run.heard |= heads.marking;
+        let ended = run.heard && !heads.marking;
+        if let (Some(tab), Some(st)) = (self.chop.as_mut(), self.chop_state.as_ref()) {
+            if self.editor == Editor::Chop {
+                run.kept += tab.live_marks(ui, st, &marks);
+                if ended {
+                    tab.live_ended(ui, st);
+                }
+            }
+        }
+        if ended {
+            self.stop_live("over: the sound ended");
+        }
     }
 
     /// The cloud's box, naming the Grain tab's pad and layer, for the audio

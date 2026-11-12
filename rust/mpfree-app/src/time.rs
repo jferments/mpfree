@@ -64,6 +64,7 @@
 
 mod audio;
 mod control;
+mod follow;
 pub mod link;
 
 use mpfree_play::{Event, Out, Sink, TrackArps};
@@ -77,6 +78,7 @@ use std::f32::consts::TAU;
 
 pub use audio::TimeAudio;
 pub use control::TimeControl;
+pub use follow::Follow;
 use link::Tracks;
 
 /// Tracks in a new project.
@@ -472,9 +474,43 @@ impl TimeHost {
         sent && self.audio.counts().refused == refused
     }
 
-    /// Follow the app's tempo (TAP TEMPO, the menu).
+    /// Follow the app's tempo (TAP TEMPO, the menu). Does nothing while
+    /// a followed clock arrives ([`TimeHost::followed_bpm`]).
     pub fn follow_tempo(&mut self, bpm: f64) {
         self.audio.follow_tempo(bpm);
+    }
+
+    /// Follow another device's MIDI clock with these options (the
+    /// project's MIDI setup: follow start/stop, follow position), or not
+    /// (None). Cheap to call every period: only a change starts afresh.
+    #[allow(dead_code)] // The MIDI thread's M4 wires it into main.rs.
+    pub fn follow(&mut self, follow: Option<Follow>) {
+        self.audio.follow(follow);
+    }
+
+    /// Every byte read from the followed port this period, before
+    /// [`TimeHost::advance`], with `frame` = [`TimeHost::next_frame`]
+    /// (or earlier, when the bytes have their own time). Anything but
+    /// clock, Start, Continue, Stop and Song Position is skipped; the
+    /// options given to [`TimeHost::follow`] say what follows.
+    #[allow(dead_code)] // The MIDI thread's M4 wires it into main.rs.
+    pub fn clock_in(&mut self, frame: u64, bytes: &[u8]) {
+        self.audio.clock_in(frame, bytes);
+    }
+
+    /// The first frame of the coming period on the transport's frame
+    /// clock, which [`TimeHost::clock_in`] counts in.
+    #[allow(dead_code)] // The MIDI thread's M4 wires it into main.rs.
+    pub fn next_frame(&self) -> u64 {
+        self.audio.next_frame()
+    }
+
+    /// The followed clock's tempo while it arrives, for the app's tempo
+    /// (the chip and TAP TEMPO's start). None while not following, or
+    /// with no clock arriving.
+    #[allow(dead_code)] // The MIDI thread's M4 wires it into main.rs.
+    pub fn followed_bpm(&self) -> Option<f64> {
+        self.audio.followed_bpm()
     }
 
     /// Carry out a touch on the time engine's screens. Returns a line for
@@ -2542,5 +2578,151 @@ mod tests {
         let clip = h.control.project.tracks[0].slots[0].as_ref().unwrap();
         assert_eq!(clip.notes.len(), ons, "every note recorded as played");
         assert_eq!(h.dropped() + arps.dropped(), 0);
+    }
+
+    /// Another device's clock: a pulse every `pulse` frames from frame
+    /// `first`, and Start halfway before pulse `start`.
+    struct Leader {
+        first: f64,
+        pulse: f64,
+        start: usize,
+        /// The next pulse, and whether Start went.
+        k: usize,
+        started: bool,
+    }
+
+    impl Leader {
+        /// Its bytes due before frame `p`, in order, into `out`; how many.
+        fn bytes(&mut self, p: u64, out: &mut [u8; 8]) -> usize {
+            use mpfree_midi_clock::{CLOCK, START};
+            let p = p as f64;
+            let mut n = 0;
+            while n < out.len() {
+                let start_at = self.first + (self.start as f64 - 0.5) * self.pulse;
+                if !self.started && self.k == self.start && start_at < p {
+                    out[n] = START;
+                    self.started = true;
+                } else if self.first + self.k as f64 * self.pulse < p {
+                    out[n] = CLOCK;
+                    self.k += 1;
+                } else {
+                    break;
+                }
+                n += 1;
+            }
+            n
+        }
+    }
+
+    /// Following another device's clock as the app will (the MIDI
+    /// thread's M4): each period, the leader port's bytes read at its top
+    /// go to `clock_in` at `next_frame`, and the app's tempo to
+    /// `follow_tempo`. The leader runs at 100 BPM, the transport at 120.
+    /// A one-bar clip with a note on every beat plays on the leader's
+    /// beats from the third bar on, about half a period after them (bytes
+    /// read once a period come up to a period late); the app's tempo is ignored while
+    /// the clock arrives; the screens and `followed_bpm` show the leader's;
+    /// the status line has nothing to add; and following allocates
+    /// nothing.
+    #[test]
+    fn a_clip_plays_on_the_beats_of_a_followed_clock() {
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut pads = Fake {
+            hits: Vec::with_capacity(1000),
+            ..Fake::default()
+        };
+        let mut c = Clip::new("Beats", 3840);
+        c.notes = (0..4)
+            .map(|i| mpfree_seq::Note {
+                tick: i * 960,
+                len: 100,
+                note: 4,
+                velocity: 100,
+                chance: 100,
+                cond: mpfree_seq::Cond::Always,
+                ratchet: 1,
+                touch: mpfree_seq::Touch::NONE,
+            })
+            .collect();
+        h.control.project.tracks[0].slots[0] = Some(c);
+        h.act(TimeAction::Launch { track: 0, slot: 0 }).unwrap();
+        h.follow(Some(Follow {
+            start_stop: true,
+            position: true,
+        }));
+        let mut leader = Leader {
+            first: 10_000.0,
+            pulse: 60.0 * f64::from(RATE) / (100.0 * 24.0),
+            start: 48,
+            k: 0,
+            started: false,
+        };
+        let (first, pulse) = (leader.first, leader.pulse);
+        let beat = |j: usize| (first + (48 + 24 * j) as f64 * pulse).round() as u64;
+        let mut buf = [0u8; 8];
+        let mut period = |h: &mut TimeHost, pads: &mut Fake| {
+            let p = h.next_frame();
+            let n = leader.bytes(p, &mut buf);
+            h.clock_in(p, &buf[..n]);
+            h.follow_tempo(120.0);
+            h.period(PERIOD, pads);
+            pads.frame += u64::from(PERIOD);
+        };
+        while pads.frame < beat(8) {
+            period(&mut h, &mut pads);
+        }
+        let ((), allocs) = crate::sys::alloc_count::calls(|| {
+            while pads.frame < beat(32) {
+                period(&mut h, &mut pads);
+            }
+        });
+        assert_eq!(allocs, 0, "allocations while following");
+        let late: Vec<i64> = (8..32)
+            .map(|j| {
+                let b = beat(j);
+                let hit = pads
+                    .hits
+                    .iter()
+                    .map(|&(f, _, _)| f)
+                    .min_by_key(|f| f.abs_diff(b))
+                    .unwrap();
+                hit as i64 - b as i64
+            })
+            .collect();
+        assert_eq!(pads.hits.len(), 32, "a note a beat, from the first");
+        // About half a period late: the bytes are read up to a period
+        // after they came (58 to 72 frames when written).
+        let half = i64::from(PERIOD) / 2;
+        assert!(
+            late.iter().all(|&d| (half - 32..=half + 32).contains(&d)),
+            "frames after the leader's beats: {late:?}"
+        );
+        let bpm = h.followed_bpm().unwrap();
+        assert!((bpm - 100.0).abs() < 0.1, "{bpm}");
+        assert_eq!(h.info().bpm, bpm);
+        assert!(!h.describe().contains("following"), "{}", h.describe());
+        // A loop of its own takes the transport away from the leader's
+        // position as it wraps: it jumps back, and the status line says so.
+        // (Twice: the leader's pulse is on the loop's end, so the first
+        // jump lands there and wraps again.)
+        let bar = h.info().position / 3840 * 3840;
+        h.command(Command::SetLoop(Some((bar, bar + 3840))));
+        while pads.frame < beat(40) {
+            period(&mut h, &mut pads);
+        }
+        assert!(
+            h.describe()
+                .contains("following a clock: 2 jumps to its position, 0 times"),
+            "{}",
+            h.describe()
+        );
+        // Not following: the app's tempo applies again.
+        // (Playing, it takes effect on the next sixteenth line.)
+        h.follow(None);
+        assert_eq!(h.followed_bpm(), None);
+        for _ in 0..100 {
+            period(&mut h, &mut pads);
+        }
+        assert_eq!(h.info().bpm, 120.0);
     }
 }
