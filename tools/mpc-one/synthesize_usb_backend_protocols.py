@@ -21,7 +21,7 @@ INTERFACES = (
         "table": "0x00012a74", "ctor": "0x00016ff8",
         "class": "0xff", "subclass": "0x42", "protocol": "0x03",
         "protocol_family": "Android Fastboot-compatible",
-        "upstream": "https://android.googlesource.com/platform/system/core/+/refs/heads/main/fastboot/fastboot.cpp",
+        "upstream": "https://android.googlesource.com/platform/system/core/+/a00f91b4c15fcc5b8f9b9c70dde39fd97a8b2e89/fastboot/fastboot.cpp",
         "marker_functions": {"0x00015bec": "0x59414b4f", "0x00016028": "0x4c494146"},
         "marker_interpretation": "Fastboot OKAY and FAIL response words, little-endian.",
     },
