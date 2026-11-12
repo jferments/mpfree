@@ -67,34 +67,43 @@ fn scene(c: &mut dyn Canvas, fonts: &mut Fonts, k: u32) {
     );
 }
 
-struct Diff {
-    max: u32,
-    over_1: usize,
-    differ: usize,
-}
-
-fn diff(a: &[u32], b: &[u32]) -> Diff {
-    assert_eq!(a.len(), b.len());
-    let mut d = Diff {
-        max: 0,
-        over_1: 0,
-        differ: 0,
-    };
-    for (x, y) in a.iter().zip(b) {
-        let m = [16, 8, 0]
-            .iter()
-            .map(|s| ((x >> s) & 0xFF).abs_diff((y >> s) & 0xFF))
-            .max()
-            .unwrap();
-        d.max = d.max.max(m);
-        d.differ += (m > 0) as usize;
-        d.over_1 += (m > 1) as usize;
+/// A page of text in rows, each row clipped differently, with a rounded
+/// strip behind it: no images, so it can all go in one draw call.
+fn text_page(c: &mut dyn Canvas, fonts: &mut Fonts) {
+    let (w, h) = c.size();
+    c.fill_rect(Rect::new(0, 0, w, h), Color::rgb(0x0E1118));
+    for row in 0..24 {
+        let y = 12 + row * 32;
+        c.set_clip(Rect::new(0, y - 4, w - row * 20, 30));
+        c.fill_round_rect(
+            Rect::new(8, y - 2, 340, 28),
+            8,
+            Color::rgb(0x223344 + row as u32 * 0x010203),
+        );
+        let face = [FontId::Sans, FontId::Bold, FontId::Mono][row as usize % 3];
+        let px = 13.0 + (row % 5) as f32 * 3.0;
+        let text = format!(
+            "Track {row}: pad {} - {} BPM, swing 56 %",
+            row * 7,
+            90 + row
+        );
+        let ink = Color::rgb(0xF0F0F0).with_alpha(170 + (row as u8 % 4) * 25);
+        fonts.face(face).draw(c, px, 16, y + 18, ink, &text);
     }
-    d
 }
 
 /// The software path's frame for `rotation`, as `fb.rs` sends it.
 fn software(nw: usize, nh: usize, rotation: Rotation, k: u32) -> (Vec<u32>, Recorder) {
+    software_of(nw, nh, rotation, &|c, f| scene(c, f, k))
+}
+
+/// The software path's frame of `draw`, and its display list.
+fn software_of(
+    nw: usize,
+    nh: usize,
+    rotation: Rotation,
+    draw: &dyn Fn(&mut dyn Canvas, &mut Fonts),
+) -> (Vec<u32>, Recorder) {
     let layout = FbLayout {
         geometry: Geometry::new(nw, nh, nw * 4, 32).unwrap(),
         rotation,
@@ -102,7 +111,7 @@ fn software(nw: usize, nh: usize, rotation: Rotation, k: u32) -> (Vec<u32>, Reco
     let (w, h) = layout.logical_size();
     let mut fonts = Fonts::embedded();
     let mut soft = SoftCanvas::new(w, h);
-    scene(&mut soft, &mut fonts, k);
+    draw(&mut soft, &mut fonts);
     let mut bytes = Vec::new();
     layout.rows(&soft, 0, nh, &mut bytes);
     let px = bytes
@@ -113,7 +122,7 @@ fn software(nw: usize, nh: usize, rotation: Rotation, k: u32) -> (Vec<u32>, Reco
         .collect();
     let mut rec = Recorder::new(w, h);
     rec.begin_frame();
-    scene(&mut rec, &mut Fonts::embedded(), k);
+    draw(&mut rec, &mut Fonts::embedded());
     (px, rec)
 }
 
@@ -131,7 +140,7 @@ fn the_gpu_draws_the_mpc_screen_as_the_software_path_does() {
     assert_eq!(r.logical_size(), (1280, 800));
     let stats = r.play(&gpu, rec.ops(), rec.store(), &[]);
     let got = r.read_native(&gpu);
-    let d = diff(&want, &got);
+    let d = compare(&want, &got);
     eprintln!(
         "{} ops in {} draws, {} uploads; {} of {} pixels differ, {} by more than 1, at most {}",
         rec.ops().len(),
@@ -162,7 +171,7 @@ fn every_turn_lands_each_pixel_where_the_software_path_puts_it() {
         let (want, rec) = software(600, 520, rotation, 0x123456);
         let mut r = Renderer::new(&gpu, 600, 520, rotation).unwrap();
         r.play(&gpu, rec.ops(), rec.store(), &[]);
-        let d = diff(&want, &r.read_native(&gpu));
+        let d = compare(&want, &r.read_native(&gpu));
         assert!(d.max <= 3, "{rotation:?}: a channel differs by {}", d.max);
         assert!(
             d.over_1 * 1000 < want.len(),
@@ -188,4 +197,129 @@ fn a_frame_keeps_the_last_one_where_it_draws_nothing() {
     let after = r.read_native(&gpu);
     let changed = before.iter().zip(&after).filter(|(a, b)| a != b).count();
     assert!(changed > 0 && changed <= 100, "{changed} pixels changed");
+}
+
+#[test]
+fn text_shapes_and_clips_are_one_draw_call() {
+    let gpu = gpu();
+    let (want, rec) = software_of(800, 1280, Rotation::Deg270, &text_page);
+    let masks = rec
+        .ops()
+        .iter()
+        .filter(|op| matches!(op, Op::Mask { .. }))
+        .count();
+    let mut r = Renderer::new(&gpu, 800, 1280, Rotation::Deg270).unwrap();
+    let s = r.play(&gpu, rec.ops(), rec.store(), &[]);
+    let d = compare(&want, &r.read_native(&gpu));
+    eprintln!(
+        "{} ops ({masks} glyphs) in {} draws, {} uploads; {} pixels differ, at most {}",
+        rec.ops().len(),
+        s.draws,
+        s.uploads,
+        d.differ,
+        d.max
+    );
+    assert!(masks > 500, "{masks} glyphs");
+    assert_eq!((s.draws, s.atlas_cleared, s.masks_alone), (1, 0, 0));
+    assert!(d.max <= 3 && d.over_1 * 1000 < want.len(), "{d:?}");
+    // Again: everything is in the atlas already.
+    let again = r.play(&gpu, rec.ops(), rec.store(), &[]);
+    assert_eq!((again.draws, again.uploads), (1, 0));
+}
+
+#[test]
+fn a_full_atlas_is_cleared_and_draws_the_same_picture() {
+    let gpu = gpu();
+    let (want, rec) = software_of(800, 1280, Rotation::Deg270, &text_page);
+    let mut big = Renderer::new(&gpu, 800, 1280, Rotation::Deg270).unwrap();
+    big.play(&gpu, rec.ops(), rec.store(), &[]);
+    let roomy = big.read_native(&gpu);
+    // Room for two rows of glyphs, and too narrow for the widest.
+    let (mut wide, mut tall) = (0, 0);
+    for op in rec.ops() {
+        if let Op::Mask { id, .. } = op {
+            let m = rec.store().mask(*id).unwrap();
+            (wide, tall) = (wide.max(m.w as i32), tall.max(m.h as i32));
+        }
+    }
+    let atlas = (wide - 1, ((tall + 7) & !7) * 2);
+    let mut small = Renderer::with_atlas(&gpu, 800, 1280, Rotation::Deg270, atlas).unwrap();
+    let s = small.play(&gpu, rec.ops(), rec.store(), &[]);
+    eprintln!(
+        "atlas {}x{}: {} draws, {} uploads, cleared {} times, {} masks alone",
+        atlas.0, atlas.1, s.draws, s.uploads, s.atlas_cleared, s.masks_alone
+    );
+    assert!(s.atlas_cleared > 0, "{s:?}");
+    assert!(s.masks_alone > 0, "{s:?}");
+    assert!(
+        small.read_native(&gpu) == roomy,
+        "a small atlas changed the picture"
+    );
+    let d = compare(&want, &roomy);
+    assert!(d.max <= 3 && d.over_1 * 1000 < want.len(), "{d:?}");
+}
+
+#[test]
+fn a_dropped_mask_is_uploaded_again_when_it_comes_back() {
+    let gpu = gpu();
+    let (_, rec) = software_of(800, 1280, Rotation::Deg270, &text_page);
+    let mut r = Renderer::new(&gpu, 800, 1280, Rotation::Deg270).unwrap();
+    r.play(&gpu, rec.ops(), rec.store(), &[]);
+    let before = r.read_native(&gpu);
+    let ids: Vec<u32> = rec
+        .ops()
+        .iter()
+        .filter_map(|op| match op {
+            Op::Mask { id, .. } => Some(*id),
+            _ => None,
+        })
+        .collect();
+    let mut unique = ids.clone();
+    unique.sort_unstable();
+    unique.dedup();
+    let s = r.play(&gpu, rec.ops(), rec.store(), &unique[..3]);
+    assert_eq!((s.draws, s.uploads), (1, 3));
+    assert!(r.read_native(&gpu) == before);
+}
+
+#[test]
+fn gpus_on_several_threads_do_not_end_each_others_display() {
+    // EGL gives them all one display; one going must not end it for the
+    // others (it did, now and then, when tests ran side by side).
+    let threads: Vec<_> = (0..4)
+        .map(|_| {
+            std::thread::spawn(|| {
+                for _ in 0..12 {
+                    let gpu = gpu();
+                    let mut r = Renderer::new(&gpu, 64, 48, Rotation::Deg0).unwrap();
+                    let mut rec = Recorder::new(64, 48);
+                    rec.begin_frame();
+                    rec.fill_rect(Rect::new(0, 0, 64, 48), Color::rgb(0x336699));
+                    r.play(&gpu, rec.ops(), rec.store(), &[]);
+                    assert!(r.read_native(&gpu).iter().all(|&p| p == 0x336699));
+                }
+            })
+        })
+        .collect();
+    for t in threads {
+        t.join().expect("a thread's GPU failed");
+    }
+}
+
+#[test]
+fn a_compute_job_comes_back_with_the_cpus_answer() {
+    let gpu = Gpu::surfaceless_es(3, 1).unwrap_or_else(|e| panic!("no OpenGL ES 3.1: {e}"));
+    for (frames, taps) in [(128, 64), (37, 5)] {
+        let r = compute::fir_round_trip(&gpu, frames, taps, 20).unwrap();
+        eprintln!(
+            "FIR {frames} frames x {taps} taps: GPU round trip p50 {:.0} us, CPU {:.0} us, error {:.1e}",
+            r.gpu_p50_us, r.cpu_p50_us, r.max_error
+        );
+        assert!(
+            r.max_error < 1e-4,
+            "the GPU's answer is {} off",
+            r.max_error
+        );
+        assert!(r.gpu_p50_us > 0.0 && r.gpu_p99_us >= r.gpu_p50_us);
+    }
 }
