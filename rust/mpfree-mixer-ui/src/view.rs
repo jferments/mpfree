@@ -1743,6 +1743,21 @@ impl MixerView {
         closed
     }
 
+    /// The hint line for the I/O view as it shows now: the section's own,
+    /// or [`crate::MIXER_HINT_IO`]; `None` away from the I/O view.
+    pub fn io_hint(&self) -> Option<String> {
+        if self.state.view != MixView::Io {
+            return None;
+        }
+        Some(
+            self.io
+                .section()
+                .and_then(|s| s.hint())
+                .unwrap_or(crate::MIXER_HINT_IO)
+                .to_string(),
+        )
+    }
+
     /// The Q-Link cards of the outside section showing, if it has its own.
     pub fn io_qlinks(&self) -> Option<[IoKnob; 4]> {
         if self.state.view != MixView::Io {
@@ -2823,6 +2838,9 @@ mod io_tests {
         fn back(&mut self) -> bool {
             std::mem::take(&mut self.0.lock().unwrap().detail)
         }
+        fn hint(&self) -> Option<&str> {
+            Some("Tap a port")
+        }
         fn qlinks(&self) -> Option<[IoKnob; 4]> {
             Some(std::array::from_fn(|i| IoKnob {
                 label: format!("K{i}"),
@@ -3010,7 +3028,9 @@ mod io_tests {
         // Picked by the app (the tempo chip opens Sync), then back to Audio.
         assert!(crate::io_select(&mut ui, 1));
         assert_eq!(view(&ui).io_section(), 1);
+        assert_eq!(crate::io_hint(&ui).as_deref(), Some("Tap a port"));
         assert!(crate::io_select(&mut ui, 0));
+        assert_eq!(crate::io_hint(&ui).as_deref(), Some(crate::MIXER_HINT_IO));
         assert!(!crate::io_select(&mut ui, 2), "no such section");
         assert_eq!(seen.lock().unwrap().shown, vec![true, false]);
         seen.lock().unwrap().shown.clear();
@@ -3057,6 +3077,7 @@ mod io_tests {
         assert!(!crate::io_back(&mut ui));
         // Another view hides it.
         crate::update(&mut ui, MixState::default());
+        assert_eq!(crate::io_hint(&ui), None);
         assert_eq!(seen.lock().unwrap().shown, vec![true, false]);
         assert_eq!(seen.lock().unwrap().ticks, 1);
     }
