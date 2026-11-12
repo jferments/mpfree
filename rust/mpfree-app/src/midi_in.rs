@@ -232,6 +232,19 @@ impl MusicIn {
         self.leader_len = 0;
     }
 
+    /// The followed port's name for the tempo chip ("MIDI In" for the
+    /// 5-pin jack, a USB device's own name), while the project's tempo is
+    /// from a port and that port is plugged in.
+    pub fn leader_name(&self) -> Option<&str> {
+        let id = self.leader?;
+        let p = self.ports.all().iter().find(|p| p.id == id)?;
+        Some(if p.name == mpfree_midi::setup::DIN_NAME {
+            "MIDI In"
+        } else {
+            &p.name
+        })
+    }
+
     /// Keeps what the time engine's follower reads of a leader's byte:
     /// clock, Start, Continue, Stop, and Song Position with its two data
     /// bytes. Anything else is left out (and ends a Song Position cut
@@ -1118,6 +1131,8 @@ mod tests {
         let s = following_din();
         m.sync(&s, 0.0);
         assert!(s.lock().unwrap().live.built.clock_in);
+        // The tempo chip names the jack.
+        assert_eq!(m.leader_name(), Some("MIDI In"));
         let all = Follow {
             start_stop: true,
             position: true,
@@ -1165,6 +1180,15 @@ mod tests {
         m.sync(&s, 0.2);
         run(&mut m, DIN, &[0xF8]);
         assert_eq!(leader_bytes(&mut m), (None, vec![]));
+        assert_eq!(m.leader_name(), None);
+        // A USB device is named as it names itself.
+        {
+            let mut v = s.lock().unwrap();
+            v.setup.tempo = TempoSource::Port("Beatstep Pro".into());
+            v.gen += 1;
+        }
+        m.sync(&s, 0.3);
+        assert_eq!(m.leader_name(), Some("Beatstep Pro"));
     }
 
     /// The app's turn each period, as main.rs takes it: a keyboard's

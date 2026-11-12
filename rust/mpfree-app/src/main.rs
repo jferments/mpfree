@@ -3085,6 +3085,8 @@ fn player_session(
     let mut learn_names_gen: Option<u64> = None;
     // A followed clock's tempo for the app, taken at the next turn.
     let mut followed_tempo: Option<f64> = None;
+    // The port the tempo chip last said the tempo comes from.
+    let mut clock_from: Option<String> = None;
     out.show(gui::ToUi::Macros(Box::new(panels.macros_state(&mix))));
     let mut shown_levels = mix.play_levels();
     out.show(gui::ToUi::PlayLevels(shown_levels));
@@ -4184,6 +4186,15 @@ fn player_session(
             if (bpm - app.settings.bpm).abs() > 0.08 {
                 followed_tempo = Some(bpm);
             }
+        }
+        // The tempo chip says where the tempo comes from while a followed
+        // clock sets it ("120.0 from MIDI In"), and goes back when it
+        // stops. Sent only when that changes, so the name is built only
+        // then.
+        let from = time.followed_bpm().and(music.leader_name());
+        if from != clock_from.as_deref() {
+            clock_from = from.map(str::to_string);
+            out.show(gui::ToUi::ClockFrom(clock_from.clone()));
         }
         // MIDI Out takes the project's track outputs, and sends programs as
         // the song starts, before this period's notes.
