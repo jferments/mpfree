@@ -1457,8 +1457,8 @@ impl Player {
                      record next to it   ·   UNDO: take a take off".to_string()
                 }
                 View::Sample if self.sample.page() == sample_page::AUTO_PAGE => {
-                    "Start samples the Synth tab's patch onto the pads named   ·   tap a row: the wheel changes it   ·   \
-                     UNDO: take the instrument off".to_string()
+                    "Start samples the Synth tab's patch or your gear onto the pads named   ·   tap a row: the wheel \
+                     changes it   ·   UNDO: take the instrument off".to_string()
                 }
                 View::Sample => format!("Hit a pad with a sound to edit it   ·   - / +: next pad with a sound   ·   {stop}"),
                 View::Debug => format!("Every MIDI message in and out, newest at the bottom   ·   SHIFT + wheel or - / +: \
@@ -8346,6 +8346,177 @@ mod tests {
         );
         assert_eq!(p.page(), sample_page::PAGE);
         assert!(take(&mut p).is_empty());
+    }
+
+    #[test]
+    fn auto_sample_plays_external_gear_over_midi_and_records_it_from_the_line_input() {
+        use mpfree_sampler_ui::auto_tab::{self, Row};
+        use mpfree_sampler_ui::rec_tab;
+        use mpfree_sampler_ui::widgets::{ButtonRow, PadBar, SettingList};
+        use std::sync::{Arc, Mutex};
+        let mut p = sample_sampler(Fonts::embedded());
+        let ev = |p: &mut Player, widget: &str, kind: EventKind| {
+            p.on_event(UiEvent {
+                widget: widget.into(),
+                kind,
+            })
+        };
+        let step = |p: &mut Player, row: Row, delta: i32| {
+            ev(
+                p,
+                auto_tab::LIST,
+                EventKind::Step {
+                    index: row.index(),
+                    delta,
+                },
+            );
+        };
+        let source = |p: &Player| {
+            p.ui.get::<SettingList>(auto_tab::LIST).unwrap().rows[Row::Source.index()]
+                .value
+                .clone()
+        };
+        let title = |p: &Player| p.ui.get::<PadBar>(auto_tab::BAR).unwrap().title.clone();
+        ev(
+            &mut p,
+            mpfree_sampler_ui::wave_tab::BAR,
+            EventKind::Tab(rec_tab::TAB),
+        );
+        ev(&mut p, rec_tab::BUTTONS, EventKind::Tab(3));
+        // No MIDI out yet: the Source row keeps the synth.
+        step(&mut p, Row::Source, 1);
+        assert_eq!(source(&p), "Poly Pluck");
+        // The app opens a MIDI out for gear: the gear on channel 2, an
+        // octave apart, one layer, short notes onto A1-A4.
+        let sent = Arc::new(Mutex::new(Vec::<Vec<u8>>::new()));
+        let to = sent.clone();
+        p.sample.set_gear(
+            &mut p.ui,
+            Some(sample_page::GearOut {
+                name: "MIDI Out (DIN)".into(),
+                send: Arc::new(move |m: &[u8]| to.lock().unwrap().push(m.to_vec())),
+            }),
+        );
+        step(&mut p, Row::Source, 2);
+        assert_eq!(source(&p), "Gear · MIDI ch 2");
+        step(&mut p, Row::Every, 9);
+        step(&mut p, Row::Layers, -2);
+        step(&mut p, Row::Hold, -3);
+        step(&mut p, Row::Tail, -2);
+        assert_eq!(title(&p), "Auto-sample the gear onto pads A1–A4");
+        // The line input is off: Start says so and sends nothing.
+        ev(&mut p, auto_tab::BUTTONS, EventKind::Tab(0));
+        assert!(!p.sample.auto_running());
+        assert!(events_log(&p)
+            .iter()
+            .any(|l| l == "sample: auto-sample of the gear not started (the line input is off)"));
+        assert!(sent.lock().unwrap().is_empty());
+        // On: its writer goes to the audio thread (here, this test).
+        let mut s = p.settings.clone();
+        s.line_input = true;
+        p.apply(ToUi::Settings(s));
+        let (views_sent, mut acts) = views(p.take_actions());
+        for v in views_sent {
+            p.apply(ToUi::SampleViewBack(v));
+        }
+        let Some(FromUi::SampleInput(Some(mut feed))) = acts.pop() else {
+            panic!("the input's writer");
+        };
+        assert!(p.ui.get::<ButtonRow>(auto_tab::BUTTONS).unwrap().enabled[0]);
+        ev(&mut p, auto_tab::BUTTONS, EventKind::Tab(0));
+        assert!(p.sample.auto_running());
+        let log = events_log(&p);
+        assert!(
+            log.iter().any(|l| l
+                == "sample: auto-sample Gear (MIDI channel 2 on MIDI Out (DIN)) started: 4 notes (C2 to C5), 4 \
+                    takes, 4 s of notes, up to 2 MB"),
+            "{log:?}"
+        );
+        // The gear: a sine for each note held, falling away when let go,
+        // heard on the line input. The audio thread writes 256 frames at a
+        // time, about twice as fast as real time.
+        let rate = 48_000.0f32;
+        let (mut held, mut env, mut phase) = (None::<u8>, 0.0f32, 0.0f32);
+        let mut midi = Vec::new();
+        let t = Instant::now();
+        while p.sample.auto_running() {
+            assert!(t.elapsed() < Duration::from_secs(60), "it finishes");
+            for m in sent.lock().unwrap().drain(..) {
+                assert_eq!(m.len(), 3);
+                assert_eq!(m[0] & 0x0f, 1, "channel 2");
+                match m[0] & 0xf0 {
+                    0x90 => held = Some(m[1]),
+                    0x80 if held == Some(m[1]) => held = None,
+                    _ => {}
+                }
+                midi.push(m);
+            }
+            let hz = held.map(|n| 440.0 * ((f32::from(n) - 69.0) / 12.0).exp2());
+            let mut l = [0.0f32; 256];
+            for x in l.iter_mut() {
+                env = match hz {
+                    Some(_) => (env + 0.01).min(1.0),
+                    None => env * 0.999,
+                };
+                phase = (phase + hz.unwrap_or(0.0) / rate).fract();
+                *x = 0.3 * env * (std::f32::consts::TAU * phase).sin();
+            }
+            feed.0.audio.push_planar(&l, &l);
+            std::thread::sleep(Duration::from_millis(2));
+            p.tick(0.033);
+        }
+        // What the job sent after the last look, before it ended: once it
+        // has landed, everything it sent is in.
+        midi.extend(sent.lock().unwrap().drain(..));
+        assert!(midi.iter().all(|m| m[0] & 0x0f == 1), "channel 2");
+        // Two level tests and four notes, each on and off, then All Notes Off.
+        let ons = midi.iter().filter(|m| m[0] == 0x91).count();
+        let offs = midi.iter().filter(|m| m[0] == 0x81).count();
+        assert_eq!((ons, offs), (6, 6));
+        assert_eq!(midi.last().map(|m| m.as_slice()), Some(&[0xb1, 123, 0][..]));
+        let log = events_log(&p);
+        assert!(
+            log.iter().any(|l| l.starts_with(
+                "sample: auto-sampled Gear onto kit 1 (Breaks) pads A1 to A4: 4 notes, 4 takes, 0 looped, "
+            ) && l.contains("s of notes recorded")),
+            "{log:?}"
+        );
+        let pad_name = |pad: usize| {
+            p.sample
+                .project(0)
+                .unwrap()
+                .pad(pad)
+                .map(|pd| pd.name.clone())
+        };
+        assert_eq!(pad_name(0).as_deref(), Some("Gear C2"));
+        assert_eq!(pad_name(3).as_deref(), Some("Gear C5"));
+        // Again, onto the next empty pads, then Cancel: the job lets go of
+        // the gear (its note off, then All Notes Off) and ends.
+        ev(&mut p, auto_tab::BUTTONS, EventKind::Tab(0));
+        assert!(p.sample.auto_running());
+        let t = Instant::now();
+        while sent.lock().unwrap().is_empty() {
+            assert!(
+                t.elapsed() < Duration::from_secs(10),
+                "the first note goes out"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        ev(&mut p, auto_tab::BUTTONS, EventKind::Tab(0));
+        while p.sample.auto_running() {
+            assert!(t.elapsed() < Duration::from_secs(10), "it stops");
+            std::thread::sleep(Duration::from_millis(5));
+            p.tick(0.033);
+        }
+        let sent = sent.lock().unwrap();
+        assert_eq!(
+            sent.iter().map(|m| m.as_slice()).collect::<Vec<_>>(),
+            [&[0x91, 60, 127][..], &[0x81, 60, 64], &[0xb1, 123, 0]],
+            "the first test note, let go"
+        );
+        assert!(events_log(&p)
+            .iter()
+            .any(|l| l == "sample: auto-sample cancelled, keeping the notes done"));
     }
 
     #[test]
