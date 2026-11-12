@@ -139,12 +139,14 @@ impl ChainPage {
 
     /// The page shown changed: the chain editor starts on its own knobs,
     /// the macros panel on the bank it opened with, and Play on the bank it
-    /// showed when it was left. A finger on a card is forgotten.
+    /// showed when it was left. Arrange shares Play's knobs and bank (the
+    /// same column, layout spec section 4c). A finger on a card is
+    /// forgotten.
     pub fn entered(&mut self, v: View) {
         if v == self.at {
             return;
         }
-        if self.at == View::Play {
+        if matches!(self.at, View::Play | View::Arrange) {
             self.play_bank = self.bind.shown();
         }
         self.press = None;
@@ -162,7 +164,7 @@ impl ChainPage {
                 let bank = self.macros.as_ref().map_or(0, |m| m.bank);
                 self.bind.show(1 + bank.min(MACRO_BANKS - 1));
             }
-            View::Play => {
+            View::Play | View::Arrange => {
                 // Play's own knobs are the Play page's; the bindings hold
                 // only its macro banks (a knob learned on the chain editor
                 // stays there).
@@ -200,12 +202,12 @@ impl ChainPage {
     }
 
     /// Whether the column shows these bindings' cards on page `v`: always
-    /// on the chain editor and the macros panel, on Play while a macro bank
-    /// shows.
+    /// on the chain editor and the macros panel, on Play and Arrange while
+    /// a macro bank shows.
     pub fn drives(&self, v: View) -> bool {
         match v {
             View::Chain | View::Macros => true,
-            View::Play => self.at == View::Play && self.macro_bank_shown(),
+            View::Play | View::Arrange => self.at == v && self.macro_bank_shown(),
             _ => false,
         }
     }
