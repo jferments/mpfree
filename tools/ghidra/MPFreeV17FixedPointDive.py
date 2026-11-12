@@ -198,6 +198,21 @@ try:
                         inputs=[varnode(op.getInput(j)) for j in range(op.getNumInputs())]
                         row={"pc":str(op.getSeqnum().getTarget()),"kind":key,
                              "in":inputs,"out":varnode(op.getOutput())}
+                        if key in ("CALLIND","BRANCHIND") and inputs:
+                            candidates=possible_constant_targets(op.getInput(0))
+                            hits=[]
+                            for value in sorted(candidates):
+                                target_fn=fm.getFunctionContaining(A(value&~1))
+                                if target_fn and int(target_fn.getEntryPoint().getOffset()) in lookup:
+                                    hits.append(H(target_fn.getEntryPoint().getOffset()))
+                            row["static_indirect_target_candidates"]=sorted(set(hits))
+                            row["candidate_not_runtime_proof"]=True
+                            if hits:count["indirect_candidate_target_sites"]+=1
+                        if key=="STORE" and op.getNumInputs()>=2:
+                            values=possible_constant_targets(op.getInput(1))
+                            row["candidate_address_constants"]=[H(v) for v in sorted(values)[:24]]
+                            if any(v in (0xff730094,0xff7300a0,0x0014d690) for v in values):
+                                count["writes_relevant_pmureg_or_auth_global"]+=1
                         doc_row["pcode_effects"].append(row)
                         count["pcode_"+key]+=1
                         if key in ("STORE","CALLIND","BRANCHIND"):
@@ -262,6 +277,44 @@ while it.hasNext():
     except Exception:continue
 # New evidence: distinguish all discovered inline function pointer tables,
 # MMIO/reboot candidates and indirect dispatch sites.
+def possible_constant_targets(v,depth=0,seen=None):
+    """Bounded recursive Ghidra High P-code backtrace. Candidates, NOT proofs."""
+    if v is None or depth>=9:return set()
+    if seen is None:seen=set()
+    identity=id(v)
+    if identity in seen:return set()
+    seen=seen|{identity}
+    if v.isConstant():return {int(v.getOffset())&0xffffffff}
+    defn=v.getDef()
+    if defn is None:return set()
+    op=str(defn.getMnemonic())
+    if op in ("COPY","CAST","INT_ZEXT","INT_SEXT","SUBPIECE","INDIRECT"):
+        if defn.getNumInputs():return possible_constant_targets(defn.getInput(0),depth+1,seen)
+    if op=="MULTIEQUAL":
+        union=set()
+        for j in range(min(8,defn.getNumInputs())):
+            union|=possible_constant_targets(defn.getInput(j),depth+1,seen)
+        return set(list(union)[:24])
+    if op in ("INT_ADD","PTRSUB","INT_SUB","PTRADD"):
+        if defn.getNumInputs()<2:return set()
+        left=possible_constant_targets(defn.getInput(0),depth+1,seen)
+        right=possible_constant_targets(defn.getInput(1),depth+1,seen)
+        if not left or not right:return set()
+        multiplier=1
+        if op=="PTRADD" and defn.getNumInputs()>=3:
+            vals=possible_constant_targets(defn.getInput(2),depth+1,seen)
+            if vals:multiplier=min(vals)
+        combined=set()
+        for a in list(left)[:12]:
+            for b in list(right)[:12]:
+                v=(a-b if op=="INT_SUB" else a+b*multiplier)&0xffffffff
+                combined.add(v)
+        return set(list(combined)[:24])
+    if op=="LOAD" and defn.getNumInputs()>=2:
+        addresses=possible_constant_targets(defn.getInput(1),depth+1,seen)
+        return {int.from_bytes(raw[a-base:a-base+4],"little")
+                for a in addresses if base<=a<=base+size-4}
+    return set()
 report={
  "schema":"mpfree-v17-full-fixedpoint-high-pcode-v1",
  "role":role,"timestamp_utc":datetime.now(timezone.utc).isoformat(),
@@ -282,6 +335,7 @@ report={
   "Fixed-point covers Ghidra-recognized code, not unknown unrecognized functions.",
   "High P-code references do not prove physical state or runtime callbacks.",
   "Unknown CALLIND targets must not be treated as absent.",
+  "Recursive constant propagation produces candidates only, not real runtime edges.",
   "No vendor updater, physical device or firmware was executed."
  ]
 }
