@@ -26,7 +26,9 @@ fn exe() -> PathBuf {
     )
 }
 
-/// The test plugins' shared library, built next to this test.
+/// The test plugins' shared library, which Cargo builds with this test:
+/// next to it (target/debug/deps, or target/debug when it is a workspace
+/// member) or, from Cargo 1.100, in its own build folder.
 fn plugin_file() -> PathBuf {
     let exe = std::env::current_exe().expect("test exe");
     let name = format!(
@@ -34,14 +36,21 @@ fn plugin_file() -> PathBuf {
         std::env::consts::DLL_PREFIX,
         std::env::consts::DLL_SUFFIX
     );
-    let deps = exe.parent().expect("deps dir");
-    for dir in [deps.to_path_buf(), deps.join("..")] {
-        let p = dir.join(&name);
-        if p.exists() {
-            return p;
+    let here = exe.parent().expect("test folder");
+    let mut dirs = vec![here.to_path_buf(), here.join("..")];
+    // Cargo 1.100 builds each unit in build/PACKAGE/HASH/out, so the
+    // library is in its own package's folders there; take the newest.
+    if let Some(build) = here.ancestors().nth(3).filter(|b| b.ends_with("build")) {
+        if let Ok(rd) = std::fs::read_dir(build.join("mpfree-clap-testplug")) {
+            dirs.extend(rd.flatten().map(|e| e.path().join("out")));
         }
     }
-    panic!("{name} not built next to {}", exe.display());
+    dirs.iter()
+        .map(|d| d.join(&name))
+        .filter_map(|p| Some((p.metadata().ok()?.modified().ok()?, p)))
+        .max_by_key(|(t, _)| *t)
+        .map(|(_, p)| p)
+        .unwrap_or_else(|| panic!("{name} not built next to {}", exe.display()))
 }
 
 /// The same plugin, in this process.
