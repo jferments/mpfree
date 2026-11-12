@@ -86,7 +86,7 @@ jobs:
           python3 tools/mpc-one/tests/test_write_test_stick.py
           python3 tools/mpc-one/tests/test_results.py
           MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_kexec_boot.py
-          MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_hello_mpc.py
+          MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_app_mpc.py
           MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_host_bench_mpc.py
           MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_app_start_capture.py
           MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_midi_capture.py
@@ -353,14 +353,14 @@ jobs:
           # read-only `journalctl -f` for its Console page; it never names a
           # block device, systemctl or the network, and it only reads the
           # framebuffer it captures as a backdrop.
-          hello_code = ""
-          for f in sorted(Path("rust/mpfree-hello/src").glob("*.rs")):
-              hello_code += "\n".join(x for x in f.read_text().splitlines()
+          app_code = ""
+          for f in sorted(Path("rust/mpfree-app/src").glob("*.rs")):
+              app_code += "\n".join(x for x in f.read_text().splitlines()
                   if not x.lstrip().startswith("//")) + "\n"
-          assert hello_code.count('Command::new(') == 1 and 'Command::new("journalctl")' in hello_code
-          assert flat('.args(["-b", "-f", "-n", "300", "--no-pager", "-o", "short-monotonic", "--no-hostname"])') in flat(hello_code)
+          assert app_code.count('Command::new(') == 1 and 'Command::new("journalctl")' in app_code
+          assert flat('.args(["-b", "-f", "-n", "300", "--no-pager", "-o", "short-monotonic", "--no-hostname"])') in flat(app_code)
           for needle in ('/dev/mmc', '/dev/sd', 'systemctl', 'std::net', 'fw_setenv', 'remove_file', 'kexec'):
-              assert needle not in hello_code, needle
+              assert needle not in app_code, needle
           ui_fb = Path("rust/mpfree-ui/src/fb.rs").read_text()
           assert 'pub fn capture(' in ui_fb
           # M13 live reader: read-only, never grabs, and its only unsafe code
@@ -1085,34 +1085,34 @@ jobs:
           assert any(data), "nothing was drawn"
           print("PASS: static ARMv7 screen log program draws on a fake framebuffer under qemu")
           PY
-      - name: Build and check the static Hello MPC program for the kexec test boot (do not deploy)
+      - name: Build and check the static mpfree program for the kexec test boot (do not deploy)
         env:
           CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER: arm-linux-gnueabihf-gcc
           CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_RUNNER: qemu-arm
           RUSTFLAGS: -C target-feature=+crt-static -C relocation-model=static
         run: |
           # Its ALSA and input layouts against the kernel's own headers for 32-bit ARM (compile only).
-          arm-linux-gnueabihf-gcc -c rust/mpfree-hello/abi-check.c -o "$RUNNER_TEMP/abi-check.o"
+          arm-linux-gnueabihf-gcc -c rust/mpfree-app/abi-check.c -o "$RUNNER_TEMP/abi-check.o"
           cargo build --manifest-path rust/Cargo.toml --release --locked \
-            --target armv7-unknown-linux-gnueabihf -p mpfree-hello
-          f=rust/target/armv7-unknown-linux-gnueabihf/release/mpfree-hello
+            --target armv7-unknown-linux-gnueabihf -p mpfree-app
+          f=rust/target/armv7-unknown-linux-gnueabihf/release/mpfree
           file "$f"
           arm-linux-gnueabihf-readelf -h "$f" | grep -Eq 'Type: *EXEC'
           arm-linux-gnueabihf-readelf -h "$f" | grep -Eq 'Flags:.*Version5 EABI.*hard-float ABI'
           if arm-linux-gnueabihf-readelf -l "$f" | grep -Eq 'INTERP|DYNAMIC'; then
-            echo "mpfree-hello must be statically linked"; exit 1
+            echo "mpfree must be statically linked"; exit 1
           fi
           # Its unit tests and the GUI's as 32-bit ARM (the parameter blocks, event layout, drawing), under qemu.
           cargo test --manifest-path rust/Cargo.toml --release --locked \
-            --target armv7-unknown-linux-gnueabihf -p mpfree-hello -p mpfree-ui
+            --target armv7-unknown-linux-gnueabihf -p mpfree-app -p mpfree-ui
           # The host-only preview under qemu: draws sample screens into new PNG files, touches no device.
           # It took 110-115 s on the self-hosted runners with four mpfree jobs sharing the CPU
           # (2026-11-11) and two runs hit a 120 s limit, so the limit is 600 s; it only stops a hang.
-          timeout 600 qemu-arm "$f" --preview "$RUNNER_TEMP/hello-preview"
+          timeout 600 qemu-arm "$f" --preview "$RUNNER_TEMP/app-preview"
           for n in console loading loading-failed play debug syslog prefs options guide touchlab calibrate prefs-touch; do
-            head -c 8 "$RUNNER_TEMP/hello-preview/$n.png" | od -An -tx1 | grep -q '89 50 4e 47 0d 0a 1a 0a'
+            head -c 8 "$RUNNER_TEMP/app-preview/$n.png" | od -An -tx1 | grep -q '89 50 4e 47 0d 0a 1a 0a'
           done
-          echo "PASS: static ARMv7 Hello MPC program; no executables uploaded or run on an MPC by CI."
+          echo "PASS: static ARMv7 mpfree program; no executables uploaded or run on an MPC by CI."
 
       - name: Build and check the static startup screen program (do not deploy)
         env:

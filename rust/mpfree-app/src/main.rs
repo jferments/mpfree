@@ -1,11 +1,11 @@
-//! MPFree "Hello MPC" (Phase 1), for the kexec test boot from the USB stick.
+//! mpfree, the app (Phase 1 called it "Hello MPC"), for the kexec test boot from the USB stick.
 //!
 //! One program, one step per run, paced from the workstation by
-//! tools/mpc-one/host_hello_mpc.py:
+//! tools/mpc-one/host_app_mpc.py:
 //!
 //!   inventory          read-only: sound cards, PCM and MIDI devices, input
 //!                      devices, framebuffer, panel rotation, RT limits
-//!   screen             draws the Hello MPC card on /dev/fb0
+//!   screen             draws the mpfree card on /dev/fb0
 //!   touch --seconds N  reads the touchscreen (no grab) and shows the contacts
 //!   pads --seconds N [--keepalive]
 //!                      reads all three of the controller's MIDI ports (Public,
@@ -58,7 +58,7 @@
 //! MIDI ports (only messages Akai's app was seen sending, button lights in the
 //! same form with the values it uses, and pad colours made by its rules; never
 //! in inventory, screen, touch, or pads without --keepalive) and
-//! /run/mpfree-hello/hello.txt (its own report, in RAM; the workstation tool
+//! /run/mpfree-app/report.txt (its own report, in RAM; the workstation tool
 //! copies it into its report). It reads the screen back once with
 //! --keep-screen, and `app` runs `journalctl -f` (read-only) for its console
 //! page. With --preview on the workstation it writes only new PNG files. It
@@ -116,7 +116,7 @@ use std::time::{Duration, Instant};
 
 use mpfree_prof::Span;
 
-const REPORT_DIR: &str = "/run/mpfree-hello";
+const REPORT_DIR: &str = "/run/mpfree-app";
 const PANEL_ROTATION: &str = "/proc/device-tree/mipi@ff960000/panel@0/rotation";
 const MAX_SECONDS: u64 = 60;
 /// The pad player may run longer.
@@ -128,7 +128,7 @@ const PERIODS: u32 = 3;
 const EPIPE: i32 = 32;
 const EAGAIN: i32 = 11;
 /// The drum kits the host tool copies next to the program (see kit.rs).
-const KIT_PATH: &str = "/run/mpfree-hello/kits.bin";
+const KIT_PATH: &str = "/run/mpfree-app/kits.bin";
 const MAX_KIT_BYTES: u64 = 48 << 20;
 
 struct Options {
@@ -213,8 +213,10 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
         }
     }
     if o.preview.is_none() && o.command.is_empty() {
-        return Err("usage: mpfree-hello inventory|screen|touch|pads|lights|setup|drums|play|app|click [options]"
-            .to_string());
+        return Err(
+            "usage: mpfree inventory|screen|touch|pads|lights|setup|drums|play|app|click [options]"
+                .to_string(),
+        );
     }
     let max = if o.command == "play" {
         PLAY_MAX_SECONDS
@@ -262,7 +264,7 @@ impl Out {
                 .create(true)
                 .append(true)
                 .mode(0o644)
-                .open(Path::new(REPORT_DIR).join("hello.txt"))
+                .open(Path::new(REPORT_DIR).join("report.txt"))
                 .ok()
         });
         let mut out = Out {
@@ -273,7 +275,7 @@ impl Out {
             last_draw: Instant::now() - Duration::from_secs(1),
         };
         out.file_line(&format!(
-            "===== mpfree-hello {} (uptime {}) =====",
+            "===== mpfree {} (uptime {}) =====",
             heading,
             uptime()
         ));
@@ -663,7 +665,7 @@ fn screen(o: &Options) -> Result<(), String> {
         return Err("no screen to draw on".to_string());
     }
     for line in [
-        "Hello MPC.",
+        "mpfree.",
         "",
         "This screen is drawn by MPFree's own GUI code, running from the USB stick.",
         "Akai's software is not running, and this system cannot see the MPC's own storage.",
@@ -3981,7 +3983,7 @@ fn preview(o: &Options) -> Result<(), String> {
     let theme = load_theme(o)?;
     let mut c = gui::Console::new(fonts()?, "touch", None);
     for l in [
-        "===== mpfree-hello touch =====",
+        "===== mpfree touch =====",
         "touchscreen: /dev/input/event0 (ili2117); read-only, not grabbed",
         "touch the screen now, with one finger and then two (10 s)",
         "touch: 1 contact(s): slot 0: x 1024 y 512",
@@ -4033,7 +4035,7 @@ fn main() {
         if let Ok(mut f) = OpenOptions::new()
             .create(true)
             .append(true)
-            .open(Path::new(REPORT_DIR).join("hello.txt"))
+            .open(Path::new(REPORT_DIR).join("report.txt"))
         {
             let _ = writeln!(f, "STOP: {e}");
         }
@@ -4051,7 +4053,7 @@ mod tests {
 
     #[test]
     fn the_themes_folder_offers_theme_files_that_parse() {
-        let d = std::env::temp_dir().join(format!("mpfree-hello-themes-{}", std::process::id()));
+        let d = std::env::temp_dir().join(format!("mpfree-themes-{}", std::process::id()));
         let _ = fs::remove_dir_all(&d);
         let t = d.join("files/themes");
         fs::create_dir_all(&t).unwrap();

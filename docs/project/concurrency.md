@@ -18,7 +18,7 @@ of the round 8 profiling asks).
 
 | Thread | What it does |
 | --- | --- |
-| `mpfree-hello` (main) | The audio loop, SCHED_FIFO 70: the screen's actions, controller MIDI, lights, the transport and arp, the sampler, the synth, the looper, the mixer, the ALSA write |
+| `mpfree-app` (main) | The audio loop, SCHED_FIFO 70: the screen's actions, controller MIDI, lights, the transport and arp, the sampler, the synth, the looper, the mixer, the ALSA write |
 | `mpfree-screen` | Touch, the raster, the framebuffer |
 | `mpfree-store` | Saved settings and patterns |
 | `mpfree-journal` | The console's log |
