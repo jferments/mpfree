@@ -88,6 +88,7 @@ jobs:
           MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_kexec_boot.py
           MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_app_mpc.py
           MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_host_bench_mpc.py
+          MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_host_gpu_mpc.py
           MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_host_disktest_mpc.py
           MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_app_start_capture.py
           MPFREE_REQUIRE_OFFLINE_TOOLS=1 python3 tools/mpc-one/tests/test_offline_factory_kit.py
@@ -1302,3 +1303,23 @@ jobs:
         # The tests fail, saying why, if EGL or the GPU is missing: they never
         # pass without drawing.
         run: cargo test --manifest-path rust/mpfree-gpu/Cargo.toml --locked -- --nocapture
+      - name: The benchmark built for the MPC (ARMv7, its C library), checked as the device tool checks it
+        env:
+          CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER: arm-linux-gnueabihf-gcc
+        run: |
+          [ "$RUNNER_ENVIRONMENT" = self-hosted ] || sudo apt-get install -y --no-install-recommends gcc-arm-linux-gnueabihf libc6-dev-armhf-cross
+          rustup target add --toolchain stable armv7-unknown-linux-gnueabihf
+          cargo build --release --manifest-path rust/mpfree-gpu/Cargo.toml --locked \
+            --target armv7-unknown-linux-gnueabihf --bin mpfree-gpu-bench
+          python3 - <<'PY'
+          import importlib.util, os
+          spec = importlib.util.spec_from_file_location("gpu", "tools/mpc-one/host_gpu_mpc.py")
+          gpu = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(gpu)
+          target = os.environ.get("CARGO_TARGET_DIR") or "rust/mpfree-gpu/target"
+          path = os.path.join(target, "armv7-unknown-linux-gnueabihf", "release", "mpfree-gpu-bench")
+          with open(path, "rb") as fh:
+              problem = gpu.arm_dynamic_problem(fh.read())
+          assert problem is None, f"{path} is {problem}"
+          print(f"PASS: {path} is for the MPC's loader and C library (glibc <= 2.34); NOT DEPLOYED")
+          PY

@@ -46,6 +46,10 @@ pub struct Gpu {
 /// Mesa's surfaceless platform (EGL_MESA_platform_surfaceless).
 const PLATFORM_SURFACELESS_MESA: egl::Enum = 0x31DD;
 
+/// EGL_OPENGL_ES3_BIT and EGL_CONTEXT_MINOR_VERSION (EGL_KHR_create_context).
+const OPENGL_ES3_BIT: egl::Int = 0x40;
+const CONTEXT_MINOR_VERSION: egl::Int = 0x30FB;
+
 /// eglGetPlatformDisplayEXT (EGL_EXT_platform_base).
 type GetPlatformDisplayExt =
     unsafe extern "system" fn(egl::Enum, *mut c_void, *const egl::Int) -> egl::EGLDisplay;
@@ -62,6 +66,12 @@ impl Gpu {
     /// functions from `libGLESv2.so.2` (EGL's own lookup only if that
     /// library is missing).
     pub fn surfaceless() -> Result<Gpu, String> {
+        Gpu::surfaceless_es(2, 0)
+    }
+
+    /// As [`Gpu::surfaceless`], with an OpenGL ES `major`.`minor` context
+    /// (3.1 for compute shaders; a minor version needs EGL_KHR_create_context).
+    pub fn surfaceless_es(major: i32, minor: i32) -> Result<Gpu, String> {
         // SAFETY: loading the system's libEGL runs its initialisers, as any
         // program linked against it would.
         let lib = unsafe { libloading::Library::new("libEGL.so.1") }
@@ -98,14 +108,18 @@ impl Gpu {
         }
         // SAFETY: a display EGL just returned.
         let display = unsafe { egl::Display::from_ptr(raw) };
-        let (major, minor) = egl
+        let (egl_major, egl_minor) = egl
             .initialize(display)
             .map_err(|e| format!("eglInitialize: {e}"))?;
         let vendor = egl
             .query_string(Some(display), egl::VENDOR)
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_default();
-        let egl_version = format!("EGL {major}.{minor} ({vendor})");
+        let egl_version = format!("EGL {egl_major}.{egl_minor} ({vendor})");
+        let display_ext = egl
+            .query_string(Some(display), egl::EXTENSIONS)
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_default();
         egl.bind_api(egl::OPENGL_ES_API)
             .map_err(|e| format!("eglBindAPI: {e}"))?;
         let config = egl
@@ -117,20 +131,32 @@ impl Gpu {
                     egl::SURFACE_TYPE,
                     0,
                     egl::RENDERABLE_TYPE,
-                    egl::OPENGL_ES2_BIT,
+                    if major >= 3 {
+                        OPENGL_ES3_BIT
+                    } else {
+                        egl::OPENGL_ES2_BIT
+                    },
                     egl::NONE,
                 ],
             )
             .map_err(|e| format!("eglChooseConfig: {e}"))?
-            .ok_or("no OpenGL ES 2 configuration")?;
+            .ok_or_else(|| format!("no OpenGL ES {major} configuration"))?;
+        let mut attrs = vec![egl::CONTEXT_CLIENT_VERSION, major];
+        if minor > 0 {
+            if !display_ext
+                .split(' ')
+                .any(|e| e == "EGL_KHR_create_context")
+            {
+                return Err(format!(
+                    "OpenGL ES {major}.{minor} needs EGL_KHR_create_context"
+                ));
+            }
+            attrs.extend([CONTEXT_MINOR_VERSION, minor]);
+        }
+        attrs.push(egl::NONE);
         let context = egl
-            .create_context(
-                display,
-                config,
-                None,
-                &[egl::CONTEXT_CLIENT_VERSION, 2, egl::NONE],
-            )
-            .map_err(|e| format!("eglCreateContext: {e}"))?;
+            .create_context(display, config, None, &attrs)
+            .map_err(|e| format!("eglCreateContext (OpenGL ES {major}.{minor}): {e}"))?;
         egl.make_current(display, None, None, Some(context))
             .map_err(|e| format!("eglMakeCurrent with no surface: {e}"))?;
         // SAFETY: loading the system's GLES library runs its initialisers, as
@@ -760,6 +786,36 @@ impl Renderer {
         unsafe { gpu.gl.finish() };
     }
 }
+
+/// How far two frames of XRGB pixels are apart, channel by channel.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Diff {
+    /// The largest difference in any channel of any pixel.
+    pub max: u32,
+    /// Pixels with a channel more than 1 apart.
+    pub over_1: usize,
+    /// Pixels that differ at all.
+    pub differ: usize,
+}
+
+/// Compares two frames of the same size (alpha bits are ignored).
+pub fn compare(a: &[u32], b: &[u32]) -> Diff {
+    assert_eq!(a.len(), b.len(), "frames of different sizes");
+    let mut d = Diff::default();
+    for (x, y) in a.iter().zip(b) {
+        let m = [16, 8, 0]
+            .iter()
+            .map(|s| ((x >> s) & 0xFF).abs_diff((y >> s) & 0xFF))
+            .max()
+            .unwrap_or(0);
+        d.max = d.max.max(m);
+        d.differ += (m > 0) as usize;
+        d.over_1 += (m > 1) as usize;
+    }
+    d
+}
+
+pub mod compute;
 
 #[cfg(test)]
 mod tests;
