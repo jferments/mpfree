@@ -227,7 +227,7 @@ impl DebugPages {
         };
         d.show_audio(ui);
         d.show_proc(ui);
-        DebugPages::set_engines(ui, &[(None, None); 6]);
+        DebugPages::set_engines(ui, &[(None, None); 6], Vec::new());
         DebugPages::set_procs(ui, &procs::ProcView::default());
         Ok(d)
     }
@@ -391,12 +391,16 @@ impl DebugPages {
     }
 
     /// The CPU by engine page, from the audio loop's published numbers.
-    pub fn set_engines(ui: &mut Ui, s: &engines::Snapshot) {
+    /// `cores`: where the sound runs and its lanes' counts (cores.rs), under
+    /// the budgets.
+    pub fn set_engines(ui: &mut Ui, s: &engines::Snapshot, cores: Vec<crate::cores::Row>) {
         if let Some(l) = ui.get_mut::<StatList>("engnow") {
             l.set(engines::now_rows(s));
         }
         if let Some(l) = ui.get_mut::<StatList>("engsession") {
-            l.set(engines::session_rows(s));
+            let mut rows = engines::session_rows(s);
+            rows.extend(cores);
+            l.set(rows);
         }
     }
 

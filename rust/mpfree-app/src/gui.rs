@@ -2683,7 +2683,7 @@ impl Player {
     pub fn refresh_engines(&mut self) {
         if let Some(shared) = self.engines.as_ref() {
             let snap = crate::engines::read(shared);
-            DebugPages::set_engines(&mut self.ui, &snap);
+            DebugPages::set_engines(&mut self.ui, &snap, crate::cores::rows(&shared.cores));
         }
     }
 
@@ -4555,7 +4555,8 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     });
     out.push(("debug-perf", perf));
     // Debug mode: CPU by engine, from made-up probe numbers shaped like
-    // round 6's (synth worst near 20 %, sampler near 24 %).
+    // round 6's (synth worst near 20 %, sampler near 24 %), with the sound
+    // on two cores and a few late mixer stages.
     let mut eng = sample_player(fonts());
     eng.apply(ToUi::Settings(Settings {
         debug_mode: true,
@@ -4591,6 +4592,8 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         }
     }
     probes.publish();
+    // Where the sound runs, as the MPC shows it with --sound-cores two.
+    crate::cores::sample(&probes.shared().cores);
     eng.apply(ToUi::Engines(probes.shared()));
     eng.apply(ToUi::Show(View::Engines));
     eng.refresh_engines();
