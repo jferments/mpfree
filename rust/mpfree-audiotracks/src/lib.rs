@@ -48,6 +48,10 @@
 
 #![forbid(unsafe_code)]
 
+pub mod save;
+
+use save::{Saved, TakeFile, TrackFile};
+
 use mpfree_transport::time::{TempoMap, Tick, PPQ};
 use mpfree_transport::transport::MAX_PERIOD;
 use mpfree_transport::{Block, Mark, Span, State};
@@ -64,6 +68,9 @@ pub const MAX_EXTENTS: usize = 32;
 /// Frames of the crossfade at each region's start and past its end (about
 /// 1.5 ms at 44.1 kHz).
 pub const FADE: usize = 64;
+/// A loaded take's audio copies in at this many frames for each frame
+/// that plays (a minute of audio in about a second).
+pub const LOAD_SPEED: usize = 64;
 /// Edits and recordings Undo can take back.
 pub const HISTORY: usize = 32;
 /// Commands waiting for the next period.
@@ -354,6 +361,8 @@ struct Take {
     wpos: usize,
     recording: bool,
     cut_short: bool,
+    /// Its saved audio is still copying in: it plays nothing yet.
+    loading: bool,
 }
 
 const NO_TAKE: Take = Take {
@@ -369,6 +378,7 @@ const NO_TAKE: Take = Take {
     wpos: 0,
     recording: false,
     cut_short: false,
+    loading: false,
 };
 
 impl Take {
@@ -657,6 +667,11 @@ pub struct AudioTracks {
     h_done: usize,
     h_redo: usize,
     stats: Stats,
+    /// Takes whose saved audio is copying in (room for all, made once).
+    loads: Vec<(u16, Vec<f32>)>,
+    /// Loaded takes' audio, done with, for the host to drop off the audio
+    /// thread.
+    returned: Vec<Vec<f32>>,
     fade: [f32; FADE + 1],
 }
 
@@ -694,6 +709,8 @@ impl AudioTracks {
             h_done: 0,
             h_redo: 0,
             stats: Stats::default(),
+            loads: Vec::with_capacity(MAX_TAKES),
+            returned: Vec::with_capacity(MAX_TAKES),
             fade: fade_table(),
         }
     }
@@ -1074,7 +1091,7 @@ impl AudioTracks {
                 let ok = self
                     .takes
                     .get(id as usize)
-                    .is_some_and(|t| t.live && !t.recording);
+                    .is_some_and(|t| t.live && !t.recording && !t.loading);
                 if !ok || self.in_use(id) {
                     return self.refuse();
                 }
@@ -1094,6 +1111,250 @@ impl AudioTracks {
 
     fn any_recording(&self) -> bool {
         self.tracks.iter().any(|t| t.rec.is_some())
+    }
+
+    // ---- saving and loading --------------------------------------------
+
+    /// The tracks' settings and regions and every take's place, for a
+    /// save (see [`save`]): None while any track records or a take is
+    /// still loading. Tracks with nothing to keep (no regions, no takes,
+    /// settings as new) are left out. The takes' audio is not in it: read
+    /// each with [`AudioTracks::read_take`]. Allocates: not on the audio
+    /// thread.
+    pub fn save_file(&self) -> Option<Saved> {
+        if self
+            .tracks
+            .iter()
+            .any(|t| t.rec.is_some() || t.tail.is_some())
+            || self.takes.iter().any(|t| t.loading)
+        {
+            return None;
+        }
+        let takes: Vec<TakeFile> = self
+            .takes()
+            .map(|k| TakeFile {
+                id: k.id,
+                track: k.track,
+                group: k.group,
+                pass: k.pass,
+                anchor: k.anchor,
+                frames: k.frames,
+                channels: k.channels,
+                file: String::new(),
+                audio: Vec::new(),
+            })
+            .collect();
+        let tracks = self
+            .tracks
+            .iter()
+            .enumerate()
+            .filter(|(i, t)| {
+                t.n > 0
+                    || takes.iter().any(|k| k.track == *i)
+                    || t.input != Input::Left
+                    || t.monitor != Monitor::Auto
+                    || t.level != 1.0
+                    || t.pan != 0.0
+                    || t.mute
+                    || t.solo
+            })
+            .map(|(i, t)| TrackFile {
+                index: i,
+                input: t.input,
+                monitor: t.monitor,
+                level: t.level,
+                pan: t.pan,
+                muted: t.mute,
+                solo: t.solo,
+                regions: t.regions().to_vec(),
+            })
+            .collect();
+        Some(Saved {
+            rate: self.rate,
+            tracks,
+            takes,
+        })
+    }
+
+    /// Copy frames `from..` of a take into `out` (interleaved, the take's
+    /// channels), as many as fit: the number of frames copied, or None if
+    /// the take is not there, records or is loading. Does not allocate.
+    pub fn read_take(&self, id: u16, from: usize, out: &mut [f32]) -> Option<usize> {
+        let t = self
+            .takes
+            .get(id as usize)
+            .filter(|t| t.live && !t.recording && !t.loading)?;
+        let ch = t.channels as usize;
+        let want = (out.len() / ch).min(t.frames.saturating_sub(from));
+        let mut done = 0;
+        let mut base = 0;
+        for e in &t.ext[..t.n_ext] {
+            if done == want {
+                break;
+            }
+            let frames_in = e.len / ch;
+            let at = from + done;
+            if at >= base + frames_in {
+                base += frames_in;
+                continue;
+            }
+            let k = at - base;
+            let count = (frames_in - k).min(want - done);
+            out[done * ch..(done + count) * ch]
+                .copy_from_slice(&self.pool.data[e.start + k * ch..e.start + (k + count) * ch]);
+            done += count;
+            base += frames_in;
+        }
+        Some(done)
+    }
+
+    /// Put a saved take back, under its own id: its memory is taken now,
+    /// and its audio (moved in, never grown or freed here) copies in at
+    /// [`LOAD_SPEED`] over the next periods; it plays once copied. Then
+    /// the audio waits in [`AudioTracks::take_returned`] for the host to
+    /// drop. Does not allocate. Gives `f` back if the id is past the last
+    /// or in use, the track past the last, the audio not `frames *
+    /// channels` long, the memory short, or [`MAX_TAKES`] loads waiting
+    /// to copy or to be collected.
+    pub fn load_take(&mut self, f: TakeFile) -> Result<(), TakeFile> {
+        let id = f.id as usize;
+        let need = f.frames * f.channels;
+        if id >= MAX_TAKES
+            || self.takes[id].live
+            || f.track >= MAX_TRACKS
+            || !(1..=2).contains(&f.channels)
+            || f.frames == 0
+            || f.audio.len() != need
+            || !f.anchor.is_finite()
+            || self.loads.len() + self.returned.len() >= MAX_TAKES
+        {
+            return Err(f);
+        }
+        self.takes[id] = Take {
+            live: true,
+            track: f.track as u8,
+            channels: f.channels as u8,
+            group: f.group,
+            pass: f.pass,
+            anchor: f.anchor,
+            loading: true,
+            ..NO_TAKE
+        };
+        let need = (need + 1) & !1;
+        loop {
+            let have: usize = self.takes[id].ext[..self.takes[id].n_ext]
+                .iter()
+                .map(|e| e.len)
+                .sum();
+            if have >= need {
+                let tk = &mut self.takes[id];
+                let last = &mut tk.ext[tk.n_ext - 1];
+                let rest = Ext {
+                    start: last.start + last.len - (have - need),
+                    len: have - need,
+                };
+                last.len -= rest.len;
+                self.pool.give(rest);
+                break;
+            }
+            if !self.grow(id) {
+                let t = self.takes[id];
+                for e in &t.ext[..t.n_ext] {
+                    self.pool.give(*e);
+                }
+                self.takes[id] = NO_TAKE;
+                return Err(f);
+            }
+        }
+        self.groups = self.groups.max(f.group);
+        self.loads.push((f.id, f.audio));
+        Ok(())
+    }
+
+    /// Put a saved track's settings and regions back (its takes loaded
+    /// with [`AudioTracks::load_take`], before or after). The undo history
+    /// is forgotten. Does not allocate. False (nothing changed) if the
+    /// track is past the last or recording, or the regions are too many or
+    /// out of order.
+    pub fn load_track(&mut self, f: &TrackFile) -> bool {
+        let ok = f.index < MAX_TRACKS
+            && f.regions.len() <= MAX_REGIONS
+            && f.regions.iter().all(|r| r.end > r.start)
+            && f.regions.windows(2).all(|w| w[0].end <= w[1].start)
+            && self.tracks[f.index].rec.is_none();
+        if !ok {
+            return false;
+        }
+        let t = &mut self.tracks[f.index];
+        t.input = f.input;
+        t.monitor = f.monitor;
+        t.level = if f.level.is_finite() {
+            f.level.clamp(0.0, 2.0)
+        } else {
+            1.0
+        };
+        t.pan = if f.pan.is_finite() {
+            f.pan.clamp(-1.0, 1.0)
+        } else {
+            0.0
+        };
+        t.mute = f.muted;
+        t.solo = f.solo;
+        t.n = f.regions.len();
+        t.regions[..t.n].copy_from_slice(&f.regions);
+        self.h_done = 0;
+        self.h_redo = 0;
+        true
+    }
+
+    /// Takes still copying in.
+    pub fn loading(&self) -> usize {
+        self.loads.len()
+    }
+
+    /// A loaded take's audio, done with: drop it off the audio thread.
+    pub fn take_returned(&mut self) -> Option<Vec<f32>> {
+        self.returned.pop()
+    }
+
+    /// Copy the loads in, `LOAD_SPEED * n` frames' worth of samples a
+    /// period, oldest first.
+    fn copy_loads(&mut self, n: usize) {
+        let mut budget = LOAD_SPEED * n.max(1) * 2;
+        while budget > 0 && !self.loads.is_empty() {
+            let (id, ref audio) = self.loads[0];
+            let tk = &mut self.takes[id as usize];
+            let ch = tk.channels as usize;
+            let done = tk.frames * ch;
+            let count = (audio.len() - done).min(budget);
+            // Write samples done..done + count across the stretches.
+            let mut base = 0;
+            let mut w = 0;
+            for e in &tk.ext[..tk.n_ext] {
+                if w == count {
+                    break;
+                }
+                let at = done + w;
+                if at >= base + e.len {
+                    base += e.len;
+                    continue;
+                }
+                let k = at - base;
+                let c = (e.len - k).min(count - w);
+                self.pool.data[e.start + k..e.start + k + c].copy_from_slice(&audio[at..at + c]);
+                w += c;
+                base += e.len;
+            }
+            tk.frames = (done + count) / ch;
+            budget -= count.max(1);
+            if done + count == audio.len() {
+                tk.loading = false;
+                let (_, audio) = self.loads.remove(0);
+                if self.returned.len() < self.returned.capacity() {
+                    self.returned.push(audio);
+                }
+            }
+        }
     }
 
     // ---- recording -----------------------------------------------------
@@ -1313,6 +1574,7 @@ impl AudioTracks {
             }
         }
         self.q_len = 0;
+        self.copy_loads(n);
         for t in &mut self.tracks {
             t.buf[..2 * n].fill(0.0);
         }
@@ -1503,7 +1765,7 @@ impl AudioTracks {
             if r.start as f64 >= tick1 {
                 break;
             }
-            let Some(tk) = takes.get(r.take as usize).filter(|k| k.live) else {
+            let Some(tk) = takes.get(r.take as usize).filter(|k| k.live && !k.loading) else {
                 continue;
             };
             // Frames since the region's start at the run's first frame,
