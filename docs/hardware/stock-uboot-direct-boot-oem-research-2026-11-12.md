@@ -84,7 +84,7 @@ global references, BootROM/reboot/boot-counter constants and bounded ARM
 instructions across boot/permission, SPL, update and USB routines.
 
 The integrated run creates a private direct-boot-focus.json and .md
-with **25 questions spanning seven topics**, beside the earlier broad
+with **26 questions spanning seven topics**, beside the earlier broad
 **42-question matrix** and existing Ghidra, QEMU and synthetic USB
 evidence. Its focused stage is fail-closed: original Ghidra grant/gate
 evidence AND new pointer equality and token SHA must be supported.
