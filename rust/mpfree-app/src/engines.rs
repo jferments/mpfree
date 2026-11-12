@@ -15,6 +15,13 @@
 //! - `mix`: the mixer (every sound summed, the Level as its master fader,
 //!   Master safety), the metronome, and the mixer panel's state while it
 //!   shows (`mixing.rs`).
+//! - `control`: the rest of the period, worked out as the whole period less
+//!   the five engines: the screen's actions, MIDI in, the lights and MIDI
+//!   out, the app's own work, log lines, the meters and panels sent to the
+//!   screen, and the copy to the sound card's format. None of it is sound,
+//!   and all of it runs on the audio thread today; this row says how much
+//!   of the period it takes before it moves to its own thread. It has no
+//!   budget of its own.
 //!
 //! The FX are not in the pad player yet, so the page says so instead of
 //! showing 0.
@@ -36,30 +43,35 @@ use mpfree_prof::{Profiler, SharedSummary, Span, Summary};
 use mpfree_ui::Tone;
 
 /// The stages, in the order of the page.
-pub const STAGES: [&str; 6] = ["period", "sampler", "synth", "looper", "time", "mix"];
+pub const STAGES: [&str; 7] = [
+    "period", "sampler", "synth", "looper", "time", "mix", "control",
+];
 pub const PERIOD: usize = 0;
 pub const SAMPLER: usize = 1;
 pub const SYNTH: usize = 2;
 pub const LOOPER: usize = 3;
 pub const TIME: usize = 4;
 pub const MIX: usize = 5;
+/// The period less the engines (worked out when the period stops).
+pub const CONTROL: usize = 6;
 
 /// What the page calls each stage.
-const LABELS: [&str; 6] = [
+const LABELS: [&str; 7] = [
     "Whole period",
     "Sampler (pads, grains)",
     "Synth (Poly or FM)",
     "Looper and line input",
     "Transport, clips, arp",
     "Mixer, metronome",
+    "Control (MIDI, lights, screen, log)",
 ];
 
 /// The numbers the audio loop publishes: each stage's last window (about
 /// 250 ms) and the whole session.
 #[derive(Debug, Default)]
 pub struct EngineShared {
-    pub window: [SharedSummary; 6],
-    pub life: [SharedSummary; 6],
+    pub window: [SharedSummary; 7],
+    pub life: [SharedSummary; 7],
     /// Where the sound runs (`--sound-cores`) and its lanes' counts.
     pub cores: crate::cores::CoreShared,
 }
@@ -69,6 +81,8 @@ pub struct EngineShared {
 pub struct EngineProbes {
     prof: Profiler,
     shared: Arc<EngineShared>,
+    /// The engines' time so far this period, in ns, for `control`.
+    engines_ns: u64,
 }
 
 impl EngineProbes {
@@ -76,6 +90,7 @@ impl EngineProbes {
         EngineProbes {
             prof: Profiler::new(&STAGES, MPC.ns()),
             shared: Arc::new(EngineShared::default()),
+            engines_ns: 0,
         }
     }
 
@@ -84,6 +99,7 @@ impl EngineProbes {
         EngineProbes {
             prof: Profiler::new(&STAGES, MPC.ns()),
             shared,
+            engines_ns: 0,
         }
     }
 
@@ -92,18 +108,33 @@ impl EngineProbes {
         Arc::clone(&self.shared)
     }
 
-    /// Ends stage `i`'s span for this period.
+    /// Ends stage `i`'s span for this period. Ending the period's span
+    /// also records `control`: the period less the engines' time.
     #[inline]
     pub fn stop(&mut self, i: usize, span: Span) {
-        self.prof.stop(i, span, MPC.frames);
+        self.record(i, span.elapsed_ns(), span.allocs());
     }
 
     /// Records a time the loop already measured for stage `i` (the
     /// sampler's and the looper's, which it times for its status lines).
     #[inline]
     pub fn add(&mut self, i: usize, d: std::time::Duration) {
+        self.record(i, d.as_nanos().min(u64::MAX as u128) as u64, 0);
+    }
+
+    fn record(&mut self, i: usize, ns: u64, allocs: u64) {
+        match i {
+            PERIOD => {
+                let engines = std::mem::take(&mut self.engines_ns);
+                if let Some(p) = self.prof.probe_mut(CONTROL) {
+                    p.record(ns.saturating_sub(engines), MPC.frames, 0);
+                }
+            }
+            CONTROL => return,
+            _ => self.engines_ns = self.engines_ns.saturating_add(ns),
+        }
         if let Some(p) = self.prof.probe_mut(i) {
-            p.record(d.as_nanos().min(u64::MAX as u128) as u64, MPC.frames, 0);
+            p.record(ns, MPC.frames, allocs);
         }
     }
 
@@ -131,10 +162,10 @@ pub fn log_line(items: &[(&'static str, Summary)]) -> String {
 
 /// The numbers one look at the page reads: each stage's window and
 /// lifetime (`None` until the audio loop has published once).
-pub type Snapshot = [(Option<Summary>, Option<Summary>); 6];
+pub type Snapshot = [(Option<Summary>, Option<Summary>); 7];
 
 pub fn read(shared: &EngineShared) -> Snapshot {
-    let mut s: Snapshot = [(None, None); 6];
+    let mut s: Snapshot = [(None, None); 7];
     for (i, slot) in s.iter_mut().enumerate() {
         let get = |x: &SharedSummary| x.read().filter(|(_, n)| *n > 0).map(|(v, _)| v);
         *slot = (get(&shared.window[i]), get(&shared.life[i]));
@@ -161,8 +192,17 @@ fn tone(v: Verdict) -> Tone {
     }
 }
 
-fn budget_pct(i: usize) -> f64 {
-    budget::pct_for(STAGES[i]).unwrap_or(100.0)
+fn budget_pct(i: usize) -> Option<f64> {
+    budget::pct_for(STAGES[i])
+}
+
+/// Which block stage `i` is judged on, in words: an engine's p99.9, the
+/// period's worst, and the worst for a stage with no budget.
+fn judged_word(i: usize) -> &'static str {
+    match budget_pct(i) {
+        Some(_) => budget::judged_word(STAGES[i]),
+        None => "worst",
+    }
 }
 
 /// Stage `i`'s judged block as a share of the period, and its colour, by
@@ -194,7 +234,7 @@ pub fn now_rows(s: &Snapshot) -> Vec<(String, String, Tone)> {
                         w.mean_ns / 1e3,
                         w.p99_ns as f64 / 1e3,
                         w.max_ns as f64 / 1e3,
-                        budget::judged_word(STAGES[i])
+                        judged_word(i)
                     ),
                     v.map_or(Tone::Dim, tone),
                 )
@@ -222,20 +262,29 @@ pub fn session_rows(s: &Snapshot) -> Vec<(String, String, Tone)> {
     let mut rows = Vec::new();
     for (i, (_, l)) in s.iter().enumerate() {
         let b = budget_pct(i);
-        let (value, t) = match l {
-            Some(l) if l.blocks > 0 => {
+        let (value, t) = match (l, b) {
+            (Some(l), Some(b)) if l.blocks > 0 => {
                 let (pct, v) = judged(i, l);
                 (
                     format!(
                         "{} {pct:.1} % of {b:.0} % ({}), CPU {:.1} %",
-                        budget::judged_word(STAGES[i]),
+                        judged_word(i),
                         v.map_or("no budget", |v| v.word()),
                         l.realtime_pct(MPC.rate)
                     ),
                     v.map_or(Tone::Dim, tone),
                 )
             }
-            _ => (format!("budget {b:.0} %"), Tone::Dim),
+            (Some(l), None) if l.blocks > 0 => (
+                format!(
+                    "worst {:.1} %, no budget, CPU {:.1} %",
+                    judged(i, l).0,
+                    l.realtime_pct(MPC.rate)
+                ),
+                Tone::Dim,
+            ),
+            (_, Some(b)) => (format!("budget {b:.0} %"), Tone::Dim),
+            (_, None) => ("no budget".to_string(), Tone::Dim),
         };
         rows.push((LABELS[i].to_string(), value, t));
     }
@@ -284,6 +333,7 @@ mod tests {
         let s = read(&shared);
         assert_eq!(s[SAMPLER].0.unwrap().blocks, 10);
         assert_eq!(s[MIX].1.unwrap().blocks, 10);
+        assert_eq!(s[CONTROL].1.unwrap().blocks, 10, "one per period");
         let now = now_rows(&s);
         assert!(
             now[1].1.ends_with(" %)") && now[1].2 == Tone::Good,
@@ -307,7 +357,7 @@ mod tests {
             "{:?}",
             now[1 + SAMPLER]
         );
-        assert_eq!(session[6].1, "10 · 0");
+        assert_eq!(session[STAGES.len()].1, "10 · 0");
         p.publish();
         assert_eq!(
             read(&shared)[SAMPLER].0.unwrap().blocks,
@@ -317,5 +367,43 @@ mod tests {
         assert_eq!(read(&shared)[SAMPLER].1.unwrap().blocks, 10);
         assert!(log_line(&p.lifetime())
             .starts_with("cpu by engine (mean/p99/worst of a period): period "));
+    }
+
+    #[test]
+    fn control_is_the_period_less_the_engines() {
+        use std::time::Duration;
+        let mut p = EngineProbes::new();
+        let shared = p.shared();
+        for k in 0..4u64 {
+            // The sampler twice (its render and the recorder), as the loop does.
+            p.add(SAMPLER, Duration::from_micros(300));
+            p.add(SAMPLER, Duration::from_micros(10));
+            p.add(SYNTH, Duration::from_micros(200));
+            p.add(LOOPER, Duration::from_micros(40));
+            p.add(TIME, Duration::from_micros(20));
+            p.add(MIX, Duration::from_micros(500));
+            p.add(PERIOD, Duration::from_micros(1_270 + 100 * k));
+        }
+        // A period shorter than its engines (clock steps) counts as none.
+        p.add(MIX, Duration::from_micros(900));
+        p.add(PERIOD, Duration::from_micros(800));
+        p.publish();
+        let c = read(&shared)[CONTROL].1.unwrap();
+        assert_eq!(c.blocks, 5);
+        assert_eq!(c.max_ns, 500_000, "1570 less 1070 µs");
+        assert_eq!(c.total_ns, 1_400_000, "200 + 300 + 400 + 500 + 0 µs");
+        let rows = now_rows(&read(&shared));
+        let last = &rows[1 + CONTROL];
+        assert_eq!(last.0, "Control (MIDI, lights, screen, log)");
+        assert!(last.1.ends_with(" µs (worst 17.2 %)"), "{last:?}");
+        assert_eq!(last.2, Tone::Dim, "no budget: shown on its worst, dim");
+        let session = session_rows(&read(&shared));
+        assert!(
+            session[CONTROL]
+                .1
+                .starts_with("worst 17.2 %, no budget, CPU "),
+            "{:?}",
+            session[CONTROL]
+        );
     }
 }

@@ -2410,6 +2410,10 @@ impl Engine {
     ) {
         let n = frames as u32;
         let mut at = 0u32;
+        // The events applied so far this block, taken off the queue's front
+        // once at the end (not one at a time, which would move the rest
+        // each time). `apply` never queues events.
+        let mut applied = 0usize;
         // Without a deadline, the lane gets as long as the block lasts.
         let deadline = match (&self.lane, deadline) {
             (Some(_), None) => {
@@ -2424,14 +2428,14 @@ impl Engine {
             let mut next = n;
             if home {
                 // Apply every event due now.
-                while let Some(&(o, ev)) = self.events.first() {
+                while let Some(&(o, ev)) = self.events.get(applied) {
                     if o > at {
                         break;
                     }
-                    self.events.remove(0);
+                    applied += 1;
                     self.apply(ev);
                 }
-                next = self.events.first().map_or(n, |&(o, _)| o.min(n));
+                next = self.events.get(applied).map_or(n, |&(o, _)| o.min(n));
             }
             if self.pool.split {
                 next = next.min(at + LANE_BLOCK as u32);
@@ -2490,6 +2494,7 @@ impl Engine {
             at = next;
         }
         self.frames += u64::from(n);
+        self.events.drain(..applied);
         for e in &mut self.events {
             e.0 = e.0.saturating_sub(n);
         }
@@ -2535,7 +2540,9 @@ fn render_granular(
     sl: &mut [f32],
     sr: &mut [f32],
 ) {
-    let Some(data) = v.data.clone() else {
+    // Taken out of the voice for the render and put back after (a clone
+    // would touch the shared count, which both cores' voices share).
+    let Some(data) = v.data.take() else {
         v.active = false;
         return;
     };
@@ -2574,8 +2581,8 @@ fn render_granular(
         }
         at += n;
     }
-    if !v.active {
-        v.data = None;
+    if v.active {
+        v.data = Some(data);
     }
 }
 
@@ -2944,7 +2951,9 @@ fn render_voice_as<const FOLLOW: bool>(
     left: &mut [f32],
     right: &mut [f32],
 ) {
-    let Some(data) = v.data.clone() else {
+    // Taken out of the voice for the render and put back after (a clone
+    // would touch the shared count, which both cores' voices share).
+    let Some(data) = v.data.take() else {
         v.active = false;
         return;
     };
@@ -3017,8 +3026,8 @@ fn render_voice_as<const FOLLOW: bool>(
             break;
         }
     }
-    if !v.active {
-        v.data = None;
+    if v.active {
+        v.data = Some(data);
     }
 }
 
