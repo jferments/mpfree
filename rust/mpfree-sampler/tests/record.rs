@@ -502,8 +502,11 @@ fn a_restart_hides_what_came_from_the_old_source() {
     let bar = 22_050;
     feed_periods(&mut f, 400, bar, 0);
     assert_eq!(i.held(), 51_200);
-    // The input now comes from somewhere else (resampling the master).
+    // The input now comes from somewhere else (resampling the master),
+    // and a reader can see that it has.
+    assert_eq!(i.audio.restarts(), 0);
     f.restart();
+    assert_eq!(i.audio.restarts(), 1);
     assert_eq!((i.held(), i.audio.oldest()), (0, 51_200));
     assert_eq!(i.last_frames(1_000).unwrap(), Vec::<f32>::new());
     assert_eq!(i.last_bars(1), Err(RecordError::Overwritten));

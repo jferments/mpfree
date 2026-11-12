@@ -1512,19 +1512,31 @@ impl Project {
     /// keeps its other settings (level, envelopes, filter, keys) with this
     /// one layer. Returns the source's id.
     pub fn put_source(&mut self, pad: usize, s: Source) -> Result<SourceId, ModelError> {
-        if pad >= PADS {
-            return Err(ModelError::BadPad);
-        }
-        let layer = Layer::new(Region::whole(&s));
-        let p = match self.pad(pad) {
+        self.put_source_as(pad, s, |name, layer, old| match old {
             Some(old) => Pad {
-                name: s.name.clone(),
+                name: name.to_string(),
                 layers: vec![layer],
                 select: LayerSelect::All,
                 ..old.clone()
             },
-            None => Pad::new(&s.name, layer),
-        };
+            None => Pad::new(name, layer),
+        })
+    }
+
+    /// [`Project::put_source`], with the pad made by `make` from the
+    /// source's name, its whole-region layer and the pad there before (if
+    /// any): one undo step. Returns the source's id.
+    pub fn put_source_as(
+        &mut self,
+        pad: usize,
+        s: Source,
+        make: impl FnOnce(&str, Layer, Option<&Pad>) -> Pad,
+    ) -> Result<SourceId, ModelError> {
+        if pad >= PADS {
+            return Err(ModelError::BadPad);
+        }
+        let layer = Layer::new(Region::whole(&s));
+        let p = make(&s.name, layer, self.pad(pad));
         let id = s.id();
         let added = self.source(id).is_none();
         if added {

@@ -83,7 +83,7 @@ use mpfree_ui::{Tone, Ui, UiEvent};
 
 use crate::app::bank_letter;
 use crate::gui::FromUi;
-use crate::sampler::{Cloud, Playheads, RecFeed, RecSource, ViewSwap};
+use crate::sampler::{Cloud, Playheads, RecFeed, RecSource, ViewSwap, CENTRE_DB};
 use mpfree_fx::{CapturePoint, StripId};
 
 /// The Wave tab's page.
@@ -172,6 +172,52 @@ struct Take {
     kit: usize,
     pad: usize,
     pick: record::Pick,
+}
+
+/// A Flatten running (the Rec tab's third button): the pad's own mixer
+/// channel recorded while the pad plays once, then kept on `target`.
+struct Flatten {
+    kit: usize,
+    pad: usize,
+    target: usize,
+    velocity: u8,
+    /// Seconds the pad is held before it is let go.
+    hold: f32,
+    /// A Toggle pad is let go by a second hit.
+    toggle: bool,
+    /// The Rec tab's own source, put back when it ends.
+    was: RecSource,
+    /// When the buffer holds the pad's channel: at once, after the audio
+    /// thread restarts it (from this count), or once a new buffer has
+    /// anything in it.
+    ready: Ready,
+    /// Seconds waited for the channel, then since the hit.
+    waited: f32,
+    played: Option<f32>,
+    lifted: bool,
+}
+
+/// When a Flatten's buffer holds the pad's channel.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Ready {
+    Now,
+    Restarted(u64),
+    Written,
+}
+
+/// How long a Flatten waits for the pad's channel, and for the pad to make
+/// a sound after its hold, before it gives up.
+const FLATTEN_WAIT: f32 = 2.0;
+
+/// What lets a Flatten's pad go: a second hit for a Toggle pad, else a
+/// lift.
+fn flatten_lift(f: &Flatten) -> FromUi {
+    FromUi::SampleHit {
+        kit: f.kit,
+        pad: f.pad,
+        velocity: f.velocity,
+        down: f.toggle,
+    }
 }
 
 /// An auto-sample running, and where its instrument goes.
@@ -299,6 +345,9 @@ pub struct SamplePage {
     feeding: bool,
     want_back: bool,
     take: Option<Take>,
+    flatten: Option<Flatten>,
+    /// Hits and lifts for the audio thread (Flatten).
+    hits: Vec<FromUi>,
     /// Takes made, for their names.
     takes: u32,
     /// The last take, said in a line on the tab.
@@ -370,6 +419,8 @@ impl SamplePage {
             feeding: false,
             want_back: false,
             take: None,
+            flatten: None,
+            hits: Vec::new(),
             takes: 0,
             last_take: String::new(),
             auto: None,
@@ -1619,13 +1670,28 @@ impl SamplePage {
             .rec
             .as_ref()
             .map_or(rec_tab::Onto::NextEmpty, |t| t.settings.onto);
+        let target = project.and_then(|_| rec_tab::target(self.pad, onto, |p| sound(p).is_some()));
+        let can_flatten = self.flatten.is_none()
+            && self.take.is_none()
+            && self.pad < crate::mixing::PADS
+            && sound(self.pad).is_some()
+            && project.is_some_and(|p| p.pads_play() == PadsPlay::Pads)
+            && target.is_some();
         RecState {
             pad: self.pad,
             pad_name: sound(self.pad).map(|pd| pd.name.clone()),
-            target: project.and_then(|_| rec_tab::target(self.pad, onto, |p| sound(p).is_some())),
+            target,
             sources: self.rec_sources.iter().map(|(n, _)| n.clone()).collect(),
             live: self.input_wanted(),
             last: self.last_take.clone(),
+            can_flatten,
+            flattening: self.flatten.as_ref().map(|f| {
+                format!(
+                    "Flattening {} onto {}",
+                    self.pad_text(f.kit, f.pad),
+                    self.pad_text(f.kit, f.target)
+                )
+            }),
         }
     }
 
@@ -1681,6 +1747,9 @@ impl SamplePage {
         match a {
             RecAction::Tab(i) => self.open(ui, i),
             RecAction::Record => self.start_take(ui),
+            RecAction::Stop if self.flatten.is_some() => {
+                self.end_flatten(ui, "stopped: nothing kept");
+            }
             RecAction::Stop => {
                 if let (Some(t), Some(input)) = (self.take.as_mut(), self.input.as_ref()) {
                     t.rec.stop(input);
@@ -1688,6 +1757,7 @@ impl SamplePage {
                 // A take that was recording ends here and lands at once.
                 self.tick(ui, 0.0, true);
             }
+            RecAction::Flatten => self.start_flatten(ui),
             RecAction::SkipBack => self.skip_back(ui),
             RecAction::Source(i) => self.set_source(ui, i),
             RecAction::Auto => {
@@ -1743,7 +1813,7 @@ impl SamplePage {
     }
 
     fn start_take(&mut self, ui: &mut Ui) {
-        if self.take.is_some() {
+        if self.take.is_some() || self.flatten.is_some() {
             return;
         }
         let st = self.rec_state_now();
@@ -1785,7 +1855,7 @@ impl SamplePage {
     }
 
     fn skip_back(&mut self, ui: &mut Ui) {
-        if self.take.is_some() {
+        if self.take.is_some() || self.flatten.is_some() {
             return;
         }
         let st = self.rec_state_now();
@@ -1852,6 +1922,226 @@ impl SamplePage {
             }
             Err(e) => self.lines.push(format!("sample: {what} not kept ({e:?})")),
         }
+    }
+
+    // ------------------------------------------------------------ flatten
+
+    /// Flatten: the Rec tab's input turns to the pad picked's own channel
+    /// (after its insert effects, before its fader: onto the pad itself,
+    /// before its inserts, as they will play again), and once the audio
+    /// thread has it, the pad plays once at the Flatten velocity and is
+    /// let go after the Flatten hold. The sound is kept from its first
+    /// frame over -60 dB until it has been under it for the Silence time,
+    /// as a pad of its own (one undo step); the Rec tab's source comes
+    /// back after.
+    fn start_flatten(&mut self, ui: &mut Ui) {
+        let st = self.rec_state_now();
+        let (true, Some(target), Some(tab)) = (st.can_flatten, st.target, self.rec.as_ref()) else {
+            return;
+        };
+        let settings = tab.settings;
+        let (kit, pad) = (self.kit, self.pad);
+        let Some(p) = self.projects.get(kit).and_then(|pr| pr.pad(pad)) else {
+            return;
+        };
+        let toggle = p.layers.iter().any(|l| l.region.mode == PlayMode::Toggle);
+        let point = if target == pad {
+            CapturePoint::BeforeInserts
+        } else {
+            CapturePoint::BeforeFader
+        };
+        let src = RecSource::Mix(StripId::Pad(pad), point);
+        let ready = match &self.input {
+            Some(_) if self.source == src => Ready::Now,
+            // A writer not yet with the audio thread only ever gets the
+            // new source (it goes after the source does).
+            Some(_) if self.feed.is_some() => Ready::Written,
+            Some(input) => Ready::Restarted(input.audio.restarts()),
+            None => Ready::Written,
+        };
+        self.lines.push(format!(
+            "sample: flatten {} onto {}: velocity {}, held {} ms, from its channel {}",
+            self.pad_text(kit, pad),
+            self.pad_text(kit, target),
+            settings.flatten_velocity,
+            settings.flatten_hold_ms,
+            if point == CapturePoint::BeforeInserts {
+                "before its inserts"
+            } else {
+                "after its inserts"
+            }
+        ));
+        self.flatten = Some(Flatten {
+            kit,
+            pad,
+            target,
+            velocity: settings.flatten_velocity,
+            hold: settings.flatten_hold_ms as f32 / 1000.0,
+            toggle,
+            was: self.source,
+            ready,
+            waited: 0.0,
+            played: None,
+            lifted: false,
+        });
+        self.source = src;
+        self.sync_input(ui);
+    }
+
+    /// A Flatten's next step, `dt` seconds on: play the pad once its
+    /// channel is in the buffer, let it go after the hold, give up if the
+    /// channel or the sound doesn't come.
+    fn poll_flatten(&mut self, ui: &mut Ui, dt: f32) {
+        let Some(f) = self.flatten.as_ref() else {
+            return;
+        };
+        if f.kit != self.kit {
+            self.end_flatten(ui, "stopped: the kit changed");
+            return;
+        }
+        let Some(input) = self.input.as_ref() else {
+            return;
+        };
+        match f.played {
+            None => {
+                let ready = match f.ready {
+                    Ready::Now => true,
+                    Ready::Restarted(n) => input.audio.restarts() > n,
+                    Ready::Written => input.now() > 0,
+                };
+                if !ready {
+                    let waited = f.waited + dt;
+                    if waited > FLATTEN_WAIT {
+                        self.end_flatten(ui, "stopped: the pad's channel didn't come in");
+                    } else if let Some(f) = self.flatten.as_mut() {
+                        f.waited = waited;
+                    }
+                    return;
+                }
+                let rec = self
+                    .rec
+                    .as_ref()
+                    .map(|t| t.settings)
+                    .unwrap_or_default()
+                    .flatten_recording(input);
+                let hit = FromUi::SampleHit {
+                    kit: f.kit,
+                    pad: f.pad,
+                    velocity: f.velocity,
+                    down: true,
+                };
+                self.take = Some(Take {
+                    rec,
+                    kit: f.kit,
+                    pad: f.target,
+                    pick: record::Pick::Stereo,
+                });
+                self.hits.push(hit);
+                if let Some(f) = self.flatten.as_mut() {
+                    f.played = Some(0.0);
+                }
+                self.refresh_rec_state(ui);
+            }
+            Some(t) => {
+                let t = t + dt;
+                let lift = (!f.lifted && t >= f.hold).then(|| flatten_lift(f));
+                let silent = self
+                    .take
+                    .as_ref()
+                    .is_some_and(|tk| tk.rec.progress() == Progress::Waiting);
+                let give_up = silent && t > f.hold + FLATTEN_WAIT;
+                if let Some(f) = self.flatten.as_mut() {
+                    f.played = Some(t);
+                    f.lifted |= lift.is_some();
+                }
+                self.hits.extend(lift);
+                if give_up {
+                    self.end_flatten(ui, "stopped: the pad made no sound");
+                }
+            }
+        }
+    }
+
+    /// The Flatten's take is done: kept on its target as a pad of its own
+    /// (its envelopes, filter, tune and pan are in the sound now), keeping
+    /// the mute group, chokes and polyphony of a pad it replaces.
+    fn keep_flatten(&mut self, ui: &mut Ui) {
+        let (Some(t), Some(f)) = (self.take.take(), self.flatten.as_ref()) else {
+            return;
+        };
+        let name = self
+            .projects
+            .get(f.kit)
+            .and_then(|p| p.pad(f.pad))
+            .map_or_else(|| "Flat".to_string(), |p| format!("{} flat", p.name));
+        let (kit, pad) = (f.kit, t.pad);
+        match t.rec.finish(&name, t.pick) {
+            Some(Ok(src)) => {
+                let (frames, rate) = (src.frames(), src.rate());
+                let put = self.projects.get_mut(kit).map(|p| {
+                    p.put_source_as(pad, src, |name, layer, old| {
+                        let mut new = Pad::new(name, layer);
+                        new.level_db = CENTRE_DB;
+                        if let Some(old) = old {
+                            new.mute_group = old.mute_group;
+                            new.chokes = old.chokes.clone();
+                            new.polyphony = old.polyphony;
+                        }
+                        new
+                    })
+                });
+                match put {
+                    Some(Ok(_)) => {
+                        self.edits += 1;
+                        if let Some(d) = self.dirty.get_mut(kit) {
+                            *d = true;
+                        }
+                        self.renamed = Some(kit);
+                        let text = format!(
+                            "{name}, {} on pad {}",
+                            duration_text(frames, rate),
+                            self.pad_text(kit, pad)
+                        );
+                        self.last_take = text.clone();
+                        self.end_flatten(ui, &format!("kept: {text}"));
+                        if kit == self.kit {
+                            self.lift();
+                            self.pad = pad;
+                            self.velocity = None;
+                        }
+                        self.refresh(ui);
+                    }
+                    Some(Err(e)) => self.end_flatten(ui, &format!("not kept ({e:?})")),
+                    None => self.end_flatten(ui, "not kept (the kit is gone)"),
+                }
+            }
+            Some(Err(e)) => self.end_flatten(ui, &format!("not kept ({e:?})")),
+            None => self.end_flatten(ui, "stopped: nothing kept"),
+        }
+    }
+
+    /// Ends the Flatten (`how` goes in its log line): the pad is let go if
+    /// it is still held, a take still going is dropped, and the Rec tab's
+    /// own source comes back.
+    fn end_flatten(&mut self, ui: &mut Ui, how: &str) {
+        let Some(f) = self.flatten.take() else {
+            return;
+        };
+        if f.played.is_some() && !f.lifted {
+            self.hits.push(flatten_lift(&f));
+        }
+        self.take = None;
+        self.lines.push(format!(
+            "sample: flatten {} {how}",
+            self.pad_text(f.kit, f.pad)
+        ));
+        self.source = f.was;
+        self.sync_input(ui);
+    }
+
+    /// Hits and lifts Flatten asks the audio thread for, once.
+    pub fn take_hits(&mut self) -> Vec<FromUi> {
+        std::mem::take(&mut self.hits)
     }
 
     // ------------------------------------------------------------ auto
@@ -2142,6 +2432,7 @@ impl SamplePage {
     pub fn tick(&mut self, ui: &mut Ui, dt: f32, showing: bool) {
         if let (Some(t), Some(input)) = (self.take.as_mut(), self.input.as_ref()) {
             match t.rec.poll(input) {
+                Ok(Progress::Done { .. }) if self.flatten.is_some() => self.keep_flatten(ui),
                 Ok(Progress::Done { .. }) => {
                     if let Some(t) = self.take.take() {
                         let name = self.take_name();
@@ -2166,6 +2457,7 @@ impl SamplePage {
                 }
             }
         }
+        self.poll_flatten(ui, dt);
         if showing && self.editor == Editor::Rec && self.rec_state.is_some() {
             self.feed_rec(ui, dt);
         }
