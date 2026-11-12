@@ -35,7 +35,7 @@ qset = 31 32 34 33 Tone
 - `Preset::capture(node, name, tags)` takes the node's sound now.
 - `Preset::to_text(params)` writes it; `Preset::parse(text, info, params)` reads it, checking the format and the engine.
 - `Preset::apply(node)` sets every setting: the preset's value, or the default when it has none, clamped. Sounding notes carry on, as with a factory preset. A preset for another engine changes nothing.
-- **On the pads** (`mpfree-hello`, `synth.rs`), the app's synth reads and plays user presets for the browser's preset picker (`Pick::Preset`). The picker names a file's engine by its folder under Instruments, the engine's name (`Poly`, `FM`, `Wavetable`, `Pluck`, `Drums`); `Engine::from_folder` maps it back, and a file straight in Instruments goes by its `engine` line.
+- **On the pads** (`mpfree-app`, `synth.rs`), the app's synth reads and plays user presets for the browser's preset picker (`Pick::Preset`). The picker names a file's engine by its folder under Instruments, the engine's name (`Poly`, `FM`, `Wavetable`, `Pluck`, `Drums`); `Engine::from_folder` maps it back, and a file straight in Instruments goes by its `engine` line.
   - `try_preset(folder, text)` (the picker's `TryPreset`, one per dial turn) plays the file on the engine on the pads and keeps the sound from before the first try.
   - `revert_preset()` (`RevertPreset`, on Cancel or BROWSE) puts that sound back, every setting to the bit.
   - `load_preset_file(folder, text)` (`LoadPreset`) plays the file from then on and forgets the kept sound.
@@ -51,7 +51,7 @@ qset = 31 32 34 33 Tone
 - Native engines name every setting (no `id.` keys) and save every writable one.
 - A setting missing from the file takes its default; a preset for another engine is refused and changes nothing.
 - Keys, the id fallback, choices and switches by name or number, unknown lines kept and written back, names and tags kept on one line, and every refusal with its reason.
-- In `mpfree-hello`'s `synth.rs`: trying two presets and cancelling brings back every setting to the bit; Load after trying keeps the tried sound; another engine's file or folder, and a file that isn't a preset, change nothing; a file straight in Instruments goes by its engine line; Q-Link sets ride along in a save; a Drums kit tried moves the pads and Cancel moves them back.
+- In `mpfree-app`'s `synth.rs`: trying two presets and cancelling brings back every setting to the bit; Load after trying keeps the tried sound; another engine's file or folder, and a file that isn't a preset, change nothing; a file straight in Instruments goes by its engine line; Q-Link sets ride along in a save; a Drums kit tried moves the pads and Cancel moves them back.
 
 ## Not yet
 

@@ -9,7 +9,7 @@ meant to grow. Status as of 2026-11-11.
 | --- | --- | --- | --- |
 | Unit and crate tests | Each crate's logic: engines, DSP, parsers, UI layout and drawing | `cargo test` in `rust/`; CI on every PR | Anyone, CI |
 | Host integration | Whole programs with no hardware: headless engine with null audio, session offline check, groove and sampler WAV renders, display previews, C++/Rust WAV parity | CI's `core` and `rust` jobs | CI |
-| ARMv7 under qemu | The device build: static ARM binaries, ABI layouts against the kernel's headers, Hello MPC and UI tests as 32-bit ARM, preview screens | CI's `rust` job | CI |
+| ARMv7 under qemu | The device build: static ARM binaries, ABI layouts against the kernel's headers, the app and UI tests as 32-bit ARM, preview screens | CI's `rust` job | CI |
 | Device tools offline | Survey, backup, kexec and update tools against fake MPCs, fake images and BusyBox | CI's `syntax` job | CI |
 | On the MPC | Real audio, pads, touch, screen | The reference MPC One, round by round with `tools/mpc-one/results.py` | Jay only |
 
@@ -107,13 +107,13 @@ python3 ../tools/ci/coverage_summary.py /tmp/cov.json
   (level in dB, zero crossings) and allows 0.5 dB and 3 % of crossings, so
   another CPU or libm passes and a changed preset, tuning or filter fails.
   A new bench case needs a reference too. A screen that changes on purpose
-  is the same: `MPFREE_GOLDEN_BLESS=1 cargo test -p mpfree-hello --test cli`
+  is the same: `MPFREE_GOLDEN_BLESS=1 cargo test -p mpfree-app --test cli`
   (references are x86-64; the ARMv7 run under qemu checks only that the
   pictures are valid).
 - **Audio-thread code doesn't allocate or block.** Each engine proves this
   with a counting allocator (`tests/no_alloc.rs`), CI runs
   `mpfree-bench --check-allocs` over the profiled engines, and
-  `mpfree-hello/src/rt_safety.rs` runs the pad player's whole sound path. A
+  `mpfree-app/src/rt_safety.rs` runs the pad player's whole sound path. A
   new audio path gets a no-allocation test, and a new step in the pad
   player's period goes into `rt_safety.rs` too.
 - **A program gets a `tests/cli.rs`** that runs it whole through
@@ -130,7 +130,7 @@ python3 ../tools/ci/coverage_summary.py /tmp/cov.json
 - **rustfmt is enforced** by the `lint` job (`cargo fmt --check`, with the
   pinned toolchain's rustfmt). Run `cargo fmt --manifest-path rust/Cargo.toml
   --all` before pushing. Source checks that read Rust files (the workflow's
-  static checks, `test_hello_mpc.py`'s write audit) compare what the code
+  static checks, `test_app_mpc.py`'s write audit) compare what the code
   says, not how rustfmt wraps it.
 
 ## Merging
@@ -154,7 +154,7 @@ screen-log, display) are run whole by `cargo test` through
 | `mpfree-bench` | 69% |
 | `mpfree-splash` | 69% (its `main.rs` drives the device framebuffer) |
 | `mpfree-touch-evdev` | 71% |
-| `mpfree-hello` | 73% |
+| `mpfree-app` | 73% |
 | `mpfree-headless` | 76% |
 | `mpfree-groove` | 80% |
 | `mpfree-touch` | 81% |
@@ -172,20 +172,20 @@ In order. Each step is its own PR.
    one-time reformat. Then the required check on `main`.
 2. **Raise the thin crates** in the table above. Done first: whole-program
    tests for render, session, device-smoke, screen-log and display. Next is
-   `mpfree-hello`, the program that actually runs on the MPC.
+   `mpfree-app`, the program that actually runs on the MPC.
 3. **Golden regressions.** Audio is done: `mpfree-bench`'s golden test
    renders every bench case (each Poly preset, the drum kits, the plucks,
    every effect and reverb, the sampler, the mixer, the time engine and arp,
    the looper, a whole song) and compares a fingerprint with
-   `rust/mpfree-bench/golden/cases.txt`. Screens too: `mpfree-hello`'s
+   `rust/mpfree-bench/golden/cases.txt`. Screens too: `mpfree-app`'s
    `tests/cli.rs` draws all its preview screens and compares each with
-   `rust/mpfree-hello/golden/screens.txt` (the mean brightness of every
+   `rust/mpfree-app/golden/screens.txt` (the mean brightness of every
    20×20 cell, within 1 level; renaming one tab label trips it).
 4. **Real-time safety everywhere.** Every engine has its own no-allocation
    test (`tests/no_alloc.rs` in synth, sampler, fx, grain, looper, play,
    transport, capture, track), and the `rust` job runs
    `mpfree-bench --quick --check-allocs`, which fails if any bench case
-   allocates inside its audio callback. On top of those, `mpfree-hello`'s
+   allocates inside its audio callback. On top of those, `mpfree-app`'s
    `src/rt_safety.rs` runs the program's whole sound path the way its audio
    loop does, period by period: pads and pressure into the arp, the
    transport and a playing clip, the sampler or the synth, the click and the

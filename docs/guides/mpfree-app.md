@@ -1,4 +1,6 @@
-# Hello MPC (Phase 1) on the kexec test build
+# mpfree on the kexec test build
+
+The app is called mpfree. Phase 1 called it Hello MPC, and its crate was `mpfree-hello` until 2026-11-11; it is now [`rust/mpfree-app`](../../rust/mpfree-app), and the program is `mpfree`.
 
 **Status:** round 3 ran on 2026-11-10, and every Phase 1 part now works on the test build: the screen, touch, pads, Q-Links, wheel, buttons, pad lights, and sound from the pads. A factory drum kit played from the pads with 0 underruns, and Akai's setup, replayed, moved the controls to the Private port with relative Q-Links ([results](#round-3-results-2026-11-10)). Round 4 ran [the pad player](#round-4-the-pad-player-and-mpfrees-first-gui), MPFree's first GUI: 323 hits in 120 s with 0 underruns and 8.7 ms from pad to sound ([results](#round-4-results-2026-11-10)). Round 5, [straight into the pad player at power-on](#round-5-straight-into-the-pad-player), is ready to run.
 
@@ -6,12 +8,12 @@ Phase 1 is the first time MPFree's own code drives the MPC One's hardware: the s
 
 ## What runs, and what it changes
 
-The program is [`mpfree-hello`](../../rust/mpfree-hello/src/main.rs), a static ARM binary. `collect-over-ssh.sh --hello` runs [`host_hello_mpc.py`](../../tools/mpc-one/host_hello_mpc.py), which:
+The program is `mpfree` (crate [`mpfree-app`](../../rust/mpfree-app/src/main.rs)), a static ARM binary. `collect-over-ssh.sh --app` runs [`host_app_mpc.py`](../../tools/mpc-one/host_app_mpc.py), which:
 
 1. checks the program on the workstation (a static ARM EABI5 hard-float executable);
 2. connects **only to the test build**: it uses the test build's own SSH host key, so stock 3.6.0 is refused before anything runs. On the test build it checks, read-only, the release, that no MMC device exists, that kexec is off, that `/` is read-only, that `/run` allows programs and has room, and that Akai's app is not running. It also lists which programs hold the sound, MIDI, touch and screen devices;
-3. copies the program to `/run/mpfree-hello` (RAM) and checks its hash there. If the drums or play step is chosen, it copies the drum kits there too and checks their hash. When the only steps are `app` and `line`, nothing is copied;
-4. runs one step at a time. Each step starts only when you press Enter. `s` skips a step and `q` stops. `MPFREE_HELLO_STEPS` picks the steps by name, comma-separated (default `inventory,screen,touch,pads,click`); they always run in the order of the table;
+3. copies the program to `/run/mpfree-app` (RAM) and checks its hash there. If the drums or play step is chosen, it copies the drum kits there too and checks their hash. When the only steps are `app` and `line`, nothing is copied;
+4. runs one step at a time. Each step starts only when you press Enter. `s` skips a step and `q` stops. `MPFREE_APP_STEPS` picks the steps by name, comma-separated (default `inventory,screen,touch,pads,click`); they always run in the order of the table;
 5. after the lights, drums, setup and play steps, checks read-only that the controller still has its normal USB id, `09e8:0046`, and stops if it does not.
 
 The first step that draws on the screen stops our own log display (`mpfree-test-screen`) or pad player (`mpfree-test-app`, on a stick built with `--app`), whichever runs, since both would draw on `/dev/fb0`; it is started again at the end.
@@ -21,7 +23,7 @@ The first step that draws on the screen stops our own log display (`mpfree-test-
 | app | nothing new runs: it reads the log of the pad player that started at power-on, phase by phase ([round 5](#round-5-straight-into-the-pad-player)). Without other steps nothing is copied | nothing |
 | line | **state-changing, never in the default steps.** Nothing new runs either: after a read-only look at the ACVA card's capture device in `/proc/asound`, and only once you type `LINE`, you turn Line input on in the pad player, which opens the capture device; phases for its meter, a loop and turning it off, each followed by the same read-only look ([round 6](#the-line-input-step-state-changing)) | the pad player opens the ACVA capture device (RAM state only) |
 | inventory | lists sound cards, PCM and MIDI devices, input devices, the framebuffer, panel rotation, real-time limits | nothing but its report |
-| screen | stops our own log display (`mpfree-test-screen`, started again at the end), draws the Hello MPC card | `/dev/fb0` and its sysfs `pan` file |
+| screen | stops our own log display (`mpfree-test-screen`, started again at the end), draws the mpfree card | `/dev/fb0` and its sysfs `pan` file |
 | touch | shows your touches for 10 s; reads the ILI2117 device without grabbing it | the screen |
 | pads | listens to all three of the controller's MIDI inputs (Public, Private, MIDI Port) for 15 s and shows every message in hex, with its meaning (pad, button, Q-Link, wheel) where known; then lists the kernel's MIDI byte counters | the screen |
 | pads, second try | only if no pad hit arrived: listens again while sending Akai's keep-alive message every 5 s on the Public port (the only message this step sends) | the controller's Public MIDI port |
@@ -31,7 +33,7 @@ The first step that draws on the screen stops our own log display (`mpfree-test-
 | play | the pad player, after you type `SEND`: the same session and setup as the setup step (with the first kit's pad colours), then up to 120 s with every kit. The pads or the screen's pads play; the wheel or a tap on the kit list picks the kit (its pad colours are sent); Q-Link 1 or the slider sets the level, from −40 dB to −12 dB, starting at −18 dB; STOP ends it. It pings the session every 4 s and times each hit. If the session is not accepted within 20 s, it plays without Akai's setup, sending only pad colours | the screen, the controller's Public and Private ports, the ACVA playback device |
 | click | 120 BPM click for 10 s on the ACVA output, about 18 dB below full scale, at the stock app's stream settings (stereo S32_LE, 44.1 kHz, 128-frame periods, 3 periods); counts underruns and late periods | the ACVA playback device |
 
-The program also appends every line to `/run/mpfree-hello/hello.txt`, which the tool copies into its report at the end. Nothing is written to the stick, and the test build cannot see the eMMC. Everything is gone after a power-cycle.
+The program also appends every line to `/run/mpfree-app/report.txt`, which the tool copies into its report at the end. Nothing is written to the stick, and the test build cannot see the eMMC. Everything is gone after a power-cycle.
 
 Every step draws on the screen with MPFree's GUI toolkit ([`mpfree-ui`](../../rust/mpfree-ui), see [UI architecture](../project/ui-architecture.md)): a header and the step's log for most steps, and the pad player's Play and Debug pages for `play`. Every line still goes to the workstation's terminal as well.
 
@@ -41,7 +43,7 @@ The lights, setup and play steps send the controller only messages Akai's app se
 
 ## The program
 
-[`rust/mpfree-hello`](../../rust/mpfree-hello) talks to ALSA directly with ioctls, as [ADR-0002](../decisions/adr-0002-direct-alsa-audio.md) chose, without alsa-lib. The parameter blocks are built as bytes in the 32-bit ARM layout. [`abi-check.c`](../../rust/mpfree-hello/abi-check.c) checks every size, offset, ioctl number and constant it uses against the kernel's own `<sound/asound.h>` and `<linux/input.h>`, compiled for ARM. CI compiles it on every change; a mismatch fails the build.
+[`rust/mpfree-app`](../../rust/mpfree-app) talks to ALSA directly with ioctls, as [ADR-0002](../decisions/adr-0002-direct-alsa-audio.md) chose, without alsa-lib. The parameter blocks are built as bytes in the 32-bit ARM layout. [`abi-check.c`](../../rust/mpfree-app/abi-check.c) checks every size, offset, ioctl number and constant it uses against the kernel's own `<sound/asound.h>` and `<linux/input.h>`, compiled for ARM. CI compiles it on every change; a mismatch fails the build.
 
 A few things it relies on, checked against the kernel source (6.18):
 
@@ -60,27 +62,27 @@ Build the program on the workstation (the same flags as the screen log program):
 CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER=arm-linux-gnueabihf-gcc \
 RUSTFLAGS="-C target-feature=+crt-static -C relocation-model=static" \
 cargo build --manifest-path rust/Cargo.toml --release --locked \
-  --target armv7-unknown-linux-gnueabihf -p mpfree-hello
+  --target armv7-unknown-linux-gnueabihf -p mpfree-app
 ```
 
 Then, with the test build running (`--kexec-boot`, see [the kexec test boot](../hardware/kexec-test-boot.md)):
 
 ```bash
-MPFREE_ACCEPT_HELLO=YES bash tools/mpc-one/collect-over-ssh.sh --hello
+MPFREE_ACCEPT_APP=YES bash tools/mpc-one/collect-over-ssh.sh --app
 ```
 
 For the drums and play steps, first make the kits on the workstation (read-only on the backup, [below](#the-factory-drum-kits)), and choose the steps:
 
 ```bash
 python3 tools/mpc-one/offline-factory-kit.py
-MPFREE_ACCEPT_HELLO=YES MPFREE_HELLO_STEPS=screen,play bash tools/mpc-one/collect-over-ssh.sh --hello
+MPFREE_ACCEPT_APP=YES MPFREE_APP_STEPS=screen,play bash tools/mpc-one/collect-over-ssh.sh --app
 ```
 
-The host tool takes the newest `~/mpfree-work/factory-kit-*/kits.bin`, or the file named by `MPFREE_HELLO_KIT`. Without one it leaves the drums and play steps out. A round 3 `kit.bin` is not used.
+The host tool takes the newest `~/mpfree-work/factory-kit-*/kits.bin`, or the file named by `MPFREE_APP_KIT`. Without one it leaves the drums and play steps out. A round 3 `kit.bin` is not used.
 
 Wrap every command in `python3 tools/mpc-one/results.py run NAME -- ...` so the output lands in the round's results folder. Afterwards: switch the MPC off, take out the stick, wait 10 s, switch it on, and run the boot-map survey to confirm nothing on the eMMC changed.
 
-`mpfree-hello --preview DIR` draws the screens with sample data into new PNG files in `DIR` (`console`, `loading`, `loading-failed`, `play`, `debug`, `syslog`, `prefs`, `options` and `guide`, each `.png`) on the workstation, with no devices; CI runs it for ARM under qemu. `--font`, `--bold-font` and `--mono-font FILE` replace the built-in fonts with any TTF or OTF file, on the workstation or the MPC.
+`mpfree --preview DIR` draws the screens with sample data into new PNG files in `DIR` (`console`, `loading`, `loading-failed`, `play`, `debug`, `syslog`, `prefs`, `options` and `guide`, each `.png`) on the workstation, with no devices; CI runs it for ARM under qemu. `--font`, `--bold-font` and `--mono-font FILE` replace the built-in fonts with any TTF or OTF file, on the workstation or the MPC.
 
 ## Round 1 results (2026-11-10)
 
@@ -144,9 +146,9 @@ From the owner's results zip (clone at `2db957c`):
 
 The owner chose the pad player (2026-11-10): one program that holds Akai's session, lights the pads, plays factory kits and lets you pick them with the wheel. The owner also asked for a GUI for everything from now on, modular enough that the layout can change completely as features arrive, with a debug mode for MIDI and system events, while the terminal keeps the full log. The new [`mpfree-ui`](../../rust/mpfree-ui) crate and the [UI architecture](../project/ui-architecture.md) are the start of that.
 
-What round 4 runs (`MPFREE_HELLO_STEPS=screen,play`):
+What round 4 runs (`MPFREE_APP_STEPS=screen,play`):
 
-1. **screen**: the Hello MPC card, now drawn by the GUI toolkit. It shows whether the new drawing code lands the right way up on the panel.
+1. **screen**: the mpfree card, now drawn by the GUI toolkit. It shows whether the new drawing code lands the right way up on the panel.
 2. **play** (typed `SEND`): the session and Akai's setup, as in round 3, then up to 120 s of the pad player:
    - **Play page:** the 16 pads laid out as on the MPC, lit in the kit's colour with each sound's name, brighter while held; the kit list; the level slider; timing (pad-to-sound delay, underruns, voices, peak level).
    - **Debug page:** every MIDI message in and out with its meaning, the program's events, and the same timing.
@@ -176,7 +178,7 @@ The owner asked (2026-11-10) to go from the loading screen to the app without ru
 
 **At power-on.** A stick built with `offline-kexec-stick.py --app` ([the kexec test boot](../hardware/kexec-test-boot.md#tools-in-order)) starts the pad player instead of the log display: the galaxy for 6 s, then a loading page over it with a progress bar and what it is doing (loading the drum kits, finding the pads and buttons, finding the sound card, connecting, lighting the pads, starting the sound), then the pad player. If something fails, the loading page says what, and a tap shows the console. The drum kits are on the stick's partition 3, mounted read-only. If the program stops with an error, the log display starts instead.
 
-**Controls** (logic in [`app.rs`](../../rust/mpfree-hello/src/app.rs), with tests):
+**Controls** (logic in [`app.rs`](../../rust/mpfree-app/src/app.rs), with tests):
 
 | Control | What it does |
 |---|---|
@@ -213,7 +215,7 @@ Clips play the current kit's pads. A click plays while counting in and recording
 
 Every 30 s the app writes a status line to the system log: hits, underruns, pad-to-sound timing, and the note engine's dropped events and overflow. A `status: mod: ...` line gives the mod engine's targets (mixer controls a clip has locked), the values it sent, any it had no place for and any events dropped.
 
-**The check** (`MPFREE_HELLO_STEPS=app`, **read-only**): it copies, starts and stops nothing. It shows what the app wrote since power-on, then seven phases, each started by Enter and ended by Enter when you are done: the button guide; velocity with Full and Half Level; Note Repeat; Latch (two pads latched, let go, a new pad takes over, NOTE REPEAT stops it); the menus; the console, Debug page and touch; STOP. After each it shows the app's log lines from that time (events, pads with their velocities, buttons, wheel) and asks what you saw. Every line goes in the report.
+**The check** (`MPFREE_APP_STEPS=app`, **read-only**): it copies, starts and stops nothing. It shows what the app wrote since power-on, then seven phases, each started by Enter and ended by Enter when you are done: the button guide; velocity with Full and Half Level; Note Repeat; Latch (two pads latched, let go, a new pad takes over, NOTE REPEAT stops it); the menus; the console, Debug page and touch; STOP. After each it shows the app's log lines from that time (events, pads with their velocities, buttons, wheel) and asks what you saw. Every line goes in the report.
 
 ### Round 5 results (2026-11-11)
 
@@ -240,18 +242,18 @@ The owner asked (2026-11-11) for the next round to bring together what the other
 - **The time engine** (the table under Round 5): the transport bar, the **Clips** tab, recording, overdub and undo. Clips recorded while the synth has the pads play the synth back.
 - **Debug mode** (Prefs, off by default) adds the **Debug** tab, with a strip for its three pages; SHIFT + wheel steps through them, and − / + on the first two:
   - **MIDI**: the MIDI log, events and timing (the round 5 Debug page).
-  - **Performance**: CPU per thread and for the whole program, memory, load, temperature and clock (read-only from `/proc` and `/sys` by the screen thread every 2 s; [`perf.rs`](../../rust/mpfree-hello/src/perf.rs)), and the audio loop's render time for the sampler and the synth against the 2.9 ms period, the worst period, steals, dropped events and grains, with the last minute drawn. While debug mode is on, a `perf:` line goes to the system log every 30 s.
-  - **Map controls** ([`app/mapper.rs`](../../rust/mpfree-hello/src/app/mapper.rs)): every button of the MPC One in a list, found, skipped or still to find, with a count of each. Tap one (or pick it with the wheel and press +) and press it on the MPC: `map: REC = button 73` goes to the log. While MPFree listens, buttons do nothing else; STOP stops listening and − skips a control that isn't there. A channel 1 CC that isn't the wheel or a Q-Link is taken too, for knobs. Other 1-10 hold buttons the list doesn't name. Leaving the page logs a `map summary:` line. Prefs > Map controls opens it directly, so it works without touch. The names in the list come from the MPC One's panel as MPFree expects it, so they are assumptions until each is found.
+  - **Performance**: CPU per thread and for the whole program, memory, load, temperature and clock (read-only from `/proc` and `/sys` by the screen thread every 2 s; [`perf.rs`](../../rust/mpfree-app/src/perf.rs)), and the audio loop's render time for the sampler and the synth against the 2.9 ms period, the worst period, steals, dropped events and grains, with the last minute drawn. While debug mode is on, a `perf:` line goes to the system log every 30 s.
+  - **Map controls** ([`app/mapper.rs`](../../rust/mpfree-app/src/app/mapper.rs)): every button of the MPC One in a list, found, skipped or still to find, with a count of each. Tap one (or pick it with the wheel and press +) and press it on the MPC: `map: REC = button 73` goes to the log. While MPFree listens, buttons do nothing else; STOP stops listening and − skips a control that isn't there. A channel 1 CC that isn't the wheel or a Q-Link is taken too, for knobs. Other 1-10 hold buttons the list doesn't name. Leaving the page logs a `map summary:` line. Prefs > Map controls opens it directly, so it works without touch. The names in the list come from the MPC One's panel as MPFree expects it, so they are assumptions until each is found.
 - **REC, OVERDUB, UNDO, PLAY START and the PAD BANK buttons** work as soon as the mapper finds them. The button guide no longer runs at power-on (Prefs > Find the buttons again still has it).
 - **The audio looper** ([`mpfree-looper`](../project/looper.md)) has its own **Looper** tab, after Synth: one stereo loop on the transport, with the loop's waveform and bar lines, Record, Overdub, Undo, Redo, Clear, Mute and Monitor, a level meter and the looper's state. By default it records what the pads and the synth play (after the master level, before the click), which opens nothing on the MPC. REC, OVERDUB and UNDO (SHIFT + UNDO: redo) work the looper while its tab shows. MENU there has its options: Record from (Pads and synth, or Line input), Line input, Monitor, the first pass's length (1, 2, 4 or 8 bars, or free), the latency to make up for and the loop's level. A `looper:` line goes to the log for each press and change, and every 30 s a `status: looper: ...` line with its render time.
 - **The line input** (Prefs, before System info and the Touch screen section, and the Looper options): **Off at every start, and never saved as On.** Turning it on opens the ACVA card's capture device (stereo S32_LE, 44.1 kHz, 128-frame periods, a 256-frame buffer, as Akai's app used it), read without waiting so the outputs never wait on it, and the looper then records it. If the card refuses, the log says why and it stays Off. Which jacks it reads is not checked yet (line in L and R is the likely reading). It is the `line` step below, after its own go.
 - **Pad banks A-H**: banks A-H are kits 1-8 (from kit 9 they start again at A). PAD BANK A/E to D/H pick A-D; SHIFT, or pressing the button of the bank playing again, picks E-H (an assumption from other MPCs). The kit chip shows the bank, the bank playing is lit (when Akai's app was seen lighting that button), and `bank: B (kit 2: …)` goes to the log. Clips play whichever bank is playing; a bank of its own per clip note is next, with 128-pad programs.
 
-**The check** (`MPFREE_HELLO_STEPS=app`, still **read-only**) has ten phases: debug mode and Map controls; Performance; kits, pad banks, Full and Half Level; Grains; the synth; Note Repeat and the arp; clips (record, overdub and undo); the audio looper on the pads; the Touch lab; menus, console and STOP. At the end it reads the whole session from power-on, so a skipped phase or free play still counts, and it shows the touch interrupt count, the latest three status lines and the latest `perf:` line.
+**The check** (`MPFREE_APP_STEPS=app`, still **read-only**) has ten phases: debug mode and Map controls; Performance; kits, pad banks, Full and Half Level; Grains; the synth; Note Repeat and the arp; clips (record, overdub and undo); the audio looper on the pads; the Touch lab; menus, console and STOP. At the end it reads the whole session from power-on, so a skipped phase or free play still counts, and it shows the touch interrupt count, the latest three status lines and the latest `perf:` line.
 
 #### The line input step (state-changing)
 
-Last, and only with the owner's go: `MPFREE_HELLO_STEPS=line`. It is the first time MPFree opens the MPC's capture device. The tool itself still only reads: the pad player started at power-on opens the device when you turn Line input on.
+Last, and only with the owner's go: `MPFREE_APP_STEPS=line`. It is the first time MPFree opens the MPC's capture device. The tool itself still only reads: the pad player started at power-on opens the device when you turn Line input on.
 
 1. **Read-only first.** It shows whether the pad player runs and the ACVA card's capture device: the `/dev/snd` node and `/proc/asound/cardN/pcm0c/info`, `sub0/status` and `sub0/hw_params` (`closed` while nothing records), next to the playback side's settings. Without the pad player it stops there.
 2. **The change, the undo and what can go wrong,** then it waits until you type `LINE` (`s` skips the step, `q` stops):
@@ -295,6 +297,6 @@ With the developer tools on, the Dev strip has a **Touch** page between Map cont
 3. It reads the drum programs (`.xpm` files whose XML says `type="Drum"`). Kit 1 is the first, by path, whose pads 1 to 16 name at least 8 samples it can find. It tries two readings of which sample a pad plays (by pad number, and by the pad's note) and reports which it used; the `.xpm` layout is inferred from the files, not documented. `--program TEXT` picks the first program whose path contains `TEXT`. If no program fits, it takes the folder with the most drum-named WAV files.
 4. Kits 2 to 8 (`--kits N` asks for 1 to 16) are the next programs by path with at least 12 samples found, one per name family (the part of the file name before `-Kit`, or its first word), so the list is not eight versions of one kit. A kit that would take the file over 48 MiB is left out.
 5. It copies each kit's WAV files out with `debugfs` into a temporary folder, converts them to 44.1 kHz stereo 16-bit (at most 10 s each), and deletes the copies.
-6. It writes a new folder `~/mpfree-work/factory-kit-<UTC>-XXXXXXXX/` holding `kits.bin` (every kit with its name; the format is in [`kit.rs`](../../rust/mpfree-hello/src/kit.rs)) and `report.txt` (file and sample names, formats and kit 1's program XML; no audio).
+6. It writes a new folder `~/mpfree-work/factory-kit-<UTC>-XXXXXXXX/` holding `kits.bin` (every kit with its name; the format is in [`kit.rs`](../../rust/mpfree-app/src/kit.rs)) and `report.txt` (file and sample names, formats and kit 1's program XML; no audio).
 
 The kits are Akai's copyrighted content, under the [factory content policy](../project/factory-content-policy.md): it stays in `~/mpfree-work` and in the test build's RAM. They are never committed or shared, and `results.py` copies only `report.txt` into a round's zip.

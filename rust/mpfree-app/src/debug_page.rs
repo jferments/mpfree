@@ -604,14 +604,14 @@ mod tests {
         };
         let (list, side) = procs_rows(&procs::ProcView {
             over_s: 1.0,
-            rows: vec![row(9, "mpfree-hello", 85.0), row(1, "init", 0.0)],
+            rows: vec![row(9, "mpfree", 85.0), row(1, "init", 0.0)],
             total_cpu_pct: Some(25.0),
             core_cpu_pct: vec![90.0, 10.0],
         });
         assert_eq!(
             list[0],
             (
-                "mpfree-hello (9) · FIFO 70 · 3 thr".to_string(),
+                "mpfree (9) · FIFO 70 · 3 thr".to_string(),
                 "85.0 % · 2 MB".to_string(),
                 Tone::Bad
             )

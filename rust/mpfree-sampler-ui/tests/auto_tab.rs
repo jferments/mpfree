@@ -1,7 +1,7 @@
 //! The Rec tab's Auto-sample mode: what the picture and the list show of
 //! the plan, where the instrument would go, and what Start, Cancel and Rec
 //! ask the app for. The app's run of it (a copy of the Synth tab's patch on
-//! a worker thread) is tested in mpfree-hello.
+//! a worker thread) is tested in mpfree-app.
 
 use mpfree_sampler::model::Keys;
 use mpfree_sampler_ui::auto_tab::{self, AutoAction, Onto, Row};
