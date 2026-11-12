@@ -2805,6 +2805,19 @@ fn player_session(
                     }
                 }
                 gui::FromUi::SampleHit { .. } => {}
+                gui::FromUi::SampleKey {
+                    kit,
+                    note,
+                    velocity,
+                    down,
+                } if kit == player.kit() => {
+                    if down {
+                        player.key_at(note, velocity, 0);
+                    } else {
+                        player.key_off_at(note, 0);
+                    }
+                }
+                gui::FromUi::SampleKey { .. } => {}
                 gui::FromUi::SampleView(mut swap) => {
                     if player.swap_view(&mut swap) {
                         views_swapped += 1;
