@@ -59,7 +59,9 @@ corners       = chamfer
 - `Theme::check()` warns when text is hard to read (WCAG contrast under 4.5:1 for text, 3:1 for dim text and accents). The built-in themes pass; a test keeps it that way.
 - Every built-in theme is written out in full in [`rust/mpfree-ui/themes/`](../../rust/mpfree-ui/themes) as a starting point, and `cargo run -p mpfree-ui --example theme_file -- NAME` prints one. A test keeps those files in step with the code.
 
-The pad player's Prefs has one **Appearance** row whose value is the theme in use. Its arrows (or - / +, or SHIFT + wheel) step through Default, Console, Synthwave and Spaceship. Each step switches the screen at once (`Ui::set_theme`) and keeps it in the store's "app" settings as `theme`, so it comes back at the next start. `mpfree-hello --theme NAME|FILE` still picks the theme for one run (for `--preview` and on the device) and wins over the saved one. A themes folder on the stick comes next.
+The pad player's Prefs has one **Appearance** row whose value is the theme in use. Its arrows (or - / +, or SHIFT + wheel) step through Default, Console, Synthwave and Spaceship. Each step switches the screen at once (`Ui::set_theme`) and keeps it in the store's "app" settings as `theme`, so it comes back at the next start. `mpfree-hello --theme NAME|FILE` still picks the theme for one run (for `--preview` and on the device) and wins over the saved one.
+
+**Themes folder.** Theme files put in `files/themes/` on the data partition (`/run/mpfree-data/files/themes/` on the stick), named `NAME.theme` (lower case, digits, `.`, `_`, `-`), join the Appearance row after Spaceship, in name order, at most 32. The row shows the theme's `name` (or the file name when it has none or reuses a built-in theme's name). The app only reads the folder: a file that doesn't parse is left out with a log line (`themes: broken.theme left out: theme line 1: ...`), and `themes: found ...` lists the rest. Picking one keeps its file name as `theme`; if the file is gone at the next start, the default theme shows and the log says the saved theme was skipped.
 
 ## The built-in themes
 
@@ -86,7 +88,7 @@ The RK3288 is several times slower per core; the estimate is 10 to 50 ms a frame
 
 The galaxy splash stays in `mpfree-splash`. The Spaceship galaxy is a different, cheaper particle galaxy under a HUD, so the two do not duplicate each other; if the splash thread wants one galaxy engine with a palette, Spaceship can switch to it.
 
-`mpfree-startup --framebuffer [--theme NAME] [--rotation 270] [--seconds N]` plays a scene on `/dev/fb0` in real time and exits with its last frame showing, for the app's loading page (`app --keep-screen`). It writes only to the framebuffer device and its sysfs `pan` file, as `mpfree-splash` does, and never to storage. Without `--theme` it plays the default theme's startup screen (synthwave).
+`mpfree-startup --framebuffer [--theme NAME] [--rotation 270] [--seconds N]` plays a scene on `/dev/fb0` in real time and exits with its last frame showing, for the app's loading page (`app --keep-screen`). It writes only to the framebuffer device and its sysfs `pan` file, as `mpfree-splash` does, and never to storage. Without `--theme` it plays the default theme's startup screen (synthwave), or, with `--data DIR`, the startup screen of the theme picked in Prefs > Appearance (for a themes-folder file, its `startup` key or its base's). `--data` reads only `settings/app.conf` and that theme file, follows no symlinks and never writes; anything missing or odd shows synthwave.
 
 ## Layouts: rearranging pages
 
@@ -130,7 +132,6 @@ What each crate should change (small, mechanical):
 
 ## Later
 
-- Themes folder on the stick (theme files added to the Appearance row).
-- Startup screens in the boot path: `--framebuffer` is ready; the test stick runs `mpfree-splash` today, and the Hello thread switches it to `mpfree-startup` for round 8.
+- Startup screens in the boot path: `--framebuffer` and `--data` are ready; the test stick runs `mpfree-splash` before the data partition is mounted, so the app thread decides when to switch it to `mpfree-startup --data /run/mpfree-data`.
 - With the GLES canvas, the same effects become shaders (bloom, scanlines, real blur) with no theme or widget changes.
 - Optional per-theme sounds (UI clicks) and pad-light palettes.
