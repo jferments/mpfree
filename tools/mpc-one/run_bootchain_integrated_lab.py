@@ -1138,6 +1138,56 @@ class Lab:
             self.stages["recovery-adc-cross-stage-evidence"] = {
                 "success": False, "error": str(exc)}
             self.notes.append("Recovery ADC static proof: " + str(exc))
+        # Separate broad evidence for SRAM SPL branch pointers and
+        # updater GOT/PLT trampolines. A mapped code pointer is NOT
+        # proof of ROM acceptance, runtime binding or safe updates.
+        try:
+            pointers = {}
+            for role in ("spl", "az01-update"):
+                source = json.loads((
+                    self.out / "static" / "v11" /
+                    ("v11-ghidra-" + role + ".json")).read_text())
+                data = source.get("direct_boot_probe", {})
+                if data.get("role") != role:
+                    raise ValueError("Missing verified pointer probe: " + role)
+                words = data.get("original_image_pointers", {})
+                if not words:
+                    raise ValueError("Missing original stage pointer words")
+                pointers[role] = {
+                    "original_image_pointers": words,
+                    "pointers_resolved_from_image": sum(
+                        bool(x.get("original_word")) for x in words.values()),
+                    "runtime_target_validation": False,
+                    "physical_stage_executed": False,
+                }
+            all_pointers = {
+                "schema":"mpfree-spl-updater-original-pointer-evidence-v1",
+                "source_only":True, "vendor_binary_executed":False,
+                "maskrom_or_updater_acceptance_proven":False,
+                "roles":pointers,
+            }
+            (self.out / "spl-updater-pointer-evidence.json").write_text(
+                json.dumps(all_pointers, indent=2) + "\n")
+            record["spl_updater_pointer_evidence"] = {
+                "report":"spl-updater-pointer-evidence.json",
+                "spl_entries":len(pointers["spl"]["original_image_pointers"]),
+                "updater_entries":len(pointers["az01-update"][
+                    "original_image_pointers"]),
+                "no_vendor_execution":True,
+            }
+            self.stages["spl-updater-pointer-evidence"] = {
+                "success":(len(pointers["spl"]["original_image_pointers"])>=5
+                           and len(pointers["az01-update"][
+                               "original_image_pointers"])>=3),
+                "original_words_reported":sum(len(x["original_image_pointers"])
+                                               for x in pointers.values()),
+                "original_code_executed":False,
+            }
+        except Exception as exc:
+            record["spl_updater_pointer_error"] = str(exc)
+            self.stages["spl-updater-pointer-evidence"] = {
+                "success":False,"error":str(exc)}
+            self.notes.append("SPL/update pointer audit: " + str(exc))
         (self.out / "cross-evidence.json").write_text(json.dumps(record, indent=2) + "\n")
         summary = [
             "# MPFree integrated bootchain run",
@@ -1246,6 +1296,14 @@ class Lab:
                            str(adc["same_flag_exported_to_dorecovery"]))
             summary.append("- Saved dorecovery env selects stock Fastboot.")
             summary.append("- No physical button / immutable MaskROM recovery test.")
+        summary += ["", "## SPL indirect handoff and 3.10 updater trampoline pointers"]
+        cross_stage = record.get("spl_updater_pointer_evidence")
+        if cross_stage:
+            summary.append("- SPL original-image pointer slots: " +
+                           str(cross_stage["spl_entries"]))
+            summary.append("- Updater original-image callback/trampoline slots: " +
+                           str(cross_stage["updater_entries"]))
+            summary.append("- Original-word evidence only; ROM load and updater execution not tested.")
         summary += ["", "## Guest/static image consistency"]
         if record["match_tests"]:
             for entry in record["match_tests"]:
