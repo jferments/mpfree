@@ -29,12 +29,12 @@ pub const SCREEN: (i32, i32) = (1280, 800);
 /// The app's header tabs, the one list mpfree-ui shares (the pad player's
 /// layout spec, approved by Jay on 2026-11-11).
 pub use mpfree_ui::widgets::APP_TABS;
-pub const EDITOR_TAB: usize = 4;
+pub const EDITOR_TAB: usize = 5;
 /// The page names the samples add the Wave, Chop and Play tabs under.
 pub const PAGE: &str = "Sample · Wave";
 pub const CHOP_PAGE: &str = "Sample · Chop";
 pub const PLAY_PAGE: &str = "Sample · Play";
-pub const PADS_PAGE: &str = "Sample · Pads";
+pub const PADS_PAGE: &str = "Pads · Pad";
 pub const GRAIN_PAGE: &str = "Sample · Grain";
 pub const REC_PAGE: &str = "Sample · Rec";
 pub const WARP_PAGE: &str = "Sample · Warp";
@@ -867,13 +867,17 @@ pub fn kit_project() -> (Project, Arc<SourceView>) {
     (p, view)
 }
 
-/// The Pads tab on the kit, pad `pad` picked.
+/// The Pads tab's Pad view on the kit, pad `pad` picked.
 pub fn pads_sample(fonts: Fonts, pad: usize) -> Result<PadsSample, String> {
     let (project, _) = kit_project();
     let state = PadsState::from_project(&project, pad);
     let mut ui = app_ui_with(fonts, &project, pads_tab::HINT);
+    if let Some(h) = ui.get_mut::<Header>("header") {
+        h.active = Header::app("Pads").active;
+    }
     let mut tab = PadsTab::add(&mut ui, PADS_PAGE, &state)?;
     tab.kit = "Kit 1 · Breaks".into();
+    tab.view = pads_tab::PAD_VIEW;
     tab.update(&mut ui, &state);
     ui.show(PADS_PAGE)?;
     Ok(PadsSample {

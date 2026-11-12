@@ -59,6 +59,10 @@ pub const DOUBLE_PRESS_SECONDS: f64 = 0.4;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum View {
     Play,
+    /// The pads (the owner's pick, 12 Nov 2026 15:46Z): the pad bank beside
+    /// the browser (Browse) or the pad's settings (Pad); the sampler's
+    /// pad screens (`mpfree_sampler_ui::pads_tab`) and the browser.
+    Pads,
     /// Arrange: the time engine's launch grid, record settings and takes
     /// (the Clips tab until Jay renamed it, 12:55Z).
     Arrange,
@@ -117,6 +121,7 @@ pub enum View {
 pub fn tabs(dev: bool) -> Vec<View> {
     let mut t = vec![
         View::Play,
+        View::Pads,
         View::Arrange,
         View::Synth,
         View::Looper,
@@ -176,6 +181,12 @@ impl View {
         }
     }
 
+    /// The pages the sampler's screens draw: the Pads tab and the Sample
+    /// tab share the kit, the pad picked, edits and undo.
+    pub fn sampler(self) -> bool {
+        matches!(self, View::Sample | View::Pads)
+    }
+
     /// The tab's place in the header, which depends on debug mode.
     pub fn tab_index(self, debug: bool) -> Option<usize> {
         let v = self.tab_view()?;
@@ -185,6 +196,7 @@ impl View {
     pub fn name(self) -> &'static str {
         match self {
             View::Play => "Play",
+            View::Pads => "Pads",
             View::Arrange => "Arrange",
             View::Synth => "Synth",
             View::Looper => "Looper",
@@ -812,13 +824,33 @@ pub enum Effect {
     /// SAMPLE EDIT: the Sample tab opens on this editor.
     SampleEditor(crate::sample_page::Editor),
     /// PROG EDIT: the sound the pads play: the Synth tab while the synth
-    /// has them, otherwise Sample > Pads (the audio loop knows which).
+    /// has them, otherwise the Pads tab's Pad view (the audio loop knows
+    /// which).
     ProgEdit,
+    /// A control for the Pads tab's browser while it shows (Browse).
+    Browse(BrowseKey),
     /// SHIFT + PLAY START: the metronome on or off.
     Metronome,
     /// FILL on or off from the coming period: notes with the FILL and
     /// !FILL trig conditions follow it.
     Fill(bool),
+}
+
+/// What a control does to the Pads tab's browser (Browse view).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BrowseKey {
+    /// The wheel: the selection.
+    Wheel(i32),
+    /// SHIFT + wheel: the places.
+    Places(i32),
+    /// The wheel's push: open a folder, or Load.
+    Push,
+    /// -: up a folder.
+    Back,
+    /// +: into the folder.
+    Enter,
+    /// PLAY: hear the sound picked.
+    Play,
 }
 
 pub struct App {
@@ -839,6 +871,9 @@ pub struct App {
     timed: bool,
     shift: bool,
     repeat_held: bool,
+    /// The Pads tab shows the browser (its Browse view), as the screen
+    /// last said: the wheel, its push, - / + and PLAY go to the browser.
+    pads_browse: bool,
     /// ERASE is down: SHIFT and ERASE held, then TAP TEMPO, is the
     /// Console's chord.
     erase_held: bool,
@@ -954,10 +989,11 @@ pub struct App {
     /// Where the sound runs in this start (cores.rs); Prefs' "Sound cores"
     /// says "(next start)" while the setting differs.
     sound_cores_now: SoundCores,
-    /// Prefs or a button changed since the last look (`saved.rs`), and
-    /// the text last handed to the store for "app" and "map".
+    /// Prefs, a button or a Synth tab option changed since the last look
+    /// (`saved.rs`), and the text last handed to the store for "app",
+    /// "map" and "synth".
     save_dirty: bool,
-    saved: [String; 2],
+    saved: [String; 3],
 }
 
 /// Prefs' main rows. The touch screen settings sit in their own section,
@@ -1000,6 +1036,7 @@ impl App {
             timed,
             shift: false,
             repeat_held: false,
+            pads_browse: true,
             erase_held: false,
             repeat_pressed_at: None,
             latched: false,
@@ -1061,6 +1098,9 @@ impl App {
             app.track_ui[t].pattern = pattern;
         }
         app.update_engine();
+        // The Synth tab's options start at their defaults: nothing to save
+        // until one changes.
+        app.saved[saved::SYNTH_SLOT] = app.synth_settings().to_text();
         app
     }
 
@@ -1375,6 +1415,10 @@ impl App {
                 // Stopped already: the transport goes back to bar 1.
                 fx.push(Effect::Time(TimeAction::Transport(Command::Stop)));
             }
+        } else if note == button::PLAY && self.browsing() {
+            // On the Pads tab's browser PLAY hears the sound picked (as in
+            // the browser); PLAY START still starts the transport.
+            fx.push(Effect::Browse(BrowseKey::Play));
         } else if note == button::PLAY && self.rolling {
             // FILL while held; pressed twice, latched; pressed again, off.
             let double = self
@@ -1419,7 +1463,7 @@ impl App {
             fx.push(Effect::Time(TimeAction::Transport(Command::Record)));
         } else if Some(note) == self.map.overdub {
             fx.push(Effect::Time(TimeAction::Transport(Command::ToggleOverdub)));
-        } else if Some(note) == self.map.undo && self.view == View::Sample {
+        } else if Some(note) == self.map.undo && self.view.sampler() {
             fx.push(Effect::SampleUndo { redo: shift });
         } else if Some(note) == self.map.undo {
             fx.push(Effect::Time(if shift {
@@ -1467,6 +1511,8 @@ impl App {
             fx.extend(self.tap(t));
         } else if let Some(k) = self.map.bank_of(note) {
             fx.push(Effect::Bank { button: k, shift });
+        } else if Some(note) == self.map.data_push && self.browsing() {
+            fx.push(Effect::Browse(BrowseKey::Push));
         } else if Some(note) == self.map.data_push {
             fx.extend(self.wheel_push());
         } else if Some(note) == self.map.minus || Some(note) == self.map.plus {
@@ -1498,7 +1544,13 @@ impl App {
                 fx.extend(self.arp_mode_step(d));
             } else if self.view == View::Synth {
                 fx.push(Effect::SynthPage(d));
-            } else if self.view == View::Sample {
+            } else if self.browsing() {
+                fx.push(Effect::Browse(if d > 0 {
+                    BrowseKey::Enter
+                } else {
+                    BrowseKey::Back
+                }));
+            } else if self.view.sampler() {
                 fx.push(Effect::SamplePad(d));
             } else {
                 fx.push(Effect::Kit(d));
@@ -1743,8 +1795,12 @@ impl App {
             }],
             View::Synth if self.shift => vec![Effect::SynthPage(delta.signum())],
             View::Synth => vec![Effect::SynthWheel(delta)],
-            View::Sample if self.shift => vec![Effect::SamplePad(delta.signum())],
-            View::Sample => vec![Effect::SampleWheel(delta)],
+            View::Pads if self.pads_browse && self.shift => {
+                vec![Effect::Browse(BrowseKey::Places(delta.signum()))]
+            }
+            View::Pads if self.pads_browse => vec![Effect::Browse(BrowseKey::Wheel(delta))],
+            View::Sample | View::Pads if self.shift => vec![Effect::SamplePad(delta.signum())],
+            View::Sample | View::Pads => vec![Effect::SampleWheel(delta)],
             View::Play if self.shift => vec![Effect::Octave(delta.signum())],
             _ => vec![Effect::Kit(delta)],
         }
@@ -1764,6 +1820,7 @@ impl App {
             && matches!(
                 self.view,
                 View::Play
+                    | View::Pads
                     | View::Arrange
                     | View::Synth
                     | View::Looper
@@ -1919,6 +1976,17 @@ impl App {
     }
 
     /// Open a tab's page.
+    /// The Pads tab shows its browser (Browse) or the pad's settings
+    /// (Pad), as the screen says when its switch is tapped.
+    pub fn set_pads_browse(&mut self, on: bool) {
+        self.pads_browse = on;
+    }
+
+    /// The wheel, its push, - / + and PLAY go to the Pads tab's browser.
+    fn browsing(&self) -> bool {
+        self.view == View::Pads && self.pads_browse
+    }
+
     pub fn open_tab(&mut self, v: View) -> Vec<Effect> {
         if self.view == View::Guide {
             return Vec::new();
@@ -3576,6 +3644,145 @@ mod tests {
     }
 
     #[test]
+    fn the_synth_options_are_kept_between_starts() {
+        use crate::synth::{Builtin, Engine};
+        use mpfree_arp::scale::pads::{InKeyRows, PadLayout};
+        use mpfree_arp::scale::SCALES;
+        use mpfree_store::Settings;
+        let files = vec![("werckmeister3".to_string(), false)];
+        let mut app = ready();
+        app.tuning_files = files.clone();
+        app.open_tab(View::Synth);
+        press(&mut app, MENU);
+        let row = |a: SynthItem| {
+            synth_pads::SYNTH_OPTIONS
+                .iter()
+                .position(|&i| i == Item::Synth(a))
+                .unwrap()
+        };
+        // No restore here, so "app" and "map" are handed out once; the
+        // Synth tab's options at their defaults are not.
+        app.save_dirty = true;
+        assert!(
+            !app.take_saves().iter().any(|(o, _)| *o == saved::SYNTH),
+            "nothing changed yet"
+        );
+        let mut step = |a: SynthItem, d: i32, times: usize| {
+            for _ in 0..times {
+                app.step_item(row(a), d);
+            }
+        };
+        step(SynthItem::Engine, 1, 1);
+        step(SynthItem::Scale, 1, 2);
+        step(SynthItem::Root, 1, 9);
+        step(SynthItem::Layout, 1, 2);
+        step(SynthItem::Rows, 1, 1);
+        step(SynthItem::Tuning, 1, Builtin::ALL.len());
+        step(SynthItem::TuningRoot, 1, 2);
+        step(SynthItem::A4, -1, 8);
+        let saves = app.take_saves();
+        assert_eq!(
+            saves.iter().map(|(o, _)| *o).collect::<Vec<_>>(),
+            vec![saved::SYNTH]
+        );
+        let kept = saves[0].1.clone();
+        for (k, v) in [
+            ("engine", "fm"),
+            ("scale", SCALES[2].name),
+            ("scale-root", "A"),
+            ("bank-a", "chords"),
+            ("bank-b", "in-key"),
+            ("in-key-rows", "fourths"),
+            ("tuning", "file werckmeister3"),
+            ("tuning-root", "D"),
+            ("a4", "432"),
+        ] {
+            assert_eq!(kept.get_str(k), Some(v), "{k}");
+        }
+        // The bank playing isn't kept, so switching banks saves nothing.
+        app.synth_bank(2);
+        assert!(app.take_saves().is_empty());
+
+        // The next start: every option comes back, on bank A.
+        let mut next = ready();
+        next.tuning_files = files.clone();
+        let (notes, fx) = next.restore_synth(&kept);
+        let mut want = app.synth_pads;
+        want.bank = 0;
+        assert_eq!(next.synth_pads, want);
+        assert_eq!(next.synth_pads.engine, Engine::Fm);
+        assert_eq!(next.synth_pads.rows, InKeyRows::Fourths);
+        assert_eq!(next.synth_pads.layout(), PadLayout::Chords);
+        assert_eq!(
+            (next.pad_scale_pick, next.pad_scale_root),
+            (app.pad_scale_pick, app.pad_scale_root)
+        );
+        assert_eq!(fx, vec![Effect::SynthPads(want)]);
+        assert_eq!(notes.len(), 1, "{notes:?}");
+        assert!(
+            notes[0].starts_with("saved synth options: FM, scale ")
+                && notes[0].ends_with("tuning werckmeister3 (root D, A4 432 Hz)"),
+            "{notes:?}"
+        );
+        let synth_saves = |a: &mut App| {
+            a.save_dirty = true;
+            a.take_saves()
+                .into_iter()
+                .filter(|(o, _)| *o == saved::SYNTH)
+                .count()
+        };
+        assert_eq!(synth_saves(&mut next), 0, "what was read is what's kept");
+
+        // A tuning file or scale that's gone, and words not understood, are
+        // left out and said; the rest comes back.
+        let mut gone = ready();
+        let mut odd = kept.clone();
+        odd.set_str("engine", "banjo");
+        odd.set_str("scale", "No such scale");
+        odd.set_i64("a4", 900);
+        odd.set_str("bank-c", "sideways");
+        let (notes, _) = gone.restore_synth(&odd);
+        let left = notes.last().unwrap();
+        for k in [
+            "engine = banjo",
+            "scale = No such scale",
+            "tuning = file werckmeister3",
+            "a4 = 900",
+            "bank-c = sideways",
+        ] {
+            assert!(left.contains(k), "{k}: {notes:?}");
+        }
+        let p = gone.synth_pads;
+        assert_eq!(
+            (p.engine, p.scale, p.tuning.file),
+            (Engine::Poly, None, None)
+        );
+        assert_eq!(
+            (p.tuning.a4_hz, p.tuning.root, p.rows),
+            (440, 2, InKeyRows::Fourths)
+        );
+        assert_eq!(
+            synth_saves(&mut gone),
+            1,
+            "the next save writes what is in use"
+        );
+
+        // The owner's own scales come back by name; nothing kept, nothing done.
+        let mut own = ready();
+        own.custom_scales
+            .push(("Mine".to_string(), SCALES[3].mask, SCALES[3].down));
+        let mut mine = Settings::default();
+        mine.set_str("scale", "Mine");
+        own.restore_synth(&mine);
+        assert_eq!(own.pad_scale_pick, SCALES.len());
+        assert!(own.synth_pads.scale.is_some());
+        assert_eq!(
+            ready().restore_synth(&Settings::default()),
+            (vec![], vec![])
+        );
+    }
+
+    #[test]
     fn the_synth_options_pick_the_engine_the_scale_and_the_pad_layouts() {
         use crate::synth::Engine;
         use mpfree_arp::scale::pads::{InKeyRows, PadLayout};
@@ -3695,14 +3902,15 @@ mod tests {
             tabs(false),
             vec![
                 View::Play,
+                View::Pads,
                 View::Arrange,
                 View::Synth,
                 View::Looper,
                 View::Sample
             ]
         );
-        assert_eq!(View::Sample.tab_index(true), Some(4));
-        assert_eq!(app.tab(4), vec![Effect::Show(View::Sample)]);
+        assert_eq!(View::Sample.tab_index(true), Some(5));
+        assert_eq!(app.tab(5), vec![Effect::Show(View::Sample)]);
         assert_eq!(app.view(), View::Sample);
         // The wheel zooms; SHIFT + wheel and - / + pick the pad.
         assert_eq!(app.wheel(2), vec![Effect::SampleWheel(2)]);
@@ -3727,6 +3935,44 @@ mod tests {
         assert_eq!(app.view(), View::Sample);
         app.tab(0);
         assert_eq!(press(&mut app, 92), vec![Effect::Time(TimeAction::Undo)]);
+    }
+
+    #[test]
+    fn the_pads_tab_follows_play_and_its_browser_takes_the_wheel_push_minus_plus_and_play() {
+        let mut app = ready();
+        assert_eq!(View::Pads.tab_index(false), Some(1));
+        assert_eq!(app.tab(1), vec![Effect::Show(View::Pads)]);
+        assert!(View::Pads.sampler() && View::Sample.sampler() && !View::Play.sampler());
+        app.map.minus = Some(40);
+        app.map.plus = Some(41);
+        app.map.data_push = Some(111);
+        // Browse (the view it opens on): the browser's.
+        assert_eq!(app.wheel(2), vec![Effect::Browse(BrowseKey::Wheel(2))]);
+        app.button(button::SHIFT, true, 0.0);
+        assert_eq!(app.wheel(-3), vec![Effect::Browse(BrowseKey::Places(-1))]);
+        app.button(button::SHIFT, false, 0.0);
+        assert_eq!(press(&mut app, 111), vec![Effect::Browse(BrowseKey::Push)]);
+        assert_eq!(press(&mut app, 41), vec![Effect::Browse(BrowseKey::Enter)]);
+        assert_eq!(press(&mut app, 40), vec![Effect::Browse(BrowseKey::Back)]);
+        assert_eq!(
+            press(&mut app, button::PLAY),
+            vec![Effect::Browse(BrowseKey::Play)]
+        );
+        // UNDO undoes the pads' edits, as on Sample.
+        assert_eq!(
+            press(&mut app, 92),
+            vec![Effect::SampleUndo { redo: false }]
+        );
+        // The Pad view: the Sample tab's controls.
+        app.set_pads_browse(false);
+        assert_eq!(app.wheel(2), vec![Effect::SampleWheel(2)]);
+        assert_eq!(press(&mut app, 41), vec![Effect::SamplePad(1)]);
+        assert!(press(&mut app, button::PLAY)
+            .contains(&Effect::Time(TimeAction::Transport(Command::Play))));
+        // Elsewhere PLAY is the transport's again.
+        app.set_pads_browse(true);
+        app.tab(0);
+        assert!(!press(&mut app, button::PLAY).contains(&Effect::Browse(BrowseKey::Play)));
     }
 
     #[test]
@@ -3799,6 +4045,7 @@ mod tests {
             tabs(false),
             vec![
                 View::Play,
+                View::Pads,
                 View::Arrange,
                 View::Synth,
                 View::Looper,
@@ -3807,9 +4054,9 @@ mod tests {
         );
         // The same names, in the same order, as the bar every preview draws.
         let names: Vec<&str> = tabs(true).iter().map(|v| v.name()).collect();
-        assert_eq!(names[..5], mpfree_ui::widgets::APP_TABS[..]);
-        assert_eq!(names[5], mpfree_ui::widgets::DEV_TAB);
-        assert_eq!(app.tab(5), vec![]);
+        assert_eq!(names[..6], mpfree_ui::widgets::APP_TABS[..]);
+        assert_eq!(names[6], mpfree_ui::widgets::DEV_TAB);
+        assert_eq!(app.tab(6), vec![]);
         app.open_tab(View::Prefs);
         let row = app
             .items()
@@ -3878,8 +4125,8 @@ mod tests {
         );
         app.button(button::SHIFT, false, 0.0);
         // Debug mode adds the Debug tab, whose pages SHIFT + wheel steps through.
-        assert_eq!(tabs(true)[5], View::Debug);
-        app.tab(5);
+        assert_eq!(tabs(true)[6], View::Debug);
+        app.tab(6);
         assert_eq!(app.view(), View::Debug);
         app.button(button::SHIFT, true, 0.0);
         app.wheel(1);
