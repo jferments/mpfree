@@ -326,14 +326,14 @@ The app check (`MPFREE_APP_STEPS=app` with `collect-over-ssh.sh --app`, read-onl
 3. Kits, banks, Full and Half Level.
 4. The Play page's four views, the pattern, the master bar and the mode buttons.
 5. Throws, the XY pad on Perform FX, and FILL.
-6. Arrange: clips, takes, Capture, the Song view and the morph bar.
+6. Arrange: clips, takes, Capture, the Song view, the morph bar and Rec song.
 7. TRACK MUTE and SHIFT + TRACK MUTE.
 8. Grains.
-9. The Synth tab's five engines (Poly, FM, Drums, Pluck, Wavetable).
+9. The Synth tab's five engines (Poly, FM, Drums, Pluck, Wavetable), and Tuning and A4 in its options.
 10. Note Repeat and the arp.
 11. The Looper tab: layers, the tools, the undo history, trim, several loops and Resample.
 12. The mixer, the chain editor, the Q-LINK banks and the macros panel.
-13. The Sample tab: Pads, Wave and Chop.
+13. The Sample tab: Pads, Wave, Chop, and Map to keys with the Play page's keyboard.
 14. Prefs (every row), System info and saving.
 15. Touch: the Touch lab, Calibrate touch, and Dev > Touch (Save writes only the stick's partition 4).
 16. Menus, the Console chord, TAP TEMPO and STOP.
