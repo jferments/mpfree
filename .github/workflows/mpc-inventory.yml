@@ -88,6 +88,7 @@ jobs:
           python3 tools/mpc-one/tests/test_boot_updater_v8.py
           python3 tools/mpc-one/tests/test_boot_updater_v9.py
           python3 tools/mpc-one/tests/test_boot_updater_v10.py
+          python3 tools/mpc-one/tests/test_boot_updater_v11.py
           MPFREE_REQUIRE_OFFLINE_TOOLS=1 python3 tools/mpc-one/tests/test_offline_rootfs_survey.py
           MPFREE_REQUIRE_DTC=1 python3 tools/mpc-one/tests/test_offline_dtb.py
           python3 tools/mpc-one/tests/test_offline_kexec_details.py
