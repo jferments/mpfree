@@ -108,6 +108,42 @@ every possible path or the exact meaning of every status code.
 No direct vendor code execution or physical MPC/USB/eMMC writes
 were attempted by any of these tools.
 
+## Tenth focused report: response-parser status saved in r4 reaches shared exit
+
+The owner supplied `mpfree-arm-return-contracts-v3-20261112T084738Z.zip`.
+Its ZIP CRC passed; both indexed JSON/Markdown reports match their
+SHA-256 digests. It records verification of 89 indexed original
+Ghidra/QEMU archive members and all eight response-validation predicates.
+
+The 11 direct BL callsites remain correctly classified as six immediate
+return checks (two CMP, four SUBS-zero), two `r0` copies into `r4`,
+and three normal-path `r0` pass-throughs. Addresses are now consistently
+normalized as 32-bit hex.
+
+**Further original ARM-instruction review resolves the two copied values:**
+in `0x1afd4`, the calls at `0x1b0c4` and `0x1b134` copy
+the result from `r0` to `r4` at `0x1b0cc` / `0x1b138`.
+On the ordinary successful stack-canary verification path, both reach
+the shared `0x1b084: cpy r0,r4` and return at `0x1b09c`.
+The first path includes an indirect `blx r5` before the common epilogue;
+tracing the saved `r4` across it assumes the callback conforms to AAPCS
+callee-saved register rules. That assumption is explicitly reported.
+
+Result: all 11 callsites now have documented immediate status checks,
+normal-return pass-throughs, or saved-register status propagation.
+This does **not** establish all-path behavior or semantic names for
+specific negative status codes.
+
+The offline analyzer now captures the saved-register path and records
+return restoration site, final normal epilogue, intervening branch path,
+conditional fallthroughs, and any AAPCS assumptions. It fails closed
+when `r4` is overwritten before restoration or a valid epilogue
+cannot be identified. Synthetic regression tests cover these cases.
+The integrated QEMU/Ghidra runner now includes this count automatically
+when generating future private evidence. The latest code still requires
+owner-workstation regression execution; the ordinary trace was
+independently checked against the captured original ARM instructions.
+
 ## Recommended next research
 
 The 11 captured direct callsites are now provisionally categorized:
