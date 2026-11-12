@@ -25,6 +25,14 @@ def fixture():
                  "0x00122c5c":{"pseudocode":"mpf_fastboot_permission()"},
                  "0x00122bf8":{"pseudocode":"mpf_fastboot_permission()"},
                  "0x001226b4":{"pseudocode":"mpf_bootm_command();mpf_reset_cpu_candidate();"},
+                 "0x001100c8":{"pseudocode":(
+                     "FUN_00110084; FUN_0010fde8; if (local_8c < uVar4) {}; "
+                     "iVar1 + 0x68")},
+                 "0x0010fde8":{"pseudocode":(
+                     "case 0xcac1; case 0xcac2; case 0xcac3; case 0xcac4; "
+                     "(uint)(param_1[1] + param_1[2]) < iVar11 + uVar2")},
+                 "0x00110270":{"pseudocode":(
+                     "FUN_00110084; if (local_8c < uVar5) {}; iVar2 + 0x6c")},
              }},
         "p3":{"globals":{"0x0014d690":{"references":[
             {"from":"0012289e","type":"WRITE"},
@@ -52,7 +60,7 @@ def run(data):
 class DirectBootFocusTests(unittest.TestCase):
     def test_seven_topics_and_exact_sha(self):
         report=run(fixture())
-        self.assertEqual(len(report["questions"]),28)
+        self.assertEqual(len(report["questions"]),32)
         self.assertEqual(
             report["nominal_memory_address_gaps"]["fdt_addr_r"][
                 "from_fastboot_load_base_bytes"], 24115200)
@@ -60,7 +68,7 @@ class DirectBootFocusTests(unittest.TestCase):
             report["nominal_memory_address_gaps"]["kernel_addr_r"][
                 "from_fastboot_load_base_bytes"], 25163776)
         self.assertFalse(report["fastboot_download_memory_safe_proven"])
-        self.assertEqual(len({x["topic"] for x in report["questions"]}),7)
+        self.assertEqual(len({x["topic"] for x in report["questions"]}),8)
         self.assertEqual(report["private_source_sha256"],M.UBOOT_SHA)
         self.assertFalse(report["vendor_code_executed"])
         self.assertFalse(report["physical_fastboot_commands_sent"])
@@ -120,6 +128,21 @@ class DirectBootFocusTests(unittest.TestCase):
             "callback_containing_function"] = "0x001226b4"
         changed = run(d)
         self.assertFalse(changed["checks"]["fastboot_boot_command_callback_resolved"])
+
+    def test_raw_sparse_erase_guards_detected_in_verified_shapes(self):
+        report = run(fixture())
+        for name in (
+            "flash_partition_capacity_guard",
+            "flash_sparse_four_chunk_kinds",
+            "sparse_raw_fill_partition_bound",
+            "erase_partition_block_range_guard",
+        ):
+            self.assertTrue(report["checks"][name],name)
+        data = fixture()
+        data["u"]["analyzed_functions"]["0x0010fde8"]["pseudocode"] = ""
+        changed = run(data)
+        self.assertFalse(changed["checks"]["flash_sparse_four_chunk_kinds"])
+        self.assertFalse(changed["checks"]["sparse_raw_fill_partition_bound"])
 
     def test_wrong_original_uboot_rejected(self):
         d=fixture()
