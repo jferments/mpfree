@@ -3077,7 +3077,9 @@ impl Player {
     pub fn refresh_engines(&mut self) {
         if let Some(shared) = self.engines.as_ref() {
             let snap = crate::engines::read(shared);
-            DebugPages::set_engines(&mut self.ui, &snap, crate::cores::rows(&shared.cores));
+            let mut rows = crate::cores::rows(&shared.cores);
+            rows.extend(crate::parts::rows(&shared.parts));
+            DebugPages::set_engines(&mut self.ui, &snap, rows);
         }
     }
 

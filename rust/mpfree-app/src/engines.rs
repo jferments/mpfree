@@ -21,7 +21,8 @@
 //!   screen, and the copy to the sound card's format. None of it is sound,
 //!   and all of it runs on the audio thread today; this row says how much
 //!   of the period it takes before it moves to its own thread. It has no
-//!   budget of its own.
+//!   budget of its own. `parts.rs` splits it into the loop's own parts and
+//!   says which one a slow period spent its time in.
 //!
 //! The FX are not in the pad player yet, so the page says so instead of
 //! showing 0.
@@ -74,6 +75,9 @@ pub struct EngineShared {
     pub life: [SharedSummary; 7],
     /// Where the sound runs (`--sound-cores`) and its lanes' counts.
     pub cores: crate::cores::CoreShared,
+    /// The period's parts outside the engines and the control side's
+    /// counts (parts.rs).
+    pub parts: crate::parts::PartsShared,
 }
 
 /// The audio loop's probes. Made before the stream starts (it allocates);
