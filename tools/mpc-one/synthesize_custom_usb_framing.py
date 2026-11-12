@@ -115,14 +115,41 @@ def validated_report(document, report_sha):
             "seen_in_verified_pseudocode": any(
                 encoded in values for values in ioctl_sites.values()),
         })
-    expected_magics = [f"0x5aa5{x:04x}" for x in
-                       (0xfe01, 0xfd02, 0xfc03, 0xfb04, 0xfa05, 0xf906)]
-    expected_magics += ["0xa55a0101", "0xa55a0202"]
+    compared_ids = [f"0x5aa5{x:04x}" for x in
+                    (0xfe01, 0xfd02, 0xfc03, 0xfb04, 0xfa05, 0xf906)]
+    constructed_values = ["0xa55a0101", "0xa55a0202"]
+    expected_magics = compared_ids + constructed_values
     seen = set(x for values in magic_sites.values() for x in values)
-    # 0x5aa5fc04 appears in the decompilation as an unsigned range bound,
-    # NOT as an equality-tested message value. Do not label it an opcode.
+    # Equality comparisons and outbound construction are DISTINCT kinds
+    # of evidence. The 0x5aa5fc04 value is only a range bound.
     comparison_only = ["0x5aa5fc04"] if "0x5aa5fc04" in seen else []
-    confirmed_ids = sorted(x for x in expected_magics if x in seen)
+    confirmed_ids = sorted(x for x in compared_ids if
+                           x in magic_sites.get("0x0001a674", []) and
+                           x in magic_sites.get("0x0001a314", []))
+    observed_constructed = sorted(
+        x for x in constructed_values
+        if x in magic_sites.get("0x0001a8d0", []))
+    response = functions.get("0x0001a314", {}).get("pseudocode", "")
+    response_checks = {
+        "min_24_byte_frame": "local_30 < 0x18" in response,
+        "declared_length_checked": "local_30 < *(ushort *)(param_4 + 0x16)" in response,
+        "message_identifier_matches_request": (
+            "*(int *)(param_4 + 4) != *(int *)(param_2 + 4)" in response),
+        "correlation_field_matches_request": (
+            "*(int *)(param_4 + 0x10) != *(int *)(param_2 + 0x10)" in response),
+        "completion_flag_bit0_required": "(uVar1 & 1) == 0" in response,
+        "error_flag_bit1_branch": "(uVar1 & 2) == 0" in response,
+        "error_status_word_at_plus_18": "*(int *)(param_4 + 0x18)" in response,
+        "negative_error_values_observed": "-0xb" in response and "-9" in response,
+    }
+    signature_warnings = []
+    for address in ("0x0001a674", "0x0001d644", "0x0001aabc"):
+        pseudocode = functions.get(address, {}).get("pseudocode", "").strip()
+        if pseudocode.startswith("void "):
+            signature_warnings.append({
+                "address": address,
+                "reason": "Ghidra inferred void return; callers may use a returned status. Verify ARM callsite/register conventions.",
+            })
     return {
         "schema": SCHEMA,
         "source_ghidra_report_sha256": report_sha,
@@ -139,10 +166,13 @@ def validated_report(document, report_sha):
                             for value in sorted(seen)},
             "eight_known_values_present": all(x in seen for x in expected_magics),
             "equality_matched_message_identifiers": confirmed_ids,
+            "constructed_outgoing_control_values": observed_constructed,
             "comparison_only_range_bounds": comparison_only,
             "unobserved_expected_values": [x for x in expected_magics if x not in seen],
         },
         "linux_usbdevfs_ioctls": ioc,
+        "response_validation_checks": response_checks,
+        "decompiler_return_type_warnings": signature_warnings,
         "tentative_frame_fields": [
             {"offset": "context+0x20", "meaning": "incremented 16-bit sequence counter",
              "evidence_functions": ["0x0001a8d0", "0x0001a9bc", "0x0001b35c"]},
@@ -186,8 +216,16 @@ def render_markdown(rep):
     for value in rep["magic_evidence"]["equality_matched_message_identifiers"]:
         addresses = rep["magic_evidence"]["code_points"][value]
         output.append("- Equality-tested: " + value + " in " + ", ".join(addresses))
+    for value in rep["magic_evidence"]["constructed_outgoing_control_values"]:
+        output.append("- Constructed outgoing value (NOT equality-tested): " + value)
     for value in rep["magic_evidence"]["comparison_only_range_bounds"]:
         output.append("- Range-bound only; NOT established as an opcode: " + value)
+    output += ["", "## Response validation predicates (decompilation evidence)"]
+    for label, observed in rep["response_validation_checks"].items():
+        output.append("- " + label + ": " + str(observed))
+    output += ["", "## Decompiled return-type ambiguities"]
+    for warn in rep["decompiler_return_type_warnings"]:
+        output.append("- " + warn["address"] + ": " + warn["reason"])
     output += ["", "## Linux USB host transfer operations"]
     for item in rep["linux_usbdevfs_ioctls"]:
         output.append("- " + item["ioctl"] + ": " + item["linux_usbdevfs_name"] +
