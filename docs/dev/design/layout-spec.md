@@ -114,8 +114,8 @@ Approved by Jay at 22:34Z (the mod thread's card, "Approve as proposed"). The mo
 - **Q-Links: Play's Q-Link column, always on Arrange** (Jay's pick on 12 Nov 2026 at 06:01Z, mockup E in /mnt/project-files/audiotracks/mockup/qlinks-right/).
   - It's the same 168 px column with four vertical cards as on Play, at the right edge from under the top bar to the bottom. The Record and Takes panels narrow to about 250 px to make room, and the arp chip leaves the transport bar on Arrange.
   - The cards follow the selection. With an audio region selected, or the track panel open, they are Q1 Level, Q2 Pan (both the track's), Q3 the region's gain and Q4 its fade.
-  - With nothing selected, they are the armed track's level, pan, send A and send B. That's the default shown on the mockup and can change.
-  - Q-LINK steps to Macros 1-4 and 5-8 as on Play. The track panel no longer lists the Q-Links at its foot.
+  - With nothing selected, they are Play's knobs, the same cards as on Play. The mockup showed the armed track's level, pan and sends, but a sequencer track has no mixer strip of its own yet: every track plays the kit. Track knobs come when tracks get strips.
+  - Q-LINK steps to Macros 1-4 and 5-8 as on Play, and Play and Arrange share the bank. The track panel no longer lists the Q-Links at its foot.
 - **The bottom row with an audio region selected:** Split · Erase · Fades · Gain · Takes · Undo, instead of the placement buttons. SHIFT + Undo redoes.
   - Dragging a region moves it, snapped to the grid (1/16 by default). SHIFT + drag moves it freely.
   - With nothing selected, the row is the Song view's own.
