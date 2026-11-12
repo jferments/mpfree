@@ -1098,6 +1098,46 @@ class Lab:
             self.stages["security-310-utilities-static"] = {
                 "success":False,"error":str(exc)}
             self.notes.append("Security 3.10 utility static audit: "+str(exc))
+        # Cross-stage stock recovery: original ARM ADC <=99, three
+        # diagnostic strings, board_setup flag and saved Fastboot env.
+        # No real button polling, device access or bootloader execution.
+        try:
+            adc_module = load_module(
+                "tools/mpc-one/synthesize_recovery_adc.py",
+                "mpfree_stock_recovery_adc",
+            )
+            adc_report = adc_module.build(
+                lambda path: (self.out / path).read_bytes()
+            )
+            (self.out / "recovery-adc-evidence.json").write_text(
+                json.dumps(adc_report, indent=2) + "\n")
+            (self.out / "recovery-adc-evidence.md").write_text(
+                adc_module.markdown(adc_report))
+            record["recovery_adc_evidence"] = {
+                "report": "recovery-adc-evidence.json",
+                "threshold_unsigned_max": adc_report[
+                    "adc_recovery_threshold_unsigned_max_inclusive"],
+                "arm_and_string_evidence": adc_report[
+                    "all_existing_cross_checks_passed"],
+                "same_flag_exported_to_dorecovery": adc_report[
+                    "all_pointer_checks_passed"],
+                "actual_button_tested": False,
+                "maskrom_restoration_proven": False,
+            }
+            self.stages["recovery-adc-cross-stage-evidence"] = {
+                "success": bool(
+                    adc_report["all_existing_cross_checks_passed"] and
+                    adc_report["all_pointer_checks_passed"]),
+                "adc_threshold_inclusive": adc_report[
+                    "adc_recovery_threshold_unsigned_max_inclusive"],
+                "same_global_flag_pointer": adc_report[
+                    "all_pointer_checks_passed"],
+            }
+        except Exception as exc:
+            record["recovery_adc_error"] = str(exc)
+            self.stages["recovery-adc-cross-stage-evidence"] = {
+                "success": False, "error": str(exc)}
+            self.notes.append("Recovery ADC static proof: " + str(exc))
         (self.out / "cross-evidence.json").write_text(json.dumps(record, indent=2) + "\n")
         summary = [
             "# MPFree integrated bootchain run",
@@ -1196,6 +1236,16 @@ class Lab:
             summary.append("- Linux LoadPin ioctl 0x40044c00 sets trusted dm-verity digests.")
             summary.append("- Kernel enforcement and vendor tool invocation were NOT tested.")
             summary.append("- See security-310-utilities.json and .md for details.")
+        summary += ["", "## Physical recovery button: U-Boot ADC evidence"]
+        adc = record.get("recovery_adc_evidence")
+        if adc:
+            summary.append("- Original ARM + diagnostics: ADC channel 1 <= " +
+                           str(adc["threshold_unsigned_max"]) +
+                           " sets the recovery flag.")
+            summary.append("- ADC and board environment export share flag pointer: " +
+                           str(adc["same_flag_exported_to_dorecovery"]))
+            summary.append("- Saved dorecovery env selects stock Fastboot.")
+            summary.append("- No physical button / immutable MaskROM recovery test.")
         summary += ["", "## Guest/static image consistency"]
         if record["match_tests"]:
             for entry in record["match_tests"]:
