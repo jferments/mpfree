@@ -1046,6 +1046,7 @@ impl App {
             for slot in 0..16 {
                 self.release_pad(slot);
             }
+            self.release_keys();
         }
         self.pad_layout = layout;
         self.arp_dirty = true;
@@ -1099,6 +1100,49 @@ impl App {
             *holds = holds.saturating_add(1);
         }
         self.pad_pressed[slot] = pad;
+    }
+
+    /// A key on a MIDI keyboard (MIDI In or USB) while the pads play notes
+    /// (a synth pad layout is set): it presses that note into the armed
+    /// track's arp, as a pad holding it would, so the arp, Latch and Note
+    /// Repeat work from a keyboard too. Keys and pads share the hold count:
+    /// a note held on both ends when both let go. A key already held is
+    /// ignored. While a pattern records in Free time the pads only write
+    /// steps, so keys do nothing then. With a kit the app hits pads instead
+    /// (main.rs, by the MPC's pad notes).
+    pub fn key_down(&mut self, note: u8, velocity: u8) {
+        let n = usize::from(note & 0x7F);
+        if self.pad_layout.is_none() || self.free_time_recording() || self.keys_held[n] {
+            return;
+        }
+        self.keys_held[n] = true;
+        let holds = &mut self.note_holds[n];
+        if *holds == 0 {
+            self.arps
+                .engine_at_mut(self.track)
+                .press(n as u8, velocity.max(1));
+        }
+        *holds = holds.saturating_add(1);
+    }
+
+    /// The key let go; the note ends unless a pad still holds it.
+    pub fn key_up(&mut self, note: u8) {
+        let n = usize::from(note & 0x7F);
+        if !std::mem::take(&mut self.keys_held[n]) {
+            return;
+        }
+        let holds = &mut self.note_holds[n];
+        *holds = holds.saturating_sub(1);
+        if *holds == 0 {
+            self.arps.engine_at_mut(self.track).release(n as u8);
+        }
+    }
+
+    /// Every held key let go (the track or the pad layout changes).
+    pub(crate) fn release_keys(&mut self) {
+        for n in 0..128u8 {
+            self.key_up(n);
+        }
     }
 
     pub(crate) fn release_pad(&mut self, slot: usize) {
@@ -1174,6 +1218,7 @@ impl App {
             for slot in 0..16 {
                 self.release_pad(slot);
             }
+            self.release_keys();
         } else if !self.latched {
             // Pad slots: what the old track's engine holds is the pads held.
             for slot in 0..16u8 {
