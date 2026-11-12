@@ -383,6 +383,27 @@ def evidence_ledger(out,prior,stages):
         "ROOTFS_COMPATIBILITY":["v17-owner-full-boot-and-dtb.json","deep-p3/V17-p3-SUMMARY.json"],
         "VM_VALIDATION":["v17-actual-vendor-QEMU-results.json"],
     }
+    newfacts_path=out/"V17-CONCRETE-NEW-FINDINGS.json"
+    newfacts=json.loads(newfacts_path.read_text()) if newfacts_path.is_file() else {}
+    new_static=newfacts.get("facts",{})
+    script_fact=new_static.get("real_stock_boot_script",{})
+    traces=new_static.get("actual_vendor_guest_instrumentation",{}).get("records",[])
+    branch_cases={name:x.get("pass") is True for x in cases for name in [x.get("test","")]}
+    bootdone=branch_cases.get("v17_boot_completion",False)
+    shell_denied=branch_cases.get("v17_oem_shell_locked",False)
+    shell_allowed=branch_cases.get("v17_oem_shell_unlocked",False)
+    env_denied=branch_cases.get("v17_oem_env_locked",False)
+    env_allowed=branch_cases.get("v17_oem_env_unlocked",False)
+    documented_modes={}
+    for variant in ("acva","acva_c"):
+        modes=new_static.get("reboot_modes_"+("acva" if variant=="acva" else "acva-c"),{}).get("matches",[])
+        compatible=False
+        for match in modes:
+            props=match.get("properties",{})
+            loader=props.get("mode-loader",{}).get("value")
+            update=props.get("mode-update",{}).get("value")
+            if loader and loader==update:compatible=True
+        documented_modes[variant]=compatible
     records=[]
     for item in questions:
         key=item["id"];prefix=key.rsplit("-",1)[0]
@@ -412,12 +433,43 @@ def evidence_ledger(out,prior,stages):
             row["new_observation_group"]="usb_receive_and_canary_matrix"
         if row["new_observation_group"] and tested_groups[row["new_observation_group"]]["passed"]:
             row["new_factual_status"]="NEW_FUNCTION_PATH_VM_EVIDENCE_REQUIRES_REVIEW"
+        # Close only narrow propositions directly shown by fresh owner data.
+        if key=="ROOTFS_COMPATIBILITY-02" and (
+            script_fact.get("header_crc") and script_fact.get("payload_crc")):
+            row["new_factual_status"]="ANSWERED_STATIC_OWNER_BOOT_SCRIPT_INTACT"
+            row["closed_by_V17"]=True
+            row["new_probe_reports"].append("V17-CONCRETE-NEW-FINDINGS.json")
+        elif key=="REMOVABLE_DIRECTBOOT-07" and script_fact.get("commands") and (
+            script_fact.get("hardcoded_uuid") is False):
+            row["new_factual_status"]="ANSWERED_STATIC_NO_HARDCODED_UUID_IN_SCRIPT"
+            row["closed_by_V17"]=True
+            row["new_probe_reports"].append("V17-CONCRETE-NEW-FINDINGS.json")
+        elif key=="RECOVERY_SECURITY-05" and all(documented_modes.values()):
+            row["new_factual_status"]="ANSWERED_STATIC_BOTH_ACVA_DTBS_ALIAS_MODE_LOADER_UPDATE"
+            row["closed_by_V17"]=True
+            row["new_probe_reports"].append("V17-CONCRETE-NEW-FINDINGS.json")
+        elif key=="FASTBOOT_RUNTIME-10" and bootdone:
+            row["new_factual_status"]="ANSWERED_ISOLATED_VM_SCOPE_NOT_PHYSICAL_MPC"
+            row["closed_by_V17"]=True
+            row["new_probe_reports"].append("V17-CONCRETE-NEW-FINDINGS.json")
+        elif key in ("FASTBOOT-05","FASTBOOT_RUNTIME-02") and (
+            shell_denied and shell_allowed and env_denied and env_allowed):
+            row["new_factual_status"]="PARTIAL_VM_OEM_ENV_CAN_CALL_MOCKED_PERSISTENCE"
+            row["new_probe_reports"].append("V17-CONCRETE-NEW-FINDINGS.json")
+        elif key in ("FASTBOOT-07","FASTBOOT-06") and bootdone:
+            row["new_factual_status"]="PARTIAL_VM_BOOTM_AND_RESET_CALLED_WITH_MOCKED_HANDOFF"
+            row["new_probe_reports"].append("V17-CONCRETE-NEW-FINDINGS.json")
+        elif key in ("FASTBOOT_RUNTIME-04","FASTBOOT_RUNTIME-05") and (
+            group("v17_download_")["passed"]>20 and
+            group("v17_receive_")["passed"]>50):
+            row["new_factual_status"]="PARTIAL_VM_DOWNLOAD_SIZE_AND_RECEIVE_BOUNDS"
+            row["new_probe_reports"].append("V17-CONCRETE-NEW-FINDINGS.json")
         records.append(row)
     # Numeric accounting only of genuinely observed experiments and decompilation.
     summary={
         "questions":len(records),
         "questions_with_new_report":sum(bool(x["new_probe_reports"]) for x in records),
-        "questions_closed_automatically":0,
+        "questions_closed_by_new_narrow_scope":sum(x["closed_by_V17"] for x in records),
         "dynamic_cases_attempted":len(cases),
         "dynamic_cases_passed":len(good),
         "dynamic_cases_failed":len(cases)-len(good),
@@ -562,7 +614,7 @@ def main():
         text+=["","## Genuine evidence counts",
           "- New actual vendor ARM cases attempted: %s"%summary.get("dynamic_cases_attempted",0),
           "- New actual vendor ARM cases passed: %s"%summary.get("dynamic_cases_passed",0),
-          "- Questions marked closed automatically: 0 (requires evidence adjudication)",
+          "- Questions resolved by specific new static / isolated VM evidence: %s"%summary.get("questions_closed_by_new_narrow_scope",0),
           "- Ghidra recursive closure and all-function High P-code: see deep-p1/deep-p3.",
           "- Updater ELF import/deep call graph: see updater-*.",
           "- Complete ACVA/ACVA-C DTB changes: see v17-owner-full-boot-and-dtb.json.",
