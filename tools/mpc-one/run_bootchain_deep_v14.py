@@ -310,6 +310,25 @@ def analyze(dst,stages,prior_questions,prior_zip):
     if p.is_file():
         try:assets=json.loads(p.read_text())
         except Exception:pass
+
+    prior_exact={}
+    prior_p3={}
+    if prior_zip:
+        try:
+            archive_files=verified_archive(prior_zip)
+            if "V13-EXACT-FINDINGS.json" in archive_files:
+                prior_exact=json.loads(archive_files["V13-EXACT-FINDINGS.json"])
+            if "ghidra-p3-v13.json" in archive_files:
+                prior_p3=json.loads(archive_files["ghidra-p3-v13.json"])
+            if prior_p3 and prior_p3.get("source_sha256") != "b4d3940c9a6a7b75590c094278aa3735c5f97e84885a9f4780dd922d27d27b7a":
+                raise ValueError("V13 owner P3 source SHA mismatch")
+        except Exception:
+            raise ValueError("Unable to validate V13 static evidence input")
+    reboot_modes={}
+    for boot_name in ("/boot/rk3288-az01-acva.dtb","/boot/rk3288-az01-acva-c.dtb"):
+        entry=assets.get("files",{}).get(boot_name,{})
+        props=entry.get("dtb",{}).get("selected_properties",{})
+        reboot_modes[boot_name]=props.get("/power-management@ff730000/reboot-mode",{})
     # No generic question is marked 'answered' from string/topic matching.
     facts={}
     def add(k,status,source,details):
@@ -373,6 +392,35 @@ def analyze(dst,stages,prior_questions,prior_zip):
             item["classification"]="NOT_PROBED_STAGE_FAILED"
         # Strict, individually justified narrow answers; never auto-close an entire
         # question when only a related domain/string was found.
+        if key=="FASTBOOT-01":
+            pointer=prior_p3.get("pointer_cells",{}).get("unlock_command_text_pointer",{})
+            if pointer.get("static_string_target") == "<REDACTED_VENDOR_AUTH_STRING>":
+                item["classification"]="ANSWERED_STATIC"
+                item["evidence"].append({"source":"ghidra-p3-v13.json",
+                    "fact":"Verified SHA-pinned P3 pointer resolves to OEM auth string (text redacted)"})
+        if key=="FASTBOOT-02":
+            entries=prior_exact.get("eight_slot_fastboot_dispatch",{}).get("entries",[])
+            handler=prior_p3.get("function_details",{}).get("0x00122854",{})
+            if (any(x.get("name")=="oem" and x.get("handler")=="0x00122855" for x in entries)
+                and "0x25" in handler.get("pseudocode","")):
+                item["classification"]="ANSWERED_STATIC"
+                item["evidence"].append({"source":"ghidra-p3-v13.json",
+                    "fact":"OEM dispatcher and 0x25-byte authorization comparison in handler"})
+        if key=="FASTBOOT_RUNTIME-10":
+            bootdone=prior_p3.get("function_details",{}).get("0x001226b4",{}).get("pseudocode","")
+            if ("mpf_bootm_command(" in bootdone and
+                "mpf_reset_cpu_candidate(" in bootdone and
+                bootdone.index("mpf_bootm_command(")<bootdone.index("mpf_reset_cpu_candidate(")):
+                item["classification"]="ANSWERED_STATIC"
+                item["evidence"].append({"source":"ghidra-p3-v13.json",
+                    "fact":"Fastboot boot-done calls bootm and then CPU reset on return"})
+        if key=="RECOVERY_SECURITY-05" and facts.get("update_loader_mode_equal",{}).get("status")=="ANSWERED_STATIC":
+            item["classification"]="ANSWERED_STATIC"
+            item["evidence"].append({"source":"offline-boot-assets-v13.json",
+                  "fact":"Both extracted ACVA DTBs define mode-update=mode-loader=0x5242c301"})
+        if key=="VM_VALIDATION-01" and vm.get("success"):
+            item["evidence"].append({"source":"v14-arm-qemu-boot-fixture.json",
+                                      "fact":"Generic ARM virt booted owner 3.10 clone"})
         if key=="ROOTFS_COMPATIBILITY-02" and script.get("valid"):
             item["classification"]="ANSWERED_STATIC"
             item["evidence"].append({"source":"offline-boot-assets-v13.json",
@@ -402,6 +450,17 @@ def analyze(dst,stages,prior_questions,prior_zip):
             item["classification"]="PARTIAL_STATIC_NEEDS_FURTHER_PROOF"
         result.append(item)
     counts=dict(Counter(x["classification"] for x in result))
+
+    if prior_exact:
+        add("v13_permission_alias","VERIFIED_STATIC_PRIOR",
+            ["V13-EXACT-FINDINGS.json","ghidra-p3-v13.json"],
+            {"gate":prior_exact.get("oem_unlock_permission_pointer_alias",{}).get("gate"),
+             "writer":prior_exact.get("oem_unlock_permission_pointer_alias",{}).get("writer")})
+    if all(reboot_modes.get(x,{}).get("mode-loader")==["0x5242c301"] and
+           reboot_modes.get(x,{}).get("mode-update")==["0x5242c301"] for x in reboot_modes):
+        add("update_loader_mode_equal","ANSWERED_STATIC",
+            ["offline-boot-assets-v13.json"],
+            {"both_acva_dtbs":True,"mode_loader":0x5242c301,"mode_update":0x5242c301})
     write(dst/"V14-PROPOSITION-EVIDENCE.json",facts)
     write(dst/"V14-85-QUESTION-EVIDENCE-LEDGER.json",{
         "schema":"mpfree-v14-non-inflated-question-ledger",
