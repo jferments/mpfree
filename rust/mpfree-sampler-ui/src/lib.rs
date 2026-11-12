@@ -15,9 +15,10 @@
 //!   its beats, with hits pinned to beats by a tap, a drag or Pin hits (a
 //!   loop played loosely made tight), each change a [`WaveAction`]. Its
 //!   picture is in [`warp_widgets`].
-//! - [`pads_tab`]: the pad editor's Pads tab, first in its bar: the kit's
-//!   pads on a compact map to pick one, copy, paste and clear it, its main
-//!   settings, and the kit's sounds to put on it ([`PadsAction`]).
+//! - [`pads_tab`]: the app's Pads tab: the kit's pads on a compact map to
+//!   pick one, copy, paste and clear it, and a Browse | Pad switch between
+//!   the browser beside them and the pad's main settings with the kit's
+//!   sounds to put on it ([`PadsAction`]).
 //! - [`chop_tab`]: the pad editor's Chop tab: slices of the pad's sound by
 //!   transients, beats, a grid, silence or by hand, split, merged and put on
 //!   pads as one undo step ([`ChopAction`]).
@@ -38,6 +39,8 @@
 //!   sampled note by note into a keygroup instrument, with the keyboard,
 //!   the velocity layers and the plan's cost shown first ([`AutoAction`]).
 //!   Its picture is in [`auto_widgets`].
+//! - [`send`]: the Send to pad and Chop to pads buttons beside every editor
+//!   tab's bar.
 //! - [`sample`]: sample screens for the workstation preview and the tests.
 //!
 //! No device I/O and no audio: the app draws the screens, feeds them
@@ -57,6 +60,7 @@ pub mod play_widgets;
 pub mod rec_tab;
 pub mod rec_widgets;
 pub mod sample;
+pub mod send;
 pub mod source;
 pub mod warp_tab;
 pub mod warp_widgets;

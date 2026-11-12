@@ -133,11 +133,13 @@ fn ui(fonts: Fonts, theme: Theme, tab: &str, hint: &str, b: &Browser) -> Result<
     Ok(ui)
 }
 
-fn source(label: &str) -> usize {
+/// The place of the source labelled `label` in [`SOURCES`].
+pub fn source(label: &str) -> usize {
     SOURCES.iter().position(|s| s.label() == label).unwrap_or(0)
 }
 
-fn select(b: &mut Browser, name: &str) {
+/// Selects the row called `name`, if it shows.
+pub fn select(b: &mut Browser, name: &str) {
     let s = b.screen();
     if let Some(i) = s.rows.iter().position(|r| r.name == name) {
         if s.selected != Some(i) {
@@ -146,7 +148,8 @@ fn select(b: &mut Browser, name: &str) {
     }
 }
 
-fn open(b: &mut Browser, name: &str) {
+/// Selects the row called `name` and opens it.
+pub fn open(b: &mut Browser, name: &str) {
     select(b, name);
     b.push();
 }

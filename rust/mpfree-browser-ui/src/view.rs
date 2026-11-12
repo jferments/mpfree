@@ -12,6 +12,14 @@ use mpfree_ui::{Align, Color, EventKind, FontId, PaintCx, Rect, Touch, Widget};
 pub const PLACES_W: i32 = 220;
 /// The selected item's column's width.
 pub const DETAIL_W: i32 = 420;
+/// Narrower than this, the browser takes its narrow form (beside the Pads
+/// tab's pad bank): slimmer places and selected item, so the list keeps
+/// room for names.
+pub const NARROW_BELOW: i32 = 1000;
+/// The narrow form's places column.
+pub const NARROW_PLACES_W: i32 = 176;
+/// The narrow form's selected item column.
+pub const NARROW_DETAIL_W: i32 = 290;
 /// A list row's height (finger sized).
 pub const ROW_H: i32 = 52;
 const HEAD_H: i32 = 56;
@@ -49,9 +57,14 @@ fn card_body(r: Rect) -> Rect {
 impl Geo {
     fn new(r: Rect, s: &Screen) -> Geo {
         let gap = 12;
-        let (places, rest) = r.take_left(PLACES_W);
+        let (places_w, detail_w) = if r.w < NARROW_BELOW {
+            (NARROW_PLACES_W, NARROW_DETAIL_W)
+        } else {
+            (PLACES_W, DETAIL_W)
+        };
+        let (places, rest) = r.take_left(places_w);
         let (_, rest) = rest.take_left(gap);
-        let (detail, rest) = rest.take_right(DETAIL_W);
+        let (detail, rest) = rest.take_right(detail_w);
         let (_, list) = rest.take_right(gap);
         // Places.
         let pb = card_body(places);
@@ -96,6 +109,9 @@ impl Geo {
         let (_, rest) = rest.take_right(8);
         let (search, _) = rest.take_right(chip_w("Search"));
         let search = Rect::new(search.x, foot.y + 8, search.w, foot.h - 12);
+        // A filter chip that would run under Search is left out (the
+        // narrow form has room for fewer).
+        filters.retain(|(_, fr)| fr.right() <= search.x - 8);
         // Detail.
         let db = card_body(detail);
         let n = s.detail.buttons.len() as i32;
