@@ -85,6 +85,7 @@ mod alsa;
 mod app;
 mod calibrate_page;
 mod chain_page;
+mod control;
 mod cores;
 mod cv_out;
 mod debug_page;
@@ -305,6 +306,9 @@ struct Out {
     /// Lines the screen thread had no room for (they still reach the report).
     dropped: u64,
     report: Option<File>,
+    /// While the audio loop runs, the report is written by the
+    /// `mpfree-report` thread ([`Out::queue_report`]).
+    queued: Option<control::Report<File>>,
     last_draw: Instant,
 }
 
@@ -323,6 +327,7 @@ impl Out {
             sink: None,
             dropped: 0,
             report,
+            queued: None,
             last_draw: Instant::now() - Duration::from_secs(1),
         };
         out.file_line(&format!(
@@ -343,8 +348,54 @@ impl Out {
     }
 
     fn file_line(&mut self, line: &str) {
-        if let Some(f) = self.report.as_mut() {
+        if let Some(q) = self.queued.as_mut() {
+            // A full queue drops the line; `unqueue_report` counts them.
+            q.line(line.to_string());
+        } else if let Some(f) = self.report.as_mut() {
             let _ = writeln!(f, "{line}");
+        }
+    }
+
+    /// From now on the report's lines are written by the `mpfree-report`
+    /// thread, not the caller (the audio loop): control.rs. Allocates and
+    /// starts the thread; without a report file it does nothing.
+    fn queue_report(&mut self) {
+        // A session that ended early may have left its queue.
+        self.unqueue_report();
+        let Some(f) = self.report.take() else {
+            return;
+        };
+        match f.try_clone().and_then(control::Report::start) {
+            Ok(q) => {
+                self.report = Some(f);
+                self.queued = Some(q);
+            }
+            Err(e) => {
+                self.report = Some(f);
+                self.note(&format!(
+                    "report: written by the audio thread ({e} starting its own)"
+                ));
+            }
+        }
+    }
+
+    /// Writes what is queued (up to a second) and goes back to writing the
+    /// report here; says how many lines the queue had no room for.
+    fn unqueue_report(&mut self) {
+        let Some(q) = self.queued.take() else {
+            return;
+        };
+        let dropped = q.dropped();
+        let back = q.finish(Duration::from_secs(1)).is_some();
+        if dropped > 0 || !back {
+            self.note(&format!(
+                "report: {dropped} lines dropped with the queue full{}",
+                if back {
+                    ""
+                } else {
+                    "; its thread was still writing at the end"
+                }
+            ));
         }
     }
 
@@ -427,6 +478,7 @@ impl Out {
 
 impl Drop for Out {
     fn drop(&mut self) {
+        self.unqueue_report();
         self.draw();
     }
 }
@@ -1156,29 +1208,10 @@ fn open_output(card: u32, sub: u32, word: &str, out: &mut Out) -> Result<File, S
 }
 
 /// Write one whole message to a non-blocking MIDI output, waiting up to half a
-/// second for room in the kernel's buffer.
+/// second for room in the kernel's buffer. Not for the audio loop, which
+/// queues its messages ([`Ports::queue`]).
 fn send_all(file: &mut File, msg: &[u8]) -> io::Result<()> {
-    let mut done = 0;
-    let give_up = Instant::now() + Duration::from_millis(500);
-    while done < msg.len() {
-        match file.write(&msg[done..]) {
-            Ok(0) => {
-                return Err(io::Error::new(
-                    ErrorKind::WriteZero,
-                    "the MIDI port took nothing",
-                ))
-            }
-            Ok(n) => done += n,
-            Err(e)
-                if (e.kind() == ErrorKind::WouldBlock || e.raw_os_error() == Some(EAGAIN))
-                    && Instant::now() < give_up =>
-            {
-                thread::sleep(Duration::from_millis(1))
-            }
-            Err(e) => return Err(e),
-        }
-    }
-    Ok(())
+    control::send_all(file, msg, Duration::from_millis(500))
 }
 
 /// One message that came in: which input, its bytes, and what it means if
@@ -1205,6 +1238,9 @@ struct Ports {
     quiet: bool,
     /// List pad pressure (aftertouch) too; it is only counted otherwise.
     show_pressure: bool,
+    /// The audio loop's outputs: queued for the `mpfree-lights` thread
+    /// ([`Ports::queue`]) instead of written here.
+    lights: Option<control::Lights>,
 }
 
 impl Ports {
@@ -1232,7 +1268,60 @@ impl Ports {
             max_shown: MAX_SHOWN,
             quiet: false,
             show_pressure: false,
+            lights: None,
         })
+    }
+
+    /// From now on [`Ports::send`] queues each message for the
+    /// `mpfree-lights` thread, which writes it, so the audio loop never
+    /// waits for room in the MIDI port's buffer (control.rs). Allocates and
+    /// starts the thread: call it before the loop.
+    fn queue(&mut self) -> Result<(), String> {
+        let public = self
+            .public
+            .try_clone()
+            .map_err(|e| format!("the Public output for the lights' thread: {e}"))?;
+        let private = match &self.private {
+            Some(f) => Some(
+                f.try_clone()
+                    .map_err(|e| format!("the Private output for the lights' thread: {e}"))?,
+            ),
+            None => None,
+        };
+        self.lights = Some(
+            control::Lights::start(public, private)
+                .map_err(|e| format!("the lights' thread: {e}"))?,
+        );
+        Ok(())
+    }
+
+    /// A message the lights' thread could not write, for the log; None
+    /// most periods, without allocating.
+    fn queue_error(&mut self) -> Option<String> {
+        self.lights.as_mut()?.error()
+    }
+
+    /// Messages the queue had no room for so far.
+    fn queue_dropped(&self) -> u64 {
+        self.lights.as_ref().map_or(0, |l| l.dropped())
+    }
+
+    /// Stops queueing: the lights' thread writes what is left (up to a
+    /// second) and the line says what it did.
+    fn unqueue(&mut self) -> Option<String> {
+        let s = self.lights.take()?.finish(Duration::from_secs(1));
+        Some(format!(
+            "controller output (its own thread): {} messages written, {} refused by the port, {} dropped with \
+             the queue full{}",
+            s.written,
+            s.failed,
+            s.dropped,
+            if s.unfinished {
+                "; still writing at the end"
+            } else {
+                ""
+            }
+        ))
     }
 
     fn t(&self) -> f64 {
@@ -1248,6 +1337,16 @@ impl Ports {
     }
 
     fn send(&mut self, private: bool, msg: &[u8]) -> Result<(), String> {
+        if let Some(l) = self.lights.as_mut() {
+            if private && self.private.is_none() {
+                return Err("the Private output is not open".into());
+            }
+            // A full queue drops the message; the lights' thread's line at
+            // the end counts it.
+            l.send(private, msg);
+            self.sent += 1;
+            return Ok(());
+        }
         let (file, name) = if private {
             (
                 self.private
@@ -1425,6 +1524,7 @@ impl UsbKeys {
         thread::Builder::new()
             .name("usb-midi-scan".into())
             .spawn(move || {
+                let _ = cores::background();
                 // Cards seen last time (open or not): a card is tried once
                 // each time it appears.
                 let mut seen: Vec<u32> = Vec::new();
@@ -3069,6 +3169,21 @@ fn player_session(
                       Synth tab's marked knobs; {}",
                      if timed { "STOP ends" } else { "STOP silences" }));
     ports.quiet = true;
+    // The control side (control.rs): from here the controller's lights,
+    // the report's lines and the chain editor's effects are written and
+    // built by threads of their own, never in the audio loop's period.
+    if let Err(e) = ports.queue() {
+        out.note(&format!(
+            "controller output: written by the audio thread ({e})"
+        ));
+    }
+    if let Err(e) = mix.build_off_thread() {
+        out.note(&format!(
+            "chain editor: effects built on the audio thread (the builder thread: {e})"
+        ));
+    }
+    out.queue_report();
+    let (mut lights_dropped, mut lights_noted) = (0u64, Instant::now());
     let mut fx = app.start();
     // The arp's own patterns: --patterns FILE (read-only) for this start, or
     // else the ones Save kept in the store (arp/patterns.txt). Save in the
@@ -4298,6 +4413,11 @@ fn player_session(
         }
         // The mixer: every sound summed, the Level (master fader), Master
         // safety. The input strip follows the line input and Monitor.
+        // Effects the builder made go into their chains; the ones edits took
+        // out go back to it to be dropped.
+        if let Some(line) = mix.poll_built() {
+            out.note(line);
+        }
         let t_mix = Span::start();
         mix.follow(looper.line.is_open(), looper.monitor);
         let ctx = mixing::ctx(RATE, i * PERIOD as u64, app.settings.bpm, time.block());
@@ -4421,6 +4541,19 @@ fn player_session(
                     ));
                 }
             }
+        }
+        // What the lights' thread could not write, and lights the queue had
+        // no room for (at most a line a second).
+        if let Some(e) = ports.queue_error() {
+            out.note(&e);
+        }
+        let d = ports.queue_dropped();
+        if d != lights_dropped && lights_noted.elapsed() >= Duration::from_secs(1) {
+            out.note(&format!(
+                "controller output: {} messages dropped with the queue full ({d} since the start)",
+                d - lights_dropped
+            ));
+            (lights_dropped, lights_noted) = (d, Instant::now());
         }
         if last_repeat_note.elapsed() >= Duration::from_secs(1) {
             last_repeat_note = Instant::now();
@@ -4550,6 +4683,9 @@ fn player_session(
         .summaries
         .push(format!("{periods} periods: {summary}"));
     ports.quiet = false;
+    if let Some(line) = ports.unqueue() {
+        out.say(&line);
+    }
     ports.counts(out);
     for line in music.summary() {
         out.say(&line);
@@ -4620,6 +4756,8 @@ fn player_session(
     if session {
         out.say("no more pings: the controller should drop the session by itself (inferred: within about 10 s)");
     }
+    // The report is written here again once the loop is over.
+    out.unqueue_report();
     Ok(())
 }
 

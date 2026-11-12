@@ -25,6 +25,10 @@ const LISTED: u64 = 64;
 pub const STALL: Duration = Duration::from_millis(500);
 /// The most bytes one write takes (a CV output's two control changes).
 const WIRE_BYTES: usize = 6;
+/// The writer thread's SCHED_FIFO priority on the MPC: below the audio
+/// thread (70) and its lanes (69), above everything at the normal policy,
+/// so each message still leaves on its moment.
+const WRITER_FIFO: i32 = 60;
 
 /// One message (or a pair written together), and when its frame is heard.
 #[derive(Clone, Copy, Debug)]
@@ -95,7 +99,21 @@ impl Writer {
         };
         let thread = thread::Builder::new()
             .name(thread_name.into())
-            .spawn(move || write_loop(w, rx, &s, &say))?;
+            .spawn(move || {
+                // Off the sound's cores; a thread the audio thread starts
+                // no longer inherits its SCHED_FIFO (sys::realtime), so on
+                // the MPC it asks for its own, just below the lanes.
+                let _ = crate::cores::background();
+                if crate::sys::IS_DEVICE_ABI {
+                    if let Err(e) = mpfree_lanes::os::fifo(WRITER_FIFO) {
+                        let _ = say.log.send(format!(
+                            "{}: the writer runs at normal priority ({e})",
+                            say.label
+                        ));
+                    }
+                }
+                write_loop(w, rx, &s, &say)
+            })?;
         Ok(Writer {
             tx,
             log,
