@@ -221,3 +221,126 @@ fn commands_and_periods_never_allocate() {
         assert!(a.takes().count() > 3, "period {period}");
     }
 }
+
+#[test]
+fn streaming_never_allocates_on_the_audio_thread() {
+    use mpfree_audiotracks::Io;
+    use std::collections::HashMap;
+    const RATE: u32 = 22_050;
+    const BAR: u64 = 22_050; // 240 BPM
+    const BT: i64 = 3_840;
+    for period in [1usize, 128, 4096] {
+        let mut t = Transport::new(RATE, 240.0).unwrap();
+        // 4 s of memory for 30 s of recording on two tracks.
+        let mut a = AudioTracks::new(RATE, 4);
+        assert!(a.stream(true));
+        let mut b = Block::new();
+        let mut input = vec![0.0f32; 2 * period];
+        let mut out = vec![0.0f32; 2 * period];
+        for (j, s) in input.iter_mut().enumerate() {
+            *s = ((j * 31) % 97) as f32 / 97.0 - 0.5;
+        }
+        let mut disk: HashMap<(u16, u32), Vec<f32>> = HashMap::new();
+        let mut reads: Vec<(u16, u32)> = Vec::new();
+        let mut buf = vec![0.0f32; mpfree_audiotracks::CHUNK];
+        let script: Vec<(u64, Vec<A>, Vec<T>)> = vec![
+            (
+                0,
+                vec![
+                    A::Arm(0, true),
+                    A::Arm(1, true),
+                    A::SetInput(1, Input::Stereo),
+                ],
+                vec![T::Record],
+            ),
+            (15, vec![A::Arm(1, false)], vec![]),
+            (30, vec![A::Arm(0, false)], vec![T::Stop]),
+            (
+                31,
+                vec![],
+                vec![T::Locate(0), T::SetLoop(Some((4 * BT, 6 * BT)))],
+            ),
+            (32, vec![], vec![T::Play]),
+            (
+                40,
+                vec![A::Comp {
+                    take: 1,
+                    from: 4 * BT,
+                    to: 5 * BT,
+                }],
+                vec![T::Locate(10 * BT)],
+            ),
+            (44, vec![A::Undo], vec![T::SetLoop(None)]),
+            (50, vec![], vec![T::Stop]),
+        ];
+        let end = 52 * BAR;
+        let mut frame = 0u64;
+        let mut calls = 0;
+        while frame < end {
+            for (bar, cmds, tcmds) in &script {
+                let at = bar * BAR;
+                if at >= frame && at < frame + period as u64 {
+                    for c in cmds {
+                        watch(true);
+                        a.command(*c);
+                        watch(false);
+                    }
+                    for c in tcmds {
+                        t.command(at, *c);
+                    }
+                }
+            }
+            t.process(period as u32, &mut b);
+            let map = *t.tempo_map();
+            out.fill(0.0);
+            CALLS.store(0, Ordering::Relaxed);
+            watch(true);
+            a.process(&b, &map, &input, &mut out);
+            let _ = (a.stats(), a.memory(), a.unwritten(), a.peaks(0, 0, 10_000));
+            watch(false);
+            calls += CALLS.load(Ordering::Relaxed);
+            // The disk thread's side: allocation allowed there, but the
+            // tracks' calls it makes are watched.
+            loop {
+                watch(true);
+                let r = a.take_io();
+                watch(false);
+                let Some(r) = r else { break };
+                match r {
+                    Io::Write { take, chunk } => {
+                        watch(true);
+                        let n = a.chunk(take, chunk).map(|c| {
+                            buf[..c.len()].copy_from_slice(c);
+                            c.len()
+                        });
+                        watch(false);
+                        if let Some(n) = n {
+                            disk.insert((take, chunk), buf[..n].to_vec());
+                        }
+                        watch(true);
+                        a.written(take, chunk);
+                        watch(false);
+                    }
+                    Io::Read { take, chunk } => reads.push((take, chunk)),
+                    Io::Finish { .. } => {}
+                }
+            }
+            for (take, chunk) in reads.drain(..) {
+                let data = disk.get(&(take, chunk)).cloned();
+                watch(true);
+                match &data {
+                    Some(d) => {
+                        a.fill(take, chunk, d);
+                    }
+                    None => a.fill_failed(take, chunk),
+                }
+                watch(false);
+            }
+            calls += CALLS.load(Ordering::Relaxed);
+            frame += period as u64;
+        }
+        assert_eq!(calls, 0, "allocations at period {period}");
+        assert!(a.stats().full == 0, "streaming kept every recording");
+        assert!(disk.len() > 20);
+    }
+}
