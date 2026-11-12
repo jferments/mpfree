@@ -432,7 +432,7 @@ class Lab:
                 "ls -la /boot 2>&1",
                 "for p in /boot/boot.scr.uimg /boot/zImage /boot/rk3288-az01-acva.dtb /boot/rk3288-az01-acva-c.dtb; do if test -f \"$p\"; then sha256sum \"$p\" 2>&1; else echo MISSING_BOOT_ASSET:\"$p\"; fi; done",
                 "echo MPFREE_VM_SECTION_boot_script_hex",
-                "od -An -v -tx1 /boot/boot.scr.uimg 2>&1",
+                "od -v -b /boot/boot.scr.uimg 2>&1",
                 "echo MPFREE_VM_SECTION_kernel_modules",
                 "ls -la /lib/modules /lib/firmware 2>&1",
                 "echo MPFREE_VM_SECTION_310_trustpoint_unit",
