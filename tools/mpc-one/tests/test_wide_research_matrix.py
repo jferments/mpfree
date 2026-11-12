@@ -55,6 +55,10 @@ def fixture():
                 "fastboot_ram_boot_to_bootm":{"direct_call_path_found":True},
                 "image_classifier_to_fit_verify":{"direct_call_path_found":True}}}}},
         "p1":{}, "p3":{}, "ledger":{},
+        "spl":{"analyzed_functions":{"0xff705350":{
+            "pseudocode":"synthetic","machine_instruction_evidence":[{"text":"b"}]}}},
+        "updater":{"analyzed_functions":{}},
+        "library":{"analyzed_functions":{}},
         "uboot":{"analyzed_functions":{
             "0x00122c5c":{"pseudocode":"mpf_fastboot_permission()"},
             "0x00122bf8":{"pseudocode":"mpf_fastboot_permission()"}}},
@@ -74,6 +78,12 @@ class BroadMatrixTests(unittest.TestCase):
         self.assertEqual(len({x["track"] for x in report["questions"]}), 7)
         self.assertEqual(report["schema"], M.SCHEMA)
         self.assertFalse(report["vendor_code_executed"])
+        self.assertEqual(len(report["focused_static_functions"]), 18)
+        spl = next(x for x in report["focused_static_functions"]
+                   if x["address"] == "0xff705350")
+        self.assertEqual(spl["captured_machine_instructions"], 1)
+        self.assertTrue(spl["decompiled"])
+        self.assertIn("Directed Ghidra evidence inventory", M.markdown(report))
         self.assertIn("Recovery", M.markdown(report))
 
     def test_update_alias_and_permission_evidence_fails_closed(self):
