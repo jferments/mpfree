@@ -49,6 +49,7 @@
 #![forbid(unsafe_code)]
 
 pub mod save;
+pub mod stretch;
 
 use save::{Saved, TakeFile, TrackFile};
 
@@ -195,6 +196,15 @@ pub enum Command {
     Forget(u16),
     /// Forget the undo history (so takes only it used can be forgotten).
     ClearHistory,
+    /// Play take `new` wherever take `old` plays, its frames `ratio` times
+    /// as many (a stretched copy: see [`stretch`]); the regions keep their
+    /// place on the song. One undo step. Refused unless both takes are of
+    /// one track and `new` has copied in.
+    Swap {
+        old: u16,
+        new: u16,
+        ratio: f64,
+    },
 }
 
 /// A stretch of song ticks playing a stretch of a take: tick `start`
@@ -238,6 +248,8 @@ pub struct TakeInfo {
     /// loop recording is a take of its own, numbered from 0.
     pub group: u16,
     pub pass: u16,
+    /// The tempo it was recorded at (0: not known).
+    pub bpm: f64,
     /// The song tick (with its fraction) its frame 0 belongs to.
     pub anchor: f64,
     pub frames: usize,
@@ -413,6 +425,7 @@ struct Take {
     channels: u8,
     group: u16,
     pass: u16,
+    bpm: f64,
     anchor: f64,
     /// Frames written.
     frames: usize,
@@ -431,6 +444,7 @@ const NO_TAKE: Take = Take {
     track: 0,
     channels: 1,
     group: 0,
+    bpm: 0.0,
     pass: 0,
     anchor: 0.0,
     frames: 0,
@@ -831,12 +845,19 @@ impl AudioTracks {
             track: t.track as usize,
             group: t.group,
             pass: t.pass,
+            bpm: t.bpm,
             anchor: t.anchor,
             frames: t.frames,
             channels: t.channels as usize,
             recording: t.recording,
             cut_short: t.cut_short,
         })
+    }
+
+    /// An id no take has, for a take made off the audio thread (a stretch)
+    /// to load under.
+    pub fn free_take_id(&self) -> Option<u16> {
+        self.takes.iter().position(|t| !t.live).map(|i| i as u16)
     }
 
     /// Every take, oldest id first.
@@ -1177,6 +1198,35 @@ impl AudioTracks {
                 }
                 self.takes[id as usize] = NO_TAKE;
             }
+            Command::Swap { old, new, ratio } => {
+                let ok = |id: u16| {
+                    self.takes
+                        .get(id as usize)
+                        .filter(|t| t.live && !t.recording && !t.loading)
+                        .map(|t| t.track as usize)
+                };
+                let (Some(a), Some(b)) = (ok(old), ok(new)) else {
+                    return self.refuse();
+                };
+                if a != b || old == new || !ratio.is_finite() || ratio <= 0.0 {
+                    return self.refuse();
+                }
+                self.edit(
+                    a,
+                    |t, _, _| {
+                        let mut any = false;
+                        for r in &mut t.regions[..t.n] {
+                            if r.take == old {
+                                r.take = new;
+                                r.src = (r.src as f64 * ratio).round() as i64;
+                                any = true;
+                            }
+                        }
+                        any
+                    },
+                    map,
+                );
+            }
             Command::ClearHistory => {
                 self.h_done = 0;
                 self.h_redo = 0;
@@ -1213,6 +1263,7 @@ impl AudioTracks {
                 track: k.track,
                 group: k.group,
                 pass: k.pass,
+                bpm: k.bpm,
                 anchor: k.anchor,
                 frames: k.frames,
                 channels: k.channels,
@@ -1312,6 +1363,11 @@ impl AudioTracks {
             channels: f.channels as u8,
             group: f.group,
             pass: f.pass,
+            bpm: if f.bpm.is_finite() && f.bpm > 0.0 {
+                f.bpm
+            } else {
+                0.0
+            },
             anchor: f.anchor,
             loading: true,
             ..NO_TAKE
@@ -1452,6 +1508,7 @@ impl AudioTracks {
             channels: ch as u8,
             group,
             pass,
+            bpm,
             anchor: tick - lat_ticks,
             recording: true,
             ..NO_TAKE
