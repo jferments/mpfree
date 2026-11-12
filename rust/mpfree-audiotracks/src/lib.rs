@@ -79,6 +79,20 @@ const QUEUE: usize = 64;
 const RUN: usize = 128;
 /// The smallest room worth recording into, in samples (even).
 const MIN_ROOM: usize = 4096;
+/// Samples in one block of the peak table: the waveform overview keeps the
+/// lowest and highest sample of every block of the pool. Every stretch of
+/// the pool starts and ends on a block's edge, so a block never holds two
+/// takes.
+pub const PEAK_BLOCK: usize = 256;
+
+fn round_up(n: usize) -> usize {
+    n.div_ceil(PEAK_BLOCK) * PEAK_BLOCK
+}
+
+fn min_max(xs: &[f32]) -> (f32, f32) {
+    xs.iter()
+        .fold((f32::MAX, f32::MIN), |(lo, hi), &v| (lo.min(v), hi.max(v)))
+}
 
 /// What a track records from the line input.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -252,7 +266,8 @@ pub struct Memory {
     pub capacity: usize,
 }
 
-/// A stretch of the pool, in samples; start and length are even.
+/// A stretch of the pool, in samples; start and length are whole
+/// [`PEAK_BLOCK`]s.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Ext {
     start: usize,
@@ -262,16 +277,19 @@ struct Ext {
 const NO_EXT: Ext = Ext { start: 0, len: 0 };
 
 /// One memory for every take: free stretches sorted by start, merged when
-/// they meet. The list is made big enough once that it never grows.
+/// they meet, all on [`PEAK_BLOCK`] edges. The list is made big enough once
+/// that it never grows. `peaks` holds each block's lowest and highest
+/// sample, kept as the audio is written.
 struct Pool {
     data: Vec<f32>,
     free: Vec<Ext>,
     used: usize,
+    peaks: Vec<(f32, f32)>,
 }
 
 impl Pool {
     fn new(samples: usize) -> Pool {
-        let samples = samples & !1;
+        let samples = samples / PEAK_BLOCK * PEAK_BLOCK;
         let mut free = Vec::with_capacity(MAX_TAKES * MAX_EXTENTS + MAX_TRACKS + 2);
         if samples > 0 {
             free.push(Ext {
@@ -290,7 +308,50 @@ impl Pool {
             data,
             free,
             used: 0,
+            peaks: vec![(0.0, 0.0); samples / PEAK_BLOCK],
         }
+    }
+
+    /// Samples `start..start + len` were just written: their blocks' peaks
+    /// take them in. A take writes each stretch in order from its start,
+    /// so a write that begins on a block's edge is that block's first and
+    /// replaces what an earlier take left there.
+    fn note(&mut self, start: usize, len: usize) {
+        let mut p = start;
+        let end = start + len;
+        while p < end {
+            let b = p / PEAK_BLOCK;
+            let to = end.min((b + 1) * PEAK_BLOCK);
+            let (lo, hi) = min_max(&self.data[p..to]);
+            let pk = &mut self.peaks[b];
+            *pk = if p.is_multiple_of(PEAK_BLOCK) {
+                (lo, hi)
+            } else {
+                (pk.0.min(lo), pk.1.max(hi))
+            };
+            p = to;
+        }
+    }
+
+    /// The lowest and highest sample of `start..start + len`, from the
+    /// table for whole blocks.
+    fn range_peaks(&self, start: usize, len: usize) -> (f32, f32) {
+        let (mut lo, mut hi) = (f32::MAX, f32::MIN);
+        let mut p = start;
+        let end = start + len;
+        while p < end {
+            let b = p / PEAK_BLOCK;
+            let to = end.min((b + 1) * PEAK_BLOCK);
+            let (l, h) = if p.is_multiple_of(PEAK_BLOCK) && to == (b + 1) * PEAK_BLOCK {
+                self.peaks[b]
+            } else {
+                min_max(&self.data[p..to])
+            };
+            lo = lo.min(l);
+            hi = hi.max(h);
+            p = to;
+        }
+        (lo, hi)
     }
 
     fn largest(&self) -> Option<usize> {
@@ -790,19 +851,34 @@ impl AudioTracks {
     }
 
     /// The lowest and highest sample of frames `from..to` of a take, over
-    /// its channels: for a waveform on the screen.
+    /// its channels: for a waveform on the screen. It reads the peak table
+    /// for whole blocks of [`PEAK_BLOCK`] samples, so a long stretch costs
+    /// little; it works while the take records (up to what is written) and
+    /// does not allocate. A host shares the result with the screen thread
+    /// as it shares the rest of the state.
     pub fn peaks(&self, id: u16, from: usize, to: usize) -> Option<(f32, f32)> {
         let t = self.takes.get(id as usize).filter(|t| t.live)?;
         let to = to.min(t.frames);
         if from >= to {
             return None;
         }
+        let ch = t.channels as usize;
         let (mut lo, mut hi) = (f32::MAX, f32::MIN);
-        for k in from..to {
-            for c in 0..t.channels as usize {
-                let s = t.sample(&self.pool.data, k, c).unwrap_or(0.0);
-                lo = lo.min(s);
-                hi = hi.max(s);
+        let mut base = 0;
+        for e in &t.ext[..t.n_ext] {
+            let frames_in = e.len / ch;
+            let a = from.max(base);
+            let b = to.min(base + frames_in);
+            if a < b {
+                let (l, h) = self
+                    .pool
+                    .range_peaks(e.start + (a - base) * ch, (b - a) * ch);
+                lo = lo.min(l);
+                hi = hi.max(h);
+            }
+            base += frames_in;
+            if base >= to {
+                break;
             }
         }
         Some((lo, hi))
@@ -1240,7 +1316,7 @@ impl AudioTracks {
             loading: true,
             ..NO_TAKE
         };
-        let need = (need + 1) & !1;
+        let need = round_up(need);
         loop {
             let have: usize = self.takes[id].ext[..self.takes[id].n_ext]
                 .iter()
@@ -1342,6 +1418,7 @@ impl AudioTracks {
                 let k = at - base;
                 let c = (e.len - k).min(count - w);
                 self.pool.data[e.start + k..e.start + k + c].copy_from_slice(&audio[at..at + c]);
+                self.pool.note(e.start + k, c);
                 w += c;
                 base += e.len;
             }
@@ -1447,7 +1524,7 @@ impl AudioTracks {
         tk.recording = false;
         if tk.n_ext > 0 {
             let last = &mut tk.ext[tk.n_ext - 1];
-            let used = (tk.wpos + 1) & !1;
+            let used = round_up(tk.wpos).min(last.len);
             let rest = Ext {
                 start: last.start + used,
                 len: last.len - used,
@@ -1472,7 +1549,8 @@ impl AudioTracks {
         let mut steal: Option<(usize, usize)> = None;
         for (k, o) in self.takes.iter().enumerate() {
             if k != id && o.live && o.recording && o.n_ext > 0 {
-                let rest = ((o.ext[o.n_ext - 1].len - o.wpos) / 2) & !1;
+                let rest =
+                    (o.ext[o.n_ext - 1].len - round_up(o.wpos)) / 2 / PEAK_BLOCK * PEAK_BLOCK;
                 if rest > steal.map_or(0, |s| s.1) {
                     steal = Some((k, rest));
                 }
@@ -1549,6 +1627,7 @@ impl AudioTracks {
                     }
                 }
             }
+            self.pool.note(e.start + tk.wpos, count * ch);
             tk.wpos += count * ch;
             tk.frames += count;
             j += count;
