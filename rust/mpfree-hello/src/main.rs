@@ -79,16 +79,21 @@ mod kit;
 mod looper_page;
 mod looping;
 mod mixing;
+mod modmix;
+mod modpanels;
 mod perf;
 mod perform;
 mod play_page;
 mod play_widgets;
+#[cfg(test)]
+mod rt_safety;
 mod sample_page;
 mod sampler;
 mod synth;
 mod sys;
 mod sysinfo;
 mod time;
+mod touch_dev;
 mod touchlab_page;
 
 use mpfree_controller::midi::{Message, Parser};
@@ -1959,7 +1964,18 @@ struct SeqPads<'a> {
     synth: Option<&'a mut synth::Synth>,
     flashes: [u8; 16],
     hits: u64,
+    /// The live treatment's inputs (velocity curve, pad layout).
+    live: app::LiveMap,
+    /// The pads the arps' notes started this period, and their velocity,
+    /// for the screen (pad down, or a repeat's flash).
+    live_hits: [(u8, u8); MAX_LIVE_HITS],
+    n_live: usize,
+    /// Arp notes on a pad with no sound.
+    silent: u64,
 }
+
+/// Pad notes from the arps one period can show; more still sound.
+const MAX_LIVE_HITS: usize = 64;
 
 impl time::Pads for SeqPads<'_> {
     fn hit_at(&mut self, pad: usize, velocity: u8, offset: u32) -> bool {
@@ -1989,6 +2005,73 @@ impl time::Pads for SeqPads<'_> {
         match self.synth.as_mut() {
             Some(s) => s.all_off(),
             None => self.player.stop_all(),
+        }
+    }
+
+    /// An arp's note: the pads played live (through the armed track's arp,
+    /// a latched arp, or a clip through its arp). It gets the velocity
+    /// curve; with a synth pad layout it is a MIDI note for the synth and
+    /// its pad (if any) is what shows and records; otherwise it is a pad.
+    /// Returns what the armed track records as heard.
+    fn live(&mut self, o: &mpfree_play::Out) -> Option<mpfree_play::Event> {
+        use mpfree_play::Event;
+        let notes = self.synth.is_some() && self.live.plays_notes();
+        match o.event {
+            Event::NoteOn { note, velocity } => {
+                let v = self.live.velocity(velocity);
+                let pad = if notes {
+                    // A note no pad has (an arp octave up, a scale run)
+                    // still plays; only a pad's own note shows and records.
+                    if let Some(s) = self.synth.as_mut() {
+                        s.note_on_note(note, v, o.offset);
+                    }
+                    self.hits += 1;
+                    self.live.pad_of_note(note)?
+                } else {
+                    let pad = usize::from(note);
+                    if pad >= 16 {
+                        return None;
+                    }
+                    match self.synth.as_mut() {
+                        Some(s) => {
+                            s.note_on(pad, v, o.offset);
+                            self.hits += 1;
+                        }
+                        None if self.player.hit_at(pad, v, o.offset) => self.hits += 1,
+                        None => self.silent += 1,
+                    }
+                    pad
+                };
+                if self.n_live < MAX_LIVE_HITS {
+                    self.live_hits[self.n_live] = (pad as u8, v);
+                    self.n_live += 1;
+                }
+                Some(Event::NoteOn {
+                    note: pad as u8,
+                    velocity: v,
+                })
+            }
+            Event::NoteOff { note } if notes => {
+                if let Some(s) = self.synth.as_mut() {
+                    s.note_off_note(note, o.offset);
+                }
+                let pad = self.live.pad_of_note(note)?;
+                Some(Event::NoteOff { note: pad as u8 })
+            }
+            Event::NoteOff { note } => {
+                // The synth's note ends; a Grains pad stops when let go;
+                // one-shot sounds ignore it.
+                match self.synth.as_mut() {
+                    Some(s) => s.note_off(usize::from(note), o.offset),
+                    None => self.player.release_at(usize::from(note), o.offset),
+                }
+                Some(o.event)
+            }
+            Event::AllOff => {
+                self.stop_all();
+                None
+            }
+            Event::Lock { .. } | Event::Lane { .. } | Event::Unlock { .. } => None,
         }
     }
 }
@@ -2186,6 +2269,12 @@ fn player_session(
     // The Grain tab's cloud box, while the audio thread holds it: filled and
     // sent back with the playheads (never freed on this thread).
     let mut cloud: Option<Box<sampler::Cloud>> = None;
+    // The sampler's line input, while it is on; and one handed back, on
+    // its way to the screen thread to be freed there.
+    let mut rec_feed: Option<Box<sampler::RecFeed>> = None;
+    let mut rec_back: Option<Box<sampler::RecFeed>> = None;
+    // What the sampler's input records from (the Rec tab's Source).
+    let mut rec_source = sampler::RecSource::Line;
     // 2. The controller (USB; it may still be starting at power-on).
     let wait = if timed { Duration::ZERO } else { DEVICE_WAIT };
     progress(
@@ -2271,6 +2360,18 @@ fn player_session(
     ) {
         out.say(&line);
     }
+    // Touch tuning (the Dev tab's Touch page), kept as the "touch" settings.
+    let touch = store.settings(app::saved::TOUCH);
+    if !touch.is_empty() {
+        let t = mpfree_touch::tuning::Tuning::from_lookup(|k| touch.get_f64(k));
+        out.show(gui::ToUi::TouchTuning(t));
+    }
+    // --theme wins over the saved theme for this run; otherwise the screen
+    // switches to the saved one (Prefs > Appearance).
+    if let Some(t) = &o.theme {
+        app.settings.theme = t.clone();
+    }
+    out.show(gui::ToUi::Settings(app.settings.clone()));
     out.say(&match (&o.data, store.saves()) {
         (None, _) => {
             "saving: off (no --data); settings and found buttons reset at every start".to_string()
@@ -2349,7 +2450,6 @@ fn player_session(
     let (mut pads_l, mut pads_r) = ([0f32; PERIOD], [0f32; PERIOD]);
     let mut frames = [0i32; PERIOD * 2];
     let mut buf = [0u8; 256];
-    let mut events = mpfree_arp::Events::new();
     let total_periods = if timed {
         o.seconds * RATE as u64 / PERIOD as u64
     } else {
@@ -2399,7 +2499,11 @@ fn player_session(
         while let Ok(a) = from_ui.try_recv() {
             match a {
                 gui::FromUi::Pad { pad, down: true } if pad < 16 => {
-                    fx.extend(app.pad_down(pad, app.settings.screen_velocity));
+                    let v = app.settings.screen_velocity;
+                    if let Some(ev) = app.pressed_event(pad, v, true) {
+                        time.pad_pressed(0, ev);
+                    }
+                    fx.extend(app.pad_down(pad, v));
                     held[pad] = true;
                     awaiting[pad] = true;
                     screen_hits += 1;
@@ -2408,6 +2512,9 @@ fn player_session(
                     }
                 }
                 gui::FromUi::Pad { pad, down: false } if pad < 16 => {
+                    if let Some(ev) = app.pressed_event(pad, 0, false) {
+                        time.pad_pressed(0, ev);
+                    }
                     fx.extend(app.pad_up(pad));
                     held[pad] = false;
                     awaiting[pad] = false;
@@ -2456,6 +2563,17 @@ fn player_session(
                 gui::FromUi::ArpChip => fx.extend(app.toggle_panel()),
                 gui::FromUi::Time(a) => fx.extend(time_action(out, &mut time, &mut app, a)),
                 gui::FromUi::DebugPage(k) => fx.extend(app.debug_page(k)),
+                gui::FromUi::SaveTouch(t) => {
+                    let mut settings = mpfree_store::Settings::default();
+                    for (k, v) in t.to_pairs() {
+                        settings.set_str(k, &v);
+                    }
+                    if !store.saves() {
+                        out.note("touch tuning: not saved (no data folder); it stays until the power goes off");
+                    } else if let Err(e) = store.save_settings(app::saved::TOUCH, &settings) {
+                        out.note(&format!("not saved: {}: {e}", app::saved::TOUCH));
+                    }
+                }
                 gui::FromUi::MapRow(k) => fx.extend(app.map_row(k)),
                 gui::FromUi::MapButton(k) => fx.extend(app.map_button(k)),
                 gui::FromUi::Looper(k) => fx.extend(app.looper_tap(k)),
@@ -2480,6 +2598,19 @@ fn player_session(
                 } => {
                     player.audition(kit, pad, layer, start, end, app.settings.screen_velocity);
                 }
+                gui::FromUi::SampleHit {
+                    kit,
+                    pad,
+                    velocity,
+                    down,
+                } if kit == player.kit() => {
+                    if down {
+                        player.hit_at(pad, velocity, 0);
+                    } else {
+                        player.release_at(pad, 0);
+                    }
+                }
+                gui::FromUi::SampleHit { .. } => {}
                 gui::FromUi::SampleView(mut swap) => {
                     if player.swap_view(&mut swap) {
                         views_swapped += 1;
@@ -2493,6 +2624,31 @@ fn player_session(
                         out.note("sample: two kit views waiting to go back; one freed on the audio thread");
                     }
                     view_back = Some(gui::ToUi::SampleViewBack(swap));
+                }
+                gui::FromUi::SampleInput(feed) => {
+                    let old = match feed {
+                        Some(f) => rec_feed.replace(f),
+                        None => rec_feed.take(),
+                    };
+                    if let Some(old) = old {
+                        // Only one goes back at a time; an older one is
+                        // freed here (not expected).
+                        if rec_back.replace(old).is_some() {
+                            out.note("sample: two line input buffers going back; one freed on the audio thread");
+                        }
+                    }
+                }
+                gui::FromUi::SampleSource(src) => {
+                    if src != rec_source {
+                        rec_source = src;
+                        if !mix.set_rec_source(src) {
+                            out.note("sample: the mixer has no such strip to resample");
+                        }
+                        // What comes in from now on is from the new source.
+                        if let Some(f) = rec_feed.as_mut() {
+                            f.restart();
+                        }
+                    }
                 }
                 gui::FromUi::SampleGrains(c) => {
                     // Only one box exists, so this is not expected; the
@@ -2536,6 +2692,9 @@ fn player_session(
             match m.event {
                 Some(ControlEvent::PadDown { pad, velocity }) if (pad as usize) < 16 => {
                     let pad = pad as usize;
+                    if let Some(ev) = app.pressed_event(pad, velocity, true) {
+                        time.pad_pressed(0, ev);
+                    }
                     fx.extend(app.pad_down(pad, velocity));
                     held[pad] = true;
                     awaiting[pad] = true;
@@ -2544,6 +2703,9 @@ fn player_session(
                     }
                 }
                 Some(ControlEvent::PadUp { pad }) if (pad as usize) < 16 => {
+                    if let Some(ev) = app.pressed_event(pad as usize, 0, false) {
+                        time.pad_pressed(0, ev);
+                    }
                     fx.extend(app.pad_up(pad as usize));
                     held[pad as usize] = false;
                     awaiting[pad as usize] = false;
@@ -2754,6 +2916,8 @@ fn player_session(
                 app::Effect::ClearConsole => out.show(gui::ToUi::ClearConsole),
                 app::Effect::TouchLab => out.show(gui::ToUi::TouchLab),
                 app::Effect::CalibrateTouch => out.show(gui::ToUi::CalibrateTouch),
+                app::Effect::TouchWheel(d) => out.show(gui::ToUi::TouchWheel(d)),
+                app::Effect::TouchStep(d) => out.show(gui::ToUi::TouchStep(d)),
                 app::Effect::Arp(v) => out.show(gui::ToUi::Arp(Box::new(v))),
                 app::Effect::Patterns(list) => out.show(gui::ToUi::Patterns(list)),
                 app::Effect::Workspace(w) => out.show(gui::ToUi::Workspace(Box::new(w))),
@@ -2908,82 +3072,38 @@ fn player_session(
         let time_span = Span::start();
         app.set_rolling(time.info().state.rolling());
         time.follow_tempo(app.settings.bpm);
-        // The transport runs first, so the arp can follow this period's
-        // clock (TimeHost::arp_clock); the clips play and record after.
+        // The transport runs first; the clips and the arps follow its clock.
         time.advance(PERIOD as u32);
-        // The arp follows this period's transport (None while stopped: it runs on its own).
-        app.set_clock(time.arp_clock());
-        app.process(PERIOD as u32, &mut events);
-        engines.stop(engines::TIME, time_span);
+        // The armed track is the one the pads and the arp screens play.
+        let armed = time.armed().unwrap_or(0);
+        if armed != app.track() {
+            fx.extend(app.set_track(armed));
+        }
         if let Some(app::Effect::Arp(v)) = app.arp_poll() {
             out.show(gui::ToUi::Arp(Box::new(v)));
         }
-        // With the synth on the pads the arp's events carry MIDI notes (its
-        // pad layout); the screen and the clips get the pad a note is on.
-        let notes = synth_on && app.arp_plays_notes();
-        for ev in events.as_slice() {
-            let (slot, velocity) = match ev.kind {
-                mpfree_arp::EventKind::On { note, velocity } => (note, velocity),
-                mpfree_arp::EventKind::Off { note } if notes => {
-                    synth.note_off_note(note, ev.offset);
-                    if let Some(pad) = app.pad_of_note(note) {
-                        time.pad(ev.offset, mpfree_play::Event::NoteOff { note: pad as u8 });
-                    }
-                    continue;
-                }
-                // The synth's note ends; a Grains pad stops when let go; one-shot sounds ignore it.
-                mpfree_arp::EventKind::Off { note } if synth_on => {
-                    synth.note_off(note as usize, ev.offset);
-                    time.pad(ev.offset, mpfree_play::Event::NoteOff { note });
-                    continue;
-                }
-                mpfree_arp::EventKind::Off { note } => {
-                    player.release_at(note as usize, ev.offset);
-                    time.pad(ev.offset, mpfree_play::Event::NoteOff { note });
-                    continue;
-                }
-            };
-            let v = app.velocity(velocity);
-            let pad = if notes {
-                // A note no pad has (an arp octave up, a scale run) still
-                // plays; only a pad's own note shows and records.
-                synth.note_on_note(slot, v, ev.offset);
-                hits += 1;
-                let Some(pad) = app.pad_of_note(slot) else {
-                    continue;
-                };
-                time.pad(
-                    ev.offset,
-                    mpfree_play::Event::NoteOn {
-                        note: pad as u8,
-                        velocity: v,
-                    },
-                );
-                pad
-            } else {
-                slot as usize
-            };
-            if pad >= 16 {
-                continue;
-            }
-            if !notes {
-                // Recorded into the armed track while the transport records.
-                time.pad(
-                    ev.offset,
-                    mpfree_play::Event::NoteOn {
-                        note: slot,
-                        velocity: v,
-                    },
-                );
-                if synth_on {
-                    synth.note_on(pad, v, ev.offset);
-                    hits += 1;
-                } else if player.hit_at(pad, v, ev.offset) {
-                    hits += 1;
-                } else {
-                    silent_hits += 1;
-                }
-            }
+        // The clips and every track's arp (the pads go through the armed
+        // track's) play into the kit or the synth: the clips as recorded,
+        // the arps' notes as live playing (SeqPads::live).
+        let mut seq = SeqPads {
+            player: &mut player,
+            synth: synth_on.then_some(&mut synth),
+            flashes: [0; 16],
+            hits: 0,
+            live: app.live_map(),
+            live_hits: [(0, 0); MAX_LIVE_HITS],
+            n_live: 0,
+            silent: 0,
+        };
+        time.period_arps(PERIOD as u32, &mut seq, &mut app.arps);
+        // The time engine: the transport, the clips and every track's arp
+        // (the pads' notes start here; their sounds are the sampler's or
+        // the synth's).
+        engines.stop(engines::TIME, time_span);
+        // The pads' own hits: the first sound of a press shows the pad
+        // down; the arp's repeats flash it.
+        for &(pad, v) in &seq.live_hits[..seq.n_live] {
+            let pad = usize::from(pad);
             if awaiting[pad] {
                 awaiting[pad] = false;
                 out.show(gui::ToUi::PadDown { pad, velocity: v });
@@ -2994,15 +3114,17 @@ fn player_session(
                 out.show(gui::ToUi::PadFlash { pad, velocity: v });
             }
         }
-        // The clips play the kit's pads; the screen's pads flash with them.
-        let mut seq = SeqPads {
-            player: &mut player,
-            synth: synth_on.then_some(&mut synth),
-            flashes: [0; 16],
-            hits: 0,
-        };
-        time.period(PERIOD as u32, &mut seq);
+        silent_hits += seq.silent;
         hits += seq.hits;
+        // The clips' parameter locks: to the mixer's mod engine, on their
+        // frames of this period.
+        for &(offset, addr, value) in time.locks() {
+            mix.lock(offset, addr, value);
+        }
+        for &(offset, addr, value) in time.lanes() {
+            mix.lane(offset, addr, value);
+        }
+        time.clear_locks();
         // The Play page: where the hits fell (Drum view), and the pattern.
         for h in time.hits() {
             out.show(gui::ToUi::Hit(*h));
@@ -3126,6 +3248,21 @@ fn player_session(
         let loop_took = t_loop.elapsed();
         loop_time.add(loop_took);
         engines.add(engines::LOOPER, loop_took);
+        // The same line input into the sampler's buffer, with the bar lines
+        // (the Sample page's Rec tab and Skip back). A point in the mix
+        // goes in after the mixer, below.
+        if let (Some(f), sampler::RecSource::Line) = (rec_feed.as_mut(), rec_source) {
+            let t_rec = Instant::now();
+            let (l, r) = looper.input();
+            f.period(time.block(), l, r, 0);
+            engines.add(engines::SAMPLER, t_rec.elapsed());
+        }
+        if let Some(f) = rec_back.take() {
+            if let Err(gui::ToUi::SampleInputBack(f)) = out.try_show(gui::ToUi::SampleInputBack(f))
+            {
+                rec_back = Some(f);
+            }
+        }
         // The mixer: every sound summed, the Level (master fader), Master
         // safety. The input strip follows the line input and Monitor.
         let t_mix = Span::start();
@@ -3145,6 +3282,15 @@ fn player_session(
         // The metronome goes on top; it keeps the samples within ±1 itself.
         let p = p.max(time.mix_click(&mut left, &mut right));
         engines.stop(engines::MIX, t_mix);
+        // Resampling: the point in the mix the Rec tab records (before the
+        // metronome), with the bar lines as late as that point hears them.
+        if let (Some(f), sampler::RecSource::Mix(..)) = (rec_feed.as_mut(), rec_source) {
+            if let Some((l, r, latency)) = mix.rec_capture() {
+                let t_rec = Instant::now();
+                f.period(time.block(), l, r, latency);
+                engines.add(engines::SAMPLER, t_rec.elapsed());
+            }
+        }
         if let Some(st) = mix.poll_state(Instant::now()) {
             out.show(gui::ToUi::Mixer(Box::new(st)));
         }
@@ -3229,8 +3375,8 @@ fn player_session(
                     } else {
                         latched.join(" ")
                     },
-                    events.dropped,
-                    app.engine.overflow
+                    app.arps.dropped(),
+                    app.arps.overflow()
                 ));
             }
             window_repeats = 0;
@@ -3244,7 +3390,7 @@ fn player_session(
                                in {} periods, at most {voices} sounds at once, peak {:.1} dBFS, {clipped} periods \
                                clipped; pad to sound {}; note engine dropped {} events, overflow {}; {}; {}",
                               totals.xruns + play.xruns, totals.periods + play.periods,
-                              20.0 * peak.max(1e-6).log10(), lat.describe(), events.dropped, app.engine.overflow,
+                              20.0 * peak.max(1e-6).log10(), lat.describe(), app.arps.dropped(), app.arps.overflow(),
                               sampler_status(&player, &render_time), time.describe()));
             out.note(&format!("status: {}", synth_status(&synth, &synth_time)));
             out.note(&format!(
@@ -3252,6 +3398,7 @@ fn player_session(
                 looper.describe(),
                 loop_time.describe()
             ));
+            out.note(&format!("status: {}", mix.modu.describe()));
             out.note(&format!(
                 "status: {}",
                 engines::log_line(&engines.lifetime())
@@ -3283,7 +3430,7 @@ fn player_session(
                         synth_max_us,
                         worst_us: (render_time.max + synth_time.max).as_secs_f32() * 1e6,
                         steals: c.steals,
-                        dropped: c.dropped_events + events.dropped,
+                        dropped: c.dropped_events + app.arps.dropped(),
                         peak_grains: c.peak_grains,
                     }
                 },
@@ -3336,7 +3483,8 @@ fn player_session(
     out.say(&format!("buttons: {}", app.map.describe()));
     out.say(&format!(
         "note engine: {repeats} repeats, {} events dropped, {} notes that could not be queued",
-        events.dropped, app.engine.overflow
+        app.arps.dropped(),
+        app.arps.overflow()
     ));
     out.say(&format!("play done ({stopped_by}): {hits} hits played ({screen_hits} from the screen), {silent_hits} on \
                       pads without a sound, kits used {}, level {level_db:.1} dB, at most {voices} sounds at once, \
@@ -3353,6 +3501,7 @@ fn player_session(
         out.say(&looper.line.close());
     }
     out.say(&format!("{}; {}", looper.describe(), loop_time.describe()));
+    out.say(&mix.modu.describe());
     if let Some(line) = param_log.flush(&synth) {
         out.say(&line);
     }

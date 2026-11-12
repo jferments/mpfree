@@ -19,9 +19,11 @@ Start with the [project README](../README.md) for what MPFree is and where it st
 - [Scenes and follow actions](project/scenes.md): a row of the launch grid launched together on the bar line, with its mutes switching there, and follow actions that chain clips and scenes (`rust/mpfree-perform`, 2026-11-11).
 - [Capture](project/capture.md): keep what was just played, even without recording: the always-on history, the last phrase cut to whole bars, a new clip in place or notes into the playing clip, undo, the Capture button, and a WAV demo (`rust/mpfree-capture`, 2026-11-11).
 - [Synths](project/synths.md): the node interface every instrument and effect uses, and the native synths: Poly (subtractive), FM (DX7-style, with DX7 banks), Drums (a model per pad: kick, snare, clap, hats, toms, percussion, with choke groups and kits) and Pluck (Karplus-Strong strings and modal mallets), pad pressure, the Synth tab, demos and costs (`rust/mpfree-node`, `rust/mpfree-synth`, `rust/mpfree-synth-ui`, 2026-11-11).
+- [Sound presets](project/presets.md): any instrument's sound saved as a plain-text preset file and loaded back to the bit, with settings by name, so old and new presets load (`rust/mpfree-instruments`, 2026-11-11).
 - [Track host](project/track-host.md): each track's instrument fed by the sequencer, the pads and the arp and rendered into its mixer track: slots, routing, notes counted per source, sample-exact parameters, swaps that ring out, STOP, and no allocation on the audio thread (`rust/mpfree-track`, 2026-11-11).
 - [Plugins: the CLAP host](project/plugins.md): CLAP instruments and effects as nodes on a track or in an insert chain: loading `.clap` files, parameters, sample-exact events, state, the main and audio threads, and our own test plugins (`rust/mpfree-clap`), and the sandbox that runs each plugin in its own process with a deadline each block and a restart after a crash (`rust/mpfree-plughost`, 2026-11-11).
 - [Wavetable synth](project/wavetable.md): the third native synth: table oscillators scanned by Position, warps, band-limited tables, factory tables, WAV and sample import, memory and device cost estimates (`rust/mpfree-synth`, 2026-11-11).
+- [Concurrency](project/concurrency.md): using every core of the MPC One: where threads run today, the core plan, and lanes, which run part of each audio period on another core with a deadline (`rust/mpfree-lanes`, 2026-11-11).
 
 ## Decisions
 
@@ -61,6 +63,7 @@ Start with the [project README](../README.md) for what MPFree is and where it st
 | M14 | [Swipes, release velocity, fling and hold jitter](milestones/m14-gestures.md) | Workstation, CI (device tuning pending) |
 | M15 | [Touch lab: owner-paced touch steps and journal lines](milestones/m15-touch-lab.md) | Workstation, CI; page in the pad player (Prefs, Touch lab) |
 | M16 | ["Calibrate touch": orientation from four corner taps](milestones/m16-calibrate-touch.md) | Workstation, CI; page in the pad player (Prefs, Calibrate touch) |
+| M17 | [The Dev tab's Touch page: measuring and tuning touch](milestones/m17-touch-tuning.md) | Workstation, CI; page in the pad player (Dev, Touch) |
 | GPU | [Panfrost offscreen GLES qualification](milestones/gpu-panfrost-offscreen.md), [kit](../tools/mpc-one/gpu-qualification/README.md) | MPC One |
 
 M4 was host-only safety tooling and the [handoff state-machine simulator](../rust/mpfree-handoff-model/src/lib.rs); it has no separate report. See the [roadmap](project/roadmap.md).

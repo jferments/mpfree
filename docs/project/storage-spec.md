@@ -39,5 +39,5 @@
 
 - **Prefs:** pad velocity curve, screen pad velocity, latch mode, audio buffer, show developer tools. Line input is never saved and is Off at every start.
 - **The buttons found with Map controls and the guide,** so the MPC is mapped once.
-- **Touch calibration** (the touch thread).
+- **Touch tuning** (the touch thread, #145): `settings/touch.conf`, written by Save on Dev > Touch. Keys are `mpfree_touch::tuning::Param::key` (offset-x, offset-y, scale-x, scale-y, hold-filter-px, tap-slop-px, tap-max-ms, long-press-ms, swipe-min-px, swipe-min-speed). Each value is clamped to its bounds when read, so a damaged file can't make touch unusable ([M17](../milestones/m17-touch-tuning.md)).
 - **Arp patterns** (the arp thread): `files/arp/patterns.txt`, the patterns and custom scales Save keeps. `--save-patterns` is gone; `--patterns FILE` only reads a library for one start.

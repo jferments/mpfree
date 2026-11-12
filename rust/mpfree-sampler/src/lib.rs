@@ -7,6 +7,8 @@
 //! - [`chop`]: chop modes (transient, beat, silence) from the analysers.
 //! - [`dsp`]: interpolation, envelopes, the filter.
 //! - [`record`]: the rolling "skip back" buffers and takes.
+//! - [`autosample`]: plays an instrument note by note, records each note
+//!   and builds a keygroup instrument from the takes.
 //! - [`Sampler`] and [`PreparedSample`] below: the first prototype (M3/M6),
 //!   kept for `mpfree-headless` and the `mpfree-sampler` CLI; its WAV loader
 //!   also feeds [`model::Source::from_prepared`].
@@ -15,6 +17,7 @@
 //! prepared memory. Design: `docs/project/sampler-design.md`.
 #![forbid(unsafe_code)]
 
+pub mod autosample;
 pub mod chop;
 pub mod dsp;
 pub mod engine;
