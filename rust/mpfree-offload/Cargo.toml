@@ -1,0 +1,14 @@
+[package]
+name = "mpfree-offload"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Render partitions on another computer: numbered blocks over UDP, answered L periods later, with the MPC as the only clock (desktop prototype)"
+
+[dependencies]
+mpfree-node = { path = "../mpfree-node" }
+mpfree-fx = { path = "../mpfree-fx" }
+mpfree-lanes = { path = "../mpfree-lanes" }
+
+[dev-dependencies]
+mpfree-prof = { path = "../mpfree-prof", features = ["counting-alloc"] }
