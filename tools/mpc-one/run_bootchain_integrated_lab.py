@@ -1219,7 +1219,7 @@ class Lab:
                 and spl_checks["second_handoff_indirect_dereference_observed"]
                 and spl_checks["second_handoff_slot_is_context_plus_0x0c"]
                 and spl_checks["five_device_order_entries_captured"]
-                and spl_checks["ten_media_mapping_entries_captured"]
+                and spl_checks["eight_media_mapping_entries_captured"]
                 and power["power_source_key_verified"]
                 and power["fastboot_getvar_dispatches_to_adc_probe"]
                 and power["saradc_channel_0_used"]
