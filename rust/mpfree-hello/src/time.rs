@@ -41,7 +41,7 @@
 //! kit.
 
 use mpfree_capture::{keep, moves_for_clip, Capture, Now, Pending};
-use mpfree_perform::{Perform, When};
+use mpfree_perform::{Perform, SongRecorder, When};
 use mpfree_play::{Cue, Event, Launch, Out, PlayView, Player, Recorder, Sink, Takes, TrackArps};
 use mpfree_seq::arrange::{scene_length, scenes_to_song, song_to_scenes};
 use mpfree_seq::mpfree_moves::{Input, MoveLog};
@@ -272,6 +272,11 @@ pub struct TimeHost {
     /// on it.
     song_view: bool,
     selected: Option<usize>,
+    /// Live to song: records what the grid plays into the song.
+    song_rec: SongRecorder,
+    /// What happened to the last recording when the transport stopped,
+    /// for the log ([`TimeHost::take_song_note`]).
+    song_note: Option<String>,
     armed: Option<usize>,
     takes: Takes,
     click: Click,
@@ -339,6 +344,8 @@ impl TimeHost {
             song: false,
             song_view: false,
             selected: None,
+            song_rec: SongRecorder::default(),
+            song_note: None,
             armed: Some(0),
             takes: Takes::default(),
             click: Click::new(rate),
@@ -696,11 +703,35 @@ impl TimeHost {
                 self.morph.a = a.min(SLOTS - 1);
                 self.morph.b = b.min(SLOTS - 1);
                 self.changed = true;
+                let rows = (self.morph.a, self.morph.b);
+                self.song_rec.morph(info.position, self.morph.pos, rows);
                 Ok(format!(
                     "morph: rows {} and {}",
                     self.morph.a + 1,
                     self.morph.b + 1
                 ))
+            }
+            TimeAction::Morph(pos) if self.song_rec.recording() => {
+                // The sound waits for the mod engine; the song keeps the
+                // move already.
+                self.morph.pos = pos.clamp(0.0, 1.0);
+                self.changed = true;
+                let rows = (self.morph.a, self.morph.b);
+                self.song_rec.morph(info.position, self.morph.pos, rows);
+                Ok(format!(
+                    "morph {:.2} into the song (the mod engine is not in the pad player yet)",
+                    self.morph.pos
+                ))
+            }
+            TimeAction::RecSong(on) => {
+                let rows = (self.morph.a, self.morph.b);
+                self.song_rec
+                    .arm(on, &self.project, &self.launches, self.morph.pos, rows);
+                self.changed = true;
+                if on {
+                    return Ok("rec song: what the grid plays goes into the song".into());
+                }
+                self.keep_song().map(|line| format!("rec song off: {line}"))
             }
             TimeAction::Morph(_)
             | TimeAction::SnapBack
@@ -747,6 +778,37 @@ impl TimeHost {
                 Ok(line)
             }
         }
+    }
+
+    /// What live to song put into the song when the transport stopped
+    /// (or why it could not: the recording is then kept, and goes in when
+    /// Rec song is turned off), once, for the log.
+    pub fn take_song_note(&mut self) -> Option<String> {
+        self.song_note.take()
+    }
+
+    /// Live to song: the passes recorded so far into the song, compiled
+    /// in. A line for the log.
+    fn keep_song(&mut self) -> Result<String, String> {
+        if !self.song_rec.waiting() {
+            return Ok("nothing recorded".into());
+        }
+        let before = self.project.arrangement.clone();
+        let r = self
+            .song_rec
+            .finish(&mut self.project)
+            .map_err(|e| format!("rec song: {e:?}"))?;
+        // New placements shift the indices.
+        self.selected = None;
+        if let Err(e) = self.compile() {
+            self.project.arrangement = before;
+            self.compile()?;
+            return Err(e);
+        }
+        Ok(format!(
+            "{} placements and {} morph points into the song",
+            r.placements, r.morph_points
+        ))
     }
 
     /// The Song view's edits of the arrangement (and, for Song → scenes,
@@ -1131,6 +1193,9 @@ impl TimeHost {
             }
         }
         self.recorder.process(&self.view, &self.block);
+        // Live to song follows the transport and the cues that started.
+        let song_was = self.song_rec.recording();
+        self.song_rec.period(&self.block, self.player.started());
         // Cues that started on a bar line become the tracks' launches: the
         // view is compiled again.
         let mut compile = false;
@@ -1193,6 +1258,14 @@ impl TimeHost {
                     .view
                     .put_move(k.track, k.slot, k.target, k.map, points, k.len);
             }
+        }
+        // The transport stopped: what live to song recorded goes into the
+        // song (it compiles).
+        if song_was && !self.song_rec.recording() && self.song_rec.waiting() {
+            self.song_note = Some(match self.keep_song() {
+                Ok(line) => format!("rec song: {line}"),
+                Err(e) => e,
+            });
         }
         if compile {
             // The clips only gained or lost notes and locks, and cues became
@@ -1262,6 +1335,7 @@ impl TimeHost {
         st.song_view = self.song_view;
         st.song_on = self.song;
         st.selected = self.selected;
+        st.song_rec = self.song_rec.armed();
         st
     }
 
@@ -1971,6 +2045,69 @@ mod tests {
         assert_eq!(h.state().placements.len(), 4);
         h.act(TimeAction::SongView(true)).unwrap();
         assert!(h.state().song_view);
+        assert_eq!(h.dropped(), 0);
+    }
+
+    /// Rec song on, row 1 then row 2 launched on the grid, STOP: the song
+    /// holds what was played, and plays it back the same in song mode.
+    #[test]
+    fn rec_song_records_the_grid_into_the_song() {
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut pads = Fake::default();
+        let one_bar = |note: u8| {
+            let mut c = Clip::new("beat", 3840);
+            c.notes = vec![mpfree_seq::Note::new(0, 100, note, 100)];
+            c
+        };
+        for (t, base) in [(0, 4), (1, 30)] {
+            h.project.tracks[t].slots[0] = Some(one_bar(base));
+            h.project.tracks[t].slots[1] = Some(one_bar(base + 1));
+        }
+        h.act(TimeAction::LaunchScene(0)).unwrap();
+        h.act(TimeAction::RecSong(true)).unwrap();
+        assert!(h.state().song_rec);
+        h.command(Command::Play);
+        run(&mut h, &mut pads, BAR / 2, &[]);
+        h.act(TimeAction::LaunchScene(1)).unwrap();
+        run(&mut h, &mut pads, 3 * BAR - 1000, &[]);
+        h.command(Command::Stop);
+        run(&mut h, &mut pads, 3 * BAR, &[]);
+        let note = h.take_song_note().unwrap();
+        assert_eq!(
+            note,
+            "rec song: 4 placements and 0 morph points into the song"
+        );
+        let st = h.state();
+        let placed: Vec<(usize, Tick, Tick)> = st
+            .placements
+            .iter()
+            .map(|p| (p.track, p.start, p.start + p.length))
+            .collect();
+        // Bar 1 row 1, bars 2 and 3 row 2, to where it stopped.
+        let end = st.placements[1].start + st.placements[1].length;
+        assert!((2 * 3840 + 3000..3 * 3840).contains(&end), "{placed:?}");
+        assert_eq!(
+            placed,
+            [(0, 0, 3840), (0, 3840, end), (1, 0, 3840), (1, 3840, end)]
+        );
+        let heard = std::mem::take(&mut pads.hits);
+        // Back to the top with nothing launched, in song mode.
+        h.act(TimeAction::RecSong(false)).unwrap();
+        h.act(TimeAction::StopAll).unwrap();
+        h.act(TimeAction::SongMode(true)).unwrap();
+        h.command(Command::Locate(0));
+        h.command(Command::Play);
+        let from = pads.frame;
+        run(&mut h, &mut pads, from + 3 * BAR - 1000, &[]);
+        let again: Vec<(u64, usize)> = pads.hits.iter().map(|&(f, p, _)| (f - from, p)).collect();
+        let heard: Vec<(u64, usize)> = heard.iter().map(|&(f, p, _)| (f, p)).collect();
+        assert_eq!(again.len(), heard.len(), "{again:?} {heard:?}");
+        for (a, b) in again.iter().zip(&heard) {
+            assert!(
+                a.0.abs_diff(b.0) <= 128 && a.1 == b.1,
+                "{again:?} {heard:?}"
+            );
+        }
         assert_eq!(h.dropped(), 0);
     }
 

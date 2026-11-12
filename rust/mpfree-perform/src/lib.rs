@@ -30,12 +30,17 @@
 //! [`morph`]: the scene morph (T10), two rows' stored values on the mod
 //! engine's scenes A and B.
 //!
+//! [`song`]: live to song (T11), what the launch grid plays recorded into
+//! the arrangement.
+//!
 //! Nothing here runs on the audio thread; the player only sees the cues.
 
 #![forbid(unsafe_code)]
 
 pub mod morph;
+pub mod song;
 pub use morph::{save_scene, Loaded, SceneMorph};
+pub use song::{Recorded, SongRecorder};
 
 use mpfree_play::{anchored, Cue, Launch, PlayView, Started};
 use mpfree_seq::scenes::follow_target;
