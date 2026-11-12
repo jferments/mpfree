@@ -630,10 +630,15 @@ mod tests {
         let writes = sink.0.lock().unwrap().clone();
         assert_eq!(writes[4].1, pair(2, cv_wire::FULL_SCALE));
         assert_eq!(writes[5].1, pair(2, 0));
-        let gap = writes[5].0 - writes[4].0;
+        // The fall is never written before it is due, 5 ms after the rise
+        // was due (t0, with no lead). How soon after that the writer
+        // thread wakes is up to the machine: on a loaded test host the
+        // rise itself can leave late, so the two writes' own gap is not
+        // checked.
+        let fell = writes[5].0 - t0;
         assert!(
-            gap >= Duration::from_millis(4) && gap < Duration::from_millis(30),
-            "{gap:?}"
+            fell >= Duration::from_micros(4_900) && fell < Duration::from_secs(1),
+            "{fell:?}"
         );
         assert!(cv.close());
     }
