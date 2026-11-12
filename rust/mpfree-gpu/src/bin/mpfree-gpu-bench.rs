@@ -125,6 +125,7 @@ struct Page {
     gpu_tick: f64,
     cpu_full: f64,
     cpu_tick: f64,
+    draws: usize,
 }
 
 fn screens(dir: &Path, frames: usize) -> Result<(), String> {
@@ -172,6 +173,8 @@ fn screens(dir: &Path, frames: usize) -> Result<(), String> {
     let started = Instant::now();
     let mut pages = Vec::new();
     let mut worst_diff = 0u32;
+    // The atlas's fallbacks over every page: clears, and masks drawn alone.
+    let (mut cleared, mut alone) = (0usize, 0usize);
     for path in &files {
         let name = path
             .file_stem()
@@ -215,6 +218,8 @@ fn screens(dir: &Path, frames: usize) -> Result<(), String> {
             .collect();
         let d = compare(&want, &got);
         worst_diff = worst_diff.max(d.max);
+        cleared += drawn.atlas_cleared;
+        alone += drawn.masks_alone;
         store.apply(tick);
         r.play(&gpu, &tick.ops, &store, &tick.dropped);
         r.finish(&gpu);
@@ -261,6 +266,7 @@ fn screens(dir: &Path, frames: usize) -> Result<(), String> {
             gpu_tick: redraw.at(0.5),
             cpu_full: sw_full.at(0.5),
             cpu_tick: sw_tick.at(0.5),
+            draws: drawn.draws,
         });
     }
     // The software path's copy to the panel (the banded turn), whole frame.
@@ -290,6 +296,13 @@ fn screens(dir: &Path, frames: usize) -> Result<(), String> {
         worst(|p| p.gpu_full),
         median(|p| p.gpu_tick),
         worst(|p| p.gpu_tick)
+    );
+    let mut draws: Vec<usize> = pages.iter().map(|p| p.draws).collect();
+    draws.sort_unstable();
+    println!(
+        "summary: gpu draw calls per whole page median {} worst {}; atlas cleared {cleared} times, {alone} masks drawn alone",
+        draws[draws.len() / 2],
+        draws.last().copied().unwrap_or(0)
     );
     println!(
         "summary: software whole page median {:.2} worst {}; software tick median {:.2} worst {}",
