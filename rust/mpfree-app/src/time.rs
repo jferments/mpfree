@@ -56,7 +56,8 @@ use mpfree_seq::steps::{Change, Grid, Step};
 use mpfree_seq::{Clip, ModelError, Project, Track, SLOTS};
 use mpfree_time_ui::editor::{EditAction, Editor};
 use mpfree_time_ui::view::{
-    bars_label, clips_after, EditInfo, MorphInfo, TimeAction, TimeState, TransportInfo,
+    bars_label, clips_after, AudioAction, EditInfo, MorphInfo, RegionId, TimeAction, TimeState,
+    TransportInfo,
 };
 use mpfree_transport::time::Tick;
 use mpfree_transport::{Block, Command, Mark, State, Transport};
@@ -321,6 +322,9 @@ pub struct TimeHost {
     /// on it.
     song_view: bool,
     selected: Option<usize>,
+    /// The audio region picked on the Song view; it and `selected` are
+    /// never both set (`TimeState::pick`).
+    region: Option<RegionId>,
     /// Live to song: records what the grid plays into the song.
     song_rec: SongRecorder,
     /// What happened to the last recording when the transport stopped,
@@ -424,6 +428,7 @@ impl TimeHost {
             song: false,
             song_view: false,
             selected: None,
+            region: None,
             song_rec: SongRecorder::default(),
             song_note: None,
             scene_morph: SceneMorph::default(),
@@ -922,9 +927,22 @@ impl TimeHost {
             }
             TimeAction::SelectPlacement(i) => {
                 self.selected = i.filter(|&i| i < self.project.arrangement.placements.len());
+                self.region = None;
                 self.changed = true;
                 Ok(String::new())
             }
+            // The selection's kind: a region picked drops the placement.
+            TimeAction::Audio(AudioAction::Pick(r)) => {
+                self.region = r;
+                if r.is_some() {
+                    self.selected = None;
+                }
+                self.changed = true;
+                Ok(String::new())
+            }
+            // The audio tracks' engine is the app's to wire (AudioHost);
+            // until it takes these, say so rather than drop them quietly.
+            TimeAction::Audio(a) => Err(format!("audio tracks: {a:?} is not wired yet")),
             TimeAction::ScenesToSong
             | TimeAction::SongToScenes
             | TimeAction::MakeUnique(_)
@@ -1707,6 +1725,7 @@ impl TimeHost {
         st.song_view = self.song_view;
         st.song_on = self.song;
         st.selected = self.selected;
+        st.region = self.region;
         st.song_rec = self.song_rec.armed();
         st.edit = self.editor.as_ref().and_then(|ed| {
             let clip = self.project.clip(ed.track, ed.slot)?;
@@ -2725,6 +2744,28 @@ mod tests {
         h.act(TimeAction::SongView(true)).unwrap();
         assert!(h.state().song_view);
         assert_eq!(h.dropped(), 0);
+        // The selection's kind: a region picked drops the placement, and
+        // a placement (or empty space) drops the region.
+        use mpfree_time_ui::view::Pick;
+        let r = RegionId { track: 1, index: 0 };
+        h.act(TimeAction::SelectPlacement(Some(0))).unwrap();
+        h.act(TimeAction::Audio(AudioAction::Pick(Some(r))))
+            .unwrap();
+        let st = h.state();
+        assert_eq!(
+            (st.selected, st.region, st.pick()),
+            (None, Some(r), Some(Pick::Region(r)))
+        );
+        h.act(TimeAction::SelectPlacement(Some(1))).unwrap();
+        assert_eq!(h.state().pick(), Some(Pick::Placement(1)));
+        h.act(TimeAction::Audio(AudioAction::Pick(Some(r))))
+            .unwrap();
+        h.act(TimeAction::SelectPlacement(None)).unwrap();
+        assert_eq!(h.state().pick(), None);
+        // The rest is the audio tracks' engine: not wired here, and it
+        // says so rather than doing nothing quietly.
+        let e = h.act(TimeAction::Audio(AudioAction::Split(r))).unwrap_err();
+        assert!(e.contains("not wired yet"), "{e}");
     }
 
     /// Rec song on, row 1 then row 2 launched on the grid, STOP: the song
