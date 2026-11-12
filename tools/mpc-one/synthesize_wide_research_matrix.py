@@ -18,6 +18,9 @@ SOURCE = {
     "p3": "static/wide/p3-uboot-ghidra.json",
     "ledger": "static/wide/evidence-ledger.json",
     "uboot": "static/v11/v11-ghidra-uboot.json",
+    "spl": "static/v11/v11-ghidra-spl.json",
+    "updater": "static/v11/v11-ghidra-az01-update.json",
+    "library": "static/v11/v11-ghidra-libaz01-prog.json",
     "usb": "usb-protocol-evidence.json",
     "framing": "usb-ff617a-framing.json",
 }
@@ -138,7 +141,7 @@ def build(read):
     row("U-Boot","Is Fastboot unlocked on the physical MPC?","hardware-gated",
         "Ghidra shows a global permission check but not live initialization.",
         "Use read-only runtime inquiry if reachable.","static/v11/v11-ghidra-uboot.json")
-    row("U-Boot","Is the P3 uImage signature authenticated?",
+    row("U-Boot","Are P3 legacy uImage CRCs intact (not authenticated)?",
         confirmed(b["p3"]["header_crc32_valid"] and b["p3"]["payload_crc32_valid"]),
         "Header/payload CRC32 are valid but are not cryptographic authentication.",
         "Separate FIT signature checks from legacy checksum validation.","static/wide/storage-env-boot-dtb.json")
@@ -213,10 +216,35 @@ def build(read):
     row("Recovery","Is independent MaskROM restore verified?","hardware-gated",
         "No physical MaskROM entry, owner-built SRAM loader, or independent full eMMC recovery yet.",
         "Do not alter boot partitions until every recovery gate has proof.","physical MPC")
+    # Bounded, source-only directed decompiler footprint across four roles.
+    # No proprietary pseudocode or raw instruction text is placed in the
+    # public repository; these derived details remain private in the ZIP.
+    focus={
+        "spl":("0xff704004","0xff705316","0xff705350","0xff7054a4","0xff705310"),
+        "uboot":("0x00100fe4","0x00101744","0x0010f388","0x001226b4",
+                 "0x00122834","0x00122854","0x00122bf8","0x00122c5c"),
+        "updater":("0x0001091c","0x00010be4"),
+        "library":("0x0001a314","0x0001a674","0x0001d644"),
+    }
+    directed=[]
+    for role, addresses in focus.items():
+        funcs=d[role].get("analyzed_functions",{})
+        for address in addresses:
+            f=funcs.get(address,{})
+            directed.append({
+                "role":role,"address":address,
+                "recognized":bool(f),
+                "decompiled":bool(f.get("pseudocode")),
+                "captured_machine_instructions":len(f.get("machine_instruction_evidence",[])),
+                "direct_callees":len(f.get("graph",{}).get("callees",[])),
+                "computed_call_sites":len(f.get("graph",{}).get("computed",[])),
+                "instruction_capture_limited":bool(f.get("instruction_capture_limited",False)),
+            })
     counts={x:sum(r["status"]==x for r in records) for x in
             ("static-supported","upstream-supported","unresolved","hardware-gated")}
     return {
-        "schema":SCHEMA,"questions":records,"counts":counts,"sources":SOURCE,
+        "schema":SCHEMA,"questions":records,"counts":counts,
+        "focused_static_functions":directed,"sources":SOURCE,
         "public_references":PUBLIC,"physical_device_access":False,
         "vendor_code_executed":False,
         "next_round_scope":[
@@ -247,6 +275,13 @@ def markdown(report):
                 "Evidence: "+q["evidence_source"],"",
                 "Next: "+q["next_step"],"",
             ])
+    lines.extend(["","## Directed Ghidra evidence inventory","",
+                  "Read-only instruction counts, no copied pseudocode.",""])
+    for f in report["focused_static_functions"]:
+        lines.append("- "+f["role"]+" "+f["address"]+
+                     ": decompiled="+str(f["decompiled"])+
+                     ", ARM instructions="+str(f["captured_machine_instructions"])+
+                     ", computed calls="+str(f["computed_call_sites"]))
     lines.extend(["","## Next run breadth guarantees"])
     lines.extend("- "+v for v in report["next_round_scope"])
     return "\n".join(lines)+"\n"
