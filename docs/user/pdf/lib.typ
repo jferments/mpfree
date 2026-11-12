@@ -25,7 +25,7 @@
 #let mpfbox(kind, body) = {
   let c = if kind == "mpc" { mpc } else if kind == "warning" { warn } else { accent }
   block(width: 100%, inset: (x: 12pt, y: 10pt), radius: 4pt, fill: c.lighten(88%),
-    stroke: (left: 3pt + c), breakable: true, body)
+    stroke: (left: 3pt + c), breakable: false, body)
 }
 // The banner under a page's title: changing or planned.
 #let mpfstatus(kind, body) = {
