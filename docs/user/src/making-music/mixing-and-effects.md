@@ -89,6 +89,8 @@ Tap an effect in a strip's insert row to open the **chain editor** on it, in the
 
 The Q-Links turn the selected effect's first four knobs, and the data wheel works as Q-Link 1. **‹ Mixer** goes back to the mixer as you left it.
 
+To give a knob a control of its own, touch it and tap **Learn to a Q-Link**, then turn a Q-Link, or move a knob or fader on your keyboard (see [MIDI Learn](midi-and-cv.md#midi-learn)).
+
 {{shot: chain | The chain editor on the drum bus, with Drive selected.}}
 
 ## Macros
