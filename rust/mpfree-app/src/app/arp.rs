@@ -1025,18 +1025,18 @@ impl App {
 
 // ------------------------------------------------------------ pad layouts
 
-/// The synth's pad layout feeding the arp (agreed hook with the Hello and
+/// The synth's pad layout feeding the arp (agreed hook with the app and
 /// synth threads, docs/project/scales.md "The arp on a pad layout"). Without
 /// a layout the arp is fed pad slots 0..15 as before (a kit, or the synth's
 /// plain chromatic pads: slot 0 counts as C). With one, each pad presses its
 /// layout notes (a chord pad presses every note of its chord, root last),
 /// and the arp's events carry MIDI notes for the synth to play as they are.
 /// The audio loop's side (calling these when the synth is on the pads, and
-/// the synth playing a note rather than a pad) is the Hello thread's wiring.
+/// the synth playing a note rather than a pad) is the app thread's wiring.
 #[cfg_attr(not(test), allow(dead_code))]
 impl App {
     /// The synth's pads now play `layout` (from `mpfree_scale::pads::layout`;
-    /// the Hello thread calls it when the synth goes on the pads, and again on
+    /// the app thread calls it when the synth goes on the pads, and again on
     /// PAD BANK or a layout change), or `None` for slots (a kit). Allocates
     /// nothing. Pads held across a change between slots and notes are let go,
     /// since their old values mean something else now; a change from one
