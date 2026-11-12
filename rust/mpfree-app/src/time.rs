@@ -483,7 +483,6 @@ impl TimeHost {
     /// Follow another device's MIDI clock with these options (the
     /// project's MIDI setup: follow start/stop, follow position), or not
     /// (None). Cheap to call every period: only a change starts afresh.
-    #[allow(dead_code)] // The MIDI thread's M4 wires it into main.rs.
     pub fn follow(&mut self, follow: Option<Follow>) {
         self.audio.follow(follow);
     }
@@ -493,14 +492,12 @@ impl TimeHost {
     /// (or earlier, when the bytes have their own time). Anything but
     /// clock, Start, Continue, Stop and Song Position is skipped; the
     /// options given to [`TimeHost::follow`] say what follows.
-    #[allow(dead_code)] // The MIDI thread's M4 wires it into main.rs.
     pub fn clock_in(&mut self, frame: u64, bytes: &[u8]) {
         self.audio.clock_in(frame, bytes);
     }
 
     /// The first frame of the coming period on the transport's frame
     /// clock, which [`TimeHost::clock_in`] counts in.
-    #[allow(dead_code)] // The MIDI thread's M4 wires it into main.rs.
     pub fn next_frame(&self) -> u64 {
         self.audio.next_frame()
     }
@@ -508,7 +505,6 @@ impl TimeHost {
     /// The followed clock's tempo while it arrives, for the app's tempo
     /// (the chip and TAP TEMPO's start). None while not following, or
     /// with no clock arriving.
-    #[allow(dead_code)] // The MIDI thread's M4 wires it into main.rs.
     pub fn followed_bpm(&self) -> Option<f64> {
         self.audio.followed_bpm()
     }
