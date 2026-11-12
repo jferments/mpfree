@@ -48,6 +48,15 @@ class Tests(unittest.TestCase):
         table=next(f for f in found if int(f['base_vaddr'],16)==base)
         self.assertEqual(table['matched_callback_count'],4)
         self.assertNotIn('stream_partition',table['callbacks'])
+    def test_v11_runner_renames_reused_v10_output_paths(self):
+        source=(ROOT/'tools/mpc-one/run_boot_updater_v11.py').read_text()
+        self.assertIn('def invoke_v11(',source)
+        self.assertIn("newprefix='v11-ghidra-'+role",source)
+        self.assertIn("result['report']=newprefix+'.json'",source)
+        gh=(ROOT/'tools/ghidra/MPFreeBackendSelectorV11.py').read_text()
+        self.assertIn("mpfree_v11_pinned_",gh)
+        self.assertIn("disassemble(a)",gh)
+
     def test_requires_verified_v10_prior_and_two_elves(self):
         txt=(ROOT/'tools/mpc-one/run_boot_updater_v11.py').read_text()
         for string in ('--prior-v10','check_previous','verify_source',
