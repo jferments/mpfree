@@ -67,8 +67,43 @@ fn scene(c: &mut dyn Canvas, fonts: &mut Fonts, k: u32) {
     );
 }
 
+/// A page of text in rows, each row clipped differently, with a rounded
+/// strip behind it: no images, so it can all go in one draw call.
+fn text_page(c: &mut dyn Canvas, fonts: &mut Fonts) {
+    let (w, h) = c.size();
+    c.fill_rect(Rect::new(0, 0, w, h), Color::rgb(0x0E1118));
+    for row in 0..24 {
+        let y = 12 + row * 32;
+        c.set_clip(Rect::new(0, y - 4, w - row * 20, 30));
+        c.fill_round_rect(
+            Rect::new(8, y - 2, 340, 28),
+            8,
+            Color::rgb(0x223344 + row as u32 * 0x010203),
+        );
+        let face = [FontId::Sans, FontId::Bold, FontId::Mono][row as usize % 3];
+        let px = 13.0 + (row % 5) as f32 * 3.0;
+        let text = format!(
+            "Track {row}: pad {} - {} BPM, swing 56 %",
+            row * 7,
+            90 + row
+        );
+        let ink = Color::rgb(0xF0F0F0).with_alpha(170 + (row as u8 % 4) * 25);
+        fonts.face(face).draw(c, px, 16, y + 18, ink, &text);
+    }
+}
+
 /// The software path's frame for `rotation`, as `fb.rs` sends it.
 fn software(nw: usize, nh: usize, rotation: Rotation, k: u32) -> (Vec<u32>, Recorder) {
+    software_of(nw, nh, rotation, &|c, f| scene(c, f, k))
+}
+
+/// The software path's frame of `draw`, and its display list.
+fn software_of(
+    nw: usize,
+    nh: usize,
+    rotation: Rotation,
+    draw: &dyn Fn(&mut dyn Canvas, &mut Fonts),
+) -> (Vec<u32>, Recorder) {
     let layout = FbLayout {
         geometry: Geometry::new(nw, nh, nw * 4, 32).unwrap(),
         rotation,
@@ -76,7 +111,7 @@ fn software(nw: usize, nh: usize, rotation: Rotation, k: u32) -> (Vec<u32>, Reco
     let (w, h) = layout.logical_size();
     let mut fonts = Fonts::embedded();
     let mut soft = SoftCanvas::new(w, h);
-    scene(&mut soft, &mut fonts, k);
+    draw(&mut soft, &mut fonts);
     let mut bytes = Vec::new();
     layout.rows(&soft, 0, nh, &mut bytes);
     let px = bytes
@@ -87,7 +122,7 @@ fn software(nw: usize, nh: usize, rotation: Rotation, k: u32) -> (Vec<u32>, Reco
         .collect();
     let mut rec = Recorder::new(w, h);
     rec.begin_frame();
-    scene(&mut rec, &mut Fonts::embedded(), k);
+    draw(&mut rec, &mut Fonts::embedded());
     (px, rec)
 }
 
@@ -162,6 +197,89 @@ fn a_frame_keeps_the_last_one_where_it_draws_nothing() {
     let after = r.read_native(&gpu);
     let changed = before.iter().zip(&after).filter(|(a, b)| a != b).count();
     assert!(changed > 0 && changed <= 100, "{changed} pixels changed");
+}
+
+#[test]
+fn text_shapes_and_clips_are_one_draw_call() {
+    let gpu = gpu();
+    let (want, rec) = software_of(800, 1280, Rotation::Deg270, &text_page);
+    let masks = rec
+        .ops()
+        .iter()
+        .filter(|op| matches!(op, Op::Mask { .. }))
+        .count();
+    let mut r = Renderer::new(&gpu, 800, 1280, Rotation::Deg270).unwrap();
+    let s = r.play(&gpu, rec.ops(), rec.store(), &[]);
+    let d = compare(&want, &r.read_native(&gpu));
+    eprintln!(
+        "{} ops ({masks} glyphs) in {} draws, {} uploads; {} pixels differ, at most {}",
+        rec.ops().len(),
+        s.draws,
+        s.uploads,
+        d.differ,
+        d.max
+    );
+    assert!(masks > 500, "{masks} glyphs");
+    assert_eq!((s.draws, s.atlas_cleared, s.masks_alone), (1, 0, 0));
+    assert!(d.max <= 3 && d.over_1 * 1000 < want.len(), "{d:?}");
+    // Again: everything is in the atlas already.
+    let again = r.play(&gpu, rec.ops(), rec.store(), &[]);
+    assert_eq!((again.draws, again.uploads), (1, 0));
+}
+
+#[test]
+fn a_full_atlas_is_cleared_and_draws_the_same_picture() {
+    let gpu = gpu();
+    let (want, rec) = software_of(800, 1280, Rotation::Deg270, &text_page);
+    let mut big = Renderer::new(&gpu, 800, 1280, Rotation::Deg270).unwrap();
+    big.play(&gpu, rec.ops(), rec.store(), &[]);
+    let roomy = big.read_native(&gpu);
+    // Room for two rows of glyphs, and too narrow for the widest.
+    let (mut wide, mut tall) = (0, 0);
+    for op in rec.ops() {
+        if let Op::Mask { id, .. } = op {
+            let m = rec.store().mask(*id).unwrap();
+            (wide, tall) = (wide.max(m.w as i32), tall.max(m.h as i32));
+        }
+    }
+    let atlas = (wide - 1, ((tall + 7) & !7) * 2);
+    let mut small = Renderer::with_atlas(&gpu, 800, 1280, Rotation::Deg270, atlas).unwrap();
+    let s = small.play(&gpu, rec.ops(), rec.store(), &[]);
+    eprintln!(
+        "atlas {}x{}: {} draws, {} uploads, cleared {} times, {} masks alone",
+        atlas.0, atlas.1, s.draws, s.uploads, s.atlas_cleared, s.masks_alone
+    );
+    assert!(s.atlas_cleared > 0, "{s:?}");
+    assert!(s.masks_alone > 0, "{s:?}");
+    assert!(
+        small.read_native(&gpu) == roomy,
+        "a small atlas changed the picture"
+    );
+    let d = compare(&want, &roomy);
+    assert!(d.max <= 3 && d.over_1 * 1000 < want.len(), "{d:?}");
+}
+
+#[test]
+fn a_dropped_mask_is_uploaded_again_when_it_comes_back() {
+    let gpu = gpu();
+    let (_, rec) = software_of(800, 1280, Rotation::Deg270, &text_page);
+    let mut r = Renderer::new(&gpu, 800, 1280, Rotation::Deg270).unwrap();
+    r.play(&gpu, rec.ops(), rec.store(), &[]);
+    let before = r.read_native(&gpu);
+    let ids: Vec<u32> = rec
+        .ops()
+        .iter()
+        .filter_map(|op| match op {
+            Op::Mask { id, .. } => Some(*id),
+            _ => None,
+        })
+        .collect();
+    let mut unique = ids.clone();
+    unique.sort_unstable();
+    unique.dedup();
+    let s = r.play(&gpu, rec.ops(), rec.store(), &unique[..3]);
+    assert_eq!((s.draws, s.uploads), (1, 3));
+    assert!(r.read_native(&gpu) == before);
 }
 
 #[test]

@@ -246,7 +246,9 @@ where it pays. Before any of it runs in the app, `mpfree-gpu-bench`
   degrees): the first frame with its uploads, the whole page again (what a
   page change costs), the redraw a tick later, reading the frame back, the
   software path's times for the same lists and its copy to the panel, and how
-  far the GPU's picture is from the software one.
+  far the GPU's picture is from the software one. A summary line gives the
+  draw calls per page and how often the glyph atlas was cleared or a mask
+  was too big for it (both fallbacks, so both are counted).
 - `compute`: an FIR filter over a stereo block as an OpenGL ES 3.1 compute
   shader, uploaded, run and read back, against the same job on one CPU core:
   one period with 64 and with 1024 taps, and 32 periods with 1024 taps. It

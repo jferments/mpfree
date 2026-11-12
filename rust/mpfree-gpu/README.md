@@ -14,8 +14,18 @@ and compute" tab, and the renderer behind
   `libEGL.so.1` at run time, so this crate links against no GPU library and
   builds anywhere; it fails, saying why, where there is none.
 - The frame stays between lists, as the software canvas does, so a frame
-  only redraws what changed. Runs of rectangles and rounded rectangles are
-  one draw call; each text mask and image is uploaded once, as a texture.
+  only redraws what changed.
+- Shapes and text go in one draw call. Masks (glyphs, stroke masks) are
+  uploaded once into a shared texture, the atlas (2048 x 1024, 2 MiB), and
+  one shader draws both shapes and masks, so a run of them is a single
+  call. Clips cost no call: each quad is cut to the clip on whole pixels
+  before it is drawn. Every one of the 59 sample pages draws in one call
+  (it was 672 at the median before the atlas). An image is a call of its
+  own. When the atlas is full the renderer draws what is waiting, clears
+  it, and uploads masks again as they are used; a mask bigger than the
+  atlas is drawn alone. Both are counted in `DrawStats` (`atlas_cleared`,
+  `masks_alone`) and the benchmark prints them; neither happened on the
+  sample pages.
 
 It is its own Cargo workspace, outside `rust/Cargo.toml`, because it is a
 normal dynamically linked program (it loads the system's EGL), while the app
@@ -84,6 +94,3 @@ times there are an emulator's and mean nothing.
   shared memory (the wire format in `mpfree_ui::record` is that feed).
 - Showing the frame on the panel without reading it back (DRM/KMS page
   flips): it changes the display settings in RAM and waits for Jay's go.
-- A glyph atlas, so text is one draw call per run instead of one per glyph.
-  The benchmark shows why: about half of a page's calls are text masks, and
-  each is a draw call of its own.
