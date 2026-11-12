@@ -5,8 +5,9 @@
 //! locks on every track, trig conditions, ratchets and FILL, and FX
 //! moves on every track and recorded from Perform FX gestures, and song
 //! mode: a track playing only placements, one linked and one made unique,
-//! and a track going back to the song after its clip stops) at period
-//! sizes from 1 to 4096 frames.
+//! and a track going back to the song after its clip stops, and pad
+//! pressure played on every note and recorded on the armed track) at
+//! period sizes from 1 to 4096 frames.
 //!
 //! This test file is its own program, so its global allocator (the only
 //! unsafe code here, a pass-through to the system allocator) does not
@@ -23,7 +24,9 @@ use mpfree_play::{
 };
 use mpfree_seq::mpfree_moves::{Input, Kind, Map, Target};
 use mpfree_seq::mpfree_param::{OnTrack, Owner, ParamAddr, RelAddr, Strip};
-use mpfree_seq::{Clip, Cond, Lock, MorphRows, Note, Placement, Project, Quantise, Speed, Track};
+use mpfree_seq::{
+    Clip, Cond, Lock, MorphRows, Note, Placement, Project, Quantise, Speed, TouchPoint, Track,
+};
 use mpfree_transport::time::Swing;
 use mpfree_transport::{Block, Command, Transport};
 
@@ -72,6 +75,8 @@ struct Counter {
     song: u64,
     /// The song's own lane's values (the morph).
     morph: u64,
+    /// Pressure values.
+    pressure: u64,
 }
 impl Sink for Counter {
     fn send(&mut self, o: Out) {
@@ -82,6 +87,7 @@ impl Sink for Counter {
         self.lanes += u64::from(matches!(o.event, Event::Lane { .. }));
         self.song += u64::from(o.track == 5 && matches!(o.event, Event::NoteOn { .. }));
         self.morph += u64::from(o.track == SONG_TRACK && matches!(o.event, Event::Lane { .. }));
+        self.pressure += u64::from(matches!(o.event, Event::Pressure { .. }));
         if o.dest == 0 || o.dest == ALL {
             self.arp.input(o.offset, o.event);
         }
@@ -112,8 +118,20 @@ fn playing_never_allocates() {
                     Cond::First,
                 ][k as usize % 6],
                 ratchet: 1 + (k % 3) as u8,
+                touch: mpfree_seq::Touch::NONE,
             })
             .collect();
+        // Pressure on every note: four values over its length.
+        for k in 0..c.notes.len() {
+            let len = c.notes[k].len as u32;
+            let run: Vec<TouchPoint> = (0..4)
+                .map(|j| TouchPoint {
+                    at: len * j / 4,
+                    value: ((k as u32 * 5 + j * 30) % 128) as u8,
+                })
+                .collect();
+            c.notes[k].touch = c.add_touch(&run).unwrap();
+        }
         // Locks on notes, trigless ones, and pad locks.
         c.locks = (0..(4 * (i as i64 + 2)))
             .map(|k| {
@@ -229,12 +247,14 @@ fn playing_never_allocates() {
         lanes: 0,
         song: 0,
         morph: 0,
+        pressure: 0,
     };
     let mut arp_notes = 0u64;
     let mut rec = Recorder::new();
     let mut recorded = 0usize;
     let mut recorded_locks = 0usize;
     let mut recorded_moves = 0usize;
+    let mut recorded_touch = 0usize;
     let mut started = 0usize;
 
     watch(true);
@@ -293,6 +313,16 @@ fn playing_never_allocates() {
                 note: ((i + 4) % 7) as u8,
             },
         );
+        // Pad pressure on the held pads, moving in big and small steps.
+        for k in 0..3u64 {
+            rec.input(
+                (i as u32 * (7 + k as u32)) % n,
+                Event::Pressure {
+                    note: ((i + k) % 7) as u8,
+                    value: ((i * 3 + k * 40) % 128) as u8,
+                },
+            );
+        }
         // Knob moves on the recording track become locks: the
         // instrument's, a pad's own, and a strip's.
         let on = [OnTrack::Inst, OnTrack::Pad(note), OnTrack::Strip][(i % 3) as usize];
@@ -328,6 +358,11 @@ fn playing_never_allocates() {
         recorded += rec.taken().len();
         recorded_locks += rec.taken_locks().len();
         recorded_moves += rec.taken_moves().count();
+        recorded_touch += rec
+            .taken()
+            .iter()
+            .filter(|k| !rec.touch_points(&k.note).is_empty())
+            .count();
     }
     watch(false);
     assert_eq!(
@@ -351,4 +386,7 @@ fn playing_never_allocates() {
     assert!(sink.lanes > 2000, "{} lane values", sink.lanes);
     assert!(sink.song > 500, "{} song notes", sink.song);
     assert!(sink.morph > 100, "{} morph values", sink.morph);
+    assert!(sink.pressure > 2000, "{} pressure values", sink.pressure);
+    assert!(recorded_touch > 200, "{recorded_touch} notes with pressure");
+    assert_eq!(rec.touch_dropped(), 0);
 }

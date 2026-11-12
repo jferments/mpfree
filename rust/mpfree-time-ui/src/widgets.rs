@@ -1173,16 +1173,29 @@ impl Widget for TakeList {
                 t.text_faint,
                 "No takes yet",
             );
-            let b = rest.take_top(24).0;
-            if b.bottom() <= limit {
+            // One line, or two in a narrow panel (Arrange beside the
+            // Q-Link column).
+            const HELP: &str = "REC records one; Capture keeps what you just played";
+            let lines: Vec<&str> = if cx.measure(FontId::Sans, t.size_small, HELP) <= body.w {
+                vec![HELP]
+            } else {
+                vec!["REC records one;", "Capture keeps what you played"]
+            };
+            let mut rest = rest;
+            for line in lines {
+                let (b, after) = rest.take_top(24);
+                if b.bottom() > limit {
+                    break;
+                }
                 cx.text(
                     FontId::Sans,
                     t.size_small,
                     b,
                     Align::Left,
                     t.text_faint,
-                    "REC records one; Capture keeps what you just played",
+                    line,
                 );
+                rest = after;
             }
         }
         let mut y = body.y;

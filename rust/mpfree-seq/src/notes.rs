@@ -33,9 +33,14 @@
 //! the step editor keeps them. Double length copies the locks and the FX
 //! moves too; half and double speed move the locks, and are refused for a
 //! clip with FX moves (moves cannot be stretched yet).
+//!
+//! **Pressure** ([`crate::Touch`]) rides on its note: moving, Timing
+//! Correct, transposing and duplicating keep it (a shortened note just
+//! stops sending what falls past its end). A split leaves it on the first
+//! part only.
 
 use crate::steps::{moves_edit, Edit};
-use crate::{Clip, Lock, Note, MAX_CLIP_TICKS, MAX_NOTES, MIN_CLIP_TICKS};
+use crate::{Clip, Lock, Note, Touch, MAX_CLIP_TICKS, MAX_NOTES, MIN_CLIP_TICKS};
 use mpfree_transport::time::{Tick, PPQ};
 
 /// The Timing Correct divisions, in ticks (960 to a beat), with their
@@ -424,6 +429,39 @@ pub fn set_velocity(clip: &Clip, sel: &[usize], v: u8) -> Edit {
     })
 }
 
+/// Change the `sel` notes' chance by `by` percent, each kept within 1 to
+/// 100.
+pub fn chance(clip: &Clip, sel: &[usize], by: i32) -> Edit {
+    map(clip, sel, |n| {
+        Some(Note {
+            chance: (i32::from(n.chance) + by).clamp(1, 100) as u8,
+            ..n
+        })
+    })
+}
+
+/// Step the `sel` notes' trig conditions `d` places along
+/// [`Cond::all`](crate::Cond::all), each from its own.
+pub fn condition(clip: &Clip, sel: &[usize], d: i32) -> Edit {
+    map(clip, sel, |n| {
+        Some(Note {
+            cond: n.cond.step(d),
+            ..n
+        })
+    })
+}
+
+/// Change the `sel` notes' ratchet by `by` hits, each kept within 1 to
+/// [`MAX_RATCHET`](crate::MAX_RATCHET).
+pub fn ratchet(clip: &Clip, sel: &[usize], by: i32) -> Edit {
+    map(clip, sel, |n| {
+        Some(Note {
+            ratchet: (i32::from(n.ratchet) + by).clamp(1, i32::from(crate::MAX_RATCHET)) as u8,
+            ..n
+        })
+    })
+}
+
 /// Take the `sel` notes out, with their own locks.
 pub fn delete(clip: &Clip, sel: &[usize]) -> Edit {
     let erase: Vec<Note> = picked(clip, sel).map(|(_, n)| n).collect();
@@ -606,6 +644,9 @@ pub fn split(clip: &Clip, sel: &[usize], parts: u32) -> Edit {
             e.add.push(Note {
                 tick: wrap(n.tick + each * k, clip.length),
                 len,
+                // The first part keeps the pressure (what falls past its
+                // end does not play); the rest would replay its start.
+                touch: if k == 0 { n.touch } else { Touch::NONE },
                 ..n
             });
         }
@@ -888,6 +929,21 @@ mod tests {
         assert_eq!(by(&d, 36).velocity, 1);
         let d = applied(&c, &set_velocity(&c, &[1], 64));
         assert_eq!(by(&d, 38).velocity, 64);
+        // Chance, condition and ratchet, each kept in range.
+        let d = applied(&c, &chance(&c, &[0], -30));
+        assert_eq!((by(&d, 36).chance, by(&d, 38).chance), (70, 100));
+        assert_eq!(by(&applied(&c, &chance(&c, &[0], -300)), 36).chance, 1);
+        assert!(chance(&c, &[0], 5).is_empty(), "already 100 %");
+        let d = applied(&c, &condition(&c, &[0, 1], 2));
+        assert!(d
+            .notes
+            .iter()
+            .all(|n| n.cond == crate::Cond::Every { a: 2, b: 2 }));
+        assert!(condition(&c, &[0], -1).is_empty(), "always is the first");
+        let d = applied(&c, &ratchet(&c, &[1], 3));
+        assert_eq!(by(&d, 38).ratchet, 4);
+        let d = applied(&c, &ratchet(&c, &[1], 30));
+        assert_eq!(by(&d, 38).ratchet, crate::MAX_RATCHET);
         let d = applied(&c, &delete(&c, &[1]));
         assert_eq!(d.notes.len(), 1);
         let d = applied(&c, &add(&c, Note::new(960, 120, 42, 90)));
@@ -965,6 +1021,16 @@ mod tests {
         let d = applied(&c, &split(&c, &[1], 3));
         assert_eq!(ticks(&d), vec![0, 960, 1120, 1280]);
         assert!(split(&c, &[1], 1).is_empty());
+        // A split leaves a note's pressure on its first part.
+        let mut c = clip(&[(0, 480, 36)]);
+        let t = c
+            .add_touch(&[crate::TouchPoint { at: 0, value: 50 }])
+            .unwrap();
+        c.notes[0].touch = t;
+        let d = applied(&c, &split(&c, &[0], 2));
+        let mut parts: Vec<_> = d.notes.iter().map(|n| (n.tick, n.touch)).collect();
+        parts.sort_by_key(|p| p.0);
+        assert_eq!(parts, vec![(0, t), (240, Touch::NONE)]);
     }
 
     #[test]

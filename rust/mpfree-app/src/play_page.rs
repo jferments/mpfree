@@ -620,11 +620,17 @@ impl PlayPage {
         let l = &self.levels;
         let mut c = match knob {
             Knob::Swing => {
+                // As the transport bar says it: 50 % is straight, so "off".
                 let a = self.transport.swing.amount;
+                let text = if a == 50 {
+                    "off".to_string()
+                } else {
+                    format!("{a} %")
+                };
                 QLinkCard::new(
                     "Swing",
                     "Transport",
-                    &format!("{a} %"),
+                    &text,
                     f32::from(a.saturating_sub(50)) / 25.0,
                 )
             }
@@ -1262,6 +1268,15 @@ mod tests {
         assert_eq!(p.xy.position(), (0.5, 0.0));
         p.fill_xy(&mut w);
         assert_eq!((w.label.as_str(), w.x, w.y), ("Off · echo 0 %", 0.5, 0.0));
+    }
+
+    #[test]
+    fn the_swing_card_says_off_when_straight_as_the_transport_bar_does() {
+        let mut p = PlayPage::default();
+        p.transport.swing.amount = 50;
+        assert_eq!(p.card(Knob::Swing, None).value, "off");
+        p.turn_knob(Knob::Swing, 8, false);
+        assert_eq!(p.card(Knob::Swing, None).value, "58 %");
     }
 
     fn slots(spec: &str) -> Vec<(String, Rect)> {

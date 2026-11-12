@@ -51,9 +51,9 @@ use mpfree_play::mpfree_param::ParamAddr;
 use mpfree_sampler::model::Project;
 use mpfree_synth_ui::view as synth_view;
 use mpfree_synth_ui::{SynthAction, SynthPanel, SynthState};
+use mpfree_time_ui::editor::Lens;
 use mpfree_time_ui::view::{
-    self as time_view, TimePage, TimeState, TransportInfo, CLIPS_HINT, CLIPS_PAGE, EDIT_HINT,
-    SONG_HINT,
+    self as time_view, TimePage, TimeState, TransportInfo, CLIPS_HINT, CLIPS_PAGE, SONG_HINT,
 };
 use mpfree_time_ui::TimeAction;
 use mpfree_touch::mt::Phase;
@@ -916,8 +916,12 @@ impl Player {
     /// REPEAT is held or the Arp panel is open they set the arp (as its
     /// sliders show); on Play, Q-Link 1 is the level, unless Q-LINK shows a
     /// macro bank; on the chain editor, the selected effect's knobs.
+    /// Arrange has the same column with Play's knobs and banks (layout spec
+    /// section 4c: every sequencer track plays the kit, so there is no
+    /// track strip of its own to turn yet).
     fn refresh_qlinks(&mut self) {
-        let arp = self.view == View::Arp || (self.view == View::Play && self.band_showing());
+        let play_like = matches!(self.view, View::Play | View::Arrange);
+        let arp = self.view == View::Arp || (play_like && self.band_showing());
         // The chain editor, the macros panel, and Play on a macro bank.
         let chain = (!arp && self.chain_page.drives(self.view))
             .then(|| self.chain_page.cards(&self.ui.theme));
@@ -955,7 +959,11 @@ impl Player {
             let knobs = self.play.knobs();
             let pad = self.sample.pad_knobs(self.play.last_pad);
             let cards: [QLinkCard; 4] = std::array::from_fn(|i| self.play.card(knobs[i], pad));
-            ("Q-Links · Play", cards)
+            if self.view == View::Arrange {
+                ("Q-Links · Arrange", cards)
+            } else {
+                ("Q-Links · Play", cards)
+            }
         };
         if let Some(q) = self.ui.get_mut::<QLinkColumn>(play_page::QLINKS) {
             if q.title != title || q.cards != cards {
@@ -998,7 +1006,7 @@ impl Player {
     /// Q-LINK: the column's next bank where it has macro banks (Play, the
     /// chain editor, the macros panel).
     fn next_qlink_bank(&mut self) {
-        let play = self.view == View::Play && !self.band_showing();
+        let play = matches!(self.view, View::Play | View::Arrange) && !self.band_showing();
         if !(play || matches!(self.view, View::Chain | View::Macros)) {
             return;
         }
@@ -1375,7 +1383,10 @@ impl Player {
             match self.view {
                 View::Play => format!("Tap All, Beats, Loop or Drum: the view   ·   Wheel or tap: kit   ·   Q-Link 1 or \
                                        the master bar: level   ·   NOTE REPEAT: repeat   ·   MENU: options   ·   {stop}"),
-                View::Arrange if self.time.edit.is_some() => EDIT_HINT.to_string(),
+                View::Arrange if self.time.edit.is_some() => {
+                    time_view::edit_hint(self.time.edit.as_ref().map_or(Lens::Grid, |e| e.editor.lens))
+                        .to_string()
+                }
                 View::Arrange if self.time.song_view => SONG_HINT.to_string(),
                 View::Arrange => CLIPS_HINT.to_string(),
                 View::Looper if self.looper_page.history_open() => format!("Tap a step: back or forward to it   ·   \
@@ -1757,9 +1768,9 @@ impl Player {
             }
             ToUi::PlayQLink(k, ticks) => {
                 if self.chain_page.drives(self.view) {
-                    // Q-LINK shows a macro bank on Play.
+                    // Q-LINK shows a macro bank on Play or Arrange.
                     self.chain_qlink(k, ticks);
-                } else if self.view == View::Play {
+                } else if matches!(self.view, View::Play | View::Arrange) {
                     self.play_qlink(k, ticks);
                 }
             }
@@ -2113,8 +2124,9 @@ impl Player {
                 self.refresh_arp();
             }
             ToUi::Time(st) => {
-                let swapped = st.song_view != self.time.song_view
-                    || st.edit.is_some() != self.time.edit.is_some();
+                // The lens the note editor shows, if it is open.
+                let lens = |t: &TimeState| t.edit.as_ref().map(|e| e.editor.lens);
+                let swapped = st.song_view != self.time.song_view || lens(&st) != lens(&self.time);
                 self.time = *st;
                 self.sample.set_tempo(self.time.transport.bpm);
                 self.time_page.update(&mut self.ui, &self.time);
@@ -2747,7 +2759,7 @@ impl Player {
             }
             return None;
         }
-        if matches!(self.view, View::Play | View::Chain) {
+        if matches!(self.view, View::Play | View::Arrange | View::Chain) {
             self.watch_card_press(finger, phase, x, y);
         }
         let action = self
@@ -2873,7 +2885,7 @@ impl Player {
                 None
             }
             (play_page::QLINKS, EventKind::Step { index, delta })
-                if self.view == View::Play && !self.band_showing() =>
+                if matches!(self.view, View::Play | View::Arrange) && !self.band_showing() =>
             {
                 self.play_qlink(index, delta);
                 None
@@ -3662,6 +3674,7 @@ pub fn sample_pattern(p: &mut Player, sixteenths: i64) {
         }
         fn release_at(&mut self, _: usize, _: u32) {}
         fn stop_all(&mut self) {}
+        fn pressure_at(&mut self, _: usize, _: u8, _: u32) {}
     }
     let Ok(mut h) = TimeHost::new(44_100, 92.0) else {
         return;
@@ -4123,6 +4136,7 @@ pub fn sample_clips(fonts: Fonts) -> Result<Player, String> {
         }
         fn release_at(&mut self, _pad: usize, _offset: u32) {}
         fn stop_all(&mut self) {}
+        fn pressure_at(&mut self, _pad: usize, _value: u8, _offset: u32) {}
     }
     const RATE: u32 = 44_100;
     const PERIOD: u32 = 128;
@@ -4630,9 +4644,18 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         Ok(p) => out.push(("clips", p)),
         Err(e) => eprintln!("clips sample: {e}"),
     }
-    // The note editor on the Arrange page: the piano roll, then the list.
-    for (name, list) in [("arrange-notes", false), ("arrange-notes-list", true)] {
-        match mpfree_time_ui::sample::notes_state(list) {
+    // The note editor on the Arrange page: the piano roll, the list, then
+    // the tracker on a bar of drums.
+    for (name, lens) in [
+        ("arrange-notes", Some(Lens::Grid)),
+        ("arrange-notes-list", Some(Lens::List)),
+        ("arrange-notes-tracker", None),
+    ] {
+        let state = match lens {
+            Some(lens) => mpfree_time_ui::sample::notes_state(lens),
+            None => mpfree_time_ui::sample::tracker_state(),
+        };
+        match state {
             Ok(state) => {
                 let mut p = quiet_player(fonts());
                 p.apply(ToUi::Time(Box::new(state)));
@@ -4652,6 +4675,18 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
             out.push(("arrange-song", p));
         }
         Err(e) => eprintln!("arrange-song sample: {e}"),
+    }
+    // The same with two audio lanes under the song (layout spec 4c): a
+    // vocal punched in over bars 5-8 and that region picked, a guitar
+    // armed. Real takes from the audio tracks engine.
+    match mpfree_time_ui::sample::song_audio_state() {
+        Ok(state) => {
+            let mut p = quiet_player(fonts());
+            p.apply(ToUi::Time(Box::new(state)));
+            p.apply(ToUi::Show(View::Arrange));
+            out.push(("arrange-song-audio", p));
+        }
+        Err(e) => eprintln!("arrange-song-audio sample: {e}"),
     }
     match sample_looper(fonts()) {
         Ok(p) => out.push(("looper", p)),
@@ -5372,6 +5407,16 @@ mod tests {
             tap(&mut p, (tc.x + tc.w / 2, tc.y + tc.h / 2)),
             Some(FromUi::Time(TimeAction::Edit(EditAction::Button(7))))
         );
+        // The list and the tracker have hint lines of their own, which say
+        // SHIFT + wheel scrolls them.
+        let mut st = p.time.clone();
+        if let Some(e) = st.edit.as_mut() {
+            e.editor.lens = Lens::Tracker;
+        }
+        p.apply(ToUi::Time(Box::new(st)));
+        let hint = &p.ui.get::<Label>("hint").unwrap().text;
+        assert_eq!(hint, time_view::EDIT_TRACKER_HINT);
+        assert!(hint.contains("SHIFT + wheel: scroll"));
     }
 
     /// Mockup H: a speaker beside each loop layer's name; a tap mutes
@@ -5974,6 +6019,73 @@ mod tests {
         apply_effects(&mut p, app.tab(2));
         let fx = app.button(71, true, 0.0);
         assert!(!fx.contains(&Effect::QLinkBank), "{fx:?}");
+    }
+
+    /// Arrange has Play's column (layout spec 4c): the same knobs, turned
+    /// by the Q-Links and by a drag on a card, and Q-LINK steps the same
+    /// macro banks, which Play then still shows.
+    #[test]
+    fn arrange_has_plays_q_links_and_their_banks() {
+        let mut p = sample_player(Fonts::embedded());
+        let mut app = sample_app();
+        app.map.learn(crate::app::mapper::Job::QLink, Some(71));
+        p.apply(ToUi::Macros(Box::new(
+            mpfree_chain_ui::sample::Song::new().macros_state(0),
+        )));
+        let title = |p: &Player| {
+            p.ui.get::<QLinkColumn>(play_page::QLINKS)
+                .unwrap()
+                .title
+                .clone()
+        };
+        let cards = |p: &Player| {
+            p.ui.get::<QLinkColumn>(play_page::QLINKS)
+                .unwrap()
+                .cards
+                .clone()
+        };
+        let play_cards = cards(&p);
+        apply_effects(&mut p, app.tab(1));
+        assert_eq!(p.view, View::Arrange);
+        assert_eq!(title(&p), "Q-Links · Arrange");
+        assert_eq!(cards(&p), play_cards, "Play's knobs");
+        let r =
+            p.ui.rect_of(play_page::QLINKS)
+                .expect("the column is on Arrange");
+        assert_eq!((r.x, r.w), (1100, 168), "at the right edge, 168 px");
+        // Q-Link 1 is Play's first knob, and a turn of it does what it does on Play.
+        p.apply(ToUi::PlayQLink(0, 6));
+        assert!(
+            !p.take_actions().is_empty(),
+            "a turn on Arrange does something"
+        );
+        // A drag on a card is a turn too.
+        let ev = mpfree_ui::UiEvent {
+            widget: play_page::QLINKS.to_string(),
+            kind: mpfree_ui::EventKind::Step { index: 0, delta: 2 },
+        };
+        let _ = p.on_event(ev);
+        assert!(
+            !p.take_actions().is_empty(),
+            "a card drag on Arrange does something"
+        );
+        // Q-LINK steps the macro banks on Arrange.
+        let fx = app.button(71, true, 0.0);
+        app.button(71, false, 0.0);
+        apply_effects(&mut p, fx);
+        assert_eq!(title(&p), "Q-Links · Macros 1-4");
+        p.apply(ToUi::PlayQLink(3, 1));
+        let sent = p.take_actions();
+        assert!(
+            matches!(
+                sent.as_slice(),
+                [FromUi::Macros(MacroAction::Macro { m: 3, .. })]
+            ),
+            "{sent:?}"
+        );
+        // Play shares the bank.
+        apply_effects(&mut p, app.tab(0));
+        assert_eq!(title(&p), "Q-Links · Macros 1-4");
     }
 
     #[test]
