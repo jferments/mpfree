@@ -99,6 +99,77 @@ def normal_fallthrough_return_preserves_r0(instructions: list[dict], call_index:
     return None
 
 
+def trace_saved_r0_to_normal_return(
+    instructions: list[dict], save_address: str, saved_register: str = "r4"
+) -> dict | None:
+    """Follow ONE bounded normal-exit path from saved callee r0 to return.
+
+    Follows unconditional direct B instructions, ignores conditional branches
+    by taking their fallthrough, and assumes AAPCS-preserving r4 across BLX.
+    This is NOT full CFG analysis; it proves neither all-path reachability nor
+    that a register-indirect callback honors the calling convention.
+    """
+    if saved_register != "r4":
+        return None
+    addresses = {ins["address"]: pos for pos, ins in enumerate(instructions)}
+    index = addresses.get(normalize_addr(save_address))
+    if index is None or instructions[index]["text"] not in ("cpy r4,r0", "mov r4,r0"):
+        return None
+    original = index
+    visited = set()
+    branch_sites = []
+    calls_with_preserved_r4_assumed = []
+    conditional_fallthroughs = []
+    for _ in range(100):
+        index += 1
+        if index >= len(instructions) or index in visited:
+            return None
+        visited.add(index)
+        ins = instructions[index]
+        instruction = ins["text"]
+        if instruction in ("cpy r0,r4", "mov r0,r4"):
+            normal_return = normal_fallthrough_return_preserves_r0(
+                instructions, index)
+            if not normal_return:
+                return None
+            return {
+                "save_site": instructions[original]["address"],
+                "saved_register": "r4",
+                "restore_site": ins["address"],
+                "normal_return_address": normal_return["return_address"],
+                "unconditional_branches_followed": branch_sites,
+                "conditional_branches_assumed_fallthrough": conditional_fallthroughs,
+                "calls_assuming_aapcs_preserves_r4": calls_with_preserved_r4_assumed,
+                "all_paths_verified": False,
+            }
+        # Normal return before restoring saved status cannot count.
+        if (re.match(r"^ldr\s+pc,\[sp\]", instruction) or
+                re.match(r"^bx\s+lr$", instruction)):
+            return None
+        direct = re.match(r"^b\s+(0x[0-9a-f]+)$", instruction)
+        if direct:
+            dest = normalize_addr(direct.group(1))
+            branch_sites.append({"at": ins["address"], "to": dest})
+            if dest not in addresses:
+                return None
+            index = addresses[dest] - 1
+            continue
+        # BNE/BEQ etc have a separate branch; inspect only fallthrough.
+        if CONDITIONAL_BRANCH.match(instruction):
+            conditional_fallthroughs.append(ins["address"])
+            continue
+        # An indirect callback has no proven contract, but r4 is callee-saved
+        # in AAPCS; expose the assumption explicitly.
+        if instruction.startswith(("bl ", "blx ")):
+            calls_with_preserved_r4_assumed.append(ins["address"])
+            continue
+        # Any instruction that writes the tracked register breaks proof.
+        if re.match(r"^[a-z][a-z0-9.]*\s+r4(?:,|\s|$)", instruction):
+            if not re.match(r"^(?:str|strb|strh|cmp|cmn|tst|teq)\b", instruction):
+                return None
+    return None
+
+
 def scan_callsite(caller_addr: str, instructions: list[dict], target: str) -> list[dict]:
     observed = []
     for pos, inst in enumerate(instructions):
@@ -191,7 +262,14 @@ def summarize(ghidra: dict, index_check: dict, framing: dict | None = None) -> d
         for caller, caller_fn in functions.items():
             src_ins = instructions_for(caller_fn)
             if src_ins:
-                callsites += scan_callsite(caller, src_ins, target)
+                found = scan_callsite(caller, src_ins, target)
+                for call in found:
+                    for saved in call.get("r0_copies", []):
+                        if saved["destination_register"] == "r4":
+                            saved["propagates_to_normal_return"] = (
+                                trace_saved_r0_to_normal_return(
+                                    src_ins, saved["address"]))
+                callsites.extend(found)
         analyzed.append({
             "function": target, "role": role,
             "ghidra_void_signature": body.startswith("void "),
@@ -208,6 +286,10 @@ def summarize(ghidra: dict, index_check: dict, framing: dict | None = None) -> d
             "callers_copying_r0": sorted({
                 c["caller"] for c in callsites if c["r0_copies"]
             }),
+            "r0_copies_propagated_to_normal_return": sum(
+                bool(saved.get("propagates_to_normal_return"))
+                for call in callsites for saved in call["r0_copies"]
+            ),
             "callers_preserving_r0_to_normal_return": sorted({
                 c["caller"] for c in callsites
                 if c["r0_preserved_to_normal_return"]
@@ -230,7 +312,9 @@ def summarize(ghidra: dict, index_check: dict, framing: dict | None = None) -> d
             "ARM AAPCS normally returns integer status in r0; actual callers must be examined.",
             "Ghidra void inference is contradicted where a caller BL is followed by CMP r0 or SUBS rx,r0,#0 and a conditional branch.",
             "SUBS rx,r0,#0 tests condition flags AND copies the return value; do not mistake it for unused r0.",
-            "CPY/MOV rx,r0 demonstrates return-value capture, not yet a verified downstream status check.",
+            "CPY/MOV rx,r0 demonstrates return-value capture; a separate normal-path trace may establish its propagation.",
+            "Tracing r4 through a BLX assumes AAPCS preservation by an indirect callback, not independently verified.",
+            "Return paths through shared epilogues are proven for the normal fallthrough only.",
             "Fallthrough-preserved r0 to a normal epilogue verifies one path only; exception/branch paths remain distinct.",
             "Only captured instruction evidence is assessed; missing callsites are not proof of absent callers.",
             "A written r0 value is only a candidate return until its control flow to an epilogue is checked.",
@@ -254,6 +338,8 @@ def to_markdown(report: dict) -> str:
                       (", ".join(item["callers_immediately_testing_r0"]) or "none in captured evidence"),
                       "- Callers copying r0: " +
                       (", ".join(item["callers_copying_r0"]) or "none in captured evidence"),
+                      "- Copied returns propagated to normal exit: " +
+                      str(item["r0_copies_propagated_to_normal_return"]),
                       "- Callers preserving r0 to a normal return: " +
                       (", ".join(item["callers_preserving_r0_to_normal_return"])
                        or "none in captured evidence")])
@@ -298,6 +384,9 @@ def generate(input_zip: Path, output_zip: Path) -> dict:
                 for fn in report["functions"]),
             "r0_copy_callsites": sum(
                 len([c for c in fn["observed_callsites"] if c["r0_copies"]])
+                for fn in report["functions"]),
+            "r0_copies_propagated_to_normal_return": sum(
+                fn["r0_copies_propagated_to_normal_return"]
                 for fn in report["functions"]),
             "normal_fallthrough_r0_passthrough_callsites": sum(
                 len([c for c in fn["observed_callsites"]
