@@ -16,6 +16,9 @@
 //!   moves as parameter locks and Perform FX gestures as moves.
 //! - [`takes`]: take undo on the control thread: what each take recorded
 //!   and erased, to undo and redo it as a whole.
+//! - [`recorded`]: recorded changes numbered, made to the view in place
+//!   and to the project alike, and kept to catch up a view compiled a
+//!   little late, for a host that compiles on another thread.
 //!
 //! The same session gives the same events for any period size, and the
 //! audio-thread call never allocates; `tests/` proves both. Host-only for
@@ -26,6 +29,7 @@ pub mod arp;
 pub mod arps;
 pub mod player;
 pub mod record;
+pub mod recorded;
 pub mod takes;
 pub mod view;
 
@@ -36,5 +40,6 @@ pub use player::{Erased, ErasedLock, Event, Out, Player, Sink, Stats, ALL, SONG_
 pub use record::{
     Recorder, Taken, TakenLock, TakenMove, MAX_TOUCH_INPUT, TOUCH_BUFS, TOUCH_POINTS, TOUCH_ROOM,
 };
-pub use takes::{MovePut, MoveWrite, Take, Takes, TAKE_ROOM};
+pub use recorded::{Behind, Includes, Rec, Recent, RECENT};
+pub use takes::{MovePut, MoveWrite, Recorded, Take, Takes, TAKE_ROOM};
 pub use view::{anchored, CompileError, Cue, Launch, PlayView, Started, EARLIEST};
