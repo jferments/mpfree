@@ -56,7 +56,17 @@ def fixture():
             "kernel_addr_r":"0x02000000",
             "ramdisk_addr_r":"0x04000000"}}},
         "fdt":{"uboot_stage_fdt":[{"selected_dts_lines":dtb}]},
-        "spl":{},"update":{}
+        "spl":{},"update":{},
+        "usb":{"verified_backend_interfaces":[
+            {"usb_descriptor":{"class":"0xff","subclass":"0x42","protocol":"0x03"},
+             "initializer_references_table":True,
+             "marker_interpretation":"Fastboot OKAY and FAIL response words"},
+            {"usb_descriptor":{"class":"0xff","subclass":"0x61","protocol":"0x7a"},
+             "initializer_references_table":True,
+             "upstream_protocol_family":"Unknown vendor-specific"},
+            {"usb_descriptor":{"class":"0xff","subclass":"0x06","protocol":"0x05"},
+             "initializer_references_table":True}]},
+        "framing":{"protocol_family":"UNIDENTIFIED; framed proprietary/vendor-specific candidate"}
     }
 
 def run(data):
@@ -66,7 +76,7 @@ def run(data):
 class DirectBootFocusTests(unittest.TestCase):
     def test_seven_topics_and_exact_sha(self):
         report=run(fixture())
-        self.assertEqual(len(report["questions"]),37)
+        self.assertEqual(len(report["questions"]),40)
         self.assertEqual(
             report["nominal_memory_address_gaps"]["fdt_addr_r"][
                 "from_fastboot_load_base_bytes"], 24115200)
@@ -74,7 +84,7 @@ class DirectBootFocusTests(unittest.TestCase):
             report["nominal_memory_address_gaps"]["kernel_addr_r"][
                 "from_fastboot_load_base_bytes"], 25163776)
         self.assertFalse(report["fastboot_download_memory_safe_proven"])
-        self.assertEqual(len({x["topic"] for x in report["questions"]}),8)
+        self.assertEqual(len({x["topic"] for x in report["questions"]}),9)
         self.assertEqual(report["private_source_sha256"],M.UBOOT_SHA)
         self.assertFalse(report["vendor_code_executed"])
         self.assertFalse(report["physical_fastboot_commands_sent"])
@@ -176,6 +186,16 @@ class DirectBootFocusTests(unittest.TestCase):
             "callback_is_thumb"] = False
         changed = run(d)
         self.assertFalse(changed["checks"]["all_eight_fastboot_prefixes_exact_and_unique"])
+
+    def test_host_usb_backends_distinct_from_verified_uboot_fastboot(self):
+        d = fixture()
+        result = run(d)
+        self.assertTrue(result["checks"]["all_three_host_usb_selector_families_verified"])
+        self.assertTrue(result["checks"]["fastboot_host_backend_has_okay_fail_literals"])
+        self.assertTrue(result["checks"]["ff617a_is_not_proven_rockusb"])
+        self.assertIn("0xff/0x61/0x7a", result["host_usb_descriptor_classes"])
+        d["framing"]["protocol_family"] = "RockUSB proven"
+        self.assertFalse(run(d)["checks"]["ff617a_is_not_proven_rockusb"])
 
     def test_wrong_original_uboot_rejected(self):
         d=fixture()
