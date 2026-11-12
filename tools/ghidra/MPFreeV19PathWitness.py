@@ -170,7 +170,10 @@ def varnode_info(v):
         resident=image_u32(value)
         if resident is not None:d["source_image_word_at_location"]=H(resident)
     return d
-def trace(varnode,depth=0,seen=None,max_depth=11):
+def trace(varnode,depth=0,seen=None,max_depth=11,budget=None):
+    if budget is None:budget=[160]
+    if budget[0]<=0:return {"kind":"node-budget-reached"}
+    budget[0]-=1
     if varnode is None:return {"kind":"no-value"}
     if seen is None:seen=set()
     node=varnode_info(varnode)
@@ -190,7 +193,7 @@ def trace(varnode,depth=0,seen=None,max_depth=11):
         "inputs":[]
     }
     for i in range(min(op.getNumInputs(),8)):
-        result["inputs"].append(trace(op.getInput(i),depth+1,seen|{identity},max_depth))
+        result["inputs"].append(trace(op.getInput(i),depth+1,seen|{identity},max_depth,budget))
     if op.getNumInputs()>8:result["inputs_truncated"]=op.getNumInputs()-8
     return result
 def xrefs(at,maximum=100):
