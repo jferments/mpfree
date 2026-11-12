@@ -518,12 +518,12 @@ class AppTests(unittest.TestCase):
         for text in ("steps: app", "[3/3] The pad player that started at power-on (read-only",
                      "pad player (mpfree-test-app.service): active", "(systemd[1]) Started MPFree test boot",
                      "pad player: 6 kits, 81 sounds", "start-up: the app was playing 9.5 s after power-on",
-                     "your answer: loading ok", "Phase 1 of 16: Developer tools and Map controls",
+                     "your answer: loading ok", "Phase 1 of 18: Developer tools and Map controls",
                      "button guide: MENU is button 11", "buttons pressed (note numbers): 11",
-                     "Phase 2 of 16: Developer pages: Performance, CPU by engine, Processes", "pads hit (pad:velocity as played): 1:18 1:124",
+                     "Phase 2 of 18: Developer pages: Performance, CPU by engine, Processes", "pads hit (pad:velocity as played): 1:18 1:124",
                      "buttons pressed (note numbers): 39", "pad level: Full Level (every hit 127)",
                      "data wheel: +1", "session pings and replies: 1", "your answer: soft and hard differ",
-                     "Phase 4 of 16: Play page: the four views and the mode buttons", "repeat: 16 hits in the last second on pads 1 2; latched: 1 2; "
+                     "Phase 4 of 18: Play page: the four views and the mode buttons", "repeat: 16 hits in the last second on pads 1 2; latched: 1 2; "
                      "engine dropped 0 events, overflow 0", "STOP: stopped by you"):
             self.assertIn(text, out)
         # Phase 1's lines are not shown again in phase 2.
@@ -551,17 +551,20 @@ class AppTests(unittest.TestCase):
                           (130.2, "mpfree[211]: status: looper: Playing, 2 layers"),
                           (130.3, "mpfree[211]: status: cpu by engine (mean/p99/worst of a period): period 9.3"),
                           (130.4, "mpfree[211]: status: Q-Link touch: 3 touches, 1 bounces held")])
-        answers = "\n\n" + "\n\n\n" * 16
+        answers = "\n\n" + "\n\n\n" * 18
         res = self.run_helper(answers, MPFREE_APP_STEPS="app")
         self.assertEqual(res.returncode, 0, res.stdout)
-        for title in ("Phase 5 of 16: Throws, the XY pad (Perform FX) and FILL",
-                      "Phase 6 of 16: Arrange: clips, takes, Capture, the song and the morph",
-                      "Phase 7 of 16: TRACK MUTE and SHIFT + TRACK MUTE",
-                      "Phase 11 of 16: Looper tab: record, layers, tools, undo history, trim",
-                      "Phase 12 of 16: Mixer, effect chains and macros",
-                      "Phase 13 of 16: Sample tab: Pads, Wave and Chop",
-                      "Phase 15 of 16: Touch: Touch lab, Calibrate touch and the Dev Touch page",
-                      "Phase 16 of 16: Menus, console and STOP"):
+        for title in ("Phase 5 of 18: Throws, the XY pad (Perform FX) and FILL",
+                      "Phase 6 of 18: Arrange: clips, takes, Capture, the song and the morph",
+                      "Phase 7 of 18: TRACK MUTE and SHIFT + TRACK MUTE",
+                      "Phase 11 of 18: Looper tab: record, layers, tools, undo history, trim",
+                      "Phase 12 of 18: Mixer, effect chains, macros and the I/O view",
+                      "Phase 13 of 18: Pads tab: the pads, Browse and Pad",
+                      "Phase 14 of 18: Sample tab: Wave, Chop, live chop, Stops, Also plays, Latch and Send to pad",
+                      "Phase 15 of 18: Prefs, System info and saving",
+                      "Phase 16 of 18: MIDI keyboard on MIDI IN (only with a keyboard and a 5-pin MIDI cable; s skips)",
+                      "Phase 17 of 18: Touch: Touch lab, Calibrate touch and the Dev Touch page",
+                      "Phase 18 of 18: Menus, console and STOP"):
             self.assertIn(title, res.stdout)
         self.assertIn("start-up: no playing line yet", res.stdout)
         self.assertIn("The app's latest status", res.stdout)
