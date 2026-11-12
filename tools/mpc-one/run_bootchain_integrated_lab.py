@@ -918,7 +918,7 @@ class Lab:
             }
             self.stages["direct-boot-focus-evidence"] = {
                 "success":(passed and literal_proof
-                           and len(direct["questions"])>=25 and topic_count==7),
+                           and len(direct["questions"])>=26 and topic_count==7),
                 "questions":len(direct["questions"]),"topics":topic_count,
                 "required_static_checks_passed":passed,
                 "new_literal_pointer_and_token_proof":literal_proof,
