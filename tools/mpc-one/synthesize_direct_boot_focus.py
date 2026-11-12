@@ -124,6 +124,41 @@ def build(read):
         entry.get("callback_containing_function") == "0x00122980"
         for entry in dispatch_entries
     )
+    expected_dispatch = {
+        "reboot": "0x00122cf8", "getvar:": "0x00122d38",
+        "download:": "0x00122980", "boot": "0x00122964",
+        "continue": "0x00122948", "flash": "0x00122c5c",
+        "erase": "0x00122bf8", "oem": "0x00122854",
+    }
+    actual_dispatch = {
+        entry.get("prefix_text"): entry.get("callback_containing_function")
+        for entry in dispatch_entries
+    }
+    checks["all_eight_fastboot_prefixes_exact_and_unique"] = (
+        len(dispatch_entries) == len(actual_dispatch) == len(expected_dispatch)
+        and actual_dispatch == expected_dispatch
+        and all(entry.get("callback_is_thumb") is True
+                for entry in dispatch_entries)
+    )
+    checks["getvar_has_no_local_permission_call"] = (
+        bool(body("0x00122d38"))
+        and "mpf_fastboot_permission()" not in body("0x00122d38")
+    )
+    checks["continue_has_no_local_permission_call"] = (
+        bool(body("0x00122948"))
+        and "mpf_fastboot_permission()" not in body("0x00122948")
+    )
+    checks["reboot_has_no_local_permission_call"] = (
+        bool(body("0x00122cf8"))
+        and "mpf_fastboot_permission()" not in body("0x00122cf8")
+    )
+    reboot_code = body("0x00100fe4")
+    checks["reboot_mode_clear_and_one_nine_branch"] = (
+        "*puVar1 = 0;" in reboot_code and
+        "uVar4 == 1" in reboot_code and
+        "if (uVar4 != 9)" in reboot_code and
+        "*DAT_00101154 = 1;" in reboot_code
+    )
     rows=[]
     def q(topic,question,result,evidence,next_step):
         rows.append({"id":"DB%03d"%(len(rows)+1),"topic":topic,
@@ -137,6 +172,22 @@ def build(read):
     q("OEM unlock","Are flash and erase each gated?",yes(checks["flash_gate_present"] and checks["erase_gate_present"]),"0x122c5c and 0x122bf8 call permission routine.","Trace partition lookup and write size limits.")
     q("OEM unlock","Is Fastboot boot gated at command dispatch?","unknown","Boot completion at 0x1226b4 does not itself show permission check.","Resolve dispatcher and upstream state machine.")
     q("OEM unlock","Does unlock persist or alter storage?","unknown","Direct grant is a memory write; no proven lifecycle/side effects.","Trace all global writers and data-store calls.")
+    q("OEM unlock","Are all eight exact command prefixes, callbacks and Thumb flags verified?",
+      yes(checks["all_eight_fastboot_prefixes_exact_and_unique"]),
+      "All eight commands are distinct: reboot, getvar:, download:, boot, continue, flash, erase, oem. All callbacks resolve to their expected Thumb entrypoints.",
+      "Review parser prefix matching, callback registration and command-size bounds.")
+    q("OEM unlock","Does getvar avoid a direct permission check?",
+      yes(checks["getvar_has_no_local_permission_call"]),
+      "The getvar callback does not call mpf_fastboot_permission in its body. The dispatcher and runtime session may impose other constraints.",
+      "Catalog safe query names and responses; do not assume any live device is connected.")
+    q("OEM unlock","Does continue avoid a direct permission check?",
+      yes(checks["continue_has_no_local_permission_call"]),
+      "The continue callback installs an asynchronous completion callback without locally checking the permission global.",
+      "Resolve registered completion target, reset/boot side effects and dispatcher state.")
+    q("OEM unlock","Does reboot avoid a direct permission check?",
+      yes(checks["reboot_has_no_local_permission_call"]),
+      "The reboot callback selects a separate path; it contains no local permission-helper call, but is state-changing.",
+      "Distinguish reboot-to-loader from reboot-to-bootrom magic without sending hardware commands.")
     q("OEM unlock","Does exact command dispatch map boot and download handlers?",
       yes(checks["fastboot_dispatch_table_eight_entries"] and
           checks["fastboot_boot_command_callback_resolved"] and
@@ -180,6 +231,10 @@ def build(read):
     q("Independent rootfs","Does openAZ0x have MPC ACVA configuration?","upstream-only","meta-az0x supports acva config, but author marks MPC hardware untested.","Compare kernel 6.18.44 owner rootfs vs openAZ0x 6.18.26 default.")
     q("Independent rootfs","Can MPFree preserve P1/P2/P3?","architecture-supported","Vendor U-Boot loads kernel and DTB from rootfs partition P6.","Qualify P6-only image offline and test kexec before installing.")
     q("Boot counter","Is 0xFF7300A0 warm reboot policy present in MPC P3?","unknown","openAZ0x observed it on JC11S; not proven on original ACVA P3.","Search full Ghidra register read/write and OS acknowledgment.")
+    q("Boot counter","Does the exact U-Boot consume and clear a distinct reboot-mode word?",
+      yes(checks["reboot_mode_clear_and_one_nine_branch"]),
+      "At 0x100FE4 U-Boot tests the low byte of a recognized reboot-mode word, sets a recovery variable for values 1/9 and clears the register. This is reboot-mode handling, not a proven warm-reboot counter.",
+      "Resolve the stored register constant and identify reset/recovery and ROM behavior separately.")
     q("Boot counter","Can synthetic B001 counter stand in for MPC tests?","related-board-only","B001 format reported on JC11S, not validated MPC threshold.","Keep board hypothesis distinct from device proof.")
     q("3.10 policy","Does 3.10 add a bootloader signature utility?",yes(checks["az01_bootloader_sig_present_3_10"]),"az01-bootloader-sig added in 3.10.","Trace whether updater/boot scripts call it.")
     q("3.10 policy","Does 3.10 add an early LoadPin service?",yes(checks["loadpin_oneshot_present_3_10"]),"az0x-loadpin-trustpoints systemd oneshot exists.","Trace kernel enforcement and service dependency.")
