@@ -708,6 +708,46 @@ class Lab:
             self.stages["usb-protocol-evidence"] = {
                 "success": False, "error": "V11 library report unavailable",
             }
+        # FF/61/7A custom framing evidence is derived from Ghidra only.
+        # Never run the original updater on the host or guest.
+        if library_report.is_file():
+            try:
+                ff_module = load_module(
+                    "tools/mpc-one/synthesize_custom_usb_framing.py",
+                    "mpfree_private_ff617a_framing",
+                )
+                blob = library_report.read_bytes()
+                frame_report = ff_module.validated_report(
+                    json.loads(blob), hashlib.sha256(blob).hexdigest())
+                (self.out / "usb-ff617a-framing.json").write_text(
+                    json.dumps(frame_report, indent=2) + "\n")
+                (self.out / "usb-ff617a-framing.md").write_text(
+                    ff_module.render_markdown(frame_report) + "\n")
+                record["ff617a_framing_evidence"] = {
+                    "report": "usb-ff617a-framing.json",
+                    "magic_words": len(frame_report["magic_evidence"]["code_points"]),
+                    "all_known_identifiers_seen": frame_report["magic_evidence"]["eight_known_values_present"],
+                    "ioctls_verified": all(
+                        item["seen_in_verified_pseudocode"]
+                        for item in frame_report["linux_usbdevfs_ioctls"]),
+                    "protocol_identity": "UNKNOWN",
+                    "no_original_vendor_execution": True,
+                }
+                self.stages["ff617a-framing-evidence"] = {
+                    "success": True,
+                    "magic_words": record["ff617a_framing_evidence"]["magic_words"],
+                }
+            except Exception as exc:
+                record["ff617a_framing_error"] = str(exc)
+                self.stages["ff617a-framing-evidence"] = {
+                    "success": False, "error": str(exc),
+                }
+                self.notes.append("FF/61/7A framing synthesis: " + str(exc))
+        else:
+            record["ff617a_framing_error"] = "V11 library report unavailable"
+            self.stages["ff617a-framing-evidence"] = {
+                "success": False, "error": "V11 library report unavailable",
+            }
         (self.out / "cross-evidence.json").write_text(json.dumps(record, indent=2) + "\n")
         summary = [
             "# MPFree integrated bootchain run",
@@ -729,6 +769,13 @@ class Lab:
                            + ": " + entry["family"]
                            + " (constructor-xref=" + str(entry["constructor_confirmed"]) + ")")
         summary.append("- Physical target runtime stage, ROM state and write authorization unproven.")
+        summary += ["", "## FF/61/7A custom-framed USB backend"]
+        framing = record.get("ff617a_framing_evidence")
+        if framing:
+            summary.append("- Distinct 32-bit message identifiers: " + str(framing["magic_words"]))
+            summary.append("- Linux usbdevfs async URB constants present: " + str(framing["ioctls_verified"]))
+            summary.append("- See usb-ff617a-framing.json for callgraph, header-field and callback evidence.")
+            summary.append("- Protocol identity UNKNOWN; no original vendor code executed.")
         summary += ["", "## Guest/static image consistency"]
         if record["match_tests"]:
             for entry in record["match_tests"]:
