@@ -48,7 +48,7 @@ pub mod ids {
 }
 
 static INFO: NodeInfo = NodeInfo {
-    id: "mpfree.hello.perform",
+    id: "mpfree.app.perform",
     name: "Throws and XY",
     kind: Kind::Effect,
 };

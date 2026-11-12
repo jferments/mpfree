@@ -1,4 +1,4 @@
-//! Hello MPC's screens, built from mpfree-ui widgets.
+//! The app's screens, built from mpfree-ui widgets.
 //!
 //! - The console (the one-shot steps): a header and the step's log.
 //! - The pad player (`play`, and `app` from power-on): a loading page with a
@@ -120,7 +120,7 @@ impl Console {
     pub fn new(fonts: Fonts, heading: &str, fb: Option<FbTarget>) -> Console {
         let (w, h) = fb.as_ref().map(|f| f.logical_size()).unwrap_or(SCREEN);
         let mut ui = Ui::new(Theme::dark(), fonts, w, h);
-        let mut header = Header::new(&["Hello MPC"]);
+        let mut header = Header::new(&["mpfree"]);
         header.chips.push(Chip::new(heading, Tone::Accent));
         ui.add("header", header);
         ui.add("log", LogPanel::new("Log", true, 400));
@@ -1995,7 +1995,7 @@ impl Player {
     /// (Wave to Chop, or a pad without a sound), and give the Play page the
     /// names of pads a chop filled.
     fn sample_after(&mut self, before: &str) {
-        if let Some((kit, pads)) = self.sample.take_renamed() {
+        while let Some((kit, pads)) = self.sample.take_renamed() {
             if let Some(k) = self.kits.get_mut(kit) {
                 k.pads = pads;
                 if kit == self.kit {
@@ -2729,6 +2729,10 @@ impl Player {
         let before = self.sample.page();
         self.sample
             .tick(&mut self.ui, dt, self.view == View::Sample);
+        if let Some(k) = self.sample.take_wanted_kit() {
+            // An opened project's kit: the audio thread switches and says so.
+            self.outbox.push(FromUi::Kit(k));
+        }
         self.sample_after(before);
         self.print_sample_lines();
         self.cpu_at += dt;
@@ -3258,10 +3262,10 @@ pub fn sample_player(fonts: Fonts) -> Player {
     }
     for l in ["[    2.104] systemd[1]: Started MPFree test boot: copy logs to the USB stick's log partition.",
               "[    2.230] systemd[1]: Starting MPFree test boot: the pad player...",
-              "[    3.871] mpfree-hello[211]: loading drum kits: 8 kits, 39.0 MB",
+              "[    3.871] mpfree[211]: loading drum kits: 8 kits, 39.0 MB",
               "[    4.402] kernel: rk_gmac-dwmac ff290000.ethernet eth0: Link is Up - 1Gbps/Full",
-              "[    5.990] mpfree-hello[211]: session accepted; sending Akai's setup exactly as the app did",
-              "[    7.315] mpfree-hello[211]: SCHED_FIFO priority 70"] {
+              "[    5.990] mpfree[211]: session accepted; sending Akai's setup exactly as the app did",
+              "[    7.315] mpfree[211]: SCHED_FIFO priority 70"] {
         p.apply(ToUi::Console(l.into()));
     }
     p.apply(ToUi::Show(View::Play));
@@ -4199,7 +4203,7 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     perf.set_proc(ProcView {
         over_s: 2.0,
         threads: vec![
-            ("mpfree-hello (812)".into(), 31.5),
+            ("mpfree (812)".into(), 31.5),
             ("mpfree-screen (815)".into(), 9.0),
             ("mpfree-journal (816)".into(), 0.5),
             ("touch-reader (817)".into(), 0.2),
@@ -4280,7 +4284,7 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     pr.set_procs(&mpfree_prof::procs::ProcView {
         over_s: 1.0,
         rows: vec![
-            row(812, "mpfree-hello", 31.5, 60, 6, "FIFO 70"),
+            row(812, "mpfree", 31.5, 60, 6, "FIFO 70"),
             row(160, "kworker/u8:2", 2.0, 0, 1, "normal"),
             row(98, "irq/45-ff0c0000", 1.0, 0, 1, "FIFO 50"),
             row(1, "systemd", 0.0, 9, 1, "normal"),
@@ -5798,6 +5802,118 @@ mod tests {
             .lines()
             .map(|(l, _)| l.clone())
             .collect()
+    }
+
+    /// Ticks until `done` (the sample page's threads finish), for at most
+    /// five seconds.
+    fn tick_until(p: &mut Player, mut done: impl FnMut(&mut Player) -> bool) {
+        let end = Instant::now() + Duration::from_secs(5);
+        while !done(p) {
+            assert!(Instant::now() < end, "{:?}", events_log(p));
+            std::thread::sleep(Duration::from_millis(5));
+            p.tick(0.033);
+        }
+    }
+
+    #[test]
+    fn the_kits_save_with_their_sounds_and_open_again() {
+        use mpfree_sampler::{save, wav};
+        use std::collections::HashMap;
+        let pad = mpfree_sampler_ui::sample::PAD;
+        let p = sample_sampler(Fonts::embedded());
+        let (text, sounds) = p.sample.save_part();
+        assert!(text.starts_with(save::FORMAT));
+        let saved = p.sample.project(0).unwrap().clone();
+        assert_eq!(sounds.len(), saved.sources().len());
+        // What the library would keep in the project's samples/.
+        let files: HashMap<String, Vec<u8>> = sounds
+            .iter()
+            .map(|(f, s)| (f.clone(), wav::bytes(s)))
+            .collect();
+        // Another session: the same kit slots, nothing on them.
+        let mut q = sample_player(Fonts::embedded());
+        q.apply(ToUi::SampleKits {
+            projects: vec![Project::new()],
+            rate: mpfree_sampler_ui::sample::RATE,
+        });
+        q.apply(ToUi::Kit(0));
+        assert!(q.sample.project(0).unwrap().pad(pad).is_none());
+        let _ = q.take_actions();
+        q.sample.open_part(
+            text,
+            Box::new(move |f| files.get(f).cloned().ok_or_else(|| "missing".to_string())),
+        );
+        tick_until(&mut q, |q| q.sample.project(0).unwrap().pad(pad).is_some());
+        let got = q.sample.project(0).unwrap();
+        assert_eq!(got.pad(pad), saved.pad(pad));
+        assert_eq!(got.chop_sets, saved.chop_sets);
+        assert!(!got.can_undo(), "UNDO doesn't take the opened kit apart");
+        let log = events_log(&q);
+        assert!(log.iter().any(|l| l == "sample: 1 kit opened"), "{log:?}");
+        // The Play page's names follow, and the audio thread gets the kit.
+        assert_eq!(q.kits[0].pads[pad].as_deref(), Some("Break 92"));
+        assert!(q.sample.take_view().is_some());
+        // A part that isn't one says so and leaves the kits alone.
+        q.sample
+            .open_part("hello".into(), Box::new(|_| Err("no".to_string())));
+        tick_until(&mut q, |q| {
+            events_log(q)
+                .iter()
+                .any(|l| l.starts_with("sample: the project's kits weren't opened"))
+        });
+        assert!(q.sample.project(0).unwrap().pad(pad).is_some());
+    }
+
+    #[test]
+    fn load_puts_a_wav_on_the_pad_shown_and_load_to_pad_on_the_next_hit() {
+        use mpfree_sampler::model::Source;
+        use mpfree_sampler::wav;
+        let dir = std::env::temp_dir().join(format!("mpfree-sample-load-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let wav_of = |name: &str, n: usize| {
+            let data = (0..n)
+                .map(|i| ((i % 200) as f32 - 100.0) / 32_768.0)
+                .collect();
+            let s = Source::new("x", 44_100, 1, data).unwrap();
+            let path = dir.join(name);
+            std::fs::write(&path, wav::bytes(&s)).unwrap();
+            path
+        };
+        let pad = mpfree_sampler_ui::sample::PAD;
+        let mut p = sample_sampler(Fonts::embedded());
+        // Load: onto the pad shown, named for the file, one undo step.
+        p.sample.load_file(wav_of("Clap 2.wav", 4_410), false);
+        tick_until(&mut p, |p| {
+            p.sample.project(0).unwrap().pad(pad).unwrap().name == "Clap 2"
+        });
+        assert!(events_log(&p)
+            .iter()
+            .any(|l| l.starts_with("sample: loaded: Clap 2, ") && l.contains("mono on pad A")));
+        assert_eq!(p.kits[0].pads[pad].as_deref(), Some("Clap 2"));
+        // Load to pad: held until a pad is hit, then it lands there.
+        p.sample.load_file(wav_of("Rim.WAV", 2_000), true);
+        tick_until(&mut p, |p| p.sample.assigning().is_some());
+        assert_eq!(p.sample.assigning(), Some("Rim"));
+        assert!(events_log(&p)
+            .iter()
+            .any(|l| l == "sample: hit a pad to put Rim on it"));
+        p.apply(ToUi::PadDown {
+            pad: 9,
+            velocity: 100,
+        });
+        p.apply(ToUi::PadUp(9));
+        p.tick(0.033);
+        assert_eq!(p.sample.assigning(), None);
+        assert_eq!(p.sample.project(0).unwrap().pad(9).unwrap().name, "Rim");
+        assert_eq!(p.kits[0].pads[9].as_deref(), Some("Rim"));
+        // What it can't load, it says.
+        p.sample.load_file(dir.join("Pad.aif"), false);
+        tick_until(&mut p, |p| {
+            events_log(p)
+                .iter()
+                .any(|l| l == "sample: not loaded (only WAV files load for now, not .aif)")
+        });
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
