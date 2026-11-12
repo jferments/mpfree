@@ -125,3 +125,48 @@ Runtime evidence from the ARM guest (syscalls, opened paths, return codes, error
 ### Physical recovery remains a separate program
 
 A virtual disk reset does **not** prove recovery from a damaged RK3288 SPL, U-Boot, eMMC boot partition, RPMB or OTP setting. Physical recovery requires validated silicon ROM entry, independent loader execution, independent boot-region readback/restore and sacrificial restoration rehearsal. **No irreversible `program-fuses`, bootpart settings, raw mmc writes, flash/erase or update execution is authorized by these scripts.**
+
+## 2026-11-11 V8 owner audit failure and corrected rerun
+
+Owner V8 ZIP: bootchain-wide-20261111T235450Z-v8-3624301.zip.
+All 10 indexed log/metadata files passed ZIP CRC, sizes and SHA256.
+The owner Ghidra Snap is Ghidra 12.2 / embedded Python 3.14.
+Both updater ELF imports succeeded and the SPL/U-Boot projects
+opened successfully, but **all four V8 post-scripts failed**:
+PyGhidra's Java-backed script namespace proxy raised AttributeError
+(property fget has no setter) while assigning a module-level
+loop variable at line 116. Ghidra returned exit code 0 despite
+the post-script exception. The runner correctly marked all four
+stages success=false. No v8-ghidra-*.json report was generated.
+
+Fix: all mutable V8 Ghidra script state is now inside a regular
+Python function mpfree_v8_entrypoint(), preventing module-level
+loop targets from being assigned through a Java attribute proxy.
+A regression check asserts no loops remain at module scope.
+
+The RAMFS is 3,747,840 bytes, SHA256
+ca9299c050173ebe0912d001c1a137c0e6dda8001987c2b423cbf8b4158fc7af.
+Initial inspection reported only 2 update-named paths:
+boot, usr/sbin/reboot; no selected contents. These were NOT
+the complete SquashFS contents. The corrected runner records
+up to 2400 paths and examines /init, linuxrc, rcS and other
+startup/config candidates regardless of filename.
+
+Rerun:
+
+    python3 "$HOME/mpfree-work/mpfree-wide-audit-src/tools/mpc-one/run_boot_updater_v8.py"
+
+Expect one private bootchain-wide-*-v8-<pid>.zip. Four nonempty
+Ghidra JSON reports should appear if the corrected scripts work;
+if a script fails, preserve the log and stage manifest.
+
+The owner APT sources use Ubuntu **26.04 resolute**, not 24.04.
+Use qemu-user (qemu-user-static is a virtual package) and
+linux-source (currently linux 7.0). The kernel builder now
+discovers the installed source tarball in /usr/src rather
+than requiring Linux 6.8. Do not install older Ubuntu archives
+merely to satisfy an obsolete package name.
+
+No live MPC commands, ROM access, firmware writes or updater
+execution are authorized by this analysis. QEMU virt does not
+simulate true RK3288 silicon recovery.
