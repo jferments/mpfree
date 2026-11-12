@@ -2722,9 +2722,15 @@ impl Player {
                 .arp_panel
                 .action(&ev, &self.arp, &mut self.qlink_focus)
                 .map(FromUi::Arp),
-            (time_view::TRANSPORT | time_view::CLIPS | time_view::RECORD | time_view::TAKES, _) => {
-                time_view::action(&ev, &self.time).map(FromUi::Time)
-            }
+            (
+                time_view::TRANSPORT
+                | time_view::CLIPS
+                | time_view::RECORD
+                | time_view::TAKES
+                | time_view::MORPH
+                | time_view::SONG,
+                _,
+            ) => time_view::action(&ev, &self.time).map(FromUi::Time),
             _ => None,
         }
     }
@@ -4864,6 +4870,27 @@ mod tests {
             "Clips · slots 2–6 of 16"
         );
         assert!(p.take_actions().is_empty());
+        // The morph bar under the grid: Save stores the A row (the
+        // crossfader is at A).
+        let morph = p.ui.rect_of(time_view::MORPH).unwrap();
+        let save = mpfree_time_ui::widgets::MorphBar::parts(morph).3[2];
+        assert_eq!(
+            tap(&mut p, (save.x + save.w / 2, save.y + save.h / 2)),
+            Some(FromUi::Time(TimeAction::SaveScene(0)))
+        );
+        // The Song view in the grid's place: its Clips button goes back.
+        p.time.song_view = true;
+        p.time_page.update(&mut p.ui, &p.time);
+        p.ui.paint(&mut SoftCanvas::new(1280, 800));
+        let song = p.ui.rect_of(time_view::SONG).unwrap();
+        let back =
+            p.ui.get::<mpfree_time_ui::song::SongLanes>(time_view::SONG)
+                .unwrap()
+                .button_rects(song)[0];
+        assert_eq!(
+            tap(&mut p, (back.x + back.w / 2, back.y + back.h / 2)),
+            Some(FromUi::Time(TimeAction::SongView(false)))
+        );
     }
 
     /// Mockup H: a speaker beside each loop layer's name; a tap mutes
