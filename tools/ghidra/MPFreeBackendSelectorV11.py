@@ -256,6 +256,56 @@ def mpfree_v11_entrypoint():
             except Exception as e:record['error']=type(e).__name__+': '+str(e)[:180]
             details[key]=record
     finally:decoder.dispose()
+    # Other independent research tracks. Original-memory words only,
+    # never execute SPL handoff, update trampolines or ARM MMIO operations.
+    if role in ('spl','az01-update'):
+        slots=(
+            {
+                'candidate_stage_entry_handoff':0xff705274,
+                'boot_device_order_ptr':0xff7053fc,
+                'boot_device_mapping_table':0xff705404,
+                'stage_handoff_param':0xff70540c,
+                'stage_boot_buffer':0xff705598,
+                'stage_boot_context':0xff7055a4,
+            }
+            if role=='spl' else {
+                'usb_update_mode_trampoline':0x00012f98,
+                'apply_image_trampoline':0x00012fac,
+                'download_image_trampoline':0x00012fd0,
+            }
+        )
+        original_pointers={}
+        for label,address in slots.items():
+            word=None
+            try:
+                block=mem.getBlock(A(address))
+                if block and block.isInitialized():
+                    word=int(mem.getInt(A(address))) & 0xffffffff
+            except Exception:
+                word=None
+            fn_match=None
+            if word is not None:
+                try:
+                    target=fm.getFunctionContaining(A(word & 0xfffffffe))
+                    if target:
+                        fn_match=addr_hex(target.getEntryPoint().getOffset())
+                except Exception:
+                    pass
+            original_pointers[label]={
+                'slot':addr_hex(address),
+                'original_word':addr_hex(word) if word is not None else None,
+                'possible_code_target':fn_match,
+                'original_word_proves_execution':False,
+                'runtime_target_unverified':True,
+            }
+        direct_boot={
+            'schema':'mpfree-original-stage-pointer-audit-v1',
+            'role':role,
+            'original_image_pointers':original_pointers,
+            'does_not_run_vendor_code':True,
+            'indirect_spl_handoff_target_proven':False,
+            'live_updater_trampoline_target_proven':False,
+        }
     # Explicit P3 direct-boot/protocol research. Read literal-pool values and
     # original bytes from the SHA-verified saved project. No code execution.
     direct_boot={}
