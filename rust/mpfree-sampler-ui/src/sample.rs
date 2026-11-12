@@ -14,6 +14,7 @@ use mpfree_sampler::record::{self, Feed, Input, Recording};
 use mpfree_ui::widgets::{Chip, Header, Label};
 use mpfree_ui::{Align, Fonts, Theme, Tone, Ui};
 
+use crate::auto_tab::{self, AutoSettings, AutoState, AutoTab, Onto, Running};
 use crate::chop_tab::{self, ChopState, ChopTab};
 use crate::grain_tab::{self, GrainState, GrainTab};
 use crate::pads_tab::{self, PadsState, PadsTab};
@@ -37,6 +38,7 @@ pub const PADS_PAGE: &str = "Sample · Pads";
 pub const GRAIN_PAGE: &str = "Sample · Grain";
 pub const REC_PAGE: &str = "Sample · Rec";
 pub const WARP_PAGE: &str = "Sample · Warp";
+pub const AUTO_PAGE: &str = "Sample · Auto-sample";
 pub const RATE: u32 = 44_100;
 pub const BPM: f64 = 92.0;
 /// The pad the samples edit (A5).
@@ -456,6 +458,103 @@ pub fn rec_samples(fonts: impl Fn() -> Fonts) -> Result<Vec<RecSample>, String> 
     s.tab.feed(&mut s.ui, &s.input, None, false, 0.05);
     out.push(s);
     Ok(out)
+}
+
+/// One sample screen of the Rec tab's Auto-sample mode.
+pub struct AutoSample {
+    pub name: &'static str,
+    pub about: &'static str,
+    pub ui: Ui,
+    pub tab: AutoTab,
+    pub project: Project,
+    pub state: AutoState,
+}
+
+/// The synth patch the Auto-sample screens sample, as the app names it.
+pub const AUTO_SYNTH: &str = "Poly Pluck";
+
+/// What the Auto-sample mode shows for `project` with `settings`.
+pub fn auto_state(
+    project: &Project,
+    settings: &AutoSettings,
+    running: Option<Running>,
+) -> AutoState {
+    let has = |p: usize| project.pad(p).is_some_and(|pd| !pd.layers.is_empty());
+    AutoState {
+        pad: PAD,
+        synth: Some(AUTO_SYNTH.to_string()),
+        pads: 16,
+        target: auto_tab::target(settings.onto, settings.notes(), 16, has),
+        running,
+        last: String::new(),
+        rate: RATE,
+    }
+}
+
+/// The Auto-sample mode's sample screens.
+pub fn auto_samples(fonts: impl Fn() -> Fonts) -> Result<Vec<AutoSample>, String> {
+    let make = |name: &'static str,
+                about: &'static str,
+                project: Project,
+                settings: AutoSettings,
+                running: Option<Running>|
+     -> Result<AutoSample, String> {
+        let state = auto_state(&project, &settings, running);
+        let mut ui = app_ui_with(fonts(), &project, auto_tab::HINT);
+        let mut tab = AutoTab::add(&mut ui, AUTO_PAGE, &state)?;
+        tab.bank = Some('A');
+        tab.settings = settings;
+        tab.update(&mut ui, &state);
+        ui.show(AUTO_PAGE)?;
+        Ok(AutoSample {
+            name,
+            about,
+            ui,
+            tab,
+            project,
+            state,
+        })
+    };
+    // Every 6 semitones from C2 to C5 (7 notes), 3 layers of 2 round
+    // robins: onto the kit's last 7 pads, which are empty.
+    let seven = AutoSettings {
+        hi: 72,
+        every: 6,
+        round_robins: 2,
+        ..AutoSettings::default()
+    };
+    Ok(vec![
+        make(
+            "rec-auto",
+            "Auto-sample on a new kit: the Synth tab's Poly Pluck from C2 to A5 every 3 semitones, 3 velocity \
+             layers, onto all 16 pads",
+            Project::new(),
+            AutoSettings::default(),
+            None,
+        )?,
+        make(
+            "rec-auto-running",
+            "Auto-sampling 7 notes × 3 layers × 2 round robins onto the kit's empty pads A10-A16, 20 takes of \
+             42 done",
+            kit_project().0,
+            seven,
+            Some(Running {
+                done: 20,
+                total: 42,
+                note: Some(54),
+            }),
+        )?,
+        make(
+            "rec-auto-full",
+            "The kit has no 16 empty pads in a row: the bar says so and Start waits (Onto: Whole kit, or fewer notes)",
+            kit_project().0,
+            AutoSettings {
+                onto: Onto::EmptyPads,
+                ..AutoSettings::default()
+            },
+            None,
+        )?,
+    ])
 }
 
 /// The app's part of the screen: the header and the hint line.

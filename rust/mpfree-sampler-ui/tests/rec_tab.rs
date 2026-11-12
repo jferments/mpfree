@@ -100,8 +100,8 @@ fn the_tab_shows_the_input_the_bar_lines_and_what_skip_back_keeps() {
     assert!(v.note.is_empty() && v.threshold.is_none());
     assert_eq!(v.caption, "40.00 s held");
     let (labels, enabled) = buttons(&s);
-    assert_eq!(labels, ["Record", "Skip back 10 s"]);
-    assert_eq!(enabled, [true, true]);
+    assert_eq!(labels, ["Record", "Skip back 10 s", "Auto-sample"]);
+    assert_eq!(enabled, [true, true, true]);
     let list = s.ui.get::<SettingList>(rec_tab::LIST).unwrap();
     let rows: Vec<(&str, &str)> = list
         .rows
@@ -133,8 +133,12 @@ fn a_take_on_the_next_bar_is_drawn_as_it_grows_and_the_button_stops_it() {
     assert!(v.bars.contains(&take.start), "it started on a bar line");
     assert!(take.label.starts_with("● "));
     let (labels, enabled) = buttons(&s);
-    assert_eq!(labels, ["Stop", "Skip back 2 bars"]);
-    assert_eq!(enabled, [true, false]);
+    assert_eq!(labels, ["Stop", "Skip back 2 bars", "Auto-sample"]);
+    assert_eq!(
+        enabled,
+        [true, false, false],
+        "no Auto-sample while a take records"
+    );
     // Two whole bars back from the latest bar line.
     let skip = v.skip.as_ref().unwrap();
     assert_eq!(
@@ -147,6 +151,7 @@ fn a_take_on_the_next_bar_is_drawn_as_it_grows_and_the_button_stops_it() {
 fn record_then_stop_puts_the_take_onto_the_next_empty_pad() {
     let mut s = screen("rec");
     let (mut project, _) = kit_project();
+    assert_eq!(press(&mut s, 2), Some(RecAction::Auto));
     assert_eq!(press(&mut s, 0), Some(RecAction::Record));
     // The app makes the take from the tab's settings and polls it.
     s.recording = Some(s.tab.settings.recording(&s.input, bar_frames()));
@@ -154,6 +159,7 @@ fn record_then_stop_puts_the_take_onto_the_next_empty_pad() {
     run(&mut s, 1.5);
     assert!(s.tab.recording());
     assert_eq!(buttons(&s).0[0], "Stop");
+    assert_eq!(press(&mut s, 2), None, "Auto-sample waits for the take");
     assert_eq!(press(&mut s, 0), Some(RecAction::Stop));
     s.recording.as_mut().unwrap().stop(&s.input);
     let to = s.input.now();
@@ -253,7 +259,8 @@ fn with_the_line_input_off_the_tab_says_where_to_turn_it_on() {
         .note
         .starts_with("The line input is off: Looper tab, MENU, Line input"));
     assert!(v.skip.is_none());
-    assert_eq!(buttons(&s).1, [false, false]);
+    // Auto-sample needs no input: it plays the synth.
+    assert_eq!(buttons(&s).1, [false, false, true]);
 }
 
 #[test]
@@ -307,5 +314,5 @@ fn the_master_screen_shows_what_it_resamples() {
     let skip = v.skip.as_ref().unwrap();
     assert_eq!(skip.label, "Skip back 4 bars");
     assert!(((skip.end - skip.start) as f64 - 4.0 * bar_frames()).abs() <= 2.0);
-    assert_eq!(buttons(&s).0, ["Record", "Skip back 4 bars"]);
+    assert_eq!(buttons(&s).0, ["Record", "Skip back 4 bars", "Auto-sample"]);
 }

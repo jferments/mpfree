@@ -29,10 +29,11 @@
 
 use mpfree_node::{
     Ctx, Kind, Node, NodeEvent, NodeInfo, ParamInfo, Pressure, PressureChord, PressureCoefs,
-    PressureMode, PressureShape, Smooth, Timed,
+    PressureMode, PressureShape, Smooth, Timed, Tuning,
 };
 
-use crate::dsp::{note_hz, same_key, Rng};
+use crate::dsp::{same_key, Rng};
+use crate::expr::{expr_coef, NoteExprs, VoiceExpr};
 use crate::fm_params::*;
 use crate::pressure::{swell_gain, Depths, Slot};
 
@@ -215,8 +216,22 @@ pub fn scale_rate(note: u8, sens: u8) -> i32 {
     (i32::from(sens.min(7)) * x) >> 3
 }
 
-/// An operator's frequency in Hz for a note pitch (fractional MIDI note).
+/// An operator's frequency in Hz for a note pitch (fractional MIDI note),
+/// in 12-TET at A4 = 440 Hz.
 pub fn op_freq(pitch: f32, fixed: bool, coarse: u8, fine: u8, detune: i8) -> f32 {
+    static STANDARD: Tuning = Tuning::standard();
+    op_freq_in(&STANDARD, pitch, fixed, coarse, fine, detune)
+}
+
+/// [`op_freq`] in a tuning. A fixed frequency stays fixed.
+pub fn op_freq_in(
+    tuning: &Tuning,
+    pitch: f32,
+    fixed: bool,
+    coarse: u8,
+    fine: u8,
+    detune: i8,
+) -> f32 {
     if fixed {
         return 10f32.powf(f32::from(coarse & 3) + f32::from(fine.min(99)) / 100.0);
     }
@@ -227,7 +242,7 @@ pub fn op_freq(pitch: f32, fixed: bool, coarse: u8, fine: u8, detune: i8) -> f32
     };
     let ratio = ratio * (1.0 + f32::from(fine.min(99)) / 100.0);
     // Detune: about a cent a step.
-    note_hz(pitch + f32::from(detune.clamp(-7, 7)) / 100.0) * ratio
+    tuning.hz(pitch + f32::from(detune.clamp(-7, 7)) / 100.0) * ratio
 }
 
 /// LFO speed 0 to 99 in Hz (about 0.06 to 49 Hz).
@@ -532,6 +547,8 @@ struct Voice {
     press: Pressure,
     /// The pressure this voice uses, 0 to 1: its own, the chord's or none.
     pv: f32,
+    /// Its note's own slide and tone.
+    ex: VoiceExpr,
     /// Feedback gain (pressure can move it).
     fb_scale: f32,
     kill_gain: f32,
@@ -550,6 +567,7 @@ impl Voice {
             peg: PitchEnv::default(),
             press: Pressure::new(),
             pv: 0.0,
+            ex: VoiceExpr::default(),
             fb_scale: 0.0,
             kill_gain: 1.0,
             kill_step: 0.0,
@@ -629,6 +647,12 @@ pub struct Fm {
     stack_len: usize,
     clock: u64,
     meter_voices: f32,
+    /// How notes become frequencies.
+    tuning: Tuning,
+    /// Each note's slide and tone for its next note-on, and the voices'
+    /// smoothing coefficient.
+    exprs: NoteExprs,
+    expr_c: f32,
     /// Notes that did not fit anywhere (should stay 0).
     pub dropped: u64,
 }
@@ -697,6 +721,9 @@ impl Fm {
             stack_len: 0,
             clock: 0,
             meter_voices: 0.0,
+            tuning: Tuning::standard(),
+            exprs: NoteExprs::new(),
+            expr_c: 1.0,
             dropped: 0,
         };
         s.read_patch();
@@ -858,6 +885,7 @@ impl Fm {
             let v = &mut self.voices[0];
             if held && v.state == State::On {
                 // Legato: a new pitch, no new attack.
+                v.ex.retarget(self.exprs.on(note));
                 v.note = note;
                 v.press.start();
                 self.voice_control(0, false);
@@ -895,6 +923,7 @@ impl Fm {
         };
         let sync = self.patch.osc_sync;
         let peg_levels = self.patch.peg_levels;
+        let ex = self.exprs.on(note);
         let v = &mut self.voices[slot];
         if !v.sounding() {
             v.ops = [OpState::default(); 6];
@@ -909,6 +938,7 @@ impl Fm {
         }
         v.state = State::On;
         v.press.start();
+        v.ex.start(ex);
         v.note = note;
         v.velocity = velocity.min(127);
         v.age = self.clock;
@@ -963,6 +993,7 @@ impl Fm {
     }
 
     fn note_off(&mut self, note: u8) {
+        self.exprs.off(note);
         self.stack_remove(note);
         if self.patch.mono {
             let back = (self.stack_len > 0).then(|| self.stack[self.stack_len - 1]);
@@ -972,6 +1003,7 @@ impl Fm {
             }
             match back {
                 Some(n) => {
+                    v.ex.retarget(self.exprs.on(n));
                     v.note = n;
                     self.voice_control(0, false);
                 }
@@ -988,6 +1020,7 @@ impl Fm {
 
     fn all_off(&mut self) {
         self.stack_len = 0;
+        self.exprs.clear();
         for v in &mut self.voices {
             if v.state == State::On {
                 Self::release(v);
@@ -1015,6 +1048,17 @@ impl Fm {
             }
             NodeEvent::AllOff => self.all_off(),
             NodeEvent::Param { id, value } => self.set_param(id, value),
+            NodeEvent::Expression { note, kind, value } => {
+                // One note's own slide or tone: its held voices glide to it.
+                let Some(value) = self.exprs.set(note, kind, value) else {
+                    return;
+                };
+                for v in &mut self.voices {
+                    if v.state == State::On && v.note == note {
+                        v.ex.aim(kind, value);
+                    }
+                }
+            }
         }
     }
 
@@ -1106,8 +1150,12 @@ impl Fm {
         let raw = self.lfo_raw;
         let bend = self.bend.value * p.bend_range;
         let d = self.depths;
+        let tuning = &self.tuning;
         let v = &mut self.voices[i];
         let press = v.pv;
+        if advance {
+            v.ex.step(self.expr_c);
+        }
         let peg = if advance {
             v.peg.run(secs, &p.peg_rates, &p.peg_levels)
         } else {
@@ -1129,7 +1177,10 @@ impl Fm {
         let fb = (f32::from(p.fb.min(7)) + press * d.get(target::FEEDBACK) * 7.0).clamp(0.0, 7.0);
         v.fb_scale = if fb <= 0.0 { 0.0 } else { (fb - 8.0).exp2() };
         let mut carriers_done = true;
-        let bent = pitch + bend;
+        let mut bent = pitch + bend;
+        if v.ex.slide != 0.0 {
+            bent += v.ex.slide;
+        }
         for (j, o) in v.ops.iter_mut().enumerate() {
             let q = &p.ops[j];
             // The same inputs give the same increment, so a held note
@@ -1145,9 +1196,9 @@ impl Fm {
             ];
             if !same_key(&o.fkey, &key) {
                 let hz = if q.fixed {
-                    op_freq(0.0, true, q.coarse, q.fine, q.detune)
+                    op_freq_in(tuning, 0.0, true, q.coarse, q.fine, q.detune)
                 } else {
-                    op_freq(bent, false, q.coarse, q.fine, q.detune)
+                    op_freq_in(tuning, bent, false, q.coarse, q.fine, q.detune)
                 };
                 o.dphase = ((hz / rate).clamp(0.0, 0.49) * 4_294_967_296.0) as u32;
                 o.fkey = key;
@@ -1315,6 +1366,7 @@ impl Node for Fm {
         self.rate = rate.max(8_000);
         let cr = self.rate / CTRL as u32;
         self.bend.set_time(cr, 4.0);
+        self.expr_c = expr_coef(cr as f32);
         self.out.set_time(cr, 15.0);
         self.out.snap(self.out.target);
         self.update_pressure();
@@ -1325,6 +1377,7 @@ impl Node for Fm {
             *v = Voice::new();
         }
         self.stack_len = 0;
+        self.exprs.clear();
         self.lfo_phase = 0.0;
         self.lfo_time = 0.0;
         self.chord.clear();
@@ -1368,6 +1421,19 @@ impl Node for Fm {
         // The slowest release can take a long time; a host waits for the
         // voices to free instead. This is a bound for a typical patch.
         (4.0 * self.rate as f32) as u32
+    }
+
+    fn set_tuning(&mut self, tuning: &Tuning) {
+        if self.tuning == *tuning {
+            return;
+        }
+        self.tuning.clone_from(tuning);
+        // Every operator works its increment out again on the next step.
+        for v in &mut self.voices {
+            for o in &mut v.ops {
+                o.fkey = [0; 3];
+            }
+        }
     }
 }
 
