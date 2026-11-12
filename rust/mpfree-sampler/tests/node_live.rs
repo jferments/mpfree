@@ -237,11 +237,7 @@ fn settings_reach_the_engine_on_their_frames_for_any_block() {
     let plain = run(&mut plain, frames, &notes, 128);
     assert!(want.iter().any(|x| x.abs() > 0.05), "the kit is silent");
     assert_ne!(plain, want, "the settings changed nothing");
-    // Each block size against the engine in the same blocks: the engine's
-    // glide back from a kit Cutoff can differ by a few parts in 10 000
-    // between blocks of 1 and of 128, which is the engine's to settle.
     for block in [1, 7, 64, 128, 1000] {
-        let want = engine_plays(&p, frames, block);
         let (mut n, _c) = node(&p);
         let got = run(&mut n, frames, &phrase(), block);
         let first = got.iter().zip(&want).position(|(a, b)| a != b);
