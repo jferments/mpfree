@@ -3304,6 +3304,10 @@ fn player_session(
                 gui::FromUi::Mixer(mpfree_mixer_ui::MixAction::AddInsert { strip }) => {
                     fx.extend(panels.open_insert(&mut app, &mix, strip, None))
                 }
+                // The Sample tab's FX: the chain editor on the pad's channel.
+                gui::FromUi::SampleFx { pad } => {
+                    fx.extend(panels.open_pad(&mut app, pad, mixing::DRUMS))
+                }
                 gui::FromUi::Chain(a) => {
                     let recording = time.info().state == mpfree_transport::State::Recording;
                     fx.extend(panels.chain(&mut app, &mut mix, &a, recording, &mut |m| {
@@ -3437,6 +3441,7 @@ fn player_session(
                     }
                 }
                 gui::FromUi::SampleKey { .. } => {}
+                gui::FromUi::SamplePadLive { kit, values } => player.pad_live(kit, &values),
                 // The Pads tab's switch: the browser or the pad's settings.
                 gui::FromUi::PadsView(v) => {
                     app.set_pads_browse(v == mpfree_sampler_ui::pads_tab::BROWSE)

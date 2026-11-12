@@ -91,21 +91,34 @@ pub fn to_text(
         w.line("pads_play", pads_play_text(p.pads_play()));
         for i in 0..PADS {
             let Some(pad) = p.pad(i) else { continue };
-            let mut pad = pad.clone();
-            w.scope(&format!("pad.{i}"), |w| {
-                w.line("layers", pad.layers.len());
-                for (j, l) in pad.layers.iter_mut().enumerate() {
-                    w.scope(&format!("layer.{j}"), |w| {
-                        let src = w.ids.get(&l.region.source).copied().unwrap_or(usize::MAX);
-                        w.line("source", src);
-                        visit_layer(w, l);
-                    });
-                }
-                visit_pad(w, &mut pad);
-            });
+            write_pad(&mut w, &format!("pad.{i}"), pad);
+        }
+        // Scenes A and B: their pads as the kit's are written.
+        for (k, scene) in p.scenes.iter().enumerate() {
+            let Some(scene) = scene else { continue };
+            w.line(&format!("scene.{k}"), "stored");
+            for i in 0..PADS {
+                let Some(pad) = scene.pad(i) else { continue };
+                write_pad(&mut w, &format!("scene.{k}.pad.{i}"), pad);
+            }
         }
     }
     w.out
+}
+
+fn write_pad(w: &mut Writer, at: &str, pad: &Pad) {
+    let mut pad = pad.clone();
+    w.scope(at, |w| {
+        w.line("layers", pad.layers.len());
+        for (j, l) in pad.layers.iter_mut().enumerate() {
+            w.scope(&format!("layer.{j}"), |w| {
+                let src = w.ids.get(&l.region.source).copied().unwrap_or(usize::MAX);
+                w.line("source", src);
+                visit_layer(w, l);
+            });
+        }
+        visit_pad(w, &mut pad);
+    });
 }
 
 /// The kits from text [`to_text`] wrote (or an older or newer build).
@@ -231,22 +244,10 @@ fn read_kit(
         }
     }
     for i in 0..PADS {
-        let Some(n) = r.get::<usize>(&format!("pad.{i}.layers")) else {
+        let Some((pad, missing)) = read_pad(r, &format!("pad.{i}"), &|n| source(&p, n)) else {
             continue;
         };
-        let mut layers = Vec::new();
-        let mut missing = 0;
-        for j in 0..n.min(MAX_LAYERS) {
-            let at = format!("pad.{i}.layer.{j}");
-            let Some(s) = source(&p, r.get(&format!("{at}.source"))) else {
-                missing += 1;
-                continue;
-            };
-            let mut l = Layer::new(Region::whole(&s));
-            r.scope(&at, |r| visit_layer(r, &mut l));
-            layers.push(l);
-        }
-        let Some(first) = layers.first().cloned() else {
+        let Some(pad) = pad else {
             if missing > 0 {
                 r.notes.push(format!(
                     "{kit}: pad {} left out (its sounds are missing)",
@@ -255,9 +256,6 @@ fn read_kit(
             }
             continue;
         };
-        let mut pad = Pad::new("", first);
-        pad.layers = layers;
-        r.scope(&format!("pad.{i}"), |r| visit_pad(r, &mut pad));
         let name = pad.name.clone();
         match p.set_pad(i, Some(pad), None) {
             Ok(()) if missing > 0 => r.notes.push(format!(
@@ -270,8 +268,60 @@ fn read_kit(
                 .push(format!("{kit}: pad {} ({name}) left out ({e})", i + 1)),
         }
     }
+    // Scenes A and B, after the pads (whose sounds they share).
+    for k in 0..p.scenes.len() {
+        if r.text(&format!("scene.{k}")).is_none() {
+            continue;
+        }
+        let mut pads = vec![None; PADS];
+        let mut lost = 0;
+        for (i, slot) in pads.iter_mut().enumerate() {
+            match read_pad(r, &format!("scene.{k}.pad.{i}"), &|n| source(&p, n)) {
+                Some((Some(pad), _)) if p.check_pad(&pad).is_ok() => *slot = Some(pad),
+                Some(_) => lost += 1,
+                None => {}
+            }
+        }
+        if lost > 0 {
+            r.notes.push(format!(
+                "{kit}: scene {} lost {lost} pad(s) (their sounds are missing)",
+                ["A", "B"][k]
+            ));
+        }
+        p.scenes[k] = Some(crate::scene::Scene::from_pads(pads));
+    }
     p.clear_history();
     p
+}
+
+/// The pad written at `at`, if there is one there: with the layers whose
+/// sounds `source` has (None if it has none of them), and how many it
+/// had to leave out.
+fn read_pad(
+    r: &mut Reader,
+    at: &str,
+    source: &dyn Fn(Option<usize>) -> Option<Source>,
+) -> Option<(Option<Pad>, usize)> {
+    let n = r.get::<usize>(&format!("{at}.layers"))?;
+    let mut layers = Vec::new();
+    let mut missing = 0;
+    for j in 0..n.min(MAX_LAYERS) {
+        let la = format!("{at}.layer.{j}");
+        let Some(s) = source(r.get(&format!("{la}.source"))) else {
+            missing += 1;
+            continue;
+        };
+        let mut l = Layer::new(Region::whole(&s));
+        r.scope(&la, |r| visit_layer(r, &mut l));
+        layers.push(l);
+    }
+    let Some(first) = layers.first().cloned() else {
+        return Some((None, missing));
+    };
+    let mut pad = Pad::new("", first);
+    pad.layers = layers;
+    r.scope(at, |r| visit_pad(r, &mut pad));
+    Some((Some(pad), missing))
 }
 
 fn one_line(s: &str) -> String {
