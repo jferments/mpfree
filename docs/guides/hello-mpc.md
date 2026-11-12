@@ -190,7 +190,8 @@ The owner asked (2026-11-10) to go from the loading screen to the app without ru
 | TAP TEMPO | Sets the tempo; its light blinks with it |
 | Wheel, − / + | The kit (outside menus) |
 | Q-Link 1, the slider | The level |
-| STOP | Silences everything and turns Latch off. SHIFT + STOP: the console (the system log, raw) and back. While the transport plays, STOP stops it first and a second STOP silences everything |
+| STOP | Silences everything and turns Latch off. While the transport plays, STOP stops it first and a second STOP silences everything. SHIFT + STOP (round 9 on): stop, silence and back to bar 1, as on the MPC |
+| SHIFT + ERASE + TAP TEMPO | The console (the system log, raw) and back: hold SHIFT, hold ERASE, press TAP TEMPO (round 9 on; SHIFT + STOP before). ERASE works once Map controls has found it; the Dev tab's Console page works without it |
 
 MENU, NOTE REPEAT, TAP TEMPO, − and + were measured in round 5 and are built in. At power-on a **button guide** asks only for buttons not known yet: REC, OVERDUB, UNDO and PLAY START, for the time engine. STOP skips one. The numbers go in the log for next time. Prefs > Find the buttons again asks for all nine.
 

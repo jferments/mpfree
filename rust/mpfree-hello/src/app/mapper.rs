@@ -52,6 +52,23 @@ pub enum Job {
     Bank(u8),
     /// TRACK MIX (SHIFT: PAD MIX): the mixer.
     TrackMix,
+    /// ERASE: nothing yet (live erase, and the FX lock mode with a step
+    /// held, come later).
+    Erase,
+    /// MAIN: the Play page, and on it the next view.
+    Main,
+    /// SHIFT + 16 LEVEL: the synth pads' Chromatic | In key switch.
+    SixteenLevel,
+    /// NEXT SEQ: the Arrange tab.
+    NextSeq,
+    /// STEP SEQ: the Play page's Beats view.
+    StepSeq,
+    /// SAMPLER: the Sample tab (SHIFT: the Looper tab).
+    Sampler,
+    /// SAMPLE EDIT: the Sample tab's Wave editor.
+    SampleEdit,
+    /// PROG EDIT: the sound the pads play (the Synth tab, or Sample > Pads).
+    ProgEdit,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -66,7 +83,7 @@ const fn c(name: &'static str, job: Job) -> Control {
 
 /// The MPC One's buttons, transport first. Names are from the panel as
 /// MPFree expects it.
-pub const CONTROLS: [Control; 35] = [
+pub const CONTROLS: [Control; 42] = [
     c("REC", Job::Rec),
     c("OVERDUB", Job::Overdub),
     c("STOP", Job::Fixed(button::STOP)),
@@ -79,14 +96,14 @@ pub const CONTROLS: [Control; 35] = [
     c("PAD BANK C/G", Job::Bank(2)),
     c("PAD BANK D/H", Job::Bank(3)),
     c("FULL LEVEL", Job::Fixed(button::FULL_LEVEL)),
-    c("16 LEVEL", Job::None),
+    c("16 LEVEL", Job::SixteenLevel),
     c("NOTE REPEAT", Job::NoteRepeat),
-    c("ERASE", Job::None),
+    c("ERASE", Job::Erase),
     c("COPY", Job::None),
     c("TC", Job::None),
     c("SHIFT", Job::Fixed(button::SHIFT)),
     c("MENU", Job::Menu),
-    c("MAIN", Job::None),
+    c("MAIN", Job::Main),
     c("BROWSE", Job::None),
     // Opens the mixer. Named after the MPC 3.6 guide's MPC One top panel
     // (p. 348, item 17, as the FX thread cites it); not yet seen by the pad
@@ -95,6 +112,15 @@ pub const CONTROLS: [Control; 35] = [
     c("-", Job::Minus),
     c("+", Job::Plus),
     c("Q-LINK", Job::None),
+    // The mode buttons the hardware control map gives a page (Jay, 20:40Z).
+    c("TRACK MUTE", Job::None),
+    c("NEXT SEQ", Job::NextSeq),
+    c("STEP SEQ", Job::StepSeq),
+    c("SAMPLER", Job::Sampler),
+    c("SAMPLE EDIT", Job::SampleEdit),
+    c("PROG EDIT", Job::ProgEdit),
+    // The data dial's push (Enter), a button like the others.
+    c("DATA DIAL PUSH", Job::None),
     c("Other 1", Job::None),
     c("Other 2", Job::None),
     c("Other 3", Job::None),
