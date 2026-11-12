@@ -53,6 +53,10 @@ pub const TRASH: &str = ".trash";
 pub const MAX_FILE: u64 = 2 << 30;
 /// The most entries a folder listing returns.
 pub const MAX_LIST: usize = 5000;
+/// The most folders one search looks in.
+pub const MAX_SEARCH_FOLDERS: usize = 4000;
+/// How deep a search goes below a place.
+pub const MAX_SEARCH_DEPTH: usize = 16;
 /// A project folder holds this file (written by `mpfree-project`).
 pub const PROJECT_FILE: &str = "project.txt";
 
@@ -448,6 +452,51 @@ impl Library {
         Ok(out)
     }
 
+    /// Everything in the library (not the Trash) whose name holds `query`,
+    /// any case: folders, projects and files, by place and then folder
+    /// order. Projects are not looked inside. At most `max` results, and it
+    /// stops after [`MAX_SEARCH_FOLDERS`] folders, so a huge library costs
+    /// a bounded time on the worker.
+    pub fn search(&self, query: &str, max: usize) -> io::Result<Vec<(Loc, Entry)>> {
+        let q = query.trim().to_lowercase();
+        if q.is_empty() {
+            return Err(err(
+                io::ErrorKind::InvalidInput,
+                "type something to search for".into(),
+            ));
+        }
+        let mut out = Vec::new();
+        let mut folders = 0;
+        for place in Place::ALL {
+            let mut queue = std::collections::VecDeque::from([Loc::top(place)]);
+            while let Some(folder) = queue.pop_front() {
+                folders += 1;
+                if folders > MAX_SEARCH_FOLDERS {
+                    return Ok(out);
+                }
+                // A folder that went away or can't be read is skipped.
+                let Ok(entries) = self.list(&folder) else {
+                    continue;
+                };
+                for e in entries {
+                    let Ok(loc) = folder.join(&e.name) else {
+                        continue;
+                    };
+                    if e.kind == Kind::Folder && loc.names().len() < MAX_SEARCH_DEPTH {
+                        queue.push_back(loc.clone());
+                    }
+                    if e.name.to_lowercase().contains(&q) {
+                        out.push((loc, e));
+                        if out.len() >= max {
+                            return Ok(out);
+                        }
+                    }
+                }
+            }
+        }
+        Ok(out)
+    }
+
     /// An audio file's header.
     pub fn audio_info(&self, loc: &Loc) -> io::Result<AudioInfo> {
         let (p, m) = self.existing(loc)?;
@@ -460,13 +509,13 @@ impl Library {
         read_info(&mut io::BufReader::new(File::open(p)?))
     }
 
-    /// A quick picture of a WAV ([`audio::wav_overview`]).
+    /// A quick picture of a WAV or AIFF ([`audio::overview`]).
     pub fn overview(&self, loc: &Loc, columns: usize) -> io::Result<Option<Vec<(f32, f32)>>> {
         let (p, m) = self.existing(loc)?;
         if !m.is_file() {
             return Ok(None);
         }
-        Ok(audio::wav_overview(
+        Ok(audio::overview(
             &mut io::BufReader::new(File::open(p)?),
             columns,
         ))
@@ -956,6 +1005,43 @@ pub(crate) mod tests {
         let _ = fs::remove_dir_all(&d);
         fs::create_dir_all(&d).unwrap();
         d
+    }
+
+    #[test]
+    fn search_finds_names_in_any_case_everywhere_but_the_trash_and_inside_projects() {
+        let d = temp();
+        let lib = Library::at(&d).unwrap();
+        let s = Loc::top(Place::Samples);
+        let drums = lib.new_folder(&s, "Drums").unwrap();
+        let deep = lib.new_folder(&drums, "Kicks").unwrap();
+        lib.write_new(&deep, "Big KICK.wav", b"x").unwrap();
+        lib.write_new(&drums, "Snare.wav", b"x").unwrap();
+        lib.write_new(&Loc::top(Place::Kits), "kick kit.kit", b"x")
+            .unwrap();
+        let gone = lib.write_new(&s, "kick gone.wav", b"x").unwrap();
+        lib.delete(&gone).unwrap();
+        let p = lib.root().join("Projects/Kick song");
+        fs::create_dir_all(p.join("samples")).unwrap();
+        fs::write(p.join(PROJECT_FILE), "mpfree-project 1\n").unwrap();
+        fs::write(p.join("samples/kick inside.wav"), "x").unwrap();
+        let found: Vec<String> = lib
+            .search("  KiCk ", 50)
+            .unwrap()
+            .iter()
+            .map(|(l, _)| l.to_line())
+            .collect();
+        assert_eq!(
+            found,
+            [
+                "Projects/Kick song",
+                "Samples/Drums/Kicks",
+                "Samples/Drums/Kicks/Big KICK.wav",
+                "Kits/kick kit.kit"
+            ]
+        );
+        assert_eq!(lib.search("kick", 2).unwrap().len(), 2);
+        assert!(lib.search("  ", 10).is_err());
+        assert!(lib.search("nothing like it", 10).unwrap().is_empty());
     }
 
     fn names(v: &[Entry]) -> Vec<&str> {

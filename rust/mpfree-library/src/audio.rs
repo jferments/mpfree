@@ -269,18 +269,71 @@ fn flac<R: Read + Seek>(r: &mut R) -> io::Result<AudioInfo> {
     })
 }
 
-/// A quick picture of a PCM or float WAV for the browser: `columns`
-/// (min, max) pairs from -1 to 1, each from at most 512 frames read at
-/// that column's place in the file, so a long file costs the same as a
-/// short one. None for anything else (the sampler draws the full
-/// waveform once a sound is loaded).
-pub fn wav_overview<R: Read + Seek>(r: &mut R, columns: usize) -> Option<Vec<(f32, f32)>> {
-    let columns = columns.clamp(1, 2048);
+/// How a file stores one sample.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Enc {
+    /// WAV's 8-bit: unsigned, 128 is silence.
+    U8,
+    /// AIFF's 8-bit: signed.
+    S8,
+    /// Signed integers of this many bytes, little or big endian.
+    Int { bytes: usize, big: bool },
+    /// 32-bit float.
+    F32 { big: bool },
+}
+
+impl Enc {
+    fn bytes(self) -> usize {
+        match self {
+            Enc::U8 | Enc::S8 => 1,
+            Enc::Int { bytes, .. } => bytes,
+            Enc::F32 { .. } => 4,
+        }
+    }
+
+    fn value(self, s: &[u8]) -> f32 {
+        match self {
+            Enc::U8 => (f32::from(s[0]) - 128.0) / 128.0,
+            Enc::S8 => f32::from(s[0] as i8) / 128.0,
+            Enc::Int { bytes, big } => {
+                // The sample in the top bytes of an i32, so every size scales alike.
+                let mut b = [0u8; 4];
+                for k in 0..bytes {
+                    b[k] = if big { s[k] } else { s[bytes - 1 - k] };
+                }
+                i32::from_be_bytes(b) as f32 / 2_147_483_648.0
+            }
+            Enc::F32 { big } => {
+                let b = [s[0], s[1], s[2], s[3]];
+                if big {
+                    f32::from_be_bytes(b)
+                } else {
+                    f32::from_le_bytes(b)
+                }
+            }
+        }
+    }
+}
+
+/// A quick picture of a PCM or float WAV or AIFF for the browser:
+/// `columns` (min, max) pairs from -1 to 1, each from at most 512 frames
+/// read at that column's place in the file, so a long file costs the same
+/// as a short one. None for anything else (FLAC needs a decoder; the
+/// sampler draws the full waveform once a sound is loaded).
+pub fn overview<R: Read + Seek>(r: &mut R, columns: usize) -> Option<Vec<(f32, f32)>> {
     let mut h = [0u8; 12];
     r.read_exact(&mut h).ok()?;
-    if &h[..4] != b"RIFF" || &h[8..] != b"WAVE" {
-        return None;
-    }
+    let (enc, channels, start, frames) = match (&h[..4], &h[8..]) {
+        (b"RIFF", b"WAVE") => wav_layout(r)?,
+        (b"FORM", b"AIFF") => aiff_layout(r, false)?,
+        (b"FORM", b"AIFC") => aiff_layout(r, true)?,
+        _ => return None,
+    };
+    sample_columns(r, columns, enc, channels, start, frames)
+}
+
+/// A WAV's encoding, channels, where its samples start and how many frames.
+fn wav_layout<R: Read + Seek>(r: &mut R) -> Option<(Enc, usize, u64, u64)> {
     let mut fmt: Option<(u16, usize, usize, usize)> = None;
     let mut data: Option<(u64, u64)> = None;
     for _ in 0..MAX_CHUNKS {
@@ -313,16 +366,91 @@ pub fn wav_overview<R: Read + Seek>(r: &mut R, columns: usize) -> Option<Vec<(f3
     }
     let (tag, channels, align, bits) = fmt?;
     let (start, size) = data?;
-    let bytes = usize::from(bits as u16 / 8);
-    let ok = match tag {
-        1 => matches!(bits, 8 | 16 | 24 | 32),
-        3 => bits == 32,
-        _ => false,
+    let enc = match (tag, bits) {
+        (1, 8) => Enc::U8,
+        (1, 16 | 24 | 32) => Enc::Int {
+            bytes: bits / 8,
+            big: false,
+        },
+        (3, 32) => Enc::F32 { big: false },
+        _ => return None,
     };
-    if !ok || channels == 0 || align != channels * bytes {
+    if channels == 0 || align != channels * enc.bytes() {
         return None;
     }
-    let frames = size / align as u64;
+    Some((enc, channels, start, size / align as u64))
+}
+
+/// An AIFF's (or uncompressed AIFF-C's) encoding, channels, where its
+/// samples start and how many frames.
+fn aiff_layout<R: Read + Seek>(r: &mut R, aifc: bool) -> Option<(Enc, usize, u64, u64)> {
+    let mut comm: Option<(usize, u64, usize, [u8; 4])> = None;
+    let mut ssnd: Option<(u64, u64)> = None;
+    for _ in 0..MAX_CHUNKS {
+        let mut c = [0u8; 8];
+        r.read_exact(&mut c).ok()?;
+        let size = u64::from(u32be(&c[4..]));
+        let here = r.stream_position().ok()?;
+        match &c[..4] {
+            b"COMM" if size >= 18 => {
+                let mut b = vec![0u8; size.min(22) as usize];
+                r.read_exact(&mut b).ok()?;
+                let mut kind = *b"NONE";
+                if aifc && b.len() >= 22 {
+                    kind.copy_from_slice(&b[18..22]);
+                }
+                comm = Some((
+                    usize::from(u16be(&b[0..])),
+                    u64::from(u32be(&b[2..])),
+                    usize::from(u16be(&b[6..])),
+                    kind,
+                ));
+            }
+            b"SSND" if size >= 8 => {
+                let mut b = [0u8; 8];
+                r.read_exact(&mut b).ok()?;
+                ssnd = Some((here + 8 + u64::from(u32be(&b[0..])), size - 8));
+            }
+            _ => {}
+        }
+        if comm.is_some() && ssnd.is_some() {
+            break;
+        }
+        r.seek(SeekFrom::Start(here + size + (size & 1))).ok()?;
+    }
+    let (channels, frames, bits, kind) = comm?;
+    let (start, size) = ssnd?;
+    let enc = match (&kind, bits) {
+        (b"NONE" | b"twos", 8) => Enc::S8,
+        (b"NONE" | b"twos", 16 | 24 | 32) => Enc::Int {
+            bytes: bits / 8,
+            big: true,
+        },
+        (b"sowt", 16 | 24 | 32) => Enc::Int {
+            bytes: bits / 8,
+            big: false,
+        },
+        (b"fl32" | b"FL32", _) => Enc::F32 { big: true },
+        _ => return None,
+    };
+    if channels == 0 {
+        return None;
+    }
+    let align = (channels * enc.bytes()) as u64;
+    Some((enc, channels, start, frames.min(size / align)))
+}
+
+fn sample_columns<R: Read + Seek>(
+    r: &mut R,
+    columns: usize,
+    enc: Enc,
+    channels: usize,
+    start: u64,
+    frames: u64,
+) -> Option<Vec<(f32, f32)>> {
+    let columns = columns.clamp(1, 2048);
+    let bytes = enc.bytes();
+    let align = channels * bytes;
     if frames == 0 {
         return Some(vec![(0.0, 0.0); columns]);
     }
@@ -341,13 +469,7 @@ pub fn wav_overview<R: Read + Seek>(r: &mut R, columns: usize) -> Option<Vec<(f3
         r.read_exact(&mut buf[..n * align]).ok()?;
         let (mut lo, mut hi) = (0f32, 0f32);
         for s in buf[..n * align].chunks_exact(bytes) {
-            let v = match (tag, bits) {
-                (1, 8) => (f32::from(s[0]) - 128.0) / 128.0,
-                (1, 16) => f32::from(i16::from_le_bytes([s[0], s[1]])) / 32768.0,
-                (1, 24) => (i32::from_le_bytes([0, s[0], s[1], s[2]]) >> 8) as f32 / 8_388_608.0,
-                (1, _) => i32::from_le_bytes([s[0], s[1], s[2], s[3]]) as f32 / 2_147_483_648.0,
-                _ => f32::from_le_bytes([s[0], s[1], s[2], s[3]]),
-            };
+            let v = enc.value(s);
             if v.is_finite() {
                 lo = lo.min(v);
                 hi = hi.max(v);
@@ -369,6 +491,33 @@ pub fn tone_wav(rate: u32, frames: u32, hz: f32, decay: f32) -> Vec<u8> {
         v[o..o + 2].copy_from_slice(&b);
         v[o + 2..o + 4].copy_from_slice(&b);
     }
+    v
+}
+
+/// Test files: the same tone as [`tone_wav`], as a 16-bit stereo AIFF.
+pub fn tone_aiff(rate: u32, frames: u32, hz: f32, decay: f32) -> Vec<u8> {
+    let w = tone_wav(rate, frames, hz, decay);
+    let mut data = w[44..].to_vec();
+    for s in data.chunks_exact_mut(2) {
+        s.swap(0, 1);
+    }
+    // The rate as an 80-bit extended float.
+    let lz = u64::from(rate).leading_zeros();
+    let mut ext = [0u8; 10];
+    ext[..2].copy_from_slice(&((16383 + 63 - lz) as u16).to_be_bytes());
+    ext[2..].copy_from_slice(&(u64::from(rate) << lz).to_be_bytes());
+    let mut v = b"FORM".to_vec();
+    v.extend_from_slice(&(4 + 8 + 18 + 8 + 8 + data.len() as u32).to_be_bytes());
+    v.extend_from_slice(b"AIFFCOMM");
+    v.extend_from_slice(&18u32.to_be_bytes());
+    v.extend_from_slice(&2u16.to_be_bytes());
+    v.extend_from_slice(&frames.to_be_bytes());
+    v.extend_from_slice(&16u16.to_be_bytes());
+    v.extend_from_slice(&ext);
+    v.extend_from_slice(b"SSND");
+    v.extend_from_slice(&(8 + data.len() as u32).to_be_bytes());
+    v.extend_from_slice(&[0; 8]);
+    v.extend_from_slice(&data);
     v
 }
 
@@ -476,13 +625,137 @@ mod tests {
     #[test]
     fn an_overview_follows_the_sound() {
         let w = tone_wav(44_100, 44_100, 220.0, 6.0);
-        let o = wav_overview(&mut Cursor::new(w), 50).unwrap();
+        let o = overview(&mut Cursor::new(w), 50).unwrap();
         assert_eq!(o.len(), 50);
         assert!(o[0].1 > 0.5 && o[0].0 < -0.5);
         assert!(o[49].1 < 0.05);
-        let silent = wav_overview(&mut Cursor::new(wav_bytes(44_100, 1, 24, 100)), 10).unwrap();
+        let silent = overview(&mut Cursor::new(wav_bytes(44_100, 1, 24, 100)), 10).unwrap();
         assert!(silent.iter().all(|&(a, b)| a == 0.0 && b == 0.0));
-        assert!(wav_overview(&mut Cursor::new(b"junk".to_vec()), 10).is_none());
+        assert!(overview(&mut Cursor::new(b"junk".to_vec()), 10).is_none());
+    }
+
+    #[test]
+    fn an_aiff_overview_matches_the_same_sound_as_a_wav() {
+        let w = tone_wav(44_100, 30_000, 220.0, 6.0);
+        let want = overview(&mut Cursor::new(w.clone()), 64).unwrap();
+        // The WAV's 16-bit stereo samples, as an AIFF (big endian) and an
+        // AIFF-C "sowt" (little endian), with a chunk before COMM.
+        let pcm = &w[44..];
+        let aiff = |kind: Option<&[u8; 4]>| {
+            let mut comm = Vec::new();
+            comm.extend_from_slice(&2u16.to_be_bytes());
+            comm.extend_from_slice(&30_000u32.to_be_bytes());
+            comm.extend_from_slice(&16u16.to_be_bytes());
+            comm.extend_from_slice(&[0x40, 0x0E, 0xAC, 0x44, 0, 0, 0, 0, 0, 0]);
+            let mut data: Vec<u8> = pcm.to_vec();
+            if let Some(k) = kind {
+                comm.extend_from_slice(k);
+                comm.extend_from_slice(&[0, 0]);
+            }
+            if kind != Some(b"sowt") {
+                for s in data.chunks_exact_mut(2) {
+                    s.swap(0, 1);
+                }
+            }
+            let mut body = Vec::new();
+            body.extend_from_slice(if kind.is_some() { b"AIFC" } else { b"AIFF" });
+            body.extend_from_slice(b"NAME\0\0\0\x03abc\0");
+            body.extend_from_slice(b"COMM");
+            body.extend_from_slice(&(comm.len() as u32).to_be_bytes());
+            body.extend_from_slice(&comm);
+            body.extend_from_slice(b"SSND");
+            body.extend_from_slice(&(data.len() as u32 + 8 + 4).to_be_bytes());
+            body.extend_from_slice(&4u32.to_be_bytes()); // offset
+            body.extend_from_slice(&0u32.to_be_bytes());
+            body.extend_from_slice(&[9, 9, 9, 9]);
+            body.extend_from_slice(&data);
+            let mut f = b"FORM".to_vec();
+            f.extend_from_slice(&(body.len() as u32).to_be_bytes());
+            f.extend_from_slice(&body);
+            f
+        };
+        let plain = aiff(None);
+        assert_eq!(
+            read_info(&mut Cursor::new(plain.clone())).unwrap().frames,
+            30_000
+        );
+        assert_eq!(overview(&mut Cursor::new(plain), 64).unwrap(), want);
+        assert_eq!(
+            overview(&mut Cursor::new(aiff(Some(b"sowt"))), 64).unwrap(),
+            want
+        );
+        assert_eq!(
+            overview(&mut Cursor::new(aiff(Some(b"NONE"))), 64).unwrap(),
+            want
+        );
+        // Compressed AIFF-C has no picture.
+        assert!(overview(&mut Cursor::new(aiff(Some(b"ima4"))), 64).is_none());
+        // The test files' AIFF reads back as the WAV it was made from.
+        let a = tone_aiff(48_000, 30_000, 220.0, 6.0);
+        let i = read_info(&mut Cursor::new(a.clone())).unwrap();
+        assert_eq!((i.rate, i.frames, i.channels), (48_000, 30_000, 2));
+        assert_eq!(
+            overview(&mut Cursor::new(a), 64),
+            overview(&mut Cursor::new(tone_wav(48_000, 30_000, 220.0, 6.0)), 64)
+        );
+    }
+
+    #[test]
+    fn every_sample_size_scales_to_one() {
+        let full = |enc: Enc, b: &[u8]| enc.value(b);
+        assert_eq!(full(Enc::U8, &[0]), -1.0);
+        assert_eq!(full(Enc::S8, &[0x80]), -1.0);
+        assert_eq!(
+            full(
+                Enc::Int {
+                    bytes: 2,
+                    big: false
+                },
+                &[0x00, 0x80]
+            ),
+            -1.0
+        );
+        assert_eq!(
+            full(
+                Enc::Int {
+                    bytes: 2,
+                    big: true
+                },
+                &[0x40, 0x00]
+            ),
+            0.5
+        );
+        assert_eq!(
+            full(
+                Enc::Int {
+                    bytes: 3,
+                    big: false
+                },
+                &[0, 0, 0xC0]
+            ),
+            -0.5
+        );
+        assert_eq!(
+            full(
+                Enc::Int {
+                    bytes: 3,
+                    big: true
+                },
+                &[0xC0, 0, 0]
+            ),
+            -0.5
+        );
+        assert_eq!(
+            full(
+                Enc::Int {
+                    bytes: 4,
+                    big: false
+                },
+                &[0, 0, 0, 0x40]
+            ),
+            0.5
+        );
+        assert_eq!(full(Enc::F32 { big: true }, &0.25f32.to_be_bytes()), 0.25);
     }
 
     #[test]
