@@ -1,7 +1,7 @@
 <!--
 status: changing
 covers: rust/mpfree-sampler rust/mpfree-sampler-ui rust/mpfree-grain rust/mpfree-app/src/sample_page.rs rust/mpfree-app/src/sampler.rs
-checked: 2026-11-12 ae9c39c
+checked: 2026-11-12 ac6fc10
 -->
 
 # Sampling
@@ -35,6 +35,19 @@ The **Wave** page shows the sample. Set where it **starts** and **ends**, and wh
 2. Turn **Sensitivity** up for more slices, down for fewer.
 3. Tap a slice to hear it. **Split** and **Merge** add or remove a cut by hand; the Q-Links move the picked slice's start.
 4. Tap **Chop to** to put the slices on the pads, starting at the first pad you chose.
+
+### Exporting a pad as files
+
+With **Put on** at **Files**, the button reads **Export** (**Export 15 slices**, or **Export the pad** when there are no cuts) and, instead of filling pads, it saves the pad as files in a folder of its own under **Samples › Exports** in the browser:
+
+- **Break 92.wav**: the pad's whole sound. Its loop and slice points are inside it too, where most samplers and audio editors find them.
+- **Break 92.mpfree**: the pad's settings, a small text file beside the sound: its trim, loop, warp, envelope, filter, layers and slices.
+- **Break 92 01.wav**, **Break 92 02.wav** and so on: each slice as a file of its own, to use anywhere.
+
+Load **Break 92.wav** back, on this MPC or another, and the pad comes back exactly as you exported it, slices and all, as long as **Break 92.mpfree** is beside it. Without it, the sound loads on its own.
+
+> [!NOTE]
+> **Files** appears on the Put on row once MPFree can save to its stick, which comes with the browser (see [Saving your work](saving.md)).
 
 ## Play: how a pad sounds
 

@@ -27,6 +27,10 @@
 //!   also makes a clip of the slices in time, from the first one, at the
 //!   sound's tempo ([`ChopAction::phrase`]): played from a Clips slot, the
 //!   loop comes back whole at any tempo, every hit a note to move or swap.
+//!   With **Files** (offered where the app can write files) the button
+//!   reads **Export** and gives the pad as files: its sounds with the
+//!   slice points in them, a sidecar that brings the pad back, and each
+//!   slice ([`ChopAction::Export`]).
 //! - **Q-Link 1** picks a slice, **Q-Link 2** moves its start (one pixel of
 //!   the current zoom per detent, snapped in the direction of the turn; with
 //!   SHIFT one frame), **Q-Link 3** turns the method's setting and **Q-Link
@@ -169,6 +173,9 @@ enum Put {
     /// The pads, and a clip of the slices in time (only for a sound with
     /// a tempo).
     Phrase,
+    /// Files: the pad's sounds, its sidecar and each slice
+    /// ([`ChopAction::Export`]; only where the app can write them).
+    Files,
 }
 
 impl Row {
@@ -211,6 +218,8 @@ pub struct ChopState {
     pub source: Arc<SourceView>,
     /// Which pads of the bank (the 16 the pad is among) have a sound.
     pub used: Vec<bool>,
+    /// The app can write files (Put on Files is offered).
+    pub files: bool,
 }
 
 impl ChopState {
@@ -236,6 +245,7 @@ impl ChopState {
             frames: s.frames(),
             source,
             used: bank_of(pad).map(|i| p.pad(i).is_some()).collect(),
+            files: false,
         })
     }
 
@@ -290,6 +300,16 @@ pub enum ChopAction {
         layer: usize,
         start: u64,
         end: u64,
+    },
+    /// Export pad `pad` as files with these slices: its sounds (the
+    /// chopped one, of layer `layer`, with the slice points in it), a
+    /// sidecar that brings the pad back, and each slice
+    /// (`mpfree_sampler::export::pad`). `cuts` are the slice starts after
+    /// the first.
+    Export {
+        pad: usize,
+        layer: usize,
+        cuts: Vec<u64>,
     },
     /// Open the editor's tab `i` of [`TABS`].
     Tab(usize),
@@ -475,8 +495,32 @@ impl ChopTab {
     fn put(&self, st: &ChopState) -> Put {
         match self.put {
             Put::Phrase if st.frames_per_beat().is_none() => Put::Pads,
+            Put::Files if !st.files => Put::Pads,
             p => p,
         }
+    }
+
+    /// What the Put on row says.
+    pub fn put_text(&self) -> &'static str {
+        match self.put {
+            Put::Pads => "Pads",
+            Put::Keys => "Keys",
+            Put::Phrase => "Pads + phrase",
+            Put::Files => "Files",
+        }
+    }
+
+    /// The Put on choices for `st`: Pads + phrase with a tempo, Files
+    /// where the app writes them.
+    fn puts(st: &ChopState) -> Vec<Put> {
+        let mut all = vec![Put::Pads, Put::Keys];
+        if st.frames_per_beat().is_some() {
+            all.push(Put::Phrase);
+        }
+        if st.files {
+            all.push(Put::Files);
+        }
+        all
     }
 
     /// Where the slices start and end: the region's start, the cuts, its end.
@@ -666,12 +710,15 @@ impl ChopTab {
         let range = pads.clone().map(|p| self.range_text(&p));
         if let Some(b) = ui.get_mut::<ButtonRow>(BUTTONS) {
             let (s0, s1) = (bounds[self.selected], bounds[self.selected + 1]);
+            let files = self.put(st) == Put::Files;
             b.enabled = vec![
                 s1 - s0 >= 2 * wave_tab::MIN_FRAMES && n < MAX_CUT_SLICES,
                 n > 1,
-                pads.is_some(),
+                pads.is_some() || files,
             ];
             b.labels[2] = match (&range, self.put(st)) {
+                (_, Put::Files) if n == 1 => "Export the pad".to_string(),
+                (_, Put::Files) => format!("Export {n} slices"),
                 (None, _) => format!("Max {BANK} slices"),
                 (Some(t), Put::Pads) => format!("Chop to {t}"),
                 (Some(t), Put::Phrase) => format!("Phrase on {t}"),
@@ -750,9 +797,11 @@ impl ChopTab {
                 },
                 Row::Pads => Setting {
                     name: "Pads".into(),
-                    value: self
-                        .pads(st)
-                        .map_or_else(|| "Too many".into(), |p| self.range_text(&p)),
+                    value: match self.pads(st) {
+                        _ if self.put(st) == Put::Files => "None (files)".into(),
+                        Some(p) => self.range_text(&p),
+                        None => "Too many".into(),
+                    },
                 },
                 Row::Put => Setting {
                     name: "Put on".into(),
@@ -760,6 +809,7 @@ impl ChopTab {
                         Put::Pads => "Pads".into(),
                         Put::Keys => format!("Keys from {}", note_name(SLICE_KEYS_FROM)),
                         Put::Phrase => "Pads + phrase".into(),
+                        Put::Files => "Files".into(),
                     },
                 },
             })
@@ -919,6 +969,11 @@ impl ChopTab {
                 self.show(ui, st);
                 None
             }
+            Button::ToPads if self.put(st) == Put::Files => Some(ChopAction::Export {
+                pad: st.pad,
+                layer: st.layer,
+                cuts: self.cuts.clone(),
+            }),
             Button::ToPads => {
                 let pads = self.pads(st)?;
                 Some(ChopAction::ToPads {
@@ -978,11 +1033,7 @@ impl ChopTab {
             }
             Row::Pads => self.turn_first_pad(st, d),
             Row::Put => {
-                let all: &[Put] = if st.frames_per_beat().is_some() {
-                    &[Put::Pads, Put::Keys, Put::Phrase]
-                } else {
-                    &[Put::Pads, Put::Keys]
-                };
+                let all = Self::puts(st);
                 let i = all.iter().position(|p| *p == self.put(st)).unwrap_or(0) as i32;
                 self.put = all[(i + d).rem_euclid(all.len() as i32) as usize];
             }

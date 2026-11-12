@@ -567,3 +567,59 @@ fn a_tapped_slice_sounds_as_the_pad_made_from_it_will() {
         assert!((h - m).abs() < 1e-6, "sample {k}: {h} vs {m}");
     }
 }
+
+#[test]
+fn put_on_files_exports_the_pad_and_its_slices_where_the_app_can_write() {
+    let mut s = chop();
+    let value = |s: &ChopSample, row: Row| {
+        let i = Row::ALL.iter().position(|r| *r == row).unwrap();
+        s.ui.get::<SettingList>(chop_tab::LIST).unwrap().rows[i]
+            .value
+            .clone()
+    };
+    // Without files: Pads, Keys, Pads + phrase and round again.
+    for _ in 0..3 {
+        step(&mut s, Row::Put, 1);
+        assert_ne!(value(&s, Row::Put), "Files");
+    }
+    assert_eq!(value(&s, Row::Put), "Pads");
+    // With them, Files comes after Pads + phrase.
+    s.state.files = true;
+    let st = s.state.clone();
+    s.tab.update(&mut s.ui, &st);
+    step(&mut s, Row::Put, -1);
+    assert_eq!(value(&s, Row::Put), "Files");
+    assert_eq!(value(&s, Row::Pads), "None (files)");
+    let n = s.tab.slices();
+    assert!(n > 1);
+    let (labels, enabled) = buttons(&s);
+    assert_eq!(labels[2], format!("Export {n} slices"));
+    assert!(enabled[2]);
+    let cuts = s.tab.bounds(&st)[1..n].to_vec();
+    assert_eq!(
+        press(&mut s, Button::ToPads),
+        Some(ChopAction::Export {
+            pad: PAD,
+            layer: 0,
+            cuts
+        })
+    );
+    // One slice is the pad itself.
+    method(&mut s, Method::Grid);
+    for _ in 0..8 {
+        step(&mut s, Row::Amount, -1);
+    }
+    while s.tab.slices() > 1 {
+        press(&mut s, Button::Merge);
+    }
+    assert_eq!(buttons(&s).0[2], "Export the pad");
+    // The files gone again, Put on is back on Pads.
+    s.state.files = false;
+    let st = s.state.clone();
+    s.tab.update(&mut s.ui, &st);
+    assert_eq!(value(&s, Row::Put), "Pads");
+    assert!(matches!(
+        press(&mut s, Button::ToPads),
+        Some(ChopAction::ToPads { .. })
+    ));
+}
