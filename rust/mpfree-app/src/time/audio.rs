@@ -398,6 +398,11 @@ impl TimeAudio {
                 }
                 continue;
             }
+            // A track that plays elsewhere (MIDI OUT) takes its clips'
+            // events first.
+            if pads.out(&o) {
+                continue;
+            }
             match o.event {
                 Event::NoteOn { note, velocity } => {
                     pads.hit_at(usize::from(note), velocity, o.offset);
