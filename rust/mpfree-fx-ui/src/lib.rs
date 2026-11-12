@@ -21,6 +21,8 @@
 //!   settings, and the DJ knob on Q-Link 1.
 //! - [`state`]: what a page shows ([`FxState`]), the effects by id
 //!   ([`make`]) and their presets.
+//! - [`lock`]: lock mode: while a step is held, turns lock parameters on
+//!   it ([`Locks`]), Perform pads included.
 //! - [`sample`]: sample screens for the workstation preview
 //!   (`mpfree-fx-preview`) and the tests.
 //!
@@ -36,6 +38,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod lock;
 pub mod pages;
 pub mod perform;
 pub mod sample;
@@ -43,6 +46,7 @@ pub mod state;
 pub mod view;
 pub mod visual;
 
+pub use lock::Locks;
 pub use perform::{PerformAction, PerformPanel};
 pub use state::{make, preset_values, presets, FxState, Scratch, CATALOGUE};
 pub use view::{FxAction, FxPanel};

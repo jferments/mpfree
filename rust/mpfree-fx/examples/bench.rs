@@ -8,7 +8,7 @@ use std::time::Instant;
 use mpfree_fx::ids;
 use mpfree_fx::mpfree_node::{Ctx, Node, MAX_BLOCK};
 use mpfree_fx::{
-    Chain, Chorus, Cloud, Compressor, Crush, Delay, DjFilter, Drive, Eq, Flanger, LoFi,
+    Chain, Character, Chorus, Cloud, Compressor, Crush, Delay, DjFilter, Drive, Eq, Flanger, LoFi,
     MasterSafety, MultiFilter, Phaser,
 };
 
@@ -79,6 +79,18 @@ fn main() {
         &[(ids::drive::QUALITY, 1.0)],
     );
     node("Crush", Box::new(Crush::new()), &[]);
+    for (name, mode) in [
+        ("Character (Console)", ids::character::CONSOLE),
+        ("Character (Tape)", ids::character::TAPE),
+        ("Character (Iron)", ids::character::IRON),
+        ("Character (Soften)", ids::character::SOFTEN),
+    ] {
+        node(
+            name,
+            Box::new(Character::new()),
+            &[(ids::character::MODE, mode), (ids::character::AMOUNT, 70.0)],
+        );
+    }
     node("Delay", Box::new(Delay::new()), &[]);
     node("Compressor", Box::new(Compressor::new()), &[]);
     node(

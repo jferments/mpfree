@@ -137,6 +137,8 @@ const NO_TAKE: Taken = Taken {
         note: 0,
         velocity: 1,
         chance: 100,
+        cond: mpfree_seq::Cond::Always,
+        ratchet: 1,
     },
     take: 0,
 };
@@ -555,6 +557,8 @@ impl Recorder {
             note: n as u8,
             velocity: h.velocity.min(127),
             chance: 100,
+            cond: mpfree_seq::Cond::Always,
+            ratchet: 1,
         };
         let taken = Taken {
             track,

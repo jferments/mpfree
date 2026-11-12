@@ -39,6 +39,7 @@ use mpfree_arp::scale::pads::{
     self, InKeyRows, Pad, PadLayout, PadRole, PadSetup, DEFAULT_BANKS, MAX_PAD_NOTES, PADS,
 };
 use mpfree_arp::scale::Scale;
+use mpfree_instruments::preset::{engine_of, Error as PresetError, Preset as SoundPreset};
 use mpfree_node::{Ctx, Node, NodeEvent, ParamInfo, Timed};
 use mpfree_synth::drum_params;
 use mpfree_synth::fm_params::FmPreset;
@@ -127,6 +128,15 @@ impl Engine {
 
     fn index(self) -> usize {
         self as usize
+    }
+
+    /// The engine whose user presets live in `folder` under the library's
+    /// Instruments place: the folder is the engine's name ("Poly", "FM"),
+    /// in any case.
+    pub fn from_folder(folder: &str) -> Option<Engine> {
+        Engine::ALL
+            .into_iter()
+            .find(|e| e.name().eq_ignore_ascii_case(folder.trim()))
     }
 }
 
@@ -242,6 +252,9 @@ pub struct Synth {
     resets: u64,
     /// Indices of the read-only parameters (meters), per engine.
     meters: [Vec<usize>; ENGINES],
+    /// The sound from before the preset picker's first try, to put back if
+    /// the picker is cancelled ([`Synth::try_preset`]).
+    audition: Option<SoundPreset>,
 }
 
 /// The factory presets of an engine other than FM (whose list is built).
@@ -371,6 +384,7 @@ impl Synth {
             peak_voices: 0,
             resets: 0,
             meters,
+            audition: None,
         }
     }
 
@@ -953,7 +967,100 @@ impl Synth {
         self.presets[e.index()] = i;
         Some(p.name)
     }
+}
 
+/// User presets: files in the library's Instruments place, for the
+/// browser's preset picker. Nothing calls these yet; the app wires the
+/// picker in with the browser page.
+#[allow(dead_code)]
+impl Synth {
+    /// The preset in `text` (a `.preset` file from `folder` under the
+    /// library's Instruments place, where the folder is the engine's name)
+    /// for the engine on the pads, read and checked; nothing changes.
+    fn read_preset(&self, folder: &str, text: &str) -> Result<SoundPreset, PresetError> {
+        let node = self.node();
+        let info = node.info();
+        // The folder must be this engine's, if the file sits in one; the
+        // file's own engine line is checked by `parse` either way.
+        if let Some(e) = Engine::from_folder(folder) {
+            if e != self.settings.engine {
+                return Err(PresetError::WrongEngine {
+                    file: engine_of(text).unwrap_or(folder).to_string(),
+                    node: info.id.to_string(),
+                });
+            }
+        }
+        SoundPreset::parse(text, info, node.params())
+    }
+
+    /// Puts a preset on the engine on the pads (notes keep sounding, values
+    /// glide), as a factory preset does. Drums' pads follow their kit.
+    fn put_preset(&mut self, p: &SoundPreset) -> Result<(), PresetError> {
+        let names = self.drum_names();
+        p.apply(self.node_mut())?;
+        if self.settings.engine == Engine::Drums {
+            self.drums_moved(names);
+        }
+        Ok(())
+    }
+
+    /// The preset picker turned to a preset (`BrowseAction::TryPreset`):
+    /// plays it on the engine on the pads. The sound from before the first
+    /// try is kept, for [`Synth::revert_preset`]. Returns the preset's
+    /// name. A file for another engine, or one this build can't read,
+    /// changes nothing.
+    pub fn try_preset(&mut self, folder: &str, text: &str) -> Result<String, PresetError> {
+        let p = self.read_preset(folder, text)?;
+        if self.audition.is_none() {
+            self.audition = Some(SoundPreset::capture(self.node(), "", &[]));
+        }
+        self.put_preset(&p)?;
+        Ok(p.name)
+    }
+
+    /// The preset picker was cancelled (`BrowseAction::RevertPreset`): the
+    /// sound from before its first try comes back, every setting as it
+    /// was. Nothing happens if nothing was tried.
+    pub fn revert_preset(&mut self) {
+        if let Some(p) = self.audition.take() {
+            // The capture is this engine's, so applying it can't fail.
+            let _ = self.put_preset(&p);
+        }
+    }
+
+    /// Loads a user preset (`BrowseAction::LoadPreset`, or the picker's
+    /// Load after trying): the engine on the pads plays it from now on, and
+    /// the sound from before any try is forgotten. Returns its name.
+    pub fn load_preset_file(&mut self, folder: &str, text: &str) -> Result<String, PresetError> {
+        let p = self.read_preset(folder, text)?;
+        self.put_preset(&p)?;
+        self.audition = None;
+        Ok(p.name)
+    }
+
+    /// Whether the preset picker is trying presets (a sound is kept to go
+    /// back to).
+    pub fn trying_preset(&self) -> bool {
+        self.audition.is_some()
+    }
+
+    /// The engine on the pads' sound now as preset text, and the folder it
+    /// goes in under the library's Instruments place (the engine's name).
+    /// `extra` lines ride along, such as the Q-Link sets (`qset`).
+    pub fn save_preset(
+        &self,
+        name: &str,
+        tags: &[&str],
+        extra: &[(String, String)],
+    ) -> (&'static str, String) {
+        let node = self.node();
+        let mut p = SoundPreset::capture(node, name, tags);
+        p.extra.extend_from_slice(extra);
+        (self.settings.engine.name(), p.to_text(node.params()))
+    }
+}
+
+impl Synth {
     #[cfg(test)]
     pub fn preset(&self) -> usize {
         self.presets[self.settings.engine.index()]
@@ -1394,6 +1501,109 @@ mod tests {
                 "{engine:?}"
             );
         }
+    }
+
+    /// Every writable setting of the engine on the pads, as bits.
+    fn sound(s: &Synth) -> Vec<(u16, u32)> {
+        let node = s.node();
+        node.params()
+            .iter()
+            .filter(|p| !p.readonly)
+            .map(|p| (p.id, node.param(p.id).to_bits()))
+            .collect()
+    }
+
+    fn on_engine(e: Engine) -> Synth {
+        let mut s = Synth::new(44_100);
+        let mut p = s.settings();
+        p.engine = e;
+        s.set_settings(p);
+        s
+    }
+
+    #[test]
+    fn the_preset_picker_tries_reverts_and_loads_user_presets() {
+        let mut s = Synth::new(44_100);
+        let before = sound(&s);
+        // Two user presets: Poly's factory sounds 3 and 5 saved as files.
+        let mut other = Synth::new(44_100);
+        other.load_preset(3);
+        let (folder, mine) = other.save_preset("Mine", &["test"], &[]);
+        assert_eq!(folder, "Poly");
+        let want = sound(&other);
+        other.load_preset(5);
+        let (_, two) = other.save_preset("Two", &[], &[]);
+        assert_ne!(before, want);
+        assert_ne!(sound(&other), want);
+        // Turning the dial plays each; the sound from before the first try
+        // is kept.
+        assert_eq!(s.try_preset("Poly", &mine).as_deref(), Ok("Mine"));
+        assert!(s.trying_preset());
+        assert_eq!(sound(&s), want);
+        assert_eq!(s.try_preset("poly", &two).as_deref(), Ok("Two"));
+        // Cancel puts the first sound back, every setting to the bit.
+        s.revert_preset();
+        assert!(!s.trying_preset());
+        assert_eq!(sound(&s), before);
+        s.revert_preset();
+        assert_eq!(sound(&s), before, "nothing tried, nothing to put back");
+        // Load after trying keeps what was tried.
+        s.try_preset("Poly", &two).unwrap();
+        assert_eq!(s.load_preset_file("Poly", &mine).as_deref(), Ok("Mine"));
+        assert!(!s.trying_preset());
+        s.revert_preset();
+        assert_eq!(sound(&s), want);
+        // Another engine's preset, a file in another engine's folder and a
+        // file that isn't a preset change nothing and keep nothing.
+        let (fm_folder, bell) = on_engine(Engine::Fm).save_preset("Bell", &[], &[]);
+        assert_eq!(fm_folder, "FM");
+        assert!(matches!(
+            s.try_preset("FM", &bell),
+            Err(PresetError::WrongEngine { .. })
+        ));
+        assert!(s.try_preset("", &bell).is_err(), "FM's engine line");
+        assert!(
+            s.try_preset("FM", &mine).is_err(),
+            "a Poly file in FM's folder"
+        );
+        assert!(s.try_preset("Poly", "not a preset").is_err());
+        assert!(!s.trying_preset());
+        assert_eq!(sound(&s), want);
+        // A file straight in Instruments goes by its engine line.
+        assert!(s.try_preset("", &two).is_ok());
+        s.revert_preset();
+        assert_eq!(sound(&s), want);
+        // Folders are engines' names, in any case; the Q-Link sets ride
+        // along in a saved preset.
+        assert_eq!(Engine::from_folder("wavetable"), Some(Engine::Wavetable));
+        assert_eq!(Engine::from_folder("Strings"), None);
+        let qset = [("qset".to_string(), "31 32 - 33 Tone".to_string())];
+        let (_, text) = s.save_preset("Q", &[], &qset);
+        assert!(text.contains("\nqset = 31 32 - 33 Tone\n"), "{text}");
+    }
+
+    #[test]
+    fn a_drum_kit_preset_moves_the_pads_and_cancel_moves_them_back() {
+        let mut s = on_engine(Engine::Drums);
+        s.take_pads_changed();
+        let names = s.drum_names();
+        // The first factory kit whose pads differ from the one playing.
+        let mut other = on_engine(Engine::Drums);
+        let kit = (0..other.preset_count())
+            .find(|&i| {
+                other.load_preset(i);
+                other.drum_names() != names
+            })
+            .expect("a kit with other pads");
+        other.load_preset(kit);
+        let (folder, text) = other.save_preset("Kit", &[], &[]);
+        assert_eq!(folder, "Drums");
+        s.try_preset("Drums", &text).unwrap();
+        assert_eq!(s.drum_names(), other.drum_names());
+        assert!(s.take_pads_changed(), "the pads follow the kit tried");
+        s.revert_preset();
+        assert_eq!(s.drum_names(), names);
+        assert!(s.take_pads_changed(), "and come back on cancel");
     }
 
     #[test]

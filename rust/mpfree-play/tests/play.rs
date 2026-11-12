@@ -36,6 +36,7 @@ fn view(clips: Vec<Clip>) -> PlayView {
             track: i,
             slot: 0,
             origin: 0,
+            start: 0,
         });
     }
     PlayView::compile(&p, &launches).unwrap()
@@ -204,6 +205,7 @@ fn a_clip_starts_at_its_origin() {
             track: 0,
             slot: 5,
             origin: 1920,
+            start: 1920,
         }],
     )
     .unwrap();
@@ -301,6 +303,7 @@ fn muted_tracks_and_count_ins_are_silent() {
             track: 0,
             slot: 0,
             origin: 0,
+            start: 0,
         }],
     )
     .unwrap();
