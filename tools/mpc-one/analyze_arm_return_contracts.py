@@ -82,19 +82,19 @@ def normal_fallthrough_return_preserves_r0(instructions: list[dict], call_index:
     """
     for distance, ins in enumerate(instructions[call_index + 1:call_index + 49], 1):
         text = ins["text"]
-        if re.match(r"^ldr\\s+pc,\\[sp\\]", text) or re.match(r"^bx\\s+lr$", text):
+        if re.match(r"^ldr\s+pc,\[sp\]", text) or re.match(r"^bx\s+lr$", text):
             return {"return_address": ins["address"],
                     "instructions_after_call": distance,
                     "all_paths_verified": False}
-        if re.match(r"^pop\\s+\\{[^}]*\\bpc\\b[^}]*\\}$", text):
+        if re.match(r"^pop\s+\{[^}]*\bpc\b[^}]*\}$", text):
             return {"return_address": ins["address"],
                     "instructions_after_call": distance,
                     "all_paths_verified": False}
-        if CALL.match(text) or re.match(r"^b\\s+", text):
+        if CALL.match(text) or re.match(r"^b\s+", text):
             return None
         # Exclude flag tests and stores that READ r0 but do not replace it.
-        if (re.match(r"^[a-z][a-z0-9.]*\\s+r0(?:,|\\s|$)", text)
-                and not re.match(r"^(?:str|strb|strh|cmp|cmn|tst|teq)\\b", text)):
+        if (re.match(r"^[a-z][a-z0-9.]*\s+r0(?:,|\s|$)", text)
+                and not re.match(r"^(?:str|strb|strh|cmp|cmn|tst|teq)\b", text)):
             return None
     return None
 
