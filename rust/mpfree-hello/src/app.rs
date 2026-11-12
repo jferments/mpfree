@@ -90,6 +90,9 @@ pub enum View {
     Procs,
     /// Debug mode: the control mapper (on the Debug tab).
     Map,
+    /// Debug mode: test, measure and tune the touchscreen (on the Debug tab;
+    /// `touch_dev.rs`).
+    Touch,
     /// Prefs > System info: the program's version, the system and the
     /// hardware (on the Prefs tab).
     System,
@@ -134,12 +137,13 @@ pub fn bank_letter(kit: usize) -> char {
 }
 
 /// The Debug tab's pages, in the order of its strip.
-pub const DEBUG_PAGES: [View; 6] = [
+pub const DEBUG_PAGES: [View; 7] = [
     View::Debug,
     View::Perf,
     View::Engines,
     View::Procs,
     View::Map,
+    View::Touch,
     View::Console,
 ];
 
@@ -149,7 +153,7 @@ impl View {
     pub fn tab_view(self) -> Option<View> {
         match self {
             View::Arp | View::Pattern => Some(View::Play),
-            View::Perf | View::Engines | View::Procs | View::Map | View::Console => {
+            View::Perf | View::Engines | View::Procs | View::Map | View::Touch | View::Console => {
                 Some(View::Debug)
             }
             View::Options | View::Guide | View::Prefs | View::System | View::Mixer => None,
@@ -181,6 +185,7 @@ impl View {
             View::Engines => "CPU by engine",
             View::Procs => "Processes",
             View::Map => "Map controls",
+            View::Touch => "Touch",
             View::System => "System info",
             View::Mixer => "Mixer",
         }
@@ -653,6 +658,10 @@ pub enum Effect {
     TouchLab,
     /// Open the Calibrate touch page (four corner taps).
     CalibrateTouch,
+    /// The Dev tab's Touch page: the wheel picks a value (by detents)...
+    TouchWheel(i32),
+    /// ...and - / + step it (or run the action picked).
+    TouchStep(i32),
     /// For the time engine (transport, clips, takes).
     Time(TimeAction),
     /// What the Map controls page shows.
@@ -1216,6 +1225,9 @@ impl App {
             let d = if Some(note) == self.map.plus { 1 } else { -1 };
             if self.in_menu() {
                 fx.extend(self.step_item(self.selected, d));
+            } else if self.view == View::Touch && !shift {
+                // The value picked on the Touch page, one step.
+                fx.push(Effect::TouchStep(d));
             } else if self.view == View::Map && !shift {
                 // + listens for the selected control, - skips it.
                 fx.extend(if d > 0 {
@@ -1225,7 +1237,13 @@ impl App {
                 });
             } else if matches!(
                 self.view,
-                View::Debug | View::Perf | View::Engines | View::Procs | View::Map | View::Console
+                View::Debug
+                    | View::Perf
+                    | View::Engines
+                    | View::Procs
+                    | View::Map
+                    | View::Touch
+                    | View::Console
             ) {
                 fx.extend(self.debug_step(d));
             } else if self.repeat_held || self.view == View::Arp {
@@ -1346,7 +1364,13 @@ impl App {
             View::Mixer => vec![Effect::MixerTurn { knob: 0, delta }],
             // On the Debug tab SHIFT + wheel picks the page; on Map controls
             // the wheel picks the control.
-            View::Debug | View::Perf | View::Engines | View::Procs | View::Map | View::Console
+            View::Debug
+            | View::Perf
+            | View::Engines
+            | View::Procs
+            | View::Map
+            | View::Touch
+            | View::Console
                 if self.shift =>
             {
                 self.debug_step(delta.signum())
@@ -1355,6 +1379,8 @@ impl App {
                 self.mapper.move_by(delta);
                 vec![Effect::Map(self.mapper.view())]
             }
+            // The Touch page: the wheel picks a value to tune.
+            View::Touch => vec![Effect::TouchWheel(delta)],
             // NOTE REPEAT held or the Arp panel: the rate, order or pattern.
             _ if self.repeat_held || self.view == View::Arp => self.arp_wheel(delta),
             View::Arrange => vec![Effect::ClipsWheel {
@@ -1394,6 +1420,7 @@ impl App {
                     | View::Engines
                     | View::Procs
                     | View::Map
+                    | View::Touch
             )
         {
             self.back = self.view;
@@ -1526,7 +1553,13 @@ impl App {
         if !on
             && matches!(
                 self.back,
-                View::Debug | View::Perf | View::Engines | View::Procs | View::Map | View::Console
+                View::Debug
+                    | View::Perf
+                    | View::Engines
+                    | View::Procs
+                    | View::Map
+                    | View::Touch
+                    | View::Console
             )
         {
             self.back = View::Play;
@@ -1723,6 +1756,8 @@ impl App {
             (_, View::Debug | View::Perf | View::Engines | View::Procs | View::Map) => {
                 &[Item::ShowPressure, Item::MidiLog, Item::ClearLogs]
             }
+            // The full-screen touch checks, also in Prefs > Touch screen.
+            (_, View::Touch) => &[Item::CalibrateTouch, Item::TouchLab],
             (_, View::Console) => &[Item::ConsoleFollow, Item::ClearConsole],
             (_, View::Arp) => &arp::ARP_OPTIONS,
             (_, View::Synth) => &synth_pads::SYNTH_OPTIONS,
@@ -1983,7 +2018,15 @@ impl App {
             (View::Prefs, _) => "Prefs".to_string(),
             (_, View::Arp) => "Arp options".to_string(),
             (_, View::Debug) => "MIDI log options".to_string(),
-            (_, b @ (View::Perf | View::Engines | View::Procs | View::Map | View::Console)) => {
+            (
+                _,
+                b @ (View::Perf
+                | View::Engines
+                | View::Procs
+                | View::Map
+                | View::Touch
+                | View::Console),
+            ) => {
                 format!("{} options", b.name())
             }
             (_, b) => format!("{} options", b.tab_view().unwrap_or(View::Play).name()),

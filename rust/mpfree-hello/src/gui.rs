@@ -37,6 +37,7 @@ use crate::play_widgets::{MiniPads, PlayTransport, StepGrid, Throws, XyPad, Your
 use crate::sample_page::{self, SamplePage};
 use crate::sampler::{Cloud, Playheads, ViewSwap};
 use crate::time::{HitInfo, StepAction, StepsData};
+use crate::touch_dev::{self, TouchTest, TuneList};
 use crate::touchlab_page::{TouchLabView, TouchPage};
 use mpfree_arp::{Mode, Pattern};
 use mpfree_arp_ui::view::{self as arp_view, ArpAction, ArpPanel, ArpState};
@@ -53,6 +54,7 @@ use mpfree_touch::mt::Phase;
 use mpfree_touch::pointer::PointerEvent;
 use mpfree_touch::profile::MPC_ONE;
 use mpfree_touch::touchlab::reader_line;
+use mpfree_touch::tuning::{Filter, Param, Tuning};
 use mpfree_touch_evdev::{EvdevFile, TouchReader, TouchSource};
 use mpfree_ui::fb::FbTarget;
 use mpfree_ui::qlink::{MasterBar, QLinkCard, QLinkColumn};
@@ -316,6 +318,12 @@ pub enum ToUi {
     TouchLab,
     /// Open the Calibrate touch page; any `Show` closes it again.
     CalibrateTouch,
+    /// The touch tuning kept in the store (at the start).
+    TouchTuning(Tuning),
+    /// On the Dev tab's Touch page: the wheel (pick a value)...
+    TouchWheel(i32),
+    /// ...and - / + (step it, or run the action picked).
+    TouchStep(i32),
     /// What the arp screens show. (Patterns are large, so they travel
     /// boxed: the channel keeps a slot of the largest message per place.)
     Arp(Box<ArpView>),
@@ -453,6 +461,8 @@ pub enum FromUi {
     /// A phrase chopped on the Sample page, for the armed track's first
     /// empty slot ([`crate::time::TimeHost::put_clip`]).
     SamplePhrase(Box<mpfree_seq::Clip>),
+    /// Save on the Touch page: keep this tuning in the store.
+    SaveTouch(Tuning),
 }
 
 /// Lines the console keeps while paused, to show when it carries on.
@@ -514,6 +524,12 @@ pub struct Player {
     pub play: PlayPage,
     /// When the CPU chip was last read.
     cpu_at: f32,
+    /// Touch tuning: every finger goes through the filter first (the
+    /// correction and the hold filter); `tuning` is what it applies and
+    /// `saved_tuning` what the store has.
+    filter: Filter,
+    tuning: Tuning,
+    saved_tuning: Tuning,
 }
 
 impl Player {
@@ -656,6 +672,9 @@ impl Player {
             looper: LooperView::default(),
             play: PlayPage::default(),
             cpu_at: 0.0,
+            filter: Filter::new((size.0 as f32, size.1 as f32)),
+            tuning: Tuning::default(),
+            saved_tuning: Tuning::default(),
         };
         p.time_page.update(&mut p.ui, &p.time);
         p.show_timing();
@@ -1160,6 +1179,8 @@ impl Player {
                                           log every 30 s   ·   SHIFT + wheel: Dev page   ·   {stop}"),
                 View::Procs => format!("Every process on the MPC, read from /proc once a second while this page \
                                         shows   ·   SHIFT + wheel: Dev page   ·   {stop}"),
+                View::Touch => "Touch the test area: it is measured before the tuning   ·   Wheel: pick a value   ·   - / +: change it \
+                                (applies at once)   ·   MENU: corner check, Touch lab   ·   SHIFT + wheel: Dev page".to_string(),
                 View::Map => "Tap a control, then press it   ·   Wheel: pick   ·   +: listen   ·   -: skip   ·   \
                               STOP: stop listening   ·   SHIFT + wheel: Dev page".to_string(),
                 View::Console if self.settings.debug_mode => "The system log, as it comes   ·   MENU: pause or clear   ·   \
@@ -1710,6 +1731,29 @@ impl Player {
             }
             ToUi::TouchLab => self.open_touch_page("touchlab", "Touch lab"),
             ToUi::CalibrateTouch => self.open_touch_page("calibrate", "Calibrate touch"),
+            ToUi::TouchTuning(t) => {
+                self.saved_tuning = t;
+                self.set_tuning(t);
+                self.say(format!("touch-tune: loaded {}", t.line()));
+            }
+            ToUi::TouchWheel(d) => {
+                if let Some(l) = self.ui.get_mut::<TuneList>(touch_dev::TUNE) {
+                    let last = l.len() as i32 - 1;
+                    l.selected = (l.selected as i32 + d).clamp(0, last) as usize;
+                }
+            }
+            ToUi::TouchStep(d) => {
+                let sel = self
+                    .ui
+                    .get::<TuneList>(touch_dev::TUNE)
+                    .map_or(0, |l| l.selected);
+                match Param::ALL.get(sel) {
+                    Some(&p) => self.tune_step(p, d),
+                    // + runs the action picked; - does nothing there.
+                    None if d > 0 => self.tune_action(sel - Param::ALL.len()),
+                    None => {}
+                }
+            }
             ToUi::Arp(v) => {
                 let v = *v;
                 let a = &mut self.arp;
@@ -1867,6 +1911,175 @@ impl Player {
         }
     }
 
+    // ------------------------------------------------------------ touch tuning
+
+    /// A line for the terminal and the Events log.
+    fn say(&mut self, l: String) {
+        println!("{l}");
+        let _ = io::stdout().flush();
+        if let Some(e) = self.ui.get_mut::<LogPanel>("events") {
+            e.push(&l, Tone::Dim);
+        }
+    }
+
+    /// The tuning in use (applied to every finger from the next event).
+    #[cfg(test)]
+    pub fn tuning(&self) -> &Tuning {
+        &self.tuning
+    }
+
+    fn set_tuning(&mut self, t: Tuning) {
+        self.tuning = t;
+        self.filter.set_tuning(t);
+        if let Some(test) = self.ui.get_mut::<TouchTest>(touch_dev::TEST) {
+            test.set_config(t.gestures);
+        }
+        if let Some(lab) = self.ui.get_mut::<TouchLabView>("touchlab") {
+            lab.set_config(t.gestures);
+        }
+        self.refresh_tune();
+    }
+
+    fn screen_size(&self) -> (f32, f32) {
+        let (w, h) = self.ui.size();
+        (w as f32, h as f32)
+    }
+
+    /// The tuning list: values now, the suggestion and the status.
+    fn refresh_tune(&mut self) {
+        let size = self.screen_size();
+        let Some(test) = self.ui.get::<TouchTest>(touch_dev::TEST) else {
+            return;
+        };
+        let (sug, why) = touch_dev::suggestion(&self.tuning, test, size);
+        let rows = touch_dev::rows(&self.tuning, &sug, &why);
+        let status = if self.tuning != self.saved_tuning {
+            (
+                "Changed: applies now; Save keeps it for the next start".to_string(),
+                Tone::Warn,
+            )
+        } else if self.tuning == Tuning::default() {
+            (
+                "Built-in values (nothing saved changes them)".to_string(),
+                Tone::Dim,
+            )
+        } else {
+            (
+                "Saved values, applied to the whole app".to_string(),
+                Tone::Good,
+            )
+        };
+        if let Some(l) = self.ui.get_mut::<TuneList>(touch_dev::TUNE) {
+            if l.rows != rows || l.status != status {
+                l.rows = rows;
+                l.status = status;
+            }
+        }
+    }
+
+    fn tune_select(&mut self, i: usize) {
+        if let Some(l) = self.ui.get_mut::<TuneList>(touch_dev::TUNE) {
+            l.selected = i.min(l.len() - 1);
+        }
+    }
+
+    fn tune_step(&mut self, p: Param, d: i32) {
+        let mut t = self.tuning;
+        t.step(p, d);
+        if p == Param::LongestTap && t.gestures.long_press_us < t.gestures.tap_max_us {
+            t.gestures.long_press_us = t.gestures.tap_max_us;
+        }
+        if p == Param::LongPress && t.gestures.tap_max_us > t.gestures.long_press_us {
+            t.gestures.tap_max_us = t.gestures.long_press_us;
+        }
+        if t != self.tuning {
+            self.say(format!(
+                "touch-tune: set {}={}",
+                p.key(),
+                p.show(t.get(p)).replace(' ', "")
+            ));
+            self.set_tuning(t);
+        }
+    }
+
+    /// The list's actions: 0 Use suggested, 1 Defaults, 2 Save.
+    fn tune_action(&mut self, i: usize) {
+        match i {
+            0 => {
+                let size = self.screen_size();
+                let Some(test) = self.ui.get::<TouchTest>(touch_dev::TEST) else {
+                    return;
+                };
+                let (t, _) = touch_dev::suggestion(&self.tuning, test, size);
+                self.say(format!("touch-tune: use-suggested {}", t.line()));
+                self.set_tuning(t);
+            }
+            1 => {
+                self.say("touch-tune: defaults".to_string());
+                self.set_tuning(Tuning::default());
+            }
+            2 => {
+                let t = self.tuning;
+                self.say(format!("touch-tune: save {}", t.line()));
+                self.saved_tuning = t;
+                self.outbox.push(FromUi::SaveTouch(t));
+                self.refresh_tune();
+            }
+            _ => {}
+        }
+    }
+
+    /// The Touch page's page: Targets takes the whole page until its nine
+    /// taps are done.
+    fn touch_dev_page(&self) -> &'static str {
+        match self.ui.get::<TouchTest>(touch_dev::TEST) {
+            Some(t) if t.wants_whole_page() => touch_dev::TARGETS_PAGE,
+            _ => touch_dev::PAGE,
+        }
+    }
+
+    /// After a finger on the Touch page: its lines, the suggestion, and the
+    /// page (Targets mode starting or done).
+    fn after_touch_dev(&mut self) {
+        if self.view != View::Touch || self.touch_page.is_some() {
+            return;
+        }
+        let lines = match self.ui.get::<TouchTest>(touch_dev::TEST) {
+            Some(t) if t.has_lines() => self
+                .ui
+                .get_mut::<TouchTest>(touch_dev::TEST)
+                .map(|t| t.take_lines())
+                .unwrap_or_default(),
+            _ => Vec::new(),
+        };
+        if !lines.is_empty() {
+            for l in lines {
+                self.say(l);
+            }
+            self.refresh_tune();
+        }
+        let page = self.touch_dev_page();
+        if self.ui.page() != page && self.fingers.is_empty() {
+            self.switch_page(page);
+        }
+    }
+
+    /// Leaving the Touch page: back to Free, and a summary line.
+    fn leave_touch_dev(&mut self) {
+        let size = self.screen_size();
+        let tuning = self.tuning;
+        let Some(t) = self.ui.get_mut::<TouchTest>(touch_dev::TEST) else {
+            return;
+        };
+        t.leave();
+        let mut lines = t.take_lines();
+        lines.push(t.summary_line(&tuning, size));
+        lines.push("touch-tune-exit".to_string());
+        for l in lines {
+            self.say(l);
+        }
+    }
+
     fn open_touch_page(&mut self, widget: &'static str, page: &str) {
         self.ready = true;
         self.close_touch_page();
@@ -1941,6 +2154,11 @@ impl Player {
     /// `touch` (the Touch lab measures speeds and jitter with it).
     pub fn set_touch_time(&mut self, time_us: u64) {
         self.with_touch_page(|p| p.set_event_time(time_us));
+        if self.view == View::Touch {
+            if let Some(t) = self.ui.get_mut::<TouchTest>(touch_dev::TEST) {
+                t.set_event_time(time_us);
+            }
+        }
     }
 
     /// The quick band shows over the Play page while NOTE REPEAT is held or
@@ -2020,6 +2238,10 @@ impl Player {
             }
             // Without the developer tools the Console (SHIFT + STOP) has no strip.
             View::Console if !self.settings.debug_mode => "Console".to_string(),
+            View::Touch => {
+                DebugPages::set_strip(&mut self.ui, v);
+                self.touch_dev_page().to_string()
+            }
             View::Debug | View::Perf | View::Engines | View::Procs | View::Map | View::Console => {
                 DebugPages::set_strip(&mut self.ui, v);
                 DebugPages::page(v).unwrap_or("Debug").to_string()
@@ -2040,8 +2262,16 @@ impl Player {
             // A pad a tap on the waveform holds is let go.
             self.sample.leave(&mut self.outbox);
         }
+        let (was, now) = (self.view == View::Touch, v == View::Touch);
+        if was && !now {
+            self.leave_touch_dev();
+        }
         self.switch_page(&page);
         self.view = v;
+        if now && !was {
+            self.say("touch-tune-open".to_string());
+            self.refresh_tune();
+        }
         if v == View::Arrange {
             // How many slots fit is known once the grid is on screen.
             self.time_page.update(&mut self.ui, &self.time);
@@ -2121,6 +2351,33 @@ impl Player {
     /// A touch: what it means for the app, if anything. Before the app is
     /// ready, the pages are switched here (loading and console only).
     pub fn touch(&mut self, finger: u64, phase: Touch, x: i32, y: i32) -> Option<FromUi> {
+        // The Touch page measures every finger before the tuning.
+        if self.ready && self.touch_page.is_none() && self.view == View::Touch {
+            let area = self
+                .ui
+                .rect_of(touch_dev::TEST)
+                .unwrap_or(mpfree_ui::Rect::new(0, 0, 0, 0));
+            if let Some(t) = self.ui.get_mut::<TouchTest>(touch_dev::TEST) {
+                t.observe(finger, phase, x as f32, y as f32, area);
+            }
+        }
+        // The tuning: the correction, and the hold filter's dropped moves.
+        let (x, y) = match self
+            .filter
+            .apply(finger, touch_phase(phase), x as f32, y as f32)
+        {
+            Some((fx, fy)) => (fx.round() as i32, fy.round() as i32),
+            None => {
+                self.after_touch_dev();
+                return None;
+            }
+        };
+        let action = self.touch_filtered(finger, phase, x, y);
+        self.after_touch_dev();
+        action
+    }
+
+    fn touch_filtered(&mut self, finger: u64, phase: Touch, x: i32, y: i32) -> Option<FromUi> {
         match phase {
             Touch::Down => self.fingers.push(finger),
             Touch::Up | Touch::Cancel => self.fingers.retain(|f| *f != finger),
@@ -2205,6 +2462,22 @@ impl Player {
             (crate::debug_page::STRIP, EventKind::Tab(i)) => {
                 DebugPages::set_strip(&mut self.ui, self.view);
                 Some(FromUi::DebugPage(i))
+            }
+            (touch_dev::TUNE, EventKind::Select(i)) => {
+                self.tune_select(i);
+                None
+            }
+            (touch_dev::TUNE, EventKind::Step { index, delta }) => {
+                if let Some(&p) = Param::ALL.get(index) {
+                    self.tune_select(index);
+                    self.tune_step(p, delta);
+                }
+                None
+            }
+            (touch_dev::TUNE, EventKind::Tab(i)) => {
+                self.tune_select(Param::ALL.len() + i);
+                self.tune_action(i);
+                None
             }
             ("controls", EventKind::Select(i)) => Some(FromUi::MapRow(i)),
             ("mapcard", EventKind::Tab(i)) => Some(FromUi::MapButton(i)),
@@ -2340,6 +2613,17 @@ impl Player {
             self.with_touch_page(|p| p.tick());
             self.print_touch_page_lines();
         }
+        if self.view == View::Touch
+            && self.touch_page.is_none()
+            && self
+                .ui
+                .get::<TouchTest>(touch_dev::TEST)
+                .is_some_and(mpfree_ui::Widget::animating)
+        {
+            if let Some(t) = self.ui.get_mut::<TouchTest>(touch_dev::TEST) {
+                t.tick();
+            }
+        }
     }
 
     pub fn set_screen_row(&mut self, text: String) {
@@ -2445,6 +2729,16 @@ impl TouchIn {
                 )
             })
             .collect())
+    }
+}
+
+/// A screen finger's phase as the touch crate names it.
+fn touch_phase(t: Touch) -> Phase {
+    match t {
+        Touch::Down => Phase::Down,
+        Touch::Move => Phase::Move,
+        Touch::Up => Phase::Up,
+        Touch::Cancel => Phase::Cancel,
     }
 }
 
@@ -3205,6 +3499,118 @@ fn boom_bap_project() -> mpfree_sampler::model::Project {
 
 /// Hands the app's effects to the screen as the audio thread does (lights,
 /// sounds and kit changes are left out), for previews and tests.
+/// The Touch page's two screens, built in their own frame: `sample_screens`
+/// already holds many players on its stack.
+#[inline(never)]
+fn push_touch_dev_samples(out: &mut Vec<(&'static str, Player)>, fonts: &impl Fn() -> Fonts) {
+    out.push(("debug-touch", touch_dev_sample(fonts(), false)));
+    out.push(("debug-touch-targets", touch_dev_sample(fonts(), true)));
+}
+
+/// The Touch page with made-up measurements, on a clock of its own (so the
+/// picture is the same every time).
+#[inline(never)]
+pub fn touch_dev_sample(fonts: Fonts, targets: bool) -> Player {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    let mut p = sample_player(fonts);
+    p.apply(ToUi::Settings(Settings {
+        debug_mode: true,
+        ..Settings::default()
+    }));
+    let mut saved = Tuning::default();
+    saved.set(Param::OffsetY, 2.0);
+    p.apply(ToUi::TouchTuning(saved));
+    p.apply(ToUi::Show(View::Touch));
+    let now = Arc::new(AtomicU64::new(1_000_000_000));
+    let c = now.clone();
+    if let Some(t) = p.ui.get_mut::<TouchTest>(touch_dev::TEST) {
+        t.set_clock(Box::new(move || c.load(Ordering::SeqCst)));
+    }
+    let at = |p: &mut Player, f: u64, ph: Touch, x: i32, y: i32, dt: u64| {
+        let t = now.fetch_add(dt, Ordering::SeqCst) + dt;
+        p.set_touch_time(t);
+        let _ = p.touch(f, ph, x, y);
+    };
+    let area =
+        p.ui.rect_of(touch_dev::TEST)
+            .unwrap_or(mpfree_ui::Rect::new(0, 112, 760, 662));
+    let (bar, body) = TouchTest::body(area);
+    let cells = TouchTest::bar_cells(bar);
+    let tap_bar = |p: &mut Player, i: usize| {
+        let c = cells[i];
+        at(p, 99, Touch::Down, c.x + c.w / 2, c.y + c.h / 2, 300_000);
+        at(p, 99, Touch::Up, c.x + c.w / 2, c.y + c.h / 2, 90_000);
+    };
+    if targets {
+        tap_bar(&mut p, 1);
+        let area = p.ui.rect_of(touch_dev::TEST).unwrap_or(area);
+        let spots = TouchTest::targets(TouchTest::body(area).1);
+        for (i, &(x, y)) in spots.iter().take(4).enumerate() {
+            let (x, y) = (x + 4 - i as i32 * 2, y - 5 + i as i32);
+            at(&mut p, 10 + i as u64, Touch::Down, x, y, 700_000);
+            at(&mut p, 10 + i as u64, Touch::Up, x, y, 90_000);
+        }
+        return p;
+    }
+    for i in 0..10i32 {
+        let (x, y) = (body.x + 80 + (i % 5) * 120, body.y + 120 + (i / 5) * 100);
+        at(&mut p, 1, Touch::Down, x, y, 400_000);
+        at(&mut p, 1, Touch::Move, x + i % 3, y + 1, 40_000);
+        at(
+            &mut p,
+            1,
+            Touch::Up,
+            x + i % 3,
+            y + 1,
+            50_000 + i as u64 * 9_000,
+        );
+    }
+    for i in 0..3i32 {
+        let (x, y) = (body.x + 200 + i * 150, body.y + 360);
+        at(&mut p, 2, Touch::Down, x, y, 400_000);
+        for k in 1..=8 {
+            at(
+                &mut p,
+                2,
+                Touch::Move,
+                x + [0, 2, 0, -2][k % 4],
+                y + [0, 1, 0, -1][(k + 1) % 4],
+                110_000,
+            );
+        }
+        at(&mut p, 2, Touch::Up, x, y, 20_000);
+    }
+    tap_bar(&mut p, 2);
+    for i in 0..4i32 {
+        let y = body.y + 160 + i * 40;
+        at(&mut p, 3, Touch::Down, body.x + 120, y, 500_000);
+        for k in 1..=18 {
+            at(
+                &mut p,
+                3,
+                Touch::Move,
+                body.x + 120 + k * 24,
+                y + k / 6,
+                9_000,
+            );
+        }
+        at(&mut p, 3, Touch::Up, body.x + 120 + 18 * 24, y + 3, 2_000);
+    }
+    tap_bar(&mut p, 0);
+    // A finger down, dragged in an arc.
+    at(&mut p, 4, Touch::Down, body.x + 180, body.y + 300, 400_000);
+    for k in 1..=24 {
+        let a = k as f32 * 0.09;
+        let (x, y) = (
+            body.x + 180 + (a.sin() * 220.0) as i32,
+            body.y + 300 - ((1.0 - a.cos()) * 140.0) as i32,
+        );
+        at(&mut p, 4, Touch::Move, x, y, 9_000);
+    }
+    p.apply(ToUi::TouchWheel(5));
+    p
+}
+
 pub fn apply_effects(p: &mut Player, fx: Vec<crate::app::Effect>) {
     use crate::app::Effect;
     for e in fx {
@@ -3223,6 +3629,8 @@ pub fn apply_effects(p: &mut Player, fx: Vec<crate::app::Effect>) {
             Effect::ClearConsole => p.apply(ToUi::ClearConsole),
             Effect::TouchLab => p.apply(ToUi::TouchLab),
             Effect::CalibrateTouch => p.apply(ToUi::CalibrateTouch),
+            Effect::TouchWheel(d) => p.apply(ToUi::TouchWheel(d)),
+            Effect::TouchStep(d) => p.apply(ToUi::TouchStep(d)),
             Effect::Note(l) => p.apply(ToUi::Line(l)),
             Effect::ClipsWheel { delta, scroll } => p.apply(ToUi::ClipsWheel { delta, scroll }),
             Effect::SynthWheel(d) => p.apply(ToUi::SynthWheel(d)),
@@ -3739,6 +4147,9 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         core_cpu_pct: vec![32.0, 2.5, 1.0, 1.0],
     });
     out.push(("debug-procs", pr));
+    // Debug mode: the Touch page after some taps, holds and swipes, a finger
+    // down, and a small saved correction; then Targets mode, four done.
+    push_touch_dev_samples(&mut out, &fonts);
     // Prefs > System info, with fixed rows (the host's own would differ).
     let mut system = sample_player(fonts());
     system.apply(ToUi::Show(View::System));
@@ -4842,6 +5253,78 @@ mod tests {
         assert_eq!(p.touch(2, Touch::Down, 640 + 60, 400 + 70), None);
         assert_eq!(p.touch(2, Touch::Up, 640 + 60, 400 + 70), None);
         assert_eq!((p.page(), p.touch_page()), ("Prefs", None));
+    }
+
+    #[test]
+    fn the_touch_page_tunes_every_touch_and_saves_on_request() {
+        let mut p = sample_player(Fonts::embedded());
+        p.apply(ToUi::Settings(Settings {
+            debug_mode: true,
+            ..Settings::default()
+        }));
+        p.apply(ToUi::Show(View::Touch));
+        assert_eq!(p.page(), touch_dev::PAGE);
+        // The first row is Shift across: + five times moves touches 5 px right.
+        for _ in 0..5 {
+            p.apply(ToUi::TouchStep(1));
+        }
+        assert_eq!(p.tuning().offset_x, 5.0);
+        assert_eq!(
+            p.filter.apply(7, Phase::Down, 100.0, 100.0),
+            Some((105.0, 100.0))
+        );
+        p.filter.apply(7, Phase::Up, 100.0, 100.0);
+        // The wheel to the last row (Save), and +: the tuning goes to the store.
+        p.apply(ToUi::TouchWheel(99));
+        p.apply(ToUi::TouchStep(1));
+        let saved: Vec<FromUi> = p
+            .take_actions()
+            .into_iter()
+            .filter(|a| matches!(a, FromUi::SaveTouch(_)))
+            .collect();
+        assert_eq!(saved.len(), 1);
+        assert!(matches!(&saved[0], FromUi::SaveTouch(t) if t.offset_x == 5.0));
+        // Defaults by touch: the Defaults button under the rows.
+        let r = p.ui.rect_of(touch_dev::TUNE).unwrap();
+        let mut hit = None;
+        'find: for y in (r.y..r.bottom()).step_by(4) {
+            for x in (r.x..r.right()).step_by(8) {
+                let mut probe = p.ui.get::<TuneList>(touch_dev::TUNE).unwrap().clone();
+                if mpfree_ui::Widget::touch(&mut probe, 1, Touch::Down, x, y, r)
+                    == Some(EventKind::Tab(1))
+                {
+                    hit = Some((x, y));
+                    break 'find;
+                }
+            }
+        }
+        let (x, y) = hit.expect("a Defaults button");
+        // The touch is shifted 5 px right on its way in; the button is wide.
+        p.touch(1, Touch::Down, x, y);
+        p.touch(1, Touch::Up, x, y);
+        assert_eq!(*p.tuning(), Tuning::default());
+        // Targets take the whole page until the nine taps are in.
+        let area = p.ui.rect_of(touch_dev::TEST).unwrap();
+        let (bar, _) = TouchTest::body(area);
+        let c = TouchTest::bar_cells(bar)[1];
+        p.touch(2, Touch::Down, c.x + c.w / 2, c.y + c.h / 2);
+        p.touch(2, Touch::Up, c.x + c.w / 2, c.y + c.h / 2);
+        assert_eq!(p.page(), touch_dev::TARGETS_PAGE);
+        let area = p.ui.rect_of(touch_dev::TEST).unwrap();
+        for (i, (x, y)) in TouchTest::targets(TouchTest::body(area).1)
+            .into_iter()
+            .enumerate()
+        {
+            p.touch(10 + i as u64, Touch::Down, x, y);
+            p.touch(10 + i as u64, Touch::Up, x, y);
+        }
+        assert_eq!(p.page(), touch_dev::PAGE);
+        // Leaving keeps the tuning and goes back to Free.
+        p.apply(ToUi::Show(View::Play));
+        assert_eq!(
+            p.ui.get::<TouchTest>(touch_dev::TEST).map(|t| t.mode),
+            Some(touch_dev::Mode::Free)
+        );
     }
 
     fn app_rows(app: &crate::app::App) -> usize {
