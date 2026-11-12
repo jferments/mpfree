@@ -411,10 +411,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "mpfree-audiotracks"
+version = "0.1.0"
+dependencies = [
+ "mpfree-transport",
+]
+
+[[package]]
 name = "mpfree-bench"
 version = "0.1.0"
 dependencies = [
  "mpfree-arp",
+ "mpfree-audiotracks",
  "mpfree-fx",
  "mpfree-grain",
  "mpfree-lanes",
