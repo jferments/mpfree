@@ -523,6 +523,12 @@ impl Player {
         self.engine.apply(Event::AllOff);
     }
 
+    /// The pads whose hit keeps a latched sound playing, as bits (pad `k`
+    /// is bit `k`): their lights stay on.
+    pub fn latched_pads(&self) -> u16 {
+        self.engine.latched_pads()
+    }
+
     pub fn playing(&self) -> usize {
         self.engine.active_voices()
     }

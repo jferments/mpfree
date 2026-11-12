@@ -4040,12 +4040,15 @@ fn player_session(
             )?;
             lit = [false; 16];
         }
-        // Pad lights: lit while held, or while the arp keeps them going (latched, or held on its grid).
+        // Pad lights: lit while held, while the arp keeps them going (latched, or held on its grid),
+        // or while a pad set to Latch in the sampler plays on.
+        let latched = if synth_on { 0 } else { player.latched_pads() };
         for pad in 0..16 {
             if mute_shown.is_some() {
                 break;
             }
-            let want = held[pad] || (app.generating() && app.active(pad));
+            let want =
+                held[pad] || (app.generating() && app.active(pad)) || latched & (1 << pad) != 0;
             if want != lit[pad] {
                 lit[pad] = want;
                 let colour = if want {
