@@ -69,6 +69,9 @@ pub enum Job {
     SampleEdit,
     /// PROG EDIT: the sound the pads play (the Synth tab, or Sample > Pads).
     ProgEdit,
+    /// Q-LINK: the Q-Link column's next bank, Macros 1-4, Macros 5-8, then
+    /// the page's own knobs again (on Play and the chain editor).
+    QLink,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -111,7 +114,7 @@ pub const CONTROLS: [Control; 42] = [
     c("TRACK MIX / PAD MIX", Job::TrackMix),
     c("-", Job::Minus),
     c("+", Job::Plus),
-    c("Q-LINK", Job::None),
+    c("Q-LINK", Job::QLink),
     // The mode buttons the hardware control map gives a page (Jay, 20:40Z).
     c("TRACK MUTE", Job::None),
     c("NEXT SEQ", Job::NextSeq),
