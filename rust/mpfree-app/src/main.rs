@@ -84,7 +84,6 @@ mod mixing;
 mod modmix;
 mod modpanels;
 mod perf;
-mod perform;
 mod play_page;
 mod play_widgets;
 #[cfg(test)]
@@ -1515,6 +1514,59 @@ fn kit_pad_colours(kit: &kit::Kit, k: usize) -> [[u8; 3]; 16] {
     rest
 }
 
+/// TRACK MUTE's pad colours (control map decision 5: lit = playing).
+/// Tracks: pads 1-8 lit green while their track plays a clip, dim green
+/// with nothing launched, red while muted; the rest dark. The kit's pads:
+/// lit in the kit's colour (`kit`) while they play, red while muted, dark
+/// without a sound. `track(t)` is (muted, launched), None past the last
+/// track. Only colours Akai's app was seen sending (a kit's resting
+/// colour, or its hit).
+fn mute_colours(
+    keys: app::MuteKeys,
+    kit: [[u8; 3]; 16],
+    track: impl Fn(usize) -> Option<(bool, bool)>,
+    pad_mutes: u16,
+) -> [[u8; 3]; 16] {
+    let (green, red) = (akai::KIT_COLOURS[3], akai::KIT_COLOURS[4]);
+    std::array::from_fn(|pad| match keys {
+        app::MuteKeys::Off => kit[pad],
+        app::MuteKeys::Tracks => match track(pad) {
+            Some((false, true)) => akai::hit_colour(green),
+            Some((false, false)) => green,
+            Some((true, _)) => red,
+            None => [0; 3],
+        },
+        app::MuteKeys::Pads if kit[pad] == [0; 3] => [0; 3],
+        app::MuteKeys::Pads if pad_mutes & (1 << pad) != 0 => red,
+        app::MuteKeys::Pads => akai::hit_colour(kit[pad]),
+    })
+}
+
+/// TRACK MUTE's key `pad` pressed: its track (pads 1-8), or the pad itself
+/// in the kit, muted or let play. The line for the log.
+fn mute_key(
+    keys: app::MuteKeys,
+    pad: usize,
+    time: &mut time::TimeHost,
+    mix: &mut mixing::MixHost,
+) -> String {
+    match keys {
+        app::MuteKeys::Off => String::new(),
+        app::MuteKeys::Tracks => time
+            .toggle_mute(pad)
+            .unwrap_or_else(|e| format!("track mute: {e}")),
+        app::MuteKeys::Pads => {
+            let mute = mix.pad_mutes() & (1 << pad) == 0;
+            mix.play(mixing::PlayFx::PadMute { pad, mute });
+            format!(
+                "pad mute: pad {} {}",
+                pad + 1,
+                if mute { "muted" } else { "plays" }
+            )
+        }
+    }
+}
+
 /// Resting pad colours for kit number `k` from which pads have a sound
 /// (`sampler::Player::sounds`, which follows the Sample tab's chops).
 fn sound_colours(has: [bool; 16], k: usize) -> [[u8; 3]; 16] {
@@ -2139,6 +2191,14 @@ fn looper_action(
             out.note(&looper.command(c));
             Vec::new()
         }
+        looping::LoopAction::Resample(n) => {
+            out.note(&looper.resample_into(n));
+            Vec::new()
+        }
+        looping::LoopAction::Steps(n) => {
+            out.note(&looper.steps(n));
+            Vec::new()
+        }
         looping::LoopAction::Source(s) => {
             looper.source = s;
             out.note(&format!("looper: records from {}", s.name().to_lowercase()));
@@ -2554,6 +2614,10 @@ fn player_session(
     let mut held = [false; 16];
     let mut awaiting = [false; 16];
     let mut lit = [false; 16];
+    // TRACK MUTE: pads pressed as mute keys (their release plays nothing),
+    // and the colours the mute keys show (None: the pads show as usual).
+    let mut mute_pressed = [false; 16];
+    let mut mute_shown: Option<[[u8; 3]; 16]> = None;
     // Buttons whose light is never sent, noted once each.
     let mut unlit = [false; 128];
     // Repeats per second, for the log (the paced Latch check reads these).
@@ -2578,6 +2642,16 @@ fn player_session(
         let direct = !app.generating();
         while let Ok(a) = from_ui.try_recv() {
             match a {
+                gui::FromUi::Pad { pad, down: true }
+                    if pad < 16 && app.mute_keys() != app::MuteKeys::Off =>
+                {
+                    mute_pressed[pad] = true;
+                    out.note(&mute_key(app.mute_keys(), pad, &mut time, &mut mix));
+                }
+                gui::FromUi::Pad { pad, down: false } if pad < 16 && mute_pressed[pad] => {
+                    mute_pressed[pad] = false;
+                    out.show(gui::ToUi::PadUp(pad));
+                }
                 gui::FromUi::Pad { pad, down: true } if pad < 16 => {
                     let v = app.settings.screen_velocity;
                     if let Some(ev) = app.pressed_event(pad, v, true) {
@@ -2687,10 +2761,16 @@ fn player_session(
                 gui::FromUi::LoopPick(n) => {
                     fx.push(app::Effect::Looper(looping::LoopAction::Select(n)))
                 }
-                gui::FromUi::LoopLevel(v) => fx.push(app::Effect::Looper(
-                    looping::LoopAction::Command(mpfree_looper::Command::SetLevel(v)),
-                )),
                 gui::FromUi::LooperSetting(item, d) => fx.extend(app.looper_setting(item, d)),
+                gui::FromUi::LoopCommand(c) => {
+                    fx.push(app::Effect::Looper(looping::LoopAction::Command(c)))
+                }
+                gui::FromUi::LoopResample(n) => {
+                    fx.push(app::Effect::Looper(looping::LoopAction::Resample(n)))
+                }
+                gui::FromUi::LoopSteps(n) => {
+                    fx.push(app::Effect::Looper(looping::LoopAction::Steps(n)))
+                }
                 gui::FromUi::Synth(SynthAction::Set { id, value }) => {
                     synth.set(id, value);
                     if let Some(line) = param_log.set(&synth, id, value, t_read) {
@@ -2798,6 +2878,23 @@ fn player_session(
                 }
             }
             match m.event {
+                Some(ControlEvent::PadDown { pad, .. })
+                    if (pad as usize) < 16 && app.mute_keys() != app::MuteKeys::Off =>
+                {
+                    mute_pressed[pad as usize] = true;
+                    out.note(&mute_key(
+                        app.mute_keys(),
+                        pad as usize,
+                        &mut time,
+                        &mut mix,
+                    ));
+                }
+                Some(ControlEvent::PadUp { pad })
+                    if (pad as usize) < 16 && mute_pressed[pad as usize] =>
+                {
+                    mute_pressed[pad as usize] = false;
+                    out.show(gui::ToUi::PadUp(pad as usize));
+                }
                 Some(ControlEvent::PadDown { pad, velocity }) if (pad as usize) < 16 => {
                     let pad = pad as usize;
                     if let Some(ev) = app.pressed_event(pad, velocity, true) {
@@ -2962,6 +3059,7 @@ fn player_session(
                             &as_slices(&pad_colours(&rest)),
                         )?;
                         lit = [false; 16];
+                        mute_shown = None;
                     }
                 }
                 // SHIFT + wheel with a drum kit: the kit, as before.
@@ -2998,6 +3096,7 @@ fn player_session(
                             &as_slices(&pad_colours(&rest)),
                         )?;
                         lit = [false; 16];
+                        mute_shown = None;
                         bank_lights = true;
                     }
                 }
@@ -3062,6 +3161,7 @@ fn player_session(
                         later.extend(app.open_tab(app::View::Sample));
                     }
                 }
+                app::Effect::Fill(on) => time.set_fill(on, 0),
                 app::Effect::Metronome => {
                     time.metronome = !time.metronome;
                     out.note(&format!(
@@ -3184,6 +3284,7 @@ fn player_session(
                 )?;
             }
             lit = [false; 16];
+            mute_shown = None;
             // The arp plays the synth's layout notes, or a kit's pad slots.
             app.set_pad_layout(synth_on.then(|| synth.pad_layout()));
             out.show(gui::ToUi::Kit(k));
@@ -3319,14 +3420,44 @@ fn player_session(
             for pad in 0..16 {
                 if fresh[pad] != rest[pad] {
                     rest[pad] = fresh[pad];
-                    if !lit[pad] {
+                    if !lit[pad] && mute_shown.is_none() {
                         ports.send(false, &akai::pad_colour(pad as u8, rest[pad]))?;
                     }
                 }
             }
         }
+        // TRACK MUTE: the pads show the mute keys in place of the sounds.
+        let keys = app.mute_keys();
+        if keys != app::MuteKeys::Off {
+            let kit = player.kit();
+            let track = |t: usize| time.muted(t).map(|m| (m, time.launched(t)));
+            let want = mute_colours(
+                keys,
+                sound_colours(player.sounds(kit), kit),
+                track,
+                mix.pad_mutes(),
+            );
+            for pad in 0..16 {
+                if mute_shown.is_none_or(|s| s[pad] != want[pad]) {
+                    ports.send(false, &akai::pad_colour(pad as u8, want[pad]))?;
+                }
+            }
+            mute_shown = Some(want);
+        } else if mute_shown.take().is_some() {
+            // Left: the pads' own colours again, lit below where they play.
+            ports.send_batch(
+                out,
+                false,
+                "the pads' colours",
+                &as_slices(&pad_colours(&rest)),
+            )?;
+            lit = [false; 16];
+        }
         // Pad lights: lit while held, or while the arp keeps them going (latched, or held on its grid).
         for pad in 0..16 {
+            if mute_shown.is_some() {
+                break;
+            }
             let want = held[pad] || (app.generating() && app.active(pad));
             if want != lit[pad] {
                 lit[pad] = want;
@@ -4108,6 +4239,47 @@ mod tests {
 
     fn args(s: &str) -> Vec<String> {
         s.split_whitespace().map(String::from).collect()
+    }
+
+    /// TRACK MUTE's keys mute a track, or a pad in the kit, and the pads
+    /// show it: green playing (dim with nothing launched), red muted,
+    /// dark where there is nothing.
+    #[test]
+    fn the_mute_keys_mute_tracks_or_pads_and_light_what_plays() {
+        use app::MuteKeys;
+        let mut time = time::TimeHost::new(RATE, 120.0).unwrap();
+        let mut mix = mixing::MixHost::new(RATE, -6.0, -6.0);
+        assert_eq!(
+            mute_key(MuteKeys::Tracks, 2, &mut time, &mut mix),
+            "track mute: Track 3 muted"
+        );
+        assert_eq!(time.muted(2), Some(true));
+        assert_eq!(
+            mute_key(MuteKeys::Tracks, 9, &mut time, &mut mix),
+            "track mute: no track 10"
+        );
+        assert_eq!(
+            mute_key(MuteKeys::Pads, 4, &mut time, &mut mix),
+            "pad mute: pad 5 muted"
+        );
+        assert_eq!(mix.pad_mutes(), 1 << 4);
+        assert_eq!(mix.play_levels().pad_mutes, 1 << 4, "the speakers show it");
+        assert_eq!(
+            mute_key(MuteKeys::Pads, 4, &mut time, &mut mix),
+            "pad mute: pad 5 plays"
+        );
+        assert_eq!(mix.pad_mutes(), 0);
+
+        let kit = sound_colours(std::array::from_fn(|p| p < 12), 1);
+        let (green, red) = (akai::KIT_COLOURS[3], akai::KIT_COLOURS[4]);
+        let track = |t: usize| (t < 8).then_some((t == 2, t == 0));
+        let c = mute_colours(MuteKeys::Tracks, kit, track, 0);
+        assert_eq!(
+            (c[0], c[1], c[2], c[8]),
+            (akai::hit_colour(green), green, red, [0; 3])
+        );
+        let c = mute_colours(MuteKeys::Pads, kit, track, 1 << 4);
+        assert_eq!((c[0], c[4], c[12]), (akai::hit_colour(kit[0]), red, [0; 3]));
     }
 
     #[test]

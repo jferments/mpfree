@@ -63,7 +63,7 @@ Built in round 8 (PR #106) to Jay's approved mockups F to I (10:05Z), with real 
   - Drum: Your timing (the last two bars of hits against the 1/16 grid, average, spread, velocity, spread of offsets) beside the XY pad (330 px), then the mini pads and all eight throws.
 - **The pattern** is the armed track's clip from the sequencer. A speaker beside each lane mutes that pad; a tap on a step toggles it (or starts a pattern when there is none).
 - **The loop strip** names each layer by what was played into it (Drums, Bass, Chop; Line in from the line). A speaker beside each name mutes that layer.
-- **Throws and the XY pad** play performance effects on the master while held; Drop drums mutes the kick, snare and hat pads while held.
+- **Throws and the XY pad** play Perform FX (`mpfree_fx::Perform`) on the master while held: each throw holds a pad of its default bank (Delay throw the 1/8 dotted echo throw, Reverb wash the wash throw, Filter dip the 1-bar low-pass sweep), entering on the next 1/16 while the transport plays; the XY pad plays its DJ filter across (low-pass left, off in the middle, high-pass right) and its echo up, and glides home when the finger lifts; the FX mix Q-Link is its Mix (round 10); Drop drums mutes the kick, snare and hat pads while held.
 - **The mini pads** have a heading: "Pads · Bank A" and the kit (the Drum view: how hits play, "velocity on"). While the synth has the pads, it shows the Chromatic | In key switch (Jay, 12:22Z). The same heading sits over the Synth tab's presets.
 - **Q-Links on Play,** by view: All and Beats: swing, tune and the drums' filter and delay send (a picked step in Beats: its velocity, length, nudge and chance); Loop: loop level, loop delay send, line level, loop filter; Drum: tune, decay, swing, FX mix. The master bar sets the level. While NOTE REPEAT is held or the Arp panel is open, the cards show the arp's four (rate, gate, swing, octaves).
 - **The header** keeps to the CPU and kit chips; the session chip shows only when something is wrong, the arp chip only while the arp, a repeat or a latch is on.
@@ -71,7 +71,7 @@ Built in round 8 (PR #106) to Jay's approved mockups F to I (10:05Z), with real 
 - **NOTE REPEAT's strip** takes the top of the view's first panel, so nothing else moves.
 - **The Arp panel** takes the view's left, and the mini pads stay where the home view has them.
 - **Macro banks:** Q-LINK steps the Q-Link column to Macros 1-4, then Macros 5-8, then back to the view's own knobs; Play keeps its bank while other pages show. A finger held on a macro card opens the macros panel (section 4b).
-- **Still to come:** half length and double on the loop strip (looper edit tools, #122); the FX thread's Perform engine in place of the stand-in (#116 merged; the swap is in round 9's queue).
+- **Still to come:** half length and double on the loop strip (the looper's edit tools, which the Looper tab has since round 10).
 
 ## 4a. The Looper tab
 
@@ -79,12 +79,12 @@ Built in round 9 to mockup J (Jay's direction, 10:16Z), with real data; side-by-
 
 - **The frame:** the loops (220 px) at the left; the editor over Recording and input and Use the loop (330 px) in the middle; the Q-Link column (168 px) at the right; the hint line under them.
 - **The loops:** Loop 1 to 4, and on as far as one is used or picked (eight in all), each with its length and layers and its state (PLAYING, MUTED, RECORDING); the picked one outlined. A tap picks a loop; + New loop picks the first empty one. Every loop plays at once; the controls act on the picked one. The loop memory gauge sits at the bottom.
-- **The editor:** the tools row (half length, double, reverse, nudge, seam fade, merge layers, undo history), the loop's wave with its bar lines and the playhead, and a row per layer: its speaker (mute), S (solo), level bar (drag: -24 to +6 dB), mini wave and × (delete). A tap on a row puts that layer on the Q-Links. Three rows show; more scroll to keep the picked one in view.
-- **Recording and input,** two columns: Record from, First pass, Start, After recording, At another tempo; Line input, Input peak, Monitor, Latency. A tap on a row's right half steps it up, the left half down; the source and on-off rows flip. The Play strip uses the same settings.
-- **Use the loop:** To a pad, To a clip, Save loop, Resample.
-- **Q-Links:** the picked layer's level and pan, the loop's level, the line input's level (mockup J's Fade old and Seam fade take Q3 and Q4 once the looper has them).
+- **The editor:** the tools row (half length, double, reverse, nudge, seam fade, merge layers, undo history; they work while the loop plays and isn't recording, and merge needs two layers; seam fade steps through a cut, 10 ms, 50 ms and the longest, and shows the fade now; merge shows its progress), the loop's wave with its bar lines and the playhead (while the loop can be edited, a handle at each end of the wave drags in by 1/16 notes, the part cut off dimmed and "keep 12 of 16 beats" above it, and trims the loop on release), and a row per layer: its speaker (mute), S (solo), level bar (drag: -24 to +6 dB), mini wave and × (delete). A layer Fade old has turned down says how far ("faded to 77 %"). A tap on a row puts that layer on the Q-Links. Three rows show; more scroll to keep the picked one in view. **Undo history** (lit while open) lists the loop's history in the layers' place: Start (the first pass), then each overdub, delete, edit and merge, oldest first, with now outlined and the steps Redo would bring back faint below it. A tap on a step goes back or forward to just after it; a drag scrolls the list; picking another loop closes it.
+- **Recording and input,** two columns: Record from, First pass, Start, After recording, At another tempo; Line input, Input peak, Monitor, Latency. A tap on a row's right half steps it up, the left half down; the source and on-off rows flip, and After recording flips between play and overdub (the picked loop's own). The Play strip uses the same settings.
+- **Use the loop:** To a pad, To a clip, Save loop, Resample. Resample picks the first empty loop and records the loops as heard into it from the next bar line, as REC does; REC ends the pass. It works while a loop plays and one is empty.
+- **Q-Links:** the picked layer's level and pan, then the loop's Fade old (50 to 100 % kept a pass, a percent a detent) and its seam fade (a millisecond a detent), as mockup J. The loop's level and the line input's are on Play's Loop view.
 - **Hardware:** REC records or overdubs, OVERDUB overdubs, UNDO undoes (SHIFT: redo); there are no on-screen record buttons here (the Play strip has them).
-- **Still to come (drawn faint until the looper has them, #122):** the tools, the trim handles on the wave, Start and After recording, Use the loop, Fade old and Seam fade.
+- **Still to come (drawn faint until then):** Start, and Use the loop's To a pad, To a clip and Save loop (the looper's bounce).
 
 
 ## 4b. The FX chain editor and macros
@@ -135,6 +135,7 @@ Approved by Jay at 22:34Z (the mod thread's card, "Approve as proposed"). The mo
 - **PAD BANK A–D:** banks. SHIFT, or a second press, gives E–H.
 - **SHIFT + REC:** Capture, on every page.
 - **SHIFT + PLAY START:** the metronome on or off.
+- **PLAY while the transport plays:** FILL while it is held (notes with the FILL and !FILL trig conditions follow it); pressed twice, FILL stays latched until PLAY is pressed again or STOP (Jay, 20:54Z, control map decision 9). Stopped, PLAY plays.
 - **The mode buttons** go to the page with the same job (Jay, 20:40Z; the control map doc, https://claude.ai/artifact/CzSwDDjX1Ngc7LkhXP4KqD):
   - MAIN: Play; on Play, the next view (All, Beats, Loop, Drum).
   - STEP SEQ: Play's Beats view.
@@ -144,8 +145,9 @@ Approved by Jay at 22:34Z (the mod thread's card, "Approve as proposed"). The mo
   - PROG EDIT: the sound the pads play: the Synth tab while the synth has them, otherwise Sample > Pads.
   - SHIFT + 16 LEVEL: the synth pads' Chromatic | In key switch.
   - Q-LINK: the Q-Link column's next bank on Play, the chain editor and the macros panel (section 4b).
+- **TRACK MUTE** (control map decision 5): the pads become mute keys over whatever page shows, and the page stays. Pads 1-8 mute and unmute tracks 1-8 at once (their clips keep their place); a pad is lit green while its track plays a clip, dim green with nothing launched, red while muted, and pads 9-16 are dark. **SHIFT + TRACK MUTE** does the same for the playing kit's pads (the speakers on Play): lit in the kit's colour while a pad plays, red while muted, dark without a sound. The same press again leaves, and the other one switches. The hint line says what the pads are, and the button is lit while they are mute keys. A pad held when TRACK MUTE is pressed still lets go as a note.
 - **Found with Map controls first:** ERASE, Q-LINK and the mode buttons have no measured note yet, so each works once Map controls has found it (TRACK MUTE, NEXT SEQ, STEP SEQ, SAMPLER, SAMPLE EDIT, PROG EDIT and the data dial's push have rows since round 9).
-- **Still to come from the control map:** FILL (hold PLAY while the transport plays; double-press latches) when the trig conditions land; TRACK MUTE (the pads as mute keys); hold MAIN + pad to pick a track; SHIFT + NEXT SEQ (Perform FX); 16 LEVEL, COPY, TC, BROWSE and the data dial's push.
+- **Still to come from the control map:** hold MAIN + pad to pick a track; SHIFT + NEXT SEQ (Perform FX); 16 LEVEL, COPY, TC, BROWSE and the data dial's push.
 
 ## 7. How changes happen
 
@@ -165,7 +167,7 @@ Approved by Jay at 22:34Z (the mod thread's card, "Approve as proposed"). The mo
   - an effect's page (title, drawings, tiles, presets, its own Q-Link strip) opens over the current page under the top bar, with Back, as the mixer does: from a tap on the selected insert's name in the chain editor, and from a mixer return or master strip's insert row;
   - the Perform FX page (16 pads with lights, the XY pad with Hold, the selected pad's settings) opens the same way from the Perform FX insert on the master; its pads and XY view can also sit in a Play view;
   - the DJ knob is Q-Link 1 on that page (it stops at the middle on the way through), and can be a Play Q-Link too.
-  - **The app thread proposes:** the pages use the 168 px Q-Link column instead of a strip of their own, so the frame stays the same everywhere; Play's throws and XY pad move onto the Perform engine when #116 merges, with no layout change.
+  - **The app thread proposes:** the pages use the 168 px Q-Link column instead of a strip of their own, so the frame stays the same everywhere; Play's throws and XY pad are on the Perform engine since round 10, with no layout change.
 
 ## Where things stand (2026-11-11 08:10Z)
 
@@ -177,6 +179,7 @@ Approved by Jay at 22:34Z (the mod thread's card, "Approve as proposed"). The mo
 | #75 Sample tab (merged) | Play, Clips, Synth, Sample, (Debug), Console, Prefs |
 | Round 7 | Play, Clips, Synth, Looper, Sample, (Dev); Prefs on SHIFT + MENU |
 | Round 8 (merged) | Play, Arrange, Synth, Looper, Sample, (Dev); Prefs on SHIFT + MENU |
-| Round 9 (this spec) | No tab change (the Looper tab becomes mockup J's editor) |
+| Round 9 (merged) | No tab change (the Looper tab becomes mockup J's editor) |
+| Round 10 | No tab change: the chain editor and the macros panel take the mixer's place or open over the page (section 4b); TRACK MUTE works over any page |
 | #72 themes, arp b1aa92e | No tab change (#72 restyles the drawing only) |
 | Preview pictures (not the app) | synth-ui "Steps, Clips, Looper, Arrange, Synth, Mix"; time-ui "Play, Clips, Debug, Console, Prefs"; sampler-ui "Play, Sample, Debug, Prefs"; arp-ui "Play, Debug, Console, Prefs"; wave preview "Record, Sound, Perform, Browse" |
