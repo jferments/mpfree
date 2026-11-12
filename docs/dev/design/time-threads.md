@@ -5,7 +5,7 @@ checked: 2026-11-12 ea72d6c
 
 # The time engine on two threads (plan)
 
-**Status:** plan, 2026-11-12. The first step is built (a compile checks only what it plays, see [playback.md](playback.md#in-the-pad-player)); the split below is not. The app thread, which owns `main.rs` and will build the control thread ([concurrency.md](concurrency.md), plan step 2), agreed to the shape on 12 Nov (07:20Z) with three asks, which are rules 1 to 3 below.
+**Status:** plan, 2026-11-12. The first step is built (a compile checks only what it plays, see [playback.md](playback.md#in-the-pad-player-timehost)); the split below is not. The app thread, which owns `main.rs` and will build the control thread ([concurrency.md](concurrency.md), plan step 2), agreed to the shape on 12 Nov (07:20Z) with three asks, which are rules 1 to 3 below.
 
 ## Why
 
