@@ -294,3 +294,60 @@ fn a_plan_past_the_memory_budget_says_so_and_start_waits() {
     assert_eq!(buttons(&s).1, [false, true]);
     assert_eq!(press(&mut s, 0), None);
 }
+
+#[test]
+fn external_gear_is_offered_with_a_midi_out_and_starts_on_its_channel() {
+    // Without a MIDI out the Source row keeps the synth, and says why.
+    let mut s = screen("rec-auto");
+    assert_eq!(s.state.gear, None);
+    let source = EventKind::Step {
+        index: Row::Source.index(),
+        delta: 1,
+    };
+    assert_eq!(act(&mut s, auto_tab::LIST, source), None);
+    assert_eq!(s.tab.settings.gear, None);
+    let card = &s.ui.get::<InfoCard>(auto_tab::WHEEL).unwrap().text;
+    assert!(card.contains("needs a MIDI out"), "{card}");
+    // With one, the steps after the synth are the gear on channels 1 to 16.
+    s.state.gear = Some(sample::GEAR_OUT.to_string());
+    for _ in 0..3 {
+        step(&mut s, Row::Source, 1);
+    }
+    assert_eq!(s.tab.settings.gear, Some(2));
+    assert_eq!(
+        row(&s, Row::Source),
+        ("Source".to_string(), "Gear · MIDI ch 3".to_string())
+    );
+    assert_eq!(bar(&s).0, "Auto-sample the gear onto pads A1–A16");
+    assert_eq!(view(&s).title, "Gear · MIDI channel 3");
+    assert!(
+        view(&s)
+            .note
+            .starts_with("Plays MIDI channel 3 on MIDI Out (DIN)"),
+        "{}",
+        view(&s).note
+    );
+    match press(&mut s, 0) {
+        Some(AutoAction::StartGear { plan, channel: 2 }) => {
+            assert_eq!(plan.name, auto_tab::GEAR_NAME);
+            assert_eq!(plan, s.tab.settings.plan("Gear", RATE));
+        }
+        a => panic!("{a:?}"),
+    }
+    // Channel 16 is the last; back past channel 1 is the synth again.
+    step(&mut s, Row::Source, 20);
+    assert_eq!(s.tab.settings.gear, Some(15));
+    step(&mut s, Row::Source, -17);
+    assert_eq!(s.tab.settings.gear, None);
+    assert_eq!(row(&s, Row::Source).1, AUTO_SYNTH);
+    assert!(matches!(press(&mut s, 0), Some(AutoAction::Start(_))));
+    // Gear picked but the MIDI out gone: Start waits and the page says so.
+    let mut g = screen("rec-auto-gear");
+    assert_eq!(buttons(&g).1, [true, true]);
+    g.state.gear = None;
+    let st = g.state.clone();
+    g.tab.update(&mut g.ui, &st);
+    assert_eq!(bar(&g).0, "Auto-sample: no MIDI out for the gear");
+    assert_eq!(buttons(&g).1, [false, true]);
+    assert_eq!(press(&mut g, 0), None);
+}

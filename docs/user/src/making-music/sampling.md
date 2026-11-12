@@ -1,7 +1,7 @@
 <!--
 status: changing
 covers: rust/mpfree-sampler rust/mpfree-sampler-ui rust/mpfree-grain rust/mpfree-app/src/sample_page.rs rust/mpfree-app/src/sampler.rs
-checked: 2026-11-12 ae9c39c
+checked: 2026-11-12 ac6fc10
 -->
 
 # Sampling
@@ -84,6 +84,18 @@ To fill in **Stops** or **Also plays**, tap the row, then hit the pads you want:
 {{shot: sample-grain | The Grain page: tiny grains of the sound play at once, around the position you pick.}}
 
 **Granular** playback plays the sound as a cloud of tiny overlapping pieces (grains). It can freeze a moment, stretch it into a pad, or scatter it into texture. Touch the square to move the **position** in the sound and the **size** of the grains together, and use the Q-Links for **position**, **size**, **density** and **pitch**. **Scan speed** moves through the sound on its own.
+
+## Auto-sample: a synth or your gear onto the pads
+
+**Auto-sample** plays an instrument note by note, records every note and makes a playable instrument of it on the kit's pads: one pad a note, each covering the keys around it, with velocity layers and round robins if you ask for them. Open it with the **Auto-sample** button on the Sample tab's **Rec** page, set the notes and layers in the list, and tap **Start**. The bar says how many takes it makes, how long it takes and how much memory, before anything starts. **Cancel** stops and keeps the notes done, and one UNDO takes the whole instrument off.
+
+The **Source** row says what plays:
+
+- **The Synth tab's patch.** MPFree plays a copy of it, much faster than real time, so a whole instrument takes seconds.
+- **External gear**, on a MIDI channel from 1 to 16. MPFree plays your synth through **MIDI OUT** and records it from the line input, in real time. Connect the synth's audio out to the line input, set it to the channel you picked and turn the line input on. MPFree first plays the middle note twice to hear how loud the synth is and how late it answers, so no note starts late or cut off. If the line input stops or you switch the Rec page to another source while it runs, it stops, lets go of the note and keeps the notes done.
+
+> [!NOTE]
+> **External gear** appears in the Source row once MIDI OUT is set up for it, which comes with the MIDI setup (see [Playing other gear](midi-and-cv.md)).
 
 ## Playing a kit on keys
 
