@@ -96,6 +96,19 @@ def build(read):
         probe.get("oem_token_slot",{}).get(
             "matches_published_37_byte_unlock_token") if probe else None
     )
+    dispatch_entries = probe.get("fastboot_command_table", [])
+    checks["fastboot_dispatch_table_eight_entries"] = (
+        len(dispatch_entries) == 8)
+    checks["fastboot_boot_command_callback_resolved"] = any(
+        (entry.get("prefix_text") or "").startswith("boot") and
+        entry.get("callback_containing_function") == "0x00122964"
+        for entry in dispatch_entries
+    )
+    checks["fastboot_download_command_callback_resolved"] = any(
+        (entry.get("prefix_text") or "").startswith("download") and
+        entry.get("callback_containing_function") == "0x00122980"
+        for entry in dispatch_entries
+    )
     rows=[]
     def q(topic,question,result,evidence,next_step):
         rows.append({"id":"DB%03d"%(len(rows)+1),"topic":topic,
@@ -109,6 +122,16 @@ def build(read):
     q("OEM unlock","Are flash and erase each gated?",yes(checks["flash_gate_present"] and checks["erase_gate_present"]),"0x122c5c and 0x122bf8 call permission routine.","Trace partition lookup and write size limits.")
     q("OEM unlock","Is Fastboot boot gated at command dispatch?","unknown","Boot completion at 0x1226b4 does not itself show permission check.","Resolve dispatcher and upstream state machine.")
     q("OEM unlock","Does unlock persist or alter storage?","unknown","Direct grant is a memory write; no proven lifecycle/side effects.","Trace all global writers and data-store calls.")
+    q("OEM unlock","Does exact command dispatch map boot and download handlers?",
+      yes(checks["fastboot_dispatch_table_eight_entries"] and
+          checks["fastboot_boot_command_callback_resolved"] and
+          checks["fastboot_download_command_callback_resolved"]),
+      "The eight-entry prefix table must map boot to 0x122964 and download to 0x122980. Its exact entries are private Ghidra evidence.",
+      "Inspect callback side effects, global permission gates and any boot preconditions.")
+    q("RAM boot","Does a locked session have an authorized upload route?",
+      "blocked-by-download-gate",
+      "The download handler checks the permission flag even though boot completion has no local check. This does not exclude an alternative upload path.",
+      "Trace every dispatch-table callback for a different way to populate the Fastboot image buffer.")
     q("RAM boot","Is there a Fastboot RAM bootm completion path?",yes(checks["boot_completion_calls_bootm"]),"0x1226b4 invokes 0x101744 bootm.","Prove image header acceptance on this exact path.")
     q("RAM boot","Does Fastboot boot return to a CPU reset?",yes(checks["boot_completion_resets_if_bootm_returns"]),"0x1226b4 invokes reset after bootm returns.","Interpret failed-image flow; no actual boot attempt.")
     q("RAM boot","Does ordinary boot use raw zImage via bootz?",yes(checks["normal_script_bootz"]),"3.10 boot script loads zImage/FDT and invokes bootz.","Inspect loader address, FDT, bootargs and rootfs UUID.")
@@ -133,7 +156,8 @@ def build(read):
     q("MaskROM/recovery","Does official MPC One Fastboot recovery work without rootfs?","public-reported","RedHate documents entering stock U-Boot Fastboot via hardware buttons.","Do read-only enumeration on owner's unit after explicit approval.")
     q("MaskROM/recovery","Does Fastboot guarantee recovery after SPL/P3 corruption?","no","Fastboot requires working vendor SPL and U-Boot.","Prove immutable RK3288 ROM entry and independent restore before altering P1/P3.")
     return {"schema":SCHEMA,"checks":checks,"questions":rows,
-            "probe":probe,"private_source_sha256":UBOOT_SHA,
+            "probe":probe,"fastboot_dispatch_entries":dispatch_entries,
+            "private_source_sha256":UBOOT_SHA,
             "fastboot_load_base_address": "0x%08x" % load_base,
             "nominal_memory_address_gaps":nominal_memory_gaps,
             "fastboot_download_memory_safe_proven":False,
