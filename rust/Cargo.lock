@@ -512,6 +512,10 @@ name = "mpfree-display"
 version = "0.1.0"
 
 [[package]]
+name = "mpfree-flac"
+version = "0.1.0"
+
+[[package]]
 name = "mpfree-fx"
 version = "0.1.0"
 dependencies = [
@@ -576,6 +580,9 @@ dependencies = [
 [[package]]
 name = "mpfree-library"
 version = "0.1.0"
+dependencies = [
+ "mpfree-flac",
+]
 
 [[package]]
 name = "mpfree-looper"
@@ -693,6 +700,7 @@ version = "0.1.0"
 dependencies = [
  "mpfree-analysis",
  "mpfree-core",
+ "mpfree-flac",
  "mpfree-grain",
  "mpfree-lanes",
  "mpfree-node",
