@@ -23,7 +23,7 @@
 //! same way. Tapping what is cued takes the cue back. While stopped, a tap
 //! launches or stops at once.
 
-use crate::song::{SongBlock, SongLanes, NONE};
+use crate::song::{SongBlock, SongLanes, NONE, REC};
 use crate::widgets::{
     BarButton, BarItem, CellState, ClipGrid, GridCell, GridTrack, MorphBar, Run, TakeItem,
     TakeList, TransportBar, GRID_COLS,
@@ -247,6 +247,9 @@ pub struct TimeState {
     pub markers: Vec<(Tick, String)>,
     /// The placement selected on the Song view. The app sets it.
     pub selected: Option<usize>,
+    /// Live to song armed: what the grid plays goes into the song. The app
+    /// sets it.
+    pub song_rec: bool,
 }
 
 /// A placement as the screens show it.
@@ -350,6 +353,7 @@ impl TimeState {
                 .map(|m| (m.at, m.name.clone()))
                 .collect(),
             selected: None,
+            song_rec: false,
         }
     }
 
@@ -438,6 +442,10 @@ pub enum TimeAction {
     /// Give a placement its own copy of its clip.
     MakeUnique(usize),
     DeletePlacement(usize),
+    /// Live to song on or off: while on and the transport plays, what the
+    /// grid plays is recorded into the song
+    /// (`mpfree_perform::SongRecorder`).
+    RecSong(bool),
 }
 
 /// Where a clip launched now starts: on the next bar line while the
@@ -573,6 +581,7 @@ pub fn action(ev: &UiEvent, st: &TimeState) -> Option<TimeAction> {
         (CLIPS, EventKind::Toggle(row)) => Some(match *row {
             r if r < SLOTS => TimeAction::LaunchScene(r),
             SLOTS => TimeAction::StopAll,
+            r if r == SLOTS + 2 => TimeAction::RecSong(!st.song_rec),
             _ => TimeAction::SongView(true),
         }),
         (SONG, EventKind::Tab(k)) => match k {
@@ -582,6 +591,7 @@ pub fn action(ev: &UiEvent, st: &TimeState) -> Option<TimeAction> {
             3 => Some(TimeAction::SongToScenes),
             4 => st.selected.map(TimeAction::MakeUnique),
             5 => st.selected.map(TimeAction::DeletePlacement),
+            &REC => Some(TimeAction::RecSong(!st.song_rec)),
             _ => None,
         },
         (SONG, EventKind::Select(i)) => {
@@ -948,6 +958,7 @@ pub fn song_lanes(st: &TimeState, first_bar: i64) -> SongLanes {
         playhead: Some(t.position),
         selected: st.selected,
         on: st.song_on,
+        rec: st.song_rec,
     }
 }
 
@@ -1046,6 +1057,7 @@ impl TimePage {
                 && g.first_row == self.first_row
                 && g.first_track == self.first_track
                 && (g.scene_playing, g.scene_cued) == (st.scene_playing, st.scene_cued)
+                && g.song_rec == st.song_rec
         });
         if !same_grid {
             if let Some(g) = ui.get_mut::<ClipGrid>(CLIPS) {
@@ -1056,6 +1068,7 @@ impl TimePage {
                 g.first_track = self.first_track;
                 g.scene_playing = st.scene_playing;
                 g.scene_cued = st.scene_cued;
+                g.song_rec = st.song_rec;
             }
         }
         // The grid or the song, as the app has it.
@@ -1335,9 +1348,22 @@ mod tests {
             song(EventKind::Tab(5), &st),
             Some(TimeAction::DeletePlacement(0))
         );
+        // Rec song, on the Song view and on the grid.
+        assert_eq!(
+            song(EventKind::Tab(REC), &st),
+            Some(TimeAction::RecSong(true))
+        );
+        st.song_rec = true;
+        page.update(&mut ui, &st);
+        assert!(ui.get::<SongLanes>(SONG).unwrap().rec);
         st.song_view = false;
         page.update(&mut ui, &st);
         assert!(ui.rect_of(CLIPS).is_some() && ui.rect_of(SONG).is_none());
+        assert!(ui.get::<ClipGrid>(CLIPS).unwrap().song_rec);
+        assert_eq!(
+            action(&ev(CLIPS, EventKind::Toggle(SLOTS + 2)), &st),
+            Some(TimeAction::RecSong(false))
+        );
     }
 
     #[test]

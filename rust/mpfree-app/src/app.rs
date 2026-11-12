@@ -3176,6 +3176,69 @@ mod tests {
     }
 
     #[test]
+    fn the_synth_options_pick_the_tuning_its_root_and_a4() {
+        use crate::synth::{Builtin, A4_MAX, A4_MIN};
+        let mut app = ready();
+        app.open_tab(View::Synth);
+        press(&mut app, MENU);
+        let row = |a: SynthItem| {
+            synth_pads::SYNTH_OPTIONS
+                .iter()
+                .position(|&i| i == Item::Synth(a))
+                .unwrap()
+        };
+        let tuning = |fx: &[Effect]| {
+            fx.iter().find_map(|e| match e {
+                Effect::SynthPads(p) => Some(p.tuning),
+                _ => None,
+            })
+        };
+        // Every built-in tuning in turn, and no further.
+        for &want in &Builtin::ALL[1..] {
+            let t = tuning(&app.step_item(row(SynthItem::Tuning), 1)).unwrap();
+            assert_eq!(t.builtin, want);
+        }
+        assert_eq!(tuning(&app.step_item(row(SynthItem::Tuning), 1)), None);
+        for _ in 0..3 {
+            app.step_item(row(SynthItem::Tuning), -1);
+        }
+        assert_eq!(app.synth_pads.tuning.builtin, Builtin::Just);
+        // Root D: the row reads it, now that just intonation uses one.
+        app.step_item(row(SynthItem::TuningRoot), 1);
+        let fx = app.step_item(row(SynthItem::TuningRoot), 1);
+        assert_eq!(tuning(&fx).unwrap().root, 2);
+        let Some(Effect::Menu(m)) = fx.last() else {
+            panic!("{fx:?}")
+        };
+        let at = row(SynthItem::Tuning);
+        assert_eq!(
+            (m.rows[at].1.as_str(), m.rows[at + 1].1.as_str()),
+            ("Just (5-limit)", "D")
+        );
+        // A4 down to 432 Hz, and it stops at the ends.
+        for _ in 0..8 {
+            app.step_item(row(SynthItem::A4), -1);
+        }
+        assert_eq!(app.synth_pads.tuning.a4_hz, 432);
+        for _ in 0..200 {
+            app.step_item(row(SynthItem::A4), 1);
+        }
+        assert_eq!(app.synth_pads.tuning.a4_hz, A4_MAX);
+        assert_eq!(tuning(&app.step_item(row(SynthItem::A4), 1)), None);
+        for _ in 0..200 {
+            app.step_item(row(SynthItem::A4), -1);
+        }
+        assert_eq!(app.synth_pads.tuning.a4_hz, A4_MIN);
+        // The root stays at B and C; the engine and scale are untouched.
+        for _ in 0..20 {
+            app.step_item(row(SynthItem::TuningRoot), 1);
+        }
+        assert_eq!(app.synth_pads.tuning.root, 11);
+        assert_eq!(app.synth_pads.engine, crate::synth::Engine::Poly);
+        assert_eq!(app.synth_pads.scale, None);
+    }
+
+    #[test]
     fn the_synth_options_pick_the_engine_the_scale_and_the_pad_layouts() {
         use crate::synth::Engine;
         use mpfree_arp::scale::pads::{InKeyRows, PadLayout};
@@ -3194,6 +3257,9 @@ mod tests {
                 "Scale root",
                 "Pad layout",
                 "In key rows",
+                "Tuning",
+                "Tuning root",
+                "A4",
                 "Note repeat rate",
                 "Tempo",
                 "Pad level",
@@ -3201,6 +3267,9 @@ mod tests {
             ]
         );
         assert_eq!(m.rows[0].1, "Poly");
+        assert_eq!(m.rows[5].1, "12-TET");
+        assert_eq!(m.rows[6].1, "C (not used)");
+        assert_eq!(m.rows[7].1, "440 Hz");
         assert_eq!(m.rows[1].1, "Off");
         assert_eq!(m.rows[3].1, "Chromatic (no scale)");
         let row = |a: SynthItem| {

@@ -1,7 +1,7 @@
 <!--
 status: changing
 covers: rust/mpfree-sampler rust/mpfree-sampler-ui rust/mpfree-grain rust/mpfree-app/src/sample_page.rs rust/mpfree-app/src/sampler.rs
-checked: 2026-11-11 414faa1
+checked: 2026-11-12 2469645
 -->
 
 # Sampling
@@ -51,6 +51,27 @@ The **Play** page shapes how the picked pad sounds each time you hit it:
 {{shot: sample-grain | The Grain page: tiny grains of the sound play at once, around the position you pick.}}
 
 **Granular** playback plays the sound as a cloud of tiny overlapping pieces (grains). It can freeze a moment, stretch it into a pad, or scatter it into texture. Touch the square to move the **position** in the sound and the **size** of the grains together, and use the Q-Links for **position**, **size**, **density** and **pitch**. **Scan speed** moves through the sound on its own.
+
+## Playing a kit on keys
+
+A kit's pads can play notes instead of their own sounds, so a bank of sampled notes plays like a keyboard instrument. A pad that plays notes is a *keygroup*: it covers a range of keys and plays its sound higher or lower for each key away from its root note.
+
+**Map to keys**, on the Sample tab's Pads page, does this for the whole bank at once. MPFree finds each pad's note: from its keygroup if it is one already, else from a note in its name ("Pluck C3", "Bass_F#1"), else from the pitch it hears in the sound. It then spreads the pads over the keyboard, each one reaching halfway to its neighbours, and the pads play notes from the C at or below the lowest. A pad with no note to find is left as it was. One UNDO takes the whole mapping back.
+
+Notes are named with middle C as C4. Some libraries call middle C "C3"; when a name and the pitch MPFree hears are the same note, it uses the octave it hears.
+
+{{shot: sample-keys-mapped | The Play page's keyboard after Map to keys: five keygroups, with pad A5's zone picked.}}
+
+While the pad is a keygroup, or the pads play notes, the Play page shows a keyboard:
+
+- Each keygroup is a bar over the keys it plays, in its pad's colour, with a dot on its root.
+- Tap a bar to pick its pad. Drag the picked pad's ends to set its lowest and highest keys, and its dot to move the root.
+- Press the keys to hear the kit. The line under the keys shows the 16 notes the pads play.
+
+The Keys rows in the Pad list do the same with numbers: Keys makes one pad a keygroup, Low key, High key and Root key set its range, and Pads play switches the pads between their own sounds and notes.
+
+> [!MPC]
+> On an MPC a keygroup instrument is a program type of its own. In MPFree keygroups are pads of an ordinary kit, so any kit can become one with Map to keys.
 
 > [!MPC]
 > The MPC's Sampler, Sample Edit and Program Edit modes are all on one tab in MPFree, always on the pad you last hit. **SAMPLER** opens the Sample tab, **SAMPLE EDIT** its Wave page, and **PROG EDIT** its Pads page (in the next build). **UNDO** takes back any edit on the Sample tab.
