@@ -21,9 +21,16 @@
 //!   the section's bars; the last one stops), so launching the first row
 //!   plays the song.
 //!
+//! The song has lanes of its own too ([`Arrangement::lanes`]), for what
+//! is not on a track: the morph crossfader's moves, with the rows it
+//! morphs between from each tick on ([`Arrangement::morphs`]). Live to song
+//! (T11, `mpfree-perform`) records them; song mode plays the lanes.
+//!
 //! Plain values checked by [`Arrangement::check`]; `mpfree-play` plays
 //! them (song mode) and `mpfree-perform` records into them (T11).
 
+use crate::mpfree_moves::{Kind, Map, Moves, Target};
+use crate::mpfree_param::ParamAddr;
 use crate::{Clip, Follow, FollowAction, ModelError, Project, Track, SCENES, SLOTS};
 use mpfree_transport::time::Tick;
 
@@ -31,6 +38,14 @@ use mpfree_transport::time::Tick;
 pub const MAX_PLACEMENTS: usize = 4096;
 /// Markers in a song.
 pub const MAX_MARKERS: usize = 256;
+/// Changes of the morph's rows in a song.
+pub const MAX_MORPHS: usize = 1024;
+/// How long the song's lanes are, in ticks: they never loop (about 72
+/// hours at 120 BPM).
+pub const SONG_LANE_LEN: u32 = 1 << 30;
+
+/// The song lane of the morph crossfader.
+pub const MORPH_LANE: Target = Target::Fixed(ParamAddr::morph_pos(0));
 
 /// Where a placement's clip comes from.
 #[derive(Clone, Debug, PartialEq)]
@@ -107,12 +122,26 @@ pub struct Marker {
     pub name: String,
 }
 
+/// From `at` on, the morph is between rows `a` and `b`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MorphRows {
+    pub at: Tick,
+    pub a: usize,
+    pub b: usize,
+}
+
 /// The song: placements sorted by track, then start (none overlapping on a
 /// track), and markers sorted by tick.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Arrangement {
     pub placements: Vec<Placement>,
     pub markers: Vec<Marker>,
+    /// The song's own lanes, on song ticks ([`SONG_LANE_LEN`] long, not
+    /// looping), for parameters not on a track: the morph
+    /// ([`MORPH_LANE`]).
+    pub lanes: Moves,
+    /// The morph's rows from each tick on, in order.
+    pub morphs: Vec<MorphRows>,
 }
 
 impl Arrangement {
@@ -154,7 +183,117 @@ impl Arrangement {
         {
             return Err(ModelError::BadPlacement);
         }
+        if self.morphs.len() > MAX_MORPHS
+            || self
+                .morphs
+                .iter()
+                .any(|m| m.at < 0 || m.a >= SCENES || m.b >= SCENES)
+            || self.morphs.windows(2).any(|w| w[0].at >= w[1].at)
+            || self
+                .lanes
+                .lanes()
+                .iter()
+                .any(|l| matches!(l.target, Target::Track(_)))
+        {
+            return Err(ModelError::BadPlacement);
+        }
+        self.lanes
+            .check(SONG_LANE_LEN)
+            .map_err(|_| ModelError::BadMoves)
+    }
+
+    /// Take track `track`'s placements out of song ticks `from..to`: the
+    /// ones inside go, the ones across an edge are cut there (a cut at the
+    /// start moves the offset on, so the rest plays as before), and one
+    /// across the whole stretch becomes two.
+    pub fn clear(
+        &mut self,
+        tracks: &[Track],
+        track: usize,
+        from: Tick,
+        to: Tick,
+    ) -> Result<(), ModelError> {
+        if to <= from {
+            return Ok(());
+        }
+        let mut i = self.placements.partition_point(|p| p.track < track);
+        while i < self.placements.len() {
+            let p = &self.placements[i];
+            if p.track != track || p.start >= to {
+                break;
+            }
+            if p.end() <= from {
+                i += 1;
+                continue;
+            }
+            let (start, end) = (p.start, p.end());
+            let mut rest = p.clone();
+            if start < from {
+                self.placements[i].length = from - start;
+                i += 1;
+            } else {
+                self.placements.remove(i);
+            }
+            if end > to {
+                // What plays from `to` on, from where the clip has got to.
+                let speed = rest.clip(tracks).map_or(crate::Speed::NORMAL, |c| c.speed);
+                let length = rest.clip(tracks).map_or(1, |c| c.length.max(1));
+                let moved = speed.to_clip((to - start) as f64).round() as Tick;
+                rest.offset = (rest.offset + moved).rem_euclid(length);
+                rest.start = to;
+                rest.length = end - to;
+                if self.placements.len() >= MAX_PLACEMENTS {
+                    return Err(ModelError::BadPlacement);
+                }
+                self.placements.insert(i, rest);
+                break;
+            }
+        }
         Ok(())
+    }
+
+    /// Write morph moves recorded over song ticks `from..to` (points at
+    /// song ticks, positions 0 to 1) into [`MORPH_LANE`], over what was
+    /// there, with the rows they morph between (`rows`, in order, within
+    /// `from..to`): the rows in force at `to` go on after it.
+    pub fn put_morph(
+        &mut self,
+        points: &[(f64, f32, Kind)],
+        rows: &[MorphRows],
+        from: Tick,
+        to: Tick,
+    ) -> Result<(), ModelError> {
+        if to <= from || to > Tick::from(SONG_LANE_LEN) {
+            return Err(ModelError::BadPlacement);
+        }
+        // The rows the song had at `to` go on after the pass.
+        let after = self.morph_rows_at(to);
+        self.lanes
+            .put(MORPH_LANE, Map::linear(0.0, 1.0), points, SONG_LANE_LEN)
+            .map_err(|_| ModelError::BadMoves)?;
+        self.morphs.retain(|m| m.at < from || m.at > to);
+        let k = self.morphs.partition_point(|m| m.at < from);
+        let mut new: Vec<MorphRows> = Vec::with_capacity(rows.len() + 1);
+        for m in rows.iter().filter(|m| (from..to).contains(&m.at)) {
+            match new.last_mut() {
+                Some(last) if last.at >= m.at => *last = *m,
+                _ => new.push(*m),
+            }
+        }
+        new.extend(after.map(|a| MorphRows { at: to, ..a }));
+        self.morphs.splice(k..k, new);
+        // Only real changes.
+        self.morphs.dedup_by(|b, a| (a.a, a.b) == (b.a, b.b));
+        if self.morphs.len() > MAX_MORPHS {
+            return Err(ModelError::BadPlacement);
+        }
+        Ok(())
+    }
+
+    /// The morph's rows in force at song tick `at`.
+    pub fn morph_rows_at(&self, at: Tick) -> Option<MorphRows> {
+        let k = self.morphs.partition_point(|m| m.at <= at);
+        k.checked_sub(1).map(|j| self.morphs[j])
     }
 
     /// Put `p` in its place. Refused when it overlaps another placement on
@@ -380,6 +519,78 @@ mod tests {
             p.tracks.push(t);
         }
         p
+    }
+
+    #[test]
+    fn clearing_cuts_placements_and_keeps_the_rest_in_phase() {
+        let p = project();
+        let mut s = Arrangement::default();
+        // Slot 1 (two bars) from 0 for 6 bars, and slot 0 from bar 7.
+        s.place(Placement::linked(0, 1, 0, 6 * BAR)).unwrap();
+        s.place(Placement::linked(0, 0, 7 * BAR, BAR)).unwrap();
+        s.place(Placement::linked(1, 0, 0, 8 * BAR)).unwrap();
+        s.clear(&p.tracks, 0, BAR, 3 * BAR + 100).unwrap();
+        let t0: Vec<(Tick, Tick, Tick)> = s
+            .on_track(0)
+            .iter()
+            .map(|p| (p.start, p.length, p.offset))
+            .collect();
+        // The rest starts 3 bars and 100 ticks in: a bar and 100 ticks
+        // into its two-bar clip.
+        assert_eq!(
+            t0,
+            [
+                (0, BAR, 0),
+                (3 * BAR + 100, 3 * BAR - 100, BAR + 100),
+                (7 * BAR, BAR, 0)
+            ]
+        );
+        assert_eq!(s.on_track(1).len(), 1, "other tracks stay");
+        s.clear(&p.tracks, 0, 3 * BAR, 9 * BAR).unwrap();
+        assert_eq!(s.on_track(0).len(), 1);
+        assert_eq!(s.check(&p.tracks), Ok(()));
+    }
+
+    #[test]
+    fn morph_moves_go_into_the_song_lane_with_their_rows() {
+        let p = project();
+        let mut s = Arrangement::default();
+        let rows = |at, a, b| MorphRows { at, a, b };
+        s.put_morph(
+            &[
+                (0.0, 0.0, Kind::Ramp),
+                (1000.0, 1.0, Kind::Ramp),
+                (2000.0, 0.5, Kind::Ramp),
+            ],
+            &[rows(0, 0, 1), rows(1500, 2, 3)],
+            0,
+            4 * BAR,
+        )
+        .unwrap();
+        assert_eq!(s.morphs, [rows(0, 0, 1), rows(1500, 2, 3)]);
+        let lane = s.lanes.lane(MORPH_LANE).unwrap();
+        assert!((lane.value_at(500.0).unwrap() - 0.5).abs() < 1e-3);
+        // A second pass over part of it: what was there after it goes on.
+        s.put_morph(
+            &[(100.0, 0.25, Kind::Ramp), (200.0, 0.25, Kind::Ramp)],
+            &[rows(100, 5, 6)],
+            100,
+            200,
+        )
+        .unwrap();
+        assert_eq!(
+            s.morphs,
+            [
+                rows(0, 0, 1),
+                rows(100, 5, 6),
+                rows(200, 0, 1),
+                rows(1500, 2, 3)
+            ]
+        );
+        assert_eq!(s.morph_rows_at(150), Some(rows(100, 5, 6)));
+        assert_eq!(s.check(&p.tracks), Ok(()));
+        s.morphs.push(rows(1500, 0, 1));
+        assert_eq!(s.check(&p.tracks), Err(ModelError::BadPlacement));
     }
 
     #[test]

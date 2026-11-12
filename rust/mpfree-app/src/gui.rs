@@ -4620,6 +4620,17 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         Ok(p) => out.push(("clips", p)),
         Err(e) => eprintln!("clips sample: {e}"),
     }
+    // The Arrange page's Song view: rows made into a song, song mode on,
+    // Rec song armed.
+    match mpfree_time_ui::sample::song_state() {
+        Ok(state) => {
+            let mut p = quiet_player(fonts());
+            p.apply(ToUi::Time(Box::new(state)));
+            p.apply(ToUi::Show(View::Arrange));
+            out.push(("arrange-song", p));
+        }
+        Err(e) => eprintln!("arrange-song sample: {e}"),
+    }
     match sample_looper(fonts()) {
         Ok(p) => out.push(("looper", p)),
         Err(e) => eprintln!("looper sample: {e}"),
