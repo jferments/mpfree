@@ -249,3 +249,27 @@ Where they live (the owner, 2026-11-12): MIDI and sync are **project** settings,
 | MIDI log | the Dev tab's MIDI page | in and out per port, filters by port and kind, clock timing and counts |
 
 The six decisions in the design doc's "Decisions for Jay" table are settled: where the settings live changed as above, and the other five (clock out per port, Learn scopes, port input names, live note timing, thru default) were agreed as recommended.
+
+## What's left
+
+At the thread's handoff (2026-11-12), M1 to M6 are built on the host, and nothing has been tried on an MPC since the M0 captures.
+
+- **Waiting on the app thread.**
+  - The I/O icon that puts the MIDI, Sync and CV sections on screen (`ToUi::IoModel`, PR #252).
+  - The project's `midi` part (`MidiPart`), so `MidiSetup` is saved: ports, track outputs, CV jobs, Tempo from and learned controls.
+  - Until both land, none of these can be set on the MPC, and learned controls last until MPFree quits.
+  - #252 also adds `ToUi::ClockFrom(Option<String>)` for the tempo chip. Clock in should send the followed port's name while `TimeHost::followed_bpm()` is Some, and None when it ends, only when it changes.
+- **Device rounds, each with the owner's own go.**
+  - M2, read-only: keyboards in. MIDI Learn and clock in only read, so they ride on it.
+  - M3 and M4: notes and clock out of the MIDI Out jack (cable 2), with `--midi-out`.
+  - M6: a meter on the CV jacks, with `--cv-out`, to learn which jack is which output and the volts at full scale.
+- **After the meter round.** CV 5 to 8 (CC 8 to 15 by the pattern, never seen), the measured full scale in `cv_wire::counts`, and a tuning page for each output.
+- **Not built yet.**
+  - Thru, and USB devices as outputs.
+  - MIDI Learn from any value on the screen (SHIFT + a touch, in the layout spec), and from synth parameters, which are counted as misses for now.
+  - A range, direction and takeover for each mapping on screen, and mappings kept outside a project.
+  - One keyboard playing several tracks by channel.
+  - A delay per port in Prefs.
+  - USB-B as a MIDI device to a computer, which needs its own rule zero review.
+  - Filters on the Dev tab's MIDI page.
+  - Stamping clock bytes half a period earlier (see [midi-clock.md](midi-clock.md), Timing).

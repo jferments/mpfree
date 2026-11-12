@@ -73,7 +73,7 @@ These engineering milestones deliberately do **not** mark the Phase 1 or Phase 2
 - [ ] Sample loading and pad mapping.
 - [ ] Velocity response and choke groups.
 - [ ] Transport and tempo.
-- [ ] MIDI input/output and sync. (The jacks are mapped by read-only captures and the host engine `mpfree-midi` is merged, 2026-11-12; app wiring, notes out, clock and CV out are next. See [MIDI I/O](../design/midi-io.md).)
+- [ ] MIDI input/output and sync. (Built, 2026-11-12: keyboards in, MIDI tracks and clock out, following another device's clock, MIDI Learn from the chain editor, and CV 1 to 4 out. MIDI out and CV out stay behind `--midi-out` and `--cv-out`. Each part waits on its device round with the owner's go, and the settings reach the screen with the I/O icon and are saved with the project's `midi` part. See [MIDI I/O](../design/midi-io.md#whats-left).)
 - [ ] Project save/load, undo, and crash recovery.
 
 **Gate:** Record, save, reload, and perform a basic beat without a computer.
