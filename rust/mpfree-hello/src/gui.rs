@@ -3499,8 +3499,17 @@ fn boom_bap_project() -> mpfree_sampler::model::Project {
 
 /// Hands the app's effects to the screen as the audio thread does (lights,
 /// sounds and kit changes are left out), for previews and tests.
+/// The Touch page's two screens, built in their own frame: `sample_screens`
+/// already holds many players on its stack.
+#[inline(never)]
+fn push_touch_dev_samples(out: &mut Vec<(&'static str, Player)>, fonts: &impl Fn() -> Fonts) {
+    out.push(("debug-touch", touch_dev_sample(fonts(), false)));
+    out.push(("debug-touch-targets", touch_dev_sample(fonts(), true)));
+}
+
 /// The Touch page with made-up measurements, on a clock of its own (so the
 /// picture is the same every time).
+#[inline(never)]
 pub fn touch_dev_sample(fonts: Fonts, targets: bool) -> Player {
     use std::sync::atomic::{AtomicU64, Ordering};
     let mut p = sample_player(fonts);
@@ -4140,8 +4149,7 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     out.push(("debug-procs", pr));
     // Debug mode: the Touch page after some taps, holds and swipes, a finger
     // down, and a small saved correction; then Targets mode, four done.
-    out.push(("debug-touch", touch_dev_sample(fonts(), false)));
-    out.push(("debug-touch-targets", touch_dev_sample(fonts(), true)));
+    push_touch_dev_samples(&mut out, &fonts);
     // Prefs > System info, with fixed rows (the host's own would differ).
     let mut system = sample_player(fonts());
     system.apply(ToUi::Show(View::System));
