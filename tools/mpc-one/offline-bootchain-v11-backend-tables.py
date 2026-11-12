@@ -50,6 +50,10 @@ def candidate_tables(pointers,reader,minimum=3):
             continue
         score=10*len(found)+(6 if 'write_bootloader' in found else 0)+(
             6 if 'write_partition' in found else 0)
+        # A compact nonzero type marker followed by a zero/one mode word
+        # is a stronger *candidate* boundary than two zero words within
+        # an overlapping function-pointer array. Still not proof.
+        if 1<=first<=4 and second<=1:score+=12
         out.append({'base_vaddr':f'0x{base:08x}',
                     'header_words':[first,second],
                     'matched_callback_count':len(found),
