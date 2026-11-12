@@ -351,6 +351,48 @@ pub fn from_wav(b: &[u8]) -> Result<(Vec<f32>, usize, u32), String> {
     Err("no audio in the file".into())
 }
 
+/// Where a 32-bit float WAV's audio is, from its first bytes (at least
+/// up to the `data` chunk's header): (byte offset of the audio, its
+/// length in bytes as the header says, channels, rate). For streaming a
+/// take file without reading it all.
+pub fn wav_layout(b: &[u8]) -> Result<(u64, u64, usize, u32), String> {
+    let u16_at = |i: usize| b.get(i..i + 2).map(|x| u16::from_le_bytes([x[0], x[1]]));
+    let u32_at = |i: usize| {
+        b.get(i..i + 4)
+            .map(|x| u32::from_le_bytes([x[0], x[1], x[2], x[3]]))
+    };
+    if b.len() < 12 || &b[..4] != b"RIFF" || &b[8..12] != b"WAVE" {
+        return Err("not a WAV file".into());
+    }
+    let mut fmt = None;
+    let mut i = 12;
+    while let (Some(id), Some(len)) = (b.get(i..i + 4), u32_at(i + 4)) {
+        let start = i + 8;
+        match id {
+            b"fmt " => {
+                let (Some(tag), Some(ch), Some(rate), Some(bits)) = (
+                    u16_at(start),
+                    u16_at(start + 2),
+                    u32_at(start + 4),
+                    u16_at(start + 14),
+                ) else {
+                    return Err("a short fmt chunk".into());
+                };
+                fmt = Some((tag, ch, rate, bits));
+            }
+            b"data" => {
+                let Some((3, ch @ (1 | 2), rate, 32)) = fmt else {
+                    return Err("not 32-bit float mono or stereo".into());
+                };
+                return Ok((start as u64, u64::from(len), ch as usize, rate));
+            }
+            _ => {}
+        }
+        i = start + len as usize + (len as usize & 1);
+    }
+    Err("no audio header in the first bytes".into())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

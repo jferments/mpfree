@@ -2,7 +2,10 @@
 //! block by block at the MPC's period. Setup allocates; the block function
 //! must not.
 
-use mpfree_audiotracks::{AudioTracks, Command as TrackCommand, Input as TrackInput, MAX_TRACKS};
+use mpfree_audiotracks::host::COPY_SAMPLES;
+use mpfree_audiotracks::{
+    AudioTracks, Command as TrackCommand, Input as TrackInput, Io as TrackIo, MAX_TRACKS,
+};
 use mpfree_fx::ids;
 use mpfree_fx::{
     CapturePoint, Chain, Character, Chorus, Cloud, Comb, Compressor, Crush, Delay, DjFilter, Drive,
@@ -1104,8 +1107,9 @@ pub fn all(rate: u32) -> Vec<Case> {
     v.push(measured(|| looper(rate, 60)));
     v.push(measured(|| looper_loops(rate, 60, false)));
     v.push(measured(|| looper_loops(rate, 60, true)));
-    v.push(measured(|| audio_tracks(rate, 0)));
-    v.push(measured(|| audio_tracks(rate, 2)));
+    v.push(measured(|| audio_tracks(rate, 0, false)));
+    v.push(measured(|| audio_tracks(rate, 2, false)));
+    v.push(measured(|| audio_tracks(rate, 0, true)));
     v.push(measured(|| song(rate)));
     v
 }
@@ -1748,7 +1752,13 @@ fn looper_loops(rate: u32, seconds: u32, edited: bool) -> Case {
 /// between two takes) falls on every beat, playing in a loop over the 8
 /// bars, with `recording` of them recording the input again (punching in
 /// and out every 2 bars) while the rest play.
-fn audio_tracks(rate: u32, recording: usize) -> Case {
+///
+/// `streaming`: the same with 60 s of memory (the app's default) streaming
+/// from a disk (a map here, answering at once): each block runs the
+/// planning and copies in at most `host::COPY_SAMPLES` samples of read
+/// chunks, as the host does on the audio thread. The three passes in play
+/// on every track are 24 streams at once, the worst case for the cache.
+fn audio_tracks(rate: u32, recording: usize, streaming: bool) -> Case {
     const BARS: i64 = 8;
     let bar = 4 * i64::from(PPQ);
     let beat = i64::from(PPQ);
@@ -1756,7 +1766,47 @@ fn audio_tracks(rate: u32, recording: usize) -> Case {
     let mut t = Transport::new(rate, 120.0).expect("transport");
     // 8 bars at 120 BPM: 16 s a pass; three passes on 8 mono tracks are
     // 384 s of mono, and the recording tracks need more on top.
-    let mut a = AudioTracks::new(rate, 300);
+    let mut a = AudioTracks::new(rate, if streaming { 60 } else { 300 });
+    a.stream(streaming);
+    let mut disk: std::collections::HashMap<(u16, u32), Vec<f32>> = Default::default();
+    let mut reads: std::collections::VecDeque<(u16, u32, usize)> =
+        std::collections::VecDeque::with_capacity(4096);
+    // The disk thread's part: writes at once; read chunks copy in `limit`
+    // samples a block (the host's part).
+    let serve = |a: &mut AudioTracks,
+                 disk: &mut std::collections::HashMap<(u16, u32), Vec<f32>>,
+                 reads: &mut std::collections::VecDeque<(u16, u32, usize)>,
+                 limit: usize| {
+        while let Some(r) = a.take_io() {
+            match r {
+                TrackIo::Write { take, chunk } => {
+                    if let Some(c) = a.chunk(take, chunk) {
+                        disk.insert((take, chunk), c.to_vec());
+                    }
+                    a.written(take, chunk);
+                }
+                TrackIo::Read { take, chunk } => reads.push_back((take, chunk, 0)),
+                TrackIo::Finish { .. } => {}
+            }
+        }
+        let mut budget = limit;
+        while budget > 0 {
+            let Some((take, chunk, done)) = reads.pop_front() else {
+                break;
+            };
+            let Some(d) = disk.get(&(take, chunk)) else {
+                a.fill_failed(take, chunk);
+                continue;
+            };
+            let k = budget.min(d.len() - done);
+            let last = done + k == d.len();
+            let kept = a.fill_part(take, chunk, done, &d[done..done + k], last);
+            budget -= k;
+            if kept && !last {
+                reads.push_front((take, chunk, done + k));
+            }
+        }
+    };
     let mut block = TBlock::new();
     let n = MAX_BLOCK;
     let (mut line_in, mut out) = (vec![0.0f32; 2 * n], vec![0.0f32; 2 * n]);
@@ -1777,6 +1827,7 @@ fn audio_tracks(rate: u32, recording: usize) -> Case {
         let map = *t.tempo_map();
         a.process(&block, &map, line_in, out);
         *frame += n as u64;
+        serve(a, &mut disk, &mut reads, usize::MAX);
     };
     // Record three passes on every track at once.
     for k in 0..MAX_TRACKS {
@@ -1820,8 +1871,9 @@ fn audio_tracks(rate: u32, recording: usize) -> Case {
     let mut tr = t;
     Case {
         name: format!(
-            "Audio tracks: {} playing comped takes{}",
+            "Audio tracks: {} {} comped takes{}",
             MAX_TRACKS - recording,
+            if streaming { "streaming" } else { "playing" },
             if recording > 0 {
                 format!(", {recording} recording")
             } else {
@@ -1845,6 +1897,9 @@ fn audio_tracks(rate: u32, recording: usize) -> Case {
             let map = *tr.tempo_map();
             a.process(&block, &map, &line_in[..2 * n], &mut out[..2 * n]);
             frame += n as u64;
+            if streaming {
+                serve(&mut a, &mut disk, &mut reads, COPY_SAMPLES);
+            }
             for (i, (x, y)) in ol.iter_mut().zip(or.iter_mut()).enumerate() {
                 *x = out[2 * i];
                 *y = out[2 * i + 1];
