@@ -38,6 +38,7 @@ pub use mapper::{Code, MapView, Mark};
 use mpfree_arp::scale::pads::Pad as PadNotes;
 pub use synth_pads::SynthItem;
 
+use crate::cores::SoundCores;
 use crate::looping::{LoopAction, LoopSource};
 use mpfree_arp::{Events, LatchMode, Mode, Pattern, Rate, RecordMode, Recorder};
 use mpfree_controller::mpc_one::button;
@@ -543,6 +544,9 @@ pub struct Settings {
     /// Prefs > Appearance: the theme in use, a built-in name (see
     /// [`THEMES`]); `--theme` can also set a theme file for one run.
     pub theme: String,
+    /// Prefs "Sound cores": where the sound runs from the next start
+    /// (cores.rs); `--sound-cores` can set it for one run.
+    pub sound_cores: SoundCores,
 }
 
 impl Settings {
@@ -577,6 +581,7 @@ impl Default for Settings {
             loop_latency_set: false,
             loop_level_db: 0.0,
             theme: "default".to_string(),
+            sound_cores: SoundCores::Shared,
         }
     }
 }
@@ -618,6 +623,8 @@ pub enum Item {
     CalibrateTouch,
     TouchLab,
     DebugMode,
+    /// Prefs: where the sound runs from the next start (cores.rs).
+    SoundCores,
     MapControls,
     SystemInfo,
     Rate,
@@ -904,6 +911,9 @@ pub struct App {
     swallowed: [bool; 128],
     /// The Looper tab's Mute.
     loop_muted: bool,
+    /// Where the sound runs in this start (cores.rs); Prefs' "Sound cores"
+    /// says "(next start)" while the setting differs.
+    sound_cores_now: SoundCores,
     /// Prefs or a button changed since the last look (`saved.rs`), and
     /// the text last handed to the store for "app" and "map".
     save_dirty: bool,
@@ -919,6 +929,7 @@ const PREFS_ROWS: &[Item] = &[
     Item::Buffer,
     Item::FindButtons,
     Item::DebugMode,
+    Item::SoundCores,
     Item::MapControls,
     Item::LineInput,
     Item::SystemInfo,
@@ -997,6 +1008,7 @@ impl App {
             prefs_section: PrefsSection::Main,
             theme_files: Vec::new(),
             loop_muted: false,
+            sound_cores_now: SoundCores::Shared,
             save_dirty: false,
             saved: Default::default(),
         };
@@ -1912,6 +1924,12 @@ impl App {
         ))]
     }
 
+    /// Where the sound runs in this start (`player_session`, once the
+    /// sound's cores are set up).
+    pub fn set_sound_cores_now(&mut self, mode: SoundCores) {
+        self.sound_cores_now = mode;
+    }
+
     /// The mapper's list starts from what the app knows (measured buttons,
     /// and those found since).
     fn refresh_mapper(&mut self) {
@@ -2161,6 +2179,14 @@ impl App {
                 "Show developer tools",
                 if s.debug_mode { "On" } else { "Off" }.to_string(),
             ),
+            Item::SoundCores => (
+                "Sound cores",
+                if s.sound_cores == self.sound_cores_now {
+                    s.sound_cores.row().to_string()
+                } else {
+                    format!("{} (next start)", s.sound_cores.row())
+                },
+            ),
             Item::MapControls => ("Map controls", "Open".to_string()),
             Item::SystemInfo => ("System info", "Open".to_string()),
             Item::Rate => ("Note repeat rate", s.rate.label().to_string()),
@@ -2284,6 +2310,14 @@ impl App {
                 "audio render time), Map controls and the",
                 "Console. The numbers also go to the log",
                 "every 30 s. SHIFT + wheel picks the page.",
+            ],
+            Item::SoundCores => vec![
+                "Which of the MPC's cores make the sound,",
+                "from the next start. Shared: as before.",
+                "Core 3: the audio on a core of its own.",
+                "Cores 3 and 2: some drums and effects on",
+                "core 2 too. Cores 3, 2 and 1 (a test): and",
+                "the synth on core 1. Dev > CPU by engine.",
             ],
             Item::MapControls => vec![
                 "Find the numbers of the MPC's buttons, one at",
@@ -2520,6 +2554,17 @@ impl App {
             Item::TouchLab => return vec![Effect::TouchLab],
             Item::SystemInfo => return self.show(View::System),
             Item::DebugMode => fx.extend(self.set_debug_mode(d > 0)),
+            Item::SoundCores => {
+                let next = cycle(&SoundCores::ALL, s.sound_cores, d);
+                if next != s.sound_cores {
+                    s.sound_cores = next;
+                    fx.push(Effect::Note(format!(
+                        "sound cores: {} from the next start (now {})",
+                        next.name(),
+                        self.sound_cores_now.name()
+                    )));
+                }
+            }
             Item::MapControls => {
                 let mut fx = self.set_debug_mode(true);
                 fx.push(Effect::Settings(self.settings.clone()));
@@ -3086,6 +3131,67 @@ mod tests {
         assert_eq!(gone.settings.theme, "default");
         assert!(
             notes.iter().any(|n| n.contains("theme = sunrise.theme")),
+            "{notes:?}"
+        );
+    }
+
+    #[test]
+    fn prefs_sound_cores_is_kept_and_used_from_the_next_start() {
+        let mut app = App::new(44_100, false);
+        app.map.menu = Some(MENU);
+        app.button(button::SHIFT, true, 0.0);
+        press(&mut app, MENU);
+        app.button(button::SHIFT, false, 0.0);
+        // Right after Show developer tools; Touch screen stays the last row.
+        let at = row(&app, Item::SoundCores);
+        assert_eq!(at, row(&app, Item::DebugMode) + 1);
+        assert_eq!(app.items().last(), Some(&Item::TouchSection));
+        let value = |fx: &[Effect]| match fx.last() {
+            Some(Effect::Menu(m)) => m.rows[at].clone(),
+            _ => panic!("{fx:?}"),
+        };
+        assert_eq!(value(&app.step_item(at, -1)).1, "Shared", "the default");
+        let fx = app.step_item(at, 1);
+        assert_eq!(
+            value(&fx),
+            ("Sound cores".to_string(), "Core 3 (next start)".to_string())
+        );
+        assert!(fx.contains(&Effect::Note(
+            "sound cores: core3 from the next start (now shared)".into()
+        )));
+        assert_eq!(value(&app.step_item(at, 1)).1, "Cores 3 and 2 (next start)");
+        assert_eq!(
+            value(&app.step_item(at, 1)).1,
+            "Cores 3, 2 and 1 (next start)"
+        );
+        assert_eq!(
+            value(&app.step_item(at, 1)).1,
+            "Cores 3, 2 and 1 (next start)",
+            "the last value"
+        );
+        assert_eq!(app.settings.sound_cores, SoundCores::Three);
+        assert_eq!(
+            value(&app.step_item(at, -1)).1,
+            "Cores 3 and 2 (next start)"
+        );
+        assert_eq!(app.settings.sound_cores, SoundCores::Two);
+        // Kept, and what the next start runs: then the row says no more.
+        let kept = app.app_settings();
+        assert_eq!(kept.get_str("sound-cores"), Some("two"));
+        let mut next = App::new(44_100, false);
+        let notes = next.restore(&kept, &mpfree_store::Settings::default());
+        assert_eq!(next.settings.sound_cores, SoundCores::Two);
+        assert!(notes[0].ends_with(", sound cores two"), "{notes:?}");
+        next.set_sound_cores_now(SoundCores::Two);
+        assert_eq!(next.item_text(Item::SoundCores).1, "Cores 3 and 2");
+        // A value it doesn't know is left out, and the default stays.
+        let mut odd = mpfree_store::Settings::default();
+        odd.set_str("sound-cores", "four");
+        let mut other = App::new(44_100, false);
+        let notes = other.restore(&odd, &mpfree_store::Settings::default());
+        assert_eq!(other.settings.sound_cores, SoundCores::Shared);
+        assert!(
+            notes.iter().any(|n| n.contains("sound-cores = four")),
             "{notes:?}"
         );
     }
