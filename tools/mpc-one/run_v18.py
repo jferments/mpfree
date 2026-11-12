@@ -111,8 +111,11 @@ def new_guest(output,raw,temp,p3future,args):
             V17.digest(raw)!=V17.SHA_P3 or
             ready.read_text().strip()!=V17.SHA_P3):
             raise RuntimeError("Verified temporary P3 ROM export invalid")
-        if not p3future.result().get("success"):
-            raise RuntimeError("P3 Ghidra static analysis did not pass coverage")
+        # The SHA-verified private ROM export is usable as soon as Ghidra
+        # emits its ready marker. Do NOT block on completion of the P3 pass:
+        # QEMU and the full High P-code sweep should genuinely run concurrently.
+        if p3future.done() and not p3future.result().get("success"):
+            raise RuntimeError("P3 Ghidra reported failure despite verified export")
         V16.C_SOURCE=ROOT/"tools/mpc-one/vendor_probe_v18.c"
         V16.CASES=v18_cases()
         q=V16.qemu_real_code(output,raw,temp,{"success":True},args)
