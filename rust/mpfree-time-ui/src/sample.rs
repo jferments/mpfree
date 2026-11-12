@@ -559,10 +559,10 @@ fn clips_sample(
     })
 }
 
-/// The Clips page's Song view: rows 1 to 5 made into a song, the third
-/// placement on the drums made unique and selected, song mode on and Rec
-/// song armed, playing at 5.3.
-fn song_sample(fonts: Fonts) -> Result<Sample, String> {
+/// The Song view's state: rows 1 to 5 made into a song, the third placement
+/// on the drums made unique and selected, song mode on and Rec song armed,
+/// playing at 5.3. The app's `--preview` draws it too, for the manual.
+pub fn song_state() -> Result<TimeState, String> {
     let mut s = playing()?;
     let rows: Vec<(usize, Tick)> = (0..5)
         .filter(|&r| s.project.row_filled(r))
@@ -574,15 +574,21 @@ fn song_sample(fonts: Fonts) -> Result<Sample, String> {
     s.project.arrangement = song;
     s.project.scene_mut(1).ok_or("no row 2")?.name = "Verse".into();
     s.project.arrangement.markers[1].name = "Verse".into();
-    let mut ui = app_ui(fonts, "Clips", SONG_HINT);
-    let page = TimePage::add_to(&mut ui)?;
-    ui.show(CLIPS_PAGE)?;
     let mut state = s.state();
     state.chips = vec![arp_chip()];
     state.song_view = true;
     state.song_on = true;
     state.song_rec = true;
     state.selected = Some(2);
+    Ok(state)
+}
+
+/// The Clips page's Song view, from [`song_state`].
+fn song_sample(fonts: Fonts) -> Result<Sample, String> {
+    let state = song_state()?;
+    let mut ui = app_ui(fonts, "Clips", SONG_HINT);
+    let page = TimePage::add_to(&mut ui)?;
+    ui.show(CLIPS_PAGE)?;
     page.update(&mut ui, &state);
     Ok(Sample {
         name: "clips-song",

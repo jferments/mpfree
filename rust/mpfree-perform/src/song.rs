@@ -41,6 +41,10 @@ use mpfree_seq::mpfree_moves::Kind;
 use mpfree_seq::{ModelError, Placement, Project, MAX_TRACKS};
 use mpfree_transport::{Block, State, Tick};
 
+/// A pause in the crossfader's moves this long or longer (a 16th note, in
+/// ticks) is held in the song's morph lane rather than ramped across.
+pub const MORPH_HOLD: f64 = 240.0;
+
 /// The clip a track plays from the session: its slot and origin.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Session {
@@ -195,7 +199,8 @@ impl SongRecorder {
     }
 
     /// The morph crossfader moved to `pos` at song tick `at` (between
-    /// rows `rows`).
+    /// rows `rows`). After a pause of [`MORPH_HOLD`] or more, the lane holds
+    /// the last place up to the move.
     pub fn morph(&mut self, at: Tick, pos: f32, rows: (usize, usize)) {
         let pos = pos.clamp(0.0, 1.0);
         let changed_rows = rows != self.rows;
@@ -214,6 +219,16 @@ impl SongRecorder {
                 a: rows.0,
                 b: rows.1,
             });
+        }
+        // A crossfader left still holds its place until it moves again, so
+        // a move after a pause starts from there instead of ramping across
+        // the pause. A drag sends its moves closer together than
+        // `MORPH_HOLD`, so it stays one smooth ramp.
+        if let Some(&(t, u, _)) = p.morph.last() {
+            let hold = at as f64 - 1.0;
+            if hold - t >= MORPH_HOLD {
+                p.morph.push((hold, u, Kind::Ramp));
+            }
         }
         p.morph.push((at as f64, pos, Kind::Ramp));
     }
