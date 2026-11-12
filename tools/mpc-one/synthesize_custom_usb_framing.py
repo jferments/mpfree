@@ -73,7 +73,8 @@ def validated_report(document, report_sha):
     for slot in table.get("observed_ghidra_slots", []):
         if slot.get("relative") not in (8, 0x18, 0x1c, 0x20, 0x2c, 0x34):
             continue
-        address = slot.get("resolved_function")
+        raw_address = slot.get("resolved_function")
+        address = ("0x%08x" % int(str(raw_address), 16)) if raw_address else None
         body = functions.get(address, {}) if address else {}
         members.append({
             "slot": f"+0x{slot['relative']:x}",
