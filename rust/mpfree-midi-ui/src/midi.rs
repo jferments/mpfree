@@ -608,10 +608,7 @@ mod tests {
         assert_eq!(a.title, "CC 74 · ch 3 · Keystep 37");
         assert_eq!(a.note, "moves Cutoff (Drums)");
         assert_eq!(a.fields[0].text, "Knob or fader");
-        assert_eq!(
-            row(&r, "learn:1").note,
-            "moves t2.inst.7; Launch Control is not plugged in"
-        );
+        assert_eq!(row(&r, "learn:1").note, "not plugged in: moves t2.inst.7");
         assert_eq!(row(&r, "learn:2").title, "CC 1 · ch 3 · any port");
         s.lock()
             .unwrap()
@@ -619,7 +616,7 @@ mod tests {
             .set_port("Keystep 37", |p| p.input = PortInput::PlaysTracks);
         assert_eq!(
             row(&rows(&s), "learn:0").note,
-            "does nothing: Keystep 37's input only plays tracks"
+            "does nothing: its port only plays tracks"
         );
     }
 

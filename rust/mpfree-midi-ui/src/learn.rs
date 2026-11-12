@@ -47,10 +47,10 @@ fn port_text(l: &Saved) -> &str {
 pub(crate) fn rows(m: &IoModel, rows: &mut Vec<Row>) {
     rows.push(Row::heading("MIDI Learn", vec!["Works as", ""]));
     if m.setup.learn.is_empty() {
-        rows.push(Row::item("learn:none", "No controls learned").note(
-            "tap Learn on an effect's page, then move a knob on your keyboard",
-            Tone::Faint,
-        ));
+        rows.push(
+            Row::item("learn:none", "No controls learned")
+                .note("use Learn in the chain editor to add one", Tone::Faint),
+        );
         return;
     }
     for (i, l) in m.setup.learn.iter().enumerate() {
@@ -67,14 +67,15 @@ pub(crate) fn rows(m: &IoModel, rows: &mut Vec<Row>) {
         )
         .field(Field::choice("Works as", MODES[mode].1, mode, MODES.len()))
         .field(Field::choice("Forget", "Forget", 0, 1).tap_only());
+        // The port is named in the title, so the notes leave it out (and
+        // fit the row).
         let row = match &l.port {
             Some(p) if m.live.port(p).is_none() => {
-                row.note(format!("moves {name}; {p} is not plugged in"), Tone::Warn)
+                row.note(format!("not plugged in: moves {name}"), Tone::Warn)
             }
-            Some(p) if m.setup.port(p).input == PortInput::PlaysTracks => row.note(
-                format!("does nothing: {p}'s input only plays tracks"),
-                Tone::Warn,
-            ),
+            Some(p) if m.setup.port(p).input == PortInput::PlaysTracks => {
+                row.note("does nothing: its port only plays tracks", Tone::Warn)
+            }
             _ => row.note(format!("moves {name}"), Tone::Normal),
         };
         rows.push(row);
