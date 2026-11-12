@@ -6,7 +6,7 @@
 
 From the round 4 notes (2026-11-10): get a **Latch** button working, and start separate work on **arpeggiator and latch pattern tools**. Then: research what people value in high-quality arpeggiators, what makes one great, how to make it intuitive yet flexible for many playing styles, and how to let people **easily design custom arp patterns**.
 
-The Latch button itself (and Note Repeat, Full/Half Level, velocity) is being wired into the pad player in the Hello MPC work (`docs/guides/hello-mpc.md` in PR #31). This document designs everything that sits behind those buttons, and `mpfree-arp` is the engine both use.
+The Latch button itself (and Note Repeat, Full/Half Level, velocity) is being wired into the pad player in the Hello MPC work (`docs/guides/mpfree-app.md` in PR #31). This document designs everything that sits behind those buttons, and `mpfree-arp` is the engine both use.
 
 ## What the research says
 
@@ -122,7 +122,7 @@ All of this uses `mpfree-ui` widgets and one-line layouts (`docs/project/ui-arch
 
 **Built (on the workstation): `rust/mpfree-arp-ui`.** The panel and the band as `mpfree-ui` widgets: mode tabs (Direct, Repeat, Arp, Pattern), the rate, order or pattern list (wheel), the Q-Link sliders (rate, gate, swing, octaves), the pattern buttons (Edit pattern, Record on pads, Mutate, Original), the band's rate buttons (at least 76 px) and Latch, the arp chip for the header, and the step strip, which shows the order's notes (with their octaves) or the pattern's steps (picks, octaves, ratchets, chance, accents) and marks the step playing. The strip shows only while the arp is generating. The panel reads an `ArpState` taken from the engine and turns touches into `ArpAction`s; the pad player keeps the pads, the header and the hint line, so the panel drops into its Play page's right-hand column. The **pattern workspace** (`workspace` module) is drawn too: a grid with a column per step and rows for the step (rest, note, tie, accent), the note pick, octave, ratchet, chance and gate; a tap cycles rest, note and accent, and a drag or the wheel changes a value; Rotate, Mutate, Original (back to the pattern it opened with), length, Save and Back; and recording on the pads, with the pads named for what each writes and the grid at 8 steps beside them. Its `Editor` is plain logic with tests. The pattern's lanes are kept as they are; editing them on screen comes later. `mpfree-arp-preview` draws sample screens, each with a real engine behind it, as PNG files.
 
-**In the pad player (`rust/mpfree-hello`, for round 6).** The pad player plays the pads through one engine. Its buttons were measured in round 5: MENU 123, NOTE REPEAT 11, TAP TEMPO 53, - 55 and + 54, besides SHIFT 49, FULL LEVEL 39, STOP 81 and PLAY 82 (`mpfree_controller::mpc_one::button`). Latch as SHIFT + NOTE REPEAT worked in round 5. Everything works from the buttons, so touch is optional:
+**In the pad player (`rust/mpfree-app`, for round 6).** The pad player plays the pads through one engine. Its buttons were measured in round 5: MENU 123, NOTE REPEAT 11, TAP TEMPO 53, - 55 and + 54, besides SHIFT 49, FULL LEVEL 39, STOP 81 and PLAY 82 (`mpfree_controller::mpc_one::button`). Latch as SHIFT + NOTE REPEAT worked in round 5. Everything works from the buttons, so touch is optional:
 
 | Control | Play page | NOTE REPEAT held | Arp panel | Pattern workspace |
 |---|---|---|---|---|

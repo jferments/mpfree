@@ -363,7 +363,7 @@ class KexecStickTests(unittest.TestCase):
     def test_pad_player_at_power_on(self):
         splash = os.path.join(self.tmp, "mpfree-splash")
         write(splash, fake_elf(), 0o755)
-        app = os.path.join(self.tmp, "mpfree-hello")
+        app = os.path.join(self.tmp, "mpfree")
         write(app, fake_elf() + os.urandom(5000), 0o755)
         self.kits_file("factory-kit-20260101T000000Z-old", count=1, size=1000)
         kits = self.kits_file("factory-kit-20260102T000000Z-new")
@@ -443,18 +443,18 @@ class KexecStickTests(unittest.TestCase):
         script = self.dfs(root_img, "cat /etc/mpfree-test/start-app.sh")
         self.assertIn(f"dev=/dev/disk/by-partuuid/{kits_uuid}\n", script)
         self.assertIn(f"data=/dev/disk/by-partuuid/{data_uuid}\n", script)
-        self.assertIn("exec /etc/mpfree-test/mpfree-hello app --kits /run/mpfree-kits/kits.bin --keep-screen "
+        self.assertIn("exec /etc/mpfree-test/mpfree app --kits /run/mpfree-kits/kits.bin --keep-screen "
                       "--data /run/mpfree-data\n", script)
         self.assertIn('mount -t ext4 -o ro,nosuid,nodev,noexec "$dev" /run/mpfree-kits', script)
-        self.assertIn("exec /etc/mpfree-test/mpfree-hello app --kits /run/mpfree-kits/kits.bin --keep-screen\n", script)
+        self.assertIn("exec /etc/mpfree-test/mpfree app --kits /run/mpfree-kits/kits.bin --keep-screen\n", script)
         copy = os.path.join(self.tmp, "app-copy")
-        run(["debugfs", "-R", f"dump /etc/mpfree-test/mpfree-hello {copy}", root_img])
+        run(["debugfs", "-R", f"dump /etc/mpfree-test/mpfree {copy}", root_img])
         self.assertEqual(sha(copy), sha(app))
-        self.assertRegex(self.dfs(root_img, "stat /etc/mpfree-test/mpfree-hello"), r"Type: regular\s+Mode:\s+0755")
-        self.assertIn("cp /run/mpfree-hello/hello.txt", self.dfs(root_img, "cat /etc/mpfree-test/save-logs.sh"))
+        self.assertRegex(self.dfs(root_img, "stat /etc/mpfree-test/mpfree"), r"Type: regular\s+Mode:\s+0755")
+        self.assertIn("cp /run/mpfree-app/report.txt", self.dfs(root_img, "cat /etc/mpfree-test/save-logs.sh"))
 
     def test_pad_player_without_splash_and_its_checks(self):
-        app = os.path.join(self.tmp, "mpfree-hello")
+        app = os.path.join(self.tmp, "mpfree")
         write(app, fake_elf(), 0o755)
         kits = self.kits_file("elsewhere", count=2)
         res = self.build("--app", app, "--kits", kits)
@@ -462,7 +462,7 @@ class KexecStickTests(unittest.TestCase):
         [folder] = self.outputs()
         root_img = os.path.join(self.tmp, "p1.img")
         self.partition(os.path.join(self.work, folder, "stick.img"), 1, root_img)
-        self.assertIn("exec /etc/mpfree-test/mpfree-hello app --kits /run/mpfree-kits/kits.bin\n",
+        self.assertIn("exec /etc/mpfree-test/mpfree app --kits /run/mpfree-kits/kits.bin\n",
                       self.dfs(root_img, "cat /etc/mpfree-test/start-app.sh"))
         self.assertIn("After=systemd-journald.service systemd-udevd.service\n",
                       self.dfs(root_img, "cat /etc/systemd/system/mpfree-test-app.service"))

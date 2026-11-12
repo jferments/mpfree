@@ -82,7 +82,7 @@ browser.save(Snapshot::from_parts(meta, &[&transport, &sampler, ...]), now_utc);
 
 `BrowseAction`s for the app: `LoadSample` / `LoadToPad` / `LoadKit` / `LoadFactoryKit` (to the sampler thread's loader), `LoadPreset` (with the engine's folder name, to the synth thread's `mpfree-instruments`), `TryPreset` / `RevertPreset` / `PickerClosed` (pickers), `Audition` / `StopAudition` (the preview path), `ProjectOpened` (give each engine its part), `ProjectSaved`, `SaveRequested` (Save as got a name: call `save`), `SaveLists` (write it to the store as `files/browser/lists.txt`).
 
-When `mpfree-library` is linked into the pad player, `tools/mpc-one/tests/test_hello_mpc.py` needs `rust/mpfree-library/src` in `LINKED_SRC`, and its write sites (all in `lib.rs` and `project.rs`, all under the library folder) added to the reviewed list.
+When `mpfree-library` is linked into the pad player, `tools/mpc-one/tests/test_app_mpc.py` needs `rust/mpfree-library/src` in `LINKED_SRC`, and its write sites (all in `lib.rs` and `project.rs`, all under the library folder) added to the reviewed list.
 
 ## Not yet
 

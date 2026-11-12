@@ -1,4 +1,4 @@
-//! Hello MPC's screens, built from mpfree-ui widgets.
+//! The app's screens, built from mpfree-ui widgets.
 //!
 //! - The console (the one-shot steps): a header and the step's log.
 //! - The pad player (`play`, and `app` from power-on): a loading page with a
@@ -120,7 +120,7 @@ impl Console {
     pub fn new(fonts: Fonts, heading: &str, fb: Option<FbTarget>) -> Console {
         let (w, h) = fb.as_ref().map(|f| f.logical_size()).unwrap_or(SCREEN);
         let mut ui = Ui::new(Theme::dark(), fonts, w, h);
-        let mut header = Header::new(&["Hello MPC"]);
+        let mut header = Header::new(&["mpfree"]);
         header.chips.push(Chip::new(heading, Tone::Accent));
         ui.add("header", header);
         ui.add("log", LogPanel::new("Log", true, 400));
@@ -3258,10 +3258,10 @@ pub fn sample_player(fonts: Fonts) -> Player {
     }
     for l in ["[    2.104] systemd[1]: Started MPFree test boot: copy logs to the USB stick's log partition.",
               "[    2.230] systemd[1]: Starting MPFree test boot: the pad player...",
-              "[    3.871] mpfree-hello[211]: loading drum kits: 8 kits, 39.0 MB",
+              "[    3.871] mpfree[211]: loading drum kits: 8 kits, 39.0 MB",
               "[    4.402] kernel: rk_gmac-dwmac ff290000.ethernet eth0: Link is Up - 1Gbps/Full",
-              "[    5.990] mpfree-hello[211]: session accepted; sending Akai's setup exactly as the app did",
-              "[    7.315] mpfree-hello[211]: SCHED_FIFO priority 70"] {
+              "[    5.990] mpfree[211]: session accepted; sending Akai's setup exactly as the app did",
+              "[    7.315] mpfree[211]: SCHED_FIFO priority 70"] {
         p.apply(ToUi::Console(l.into()));
     }
     p.apply(ToUi::Show(View::Play));
@@ -4199,7 +4199,7 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     perf.set_proc(ProcView {
         over_s: 2.0,
         threads: vec![
-            ("mpfree-hello (812)".into(), 31.5),
+            ("mpfree (812)".into(), 31.5),
             ("mpfree-screen (815)".into(), 9.0),
             ("mpfree-journal (816)".into(), 0.5),
             ("touch-reader (817)".into(), 0.2),
@@ -4280,7 +4280,7 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     pr.set_procs(&mpfree_prof::procs::ProcView {
         over_s: 1.0,
         rows: vec![
-            row(812, "mpfree-hello", 31.5, 60, 6, "FIFO 70"),
+            row(812, "mpfree", 31.5, 60, 6, "FIFO 70"),
             row(160, "kworker/u8:2", 2.0, 0, 1, "normal"),
             row(98, "irq/45-ff0c0000", 1.0, 0, 1, "FIFO 50"),
             row(1, "systemd", 0.0, 9, 1, "normal"),
