@@ -58,7 +58,7 @@ Notes in, sample-timed notes out. It lives in the audio thread: the app calls `p
 
 Built now:
 
-- **Latch** Off, Reset (called `Replace`), Toggle; clear latched notes; panic.
+- **Latch** Off, Reset (called `Replace`), Toggle; clear latched notes; panic. A panic, and a hush, end the notes the engine has sounding and only those (`Engine::sounding`, a bit a note, set as a note-on leaves the engine and cleared as its note-off does), so an arp playing nothing sends nothing.
 - **Modes** Direct, Repeat, Arp, Pattern. Switching mode never leaves a gap: notes sounding in Direct mode are stopped and the generator starts on the same frame.
 - **Orders** Up, Down, Up-down, Up-down inclusive, Converge, Diverge, As played, Random (seeded, so it is repeatable), Random with no repeats until every note has played, Random once (one shuffled order kept until the notes change), Chord; 1–4 octaves; notes past 127 are skipped.
 - **Feel** strum (spreads chord notes across up to the whole step, lowest first); retrigger (a new note restarts the order and pattern); repeat count (play N steps, then stop, for one-shot runs).
