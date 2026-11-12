@@ -21,6 +21,23 @@ class DirectBootSourceGuards(unittest.TestCase):
         self.assertIn("fastboot_command_table_expected_eight_entries",s)
         self.assertIn("'0x0010fde8'",s)
 
+    def test_other_stage_pointer_probes_are_not_cleared(self):
+        source = GHIDRA.read_text()
+        stage = source.index("if role in ('spl','az01-update')")
+        uboot = source.index("if role=='uboot':", stage)
+        self.assertNotIn("direct_boot={}", source[stage:uboot])
+        self.assertIn("original_image_pointers", source[stage:uboot])
+        self.assertIn("spl-updater-pointer-evidence.json", RUNNER.read_text())
+
+    def test_adc_source_present_and_pointer_proof_is_required(self):
+        source = GHIDRA.read_text()
+        runner = RUNNER.read_text()
+        self.assertIn("'board_setup_recovery_flag_pointer'", source)
+        self.assertIn("'recovery_adc_not_found_string'", source)
+        self.assertIn("recovery_adc_to_environment_pointer_equal", source)
+        self.assertIn("recovery-adc-evidence.json", runner)
+        self.assertIn("all_pointer_checks_passed", runner)
+
     def test_source_does_not_execute_an_oem_fastboot_command(self):
         s=GHIDRA.read_text()
         self.assertNotIn("fastboot oem ",s)
