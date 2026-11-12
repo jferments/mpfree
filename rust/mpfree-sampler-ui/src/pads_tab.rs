@@ -1,7 +1,14 @@
-//! The pad editor's Pads tab: the kit's pads at a glance, to pick one and
-//! set it up. It sits first in the pad bar, a sub-page of the Sample tab
-//! that leaves room for the pad's settings and the kit's sounds.
+//! The app's Pads tab: the kit's pads at a glance, to pick one, find it a
+//! sound and set it up. It is a top-level tab of its own, between Play and
+//! Arrange (the owner's pick, 12 Nov 2026 15:46Z: "the pads are the
+//! centerpiece of the MPC, and deserve their own top menu"); until then it
+//! was a sub-page of the Sample tab.
 //!
+//! - The **bar** over everything shows the pad picked and a **Browse |
+//!   Pad** switch ([`VIEWS`]). Browse (the default) puts the app's browser
+//!   beside the pad map ([`browse_layout`]); Pad shows the pad's settings
+//!   and the kit's sounds ([`LAYOUT`]). The switch gives
+//!   [`PadsAction::View`]; the app shows the page.
 //! - The **pad map** shows the bank's 16 pads as on the MPC (pad 1 bottom
 //!   left): name, layers and play mode, and the clip a pad launches. A tap
 //!   picks a pad for every tab (Wave, Chop and Play edit it next); a tap on
@@ -32,8 +39,7 @@ use mpfree_ui::{EventKind, Ui, UiEvent};
 
 use crate::chop_tab::{bank_of, pad_text};
 use crate::play_tab::{self, stepped, value_text};
-use crate::rec_tab;
-use crate::wave_tab::{self, default_loop, duration_text, mode_label, pad_color, TABS};
+use crate::wave_tab::{default_loop, duration_text, mode_label, pad_color};
 use crate::widgets::{ButtonRow, PadBar, PadCell, PadMap, Setting, SettingList};
 
 /// Widget names the tab adds. The app's own are `header` and `hint`.
@@ -44,16 +50,31 @@ pub const LIST: &str = "smp-pads-list";
 pub const SOUNDS: &str = "smp-pads-sounds";
 pub const PUT: &str = "smp-pads-put";
 
-/// The tab's page: the pad map with its buttons, the Pad list, and the
-/// kit's sounds with the button that puts one on the pad.
+/// The Pad view's page: the pad map with its buttons, the Pad list, and
+/// the kit's sounds with the button that puts one on the pad.
 pub const LAYOUT: &str = "col(header:60, smp-pads-bar:60, \
                           row(col(smp-pads-map:*, smp-pads-buttons:64):440, smp-pads-list:*, \
                           col(smp-pads-sounds:*, smp-pads-put:64):340):*, hint:26)";
 
-/// The tab's place in [`TABS`].
-pub const TAB: usize = 0;
+/// The bar's switch: the browser beside the pads, or the pad's settings.
+pub const VIEWS: [&str; 2] = ["Browse", "Pad"];
+/// The Browse view's place in [`VIEWS`] (the view the tab opens on).
+pub const BROWSE: usize = 0;
+/// The Pad view's place in [`VIEWS`].
+pub const PAD_VIEW: usize = 1;
+/// The width of the pad map and its buttons beside the browser.
+pub const BROWSE_MAP_W: i32 = 400;
 
-/// The hint line the app shows under the tab.
+/// The Browse view's page: the pad map and its buttons on the left, and
+/// the app's widget `beside` (the browser) in the rest of the room.
+pub fn browse_layout(beside: &str) -> String {
+    format!(
+        "col(header:60, {BAR}:60, row(col({MAP}:*, {BUTTONS}:64):{BROWSE_MAP_W}, \
+         {beside}:*):*, hint:26)"
+    )
+}
+
+/// The hint line the app shows under the Pad view.
 pub const HINT: &str =
     "Tap a pad to pick it, again to hear it · Copy, Paste, Clear, Map to keys · pick a sound, then Put it on \
                         the pad · Q-Links: level, pan, tune, voices";
@@ -229,8 +250,8 @@ pub enum PadsAction {
     /// keygroup instrument at their sounds' notes
     /// ([`mpfree_sampler::keymap`], `Project::map_to_keys`).
     MapToKeys { pads: Vec<usize> },
-    /// Open the editor's tab `i` of [`TABS`].
-    Tab(usize),
+    /// Show view `i` of [`VIEWS`] (the bar's switch).
+    View(usize),
 }
 
 impl PadsAction {
@@ -320,10 +341,12 @@ enum Key {
 pub struct PadsTab {
     /// The page name the tab's layout is added under.
     pub name: String,
-    /// The bank letter shown in pad names, as [`wave_tab::WaveTab::bank`].
+    /// The bank letter shown in pad names, as [`crate::wave_tab::WaveTab::bank`].
     pub bank: Option<char>,
     /// A kit name for the map's title, such as "Kit 1 · Breaks".
     pub kit: String,
+    /// The view on show, of [`VIEWS`].
+    pub view: usize,
     copied: Option<(usize, Pad)>,
     sound: usize,
     shown_pad: Option<usize>,
@@ -335,9 +358,8 @@ impl PadsTab {
     /// Adds the widgets and the page `name` to `ui` (the app adds `header`
     /// and `hint` first) and shows `st`.
     pub fn add(ui: &mut Ui, name: &str, st: &PadsState) -> Result<PadsTab, String> {
-        let mut bar = PadBar::new(&TABS);
-        bar.enabled = TABS.iter().map(|t| wave_tab::BUILT.contains(t)).collect();
-        bar.active = TAB;
+        let mut bar = PadBar::new(&VIEWS);
+        bar.active = BROWSE;
         ui.add(BAR, bar);
         ui.add(MAP, PadMap::new("Pads"));
         ui.add(
@@ -354,6 +376,7 @@ impl PadsTab {
             name: name.to_string(),
             bank: None,
             kit: String::new(),
+            view: BROWSE,
             copied: None,
             sound: 0,
             shown_pad: None,
@@ -410,16 +433,7 @@ impl PadsTab {
         let picked = st.picked();
         if let Some(bar) = ui.get_mut::<PadBar>(BAR) {
             bar.color = pad_color(st.pad);
-            bar.active = TAB;
-            // A pad without a sound has nothing for the other tabs to edit,
-            // but one can be recorded onto it.
-            bar.enabled = TABS
-                .iter()
-                .map(|t| {
-                    wave_tab::BUILT.contains(t)
-                        && (picked.is_some() || *t == TABS[TAB] || *t == TABS[rec_tab::TAB])
-                })
-                .collect();
+            bar.active = self.view;
             bar.title = match picked {
                 Some(p) => format!("Pad {here} · {}", p.name),
                 None => format!("Pad {here} · no sound"),
@@ -510,7 +524,13 @@ impl PadsTab {
     /// that only change what the tab shows.
     pub fn action(&mut self, ui: &mut Ui, ev: &UiEvent, st: &PadsState) -> Option<PadsAction> {
         match (ev.widget.as_str(), &ev.kind) {
-            (BAR, EventKind::Tab(i)) => Some(PadsAction::Tab(*i)),
+            (BAR, EventKind::Tab(i)) if *i < VIEWS.len() => {
+                self.view = *i;
+                if let Some(bar) = ui.get_mut::<PadBar>(BAR) {
+                    bar.active = *i;
+                }
+                Some(PadsAction::View(*i))
+            }
             (MAP, EventKind::Select(i)) => Some(PadsAction::Pick(st.first + *i)),
             (MAP, EventKind::Pad { index, down }) => Some(PadsAction::Audition {
                 pad: st.first + *index,
