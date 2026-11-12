@@ -115,11 +115,7 @@ fn the_tab_shows_the_layers_grain_settings_and_the_engines_cloud() {
         bar.subtitle
     );
     assert_eq!(bar.active, grain_tab::TAB);
-    assert_eq!(
-        bar.enabled,
-        vec![true, true, true, true, true, false, true],
-        "every tab but FX is built"
-    );
+    assert_eq!(bar.enabled, vec![true; 7], "every tab is built");
     for (row, value) in [
         (Row::Mode, "Granular"),
         (Row::Scan, "0.25×"),

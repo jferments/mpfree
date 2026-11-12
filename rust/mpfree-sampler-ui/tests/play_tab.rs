@@ -107,11 +107,7 @@ fn the_tab_shows_the_pads_layers_envelope_filter_and_settings() {
         "3 layers · Loop · stacked · 4 voices · 4.73 s long"
     );
     assert_eq!(bar.active, play_tab::TAB);
-    assert_eq!(
-        bar.enabled,
-        vec![true, true, true, true, true, false, true],
-        "Wave, Warp, Chop, Play, Grain and Rec are built"
-    );
+    assert_eq!(bar.enabled, vec![true; 7], "every tab is built");
     let map = s.ui.get::<LayerMap>(play_tab::LAYERS).unwrap();
     let ranges: Vec<(u8, u8)> = map.layers.iter().map(|l| (l.lo, l.hi)).collect();
     assert_eq!(ranges, vec![(1, 63), (64, 109), (110, 127)]);
