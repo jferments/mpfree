@@ -40,7 +40,7 @@ Start with the [project README](../README.md) for what MPFree is and where it st
 - [Developer access](guides/developer-access.md): getting root SSH over direct Ethernet, and the safety runbook.
 - [Survey tools](guides/survey-tools.md): running read-only surveys and milestone tests from a workstation.
 - [USB autorun reference](guides/usb-autorun-reference.md): the exact lab tooling used to first get SSH. Not a general installer.
-- [Hello MPC](guides/hello-mpc.md): Phase 1 on the kexec test build: our own program on the screen, touchscreen, pads, pad lights and audio output, with factory drum kits read from the backup, and the pad player with MPFree's first GUI, one step at a time (`--hello`).
+- [mpfree on the test build](guides/mpfree-app.md): the app on the kexec test build (Phase 1 called it Hello MPC): our own program on the screen, touchscreen, pads, pad lights and audio output, with factory drum kits read from the backup, and the pad player with MPFree's first GUI, one step at a time (`--app`).
 - [Audio and MIDI diagnostics](guides/audio-midi-diagnostics.md): the `--audio-midi`, `--midi-activity` and `--midi-capture` modes, what each reads and why.
 - [Device modifications](hardware/device-modifications.md): every persistent change made to the reference MPC One (currently persistent SSH, MOD-001/MOD-002), with verification and undo steps.
 
