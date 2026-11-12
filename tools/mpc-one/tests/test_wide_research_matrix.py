@@ -94,7 +94,7 @@ def build(data):
 class BroadMatrixTests(unittest.TestCase):
     def test_all_seven_tracks_and_at_least_forty_five_questions(self):
         report = build(fixture())
-        self.assertGreaterEqual(len(report["questions"]), 45)
+        self.assertGreaterEqual(len(report["questions"]), 47)
         self.assertEqual(len({x["track"] for x in report["questions"]}), 7)
         self.assertEqual(report["schema"], M.SCHEMA)
         self.assertFalse(report["vendor_code_executed"])
