@@ -3031,6 +3031,9 @@ fn player_session(
             }
             heads_at = Instant::now();
         }
+        if let Some(line) = time.take_song_note() {
+            out.note(&format!("time: {line}"));
+        }
         if time.take_changed() {
             out.show(gui::ToUi::Time(Box::new(time.state())));
             (shown_transport, transport_shown_at) = (time.info(), Instant::now());

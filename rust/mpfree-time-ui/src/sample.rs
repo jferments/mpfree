@@ -560,8 +560,8 @@ fn clips_sample(
 }
 
 /// The Clips page's Song view: rows 1 to 5 made into a song, the third
-/// placement on the drums made unique and selected, song mode on, playing
-/// at 5.3.
+/// placement on the drums made unique and selected, song mode on and Rec
+/// song armed, playing at 5.3.
 fn song_sample(fonts: Fonts) -> Result<Sample, String> {
     let mut s = playing()?;
     let rows: Vec<(usize, Tick)> = (0..5)
@@ -581,12 +581,13 @@ fn song_sample(fonts: Fonts) -> Result<Sample, String> {
     state.chips = vec![arp_chip()];
     state.song_view = true;
     state.song_on = true;
+    state.song_rec = true;
     state.selected = Some(2);
     page.update(&mut ui, &state);
     Ok(Sample {
         name: "clips-song",
         about: "Clips page, Song view: rows 1 to 5 as a song, a drum placement made unique \
-                and selected, song mode on at 5.3",
+                and selected, song mode on at 5.3, Rec song armed",
         ui,
         state,
     })
