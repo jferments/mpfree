@@ -40,7 +40,7 @@ CAPTURE's history and the move log moved to the control half, not the audio half
 
 **To audio** (`ToAudio`, 256 slots): a new view, which says what it includes; a transport command; the tracks' settings when they change (the armed track, and each track's "Clips through the arp", destination and "Record pad pressure", as a fixed array).
 
-**To control** (`ToControl`, 8192 slots, a busy second of periods), in the order things happened: each pad note played and each gesture taken, with its offset; each cue that started (`Started`); each recorded change (`Rec`) with its number, after its pressure or gesture points in fixed chunks; a request to compile again; each of the period's spans; the clock follower's counts when they change; the period's end, with the transport as it left it and the audio half's counts; and each view to free.
+**To control** (`ToControl`, 8192 slots, a busy second of periods), in the order things happened: each pad note played, each pad pressure value that changed (both for CAPTURE's history) and each gesture taken, with its offset; each cue that started (`Started`); each recorded change (`Rec`) with its number, after its pressure or gesture points in fixed chunks; a request to compile again; each of the period's spans; the clock follower's counts when they change; the period's end, with the transport as it left it and the audio half's counts; and each view to free.
 
 The pad player's audio loop calls the audio half directly for what it hands the time engine each period: the pads, their pressure, the knobs, the gestures, FILL, the tempo it follows, the followed port's clock bytes, and the metronome.
 

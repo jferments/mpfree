@@ -26,12 +26,16 @@
 //!   moves;
 //! - the buttons along the bottom: `Tab(k)` for [`EDIT_BUTTONS`]`[k]`.
 //!
+//! On the roll, a note played with pad pressure shows it as a lighter
+//! contour along its bottom, as high as the pressure, from where each
+//! value was played to the next (`NoteGrid::touch`).
+//!
 //! [`edit_rows`] fills the Edit options list; its `Step` and `Select`
 //! become [`EditAction::Row`] and [`EditAction::PickRow`].
 
 use mpfree_seq::notes::{self, Snap, Tc, TcKind, Which, DIVISIONS};
 use mpfree_seq::steps::{Edit, Euclid, Grid, MAX_EUCLID_STEPS};
-use mpfree_seq::{Clip, Cond, Lock, Note};
+use mpfree_seq::{Clip, Cond, Lock, Note, TouchPoint};
 use mpfree_transport::time::{Tick, PPQ};
 use mpfree_ui::widgets::OptionRow;
 use mpfree_ui::{Align, Color, EventKind, FontId, PaintCx, Rect, Touch, Widget};
@@ -902,10 +906,12 @@ pub struct NoteBox {
     pub cond: Cond,
     pub ratchet: u8,
     pub selected: bool,
+    /// Its pad pressure in [`NoteGrid::touch`] (none: `len` 0).
+    pub touch: mpfree_seq::Touch,
 }
 
 impl NoteBox {
-    /// The box for `n`.
+    /// The box for `n`, its pressure left out.
     pub fn of(n: &Note, selected: bool) -> NoteBox {
         NoteBox {
             tick: n.tick,
@@ -916,6 +922,7 @@ impl NoteBox {
             cond: n.cond,
             ratchet: n.ratchet,
             selected,
+            touch: mpfree_seq::Touch::NONE,
         }
     }
 }
@@ -972,6 +979,9 @@ pub struct NoteGrid {
     pub step: Tick,
     /// The clip's locks, for the tracker's Locks column.
     pub locks: Vec<LockMark>,
+    /// The notes' pad pressure, each [`NoteBox::touch`] a run of it, timed
+    /// in clip ticks from its note's start (as `Clip::touch`).
+    pub touch: Vec<TouchPoint>,
     drag: Option<Drag>,
 }
 
@@ -1041,6 +1051,7 @@ impl Default for NoteGrid {
             color: Color::rgb(0x6EA8FE),
             step: STEP_FALLBACK,
             locks: Vec::new(),
+            touch: Vec::new(),
             drag: None,
         }
     }
@@ -1074,6 +1085,15 @@ impl NoteGrid {
             && self.color == other.color
             && self.step == other.step
             && self.locks == other.locks
+            && self.touch == other.touch
+    }
+
+    /// Note `i`'s pressure, empty for none.
+    pub fn touch_of(&self, i: usize) -> &[TouchPoint] {
+        self.notes
+            .get(i)
+            .and_then(|n| self.touch.get(n.touch.range()))
+            .unwrap_or(&[])
     }
 
     /// Show what `other` shows, keeping a drag in progress.
@@ -1298,6 +1318,7 @@ impl NoteGrid {
             let shade = 0.35 + 0.65 * f32::from(n.velocity) / 127.0;
             let fill = t.raised.mix(self.color, shade);
             cx.canvas.fill_round_rect(nr, 3, fill);
+            self.paint_touch(cx, g, nr, i, fill.mix(t.text, 0.5));
             if n.selected {
                 cx.canvas.stroke_round_rect(nr, 3, 2, top);
             }
@@ -1324,6 +1345,35 @@ impl NoteGrid {
                 Rect::new(x, g.ruler.y, 2, g.roll.bottom() - g.ruler.y),
                 t.good,
             );
+        }
+    }
+
+    /// Note `i`'s pressure in its box `nr`: from each value's tick to the
+    /// next one's (the last to the note's end), as high as the value.
+    fn paint_touch(&self, cx: &mut PaintCx, g: &Geo, nr: Rect, i: usize, color: Color) {
+        let points = self.touch_of(i);
+        let Some(n) = self.notes.get(i) else {
+            return;
+        };
+        let px = |ticks: i64| {
+            let x = nr.x as f64 + f64::from(g.roll.w) * ticks as f64 / self.length.max(1) as f64;
+            (x.round() as i32).clamp(nr.x, nr.right())
+        };
+        let room = (nr.h - 2).max(1);
+        for (k, p) in points.iter().enumerate() {
+            let from = i64::from(p.at);
+            if from >= n.len {
+                break;
+            }
+            let to = points
+                .get(k + 1)
+                .map_or(n.len, |q| i64::from(q.at).min(n.len));
+            let (x0, x1) = (px(from), px(to));
+            let h = (f32::from(p.value.min(127)) / 127.0 * room as f32).round() as i32;
+            if h > 0 && x1 > x0 {
+                cx.canvas
+                    .fill_rect(Rect::new(x0, nr.bottom() - 1 - h, x1 - x0, h), color);
+            }
         }
     }
 
@@ -2051,6 +2101,48 @@ mod tests {
         let (x, y) = row(0);
         assert_eq!(g.touch(3, Touch::Down, x, y, R), Some(EventKind::Select(3)));
         assert_eq!(g.button_label(1), "Tracker");
+    }
+
+    /// A note's pressure shows along its bottom, as high as the value,
+    /// from each value's tick to the next; a note without any is drawn as
+    /// before.
+    #[test]
+    fn the_roll_shows_each_notes_pressure() {
+        use mpfree_ui::{Fonts, SoftCanvas, Theme};
+        let paint = |g: &NoteGrid| {
+            let mut c = SoftCanvas::new(R.right(), R.bottom());
+            let theme = Theme::dark();
+            let mut fonts = Fonts::embedded();
+            g.paint(
+                &mut PaintCx {
+                    canvas: &mut c,
+                    theme: &theme,
+                    fonts: &mut fonts,
+                },
+                R,
+            );
+            c
+        };
+        let plain = grid();
+        let mut pressed = grid();
+        // Note 1 of 2 (240 ticks): pressed fully for its first half, then
+        // let go.
+        pressed.notes[0].touch = mpfree_seq::Touch { first: 0, len: 2 };
+        pressed.touch = vec![
+            TouchPoint { at: 0, value: 127 },
+            TouchPoint { at: 120, value: 0 },
+        ];
+        assert_eq!(pressed.touch_of(0).len(), 2);
+        assert!(pressed.touch_of(1).is_empty() && plain.touch_of(0).is_empty());
+        assert!(!plain.same(&pressed));
+        let (a, b) = (paint(&plain), paint(&pressed));
+        let nr = pressed.note_rect(R, 0).unwrap();
+        let y = nr.y + nr.h / 2;
+        let (left, right) = (nr.x + nr.w / 4, nr.x + 3 * nr.w / 4);
+        assert_ne!(a.pixel(left, y), b.pixel(left, y), "pressed");
+        assert_eq!(a.pixel(right, y), b.pixel(right, y), "let go");
+        let (x, y) = mid(pressed.note_rect(R, 1).unwrap());
+        assert_eq!(a.pixel(x, y), b.pixel(x, y), "the other note");
     }
 
     #[test]

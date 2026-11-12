@@ -46,7 +46,9 @@
 //! notes and locks to take out and to put in, for the control thread to
 //! apply as one undoable take (`Takes::edit` in `mpfree-play`).
 
-use crate::{Clip, Cond, Lock, Note, MAX_CLIP_TICKS, MAX_RATCHET, MIN_CLIP_TICKS};
+use crate::{
+    touch_room, Clip, Cond, Lock, Note, TouchPoint, MAX_CLIP_TICKS, MAX_RATCHET, MIN_CLIP_TICKS,
+};
 use mpfree_moves::{Moves, MovesError};
 use mpfree_param::RelAddr;
 use mpfree_transport::time::{Tick, PPQ};
@@ -83,8 +85,9 @@ pub struct Step {
 }
 
 /// A change to a clip: take `erase` and `erase_locks` out, change the
-/// length from and to `length` when there is one, put `add` and
-/// `add_locks` in, then change the moves when `moves` says so.
+/// length from and to `length` when there is one, add `touch` to the
+/// clip's pressure, put `add` and `add_locks` in, then change the moves
+/// when `moves` says so.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Edit {
     pub erase: Vec<Note>,
@@ -94,6 +97,13 @@ pub struct Edit {
     pub add_locks: Vec<Lock>,
     /// A page added, taken off or copied takes the clip's moves along.
     pub moves: Option<Box<MovesEdit>>,
+    /// Pressure runs for the new notes (half and double speed rescale
+    /// their notes' pressure), added to the end of the clip's pressure,
+    /// which is `touch_at` values long when the edit is made. The clip's
+    /// pressure only grows, so undo and redo leave it: they take out and
+    /// put back notes that name these runs.
+    pub touch: Vec<TouchPoint>,
+    pub touch_at: u32,
 }
 
 /// The clip's moves before and after an [`Edit`]: kept whole, since a
@@ -136,6 +146,7 @@ impl Edit {
             && self.erase_locks.is_empty()
             && self.add_locks.is_empty()
             && self.moves.is_none()
+            && self.touch.is_empty()
     }
 
     /// The edit that puts the clip back as it was.
@@ -152,10 +163,26 @@ impl Edit {
                     after: m.before.clone(),
                 })
             }),
+            // The pressure stays: the clip's only grows.
+            touch: Vec::new(),
+            touch_at: 0,
         }
     }
 
-    fn join(&mut self, other: Edit) {
+    /// Both edits made from the same clip: `other`'s new pressure runs go
+    /// after this one's, and its notes name them there.
+    fn join(&mut self, mut other: Edit) {
+        if self.touch.is_empty() {
+            self.touch_at = other.touch_at;
+        } else if !other.touch.is_empty() {
+            let (from, by) = (other.touch_at, self.touch.len() as u32);
+            for n in &mut other.add {
+                if !n.touch.is_none() && n.touch.first >= from {
+                    n.touch.first += by;
+                }
+            }
+        }
+        self.touch.extend(other.touch);
         self.erase.extend(other.erase);
         self.add.extend(other.add);
         self.erase_locks.extend(other.erase_locks);
@@ -870,9 +897,11 @@ impl Clip {
     pub fn apply(&mut self, edit: &Edit) -> Result<(), crate::ModelError> {
         let (notes, locks, length) = (self.notes.clone(), self.locks.clone(), self.length);
         let moves = edit.moves.as_ref().map(|_| self.moves.clone());
+        let touch = self.touch.len();
         let result = self.apply_all(edit);
         if result.is_err() {
             (self.notes, self.locks, self.length) = (notes, locks, length);
+            self.touch.truncate(touch);
             if let Some(moves) = moves {
                 self.moves = moves;
             }
@@ -899,6 +928,14 @@ impl Clip {
                 return Err(crate::ModelError::ClipLength);
             }
             self.length = to;
+        }
+        if !edit.touch.is_empty() {
+            if self.touch.len() != edit.touch_at as usize
+                || !touch_room(self.touch.len(), &edit.touch)
+            {
+                return Err(crate::ModelError::BadTouch);
+            }
+            self.touch.extend_from_slice(&edit.touch);
         }
         for n in &edit.add {
             self.add_note(*n)?;

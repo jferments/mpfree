@@ -15,7 +15,7 @@ use crate::widgets::TransportBar;
 use mpfree_capture::{keep, Capture, Kept, Now};
 use mpfree_play::{Cue, Event, Launch, Out, PlayView, Player, Recorder, Sink, Takes};
 use mpfree_seq::arrange::{scene_length, scenes_to_song};
-use mpfree_seq::{Clip, Note, Project, Track};
+use mpfree_seq::{Clip, Note, Project, TouchPoint, Track};
 use mpfree_transport::time::Tick;
 use mpfree_transport::{Block, Command, Transport};
 use mpfree_ui::widgets::{Chip, Fader, Header, Label, ListItem, ListView, PadGrid, StatList};
@@ -857,6 +857,36 @@ pub fn keys_clip() -> Clip {
     for (tick, len, n, v) in melody {
         c.add_note(Note::new(tick, len, n, v)).ok();
     }
+    // The two long melody notes were leaned into: their pressure swells
+    // (the roll draws it along their bottoms).
+    let swells: [(Tick, &[(u32, u8)]); 2] = [
+        (
+            3 * BEAT + 5,
+            &[(0, 30), (60, 70), (140, 112), (260, 90), (380, 40)],
+        ),
+        (
+            BAR + 3 * BEAT + 16,
+            &[
+                (0, 20),
+                (120, 50),
+                (240, 85),
+                (360, 120),
+                (520, 100),
+                (640, 60),
+            ],
+        ),
+    ];
+    for (tick, run) in swells {
+        let points: Vec<TouchPoint> = run
+            .iter()
+            .map(|&(at, value)| TouchPoint { at, value })
+            .collect();
+        let touch = c.add_touch(&points).expect("sample pressure fits");
+        if let Some(n) = c.notes.iter_mut().find(|n| n.tick == tick) {
+            n.touch = touch;
+        }
+    }
+    c.check().expect("sample clip in range");
     c
 }
 
