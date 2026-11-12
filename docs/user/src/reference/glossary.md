@@ -18,6 +18,8 @@ checked: 2026-11-11 414faa1
 
 **Clip** — A recorded or programmed part (a pattern, a bass line) on one track.
 
+**CV/gate** — Voltages that play a modular synth: CV sets the pitch or moves a value, the gate says when a note is held.
+
 **Envelope** — How a sound's volume rises and falls each time it plays: attack, hold, decay, sustain, release.
 
 **Kit** — A set of drum sounds, one per pad, across the pad banks.
@@ -27,6 +29,12 @@ checked: 2026-11-11 414faa1
 **Layer** — One recording in a loop. The first pass is the first layer; every overdub adds another.
 
 **Loop** — A few bars of audio that play round and round, in time, recorded by the looper.
+
+**MIDI** — The language keyboards, synths and drum machines use to send notes, knob moves and timing to each other.
+
+**MIDI clock** — Timing pulses one device sends so another plays at the same tempo.
+
+**MIDI Learn** — Teaching MPFree which knob, fader or pedal on a controller moves a value on the screen.
 
 **Mute group** — Pads that cut each other off, like an open and a closed hi-hat.
 
