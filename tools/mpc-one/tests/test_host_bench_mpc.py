@@ -44,6 +44,8 @@ case "$1" in
   --json) echo "Poly Init, 8 voices   400.0"; echo "{\"schema\": \"mpfree-bench/1\", \"build\": \"$build\"}" > "$2"
           echo "Wrote $2"; exit "$FAKE_BENCH_RC" ;;
   --afford) echo "Poly Supersaw  18.4  7.40  16+ (75)" ;;
+  --lanes) [ "$*" = "--lanes --lane-cores 3,2" ] || { echo "STOP: lanes args $*"; exit 1; }
+           echo "This thread: pinned to core 3."; echo "Lanes: a worker thread each; worker core: pinned to 2" ;;
 esac
 '''
 
@@ -115,10 +117,13 @@ class BenchTests(unittest.TestCase):
         for text in ("static ARM EABI5 hard-float", "Poly Supersaw  18.4  7.40  16+ (75)", "CHECKS-OK", "default: copied; its hash on the MPC matches",
                      "a17: copied; its hash on the MPC matches", "biquad 9000.0", "Poly Init, 8 voices",
                      "----- default.json -----", "Poly Supersaw  18.4  7.40  16+ (75)", '{"schema": "mpfree-bench/1", "build": "a17"}',
+                     "This thread: pinned to core 3.", "Lanes: a worker thread each; worker core: pinned to 2",
                      "RESULT: both builds ran"):
             self.assertIn(text, res.stdout)
         self.assertEqual(self.lines("bench: "), ["default --calibrate", "default --json default.json", "default --afford",
-                                                 "a17 --calibrate", "a17 --json a17.json", "a17 --afford"])
+                                                 "default --lanes --lane-cores 3,2",
+                                                 "a17 --calibrate", "a17 --json a17.json", "a17 --afford",
+                                                 "a17 --lanes --lane-cores 3,2"])
         # Read-only on services: only is-active, never a start or stop.
         self.assertTrue(all(c.startswith("is-active ") for c in self.lines("systemctl: ")), self.lines("systemctl: "))
         for name, path in self.programs.items():

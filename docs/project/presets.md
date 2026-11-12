@@ -35,6 +35,13 @@ qset = 31 32 34 33 Tone
 - `Preset::capture(node, name, tags)` takes the node's sound now.
 - `Preset::to_text(params)` writes it; `Preset::parse(text, info, params)` reads it, checking the format and the engine.
 - `Preset::apply(node)` sets every setting: the preset's value, or the default when it has none, clamped. Sounding notes carry on, as with a factory preset. A preset for another engine changes nothing.
+- **On the pads** (`mpfree-hello`, `synth.rs`), the app's synth reads and plays user presets for the browser's preset picker (`Pick::Preset`). The picker names a file's engine by its folder under Instruments, the engine's name (`Poly`, `FM`, `Wavetable`, `Pluck`, `Drums`); `Engine::from_folder` maps it back, and a file straight in Instruments goes by its `engine` line.
+  - `try_preset(folder, text)` (the picker's `TryPreset`, one per dial turn) plays the file on the engine on the pads and keeps the sound from before the first try.
+  - `revert_preset()` (`RevertPreset`, on Cancel or BROWSE) puts that sound back, every setting to the bit.
+  - `load_preset_file(folder, text)` (`LoadPreset`) plays the file from then on and forgets the kept sound.
+  - `save_preset(name, tags, extra)` gives the folder and the text to write, with `extra` lines such as the Q-Link sets.
+  - A Drums kit moves its pads, and they move back on Cancel. A file for another engine, in another engine's folder, or not a preset changes nothing.
+  - The app wires these to the browser's actions with the browser page.
 - The crate does no file I/O. The library (`mpfree-library`, the browser thread) writes files whole or not at all, refuses a taken name, lists the Instruments place and moves deleted presets to the Trash. Saving makes `Instruments/<engine>` if it is missing, then writes `<name>.preset` with a name the library picked as unique.
 
 ## Tests
@@ -44,9 +51,10 @@ qset = 31 32 34 33 Tone
 - Native engines name every setting (no `id.` keys) and save every writable one.
 - A setting missing from the file takes its default; a preset for another engine is refused and changes nothing.
 - Keys, the id fallback, choices and switches by name or number, unknown lines kept and written back, names and tags kept on one line, and every refusal with its reason.
+- In `mpfree-hello`'s `synth.rs`: trying two presets and cancelling brings back every setting to the bit; Load after trying keeps the tried sound; another engine's file or folder, and a file that isn't a preset, change nothing; a file straight in Instruments goes by its engine line; Q-Link sets ride along in a save; a Drums kit tried moves the pads and Cancel moves them back.
 
 ## Not yet
 
 - A Wavetable sound on a user table (one made from a sample) saves the table choice "User" but not the table itself; the preset will name the table's file once the library holds it.
 - Plugins: a CLAP plugin's own state chunk is not saved yet.
-- The catalogue (factory presets with tags, user files, search, favourites, audition) and the Save and Load buttons come next, with the browser page.
+- The catalogue (factory presets with tags, search, favourites) and the Save button come next. The picker's try, cancel and load are built on the app's side and wait for the app to wire the browser page in.
