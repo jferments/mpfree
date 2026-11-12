@@ -6,6 +6,9 @@
 #define main mpfree_v16_legacy_main
 #include "vendor_probe_v16.c"
 #undef main
+#ifdef MPFREE_V18_WRAPPING
+#define main mpfree_v17_legacy_main
+#endif
 #define TRAMP ((uintptr_t)0x00900000u)
 #define COUNTER ((uintptr_t)0x0060c000u)
 static unsigned slots;
@@ -157,3 +160,6 @@ int main(int argc,char **argv){
     if(!strncmp(argv[1],"v17_receive_",12))return receive_canary(argv[1]);
     return result(argv[1],false,"unknown-v17-case");
 }
+#ifdef MPFREE_V18_WRAPPING
+#undef main
+#endif
