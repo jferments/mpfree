@@ -1,7 +1,7 @@
 <!--
 status: changing
 covers: rust/mpfree-midi rust/mpfree-midi-ui/src/learn.rs rust/mpfree-app/src/midi_in.rs rust/mpfree-app/src/cv_out.rs
-checked: 2026-11-12 dcdd941
+checked: 2026-11-12 34d34b4
 -->
 
 # Playing other gear: MIDI, sync and CV
@@ -30,7 +30,16 @@ If a track would send nothing, because no port is picked or the device is unplug
 
 ## Staying in time with other gear
 
-MPFree can follow another device's MIDI clock, so its tempo, start and stop come from there. It can also send its own clock, so a drum machine or an arpeggiator plays in time with it. You choose which device sets the tempo, and which ports send clock.
+MPFree can follow another device's MIDI clock. In the mixer's I/O view, under **Sync**, set **Tempo from** to the port the device is plugged into:
+
+- Its tempo becomes MPFree's, on the tempo chip too, and moves when it moves.
+- With **Start and stop** on, its Start and Stop start and stop MPFree.
+- With **Position** on, MPFree plays from the same bar as the device, and goes back in step if it drifts away.
+- If its clock stops arriving, MPFree keeps playing at the last tempo.
+
+MPFree can also send its own clock from **MIDI OUT**, so a drum machine or an arpeggiator plays in time with it. Each port's **Clock out** is **Off**, **While playing** or **Always**.
+
+The Sync settings come to the MPC's screen with the I/O view.
 
 ## MIDI Learn
 
