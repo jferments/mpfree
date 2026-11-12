@@ -30,10 +30,12 @@ git -C "$R" switch --detach FETCH_HEAD && \
 python3 -m py_compile \
   "$R/tools/mpc-one/run_fastboot_directboot_v13.py" \
   "$R/tools/mpc-one/run_fastboot_directboot_v12.py" \
-  "$R/tools/mpc-one/tests/test_fastboot_directboot_v13.py" && \
+  "$R/tools/mpc-one/offline_fastboot_boot_assets_v13.py" \
+  "$R/tools/mpc-one/tests/test_fastboot_directboot_v13.py" \
+  "$R/tools/mpc-one/tests/test_fastboot_boot_assets_v13.py" && \
 python3 -m unittest discover \
   -s "$R/tools/mpc-one/tests" \
-  -p 'test_fastboot_directboot_v13.py' -v && \
+  -p 'test_*v13.py' -v && \
 python3 "$R/tools/mpc-one/run_fastboot_directboot_v13.py"
 ~~~
 
@@ -58,6 +60,9 @@ Upload the ZIP only, not each private report and not firmware.
   This reruns a regression baseline; it is NOT vendor U-Boot execution.
 - Native model reuses the V12 synthetic ARM policy specification.
 - Offline rootfs and backup inspection reuses verified V12 routines.
+- Additional offline /boot analysis checks legacy U-Boot script header and payload CRCs,
+  ARM zImage magic, both ACVA DTB structures, reboot-mode properties and
+  selected differences. It only reads original regular-file ext4 with debugfs.
 
 The five independent jobs run concurrently and write failure states rather
 than reporting a partial run as complete.
@@ -86,7 +91,8 @@ than reporting a partial run as complete.
 
 V13-READ-ME-FIRST.md, V13-STAGE-MANIFEST.json,
 V13-EXACT-FINDINGS.json, V13-RESEARCH-QUESTION-MATRIX.json,
-V13-PRIOR-QUESTION-LINEAGE.json, ghidra-p3-v13.json,
+V13-PRIOR-QUESTION-LINEAGE.json, offline-boot-assets-v13.json,
+ghidra-p3-v13.json,
 ghidra-p1-v13.json, qemu-v12-console.log, qemu-v12-stage.json,
 native-synthetic-results.log, offline-rootfs-and-boot-map-v12.json
 and SHA-indexed manifest.
