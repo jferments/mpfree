@@ -18,7 +18,7 @@ def fake_ghidra():
     } for where in FRAMING.ROLES}
     funcs["0x0001a674"]["pseudocode"] = (
         "0x5aa5fe01 0x5aa5fd02 0x5aa5fc03 0x5aa5fb04 "
-        "0x5aa5fa05 0x5aa5f906 synthetic"
+        "0x5aa5fa05 0x5aa5f906 if (value < 0x5aa5fc04) synthetic"
     )
     funcs["0x0001a8d0"]["pseudocode"] = "0xa55a0101 0xa55a0202"
     funcs["0x0001d644"]["pseudocode"] = "0x802c550a 0x4004550d"
@@ -66,7 +66,11 @@ class FramingTests(unittest.TestCase):
     def test_all_signature_evidence_and_provenance(self):
         report = FRAMING.validated_report(fake_ghidra(), "source-hash")
         self.assertTrue(report["magic_evidence"]["eight_known_values_present"])
-        self.assertEqual(len(report["magic_evidence"]["code_points"]), 8)
+        self.assertEqual(len(report["magic_evidence"]["code_points"]), 9)
+        self.assertEqual(
+            len(report["magic_evidence"]["equality_matched_message_identifiers"]), 8)
+        self.assertEqual(report["magic_evidence"]["comparison_only_range_bounds"],
+                         ["0x5aa5fc04"])
         self.assertTrue(all(item["seen_in_verified_pseudocode"]
                             for item in report["linux_usbdevfs_ioctls"]))
         md = FRAMING.render_markdown(report)
