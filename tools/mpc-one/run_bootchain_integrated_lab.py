@@ -796,17 +796,22 @@ class Lab:
                 ]
                 r0_checked = sum(bool(call["immediate_r0_test"]) for call in arm_sites)
                 r0_copied = sum(bool(call["r0_copies"]) for call in arm_sites)
+                r4_propagated = sum(
+                    bool(saved.get("propagates_to_normal_return"))
+                    for call in arm_sites for saved in call["r0_copies"]
+                )
                 r0_returned = sum(
                     bool(call["r0_preserved_to_normal_return"]) for call in arm_sites
                 )
                 cmp_only = sum(bool(call["immediate_r0_compare"]) for call in arm_sites)
                 self.stages["arm-return-contract-evidence"] = {
                     "success": (r0_checked >= 6 and r0_copied >= 2
-                                and r0_returned >= 3),
+                                and r4_propagated >= 2 and r0_returned >= 3),
                     "captured_status_test_callsites": r0_checked,
                     "explicit_cmp_callsites": cmp_only,
                     "subs_zero_test_callsites": r0_checked - cmp_only,
                     "r0_captured_for_later_use": r0_copied,
+                    "r4_copy_status_return_passthroughs": r4_propagated,
                     "normal_fallthrough_return_passthroughs": r0_returned,
                     "functions": len(arm_report["functions"]),
                 }
@@ -816,6 +821,7 @@ class Lab:
                     "explicit_cmp_callsites": cmp_only,
                     "subs_zero_test_callsites": r0_checked - cmp_only,
                     "r0_copy_callsites": r0_copied,
+                    "r4_copy_status_return_passthroughs": r4_propagated,
                     "normal_fallthrough_r0_passthroughs": r0_returned,
                     "safety": "Read-only static-derived facts, no vendor execution",
                 }
@@ -863,8 +869,10 @@ class Lab:
                            str(arm["status_test_callsites"]))
             summary.append("- CMP/other explicit comparisons: " + str(arm["explicit_cmp_callsites"]) +
                            "; SUBS-zero flag tests: " + str(arm["subs_zero_test_callsites"]))
-            summary.append("- Additional BL callsites copying r0 for deferred handling: " +
+            summary.append("- BL callsites copying r0 into r4: " +
                            str(arm["r0_copy_callsites"]))
+            summary.append("- Of those, r4 restored into r0 at normal return: " +
+                           str(arm["r4_copy_status_return_passthroughs"]))
             summary.append("- Normal fallthrough paths returning the callee r0 unchanged: " +
                            str(arm["normal_fallthrough_r0_passthroughs"]))
             summary.append("- Return passthrough proves only the normal fallthrough, not all branches.")
