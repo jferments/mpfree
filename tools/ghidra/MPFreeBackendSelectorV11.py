@@ -18,7 +18,7 @@ SHA={
  'uboot':'b4d3940c9a6a7b75590c094278aa3735c5f97e84885a9f4780dd922d27d27b7a'
 }
 PINNED={
- 'az01-update':[0x1091c,0x10be4],
+ 'az01-update':[0x1091c,0x10be4,0x10d60,0x11248,0x10850,0x1088c,0x108e0,0x108f8],
  'libaz01-prog':[0x14154,0x145d8,0x149b8,0x14ac8,0x14b98,0x14c50,
  0x14d00,0x14dc4,0x154b8,0x157a8,0x15bec,0x16028,0x1611c,0x16210,
  0x163ec,0x166f8,0x16c14,0x16dbc,0x1738c,0x17554,0x1798c,
@@ -30,11 +30,18 @@ PINNED={
  0x164b0,0x165f0,0x1a178,0x1a314,0x1a674,0x1a8d0,
  0x1a9bc,0x1aabc,0x1afd4,0x1b35c,0x1b27c,0x1b150,
  0x1be1c,0x1c2bc,0x1d8c4],
- 'spl':[0xff704004,0xff7041a8,0xff7052c0,0xff705310,
-        0xff705350,0xff7054a4,0xff7056a8],
- 'uboot':[0x100fe4,0x1011e0,0x101744,0x1017fc,0x101bb4,
-          0x10228c,0x10a6a4,0x112228,0x122834,0x122854,0x122980,
-          0x1226b4,0x122c5c,0x122bf8]
+ 'spl':[0xff704004,0xff704060,0xff704068,0xff7041a8,
+        0xff704160,0xff704164,0xff7041e8,0xff705208,0xff7052c0,
+        0xff705310,0xff705316,0xff705350,0xff705418,0xff705480,
+        0xff7054a4,0xff7056a8,0xff7069e0,0xff707d28,0xff707de4,
+        0xff708b74],
+ 'uboot':[0x100fe4,0x1011e0,0x100da0,0x101744,0x1017fc,
+          0x101bb4,0x10228c,0x1018fc,0x1021a8,0x10a6a4,
+          0x10b74c,0x10cc64,0x10d14c,0x10d588,0x10e000,0x10e02a,
+          0x10f188,0x10f388,0x10f45c,0x10f728,
+          0x1100c8,0x110270,0x110484,0x112228,0x11622a,
+          0x12247c,0x1226b4,0x122734,0x122780,
+          0x122834,0x122854,0x122980,0x122bd0,0x122bf8,0x122c5c]
 }
 OFFSETS={'open':0x08,'write_bootloader':0x18,'write_partition':0x1c,
          'stream_partition':0x20,'commit_bootloader':0x2c,'reset':0x34}
@@ -193,7 +200,8 @@ def mpfree_v11_entrypoint():
         for near in list(callers)[:8]+list(callees)[:8]:
             if fm.getFunctionContaining(A(near)):selected.add(near)
     priority=sorted(selected,key=lambda va:(va not in original, va))
-    lim={'az01-update':22,'libaz01-prog':180,'spl':25,'uboot':55}[role]
+    # Expanded direction: ROM entry, loader handoff, fastboot auth and update flow.
+    lim={'az01-update':30,'libaz01-prog':180,'spl':45,'uboot':100}[role]
     if not priority:raise RuntimeError('No functions selected for analysis')
     decoder=DecompInterface();decoder.toggleCCode(True)
     if not decoder.openProgram(prog):raise RuntimeError('Decompiler unavailable')
@@ -210,10 +218,13 @@ def mpfree_v11_entrypoint():
             # Raw ARM instruction record for the small set of functions
             # where Ghidra C return types and structure offsets are uncertain.
             # These records are written ONLY to the private owner ZIP.
-            if role=='libaz01-prog' and key in (
-                '0x0001a314','0x0001a674','0x0001a8d0',
-                '0x0001aabc','0x0001d644','0x0001a178',
-                '0x0001b35c','0x0001afd4'):
+            capture_by_role={
+                'libaz01-prog':('0x0001a314','0x0001a674','0x0001a8d0','0x0001aabc','0x0001d644','0x0001a178','0x0001b35c','0x0001afd4'),
+                'spl':('0xff704004','0xff7041a8','0xff705310','0xff705316','0xff705350','0xff7054a4','0xff7056a8','0xff708b74'),
+                'uboot':('0x00100fe4','0x001011e0','0x00101744','0x001017fc','0x0010a6a4','0x0010f388','0x00112228','0x001226b4','0x00122734','0x00122834','0x00122854','0x00122980','0x00122bf8','0x00122c5c'),
+                'az01-update':('0x0001091c','0x00010be4')
+            }
+            if key in capture_by_role.get(role,()):
                 raw_ins=[]
                 iterator=listing.getInstructions(fn.getBody(),True)
                 while iterator.hasNext() and len(raw_ins)<550:
