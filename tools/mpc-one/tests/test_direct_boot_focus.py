@@ -25,6 +25,12 @@ def fixture():
                  "0x00122c5c":{"pseudocode":"mpf_fastboot_permission()"},
                  "0x00122bf8":{"pseudocode":"mpf_fastboot_permission()"},
                  "0x001226b4":{"pseudocode":"mpf_bootm_command();mpf_reset_cpu_candidate();"},
+                 "0x00122cf8":{"pseudocode":"mpf_fastboot_response()"},
+                 "0x00122d38":{"pseudocode":"mpf_fastboot_response()"},
+                 "0x00122948":{"pseudocode":"mpf_fastboot_response()"},
+                 "0x00100fe4":{"pseudocode":(
+                     "if (uVar4 == 1) { *DAT_00101154 = 1; } "
+                     "if (uVar4 != 9) {}; *puVar1 = 0;")},
                  "0x001100c8":{"pseudocode":(
                      "FUN_00110084; FUN_0010fde8; if (local_8c < uVar4) {}; "
                      "iVar1 + 0x68")},
@@ -60,7 +66,7 @@ def run(data):
 class DirectBootFocusTests(unittest.TestCase):
     def test_seven_topics_and_exact_sha(self):
         report=run(fixture())
-        self.assertEqual(len(report["questions"]),32)
+        self.assertEqual(len(report["questions"]),37)
         self.assertEqual(
             report["nominal_memory_address_gaps"]["fdt_addr_r"][
                 "from_fastboot_load_base_bytes"], 24115200)
@@ -143,6 +149,33 @@ class DirectBootFocusTests(unittest.TestCase):
         changed = run(data)
         self.assertFalse(changed["checks"]["flash_sparse_four_chunk_kinds"])
         self.assertFalse(changed["checks"]["sparse_raw_fill_partition_bound"])
+
+    def test_all_eight_exact_thumb_command_handlers(self):
+        d = fixture()
+        expected = {
+            "reboot":"0x00122cf8", "getvar:":"0x00122d38",
+            "download:":"0x00122980", "boot":"0x00122964",
+            "continue":"0x00122948", "flash":"0x00122c5c",
+            "erase":"0x00122bf8", "oem":"0x00122854",
+        }
+        d["u"]["direct_boot_probe"] = {
+            "fastboot_command_table": [
+                {"prefix_text": key, "callback_containing_function": value,
+                 "callback_is_thumb": True}
+                for key,value in expected.items()
+            ]
+        }
+        report = run(d)
+        self.assertTrue(report["checks"]["all_eight_fastboot_prefixes_exact_and_unique"])
+        for key in ("getvar_has_no_local_permission_call",
+                    "continue_has_no_local_permission_call",
+                    "reboot_has_no_local_permission_call",
+                    "reboot_mode_clear_and_one_nine_branch"):
+            self.assertTrue(report["checks"][key], key)
+        d["u"]["direct_boot_probe"]["fastboot_command_table"][0][
+            "callback_is_thumb"] = False
+        changed = run(d)
+        self.assertFalse(changed["checks"]["all_eight_fastboot_prefixes_exact_and_unique"])
 
     def test_wrong_original_uboot_rejected(self):
         d=fixture()
