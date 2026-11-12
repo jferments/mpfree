@@ -594,6 +594,11 @@ pub const THEMES: [(&str, &str); 4] = [
 /// user puts in `files/themes/` on the data partition, named `NAME.theme`.
 pub const THEMES_FOLDER: &str = "themes";
 
+/// The store owner whose files are the tunings folder: Scala scales the
+/// user puts in `files/tunings/` on the data partition (`NAME.scl`, with an
+/// optional keyboard map `NAME.kbm`), offered on the Synth tab.
+pub const TUNINGS_FOLDER: &str = "tunings";
+
 /// Which part of Prefs is on screen.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum PrefsSection {
@@ -839,6 +844,12 @@ pub struct App {
     /// `--data`): the file name, which is what `settings.theme` holds, and
     /// the theme's own name for the Appearance row. After [`THEMES`].
     pub theme_files: Vec<(String, String)>,
+    /// Tuning files found in the tunings folder at start (`files/tunings/`
+    /// in `--data`), in the synth's order ([`crate::synth::Synth::tuning_files`]):
+    /// each one's name and whether its keyboard map sets the root and
+    /// pitch. The Synth tab's Tuning row offers them after the built-in
+    /// tunings.
+    pub tuning_files: Vec<(String, bool)>,
     /// The mode the Arp panel picked. NOTE REPEAT and Latch turn on Repeat
     /// when it is Direct.
     arp_mode: Mode,
@@ -996,6 +1007,7 @@ impl App {
             swallowed: [false; 128],
             prefs_section: PrefsSection::Main,
             theme_files: Vec::new(),
+            tuning_files: Vec::new(),
             loop_muted: false,
             save_dirty: false,
             saved: Default::default(),
@@ -3236,6 +3248,62 @@ mod tests {
         assert_eq!(app.synth_pads.tuning.root, 11);
         assert_eq!(app.synth_pads.engine, crate::synth::Engine::Poly);
         assert_eq!(app.synth_pads.scale, None);
+    }
+
+    #[test]
+    fn the_synth_options_offer_tuning_files_after_the_built_in_tunings() {
+        use crate::synth::Builtin;
+        let mut app = ready();
+        app.tuning_files = vec![
+            ("werckmeister3".to_string(), false),
+            ("bohlen-pierce-with-a-long-name".to_string(), true),
+        ];
+        app.open_tab(View::Synth);
+        press(&mut app, MENU);
+        let row = |a: SynthItem| {
+            synth_pads::SYNTH_OPTIONS
+                .iter()
+                .position(|&i| i == Item::Synth(a))
+                .unwrap()
+        };
+        let at = row(SynthItem::Tuning);
+        let step = |app: &mut App, d: i32| {
+            let fx = app.step_item(at, d);
+            let tuning = fx.iter().find_map(|e| match e {
+                Effect::SynthPads(p) => Some(p.tuning),
+                _ => None,
+            });
+            let rows = match fx.last() {
+                Some(Effect::Menu(m)) => m.rows[at..at + 3]
+                    .iter()
+                    .map(|r| r.1.clone())
+                    .collect::<Vec<_>>(),
+                _ => Vec::new(),
+            };
+            (tuning, rows)
+        };
+        for _ in 1..Builtin::ALL.len() {
+            step(&mut app, 1);
+        }
+        assert_eq!(app.synth_pads.tuning.builtin, Builtin::Equal24);
+        // The first file: its root and A4 apply.
+        let (t, rows) = step(&mut app, 1);
+        assert_eq!(t.unwrap().file, Some(0));
+        assert_eq!(rows, ["werckmeister3", "C", "440 Hz"]);
+        // The second: its keyboard map sets them, and a long name is cut.
+        let (t, rows) = step(&mut app, 1);
+        assert_eq!(t.unwrap().file, Some(1));
+        assert_eq!(
+            rows,
+            ["bohlen-pierce-with-…", "set by its .kbm", "set by its .kbm"]
+        );
+        assert_eq!(step(&mut app, 1).0, None, "no further");
+        // Back down past the files to the last built-in tuning.
+        step(&mut app, -1);
+        let (t, rows) = step(&mut app, -1);
+        assert_eq!(t.unwrap().file, None);
+        assert_eq!(app.synth_pads.tuning.builtin, Builtin::Equal24);
+        assert_eq!(rows, ["24-TET quarter tones", "C (not used)", "440 Hz"]);
     }
 
     #[test]
