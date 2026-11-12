@@ -1281,6 +1281,9 @@ pub struct Project {
     redo: Vec<Undo>,
     /// Bumps on every change; the engine view records which one it was built from.
     revision: u64,
+    /// Scenes A and B: the pads as stored, to morph between and go back
+    /// to ([`crate::scene`]). Storing one is not an edit (no undo step).
+    pub scenes: [Option<crate::scene::Scene>; 2],
 }
 
 impl Project {
@@ -1336,7 +1339,7 @@ impl Project {
             .collect()
     }
 
-    fn check_pad(&self, pad: &Pad) -> Result<(), ModelError> {
+    pub(crate) fn check_pad(&self, pad: &Pad) -> Result<(), ModelError> {
         if pad.layers.len() > MAX_LAYERS {
             return Err(ModelError::TooManyLayers);
         }
@@ -1674,6 +1677,86 @@ impl Project {
         });
         self.push_undo(Undo::Group(steps));
         Ok(id)
+    }
+
+    /// Puts `pad` on pad `index` with the sounds it plays and chop sets on
+    /// them (a pad read back from its files: [`crate::export`]), as one
+    /// undo step. Sounds already here are used as they are; a chop set on
+    /// a sound that isn't among them is refused, and nothing changes.
+    pub fn put_pad_with(
+        &mut self,
+        index: usize,
+        sources: Vec<Source>,
+        pad: Pad,
+        chops: Vec<ChopSet>,
+    ) -> Result<(), ModelError> {
+        if index >= PADS {
+            return Err(ModelError::BadPad);
+        }
+        let mut added = Vec::new();
+        for s in sources {
+            let id = s.id();
+            if self.source(id).is_none() {
+                self.sources.push(s);
+                added.push(id);
+            }
+        }
+        let checked = self.check_pad(&pad).and_then(|()| {
+            chops
+                .iter()
+                .all(|c| self.source(c.source).is_some())
+                .then_some(())
+                .ok_or(ModelError::UnknownSource)
+        });
+        if let Err(e) = checked {
+            self.sources.retain(|s| !added.contains(&s.id()));
+            return Err(e);
+        }
+        let mut steps: Vec<Undo> = added.into_iter().map(|id| Undo::AddSource { id }).collect();
+        for c in chops {
+            self.chop_sets.push(c);
+            steps.push(Undo::AddChop { set: None });
+        }
+        let before = self.pads[index].replace(pad);
+        steps.push(Undo::Pad {
+            index,
+            before: before.map(Box::new),
+            gesture: None,
+        });
+        self.push_undo(Undo::Group(steps));
+        Ok(())
+    }
+
+    /// The pads back as `scene` stored them, as one undo step: every pad
+    /// that differs from it is put back (or cleared). A stored pad whose
+    /// sounds the kit no longer has is left as it is. Returns how many
+    /// pads changed and how many were left for that.
+    pub fn return_to(&mut self, scene: &crate::scene::Scene) -> (usize, usize) {
+        let mut steps = Vec::new();
+        let mut left = 0;
+        for i in 0..PADS {
+            let want = scene.pad(i);
+            if self.pad(i) == want {
+                continue;
+            }
+            if let Some(p) = want {
+                if self.check_pad(p).is_err() {
+                    left += 1;
+                    continue;
+                }
+            }
+            let before = std::mem::replace(&mut self.pads[i], want.cloned());
+            steps.push(Undo::Pad {
+                index: i,
+                before: before.map(Box::new),
+                gesture: None,
+            });
+        }
+        let n = steps.len();
+        if n > 0 {
+            self.push_undo(Undo::Group(steps));
+        }
+        (n, left)
     }
 
     pub fn pads_play(&self) -> PadsPlay {

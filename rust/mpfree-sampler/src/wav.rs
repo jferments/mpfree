@@ -12,6 +12,10 @@
 //!   the whole frames it has.
 //! - [`file_name`] names a sound's file by its id: the same sound is kept
 //!   once however many pads and kits use it.
+//! - [`bytes_marked`] adds what other software reads of a sampled sound:
+//!   a `smpl` chunk (its root note and loop) and `cue ` points with names
+//!   in a `LIST`/`adtl` chunk (its slice points). [`marks`] reads them
+//!   back from any WAV file that has them.
 //!
 //! Nothing here touches the disk: the caller reads and writes the bytes.
 
@@ -140,6 +144,174 @@ pub fn bytes(s: &Source) -> Vec<u8> {
     v
 }
 
+/// The loop, root note and points a WAV file can carry for samplers
+/// (its `smpl` and `cue ` chunks), in frames.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Marks {
+    /// The MIDI note the sound plays as recorded.
+    pub root: Option<u8>,
+    /// The first loop: start and end frame (the end not played, as
+    /// [`crate::model::Loop`] has it) and whether it plays back and forth.
+    pub loop_: Option<(u64, u64, bool)>,
+    /// Points in the sound, sorted, with their names.
+    pub cues: Vec<(u64, String)>,
+}
+
+impl Marks {
+    fn is_empty(&self) -> bool {
+        self.root.is_none() && self.loop_.is_none() && self.cues.is_empty()
+    }
+
+    /// The chunks that carry these marks: `smpl`, `cue ` and `LIST`.
+    fn chunks(&self, rate: u32) -> Vec<u8> {
+        let mut out = Vec::new();
+        let mut chunk = |id: &[u8; 4], body: &[u8]| {
+            out.extend_from_slice(id);
+            out.extend_from_slice(&(body.len() as u32).to_le_bytes());
+            out.extend_from_slice(body);
+            if body.len() & 1 == 1 {
+                out.push(0);
+            }
+        };
+        if self.root.is_some() || self.loop_.is_some() {
+            let mut b = Vec::with_capacity(60);
+            let mut u = |x: u32| b.extend_from_slice(&x.to_le_bytes());
+            u(0); // manufacturer
+            u(0); // product
+            u(1_000_000_000 / rate.max(1)); // sample period, ns
+            u(u32::from(self.root.unwrap_or(60)));
+            u(0); // pitch fraction
+            u(0); // SMPTE format
+            u(0); // SMPTE offset
+            u(u32::from(self.loop_.is_some()));
+            u(0); // sampler data
+            if let Some((start, end, back)) = self.loop_ {
+                u(0); // cue point id
+                u(u32::from(back));
+                u(start.min(u64::from(u32::MAX)) as u32);
+                // smpl's end is the last frame played.
+                u(end.saturating_sub(1).min(u64::from(u32::MAX)) as u32);
+                u(0); // fraction
+                u(0); // play count: forever
+            }
+            chunk(b"smpl", &b);
+        }
+        if !self.cues.is_empty() {
+            let mut b = Vec::with_capacity(4 + 24 * self.cues.len());
+            b.extend_from_slice(&(self.cues.len() as u32).to_le_bytes());
+            let mut adtl = b"adtl".to_vec();
+            for (i, (at, name)) in self.cues.iter().enumerate() {
+                let id = i as u32 + 1;
+                let at = (*at).min(u64::from(u32::MAX)) as u32;
+                for x in [id, at] {
+                    b.extend_from_slice(&x.to_le_bytes());
+                }
+                b.extend_from_slice(b"data");
+                for x in [0u32, 0, at] {
+                    b.extend_from_slice(&x.to_le_bytes());
+                }
+                let mut text = id.to_le_bytes().to_vec();
+                text.extend(name.bytes().filter(|&c| c != 0));
+                text.push(0);
+                adtl.extend_from_slice(b"labl");
+                adtl.extend_from_slice(&(text.len() as u32).to_le_bytes());
+                let odd = text.len() & 1 == 1;
+                adtl.extend_from_slice(&text);
+                if odd {
+                    adtl.push(0);
+                }
+            }
+            chunk(b"cue ", &b);
+            chunk(b"LIST", &adtl);
+        }
+        out
+    }
+}
+
+/// [`bytes`], with `marks` in the chunks other samplers read.
+pub fn bytes_marked(s: &Source, marks: &Marks) -> Vec<u8> {
+    let mut v = bytes(s);
+    if marks.is_empty() {
+        return v;
+    }
+    let extra = marks.chunks(s.rate());
+    let riff = u32_at(&v, 4)
+        .unwrap_or(0)
+        .saturating_add(extra.len() as u32);
+    v[4..8].copy_from_slice(&riff.to_le_bytes());
+    v.extend_from_slice(&extra);
+    v
+}
+
+/// The root note, first loop and cue points a WAV file carries (see
+/// [`Marks`]); what isn't there, or is broken, is left out.
+pub fn marks(b: &[u8]) -> Marks {
+    let mut m = Marks::default();
+    if b.len() < 12 || &b[0..4] != b"RIFF" || &b[8..12] != b"WAVE" {
+        return m;
+    }
+    let mut names: Vec<(u32, String)> = Vec::new();
+    let mut cues: Vec<(u32, u64)> = Vec::new();
+    let mut at = 12;
+    while at + 8 <= b.len() {
+        let id = &b[at..at + 4];
+        let len = u32_at(b, at + 4).unwrap_or(0) as usize;
+        let start = at + 8;
+        let end = start.saturating_add(len).min(b.len());
+        let body = &b[start..end];
+        if id == b"smpl" {
+            let note = u32_at(body, 12).filter(|&n| n < 128);
+            m.root = note.map(|n| n as u8);
+            let loops = u32_at(body, 28).unwrap_or(0);
+            if loops > 0 {
+                let kind = u32_at(body, 40);
+                let (s, e) = (u32_at(body, 44), u32_at(body, 48));
+                if let (Some(kind @ (0 | 1)), Some(s), Some(e)) = (kind, s, e) {
+                    if e >= s {
+                        m.loop_ = Some((u64::from(s), u64::from(e) + 1, kind == 1));
+                    }
+                }
+            }
+        } else if id == b"cue " {
+            let n = u32_at(body, 0).unwrap_or(0) as usize;
+            for k in 0..n.min(body.len() / 24) {
+                let p = 4 + 24 * k;
+                if let (Some(cid), Some(off)) = (u32_at(body, p), u32_at(body, p + 20)) {
+                    cues.push((cid, u64::from(off)));
+                }
+            }
+        } else if id == b"LIST" && body.get(0..4) == Some(b"adtl") {
+            let mut q = 4;
+            while q + 8 <= body.len() {
+                let sub = &body[q..q + 4];
+                let n = u32_at(body, q + 4).unwrap_or(0) as usize;
+                let s = q + 8;
+                let e = s.saturating_add(n).min(body.len());
+                if sub == b"labl" && e >= s + 4 {
+                    let cid = u32_at(body, s).unwrap_or(0);
+                    let text = &body[s + 4..e];
+                    let text = text.split(|&c| c == 0).next().unwrap_or(&[]);
+                    names.push((cid, String::from_utf8_lossy(text).into_owned()));
+                }
+                q = s.saturating_add(n).saturating_add(n & 1);
+            }
+        }
+        at = start.saturating_add(len).saturating_add(len & 1);
+    }
+    m.cues = cues
+        .into_iter()
+        .map(|(cid, off)| {
+            let name = names
+                .iter()
+                .find(|(n, _)| *n == cid)
+                .map_or_else(String::new, |(_, t)| t.clone());
+            (off, name)
+        })
+        .collect();
+    m.cues.sort_by_key(|c| c.0);
+    m
+}
+
 fn u16_at(b: &[u8], i: usize) -> Option<u16> {
     Some(u16::from_le_bytes(b.get(i..i + 2)?.try_into().ok()?))
 }
@@ -259,6 +431,37 @@ mod tests {
             assert_eq!(encoding(&s), Encoding::Float32, "{odd}");
             round_trip(&s);
         }
+    }
+
+    #[test]
+    fn marks_go_in_smpl_and_cue_chunks_and_come_back() {
+        let s = source(2, (0..2000).map(|i| (i % 50) as f32 / S16).collect());
+        let m = Marks {
+            root: Some(48),
+            loop_: Some((100, 900, false)),
+            cues: vec![(250, "Slice 2".into()), (700, "Slice 3".into())],
+        };
+        let b = bytes_marked(&s, &m);
+        assert_eq!(marks(&b), m);
+        assert_eq!(u32_at(&b, 4).unwrap() as usize, b.len() - 8, "RIFF size");
+        // The sound itself reads as before, bit for bit.
+        assert_eq!(read("t", &b).unwrap().id(), s.id());
+        // smpl's loop end is the last frame played.
+        let at = b.windows(4).position(|w| w == b"smpl").unwrap();
+        assert_eq!(u32_at(&b, at + 8 + 48), Some(899));
+        // Back and forth, odd names, and nothing at all.
+        let m = Marks {
+            root: None,
+            loop_: Some((0, 10, true)),
+            cues: vec![(5, "odd".into())],
+        };
+        let back = marks(&bytes_marked(&s, &m));
+        assert_eq!(back.loop_, m.loop_);
+        assert_eq!(back.cues, m.cues);
+        assert_eq!(back.root, Some(60), "smpl always says a note");
+        assert_eq!(bytes_marked(&s, &Marks::default()), bytes(&s));
+        assert_eq!(marks(&bytes(&s)), Marks::default());
+        assert_eq!(marks(b"junk"), Marks::default());
     }
 
     #[test]
