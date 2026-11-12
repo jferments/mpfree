@@ -98,6 +98,37 @@ Approved by Jay at 22:34Z (the mod thread's card, "Approve as proposed"). The mo
 - **The Q-Link hook:** the app routes Q-Link turns per page in one place (main.rs, the `QLinkTurn` arm). A macro bank, when shown, takes the turns there first.
 - **Built (round 10):** a strip's insert row opens the editor on that effect, and its "+" opens it with the effect picker up; it takes the mixer's place with no tab lit, and Back opens the mixer again on the view it showed (Track Mix, Pad Mix and so on). The wheel is Q-Link 1. Q-LINK steps the column through the effect's knobs, Macros 1-4 and Macros 5-8; a learn takes the next Q-Link turned. A finger held for half a second on a macro card (Play or the editor) opens the macros panel on that card's bank, and its Back goes back to the page it opened over. Still to come: Sample > FX (the sampler's sub-tab), the effect's own page from a tap on its name, and keeping the macro set-up and learned Q-Links in the store.
 
+## 4c. Audio tracks in the Song view
+
+**Approved by Jay on 12 Nov 2026 (05:33Z), as proposed** in mockups A to C (/mnt/project-files/audiotracks/mockup/). The audio tracks thread built the engine. The time thread draws the lanes and take lanes. The app thread wires the header, panel, bottom row and Q-Links. No tab is added: everything is inside Arrange's Song view.
+
+- **Audio lanes:**
+  - They sit under the MIDI lanes, with a thin divider. They share the ruler, the playhead, bar scrolling and the lane height (up to 56 px).
+  - A lane shows once its track has a region or is armed. The last lane is "+ Audio", which adds the next track (up to 8).
+  - Regions are blocks in the track's colour with the take's waveform. An older take has a "take N" tag, and fades show as slopes.
+  - While recording, a red block grows from the punch in.
+  - A tap selects a region. The selection has a kind (placement or audio region).
+- **The header (the 96 px name area):**
+  - It shows the name, an arm dot (tap to arm), an input chip (L, R, L+R, ST) and a 3 px level bar along its bottom edge.
+  - Tapping the name opens a panel over the lanes with Arm, Input (Left by default), Monitor (Auto, In, Off), level, pan, mute, solo and Takes.
+- **Q-Links while the panel is open:** Q1 Level, Q2 Pan, Q3 the selected region's gain, Q4 its fade. Arrange has no Q-Link column, so the panel lists them at its foot.
+- **The bottom row with an audio region selected:** Split · Erase · Fades · Gain · Takes · Undo, instead of the placement buttons. SHIFT + Undo redoes.
+  - Dragging a region moves it, snapped to the grid (1/16 by default). SHIFT + drag moves it freely.
+  - With nothing selected, the row is the Song view's own.
+- **Take lanes (comping):**
+  - Takes opens the track's takes as thin lanes (about 28 px each) under its lane, newest first. They borrow height from the other lanes.
+  - The Song view gains a vertical lane scroll: SHIFT + wheel, or a drag on the name column.
+  - Swiping across a take lane plays that stretch on the track, snapped to the grid (SHIFT + swipe is free). Tapping a whole take lane uses that take everywhere it has audio.
+- **Buttons:**
+  - REC records an armed audio track in song mode as the transport records. There is no new button.
+  - Audio tracks play in song mode only, and Rec song doesn't arm them.
+- **Memory:** "Audio 0:42 of 1:00 free" on the Song view's legend line while any audio track exists.
+- **Prefs:** two rows come with it:
+  - **Audio track memory:** 60 s stereo by default, applied at the next start.
+  - **Line input latency:** in frames, shared with the looper.
+
+  They go before System info when built, and Touch screen stays last.
+
 ## 5. Prefs (SHIFT + MENU)
 
 - **Main rows, in order:**
