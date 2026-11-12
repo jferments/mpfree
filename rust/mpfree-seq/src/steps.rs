@@ -106,7 +106,7 @@ impl Eq for MovesEdit {}
 
 /// The edit of `clip`'s moves that `f` makes, or None when it has none,
 /// makes no change or is refused (then the moves stay as they are).
-fn moves_edit(
+pub(crate) fn moves_edit(
     clip: &Clip,
     f: impl FnOnce(&mut Moves) -> Result<(), MovesError>,
 ) -> Option<Box<MovesEdit>> {

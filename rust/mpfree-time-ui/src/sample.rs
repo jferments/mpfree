@@ -600,6 +600,64 @@ fn song_sample(fonts: Fonts) -> Result<Sample, String> {
     })
 }
 
+/// "Keys": two bars of chords in C minor under a short melody, played in
+/// by hand, so some notes sit a little off the 1/16 grid.
+pub fn keys_clip() -> Clip {
+    let mut c = Clip::new("Keys", 2 * BAR);
+    // (tick, length, note, velocity)
+    let chords: [(Tick, Tick, [u8; 3]); 4] = [
+        (0, 2 * BEAT - 40, [60, 63, 67]),
+        (2 * BEAT + 12, 2 * BEAT - 60, [56, 60, 63]),
+        (BAR - 8, 2 * BEAT, [58, 62, 65]),
+        (BAR + 2 * BEAT + 20, 2 * BEAT - 80, [55, 58, 62]),
+    ];
+    for (tick, len, notes) in chords {
+        for (k, n) in notes.into_iter().enumerate() {
+            c.add_note(Note::new(tick + 6 * k as Tick, len, n, 84 - 6 * k as u8))
+                .ok();
+        }
+    }
+    let melody: [(Tick, Tick, u8, u8); 6] = [
+        (BEAT + 14, 220, 75, 104),
+        (BEAT + 3 * SIXTEENTH - 10, 240, 74, 92),
+        (3 * BEAT + 5, 460, 72, 110),
+        (BAR + BEAT - 18, 240, 70, 96),
+        (BAR + 2 * BEAT + 2 * SIXTEENTH + 9, 230, 72, 100),
+        (BAR + 3 * BEAT + 16, 700, 67, 118),
+    ];
+    for (tick, len, n, v) in melody {
+        c.add_note(Note::new(tick, len, n, v)).ok();
+    }
+    c
+}
+
+/// The note editor on "Keys" (Chords, slot 2) over the playing session,
+/// the melody selected: the piano roll, or the list with `list`. The app's
+/// `--preview` draws it for the manual.
+pub fn notes_state(list: bool) -> Result<TimeState, String> {
+    let mut s = playing()?;
+    let keys = keys_clip();
+    s.project.tracks[CHORDS].slots[1] = Some(keys.clone());
+    let mut state = s.state();
+    state.chips = vec![arp_chip()];
+    let mut editor = crate::editor::Editor::new(CHORDS, 1, &keys);
+    editor.sel = keys
+        .notes
+        .iter()
+        .enumerate()
+        .filter(|(_, n)| n.note >= 67 && n.len < BEAT)
+        .map(|(i, _)| i)
+        .collect();
+    editor.list = list;
+    state.edit = Some(Box::new(crate::view::EditInfo {
+        editor,
+        clip: keys,
+        track_name: "Chords".into(),
+        bar: BAR,
+    }));
+    Ok(state)
+}
+
 /// The pad player's Play page with the bar under the header.
 fn play_sample(fonts: Fonts, s: &Session) -> Result<Sample, String> {
     let mut ui = app_ui(fonts, "Play", PLAY_HINT);

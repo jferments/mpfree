@@ -54,8 +54,9 @@ use mpfree_seq::arrange::{scene_length, scenes_to_song, song_to_scenes};
 use mpfree_seq::mpfree_moves::{Input, MoveLog};
 use mpfree_seq::steps::{Change, Grid, Step};
 use mpfree_seq::{Clip, ModelError, Project, Track, SLOTS};
+use mpfree_time_ui::editor::{EditAction, Editor};
 use mpfree_time_ui::view::{
-    bars_label, clips_after, MorphInfo, TimeAction, TimeState, TransportInfo,
+    bars_label, clips_after, EditInfo, MorphInfo, TimeAction, TimeState, TransportInfo,
 };
 use mpfree_transport::time::Tick;
 use mpfree_transport::{Block, Command, Mark, State, Transport};
@@ -326,6 +327,8 @@ pub struct TimeHost {
     /// for the log ([`TimeHost::take_song_note`]).
     song_note: Option<String>,
     scene_morph: SceneMorph,
+    /// The note editor on the Arrange page, while it is open.
+    editor: Option<Editor>,
     armed: Option<usize>,
     takes: Takes,
     click: Click,
@@ -424,6 +427,7 @@ impl TimeHost {
             song_rec: SongRecorder::default(),
             song_note: None,
             scene_morph: SceneMorph::default(),
+            editor: None,
             armed: Some(0),
             takes: Takes::default(),
             click: Click::new(rate),
@@ -694,6 +698,56 @@ impl TimeHost {
         }
     }
 
+    /// A touch on the note editor. Open takes the clip the Play page's
+    /// steps show (the armed track's); an edit is one undoable take (a
+    /// row turned or the velocity lane dragged joins one).
+    fn edit(&mut self, a: EditAction) -> Result<String, String> {
+        if a == EditAction::Open {
+            let (track, slot) = self.step_focus();
+            let name = self
+                .project
+                .tracks
+                .get(track)
+                .map_or_else(String::new, |t| t.name.clone());
+            let slot = slot.ok_or_else(|| format!("edit: {name} has no clip"))?;
+            let clip = self.project.clip(track, slot).ok_or("edit: no such clip")?;
+            let line = format!("edit: {} on {name}", clip.name);
+            self.editor = Some(Editor::new(track, slot, clip));
+            self.changed = true;
+            return Ok(line);
+        }
+        let Some(mut ed) = self.editor.take() else {
+            return Ok(String::new());
+        };
+        let Some(clip) = self.project.clip(ed.track, ed.slot) else {
+            self.changed = true;
+            return Err("edit: the clip is gone".into());
+        };
+        let done = ed.act(a, clip);
+        self.changed = true;
+        if done.close {
+            return Ok(done.line);
+        }
+        if !done.edit.is_empty() {
+            let applied = self
+                .takes
+                .edit(&mut self.project, ed.track, ed.slot, &done.edit, done.join)
+                .map_err(|e| format!("edit: {e:?}"));
+            if let Err(e) = applied {
+                self.editor = Some(ed);
+                return Err(e);
+            }
+            if let Some(clip) = self.project.clip(ed.track, ed.slot) {
+                ed.applied(clip, &done);
+            }
+            self.editor = Some(ed);
+            self.compile()?;
+        } else {
+            self.editor = Some(ed);
+        }
+        Ok(done.line)
+    }
+
     /// Carry out a touch on the time engine's screens. Returns a line for
     /// the log.
     pub fn act(&mut self, a: TimeAction) -> Result<String, String> {
@@ -852,6 +906,7 @@ impl TimeHost {
             | TimeAction::SaveScene(_) => {
                 Err("morph: needs the mixer's mod engine (TimeHost::morph)".into())
             }
+            TimeAction::Edit(e) => self.edit(e),
             TimeAction::SongView(on) => {
                 self.song_view = on;
                 self.changed = true;
@@ -1653,6 +1708,18 @@ impl TimeHost {
         st.song_on = self.song;
         st.selected = self.selected;
         st.song_rec = self.song_rec.armed();
+        st.edit = self.editor.as_ref().and_then(|ed| {
+            let clip = self.project.clip(ed.track, ed.slot)?;
+            let bar = clip
+                .speed
+                .to_clip(self.transport.meter().bar_ticks() as f64);
+            Some(Box::new(EditInfo {
+                editor: ed.clone(),
+                clip: clip.clone(),
+                track_name: self.project.tracks[ed.track].name.clone(),
+                bar: bar.round() as Tick,
+            }))
+        });
         st
     }
 
@@ -2763,6 +2830,62 @@ mod tests {
         let at = |frames: u64| frames as f64 * 960.0 * 2.0 / f64::from(RATE);
         assert!((lane.value_at(at(BAR)).unwrap() - 0.5).abs() < 1e-3);
         assert!((lane.value_at(at(2 * BAR - 1500)).unwrap() - 1.0).abs() < 1e-3);
+    }
+
+    /// The note editor on the focused clip: Edit opens it; Timing Correct
+    /// with nothing selected moves every note to the 1/16 grid; a tap
+    /// selects a note and Delete takes it out; each is one take that Undo
+    /// puts back; ‹ Clips closes it.
+    #[test]
+    fn the_note_editor_edits_the_focused_clip_through_the_take_history() {
+        use mpfree_seq::Note;
+        use mpfree_time_ui::editor::EditAction as E;
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        assert_eq!(
+            h.act(TimeAction::Edit(E::Open)).unwrap_err(),
+            "edit: Track 1 has no clip"
+        );
+        let mut c = Clip::new("Beat", 3840);
+        c.notes = vec![
+            Note::new(10, 100, 0, 100),
+            Note::new(970, 100, 1, 90),
+            Note::new(1930, 100, 0, 110),
+        ];
+        h.project.tracks[0].slots[0] = Some(c.clone());
+        assert_eq!(
+            h.act(TimeAction::Edit(E::Open)).unwrap(),
+            "edit: Beat on Track 1"
+        );
+        assert!(h.state().edit.is_some());
+        // The clip's notes in time order (an undo may put them back in
+        // another order, which plays the same).
+        let sorted = |h: &TimeHost| -> Vec<Note> {
+            let mut n = h.project.clip(0, 0).unwrap().notes.clone();
+            n.sort_by_key(|n| (n.tick, n.note));
+            n
+        };
+        let ticks = |h: &TimeHost| -> Vec<Tick> { sorted(h).iter().map(|n| n.tick).collect() };
+        assert_eq!(
+            h.act(TimeAction::Edit(E::Button(7))).unwrap(),
+            "edit: timing correct moved 3 notes"
+        );
+        assert_eq!(ticks(&h), [0, 960, 1920]);
+        h.act(TimeAction::Edit(E::Note(1))).unwrap();
+        assert_eq!(
+            h.act(TimeAction::Edit(E::Button(6))).unwrap(),
+            "edit: 1 notes deleted"
+        );
+        assert_eq!(ticks(&h), [0, 1920]);
+        // Each edit is a take of its own.
+        h.act(TimeAction::Undo).unwrap();
+        assert_eq!(ticks(&h), [0, 960, 1920]);
+        h.act(TimeAction::Undo).unwrap();
+        assert_eq!(sorted(&h), c.notes);
+        assert_eq!(
+            h.act(TimeAction::Edit(E::Button(0))).unwrap(),
+            "edit: closed"
+        );
+        assert!(h.state().edit.is_none());
     }
 
     /// Pads played over bars 2 and 3 without recording; Capture keeps them
