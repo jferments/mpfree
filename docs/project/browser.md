@@ -7,8 +7,9 @@
 BROWSE opens the browser over the current page, under the top bar, as Prefs and the mixer do. It is not a tab. BROWSE again closes it. SHIFT + BROWSE saves the project from any page.
 
 - **Places** on the left: Projects, Samples, Kits, Instruments, Patterns, Recordings; Recent and Favourites; Factory (the kits made from the owner's own backup, read only); Trash.
-- **The list** in the middle: folders first, then files, in natural order (`Kick 2` before `Kick 10`). Back, the path, New folder and Paste at the top. The filter chips at the bottom (All, Audio, Projects, Kits). A line under them says what just happened, or why something failed.
-- **The selected item** on the right: for a sound, its length, rate, bits and channels and a quick waveform; for a project, its tempo and when it was saved. Then its buttons: Load, Load to pad, Audition, Favourite, Rename, Copy, Cut, Delete (Open for folders and projects, Put back in the Trash).
+- **The list** in the middle: folders first, then files, in natural order (`Kick 2` before `Kick 10`). Back, the path, New folder and Paste at the top. The filter chips at the bottom (All, Audio, Projects, Kits), then **Search** and the order chip (**A to Z** or **Newest**: folders first either way, then the last changed first). A line under them says what just happened, or why something failed.
+- **Search** opens the keyboard. The text is looked for, in any case, in every name in the library except the Trash, and not inside projects. Results show where each item is, with the same buttons as Recent (no Rename or Cut), and the filters still apply. Back returns to the folder. At most 200 results; the search stops after 4000 folders so it costs a bounded time on the worker.
+- **The selected item** on the right: for a sound, its length, rate, bits and channels and a quick waveform (WAV, AIFF and uncompressed AIFF-C; FLAC shows its header only); for a project, its tempo and when it was saved. Then its buttons: Load, Load to pad, Audition, Favourite, Rename, Copy, Cut, Delete (Open for folders and projects, plus Earlier saves for a project; Put back in the Trash).
 - **Audition** is on by default: moving the selection to a sound plays it once through the preview path. A list arriving never plays anything by itself.
 - **Delete** asks first, with the name, and moves the item to the Trash. Empty Trash asks again.
 - **Rename and New folder** use an on-screen keyboard. Names may have spaces and capitals. They may not have `/ \ : * ? " < > |`, a leading dot or space, or a trailing dot or space, so they also fit a FAT stick.
@@ -63,7 +64,7 @@ A project is one folder, complete in itself, readable on any computer.
 - `project.txt`: `mpfree-project 1`, then `name`, `tempo`, `created`, `saved`, `app`. Lines it does not know are kept.
 - `parts/<owner>.txt`: one text file per engine. An engine implements `mpfree_library::Part` (`owner`, `save`, `load`). The browser never reads a part. A part no engine claims is kept when the project is saved again (`Snapshot::keep_unknown`).
 - `samples/`: every sound the project uses, copied in and named by a 128-bit hash of its bytes and its length, so the same sound is stored once and a project never misses a sample because a drive is gone. Two different sounds that hash the same are told apart by comparing bytes.
-- `versions/<id>/`: the last 10 saves before this one, each with its `project.txt` and `parts/`.
+- `versions/<id>/`: the last 10 saves before this one, each with its `project.txt` and `parts/`. **Earlier saves** on a project lists them, newest first, by when they were saved. Open on one gives its parts to the app in place of the project's (it asks first over unsaved work) and marks the work unsaved; the next save makes it the newest, and the save it replaces becomes an earlier save, so nothing is lost. An earlier save's row only opens: Delete, Rename and the rest do nothing there.
 - A save writes the new parts to `.parts-new/`, syncs them, moves the old `parts/` into `versions/`, renames the new parts into place, then replaces `project.txt` through a `.part` file. Opening a project finishes or undoes a save that was cut off.
 
 ## For the app (Hello MPC thread wires it)
@@ -88,6 +89,6 @@ When `mpfree-library` is linked into the pad player, `tools/mpc-one/tests/test_h
 
 - The pad player wiring (Hello MPC thread), and the sampler loading a file from a path (sampler thread).
 - Each engine's part (`transport`, `clips`, `sampler`, `synth`, `mixer`, `fx`, `mod`, `arp`, `looper` ...): each thread adds its own.
-- A Versions list on the page, autosave, search, sorting by date.
-- AIFF and FLAC waveforms in the browser (their headers are read; WAV only gets the quick waveform).
+- Autosave.
+- FLAC waveforms: they need a FLAC decoder, which the sampler needs too to load FLAC. Best written once, with the sampler thread.
 - Sharing the library over Ethernet (WebDAV and a web page), a desktop `mpfree-sync`, and USB file mode: plan section 9, decisions 9 to 11.
