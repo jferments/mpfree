@@ -55,6 +55,32 @@ class DirectBootSourceGuards(unittest.TestCase):
         self.assertIn("terminal_offset", source)
         self.assertNotIn("od -An -v -tx1", RUNNER.read_text())
 
+    def test_new_offline_recheck_and_hash_region_contract(self):
+        preflight = ROOT / "tools/mpc-one/recheck_integrated_directboot.py"
+        script_parser = ROOT / "tools/mpc-one/verify_uboot_script_wrapper.py"
+        preflight_src = preflight.read_text()
+        parser_src = script_parser.read_text()
+        ast.parse(preflight_src, filename=str(preflight))
+        ast.parse(parser_src, filename=str(script_parser))
+        for value in (
+            "wide.verify_zip(z)",
+            "script.compare_guest_to_update(",
+            "direct.build(z.read)",
+            "physical_device_access",
+            "vendor_binary_executed",
+        ):
+            self.assertIn(value, preflight_src)
+        for value in (
+            "source_official_sha256_field_means",
+            "raw_script_data_not_uimage",
+            "header_sha256_matches_official",
+            "canonical_header_and_script_bytes_match_official",
+            'firmware310.get("image_sha256")',
+        ):
+            self.assertIn(value, parser_src)
+        self.assertNotIn("subprocess.", preflight_src)
+        self.assertNotIn("os.system(", preflight_src)
+
     def test_focus_syntax_and_no_physical_fastboot(self):
         s=FOCUS.read_text()
         ast.parse(s,filename=str(FOCUS))
