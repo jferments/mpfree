@@ -32,9 +32,10 @@
 
 use crate::alsa;
 use mpfree_looper::print::{frames_at, PrintJob};
+use mpfree_looper::save::Saved;
 use mpfree_looper::{
-    Bounce, Command, LayerCommand, LayerInfo, Looper, Memory, Phase, Print, Stats, Status,
-    MAX_LAYERS, MAX_LOOPS,
+    Bounce, Command, LayerCommand, LayerInfo, LoopFile, Looper, Memory, Phase, Print, Stats,
+    Status, MAX_LAYERS, MAX_LOOPS,
 };
 use mpfree_transport::Block;
 use mpfree_ui::wave::{Peaks, WaveColumn};
@@ -535,20 +536,53 @@ pub struct LoopHost {
     beats_per_bar: u32,
     rate: u32,
     printer: Printer,
+    /// A save of the loops under way, and one done.
+    saving: Option<Saving>,
+    saved: Option<Saved>,
+    /// Saves started again because a loop changed while it was read.
+    pub save_restarts: u64,
 }
 
-/// What the worker is asked: a buffer for a bounce, a print, or to drop
-/// what the audio loop is done with.
+/// A save under way ([`LoopHost::save`]).
+enum Saving {
+    /// Until no loop is recording a first pass, overdubbing, merging,
+    /// fitting or loading.
+    Waiting,
+    /// The worker is making room for the layers' audio.
+    Sizing {
+        /// Each loop's (version, layers, frames) when the save began.
+        at: [(u64, usize, usize); MAX_LOOPS],
+    },
+    /// Reading layer `k` of `saved.loops[i]` from `frame`.
+    Reading {
+        saved: Saved,
+        at: [(u64, usize, usize); MAX_LOOPS],
+        i: usize,
+        k: usize,
+        frame: usize,
+    },
+}
+
+/// Frames of the loops' layers a save reads for each frame that plays.
+pub const SAVE_SPEED: usize = 64;
+
+/// What the worker is asked: a buffer for a bounce, a print, room for a
+/// save's audio, or to drop what the audio loop is done with.
 enum ToPrinter {
     Buffer(usize),
     Print(Bounce, usize),
     Drop(Option<Print>, Vec<f32>),
+    Size(Saved),
+    DropSaved(Saved),
+    DropLoop(LoopFile),
 }
 
 enum FromPrinter {
     Buffer(Vec<f32>),
     /// The print for (loop, frames), or None if it could not be made.
     Done(usize, usize, Option<Print>),
+    /// A save with room for every layer's audio.
+    Sized(Saved),
 }
 
 /// One print under way: for loop `n`, `frames` long, from the loop at
@@ -575,6 +609,8 @@ pub struct Printer {
     pub made: u64,
     pub stale: u64,
     pub failed: u64,
+    /// A save the worker made room for.
+    sized: Option<Saved>,
 }
 
 impl Printer {
@@ -598,6 +634,22 @@ impl Printer {
                             drop((p, b));
                             continue;
                         }
+                        ToPrinter::Size(mut saved) => {
+                            for (_, f) in &mut saved.loops {
+                                for y in &mut f.layers {
+                                    y.audio = vec![0.0; 2 * f.frames];
+                                }
+                            }
+                            FromPrinter::Sized(saved)
+                        }
+                        ToPrinter::DropSaved(saved) => {
+                            drop(saved);
+                            continue;
+                        }
+                        ToPrinter::DropLoop(f) => {
+                            drop(f);
+                            continue;
+                        }
                     };
                     if done.send(reply).is_err() {
                         break;
@@ -616,6 +668,7 @@ impl Printer {
             made: 0,
             stale: 0,
             failed: 0,
+            sized: None,
         }
     }
 
@@ -632,16 +685,20 @@ impl Printer {
     /// a message to the worker can (a block of the channel, now and then),
     /// and only goes when a print starts, arrives or is dropped.
     fn tend(&mut self, looper: &mut Looper, bpm: f64) {
-        if self.tx.is_none() || !(bpm > 0.0) {
+        if self.tx.is_none() || bpm.is_nan() || bpm <= 0.0 {
             return;
         }
         for n in 0..MAX_LOOPS {
             if let Some(p) = looper.take_print(n) {
                 self.send(ToPrinter::Drop(Some(p), Vec::new()));
             }
+            if let Some(f) = looper.take_loaded(n) {
+                self.send(ToPrinter::DropLoop(f));
+            }
         }
         while let Some(m) = self.rx.as_ref().and_then(|rx| rx.try_recv().ok()) {
             match m {
+                FromPrinter::Sized(saved) => self.sized = Some(saved),
                 FromPrinter::Buffer(b) => {
                     self.asked = false;
                     self.buf = Some(b);
@@ -769,7 +826,201 @@ impl LoopHost {
             beats_per_bar: 4,
             rate,
             printer: Printer::new(rate),
+            saving: None,
+            saved: None,
+            save_restarts: 0,
         }
+    }
+
+    /// Save every loop for a project: once no loop is recording a first
+    /// pass, overdubbing, merging, fitting or loading, the worker makes
+    /// room, and each loop's layers are read as they play ([`SAVE_SPEED`]
+    /// frames for each frame), with no glitch. A loop that changes while
+    /// it is read starts the save again. [`LoopHost::take_saved`] gives
+    /// it when done, with each layer's audio (name the files, then write
+    /// the text: `loop_project::write`). Allocates only the list of loops,
+    /// here and when it starts again.
+    // The project browser calls this (not wired into the app yet).
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn save(&mut self) -> String {
+        if self.printer.tx.is_none() {
+            return "looper: cannot save, the worker did not start".into();
+        }
+        if let Some(s) = self.saved.take() {
+            self.printer.send(ToPrinter::DropSaved(s));
+        }
+        if let Some(Saving::Reading { saved, .. }) = self.saving.take() {
+            self.printer.send(ToPrinter::DropSaved(saved));
+        }
+        self.saving = Some(Saving::Waiting);
+        "looper: saving the loops".into()
+    }
+
+    /// How far the save is, 0 to 1 (0 while it waits for a loop).
+    // The project browser calls this (not wired into the app yet).
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn saving(&self) -> Option<f32> {
+        match self.saving.as_ref()? {
+            Saving::Reading {
+                saved, i, k, frame, ..
+            } => {
+                let all: usize = saved
+                    .loops
+                    .iter()
+                    .map(|(_, f)| f.layers.len() * f.frames)
+                    .sum();
+                let done: usize = saved.loops[..*i]
+                    .iter()
+                    .map(|(_, f)| f.layers.len() * f.frames)
+                    .sum::<usize>()
+                    + saved.loops.get(*i).map_or(0, |(_, f)| k * f.frames)
+                    + frame;
+                Some(done as f32 / all.max(1) as f32)
+            }
+            _ => Some(0.0),
+        }
+    }
+
+    /// The save, once done: drop it away from the audio loop.
+    // The project browser calls this (not wired into the app yet).
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn take_saved(&mut self) -> Option<Saved> {
+        self.saved.take()
+    }
+
+    /// Load saved loops (`loop_project::read`) into the loops they came
+    /// from, which must be empty: each copies in while silent, then fades
+    /// in, in time with the song. A loop that is not empty keeps what it
+    /// has (its saved one is dropped on the worker).
+    // The project browser calls this (not wired into the app yet).
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn load(&mut self, saved: Saved) -> String {
+        let (mut done, mut kept) = (Vec::new(), Vec::new());
+        for (n, f) in saved.loops {
+            match self.looper.load(n, f) {
+                Ok(()) => done.push((n + 1).to_string()),
+                Err(f) => {
+                    kept.push((n + 1).to_string());
+                    self.printer.send(ToPrinter::DropLoop(f));
+                }
+            }
+        }
+        self.looper.select_loop(saved.selected);
+        let mut note = format!("looper: loading loops {}", done.join(", "));
+        if done.is_empty() {
+            note = "looper: no loops to load".into();
+        }
+        if !kept.is_empty() {
+            note += &format!(
+                "; loops {} were not empty and kept what they had",
+                kept.join(", ")
+            );
+        }
+        if saved.rate != self.rate {
+            note += &format!(
+                " (saved at {} Hz: they play like tape until their prints are in)",
+                saved.rate
+            );
+        }
+        note
+    }
+
+    /// Each loop's (version, layers, frames) now.
+    fn shapes(&self) -> [(u64, usize, usize); MAX_LOOPS] {
+        let mut at = [(0, 0, 0); MAX_LOOPS];
+        for (n, a) in at.iter_mut().enumerate() {
+            if let Some(s) = self.looper.loop_status(n) {
+                *a = (s.version, s.layers, s.frames);
+            }
+        }
+        at
+    }
+
+    /// One period of a save: see [`LoopHost::save`].
+    fn tend_save(&mut self) {
+        let Some(state) = self.saving.take() else {
+            return;
+        };
+        self.saving = match state {
+            Saving::Waiting => {
+                // Every loop empty (or armed) or still enough to read.
+                let ready = (0..MAX_LOOPS).all(|n| {
+                    let s = self.looper.loop_status(n).expect("a loop");
+                    matches!(s.phase, Phase::Empty | Phase::Armed) && s.loading.is_none()
+                        || self.looper.read_layer(n, 0, 0, &mut []).is_some()
+                });
+                if ready {
+                    let saved = Saved {
+                        rate: self.rate,
+                        selected: self.looper.selected(),
+                        loops: (0..MAX_LOOPS)
+                            .filter_map(|n| self.looper.loop_file(n).map(|f| (n, f)))
+                            .collect(),
+                    };
+                    self.printer.send(ToPrinter::Size(saved));
+                    Some(Saving::Sizing { at: self.shapes() })
+                } else {
+                    Some(Saving::Waiting)
+                }
+            }
+            Saving::Sizing { at } => match self.printer.sized.take() {
+                Some(saved) => Some(Saving::Reading {
+                    saved,
+                    at,
+                    i: 0,
+                    k: 0,
+                    frame: 0,
+                }),
+                None => Some(Saving::Sizing { at }),
+            },
+            Saving::Reading {
+                mut saved,
+                at,
+                mut i,
+                mut k,
+                mut frame,
+            } => {
+                if self.shapes() != at {
+                    // A loop changed: start again.
+                    self.save_restarts += 1;
+                    self.printer.send(ToPrinter::DropSaved(saved));
+                    self.saving = Some(Saving::Waiting);
+                    return;
+                }
+                let mut budget = SAVE_SPEED * PERIOD;
+                while budget > 0 && i < saved.loops.len() {
+                    let (n, f) = &mut saved.loops[i];
+                    let take = budget.min(f.frames - frame);
+                    let out = &mut f.layers[k].audio[2 * frame..2 * (frame + take)];
+                    if self.looper.read_layer(*n, k, frame, out).is_none() {
+                        // Busy for now (a merge or a fit starting): wait.
+                        break;
+                    }
+                    budget -= take;
+                    frame += take;
+                    if frame == f.frames {
+                        frame = 0;
+                        k += 1;
+                        if k == f.layers.len() {
+                            k = 0;
+                            i += 1;
+                        }
+                    }
+                }
+                if i == saved.loops.len() {
+                    self.saved = Some(saved);
+                    None
+                } else {
+                    Some(Saving::Reading {
+                        saved,
+                        at,
+                        i,
+                        k,
+                        frame,
+                    })
+                }
+            }
+        };
     }
 
     /// A press or a setting, with its `looper:` line for the log.
@@ -995,6 +1246,7 @@ impl LoopHost {
         if let Some(span) = block.spans().last() {
             self.printer.tend(&mut self.looper, span.bpm);
         }
+        self.tend_save();
         note
     }
 

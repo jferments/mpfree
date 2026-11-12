@@ -526,6 +526,7 @@ dependencies = [
  "mpfree-fx",
  "mpfree-fx-ui",
  "mpfree-instruments",
+ "mpfree-library",
  "mpfree-looper",
  "mpfree-mixer-ui",
  "mpfree-mod",
