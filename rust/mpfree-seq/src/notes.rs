@@ -33,9 +33,14 @@
 //! the step editor keeps them. Double length copies the locks and the FX
 //! moves too; half and double speed move the locks, and are refused for a
 //! clip with FX moves (moves cannot be stretched yet).
+//!
+//! **Pressure** ([`crate::Touch`]) rides on its note: moving, Timing
+//! Correct, transposing and duplicating keep it (a shortened note just
+//! stops sending what falls past its end). A split leaves it on the first
+//! part only.
 
 use crate::steps::{moves_edit, Edit};
-use crate::{Clip, Lock, Note, MAX_CLIP_TICKS, MAX_NOTES, MIN_CLIP_TICKS};
+use crate::{Clip, Lock, Note, Touch, MAX_CLIP_TICKS, MAX_NOTES, MIN_CLIP_TICKS};
 use mpfree_transport::time::{Tick, PPQ};
 
 /// The Timing Correct divisions, in ticks (960 to a beat), with their
@@ -606,6 +611,9 @@ pub fn split(clip: &Clip, sel: &[usize], parts: u32) -> Edit {
             e.add.push(Note {
                 tick: wrap(n.tick + each * k, clip.length),
                 len,
+                // The first part keeps the pressure (what falls past its
+                // end does not play); the rest would replay its start.
+                touch: if k == 0 { n.touch } else { Touch::NONE },
                 ..n
             });
         }
@@ -965,6 +973,16 @@ mod tests {
         let d = applied(&c, &split(&c, &[1], 3));
         assert_eq!(ticks(&d), vec![0, 960, 1120, 1280]);
         assert!(split(&c, &[1], 1).is_empty());
+        // A split leaves a note's pressure on its first part.
+        let mut c = clip(&[(0, 480, 36)]);
+        let t = c
+            .add_touch(&[crate::TouchPoint { at: 0, value: 50 }])
+            .unwrap();
+        c.notes[0].touch = t;
+        let d = applied(&c, &split(&c, &[0], 2));
+        let mut parts: Vec<_> = d.notes.iter().map(|n| (n.tick, n.touch)).collect();
+        parts.sort_by_key(|p| p.0);
+        assert_eq!(parts, vec![(0, t), (240, Touch::NONE)]);
     }
 
     #[test]

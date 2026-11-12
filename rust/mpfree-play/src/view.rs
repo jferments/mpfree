@@ -25,7 +25,8 @@ use mpfree_param::RelAddr;
 use mpfree_seq::arrange::SONG_LANE_LEN;
 use mpfree_seq::mpfree_moves::{Kind, Map, Moves, Target};
 use mpfree_seq::{
-    Clip, DestId, Lock, ModelError, Note, Project, Quantise, Source, Speed, MAX_TRACKS, SLOTS,
+    Clip, DestId, Lock, ModelError, Note, Project, Quantise, Source, Speed, Touch, TouchPoint,
+    MAX_TRACKS, SLOTS,
 };
 use mpfree_transport::time::{ceil_to, Swing, Tick};
 
@@ -165,6 +166,9 @@ pub(crate) struct ClipView {
     pub locks: Vec<LockView>,
     /// The clip's moves, on its own ticks (not quantised or swung).
     pub moves: Moves,
+    /// The clip's pad pressure, as it holds it ([`Clip::touch`]): each
+    /// note's [`Touch`] names its run here.
+    pub touch: Vec<TouchPoint>,
 }
 
 impl ClipView {
@@ -258,6 +262,7 @@ impl ClipView {
     fn make_room(&mut self, notes: usize, locks: usize) {
         self.notes.reserve(notes);
         self.locks.reserve(locks);
+        self.touch.reserve(crate::record::TOUCH_ROOM);
         // Each lane the clip has gets room for two recorded parts (a new
         // lane still needs a compile).
         let lanes: Vec<_> = self
@@ -269,6 +274,21 @@ impl ClipView {
         for (target, map) in lanes {
             let _ = self.moves.reserve(target, map, crate::record::MOVE_ROOM);
         }
+    }
+
+    /// A note's pressure run added to the clip at `touch` (as
+    /// `Clip::add_touch` put it there): added here in the same place.
+    /// False when this view's pressure is not where the clip's was, or
+    /// there is no room left.
+    fn add_touch(&mut self, touch: Touch, points: &[TouchPoint]) -> bool {
+        if self.touch.len() != touch.first as usize
+            || points.len() != touch.len as usize
+            || self.touch.capacity() - self.touch.len() < points.len()
+        {
+            return false;
+        }
+        self.touch.extend_from_slice(points);
+        true
     }
 
     /// A recorded gesture written into this clip's moves in place, as
@@ -424,6 +444,7 @@ impl PlayView {
                 notes: Vec::new(),
                 locks: Vec::new(),
                 moves: lanes.clone(),
+                touch: Vec::new(),
             });
         }
         for (i, p) in project.arrangement.placements.iter().enumerate() {
@@ -536,6 +557,42 @@ impl PlayView {
             .into_iter()
             .flatten()
             .all(|c| c.add_note(n))
+    }
+
+    /// A note's pressure run went into clip `slot` of `track` at `touch`
+    /// (as `Takes::add_touched` puts it, before the note): put it in this
+    /// view in the same place, before [`PlayView::add_note`] adds the note.
+    /// Real-time safe. False when there is no room, or this view's
+    /// pressure is not where the clip's was; then compile instead.
+    pub fn add_touch(
+        &mut self,
+        track: usize,
+        slot: usize,
+        touch: Touch,
+        points: &[TouchPoint],
+    ) -> bool {
+        touch.is_none()
+            || self
+                .shown(track, slot)
+                .into_iter()
+                .flatten()
+                .all(|c| c.add_touch(touch, points))
+    }
+
+    /// The pad pressure of clip `slot` of `track` as compiled: the clip
+    /// playing, the one cued, or a placement of it in the song (a
+    /// placement's own clip goes by its number past the slots).
+    pub(crate) fn touch_of(&self, track: usize, slot: usize) -> &[TouchPoint] {
+        let Some(t) = self.tracks.get(track) else {
+            return &[];
+        };
+        let cued = t.cue.as_ref().and_then(|c| c.clip.as_ref());
+        t.clip
+            .iter()
+            .chain(cued)
+            .chain(t.regions.iter().map(|r| &r.clip))
+            .find(|c| c.slot == slot)
+            .map_or(&[], |c| c.touch.as_slice())
     }
 
     /// A note equal to `n` was taken out of clip `slot` of `track` (as
@@ -658,6 +715,7 @@ fn view_of(
         notes: Vec::new(),
         locks: Vec::new(),
         moves: clip.moves.clone(),
+        touch: clip.touch.clone(),
     };
     view.notes = clip.notes.iter().map(|n| view.note_view(n)).collect();
     view.notes.sort_by(|a, b| a.local.total_cmp(&b.local));
@@ -797,6 +855,7 @@ mod tests {
                 chance: 100,
                 cond: mpfree_seq::Cond::Always,
                 ratchet: 1,
+                touch: mpfree_seq::Touch::NONE,
             },
             Note {
                 tick: 0,
@@ -806,6 +865,7 @@ mod tests {
                 chance: 100,
                 cond: mpfree_seq::Cond::Always,
                 ratchet: 1,
+                touch: mpfree_seq::Touch::NONE,
             },
             Note {
                 tick: 950,
@@ -815,6 +875,7 @@ mod tests {
                 chance: 100,
                 cond: mpfree_seq::Cond::Always,
                 ratchet: 1,
+                touch: mpfree_seq::Touch::NONE,
             },
         ];
         c.quantise = Quantise::new(240, 100);

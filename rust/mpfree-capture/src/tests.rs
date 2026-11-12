@@ -340,6 +340,7 @@ fn timed(notes: &[(Tick, f64)], length: Tick, song_start: Tick) -> Phrase {
                 chance: 100,
                 cond: mpfree_seq::Cond::Always,
                 ratchet: 1,
+                touch: mpfree_seq::Touch::NONE,
             },
             song: Some(song),
         })
@@ -419,6 +420,7 @@ fn kept_free_a_new_clip_starts_on_the_next_bar() {
                 chance: 100,
                 cond: mpfree_seq::Cond::Always,
                 ratchet: 1,
+                touch: mpfree_seq::Touch::NONE,
             },
             song: None,
         }],

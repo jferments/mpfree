@@ -412,6 +412,7 @@ impl Sink for Route<'_> {
                 },
                 Event::NoteOff { note } => SEvent::NoteOff { pad: note },
                 Event::AllOff => SEvent::AllOff,
+                Event::Pressure { note, value } => SEvent::Pressure { pad: note, value },
                 // The demo's beat has no parameter locks.
                 Event::Lock { .. } | Event::Lane { .. } | Event::Unlock { .. } => return,
             };
