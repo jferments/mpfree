@@ -35,7 +35,7 @@ case "${1:-}" in
   "--kexec-preflight") REMOTE_SCRIPT="$SCRIPT_DIR/read-only-kexec-preflight.sh"; REPORT_KIND="mpc-one-kexec-preflight" ;;
   "--ethernet") REMOTE_SCRIPT="$SCRIPT_DIR/read-only-ethernet.sh"; REPORT_KIND="mpc-one-ethernet" ;;
   "--kexec-boot") REMOTE_SCRIPT=""; REPORT_KIND="mpc-one-kexec-boot" ;;
-  "--hello") REMOTE_SCRIPT=""; REPORT_KIND="mpc-one-hello" ;;
+  "--app") REMOTE_SCRIPT=""; REPORT_KIND="mpc-one-app" ;;
   "--app-start-capture") REMOTE_SCRIPT=""; REPORT_KIND="mpc-one-app-start-capture" ;;
   "--backup") REMOTE_SCRIPT=""; REPORT_KIND="mpc-one-emmc-backup" ;;
   "--ram-smoke-env") REMOTE_SCRIPT="$SCRIPT_DIR/read-only-ram-smoke-env.sh"; REPORT_KIND="mpc-one-smoke-env" ;;
@@ -50,7 +50,7 @@ case "${1:-}" in
   "--touch-capture-check") REMOTE_SCRIPT=""; REPORT_KIND="mpc-one-touch-capture-preflight" ;;
   "--touch-capture") REMOTE_SCRIPT=""; REPORT_KIND="mpc-one-touch-capture" ;;
   "--netbench") REMOTE_SCRIPT=""; REPORT_KIND="mpc-one-netbench" ;;
-  *) printf 'ERROR: Unknown mode. Modes: default baseline, --detail, --runtime, --io (passive link/USB), --abi (read-only userspace), --handoff-preflight (read-only service map), --process-map (read-only process/unit and device ownership), --touchscreen (read-only ILI2117, DRM and input metadata), --rtthreads (read-only task RT/affinity), --capacity (2-second read-only CPU/memory), --boot-map (read-only boot chain, partition hashes, write counters, kexec/U-Boot/update metadata), --boot-menu-survey (read-only facts for the boot menu: framebuffer, controller MIDI card, who holds display/MIDI, acvs and script-runner units, autorun, kexec), --kexec-preflight (read-only kexec, memory, CPU and device-tree facts; copies the running device tree to ~/mpfree-work), --ethernet (read-only Ethernet controller, PHY, reset pin, clock and kernel-log details), --kexec-boot (STATE-CHANGING, RAM only: boots the test build on the USB stick once by kexec; needs MPFREE_ACCEPT_KEXEC_BOOT=YES and a typed confirmation), --hello (STATE-CHANGING, RAM only: Phase 1 Hello MPC on the running test build, each step started by Enter; needs MPFREE_ACCEPT_HELLO=YES; MPFREE_HELLO_STEPS picks steps, e.g. app (read-only: the pad player started at power-on), line (that pad player opens the line input after you type LINE) or pads,lights,drums,setup), --app-start-capture (STATE-CHANGING on stock 3.6: restarts Akai'"'"'s app once under a passive usbmon capture of the controller; needs MPFREE_ACCEPT_APP_RESTART=YES and a typed confirmation), --backup (read-only on the MPC: full eMMC image to the workstation, about 7.3 GiB), --audio-midi (read-only ALSA/MIDI/IRQ/RT survey), --midi-activity (guided read-only MIDI counter deltas; interactive), --midi-capture (opt-in passive usbmon capture of controller USB-MIDI; interactive), --ram-smoke-env (read-only utility probe), --ram-smoke-check (read-only ABI + tool checks), --ram-smoke (explicit RAM-only execute), --headless-check (read-only M6 ELF/ABI check), --headless-smoke (double opt-in M6 RAM-only execution), --session-check (read-only M7 ABI preflight), --session-smoke (double opt-in 2-second M7 null-only timing), --touch-axes-check (read-only M10 ABI/ILI2117 identity), --touch-axes (double-opt-in metadata-only EVIOCGABS), --touch-capture-check (read-only M12 preflight), --touch-capture (double-opt-in, step-by-step read-only touch capture), --netbench (opt-in active SSH load).\n' >&2
+  *) printf 'ERROR: Unknown mode. Modes: default baseline, --detail, --runtime, --io (passive link/USB), --abi (read-only userspace), --handoff-preflight (read-only service map), --process-map (read-only process/unit and device ownership), --touchscreen (read-only ILI2117, DRM and input metadata), --rtthreads (read-only task RT/affinity), --capacity (2-second read-only CPU/memory), --boot-map (read-only boot chain, partition hashes, write counters, kexec/U-Boot/update metadata), --boot-menu-survey (read-only facts for the boot menu: framebuffer, controller MIDI card, who holds display/MIDI, acvs and script-runner units, autorun, kexec), --kexec-preflight (read-only kexec, memory, CPU and device-tree facts; copies the running device tree to ~/mpfree-work), --ethernet (read-only Ethernet controller, PHY, reset pin, clock and kernel-log details), --kexec-boot (STATE-CHANGING, RAM only: boots the test build on the USB stick once by kexec; needs MPFREE_ACCEPT_KEXEC_BOOT=YES and a typed confirmation), --app (STATE-CHANGING, RAM only: Phase 1 mpfree on the running test build, each step started by Enter; needs MPFREE_ACCEPT_APP=YES; MPFREE_APP_STEPS picks steps, e.g. app (read-only: the pad player started at power-on), line (that pad player opens the line input after you type LINE) or pads,lights,drums,setup), --app-start-capture (STATE-CHANGING on stock 3.6: restarts Akai'"'"'s app once under a passive usbmon capture of the controller; needs MPFREE_ACCEPT_APP_RESTART=YES and a typed confirmation), --backup (read-only on the MPC: full eMMC image to the workstation, about 7.3 GiB), --audio-midi (read-only ALSA/MIDI/IRQ/RT survey), --midi-activity (guided read-only MIDI counter deltas; interactive), --midi-capture (opt-in passive usbmon capture of controller USB-MIDI; interactive), --ram-smoke-env (read-only utility probe), --ram-smoke-check (read-only ABI + tool checks), --ram-smoke (explicit RAM-only execute), --headless-check (read-only M6 ELF/ABI check), --headless-smoke (double opt-in M6 RAM-only execution), --session-check (read-only M7 ABI preflight), --session-smoke (double opt-in 2-second M7 null-only timing), --touch-axes-check (read-only M10 ABI/ILI2117 identity), --touch-axes (double-opt-in metadata-only EVIOCGABS), --touch-capture-check (read-only M12 preflight), --touch-capture (double-opt-in, step-by-step read-only touch capture), --netbench (opt-in active SSH load).\n' >&2
      exit 1 ;;
 esac
 [ "$#" -le 1 ] || { printf 'ERROR: Too many arguments\n' >&2; exit 1; }
@@ -96,9 +96,9 @@ elif [[ "${1:-}" == "--backup" ]]; then
         die "MPC_BACKUP_DIR is inside the git clone and not git-ignored: $backup_abs"
       ;;
   esac
-elif [[ "${1:-}" == "--kexec-preflight" || "${1:-}" == "--kexec-boot" || "${1:-}" == "--hello" ]]; then
+elif [[ "${1:-}" == "--kexec-preflight" || "${1:-}" == "--kexec-boot" || "${1:-}" == "--app" ]]; then
   command -v python3 >/dev/null 2>&1 || die "python3 is required for ${1:-} on workstation"
-  for helper in read-only-kexec-preflight.sh offline-dtb.py host_kexec_boot.py host_hello_mpc.py; do
+  for helper in read-only-kexec-preflight.sh offline-dtb.py host_kexec_boot.py host_app_mpc.py; do
     [[ -r "$SCRIPT_DIR/$helper" ]] || die "missing kexec helper: $helper"
   done
   if [[ "${1:-}" == "--kexec-boot" ]]; then
@@ -106,10 +106,10 @@ elif [[ "${1:-}" == "--kexec-preflight" || "${1:-}" == "--kexec-boot" || "${1:-}
     [[ "${MPFREE_ACCEPT_KEXEC_BOOT:-}" == 'YES' ]] ||
       die 'Opt-in required (boots the test build from the USB stick; RAM only): MPFREE_ACCEPT_KEXEC_BOOT=YES bash tools/mpc-one/collect-over-ssh.sh --kexec-boot'
   fi
-  if [[ "${1:-}" == "--hello" ]]; then
-    [[ -t 0 ]] || die '--hello waits for you to press Enter before each step: run it from a terminal'
-    [[ "${MPFREE_ACCEPT_HELLO:-}" == 'YES' ]] ||
-      die 'Opt-in required (runs Hello MPC on the test build from the USB stick; RAM only): MPFREE_ACCEPT_HELLO=YES bash tools/mpc-one/collect-over-ssh.sh --hello'
+  if [[ "${1:-}" == "--app" ]]; then
+    [[ -t 0 ]] || die '--app waits for you to press Enter before each step: run it from a terminal'
+    [[ "${MPFREE_ACCEPT_APP:-}" == 'YES' ]] ||
+      die 'Opt-in required (runs mpfree on the test build from the USB stick; RAM only): MPFREE_ACCEPT_APP=YES bash tools/mpc-one/collect-over-ssh.sh --app'
   fi
   # The running device tree carries the unit's serial number and MAC: keep it outside the clone.
   work_abs="$(realpath -m -- "${MPFREE_WORK_DIR:-$HOME/mpfree-work}")"
@@ -278,8 +278,8 @@ elif [[ "${1:-}" == "--backup" ]]; then
   echo "READ-ONLY on the MPC: full eMMC backup. Log: $REPORT"
 elif [[ "${1:-}" == "--kexec-boot" ]]; then
   echo "OWNER OPT-IN: kexec test boot from the USB stick (RAM only on the MPC). Log: $REPORT"
-elif [[ "${1:-}" == "--hello" ]]; then
-  echo "OWNER OPT-IN: Hello MPC on the test build (RAM only on the MPC). Log: $REPORT"
+elif [[ "${1:-}" == "--app" ]]; then
+  echo "OWNER OPT-IN: mpfree on the test build (RAM only on the MPC). Log: $REPORT"
 elif [[ "${1:-}" == "--app-start-capture" ]]; then
   echo "OWNER OPT-IN: restart Akai's app once on stock 3.6 under a passive usbmon capture. Log: $REPORT"
 elif [[ "${1:-}" == "--touch-axes-check" ]]; then
@@ -365,13 +365,13 @@ elif [[ "${1:-}" == "--kexec-boot" ]]; then
     echo "The kexec test boot stopped or did not pass its checks; log: $REPORT" >&2
     exit 1
   fi
-elif [[ "${1:-}" == "--hello" ]]; then
+elif [[ "${1:-}" == "--app" ]]; then
   # Not redirected: each step waits for Enter in the terminal. The helper writes the same lines to $REPORT.
   # Up to an hour: the app step's phases each wait for you.
-  if ! timeout --foreground 3600 python3 -I "$SCRIPT_DIR/host_hello_mpc.py" \
+  if ! timeout --foreground 3600 python3 -I "$SCRIPT_DIR/host_app_mpc.py" \
       --ip "$MPC_IP" --port "$MPC_PORT" --user "$MPC_USER" --key "$MPC_KEY" \
       --work "$work_abs" --report "$REPORT"; then
-    echo "Hello MPC stopped early or a step failed; log: $REPORT" >&2
+    echo "mpfree stopped early or a step failed; log: $REPORT" >&2
     exit 1
   fi
 elif [[ "${1:-}" == "--app-start-capture" ]]; then

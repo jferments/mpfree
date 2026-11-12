@@ -59,7 +59,7 @@ corners       = chamfer
 - `Theme::check()` warns when text is hard to read (WCAG contrast under 4.5:1 for text, 3:1 for dim text and accents). The built-in themes pass; a test keeps it that way.
 - Every built-in theme is written out in full in [`rust/mpfree-ui/themes/`](../../rust/mpfree-ui/themes) as a starting point, and `cargo run -p mpfree-ui --example theme_file -- NAME` prints one. A test keeps those files in step with the code.
 
-The pad player's Prefs has one **Appearance** row whose value is the theme in use. Its arrows (or - / +, or SHIFT + wheel) step through Default, Console, Synthwave and Spaceship. Each step switches the screen at once (`Ui::set_theme`) and keeps it in the store's "app" settings as `theme`, so it comes back at the next start. `mpfree-hello --theme NAME|FILE` still picks the theme for one run (for `--preview` and on the device) and wins over the saved one.
+The pad player's Prefs has one **Appearance** row whose value is the theme in use. Its arrows (or - / +, or SHIFT + wheel) step through Default, Console, Synthwave and Spaceship. Each step switches the screen at once (`Ui::set_theme`) and keeps it in the store's "app" settings as `theme`, so it comes back at the next start. `mpfree --theme NAME|FILE` still picks the theme for one run (for `--preview` and on the device) and wins over the saved one.
 
 **Themes folder.** Theme files put in `files/themes/` on the data partition (`/run/mpfree-data/files/themes/` on the stick), named `NAME.theme` (lower case, digits, `.`, `_`, `-`), join the Appearance row after Spaceship, in name order, at most 32. The row shows the theme's `name` (or the file name when it has none or reuses a built-in theme's name). The app only reads the folder: a file that doesn't parse is left out with a log line (`themes: broken.theme left out: theme line 1: ...`), and `themes: found ...` lists the rest. Picking one keeps its file name as `theme`; if the file is gone at the next start, the default theme shows and the log says the saved theme was skipped.
 
@@ -119,7 +119,7 @@ Next steps for composability, in order:
 
 ## Retrofitting the other UI crates
 
-What is automatic, for any crate that draws through `PaintCx`: colours that come from the theme, corner shapes, glow, backdrop, font roles. Screens were checked in all four themes with `mpfree-hello --preview DIR --theme NAME`.
+What is automatic, for any crate that draws through `PaintCx`: colours that come from the theme, corner shapes, glow, backdrop, font roles. Screens were checked in all four themes with `mpfree --preview DIR --theme NAME`.
 
 What each crate should change (small, mechanical):
 

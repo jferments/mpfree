@@ -1,4 +1,4 @@
-/* Compile-time check that mpfree-hello's ALSA constants (src/alsa.rs) match the
+/* Compile-time check that mpfree-app's ALSA constants (src/alsa.rs) match the
  * kernel's <sound/asound.h> for the MPC One's 32-bit ARM. CI compiles it with
  * arm-linux-gnueabihf-gcc -c; a mismatch stops the build. Nothing runs. */
 #include <stddef.h>
