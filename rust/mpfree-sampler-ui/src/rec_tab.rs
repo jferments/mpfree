@@ -19,6 +19,8 @@
 //! - Either way the sound goes onto the next empty pad from the pad picked
 //!   (or onto the pad picked, replacing its sound), as one undo step, and
 //!   the editor picks that pad.
+//! - **Auto-sample** opens the mode that plays the synth on the pads note
+//!   by note and makes a keygroup instrument of it ([`crate::auto_tab`]).
 //! - The **Record** list holds the settings: which channels (both, left,
 //!   right, or both mixed to mono), how a take starts and ends, the
 //!   threshold, pre-roll, length and silence, how far Skip back goes, and
@@ -56,6 +58,9 @@ pub const TAB: usize = 7;
 /// The hint line the app shows under the tab.
 pub const HINT: &str = "Record, or keep what just came in with Skip back · tap a row, then the wheel changes it · UNDO \
                         takes a take off its pad again";
+
+/// The third button: the Auto-sample mode.
+pub const AUTO_LABEL: &str = "Auto-sample";
 
 /// What the picture says while the line input is off (and is the source).
 pub const OFF_NOTE: &str =
@@ -374,6 +379,8 @@ pub enum RecAction {
     Source(usize),
     /// Open the editor's tab `i` of [`TABS`].
     Tab(usize),
+    /// Open the Auto-sample mode ([`crate::auto_tab`]).
+    Auto,
 }
 
 /// The Rec tab's widgets and settings.
@@ -404,7 +411,7 @@ impl RecTab {
         let mut list = SettingList::new("Record");
         list.selected = Row::Start.index();
         ui.add(LIST, list);
-        let mut buttons = ButtonRow::new(&["Record", "Skip back"]);
+        let mut buttons = ButtonRow::new(&["Record", "Skip back", "Auto-sample"]);
         buttons.primary = Some(0);
         ui.add(BUTTONS, buttons);
         ui.add(WHEEL, InfoCard::new("Wheel · the row picked"));
@@ -488,8 +495,9 @@ impl RecTab {
             b.labels = vec![
                 if recording { "Stop" } else { "Record" }.to_string(),
                 format!("Skip back {skip}"),
+                AUTO_LABEL.to_string(),
             ];
-            b.enabled = vec![recording || can, can && !recording];
+            b.enabled = vec![recording || can, can && !recording, !recording];
         }
         self.sources = st.sources.clone();
         self.show_wheel(ui);
@@ -602,6 +610,7 @@ impl RecTab {
                 if self.recording {
                     b.enabled[0] = true;
                     b.enabled[1] = false;
+                    b.enabled[2] = false;
                 }
             }
         }
@@ -624,7 +633,7 @@ impl RecTab {
         }
         if let Some(b) = ui.get_mut::<ButtonRow>(BUTTONS) {
             b.labels[0] = "Record".to_string();
-            b.enabled = vec![false, false];
+            b.enabled = vec![false, false, true];
         }
     }
 
@@ -639,6 +648,7 @@ impl RecTab {
                 RecAction::Record
             }),
             (BUTTONS, EventKind::Tab(1)) => Some(RecAction::SkipBack),
+            (BUTTONS, EventKind::Tab(2)) if !self.recording => Some(RecAction::Auto),
             (LIST, EventKind::Step { index, delta }) => {
                 let row = *Row::ALL.get(*index)?;
                 self.step(ui, st, row, *delta)
