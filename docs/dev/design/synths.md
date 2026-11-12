@@ -186,7 +186,9 @@ Poly, FM, Wavetable and Pluck play every note through their tuning; a sounding n
 - A value sent before a note-on (as MPE controllers do) is kept for that note and starts it in place. A note-off puts the note back to neutral for its next note-on; the releasing voice keeps its values. AllOff and reset clear every note. With nothing sent, nothing changes to the bit.
 - **CLAP plugins** get them as CLAP note expressions: a note's slide is its tuning expression (with the bend added when the bend goes that way), its tone is brightness, and its release velocity goes in its note-off. A new note now also starts at a bend held from before it. The plugin sandbox carries `Expression` across (protocol version 2).
 
-**Not yet.** A tuning per track slot in the track host, Tone routing in the native engines, and MPE from MIDI input (no MIDI port is open yet). The sequencer and the arp can send slides now. Choosing a built-in tuning is on the Synth tab's options (see [In the pad player](#in-the-pad-player-rustmpfree-app)).
+A tuning per track slot is in the track host (`TrackHost::set_tuning`, see [Track host](track-host.md)); nothing calls the host yet.
+
+**Not yet.** Tone routing in the native engines, and MPE from MIDI input (no MIDI port is open yet). The sequencer and the arp can send slides now. Choosing a built-in tuning or a tuning file is on the Synth tab's options (see [In the pad player](#in-the-pad-player-rustmpfree-app)).
 
 ## Tests
 
@@ -289,7 +291,7 @@ The pad player (`play` and `app`) carries Poly, FM, Drums, Pluck and Wavetable; 
 
 ## Next
 
-- Tunings and expression: Tone routing in Poly, FM and Wavetable (two slots on the pressure targets, on the Pressure page), a tuning per track slot. Then Q-Link banks, the sampler as a node and the instrument browser (plan doc "Four synth features: plan").
+- Tunings and expression: Tone routing in Poly, FM and Wavetable (two slots on the pressure targets, on the Pressure page). Then Q-Link banks, the sampler as a node and the instrument browser (plan doc "Four synth features: plan").
 - Presets as files: the format is built ([Sound presets](presets.md)); next, the catalogue and Save and Load with the browser page.
 - A track host: built in `rust/mpfree-track` ([Track host](track-host.md)); next, wiring it into the pad player.
 - The Sample tab's "Make a wavetable": see [Wavetable synth](wavetable.md).
