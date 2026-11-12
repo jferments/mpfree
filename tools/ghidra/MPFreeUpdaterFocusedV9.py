@@ -60,7 +60,7 @@ def mpfree_v9_run():
             h.update(bytes(int(x)&255 for x in buf[:n]))
         if h.hexdigest()!=sha:raise RuntimeError('Ghidra boot-stage bytes not owner verified')
     recovered=[]
-    if candidate_arg!='-':
+    if candidate_arg!='none':
         doc=json.loads(Path(candidate_arg).read_text(encoding='utf-8'))
         entry=doc['data'].get(role,{})
         if entry.get('sha256')!=sha or entry.get('status')!='ok':
