@@ -60,6 +60,9 @@ pub struct LayerMap {
     pub layers: Vec<LayerBar>,
     pub selected: usize,
     pub last_velocity: Option<u8>,
+    /// The pad's velocity fade: each bar is cut down along its curve over
+    /// this many velocities inside each edge (none at 1 and 127).
+    pub fade: u8,
     /// Finger, layer, and whether it holds the high edge.
     grab: Option<(u64, usize, bool)>,
 }
@@ -77,6 +80,7 @@ impl LayerMap {
             layers: Vec::new(),
             selected: 0,
             last_velocity: None,
+            fade: 0,
             grab: None,
         }
     }
@@ -117,6 +121,29 @@ impl LayerMap {
     }
 }
 
+/// Cuts bar `b` down to an equal-power fade between `x0` and `x1`: rising
+/// (the level grows left to right) or falling. What is cut shows `bg`,
+/// faintly, so the bar's extent stays visible.
+pub fn fade_cut(cx: &mut PaintCx, b: Rect, x0: i32, x1: i32, rising: bool, bg: Color) {
+    let (x0, x1) = (x0.max(b.x), x1.min(b.right()));
+    if x1 <= x0 {
+        return;
+    }
+    let span = (x1 - x0) as f32;
+    for x in x0..x1 {
+        let mut t = (x - x0) as f32 / span;
+        if !rising {
+            t = 1.0 - t;
+        }
+        let g = (t * std::f32::consts::FRAC_PI_2).sin();
+        let h = ((1.0 - g) * b.h as f32).round() as i32;
+        if h > 0 {
+            cx.canvas
+                .fill_rect(Rect::new(x, b.y, 1, h), bg.with_alpha(210));
+        }
+    }
+}
+
 impl Widget for LayerMap {
     fn paint(&self, cx: &mut PaintCx, r: Rect) {
         let t = cx.theme.clone();
@@ -153,6 +180,18 @@ impl Widget for LayerMap {
             cx.canvas
                 .fill_round_rect(b, 8, l.color.mix(t.surface, if on { 0.45 } else { 0.72 }));
             cx.canvas.fill_rect(Rect::new(b.x, b.y, 4, b.h), l.color);
+            if self.fade > 0 {
+                let w = |v: f32| LayerMap::x_of(plot, v);
+                let f = f32::from(self.fade);
+                if l.lo > 1 {
+                    let x0 = w(f32::from(l.lo));
+                    fade_cut(cx, b, x0, w(f32::from(l.lo) + f + 1.0), true, t.surface);
+                }
+                if l.hi < 127 {
+                    let x1 = w(f32::from(l.hi) + 1.0);
+                    fade_cut(cx, b, w(f32::from(l.hi) - f), x1, false, t.surface);
+                }
+            }
             if on {
                 cx.canvas.stroke_round_rect(b, 8, 2, l.color);
             }

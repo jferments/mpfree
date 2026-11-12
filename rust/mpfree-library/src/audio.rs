@@ -1,6 +1,7 @@
 //! What an audio file holds, read from its header alone: format, rate,
-//! channels, bits and length. Nothing here decodes audio; the sampler does
-//! that when a sound is loaded.
+//! channels, bits and length, and a quick picture of it for the browser
+//! ([`overview`]). Nothing here decodes a whole file; the sampler does that
+//! when a sound is loaded.
 
 use std::io::{self, Read, Seek, SeekFrom};
 
@@ -315,14 +316,17 @@ impl Enc {
     }
 }
 
-/// A quick picture of a PCM or float WAV or AIFF for the browser:
-/// `columns` (min, max) pairs from -1 to 1, each from at most 512 frames
-/// read at that column's place in the file, so a long file costs the same
-/// as a short one. None for anything else (FLAC needs a decoder; the
-/// sampler draws the full waveform once a sound is loaded).
+/// A quick picture of a PCM or float WAV or AIFF, or a FLAC, for the
+/// browser: `columns` (min, max) pairs from -1 to 1, each from at most 512
+/// frames read at that column's place in the file, so a long file costs
+/// about the same as a short one. A FLAC column decodes the one frame at its
+/// place ([`mpfree_flac::overview`]). None for anything else.
 pub fn overview<R: Read + Seek>(r: &mut R, columns: usize) -> Option<Vec<(f32, f32)>> {
     let mut h = [0u8; 12];
     r.read_exact(&mut h).ok()?;
+    if &h[..4] == b"fLaC" || &h[..3] == b"ID3" {
+        return mpfree_flac::overview(r, columns, 512);
+    }
     let (enc, channels, start, frames) = match (&h[..4], &h[8..]) {
         (b"RIFF", b"WAVE") => wav_layout(r)?,
         (b"FORM", b"AIFF") => aiff_layout(r, false)?,
@@ -632,6 +636,26 @@ mod tests {
         let silent = overview(&mut Cursor::new(wav_bytes(44_100, 1, 24, 100)), 10).unwrap();
         assert!(silent.iter().all(|&(a, b)| a == 0.0 && b == 0.0));
         assert!(overview(&mut Cursor::new(b"junk".to_vec()), 10).is_none());
+    }
+
+    #[test]
+    fn a_flac_overview_comes_from_its_frames() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../mpfree-flac/tests/data/s16-stereo-auto.flac"
+        );
+        let b = std::fs::read(path).unwrap();
+        let o = overview(&mut Cursor::new(&b), 40).unwrap();
+        assert_eq!(
+            o,
+            mpfree_flac::overview(&mut Cursor::new(&b), 40, 512).unwrap()
+        );
+        // The test signal: all but silent (a hiss of 2 steps), then a
+        // triangle at half level, then full-level noise in its fourth eighth.
+        assert!(o[0].1 < 0.001 && o[0].0 > -0.001, "{:?}", o[0]);
+        assert!(o[6].1 > 0.3 && o[6].1 < 0.55, "{:?}", o[6]);
+        assert!(o[16].1 > 0.9 && o[16].0 < -0.9, "{:?}", o[16]);
+        assert_eq!(read_info(&mut Cursor::new(&b)).unwrap().frames, 4800);
     }
 
     #[test]

@@ -30,6 +30,7 @@ Every design page opens with a **Status** line (proposal, approved, built, on ma
 - [Scenes and follow actions](design/scenes.md): a row of the launch grid launched together on the bar line, with its mutes switching there, and follow actions that chain clips and scenes (`rust/mpfree-perform`, 2026-11-11).
 - [The arrangement, the Song view and live to song](design/arrange.md): clips on a timeline, linked to their slots until made unique, song mode (a launched clip takes a track over until it stops), scenes into a song and back, the Song view on the Arrange page, and Rec song, which records what the grid plays (and the morph) into the song (`rust/mpfree-seq`, `rust/mpfree-play`, `rust/mpfree-perform`, `rust/mpfree-time-ui`, 2026-11-12).
 - [Step sequencer](design/steps.md): steps as a grid over a clip: velocity, length, nudge, chance, pages and chords (`rust/mpfree-seq`).
+- [The note editor](design/note-editor.md): one clip's notes on a piano roll or as a list on the Arrange page, with Timing Correct, nudge, transpose, draw and erase, each edit an undoable take (the MPC's Grid View, List Edit and TC; `rust/mpfree-seq`, `rust/mpfree-time-ui`, 2026-11-12).
 - [Capture](design/capture.md): keep what was just played, even without recording: the always-on history, the last phrase cut to whole bars, a new clip in place or notes into the playing clip, undo, the Capture button, and a WAV demo (`rust/mpfree-capture`, 2026-11-11).
 - [Audio tracks](design/audio-tracks.md): recording the line input in a line along the song: takes, a take per pass of a loop recording, comping between takes with crossfades, punch in and out, latency, one memory, and a demo (`rust/mpfree-audiotracks`, 2026-11-12).
 - [Looper](design/looper.md): up to eight audio loops on the transport, recorded from the line input or the pads, with layers, overdub and shared memory (`rust/mpfree-looper`).
@@ -51,7 +52,7 @@ Every design page opens with a **Status** line (proposal, approved, built, on ma
 
 - [Sampler design](design/sampler-design.md): how MPFree records, chops, edits, assigns and plays samples, including granular tools (proposal, 2026-11-10).
 - [Sampler feature map](design/sampler-features.md): every MPC sampler feature rebuilt with a better UI, what other samplers add, and what makes a sampler great for production and performance (proposal, 2026-11-10).
-- [Sampler architecture](design/sampler-architecture.md): crates, threads, data flow, real-time rules, algorithms and files for the sampler (proposal, 2026-11-10).
+- [Sampler architecture](design/sampler-architecture.md): crates, threads, data flow, real-time rules, algorithms and files for the sampler, and the sound files it loads (WAV, AIFF, and FLAC with our own decoder in `rust/mpfree-flac`) (proposal, 2026-11-10).
 
 ### Performance
 
