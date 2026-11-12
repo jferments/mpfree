@@ -445,18 +445,24 @@ impl Builder {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::AtomicBool;
     use std::sync::Mutex;
 
     /// A port that keeps what it is given, refusing the first `busy` writes
-    /// with WouldBlock (a full kernel buffer).
+    /// with WouldBlock (a full kernel buffer). While `held`, a write waits
+    /// (a port the kernel holds up).
     #[derive(Clone, Default)]
     struct Port {
         got: Arc<Mutex<Vec<u8>>>,
         busy: Arc<Mutex<u32>>,
+        held: Arc<AtomicBool>,
     }
 
     impl Write for Port {
         fn write(&mut self, b: &[u8]) -> io::Result<usize> {
+            while self.held.load(Ordering::Relaxed) {
+                thread::sleep(Duration::from_millis(1));
+            }
             let mut busy = self.busy.lock().unwrap();
             if *busy > 0 {
                 *busy -= 1;
@@ -475,6 +481,15 @@ mod tests {
         let public = Port::default();
         let private = Port::default();
         *public.busy.lock().unwrap() = 5;
+        // The port is held up until the sends are done, then busy five
+        // times. After two seconds it lets go on its own, so a send that
+        // waited for it fails the test rather than hanging it.
+        public.held.store(true, Ordering::Relaxed);
+        let held = public.held.clone();
+        thread::spawn(move || {
+            thread::sleep(Duration::from_secs(2));
+            held.store(false, Ordering::Relaxed);
+        });
         let mut l = Lights::start(public.clone(), Some(private.clone())).unwrap();
         let t = Instant::now();
         for k in 0..20u8 {
@@ -483,8 +498,11 @@ mod tests {
         assert!(l.send(true, &[0x90, 1, 2]));
         let long: Vec<u8> = (0..40).collect();
         assert!(l.send(false, &long));
-        // The sends never waited for the busy port (five 1 ms sleeps).
-        assert!(t.elapsed() < Duration::from_millis(5), "{:?}", t.elapsed());
+        // The sends never waited for the port: a wait takes the two
+        // seconds. (A second leaves room for a slow runner: CI runs these
+        // as 32-bit ARM under qemu.)
+        assert!(t.elapsed() < Duration::from_secs(1), "{:?}", t.elapsed());
+        public.held.store(false, Ordering::Relaxed);
         let s = l.finish(Duration::from_secs(5));
         assert_eq!(
             s,
