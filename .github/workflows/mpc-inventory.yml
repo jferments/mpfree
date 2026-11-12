@@ -1053,7 +1053,9 @@ jobs:
           cargo test --manifest-path rust/Cargo.toml --release --locked \
             --target armv7-unknown-linux-gnueabihf -p mpfree-hello -p mpfree-ui
           # The host-only preview under qemu: draws sample screens into new PNG files, touches no device.
-          timeout 120 qemu-arm "$f" --preview "$RUNNER_TEMP/hello-preview"
+          # It took 110-115 s on the self-hosted runners with four mpfree jobs sharing the CPU
+          # (2026-11-11) and two runs hit a 120 s limit, so the limit is 600 s; it only stops a hang.
+          timeout 600 qemu-arm "$f" --preview "$RUNNER_TEMP/hello-preview"
           for n in console loading loading-failed play debug syslog prefs options guide touchlab calibrate prefs-touch; do
             head -c 8 "$RUNNER_TEMP/hello-preview/$n.png" | od -An -tx1 | grep -q '89 50 4e 47 0d 0a 1a 0a'
           done
