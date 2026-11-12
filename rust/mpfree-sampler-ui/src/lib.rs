@@ -34,6 +34,10 @@
 //!   next bar and end on a press, silence or a length, and Skip back over
 //!   the last seconds or bars, each onto a pad ([`RecAction`]). Its picture
 //!   is in [`rec_widgets`].
+//! - [`auto_tab`]: the Rec tab's Auto-sample mode: the synth on the pads
+//!   sampled note by note into a keygroup instrument, with the keyboard,
+//!   the velocity layers and the plan's cost shown first ([`AutoAction`]).
+//!   Its picture is in [`auto_widgets`].
 //! - [`sample`]: sample screens for the workstation preview and the tests.
 //!
 //! No device I/O and no audio: the app draws the screens, feeds them
@@ -41,6 +45,8 @@
 
 #![forbid(unsafe_code)]
 
+pub mod auto_tab;
+pub mod auto_widgets;
 pub mod chop_tab;
 pub mod grain_tab;
 pub mod grain_widgets;
@@ -56,6 +62,7 @@ pub mod warp_widgets;
 pub mod wave_tab;
 pub mod widgets;
 
+pub use auto_tab::{AutoAction, AutoState, AutoTab};
 pub use chop_tab::{ChopAction, ChopState, ChopTab};
 pub use grain_tab::{GrainAction, GrainState, GrainTab};
 pub use mpfree_analysis::note_name;
