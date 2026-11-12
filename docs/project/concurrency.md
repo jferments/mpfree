@@ -70,7 +70,8 @@ match lane.join(deadline) {
 - **Deadlines, like the plugin sandbox.** `join` never waits past its
   deadline. Late, it says `Late`; the job comes back by itself, and until it
   does `post` says `Busy`. The caller picks the fallback. The plugin sandbox
-  and the remote offload server keep the same contract.
+  and the remote offload server ([Offload](offload.md)) keep the same
+  contract.
 - **Waiting.** The joiner spins, then sleeps on the word (a futex on Linux)
   until the deadline; by default it spins all the way, since the audio
   thread has nothing else to do. The worker sleeps between blocks
