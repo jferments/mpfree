@@ -147,14 +147,15 @@ Approved by Jay at 22:34Z (the mod thread's card, "Approve as proposed"). The mo
 
 ## 4e. The Pads tab
 
-**Picked by Jay on 12 Nov 2026** (15:46Z, "Pads + Browse / Pad switch"; his ask at 08:11Z: "the pads are the centerpiece of the MPC, and deserve their own top menu"). Mockups pads-1-browse and pads-2-pad in /mnt/project-files/hello-mpc/pads-mockups/. Not built yet.
+**Picked by Jay on 12 Nov 2026** (15:46Z, "Pads + Browse / Pad switch"; his ask at 08:11Z: "the pads are the centerpiece of the MPC, and deserve their own top menu"). Mockups pads-1-browse and pads-2-pad in /mnt/project-files/hello-mpc/pads-mockups/. Built to them by the app thread on 12 Nov (screens `pads-browse` and `pads-pad` in `mpfree --preview`).
 
 - **Its place:** a top-level tab between Play and Arrange (Play, Pads, Arrange, Synth, Looper, Sample).
 - **The pad bank on the left** (400 to 440 px), as the Sample tab's Pads sub-page had it: the bank's 16 pads as on the MPC (pad 1 bottom left), each with its name, layers and play mode; a tap picks a pad, a tap on the pad picked plays it; pads held on the hardware light up. Under it: Copy, Paste, Clear and Map to keys.
 - **A bar over everything:** the picked pad's colour, name and a line about its sound, and a **Browse | Pad** switch on the right.
-- **Browse** (the default): the browser in a narrow form beside the pads (places, the list, the selected item with its waveform and buttons). **Load to pad** puts the sound picked on the pad picked; PLAY hears it first.
+- **Browse** (the default): the browser in a narrow form beside the pads (places, the list, the selected item with its waveform and buttons), a picker for sounds that stays open: Samples, Recordings, Recent and Favourites, with Load (onto the pad picked), Load to pad (onto the next pad hit), Audition and Favourite only. The wheel moves through the list, SHIFT + wheel through the places, the push opens or loads, - goes up a folder, + into one, and PLAY hears the sound picked (it doesn't start the transport while Browse shows). Q-Link 1 scrolls, Q-Link 3 is the preview level, Q-Link 4 the places. Without a library (no `--data`), a card says so and the Pad view still works.
 - **Pad:** the picked pad's settings (sound, play mode, voices, mute group, level, pan, tune) and the kit's sounds with Put on, as the Sample tab's Pads sub-page had them. Q-Links 1 to 4 turn level, pan, tune and voices.
-- **The Sample tab** loses its Pads sub-tab and gains two small buttons in its bar, **Send to pad** and **Chop to pads**.
+- **The Sample tab** loses its Pads sub-tab and gains two small buttons beside its bar on every page (330 px, mockup sample-send-to-pad), **Send to pad** (the pad picked, sound and edits, onto the next pad hit; it reads "Hit a pad" while it waits, a second press calls it off) and **Chop to pads** (opens the Chop page; on the Chop page it is that page's own Chop to pads). Both are faint while the pad picked has no sound.
+- **PROG EDIT** opens the Pads tab on its Pad view (the Synth tab while the synth has the pads).
 - While the synth has the pads, the bar's heading carries the Chromatic | In key switch, as the Synth tab does.
 
 ## 5. Prefs (SHIFT + MENU)

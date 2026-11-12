@@ -52,12 +52,12 @@ pub const WHEEL: &str = "smp-grain-wheel";
 
 /// The tab's page: the cloud, and beside it the touch pad over the Grain
 /// list, between the pad bar and the Q-Link cards.
-pub const LAYOUT: &str = "col(header:60, smp-grain-bar:60, \
+pub const LAYOUT: &str = "col(header:60, row(smp-grain-bar:*, smp-send:330):60, \
                           row(smp-grain-cloud:*, col(smp-grain-xy:236, smp-grain-list:*):340):*, \
                           row(smp-grain-q1, smp-grain-q2, smp-grain-q3, smp-grain-q4, smp-grain-wheel:210):88, hint:26)";
 
 /// The tab's place in [`TABS`].
-pub const TAB: usize = 5;
+pub const TAB: usize = 4;
 
 /// The hint line the app shows under the tab.
 pub const HINT: &str = "Hit the pad to hear the cloud · drag on the sound for the position, on the pad for position and \
@@ -284,6 +284,7 @@ impl GrainTab {
     /// Adds the widgets and the page `name` to `ui` (the app adds `header`
     /// and `hint` first) and shows `st`.
     pub fn add(ui: &mut Ui, name: &str, st: &GrainState) -> Result<GrainTab, String> {
+        crate::send::add(ui);
         let mut bar = PadBar::new(&TABS);
         bar.enabled = TABS.iter().map(|t| wave_tab::BUILT.contains(t)).collect();
         bar.active = TAB;
