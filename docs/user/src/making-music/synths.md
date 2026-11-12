@@ -1,7 +1,7 @@
 <!--
 status: changing
 covers: rust/mpfree-synth rust/mpfree-synth-ui rust/mpfree-scale rust/mpfree-app/src/synth.rs rust/mpfree-app/src/app/synth_pads.rs
-checked: 2026-11-12 b4f1d46
+checked: 2026-11-12 1a6eb01
 -->
 
 # Synths
@@ -69,9 +69,9 @@ There are three pad layouts:
 
 With a scale on, the four pad banks start out as four different layouts, so you can switch between them with the **PAD BANK** buttons as you play: **A** Chromatic, **B** In key, **C** Chord pads, **D** In key an octave higher.
 
-The **Chromatic / In key** switch at the top of the pad map, on the Play page and the Synth tab, flips the current bank between the two with one tap.
+The **Chromatic / In key** switch in the pads heading on the Synth tab flips the current bank between the two with one tap.
 
-{{shot: play-synth-in-key | The Poly synth in A minor, In key. Every pad plays a note of the scale, and the pattern's rows are named by note.}}
+{{shot: play-synth-in-key | The Poly synth in A minor, In key, on the Play page. Every pad plays a note of the scale, and the pattern's rows are named by note.}}
 
 > [!TIP]
 > Drums is a kit rather than a keyboard: pad 1 plays the first drum, pad 2 the second and so on, whatever the scale, layout or octave.

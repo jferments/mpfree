@@ -1,7 +1,7 @@
 <!--
 status: changing
 covers: rust/mpfree-app/src/play_page.rs rust/mpfree-app/src/kit.rs rust/mpfree-app/src/app.rs rust/mpfree-seq rust/mpfree-transport
-checked: 2026-11-11 414faa1
+checked: 2026-11-12 1a6eb01
 -->
 
 # Your first beat
@@ -10,7 +10,7 @@ In this chapter you play a drum kit, set the tempo, program a pattern one step a
 
 ## Play the pads
 
-MPFree starts on the **Play** page with a drum kit on the pads. Hit a few pads: the kick is usually on pad 1, the snare on pad 2 and the hi-hats nearby. The small pad map on the screen shows each pad's name and lights up as you play.
+MPFree starts on the **Play** page with a drum kit on the pads. Hit a few pads: the kick is usually on pad 1, the snare on pad 2 and the hi-hats nearby. The pattern on the screen has a row for each pad, named after its sound.
 
 - **Change the kit:** turn the data wheel. The chip at the top right shows which kit you're on ("Kit 2 of 7 · Bank A").
 - **More sounds:** press **PAD BANK B**, **C** or **D** for another 16 sounds from the same kit. Press **PAD BANK A** to come back.

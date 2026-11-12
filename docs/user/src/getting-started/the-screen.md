@@ -1,7 +1,7 @@
 <!--
 status: changing
 covers: rust/mpfree-ui/src/widgets.rs rust/mpfree-ui/src/qlink.rs rust/mpfree-app/src/play_page.rs rust/mpfree-app/src/gui.rs
-checked: 2026-11-12 280f4cf
+checked: 2026-11-12 1a6eb01
 -->
 
 # The screen
@@ -58,4 +58,4 @@ In a list of settings like this one, turn the data wheel or tap to pick a row, a
 - **Hold** on a throw or the XY pad plays it for as long as you hold.
 
 > [!MPC]
-> There is no Main mode with tracks and programs on screen, and the Play page has only a small map of the pads: you play the real ones, and the screen uses the room for the loop, the pattern and performance tools. Prefs is not a menu item: it opens with **SHIFT + MENU**.
+> There is no Main mode with tracks and programs on screen, and the Play page has no pads on screen: you play the real ones, and the screen uses the room for the loop, the pattern and performance tools. Prefs is not a menu item: it opens with **SHIFT + MENU**.
