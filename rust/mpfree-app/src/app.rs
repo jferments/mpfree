@@ -11,7 +11,7 @@
 //! 0..15 (pad 1 = 0), as that engine expects.
 //!
 //! Buttons: SHIFT 49, FULL LEVEL 39, STOP 81 and PLAY 82 are measured
-//! (docs/hardware/controller-protocol.md); MENU 123, NOTE REPEAT 11, TAP
+//! (docs/dev/hardware/controller-protocol.md); MENU 123, NOTE REPEAT 11, TAP
 //! TEMPO 53, - 55 and + 54 were pressed in the round 5 button guide, so the
 //! guide no longer runs at power-on (Prefs still has it). Latch as SHIFT +
 //! NOTE REPEAT worked in round 5; Half Level as SHIFT + FULL LEVEL is read
@@ -102,7 +102,7 @@ pub enum View {
 }
 
 /// The header's tabs, in the order of the approved layout spec
-/// (docs/project/layout-spec.md, approved by the owner 2026-11-11): the music
+/// (docs/dev/design/layout-spec.md, approved by the owner 2026-11-11): the music
 /// pages, and the Dev tab only with the developer tools on. Prefs is not a
 /// tab (SHIFT + MENU).
 pub fn tabs(dev: bool) -> Vec<View> {

@@ -1,6 +1,6 @@
 # Expected eMMC layout and boot-critical hashes of the reference MPC One,
 # firmware 3.6.0, state MOD-001+MOD-002, from the owner's two --boot-map runs
-# on 2026-11-09 (docs/hardware/MPC_ONE_3_6_0_BOOT_MAP_20261109.md).
+# on 2026-11-09 (docs/dev/hardware/MPC_ONE_3_6_0_BOOT_MAP_20261109.md).
 # host_emmc_backup.py refuses to copy a disk whose layout differs from this,
 # and warns loudly if a boot-critical hash differs.
 #

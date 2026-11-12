@@ -2803,7 +2803,7 @@ use mpfree_touch_evdev::{parse_input_event, EVENT_SIZE};
 /// screen pixels. M13's reader: seeded from the kernel's slot state at open,
 /// resynced after an overflow, and still working (unseeded) if those queries
 /// fail. The profile comes from `mpfree_touch::profile::MPC_ONE`, which a test
-/// checks against docs/hardware/data/mpc-one-touch-profile.json.
+/// checks against docs/dev/hardware/data/mpc-one-touch-profile.json.
 pub struct TouchIn {
     reader: TouchReader<Box<dyn TouchSource + Send>>,
     events: Vec<PointerEvent>,
