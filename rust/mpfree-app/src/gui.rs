@@ -6513,7 +6513,7 @@ mod tests {
     }
 
     #[test]
-    fn load_puts_a_wav_on_the_pad_shown_and_load_to_pad_on_the_next_hit() {
+    fn load_puts_a_sound_on_the_pad_shown_and_load_to_pad_on_the_next_hit() {
         use mpfree_sampler::model::Source;
         use mpfree_sampler::wav;
         let dir = std::env::temp_dir().join(format!("mpfree-sample-load-{}", std::process::id()));
@@ -6554,12 +6554,30 @@ mod tests {
         assert_eq!(p.sample.assigning(), None);
         assert_eq!(p.sample.project(0).unwrap().pad(9).unwrap().name, "Rim");
         assert_eq!(p.kits[0].pads[9].as_deref(), Some("Rim"));
+        // A FLAC loads too, onto the pad shown (now the one just hit),
+        // known by what it holds; one cut short says so.
+        let flac = std::fs::read(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../mpfree-flac/tests/data/s16-stereo-auto.flac"
+        ))
+        .unwrap();
+        std::fs::write(dir.join("Loop.flac"), &flac[..flac.len() * 3 / 4]).unwrap();
+        p.sample.load_file(dir.join("Loop.flac"), false);
+        tick_until(&mut p, |p| p.kits[0].pads[9].as_deref() == Some("Loop"));
+        let log = events_log(&p);
+        assert!(log
+            .iter()
+            .any(|l| l == "sample: Loop: the file is cut short: its first 2304 frames"));
+        assert!(log
+            .iter()
+            .any(|l| l == "sample: loaded: Loop, 52 ms stereo on pad A10"));
         // What it can't load, it says.
+        std::fs::write(dir.join("Pad.aif"), b"not a sound").unwrap();
         p.sample.load_file(dir.join("Pad.aif"), false);
         tick_until(&mut p, |p| {
             events_log(p)
                 .iter()
-                .any(|l| l == "sample: not loaded (only WAV files load for now, not .aif)")
+                .any(|l| l == "sample: not loaded (not a WAV, AIFF or FLAC file)")
         });
         std::fs::remove_dir_all(&dir).unwrap();
     }

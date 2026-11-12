@@ -7,3 +7,4 @@ license = "MIT"
 description = "The user's library on the test stick (projects, samples, kits, patterns, recordings, trash): checked names, folder listing, audio file info, and copy, move, rename and delete to Trash on one worker thread"
 
 [dependencies]
+mpfree-flac = { path = "../mpfree-flac" }
