@@ -27,7 +27,10 @@
 //! same way. Tapping what is cued takes the cue back. While stopped, a tap
 //! launches or stops at once.
 
-use crate::editor::{drop_of, edit_rows, pads, EditAction, Editor, NoteBox, NoteGrid};
+use crate::editor::{
+    drop_of, edit_rows, pads, step_name, EditAction, Editor, Lens, LockMark, NoteBox, NoteGrid,
+    PEN, STEP_FALLBACK,
+};
 use crate::song::{AudioLane, SongBlock, SongLanes, ADD_AUDIO, AUDIO_BUTTONS, NONE, PANEL, REC};
 use crate::widgets::{
     BarButton, BarItem, CellState, ClipGrid, GridCell, GridTrack, MorphBar, Run, TakeItem,
@@ -81,9 +84,24 @@ pub const SONG_HINT: &str =
 /// of the grid, and the Edit options in place of the record settings.
 pub const EDIT_LAYOUT: &str =
     "col(header:60, row(col(transport:44, row(notes:*, col(edit-options:*, takes:240):250):*):*, qlinks:168):*, hint:26)";
-/// The hint line under the note editor.
+/// The hint line under the note editor's piano roll.
 pub const EDIT_HINT: &str =
     "Tap a note to pick it, drag to move   ·   Tool: select, draw, erase   ·   TC corrects the picked notes (all if none)   ·   wheel: the option picked";
+/// The hint line under the note editor's list.
+pub const EDIT_LIST_HINT: &str =
+    "Tap a row to pick its note   ·   SHIFT + wheel: scroll   ·   TC corrects the picked notes (all if none)   ·   wheel: the option picked";
+/// The hint line under the note editor's tracker.
+pub const EDIT_TRACKER_HINT: &str =
+    "Tap a row to pick its note   ·   Draw: tap an empty step   ·   SHIFT + wheel: scroll   ·   wheel: the option picked";
+
+/// The hint line under the note editor showing `lens`.
+pub fn edit_hint(lens: Lens) -> &'static str {
+    match lens {
+        Lens::Grid => EDIT_HINT,
+        Lens::List => EDIT_LIST_HINT,
+        Lens::Tracker => EDIT_TRACKER_HINT,
+    }
+}
 /// The record settings, top to bottom (short, to fit the 250 px panel).
 pub const RECORD_ROWS: [&str; 6] = ["Armed", "Mode", "Count-in", "Loop", "Tempo", "Pressure"];
 /// The loop lengths the Loop row steps through, in bars from bar 1 (0 is off).
@@ -717,6 +735,7 @@ pub fn action(ev: &UiEvent, st: &TimeState) -> Option<TimeAction> {
         (NOTES, kind) => Some(TimeAction::Edit(match *kind {
             EventKind::Tab(k) => EditAction::Button(k),
             EventKind::Select(i) => EditAction::Note(i),
+            EventKind::Cell { row: PEN, col } => EditAction::Step(col as Tick),
             EventKind::Cell { row, col } => EditAction::Empty {
                 tick: col as Tick,
                 note: u8::try_from(row).ok()?,
@@ -1189,24 +1208,29 @@ pub fn note_grid(e: &EditInfo, st: &TimeState) -> NoteGrid {
     let n_sel = ed.sel.iter().filter(|&&i| i < c.notes.len()).count();
     let mut g = NoteGrid::new();
     g.title = format!("Edit · {} · {}", c.name, e.track_name);
-    g.legend = format!(
-        "{} notes · {} picked · {}",
-        c.notes.len(),
-        n_sel,
-        if ed.list { "list" } else { "grid" }
-    );
+    let step = ed.grid().size();
+    let lens = match ed.lens {
+        Lens::Grid => "grid".to_string(),
+        Lens::List => "list".to_string(),
+        // The snap off or too fine: the steps are 1/16s, and it says so.
+        Lens::Tracker if step == STEP_FALLBACK && ed.snap_ticks() != step => {
+            format!(
+                "tracker · {} steps (snap {})",
+                step_name(step),
+                ed.snap_name()
+            )
+        }
+        Lens::Tracker => format!("tracker · {} steps", step_name(step)),
+    };
+    g.legend = format!("{} notes · {} picked · {lens}", c.notes.len(), n_sel);
     g.notes = c
         .notes
         .iter()
         .enumerate()
-        .map(|(i, n)| NoteBox {
-            tick: n.tick,
-            len: n.len,
-            note: n.note,
-            velocity: n.velocity,
-            selected: selected(i),
-        })
+        .map(|(i, n)| NoteBox::of(n, selected(i)))
         .collect();
+    g.step = step;
+    g.locks = c.locks.iter().map(LockMark::of).collect();
     g.length = c.length;
     g.bar = e.bar;
     g.low = ed.low;
@@ -1215,7 +1239,7 @@ pub fn note_grid(e: &EditInfo, st: &TimeState) -> NoteGrid {
     g.snap = ed.snap_ticks();
     g.snap_name = ed.snap_name().to_string();
     g.tool = ed.tool;
-    g.list = ed.list;
+    g.lens = ed.lens;
     g.first = ed.first;
     g.color = track_color(ed.track);
     g
