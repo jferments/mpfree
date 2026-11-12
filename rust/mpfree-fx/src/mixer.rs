@@ -2177,20 +2177,25 @@ impl Mixer {
         }
         for (i, &k) in order.iter().enumerate() {
             let k = k as usize;
-            if let Some(sp) = split.as_deref_mut() {
-                if lane_stages.contains(&i) && !sp.away {
-                    let end = order[i..]
-                        .iter()
-                        .position(|&j| topo.role(j as usize).0 != topo.role(k).0)
-                        .map_or(order.len(), |n| i + n);
-                    let want = pick(strips, &order[i..end], &keyed);
-                    remote = post(sp, strips, &order[i..end], &want, caps, &base, len, stats);
+            // With no lane (the usual case) nothing here looks at one.
+            let lane_did = match split.as_deref_mut() {
+                None => false,
+                Some(sp) => {
+                    if lane_stages.contains(&i) && !sp.away {
+                        let end = order[i..]
+                            .iter()
+                            .position(|&j| topo.role(j as usize).0 != topo.role(k).0)
+                            .map_or(order.len(), |n| i + n);
+                        let want = pick(strips, &order[i..end], &keyed);
+                        remote = post(sp, strips, &order[i..end], &want, caps, &base, len, stats);
+                    }
+                    let did = remote.get(k);
+                    if did && sp.posted {
+                        join(sp, strips, stats);
+                    }
+                    did
                 }
-                if remote.get(k) && sp.posted {
-                    join(sp, strips, stats);
-                }
-            }
-            let lane_did = remote.get(k);
+            };
             let (lo, rest) = strips.split_at_mut(k);
             let Some((st, hi)) = rest.split_first_mut() else {
                 break;
@@ -2205,7 +2210,9 @@ impl Mixer {
                 fed
             };
             let mut frozen = false;
-            if !lane_did {
+            // An empty chain that is not frozen does nothing: skip it.
+            let idle = matches!(st.fz, Fz::Off) && st.chain.is_empty();
+            if !lane_did && !idle {
                 let key = |j: u16| {
                     let j = j as usize;
                     let s = if j < k {

@@ -1,17 +1,17 @@
 # MPFree storage: where settings and user files are saved
 
 **Status:** APPROVED by Jay on 2026-11-11 at 09:30Z ("Yes, kept across rounds"). Built in round 7; until a stick with partition 4 is written, nothing is saved.
-**Owner:** the Hello MPC thread, which owns the app shell. The touch thread (calibration) and the arp thread (patterns) use this; nothing else picks its own place.
+**Owner:** the app thread (it was the Hello MPC thread), which owns the app shell. The touch thread (calibration) and the arp thread (patterns) use this; nothing else picks its own place.
 
 ## Where (rule zero)
 
 - **On the test stick, never on the MPC.** The eMMC (p1–p6, the U-Boot environment, the rootfs) and the SD card are never written. On the test boot, the eMMC and SD controllers are disabled in the device tree anyway.
 - **Root file system:** the stick's partition 1 stays read-only, and /data is RAM.
-- **A new partition 4, "MPFREE-DATA":** ext4 with a journal, 64 MiB, built by `offline-kexec-stick.py`.
+- **A new partition 4, "MPFREE-DATA":** ext4 with a journal, built by `offline-kexec-stick.py` at 1 GiB. It fills the rest of the stick (plan decision 1, approved 2026-11-12): `stick.img` holds a 64 MiB one, `write-test-stick.py` makes the partition run to the end of the stick, and the filesystem grows to fill it at boot ([how](../hardware/kexec-test-boot.md#saved-settings-partition-4)).
   - `start-app.sh` mounts it read-write at `/run/mpfree-data` (nosuid, nodev, noexec) and passes `--data /run/mpfree-data` to the pad player.
   - If the mount fails, the app runs without saving and logs why.
-- **Kept across rounds:** `write-test-stick.py` reads partition 4 off the old stick first (read-only), puts it into the new image, then writes the image as now. `--fresh-data` starts empty.
-- **Undo:** rewrite the stick with `--fresh-data`, or delete files on partition 4 from the workstation.
+- **Kept across rounds:** `write-test-stick.py` leaves partition 4 where it is when the stick already has it at 1 GiB, and rewrites only partitions 1 to 3 and the partition table. A stick with the old 64 MiB layout has its partition 4 saved to the build folder first, then moved. `--fresh-data` starts empty; `--data-from FILE` writes a saved copy.
+- **Undo:** rewrite the stick with `--fresh-data`, write a saved copy back with `--data-from`, or delete files on partition 4 from the workstation.
 - **If a write is cut off:** each file is written whole to `NAME.part`, synced, then renamed over the old one. A cut-off write leaves the old file.
 
 ## Layout of the partition

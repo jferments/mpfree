@@ -6,8 +6,8 @@
 
 use mpfree_library::audio::duration;
 use mpfree_library::{
-    valid_name, AudioFormat, AudioInfo, Done, Entry, Job, Kind, Library, Loc, Meta, Outcome, Place,
-    Snapshot, TrashItem, Worker,
+    valid_name, AudioFormat, AudioInfo, Done, Entry, Job, Kind, Library, Loc, Meta, NewSample,
+    Outcome, Place, Snapshot, TrashItem, Worker,
 };
 use std::path::PathBuf;
 
@@ -1385,7 +1385,14 @@ impl Browser {
     /// SHIFT + BROWSE: saves `snap` as the current project, or, the first
     /// time, as a new project named for the time (no typing needed;
     /// Rename changes it later). `now` is seconds since 1970 (UTC).
-    pub fn save(&mut self, mut snap: Snapshot, now: u64) {
+    pub fn save(&mut self, snap: Snapshot, now: u64) {
+        self.save_with(snap, Vec::new(), now);
+    }
+
+    /// [`Browser::save`] with the sounds the parts name (the sampler's
+    /// recordings and kits), written into the project first where it
+    /// doesn't have them yet.
+    pub fn save_with(&mut self, mut snap: Snapshot, samples: Vec<NewSample>, now: u64) {
         let loc = match &self.project {
             Some(l) => l.clone(),
             None => {
@@ -1414,6 +1421,7 @@ impl Browser {
             project: loc,
             snap,
             keep: KEEP_VERSIONS,
+            samples,
         });
     }
 
