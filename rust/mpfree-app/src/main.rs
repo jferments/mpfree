@@ -101,6 +101,7 @@ mod modpanels;
 mod perf;
 mod play_page;
 mod play_widgets;
+mod port_writer;
 mod qlink_touch;
 #[cfg(test)]
 mod rt_safety;
