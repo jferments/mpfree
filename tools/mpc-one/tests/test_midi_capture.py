@@ -187,6 +187,22 @@ class MidiCaptureWrapperTests(unittest.TestCase):
         self.assertIn("phase set: cv-scale", text)
         self.assertRegex(text, r"  cv_octaves: .*IN cable2 \d+ \([+-]\d+\)")
 
+    def test_midi_out_phases(self):
+        # Enter after the setup list, then Enter for each of the five phases.
+        rc, out = self.run_wrapper("\n" * 6, MPFREE_CAPTURE_PHASES="midi-out")
+        self.assertEqual(rc, 0, out)
+        self.assertIn("Keep the MIDI track routed the way that made the synth play", out)
+        self.assertIn("Do not save the project or change Preferences.", out)
+        for name in ("idle", "out_keys", "out_hold", "out_pads", "out_clock"):
+            self.assertIn(f"] {name}: ", out)
+        text = self.report()
+        self.assertIn("phase set: midi-out", text)
+        self.assertRegex(text, r"  out_keys: .*IN cable2 \d+ \([+-]\d+\)")
+        self.assertIn("OUT cable2 note_on ch=1 64 80 [90 40 50]", text)
+        with open(self.log) as fh:
+            ssh = [ln for ln in fh.read().splitlines() if ln.startswith("ssh: ")]
+        self.assertEqual(ssh, ["ssh: sh -s"])
+
     def test_default_is_the_controller_set(self):
         rc, out = self.run_wrapper("\n" * 10)
         self.assertEqual(rc, 0, out)
@@ -210,7 +226,7 @@ class MidiCaptureWrapperTests(unittest.TestCase):
     def test_wrapper_refuses_an_unknown_phase_set(self):
         rc, out = self.run_wrapper("\n" * 7, MPFREE_CAPTURE_PHASES="cv")
         self.assertNotEqual(rc, 0, out)
-        self.assertIn("MPFREE_CAPTURE_PHASES must be controller, midi-cv or cv-scale, not: cv", out)
+        self.assertIn("MPFREE_CAPTURE_PHASES must be controller, midi-cv, cv-scale or midi-out, not: cv", out)
         with open(self.log) as fh:
             self.assertNotIn("ssh:", fh.read())
 
@@ -218,10 +234,10 @@ class MidiCaptureWrapperTests(unittest.TestCase):
 class StaticTests(unittest.TestCase):
     def test_phase_sets(self):
         mod = load_helper()
-        self.assertEqual(sorted(mod.PHASE_SETS), ["controller", "cv-scale", "midi-cv"])
-        self.assertEqual(sorted(mod.SETUPS), ["cv-scale", "midi-cv"])
+        self.assertEqual(sorted(mod.PHASE_SETS), ["controller", "cv-scale", "midi-cv", "midi-out"])
+        self.assertEqual(sorted(mod.SETUPS), ["cv-scale", "midi-cv", "midi-out"])
         self.assertIs(mod.PHASE_SETS["controller"], mod.PHASES)
-        for phases in (mod.MIDI_CV_PHASES, mod.CV_SCALE_PHASES):
+        for phases in (mod.MIDI_CV_PHASES, mod.CV_SCALE_PHASES, mod.MIDI_OUT_PHASES):
             names = [n for n, _ in phases]
             self.assertEqual(names[0], "idle")  # the baseline the per-cable counts compare against
             self.assertEqual(len(names), len(set(names)))

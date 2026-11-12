@@ -45,6 +45,8 @@ MPFREE_ACCEPT_USBMON=YES MPFREE_CAPTURE_PHASES=midi-cv bash tools/mpc-one/collec
 
 `MPFREE_CAPTURE_PHASES=cv-scale` is the second round. With the keyboard on MIDI In and the CV track selected, you play C in three octaves, then C, C sharp, D and D sharp. Then you move the CV track to its next outputs and play one C. Last, you play the MIDI track (output MIDI Out) from the keyboard and the pads. Because the keyboard's note numbers show on cable 2, each CV message can be matched to its note.
 
+`MPFREE_CAPTURE_PHASES=midi-out` is the third round, for the MIDI Out jack only. Set it up once a synth on MIDI Out is heard playing from a MIDI track (in Akai's app that took the track's MIDI Out routing as well as its MIDI Output Ch). Then you play C, E and G on the keyboard into the MIDI track, hold one key for about 3 s, hit pad 1 softly and hard and pad 13 once, and, only if Sync is already ticked for that port in Akai's Preferences, press PLAY and STOP. The report shows which cable and channel the notes leave on.
+
 ## What comes next (not in this phase)
 
 These need separate, explicit opt-in steps, each with its own undo plan:

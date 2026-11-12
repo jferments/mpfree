@@ -142,10 +142,12 @@ elif [[ "${1:-}" == "--midi-activity" ]]; then
   [[ -t 0 ]] || die '--midi-activity is interactive: run it from a terminal'
 elif [[ "${1:-}" == "--midi-capture" ]]; then
   # Which guided phases: controller (default), midi-cv (the DIN MIDI jacks and the CV/Gate jacks)
-  # or cv-scale (known keyboard notes into the CV track, and MIDI Out again).
+  # cv-scale (known keyboard notes into the CV track, and MIDI Out again) or midi-out (MIDI Out only).
   MIDI_CAPTURE_PHASES="${MPFREE_CAPTURE_PHASES:-controller}"
-  [[ "$MIDI_CAPTURE_PHASES" == 'controller' || "$MIDI_CAPTURE_PHASES" == 'midi-cv' || "$MIDI_CAPTURE_PHASES" == 'cv-scale' ]] ||
-    die "MPFREE_CAPTURE_PHASES must be controller, midi-cv or cv-scale, not: $MIDI_CAPTURE_PHASES"
+  case "$MIDI_CAPTURE_PHASES" in
+    controller|midi-cv|cv-scale|midi-out) ;;
+    *) die "MPFREE_CAPTURE_PHASES must be controller, midi-cv, cv-scale or midi-out, not: $MIDI_CAPTURE_PHASES" ;;
+  esac
   command -v python3 >/dev/null 2>&1 || die 'python3 is required for --midi-capture on workstation'
   [[ -r "$SCRIPT_DIR/host_midi_capture.py" ]] || die 'Missing host_midi_capture.py'
   [[ -r "$SCRIPT_DIR/passive-usbmon-capture.sh" ]] || die 'Missing passive-usbmon-capture.sh'
