@@ -23,9 +23,10 @@
 //! depend on how the host cuts blocks. The delay lines are allocated in
 //! `prepare`; nothing in `process` allocates.
 
-use mpfree_node::{Ctx, Kind, Node, NodeEvent, NodeInfo, ParamInfo, Smooth, Timed};
+use mpfree_node::{Ctx, Kind, Node, NodeEvent, NodeInfo, ParamInfo, Smooth, Timed, Tuning};
 
 use crate::dsp::{note_hz, Rng};
+use crate::expr::{expr_coef, NoteExprs, VoiceExpr};
 use crate::params::Preset;
 use crate::pluck_params::*;
 
@@ -151,12 +152,12 @@ fn strike_place(k: usize, pos: f32) -> f32 {
 }
 
 /// The mallet pulse's length in frames, from Hardness (0 to 100), the
-/// velocity's brightness and the note's pitch. A soft mallet is a long
+/// velocity's brightness and the note's frequency. A soft mallet is a long
 /// pulse, but never longer than a third of the note's period, so high notes
 /// still sound.
-fn pulse_len(hardness: f32, bright: f32, pitch: f32, rate: f32) -> f32 {
+fn pulse_len(hardness: f32, bright: f32, hz: f32, rate: f32) -> f32 {
     let hard = (hardness / 100.0 * bright).clamp(0.0, 1.0);
-    let period = rate / note_hz(pitch).max(1.0);
+    let period = rate / hz.max(1.0);
     (rate * (0.0002 + 0.006 * (1.0 - hard) * (1.0 - hard)))
         .min(period / 3.0)
         .max(2.0)
@@ -166,7 +167,7 @@ fn pulse_len(hardness: f32, bright: f32, pitch: f32, rate: f32) -> f32 {
 /// seconds, with the values `value` gives by parameter id (for drawing it).
 pub fn mallet_pulse_secs(value: impl Fn(u16) -> f32, note: u8, rate: u32) -> f32 {
     let pitch = f32::from(note) + value(TRANSPOSE) + value(FINE) / 100.0;
-    pulse_len(value(HARDNESS), 1.0, pitch, rate as f32) / rate as f32
+    pulse_len(value(HARDNESS), 1.0, note_hz(pitch), rate as f32) / rate as f32
 }
 
 /// One partial of a note, for drawing it (`mpfree-synth-ui`).
@@ -249,7 +250,7 @@ pub fn partials(value: impl Fn(u16) -> f32, note: u8, rate: u32, out: &mut [Part
         let base = decay_for(value(DECAY), f0);
         let share = mode_share(modes);
         // The half-sine pulse's spectrum, 1 at 0 Hz.
-        let t = pulse_len(value(HARDNESS), 1.0, pitch, rate) / rate;
+        let t = pulse_len(value(HARDNESS), 1.0, f0, rate) / rate;
         let pulse = |f: f32| {
             let d = 1.0 - (2.0 * f * t).powi(2);
             if d.abs() < 1e-4 {
@@ -301,6 +302,8 @@ struct Voice {
     /// Pitch the voice is tuned to now (fractional MIDI note), or NaN to
     /// force a retune.
     tuned: f32,
+    /// Its note's own slide (tone isn't used yet).
+    ex: VoiceExpr,
     gain_l: f32,
     gain_r: f32,
     kill: f32,
@@ -350,6 +353,12 @@ pub struct Pluck {
     out_l: Smooth,
     out_r: Smooth,
     next_pan: u32,
+    /// How notes become frequencies.
+    tuning: Tuning,
+    /// Each note's slide and tone for its next note-on, and the voices'
+    /// smoothing coefficient.
+    exprs: NoteExprs,
+    expr_c: f32,
 }
 
 impl Pluck {
@@ -372,6 +381,9 @@ impl Pluck {
             out_l: Smooth::new(0.0),
             out_r: Smooth::new(0.0),
             next_pan: 0,
+            tuning: Tuning::standard(),
+            exprs: NoteExprs::new(),
+            expr_c: 1.0,
         };
         s.prepare(rate, mpfree_node::MAX_BLOCK);
         s
@@ -430,6 +442,16 @@ impl Pluck {
             + self.bend.value * self.v(BEND_RANGE)
     }
 
+    /// The pitch a voice plays now: its note's, plus its own slide.
+    fn voice_pitch(&self, note: u8, ex: &VoiceExpr) -> f32 {
+        let p = self.pitch(note);
+        if ex.slide != 0.0 {
+            p + ex.slide
+        } else {
+            p
+        }
+    }
+
     /// Decay (T60, seconds) at `hz`: the Decay value at middle C, halving
     /// every two octaves up.
     fn decay_at(&self, hz: f32, held: bool) -> f32 {
@@ -446,7 +468,7 @@ impl Pluck {
         let rate = self.rate as f32;
         let held = v.state == State::On;
         if !self.mallet() {
-            let hz = note_hz(pitch).max(MIN_HZ).min(rate * 0.25);
+            let hz = self.tuning.hz(pitch).max(MIN_HZ).min(rate * 0.25);
             let w = std::f32::consts::TAU * hz / rate;
             let a = loop_coef(self.v(BRIGHTNESS), hz, rate);
             let (s, c) = w.sin_cos();
@@ -463,7 +485,7 @@ impl Pluck {
             let stretch = self.v(STRETCH) / 100.0;
             let damp = self.v(HIGH_DAMP) / 100.0;
             let pos = self.v(STRIKE) / 100.0;
-            let f0 = note_hz(pitch);
+            let f0 = self.tuning.hz(pitch);
             let base = self.decay_at(f0, held);
             v.n_modes = modes.len().min(MODES);
             let share = mode_share(modes);
@@ -561,14 +583,16 @@ impl Pluck {
         v.vel = vel;
         v.age = self.clock;
         v.frames = 0;
-        let pitch = self.pitch(note);
+        v.ex.start(self.exprs.on(note));
+        let pitch = self.voice_pitch(note, &v.ex);
         self.tune(&mut v, pitch);
         // Velocity: level, and brightness by Vel > tone.
         let vt = self.v(VEL_TONE) / 100.0;
         let bright = 1.0 - vt * (1.0 - vel);
         let amp = 0.25 + 0.75 * vel;
         if self.mallet() {
-            let len = pulse_len(self.v(HARDNESS), bright, pitch, self.rate as f32);
+            let hz = self.tuning.hz(pitch);
+            let len = pulse_len(self.v(HARDNESS), bright, hz, self.rate as f32);
             v.pulse_len = len as u32;
             v.pulse_at = 0;
             // Unit area, so the low modes sound the same at any hardness.
@@ -616,11 +640,12 @@ impl Pluck {
     }
 
     fn note_off(&mut self, note: u8) {
+        self.exprs.off(note);
         for i in 0..POOL {
             if self.voices[i].note == note && self.voices[i].state == State::On {
                 let mut v = self.voices[i];
                 v.state = State::Release;
-                let pitch = self.pitch(note);
+                let pitch = self.voice_pitch(note, &v.ex);
                 self.tune(&mut v, pitch);
                 self.voices[i] = v;
             }
@@ -655,9 +680,21 @@ impl Pluck {
                         self.note_off(n);
                     }
                 }
+                self.exprs.clear();
             }
             NodeEvent::Param { id, value } => self.set_param(id, value),
             NodeEvent::Pressure { .. } => {}
+            NodeEvent::Expression { note, kind, value } => {
+                // One note's own slide: its held voices glide to it.
+                let Some(value) = self.exprs.set(note, kind, value) else {
+                    return;
+                };
+                for v in &mut self.voices {
+                    if v.state == State::On && v.note == note {
+                        v.ex.aim(kind, value);
+                    }
+                }
+            }
         }
     }
 
@@ -665,12 +702,22 @@ impl Pluck {
     fn control(&mut self) {
         self.bend.next();
         for i in 0..POOL {
-            let mut v = self.voices[i];
-            if v.state == State::Free {
+            // Look before copying: a voice is a few hundred bytes, and
+            // most steps retune nothing.
+            let (state, note, tuned, mut ex) = {
+                let v = &self.voices[i];
+                (v.state, v.note, v.tuned, v.ex)
+            };
+            if state == State::Free {
                 continue;
             }
-            let p = self.pitch(v.note);
-            if v.tuned.is_nan() || (p - v.tuned).abs() > 1e-4 {
+            if ex.active() {
+                ex.step(self.expr_c);
+                self.voices[i].ex = ex;
+            }
+            let p = self.voice_pitch(note, &ex);
+            if tuned.is_nan() || (p - tuned).abs() > 1e-4 {
+                let mut v = self.voices[i];
                 self.tune(&mut v, p);
                 self.voices[i] = v;
             }
@@ -800,6 +847,7 @@ impl Node for Pluck {
         self.scratch = vec![0.0; self.line];
         let cr = rate / CTRL as u32;
         self.bend.set_time(cr, 4.0);
+        self.expr_c = expr_coef(cr as f32);
         self.out_l.set_time(rate, 10.0);
         self.out_r.set_time(rate, 10.0);
         self.reset();
@@ -814,6 +862,7 @@ impl Node for Pluck {
         self.out_l.snap(self.out_l.target);
         self.out_r.snap(self.out_r.target);
         self.bend.snap(self.bend_value);
+        self.exprs.clear();
     }
 
     fn process(&mut self, ctx: &Ctx, events: &[Timed], left: &mut [f32], right: &mut [f32]) {
@@ -848,5 +897,16 @@ impl Node for Pluck {
 
     fn tail_frames(&self) -> u32 {
         (self.v(RELEASE).max(KILL_MS) * 0.001 * self.rate as f32 * 1.5) as u32
+    }
+
+    fn set_tuning(&mut self, tuning: &Tuning) {
+        if self.tuning == *tuning {
+            return;
+        }
+        self.tuning.clone_from(tuning);
+        // Every voice retunes on the next control step.
+        for v in self.voices.iter_mut() {
+            v.tuned = f32::NAN;
+        }
     }
 }

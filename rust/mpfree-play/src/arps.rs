@@ -26,7 +26,9 @@
 //! player sent them, before the arp's notes on the same frame.
 //!
 //! [`TrackArps::new`] allocates (16 engines) and belongs on the control
-//! thread at start; nothing else allocates.
+//! thread at start; nothing else allocates. An arp given nothing in a
+//! period whose engine is idle (`Engine::idle`) skips that period
+//! (`Engine::skip`), so idle tracks cost next to nothing.
 
 use mpfree_arp::{Engine, EventKind};
 use mpfree_seq::{DestId, MAX_TRACKS};
@@ -43,6 +45,10 @@ pub struct TrackArps {
     arps: Vec<ArpHost>,
     through: [bool; MAX_TRACKS],
     dest: [DestId; MAX_TRACKS],
+    /// Tracks whose arp was given a note (or a panic) this period. An arp
+    /// with none and an idle engine skips its period, which keeps 15 idle
+    /// arps nearly free.
+    fed: [bool; MAX_TRACKS],
     /// This period's notes for the sink, until [`TrackArps::finish`].
     out: [Out; MAX_OUT],
     n_out: usize,
@@ -67,6 +73,7 @@ impl TrackArps {
                 .collect(),
             through: [false; MAX_TRACKS],
             dest: core::array::from_fn(|t| t as DestId),
+            fed: [false; MAX_TRACKS],
             out: [blank; MAX_OUT],
             n_out: 0,
             dropped: 0,
@@ -94,6 +101,7 @@ impl TrackArps {
                 *t = on;
                 if !self.arps[track].engine.active().is_empty() {
                     self.arps[track].input(0, Event::AllOff);
+                    self.fed[track] = true;
                 }
             }
         }
@@ -123,6 +131,7 @@ impl TrackArps {
     pub fn pad(&mut self, track: usize, offset: u32, event: Event) {
         if let Some(a) = self.arps.get_mut(track) {
             a.input(offset, event);
+            self.fed[track] = true;
         }
     }
 
@@ -143,6 +152,10 @@ impl TrackArps {
     pub fn finish(&mut self, block: &Block, sink: &mut impl Sink) {
         let player_notes = self.n_out;
         for t in 0..self.arps.len() {
+            if !std::mem::take(&mut self.fed[t]) && self.arps[t].engine.idle() {
+                self.arps[t].engine.skip(block.frames);
+                continue;
+            }
             let (track, dest) = (t as u16, self.dest[t]);
             let start = block.start_frame;
             let (arps, out, n_out, dropped) = (
@@ -212,8 +225,10 @@ impl Sink for Through<'_> {
             for arp in a.arps.iter_mut() {
                 arp.input(o.offset, Event::AllOff);
             }
+            a.fed = [true; MAX_TRACKS];
         } else if a.through(t) && matches!(o.event, Event::NoteOn { .. } | Event::NoteOff { .. }) {
             a.arps[t].input(o.offset, o.event);
+            a.fed[t] = true;
             return;
         }
         push(&mut a.out, &mut a.n_out, &mut a.dropped, o);

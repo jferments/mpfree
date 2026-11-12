@@ -254,6 +254,33 @@ fn static_presets(engine: Engine) -> &'static [Preset] {
     }
 }
 
+/// A new instrument of the engine `id` (its [`mpfree_node::NodeInfo::id`])
+/// at `rate`, with `values` (every parameter, in the node's order, as
+/// [`Synth::values`] and the Synth tab's state hold them) set: a copy of
+/// the patch for auto-sampling off the audio thread, which keeps playing
+/// its own. The meters are left alone. None for an engine it doesn't know
+/// or values that aren't its.
+pub fn fresh_node(id: &str, values: &[f32], rate: u32) -> Option<Box<dyn Node>> {
+    let mut node: Box<dyn Node> = match id {
+        "mpfree.poly" => Box::new(Poly::new(rate)),
+        "mpfree.fm" => Box::new(Fm::new(rate)),
+        "mpfree.drums" => Box::new(Drums::new(rate)),
+        "mpfree.pluck" => Box::new(Pluck::new(rate)),
+        "mpfree.wavetable" => Box::new(Wavetable::new(rate)),
+        _ => return None,
+    };
+    let params = node.params();
+    if params.len() != values.len() {
+        return None;
+    }
+    for (p, v) in params.iter().zip(values) {
+        if !p.readonly {
+            node.set_param(p.id, *v);
+        }
+    }
+    Some(node)
+}
+
 /// The index of the preset called `name`, or 0.
 fn start_preset(presets: &[Preset], name: &str) -> usize {
     presets.iter().position(|p| p.name == name).unwrap_or(0)
@@ -1068,6 +1095,72 @@ mod tests {
         let mut p = s.settings();
         f(&mut p);
         s.set_settings(p);
+    }
+
+    /// A note on `node` from a fresh start, as auto-sampling plays it.
+    fn note(node: &mut dyn Node, note: u8) -> Vec<f32> {
+        const BLOCK: usize = 256;
+        node.prepare(48_000, BLOCK);
+        node.reset();
+        let mut out = Vec::new();
+        for b in 0..40 {
+            let (mut l, mut r) = (vec![0f32; BLOCK], vec![0f32; BLOCK]);
+            let ev = match b {
+                0 => vec![Timed::new(
+                    0,
+                    NodeEvent::NoteOn {
+                        note,
+                        velocity: 100,
+                    },
+                )],
+                24 => vec![Timed::new(0, NodeEvent::NoteOff { note })],
+                _ => Vec::new(),
+            };
+            let ctx = Ctx::new(48_000, (b * BLOCK) as u64);
+            node.process(&ctx, &ev, &mut l, &mut r);
+            out.extend(l.iter().zip(&r).flat_map(|(a, b)| [*a, *b]));
+        }
+        out
+    }
+
+    #[test]
+    fn a_fresh_copy_of_every_engine_plays_the_patch_as_the_pads_do() {
+        let mut s = Synth::new(48_000);
+        for engine in [
+            Engine::Poly,
+            Engine::Fm,
+            Engine::Drums,
+            Engine::Pluck,
+            Engine::Wavetable,
+        ] {
+            with(&mut s, |p| p.engine = engine);
+            // A preset other than the first, with a value changed after.
+            let i = 1.min(s.preset_count() - 1);
+            s.load_preset(i);
+            let edit = s
+                .node()
+                .params()
+                .iter()
+                .find(|p| !p.readonly && p.max > p.min)
+                .map(|p| (p.id, p.min + (p.max - p.min) * 0.3));
+            if let Some((id, v)) = edit {
+                s.set(id, v);
+            }
+            let st = s.state();
+            let mut copy = fresh_node(st.info.id, &st.values, 48_000).unwrap();
+            assert_eq!(copy.info().id, st.info.id);
+            for (p, v) in st.params.iter().zip(&st.values) {
+                assert_eq!(copy.param(p.id), *v, "{} {}", st.info.name, p.name);
+            }
+            // The note pad 1 plays (a drum's, for Drums).
+            let n = s.notes(0)[0];
+            let theirs = note(s.node_mut(), n);
+            let ours = note(copy.as_mut(), n);
+            assert!(peak(&theirs) > 0.001, "{} sounds", st.info.name);
+            assert_eq!(ours, theirs, "{} plays the same", st.info.name);
+        }
+        assert!(fresh_node("mpfree.nothing", &[], 48_000).is_none());
+        assert!(fresh_node("mpfree.poly", &[0.5], 48_000).is_none());
     }
 
     #[test]
