@@ -530,6 +530,7 @@ dependencies = [
  "mpfree-mixer-ui",
  "mpfree-mod",
  "mpfree-node",
+ "mpfree-perform",
  "mpfree-play",
  "mpfree-prof",
  "mpfree-sampler",
@@ -628,6 +629,15 @@ name = "mpfree-param"
 version = "0.1.0"
 
 [[package]]
+name = "mpfree-perform"
+version = "0.1.0"
+dependencies = [
+ "mpfree-play",
+ "mpfree-seq",
+ "mpfree-transport",
+]
+
+[[package]]
 name = "mpfree-play"
 version = "0.1.0"
 dependencies = [
@@ -699,6 +709,7 @@ version = "0.1.0"
 name = "mpfree-seq"
 version = "0.1.0"
 dependencies = [
+ "mpfree-moves",
  "mpfree-param",
  "mpfree-transport",
 ]

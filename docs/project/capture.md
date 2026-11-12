@@ -24,6 +24,7 @@ CAPTURE puts the phrase in the armed track (track 1 if none is armed), as a take
 - **Otherwise, a new clip:** it goes in the track's first empty slot, named "Capture 1", "Capture 2" and so on, and it is launched in place of the track's clip.
   - A phrase played in time keeps its place against the song. If you played it over bars 3 and 4, bar 5 is its first bar again, so it plays on in time straight away.
   - A free phrase starts on the next bar line (when stopped, on the current bar's line).
+- **FX moves go with it.** The Perform FX moves made over a phrase played in time (the XY pad, the DJ knob, a pad's Hold, kept always in a move log while the transport rolls) go into the same clip as moves, on the ticks where they were made, as part of the same capture (`mpfree_capture::moves_for_clip`, `Takes::capture_moves`). The log line counts them ("capture 2: 6 notes and 1 move, ..."). A free phrase keeps its notes only. See [playback.md](playback.md#fx-moves).
 - **Undo.** UNDO takes a capture back like any take. Notes come out of the clip, or the new clip leaves its slot and stops. REDO puts it back. After an undo, the same phrase can be captured again.
 - **Nothing new.** After a capture, the Capture button goes quiet until another note is played, so pressing it twice does not make two copies.
 - **Refused.** It is refused, and nothing changes, when nothing was played, the track does not exist, or all 16 of the track's slots hold clips.

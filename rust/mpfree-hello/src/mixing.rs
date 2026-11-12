@@ -312,6 +312,12 @@ impl MixHost {
         self.modu.lock(&self.mixer, offset, addr, value);
     }
 
+    /// A clip's move lane value (an FX move), `offset` frames into the
+    /// coming period.
+    pub fn lane(&mut self, offset: u32, addr: ParamAddr, value: f32) {
+        self.modu.lane(&self.mixer, offset, addr, value);
+    }
+
     fn apply_mutes(&mut self) {
         for p in 0..PADS {
             let on = (self.pad_mutes | self.dropped) & (1 << p) != 0;
