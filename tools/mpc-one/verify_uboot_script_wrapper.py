@@ -102,6 +102,8 @@ def inspect_script_image(image: bytes) -> dict:
     return {
         "schema": "mpfree-legacy-boot-script-verified-v1",
         "full_image_sha256": hashlib.sha256(image).hexdigest(),
+        "header_sha256": hashlib.sha256(head).hexdigest(),
+        "multi_image_prefix_sha256": hashlib.sha256(payload[:8]).hexdigest(),
         "image_total_bytes": len(image),
         "header_crc32_verified": True,
         "payload_crc32_verified": True,
@@ -120,26 +122,57 @@ def inspect_script_image(image: bytes) -> dict:
 
 
 def compare_guest_to_update(section: str, firmware310: dict) -> dict:
+    """Compare hashes of the SAME semantic byte regions.
+
+    In the verified 3.10 source report, sha256 hashes the raw script
+    data (including its terminal newline), NOT the complete uImage.
+    The header.header_sha256 key hashes the 64-byte header.
+    An original full-image hash must use explicit image_sha256.
+    """
     guest = inspect_script_image(decode_od_bytes(section))
     official = str(firmware310["commands"])
     observed = guest.pop("script_commands")
-    # Normalize line endings and insignificant file-edge whitespace ONLY.
-    # Do not rewrite U-Boot commands or silently treat arbitrary whitespace
-    # changes as semantically identical.
     def normalize(x):
         return x.replace("\r\n", "\n").strip()
-    diff = normalize(observed) != normalize(official)
+    expected_script = firmware310["sha256"].lower()
+    expected_header = firmware310["header"]["header_sha256"].lower()
+    expected_size = firmware310["header"]["image_bytes"]
+    expected_script_length = firmware310["header"]["multi_image_script_length"]
+    if (not isinstance(expected_size, int) or
+        not isinstance(expected_script_length, int) or
+        any(len(x) != 64 for x in (expected_script, expected_header))):
+        raise ValueError("Incomplete official 3.10 script/header provenance")
+    script_match = guest["script_commands_sha256"] == expected_script
+    header_match = guest["header_sha256"] == expected_header
+    size_match = guest["image_total_bytes"] == expected_size
+    script_length_match = guest["script_length"] == expected_script_length
+    layout_match = script_match and header_match and size_match and script_length_match
+    original_image_hash = firmware310.get("image_sha256")
+    if original_image_hash is not None and not isinstance(original_image_hash, str):
+        raise ValueError("Invalid optional full image hash")
+    exact_full_hash_match = (guest["full_image_sha256"] ==
+                             original_image_hash.lower()
+                             if original_image_hash else None)
     result = {
         **guest,
-        "official_image_sha256": firmware310["sha256"],
-        "full_image_matches_official": guest["full_image_sha256"] == firmware310["sha256"],
-        "script_commands_match_official": not diff,
+        "source_official_sha256_field_means": "raw_script_data_not_uimage",
+        "official_raw_script_sha256": expected_script,
+        "official_header_sha256": expected_header,
+        "original_full_image_sha256_available": original_image_hash is not None,
+        "full_image_matches_official": exact_full_hash_match,
+        "header_sha256_matches_official": header_match,
+        "raw_script_sha256_matches_official": script_match,
+        "image_length_matches_official": size_match,
+        "raw_script_length_matches_official": script_length_match,
+        "canonical_header_and_script_bytes_match_official": layout_match,
+        "script_commands_match_official": normalize(observed) == normalize(official),
         "payload_command_lines": len(observed.splitlines()),
         "different_image_even_if_commands_match": (
-            guest["full_image_sha256"] != firmware310["sha256"] and not diff),
+            exact_full_hash_match is False
+            and normalize(observed) == normalize(official)),
         "analysis_only_no_vendor_execution": True,
     }
-    if diff:
+    if not result["script_commands_match_official"]:
         import difflib
         result["command_diff_excerpt"] = list(
             difflib.unified_diff(official.splitlines(), observed.splitlines(),
