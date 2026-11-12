@@ -513,20 +513,6 @@ impl Player {
     }
 }
 
-/// The level, then the clip to full scale. Returns the peak before the
-/// clip (above 1.0 means the period clipped). The pad player's mixer does
-/// this now (the Level is its master fader, Master safety its limit).
-#[cfg(test)]
-pub fn master_out(left: &mut [f32], right: &mut [f32], master: f32) -> f32 {
-    let mut peak = 0f32;
-    for s in left.iter_mut().chain(right.iter_mut()) {
-        *s *= master;
-        peak = peak.max(s.abs());
-        *s = s.clamp(-1.0, 1.0);
-    }
-    peak
-}
-
 /// What the sampler records from (steps CAP and RESAMP): the line input,
 /// or a point in the mix taken by the mixer's capture point
 /// ([`crate::mixing::SAMPLER_CAPTURE`]).
@@ -595,40 +581,18 @@ impl std::fmt::Debug for RecFeed {
     }
 }
 
+/// The level, then the clip to full scale. Returns the peak before the
+/// clip (above 1.0 means the period clipped). The pad player's mixer does
+/// this now (the Level is its master fader, Master safety its limit).
 #[cfg(test)]
-mod rec_tests {
-    use super::*;
-    use mpfree_sampler::record::input;
-    use mpfree_transport::{Command, Transport};
-
-    #[test]
-    fn the_feed_marks_each_bar_line_at_its_frame_and_appends_the_input() {
-        let rate = 44_100;
-        let mut t = Transport::new(rate, 120.0).unwrap();
-        let (feed, inp) = input(10, rate);
-        let mut feed = RecFeed(feed);
-        let mut block = Block::new();
-        // Play from frame 1 000; a 4/4 bar at 120 BPM is 88 200 frames.
-        t.command(1_000, Command::Play);
-        let (l, r) = ([0.25f32; PERIOD], [-0.25f32; PERIOD]);
-        for _ in 0..1_500 {
-            assert!(t.process(PERIOD as u32, &mut block));
-            feed.period(&block, &l, &r, 0);
-        }
-        assert_eq!(feed.written(), 1_500 * PERIOD as u64);
-        let lines: Vec<u64> = (0..4).map_while(|n| inp.bars.back(n)).collect();
-        assert_eq!(lines, [1_000 + 2 * 88_200, 1_000 + 88_200, 1_000]);
-        assert_eq!(inp.bars.bar_frames(), Some(88_200.0));
-        assert_eq!(inp.last_frames(1).unwrap(), [0.25, -0.25]);
-        // Stopped: no bar length, and no more lines.
-        t.command(t.frame(), Command::Stop);
-        for _ in 0..800 {
-            t.process(PERIOD as u32, &mut block);
-            feed.period(&block, &l, &r, 0);
-        }
-        assert_eq!(inp.bars.bar_frames(), None);
-        assert_eq!(inp.bars.count(), 3);
+pub fn master_out(left: &mut [f32], right: &mut [f32], master: f32) -> f32 {
+    let mut peak = 0f32;
+    for s in left.iter_mut().chain(right.iter_mut()) {
+        *s *= master;
+        peak = peak.max(s.abs());
+        *s = s.clamp(-1.0, 1.0);
     }
+    peak
 }
 
 #[cfg(test)]
@@ -1022,5 +986,37 @@ mod tests {
                 "velocity {v}: {level} vs {want}"
             );
         }
+    }
+
+    #[test]
+    fn the_feed_marks_each_bar_line_at_its_frame_and_appends_the_input() {
+        use mpfree_sampler::record::input;
+        use mpfree_transport::{Command, Transport};
+
+        let rate = 44_100;
+        let mut t = Transport::new(rate, 120.0).unwrap();
+        let (feed, inp) = input(10, rate);
+        let mut feed = RecFeed(feed);
+        let mut block = Block::new();
+        // Play from frame 1 000; a 4/4 bar at 120 BPM is 88 200 frames.
+        t.command(1_000, Command::Play);
+        let (l, r) = ([0.25f32; PERIOD], [-0.25f32; PERIOD]);
+        for _ in 0..1_500 {
+            assert!(t.process(PERIOD as u32, &mut block));
+            feed.period(&block, &l, &r, 0);
+        }
+        assert_eq!(feed.written(), 1_500 * PERIOD as u64);
+        let lines: Vec<u64> = (0..4).map_while(|n| inp.bars.back(n)).collect();
+        assert_eq!(lines, [1_000 + 2 * 88_200, 1_000 + 88_200, 1_000]);
+        assert_eq!(inp.bars.bar_frames(), Some(88_200.0));
+        assert_eq!(inp.last_frames(1).unwrap(), [0.25, -0.25]);
+        // Stopped: no bar length, and no more lines.
+        t.command(t.frame(), Command::Stop);
+        for _ in 0..800 {
+            t.process(PERIOD as u32, &mut block);
+            feed.period(&block, &l, &r, 0);
+        }
+        assert_eq!(inp.bars.bar_frames(), None);
+        assert_eq!(inp.bars.count(), 3);
     }
 }
