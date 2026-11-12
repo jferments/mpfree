@@ -423,6 +423,106 @@ class Lab:
             self.say("QEMU RESULT: " + json.dumps(self.stages["qemu-guest"]))
         return result["success"]
 
+    def synthesize(self):
+        """Correlate guest executable hashes with the verified static ELF inputs."""
+        static_path = self.out / "static" / "v11" / "v11-stage-manifest.json"
+        wide_path = self.out / "static" / "wide" / "manifest.json"
+        guest_path = self.out / "qemu-probe-results.json"
+        hashes_path = self.out / "qemu-guest-vendor_hashes.txt"
+        record = {
+            "schema": "mpfree-integrated-cross-evidence-v1",
+            "static_v11_manifest": static_path.is_file(),
+            "broad_static_manifest": wide_path.is_file(),
+            "qemu_guest_probe": guest_path.is_file(),
+            "match_tests": [],
+            "confirmed_boundaries": [
+                "Booting the QEMU guest does NOT execute MPC SPL, U-Boot, or MaskROM.",
+                "Guest loader --list does not execute the updater application entrypoint.",
+                "Any live physical recovery, ROM USB acceptance, fuse policy or DDR inference requires separate evidence.",
+            ],
+        }
+        if wide_path.is_file():
+            try:
+                src = json.loads(wide_path.read_text())
+                record["spl_ghidra_recognized_functions"] = src.get("p1_functions")
+                record["uboot_ghidra_recognized_functions"] = src.get("p3_functions")
+                record["wide_static_source_mode"] = src.get("source_mode")
+            except Exception as exc:
+                record["wide_parse_error"] = str(exc)
+        guest_hashes = {}
+        if hashes_path.is_file():
+            for line in hashes_path.read_text(errors="replace").splitlines():
+                found = re.match(r"^([a-f0-9]{64})[ \t]+(/\S+)", line.strip())
+                if found:
+                    guest_hashes[found.group(2)] = found.group(1)
+        if static_path.is_file():
+            try:
+                src = json.loads(static_path.read_text())
+                record["v11_static_stage_success"] = {
+                    k: v.get("success") for k, v in src.get("stages", {}).items()
+                }
+                expected = src.get("source_sha256", {})
+                for role, guest_name in (
+                    ("az01-update", "/usr/sbin/az01-update"),
+                    ("libaz01-prog", "/usr/lib/libaz01-prog.so.1.3"),
+                ):
+                    actual = guest_hashes.get(guest_name)
+                    want = expected.get(role)
+                    record["match_tests"].append({
+                        "role": role, "guest_path": guest_name,
+                        "guest_sha256": actual, "static_sha256": want,
+                        "match": actual == want if actual and want else None,
+                        "interpretation": (
+                            "Guest and static executable input match byte-for-byte"
+                            if actual and want and actual == want else
+                            "Cannot prove guest/static source identity; investigate missing or differing hashes"
+                        ),
+                    })
+            except Exception as exc:
+                record["v11_parse_error"] = str(exc)
+        else:
+            record["match_tests_note"] = "V11 report missing; no comparison asserted"
+        (self.out / "cross-evidence.json").write_text(json.dumps(record, indent=2) + "\n")
+        summary = [
+            "# MPFree integrated bootchain run",
+            "",
+            "This report is automatically derived from a single offline static/QEMU session.",
+            "All findings are private and firmware-derived; DO NOT commit this ZIP to GitHub.",
+            "",
+            "## Status",
+        ]
+        for name, stage in self.stages.items():
+            summary.append("- " + name + ": " +
+                           ("PASS" if stage.get("success") else "INCOMPLETE/FAIL") +
+                           (" (" + str(stage.get("error") or stage.get("reason")) + ")"
+                            if stage.get("error") or stage.get("reason") else ""))
+        summary += ["", "## Guest/static image consistency"]
+        if record["match_tests"]:
+            for entry in record["match_tests"]:
+                summary.append("- " + entry["role"] + ": " +
+                               ("MATCH" if entry["match"] is True else
+                                "MISMATCH" if entry["match"] is False else
+                                "NOT ESTABLISHED"))
+        else:
+            summary.append("- Not established; see cross-evidence.json.")
+        summary += [
+            "",
+            "## Research scope",
+            "- Broad Ghidra: SPL entry, DDR/FDT, ROM/boot choice, U-Boot/Fastboot, permission, RAM, recovery.",
+            "- V11 Ghidra: updater verification states, function-pointer backend selectors, RockUSB framing.",
+            "- QEMU: real ARMv7 Linux/userspace boot, virtual hardware boundary, loader dependencies and passive file inventory.",
+            "",
+            "## Still not proven",
+            "- Silicon MaskROM entry, unsigned owner-SPL execution, eMMC hardware restoration.",
+            "- Real RK3288 peripheral behavior, U-Boot Fastboot runtime authorization or safe physical flash writes.",
+            "- Live original updater state transitions: the guest did not execute vendor updater code.",
+            "",
+            "Use cross-evidence.json, session-summary.json, stage console logs and Ghidra JSON for the next analysis.",
+            "",
+        ]
+        (self.out / "RESEARCH-SUMMARY.md").write_text("\n".join(summary))
+        self.say("Cross-evidence synthesis complete: RESEARCH-SUMMARY.md / cross-evidence.json")
+
     def package(self):
         self.manifest["duration_seconds"] = round(time.time() - self.start, 1)
         self.manifest["source_archives_imported"] = self.new_archives
@@ -506,6 +606,11 @@ def main():
         except Exception:
             lab.say("QEMU ERROR: " + traceback.format_exc())
             lab.notes.append("QEMU stage exception; package available Ghidra data.")
+        try:
+            lab.synthesize()
+        except Exception:
+            lab.say("CROSS-EVIDENCE ERROR: " + traceback.format_exc())
+            lab.notes.append("Cross-evidence synthesis failed; source reports still packaged.")
     finally:
         try:
             lab.full_file.flush()
