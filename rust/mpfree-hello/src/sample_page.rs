@@ -2110,7 +2110,6 @@ impl SamplePage {
                             self.velocity = None;
                         }
                         self.refresh(ui);
-                        return;
                     }
                     Some(Err(e)) => self.end_flatten(ui, &format!("not kept ({e:?})")),
                     None => self.end_flatten(ui, "not kept (the kit is gone)"),
