@@ -105,6 +105,9 @@ static int v20_command(const char *name){
            calls(release),calls(storage));
     return result(name,ok,"genuine-U-Boot-parser-reached-synthetic-dispatch-only");
 }
+#ifdef MPFREE_V21_WRAPPING
+#define main mpfree_v20_legacy_main
+#endif
 int main(int argc,char **argv){
     if(argc!=3){
         fputs("usage: vendor_probe_v20 CASE private-SHA-pinned-P3\n",stderr);
@@ -119,3 +122,7 @@ int main(int argc,char **argv){
     if(!strncmp(argv[1],"v20_command_",12))return v20_command(argv[1]);
     return result(argv[1],false,"unrecognized-V20-case");
 }
+
+#ifdef MPFREE_V21_WRAPPING
+#undef main
+#endif
