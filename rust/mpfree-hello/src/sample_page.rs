@@ -41,12 +41,21 @@
 //!   the buffer is freed here ([`SamplePage::input_back`]). A take keeps
 //!   recording while other pages show ([`SamplePage::tick`]), and lands on
 //!   its pad as one undo step.
+//! - The Rec tab's Auto-sample button opens its Auto-sample mode: it plays
+//!   a copy of the Synth tab's patch note by note on a worker thread
+//!   ([`mpfree_sampler::autosample::Job`]), offline and many times faster
+//!   than real time, and makes a keygroup instrument of it on the kit's
+//!   pads, one undo step. The app makes the copy
+//!   ([`SamplePage::take_auto_request`], [`SamplePage::start_auto`]); the
+//!   audio thread is never asked for anything.
 //! - Edits live in memory until the power goes off: nothing is saved yet.
 
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use mpfree_node::Node;
+use mpfree_sampler::autosample::{Finished, Job, Plan};
 use mpfree_sampler::engine::EngineView;
 use mpfree_sampler::model::{
     ChannelPick, Fade, LoopMode, Pad, PadsPlay, PlayMode, Project, Region, Source, SourceId,
@@ -54,6 +63,9 @@ use mpfree_sampler::model::{
 use mpfree_sampler::phrase::Phrase;
 use mpfree_sampler::record::{self, Input, Progress, Recording};
 use mpfree_sampler::warp::{CopyKey, Done, Warps, Worker};
+use mpfree_sampler_ui::auto_tab::{
+    self, AutoAction, AutoSettings, AutoState, AutoTab, Onto, Running,
+};
 use mpfree_sampler_ui::chop_tab::{self, ChopAction, ChopState, ChopTab};
 use mpfree_sampler_ui::grain_tab::{self, GrainAction, GrainState, GrainTab};
 use mpfree_sampler_ui::pads_tab::{self, PadsAction, PadsState, PadsTab};
@@ -88,6 +100,8 @@ pub const GRAIN_PAGE: &str = "Sample · Grain";
 pub const REC_PAGE: &str = "Sample · Rec";
 /// The Warp tab's page.
 pub const WARP_PAGE: &str = "Sample · Warp";
+/// The Rec tab's Auto-sample mode's page.
+pub const AUTO_PAGE: &str = "Sample · Auto-sample";
 /// The line input the sampler keeps while it is on: enough for the
 /// longest Skip back (a minute, or 8 bars down to 60 BPM) and more.
 pub const INPUT_SECONDS: u32 = 75;
@@ -104,6 +118,7 @@ const PADS_PREFIX: &str = "smp-pads-";
 const GRAIN_PREFIX: &str = "smp-grain-";
 const REC_PREFIX: &str = "smp-rec-";
 const WARP_PREFIX: &str = "smp-warp-";
+const AUTO_PREFIX: &str = "smp-auto-";
 /// A Q-Link resting this long ends its turn: the next one is a new undo step.
 const TURN_REST: Duration = Duration::from_secs(1);
 
@@ -147,6 +162,8 @@ pub enum Editor {
     Play,
     Grain,
     Rec,
+    /// The Rec tab's Auto-sample mode.
+    Auto,
 }
 
 /// A take being recorded, and the pad it goes onto.
@@ -155,6 +172,28 @@ struct Take {
     kit: usize,
     pad: usize,
     pick: record::Pick,
+}
+
+/// An auto-sample running, and where its instrument goes.
+struct AutoJob {
+    job: Job,
+    kit: usize,
+    onto: Onto,
+    /// The notes it samples, low to high, and takes a note.
+    notes: Vec<u8>,
+    per_note: usize,
+}
+
+impl AutoJob {
+    fn running(&self) -> Running {
+        let (done, total) = self.job.progress();
+        let k = (done / self.per_note.max(1)).min(self.notes.len().saturating_sub(1));
+        Running {
+            done,
+            total,
+            note: (done < total).then(|| self.notes.get(k).copied()).flatten(),
+        }
+    }
 }
 
 /// What the Rec tab's Source row offers, by name: the line input, then the
@@ -264,6 +303,16 @@ pub struct SamplePage {
     takes: u32,
     /// The last take, said in a line on the tab.
     last_take: String,
+    /// The Auto-sample mode, added the first time it is opened.
+    auto: Option<AutoTab>,
+    auto_state: Option<AutoState>,
+    /// The Synth tab's patch by name ("Poly Pluck"), as the app last said.
+    auto_synth: Option<String>,
+    /// A plan Start asked for: the app makes the patch's copy for it.
+    auto_request: Option<Plan>,
+    auto_job: Option<AutoJob>,
+    /// The last instrument made, or why not, in a line.
+    auto_last: String,
 }
 
 impl SamplePage {
@@ -323,6 +372,12 @@ impl SamplePage {
             take: None,
             takes: 0,
             last_take: String::new(),
+            auto: None,
+            auto_state: None,
+            auto_synth: None,
+            auto_request: None,
+            auto_job: None,
+            auto_last: String::new(),
         };
         p.show_empty(ui);
         Ok(p)
@@ -346,6 +401,12 @@ impl SamplePage {
         if self.take.take().is_some() {
             self.lines
                 .push("sample: the take was dropped (the kits were loaded again)".to_string());
+        }
+        if self.auto_job.take().is_some() {
+            // Dropping it cancels it; its thread ends on its own.
+            self.lines.push(
+                "sample: the auto-sample was cancelled (the kits were loaded again)".to_string(),
+            );
         }
         // Kits with warped pads get their views at the project tempo.
         for k in 0..self.projects.len() {
@@ -497,6 +558,7 @@ impl SamplePage {
             Editor::Play if self.play_state.is_some() && self.play.is_some() => PLAY_PAGE,
             Editor::Grain if self.grain_state.is_some() && self.grain.is_some() => GRAIN_PAGE,
             Editor::Rec if self.rec_state.is_some() && self.rec.is_some() => REC_PAGE,
+            Editor::Auto if self.auto_state.is_some() && self.auto.is_some() => AUTO_PAGE,
             Editor::Wave if self.state.is_some() && self.tab.is_some() => PAGE,
             Editor::Warp if self.state.is_some() && self.warp.is_some() => WARP_PAGE,
             _ if self.pads_state.is_some() && self.pads.is_some() => PADS_PAGE,
@@ -553,8 +615,13 @@ impl SamplePage {
         if self.editor == Editor::Rec {
             self.refresh_rec(ui, bank);
         }
+        self.auto_state = None;
+        if self.editor == Editor::Auto {
+            self.refresh_auto(ui, bank);
+        }
         self.pads_state = None;
-        if self.editor == Editor::Pads || self.state.is_none() && self.editor != Editor::Rec {
+        let recording = matches!(self.editor, Editor::Rec | Editor::Auto);
+        if self.editor == Editor::Pads || self.state.is_none() && !recording {
             self.refresh_pads(ui, bank);
         }
         if self.page() == EMPTY_PAGE {
@@ -824,6 +891,17 @@ impl SamplePage {
             };
             if let Some(a) = tab.action(ui, ev, st) {
                 self.act_rec(ui, a);
+            }
+            return;
+        }
+        if ev.widget.starts_with(AUTO_PREFIX) {
+            let (Some(tab), Some(st)) = (self.auto.as_mut(), self.auto_state.as_ref()) else {
+                return;
+            };
+            match tab.action(ui, ev, st) {
+                Some(a) => self.act_auto(ui, a),
+                // A row stepped: the pads it would go onto follow.
+                None => self.refresh_auto_state(ui),
             }
             return;
         }
@@ -1363,6 +1441,13 @@ impl SamplePage {
                 // The target pad follows the Onto row.
                 self.refresh_rec_state(ui);
             }
+            Editor::Auto => {
+                if let (Some(tab), Some(st)) = (self.auto.as_mut(), self.auto_state.as_ref()) {
+                    tab.wheel(ui, st, delta);
+                }
+                // The pads it would go onto follow the notes and Onto.
+                self.refresh_auto_state(ui);
+            }
         }
     }
 
@@ -1610,6 +1695,10 @@ impl SamplePage {
             }
             RecAction::SkipBack => self.skip_back(ui),
             RecAction::Source(i) => self.set_source(ui, i),
+            RecAction::Auto => {
+                self.editor = Editor::Auto;
+                self.refresh(ui);
+            }
         }
     }
 
@@ -1770,6 +1859,288 @@ impl SamplePage {
         }
     }
 
+    // ------------------------------------------------------------ auto
+
+    /// What the Auto-sample mode shows besides its settings: the Synth
+    /// tab's patch, where the instrument would go and how far it has got.
+    fn auto_state_now(&self) -> AutoState {
+        let project = self.projects.get(self.kit);
+        let has = |p: usize| {
+            project
+                .and_then(|pr| pr.pad(p))
+                .is_some_and(|pd| !pd.layers.is_empty())
+        };
+        let settings = self
+            .auto
+            .as_ref()
+            .map_or_else(AutoSettings::default, |t| t.settings);
+        // With the synth on the pads there is no kit to put it on.
+        let pads = if project.is_some() { 16 } else { 0 };
+        AutoState {
+            pad: self.pad,
+            synth: self.auto_synth.clone(),
+            pads,
+            target: auto_tab::target(settings.onto, settings.notes(), pads, has),
+            running: self.auto_job.as_ref().map(AutoJob::running),
+            last: self.auto_last.clone(),
+            rate: self.rate,
+        }
+    }
+
+    fn refresh_auto(&mut self, ui: &mut Ui, bank: Option<char>) {
+        let st = self.auto_state_now();
+        match self.auto.as_mut() {
+            Some(tab) => {
+                tab.bank = bank;
+                tab.update(ui, &st);
+            }
+            None => match AutoTab::add(ui, AUTO_PAGE, &st) {
+                Ok(mut tab) => {
+                    tab.bank = bank;
+                    tab.update(ui, &st);
+                    self.auto = Some(tab);
+                }
+                Err(e) => {
+                    self.lines
+                        .push(format!("sample: no Auto-sample page ({e})"));
+                    return;
+                }
+            },
+        }
+        self.auto_state = Some(st);
+    }
+
+    /// The Auto-sample mode's state again (the settings changed, or the
+    /// job moved on).
+    fn refresh_auto_state(&mut self, ui: &mut Ui) {
+        if self.auto_state.is_none() {
+            return;
+        }
+        let st = self.auto_state_now();
+        if let Some(tab) = self.auto.as_mut() {
+            tab.update(ui, &st);
+        }
+        self.auto_state = Some(st);
+    }
+
+    fn act_auto(&mut self, ui: &mut Ui, a: AutoAction) {
+        match a {
+            AutoAction::Tab(i) => self.open(ui, i),
+            AutoAction::Back => {
+                self.editor = Editor::Rec;
+                self.refresh(ui);
+            }
+            AutoAction::Start(plan) => {
+                if self.auto_job.is_none() {
+                    self.auto_request = Some(plan);
+                }
+            }
+            AutoAction::Cancel => {
+                if let Some(j) = self.auto_job.as_ref() {
+                    j.job.cancel();
+                    self.lines
+                        .push("sample: auto-sample cancelled, keeping the notes done".to_string());
+                }
+            }
+        }
+    }
+
+    /// The Synth tab's patch, by name ("Poly Pluck"), for the Auto-sample
+    /// mode; None before the synth is up.
+    pub fn set_auto_synth(&mut self, ui: &mut Ui, name: Option<String>) {
+        if name == self.auto_synth {
+            return;
+        }
+        self.auto_synth = name;
+        self.refresh_auto_state(ui);
+    }
+
+    /// A plan Start asked for. The app makes a fresh copy of the Synth
+    /// tab's patch and hands it to [`SamplePage::start_auto`].
+    pub fn take_auto_request(&mut self) -> Option<Plan> {
+        self.auto_request.take()
+    }
+
+    /// Starts auto-sampling `node` (None: the app had no patch to copy)
+    /// with `plan`, for the kit the pads play now.
+    pub fn start_auto(&mut self, ui: &mut Ui, plan: Plan, node: Option<Box<dyn Node>>) {
+        if self.auto_job.is_some() {
+            return;
+        }
+        let Some(node) = node else {
+            self.auto_last = "Not started: the synth's patch couldn't be copied".to_string();
+            self.lines.push(format!(
+                "sample: auto-sample of {} not started (no copy of the patch)",
+                plan.name
+            ));
+            self.refresh_auto_state(ui);
+            return;
+        };
+        let onto = self
+            .auto
+            .as_ref()
+            .map_or(Onto::EmptyPads, |t| t.settings.onto);
+        let notes = plan.notes();
+        let per_note = plan.velocities.len() * usize::from(plan.round_robins);
+        let est = plan.estimate();
+        let text = format!(
+            "sample: auto-sample {} started: {} notes ({} to {}), {} takes, {:.0} s of notes, up to {:.0} MB",
+            plan.name,
+            notes.len(),
+            mpfree_sampler_ui::note_name(notes.first().copied().unwrap_or(plan.lo)),
+            mpfree_sampler_ui::note_name(notes.last().copied().unwrap_or(plan.hi)),
+            est.takes,
+            est.seconds,
+            est.bytes_most as f64 / 1e6
+        );
+        match Job::start(plan, node) {
+            Ok(job) => {
+                self.lines.push(text);
+                self.auto_last.clear();
+                self.auto_job = Some(AutoJob {
+                    job,
+                    kit: self.kit,
+                    onto,
+                    notes,
+                    per_note,
+                });
+            }
+            Err(e) => {
+                self.auto_last = format!("Not started: {e}");
+                self.lines
+                    .push(format!("sample: auto-sample not started ({e})"));
+            }
+        }
+        self.refresh_auto_state(ui);
+    }
+
+    /// Whether an auto-sample runs.
+    #[cfg(test)]
+    pub fn auto_running(&self) -> bool {
+        self.auto_job.is_some()
+    }
+
+    /// Moves the Auto-sample mode's progress on while it `showing`, and
+    /// lands the instrument once the job is done.
+    fn poll_auto(&mut self, ui: &mut Ui, showing: bool) {
+        let Some(j) = self.auto_job.as_ref() else {
+            return;
+        };
+        if !j.job.is_finished() {
+            let now = Some(j.running());
+            if showing
+                && self.editor == Editor::Auto
+                && self.auto_state.as_ref().is_some_and(|st| st.running != now)
+            {
+                self.refresh_auto_state(ui);
+            }
+            return;
+        }
+        let Some(j) = self.auto_job.take() else {
+            return;
+        };
+        let (kit, onto) = (j.kit, j.onto);
+        let f = j.job.finish();
+        self.land_auto(ui, kit, onto, f);
+    }
+
+    /// Puts a finished auto-sample's instrument on kit `kit` (one undo
+    /// step) and picks its first pad, or says why not.
+    fn land_auto(&mut self, ui: &mut Ui, kit: usize, onto: Onto, f: Finished) {
+        let what = format!(
+            "{:.1} s of notes rendered in {:.2} s, built in {:.2} s{}",
+            f.audio_seconds,
+            f.render_seconds,
+            f.build_seconds,
+            if f.clipped { ", it clipped (kept)" } else { "" }
+        );
+        let inst = match f.instrument {
+            Ok(i) => i,
+            Err(e) => {
+                self.auto_last = format!("Nothing made: {e}");
+                self.lines
+                    .push(format!("sample: auto-sample made nothing ({e}; {what})"));
+                self.refresh_auto_state(ui);
+                return;
+            }
+        };
+        let n = inst.pads.len();
+        let Some(project) = self.projects.get_mut(kit) else {
+            self.auto_last = "Not kept: the kit is gone".to_string();
+            self.lines
+                .push("sample: auto-sample not kept (the kit is gone)".to_string());
+            self.refresh_auto_state(ui);
+            return;
+        };
+        let to = auto_tab::target(onto, n, 16, |p| {
+            project.pad(p).is_some_and(|pd| !pd.layers.is_empty())
+        });
+        let Some(to) = to else {
+            self.auto_last = format!("Not kept: no {n} empty pads in a row now");
+            self.lines.push(format!(
+                "sample: auto-sample not kept (no {n} empty pads in a row now; {what})"
+            ));
+            self.refresh_auto_state(ui);
+            return;
+        };
+        let (name, takes, looped, gain, mb) = (
+            inst.name.clone(),
+            inst.sources.len(),
+            inst.looped,
+            inst.gain_db,
+            inst.bytes() as f64 / 1e6,
+        );
+        let cancelled = f.state == mpfree_sampler::autosample::State::Cancelled;
+        match inst.put(project, to) {
+            Ok(()) => {
+                self.edits += 1;
+                if let Some(d) = self.dirty.get_mut(kit) {
+                    *d = true;
+                }
+                self.renamed = Some(kit);
+                let pads = if n == 1 {
+                    self.pad_text(kit, to)
+                } else {
+                    format!(
+                        "{} to {}",
+                        self.pad_text(kit, to),
+                        self.pad_text(kit, to + n - 1)
+                    )
+                };
+                self.auto_last = format!(
+                    "{name}: {n} notes, {takes} takes on pads {pads}{}{} · {mb:.1} MB",
+                    if looped > 0 {
+                        format!(", {looped} looped")
+                    } else {
+                        String::new()
+                    },
+                    if cancelled {
+                        " (cancelled: the notes done)"
+                    } else {
+                        ""
+                    },
+                );
+                self.lines.push(format!(
+                    "sample: auto-sampled {name} onto {} pads {pads}: {n} notes, {takes} takes, {looped} looped, \
+                     {gain:+.1} dB, {mb:.1} MB ({what}); the pads play notes",
+                    self.kit_text_of(kit)
+                ));
+                if kit == self.kit {
+                    self.lift();
+                    self.pad = to;
+                    self.velocity = None;
+                }
+                self.refresh(ui);
+            }
+            Err(e) => {
+                self.auto_last = format!("Not kept: {e:?}");
+                self.lines
+                    .push(format!("sample: auto-sample not kept ({e:?})"));
+                self.refresh_auto_state(ui);
+            }
+        }
+    }
+
     /// About 30 times a second: polls the take (when it ends it lands on
     /// its pad) and, while the Rec tab `showing`, moves its picture `dt`
     /// seconds on.
@@ -1803,6 +2174,7 @@ impl SamplePage {
         if showing && self.editor == Editor::Rec && self.rec_state.is_some() {
             self.feed_rec(ui, dt);
         }
+        self.poll_auto(ui, showing);
     }
 
     /// The line input turned on or off (its row on the Looper tab's MENU).
@@ -2069,9 +2441,9 @@ impl SamplePage {
                     tab.set_playheads(ui, &frames);
                 }
             }
-            // The Play, Pads and Rec tabs draw no playheads; the Grain
+            // The Play, Pads and Rec tabs (and Auto-sample) draw no playheads; the Grain
             // tab's come with its cloud.
-            Editor::Play | Editor::Pads | Editor::Grain | Editor::Rec => {}
+            Editor::Play | Editor::Pads | Editor::Grain | Editor::Rec | Editor::Auto => {}
         }
         self.shown_heads = frames;
     }

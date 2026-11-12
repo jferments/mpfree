@@ -1233,6 +1233,10 @@ impl Player {
                     "Record or Skip back onto the pad named   ·   tap a row: the wheel changes it   ·   hit a pad to \
                      record next to it   ·   UNDO: take a take off".to_string()
                 }
+                View::Sample if self.sample.page() == sample_page::AUTO_PAGE => {
+                    "Start samples the Synth tab's patch onto the pads named   ·   tap a row: the wheel changes it   ·   \
+                     UNDO: take the instrument off".to_string()
+                }
                 View::Sample => format!("Hit a pad with a sound to edit it   ·   - / +: next pad with a sound   ·   {stop}"),
                 View::Debug => format!("Every MIDI message in and out, newest at the bottom   ·   SHIFT + wheel or - / +: \
                                         Dev page   ·   MENU: options   ·   {stop}"),
@@ -1901,6 +1905,17 @@ impl Player {
         }
     }
 
+    /// The Synth tab's patch by engine and preset ("Poly Pluck"), for the
+    /// Sample page's Auto-sample mode; None before the synth is up.
+    fn auto_synth_name(&self) -> Option<String> {
+        let st = &self.synth.as_ref()?.state;
+        let preset = st.preset.and_then(|i| st.presets.get(i));
+        Some(match preset {
+            Some(p) => format!("{} {p}", st.info.name),
+            None => st.info.name.to_string(),
+        })
+    }
+
     /// After an edit on the Sample page: show the page again if it changed
     /// (Wave to Chop, or a pad without a sound), and give the Play page the
     /// names of pads a chop filled.
@@ -2095,6 +2110,8 @@ impl Player {
             View::Synth => "Synth".to_string(),
             View::Looper => LOOPER_PAGE.to_string(),
             View::Sample => {
+                let name = self.auto_synth_name();
+                self.sample.set_auto_synth(&mut self.ui, name);
                 self.sample.refresh_if_stale(&mut self.ui);
                 self.sample.page().to_string()
             }
@@ -2261,7 +2278,17 @@ impl Player {
         }
         if ev.widget.starts_with(sample_page::PREFIX) {
             let before = self.sample.page();
+            let name = self.auto_synth_name();
+            self.sample.set_auto_synth(&mut self.ui, name);
             self.sample.event(&mut self.ui, &ev, &mut self.outbox);
+            if let Some(plan) = self.sample.take_auto_request() {
+                // A copy of the patch, made here: the audio thread keeps
+                // playing its own and is never asked for anything.
+                let node = self.synth.as_ref().and_then(|p| {
+                    crate::synth::fresh_node(p.state.info.id, &p.state.values, plan.rate)
+                });
+                self.sample.start_auto(&mut self.ui, plan, node);
+            }
             self.sample_after(before);
             self.print_sample_lines();
             return None;
@@ -4071,6 +4098,29 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         rec.take_actions();
     }
     out.push(("sample-rec", rec));
+    // The Rec tab's Auto-sample mode on the Synth tab's patch: every 5
+    // semitones, 10 notes onto the empty pads after the break.
+    let mut auto = sample_sampler(fonts());
+    {
+        use mpfree_sampler_ui::auto_tab::{Row, LIST};
+        auto.on_event(UiEvent {
+            widget: mpfree_sampler_ui::wave_tab::BAR.into(),
+            kind: EventKind::Tab(mpfree_sampler_ui::rec_tab::TAB),
+        });
+        auto.on_event(UiEvent {
+            widget: mpfree_sampler_ui::rec_tab::BUTTONS.into(),
+            kind: EventKind::Tab(2),
+        });
+        auto.on_event(UiEvent {
+            widget: LIST.into(),
+            kind: EventKind::Step {
+                index: Row::Every.index(),
+                delta: 2,
+            },
+        });
+        auto.take_actions();
+    }
+    out.push(("sample-auto", auto));
     // The Play tab with the pad a keygroup and the pads playing notes, the
     // list on the Keys rows.
     {
@@ -5845,7 +5895,7 @@ mod tests {
         );
         assert_eq!(
             p.ui.get::<ButtonRow>(rec_tab::BUTTONS).unwrap().enabled,
-            [false, false]
+            [false, false, true]
         );
         assert!(take(&mut p).is_empty(), "no input buffer while it is off");
         // The line input on (the Looper tab's MENU): the buffer is made once
@@ -6185,6 +6235,127 @@ mod tests {
         );
         assert_eq!(p.page(), sample_page::PAGE);
         assert!(take(&mut p).is_empty());
+    }
+
+    #[test]
+    fn auto_sample_plays_a_copy_of_the_synth_onto_empty_pads_and_undo_takes_it_off() {
+        use mpfree_sampler::model::PadsPlay;
+        use mpfree_sampler_ui::auto_tab::{self, Row};
+        use mpfree_sampler_ui::auto_widgets::KeyMapView;
+        use mpfree_sampler_ui::rec_tab;
+        use mpfree_sampler_ui::widgets::{ButtonRow, PadBar};
+        let mut p = sample_sampler(Fonts::embedded());
+        let ev = |p: &mut Player, widget: &str, kind: EventKind| {
+            p.on_event(UiEvent {
+                widget: widget.into(),
+                kind,
+            })
+        };
+        let step = |p: &mut Player, row: Row, delta: i32| {
+            ev(
+                p,
+                auto_tab::LIST,
+                EventKind::Step {
+                    index: row.index(),
+                    delta,
+                },
+            );
+        };
+        let title = |p: &Player| p.ui.get::<PadBar>(auto_tab::BAR).unwrap().title.clone();
+        let pad_name = |p: &Player, pad: usize| {
+            p.sample
+                .project(0)
+                .unwrap()
+                .pad(pad)
+                .map(|pd| pd.name.clone())
+        };
+        // The Rec tab's third button opens the mode, with the Synth tab's
+        // patch as its source.
+        ev(
+            &mut p,
+            mpfree_sampler_ui::wave_tab::BAR,
+            EventKind::Tab(rec_tab::TAB),
+        );
+        ev(&mut p, rec_tab::BUTTONS, EventKind::Tab(2));
+        assert_eq!(
+            (p.page(), p.sample.editor()),
+            (sample_page::AUTO_PAGE, sample_page::Editor::Auto)
+        );
+        assert!(p
+            .ui
+            .get::<Label>("hint")
+            .unwrap()
+            .text
+            .starts_with("Start samples the Synth tab's patch"));
+        // 16 notes need the whole kit: the break on A5 is in the way.
+        assert_eq!(title(&p), "No 16 empty pads in a row on this kit");
+        assert!(!p.ui.get::<ButtonRow>(auto_tab::BUTTONS).unwrap().enabled[0]);
+        // An octave apart, one layer, short notes: 4 takes onto A1-A4.
+        step(&mut p, Row::Every, 9);
+        step(&mut p, Row::Layers, -2);
+        step(&mut p, Row::Hold, -3);
+        step(&mut p, Row::Tail, -2);
+        assert_eq!(title(&p), "Auto-sample Poly Pluck onto pads A1–A4");
+        let v = p.ui.get::<KeyMapView>(auto_tab::VIEW).unwrap();
+        assert_eq!((v.zones.len(), v.layers.len()), (4, 1));
+        assert!(p.ui.get::<ButtonRow>(auto_tab::BUTTONS).unwrap().enabled[0]);
+        // Start: a copy of the patch plays on a worker thread; the audio
+        // thread is asked for nothing.
+        ev(&mut p, auto_tab::BUTTONS, EventKind::Tab(0));
+        assert!(p.sample.auto_running());
+        let log = events_log(&p);
+        assert!(
+            log.iter().any(|l| l
+                == "sample: auto-sample Poly Pluck started: 4 notes (C2 to C5), 4 takes, 4 s of notes, up to 2 MB"),
+            "{log:?}"
+        );
+        let (sent, rest) = views(p.take_actions());
+        assert!(sent.is_empty() && rest.is_empty(), "{rest:?}");
+        let t = Instant::now();
+        while p.sample.auto_running() {
+            assert!(t.elapsed() < Duration::from_secs(60), "it finishes");
+            std::thread::sleep(Duration::from_millis(5));
+            p.tick(0.033);
+        }
+        let log = events_log(&p);
+        assert!(
+            log.iter().any(|l| l.starts_with(
+                "sample: auto-sampled Poly Pluck onto kit 1 (Breaks) pads A1 to A4: 4 notes, 4 takes, 0 looped, "
+            ) && l.ends_with("; the pads play notes")),
+            "{log:?}"
+        );
+        // The instrument is on the kit, one keygroup a note, and the Play
+        // page's pad names follow.
+        assert_eq!(pad_name(&p, 0).as_deref(), Some("Poly Pluck C2"));
+        assert_eq!(pad_name(&p, 3).as_deref(), Some("Poly Pluck C5"));
+        assert_eq!(pad_name(&p, 4).as_deref(), Some("Break 92"));
+        assert_eq!(p.kits[0].pads[0].as_deref(), Some("Poly Pluck C2"));
+        assert!(matches!(
+            p.sample.project(0).unwrap().pads_play(),
+            PadsPlay::Keys { .. }
+        ));
+        assert_eq!(p.page(), sample_page::AUTO_PAGE);
+        assert!(p
+            .ui
+            .get::<PadBar>(auto_tab::BAR)
+            .unwrap()
+            .subtitle
+            .starts_with("Poly Pluck: 4 notes, 4 takes on pads A1 to A4"));
+        // The kit sounds again with the new view.
+        let (sent, _) = views(p.take_actions());
+        assert_eq!(sent.len(), 1);
+        // UNDO takes the whole instrument off, and the pads play pads.
+        p.apply(ToUi::SampleUndo(false));
+        assert_eq!(pad_name(&p, 0), None);
+        assert_eq!(pad_name(&p, 3), None);
+        assert_eq!(pad_name(&p, 4).as_deref(), Some("Break 92"));
+        assert!(matches!(
+            p.sample.project(0).unwrap().pads_play(),
+            PadsPlay::Pads
+        ));
+        // Rec goes back to recording.
+        ev(&mut p, auto_tab::BUTTONS, EventKind::Tab(1));
+        assert_eq!(p.page(), sample_page::REC_PAGE);
     }
 
     #[test]

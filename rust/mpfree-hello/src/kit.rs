@@ -463,4 +463,72 @@ mod tests {
         }
         assert_eq!(m.playing(), MAX_VOICES);
     }
+
+    /// A damaged kits file (a bad stick, a half-copied file) is refused
+    /// with a reason or read whole, never a panic: thousands of copies of a
+    /// good file with bytes flipped, set to edge values, cut, grown or
+    /// repeated. (The same damage as rust/test-support/mutate.rs, inline
+    /// because this is the program's own crate.)
+    #[test]
+    fn damaged_kits_files_are_refused_or_read() {
+        let a = build(&[
+            (36, "Kick", &[1000, -1000, 2000, -2000]),
+            (38, "Snare", &[5, 6]),
+        ]);
+        let b = build(&[(42, "Hat", &[7; 64])]);
+        let seed = build_kits(&[("House", a), ("Trap", b)]);
+        assert_eq!(parse_kits(&seed).unwrap().len(), 2);
+        let mut x = 15u64;
+        let mut next = move |n: usize| {
+            x = x
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            ((x >> 33) % n as u64) as usize
+        };
+        let (mut ok, mut refused) = (0, 0);
+        for case in 0..20_000 {
+            let mut v = seed.clone();
+            for _ in 0..1 + next(3) {
+                let at = next(v.len().max(1));
+                match next(6) {
+                    0 => v[at] ^= 1 << next(8),
+                    1 => v[at] = [0, 0x7F, 0x80, 0xFF][next(4)],
+                    2 => {
+                        for k in 0..4 {
+                            if let Some(b) = v.get_mut(at + k) {
+                                *b = 0xFF;
+                            }
+                        }
+                    }
+                    3 => v.truncate(at),
+                    4 => {
+                        let run = v[at..(at + 1 + next(32)).min(v.len())].to_vec();
+                        v.splice(at..at, run);
+                    }
+                    _ => v.insert(at, next(256) as u8),
+                }
+                if v.is_empty() {
+                    v.push(0);
+                }
+            }
+            match parse_kits(&v) {
+                Ok(kits) => {
+                    ok += 1;
+                    assert!((1..=MAX_KITS).contains(&kits.len()), "case {case}");
+                    for k in &kits {
+                        assert!(k.name.chars().all(|c| !c.is_control()), "case {case}");
+                        assert!((1..=MAX_SOUNDS).contains(&k.sounds.len()), "case {case}");
+                        for s in &k.sounds {
+                            assert!(s.note <= 127 && s.frames() > 0, "case {case}");
+                        }
+                    }
+                }
+                Err(e) => {
+                    refused += 1;
+                    assert!(!e.is_empty(), "case {case}");
+                }
+            }
+        }
+        assert!(ok > 1_000 && refused > 1_000, "ok {ok}, refused {refused}");
+    }
 }

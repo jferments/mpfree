@@ -81,6 +81,7 @@ mod looper_tab;
 mod looping;
 mod mixing;
 mod modmix;
+mod modpanels;
 mod perf;
 mod perform;
 mod play_page;
