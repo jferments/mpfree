@@ -71,12 +71,13 @@ pub const EDIT_LAYOUT: &str =
 pub const EDIT_HINT: &str =
     "Tap a note to pick it, drag to move   ·   Tool: select, draw, erase   ·   TC corrects the picked notes (all if none)   ·   wheel: the option picked";
 /// The record settings, top to bottom.
-pub const RECORD_ROWS: [&str; 5] = [
+pub const RECORD_ROWS: [&str; 6] = [
     "Armed track",
     "Record mode",
     "Count-in",
     "Loop, bars",
     "Tempo, BPM",
+    "Pad pressure",
 ];
 /// The loop lengths the Loop row steps through, in bars from bar 1 (0 is off).
 pub const LOOP_BARS: [i64; 6] = [0, 1, 2, 4, 8, 16];
@@ -166,6 +167,8 @@ impl ClipInfo {
 pub struct TrackInfo {
     pub name: String,
     pub mute: bool,
+    /// It records pad pressure (`Track::record_touch`).
+    pub pressure: bool,
     pub slots: Vec<Option<ClipInfo>>,
 }
 
@@ -326,6 +329,7 @@ impl TimeState {
             .map(|t| TrackInfo {
                 name: t.name.clone(),
                 mute: t.mute,
+                pressure: t.record_touch,
                 slots: t
                     .slots
                     .iter()
@@ -413,6 +417,12 @@ pub enum TimeAction {
     Redo,
     /// Arm a track for recording, or none.
     Arm(Option<usize>),
+    /// "Pad pressure" for a track: whether recording keeps the pads'
+    /// pressure on its notes (`Track::record_touch`).
+    RecordPressure {
+        track: usize,
+        on: bool,
+    },
     /// Play this clip from the next bar line (see [`clips_after`]).
     Launch {
         track: usize,
@@ -711,6 +721,11 @@ pub fn action(ev: &UiEvent, st: &TimeState) -> Option<TimeAction> {
                     let bpm = (t.bpm + f64::from(d)).clamp(MIN_BPM, MAX_BPM);
                     (bpm != t.bpm).then_some(TimeAction::Transport(Command::SetTempo(bpm)))
                 }
+                // Either way flips it, for the armed track.
+                5 => st.armed.and_then(|a| {
+                    let on = st.tracks.get(a)?.pressure;
+                    Some(TimeAction::RecordPressure { track: a, on: !on })
+                }),
                 _ => None,
             }
         }
@@ -944,6 +959,14 @@ pub fn record_rows(st: &TimeState) -> Vec<OptionRow> {
         row(RECORD_ROWS[2], count_in),
         row(RECORD_ROWS[3], loop_label(t.loop_range, t.meter)),
         row(RECORD_ROWS[4], format!("{:.1}", t.bpm)),
+        row(
+            RECORD_ROWS[5],
+            match st.armed.and_then(|a| st.tracks.get(a)) {
+                None => "–".to_string(),
+                Some(tr) if tr.pressure => "Recorded".to_string(),
+                Some(_) => "Off".to_string(),
+            },
+        ),
     ]
 }
 
@@ -1284,6 +1307,7 @@ mod tests {
                 chance: 100,
                 cond: mpfree_seq::Cond::Always,
                 ratchet: 1,
+                touch: mpfree_seq::Touch::NONE,
             })
             .unwrap();
             t.slots[0] = Some(c);
@@ -1345,12 +1369,21 @@ mod tests {
         let morph = ui.rect_of(MORPH).unwrap();
         assert_eq!(morph.h, 64);
         assert!(morph.w >= 800, "{morph:?}");
-        // Every record setting is in view at once (58 px a row).
+        // Five record settings are in view at once (58 px a row); the
+        // sixth, Pad pressure, scrolls in when a row below the middle is
+        // picked (the list keeps the picked row in view).
         let record = ui.rect_of(RECORD).unwrap();
-        assert!(
-            record.h - 14 * 2 - 34 >= 58 * RECORD_ROWS.len() as i32,
-            "{record:?}"
-        );
+        assert!(record.h - 14 * 2 - 34 >= 58 * 5, "{record:?}");
+        let list = ui.get_mut::<OptionList>(RECORD).unwrap();
+        list.rows = (0..RECORD_ROWS.len())
+            .map(|k| OptionRow {
+                name: RECORD_ROWS[k].to_string(),
+                value: String::new(),
+            })
+            .collect();
+        assert!(list.row_rects(record, 5).is_none());
+        list.selected = 3;
+        assert!(list.row_rects(record, 5).is_some());
         // Three takes and the buttons.
         let takes = ui.rect_of(TAKES).unwrap();
         assert!(takes.h - 14 * 2 - 34 - 48 - 8 >= 3 * 38, "{takes:?}");
@@ -1632,6 +1665,27 @@ mod tests {
         );
         st.transport.bpm = MAX_BPM;
         assert_eq!(step(&st, 4, 1), None);
+        // Pad pressure flips for the armed track, either way; with none
+        // armed it shows a dash and does nothing.
+        st.armed = Some(1);
+        st.tracks[1].pressure = true;
+        assert_eq!(record_rows(&st)[5].value, "Recorded");
+        assert_eq!(
+            step(&st, 5, -1),
+            Some(TimeAction::RecordPressure {
+                track: 1,
+                on: false
+            })
+        );
+        st.tracks[1].pressure = false;
+        assert_eq!(record_rows(&st)[5].value, "Off");
+        assert_eq!(
+            step(&st, 5, 1),
+            Some(TimeAction::RecordPressure { track: 1, on: true })
+        );
+        st.armed = None;
+        assert_eq!(record_rows(&st)[5].value, "–");
+        assert_eq!(step(&st, 5, 1), None);
     }
 
     fn project() -> Project {

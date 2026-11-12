@@ -1,7 +1,7 @@
 <!--
 status: changing
 covers: rust/mpfree-seq rust/mpfree-play rust/mpfree-capture rust/mpfree-time-ui rust/mpfree-transport
-checked: 2026-11-12 59ce795
+checked: 2026-11-12 3c5a580
 -->
 
 # Clips and patterns
@@ -29,8 +29,20 @@ Set up the recording on the right of the Arrange tab:
 - **Count-in:** a count before recording starts, so you can come in on time.
 - **Loop, bars:** plays the same bars round and round while you record, so you can keep trying a part.
 - **Tempo:** the song's tempo.
+- **Pad pressure:** whether the armed track records how hard you press the pads while they're held (**Recorded**, the setting for a new track, or **Off**). It's the last row: pick Loop or Tempo and the list moves up to show it.
 
 Then press **REC**, play, and press **STOP**. The new notes go into the armed track's clip.
+
+### Pad pressure
+
+The pads feel how hard you keep pressing after you hit them. While you record, that pressure goes into the clip with each note, and the clip plays it back the way you played it: a synth swells, opens up or wobbles just as it did live. It works on drum pads too, where a sound's pressure settings use it.
+
+- The pressure stays with its note. If the clip's quantise moves a note into time, or you move the note in the note editor, its pressure moves with it.
+- MPFree keeps only the movement that matters: a change of two steps or more right away, a small change once it has lasted a moment (10 ms). A finger's tiny wobble isn't kept, so clips stay light.
+- The clip keeps the raw pressure, and each sound decides what pressure does. Change a sound's pressure curve and the clip plays back through the new one.
+- Splitting a note in the note editor keeps its pressure on the first part only.
+- Turn **Pad pressure** to **Off** for a track that shouldn't record it, for example drums you want to stay steady.
+- Coming: seeing and editing pressure in the note editor, and Capture keeping it.
 
 ## Takes
 
