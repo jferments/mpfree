@@ -4,10 +4,11 @@
 # After an intended change, bless with CI's pinned toolchain:
 #   cargo build --manifest-path rust/Cargo.toml --release --locked -p mpfree-bench
 #   python3 tools/ci/instr_gate.py --bless
-9073	Arps: 16 latched arps at 32nds
-3337	Arps: 4 latched arps at 32nds
-43628	Audio tracks: 6 playing comped takes, 2 recording
-43619	Audio tracks: 8 playing comped takes
+9187	Arps: 16 latched arps at 32nds
+3435	Arps: 4 latched arps at 32nds
+44291	Audio tracks: 6 playing comped takes, 2 recording
+44270	Audio tracks: 8 playing comped takes
+54516	Audio tracks: 8 streaming comped takes
 291639	Chain: drive, filter, delay, comp
 20095	Character (Console)
 27006	Character (Iron)
@@ -16,15 +17,15 @@
 94997	Chorus (2 voices)
 154901	Chorus (4 voices)
 908699	Cloud reverb (Cloud)
-254467	Cloud reverb (Cloud, Eco)
+254417	Cloud reverb (Cloud, Eco)
 282548	Cloud reverb (Echoes)
-169782	Cloud reverb (Echoes, Eco)
+169785	Cloud reverb (Echoes, Eco)
 723627	Cloud reverb (Hall)
-249009	Cloud reverb (Hall, Eco)
+249011	Cloud reverb (Hall, Eco)
 767509	Cloud reverb (Plate)
 225383	Cloud reverb (Plate, Eco)
 554764	Cloud reverb (Room)
-209216	Cloud reverb (Room, Eco)
+209217	Cloud reverb (Room, Eco)
 20102	Comb
 20996	Compressor
 10346	Crush
@@ -39,24 +40,24 @@
 434564	Grains FX (dense)
 116998	Lo-fi
 294259	Looper (60 s), 8 loops of 3 layers playing
-417860	Looper (60 s), 8 loops of 3 layers playing, half edited
-25437	Looper (60 s), overdubbing
+417853	Looper (60 s), 8 loops of 3 layers playing, half edited
+25436	Looper (60 s), overdubbing
 28961	Master safety
-210333	Mixer, 12 tracks and 8 pads, routing only
-1420377	Mixer, 12 tracks and 8 pads, with a song's inserts
-945337	Mixer, 12 tracks and 8 pads, with a song's inserts, Eco reverb
-1031926	Mixer, 12 tracks and 8 pads, with a song's inserts, Light reverb
-370281	Mixer, 16 tracks and 32 pads, routing only
-1274619	Mixer, a song's inserts, 6 tracks frozen, printing a bus
-52356	Mixer, idle (63 strips, nothing playing)
-107892	Mod: 8 macros x 8, 16 rows, morph, locks
-9032	Moves: 16 lanes playing, the move log taking 3 controls
+210819	Mixer, 12 tracks and 8 pads, routing only
+1420752	Mixer, 12 tracks and 8 pads, with a song's inserts
+945794	Mixer, 12 tracks and 8 pads, with a song's inserts, Eco reverb
+1032388	Mixer, 12 tracks and 8 pads, with a song's inserts, Light reverb
+370832	Mixer, 16 tracks and 32 pads, routing only
+1275147	Mixer, a song's inserts, 6 tracks frozen, printing a bus
+52828	Mixer, idle (63 strips, nothing playing)
+107876	Mod: 8 macros x 8, 16 rows, morph, locks
+9033	Moves: 16 lanes playing, the move log taking 3 controls
 11308	Multi filter (LP 12)
 33708	Multi filter (LP 24, drive)
-212564	Perform FX, 7 pads held (pitch drop, gate, sweeps, crush, riser, echo)
+212533	Perform FX, 7 pads held (pitch drop, gate, sweeps, crush, riser, echo)
 61602	Perform FX, a wash throw held
 3388	Perform FX, idle
-37005	Perform FX, the 16 pads in turn
+37002	Perform FX, the 16 pads in turn
 100523	Phaser (12 stages)
 61610	Phaser (4 stages)
 307019	Pluck Bell, 16 voices
@@ -73,22 +74,22 @@
 209421	Poly Pluck, 8 voices
 33542	Poly Sub Bass, 8 voices
 374672	Poly Supersaw, 8 voices
-931704	Sampler, 20 pads
-1451336	Sampler, 20 pads + master grains
-722104	Sampler, the 16 sample pads alone
-235616	Sampler, the 4 granular pads alone
-3316999	Song: sampler, 2 synths, mixer+FX, time, looper
-8050	Time with trig conditions and ratchets, 8 clips, arp
-8359	Time: transport, 8 clips, arp
-53633	Track host alone, 16 tracks, 8 events each per block
-406155	Track host, 4 Poly tracks of 4 voices
+931756	Sampler, 20 pads
+1451388	Sampler, 20 pads + master grains
+722153	Sampler, the 16 sample pads alone
+235626	Sampler, the 4 granular pads alone
+3317675	Song: sampler, 2 synths, mixer+FX, time, looper
+8130	Time with trig conditions and ratchets, 8 clips, arp
+8528	Time: transport, 8 clips, arp
+53727	Track host alone, 16 tracks, 8 events each per block
+406148	Track host, 4 Poly tracks of 4 voices
 476604	Wavetable Digital Bell, 8 voices
 479074	Wavetable FM Keys, 8 voices
 77780	Wavetable Growl Bass, 8 voices
-362708	Wavetable Harmonic Pluck, 8 voices
-2715694	Wavetable Init, 16 voices, both osc, unison 8
+362702	Wavetable Harmonic Pluck, 8 voices
+2715695	Wavetable Init, 16 voices, both osc, unison 8
 361976	Wavetable Init, 8 voices
-1034426	Wavetable Init, 8 voices, both osc, unison 4
+1034441	Wavetable Init, 8 voices, both osc, unison 4
 858613	Wavetable Morph Pad, 8 voices
 362861	Wavetable Organ, 8 voices
 553843	Wavetable Sync Sweep, 8 voices
