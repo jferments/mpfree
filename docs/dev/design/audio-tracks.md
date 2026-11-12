@@ -58,7 +58,7 @@ All takes share one pool of samples, asked for once in `AudioTracks::new(rate, s
 - `memory()` is the gauge (`used`, `capacity`, in samples).
 - **Waveforms.** The pool keeps the lowest and highest sample of every block of 256 samples (`PEAK_BLOCK`) as audio is written or loaded. `peaks(id, from, to)` reads the table for whole blocks, so a screen column covering a second of audio costs about 170 reads instead of 44,100. It works while a take records, up to what has been written, and doesn't allocate. Every stretch of the pool starts and ends on a block edge, so a block never mixes two takes. Memory is therefore handed out in blocks of 256 samples (5.8 ms of mono), and the pool is cut down to whole blocks. The host shares the peaks with the screen thread the way it shares the rest of the state, as the looper's waveform does.
 
-Recording to the storage partition instead of RAM, so tracks can be as long as the disk allows, needs a writer thread and the store; it is not built.
+Recording past the RAM pool, onto the stick's data partition, is the chosen next step: see "Streaming from the stick" below.
 
 ## Saved with the project
 
@@ -102,6 +102,16 @@ Each case is an 8-bar song loop with every track comped so that two takes crossf
 - **Waveforms:** `wave(id, columns)` reads a take's peak table into up to `columns` columns (at most `MAX_COLUMNS`, 4096) at `WAVE_SPEED` (1024 frames of the take for each frame that plays). `take_wave()` gives a `TakeWave`: the lowest and highest sample of each column. A column covers whole blocks of the table, so a short take gets fewer columns. The pool lives with the tracks on the audio thread, so this is how the screen sees it. For a take that is recording, ask again as it grows.
 - **Tests** (`tests/host.rs`): a save made across periods opens in a fresh host and plays back sample for sample; a save asked for while recording waits for the recording to end; a fit at half the tempo fills the bar, and Undo goes back; a waveform matches the take's samples column by column, and asking again replaces a wave not yet done.
 
+## Streaming from the stick: measuring the disk first
+
+Jay chose (2026-11-12) to stream takes from the stick's data partition rather than hold them all in RAM: a small RAM buffer in front of the take files, a disk thread reading ahead of the playhead and writing behind a recording, and the first second or so of every region kept in RAM so jumps between comped takes and locates play at once. The audio thread only ever touches RAM, so streaming adds no latency. The risk is the stick pausing: a pause longer than the buffer would lose audio, which is counted and shown.
+
+How big the buffer must be depends on the stick, so `mpfree-disktest` measures it ([`src/bin/disktest.rs`](../../../rust/mpfree-audiotracks/src/bin/disktest.rs)). Every I/O is 128 KiB. It runs a sequential write, a write paced at 3.1 MB/s (8 stereo tracks recording) for 60 s with fdatasync every second, reads with the file's pages dropped from the cache (sequential, then 8 paced streams), and 4 writing and 4 reading streams at once. For each it gives p50, p99 and max time per call, the calls over 50, 100, 250 and 500 ms, and how far behind schedule it fell, which is the buffer a recording or playback would need.
+
+- **Safety (rule zero).** With no arguments it runs only on `/run/mpfree-data`, and only if that is the mount of an ext4 file system labelled `MPFREE-DATA` on partition 4 of a USB disk, with no MMC device present (it reads the superblock, read-only, for the label). It writes only inside `mpfree-disktest/` there, with files it creates itself (`O_EXCL`, `O_NOFOLLOW`): at most 448 MiB at once and at most half the free space, refusing under 64 MiB free. It deletes the folder at the end, after an error, on Ctrl-C, or when the ssh session closes, and a later run clears a folder left by a power cut (only its own file names). Free space is printed before and after.
+- **On the MPC:** [`tools/mpc-one/host_disktest_mpc.py`](../../../tools/mpc-one/host_disktest_mpc.py) copies the static armv7 build to `/run/mpfree-disktest` (RAM), checks its hash and runs it, as `host_bench_mpc.py` does for the benchmark. It needs `MPFREE_ACCEPT_DISKTEST=YES`, a terminal, and Jay's go for the step. Build: `RUSTFLAGS="-C target-feature=+crt-static -C relocation-model=static" cargo build --release --target armv7-unknown-linux-gnueabihf -p mpfree-audiotracks --bin mpfree-disktest`.
+- **On a desktop:** `mpfree-disktest --desktop-test DIR [--quick]`. Tests: `tests/disktest.rs` (a quick run leaves nothing, a folder holding other files is left alone, a leftover folder of its own is cleared, no run off the stick without the flag) and `tools/mpc-one/tests/test_host_disktest_mpc.py` (against a fake test build under BusyBox).
+
 ## Joining the rest of MPFree
 
 - **The arrangement.** Audio tracks keep their own regions on song ticks, next to the arrangement's MIDI placements (PR #160), so the two are independent. The Song view can draw each audio track as one more lane, with its take lanes under it for comping. `SetActive(false)` silences the tracks when the song is not playing (clip launch mode), if that is what the time engine wants.
@@ -116,7 +126,7 @@ Each case is an 8-bar song loop with every track comped so that two takes crossf
 
 ## Not built yet
 
-- Recording to disk, for tracks longer than the RAM pool.
+- Streaming takes from the stick (chosen; the engine and the host's disk thread are being built, sized by the disk test above).
 - Fitting takes on its own when the tempo changes. The host fits one take when asked; deciding when to ask is the app's call.
 - The pad player's wiring and the Song view's audio lanes and take lanes. Saving is built in the engine (above); the project browser writes the files once it is in the app.
 - Device runs. Opening the line input on the MPC needs Jay's go, step by step (rule zero).
