@@ -95,8 +95,21 @@ def validated_report(document, report_sha):
             magic_sites[address] = hexvalues
         if ioctls:
             ioctl_sites[address] = ioctls
+        instructions = rec.get("machine_instruction_evidence", [])
         analyzed.append({
             "address": address, "analysis_role": role,
+            "instruction_evidence": {
+                "captured": len(instructions),
+                "capture_limited": rec.get("instruction_capture_limited", False),
+                "sha256": hashlib.sha256(
+                    json.dumps(instructions, sort_keys=True).encode()).hexdigest()
+                    if instructions else None,
+                "call_sites": [
+                    {"address": ins.get("address"), "text": ins.get("text")}
+                    for ins in instructions
+                    if ins.get("mnemonic", "").upper() in ("BL", "BLX")
+                ][:60],
+            },
             "decompiled": bool(body),
             "function_size_ghidra": rec.get("size"),
             "decompilation_sha256": hashlib.sha256(body.encode()).hexdigest() if body else None,
@@ -230,6 +243,14 @@ def render_markdown(rep):
     for item in rep["linux_usbdevfs_ioctls"]:
         output.append("- " + item["ioctl"] + ": " + item["linux_usbdevfs_name"] +
                       " (seen=" + str(item["seen_in_verified_pseudocode"]) + ")")
+    output += ["", "## Raw ARM callsite evidence (private Ghidra export)"]
+    for item in rep["focused_function_evidence"]:
+        evidence = item["instruction_evidence"]
+        if evidence["captured"]:
+            output.append("- " + item["address"] + ": " +
+                          str(evidence["captured"]) + " instructions, " +
+                          str(len(evidence["call_sites"])) + " call sites, " +
+                          "SHA256=" + str(evidence["sha256"]))
     output += ["", "## Callback table slots"]
     for item in rep["callback_evidence"]:
         output.append("- " + item["slot"] + " -> " + str(item["function"]) +
