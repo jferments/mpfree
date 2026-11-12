@@ -28,9 +28,9 @@ class SerialCompletionTests(unittest.TestCase):
 
     def test_numeric_section_labels_parse_in_guest_transcript(self):
         import re
-        sample = ("MPFREE_VM_SECTION_kernel_modules\\nA\\n"
-                  "MPFREE_VM_SECTION_310_trustpoint_unit\\nB\\n"
-                  "MPFREE_VM_SECTION_310_policy_assets\\nC\\n")
+        sample = ("MPFREE_VM_SECTION_kernel_modules\nA\n"
+                  "MPFREE_VM_SECTION_310_trustpoint_unit\nB\n"
+                  "MPFREE_VM_SECTION_310_policy_assets\nC\n")
         pattern = r"(?m)^MPFREE_VM_SECTION_([a-z0-9_]+)[ ]*$"
         parts = re.split(pattern, sample)
         named = {parts[n]: parts[n+1] for n in range(1, len(parts)-1, 2)}
