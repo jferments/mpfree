@@ -58,6 +58,9 @@ pub struct TimeAudio {
     /// Pad hits this period, for the screen.
     hits: [HitInfo; MAX_HITS],
     n_hits: usize,
+    /// Each pad's pressure last sent to CAPTURE's history, None after a
+    /// press: a value that did not change is not sent again.
+    pressure_sent: [Option<u8>; 16],
     /// The clips' parameter locks and lanes' values this period, for the
     /// mixer's mod engine.
     locks: Vec<LockOut>,
@@ -112,6 +115,7 @@ impl TimeAudio {
             jump_pending: false,
             hits: [HitInfo::default(); MAX_HITS],
             n_hits: 0,
+            pressure_sent: [None; 16],
             locks: Vec::with_capacity(MAX_LOCKS),
             lanes: Vec::with_capacity(MAX_LOCKS),
             locks_dropped: 0,
@@ -251,14 +255,14 @@ impl TimeAudio {
     pub fn pad_pressed(&mut self, offset: u32, event: Event) {
         if self.tracks.records_pressed() {
             self.recorder.input(offset, event);
-            self.send(ToControl::Played(offset, event));
+            self.played(offset, event);
         }
     }
 
     pub fn pad(&mut self, offset: u32, event: Event) {
         if !self.tracks.records_pressed() {
             self.recorder.input(offset, event);
-            self.send(ToControl::Played(offset, event));
+            self.played(offset, event);
         }
         let Event::NoteOn { note, velocity } = event else {
             return;
@@ -284,10 +288,31 @@ impl TimeAudio {
     }
 
     pub fn pad_pressure(&mut self, offset: u32, pad: u8, value: u8) {
-        if self.tracks.records_touch() && pad < 16 {
-            self.recorder
-                .input(offset, Event::Pressure { note: pad, value });
+        if pad >= 16 {
+            return;
         }
+        let event = Event::Pressure { note: pad, value };
+        if self.tracks.records_touch() {
+            self.recorder.input(offset, event);
+        }
+        // CAPTURE's history keeps it always, as it keeps the notes (its
+        // keep leaves it out for a track that doesn't record pressure).
+        let sent = &mut self.pressure_sent[usize::from(pad)];
+        if *sent != Some(value) {
+            *sent = Some(value);
+            self.send(ToControl::Played(offset, event));
+        }
+    }
+
+    /// A pad note for CAPTURE's history; a press sends its pad's next
+    /// pressure value even when it is the last one sent.
+    fn played(&mut self, offset: u32, event: Event) {
+        if let Event::NoteOn { note, .. } = event {
+            if let Some(p) = self.pressure_sent.get_mut(usize::from(note)) {
+                *p = None;
+            }
+        }
+        self.send(ToControl::Played(offset, event));
     }
 
     pub fn touch_dropped(&self) -> u64 {

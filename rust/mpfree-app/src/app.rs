@@ -742,12 +742,14 @@ pub enum Effect {
     /// The mixer opened on a view, or closed (`None`): the audio thread
     /// sends the panel its state only while it is open.
     Mixer(Option<mpfree_mixer_ui::MixView>),
-    /// While the mixer is open: Q-Link `knob` (or the wheel, as Q-Link 1)
-    /// turned by `delta`, for the panel's selected strip.
-    MixerTurn {
-        knob: usize,
-        delta: i32,
-    },
+    /// While the mixer is open: the data wheel turned by `delta`. On a
+    /// strips view it is Q-Link 1, the selected strip's volume; on the I/O
+    /// view it moves the section's selection.
+    MixerWheel(i32),
+    /// While the mixer is open: - (-1) or + (1). On the I/O view it steps
+    /// the section's selected row; on a strips view it steps the kit, as
+    /// [`Effect::Kit`].
+    MixerStep(i32),
     /// While the chain editor or the macros panel is open: Q-Link `knob`
     /// (or the wheel, as Q-Link 1) turned by `delta`, for the knobs the
     /// Q-Link column shows there.
@@ -1552,6 +1554,8 @@ impl App {
                 }));
             } else if self.view.sampler() {
                 fx.push(Effect::SamplePad(d));
+            } else if self.view == View::Mixer {
+                fx.push(Effect::MixerStep(d));
             } else {
                 fx.push(Effect::Kit(d));
             }
@@ -1764,8 +1768,9 @@ impl App {
                 self.select((self.selected as i32 + delta).clamp(0, last) as usize)
             }
             View::Pattern => vec![Effect::WorkspaceWheel(delta)],
-            // The mixer: the wheel is the selected strip's volume (Q-Link 1).
-            View::Mixer => vec![Effect::MixerTurn { knob: 0, delta }],
+            // The mixer: the wheel is the selected strip's volume (Q-Link 1),
+            // or on the I/O view the section's selection.
+            View::Mixer => vec![Effect::MixerWheel(delta)],
             // The chain editor and the macros panel: the wheel is Q-Link 1.
             View::Chain | View::Macros => vec![Effect::ChainTurn { knob: 0, delta }],
             // On the Debug tab SHIFT + wheel picks the page; on Map controls
@@ -1882,6 +1887,31 @@ impl App {
             0,
             Effect::Mixer(Some(if pads { MixView::Pads } else { MixView::Tracks })),
         );
+        fx
+    }
+
+    /// The bar's I/O icon (layout spec, section 2): the mixer opens on its
+    /// I/O view; on a strips view the mixer turns to I/O; on the I/O view
+    /// (`io_showing`) it closes back to the page, as the mixer icon does.
+    pub fn toggle_io(&mut self, io_showing: bool) -> Vec<Effect> {
+        if self.view == View::Mixer && io_showing {
+            return self.toggle_mixer(false);
+        }
+        self.open_io()
+    }
+
+    /// The tempo chip: the mixer's I/O view, whatever shows (the app picks
+    /// the Sync section). It never closes it.
+    pub fn open_io(&mut self) -> Vec<Effect> {
+        use mpfree_mixer_ui::MixView;
+        if self.view == View::Guide {
+            return Vec::new();
+        }
+        if self.view == View::Mixer {
+            return vec![Effect::Mixer(Some(MixView::Io))];
+        }
+        let mut fx = self.show(View::Mixer);
+        fx.insert(0, Effect::Mixer(Some(MixView::Io)));
         fx
     }
 

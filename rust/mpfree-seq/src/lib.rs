@@ -633,6 +633,13 @@ pub fn touch_fits(had: usize, points: &[TouchPoint]) -> bool {
     points.is_empty() || (had + points.len() <= MAX_TOUCH_POINTS && run_ok(points))
 }
 
+/// Whether a clip holding `had` pressure values has room for `points`,
+/// several notes' runs one after another (each note that names one
+/// checks its run's order when it goes in).
+pub fn touch_room(had: usize, points: &[TouchPoint]) -> bool {
+    had + points.len() <= MAX_TOUCH_POINTS && points.iter().all(|p| p.value <= 127)
+}
+
 /// Where a track's notes go: a sampler program, the arp in front of it,
 /// MIDI out ... The host owns the list; a track holds an index into it.
 pub type DestId = u16;

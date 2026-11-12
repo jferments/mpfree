@@ -288,11 +288,14 @@ The device round that compares the modes is the app thread's live test
 runbook. Its app check picks up the `sound cores: ` and `status: sound
 cores ` lines.
 
-`Mixer::set_pipelined_returns` is the returns' turn, as a prototype for Jay's
-call: the returns' inserts run on a lane one block behind, during the next
-block's pad channels, tracks and submixes, so the reverb leaves the audio
-core at the cost of a block of timing on every return. Its output is the
-reference a block late, bit for bit. It has its own lane; with both on, put
+`Mixer::set_pipelined_returns` is the returns' turn (Jay 2026-11-12:
+reverb returns only): a reverb return's inserts run on a lane one block
+behind, during the next block's pad channels, tracks and submixes, so the
+reverb leaves the audio core. The reverb takes the block back from its
+pre-delay (`Node::lead_in`, `Chain::lead_slot`), so the output is the
+reference on time, bit for bit; a return that cannot do that (no pre-delay,
+a dry mix, a delay, parallel compression or drive) stays on time
+(`mpfree-fx/tests/late_returns.rs`). It has its own lane; with both on, put
 the two lanes on different cores or expect them to queue.
 
 ## Measuring it: `mpfree-bench --lanes`
