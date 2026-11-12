@@ -19,14 +19,18 @@ pub enum MixView {
     Inputs,
     /// Submixes 1 to 8, then returns A to D.
     Buses,
+    /// The I/O view: where everything goes (see [`crate::io`]). Its strips
+    /// are every strip with an output: inputs, tracks, pads, submixes.
+    Io,
 }
 
 impl MixView {
-    pub const ALL: [MixView; 4] = [
+    pub const ALL: [MixView; 5] = [
         MixView::Tracks,
         MixView::Pads,
         MixView::Inputs,
         MixView::Buses,
+        MixView::Io,
     ];
 
     pub fn label(self) -> &'static str {
@@ -35,6 +39,7 @@ impl MixView {
             MixView::Pads => "Pads",
             MixView::Inputs => "Inputs",
             MixView::Buses => "Submixes",
+            MixView::Io => "I/O",
         }
     }
 
@@ -209,7 +214,8 @@ pub struct MixState {
     pub strips: Vec<StripView>,
     pub master: StripView,
     pub safety: SafetyView,
-    /// How many strips each view has, in [`MixView::ALL`] order.
+    /// How many strips each strip view has, in [`MixView::ALL`] order (the
+    /// I/O view shows no count).
     pub counts: [usize; 4],
     /// Tracks there are, for the output choices of inputs and pads.
     pub tracks: usize,
@@ -273,6 +279,12 @@ impl MixState {
             MixView::Buses => (0..BUSES)
                 .map(StripId::Bus)
                 .chain((0..RETURNS).map(StripId::Return))
+                .collect(),
+            MixView::Io => (0..m.inputs())
+                .map(StripId::Input)
+                .chain((0..m.tracks()).map(StripId::Track))
+                .chain((0..m.pads()).map(StripId::Pad))
+                .chain((0..BUSES).map(StripId::Bus))
                 .collect(),
         };
         let strips = ids.iter().map(|&s| read_strip(m, s, name)).collect();

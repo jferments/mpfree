@@ -99,7 +99,7 @@ Tests: `cargo test -p mpfree-midi`. They cover:
 |---|---|---|---|
 | M0 | The read-only `midi-cv`, `cv-scale` and `midi-out` captures above (all done 2026-11-12) | read-only (passive usbmon, stock 3.6) | done |
 | M1 | `mpfree-midi`, host only | no | done: PR #177, merged 2026-11-12 (train 14, main `7ecb7e4`) |
-| M2 | App wiring for input. The app opens the DIN In cable (from M0) and USB keyboards **for reading**, routes them to the selected track, and shows a MIDI monitor on the Dev page and a MIDI page in Prefs (ports, input mode, clock source). The layout goes through the app thread | a device round on the test boot: opens MIDI inputs for reading | M0, the owner's go, the app thread |
+| M2 | App wiring for input. The app reads the DIN In cable (from M0) and USB keyboards **for reading**, plays them on the armed track and logs them on the Dev tab's MIDI page (built, see [M2: keyboards in](#m2-keyboards-in)). The settings (ports, input mode, clock source) go in the mixer's I/O view, which waits on the FX and app threads | a device round on the test boot: opens MIDI inputs for reading | input built; device round and the I/O view to come |
 | M3 | MIDI tracks out. A seq destination for MIDI out, and cable 2 out written with paced bytes from a writer thread that sleeps to each message's frame (sub-period timing; to be measured on the unit, aiming under Akai's 5 to 8 ms) | **state-changing, RAM only**: sends note bytes on cable 2 to the MIDI Out jack. Undo: power-cycle. No SysEx is ever sent there | the owner's go |
 | M4 | Clock out (DIN, USB) from the transport, and clock in, with the transport following it | as M3 for out | the time engine thread, the owner's go |
 | M5 | MIDI Learn on screen: hold a parameter and pick Learn, mappings in `mpfree-store` | as M2 | the app thread |
@@ -112,7 +112,7 @@ Tests: `cargo test -p mpfree-midi`. They cover:
 2. MIDI Learn listens to external ports only. The Q-Links keep their own learn (`mpfree-mod`'s bindings).
 3. A control moves one parameter: learning it again replaces the old mapping.
 4. Learned CCs start as absolute with jump. Learned keys start as momentary.
-5. Clock out is off and the clock source is none (internal) until set in Prefs.
+5. Clock out is off and the clock source is none (internal) until set in the project's I/O view.
 6. Running status is on for DIN out, which saves a byte on each repeated status.
 
 ## A rule for the MIDI screens (the owner, 2026-11-12)
@@ -137,18 +137,31 @@ The CV range is set by Akai's hardware (5 V at most, if the forum report holds).
 
 What musicians praise in other sequencers: clock they can trust as leader and follower, measured per port ([Elektronauts](https://www.elektronauts.com/t/clock-sync-latency-and-jitter/256632?page=2)); many ports with each lane routed freely, automation lanes to CC, pitch bend, aftertouch or CV, MIDI effects per track and MPE input ([Perfect Circuit, Hapax](https://www.perfectcircuit.com/signal/squarp-hapax-review)); CV outputs that can be LFOs or envelopes ([Perfect Circuit, OXI One](https://perfectcircuit.com/signal/oxi-one-sequencer-review)); USB host for several devices, CC lanes and microtuning through pitch bend ([Elektronauts](https://stage2.elektronauts.com/t/how-would-your-dream-sequencer-look-like/138255)).
 
+## M2: keyboards in
+
+Built 2026-11-12 in `rust/mpfree-app/src/midi_in.rs` and the app's `main.rs`. Read only: nothing is written to a MIDI port.
+
+- **Cable 2 is music, not MPC controls.** Before M2 the app decoded cable 2's bytes with `mpc_one::decode`, as if they came from the MPC's own pads and buttons, so a keyboard on channel 1 pressed MPC buttons and one on channel 10 hit pads, and each clock tick printed a log line. Now `Ports::poll` hands cable 2's raw bytes to `MusicIn`, which parses them with `mpfree_midi::input::InputRouter` in Selected mode (any port, any channel).
+- **USB keyboards.** A thread named `usb-midi-scan` lists the ALSA cards every 2 s, skips the MPC's own audio and controller cards, and opens the first rawmidi input of each new card for reading. Unplugging a keyboard lets go of its held keys.
+- **Where keys go.** With a synth on the pads (`pad_layout` set), keys go by note to the armed track's arp engine through `App::key_down` and `App::key_up`, and share hold counts with the pads, so a note held on both ends when both let go. With a kit, keys whose note is one of `mpc_one::PAD_NOTES` become pad hits; other keys play nothing, and the first such key is logged once with the pad notes. Poly pressure reaches the synth.
+- **The log.** Each channel message gets one line naming the port. Clock (F8) and active sensing (FE) are counted, not listed: the log says when clock starts and stops arriving. Start, continue, stop and reset are listed. SysEx is logged by length and ignored. The run's counts are printed at exit.
+
+Not yet: CCs, pitch bend and program change wait for MIDI Learn (M5) and the track settings; clock-follow waits for M4; keys that don't land on a pad aren't recorded; only the first rawmidi input of a USB card is read. Not yet tried on the MPC: the read-only device round comes with the app thread's next live test.
+
 ## The screens (proposed, 2026-11-12)
 
-No MIDI screen is built yet. The app's Dev tab has a MIDI log of the controller's own messages; everything else below is a proposal, drawn at 1280 × 800 in [MPFree MIDI screens](https://claude.ai/artifact/5ygP92smCQVhu31qq2kfYZ). A new Prefs row, a track field and the tempo chip change the shared layout, so they go to the app thread and need the owner's approval in the [layout spec](layout-spec.md) before they land.
+No MIDI settings screen is built yet. The app's Dev tab has the MIDI log (see M2 above); everything else below is a proposal, drawn at 1280 × 800 in [MPFree MIDI screens](https://claude.ai/artifact/5ygP92smCQVhu31qq2kfYZ).
 
-| Screen | Where it would open | What is on it |
+Where they live (the owner, 2026-11-12): MIDI and sync are **project** settings, not Prefs, since they change from project to project. A project's routing (audio, MIDI, sync and CV) is an I/O view inside the mixer, opened by a new icon beside the mixer icon. The FX thread owns the mixer and plans I/O as a fifth mixer view beside Tracks, Pads, Inputs and Submixes, with a section list (Audio, MIDI, Sync, CV); the [layout spec](layout-spec.md) names it the I/O icon, just left of the mixer icon at the top bar's right edge, and a tap on the tempo chip opens the same view at Sync (docs PR #221). The MIDI, Sync and CV sections are panels built against a small section interface that the mixer provides, so neither side edits the other's code. Facts about the rig rather than the project (CV tuning, port names, port delays) stay in Prefs. The mockups were drawn before this choice and still show a Prefs row.
+
+| Screen | Where it opens | What is on it |
 |---|---|---|
-| MIDI and sync | a Prefs row (SHIFT + MENU) | tempo source, follow start/stop/position, what keys play, links to ports, Learn mappings and CV outputs, every note off |
-| A port | MIDI and sync › Ports | what its input does, clock out (off, while playing, always), start/stop out, offset, thru, ignored kinds, name; a device keeps its settings by name while unplugged |
-| CV outputs | MIDI and sync › CV outputs | the 8 outputs with job, source, scale and a live value; tuning each output waits for M6 |
+| MIDI and sync | the mixer's I/O view | tempo source, follow start/stop/position, what keys play, links to ports, Learn mappings and CV outputs, every note off |
+| A port | I/O view › Ports | what its input does, clock out (off, while playing, always), start/stop out, offset, thru, ignored kinds; a device keeps its settings by name while unplugged. Its name and delay are rig facts in Prefs |
+| CV outputs | I/O view › CV outputs | the 8 outputs with job, source, scale and a live value; each output's tuning is a rig fact in Prefs and waits for M6 |
 | A track's output | Arrange, the track's settings | one "Plays on" field (port and channel together), program, bank, what pad pressure sends, delay; "Sends nothing: no port" under the track name when true |
 | MIDI Learn | a value on any page | Learn, range, direction, takeover, where it is kept; a strip while waiting; STOP cancels |
-| Learn mappings | MIDI and sync › MIDI Learn mappings | every mapping with control, target, range and scope; greyed when the device is unplugged |
+| Learn mappings | I/O view › MIDI Learn mappings | every mapping with control, target, range and scope; greyed when the device is unplugged |
 | MIDI log | the Dev tab's MIDI page | in and out per port, filters by port and kind, clock timing and counts |
 
-The open decisions (where the settings live, clock out per port, Learn scopes, port input names, live note timing, thru default) are in the design doc's "Decisions for Jay" table.
+The six decisions in the design doc's "Decisions for Jay" table are settled: where the settings live changed as above, and the other five (clock out per port, Learn scopes, port input names, live note timing, thru default) were agreed as recommended.

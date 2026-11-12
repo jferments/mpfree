@@ -733,7 +733,7 @@ impl Renderer {
                 Op::Clip(r) => self.clip = r.intersect(all),
                 Op::Fill(r, c) => self.push_shape(gl, r, 0, None, 0, c),
                 Op::FillRound { r, radius, c } => {
-                    let rad = radius.clamp(0, r.w.min(r.h) / 2);
+                    let rad = radius.clamp(0, (r.w.min(r.h) / 2).max(0));
                     self.push_shape(gl, r, rad, None, 0, c);
                 }
                 Op::StrokeRound {
@@ -742,7 +742,7 @@ impl Renderer {
                     width,
                     c,
                 } => {
-                    let rad = radius.clamp(0, r.w.min(r.h) / 2);
+                    let rad = radius.clamp(0, (r.w.min(r.h) / 2).max(0));
                     let width = width.max(1);
                     let inner = r.inset(width);
                     let irad = (rad - width).max(0);

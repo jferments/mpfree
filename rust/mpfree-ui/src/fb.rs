@@ -273,6 +273,22 @@ impl FbTarget {
         self.layout.logical_size()
     }
 
+    /// Copy a whole native frame, already in the framebuffer's own layout
+    /// (`frame_len` bytes: every row, `stride` bytes each), in one write.
+    /// For a picture drawn elsewhere in the panel's orientation (the GPU's).
+    pub fn present_frame(&mut self, frame: &[u8]) -> Result<(), String> {
+        let want = self.layout.geometry.frame_len();
+        if frame.len() != want {
+            return Err(format!(
+                "a frame of {} bytes for a screen of {want}",
+                frame.len()
+            ));
+        }
+        self.file
+            .write_all_at(frame, 0)
+            .map_err(|e| format!("writing the screen: {e}"))
+    }
+
     /// Copy the given rectangles of `canvas` to the screen, as whole native
     /// rows, two or more per write.
     pub fn present(&mut self, canvas: &SoftCanvas, damage: &[Rect]) -> Result<(), String> {
@@ -589,6 +605,28 @@ mod tests {
         fs::write(dir.join("bits_per_pixel"), "32\n").unwrap();
         let g = geometry_from_sysfs(&dir).unwrap();
         assert_eq!((g.width, g.height, g.stride), (800, 1280, 3200));
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_whole_frame_goes_to_the_screen_in_one_write() {
+        let dir = std::env::temp_dir().join(format!("mpfree-ui-fb-frame-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("modes"), "U:4x3p-0\n").unwrap();
+        fs::write(dir.join("stride"), "20\n").unwrap();
+        fs::write(dir.join("bits_per_pixel"), "32\n").unwrap();
+        fs::write(dir.join("pan"), "").unwrap();
+        let fb = dir.join("fb");
+        fs::write(&fb, vec![0u8; 60]).unwrap();
+        let mut t = FbTarget::open(&fb, &dir, Rotation::Deg0).unwrap();
+        let frame: Vec<u8> = (0..60u8).collect();
+        t.present_frame(&frame).unwrap();
+        assert_eq!(fs::read(&fb).unwrap(), frame);
+        assert_eq!(fs::read_to_string(dir.join("pan")).unwrap(), "0,0\n");
+        assert!(t.present_frame(&frame[..59]).is_err());
+        // It never makes the file: no framebuffer, no screen.
+        assert!(FbTarget::open(&dir.join("none"), &dir, Rotation::Deg0).is_err());
+        assert!(!dir.join("none").exists());
         fs::remove_dir_all(&dir).unwrap();
     }
 }

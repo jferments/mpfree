@@ -21,6 +21,8 @@ The transport is the one clock that the sequencer, looper, arpeggiator, sampler 
 
 An engine walks the spans in order and schedules its events at the offsets the span gives. The arp gets one `mpfree_arp::Clock` per span, built from the span's anchor and tempo, and `Engine::sync` runs before `process(span.len)` (agreed with the arp thread; the hook is in PR #42). The looper (T4) takes its phase from the span's tick, not from a free-running frame count, so it stays on the transport's loop.
 
+A host whose bookkeeping runs later on another thread can rebuild a period's block from the spans the audio thread sends it: `Block::start_copy(start_frame, frames)`, then `Block::copy_span` for each span in order. The markers are not copied (the time engine's control half reads only spans; see [time-threads.md](time-threads.md)).
+
 ## Commands
 
 | Command | Stopped | Rolling |
