@@ -1,0 +1,15 @@
+[package]
+name = "mpfree-perform"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Scenes and follow actions: launch a row of clips on the bar line with its mutes, and chain clips and scenes after some bars"
+
+[lib]
+name = "mpfree_perform"
+path = "src/lib.rs"
+
+[dependencies]
+mpfree-transport = { path = "../mpfree-transport" }
+mpfree-seq = { path = "../mpfree-seq" }
+mpfree-play = { path = "../mpfree-play" }
