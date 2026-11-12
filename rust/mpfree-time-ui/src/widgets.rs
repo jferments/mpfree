@@ -553,6 +553,12 @@ impl ClipGrid {
         Rect::new(song.x - 8 - REC_SONG_W, song.y, REC_SONG_W, song.h)
     }
 
+    /// Where the Edit button is (the note editor): left of Rec song.
+    pub fn edit_rect(&self, r: Rect) -> Rect {
+        let rec = self.rec_rect(r);
+        Rect::new(rec.x - 8 - 72, rec.y, 72, rec.h)
+    }
+
     /// Where the Stop all button is: over the scene buttons.
     pub fn stop_all_rect(&self, r: Rect) -> Rect {
         let g = self.geo(r);
@@ -667,16 +673,26 @@ impl Widget for ClipGrid {
         // the page).
         let song = self.song_rect(r);
         let rec = self.rec_rect(r);
+        let edit = self.edit_rect(r);
         let head = r.inset(14).take_top(26).0;
         cx.text(
             FontId::Sans,
             t.size_small,
-            Rect::new(head.x, head.y, rec.x - head.x - 12, head.h),
+            Rect::new(head.x, head.y, edit.x - head.x - 12, head.h),
             Align::Right,
             t.text_dim,
             &self.legend,
         );
         rec_song_pill(cx, rec, self.song_rec);
+        cx.canvas.fill_round_rect(edit, 10, t.raised);
+        cx.text(
+            FontId::Bold,
+            t.size_small,
+            edit,
+            Align::Center,
+            t.text,
+            "Edit ›",
+        );
         cx.canvas.fill_round_rect(song, 10, t.raised);
         cx.text(
             FontId::Bold,
@@ -781,12 +797,16 @@ impl Widget for ClipGrid {
             return None;
         }
         // A row's scene button is Toggle(row); Stop all is Toggle(slots);
-        // the Song button Toggle(slots + 1); Rec song Toggle(slots + 2).
+        // the Song button Toggle(slots + 1); Rec song Toggle(slots + 2);
+        // Edit Toggle(slots + 3).
         if self.song_rect(r).contains(x, y) {
             return Some(EventKind::Toggle(self.slots + 1));
         }
         if self.rec_rect(r).contains(x, y) {
             return Some(EventKind::Toggle(self.slots + 2));
+        }
+        if self.edit_rect(r).contains(x, y) {
+            return Some(EventKind::Toggle(self.slots + 3));
         }
         if self.tracks.is_empty() {
             return None;
@@ -1438,6 +1458,12 @@ mod tests {
         assert_eq!(
             g.touch(1, Touch::Down, rec.x + 4, rec.y + 4, r),
             Some(EventKind::Toggle(18))
+        );
+        let edit = g.edit_rect(r);
+        assert!(edit.right() < rec.x, "{edit:?}");
+        assert_eq!(
+            g.touch(1, Touch::Down, edit.x + 4, edit.y + 4, r),
+            Some(EventKind::Toggle(19))
         );
         g.first_row = 2;
         assert_eq!(

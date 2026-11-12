@@ -26,9 +26,16 @@
 //!
 //! [`Tc::correct`] gives one tick's corrected place, for recording with
 //! Timing Correct on.
+//!
+//! **Locks** go with their notes: a lock on a note's own sound and tick
+//! moves when the note moves and goes when it is deleted; a duplicate
+//! copies it. Locks on a whole step (no sound) stay on their line, as
+//! the step editor keeps them. Double length copies the locks and the FX
+//! moves too; half and double speed move the locks, and are refused for a
+//! clip with FX moves (moves cannot be stretched yet).
 
-use crate::steps::Edit;
-use crate::{Clip, Note, MAX_CLIP_TICKS, MAX_NOTES, MIN_CLIP_TICKS};
+use crate::steps::{moves_edit, Edit};
+use crate::{Clip, Lock, Note, MAX_CLIP_TICKS, MAX_NOTES, MIN_CLIP_TICKS};
 use mpfree_transport::time::{Tick, PPQ};
 
 /// The Timing Correct divisions, in ticks (960 to a beat), with their
@@ -256,7 +263,7 @@ pub fn timing_correct(clip: &Clip, tc: Tc, which: &Which) -> Edit {
             }
         }
     }
-    replace(out)
+    replace(clip, out)
 }
 
 fn wrap(tick: Tick, length: Tick) -> Tick {
@@ -268,16 +275,37 @@ fn fit_len(len: Tick) -> Tick {
 }
 
 /// The edit that turns each `(old, new)` into `new`, leaving out the ones
-/// that stay the same.
-fn replace(pairs: Vec<(Note, Note)>) -> Edit {
+/// that stay the same; each note's own locks go with it.
+fn replace(clip: &Clip, pairs: Vec<(Note, Note)>) -> Edit {
     let mut e = Edit::default();
+    let mut used = vec![false; clip.locks.len()];
     for (old, new) in pairs {
-        if old != new {
-            e.erase.push(old);
-            e.add.push(new);
+        if old == new {
+            continue;
+        }
+        e.erase.push(old);
+        e.add.push(new);
+        if (old.tick, old.note) == (new.tick, new.note) {
+            continue;
+        }
+        for (k, l) in clip.locks.iter().enumerate() {
+            if !used[k] && own(l, &old) {
+                used[k] = true;
+                e.erase_locks.push(*l);
+                e.add_locks.push(Lock {
+                    tick: new.tick,
+                    sound: Some(new.note),
+                    ..*l
+                });
+            }
         }
     }
     e
+}
+
+/// A lock on `n`'s own sound and tick.
+fn own(l: &Lock, n: &Note) -> bool {
+    l.tick == n.tick && l.sound == Some(n.note)
 }
 
 /// How a move snaps (the Grid View's snap mode, or Don't Snap).
@@ -396,10 +424,18 @@ pub fn set_velocity(clip: &Clip, sel: &[usize], v: u8) -> Edit {
     })
 }
 
-/// Take the `sel` notes out.
+/// Take the `sel` notes out, with their own locks.
 pub fn delete(clip: &Clip, sel: &[usize]) -> Edit {
+    let erase: Vec<Note> = picked(clip, sel).map(|(_, n)| n).collect();
+    let erase_locks = clip
+        .locks
+        .iter()
+        .filter(|l| erase.iter().any(|n| own(l, n)))
+        .copied()
+        .collect();
     Edit {
-        erase: picked(clip, sel).map(|(_, n)| n).collect(),
+        erase,
+        erase_locks,
         ..Edit::default()
     }
 }
@@ -429,7 +465,20 @@ pub fn duplicate(clip: &Clip, sel: &[usize], division: Tick) -> Edit {
     };
     let d = division.max(1);
     let by = ((end - first) + d - 1).div_euclid(d) * d;
-    paste(clip, &notes, first + by, first)
+    let mut e = paste(clip, &notes, first + by, first);
+    if !e.is_empty() {
+        for l in clip
+            .locks
+            .iter()
+            .filter(|l| notes.iter().any(|n| own(l, n)))
+        {
+            e.add_locks.push(Lock {
+                tick: wrap(l.tick + by, clip.length),
+                ..*l
+            });
+        }
+    }
+    e
 }
 
 /// Put `notes` (a copy taken from a clip, `from` its first start) in at
@@ -450,8 +499,8 @@ pub fn paste(clip: &Clip, notes: &[Note], at: Tick, from: Tick) -> Edit {
     }
 }
 
-/// Twice the clip's length, its notes played twice (Double Length with
-/// Events); refused (empty) past the longest clip.
+/// Twice the clip's length, its notes, locks and moves played twice
+/// (Double Length with Events); refused (empty) past the longest clip.
 pub fn double_length(clip: &Clip) -> Edit {
     let to = clip.length * 2;
     if to > MAX_CLIP_TICKS || clip.notes.len() * 2 > MAX_NOTES {
@@ -467,16 +516,27 @@ pub fn double_length(clip: &Clip) -> Edit {
                 ..*n
             })
             .collect(),
+        add_locks: clip
+            .locks
+            .iter()
+            .map(|l| Lock {
+                tick: l.tick + clip.length,
+                ..*l
+            })
+            .collect(),
+        moves: moves_edit(clip, |m| {
+            m.copy_range(0, clip.length as u32, clip.length as u32, to as u32)
+        }),
         ..Edit::default()
     }
 }
 
 /// Half-speed events: every start and length twice as far, and the clip
 /// twice as long so nothing falls off its end; refused past the longest
-/// clip.
+/// clip or for a clip with FX moves.
 pub fn half_speed(clip: &Clip) -> Edit {
     let to = clip.length * 2;
-    if to > MAX_CLIP_TICKS {
+    if to > MAX_CLIP_TICKS || !clip.moves.is_empty() {
         return Edit::default();
     }
     let mut e = respace(clip, |t| t * 2, |l| fit_len(l * 2));
@@ -485,10 +545,10 @@ pub fn half_speed(clip: &Clip) -> Edit {
 }
 
 /// Double-speed events: every start and length halved, and the clip half
-/// as long; refused below the shortest clip.
+/// as long; refused below the shortest clip or for a clip with FX moves.
 pub fn double_speed(clip: &Clip) -> Edit {
     let to = clip.length / 2;
-    if to < MIN_CLIP_TICKS {
+    if to < MIN_CLIP_TICKS || !clip.moves.is_empty() {
         return Edit::default();
     }
     let mut e = respace(clip, |t| t / 2, |l| (l / 2).max(1));
@@ -506,6 +566,15 @@ fn respace(clip: &Clip, at: impl Fn(Tick) -> Tick, len: impl Fn(Tick) -> Tick) -
                 tick: at(n.tick),
                 len: len(n.len),
                 ..*n
+            })
+            .collect(),
+        erase_locks: clip.locks.clone(),
+        add_locks: clip
+            .locks
+            .iter()
+            .map(|l| Lock {
+                tick: at(l.tick),
+                ..*l
             })
             .collect(),
         ..Edit::default()
@@ -622,6 +691,7 @@ fn picked<'a>(clip: &'a Clip, sel: &'a [usize]) -> impl Iterator<Item = (usize, 
 /// The edit that changes each `sel` note by `f` (None leaves it).
 fn map(clip: &Clip, sel: &[usize], mut f: impl FnMut(Note) -> Option<Note>) -> Edit {
     replace(
+        clip,
         picked(clip, sel)
             .filter_map(|(_, n)| f(n).map(|m| (n, m)))
             .collect(),
@@ -834,6 +904,45 @@ mod tests {
         let mut d = c.clone();
         d.apply(&e).unwrap();
         assert_eq!(added_indexes(&d, &e), vec![2]);
+    }
+
+    #[test]
+    fn locks_go_with_their_notes() {
+        use mpfree_param::{OnTrack, RelAddr};
+        let cut = RelAddr::new(OnTrack::Inst, 1);
+        let mut c = clip(&[(250, 100, 36), (250, 100, 38)]);
+        let own36 = Lock::new(250, Some(36), cut, 800.0);
+        let step = Lock::new(250, None, cut, 300.0);
+        c.add_lock(own36).unwrap();
+        c.add_lock(step).unwrap();
+        let locks = |d: &Clip| {
+            let mut v: Vec<(Tick, Option<u8>)> =
+                d.locks.iter().map(|l| (l.tick, l.sound)).collect();
+            v.sort_unstable();
+            v
+        };
+        // Timing Correct moves the note and its own lock; the step's stays.
+        let d = applied(
+            &c,
+            &timing_correct(&c, Tc::default(), &Which::Selected(vec![0])),
+        );
+        assert_eq!(locks(&d), vec![(240, Some(36)), (250, None)]);
+        // A drag up a tone takes the lock to the new sound.
+        let d = applied(&c, &shift(&c, &[0], 0, 2));
+        assert_eq!(locks(&d), vec![(250, None), (250, Some(38))]);
+        // Delete takes it out; duplicate copies it.
+        let d = applied(&c, &delete(&c, &[0]));
+        assert_eq!(locks(&d), vec![(250, None)]);
+        let d = applied(&c, &duplicate(&c, &[0], Q));
+        assert_eq!(
+            locks(&d),
+            vec![(250, None), (250, Some(36)), (490, Some(36))]
+        );
+        // Double length and the speeds take every lock.
+        let d = applied(&c, &double_length(&c));
+        assert_eq!(locks(&d).len(), 4);
+        let d = applied(&c, &half_speed(&c));
+        assert_eq!(locks(&d), vec![(500, None), (500, Some(36))]);
     }
 
     #[test]

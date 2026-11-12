@@ -47,7 +47,8 @@ use mpfree_sampler::model::Project;
 use mpfree_synth_ui::view as synth_view;
 use mpfree_synth_ui::{SynthAction, SynthPanel, SynthState};
 use mpfree_time_ui::view::{
-    self as time_view, TimePage, TimeState, TransportInfo, CLIPS_HINT, CLIPS_PAGE, SONG_HINT,
+    self as time_view, TimePage, TimeState, TransportInfo, CLIPS_HINT, CLIPS_PAGE, EDIT_HINT,
+    SONG_HINT,
 };
 use mpfree_time_ui::TimeAction;
 use mpfree_touch::mt::Phase;
@@ -1233,6 +1234,7 @@ impl Player {
             match self.view {
                 View::Play => format!("Tap All, Beats, Loop or Drum: the view   ·   Wheel or tap: kit   ·   Q-Link 1 or \
                                        the master bar: level   ·   NOTE REPEAT: repeat   ·   MENU: options   ·   {stop}"),
+                View::Arrange if self.time.edit.is_some() => EDIT_HINT.to_string(),
                 View::Arrange if self.time.song_view => SONG_HINT.to_string(),
                 View::Arrange => CLIPS_HINT.to_string(),
                 View::Looper => format!("Tap a loop or a layer: pick it   ·   Q-Links: layer level and pan, loop level, \
@@ -1927,14 +1929,16 @@ impl Player {
                 self.refresh_arp();
             }
             ToUi::Time(st) => {
-                let swapped = st.song_view != self.time.song_view;
+                let swapped = st.song_view != self.time.song_view
+                    || st.edit.is_some() != self.time.edit.is_some();
                 self.time = *st;
                 self.sample.set_tempo(self.time.transport.bpm);
                 self.time_page.update(&mut self.ui, &self.time);
                 self.play.set_transport(self.time.transport);
                 self.refresh_play();
                 if swapped {
-                    // The Song view has its own hint line.
+                    // The Song view and the note editor have their own
+                    // hint lines.
                     self.refresh_hint();
                 }
             }
@@ -1953,20 +1957,21 @@ impl Player {
                 delta,
                 scroll: true,
             } => {
-                self.time_page.scroll(&self.ui, delta);
+                if let Some(a) = self.time_page.scroll(&self.ui, delta) {
+                    self.outbox.push(FromUi::Time(a));
+                }
                 self.time_page.update(&mut self.ui, &self.time);
             }
             ToUi::ClipsWheel {
                 delta,
                 scroll: false,
             } => {
-                // The row last touched (the armed track to begin with).
-                let index = self
-                    .ui
-                    .get::<OptionList>(time_view::RECORD)
-                    .map_or(0, |l| l.selected);
+                // The row last touched (the armed track to begin with), of
+                // the record settings or, in the note editor, its options.
+                let list = self.time_page.wheel_list(&self.ui);
+                let index = self.ui.get::<OptionList>(list).map_or(0, |l| l.selected);
                 let ev = UiEvent {
-                    widget: time_view::RECORD.to_string(),
+                    widget: list.to_string(),
                     kind: EventKind::Step { index, delta },
                 };
                 if let Some(a) = time_view::action(&ev, &self.time) {
@@ -2728,7 +2733,9 @@ impl Player {
                 | time_view::RECORD
                 | time_view::TAKES
                 | time_view::MORPH
-                | time_view::SONG,
+                | time_view::SONG
+                | time_view::NOTES
+                | time_view::EDIT_OPTIONS,
                 _,
             ) => time_view::action(&ev, &self.time).map(FromUi::Time),
             _ => None,
