@@ -984,7 +984,7 @@ class Lab:
                     "/boot/rk3288-az01-acva.dtb",
                     "/boot/rk3288-az01-acva-c.dtb",
                 )
-                expected = compared["boot_script"]["firmware310"]["sha256"]
+                source_script_sha = compared["boot_script"]["firmware310"]["sha256"]
                 actual = checksums.get("/boot/boot.scr.uimg")
                 info = {
                     "schema": "mpfree-qemu-directboot-rootfs-compat-v1",
@@ -995,9 +995,9 @@ class Lab:
                     "boot_asset_sha256": checksums,
                     "required_boot_assets": {
                         path: path in checksums for path in required},
-                    "boot_script_matches_offline_3_10": (
-                        actual == expected if actual else None),
-                    "source_310_boot_script_sha256": expected,
+                    "boot_script_matches_offline_3_10": None,
+                    "source_310_raw_script_sha256": source_script_sha,
+                    "official_full_image_sha256_not_provided": True,
                     "observed_modules_kernel_6_18_44": "6.18.44" in module_text,
                     "trustpoint_unit_captured": trust_path.is_file(),
                     "limitations": [
@@ -1022,6 +1022,10 @@ class Lab:
                         info["verified_uboot_script"] = script_report
                         info["boot_script_commands_match_official"] = (
                             script_report["script_commands_match_official"])
+                        info["boot_script_header_and_raw_script_match_official"] = (
+                            script_report["canonical_header_and_script_bytes_match_official"])
+                        info["boot_script_matches_offline_3_10"] = (
+                            script_report["full_image_matches_official"])
                     except Exception as exc:
                         info["boot_script_decode_error"] = str(exc)
                 else:
@@ -1032,11 +1036,13 @@ class Lab:
                 record["qemu_directboot_rootfs_compat"] = info
                 self.stages["qemu-directboot-rootfs-compat"] = {
                     "success": (
-                        info.get("boot_script_commands_match_official") is True
+                        info.get("boot_script_header_and_raw_script_match_official") is True
                         and all(info["required_boot_assets"].values())),
                     "assets_found": sum(info["required_boot_assets"].values()),
                     "assets_expected": len(required),
                     "boot_script_full_sha_match": info["boot_script_matches_offline_3_10"],
+                    "header_and_raw_script_sha_match": info.get(
+                        "boot_script_header_and_raw_script_match_official"),
                     "boot_script_commands_match": info.get(
                         "boot_script_commands_match_official"),
                 }
@@ -1168,10 +1174,13 @@ class Lab:
             summary.append("- Required stock boot assets: " +
                            str(sum(compat["required_boot_assets"].values())) +
                            "/" + str(len(compat["required_boot_assets"])))
-            summary.append("- Guest boot script full-file SHA matches verified 3.10: " +
-                           str(compat["boot_script_matches_offline_3_10"]))
-            summary.append("- Guest boot script executable commands match verified 3.10: " +
+            summary.append("- Official report's SHA is raw script payload, not full uImage.")
+            summary.append("- Guest header and exact raw script SHA match official 3.10: " +
+                           str(compat.get("boot_script_header_and_raw_script_match_official")))
+            summary.append("- Guest boot script executable commands match official 3.10: " +
                            str(compat.get("boot_script_commands_match_official")))
+            summary.append("- Independent full original-image SHA available: " +
+                           str(not compat["official_full_image_sha256_not_provided"]))
             if compat.get("boot_script_decode_error"):
                 summary.append("- Boot script decode requires investigation: " +
                                str(compat["boot_script_decode_error"]))
