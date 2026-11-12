@@ -60,7 +60,7 @@ Built in round 8 (PR #106) to Jay's approved mockups F to I (10:05Z), with real 
 - **The views:**
   - All (home): the loop strip (150 px), the pattern beside the mini pads (270 px), then the throws beside the XY pad (280 px).
   - Beats: the whole pattern (every lane), then the mini pads (300 px) beside all eight throws. A tap on a lit step picks it for the Q-Links (velocity, length, nudge, chance).
-  - Loop: the loop big with its buttons (Record, Overdub, Stop, Undo, Redo, Mute, Clear) and the input in its heading, then the mini pads, four throws and the XY pad.
+  - Loop: the loop big with its buttons (Record, Overdub, Play, Stop, Undo, Redo, Mute, Clear; Record has a red dot, Overdub a red ring, Play a triangle and Stop a square, and Play was added, Jay 12 Nov 08:11Z) and the input in its heading, then the mini pads, four throws and the XY pad.
   - Drum: Your timing (the last two bars of hits against the 1/16 grid, average, spread, velocity, spread of offsets) beside the XY pad (330 px), then the mini pads and all eight throws.
 - **The pattern** is the armed track's clip from the sequencer. A speaker beside each lane mutes that pad; a tap on a step toggles it (or starts a pattern when there is none).
 - **The loop strip** names each layer by what was played into it (Drums, Bass, Chop; Line in from the line). A speaker beside each name mutes that layer.
@@ -194,7 +194,8 @@ Approved by Jay at 22:34Z (the mod thread's card, "Approve as proposed"). The mo
   - Q-LINK: the Q-Link column's next bank on Play, the chain editor and the macros panel (section 4b).
 - **TRACK MUTE** (control map decision 5): the pads become mute keys over whatever page shows, and the page stays. Pads 1-8 mute and unmute tracks 1-8 at once (their clips keep their place); a pad is lit green while its track plays a clip, dim green with nothing launched, red while muted, and pads 9-16 are dark. **SHIFT + TRACK MUTE** does the same for the playing kit's pads (the speakers on Play): lit in the kit's colour while a pad plays, red while muted, dark without a sound. The same press again leaves, and the other one switches. The hint line says what the pads are, and the button is lit while they are mute keys. A pad held when TRACK MUTE is pressed still lets go as a note.
 - **Found with Map controls first:** ERASE, Q-LINK and the mode buttons have no measured note yet, so each works once Map controls has found it (TRACK MUTE, NEXT SEQ, STEP SEQ, SAMPLER, SAMPLE EDIT, PROG EDIT and the data dial's push have rows since round 9).
-- **Still to come from the control map:** hold MAIN + pad to pick a track; SHIFT + NEXT SEQ (Perform FX); 16 LEVEL, COPY, TC, BROWSE and the data dial's push.
+- **The data dial's push** (Jay, 12 Nov 08:11Z): in Prefs and the options menus, it opens the picked row (its value box outlined), the wheel changes the value, and a second push sets it and gives the wheel back to the rows. On a row that opens something (System info, Touch screen, Back, Find the buttons again, Map controls, Calibrate touch, Touch lab) it opens it, as + does.
+- **Still to come from the control map:** hold MAIN + pad to pick a track; SHIFT + NEXT SEQ (Perform FX); 16 LEVEL, COPY, TC and BROWSE.
 
 ## 7. How changes happen
 
