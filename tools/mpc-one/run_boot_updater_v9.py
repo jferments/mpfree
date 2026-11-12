@@ -129,7 +129,7 @@ def boot_run(runner,report,role):
     out=report/('v9-ghidra-'+role+'.json')
     args=runner+[str(folder),name,'-process',filename,'-readOnly','-noanalysis',
                  '-scriptPath',str(ROOT/'tools/ghidra'),
-                 '-postScript',SCRIPT,role,str(out),SRC_SHA[role],'-',
+                 '-postScript',SCRIPT,role,str(out),SRC_SHA[role],'none',
                  '-log',str(report/('v9-ghidra-'+role+'.log'))]
     code=V8.subprocess_log(args,report/('v9-ghidra-'+role+'-console.txt'),timeout=1100)
     return {'project':name,**verify_stage(out,role,code)}
