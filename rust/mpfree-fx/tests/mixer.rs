@@ -154,6 +154,17 @@ struct Run {
 }
 
 fn play(m: &mut Mixer, s: &Script, frames: usize, next_block: &mut dyn FnMut() -> usize) -> Run {
+    play_each(m, s, frames, next_block, &mut |_| {})
+}
+
+/// [`play`], calling `before` on the mixer before each block.
+fn play_each(
+    m: &mut Mixer,
+    s: &Script,
+    frames: usize,
+    next_block: &mut dyn FnMut() -> usize,
+    before: &mut dyn FnMut(&mut Mixer),
+) -> Run {
     let mut out = (vec![0.0; frames], vec![0.0; frames]);
     let mut caps = vec![(Vec::new(), Vec::new()); s.caps.len()];
     let mut at = 0;
@@ -182,6 +193,7 @@ fn play(m: &mut Mixer, s: &Script, frames: usize, next_block: &mut dyn FnMut() -
             hr[..len].copy_from_slice(&r[at..at + len]);
         }
         let ctx = Ctx::new(RATE, at as u64);
+        before(m);
         m.process(&ctx, &mut out.0[at..at + len], &mut out.1[at..at + len]);
         for (c, &slot) in caps.iter_mut().zip(&s.caps) {
             let (l, r) = m.capture(slot).unwrap();
@@ -1093,6 +1105,37 @@ fn a_late_lane_leaves_its_strips_dry_until_their_inserts_come_back() {
     }
     for p in [0, 2] {
         assert_eq!(m.chain(StripId::Pad(p)).unwrap().len(), 1, "pad {p}");
+    }
+}
+
+#[test]
+fn a_blocks_deadline_holds_for_every_join_in_it_and_only_that_block() {
+    use std::time::{Duration, Instant};
+    let n = 20_000;
+    let reference = {
+        let (mut m, s) = busy_for_lanes(9, n);
+        play(&mut m, &s, n, &mut blocks(64)).out
+    };
+    let (mut m, s) = busy_for_lanes(9, n);
+    // A wait of zero, which alone makes nearly every join late (above),
+    // and a far deadline given to each block: no join is late, and the
+    // output is the same, bit for bit.
+    let setup = m.set_lane(Some(mpfree_lanes::Config::default()), Duration::ZERO);
+    let threaded = setup.is_some_and(|s| s.threaded.is_ok());
+    let far = |m: &mut Mixer| m.set_lane_deadline(Some(Instant::now() + Duration::from_secs(5)));
+    let got = play_each(&mut m, &s, n, &mut blocks(64), &mut { far }).out;
+    close("a far deadline each block", &got, &reference, 0.0);
+    let st = m.stats();
+    assert!(st.lane_posts > 0);
+    assert_eq!(
+        st.lane_late, 0,
+        "the block's deadline replaced the zero wait"
+    );
+    // The deadline holds for one block: without a new one, the zero wait
+    // is back.
+    play(&mut m, &s, n, &mut blocks(64));
+    if threaded {
+        assert!(m.stats().lane_late > 0, "a zero wait is late again");
     }
 }
 

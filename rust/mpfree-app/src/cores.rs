@@ -23,13 +23,37 @@
 //!   shares it with ordinary threads (it runs ahead of them) and with any
 //!   interrupts sent there: finding out what that costs is the test.
 //!
+//! **One deadline per period** ([`lane_deadline`]). Every lane join in a
+//! period (the sampler's parts, the synth, each mixer stage and the
+//! returns) waits until the same moment at most: when the sound card's
+//! queue would run dry, less a period for the work after the joins (the end
+//! of the mix and the write). The audio loop reads the card's delay right
+//! after each write and sets the next period's deadline from it, so after a
+//! long period the next deadlines come sooner, and however many lanes are
+//! late in one period, waiting for them never empties the card's queue by
+//! itself. (Before, each join waited a period from when it started, so a
+//! sampler part, two mixer stages and the returns could together wait four
+//! periods with three in the buffer.)
+//!
 //! A late lane is never silent (Jay's rule, 12 Nov). A late sampler part
-//! leaves that half of the voices out of that part of the period, and a
-//! late mixer stage leaves those strips silent for the block: both are
-//! fallbacks. A late synth leaves nothing out: the audio thread waits for
-//! it, so the period runs long. All three are counted on the Dev tab's
-//! "CPU by engine" page and in the 30 s status line, and a line goes to
-//! the log within a second of one.
+//! leaves that half of the voices out of that part of the period, a late
+//! mixer stage leaves those strips silent for the block, and a late synth
+//! is left out of that period (Jay, 12 Nov 20:51Z): all three are
+//! fallbacks. The synth's lane finishes that period on its own while the
+//! sound card takes this one, and [`SynthSlot::settle`] takes the synth
+//! back right after the write; only if it is still not back by the next
+//! period's deadline does the audio thread wait for it (the rest of the
+//! loop plays the synth), and that wait is counted too. All of these are
+//! counted on the Dev tab's "CPU by engine" page and in the 30 s status
+//! line, and a line goes to the log within a second of one.
+//!
+//! **Lanes only where they were asked for.** The lanes are strict
+//! (`mpfree_lanes::Config::strict`): a lane whose worker could not be
+//! pinned to its core or given SCHED_FIFO runs on the audio thread instead
+//! (the same sound, one core), and says so in red. A worker that could not
+//! be pinned would keep the audio thread's own core 3 and fight it for that
+//! core. For the same reason, if the audio thread itself could not be put
+//! on core 3, no lane starts at all.
 //!
 //! The mode is set once, on the audio thread, before the sound starts.
 //! Only the program's own threads change (their core and priority, in
@@ -61,11 +85,27 @@ pub const LANE_CORE: usize = 2;
 pub const SYNTH_CORE: usize = 1;
 pub const LANE_FIFO: i32 = 69;
 
-/// A period: 128 frames at 44.1 kHz. The mixer waits this long for its
-/// lane each stage; the synth's lane is late once it takes longer; the
-/// sampler's lane gets as long as its part of the period lasts
-/// (`Engine::render_routed`).
-const PERIOD_TIME: Duration = Duration::from_nanos(128 * 1_000_000_000 / 44_100);
+/// A period: 128 frames at 44.1 kHz. The mixer's lane waits this long at
+/// a stage when the period has no deadline of its own ([`lane_deadline`]).
+pub const PERIOD_TIME: Duration = Duration::from_nanos(PERIOD as u64 * 1_000_000_000 / 44_100);
+
+/// The next period's deadline for every lane join in it: when the sound
+/// card's queue would run dry, less one period for the work after the
+/// joins (the end of the mix and the write). `written`: when the last
+/// period was written; `delay`: the card's delay read then, in frames
+/// (`snd_pcm_delay`), or None if it could not be read, when a full queue of
+/// `queued` periods is assumed (a write that waited leaves it full). A
+/// delay outside 0..=the buffer is held to it. With three periods in the
+/// buffer and the queue full, the deadline is two periods after the write.
+/// No allocation.
+pub fn lane_deadline(written: Instant, delay: Option<i64>, queued: u32) -> Instant {
+    let full = i64::from(queued) * PERIOD as i64;
+    let frames = delay.unwrap_or(full).clamp(0, full) - PERIOD as i64;
+    if frames <= 0 {
+        return written;
+    }
+    written + Duration::from_nanos(frames as u64 * 1_000_000_000 / 44_100)
+}
 
 /// The shortest time between two log lines about late lanes.
 const NOTE_EVERY: Duration = Duration::from_secs(1);
@@ -169,9 +209,12 @@ pub struct Counts {
     pub mix_late: u64,
     /// Periods the synth rendered on its lane (`three`).
     pub synth_periods: u64,
-    /// Of those, the ones it took longer than a period for (the audio
-    /// thread waited: nothing left out, the period ran long).
+    /// Of those, the ones it missed the period's deadline for (left out of
+    /// that period: a fallback).
     pub synth_late: u64,
+    /// Late synth periods still not back by the next period's deadline,
+    /// which the audio thread then waited for (a stall).
+    pub synth_waits: u64,
 }
 
 impl Counts {
@@ -184,14 +227,15 @@ impl Counts {
             mix_late: m.lane_late,
             synth_periods: synth.periods,
             synth_late: synth.late,
+            synth_waits: synth.waits,
         }
     }
 
     fn late(&self) -> u64 {
-        self.voice_late + self.mix_late + self.synth_late
+        self.voice_late + self.mix_late + self.synth_late + self.synth_waits
     }
 
-    fn values(&self) -> [u64; 6] {
+    fn values(&self) -> [u64; 7] {
         [
             self.voice_parts,
             self.voice_late,
@@ -199,22 +243,28 @@ impl Counts {
             self.mix_late,
             self.synth_periods,
             self.synth_late,
+            self.synth_waits,
         ]
     }
 }
 
 /// The synth, played on the audio thread, or (`three`) on a lane on core
 /// 1 while the drums render. Between periods it is always here, so the
-/// rest of the audio loop uses it as a [`Synth`] (through `Deref`); only
-/// between [`SynthSlot::start`] and [`SynthSlot::finish`] is it away.
+/// rest of the audio loop uses it as a [`Synth`] (through `Deref`); it is
+/// away only between [`SynthSlot::start`] and [`SynthSlot::finish`], or,
+/// after a late period, until [`SynthSlot::settle`], which the audio loop
+/// calls right after each write.
 pub struct SynthSlot {
     home: Option<Box<Synth>>,
     lane: Option<Lane<SynthJob>>,
     frame: u64,
     bpm: f64,
-    posted_at: Option<Instant>,
+    posted: bool,
+    /// The last period was late: the lane still has the synth.
+    away: bool,
     periods: u64,
     late: u64,
+    waits: u64,
 }
 
 /// The synth's job on its lane: a period into its own pair.
@@ -245,9 +295,11 @@ impl SynthSlot {
             lane: None,
             frame: 0,
             bpm: 120.0,
-            posted_at: None,
+            posted: false,
+            away: false,
             periods: 0,
             late: 0,
+            waits: 0,
         }
     }
 
@@ -264,37 +316,66 @@ impl SynthSlot {
             (job.frame, job.bpm) = (frame, bpm);
         }
         if lane.post(frame).is_ok() {
-            self.posted_at = Some(Instant::now());
+            self.posted = true;
         } else if let Some(job) = lane.job() {
-            // Never reached (finish always takes the synth back): play here.
+            // Never reached (settle always takes the synth back): play here.
             self.home = job.synth.take();
         }
     }
 
     /// Adds the period's synth into `left` and `right` (cleared by the
     /// caller, as [`Synth::render`] adds), the same sound either way. On
-    /// its lane it waits for the synth as long as it takes: past a period
-    /// that counts as late. No allocation.
-    pub fn finish(&mut self, left: &mut [f32], right: &mut [f32]) {
-        let (Some(lane), Some(at)) = (self.lane.as_mut(), self.posted_at.take()) else {
+    /// its lane it waits for the synth until `deadline` at most (the
+    /// period's, [`lane_deadline`]): past it the synth is left out of this
+    /// period (counted late) and stays on its lane, which finishes the
+    /// period on its own; [`SynthSlot::settle`] takes it back. No
+    /// allocation.
+    pub fn finish(&mut self, deadline: Instant, left: &mut [f32], right: &mut [f32]) {
+        let Some(lane) = self
+            .lane
+            .as_mut()
+            .filter(|_| std::mem::take(&mut self.posted))
+        else {
             if let Some(s) = self.home.as_deref_mut() {
                 s.render(self.frame, self.bpm, left, right);
             }
             return;
         };
-        if lane.join(at + PERIOD_TIME).is_err() {
+        self.periods += 1;
+        let Ok(job) = lane.join(deadline) else {
             self.late += 1;
+            self.away = true;
+            return;
+        };
+        self.home = job.synth.take();
+        for (o, s) in left.iter_mut().zip(job.left) {
+            *o += s;
+        }
+        for (o, s) in right.iter_mut().zip(job.right) {
+            *o += s;
+        }
+    }
+
+    /// After a late period: takes the synth back from its lane, dropping
+    /// what it made for that period. Call it right after each write, before
+    /// anything plays the synth: the write's own wait has usually given the
+    /// lane the time to finish. If the synth is still not back by
+    /// `deadline` (the next period's), this waits for it as long as it
+    /// takes, since the rest of the loop plays the synth, and counts the
+    /// wait. Does nothing after a period in time. No allocation.
+    pub fn settle(&mut self, deadline: Instant) {
+        if !std::mem::take(&mut self.away) {
+            return;
+        }
+        let Some(lane) = self.lane.as_mut() else {
+            return;
+        };
+        if lane.join(deadline).is_err() {
+            self.waits += 1;
             while lane.join(Instant::now() + Duration::from_secs(1)).is_err() {}
         }
-        self.periods += 1;
         if let Some(job) = lane.job() {
             self.home = job.synth.take();
-            for (o, s) in left.iter_mut().zip(job.left) {
-                *o += s;
-            }
-            for (o, s) in right.iter_mut().zip(job.right) {
-                *o += s;
-            }
         }
     }
 
@@ -339,8 +420,9 @@ impl std::ops::DerefMut for SynthSlot {
 /// lock: the counts are atomics, and the rows are set once.
 #[derive(Debug, Default)]
 pub struct CoreShared {
-    setup: OnceLock<(SoundCores, Vec<Row>)>,
-    counts: [AtomicU64; 6],
+    /// The mode, whether its lanes started, and the set-up rows.
+    setup: OnceLock<(SoundCores, bool, Vec<Row>)>,
+    counts: [AtomicU64; 7],
 }
 
 impl CoreShared {
@@ -354,6 +436,7 @@ impl CoreShared {
             mix_late: get(3),
             synth_periods: get(4),
             synth_late: get(5),
+            synth_waits: get(6),
         }
     }
 
@@ -369,6 +452,9 @@ impl CoreShared {
 pub struct Cores {
     mode: SoundCores,
     pins: Pins,
+    /// The lanes may start: the mode has them and the audio thread is on
+    /// its core (or none was asked).
+    lanes: bool,
     rows: Vec<Row>,
     lines: Vec<String>,
     /// The counts at the last log line about late lanes, and when.
@@ -397,6 +483,7 @@ impl Cores {
         let mut c = Cores {
             mode,
             pins,
+            lanes: false,
             rows: vec![(
                 "Sound cores".to_string(),
                 mode.label().to_string(),
@@ -413,16 +500,33 @@ impl Cores {
         if mode == SoundCores::Shared {
             return c;
         }
-        let (text, tone) = match pins.audio {
+        let ((text, tone), pinned) = match pins.audio {
             Some(core) => match mpfree_lanes::os::pin(core) {
-                Ok(()) => (format!("core {core} only"), Tone::Good),
-                Err(e) => (format!("not pinned to core {core}: {e}"), Tone::Bad),
+                Ok(()) => ((format!("core {core} only"), Tone::Good), true),
+                Err(e) => (
+                    (format!("not pinned to core {core}: {e}"), Tone::Bad),
+                    false,
+                ),
             },
-            None => ("left where it is (no core asked)".to_string(), Tone::Dim),
+            None => (
+                ("left where it is (no core asked)".to_string(), Tone::Dim),
+                true,
+            ),
         };
         c.lines.push(format!("sound cores: audio thread {text}"));
         c.rows.push(("Audio thread".to_string(), text, tone));
-        if mode.lanes() {
+        if mode.lanes() && !pinned {
+            // A lane's worker starts with this thread's cores: without the
+            // pin it could land anywhere, beside this thread included.
+            let text =
+                "not started: the audio thread is not on its core, so everything plays on it";
+            c.lines.push(format!("sound cores: lanes {text}"));
+            c.rows
+                .push(("Lanes".to_string(), text.to_string(), Tone::Bad));
+            return c;
+        }
+        c.lanes = mode.lanes();
+        if c.lanes {
             let setup = player.split(c.lane("mpfree-lane-smp", pins.lane));
             let (text, tone) = match &setup {
                 Some(s) => lane_text(s, "half the drum voices"),
@@ -444,7 +548,7 @@ impl Cores {
     /// lane on core 2. Call it right after the mixer is made, before the
     /// loop: it allocates and starts the mixer's lane thread.
     pub fn start_mixer(&mut self, mixer: &mut Mixer) {
-        if !self.mode.lanes() {
+        if !self.lanes {
             return;
         }
         let cfg = self.lane("mpfree-lane-mix", self.pins.lane);
@@ -462,6 +566,7 @@ impl Cores {
             name: name.to_string(),
             core,
             fifo: self.pins.fifo,
+            strict: true,
             ..LaneConfig::default()
         }
     }
@@ -474,7 +579,7 @@ impl Cores {
     /// Hands the set-up rows to the Dev page (once, before the loop; it
     /// allocates).
     pub fn show(&self, shared: &CoreShared) {
-        let _ = shared.setup.set((self.mode, self.rows.clone()));
+        let _ = shared.setup.set((self.mode, self.lanes, self.rows.clone()));
     }
 
     /// Publishes the counts for the Dev page (no allocation).
@@ -494,24 +599,27 @@ impl Cores {
         {
             return None;
         }
-        let (dv, dm, ds) = (
+        let (dv, dm, ds, dw) = (
             c.voice_late - self.noted.voice_late,
             c.mix_late - self.noted.mix_late,
             c.synth_late - self.noted.synth_late,
+            c.synth_waits - self.noted.synth_waits,
         );
         self.noted = c;
         self.noted_at = Some(now);
         let s = |n: u64| if n == 1 { "" } else { "s" };
         Some(format!(
-            "sound cores: late: {dv} part{} with half the drum voices unheard and {dm} mixer stage{} \
-             with those strips silent (fallbacks), {ds} period{} waiting past a period for the synth; \
-             {}, {} and {} since the start",
+            "sound cores: late: {dv} part{} with half the drum voices unheard, {dm} mixer stage{} \
+             with those strips silent and {ds} period{} with the synth left out (fallbacks), {dw} \
+             wait{} for the synth past the next deadline; {}, {}, {} and {} since the start",
             s(dv),
             s(dm),
             s(ds),
+            s(dw),
             c.voice_late,
             c.mix_late,
-            c.synth_late
+            c.synth_late,
+            c.synth_waits
         ))
     }
 
@@ -530,10 +638,11 @@ impl Cores {
         match self.mode {
             SoundCores::Two => lanes(),
             SoundCores::Three => format!(
-                "{}; synth {} periods on core 1, {} late",
+                "{}; synth {} periods on core 1, {} late (left out), {} waited for",
                 lanes(),
                 c.synth_periods,
-                c.synth_late
+                c.synth_late,
+                c.synth_waits
             ),
             m => format!("sound cores {}", m.name()),
         }
@@ -571,13 +680,16 @@ fn lane_text(s: &LaneSetup, what: &str) -> (String, Tone) {
 /// `three`) the lanes' parts and late ones. Empty until the audio loop has
 /// set up.
 pub fn rows(shared: &CoreShared) -> Vec<Row> {
-    let Some((mode, setup)) = shared.setup.get() else {
+    let Some((mode, lanes, setup)) = shared.setup.get() else {
         return Vec::new();
     };
     let mut rows = setup.clone();
+    if !lanes {
+        return rows;
+    }
     let c = shared.counts();
     let tone = |late: u64| if late == 0 { Tone::Good } else { Tone::Bad };
-    if mode.lanes() {
+    {
         rows.push((
             "Drum voices on core 2 · late".to_string(),
             format!("{} parts · {} late", c.voice_parts, c.voice_late),
@@ -591,9 +703,12 @@ pub fn rows(shared: &CoreShared) -> Vec<Row> {
     }
     if *mode == SoundCores::Three {
         rows.push((
-            "Synth on core 1 · late".to_string(),
-            format!("{} periods · {} late", c.synth_periods, c.synth_late),
-            tone(c.synth_late),
+            "Synth on core 1 · late · waited".to_string(),
+            format!(
+                "{} periods · {} late · {} waited",
+                c.synth_periods, c.synth_late, c.synth_waits
+            ),
+            tone(c.synth_late + c.synth_waits),
         ));
     }
     rows
@@ -626,7 +741,7 @@ pub fn sample(shared: &CoreShared) {
         row("Drum voices lane", lane("half the drum voices")),
         row("Mixer inserts lane", lane("about half the inserts")),
     ];
-    let _ = shared.setup.set((SoundCores::Two, rows));
+    let _ = shared.setup.set((SoundCores::Two, true, rows));
     shared.store(Counts {
         voice_parts: 41_210,
         voice_late: 0,
@@ -765,7 +880,7 @@ mod tests {
         let line = c.late_note(n, t).unwrap();
         assert!(
             line.starts_with(
-                "sound cores: late: 1 part with half the drum voices unheard and 0 mixer stages"
+                "sound cores: late: 1 part with half the drum voices unheard, 0 mixer stages"
             ),
             "{line}"
         );
@@ -774,15 +889,22 @@ mod tests {
         let line = c.late_note(n, t + Duration::from_millis(1000)).unwrap();
         assert!(line.contains("0 parts with half"), "{line}");
         assert!(
-            line.contains("2 mixer stages with those strips silent (fallbacks), 0 periods"),
+            line.contains(
+                "2 mixer stages with those strips silent and 0 periods with the synth left out \
+                 (fallbacks), 0 waits"
+            ),
             "{line}"
         );
-        assert!(line.ends_with("; 1, 2 and 0 since the start"), "{line}");
-        // A late synth is waited for, not left out, and logged the same way.
+        assert!(line.ends_with("; 1, 2, 0 and 0 since the start"), "{line}");
+        // A late synth is left out, and a wait for it past the next
+        // deadline is logged the same way.
         n.synth_late = 1;
+        n.synth_waits = 1;
         let line = c.late_note(n, t + Duration::from_secs(2)).unwrap();
         assert!(
-            line.contains("1 period waiting past a period for the synth"),
+            line.contains(
+                "1 period with the synth left out (fallbacks), 1 wait for the synth past the next deadline"
+            ),
             "{line}"
         );
         assert_eq!(
@@ -835,11 +957,14 @@ mod tests {
                 ([0.0f32; PERIOD], [0.0f32; PERIOD]),
                 ([0.0; PERIOD], [0.0; PERIOD]),
             );
+            // A far deadline, so a slow machine (qemu in CI) is never late.
+            let far = Instant::now() + Duration::from_secs(5);
             here.start(i * PERIOD as u64, 120.0);
-            here.finish(&mut a.0, &mut a.1);
+            here.finish(far, &mut a.0, &mut a.1);
             there.start(i * PERIOD as u64, 120.0);
             // The synth is on its lane now; the drums would render here.
-            there.finish(&mut b.0, &mut b.1);
+            there.finish(far, &mut b.0, &mut b.1);
+            there.settle(far);
             assert_eq!(
                 a, b,
                 "period {i}: the lane's sound is the same, bit for bit"
@@ -866,22 +991,155 @@ mod tests {
                 "Mixer inserts lane",
                 "Drum voices on core 2 · late",
                 "Mixer inserts on core 2 · late",
-                "Synth on core 1 · late"
+                "Synth on core 1 · late · waited"
             ]
         );
-        assert_eq!(rows[7].1, format!("60 periods · {} late", n.synth_late));
+        assert_eq!(rows[7].1, "60 periods · 0 late · 0 waited");
         let status = c.status(n);
         assert!(
             status.starts_with("sound cores three: drum voices "),
             "{status}"
         );
         assert!(
-            status.ends_with(&format!(
-                "; synth 60 periods on core 1, {} late",
-                n.synth_late
-            )),
+            status.ends_with("; synth 60 periods on core 1, 0 late (left out), 0 waited for"),
             "{status}"
         );
+    }
+
+    #[test]
+    fn a_late_synth_is_left_out_and_taken_back_after_the_write() {
+        let mut p = player();
+        let mut there = slot();
+        let _c = Cores::start_on(SoundCores::Three, &mut p, &mut there, NONE);
+        there.note_on(0, 110, 0);
+        there.note_on(5, 90, 0);
+        let mut left_out = 0;
+        for i in 0..200u64 {
+            let (mut l, mut r) = ([0.0f32; PERIOD], [0.0f32; PERIOD]);
+            there.start(i * PERIOD as u64, 120.0);
+            // A deadline that has passed: the lane has barely woken.
+            let before = there.late;
+            there.finish(Instant::now(), &mut l, &mut r);
+            if there.late > before {
+                left_out += 1;
+                assert!(there.home.is_none(), "period {i}: still on its lane");
+                assert!(
+                    l.iter().chain(&r).all(|&x| x == 0.0),
+                    "period {i}: left out, nothing added"
+                );
+            }
+            // Right after the write: the synth comes back, and the loop
+            // can play it again.
+            there.settle(Instant::now() + Duration::from_secs(5));
+            assert!(there.home.is_some(), "period {i}: back");
+            assert!(there.active_voices() > 0);
+        }
+        let n = Counts::read(&p, &mixing_host().mixer, &there);
+        assert_eq!(n.synth_periods, 200);
+        assert_eq!(n.synth_late, left_out);
+        assert_eq!(
+            n.synth_waits, 0,
+            "a far deadline after the write never waits"
+        );
+        // The worker needs a wake-up and a render; a deadline already
+        // passed is late nearly every time.
+        assert!(left_out > 0, "some periods were late");
+        // Settling with a deadline that has passed: a synth still away is
+        // waited for (counted), and is back either way.
+        for i in 200..260u64 {
+            let (mut l, mut r) = ([0.0f32; PERIOD], [0.0f32; PERIOD]);
+            there.start(i * PERIOD as u64, 120.0);
+            there.finish(Instant::now(), &mut l, &mut r);
+            there.settle(Instant::now());
+            assert!(there.home.is_some());
+        }
+        assert!(there.waits <= there.late);
+    }
+
+    fn mixing_host() -> crate::mixing::MixHost {
+        crate::mixing::MixHost::new(44_100, -6.0, -6.0)
+    }
+
+    #[test]
+    fn the_deadline_is_when_the_queue_would_run_dry_less_a_period() {
+        let t = Instant::now();
+        let period = |n: u64| Duration::from_nanos(n * PERIOD as u64 * 1_000_000_000 / 44_100);
+        // Three periods queued after the write: two periods to go.
+        assert_eq!(lane_deadline(t, Some(3 * PERIOD as i64), 3), t + period(2));
+        // After a long period, a period and a half queued: half a period.
+        assert_eq!(
+            lane_deadline(t, Some(PERIOD as i64 * 3 / 2), 3),
+            t + Duration::from_nanos(PERIOD as u64 / 2 * 1_000_000_000 / 44_100)
+        );
+        // A period or less: the deadline is now (only what is done counts).
+        assert_eq!(lane_deadline(t, Some(PERIOD as i64), 3), t);
+        assert_eq!(lane_deadline(t, Some(-40), 3), t);
+        // No delay read: a full queue is assumed; a delay past the buffer
+        // (the card's own latency on top) is held to it.
+        assert_eq!(lane_deadline(t, None, 3), t + period(2));
+        assert_eq!(lane_deadline(t, Some(10_000), 3), t + period(2));
+        assert_eq!(lane_deadline(t, None, 2), t + period(1));
+    }
+
+    #[test]
+    fn no_lane_starts_when_the_audio_thread_is_not_on_its_core() {
+        let mut p = player();
+        let mut mix = mixing_host();
+        let mut synth = slot();
+        // Core 100000 is past any machine, so the pin fails.
+        let pins = Pins {
+            audio: Some(100_000),
+            ..NONE
+        };
+        let mut c = Cores::start_on(SoundCores::Three, &mut p, &mut synth, pins);
+        c.start_mixer(&mut mix.mixer);
+        assert_eq!(p.lane_stats(), None, "the drums are not split");
+        assert!(!mix.mixer.lane_on(), "the mixer has no lane");
+        assert!(synth.lane.is_none(), "the synth has no lane");
+        let shared = CoreShared::default();
+        c.show(&shared);
+        let r = rows(&shared);
+        let labels: Vec<&str> = r.iter().map(|r| r.0.as_str()).collect();
+        assert_eq!(labels, ["Sound cores", "Audio thread", "Lanes"]);
+        assert_eq!(r[1].2, Tone::Bad);
+        assert!(r[2].1.starts_with("not started: "), "{r:?}");
+        assert_eq!(r[2].2, Tone::Bad);
+        let lines = c.take_lines();
+        assert!(
+            lines
+                .last()
+                .unwrap()
+                .starts_with("sound cores: lanes not started"),
+            "{lines:?}"
+        );
+    }
+
+    #[test]
+    fn a_lane_that_cannot_have_its_core_plays_on_the_audio_thread() {
+        let mut p = player();
+        let mut mix = mixing_host();
+        let pins = Pins {
+            lane: Some(100_000),
+            ..NONE
+        };
+        let mut c = Cores::start_on(SoundCores::Two, &mut p, &mut slot(), pins);
+        c.start_mixer(&mut mix.mixer);
+        let lines = c.take_lines();
+        assert!(
+            lines[2].starts_with(
+                "sound cores: sampler lane on the audio thread (strict lane, not pinned: "
+            ),
+            "{lines:?}"
+        );
+        assert!(
+            lines[3].starts_with("sound cores: mixer lane on the audio thread (strict lane"),
+            "{lines:?}"
+        );
+        let shared = CoreShared::default();
+        c.show(&shared);
+        let r = rows(&shared);
+        assert_eq!(r[2].2, Tone::Bad, "{r:?}");
+        assert_eq!(r[3].2, Tone::Bad, "{r:?}");
     }
 
     #[test]
