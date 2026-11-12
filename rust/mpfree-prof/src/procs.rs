@@ -327,7 +327,7 @@ mod tests {
         for (pid, name, rss, pol, rt) in [
             (1u32, "init", 100u64, 0u64, 0u64),
             (300, "MPC", 250_000, 1, 80),
-            (400, "mpfree-hello", 10_000, 0, 0),
+            (400, "mpfree", 10_000, 0, 0),
         ] {
             fs::create_dir_all(root.join(pid.to_string())).unwrap();
             fs::write(
@@ -357,7 +357,7 @@ mod tests {
         assert_eq!(first.total_cpu_pct, None);
         fs::write(
             root.join("400/stat"),
-            stat(400, "mpfree-hello", 150, 10_000, 0, 0),
+            stat(400, "mpfree", 150, 10_000, 0, 0),
         )
         .unwrap();
         fs::write(
@@ -366,7 +366,7 @@ mod tests {
         )
         .unwrap();
         let second = t.sample();
-        assert_eq!(second.rows[0].name, "mpfree-hello");
+        assert_eq!(second.rows[0].name, "mpfree");
         assert!(second.rows[0].cpu_pct > 0.0);
         assert_eq!(second.total_cpu_pct, Some(50.0));
         assert_eq!(second.core_cpu_pct, vec![90.0, 10.0]);
@@ -377,7 +377,7 @@ mod tests {
         assert!(
             second
                 .line(2)
-                .starts_with("procs: system 50.0 %, cores 90/10 %, top: mpfree-hello (400) "),
+                .starts_with("procs: system 50.0 %, cores 90/10 %, top: mpfree (400) "),
             "{}",
             second.line(2)
         );
