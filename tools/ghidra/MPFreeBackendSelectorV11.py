@@ -344,6 +344,36 @@ def mpfree_v11_entrypoint():
                                   'byte_order':endian})
                     offset=pos+1
             hits[label]=where
+        # Resolve the eight-entry Fastboot prefix/callback dispatch table
+        # used at 0x122780. This independently distinguishes download,
+        # boot, flash and OEM entry gates. Never call a firmware handler.
+        command_table_pointer=read_word(0x00122818)
+        command_dispatch=[]
+        if command_table_pointer is not None:
+            for index in range(8):
+                pair=command_table_pointer+index*8
+                prefix_ptr=read_word(pair)
+                callback_ptr=read_word(pair+4)
+                prefix=read_cstr(prefix_ptr,48) if prefix_ptr is not None else None
+                callback=(callback_ptr & 0xfffffffe) if callback_ptr is not None else None
+                callback_fn=None
+                if callback is not None:
+                    try:
+                        candidate=fm.getFunctionContaining(A(callback))
+                        if candidate:
+                            callback_fn=addr_hex(candidate.getEntryPoint().getOffset())
+                    except Exception:
+                        pass
+                command_dispatch.append({
+                    'slot_index':index,
+                    'table_pair_address':addr_hex(pair),
+                    'prefix_pointer':addr_hex(prefix_ptr) if prefix_ptr is not None else None,
+                    'prefix_text':prefix,
+                    'raw_callback_pointer':addr_hex(callback_ptr) if callback_ptr is not None else None,
+                    'callback_address':addr_hex(callback) if callback is not None else None,
+                    'callback_containing_function':callback_fn,
+                    'callback_is_thumb':bool(callback_ptr & 1) if callback_ptr is not None else None,
+                })
         direct_boot={
             'schema':'mpfree-p3-directboot-literal-evidence-v1',
             'permission_read_slot':ptrs['permission_read_literal'],
@@ -355,6 +385,10 @@ def mpfree_v11_entrypoint():
             'permission_read_write_pointer_is_prior_global':bool(
                 rptr=='0x0014d690' and wptr=='0x0014d690'),
             'permission_global_xrefs':global_refs,
+            'fastboot_command_table_pointer':(
+                addr_hex(command_table_pointer) if command_table_pointer is not None else None),
+            'fastboot_command_table':command_dispatch,
+            'fastboot_command_table_expected_eight_entries':len(command_dispatch)==8,
             'raw_word_occurrences':hits,
             'notes':[
                 'Literal slot dereference verified from original U-Boot bytes.',
