@@ -25,7 +25,8 @@ sys.path.insert(0, os.path.dirname(__file__))
 import manual_pages as mp  # noqa: E402
 
 OUT_DEFAULT = os.path.join(mp.USER, "build")
-FONTS = os.path.join(mp.ROOT, "rust", "mpfree-ui", "fonts")
+# The PDF's fonts (Inter with its italic and display cuts, JetBrains Mono).
+FONTS = os.path.join(mp.USER, "pdf", "fonts")
 
 
 def run(cmd, **kw):
@@ -74,7 +75,8 @@ def banner(fields, target):
     title, text = mp.BANNERS[status]
     if target == "html":
         return f'<div class="mpf-status {status}"><strong>{title}</strong> {text}</div>\n\n'
-    return f"::: {{.mpfstatus .{status}}}\n**{title}.** {text}\n:::\n\n"
+    # The PDF's banner draws its own label (lib.typ, mpfstatus).
+    return f"::: {{.mpfstatus .{status}}}\n{text}\n:::\n\n"
 
 
 def box(kind, inner, target):
@@ -83,7 +85,8 @@ def box(kind, inner, target):
     if target == "html":
         return (f'<div class="mpf-box {cls}">\n<p class="mpf-box-title">{title}</p>\n\n'
                 f"{inner}\n\n</div>\n")
-    return f"::: {{.mpfbox .{cls}}}\n**{title}**\n\n{inner}\n:::\n"
+    # The PDF's box draws its own title (lib.typ, mpfbox).
+    return f"::: {{.mpfbox .{cls}}}\n{inner}\n:::\n"
 
 
 def shot(m, path, target):
@@ -192,6 +195,9 @@ def build_pdf(out, src_pdf, shots, toc):
             # Pages before the first part (the welcome) are not numbered chapters.
             typ = re.sub(r"^= (.+)\n<(page-[^>]+)>", r"#heading(level: 1, numbering: none)[\1] <\2>",
                          typ, count=1, flags=re.M)
+        # Pandoc writes **+ New loop** as #strong[+ New loop], which Typst
+        # reads as a numbered list: escape a list marker at the start.
+        typ = re.sub(r"(#(?:strong|emph)\[)([+-]|\d+\.) ", lambda m: m.group(1) + "\\" + m.group(2) + " ", typ)
         body.append(typ)
     with open(os.path.join(work, "body.typ"), "w", encoding="utf-8") as f:
         f.write("#import \"lib.typ\": *\n\n" + "\n".join(body))
@@ -200,7 +206,7 @@ def build_pdf(out, src_pdf, shots, toc):
     commit = mp.git("rev-parse", "--short", "HEAD") or "unknown"
     date = mp.git("log", "-1", "--format=%cs") or ""
     pdf = os.path.join(out, "mpfree-manual.pdf")
-    run(["typst", "compile", "--root", work, "--font-path", FONTS,
+    run(["typst", "compile", "--root", work, "--font-path", FONTS, "--ignore-system-fonts",
          "--input", f"commit={commit}", "--input", f"date={date}",
          os.path.join(work, "manual.typ"), pdf])
     return pdf
