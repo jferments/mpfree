@@ -285,6 +285,9 @@ pub enum ToUi {
     /// Learn armed on the chain editor: the next Q-Link turned takes this
     /// knob.
     ChainLearn(ParamAddr),
+    /// A MIDI control took the knob learn was armed for (M5): the Q-Links
+    /// stop waiting for it.
+    ChainLearnDone,
     /// Q-LINK: the Q-Link column's next bank.
     QLinkBank,
     Session(String, Tone),
@@ -1959,6 +1962,10 @@ impl Player {
             }
             ToUi::ChainLearn(addr) => {
                 self.chain_page.learn(addr);
+                self.refresh_qlinks();
+            }
+            ToUi::ChainLearnDone => {
+                self.chain_page.cancel_learn();
                 self.refresh_qlinks();
             }
             ToUi::QLinkBank => self.next_qlink_bank(),

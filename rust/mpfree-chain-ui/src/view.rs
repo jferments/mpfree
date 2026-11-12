@@ -972,7 +972,8 @@ fn paint_side(cx: &mut PaintCx, l: &Layout, st: &ChainState) {
     cx.canvas
         .fill_round_rect(l.learn, 10, if st.learning { t.accent } else { t.raised });
     let learn = if st.learning {
-        "Turn a Q-Link to take it"
+        // 207 px in Inter Bold at 14 px: fits the 252 px button (M5).
+        "Turn a Q-Link or a MIDI control"
     } else {
         "Learn to a Q-Link"
     };
