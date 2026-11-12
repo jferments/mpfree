@@ -532,6 +532,60 @@ jobs:
             --workspace --all-targets --locked -- -D warnings \
             -A clippy::needless_range_loop -A clippy::should_implement_trait
 
+  instructions:
+    name: Instructions per bench case (fails on a rise over 5 %)
+    # Times on shared runners drift; instruction counts under callgrind don't.
+    # Each mpfree-bench case is counted per 128-frame block and compared with
+    # rust/mpfree-bench/instructions.txt (docs/project/profiling.md, "Instruction counts").
+    runs-on: [self-hosted, linux, x64, mpfree-ci]
+    timeout-minutes: 45
+    env:
+      # The baseline's toolchain: another compiler makes other code, so the
+      # counts are only comparable on the same one. The same pin as clippy.
+      RUSTUP_TOOLCHAIN: "1.97.0"
+      MPFREE_CARGO_TARGET_BUDGET_GIB: 15
+    steps:
+      - name: Clear the last job's /tmp files (self-hosted only)
+        if: runner.environment == 'self-hosted'
+        run: find /tmp -maxdepth 1 -name 'mpfree-*' -user "$(id -u)" -exec rm -rf {} +
+      - uses: actions/checkout@v4
+      - name: Keep the Cargo target between runs (self-hosted only)
+        if: runner.environment == 'self-hosted'
+        run: |
+          all="$RUNNER_WORKSPACE/cargo-target"
+          t="$all/instructions"
+          mkdir -p "$t"
+          used=$(du -s -BG "$all" | cut -f1 | tr -d G)
+          if [ "$used" -gt "$MPFREE_CARGO_TARGET_BUDGET_GIB" ]; then
+            echo "Cargo targets hold ${used} GiB, over ${MPFREE_CARGO_TARGET_BUDGET_GIB}: starting instructions afresh"
+            rm -rf "$t" && mkdir -p "$t"
+          fi
+          rm -rf rust/target && ln -s "$t" rust/target
+          echo "CARGO_TARGET_DIR=$t" >> "$GITHUB_ENV"
+      - name: Put the runner account's rustup on PATH (self-hosted only)
+        if: runner.environment == 'self-hosted'
+        run: echo "${CARGO_HOME:-$HOME/.cargo}/bin" >> "$GITHUB_PATH"
+      - name: Install the pinned toolchain
+        run: |
+          rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
+          rustc --version
+      - name: The gate's own tests
+        run: python3 tools/ci/test_instr_gate.py
+      - name: Build the bench (release)
+        run: cargo build --manifest-path rust/Cargo.toml --release --locked -p mpfree-bench
+      - name: Count instructions per case and compare with the baseline
+        shell: bash
+        run: |
+          if ! command -v valgrind >/dev/null; then
+            echo "::warning title=No valgrind on this runner::the instruction-count gate did not run; install valgrind on the runner (apt install valgrind)"
+            echo "Instruction counts: skipped, no valgrind on this runner." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          valgrind --version
+          set -o pipefail
+          # rust/target is the kept target (linked above) or the checkout's own.
+          { status=0; echo '```'; python3 tools/ci/instr_gate.py || status=$?; echo '```'; exit $status; } | tee -a "$GITHUB_STEP_SUMMARY"
+
   coverage:
     name: Rust line coverage by crate (report only)
     # Report, not a gate: on main and by hand. Its numbers point the next
