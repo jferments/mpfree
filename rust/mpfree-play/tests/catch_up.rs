@@ -209,7 +209,7 @@ impl World {
         let clip = self.truth_clip(slot);
         let rec = match rnd() % 5 {
             0 | 1 => {
-                let tick = if rnd() % 40 == 0 {
+                let tick = if rnd().is_multiple_of(40) {
                     LEN + 5
                 } else {
                     (rnd() % 64) as i64 * 240 + [0, 7, 120][(rnd() % 3) as usize]
@@ -217,7 +217,11 @@ impl World {
                 let mut note = Note::new(tick, 1 + (rnd() % 400) as i64, (rnd() % 4) as u8, 100);
                 // The recorder's own buffer handle: both sides replace it.
                 note.touch.first = 3;
-                let n = if rnd() % 2 == 0 { 0 } else { 1 + rnd() % 6 };
+                let n = if rnd().is_multiple_of(2) {
+                    0
+                } else {
+                    1 + rnd() % 6
+                };
                 let touch: Vec<TouchPoint> = (0..n)
                     .map(|i| TouchPoint {
                         at: i as u32 * 30,
@@ -325,7 +329,7 @@ fn a_late_view_catches_up_before_it_plays() {
         for i in 0..3000 {
             let slot = if cue == Some(1) && i % 3 == 0 { 1 } else { 0 };
             w.random_change(&mut rnd, slot);
-            if rnd() % 7 == 0 {
+            if rnd().is_multiple_of(7) {
                 // Compiled after making all but the last few changes.
                 let behind = rnd() % 12;
                 let to = (w.log.len() as u64).saturating_sub(behind).max(w.applied);
