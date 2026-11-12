@@ -40,6 +40,13 @@ impl Rig {
         self.notes.sort_by_key(|n| n.0);
     }
 
+    /// Pad `pad`'s pressure `value` at `frame`, after the notes there.
+    fn press(&mut self, frame: u64, pad: u8, value: u8) {
+        self.notes
+            .push((frame, Event::Pressure { note: pad, value }));
+        self.notes.sort_by_key(|n| n.0);
+    }
+
     /// A note on song tick `tick` while playing from bar 1 at frame 0.
     fn at_tick(&mut self, tick: Tick, len: Tick, note: u8) {
         self.note(tick as u64 * TICK, len as u64 * TICK, note, 100);
@@ -308,6 +315,107 @@ fn the_history_is_a_ring() {
     assert_eq!(p.bars(), 22);
 }
 
+fn runs(p: &Phrase) -> Vec<Vec<(u32, u8)>> {
+    p.played
+        .iter()
+        .map(|x| {
+            p.touch_of(&x.note)
+                .iter()
+                .map(|t| (t.at, t.value))
+                .collect()
+        })
+        .collect()
+}
+
+/// Each value goes on the note its pad holds, timed from the note's start
+/// and thinned as recording thins it: 2 steps or more kept at once, one
+/// step once it has lasted 10 ms (480 frames, 19.2 ticks), a value the
+/// same as the last kept never. The same for every period size, rolling
+/// or not.
+#[test]
+fn pressure_goes_on_the_note_its_pad_held_thinned_as_recording_thins_it() {
+    let play = |period: u32, rolling: bool| {
+        let mut r = Rig::new(period);
+        if rolling {
+            r.command(0, Command::Play);
+        }
+        let f = BEAT as u64 * TICK;
+        r.note(f, BEAT as u64 * TICK, 1, 100);
+        for (at, value) in [
+            (0, 10),
+            (250, 11),
+            (500, 12),
+            (1000, 13),
+            (2500, 60),
+            (3000, 59),
+        ] {
+            r.press(f + at, 1, value);
+        }
+        // Let go: no longer its note's.
+        r.press(f + BEAT as u64 * TICK + 100, 1, 5);
+        let g = 1440 * TICK;
+        r.note(g, 480 * TICK, 2, 100);
+        for (at, value) in [(1250, 70), (1500, 70), (2000, 71)] {
+            r.press(g + at, 2, value);
+        }
+        // A pad not held, and a note without pressure.
+        r.press(g + 10, 4, 99);
+        r.note(3 * f, 100 * TICK, 3, 100);
+        r.run_to(2 * BAR as u64 * TICK);
+        r.capture.phrase().unwrap()
+    };
+    for rolling in [true, false] {
+        let p = play(128, rolling);
+        assert_eq!(
+            runs(&p),
+            vec![
+                // 11 gave way to 12 before it lasted; 13 lasted until 60
+                // came, so it went in 480 frames after it came; 59 is kept
+                // when the pad lets go.
+                vec![(0, 10), (20, 12), (59, 13), (100, 60), (139, 59)],
+                vec![(50, 70), (99, 71)],
+                vec![],
+            ],
+            "rolling {rolling}"
+        );
+        assert!(!p.touch_cut);
+        assert_eq!(p.touch.len(), 7);
+        for period in [1, 64, 1000, 4096] {
+            assert_eq!(play(period, rolling), p, "period {period}");
+        }
+    }
+}
+
+/// The pressure ring is apart from the notes': more values than it holds
+/// push out the oldest values, never notes, and the phrase says its first
+/// notes' pressure is cut short.
+#[test]
+fn the_pressure_history_is_a_ring_of_its_own() {
+    let mut r = Rig::new(4096);
+    // 120 beats, each a note with 300 values on it (0 and 10 by turns).
+    let beat = BEAT as u64 * TICK;
+    for b in 0..120 {
+        r.note(b * beat, beat - 10, 1, 100);
+        for i in 0..300 {
+            let value = if i % 2 == 0 { 10 } else { 0 };
+            r.notes
+                .push((b * beat + i * 80, Event::Pressure { note: 1, value }));
+        }
+    }
+    r.notes.sort_by_key(|n| n.0);
+    r.run_to(120 * beat + BAR as u64 * TICK);
+    let p = r.capture.phrase().unwrap();
+    assert_eq!(p.played.len(), 120);
+    assert_eq!(p.touch.len(), MAX_TOUCH_HITS);
+    assert!(p.touch_cut);
+    let lens: Vec<usize> = runs(&p).iter().map(Vec::len).collect();
+    let cut = 120 * 300 - MAX_TOUCH_HITS;
+    assert!(lens[..cut / 300].iter().all(|&n| n == 0));
+    assert_eq!(lens[cut / 300], 300 - cut % 300);
+    assert!(lens[cut / 300 + 1..].iter().all(|&n| n == 300));
+    assert_eq!(r.capture.dropped(), 0);
+}
+
 // ---------------------------------------------------------------- keep
 
 fn project() -> Project {
@@ -347,6 +455,8 @@ fn timed(notes: &[(Tick, f64)], length: Tick, song_start: Tick) -> Phrase {
         .collect();
     Phrase {
         played,
+        touch: Vec::new(),
+        touch_cut: false,
         length,
         bar: BAR,
         song_start: Some(song_start),
@@ -388,7 +498,9 @@ fn kept_in_time_a_new_clip_plays_on_in_its_place() {
                 slot: 0,
                 origin: -BAR,
                 start: 5 * BAR,
-            })
+            }),
+            touch: 0,
+            touch_lost: 0,
         }
     );
     let c = p.clip(0, 0).unwrap();
@@ -424,6 +536,8 @@ fn kept_free_a_new_clip_starts_on_the_next_bar() {
             },
             song: None,
         }],
+        touch: Vec::new(),
+        touch_cut: false,
         length: BAR,
         bar: BAR,
         song_start: None,
@@ -478,7 +592,9 @@ fn kept_over_the_playing_clip_the_notes_go_into_it() {
             take: 1,
             notes: 2,
             bars: 2,
-            launch: None
+            launch: None,
+            touch: 0,
+            touch_lost: 0,
         }
     );
     let ticks: Vec<Tick> = p.clip(1, 0).unwrap().notes.iter().map(|n| n.tick).collect();
@@ -494,6 +610,68 @@ fn kept_over_the_playing_clip_the_notes_go_into_it() {
     }];
     let k = keep(&phrase, &mut p, &late, &mut takes, 1, now(7 * BAR), "new").unwrap();
     assert_eq!((k.slot, k.launch.is_some()), (1, true));
+}
+
+/// The kept notes keep their pressure when the track records it: as it
+/// was in a new clip, on the playing clip's own ticks (twice as many at
+/// double speed) after its own pressure, and left off, counted, when the
+/// playing clip has no room for it.
+#[test]
+fn kept_notes_keep_their_pressure_when_the_track_records_it() {
+    let point = |at, value| TouchPoint { at, value };
+    let mut phrase = timed(
+        &[(BEAT, (4 * BAR + BEAT) as f64), (BAR, (5 * BAR) as f64)],
+        2 * BAR,
+        4 * BAR,
+    );
+    phrase.touch = vec![point(0, 10), point(50, 90)];
+    phrase.played[0].note.touch = Touch { first: 0, len: 2 };
+    let values = |c: &Clip| -> Vec<Vec<(u32, u8)>> {
+        c.notes
+            .iter()
+            .map(|n| c.touch_of(n).iter().map(|t| (t.at, t.value)).collect())
+            .collect()
+    };
+    let mut p = project();
+    let mut takes = Takes::default();
+    let k = keep(&phrase, &mut p, &[], &mut takes, 0, now(8 * BAR), "c").unwrap();
+    assert_eq!((k.touch, k.touch_lost), (2, 0));
+    assert_eq!(
+        values(p.clip(0, 0).unwrap()),
+        vec![vec![(0, 10), (50, 90)], vec![]]
+    );
+    // A track that leaves pressure out.
+    p.tracks[2].record_touch = false;
+    let k = keep(&phrase, &mut p, &[], &mut takes, 2, now(8 * BAR), "c").unwrap();
+    let c = p.clip(2, k.slot).unwrap();
+    assert_eq!((k.touch, c.touch.len()), (0, 0));
+    assert!(c.notes.iter().all(|n| n.touch.is_none()));
+    // Over the playing clip, at double speed, after its own pressure.
+    let launches = [Launch {
+        track: 1,
+        slot: 0,
+        origin: 2 * BAR,
+        start: 2 * BAR,
+    }];
+    let beat = p.tracks[1].slots[0].as_mut().unwrap();
+    beat.speed = mpfree_seq::Speed::new(2, 1).unwrap();
+    beat.touch.push(point(0, 1));
+    let k = keep(&phrase, &mut p, &launches, &mut takes, 1, now(7 * BAR), "-").unwrap();
+    assert_eq!((k.launch, k.touch, k.touch_lost), (None, 2, 0));
+    let c = p.clip(1, 0).unwrap();
+    assert_eq!(c.touch.len(), 3);
+    assert_eq!(values(c), vec![vec![(0, 10), (100, 90)], vec![]]);
+    // Undo takes the notes out; the clip keeps the values it was given.
+    takes.undo(&mut p);
+    assert!(p.clip(1, 0).unwrap().notes.is_empty());
+    // A playing clip with no room: the notes go in without it.
+    let beat = p.tracks[1].slots[0].as_mut().unwrap();
+    beat.touch
+        .resize(mpfree_seq::MAX_TOUCH_POINTS - 1, point(0, 0));
+    let k = keep(&phrase, &mut p, &launches, &mut takes, 1, now(7 * BAR), "-").unwrap();
+    assert_eq!((k.notes, k.touch, k.touch_lost), (2, 0, 2));
+    let c = p.clip(1, 0).unwrap();
+    assert!(c.notes.iter().all(|n| n.touch.is_none()));
 }
 
 #[test]

@@ -15,6 +15,7 @@ You play the pads without recording, then decide you liked it. CAPTURE keeps it.
 - **Up to 32 bars.** A longer phrase keeps its last 32 bars. A clip holds at most 8192 notes, the last ones played.
 - **Lengths.** A note ends where its pad was released. A note still held ends at the moment of the capture.
 - **Exact timing.** Notes land on the nearest tick to the frame they were played on. Nothing is quantised. The clip's quantise setting can still be turned on afterwards, because quantise never changes the stored notes.
+- **Pad pressure.** Each note keeps the pressure played on it, thinned as recording thins it ([playback.md](playback.md#pad-pressure-goes-on-its-note)): a value 2 or more steps from the last one kept at once, a one-step value once it has lasted 10 ms, a value the same as the last kept never, a new press starting from 0. Values come in through `Capture::input` as `Event::Pressure` (the pad and its raw value) and are kept only while their pad's note is held. They are timed in ticks from their note's start (`Phrase::touch`, each note's `touch` naming its run), on the same clock as the notes, so a phrase is the same for any period size, rolling or stopped.
 
 ## Where it goes
 
@@ -25,6 +26,7 @@ CAPTURE puts the phrase in the armed track (track 1 if none is armed), as a take
   - A phrase played in time keeps its place against the song. If you played it over bars 3 and 4, bar 5 is its first bar again, so it plays on in time straight away.
   - A free phrase starts on the next bar line (when stopped, on the current bar's line).
 - **FX moves go with it.** The Perform FX moves made over a phrase played in time (the XY pad, the DJ knob, a pad's Hold, kept always in a move log while the transport rolls) go into the same clip as moves, on the ticks where they were made, as part of the same capture (`mpfree_capture::moves_for_clip`, `Takes::capture_moves`). The log line counts them ("capture 2: 6 notes and 1 move, ..."). A free phrase keeps its notes only. See [playback.md](playback.md#fx-moves).
+- **Pressure goes with it** when the track records pressure (`Track::record_touch`, the Record list's Pressure row). In a new clip the clip's pressure is the phrase's. Over the playing clip, each value moves to the clip's ticks as the note lengths do (twice as far at double speed), and the runs go after the clip's own pressure (`Takes::capture_notes`, given the runs). A playing clip with no room for them takes the notes without their pressure; `Kept::touch_lost` counts the values left off, the log line says so, and they add to the pressure losses the status line shows. The log line counts the values kept ("capture 1: 1 notes with 3 pressure values, ..."). A track with Pressure off keeps the notes without it.
 - **Undo.** UNDO takes a capture back like any take. Notes come out of the clip, or the new clip leaves its slot and stops. REDO puts it back. After an undo, the same phrase can be captured again.
 - **Nothing new.** After a capture, the Capture button goes quiet until another note is played, so pressing it twice does not make two copies.
 - **Refused.** It is refused, and nothing changes, when nothing was played, the track does not exist, or all 16 of the track's slots hold clips.
@@ -52,15 +54,19 @@ Each note also keeps the song tick it was played on. That is how notes over a pl
 `Capture::input`, `Capture::process` and `Capture::pending` run on the audio thread and never allocate. The history is a fixed ring:
 
 - 16384 note starts and ends: 8192 notes, about 8 minutes of 1/16 notes on two pads at 120 BPM;
-- 256 notes a period.
+- 256 notes a period;
+- a ring of its own for pressure: 32768 thinned values (`MAX_TOUCH_HITS`), each with the number of note starts and ends before it, so each value goes on the note its pad held then. A flood of pressure pushes out old pressure, never notes. A phrase whose first notes' values were pushed out says so (`Phrase::touch_cut`), and the log line adds "the first notes' pressure was older than the history keeps";
+- 512 pressure values a period (`MAX_TOUCH_INPUT`), in a queue of their own.
 
-`Capture::dropped()` counts notes lost to a full input table. It should stay 0.
+`Capture::dropped()` counts notes and pressure values lost to a full input table. It should stay 0.
+
+In the pad player the audio half sends each pad's pressure to the history as it sends the notes (`ToControl::Played`), whatever the armed track records, but only a value that changed since the last one it sent for that pad (a press sends the next one again).
 
 `Capture::phrase` and `keep` allocate. In the pad player they run when the button is pressed, like the other edits.
 
 ## Tests
 
-- `src/tests.rs` (13 tests):
+- `src/tests.rs` (16 tests):
   - a phrase in time starts on its bar and keeps its place; a free phrase starts on its first note;
   - a bar of silence, or the transport starting, ends a phrase; less than a bar does not;
   - a held note ends now, and a pad pressed again ends the held note;
@@ -68,9 +74,13 @@ Each note also keeps the song tick it was played on. That is how notes over a pl
   - a phrase goes on across a loop of whole bars, and each note keeps its song tick;
   - every period size (1, 64, 128, 1000 and 4096 frames, with a tempo change) gives the same phrase, rolling or stopped;
   - the button goes quiet once a phrase is kept, until the next note; the history is a ring;
-  - `keep`: a new clip in time plays on in its place (in a loop too); a free one starts on the next bar; notes over the playing clip go into it; refusals change nothing.
-- `tests/no_alloc.rs`: a counting allocator watches the capture follow a busy transport long enough for the history to wrap, at periods of 1, 128 and 4096 frames. It sees no allocation and no free.
-- `mpfree-play`'s `takes.rs`: a captured clip is undone and redone as a take, and a slot filled meanwhile keeps its clip. Recorded notes still join their own take when a capture has the same number. Captured notes go in all together or not at all.
+  - `keep`: a new clip in time plays on in its place (in a loop too); a free one starts on the next bar; notes over the playing clip go into it; refusals change nothing;
+  - pressure goes on the note its pad held, thinned as recording thins it (a one-step value given way, one kept 480 frames after it came, one kept as the pad lets go, a repeat, a value after letting go and one on a pad not held), the same at 1, 64, 128, 1000 and 4096 frames, rolling or stopped;
+  - the pressure ring is its own: 36000 values over 120 notes keep every note and the last 32768 values, the first ten notes' runs cut and the phrase saying so;
+  - kept notes keep their pressure: in a new clip, left out on a track with Pressure off, on a double-speed playing clip's ticks after its own pressure, and left off and counted when that clip is full.
+- `tests/no_alloc.rs`: a counting allocator watches the capture follow a busy transport long enough for the history to wrap, at periods of 1, 128 and 4096 frames, with pressure on the held pads every 8 frames. It sees no allocation and no free.
+- `mpfree-play`'s `takes.rs`: a captured clip is undone and redone as a take, and a slot filled meanwhile keeps its clip. Recorded notes still join their own take when a capture has the same number. Captured notes go in all together or not at all, their pressure after the clip's own, or without it in a clip with no room.
+- `mpfree-app`'s `time.rs`: `capture_keeps_the_pressure_played_on_its_notes` plays a pad squeezed harder and let up without recording, captures it, and hears the pressure play back with the note every bar; with Pressure off the capture keeps the note alone.
 - `mpfree-time-ui`: the button, the take rows, and a sample session that captures a riff as a new clip in place, captures over a playing clip, and undoes both.
 
 ## Listening

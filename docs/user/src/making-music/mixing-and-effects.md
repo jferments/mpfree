@@ -1,7 +1,7 @@
 <!--
 status: changing
 covers: rust/mpfree-fx rust/mpfree-mixer-ui rust/mpfree-fx-ui rust/mpfree-chain-ui rust/mpfree-app/src/chain_page.rs rust/mpfree-app/src/mixing.rs rust/mpfree-fx/src/perform.rs
-checked: 2026-11-12 15df706
+checked: 2026-11-12 88c9908
 -->
 
 # Mixing and effects
@@ -43,12 +43,20 @@ Drag a fader, pan or send with your finger, and tap M, S or the output to change
 
 **I/O** shows the project's routing in one place instead of strip by strip. The master stays on the right; down the left is a list of sections, and the section you pick fills the rest.
 
+To open it, tap the small **I/O icon** (an arrow in over an arrow out) just left of the mixer icon in the top bar, or tap **I/O** among the mixer's views. The I/O icon lights while the view shows; tap it again, press **TRACK MIX** or pick a tab to close the mixer. While the tempo follows a clock from another device, the top bar shows a tempo chip such as **120.0 from MIDI In** with a green dot; tapping it opens this view too, at **Sync** once that section is there.
+
 - **Audio** has a row for every strip that has an output: the inputs, the tracks, the pad channels and the submixes, each with where it goes. An input's row also has its **Source** and **Monitor**.
 - Tap a row to select that strip (the Q-Links follow it). Tap its output to open the same picker as on the strip. Tap an input's Source or Monitor to step through the choices.
 - Turn the **data wheel** to move the selection up and down the list, and press **-** or **+** to step the selected row's output.
 - An output of **None (silent)** shows in amber, so a strip that goes nowhere is easy to spot.
 
-MIDI, Sync and CV will join the list as their own sections: see [Playing other gear](midi-and-cv.md) for what each one sets.
+Under Audio come three more sections, for the gear around the MPC (see [Playing other gear](midi-and-cv.md)):
+
+- **MIDI** lists the ports plugged in, each with what its **Input** does and its **Thru**, then **Tracks out**: where each track plays (**Plays on**, the port and the channel together, or **Inside MPFree**) and the **Program** it sends.
+- **Sync** sets **Tempo from** (MPFree itself or a port's clock), what following does with start, stop and the position, the clock arriving now, and which ports send **Clock out**.
+- **CV** has a row for each of the eight CV/gate outputs: its **Job**, the **Track** it follows and its setting, with the volts it gives now.
+
+A setting for a device that isn't plugged in, or for a part of MPFree that doesn't work yet, says so on its own row, and is kept. For now these settings last until you switch off; saving them with the project is coming.
 
 ## Using the Q-Links in the mixer
 

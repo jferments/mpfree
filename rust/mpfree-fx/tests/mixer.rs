@@ -1150,9 +1150,16 @@ fn returns_only(n: usize) -> (Mixer, Script) {
     m.chain_mut(StripId::Return(0))
         .unwrap()
         .push(Box::new(Delay::new()));
-    let c = m.chain_mut(StripId::Return(1)).unwrap();
-    c.push(Box::new(Cloud::new()));
-    c.set_param(0, ids::cloud::QUALITY, 2.0);
+    // All wet with a pre-delay, settled from the start: the reverb can run
+    // a block late from the first block.
+    let mut cloud = Cloud::new();
+    cloud.set_param(ids::cloud::QUALITY, 2.0);
+    cloud.set_param(ids::cloud::MIX, 100.0);
+    cloud.set_param(ids::cloud::PRE_DELAY, 20.0);
+    cloud.reset();
+    m.chain_mut(StripId::Return(1))
+        .unwrap()
+        .push(Box::new(cloud));
     let mut rng = Lcg(41);
     let x: Vec<f32> = (0..n)
         .map(|i| {
@@ -1173,7 +1180,7 @@ fn returns_only(n: usize) -> (Mixer, Script) {
 }
 
 #[test]
-fn pipelined_returns_are_the_same_output_one_block_late() {
+fn pipelined_returns_sound_the_same_bit_for_bit() {
     use std::time::Duration;
     let (n, b) = (24_000, 128);
     let reference = {
@@ -1192,18 +1199,24 @@ fn pipelined_returns_are_the_same_output_one_block_late() {
             .is_some());
         assert!(m.pipelined_returns());
         let got = play(&mut m, &s, n, &mut blocks(b)).out;
-        // The first block is silent, then it is the reference a block late.
-        assert!(got.0[..b].iter().chain(&got.1[..b]).all(|&v| v == 0.0));
-        let late = (got.0[b..].to_vec(), got.1[b..].to_vec());
-        let want = (reference.0[..n - b].to_vec(), reference.1[..n - b].to_vec());
-        close(name, &late, &want, 0.0);
+        // The reverb runs a block late and takes the block back from its
+        // pre-delay; the delay (no pre-delay to take it from) stays on
+        // time. Together: the reference, bit for bit, from the first block.
+        close(name, &got, &reference, 0.0);
         let st = m.stats();
+        // Late from the first block (a start) to the last, a shorter one,
+        // where it goes back on time (a stop).
+        assert_eq!(n % b, 64);
         assert_eq!(st.pipe_posts as usize, n / b - 1, "{name}");
+        assert_eq!(st.pipe_starts, 1, "{name}");
+        assert_eq!(st.pipe_stops, 1, "{name}");
         assert_eq!(st.pipe_late, 0, "{name}");
+        assert_eq!(m.chain(StripId::Return(1)).unwrap().lead(), 0);
         // The inserts are home between blocks.
         assert_eq!(m.chain(StripId::Return(1)).unwrap().len(), 1);
         assert!(m.set_pipelined_returns(None, Duration::ZERO).is_none());
         assert!(!m.pipelined_returns());
+        assert_eq!(m.stats().pipe_lost_input, 0);
     }
 }
 
@@ -1212,6 +1225,9 @@ fn pipelined_returns_take_insert_controls_and_play_with_everything_else() {
     use std::time::Duration;
     let n = 30_000;
     let (mut m, s) = busy(9, n);
+    let c = m.chain_mut(StripId::Return(1)).unwrap();
+    c.set_param(0, ids::cloud::MIX, 100.0);
+    c.set_param(0, ids::cloud::PRE_DELAY, 30.0);
     assert!(m
         .set_pipelined_returns(
             Some(mpfree_lanes::Config::default()),
@@ -1219,9 +1235,14 @@ fn pipelined_returns_take_insert_controls_and_play_with_everything_else() {
         )
         .is_some());
     let mut rng = Lcg(5);
+    // Blocks of any length: the reverb starts and stops around each change.
     let out = play(&mut m, &s, n / 2, &mut || 1 + rng.next() as usize % 512).out;
     assert!(out.0.iter().chain(&out.1).all(|v| v.is_finite()));
     assert!(peak(&out.0) > 0.05);
+    let out = play(&mut m, &s, n / 4, &mut blocks(256)).out;
+    assert!(out.0.iter().chain(&out.1).all(|v| v.is_finite()));
+    assert!(m.stats().pipe_posts > 0);
+    assert!(m.stats().pipe_starts > 1);
     // Between blocks the returns' inserts are home: knob turns and bypass
     // reach them.
     assert!(m.queue_insert(
