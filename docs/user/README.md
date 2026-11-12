@@ -14,7 +14,7 @@ This folder is the source of MPFree's user manual, for musicians and producers. 
 | `src/getting-started/`, `src/making-music/`, `src/reference/` | The pages. |
 | `terms.toml` | Current and retired names; `check_docs.py` fails on a retired one. |
 | `book.toml`, `theme/` | The website (mdBook). |
-| `pdf/` | The PDF: the Typst layout (`manual.typ`, `lib.typ`) and the Pandoc filter. |
+| `pdf/` | The PDF: the Typst layout (`manual.typ` for the cover, page frame and chapter openers; `lib.typ` for colours, boxes, tables and the button keys), the Pandoc filter, and its fonts (`fonts/`, Inter and JetBrains Mono). |
 | `build/` | Build output (not committed). |
 
 ## Building
