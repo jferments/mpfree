@@ -60,7 +60,7 @@ def build(read):
                 "device_order",{}).get("entries",[]))==5,
         "eight_media_mapping_entries_captured":len(
             stage_ext.get("opaque_media_table_words",{}).get(
-                "device_mapping",{}).get("entries",[]))==10,
+                "device_mapping",{}).get("entries",[]))==8,
     }
     literals=u.get("direct_boot_probe",{}).get(
         "reboot_mode_original_literal_slots",{})
