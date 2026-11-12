@@ -29,6 +29,21 @@ class DirectBootSourceGuards(unittest.TestCase):
         self.assertIn("original_image_pointers", source[stage:uboot])
         self.assertIn("spl-updater-pointer-evidence.json", RUNNER.read_text())
 
+    def test_crossstage_loader_tables_and_power_source_are_source_only(self):
+        ghidra = GHIDRA.read_text()
+        runner = RUNNER.read_text()
+        module = ROOT / "tools/mpc-one/synthesize_stage_indirection.py"
+        source = module.read_text()
+        ast.parse(source, filename=str(module))
+        self.assertIn("('device_mapping',0xff705404,8)", ghidra)
+        self.assertIn("('device_order',0xff7053fc,5)", ghidra)
+        self.assertIn("indirect_handoff_original_word", ghidra)
+        self.assertIn("'getvar_power_source_label_1_string'", ghidra)
+        self.assertIn("mapping_table_ends_at_device_order_start", source)
+        self.assertIn("cross-stage-indirection.json", runner)
+        self.assertNotIn("subprocess.", source)
+        self.assertNotIn("os.system(", source)
+
     def test_adc_source_present_and_pointer_proof_is_required(self):
         source = GHIDRA.read_text()
         runner = RUNNER.read_text()
