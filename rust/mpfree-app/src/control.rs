@@ -56,6 +56,11 @@ const BUILD_QUEUE: usize = 64;
 /// gives up on that message.
 const MIDI_WAIT: Duration = Duration::from_millis(500);
 
+/// The lights' thread writing nothing this long while messages wait is a
+/// stall ([`Lights::watch`]): the session ping waits behind them, and the
+/// controller drops the session after about 10 s without one.
+pub const STALL: Duration = Duration::from_secs(2);
+
 /// Writes one whole message to a non-blocking MIDI output, waiting up to
 /// `wait` for room in the kernel's buffer (1 ms at a time). Never call it on
 /// the audio thread: it sleeps.
@@ -139,8 +144,19 @@ pub struct LightsSummary {
     pub failed: u64,
     /// Messages dropped because the queue was full.
     pub dropped: u64,
+    /// Times the thread wrote nothing for [`STALL`] with messages waiting.
+    pub stalls: u64,
     /// The thread was still writing when the session ended.
     pub unfinished: bool,
+}
+
+/// What [`Lights::watch`] saw.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum LightsWatch {
+    /// Nothing written for [`STALL`] while `waiting` messages wait.
+    Stalled { waiting: u64 },
+    /// Writing again, `after` the stall was seen.
+    Resumed { after: Duration },
 }
 
 /// The controller's outputs, written by the `mpfree-lights` thread.
@@ -148,7 +164,15 @@ pub struct Lights {
     tx: Option<SyncSender<Msg>>,
     errors: Receiver<String>,
     counts: Arc<LightCounts>,
+    /// Messages put in the queue.
+    queued: u64,
     dropped: u64,
+    /// The watchdog ([`Lights::watch`]): the thread's count when it last
+    /// moved (or the queue was empty), and the stall being seen.
+    done: u64,
+    moved_at: Instant,
+    stalled_at: Option<Instant>,
+    stalls: u64,
     thread: Option<JoinHandle<()>>,
 }
 
@@ -202,7 +226,12 @@ impl Lights {
             tx: Some(tx),
             errors,
             counts,
+            queued: 0,
             dropped: 0,
+            done: 0,
+            moved_at: Instant::now(),
+            stalled_at: None,
+            stalls: 0,
             thread: Some(thread),
         })
     }
@@ -215,7 +244,10 @@ impl Lights {
             return false;
         };
         match tx.try_send(Msg::new(private, msg)) {
-            Ok(()) => true,
+            Ok(()) => {
+                self.queued += 1;
+                true
+            }
             Err(TrySendError::Full(_)) | Err(TrySendError::Disconnected(_)) => {
                 self.dropped += 1;
                 false
@@ -234,6 +266,39 @@ impl Lights {
         self.dropped
     }
 
+    /// Messages the port refused so far.
+    pub fn failed(&self) -> u64 {
+        self.counts.failed.load(Ordering::Relaxed)
+    }
+
+    /// Stalls seen so far ([`Lights::watch`]).
+    pub fn stalls(&self) -> u64 {
+        self.stalls
+    }
+
+    /// The watchdog, once a period: says when the thread has written
+    /// nothing for [`STALL`] while messages wait (once per stall), and when
+    /// it writes again. A stall is a fallback made visible: the lights and
+    /// the session ping are late, not lost. Never waits; no allocation.
+    pub fn watch(&mut self, now: Instant) -> Option<LightsWatch> {
+        let done = self.counts.written.load(Ordering::Relaxed)
+            + self.counts.failed.load(Ordering::Relaxed);
+        let waiting = self.queued.saturating_sub(done);
+        if done != self.done || waiting == 0 {
+            self.done = done;
+            self.moved_at = now;
+            return self.stalled_at.take().map(|at| LightsWatch::Resumed {
+                after: now.saturating_duration_since(at),
+            });
+        }
+        if self.stalled_at.is_none() && now.saturating_duration_since(self.moved_at) >= STALL {
+            self.stalled_at = Some(now);
+            self.stalls += 1;
+            return Some(LightsWatch::Stalled { waiting });
+        }
+        None
+    }
+
     /// Lets the thread write what is queued (up to `wait`) and stops it.
     pub fn finish(mut self, wait: Duration) -> LightsSummary {
         self.tx = None;
@@ -242,6 +307,7 @@ impl Lights {
             written: self.counts.written.load(Ordering::Relaxed),
             failed: self.counts.failed.load(Ordering::Relaxed),
             dropped: self.dropped,
+            stalls: self.stalls,
             unfinished,
         }
     }
@@ -510,6 +576,7 @@ mod tests {
                 written: 22,
                 failed: 0,
                 dropped: 0,
+                stalls: 0,
                 unfinished: false
             }
         );
@@ -544,6 +611,38 @@ mod tests {
             "{said:?}"
         );
         assert_eq!(l.finish(Duration::from_secs(5)).failed, 2);
+    }
+
+    #[test]
+    fn a_stalled_lights_thread_is_seen_once_and_so_is_its_return() {
+        let public = Port::default();
+        *public.busy.lock().unwrap() = u32::MAX;
+        let busy = Arc::clone(&public.busy);
+        // The thread waits up to 30 s on the first message.
+        let mut l = Lights::start_with(public, None, Duration::from_secs(30)).unwrap();
+        let t0 = Instant::now();
+        assert_eq!(l.watch(t0), None, "nothing waiting");
+        for k in 0..3 {
+            assert!(l.send(false, &[0x90, k, 1]));
+        }
+        assert_eq!(l.watch(t0 + Duration::from_secs(1)), None);
+        assert_eq!(
+            l.watch(t0 + STALL),
+            Some(LightsWatch::Stalled { waiting: 3 })
+        );
+        assert_eq!(l.watch(t0 + 2 * STALL), None, "said once");
+        assert_eq!(l.stalls(), 1);
+        // The port takes messages again.
+        *busy.lock().unwrap() = 0;
+        let give_up = Instant::now() + Duration::from_secs(5);
+        let mut seen = None;
+        while seen.is_none() && Instant::now() < give_up {
+            seen = l.watch(t0 + 3 * STALL);
+            thread::sleep(Duration::from_millis(1));
+        }
+        assert_eq!(seen, Some(LightsWatch::Resumed { after: 2 * STALL }));
+        let s = l.finish(Duration::from_secs(5));
+        assert_eq!((s.written, s.stalls), (3, 1));
     }
 
     #[test]

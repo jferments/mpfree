@@ -312,6 +312,24 @@ data side is here:
   card's format), which the outside review of 12 Nov named as the first
   thing to move off the audio thread. It has no budget yet, so it is shown
   on its worst block, dim, until the control thread moves it.
+- **Slow periods outside the engines** (`parts.rs`): the `control` row is
+  one number, so the loop also times its own parts outside the engines
+  (screen actions, MIDI in and buttons, app and effects, pads and lights,
+  screen updates, and the time after the sound card's write, which the
+  period's span leaves out), and each screen action, MIDI event and effect.
+  A period whose parts take half a period or more is slow: counted, on this
+  page under the budgets ("Slow periods outside the engines", red once there
+  is one, with its worst and the part that took most), and said in a
+  `control: slow period at +T s: ...` line (at most one a second, the rest
+  counted) that names the slowest part and the slowest single action,
+  event or effect by its debug text, cut to 48 bytes without allocating.
+  Every 30 s `status: control parts (worst in 30 s): ...` gives each part's
+  worst. Why: in the 12 Nov live test the period's worst reached 176 % and
+  295 % with every engine under 51 %, and nothing said where the time went
+  (the looper's waveform, drawn in one go outside the looper's probe on
+  that build; #223 has since spread it over periods inside the probe). The
+  same rows show the controller output's refused, dropped and stalled
+  messages and the report lines dropped (control.rs).
 
 ## CI
 
