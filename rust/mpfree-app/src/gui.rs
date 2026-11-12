@@ -51,7 +51,7 @@ use mpfree_sampler::model::Project;
 use mpfree_synth_ui::view as synth_view;
 use mpfree_synth_ui::{SynthAction, SynthPanel, SynthState};
 use mpfree_time_ui::view::{
-    self as time_view, TimePage, TimeState, TransportInfo, CLIPS_HINT, CLIPS_PAGE,
+    self as time_view, TimePage, TimeState, TransportInfo, CLIPS_HINT, CLIPS_PAGE, SONG_HINT,
 };
 use mpfree_time_ui::TimeAction;
 use mpfree_touch::mt::Phase;
@@ -1313,6 +1313,7 @@ impl Player {
             match self.view {
                 View::Play => format!("Tap All, Beats, Loop or Drum: the view   ·   Wheel or tap: kit   ·   Q-Link 1 or \
                                        the master bar: level   ·   NOTE REPEAT: repeat   ·   MENU: options   ·   {stop}"),
+                View::Arrange if self.time.song_view => SONG_HINT.to_string(),
                 View::Arrange => CLIPS_HINT.to_string(),
                 View::Looper => format!("Tap a loop or a layer: pick it   ·   Q-Links: layer level and pan, loop level, \
                                          line   ·   REC: record   ·   OVERDUB: overdub   ·   UNDO: undo (SHIFT: redo)   ·   \
@@ -2043,11 +2044,16 @@ impl Player {
                 self.refresh_arp();
             }
             ToUi::Time(st) => {
+                let swapped = st.song_view != self.time.song_view;
                 self.time = *st;
                 self.sample.set_tempo(self.time.transport.bpm);
                 self.time_page.update(&mut self.ui, &self.time);
                 self.play.set_transport(self.time.transport);
                 self.refresh_play();
+                if swapped {
+                    // The Song view has its own hint line.
+                    self.refresh_hint();
+                }
             }
             ToUi::Transport(info) => {
                 self.time.transport = info;
@@ -2889,7 +2895,8 @@ impl Player {
                 | time_view::CLIPS
                 | time_view::RECORD
                 | time_view::TAKES
-                | time_view::MORPH,
+                | time_view::MORPH
+                | time_view::SONG,
                 _,
             ) => time_view::action(&ev, &self.time).map(FromUi::Time),
             _ => None,
@@ -5086,6 +5093,19 @@ mod tests {
         assert_eq!(
             tap(&mut p, (save.x + save.w / 2, save.y + save.h / 2)),
             Some(FromUi::Time(TimeAction::SaveScene(0)))
+        );
+        // The Song view in the grid's place: its Clips button goes back.
+        p.time.song_view = true;
+        p.time_page.update(&mut p.ui, &p.time);
+        p.ui.paint(&mut SoftCanvas::new(1280, 800));
+        let song = p.ui.rect_of(time_view::SONG).unwrap();
+        let back =
+            p.ui.get::<mpfree_time_ui::song::SongLanes>(time_view::SONG)
+                .unwrap()
+                .button_rects(song)[0];
+        assert_eq!(
+            tap(&mut p, (back.x + back.w / 2, back.y + back.h / 2)),
+            Some(FromUi::Time(TimeAction::SongView(false)))
         );
     }
 
