@@ -38,7 +38,8 @@ pub use arps::{Through, TrackArps};
 pub use mpfree_param;
 pub use player::{Erased, ErasedLock, Event, Out, Player, Sink, Stats, ALL, SONG_TRACK};
 pub use record::{
-    Recorder, Taken, TakenLock, TakenMove, MAX_TOUCH_INPUT, TOUCH_BUFS, TOUCH_POINTS, TOUCH_ROOM,
+    Recorder, Taken, TakenLock, TakenMove, MAX_TOUCH_INPUT, MOVE_POINTS, TOUCH_BUFS, TOUCH_POINTS,
+    TOUCH_ROOM,
 };
 pub use recorded::{Behind, Includes, Rec, Recent, RECENT};
 pub use takes::{MovePut, MoveWrite, Recorded, Take, Takes, TAKE_ROOM};
