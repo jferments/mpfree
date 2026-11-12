@@ -27,6 +27,13 @@
 //!   each pad a semitone up, played by the keygroups that hold them; or
 //!   **16 Levels** of the pad, each pad a step of what **Levels by** says
 //!   (velocity, tune, cutoff, decay or start).
+//! - The **scene strip** under them holds the kit's scenes
+//!   (`mpfree_sampler::scene`): **Store A** and **Store B** keep the pads
+//!   as they are, the **crossfader** morphs every pad's level, pan, tune,
+//!   filter and envelope times from A to B while it plays (the kit itself
+//!   doesn't change), and **Return to A** puts the pads back as A stored
+//!   them, as one undo step, with the crossfader at A
+//!   ([`PlayAction::Scene`]).
 //! - **Q-Links 1 to 4** turn Attack, Decay, Cutoff and Resonance (with
 //!   SHIFT, finer). A tap on a Q-Link's card picks its row.
 //!
@@ -43,6 +50,7 @@ use mpfree_sampler::model::{
     Ahdsr, Filter, FilterKind, Keys, LayerSelect, Levels, ModelError, Pad, PadsPlay, PlayMode,
     PressureTarget, Project, Source, KEYGROUP_POLYPHONY, MAX_KEY_FADE, MAX_VEL_FADE, PADS,
 };
+use mpfree_ui::widgets::Fader;
 use mpfree_ui::{Color, EventKind, Ui, UiEvent};
 
 use crate::chop_tab::pad_text;
@@ -50,7 +58,7 @@ use crate::keys_widgets::{KeyZones, Zone};
 use crate::play_widgets::{EnvelopeView, FilterCurve, LayerBar, LayerMap};
 use crate::source::SourceView;
 use crate::wave_tab::{self, duration_text, mode_label, pad_color, TABS};
-use crate::widgets::{InfoCard, KnobCard, PadBar, Setting, SettingList};
+use crate::widgets::{ButtonRow, InfoCard, KnobCard, PadBar, Setting, SettingList};
 
 /// Widget names the tab adds. The app's own are `header` and `hint`.
 pub const BAR: &str = "smp-play-bar";
@@ -61,25 +69,30 @@ pub const LIST: &str = "smp-play-list";
 pub const KEYS: &str = "smp-play-keys";
 pub const QLINKS: [&str; 4] = ["smp-play-q1", "smp-play-q2", "smp-play-q3", "smp-play-q4"];
 pub const WHEEL: &str = "smp-play-wheel";
+/// The scene strip: Store A, Store B and Return, and the crossfader.
+pub const SCENES: &str = "smp-play-scenes";
+pub const FADER: &str = "smp-play-fader";
 
 /// The tab's page: the layer map, the envelope over the filter, and the Pad
 /// list, between the pad bar and the Q-Link cards.
-pub const LAYOUT: &str = "col(header:60, smp-play-bar:60, \
+pub const LAYOUT: &str = "col(header:60, row(smp-play-bar:*, smp-send:330):60, \
                           row(smp-play-layers:*, col(smp-play-env:3*, smp-play-filter:2*):*, smp-play-list:340):*, \
+                          row(smp-play-scenes:420, smp-play-fader:*):68, \
                           row(smp-play-q1, smp-play-q2, smp-play-q3, smp-play-q4, smp-play-wheel:210):88, hint:26)";
 
 /// The page while the pad is a keygroup or the pads play notes: the
 /// keyboard over the layer map and the envelope (a layout file can set it
 /// under the page's name with `.keys` after it).
-pub const KEYS_LAYOUT: &str = "col(header:60, smp-play-bar:60, \
-                               row(col(smp-play-keys:236, row(smp-play-layers:*, col(smp-play-env:3*, smp-play-filter:2*):*):*):*, smp-play-list:340):*, \
+pub const KEYS_LAYOUT: &str = "col(header:60, row(smp-play-bar:*, smp-send:330):60, \
+                               row(col(smp-play-keys:212, row(smp-play-layers:*, col(smp-play-env:*, smp-play-filter:*):*):*):*, smp-play-list:340):*, \
+                               row(smp-play-scenes:420, smp-play-fader:*):68, \
                                row(smp-play-q1, smp-play-q2, smp-play-q3, smp-play-q4, smp-play-wheel:210):88, hint:26)";
 
 /// The velocity a key pressed on the keyboard plays at.
 pub const KEY_VELOCITY: u8 = 100;
 
 /// The tab's place in [`TABS`].
-pub const TAB: usize = 4;
+pub const TAB: usize = 3;
 
 /// The hint line the app shows under the tab.
 pub const HINT: &str = "Drag a layer's edges for its velocities · drag the envelope's points and the filter's dot · tap a \
@@ -321,6 +334,8 @@ pub struct PlayState {
     pub zones: Vec<KeyZone>,
     /// The key fade the kit's keygroups share (None when they differ).
     pub key_fade: Option<u8>,
+    /// Whether the kit has scenes A and B stored.
+    pub scenes: [bool; 2],
 }
 
 impl PlayState {
@@ -364,6 +379,7 @@ impl PlayState {
             pads_play: p.pads_play(),
             zones,
             key_fade: p.key_fade(),
+            scenes: [p.scenes[0].is_some(), p.scenes[1].is_some()],
         })
     }
 
@@ -476,8 +492,23 @@ pub enum PlayAction {
     /// A key on the keyboard pressed (`down`) or let go: play the kit's
     /// keygroups at `note`, at [`KEY_VELOCITY`], as a keyboard would.
     Note { note: u8, down: bool },
+    /// The scene strip: see [`SceneAction`]. The app keeps the scenes in
+    /// the kit and sends the crossfader's values to the sampler.
+    Scene(SceneAction),
     /// Open the editor's tab `i` of [`TABS`].
     Tab(usize),
+}
+
+/// What the scene strip asks for (`mpfree_sampler::scene`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum SceneAction {
+    /// Store the kit's pads as they are as scene A (0) or B (1).
+    Store(usize),
+    /// The crossfader moved: 0 is A, 1 is B.
+    Fade(f32),
+    /// Back to scene A: the pads as it stored them (one undo step), and
+    /// the crossfader to A.
+    Return,
 }
 
 impl PlayAction {
@@ -492,7 +523,10 @@ impl PlayAction {
             } => (pad, after, gesture),
             PlayAction::PadsPlay(play) => return p.set_pads_play(*play),
             PlayAction::KeyFade(fade) => return p.set_key_fade(*fade),
-            PlayAction::Tab(_) | PlayAction::Pick(_) | PlayAction::Note { .. } => return Ok(()),
+            PlayAction::Tab(_)
+            | PlayAction::Pick(_)
+            | PlayAction::Note { .. }
+            | PlayAction::Scene(_) => return Ok(()),
         };
         let now = p.pad(*pad).ok_or(ModelError::BadPad)?;
         if now.layers.len() != after.layers.len() {
@@ -536,12 +570,15 @@ pub struct PlayTab {
     next_gesture: u64,
     /// Whether the page has the keyboard.
     keys_shown: bool,
+    /// The crossfader, 0 (A) to 1 (B).
+    fade: f32,
 }
 
 impl PlayTab {
     /// Adds the widgets and the page `name` to `ui` (the app adds `header`
     /// and `hint` first) and shows `st`.
     pub fn add(ui: &mut Ui, name: &str, st: &PlayState) -> Result<PlayTab, String> {
+        crate::send::add(ui);
         let mut bar = PadBar::new(&TABS);
         bar.enabled = TABS.iter().map(|t| wave_tab::BUILT.contains(t)).collect();
         bar.active = TAB;
@@ -566,6 +603,11 @@ impl PlayTab {
             );
         }
         ui.add(WHEEL, InfoCard::new("Wheel · the row picked"));
+        ui.add(
+            SCENES,
+            ButtonRow::new(&["Store A", "Store B", "Return to A"]),
+        );
+        ui.add(FADER, Fader::new("Scenes · A to B"));
         ui.add_page(name, LAYOUT)?;
         let mut tab = PlayTab {
             name: name.to_string(),
@@ -576,6 +618,7 @@ impl PlayTab {
             gesture: None,
             next_gesture: GESTURE_BASE,
             keys_shown: false,
+            fade: 0.0,
         };
         tab.update(ui, st);
         Ok(tab)
@@ -649,7 +692,56 @@ impl PlayTab {
         }
     }
 
+    /// The crossfader's position, 0 (A) to 1 (B).
+    pub fn fade(&self) -> f32 {
+        self.fade
+    }
+
+    /// Puts the crossfader at `x` (the app's, after Return or a new kit).
+    pub fn set_fade(&mut self, ui: &mut Ui, st: &PlayState, x: f32) {
+        self.fade = if x.is_finite() {
+            x.clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        self.show_scenes(ui, st);
+    }
+
+    fn show_scenes(&self, ui: &mut Ui, st: &PlayState) {
+        if let Some(b) = ui.get_mut::<ButtonRow>(SCENES) {
+            b.labels = vec![
+                if st.scenes[0] {
+                    "Store A again"
+                } else {
+                    "Store A"
+                }
+                .into(),
+                if st.scenes[1] {
+                    "Store B again"
+                } else {
+                    "Store B"
+                }
+                .into(),
+                "Return to A".into(),
+            ];
+            b.enabled = vec![true, true, st.scenes[0]];
+        }
+        if let Some(f) = ui.get_mut::<Fader>(FADER) {
+            f.value = self.fade;
+            f.text = match st.scenes {
+                [true, true] => match (self.fade * 100.0).round() as u32 {
+                    0 => "A".into(),
+                    100 => "B".into(),
+                    n => format!("{n} % to B"),
+                },
+                [false, _] => "store A first".into(),
+                [true, false] => "store B first".into(),
+            };
+        }
+    }
+
     fn show(&self, ui: &mut Ui, st: &PlayState) {
+        self.show_scenes(ui, st);
         let p = &st.settings;
         let n = p.layers.len();
         if let Some(bar) = ui.get_mut::<PadBar>(BAR) {
@@ -878,6 +970,32 @@ impl PlayTab {
     pub fn action(&mut self, ui: &mut Ui, ev: &UiEvent, st: &PlayState) -> Option<PlayAction> {
         match (ev.widget.as_str(), &ev.kind) {
             (BAR, EventKind::Tab(i)) => Some(PlayAction::Tab(*i)),
+            (SCENES, EventKind::Tab(i @ (0 | 1))) => {
+                Some(PlayAction::Scene(SceneAction::Store(*i)))
+            }
+            (SCENES, EventKind::Tab(2)) if st.scenes[0] => {
+                self.fade = 0.0;
+                self.show_scenes(ui, st);
+                Some(PlayAction::Scene(SceneAction::Return))
+            }
+            (FADER, EventKind::Value(x)) => {
+                if st.scenes != [true, true] {
+                    // Nothing to fade between yet: the fader stays at A.
+                    self.show_scenes(ui, st);
+                    return None;
+                }
+                let x = if x.is_finite() {
+                    x.clamp(0.0, 1.0)
+                } else {
+                    0.0
+                };
+                if x == self.fade {
+                    return None;
+                }
+                self.fade = x;
+                self.show_scenes(ui, st);
+                Some(PlayAction::Scene(SceneAction::Fade(x)))
+            }
             (LAYERS, EventKind::Select(k)) => {
                 self.layer = (*k).min(st.settings.layers.len() - 1);
                 self.show(ui, st);

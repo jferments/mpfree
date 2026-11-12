@@ -9,6 +9,7 @@ use mpfree_sampler_ui::wave_tab::{
     self, moved, position_text, Mark, Row, Snap, WaveAction, WaveState,
 };
 use mpfree_sampler_ui::widgets::{KnobCard, PadBar, SettingList};
+use mpfree_sampler_ui::{chop_tab, grain_tab, play_tab, warp_tab};
 use mpfree_sampler_ui::{PyramidPeaks, SourceView};
 use mpfree_ui::wave::{Peaks, RawPeaks, Waveform};
 use mpfree_ui::{EventKind, Fonts, SoftCanvas, Touch, UiEvent};
@@ -475,65 +476,37 @@ fn tabs_taps_and_the_sample_screens() {
     let mut s = sample();
     let bar = s.ui.rect_of(wave_tab::BAR).unwrap();
     let pb = s.ui.get::<PadBar>(wave_tab::BAR).unwrap();
-    let (pads_tab_r, warp_tab_r, chop_tab_r, play_tab_r, grain_tab_r, fx_tab_r) = (
-        pb.tab_rect(bar, 0),
-        pb.tab_rect(bar, 2),
-        pb.tab_rect(bar, 3),
-        pb.tab_rect(bar, 4),
-        pb.tab_rect(bar, 5),
-        pb.tab_rect(bar, 6),
+    let (warp_tab_r, chop_tab_r, play_tab_r, grain_tab_r, fx_tab_r) = (
+        pb.tab_rect(bar, warp_tab::TAB),
+        pb.tab_rect(bar, chop_tab::TAB),
+        pb.tab_rect(bar, play_tab::TAB),
+        pb.tab_rect(bar, grain_tab::TAB),
+        pb.tab_rect(bar, wave_tab::FX_TAB),
     );
     assert_eq!(pb.active, wave_tab::TAB);
+    assert_eq!(pb.tabs[0], "Wave", "the pads are the app's Pads tab now");
     let st = s.state.clone();
+    for (id, r, tab, what) in [
+        (7, warp_tab_r, warp_tab::TAB, "Warp opens"),
+        (2, chop_tab_r, chop_tab::TAB, "Chop opens"),
+        (4, play_tab_r, play_tab::TAB, "Play opens"),
+        (5, grain_tab_r, grain_tab::TAB, "Grain opens"),
+    ] {
+        let ev = s.ui.touch(id, Touch::Down, r.x + 5, r.y + 5).unwrap();
+        assert_eq!(
+            s.tab.action(&mut s.ui, &ev, &st),
+            Some(WaveAction::Tab(tab)),
+            "{what}"
+        );
+        s.ui.touch(id, Touch::Up, 0, 0);
+    }
     let ev =
-        s.ui.touch(1, Touch::Down, pads_tab_r.x + 5, pads_tab_r.y + 5)
+        s.ui.touch(6, Touch::Down, fx_tab_r.x + 5, fx_tab_r.y + 5)
             .unwrap();
     assert_eq!(
         s.tab.action(&mut s.ui, &ev, &st),
-        Some(WaveAction::Tab(0)),
-        "Pads opens"
-    );
-    s.ui.touch(1, Touch::Up, 0, 0);
-    let ev =
-        s.ui.touch(7, Touch::Down, warp_tab_r.x + 5, warp_tab_r.y + 5)
-            .unwrap();
-    assert_eq!(
-        s.tab.action(&mut s.ui, &ev, &st),
-        Some(WaveAction::Tab(2)),
-        "Warp opens"
-    );
-    s.ui.touch(7, Touch::Up, 0, 0);
-    let ev =
-        s.ui.touch(2, Touch::Down, chop_tab_r.x + 5, chop_tab_r.y + 5)
-            .unwrap();
-    assert_eq!(
-        s.tab.action(&mut s.ui, &ev, &st),
-        Some(WaveAction::Tab(3)),
-        "Chop opens"
-    );
-    s.ui.touch(2, Touch::Up, 0, 0);
-    let ev =
-        s.ui.touch(4, Touch::Down, play_tab_r.x + 5, play_tab_r.y + 5)
-            .unwrap();
-    assert_eq!(
-        s.tab.action(&mut s.ui, &ev, &st),
-        Some(WaveAction::Tab(4)),
-        "Play opens"
-    );
-    s.ui.touch(4, Touch::Up, 0, 0);
-    let ev =
-        s.ui.touch(5, Touch::Down, grain_tab_r.x + 5, grain_tab_r.y + 5)
-            .unwrap();
-    assert_eq!(
-        s.tab.action(&mut s.ui, &ev, &st),
-        Some(WaveAction::Tab(5)),
-        "Grain opens"
-    );
-    s.ui.touch(5, Touch::Up, 0, 0);
-    assert_eq!(
-        s.ui.touch(6, Touch::Down, fx_tab_r.x + 5, fx_tab_r.y + 5),
-        None,
-        "FX isn't built yet"
+        Some(WaveAction::Tab(wave_tab::FX_TAB)),
+        "FX opens"
     );
     s.ui.touch(6, Touch::Up, 0, 0);
     // A tap on the wave plays the pad.

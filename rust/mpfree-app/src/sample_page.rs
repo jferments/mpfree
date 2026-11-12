@@ -70,6 +70,7 @@ use std::time::{Duration, Instant};
 use mpfree_node::Node;
 use mpfree_sampler::autosample::{Finished, Gear, Job, Plan, PlanError};
 use mpfree_sampler::engine::EngineView;
+use mpfree_sampler::export;
 use mpfree_sampler::keymap::{self, RootFrom};
 use mpfree_sampler::model::{
     ChannelPick, Fade, LoopMode, Pad, PadsPlay, PlayMode, Project, Region, Source, SourceId, Warp,
@@ -78,6 +79,7 @@ use mpfree_sampler::model::{
 use mpfree_sampler::phrase::Phrase;
 use mpfree_sampler::record::{self, Input, Looped, Progress, Recording};
 use mpfree_sampler::save::{self, Opened};
+use mpfree_sampler::scene;
 use mpfree_sampler::warp::{CopyKey, Done, Warps, Worker};
 use mpfree_sampler::{sound_file, wav};
 use mpfree_sampler_ui::auto_tab::{
@@ -86,8 +88,9 @@ use mpfree_sampler_ui::auto_tab::{
 use mpfree_sampler_ui::chop_tab::{self, ChopAction, ChopState, ChopTab};
 use mpfree_sampler_ui::grain_tab::{self, GrainAction, GrainState, GrainTab};
 use mpfree_sampler_ui::pads_tab::{self, PadsAction, PadsState, PadsTab};
-use mpfree_sampler_ui::play_tab::{self, PlayAction, PlayState, PlayTab};
+use mpfree_sampler_ui::play_tab::{self, PlayAction, PlayState, PlayTab, SceneAction};
 use mpfree_sampler_ui::rec_tab::{self, RecAction, RecState, RecTab, Skip};
+use mpfree_sampler_ui::send;
 use mpfree_sampler_ui::warp_tab::{self, WarpTab};
 use mpfree_sampler_ui::wave_tab::{
     self, duration_text, mode_label, WaveAction, WaveState, WaveTab,
@@ -96,7 +99,7 @@ use mpfree_sampler_ui::SourceView;
 use mpfree_seq::{Clip, Note};
 use mpfree_transport::PPQ;
 use mpfree_ui::widgets::Card;
-use mpfree_ui::{Tone, Ui, UiEvent};
+use mpfree_ui::{EventKind, Tone, Ui, UiEvent};
 
 use crate::app::bank_letter;
 use crate::gui::FromUi;
@@ -109,8 +112,13 @@ pub const PAGE: &str = "Sample";
 pub const CHOP_PAGE: &str = "Sample · Chop";
 /// The Play tab's page.
 pub const PLAY_PAGE: &str = "Sample · Play";
-/// The Pads tab's page.
-pub const PADS_PAGE: &str = "Sample · Pads";
+/// The Pads tab's Pad view: the pad's settings and the kit's sounds.
+pub const PADS_PAGE: &str = "Pads · Pad";
+/// The Pads tab's Browse view: the browser beside the pads.
+pub const PADS_BROWSE_PAGE: &str = "Pads · Browse";
+/// The card the Browse view shows beside the pads while there is no
+/// library (the app runs without a data folder).
+pub const NO_LIBRARY: &str = "pads-no-library";
 /// The Grain tab's page.
 pub const GRAIN_PAGE: &str = "Sample · Grain";
 /// The Rec tab's page.
@@ -172,6 +180,8 @@ pub enum PadKnob {
 /// The pad editor's tab on show.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Editor {
+    /// The Pads tab (a top-level tab of its own since 12 Nov 2026), not
+    /// one of the Sample tab's.
     Pads,
     Wave,
     Warp,
@@ -349,6 +359,13 @@ pub struct SamplePage {
     tab: Option<WaveTab>,
     state: Option<WaveState>,
     editor: Editor,
+    /// The Sample tab's editor, kept while the Pads tab shows.
+    sample_editor: Editor,
+    /// The widget beside the pads on the Browse view: the browser, or
+    /// [`NO_LIBRARY`].
+    browse_with: &'static str,
+    /// The Pads tab's view (of `pads_tab::VIEWS`; Browse at first).
+    pads_view: usize,
     /// The Chop tab, added the first time it is opened.
     chop: Option<ChopTab>,
     chop_state: Option<ChopState>,
@@ -375,6 +392,10 @@ pub struct SamplePage {
     dirty: Vec<bool>,
     /// A view is on its way to the audio thread (or back).
     in_flight: bool,
+    /// The scene crossfader, once moved: the kit and where it is (0 is
+    /// A). A new view of that kit clears the engine's live values, so they
+    /// go again after it.
+    morph: Option<(usize, f32)>,
     /// The pad a tap on the waveform holds down (Gate, Loop, Granular).
     auditioning: Option<usize>,
     last_turn: Option<Instant>,
@@ -438,15 +459,23 @@ pub struct SamplePage {
     auto_job: Option<AutoJob>,
     /// The last instrument made, or why not, in a line.
     auto_last: String,
+    /// The FX tab was tapped on this pad: the app opens its chain editor.
+    fx_open: Option<usize>,
     /// The MIDI out external gear is auto-sampled through, when the app
     /// has one open.
     gear_out: Option<GearOut>,
     /// A project's kits being read and decoded ([`SamplePage::open_part`]).
     opening: Option<Receiver<Result<Opened, String>>>,
     /// A file being read for the browser's Load (true: Load to pad).
-    loading: Option<(Receiver<Loaded>, bool)>,
+    loading: Option<(Receiver<LoadedPad>, bool)>,
     /// A sound Load to pad put on the next pad hit.
-    assign: Option<Source>,
+    assign: Option<LoadedSound>,
+    /// Send to pad: the kit and pad whose copy goes on the next pad hit.
+    sending: Option<(usize, usize)>,
+    /// The app can write files (Put on Files on the Chop tab).
+    files: bool,
+    /// Pads exported, for the app to write.
+    exports: Vec<export::Export>,
     /// The kit an opened project was playing, for the app to switch to.
     wanted_kit: Option<usize>,
 }
@@ -457,6 +486,17 @@ impl SamplePage {
     pub fn add(ui: &mut Ui) -> Result<SamplePage, String> {
         ui.add(EMPTY, Card::new("Sample"));
         ui.add_page(EMPTY_PAGE, EMPTY_LAYOUT)?;
+        let mut none = Card::new("No library on this run");
+        none.lines = [
+            "The browser needs the data folder: the app starts with --data",
+            "(the test stick's partition 4).",
+            "",
+            "The Pad view (top right) works without it.",
+        ]
+        .into_iter()
+        .map(|l| (l.to_string(), Tone::Dim))
+        .collect();
+        ui.add(NO_LIBRARY, none);
         let mut p = SamplePage {
             projects: Vec::new(),
             names: Vec::new(),
@@ -467,6 +507,9 @@ impl SamplePage {
             tab: None,
             state: None,
             editor: Editor::Wave,
+            sample_editor: Editor::Wave,
+            browse_with: NO_LIBRARY,
+            pads_view: pads_tab::BROWSE,
             chop: None,
             chop_state: None,
             play: None,
@@ -482,6 +525,7 @@ impl SamplePage {
             stale: true,
             dirty: Vec::new(),
             in_flight: false,
+            morph: None,
             auditioning: None,
             last_turn: None,
             gesture: None,
@@ -518,10 +562,14 @@ impl SamplePage {
             auto_request: None,
             auto_job: None,
             auto_last: String::new(),
+            fx_open: None,
             gear_out: None,
             opening: None,
             loading: None,
             assign: None,
+            sending: None,
+            files: false,
+            exports: Vec::new(),
             wanted_kit: None,
         };
         p.show_empty(ui);
@@ -575,6 +623,10 @@ impl SamplePage {
         self.lift();
         self.kit = k;
         self.pad = self.with_sound(self.pad, 1).unwrap_or(self.pad);
+        if self.sending.take().is_some() {
+            self.lines
+                .push("sample: Send to pad called off (another kit)".into());
+        }
         self.stale = true;
     }
 
@@ -594,12 +646,13 @@ impl SamplePage {
     }
 
     /// Pad `pad` was hit at `velocity`. With the Play tab on screen
-    /// (`shown`) at its Stops or Also plays row, the pad goes into that
-    /// set or out of it (an undo step each); otherwise the tab edits the
+    /// (`shown`) at its Stops or Also plays row, and no Load to pad or
+    /// Send to pad waiting for a hit, the pad goes into that set or out of
+    /// it (an undo step each); otherwise the tab edits the
     /// pad hit from now on ([`SamplePage::hit`]) and shows its velocity
     /// ([`SamplePage::hit_velocity`]).
     pub fn press(&mut self, ui: &mut Ui, pad: usize, velocity: u8, shown: bool) {
-        if shown && self.play_takes_pads(ui) && self.assign.is_none() {
+        if shown && self.play_takes_pads(ui) && self.assign.is_none() && self.sending.is_none() {
             let a = match (self.play.as_mut(), self.play_state.as_ref()) {
                 (Some(tab), Some(st)) => tab.pad_hit(ui, st, pad),
                 _ => None,
@@ -646,10 +699,14 @@ impl SamplePage {
             self.light(ui, self.played(pad), true);
             return;
         }
-        if let Some(src) = self.assign.take() {
+        if let Some(l) = self.assign.take() {
             // Load to pad: this hit picks the pad.
             let kit = self.kit;
-            self.keep(ui, kit, pad, src, "loaded");
+            self.keep_loaded(ui, kit, pad, l);
+        }
+        if let Some((kit, from)) = self.sending.take() {
+            // Send to pad: this hit picks the pad the copy goes on.
+            self.send(ui, kit, from, pad);
         }
         let pad = self.played(pad);
         self.light(ui, pad, true);
@@ -747,11 +804,16 @@ impl SamplePage {
         self.editor
     }
 
-    /// The page to show: the editor's tab; the Pads tab for a pad without
-    /// a sound; or the page that says the kits are loading or the synth
-    /// has the pads.
+    /// The page to show: the Pads tab's view; the editor's tab; or the
+    /// page that says the kits are loading, the synth has the pads or the
+    /// pad has no sound.
     pub fn page(&self) -> &'static str {
         match self.editor {
+            Editor::Pads => match (&self.pads, &self.pads_state) {
+                (Some(t), Some(_)) if t.view == pads_tab::BROWSE => PADS_BROWSE_PAGE,
+                (Some(_), Some(_)) => PADS_PAGE,
+                _ => EMPTY_PAGE,
+            },
             Editor::Chop if self.chop_state.is_some() && self.chop.is_some() => CHOP_PAGE,
             Editor::Play if self.play_state.is_some() && self.play.is_some() => PLAY_PAGE,
             Editor::Grain if self.grain_state.is_some() && self.grain.is_some() => GRAIN_PAGE,
@@ -759,7 +821,6 @@ impl SamplePage {
             Editor::Auto if self.auto_state.is_some() && self.auto.is_some() => AUTO_PAGE,
             Editor::Wave if self.state.is_some() && self.tab.is_some() => PAGE,
             Editor::Warp if self.state.is_some() && self.warp.is_some() => WARP_PAGE,
-            _ if self.pads_state.is_some() && self.pads.is_some() => PADS_PAGE,
             _ => EMPTY_PAGE,
         }
     }
@@ -828,13 +889,18 @@ impl SamplePage {
             self.refresh_auto(ui, bank);
         }
         self.pads_state = None;
-        let recording = matches!(self.editor, Editor::Rec | Editor::Auto);
-        if self.editor == Editor::Pads || self.state.is_none() && !recording {
+        if self.editor == Editor::Pads {
             self.refresh_pads(ui, bank);
         }
         if self.page() == EMPTY_PAGE {
             self.show_empty(ui);
         }
+        let has_sound = self
+            .projects
+            .get(self.kit)
+            .and_then(|p| p.pad(self.pad))
+            .is_some_and(|pd| !pd.layers.is_empty());
+        send::show(ui, has_sound, self.sending.is_some());
         self.shown_heads.clear();
         if let Some(tab) = self.tab.as_ref() {
             tab.set_playheads(ui, &[]);
@@ -876,6 +942,9 @@ impl SamplePage {
             return;
         };
         self.chop_state = ChopState::from_project(project, st.pad, st.layer, st.source.clone());
+        if let Some(cs) = self.chop_state.as_mut() {
+            cs.files = self.files;
+        }
         let Some(cs) = self.chop_state.as_ref() else {
             return;
         };
@@ -912,9 +981,12 @@ impl SamplePage {
                 (tab.bank, tab.kit) = (bank, kit);
                 tab.update(ui, &st);
             }
-            None => match PadsTab::add(ui, PADS_PAGE, &st) {
+            None => match PadsTab::add(ui, PADS_PAGE, &st).and_then(|t| {
+                ui.add_page(PADS_BROWSE_PAGE, &pads_tab::browse_layout(self.browse_with))?;
+                Ok(t)
+            }) {
                 Ok(mut tab) => {
-                    (tab.bank, tab.kit) = (bank, kit);
+                    (tab.bank, tab.kit, tab.view) = (bank, kit, self.pads_view);
                     tab.update(ui, &st);
                     self.pads = Some(tab);
                 }
@@ -1129,6 +1201,8 @@ impl SamplePage {
                 vec![
                     "Hit a pad with a sound to edit it,",
                     "or turn SHIFT + wheel or press - / + for the next one.",
+                    "",
+                    "To give this pad a sound: the Pads tab, Browse, then Load.",
                 ],
             )
         };
@@ -1146,6 +1220,25 @@ impl SamplePage {
     /// A touch on one of the editor's widgets. Taps that play the pad go
     /// in `out`, for the audio thread.
     pub fn event(&mut self, ui: &mut Ui, ev: &UiEvent, out: &mut Vec<FromUi>) {
+        self.event_on(ui, ev, out);
+        // The FX tab: the chain editor on the pad's channel, in the page's
+        // place (the audio loop owns the mixer it edits).
+        if let Some(pad) = self.fx_open.take() {
+            self.lines.push(format!(
+                "sample: pad {}'s effects: its own channel, then the Drums track",
+                self.pad_text(self.kit, pad)
+            ));
+            out.push(FromUi::SampleFx { pad });
+        }
+    }
+
+    fn event_on(&mut self, ui: &mut Ui, ev: &UiEvent, out: &mut Vec<FromUi>) {
+        if ev.widget == send::SEND {
+            if let EventKind::Tab(i) = ev.kind {
+                self.press_send(ui, i, out);
+            }
+            return;
+        }
         if ev.widget.starts_with(CHOP_PREFIX) {
             let (Some(tab), Some(st)) = (self.chop.as_mut(), self.chop_state.as_ref()) else {
                 return;
@@ -1219,23 +1312,137 @@ impl SamplePage {
         }
     }
 
-    /// Opens the editor's tab `i` (Pads, Wave, Warp, Chop, Play, Grain or
-    /// Rec; FX isn't built).
+    /// A press on the buttons beside the bar ([`send::BUTTONS`]).
+    fn press_send(&mut self, ui: &mut Ui, i: usize, out: &mut Vec<FromUi>) {
+        match i {
+            send::SEND_TO_PAD => {
+                let what = format!("pad {}", self.pad_text(self.kit, self.pad));
+                if self.sending.take().is_some() {
+                    self.lines.push("sample: Send to pad called off".into());
+                } else if !self
+                    .projects
+                    .get(self.kit)
+                    .and_then(|p| p.pad(self.pad))
+                    .is_some_and(|pd| !pd.layers.is_empty())
+                {
+                    self.lines
+                        .push(format!("sample: {what} has nothing to send"));
+                } else {
+                    self.lines
+                        .push(format!("sample: hit a pad to send {what} to it"));
+                    self.sending = Some((self.kit, self.pad));
+                }
+                send::show(ui, true, self.sending.is_some());
+            }
+            send::CHOP_TO_PADS if self.editor == Editor::Chop => {
+                // The Chop tab's own Chop to pads.
+                let (Some(tab), Some(st)) = (self.chop.as_mut(), self.chop_state.as_ref()) else {
+                    return;
+                };
+                if let Some(a) = tab.press(ui, st, chop_tab::Button::ToPads) {
+                    self.act_chop(ui, a, out);
+                }
+            }
+            send::CHOP_TO_PADS => self.open_editor(ui, Editor::Chop),
+            _ => {}
+        }
+    }
+
+    /// Send to pad: a copy of pad `from` of kit `kit` (its sound and every
+    /// edit) onto pad `to`, one undo step.
+    fn send(&mut self, ui: &mut Ui, kit: usize, from: usize, to: usize) {
+        send::show(ui, true, false);
+        if kit != self.kit || to == from || to >= 16 {
+            self.lines.push("sample: Send to pad called off".into());
+            return;
+        }
+        let Some(copy) = self.projects.get(kit).and_then(|p| p.pad(from)).cloned() else {
+            return;
+        };
+        let mut none = Vec::new();
+        self.act_pads(
+            ui,
+            PadsAction::Set {
+                pad: to,
+                after: Some(Box::new(copy)),
+                gesture: None,
+            },
+            &mut none,
+        );
+        self.lines.push(format!(
+            "sample: pad {} sent to pad {}",
+            self.pad_text(kit, from),
+            self.pad_text(kit, to)
+        ));
+    }
+
+    /// Opens the editor's tab `i` (Wave, Warp, Chop, Play, Grain or Rec), or
+    /// for FX asks the app for its chain editor on the pad's channel.
     fn open(&mut self, ui: &mut Ui, i: usize) {
         let editor = match i {
-            pads_tab::TAB => Editor::Pads,
             wave_tab::TAB => Editor::Wave,
             warp_tab::TAB => Editor::Warp,
             chop_tab::TAB => Editor::Chop,
             play_tab::TAB => Editor::Play,
             grain_tab::TAB => Editor::Grain,
             rec_tab::TAB => Editor::Rec,
+            // The pad's effects: the app's chain editor, on its channel.
+            wave_tab::FX_TAB => {
+                self.fx_open = Some(self.pad);
+                return;
+            }
             _ => return,
         };
         self.open_editor(ui, editor);
     }
 
-    /// Opens `editor` (SAMPLE EDIT: Wave; PROG EDIT: Pads).
+    /// The Pads tab shows: the pad picked's bank on its view (the Sample
+    /// tab's editor is kept for when it shows again).
+    pub fn show_pads(&mut self, ui: &mut Ui) {
+        if self.editor != Editor::Pads {
+            self.lift();
+            self.sample_editor = self.editor;
+            self.editor = Editor::Pads;
+            self.stale = true;
+        }
+        self.refresh_if_stale(ui);
+    }
+
+    /// The Sample tab shows: its editor again, if the Pads tab had the
+    /// page.
+    pub fn show_sample(&mut self, ui: &mut Ui) {
+        if self.editor == Editor::Pads {
+            self.lift();
+            self.editor = self.sample_editor;
+            self.stale = true;
+        }
+        self.refresh_if_stale(ui);
+    }
+
+    /// The Pads tab's view (Browse or Pad, of `pads_tab::VIEWS`).
+    pub fn set_pads_view(&mut self, ui: &mut Ui, view: usize) {
+        self.pads_view = view;
+        if let Some(tab) = self.pads.as_mut() {
+            tab.view = view;
+            if let Some(st) = self.pads_state.as_ref() {
+                tab.update(ui, st);
+            }
+        }
+    }
+
+    /// The widget the Browse view shows beside the pads: the browser once
+    /// there is a library, else [`NO_LIBRARY`].
+    pub fn set_browse_with(&mut self, ui: &mut Ui, widget: &'static str) {
+        self.browse_with = widget;
+        if self.pads.is_some() {
+            if let Err(e) = ui.set_layout(PADS_BROWSE_PAGE, &pads_tab::browse_layout(widget)) {
+                self.lines
+                    .push(format!("sample: Browse view not laid out ({e})"));
+            }
+        }
+    }
+
+    /// Opens `editor` (SAMPLE EDIT: Wave).
     pub fn open_editor(&mut self, ui: &mut Ui, editor: Editor) {
         if editor != self.editor {
             self.lift();
@@ -1359,17 +1566,64 @@ impl SamplePage {
                 }
                 self.refresh(ui);
             }
+            ChopAction::Export { pad, layer, cuts } => self.export(*pad, *layer, cuts),
+        }
+    }
+
+    /// Pad `pad` of the kit shown as files ([`export::pad`]), for the app
+    /// to write ([`Self::take_exports`]); the log says what they are.
+    fn export(&mut self, pad: usize, layer: usize, cuts: &[u64]) {
+        let kit = self.kit;
+        let Some(project) = self.projects.get(kit) else {
+            return;
+        };
+        let at = self.pad_text(kit, pad);
+        match export::pad(project, pad, layer, cuts) {
+            Ok(e) => {
+                let name = &e.name;
+                let slices = match e.slices {
+                    0 => String::new(),
+                    n => format!(" and {n} slices ({name} 01.wav to {name} {n:02}.wav)"),
+                };
+                self.lines.push(format!(
+                    "sample: pad {at} exported as {} files: {name}.wav with its settings ({name}.{}){slices}",
+                    e.files.len(),
+                    export::SIDECAR
+                ));
+                self.exports.push(e);
+            }
+            Err(e) => self
+                .lines
+                .push(format!("sample: pad {at} not exported ({e})")),
+        }
+    }
+
+    /// Pads exported since the last call, each a folder's worth of files
+    /// (named in the files; [`export::Export::name`] names the folder).
+    /// The app writes them together, each in a folder of its own, since a
+    /// sidecar names its sounds by file name.
+    #[allow(dead_code)] // the app's library wiring calls it
+    pub fn take_exports(&mut self) -> Vec<export::Export> {
+        std::mem::take(&mut self.exports)
+    }
+
+    /// The app can write files: the Chop tab offers Put on Files. Off until
+    /// it says so, so nothing is exported that would go nowhere.
+    #[allow(dead_code)] // the app's library wiring calls it
+    pub fn set_files(&mut self, ui: &mut Ui, on: bool) {
+        if self.files != on {
+            self.files = on;
+            self.refresh(ui);
         }
     }
 
     fn act_pads(&mut self, ui: &mut Ui, a: PadsAction, out: &mut Vec<FromUi>) {
-        if !matches!(a, PadsAction::Tab(_)) {
-            // Working on the Pads tab (shown for a pad without a sound, too)
-            // keeps it open.
-            self.editor = Editor::Pads;
-        }
         match &a {
-            PadsAction::Tab(i) => self.open(ui, *i),
+            // The switch: the app's controls follow it.
+            PadsAction::View(i) => {
+                self.pads_view = *i;
+                out.push(FromUi::PadsView(*i));
+            }
             PadsAction::Pick(pad) => {
                 self.pick(*pad);
                 self.refresh(ui);
@@ -1499,6 +1753,7 @@ impl SamplePage {
                 self.lines.push(format!("sample: {kit}: {what}"));
                 self.refresh(ui);
             }
+            PlayAction::Scene(s) => self.scene(ui, *s, out),
             PlayAction::Pad { pad, gesture, .. } => {
                 let (kit, pad, gesture) = (self.kit, *pad, *gesture);
                 if self.gesture.as_ref().is_some_and(|g| g.id != gesture) {
@@ -2392,7 +2647,7 @@ impl SamplePage {
     /// A sound Load to pad is holding for the next pad hit.
     #[allow(dead_code)] // the app's browser wiring calls it
     pub fn assigning(&self) -> Option<&str> {
-        self.assign.as_ref().map(|s| s.name.as_str())
+        self.assign.as_ref().map(|l| l.src.name.as_str())
     }
 
     fn poll_open(&mut self, ui: &mut Ui) {
@@ -2461,20 +2716,83 @@ impl SamplePage {
             Err(TryRecvError::Disconnected) => Err("its thread stopped".to_string()),
         };
         self.loading = None;
-        if let Ok((src, Some(note))) = &r {
+        if let Ok(LoadedSound {
+            src,
+            note: Some(note),
+            ..
+        }) = &r
+        {
             self.lines.push(format!("sample: {}: {note}", src.name));
         }
-        match r.map(|(src, _)| src) {
-            Ok(src) if to_pad => {
+        match r {
+            Ok(l) if to_pad => {
                 self.lines
-                    .push(format!("sample: hit a pad to put {} on it", src.name));
-                self.assign = Some(src);
+                    .push(format!("sample: hit a pad to put {} on it", l.src.name));
+                self.assign = Some(l);
             }
-            Ok(src) => {
+            Ok(l) => {
                 let (kit, pad) = (self.kit, self.pad);
-                self.keep(ui, kit, pad, src, "loaded");
+                self.keep_loaded(ui, kit, pad, l);
             }
             Err(e) => self.lines.push(format!("sample: not loaded ({e})")),
+        }
+    }
+
+    /// A loaded sound onto pad `pad` of kit `kit`: with its sidecar, the
+    /// pad as it was exported (its sounds, settings and slices, one undo
+    /// step); without, or if the sidecar can't be used (the log says
+    /// why), the sound alone.
+    fn keep_loaded(&mut self, ui: &mut Ui, kit: usize, pad: usize, l: LoadedSound) {
+        let o = match l.sidecar {
+            None => return self.keep(ui, kit, pad, l.src, "loaded"),
+            Some(Err(e)) => {
+                self.lines.push(format!(
+                    "sample: {}: its settings ({}) not used ({e}); the sound alone is loaded",
+                    l.src.name, l.sidecar_name
+                ));
+                return self.keep(ui, kit, pad, l.src, "loaded");
+            }
+            Some(Ok(o)) => o,
+        };
+        for n in &o.notes {
+            self.lines.push(format!("sample: {}: {n}", l.sidecar_name));
+        }
+        let at = self.pad_text(kit, pad);
+        let Some(project) = self.projects.get_mut(kit) else {
+            return;
+        };
+        let (name, chops) = (o.pad.name.clone(), o.chops.len());
+        match project.put_pad_with(pad, o.sources, o.pad, o.chops) {
+            Ok(()) => {
+                self.edits += 1;
+                if let Some(d) = self.dirty.get_mut(kit) {
+                    *d = true;
+                }
+                self.mark_renamed(kit);
+                let chops = match chops {
+                    0 => String::new(),
+                    1 => " and its slices".to_string(),
+                    n => format!(" and {n} chops"),
+                };
+                self.lines.push(format!(
+                    "sample: loaded: {name} on pad {at}, with its settings{chops} from {}",
+                    l.sidecar_name
+                ));
+                self.last_take = name;
+                if kit == self.kit {
+                    self.lift();
+                    self.pad = pad;
+                    self.velocity = None;
+                }
+                self.refresh(ui);
+            }
+            Err(e) => {
+                self.lines.push(format!(
+                    "sample: {}: its settings ({}) not used ({e:?}); the sound alone is loaded",
+                    l.src.name, l.sidecar_name
+                ));
+                self.keep(ui, kit, pad, l.src, "loaded");
+            }
         }
     }
 
@@ -3311,6 +3629,74 @@ impl SamplePage {
     /// The next kit view for the audio thread, if a kit was edited (or a
     /// stretched copy came in) and no view is on its way already. Built
     /// here, off the audio thread, with warped pads at the project tempo.
+    /// The scene strip ([`scene`]): store A or B, move the crossfader,
+    /// or go back to A.
+    fn scene(&mut self, ui: &mut Ui, a: SceneAction, out: &mut Vec<FromUi>) {
+        self.lift();
+        let kit = self.kit;
+        let name = self.kit_text_of(kit);
+        let Some(project) = self.projects.get_mut(kit) else {
+            return;
+        };
+        match a {
+            SceneAction::Store(k) if k < 2 => {
+                let stored = scene::Scene::of(project);
+                let n = stored.sounds();
+                project.scenes[k] = Some(stored);
+                // Saved with the kit; the new view puts the crossfader's
+                // values back (take_view).
+                if let Some(d) = self.dirty.get_mut(kit) {
+                    *d = true;
+                }
+                self.lines.push(format!(
+                    "sample: {name}: scene {} stored ({n} pad{})",
+                    ["A", "B"][k],
+                    if n == 1 { "" } else { "s" }
+                ));
+            }
+            SceneAction::Store(_) => {}
+            SceneAction::Fade(x) => {
+                if let [Some(sa), Some(sb)] = &project.scenes {
+                    out.push(FromUi::SamplePadLive {
+                        kit,
+                        values: scene::morph(sa, sb, x),
+                    });
+                    self.morph = Some((kit, x));
+                }
+            }
+            SceneAction::Return => {
+                let Some(sa) = project.scenes[0].clone() else {
+                    return;
+                };
+                if let Some(sb) = &project.scenes[1] {
+                    out.push(FromUi::SamplePadLive {
+                        kit,
+                        values: scene::clear(&sa, sb),
+                    });
+                }
+                self.morph = None;
+                let (n, left) = project.return_to(&sa);
+                if n > 0 {
+                    self.edits += 1;
+                    if let Some(d) = self.dirty.get_mut(kit) {
+                        *d = true;
+                    }
+                    self.mark_renamed(kit);
+                }
+                let left = match left {
+                    0 => String::new(),
+                    n => format!("; {n} left as they are (their sounds are gone)"),
+                };
+                self.lines.push(match n {
+                    0 => format!("sample: {name}: back to scene A (nothing had changed){left}"),
+                    1 => format!("sample: {name}: back to scene A (1 pad put back){left}"),
+                    n => format!("sample: {name}: back to scene A ({n} pads put back){left}"),
+                });
+            }
+        }
+        self.refresh(ui);
+    }
+
     pub fn take_view(&mut self) -> Option<FromUi> {
         self.take_copies();
         if self.in_flight {
@@ -3322,6 +3708,15 @@ impl SamplePage {
         self.views_sent += 1;
         let view = EngineView::build_warped(&self.projects[kit], self.rate, &mut self.warps);
         self.ask_for_copies(kit);
+        // The new view clears the crossfader's values: they follow it.
+        if let Some((k, x)) = self.morph.filter(|m| m.0 == kit) {
+            if let [Some(sa), Some(sb)] = &self.projects[k].scenes {
+                self.hits.push(FromUi::SamplePadLive {
+                    kit,
+                    values: scene::morph(sa, sb, x),
+                });
+            }
+        }
         Some(FromUi::SampleView(Box::new(ViewSwap {
             kit,
             view: Some(view),
@@ -3608,14 +4003,72 @@ fn phrase_clip(name: &str, p: &Phrase, first_pad: usize) -> Result<Clip, String>
     Ok(clip)
 }
 
-/// A sound read for Load, with a note when something was left out.
-type Loaded = Result<(Source, Option<String>), String>;
+/// A sound file read and decoded (and a note about it), or why not.
+pub type Loaded = Result<(Source, Option<String>), String>;
+
+/// A sound read for the browser's Load, a note when something was left
+/// out of it (a file cut short), and the pad its sidecar describes when
+/// one is beside it ([`export`]).
+struct LoadedSound {
+    src: Source,
+    note: Option<String>,
+    sidecar: Option<Result<export::Opened, String>>,
+    /// The sidecar's file name, for the log.
+    sidecar_name: String,
+}
+
+/// A Load's sound with its sidecar, or why not.
+type LoadedPad = Result<LoadedSound, String>;
+
+/// Reads and decodes `path` on a thread of its own; the answer comes on
+/// the channel (the browser's preview).
+pub fn read_in_thread(path: PathBuf) -> std::io::Result<Receiver<Loaded>> {
+    let (tx, rx) = mpsc::channel();
+    std::thread::Builder::new()
+        .name("preview-load".into())
+        .spawn(move || {
+            let _ = tx.send(read_one(&path));
+        })?;
+    Ok(rx)
+}
 
 /// A sound file for the browser's Load: WAV, AIFF or FLAC, known by what
-/// it holds, no bigger than the sampler holds in memory; and a note when
-/// something was left out (a file cut short).
+/// it holds, no bigger than the sampler holds in memory; with its sidecar
+/// (`Break 92.mpfree` beside `Break 92.wav`) read too, and the other
+/// sounds it names beside it.
 #[allow(dead_code)] // reached through load_file
-fn read_sound(path: &Path) -> Loaded {
+fn read_sound(path: &Path) -> LoadedPad {
+    let (src, note) = read_one(path)?;
+    let side = path.with_extension(export::SIDECAR);
+    let sidecar_name = side
+        .file_name()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let sidecar = side.is_file().then(|| {
+        let text = std::fs::read_to_string(&side).map_err(|e| e.to_string())?;
+        let own = path.file_name().map(|s| s.to_string_lossy().into_owned());
+        let dir = path.parent().unwrap_or(Path::new("."));
+        export::read_sidecar(&text, &mut |name| {
+            if own.as_deref() == Some(name) {
+                return Ok(src.clone());
+            }
+            // Only sounds beside it.
+            if name.is_empty() || name.contains(['/', '\\']) || name == ".." {
+                return Err("not beside it".to_string());
+            }
+            read_one(&dir.join(name)).map(|(s, _)| s)
+        })
+    });
+    Ok(LoadedSound {
+        src,
+        note,
+        sidecar,
+        sidecar_name,
+    })
+}
+
+/// One sound file, no bigger than the sampler holds in memory.
+fn read_one(path: &Path) -> Loaded {
     let len = std::fs::metadata(path).map_err(|e| e.to_string())?.len();
     if len > wav::MAX_SAMPLES as u64 * 8 + (1 << 20) {
         return Err("too long to hold in memory".to_string());

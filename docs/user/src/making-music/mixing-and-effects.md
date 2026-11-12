@@ -1,7 +1,7 @@
 <!--
 status: changing
 covers: rust/mpfree-fx rust/mpfree-mixer-ui rust/mpfree-fx-ui rust/mpfree-chain-ui rust/mpfree-app/src/chain_page.rs rust/mpfree-app/src/mixing.rs rust/mpfree-fx/src/perform.rs
-checked: 2026-11-12 ae9c39c
+checked: 2026-11-12 db9b6ff
 -->
 
 # Mixing and effects
@@ -48,7 +48,7 @@ Drag a fader, pan or send with your finger, and tap M, S or the output to change
 - Turn the **data wheel** to move the selection up and down the list, and press **-** or **+** to step the selected row's output.
 - An output of **None (silent)** shows in amber, so a strip that goes nowhere is easy to spot.
 
-MIDI, Sync and CV will join the list as their own sections.
+MIDI, Sync and CV will join the list as their own sections: see [Playing other gear](midi-and-cv.md) for what each one sets.
 
 ## Using the Q-Links in the mixer
 
@@ -88,6 +88,8 @@ Adding, removing or reordering an effect while the music plays doesn't click: th
 Tap an effect in a strip's insert row to open the **chain editor** on it, in the mixer's place. Tap the strip's **+ Insert** to add an effect, with the list of effects already open; a new effect goes at the end of the chain. In the chain editor you can reorder, bypass and remove effects, and turn the selected effect's knobs.
 
 The Q-Links turn the selected effect's first four knobs, and the data wheel works as Q-Link 1. **‹ Mixer** goes back to the mixer as you left it.
+
+The Sample tab's **FX** opens the chain editor too, on the pad you are editing (its own channel, then the Drums track), and Back goes back to the Sample tab (see [Sampling](sampling.md#fx-effects-on-one-pad-or-on-the-whole-kit)).
 
 {{shot: chain | The chain editor on the drum bus, with Drive selected.}}
 

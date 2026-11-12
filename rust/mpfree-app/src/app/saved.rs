@@ -28,6 +28,10 @@ pub const ARP_PATTERNS: &str = "patterns.txt";
 /// The Dev tab's Touch page keeps its tuning as these settings
 /// (`mpfree_touch::tuning::Tuning::to_pairs`).
 pub const TOUCH: &str = "touch";
+/// The browser's owner name in the store, and its Recent and Favourites
+/// there (docs/dev/design/browser.md).
+pub const BROWSER: &str = "browser";
+pub const BROWSER_LISTS: &str = "lists.txt";
 
 /// A control's key in the "map" settings: its name in lower case, words
 /// joined by "-" ("PAD BANK A/E" is pad-bank-a-e).

@@ -208,13 +208,19 @@ impl Form for Cv {
     }
 
     fn banner(&self, m: &IoModel) -> Option<String> {
-        Some(if m.live.built.cv {
-            "Each output's tuning to your module is in Prefs.".to_string()
-        } else {
-            "CV out isn't in this build yet: the jacks stay at 0 V, and what you set \
-             here is kept with the project. Tuning is in Prefs."
-                .to_string()
-        })
+        match usize::from(m.live.built.cv_outs) {
+            0 => Some(
+                "CV out is off in this run: MPFree sends nothing to the jacks, and what \
+                 you set here is kept with the project."
+                    .to_string(),
+            ),
+            n if n < CV_OUTS => Some(format!(
+                "CV 1 to {n} are sent; CV {} to {CV_OUTS} wait for a check on the MPC. \
+                 The volts are not yet measured at the jacks.",
+                n + 1
+            )),
+            _ => None,
+        }
     }
 
     fn rows(&self, m: &IoModel, _now: Duration) -> Vec<Row> {
@@ -224,8 +230,10 @@ impl Form for Cv {
             let mut row = Row::item(format!("cv:{i}"), format!("CV {}", i + 1));
             row = if *a == CvAssign::Off {
                 row.note(format!("{v:.2} V · off"), Tone::Faint)
-            } else if !m.live.built.cv {
-                row.note("sends nothing yet: no CV out", Tone::Warn)
+            } else if m.live.built.cv_outs == 0 {
+                row.note("sends nothing: CV out is off", Tone::Warn)
+            } else if i >= usize::from(m.live.built.cv_outs) {
+                row.note("sends nothing yet: not checked on the MPC", Tone::Warn)
             } else {
                 row.note(format!("{v:.2} V now"), Tone::Normal)
             };
@@ -316,7 +324,7 @@ mod tests {
         assert_eq!(a, fresh(1, 0));
         let rows = Cv.rows(&s.lock().unwrap(), Duration::ZERO);
         assert_eq!(rows[1].fields[2].text, "0 V at C2");
-        assert_eq!(rows[1].note, "sends nothing yet: no CV out");
+        assert_eq!(rows[1].note, "sends nothing: CV out is off");
         // The Q-Links: Job, Track, the setting.
         let k = sec.qlinks().unwrap();
         assert_eq!(
@@ -363,7 +371,7 @@ mod tests {
         {
             let mut m = s.lock().unwrap();
             m.live.built = Built {
-                cv: true,
+                cv_outs: 4,
                 ..Built::default()
             };
             m.setup.cv[0] = fresh(2, 0);
@@ -376,5 +384,32 @@ mod tests {
         assert_eq!(sec.tick(Duration::ZERO), IoReply::Ignored);
         s.lock().unwrap().live.cv_volts[0] = 0.0;
         assert_eq!(sec.tick(Duration::ZERO), IoReply::Redraw);
+    }
+
+    /// Outputs past the ones this run drives say so on their row, and the
+    /// banner names which are sent.
+    #[test]
+    fn unchecked_outputs_say_they_send_nothing() {
+        let s = model();
+        let mut m = s.lock().unwrap();
+        m.setup.cv[0] = fresh(2, 0);
+        m.setup.cv[4] = fresh(6, 0);
+        let rows = Cv.rows(&m, Duration::ZERO);
+        assert_eq!(rows[1].note, "sends nothing: CV out is off");
+        assert!(Cv
+            .banner(&m)
+            .unwrap()
+            .starts_with("CV out is off in this run"));
+        m.live.built.cv_outs = 4;
+        let rows = Cv.rows(&m, Duration::ZERO);
+        assert_eq!(rows[1].note, "0.00 V now");
+        assert_eq!(rows[5].note, "sends nothing yet: not checked on the MPC");
+        assert_eq!(rows[6].note, "0.00 V · off");
+        assert!(Cv
+            .banner(&m)
+            .unwrap()
+            .starts_with("CV 1 to 4 are sent; CV 5 to 8 wait for a check on the MPC."));
+        m.live.built.cv_outs = 8;
+        assert_eq!(Cv.banner(&m), None);
     }
 }

@@ -34,7 +34,7 @@
   - 1 MiB per file, and the partition's size caps the total.
   - Reads happen at start only.
   - Saves never happen on the audio thread. They go to one `mpfree-store` writer thread, which logs `saved: arp/patterns.txt (812 bytes)` or why it failed.
-- **Static test:** `mpfree-store` is the only code that writes files, and only under the folder it was given. `start-app.sh` is the only place that names that folder.
+- **Static test:** `mpfree-store` and `mpfree-library` are the only code that writes files, each only under the folder it was given, and each write site is listed in `tools/mpc-one/tests/test_app_mpc.py`. `start-app.sh` is the only place that names that folder.
 
 ## What is saved (first version)
 
