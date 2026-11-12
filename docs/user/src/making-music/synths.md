@@ -94,6 +94,8 @@ Out of the box every synth plays in standard tuning: twelve equal steps to the o
 
 The drum synth keeps its own pitches whatever you pick here.
 
+Everything in the Synth tab's options (the engine, scale, pad layouts and tuning) is kept on the stick and comes back the next time MPFree starts. If a tuning file or one of your own scales is gone by then, that one choice goes back to its default, and the Console says so.
+
 ### Your own tunings
 
 MPFree reads Scala tuning files, the format thousands of published tunings come in. Put them on the MPFREE-DATA partition of your MPFree stick, in the folder `files/tunings/`, and start MPFree. They join the Tuning row after the built-in tunings, in name order, up to 64.
