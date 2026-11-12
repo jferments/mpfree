@@ -47,10 +47,11 @@
 //!                      does) and logs every underrun and late period
 //!   --preview DIR      host only: draws sample screens to new PNG files in DIR
 //!
-//! `--sound-cores shared|core3|two` (play and app; shared by default) picks
-//! where the sound runs: as before, the audio thread alone on core 3, or
-//! core 3 plus lanes on core 2 for half the drum voices and part of the
-//! mixer's inserts (cores.rs). It changes only this program's threads.
+//! `--sound-cores shared|core3|two` (play and app) picks where the sound
+//! runs for this run, in place of Prefs' saved "Sound cores" (shared by
+//! default): as before, the audio thread alone on core 3, or core 3 plus
+//! lanes on core 2 for half the drum voices and part of the mixer's inserts
+//! (cores.rs). It changes only this program's threads.
 //!
 //! The screen is MPFree's GUI (crate mpfree-ui, screens in gui.rs). Every line
 //! also goes to stdout, which the workstation shows, and to the report file.
@@ -156,8 +157,9 @@ struct Options {
     patterns: Option<PathBuf>,
     /// Where settings and found buttons are kept (`app` only; mpfree-store).
     data: Option<PathBuf>,
-    /// Where the sound runs (`play` and `app`; cores.rs).
-    sound_cores: cores::SoundCores,
+    /// Where the sound runs for this run (`play` and `app`; cores.rs);
+    /// else Prefs' saved "Sound cores".
+    sound_cores: Option<cores::SoundCores>,
 }
 
 fn parse_args(args: &[String]) -> Result<Options, String> {
@@ -177,7 +179,7 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
         keep_screen: false,
         patterns: None,
         data: None,
-        sound_cores: cores::SoundCores::Shared,
+        sound_cores: None,
     };
     let mut it = args.iter();
     while let Some(arg) = it.next() {
@@ -219,8 +221,10 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
             "--patterns" => o.patterns = Some(PathBuf::from(value()?)),
             "--data" => o.data = Some(PathBuf::from(value()?)),
             "--sound-cores" => {
-                o.sound_cores = cores::SoundCores::parse(&value()?)
-                    .ok_or_else(|| format!("--sound-cores needs {}", cores::SoundCores::NAMES))?
+                o.sound_cores =
+                    Some(cores::SoundCores::parse(&value()?).ok_or_else(|| {
+                        format!("--sound-cores needs {}", cores::SoundCores::NAMES)
+                    })?)
             }
             _ => return Err(format!("unknown argument {arg}")),
         }
@@ -2552,9 +2556,12 @@ fn player_session(
     out.show(gui::ToUi::Time(Box::new(time.state())));
     let (mut shown_transport, mut transport_shown_at) = (time.info(), Instant::now());
     let mut periods = app.settings.periods;
-    // Where the sound runs (--sound-cores, cores.rs): this thread is the
-    // audio thread, and the sampler's lane starts before the sound does.
-    let mut cores = cores::Cores::start(o.sound_cores, &mut player);
+    // Where the sound runs (Prefs "Sound cores" as saved, or --sound-cores
+    // for this run; cores.rs): this thread is the audio thread, and the
+    // sampler's lane starts before the sound does.
+    let sound_cores = o.sound_cores.unwrap_or(app.settings.sound_cores);
+    let mut cores = cores::Cores::start(sound_cores, &mut player);
+    app.set_sound_cores_now(sound_cores);
     let mut play = Playback::start(open_acva(out, periods)?, periods)?;
     progress(out, 6, "Ready", "Have fun", 1.0);
     let max_db = o.gain_db;
@@ -4401,15 +4408,13 @@ mod tests {
             "the store saves patterns now"
         );
         assert!(parse_args(&args("play --seconds 5 --patterns /tmp/p.txt")).is_err());
-        // Where the sound runs: shared unless asked, and only for the pad player.
-        assert_eq!(
-            parse_args(&args("app")).unwrap().sound_cores,
-            cores::SoundCores::Shared
-        );
+        // Where the sound runs: Prefs' setting unless asked for this run, and
+        // only for the pad player.
+        assert_eq!(parse_args(&args("app")).unwrap().sound_cores, None);
         let o = parse_args(&args("play --seconds 120 --sound-cores two")).unwrap();
-        assert_eq!(o.sound_cores, cores::SoundCores::Two);
+        assert_eq!(o.sound_cores, Some(cores::SoundCores::Two));
         let o = parse_args(&args("app --sound-cores core3")).unwrap();
-        assert_eq!(o.sound_cores, cores::SoundCores::Core3);
+        assert_eq!(o.sound_cores, Some(cores::SoundCores::Core3));
         assert!(parse_args(&args("app --sound-cores 2")).is_err());
         assert!(parse_args(&args("app --sound-cores")).is_err());
         assert!(parse_args(&args("click --seconds 5 --sound-cores two")).is_err());

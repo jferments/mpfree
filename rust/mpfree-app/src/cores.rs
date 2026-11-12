@@ -1,5 +1,7 @@
-//! Where the sound runs: `--sound-cores shared|core3|two` with `play` or
-//! `app` (the default is `shared`, as before).
+//! Where the sound runs: Prefs "Sound cores" (Shared, Core 3, Cores 3 and
+//! 2; kept in the "app" settings as `sound-cores`, used from the next
+//! start), or `--sound-cores shared|core3|two` with `play` or `app` for one
+//! run. The default is `shared`, as before.
 //!
 //! - `shared`: the audio thread runs at SCHED_FIFO 70 on whichever core the
 //!   kernel gives it.
@@ -65,6 +67,7 @@ pub enum SoundCores {
 }
 
 impl SoundCores {
+    pub const ALL: [SoundCores; 3] = [SoundCores::Shared, SoundCores::Core3, SoundCores::Two];
     pub const NAMES: &'static str = "shared, core3 or two";
 
     pub fn parse(s: &str) -> Option<SoundCores> {
@@ -81,6 +84,15 @@ impl SoundCores {
             SoundCores::Shared => "shared",
             SoundCores::Core3 => "core3",
             SoundCores::Two => "two",
+        }
+    }
+
+    /// Prefs' value for it.
+    pub fn row(self) -> &'static str {
+        match self {
+            SoundCores::Shared => "Shared",
+            SoundCores::Core3 => "Core 3",
+            SoundCores::Two => "Cores 3 and 2",
         }
     }
 

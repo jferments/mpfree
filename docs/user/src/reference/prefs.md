@@ -1,7 +1,7 @@
 <!--
 status: changing
 covers: rust/mpfree-app/src/app.rs
-checked: 2026-11-11 414faa1
+checked: 2026-11-12 26b6821
 -->
 
 # Prefs
@@ -15,6 +15,7 @@ This chapter is not written yet. It will cover:
 - Audio buffer
 - Find the buttons again
 - Show developer tools
+- Sound cores
 - Map controls
 - Line input
 - System info
