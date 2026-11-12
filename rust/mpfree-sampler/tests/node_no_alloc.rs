@@ -1,7 +1,8 @@
 //! The sampler node's `process` must not allocate or free: notes on and
-//! off on pads and keygroups, pressure, a note held again, "Pad 1 note"
-//! and Level changes inside a block, all notes off, reset, and views
-//! swapped in (and old ones handed back) while voices play.
+//! off on pads and keygroups, pressure, a note held again, "Pad 1 note",
+//! Level, kit Tune and Cutoff and every pad setting changing inside a
+//! block, all notes off, reset, and views swapped in (and old ones handed
+//! back, and the pad settings put on the new ones) while voices play.
 //!
 //! This test file is its own program, so its global allocator (the only
 //! unsafe code here, a pass-through to the system allocator) does not
@@ -17,7 +18,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use mpfree_node::{Ctx, Node, NodeEvent, Timed};
 use mpfree_sampler::engine::EngineView;
 use mpfree_sampler::model::*;
-use mpfree_sampler::node::{ids, SamplerNode, DEFAULT_BASE_NOTE};
+use mpfree_sampler::node::{field, ids, pad_id, SamplerNode, DEFAULT_BASE_NOTE, LIVE_PADS};
 
 struct Counting;
 thread_local! {
@@ -84,6 +85,15 @@ fn kit() -> Project {
             mode: LoopMode::Forward,
         });
         let mut pad = Pad::new("p", Layer::new(r));
+        if i % 3 == 0 {
+            pad.filter = Filter {
+                kind: FilterKind::LowPass,
+                poles: 2,
+                cutoff_hz: 1_500.0 + 100.0 * i as f32,
+                resonance: 0.2,
+                env_octaves: 0.0,
+            };
+        }
         pad.keys = (i == 2).then_some(Keys {
             lo: 0,
             hi: 35,
@@ -180,6 +190,33 @@ fn process_never_allocates() {
                     id: ids::BASE_NOTE,
                     value,
                 },
+            ));
+        }
+        // Pad settings, anywhere in their range or back at their default,
+        // and the kit's Tune and Cutoff.
+        for _ in 0..rng.next(3) {
+            let id = pad_id(
+                rng.next(LIVE_PADS as u32) as usize,
+                rng.next(field::COUNT as u32) as u16,
+            );
+            let info = *node.params().iter().find(|p| p.id == id).unwrap();
+            let value = match rng.next(4) {
+                0 => info.default,
+                _ => info.min + (info.max - info.min) * rng.next(1001) as f32 / 1000.0,
+            };
+            events.push(Timed::new(
+                rng.next(BLOCK as u32),
+                NodeEvent::Param { id, value },
+            ));
+        }
+        if block % 23 == 11 {
+            let (id, value) = match rng.next(2) {
+                0 => (ids::TUNE, -12.0 + rng.next(25) as f32),
+                _ => (ids::CUTOFF, -4.0 + rng.next(9) as f32),
+            };
+            events.push(Timed::new(
+                rng.next(BLOCK as u32),
+                NodeEvent::Param { id, value },
             ));
         }
         if block % 401 == 400 {
