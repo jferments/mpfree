@@ -892,17 +892,27 @@ class Lab:
                 "normal_script_bootz",
             )
             passed = all(direct["checks"].get(key) for key in required)
+            exact_checks = (
+                "literal_pool_both_pointers_equal",
+                "literal_pool_both_point_to_global",
+                "published_oem_token_binary_sha256_matches",
+            )
+            literal_proof = all(direct["checks"].get(key) is True
+                                for key in exact_checks)
             record["direct_boot_focus"] = {
                 "report": "direct-boot-focus.json",
                 "questions":len(direct["questions"]),
                 "topics":topic_count,
                 "required_owner_evidence":passed,
+                "literal_pointer_and_token_proven":literal_proof,
                 "permission_pointer_probe":direct.get("probe",{}),
             }
             self.stages["direct-boot-focus-evidence"] = {
-                "success":passed and len(direct["questions"])>=25 and topic_count==7,
+                "success":(passed and literal_proof
+                           and len(direct["questions"])>=25 and topic_count==7),
                 "questions":len(direct["questions"]),"topics":topic_count,
                 "required_static_checks_passed":passed,
+                "new_literal_pointer_and_token_proof":literal_proof,
             }
         except Exception as exc:
             record["direct_boot_focus_error"]=str(exc)
@@ -971,8 +981,10 @@ class Lab:
         if direct:
             summary.append("- Focused questions: " + str(direct["questions"]) +
                            " across " + str(direct["topics"]) + " topics.")
-            summary.append("- OEM grant, download gate, flash/erase, bootm/bootz evidence: " +
+            summary.append("- Existing OEM grant, download gate, flash/erase, bootm/bootz evidence: " +
                            str(direct["required_owner_evidence"]))
+            summary.append("- Exact U-Boot OEM token and shared permission pointer proof: " +
+                           str(direct["literal_pointer_and_token_proven"]))
             summary.append("- See direct-boot-focus.md for individual evidence, limitations and follow-ups.")
             summary.append("- No Fastboot commands sent; no rootfs, eMMC or device modified.")
         summary += ["", "## Guest/static image consistency"]
