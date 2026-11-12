@@ -1,0 +1,39 @@
+name: MPFree V21 owner-offline research host preflight
+
+on:
+  push:
+    branches:
+      - research/bootchain-v21-backend-registry-20261112
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  v21-host-preflight:
+    name: Python syntax, regression, ARM guest C compile
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install ARM C cross compiler (no vendor firmware)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-arm-linux-gnueabihf
+      - name: Compile all V21 Python sources
+        run: |
+          python3 -m py_compile \
+            tools/mpc-one/run_v21.py \
+            tools/mpc-one/test_v21.py \
+            tools/ghidra/MPFreeV21BackendRegistry.py
+      - name: Validate source of actual ARM guest code
+        run: |
+          arm-linux-gnueabihf-gcc -std=c11 -O2 -Wall -Wextra -Werror -fsyntax-only \
+            tools/mpc-one/vendor_probe_v21.c
+      - name: Host-only V21 regression tests
+        run: |
+          python3 tools/mpc-one/test_v21.py
+      - name: Confirm no owner binaries were required
+        run: |
+          test ! -f tools/mpc-one/p3-uimage-payload.bin
+          test ! -f tools/mpc-one/mmcblk0.img
