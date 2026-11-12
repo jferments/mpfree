@@ -24,7 +24,8 @@
 //! `app.rs` decides, and touches only report what was touched.
 
 use crate::app::{
-    tabs, ArpView, GuideView, MapView, MenuView, PadLevel, Settings, Status, View, WorkspaceView,
+    tabs, ArpView, GuideView, MapView, MenuView, MuteKeys, PadLevel, Settings, Status, View,
+    WorkspaceView,
 };
 use crate::calibrate_page::CalibrateView;
 use crate::chain_page::{ChainPage, Turned};
@@ -51,7 +52,7 @@ use mpfree_sampler::model::Project;
 use mpfree_synth_ui::view as synth_view;
 use mpfree_synth_ui::{SynthAction, SynthPanel, SynthState};
 use mpfree_time_ui::view::{
-    self as time_view, TimePage, TimeState, TransportInfo, CLIPS_HINT, CLIPS_PAGE,
+    self as time_view, TimePage, TimeState, TransportInfo, CLIPS_HINT, CLIPS_PAGE, SONG_HINT,
 };
 use mpfree_time_ui::TimeAction;
 use mpfree_touch::mt::Phase;
@@ -88,13 +89,19 @@ pub const GUIDE_LAYOUT: &str = "col(header:60, row(guide:*, found:400):*, hint:2
 const CONSOLE_HINT: &str =
     "Switch the MPC off with its power switch to return to the stock firmware";
 const SHIFT_HINT: &str =
-    "SHIFT +   wheel: synth octave   ·   FULL LEVEL: Half Level   ·   NOTE REPEAT: Latch   ·   MENU: Prefs   ·   STOP: console";
+    "SHIFT +   wheel: synth octave   ·   FULL LEVEL: Half Level   ·   NOTE REPEAT: Latch   ·   MENU: Prefs   ·   STOP: back to bar 1";
+/// TRACK MUTE's keys, over whatever page shows (control map decision 5).
+const TRACK_MUTE_HINT: &str = "TRACK MUTE:   pads 1-8 mute and unmute tracks 1-8   ·   green: playing, red: muted   ·   \
+                               SHIFT + TRACK MUTE: the kit's pads   ·   TRACK MUTE: the pads play again";
+const PAD_MUTE_HINT: &str =
+    "SHIFT + TRACK MUTE:   a pad mutes and unmutes itself in the kit   ·   red: muted   ·   \
+                             TRACK MUTE: tracks   ·   SHIFT + TRACK MUTE: the pads play again";
 const SHIFT_SYNTH_HINT: &str =
-    "SHIFT +   wheel: page   ·   FULL LEVEL: Half Level   ·   NOTE REPEAT: Latch   ·   MENU: Prefs   ·   STOP: console";
+    "SHIFT +   wheel: page   ·   FULL LEVEL: Half Level   ·   NOTE REPEAT: Latch   ·   MENU: Prefs   ·   STOP: back to bar 1";
 const SHIFT_SAMPLE_HINT: &str =
-    "SHIFT +   wheel: pad   ·   Q-Links: finer   ·   UNDO: redo   ·   MENU: Prefs   ·   STOP: console";
+    "SHIFT +   wheel: pad   ·   Q-Links: finer   ·   UNDO: redo   ·   MENU: Prefs   ·   STOP: back to bar 1";
 const SHIFT_MENU_HINT: &str =
-    "SHIFT +   wheel: change the value   ·   MENU: Prefs   ·   STOP: console";
+    "SHIFT +   wheel: change the value   ·   MENU: Prefs   ·   STOP: back to bar 1";
 const OPTIONS_HINT: &str =
     "Wheel or tap: pick a row   ·   - / +, SHIFT + wheel or the arrows: change it   ·   MENU: close";
 const GUIDE_HINT: &str = "STOP: skip this button   ·   The pads still play while the guide is open";
@@ -481,8 +488,15 @@ pub enum FromUi {
     },
     /// The Looper tab: pick loop `n` for the controls.
     LoopPick(usize),
-    /// The Looper tab: the picked loop's level, 0 to 2 (Q-Link 3).
-    LoopLevel(f32),
+    /// The Looper tab: a command for the picked loop (an edit tool, Fade
+    /// old, the seam fade, After recording).
+    LoopCommand(mpfree_looper::Command),
+    /// The Looper tab's undo history: back (below 0) or forward this many
+    /// steps.
+    LoopSteps(i32),
+    /// Use the loop's Resample: pick loop `n` (empty) and record the
+    /// other loops into it, as heard.
+    LoopResample(usize),
     /// The Looper tab's Recording and input panel: a setting stepped (the
     /// same settings as the looper's options menu).
     LooperSetting(crate::app::Item, i32),
@@ -702,6 +716,7 @@ impl Player {
             latched: false,
             rate: "1/16",
             bpm: 120.0,
+            mute_keys: MuteKeys::Off,
         };
         let mut p = Player {
             ui,
@@ -1066,15 +1081,17 @@ impl Player {
             }
         }
         if let Some(xy) = self.ui.get::<XyPad>(play_page::XY) {
-            let mut label = String::new();
             let mut probe = XyPad::default();
             self.play.fill_xy(&mut probe);
-            if xy.label != probe.label {
-                label = probe.label;
-            }
-            if !label.is_empty() {
+            // A finger on the pad puts the dot; otherwise it glides home.
+            let at = (!xy.on).then_some((probe.x, probe.y));
+            let changed = xy.label != probe.label || at.is_some_and(|a| a != (xy.x, xy.y));
+            if changed {
                 if let Some(xy) = self.ui.get_mut::<XyPad>(play_page::XY) {
-                    xy.label = label;
+                    xy.label = probe.label;
+                    if let Some((x, y)) = at {
+                        (xy.x, xy.y) = (x, y);
+                    }
                 }
             }
         }
@@ -1086,17 +1103,14 @@ impl Player {
     }
 
     /// A Q-Link on the Play page (no arp): what it turns there.
-    /// The Looper tab and the Play strip from the last looper view; Q-Link
-    /// 4's card is the Play page's line level.
+    /// The Looper tab and the Play strip from the last looper view.
     fn refresh_looper(&mut self) {
         self.looper_page
             .update(&mut self.ui, &self.looper, &self.settings);
-        let card = self.play.card(Knob::LineLevel, None);
-        self.looper_page.set_line_card(&mut self.ui, card);
     }
 
-    /// A Q-Link on the Looper tab: the picked layer's level and pan, the
-    /// loop's level, the line input's level.
+    /// A Q-Link on the Looper tab: the picked layer's level and pan, how
+    /// much each overdub fades the old layers, the seam fade.
     fn looper_qlink(&mut self, k: usize, ticks: i32) {
         use crate::looper_page::LoopTurn;
         let fine = self.status.shift;
@@ -1109,13 +1123,14 @@ impl Player {
                     });
                 }
             }
-            Some(LoopTurn::Level(v)) => self.outbox.push(FromUi::LoopLevel(v)),
-            Some(LoopTurn::Line(t)) => {
-                if let Some(Turn::Fx(fx)) = self.play.turn_knob(Knob::LineLevel, t, fine) {
-                    self.outbox.push(FromUi::PlayFx(fx));
-                }
-                let card = self.play.card(Knob::LineLevel, None);
-                self.looper_page.set_line_card(&mut self.ui, card);
+            Some(LoopTurn::FadeOld(k)) => self
+                .outbox
+                .push(FromUi::LoopCommand(mpfree_looper::Command::SetFadeOld(k))),
+            Some(LoopTurn::Seam(f)) => {
+                self.outbox
+                    .push(FromUi::LoopCommand(mpfree_looper::Command::Edit(
+                        mpfree_looper::Edit::SeamFade(f),
+                    )))
             }
             None => {}
         }
@@ -1141,13 +1156,43 @@ impl Player {
                     }
                 }
                 LoopAct::Setting(i, d) => {
-                    if let Some((item, d)) = crate::looper_page::setting_item(i, d, &self.settings)
+                    if let Some(c) = crate::looper_page::setting_command(i, &self.looper.status) {
+                        out.push(FromUi::LoopCommand(c));
+                    } else if let Some((item, d)) =
+                        crate::looper_page::setting_item(i, d, &self.settings)
                     {
                         out.push(FromUi::LooperSetting(item, d));
                     }
                 }
-                // The looper's edits and bounce come with its next part.
-                LoopAct::Tool(_) | LoopAct::Use(_) => {}
+                LoopAct::Tool(crate::looper_page::TOOL_HISTORY) => {
+                    self.looper_page.toggle_history(&mut self.ui);
+                    self.refresh_hint();
+                }
+                LoopAct::Trim(from, to) => {
+                    if let Some(c) = crate::looper_page::trim_command(from, to, &self.looper.status)
+                    {
+                        out.push(FromUi::LoopCommand(c));
+                    }
+                }
+                LoopAct::Step(row) => {
+                    if let Some(n) = self.looper_page.history_steps(row) {
+                        out.push(FromUi::LoopSteps(n));
+                    }
+                }
+                LoopAct::Tool(i) => {
+                    let rate = self.looper.rate;
+                    if let Some(c) = crate::looper_page::tool_command(i, &self.looper.status, rate)
+                    {
+                        out.push(FromUi::LoopCommand(c));
+                    }
+                }
+                LoopAct::Use(crate::looper_page::USE_RESAMPLE) => {
+                    if let Some(n) = self.looper_page.first_empty() {
+                        out.push(FromUi::LoopResample(n));
+                    }
+                }
+                // The bounce to a pad, a clip or a file comes next.
+                LoopAct::Use(_) => {}
             }
         }
         let mut it = out.into_iter();
@@ -1300,6 +1345,10 @@ impl Player {
             SHIFT_SAMPLE_HINT.to_string()
         } else if self.status.shift && self.ready {
             SHIFT_HINT.to_string()
+        } else if self.status.mute_keys == MuteKeys::Tracks {
+            TRACK_MUTE_HINT.to_string()
+        } else if self.status.mute_keys == MuteKeys::Pads {
+            PAD_MUTE_HINT.to_string()
         } else if self.view == View::Play && self.band_showing() && self.status.latched {
             format!("Latched: {}   ·   NOTE REPEAT: let go   ·   hold NOTE REPEAT for the wheel, - / + and Q-Links   ·   \
                      {stop}", crate::app::mode_label(mode))
@@ -1313,9 +1362,12 @@ impl Player {
             match self.view {
                 View::Play => format!("Tap All, Beats, Loop or Drum: the view   ·   Wheel or tap: kit   ·   Q-Link 1 or \
                                        the master bar: level   ·   NOTE REPEAT: repeat   ·   MENU: options   ·   {stop}"),
+                View::Arrange if self.time.song_view => SONG_HINT.to_string(),
                 View::Arrange => CLIPS_HINT.to_string(),
-                View::Looper => format!("Tap a loop or a layer: pick it   ·   Q-Links: layer level and pan, loop level, \
-                                         line   ·   REC: record   ·   OVERDUB: overdub   ·   UNDO: undo (SHIFT: redo)   ·   \
+                View::Looper if self.looper_page.history_open() => format!("Tap a step: back or forward to it   ·   \
+                                         drag: scroll   ·   Undo history: close   ·   UNDO: undo (SHIFT: redo)   ·   {stop}"),
+                View::Looper => format!("Tap a loop or a layer: pick it   ·   Q-Links: layer level and pan, Fade old, \
+                                         seam fade   ·   REC: record   ·   OVERDUB: overdub   ·   UNDO: undo (SHIFT: redo)   ·   \
                                          {stop}"),
                 View::Synth => format!("Pads play {}   ·   Q-Links 1-4: the marked knobs   ·   Wheel: the selected knob   ·   \
                                         - / +: page   ·   MENU: engine, scale   ·   {stop}",
@@ -2043,11 +2095,16 @@ impl Player {
                 self.refresh_arp();
             }
             ToUi::Time(st) => {
+                let swapped = st.song_view != self.time.song_view;
                 self.time = *st;
                 self.sample.set_tempo(self.time.transport.bpm);
                 self.time_page.update(&mut self.ui, &self.time);
                 self.play.set_transport(self.time.transport);
                 self.refresh_play();
+                if swapped {
+                    // The Song view has its own hint line.
+                    self.refresh_hint();
+                }
             }
             ToUi::Transport(info) => {
                 self.time.transport = info;
@@ -2889,7 +2946,8 @@ impl Player {
                 | time_view::CLIPS
                 | time_view::RECORD
                 | time_view::TAKES
-                | time_view::MORPH,
+                | time_view::MORPH
+                | time_view::SONG,
                 _,
             ) => time_view::action(&ev, &self.time).map(FromUi::Time),
             _ => None,
@@ -2898,6 +2956,11 @@ impl Player {
 
     /// Advance animations by `dt` seconds.
     pub fn tick(&mut self, dt: f32) {
+        // The XY pad glides home after the finger lifts.
+        if let Some(fx) = self.play.tick_xy(dt * 1000.0) {
+            self.outbox.push(FromUi::PlayFx(fx));
+            self.refresh_play();
+        }
         // A finger held still on a macro card opens the macros panel.
         if self.chain_page.drives(self.view) && !self.band_showing() {
             if let Some(bank) = self.chain_page.held(dt) {
@@ -3382,6 +3445,7 @@ pub fn sample_player(fonts: Fonts) -> Player {
         latched: false,
         rate: "1/16",
         bpm: 120.0,
+        mute_keys: MuteKeys::Off,
     }));
     for (pad, v) in [(0usize, 112u8), (5, 87), (10, 64)] {
         p.apply(ToUi::PadDown { pad, velocity: v });
@@ -3699,6 +3763,7 @@ pub fn sample_play(fonts: Fonts, v: PlayView) -> Player {
         latched: false,
         rate: "1/16",
         bpm: 92.0,
+        mute_keys: MuteKeys::Off,
     }));
     sample_loop(&mut p);
     if v == PlayView::Loop {
@@ -3751,7 +3816,7 @@ pub fn sample_play(fonts: Fonts, v: PlayView) -> Player {
     match v {
         PlayView::All => {
             p.play.throw(2, true);
-            p.play.xy = (0.68, 0.62, true);
+            p.play.xy.touch(0.68, 0.62);
         }
         PlayView::Beats => {
             p.play.selected = Some((0, 6));
@@ -3760,20 +3825,21 @@ pub fn sample_play(fonts: Fonts, v: PlayView) -> Player {
         }
         PlayView::Loop => {
             p.play.throw(2, true);
-            p.play.xy = (0.68, 0.62, true);
+            p.play.xy.touch(0.68, 0.62);
         }
         PlayView::Drum => {
             sample_hits(&mut p);
             p.play.throw(2, true);
             p.apply(ToUi::QLinkTouch(2, true));
-            p.play.xy = (0.68, 0.62, true);
+            p.play.xy.touch(0.68, 0.62);
         }
     }
     if let Some(xy) = p.ui.get_mut::<XyPad>(play_page::XY) {
-        (xy.x, xy.y, xy.on) = p.play.xy;
+        (xy.x, xy.y) = p.play.xy.position();
+        xy.on = p.play.xy.touched();
         if xy.on {
             // The finger's way up to where it is, as the mockups draw it.
-            let (x, y, _) = p.play.xy;
+            let (x, y) = p.play.xy.position();
             let trail: Vec<(f32, f32)> = (0..10)
                 .map(|k| {
                     let f = k as f32 / 10.0;
@@ -3978,6 +4044,7 @@ pub fn apply_effects(p: &mut Player, fx: Vec<crate::app::Effect>) {
             | Effect::SynthPads(_)
             | Effect::ProgEdit
             | Effect::Metronome
+            | Effect::Fill(_)
             | Effect::Mixer(_) => {}
             Effect::MixerTurn { knob, delta } => p.apply(ToUi::MixerQLink(knob, delta)),
             Effect::ChainTurn { knob, delta } => p.apply(ToUi::ChainQLink(knob, delta)),
@@ -4533,6 +4600,15 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         Ok(p) => out.push(("looper", p)),
         Err(e) => eprintln!("looper sample: {e}"),
     }
+    // The same with the undo history open: the bass and the chop overdubs.
+    match sample_looper(fonts()) {
+        Ok(mut p) => {
+            p.looper_page.toggle_history(&mut p.ui);
+            p.refresh_hint();
+            out.push(("looper-history", p));
+        }
+        Err(e) => eprintln!("looper sample: {e}"),
+    }
     // The synth on the pads (the kit list's last entry), then its page.
     let synth_kit = sample_kits().len();
     let mut play_synth = sample_player(fonts());
@@ -4543,6 +4619,7 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         latched: false,
         rate: "1/16",
         bpm: 120.0,
+        mute_keys: MuteKeys::Off,
     }));
     play_synth.apply(ToUi::Kit(synth_kit));
     for (pad, v) in [(0usize, 96u8), (4, 90), (7, 101)] {
@@ -4575,6 +4652,7 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         latched: false,
         rate: "1/16",
         bpm: 120.0,
+        mute_keys: MuteKeys::Off,
     }));
     chords.apply(ToUi::KitChanged {
         kit: synth_kit,
@@ -5087,6 +5165,19 @@ mod tests {
             tap(&mut p, (save.x + save.w / 2, save.y + save.h / 2)),
             Some(FromUi::Time(TimeAction::SaveScene(0)))
         );
+        // The Song view in the grid's place: its Clips button goes back.
+        p.time.song_view = true;
+        p.time_page.update(&mut p.ui, &p.time);
+        p.ui.paint(&mut SoftCanvas::new(1280, 800));
+        let song = p.ui.rect_of(time_view::SONG).unwrap();
+        let back =
+            p.ui.get::<mpfree_time_ui::song::SongLanes>(time_view::SONG)
+                .unwrap()
+                .button_rects(song)[0];
+        assert_eq!(
+            tap(&mut p, (back.x + back.w / 2, back.y + back.h / 2)),
+            Some(FromUi::Time(TimeAction::SongView(false)))
+        );
     }
 
     /// Mockup H: a speaker beside each loop layer's name; a tap mutes
@@ -5218,10 +5309,11 @@ mod tests {
             ),
             "{acts:?}"
         );
-        p.apply(ToUi::LooperQLink(2, 1));
+        // Q3 sets how much each overdub fades the old layers.
+        p.apply(ToUi::LooperQLink(2, -1));
         assert!(matches!(
             p.take_actions().as_slice(),
-            [FromUi::LoopLevel(_)]
+            [FromUi::LoopCommand(mpfree_looper::Command::SetFadeOld(_))]
         ));
         // Line input, right half: on.
         let r = p.ui.rect_of(RECORDING).unwrap();
@@ -8021,6 +8113,7 @@ mod tests {
             latched: true,
             rate: "1/8",
             bpm: 96.0,
+            mute_keys: MuteKeys::Off,
         };
         p.apply(ToUi::Status(s.clone()));
         assert_eq!(p.ui.get::<Label>("hint").unwrap().text, SHIFT_HINT);
@@ -8048,13 +8141,24 @@ mod tests {
             "the level is on the slider: {chips:?}"
         );
         s.shift = false;
-        p.apply(ToUi::Status(s));
+        p.apply(ToUi::Status(s.clone()));
         assert!(p
             .ui
             .get::<Label>("hint")
             .unwrap()
             .text
             .contains("NOTE REPEAT: repeat"));
+        // TRACK MUTE: the hint says what the pads are now, on any page.
+        for (keys, hint) in [
+            (MuteKeys::Tracks, TRACK_MUTE_HINT),
+            (MuteKeys::Pads, PAD_MUTE_HINT),
+        ] {
+            s.mute_keys = keys;
+            p.apply(ToUi::Status(s.clone()));
+            assert_eq!(p.ui.get::<Label>("hint").unwrap().text, hint);
+        }
+        s.mute_keys = MuteKeys::Off;
+        p.apply(ToUi::Status(s));
         p.apply(ToUi::PadFlash {
             pad: 3,
             velocity: 90,

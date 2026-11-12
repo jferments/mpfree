@@ -36,7 +36,15 @@ Every region fades in over `FADE` (64) frames from its start and plays on `FADE`
 
 ## Time
 
-A region sits on song ticks, so it stays on its bar when the tempo before it changes. Its audio plays sample for sample from the region's start, the way a DAW plays audio that is not warped. At a tempo other than the one it was recorded at, it does not stretch, so a region longer than a bar drifts against the bars. Time-stretching a take to a new tempo is a later step, using `mpfree-stretch` (phase vocoder on a worker, already on main) to print a stretched copy.
+A region sits on song ticks, so it stays on its bar when the tempo before it changes. Its audio plays sample for sample from the region's start, the way a DAW plays audio that is not warped. At a tempo other than the one it was recorded at, it doesn't stretch by itself, so a region longer than a bar drifts against the bars until the take is fitted (below).
+
+**Fitting a take to a new tempo** ([`stretch.rs`](../../../rust/mpfree-audiotracks/src/stretch.rs)) keeps its pitch:
+
+1. A take remembers the tempo it was recorded at (`TakeInfo::bpm`), and `stretch::fit_ratio(recorded, now)` says how much longer it must be.
+2. Off the audio thread, the host reads the take with `read_take`, runs a `StretchJob` (the `mpfree-stretch` phase vocoder that keeps hits sharp) in steps on a worker, and loads the result under `free_take_id()` with `load_take`. The new take keeps the old one's anchor, so its frame 0 stays on the same tick.
+3. Once it has copied in, `Command::Swap { old, new, ratio }` plays it wherever the old take played, with each region's `src` scaled by the ratio, as one undo step. The old take stays until it is forgotten, so Undo goes back to it.
+
+The stretch is one ratio over the whole take. That is right for a take recorded at one tempo and played at one tempo. A test records a 441 Hz tone at 240 BPM, halves the tempo and fits the take: the take then fills its bar again, still at 441 Hz.
 
 Positions use the transport's tempo map (`process` takes it), so a tempo map with steps plays audio in the right place: `frames_from` and `tick_after` walk the map's segments.
 
@@ -48,8 +56,22 @@ All takes share one pool of samples, asked for once in `AudioTracks::new(rate, s
 - When a recording ends, the part of its last stretch it did not fill goes back, joined to free neighbours.
 - A recording that runs out of memory stops there. What was written stays, with its region; the take is marked `cut_short` and counted in `Stats::full`. The track records again at the next punch in.
 - `memory()` is the gauge (`used`, `capacity`, in samples).
+- **Waveforms.** The pool keeps the lowest and highest sample of every block of 256 samples (`PEAK_BLOCK`) as audio is written or loaded. `peaks(id, from, to)` reads the table for whole blocks, so a screen column covering a second of audio costs about 170 reads instead of 44,100. It works while a take records, up to what has been written, and doesn't allocate. Every stretch of the pool starts and ends on a block edge, so a block never mixes two takes. Memory is therefore handed out in blocks of 256 samples (5.8 ms of mono), and the pool is cut down to whole blocks. The host shares the peaks with the screen thread the way it shares the rest of the state, as the looper's waveform does.
 
 Recording to the storage partition instead of RAM, so tracks can be as long as the disk allows, needs a writer thread and the store; it is not built.
+
+## Saved with the project
+
+[`save.rs`](../../../rust/mpfree-audiotracks/src/save.rs) holds the audio tracks' part of a project (`parts/audiotracks.txt`): each track's settings and regions, and each take's place, with its audio named by file. The audio is a 32-bit float WAV a take, mono or stereo as recorded.
+
+- **Saving.** `save_file()` gives the settings, regions and takes. It returns None while a track records or a take loads, leaves out tracks with nothing to keep, and allocates. `read_take(id, from, out)` reads a take's audio a piece at a time without allocating, so the app can read across periods. `save::to_text` and `save::wav` make the files. A take never changes once recorded, so a save read slowly can't tear.
+- **Opening.** Takes and tracks come back through `save::from_text` and `save::from_wav`, then:
+  - `load_take(file)` puts each take back under its own id. It takes the memory at once, then copies the audio in at `LOAD_SPEED` (64 frames for each frame that plays). A loading take plays nothing until it's done.
+  - `load_track(&file)` puts back the settings and regions, and forgets the undo history.
+  - `take_returned()` hands the loaded audio back for the host to drop away from the audio thread.
+  - A load is refused, with the take given back, if the id is in use, the audio is the wrong length or the memory is short.
+- **Unknown words and lines are skipped,** so a newer build's text still loads. Regions must be in order and must name takes of their own track.
+- **Test:** a session (three comped loop passes, a stereo punch, gains and mixes) is saved, opened in fresh tracks, and plays back the same, sample for sample.
 
 ## The audio thread
 
@@ -84,6 +106,6 @@ Each case is an 8-bar song loop with every track comped so that two takes crossf
 ## Not built yet
 
 - Recording to disk, for tracks longer than the RAM pool.
-- Time-stretch to a new tempo (with `mpfree-stretch`).
-- The pad player's wiring, the Song view's audio lanes and take lanes, and saving takes and regions in the project.
+- Fitting takes on its own when the tempo changes: the host runs the stretch worker (as `LoopHost` does for loop prints).
+- The pad player's wiring and the Song view's audio lanes and take lanes. Saving is built in the engine (above); the project browser writes the files once it is in the app.
 - Device runs. Opening the line input on the MPC needs Jay's go, step by step (rule zero).
