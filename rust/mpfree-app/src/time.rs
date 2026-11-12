@@ -21,7 +21,7 @@
 //!
 //! Pad pressure comes in through [`TimeHost::pad_pressure`]: while the
 //! armed track records and records pressure (`Track::record_touch`, the
-//! Record list's "Pad pressure" row), it is thinned onto the pads' notes
+//! Record list's "Pressure" row), it is thinned onto the pads' notes
 //! and kept in the clip with them; clips play it back to the pads
 //! ([`Pads::pressure_at`]) as the raw value, which each instrument's
 //! pressure curve shapes.
@@ -2017,7 +2017,7 @@ mod tests {
     }
 
     /// Pad pressure while recording goes on the pad's note in the clip
-    /// (the Record list's "Pad pressure" row is on for a new track), plays
+    /// (the Record list's "Pressure" row is on for a new track), plays
     /// back to the pads on the next pass, and is left out with the row off.
     #[test]
     fn pad_pressure_while_recording_goes_on_its_note_and_plays_back() {

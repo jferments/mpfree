@@ -501,7 +501,7 @@ pub fn edit_rows(ed: &Editor, clip: &Clip) -> Vec<OptionRow> {
     };
     let of_sel = |f: &dyn Fn(&Note) -> i64, show: &dyn Fn(i64) -> String| -> String {
         match sel.first() {
-            None => "select notes".into(),
+            None => "pick notes".into(),
             Some(n) if sel.iter().all(|m| f(m) == f(n)) => show(f(n)),
             Some(_) => "mixed".into(),
         }
@@ -514,7 +514,7 @@ pub fn edit_rows(ed: &Editor, clip: &Clip) -> Vec<OptionRow> {
         format!("{} %", tc.strength),
         format!("{} ticks", tc.shift),
         if sel.is_empty() {
-            "select notes".into()
+            "pick notes".into()
         } else {
             format!("by {}", ed.snap_name())
         },
@@ -1278,7 +1278,7 @@ mod tests {
         assert_eq!(rows[9].value, "1/8");
         // With nothing selected the rows say so, and change nothing.
         ed.sel.clear();
-        assert_eq!(edit_rows(&ed, &c)[8].value, "select notes");
+        assert_eq!(edit_rows(&ed, &c)[8].value, "pick notes");
         assert!(ed
             .act(EditAction::Row { row: 7, delta: 1 }, &c)
             .edit
