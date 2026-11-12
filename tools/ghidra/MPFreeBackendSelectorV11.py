@@ -62,6 +62,20 @@ def mpfree_v11_entrypoint():
         if h.hexdigest()!=expect:
             raise RuntimeError('Saved project differs from verified owner boot stage')
     selected=set(PINNED[role])
+    # Fresh Ghidra ELF imports do not necessarily recognize stripped
+    # entrypoints (notably az01-update main at 0x1091c). Recover pinned
+    # executable entry functions in the disposable imported project only.
+    if role in ('az01-update','libaz01-prog'):
+        for va in sorted(selected):
+            a=A(va)
+            block=mem.getBlock(a)
+            if not block or not block.isExecute() or fm.getFunctionContaining(a):
+                continue
+            try:
+                disassemble(a)
+                createFunction(a,'mpfree_v11_pinned_%x'%va)
+            except Exception:
+                pass
     tables=[]
     if backend_file!='none':
         doc=json.loads(Path(backend_file).read_text())
