@@ -386,16 +386,28 @@ impl TimeAudio {
         }
         for i in 0..self.sink.n {
             let o = self.sink.out[i];
+            // A track that plays elsewhere (MIDI OUT) takes its events
+            // first.
+            let taken = pads.out(&o);
             if self.sink.arp[i] {
                 // Live playing: the pad player's own treatment, and what it
                 // says to record goes to the armed track as heard (or, on a
                 // track whose clips play through its arp, the pads as
-                // pressed do, through pad_pressed).
-                let heard = pads.live(&o);
+                // pressed do, through pad_pressed). A note played
+                // elsewhere records as it was played.
+                let heard = if taken {
+                    matches!(o.event, Event::NoteOn { .. } | Event::NoteOff { .. })
+                        .then_some(o.event)
+                } else {
+                    pads.live(&o)
+                };
                 if let Some(ev) = heard.filter(|_| self.tracks.armed == Some(usize::from(o.track)))
                 {
                     self.pad(o.offset, ev);
                 }
+                continue;
+            }
+            if taken {
                 continue;
             }
             match o.event {
