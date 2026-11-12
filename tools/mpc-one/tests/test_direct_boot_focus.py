@@ -52,7 +52,7 @@ def run(data):
 class DirectBootFocusTests(unittest.TestCase):
     def test_seven_topics_and_exact_sha(self):
         report=run(fixture())
-        self.assertEqual(len(report["questions"]),26)
+        self.assertEqual(len(report["questions"]),28)
         self.assertEqual(
             report["nominal_memory_address_gaps"]["fdt_addr_r"][
                 "from_fastboot_load_base_bytes"], 24115200)
@@ -94,6 +94,32 @@ class DirectBootFocusTests(unittest.TestCase):
         self.assertTrue(report["checks"]["normal_script_bootz"])
         self.assertFalse(report["checks"]["boot_completion_has_local_permission_check"])
         self.assertIn("## RAM boot",M.render_md(report))
+
+    def test_fastboot_dispatch_table_proves_boot_and_download_handlers(self):
+        d = fixture()
+        d["u"]["direct_boot_probe"] = {
+            "fastboot_command_table": [
+                {"prefix_text": "boot",
+                 "callback_containing_function": "0x00122964"},
+                {"prefix_text": "download:",
+                 "callback_containing_function": "0x00122980"},
+            ] + [
+                {"prefix_text": "other"+str(i),
+                 "callback_containing_function": None}
+                for i in range(6)
+            ]
+        }
+        report = run(d)
+        self.assertTrue(report["checks"]["fastboot_dispatch_table_eight_entries"])
+        self.assertTrue(report["checks"]["fastboot_boot_command_callback_resolved"])
+        self.assertTrue(report["checks"]["fastboot_download_command_callback_resolved"])
+        dispatch_question = next(x for x in report["questions"]
+                                 if "map boot and download" in x["question"])
+        self.assertEqual(dispatch_question["result"], "verified-static")
+        d["u"]["direct_boot_probe"]["fastboot_command_table"][0][
+            "callback_containing_function"] = "0x001226b4"
+        changed = run(d)
+        self.assertFalse(changed["checks"]["fastboot_boot_command_callback_resolved"])
 
     def test_wrong_original_uboot_rejected(self):
         d=fixture()
