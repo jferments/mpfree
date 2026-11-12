@@ -340,7 +340,7 @@ Our own Rust, not Signalsmith Stretch as first planned: no C++ to cross-build fo
 - **The clip.** The Sample page makes it (`ChopAction::phrase`, then `phrase_clip`): one note per slice, on the slice's pad at velocity 127, at 960 ticks a beat, named after the pad ("Break 92 phrase"); the time engine checks it (`Clip::check`) when it lands.
 - **Not yet.** Keys + phrase (the clip would need a track that plays notes), phrases on pads past A16, and a phrase from a chop already on pads.
 
-### Saving with the project (`mpfree-sampler`, `mpfree-hello`)
+### Saving with the project (`mpfree-sampler`, `mpfree-app`)
 
 The kits are the sampler's part of a saved project (owner `sampler`, see `docs/project/browser.md`).
 
