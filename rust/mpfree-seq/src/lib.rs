@@ -35,10 +35,14 @@
 //! their slots until made unique; scenes and the arrangement convert both
 //! ways.
 //!
+//! The note editors (the Grid View and List Edit) make their edits with
+//! [`notes`], Timing Correct among them.
+//!
 //! Audio clips come in a later roadmap step.
 #![forbid(unsafe_code)]
 
 pub mod arrange;
+pub mod notes;
 pub mod scenes;
 pub mod steps;
 
