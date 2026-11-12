@@ -22,6 +22,7 @@ Start with the [project README](../README.md) for what MPFree is and where it st
 - [Plugins: the CLAP host](project/plugins.md): CLAP instruments and effects as nodes on a track or in an insert chain: loading `.clap` files, parameters, sample-exact events, state, the main and audio threads, and our own test plugins (`rust/mpfree-clap`), and the sandbox that runs each plugin in its own process with a deadline each block and a restart after a crash (`rust/mpfree-plughost`, 2026-11-11).
 - [Wavetable synth](project/wavetable.md): the third native synth: table oscillators scanned by Position, warps, band-limited tables, factory tables, WAV and sample import, memory and device cost estimates (`rust/mpfree-synth`, 2026-11-11).
 - [Concurrency](project/concurrency.md): using every core of the MPC One: where threads run today, the core plan, and lanes, which run part of each audio period on another core with a deadline (`rust/mpfree-lanes`, 2026-11-11).
+- [Importing MPC projects](project/mpc-import.md): what MPC project files hold, how confidently each part maps onto MPFree, the staged importer, and the workstation tool that copies your own projects out of the eMMC backup (`tools/mpc-one/offline-mpc-projects.py`, 2026-11-12).
 
 ## Decisions
 
