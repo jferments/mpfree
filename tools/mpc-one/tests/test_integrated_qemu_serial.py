@@ -26,6 +26,19 @@ class SerialCompletionTests(unittest.TestCase):
     def test_lf_and_optional_trailing_spaces(self):
         self.assertTrue(LAB.guest_marker_seen("MPFREE_VM_DONE_expected  \n", "MPFREE_VM_DONE_expected"))
 
+    def test_numeric_section_labels_parse_in_guest_transcript(self):
+        import re
+        sample = ("MPFREE_VM_SECTION_kernel_modules\\nA\\n"
+                  "MPFREE_VM_SECTION_310_trustpoint_unit\\nB\\n"
+                  "MPFREE_VM_SECTION_310_policy_assets\\nC\\n")
+        pattern = r"(?m)^MPFREE_VM_SECTION_([a-z0-9_]+)[ ]*$"
+        parts = re.split(pattern, sample)
+        named = {parts[n]: parts[n+1] for n in range(1, len(parts)-1, 2)}
+        self.assertEqual(set(named), {
+            "kernel_modules", "310_trustpoint_unit", "310_policy_assets"})
+        self.assertIn("B", named["310_trustpoint_unit"])
+        self.assertIn(pattern, PATH.read_text())
+
     def test_section_marker_not_done(self):
         self.assertFalse(LAB.guest_marker_seen("MPFREE_VM_SECTION_completed\r\r\n",
                                                "MPFREE_VM_DONE_expected"))
