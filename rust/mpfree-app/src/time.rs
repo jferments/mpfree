@@ -175,12 +175,13 @@ pub trait Pads {
     /// 0 to 127, `offset` frames into the period.
     fn pressure_at(&mut self, pad: usize, value: u8, offset: u32);
     /// A track that plays somewhere other than the pads (one on MIDI
-    /// OUT) is offered every event first: the clips' and the arps' notes
-    /// alike, a panic's `AllOff`, pressure, and the locks and lanes.
-    /// True when it took the event, so neither the pads nor the mixer's
-    /// mod engine get it; a live note it takes still records on the armed
-    /// track as played. False leaves it to go on as usual (an `AllOff`
-    /// should, so the pads stop too). By default nothing is taken.
+    /// OUT) is offered each event the clips play first: notes, a panic's
+    /// `AllOff`, pressure, and the locks and lanes. True when it took the
+    /// event, so neither the pads nor the mixer's mod engine get it.
+    /// False leaves it to go on as usual (an `AllOff` should, so the pads
+    /// stop too). The arps' notes, the live pads among them, go to
+    /// [`Pads::live`] instead, which sees the whole event and says what
+    /// records. By default nothing is taken.
     fn out(&mut self, o: &Out) -> bool {
         let _ = o;
         false
@@ -2450,11 +2451,12 @@ mod tests {
         assert_eq!(h.dropped(), 0);
     }
 
-    /// The live pads through the armed track's arp, on a track that plays
-    /// elsewhere: every note goes there, none to the pads, and the track
-    /// still records each one as played.
+    /// The arps' notes (the live pads through the armed track's arp) are
+    /// not offered to `out`, even on a track that plays elsewhere: they go
+    /// to `Pads::live`, which sees the whole event and says what the
+    /// armed track records (here the default: each note as played).
     #[test]
-    fn live_notes_taken_elsewhere_still_record_on_the_armed_track() {
+    fn the_arps_notes_go_to_live_not_out() {
         let mut h = TimeHost::new(RATE, 120.0).unwrap();
         let mut arps = arp_up(0);
         let mut r = Routed {
@@ -2486,13 +2488,9 @@ mod tests {
             h.period_arps(PERIOD, &mut r, &mut arps);
             r.pads.frame += u64::from(PERIOD);
         }
-        assert!(r.pads.hits.is_empty(), "{:?}", r.pads.hits);
-        let ons = r
-            .taken
-            .iter()
-            .filter(|(_, e)| matches!(e, Event::NoteOn { note: 4, .. }))
-            .count();
-        assert!((6..=8).contains(&ons), "{:?}", r.taken);
+        assert!(r.taken.is_empty(), "{:?}", r.taken);
+        let ons = r.pads.hits.len();
+        assert!((6..=8).contains(&ons), "{:?}", r.pads.hits);
         let clip = h.control.project.tracks[0].slots[0].as_ref().unwrap();
         assert_eq!(clip.notes.len(), ons, "every note recorded as played");
         assert_eq!(h.dropped() + arps.dropped(), 0);
