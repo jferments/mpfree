@@ -316,7 +316,7 @@ def mpfree_v11_entrypoint():
             table_words={}
             for name, pointer_slot, count in (
                 ('device_order',0xff7053fc,5),
-                ('device_mapping',0xff705404,10)):
+                ('device_mapping',0xff705404,8)):
                 address=original_word(pointer_slot)
                 words=[]
                 if address is not None:
