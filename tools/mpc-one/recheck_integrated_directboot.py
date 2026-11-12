@@ -28,9 +28,11 @@ def audit(archive: Path) -> dict:
     direct = load("synthesize_direct_boot_focus.py", "mpfree_direct_preflight")
     script = load("verify_uboot_script_wrapper.py", "mpfree_script_preflight")
     security = load("synthesize_310_security_utilities.py", "mpfree_sec_preflight")
+    adc = load("synthesize_recovery_adc.py", "mpfree_adc_preflight")
     with zipfile.ZipFile(archive) as z:
         members = wide.verify_zip(z)
         focus = direct.build(z.read)
+        stock_recovery = adc.build(z.read)
         comparison = json.loads(
             z.read("static/wide/firmware-3.10-bootchain-v4-compare.json"))
         guest_hex = z.read("qemu-guest-boot_script_hex.txt").decode("utf-8")
@@ -54,6 +56,8 @@ def audit(archive: Path) -> dict:
             "canonical_header_and_script_bytes_match_official"],
         "guest_script_commands_match_official": rootfs_script[
             "script_commands_match_official"],
+        "original_adc_recovery_proven_by_arm_strings_and_fdt": (
+            stock_recovery["all_existing_cross_checks_passed"]),
         "loadpin_ioctl_identified": utilities["loadpin_trustpoints"][
             "ioctl_request"] == "0x40044c00",
     }
@@ -75,6 +79,13 @@ def audit(archive: Path) -> dict:
             "original_full_image_sha256_available"],
         "boot_script_provenance_note": rootfs_script[
             "source_official_sha256_field_means"],
+        "stock_adc_channel1_threshold_inclusive": stock_recovery[
+            "adc_recovery_threshold_unsigned_max_inclusive"],
+        "stock_adc_to_dorecovery_pointer_equal": stock_recovery[
+            "recovery_flag_pointer_comparison"]["equal"],
+        "stock_adc_pointer_equality_pending_new_ghidra": (
+            stock_recovery["recovery_flag_pointer_comparison"]["equal"]
+            is None),
         "independent_maskrom_recovery_proven": False,
     }
 
