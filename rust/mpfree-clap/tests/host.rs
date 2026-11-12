@@ -3,7 +3,7 @@
 
 use mpfree_clap::testplug::{self, gain_params, synth_params, GAIN_ID, SYNTH_ID};
 use mpfree_clap::{request, ClapNode, Error, Library};
-use mpfree_node::{Ctx, Curve, Kind, Node, NodeEvent, Timed};
+use mpfree_node::{Ctx, Curve, Expr, Kind, Node, NodeEvent, Timed};
 use std::path::PathBuf;
 
 const RATE: u32 = 44_100;
@@ -199,6 +199,45 @@ fn the_same_events_sound_the_same_in_any_block_size() {
     // Blocks longer than the plugin was activated for are cut into pieces.
     let got = render(&mut synth(64), &events, 4096, 1000);
     assert_eq!(got, want, "max block 64, blocks of 1000");
+}
+
+#[test]
+fn a_notes_slide_goes_in_its_tuning_expression() {
+    let on = |note| NodeEvent::NoteOn {
+        note,
+        velocity: 100,
+    };
+    let slide = |note, value| NodeEvent::Expression {
+        note,
+        kind: Expr::Slide,
+        value,
+    };
+    let run = |events: &[(u64, NodeEvent)]| render(&mut synth(512), events, 24_000, 256);
+    let plain = run(&[(0, on(60))]);
+    // A slide sent before the note starts it there, as one sent just after.
+    let before = run(&[(0, slide(60, 2.0)), (0, on(60))]);
+    let after = run(&[(0, on(60)), (0, slide(60, 2.0))]);
+    assert!(peak(&before.0) > 0.01);
+    assert_eq!(before, after, "slide before the note");
+    assert_ne!(before, plain, "the slide moved it");
+    // Part way: the same until the slide, different after it.
+    let part = run(&[(0, on(60)), (1000, slide(60, 2.0))]);
+    assert_eq!(part.0[..1000], plain.0[..1000]);
+    assert_ne!(part.0[1000..], plain.0[1000..]);
+    // Another note's slide does nothing; a note-off clears the slide.
+    let notes = [
+        (0, on(60)),
+        (500, NodeEvent::NoteOff { note: 60 }),
+        (20_000, on(60)),
+    ];
+    let mut busy = vec![(0, slide(61, 5.0)), (0, slide(60, 3.0))];
+    busy.extend(notes);
+    busy.sort_by_key(|e| e.0);
+    let d = run(&busy);
+    let e = run(&notes);
+    assert_ne!(d.0[..500], e.0[..500]);
+    // (Once the first note's release has died away.)
+    assert_eq!(d.0[20_000..], e.0[20_000..], "cleared at the note-off");
 }
 
 #[test]

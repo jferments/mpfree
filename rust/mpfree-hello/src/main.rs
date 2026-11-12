@@ -80,6 +80,7 @@ mod looper_page;
 mod looping;
 mod mixing;
 mod modmix;
+mod modpanels;
 mod perf;
 mod perform;
 mod play_page;
@@ -2190,6 +2191,12 @@ fn player_session(
     // The Grain tab's cloud box, while the audio thread holds it: filled and
     // sent back with the playheads (never freed on this thread).
     let mut cloud: Option<Box<sampler::Cloud>> = None;
+    // The sampler's line input, while it is on; and one handed back, on
+    // its way to the screen thread to be freed there.
+    let mut rec_feed: Option<Box<sampler::RecFeed>> = None;
+    let mut rec_back: Option<Box<sampler::RecFeed>> = None;
+    // What the sampler's input records from (the Rec tab's Source).
+    let mut rec_source = sampler::RecSource::Line;
     // 2. The controller (USB; it may still be starting at power-on).
     let wait = if timed { Duration::ZERO } else { DEVICE_WAIT };
     progress(
@@ -2514,6 +2521,31 @@ fn player_session(
                         out.note("sample: two kit views waiting to go back; one freed on the audio thread");
                     }
                     view_back = Some(gui::ToUi::SampleViewBack(swap));
+                }
+                gui::FromUi::SampleInput(feed) => {
+                    let old = match feed {
+                        Some(f) => rec_feed.replace(f),
+                        None => rec_feed.take(),
+                    };
+                    if let Some(old) = old {
+                        // Only one goes back at a time; an older one is
+                        // freed here (not expected).
+                        if rec_back.replace(old).is_some() {
+                            out.note("sample: two line input buffers going back; one freed on the audio thread");
+                        }
+                    }
+                }
+                gui::FromUi::SampleSource(src) => {
+                    if src != rec_source {
+                        rec_source = src;
+                        if !mix.set_rec_source(src) {
+                            out.note("sample: the mixer has no such strip to resample");
+                        }
+                        // What comes in from now on is from the new source.
+                        if let Some(f) = rec_feed.as_mut() {
+                            f.restart();
+                        }
+                    }
                 }
                 gui::FromUi::SampleGrains(c) => {
                     // Only one box exists, so this is not expected; the
@@ -3155,6 +3187,21 @@ fn player_session(
         let loop_took = t_loop.elapsed();
         loop_time.add(loop_took);
         engines.add(engines::LOOPER, loop_took);
+        // The same line input into the sampler's buffer, with the bar lines
+        // (the Sample page's Rec tab and Skip back). A point in the mix
+        // goes in after the mixer, below.
+        if let (Some(f), sampler::RecSource::Line) = (rec_feed.as_mut(), rec_source) {
+            let t_rec = Instant::now();
+            let (l, r) = looper.input();
+            f.period(time.block(), l, r, 0);
+            engines.add(engines::SAMPLER, t_rec.elapsed());
+        }
+        if let Some(f) = rec_back.take() {
+            if let Err(gui::ToUi::SampleInputBack(f)) = out.try_show(gui::ToUi::SampleInputBack(f))
+            {
+                rec_back = Some(f);
+            }
+        }
         // The mixer: every sound summed, the Level (master fader), Master
         // safety. The input strip follows the line input and Monitor.
         let t_mix = Span::start();
@@ -3174,6 +3221,15 @@ fn player_session(
         // The metronome goes on top; it keeps the samples within ±1 itself.
         let p = p.max(time.mix_click(&mut left, &mut right));
         engines.stop(engines::MIX, t_mix);
+        // Resampling: the point in the mix the Rec tab records (before the
+        // metronome), with the bar lines as late as that point hears them.
+        if let (Some(f), sampler::RecSource::Mix(..)) = (rec_feed.as_mut(), rec_source) {
+            if let Some((l, r, latency)) = mix.rec_capture() {
+                let t_rec = Instant::now();
+                f.period(time.block(), l, r, latency);
+                engines.add(engines::SAMPLER, t_rec.elapsed());
+            }
+        }
         if let Some(st) = mix.poll_state(Instant::now()) {
             out.show(gui::ToUi::Mixer(Box::new(st)));
         }

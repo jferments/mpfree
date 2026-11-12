@@ -305,6 +305,9 @@ pub enum ToUi {
     /// The grains of the pad on the Grain tab, filled in by the audio
     /// thread; the box goes back with the next request.
     SampleGrains(Box<Cloud>),
+    /// The sampler's input writer, handed back once the line input is off,
+    /// for the Sample page to free.
+    SampleInputBack(Box<crate::sampler::RecFeed>),
     /// One kit's entry changed: its name, pad labels and chip (the synth,
     /// after an octave, engine or pad layout change).
     KitChanged {
@@ -371,7 +374,9 @@ pub enum ToUi {
     Quit,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+/// Not `Clone`: [`FromUi::SampleInput`] carries the one writer of the
+/// sampler's input buffer.
+#[derive(Debug, PartialEq)]
 pub enum FromUi {
     Pad {
         pad: usize,
@@ -445,6 +450,14 @@ pub enum FromUi {
     PlayFx(PlayFx),
     /// The Play page's pattern: a step tapped or changed.
     Steps(StepAction),
+    /// The sampler's line input: its writing end, for the audio thread to
+    /// fill each period (`sampler::RecFeed`); None asks for it back, to be
+    /// freed here ([`ToUi::SampleInputBack`]).
+    SampleInput(Option<Box<crate::sampler::RecFeed>>),
+    /// What the sampler's input records from: the line input or a point in
+    /// the mix (the Rec tab's Source). The audio thread points the mixer's
+    /// sampler capture point at it and starts the buffer afresh.
+    SampleSource(crate::sampler::RecSource),
     /// A phrase chopped on the Sample page, for the armed track's first
     /// empty slot ([`crate::time::TimeHost::put_clip`]).
     SamplePhrase(Box<mpfree_seq::Clip>),
@@ -1129,6 +1142,10 @@ impl Player {
                     "Hit a pad to edit it   ·   Q-Links 1-4: Start, End, loop   ·   Wheel: zoom   ·   - / +: pad   ·   \
                      UNDO: undo   ·   tap the wave: play".to_string()
                 }
+                View::Sample if self.sample.page() == sample_page::WARP_PAGE => {
+                    "Tap a hit: pin it to the grid   ·   drag a pin along the beats   ·   Q-Links 1-4: pin, its beat, \
+                     warp tempo, scroll   ·   Wheel: zoom   ·   UNDO: undo".to_string()
+                }
                 View::Sample if self.sample.page() == sample_page::CHOP_PAGE => {
                     "Hit a pad to chop it   ·   tap a slice: hear it   ·   Q-Links 1-4: slice, its start, setting, first pad   ·   \
                      Wheel: zoom   ·   UNDO: undo".to_string()
@@ -1144,6 +1161,14 @@ impl Player {
                 View::Sample if self.sample.page() == sample_page::GRAIN_PAGE => {
                     "Hit the pad to see its grains   ·   Q-Links 1-4: position, size, density, pitch (SHIFT: sprays, \
                      finer)   ·   Wheel: the row picked   ·   - / +: pad   ·   UNDO: undo".to_string()
+                }
+                View::Sample if self.sample.page() == sample_page::REC_PAGE => {
+                    "Record or Skip back onto the pad named   ·   tap a row: the wheel changes it   ·   hit a pad to \
+                     record next to it   ·   UNDO: take a take off".to_string()
+                }
+                View::Sample if self.sample.page() == sample_page::AUTO_PAGE => {
+                    "Start samples the Synth tab's patch onto the pads named   ·   tap a row: the wheel changes it   ·   \
+                     UNDO: take the instrument off".to_string()
                 }
                 View::Sample => format!("Hit a pad with a sound to edit it   ·   - / +: next pad with a sound   ·   {stop}"),
                 View::Debug => format!("Every MIDI message in and out, newest at the bottom   ·   SHIFT + wheel or - / +: \
@@ -1253,6 +1278,10 @@ impl Player {
         let resumed = self.settings.console_paused && !s.console_paused;
         let retab = self.settings.debug_mode != s.debug_mode;
         self.settings = s;
+        // The sampler keeps the line input only while it is on.
+        let line = self.settings.line_input;
+        self.sample.set_line_input(&mut self.ui, line);
+        self.print_sample_lines();
         if retab {
             let debug = self.settings.debug_mode;
             if let Some(h) = self.ui.get_mut::<Header>("header") {
@@ -1673,6 +1702,10 @@ impl Player {
                 }
             }
             ToUi::SampleGrains(c) => self.sample.cloud_back(&mut self.ui, c),
+            ToUi::SampleInputBack(f) => {
+                self.sample.input_back(f);
+                self.print_sample_lines();
+            }
             ToUi::KitChanged { kit, view } => {
                 if let Some(item) = self
                     .ui
@@ -1812,6 +1845,17 @@ impl Player {
         }
     }
 
+    /// The Synth tab's patch by engine and preset ("Poly Pluck"), for the
+    /// Sample page's Auto-sample mode; None before the synth is up.
+    fn auto_synth_name(&self) -> Option<String> {
+        let st = &self.synth.as_ref()?.state;
+        let preset = st.preset.and_then(|i| st.presets.get(i));
+        Some(match preset {
+            Some(p) => format!("{} {p}", st.info.name),
+            None => st.info.name.to_string(),
+        })
+    }
+
     /// After an edit on the Sample page: show the page again if it changed
     /// (Wave to Chop, or a pad without a sound), and give the Play page the
     /// names of pads a chop filled.
@@ -1850,6 +1894,8 @@ impl Player {
         match a {
             FromUi::SampleView(swap) => self.sample.unsent(swap.kit),
             FromUi::SampleGrains(c) => self.sample.cloud_unsent(c),
+            FromUi::SampleInput(f) => self.sample.input_unsent(f),
+            FromUi::SampleSource(src) => self.sample.source_unsent(src),
             FromUi::SamplePhrase(clip) => {
                 println!("sample: phrase {:?} found no room on its way to the clips; the pads have the slices", clip.name);
                 let _ = io::stdout().flush();
@@ -2156,6 +2202,9 @@ impl Player {
         if let Some(a) = self.sample.take_view() {
             self.outbox.push(a);
         }
+        if let Some(a) = self.sample.take_input() {
+            self.outbox.push(a);
+        }
         if self.view == View::Sample {
             if let Some(a) = self.sample.take_cloud() {
                 self.outbox.push(a);
@@ -2175,6 +2224,8 @@ impl Player {
             View::Synth => "Synth".to_string(),
             View::Looper => LOOPER_PAGE.to_string(),
             View::Sample => {
+                let name = self.auto_synth_name();
+                self.sample.set_auto_synth(&mut self.ui, name);
                 self.sample.refresh_if_stale(&mut self.ui);
                 self.sample.page().to_string()
             }
@@ -2380,7 +2431,17 @@ impl Player {
         }
         if ev.widget.starts_with(sample_page::PREFIX) {
             let before = self.sample.page();
+            let name = self.auto_synth_name();
+            self.sample.set_auto_synth(&mut self.ui, name);
             self.sample.event(&mut self.ui, &ev, &mut self.outbox);
+            if let Some(plan) = self.sample.take_auto_request() {
+                // A copy of the patch, made here: the audio thread keeps
+                // playing its own and is never asked for anything.
+                let node = self.synth.as_ref().and_then(|p| {
+                    crate::synth::fresh_node(p.state.info.id, &p.state.values, plan.rate)
+                });
+                self.sample.start_auto(&mut self.ui, plan, node);
+            }
             self.sample_after(before);
             self.print_sample_lines();
             return None;
@@ -2516,6 +2577,12 @@ impl Player {
 
     /// Advance animations by `dt` seconds.
     pub fn tick(&mut self, dt: f32) {
+        // A take records on, whatever shows; it lands on its pad here.
+        let before = self.sample.page();
+        self.sample
+            .tick(&mut self.ui, dt, self.view == View::Sample);
+        self.sample_after(before);
+        self.print_sample_lines();
         self.cpu_at += dt;
         if self.cpu_at >= 1.0 {
             self.cpu_at = 0.0;
@@ -4200,6 +4267,28 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     chop.apply(ToUi::SampleQLink(0, 2));
     chop.take_actions();
     out.push(("sample-chop", chop));
+    // The Warp tab on the same pad: warped to stretch, its hits pinned to
+    // the sixteenths, the fourth pin picked.
+    let mut warp = sample_sampler(fonts());
+    warp.on_event(UiEvent {
+        widget: mpfree_sampler_ui::wave_tab::BAR.into(),
+        kind: EventKind::Tab(mpfree_sampler_ui::warp_tab::TAB),
+    });
+    warp.on_event(UiEvent {
+        widget: mpfree_sampler_ui::warp_tab::LIST.into(),
+        kind: EventKind::Step {
+            index: mpfree_sampler_ui::warp_tab::Row::Warp.index(),
+            delta: 1,
+        },
+    });
+    warp.apply(ToUi::SampleLift);
+    warp.on_event(UiEvent {
+        widget: mpfree_sampler_ui::warp_tab::BUTTONS.into(),
+        kind: EventKind::Tab(0),
+    });
+    warp.apply(ToUi::SampleQLink(0, 4));
+    warp.take_actions();
+    out.push(("sample-warp", warp));
     // The Play tab on the same pad: hit at 100, Decay turned (Q-Link 2),
     // the filter turned on from the list.
     let mut play = sample_sampler(fonts());
@@ -4258,6 +4347,65 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         grain.apply(ToUi::SampleGrains(c));
     }
     out.push(("sample-grain", grain));
+    // The Rec tab with the line input on: 40 s of drums came in with the
+    // transport playing, and a take on the next bar is two bars in.
+    let mut rec = sample_sampler(fonts());
+    rec.on_event(UiEvent {
+        widget: mpfree_sampler_ui::wave_tab::BAR.into(),
+        kind: EventKind::Tab(mpfree_sampler_ui::rec_tab::TAB),
+    });
+    let mut s = rec.settings.clone();
+    s.line_input = true;
+    rec.apply(ToUi::Settings(s));
+    if let Some(FromUi::SampleInput(Some(mut feed))) = rec
+        .take_actions()
+        .into_iter()
+        .find(|a| matches!(a, FromUi::SampleInput(_)))
+    {
+        use mpfree_sampler_ui::rec_tab::{Row, LIST};
+        use mpfree_sampler_ui::sample::{bar_frames, feed_input, RATE};
+        feed_input(&mut feed.0, 40.0, 0.4, true);
+        rec.tick(0.033);
+        // Start: the next bar; End: after the length (4 bars).
+        for (row, delta) in [(Row::Start, 2), (Row::End, 2)] {
+            let index = Row::ALL.iter().position(|r| *r == row).unwrap_or(0);
+            rec.on_event(UiEvent {
+                widget: LIST.into(),
+                kind: EventKind::Step { index, delta },
+            });
+        }
+        rec.on_event(UiEvent {
+            widget: mpfree_sampler_ui::rec_tab::BUTTONS.into(),
+            kind: EventKind::Tab(0),
+        });
+        feed_input(&mut feed.0, 2.2 * bar_frames() / f64::from(RATE), 0.4, true);
+        rec.tick(0.033);
+        rec.take_actions();
+    }
+    out.push(("sample-rec", rec));
+    // The Rec tab's Auto-sample mode on the Synth tab's patch: every 5
+    // semitones, 10 notes onto the empty pads after the break.
+    let mut auto = sample_sampler(fonts());
+    {
+        use mpfree_sampler_ui::auto_tab::{Row, LIST};
+        auto.on_event(UiEvent {
+            widget: mpfree_sampler_ui::wave_tab::BAR.into(),
+            kind: EventKind::Tab(mpfree_sampler_ui::rec_tab::TAB),
+        });
+        auto.on_event(UiEvent {
+            widget: mpfree_sampler_ui::rec_tab::BUTTONS.into(),
+            kind: EventKind::Tab(2),
+        });
+        auto.on_event(UiEvent {
+            widget: LIST.into(),
+            kind: EventKind::Step {
+                index: Row::Every.index(),
+                delta: 2,
+            },
+        });
+        auto.take_actions();
+    }
+    out.push(("sample-auto", auto));
     // The Play tab with the pad a keygroup and the pads playing notes, the
     // list on the Keys rows.
     {
@@ -5259,7 +5407,7 @@ mod tests {
             },
         });
         let region = p.sample.state().unwrap().region.clone();
-        let w = region.warp.expect("warped");
+        let w = region.warp.clone().expect("warped");
         assert_eq!(w.method, mpfree_sampler::model::WarpMethod::Stretch);
         // The first view repitches (no copy yet) and asks for the copy.
         let (sent, _) = views(p.take_actions());
@@ -5313,6 +5461,76 @@ mod tests {
                 .stretched_frames(),
             None
         );
+    }
+
+    #[test]
+    fn the_warp_tab_pins_the_hits_and_the_copy_goes_through_them() {
+        use mpfree_sampler_ui::warp_tab::{self, Row};
+        use mpfree_sampler_ui::widgets::PadBar;
+        let pad = mpfree_sampler_ui::sample::PAD;
+        let mut p = sample_sampler(Fonts::embedded());
+        // The pad bar's Warp tab, after Wave.
+        let r = p.ui.rect_of(mpfree_sampler_ui::wave_tab::BAR).unwrap();
+        let t =
+            p.ui.get::<PadBar>(mpfree_sampler_ui::wave_tab::BAR)
+                .unwrap()
+                .tab_rect(r, warp_tab::TAB);
+        assert_eq!(p.touch(9, Touch::Down, t.x + 5, t.y + 5), None);
+        p.touch(9, Touch::Up, t.x + 5, t.y + 5);
+        assert_eq!(
+            (p.page(), p.sample.editor()),
+            (sample_page::WARP_PAGE, sample_page::Editor::Warp)
+        );
+        assert!(p
+            .ui
+            .get::<Label>("hint")
+            .unwrap()
+            .text
+            .contains("Tap a hit: pin it to the grid"));
+        // Warp on (Stretch), then Pin hits.
+        p.on_event(UiEvent {
+            widget: warp_tab::LIST.into(),
+            kind: EventKind::Step {
+                index: Row::Warp.index(),
+                delta: 1,
+            },
+        });
+        let (sent, _) = views(p.take_actions());
+        p.apply(ToUi::SampleViewBack(sent.into_iter().next().unwrap()));
+        p.apply(ToUi::SampleLift);
+        p.on_event(UiEvent {
+            widget: warp_tab::BUTTONS.into(),
+            kind: EventKind::Tab(0),
+        });
+        let w = p.sample.state().unwrap().region.warp.clone().unwrap();
+        assert!(w.pins.len() >= 4, "{:?}", w.pins);
+        // The copy made through the pins comes back and is played.
+        let t = Instant::now();
+        let sent = loop {
+            let (sent, _) = views(p.take_actions());
+            if sent.iter().any(|s| {
+                s.view
+                    .as_ref()
+                    .and_then(|v| v.layer(pad, 0))
+                    .is_some_and(|l| l.stretched_frames().is_some())
+            }) {
+                break sent;
+            }
+            for s in sent {
+                p.apply(ToUi::SampleViewBack(s));
+            }
+            assert!(t.elapsed() < Duration::from_secs(30), "no copy");
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        for s in sent {
+            p.apply(ToUi::SampleViewBack(s));
+        }
+        // UNDO takes the pins off again.
+        p.apply(ToUi::SampleLift);
+        p.apply(ToUi::SampleUndo(false));
+        let w = p.sample.state().unwrap().region.warp.clone().unwrap();
+        assert!(w.pins.is_empty());
+        assert_eq!(p.page(), sample_page::WARP_PAGE);
     }
 
     fn events_log(p: &Player) -> Vec<String> {
@@ -5891,6 +6109,249 @@ mod tests {
     }
 
     #[test]
+    fn the_rec_tab_records_the_line_input_onto_a_pad_and_frees_the_buffer_when_it_goes_off() {
+        use mpfree_sampler_ui::rec_tab;
+        use mpfree_sampler_ui::rec_widgets::InputView;
+        use mpfree_sampler_ui::sample::feed_input;
+        use mpfree_sampler_ui::widgets::{ButtonRow, PadBar};
+        let mut p = sample_sampler(Fonts::embedded());
+        let ev = |p: &mut Player, widget: &str, kind: EventKind| {
+            p.on_event(UiEvent {
+                widget: widget.into(),
+                kind,
+            })
+        };
+        // Actions for the audio thread: views go back at once; the rest stay.
+        let take = |p: &mut Player| {
+            let (sent, rest) = views(p.take_actions());
+            for v in sent {
+                p.apply(ToUi::SampleViewBack(v));
+            }
+            rest
+        };
+        let pad_name = |p: &Player, pad: usize| {
+            p.sample
+                .project(0)
+                .unwrap()
+                .pad(pad)
+                .map(|pd| pd.name.clone())
+        };
+        // The pad bar's Rec tab: the line input is off, so nothing to record.
+        ev(
+            &mut p,
+            mpfree_sampler_ui::wave_tab::BAR,
+            EventKind::Tab(rec_tab::TAB),
+        );
+        assert_eq!(
+            (p.page(), p.sample.editor()),
+            (sample_page::REC_PAGE, sample_page::Editor::Rec)
+        );
+        assert!(p
+            .ui
+            .get::<Label>("hint")
+            .unwrap()
+            .text
+            .starts_with("Record or Skip back onto the pad named"));
+        assert_eq!(
+            p.ui.get::<PadBar>(rec_tab::BAR).unwrap().title,
+            "Record onto pad A6"
+        );
+        assert_eq!(
+            p.ui.get::<InputView>(rec_tab::VIEW).unwrap().note,
+            rec_tab::OFF_NOTE
+        );
+        assert_eq!(
+            p.ui.get::<ButtonRow>(rec_tab::BUTTONS).unwrap().enabled,
+            [false, false, true]
+        );
+        assert!(take(&mut p).is_empty(), "no input buffer while it is off");
+        // The line input on (the Looper tab's MENU): the buffer is made once
+        // and its writer goes to the audio thread.
+        let mut s = p.settings.clone();
+        s.line_input = true;
+        p.apply(ToUi::Settings(s.clone()));
+        assert!(events_log(&p)
+            .iter()
+            .any(|l| l == "sample: the line input feeds the sampler (75 s kept, 26.5 MB)"));
+        let mut acts = take(&mut p);
+        assert_eq!(acts.len(), 1);
+        let Some(FromUi::SampleInput(Some(mut feed))) = acts.pop() else {
+            panic!("the input's writer");
+        };
+        assert!(take(&mut p).is_empty(), "sent once");
+        // The audio thread fills it: 12 s of drums with the transport
+        // playing, and the tab draws it.
+        feed_input(&mut feed.0, 12.0, 0.4, true);
+        p.tick(0.033);
+        let v = p.ui.get::<InputView>(rec_tab::VIEW).unwrap();
+        assert!(
+            v.note.is_empty() && v.meter_db[0] > -12.0,
+            "{:?}",
+            v.meter_db
+        );
+        assert_eq!(v.skip.as_ref().unwrap().label, "Skip back 10 s");
+        // Record, a second and a half, Stop: Take 1 lands on A6, one undo
+        // step, and the editor picks it; the Play page's pad names follow.
+        ev(&mut p, rec_tab::BUTTONS, EventKind::Tab(0));
+        feed_input(&mut feed.0, 1.5, 0.4, true);
+        p.tick(0.033);
+        assert_eq!(
+            p.ui.get::<ButtonRow>(rec_tab::BUTTONS).unwrap().labels[0],
+            "Stop"
+        );
+        ev(&mut p, rec_tab::BUTTONS, EventKind::Tab(0));
+        let log = events_log(&p);
+        assert!(
+            log.iter()
+                .any(|l| l == "sample: take armed for pad A6: start now, end stop, left + right"),
+            "{log:?}"
+        );
+        assert!(
+            log.iter()
+                .any(|l| l.starts_with("sample: recorded: Take 1, 1.5")
+                    && l.ends_with(" stereo on pad A6")),
+            "{log:?}"
+        );
+        assert_eq!(pad_name(&p, 5).as_deref(), Some("Take 1"));
+        assert_eq!(p.kits[0].pads[5].as_deref(), Some("Take 1"));
+        assert_eq!(
+            p.ui.get::<PadBar>(rec_tab::BAR).unwrap().title,
+            "Record onto pad A7",
+            "the next take goes after it"
+        );
+        // Skip back keeps the last 10 s onto A7.
+        ev(&mut p, rec_tab::BUTTONS, EventKind::Tab(1));
+        assert!(events_log(&p)
+            .iter()
+            .any(|l| l == "sample: skip back 10 s: Take 2, 10.00 s stereo on pad A7"));
+        let src = {
+            let pr = p.sample.project(0).unwrap();
+            let id = pr.pad(6).unwrap().layers[0].region.source;
+            pr.source(id).unwrap().frames()
+        };
+        assert_eq!(src, 441_000);
+        // UNDO takes it off again.
+        p.apply(ToUi::SampleUndo(false));
+        assert_eq!(pad_name(&p, 6), None);
+        assert_eq!(pad_name(&p, 5).as_deref(), Some("Take 1"));
+        // The line input off: the audio thread is asked for the writer, and
+        // it is freed here when it comes back.
+        s.line_input = false;
+        p.apply(ToUi::Settings(s));
+        let mut acts = take(&mut p);
+        assert!(matches!(acts.pop(), Some(FromUi::SampleInput(None))));
+        p.apply(ToUi::SampleInputBack(feed));
+        assert!(events_log(&p)
+            .iter()
+            .any(|l| l.starts_with("sample: the sampler's input buffer was freed (")));
+        assert_eq!(
+            p.ui.get::<InputView>(rec_tab::VIEW).unwrap().note,
+            rec_tab::OFF_NOTE
+        );
+    }
+
+    #[test]
+    fn the_rec_tab_resamples_the_master_and_lets_go_of_it_for_the_line_input() {
+        use crate::sampler::RecSource;
+        use mpfree_fx::{CapturePoint, StripId};
+        use mpfree_sampler_ui::rec_tab::{self, Row};
+        use mpfree_sampler_ui::rec_widgets::InputView;
+        use mpfree_sampler_ui::sample::feed_input;
+        use mpfree_sampler_ui::widgets::PadBar;
+        let mut p = sample_sampler(Fonts::embedded());
+        let ev = |p: &mut Player, widget: &str, kind: EventKind| {
+            p.on_event(UiEvent {
+                widget: widget.into(),
+                kind,
+            })
+        };
+        let take = |p: &mut Player| {
+            let (sent, rest) = views(p.take_actions());
+            for v in sent {
+                p.apply(ToUi::SampleViewBack(v));
+            }
+            rest
+        };
+        ev(
+            &mut p,
+            mpfree_sampler_ui::wave_tab::BAR,
+            EventKind::Tab(rec_tab::TAB),
+        );
+        assert!(take(&mut p).is_empty(), "the line input is off: no buffer");
+        // Source: Master. The audio thread is told, then gets the buffer's
+        // writer (the line input stays off).
+        let source = Row::ALL.iter().position(|r| *r == Row::Source).unwrap();
+        ev(
+            &mut p,
+            rec_tab::LIST,
+            EventKind::Step {
+                index: source,
+                delta: 1,
+            },
+        );
+        let master = RecSource::Mix(StripId::Master, CapturePoint::AfterSafety);
+        let acts = take(&mut p);
+        assert!(matches!(acts.as_slice(), [FromUi::SampleSource(s)] if *s == master));
+        let mut acts = take(&mut p);
+        let Some(FromUi::SampleInput(Some(mut feed))) = acts.pop() else {
+            panic!("the input's writer");
+        };
+        assert!(take(&mut p).is_empty(), "each sent once");
+        let log = events_log(&p);
+        assert!(
+            log.iter()
+                .any(|l| l == "sample: the Rec tab resamples Master")
+                && log
+                    .iter()
+                    .any(|l| l == "sample: the sampler resamples Master (75 s kept, 26.5 MB)"),
+            "{log:?}"
+        );
+        // The audio thread fills it from the master; Skip back keeps it.
+        feed_input(&mut feed.0, 12.0, 0.4, true);
+        p.tick(0.033);
+        let v = p.ui.get::<InputView>(rec_tab::VIEW).unwrap();
+        assert_eq!(v.title, "Master");
+        assert!(v.note.is_empty(), "{}", v.note);
+        assert_eq!(
+            p.ui.get::<PadBar>(rec_tab::BAR).unwrap().subtitle,
+            "Left + right · resampling Master"
+        );
+        ev(&mut p, rec_tab::BUTTONS, EventKind::Tab(1));
+        assert!(
+            events_log(&p)
+                .iter()
+                .any(|l| l == "sample: skip back 10 s: Master take 1, 10.00 s stereo on pad A6"),
+            "{:?}",
+            events_log(&p)
+        );
+        // Back to the line input, which is off: the source goes back and
+        // the writer is asked for, to be freed here.
+        ev(
+            &mut p,
+            rec_tab::LIST,
+            EventKind::Step {
+                index: source,
+                delta: -1,
+            },
+        );
+        let acts = take(&mut p);
+        assert!(matches!(
+            acts.as_slice(),
+            [FromUi::SampleSource(RecSource::Line)]
+        ));
+        let mut acts = take(&mut p);
+        assert!(matches!(acts.pop(), Some(FromUi::SampleInput(None))));
+        p.apply(ToUi::SampleInputBack(feed));
+        assert!(events_log(&p)
+            .iter()
+            .any(|l| l.starts_with("sample: the sampler's input buffer was freed (")));
+        assert_eq!(
+            p.ui.get::<InputView>(rec_tab::VIEW).unwrap().note,
+            rec_tab::OFF_NOTE
+        );
+    }
+
+    #[test]
     fn the_grain_tab_sets_the_grains_and_draws_the_cloud_the_audio_thread_fills() {
         use mpfree_sampler::model::PlayMode;
         use mpfree_sampler_ui::grain_tab::{self, Row};
@@ -6041,6 +6502,127 @@ mod tests {
         );
         assert_eq!(p.page(), sample_page::PAGE);
         assert!(take(&mut p).is_empty());
+    }
+
+    #[test]
+    fn auto_sample_plays_a_copy_of_the_synth_onto_empty_pads_and_undo_takes_it_off() {
+        use mpfree_sampler::model::PadsPlay;
+        use mpfree_sampler_ui::auto_tab::{self, Row};
+        use mpfree_sampler_ui::auto_widgets::KeyMapView;
+        use mpfree_sampler_ui::rec_tab;
+        use mpfree_sampler_ui::widgets::{ButtonRow, PadBar};
+        let mut p = sample_sampler(Fonts::embedded());
+        let ev = |p: &mut Player, widget: &str, kind: EventKind| {
+            p.on_event(UiEvent {
+                widget: widget.into(),
+                kind,
+            })
+        };
+        let step = |p: &mut Player, row: Row, delta: i32| {
+            ev(
+                p,
+                auto_tab::LIST,
+                EventKind::Step {
+                    index: row.index(),
+                    delta,
+                },
+            );
+        };
+        let title = |p: &Player| p.ui.get::<PadBar>(auto_tab::BAR).unwrap().title.clone();
+        let pad_name = |p: &Player, pad: usize| {
+            p.sample
+                .project(0)
+                .unwrap()
+                .pad(pad)
+                .map(|pd| pd.name.clone())
+        };
+        // The Rec tab's third button opens the mode, with the Synth tab's
+        // patch as its source.
+        ev(
+            &mut p,
+            mpfree_sampler_ui::wave_tab::BAR,
+            EventKind::Tab(rec_tab::TAB),
+        );
+        ev(&mut p, rec_tab::BUTTONS, EventKind::Tab(2));
+        assert_eq!(
+            (p.page(), p.sample.editor()),
+            (sample_page::AUTO_PAGE, sample_page::Editor::Auto)
+        );
+        assert!(p
+            .ui
+            .get::<Label>("hint")
+            .unwrap()
+            .text
+            .starts_with("Start samples the Synth tab's patch"));
+        // 16 notes need the whole kit: the break on A5 is in the way.
+        assert_eq!(title(&p), "No 16 empty pads in a row on this kit");
+        assert!(!p.ui.get::<ButtonRow>(auto_tab::BUTTONS).unwrap().enabled[0]);
+        // An octave apart, one layer, short notes: 4 takes onto A1-A4.
+        step(&mut p, Row::Every, 9);
+        step(&mut p, Row::Layers, -2);
+        step(&mut p, Row::Hold, -3);
+        step(&mut p, Row::Tail, -2);
+        assert_eq!(title(&p), "Auto-sample Poly Pluck onto pads A1–A4");
+        let v = p.ui.get::<KeyMapView>(auto_tab::VIEW).unwrap();
+        assert_eq!((v.zones.len(), v.layers.len()), (4, 1));
+        assert!(p.ui.get::<ButtonRow>(auto_tab::BUTTONS).unwrap().enabled[0]);
+        // Start: a copy of the patch plays on a worker thread; the audio
+        // thread is asked for nothing.
+        ev(&mut p, auto_tab::BUTTONS, EventKind::Tab(0));
+        assert!(p.sample.auto_running());
+        let log = events_log(&p);
+        assert!(
+            log.iter().any(|l| l
+                == "sample: auto-sample Poly Pluck started: 4 notes (C2 to C5), 4 takes, 4 s of notes, up to 2 MB"),
+            "{log:?}"
+        );
+        let (sent, rest) = views(p.take_actions());
+        assert!(sent.is_empty() && rest.is_empty(), "{rest:?}");
+        let t = Instant::now();
+        while p.sample.auto_running() {
+            assert!(t.elapsed() < Duration::from_secs(60), "it finishes");
+            std::thread::sleep(Duration::from_millis(5));
+            p.tick(0.033);
+        }
+        let log = events_log(&p);
+        assert!(
+            log.iter().any(|l| l.starts_with(
+                "sample: auto-sampled Poly Pluck onto kit 1 (Breaks) pads A1 to A4: 4 notes, 4 takes, 0 looped, "
+            ) && l.ends_with("; the pads play notes")),
+            "{log:?}"
+        );
+        // The instrument is on the kit, one keygroup a note, and the Play
+        // page's pad names follow.
+        assert_eq!(pad_name(&p, 0).as_deref(), Some("Poly Pluck C2"));
+        assert_eq!(pad_name(&p, 3).as_deref(), Some("Poly Pluck C5"));
+        assert_eq!(pad_name(&p, 4).as_deref(), Some("Break 92"));
+        assert_eq!(p.kits[0].pads[0].as_deref(), Some("Poly Pluck C2"));
+        assert!(matches!(
+            p.sample.project(0).unwrap().pads_play(),
+            PadsPlay::Keys { .. }
+        ));
+        assert_eq!(p.page(), sample_page::AUTO_PAGE);
+        assert!(p
+            .ui
+            .get::<PadBar>(auto_tab::BAR)
+            .unwrap()
+            .subtitle
+            .starts_with("Poly Pluck: 4 notes, 4 takes on pads A1 to A4"));
+        // The kit sounds again with the new view.
+        let (sent, _) = views(p.take_actions());
+        assert_eq!(sent.len(), 1);
+        // UNDO takes the whole instrument off, and the pads play pads.
+        p.apply(ToUi::SampleUndo(false));
+        assert_eq!(pad_name(&p, 0), None);
+        assert_eq!(pad_name(&p, 3), None);
+        assert_eq!(pad_name(&p, 4).as_deref(), Some("Break 92"));
+        assert!(matches!(
+            p.sample.project(0).unwrap().pads_play(),
+            PadsPlay::Pads
+        ));
+        // Rec goes back to recording.
+        ev(&mut p, auto_tab::BUTTONS, EventKind::Tab(1));
+        assert_eq!(p.page(), sample_page::REC_PAGE);
     }
 
     #[test]
