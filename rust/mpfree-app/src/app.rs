@@ -954,10 +954,11 @@ pub struct App {
     /// Where the sound runs in this start (cores.rs); Prefs' "Sound cores"
     /// says "(next start)" while the setting differs.
     sound_cores_now: SoundCores,
-    /// Prefs or a button changed since the last look (`saved.rs`), and
-    /// the text last handed to the store for "app" and "map".
+    /// Prefs, a button or a Synth tab option changed since the last look
+    /// (`saved.rs`), and the text last handed to the store for "app",
+    /// "map" and "synth".
     save_dirty: bool,
-    saved: [String; 2],
+    saved: [String; 3],
 }
 
 /// Prefs' main rows. The touch screen settings sit in their own section,
@@ -1061,6 +1062,9 @@ impl App {
             app.track_ui[t].pattern = pattern;
         }
         app.update_engine();
+        // The Synth tab's options start at their defaults: nothing to save
+        // until one changes.
+        app.saved[saved::SYNTH_SLOT] = app.synth_settings().to_text();
         app
     }
 
@@ -3573,6 +3577,145 @@ mod tests {
         assert_eq!(t.unwrap().file, None);
         assert_eq!(app.synth_pads.tuning.builtin, Builtin::Equal24);
         assert_eq!(rows, ["24-TET quarter tones", "C (not used)", "440 Hz"]);
+    }
+
+    #[test]
+    fn the_synth_options_are_kept_between_starts() {
+        use crate::synth::{Builtin, Engine};
+        use mpfree_arp::scale::pads::{InKeyRows, PadLayout};
+        use mpfree_arp::scale::SCALES;
+        use mpfree_store::Settings;
+        let files = vec![("werckmeister3".to_string(), false)];
+        let mut app = ready();
+        app.tuning_files = files.clone();
+        app.open_tab(View::Synth);
+        press(&mut app, MENU);
+        let row = |a: SynthItem| {
+            synth_pads::SYNTH_OPTIONS
+                .iter()
+                .position(|&i| i == Item::Synth(a))
+                .unwrap()
+        };
+        // No restore here, so "app" and "map" are handed out once; the
+        // Synth tab's options at their defaults are not.
+        app.save_dirty = true;
+        assert!(
+            !app.take_saves().iter().any(|(o, _)| *o == saved::SYNTH),
+            "nothing changed yet"
+        );
+        let mut step = |a: SynthItem, d: i32, times: usize| {
+            for _ in 0..times {
+                app.step_item(row(a), d);
+            }
+        };
+        step(SynthItem::Engine, 1, 1);
+        step(SynthItem::Scale, 1, 2);
+        step(SynthItem::Root, 1, 9);
+        step(SynthItem::Layout, 1, 2);
+        step(SynthItem::Rows, 1, 1);
+        step(SynthItem::Tuning, 1, Builtin::ALL.len());
+        step(SynthItem::TuningRoot, 1, 2);
+        step(SynthItem::A4, -1, 8);
+        let saves = app.take_saves();
+        assert_eq!(
+            saves.iter().map(|(o, _)| *o).collect::<Vec<_>>(),
+            vec![saved::SYNTH]
+        );
+        let kept = saves[0].1.clone();
+        for (k, v) in [
+            ("engine", "fm"),
+            ("scale", SCALES[2].name),
+            ("scale-root", "A"),
+            ("bank-a", "chords"),
+            ("bank-b", "in-key"),
+            ("in-key-rows", "fourths"),
+            ("tuning", "file werckmeister3"),
+            ("tuning-root", "D"),
+            ("a4", "432"),
+        ] {
+            assert_eq!(kept.get_str(k), Some(v), "{k}");
+        }
+        // The bank playing isn't kept, so switching banks saves nothing.
+        app.synth_bank(2);
+        assert!(app.take_saves().is_empty());
+
+        // The next start: every option comes back, on bank A.
+        let mut next = ready();
+        next.tuning_files = files.clone();
+        let (notes, fx) = next.restore_synth(&kept);
+        let mut want = app.synth_pads;
+        want.bank = 0;
+        assert_eq!(next.synth_pads, want);
+        assert_eq!(next.synth_pads.engine, Engine::Fm);
+        assert_eq!(next.synth_pads.rows, InKeyRows::Fourths);
+        assert_eq!(next.synth_pads.layout(), PadLayout::Chords);
+        assert_eq!(
+            (next.pad_scale_pick, next.pad_scale_root),
+            (app.pad_scale_pick, app.pad_scale_root)
+        );
+        assert_eq!(fx, vec![Effect::SynthPads(want)]);
+        assert_eq!(notes.len(), 1, "{notes:?}");
+        assert!(
+            notes[0].starts_with("saved synth options: FM, scale ")
+                && notes[0].ends_with("tuning werckmeister3 (root D, A4 432 Hz)"),
+            "{notes:?}"
+        );
+        let synth_saves = |a: &mut App| {
+            a.save_dirty = true;
+            a.take_saves()
+                .into_iter()
+                .filter(|(o, _)| *o == saved::SYNTH)
+                .count()
+        };
+        assert_eq!(synth_saves(&mut next), 0, "what was read is what's kept");
+
+        // A tuning file or scale that's gone, and words not understood, are
+        // left out and said; the rest comes back.
+        let mut gone = ready();
+        let mut odd = kept.clone();
+        odd.set_str("engine", "banjo");
+        odd.set_str("scale", "No such scale");
+        odd.set_i64("a4", 900);
+        odd.set_str("bank-c", "sideways");
+        let (notes, _) = gone.restore_synth(&odd);
+        let left = notes.last().unwrap();
+        for k in [
+            "engine = banjo",
+            "scale = No such scale",
+            "tuning = file werckmeister3",
+            "a4 = 900",
+            "bank-c = sideways",
+        ] {
+            assert!(left.contains(k), "{k}: {notes:?}");
+        }
+        let p = gone.synth_pads;
+        assert_eq!(
+            (p.engine, p.scale, p.tuning.file),
+            (Engine::Poly, None, None)
+        );
+        assert_eq!(
+            (p.tuning.a4_hz, p.tuning.root, p.rows),
+            (440, 2, InKeyRows::Fourths)
+        );
+        assert_eq!(
+            synth_saves(&mut gone),
+            1,
+            "the next save writes what is in use"
+        );
+
+        // The owner's own scales come back by name; nothing kept, nothing done.
+        let mut own = ready();
+        own.custom_scales
+            .push(("Mine".to_string(), SCALES[3].mask, SCALES[3].down));
+        let mut mine = Settings::default();
+        mine.set_str("scale", "Mine");
+        own.restore_synth(&mine);
+        assert_eq!(own.pad_scale_pick, SCALES.len());
+        assert!(own.synth_pads.scale.is_some());
+        assert_eq!(
+            ready().restore_synth(&Settings::default()),
+            (vec![], vec![])
+        );
     }
 
     #[test]
