@@ -85,7 +85,7 @@ def mpfree_v11_entrypoint():
         for t in doc.get('tables',[])[:35]:
             table_va=int(t['base_vaddr'],16)
             table_abs=base+table_va
-            xrefs=[];slots=[];source_functions=set()
+            xrefs=[];slots=[];source_functions=set();xref_sites=[]
             for delta in (0,4,8,0x18,0x1c,0x20,0x2c,0x34):
                 pos=table_abs+delta
                 b=mem.getBlock(A(pos))
@@ -112,6 +112,16 @@ def mpfree_v11_entrypoint():
                         entry=source_fn.getEntryPoint().getOffset()
                         source_functions.add(entry)
                         table_xref_targets.add(entry)
+                    if len(xref_sites)<80:
+                        ins=listing.getInstructionContaining(ref.getFromAddress())
+                        xref_sites.append({
+                            'slot_relative':delta,
+                            'source':str(ref.getFromAddress()),
+                            'source_function':str(source_fn.getEntryPoint()) if source_fn else None,
+                            'instruction':str(ins) if ins else None,
+                            'previous_instruction':str(ins.getPrevious()) if ins and ins.getPrevious() else None,
+                            'next_instruction':str(ins.getNext()) if ins and ins.getNext() else None,
+                        })
                     if len(refs)>=25:break
                 xrefs+=refs
                 slots.append({'relative':delta,'absolute':addr_hex(pos),
@@ -123,6 +133,7 @@ def mpfree_v11_entrypoint():
                            'raw_callbacks':t['callbacks'],
                            'code_xrefs_to_table_or_slots':xrefs[:60],
                            'xref_source_functions':[addr_hex(i) for i in sorted(source_functions)],
+                           'xref_site_instructions':xref_sites,
                            'observed_ghidra_slots':slots,
                            'table_assignment_proven':False})
     # Investigate the containing functions of actual references to candidate
