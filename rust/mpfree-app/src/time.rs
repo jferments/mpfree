@@ -1,0 +1,2637 @@
+//! The time engine in the pad player: the transport, the sequencer
+//! (`mpfree-play`'s player and recorder), take undo and a metronome click,
+//! run in the audio loop.
+//!
+//! Each period the loop first runs the transport ([`TimeHost::advance`]),
+//! so the arp can follow its clock ([`TimeHost::arp_clock`]), hands
+//! [`TimeHost::pad`] the pad notes it plays (after the arp, with their
+//! offsets), then calls [`TimeHost::period`]:
+//! the transport runs, the clips play their notes on the kit's pads through
+//! [`Pads`] (the sampler), the armed track records, and recorded and erased
+//! notes go into the clips and the take history. After the sampler renders,
+//! [`TimeHost::mix_click`] adds the click while counting in and recording.
+//!
+//! One arp per track ([`TrackArps`], which the app owns with the arp
+//! panel) sits between the player and the pads when the loop calls
+//! [`TimeHost::period_arps`]. A track with "Clips through the arp" on
+//! (`Track::through_arp`) plays its clips through its arp, and records the
+//! pads as pressed ([`TimeHost::pad_pressed`]); with it off, the clips play
+//! as recorded and the track records what the arp played
+//! ([`TimeHost::pad`]).
+//!
+//! Perform FX gestures (the XY pad, the DJ knob, a pad's Hold) come in
+//! through [`TimeHost::gesture`]: while recording they become moves in the
+//! armed track's clip (FX moves, played back as lane values), and the
+//! move log keeps them always, so CAPTURE keeps the moves made over its
+//! phrase too.
+//!
+//! Every pad note also goes into the capture history, so CAPTURE
+//! ([`TimeAction::Capture`]: the Arrange page's Capture button) keeps the
+//! last phrase in the armed track even when nothing was recording, as an
+//! undoable take (`mpfree-capture`).
+//!
+//! Edits (launches, takes, arming, a capture) compile a new play view in
+//! the loop. That allocates, but only on an edit, not every period; moving
+//! it to a control thread is a later step. Recording is not an edit of
+//! that kind: each recorded or erased note or lock goes into the clip and
+//! into the play view in place, in room set aside when the view was
+//! compiled ([`RECORD_ROOM`]), so a recording period neither compiles nor
+//! allocates. The screens hear about those notes at most four times a
+//! second ([`TimeHost::take_changed`]). Every track plays the current
+//! kit.
+
+use mpfree_capture::{keep, moves_for_clip, Capture, Now, Pending};
+use mpfree_perform::{Perform, SceneMorph, SongRecorder, When};
+use mpfree_play::{Cue, Event, Launch, Out, PlayView, Player, Recorder, Sink, Takes, TrackArps};
+use mpfree_seq::arrange::{scene_length, scenes_to_song, song_to_scenes};
+use mpfree_seq::mpfree_moves::{Input, MoveLog};
+use mpfree_seq::steps::{Change, Grid, Step};
+use mpfree_seq::{Clip, ModelError, Project, Track, SLOTS};
+use mpfree_time_ui::view::{
+    bars_label, clips_after, MorphInfo, TimeAction, TimeState, TransportInfo,
+};
+use mpfree_transport::time::Tick;
+use mpfree_transport::{Block, Command, Mark, State, Transport};
+use std::f32::consts::TAU;
+
+/// Tracks in a new project.
+pub const TRACKS: usize = 8;
+/// Bars in a clip made by tapping an empty slot (without a loop set).
+pub const NEW_CLIP_BARS: i64 = 2;
+/// Notes the sequencer can start or stop in one period.
+const MAX_OUT: usize = 512;
+/// Notes, and locks, the armed track's clips can take while recording
+/// before the view is compiled again (which allocates): room set aside
+/// in the clip and in the play view each time it compiles.
+pub const RECORD_ROOM: usize = 1024;
+/// The Play page's steps: sixteenths.
+pub const STEP_TICKS: Tick = 240;
+/// Pad hits kept for the screen between two periods (more are dropped).
+const MAX_HITS: usize = 16;
+
+/// What the Play page's pattern shows: the armed track's clip (the one
+/// playing, else its first), each sound's steps.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct StepsData {
+    pub track: usize,
+    pub track_name: String,
+    pub clip: Option<StepClip>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct StepClip {
+    pub slot: usize,
+    pub name: String,
+    /// Steps in the clip (16 a bar).
+    pub steps: usize,
+    /// The clip's length and a step's, in song ticks (after its speed).
+    pub song_length: f64,
+    pub song_step: f64,
+    /// Where it was launched, while it plays (for the playhead).
+    pub origin: Option<Tick>,
+    /// Every pad (0 to 15), and any other note the clip holds, with its
+    /// steps (None: empty).
+    pub rows: Vec<(u8, Vec<Option<Step>>)>,
+}
+
+impl StepClip {
+    /// The steps of `pitch` (empty when the clip has no such row).
+    pub fn row(&self, pitch: u8) -> &[Option<Step>] {
+        self.rows
+            .iter()
+            .find(|(p, _)| *p == pitch)
+            .map_or(&[], |(_, r)| r.as_slice())
+    }
+
+    /// The step playing at song position `pos`, while the clip plays.
+    pub fn playing(&self, pos: Tick) -> Option<usize> {
+        let origin = self.origin?;
+        if self.song_length <= 0.0 || self.song_step <= 0.0 || pos < origin {
+            return None;
+        }
+        let at = ((pos - origin) as f64).rem_euclid(self.song_length);
+        Some(((at / self.song_step) as usize).min(self.steps.saturating_sub(1)))
+    }
+}
+
+/// A touch on the Play page's pattern.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum StepAction {
+    /// Tap step `step` of `pad`: on (at `velocity`) or off. With no clip,
+    /// a one-bar clip is made in the armed track's first empty slot and
+    /// launched.
+    Tap { pad: u8, step: usize, velocity: u8 },
+    /// A Q-Link on a step: velocity, length, nudge or chance.
+    Change {
+        pad: u8,
+        step: usize,
+        change: Change,
+    },
+}
+
+/// A pad hit while the transport rolls: where it fell, for the Play page's
+/// timing (Drum view).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct HitInfo {
+    pub pad: u8,
+    pub velocity: u8,
+    /// Song position, ticks, with the fraction.
+    pub tick: f64,
+    pub bpm: f64,
+    pub bar_ticks: Tick,
+}
+
+/// Where the sequencer's notes go: the sampler's pads.
+pub trait Pads {
+    fn hit_at(&mut self, pad: usize, velocity: u8, offset: u32) -> bool;
+    fn release_at(&mut self, pad: usize, offset: u32);
+    fn stop_all(&mut self);
+    /// A note one of the per-track arps played ([`TimeHost::period_arps`]):
+    /// the pads through their track's arp, a latched arp, or a clip that
+    /// plays through its arp. It is live playing, so the pad player gives
+    /// it the pads' own treatment (velocity curve, flashes). Returns the
+    /// note to record as heard on the armed track (a pad number), or None.
+    /// By default it plays as a clip's note and records as it is.
+    fn live(&mut self, o: &Out) -> Option<Event> {
+        match o.event {
+            Event::NoteOn { note, velocity } => {
+                self.hit_at(usize::from(note), velocity, o.offset);
+                Some(o.event)
+            }
+            Event::NoteOff { note } => {
+                self.release_at(usize::from(note), o.offset);
+                Some(o.event)
+            }
+            Event::AllOff => {
+                self.stop_all();
+                None
+            }
+            Event::Lock { .. } | Event::Lane { .. } | Event::Unlock { .. } => None,
+        }
+    }
+}
+
+impl Pads for crate::sampler::Player {
+    fn hit_at(&mut self, pad: usize, velocity: u8, offset: u32) -> bool {
+        crate::sampler::Player::hit_at(self, pad, velocity, offset)
+    }
+    fn release_at(&mut self, pad: usize, offset: u32) {
+        crate::sampler::Player::release_at(self, pad, offset)
+    }
+    fn stop_all(&mut self) {
+        crate::sampler::Player::stop_all(self)
+    }
+}
+
+/// The player's notes for one period, in a fixed table.
+struct Collect {
+    out: [Out; MAX_OUT],
+    /// Which of `out` an arp played (live playing, see [`Pads::live`]).
+    arp: [bool; MAX_OUT],
+    n: usize,
+    dropped: u64,
+}
+
+impl Collect {
+    fn push(&mut self, out: Out, arp: bool) {
+        if self.n < MAX_OUT {
+            self.out[self.n] = out;
+            self.arp[self.n] = arp;
+            self.n += 1;
+        } else {
+            self.dropped += 1;
+        }
+    }
+}
+
+impl Sink for Collect {
+    fn send(&mut self, out: Out) {
+        self.push(out, false);
+    }
+}
+
+/// The metronome: a short sine blip on each beat, higher on the bar.
+#[derive(Clone, Copy, Debug)]
+struct Click {
+    rate: f32,
+    /// Starts in this period: (offset, accent).
+    starts: [(u32, bool); 8],
+    n: usize,
+    phase: f32,
+    freq: f32,
+    env: f32,
+}
+
+/// The click's level (about -12 dBFS) and decay (a quarter of its level
+/// after 15 ms).
+const CLICK_GAIN: f32 = 0.25;
+const CLICK_MS: f32 = 15.0;
+
+impl Click {
+    fn new(rate: u32) -> Click {
+        Click {
+            rate: rate as f32,
+            starts: [(0, false); 8],
+            n: 0,
+            phase: 0.0,
+            freq: 0.0,
+            env: 0.0,
+        }
+    }
+
+    fn schedule(&mut self, offset: u32, accent: bool) {
+        if self.n < self.starts.len() {
+            self.starts[self.n] = (offset, accent);
+            self.n += 1;
+        }
+    }
+
+    /// Add the click to `left` and `right` (keeping them within ±1);
+    /// returns the peak afterwards.
+    fn mix(&mut self, left: &mut [f32], right: &mut [f32]) -> f32 {
+        let decay = 0.25f32.powf(1.0 / (CLICK_MS * 1e-3 * self.rate));
+        let mut peak = 0f32;
+        let mut next = 0;
+        for f in 0..left.len().min(right.len()) {
+            while next < self.n && self.starts[next].0 as usize == f {
+                self.freq = if self.starts[next].1 { 1760.0 } else { 1320.0 };
+                self.phase = 0.0;
+                self.env = 1.0;
+                next += 1;
+            }
+            if self.env > 1e-4 {
+                let s = CLICK_GAIN * self.env * (self.phase * TAU).sin();
+                self.phase = (self.phase + self.freq / self.rate).fract();
+                self.env *= decay;
+                left[f] = (left[f] + s).clamp(-1.0, 1.0);
+                right[f] = (right[f] + s).clamp(-1.0, 1.0);
+            }
+            peak = peak.max(left[f].abs()).max(right[f].abs());
+        }
+        self.n = 0;
+        peak
+    }
+}
+
+pub struct TimeHost {
+    // Boxed: the fixed tables are large.
+    transport: Box<Transport>,
+    player: Box<Player>,
+    recorder: Box<Recorder>,
+    capture: Box<Capture>,
+    /// Every Perform FX move made while rolling, for CAPTURE.
+    move_log: Box<MoveLog>,
+    /// What CAPTURE would keep, as the screen last showed it.
+    pending: Option<Pending>,
+    block: Box<Block>,
+    sink: Box<Collect>,
+    view: PlayView,
+    project: Project,
+    launches: Vec<Launch>,
+    /// Launches and stops waiting for the next bar line.
+    cues: Vec<Cue>,
+    /// Scenes and follow actions: cues the rows and chains clips and
+    /// scenes on their bar lines.
+    perform: Perform,
+    /// The morph bar, and the morph on the mixer's mod engine
+    /// ([`TimeHost::morph`]).
+    morph: MorphInfo,
+    /// Song mode: the arrangement plays on the tracks with no clip
+    /// launched.
+    song: bool,
+    /// The Arrange page shows the Song view, and the placement selected
+    /// on it.
+    song_view: bool,
+    selected: Option<usize>,
+    /// Live to song: records what the grid plays into the song.
+    song_rec: SongRecorder,
+    /// What happened to the last recording when the transport stopped,
+    /// for the log ([`TimeHost::take_song_note`]).
+    song_note: Option<String>,
+    scene_morph: SceneMorph,
+    armed: Option<usize>,
+    takes: Takes,
+    click: Click,
+    /// Click while counting in and recording.
+    pub metronome: bool,
+    /// The clips, launches or takes changed since [`TimeHost::take_changed`].
+    changed: bool,
+    /// Recording changed the clips and takes since the screens last heard.
+    recorded: bool,
+    /// Frames since `changed` was last set for a recording.
+    since_told: u64,
+    /// Recorded changes are told this often, in frames (a quarter second).
+    tell_every: u64,
+    /// [`TimeHost::advance`] ran the transport for the coming period (and
+    /// whether it could).
+    advanced: Option<bool>,
+    /// A start or jump after the first span of the last period: the next
+    /// arp clock says it jumped.
+    #[allow(dead_code)] // read by arp_clock only
+    jump_pending: bool,
+    /// Pad hits this period, for the screen ([`TimeHost::hits`]).
+    hits: [HitInfo; MAX_HITS],
+    n_hits: usize,
+    /// The steps changed since [`TimeHost::take_steps_changed`].
+    steps_changed: bool,
+    /// The clips' parameter locks this period, for the mixer's mod engine
+    /// ([`TimeHost::locks`]).
+    locks: Vec<LockOut>,
+    /// The clips' move lanes' values this period, for the same engine
+    /// ([`TimeHost::lanes`]).
+    lanes: Vec<LaneOut>,
+    locks_dropped: u64,
+}
+
+/// A step's parameter lock (`value`) or its end (`None`), `offset` frames
+/// into the period.
+pub type LockOut = (u32, mpfree_play::mpfree_param::ParamAddr, Option<f32>);
+
+/// A move lane's value, `offset` frames into the period (a lane's end
+/// comes as a [`LockOut`] unlock).
+pub type LaneOut = (u32, mpfree_play::mpfree_param::ParamAddr, f32);
+
+/// Locks kept for the mixer in one period (more are dropped).
+const MAX_LOCKS: usize = 256;
+
+impl TimeHost {
+    /// The armed track (the one the pads, the arp panel and recording
+    /// follow), if any.
+    pub fn armed(&self) -> Option<usize> {
+        self.armed
+    }
+
+    /// Stopped at bar 1 with an empty project of [`TRACKS`] tracks, track 1
+    /// armed.
+    pub fn new(rate: u32, bpm: f64) -> Result<TimeHost, String> {
+        let transport =
+            Box::new(Transport::new(rate, bpm).map_err(|e| format!("transport: {e:?}"))?);
+        let mut project = Project::new();
+        for i in 0..TRACKS {
+            project
+                .tracks
+                .push(Track::new(&format!("Track {}", i + 1), i as u16));
+        }
+        let blank = Out {
+            offset: 0,
+            frame: 0,
+            track: 0,
+            dest: 0,
+            event: Event::AllOff,
+        };
+        let mut host = TimeHost {
+            transport,
+            player: Box::new(Player::new()),
+            recorder: Box::new(Recorder::new()),
+            capture: Box::new(Capture::new()),
+            move_log: Box::new(MoveLog::new()),
+            pending: None,
+            block: Box::new(Block::new()),
+            sink: Box::new(Collect {
+                out: [blank; MAX_OUT],
+                arp: [false; MAX_OUT],
+                n: 0,
+                dropped: 0,
+            }),
+            view: PlayView::empty(),
+            project,
+            launches: Vec::new(),
+            cues: Vec::new(),
+            perform: Perform::default(),
+            morph: MorphInfo::default(),
+            song: false,
+            song_view: false,
+            selected: None,
+            song_rec: SongRecorder::default(),
+            song_note: None,
+            scene_morph: SceneMorph::default(),
+            armed: Some(0),
+            takes: Takes::default(),
+            click: Click::new(rate),
+            metronome: true,
+            changed: true,
+            recorded: false,
+            since_told: 0,
+            tell_every: u64::from(rate / 4),
+            advanced: None,
+            jump_pending: false,
+            hits: [HitInfo::default(); MAX_HITS],
+            n_hits: 0,
+            steps_changed: true,
+            locks: Vec::with_capacity(MAX_LOCKS),
+            lanes: Vec::with_capacity(MAX_LOCKS),
+            locks_dropped: 0,
+        };
+        host.compile()?;
+        Ok(host)
+    }
+
+    fn compile(&mut self) -> Result<(), String> {
+        // An undone capture takes its clip, and so its launch, away.
+        let project = &self.project;
+        self.launches
+            .retain(|l| project.clip(l.track, l.slot).is_some());
+        self.cues.retain(|c| {
+            c.slot
+                .is_none_or(|slot| project.clip(c.track, slot).is_some())
+        });
+        let mut v = PlayView::compile_cued(&self.project, &self.launches, &self.cues)
+            .map_err(|e| format!("clips: {e:?}"))?;
+        v.set_armed(self.armed);
+        v.set_song(&self.project, self.song)
+            .map_err(|e| format!("song: {e:?}"))?;
+        // A scene's mutes switch with its cues.
+        self.perform.dress(&mut v);
+        // Room to record into the armed track's clips without allocating.
+        v.make_room(RECORD_ROOM, RECORD_ROOM);
+        if let Some(t) = self.armed {
+            let slots = self
+                .launches
+                .iter()
+                .filter(|l| l.track == t)
+                .map(|l| l.slot);
+            let cued = self
+                .cues
+                .iter()
+                .filter(|c| c.track == t)
+                .filter_map(|c| c.slot);
+            for slot in slots.chain(cued) {
+                if let Some(Some(c)) = self
+                    .project
+                    .tracks
+                    .get_mut(t)
+                    .and_then(|t| t.slots.get_mut(slot))
+                {
+                    c.notes.reserve(RECORD_ROOM);
+                    c.locks.reserve(RECORD_ROOM);
+                }
+            }
+        }
+        self.view = v;
+        self.changed = true;
+        self.recorded = false;
+        self.steps_changed = true;
+        Ok(())
+    }
+
+    /// "Clips through the arp" for `track` (see `Track::through_arp`).
+    /// The track's arp follows from the next [`TimeHost::period_arps`],
+    /// which clears it if it holds anything, so no note is left hanging.
+    /// False if there is no such track.
+    // The arp panel calls it (the arp thread's side); until then only
+    // tests do.
+    #[allow(dead_code)]
+    pub fn set_through_arp(&mut self, track: usize, on: bool) -> bool {
+        let Some(t) = self.project.tracks.get_mut(track) else {
+            return false;
+        };
+        if t.through_arp != on {
+            t.through_arp = on;
+            self.changed = true;
+        }
+        true
+    }
+
+    /// The clip the Play page's pattern edits: the armed track's (track 1
+    /// if none is armed) launched clip, else its first clip.
+    fn step_focus(&self) -> (usize, Option<usize>) {
+        let track = self.armed.unwrap_or(0);
+        let launched = self
+            .launches
+            .iter()
+            .find(|l| l.track == track)
+            .map(|l| l.slot);
+        let first = || {
+            self.project
+                .tracks
+                .get(track)?
+                .slots
+                .iter()
+                .position(Option::is_some)
+        };
+        (track, launched.or_else(first))
+    }
+
+    /// What the Play page's pattern shows. Allocates: called on a change.
+    pub fn steps(&self) -> StepsData {
+        let (track, slot) = self.step_focus();
+        let track_name = self
+            .project
+            .tracks
+            .get(track)
+            .map_or(String::new(), |t| t.name.clone());
+        let grid = Grid::new(STEP_TICKS).expect("a sixteenth is a step size");
+        let clip = slot.and_then(|slot| {
+            let c = self.project.clip(track, slot)?;
+            let mut pitches: Vec<u8> = (0..16).collect();
+            for n in &c.notes {
+                if !pitches.contains(&n.note) {
+                    pitches.push(n.note);
+                }
+            }
+            let origin = self
+                .launches
+                .iter()
+                .find(|l| l.track == track && l.slot == slot)
+                .map(|l| l.origin);
+            Some(StepClip {
+                slot,
+                name: c.name.clone(),
+                steps: grid.steps(c.length),
+                song_length: c.speed.to_song(c.length as f64),
+                song_step: c.speed.to_song(STEP_TICKS as f64),
+                origin,
+                rows: pitches.into_iter().map(|p| (p, grid.row(c, p))).collect(),
+            })
+        });
+        StepsData {
+            track,
+            track_name,
+            clip,
+        }
+    }
+
+    /// True once after the steps the Play page shows changed.
+    pub fn take_steps_changed(&mut self) -> bool {
+        std::mem::take(&mut self.steps_changed)
+    }
+
+    /// A touch on the Play page's pattern, as one undoable edit (a
+    /// Q-Link turned through many values joins one). A line for the log.
+    pub fn step_action(&mut self, a: StepAction) -> Result<String, String> {
+        let grid = Grid::new(STEP_TICKS).expect("a sixteenth is a step size");
+        let (track, slot) = self.step_focus();
+        let (slot, made) = match slot {
+            Some(s) => (s, None),
+            None => {
+                let StepAction::Tap { .. } = a else {
+                    return Ok(String::new());
+                };
+                let t = self.project.tracks.get_mut(track).ok_or("no such track")?;
+                let s = t
+                    .slots
+                    .iter()
+                    .position(Option::is_none)
+                    .ok_or_else(|| format!("{} has no empty slot", t.name))?;
+                let name = format!("Pattern {}", s + 1);
+                t.slots[s] = Some(Clip::new(&name, grid.page_length()));
+                let info = self.info();
+                let launch = TimeAction::Launch { track, slot: s };
+                (self.launches, self.cues) =
+                    clips_after(&self.project, &self.launches, &self.cues, &launch, &info);
+                (s, Some(name))
+            }
+        };
+        let clip = self.project.clip(track, slot).ok_or("the clip is gone")?;
+        let (edit, join, what) = match a {
+            StepAction::Tap {
+                pad,
+                step,
+                velocity,
+            } => (
+                grid.toggle(clip, pad, step, velocity),
+                None,
+                format!("step {} of pad {}", step + 1, pad + 1),
+            ),
+            StepAction::Change { pad, step, change } => (
+                grid.change(clip, pad, step, change),
+                Some(change.key(pad, step)),
+                format!("step {} of pad {}: {change:?}", step + 1, pad + 1),
+            ),
+        };
+        if edit.is_empty() && made.is_none() {
+            return Ok(String::new());
+        }
+        self.takes
+            .edit(&mut self.project, track, slot, &edit, join)
+            .map_err(|e| format!("steps: {e:?}"))?;
+        self.compile()?;
+        let on = if edit.add.is_empty() { "off" } else { "on" };
+        Ok(match (made, a) {
+            (Some(name), _) => format!(
+                "steps: new clip {name} in {}, {what} {on}",
+                self.project.tracks[track].name
+            ),
+            (None, StepAction::Tap { .. }) => format!("steps: {what} {on}"),
+            (None, _) => String::new(),
+        })
+    }
+
+    /// The pad hits of the last period that fell while the transport
+    /// rolled (for the Play page's timing); [`TimeHost::clear_hits`]
+    /// after reading.
+    pub fn hits(&self) -> &[HitInfo] {
+        &self.hits[..self.n_hits]
+    }
+
+    pub fn clear_hits(&mut self) {
+        self.n_hits = 0;
+    }
+
+    /// The parameter locks of the last period, for `MixHost::lock` (the
+    /// next period starts a new list; [`TimeHost::clear_locks`] after
+    /// handing them on).
+    pub fn locks(&self) -> &[LockOut] {
+        &self.locks
+    }
+
+    /// The move lanes' values of the last period, for `MixHost::lane`
+    /// (cleared with the locks).
+    pub fn lanes(&self) -> &[LaneOut] {
+        &self.lanes
+    }
+
+    pub fn clear_locks(&mut self) {
+        self.locks.clear();
+        self.lanes.clear();
+    }
+
+    fn lock_out(
+        locks: &mut Vec<LockOut>,
+        dropped: &mut u64,
+        offset: u32,
+        addr: mpfree_play::mpfree_param::ParamAddr,
+        value: Option<f32>,
+    ) {
+        if locks.len() < locks.capacity() {
+            locks.push((offset, addr, value));
+        } else {
+            *dropped += 1;
+        }
+    }
+
+    /// A transport command, from the next period on.
+    pub fn command(&mut self, cmd: Command) -> bool {
+        let at = self.transport.frame();
+        self.transport.command(at, cmd)
+    }
+
+    /// Follow the app's tempo (TAP TEMPO, the menu).
+    pub fn follow_tempo(&mut self, bpm: f64) {
+        if (self.transport.bpm() - bpm).abs() > 1e-9 {
+            self.command(Command::SetTempo(bpm));
+        }
+    }
+
+    /// Carry out a touch on the time engine's screens. Returns a line for
+    /// the log.
+    pub fn act(&mut self, a: TimeAction) -> Result<String, String> {
+        let info = self.info();
+        match a {
+            TimeAction::Transport(cmd) => {
+                if !self.command(cmd) {
+                    return Err("transport: command queue full".into());
+                }
+                Ok(format!("transport: {cmd:?}"))
+            }
+            TimeAction::Undo => match self.takes.undo(&mut self.project) {
+                Some(_) => {
+                    let row = self.takes.undone().last().map(|t| (t.captured, t.number));
+                    if row.is_some_and(|(captured, _)| captured) {
+                        // It can be kept again.
+                        self.capture.forget_kept();
+                        self.pending = self.capture.pending();
+                    }
+                    self.compile().map(|_| format!("undo: {}", take_name(row)))
+                }
+                None => Ok("undo: nothing to undo".into()),
+            },
+            TimeAction::Redo => match self.takes.redo(&mut self.project) {
+                Some(_) => {
+                    let row = self.takes.done().last().map(|t| (t.captured, t.number));
+                    self.compile().map(|_| format!("redo: {}", take_name(row)))
+                }
+                None => Ok("redo: nothing to redo".into()),
+            },
+            TimeAction::Capture => self.keep(),
+            TimeAction::Arm(track) => {
+                self.armed = track.filter(|&t| t < self.project.tracks.len());
+                self.compile()?;
+                Ok(match self.armed {
+                    Some(t) => format!("armed: {}", self.project.tracks[t].name),
+                    None => "armed: none".into(),
+                })
+            }
+            TimeAction::LaunchScene(_) | TimeAction::StopAll => {
+                let when = if info.state.rolling() {
+                    When::Cued
+                } else {
+                    When::Now(info.position - info.position.rem_euclid(info.meter.bar_ticks()))
+                };
+                let before = (
+                    self.launches.clone(),
+                    self.cues.clone(),
+                    self.perform.clone(),
+                    self.project
+                        .tracks
+                        .iter()
+                        .map(|t| t.mute)
+                        .collect::<Vec<_>>(),
+                );
+                let (launches, cues) = (&mut self.launches, &mut self.cues);
+                let line = match a {
+                    TimeAction::LaunchScene(row) => {
+                        if !self
+                            .perform
+                            .launch_scene(&mut self.project, row, when, launches, cues)
+                        {
+                            return Err(format!("no scene {}", row + 1));
+                        }
+                        format!("scene {}", row + 1)
+                    }
+                    _ => {
+                        self.perform.stop_all(when, launches, cues);
+                        "stop all".to_string()
+                    }
+                };
+                if let Err(e) = self.compile() {
+                    (self.launches, self.cues, self.perform) = (before.0, before.1, before.2);
+                    for (t, m) in self.project.tracks.iter_mut().zip(before.3) {
+                        t.mute = m;
+                    }
+                    return Err(e);
+                }
+                Ok(line)
+            }
+            TimeAction::Launch { .. } | TimeAction::StopClip(_) | TimeAction::Uncue(_) => {
+                if let TimeAction::Uncue(track) = a {
+                    self.perform.uncue(track);
+                }
+                // While the music plays, they wait for the next bar line.
+                let after = clips_after(&self.project, &self.launches, &self.cues, &a, &info);
+                let before = (
+                    std::mem::replace(&mut self.launches, after.0),
+                    std::mem::replace(&mut self.cues, after.1),
+                );
+                if let Err(e) = self.compile() {
+                    (self.launches, self.cues) = before;
+                    return Err(e);
+                }
+                Ok(format!("clips: {a:?}"))
+            }
+            TimeAction::NewClip { track, slot } => {
+                let bar = info.meter.bar_ticks();
+                let length = info.loop_range.map_or(NEW_CLIP_BARS * bar, |(a, b)| b - a);
+                let t = self.project.tracks.get_mut(track).ok_or("no such track")?;
+                let s = t.slots.get_mut(slot).ok_or("no such slot")?;
+                if s.is_some() {
+                    return Err(format!("slot {} of {} is not empty", slot + 1, t.name));
+                }
+                *s = Some(Clip::new(&format!("Clip {}", slot + 1), length));
+                self.armed = Some(track);
+                (self.launches, self.cues) =
+                    clips_after(&self.project, &self.launches, &self.cues, &a, &info);
+                self.compile()?;
+                // Record into it, unless already recording or counting in.
+                if !matches!(info.state, State::Recording | State::CountIn) {
+                    self.command(Command::Record);
+                }
+                Ok(format!(
+                    "new clip in slot {} of track {}, recording",
+                    slot + 1,
+                    track + 1
+                ))
+            }
+            TimeAction::Chip(_) => Ok(String::new()),
+            TimeAction::MorphRows { a, b } => {
+                self.morph.a = a.min(SLOTS - 1);
+                self.morph.b = b.min(SLOTS - 1);
+                self.changed = true;
+                let rows = (self.morph.a, self.morph.b);
+                self.song_rec.morph(info.position, self.morph.pos, rows);
+                Ok(format!(
+                    "morph: rows {} and {}",
+                    self.morph.a + 1,
+                    self.morph.b + 1
+                ))
+            }
+            TimeAction::Morph(pos) if self.song_rec.recording() => {
+                // The sound waits for the mod engine; the song keeps the
+                // move already.
+                self.morph.pos = pos.clamp(0.0, 1.0);
+                self.changed = true;
+                let rows = (self.morph.a, self.morph.b);
+                self.song_rec.morph(info.position, self.morph.pos, rows);
+                Ok(format!(
+                    "morph {:.2} into the song (the mod engine is not in the pad player yet)",
+                    self.morph.pos
+                ))
+            }
+            TimeAction::RecSong(on) => {
+                let rows = (self.morph.a, self.morph.b);
+                self.song_rec
+                    .arm(on, &self.project, &self.launches, self.morph.pos, rows);
+                self.changed = true;
+                if on {
+                    return Ok("rec song: what the grid plays goes into the song".into());
+                }
+                self.keep_song().map(|line| format!("rec song off: {line}"))
+            }
+            TimeAction::Morph(_)
+            | TimeAction::SnapBack
+            | TimeAction::KeepMorph
+            | TimeAction::SaveScene(_) => {
+                Err("morph: needs the mixer's mod engine (TimeHost::morph)".into())
+            }
+            TimeAction::SongView(on) => {
+                self.song_view = on;
+                self.changed = true;
+                Ok(if on { "song view" } else { "clips view" }.into())
+            }
+            TimeAction::SongMode(on) => {
+                self.song = on;
+                if let Err(e) = self.compile() {
+                    self.song = !on;
+                    return Err(e);
+                }
+                Ok(if on { "song on" } else { "song off" }.into())
+            }
+            TimeAction::SelectPlacement(i) => {
+                self.selected = i.filter(|&i| i < self.project.arrangement.placements.len());
+                self.changed = true;
+                Ok(String::new())
+            }
+            TimeAction::ScenesToSong
+            | TimeAction::SongToScenes
+            | TimeAction::MakeUnique(_)
+            | TimeAction::DeletePlacement(_) => {
+                let bar = info.meter.bar_ticks();
+                let before = self.project.clone();
+                let line = match self.edit_song(a, bar) {
+                    Ok(line) => line,
+                    Err(e) => {
+                        self.project = before;
+                        return Err(e);
+                    }
+                };
+                if let Err(e) = self.compile() {
+                    self.project = before;
+                    self.compile()?;
+                    return Err(e);
+                }
+                Ok(line)
+            }
+        }
+    }
+
+    /// What live to song put into the song when the transport stopped
+    /// (or why it could not: the recording is then kept, and goes in when
+    /// Rec song is turned off), once, for the log.
+    pub fn take_song_note(&mut self) -> Option<String> {
+        self.song_note.take()
+    }
+
+    /// Live to song: the passes recorded so far into the song, compiled
+    /// in. A line for the log.
+    fn keep_song(&mut self) -> Result<String, String> {
+        if !self.song_rec.waiting() {
+            return Ok("nothing recorded".into());
+        }
+        let before = self.project.arrangement.clone();
+        let r = self
+            .song_rec
+            .finish(&mut self.project)
+            .map_err(|e| format!("rec song: {e:?}"))?;
+        // New placements shift the indices.
+        self.selected = None;
+        if let Err(e) = self.compile() {
+            self.project.arrangement = before;
+            self.compile()?;
+            return Err(e);
+        }
+        Ok(format!(
+            "{} placements and {} morph points into the song",
+            r.placements, r.morph_points
+        ))
+    }
+
+    /// The Song view's edits of the arrangement (and, for Song → scenes,
+    /// the rows). A line for the log.
+    fn edit_song(&mut self, a: TimeAction, bar: Tick) -> Result<String, String> {
+        let song = &mut self.project.arrangement;
+        match a {
+            TimeAction::ScenesToSong => {
+                // Every row with a clip, in order, after the song's end.
+                let rows: Vec<(usize, Tick)> = (0..SLOTS)
+                    .filter(|&r| self.project.row_filled(r))
+                    .map(|r| (r, scene_length(&self.project, r, bar)))
+                    .collect();
+                if rows.is_empty() {
+                    return Err("scenes → song: no row has a clip".into());
+                }
+                let end = self.project.arrangement.end();
+                let at = (end + bar - 1) / bar.max(1) * bar;
+                let add = scenes_to_song(&self.project, &rows, at)
+                    .map_err(|e| format!("scenes → song: {e:?}"))?;
+                // New placements shift the indices.
+                self.selected = None;
+                let song = &mut self.project.arrangement;
+                for p in add.placements {
+                    song.place(p).map_err(|e| format!("scenes → song: {e:?}"))?;
+                }
+                for m in add.markers {
+                    song.mark(m.at, &m.name)
+                        .map_err(|e| format!("scenes → song: {e:?}"))?;
+                }
+                Ok(format!(
+                    "scenes → song: {} rows from bar {}",
+                    rows.len(),
+                    at / bar.max(1) + 1
+                ))
+            }
+            TimeAction::SongToScenes => match song_to_scenes(&mut self.project, bar) {
+                Ok(rows) if rows.is_empty() => Ok("song → scenes: the song is empty".into()),
+                Ok(rows) => Ok(format!(
+                    "song → scenes: rows {} to {}",
+                    rows[0] + 1,
+                    rows[rows.len() - 1] + 1
+                )),
+                Err(ModelError::NoRoom) => {
+                    Err("song → scenes: not enough empty rows in a run".into())
+                }
+                Err(e) => Err(format!("song → scenes: {e:?}")),
+            },
+            TimeAction::MakeUnique(i) => {
+                song.make_unique(&self.project.tracks, i)
+                    .map_err(|e| format!("make unique: {e:?}"))?;
+                Ok(format!("placement {} is its own copy", i + 1))
+            }
+            TimeAction::DeletePlacement(i) => {
+                song.remove(i).ok_or("delete: no such placement")?;
+                self.selected = None;
+                Ok(format!("placement {} deleted", i + 1))
+            }
+            _ => Ok(String::new()),
+        }
+    }
+
+    /// The morph bar on the mixer's mod engine (`modu`): the rows, the
+    /// crossfader (which loads the rows on its first move), snap back,
+    /// keep and saving a row. A line for the log.
+    pub fn morph(
+        &mut self,
+        a: TimeAction,
+        modu: &mut crate::modmix::ModMix,
+        mixer: &mpfree_fx::Mixer,
+    ) -> Result<String, String> {
+        let (ra, rb) = (self.morph.a, self.morph.b);
+        let line = match a {
+            TimeAction::MorphRows { .. } if !self.morph.on => return self.act(a),
+            TimeAction::MorphRows { a, b } => {
+                // Morphing: the new rows go on A and B at once, from the
+                // same sound before.
+                let (a, b) = (a.min(SLOTS - 1), b.min(SLOTS - 1));
+                let l = modu
+                    .morph_load(mixer, &mut self.scene_morph, &mut self.project, a, b)
+                    .map_err(|e| format!("morph: {e:?}"))?;
+                modu.morph_to(self.morph.pos);
+                (self.morph.a, self.morph.b, self.morph.params) = (a, b, l.morphing);
+                format!(
+                    "morph: rows {} and {}, {} parameters",
+                    a + 1,
+                    b + 1,
+                    l.morphing
+                )
+            }
+            TimeAction::Morph(x) => {
+                let x = if x.is_finite() {
+                    x.clamp(0.0, 1.0)
+                } else {
+                    0.0
+                };
+                let mut line = String::new();
+                if !self.morph.on {
+                    let l = modu
+                        .morph_load(mixer, &mut self.scene_morph, &mut self.project, ra, rb)
+                        .map_err(|e| format!("morph: {e:?}"))?;
+                    self.morph.on = true;
+                    self.morph.params = l.morphing;
+                    line = format!(
+                        "morph: rows {} and {}, {} parameters{}",
+                        ra + 1,
+                        rb + 1,
+                        l.morphing,
+                        if l.unknown > 0 {
+                            format!(" ({} not on the mixer, left out)", l.unknown)
+                        } else {
+                            String::new()
+                        }
+                    );
+                }
+                modu.morph_to(x);
+                self.morph.pos = x;
+                line
+            }
+            TimeAction::SnapBack | TimeAction::KeepMorph if !self.morph.on => {
+                return Ok(String::new())
+            }
+            TimeAction::SnapBack | TimeAction::KeepMorph => {
+                let keep = a == TimeAction::KeepMorph;
+                modu.morph_end(&mut self.scene_morph, &mut self.project, keep);
+                self.morph.on = false;
+                self.morph.pos = 0.0;
+                self.morph.params = 0;
+                if keep {
+                    "morph: kept where it was".into()
+                } else {
+                    "morph: snapped back".into()
+                }
+            }
+            TimeAction::SaveScene(row) => match modu.save_scene(&mut self.project, row) {
+                Some(n) => format!("morph: row {} stores {n} values", row + 1),
+                None => return Err(format!("morph: row {} cannot store them", row + 1)),
+            },
+            other => return self.act(other),
+        };
+        self.changed = true;
+        Ok(line)
+    }
+
+    /// CAPTURE: keep the last phrase in the armed track (track 1 if none
+    /// is armed): into its playing clip when it was played in time over
+    /// it, else as a new clip in its first empty slot that plays on in its
+    /// place. A line for the log.
+    fn keep(&mut self) -> Result<String, String> {
+        if self.capture.pending().is_none() {
+            return Ok("capture: nothing new to keep".into());
+        }
+        let phrase = self.capture.phrase().ok_or("capture: nothing played")?;
+        let t = &self.transport;
+        let now = Now {
+            position: t.position(),
+            rolling: t.state().rolling(),
+            meter: t.meter(),
+            loop_range: t.loop_range(),
+        };
+        let track = self.armed.unwrap_or(0);
+        let name = format!("Capture {}", self.takes.captures() + 1);
+        let k = keep(
+            &phrase,
+            &mut self.project,
+            &self.launches,
+            &mut self.takes,
+            track,
+            now,
+            &name,
+        )
+        .map_err(|e| format!("capture: {e:?}"))?;
+        // The moves made over a phrase played in time go with it.
+        let origin = k.launch.map(|l| l.origin).or_else(|| {
+            self.launches
+                .iter()
+                .find(|l| l.track == track && l.slot == k.slot)
+                .map(|l| l.origin)
+        });
+        let mut moves = 0;
+        if let (Some(s), Some(origin)) = (phrase.song_start, origin) {
+            if let Some(clip) = self.project.clip(track, k.slot) {
+                let list = moves_for_clip(
+                    &self.move_log.phrase(),
+                    s as f64,
+                    (s + phrase.length) as f64,
+                    clip,
+                    origin,
+                    track as u8,
+                );
+                if !list.is_empty() {
+                    moves = self
+                        .takes
+                        .capture_moves(&mut self.project, track, k.slot, k.take, &list)
+                        .unwrap_or(0);
+                }
+            }
+            self.move_log.forget();
+        }
+        if let Some(l) = k.launch {
+            self.launches.retain(|x| x.track != l.track);
+            self.cues.retain(|x| x.track != l.track);
+            self.launches.push(l);
+        }
+        self.capture.mark_kept(phrase.id);
+        self.pending = self.capture.pending();
+        self.compile()?;
+        let into = if k.launch.is_some() {
+            "new clip in"
+        } else {
+            "into the clip in"
+        };
+        let moved = match moves {
+            0 => String::new(),
+            1 => " and 1 move".into(),
+            n => format!(" and {n} moves"),
+        };
+        Ok(format!(
+            "capture {}: {} notes{moved}, {}, {into} slot {} of {}",
+            k.take,
+            k.notes,
+            bars_label(k.bars),
+            k.slot + 1,
+            self.project.tracks[track].name
+        ))
+    }
+
+    /// A clip made elsewhere (the Sample page's chop to a phrase) into the
+    /// first empty slot of the armed track (track 1 if none is armed), as
+    /// a take that UNDO on the Clips page takes away again. It isn't
+    /// launched: a tap on the Clips page plays it like any clip. Returns a
+    /// line for the log.
+    pub fn put_clip(&mut self, clip: Clip) -> Result<String, String> {
+        let track = self.armed.unwrap_or(0);
+        let t = self.project.tracks.get(track).ok_or("no such track")?;
+        let name = t.name.clone();
+        let slot = (0..SLOTS)
+            .find(|&s| t.slots[s].is_none())
+            .ok_or_else(|| format!("{name} has no empty slot for the phrase"))?;
+        let notes = clip.notes.len();
+        self.takes
+            .capture_clip(&mut self.project, track, slot, clip)
+            .map_err(|e| format!("phrase refused: {e:?}"))?;
+        self.compile()?;
+        Ok(format!(
+            "phrase: {notes} notes in slot {} of {name}",
+            slot + 1
+        ))
+    }
+
+    /// Whether the armed track records the pads as pressed (its clips
+    /// play through its arp) rather than what its arp played.
+    fn records_pressed(&self) -> bool {
+        self.armed
+            .and_then(|t| self.project.tracks.get(t))
+            .is_some_and(|t| t.through_arp)
+    }
+
+    /// A pad note as pressed, before any arp, in the coming period at
+    /// `offset`. When the armed track's clips play through its arp, this
+    /// is what it records, and what the capture history keeps.
+    // The app calls it once its pads play through the per-track arps (the
+    // arp thread's side); until then only tests do.
+    #[allow(dead_code)]
+    pub fn pad_pressed(&mut self, offset: u32, event: Event) {
+        if self.records_pressed() {
+            self.recorder.input(offset, event);
+            self.capture.input(offset, event);
+        }
+    }
+
+    /// A pad note as heard (after the arp) in the coming period, at
+    /// `offset`: recorded into the armed track while the transport
+    /// records, and kept in the capture history always, unless the armed
+    /// track's clips play through its arp (then [`TimeHost::pad_pressed`]
+    /// gives those). It lights the pattern's step either way.
+    pub fn pad(&mut self, offset: u32, event: Event) {
+        if !self.records_pressed() {
+            self.recorder.input(offset, event);
+            self.capture.input(offset, event);
+        }
+        let Event::NoteOn { note, velocity } = event else {
+            return;
+        };
+        if self.n_hits >= MAX_HITS {
+            return;
+        }
+        let span = self
+            .block
+            .spans()
+            .iter()
+            .find(|s| offset >= s.offset && offset < s.offset + s.len.max(1));
+        if let Some(s) = span.filter(|s| s.state.rolling()) {
+            self.hits[self.n_hits] = HitInfo {
+                pad: note,
+                velocity,
+                tick: s.tick_at(s.frame + u64::from(offset - s.offset)),
+                bpm: s.bpm,
+                bar_ticks: s.meter.bar_ticks(),
+            };
+            self.n_hits += 1;
+        }
+    }
+
+    /// A knob moved in the coming period, at `offset`: parameter `addr` is
+    /// now `value`. While the transport records and `addr` is on the armed
+    /// track, it becomes a parameter lock on the step it belongs to (see
+    /// `mpfree_play::Recorder`).
+    // No knob is mapped to a parameter in the pad player yet (that needs
+    // the mod resolver); the Q-Links call this once one is.
+    #[allow(dead_code)]
+    pub fn knob(&mut self, offset: u32, addr: mpfree_play::mpfree_param::ParamAddr, value: f32) {
+        self.recorder.input(offset, Event::Lock { addr, value });
+    }
+
+    /// A Perform FX move in the coming period, at `offset`: the XY pad,
+    /// the DJ knob or a pad's Hold moving a parameter (`Input::Move`, the
+    /// first value starting a gesture), or letting go (`Input::End`).
+    /// While the transport records it becomes a move in the armed track's
+    /// clip; while it rolls the move log keeps it for CAPTURE.
+    // The Perform FX page calls it once the pad player runs it (the FX
+    // thread's side); until then only tests do.
+    #[allow(dead_code)]
+    pub fn gesture(&mut self, offset: u32, input: Input) {
+        self.move_log.input(offset, input);
+        self.recorder.input_move(offset, input);
+    }
+
+    /// FILL on or off from `offset` in the coming period: notes with the
+    /// FILL and !FILL trig conditions follow it from that frame on. For
+    /// the FILL button (hold for a fill, double-press to latch).
+    // No button is mapped to FILL yet: the pad player picks one under the
+    // layout rules.
+    #[allow(dead_code)]
+    pub fn set_fill(&mut self, on: bool, offset: u32) {
+        self.player.set_fill(on, offset);
+    }
+
+    /// FILL, as of the last period, for the button's light.
+    #[allow(dead_code)]
+    pub fn fill(&self) -> bool {
+        self.player.fill()
+    }
+
+    /// Run the transport for the coming period, before the app's process,
+    /// so the arp can follow it ([`TimeHost::arp_clock`]).
+    /// [`TimeHost::period`] then plays and records on the same block.
+    pub fn advance(&mut self, frames: u32) -> bool {
+        let ok = self.transport.process(frames, &mut self.block);
+        self.advanced = Some(ok);
+        ok
+    }
+
+    /// The arp's clock for the coming period, from the first span of the
+    /// block [`TimeHost::advance`] made: None while stopped, so the arp
+    /// runs on its own tempo. The count-in counts as playing. `jumped` is
+    /// set by a start or jump before the first span, or by one later in the
+    /// last period (the arp follows the first span only, so it catches up
+    /// one period later).
+    // The per-track arps (TimeHost::period_arps) take the clock from the
+    // block's spans themselves (ArpHost); App::process's single arp used
+    // this. Kept for a host that drives one Engine directly.
+    #[allow(dead_code)]
+    pub fn arp_clock(&mut self) -> Option<mpfree_arp::Clock> {
+        let jump = |m: &Mark| {
+            matches!(
+                m,
+                Mark::Started { .. }
+                    | Mark::CountIn { .. }
+                    | Mark::Located { .. }
+                    | Mark::Looped { .. }
+            )
+        };
+        let first = self.block.spans().first().copied();
+        let first_offset = first.map_or(0, |s| s.offset);
+        let mut jumped = std::mem::take(&mut self.jump_pending);
+        for m in self.block.markers() {
+            if jump(&m.mark) {
+                if m.offset <= first_offset {
+                    jumped = true;
+                } else {
+                    self.jump_pending = true;
+                }
+            }
+        }
+        let span = first?;
+        if !span.state.rolling() {
+            return None;
+        }
+        Some(mpfree_arp::Clock {
+            anchor_tick: span.anchor_tick,
+            frames_since_anchor: span.frame.saturating_sub(span.anchor_frame),
+            bpm: span.bpm,
+            playing: true,
+            jumped,
+            swing: (span.swing.amount > 50).then_some((span.swing.grid, span.swing.amount)),
+            bar_ticks: u32::try_from(span.meter.bar_ticks()).unwrap_or(4 * mpfree_arp::PPQ),
+        })
+    }
+
+    /// Run one period: the clips play into `pads`, every track as
+    /// recorded (no arp), and the armed track records. Runs the transport
+    /// first unless [`TimeHost::advance`] already did. For previews and
+    /// tests; the pad player calls [`TimeHost::period_arps`].
+    pub fn period(&mut self, frames: u32, pads: &mut impl Pads) {
+        self.run(frames, pads, None);
+    }
+
+    /// [`TimeHost::period`] with the per-track arps between the player and
+    /// `pads`: a track whose clips play through its arp ("Clips through the
+    /// arp") plays them into its arp; the others play as recorded; every
+    /// arp's notes (the live pads' too, fed with [`TrackArps::pad`] before
+    /// this) go to `pads` with them, in frame order. Each arp first takes
+    /// its track's destination and switch.
+    pub fn period_arps(&mut self, frames: u32, pads: &mut impl Pads, arps: &mut TrackArps) {
+        for (t, track) in self.project.tracks.iter().enumerate() {
+            arps.set_through(t, track.through_arp);
+            arps.set_dest(t, track.dest);
+        }
+        self.run(frames, pads, Some(arps));
+    }
+
+    fn run(&mut self, frames: u32, pads: &mut impl Pads, arps: Option<&mut TrackArps>) {
+        let ok = match self.advanced.take() {
+            Some(ok) => ok,
+            None => self.transport.process(frames, &mut self.block),
+        };
+        if !ok {
+            return;
+        }
+        self.sink.n = 0;
+        self.locks.clear();
+        self.lanes.clear();
+        match arps {
+            // The player's notes go through the per-track arps (a through
+            // track's into its arp, the rest as they are), then to the pads,
+            // with what the arps played (the live pads among it) marked.
+            Some(arps) => {
+                self.player
+                    .process(&self.view, &self.block, &mut arps.through_sink());
+                let sink = &mut *self.sink;
+                arps.finish_with(&self.block, |o, arp| sink.push(*o, arp));
+            }
+            None => self
+                .player
+                .process(&self.view, &self.block, &mut *self.sink),
+        }
+        for i in 0..self.sink.n {
+            let o = self.sink.out[i];
+            if self.sink.arp[i] {
+                // Live playing: the pad player's own treatment, and what it
+                // says to record goes to the armed track as heard (or, on a
+                // track whose clips play through its arp, the pads as
+                // pressed do, through pad_pressed).
+                let heard = pads.live(&o);
+                if let Some(ev) = heard.filter(|_| self.armed == Some(usize::from(o.track))) {
+                    self.pad(o.offset, ev);
+                }
+                continue;
+            }
+            match o.event {
+                Event::NoteOn { note, velocity } => {
+                    pads.hit_at(usize::from(note), velocity, o.offset);
+                }
+                Event::NoteOff { note } => pads.release_at(usize::from(note), o.offset),
+                Event::AllOff => pads.stop_all(),
+                // Parameter locks go to the mod engine in the mixer
+                // (`MixHost::lock`), which the audio loop hands them to.
+                Event::Lock { addr, value } => Self::lock_out(
+                    &mut self.locks,
+                    &mut self.locks_dropped,
+                    o.offset,
+                    addr,
+                    Some(value),
+                ),
+                Event::Unlock { addr } => Self::lock_out(
+                    &mut self.locks,
+                    &mut self.locks_dropped,
+                    o.offset,
+                    addr,
+                    None,
+                ),
+                // A move lane's value goes to the mod engine too, where any
+                // hand on the control beats it.
+                Event::Lane { addr, value } => {
+                    if self.lanes.len() < self.lanes.capacity() {
+                        self.lanes.push((o.offset, addr, value));
+                    } else {
+                        self.locks_dropped += 1;
+                    }
+                }
+            }
+        }
+        // After the live notes above, which it keeps as heard.
+        self.capture.process(&self.block);
+        self.move_log.process(&self.block);
+        // The Capture button shows what it would keep: a new phrase, or one
+        // more bar of it, is a change for the screen (once a bar at most).
+        let pending = self.capture.pending();
+        if pending != self.pending {
+            self.pending = pending;
+            self.changed = true;
+        }
+        self.recorder.process(&self.view, &self.block);
+        // Live to song follows the transport and the cues that started.
+        let song_was = self.song_rec.recording();
+        self.song_rec.period(&self.block, self.player.started());
+        // Cues that started on a bar line become the tracks' launches: the
+        // view is compiled again.
+        let mut compile = false;
+        for i in 0..self.player.started().len() {
+            let st = self.player.started()[i];
+            self.perform.started(&mut self.project, &st);
+            st.apply(&mut self.launches, &mut self.cues);
+            compile = true;
+        }
+        // Follow actions coming due are cued for their bar lines.
+        if self.transport.state().rolling() {
+            let bar = self.transport.meter().bar_ticks();
+            compile |= self
+                .perform
+                .due(
+                    &mut self.project,
+                    &mut self.launches,
+                    &mut self.cues,
+                    self.transport.position(),
+                    bar,
+                )
+                .changed();
+        }
+        // Recorded and erased notes and locks go into the clips and, in
+        // place, into the view, unless it has no room left.
+        let mut recorded = false;
+        for i in 0..self.player.erased().len() {
+            let e = self.player.erased()[i];
+            if self.takes.erase(&mut self.project, &e) {
+                recorded = true;
+                compile |= !self.view.remove_note(e.track, e.slot, &e.note);
+            }
+        }
+        for i in 0..self.player.erased_locks().len() {
+            let e = self.player.erased_locks()[i];
+            if self.takes.erase_lock(&mut self.project, &e) {
+                recorded = true;
+                compile |= !self.view.remove_lock(e.track, e.slot, &e.lock);
+            }
+        }
+        for i in 0..self.recorder.taken().len() {
+            let k = self.recorder.taken()[i];
+            if self.takes.add(&mut self.project, &k).is_ok() {
+                recorded = true;
+                compile |= !self.view.add_note(k.track, k.slot, &k.note);
+            }
+        }
+        for i in 0..self.recorder.taken_locks().len() {
+            let k = self.recorder.taken_locks()[i];
+            if let Ok(old) = self.takes.add_lock(&mut self.project, &k) {
+                recorded = true;
+                compile |= !self.view.add_lock(k.track, k.slot, &k.lock, old.as_ref());
+            }
+        }
+        for k in self.recorder.taken_moves() {
+            let points = self.recorder.move_points(k);
+            if self.takes.put_move(&mut self.project, k, points).is_ok() {
+                recorded = true;
+                compile |= !self
+                    .view
+                    .put_move(k.track, k.slot, k.target, k.map, points, k.len);
+            }
+        }
+        // The transport stopped: what live to song recorded goes into the
+        // song (it compiles).
+        if song_was && !self.song_rec.recording() && self.song_rec.waiting() {
+            self.song_note = Some(match self.keep_song() {
+                Ok(line) => format!("rec song: {line}"),
+                Err(e) => e,
+            });
+        }
+        if compile {
+            // The clips only gained or lost notes and locks, and cues became
+            // launches of clips they had compiled with, so this compiles.
+            let _ = self.compile();
+        } else {
+            self.recorded |= recorded;
+            self.since_told += u64::from(frames);
+            if self.recorded && self.since_told >= self.tell_every {
+                self.changed = true;
+                self.recorded = false;
+                self.since_told = 0;
+            }
+        }
+        if self.metronome {
+            for span in self.block.spans() {
+                if matches!(span.state, State::CountIn | State::Recording) {
+                    let bar = span.meter.bar_ticks();
+                    for (tick, offset) in span.lines(span.meter.beat_ticks()) {
+                        self.click.schedule(offset, tick.rem_euclid(bar) == 0);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Add the click to the rendered period; returns the peak afterwards.
+    pub fn mix_click(&mut self, left: &mut [f32], right: &mut [f32]) -> f32 {
+        self.click.mix(left, right)
+    }
+
+    /// The transport's description of the last period (for the looper).
+    pub fn block(&self) -> &Block {
+        &self.block
+    }
+
+    /// The song position as bar.beat.tick, for log lines.
+    pub fn position_text(&self) -> String {
+        let t = &self.transport;
+        t.meter().position(t.position()).to_string()
+    }
+
+    pub fn info(&self) -> TransportInfo {
+        TransportInfo::of(&self.transport)
+    }
+
+    /// True once after the clips, launches or takes changed. Notes and
+    /// locks being recorded are told at most every quarter second.
+    pub fn take_changed(&mut self) -> bool {
+        std::mem::take(&mut self.changed)
+    }
+
+    /// Everything the screens show.
+    pub fn state(&self) -> TimeState {
+        let mut st = TimeState::from_engine(
+            self.info(),
+            &self.project,
+            &self.launches,
+            self.armed,
+            &self.takes,
+        );
+        st.capture = self.pending.map(|p| bars_label(p.bars));
+        st.cues = self.cues.clone();
+        st.scene_playing = self.perform.playing().map(|p| p.row);
+        st.scene_cued = self.perform.cued();
+        st.morph = self.morph;
+        st.song_view = self.song_view;
+        st.song_on = self.song;
+        st.selected = self.selected;
+        st.song_rec = self.song_rec.armed();
+        st
+    }
+
+    /// Notes and locks lost because a table was full (should stay 0).
+    pub fn dropped(&self) -> u64 {
+        self.sink.dropped
+            + self.recorder.dropped()
+            + self.player.stats().dropped
+            + self.capture.dropped()
+            + self.locks_dropped
+    }
+
+    /// The time engine's part of the status line.
+    pub fn describe(&self) -> String {
+        let t = &self.transport;
+        format!(
+            "time: {:?} at {}, {:.1} BPM, {} takes, {} notes or locks lost to full tables",
+            t.state(),
+            t.meter().position(t.position()),
+            t.bpm(),
+            self.takes.done().len(),
+            self.dropped()
+        )
+    }
+}
+
+/// "take 3" or "capture 2", for log lines.
+fn take_name(row: Option<(bool, u32)>) -> String {
+    match row {
+        Some((true, n)) => format!("capture {n}"),
+        Some((false, n)) => format!("take {n}"),
+        None => "take".into(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_morph_bar_runs_the_scene_morph_on_the_mixers_mod_engine() {
+        use mpfree_fx::{ids::mixer as mx, StripId};
+        use mpfree_seq::mpfree_param::{Owner, ParamAddr, Strip};
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut mix = crate::mixing::MixHost::new(RATE, 0.0, 6.0);
+        let lp = crate::mixing::LOOP;
+        let vol = ParamAddr::new(Owner::Strip(Strip::Track(lp as u8)), mx::VOLUME);
+        let was = mix.mixer.param(StripId::Track(lp), mx::VOLUME);
+        h.project
+            .scene_mut(0)
+            .unwrap()
+            .set_value(vol, -24.0)
+            .unwrap();
+        h.project
+            .scene_mut(1)
+            .unwrap()
+            .set_value(vol, -2.0)
+            .unwrap();
+        let run = |mix: &mut crate::mixing::MixHost, from: u64| {
+            let z = [0f32; crate::PERIOD];
+            let (mut l, mut r) = ([0f32; crate::PERIOD], [0f32; crate::PERIOD]);
+            for i in from..from + 40 {
+                let ctx = mpfree_fx::mpfree_node::Ctx::new(RATE, i * crate::PERIOD as u64);
+                mix.period(&ctx, (&z, &z), (&z, &z), (&z, &z), &mut l, &mut r);
+            }
+        };
+        // The crossfader's first move loads rows 1 and 2.
+        let line = h
+            .morph(TimeAction::Morph(1.0), &mut mix.modu, &mix.mixer)
+            .unwrap();
+        assert_eq!(line, "morph: rows 1 and 2, 1 parameters");
+        assert!(h.state().morph.on);
+        run(&mut mix, 0);
+        assert!((mix.mixer.param(StripId::Track(lp), mx::VOLUME) + 2.0).abs() < 0.05);
+        // Other rows while morphing: on A and B at once.
+        h.project
+            .scene_mut(3)
+            .unwrap()
+            .set_value(vol, -12.0)
+            .unwrap();
+        h.morph(
+            TimeAction::MorphRows { a: 0, b: 3 },
+            &mut mix.modu,
+            &mix.mixer,
+        )
+        .unwrap();
+        run(&mut mix, 40);
+        assert!((mix.mixer.param(StripId::Track(lp), mx::VOLUME) + 12.0).abs() < 0.05);
+        assert_eq!(
+            h.morph(TimeAction::SnapBack, &mut mix.modu, &mix.mixer)
+                .unwrap(),
+            "morph: snapped back"
+        );
+        run(&mut mix, 80);
+        assert!((mix.mixer.param(StripId::Track(lp), mx::VOLUME) - was).abs() < 0.05);
+        assert!(!h.state().morph.on);
+        // Save: row 6 stores the mixer as it is.
+        let line = h
+            .morph(TimeAction::SaveScene(5), &mut mix.modu, &mix.mixer)
+            .unwrap();
+        assert!(line.starts_with("morph: row 6 stores"), "{line}");
+        // Snap back with nothing loaded does nothing.
+        assert_eq!(
+            h.morph(TimeAction::SnapBack, &mut mix.modu, &mix.mixer)
+                .unwrap(),
+            ""
+        );
+    }
+
+    #[test]
+    fn a_clip_put_from_elsewhere_lands_in_the_first_empty_slot_and_undo_takes_it() {
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut clip = Clip::new("Break phrase", 4 * 960);
+        for k in 0..4u8 {
+            clip.add_note(mpfree_seq::Note::new(i64::from(k) * 960, 480, k, 127))
+                .unwrap();
+        }
+        // Slot 1 of track 1 is taken: the phrase goes in slot 2.
+        h.project.tracks[0].slots[0] = Some(Clip::new("taken", 960));
+        let line = h.put_clip(clip.clone()).unwrap();
+        assert_eq!(line, "phrase: 4 notes in slot 2 of Track 1");
+        assert_eq!(h.project.clip(0, 1), Some(&clip));
+        assert!(h.launches.is_empty(), "not launched");
+        // The armed track takes it.
+        h.act(TimeAction::Arm(Some(2))).unwrap();
+        assert!(h
+            .put_clip(clip.clone())
+            .unwrap()
+            .ends_with("slot 1 of Track 3"));
+        // UNDO on the Clips page takes the last one away, then the first.
+        h.act(TimeAction::Undo).unwrap();
+        assert!(h.project.clip(2, 0).is_none());
+        h.act(TimeAction::Undo).unwrap();
+        assert!(h.project.clip(0, 1).is_none());
+        // A full track says so.
+        for s in 0..SLOTS {
+            h.project.tracks[2].slots[s] = Some(Clip::new("full", 960));
+        }
+        assert!(h.put_clip(clip).unwrap_err().contains("no empty slot"));
+    }
+
+    const RATE: u32 = 44_100;
+    const PERIOD: u32 = 128;
+
+    #[derive(Default)]
+    struct Fake {
+        hits: Vec<(u64, usize, u8)>,
+        frame: u64,
+        stops: usize,
+    }
+
+    impl Pads for Fake {
+        fn hit_at(&mut self, pad: usize, velocity: u8, offset: u32) -> bool {
+            self.hits
+                .push((self.frame + u64::from(offset), pad, velocity));
+            true
+        }
+        fn release_at(&mut self, _pad: usize, _offset: u32) {}
+        fn stop_all(&mut self) {
+            self.stops += 1;
+        }
+    }
+
+    /// Run until frame `to`, pressing `presses` (absolute frame, pad, velocity, frames held) on the way.
+    fn run(h: &mut TimeHost, pads: &mut Fake, to: u64, presses: &[(u64, u8, u8, u64)]) {
+        while pads.frame < to {
+            let end = pads.frame + u64::from(PERIOD);
+            for &(at, pad, v, held) in presses {
+                if (pads.frame..end).contains(&at) {
+                    h.pad(
+                        (at - pads.frame) as u32,
+                        Event::NoteOn {
+                            note: pad,
+                            velocity: v,
+                        },
+                    );
+                }
+                if (pads.frame..end).contains(&(at + held)) {
+                    h.pad(
+                        (at + held - pads.frame) as u32,
+                        Event::NoteOff { note: pad },
+                    );
+                }
+            }
+            h.period(PERIOD, pads);
+            pads.frame = end;
+        }
+    }
+
+    /// Frames per bar at 120 BPM.
+    const BAR: u64 = 88_200;
+
+    /// Perform FX gestures at frames: (frame, value or None for letting go).
+    fn gestures(
+        h: &mut TimeHost,
+        pads: &mut Fake,
+        to: u64,
+        addr: mpfree_play::mpfree_param::ParamAddr,
+        moves: &[(u64, Option<f32>)],
+    ) {
+        use mpfree_seq::mpfree_moves::Map;
+        while pads.frame < to {
+            let end = pads.frame + u64::from(PERIOD);
+            for &(at, v) in moves {
+                if (pads.frame..end).contains(&at) {
+                    let input = match v {
+                        Some(value) => Input::Move {
+                            addr,
+                            value,
+                            map: Map::linear(0.0, 1.0),
+                        },
+                        None => Input::End { addr },
+                    };
+                    h.gesture((at - pads.frame) as u32, input);
+                }
+            }
+            h.period(PERIOD, pads);
+            pads.frame = end;
+        }
+    }
+
+    /// The XY pad moved while recording becomes a move in the armed
+    /// track's clip, plays back as lane values, and undoes with its take.
+    #[test]
+    fn a_perform_fx_gesture_while_recording_becomes_a_move() {
+        use mpfree_play::mpfree_param::{Owner, ParamAddr, Strip};
+        use mpfree_seq::mpfree_moves::Target;
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut pads = Fake::default();
+        h.command(Command::SetLoop(Some((0, 3840))));
+        h.act(TimeAction::NewClip { track: 0, slot: 0 }).unwrap();
+        let xy = ParamAddr::new(Owner::Insert(Strip::Master, 1), 0);
+        let moves: Vec<(u64, Option<f32>)> = (0..20)
+            .map(|i| (1000 + i * 2000, Some(i as f32 / 20.0)))
+            .chain([(45_000, None)])
+            .collect();
+        gestures(&mut h, &mut pads, BAR - 1000, xy, &moves);
+        let lane = |h: &TimeHost| {
+            h.project
+                .clip(0, 0)
+                .unwrap()
+                .moves
+                .lane(Target::Fixed(xy))
+                .map(|l| l.points.len())
+        };
+        assert!(lane(&h).is_some_and(|n| n >= 2), "{:?}", lane(&h));
+        assert_eq!(h.view, {
+            let mut v = PlayView::compile_cued(&h.project, &h.launches, &h.cues).unwrap();
+            v.set_armed(h.armed);
+            v.make_room(RECORD_ROOM, RECORD_ROOM);
+            v
+        });
+        h.act(TimeAction::Transport(Command::Record)).unwrap();
+        // The next pass plays it as lane values.
+        let mut lanes = 0;
+        while pads.frame < 2 * BAR {
+            h.period(PERIOD, &mut pads);
+            pads.frame += u64::from(PERIOD);
+            lanes += h.sink.out[..h.sink.n]
+                .iter()
+                .filter(|o| matches!(o.event, Event::Lane { addr, .. } if addr == xy))
+                .count();
+        }
+        assert!(lanes > 20, "{lanes}");
+        assert_eq!(h.act(TimeAction::Undo).unwrap(), "undo: take 1");
+        assert_eq!(lane(&h), None);
+        assert_eq!(h.dropped(), 0);
+    }
+
+    /// CAPTURE keeps the moves made over the phrase it keeps.
+    #[test]
+    fn capture_keeps_the_moves_made_over_its_phrase() {
+        use mpfree_play::mpfree_param::{OnTrack, Owner, ParamAddr, RelAddr};
+        use mpfree_seq::mpfree_moves::Target;
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut pads = Fake::default();
+        h.command(Command::Play);
+        run(&mut h, &mut pads, BAR / 2, &[]);
+        let knob = ParamAddr::new(Owner::Inst(0), 5);
+        // A pad in bar 2 and a gesture over it.
+        let notes = [(BAR + 1000, 4, 100, 2000)];
+        let mut moves: Vec<(u64, Option<f32>)> = (0..10)
+            .map(|i| (BAR + 3000 + i * 1500, Some(0.1 * i as f32)))
+            .collect();
+        moves.push((BAR + 20_000, None));
+        while pads.frame < 3 * BAR {
+            let end = pads.frame + u64::from(PERIOD);
+            for &(at, pad, v, held) in &notes {
+                if (pads.frame..end).contains(&at) {
+                    h.pad(
+                        (at - pads.frame) as u32,
+                        Event::NoteOn {
+                            note: pad,
+                            velocity: v,
+                        },
+                    );
+                }
+                if (pads.frame..end).contains(&(at + held)) {
+                    h.pad(
+                        (at + held - pads.frame) as u32,
+                        Event::NoteOff { note: pad },
+                    );
+                }
+            }
+            for &(at, v) in &moves {
+                if (pads.frame..end).contains(&at) {
+                    let input = match v {
+                        Some(value) => Input::Move {
+                            addr: knob,
+                            value,
+                            map: mpfree_seq::mpfree_moves::Map::linear(0.0, 1.0),
+                        },
+                        None => Input::End { addr: knob },
+                    };
+                    h.gesture((at - pads.frame) as u32, input);
+                }
+            }
+            h.period(PERIOD, &mut pads);
+            pads.frame = end;
+        }
+        assert!(h.state().done.is_empty(), "nothing was recorded");
+        let line = h.act(TimeAction::Capture).unwrap();
+        assert_eq!(
+            line,
+            "capture 1: 1 notes and 1 move, 1 bar, new clip in slot 1 of Track 1"
+        );
+        let target = Target::Track(RelAddr::new(OnTrack::Inst, 5));
+        let points = h
+            .project
+            .clip(0, 0)
+            .unwrap()
+            .moves
+            .lane(target)
+            .map(|l| l.points.clone());
+        let points = points.expect("the move went into the kept clip");
+        // On the clip's ticks: bar 2 is its bar, from about tick 125.
+        assert!(points[0].tick.abs_diff(130) <= 2, "{points:?}");
+        assert_eq!(
+            points.last().map(|p| p.kind),
+            Some(mpfree_seq::mpfree_moves::Kind::End)
+        );
+        assert_eq!(h.act(TimeAction::Undo).unwrap(), "undo: capture 1");
+        assert!(h.project.clip(0, 0).is_none());
+    }
+
+    /// The arp's clock follows the transport: None while stopped, the
+    /// transport's anchor while playing (a whole tick on an exact frame),
+    /// `jumped` once at the start and after a locate, and the swing.
+    #[test]
+    fn the_arp_clock_follows_the_transport() {
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut pads = Fake::default();
+        assert!(h.advance(PERIOD));
+        assert_eq!(h.arp_clock(), None, "stopped: the arp runs on its own");
+        h.period(PERIOD, &mut pads);
+        h.command(Command::Play);
+        let mut clocks = Vec::new();
+        for _ in 0..40 {
+            h.advance(PERIOD);
+            clocks.push(h.arp_clock().expect("playing"));
+            h.period(PERIOD, &mut pads);
+        }
+        assert!(
+            clocks[0].jumped && clocks[1..].iter().all(|c| !c.jumped),
+            "{clocks:?}"
+        );
+        for c in &clocks {
+            assert!(c.playing && c.bpm == 120.0 && c.bar_ticks == 3840 && c.swing.is_none());
+            // The anchor's tick and frame agree with the song position at the period's start.
+            let tick = c.anchor_tick as f64
+                + c.frames_since_anchor as f64 * 120.0 * 960.0 / (60.0 * f64::from(RATE));
+            assert!(tick >= 0.0);
+        }
+        let k = clocks.len() - 1;
+        let at = |c: &mpfree_arp::Clock| {
+            c.anchor_tick as f64
+                + c.frames_since_anchor as f64 * 120.0 * 960.0 / (60.0 * f64::from(RATE))
+        };
+        assert!(
+            (at(&clocks[k])
+                - at(&clocks[0])
+                - k as f64 * f64::from(PERIOD) * 960.0 * 2.0 / f64::from(RATE))
+            .abs()
+                < 1e-6
+        );
+        // A locate while playing: jumped once, from the new place.
+        h.command(Command::Locate(3840 * 4));
+        h.advance(PERIOD);
+        let c = h.arp_clock().unwrap();
+        assert!(c.jumped && (at(&c) - 15_360.0).abs() < 1e-6, "{c:?}");
+        h.period(PERIOD, &mut pads);
+        h.advance(PERIOD);
+        assert!(!h.arp_clock().unwrap().jumped);
+        h.period(PERIOD, &mut pads);
+        // Swing on the transport goes to the arp.
+        h.command(Command::SetSwing(mpfree_transport::Swing {
+            grid: 240,
+            amount: 62,
+        }));
+        h.period(PERIOD, &mut pads);
+        h.advance(PERIOD);
+        assert_eq!(h.arp_clock().unwrap().swing, Some((240, 62)));
+        h.period(PERIOD, &mut pads);
+        // Stopped again: None.
+        h.command(Command::Stop);
+        h.period(PERIOD, &mut pads);
+        h.advance(PERIOD);
+        assert_eq!(h.arp_clock(), None);
+    }
+
+    #[test]
+    fn a_new_clip_records_the_pads_and_plays_them_back() {
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut pads = Fake::default();
+        h.command(Command::SetLoop(Some((0, 2 * 3840))));
+        assert!(h
+            .act(TimeAction::NewClip { track: 2, slot: 0 })
+            .unwrap()
+            .contains("recording"));
+        let st = h.state();
+        assert_eq!(st.armed, Some(2));
+        assert_eq!(
+            st.clip(2, 0).map(|c| c.length),
+            Some(2 * 3840),
+            "as long as the loop"
+        );
+        // Record two hits in the first pass; the second pass plays them.
+        run(
+            &mut h,
+            &mut pads,
+            2 * BAR,
+            &[(1000, 4, 100, 2000), (BAR + 500, 9, 80, 2000)],
+        );
+        assert_eq!(h.info().state, State::Recording);
+        assert!(h.take_changed());
+        let st = h.state();
+        assert_eq!(st.done.len(), 1);
+        assert_eq!(st.done[0].added, 2);
+        assert!(
+            pads.hits.is_empty(),
+            "nothing plays the notes back while they are being played"
+        );
+        run(&mut h, &mut pads, 4 * BAR, &[]);
+        // Notes are kept in whole ticks (960 to a beat: 23 frames at 120 BPM).
+        let back: Vec<(u64, usize)> = pads.hits.iter().map(|&(f, p, _)| (f, p)).collect();
+        assert_eq!(back.len(), 2, "{back:?}");
+        for ((f, p), (want, pad)) in back.iter().zip([(2 * BAR + 1000, 4), (3 * BAR + 500, 9)]) {
+            assert!(f.abs_diff(want) <= 23 && *p == pad, "{back:?}");
+        }
+        // Undo takes the take out; the next pass is silent.
+        assert_eq!(h.act(TimeAction::Undo).unwrap(), "undo: take 1");
+        pads.hits.clear();
+        run(&mut h, &mut pads, 6 * BAR, &[]);
+        assert!(pads.hits.is_empty());
+        assert_eq!(h.act(TimeAction::Redo).unwrap(), "redo: take 1");
+        h.act(TimeAction::Transport(Command::Record)).unwrap();
+        run(&mut h, &mut pads, 8 * BAR, &[]);
+        assert_eq!(pads.hits.len(), 2, "redo brings both back");
+        assert_eq!(h.dropped(), 0);
+    }
+
+    /// A knob turned while a pad is held and the track records becomes a
+    /// parameter lock on that pad's note, and goes with its take.
+    #[test]
+    fn a_knob_turned_while_recording_locks_the_held_pads_note() {
+        use mpfree_play::mpfree_param::{OnTrack, RelAddr};
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut pads = Fake::default();
+        h.act(TimeAction::NewClip { track: 2, slot: 0 }).unwrap();
+        let press = [(1000, 4, 100, 2000)];
+        run(&mut h, &mut pads, 1536, &press);
+        let cutoff = RelAddr::new(OnTrack::Inst, 1);
+        h.knob(0, cutoff.on(2), 0.25);
+        h.knob(64, cutoff.on(2), 0.6);
+        // Another track's knob is not recorded here.
+        h.knob(100, cutoff.on(5), 0.9);
+        run(&mut h, &mut pads, BAR, &press);
+        let clip = h.project.tracks[2].slots[0].as_ref().unwrap();
+        assert_eq!(clip.notes.len(), 1);
+        let locks: Vec<_> = clip
+            .locks
+            .iter()
+            .map(|l| (l.tick, l.sound, l.addr, l.value))
+            .collect();
+        assert_eq!(locks, vec![(clip.notes[0].tick, None, cutoff, 0.6)]);
+        // Played back, the lock goes out for the mixer's mod engine on its
+        // note's frame (the clip's only note is locked, so it never ends).
+        let mut out = Vec::new();
+        for _ in 0..2 * BAR / u64::from(PERIOD) {
+            h.period(PERIOD, &mut pads);
+            out.extend_from_slice(h.locks());
+        }
+        assert!(
+            out.iter()
+                .any(|&(_, a, v)| a == cutoff.on(2) && v == Some(0.6)),
+            "{out:?}"
+        );
+        assert_eq!(h.dropped(), 0);
+        assert_eq!(h.act(TimeAction::Undo).unwrap(), "undo: take 1");
+        let clip = h.project.tracks[2].slots[0].as_ref().unwrap();
+        assert!(clip.notes.is_empty() && clip.locks.is_empty());
+    }
+
+    /// Per-track arps with track `track`'s arp playing up in sixteenths.
+    fn arp_up(track: usize) -> TrackArps {
+        use mpfree_arp::{Mode, Order, Rate, Settings};
+        let mut arps = TrackArps::new(RATE, 120.0);
+        arps.engine(track).unwrap().set_settings(Settings {
+            mode: Mode::Arp,
+            order: Order::Up,
+            rate: Rate::Sixteenth,
+            gate: 50,
+            ..Settings::default()
+        });
+        arps
+    }
+
+    /// Records one bar into a new clip on track 3 (a two-bar loop) through
+    /// the per-track arps: the pads pressed the chord 4, 7, 9 at frame
+    /// 1000 and held it to the bar line, while the app's arp let pads 20
+    /// and 21 be heard. Then plays the next pass and returns its pad hits
+    /// as (frame, pad).
+    fn record_a_chord(h: &mut TimeHost, arps: &mut TrackArps) -> Vec<(u64, usize)> {
+        let mut pads = Fake::default();
+        h.command(Command::SetLoop(Some((0, 2 * 3840))));
+        h.act(TimeAction::NewClip { track: 2, slot: 0 }).unwrap();
+        let on = |note| Event::NoteOn {
+            note,
+            velocity: 100,
+        };
+        while pads.frame < 4 * BAR {
+            let f = pads.frame;
+            let at = |x: u64| {
+                (f..f + u64::from(PERIOD))
+                    .contains(&x)
+                    .then(|| (x - f) as u32)
+            };
+            if let Some(o) = at(1000) {
+                for note in [4, 7, 9] {
+                    h.pad_pressed(o, on(note));
+                }
+                h.pad(o, on(20));
+            }
+            if let Some(o) = at(1000 + 5512) {
+                h.pad(o, Event::NoteOff { note: 20 });
+                h.pad(o, on(21));
+            }
+            if let Some(o) = at(BAR - 100) {
+                for note in [4, 7, 9] {
+                    h.pad_pressed(o, Event::NoteOff { note });
+                }
+                h.pad(o, Event::NoteOff { note: 21 });
+            }
+            h.period_arps(PERIOD, &mut pads, arps);
+            pads.frame += u64::from(PERIOD);
+        }
+        assert!(
+            pads.hits.iter().all(|&(f, _, _)| f >= 2 * BAR),
+            "the first pass only records"
+        );
+        assert_eq!(h.dropped() + arps.dropped(), 0);
+        pads.hits
+            .iter()
+            .filter(|&&(f, _, _)| f >= 2 * BAR)
+            .map(|&(f, p, _)| (f, p))
+            .collect()
+    }
+
+    /// The live pads through a track's arp, while the transport plays: the
+    /// arp steps on the transport's sixteenths (period_arps hands every arp
+    /// the clock), its notes reach the pads as live playing, and the armed
+    /// track records them as heard.
+    #[test]
+    fn the_pads_arp_steps_on_the_transport_grid_and_records_as_heard() {
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut pads = Fake::default();
+        let mut arps = arp_up(0);
+        // Its own tempo differs: the transport's clock puts it on the
+        // transport's grid.
+        arps.engine(0).unwrap().set_tempo(97.0);
+        h.command(Command::SetLoop(Some((0, 2 * 3840))));
+        h.act(TimeAction::NewClip { track: 0, slot: 0 }).unwrap();
+        assert_eq!(h.armed(), Some(0));
+        while pads.frame < 2 * BAR {
+            let f = pads.frame;
+            let at = |x: u64| {
+                (f..f + u64::from(PERIOD))
+                    .contains(&x)
+                    .then(|| (x - f) as u32)
+            };
+            if let Some(o) = at(1000) {
+                arps.pad(
+                    0,
+                    o,
+                    Event::NoteOn {
+                        note: 4,
+                        velocity: 100,
+                    },
+                );
+            }
+            if let Some(o) = at(BAR / 2) {
+                arps.pad(0, o, Event::NoteOff { note: 4 });
+            }
+            h.period_arps(PERIOD, &mut pads, &mut arps);
+            pads.frame += u64::from(PERIOD);
+        }
+        let sixteenth = BAR as f64 / 16.0;
+        let frames: Vec<u64> = pads.hits.iter().map(|&(f, _, _)| f).collect();
+        assert!(frames.len() >= 6 && frames.len() <= 8, "{frames:?}");
+        for &f in &frames {
+            let steps = f as f64 / sixteenth;
+            assert!(
+                (steps - steps.round()).abs() * sixteenth <= 1.0,
+                "on the transport's grid: {frames:?}"
+            );
+        }
+        assert!(frames[0] >= 1000 && (frames[0] as f64) < 1000.0 + sixteenth);
+        assert!(pads.hits.iter().all(|&(_, p, _)| p == 4));
+        assert_eq!(h.dropped() + arps.dropped(), 0);
+        let clip = h.project.tracks[0].slots[0].as_ref().unwrap();
+        assert_eq!(
+            clip.notes.len(),
+            frames.len(),
+            "every step recorded as heard"
+        );
+    }
+
+    /// "Clips through the arp" on: the track records the chord as pressed
+    /// (not what the app's arp played), and its clip plays back through
+    /// the track's arp, one note per sixteenth.
+    #[test]
+    fn a_through_track_records_the_chord_and_plays_it_through_its_arp() {
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        assert!(h.set_through_arp(2, true));
+        assert!(h.project.tracks[2].through_arp);
+        let mut arps = arp_up(2);
+        let hits = record_a_chord(&mut h, &mut arps);
+        assert!(arps.through(2) && !arps.through(1));
+        let clip = h.project.tracks[2].slots[0].as_ref().unwrap();
+        let mut kept: Vec<u8> = clip.notes.iter().map(|n| n.note).collect();
+        kept.sort();
+        assert_eq!(kept, [4, 7, 9], "the chord, not the arp's notes");
+        let pads: Vec<usize> = hits.iter().map(|&(_, p)| p).collect();
+        assert!(pads.len() >= 12, "{hits:?}");
+        assert_eq!(&pads[..6], &[4, 7, 9, 4, 7, 9], "up, one at a time");
+        let sixteenth = BAR / 16;
+        for w in hits.windows(2) {
+            assert!(w[1].0.abs_diff(w[0].0 + sixteenth) <= 1, "{hits:?}");
+        }
+        assert!(hits[0].0 >= 2 * BAR + 1000 - 23 && hits[0].0 < 2 * BAR + 1000 + sixteenth);
+        // A set_through_arp past the last track says so.
+        assert!(!h.set_through_arp(99, true));
+    }
+
+    /// The switch off (the default, for drums): the track records what was
+    /// heard, and its clip plays as recorded even though its arp is set
+    /// to arpeggiate.
+    #[test]
+    fn a_track_with_the_switch_off_records_and_plays_what_was_heard() {
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut arps = arp_up(2);
+        let hits = record_a_chord(&mut h, &mut arps);
+        let clip = h.project.tracks[2].slots[0].as_ref().unwrap();
+        let kept: Vec<u8> = clip.notes.iter().map(|n| n.note).collect();
+        assert_eq!(kept, [20, 21]);
+        let pads: Vec<usize> = hits.iter().map(|&(_, p)| p).collect();
+        assert_eq!(pads, [20, 21], "{hits:?}");
+        assert!(hits[0].0.abs_diff(2 * BAR + 1000) <= 23);
+        assert!(hits[1].0.abs_diff(2 * BAR + 1000 + 5512) <= 23);
+    }
+
+    /// A clip launched while the music plays waits for the next bar line,
+    /// and the track's clip plays until then.
+    #[test]
+    fn a_launch_while_playing_waits_for_the_bar_line() {
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut pads = Fake::default();
+        let one_bar = |name: &str, notes: &[(i64, u8)]| {
+            let mut c = Clip::new(name, 3840);
+            c.notes = notes
+                .iter()
+                .map(|&(tick, note)| mpfree_seq::Note {
+                    tick,
+                    len: 100,
+                    note,
+                    velocity: 100,
+                    chance: 100,
+                    cond: mpfree_seq::Cond::Always,
+                    ratchet: 1,
+                })
+                .collect();
+            c
+        };
+        h.project.tracks[0].slots[0] = Some(one_bar("A", &[(0, 4), (1920, 4)]));
+        h.project.tracks[0].slots[1] = Some(one_bar("B", &[(0, 9)]));
+        // Stopped: at once.
+        h.act(TimeAction::Launch { track: 0, slot: 0 }).unwrap();
+        assert_eq!(h.state().launch(0).map(|l| l.slot), Some(0));
+        h.command(Command::Play);
+        run(&mut h, &mut pads, BAR + BAR / 2, &[]);
+        h.act(TimeAction::Launch { track: 0, slot: 1 }).unwrap();
+        let st = h.state();
+        assert_eq!(
+            (st.launch(0).map(|l| l.slot), st.cues.len()),
+            (Some(0), 1),
+            "B waits for bar 3"
+        );
+        run(&mut h, &mut pads, 4 * BAR - 1000, &[]);
+        let st = h.state();
+        assert_eq!((st.launch(0).map(|l| l.slot), st.cues.len()), (Some(1), 0));
+        let hits: Vec<(u64, usize)> = pads.hits.iter().map(|&(f, p, _)| (f, p)).collect();
+        let want = [
+            (0, 4),
+            (BAR / 2, 4),
+            (BAR, 4),
+            (BAR + BAR / 2, 4),
+            (2 * BAR, 9),
+            (3 * BAR, 9),
+        ];
+        assert_eq!(hits.len(), want.len(), "{hits:?}");
+        for ((f, p), (at, pad)) in hits.iter().zip(want) {
+            assert!(f.abs_diff(at) <= 23 && *p == pad, "{hits:?}");
+        }
+        assert_eq!(h.dropped(), 0);
+    }
+
+    /// A row's scene button: stopped, the row plays at once; playing, it
+    /// waits for the bar line, where track 2 goes quiet (the scene mutes
+    /// it) and track 1 switches row. Row 2 follows on to row 1 after a bar.
+    #[test]
+    fn a_scene_plays_its_row_with_its_mutes_and_follows_on() {
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut pads = Fake::default();
+        let one_bar = |note: u8| {
+            let mut c = Clip::new("beat", 3840);
+            c.notes = vec![mpfree_seq::Note::new(0, 100, note, 100)];
+            c
+        };
+        for (t, base) in [(0, 4), (1, 30)] {
+            h.project.tracks[t].slots[0] = Some(one_bar(base));
+            h.project.tracks[t].slots[1] = Some(one_bar(base + 1));
+        }
+        let s1 = h.project.scene_mut(1).unwrap();
+        s1.mutes = Some(0b10);
+        s1.follow = Some(mpfree_seq::Follow::after(
+            1,
+            mpfree_seq::FollowAction::Previous,
+        ));
+        h.project.scene_mut(0).unwrap().mutes = Some(0);
+        assert_eq!(h.act(TimeAction::LaunchScene(0)).unwrap(), "scene 1");
+        let st = h.state();
+        assert_eq!((st.launches.len(), st.scene_playing), (2, Some(0)));
+        h.command(Command::Play);
+        run(&mut h, &mut pads, BAR / 2, &[]);
+        h.act(TimeAction::LaunchScene(1)).unwrap();
+        assert_eq!(h.state().scene_cued, Some(1));
+        run(&mut h, &mut pads, 4 * BAR - 1000, &[]);
+        let hits: Vec<(u64, usize)> = pads.hits.iter().map(|&(f, p, _)| (f, p)).collect();
+        // Bar 1: row 1. Bar 2: row 2, track 2 muted. Bar 3: back to row 1
+        // (the follow), track 2 heard again. Bar 4: row 1.
+        let want = [
+            (0, 4),
+            (0, 30),
+            (BAR, 5),
+            (2 * BAR, 4),
+            (2 * BAR, 30),
+            (3 * BAR, 4),
+            (3 * BAR, 30),
+        ];
+        assert_eq!(hits.len(), want.len(), "{hits:?}");
+        for ((f, p), (at, pad)) in hits.iter().zip(want) {
+            assert!(f.abs_diff(at) <= 23 && *p == pad, "{hits:?}");
+        }
+        let st = h.state();
+        assert_eq!(
+            (st.scene_playing, st.scene_cued, st.tracks[1].mute),
+            (Some(0), None, false)
+        );
+        assert_eq!(h.act(TimeAction::StopAll).unwrap(), "stop all");
+        run(&mut h, &mut pads, 6 * BAR, &[]);
+        assert!(h.state().launches.is_empty());
+        assert!(h.act(TimeAction::LaunchScene(SLOTS)).is_err());
+        assert_eq!(h.dropped(), 0);
+    }
+
+    /// Two one-bar rows become a song (Scenes → song), which plays in song
+    /// mode; a clip launched on track 1 takes it over, and the song plays
+    /// on there after it stops. The song goes back into rows (Song →
+    /// scenes), and a placement is made unique and deleted.
+    #[test]
+    fn rows_become_a_song_that_plays_and_goes_back_into_rows() {
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut pads = Fake::default();
+        let one_bar = |note: u8| {
+            let mut c = Clip::new("beat", 3840);
+            c.notes = vec![mpfree_seq::Note::new(0, 100, note, 100)];
+            c
+        };
+        for (t, base) in [(0, 4), (1, 30)] {
+            h.project.tracks[t].slots[0] = Some(one_bar(base));
+            h.project.tracks[t].slots[1] = Some(one_bar(base + 1));
+        }
+        h.project.tracks[0].slots[5] = Some(one_bar(9));
+        h.project.scene_mut(1).unwrap().name = "Drop".into();
+        // Row 6 has a clip too: three rows, bars 1, 2 and 3.
+        assert_eq!(
+            h.act(TimeAction::ScenesToSong).unwrap(),
+            "scenes → song: 3 rows from bar 1"
+        );
+        let st = h.state();
+        assert_eq!(st.placements.len(), 5);
+        let names: Vec<&str> = st.markers.iter().map(|m| m.1.as_str()).collect();
+        assert_eq!(names, ["Scene 1", "Drop", "Scene 6"]);
+        assert!(!st.song_on);
+        h.act(TimeAction::SongMode(true)).unwrap();
+        assert!(h.state().song_on);
+        h.command(Command::Play);
+        run(&mut h, &mut pads, BAR / 2, &[]);
+        // Track 1 plays row 1's clip in place of the song in bar 2, to its
+        // stop on bar 3, where the song plays on (row 6).
+        h.act(TimeAction::Launch { track: 0, slot: 0 }).unwrap();
+        run(&mut h, &mut pads, BAR + BAR / 2, &[]);
+        h.act(TimeAction::StopClip(0)).unwrap();
+        run(&mut h, &mut pads, 4 * BAR - 1000, &[]);
+        let hits: Vec<(u64, usize)> = pads.hits.iter().map(|&(f, p, _)| (f, p)).collect();
+        let want = [(0, 4), (0, 30), (BAR, 4), (BAR, 31), (2 * BAR, 9)];
+        assert_eq!(hits.len(), want.len(), "{hits:?}");
+        for ((f, p), (at, pad)) in hits.iter().zip(want) {
+            assert!(f.abs_diff(at) <= 23 && *p == pad, "{hits:?}");
+        }
+        // Back into rows: the first run of three empty rows is 3 to 5.
+        assert_eq!(
+            h.act(TimeAction::SongToScenes).unwrap(),
+            "song → scenes: rows 3 to 5"
+        );
+        let p = &h.project;
+        assert_eq!(p.tracks[0].slots[2], p.tracks[0].slots[0]);
+        assert_eq!(p.tracks[1].slots[3], p.tracks[1].slots[1]);
+        assert_eq!(p.tracks[0].slots[4], p.tracks[0].slots[5]);
+        assert_eq!(p.scene(3).unwrap().name, "Drop");
+        // A placement made unique keeps its clip when the slot changes.
+        h.act(TimeAction::SelectPlacement(Some(0))).unwrap();
+        assert_eq!(h.state().selected, Some(0));
+        h.act(TimeAction::MakeUnique(0)).unwrap();
+        assert!(h.state().placements[0].unique);
+        h.act(TimeAction::DeletePlacement(4)).unwrap();
+        let st = h.state();
+        assert_eq!((st.placements.len(), st.selected), (4, None));
+        assert!(h.act(TimeAction::DeletePlacement(9)).is_err());
+        assert_eq!(h.state().placements.len(), 4);
+        h.act(TimeAction::SongView(true)).unwrap();
+        assert!(h.state().song_view);
+        assert_eq!(h.dropped(), 0);
+    }
+
+    /// Rec song on, row 1 then row 2 launched on the grid, STOP: the song
+    /// holds what was played, and plays it back the same in song mode.
+    #[test]
+    fn rec_song_records_the_grid_into_the_song() {
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut pads = Fake::default();
+        let one_bar = |note: u8| {
+            let mut c = Clip::new("beat", 3840);
+            c.notes = vec![mpfree_seq::Note::new(0, 100, note, 100)];
+            c
+        };
+        for (t, base) in [(0, 4), (1, 30)] {
+            h.project.tracks[t].slots[0] = Some(one_bar(base));
+            h.project.tracks[t].slots[1] = Some(one_bar(base + 1));
+        }
+        h.act(TimeAction::LaunchScene(0)).unwrap();
+        h.act(TimeAction::RecSong(true)).unwrap();
+        assert!(h.state().song_rec);
+        h.command(Command::Play);
+        run(&mut h, &mut pads, BAR / 2, &[]);
+        h.act(TimeAction::LaunchScene(1)).unwrap();
+        run(&mut h, &mut pads, 3 * BAR - 1000, &[]);
+        h.command(Command::Stop);
+        run(&mut h, &mut pads, 3 * BAR, &[]);
+        let note = h.take_song_note().unwrap();
+        assert_eq!(
+            note,
+            "rec song: 4 placements and 0 morph points into the song"
+        );
+        let st = h.state();
+        let placed: Vec<(usize, Tick, Tick)> = st
+            .placements
+            .iter()
+            .map(|p| (p.track, p.start, p.start + p.length))
+            .collect();
+        // Bar 1 row 1, bars 2 and 3 row 2, to where it stopped.
+        let end = st.placements[1].start + st.placements[1].length;
+        assert!((2 * 3840 + 3000..3 * 3840).contains(&end), "{placed:?}");
+        assert_eq!(
+            placed,
+            [(0, 0, 3840), (0, 3840, end), (1, 0, 3840), (1, 3840, end)]
+        );
+        let heard = std::mem::take(&mut pads.hits);
+        // Back to the top with nothing launched, in song mode.
+        h.act(TimeAction::RecSong(false)).unwrap();
+        h.act(TimeAction::StopAll).unwrap();
+        h.act(TimeAction::SongMode(true)).unwrap();
+        h.command(Command::Locate(0));
+        h.command(Command::Play);
+        let from = pads.frame;
+        run(&mut h, &mut pads, from + 3 * BAR - 1000, &[]);
+        let again: Vec<(u64, usize)> = pads.hits.iter().map(|&(f, p, _)| (f - from, p)).collect();
+        let heard: Vec<(u64, usize)> = heard.iter().map(|&(f, p, _)| (f, p)).collect();
+        assert_eq!(again.len(), heard.len(), "{again:?} {heard:?}");
+        for (a, b) in again.iter().zip(&heard) {
+            assert!(
+                a.0.abs_diff(b.0) <= 128 && a.1 == b.1,
+                "{again:?} {heard:?}"
+            );
+        }
+        assert_eq!(h.dropped(), 0);
+    }
+
+    /// Pads played over bars 2 and 3 without recording; Capture keeps them
+    /// as a new clip in the armed track that plays on in its place, and
+    /// Undo takes it back.
+    #[test]
+    fn capture_keeps_what_was_played_without_recording() {
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut pads = Fake::default();
+        assert_eq!(
+            h.act(TimeAction::Capture).unwrap(),
+            "capture: nothing new to keep"
+        );
+        h.command(Command::Play);
+        run(&mut h, &mut pads, BAR / 2, &[]);
+        h.take_changed();
+        run(
+            &mut h,
+            &mut pads,
+            3 * BAR + BAR / 2,
+            &[(BAR + 1000, 4, 100, 2000), (2 * BAR + 500, 9, 80, 2000)],
+        );
+        assert!(h.take_changed(), "the Capture button changed");
+        assert_eq!(h.state().capture.as_deref(), Some("2 bars"));
+        assert!(
+            pads.hits.is_empty() && h.state().done.is_empty(),
+            "nothing was recorded or played back"
+        );
+        let line = h.act(TimeAction::Capture).unwrap();
+        assert_eq!(
+            line,
+            "capture 1: 2 notes, 2 bars, new clip in slot 1 of Track 1"
+        );
+        let st = h.state();
+        assert_eq!(st.capture, None);
+        assert_eq!(
+            (
+                st.clip(0, 0).map(|c| (c.name.as_str(), c.notes)),
+                st.launch(0).is_some()
+            ),
+            (Some(("Capture 1", 2)), true)
+        );
+        // It plays on in its place: it was played over bars 2 and 3, so bar
+        // 4 is its first bar again. Kept halfway through bar 4, it plays
+        // its second bar's note in bar 5 and its first bar's in bar 6.
+        run(&mut h, &mut pads, 6 * BAR, &[]);
+        let back: Vec<(u64, usize)> = pads.hits.iter().map(|&(f, p, _)| (f, p)).collect();
+        assert_eq!(back.len(), 2, "{back:?}");
+        for ((f, p), (want, pad)) in back.iter().zip([(4 * BAR + 500, 9), (5 * BAR + 1000, 4)]) {
+            assert!(f.abs_diff(want) <= 23 && *p == pad, "{back:?}");
+        }
+        assert_eq!(h.act(TimeAction::Undo).unwrap(), "undo: capture 1");
+        let st = h.state();
+        assert!(st.clip(0, 0).is_none() && st.launch(0).is_none());
+        assert_eq!(
+            st.capture.as_deref(),
+            Some("2 bars"),
+            "it can be kept again"
+        );
+        assert_eq!(h.act(TimeAction::Redo).unwrap(), "redo: capture 1");
+        assert_eq!(h.dropped(), 0);
+    }
+
+    /// Recording puts each note into the clip and the play view in place:
+    /// once the take has begun, recording periods (a new pass replacing the
+    /// last one, sixteen notes a second) neither compile nor allocate, the
+    /// view is what compiling again would give, and the screens hear about
+    /// the notes at most four times a second.
+    #[test]
+    fn recording_neither_compiles_nor_allocates_on_every_note() {
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut pads = Fake {
+            hits: Vec::with_capacity(100_000),
+            ..Fake::default()
+        };
+        h.command(Command::SetLoop(Some((0, 2 * 3840))));
+        h.act(TimeAction::NewClip { track: 2, slot: 0 }).unwrap();
+        let presses: Vec<(u64, u8, u8, u64)> = (0..200u64)
+            .map(|i| (1000 + i * 2756, (i % 16) as u8, 60 + (i % 60) as u8, 1000))
+            .collect();
+        // The first notes begin the take (its entry in the history).
+        run(&mut h, &mut pads, BAR / 2, &presses);
+        assert_eq!(h.info().state, State::Recording);
+        h.take_changed();
+        let mut told = 0;
+        let ((), allocs) = crate::sys::alloc_count::calls(|| {
+            while pads.frame < 6 * BAR {
+                let to = pads.frame + u64::from(PERIOD);
+                run(&mut h, &mut pads, to, &presses);
+                told += usize::from(h.take_changed());
+            }
+        });
+        assert_eq!(allocs, 0, "allocations or frees while recording");
+        let notes = h.state().clip(2, 0).map(|c| c.notes).unwrap();
+        assert!(notes > 40, "{notes} notes in the clip");
+        assert!(!pads.hits.is_empty(), "the clip plays what it recorded");
+        let mut fresh = PlayView::compile_cued(&h.project, &h.launches, &h.cues).unwrap();
+        fresh.set_armed(h.armed);
+        assert_eq!(h.view, fresh, "the view in place is what compiling gives");
+        // 5.5 bars of 2 s: the notes at most 4 times a second (44), and the
+        // Capture button once a bar; one each note would be 176.
+        assert!((10..=52).contains(&told), "told the screens {told} times");
+    }
+
+    #[test]
+    fn a_slot_with_a_clip_is_not_made_again() {
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        h.act(TimeAction::NewClip { track: 0, slot: 3 }).unwrap();
+        assert!(h.act(TimeAction::NewClip { track: 0, slot: 3 }).is_err());
+        assert!(h.act(TimeAction::NewClip { track: 99, slot: 0 }).is_err());
+    }
+
+    #[test]
+    fn the_click_counts_in_and_follows_recording_only() {
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut pads = Fake::default();
+        let (mut l, mut r) = ([0f32; PERIOD as usize], [0f32; PERIOD as usize]);
+        let mut onsets = Vec::new();
+        let mut frame = 0u64;
+        let mut prev = 0f32;
+        let mut step =
+            |h: &mut TimeHost, pads: &mut Fake, frame: &mut u64, onsets: &mut Vec<u64>| {
+                h.period(PERIOD, pads);
+                l.fill(0.0);
+                r.fill(0.0);
+                h.mix_click(&mut l, &mut r);
+                // An onset: sound after silence (a blip dies away within 0.1 s).
+                for (f, &s) in l.iter().enumerate() {
+                    if s != 0.0 && prev == 0.0 {
+                        onsets.push(*frame + f as u64);
+                    }
+                    prev = s;
+                }
+                pads.frame += u64::from(PERIOD);
+                *frame += u64::from(PERIOD);
+            };
+        // Playing: no click.
+        h.command(Command::Play);
+        while frame < BAR {
+            step(&mut h, &mut pads, &mut frame, &mut onsets);
+        }
+        assert!(onsets.is_empty(), "{onsets:?}");
+        h.command(Command::Stop);
+        h.command(Command::SetCountIn(1));
+        h.command(Command::Record);
+        let start = frame;
+        while frame < start + 2 * BAR {
+            step(&mut h, &mut pads, &mut frame, &mut onsets);
+        }
+        // One bar of count-in and one of recording: eight beats, half a second apart.
+        assert_eq!(onsets.len(), 8, "{onsets:?}");
+        for w in onsets.windows(2) {
+            assert!((w[1] - w[0]).abs_diff(22_050) <= 1, "{onsets:?}");
+        }
+        assert!(l.iter().chain(&r).all(|s| s.abs() <= 1.0));
+    }
+
+    #[test]
+    fn the_transport_follows_the_apps_tempo() {
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut pads = Fake::default();
+        h.follow_tempo(96.0);
+        h.period(PERIOD, &mut pads);
+        assert_eq!(h.info().bpm, 96.0);
+        h.follow_tempo(96.0);
+        h.period(PERIOD, &mut pads);
+        assert_eq!(h.info().bpm, 96.0);
+    }
+}

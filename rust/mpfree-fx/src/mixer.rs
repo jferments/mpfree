@@ -88,6 +88,19 @@
 //! insert slot into `mpfree-prof` probes, for the Dev tools pages and
 //! `examples/mixer_cost.rs`.
 //!
+//! **A second core** ([`Mixer::set_lane`], off by default): pad channels'
+//! and tracks' inserts can run on another core with a lane
+//! (`mpfree-lanes`). At the start of each of those stages the mixer hands
+//! the lane the inserts of the stage's last strips, about half of the
+//! stage's inserts, and runs the rest itself; it takes them back before
+//! those strips' faders. A strip goes only if its inserts have no sidechain
+//! key, it keys nothing and it is not frozen. The output is the same, bit
+//! for bit, with or without the lane. If the lane is later than
+//! [`Mixer::set_lane`]'s wait, those strips are silent for the block and
+//! play their input dry, without inserts, until their inserts come back;
+//! meanwhile edits wait and their inserts take no events
+//! ([`Mixer::queue_insert`] says false).
+//!
 //! **Real-time safe:** building the mixer, [`Mixer::chain_mut`] and
 //! [`Insert::new`] allocate and belong on the control thread; everything
 //! else, including [`Mixer::edit`], [`Mixer::set_key`] and
@@ -96,7 +109,9 @@
 //! audio thread.
 
 use std::f32::consts::FRAC_PI_2;
+use std::time::{Duration, Instant};
 
+use mpfree_lanes::{Config as LaneConfig, Job, Lane, Setup};
 use mpfree_node::{Ctx, Curve, NodeEvent, ParamInfo, Smooth, Timed, Unit};
 use mpfree_prof::{Probe, Span};
 
@@ -528,6 +543,10 @@ pub struct MixerStats {
     pub nan_resets: u64,
     /// Whether some path needs more latency compensation than the maximum.
     pub misaligned: bool,
+    /// Stages whose inserts went to the second core ([`Mixer::set_lane`]).
+    pub lane_posts: u64,
+    /// Of those, the ones that came back later than the lane's wait.
+    pub lane_late: u64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -1248,6 +1267,8 @@ pub struct Mixer {
     stats: MixerStats,
     profiling: bool,
     probe: Probe,
+    /// Inserts on a second core, when on.
+    split: Option<Box<Split>>,
 }
 
 impl Mixer {
@@ -1316,6 +1337,7 @@ impl Mixer {
             stats: MixerStats::default(),
             profiling: false,
             probe: Probe::new(u64::MAX),
+            split: None,
         };
         m.reorder();
         m.aud = topo.audible(&m.sw);
@@ -1477,7 +1499,7 @@ impl Mixer {
         let Some(k) = self.plan.topo.order(s) else {
             return false;
         };
-        let ok = self.strips[k].chain.queue(slot, t);
+        let ok = !self.away(k) && self.strips[k].chain.queue(slot, t);
         if !ok {
             self.stats.dropped_events += 1;
         }
@@ -1487,7 +1509,9 @@ impl Mixer {
     /// Bypasses an insert or switches it back on (see [`Chain::set_on`]).
     pub fn set_on(&mut self, s: StripId, slot: usize, on: bool) {
         if let Some(k) = self.plan.topo.order(s) {
-            self.strips[k].chain.set_on(slot, on);
+            if !self.away(k) {
+                self.strips[k].chain.set_on(slot, on);
+            }
         }
     }
 
@@ -1500,7 +1524,7 @@ impl Mixer {
     pub fn set_key(&mut self, s: StripId, slot: usize, key: Option<StripId>) -> bool {
         let topo = self.plan.topo;
         let Some(k) = topo.order(s) else { return false };
-        if slot >= self.strips[k].chain.len() {
+        if slot >= self.strips[k].chain.len() || self.split.as_ref().is_some_and(|sp| sp.away) {
             return false;
         }
         let tag = match key {
@@ -1742,6 +1766,66 @@ impl Mixer {
     /// Master safety, to set its mode, trim and ceiling.
     pub fn safety_mut(&mut self) -> &mut MasterSafety {
         &mut self.safety
+    }
+
+    /// Runs pad channels' and tracks' inserts partly on another core with
+    /// a lane (see the module docs), or stops that with `None`. `wait` is
+    /// how long the mixer waits for the lane each stage before it plays
+    /// those strips without their inserts; set it to about a period (the
+    /// lane is late only when the period is lost anyway). Says how the
+    /// lane started (its thread, pinning and priority). Control thread:
+    /// starts or stops a thread, and waits up to a second for inserts still
+    /// on the lane before stopping it.
+    pub fn set_lane(&mut self, lane: Option<LaneConfig>, wait: Duration) -> Option<Setup> {
+        if let Some(mut old) = self.split.take() {
+            if old.away {
+                if let Ok(job) = old.lane.join(Instant::now() + Duration::from_secs(1)) {
+                    give_back(job, &mut self.strips);
+                }
+            }
+        }
+        let cfg = lane?;
+        let slots = self.strips.first().map_or(8, |st| st.chain.capacity());
+        let parts = (0..self.plan.topo.pads.max(self.plan.topo.tracks))
+            .map(|_| {
+                let mut chain = Chain::with_capacity(slots);
+                chain.prepare(self.rate, self.max_block);
+                Part {
+                    k: 0,
+                    chain,
+                    buf: [vec![0.0; self.max_block], vec![0.0; self.max_block]],
+                }
+            })
+            .collect();
+        let job = Chains {
+            parts,
+            n: 0,
+            len: 0,
+            ctx: CtxCopy::default(),
+        };
+        let lane = Lane::new(job, cfg);
+        let setup = lane.setup().clone();
+        self.split = Some(Box::new(Split {
+            lane,
+            wait,
+            held: Bits::default(),
+            posted: false,
+            away: false,
+            block: 0,
+        }));
+        Some(setup)
+    }
+
+    /// Whether inserts run partly on a second core ([`Mixer::set_lane`]).
+    pub fn lane_on(&self) -> bool {
+        self.split.is_some()
+    }
+
+    /// Whether strip `k`'s inserts are away on a late lane.
+    fn away(&self, k: usize) -> bool {
+        self.split
+            .as_ref()
+            .is_some_and(|sp| sp.away && sp.held.get(k))
     }
 
     pub fn stats(&self) -> MixerStats {
@@ -2017,8 +2101,16 @@ impl Mixer {
         }
         let whole = self.profiling.then(Span::start);
         self.rolling = ctx.playing;
-        self.apply_edits();
-        self.align(false);
+        // Inserts away on a late lane come back first if they are done;
+        // until they are, edits and latency changes wait.
+        let away = match self.split.as_mut() {
+            Some(sp) if sp.away => !reclaim(sp, &mut self.strips),
+            _ => false,
+        };
+        if !away {
+            self.apply_edits();
+            self.align(false);
+        }
         self.start_ducks();
         let sw_end = self.gather_globals();
         let Mixer {
@@ -2040,11 +2132,30 @@ impl Mixer {
             fz_buf,
             fz_step,
             ring_quiet,
+            split,
             ..
         } = self;
         let (fz_step, ring_quiet) = (*fz_step, *ring_quiet);
         let profiling = *profiling;
         let (topo, tap_step, duck_step, line_len) = (plan.topo, *tap_step, *duck_step, *line_len);
+        // Where the stages a lane can take start in the order: pad channels
+        // and tracks.
+        let lane_stages = if split.as_ref().is_some_and(|sp| !sp.away) {
+            stage_starts(order, &topo)
+        } else {
+            [usize::MAX; 2]
+        };
+        let mut keyed = Bits::default();
+        if lane_stages[0] != usize::MAX || lane_stages[1] != usize::MAX {
+            for st in strips.iter() {
+                for slot in 0..st.chain.len() {
+                    if let Some(j) = st.chain.key(slot) {
+                        keyed.set(j as usize, true);
+                    }
+                }
+            }
+        }
+        let mut remote = Bits::default();
         // With no capture point in use, nothing needs to look for one.
         let caps: &mut [Capture] = if caps.iter().any(|c| c.src.is_some()) {
             caps
@@ -2064,17 +2175,44 @@ impl Mixer {
             guard(st, len, stats);
             hold_input(st, len, tap_step, scratch);
         }
-        for &k in order.iter() {
+        for (i, &k) in order.iter().enumerate() {
             let k = k as usize;
+            // With no lane (the usual case) nothing here looks at one.
+            let lane_did = match split.as_deref_mut() {
+                None => false,
+                Some(sp) => {
+                    if lane_stages.contains(&i) && !sp.away {
+                        let end = order[i..]
+                            .iter()
+                            .position(|&j| topo.role(j as usize).0 != topo.role(k).0)
+                            .map_or(order.len(), |n| i + n);
+                        let want = pick(strips, &order[i..end], &keyed);
+                        remote = post(sp, strips, &order[i..end], &want, caps, &base, len, stats);
+                    }
+                    let did = remote.get(k);
+                    if did && sp.posted {
+                        join(sp, strips, stats);
+                    }
+                    did
+                }
+            };
             let (lo, rest) = strips.split_at_mut(k);
             let Some((st, hi)) = rest.split_first_mut() else {
                 break;
             };
             let span = profiling.then(Span::start);
-            let fed = guard(st, len, stats);
-            take(caps, k, CapturePoint::BeforeInserts, &st.buf, 0, len);
+            let fed = if lane_did {
+                // Its input was checked and taken before the lane had it.
+                sounding(&st.buf[0][..len], &st.buf[1][..len])
+            } else {
+                let fed = guard(st, len, stats);
+                take(caps, k, CapturePoint::BeforeInserts, &st.buf, 0, len);
+                fed
+            };
             let mut frozen = false;
-            {
+            // An empty chain that is not frozen does nothing: skip it.
+            let idle = matches!(st.fz, Fz::Off) && st.chain.is_empty();
+            if !lane_did && !idle {
                 let key = |j: u16| {
                     let j = j as usize;
                     let s = if j < k {
@@ -2244,6 +2382,211 @@ impl Mixer {
             self.probe.stop(span, len as u32);
         }
     }
+}
+
+/// What a block's inserts need of its [`Ctx`], kept by the lane's job (a
+/// `Ctx` borrows its sidechain, so it cannot be kept). Lane strips have no
+/// keys.
+#[derive(Clone, Copy, Debug, Default)]
+struct CtxCopy {
+    rate: u32,
+    frame: u64,
+    bpm: f64,
+    beats: f64,
+    playing: bool,
+}
+
+/// A strip's inserts and block, moved to the lane for a stage.
+struct Part {
+    k: u16,
+    chain: Chain,
+    buf: [Vec<f32>; 2],
+}
+
+/// The lane's job: the inserts of some strips of one stage. Between
+/// stages it holds spare (empty) chains and all-zero blocks, which the
+/// strips hold while their own are on the lane.
+struct Chains {
+    parts: Vec<Part>,
+    n: usize,
+    len: usize,
+    ctx: CtxCopy,
+}
+
+impl Job for Chains {
+    fn run(&mut self, _block: u64) {
+        let c = self.ctx;
+        let ctx = Ctx {
+            rate: c.rate,
+            frame: c.frame,
+            bpm: c.bpm,
+            beats: c.beats,
+            playing: c.playing,
+            sidechain: None,
+        };
+        let len = self.len;
+        for p in &mut self.parts[..self.n] {
+            let [l, r] = &mut p.buf;
+            p.chain.process(&ctx, &mut l[..len], &mut r[..len]);
+        }
+    }
+}
+
+/// Inserts on a second core ([`Mixer::set_lane`]).
+struct Split {
+    lane: Lane<Chains>,
+    wait: Duration,
+    /// The strips whose inserts are on the lane (posted, or away).
+    held: Bits,
+    /// Posted this stage and not joined yet.
+    posted: bool,
+    /// A join was late: the lane still has those strips' inserts.
+    away: bool,
+    block: u64,
+}
+
+/// Where the pad channels' and the tracks' stages start in `order`
+/// (`usize::MAX` for a stage with no strips).
+fn stage_starts(order: &[u16], topo: &Topo) -> [usize; 2] {
+    let first = |role: Role| {
+        order
+            .iter()
+            .position(|&k| topo.role(k as usize).0 == role)
+            .unwrap_or(usize::MAX)
+    };
+    [first(Role::Pad), first(Role::Track)]
+}
+
+/// The strips of a stage (`stage`, in processing order) whose inserts go
+/// to the lane: from the stage's end back, strips that may go, while the
+/// lane's share of the stage's inserts stays at half or under. The end of
+/// the stage, so the strips before them run here while the lane works.
+fn pick(strips: &[Strip], stage: &[u16], keyed: &Bits) -> Bits {
+    let total: usize = stage.iter().map(|&k| strips[k as usize].chain.len()).sum();
+    let half = total.div_ceil(2);
+    let mut out = Bits::default();
+    let mut taken = 0;
+    for &k in stage.iter().rev() {
+        let k = k as usize;
+        let st = &strips[k];
+        let n = st.chain.len();
+        let free = n > 0
+            && !keyed.get(k)
+            && matches!(st.fz, Fz::Off)
+            && st.frozen.is_none()
+            && (0..n).all(|slot| st.chain.key(slot).is_none());
+        if free && taken + n <= half {
+            out.set(k, true);
+            taken += n;
+        }
+    }
+    out
+}
+
+/// Hands the lane the inserts of the strips in `remote` (checking and
+/// capturing their input first) and posts the stage. Returns the strips
+/// the lane has; if it will not take them, none, and they run here as
+/// usual.
+#[allow(clippy::too_many_arguments)]
+fn post(
+    sp: &mut Split,
+    strips: &mut [Strip],
+    stage: &[u16],
+    remote: &Bits,
+    caps: &mut [Capture],
+    base: &Ctx,
+    len: usize,
+    stats: &mut MixerStats,
+) -> Bits {
+    if !remote.any() {
+        return Bits::default();
+    }
+    let Some(job) = sp.lane.job() else {
+        return Bits::default();
+    };
+    let mut n = 0;
+    for &k in stage {
+        let k = k as usize;
+        if !remote.get(k) || n == job.parts.len() {
+            continue;
+        }
+        let st = &mut strips[k];
+        guard(st, len, stats);
+        take(caps, k, CapturePoint::BeforeInserts, &st.buf, 0, len);
+        let p = &mut job.parts[n];
+        p.k = k as u16;
+        std::mem::swap(&mut st.chain, &mut p.chain);
+        std::mem::swap(&mut st.buf, &mut p.buf);
+        sp.held.set(k, true);
+        n += 1;
+    }
+    job.n = n;
+    job.len = len;
+    job.ctx = CtxCopy {
+        rate: base.rate,
+        frame: base.frame,
+        bpm: base.bpm,
+        beats: base.beats,
+        playing: base.playing,
+    };
+    sp.block += 1;
+    if sp.lane.post(sp.block).is_ok() {
+        sp.posted = true;
+        stats.lane_posts += 1;
+    } else if let Some(job) = sp.lane.job() {
+        // Never reached (the lane only refuses while away): they run here.
+        give_back(job, strips);
+        sp.held = Bits::default();
+    }
+    sp.held
+}
+
+/// Takes the stage's inserts back from the lane, with their output. Late:
+/// the strips keep the spare chains and silent blocks for this block.
+fn join(sp: &mut Split, strips: &mut [Strip], stats: &mut MixerStats) {
+    sp.posted = false;
+    match sp.lane.join(Instant::now() + sp.wait) {
+        Ok(job) => {
+            give_back(job, strips);
+            sp.held = Bits::default();
+        }
+        Err(_) => {
+            sp.away = true;
+            stats.lane_late += 1;
+        }
+    }
+}
+
+/// Puts each part's chain and block back in its strip, and the spares back
+/// in the job.
+fn give_back(job: &mut Chains, strips: &mut [Strip]) {
+    for p in &mut job.parts[..job.n] {
+        let st = &mut strips[p.k as usize];
+        std::mem::swap(&mut st.chain, &mut p.chain);
+        std::mem::swap(&mut st.buf, &mut p.buf);
+    }
+    job.n = 0;
+}
+
+/// After a late join: if the lane is done, each strip gets its inserts
+/// back and keeps the block it holds now (this block's input); the late
+/// output is dropped and that block becomes a spare again. True when
+/// nothing is away any more.
+fn reclaim(sp: &mut Split, strips: &mut [Strip]) -> bool {
+    let Some(job) = sp.lane.job() else {
+        return false;
+    };
+    for p in &mut job.parts[..job.n] {
+        let st = &mut strips[p.k as usize];
+        std::mem::swap(&mut st.chain, &mut p.chain);
+        for b in &mut p.buf {
+            b.fill(0.0);
+        }
+    }
+    job.n = 0;
+    sp.held = Bits::default();
+    sp.away = false;
+    true
 }
 
 /// Visits strip `k` and, first, the keys inside its stage `lo..hi`.

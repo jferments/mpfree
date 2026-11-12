@@ -9,7 +9,7 @@ meant to grow. Status as of 2026-11-11.
 | --- | --- | --- | --- |
 | Unit and crate tests | Each crate's logic: engines, DSP, parsers, UI layout and drawing | `cargo test` in `rust/`; CI on every PR | Anyone, CI |
 | Host integration | Whole programs with no hardware: headless engine with null audio, session offline check, groove and sampler WAV renders, display previews, C++/Rust WAV parity | CI's `core` and `rust` jobs | CI |
-| ARMv7 under qemu | The device build: static ARM binaries, ABI layouts against the kernel's headers, Hello MPC and UI tests as 32-bit ARM, preview screens | CI's `rust` job | CI |
+| ARMv7 under qemu | The device build: static ARM binaries, ABI layouts against the kernel's headers, the app and UI tests as 32-bit ARM, preview screens | CI's `rust` job | CI |
 | Device tools offline | Survey, backup, kexec and update tools against fake MPCs, fake images and BusyBox | CI's `syntax` job | CI |
 | On the MPC | Real audio, pads, touch, screen | The reference MPC One, round by round with `tools/mpc-one/results.py` | Jay only |
 
@@ -31,15 +31,17 @@ filters, so the check always reports.
 | `lint` | `cargo clippy --workspace --all-targets` with warnings as errors, and `cargo fmt --check`, on a pinned toolchain | ~1 min |
 | `rust` | All workspace tests in debug and release; the `mpfree-bench` no-allocation check; host self-tests and fixed-output renders; C++/Rust WAV parity; the ARMv7 hard-float cross-build, ELF checks, and ARM tests and previews under qemu | ~2-3 min warm |
 | `splash-gl` | SDL3/GLES startup screen built from source and rendered headless with Mesa | ~1 min warm |
+| `instructions` | Instructions per 128-frame block for every `mpfree-bench` case under callgrind, against `rust/mpfree-bench/instructions.txt`; fails when a case rises more than 5 % (see [profiling](../project/profiling.md#instruction-counts-the-instructions-ci-job)) | ~2 min warm |
 | `coverage` | Line coverage per crate (report only, never fails a PR); on `main` and by hand | ~5 min |
 
 The coverage table appears in the run's summary page, and the lcov file is
-kept as an artifact for 14 days.
+kept as an artifact for 7 days. If the account's artifact storage is full,
+the upload fails without failing the run.
 
 ### Where it runs
 
 GitHub-hosted Actions minutes ran out on 2026-11-11. Since then every job runs
-on two self-hosted runners, `mpfree-ci` and `mpfree-ci-2` (label `mpfree-ci`),
+on four self-hosted runners, `mpfree-ci` to `mpfree-ci-4` (label `mpfree-ci`),
 inside the CI VM `project-after-ci` that also runs Project After's and
 PlantGen's CI. The setup, resource limits, job guard and undo are documented in
 jferments/ci-infrastructure `docs/mpfree-runner.md`.
@@ -62,8 +64,13 @@ Things that differ from GitHub's hosts, and that the workflow handles:
 - Only Jay's own pushes and PRs from this repository's branches run. The
   VM's job guard refuses forks and other actors.
 
-Two runners means at most two jobs at once; the rest queue. A run waiting for
-a runner is waiting, not failed.
+Four runners means at most four jobs at once; the rest queue. A run waiting
+for a runner is waiting, not failed. GitHub's list of runs can show a run as
+queued while its jobs are already running: to see what the runners are doing,
+look at the jobs of each run, not the run's status.
+
+If the account's artifact storage is full, the coverage job's lcov upload
+fails without failing the run (the table is in the run summary anyway).
 
 ## Running it locally
 
@@ -93,10 +100,22 @@ python3 ../tools/ci/coverage_summary.py /tmp/cov.json
 - **New behaviour comes with tests** in the crate that owns it. Engine code
   gets unit tests. Audio output gets a fixed-output or golden check. A parser
   gets tests on bad input as well as good.
-- **Audio-thread code doesn't allocate or block.** `mpfree-fx` and
-  `mpfree-grain` prove this with a counting allocator (`tests/no_alloc.rs`),
-  and CI runs `mpfree-bench --check-allocs` over the profiled engines. New
-  audio paths should do the same.
+- **A sound or screen that changes on purpose gets new golden references** in the
+  same PR, with the reason in the commit:
+  `MPFREE_GOLDEN_BLESS=1 cargo test -p mpfree-bench golden`. The golden
+  test fingerprints each bench case per eighth of its render and channel
+  (level in dB, zero crossings) and allows 0.5 dB and 3 % of crossings, so
+  another CPU or libm passes and a changed preset, tuning or filter fails.
+  A new bench case needs a reference too. A screen that changes on purpose
+  is the same: `MPFREE_GOLDEN_BLESS=1 cargo test -p mpfree-app --test cli`
+  (references are x86-64; the ARMv7 run under qemu checks only that the
+  pictures are valid).
+- **Audio-thread code doesn't allocate or block.** Each engine proves this
+  with a counting allocator (`tests/no_alloc.rs`), CI runs
+  `mpfree-bench --check-allocs` over the profiled engines, and
+  `mpfree-app/src/rt_safety.rs` runs the pad player's whole sound path. A
+  new audio path gets a no-allocation test, and a new step in the pad
+  player's period goes into `rt_safety.rs` too.
 - **A program gets a `tests/cli.rs`** that runs it whole through
   `env!("CARGO_BIN_EXE_<name>")`: its arguments, exit codes and output files.
   Tests write only under `env!("CARGO_TARGET_TMPDIR")`, never a fixed `/tmp`
@@ -111,7 +130,7 @@ python3 ../tools/ci/coverage_summary.py /tmp/cov.json
 - **rustfmt is enforced** by the `lint` job (`cargo fmt --check`, with the
   pinned toolchain's rustfmt). Run `cargo fmt --manifest-path rust/Cargo.toml
   --all` before pushing. Source checks that read Rust files (the workflow's
-  static checks, `test_hello_mpc.py`'s write audit) compare what the code
+  static checks, `test_app_mpc.py`'s write audit) compare what the code
   says, not how rustfmt wraps it.
 
 ## Merging
@@ -135,7 +154,7 @@ screen-log, display) are run whole by `cargo test` through
 | `mpfree-bench` | 69% |
 | `mpfree-splash` | 69% (its `main.rs` drives the device framebuffer) |
 | `mpfree-touch-evdev` | 71% |
-| `mpfree-hello` | 73% |
+| `mpfree-app` | 73% |
 | `mpfree-headless` | 76% |
 | `mpfree-groove` | 80% |
 | `mpfree-touch` | 81% |
@@ -153,21 +172,41 @@ In order. Each step is its own PR.
    one-time reformat. Then the required check on `main`.
 2. **Raise the thin crates** in the table above. Done first: whole-program
    tests for render, session, device-smoke, screen-log and display. Next is
-   `mpfree-hello`, the program that actually runs on the MPC.
-3. **Golden regressions.** Render each synth, FX, sampler and arp preset to
-   audio and compare with stored references within a tolerance. Do the same
-   for the Hello preview screens, which today are checked only as valid PNGs,
-   compared with stored images.
-4. **Real-time safety everywhere.** No-allocation and deadline tests for every
-   audio path (synth, sampler, play, arp), not only FX and grain. The `rust`
-   job already runs `mpfree-bench --quick --check-allocs`, which fails if any
-   engine it profiles allocates inside its audio callback. Its timings are
-   not a gate, because wall-clock speed on a shared VM varies from run to run.
-   The stable way to gate on CPU cost later is to count instructions per
-   engine under qemu-arm (ARMv7, like the MPC) and fail on a regression past
-   a set margin.
-5. **Fuzz and property tests** for everything that reads files or device
-   input: WAV, MIDI, touch events, kit files, the DX7 sysex importer.
+   `mpfree-app`, the program that actually runs on the MPC.
+3. **Golden regressions.** Audio is done: `mpfree-bench`'s golden test
+   renders every bench case (each Poly preset, the drum kits, the plucks,
+   every effect and reverb, the sampler, the mixer, the time engine and arp,
+   the looper, a whole song) and compares a fingerprint with
+   `rust/mpfree-bench/golden/cases.txt`. Screens too: `mpfree-app`'s
+   `tests/cli.rs` draws all its preview screens and compares each with
+   `rust/mpfree-app/golden/screens.txt` (the mean brightness of every
+   20×20 cell, within 1 level; renaming one tab label trips it).
+4. **Real-time safety everywhere.** Every engine has its own no-allocation
+   test (`tests/no_alloc.rs` in synth, sampler, fx, grain, looper, play,
+   transport, capture, track), and the `rust` job runs
+   `mpfree-bench --quick --check-allocs`, which fails if any bench case
+   allocates inside its audio callback. On top of those, `mpfree-app`'s
+   `src/rt_safety.rs` runs the program's whole sound path the way its audio
+   loop does, period by period: pads and pressure into the arp, the
+   transport and a playing clip, the sampler or the synth, the click and the
+   looper. Half a minute of that may not allocate or free once. Recording
+   into a clip is left out: each finished note is an edit, and the clips are
+   compiled again on that thread. Bench timings are not a gate, because
+   wall-clock speed on a shared VM varies from run to run. CPU cost is gated
+   by instruction counts instead: the `instructions` job counts every bench
+   case's instructions per block under callgrind and fails when one rises
+   more than 5 % above its committed baseline.
+5. **Damaged input** (done): every reader of files and device input has a
+   `tests/robust_*.rs` that feeds it thousands of damaged copies of good
+   input (bits flipped, fields set to edge values, cut short, grown,
+   repeated) and checks the answer is an error or something safe to use,
+   never a panic: WAV in the sampler and wavetables, DX7 sysex (then played
+   in the FM engine), kits files, the plugin process's wire messages and
+   parameter ranges, touchscreen events, MIDI from the controller, arp
+   patterns and libraries (they must write back to what they read), and
+   settings files. The damage comes from `rust/test-support/mutate.rs`,
+   which needs no crate and no nightly toolchain, and the same seed gives
+   the same cases everywhere. A new reader gets the same kind of test.
 6. **End-to-end headless scenarios** under qemu ARMv7: scripted pad and touch
    input in, audio and screen fingerprints out.
 7. **Nightly long run:** soak tests and sanitizers. This needs the VM's job

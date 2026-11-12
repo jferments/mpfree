@@ -1,0 +1,13 @@
+[package]
+name = "mpfree-lanes"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Render partitions: a lane runs part of each audio period on another core, joined before the mix, with a deadline and a fallback when it is late"
+
+[dependencies]
+mpfree-prof = { path = "../mpfree-prof" }
+libc = "0.2"
+
+[dev-dependencies]
+mpfree-prof = { path = "../mpfree-prof", features = ["counting-alloc"] }
