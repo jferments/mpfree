@@ -1,7 +1,7 @@
 <!--
 status: changing
 covers: rust/mpfree-ui/src/widgets.rs rust/mpfree-ui/src/qlink.rs rust/mpfree-app/src/play_page.rs rust/mpfree-app/src/gui.rs
-checked: 2026-11-12 ae9c39c
+checked: 2026-11-12 15df706
 -->
 
 # The screen
