@@ -146,9 +146,15 @@ def build(read):
         confirmed(p3_paths["image_classifier_to_fit_verify"]["direct_call_path_found"]),
         "Static classifier-to-verifier path exists; trust roots and enforcement remain unknown.",
         "Trace verifier branches and keys.","static/wide/bootchain-v5-synthesis.json")
-    row("U-Boot","Is RAM boot memory placement safe?","unresolved",
+    row("Memory","Is RAM boot memory placement safe?","unresolved",
         "Env uses FDT 0x01F00000, kernel 0x02000000 and ramdisk 0x04000000; relocation/stack/download footprint not measured.",
         "Calculate image boundaries and verify physical runtime relocation before using boot commands.","static/wide/storage-env-boot-dtb.json")
+    row("Memory","Do static DDR parameter matches establish safe memory ownership?","unresolved",
+        "Matching DDR parameters do not establish U-Boot relocation, stack, cache, framebuffer or USB download footprints.",
+        "Measure and compare stage relocation, kernel expansion and FDT reserve ranges.","static/wide/p1-p3-embedded-fdt-crossstage.json")
+    row("Memory","Does generic ARM QEMU validate RK3288 memory registers?","unresolved",
+        "No: generic ARM virt uses different hardware and cannot exercise RK3288 ROM/DDR/USB MMIO.",
+        "Keep QEMU userspace observations separate from physical bring-up evidence.","session-summary.json")
     row("Update","Did 3.10 alter executable U-Boot boot scripts?",
         confirmed(scripts["normalized_commands_equal"]),
         "Normalized 3.6 and 3.10 boot script commands match.",
