@@ -293,6 +293,7 @@ fn clip(name: &str, length: Tick, notes: &[(Tick, u8, u8)]) -> Clip {
             chance: 100,
             cond: mpfree_seq::Cond::Always,
             ratchet: 1,
+            touch: mpfree_seq::Touch::NONE,
         })
         .expect("sample note in range");
     }
@@ -544,12 +545,12 @@ fn clips_sample(
     s: &Session,
     first_row: usize,
 ) -> Result<Sample, String> {
-    let mut ui = app_ui(fonts, "Clips", CLIPS_HINT);
+    let mut ui = app_ui(fonts, "Arrange", CLIPS_HINT);
     let mut page = TimePage::add_to(&mut ui)?;
     ui.show(CLIPS_PAGE)?;
     page.first_row = first_row;
-    let mut state = s.state();
-    state.chips = vec![arp_chip()];
+    // No chips: on Arrange the arp's chip is in the header (option E).
+    let state = s.state();
     page.update(&mut ui, &state);
     Ok(Sample {
         name,
@@ -575,7 +576,6 @@ pub fn song_state() -> Result<TimeState, String> {
     s.project.scene_mut(1).ok_or("no row 2")?.name = "Verse".into();
     s.project.arrangement.markers[1].name = "Verse".into();
     let mut state = s.state();
-    state.chips = vec![arp_chip()];
     state.song_view = true;
     state.song_on = true;
     state.song_rec = true;
@@ -583,10 +583,223 @@ pub fn song_state() -> Result<TimeState, String> {
     Ok(state)
 }
 
+/// Recordings into a real audio tracks engine for the Song view's audio
+/// lanes: "Guitar" (audio track 2, stereo) plays bars 1 to 4; "Vocal"
+/// (audio track 1, the left jack) was recorded over bars 1 to 8 and then
+/// punched in again over bars 5 to 8, with fades on that region. The
+/// signals are made up: a strummed tone and a sung-like one, in phrases.
+pub struct AudioSession {
+    pub tracks: mpfree_audiotracks::AudioTracks,
+    pub map: mpfree_transport::time::TempoMap,
+}
+
+/// The rate the sample's audio is made at: low, so it is quick to make.
+const AUDIO_RATE: u32 = 22_050;
+
+impl AudioSession {
+    pub fn new() -> Result<AudioSession, String> {
+        use mpfree_audiotracks::{AudioTracks, Command as A, Input};
+        let mut t = Transport::new(AUDIO_RATE, BPM).map_err(|e| format!("{e:?}"))?;
+        let mut a = AudioTracks::new(AUDIO_RATE, 60);
+        let mut b = Block::new();
+        let bar_frames = 4.0 * 60.0 / BPM * f64::from(AUDIO_RATE);
+        let at = |bars: f64| (bars * bar_frames).round() as u64;
+        // A phrase every two beats; the vocal's own pitch and a softer
+        // strum for the guitar.
+        let sound = |g: u64, hz: f64, phrase: f64| -> f32 {
+            let s = g as f64 / f64::from(AUDIO_RATE);
+            let beat = 60.0 / BPM;
+            let p = (s / (phrase * beat)).fract();
+            let env = (p * 6.0).min(1.0) * (1.0 - p).powf(1.5);
+            let tone = (s * hz * std::f64::consts::TAU).sin() * 0.6
+                + (s * hz * 2.01 * std::f64::consts::TAU).sin() * 0.25;
+            let grain = ((g.wrapping_mul(2_654_435_761) >> 7) % 1000) as f64 / 1000.0 - 0.5;
+            ((tone + grain * 0.3) * env * 0.9) as f32
+        };
+        let mut frame = 0u64;
+        /// Periods of 1024 frames until frame `to`, the input from `input`.
+        fn run(
+            t: &mut Transport,
+            a: &mut AudioTracks,
+            b: &mut Block,
+            frame: &mut u64,
+            to: u64,
+            input: &dyn Fn(u64) -> (f32, f32),
+        ) -> Result<(), String> {
+            const N: usize = 1024;
+            let (mut inp, mut out) = (vec![0.0f32; 2 * N], vec![0.0f32; 2 * N]);
+            while *frame < to {
+                let n = (N as u64).min(to - *frame) as usize;
+                for j in 0..n {
+                    let (l, r) = input(*frame + j as u64);
+                    inp[2 * j] = l;
+                    inp[2 * j + 1] = r;
+                }
+                if !t.process(n as u32, b) {
+                    return Err("audio sample: the transport refused a period".into());
+                }
+                let map = *t.tempo_map();
+                a.process(b, &map, &inp[..2 * n], &mut out[..2 * n]);
+                *frame += n as u64;
+            }
+            Ok(())
+        }
+        let cmd = |a: &mut AudioTracks, c: A| -> Result<(), String> {
+            a.command(c)
+                .then_some(())
+                .ok_or_else(|| format!("audio sample: {c:?} refused"))
+        };
+        let guitar = move |g: u64| {
+            let v = sound(g, 196.0, 1.0) * 0.8;
+            (v, v * 0.9)
+        };
+        let vocal = move |g: u64| (sound(g, 330.0, 2.0), 0.0);
+        let vocal_again = move |g: u64| (sound(g + 777, 294.0, 2.0) * 0.85, 0.0);
+        // Guitar: bars 1 to 4, stereo.
+        cmd(&mut a, A::SetInput(1, Input::Stereo))?;
+        cmd(&mut a, A::Arm(1, true))?;
+        t.command(at(0.0), Command::Record);
+        t.command(at(4.0), Command::Stop);
+        run(&mut t, &mut a, &mut b, &mut frame, at(4.0) + 1, &guitar)?;
+        cmd(&mut a, A::Arm(1, false))?;
+        // Vocal: bars 1 to 8, the left jack.
+        cmd(&mut a, A::SetInput(0, Input::Left))?;
+        cmd(&mut a, A::Arm(0, true))?;
+        let from = frame + 1024;
+        t.command(from, Command::Locate(0));
+        t.command(from + 1, Command::Record);
+        t.command(from + 1 + at(8.0), Command::Stop);
+        run(
+            &mut t,
+            &mut a,
+            &mut b,
+            &mut frame,
+            from + at(8.0) + 2048,
+            &vocal,
+        )?;
+        // Again over bars 5 to 8.
+        let from = frame + 1024;
+        t.command(from, Command::Locate(4 * BAR));
+        t.command(from + 1, Command::Record);
+        t.command(from + 1 + at(4.0), Command::Stop);
+        run(
+            &mut t,
+            &mut a,
+            &mut b,
+            &mut frame,
+            from + at(4.0) + 2048,
+            &vocal_again,
+        )?;
+        cmd(&mut a, A::Arm(0, false))?;
+        // Fades on the new part, and the guitar armed again.
+        cmd(
+            &mut a,
+            A::SetFades {
+                track: 0,
+                at: 4 * BAR + BAR / 2,
+                fade_in: AUDIO_RATE / 2,
+                fade_out: 2 * AUDIO_RATE,
+            },
+        )?;
+        cmd(&mut a, A::Arm(1, true))?;
+        let to = frame + 1024;
+        run(&mut t, &mut a, &mut b, &mut frame, to, &|_| (0.0, 0.0))?;
+        Ok(AudioSession {
+            map: *t.tempo_map(),
+            tracks: a,
+        })
+    }
+
+    /// A take's waveform as `AudioHost::wave` reads it, `columns` wide.
+    pub fn wave(&self, id: u16, columns: usize) -> Option<mpfree_audiotracks::host::TakeWave> {
+        let take = self.tracks.take(id)?;
+        let per = take.frames.div_ceil(columns.max(1)).max(1);
+        let columns = (0..take.frames.div_ceil(per))
+            .map(|c| {
+                let (from, to) = (c * per, ((c + 1) * per).min(take.frames));
+                self.tracks.peaks(id, from, to).unwrap_or((0.0, 0.0))
+            })
+            .collect();
+        Some(mpfree_audiotracks::host::TakeWave {
+            id,
+            frames: take.frames,
+            channels: take.channels,
+            frames_per_column: per,
+            columns,
+        })
+    }
+
+    /// The lanes for the Song view: Vocal (L, audio track 1) and Guitar
+    /// (ST, armed, audio track 2), with their waveforms.
+    pub fn lanes(
+        &self,
+    ) -> (
+        Vec<crate::song::AudioLane>,
+        Vec<mpfree_audiotracks::host::TakeWave>,
+    ) {
+        let takes: Vec<_> = self.tracks.takes().collect();
+        let lanes = [(0, "Vocal", "L", 0.42), (1, "Guitar", "ST", 0.63)]
+            .into_iter()
+            .map(|(track, name, input, level)| crate::song::AudioLane {
+                track,
+                name: name.into(),
+                color: crate::view::audio_color(track),
+                armed: self.tracks.armed(track),
+                input: input.into(),
+                level,
+                blocks: crate::song::audio_blocks(
+                    track,
+                    self.tracks.regions(track),
+                    &takes,
+                    &self.map,
+                    AUDIO_RATE,
+                ),
+                recording: None,
+            })
+            .collect();
+        let waves = takes.iter().filter_map(|t| self.wave(t.id, 600)).collect();
+        (lanes, waves)
+    }
+
+    /// Seconds free and in all, as the Song view's legend shows them
+    /// (seconds of stereo: two samples a frame).
+    pub fn free(&self) -> (f64, f64) {
+        let m = self.tracks.memory();
+        let per_s = 2.0 * f64::from(AUDIO_RATE);
+        (
+            (m.capacity - m.used) as f64 / per_s,
+            m.capacity as f64 / per_s,
+        )
+    }
+}
+
+/// The Song view with audio lanes under the song of [`song_state`]: the
+/// Vocal's newer take picked (so the bottom row is the region's), the
+/// Guitar armed. The app's `--preview` draws it too, for the manual.
+pub fn song_audio_state() -> Result<TimeState, String> {
+    let mut state = song_state()?;
+    let audio = AudioSession::new()?;
+    let (lanes, waves) = audio.lanes();
+    let picked = lanes[0]
+        .blocks
+        .iter()
+        .position(|b| b.start >= 4 * BAR)
+        .ok_or("audio sample: no region from bar 5")?;
+    state.audio = lanes;
+    state.waves = waves;
+    state.selected = None;
+    state.region = Some(crate::view::RegionId {
+        track: 0,
+        index: picked,
+    });
+    state.audio_free = Some(audio.free());
+    Ok(state)
+}
+
 /// The Clips page's Song view, from [`song_state`].
 fn song_sample(fonts: Fonts) -> Result<Sample, String> {
     let state = song_state()?;
-    let mut ui = app_ui(fonts, "Clips", SONG_HINT);
+    let mut ui = app_ui(fonts, "Arrange", SONG_HINT);
     let page = TimePage::add_to(&mut ui)?;
     ui.show(CLIPS_PAGE)?;
     page.update(&mut ui, &state);
@@ -597,6 +810,149 @@ fn song_sample(fonts: Fonts) -> Result<Sample, String> {
         ui,
         state,
     })
+}
+
+/// The Song view with audio lanes, from [`song_audio_state`].
+fn song_audio_sample(fonts: Fonts) -> Result<Sample, String> {
+    let state = song_audio_state()?;
+    let mut ui = app_ui(fonts, "Arrange", SONG_HINT);
+    let page = TimePage::add_to(&mut ui)?;
+    ui.show(CLIPS_PAGE)?;
+    page.update(&mut ui, &state);
+    Ok(Sample {
+        name: "clips-song-audio",
+        about: "Arrange page, Song view with two audio lanes under the song: Vocal \
+                recorded over bars 1-8 and punched in over 5-8 (that region picked, with \
+                fades), Guitar armed",
+        ui,
+        state,
+    })
+}
+
+/// "Keys": two bars of chords in C minor under a short melody, played in
+/// by hand, so some notes sit a little off the 1/16 grid.
+pub fn keys_clip() -> Clip {
+    let mut c = Clip::new("Keys", 2 * BAR);
+    // (tick, length, note, velocity)
+    let chords: [(Tick, Tick, [u8; 3]); 4] = [
+        (0, 2 * BEAT - 40, [60, 63, 67]),
+        (2 * BEAT + 12, 2 * BEAT - 60, [56, 60, 63]),
+        (BAR - 8, 2 * BEAT, [58, 62, 65]),
+        (BAR + 2 * BEAT + 20, 2 * BEAT - 80, [55, 58, 62]),
+    ];
+    for (tick, len, notes) in chords {
+        for (k, n) in notes.into_iter().enumerate() {
+            c.add_note(Note::new(tick + 6 * k as Tick, len, n, 84 - 6 * k as u8))
+                .ok();
+        }
+    }
+    let melody: [(Tick, Tick, u8, u8); 6] = [
+        (BEAT + 14, 220, 75, 104),
+        (BEAT + 3 * SIXTEENTH - 10, 240, 74, 92),
+        (3 * BEAT + 5, 460, 72, 110),
+        (BAR + BEAT - 18, 240, 70, 96),
+        (BAR + 2 * BEAT + 2 * SIXTEENTH + 9, 230, 72, 100),
+        (BAR + 3 * BEAT + 16, 700, 67, 118),
+    ];
+    for (tick, len, n, v) in melody {
+        c.add_note(Note::new(tick, len, n, v)).ok();
+    }
+    c
+}
+
+/// The note editor on "Keys" (Chords, slot 2) over the playing session,
+/// the melody selected, through `lens`. The app's `--preview` draws it for
+/// the manual.
+pub fn notes_state(lens: crate::editor::Lens) -> Result<TimeState, String> {
+    let mut s = playing()?;
+    let keys = keys_clip();
+    s.project.tracks[CHORDS].slots[1] = Some(keys.clone());
+    let mut state = s.state();
+    let mut editor = crate::editor::Editor::new(CHORDS, 1, &keys);
+    editor.sel = keys
+        .notes
+        .iter()
+        .enumerate()
+        .filter(|(_, n)| n.note >= 67 && n.len < BEAT)
+        .map(|(i, _)| i)
+        .collect();
+    editor.lens = lens;
+    state.edit = Some(Box::new(crate::view::EditInfo {
+        editor,
+        clip: keys,
+        track_name: "Chords".into(),
+        bar: BAR,
+    }));
+    Ok(state)
+}
+
+/// A bar of drums with a step's every setting in use: a nudged hat, a
+/// ghost snare at 50 %, a 1:2 hat, a ratchet, a FILL open hat and a lock
+/// on the second snare (what the tracker shows).
+pub fn tracker_clip() -> Clip {
+    use mpfree_seq::mpfree_param::{OnTrack, RelAddr};
+    use mpfree_seq::Cond;
+    let mut c = clip(
+        "Boom bap",
+        BAR,
+        &[
+            (0, 0, 120),
+            (1680, 0, 100),
+            (960, 1, 110),
+            (2880, 1, 115),
+            (3600, 1, 40),
+            (2160, 3, 90),
+        ],
+    );
+    for k in 0..8 {
+        let mut n = Note::new(k * 480, SIXTEENTH, 2, if k % 2 == 0 { 84 } else { 62 });
+        match k {
+            3 => n.tick += 18,
+            5 => n.cond = Cond::Every { a: 1, b: 2 },
+            7 => n.ratchet = 3,
+            _ => {}
+        }
+        c.add_note(n).expect("sample hat in range");
+    }
+    for n in c.notes.iter_mut() {
+        match (n.note, n.tick) {
+            (1, 3600) => n.chance = 50,
+            (3, _) => n.cond = Cond::Fill,
+            _ => {}
+        }
+    }
+    let lock = mpfree_seq::Lock::new(2880, Some(1), RelAddr::new(OnTrack::Pad(1), 3), 0.4);
+    c.locks.push(lock);
+    c.check().expect("sample clip in range");
+    c
+}
+
+/// The note editor's tracker on [`tracker_clip`] in place of Drums' first
+/// clip while it plays, the second snare picked and the Euclidean rows on
+/// show. The app's `--preview` draws it for the manual.
+pub fn tracker_state() -> Result<TimeState, String> {
+    let mut s = playing()?;
+    let drums = tracker_clip();
+    s.project.tracks[DRUMS].slots[0] = Some(drums.clone());
+    let mut state = s.state();
+    let mut editor = crate::editor::Editor::new(DRUMS, 0, &drums);
+    editor.sel = drums
+        .notes
+        .iter()
+        .enumerate()
+        .filter(|(_, n)| n.note == 1 && n.tick == 2880)
+        .map(|(i, _)| i)
+        .collect();
+    editor.sound = 1;
+    editor.lens = crate::editor::Lens::Tracker;
+    editor.row = crate::editor::EUCLID_ROW + 1;
+    state.edit = Some(Box::new(crate::view::EditInfo {
+        editor,
+        clip: drums,
+        track_name: "Drums".into(),
+        bar: BAR,
+    }));
+    Ok(state)
 }
 
 /// The pad player's Play page with the bar under the header.
@@ -736,6 +1092,7 @@ pub fn samples(fonts: impl Fn() -> Fonts) -> Result<Vec<Sample>, String> {
             0,
         )?,
         song_sample(fonts())?,
+        song_audio_sample(fonts())?,
     ];
     // A narrow look at the bar alone, while recording.
     let rec = recording()?;
@@ -773,7 +1130,7 @@ mod tests {
     #[test]
     fn every_sample_draws() {
         let samples = samples(Fonts::embedded).unwrap();
-        assert_eq!(samples.len(), 10);
+        assert_eq!(samples.len(), 11);
         for mut s in samples {
             let (w, h) = s.ui.size();
             let mut c = SoftCanvas::new(w, h);

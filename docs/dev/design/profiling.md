@@ -213,10 +213,11 @@ calibration file is [docs/dev/perf/mpc-one-calibration.txt](../perf/mpc-one-cali
 `tools/mpc-one/host_bench_mpc.py` runs the benchmark on the kexec test build
 (the 3.10 build on the USB stick, which cannot see the eMMC). **RAM only:**
 it copies the two builds to `/run/mpfree-bench`, runs each with fixed
-arguments (`--calibrate`, `--json <build>.json`, then `--afford`), and prints the output
-and the JSON into the results log. It starts, stops and changes no service,
-and the benchmark opens no device. It runs as an ordinary process, so the pad
-player's real-time audio thread always comes first. Like host_app_mpc.py it
+arguments (`--calibrate`, `--json <build>.json`, `--afford`, then `--lanes --lane-cores 3,2`), and prints the output
+and the JSON into the results log. The benchmark opens no device and runs as an ordinary process. For a clean
+run (the round 8 ask), after the copy the tool stops our own pad player and log display (`mpfree-test-app`,
+`mpfree-test-screen`; RAM state only, Akai's services are never touched) and starts whichever was running
+again at the end, also when a run fails or is stopped. Like host_app_mpc.py it
 uses only the test build's own host key, so on stock 3.6 it runs nothing.
 It needs `MPFREE_ACCEPT_BENCH=YES` and a terminal; each step waits for
 Enter. Its tests (`tests/test_host_bench_mpc.py`) run it against a fake test

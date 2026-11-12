@@ -57,10 +57,31 @@
 //! ends the gesture there; a loop jump or a locate hands over what was
 //! kept and goes on from the new place; a gesture longer than
 //! [`MOVE_POINTS`] values is handed over in parts.
+//!
+//! **Pad pressure goes on its note.** The host feeds the armed track's pad
+//! pressure in as [`Event::Pressure`] (the pad, its raw value) when the
+//! track records pressure (`Track::record_touch`). While a pad's note is
+//! held and the transport records, its values are thinned and kept on the
+//! note, timed in clip ticks from the note's start (`TouchPoint::at`):
+//!
+//! - a value 2 or more steps ([`TOUCH_STEP`]) from the last one kept is
+//!   kept at once;
+//! - a value one step away is kept once it has lasted [`TOUCH_SETTLE_MS`],
+//!   on the frame that time is up, so a slow drift is kept every 10 ms or
+//!   so while a finger's one-step jitter is not.
+//!
+//! Every time comes from the frame the value came on, so what is kept is
+//! the same for any period size. Each note's values wait in one of
+//! [`TOUCH_BUFS`] buffers of [`TOUCH_POINTS`] values until the note is
+//! handed over; [`Recorder::touch_points`] then gives them, named by the
+//! taken note's `touch`, for the control thread to put in the clip
+//! (`Takes::add_touched`). Values past a full buffer, or a note that finds
+//! no free buffer, are counted ([`Recorder::touch_dropped`]), never
+//! silently lost.
 
 use mpfree_param::ParamAddr;
 use mpfree_seq::mpfree_moves::{Input, Kind, Map, Target};
-use mpfree_seq::{Lock, Note, Speed};
+use mpfree_seq::{Lock, Note, Speed, Touch, TouchPoint};
 use mpfree_transport::time::{Swing, Tick};
 use mpfree_transport::{Block, Mark, Marker, Span, State};
 
@@ -92,6 +113,23 @@ pub const MAX_MOVES_TAKEN: usize = 32;
 /// Room `PlayView::make_room` sets aside in each lane of the armed
 /// track's clips: two parts of a gesture, and what a write adds.
 pub const MOVE_ROOM: usize = 2 * MOVE_POINTS + 8;
+/// Pressure values one period can bring (they have their own room, so
+/// they never crowd out notes).
+pub const MAX_TOUCH_INPUT: usize = 512;
+/// Notes keeping pressure at once: held, or waiting for the playhead.
+pub const TOUCH_BUFS: usize = 32;
+/// Pressure values one note keeps; later ones are counted as dropped.
+pub const TOUCH_POINTS: usize = 2048;
+/// A pressure value this many steps from the last one kept is kept at once.
+pub const TOUCH_STEP: u8 = 2;
+/// A value one step from the last one kept is kept once it has lasted
+/// this long.
+pub const TOUCH_SETTLE_MS: u32 = 10;
+/// Room `PlayView::make_room` and the host set aside for pressure in the
+/// armed track's clips.
+pub const TOUCH_ROOM: usize = 8192;
+/// No buffer.
+const NO_BUF: u8 = u8::MAX;
 
 /// A recorded gesture for the control thread: write its points
 /// ([`Recorder::move_points`]) into the lane for `target` of clip `slot`
@@ -160,6 +198,15 @@ struct Held {
     /// Song tick of the press.
     tick: Tick,
     velocity: u8,
+    /// The speed of the clip it went into, for its pressure's clip ticks.
+    speed: Speed,
+    /// Its pressure buffer, or [`NO_BUF`] before the first value kept.
+    buf: u8,
+    /// The last pressure value kept (0 when pressed).
+    kept: u8,
+    /// A value one step from `kept` waiting to last [`TOUCH_SETTLE_MS`],
+    /// and the frame it came on.
+    wait: Option<(u8, u64)>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -167,6 +214,8 @@ struct Pending {
     taken: Taken,
     /// Song tick from which the note may be handed over.
     release: Tick,
+    /// Its pressure buffer, or [`NO_BUF`].
+    buf: u8,
 }
 
 /// A recorded lock waiting for the playhead, as a [`Pending`] note does.
@@ -180,6 +229,10 @@ const NOT_HELD: Held = Held {
     on: false,
     tick: 0,
     velocity: 0,
+    speed: Speed::NORMAL,
+    buf: NO_BUF,
+    kept: 0,
+    wait: None,
 };
 const NO_TAKEN_LOCK: TakenLock = TakenLock {
     track: 0,
@@ -204,6 +257,7 @@ const NO_TAKE: Taken = Taken {
         chance: 100,
         cond: mpfree_seq::Cond::Always,
         ratchet: 1,
+        touch: mpfree_seq::Touch::NONE,
     },
     take: 0,
 };
@@ -249,6 +303,19 @@ pub struct Recorder {
     n_taken_moves: usize,
     /// The points handed over this period.
     taken_points: Vec<(f64, f32, Kind)>,
+    /// Pressure values waiting for the coming period, in offset order:
+    /// (offset, pad, value).
+    touch_input: [(u32, u8, u8); MAX_TOUCH_INPUT],
+    n_touch_input: usize,
+    /// The notes' pressure buffers: buffer `k` is
+    /// `touch[k * TOUCH_POINTS..][..touch_len[k]]`.
+    touch: Vec<TouchPoint>,
+    touch_len: [u16; TOUCH_BUFS],
+    /// Buffers in use (a bit each), and buffers handed over this period,
+    /// free from the next (their values stay readable until then).
+    bufs_used: u32,
+    bufs_freeing: u32,
+    touch_dropped: u64,
 }
 
 impl Default for Recorder {
@@ -267,6 +334,7 @@ impl Recorder {
             pending: [Pending {
                 taken: NO_TAKE,
                 release: 0,
+                buf: NO_BUF,
             }; MAX_PENDING],
             n_pending: 0,
             taken: [NO_TAKE; MAX_PENDING],
@@ -299,6 +367,13 @@ impl Recorder {
             taken_moves: [None; MAX_MOVES_TAKEN],
             n_taken_moves: 0,
             taken_points: Vec::with_capacity(MAX_MOVES_TAKEN * MOVE_POINTS),
+            touch_input: [(0, 0, 0); MAX_TOUCH_INPUT],
+            n_touch_input: 0,
+            touch: vec![TouchPoint::default(); TOUCH_BUFS * TOUCH_POINTS],
+            touch_len: [0; TOUCH_BUFS],
+            bufs_used: 0,
+            bufs_freeing: 0,
+            touch_dropped: 0,
         }
     }
 
@@ -306,7 +381,25 @@ impl Recorder {
     /// period: the armed track's pad notes, or its arp's output. They may
     /// come in any order; they are kept in offset order, and notes on the
     /// same offset keep the order they came in.
+    ///
+    /// [`Event::Pressure`] (a pad's raw pressure) goes in its own queue of
+    /// [`MAX_TOUCH_INPUT`], so a flood of pressure never crowds out notes;
+    /// a value on the same offset as a note comes after it.
     pub fn input(&mut self, offset: u32, event: Event) {
+        if let Event::Pressure { note, value } = event {
+            if self.n_touch_input == MAX_TOUCH_INPUT {
+                self.touch_dropped += 1;
+                return;
+            }
+            let mut i = self.n_touch_input;
+            while i > 0 && self.touch_input[i - 1].0 > offset {
+                self.touch_input[i] = self.touch_input[i - 1];
+                i -= 1;
+            }
+            self.touch_input[i] = (offset, note, value);
+            self.n_touch_input += 1;
+            return;
+        }
         if self.n_input == MAX_INPUT {
             self.dropped += 1;
             return;
@@ -376,6 +469,19 @@ impl Recorder {
         self.dropped
     }
 
+    /// Pressure values lost: past a full queue or a note's full buffer, or
+    /// on a note that found no free buffer. It should stay 0.
+    pub fn touch_dropped(&self) -> u64 {
+        self.touch_dropped
+    }
+
+    /// The pressure kept on a note handed over in [`Recorder::taken`] this
+    /// period, named by its `touch` (empty for none). The values stay
+    /// readable until the next [`Recorder::process`] call.
+    pub fn touch_points(&self, note: &Note) -> &[TouchPoint] {
+        self.touch.get(note.touch.range()).unwrap_or(&[])
+    }
+
     /// The number of the latest take: each record-on starts the next one,
     /// from 1. The player counts the same record-ons, so a take's recorded
     /// notes and the notes it erased carry the same number.
@@ -396,7 +502,13 @@ impl Recorder {
         self.n_locks = 0;
         self.n_taken_moves = 0;
         self.taken_points.clear();
+        // Buffers handed over last period are read by now.
+        self.bufs_used &= !std::mem::take(&mut self.bufs_freeing);
         if view.armed != self.armed {
+            for n in 0..128 {
+                let b = self.held[n].buf;
+                self.free_buf(b);
+            }
             self.held = [NOT_HELD; 128];
             // What the old arm's gestures kept goes in; they record no more.
             for k in 0..MAX_GESTURES {
@@ -411,6 +523,7 @@ impl Recorder {
         let mut m = 0;
         let mut next = 0;
         let mut next_move = 0;
+        let mut next_touch = 0;
         for span in block.spans() {
             // A marker on a span's first frame happened just before it.
             while m < markers.len() && markers[m].offset <= span.offset {
@@ -443,6 +556,18 @@ impl Recorder {
                 let gesture = (next_move < self.n_move_input)
                     .then(|| self.move_input[next_move].0)
                     .filter(|&o| o < end);
+                // Pressure after the notes and moves on its offset.
+                let touch = (next_touch < self.n_touch_input)
+                    .then(|| self.touch_input[next_touch].0)
+                    .filter(|&o| o < end);
+                if let Some(t) = touch {
+                    if note.is_none_or(|a| t < a) && gesture.is_none_or(|b| t < b) {
+                        let (offset, pad, value) = self.touch_input[next_touch];
+                        next_touch += 1;
+                        self.touch_value(span, offset, pad, value);
+                        continue;
+                    }
+                }
                 match (note, gesture) {
                     (None, None) => break,
                     (Some(a), Some(b)) if b < a => {}
@@ -476,6 +601,10 @@ impl Recorder {
             if let Some(at) = switch {
                 self.switch(view, at);
             }
+            // One-step values whose time is up within this span.
+            if span.state == State::Recording {
+                self.settle_all(span, span.frame + u64::from(span.len));
+            }
             // The last tick the next span can start a note on is
             // `end - 1`, so this releases nothing an input there would not.
             if span.state.rolling() {
@@ -488,8 +617,105 @@ impl Recorder {
         // Offsets past the period's end are the host's mistake.
         self.dropped += (self.n_input - next) as u64;
         self.dropped += (self.n_move_input - next_move) as u64;
+        self.touch_dropped += (self.n_touch_input - next_touch) as u64;
         self.n_input = 0;
         self.n_move_input = 0;
+        self.n_touch_input = 0;
+    }
+
+    /// Pad `pad`'s pressure `value` at `offset` in `span`: thinned onto its
+    /// held note while recording (see the module notes).
+    fn touch_value(&mut self, span: &Span, offset: u32, pad: u8, value: u8) {
+        if span.state != State::Recording {
+            return;
+        }
+        let n = usize::from(pad & 127);
+        if !self.held[n].on {
+            return;
+        }
+        let frame = span.frame + u64::from(offset.saturating_sub(span.offset));
+        // A one-step value whose time came before this one is kept first.
+        self.settle(n, span, frame + 1);
+        let v = value.min(127);
+        let h = &mut self.held[n];
+        if v.abs_diff(h.kept) >= TOUCH_STEP {
+            h.wait = None;
+            self.keep(n, span, frame, v);
+        } else if v == h.kept {
+            h.wait = None;
+        } else if h.wait.is_none_or(|(w, _)| w != v) {
+            h.wait = Some((v, frame));
+        }
+    }
+
+    /// Frames a one-step value must last.
+    fn settle_frames(span: &Span) -> u64 {
+        u64::from(span.rate) * u64::from(TOUCH_SETTLE_MS) / 1000
+    }
+
+    /// Keep held note `n`'s waiting one-step value if its time is up before
+    /// frame `before` (its time falls in `span`).
+    fn settle(&mut self, n: usize, span: &Span, before: u64) {
+        let Some((v, from)) = self.held[n].wait else {
+            return;
+        };
+        let due = from + Self::settle_frames(span);
+        if due < before {
+            self.held[n].wait = None;
+            self.keep(n, span, due.max(span.frame), v);
+        }
+    }
+
+    fn settle_all(&mut self, span: &Span, before: u64) {
+        for n in 0..128 {
+            if self.held[n].on && self.held[n].wait.is_some() {
+                self.settle(n, span, before);
+            }
+        }
+    }
+
+    /// Keep `value` on held note `n`, on `frame` of `span`.
+    fn keep(&mut self, n: usize, span: &Span, frame: u64, value: u8) {
+        let h = self.held[n];
+        self.held[n].kept = value;
+        let mut buf = h.buf;
+        if buf == NO_BUF {
+            match (0..TOUCH_BUFS).find(|&k| self.bufs_used & (1 << k) == 0) {
+                Some(k) => {
+                    self.bufs_used |= 1 << k;
+                    self.touch_len[k] = 0;
+                    buf = k as u8;
+                    self.held[n].buf = buf;
+                }
+                None => {
+                    self.touch_dropped += 1;
+                    return;
+                }
+            }
+        }
+        let k = usize::from(buf);
+        let len = usize::from(self.touch_len[k]);
+        if len == TOUCH_POINTS {
+            self.touch_dropped += 1;
+            return;
+        }
+        let song = span.tick_at(frame).round() as Tick;
+        let at = h.speed.to_clip((song - h.tick).max(0) as f64).round() as u32;
+        // In time order, also across a tempo change's rounding.
+        let at = if len > 0 {
+            at.max(self.touch[k * TOUCH_POINTS + len - 1].at)
+        } else {
+            at
+        };
+        self.touch[k * TOUCH_POINTS + len] = TouchPoint { at, value };
+        self.touch_len[k] += 1;
+    }
+
+    /// Buffer `b` is free again (at once: nothing reads it).
+    fn free_buf(&mut self, b: u8) {
+        if usize::from(b) < TOUCH_BUFS {
+            self.bufs_used &= !(1 << b);
+        }
     }
 
     /// One note or knob move at `offset` in `span`, after the armed
@@ -514,6 +740,14 @@ impl Recorder {
             *switch = None;
         }
         self.release(tick);
+        // Pressure whose time came before this note event is kept first.
+        match event {
+            Event::NoteOn { note, .. } | Event::NoteOff { note } => {
+                self.settle(usize::from(note & 127), span, frame + 1);
+            }
+            Event::AllOff => self.settle_all(span, frame + 1),
+            _ => {}
+        }
         match event {
             // A MIDI-style note-on at velocity 0 is a release.
             Event::NoteOn { note, velocity: 0 } | Event::NoteOff { note } => {
@@ -527,16 +761,23 @@ impl Recorder {
                 if self.held[n].on {
                     self.finish(view, span.swing, n, tick);
                 }
+                let speed = self
+                    .armed
+                    .and_then(|t| self.switches.playing(view, t))
+                    .map_or(Speed::NORMAL, |(c, _)| c.speed);
                 self.held[n] = Held {
                     on: true,
                     tick,
                     velocity,
+                    speed,
+                    ..NOT_HELD
                 };
             }
             Event::AllOff => self.finish_all(view, span.swing, tick),
             Event::Lock { addr, value } => self.lock(view, span.swing, addr, value, tick),
-            // Moves are recorded as gestures, not as locks.
-            Event::Lane { .. } | Event::Unlock { .. } => {}
+            // Moves are recorded as gestures, not as locks; pressure has
+            // its own queue.
+            Event::Lane { .. } | Event::Unlock { .. } | Event::Pressure { .. } => {}
         }
     }
 
@@ -866,12 +1107,17 @@ impl Recorder {
     fn finish(&mut self, view: &PlayView, transport_swing: Swing, n: usize, end: Tick) {
         let h = self.held[n];
         self.held[n].on = false;
-        let Some(track) = self.armed else { return };
+        self.held[n].buf = NO_BUF;
+        self.held[n].wait = None;
+        // A note not queued lets its pressure go.
+        let Some(track) = self.armed else {
+            return self.free_buf(h.buf);
+        };
         let Some((clip, origin)) = self.switches.playing(view, track) else {
-            return;
+            return self.free_buf(h.buf);
         };
         let Some((tick, pass)) = clip_tick(clip, origin, h.tick) else {
-            return;
+            return self.free_buf(h.buf);
         };
         let len = (clip.speed.to_clip((end - h.tick).max(1) as f64).round() as Tick)
             .clamp(1, clip.length);
@@ -885,7 +1131,7 @@ impl Recorder {
             .round() as Tick;
         if self.n_pending == MAX_PENDING {
             self.dropped += 1;
-            return;
+            return self.free_buf(h.buf);
         }
         let note = Note {
             tick,
@@ -895,6 +1141,7 @@ impl Recorder {
             chance: 100,
             cond: mpfree_seq::Cond::Always,
             ratchet: 1,
+            touch: mpfree_seq::Touch::NONE,
         };
         let taken = Taken {
             track,
@@ -908,6 +1155,7 @@ impl Recorder {
         self.pending[self.n_pending] = Pending {
             taken,
             release: plays + 2,
+            buf: h.buf,
         };
         self.n_pending += 1;
     }
@@ -923,10 +1171,22 @@ impl Recorder {
                 }
             }
             let Some(i) = best else { break };
+            let p = self.pending[i];
             if self.n_taken == MAX_PENDING {
                 self.dropped += 1;
+                self.free_buf(p.buf);
             } else {
-                self.taken[self.n_taken] = self.pending[i].taken;
+                let mut taken = p.taken;
+                if usize::from(p.buf) < TOUCH_BUFS {
+                    let k = usize::from(p.buf);
+                    // Named in the buffers; free from the next period.
+                    taken.note.touch = Touch {
+                        first: (k * TOUCH_POINTS) as u32,
+                        len: u32::from(self.touch_len[k]),
+                    };
+                    self.bufs_freeing |= 1 << k;
+                }
+                self.taken[self.n_taken] = taken;
                 self.n_taken += 1;
             }
             self.pending.copy_within(i + 1..self.n_pending, i);

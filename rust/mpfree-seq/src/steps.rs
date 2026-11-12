@@ -37,6 +37,11 @@
 //! with their step: tapping a step off takes its row's locks out, a nudge
 //! moves them, and pages added, copied or taken off carry them.
 //!
+//! **Euclidean fill.** [`Euclid`] spreads `hits` as evenly as they go
+//! over `steps` steps (the Euclidean rhythms, as on the Digitakt), turned
+//! on by `rotate`; [`Grid::euclid`] writes that pattern into one sound's
+//! row, repeated from the clip's first step, as one edit.
+//!
 //! Edits never change the clip themselves: they return an [`Edit`], the
 //! notes and locks to take out and to put in, for the control thread to
 //! apply as one undoable take (`Takes::edit` in `mpfree-play`).
@@ -106,7 +111,7 @@ impl Eq for MovesEdit {}
 
 /// The edit of `clip`'s moves that `f` makes, or None when it has none,
 /// makes no change or is refused (then the moves stay as they are).
-fn moves_edit(
+pub(crate) fn moves_edit(
     clip: &Clip,
     f: impl FnOnce(&mut Moves) -> Result<(), MovesError>,
 ) -> Option<Box<MovesEdit>> {
@@ -233,6 +238,65 @@ pub fn lock_key(sound: Option<u8>, i: usize, addr: RelAddr) -> u64 {
 
 /// No sound has this number: it names every sound of a step in a key.
 const ALL: u8 = 255;
+
+/// The most steps a Euclidean pattern spans: four pages.
+pub const MAX_EUCLID_STEPS: u8 = 64;
+
+/// A Euclidean rhythm: `hits` spread as evenly as they go over `steps`
+/// steps, the first on step 0, then the whole pattern turned `rotate`
+/// steps later. 3 of 8 is x..x..x. and 4 of 16 is a hit every beat.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Euclid {
+    /// 0 to `steps`.
+    pub hits: u8,
+    /// 1 to [`MAX_EUCLID_STEPS`].
+    pub steps: u8,
+    /// Steps later, 0 to `steps - 1`.
+    pub rotate: u8,
+}
+
+impl Default for Euclid {
+    /// A hit every beat in 1/16 steps.
+    fn default() -> Euclid {
+        Euclid {
+            hits: 4,
+            steps: 16,
+            rotate: 0,
+        }
+    }
+}
+
+impl Euclid {
+    /// In range: steps within 1 to [`MAX_EUCLID_STEPS`], hits no more than
+    /// the steps, rotate below them.
+    pub fn fit(self) -> Euclid {
+        let steps = self.steps.clamp(1, MAX_EUCLID_STEPS);
+        Euclid {
+            hits: self.hits.min(steps),
+            steps,
+            rotate: self.rotate % steps,
+        }
+    }
+
+    /// Whether step `i` of the pattern (any step: it repeats) has a hit.
+    /// Step `j` before the rotation has one when `j * hits mod steps` is
+    /// below `hits`: Bresenham's line, which spreads the hits as evenly as
+    /// the Euclidean algorithm does and starts on one.
+    pub fn hit(self, i: usize) -> bool {
+        let e = self.fit();
+        let (k, n) = (usize::from(e.hits), usize::from(e.steps));
+        let j = (i % n + n - usize::from(e.rotate)) % n;
+        j * k % n < k
+    }
+
+    /// The pattern as text, x for a hit and . for a rest (for the log).
+    pub fn pattern(self) -> String {
+        let e = self.fit();
+        (0..usize::from(e.steps))
+            .map(|i| if e.hit(i) { 'x' } else { '.' })
+            .collect()
+    }
+}
 
 impl Grid {
     /// Steps of `size` ticks, from a 1/32 to a whole note.
@@ -746,6 +810,34 @@ impl Grid {
         }
     }
 
+    /// Write the Euclidean pattern `e` into the row of sound `pitch`,
+    /// repeated from the clip's first step to its last: a step with a hit
+    /// keeps its notes, or with none gets a note on its line, a step long,
+    /// `velocity` loud; a step without one loses its notes and their
+    /// locks. Empty when the row already is the pattern.
+    pub fn euclid(self, clip: &Clip, pitch: u8, e: Euclid, velocity: u8) -> Edit {
+        let e = e.fit();
+        let pitch = pitch.min(127);
+        let mut edit = Edit::default();
+        for i in 0..self.steps(clip.length) {
+            let notes = self.notes(clip, pitch, i);
+            match (e.hit(i), notes.is_empty()) {
+                (true, true) => edit.add.push(Note::new(
+                    self.tick(clip.length, i, 0),
+                    self.size,
+                    pitch,
+                    velocity.clamp(1, 127),
+                )),
+                (false, false) => {
+                    edit.erase.extend(notes);
+                    edit.erase_locks.extend(self.locks(clip, Some(pitch), i));
+                }
+                _ => {}
+            }
+        }
+        edit
+    }
+
     /// The sounds with notes in step `i`, lowest first.
     fn sounds_in(self, clip: &Clip, i: usize) -> Vec<u8> {
         let mut s: Vec<u8> = clip
@@ -837,6 +929,89 @@ mod tests {
             .map(|&(tick, note)| Note::new(tick, 60, note, 100))
             .collect();
         c
+    }
+
+    #[test]
+    fn euclidean_patterns_spread_their_hits_evenly() {
+        let e = |hits, steps, rotate| Euclid {
+            hits,
+            steps,
+            rotate,
+        };
+        assert_eq!(e(3, 8, 0).pattern(), "x..x..x.");
+        assert_eq!(e(4, 16, 0).pattern(), "x...x...x...x...");
+        assert_eq!(e(5, 8, 0).pattern(), "x.x.xx.x");
+        assert_eq!(e(3, 8, 1).pattern(), ".x..x..x");
+        assert_eq!(e(0, 4, 0).pattern(), "....");
+        assert_eq!(e(4, 4, 0).pattern(), "xxxx");
+        // Out of range: hits cut to the steps, rotate wraps, steps capped.
+        assert_eq!(e(9, 4, 6).fit(), e(4, 4, 2));
+        assert_eq!(e(1, 0, 0).fit().steps, 1);
+        assert_eq!(e(1, 200, 0).fit().steps, MAX_EUCLID_STEPS);
+        // Every hits-of-steps pattern has exactly that many hits, and the
+        // gaps between them differ by at most one step (maximally even).
+        for n in 1..=32u8 {
+            for k in 0..=n {
+                let p = e(k, n, 0);
+                let at: Vec<usize> = (0..usize::from(n)).filter(|&i| p.hit(i)).collect();
+                assert_eq!(at.len(), usize::from(k), "{k} of {n}");
+                if k >= 2 {
+                    let gaps: Vec<usize> = (0..at.len())
+                        .map(|j| (at[(j + 1) % at.len()] + usize::from(n) - at[j]) % usize::from(n))
+                        .map(|g| if g == 0 { usize::from(n) } else { g })
+                        .collect();
+                    let (lo, hi) = (gaps.iter().min().unwrap(), gaps.iter().max().unwrap());
+                    assert!(hi - lo <= 1, "{k} of {n}: gaps {gaps:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_euclidean_fill_writes_one_row_and_undoes() {
+        use mpfree_param::{OnTrack, RelAddr};
+        let g = Grid::new(240).unwrap();
+        // Pad 2 on steps 0 and 1 (with a lock on step 1), pad 5 on step 2.
+        let mut c = clip(BAR, &[(0, 2), (250, 2), (480, 5)]);
+        c.notes[0].velocity = 90;
+        let cut = RelAddr::new(OnTrack::Inst, 1);
+        c.apply(&g.lock(&c, Some(2), 1, cut, 0.5)).unwrap();
+        let before = c.clone();
+        let e = Euclid {
+            hits: 3,
+            steps: 8,
+            rotate: 0,
+        };
+        let edit = g.euclid(&c, 2, e, 90);
+        c.apply(&edit).unwrap();
+        // x..x..x. twice: steps 0, 3, 6, 8, 11, 14. Step 0's note stays,
+        // step 1's goes with its lock, pad 5 is left alone.
+        let row: Vec<usize> = g
+            .row(&c, 2)
+            .iter()
+            .enumerate()
+            .filter_map(|(i, s)| s.map(|_| i))
+            .collect();
+        assert_eq!(row, vec![0, 3, 6, 8, 11, 14]);
+        assert!(c.notes.iter().any(|n| n.note == 5 && n.tick == 480));
+        assert!(c.locks.is_empty());
+        assert!(c
+            .notes
+            .iter()
+            .filter(|n| n.note == 2)
+            .all(|n| n.velocity == 90 && n.len >= 60));
+        assert!(g.euclid(&c, 2, e, 90).is_empty(), "already the pattern");
+        // Undo puts the row and its lock back.
+        c.apply(&edit.inverse()).unwrap();
+        let mut a = c.notes.clone();
+        let mut b = before.notes.clone();
+        a.sort_by_key(|n| (n.tick, n.note));
+        b.sort_by_key(|n| (n.tick, n.note));
+        assert_eq!((a, c.locks.clone()), (b, before.locks.clone()));
+        // A pattern longer than the clip is cut at its end.
+        let short = clip(4 * 240, &[]);
+        let edit = g.euclid(&short, 0, Euclid::default(), 100);
+        assert_eq!(edit.add.len(), 1);
     }
 
     #[test]

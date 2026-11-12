@@ -47,6 +47,14 @@ On the current test build, some buttons (REC, OVERDUB, UNDO, PLAY START, TRACK M
 | **NOTE REPEAT** twice, or **SHIFT + NOTE REPEAT** | Latch: repeat keeps going after you let go. Press again to stop. | Works |
 | **NOTE REPEAT + MENU** | Opens the Arp panel. | Works |
 
+## Arrange tab
+
+| Control | What it does | When |
+|---|---|---|
+| **Data wheel** | Changes the picked row of the Record settings, or of the Edit options while the note editor is open. | Works |
+| **SHIFT + data wheel** | Scrolls the clip grid, the song, or the note editor's roll, list or tracker. | Works |
+| **Q-Link knobs 1-4** | The same knobs as on the Play page, as the cards on the right show; Q-LINK steps to the macro banks. See [Clips and patterns](../making-music/clips.md#the-q-links-on-arrange). | Next build |
+
 ## Mode buttons
 
 The mode buttons along the top of the MPC go to the MPFree page that does the same job.
@@ -60,9 +68,10 @@ The mode buttons along the top of the MPC go to the MPFree page that does the sa
 | **SAMPLE EDIT** | The Sample tab's Wave page. | Next build |
 | **PROG EDIT** | The sound the pads play: the Synth tab while the synth is on the pads, otherwise the Sample tab's Pads page. | Next build |
 | **TRACK MUTE** | The pads become mute keys over any page: pads 1-8 mute and unmute tracks 1-8. **SHIFT + TRACK MUTE**: each pad mutes and unmutes itself in the kit. Press the same button again to play the pads. See [Playing live](../making-music/playing-live.md#muting-tracks-and-pads). | Next build |
-| **Q-LINK** | Steps the Q-Links through Macros 1-4, Macros 5-8 and the page's own knobs (the Play page and the chain editor). See [Mixing and effects](../making-music/mixing-and-effects.md#macros). | Next build |
+| **Q-LINK** | Steps the Q-Links through Macros 1-4, Macros 5-8 and the page's own knobs (the Play page, Arrange and the chain editor). See [Mixing and effects](../making-music/mixing-and-effects.md#macros). | Next build |
 | **ERASE** | Live erase while recording. | Planned |
-| **COPY**, **TC**, **BROWSE**, the data wheel's push | Not assigned yet. | Planned |
+| **BROWSE** | Opens or closes the browser. **SHIFT + BROWSE** saves the project. See [Saving your work](../making-music/saving.md). | Planned |
+| **COPY**, **TC**, the data wheel's push | Not assigned yet. | Planned |
 
 ## For developers
 

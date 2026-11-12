@@ -76,7 +76,7 @@ use mpfree_sampler::phrase::Phrase;
 use mpfree_sampler::record::{self, Input, Looped, Progress, Recording};
 use mpfree_sampler::save::{self, Opened};
 use mpfree_sampler::warp::{CopyKey, Done, Warps, Worker};
-use mpfree_sampler::wav;
+use mpfree_sampler::{sound_file, wav};
 use mpfree_sampler_ui::auto_tab::{
     self, AutoAction, AutoSettings, AutoState, AutoTab, Onto, Running,
 };
@@ -407,7 +407,7 @@ pub struct SamplePage {
     /// A project's kits being read and decoded ([`SamplePage::open_part`]).
     opening: Option<Receiver<Result<Opened, String>>>,
     /// A file being read for the browser's Load (true: Load to pad).
-    loading: Option<(Receiver<Result<Source, String>>, bool)>,
+    loading: Option<(Receiver<Loaded>, bool)>,
     /// A sound Load to pad put on the next pad hit.
     assign: Option<Source>,
     /// The kit an opened project was playing, for the app to switch to.
@@ -1354,6 +1354,34 @@ impl SamplePage {
                 self.lines.push(format!("sample: {kit}: {what}"));
                 self.refresh(ui);
             }
+            PlayAction::KeyFade(fade) => {
+                self.lift();
+                let kit = self.kit;
+                let Some(project) = self.projects.get_mut(kit) else {
+                    return;
+                };
+                let what = match a.apply(project) {
+                    Ok(()) => {
+                        self.edits += 1;
+                        if let Some(d) = self.dirty.get_mut(kit) {
+                            *d = true;
+                        }
+                        match fade {
+                            0 => "key fade off, the zones edge to edge".to_string(),
+                            1 => {
+                                "key fade 1 note, the zones that meet crossfade over it".to_string()
+                            }
+                            n => format!(
+                                "key fade {n} notes, the zones that meet crossfade over them"
+                            ),
+                        }
+                    }
+                    Err(e) => format!("key fade not changed ({e:?})"),
+                };
+                let kit = self.kit_text_of(kit);
+                self.lines.push(format!("sample: {kit}: {what}"));
+                self.refresh(ui);
+            }
             PlayAction::Pad { pad, gesture, .. } => {
                 let (kit, pad, gesture) = (self.kit, *pad, *gesture);
                 if self.gesture.as_ref().is_some_and(|g| g.id != gesture) {
@@ -2194,9 +2222,9 @@ impl SamplePage {
     }
 
     /// The browser's Load (`to_pad` false: onto the pad shown, one undo
-    /// step) and Load to pad (`to_pad`: onto the next pad hit). The WAV
-    /// file is read and decoded on a thread of its own and lands on a
-    /// later [`SamplePage::tick`]. A Load while another is under way
+    /// step) and Load to pad (`to_pad`: onto the next pad hit). The WAV,
+    /// AIFF or FLAC file is read and decoded on a thread of its own and
+    /// lands on a later [`SamplePage::tick`]. A Load while another is under way
     /// replaces it.
     #[allow(dead_code)] // the app's browser wiring calls it
     pub fn load_file(&mut self, path: PathBuf, to_pad: bool) {
@@ -2284,7 +2312,10 @@ impl SamplePage {
             Err(TryRecvError::Disconnected) => Err("its thread stopped".to_string()),
         };
         self.loading = None;
-        match r {
+        if let Ok((src, Some(note))) = &r {
+            self.lines.push(format!("sample: {}: {note}", src.name));
+        }
+        match r.map(|(src, _)| src) {
             Ok(src) if to_pad => {
                 self.lines
                     .push(format!("sample: hit a pad to put {} on it", src.name));
@@ -3320,17 +3351,14 @@ fn phrase_clip(name: &str, p: &Phrase, first_pad: usize) -> Result<Clip, String>
     Ok(clip)
 }
 
-/// A sound file for the browser's Load: WAV only for now (AIFF, FLAC and
-/// the rest say so), and no bigger than the sampler holds in memory.
+/// A sound read for Load, with a note when something was left out.
+type Loaded = Result<(Source, Option<String>), String>;
+
+/// A sound file for the browser's Load: WAV, AIFF or FLAC, known by what
+/// it holds, no bigger than the sampler holds in memory; and a note when
+/// something was left out (a file cut short).
 #[allow(dead_code)] // reached through load_file
-fn read_sound(path: &Path) -> Result<Source, String> {
-    let ext = path
-        .extension()
-        .map(|e| e.to_string_lossy().to_ascii_lowercase())
-        .unwrap_or_default();
-    if ext != "wav" && ext != "wave" {
-        return Err(format!("only WAV files load for now, not .{ext}"));
-    }
+fn read_sound(path: &Path) -> Loaded {
     let len = std::fs::metadata(path).map_err(|e| e.to_string())?.len();
     if len > wav::MAX_SAMPLES as u64 * 8 + (1 << 20) {
         return Err("too long to hold in memory".to_string());
@@ -3340,7 +3368,7 @@ fn read_sound(path: &Path) -> Result<Source, String> {
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_default();
     let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
-    wav::read(&name, &bytes)
+    sound_file::read(&name, &bytes)
 }
 
 #[cfg(test)]

@@ -277,8 +277,12 @@ impl Capture {
             velocity: 0,
         };
         match event {
-            // CAPTURE keeps what was played, not parameter locks.
-            Event::Lock { .. } | Event::Lane { .. } | Event::Unlock { .. } => return,
+            // CAPTURE keeps the notes played, not parameter locks or (yet)
+            // pad pressure.
+            Event::Lock { .. }
+            | Event::Lane { .. }
+            | Event::Unlock { .. }
+            | Event::Pressure { .. } => return,
             // A MIDI-style note-on at velocity 0 is a release.
             Event::NoteOn { note, velocity: 0 } | Event::NoteOff { note } => {
                 let n = usize::from(note & 127);
@@ -423,6 +427,7 @@ impl Capture {
                         chance: 100,
                         cond: mpfree_seq::Cond::Always,
                         ratchet: 1,
+                        touch: mpfree_seq::Touch::NONE,
                     };
                     open[n] = Some((played.len(), x.at));
                     played.push(Played {

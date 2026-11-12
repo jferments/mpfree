@@ -41,3 +41,6 @@ mpfree-chain-ui = { path = "../mpfree-chain-ui" }
 mpfree-fx-ui = { path = "../mpfree-fx-ui" }
 # Profiling (block timing, /proc process table). Not its counting-alloc feature.
 mpfree-prof = { path = "../mpfree-prof" }
+# Pinning the audio thread to a core (`--sound-cores`, cores.rs); the lanes
+# themselves live in the sampler and the mixer.
+mpfree-lanes = { path = "../mpfree-lanes" }

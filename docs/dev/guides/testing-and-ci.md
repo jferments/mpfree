@@ -31,6 +31,7 @@ filters, so the check always reports.
 | `lint` | `cargo clippy --workspace --all-targets` with warnings as errors, and `cargo fmt --check`, on a pinned toolchain | ~1 min |
 | `rust` | All workspace tests in debug and release; the `mpfree-bench` no-allocation check; host self-tests and fixed-output renders; C++/Rust WAV parity; the ARMv7 hard-float cross-build, ELF checks, and ARM tests and previews under qemu | ~2-3 min warm |
 | `splash-gl` | SDL3/GLES startup screen built from source and rendered headless with Mesa | ~1 min warm |
+| `gpu` | The GPU renderer (`rust/mpfree-gpu`, OpenGL ES through EGL) with Mesa's software GPU: clippy, then its frames against the software path's, for the MPC's screen and every panel turn | ~1 min warm |
 | `instructions` | Instructions per 128-frame block for every `mpfree-bench` case under callgrind, against `rust/mpfree-bench/instructions.txt`; fails when a case rises more than 5 % (see [profiling](../design/profiling.md#instruction-counts-the-instructions-ci-job)) | ~2 min warm |
 | `coverage` | Line coverage per crate (report only, never fails a PR); on `main` and by hand | ~5 min |
 

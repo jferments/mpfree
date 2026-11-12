@@ -602,6 +602,9 @@ impl Sink for TrackHost {
             Event::NoteOn { note, velocity } => NodeEvent::NoteOn { note, velocity },
             Event::NoteOff { note } => NodeEvent::NoteOff { note },
             Event::AllOff => NodeEvent::AllOff,
+            // A clip's pad pressure: the raw value, which the node's own
+            // pressure curve shapes.
+            Event::Pressure { note, value } => NodeEvent::Pressure { note, value },
             // Parameter locks and moves go to the mod resolver
             // (`mpfree-mod`), which knows each parameter's own value to go
             // back to on Unlock and sends the instruments their values; not

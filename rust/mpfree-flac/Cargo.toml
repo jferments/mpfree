@@ -1,0 +1,9 @@
+[package]
+name = "mpfree-flac"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "MIT"
+description = "A FLAC decoder of our own, no dependencies: every sample of a whole file for the sampler, or one frame anywhere in it for the browser's waveform"
+
+[dependencies]

@@ -374,6 +374,7 @@ dependencies = [
  "mpfree-fx",
  "mpfree-fx-ui",
  "mpfree-instruments",
+ "mpfree-lanes",
  "mpfree-looper",
  "mpfree-mixer-ui",
  "mpfree-mod",
@@ -415,6 +416,7 @@ dependencies = [
 name = "mpfree-audiotracks"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "mpfree-stretch",
  "mpfree-transport",
 ]
@@ -512,6 +514,10 @@ name = "mpfree-display"
 version = "0.1.0"
 
 [[package]]
+name = "mpfree-flac"
+version = "0.1.0"
+
+[[package]]
 name = "mpfree-fx"
 version = "0.1.0"
 dependencies = [
@@ -576,6 +582,9 @@ dependencies = [
 [[package]]
 name = "mpfree-library"
 version = "0.1.0"
+dependencies = [
+ "mpfree-flac",
+]
 
 [[package]]
 name = "mpfree-looper"
@@ -583,6 +592,15 @@ version = "0.1.0"
 dependencies = [
  "mpfree-stretch",
  "mpfree-transport",
+]
+
+[[package]]
+name = "mpfree-midi"
+version = "0.1.0"
+dependencies = [
+ "mpfree-controller",
+ "mpfree-midi-clock",
+ "mpfree-param",
 ]
 
 [[package]]
@@ -693,6 +711,7 @@ version = "0.1.0"
 dependencies = [
  "mpfree-analysis",
  "mpfree-core",
+ "mpfree-flac",
  "mpfree-grain",
  "mpfree-lanes",
  "mpfree-node",
@@ -790,6 +809,7 @@ dependencies = [
 name = "mpfree-time-ui"
 version = "0.1.0"
 dependencies = [
+ "mpfree-audiotracks",
  "mpfree-capture",
  "mpfree-play",
  "mpfree-seq",

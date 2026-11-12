@@ -46,6 +46,24 @@ A block in the song is linked to its clip, so when you edit the clip, every bloc
 > [!MPC]
 > On the MPC, a song is a list of sequences played one after another. In MPFree, the song is a timeline of clips, and each track can leave the song to play a launched clip and come back.
 
+### Audio in the song
+
+Audio you record from the line input goes on **audio tracks**, which have their own lanes under the clip lanes, on the same timeline. A lane shows once its track is armed or has audio on it.
+
+> [!NOTE]
+> Coming: the Song view can show audio lanes, but the audio tracks aren't connected to it in this build, so no lanes appear yet. This section describes how they will work.
+
+{{shot: arrange-song-audio | The Song view with two audio lanes: a vocal recorded twice, its newer part picked, and a guitar armed.}}
+
+- Each recording is a **region**: a block in the track's colour with its waveform. When an older take plays, the block says which one ("take 1"). A fade shows as a slope.
+- While a track records, a red block grows from where it started.
+- On the left of each lane: the **arm dot** (red while armed: tap it to arm or disarm), the track's name, its input (**L**, **R**, **L+R** or **ST**) and a thin level bar along the bottom.
+- **+ Audio** at the bottom adds the next audio track, up to 8.
+- Tap a region to pick it. The buttons along the bottom become **Split**, **Erase**, **Fades**, **Gain**, **Takes** and **Undo** for that region. Tap empty space to go back to the song's own buttons.
+- When there are more lanes than fit, drag up or down on the names to scroll them.
+
+Also coming: tapping a track's name for its settings (input, monitoring, level, pan, mute, solo), swiping across takes to keep the best parts of each, and dragging a region to move it.
+
 ## Recording a performance into the song
 
 **Rec song** records what you play on the clip grid into the song, so a jam becomes a song you can edit afterwards. The button sits above the clip grid and on the Song view, and it is red while it is on.

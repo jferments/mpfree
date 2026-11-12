@@ -31,14 +31,23 @@
 //! together, with mutes, follow actions and stored values for the morph.
 //! A clip can have a follow action too ([`Clip::follow`]).
 //!
+//! A note can carry the **pad pressure** played on it ([`Touch`]): a run
+//! of thinned values in the clip's [`Clip::touch`], timed from the note's
+//! start, so quantise, swing and edits that move the note take its
+//! pressure with it.
+//!
 //! The **arrangement** ([`arrange`]) puts clips on a timeline, linked to
 //! their slots until made unique; scenes and the arrangement convert both
 //! ways.
+//!
+//! The note editors (the Grid View and List Edit) make their edits with
+//! [`notes`], Timing Correct among them.
 //!
 //! Audio clips come in a later roadmap step.
 #![forbid(unsafe_code)]
 
 pub mod arrange;
+pub mod notes;
 pub mod scenes;
 pub mod steps;
 
@@ -63,6 +72,8 @@ pub const MAX_CLIP_TICKS: Tick = 256 * 4 * PPQ as Tick;
 pub const MAX_NOTES: usize = 8192;
 /// Parameter locks in one clip.
 pub const MAX_LOCKS: usize = 8192;
+/// Pressure values in one clip, every note's together ([`Clip::touch`]).
+pub const MAX_TOUCH_POINTS: usize = 65536;
 
 /// One note in a clip, in the clip's own ticks.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -84,6 +95,41 @@ pub struct Note {
     /// It plays this many times, 1 to [`MAX_RATCHET`], evenly spread over
     /// its length, each hit lasting `len / ratchet`. 1 is a plain note.
     pub ratchet: u8,
+    /// The pad pressure played on it, if any: its values in the clip's
+    /// [`Clip::touch`]. Edits that copy the note (`..note`) keep it.
+    pub touch: Touch,
+}
+
+/// Where a note's pressure is in its clip: values `first..first + len` of
+/// [`Clip::touch`]. `len` 0 is none ([`Touch::NONE`]). A clip only ever
+/// adds pressure ([`Clip::add_touch`]), so this stays valid while notes
+/// are taken out, put back (undo) or moved.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct Touch {
+    pub first: u32,
+    pub len: u32,
+}
+
+impl Touch {
+    pub const NONE: Touch = Touch { first: 0, len: 0 };
+
+    pub fn is_none(self) -> bool {
+        self.len == 0
+    }
+
+    /// The indices in [`Clip::touch`].
+    pub fn range(self) -> std::ops::Range<usize> {
+        self.first as usize..self.first as usize + self.len as usize
+    }
+}
+
+/// One pressure value of a note: `value` (0 to 127, the pad's raw
+/// pressure, before any instrument's curve) from `at` clip ticks after the
+/// note's start on.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct TouchPoint {
+    pub at: u32,
+    pub value: u8,
 }
 
 /// The most hits a ratchet makes.
@@ -142,6 +188,35 @@ impl Cond {
         }
     }
 
+    /// Every condition in the order a wheel steps through them: always,
+    /// then 1:2 to 8:8 (by the number of passes, then the pass), then
+    /// FILL, !FILL, PRE, !PRE, NEI, !NEI, 1ST and !1ST.
+    pub fn all() -> Vec<Cond> {
+        let mut out = vec![Cond::Always];
+        for b in 2..=8 {
+            out.extend((1..=b).map(|a| Cond::Every { a, b }));
+        }
+        out.extend([
+            Cond::Fill,
+            Cond::NotFill,
+            Cond::Pre,
+            Cond::NotPre,
+            Cond::Nei,
+            Cond::NotNei,
+            Cond::First,
+            Cond::NotFirst,
+        ]);
+        out
+    }
+
+    /// The condition `d` places on in [`Cond::all`], stopping at either
+    /// end (one out of range steps from always).
+    pub fn step(self, d: i32) -> Cond {
+        let all = Cond::all();
+        let at = all.iter().position(|&c| c == self).unwrap_or(0) as i32;
+        all[(at + d).clamp(0, all.len() as i32 - 1) as usize]
+    }
+
     /// The condition alone (fill, the pass, the last results given):
     /// whether the note plays, before its chance. `pass` counts from 1 at
     /// the clip's start (0 and below before it); `pre` and `nei` are the
@@ -194,6 +269,7 @@ impl Note {
             chance: 100,
             cond: Cond::Always,
             ratchet: 1,
+            touch: Touch::NONE,
         }
     }
 
@@ -321,6 +397,9 @@ pub struct Clip {
     /// Recorded parameter moves (automation): Perform FX gestures, as
     /// lanes of points on the clip's ticks (`mpfree-moves`).
     pub moves: Moves,
+    /// Every note's pad pressure, one run a note ([`Note::touch`]), each
+    /// run's values in time order. Only added to, never taken out of.
+    pub touch: Vec<TouchPoint>,
     /// After some bars, its track plays another clip or stops
     /// ([`scenes`]).
     pub follow: Option<Follow>,
@@ -345,6 +424,9 @@ pub enum ModelError {
     BadLock(usize),
     /// A lock to take out is not in the clip.
     MissingLock,
+    /// Pressure values past [`MAX_TOUCH_POINTS`], or a run out of order
+    /// or out of range.
+    BadTouch,
     /// The clip's moves are not sound for its length, or not the ones an
     /// edit expected to change (see [`steps::Edit`]).
     BadMoves,
@@ -373,7 +455,34 @@ impl Clip {
             locks: Vec::new(),
             moves: Moves::new(),
             follow: None,
+            touch: Vec::new(),
         }
+    }
+
+    /// Add one note's pressure run (values in time order, 0 to 127) and
+    /// say where it went, for the note's [`Note::touch`]. An empty run is
+    /// [`Touch::NONE`]. A run out of order, or one that would take the clip
+    /// past [`MAX_TOUCH_POINTS`], is refused and the clip is unchanged. It
+    /// allocates only past the room reserved in `touch`.
+    pub fn add_touch(&mut self, points: &[TouchPoint]) -> Result<Touch, ModelError> {
+        if points.is_empty() {
+            return Ok(Touch::NONE);
+        }
+        if self.touch.len() + points.len() > MAX_TOUCH_POINTS || !run_ok(points) {
+            return Err(ModelError::BadTouch);
+        }
+        let first = self.touch.len() as u32;
+        self.touch.extend_from_slice(points);
+        Ok(Touch {
+            first,
+            len: points.len() as u32,
+        })
+    }
+
+    /// Note `n`'s pressure run (empty if it has none or it is out of
+    /// range).
+    pub fn touch_of(&self, n: &Note) -> &[TouchPoint] {
+        self.touch.get(n.touch.range()).unwrap_or(&[])
     }
 
     /// Add one note, for example a recorded one. A note out of range, or
@@ -440,6 +549,7 @@ impl Clip {
             && (1..=100).contains(&n.chance)
             && n.cond.ok()
             && (1..=MAX_RATCHET).contains(&n.ratchet)
+            && (n.touch.is_none() || self.touch.get(n.touch.range()).is_some_and(run_ok))
     }
 
     /// Every value in range.
@@ -449,6 +559,9 @@ impl Clip {
         }
         if self.notes.len() > MAX_NOTES {
             return Err(ModelError::TooManyNotes);
+        }
+        if self.touch.len() > MAX_TOUCH_POINTS {
+            return Err(ModelError::BadTouch);
         }
         if Speed::new(self.speed.num, self.speed.den).is_none() {
             return Err(ModelError::BadSpeed);
@@ -486,6 +599,11 @@ impl Clip {
     }
 }
 
+/// A pressure run is sound: values 0 to 127, in time order.
+fn run_ok(points: &[TouchPoint]) -> bool {
+    points.iter().all(|p| p.value <= 127) && points.windows(2).all(|w| w[0].at <= w[1].at)
+}
+
 /// Where a track's notes go: a sampler program, the arp in front of it,
 /// MIDI out ... The host owns the list; a track holds an index into it.
 pub type DestId = u16;
@@ -505,6 +623,9 @@ pub struct Track {
     /// arp played. Either way a part is never arpeggiated twice
     /// (`mpfree_play::TrackArps`).
     pub through_arp: bool,
+    /// "Record pad pressure": while the track records, the pads' pressure
+    /// goes into its notes ([`Note::touch`]). On by default.
+    pub record_touch: bool,
     pub slots: [Option<Clip>; SLOTS],
 }
 
@@ -516,6 +637,7 @@ impl Track {
             swing: None,
             mute: false,
             through_arp: false,
+            record_touch: true,
             slots: Default::default(),
         }
     }
@@ -596,6 +718,47 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_notes_pressure_is_a_run_in_its_clip() {
+        let p = |at, value| TouchPoint { at, value };
+        let mut c = Clip::new("pressed", 3840);
+        assert_eq!(c.add_touch(&[]), Ok(Touch::NONE));
+        let a = c.add_touch(&[p(0, 10), p(50, 40)]).unwrap();
+        let b = c.add_touch(&[p(0, 127)]).unwrap();
+        assert_eq!(
+            (a, b),
+            (Touch { first: 0, len: 2 }, Touch { first: 2, len: 1 })
+        );
+        // Out of order or out of range: refused, nothing added.
+        assert_eq!(c.add_touch(&[p(9, 1), p(3, 1)]), Err(ModelError::BadTouch));
+        assert_eq!(c.add_touch(&[p(0, 128)]), Err(ModelError::BadTouch));
+        assert_eq!(c.touch.len(), 3);
+        let n = Note {
+            touch: a,
+            ..Note::new(0, 240, 1, 100)
+        };
+        c.add_note(n).unwrap();
+        assert_eq!(c.touch_of(&n), &[p(0, 10), p(50, 40)]);
+        // Taking the note out keeps its pressure, so undo can put it back.
+        assert!(c.remove_note(&n));
+        assert_eq!(c.touch.len(), 3);
+        c.add_note(n).unwrap();
+        assert_eq!(c.check(), Ok(()));
+        // A note naming pressure the clip does not have is refused.
+        let stray = Note {
+            touch: Touch { first: 2, len: 5 },
+            ..Note::new(0, 240, 2, 100)
+        };
+        assert_eq!(c.add_note(stray), Err(ModelError::BadNote(1)));
+        // No more than MAX_TOUCH_POINTS in a clip.
+        let many = vec![p(0, 1); MAX_TOUCH_POINTS - 3];
+        assert!(c.add_touch(&many).is_ok());
+        assert_eq!(c.add_touch(&[p(0, 1)]), Err(ModelError::BadTouch));
+        assert_eq!(c.check(), Ok(()));
+        // A new track records pressure.
+        assert!(Track::new("t", 0).record_touch);
+    }
+
+    #[test]
     fn clips_check_their_values() {
         let mut c = Clip::new("beat", 3840);
         c.notes.push(Note {
@@ -606,6 +769,7 @@ mod tests {
             chance: 100,
             cond: Cond::Always,
             ratchet: 1,
+            touch: Touch::NONE,
         });
         assert_eq!(c.check(), Ok(()));
         c.notes.push(Note {
@@ -616,6 +780,7 @@ mod tests {
             chance: 100,
             cond: Cond::Always,
             ratchet: 1,
+            touch: Touch::NONE,
         });
         assert_eq!(c.check(), Err(ModelError::BadNote(1)));
         c.notes[1].tick = 100;
@@ -673,6 +838,16 @@ mod tests {
         .map(|c| c.to_string())
         .collect();
         assert_eq!(shown, ["3:8", "!FILL", "PRE", "1ST", ""]);
+        // The wheel's order: always, the 35 A:B conditions, then the rest.
+        let all = Cond::all();
+        assert_eq!(all.len(), 44);
+        assert!(all.iter().all(|c| c.ok()));
+        assert_eq!(Cond::Always.step(1), every(1, 2));
+        assert_eq!(every(2, 2).step(1), every(1, 3));
+        assert_eq!(every(8, 8).step(1), Cond::Fill);
+        assert_eq!(Cond::NotFirst.step(1), Cond::NotFirst, "stops at the end");
+        assert_eq!(Cond::Always.step(-1), Cond::Always);
+        assert_eq!(Cond::Fill.step(-2), every(7, 8));
         // Out of range: refused by the clip.
         assert!(!every(0, 2).ok() && !every(3, 2).ok() && !every(1, 9).ok() && every(8, 8).ok());
         let mut c = Clip::new("c", 3840);
@@ -701,6 +876,7 @@ mod tests {
                 chance: 100,
                 cond: Cond::Always,
                 ratchet: 1,
+                touch: Touch::NONE,
             }),
             Ok(())
         );
@@ -713,6 +889,7 @@ mod tests {
                 chance: 100,
                 cond: Cond::Always,
                 ratchet: 1,
+                touch: Touch::NONE,
             }),
             Err(ModelError::BadNote(1))
         );
@@ -725,6 +902,7 @@ mod tests {
                 chance: 100,
                 cond: Cond::Always,
                 ratchet: 1,
+                touch: Touch::NONE,
             }),
             Err(ModelError::BadNote(1))
         );
@@ -738,6 +916,7 @@ mod tests {
                 chance: 100,
                 cond: Cond::Always,
                 ratchet: 1,
+                touch: Touch::NONE,
             };
             MAX_NOTES
         ];
@@ -750,6 +929,7 @@ mod tests {
                 chance: 100,
                 cond: Cond::Always,
                 ratchet: 1,
+                touch: Touch::NONE,
             }),
             Err(ModelError::TooManyNotes)
         );
@@ -763,6 +943,7 @@ mod tests {
             chance: 100,
             cond: Cond::Always,
             ratchet: 1,
+            touch: Touch::NONE,
         }));
         assert_eq!(c.notes.len(), MAX_NOTES - 1);
         assert!(!c.remove_note(&Note {
@@ -773,6 +954,7 @@ mod tests {
             chance: 100,
             cond: Cond::Always,
             ratchet: 1,
+            touch: Touch::NONE,
         }));
     }
 

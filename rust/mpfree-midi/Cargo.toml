@@ -1,0 +1,17 @@
+[package]
+name = "mpfree-midi"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Host-first MIDI routing for MPFree: external ports (DIN, USB keyboards), keyboards into tracks, MIDI tracks out with DIN pacing, MIDI Learn onto any parameter, and the CV/gate model; bytes and volts only, no ports opened"
+
+[lib]
+name = "mpfree_midi"
+path = "src/lib.rs"
+
+[dependencies]
+mpfree-controller = { path = "../mpfree-controller" }
+mpfree-param = { path = "../mpfree-param" }
+
+[dev-dependencies]
+mpfree-midi-clock = { path = "../mpfree-midi-clock" }
