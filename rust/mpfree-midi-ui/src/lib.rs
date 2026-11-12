@@ -67,8 +67,8 @@ pub struct Built {
     pub clock_in: bool,
     /// Ports send clock.
     pub clock_out: bool,
-    /// The CV/gate jacks are driven.
-    pub cv: bool,
+    /// The CV/gate outputs driven, counted from CV 1 (0: CV out is off).
+    pub cv_outs: u8,
 }
 
 /// What the app tells the sections about the world now.

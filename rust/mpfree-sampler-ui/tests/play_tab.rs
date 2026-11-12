@@ -107,11 +107,7 @@ fn the_tab_shows_the_pads_layers_envelope_filter_and_settings() {
         "3 layers · Loop · stacked · 4 voices · 4.73 s long"
     );
     assert_eq!(bar.active, play_tab::TAB);
-    assert_eq!(
-        bar.enabled,
-        vec![true, true, true, true, true, true, false, true],
-        "Pads, Wave, Chop, Play, Grain and Rec are built"
-    );
+    assert_eq!(bar.enabled, vec![true; 7], "every tab is built");
     let map = s.ui.get::<LayerMap>(play_tab::LAYERS).unwrap();
     let ranges: Vec<(u8, u8)> = map.layers.iter().map(|l| (l.lo, l.hi)).collect();
     assert_eq!(ranges, vec![(1, 63), (64, 109), (110, 127)]);
@@ -934,6 +930,79 @@ fn key_fade_overlaps_the_kits_zones_and_the_keyboard_draws_their_curves() {
     let mut plain = play(false);
     assert_eq!(row_value(&plain, Row::KeyFade), "–");
     assert_eq!(step(&mut plain, Row::KeyFade, 1), None);
+}
+
+#[test]
+fn the_scene_strip_stores_fades_and_returns() {
+    use mpfree_sampler::scene::Scene;
+    use mpfree_sampler_ui::play_tab::SceneAction;
+    use mpfree_sampler_ui::widgets::ButtonRow;
+    use mpfree_ui::widgets::Fader;
+    let mut s = play(false);
+    let ev = |widget: &str, kind: EventKind| UiEvent {
+        widget: widget.into(),
+        kind,
+    };
+    let act = |s: &mut PlaySample, e: UiEvent| {
+        let st = s.state.clone();
+        s.tab.action(&mut s.ui, &e, &st)
+    };
+    let strip = |s: &PlaySample| {
+        let b = s.ui.get::<ButtonRow>(play_tab::SCENES).unwrap();
+        let f = s.ui.get::<Fader>(play_tab::FADER).unwrap();
+        (b.labels.clone(), b.enabled.clone(), f.text.clone())
+    };
+    let (labels, enabled, text) = strip(&s);
+    assert_eq!(labels, ["Store A", "Store B", "Return to A"]);
+    assert_eq!(enabled, [true, true, false], "nothing to return to");
+    assert_eq!(text, "store A first");
+    // The fader does nothing until A and B are stored.
+    assert_eq!(
+        act(&mut s, ev(play_tab::FADER, EventKind::Value(0.5))),
+        None
+    );
+    assert_eq!(s.tab.fade(), 0.0);
+    let store = |s: &mut PlaySample, k: usize| {
+        assert_eq!(
+            act(s, ev(play_tab::SCENES, EventKind::Tab(k))),
+            Some(PlayAction::Scene(SceneAction::Store(k)))
+        );
+        // The app stores it in the kit.
+        s.project.scenes[k] = Some(Scene::of(&s.project));
+        let view = s.state.sounds[0].view.clone();
+        s.state = PlayState::from_project(&s.project, PAD, |_| view.clone()).unwrap();
+        let st = s.state.clone();
+        s.tab.update(&mut s.ui, &st);
+    };
+    store(&mut s, 0);
+    assert_eq!(strip(&s).2, "store B first");
+    store(&mut s, 1);
+    let (labels, enabled, text) = strip(&s);
+    assert_eq!(labels, ["Store A again", "Store B again", "Return to A"]);
+    assert_eq!(enabled, [true, true, true]);
+    assert_eq!(text, "A");
+    assert_eq!(
+        act(&mut s, ev(play_tab::FADER, EventKind::Value(0.4))),
+        Some(PlayAction::Scene(SceneAction::Fade(0.4)))
+    );
+    assert_eq!(strip(&s).2, "40 % to B");
+    assert_eq!(
+        act(&mut s, ev(play_tab::FADER, EventKind::Value(0.4))),
+        None,
+        "no move"
+    );
+    act(&mut s, ev(play_tab::FADER, EventKind::Value(1.0)));
+    assert_eq!(strip(&s).2, "B");
+    // Return: the fader back at A.
+    assert_eq!(
+        act(&mut s, ev(play_tab::SCENES, EventKind::Tab(2))),
+        Some(PlayAction::Scene(SceneAction::Return))
+    );
+    assert_eq!((s.tab.fade(), strip(&s).2.as_str()), (0.0, "A"));
+    // It changes nothing in the kit by itself.
+    let before = s.project.pad(PAD).cloned();
+    apply(&mut s, &PlayAction::Scene(SceneAction::Return));
+    assert_eq!(s.project.pad(PAD).cloned(), before);
 }
 
 #[test]
