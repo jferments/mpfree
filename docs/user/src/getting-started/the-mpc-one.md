@@ -62,7 +62,7 @@ On the back:
 
 - **OUTPUTS**: two 6.35 mm (1/4") jacks for speakers, a mixer or an audio interface. The **MASTER VOL** knob sets their volume and the headphones'.
 - **INPUTS**: two 6.35 mm jacks to record from a synth, a turntable or another instrument. The **REC VOL** knob sets how loud they come in. In MPFree the inputs are off until you turn them on in Prefs (Line input).
-- **MIDI IN** and **MIDI OUT**, **USB** ports, **CV/Gate** outputs and the **Link** (Ethernet) port: MPFree doesn't use these for music yet.
+- **MIDI IN** and **MIDI OUT**, **USB** ports, **CV/Gate** outputs and the **Link** (Ethernet) port: MPFree doesn't use these for music yet. [Playing other gear](../making-music/midi-and-cv.md) says what is coming for MIDI, sync and CV.
 
 > [!MPC]
 > The hardware is the same, but a few buttons do different jobs in MPFree. **MAIN** goes to the Play page and, pressed again, switches its view. **SHIFT + MENU** opens MPFree's Prefs. The Q-Links always follow the page you are on, so there is no Q-Link Edit mode. See [Buttons and controls](../reference/controls.md) for every difference.

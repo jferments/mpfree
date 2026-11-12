@@ -1045,6 +1045,12 @@ pub struct OptionRow {
 /// A titled list of settings, each with a value and arrows to step it. A tap
 /// on a row's name selects it (`Select`); a tap on an arrow steps its value
 /// (`Step`).
+///
+/// A narrow list (rows under [`NARROW_ROW_W`] pixels, such as Arrange's
+/// Record panel beside the Q-Link column) keeps every row readable: the
+/// text is 15 px, the value box takes a little over half the row, its
+/// arrows are drawn thin, and a tap on its left or right third steps the
+/// value.
 pub struct OptionList {
     pub title: String,
     pub right: String,
@@ -1055,6 +1061,12 @@ pub struct OptionList {
 const OPTION_H: i32 = 58;
 const VALUE_W: i32 = 300;
 const ARROW_W: i32 = 64;
+/// Rows narrower than this draw narrow (see [`OptionList`]): below it the
+/// usual value box (half the row) has no room for its two 64 px arrows and
+/// a value between them.
+pub const NARROW_ROW_W: i32 = 6 * ARROW_W;
+/// A narrow row's arrow, as drawn.
+const NARROW_ARROW_W: i32 = 22;
 
 impl OptionList {
     pub fn new(title: &str) -> OptionList {
@@ -1094,13 +1106,27 @@ impl OptionList {
             body.w,
             OPTION_H - 6,
         );
-        let value = Rect::new(
-            row.right() - VALUE_W.min(row.w / 2),
-            row.y,
-            VALUE_W.min(row.w / 2),
-            row.h,
-        );
+        let w = if OptionList::narrow(row) {
+            row.w * 54 / 100
+        } else {
+            VALUE_W.min(row.w / 2)
+        };
+        let value = Rect::new(row.right() - w, row.y, w, row.h);
         Some((row, value))
+    }
+
+    /// The row draws narrow (see [`OptionList`]).
+    pub fn narrow(row: Rect) -> bool {
+        row.w < NARROW_ROW_W
+    }
+
+    /// How far in from each end of a value box a tap steps the value.
+    fn arrow_reach(row: Rect, value: Rect) -> i32 {
+        if OptionList::narrow(row) {
+            value.w / 3
+        } else {
+            ARROW_W
+        }
     }
 }
 
@@ -1113,15 +1139,21 @@ impl Widget for OptionList {
                 continue;
             };
             let on = k == self.selected;
+            let narrow = OptionList::narrow(row);
             if on {
                 cx.canvas.fill_round_rect(row, 10, t.raised);
                 cx.canvas
                     .fill_round_rect(Rect::new(row.x, row.y + 12, 4, row.h - 24), 2, t.accent);
             }
-            let name = Rect::new(row.x + 16, row.y, (value.x - row.x - 24).max(0), row.h);
+            let (px, arrow, gap) = if narrow {
+                (t.size_small + 1.0, NARROW_ARROW_W, 20)
+            } else {
+                (t.size_body, ARROW_W, 24)
+            };
+            let name = Rect::new(row.x + 16, row.y, (value.x - row.x - gap).max(0), row.h);
             cx.text(
                 if on { FontId::Bold } else { FontId::Sans },
-                t.size_body,
+                px,
                 name,
                 Align::Left,
                 t.text,
@@ -1130,8 +1162,8 @@ impl Widget for OptionList {
             let boxr = value.inset_xy(0, 7);
             cx.canvas
                 .fill_round_rect(boxr, 10, if on { t.surface } else { t.raised });
-            let (left, mid) = boxr.take_left(ARROW_W);
-            let (right, mid) = mid.take_right(ARROW_W);
+            let (left, mid) = boxr.take_left(arrow);
+            let (right, mid) = mid.take_right(arrow);
             cx.text(
                 FontId::Bold,
                 t.size_title + 4.0,
@@ -1150,7 +1182,7 @@ impl Widget for OptionList {
             );
             cx.text(
                 FontId::Bold,
-                t.size_body,
+                px,
                 mid,
                 Align::Center,
                 if on { t.accent } else { t.text },
@@ -1178,14 +1210,15 @@ impl Widget for OptionList {
             self.row_rects(r, k)
                 .is_some_and(|(row, _)| row.contains(x, y))
         })?;
-        let (_, value) = self.row_rects(r, k)?;
+        let (row, value) = self.row_rects(r, k)?;
+        let reach = OptionList::arrow_reach(row, value);
         self.selected = k;
-        if value.contains(x, y) && x < value.x + ARROW_W {
+        if value.contains(x, y) && x < value.x + reach {
             Some(EventKind::Step {
                 index: k,
                 delta: -1,
             })
-        } else if value.contains(x, y) && x >= value.right() - ARROW_W {
+        } else if value.contains(x, y) && x >= value.right() - reach {
             Some(EventKind::Step { index: k, delta: 1 })
         } else {
             Some(EventKind::Select(k))
@@ -1369,6 +1402,55 @@ mod tests {
         // Rows out of view cannot be hit; the selected row is kept in view.
         o.selected = 11;
         assert!(o.row_rects(r, 0).is_none() && o.row_rects(r, 11).is_some());
+    }
+
+    #[test]
+    fn narrow_option_rows_keep_their_arrows() {
+        let mut o = OptionList::new("Record");
+        o.rows = (0..3)
+            .map(|i| OptionRow {
+                name: format!("option {i}"),
+                value: "a".into(),
+            })
+            .collect();
+        // Arrange's Record panel beside the Q-Link column: 250 px.
+        let r = Rect::new(0, 0, 250, 14 * 2 + 34 + OPTION_H * 3);
+        let (row, value) = o.row_rects(r, 1).unwrap();
+        assert!(OptionList::narrow(row) && row.w == 222, "{row:?}");
+        // A little over half the row, and more than two wide arrows' worth
+        // would leave.
+        assert_eq!(value.w, 119);
+        assert_eq!(value.right(), row.right());
+        // The value box's left and right thirds step it; its middle and the
+        // name select the row.
+        let y = value.y + 10;
+        let step = |delta| EventKind::Step { index: 1, delta };
+        for (x, want) in [
+            (value.x + 2, step(-1)),
+            (value.x + value.w / 3 - 1, step(-1)),
+            (value.x + value.w / 2, EventKind::Select(1)),
+            (value.right() - value.w / 3, step(1)),
+            (value.right() - 2, step(1)),
+            (row.x + 20, EventKind::Select(1)),
+        ] {
+            assert_eq!(o.touch(1, Touch::Down, x, y, r), Some(want), "x {x}");
+        }
+        // A wide list is as before: the 64 px arrows, half the row.
+        let wide = Rect::new(0, 0, 430, r.h);
+        let (row, value) = o.row_rects(wide, 1).unwrap();
+        assert!(!OptionList::narrow(row));
+        assert_eq!(value.w, row.w / 2);
+        assert_eq!(
+            o.touch(1, Touch::Down, value.x + ARROW_W - 1, value.y + 10, wide),
+            Some(EventKind::Step {
+                index: 1,
+                delta: -1
+            })
+        );
+        assert_eq!(
+            o.touch(1, Touch::Down, value.x + ARROW_W + 1, value.y + 10, wide),
+            Some(EventKind::Select(1))
+        );
     }
 
     #[test]
