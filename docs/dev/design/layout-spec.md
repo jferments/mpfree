@@ -79,12 +79,12 @@ Built in round 9 to mockup J (Jay's direction, 10:16Z), with real data; side-by-
 
 - **The frame:** the loops (220 px) at the left; the editor over Recording and input and Use the loop (330 px) in the middle; the Q-Link column (168 px) at the right; the hint line under them.
 - **The loops:** Loop 1 to 4, and on as far as one is used or picked (eight in all), each with its length and layers and its state (PLAYING, MUTED, RECORDING); the picked one outlined. A tap picks a loop; + New loop picks the first empty one. Every loop plays at once; the controls act on the picked one. The loop memory gauge sits at the bottom.
-- **The editor:** the tools row (half length, double, reverse, nudge, seam fade, merge layers, undo history), the loop's wave with its bar lines and the playhead, and a row per layer: its speaker (mute), S (solo), level bar (drag: -24 to +6 dB), mini wave and × (delete). A tap on a row puts that layer on the Q-Links. Three rows show; more scroll to keep the picked one in view.
-- **Recording and input,** two columns: Record from, First pass, Start, After recording, At another tempo; Line input, Input peak, Monitor, Latency. A tap on a row's right half steps it up, the left half down; the source and on-off rows flip. The Play strip uses the same settings.
-- **Use the loop:** To a pad, To a clip, Save loop, Resample.
-- **Q-Links:** the picked layer's level and pan, the loop's level, the line input's level (mockup J's Fade old and Seam fade take Q3 and Q4 once the looper has them).
+- **The editor:** the tools row (half length, double, reverse, nudge, seam fade, merge layers, undo history; they work while the loop plays and isn't recording, and merge needs two layers; seam fade steps through a cut, 10 ms, 50 ms and the longest, and shows the fade now; merge shows its progress), the loop's wave with its bar lines and the playhead, and a row per layer: its speaker (mute), S (solo), level bar (drag: -24 to +6 dB), mini wave and × (delete). A layer Fade old has turned down says how far ("faded to 77 %"). A tap on a row puts that layer on the Q-Links. Three rows show; more scroll to keep the picked one in view.
+- **Recording and input,** two columns: Record from, First pass, Start, After recording, At another tempo; Line input, Input peak, Monitor, Latency. A tap on a row's right half steps it up, the left half down; the source and on-off rows flip, and After recording flips between play and overdub (the picked loop's own). The Play strip uses the same settings.
+- **Use the loop:** To a pad, To a clip, Save loop, Resample. Resample picks the first empty loop and records the loops as heard into it from the next bar line, as REC does; REC ends the pass. It works while a loop plays and one is empty.
+- **Q-Links:** the picked layer's level and pan, then the loop's Fade old (50 to 100 % kept a pass, a percent a detent) and its seam fade (a millisecond a detent), as mockup J. The loop's level and the line input's are on Play's Loop view.
 - **Hardware:** REC records or overdubs, OVERDUB overdubs, UNDO undoes (SHIFT: redo); there are no on-screen record buttons here (the Play strip has them).
-- **Still to come (drawn faint until the looper has them, #122):** the tools, the trim handles on the wave, Start and After recording, Use the loop, Fade old and Seam fade.
+- **Still to come (drawn faint until then):** the trim handles on the wave, Undo history, Start, and Use the loop's To a pad, To a clip and Save loop (the looper's bounce).
 
 
 ## 4b. The FX chain editor and macros

@@ -95,6 +95,9 @@ pub enum LoopAction {
     /// Pick loop `n` (0 to [`MAX_LOOPS`] - 1): the buttons, the layers'
     /// controls and the screens act on it from the next period.
     Select(usize),
+    /// Pick loop `n`, empty, and resample into it: its first pass records
+    /// the other loops as heard ([`Command::Resample`]).
+    Resample(usize),
 }
 
 /// What the line input counted since it was opened.
@@ -1112,6 +1115,33 @@ impl LoopHost {
         format!("looper: {what}")
     }
 
+    /// Use the loop's Resample: pick loop `n` and queue
+    /// [`Command::Resample`] for it, with one `looper:` line for the log.
+    /// Refused (nothing queued) unless loop `n` is empty.
+    pub fn resample_into(&mut self, n: usize) -> String {
+        let n = n.min(MAX_LOOPS - 1);
+        if self
+            .looper
+            .loop_status(n)
+            .is_none_or(|s| s.phase != Phase::Empty)
+        {
+            return format!(
+                "looper: Resample into loop {}: refused, it is not empty",
+                n + 1
+            );
+        }
+        if !self.looper.select_loop(n) || !self.looper.command(Command::Resample) {
+            return format!(
+                "looper: Resample into loop {}: NOT done, the command queue is full",
+                n + 1
+            );
+        }
+        format!(
+            "looper: Resample into loop {}: armed, its first pass records the other loops as heard from the next bar line",
+            n + 1
+        )
+    }
+
     /// Pick loop `n` for the presses and controls after this, with its
     /// `looper:` line for the log ("loop 2 picked (empty)").
     pub fn select(&mut self, n: usize) -> String {
@@ -1538,6 +1568,35 @@ mod tests {
 
     /// A layer's speaker: the mute goes to the layer by its id, the log
     /// names it, and the next view shows it muted and not heard.
+    /// Use the loop's Resample: into an empty loop only, picked with it.
+    #[test]
+    fn resample_goes_into_an_empty_loop_and_picks_it() {
+        let mut h = LoopHost::new(44_100, 8);
+        let mut t = Transport::new(44_100, 120.0).unwrap();
+        let mut b = Block::new();
+        h.command(Command::SetBars(Some(1)));
+        h.command(Command::SetLatency(0));
+        h.command(Command::Record);
+        t.command(0, T::Play);
+        let mut run = |h: &mut LoopHost, periods: u64| {
+            for _ in 0..periods {
+                assert!(t.process(PERIOD as u32, &mut b));
+                let (mut l, mut r) = ([0.0; PERIOD], [0.0; PERIOD]);
+                h.period(&b, &mut l, &mut r);
+            }
+        };
+        run(&mut h, 700);
+        assert_eq!(h.view(120.0).status.phase, Phase::Playing);
+        assert!(h.resample_into(0).contains("refused"), "loop 1 has a loop");
+        let line = h.resample_into(1);
+        assert!(line.contains("loop 2: armed"), "{line}");
+        run(&mut h, 1);
+        let v = h.view(120.0);
+        assert_eq!(v.selected, 1);
+        assert!(v.status.resampling, "{:?}", v.status);
+        assert_eq!(v.loops[0].phase, Phase::Playing);
+    }
+
     #[test]
     fn a_layer_mutes_by_its_id_and_the_view_shows_it() {
         let mut h = LoopHost::new(44_100, 8);

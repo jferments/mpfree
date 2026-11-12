@@ -13,7 +13,9 @@ use crate::looper_tab::{
     UseLoop, EDITOR, LOOPS, LOOP_COLOURS, QLINKS, RECORDING, TOOLS, USE,
 };
 use crate::looping::{LoopSource, LoopWave, LooperView};
-use mpfree_looper::{LayerCommand, LayerInfo, Phase, MAX_LAYERS, MAX_LOOPS};
+use mpfree_looper::{
+    After, Command, Edit, LayerCommand, LayerInfo, Phase, Status, MAX_LAYERS, MAX_LOOPS, MAX_SEAM,
+};
 use mpfree_ui::draw;
 use mpfree_ui::qlink::{QLinkCard, QLinkColumn};
 use mpfree_ui::{Align, Color, EventKind, FontId, PaintCx, Rect, Tone, Touch, Ui, Widget};
@@ -415,23 +417,117 @@ pub fn setting_item(i: usize, delta: i32, set: &Settings) -> Option<(Item, i32)>
     })
 }
 
+/// The setting row `i` that is the picked loop's own (After recording):
+/// the looper command a tap asks for. None for the other rows.
+pub fn setting_command(i: usize, s: &Status) -> Option<Command> {
+    match SET_ROWS.get(i)? {
+        SetRow::After => Some(Command::SetAfter(match s.after {
+            After::Play => After::Overdub,
+            After::Overdub => After::Play,
+        })),
+        _ => None,
+    }
+}
+
 /// Use the loop's rows: title and what it does.
 const USE_ROWS: [(&str, &str); 4] = [
     ("To a pad", "a sample on the Sample tab"),
     ("To a clip", "audio on the Arrange page"),
     ("Save loop", "on the stick, with its layers"),
-    ("Resample", "the loop through its FX"),
+    ("Resample", "the loops as heard, into a new loop"),
 ];
+
+/// Use the loop's Resample row.
+pub const USE_RESAMPLE: usize = 3;
+
+/// The seam fades the tool steps through, in milliseconds (0: a straight
+/// cut); the last is the looper's longest ([`MAX_SEAM`]).
+const SEAM_STEPS_MS: [f32; 4] = [0.0, 10.0, 50.0, 1000.0];
+
+/// A seam fade in frames at `rate`, up to the looper's longest.
+fn seam_frames(ms: f32, rate: u32) -> u32 {
+    ((ms / 1000.0 * rate as f32).round() as u32).min(MAX_SEAM as u32)
+}
+
+/// A seam fade as text: "10 ms", "cut".
+pub fn seam_text(frames: usize, rate: u32) -> String {
+    if frames == 0 {
+        "cut".to_string()
+    } else {
+        format!("{:.0} ms", frames as f64 * 1000.0 / f64::from(rate.max(1)))
+    }
+}
+
+/// Whether the picked loop takes edits now: it plays (not recording or
+/// overdubbing) and no merge is rendering.
+fn editable(s: &Status) -> bool {
+    s.phase == Phase::Playing && s.merging.is_none()
+}
+
+/// What the editor's tool `i` ([`TOOLS`]) asks of the picked loop; None
+/// while it can't be used (the loop isn't playing, or the tool is not
+/// built yet).
+pub fn tool_command(i: usize, s: &Status, rate: u32) -> Option<Command> {
+    if !editable(s) {
+        return None;
+    }
+    Some(match i {
+        0 => Command::Edit(Edit::Half),
+        1 => Command::Edit(Edit::Double),
+        2 => Command::Edit(Edit::Reverse),
+        3 => Command::Edit(Edit::Nudge(-1)),
+        4 => Command::Edit(Edit::Nudge(1)),
+        5 => {
+            // The next step up from the fade now, then back to a cut.
+            let next = SEAM_STEPS_MS
+                .iter()
+                .map(|&ms| seam_frames(ms, rate))
+                .find(|&f| f as usize > s.seam)
+                .unwrap_or(0);
+            Command::Edit(Edit::SeamFade(next))
+        }
+        6 if s.layers > 1 => Command::Merge,
+        _ => return None,
+    })
+}
+
+/// The tools as the editor shows them: each one's name (the seam fade's
+/// with its length, the merge's progress) and whether it works now.
+pub fn tools(s: &Status, rate: u32) -> Vec<(String, bool)> {
+    TOOLS
+        .iter()
+        .enumerate()
+        .map(|(i, t)| {
+            let name = match i {
+                5 => format!("Seam fade {}", seam_text(s.seam, rate)),
+                6 if s.merging.is_some() => {
+                    format!("Merging {:.0} %", 100.0 * s.merging.unwrap_or(0.0))
+                }
+                _ => t.to_string(),
+            };
+            (name, tool_command(i, s, rate).is_some())
+        })
+        .collect()
+}
+
+/// Fade old as a Q-Link moves it: 50 % to 100 % kept a pass, in steps of
+/// 1 % (SHIFT: 0.2 %).
+const FADE_OLD_MIN: f32 = 0.5;
+
+/// How far round Fade old's ring is lit, 0 to 1.
+fn fade_old_pos(k: f32) -> f32 {
+    ((k - FADE_OLD_MIN) / (1.0 - FADE_OLD_MIN)).clamp(0.0, 1.0)
+}
 
 /// A Q-Link turn on the Looper tab: what it asks of the looper.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum LoopTurn {
     /// The picked layer's level or pan, by play order.
     Layer(usize, LayerCommand),
-    /// The picked loop's level, 0 to 2.
-    Level(f32),
-    /// Q-Link 4: the line input's level, as on the Play page.
-    Line(i32),
+    /// Q-Link 3: the picked loop's Fade old, 0.5 to 1 kept a pass.
+    FadeOld(f32),
+    /// Q-Link 4: the picked loop's seam fade, in frames.
+    Seam(u32),
 }
 
 /// A take being recorded: its loop, its layer, and how many hits of each
@@ -597,8 +693,8 @@ impl LooperPage {
     }
 
     /// A Q-Link turned `ticks` detents on the Looper tab (SHIFT: `fine`):
-    /// the picked layer's level and pan, the loop's level, and the line
-    /// input's level. The card follows at once.
+    /// the picked layer's level and pan, the loop's Fade old and its seam
+    /// fade (mockup J). The card follows at once.
     pub fn qlink(&mut self, ui: &mut Ui, k: usize, ticks: i32, fine: bool) -> Option<LoopTurn> {
         if ticks == 0 {
             return None;
@@ -627,16 +723,22 @@ impl LooperPage {
                 if s.phase == Phase::Empty {
                     return None;
                 }
-                let db = (20.0 * s.level.max(1e-6).log10()).max(-60.0);
-                let db = (db + d).clamp(-60.0, 6.0);
-                s.level = if db <= -60.0 {
-                    0.0
-                } else {
-                    10f32.powf(db / 20.0)
-                };
-                LoopTurn::Level(s.level)
+                let step = if fine { 0.002 } else { 0.01 };
+                s.fade_old = (s.fade_old + ticks as f32 * step).clamp(FADE_OLD_MIN, 1.0);
+                LoopTurn::FadeOld(s.fade_old)
             }
-            3 => return Some(LoopTurn::Line(ticks)),
+            3 => {
+                let rate = self.view.rate;
+                let s = &mut self.view.status;
+                if !editable(s) {
+                    return None;
+                }
+                // A millisecond a detent (SHIFT: a tenth).
+                let step = (rate as f32 / if fine { 10_000.0 } else { 1000.0 }).max(1.0);
+                let seam = (s.seam as f32 + ticks as f32 * step).clamp(0.0, MAX_SEAM as f32);
+                s.seam = seam.round() as usize;
+                LoopTurn::Seam(s.seam as u32)
+            }
             _ => return None,
         };
         self.turned = Some(Instant::now());
@@ -651,15 +753,6 @@ impl LooperPage {
         self.refresh_qlinks(ui, &v);
         self.refresh_editor(ui, &v);
         Some(turn)
-    }
-
-    /// Q-Link 4's card: the Play page's line level, given by the caller.
-    pub fn set_line_card(&mut self, ui: &mut Ui, card: QLinkCard) {
-        if let Some(q) = ui.get_mut::<QLinkColumn>(QLINKS) {
-            if q.cards[3] != card {
-                q.cards[3] = card;
-            }
-        }
     }
 
     fn refresh_qlinks(&mut self, ui: &mut Ui, v: &LooperView) {
@@ -684,19 +777,29 @@ impl LooperPage {
         };
         let s = &v.status;
         let c2 = if s.phase == Phase::Empty {
-            QLinkCard::new("Loop level", &loop_scope, "-", 0.0)
+            QLinkCard::new("Fade old", &loop_scope, "-", 0.0)
         } else {
             QLinkCard::new(
-                "Loop level",
+                "Fade old",
                 &loop_scope,
-                &level_text(s.level),
-                level_frac(s.level),
+                &format!("{:.0} %", 100.0 * s.fade_old),
+                fade_old_pos(s.fade_old),
+            )
+        };
+        let c3 = if s.phase == Phase::Empty {
+            QLinkCard::new("Seam fade", &loop_scope, "-", 0.0)
+        } else {
+            QLinkCard::new(
+                "Seam fade",
+                &loop_scope,
+                &seam_text(s.seam, v.rate),
+                s.seam as f32 / MAX_SEAM as f32,
             )
         };
         if let Some(q) = ui.get_mut::<QLinkColumn>(QLINKS) {
-            let cards = [c0, c1, c2];
-            if q.cards[..3] != cards {
-                q.cards[..3].clone_from_slice(&cards);
+            let cards = [c0, c1, c2, c3];
+            if q.cards != cards {
+                q.cards = cards;
             }
             q.title = "Looper".to_string();
         }
@@ -735,10 +838,14 @@ impl LooperPage {
             .map(|k| {
                 let info = self.layers.get(k).copied().flatten();
                 let what = if k == 0 { "first pass" } else { "overdub" };
-                let detail = match names.get(k).filter(|n| !n.is_empty()) {
+                let mut detail = match names.get(k).filter(|n| !n.is_empty()) {
                     Some(name) => format!("{what} · {}", name.to_lowercase()),
                     None => what.to_string(),
                 };
+                // Fade old has turned it down under the overdubs since.
+                if let Some(l) = info.filter(|l| l.faded < 0.995) {
+                    detail.push_str(&format!(" · faded to {:.0} %", 100.0 * l.faded));
+                }
                 LayerRow {
                     name: format!("Layer {}", k + 1),
                     detail,
@@ -751,7 +858,7 @@ impl LooperPage {
                 }
             })
             .collect();
-        let tools: Vec<(String, bool)> = TOOLS.iter().map(|t| (t.to_string(), false)).collect();
+        let tools = tools(s, v.rate);
         let note = empty_note(v);
         let position = (!empty && s.frames > 0).then_some(s.position);
         let bars = bars_of(s.ticks, v.beats_per_bar);
@@ -799,6 +906,8 @@ impl LooperPage {
         if fresh {
             v.layers = self.view.layers;
             v.status.level = self.view.status.level;
+            v.status.fade_old = self.view.status.fade_old;
+            v.status.seam = self.view.status.seam;
         }
         self.layers = v.layers;
         self.layer = self.layer.min(v.status.layers.saturating_sub(1));
@@ -870,10 +979,16 @@ impl LooperPage {
                 w.right = right;
             }
         }
-        // What to do with it (the looper's bounce comes next).
+        // What to do with it: Resample works while a loop plays and one is
+        // empty; the bounce to a pad, a clip or a file comes next.
+        let resample = v.loops.iter().any(|l| l.phase == Phase::Empty)
+            && v.loops
+                .iter()
+                .any(|l| l.phase == Phase::Playing && !l.muted);
         let use_rows: Vec<(String, String, bool)> = USE_ROWS
             .iter()
-            .map(|(a, b)| (a.to_string(), b.to_string(), false))
+            .enumerate()
+            .map(|(i, (a, b))| (a.to_string(), b.to_string(), i == USE_RESAMPLE && resample))
             .collect();
         if let Some(w) = ui.get_mut::<UseLoop>(USE) {
             if w.rows != use_rows {
@@ -1030,7 +1145,16 @@ fn setting_row(row: SetRow, v: &LooperView, set: &Settings, peak: f32, ready: bo
             true,
         ),
         SetRow::Start => ("Start", "next bar line".to_string(), Tone::Dim, false),
-        SetRow::After => ("After recording", "play".to_string(), Tone::Dim, false),
+        SetRow::After => (
+            "After recording",
+            match v.status.after {
+                After::Play => "play",
+                After::Overdub => "overdub",
+            }
+            .to_string(),
+            Tone::Normal,
+            true,
+        ),
         SetRow::InputPeak => (
             "Input peak",
             if peak.is_finite() {
@@ -1268,10 +1392,9 @@ mod tests {
             ("first pass", "overdub")
         );
         assert!(e.layers[2].muted && !e.layers[2].heard && e.layers[0].heard);
-        assert!(
-            e.tools.iter().all(|t| !t.1),
-            "the tools wait for the looper's edits"
-        );
+        // The loop plays, so its edits are on; Undo history is to come.
+        let on: Vec<bool> = e.tools.iter().map(|t| t.1).collect();
+        assert_eq!(on, [true, true, true, true, true, true, true, false]);
         // As on mockup J, the three layers fit under the wave.
         let r = ui.rect_of(EDITOR).unwrap();
         assert_eq!(e.row_rects(LoopEditor::parts(r).2).len(), 3);
@@ -1298,7 +1421,9 @@ mod tests {
         );
         let use_loop = ui.get::<UseLoop>(USE).unwrap();
         assert_eq!(use_loop.rows.len(), 4);
-        assert!(use_loop.rows.iter().all(|r| !r.2));
+        // Only Resample is built: Loop 3 is empty and Loop 1 plays.
+        let on: Vec<bool> = use_loop.rows.iter().map(|r| r.2).collect();
+        assert_eq!(on, [false, false, false, true]);
         // A loop picked further down shows the list down to it.
         let mut v = two_loops();
         v.selected = 5;
@@ -1413,6 +1538,51 @@ mod tests {
         assert_eq!(SET_ROWS.len(), 9);
     }
 
+    /// The editor's tools work while the loop plays and isn't recording:
+    /// each asks for its looper command; seam fade steps up and round.
+    #[test]
+    fn the_tools_ask_for_the_looper_edits_while_the_loop_plays() {
+        let v = two_loops();
+        let mut s = v.status;
+        s.seam = mpfree_looper::FADE;
+        let cmd = |i: usize, s: &Status| tool_command(i, s, 44_100);
+        assert_eq!(cmd(0, &s), Some(Command::Edit(Edit::Half)));
+        assert_eq!(cmd(1, &s), Some(Command::Edit(Edit::Double)));
+        assert_eq!(cmd(2, &s), Some(Command::Edit(Edit::Reverse)));
+        assert_eq!(cmd(3, &s), Some(Command::Edit(Edit::Nudge(-1))));
+        assert_eq!(cmd(4, &s), Some(Command::Edit(Edit::Nudge(1))));
+        assert_eq!(cmd(6, &s), Some(Command::Merge));
+        assert_eq!(cmd(7, &s), None, "the undo history comes later");
+        // Seam fade: 10 ms, 50 ms, the longest, then a straight cut.
+        let mut seams = Vec::new();
+        for _ in 0..4 {
+            let Some(Command::Edit(Edit::SeamFade(f))) = cmd(5, &s) else {
+                panic!("seam fade");
+            };
+            seams.push(f);
+            s.seam = f as usize;
+        }
+        assert_eq!(seams, [441, 2205, MAX_SEAM as u32, 0]);
+        let names = tools(&s, 44_100);
+        assert_eq!(names[5], ("Seam fade cut".to_string(), true));
+        // One layer has nothing to merge; while overdubbing, or merging,
+        // nothing works.
+        s.layers = 1;
+        assert_eq!(cmd(6, &s), None);
+        s.phase = Phase::Overdubbing;
+        assert!(tools(&s, 44_100).iter().all(|(_, on)| !on));
+        s.phase = Phase::Playing;
+        s.merging = Some(0.4);
+        assert_eq!(tools(&s, 44_100)[6], ("Merging 40 %".to_string(), false));
+        // After recording flips between play and overdub.
+        let after = SET_ROWS.iter().position(|r| *r == SetRow::After).unwrap();
+        assert_eq!(
+            setting_command(after, &s),
+            Some(Command::SetAfter(After::Overdub))
+        );
+        assert_eq!(setting_command(0, &s), None);
+    }
+
     #[test]
     fn the_q_links_turn_the_picked_layer_and_the_loop() {
         let (mut ui, mut page) = page();
@@ -1441,13 +1611,19 @@ mod tests {
             Some(LoopTurn::Layer(1, LayerCommand::Pan(-0.12)))
         );
         assert_eq!(card(&ui, 1).1, "L 6");
-        // Q3: the loop's level; Q4: the line input's.
-        let Some(LoopTurn::Level(l)) = page.qlink(&mut ui, 2, -2, false) else {
-            panic!("Q3 turns the loop's level");
+        // Q3: the loop's Fade old, a percent a detent; Q4: its seam fade,
+        // a millisecond a detent (mockup J).
+        let Some(LoopTurn::FadeOld(k)) = page.qlink(&mut ui, 2, -2, false) else {
+            panic!("Q3 turns the loop's Fade old");
         };
-        assert!((l - 10f32.powf(-1.0 / 20.0)).abs() < 1e-4);
-        assert_eq!(card(&ui, 2), ("Loop 1".to_string(), "-1.0 dB".to_string()));
-        assert_eq!(page.qlink(&mut ui, 3, 4, true), Some(LoopTurn::Line(4)));
+        assert!((k - 0.98).abs() < 1e-4, "{k}");
+        assert_eq!(card(&ui, 2), ("Loop 1".to_string(), "98 %".to_string()));
+        let before = v.status.seam;
+        let Some(LoopTurn::Seam(f)) = page.qlink(&mut ui, 3, 10, false) else {
+            panic!("Q4 turns the loop's seam fade");
+        };
+        assert_eq!(f as usize, before + 441);
+        assert_eq!(card(&ui, 3).1, seam_text(before + 441, 44_100));
         assert_eq!(page.qlink(&mut ui, 0, 0, false), None);
         // The looper's next view (from before the turn) does not undo the
         // cards while it catches up.
