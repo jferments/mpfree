@@ -65,7 +65,7 @@ started by you pressing Enter:
   (/run/mpfree-app/report.txt) into this report.
 
 lights, drums, setup and play send the controller only what Akai's app sent it in
-the capture of 2026-11-10 (see docs/hardware/controller-protocol.md), plus pad
+the capture of 2026-11-10 (see docs/dev/hardware/controller-protocol.md), plus pad
 colours made by the app's own rule for a held pad.
 
 Nothing here writes to the eMMC (the test build cannot see it), the U-Boot
@@ -756,12 +756,12 @@ def main(argv):
     out.say(f"  steps: {', '.join(steps)}")
     program = os.path.realpath(args.program)
     if not os.path.isfile(program):
-        raise Stop(f"missing {program}: build it first (see docs/guides/mpfree-app.md)")
+        raise Stop(f"missing {program}: build it first (see docs/dev/guides/mpfree-app.md)")
     with open(program, "rb") as fh:
         data = fh.read(PROGRAM_MAX + 1)
     problem = arm_static_problem(data)
     if problem:
-        raise Stop(f"{program} is {problem}; rebuild it as docs/guides/mpfree-app.md shows")
+        raise Stop(f"{program} is {problem}; rebuild it as docs/dev/guides/mpfree-app.md shows")
     digest = hashlib.sha256(data).hexdigest()
     out.say(f"  program: {program}")
     out.say(f"  {len(data)} bytes, sha256 {digest}, static ARM EABI5 hard-float")
