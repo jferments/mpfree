@@ -591,10 +591,10 @@ impl PlayView {
     /// longer holds (an edit took it out), needs nothing.
     pub fn record(&mut self, rec: &Rec, touch: &[TouchPoint], moves: &[(f64, f32, Kind)]) -> bool {
         let (track, slot) = rec.clip();
-        let shown = self.shown(track, slot).into_iter().flatten();
+        let mut shown = self.shown(track, slot).into_iter().flatten();
         match rec {
-            Rec::Note(k) => shown.fold(true, |ok, c| c.record_note(k.note, touch) && ok),
-            Rec::Lock(k) => shown.fold(true, |ok, c| c.record_lock(&k.lock) && ok),
+            Rec::Note(k) => shown.all(|c| c.record_note(k.note, touch)),
+            Rec::Lock(k) => shown.all(|c| c.record_lock(&k.lock)),
             Rec::Erase(e) => {
                 for c in shown {
                     c.remove_note(&e.note);
@@ -607,9 +607,7 @@ impl PlayView {
                 }
                 true
             }
-            Rec::Move(k) => shown.fold(true, |ok, c| {
-                c.put_move(k.target, k.map, moves, k.len) && ok
-            }),
+            Rec::Move(k) => shown.all(|c| c.put_move(k.target, k.map, moves, k.len)),
         }
     }
 
