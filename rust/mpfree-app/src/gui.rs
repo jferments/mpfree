@@ -4655,6 +4655,18 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         }
         Err(e) => eprintln!("arrange-song sample: {e}"),
     }
+    // The same with two audio lanes under the song (layout spec 4c): a
+    // vocal punched in over bars 5-8 and that region picked, a guitar
+    // armed. Real takes from the audio tracks engine.
+    match mpfree_time_ui::sample::song_audio_state() {
+        Ok(state) => {
+            let mut p = quiet_player(fonts());
+            p.apply(ToUi::Time(Box::new(state)));
+            p.apply(ToUi::Show(View::Arrange));
+            out.push(("arrange-song-audio", p));
+        }
+        Err(e) => eprintln!("arrange-song-audio sample: {e}"),
+    }
     match sample_looper(fonts()) {
         Ok(p) => out.push(("looper", p)),
         Err(e) => eprintln!("looper sample: {e}"),
