@@ -119,6 +119,10 @@ def validated_report(document, report_sha):
                        (0xfe01, 0xfd02, 0xfc03, 0xfb04, 0xfa05, 0xf906)]
     expected_magics += ["0xa55a0101", "0xa55a0202"]
     seen = set(x for values in magic_sites.values() for x in values)
+    # 0x5aa5fc04 appears in the decompilation as an unsigned range bound,
+    # NOT as an equality-tested message value. Do not label it an opcode.
+    comparison_only = ["0x5aa5fc04"] if "0x5aa5fc04" in seen else []
+    confirmed_ids = sorted(x for x in expected_magics if x in seen)
     return {
         "schema": SCHEMA,
         "source_ghidra_report_sha256": report_sha,
@@ -134,6 +138,8 @@ def validated_report(document, report_sha):
             "code_points": {value: [a for a, v in magic_sites.items() if value in v]
                             for value in sorted(seen)},
             "eight_known_values_present": all(x in seen for x in expected_magics),
+            "equality_matched_message_identifiers": confirmed_ids,
+            "comparison_only_range_bounds": comparison_only,
             "unobserved_expected_values": [x for x in expected_magics if x not in seen],
         },
         "linux_usbdevfs_ioctls": ioc,
@@ -177,8 +183,11 @@ def render_markdown(rep):
         "",
         "## Observed 32-bit message identifiers",
     ]
-    for value, addresses in rep["magic_evidence"]["code_points"].items():
-        output.append("- " + value + " in " + ", ".join(addresses))
+    for value in rep["magic_evidence"]["equality_matched_message_identifiers"]:
+        addresses = rep["magic_evidence"]["code_points"][value]
+        output.append("- Equality-tested: " + value + " in " + ", ".join(addresses))
+    for value in rep["magic_evidence"]["comparison_only_range_bounds"]:
+        output.append("- Range-bound only; NOT established as an opcode: " + value)
     output += ["", "## Linux USB host transfer operations"]
     for item in rep["linux_usbdevfs_ioctls"]:
         output.append("- " + item["ioctl"] + ": " + item["linux_usbdevfs_name"] +
