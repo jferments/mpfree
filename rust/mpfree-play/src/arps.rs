@@ -242,7 +242,7 @@ fn push(out: &mut [Out; MAX_OUT], n: &mut usize, dropped: &mut u64, o: Out) {
 }
 
 /// The player's [`Sink`] for one period: a through track's notes go into
-/// its arp, everything else (other tracks' notes, and every parameter
+/// its arp (its pressure too, which also goes on), everything else (other tracks' notes, and every parameter
 /// lock and unlock, which an arp has no use for) waits for
 /// [`TrackArps::finish`].
 pub struct Through<'a> {
@@ -262,6 +262,11 @@ impl Sink for Through<'_> {
             a.arps[t].input(o.offset, o.event);
             a.fed[t] = true;
             return;
+        } else if a.through(t) && matches!(o.event, Event::Pressure { .. }) {
+            // The arp's repeats follow a clip's pressure, and the sound
+            // hears it too, as with the live pads.
+            a.arps[t].input(o.offset, o.event);
+            a.fed[t] = true;
         }
         push(&mut a.out, &mut a.n_out, &mut a.dropped, o);
     }

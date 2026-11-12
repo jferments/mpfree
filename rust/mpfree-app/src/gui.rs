@@ -3662,6 +3662,7 @@ pub fn sample_pattern(p: &mut Player, sixteenths: i64) {
         }
         fn release_at(&mut self, _: usize, _: u32) {}
         fn stop_all(&mut self) {}
+        fn pressure_at(&mut self, _: usize, _: u8, _: u32) {}
     }
     let Ok(mut h) = TimeHost::new(44_100, 92.0) else {
         return;
@@ -4123,6 +4124,7 @@ pub fn sample_clips(fonts: Fonts) -> Result<Player, String> {
         }
         fn release_at(&mut self, _pad: usize, _offset: u32) {}
         fn stop_all(&mut self) {}
+        fn pressure_at(&mut self, _pad: usize, _value: u8, _offset: u32) {}
     }
     const RATE: u32 = 44_100;
     const PERIOD: u32 = 128;

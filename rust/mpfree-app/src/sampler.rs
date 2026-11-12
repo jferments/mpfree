@@ -484,6 +484,20 @@ impl Player {
             )
     }
 
+    /// Pad pressure, 0 to 127, `offset` frames into the next render (a
+    /// clip's recorded pressure).
+    pub fn pressure_at(&mut self, pad: usize, value: u8, offset: u32) {
+        if pad < 16 {
+            self.engine.schedule(
+                offset,
+                Event::Pressure {
+                    pad: pad as u8,
+                    value: value.min(127),
+                },
+            );
+        }
+    }
+
     /// Pad pressure, 0 to 127, from the next render on.
     pub fn pressure(&mut self, pad: usize, value: u8) {
         if pad < 16 {
