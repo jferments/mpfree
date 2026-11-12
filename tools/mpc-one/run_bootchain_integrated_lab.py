@@ -977,16 +977,40 @@ class Lab:
                         "An independent MPFree rootfs must be separately tested.",
                     ],
                 }
+                hex_path = self.out / "qemu-guest-boot_script_hex.txt"
+                if hex_path.is_file():
+                    try:
+                        wrapper = load_module(
+                            "tools/mpc-one/verify_uboot_script_wrapper.py",
+                            "mpfree_uboot_script_wrapper",
+                        )
+                        script_report = wrapper.compare_guest_to_update(
+                            hex_path.read_text(errors="replace"),
+                            compared["boot_script"]["firmware310"],
+                        )
+                        if (script_report["full_image_sha256"] != actual):
+                            raise ValueError(
+                                "QEMU od bytes disagree with guest sha256sum")
+                        info["verified_uboot_script"] = script_report
+                        info["boot_script_commands_match_official"] = (
+                            script_report["script_commands_match_official"])
+                    except Exception as exc:
+                        info["boot_script_decode_error"] = str(exc)
+                else:
+                    info["boot_script_decode_error"] = (
+                        "QEMU guest boot-script hexadecimal section missing")
                 (self.out / "qemu-directboot-rootfs-compat.json").write_text(
                     json.dumps(info, indent=2) + "\n")
                 record["qemu_directboot_rootfs_compat"] = info
                 self.stages["qemu-directboot-rootfs-compat"] = {
                     "success": (
-                        info["boot_script_matches_offline_3_10"] is True
+                        info.get("boot_script_commands_match_official") is True
                         and all(info["required_boot_assets"].values())),
                     "assets_found": sum(info["required_boot_assets"].values()),
                     "assets_expected": len(required),
-                    "boot_script_sha_match": info["boot_script_matches_offline_3_10"],
+                    "boot_script_full_sha_match": info["boot_script_matches_offline_3_10"],
+                    "boot_script_commands_match": info.get(
+                        "boot_script_commands_match_official"),
                 }
             except Exception as exc:
                 self.stages["qemu-directboot-rootfs-compat"] = {
@@ -1070,8 +1094,13 @@ class Lab:
             summary.append("- Required stock boot assets: " +
                            str(sum(compat["required_boot_assets"].values())) +
                            "/" + str(len(compat["required_boot_assets"])))
-            summary.append("- Guest boot script SHA matches verified 3.10: " +
+            summary.append("- Guest boot script full-file SHA matches verified 3.10: " +
                            str(compat["boot_script_matches_offline_3_10"]))
+            summary.append("- Guest boot script executable commands match verified 3.10: " +
+                           str(compat.get("boot_script_commands_match_official")))
+            if compat.get("boot_script_decode_error"):
+                summary.append("- Boot script decode requires investigation: " +
+                               str(compat["boot_script_decode_error"]))
             summary.append("- Modules inventory includes 6.18.44: " +
                            str(compat["observed_modules_kernel_6_18_44"]))
             summary.append("- Vendor P6 inspected only; no independent MPFree image tested.")
