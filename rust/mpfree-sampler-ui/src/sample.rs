@@ -8,16 +8,20 @@ use mpfree_sampler::engine::{Engine, EngineView, Event, GrainView};
 use mpfree_sampler::model::{
     Ahdsr, ChopMode, ChopSet, Fade, FadeCurve, Filter, FilterKind, GrainParams, GrainWindow, Layer,
     LayerSelect, Loop, LoopMode, Pad, PlayMode, PressureRoute, PressureTarget, Project, Region,
-    Source,
+    Source, Warp,
 };
+use mpfree_sampler::record::{self, Feed, Input, Recording};
 use mpfree_ui::widgets::{Chip, Header, Label};
 use mpfree_ui::{Align, Fonts, Theme, Tone, Ui};
 
+use crate::auto_tab::{self, AutoSettings, AutoState, AutoTab, Onto, Running};
 use crate::chop_tab::{self, ChopState, ChopTab};
 use crate::grain_tab::{self, GrainState, GrainTab};
 use crate::pads_tab::{self, PadsState, PadsTab};
 use crate::play_tab::{self, PlayState, PlayTab};
+use crate::rec_tab::{self, EndAt, RecState, RecTab, Skip, StartAt};
 use crate::source::SourceView;
+use crate::warp_tab::{self, WarpTab};
 use crate::wave_tab::{pad_label, WaveState, WaveTab, HINT};
 
 /// The MPC One's screen, turned.
@@ -32,6 +36,9 @@ pub const CHOP_PAGE: &str = "Sample · Chop";
 pub const PLAY_PAGE: &str = "Sample · Play";
 pub const PADS_PAGE: &str = "Sample · Pads";
 pub const GRAIN_PAGE: &str = "Sample · Grain";
+pub const REC_PAGE: &str = "Sample · Rec";
+pub const WARP_PAGE: &str = "Sample · Warp";
+pub const AUTO_PAGE: &str = "Sample · Auto-sample";
 pub const RATE: u32 = 44_100;
 pub const BPM: f64 = 92.0;
 /// The pad the samples edit (A5).
@@ -77,6 +84,157 @@ pub fn drum_loop() -> Vec<f32> {
         }
     }
     out
+}
+
+/// The drum loop played loosely: the same two bars at [`BPM`], each hit
+/// up to 25 ms early or late, as a drummer might.
+pub fn loose_loop() -> Vec<f32> {
+    let rate = f64::from(RATE);
+    let beat = rate * 60.0 / BPM;
+    let frames = (beat * 8.0).round() as usize;
+    let tight = drum_loop();
+    let mut out = vec![0.0f32; frames * 2];
+    // Each eighth's slice of the tight loop, moved by its own amount.
+    let mut seed = 0x9E37_79B9u32;
+    let eighth = (beat / 2.0).round() as usize;
+    for k in 0..16 {
+        seed ^= seed << 13;
+        seed ^= seed >> 17;
+        seed ^= seed << 5;
+        let off_ms = if k == 0 {
+            0.0
+        } else {
+            (seed as f64 / f64::from(u32::MAX) * 2.0 - 1.0) * 25.0
+        };
+        let shift = (off_ms / 1000.0 * rate).round() as i64;
+        for i in 0..eighth {
+            let from = k * eighth + i;
+            let to = from as i64 + shift;
+            if from >= frames || to < 0 || to as usize >= frames {
+                continue;
+            }
+            for c in 0..2 {
+                out[to as usize * 2 + c] += tight[from * 2 + c];
+            }
+        }
+    }
+    out
+}
+
+/// A project with the loosely played loop on pad A5, whole and warped to
+/// stretch at its tempo.
+pub fn loose_project() -> (Project, Arc<SourceView>) {
+    let mut p = Project::new();
+    let source = Source::new("Loose break 92", RATE, 2, loose_loop()).expect("valid");
+    let view = Arc::new(SourceView::analyse(&source));
+    let mut region = Region::whole(&source);
+    region.warp = Some(Warp::new(BPM as f32));
+    p.add_source(source);
+    p.set_pad(PAD, Some(Pad::new("Loose break", Layer::new(region))), None)
+        .expect("the sample pad is valid");
+    (p, view)
+}
+
+/// One sample screen of the Warp tab.
+pub struct WarpSample {
+    pub name: &'static str,
+    pub about: &'static str,
+    pub ui: Ui,
+    pub tab: WarpTab,
+    pub project: Project,
+    pub state: WaveState,
+}
+
+impl WarpSample {
+    /// Applies what the tab asked for and shows the project after it.
+    pub fn apply(&mut self, a: Option<crate::wave_tab::WaveAction>) -> Result<(), String> {
+        if let Some(a) = a {
+            a.apply(&mut self.project).map_err(|e| format!("{e:?}"))?;
+            self.state = WaveState::from_project(&self.project, PAD, 0, self.state.source.clone())
+                .ok_or("no pad")?;
+        }
+        self.tab.update(&mut self.ui, &self.state);
+        Ok(())
+    }
+
+    /// A touch on one of the tab's widgets.
+    pub fn event(&mut self, widget: &str, kind: mpfree_ui::EventKind) -> Result<(), String> {
+        let ev = mpfree_ui::UiEvent {
+            widget: widget.into(),
+            kind,
+        };
+        let st = self.state.clone();
+        let a = self.tab.action(&mut self.ui, &ev, &st);
+        self.apply(a)
+    }
+}
+
+/// The Warp tab on `project`'s pad A5.
+pub fn warp_sample(
+    fonts: Fonts,
+    (project, view): (Project, Arc<SourceView>),
+) -> Result<WarpSample, String> {
+    let state = WaveState::from_project(&project, PAD, 0, view).ok_or("no pad")?;
+    let mut ui = app_ui_with(fonts, &project, warp_tab::HINT);
+    let tab = WarpTab::add(&mut ui, WARP_PAGE, &state)?;
+    ui.show(WARP_PAGE)?;
+    Ok(WarpSample {
+        name: "warp",
+        about: "A loop played loosely, warped: its hits off the grid",
+        ui,
+        tab,
+        project,
+        state,
+    })
+}
+
+/// The Warp tab's sample screens.
+pub fn warp_samples(fonts: impl Fn() -> Fonts) -> Result<Vec<WarpSample>, String> {
+    let mut out = vec![warp_sample(fonts(), loose_project())?];
+
+    // Pin hits on the eighths: every hit on its line, one pin picked.
+    let mut s = warp_sample(fonts(), loose_project())?;
+    s.name = "warp-pinned";
+    s.about = "Pin hits on a 1/8 grid: each hit pinned to its eighth, the fifth pin picked";
+    let grid_row = warp_tab::Row::Grid.index();
+    s.event(
+        warp_tab::LIST,
+        mpfree_ui::EventKind::Step {
+            index: grid_row,
+            delta: -1,
+        },
+    )?;
+    s.event(warp_tab::BUTTONS, mpfree_ui::EventKind::Tab(0))?;
+    s.event(warp_tab::VIEW, mpfree_ui::EventKind::Select(4))?;
+    s.tab
+        .set_playheads(&mut s.ui, &[(f64::from(RATE) * 60.0 / BPM * 3.3) as u64]);
+    out.push(s);
+
+    // Zoomed in on that pin, nudged a little late by Q-Link 2.
+    let mut s = warp_sample(fonts(), loose_project())?;
+    s.name = "warp-zoomed";
+    s.about =
+        "Zoomed round the fifth pin (wheel), nudged 2/64 of a beat late by Q-Link 2, 1/16 grid";
+    s.event(warp_tab::BUTTONS, mpfree_ui::EventKind::Tab(0))?;
+    s.event(warp_tab::VIEW, mpfree_ui::EventKind::Select(4))?;
+    let st = s.state.clone();
+    for _ in 0..6 {
+        s.tab.wheel(&mut s.ui, &st, 1);
+    }
+    let a = s.tab.qlink(&mut s.ui, &st, 1, 2, false);
+    s.apply(a)?;
+    out.push(s);
+
+    // Not warped: the tab says how to start.
+    let (mut project, view) = loose_project();
+    project
+        .edit_pad(PAD, None, |p| p.layers[0].region.warp = None)
+        .map_err(|e| format!("{e:?}"))?;
+    let mut s = warp_sample(fonts(), (project, view))?;
+    s.name = "warp-off";
+    s.about = "A layer that isn't warped: the tab says to turn Warp to Stretch";
+    out.push(s);
+    Ok(out)
 }
 
 /// A project with the drum loop on pad A5: trimmed a little, looping over
@@ -160,6 +318,268 @@ pub struct PadsSample {
     pub tab: PadsTab,
     pub project: Project,
     pub state: PadsState,
+}
+
+/// One sample screen of the Rec tab, with the input behind it.
+pub struct RecSample {
+    pub name: &'static str,
+    pub about: &'static str,
+    pub ui: Ui,
+    pub tab: RecTab,
+    pub state: RecState,
+    pub feed: Feed,
+    pub input: Input,
+    pub recording: Option<Recording>,
+}
+
+/// A bar of 4/4 at [`BPM`], in frames.
+pub fn bar_frames() -> f64 {
+    4.0 * 60.0 / BPM * f64::from(RATE)
+}
+
+/// What the audio thread does with the line input, for `seconds`: the
+/// drum loop (at `level`) into the input, in periods of 128 frames, with a
+/// bar line on every bar of [`BPM`] from frame 0 while `rolling`.
+pub fn feed_input(feed: &mut Feed, seconds: f64, level: f32, rolling: bool) {
+    let drums = drum_loop();
+    let loop_frames = (drums.len() / 2) as u64;
+    let bar = bar_frames();
+    let periods = (seconds * f64::from(RATE) / 128.0).round() as u64;
+    let mut period = [0.0f32; 256];
+    for _ in 0..periods {
+        let base = feed.audio.written();
+        if rolling {
+            // The bar lines in this period, at whole frames.
+            let mut k = (base as f64 / bar).ceil() as u64;
+            while ((k as f64 * bar).round() as u64) < base + 128 {
+                feed.bars.mark((k as f64 * bar).round() as u64);
+                k += 1;
+            }
+        }
+        feed.bars.set_bar(rolling.then_some(bar));
+        for (i, x) in period.iter_mut().enumerate() {
+            let f = (base + i as u64 / 2) % loop_frames;
+            *x = level * drums[2 * f as usize + i % 2];
+        }
+        feed.audio.push(&period);
+    }
+}
+
+/// The sources the sample screens offer, as the app names them.
+pub fn rec_sources() -> Vec<String> {
+    let mut v: Vec<String> = ["Line in", "Master", "Drums", "Synth", "Loop", "Return A"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    v.extend((1..=16).map(|p| format!("Pad {p}")));
+    v
+}
+
+/// The Rec tab's sample screens.
+pub fn rec_samples(fonts: impl Fn() -> Fonts) -> Result<Vec<RecSample>, String> {
+    let make = |name: &'static str, about: &'static str, live: bool| -> Result<RecSample, String> {
+        let (project, _) = kit_project();
+        let (feed, input) = record::input(120, RATE);
+        let state = RecState {
+            pad: PAD,
+            pad_name: project.pad(PAD).map(|p| p.name.clone()),
+            target: rec_tab::target(PAD, rec_tab::Onto::NextEmpty, |p| project.pad(p).is_some()),
+            sources: rec_sources(),
+            live,
+            last: String::new(),
+            can_flatten: project.pad(PAD).is_some(),
+            flattening: None,
+        };
+        let mut ui = app_ui_with(fonts(), &project, rec_tab::HINT);
+        let tab = RecTab::add(&mut ui, REC_PAGE, &state, RATE)?;
+        ui.show(REC_PAGE)?;
+        Ok(RecSample {
+            name,
+            about,
+            ui,
+            tab,
+            state,
+            feed,
+            input,
+            recording: None,
+        })
+    };
+    let mut out = Vec::new();
+
+    let mut s = make(
+        "rec",
+        "The drums coming in on the line input, the transport playing: Skip back would keep the last 10 s",
+        true,
+    )?;
+    feed_input(&mut s.feed, 40.0, 0.4, true);
+    s.tab.feed(&mut s.ui, &s.input, None, true, 0.05);
+    out.push(s);
+
+    let mut s = make(
+        "rec-take",
+        "A take of 4 bars that started on the next bar line, two bars in; Skip back set to 2 bars",
+        true,
+    )?;
+    s.tab.settings.start = StartAt::NextBar;
+    s.tab.settings.end = EndAt::Length;
+    s.tab.settings.skip = Skip::Bars(2);
+    feed_input(&mut s.feed, 20.0, 0.4, true);
+    let mut rec = s.tab.settings.recording(&s.input, bar_frames());
+    feed_input(
+        &mut s.feed,
+        bar_frames() * 2.4 / f64::from(RATE) + 0.5,
+        0.4,
+        true,
+    );
+    rec.poll(&s.input).map_err(|e| e.to_string())?;
+    s.tab.feed(&mut s.ui, &s.input, Some(&rec), true, 0.05);
+    let st = s.state.clone();
+    s.tab.update(&mut s.ui, &st);
+    s.recording = Some(rec);
+    out.push(s);
+
+    let mut s = make(
+        "rec-master",
+        "Resampling the master: Source turned to Master, the last 4 bars ready for Skip back",
+        true,
+    )?;
+    let st = s.state.clone();
+    s.tab.settings.source = 1;
+    s.tab.settings.skip = Skip::Bars(4);
+    s.tab.update(&mut s.ui, &st);
+    feed_input(&mut s.feed, 25.0, 0.7, true);
+    s.tab.feed(&mut s.ui, &s.input, None, true, 0.05);
+    out.push(s);
+
+    let mut s = make(
+        "rec-flatten",
+        "Flatten: the pad picked resampled from its own channel as it plays, held for 1 s, onto the next empty pad",
+        true,
+    )?;
+    let mut st = s.state.clone();
+    st.flattening = Some(format!(
+        "Flattening {} onto {}",
+        chop_tab::pad_text(None, PAD),
+        st.target
+            .map_or_else(String::new, |p| chop_tab::pad_text(None, p))
+    ));
+    s.tab.update(&mut s.ui, &st);
+    s.state = st;
+    feed_input(&mut s.feed, 3.0, 0.0, false);
+    let rec = s.tab.settings.flatten_recording(&s.input);
+    feed_input(&mut s.feed, 1.4, 0.6, false);
+    let mut rec = rec;
+    rec.poll(&s.input).map_err(|e| e.to_string())?;
+    s.tab.feed(&mut s.ui, &s.input, Some(&rec), true, 0.05);
+    s.recording = Some(rec);
+    out.push(s);
+
+    let mut s = make(
+        "rec-off",
+        "The line input is off: the tab says where to turn it on",
+        false,
+    )?;
+    feed_input(&mut s.feed, 5.0, 0.0, false);
+    s.tab.feed(&mut s.ui, &s.input, None, false, 0.05);
+    out.push(s);
+    Ok(out)
+}
+
+/// One sample screen of the Rec tab's Auto-sample mode.
+pub struct AutoSample {
+    pub name: &'static str,
+    pub about: &'static str,
+    pub ui: Ui,
+    pub tab: AutoTab,
+    pub project: Project,
+    pub state: AutoState,
+}
+
+/// The synth patch the Auto-sample screens sample, as the app names it.
+pub const AUTO_SYNTH: &str = "Poly Pluck";
+
+/// What the Auto-sample mode shows for `project` with `settings`.
+pub fn auto_state(
+    project: &Project,
+    settings: &AutoSettings,
+    running: Option<Running>,
+) -> AutoState {
+    let has = |p: usize| project.pad(p).is_some_and(|pd| !pd.layers.is_empty());
+    AutoState {
+        pad: PAD,
+        synth: Some(AUTO_SYNTH.to_string()),
+        pads: 16,
+        target: auto_tab::target(settings.onto, settings.notes(), 16, has),
+        running,
+        last: String::new(),
+        rate: RATE,
+    }
+}
+
+/// The Auto-sample mode's sample screens.
+pub fn auto_samples(fonts: impl Fn() -> Fonts) -> Result<Vec<AutoSample>, String> {
+    let make = |name: &'static str,
+                about: &'static str,
+                project: Project,
+                settings: AutoSettings,
+                running: Option<Running>|
+     -> Result<AutoSample, String> {
+        let state = auto_state(&project, &settings, running);
+        let mut ui = app_ui_with(fonts(), &project, auto_tab::HINT);
+        let mut tab = AutoTab::add(&mut ui, AUTO_PAGE, &state)?;
+        tab.bank = Some('A');
+        tab.settings = settings;
+        tab.update(&mut ui, &state);
+        ui.show(AUTO_PAGE)?;
+        Ok(AutoSample {
+            name,
+            about,
+            ui,
+            tab,
+            project,
+            state,
+        })
+    };
+    // Every 6 semitones from C2 to C5 (7 notes), 3 layers of 2 round
+    // robins: onto the kit's last 7 pads, which are empty.
+    let seven = AutoSettings {
+        hi: 72,
+        every: 6,
+        round_robins: 2,
+        ..AutoSettings::default()
+    };
+    Ok(vec![
+        make(
+            "rec-auto",
+            "Auto-sample on a new kit: the Synth tab's Poly Pluck from C2 to A5 every 3 semitones, 3 velocity \
+             layers, onto all 16 pads",
+            Project::new(),
+            AutoSettings::default(),
+            None,
+        )?,
+        make(
+            "rec-auto-running",
+            "Auto-sampling 7 notes × 3 layers × 2 round robins onto the kit's empty pads A10-A16, 20 takes of \
+             42 done",
+            kit_project().0,
+            seven,
+            Some(Running {
+                done: 20,
+                total: 42,
+                note: Some(54),
+            }),
+        )?,
+        make(
+            "rec-auto-full",
+            "The kit has no 16 empty pads in a row: the bar says so and Start waits (Onto: Whole kit, or fewer notes)",
+            kit_project().0,
+            AutoSettings {
+                onto: Onto::EmptyPads,
+                ..AutoSettings::default()
+            },
+            None,
+        )?,
+    ])
 }
 
 /// The app's part of the screen: the header and the hint line.

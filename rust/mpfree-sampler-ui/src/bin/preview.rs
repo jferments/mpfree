@@ -11,7 +11,10 @@ use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use mpfree_sampler_ui::sample::{chop_samples, grain_samples, pads_samples, play_samples, samples};
+use mpfree_sampler_ui::sample::{
+    auto_samples, chop_samples, grain_samples, pads_samples, play_samples, rec_samples, samples,
+    warp_samples,
+};
 use mpfree_ui::{Fonts, SoftCanvas};
 
 fn write_new(path: &Path, bytes: &[u8]) -> Result<(), String> {
@@ -51,6 +54,11 @@ fn run() -> Result<(), String> {
             .map(|s| (s.name, s.about, s.ui)),
     );
     screens.extend(
+        warp_samples(Fonts::embedded)?
+            .into_iter()
+            .map(|s| (s.name, s.about, s.ui)),
+    );
+    screens.extend(
         chop_samples(Fonts::embedded)?
             .into_iter()
             .map(|s| (s.name, s.about, s.ui)),
@@ -62,6 +70,16 @@ fn run() -> Result<(), String> {
     );
     screens.extend(
         grain_samples(Fonts::embedded)?
+            .into_iter()
+            .map(|s| (s.name, s.about, s.ui)),
+    );
+    screens.extend(
+        rec_samples(Fonts::embedded)?
+            .into_iter()
+            .map(|s| (s.name, s.about, s.ui)),
+    );
+    screens.extend(
+        auto_samples(Fonts::embedded)?
             .into_iter()
             .map(|s| (s.name, s.about, s.ui)),
     );

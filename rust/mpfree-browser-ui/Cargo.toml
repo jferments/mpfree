@@ -1,0 +1,15 @@
+[package]
+name = "mpfree-browser-ui"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "MIT"
+description = "The browser page for the MPC One (BROWSE): projects, samples, kits, patterns, recordings, Recent, Favourites, Factory kits and the Trash, with audition, load, load to pad, rename, copy, move and delete to Trash, and saving projects (SHIFT + BROWSE), built on mpfree-ui over mpfree-library"
+
+[dependencies]
+mpfree-library = { path = "../mpfree-library" }
+mpfree-ui = { path = "../mpfree-ui" }
+
+[[bin]]
+name = "mpfree-browser-preview"
+path = "src/bin/preview.rs"

@@ -7,6 +7,8 @@
 //! mpfree-bench --calibrate [--machine NAME]
 //! mpfree-bench --compare A.json B.json
 //! mpfree-bench --afford [--quick] [--calibration FILE]
+//! mpfree-bench --lanes [--lane-cores A,B] [--quick] [--json FILE]
+//! mpfree-bench --count [--blocks N] [--filter TEXT]
 //! ```
 //!
 //! - On the desktop it prints each case's mean, p99 and worst block. With
@@ -28,10 +30,28 @@
 //! - The "mem MB" column is what each engine holds once it is built (its
 //!   buffers, delay lines, sample memory), from the counting allocator.
 //!
+//! - `--lanes` runs only the lane cases: the same work on one core and split
+//!   over two with a lane (`mpfree-lanes`), plus the handoff alone. With
+//!   `--lane-cores A,B` this thread pins itself to core A and each lane's
+//!   worker to core B (on the MPC: 3,2); without it nothing is pinned.
+//! - `--count` runs each case for N blocks (200 by default) between two
+//!   callgrind client requests, so a run under `valgrind --tool=callgrind`
+//!   writes one count of instructions per case. `tools/ci/instr_gate.py`
+//!   runs it and fails CI when a case costs more than 5 % above the
+//!   baseline in `rust/mpfree-bench/instructions.txt`. Instruction counts
+//!   don't drift with the machine's load, as times on a shared VM do.
+//!
 //! It only reads and computes: it opens no device, writes no file unless
-//! `--json` names one, and runs on one thread at normal priority.
+//! `--json` names one, and runs on one thread at normal priority. The one
+//! exception is `--lanes`, which starts a worker thread per lane case (at
+//! normal priority) and closes it before the next case; pinning, asked for
+//! with `--lane-cores`, changes only this program's own threads and ends
+//! with it.
 
 mod cases;
+#[cfg(test)]
+mod golden;
+mod vg;
 
 use std::fmt::Write as _;
 use std::process::ExitCode;
@@ -54,6 +74,10 @@ struct Options {
     machine: Option<String>,
     compare: Option<(String, String)>,
     afford: bool,
+    lanes: bool,
+    lane_cores: Option<(usize, usize)>,
+    count: bool,
+    blocks: Option<u64>,
 }
 
 fn options() -> Result<Options, String> {
@@ -67,6 +91,10 @@ fn options() -> Result<Options, String> {
         machine: None,
         compare: None,
         afford: false,
+        lanes: false,
+        lane_cores: None,
+        count: false,
+        blocks: None,
     };
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
@@ -80,6 +108,15 @@ fn options() -> Result<Options, String> {
             "--calibrate" => o.calibrate = true,
             "--machine" => o.machine = Some(value("--machine")?),
             "--afford" => o.afford = true,
+            "--lanes" => o.lanes = true,
+            "--count" => o.count = true,
+            "--blocks" => {
+                let v = value("--blocks")?;
+                o.blocks = Some(v.parse().ok().filter(|&n| n > 0).ok_or(format!(
+                    "--blocks takes a number of blocks above 0 (not {v:?})"
+                ))?);
+            }
+            "--lane-cores" => o.lane_cores = Some(lane_cores(&value("--lane-cores")?)?),
             "--compare" => {
                 let a = value("--compare")?;
                 o.compare = Some((a, value("--compare")?));
@@ -89,6 +126,64 @@ fn options() -> Result<Options, String> {
         }
     }
     Ok(o)
+}
+
+/// Blocks per case for `--count`: enough for a chord change, a few hits and
+/// the looper's next pass to be in the count, few enough for callgrind
+/// (about 50 times slower than the CPU) to count every case in minutes.
+const COUNT_BLOCKS: u64 = 200;
+
+/// `--count`: each case's blocks between a callgrind zero and a dump named
+/// after the case, after the same 50-block warm-up the timings use. Under
+/// callgrind each dump is that case's instructions; on a real CPU the
+/// requests do nothing and this just runs the blocks.
+fn count(o: &Options) {
+    let blocks = o.blocks.unwrap_or(COUNT_BLOCKS);
+    if vg::running() == 0 {
+        eprintln!(
+            "mpfree-bench: --count reports through callgrind; run it with tools/ci/instr_gate.py"
+        );
+    }
+    println!("counting {blocks} blocks per case");
+    let (mut l, mut r) = (
+        vec![0.0f32; MPC.frames as usize],
+        vec![0.0f32; MPC.frames as usize],
+    );
+    for mut c in cases::all(MPC.rate) {
+        if o.filter
+            .as_ref()
+            .is_some_and(|f| !c.name.to_lowercase().contains(f) && !c.module.contains(f.as_str()))
+        {
+            continue;
+        }
+        for b in 0..50 {
+            (c.block)(b, &mut l, &mut r);
+        }
+        vg::zero_stats();
+        for b in 50..50 + blocks {
+            (c.block)(b, &mut l, &mut r);
+        }
+        vg::dump_stats_at(&format!("{COUNT_TAG}{}", c.name));
+        std::hint::black_box((&l, &r));
+        println!("{}", c.name);
+    }
+}
+
+/// What each `--count` dump's trigger starts with, before the case's name.
+const COUNT_TAG: &str = "mpfree-bench case: ";
+
+/// `A,B`: this thread's core and the lanes' worker core.
+fn lane_cores(text: &str) -> Result<(usize, usize), String> {
+    let bad = || format!("--lane-cores takes two core numbers, such as 3,2 (not {text:?})");
+    let (a, b) = text.split_once(',').ok_or_else(bad)?;
+    let a = a.trim().parse().map_err(|_| bad())?;
+    let b = b.trim().parse().map_err(|_| bad())?;
+    if a == b {
+        return Err(format!(
+            "--lane-cores: the two cores must differ (both {a})"
+        ));
+    }
+    Ok((a, b))
 }
 
 /// What this program runs on and how it was built.
@@ -405,7 +500,9 @@ fn main() -> ExitCode {
             eprintln!("usage: mpfree-bench [--quick] [--filter TEXT] [--calibration FILE] [--json FILE] [--check-allocs]\n       \
                        mpfree-bench --calibrate [--machine NAME]\n       \
                        mpfree-bench --compare A.json B.json\n       \
-                       mpfree-bench --afford [--quick] [--calibration FILE]");
+                       mpfree-bench --afford [--quick] [--calibration FILE]\n       \
+                       mpfree-bench --lanes [--lane-cores A,B] [--quick] [--json FILE]\n       \
+                       mpfree-bench --count [--blocks N] [--filter TEXT]");
             return ExitCode::from(if e.is_empty() { 0 } else { 1 });
         }
     };
@@ -420,6 +517,10 @@ fn main() -> ExitCode {
                 ExitCode::from(1)
             }
         };
+    }
+    if o.count {
+        count(&o);
+        return ExitCode::SUCCESS;
     }
     let (calls, rounds) = if o.quick { (200, 5) } else { (2000, 15) };
 
@@ -503,7 +604,18 @@ fn main() -> ExitCode {
         vec![0.0f32; MPC.frames as usize],
         vec![0.0f32; MPC.frames as usize],
     );
-    for mut c in cases::all(MPC.rate) {
+    let list = if o.lanes {
+        if let Some((here, _)) = o.lane_cores {
+            match mpfree_lanes::os::pin(here) {
+                Ok(()) => println!("This thread: pinned to core {here}."),
+                Err(e) => println!("This thread: not pinned to core {here} ({e})."),
+            }
+        }
+        cases::lanes(MPC.rate, o.lane_cores.map(|(_, worker)| worker))
+    } else {
+        cases::all(MPC.rate)
+    };
+    for mut c in list {
         if o.filter
             .as_ref()
             .is_some_and(|f| !c.name.to_lowercase().contains(f) && !c.module.contains(f.as_str()))
@@ -611,6 +723,15 @@ fn main() -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lane_cores_read_two_different_cores() {
+        assert_eq!(lane_cores("3,2"), Ok((3, 2)));
+        assert_eq!(lane_cores(" 3 , 2 "), Ok((3, 2)));
+        assert!(lane_cores("3").is_err());
+        assert!(lane_cores("3,x").is_err());
+        assert!(lane_cores("2,2").is_err());
+    }
 
     #[test]
     fn a_report_reads_back_and_compares() {

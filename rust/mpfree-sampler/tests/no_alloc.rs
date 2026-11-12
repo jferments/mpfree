@@ -24,9 +24,9 @@ use std::cell::Cell;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use mpfree_sampler::dsp::{Ahdsr, Filter, FilterKind};
-use mpfree_sampler::engine::{Engine, EngineView, Event, PadOut};
+use mpfree_sampler::engine::{Engine, EngineView, Event, PadField, PadOut, ProgramField};
 use mpfree_sampler::model::*;
-use mpfree_sampler::record::rolling;
+use mpfree_sampler::record::{bar_lines, rolling};
 
 struct Counting;
 thread_local! {
@@ -113,6 +113,7 @@ fn render_and_events_never_allocate() {
             1 => Some(Warp {
                 bpm: 100.0,
                 method: WarpMethod::Repitch,
+                pins: Vec::new(),
             }),
             3 => Some(Warp::new(140.0)),
             _ => None,
@@ -240,6 +241,8 @@ fn render_and_events_never_allocate() {
     e.render(&mut l, &mut r); // warm up outside the watch
                               // The rolling "skip back" buffer the audio thread fills every period.
     let (mut rec, reader) = rolling(2, 44_100 * 2);
+    // And the transport's bar lines in its frames, for takes in time.
+    let (mut bars, bar_reader) = bar_lines();
     // The master effect is made and put in before the watch; inside it, a
     // second view brings its mix up and back down.
     assert!(e.set_master_fx(Engine::make_master_fx(rate)).is_none());
@@ -376,6 +379,35 @@ fn render_and_events_never_allocate() {
                 },
             );
         }
+        // Live settings: knobs turned, p-locks on hits, cleared again, and
+        // the program's offsets.
+        e.schedule(
+            block * 13 % 128,
+            Event::PadLive {
+                pad: (block % 20) as u8,
+                field: PadField::ALL[(block % 8) as usize],
+                value: live_value(block),
+            },
+        );
+        if block % 9 == 4 {
+            e.schedule(
+                block % 128,
+                Event::ProgramLive {
+                    field: ProgramField::ALL[(block % 3) as usize],
+                    value: (block % 7) as f32 - 3.0,
+                },
+            );
+        }
+        if block % 11 == 5 {
+            e.apply(Event::PadLive {
+                pad: (block % 20) as u8,
+                field: PadField::ALL[(block / 11 % 8) as usize],
+                value: f32::NAN,
+            });
+        }
+        if block % 500 == 377 {
+            e.stop_all();
+        }
         if block % 300 == 299 {
             e.apply(Event::AllOff);
         }
@@ -391,6 +423,10 @@ fn render_and_events_never_allocate() {
         } else {
             e.render(&mut l, &mut r);
         }
+        if block % 16 == 0 {
+            bars.mark(rec.written());
+        }
+        bars.set_bar(Some(88_200.0));
         rec.push_planar(&l, &r);
     }
     // Then only the granular pads, held long enough to fill the grain budget.
@@ -435,10 +471,17 @@ fn render_and_events_never_allocate() {
         "the grain budget never filled; the test is not busy enough"
     );
     assert_eq!(reader.written(), 2200 * 128);
+    assert_eq!(bar_reader.count(), 2000 / 16);
     assert_eq!(e.live_grains(), 0, "every grain handed back after AllOff");
     assert!(l.iter().chain(r.iter()).all(|x| x.is_finite()));
     assert!(
         spawned_before_dry > 100,
         "the master effect made grains: {spawned_before_dry}"
     );
+}
+
+/// A value for a live setting: in range for some fields, out of range
+/// (clamped) for others, the way a careless caller might send it.
+fn live_value(block: u32) -> f32 {
+    (block * 37 % 2000) as f32 - 500.0
 }
