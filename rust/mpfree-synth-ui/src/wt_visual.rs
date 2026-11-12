@@ -14,7 +14,7 @@ use mpfree_synth::wavetable::table::{Table, PREVIEW};
 use mpfree_ui::Color;
 
 use crate::visual::{self, Values};
-use crate::widgets::{Card, Trace, QLINK_COLORS};
+use crate::widgets::{Card, Trace, QLINK_COLORS, TEXT, TEXT_DIM, TEXT_FAINT};
 
 /// Points of one drawn curve, in the unit box.
 pub type Curve = Vec<(f32, f32)>;
@@ -137,9 +137,7 @@ pub fn osc_caption(v: &impl Values, o: usize) -> String {
 /// white, mod blue). Each card's page name is its title.
 pub fn cards(v: &impl Values, page: &str) -> Vec<Card> {
     let (blue, green) = (QLINK_COLORS[0], QLINK_COLORS[1]);
-    let ghost = Color::rgb(0x5A6273);
-    let grey = Color::rgb(0x98A1B3);
-    let white = Color::rgb(0xE9ECF2);
+    let (ghost, grey, white) = (TEXT_FAINT, TEXT_DIM, TEXT);
     let tr = |pts: Vec<(f32, f32)>, color: Color, width: f32, fill: bool, dashed: bool| Trace {
         pts,
         color,

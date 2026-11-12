@@ -603,3 +603,38 @@ fn stepped_and_choice_values_are_whole_numbers_after_a_drag() {
         assert_eq!(value, value.round());
     }
 }
+
+#[test]
+fn every_sample_takes_its_colours_from_the_theme() {
+    use mpfree_synth_ui::widgets::{QLINK_COLORS, TEXT, TEXT_DIM, TEXT_FAINT};
+    use mpfree_ui::Theme;
+    // The default theme's Q-Link and text colours, drawn solid anywhere in
+    // the panel under another theme, would be a colour that missed the
+    // theme. (Edges of shapes blend, so only exact matches count.)
+    let fixed: Vec<Color> = QLINK_COLORS
+        .into_iter()
+        .chain([TEXT, TEXT_DIM, TEXT_FAINT])
+        .collect();
+    for name in ["console", "synthwave", "spaceship"] {
+        for mut s in sample::samples(Fonts::embedded).unwrap() {
+            s.ui.set_theme(Theme::builtin(name).unwrap());
+            let mut c = SoftCanvas::new(sample::WIDTH, sample::HEIGHT);
+            s.ui.paint(&mut c);
+            for widget in [TITLE, VISUALS, TILES, QLINKS] {
+                let Some(r) = s.ui.rect_of(widget) else {
+                    continue;
+                };
+                let mut found = 0;
+                for y in r.y..r.bottom() {
+                    for x in r.x..r.right() {
+                        let p = c.pixel(x, y);
+                        if fixed.iter().any(|f| (f.r, f.g, f.b) == (p.r, p.g, p.b)) {
+                            found += 1;
+                        }
+                    }
+                }
+                assert_eq!(found, 0, "{name} {}: {widget} has default colours", s.name);
+            }
+        }
+    }
+}
