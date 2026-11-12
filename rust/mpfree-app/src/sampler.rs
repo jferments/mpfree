@@ -160,9 +160,22 @@ pub struct Playheads {
     pub len: u8,
     pub pad: [u8; PLAYHEADS],
     pub frame: [u32; PLAYHEADS],
+    /// Live chop is taking cuts (its audition plays).
+    pub marking: bool,
+    /// The cuts live chop has made so far, and the last of them in source
+    /// frames: cut `i` is `marks[i % PLAYHEADS]` while `marks_made - i` is
+    /// at most [`PLAYHEADS`] ([`Playheads::mark`]).
+    pub marks_made: u64,
+    pub marks: [u32; PLAYHEADS],
 }
 
 impl Playheads {
+    /// Live chop's cut `i`, while it is among the last [`PLAYHEADS`].
+    pub fn mark(&self, i: u64) -> Option<u64> {
+        (i < self.marks_made && self.marks_made - i <= PLAYHEADS as u64)
+            .then(|| u64::from(self.marks[(i % PLAYHEADS as u64) as usize]))
+    }
+
     /// The frames of pad `pad`'s voices.
     pub fn of(&self, pad: usize) -> impl Iterator<Item = u64> + '_ {
         let n = usize::from(self.len).min(PLAYHEADS);
@@ -377,6 +390,14 @@ impl Player {
             p.frame[n] = at.min(u64::from(u32::MAX)) as u32;
             p.len += 1;
         }
+        p.marking = self.engine.marking().is_some();
+        p.marks_made = self.engine.marks_made();
+        let first = p.marks_made.saturating_sub(PLAYHEADS as u64);
+        for i in first..p.marks_made {
+            if let Some(at) = self.engine.mark(i) {
+                p.marks[(i % PLAYHEADS as u64) as usize] = at.min(u64::from(u32::MAX)) as u32;
+            }
+        }
         p
     }
 
@@ -395,6 +416,57 @@ impl Player {
             .playheads()
             .find(|&(pad, layer, _)| pad == c.pad && layer == c.layer)
             .map(|(_, _, at)| at);
+    }
+
+    /// Live chop on kit `kit`'s pad `pad` (`on`), or off: on plays source
+    /// frames `start..end` of its layer `layer` once at `velocity` (as a
+    /// tap on a slice does) and, while that plays, live hits
+    /// ([`Player::live_hit_at`]) mark cuts in it instead of playing. Off
+    /// stops it. Another kit than the one playing does nothing.
+    #[allow(clippy::too_many_arguments)]
+    pub fn live_chop(
+        &mut self,
+        kit: usize,
+        pad: usize,
+        layer: usize,
+        start: u64,
+        end: u64,
+        on: bool,
+        velocity: u8,
+    ) {
+        if kit != self.kit || pad >= 128 {
+            return;
+        }
+        // In order, after anything already queued.
+        if on {
+            self.audition(kit, pad, layer, start, end, velocity);
+            self.engine.schedule(
+                0,
+                Event::LiveChop {
+                    pad: Some(pad as u8),
+                },
+            );
+        } else {
+            self.engine.schedule(0, Event::LiveChop { pad: None });
+        }
+    }
+
+    /// A pad played live (by hand, or a latched arp): it marks a cut
+    /// while live chop takes them, and plays otherwise
+    /// ([`Player::hit_at`]).
+    pub fn live_hit_at(&mut self, pad: usize, velocity: u8, offset: u32) -> bool {
+        if self.engine.marking().is_some() {
+            return self.engine.schedule(offset, Event::Mark);
+        }
+        self.hit_at(pad, velocity, offset)
+    }
+
+    /// A pad let go live: nothing while live chop takes cuts (the hit
+    /// played nothing), else [`Player::release_at`].
+    pub fn live_release_at(&mut self, pad: usize, offset: u32) {
+        if self.engine.marking().is_none() {
+            self.release_at(pad, offset);
+        }
     }
 
     /// Starts pad `pad`'s sound `offset` frames into the next render.
@@ -521,6 +593,12 @@ impl Player {
     /// release).
     pub fn stop_all(&mut self) {
         self.engine.apply(Event::AllOff);
+    }
+
+    /// The pads whose hit keeps a latched sound playing, as bits (pad `k`
+    /// is bit `k`): their lights stay on.
+    pub fn latched_pads(&self) -> u16 {
+        self.engine.latched_pads()
     }
 
     pub fn playing(&self) -> usize {
@@ -1090,6 +1168,37 @@ mod tests {
         assert_eq!((kick.len(), snare.len()), (1, 1));
         assert!(kick[0] > snare[0] && kick[0] <= 512, "{kick:?} {snare:?}");
         assert_eq!(heads.of(3).count(), 0);
+    }
+
+    #[test]
+    fn live_chop_marks_cuts_instead_of_playing_and_the_playheads_carry_them() {
+        let mut ks = kits();
+        let mut p = Player::new(&mut ks, &NOTES, 44_100).unwrap();
+        // Kick (pad 1, 3000 frames) from frame 200 to its end.
+        p.live_chop(1, 0, 0, 200, 3000, true, 127);
+        assert_eq!(p.playheads().marks_made, 0, "kit 2 isn't playing");
+        p.live_chop(0, 0, 0, 200, 3000, true, 127);
+        run(&mut p, 1);
+        let heads = p.playheads();
+        assert!(heads.marking);
+        // The snare hit 10 frames into the next period marks a cut there
+        // (128 + 10 frames from 200) and plays nothing.
+        assert!(p.live_hit_at(5, 127, 10));
+        p.live_release_at(5, 20);
+        run(&mut p, 1);
+        let heads = p.playheads();
+        assert_eq!(heads.marks_made, 1);
+        assert_eq!(heads.mark(0), Some(200 + 128 + 10));
+        assert_eq!(heads.of(5).count(), 0, "the snare didn't play");
+        // Off stops the sound; the snare plays again.
+        p.live_chop(0, 0, 0, 0, 0, false, 127);
+        run(&mut p, 2);
+        assert!(!p.playheads().marking);
+        assert_eq!(p.playing(), 0);
+        assert!(p.live_hit_at(5, 127, 0));
+        run(&mut p, 1);
+        assert_eq!(p.playheads().of(5).count(), 1);
+        assert_eq!(p.playheads().marks_made, 1);
     }
 
     #[test]

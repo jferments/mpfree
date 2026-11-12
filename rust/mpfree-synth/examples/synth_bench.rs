@@ -4,7 +4,7 @@
 //! heaviest presets (Brass Section: algorithm 22 with three carriers and
 //! the pitch envelope; Glass Keys: algorithm 5 with feedback).
 //!
-//! `cargo run --release -p mpfree-synth --example bench`. The MPC One's
+//! `cargo run --release -p mpfree-synth --example synth_bench`. The MPC One's
 //! Cortex-A17 cores are several times slower than a desktop core, so run
 //! it there (cross-built) before trusting the numbers for the device.
 
