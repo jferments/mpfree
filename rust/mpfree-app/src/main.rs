@@ -3208,6 +3208,9 @@ fn player_session(
     );
     let mut keys: Vec<midi_in::Key> = Vec::with_capacity(64);
     let mut key_misses = 0u64;
+    // The lanes' deadline for this period (cores.rs): when the sound card's
+    // queue would run dry, less a period. The buffer starts full.
+    let mut lane_until = cores::lane_deadline(Instant::now(), None, periods);
     let mut i = 0u64;
     while i < total_periods {
         let t_read = Instant::now();
@@ -3961,6 +3964,7 @@ fn player_session(
                 p as f64 * period_time().as_secs_f64() * 1e3
             ));
             play = Playback::start(open_acva(out, p)?, p)?;
+            lane_until = cores::lane_deadline(Instant::now(), None, p);
             pending.clear();
         }
         // Drums' Pad 1 note, a pad's sound or another kit: the pad grid
@@ -4242,7 +4246,9 @@ fn player_session(
         // frame and tempo, and it renders below as before.
         synth.start(i * PERIOD as u64, app.settings.bpm);
         let mut pads = mix.pads();
-        player.render_routed(PERIOD, &mut pads);
+        // With the drums split (Cores 3 and 2), the lane's voices are waited
+        // for until the period's deadline at most.
+        player.render_routed_until(PERIOD, &mut pads, lane_until);
         let played = pads.played();
         mix.drums(played, &mut drums_l, &mut drums_r);
         let t_synth = Instant::now();
@@ -4250,9 +4256,11 @@ fn player_session(
         engines.add(engines::SAMPLER, t_synth - t_render);
         synth_l.fill(0.0);
         synth_r.fill(0.0);
-        // Renders here, or (with a synth lane) waits for the lane and adds
-        // what it made; then the time is only the wait.
-        synth.finish(&mut synth_l, &mut synth_r);
+        // Renders here, or (with a synth lane) waits for the lane until the
+        // period's deadline and adds what it made; then the time is only
+        // the wait. Past the deadline the synth is left out of this period
+        // (counted, cores.rs) and comes back after the write.
+        synth.finish(lane_until, &mut synth_l, &mut synth_r);
         let synth_took = t_synth.elapsed();
         synth_time.add(synth_took);
         engines.add(engines::SYNTH, synth_took);
@@ -4293,6 +4301,9 @@ fn player_session(
         let t_mix = Span::start();
         mix.follow(looper.line.is_open(), looper.monitor);
         let ctx = mixing::ctx(RATE, i * PERIOD as u64, app.settings.bpm, time.block());
+        // The mixer's lanes (each stage's inserts, the returns) keep the
+        // same deadline.
+        mix.mixer.set_lane_deadline(Some(lane_until));
         let (p, caught) = mix.period(
             &ctx,
             (&synth_l, &synth_r),
@@ -4381,22 +4392,33 @@ fn player_session(
         let xruns = play.xruns;
         engines.stop(engines::PERIOD, period_span);
         play.write(&frames, i)?;
-        if !pending.is_empty() {
-            let written = Instant::now();
-            match play.pcm.delay() {
-                // An underrun in this write dropped the period: no timing for it.
-                Ok(d) if play.xruns == xruns => {
-                    for t in pending.drain(..) {
-                        lat.add(hit_latency_ms(written - t, d));
-                    }
+        // How much the card has queued now sets the next period's deadline
+        // for the lanes, and times the hits of this period.
+        let written = Instant::now();
+        let delay = play.pcm.delay();
+        lane_until = cores::lane_deadline(
+            written,
+            delay.as_ref().ok().map(|&d| i64::from(d)),
+            play.queued,
+        );
+        // A synth left out of this period (late) comes back before anything
+        // plays it again.
+        synth.settle(lane_until);
+        match delay {
+            // An underrun in this write dropped the period: no timing for it.
+            Ok(d) if play.xruns == xruns => {
+                for t in pending.drain(..) {
+                    lat.add(hit_latency_ms(written - t, d));
                 }
-                Ok(_) => pending.clear(),
-                Err(e) => {
-                    pending.clear();
-                    if !delay_error {
-                        delay_error = true;
-                        out.note(&format!("PCM delay: {e} (no timing)"));
-                    }
+            }
+            Ok(_) => pending.clear(),
+            Err(e) => {
+                pending.clear();
+                if !delay_error {
+                    delay_error = true;
+                    out.note(&format!(
+                        "PCM delay: {e} (no timing; the lanes' deadline assumes a full buffer)"
+                    ));
                 }
             }
         }

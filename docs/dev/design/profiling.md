@@ -304,7 +304,14 @@ data side is here:
   (`budget::judge`: p99.9 for an engine, worst for the period),
   and any allocation on the audio thread in red. The same rows go to the log
   every 30 s with the existing `perf:` line, so test-round results carry
-  them.
+  them. In the app (`engines.rs`) a `control` row follows the engines: the
+  whole period less the five engines, worked out each period when the
+  period's span stops. It is everything on the audio thread that is not
+  sound (the screen's actions, MIDI in, lights and MIDI out, the app's own
+  work, log lines, the meters and panels sent to the screen, the copy to the
+  card's format), which the outside review of 12 Nov named as the first
+  thing to move off the audio thread. It has no budget yet, so it is shown
+  on its worst block, dim, until the control thread moves it.
 
 ## CI
 

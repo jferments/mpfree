@@ -230,16 +230,19 @@ impl Rig {
         time.clear_hits();
         // The pads, each into its mixer channel, and on to the Drums track.
         player.set_tempo(time.info().bpm);
+        // The period's deadline for the lanes, as the loop sets it after
+        // each write; far, so a slow machine (qemu in CI) is never late.
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
         synth.start(i * PERIOD as u64, app.settings.bpm);
         let mut pads = mix.pads();
-        player.render_routed(PERIOD, &mut pads);
+        player.render_routed_until(PERIOD, &mut pads, until);
         let played = pads.played();
         let [drums_l, drums_r] = drums;
         mix.drums(played, drums_l, drums_r);
         let [synth_l, synth_r] = synth_out;
         synth_l.fill(0.0);
         synth_r.fill(0.0);
-        synth.finish(synth_l, synth_r);
+        synth.finish(until, synth_l, synth_r);
         let [pads_l, pads_r] = pads_out;
         for f in 0..PERIOD {
             pads_l[f] = drums_l[f] + synth_l[f];
@@ -251,6 +254,7 @@ impl Rig {
         assert!(note.is_none(), "period {i}: {note:?}");
         mix.follow(looper.line.is_open(), looper.monitor);
         let ctx = mixing::ctx(RATE, i * PERIOD as u64, app.settings.bpm, time.block());
+        mix.mixer.set_lane_deadline(Some(until));
         let (p, _) = mix.period(
             &ctx,
             (synth_l, synth_r),
@@ -261,6 +265,8 @@ impl Rig {
         );
         let p = p.max(time.mix_click(left, right));
         self.peak = self.peak.max(p);
+        // After the write, in the loop.
+        synth.settle(until);
     }
 }
 

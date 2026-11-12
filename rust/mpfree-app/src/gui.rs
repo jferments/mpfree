@@ -4879,23 +4879,22 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         let spike = |every: u64, us: u64, base: u64| {
             Duration::from_micros(if k % every == 0 { us } else { base + k % 7 })
         };
-        let (s, y, l, t, m) = (
+        let (s, y, l, t, m, c) = (
             spike(500, 690, 30),
             spike(400, 570, 55),
             spike(1000, 40, 6),
             spike(900, 25, 4),
             spike(800, 18, 3),
+            spike(700, 310, 45),
         );
+        // The period is the engines plus the rest (the control row).
         for (i, d) in [
             (crate::engines::SAMPLER, s),
             (crate::engines::SYNTH, y),
             (crate::engines::LOOPER, l),
             (crate::engines::TIME, t),
             (crate::engines::MIX, m),
-            (
-                crate::engines::PERIOD,
-                s + y + l + t + m + Duration::from_micros(20),
-            ),
+            (crate::engines::PERIOD, s + y + l + t + m + c),
         ] {
             probes.add(i, d);
         }

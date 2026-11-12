@@ -87,8 +87,14 @@ match lane.join(deadline) {
   the same output. So the audio loop is written once and a setting compares
   one core against two.
 - **Pinning and priority** are asked for by the worker when it starts;
-  `Lane::setup` says what took. Neither failing stops the lane. They change
-  only the program's own thread and end with it.
+  `Lane::setup` says what took. They change only the program's own thread
+  and end with it. Neither failing stops the lane: by default the worker
+  runs where and how it can. With `Config::strict` it stops before it
+  touches the job, and the lane runs its jobs on the calling thread instead
+  (`Setup::threaded` says why). The app's lanes are strict: a worker that
+  could not be pinned keeps the core set of the thread that made it, which
+  is the audio thread's own core 3, and would fight the audio thread for it
+  while the audio thread spins in `join`.
 - **Linux first.** Other systems poll with short sleeps instead of a futex,
   and report that pinning and SCHED_FIFO are not supported yet.
 
@@ -99,7 +105,10 @@ user in the audio graph: pad channels' and tracks' inserts are split between
 the audio thread and a lane, stage by stage, with the same output bit for
 bit. Strips with sidechain keys and frozen strips stay on the audio thread;
 returns stay too, since they need every send first. The app turns it on with
-`--sound-cores two` (core 2, SCHED_FIFO 69, a wait of a period; below).
+`--sound-cores two` (core 2, SCHED_FIFO 69; below). `Mixer::set_lane_deadline`
+gives the next block one deadline for every join in it (each stage, and the
+returns a block late); the app sets it from the sound card's queue, and
+without one each join waits the lane's own wait from when it starts.
 
 ## In the app: Prefs "Sound cores" and `--sound-cores`
 
@@ -119,7 +128,7 @@ runs again after the second boot it already makes to check saved settings;
 | --- | --- | --- | --- |
 | `shared` | SCHED_FIFO 70, wherever the kernel puts it (cores 0 and 1 on the test stick) | idle | shared with the rest |
 | `core3` | pinned to core 3, SCHED_FIFO 70 | idle | the rest |
-| `two` | pinned to core 3, SCHED_FIFO 70 | two lanes at SCHED_FIFO 69: the sampler's second voice pool (`Engine::split`, half the voices) and about half the pad channels' and tracks' inserts (`Mixer::set_lane`, a wait of one period) | the rest |
+| `two` | pinned to core 3, SCHED_FIFO 70 | two lanes at SCHED_FIFO 69: the sampler's second voice pool (`Engine::split`, half the voices) and about half the pad channels' and tracks' inserts (`Mixer::set_lane`) | the rest |
 | `three` (a test) | pinned to core 3, SCHED_FIFO 70 | as `two` | the synth's lane at SCHED_FIFO 69 (`SynthSlot`), beside the rest |
 
 Core 0 is never asked for: Linux on ARM sends hardware interrupts to core 0
@@ -135,9 +144,15 @@ there. Jay (12 Nov): keep one core for interrupts.
   output, bit for bit what the audio thread would have made. Core 1 is not
   kept free by the kernel (only 2 and 3 are), so the synth runs ahead of
   the ordinary threads there and shares the core with any interrupts sent
-  to it; what that costs is what the test measures. A late synth is waited
-  for, not left out: nothing is dropped, the period runs long, and it is
-  counted like the fallbacks (`synth N periods on core 1, N late`). With
+  to it; what that costs is what the test measures. A late synth is left
+  out of that period (Jay, 12 Nov 20:51Z), like the other fallbacks: the
+  lane finishes the period on its own while the sound card takes this one,
+  and `SynthSlot::settle`, right after the write, takes the synth back and
+  drops what it made. Only if it is still not back by the next period's
+  deadline does the audio thread wait for it, because the rest of the loop
+  plays the synth; that wait is counted too (`synth N periods on core 1, N
+  late (left out), N waited for`). Before 12 Nov a late synth was waited
+  for with no limit, so one slow synth period could run the card dry. With
   the synth on its lane, the CPU by engine page's synth row is only the
   audio thread's wait for it.
 
@@ -150,28 +165,52 @@ there. Jay (12 Nov): keep one core for interrupts.
   sampler and the mixer each own theirs), both on core 2. They never run at
   once: within a period the sampler's lane is joined before the mixer posts.
   A late sampler lane can delay the mixer's, and both are counted.
-- **The sampler's wait.** The audio loop still calls `render_routed`, so each
-  part waits for the lane no longer than that part of the period lasts.
+- **One deadline per period** (`cores::lane_deadline`, 12 Nov, after an
+  outside review). Every join in a period waits until the same moment at
+  most: the sampler's parts (`render_routed_until`), the synth, each mixer
+  stage and the returns (`Mixer::set_lane_deadline`). The moment is when the
+  sound card's queue would run dry, less a period for the work after the
+  joins (the end of the mix and the write). Right after each write the audio
+  loop reads the card's delay (`snd_pcm_delay`, one ioctl) and sets the next
+  period's deadline from it: two periods after the write when the queue is
+  full (three periods in the buffer), sooner after a long period, so the
+  deadlines tighten by themselves under load. Before, each join waited a
+  period from when it started, so a sampler part, two mixer stages and the
+  returns could together wait four periods with three in the buffer. A
+  delay that cannot be read counts as a full queue, and says so once in the
+  log.
 - **Late is a fallback, and never silent** (Jay, 12 Nov): a late sampler
   part leaves half the voices out of that part of the period; a late mixer
-  stage leaves those strips silent for the block. Both counts are on the Dev
-  tab's CPU by engine page (red once one is late), in the 30 s `status:`
-  line (`sound cores two: drum voices N parts on core 2, N late; mixer N
-  stages on core 2, N late`, and `three` adds `; synth N periods on core 1,
-  N late`), and in a log line within a second of a late one (`sound cores:
+  stage leaves those strips silent for the block; a late synth is left out
+  of the period. The counts are on the Dev tab's CPU by engine page (red
+  once one is late), in the 30 s `status:` line (`sound cores two: drum
+  voices N parts on core 2, N late; mixer N stages on core 2, N late`, and
+  `three` adds `; synth N periods on core 1, N late (left out), N waited
+  for`), and in a log line within a second of a late one (`sound cores:
   late: ...`). A late part is a bug or an over-budget design to fix, not a
   setting to tune away.
-- **What took.** The start lines (`sound cores: ...`) and the Dev page say
-  whether the pin and each lane's core and priority took. A refused pin or
-  priority is reported in red or amber and the sound plays on.
+- **What took, and lanes only where they were asked for.** The start lines
+  (`sound cores: ...`) and the Dev page say whether the pin and each lane's
+  core and priority took. The lanes are strict (above): a lane that did not
+  get its core or SCHED_FIFO runs on the audio thread, in red (`on the audio
+  thread (strict lane, not pinned: ...)`), with the same sound on one core.
+  If the audio thread itself could not be pinned to core 3, no lane starts
+  (`sound cores: lanes not started: ...`, a red "Lanes" row), since a lane's
+  worker starts with the audio thread's cores. A refused priority for the
+  audio thread is reported and the sound plays on.
 - **Safety.** Only the program's own threads change: their allowed cores
   (`sched_setaffinity`) and priority (`sched_setscheduler`), in RAM. The
   only thing written is the Prefs row's line in the app's settings on the
   stick's data partition (never the MPC's own storage). Setting the row
   back to Shared undoes it from the next start; on the workstation,
   removing that line or `write-test-stick.py --fresh-data` does too.
-- **Tests.** `cores.rs` checks the modes, the rows and the late lines, and
-  that the synth on its lane sounds the same bit for bit; `rt_safety.rs`
+- **Tests.** `cores.rs` checks the modes, the rows and the late lines, that
+  the synth on its lane sounds the same bit for bit, that a late synth is
+  left out and comes back after the write, the deadline's arithmetic, that
+  no lane starts without the audio thread's pin, and that a lane without its
+  core plays on the audio thread; mpfree-lanes checks strict lanes, and the
+  mixer's tests that a block's deadline holds for every join in it and only
+  that block; `rt_safety.rs`
   runs the sound path for 35 s on two cores, and with the synth on three
   (unpinned), with no allocation on the sound path.
 - **Other devices.** The cores above are the MPC One's. The MPC Gen 2 (8
