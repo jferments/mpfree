@@ -602,6 +602,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "mpfree-offload"
+version = "0.1.0"
+dependencies = [
+ "mpfree-fx",
+ "mpfree-lanes",
+ "mpfree-node",
+ "mpfree-prof",
+]
+
+[[package]]
 name = "mpfree-param"
 version = "0.1.0"
 
