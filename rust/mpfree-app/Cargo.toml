@@ -30,7 +30,6 @@ mpfree-synth-ui = { path = "../mpfree-synth-ui" }
 mpfree-instruments = { path = "../mpfree-instruments" }
 mpfree-sampler-ui = { path = "../mpfree-sampler-ui" }
 mpfree-looper = { path = "../mpfree-looper" }
-mpfree-library = { path = "../mpfree-library" }
 mpfree-store = { path = "../mpfree-store" }
 # The mixer (every sound is summed in it) and its screen.
 mpfree-fx = { path = "../mpfree-fx" }
