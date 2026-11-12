@@ -25,6 +25,13 @@ class TestV10(unittest.TestCase):
         self.assertIn('mpfree_v10_run',[n.name for n in tree.body
                                        if isinstance(n,ast.FunctionDef)])
         self.assertFalse(any(isinstance(n,(ast.For,ast.While)) for n in tree.body))
+    def test_qemu_can_discard_all_guest_writes(self):
+        source=(ROOT/'tools/mpc-one/arm_qemu_lab.py').read_text()
+        self.assertIn("--launch-ephemeral",source)
+        self.assertIn("cmd.insert(1,'-snapshot')",source)
+        self.assertIn("'-nic','none'",source)
+        self.assertIn("'-monitor','none'",source)
+
     def test_stage_report_requires_schema_source_role(self):
         with tempfile.TemporaryDirectory() as td:
             p=Path(td)/'v10-ghidra-spl.json'
