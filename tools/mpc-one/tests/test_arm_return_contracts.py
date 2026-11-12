@@ -83,6 +83,52 @@ class ArmReturnContractTests(unittest.TestCase):
         self.assertTrue(result["r0_copies"])
         self.assertIn("downstream use not yet traced", result["observation"])
 
+    def test_three_normal_fallthrough_return_passthroughs(self):
+        # Reduced instruction fixtures from the three captured callsite
+        # shapes. The conditional stack-check failure is a separate path.
+        patterns = [
+            ("0x0001a8d0", "0x0001a674", "1a964", "1a990"),
+            ("0x0001aabc", "0x0001a674", "1aba8", "1abe8"),
+            ("0x0001a674", "0x0001a314", "1a7cc", "1a80c"),
+        ]
+        for caller, callee, bl_at, return_at in patterns:
+            with self.subTest(caller=caller):
+                instructions = [
+                    {"address": bl_at, "text": "bl " + callee},
+                    {"address": "temp1", "text": "ldr r2,[0x1b14c]"},
+                    {"address": "temp2", "text": "ldr r3,[sp,#0x14]"},
+                    {"address": "temp3", "text": "eors r2,r3,r2"},
+                    {"address": "temp4", "text": "bne 0x00012f44"},
+                    {"address": "temp5", "text": "add sp,sp,#0x20"},
+                    {"address": return_at, "text": "ldr pc,[sp],#0x4"},
+                ]
+                result = LAB.scan_callsite(caller, instructions, callee)[0]
+                self.assertFalse(result["immediate_r0_test"])
+                self.assertFalse(result["r0_copies"])
+                self.assertEqual(
+                    result["r0_preserved_to_normal_return"]["return_address"],
+                    "0x" + return_at)
+                self.assertFalse(
+                    result["r0_preserved_to_normal_return"]["all_paths_verified"])
+
+    def test_r0_clobber_prevents_passthrough_claim(self):
+        ins = [
+            {"address": "1a964", "text": "bl 0x0001a674"},
+            {"address": "1a968", "text": "mov r0,#0x1"},
+            {"address": "1a96c", "text": "ldr pc,[sp],#0x4"},
+        ]
+        observed = LAB.scan_callsite("0x0001a8d0", ins, "0x0001a674")[0]
+        self.assertIsNone(observed["r0_preserved_to_normal_return"])
+
+    def test_intervening_function_call_prevents_passthrough_claim(self):
+        ins = [
+            {"address": "1a964", "text": "bl 0x0001a674"},
+            {"address": "1a968", "text": "bl 0x00012f44"},
+            {"address": "1a96c", "text": "ldr pc,[sp],#0x4"},
+        ]
+        observed = LAB.scan_callsite("0x0001a8d0", ins, "0x0001a674")[0]
+        self.assertIsNone(observed["r0_preserved_to_normal_return"])
+
     def test_archive_index_rejects_unindexed_members(self):
         with tempfile.TemporaryDirectory(prefix="mpfree-arm-contract-test-") as td:
             p = Path(td) / "fixture.zip"
