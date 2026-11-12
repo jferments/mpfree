@@ -546,6 +546,20 @@ impl Panels {
         }
     }
 
+    /// The chain editor is open with learn armed (MIDI Learn listens only
+    /// while it is, M5).
+    pub fn learning(&self) -> bool {
+        self.chain.as_ref().is_some_and(|h| h.learning)
+    }
+
+    /// A learned MIDI control moved `addr` to `value` (in the parameter's
+    /// own units; 0 to 1 for a macro), set as a chain editor knob sets it,
+    /// and the open panel shows it at once (M5).
+    pub fn set_param(&mut self, mix: &mut MixHost, addr: ParamAddr, value: f32, recording: bool) {
+        set(mix, addr, value, recording);
+        self.sent_at = None;
+    }
+
     /// The macros' values, for the Q-Link column's macro banks (at the
     /// start; the panels send them again while they show).
     pub fn macros_state(&self, mix: &MixHost) -> MacrosState {
