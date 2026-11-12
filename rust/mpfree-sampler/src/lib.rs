@@ -10,6 +10,8 @@
 //! - [`record`]: the rolling "skip back" buffers and takes.
 //! - [`autosample`]: plays an instrument note by note, records each note
 //!   and builds a keygroup instrument from the takes.
+//! - [`keymap`]: Map to keys, a kit's pads made into one keygroup
+//!   instrument at their sounds' notes.
 //! - [`save`]: the kits as a saved project's text; [`wav`]: their sounds as
 //!   WAV files, kept losslessly, and WAV files read from the library.
 //! - [`Sampler`] and [`PreparedSample`] below: the first prototype (M3/M6),
@@ -24,6 +26,7 @@ pub mod autosample;
 pub mod chop;
 pub mod dsp;
 pub mod engine;
+pub mod keymap;
 pub mod model;
 pub mod node;
 pub mod phrase;

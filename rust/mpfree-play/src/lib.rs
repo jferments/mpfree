@@ -32,7 +32,7 @@ pub mod view;
 pub use arp::ArpHost;
 pub use arps::{Through, TrackArps};
 pub use mpfree_param;
-pub use player::{Erased, ErasedLock, Event, Out, Player, Sink, Stats, ALL};
+pub use player::{Erased, ErasedLock, Event, Out, Player, Sink, Stats, ALL, SONG_TRACK};
 pub use record::{Recorder, Taken, TakenLock, TakenMove};
 pub use takes::{MovePut, MoveWrite, Take, Takes, TAKE_ROOM};
 pub use view::{anchored, CompileError, Cue, Launch, PlayView, Started, EARLIEST};

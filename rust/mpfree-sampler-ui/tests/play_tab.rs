@@ -9,6 +9,7 @@ use mpfree_sampler::model::{
     FilterKind, Keys, Layer, LayerSelect, Levels, Pad, PadsPlay, PressureTarget, Project, Region,
     Source, KEYGROUP_POLYPHONY,
 };
+use mpfree_sampler_ui::keys_widgets::KeyZones;
 use mpfree_sampler_ui::play_tab::{self, describe, PlayAction, PlayState, Row};
 use mpfree_sampler_ui::play_widgets::{
     env_level, filter_db, EnvPoint, EnvelopeView, FilterCurve, LayerMap,
@@ -723,4 +724,145 @@ fn sixteen_levels_spread_the_pad_over_the_kits_pads() {
     step_apply(&mut s, Row::PadsPlay, 1);
     assert_eq!(s.project.pads_play(), PadsPlay::Pads);
     assert_eq!(row_value(&s, Row::LevelsBy), "–");
+}
+
+/// The tab's keyboard and where it is.
+fn keyboard(s: &PlaySample) -> (KeyZones, mpfree_ui::Rect) {
+    let z = s.ui.get::<KeyZones>(play_tab::KEYS).unwrap().clone();
+    (z, s.ui.rect_of(play_tab::KEYS).unwrap())
+}
+
+/// A finger down and up at (x, y): the actions it asks for.
+fn tap(s: &mut PlaySample, x: i32, y: i32) -> Vec<PlayAction> {
+    let mut out = Vec::new();
+    for phase in [Touch::Down, Touch::Up] {
+        if let Some(ev) = s.ui.touch(1, phase, x, y) {
+            let st = s.state.clone();
+            out.extend(s.tab.action(&mut s.ui, &ev, &st));
+        }
+    }
+    s.tab.lift();
+    out
+}
+
+#[test]
+fn a_keygroup_shows_the_kits_keyboard_to_drag_its_zone_pick_a_pad_and_play_notes() {
+    let mut s = tone();
+    assert!(!s.tab.keys_shown());
+    assert_eq!(s.tab.hint(), play_tab::HINT);
+    // Keys on: the keyboard spans the top of the tab.
+    step_apply(&mut s, Row::Keys, 1);
+    s.tab.lift();
+    assert!(s.tab.keys_shown());
+    assert_eq!(s.tab.hint(), play_tab::KEYS_HINT);
+    let (_, r) = keyboard(&s);
+    assert!(r.w > 800 && r.h >= 200, "{r:?}");
+    // Narrow it to C2–G4 with the rows, and add a second keygroup on the
+    // next pad, C5 to the top.
+    step_apply(&mut s, Row::LowKey, 36);
+    s.tab.lift();
+    step_apply(&mut s, Row::HighKey, -60);
+    s.tab.lift();
+    let mut other = s.project.pad(PAD).unwrap().clone();
+    other.keys = Some(Keys {
+        lo: 72,
+        hi: 127,
+        root: 72,
+    });
+    s.project.set_pad(PAD + 1, Some(other), None).unwrap();
+    apply(&mut s, &PlayAction::Tab(play_tab::TAB));
+    let (z, r) = keyboard(&s);
+    assert_eq!(z.zones.len(), 2);
+    assert_eq!(z.picked, Some(PAD));
+    assert_eq!(z.right, "2 keygroups");
+    assert!(z.caption.starts_with("A5: C2–G4, root A3"), "{}", z.caption);
+    assert!(z.first <= 36 && z.last >= 79, "{}–{}", z.first, z.last);
+    let picked = z.zones.iter().position(|k| k.pad == PAD).unwrap();
+    let zr = z.zone_rect(r, picked).unwrap();
+    // Its right edge dragged to B4.
+    let b4 = z.key_point(r, 71).unwrap();
+    let a = drag(
+        &mut s,
+        (zr.right(), zr.y + zr.h / 2),
+        (b4.0, zr.y + zr.h / 2),
+    )
+    .unwrap();
+    let first = gesture(&a);
+    apply(&mut s, &a);
+    lift(&mut s);
+    assert_eq!(
+        s.state.settings.keys,
+        Some(Keys {
+            lo: 36,
+            hi: 71,
+            root: 57
+        })
+    );
+    // Its root dragged to C4: an undo step of its own.
+    let (z, r) = keyboard(&s);
+    let zr = z.zone_rect(r, picked).unwrap();
+    let rx = z.root_x(r, s.state.settings.keys.unwrap());
+    let c4 = z.key_point(r, 60).unwrap();
+    let a = drag(&mut s, (rx, zr.y + zr.h / 2), (c4.0, zr.y + zr.h / 2)).unwrap();
+    assert_ne!(gesture(&a), first);
+    apply(&mut s, &a);
+    lift(&mut s);
+    assert_eq!(s.state.settings.keys.unwrap().root, 60);
+    assert!(s.project.undo());
+    assert_eq!(s.project.pad(PAD).unwrap().keys.unwrap().root, 57);
+    // A tap on the other zone picks its pad.
+    let (z, r) = keyboard(&s);
+    let i = z.zones.iter().position(|k| k.pad == PAD + 1).unwrap();
+    let zr = z.zone_rect(r, i).unwrap();
+    assert_eq!(
+        tap(&mut s, zr.x + zr.w / 2, zr.y + zr.h / 2),
+        [PlayAction::Pick(PAD + 1)]
+    );
+    // A key pressed plays the note, and lets it go.
+    let (z, r) = keyboard(&s);
+    let e4 = z.key_point(r, 64).unwrap();
+    assert_eq!(
+        tap(&mut s, e4.0, e4.1),
+        [
+            PlayAction::Note {
+                note: 64,
+                down: true
+            },
+            PlayAction::Note {
+                note: 64,
+                down: false
+            }
+        ]
+    );
+    let f_sharp = z.key_point(r, 66).unwrap();
+    assert_eq!(
+        tap(&mut s, f_sharp.0, f_sharp.1)[0],
+        PlayAction::Note {
+            note: 66,
+            down: true
+        }
+    );
+    // Keys off, and the pads play their sounds: the keyboard goes.
+    step_apply(&mut s, Row::Keys, -1);
+    assert!(!s.tab.keys_shown());
+    assert!(s.ui.rect_of(play_tab::LAYERS).is_some());
+}
+
+#[test]
+fn the_keyboard_shows_while_the_pads_play_notes_and_marks_their_notes() {
+    let mut s = tone();
+    step_apply(&mut s, Row::Keys, 1);
+    s.tab.lift();
+    let a = step(&mut s, Row::PadsPlay, 1).unwrap();
+    apply(&mut s, &a);
+    // The pad's keys off: the pads still play notes, so the keyboard stays.
+    step_apply(&mut s, Row::Keys, -1);
+    assert!(s.tab.keys_shown());
+    let (z, _) = keyboard(&s);
+    assert_eq!(z.pads_from, Some(48));
+    assert_eq!(z.picked, None);
+    assert!(z.zones.is_empty());
+    assert!(z.caption.contains("is not a keygroup"), "{}", z.caption);
+    let mut c = SoftCanvas::new(sample::SCREEN.0, sample::SCREEN.1);
+    s.ui.paint(&mut c);
 }
