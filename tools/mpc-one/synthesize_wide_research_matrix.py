@@ -88,6 +88,23 @@ def build(read):
     row("ROM","Is ROM security/eFuse state determined?","hardware-gated",
         "Userland crypto functions and stage bytes cannot reveal silicon security policy.",
         "Read security fuse state with non-mutating authorized diagnostics.","static/wide/evidence-ledger.json")
+    spl_sources=d["spl"].get("direct_boot_probe",{}).get(
+        "original_image_pointers",{})
+    spl_entry=spl_sources.get("candidate_stage_entry_handoff",{}).get(
+        "original_word")
+    spl_initial=d["spl"].get("analyzed_functions",{}).get(
+        "0xff705208",{}).get("pseudocode","")
+    row("SPL","Does SRAM initialization make an indirect call to the boot selector?",
+        confirmed(spl_entry=="0xff705351" and
+                  "(*DAT_ff705274)(" in spl_initial),
+        "Yes: original SPL slot 0xFF705274 is Thumb pointer 0xFF705351 to selector 0xFF705350, called by 0xFF705208. This closes the missing graph edge statically, not ROM acceptance.",
+        "Inspect full entry interworking and physical ROM acceptance independently.",
+        "static/v11/v11-ghidra-spl.json")
+    row("SPL","Is the second context-based function-pointer handoff target established?",
+        "unresolved",
+        "SPL selector calls 0xFF705310 with context 0xFF70A244. That function dereferences callback at context+0xC, candidate slot 0xFF70A250. Runtime mutation and final target remain unverified.",
+        "Read the original context callback word and find every initializer/writer before identifying the final U-Boot handoff.",
+        "static/v11/v11-ghidra-spl.json")
     row("SPL","Do the backup P1 offsets and size identify stage location?",confirmed(b["p1"]["lba"]==64 and b["p1"]["bytes"]==65536),
         "The first-stage partition starts at LBA 64 and spans 64KiB in the owner's backup.",
         "Confirm an independent ROM loader can accept an owner-built SRAM payload.","static/wide/storage-env-boot-dtb.json")
@@ -202,6 +219,17 @@ def build(read):
     row("U-Boot","Are extlinux and external script fallback configured?","static-supported",
         "Saved U-Boot environment scans extlinux.conf and boot.scr.uimg/boot.scr in mmc targets.",
         "Check which device can actually provide a verified reversible boot path.","static/wide/storage-env-boot-dtb.json")
+    uboot_getvar=d["uboot"].get("direct_boot_probe",{}).get(
+        "reboot_mode_original_literal_slots",{}).get(
+        "getvar_adc_key_string",{}).get("printable_string")
+    row("U-Boot","Does Fastboot getvar:power-source query SARADC channel 0?",
+        confirmed(uboot_getvar=="power-source" and
+                  "FUN_00115ef4(local_24,0)" in
+                  d["uboot"].get("analyzed_functions",{}).get(
+                      "0x00100ef0",{}).get("pseudocode","")),
+        "Yes: request key power-source is read from the original literal pool; the getvar callback starts channel 0 and scales its ADC reading/reference voltage into a categorical response.",
+        "Decode the actual scale, boundaries and four response labels; no physical voltage has been measured.",
+        "static/v11/v11-ghidra-uboot.json")
     row("U-Boot","Does Fastboot RAM boot reach bootm?",
         confirmed(p3_paths["fastboot_ram_boot_to_bootm"]["direct_call_path_found"]),
         "Direct path from 0x1226B4 to 0x101744 and image loader 0x10A6A4.",
@@ -267,6 +295,15 @@ def build(read):
         confirmed(diff["ramfs_updater"]["present"]),
         "Updater ramfs inventory is available but neither its program nor writes were run.",
         "Map verified update preparation, target selection and rollback behavior.","static/wide/firmware-3.10-bootchain-v4-compare.json")
+    updater_stub=d["updater"].get("analyzed_functions",{})
+    stub_bad=all("halt_baddata" in updater_stub.get(address,{}).get(
+        "pseudocode","") for address in (
+            "0x00014028","0x00014040","0x00014070"))
+    row("Update","Do three recognized updater trampoline addresses prove library implementations?",
+        "static-supported" if stub_bad else "unresolved",
+        "No: addresses 0x14028/0x14040/0x14070 have invalid-instruction Ghidra stubs. Symbol name/linkage is not verified library implementation or execution.",
+        "Follow ELF relocations and imports to libaz01-prog functions, then distinguish verification from partition writes.",
+        "static/v11/v11-ghidra-az01-update.json")
     row("Update","Are file, network and USB updater modes exposed?","static-supported",
         "Updater executable strings and symbols expose file/net/USB update paths; execution path still unproven.",
         "Trace CLI entry→verification→image apply→reboot in Ghidra.","static/wide/firmware-3.10-bootchain-v4-compare.json")
