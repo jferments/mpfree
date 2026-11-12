@@ -239,6 +239,31 @@ impl Curve {
     }
 }
 
+/// FILL (control map decision 9, Jay 20:54Z): PLAY held while the
+/// transport plays, or pressed twice to latch it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Fill {
+    Off,
+    /// While PLAY is held.
+    Held,
+    /// Until PLAY is pressed again, or STOP.
+    Latched,
+}
+
+/// TRACK MUTE (control map decision 5): the pads as mute keys over
+/// whatever page shows, until TRACK MUTE is pressed again.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum MuteKeys {
+    /// The pads play.
+    #[default]
+    Off,
+    /// TRACK MUTE: pads 1-8 mute and unmute tracks 1-8.
+    Tracks,
+    /// SHIFT + TRACK MUTE: each pad mutes and unmutes itself in the
+    /// playing kit (the speakers on Play).
+    Pads,
+}
+
 /// FULL LEVEL (every hit 127) and Half Level (every hit 64).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PadLevel {
@@ -324,6 +349,7 @@ pub struct ButtonMap {
     pub sample_edit: Option<u8>,
     pub prog_edit: Option<u8>,
     pub q_link: Option<u8>,
+    pub track_mute: Option<u8>,
 }
 
 impl ButtonMap {
@@ -436,6 +462,7 @@ impl ButtonMap {
             Job::SampleEdit => self.sample_edit,
             Job::ProgEdit => self.prog_edit,
             Job::QLink => self.q_link,
+            Job::TrackMute => self.track_mute,
         }
     }
 
@@ -464,6 +491,7 @@ impl ButtonMap {
             Job::SampleEdit => &mut self.sample_edit,
             Job::ProgEdit => &mut self.prog_edit,
             Job::QLink => &mut self.q_link,
+            Job::TrackMute => &mut self.track_mute,
         };
         *slot = code;
     }
@@ -640,6 +668,8 @@ pub struct Status {
     pub latched: bool,
     pub rate: &'static str,
     pub bpm: f64,
+    /// TRACK MUTE: what the pads are, the hint line says.
+    pub mute_keys: MuteKeys,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -750,6 +780,9 @@ pub enum Effect {
     ProgEdit,
     /// SHIFT + PLAY START: the metronome on or off.
     Metronome,
+    /// FILL on or off from the coming period: notes with the FILL and
+    /// !FILL trig conditions follow it.
+    Fill(bool),
 }
 
 pub struct App {
@@ -778,6 +811,12 @@ pub struct App {
     repeat_pressed_at: Option<f64>,
     latched: bool,
     pad_level: PadLevel,
+    fill: Fill,
+    /// When PLAY was last pressed while the transport played, for the
+    /// double press that latches FILL.
+    play_pressed_at: Option<f64>,
+    /// TRACK MUTE: the pads play, or mute tracks or the kit's pads.
+    mute_keys: MuteKeys,
     view: View,
     /// The page to go back to from Console, Options or the guide.
     back: View,
@@ -914,6 +953,9 @@ impl App {
             repeat_pressed_at: None,
             latched: false,
             pad_level: PadLevel::Off,
+            fill: Fill::Off,
+            play_pressed_at: None,
+            mute_keys: MuteKeys::Off,
             view: View::Play,
             back: View::Play,
             chain_back: View::Mixer,
@@ -971,10 +1013,19 @@ impl App {
         self.view
     }
 
-    /// Whether the transport is rolling, for STOP (the audio loop tells it
-    /// each period).
+    /// Whether the transport is rolling, for STOP and FILL (the audio loop
+    /// tells it each period).
     pub fn set_rolling(&mut self, rolling: bool) {
         self.rolling = rolling;
+    }
+
+    /// FILL let go, if it was on.
+    fn fill_off(&mut self) -> Option<Effect> {
+        if self.fill == Fill::Off {
+            return None;
+        }
+        self.fill = Fill::Off;
+        Some(Effect::Fill(false))
     }
 
     /// The first page once everything is ready, and the lights to start with.
@@ -1104,6 +1155,12 @@ impl App {
         }
     }
 
+    /// TRACK MUTE: whether a pad press plays, or mutes a track or a pad
+    /// (the audio loop applies it, and lights the pads).
+    pub fn mute_keys(&self) -> MuteKeys {
+        self.mute_keys
+    }
+
     /// NOTE REPEAT is held or Latch is on.
     pub fn repeating(&self) -> bool {
         self.repeat_held || self.latched
@@ -1154,6 +1211,7 @@ impl App {
             latched: self.latched,
             rate: self.settings.rate.label(),
             bpm: self.settings.bpm,
+            mute_keys: self.mute_keys,
         })
     }
 
@@ -1207,6 +1265,10 @@ impl App {
                 self.repeat_held = false;
                 fx.extend(self.arp_changed());
             }
+            if note == button::PLAY && self.fill == Fill::Held {
+                self.fill = Fill::Off;
+                fx.push(Effect::Fill(false));
+            }
             return fx;
         }
         if self.view == View::Guide {
@@ -1236,6 +1298,7 @@ impl App {
                 PadLevel::Half => "pad level: Half Level (every hit 64)".to_string(),
             }));
         } else if note == button::STOP {
+            fx.extend(self.fill_off());
             if self.timed {
                 fx.push(Effect::Quit);
             } else if shift {
@@ -1257,7 +1320,22 @@ impl App {
                 // Stopped already: the transport goes back to bar 1.
                 fx.push(Effect::Time(TimeAction::Transport(Command::Stop)));
             }
+        } else if note == button::PLAY && self.rolling {
+            // FILL while held; pressed twice, latched; pressed again, off.
+            let double = self
+                .play_pressed_at
+                .is_some_and(|at| t - at <= DOUBLE_PRESS_SECONDS);
+            self.play_pressed_at = (!double).then_some(t);
+            let (fill, line) = match self.fill {
+                Fill::Latched => (Fill::Off, "FILL off"),
+                _ if double => (Fill::Latched, "FILL latched (PLAY again: off)"),
+                _ => (Fill::Held, "FILL while PLAY is held (twice: latch)"),
+            };
+            self.fill = fill;
+            fx.push(Effect::Fill(fill != Fill::Off));
+            fx.push(Effect::Note(line.to_string()));
         } else if note == button::PLAY {
+            fx.extend(self.fill_off());
             self.arps.engine_at_mut(self.track).resume();
             fx.push(Effect::Time(TimeAction::Transport(Command::Play)));
         } else if Some(note) == self.map.play_start && shift {
@@ -1414,6 +1492,33 @@ impl App {
             } else {
                 Vec::new()
             }
+        } else if is(m.track_mute) {
+            // TRACK MUTE: the pads mute tracks; SHIFT + TRACK MUTE: the
+            // kit's pads. The same press again leaves; the other one
+            // switches.
+            let want = if shift {
+                MuteKeys::Pads
+            } else {
+                MuteKeys::Tracks
+            };
+            self.mute_keys = if self.mute_keys == want {
+                MuteKeys::Off
+            } else {
+                want
+            };
+            let on = self.mute_keys != MuteKeys::Off;
+            vec![
+                Effect::Light(note, if on { LIGHT_ON } else { LIGHT_OFF }),
+                self.status(),
+                Effect::Note(
+                    match self.mute_keys {
+                        MuteKeys::Off => "TRACK MUTE: the pads play again",
+                        MuteKeys::Tracks => "TRACK MUTE: pads 1-8 mute tracks 1-8",
+                        MuteKeys::Pads => "SHIFT + TRACK MUTE: each pad mutes itself in the kit",
+                    }
+                    .to_string(),
+                ),
+            ]
         } else if is(m.sixteen_level) {
             // SHIFT + 16 LEVEL: the synth pads' Chromatic | In key switch.
             // 16 LEVEL itself comes with 16 Levels for kits.
@@ -4234,6 +4339,75 @@ mod tests {
             app.tick(20.9),
             Some(Effect::Light(button::TAP_TEMPO, LIGHT_OFF))
         );
+    }
+
+    #[test]
+    fn play_held_while_rolling_is_a_fill_and_twice_latches_it() {
+        let mut app = ready();
+        // Stopped, PLAY plays.
+        assert_eq!(
+            press(&mut app, button::PLAY),
+            vec![Effect::Time(TimeAction::Transport(Command::Play))]
+        );
+        app.set_rolling(true);
+        let fills = |fx: &[Effect]| {
+            fx.iter()
+                .filter_map(|e| match e {
+                    Effect::Fill(on) => Some(*on),
+                    _ => None,
+                })
+                .collect::<Vec<bool>>()
+        };
+        // Held: a fill until PLAY lifts.
+        let fx = app.button(button::PLAY, true, 10.0);
+        assert_eq!(fills(&fx), [true]);
+        assert!(!fx.contains(&Effect::Time(TimeAction::Transport(Command::Play))));
+        assert_eq!(app.button(button::PLAY, false, 10.1), [Effect::Fill(false)]);
+        // Pressed again at once: latched, and the lift leaves it on.
+        assert_eq!(fills(&app.button(button::PLAY, true, 10.3)), [true]);
+        assert!(app.button(button::PLAY, false, 10.4).is_empty());
+        // Once more: off.
+        assert_eq!(fills(&app.button(button::PLAY, true, 12.0)), [false]);
+        assert!(app.button(button::PLAY, false, 12.1).is_empty());
+        // Latched, STOP lets it go with the transport.
+        app.button(button::PLAY, true, 20.0);
+        app.button(button::PLAY, false, 20.1);
+        app.button(button::PLAY, true, 20.2);
+        app.button(button::PLAY, false, 20.3);
+        let fx = app.button(button::STOP, true, 21.0);
+        assert_eq!(fills(&fx), [false]);
+        assert!(fx.contains(&Effect::Time(TimeAction::Transport(Command::Stop))));
+    }
+
+    /// TRACK MUTE (control map decision 5), once Map controls has found
+    /// it: the pads mute tracks over any page, SHIFT + TRACK MUTE the
+    /// kit's pads; the same press leaves, the other switches. The page
+    /// stays as it was, and the button's light and the hint follow.
+    #[test]
+    fn track_mute_turns_the_pads_into_mute_keys_over_any_page() {
+        const SHIFT: u8 = button::SHIFT;
+        const TRACK_MUTE: u8 = 68;
+        let mut app = ready();
+        assert!(press(&mut app, TRACK_MUTE).is_empty(), "not found yet");
+        app.map.learn(mapper::Job::TrackMute, Some(TRACK_MUTE));
+        assert_eq!(app.map.name(TRACK_MUTE), Some("TRACK MUTE"));
+        app.open_tab(View::Looper);
+        let fx = press(&mut app, TRACK_MUTE);
+        assert_eq!(app.mute_keys(), MuteKeys::Tracks);
+        assert_eq!(fx[0], Effect::Light(TRACK_MUTE, LIGHT_ON));
+        assert!(!fx.iter().any(|e| matches!(e, Effect::Show(_))));
+        assert_eq!(app.view(), View::Looper, "the page stays");
+        assert_eq!(app.status_now().mute_keys, MuteKeys::Tracks);
+        // SHIFT + TRACK MUTE: the kit's pads; again: the pads play.
+        held(&mut app, SHIFT, |a| press(a, TRACK_MUTE));
+        assert_eq!(app.mute_keys(), MuteKeys::Pads);
+        let fx = held(&mut app, SHIFT, |a| press(a, TRACK_MUTE));
+        assert_eq!(app.mute_keys(), MuteKeys::Off);
+        assert_eq!(fx[0], Effect::Light(TRACK_MUTE, LIGHT_OFF));
+        assert!(fx.contains(&Effect::Note("TRACK MUTE: the pads play again".into())));
+        press(&mut app, TRACK_MUTE);
+        press(&mut app, TRACK_MUTE);
+        assert_eq!(app.mute_keys(), MuteKeys::Off);
     }
 
     #[test]

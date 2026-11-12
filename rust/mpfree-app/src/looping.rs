@@ -34,8 +34,8 @@ use crate::alsa;
 use mpfree_looper::print::{frames_at, PrintJob};
 use mpfree_looper::save::Saved;
 use mpfree_looper::{
-    Bounce, Command, LayerCommand, LayerInfo, LoopFile, Looper, Memory, Phase, Print, Stats,
-    Status, MAX_LAYERS, MAX_LOOPS,
+    Bounce, Command, History, LayerCommand, LayerInfo, LoopFile, Looper, Memory, Phase, Print,
+    Stats, Status, MAX_LAYERS, MAX_LOOPS,
 };
 use mpfree_transport::Block;
 use mpfree_ui::wave::{Peaks, WaveColumn};
@@ -95,6 +95,11 @@ pub enum LoopAction {
     /// Pick loop `n` (0 to [`MAX_LOOPS`] - 1): the buttons, the layers'
     /// controls and the screens act on it from the next period.
     Select(usize),
+    /// Pick loop `n`, empty, and resample into it: its first pass records
+    /// the other loops as heard ([`Command::Resample`]).
+    Resample(usize),
+    /// The undo history: back `n` steps (below 0) or forward (above 0).
+    Steps(i32),
 }
 
 /// What the line input counted since it was opened.
@@ -490,6 +495,8 @@ pub struct LooperView {
     pub memory: Memory,
     /// Frames per second, for the lengths in seconds.
     pub rate: u32,
+    /// The picked loop's undo history.
+    pub history: History,
 }
 
 impl Default for LooperView {
@@ -510,6 +517,7 @@ impl Default for LooperView {
             selected: 0,
             memory: l.memory(),
             rate: 44_100,
+            history: l.history(),
         }
     }
 }
@@ -541,6 +549,9 @@ pub struct LoopHost {
     saved: Option<Saved>,
     /// Saves started again because a loop changed while it was read.
     pub save_restarts: u64,
+    /// Undo (below 0) or Redo (above 0) presses the undo history asked for
+    /// that the command queue had no room for yet ([`LoopHost::steps`]).
+    steps_left: i32,
 }
 
 /// A save under way ([`LoopHost::save`]).
@@ -829,6 +840,7 @@ impl LoopHost {
             saving: None,
             saved: None,
             save_restarts: 0,
+            steps_left: 0,
         }
     }
 
@@ -1027,6 +1039,7 @@ impl LoopHost {
 
     /// A press or a setting, with its `looper:` line for the log.
     pub fn command(&mut self, c: Command) -> String {
+        self.steps_left = 0;
         let s = self.looper.status();
         let what = match (c, s.phase) {
             (Command::Record, Phase::Empty) => format!(
@@ -1112,9 +1125,78 @@ impl LoopHost {
         format!("looper: {what}")
     }
 
+    /// The undo history: go back `n` steps (below 0) or forward (above 0),
+    /// as if Undo or Redo were pressed that many times, as far as the
+    /// picked loop's history goes; with one `looper:` line for the log.
+    /// What the command queue can't take now goes in over the next
+    /// periods, unless another press comes first.
+    pub fn steps(&mut self, n: i32) -> String {
+        let h = self.looper.history();
+        let (way, room) = if n < 0 {
+            ("back", h.done().len())
+        } else {
+            ("forward", h.redo().len())
+        };
+        let want = (n.unsigned_abs() as usize).min(room);
+        if want == 0 {
+            self.steps_left = 0;
+            return format!("looper: undo history: nothing to go {way} to");
+        }
+        self.steps_left = want as i32 * n.signum();
+        self.queue_steps();
+        format!(
+            "looper: undo history: {way} {want} step{}",
+            if want == 1 { "" } else { "s" }
+        )
+    }
+
+    /// As many of the undo history's presses as the queue takes.
+    fn queue_steps(&mut self) {
+        while self.steps_left != 0 {
+            let c = if self.steps_left < 0 {
+                Command::Undo
+            } else {
+                Command::Redo
+            };
+            if !self.looper.command(c) {
+                break;
+            }
+            self.steps_left -= self.steps_left.signum();
+        }
+    }
+
+    /// Use the loop's Resample: pick loop `n` and queue
+    /// [`Command::Resample`] for it, with one `looper:` line for the log.
+    /// Refused (nothing queued) unless loop `n` is empty.
+    pub fn resample_into(&mut self, n: usize) -> String {
+        self.steps_left = 0;
+        let n = n.min(MAX_LOOPS - 1);
+        if self
+            .looper
+            .loop_status(n)
+            .is_none_or(|s| s.phase != Phase::Empty)
+        {
+            return format!(
+                "looper: Resample into loop {}: refused, it is not empty",
+                n + 1
+            );
+        }
+        if !self.looper.select_loop(n) || !self.looper.command(Command::Resample) {
+            return format!(
+                "looper: Resample into loop {}: NOT done, the command queue is full",
+                n + 1
+            );
+        }
+        format!(
+            "looper: Resample into loop {}: armed, its first pass records the other loops as heard from the next bar line",
+            n + 1
+        )
+    }
+
     /// Pick loop `n` for the presses and controls after this, with its
     /// `looper:` line for the log ("loop 2 picked (empty)").
     pub fn select(&mut self, n: usize) -> String {
+        self.steps_left = 0;
         let n = n.min(MAX_LOOPS - 1);
         let what = match self.looper.loop_status(n) {
             Some(s) if s.phase == Phase::Empty => "empty".to_string(),
@@ -1138,6 +1220,9 @@ impl LoopHost {
     /// A layer's control, by the layer's id, with its `looper:` line for
     /// the log ("layer 3 muted").
     pub fn layer_command(&mut self, id: u8, c: LayerCommand) -> String {
+        if c == LayerCommand::Delete {
+            self.steps_left = 0;
+        }
         let k = (0..MAX_LAYERS)
             .find(|&k| self.looper.layer_info(k).is_some_and(|l| l.id == id))
             .map_or_else(|| format!("layer id {id}"), |k| format!("layer {}", k + 1));
@@ -1225,6 +1310,7 @@ impl LoopHost {
 
     /// Reads the line input and runs the looper into `self.out`.
     fn record(&mut self, block: &Block) -> Option<String> {
+        self.queue_steps();
         let note = self.line.period(&mut self.input_l, &mut self.input_r);
         let (src_l, src_r) = match self.source {
             LoopSource::Pads => (&self.pads_l, &self.pads_r),
@@ -1346,6 +1432,7 @@ impl LoopHost {
             selected: self.looper.selected(),
             memory: self.looper.memory(),
             rate: self.rate,
+            history: self.looper.history(),
         }
     }
 
@@ -1538,6 +1625,93 @@ mod tests {
 
     /// A layer's speaker: the mute goes to the layer by its id, the log
     /// names it, and the next view shows it muted and not heard.
+    /// Use the loop's Resample: into an empty loop only, picked with it.
+    #[test]
+    fn resample_goes_into_an_empty_loop_and_picks_it() {
+        let mut h = LoopHost::new(44_100, 8);
+        let mut t = Transport::new(44_100, 120.0).unwrap();
+        let mut b = Block::new();
+        h.command(Command::SetBars(Some(1)));
+        h.command(Command::SetLatency(0));
+        h.command(Command::Record);
+        t.command(0, T::Play);
+        let mut run = |h: &mut LoopHost, periods: u64| {
+            for _ in 0..periods {
+                assert!(t.process(PERIOD as u32, &mut b));
+                let (mut l, mut r) = ([0.0; PERIOD], [0.0; PERIOD]);
+                h.period(&b, &mut l, &mut r);
+            }
+        };
+        run(&mut h, 700);
+        assert_eq!(h.view(120.0).status.phase, Phase::Playing);
+        assert!(h.resample_into(0).contains("refused"), "loop 1 has a loop");
+        let line = h.resample_into(1);
+        assert!(line.contains("loop 2: armed"), "{line}");
+        run(&mut h, 1);
+        let v = h.view(120.0);
+        assert_eq!(v.selected, 1);
+        assert!(v.status.resampling, "{:?}", v.status);
+        assert_eq!(v.loops[0].phase, Phase::Playing);
+    }
+
+    /// The undo history goes back and forward by as many steps as asked,
+    /// as far as there are steps, and more than the command queue holds.
+    #[test]
+    fn the_undo_history_steps_back_and_forward() {
+        use mpfree_looper::{Edit, Step};
+        let mut h = LoopHost::new(44_100, 40);
+        let mut t = Transport::new(44_100, 120.0).unwrap();
+        let mut b = Block::new();
+        h.command(Command::SetBars(Some(1)));
+        h.command(Command::SetLatency(0));
+        h.command(Command::Record);
+        t.command(0, T::Play);
+        let mut run = |h: &mut LoopHost, periods: u64| {
+            for _ in 0..periods {
+                assert!(t.process(PERIOD as u32, &mut b));
+                let (mut l, mut r) = ([0.0; PERIOD], [0.0; PERIOD]);
+                h.period(&b, &mut l, &mut r);
+            }
+        };
+        run(&mut h, 700);
+        assert_eq!(h.view(120.0).status.phase, Phase::Playing);
+        // 12 overdubs, 8 deletes and 16 edits (all the looper keeps): more
+        // steps than the command queue (32) takes at once.
+        for _ in 0..12 {
+            h.command(Command::Overdub);
+            run(&mut h, 20);
+            h.command(Command::Overdub);
+            run(&mut h, 20);
+        }
+        for _ in 0..8 {
+            let id = h.view(120.0).layers[1].unwrap().id;
+            h.layer_command(id, LayerCommand::Delete);
+            run(&mut h, 20);
+        }
+        for _ in 0..16 {
+            h.command(Command::Edit(Edit::Reverse));
+            run(&mut h, 4);
+        }
+        let v = h.view(120.0);
+        assert_eq!((v.history.done().len(), v.status.layers), (36, 5));
+        assert_eq!(h.steps(1), "looper: undo history: nothing to go forward to");
+        assert_eq!(h.steps(-34), "looper: undo history: back 34 steps");
+        run(&mut h, 200);
+        let v = h.view(120.0);
+        assert_eq!((v.history.done().len(), v.history.redo().len()), (2, 34));
+        assert!(matches!(v.history.done()[1], Step::Overdub(_)));
+        assert_eq!(v.status.layers, 3);
+        assert_eq!(h.steps(5), "looper: undo history: forward 5 steps");
+        run(&mut h, 50);
+        let v = h.view(120.0);
+        assert_eq!((v.history.done().len(), v.history.redo().len()), (7, 29));
+        // Back further than there are steps goes back to the first pass.
+        assert_eq!(h.steps(-99), "looper: undo history: back 7 steps");
+        run(&mut h, 50);
+        assert_eq!(h.view(120.0).history.done().len(), 0);
+        assert_eq!(h.view(120.0).status.layers, 1, "the first pass stays");
+    }
+
     #[test]
     fn a_layer_mutes_by_its_id_and_the_view_shows_it() {
         let mut h = LoopHost::new(44_100, 8);
