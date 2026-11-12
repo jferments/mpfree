@@ -2716,9 +2716,14 @@ impl Player {
                 .arp_panel
                 .action(&ev, &self.arp, &mut self.qlink_focus)
                 .map(FromUi::Arp),
-            (time_view::TRANSPORT | time_view::CLIPS | time_view::RECORD | time_view::TAKES, _) => {
-                time_view::action(&ev, &self.time).map(FromUi::Time)
-            }
+            (
+                time_view::TRANSPORT
+                | time_view::CLIPS
+                | time_view::RECORD
+                | time_view::TAKES
+                | time_view::MORPH,
+                _,
+            ) => time_view::action(&ev, &self.time).map(FromUi::Time),
             _ => None,
         }
     }
@@ -4855,9 +4860,17 @@ mod tests {
         });
         assert_eq!(
             p.ui.get::<ClipGrid>(time_view::CLIPS).unwrap().title,
-            "Clips · slots 2–7 of 16"
+            "Clips · slots 2–6 of 16"
         );
         assert!(p.take_actions().is_empty());
+        // The morph bar under the grid: Save stores the A row (the
+        // crossfader is at A).
+        let morph = p.ui.rect_of(time_view::MORPH).unwrap();
+        let save = mpfree_time_ui::widgets::MorphBar::parts(morph).3[2];
+        assert_eq!(
+            tap(&mut p, (save.x + save.w / 2, save.y + save.h / 2)),
+            Some(FromUi::Time(TimeAction::SaveScene(0)))
+        );
     }
 
     /// Mockup H: a speaker beside each loop layer's name; a tap mutes
@@ -5401,8 +5414,9 @@ mod tests {
             .rect_of(crate::looper_page::LOOP_STRIP)
             .is_some_and(|r| r.w > 900));
         p.apply(ToUi::Show(View::Arrange));
+        // The grid over the scene morph bar.
         let clips = p.ui.rect_of(time_view::CLIPS).unwrap();
-        assert!(clips.w > 780 && clips.h > 560, "{clips:?}");
+        assert!(clips.w > 780 && clips.h > 500, "{clips:?}");
         p.apply(ToUi::Show(View::Prefs));
         assert!(p.ui.rect_of("options").unwrap().h > 600);
         let c = Console::new(Fonts::embedded(), "touch", None);
