@@ -520,7 +520,9 @@ pub struct Player {
     /// The audio loop's CPU by engine numbers (None until the loop starts).
     engines: Option<Arc<crate::engines::EngineShared>>,
     /// The Looper tab, and what it shows.
-    looper_page: LooperPage,
+    // Boxed: it holds every loop's status and layer rows, and a Player is
+    // moved by value often enough (sample_screens) that its size matters.
+    looper_page: Box<LooperPage>,
     pub looper: LooperView,
     /// The Play page: its view (the screen's own choice, kept while other
     /// tabs show), pattern, throws, timing and Q-Links.
@@ -574,7 +576,7 @@ impl Player {
         ui.add_full_page("Loading", "loading")
             .expect("loading layout");
         // The Looper tab's widgets first: the Play views show some of them.
-        let looper_page = LooperPage::add(&mut ui).expect("looper layout");
+        let looper_page = Box::new(LooperPage::add(&mut ui).expect("looper layout"));
         for v in PlayView::ALL {
             ui.add_page(v.page(), &v.layout()).expect("play layout");
         }
