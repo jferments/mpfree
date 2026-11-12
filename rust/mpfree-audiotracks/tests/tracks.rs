@@ -6,7 +6,7 @@
 //!
 //! 22.05 kHz at 240 BPM in 4/4 makes a bar exactly 22 050 frames (1 s).
 
-use mpfree_audiotracks::{AudioTracks, Command as A, Input, Monitor, FADE};
+use mpfree_audiotracks::{AudioTracks, Command as A, Input, Monitor, FADE, PEAK_BLOCK};
 use mpfree_transport::{Block, Command as T, Transport};
 
 const RATE: u32 = 22_050;
@@ -370,7 +370,9 @@ fn two_tracks_record_at_once_into_one_memory() {
         assert_eq!(r.a.sample(t1.id, k, 0), Some(-sig(START + k as u64)));
     }
     // Both mono takes together: a bar and a crossfade each.
-    assert_eq!(r.a.memory().used, 2 * (BAR as usize + FADE));
+    // Each take's memory ends on a peak block's edge.
+    let each = (BAR as usize + FADE).div_ceil(PEAK_BLOCK) * PEAK_BLOCK;
+    assert_eq!(r.a.memory().used, 2 * each);
     // Track 1 alone (solo) plays the right input on both sides.
     r.cmd(A::Solo(1, true));
     let p = r.frame + 1;
@@ -391,10 +393,13 @@ fn a_full_memory_cuts_the_take_short_and_keeps_it() {
     let t = r.a.take(0).unwrap();
     assert!(t.cut_short);
     assert!(!t.recording);
-    assert_eq!(t.frames, BAR as usize);
+    // 1 s of stereo, cut to whole peak blocks.
+    assert_eq!(t.frames, r.a.memory().capacity / 2);
+    assert_eq!(r.a.memory().capacity, 44_100 / PEAK_BLOCK * PEAK_BLOCK);
     assert_eq!(r.a.stats().full, 1);
     assert_eq!(r.a.memory().used, r.a.memory().capacity);
-    assert_eq!(r.a.regions(0)[0].end, BAR_TICKS);
+    let end = (t.frames as f64 * BAR_TICKS as f64 / BAR as f64).round() as i64;
+    assert_eq!(r.a.regions(0)[0].end, end);
     assert_eq!(r.a.recording(0), None);
 }
 
@@ -533,4 +538,63 @@ fn a_locate_while_recording_starts_a_new_take_where_it_lands() {
     let (a, b) = (r.a.take(rs[0].take).unwrap(), r.a.take(rs[1].take).unwrap());
     assert_eq!(a.group, b.group);
     assert_eq!(r.a.sample(b.id, 0, 0), Some(sig(START + BAR)));
+}
+
+/// The peaks the slow way: every sample.
+fn brute(a: &AudioTracks, id: u16, from: usize, to: usize) -> (f32, f32) {
+    let t = a.take(id).unwrap();
+    let (mut lo, mut hi) = (f32::MAX, f32::MIN);
+    for k in from..to.min(t.frames) {
+        for c in 0..t.channels {
+            let v = a.sample(id, k, c).unwrap();
+            lo = lo.min(v);
+            hi = hi.max(v);
+        }
+    }
+    (lo, hi)
+}
+
+#[test]
+fn peaks_match_every_sample_even_in_reused_memory() {
+    let mut r = one_bar(256);
+    for (from, to) in [
+        (0, 1),
+        (0, 22_050),
+        (100, 5_000),
+        (127, 129),
+        (3_333, 22_114),
+        (22_000, 99_999),
+    ] {
+        assert_eq!(
+            r.a.peaks(0, from, to),
+            Some(brute(&r.a, 0, from, to)),
+            "{from}..{to}"
+        );
+    }
+    assert_eq!(r.a.peaks(0, 30_000, 40_000), None);
+    // Forget it and record a quieter take into the same memory.
+    r.cmd(A::Erase {
+        track: 0,
+        from: 0,
+        to: BAR_TICKS,
+    });
+    r.cmd(A::ClearHistory);
+    r.cmd(A::Forget(0));
+    r.run_to(r.frame + 1);
+    assert_eq!(r.a.memory().used, 0);
+    r.input = Box::new(|g| (0.01 * sig(g), 0.0));
+    r.cmd(A::SetInput(0, Input::Left));
+    let p = r.frame + 7;
+    r.at(p, T::Locate(0));
+    r.at(p, T::Record);
+    r.run_to(p + BAR / 3);
+    // While it records, too.
+    let id = r.a.recording(0).unwrap();
+    let f = r.a.take(id).unwrap().frames;
+    assert_eq!(r.a.peaks(id, 0, f), Some(brute(&r.a, id, 0, f)));
+    let (lo, hi) = r.a.peaks(id, 0, f).unwrap();
+    assert!(lo >= -0.01 && hi <= 0.01, "{lo} {hi}");
+    for (from, to) in [(0, 300), (255, 257), (1000, f)] {
+        assert_eq!(r.a.peaks(id, from, to), Some(brute(&r.a, id, from, to)));
+    }
 }
