@@ -338,4 +338,4 @@ The app check (`MPFREE_HELLO_STEPS=app`, read-only) has sixteen phases for this 
 15. Touch: the Touch lab, Calibrate touch, and Dev > Touch (Save writes only the stick's partition 4).
 16. Menus, the Console chord, TAP TEMPO and STOP.
 
-At the start the tool prints `start-up: the app was playing N s after power-on`, read from the log line that starts with `playing ` (Perform FX and the wavetables allocate about 18 MB at startup). The line input step (state-changing, its own go) now checks the left and the right jack one at a time; round 7 checked only the left.
+At the start the tool also reads, read-only, partition 4's size and free space and the first lines of `/run/mpfree-data-grow.txt` (`partition 4: …` and `partition 4 grow: …`), which shows whether 3.10's `resize2fs` grew it to fill the stick. It prints `start-up: the app was playing N s after power-on`, read from the log line that starts with `playing ` (Perform FX and the wavetables allocate about 18 MB at startup). The line input step (state-changing, its own go) now checks the left and the right jack one at a time; round 7 checked only the left.

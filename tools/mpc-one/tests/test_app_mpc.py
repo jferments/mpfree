@@ -515,6 +515,27 @@ class AppTests(unittest.TestCase):
         self.assertIn("    status: 60 hits (0 from the screen), 40 repeats, 0 underruns", res.stdout)
         self.assertIn("RESULT: all steps ran", res.stdout)
 
+    def test_app_step_reads_partition_4_and_its_grow(self):
+        """Read-only: partition 4's size and free space, and what the online grow at power-on said."""
+        write(self.app, "active\n")
+        r = self.root
+        with open(f"{r}/proc/mounts", "a") as fh:
+            fh.write("/dev/sda4 /run/mpfree-data ext4 rw,nosuid,nodev,noexec,noatime 0 0\n")
+        os.makedirs(f"{r}/run/mpfree-data", exist_ok=True)
+        write(f"{r}/run/mpfree-data-grow.txt", "resize2fs 1.47.0 (5-Feb-2023)\n"
+              "The filesystem on /dev/sda4 is now 7520000 (4k) blocks long.\n")
+        res = self.run_helper("\nq\n", MPFREE_APP_STEPS="app")
+        self.assertRegex(res.stdout, r"partition 4: \d+ KiB, \d+ KiB used, \d+ KiB free")
+        self.assertIn("partition 4 grow:\n    resize2fs 1.47.0 (5-Feb-2023)\n"
+                      "    The filesystem on /dev/sda4 is now 7520000 (4k) blocks long.", res.stdout)
+        os.remove(f"{r}/run/mpfree-data-grow.txt")
+        with open(f"{r}/proc/mounts") as fh:
+            mounts = fh.read().replace("/dev/sda4 /run/mpfree-data ext4 rw,nosuid,nodev,noexec,noatime 0 0\n", "")
+        write(f"{r}/proc/mounts", mounts)
+        res = self.run_helper("\nq\n", MPFREE_APP_STEPS="app")
+        self.assertIn("partition 4: not mounted", res.stdout)
+        self.assertIn("partition 4 grow: no /run/mpfree-data-grow.txt", res.stdout)
+
     def test_app_step_summary_reads_the_whole_session(self):
         """Every phase skipped: the summary still shows the whole run, the touch interrupts and the status."""
         write(self.app, "active\n")

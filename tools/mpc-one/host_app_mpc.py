@@ -233,6 +233,24 @@ echo "pad player: $(systemctl is-active mpfree-test-app.service)"
 APP_STATE = r"""R=''
 echo "pad player (mpfree-test-app.service): $(systemctl is-active mpfree-test-app.service 2>/dev/null)"
 """
+# Read-only: the stick's partition 4 (saved settings and files): its size and free space, and what the
+# online grow at power-on said (it fills the stick since #169; whether 3.10's resize2fs grows it is checked here).
+DATA_STATE = r"""R=''
+if grep -q ' /run/mpfree-data ' "$R/proc/mounts"; then
+  df -k "$R/run/mpfree-data" | tail -n 1 | while read -r dev size used avail rest; do
+    echo "partition 4: $size KiB, $used KiB used, $avail KiB free"
+  done
+else
+  echo "partition 4: not mounted"
+fi
+if [ -f "$R/run/mpfree-data-grow.txt" ]; then
+  echo "partition 4 grow:"
+  n=0
+  while IFS= read -r l && [ "$n" -lt 8 ]; do echo "  $l"; n=$((n + 1)); done < "$R/run/mpfree-data-grow.txt"
+else
+  echo "partition 4 grow: no /run/mpfree-data-grow.txt"
+fi
+"""
 UPTIME = r"""R=''
 cat "$R/proc/uptime"
 """
@@ -604,6 +622,9 @@ def app_check(mpc, out, n, total):
     out.say(f"\n[{n}/{total}] The pad player that started at power-on (read-only: this reads its log and nothing else)")
     rc, text = mpc.run(APP_STATE, test=True)
     out.say(f"  {text.strip() or f'(no answer, exit code {rc})'}")
+    rc, data = mpc.run(DATA_STATE, test=True)
+    for line in (data.strip() or f"partition 4: no answer, exit code {rc}").splitlines():
+        out.say(f"  {line}")
     answer = ready(out, "First, what the screen did from power-on.")
     if answer == "quit":
         raise Stop("stopped by you")
