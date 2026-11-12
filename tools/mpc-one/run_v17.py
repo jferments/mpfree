@@ -57,7 +57,7 @@ def load_zip(path):
         if bad:raise ValueError("Owner archive CRC failed: "+bad)
         index=json.loads(z.read("ZIP_INDEX.json"))
         rows=index["files"]
-        if len(rows)<5 or len(rows)>500:
+        if not rows or len(rows)>500:
             raise ValueError("Unexpected prior report member count")
         total=0;names=set()
         for item in rows:
