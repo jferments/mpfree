@@ -24,11 +24,13 @@ def make_script(commands: str, timestamp: int = 4) -> bytes:
 
 
 def simulated_od(image: bytes) -> str:
-    return ("~ # od -An -v -tx1 /boot/boot.scr.uimg\n" +
-            "\n".join(" " + image[i:i + 16].hex(" ")
-                      for i in range(0, len(image), 16)) +
-            "\n~ # echo MPFREE_VM_ACK\n")
-
+    lines = ["~ # od -v -b /boot/boot.scr.uimg"]
+    for offset in range(0, len(image), 16):
+        words = " ".join("%03o" % v for v in image[offset:offset + 16])
+        lines.append("%07o %s" % (offset, words))
+    lines.append("%07o" % len(image))
+    lines.append("~ # echo MPFREE_VM_ACK")
+    return "\n".join(lines) + "\n"
 
 class ScriptWrapperTests(unittest.TestCase):
     def test_matching_image_and_payload(self):
@@ -65,6 +67,29 @@ class ScriptWrapperTests(unittest.TestCase):
         self.assertFalse(report["script_commands_match_official"])
         self.assertTrue(report["command_diff_excerpt"])
 
+    def test_busybox_offset_gap_is_rejected(self):
+        image = make_script("bootz\n")
+        data = simulated_od(image)
+        # Skip the first block so the next row starts at offset 020.
+        lines = data.splitlines()
+        lines.pop(1)
+        with self.assertRaisesRegex(ValueError, "offset"):
+            M.decode_od_bytes("\n".join(lines))
+
+    def test_busybox_terminal_offset_missing_rejected(self):
+        image = make_script("bootz\n")
+        lines = simulated_od(image).splitlines()
+        lines.pop(-2)
+        with self.assertRaisesRegex(ValueError, "terminal"):
+            M.decode_od_bytes("\n".join(lines))
+
+    def test_busybox_octal_byte_overflow_rejected(self):
+        image = make_script("bootz\n")
+        dump = simulated_od(image)
+        dump = dump.replace(" 047 ", " 777 ", 1)
+        with self.assertRaisesRegex(ValueError, "out-of-range"):
+            M.decode_od_bytes(dump)
+
     def test_bad_header_crc_fails_closed(self):
         image = bytearray(make_script("bootz\n"))
         image[16] ^= 0x5
@@ -83,11 +108,11 @@ class ScriptWrapperTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             M.inspect_script_image(bytes(image))
 
-    def test_no_hex_report_fails_closed(self):
+    def test_no_octals_report_fails_closed(self):
         with self.assertRaises(ValueError):
             M.decode_od_hex("~ # command not found\n")
 
-    def test_od_dump_does_not_parse_partial_shell_noise(self):
+    def test_busybox_octal_dump_ignores_shell_noise(self):
         image = make_script("bootz\n")
         text = simulated_od(image) + "xx 11 22 33\n"
         self.assertEqual(M.decode_od_hex(text), image)
