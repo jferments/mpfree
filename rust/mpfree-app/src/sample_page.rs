@@ -549,6 +549,35 @@ impl SamplePage {
         self.pick(pad);
     }
 
+    /// Pad `pad` was hit at `velocity`. With the Play tab on screen
+    /// (`shown`) at its Stops or Also plays row, the pad goes into that
+    /// set or out of it (an undo step each); otherwise the tab edits the
+    /// pad hit from now on ([`SamplePage::hit`]) and shows its velocity
+    /// ([`SamplePage::hit_velocity`]).
+    pub fn press(&mut self, ui: &mut Ui, pad: usize, velocity: u8, shown: bool) {
+        if shown && self.play_takes_pads(ui) && self.assign.is_none() {
+            let a = match (self.play.as_mut(), self.play_state.as_ref()) {
+                (Some(tab), Some(st)) => tab.pad_hit(ui, st, pad),
+                _ => None,
+            };
+            if let Some(a) = a {
+                self.lift();
+                let mut out = Vec::new();
+                self.act_play(ui, a, &mut out);
+                self.lift();
+            }
+            return;
+        }
+        self.hit(pad);
+        self.hit_velocity(ui, pad, velocity);
+    }
+
+    /// Whether the Play tab shows, at a row that pad hits edit (Stops or
+    /// Also plays): the hint says so.
+    pub fn play_takes_pads(&self, ui: &Ui) -> bool {
+        self.page() == PLAY_PAGE && self.play.as_ref().is_some_and(|t| t.takes_pads(ui))
+    }
+
     /// Picks pad `pad` itself (a tap on its cell or its zone), whatever
     /// the pads play.
     fn pick(&mut self, pad: usize) {
