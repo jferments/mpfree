@@ -14,23 +14,59 @@ import zlib
 IH_MAGIC = 0x27051956
 IH_TYPE_SCRIPT = 6
 MAX_IMAGE_SIZE = 1024 * 1024
-HEX_LINE = re.compile(r"^\s*[0-9a-fA-F]{2}(?:\s+[0-9a-fA-F]{2})*\s*$")
+# BusyBox 1.36 `od -v -b` prints an OCTAL byte address,
+# followed by up to 16 three-digit OCTAL bytes per line; final address
+# line has no bytes. Unlike GNU od, this build has no -A/-t options.
+BUSYBOX_OCTAL_LINE = re.compile(r"^\s*([0-7]{7,11})(?:\s+([0-7]{3}(?:\s+[0-7]{3})*))?\s*$")
 
 
-def decode_od_hex(section: str) -> bytes:
-    """Read only all-hex output lines; ignore shell prompts and echo ACKs."""
+def decode_od_bytes(section: str) -> bytes:
+    """Reassemble an actual BusyBox od -v -b transcript with offset checks.
+
+    Reject missing chunks, duplicated lines, masked truncation, unexpected
+    byte values and missing terminal length. Shell prompts/ACKs are ignored;
+    unsupported od options will result in a hard error, not empty success.
+    """
     if not isinstance(section, str):
         raise TypeError("Guest od transcript must be text")
     result = bytearray()
+    found_data = False
+    terminal_offset = None
     for line in section.splitlines():
-        if HEX_LINE.fullmatch(line):
-            result.extend(bytes.fromhex(line))
-            if len(result) > MAX_IMAGE_SIZE:
-                raise ValueError("Guest image exceeds offline analysis bound")
-    if not result:
-        raise ValueError("No U-Boot script bytes found in guest od output")
+        match = BUSYBOX_OCTAL_LINE.fullmatch(line)
+        if not match:
+            continue
+        offset = int(match.group(1), 8)
+        words = match.group(2)
+        if words is None:
+            if found_data:
+                if terminal_offset is not None:
+                    raise ValueError("Duplicate terminal offset")
+                terminal_offset = offset
+            continue
+        if terminal_offset is not None:
+            raise ValueError("Hex/oct dump data after terminal offset")
+        if offset != len(result):
+            raise ValueError("Non-contiguous BusyBox od byte offsets")
+        numbers = words.split()
+        if not (1 <= len(numbers) <= 16):
+            raise ValueError("Unexpected octal bytes per output row")
+        decoded = [int(item, 8) for item in numbers]
+        if any(item > 255 for item in decoded):
+            raise ValueError("BusyBox od produced out-of-range octal byte")
+        result.extend(decoded)
+        found_data = True
+        if len(result) > MAX_IMAGE_SIZE:
+            raise ValueError("Guest image exceeds offline analysis bound")
+    if not found_data:
+        raise ValueError("No U-Boot script bytes found in guest BusyBox od output")
+    if terminal_offset is None or terminal_offset != len(result):
+        raise ValueError("Missing or inconsistent BusyBox od terminal offset")
     return bytes(result)
 
+
+# Backward-compatible public name; input is explicitly BusyBox octal, not hex.
+decode_od_hex = decode_od_bytes
 
 def inspect_script_image(image: bytes) -> dict:
     """Validate uImage header/data CRC32 and extract multi-image script.
@@ -84,7 +120,7 @@ def inspect_script_image(image: bytes) -> dict:
 
 
 def compare_guest_to_update(section: str, firmware310: dict) -> dict:
-    guest = inspect_script_image(decode_od_hex(section))
+    guest = inspect_script_image(decode_od_bytes(section))
     official = str(firmware310["commands"])
     observed = guest.pop("script_commands")
     # Normalize line endings and insignificant file-edge whitespace ONLY.
