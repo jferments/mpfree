@@ -69,6 +69,17 @@ python3 docs/tools/build_manual.py          # the manual as a website and a PDF 
 
 `check_docs.py` and `doc_drift.py` need only Python 3, and CI runs them on every pull request. `build_manual.py` is described in [docs/user/README.md](../user/README.md).
 
+### The PDF's design
+
+The PDF is typeset by Typst from the same pages, so a page never needs PDF-only markup. What decides how it looks:
+
+- `docs/user/pdf/manual.typ`: the cover, the inside cover (how the manual shows things, and the colophon), the page frame (A4, running heads, page numbers on the outer edge), chapter openers with their "In this chapter" list, the contents, and screens numbered per chapter and floated to the top or bottom of a page.
+- `docs/user/pdf/lib.typ`: colours, part pages, the callout boxes and status banners, tables, and the **buttons drawn as keys**. A bold run of words is drawn as keys only when every name in it (split on ` + `) is in the `buttons` list there, so `**SHIFT + MENU**` becomes two keys while `**INPUTS**` (a jack) stays bold text. Add a new hardware button to that list when a page starts naming it.
+- `docs/user/pdf/filter.lua`: turns boxes, banners, screenshots and tables into calls to `lib.typ`. A table's column widths follow the length of its text; a first column of short labels gets the width it needs.
+- `docs/user/pdf/fonts/`: Inter (with italic and the Display cuts) and JetBrains Mono. Typst sees only this folder, so the PDF is the same on every machine.
+
+After changing any of these, build the PDF and look at every page (for example `pdftoppm -r 50 -png` and a contact sheet): a gap at the foot of a page, a table squeezed into one narrow column, or a key that wraps are the usual faults.
+
 ## 7. Branches made before the move (2026-11-11)
 
 The docs moved from `docs/{project,guides,hardware,milestones,perf,research,decisions}` to `docs/dev/...`. A branch made earlier runs, after merging main:
