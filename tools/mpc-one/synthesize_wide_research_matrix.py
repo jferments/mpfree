@@ -124,6 +124,14 @@ def build(read):
                  'mmc1 = "/dwmmc@ff0c0000";' in fdt_text)
     mmc1_chunk = fdt_text.split("dwmmc@ff0c0000 {",1)[1].split("};",1)[0] if "dwmmc@ff0c0000 {" in fdt_text else ""
     mmc0_chunk = fdt_text.split("dwmmc@ff0f0000 {",1)[1].split("};",1)[0] if "dwmmc@ff0f0000 {" in fdt_text else ""
+    def disabled_controller(address):
+        node = "dwmmc@" + address + " {"
+        if node not in fdt_text:
+            return False
+        chunk = fdt_text.split(node, 1)[1].split("};", 1)[0]
+        return 'status = "disabled";' in chunk
+    other_mmc_disabled = all(disabled_controller(x) for x in (
+        "ff0c0000", "ff0d0000", "ff0e0000"))
     second_mmc_disabled = ('status = "disabled";' in mmc1_chunk)
     first_mmc_emmc = ('status = "okay";' in mmc0_chunk and
                       'non-removable;' in mmc0_chunk and
@@ -133,8 +141,8 @@ def build(read):
         (env["boot_targets"].strip(),env["bootdelay"]),
         "Verify runtime probing and board-level removable storage wiring.","static/wide/storage-env-boot-dtb.json + p1-p3-embedded-fdt-crossstage.json")
     row("U-Boot","Does embedded U-Boot FDT enable its SDMMC boot target?",
-        confirmed(mmc0_emmc and first_mmc_emmc and second_mmc_disabled),
-        "Embedded U-Boot FDT maps mmc0 to active non-removable 8-bit eMMC at ff0f0000; mmc1 at ff0c0000 has status disabled. This is not runtime proof of impossibility.",
+        confirmed(mmc0_emmc and first_mmc_emmc and second_mmc_disabled and other_mmc_disabled),
+        "Embedded U-Boot FDT maps mmc0 to active non-removable 8-bit eMMC at ff0f0000; all three other MMC nodes ff0c0000 (mmc1), ff0d0000 (mmc2), ff0e0000 (mmc3) are disabled. Runtime re-enable is unproven.",
         "Determine if U-Boot dynamically enables SDMMC or reads a different runtime FDT before relying on SD fallback.",
         "static/wide/p1-p3-embedded-fdt-crossstage.json")
     row("U-Boot","Is there a stock fallback to Fastboot?",
@@ -206,7 +214,7 @@ def build(read):
         "Map verified update preparation, target selection and rollback behavior.","static/wide/firmware-3.10-bootchain-v4-compare.json")
     row("Update","Are file, network and USB updater modes exposed?","static-supported",
         "Updater executable strings and symbols expose file/net/USB update paths; execution path still unproven.",
-        "Trace CLI entry→verification→image apply→reboot in Ghidra.","static/wide/firmware-3.10-boot-compare.json")
+        "Trace CLI entry→verification→image apply→reboot in Ghidra.","static/wide/firmware-3.10-bootchain-v4-compare.json")
     usbs=d["usb"]["verified_backend_interfaces"]
     row("USB","How many updater USB interface backends are selected?",
         confirmed(len(usbs)==3),
