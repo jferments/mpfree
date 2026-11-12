@@ -8,7 +8,7 @@ checked: 2026-11-12 59ce795
 
 A **clip** is a piece of music you recorded or programmed: a drum pattern, a bass line, a chord part. The pattern on the Play page is a clip. Clips live on **tracks**, and the **Arrange** tab shows them all as a grid so you can record new ones, keep the best takes and switch between them while the music plays.
 
-{{shot: clips | The Arrange tab: tracks across the top, clip slots down, the record settings and the takes on the right.}}
+{{shot: clips | The Arrange tab: tracks across the top, clip slots down, the record settings and the takes beside them, and the Q-Links down the right edge.}}
 
 ## Tracks and slots
 
@@ -20,15 +20,23 @@ The grid has a column per **track** (up to 16) and a row per **slot**. Each trac
 
 A clip's border tells you what it's doing: a ring going round as it plays one pass, amber while it waits for the next bar, red while recording.
 
+## The Q-Links on Arrange
+
+The four Q-Link cards run down the right edge of Arrange, in the same place as on the Play page, so the knobs never move between the two. With nothing picked, they're the armed track's **level**, **pan**, **send A** and **send B**. Turn a knob, or drag up or down on its card. **Q-LINK** steps the cards to Macros 1-4 and Macros 5-8, as on Play.
+
+Coming: with an audio region picked in the Song view, the cards become the track's level and pan and the region's gain and fade.
+
 ## Recording a clip
 
-Set up the recording on the right of the Arrange tab:
+Set up the recording in the Record panel, beside the grid:
 
-- **Armed track:** the track that records.
-- **Record mode:** **Replace** records over what's there; **Overdub** adds to it. The **OVERDUB** button switches this too.
+- **Armed:** the track that records.
+- **Mode:** **Replace** records over what's there; **Overdub** adds to it. The **OVERDUB** button switches this too.
 - **Count-in:** a count before recording starts, so you can come in on time.
-- **Loop, bars:** plays the same bars round and round while you record, so you can keep trying a part.
-- **Tempo:** the song's tempo.
+- **Loop:** plays the same bars round and round while you record, so you can keep trying a part. It counts in bars from bar 1.
+- **Tempo:** the song's tempo, in BPM.
+
+Tap a row's arrows, or the left or right of its value, to change it. Or tap the row and turn the data wheel.
 
 Then press **REC**, play, and press **STOP**. The new notes go into the armed track's clip.
 
