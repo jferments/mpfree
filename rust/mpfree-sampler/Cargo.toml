@@ -13,6 +13,7 @@ mpfree-stretch = { path = "../mpfree-stretch" }
 mpfree-prof = { path = "../mpfree-prof" }
 mpfree-node = { path = "../mpfree-node" }
 mpfree-lanes = { path = "../mpfree-lanes" }
+mpfree-flac = { path = "../mpfree-flac" }
 
 [dev-dependencies]
 mpfree-synth = { path = "../mpfree-synth" }
