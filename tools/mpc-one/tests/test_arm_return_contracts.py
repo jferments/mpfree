@@ -129,6 +129,57 @@ class ArmReturnContractTests(unittest.TestCase):
         observed = LAB.scan_callsite("0x0001a8d0", ins, "0x0001a674")[0]
         self.assertIsNone(observed["r0_preserved_to_normal_return"])
 
+    def test_copied_r0_through_r4_to_shared_epilogue(self):
+        # Synthetic miniature of the two observed 0x1afd4 normal-exit paths.
+        # The indirect BLX preserves r4 only under the AAPCS convention.
+        ins = [
+            {"address": "0x0001b0c4", "text": "bl 0x0001a314"},
+            {"address": "0x0001b0c8", "text": "vmov.f32 s0,0x3f800000"},
+            {"address": "0x0001b0cc", "text": "cpy r4,r0"},
+            {"address": "0x0001b0d0", "text": "cpy r1,r7"},
+            {"address": "0x0001b0d4", "text": "cpy r0,r9"},
+            {"address": "0x0001b0d8", "text": "blx r5"},
+            {"address": "0x0001b0dc", "text": "b 0x0001b060"},
+            {"address": "0x0001b108", "text": "bl 0x0001d644"},
+            {"address": "0x0001b134", "text": "bl 0x0001a314"},
+            {"address": "0x0001b138", "text": "cpy r4,r0"},
+            {"address": "0x0001b13c", "text": "b 0x0001b060"},
+            {"address": "0x0001b060", "text": "ldr r2,[0x1b14c]"},
+            {"address": "0x0001b064", "text": "ldr r3,[0x1b148]"},
+            {"address": "0x0001b078", "text": "eors r2,r3,r2"},
+            {"address": "0x0001b080", "text": "bne 0x0001b140"},
+            {"address": "0x0001b084", "text": "cpy r0,r4"},
+            {"address": "0x0001b088", "text": "add sp,sp,#0x3c"},
+            {"address": "0x0001b08c", "text": "ldrd r4,r5,[sp,#0x0]"},
+            {"address": "0x0001b090", "text": "ldrd r6,r7,[sp,#0x8]"},
+            {"address": "0x0001b094", "text": "ldrd r8,r9,[sp,#0x10]"},
+            {"address": "0x0001b098", "text": "add sp,sp,#0x18"},
+            {"address": "0x0001b09c", "text": "ldr pc,[sp],#0x4"},
+        ]
+        for address, requires_indirect_call in (
+            ("0x0001b0cc", True),
+            ("0x0001b138", False),
+        ):
+            with self.subTest(saved_at=address):
+                observed = LAB.trace_saved_r0_to_normal_return(ins, address)
+                self.assertIsNotNone(observed)
+                self.assertEqual(observed["restore_site"], "0x0001b084")
+                self.assertEqual(observed["normal_return_address"],
+                                 "0x0001b09c")
+                self.assertEqual(bool(observed["calls_assuming_aapcs_preserves_r4"]),
+                                 requires_indirect_call)
+                self.assertFalse(observed["all_paths_verified"])
+
+    def test_copied_r0_clobber_fails_closed(self):
+        ins = [
+            {"address": "0x0001b138", "text": "cpy r4,r0"},
+            {"address": "0x0001b13c", "text": "mov r4,#0x0"},
+            {"address": "0x0001b140", "text": "cpy r0,r4"},
+            {"address": "0x0001b144", "text": "ldr pc,[sp],#0x4"},
+        ]
+        self.assertIsNone(LAB.trace_saved_r0_to_normal_return(
+            ins, "0x0001b138"))
+
     def test_archive_index_rejects_unindexed_members(self):
         with tempfile.TemporaryDirectory(prefix="mpfree-arm-contract-test-") as td:
             p = Path(td) / "fixture.zip"
