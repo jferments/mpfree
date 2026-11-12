@@ -24,6 +24,10 @@
 //! lock over atomics). The screen thread reads them only while the page
 //! shows. The counting allocator is not installed in the pad player, so no
 //! allocation figures are shown.
+//!
+//! Under the budgets, the right panel says where the sound runs
+//! (`--sound-cores`, cores.rs) and, with a second core, how many parts the
+//! lanes took and how many they were late for.
 
 use std::sync::Arc;
 
@@ -56,6 +60,8 @@ const LABELS: [&str; 6] = [
 pub struct EngineShared {
     pub window: [SharedSummary; 6],
     pub life: [SharedSummary; 6],
+    /// Where the sound runs (`--sound-cores`) and its lanes' counts.
+    pub cores: crate::cores::CoreShared,
 }
 
 /// The audio loop's probes. Made before the stream starts (it allocates);

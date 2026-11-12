@@ -1,7 +1,7 @@
 <!--
 status: changing
 covers: rust/mpfree-app/src/app.rs rust/mpfree-app/src/gui.rs
-checked: 2026-11-11 414faa1
+checked: 2026-11-12 3c5a580
 -->
 
 # Prefs
@@ -17,6 +17,7 @@ checked: 2026-11-11 414faa1
 | **Audio buffer** | How much sound is queued ahead of the speakers. 3 periods is what the factory software uses; 2 plays about 3 ms sooner after a hit, with more risk of clicks. Changing it restarts the sound. |
 | **Find the buttons again** | Runs the button guide, which asks you to press MENU, NOTE REPEAT, TAP TEMPO, – and +, REC, OVERDUB, UNDO and PLAY START one at a time, so MPFree learns them. |
 | **Show developer tools** | Adds the Dev tab, for people building MPFree. |
+| **Sound cores** | Which of the MPC's cores make the sound, from the next start (the row says "(next start)" until then). **Shared:** as MPFree always ran. **Core 3:** the sound on a core of its own. **Cores 3 and 2:** some of the drums and the mixer's effects on a second core too. **Cores 3, 2 and 1:** a test that also puts the synth on a third core. Core 0 is always left for the MPC's own work and the screen. The Dev tab's CPU by engine page shows how it runs. Shared is the default until the device tests pick one. |
 | **Map controls** | Teach MPFree the MPC's other buttons, one at a time: pick a control, press **+** and press the button (**–** skips it). It also turns on the developer tools. |
 | **Line input** | Turns the INPUTS on the back on or off. It is off every time MPFree starts. |
 | **System info** | MPFree's version, and details of the MPC it runs on. **MENU** goes back to Prefs. |
