@@ -74,7 +74,7 @@ def run(data):
     return M.build(lambda path:json.dumps(data[lookup[path]]).encode())
 
 class DirectBootFocusTests(unittest.TestCase):
-    def test_seven_topics_and_exact_sha(self):
+    def test_nine_topics_and_exact_sha(self):
         report=run(fixture())
         self.assertEqual(len(report["questions"]),40)
         self.assertEqual(
