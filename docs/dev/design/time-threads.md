@@ -60,4 +60,4 @@ They talk through two bounded queues (`Link`), one each way.
 3. The app thread runs the control half on its control thread. Round tests on the MPC compare the audio thread's worst period with launches, undo and capture in a big project, before and after.
 4. Song edits and capture lose their project clones, since the control half can afford them.
 
-Step 2 waits until the open time engine PRs (#206, #209, #211, #212) have merged, because it moves most of `time.rs`.
+Step 2 moves most of `time.rs`, so it waited for the time engine PRs that were open (#206, #209, #211, #212); they merged on 12 Nov in train 15.
