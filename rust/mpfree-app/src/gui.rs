@@ -1073,15 +1073,17 @@ impl Player {
             }
         }
         if let Some(xy) = self.ui.get::<XyPad>(play_page::XY) {
-            let mut label = String::new();
             let mut probe = XyPad::default();
             self.play.fill_xy(&mut probe);
-            if xy.label != probe.label {
-                label = probe.label;
-            }
-            if !label.is_empty() {
+            // A finger on the pad puts the dot; otherwise it glides home.
+            let at = (!xy.on).then_some((probe.x, probe.y));
+            let changed = xy.label != probe.label || at.is_some_and(|a| a != (xy.x, xy.y));
+            if changed {
                 if let Some(xy) = self.ui.get_mut::<XyPad>(play_page::XY) {
-                    xy.label = label;
+                    xy.label = probe.label;
+                    if let Some((x, y)) = at {
+                        (xy.x, xy.y) = (x, y);
+                    }
                 }
             }
         }
@@ -2935,6 +2937,11 @@ impl Player {
 
     /// Advance animations by `dt` seconds.
     pub fn tick(&mut self, dt: f32) {
+        // The XY pad glides home after the finger lifts.
+        if let Some(fx) = self.play.tick_xy(dt * 1000.0) {
+            self.outbox.push(FromUi::PlayFx(fx));
+            self.refresh_play();
+        }
         // A finger held still on a macro card opens the macros panel.
         if self.chain_page.drives(self.view) && !self.band_showing() {
             if let Some(bank) = self.chain_page.held(dt) {
@@ -3788,7 +3795,7 @@ pub fn sample_play(fonts: Fonts, v: PlayView) -> Player {
     match v {
         PlayView::All => {
             p.play.throw(2, true);
-            p.play.xy = (0.68, 0.62, true);
+            p.play.xy.touch(0.68, 0.62);
         }
         PlayView::Beats => {
             p.play.selected = Some((0, 6));
@@ -3797,20 +3804,21 @@ pub fn sample_play(fonts: Fonts, v: PlayView) -> Player {
         }
         PlayView::Loop => {
             p.play.throw(2, true);
-            p.play.xy = (0.68, 0.62, true);
+            p.play.xy.touch(0.68, 0.62);
         }
         PlayView::Drum => {
             sample_hits(&mut p);
             p.play.throw(2, true);
             p.apply(ToUi::QLinkTouch(2, true));
-            p.play.xy = (0.68, 0.62, true);
+            p.play.xy.touch(0.68, 0.62);
         }
     }
     if let Some(xy) = p.ui.get_mut::<XyPad>(play_page::XY) {
-        (xy.x, xy.y, xy.on) = p.play.xy;
+        (xy.x, xy.y) = p.play.xy.position();
+        xy.on = p.play.xy.touched();
         if xy.on {
             // The finger's way up to where it is, as the mockups draw it.
-            let (x, y, _) = p.play.xy;
+            let (x, y) = p.play.xy.position();
             let trail: Vec<(f32, f32)> = (0..10)
                 .map(|k| {
                     let f = k as f32 / 10.0;
@@ -4015,6 +4023,7 @@ pub fn apply_effects(p: &mut Player, fx: Vec<crate::app::Effect>) {
             | Effect::SynthPads(_)
             | Effect::ProgEdit
             | Effect::Metronome
+            | Effect::Fill(_)
             | Effect::Mixer(_) => {}
             Effect::MixerTurn { knob, delta } => p.apply(ToUi::MixerQLink(knob, delta)),
             Effect::ChainTurn { knob, delta } => p.apply(ToUi::ChainQLink(knob, delta)),
