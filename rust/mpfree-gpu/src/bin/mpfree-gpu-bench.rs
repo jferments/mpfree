@@ -14,18 +14,26 @@
 //!   mpfree-gpu-bench compute [--iterations N]
 //!       a GPU compute round trip (an FIR filter over a stereo block: upload,
 //!       run, read back) against the same job on one CPU core
+//!   mpfree-gpu-bench panel DIR [--hold-ms N] [--frames N]
+//!       the GPU's pictures on the panel: draws each page on the GPU, reads
+//!       it back and writes it to /dev/fb0, holding each for N ms; then times
+//!       a whole page drawn and copied to the panel on the GPU and in
+//!       software, frame after frame (--fb and --sysfs name another
+//!       framebuffer, for tests)
 //!
-//! It draws offscreen only (Mesa's surfaceless EGL, a render node): it opens
-//! no display, takes no DRM master and changes no display setting. It reads
-//! DIR and writes nothing; everything goes to stdout. A failure prints
-//! `STOP: reason` and exits with status 1.
+//! It draws through Mesa's surfaceless EGL on a render node: it opens no
+//! display, takes no DRM master and changes no display setting. It reads DIR
+//! and everything goes to stdout. Only `panel` writes anything: whole frames
+//! to the framebuffer, and `0,0` to its sysfs `pan` file, as the app's
+//! screen does (`mpfree_ui::fb::FbTarget`); it never creates either. A
+//! failure prints `STOP: reason` and exits with status 1.
 
 use std::path::{Path, PathBuf};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use mpfree_gpu::{compare, compute, Gpu, Renderer};
-use mpfree_screen_log::{Geometry, Rotation};
-use mpfree_ui::fb::FbLayout;
+use mpfree_screen_log::{Geometry, PixelFormat, Rotation};
+use mpfree_ui::fb::{FbLayout, FbTarget};
 use mpfree_ui::record::{replay, Frame, Store};
 use mpfree_ui::SoftCanvas;
 
@@ -58,8 +66,8 @@ fn number(args: &[String], flag: &str, default: usize, max: usize) -> Result<usi
 }
 
 fn run(args: &[String]) -> Result<(), String> {
-    let usage =
-        "usage: mpfree-gpu-bench describe | screens DIR [--frames N] | compute [--iterations N]";
+    let usage = "usage: mpfree-gpu-bench describe | screens DIR [--frames N] | \
+                 compute [--iterations N] | panel DIR [--hold-ms N] [--frames N]";
     match args.first().map(String::as_str) {
         Some("describe") if args.len() == 1 => describe(),
         Some("screens") => {
@@ -69,6 +77,29 @@ fn run(args: &[String]) -> Result<(), String> {
                 return Err(format!("unknown argument {a}"));
             }
             screens(Path::new(dir), number(args, "--frames", 30, 1000)?)
+        }
+        Some("panel") => {
+            let dir = args.get(1).filter(|a| !a.starts_with("--")).ok_or(usage)?;
+            let mut fb = PathBuf::from("/dev/fb0");
+            let mut sysfs = PathBuf::from("/sys/class/graphics/fb0");
+            let mut rest = args[2..].iter();
+            while let Some(a) = rest.next() {
+                match a.as_str() {
+                    "--hold-ms" | "--frames" => {
+                        rest.next();
+                    }
+                    "--fb" => fb = rest.next().ok_or("--fb needs a path")?.into(),
+                    "--sysfs" => sysfs = rest.next().ok_or("--sysfs needs a path")?.into(),
+                    _ => return Err(format!("unknown argument {a}")),
+                }
+            }
+            panel(
+                Path::new(dir),
+                number(args, "--hold-ms", 1500, 10_000)?,
+                number(args, "--frames", 60, 1000)?,
+                &fb,
+                &sysfs,
+            )
         }
         Some("compute") => {
             if let Some(a) = args[1..]
@@ -128,7 +159,8 @@ struct Page {
     draws: usize,
 }
 
-fn screens(dir: &Path, frames: usize) -> Result<(), String> {
+/// Every NAME.mpdl in `dir`, in name order.
+fn page_files(dir: &Path) -> Result<Vec<PathBuf>, String> {
     let mut files: Vec<PathBuf> = std::fs::read_dir(dir)
         .map_err(|e| format!("{}: {e}", dir.display()))?
         .filter_map(|e| e.ok().map(|e| e.path()))
@@ -138,6 +170,191 @@ fn screens(dir: &Path, frames: usize) -> Result<(), String> {
     if files.is_empty() {
         return Err(format!("no .mpdl files in {}", dir.display()));
     }
+    Ok(files)
+}
+
+/// A page's name and its first frame, which must be `w` x `h`.
+fn first_frame(path: &Path, w: i32, h: i32) -> Result<(String, Frame), String> {
+    let name = path
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let bytes = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let first = Frame::decode_all(&bytes)
+        .map_err(|e| format!("{}: {e}", path.display()))?
+        .into_iter()
+        .next()
+        .ok_or_else(|| format!("{}: no frames", path.display()))?;
+    if (first.w, first.h) != (w, h) {
+        return Err(format!(
+            "{}: a {}x{} page; this bench draws {w}x{h}",
+            path.display(),
+            first.w,
+            first.h
+        ));
+    }
+    Ok((name, first))
+}
+
+/// The GPU's frame (native rows, XRGB words) as the framebuffer's bytes.
+fn to_frame(px: &[u32], g: &Geometry, out: &mut [u8]) {
+    for (ny, row) in px.chunks_exact(g.width).enumerate() {
+        let line = &mut out[ny * g.stride..ny * g.stride + g.width * 4];
+        for (dst, p) in line.as_chunks_mut::<4>().0.iter_mut().zip(row) {
+            *dst = p.to_le_bytes();
+        }
+    }
+}
+
+/// The GPU's pictures on the panel: each page drawn on the GPU, read back
+/// and written to the framebuffer, held `hold_ms`; then one page drawn and
+/// copied `frames` times on the GPU and in software, timed.
+fn panel(dir: &Path, hold_ms: usize, frames: usize, fb: &Path, sysfs: &Path) -> Result<(), String> {
+    let files = page_files(dir)?;
+    let mut target = FbTarget::open(fb, sysfs, ROTATION)?;
+    let g = target.layout.geometry;
+    if (g.width, g.height) != NATIVE || g.format != PixelFormat::Xrgb8888 {
+        return Err(format!(
+            "the panel is {}x{} at {:?}; this bench draws {}x{} at 32 bits a pixel",
+            g.width, g.height, g.format, NATIVE.0, NATIVE.1
+        ));
+    }
+    let (w, h) = target.logical_size();
+    let gpu = Gpu::surfaceless()?;
+    println!("gpu: {}", gpu.describe());
+    println!(
+        "panel: {} pages drawn on the GPU and shown {hold_ms} ms each; panel {}x{} turned 270, stride {}; times in ms",
+        files.len(),
+        g.width,
+        g.height,
+        g.stride
+    );
+    println!(
+        "{:<24} {:>5} {:>5} | {:>6} {:>6} {:>6} {:>6}",
+        "page", "ops", "draws", "draw", "read", "copy", "whole"
+    );
+    let mut r = Renderer::new(&gpu, g.width as i32, g.height as i32, ROTATION)?;
+    let mut store = Store::new(usize::MAX);
+    let mut frame = vec![0u8; g.frame_len()];
+    let (mut cleared, mut alone) = (0usize, 0usize);
+    let mut busiest: Option<(String, Frame)> = None;
+    let mut checked = false;
+    for path in &files {
+        let (name, first) = first_frame(path, w, h)?;
+        store.apply(&first);
+        let t = Instant::now();
+        let drawn = r.play(&gpu, &first.ops, &store, &first.dropped);
+        r.finish(&gpu);
+        let t_draw = t.elapsed();
+        let px = r.read_native(&gpu);
+        let t_read = t.elapsed();
+        to_frame(&px, &g, &mut frame);
+        target.present_frame(&frame)?;
+        let t_copy = t.elapsed();
+        let ms = |d: Duration| d.as_secs_f64() * 1e3;
+        println!(
+            "{:<24} {:>5} {:>5} | {:>6.2} {:>6.2} {:>6.2} {:>6.2}",
+            name,
+            first.ops.len(),
+            drawn.draws,
+            ms(t_draw),
+            ms(t_read - t_draw),
+            ms(t_copy - t_read),
+            ms(t_copy)
+        );
+        cleared += drawn.atlas_cleared;
+        alone += drawn.masks_alone;
+        if !checked {
+            // The framebuffer holds what was written (read back once).
+            checked = true;
+            match mpfree_ui::fb::capture(fb, &target.layout) {
+                Ok(img) => {
+                    let mut soft = SoftCanvas::new(w, h);
+                    soft.px.copy_from_slice(&img.px);
+                    let mut back = Vec::new();
+                    target.layout.rows(&soft, 0, g.height, &mut back);
+                    let same = back
+                        .as_chunks::<4>()
+                        .0
+                        .iter()
+                        .zip(frame.as_chunks::<4>().0)
+                        .all(|(a, b)| a[..3] == b[..3]);
+                    println!(
+                        "panel: the framebuffer holds what was written: {}",
+                        if same { "yes" } else { "NO" }
+                    );
+                    if !same {
+                        return Err("the framebuffer does not hold what was written".into());
+                    }
+                }
+                Err(e) => println!("panel: could not read the framebuffer back ({e})"),
+            }
+        }
+        if busiest
+            .as_ref()
+            .is_none_or(|(_, b)| first.ops.len() > b.ops.len())
+        {
+            busiest = Some((name, first));
+        }
+        std::thread::sleep(Duration::from_millis(hold_ms as u64));
+    }
+    // One page, again and again, to the panel: the GPU's way and software's.
+    let (name, page) = busiest.ok_or("no pages")?;
+    let mut soft = SoftCanvas::new(w, h);
+    let mut buf = Vec::with_capacity(g.frame_len());
+    let (mut g_draw, mut g_read, mut g_copy, mut g_all) =
+        (Times::new(), Times::new(), Times::new(), Times::new());
+    let (mut s_draw, mut s_copy, mut s_all) = (Times::new(), Times::new(), Times::new());
+    for _ in 0..frames {
+        let t = Instant::now();
+        g_draw.time(|| {
+            r.play(&gpu, &page.ops, &store, &[]);
+            r.finish(&gpu);
+        });
+        let px = g_read.time(|| r.read_native(&gpu));
+        g_copy.time(|| {
+            to_frame(&px, &g, &mut frame);
+            target.present_frame(&frame)
+        })?;
+        g_all.0.push(t.elapsed().as_secs_f64() * 1e3);
+        let t = Instant::now();
+        s_draw.time(|| replay(&page.ops, &store, &mut soft));
+        s_copy.time(|| {
+            target.layout.rows(&soft, 0, g.height, &mut buf);
+            target.present_frame(&buf)
+        })?;
+        s_all.0.push(t.elapsed().as_secs_f64() * 1e3);
+    }
+    println!(
+        "summary: panel, page {name} ({} ops), {frames} frames each way, whole frame to the panel",
+        page.ops.len()
+    );
+    println!(
+        "summary: panel gpu: draw p50 {:.2}, read back p50 {:.2}, copy p50 {:.2}; whole p50 {:.2} p95 {:.2} max {:.2}",
+        g_draw.at(0.5),
+        g_read.at(0.5),
+        g_copy.at(0.5),
+        g_all.at(0.5),
+        g_all.at(0.95),
+        g_all.at(1.0)
+    );
+    println!(
+        "summary: panel software: draw p50 {:.2}, turn and copy p50 {:.2}; whole p50 {:.2} p95 {:.2} max {:.2}",
+        s_draw.at(0.5),
+        s_copy.at(0.5),
+        s_all.at(0.5),
+        s_all.at(0.95),
+        s_all.at(1.0)
+    );
+    println!(
+        "summary: panel showed {} pages from the GPU; atlas cleared {cleared} times, {alone} masks drawn alone",
+        files.len()
+    );
+    Ok(())
+}
+
+fn screens(dir: &Path, frames: usize) -> Result<(), String> {
+    let files = page_files(dir)?;
     let gpu = Gpu::surfaceless()?;
     println!("gpu: {}", gpu.describe());
     let geometry = Geometry::new(NATIVE.0, NATIVE.1, NATIVE.0 * 4, 32)?;
