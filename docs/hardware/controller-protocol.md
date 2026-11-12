@@ -44,7 +44,7 @@ TheKikGen's MPCLiveXplore-libs lists the same device ID (0x46), the same pad not
 
 ## Without Akai's app (Hello MPC rounds 1 and 2, 2026-11-10)
 
-On the [kexec test build](kexec-test-boot.md) (Akai 3.10.0 rootfs, kernel 6.18, Akai's app masked), our [`mpfree-hello`](../../rust/mpfree-hello) listened while the owner hit pads, turned Q-Links and the wheel, and pressed buttons. Nothing was sent to the controller in round 2's listening step.
+On the [kexec test build](kexec-test-boot.md) (Akai 3.10.0 rootfs, kernel 6.18, Akai's app masked), our [`mpfree-hello`](../../rust/mpfree-app) listened while the owner hit pads, turned Q-Links and the wheel, and pressed buttons. Nothing was sent to the controller in round 2's listening step.
 
 Round 1 listened on cable 1 only and heard nothing. With the old keep-alive (`F0 47 00 46 52 00 04 7D 6D 57 35 F7` every 5 s) the controller answered on cable 1, but no control data arrived there.
 

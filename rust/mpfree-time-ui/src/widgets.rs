@@ -449,6 +449,10 @@ pub struct ClipGrid {
     pub slots: usize,
     pub first_track: usize,
     pub first_row: usize,
+    /// The scene (row) playing, lit on its row button.
+    pub scene_playing: Option<usize>,
+    /// The scene launched and waiting for the next bar line.
+    pub scene_cued: Option<usize>,
     /// What was drawn last, so a change redraws only the cells that changed.
     drawn: RefCell<Option<Drawn>>,
 }
@@ -459,11 +463,13 @@ struct Drawn {
     title: String,
     legend: String,
     tracks: Vec<GridTrack>,
+    scenes: (Option<usize>, Option<usize>),
 }
 
 /// Tracks shown at once.
 pub const GRID_COLS: usize = 8;
-const LABEL_W: i32 = 26;
+/// The scene buttons' column: each row's number launches the row.
+const LABEL_W: i32 = 48;
 const HEAD_H: i32 = 28;
 const CELL_GAP: i32 = 6;
 const ROW_MIN_H: i32 = 76;
@@ -487,8 +493,31 @@ impl ClipGrid {
             slots,
             first_track: 0,
             first_row: 0,
+            scene_playing: None,
+            scene_cued: None,
             drawn: RefCell::new(None),
         }
+    }
+
+    /// Where row `slot`'s scene button is, if it is in view.
+    pub fn scene_rect(&self, r: Rect, slot: usize) -> Option<Rect> {
+        let g = self.geo(r);
+        if slot < self.first_row || slot >= self.first_row + g.rows || slot >= self.slots {
+            return None;
+        }
+        let row = (slot - self.first_row) as i32;
+        Some(Rect::new(
+            g.body.x,
+            g.cells_y + row * (g.row_h + CELL_GAP),
+            LABEL_W,
+            g.row_h,
+        ))
+    }
+
+    /// Where the Stop all button is: over the scene buttons.
+    pub fn stop_all_rect(&self, r: Rect) -> Rect {
+        let g = self.geo(r);
+        Rect::new(g.body.x, g.body.y, LABEL_W, HEAD_H)
     }
 
     fn geo(&self, r: Rect) -> Geo {
@@ -562,6 +591,7 @@ impl Widget for ClipGrid {
             || d.title != self.title
             || d.legend != self.legend
             || d.tracks.len() != self.tracks.len()
+            || d.scenes != (self.scene_playing, self.scene_cued)
         {
             return None;
         }
@@ -589,6 +619,7 @@ impl Widget for ClipGrid {
             title: self.title.clone(),
             legend: self.legend.clone(),
             tracks: self.tracks.clone(),
+            scenes: (self.scene_playing, self.scene_cued),
         });
         cx.titled_panel(r, &self.title, &self.legend);
         let g = self.geo(r);
@@ -609,17 +640,35 @@ impl Widget for ClipGrid {
             if slot >= self.slots {
                 break;
             }
-            let y = g.cells_y + row as i32 * (g.row_h + CELL_GAP);
-            let label = Rect::new(g.body.x, y, LABEL_W, g.row_h);
+            let Some(b) = self.scene_rect(r, slot) else {
+                break;
+            };
+            // A scene button: a play mark over the row's number, lit while
+            // the scene plays, ringed while it waits for the bar line.
+            let playing = self.scene_playing == Some(slot);
+            let fill = if playing { t.good } else { t.raised };
+            let ink = if playing { t.bg } else { t.text_dim };
+            cx.canvas.fill_round_rect(b, 10, fill);
+            if self.scene_cued == Some(slot) {
+                cx.canvas.stroke_round_rect(b, 10, 2, t.warn);
+            }
+            let mx = b.x + b.w / 2;
+            let top = b.y + (b.h / 2 - 18).max(4);
+            play_symbol(cx.canvas, Rect::new(mx - 5, top, 10, 12), ink);
             cx.text(
                 FontId::Bold,
                 t.size_small,
-                label,
+                Rect::new(b.x, top + 14, b.w, 22),
                 Align::Center,
-                t.text_faint,
+                ink,
                 &format!("{}", slot + 1),
             );
         }
+        let stop = self.stop_all_rect(r);
+        cx.canvas.fill_round_rect(stop, 8, t.raised);
+        let (mx, my) = (stop.x + stop.w / 2, stop.y + stop.h / 2);
+        cx.canvas
+            .fill_round_rect(Rect::new(mx - 5, my - 5, 10, 10), 2, t.text_dim);
         for (ti, track) in self.tracks.iter().enumerate() {
             let Some(head) = self.head_rect(r, ti) else {
                 continue;
@@ -666,6 +715,18 @@ impl Widget for ClipGrid {
     fn touch(&mut self, _f: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
         if phase != Touch::Down {
             return None;
+        }
+        // A row's scene button is Toggle(row); Stop all is Toggle(slots).
+        if self.tracks.is_empty() {
+            return None;
+        }
+        if self.stop_all_rect(r).contains(x, y) {
+            return Some(EventKind::Toggle(self.slots));
+        }
+        for slot in self.first_row..self.slots {
+            if self.scene_rect(r, slot).is_some_and(|b| b.contains(x, y)) {
+                return Some(EventKind::Toggle(slot));
+            }
         }
         let tracks = self.first_track..(self.first_track + GRID_COLS).min(self.tracks.len());
         for track in tracks {
@@ -1080,6 +1141,31 @@ mod tests {
         assert!(g
             .cell_rect(r, 2, 15)
             .is_some_and(|c| c.bottom() <= r.bottom()));
+    }
+
+    #[test]
+    fn row_numbers_launch_scenes_and_the_corner_stops_all() {
+        let mut g = grid(3);
+        let r = Rect::new(12, 128, 814, 610);
+        let b = g.scene_rect(r, 2).unwrap();
+        let c = g.cell_rect(r, 0, 2).unwrap();
+        assert_eq!((b.y, b.h), (c.y, c.h), "beside its row");
+        assert!(b.right() < c.x && b.w >= 44, "{b:?} {c:?}");
+        assert_eq!(
+            g.touch(1, Touch::Down, b.x + 4, b.y + 4, r),
+            Some(EventKind::Toggle(2))
+        );
+        let s = g.stop_all_rect(r);
+        assert_eq!(
+            g.touch(1, Touch::Down, s.x + 4, s.y + 4, r),
+            Some(EventKind::Toggle(16))
+        );
+        g.first_row = 2;
+        assert_eq!(
+            g.scene_rect(r, 2).map(|x| x.y),
+            g.cell_rect(r, 0, 2).map(|x| x.y)
+        );
+        assert!(g.scene_rect(r, 1).is_none());
     }
 
     #[test]

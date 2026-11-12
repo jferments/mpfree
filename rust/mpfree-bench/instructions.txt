@@ -40,13 +40,13 @@
 412037	Looper (60 s), 8 loops of 3 layers playing, half edited
 25674	Looper (60 s), overdubbing
 28961	Master safety
-215402	Mixer, 12 tracks and 8 pads, routing only
-1424539	Mixer, 12 tracks and 8 pads, with a song's inserts
-949612	Mixer, 12 tracks and 8 pads, with a song's inserts, Eco reverb
-1036212	Mixer, 12 tracks and 8 pads, with a song's inserts, Light reverb
-375071	Mixer, 16 tracks and 32 pads, routing only
-1278615	Mixer, a song's inserts, 6 tracks frozen, printing a bus
-57701	Mixer, idle (63 strips, nothing playing)
+210322	Mixer, 12 tracks and 8 pads, routing only
+1420272	Mixer, 12 tracks and 8 pads, with a song's inserts
+945483	Mixer, 12 tracks and 8 pads, with a song's inserts, Eco reverb
+1031944	Mixer, 12 tracks and 8 pads, with a song's inserts, Light reverb
+370263	Mixer, 16 tracks and 32 pads, routing only
+1274671	Mixer, a song's inserts, 6 tracks frozen, printing a bus
+52356	Mixer, idle (63 strips, nothing playing)
 107876	Mod: 8 macros x 8, 16 rows, morph, locks
 9097	Moves: 16 lanes playing, the move log taking 3 controls
 11308	Multi filter (LP 12)
@@ -75,7 +75,7 @@
 1451083	Sampler, 20 pads + master grains
 721992	Sampler, the 16 sample pads alone
 235471	Sampler, the 4 granular pads alone
-3321245	Song: sampler, 2 synths, mixer+FX, time, looper
+3316977	Song: sampler, 2 synths, mixer+FX, time, looper
 7989	Time with trig conditions and ratchets, 8 clips, arp
 8506	Time: transport, 8 clips, arp
 53633	Track host alone, 16 tracks, 8 events each per block
