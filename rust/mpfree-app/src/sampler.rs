@@ -33,7 +33,8 @@ use std::time::Instant;
 
 use mpfree_sampler::dsp::Ahdsr;
 use mpfree_sampler::engine::{
-    Engine, EngineView, Event, GrainView, LaneConfig, LaneSetup, LaneStats, PadOut, MAX_GRAINS,
+    Engine, EngineView, Event, GrainView, LaneConfig, LaneSetup, LaneStats, PadField, PadOut,
+    MAX_GRAINS,
 };
 use mpfree_sampler::model::{
     GrainParams, Layer, Pad, PlayMode, PressureRoute, PressureTarget, Project, Region, Source,
@@ -525,6 +526,18 @@ impl Player {
         }
     }
 
+    /// Live values on kit `kit`'s pads (the scene crossfader's), applied
+    /// before the next render, while that kit is the one playing: each
+    /// replaces the pad's own until it is NaN or the kit's next view comes.
+    pub fn pad_live(&mut self, kit: usize, values: &[(u8, PadField, f32)]) {
+        if kit != self.kit {
+            return;
+        }
+        for &(pad, field, value) in values {
+            self.engine.apply(Event::PadLive { pad, field, value });
+        }
+    }
+
     /// Plays source frames `start..end` of pad `pad`'s layer `layer` once,
     /// from the next render, as the pad made from that slice will play it
     /// (a tap on the Chop page). Only while kit `kit` is the one playing;
@@ -637,19 +650,20 @@ impl Player {
     /// The next `frames` frames with each pad of the playing kit apart, for
     /// the mixer's pad channels: pad `p` (0 to 15) adds its sound into
     /// `out.pad(p)` (see [`Engine::render_routed`]). The pads add up to what
-    /// [`Player::render_dry`] renders.
+    /// [`Player::render_dry`] renders. (The tests; the audio loop renders
+    /// with [`Player::render_routed_until`].)
+    #[cfg(test)]
     pub fn render_routed(&mut self, frames: usize, out: &mut impl PadOut) {
         self.engine.render_routed(frames, out);
         self.peak_grains = self.peak_grains.max(self.engine.live_grains());
     }
 
-    /// [`Player::render_routed`], waiting for the lane's voices (once
-    /// split) until `deadline` at most: past it their sound is left out of
+    /// The next `frames` frames with each pad apart, as `render_routed`
+    /// gives them, waiting for the lane's voices (once split) until
+    /// `deadline` at most: past it their sound is left out of
     /// that part of the period, and no event is lost (see
-    /// [`Engine::render_routed_until`]).
-    // Not called: the audio loop renders with `render_routed`, whose lane
-    // waits as long as its part of the period lasts (cores.rs).
-    #[allow(dead_code)]
+    /// [`Engine::render_routed_until`]). The audio loop renders with this,
+    /// with the period's deadline (cores.rs).
     pub fn render_routed_until(&mut self, frames: usize, out: &mut impl PadOut, deadline: Instant) {
         self.engine.render_routed_until(frames, out, deadline);
         self.peak_grains = self.peak_grains.max(self.engine.live_grains());

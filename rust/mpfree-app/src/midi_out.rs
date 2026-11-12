@@ -33,11 +33,8 @@
 //!   Stop when it stops. A count-in sends nothing until playback starts.
 //!   Always also sends pulses at the tempo while stopped.
 
-use std::io::{self, ErrorKind, Write};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::mpsc::{self, Receiver, Sender, SyncSender};
-use std::sync::{Arc, TryLockError};
-use std::thread::{self, JoinHandle};
+use std::io::{self, Write};
+use std::sync::TryLockError;
 use std::time::{Duration, Instant};
 
 use mpfree_controller::mpc_one::PAD_NOTES;
@@ -50,16 +47,11 @@ use mpfree_midi_ui::{IoModel, Shared};
 use mpfree_play::{Event, Out};
 use mpfree_transport::{Block, Mark, Marker, Span, State};
 
+use crate::port_writer::{Wire, Writer, STALL};
+
 /// Notes one pad can start (a synth pad's chord); more are not sent.
 const CHORD: usize = 8;
 const PADS: usize = 16;
-/// Messages waiting for the writer: over a second of a full DIN wire.
-pub const WIRE_QUEUE: usize = 4096;
-/// Messages the log lists before it only counts them.
-const LISTED: u64 = 64;
-/// How long the writer waits for room in the kernel's buffer before it
-/// drops a message and counts it.
-const STALL: Duration = Duration::from_millis(500);
 
 /// What an event's note number is.
 #[derive(Clone, Copy, Debug)]
@@ -77,13 +69,6 @@ pub enum NoteIs<'a> {
 /// note 37), as Akai's MPC sends them.
 pub fn kit_notes(pad: usize) -> &'static [u8] {
     PAD_NOTES.get(pad).map_or(&[], std::slice::from_ref)
-}
-
-/// One message for the writer, and when its frame is heard.
-#[derive(Clone, Copy, Debug)]
-struct Wire {
-    due: Instant,
-    msg: Timed,
 }
 
 /// A track's output as it was taken from the project.
@@ -118,23 +103,108 @@ impl Chord {
     }
 }
 
-/// What the writer counts, read by the sound loop for the summary.
-#[derive(Debug, Default)]
-struct WriterStats {
-    written: AtomicU64,
-    /// The most a message left after it was due, in microseconds.
-    max_late_us: AtomicU64,
-    /// Messages dropped because the port took nothing for [`STALL`].
-    stalled: AtomicU64,
-    /// The port failed (unplugged, gone): the writer stopped.
-    gone: AtomicBool,
+/// What each track's pads' note-ons sent, so a pad's note-off and
+/// pressure go to the same notes even if its layout changed in between.
+/// MIDI Out and CV out each keep one.
+#[derive(Clone, Debug)]
+pub struct Chords([[Chord; PADS]; MAX_TRACKS]);
+
+impl Default for Chords {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
-struct Writer {
-    tx: SyncSender<Wire>,
-    log: Receiver<String>,
-    thread: JoinHandle<()>,
-    stats: Arc<WriterStats>,
+impl Chords {
+    pub fn new() -> Chords {
+        Chords([[Chord::default(); PADS]; MAX_TRACKS])
+    }
+
+    /// The note messages (on channel 0) one note event of track `t` makes,
+    /// in order, to `f`. A pad hit again ends its earlier notes first, as
+    /// the synth does. Velocity 0 sounds as 1, so a note-on is never read
+    /// as a note-off. Other events make none.
+    pub fn messages(&mut self, t: usize, event: Event, is: NoteIs, mut f: impl FnMut(Msg)) {
+        let Some(pads) = self.0.get_mut(t) else {
+            return;
+        };
+        let off = |note| Msg::NoteOff {
+            ch: 0,
+            note,
+            vel: 64,
+        };
+        match (event, is) {
+            (Event::NoteOn { note, velocity }, NoteIs::Note) => f(Msg::NoteOn {
+                ch: 0,
+                note: note & 0x7F,
+                vel: velocity.clamp(1, 127),
+            }),
+            (Event::NoteOn { note, velocity }, NoteIs::Pad(notes)) => {
+                let Some(c) = pads.get_mut(usize::from(note)) else {
+                    return;
+                };
+                for &n in std::mem::take(c).notes() {
+                    f(off(n));
+                }
+                for &n in notes.iter().filter(|&&n| n < 128).take(CHORD) {
+                    c.notes[usize::from(c.len)] = n;
+                    c.len += 1;
+                }
+                for &n in c.notes() {
+                    f(Msg::NoteOn {
+                        ch: 0,
+                        note: n,
+                        vel: velocity.clamp(1, 127),
+                    });
+                }
+            }
+            (Event::NoteOff { note }, NoteIs::Note) => f(off(note & 0x7F)),
+            (Event::NoteOff { note }, NoteIs::Pad(_)) => {
+                if let Some(c) = pads.get_mut(usize::from(note)).map(std::mem::take) {
+                    for &n in c.notes() {
+                        f(off(n));
+                    }
+                }
+            }
+            (Event::Pressure { note, value }, NoteIs::Note) => f(Msg::PolyPressure {
+                ch: 0,
+                note: note & 0x7F,
+                value,
+            }),
+            (Event::Pressure { note, value }, NoteIs::Pad(_)) => {
+                if let Some(c) = pads.get(usize::from(note)) {
+                    for &n in c.notes() {
+                        f(Msg::PolyPressure {
+                            ch: 0,
+                            note: n,
+                            value,
+                        });
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Note-offs for every pad of track `t` that is on.
+    pub fn end_track(&mut self, t: usize, mut f: impl FnMut(Msg)) {
+        let Some(pads) = self.0.get_mut(t) else {
+            return;
+        };
+        for c in pads.iter_mut() {
+            for &n in std::mem::take(c).notes() {
+                f(Msg::NoteOff {
+                    ch: 0,
+                    note: n,
+                    vel: 64,
+                });
+            }
+        }
+    }
+
+    pub fn clear(&mut self) {
+        *self = Chords::new();
+    }
 }
 
 /// Tracks to the MIDI Out jack, from the sound loop.
@@ -149,7 +219,7 @@ pub struct MidiOut {
     tracks: [Option<Applied>; MAX_TRACKS],
     /// Bank and program to send before this period's notes.
     program_due: [bool; MAX_TRACKS],
-    chords: [[Chord; PADS]; MAX_TRACKS],
+    chords: Chords,
     applied_gen: Option<u64>,
     shown_on: Option<bool>,
     rolling: bool,
@@ -189,7 +259,7 @@ impl MidiOut {
             writer: None,
             tracks: [None; MAX_TRACKS],
             program_due: [false; MAX_TRACKS],
-            chords: [[Chord::default(); PADS]; MAX_TRACKS],
+            chords: Chords::new(),
             applied_gen: None,
             shown_on: None,
             rolling: false,
@@ -207,19 +277,7 @@ impl MidiOut {
     /// Starts the writer thread on the MIDI Out port (`w`). `started` is
     /// the app's start, for the log's times.
     pub fn open<W: Write + Send + 'static>(&mut self, w: W, started: Instant) -> io::Result<()> {
-        let (tx, rx) = mpsc::sync_channel(WIRE_QUEUE);
-        let (log_tx, log) = mpsc::channel();
-        let stats = Arc::new(WriterStats::default());
-        let s = stats.clone();
-        let thread = thread::Builder::new()
-            .name("midi-out".into())
-            .spawn(move || write_loop(w, rx, &s, &log_tx, started))?;
-        self.writer = Some(Writer {
-            tx,
-            log,
-            thread,
-            stats,
-        });
+        self.writer = Some(Writer::start(w, "midi-out", "MIDI Out", describe, started)?);
         self.lost = false;
         Ok(())
     }
@@ -328,107 +386,30 @@ impl MidiOut {
         if !self.takes(o.track) {
             return false;
         }
-        let t = usize::from(o.track);
-        let off = o.offset;
-        match (o.event, is) {
-            (Event::NoteOn { note, velocity }, NoteIs::Note) => {
-                let vel = velocity.clamp(1, 127);
-                self.msg(t, Msg::NoteOn { ch: 0, note, vel }, off);
-            }
-            (Event::NoteOn { note, velocity }, NoteIs::Pad(notes)) => {
-                let pad = usize::from(note);
-                if pad >= PADS {
-                    return true;
-                }
-                // A pad hit again ends its earlier notes first, as the
-                // synth does.
-                self.pad_off(t, pad, off);
-                let mut c = Chord::default();
-                for &n in notes.iter().filter(|&&n| n < 128).take(CHORD) {
-                    c.notes[usize::from(c.len)] = n;
-                    c.len += 1;
-                }
-                self.chords[t][pad] = c;
-                let vel = velocity.clamp(1, 127);
-                for &n in c.notes() {
-                    self.msg(
-                        t,
-                        Msg::NoteOn {
-                            ch: 0,
-                            note: n,
-                            vel,
-                        },
-                        off,
-                    );
-                }
-            }
-            (Event::NoteOff { note }, NoteIs::Note) => {
-                self.msg(
-                    t,
-                    Msg::NoteOff {
-                        ch: 0,
-                        note,
-                        vel: 64,
-                    },
-                    off,
-                );
-            }
-            (Event::NoteOff { note }, NoteIs::Pad(_)) => {
-                self.pad_off(t, usize::from(note), off);
-            }
-            (Event::Pressure { note, value }, NoteIs::Note) => {
-                self.msg(t, Msg::PolyPressure { ch: 0, note, value }, off);
-            }
-            (Event::Pressure { note, value }, NoteIs::Pad(_)) => {
-                if let Some(c) = self.chords[t].get(usize::from(note)).copied() {
-                    for &n in c.notes() {
-                        self.msg(
-                            t,
-                            Msg::PolyPressure {
-                                ch: 0,
-                                note: n,
-                                value,
-                            },
-                            off,
-                        );
-                    }
-                }
-            }
-            (Event::Lock { .. } | Event::Lane { .. } | Event::Unlock { .. }, _) => return false,
-            (Event::AllOff, _) => unreachable!("handled above"),
+        if matches!(
+            o.event,
+            Event::Lock { .. } | Event::Lane { .. } | Event::Unlock { .. }
+        ) {
+            return false;
         }
+        let t = usize::from(o.track);
+        let (router, queue) = (&mut self.router, &mut self.queue);
+        self.chords.messages(t, o.event, is, |m| {
+            router.send(t as u8, m, o.offset, queue);
+        });
         true
     }
 
-    fn pad_off(&mut self, t: usize, pad: usize, offset: u32) {
-        let Some(c) = self.chords[t].get_mut(pad).map(std::mem::take) else {
-            return;
-        };
-        for &n in c.notes() {
-            self.msg(
-                t,
-                Msg::NoteOff {
-                    ch: 0,
-                    note: n,
-                    vel: 64,
-                },
-                offset,
-            );
-        }
-    }
-
     fn end_chords(&mut self, t: usize, offset: u32) {
-        for pad in 0..PADS {
-            self.pad_off(t, pad, offset);
-        }
+        let (router, queue) = (&mut self.router, &mut self.queue);
+        self.chords
+            .end_track(t, |m| router.send(t as u8, m, offset, queue));
     }
 
     /// Ends every note on MIDI Out (a panic, a stop), at `offset`: only the
     /// notes that are on, never 2048 blind note-offs.
     pub fn all_off(&mut self, offset: u32) {
-        for t in 0..MAX_TRACKS {
-            self.chords[t] = [Chord::default(); PADS];
-        }
+        self.chords.clear();
         self.router.all_off(offset, &mut self.queue);
     }
 
@@ -522,14 +503,15 @@ impl MidiOut {
         q.sort_by_frame();
         let at = t0 + self.lead;
         let rate = f64::from(self.rate);
-        let tx = self.writer.as_ref().map(|w| &w.tx);
+        let writer = self.writer.as_ref();
         let (mut queued, mut full) = (0u64, 0u64);
         self.pacer.pace(q, frames, |m, _| {
-            let Some(tx) = tx else { return };
+            let Some(w) = writer else { return };
             let due = at + Duration::from_secs_f64(f64::from(m.offset) / rate);
-            match tx.try_send(Wire { due, msg: *m }) {
-                Ok(()) => queued += 1,
-                Err(_) => full += 1,
+            if w.send(Wire::new(due, m.bytes())) {
+                queued += 1;
+            } else {
+                full += 1;
             }
         });
         q.clear();
@@ -542,10 +524,8 @@ impl MidiOut {
     /// play on the pads again and the I/O view says MIDI out is off.
     pub fn tick(&mut self, log: &mut dyn FnMut(String)) {
         let Some(w) = &self.writer else { return };
-        while let Ok(l) = w.log.try_recv() {
-            log(l);
-        }
-        if w.stats.gone.load(Ordering::Relaxed) {
+        w.log_lines(log);
+        if w.gone() {
             self.lost = true;
             log("MIDI Out stopped: tracks set to play on MIDI play on the pads again".to_string());
             self.writer = None;
@@ -574,18 +554,7 @@ impl MidiOut {
             }
         }
         self.period_end(0, Instant::now() - self.lead);
-        let Some(w) = self.writer.take() else {
-            return true;
-        };
-        drop(w.tx);
-        let give_up = Instant::now() + Duration::from_secs(1);
-        while !w.thread.is_finished() && Instant::now() < give_up {
-            thread::sleep(Duration::from_millis(2));
-        }
-        let done = w.thread.is_finished();
-        if done {
-            let _ = w.thread.join();
-        }
+        let done = self.writer.take().is_none_or(Writer::finish);
         self.shown_on = None;
         done
     }
@@ -593,17 +562,15 @@ impl MidiOut {
     /// The run's counts, for the log at exit.
     pub fn summary(&self) -> Vec<String> {
         let mut lines = Vec::new();
-        let ms = |us: u64| us as f64 / 1000.0;
         if let Some(w) = &self.writer {
-            let s = &w.stats;
             lines.push(format!(
                 "MIDI Out: {} messages written, {} dropped (writer's queue full), {} dropped \
                  (port took nothing for {} ms); the latest left {:.1} ms after its frame",
-                s.written.load(Ordering::Relaxed),
+                w.written(),
                 self.full,
-                s.stalled.load(Ordering::Relaxed),
+                w.stalled(),
                 STALL.as_millis(),
-                ms(s.max_late_us.load(Ordering::Relaxed)),
+                w.max_late_ms(),
             ));
         } else if self.queued > 0 || self.lost {
             lines.push(format!(
@@ -643,93 +610,6 @@ impl Drop for MidiOut {
     }
 }
 
-/// The writer thread: each message when it is due, in the order sent.
-fn write_loop<W: Write>(
-    mut w: W,
-    rx: Receiver<Wire>,
-    stats: &WriterStats,
-    log: &Sender<String>,
-    started: Instant,
-) {
-    let mut listed = 0u64;
-    while let Ok(m) = rx.recv() {
-        let now = Instant::now();
-        if m.due > now {
-            thread::sleep(m.due - now);
-        }
-        let b = m.msg.bytes();
-        match write_msg(&mut w, b) {
-            Ok(()) => {
-                let late = Instant::now().saturating_duration_since(m.due);
-                stats.written.fetch_add(1, Ordering::Relaxed);
-                stats
-                    .max_late_us
-                    .fetch_max(late.as_micros() as u64, Ordering::Relaxed);
-                if listed < LISTED {
-                    listed += 1;
-                    let t = m.due.saturating_duration_since(started).as_secs_f64();
-                    let _ = log.send(format!(
-                        "+{t:.3} s MIDI Out: {} = {}{}",
-                        hex(b),
-                        describe(b),
-                        if listed == LISTED {
-                            " (more are counted, not listed)"
-                        } else {
-                            ""
-                        }
-                    ));
-                }
-            }
-            Err(e) if e.kind() == ErrorKind::WouldBlock => {
-                let n = stats.stalled.fetch_add(1, Ordering::Relaxed);
-                if n == 0 {
-                    let _ = log.send(format!(
-                        "MIDI Out: the port took nothing for {} ms; {} dropped (more are counted)",
-                        STALL.as_millis(),
-                        hex(b)
-                    ));
-                }
-            }
-            Err(e) => {
-                let _ = log.send(format!("MIDI Out: writing {} failed: {e}", hex(b)));
-                stats.gone.store(true, Ordering::Relaxed);
-                return;
-            }
-        }
-    }
-}
-
-/// One whole message to a non-blocking port, waiting up to [`STALL`] for
-/// room in the kernel's buffer.
-fn write_msg<W: Write>(w: &mut W, b: &[u8]) -> io::Result<()> {
-    let give_up = Instant::now() + STALL;
-    let mut done = 0;
-    while done < b.len() {
-        match w.write(&b[done..]) {
-            Ok(0) => {
-                return Err(io::Error::new(
-                    ErrorKind::WriteZero,
-                    "the MIDI port took nothing",
-                ))
-            }
-            Ok(n) => done += n,
-            Err(e) if e.kind() == ErrorKind::Interrupted => {}
-            Err(e) if e.kind() == ErrorKind::WouldBlock && Instant::now() < give_up => {
-                thread::sleep(Duration::from_millis(1))
-            }
-            Err(e) => return Err(e),
-        }
-    }
-    Ok(())
-}
-
-fn hex(b: &[u8]) -> String {
-    b.iter()
-        .map(|x| format!("{x:02X}"))
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
 /// "note on, ch 10, C#2, velocity 100", as the log shows a message.
 fn describe(b: &[u8]) -> String {
     let at = |i: usize| b.get(i).copied().unwrap_or(0);
@@ -758,7 +638,8 @@ mod tests {
     use super::*;
     use mpfree_midi::setup::MidiSetup;
     use mpfree_play::ALL;
-    use std::sync::Mutex;
+    use std::sync::{Arc, Mutex};
+    use std::thread;
 
     const RATE: u32 = 44_100;
     const PERIOD: u32 = 128;
@@ -1146,7 +1027,7 @@ mod tests {
                 .mo
                 .writer
                 .as_ref()
-                .is_some_and(|w| w.stats.written.load(Ordering::Relaxed) < self.mo.queued)
+                .is_some_and(|w| w.written() < self.mo.queued)
                 && Instant::now() < give_up
             {
                 thread::sleep(Duration::from_millis(1));
