@@ -23,12 +23,18 @@
 //! over loopback and reports the round trip's tail, the misses and what a
 //! partition costs the audio thread.
 //!
+//! [`offloaded::Offloaded`] wraps a link as an ordinary node for a mixer
+//! return: it plays the server's answers, fades a lost block out, and when
+//! the link stays down, a stand-in here (Cloud Eco for a Cloud send) takes
+//! over until the server is back. A reverb takes the link's latency off its
+//! pre-delay, so the return lands where it would have here.
+//!
 //! Not here yet: pairing and a control channel (the server takes its
 //! partitions from its command line and only listens on loopback unless
-//! told otherwise), a local fallback with a fade when the link drops, many
-//! partitions on one socket, and anything on the MPC.
+//! told otherwise), many partitions on one socket, and anything on the MPC.
 
 pub mod client;
+pub mod offloaded;
 pub mod server;
 pub mod wire;
 

@@ -72,6 +72,7 @@ mod akai;
 mod alsa;
 mod app;
 mod calibrate_page;
+mod chain_page;
 mod debug_page;
 mod engines;
 mod gui;
@@ -2476,6 +2477,11 @@ fn player_session(
     out.show(gui::ToUi::Level { db: level_db });
     // The mixer sums everything; the Level is its master fader (mixing.rs).
     let mut mix = mixing::MixHost::new(RATE, level_db, max_db);
+    // The chain editor and the macros panel (layout spec 4b): the mixer's
+    // insert row opens the editor; a long press on a macro card the panel.
+    // The macros' values go out once for the Q-Link column's macro banks.
+    let mut panels = modpanels::Panels::new();
+    out.show(gui::ToUi::Macros(Box::new(panels.macros_state(&mix))));
     let mut shown_levels = mix.play_levels();
     out.show(gui::ToUi::PlayLevels(shown_levels));
     let mut meter_at = Instant::now();
@@ -2613,6 +2619,25 @@ fn player_session(
                     }
                 }
                 gui::FromUi::PadsLayout { in_key } => fx.extend(app.synth_pick_layout(in_key)),
+                // A strip's insert row or "+": the chain editor in the mixer's place.
+                gui::FromUi::Mixer(mpfree_mixer_ui::MixAction::OpenInsert { strip, slot }) => {
+                    fx.extend(panels.open_insert(&mut app, &mix, strip, Some(slot)))
+                }
+                gui::FromUi::Mixer(mpfree_mixer_ui::MixAction::AddInsert { strip }) => {
+                    fx.extend(panels.open_insert(&mut app, &mix, strip, None))
+                }
+                gui::FromUi::Chain(a) => {
+                    let recording = time.info().state == mpfree_transport::State::Recording;
+                    fx.extend(panels.chain(&mut app, &mut mix, &a, recording, &mut |m| out.show(m)))
+                }
+                gui::FromUi::ChainLearned => panels.learned(),
+                gui::FromUi::Macros(a) => {
+                    let recording = time.info().state == mpfree_transport::State::Recording;
+                    fx.extend(panels.macros(&mut app, &mut mix, &a, recording))
+                }
+                gui::FromUi::OpenMacros(bank) => {
+                    fx.extend(panels.open_macros(&mut app, &mut mix, bank))
+                }
                 // The mixer panel. Its master fader is the Level, so the Play page follows it.
                 gui::FromUi::Mixer(a) => {
                     if let Some(db) = mix.action(&a) {
@@ -2815,10 +2840,16 @@ fn player_session(
                     let public = MIDI_PORTS[m.port].1 == "Public" && m.bytes.len() == 3;
                     // On the Sample page they move Start, End and the loop.
                     let page = app.view();
-                    // While the mixer is open they move the selected strip.
+                    // While the mixer is open they move the selected strip; on the chain
+                    // editor and the macros panel, the knobs or macros the column shows.
                     if matches!(
                         page,
-                        app::View::Synth | app::View::Sample | app::View::Mixer | app::View::Looper
+                        app::View::Synth
+                            | app::View::Sample
+                            | app::View::Mixer
+                            | app::View::Looper
+                            | app::View::Chain
+                            | app::View::Macros
                     ) && knob < 4
                     {
                         let k = knob as usize;
@@ -2834,6 +2865,9 @@ fn player_session(
                             out.show(gui::ToUi::MixerQLink(k, ticks));
                         } else if ticks != 0 && page == app::View::Looper {
                             out.show(gui::ToUi::LooperQLink(k, ticks));
+                        } else if ticks != 0 && matches!(page, app::View::Chain | app::View::Macros)
+                        {
+                            out.show(gui::ToUi::ChainQLink(k, ticks));
                         } else if ticks != 0 {
                             out.show(gui::ToUi::SampleQLink(k, ticks));
                         }
@@ -2971,6 +3005,10 @@ fn player_session(
                 app::Effect::MixerTurn { knob, delta } => {
                     out.show(gui::ToUi::MixerQLink(knob, delta))
                 }
+                app::Effect::ChainTurn { knob, delta } => {
+                    out.show(gui::ToUi::ChainQLink(knob, delta))
+                }
+                app::Effect::QLinkBank => out.show(gui::ToUi::QLinkBank),
                 app::Effect::SynthWheel(d) => out.show(gui::ToUi::SynthWheel(d)),
                 app::Effect::SynthPage(d) => out.show(gui::ToUi::SynthPage(d)),
                 app::Effect::SampleWheel(d) => out.show(gui::ToUi::SampleWheel(d)),
@@ -3403,6 +3441,13 @@ fn player_session(
         if let Some(st) = mix.poll_state(Instant::now()) {
             out.show(gui::ToUi::Mixer(Box::new(st)));
         }
+        panels.poll(
+            app.view(),
+            &mix,
+            time.info().bpm,
+            Instant::now(),
+            &mut |m| out.show(m),
+        );
         // The Play page's master meter and what its Q-Links show.
         if meter_at.elapsed() >= METER_EVERY {
             meter_at = Instant::now();

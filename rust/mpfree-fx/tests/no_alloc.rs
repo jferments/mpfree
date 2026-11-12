@@ -226,15 +226,20 @@ fn effects_and_the_chain_never_allocate() {
 
 #[test]
 fn the_mixer_never_allocates() {
-    mixer_never_allocates(false);
+    mixer_never_allocates(false, false);
 }
 
 #[test]
 fn the_mixer_with_inserts_on_a_second_core_never_allocates() {
-    mixer_never_allocates(true);
+    mixer_never_allocates(true, false);
 }
 
-fn mixer_never_allocates(lane: bool) {
+#[test]
+fn the_mixer_with_returns_a_block_late_never_allocates() {
+    mixer_never_allocates(false, true);
+}
+
+fn mixer_never_allocates(lane: bool, pipe: bool) {
     let rate = 48_000;
     let max = 512;
     let mut m = Mixer::new(MixerConfig::default(), rate, max);
@@ -288,6 +293,12 @@ fn mixer_never_allocates(lane: bool) {
             std::time::Duration::from_secs(1),
         );
     }
+    if pipe {
+        m.set_pipelined_returns(
+            Some(mpfree_lanes::Config::default()),
+            std::time::Duration::from_secs(1),
+        );
+    }
     let strips: Vec<StripId> = m.strips().collect();
     let tracks = [
         StripId::Track(0),
@@ -303,7 +314,9 @@ fn mixer_never_allocates(lane: bool) {
 
     watch(true);
     for block in 0..3000u64 {
+        // Returns a block late need a steady block length to run.
         let len = 1 + (rng.next() as usize) % max;
+        let len = if pipe { 256 } else { len };
         for t in 0..m.tracks() {
             if (block / 50 + t as u64).is_multiple_of(3) {
                 continue;

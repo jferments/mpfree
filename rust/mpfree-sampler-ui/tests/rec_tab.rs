@@ -121,6 +121,7 @@ fn the_tab_shows_the_input_the_bar_lines_and_what_skip_back_keeps() {
             ("Pre-roll", "20 ms"),
             ("End", "Stop"),
             ("Length", "4 bars"),
+            ("Tail", "Cut"),
             ("Silence for", "1 s"),
             ("Skip back", "10 s"),
             ("Onto", "Next empty"),
@@ -386,5 +387,6 @@ fn flatten_says_what_it_resamples_and_records_the_pad_until_it_is_silent() {
     step(&mut s, Row::FlattenHold, -9);
     assert_eq!(s.tab.settings.flatten_hold_ms, 100);
     let list = s.ui.get::<SettingList>(rec_tab::LIST).unwrap();
-    assert_eq!(list.rows[11].value, "100 ms");
+    let hold = Row::ALL.iter().position(|r| *r == Row::FlattenHold);
+    assert_eq!(list.rows[hold.unwrap()].value, "100 ms");
 }

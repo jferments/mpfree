@@ -14,7 +14,7 @@
 //! 24     2     frames in the block, 1 to MAX_FRAMES
 //! 26     1     channels of audio that follow: 0 or 2
 //! 27     1     events that follow, 0 to MAX_EVENTS (a reply carries none)
-//! 28     2     flags (a reply's GAP and RESET; 0 in a request)
+//! 28     2     flags (a request's CLEAR; a reply's GAP and RESET)
 //! 30     2     the server's render time for this block in µs (a reply's)
 //! 32           events, EVENT_BYTES each, in frame order
 //!  .           audio: the left channel's frames, then the right's, as f32
@@ -46,6 +46,11 @@ pub const FLAG_GAP: u16 = 1;
 /// A reply's flag: the node gave a sample that isn't finite, so the server
 /// reset it and sends silence for this block.
 pub const FLAG_RESET: u16 = 2;
+/// A request's flag: reset the node before this block (the host stopped
+/// or loaded a project). A client sets it on a few requests in a row, so
+/// one lost datagram doesn't lose it, and the server resets on the first
+/// of a run.
+pub const FLAG_CLEAR: u16 = 4;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
