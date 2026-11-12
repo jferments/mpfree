@@ -33,7 +33,9 @@
 //! [`song`]: live to song (T11), what the launch grid plays recorded into
 //! the arrangement.
 //!
-//! Nothing here runs on the audio thread; the player only sees the cues.
+//! None of this runs in the player: the player only sees the cues. In the
+//! pad player, `TimeHost` calls it from its period, as it does its other
+//! edits, until edits move to a control thread.
 
 #![forbid(unsafe_code)]
 
