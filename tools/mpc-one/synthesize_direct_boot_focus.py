@@ -33,6 +33,19 @@ def build(read):
     refs={str(r.get("from","")).lower():str(r.get("type","")).upper()
           for r in glob.get("references",[])}
     env=d["env"]["p2"]["boot_related_variables"]
+    # Address distances are NOT a verified memory map: they are only
+    # candidate overlap thresholds if regions are simultaneously live.
+    load_base=int(env["loadaddr"],0)
+    nominal_memory_gaps={}
+    for name in ("fdt_addr_r","kernel_addr_r","ramdisk_addr_r"):
+        target=int(env[name],0)
+        distance=target-load_base
+        nominal_memory_gaps[name]={
+            "address": "0x%08x" % target,
+            "from_fastboot_load_base_bytes": distance,
+            "from_fastboot_load_base_mib": round(distance/(1024.0*1024),6),
+            "non_overlapping_conclusion_valid": False,
+        }
     boot=d["boot"]["boot_script"]
     normal=boot["firmware310"]["commands"]
     fdt="\n".join(d["fdt"]["uboot_stage_fdt"][0]["selected_dts_lines"])
@@ -101,6 +114,11 @@ def build(read):
     q("RAM boot","Does ordinary boot use raw zImage via bootz?",yes(checks["normal_script_bootz"]),"3.10 boot script loads zImage/FDT and invokes bootz.","Inspect loader address, FDT, bootargs and rootfs UUID.")
     q("RAM boot","Are bootm and bootz interchangeable?","no","General bootm recognizes wrapped legacy/FIT formats; bootz raw Linux zImage.","Analyze valid synthetic legacy image and FIT failure branches.")
     q("RAM boot","Does maximum Fastboot download equal safe physical RAM?","no","0x70000000 check is protocol bound, not proof of free RAM.","Map relocation, download base and FDT/kernel/ramdisk overlaps.")
+    q("RAM boot","Does a download near 23 MiB approach configured FDT placement?","needs-memory-proof",
+        "FDT address minus loadaddr is "+str(nominal_memory_gaps["fdt_addr_r"]["from_fastboot_load_base_bytes"])+
+        " bytes; this is a nominal gap, not a measured live overlap.",
+        "Verify U-Boot download area, relocation, FDT residency and guard checks before any real boot.")
+
     q("External media","Does U-Boot scan MMC1?",yes(checks["mmc1_in_saved_targets"]),"Saved boot_targets includes mmc0 mmc1.","Check whether runtime enables the removable controller.")
     q("External media","Is MMC1 disabled in U-Boot DTB?",yes(checks["mmc1_disabled_in_embedded_fdt"]),"MMC1 ff0c0000 disabled in embedded FDT.","Trace driver startup and runtime DTS fixups.")
     q("External media","Can owner boot SD without persistent environment change?","unknown","No proof of SD boot or interactive nonpersistent selection on MPC One.","Find safe serial/boot mechanism; no P2 writes.")
@@ -116,6 +134,9 @@ def build(read):
     q("MaskROM/recovery","Does Fastboot guarantee recovery after SPL/P3 corruption?","no","Fastboot requires working vendor SPL and U-Boot.","Prove immutable RK3288 ROM entry and independent restore before altering P1/P3.")
     return {"schema":SCHEMA,"checks":checks,"questions":rows,
             "probe":probe,"private_source_sha256":UBOOT_SHA,
+            "fastboot_load_base_address": "0x%08x" % load_base,
+            "nominal_memory_address_gaps":nominal_memory_gaps,
+            "fastboot_download_memory_safe_proven":False,
             "physical_fastboot_commands_sent":False,
             "vendor_code_executed":False}
 
@@ -126,6 +147,10 @@ def render_md(d):
            "## Automated static checks"]
     for name,ok in d["checks"].items():
         lines.append("- "+name+": "+str(ok))
+    lines.extend(["","## Nominal download-to-kernel/FDT/ramdisk distances","",
+                  "Load base: "+d["fastboot_load_base_address"],
+                  "These are NOT verified safe download sizes.","",
+                  json.dumps(d["nominal_memory_address_gaps"],indent=2),""])
     lines.extend(["","## OEM literal-pool / PMU probe","",
                   json.dumps(d["probe"],indent=2), ""])
     for topic in dict.fromkeys(x["topic"] for x in d["questions"]):
