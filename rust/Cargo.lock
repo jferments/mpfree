@@ -383,6 +383,7 @@ dependencies = [
  "mpfree-arp",
  "mpfree-fx",
  "mpfree-grain",
+ "mpfree-lanes",
  "mpfree-looper",
  "mpfree-mod",
  "mpfree-moves",
@@ -395,6 +396,14 @@ dependencies = [
  "mpfree-synth",
  "mpfree-track",
  "mpfree-transport",
+]
+
+[[package]]
+name = "mpfree-browser-ui"
+version = "0.1.0"
+dependencies = [
+ "mpfree-library",
+ "mpfree-ui",
 ]
 
 [[package]]
@@ -412,6 +421,7 @@ name = "mpfree-chain-ui"
 version = "0.1.0"
 dependencies = [
  "mpfree-fx",
+ "mpfree-fx-ui",
  "mpfree-mod",
  "mpfree-param",
  "mpfree-sampler-ui",
@@ -461,6 +471,7 @@ version = "0.1.0"
 name = "mpfree-fx"
 version = "0.1.0"
 dependencies = [
+ "mpfree-lanes",
  "mpfree-node",
  "mpfree-prof",
 ]
@@ -509,11 +520,14 @@ dependencies = [
  "mpfree-arp",
  "mpfree-arp-ui",
  "mpfree-capture",
+ "mpfree-chain-ui",
  "mpfree-controller",
  "mpfree-core",
  "mpfree-fx",
+ "mpfree-fx-ui",
  "mpfree-looper",
  "mpfree-mixer-ui",
+ "mpfree-mod",
  "mpfree-node",
  "mpfree-play",
  "mpfree-prof",
@@ -530,6 +544,26 @@ dependencies = [
  "mpfree-transport",
  "mpfree-ui",
 ]
+
+[[package]]
+name = "mpfree-instruments"
+version = "0.1.0"
+dependencies = [
+ "mpfree-node",
+ "mpfree-synth",
+]
+
+[[package]]
+name = "mpfree-lanes"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "mpfree-prof",
+]
+
+[[package]]
+name = "mpfree-library"
+version = "0.1.0"
 
 [[package]]
 name = "mpfree-looper"
@@ -574,6 +608,9 @@ version = "0.1.0"
 [[package]]
 name = "mpfree-node"
 version = "0.1.0"
+dependencies = [
+ "mpfree-tuning",
+]
 
 [[package]]
 name = "mpfree-param"
@@ -623,8 +660,11 @@ dependencies = [
  "mpfree-analysis",
  "mpfree-core",
  "mpfree-grain",
+ "mpfree-lanes",
+ "mpfree-node",
  "mpfree-prof",
  "mpfree-stretch",
+ "mpfree-synth",
 ]
 
 [[package]]
@@ -697,6 +737,7 @@ version = "0.1.0"
 dependencies = [
  "mpfree-analysis",
  "mpfree-node",
+ "mpfree-tuning",
 ]
 
 [[package]]
@@ -747,6 +788,10 @@ version = "0.1.0"
 dependencies = [
  "mpfree-core",
 ]
+
+[[package]]
+name = "mpfree-tuning"
+version = "0.1.0"
 
 [[package]]
 name = "mpfree-ui"

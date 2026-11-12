@@ -6,7 +6,8 @@
 
 One trait, `Node`, for anything that runs on the audio thread on a stereo bus: a synth, the sampler (later), a hosted plugin (later), an effect (the FX work builds `mpfree-fx` on it).
 
-- `process(ctx, events, left, right)` once per block. `events` are `Timed { offset, ev }`, sorted, with offsets inside the block: `NoteOn`, `NoteOff`, `Pressure` (poly aftertouch), `Bend`, `AllOff` and `Param { id, value }` (automation, parameter locks, macro moves).
+- `process(ctx, events, left, right)` once per block. `events` are `Timed { offset, ev }`, sorted, with offsets inside the block: `NoteOn`, `NoteOff`, `Pressure` (poly aftertouch), `Bend`, `AllOff`, `Param { id, value }` (automation, parameter locks, macro moves) and `Expression { note, kind, value }` (one note's own slide, tone or release velocity; see [Tunings and per-note expression](#tunings-and-per-note-expression)).
+- `set_tuning(&Tuning)` hands an instrument its tuning between blocks. The node copies it (plain data, no allocation), so it may run on the audio thread. The default does nothing, so effects and plugins ignore it.
 - `Ctx` carries the rate, the absolute frame of the block's first frame, the tempo, the transport position in beats, whether it plays, and an optional sidechain.
 - `params()` describes every parameter with `ParamInfo`: id, name, group, range, default, unit, curve (linear, log, stepped, named choices, toggle) and a read-only flag for meters. A GUI page, Q-Link mapping, automation and p-locks can be built for any node from this list alone. `check_params` checks a list.
 - `prepare(rate, max_block)` runs on the control thread and may allocate. `reset()` silences the node and keeps its parameters. `tail_frames()` and `latency()` tell the host how long the node rings and how much delay it adds.
@@ -106,7 +107,7 @@ Its visual strip has three cards for the model it plays, all for middle C. A str
 
 ## Wavetable (`mpfree-synth`, `Wavetable`)
 
-Two table oscillators that scan through stacks of single-cycle frames, with warps (Bend, Sync, Mirror, FM), unison, a sub and noise, Poly's filter, a mod envelope and LFO that move the positions, and pad pressure. Ten factory tables are built from formulas; a player's WAV tables and a pad's sample can become user tables. Tables are band-limited at 17 half-octave levels, so high notes don't alias. The full description, the memory and cost numbers and the demo are in [Wavetable synth](wavetable.md).
+Two table oscillators that scan through stacks of single-cycle frames, with warps (Bend, Sync, Mirror, FM), unison, a sub and noise, Poly's filter, a mod envelope and LFO that move the positions, and pad pressure. Ten factory tables are built from formulas; a player's WAV tables and a pad's sample can become user tables. Tables are band-limited at 17 half-octave levels, so high notes don't alias. The ten factory tables are built once, by the first `Wavetable::new` (the pad player makes it before the sound starts): about 0.9 billion ARMv7 instructions under qemu, most of them FFTs, so it adds to start-up time, never to a block. The full description, the memory and cost numbers and the demo are in [Wavetable synth](wavetable.md).
 
 ## Pad pressure (poly aftertouch)
 
@@ -164,6 +165,27 @@ A swell preset at rest (a pad not pressed, a keyboard without aftertouch) plays 
 
 **What other parts own.** Per-pad calibration is the app's: it scales each pad's raw value before the event reaches a node. Recording pressure into clips, Note Repeat and the sampler pads adopting the shaper belong to the time engine, the arp and the sampler. How the One's pads actually send pressure (rate, a spike on the strike, a 0 before the note-off, evenness) still needs a read-only measurement round before the defaults are final.
 
+## Tunings and per-note expression
+
+**Tunings** (`rust/mpfree-tuning`). A `Tuning` turns a note number, fractional for bends and slides, into Hz. The default is 12-TET with A4 = 440 Hz, worked out with exactly the operations every engine used before (`440 * exp2((note - 69) / 12)`), so every factory sound is unchanged to the bit: all 38 `engine_cost` and 14 `poly_cost` hashes match main on x86 and on ARMv7.
+
+- **Equal tunings:** any number of steps to the octave, each key one step, A4 on key 69 at any pitch from 100 to 1000 Hz (`Tuning::equal(steps, a4)`).
+- **Table tunings:** each key from MIDI -64 to 191 has its own pitch. A note between two keys lies between their pitches on a log scale, so a slide or bend moves evenly from one key's pitch to the next.
+- **Built in** (`Builtin`): 12-TET, 5-limit just intonation, Pythagorean, quarter-comma meantone and 24-TET quarter tones. The table tunings take a root (their 1/1, which keeps its 12-TET pitch) and an A4, so "just intonation on A at A4 = 432" is one call.
+- **Scala files** (`scala`): `.scl` scales (cents or ratios, any period, so Bohlen-Pierce works) and `.kbm` keyboard maps (middle key, reference key and frequency, a map per repeat with `x` for unmapped keys). With no map, keys follow the degrees from middle C at its 12-TET pitch, as Scala does. Two differences from Scala, so a note never vanishes: every key follows the map whatever its first and last keys say, and an unmapped key sounds between its neighbours.
+
+Poly, FM, Wavetable and Pluck play every note through their tuning; a sounding note moves to a new tuning on the next control step. FM's fixed-frequency operators stay fixed. Drums ignore tunings (a kit is pitched per pad).
+
+**Per-note expression** (`NodeEvent::Expression`, `mpfree_node::Expr`):
+
+- **Slide:** the note's own pitch offset, -48 to 48 semitones, added to the bend. Only voices playing that note move, so one note of a chord can slide (a sus4 resolving, a pitch lock on one note). Engines glide to each new value over 5 ms (`expr::EXPR_MS`), so a stream of values never zips; a sender ramps a long slide itself.
+- **Tone:** 0 to 1, MPE's timbre axis. The engines keep it per voice; routing it to destinations, as pressure is, comes next with a Synth tab page.
+- **Release:** release velocity, 0 to 1, for the note's coming note-off. The native engines don't use it yet.
+- A value sent before a note-on (as MPE controllers do) is kept for that note and starts it in place. A note-off puts the note back to neutral for its next note-on; the releasing voice keeps its values. AllOff and reset clear every note. With nothing sent, nothing changes to the bit.
+- **CLAP plugins** get them as CLAP note expressions: a note's slide is its tuning expression (with the bend added when the bend goes that way), its tone is brightness, and its release velocity goes in its note-off. A new note now also starts at a bend held from before it. The plugin sandbox carries `Expression` across (protocol version 2).
+
+**Not yet.** Choosing a tuning on the Synth tab (rows in its Options menu), a tuning per track slot in the track host, Tone routing in the native engines, and MPE from MIDI input (no MIDI port is open yet). The sequencer and the arp can send slides now.
+
 ## Tests
 
 - `mpfree-node`: curves round-trip, clamping, description checks, event splitting, smoothing. The pressure shaper, 7 tests: below the threshold is exactly 0 and it rises with no step; a strike spike in the hold-off gives nothing, then pressure glides in with no jump; a retriggered voice keeps its value through the hold-off; release Hold, Follow and Fade as a finger lifts before the note-off; no step moves further than the rise or fall time allows; Highest follows the highest held note; the parameter block reads back into the settings.
@@ -201,7 +223,9 @@ A swell preset at rest (a pad not pressed, a keyboard without aftertouch) plays 
   - Highest swells the whole chord; Off moves nothing
   - FM brightness brightens without getting louder (RMS within 1 dB)
   - bit-identical output at block sizes 1 to 40000 in every mode and release setting, for both engines
-- `tests/no_alloc.rs`: a counting allocator watches 4000 blocks of random notes, pressure, bend, parameter changes over every parameter, AllOff and a reset, and sees no allocation or free. It runs Poly and FM.
+- `mpfree-synth/tests/expression.rs`, 6 tests on Poly, FM, Wavetable and Pluck: in just intonation on C, C keeps its pitch while E and G sit at pure 386 and 702 cents (within 3 cents, by autocorrelation), and the standard tuning plays as before to the bit; a tuning change reaches a sounding note; a slide moves its own note (+7 gives a fifth, +12 part way an octave) and a slide for another note changes nothing to the bit; a note-off clears the note's slide for its next note-on; neutral values (a slide of 0, a release velocity, not a number) change nothing to the bit; slides land the same at block sizes 1 to 4096.
+- `mpfree-tuning`, 14 tests: the standard tuning is the old formula to the bit across notes -200 to 300; equal tunings, A4 and clamping; just, Pythagorean and meantone intervals are pure where they should be; notes between keys lie between their pitches; every note gives a finite frequency; unmapped keys lie between their neighbours; `.scl` reading (cents, ratios, comments, trailing text, Windows line ends) and its errors with line numbers; a 12-TET file matches the standard tuning; a `.kbm` places degrees, the reference pitch and unmapped keys; short maps; map errors; a scale repeating at a twelfth.
+- `tests/no_alloc.rs`: a counting allocator watches 4000 blocks of random notes, pressure, bend, per-note slides, tones and release velocities, tuning changes, parameter changes over every parameter, AllOff and a reset, and sees no allocation or free. It runs every engine.
 - `dsp` unit tests: oscillator bounds, envelope stages, low-pass and high-pass responses.
 
 ## Listening and timing
@@ -210,7 +234,9 @@ A swell preset at rest (a pad not pressed, a keyboard without aftertouch) plays 
 - `cargo run --release -p mpfree-synth --example fm_render [out.wav]` writes `~/mpfree-work/fm-demo.wav`: 9 bars at 92 BPM with the same drums. Rubber Bass plays all the way through; Log Drum comes in for bars 3 and 4 (velocity drives its modulator); Glass Keys chords and Brass Section stabs (algorithm 22 and its pitch envelope) take bars 5 and 6; Bell Tower (with a bend down a semitone and back) and Steel Pluck, read back from a DX7 bank written from the presets, take bars 7 and 8; the final chord rings out. It checks the same things as the Poly demo, plus that the end is quiet and no voice is left on.
 - `cargo run --release -p mpfree-synth --example pressure_render [out.wav]` writes `~/mpfree-work/pressure-demo.wav`: the same 4-bar phrase twice at 90 BPM with the same notes and the same pad pressure, first with pressure Off on every synth, then on. A Brass chord with only its top note pressed (it swells twice), an Acid line that opens as the phrase builds, an FM Brass Section chord that swells and brightens, and a Dust Pad with vibrato on its top note; a last Brass chord swells and rings out in bar 9. It measures what pressure does in the second pass (the level difference between the passes, and brightness), checks each part clearly moves, and trims the master to -1 dBFS.
 - `cargo run --release -p mpfree-synth --example drum_pluck_render [out.wav]` writes `~/mpfree-work/drum-pluck-demo.wav`: 11 bars at 90 BPM. Bars 1-2 are the Init Kit alone (the open hat choked by the next closed hat, a tom fill); then the Grit Kit with the Muted Bass pluck; the Boom Kit with a Koto line; the Electro Kit with a Marimba riff; the Grit Kit with a Bell melody and a Kalimba arpeggio; and a Glass chord and a last boom ring out. Kits change on the bar line while the last hits ring on. It prints a timeline and each part's level per bar, checks each part sounds only where it should and the end is quiet, and trims the master to -1 dBFS.
+- `cargo run --release -p mpfree-synth --example tuning_render [out.wav]` writes `~/mpfree-work/tuning-demo.wav` (44 s): C, F, G, C on the FM Drawbars organ in 12-TET, then just intonation on C, then quarter-comma meantone on C (the thirds beat in 12-TET and lock still in the other two); the Poly Dust Pad holding C, E and G while only the E slides up to F and back; and the Pluck Koto playing C major in 12-TET, then maqam Rast on C in 24-TET, with its E and B a quarter tone flat. Tunings go in through `Node::set_tuning` and slides as `Expression` events, in 128-frame blocks.
 - `mpfree-bench` has cases for both (module "synth"): Drums Init Kit with a hit every 4 blocks and Boom Kit with a hit every block, and Pluck Steel String (8 voices), Harp (16), Marimba (8) and Bell (16) with chords changing every half second. On the build host (an x86 server core, 44.1 kHz, 128 frames) Drums take about 2 % of a period at p99 and the plucks 0.8 to 1.4 %; the MPC One's numbers need its own run (`--calibration`).
+- `cargo run --release -p mpfree-synth --example engine_cost [fm|drums|pluck|wt [PRESET [SECONDS]]]` renders every FM, Drums, Pluck and Wavetable preset (and two Wavetable unison cases: Morph Pad with no spread, and Init at unison 3 with the spread switched on and off) the same way every run, with chords, pressure and a bend (Drums: a 16th pattern over the kit), and prints a hash of each output and the time per block. Like `poly_cost` for Poly, it checks that a change to an engine's code leaves the sound the same to the bit. The same-output pass of 11 Nov kept every hash and cut the instructions an ARMv7 build runs under qemu for 0.6 s (setup included): FM Bell Tower 22 %, Pluck Bell 10 %, Drums Grit Kit 5 %, Wavetable's voice loop 11 % for Morph Pad (unison 3, wide) and 22 % for Digital Bell (centred), its start-up table build left out; Poly's Supersaw another 3 %. What changed: FM turns a phase offset into an integer through an i32 when it fits (the i64 conversion is a library call on ARMv7), reads its sine table without bounds checks, decides once per run which operators sound, and works an operator's increment out again only when its pitch moves; Pluck no longer copies every voice each control step to look at it; Drums floor phases through an i32, skip the exp2 for a body with no sweep and work out the drive's square roots at the hit; Wavetable works out a centred voice (one stack, or no spread) once for both sides, as Poly does, with the centred and stereo loops as separate copies; the noise source converts through a u32; the engines' cache keys compare in line rather than through a `bcmp` call. Drums still spend most of their time in `tanhf` (drive) and `exp2f` (the sweep); those library calls can only go if the sound may change slightly.
 - `cargo run --release -p mpfree-synth --example bench` times one 128-frame block with 1 to 16 voices: Poly at unison 1 or 4, and FM's Brass Section and Glass Keys. On the build host (an x86 desktop core) 16 voices take about 4 % of real time for Poly at unison 1, 5 to 6 % at unison 4, and about 3 % for FM; this host's runs vary by up to a third between runs, and pressure made no difference beyond that. The MPC One's Cortex-A17 is slower; it needs its own run before voice limits are set.
 
 ## The Synth tab (`rust/mpfree-synth-ui`)
@@ -225,9 +251,21 @@ The instrument page for the MPC One's 1280x800 screen, on `mpfree-ui`. It works 
   - A tap selects a tile, and the wheel then turns it.
   - Q-Links 1 to 4 turn the marked tiles. A detent is one step for whole numbers and choices, and 1/100 of the range along the parameter's curve otherwise.
   - SHIFT + wheel steps through the pages.
+- **Q-Link sets** (`qsets`). A sound carries named sets of four controls, so the Q-Links can play it from any screen without opening its editor. Each engine has curated sets, in the order a player reaches for them:
+
+  | Engine | Sets |
+  |---|---|
+  | Poly | Tone (cutoff, resonance, filter env amount, drive), Env, Filter env, Motion (LFO rate, LFO to cutoff, LFO to pitch, unison detune), Mix, Osc |
+  | FM | Algo (algorithm, feedback, transpose, level), Levels 1-4, Ops 5-6 (levels and coarse), Ratios 1-4, Mod (LFO) |
+  | Wavetable | Tables (both positions and warps), Tone, Env, Mod env, Motion, Mix |
+  | Pluck | String, Mallet, Play |
+  | Drums | Hit (tune, decay, tone, snap), Body, Mix, on the pad hit last |
+
+  Any other node, such as a plugin, gets one set per Synth tab page (at most 8). Drums' sets name pad 1's parameters; `qsets::on_pad` moves them to the pad hit last, and `qsets::pad_relative` keeps a knob learned on another pad as pad 1's, so it follows the pad too. `qsets::save` writes the sets as `qset = <id> <id> <id> <id> <name>` lines for a preset file (`-` for a free knob), and `qsets::load` reads them back from a whole preset file: an id the node no longer has, or a meter, loads as a free knob. Showing the sets in the Q-Link column goes through `mpfree-mod`'s bindings; nothing on screen changes yet.
 - **The app's part.** The app owns the node on the audio thread. It builds a `SynthState` from the node (`SynthState::from_node`) and adds the panel with `SynthPanel::add(ui, "Synth", state)` after its own `header` and `hint` widgets. It passes touches (`SynthPanel::event`), Q-Link turns (`qlink`) and wheel turns (`wheel`, `step_page`) to the panel, and applies each `SynthAction` it gets back: `Set { id, value }` becomes `Node::set_param`, and `Preset(i)` loads the preset, after which the app calls `SynthPanel::load` with the node's new state. The panel updates its own copy of a value at once, so the screen keeps up with a finger.
 - **Preview.** `cargo run --locked -p mpfree-synth-ui --bin mpfree-synth-preview` draws the sample screens to PNG files in a new folder `~/mpfree-work/synth-preview-<UTC>`. It opens no device.
 - **Tests.**
+  - Q-Link sets: every engine's curated sets turn real knobs (no meters, switches or choices, nothing twice in a set), Drums' sets follow the pad, the sets save and load with a preset, and old or odd preset lines load safely.
   - The anti-aliased drawing, value text, page plans and visual curves (every curve stays in its box for every parameter at its minimum and maximum). All 32 algorithms lay out with no boxes overlapping, carriers on the bottom row and every modulator above what it modulates.
   - `tests/panel.rs` runs a Ui at 1280x800 with a real Poly. It checks that dragging, tapping choices and switches, Q-Links, the wheel and presets reach the node, that every Poly parameter can be reached and set, that the cards follow the page, that the Pressure page draws the curve and live bars and reads depths in their targets' units, that FM draws its algorithm, rings the page's operators and opens an operator's page from a tap on its box, that every FM page has its strip, that a node without a plan gets the plain page, and that every sample screen lays out inside the screen and redraws only the panel after a turn.
 
@@ -247,6 +285,8 @@ The pad player (`play` and `app`) carries Poly, FM, Drums, Pluck and Wavetable; 
 
 ## Next
 
+- Tunings and expression: Tone routing in Poly, FM and Wavetable (two slots on the pressure targets, on the Pressure page), Tuning and A4 rows on the Synth tab, a tuning per track slot. Then Q-Link banks, the sampler as a node and the instrument browser (plan doc "Four synth features: plan").
+- Presets as files: the format is built ([Sound presets](presets.md)); next, the catalogue and Save and Load with the browser page.
 - A track host: built in `rust/mpfree-track` ([Track host](track-host.md)); next, wiring it into the pad player.
 - The Sample tab's "Make a wavetable": see [Wavetable synth](wavetable.md).
 - Plugin hosting: the CLAP host and its sandbox process are built ([Plugins](plugins.md)); next, ARM builds of free plugins (P3).

@@ -19,7 +19,7 @@
 use mpfree_node::{Ctx, Kind, Node, NodeEvent, NodeInfo, ParamInfo, Smooth, Timed};
 
 use crate::drum_params::*;
-use crate::dsp::{drive, osc, Rng, Wave};
+use crate::dsp::{drive_sq, osc, Rng, Wave};
 use crate::params::Preset;
 
 /// Hit slots: one per pad plus room for fading hits.
@@ -47,10 +47,22 @@ const CLAP_BURSTS: [f32; 4] = [0.0, 0.0105, 0.0215, 0.0305];
 pub fn sin_turns(ph: f32) -> f32 {
     // sin(2 pi x) = -sin(pi s) with s = 2x - 1 in -1..1; a parabola for
     // sin(pi s), refined.
-    let x = ph - ph.floor();
+    let x = ph - floor(ph);
     let s = 2.0 * x - 1.0;
     let p = 4.0 * s * (1.0 - s.abs());
     -(0.225 * (p * p.abs() - p) + p)
+}
+
+/// `x.floor()`, the same value for every input: a positive value below
+/// 2^23 (every phase here in practice) truncates through an i32, which is
+/// its floor, instead of the library call `floorf` is on ARMv7.
+#[inline]
+fn floor(x: f32) -> f32 {
+    if x > 0.0 && x < 8_388_608.0 {
+        x as i32 as f32
+    } else {
+        x.floor()
+    }
 }
 
 /// A per-frame multiplier that falls 60 dB in `secs`.
@@ -168,6 +180,11 @@ struct Voice {
     click_mul: f32,
     click_lvl: f32,
     drive: f32,
+    /// What the drive stage takes, from `drive`: the gain, its square root
+    /// and the amount.
+    drive_gain: f32,
+    drive_sq: f32,
+    drive_amt: f32,
     /// Frames since the hit: the silence check runs every 64, so when a
     /// hit ends doesn't depend on the block size.
     frames: u32,
@@ -179,7 +196,12 @@ impl Voice {
         let inv = 1.0 / rate;
         let mut out = 0.0;
         if self.lvl_a > 0.0 {
-            let hz = self.f0 * (self.sweep * self.pitch * (1.0 / 12.0)).exp2();
+            // No sweep: exp2(0) is exactly 1, so the pitch is f0 as it is.
+            let hz = if self.sweep == 0.0 && self.pitch.is_finite() {
+                self.f0
+            } else {
+                self.f0 * (self.sweep * self.pitch * (1.0 / 12.0)).exp2()
+            };
             self.pitch *= self.pitch_mul;
             self.ph_a += hz * inv;
             if self.ph_a >= 1.0 {
@@ -188,7 +210,7 @@ impl Voice {
             let mut s = if self.fm_index > 0.0 {
                 self.fm_ph += hz * self.fm_ratio * inv;
                 if self.fm_ph >= 1.0 {
-                    self.fm_ph -= self.fm_ph.floor();
+                    self.fm_ph -= floor(self.fm_ph);
                 }
                 let ix = self.fm_index * (0.15 + 0.85 * self.pitch);
                 sin_turns(self.ph_a + ix * sin_turns(self.fm_ph) * 0.159_155)
@@ -202,7 +224,7 @@ impl Voice {
             if self.lvl_b > 0.0 {
                 self.ph_b += hz * self.ratio_b * inv;
                 if self.ph_b >= 1.0 {
-                    self.ph_b -= self.ph_b.floor();
+                    self.ph_b -= floor(self.ph_b);
                 }
                 b += self.lvl_b * sin_turns(self.ph_b);
             }
@@ -242,7 +264,9 @@ impl Voice {
             self.click *= self.click_mul;
         }
         if self.drive > 0.0 {
-            out = drive(out, 1.0 + self.drive * 9.0, self.drive.sqrt());
+            // drive(out, 1 + 9 drive, sqrt(drive)) with its square roots
+            // worked out at the hit.
+            out = drive_sq(out, self.drive_gain, self.drive_sq, self.drive_amt);
         }
         if self.state == State::Kill {
             out *= self.kill;
@@ -314,6 +338,9 @@ fn build(
         drive: g(field::DRIVE) / 100.0,
         ..Voice::default()
     };
+    v.drive_gain = 1.0 + v.drive * 9.0;
+    v.drive_sq = v.drive_gain.sqrt();
+    v.drive_amt = v.drive.sqrt();
     // How loud each model is at full velocity, so the defaults peak
     // near -12 dBFS.
     let norm;
@@ -636,7 +663,10 @@ impl Drums {
             }
             NodeEvent::AllOff => self.kill_where(ALL_OFF_MS, |_| true),
             NodeEvent::Param { id, value } => self.set_param(id, value),
-            NodeEvent::NoteOff { .. } | NodeEvent::Pressure { .. } | NodeEvent::Bend { .. } => {}
+            NodeEvent::NoteOff { .. }
+            | NodeEvent::Pressure { .. }
+            | NodeEvent::Bend { .. }
+            | NodeEvent::Expression { .. } => {}
         }
     }
 
@@ -731,5 +761,31 @@ impl Node for Drums {
 
     fn tail_frames(&self) -> u32 {
         (5.2 * self.rate as f32) as u32
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::floor;
+
+    #[test]
+    fn the_quick_floor_matches_floorf_for_every_input() {
+        let same = |x: f32| floor(x).to_bits() == x.floor().to_bits() || x.is_nan();
+        for x in [
+            0.0,
+            -0.0,
+            0.5,
+            -0.5,
+            1.0,
+            8_388_607.5,
+            8_388_608.0,
+            f32::MIN_POSITIVE,
+        ] {
+            assert!(same(x) && same(-x), "{x:e}");
+        }
+        for bits in (0..=u32::MAX).step_by(997) {
+            let x = f32::from_bits(bits);
+            assert!(same(x), "{bits:#x}");
+        }
     }
 }

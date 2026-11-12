@@ -30,11 +30,12 @@ pub mod table;
 use std::sync::Arc;
 
 use mpfree_node::{
-    Ctx, Kind, Node, NodeEvent, NodeInfo, ParamInfo, Pressure, PressureChord, PressureCoefs,
-    PressureMode, PressureShape, Smooth, Timed,
+    Ctx, Expr, Kind, Node, NodeEvent, NodeInfo, ParamInfo, Pressure, PressureChord, PressureCoefs,
+    PressureMode, PressureShape, Smooth, Timed, Tuning,
 };
 
 use crate::dsp::*;
+use crate::expr::{expr_coef, NoteExprs, VoiceExpr};
 use crate::params::{Preset, LFO_SYNC_BEATS};
 use crate::pressure::{swell_gain, Depths, Slot};
 use params::*;
@@ -234,6 +235,8 @@ struct Voice {
     drive_amt: f32,
     press: Pressure,
     pv: f32,
+    /// Its note's own slide and tone.
+    ex: VoiceExpr,
     kill_gain: f32,
     kill_step: f32,
     /// Whether the next control step snaps positions instead of ramping.
@@ -271,6 +274,7 @@ impl Voice {
             drive_amt: 0.0,
             press: Pressure::new(),
             pv: 0.0,
+            ex: VoiceExpr::default(),
             kill_gain: 1.0,
             kill_step: 0.0,
             snap: true,
@@ -333,6 +337,12 @@ pub struct Wavetable {
     chord: PressureChord,
     vib_phase: f32,
     vib: f32,
+    /// How notes become frequencies.
+    tuning: Tuning,
+    /// Each note's slide and tone for its next note-on, and the voices'
+    /// smoothing coefficient.
+    exprs: NoteExprs,
+    expr_c: f32,
     /// Notes that did not fit anywhere (should stay 0).
     pub dropped: u64,
 }
@@ -396,6 +406,9 @@ impl Wavetable {
             chord: PressureChord::default(),
             vib_phase: 0.0,
             vib: 0.0,
+            tuning: Tuning::standard(),
+            exprs: NoteExprs::new(),
+            expr_c: 1.0,
             dropped: 0,
         };
         s.pick_tables();
@@ -592,6 +605,7 @@ impl Wavetable {
             s.snap(s.target);
         }
         sm.bend.set_time(cr, 4.0);
+        self.expr_c = expr_coef(cr as f32);
     }
 
     // ---- notes ----
@@ -624,12 +638,18 @@ impl Wavetable {
             } else {
                 self.last_pitch
             };
+            let ex = self.exprs.on(note);
             let v = &mut self.voices[0];
             let fresh = v.state == State::Free || v.state == State::Kill;
             if fresh {
                 Self::fresh(v);
             }
             v.press.start();
+            if legato {
+                v.ex.retarget(ex);
+            } else {
+                v.ex.start(ex);
+            }
             v.note = note;
             v.target = f32::from(note);
             v.pitch = if glide && (mode == 1 || legato) {
@@ -682,12 +702,14 @@ impl Wavetable {
             }
         };
         let unison = (self.v(UNISON) as usize).clamp(1, UNISON_MAX);
+        let ex = self.exprs.on(note);
         let v = &mut self.voices[slot];
         let fresh = !v.sounding();
         if fresh {
             Self::fresh(v);
         }
         v.press.start();
+        v.ex.start(ex);
         v.note = note;
         v.vel = vel;
         v.target = f32::from(note);
@@ -757,6 +779,7 @@ impl Wavetable {
     }
 
     fn note_off(&mut self, note: u8) {
+        self.exprs.off(note);
         self.stack_remove(note);
         let mode = self.v(VOICE_MODE) as u8;
         let glide = self.v(GLIDE) > 0.0;
@@ -767,6 +790,7 @@ impl Wavetable {
             }
             if self.stack_len > 0 {
                 let back = self.stack[self.stack_len - 1];
+                v.ex.retarget(self.exprs.on(back));
                 v.note = back;
                 v.target = f32::from(back);
                 if !glide {
@@ -794,6 +818,7 @@ impl Wavetable {
 
     fn all_off(&mut self) {
         self.stack_len = 0;
+        self.exprs.clear();
         for v in &mut self.voices {
             if v.state == State::On {
                 Self::release(v);
@@ -805,6 +830,18 @@ impl Wavetable {
         for v in &mut self.voices {
             if v.sounding() && v.note == note {
                 v.press.set(value);
+            }
+        }
+    }
+
+    /// One note's own slide or tone: its held voices glide to it.
+    fn expression(&mut self, note: u8, kind: Expr, value: f32) {
+        let Some(value) = self.exprs.set(note, kind, value) else {
+            return;
+        };
+        for v in &mut self.voices {
+            if v.state == State::On && v.note == note {
+                v.ex.aim(kind, value);
             }
         }
     }
@@ -823,6 +860,7 @@ impl Wavetable {
             }
             NodeEvent::AllOff => self.all_off(),
             NodeEvent::Param { id, value } => self.set_param(id, value),
+            NodeEvent::Expression { note, kind, value } => self.expression(note, kind, value),
         }
     }
 
@@ -948,6 +986,8 @@ impl Wavetable {
         let (drive_gain, drive_amt) = (self.sh.drive_gain, self.sh.drive_amt);
         let norm = VOICE_GAIN / (unison as f32).sqrt();
         let tabs = [&self.tables[0], &self.tables[1]];
+        let expr_c = self.expr_c;
+        let tuning = &self.tuning;
 
         let v = &mut self.voices[i];
         let p = v.pv;
@@ -955,7 +995,11 @@ impl Wavetable {
         if (v.target - v.pitch).abs() < 1e-4 {
             v.pitch = v.target;
         }
+        v.ex.step(expr_c);
         let mut base = v.pitch + bend + vib;
+        if v.ex.slide != 0.0 {
+            base += v.ex.slide;
+        }
         if d.any {
             base += p * (d.get(target::PITCH) * 12.0 + d.get(target::VIBRATO) * vib_p);
         }
@@ -980,7 +1024,7 @@ impl Wavetable {
                     0.0
                 };
                 let cents = pos * detune * if o == 0 { 1.0 } else { -0.7 };
-                v.dt[o][u] = (note_hz(base + tune[o] + cents) / rate).min(0.45);
+                v.dt[o][u] = (tuning.hz(base + tune[o] + cents) / rate).min(0.45);
                 top = top.max(v.dt[o][u]);
             }
             v.top[o] = top * v.warp[o].speed();
@@ -998,7 +1042,7 @@ impl Wavetable {
             v.pan_l[u] = (1.0 - q).sqrt();
             v.pan_r[u] = (1.0 + q).sqrt();
         }
-        v.dt_sub = (note_hz(base + tune[0] - 12.0) / rate).min(0.45);
+        v.dt_sub = (tuning.hz(base + tune[0] - 12.0) / rate).min(0.45);
         let oct = cutoff
             + me * menv_cut
             + (f32::from(v.note) - 60.0) / 12.0 * key
@@ -1020,77 +1064,113 @@ impl Wavetable {
     fn render(&mut self, from: usize, to: usize, left: &mut [f32], right: &mut [f32]) {
         let s = self.sh;
         let mode = FilterMode::from_index(f32::from(s.mode));
-        let (ta, tb) = (&*self.tables[0], &*self.tables[1]);
+        let tabs = (&*self.tables[0], &*self.tables[1]);
         for v in &mut self.voices {
             if v.state == State::Free {
                 continue;
             }
-            let (wa, wb) = (v.warp[0], v.warp[1]);
-            // B is read when heard or when it frequency-modulates A; A when
-            // heard or when it modulates B.
-            let use_b = s.lvl[1] != 0.0 || matches!(wa, Warp::Fm { .. });
-            let use_a = s.lvl[0] != 0.0 || matches!(wb, Warp::Fm { .. });
-            let da = ta.levels()[v.level[0]].data();
-            let db = tb.levels()[v.level[1]].data();
-            let (use_sub, use_noise) = (s.sub != 0.0, s.noise != 0.0);
-            for k in from..to {
-                let (ra, rb) = (v.run[0], v.run[1]);
-                let mut l = 0.0;
-                let mut r = 0.0;
-                for u in 0..s.unison {
-                    let mut b = 0.0;
-                    if use_b {
-                        let ph = v.ph[1][u];
-                        b = rb.read(db, wb.apply(ph, v.last[0][u]));
-                        v.last[1][u] = b;
-                        let n = ph + v.dt[1][u];
-                        v.ph[1][u] = if n >= 1.0 { n - 1.0 } else { n };
-                    }
-                    let mut a = 0.0;
-                    if use_a {
-                        let ph = v.ph[0][u];
-                        a = ra.read(da, wa.apply(ph, b));
-                        v.last[0][u] = a;
-                        let n = ph + v.dt[0][u];
-                        v.ph[0][u] = if n >= 1.0 { n - 1.0 } else { n };
-                    }
-                    let x = a * s.lvl[0] + b * s.lvl[1];
-                    l += x * v.pan_l[u];
-                    r += x * v.pan_r[u];
-                }
-                v.run[0].t += ra.t_inc;
-                v.run[1].t += rb.t_inc;
-                let mut c = 0.0;
-                if use_sub {
-                    c += osc(Wave::Sine, &mut v.ph_sub, v.dt_sub, 0.5) * s.sub;
-                }
-                if use_noise {
-                    c += self.rng.bipolar() * s.noise;
-                }
-                let l = drive(l + c, v.drive_gain, v.drive_amt);
-                let r = drive(r + c, v.drive_gain, v.drive_amt);
-                let l = v.filt[0].process(mode, &v.coefs, l);
-                let r = v.filt[1].process(mode, &v.coefs, r);
-                let mut g = v.amp.next() * v.gain;
-                v.gain += v.gain_inc;
-                if v.state == State::Kill {
-                    v.kill_gain -= v.kill_step;
-                    if v.kill_gain <= 0.0 {
-                        v.kill_gain = 0.0;
-                        v.state = State::Free;
-                    }
-                    g *= v.kill_gain;
-                }
-                left[k] += l * g * s.out_l;
-                right[k] += r * g * s.out_r;
-                if v.state == State::Free {
-                    break;
-                }
-                if v.amp.idle() && v.state != State::On {
-                    v.state = State::Free;
-                    break;
-                }
+            // Mono: every unison voice panned the same both ways and both
+            // filters in the same state, so the right side would come out
+            // equal to the left bit for bit; work it out once. Each case
+            // has its own copy of the loop, so stereo runs as before.
+            let mono = (0..s.unison).all(|u| v.pan_l[u].to_bits() == v.pan_r[u].to_bits())
+                && v.filt[0].same_as(&v.filt[1]);
+            let out = (&mut *left, &mut *right);
+            if mono {
+                run_voice::<true>(v, &s, mode, tabs, &mut self.rng, from..to, out);
+                v.filt[1] = v.filt[0];
+            } else {
+                run_voice::<false>(v, &s, mode, tabs, &mut self.rng, from..to, out);
             }
+        }
+    }
+}
+
+/// One voice over frames `span` into `out` (left, right). With `MONO` the
+/// right side is the left one (see `render`) and its filter isn't run.
+/// Kept out of line, so each copy is optimised on its own.
+#[inline(never)]
+fn run_voice<const MONO: bool>(
+    v: &mut Voice,
+    s: &Shared,
+    mode: FilterMode,
+    (ta, tb): (&Table, &Table),
+    rng: &mut Rng,
+    span: std::ops::Range<usize>,
+    (left, right): (&mut [f32], &mut [f32]),
+) {
+    let (wa, wb) = (v.warp[0], v.warp[1]);
+    // B is read when heard or when it frequency-modulates A; A when
+    // heard or when it modulates B.
+    let use_b = s.lvl[1] != 0.0 || matches!(wa, Warp::Fm { .. });
+    let use_a = s.lvl[0] != 0.0 || matches!(wb, Warp::Fm { .. });
+    let da = ta.levels()[v.level[0]].data();
+    let db = tb.levels()[v.level[1]].data();
+    let (use_sub, use_noise) = (s.sub != 0.0, s.noise != 0.0);
+    // The drive's gain root, once per run rather than per sample.
+    let (dg, dsq, damt) = (v.drive_gain, v.drive_gain.sqrt(), v.drive_amt);
+    for k in span {
+        let (ra, rb) = (v.run[0], v.run[1]);
+        let mut l = 0.0;
+        let mut r = 0.0;
+        for u in 0..s.unison {
+            let mut b = 0.0;
+            if use_b {
+                let ph = v.ph[1][u];
+                b = rb.read(db, wb.apply(ph, v.last[0][u]));
+                v.last[1][u] = b;
+                let n = ph + v.dt[1][u];
+                v.ph[1][u] = if n >= 1.0 { n - 1.0 } else { n };
+            }
+            let mut a = 0.0;
+            if use_a {
+                let ph = v.ph[0][u];
+                a = ra.read(da, wa.apply(ph, b));
+                v.last[0][u] = a;
+                let n = ph + v.dt[0][u];
+                v.ph[0][u] = if n >= 1.0 { n - 1.0 } else { n };
+            }
+            let x = a * s.lvl[0] + b * s.lvl[1];
+            l += x * v.pan_l[u];
+            if !MONO {
+                r += x * v.pan_r[u];
+            }
+        }
+        v.run[0].t += ra.t_inc;
+        v.run[1].t += rb.t_inc;
+        let mut c = 0.0;
+        if use_sub {
+            c += osc(Wave::Sine, &mut v.ph_sub, v.dt_sub, 0.5) * s.sub;
+        }
+        if use_noise {
+            c += rng.bipolar() * s.noise;
+        }
+        let l = drive_sq(l + c, dg, dsq, damt);
+        let l = v.filt[0].process(mode, &v.coefs, l);
+        let r = if MONO {
+            l
+        } else {
+            let r = drive_sq(r + c, dg, dsq, damt);
+            v.filt[1].process(mode, &v.coefs, r)
+        };
+        let mut g = v.amp.next() * v.gain;
+        v.gain += v.gain_inc;
+        if v.state == State::Kill {
+            v.kill_gain -= v.kill_step;
+            if v.kill_gain <= 0.0 {
+                v.kill_gain = 0.0;
+                v.state = State::Free;
+            }
+            g *= v.kill_gain;
+        }
+        left[k] += l * g * s.out_l;
+        right[k] += r * g * s.out_r;
+        if v.state == State::Free {
+            break;
+        }
+        if v.amp.idle() && v.state != State::On {
+            v.state = State::Free;
+            break;
         }
     }
 }
@@ -1150,6 +1230,7 @@ impl Node for Wavetable {
         self.update_envs();
         self.reset_smoothers();
         self.stack_len = 0;
+        self.exprs.clear();
         self.lfo_phase = 0.0;
         self.vib_phase = 0.0;
         self.chord.clear();
@@ -1190,6 +1271,14 @@ impl Node for Wavetable {
     fn tail_frames(&self) -> u32 {
         let ms = self.v(AMP_R).max(KILL_MS);
         (ms * 0.001 * self.rate as f32 * 1.5) as u32
+    }
+
+    fn set_tuning(&mut self, tuning: &Tuning) {
+        // Voices work their pitch out every control step, so the new tuning
+        // reaches them on the next one.
+        if self.tuning != *tuning {
+            self.tuning.clone_from(tuning);
+        }
     }
 }
 

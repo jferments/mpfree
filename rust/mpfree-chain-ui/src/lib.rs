@@ -2,34 +2,43 @@
 //! built on `mpfree-ui` over `mpfree-fx`'s [`mpfree_fx::Chain`] and
 //! `mpfree-mod`'s [`mpfree_mod::ModEngine`].
 //!
-//! **Where they open is the Hello MPC thread's call and Jay's** (layout
-//! spec, "The FX chain editor and macros"). Hello proposes: the chain
-//! editor takes the mixer's place when an insert is tapped there, with a
-//! Back to the mixer ([`ChainState::back`]), and sits in the Sample tab's
-//! FX sub-tab under the pad bar (with a switch between the pad's chain and
-//! the track's, [`ChainState::scopes`], to agree with the sampler thread);
-//! Macros 1-4 and 5-8 are banks of the Q-Link column, and a long press on
-//! a macro card opens the macros panel over the page under the top bar,
-//! with Back in its corner. While the chain editor is open, the Q-Links
-//! default to the selected effect's first four knobs: pass
-//! [`QLINK_PAGE`] and [`ChainState::qlinks`] to `Bindings::set_page`. This crate is the panel
+//! **Where they open** (layout spec section 4b, approved by Jay
+//! 2026-11-11 22:34Z): the chain editor takes the mixer's place when an
+//! insert row is tapped there, with a Back to the mixer
+//! ([`ChainState::back`]); the mixer's "+" on a strip opens it with the
+//! effect picker up ([`ChainState::picking`]). It also sits in the Sample
+//! tab's FX sub-tab under the pad bar, with a switch between the pad's
+//! chain and the track's ([`ChainState::scopes`]). Macros 1-4 and 5-8 are
+//! banks of the Q-Link column, and a long press on a macro card opens the
+//! macros panel over the page under the top bar, with Back in its corner.
+//! While the chain editor is open, the Q-Links default to the selected
+//! effect's first four knobs: pass [`QLINK_PAGE`] and
+//! [`ChainState::qlinks`] to `Bindings::set_page`. This crate is the panel
 //! inside whatever area it gets.
 //!
 //! - [`state`]: what the panels show ([`ChainState`], [`MacrosState`]),
 //!   built on the control thread; `from_chain` and `from_engine` read a
 //!   chain and an engine directly, for previews and tests.
-//! - [`view`]: the chain editor ([`ChainView`]): the inserts, the selected
-//!   effect's knobs with modulation rings and macro badges, and the
+//! - [`view`]: the chain editor ([`ChainView`]): the inserts, the effect
+//!   picker, the selected effect's drawings (from `mpfree-fx-ui`'s effect
+//!   pages) and knobs with modulation rings and macro badges, and the
 //!   modulation column (macro, learn to a Q-Link, matrix rows).
-//! - [`macros`]: the macros and morph panel ([`MacrosView`]).
+//! - [`macros`]: the macros and morph panel ([`MacrosView`]), with the
+//!   target editor (range, curve, flip, remove).
 //! - [`sample`]: sample screens for the workstation preview
 //!   (`mpfree-chain-preview`) and the tests.
 //!
 //! For the app: [`add`] puts both widgets and their pages in the [`Ui`];
-//! [`update_chain`] and [`update_macros`] show new states; after a touch,
-//! [`take_chain_actions`] and [`take_macro_actions`] give what to do.
-//! Parameter changes go to the mod engine as `ModEvent::Set` (it sends
-//! them on to the chain); chain edits go to the mixer as `Edit`s.
+//! [`update_chain`] and [`update_macros`] show new states, and
+//! [`set_chain_picture`] the selected effect's drawings
+//! ([`state::picture`]); after a touch, [`take_chain_actions`] and
+//! [`take_macro_actions`] give what to do. Parameter changes go to the mod
+//! engine as `ModEvent::hand` gives (a `Set`, or a `Touch` over a move lane
+//! or while recording, with `Untouch` on [`ChainAction::Release`]; it sends
+//! them on to the chain). Set-up changes (macro targets, matrix rows,
+//! scenes) go to the audio thread's engine as `mpfree_mod::Change`s, chain
+//! edits to the mixer as `Edit`s, and [`ChainAction::Add`] names the effect
+//! for `mpfree_fx_ui::make`.
 
 #![forbid(unsafe_code)]
 
@@ -39,7 +48,10 @@ pub mod state;
 pub mod view;
 
 pub use macros::{MacroAction, MacrosView};
-pub use state::{macro_color, strip_id, strip_of, ChainState, MacrosState, ParamView, SlotView};
+pub use state::{
+    macro_color, picks, picture, strip_id, strip_of, ChainState, MacrosState, ParamView, Pick,
+    SlotView, TargetView,
+};
 pub use view::{ChainAction, ChainView};
 
 use mpfree_ui::Ui;
@@ -60,7 +72,7 @@ pub const MACROS_LAYOUT: &str = "col(header:60, row(macros:*, qlinks:168):*, hin
 pub const QLINK_PAGE: &str = "chain";
 /// The hint lines: what the buttons do on the page.
 pub const CHAIN_HINT: &str = "Q-Links: the first 4 knobs shown  ·  SHIFT + Q-Link: fine  ·  touch a knob, then a macro number, Learn or + LFO";
-pub const MACROS_HINT: &str = "Q-Links: the 4 macros shown  ·  SHIFT + Q-Link: fine  ·  tap a target to set its range  ·  Back closes";
+pub const MACROS_HINT: &str = "Q-Links: the 4 macros shown  ·  SHIFT + Q-Link: fine  ·  tap a target to edit its range and curve  ·  Back closes";
 
 /// Adds both widgets and their pages. The app's `header`, `qlinks` and
 /// `hint` widgets must be there already.
@@ -74,6 +86,14 @@ pub fn add(ui: &mut Ui) -> Result<(), String> {
 pub fn update_chain(ui: &mut Ui, st: ChainState) {
     if let Some(v) = ui.get_mut::<ChainView>(CHAIN) {
         v.update(st);
+    }
+}
+
+/// Shows the selected effect's drawings in the chain editor
+/// ([`state::picture`]; empty for none).
+pub fn set_chain_picture(ui: &mut Ui, cards: Vec<mpfree_synth_ui::widgets::Card>) {
+    if let Some(v) = ui.get_mut::<ChainView>(CHAIN) {
+        v.set_picture(cards);
     }
 }
 
