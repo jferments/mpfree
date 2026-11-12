@@ -45,3 +45,49 @@ fn process_allocates_nothing_on_the_audio_thread() {
     assert!(hits > 250, "{hits} hits");
     drop(link);
 }
+
+#[test]
+fn an_offloaded_send_allocates_nothing_through_a_fallback_and_back() {
+    use common::{relay, wait_sent};
+    use mpfree_fx::ids;
+    use mpfree_node::{Ctx, Node};
+    use mpfree_offload::offloaded::{cloud_send, Mode};
+
+    assert!(alloc::installed());
+    let srv = server(&["cloud-full"]);
+    // Requests 50 to 89 are lost: the Eco stand-in takes over, then the
+    // server comes back with a crossfade.
+    let lossy = relay(srv.addr, 50..90);
+    let (remote, link) = connect(lossy.addr, Config::default()).unwrap();
+    let mut node = cloud_send(remote);
+    node.prepare(44_100, 128);
+    let (mut l, mut r) = (vec![0.0f32; 128], vec![0.0f32; 128]);
+    let mut modes = Vec::with_capacity(220);
+    let before = alloc::thread_count();
+    for k in 0..220u64 {
+        if k >= 2 && !(50..90).contains(&(k - 2)) {
+            wait_for(node.remote(), k - 2);
+        }
+        let events = [Timed::new(
+            32,
+            NodeEvent::Param {
+                id: ids::cloud::SIZE,
+                value: 40.0 + (k % 10) as f32,
+            },
+        )];
+        if k % 7 == 0 {
+            node.set_param(ids::cloud::DECAY, 2.0 + (k % 3) as f32);
+        }
+        signal(k, &mut l, &mut r);
+        node.process(&Ctx::new(44_100, k * 128), &events, &mut l, &mut r);
+        modes.push(node.mode());
+        wait_sent(node.remote());
+    }
+    let used = alloc::thread_count() - before;
+    assert_eq!(used, 0, "the offloaded send allocated {used} times");
+    for m in [Mode::Bridge, Mode::Local, Mode::Return] {
+        assert!(modes.contains(&m), "never reached {m:?}");
+    }
+    assert_eq!(node.mode(), Mode::Remote);
+    drop(link);
+}
