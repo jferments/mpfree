@@ -101,6 +101,7 @@ mod modpanels;
 mod perf;
 mod play_page;
 mod play_widgets;
+mod preview;
 mod qlink_touch;
 #[cfg(test)]
 mod rt_safety;
@@ -2816,6 +2817,9 @@ fn player_session(
     // (kept here, never freed on this thread), how many views were swapped
     // in, its playheads, and whether a view changed the playing kit's pads.
     let mut view_back: Option<gui::ToUi> = None;
+    // The browser's preview playing, and one going back to be freed.
+    let mut preview: Option<Box<preview::Preview>> = None;
+    let mut preview_back: Option<Box<preview::Preview>> = None;
     let mut views_swapped = 0u64;
     let mut recolour = false;
     let (mut shown_heads, mut heads_at) = (sampler::Playheads::default(), Instant::now());
@@ -2919,6 +2923,19 @@ fn player_session(
         .map(|(f, t)| (f.clone(), t.name.clone()))
         .collect();
     out.show(gui::ToUi::ThemeFiles(theme_files));
+    // The library in the data folder (its places are made there if they
+    // are missing), for the Pads tab's browser, with its Recent and
+    // Favourites from the store. Without --data the browser says so.
+    if let (Some(dir), true) = (&o.data, store.saves()) {
+        let lists = store
+            .read(app::saved::BROWSER, app::saved::BROWSER_LISTS)
+            .map(|b| String::from_utf8_lossy(&b).into_owned())
+            .unwrap_or_default();
+        out.show(gui::ToUi::Library {
+            dir: dir.clone(),
+            lists,
+        });
+    }
     // The tunings folder: Scala files the user put in files/tunings/ (read
     // only), offered on the Synth tab after the built-in tunings. The scales
     // are read and the keyboard maps worked out here, before the sound
@@ -3323,6 +3340,37 @@ fn player_session(
                     }
                 }
                 gui::FromUi::SampleKey { .. } => {}
+                // The Pads tab's switch: the browser or the pad's settings.
+                gui::FromUi::PadsView(v) => {
+                    app.set_pads_browse(v == mpfree_sampler_ui::pads_tab::BROWSE)
+                }
+                // The browser's preview: a new sound replaces the one
+                // playing, which goes back to be freed.
+                gui::FromUi::Preview(p) => {
+                    if let Some(old) = preview.replace(p) {
+                        if preview_back.replace(old).is_some() {
+                            out.note(
+                                "preview: two sounds going back; one freed on the audio thread",
+                            );
+                        }
+                    }
+                }
+                gui::FromUi::PreviewStop => {
+                    if let Some(p) = preview.as_mut() {
+                        p.stop();
+                    }
+                }
+                gui::FromUi::SaveBrowserLists(text) => {
+                    if !store.saves() {
+                        out.note("browser: Recent and Favourites not kept (no data folder)");
+                    } else if let Err(e) = store.write(
+                        app::saved::BROWSER,
+                        app::saved::BROWSER_LISTS,
+                        text.into_bytes(),
+                    ) {
+                        out.note(&format!("browser: Recent and Favourites not kept ({e})"));
+                    }
+                }
                 gui::FromUi::SampleView(mut swap) => {
                     if player.swap_view(&mut swap) {
                         views_swapped += 1;
@@ -3386,6 +3434,11 @@ fn player_session(
         }
         if let Some(line) = param_log.poll(&synth, t_read) {
             out.note(&line);
+        }
+        if let Some(b) = preview_back.take() {
+            if let Err(gui::ToUi::PreviewBack(b)) = out.try_show(gui::ToUi::PreviewBack(b)) {
+                preview_back = Some(b);
+            }
         }
         if let Some(m) = view_back.take() {
             view_back = out.try_show(m).err();
@@ -3532,6 +3585,7 @@ fn player_session(
                         page,
                         app::View::Synth
                             | app::View::Sample
+                            | app::View::Pads
                             | app::View::Mixer
                             | app::View::Looper
                             | app::View::Chain
@@ -3613,7 +3667,7 @@ fn player_session(
         // Sample page (one undo step).
         for (k, _) in touch_hold.due(t).iter().enumerate().filter(|(_, &d)| d) {
             out.show(gui::ToUi::QLinkTouch(k, false));
-            if app.view() == app::View::Sample {
+            if app.view().sampler() {
                 out.show(gui::ToUi::SampleLift);
             }
         }
@@ -3722,7 +3776,7 @@ fn player_session(
                     // opening the Sample tab gives them back to the drum kit.
                     if v == app::View::Synth && !synth_on {
                         kit_to = Some(synth_kit);
-                    } else if v == app::View::Sample && synth_on {
+                    } else if v.sampler() && synth_on {
                         kit_to = Some(player.kit());
                     }
                     out.show(gui::ToUi::Show(v));
@@ -3748,14 +3802,17 @@ fn player_session(
                 app::Effect::Map(m) => out.show(gui::ToUi::Map(Box::new(m))),
                 app::Effect::PlayView(v) => out.show(gui::ToUi::PlayView(v)),
                 app::Effect::SampleEditor(e) => out.show(gui::ToUi::SampleEditor(e)),
+                app::Effect::Browse(k) => out.show(gui::ToUi::Browse(k)),
                 // PROG EDIT: the sound the pads play (Jay, 20:40Z).
                 app::Effect::ProgEdit => {
                     let synth_now = kit_to.map_or(synth_on, |k| k == synth_kit);
                     if synth_now {
                         later.extend(app.open_tab(app::View::Synth));
                     } else {
-                        out.show(gui::ToUi::SampleEditor(sample_page::Editor::Pads));
-                        later.extend(app.open_tab(app::View::Sample));
+                        // The Pads tab on its Pad view: the pad's settings.
+                        app.set_pads_browse(false);
+                        out.show(gui::ToUi::PadsView(mpfree_sampler_ui::pads_tab::PAD_VIEW));
+                        later.extend(app.open_tab(app::View::Pads));
                     }
                 }
                 app::Effect::Fill(on) => time.set_fill(on, 0),
@@ -4227,6 +4284,16 @@ fn player_session(
         }
         peak = peak.max(p);
         window_peak = window_peak.max(p);
+        // The browser's preview, over everything on the main out.
+        if let Some(pv) = preview.as_mut() {
+            if pv.mix(RATE, &mut left, &mut right) {
+                if let Some(done) = preview.take() {
+                    if preview_back.replace(done).is_some() {
+                        out.note("preview: two sounds going back; one freed on the audio thread");
+                    }
+                }
+            }
+        }
         for f in 0..PERIOD {
             frames[2 * f] = float_to_s32(left[f]);
             frames[2 * f + 1] = float_to_s32(right[f]);

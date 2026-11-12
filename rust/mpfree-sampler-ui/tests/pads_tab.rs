@@ -70,7 +70,8 @@ fn the_map_shows_the_banks_pads_and_the_list_the_kits_sounds() {
         bar.subtitle,
         "6 of 16 pads with a sound · 3 sounds in the kit"
     );
-    assert_eq!((bar.active, bar.tabs[0].as_str()), (pads_tab::TAB, "Pads"));
+    assert_eq!(bar.tabs, ["Browse", "Pad"]);
+    assert_eq!(bar.active, pads_tab::PAD_VIEW);
     let map = s.ui.get::<PadMap>(pads_tab::MAP).unwrap();
     assert_eq!(map.title, "Kit 1 · Breaks");
     let names: Vec<&str> = map.cells.iter().take(9).map(|c| c.name.as_str()).collect();
