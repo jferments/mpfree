@@ -198,7 +198,10 @@ fn a_change_to_the_layers_stops_the_print() {
     r.l.print(0, Some(p)).unwrap();
     r.run(r.frame + 4 * FADE as u64, &silence);
     assert!(r.l.status().printed);
-    assert!(r.l.take_print(0).is_some(), "the stale one waits to be dropped");
+    assert!(
+        r.l.take_print(0).is_some(),
+        "the stale one waits to be dropped"
+    );
 }
 
 /// The fit scenario at one period size: print in, Overdub (which fits the
@@ -238,7 +241,10 @@ fn fit_session(period: usize) -> (Rig, Vec<u64>) {
     let f = next(r.frame + 4 * FADE as u64);
     r.run(f, &silence);
     let h = r.l.history();
-    assert!(matches!(h.done(), [Step::Fit(_), Step::Overdub(_)]), "{h:?}");
+    assert!(
+        matches!(h.done(), [Step::Fit(_), Step::Overdub(_)]),
+        "{h:?}"
+    );
     marks.push(r.frame);
     // Undo the overdub, then the fit: the loop dips and is back as it was.
     r.cmd(L::Undo);
