@@ -55,10 +55,10 @@ use mpfree_play::{
     Cue, Event, Includes, Launch, Out, PlayView, Player, Rec, Recorder, Sink, Takes, TrackArps,
 };
 use mpfree_seq::arrange::{scene_length, scenes_to_song, song_to_scenes};
+use mpfree_seq::mpfree_moves::Kind;
 use mpfree_seq::mpfree_moves::{Input, MoveLog};
 use mpfree_seq::steps::{Change, Grid, Step};
-use mpfree_seq::mpfree_moves::Kind;
-use mpfree_seq::{Clip, ModelError, Project, Track, TouchPoint, SLOTS};
+use mpfree_seq::{Clip, ModelError, Project, TouchPoint, Track, SLOTS};
 use mpfree_time_ui::editor::{EditAction, Editor};
 use mpfree_time_ui::view::{
     bars_label, clips_after, AudioAction, EditInfo, MorphInfo, RegionId, TimeAction, TimeState,
@@ -2578,7 +2578,10 @@ mod tests {
         let st = h.state();
         assert_eq!((st.launch(0).map(|l| l.slot), st.cues.len()), (Some(1), 0));
         // The view says it shows the one switch made on track 1.
-        assert_eq!(h.view.includes().map(|i| i.switches[..2].to_vec()), Some(vec![1, 0]));
+        assert_eq!(
+            h.view.includes().map(|i| i.switches[..2].to_vec()),
+            Some(vec![1, 0])
+        );
         let hits: Vec<(u64, usize)> = pads.hits.iter().map(|&(f, p, _)| (f, p)).collect();
         let want = [
             (0, 4),

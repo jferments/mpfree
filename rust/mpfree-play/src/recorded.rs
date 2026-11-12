@@ -209,8 +209,7 @@ impl Recent {
                     }
                     let n = k.n as usize;
                     for i in 0..n {
-                        self.scratch_touch[i] =
-                            self.touch[(k.from as usize + i) % RECENT_TOUCH];
+                        self.scratch_touch[i] = self.touch[(k.from as usize + i) % RECENT_TOUCH];
                     }
                     view.record(&k.rec, &self.scratch_touch[..n], &[])
                 }

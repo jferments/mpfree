@@ -607,9 +607,9 @@ impl PlayView {
                 }
                 true
             }
-            Rec::Move(k) => {
-                shown.fold(true, |ok, c| c.put_move(k.target, k.map, moves, k.len) && ok)
-            }
+            Rec::Move(k) => shown.fold(true, |ok, c| {
+                c.put_move(k.target, k.map, moves, k.len) && ok
+            }),
         }
     }
 
