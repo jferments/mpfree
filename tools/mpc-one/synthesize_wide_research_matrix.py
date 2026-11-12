@@ -17,6 +17,7 @@ SOURCE = {
     "p1": "static/wide/p1-sram-ghidra.json",
     "p3": "static/wide/p3-uboot-ghidra.json",
     "ledger": "static/wide/evidence-ledger.json",
+    "fdt": "static/wide/p1-p3-embedded-fdt-crossstage.json",
     "uboot": "static/v11/v11-ghidra-uboot.json",
     "spl": "static/v11/v11-ghidra-spl.json",
     "updater": "static/v11/v11-ghidra-az01-update.json",
@@ -116,10 +117,26 @@ def build(read):
         confirmed(all(v.get("same_as_saved") for v in comparisons.values())),
         "%d/%d candidate boot variables match." % (sum(v.get("same_as_saved",False) for v in comparisons.values()),len(comparisons)),
         "Establish runtime environment selection and override precedence.","static/wide/storage-env-boot-dtb.json")
+    # Embedded U-Boot FDT uses aliases mmc0->ff0f0000 and
+    # mmc1->ff0c0000. The latter controller is explicitly disabled.
+    fdt_text="\n".join(d["fdt"]["uboot_stage_fdt"][0]["selected_dts_lines"])
+    mmc0_emmc = ('mmc0 = "/dwmmc@ff0f0000";' in fdt_text and
+                 'mmc1 = "/dwmmc@ff0c0000";' in fdt_text)
+    mmc1_chunk = fdt_text.split("dwmmc@ff0c0000 {",1)[1].split("};",1)[0] if "dwmmc@ff0c0000 {" in fdt_text else ""
+    mmc0_chunk = fdt_text.split("dwmmc@ff0f0000 {",1)[1].split("};",1)[0] if "dwmmc@ff0f0000 {" in fdt_text else ""
+    second_mmc_disabled = ('status = "disabled";' in mmc1_chunk)
+    first_mmc_emmc = ('status = "okay";' in mmc0_chunk and
+                      'non-removable;' in mmc0_chunk and
+                      'bus-width = <0x08>;' in mmc0_chunk)
     row("U-Boot","Which MMC devices are tried in U-Boot order?","static-supported",
-        "Configured boot_targets=%s and bootdelay=%s, but MMC numbering-to-physical-port mapping is unknown." %
+        "Configured boot_targets=%s with bootdelay=%s; embedded U-Boot FDT aliases mmc0=eMMC-controller and mmc1=SDMMC-controller." %
         (env["boot_targets"].strip(),env["bootdelay"]),
-        "Map mmc0/mmc1 to eMMC versus removable SD using physical device info.","static/wide/storage-env-boot-dtb.json")
+        "Verify runtime probing and board-level removable storage wiring.","static/wide/storage-env-boot-dtb.json + p1-p3-embedded-fdt-crossstage.json")
+    row("U-Boot","Does embedded U-Boot FDT enable its SDMMC boot target?",
+        confirmed(mmc0_emmc and first_mmc_emmc and second_mmc_disabled),
+        "Embedded U-Boot FDT maps mmc0 to active non-removable 8-bit eMMC at ff0f0000; mmc1 at ff0c0000 has status disabled. This is not runtime proof of impossibility.",
+        "Determine if U-Boot dynamically enables SDMMC or reads a different runtime FDT before relying on SD fallback.",
+        "static/wide/p1-p3-embedded-fdt-crossstage.json")
     row("U-Boot","Is there a stock fallback to Fastboot?",
         confirmed("fastboot 0" in env["az01_recovercmd"]),
         "az01_bootcmd branches on dorecovery into az01_recovercmd/fastboot 0.",
