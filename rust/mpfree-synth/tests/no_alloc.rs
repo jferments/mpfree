@@ -1,6 +1,7 @@
 //! Poly's, FM's, Drums' and Pluck's `process` must not allocate or free. A counting global allocator
 //! watches a busy session: chords past the voice limit, mono and legato,
-//! glide, bend, pressure, automation of every parameter, AllOff, reset.
+//! glide, bend, pressure, per-note slides, tones and release velocities,
+//! tuning changes, automation of every parameter, AllOff, reset.
 //!
 //! This file is its own program, so its global allocator (the only unsafe
 //! code here, a pass-through to the system allocator) does not affect the
@@ -10,7 +11,7 @@ use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use mpfree_node::{Ctx, Node, NodeEvent, Timed};
+use mpfree_node::{Ctx, Expr, Node, NodeEvent, Timed, Tuning};
 use std::sync::Arc;
 
 use mpfree_synth::wavetable::table::{Table, FRAME};
@@ -62,14 +63,21 @@ fn exercise(s: &mut dyn Node, params: &[mpfree_node::ParamInfo], rate: u32) -> u
             .wrapping_add(1442695040888963407);
         (seed >> 33) as u32
     };
+    let just = mpfree_tuning::Builtin::Just.tuning(5, 432.0);
+    let standard = Tuning::standard();
     let before = CALLS.load(Ordering::Relaxed);
     watch(true);
     for block in 0..4000u64 {
         events.clear();
+        match block {
+            1000 => s.set_tuning(&just),
+            3000 => s.set_tuning(&standard),
+            _ => {}
+        }
         for _ in 0..rnd() % 6 {
             let off = rnd() % 128;
             let note = 24 + (rnd() % 80) as u8;
-            let ev = match rnd() % 9 {
+            let ev = match rnd() % 10 {
                 0..=2 => NodeEvent::NoteOn {
                     note,
                     velocity: 1 + (rnd() % 127) as u8,
@@ -89,6 +97,11 @@ fn exercise(s: &mut dyn Node, params: &[mpfree_node::ParamInfo], rate: u32) -> u
                         value: p.min + (p.max - p.min) * (rnd() % 1000) as f32 / 1000.0,
                     }
                 }
+                8 => NodeEvent::Expression {
+                    note,
+                    kind: [Expr::Slide, Expr::Tone, Expr::Release][rnd() as usize % 3],
+                    value: (rnd() % 200) as f32 / 10.0 - 10.0,
+                },
                 _ => NodeEvent::AllOff,
             };
             events.push(Timed::new(off, ev));
@@ -199,13 +212,19 @@ fn process_never_allocates() {
         (seed >> 33) as u32
     };
 
+    let just = mpfree_tuning::Builtin::Just.tuning(5, 432.0);
     watch(true);
     for block in 0..4000u64 {
         events.clear();
+        match block {
+            1000 => s.set_tuning(&just),
+            3000 => s.set_tuning(&Tuning::standard()),
+            _ => {}
+        }
         for _ in 0..rnd() % 6 {
             let off = rnd() % 128;
             let note = 24 + (rnd() % 80) as u8;
-            let ev = match rnd() % 9 {
+            let ev = match rnd() % 10 {
                 0..=2 => NodeEvent::NoteOn {
                     note,
                     velocity: 1 + (rnd() % 127) as u8,
@@ -225,6 +244,11 @@ fn process_never_allocates() {
                         value: p.min + (p.max - p.min) * (rnd() % 1000) as f32 / 1000.0,
                     }
                 }
+                8 => NodeEvent::Expression {
+                    note,
+                    kind: [Expr::Slide, Expr::Tone, Expr::Release][rnd() as usize % 3],
+                    value: (rnd() % 200) as f32 / 10.0 - 10.0,
+                },
                 _ => NodeEvent::AllOff,
             };
             events.push(Timed::new(off, ev));

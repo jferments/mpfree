@@ -17,8 +17,12 @@
 //! - **Events.** Note on/off, pressure (a note expression), bend (MIDI pitch
 //!   bend when the plugin takes MIDI, else a tuning expression on the held
 //!   notes, 2 semitones at full bend), `AllOff` (a note-off for every held
-//!   note) and parameter changes go to the plugin on their exact frame. The
-//!   transport (tempo, beats, playing) goes with every block. Parameter
+//!   note) and parameter changes go to the plugin on their exact frame.
+//!   Per-note expression maps to CLAP's own: a note's slide is its tuning
+//!   expression (with the bend added when the bend goes that way), its tone
+//!   is the brightness expression, and its release velocity goes in its
+//!   note-off.
+//!   The transport (tempo, beats, playing) goes with every block. Parameter
 //!   values the plugin sends back update [`Node::param`].
 //! - **State.** [`ClapControl`], taken before the node goes to the audio
 //!   thread, saves and loads the plugin's state and answers its main-thread
@@ -48,7 +52,9 @@ pub mod sys;
 #[doc(hidden)]
 pub mod testplug;
 
-use mpfree_node::{Ctx, Curve, Kind, Node, NodeEvent, NodeInfo, ParamInfo, Timed, Unit, MAX_BLOCK};
+use mpfree_node::{
+    Ctx, Curve, Expr, Kind, Node, NodeEvent, NodeInfo, ParamInfo, Timed, Unit, MAX_BLOCK,
+};
 use std::collections::HashMap;
 use std::ffi::{c_char, c_void, CStr, CString};
 use std::fmt;
@@ -315,6 +321,7 @@ impl Library {
                 events: Vec::with_capacity(MAX_EVENTS),
                 pending: Vec::with_capacity(MAX_PENDING),
                 held: [false; 128],
+                notes: NoteState::new(),
                 latency: 0,
                 stats: ClapStats::default(),
             })
@@ -845,6 +852,17 @@ fn key_of(p: &ParamSpec) -> OwnedParamKey {
     )
 }
 
+/// A plugin's range as [`ParamInfo::clamp`] needs it: finite ends (0 and 1
+/// stand in for one that is not), the lower first, and the default inside.
+/// `f32::clamp` panics on a NaN or reversed range, and a plugin (or a
+/// sandboxed plugin process) may report anything.
+fn safe_range(p: &ParamSpec) -> (f32, f32, f32) {
+    let finite = |x: f32, or: f32| if x.is_finite() { x } else { or };
+    let (a, b) = (finite(p.min, 0.0), finite(p.max, 1.0));
+    let (min, max) = if a <= b { (a, b) } else { (b, a) };
+    (min, max, finite(p.default, min).clamp(min, max))
+}
+
 /// The `'static` descriptions for a plugin's parameter list; their ids are
 /// their positions. Each distinct (plugin, list) is leaked once, for the
 /// life of the program.
@@ -862,24 +880,27 @@ pub fn intern_params(plugin_id: &str, list: Vec<ParamSpec>) -> &'static [ParamIn
     let infos: Vec<ParamInfo> = list
         .iter()
         .enumerate()
-        .map(|(i, p)| ParamInfo {
-            id: i as u16,
-            name: leak(&p.name),
-            group: leak(&p.group),
-            min: p.min,
-            max: p.max,
-            default: p.default,
-            unit: Unit::None,
-            curve: match &p.curve {
-                CurveSpec::Linear => Curve::Linear,
-                CurveSpec::Stepped => Curve::Stepped,
-                CurveSpec::Toggle => Curve::Toggle,
-                CurveSpec::Choice(names) => {
-                    let names: Vec<&'static str> = names.iter().map(|n| leak(n)).collect();
-                    Curve::Choice(Box::leak(names.into_boxed_slice()))
-                }
-            },
-            readonly: p.readonly,
+        .map(|(i, p)| {
+            let (min, max, default) = safe_range(p);
+            ParamInfo {
+                id: i as u16,
+                name: leak(&p.name),
+                group: leak(&p.group),
+                min,
+                max,
+                default,
+                unit: Unit::None,
+                curve: match &p.curve {
+                    CurveSpec::Linear => Curve::Linear,
+                    CurveSpec::Stepped => Curve::Stepped,
+                    CurveSpec::Toggle => Curve::Toggle,
+                    CurveSpec::Choice(names) => {
+                        let names: Vec<&'static str> = names.iter().map(|n| leak(n)).collect();
+                        Curve::Choice(Box::leak(names.into_boxed_slice()))
+                    }
+                },
+                readonly: p.readonly,
+            }
         })
         .collect();
     let infos: &'static [ParamInfo] = Box::leak(infos.into_boxed_slice());
@@ -1018,8 +1039,53 @@ pub struct ClapNode {
     events: Vec<EvSlot>,
     pending: Vec<(u16, f32)>,
     held: [bool; 128],
+    /// The bend and each note's own slide, tone and release velocity.
+    notes: NoteState,
     latency: u32,
     stats: ClapStats,
+}
+
+/// What the per-note events say, so a tuning expression carries the bend
+/// and the note's slide together, and a note starts with its own values.
+#[derive(Clone, Copy, Debug)]
+struct NoteState {
+    /// The bend in semitones, when it goes in tuning expressions (0 for a
+    /// plugin that takes MIDI: its bend goes as MIDI pitch bend).
+    bend: f64,
+    slide: [f32; 128],
+    tone: [f32; 128],
+    /// Release velocity for the coming note-off; NaN for none sent.
+    release: [f32; 128],
+}
+
+impl NoteState {
+    fn new() -> NoteState {
+        NoteState {
+            bend: 0.0,
+            slide: [0.0; 128],
+            tone: [0.0; 128],
+            release: [f32::NAN; 128],
+        }
+    }
+
+    /// A note's tuning expression: the bend plus its slide.
+    fn tuning(&self, key: u8) -> f64 {
+        self.bend + f64::from(self.slide[usize::from(key)])
+    }
+
+    /// At a note-off: its velocity (0 when none was sent), and the note
+    /// back to neutral.
+    fn off(&mut self, key: u8) -> f64 {
+        let k = usize::from(key);
+        self.slide[k] = 0.0;
+        self.tone[k] = 0.0;
+        let r = std::mem::replace(&mut self.release[k], f32::NAN);
+        if r.is_nan() {
+            0.0
+        } else {
+            f64::from(r)
+        }
+    }
 }
 
 // SAFETY: the raw pointers are into this node's own buffers (made in
@@ -1238,7 +1304,8 @@ impl ClapNode {
             NodeEvent::NoteOn { note, velocity } if notes && note < 128 => {
                 if velocity == 0 {
                     self.held[usize::from(note)] = false;
-                    self.note(CLAP_EVENT_NOTE_OFF, time, note, 0.0);
+                    let off = self.notes.off(note);
+                    self.note(CLAP_EVENT_NOTE_OFF, time, note, off);
                 } else {
                     self.held[usize::from(note)] = true;
                     self.note(
@@ -1247,11 +1314,53 @@ impl ClapNode {
                         note,
                         f64::from(velocity.min(127)) / 127.0,
                     );
+                    // A new note starts at the bend and its own values.
+                    let tuning = self.notes.tuning(note);
+                    if tuning != 0.0 {
+                        self.expression(time, CLAP_NOTE_EXPRESSION_TUNING, i16::from(note), tuning);
+                    }
+                    let tone = self.notes.tone[usize::from(note)];
+                    if tone != 0.0 {
+                        self.expression(
+                            time,
+                            CLAP_NOTE_EXPRESSION_BRIGHTNESS,
+                            i16::from(note),
+                            f64::from(tone),
+                        );
+                    }
                 }
             }
             NodeEvent::NoteOff { note } if notes && note < 128 => {
                 self.held[usize::from(note)] = false;
-                self.note(CLAP_EVENT_NOTE_OFF, time, note, 0.0);
+                let off = self.notes.off(note);
+                self.note(CLAP_EVENT_NOTE_OFF, time, note, off);
+            }
+            NodeEvent::Expression { note, kind, value } if notes && note < 128 => {
+                let Some(v) = kind.clamp(value) else {
+                    return;
+                };
+                let k = usize::from(note);
+                match kind {
+                    Expr::Slide => {
+                        self.notes.slide[k] = v;
+                        if self.held[k] {
+                            let t = self.notes.tuning(note);
+                            self.expression(time, CLAP_NOTE_EXPRESSION_TUNING, i16::from(note), t);
+                        }
+                    }
+                    Expr::Tone => {
+                        self.notes.tone[k] = v;
+                        if self.held[k] {
+                            self.expression(
+                                time,
+                                CLAP_NOTE_EXPRESSION_BRIGHTNESS,
+                                i16::from(note),
+                                f64::from(v),
+                            );
+                        }
+                    }
+                    Expr::Release => self.notes.release[k] = v,
+                }
             }
             NodeEvent::Pressure { note, value } if notes && note < 128 => {
                 self.expression(
@@ -1276,14 +1385,11 @@ impl ClapNode {
                     };
                     self.push_ev(EvSlot { midi });
                 } else {
+                    self.notes.bend = v * BEND_SEMITONES;
                     for k in 0..128u8 {
                         if self.held[usize::from(k)] {
-                            self.expression(
-                                time,
-                                CLAP_NOTE_EXPRESSION_TUNING,
-                                i16::from(k),
-                                v * BEND_SEMITONES,
-                            );
+                            let t = self.notes.tuning(k);
+                            self.expression(time, CLAP_NOTE_EXPRESSION_TUNING, i16::from(k), t);
                         }
                     }
                 }
@@ -1291,9 +1397,13 @@ impl ClapNode {
             NodeEvent::AllOff if notes => {
                 for k in 0..128u8 {
                     if std::mem::take(&mut self.held[usize::from(k)]) {
-                        self.note(CLAP_EVENT_NOTE_OFF, time, k, 0.0);
+                        let off = self.notes.off(k);
+                        self.note(CLAP_EVENT_NOTE_OFF, time, k, off);
                     }
                 }
+                let bend = self.notes.bend;
+                self.notes = NoteState::new();
+                self.notes.bend = bend;
             }
             NodeEvent::Param { id, value } => {
                 if let Some(p) = self.params.get(usize::from(id)) {
@@ -1489,6 +1599,7 @@ impl Node for ClapNode {
             self.inst.values[usize::from(id)].store(v.to_bits(), Ordering::Relaxed);
         }
         self.held = [false; 128];
+        self.notes = NoteState::new();
     }
 
     fn reset(&mut self) {
@@ -1502,6 +1613,7 @@ impl Node for ClapNode {
             }
         }
         self.held = [false; 128];
+        self.notes = NoteState::new();
     }
 
     fn process(&mut self, ctx: &Ctx, events: &[Timed], left: &mut [f32], right: &mut [f32]) {

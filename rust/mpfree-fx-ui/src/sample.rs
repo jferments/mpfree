@@ -6,10 +6,10 @@ use crate::perform::{self, PerformPanel};
 use crate::state::{make, FxState};
 use crate::view::{self, FxPanel};
 use mpfree_fx::ids::{
-    chorus, cloud, comb, compressor as comp, crush, delay, dj_filter as dj, drive, eq, filter,
-    flanger, master, perform as pf, phaser,
+    character, chorus, cloud, comb, compressor as comp, crush, delay, dj_filter as dj, drive, eq,
+    filter, flanger, master, perform as pf, phaser,
 };
-use mpfree_fx::{perform_state, CLOUD_PRESETS, LOFI_PRESETS};
+use mpfree_fx::{perform_state, presets};
 use mpfree_ui::widgets::{Chip, Header, Label};
 use mpfree_ui::{Align, EventKind, Fonts, Theme, Tone, Ui, UiEvent};
 
@@ -279,16 +279,29 @@ const SCENES: &[Scene] = &[
     },
 ];
 
+/// Character with its Pushed tape preset (after the lock scenes, so the
+/// earlier screens keep their numbers).
+const CHARACTER: Scene = Scene {
+    name: "21-character",
+    about: "Character with the Pushed tape preset: the tape curve, and a loud low sine held by it",
+    id: "mpfree.fx.character",
+    place: "Drums · insert 2",
+    values: &[],
+    preset: Some(3),
+    page: "Character",
+    focus: Some(character::AMOUNT),
+    meters: &[],
+};
+
 /// The effect `s` shows, with its values, as a page.
 fn scene(s: &Scene, fonts: Fonts) -> Result<Sample, String> {
     let mut node = make(s.id).ok_or_else(|| format!("no effect {}", s.id))?;
     node.prepare(RATE, 512);
     if let Some(i) = s.preset {
-        let list = match s.id {
-            "mpfree.fx.cloud" => CLOUD_PRESETS,
-            _ => LOFI_PRESETS,
-        };
-        for &(id, v) in list[i].values {
+        let p = presets(s.id)
+            .get(i)
+            .ok_or_else(|| format!("{}: no preset {i}", s.name))?;
+        for &(id, v) in p.values {
             node.set_param(id, v);
         }
     }
@@ -525,5 +538,6 @@ pub fn samples(fonts: impl Fn() -> Fonts) -> Result<Vec<Sample>, String> {
     out.push(perform_scene(fonts(), true)?);
     out.push(perform_scene(fonts(), false)?);
     out.extend(lock_scenes(&fonts)?);
+    out.push(scene(&CHARACTER, fonts())?);
     Ok(out)
 }
