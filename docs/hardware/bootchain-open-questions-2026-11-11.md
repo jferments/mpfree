@@ -1,5 +1,23 @@
 # MPFree: comprehensive open-question inventory after bootchain-wide 20261111T123312Z
 
+> **2026-11-12 research update:** This historical inventory is retained for provenance.
+> The current active question tracker is generated per research run by
+> `tools/mpc-one/synthesize_wide_research_matrix.py`, with **42 evidence-linked
+> questions spanning seven tracks** (ROM, SPL, U-Boot, memory, updater, USB,
+> recovery). See [seven-track 2026-11-12 research report](bootchain-seven-track-research-round-2026-11-12.md).
+> Two important changes: 3.10 `mode-update` aliases loader mode
+> `0x5242C301` rather than the distinct `0xEF08A53C` ROM-request value;
+> embedded U-Boot FDT maps `mmc0` to an enabled 8-bit non-removable eMMC
+> controller, but `mmc1` to a **disabled** SDMMC controller. Saved
+> `boot_targets=mmc0 mmc1` therefore does **not** prove an operational
+> SD-card recovery route. No physical MaskROM/restore path yet proven.
+>
+> The updated integrated Ghidra/QEMU runner expands SPL, U-Boot and updater
+> analysis along with USB; source-only regression tests run before the next
+> owner-private SHA-indexed ZIP. Hardware and firmware writes remain out of scope.
+
+
+
 **Evidence boundary:** Everything here is based on the owner's offline SHA-validated
 P1 SRAM SPL, P2 U-Boot environment, P3 U-Boot executable, embedded device
 trees, P6 stock rootfs, and original 3.10 update-container inventory.
