@@ -27,7 +27,8 @@ PINNED={
  0x1d924,0x1d9fc,0x1d274,0x1d374,0x1d644,
  0x16ff8,0x1b49c,0x1ca80,
  0x14fc4,0x152b0,0x153ac,0x15714,0x158fc,
- 0x164b0,0x165f0,0x1a178,0x1a674,0x1aabc,0x1afd4,
+ 0x164b0,0x165f0,0x1a178,0x1a314,0x1a674,0x1a8d0,
+ 0x1a9bc,0x1aabc,0x1afd4,0x1b35c,0x1b27c,0x1b150,
  0x1be1c,0x1c2bc,0x1d8c4],
  'spl':[0xff704004,0xff7041a8,0xff7052c0,0xff705310,
         0xff705350,0xff7054a4,0xff7056a8],
@@ -206,6 +207,23 @@ def mpfree_v11_entrypoint():
                     'size':int(fn.getBody().getNumAddresses()),
                     'graph':edges.get(fn.getEntryPoint().getOffset(),{}),
                     'pinned':fn.getEntryPoint().getOffset() in original}
+            # Raw ARM instruction record for the small set of functions
+            # where Ghidra C return types and structure offsets are uncertain.
+            # These records are written ONLY to the private owner ZIP.
+            if role=='libaz01-prog' and key in (
+                '0x0001a314','0x0001a674','0x0001a8d0',
+                '0x0001aabc','0x0001d644','0x0001a178',
+                '0x0001b35c','0x0001afd4'):
+                raw_ins=[]
+                iterator=listing.getInstructions(fn.getBody(),True)
+                while iterator.hasNext() and len(raw_ins)<550:
+                    ins=iterator.next()
+                    raw_ins.append({'address':str(ins.getAddress()),
+                                    'mnemonic':str(ins.getMnemonicString()),
+                                    'text':str(ins),
+                                    'flow':str(ins.getFlowType())})
+                record['machine_instruction_evidence']=raw_ins
+                record['instruction_capture_limited']=iterator.hasNext()
             try:
                 dec=decoder.decompileFunction(fn,65,monitor)
                 if dec and dec.decompileCompleted() and dec.getDecompiledFunction():
