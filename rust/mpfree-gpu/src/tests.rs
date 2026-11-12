@@ -283,6 +283,21 @@ fn a_dropped_mask_is_uploaded_again_when_it_comes_back() {
 }
 
 #[test]
+fn a_box_narrower_than_nothing_draws_nothing_and_does_not_panic() {
+    // A widget laid out narrower than it draws can ask for a box of
+    // negative width; the software canvas draws nothing, and so must this.
+    let gpu = gpu();
+    let mut r = Renderer::new(&gpu, 64, 48, Rotation::Deg0).unwrap();
+    let mut rec = Recorder::new(64, 48);
+    rec.begin_frame();
+    rec.fill_rect(Rect::new(0, 0, 64, 48), Color::rgb(0x102030));
+    rec.fill_round_rect(Rect::new(10, 10, -6, 20), 8, Color::rgb(0xFFFFFF));
+    rec.stroke_round_rect(Rect::new(10, 10, 20, -4), 8, 2, Color::rgb(0xFFFFFF));
+    r.play(&gpu, rec.ops(), rec.store(), &[]);
+    assert!(r.read_native(&gpu).iter().all(|&p| p == 0x102030));
+}
+
+#[test]
 fn gpus_on_several_threads_do_not_end_each_others_display() {
     // EGL gives them all one display; one going must not end it for the
     // others (it did, now and then, when tests ran side by side).

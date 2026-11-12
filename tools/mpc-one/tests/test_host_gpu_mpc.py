@@ -48,6 +48,9 @@ case "$1" in
   compute) echo "compute: 128 frames x 64 taps: gpu p50 400 p99 900 max 1200; cpu (one core) p50 60" ;;
   screens) n=$(ls pages | grep -c '\.mpdl$'); echo "screens: $n pages, 30 frames each timed"
            echo "summary: gpu against software: at most 2 levels apart"; exit "$FAKE_SCREENS_RC" ;;
+  panel) n=$(ls pages | grep -c '\.mpdl$'); echo "panel: $n pages drawn on the GPU and shown 1500 ms each"
+         echo "panel: the framebuffer holds what was written: yes"
+         echo "summary: panel showed $n pages from the GPU"; exit "$FAKE_PANEL_RC" ;;
 esac
 '''
 
@@ -127,7 +130,7 @@ class GpuBenchTests(unittest.TestCase):
                     "MPFREE_APP_TEST": "1", "MPFREE_ACCEPT_GPU_BENCH": "YES", "FAKE_STAGE": self.stage,
                     "FAKE_LOG": self.log, "FAKE_ROOT": self.root, "FAKE_REMOTE_PATH": remote, "FAKE_SCREEN": screen,
                     "FAKE_APP": app, "FAKE_ACVS": "inactive", "FAKE_PROGRAM": standin,
-                    "FAKE_RENDERER": "Mali-T760 (Panfrost)", "FAKE_SCREENS_RC": "0"}
+                    "FAKE_RENDERER": "Mali-T760 (Panfrost)", "FAKE_SCREENS_RC": "0", "FAKE_PANEL_RC": "0"}
         self.key = os.path.join(t, "key")
         th.write(self.key, "fake key\n", 0o600)
         self.program = os.path.join(t, "build", "mpfree-gpu-bench")
@@ -152,7 +155,7 @@ class GpuBenchTests(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
-    def run_helper(self, answers="\n" * 4, pages=True, **env):
+    def run_helper(self, answers="\n" * 5, pages=True, **env):
         cmd = [sys.executable, "-I", HELPER, "--ip", "192.0.2.141", "--key", self.key, "--work", self.work,
                "--report", self.report, "--program", self.program]
         if pages:
@@ -171,11 +174,14 @@ class GpuBenchTests(unittest.TestCase):
                      "render node: /dev/dri/renderD128", "found: /usr/lib/libEGL.so.1", "GPU-OK",
                      "copied the benchmark and 3 pages; every hash on the MPC matches",
                      "gpu: Mali-T760 (Panfrost)", "compute: 128 frames x 64 taps", "screens: 3 pages",
-                     "at most 2 levels apart", "pad player: active (started again)",
+                     "at most 2 levels apart", "panel: 3 pages drawn on the GPU",
+                     "the framebuffer holds what was written: yes", "summary: panel showed 3 pages",
+                     "the screen keeps the last page", "pad player: active (started again)",
                      "RESULT: the GPU benchmark ran"):
             self.assertIn(text, res.stdout)
         self.assertEqual(self.lines("bench: "), ["describe", "compute --iterations 500",
-                                                 "screens pages --frames 30"])
+                                                 "screens pages --frames 30",
+                                                 "panel pages --hold-ms 1500 --frames 60"])
         # Services: only our own pad player is stopped for the runs and started again after.
         changes = [c for c in self.lines("systemctl: ") if not c.startswith("is-active ")]
         self.assertEqual(changes, ["stop mpfree-test-app.service", "start mpfree-test-app.service"])
@@ -235,6 +241,20 @@ class GpuBenchTests(unittest.TestCase):
         self.assertEqual(res.returncode, 1)
         self.assertIn("screens ended with exit code 3", res.stdout)
         self.assertIn("(started again)", res.stdout)
+        self.assertNotIn("panel pages", self.lines("bench: "))
+
+    def test_the_screen_step_can_be_skipped_or_fail_and_the_log_display_comes_back(self):
+        th.write(os.path.join(self.tmp, "screen-state"), "active\n")
+        res = self.run_helper(answers="\n\n\ns\n")
+        self.assertEqual(res.returncode, 0, res.stdout)
+        self.assertEqual(self.lines("bench: ")[-1], "screens pages --frames 30")
+        res = self.run_helper(FAKE_PANEL_RC="1")
+        self.assertEqual(res.returncode, 1)
+        self.assertIn("panel ended with exit code 1", res.stdout)
+        self.assertNotIn("the screen keeps the last page", res.stdout)
+        changes = [c for c in self.lines("systemctl: ") if not c.startswith("is-active ")]
+        self.assertIn("start mpfree-test-screen.service", changes)
+        self.assertEqual(changes[-1:], ["start mpfree-test-screen.service"])
 
     def test_q_stops_before_the_copy(self):
         res = self.run_helper(answers="q\n")

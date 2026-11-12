@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""mpfree-gpu-bench on the kexec test build: what drawing on the MPC One's GPU costs. RAM ONLY on the MPC.
+"""mpfree-gpu-bench on the kexec test build: what drawing on the MPC One's GPU costs. RAM ONLY on the MPC
+(and, in step 6, the screen's picture).
 
 The performance plan's step G2 ("GPU drawing and compute"). Run it after
 `collect-over-ssh.sh --kexec-boot` has started the test build from the USB
@@ -36,12 +37,23 @@ first waits for you to press Enter:
   5. `mpfree-gpu-bench screens pages --frames 30` (a few minutes): every page
      drawn on the GPU and in software at the panel's size, timed, and the
      GPU's picture checked against the software one.
+  6. `mpfree-gpu-bench panel pages --hold-ms 1500 --frames 60` (about two
+     minutes): the GPU's pictures on the panel. Each page is drawn on the
+     GPU, read back and written to /dev/fb0, and stays on the screen for
+     1.5 s; then the busiest page is drawn and copied to the panel 60 times
+     the GPU's way and 60 times software's, timed. It writes the screen as
+     the app's screen does (whole frames to /dev/fb0, `0,0` to its sysfs
+     `pan` file; mpfree_ui::fb::FbTarget), never creates either, and
+     changes no display setting. The log display was stopped in step 3; if
+     it was running it starts again and redraws, otherwise the last page
+     stays on the screen until something draws over it.
 
-The benchmark draws offscreen only, through Mesa's surfaceless EGL on the
-GPU's render node, as the offscreen GPU tests of 9 Nov did: it opens no
-display, takes no DRM master and changes no display setting; the screen
-keeps what it shows. It runs as an ordinary process (no real-time priority)
-and writes nothing on the MPC; its output goes into this report.
+The benchmark draws through Mesa's surfaceless EGL on the GPU's render
+node, as the offscreen GPU tests of 9 Nov did: it opens no display, takes no
+DRM master and changes no display setting. Steps 4 and 5 leave the screen
+as it is; step 6 writes pictures to it as above. It runs as an ordinary
+process (no real-time priority) and writes nothing else on the MPC; its
+output goes into this report.
 
 Nothing here writes to the eMMC (the test build cannot see it), the U-Boot
 environment, the SD card or the stick. To go back: switch the MPC off with its
@@ -81,6 +93,7 @@ PAGES_MAX = 32 << 20
 DESCRIBE = ("describe", 120)
 COMPUTE = ("compute --iterations 500", 600)
 SCREENS = ("screens pages --frames 30", 1500)
+PANEL = ("panel pages --hold-ms 1500 --frames 60", 900)
 DEFAULT_SSH = {
     "ip": os.environ.get("MPC_IP", "10.42.0.141"),
     "port": int(os.environ.get("MPC_PORT", "2222")),
@@ -265,8 +278,8 @@ def main(argv):
     if not app.TESTING and not sys.stdin.isatty():
         raise Stop("run this from a terminal: each step waits for you to press Enter")
     out = kexec.Out(args.report)
-    out.say("MPFree GPU benchmark on the test build (changes RAM on the MPC only; draws offscreen)")
-    total = 5
+    out.say("MPFree GPU benchmark on the test build (changes RAM on the MPC only; step 6 draws on the screen)")
+    total = 6
 
     out.say(f"\n[1/{total}] Workstation checks (read-only on the MPC)")
     program, digest = check_program(out, args.program)
@@ -359,6 +372,19 @@ def main(argv):
             rc, _ = app.stream(mpc, kexec.fill(RUN, ARGS=run_args), timeout, out)
             if rc != 0:
                 raise Stop(f"screens ended with exit code {rc}")
+
+        out.say(f"\n[{total}/{total}] The GPU's pictures on the screen, then GPU against software to the panel")
+        answer = app.ready(out, f"Shows each of the {len(pages)} pages for 1.5 s, drawn by the GPU (about two "
+                                "minutes). Writes the screen as the app does; no display setting changes.")
+        if answer == "quit":
+            raise Stop("stopped by you")
+        if answer == "go":
+            run_args, timeout = PANEL
+            rc, _ = app.stream(mpc, kexec.fill(RUN, ARGS=run_args), timeout, out)
+            if rc != 0:
+                raise Stop(f"panel ended with exit code {rc}")
+            if app.SCREEN_START not in stopped:
+                out.say("  (the screen keeps the last page until something draws over it)")
         result = 0
     except (Stop, KeyboardInterrupt) as err:
         out.say(f"\nSTOP: {str(err) or 'interrupted (Ctrl-C)'}")
