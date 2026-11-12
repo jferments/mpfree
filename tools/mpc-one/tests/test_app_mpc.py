@@ -470,12 +470,13 @@ class AppTests(unittest.TestCase):
         out = res.stdout
         for text in ("steps: app", "[3/3] The pad player that started at power-on (read-only",
                      "pad player (mpfree-test-app.service): active", "(systemd[1]) Started MPFree test boot",
-                     "pad player: 6 kits, 81 sounds", "your answer: loading ok", "Phase 1 of 12: Developer tools and Map controls",
+                     "pad player: 6 kits, 81 sounds", "start-up: the app was playing 9.5 s after power-on",
+                     "your answer: loading ok", "Phase 1 of 16: Developer tools and Map controls",
                      "button guide: MENU is button 11", "buttons pressed (note numbers): 11",
-                     "Phase 2 of 12: Developer pages: Performance, CPU by engine, Processes", "pads hit (pad:velocity as played): 1:18 1:124",
+                     "Phase 2 of 16: Developer pages: Performance, CPU by engine, Processes", "pads hit (pad:velocity as played): 1:18 1:124",
                      "buttons pressed (note numbers): 39", "pad level: Full Level (every hit 127)",
                      "data wheel: +1", "session pings and replies: 1", "your answer: soft and hard differ",
-                     "Phase 4 of 12: Grains", "repeat: 16 hits in the last second on pads 1 2; latched: 1 2; "
+                     "Phase 4 of 16: Play page: the four views and the mode buttons", "repeat: 16 hits in the last second on pads 1 2; latched: 1 2; "
                      "engine dropped 0 events, overflow 0", "STOP: stopped by you"):
             self.assertIn(text, out)
         # Phase 1's lines are not shown again in phase 2.
@@ -497,14 +498,19 @@ class AppTests(unittest.TestCase):
     def test_app_step_all_phases_and_the_status(self):
         write(self.app, "active\n")
         self.add_journal([(130.0, "mpfree[211]: status: 60 hits (0 from the screen), 40 repeats, 0 underruns")])
-        answers = "\n\n" + "\n\n\n" * 12
+        answers = "\n\n" + "\n\n\n" * 16
         res = self.run_helper(answers, MPFREE_APP_STEPS="app")
         self.assertEqual(res.returncode, 0, res.stdout)
-        self.assertIn("Phase 7 of 12: Arrange: record, overdub and undo", res.stdout)
-        self.assertIn("Phase 8 of 12: Audio looper: loop the pads", res.stdout)
-        self.assertIn("Phase 9 of 12: Sample tab: Wave and Chop", res.stdout)
-        self.assertIn("Phase 10 of 12: Prefs, System info and saving", res.stdout)
-        self.assertIn("Phase 12 of 12: Menus, console and STOP", res.stdout)
+        for title in ("Phase 5 of 16: Throws, the XY pad (Perform FX) and FILL",
+                      "Phase 6 of 16: Arrange: clips, takes, Capture, the song and the morph",
+                      "Phase 7 of 16: TRACK MUTE and SHIFT + TRACK MUTE",
+                      "Phase 11 of 16: Looper tab: record, layers, tools, undo history, trim",
+                      "Phase 12 of 16: Mixer, effect chains and macros",
+                      "Phase 13 of 16: Sample tab: Pads, Wave and Chop",
+                      "Phase 15 of 16: Touch: Touch lab, Calibrate touch and the Dev Touch page",
+                      "Phase 16 of 16: Menus, console and STOP"):
+            self.assertIn(title, res.stdout)
+        self.assertIn("start-up: no playing line yet", res.stdout)
         self.assertIn("The app's latest status", res.stdout)
         self.assertIn("    status: 60 hits (0 from the screen), 40 repeats, 0 underruns", res.stdout)
         self.assertIn("RESULT: all steps ran", res.stdout)
@@ -583,7 +589,7 @@ class AppTests(unittest.TestCase):
         for text in ("steps: line", "[3/3] The line input (STATE-CHANGING on the MPC, RAM only",
                      "pad player (mpfree-test-app.service): active", "the line input before (read-only):",
                      "    ACVA is card 1", "    --- card1/pcm0c/sub0/status", "    --- card1/pcm0p/sub0/hw_params",
-                     "Undo: Line input Off", "answer: LINE", "Phase 1 of 3: Line input on, and its meter",
+                     "Undo: Line input Off", "answer: LINE", "Phase 1 of 3: Line input on, and which jack is which",
                      "line input: on: /dev/snd/pcmC1D0c, rate 44100", "the line input now (read-only):",
                      "your answer: meter moved, L left", "Phase 2 of 3: Loop the line input",
                      "looper: loop of 2 bars at 3.1.000", "Phase 3 of 3: Line input off", "your answer: off ok",
