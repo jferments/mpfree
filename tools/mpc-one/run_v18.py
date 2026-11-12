@@ -262,6 +262,39 @@ def dataflow_findings(output,old,stages):
     record(output/"V18-REPAIRED-DATAFLOW-AND-85-QUESTIONS.json",findings)
     return findings
 
+def package_v18(output):
+    """Single private owner report archive with complete SHA-checked manifest."""
+    allowed={".json",".jsonl",".log",".txt",".md",".csv",".tsv"}
+    members=[];total=0
+    for candidate in sorted(output.rglob("*")):
+        if candidate.is_symlink():
+            raise ValueError("Symlink in owner-private evidence: "+str(candidate))
+        if candidate.is_dir():continue
+        if not candidate.is_file() or candidate.suffix not in allowed:
+            raise ValueError("Unexpected private output entry: "+str(candidate))
+        size=candidate.stat().st_size
+        total+=size
+        if size>192*1024*1024 or total>512*1024*1024:
+            raise ValueError("Private evidence exceeds bounded archive limit")
+        members.append({"name":candidate.relative_to(output).as_posix(),
+                        "bytes":size,"sha256":V17.digest(candidate)})
+    if not members:raise ValueError("No research evidence was generated")
+    dest=output.with_suffix(".zip")
+    with zipfile.ZipFile(dest,"x",compression=zipfile.ZIP_DEFLATED,compresslevel=6) as archive:
+        archive.writestr("ZIP_INDEX.json",json.dumps({
+            "schema":"mpfree-private-v18","private":True,"files":members
+        },indent=2)+"\n")
+        for item in members:
+            archive.write(output/item["name"],item["name"])
+    with zipfile.ZipFile(dest) as archive:
+        if archive.testzip():raise RuntimeError("V18 output ZIP failed CRC")
+        for item in members:
+            payload=archive.read(item["name"])
+            if len(payload)!=item["bytes"] or hashlib.sha256(payload).hexdigest()!=item["sha256"]:
+                raise RuntimeError("V18 output ZIP SHA mismatch: "+item["name"])
+    dest.with_suffix(".zip.sha256").write_text(V17.digest(dest)+"  "+dest.name+"\n")
+    return dest,len(members)
+
 def main():
     ap=argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--prior-v17",type=Path,
@@ -351,7 +384,7 @@ def main():
             "- Original proprietary firmware bytes are deleted with the temporary",
             "  fixture and are NOT packaged into the single private output ZIP.",""])
         (output/"V18-READ-ME-FIRST.md").write_text("\n".join(summary),encoding="utf8")
-        archive,files=V17.package(output)
+        archive,files=package_v18(output)
         print("\nONE PRIVATE V18 ZIP TO UPLOAD:",archive,flush=True)
         print("SHA256:",V17.digest(archive),"report files",files,flush=True)
         print("No physical device, USB or storage contacted.",flush=True)
