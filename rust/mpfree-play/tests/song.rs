@@ -7,9 +7,10 @@
 //! it the same at any period size, with the control thread applying
 //! started cues at once, late or never.
 
-use mpfree_play::{Cue, Event, Launch, Out, PlayView, Player, Sink, Started};
+use mpfree_play::{Cue, Event, Launch, Out, PlayView, Player, Sink, Started, SONG_TRACK};
 use mpfree_seq::mpfree_moves::{Kind, Map, Target};
-use mpfree_seq::mpfree_param::{OnTrack, RelAddr};
+use mpfree_seq::mpfree_param::{OnTrack, ParamAddr, RelAddr};
+use mpfree_seq::MorphRows;
 use mpfree_seq::{Clip, Note, Placement, Project, Track};
 use mpfree_transport::{Block, Command, Transport};
 
@@ -330,4 +331,74 @@ fn song_mode_off_plays_only_the_launches() {
     }
     assert!(log.0.is_empty());
     assert!(!view.song());
+}
+
+#[test]
+fn the_songs_own_lane_plays_the_morph_and_chases_after_a_locate() {
+    let mut s = session(at(3 * BAR));
+    s.project
+        .arrangement
+        .put_morph(
+            &[(0.0, 0.0, Kind::Ramp), (2.0 * BAR as f64, 1.0, Kind::Ramp)],
+            &[MorphRows { at: 0, a: 0, b: 1 }],
+            0,
+            2 * BAR,
+        )
+        .unwrap();
+    // Half a bar in, a locate to bar 2: the lane is at 0.5 there.
+    s.commands.push((at(BAR / 2), Command::Locate(BAR)));
+    let r = same_everywhere(&s);
+    let lanes: Vec<(u64, u16, ParamAddr, f32)> = r
+        .played
+        .iter()
+        .filter_map(|&(f, t, e)| match e {
+            Event::Lane { addr, value } => Some((f, t, addr, value)),
+            _ => None,
+        })
+        .collect();
+    assert!(lanes
+        .iter()
+        .all(|l| l.1 == SONG_TRACK && l.2 == ParamAddr::morph_pos(0)));
+    assert_eq!((lanes[0].0, lanes[0].3), (0, 0.0));
+    let after = lanes.iter().find(|l| l.0 >= at(BAR / 2)).unwrap();
+    assert_eq!(after.0, at(BAR / 2), "{lanes:?}");
+    assert!((after.3 - 0.5).abs() < 0.01, "{lanes:?}");
+    assert!((lanes.last().unwrap().3 - 1.0).abs() < 0.01, "{lanes:?}");
+}
+
+#[test]
+fn song_mode_off_lets_the_songs_lane_go() {
+    let mut p = session(at(2 * BAR)).project;
+    p.arrangement
+        .put_morph(
+            &[(0.0, 0.0, Kind::Ramp), (2.0 * BAR as f64, 1.0, Kind::Ramp)],
+            &[MorphRows { at: 0, a: 0, b: 1 }],
+            0,
+            2 * BAR,
+        )
+        .unwrap();
+    let mut on = PlayView::compile(&p, &[]).unwrap();
+    on.set_song(&p, true).unwrap();
+    let mut off = on.clone();
+    off.set_song(&p, false).unwrap();
+    let mut t = Transport::new(RATE, 120.0).unwrap();
+    t.command(0, Command::Play);
+    let (mut player, mut block, mut log) = (Player::new(), Block::new(), Log::default());
+    while t.frame() < at(2 * BAR) {
+        let view = if t.frame() < at(BAR) { &on } else { &off };
+        t.process(256, &mut block);
+        player.process(view, &block, &mut log);
+    }
+    let song: Vec<&(u64, u16, Event)> = log.0.iter().filter(|e| e.1 == SONG_TRACK).collect();
+    let last = song.last().unwrap();
+    assert_eq!(
+        (last.0, last.2),
+        (
+            at(BAR),
+            Event::Unlock {
+                addr: ParamAddr::morph_pos(0)
+            }
+        ),
+        "{song:?}"
+    );
 }
