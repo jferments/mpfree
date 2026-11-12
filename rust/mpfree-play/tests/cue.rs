@@ -224,7 +224,8 @@ fn a_launch_waits_for_the_bar_line_and_starts_the_clip_from_its_top() {
             track: 0,
             slot: Some(1),
             at: BAR,
-            origin
+            origin,
+            mute: None,
         }]
     );
     assert_eq!(
@@ -315,7 +316,8 @@ fn a_stop_waits_for_the_bar_line_too() {
             track: 0,
             slot: None,
             at: BAR,
-            origin: BAR
+            origin: BAR,
+            mute: None,
         }]
     );
     assert_eq!((r.launches, r.cues), (vec![], vec![]));

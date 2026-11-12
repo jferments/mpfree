@@ -77,7 +77,28 @@ mpfree_browser_ui::add(&mut ui, &browser)?;                      // the "browser
 // each frame while open:
 for a in mpfree_browser_ui::step(&mut ui, &mut browser) { /* BrowseAction */ }
 // SHIFT + BROWSE anywhere:
-browser.save(Snapshot::from_parts(meta, &[&transport, &sampler, ...]), now_utc);
+browser.save(Snapshot::from_parts(meta, &[&transport, ...]), now_utc);
+```
+
+The sampler's part comes with the sounds it names, which the save writes into the project's `samples/` first where they aren't there yet (`Library::save_project_with`; a sound that can't be written leaves the last save standing):
+
+```rust
+let (text, sounds) = sample_page.save_part();                   // SamplePage in mpfree-hello
+snap.parts.push(("sampler".into(), text));
+let samples = sounds
+    .into_iter()
+    .map(|(file, s)| NewSample::new(file, Arc::new(move |w: &mut dyn Write| mpfree_sampler::wav::write(&s, w))))
+    .collect();
+browser.save_with(snap, samples, now_utc);
+// BrowseAction::ProjectOpened { loc, snap }:
+if let Some(text) = snap.part("sampler") {
+    let lib = Library::at(data_dir)?;
+    sample_page.open_part(text.to_string(), Box::new(move |f| {
+        lib.sample_path(&loc, f).and_then(std::fs::read).map_err(|e| e.to_string())
+    }));
+}
+// BrowseAction::LoadSample { path, .. } => sample_page.load_file(path, false),
+// BrowseAction::LoadToPad { path, .. } => sample_page.load_file(path, true),
 ```
 
 `BrowseAction`s for the app: `LoadSample` / `LoadToPad` / `LoadKit` / `LoadFactoryKit` (to the sampler thread's loader), `LoadPreset` (with the engine's folder name, to the synth thread's `mpfree-instruments`), `TryPreset` / `RevertPreset` / `PickerClosed` (pickers), `Audition` / `StopAudition` (the preview path), `ProjectOpened` (give each engine its part), `ProjectSaved`, `SaveRequested` (Save as got a name: call `save`), `SaveLists` (write it to the store as `files/browser/lists.txt`).
@@ -86,7 +107,8 @@ When `mpfree-library` is linked into the pad player, `tools/mpc-one/tests/test_h
 
 ## Not yet
 
-- The pad player wiring (Hello MPC thread), and the sampler loading a file from a path (sampler thread).
+- The pad player wiring (Hello MPC thread). The sampler's side is ready: its part, its sounds, Load and Load to pad (above).
+- `LoadKit` and `LoadFactoryKit`: a kit file's format and saving a kit on its own come later (sampler thread).
 - Each engine's part (`transport`, `clips`, `sampler`, `synth`, `mixer`, `fx`, `mod`, `arp`, `looper` ...): each thread adds its own.
 - A Versions list on the page, autosave, search, sorting by date.
 - AIFF and FLAC waveforms in the browser (their headers are read; WAV only gets the quick waveform).

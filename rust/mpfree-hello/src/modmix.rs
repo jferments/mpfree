@@ -162,6 +162,14 @@ impl ModMix {
         self.queue(offset, ev);
     }
 
+    /// A move lane's value (an FX move played from a clip): it holds the
+    /// parameter as a lock does, but a hand on the control beats it
+    /// (`ModEvent::Lane`). The lane's end comes as a lock's `None`.
+    pub fn lane(&mut self, mixer: &Mixer, offset: u32, addr: ParamAddr, value: f32) {
+        self.hold(mixer, addr);
+        self.queue(offset, ModEvent::Lane { addr, value });
+    }
+
     /// Makes a mixer parameter a target, with the value the mixer has now,
     /// if it isn't one. False when the engine can't hold it (full, or not
     /// a parameter the mixer has). Macros and the morph always are.
