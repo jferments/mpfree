@@ -156,6 +156,11 @@ def evaluate(dst, results, questions):
     if path.is_file():
         try: storage = json.loads(path.read_text())
         except Exception: pass
+    boot_assets = {}
+    asset_path = dst / "offline-boot-assets-v13.json"
+    if asset_path.is_file():
+        try: boot_assets = json.loads(asset_path.read_text())
+        except Exception: pass
     exact = {}
     cells = p3.get("pointer_cells", {})
     alias = p3.get("oem_permission_alias", {})
@@ -203,6 +208,53 @@ def evaluate(dst, results, questions):
     }
     counts = p3.get("constant_occurrences", {})
     x = counts.get("pmu_bootcount_address_candidate", {})
+    boot_files = boot_assets.get("files", {})
+    boot_image = boot_files.get("/boot/boot.scr.uimg", {}).get("uimage", {})
+    exact["boot_script_uimage_integrity"] = {
+        "status": ("ANSWERED_STATIC" if (boot_image.get("valid") and
+                    boot_image.get("header_crc_valid") and
+                    boot_image.get("payload_crc_valid")) else "UNRESOLVED"),
+        "header_crc_valid": boot_image.get("header_crc_valid"),
+        "payload_crc_valid": boot_image.get("payload_crc_valid"),
+        "image_type": boot_image.get("type"),
+        "entry_address": boot_image.get("entry_address"),
+        "limitation": "CRC is corruption detection, not an RSA or secure-boot signature.",
+    }
+    kernel = boot_files.get("/boot/zImage-6.18.44-az01-2026-08-10-rt6", {})
+    exact["vendor_310_arm_zimage_header"] = {
+        "status": ("ANSWERED_STATIC" if kernel.get("kernel_arm_zimage_magic")
+                   else "UNRESOLVED"),
+        "bytes": kernel.get("bytes"),
+        "sha256": kernel.get("sha256"),
+        "limitation": "A recognized ARM zImage header does not validate bootability.",
+    }
+    acva = boot_files.get("/boot/rk3288-az01-acva.dtb", {}).get("dtb", {})
+    acvac = boot_files.get("/boot/rk3288-az01-acva-c.dtb", {}).get("dtb", {})
+    exact["vendor_310_both_acva_dtbs"] = {
+        "status": ("ANSWERED_STATIC" if acva.get("valid") and acvac.get("valid")
+                   else "UNRESOLVED"),
+        "acva_nodes": acva.get("nodes"),
+        "acva_c_nodes": acvac.get("nodes"),
+        "acva_props": acva.get("properties"),
+        "acva_c_props": acvac.get("properties"),
+        "caveat": "Presence/validity does not identify which variant the actual MPC loads.",
+    }
+    if acva.get("valid") and acvac.get("valid"):
+        a_props = acva.get("selected_properties", {})
+        c_props = acvac.get("selected_properties", {})
+        differences = []
+        for node in sorted(set(a_props) | set(c_props)):
+            for key in sorted(set(a_props.get(node, {})) | set(c_props.get(node, {}))):
+                left, right = a_props.get(node, {}).get(key), c_props.get(node, {}).get(key)
+                if left != right:
+                    differences.append({"path": node, "property": key,
+                                        "acva": left, "acva_c": right})
+        exact["vendor_310_dtb_selected_property_differences"] = {
+            "status": "ANSWERED_STATIC",
+            "selected_property_differences": differences[:300],
+            "total_selected_property_differences": len(differences),
+            "caveat": "Selected properties only, not a complete DTB diff.",
+        }
     exact["pmu_bootcount_at_0xff7300a0"] = {
         "status": "UNRESOLVED",
         "static_candidate_literal_occurrences": x.get("locations", []),
@@ -228,6 +280,14 @@ def evaluate(dst, results, questions):
             # complete handler-to-runtime-state transition on this query alone.
             if exact["oem_unlock_permission_pointer_alias"]["status"] == "ANSWERED_STATIC":
                 entry["evidence"].append("oem_unlock_permission_pointer_alias")
+        if "permission" in q and ("what writes" in q or "initializ" in q):
+            if exact["oem_unlock_permission_pointer_alias"]["status"] == "ANSWERED_STATIC":
+                entry["evidence"].append("oem_unlock_permission_pointer_alias")
+                # Still requires startup initialization analysis; keep open.
+        if "boot script" in q and "valid" in q:
+            mark("boot_script_uimage_integrity")
+        if "device tree" in q and "rootfs" in q:
+            mark("vendor_310_both_acva_dtbs")
         if "download" in q and "permission" in q:
             mark("fastboot_download_permission_check")
         if "bootm" in q and ("completion" in q or "fastboot" in q):
