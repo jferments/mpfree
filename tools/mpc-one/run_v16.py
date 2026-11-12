@@ -123,6 +123,8 @@ CASES=(['permission_0','permission_1','permission_2','permission_highbit']+
        ['oem_mutate_%02d'%i for i in range(37)]+
        ['oem_trunc_%02d'%i for i in range(38)]+
        ['classify_legacy','classify_fdt','classify_invalid',
+        'fdt_valid','fdt_bad_magic','fdt_old_version','fdt_incompatible',
+        'flash_denied','erase_denied',
         'boot_callback','usb_exit_state']+
        ['receive_one','receive_31','receive_256','receive_4096','receive_clip'])
 
@@ -144,7 +146,7 @@ def qemu_real_code(dst,export,tmp,ghresult,args):
     r={'success':False,'stage':'real_vendor_qemu','board':'generic ARM virt; NOT RK3288',
        'physical_devices':False,'network':False,'vendor_update_executed':False,
        'vendor_functions_tested':['OEM','string_compare','permission','image_classifier',
-                                  'boot_callback','usb_exit_state','receive'],
+                                  'boot_callback','usb_exit_state','receive','FDT_header','flash_denied','erase_denied'],
        'tests_planned':len(CASES),'cases':[]}
     serial=dst/'v16-qemu-vendor-function-console.log'
     proc=None;master=slave=None
