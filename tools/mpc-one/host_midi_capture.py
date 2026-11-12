@@ -11,11 +11,19 @@ line with the phase the owner is performing, decodes USB-MIDI event packets
 (4 bytes: cable/CIN + 3 MIDI bytes), reassembles SysEx, and writes a report.
 
 Nothing is sent to the controller and nothing is written on the MPC.
+
+Two phase sets (--phases, or MPFREE_CAPTURE_PHASES in collect-over-ssh.sh):
+- controller (default): the pads, Q-Links, wheel and buttons, as in 2026-11-10.
+- midi-cv: which USB-MIDI cable carries the DIN MIDI In and Out jacks, and
+  whether the CV/Gate jacks are driven over USB-MIDI at all and in what
+  form. The owner sets up a MIDI track and a CV track in Akai's app before
+  starting (see MIDI_CV_SETUP); the capture itself only reads.
 usbmon's text interface shows at most 32 data bytes per transfer, so longer
 transfers (for example big LED SysEx bursts) are marked as truncated.
 """
 import argparse
 import collections
+import os
 import re
 import subprocess
 import sys
@@ -25,6 +33,9 @@ from pathlib import Path
 
 SENTINEL = "MPFREE PASSIVE USBMON CAPTURE V1"
 PHASE_SECONDS = 8.0
+# Tests set this so a run takes seconds; it changes nothing else.
+if os.environ.get("MPFREE_MIDI_CAPTURE_TEST") == "1":
+    PHASE_SECONDS = 0.3
 
 PHASES = (
     ("idle", "Touch NOTHING (baseline)."),
@@ -38,6 +49,30 @@ PHASES = (
     ("full_level", "Press FULL LEVEL twice (on, then off again)."),
     ("play_stop", "Press PLAY, wait a second, then press STOP."),
 )
+
+MIDI_CV_PHASES = (
+    ("idle", "Touch NOTHING (baseline). Akai's app shows the MIDI track."),
+    ("din_in", "Play a few notes on the device plugged into the MPC's 5-pin MIDI In jack "
+               "(s + Enter to skip if nothing is plugged in)."),
+    ("din_out", "With the MIDI track selected, hit pads 1, 5, 9 and 13, one at a time."),
+    ("cv_notes", "Select the CV track. Hit pad 1, then pad 13, one at a time."),
+    ("cv_hold", "With the CV track still selected, HOLD pad 1 for about 3 s, then let go."),
+    ("cv_slider", "On the CV track's overview of CV outputs, move ONE slider slowly up, then down "
+                  "(s + Enter to skip if you cannot find it)."),
+)
+
+# Shown before the capture starts: what to prepare in Akai's app. The menu
+# names are from the MPC 3.6 user guide (Track types, MIDI Tracks, CV
+# Tracks) and are not checked on this unit.
+MIDI_CV_SETUP = (
+    "Before you press Enter, in Akai's app (stock 3.6, normal use, nothing saved):",
+    "  1. Make a new MIDI track and set its output to the MIDI Out jack, channel 1.",
+    "  2. Make a new CV track (it drives the CV/Gate jacks; nothing needs to be plugged in).",
+    "  3. Select the MIDI track. Do not save the project or change Preferences.",
+    "  4. Optional: plug a keyboard or other MIDI device into the 5-pin MIDI In jack.",
+)
+
+PHASE_SETS = {"controller": PHASES, "midi-cv": MIDI_CV_PHASES}
 
 CIN_LEN = {0x0: 3, 0x1: 3, 0x2: 2, 0x3: 3, 0x4: 3, 0x5: 1, 0x6: 2, 0x7: 3,
            0x8: 3, 0x9: 3, 0xA: 3, 0xB: 3, 0xC: 2, 0xD: 2, 0xE: 3, 0xF: 1}
@@ -144,7 +179,16 @@ def main(argv=None):
     for a in ("--ip", "--user", "--key", "--script", "--report"):
         ap.add_argument(a, required=True)
     ap.add_argument("--port", required=True, type=int)
+    ap.add_argument("--phases", choices=sorted(PHASE_SETS), default="controller")
     args = ap.parse_args(argv)
+    phases = PHASE_SETS[args.phases]
+    if args.phases == "midi-cv":
+        for line in MIDI_CV_SETUP:
+            print(line, file=sys.stderr)
+        try:
+            input("Press Enter when that is set up (Ctrl+C stops, nothing has run on the MPC yet): ")
+        except EOFError:
+            return 1
 
     report = open(args.report, "w", encoding="utf-8")
 
@@ -182,6 +226,7 @@ def main(argv=None):
     t.start()
 
     out("MPFREE MPC ONE GUIDED PASSIVE USB-MIDI CAPTURE")
+    out(f"phase set: {args.phases}")
     deadline = time.monotonic() + 25
     while time.monotonic() < deadline:
         with lock:
@@ -198,12 +243,12 @@ def main(argv=None):
         return 1
     out(f"capture running on usb bus {state['bus']} device {state['dev']} (max 240 s)")
 
-    for i, (name, instruction) in enumerate(PHASES, 1):
+    for i, (name, instruction) in enumerate(phases, 1):
         with lock:
             if state["ended"]:
                 out("capture window ended on the MPC; stopping early")
                 break
-        print(f"\n[{i}/{len(PHASES)}] {name}: {instruction}", file=sys.stderr)
+        print(f"\n[{i}/{len(phases)}] {name}: {instruction}", file=sys.stderr)
         try:
             reply = input("Press Enter to start (s + Enter to skip): ")
         except EOFError:
@@ -250,7 +295,17 @@ def analyze(lines, bus, dev):
             truncated[phase] += 1
         for d, cable, msg in dec.feed(direction, data):
             per_phase.setdefault(phase, []).append((d, cable, msg))
-    res = ["DECODED USB-MIDI BY PHASE"]
+    res = ["MESSAGES PER CABLE AND PHASE (beyond the idle phase's count)"]
+    base = collections.Counter((d, c) for d, c, _ in per_phase.get("idle", []))
+    for phase, msgs in per_phase.items():
+        if phase == "gap":
+            continue
+        n = collections.Counter((d, c) for d, c, _ in msgs)
+        cells = [f"{d} cable{c} {n[(d, c)]} ({n[(d, c)] - base[(d, c)]:+d})"
+                 for d, c in sorted(set(n) | set(base))]
+        res.append(f"  {phase}: " + ", ".join(cells))
+    res.append("")
+    res.append("DECODED USB-MIDI BY PHASE")
     for phase, msgs in per_phase.items():
         res.append(f"\n== {phase}: {len(msgs)} messages"
                    + (f", {truncated[phase]} truncated transfers" if truncated[phase] else ""))

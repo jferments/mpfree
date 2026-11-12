@@ -37,6 +37,12 @@ This is not strictly read-only, so it is opt-in. It reads the kernel's usbmon te
 
 The host tool walks through ten phases (single pad soft/hard, pads 1-16 in order, pressure, Q-Links, data wheel, SHIFT, FULL LEVEL, play/stop) and decodes USB-MIDI packets and SysEx for each phase. usbmon text shows at most 32 data bytes per transfer, so long LED bursts are marked as truncated.
 
+`MPFREE_CAPTURE_PHASES=midi-cv` swaps in six phases about the rear jacks instead: idle, notes into the 5-pin MIDI In jack, pads on a MIDI track whose output is the MIDI Out jack, pads on a CV track, one held note on the CV track, and one CV slider. Before anything runs on the MPC, the tool lists what to set up in Akai's app (a new MIDI track and a new CV track, nothing saved, Preferences unchanged). The report adds, for each phase, the messages per direction and cable next to the idle phase's count. It answers which USB-MIDI cable carries the DIN jacks under Akai's app, and whether the CV/Gate jacks are driven over USB-MIDI at all. Nothing needs to be plugged into the CV/Gate jacks.
+
+```bash
+MPFREE_ACCEPT_USBMON=YES MPFREE_CAPTURE_PHASES=midi-cv bash tools/mpc-one/collect-over-ssh.sh --midi-capture
+```
+
 ## What comes next (not in this phase)
 
 These need separate, explicit opt-in steps, each with its own undo plan:
