@@ -75,6 +75,9 @@ pub enum Job {
     /// TRACK MUTE: the pads mute tracks 1-8 over any page (SHIFT: the
     /// playing kit's pads), until it is pressed again.
     TrackMute,
+    /// The data dial's push: in a menu, opens the row for the wheel to
+    /// change, and a second push sets it (Jay, 12 Nov 08:11Z).
+    DataPush,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -125,8 +128,9 @@ pub const CONTROLS: [Control; 42] = [
     c("SAMPLER", Job::Sampler),
     c("SAMPLE EDIT", Job::SampleEdit),
     c("PROG EDIT", Job::ProgEdit),
-    // The data dial's push (Enter), a button like the others.
-    c("DATA DIAL PUSH", Job::None),
+    // The data dial's push (Enter), a button like the others; button 111 on
+    // Jay's MPC One (Map controls, live test of 12 Nov).
+    c("DATA DIAL PUSH", Job::DataPush),
     c("Other 1", Job::None),
     c("Other 2", Job::None),
     c("Other 3", Job::None),

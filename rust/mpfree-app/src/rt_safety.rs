@@ -14,7 +14,8 @@
 //! ALSA.
 
 use crate::{
-    app, cores, kit, looping, mixing, sampler, synth, time, SeqPads, MAX_LIVE_HITS, PERIOD, RATE,
+    app, cores, kit, looping, midi_in, midi_out, mixing, sampler, synth, time, SeqPads,
+    MAX_LIVE_HITS, PERIOD, RATE,
 };
 use mpfree_arp::{EventKind, Events, Mode};
 use mpfree_arp_ui::view::ArpAction;
@@ -44,6 +45,10 @@ struct Rig {
     /// Notes the arp started, and hits the clip played.
     arp_notes: u64,
     clip_hits: u64,
+    /// MIDI Out (closed: every track plays on the pads) and the I/O view's
+    /// model it reads each period.
+    midi: midi_out::MidiOut,
+    io: mpfree_midi_ui::Shared,
 }
 
 fn tone(frames: usize, f: f32) -> Vec<i16> {
@@ -85,6 +90,8 @@ impl Rig {
             peak: 0.0,
             arp_notes: 0,
             clip_hits: 0,
+            midi: midi_out::MidiOut::new(RATE, std::time::Duration::ZERO),
+            io: midi_in::io_model(),
         }
     }
 
@@ -129,12 +136,16 @@ impl Rig {
             pads_out,
             arp_notes,
             clip_hits,
+            midi,
+            io,
             ..
         } = self;
         let synth_on = *synth_on;
         app.set_rolling(time.info().state.rolling());
         time.follow_tempo(app.settings.bpm);
         time.advance(PERIOD as u32);
+        midi.sync(io, time.info().state.rolling());
+        midi.clock(time.block());
         app.set_clock(time.arp_clock());
         app.process(PERIOD as u32, events);
         // With the synth on the pads the arp may play notes (its pad layout).
@@ -202,8 +213,11 @@ impl Rig {
             live_hits: [(0, 0); MAX_LIVE_HITS],
             n_live: 0,
             silent: 0,
+            midi,
         };
         time.period(PERIOD as u32, &mut seq);
+        seq.midi
+            .period_end(PERIOD as u32, std::time::Instant::now());
         *clip_hits += seq.hits;
         time.clear_hits();
         // The pads, each into its mixer channel, and on to the Drums track.
@@ -333,4 +347,166 @@ fn the_sound_path_never_allocates_on_two_cores() {
 #[test]
 fn the_sound_path_never_allocates_on_three_cores_with_the_synth() {
     steady_play_never_allocates(true, cores::SoundCores::Three);
+}
+
+/// MIDI Out's port in these tests: every byte written.
+#[derive(Clone, Default)]
+struct MidiSink(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+impl std::io::Write for MidiSink {
+    fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(b);
+        Ok(b.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// The clip's track set to play on MIDI Out, channel 10, with clock out on:
+/// its recorded pads go out as the MPC's pad notes instead of to the pads,
+/// every note-on gets its note-off, the clock joins and pulses, and the
+/// sound path still never allocates or frees.
+#[test]
+fn a_track_on_midi_out_plays_there_and_never_allocates() {
+    use mpfree_midi::setup::{ClockOut, TrackOut, DIN_NAME};
+    let mut rig = Rig::new(false);
+    let mut c =
+        cores::Cores::start_unpinned(cores::SoundCores::Shared, &mut rig.player, &mut rig.synth);
+    c.start_mixer(&mut rig.mix.mixer);
+    rig.time
+        .act(TimeAction::NewClip { track: 0, slot: 0 })
+        .unwrap();
+    let mut i = 0u64;
+    while i < 1_500 {
+        rig.pads(i);
+        rig.period(i);
+        i += 1;
+    }
+    rig.time.command(Command::Record);
+    // Setup, which may allocate: MIDI Out opens and the track goes there.
+    let sink = MidiSink::default();
+    rig.midi
+        .open(sink.clone(), std::time::Instant::now())
+        .unwrap();
+    {
+        let mut m = rig.io.lock().unwrap();
+        m.setup.tracks[0] = Some(TrackOut::new(DIN_NAME, 9));
+        m.setup
+            .set_port(DIN_NAME, |p| p.clock_out = ClockOut::WhilePlaying);
+        m.gen += 1;
+    }
+    for _ in 0..200 {
+        rig.pads(i);
+        rig.period(i);
+        i += 1;
+    }
+    assert!(rig.midi.takes(0));
+    let clip_before = rig.clip_hits;
+    let ((), calls) = crate::sys::alloc_count::calls(|| {
+        for _ in 0..4_000 {
+            rig.pads(i);
+            rig.period(i);
+            i += 1;
+        }
+    });
+    assert_eq!(calls, 0, "allocations or frees on the sound path");
+    assert_eq!(
+        rig.clip_hits, clip_before,
+        "the clip's notes reached the pads"
+    );
+    // Closing ends whatever is still on.
+    assert!(rig.midi.close());
+    let bytes = sink.0.lock().unwrap().clone();
+    // Split into messages: one byte for real-time ones, three otherwise.
+    let mut msgs: Vec<&[u8]> = Vec::new();
+    let mut at = 0;
+    while at < bytes.len() {
+        let n = if bytes[at] >= 0xF8 { 1 } else { 3 };
+        msgs.push(&bytes[at..(at + n).min(bytes.len())]);
+        at += n;
+    }
+    let count = |status: u8| {
+        msgs.iter()
+            .filter(|m| m[0] == status && (m.len() == 1 || PAD_NOTES[..4].contains(&m[1])))
+            .count()
+    };
+    let ons = count(0x99);
+    assert!(ons > 20, "note-ons on channel 10: {ons}");
+    assert_eq!(count(0x89), ons, "every note-on ends");
+    // The clock joined with Song Position and Continue, pulsed throughout
+    // (4,200 periods at 120 BPM is about 590 pulses) and stopped at close.
+    assert_eq!(msgs.iter().filter(|m| m[0] == 0xF2).count(), 1);
+    assert_eq!(count(0xFB), 1);
+    let pulses = count(0xF8);
+    assert!((550..=620).contains(&pulses), "pulses: {pulses}");
+    assert_eq!(count(0xFC), 1);
+    assert_eq!(
+        msgs.len(),
+        2 * ons + pulses + 3,
+        "only notes and clock went out: {bytes:02X?}"
+    );
+}
+
+/// An arp's note (the pads played live) on a track that plays on MIDI Out:
+/// it goes out with the pads' velocity, the pads don't sound it, the pad
+/// still shows, and the armed track records the pad as heard.
+#[test]
+fn live_notes_on_a_midi_out_track_go_out_and_record_as_their_pad() {
+    use mpfree_midi::setup::{TrackOut, DIN_NAME};
+    use mpfree_play::{Event, Out};
+    let mut rig = Rig::new(false);
+    let sink = MidiSink::default();
+    rig.midi
+        .open(sink.clone(), std::time::Instant::now())
+        .unwrap();
+    rig.io.lock().unwrap().setup.tracks[0] = Some(TrackOut::new(DIN_NAME, 0));
+    rig.io.lock().unwrap().gen += 1;
+    rig.midi.sync(&rig.io, false);
+    let live = rig.app.live_map();
+    let v = live.velocity(100);
+    let mut seq = SeqPads {
+        player: &mut rig.player,
+        synth: None,
+        flashes: [0; 16],
+        hits: 0,
+        live,
+        live_hits: [(0, 0); MAX_LIVE_HITS],
+        n_live: 0,
+        silent: 0,
+        midi: &mut rig.midi,
+    };
+    let at = |event| Out {
+        offset: 0,
+        frame: 0,
+        track: 0,
+        dest: 0,
+        event,
+    };
+    let on = Event::NoteOn {
+        note: 2,
+        velocity: 100,
+    };
+    let heard = time::Pads::live(&mut seq, &at(on));
+    assert_eq!(
+        heard,
+        Some(Event::NoteOn {
+            note: 2,
+            velocity: v
+        })
+    );
+    let off = Event::NoteOff { note: 2 };
+    assert_eq!(time::Pads::live(&mut seq, &at(off)), Some(off));
+    assert_eq!((seq.hits, seq.silent), (0, 0), "the pads sounded it");
+    assert_eq!(&seq.live_hits[..seq.n_live], [(2, v)]);
+    // Another track's notes still play on the pads.
+    let other = Out { track: 1, ..at(on) };
+    assert!(!time::Pads::out(&mut seq, &other));
+    seq.midi
+        .period_end(PERIOD as u32, std::time::Instant::now());
+    assert!(rig.midi.close());
+    assert_eq!(
+        *sink.0.lock().unwrap(),
+        [0x90, PAD_NOTES[2], v, 0x80, PAD_NOTES[2], 64]
+    );
 }

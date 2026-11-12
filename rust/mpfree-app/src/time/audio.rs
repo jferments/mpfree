@@ -19,6 +19,7 @@ use mpfree_seq::TouchPoint;
 use mpfree_time_ui::view::TransportInfo;
 use mpfree_transport::{Block, Command, Mark, State, Transport};
 
+use super::follow::{Follow, FollowCounts, Follower};
 use super::link::{
     Counts, PeriodEnd, Rx, ToAudio, ToControl, Tracks, Tx, POINTS_CHUNK, TOUCH_CHUNK,
 };
@@ -40,6 +41,10 @@ pub struct TimeAudio {
     pub(super) recent: Box<Recent>,
     /// The tracks' settings, as the control half last sent them.
     tracks: Tracks,
+    /// Another device's clock, when the transport follows one, and its
+    /// counts as last sent.
+    follower: Follower,
+    follow_sent: FollowCounts,
     click: Click,
     /// Click while counting in and recording.
     pub metronome: bool,
@@ -99,6 +104,8 @@ impl TimeAudio {
             view: Box::new(PlayView::empty()),
             recent: Box::new(Recent::new()),
             tracks,
+            follower: Follower::new(rate),
+            follow_sent: FollowCounts::default(),
             click: Click::new(rate),
             metronome: true,
             advanced: None,
@@ -230,7 +237,12 @@ impl TimeAudio {
         self.transport.command(at, cmd)
     }
 
+    /// The app's tempo, unless the transport follows another device's
+    /// clock that is arriving.
     pub fn follow_tempo(&mut self, bpm: f64) {
+        if self.follower.bpm().is_some() {
+            return;
+        }
         if (self.transport.bpm() - bpm).abs() > 1e-9 {
             self.command(Command::SetTempo(bpm));
         }
@@ -299,9 +311,39 @@ impl TimeAudio {
         self.player.fill()
     }
 
+    /// Follow another device's clock with these options (the project's
+    /// MIDI setup), or not (None).
+    pub fn follow(&mut self, follow: Option<Follow>) {
+        self.follower.set(follow);
+    }
+
+    /// The followed port's bytes, read at `frame` on the transport's frame
+    /// clock ([`TimeAudio::next_frame`] for bytes read at the top of the
+    /// period), before [`TimeAudio::advance`].
+    pub fn clock_in(&mut self, frame: u64, bytes: &[u8]) {
+        self.follower.bytes(&mut self.transport, frame, bytes);
+    }
+
+    /// The first frame of the coming period, on the transport's frame
+    /// clock.
+    pub fn next_frame(&self) -> u64 {
+        self.transport.frame()
+    }
+
+    /// The followed clock's tempo while one arrives (for the tempo chip).
+    pub fn followed_bpm(&self) -> Option<f64> {
+        self.follower.bpm()
+    }
+
+    /// The transport runs the coming period, after the follower's turn.
+    fn process(&mut self, frames: u32) -> bool {
+        self.follower.period(&self.transport);
+        self.transport.process(frames, &mut self.block)
+    }
+
     pub fn advance(&mut self, frames: u32) -> bool {
         self.receive();
-        let ok = self.transport.process(frames, &mut self.block);
+        let ok = self.process(frames);
         self.advanced = Some(ok);
         ok
     }
@@ -361,7 +403,7 @@ impl TimeAudio {
             Some(ok) => ok,
             None => {
                 self.receive();
-                self.transport.process(frames, &mut self.block)
+                self.process(frames)
             }
         };
         if !ok {
@@ -489,6 +531,10 @@ impl TimeAudio {
             let s = self.block.spans()[i];
             self.send(ToControl::Span(s));
         }
+        let follow = self.follower.counts();
+        if follow != self.follow_sent && self.tx.send(ToControl::Follow(follow)).is_ok() {
+            self.follow_sent = follow;
+        }
         let end = PeriodEnd {
             start_frame: self.block.start_frame,
             frames: self.block.frames,
@@ -525,8 +571,14 @@ impl TimeAudio {
         t.meter().position(t.position()).to_string()
     }
 
+    /// The transport for the screens, with the followed clock's tempo
+    /// rather than the nudged one while following.
     pub fn info(&self) -> TransportInfo {
-        TransportInfo::of(&self.transport)
+        let mut info = TransportInfo::of(&self.transport);
+        if let Some(bpm) = self.follower.bpm() {
+            info.bpm = bpm;
+        }
+        info
     }
 }
 

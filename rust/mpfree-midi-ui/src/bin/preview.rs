@@ -39,6 +39,7 @@ fn shots() -> Vec<Shot> {
     let mut built = sample::rig();
     built.live.built = Built {
         notes_out: true,
+        thru: true,
         clock_in: true,
         clock_out: true,
         cv: true,
@@ -47,7 +48,7 @@ fn shots() -> Vec<Shot> {
     vec![
         Shot {
             name: "io-midi",
-            about: "MIDI: each port's input and thru, and where each track plays (one setting, port and channel together); MIDI out not built yet, so the rows say so",
+            about: "MIDI: each port's input and thru, and where each track plays (one setting, port and channel together); MIDI out off, so the rows say so",
             section: 1,
             model: rig.clone(),
             taps: vec![],
@@ -76,7 +77,7 @@ fn shots() -> Vec<Shot> {
         },
         Shot {
             name: "io-midi-built",
-            about: "MIDI once MIDI out is built: rows say where each track plays",
+            about: "MIDI once MIDI out is on: rows say where each track plays",
             section: 1,
             model: built.clone(),
             taps: vec![],

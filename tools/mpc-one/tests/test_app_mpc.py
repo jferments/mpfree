@@ -497,7 +497,13 @@ class AppTests(unittest.TestCase):
 
     def test_app_step_all_phases_and_the_status(self):
         write(self.app, "active\n")
-        self.add_journal([(130.0, "mpfree[211]: status: 60 hits (0 from the screen), 40 repeats, 0 underruns")])
+        self.add_journal([(100.0, "mpfree[211]: status: 30 hits (0 from the screen), 20 repeats, 0 underruns"),
+                          (100.1, "mpfree[211]: status: looper: Empty, 0 layers"),
+                          (130.0, "mpfree[211]: status: 60 hits (0 from the screen), 40 repeats, 0 underruns"),
+                          (130.1, "mpfree[211]: status: synth: Poly (Brass)"),
+                          (130.2, "mpfree[211]: status: looper: Playing, 2 layers"),
+                          (130.3, "mpfree[211]: status: cpu by engine (mean/p99/worst of a period): period 9.3"),
+                          (130.4, "mpfree[211]: status: Q-Link touch: 3 touches, 1 bounces held")])
         answers = "\n\n" + "\n\n\n" * 16
         res = self.run_helper(answers, MPFREE_APP_STEPS="app")
         self.assertEqual(res.returncode, 0, res.stdout)
@@ -513,6 +519,13 @@ class AppTests(unittest.TestCase):
         self.assertIn("start-up: no playing line yet", res.stdout)
         self.assertIn("The app's latest status", res.stdout)
         self.assertIn("    status: 60 hits (0 from the screen), 40 repeats, 0 underruns", res.stdout)
+        # The latest whole set of status lines, not only the last three.
+        summary = res.stdout.split("The app's latest status")[1].split("The developer tools'")[0]
+        for line in ("status: 60 hits", "status: synth: Poly (Brass)", "status: looper: Playing, 2 layers",
+                     "status: Q-Link touch: 3 touches, 1 bounces held"):
+            self.assertIn(f"    {line}", summary)
+        self.assertNotIn("status: 30 hits", summary)
+        self.assertNotIn("status: looper: Empty", summary)
         self.assertIn("RESULT: all steps ran", res.stdout)
 
     def test_app_step_reads_partition_4_and_its_grow(self):

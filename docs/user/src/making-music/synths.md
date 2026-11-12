@@ -71,9 +71,9 @@ There are three pad layouts:
 
 With a scale on, the four pad banks start out as four different layouts, so you can switch between them with the **PAD BANK** buttons as you play: **A** Chromatic, **B** In key, **C** Chord pads, **D** In key an octave higher.
 
-The **Chromatic / In key** switch at the top of the pad map, on the Play page and the Synth tab, flips the current bank between the two with one tap.
+The **Chromatic / In key** switch in the pads heading on the Synth tab flips the current bank between the two with one tap.
 
-{{shot: play-synth-in-key | The Poly synth in A minor, In key. Every pad plays a note of the scale, and the pattern's rows are named by note.}}
+{{shot: play-synth-in-key | The Poly synth in A minor, In key, on the Play page. Every pad plays a note of the scale, and the pattern's rows are named by note.}}
 
 > [!TIP]
 > Drums is a kit rather than a keyboard: pad 1 plays the first drum, pad 2 the second and so on, whatever the scale, layout or octave.
@@ -95,6 +95,8 @@ Out of the box every synth plays in standard tuning: twelve equal steps to the o
 - **A4** is the pitch of the A above middle C, from 380 to 480 Hz, so the synth can match a recording or another instrument. 432 Hz and 442 Hz are common choices.
 
 The drum synth keeps its own pitches whatever you pick here.
+
+Everything in the Synth tab's options (the engine, scale, pad layouts and tuning) is kept on the stick and comes back the next time MPFree starts. If a tuning file or one of your own scales is gone by then, that one choice goes back to its default, and the Console says so.
 
 ### Your own tunings
 
