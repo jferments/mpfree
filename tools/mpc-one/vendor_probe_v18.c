@@ -5,9 +5,8 @@
  * New experiments: getvar built-in dispatch under locked/unlocked state,
  * Fastboot continue callback, and reboot state handling.
  */
-#define main mpfree_v17_legacy_main
+#define MPFREE_V18_WRAPPING 1
 #include "vendor_probe_v17.c"
-#undef main
 #define GETVAR ((uintptr_t)0x00122d39u)
 #define CONTINUE ((uintptr_t)0x00122949u)
 #define REBOOT ((uintptr_t)0x00122cf9u)
