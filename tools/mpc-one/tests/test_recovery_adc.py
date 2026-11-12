@@ -52,6 +52,14 @@ def source_fixture(pointer=True):
             },
         },
         "strings":{"strings": string_rows},
+        "fdt":{"uboot_stage_fdt":[{"selected_dts_lines":[
+            'adc0 = "/saradc@ff100000";',
+            'saradc@ff100000 {',
+            'compatible = "rockchip,saradc";',
+            'reg = <0xff100000 0x100>;',
+            'status = "okay";',
+            '};',
+        ]}]},
         "env":{"p2":{"boot_related_variables":{
             "az01_bootcmd":"if test x$" + "{dorecovery} = x1; run az01_recovercmd",
             "az01_recovercmd":"fastboot 0",
@@ -97,6 +105,13 @@ class RecoveryADCTests(unittest.TestCase):
                 entry["text"]="ittt gt"
         report=build(data)
         self.assertFalse(report["all_existing_cross_checks_passed"])
+
+    def test_disabled_saradc_fdt_fails_closed(self):
+        data = source_fixture()
+        self.assertTrue(build(data)["checks"]["original_uboot_fdt_saradc_enabled"])
+        dts = data["fdt"]["uboot_stage_fdt"][0]["selected_dts_lines"]
+        dts[dts.index('status = "okay";')] = 'status = "disabled";'
+        self.assertFalse(build(data)["checks"]["original_uboot_fdt_saradc_enabled"])
 
     def test_missing_diagnostic_breaks_cross_validation(self):
         data=source_fixture()
