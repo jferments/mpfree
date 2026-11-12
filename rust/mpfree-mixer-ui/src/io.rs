@@ -115,6 +115,12 @@ pub trait IoSection: Send {
         false
     }
 
+    /// The hint line while it shows; `None` keeps the I/O view's own
+    /// ([`crate::MIXER_HINT_IO`]).
+    fn hint(&self) -> Option<&str> {
+        None
+    }
+
     /// The four Q-Links' cards while it shows; `None` leaves the knobs on
     /// the selected mixer strip.
     fn qlinks(&self) -> Option<[IoKnob; 4]> {

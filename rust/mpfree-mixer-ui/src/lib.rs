@@ -169,6 +169,13 @@ pub fn io_select(ui: &mut Ui, section: usize) -> bool {
         .is_some_and(|v| v.show_io_section(section))
 }
 
+/// The hint line while the I/O view shows: the section's own, or
+/// [`MIXER_HINT_IO`]; `None` away from the I/O view (keep the mixer's
+/// hint). Set the `hint` label to it after a view or section change.
+pub fn io_hint(ui: &Ui) -> Option<String> {
+    ui.get::<MixerView>(MIXER).and_then(|v| v.io_hint())
+}
+
 /// The data wheel, - and +, or the page arrows while the I/O view shows.
 /// On Audio, actions may follow ([`take_actions`]); [`IoReply::Ignored`]
 /// when the I/O view is not showing.
