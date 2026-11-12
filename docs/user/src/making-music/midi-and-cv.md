@@ -6,7 +6,7 @@ checked: 2026-11-12 34d34b4
 
 # Playing other gear: MIDI, sync and CV
 
-The **MIDI IN** and **MIDI OUT** jacks, a USB keyboard on the **USB** port and the **CV/Gate** outputs connect MPFree to other instruments. Playing MPFree from a keyboard works now. The rest of this page is coming, so you can plan your setup.
+The **MIDI IN** and **MIDI OUT** jacks, a USB keyboard on the **USB** port and the **CV/Gate** outputs connect MPFree to other instruments. Playing MPFree from a keyboard and [MIDI Learn](#midi-learn) work now. Following another device's clock works too, once the I/O view is on the MPC's screen. Playing gear from **MIDI OUT** and the CV outputs stay off until they've been checked on an MPC One. This page says what each will do, so you can plan your setup.
 
 ## Playing MPFree from a keyboard
 
