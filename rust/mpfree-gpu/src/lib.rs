@@ -33,38 +33,79 @@ use mpfree_ui::{Color, Rect};
 
 /// An EGL display and an OpenGL ES 2 context, current on this thread.
 pub struct Gpu {
-    egl: egl::DynamicInstance<egl::EGL1_5>,
+    egl: egl::DynamicInstance<egl::EGL1_4>,
     display: egl::Display,
     context: egl::Context,
+    /// EGL's version and vendor, as the display reports them.
+    egl_version: String,
     pub gl: glow::Context,
+    /// Kept loaded while `gl` holds its functions.
+    _gles: Option<libloading::Library>,
 }
 
 /// Mesa's surfaceless platform (EGL_MESA_platform_surfaceless).
 const PLATFORM_SURFACELESS_MESA: egl::Enum = 0x31DD;
 
+/// eglGetPlatformDisplayEXT (EGL_EXT_platform_base).
+type GetPlatformDisplayExt =
+    unsafe extern "system" fn(egl::Enum, *mut c_void, *const egl::Int) -> egl::EGLDisplay;
+
 impl Gpu {
     /// EGL on Mesa's surfaceless platform: a GPU with no window and no
     /// display. Fails (with the reason) if libEGL, the platform or an ES 2
     /// context is missing.
+    ///
+    /// It takes the same path as the MPC's offscreen tests of 9 Nov
+    /// (`tools/mpc-one/gpu-qualification/mpfree-egl-smoke.c`), which is
+    /// what the MPC is known to support: EGL 1.4 (the MPC's Mesa reports
+    /// 1.4), the display from `eglGetPlatformDisplayEXT`, and the GL
+    /// functions from `libGLESv2.so.2` (EGL's own lookup only if that
+    /// library is missing).
     pub fn surfaceless() -> Result<Gpu, String> {
         // SAFETY: loading the system's libEGL runs its initialisers, as any
         // program linked against it would.
         let lib = unsafe { libloading::Library::new("libEGL.so.1") }
             .map_err(|e| format!("libEGL.so.1: {e}"))?;
         // SAFETY: the library is EGL's; the functions are looked up by name.
-        let egl = unsafe { egl::DynamicInstance::<egl::EGL1_5>::load_required_from(lib) }
-            .map_err(|e| format!("EGL 1.5: {e}"))?;
-        // SAFETY: the default display handle with no attributes.
-        let display = unsafe {
-            egl.get_platform_display(
-                PLATFORM_SURFACELESS_MESA,
-                egl::DEFAULT_DISPLAY,
-                &[egl::ATTRIB_NONE],
-            )
+        let egl = unsafe { egl::DynamicInstance::<egl::EGL1_4>::load_required_from(lib) }
+            .map_err(|e| format!("EGL 1.4: {e}"))?;
+        let client = egl
+            .query_string(None, egl::EXTENSIONS)
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        for ext in ["EGL_EXT_platform_base", "EGL_MESA_platform_surfaceless"] {
+            if !client.split(' ').any(|e| e == ext) {
+                return Err(format!("EGL has no {ext}"));
+            }
         }
-        .map_err(|e| format!("the surfaceless platform: {e}"))?;
-        egl.initialize(display)
+        let get_platform_display = egl
+            .get_proc_address("eglGetPlatformDisplayEXT")
+            .ok_or("EGL has no eglGetPlatformDisplayEXT")?;
+        // SAFETY: EGL_EXT_platform_base defines the function with this type.
+        let get_platform_display: GetPlatformDisplayExt =
+            unsafe { std::mem::transmute(get_platform_display) };
+        // SAFETY: the surfaceless platform takes no native display and no
+        // attributes.
+        let raw = unsafe {
+            get_platform_display(
+                PLATFORM_SURFACELESS_MESA,
+                std::ptr::null_mut(),
+                std::ptr::null(),
+            )
+        };
+        if raw.is_null() {
+            return Err("the surfaceless platform gave no display".into());
+        }
+        // SAFETY: a display EGL just returned.
+        let display = unsafe { egl::Display::from_ptr(raw) };
+        let (major, minor) = egl
+            .initialize(display)
             .map_err(|e| format!("eglInitialize: {e}"))?;
+        let vendor = egl
+            .query_string(Some(display), egl::VENDOR)
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let egl_version = format!("EGL {major}.{minor} ({vendor})");
         egl.bind_api(egl::OPENGL_ES_API)
             .map_err(|e| format!("eglBindAPI: {e}"))?;
         let config = egl
@@ -92,30 +133,43 @@ impl Gpu {
             .map_err(|e| format!("eglCreateContext: {e}"))?;
         egl.make_current(display, None, None, Some(context))
             .map_err(|e| format!("eglMakeCurrent with no surface: {e}"))?;
-        // SAFETY: the context is current on this thread; the loader returns
-        // EGL's addresses for the GL functions.
+        // SAFETY: loading the system's GLES library runs its initialisers, as
+        // any program linked against it would.
+        let gles = unsafe { libloading::Library::new("libGLESv2.so.2") }.ok();
+        // SAFETY: the context is current on this thread; each name is looked
+        // up in libGLESv2 (as the 9 Nov tests did), or else through EGL.
         let gl = unsafe {
             glow::Context::from_loader_function(|name| {
-                egl.get_proc_address(name)
-                    .map_or(std::ptr::null(), |f| f as *const c_void)
+                let from_lib = gles.as_ref().and_then(|lib| {
+                    let mut sym = name.as_bytes().to_vec();
+                    sym.push(0);
+                    lib.get::<*const c_void>(&sym).ok().map(|s| *s)
+                });
+                from_lib
+                    .filter(|p| !p.is_null())
+                    .or_else(|| egl.get_proc_address(name).map(|f| f as *const c_void))
+                    .unwrap_or(std::ptr::null())
             })
         };
         Ok(Gpu {
             egl,
             display,
             context,
+            egl_version,
             gl,
+            _gles: gles,
         })
     }
 
-    /// The driver's name for the GPU (GL_RENDERER) and its version.
+    /// The driver's name for the GPU (GL_RENDERER), its GL version and EGL's.
     pub fn describe(&self) -> String {
         // SAFETY: plain queries on the current context.
         unsafe {
             format!(
-                "{}; {}",
+                "{}; {}; {}",
                 self.gl.get_parameter_string(glow::RENDERER),
-                self.gl.get_parameter_string(glow::VERSION)
+                self.gl.get_parameter_string(glow::VERSION),
+                self.egl_version
             )
         }
     }
