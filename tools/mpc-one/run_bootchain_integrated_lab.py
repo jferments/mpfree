@@ -856,7 +856,7 @@ class Lab:
                 "no_vendor_execution": True,
             }
             self.stages["wide-multitrack-question-evidence"] = {
-                "success": matrix_count >= 35 and matrix_tracks >= 6,
+                "success": matrix_count >= 42 and matrix_tracks == 7,
                 "questions": matrix_count, "tracks": matrix_tracks,
             }
         except Exception as exc:
