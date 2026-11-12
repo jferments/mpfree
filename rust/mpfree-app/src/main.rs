@@ -3884,6 +3884,7 @@ fn player_session(
         // MIDI Out takes the project's track outputs, and sends programs as
         // the song starts, before this period's notes.
         midi_out.sync(&io_model, time.info().state.rolling());
+        midi_out.clock(time.block());
         // The armed track is the one the pads and the arp screens play.
         let armed = time.armed().unwrap_or(0);
         if armed != app.track() {

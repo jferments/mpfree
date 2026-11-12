@@ -101,7 +101,7 @@ Tests: `cargo test -p mpfree-midi`. They cover:
 | M1 | `mpfree-midi`, host only | no | done: PR #177, merged 2026-11-12 (train 14, main `7ecb7e4`) |
 | M2 | App wiring for input. The app reads the DIN In cable (from M0) and USB keyboards **for reading**, plays them on the armed track and logs them on the Dev tab's MIDI page (built, see [M2: keyboards in](#m2-keyboards-in)). The settings (ports, input mode, clock source) go in the mixer's I/O view, which waits on the FX and app threads | a device round on the test boot: opens MIDI inputs for reading | input built; device round and the I/O view to come |
 | M3 | MIDI tracks out. A seq destination for MIDI out, and cable 2 out written with paced bytes from a writer thread that sleeps to each message's frame (sub-period timing; to be measured on the unit, aiming under Akai's 5 to 8 ms) | **state-changing, RAM only**: sends note bytes on cable 2 to the MIDI Out jack. Undo: power-cycle. No SysEx is ever sent there | built on the host behind `mpfree app --midi-out` (see [M3: tracks out](#m3-tracks-out)); the device round waits on the owner's go |
-| M4 | Clock out (DIN, USB) from the transport, and clock in, with the transport following it | as M3 for out | the time engine thread, the owner's go |
+| M4 | Clock out (DIN, USB) from the transport, and clock in, with the transport following it | as M3 for out | clock out on the 5-pin jacks built on the host (see [M4: clock out](#m4-clock-out)); clock in is the time engine thread's follower (`TimeHost::follow`, `clock_in`), wired here when it lands; the device round waits on the owner's go |
 | M5 | MIDI Learn on screen: hold a parameter and pick Learn, mappings in `mpfree-store` | as M2 | the app thread |
 | M6 | CV out: a hardware layer that sends `cv_wire` CC pairs on cable 1 from `CvEngine`'s changes, then a first output test with a multimeter on one jack (known counts, read the volts, find which jack each output is), then a calibration page | **state-changing**, gated separately, after M0 | M0, the owner's go |
 | Later | USB-B as a USB-MIDI device to a computer (the UDC gadget: rule zero, not before the boot work allows it); MIDI file import and export (the arp already writes MIDI files) | — | — |
@@ -162,6 +162,22 @@ Built 2026-11-12 in `rust/mpfree-app/src/midi_out.rs`, on the time engine's `Pad
 - **Sound path.** `sync`, `send` and `period_end` never allocate, wait or write: `rt_safety` plays a recorded clip on MIDI Out for 4,000 periods under the counting allocator.
 
 Not yet: MIDI thru (`Built::thru`, its row says "thru does nothing yet"), USB devices as outputs, a per-track delay (a rig fact, for Prefs), CCs, pitch bend and pressure lanes from clips. The device round, with its exact steps and undo, goes to the owner first.
+
+## M4: clock out
+
+Built 2026-11-12 in `MidiOut::clock` (`rust/mpfree-app/src/midi_out.rs`), on the same `--midi-out` switch as M3, so it is state-changing in the same way and waits for the same device round.
+
+- **The setting.** The jacks' "Clock out" in the I/O view's Sync section: Off (the default), While playing, or Always. USB devices as outputs come later.
+- **From the transport.** Once a period, after `TimeHost::advance`, the app hands `TimeHost::block()` to `MidiOut::clock`, which drives `mpfree_midi_clock::ClockOut` in time order (a marker on a span's first frame comes before that span):
+  - `Mark::Started { tick }`: Start (FA) at tick 0, else Song Position (F2) and Continue (FB) with pulses from the next sixteenth.
+  - Playing and recording spans: a pulse (F8) on every 40-tick line (`Span::lines(PULSE_TICKS)`, 24 a quarter note), so pulses follow every tempo change.
+  - `Mark::Located` and `Mark::Looped`: Stop, Song Position, Continue. `Mark::Rewound` (bar 1 while stopped): Song Position 0. `Mark::Stopped`: Stop (FC).
+  - A count-in sends nothing. Its spans roll, but Start comes with `Started`, when playback begins.
+  - Clock set while playing (or the port opened while playing) joins at the next sixteenth with Song Position and Continue.
+  - Set to Off while playing: Stop. Closing the port (at exit) sends Stop too.
+- **Always** also sends pulses while stopped, at the transport's tempo, from the moment it stops.
+- **Order.** The clock is queued before the period's notes, and the queue is sorted by frame only (`OutQueue::sort_by_frame`), keeping the order pushed: Song Position must come before Continue, which `OutQueue::sort` (real-time bytes first) would swap.
+- **Tests.** Start and 48 pulses a second at 120 BPM while playing, nothing while stopped; Always; a locate; a count-in; turned on and off while playing; and `rt_safety` plays a clip on MIDI Out with clock on for 4,000 periods with no allocation.
 
 ## A project's settings and the I/O view's sections
 

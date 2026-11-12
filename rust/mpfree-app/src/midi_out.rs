@@ -24,6 +24,14 @@
 //! - A track set to a port this build can't send to (a USB device: not yet)
 //!   or set while MIDI out is off plays on the pads, and the I/O view says
 //!   so on its row.
+//! - **Clock out** ([`MidiOut::clock`]): with the jacks' "Clock out" set to
+//!   While playing or Always, the transport's period (`TimeHost::block`)
+//!   becomes MIDI clock through `mpfree_midi_clock::ClockOut`: Start, or
+//!   Song Position and Continue, where playback starts; a pulse (F8) every
+//!   40 ticks (24 a quarter note) while it plays, following every tempo
+//!   change; Stop, Song Position and Continue on a locate or a loop's jump;
+//!   Stop when it stops. A count-in sends nothing until playback starts.
+//!   Always also sends pulses at the tempo while stopped.
 
 use std::io::{self, ErrorKind, Write};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -36,9 +44,11 @@ use mpfree_controller::mpc_one::PAD_NOTES;
 use mpfree_midi::msg::Msg;
 use mpfree_midi::output::{DinPacer, OutQueue, OutRoute, OutputRouter, Timed, MAX_TRACKS};
 use mpfree_midi::port::DIN;
-use mpfree_midi::setup::{TrackOut, DIN_NAME};
+use mpfree_midi::setup::{ClockOut, TrackOut, DIN_NAME};
+use mpfree_midi_clock::{ClockOut as Pulses, Messages, PULSE_TICKS};
 use mpfree_midi_ui::{IoModel, Shared};
 use mpfree_play::{Event, Out};
+use mpfree_transport::{Block, Mark, Marker, Span, State};
 
 /// Notes one pad can start (a synth pad's chord); more are not sent.
 const CHORD: usize = 8;
@@ -152,6 +162,13 @@ pub struct MidiOut {
     queued: u64,
     /// Why the port stopped, once the log has said so.
     lost: bool,
+    /// The jacks' "Clock out" setting, and the clock it makes.
+    clock_mode: ClockOut,
+    pulses: Pulses,
+    clock_msgs: Messages,
+    /// Always, while stopped: frames from this period's start to the next
+    /// pulse.
+    free_next: f64,
 }
 
 impl MidiOut {
@@ -180,6 +197,10 @@ impl MidiOut {
             full: 0,
             queued: 0,
             lost: false,
+            clock_mode: ClockOut::Off,
+            pulses: Pulses::new(),
+            clock_msgs: Messages::new(),
+            free_next: 0.0,
         }
     }
 
@@ -245,12 +266,20 @@ impl MidiOut {
         let on = self.writer.is_some();
         if self.shown_on != Some(on) {
             m.live.built.notes_out = on;
+            m.live.built.clock_out = on;
             self.shown_on = Some(on);
         }
         if self.applied_gen == Some(m.gen) {
             return;
         }
         self.applied_gen = Some(m.gen);
+        // Found in place: `MidiSetup::port` would make a copy.
+        self.clock_mode = m
+            .setup
+            .ports
+            .iter()
+            .find(|p| p.name == DIN_NAME)
+            .map_or(ClockOut::default(), |p| p.clock_out);
         for t in 0..MAX_TRACKS {
             let want = m.setup.tracks[t].as_ref().and_then(Applied::of);
             if want == self.tracks[t] {
@@ -403,12 +432,94 @@ impl MidiOut {
         self.router.all_off(offset, &mut self.queue);
     }
 
+    /// The transport's period as MIDI clock on the jacks, by their "Clock
+    /// out" setting. Call it once a period after `TimeHost::advance`.
+    pub fn clock(&mut self, block: &Block) {
+        if self.writer.is_none() {
+            return;
+        }
+        self.clock_msgs.clear();
+        if self.clock_mode == ClockOut::Off {
+            // Turned off while playing: the other device stops too.
+            if self.pulses.running() {
+                self.pulses.stopped(0, &mut self.clock_msgs);
+            }
+        } else {
+            let markers = block.markers();
+            let mut next = 0;
+            for span in block.spans() {
+                // A marker on a span's first frame happened just before it.
+                while next < markers.len() && markers[next].offset <= span.offset {
+                    self.mark(&markers[next]);
+                    next += 1;
+                }
+                self.clock_span(span);
+            }
+            for m in &markers[next..] {
+                self.mark(m);
+            }
+            self.free_next = (self.free_next - f64::from(block.frames)).max(0.0);
+        }
+        for i in 0..self.clock_msgs.as_slice().len() {
+            let m = self.clock_msgs.as_slice()[i];
+            self.queue[0].push(Timed::raw(m.offset, m.bytes()));
+        }
+    }
+
+    fn mark(&mut self, m: &Marker) {
+        let out = &mut self.clock_msgs;
+        match m.mark {
+            Mark::Started { tick } => self.pulses.started(m.offset, tick, out),
+            Mark::Stopped { .. } => {
+                self.pulses.stopped(m.offset, out);
+                // Always: pulses go on from here at the tempo.
+                self.free_next = f64::from(m.offset);
+            }
+            Mark::Located { to, .. } => self.pulses.located(m.offset, to, out),
+            Mark::Looped { start, .. } => self.pulses.located(m.offset, start, out),
+            // Back to bar 1 while stopped: the other device's position too.
+            Mark::Rewound => self.pulses.located(m.offset, 0, out),
+            _ => {}
+        }
+    }
+
+    fn clock_span(&mut self, span: &Span) {
+        match span.state {
+            State::Playing | State::Recording => {
+                // Clock turned on (or the port opened) while playing: the
+                // other device joins from the next sixteenth.
+                if !self.pulses.running() {
+                    let tick = span.ticks().start;
+                    self.pulses.started(span.offset, tick, &mut self.clock_msgs);
+                }
+                for (tick, offset) in span.lines(PULSE_TICKS) {
+                    self.pulses.pulse(tick, offset, &mut self.clock_msgs);
+                }
+            }
+            // Nothing until playback starts, when Started comes.
+            State::CountIn => {}
+            State::Stopped if self.clock_mode == ClockOut::Always && !self.pulses.running() => {
+                let every = 60.0 * f64::from(span.rate) / (span.bpm.max(1.0) * 24.0);
+                let (start, end) = (f64::from(span.offset), f64::from(span.offset + span.len));
+                self.free_next = self.free_next.max(start);
+                while self.free_next < end {
+                    let offset = self.free_next as u32;
+                    self.queue[0].push(Timed::realtime(offset, mpfree_midi_clock::CLOCK));
+                    self.free_next += every;
+                }
+            }
+            State::Stopped => {}
+        }
+    }
+
     /// After the notes: the period's messages, in frame order, go to the
     /// writer, each due when its frame is heard. `t0` is when the period
     /// was made (the loop's start); the sound is heard `lead` later.
     pub fn period_end(&mut self, frames: u32, t0: Instant) {
         let q = &mut self.queue[0];
-        q.sort();
+        // The clock went in first (`clock` runs before the notes), in the
+        // order it must leave.
+        q.sort_by_frame();
         let at = t0 + self.lead;
         let rate = f64::from(self.rate);
         let tx = self.writer.as_ref().map(|w| &w.tx);
@@ -444,7 +555,8 @@ impl MidiOut {
         }
     }
 
-    /// Ends the notes that are on, lets the writer send them and stops it,
+    /// Ends the notes that are on (and the clock, with Stop), lets the
+    /// writer send them and stops it,
     /// waiting at most a second. True when everything queued was written
     /// or there was nothing to close.
     pub fn close(&mut self) -> bool {
@@ -452,6 +564,15 @@ impl MidiOut {
             return true;
         }
         self.all_off(0);
+        // The other device stops with us.
+        if self.pulses.running() {
+            self.clock_msgs.clear();
+            self.pulses.stopped(0, &mut self.clock_msgs);
+            for i in 0..self.clock_msgs.as_slice().len() {
+                let m = self.clock_msgs.as_slice()[i];
+                self.queue[0].push(Timed::raw(m.offset, m.bytes()));
+            }
+        }
         self.period_end(0, Instant::now() - self.lead);
         let Some(w) = self.writer.take() else {
             return true;
@@ -973,6 +1094,158 @@ mod tests {
             "{lines:?}"
         );
         assert!(mo.close());
+    }
+
+    /// The jacks with "Clock out" set, a transport, and its period.
+    struct ClockRig {
+        mo: MidiOut,
+        sink: Sink,
+        m: Shared,
+        tr: mpfree_transport::Transport,
+        block: Block,
+    }
+
+    impl ClockRig {
+        fn new(mode: ClockOut) -> ClockRig {
+            let (mut mo, sink) = open(Duration::ZERO);
+            let m = model(&[]);
+            m.lock()
+                .unwrap()
+                .setup
+                .set_port(DIN_NAME, |p| p.clock_out = mode);
+            mo.sync(&m, false);
+            ClockRig {
+                mo,
+                sink,
+                m,
+                tr: mpfree_transport::Transport::new(RATE, 120.0).unwrap(),
+                block: Block::new(),
+            }
+        }
+
+        fn command(&mut self, c: mpfree_transport::Command) {
+            self.tr.command(self.tr.frame(), c);
+        }
+
+        /// `seconds` of periods; returns the bytes they sent.
+        fn run(&mut self, seconds: f64) -> Vec<u8> {
+            let periods = (seconds * f64::from(RATE) / f64::from(PERIOD)).round() as u32;
+            for _ in 0..periods {
+                self.tr.process(PERIOD, &mut self.block);
+                self.mo.sync(&self.m, self.tr.state().rolling());
+                self.mo.clock(&self.block);
+                self.mo.period_end(PERIOD, Instant::now());
+            }
+            self.flush()
+        }
+
+        /// What the writer has written since the last call.
+        fn flush(&mut self) -> Vec<u8> {
+            let give_up = Instant::now() + Duration::from_secs(2);
+            while self
+                .mo
+                .writer
+                .as_ref()
+                .is_some_and(|w| w.stats.written.load(Ordering::Relaxed) < self.mo.queued)
+                && Instant::now() < give_up
+            {
+                thread::sleep(Duration::from_millis(1));
+            }
+            let b = self.sink.bytes();
+            self.sink.0.lock().unwrap().clear();
+            b
+        }
+    }
+
+    fn pulses(b: &[u8]) -> usize {
+        b.iter().filter(|&&x| x == 0xF8).count()
+    }
+
+    /// While playing: Start from the top, 24 pulses a quarter note (48 a
+    /// second at 120 BPM), Stop; nothing while stopped.
+    #[test]
+    fn clock_out_while_playing() {
+        use mpfree_transport::Command;
+        let mut r = ClockRig::new(ClockOut::WhilePlaying);
+        assert!(r.m.lock().unwrap().live.built.clock_out);
+        assert_eq!(r.run(0.5), []);
+        r.command(Command::Play);
+        let b = r.run(1.0);
+        assert_eq!(b[0], 0xFA, "{b:02X?}");
+        assert!(b[1..].iter().all(|&x| x == 0xF8), "{b:02X?}");
+        assert!((48..=49).contains(&pulses(&b)), "{}", pulses(&b));
+        r.command(Command::Stop);
+        assert_eq!(r.run(0.5), [0xFC]);
+        assert!(r.mo.close());
+    }
+
+    /// Always: pulses at the tempo while stopped too, then Start and
+    /// pulses from the top when it plays; close sends Stop.
+    #[test]
+    fn clock_out_always() {
+        use mpfree_transport::Command;
+        let mut r = ClockRig::new(ClockOut::Always);
+        let b = r.run(1.0);
+        assert!(b.iter().all(|&x| x == 0xF8), "{b:02X?}");
+        assert!((47..=49).contains(&b.len()), "{}", b.len());
+        r.command(Command::Play);
+        let b = r.run(0.5);
+        assert_eq!(b[0], 0xFA, "{b:02X?}");
+        assert!((24..=25).contains(&pulses(&b)));
+        assert!(r.mo.close());
+        assert_eq!(r.sink.bytes(), [0xFC]);
+    }
+
+    /// A locate while playing: Stop, Song Position, Continue, then pulses
+    /// from there.
+    #[test]
+    fn clock_out_follows_a_locate() {
+        use mpfree_transport::Command;
+        let mut r = ClockRig::new(ClockOut::WhilePlaying);
+        r.command(Command::Play);
+        r.run(0.25);
+        // Bar 2: 16 sixteenths in.
+        r.command(Command::Locate(3840));
+        let b = r.run(0.1);
+        assert_eq!(&b[..5], [0xFC, 0xF2, 16, 0, 0xFB], "{b:02X?}");
+        assert!(b[5..].iter().all(|&x| x == 0xF8));
+        assert!(pulses(&b) >= 4);
+    }
+
+    /// A count-in sends no clock; Start comes when playback starts.
+    #[test]
+    fn clock_out_waits_for_the_count_in() {
+        use mpfree_transport::Command;
+        let mut r = ClockRig::new(ClockOut::WhilePlaying);
+        r.command(Command::SetCountIn(1));
+        r.command(Command::Record);
+        // A bar at 120 BPM is 2 s: still counting in.
+        assert_eq!(r.run(1.5), []);
+        let b = r.run(1.0);
+        assert_eq!(b[0], 0xFA, "{b:02X?}");
+        assert!(b[1..].iter().all(|&x| x == 0xF8));
+    }
+
+    /// Clock turned on while playing joins at the next sixteenth (Song
+    /// Position, Continue); turned off while playing, it sends Stop.
+    #[test]
+    fn clock_out_turned_on_and_off_while_playing() {
+        use mpfree_transport::Command;
+        let mut r = ClockRig::new(ClockOut::Off);
+        r.command(Command::Play);
+        assert_eq!(r.run(0.5), []);
+        let set = |r: &mut ClockRig, mode| {
+            let mut g = r.m.lock().unwrap();
+            g.setup.set_port(DIN_NAME, |p| p.clock_out = mode);
+            g.gen += 1;
+        };
+        set(&mut r, ClockOut::WhilePlaying);
+        let b = r.run(0.5);
+        assert_eq!(b[0], 0xF2, "{b:02X?}");
+        assert_eq!(b[3], 0xFB);
+        assert!(b[4..].iter().all(|&x| x == 0xF8));
+        set(&mut r, ClockOut::Off);
+        assert_eq!(r.run(0.5), [0xFC]);
     }
 
     /// Steady playing on MIDI Out allocates and frees nothing in the sound
