@@ -36,7 +36,7 @@ pub mod sample;
 pub mod state;
 pub mod view;
 
-pub use state::{BrowseAction, Browser, Button, Filter, Input, Pick, Screen, Source};
+pub use state::{BrowseAction, Browser, Button, Filter, Input, Pick, Screen, Sort, Source};
 pub use view::BrowserView;
 
 use mpfree_ui::Ui;

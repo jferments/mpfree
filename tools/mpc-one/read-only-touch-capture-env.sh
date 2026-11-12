@@ -19,7 +19,7 @@ pid="$(systemctl show acvs.service -p MainPID --value 2>/dev/null)"
 case "$pid" in ''|0|*[!0-9]*) exit 4 ;; esac
 [ -d "/proc/$pid" ]
 # The eMMC must be mmcblk0 with the partition names recorded in
-# docs/hardware/baseline-3.6.0.md before its counters mean anything.
+# docs/dev/hardware/baseline-3.6.0.md before its counters mean anything.
 n=1
 for name in uboot-spl env uboot splash recoverysplash rootfs; do
   grep -Fxq "PARTNAME=$name" "/sys/class/block/mmcblk0p$n/uevent" || {

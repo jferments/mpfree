@@ -323,10 +323,13 @@ fn morph_moves_go_into_the_songs_lane_and_play_back() {
         ]
     );
     let lane = s.lanes.lane(MORPH_LANE).unwrap();
-    // From 0 where the pass started to 0.25 at bar 2 (the period after
-    // the move, 64 frames late at most).
-    assert!((lane.value_at(0.0).unwrap()).abs() < 1e-3);
+    // At 0 where the pass started, held until the move to 0.25 at bar 2
+    // (the period after the move, 64 frames late at most).
     let near = |tick: f64, want: f32| (lane.value_at(tick).unwrap() - want).abs() < 0.01;
+    assert!((lane.value_at(0.0).unwrap()).abs() < 1e-3);
+    assert!(near((BAR - 100) as f64, 0.0));
+    // Held at 0.25 until the move to 0.5 a beat later, not ramped.
+    assert!(near((BAR + 900) as f64, 0.25));
     assert!(near((BAR + 3) as f64, 0.25));
     assert!(near((2 * BAR + 3) as f64, 1.0));
     // The song plays it on its own track.
