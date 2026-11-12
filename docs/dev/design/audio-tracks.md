@@ -48,6 +48,7 @@ All takes share one pool of samples, asked for once in `AudioTracks::new(rate, s
 - When a recording ends, the part of its last stretch it did not fill goes back, joined to free neighbours.
 - A recording that runs out of memory stops there. What was written stays, with its region; the take is marked `cut_short` and counted in `Stats::full`. The track records again at the next punch in.
 - `memory()` is the gauge (`used`, `capacity`, in samples).
+- **Waveforms.** The pool keeps the lowest and highest sample of every block of 256 samples (`PEAK_BLOCK`) as audio is written or loaded. `peaks(id, from, to)` reads the table for whole blocks, so a screen column covering a second of audio costs about 170 reads instead of 44,100. It works while a take records, up to what has been written, and doesn't allocate. Every stretch of the pool starts and ends on a block edge, so a block never mixes two takes. Memory is therefore handed out in blocks of 256 samples (5.8 ms of mono), and the pool is cut down to whole blocks. The host shares the peaks with the screen thread the way it shares the rest of the state, as the looper's waveform does.
 
 Recording to the storage partition instead of RAM, so tracks can be as long as the disk allows, needs a writer thread and the store; it is not built.
 
