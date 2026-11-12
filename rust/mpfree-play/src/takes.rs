@@ -37,6 +37,10 @@
 //! a lock of the same parameter on the same tick and row, and a turn that
 //! spans many periods stays one lock in the take.
 //!
+//! A host that numbers recorded changes ([`crate::recorded`]) hands each
+//! to [`Takes::record`], which calls the one above that fits and decides
+//! as `PlayView::record` does, so its view and the project agree.
+//!
 //! Perform FX gestures recorded as moves ([`Recorder::taken_moves`]) go in
 //! with [`Takes::put_move`]: each replaces what its lane had over the
 //! ticks it covers, and the take keeps what it replaced, so undo puts the
@@ -61,7 +65,18 @@ use mpfree_seq::steps::{Edit, MovesEdit};
 use mpfree_seq::{Clip, Lock, ModelError, Note, Project, Touch, TouchPoint};
 use mpfree_transport::time::Tick;
 
+use crate::recorded::Rec;
 use crate::{Erased, ErasedLock, Taken, TakenLock, TakenMove};
+
+/// What one recorded change did to the project ([`Takes::record`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Recorded {
+    /// A clip changed.
+    pub changed: bool,
+    /// Pressure values the clip had no room for (the note went in
+    /// without them).
+    pub touch_lost: usize,
+}
 
 /// A gesture to write into a clip's lanes: its target, map and points (as
 /// for `Moves::put`).
@@ -182,6 +197,36 @@ impl Takes {
         Ok((note, kept))
     }
 
+    /// Make recorded change `rec` to the project and remember it with its
+    /// take, with a note's pressure `touch` or a gesture's `moves`:
+    /// [`Takes::add_touched`], [`Takes::erase`], [`Takes::add_lock`],
+    /// [`Takes::erase_lock`] or [`Takes::put_move`]. A change its clip
+    /// refuses, or one to a clip that is gone, changes nothing.
+    pub fn record(
+        &mut self,
+        project: &mut Project,
+        rec: &Rec,
+        touch: &[TouchPoint],
+        moves: &[(f64, f32, Kind)],
+    ) -> Recorded {
+        let mut done = Recorded::default();
+        match rec {
+            Rec::Note(k) => {
+                if let Ok((_, kept)) = self.add_touched(project, k, touch) {
+                    done.changed = true;
+                    if !kept {
+                        done.touch_lost = touch.len();
+                    }
+                }
+            }
+            Rec::Erase(e) => done.changed = self.erase(project, e),
+            Rec::Lock(k) => done.changed = self.add_lock(project, k).is_ok(),
+            Rec::EraseLock(e) => done.changed = self.erase_lock(project, e),
+            Rec::Move(k) => done.changed = self.put_move(project, k, moves).is_ok(),
+        }
+        done
+    }
+
     /// Put a recorded lock in its clip, in place of a lock of the same
     /// parameter on the same tick and row, and remember it with its take.
     /// A later value of a lock this take recorded replaces it in the take
@@ -196,7 +241,7 @@ impl Takes {
     ) -> Result<Option<Lock>, ModelError> {
         let c = clip(project, k.track, k.slot).ok_or(ModelError::BadSlot)?;
         let new = k.lock;
-        let key = |x: &Lock| (x.tick, x.sound, x.addr) == (new.tick, new.sound, new.addr);
+        let key = |x: &Lock| x.same_place(&new);
         let i = c.locks.iter().position(key);
         let old = i.map(|i| c.locks.remove(i));
         if let Err(e) = c.add_lock(new) {

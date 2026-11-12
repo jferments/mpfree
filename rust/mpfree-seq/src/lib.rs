@@ -273,6 +273,21 @@ impl Note {
         }
     }
 
+    /// Whether a clip `length` ticks long whose pad pressure is `touch`
+    /// ([`Clip::touch`]) can hold this note: [`Clip::add_note`]'s rule,
+    /// less the note count. A play view checks a recorded note with it,
+    /// so the view and the clip decide alike.
+    pub fn fits(&self, length: Tick, touch: &[TouchPoint]) -> bool {
+        (0..length).contains(&self.tick)
+            && (1..=MAX_CLIP_TICKS).contains(&self.len)
+            && self.note <= 127
+            && (1..=127).contains(&self.velocity)
+            && (1..=100).contains(&self.chance)
+            && self.cond.ok()
+            && (1..=MAX_RATCHET).contains(&self.ratchet)
+            && (self.touch.is_none() || touch.get(self.touch.range()).is_some_and(run_ok))
+    }
+
     /// Whether it is conditional ([`Cond::sets_last`]): whether it played
     /// is what `Cond::Pre` and `Cond::Nei` read.
     pub fn conditional(&self) -> bool {
@@ -369,6 +384,22 @@ impl Lock {
             addr,
             value,
         }
+    }
+
+    /// Whether a clip `length` ticks long can hold this lock:
+    /// [`Clip::add_lock`]'s rule, less the lock count.
+    pub fn fits(&self, length: Tick) -> bool {
+        (0..length).contains(&self.tick)
+            && self.sound.is_none_or(|s| s <= 127)
+            && self.value.is_finite()
+    }
+
+    /// Whether this lock and `other` hold the same place: the same
+    /// parameter on the same tick and row. A clip keeps one lock in each
+    /// place, and a recorded lock takes the place of the one there
+    /// ([`crate::Clip::locks`]).
+    pub fn same_place(&self, other: &Lock) -> bool {
+        (self.tick, self.sound, self.addr) == (other.tick, other.sound, other.addr)
     }
 
     /// The pad whose notes end this lock, for a sampler pad's parameter
@@ -468,7 +499,7 @@ impl Clip {
         if points.is_empty() {
             return Ok(Touch::NONE);
         }
-        if self.touch.len() + points.len() > MAX_TOUCH_POINTS || !run_ok(points) {
+        if !touch_fits(self.touch.len(), points) {
             return Err(ModelError::BadTouch);
         }
         let first = self.touch.len() as u32;
@@ -536,20 +567,11 @@ impl Clip {
     }
 
     fn lock_ok(&self, l: &Lock) -> bool {
-        (0..self.length).contains(&l.tick)
-            && l.sound.is_none_or(|s| s <= 127)
-            && l.value.is_finite()
+        l.fits(self.length)
     }
 
     fn note_ok(&self, n: &Note) -> bool {
-        (0..self.length).contains(&n.tick)
-            && (1..=MAX_CLIP_TICKS).contains(&n.len)
-            && n.note <= 127
-            && (1..=127).contains(&n.velocity)
-            && (1..=100).contains(&n.chance)
-            && n.cond.ok()
-            && (1..=MAX_RATCHET).contains(&n.ratchet)
-            && (n.touch.is_none() || self.touch.get(n.touch.range()).is_some_and(run_ok))
+        n.fits(self.length, &self.touch)
     }
 
     /// Every value in range.
@@ -602,6 +624,13 @@ impl Clip {
 /// A pressure run is sound: values 0 to 127, in time order.
 fn run_ok(points: &[TouchPoint]) -> bool {
     points.iter().all(|p| p.value <= 127) && points.windows(2).all(|w| w[0].at <= w[1].at)
+}
+
+/// Whether a clip holding `had` pressure values takes a new run of
+/// `points`: [`Clip::add_touch`]'s rule (sound, and no further than
+/// [`MAX_TOUCH_POINTS`]). An empty run always fits; it adds nothing.
+pub fn touch_fits(had: usize, points: &[TouchPoint]) -> bool {
+    points.is_empty() || (had + points.len() <= MAX_TOUCH_POINTS && run_ok(points))
 }
 
 /// Where a track's notes go: a sampler program, the arp in front of it,

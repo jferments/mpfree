@@ -5,7 +5,7 @@ checked: 2026-11-12 ea72d6c
 
 # The time engine on two threads (plan)
 
-**Status:** plan, 2026-11-12. The first step is built (a compile checks only what it plays, see [playback.md](playback.md#in-the-pad-player-timehost)); the split below is not. The app thread, which owns `main.rs` and will build the control thread ([concurrency.md](concurrency.md), plan step 2), agreed to the shape on 12 Nov (07:20Z) with three asks, which are rules 1 to 3 below.
+**Status:** plan, 2026-11-12. Step 1 is built (a compile checks only what it plays, see [playback.md](playback.md#in-the-pad-player-timehost)), and so is step 2a (recorded changes made alike to the view and the project, and the catch-up); the split itself is not. The app thread, which owns `main.rs` and will build the control thread ([concurrency.md](concurrency.md), plan step 2), agreed to the shape on 12 Nov (07:20Z) with three asks, which are rules 1 to 3 below.
 
 ## Why
 
@@ -54,7 +54,9 @@ They talk through two bounded queues (`Link`), one each way.
 ## Steps
 
 1. Done: a compile checks only what it plays.
-2. `Link`, the messages and the two halves behind the facade, still on one thread, with the catch-up for recorded notes and switches, and the tests above. The existing time tests pass unchanged.
+2. In two parts:
+   - **2a, built:** recorded changes numbered (`mpfree_play::Rec`) and made to the view and the project alike (`PlayView::record`, `Takes::record`), views that say what they include (`Includes`), the switch count, and the catch-up (`Recent`), with their tests in `mpfree-play` (`tests/catch_up.rs`, and the late view that cues the same clip again in `tests/cue.rs`). The pad player already makes every recorded change this way and sets what each view includes, so every time test runs through it. See [playback.md](playback.md#compiling-playview).
+   - **2b:** `Link`, the messages and the two halves behind the facade, still on one thread, and the tests above. The existing time tests pass unchanged.
 3. The app thread runs the control half on its control thread. Round tests on the MPC compare the audio thread's worst period with launches, undo and capture in a big project, before and after.
 4. Song edits and capture lose their project clones, since the control half can afford them.
 
