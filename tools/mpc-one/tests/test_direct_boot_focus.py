@@ -29,8 +29,14 @@ def fixture():
                  "0x00122d38":{"pseudocode":"mpf_fastboot_response()"},
                  "0x00122948":{"pseudocode":"mpf_fastboot_response()"},
                  "0x00100fe4":{"pseudocode":(
+                     "if ((*DAT_0010114c & 0xffffff00) == DAT_00101150) { "
+                     "uVar4 = *DAT_0010114c & 0xff; "
                      "if (uVar4 == 1) { *DAT_00101154 = 1; } "
-                     "if (uVar4 != 9) {}; *puVar1 = 0;")},
+                     "if (uVar4 == 9) goto LAB_00101096; } "
+                     "*puVar1 = 0; "
+                     "FUN_001147f0(10,0,&local_20); "
+                     "FUN_00115f30(local_20,1,local_1c); "
+                     "if (local_1c[0] < 100) { *DAT_00101154 = 1; }")},
                  "0x001100c8":{"pseudocode":(
                      "FUN_00110084; FUN_0010fde8; if (local_8c < uVar4) {}; "
                      "iVar1 + 0x68")},
@@ -76,7 +82,7 @@ def run(data):
 class DirectBootFocusTests(unittest.TestCase):
     def test_nine_topics_and_exact_sha(self):
         report=run(fixture())
-        self.assertEqual(len(report["questions"]),40)
+        self.assertEqual(len(report["questions"]),41)
         self.assertEqual(
             report["nominal_memory_address_gaps"]["fdt_addr_r"][
                 "from_fastboot_load_base_bytes"], 24115200)
@@ -202,6 +208,16 @@ class DirectBootFocusTests(unittest.TestCase):
         d["u"]["source_sha256_prechecked_by_launcher"]="different"
         with self.assertRaises(ValueError):
             run(d)
+
+    def test_reboot_modes_are_equality_branches_with_prefix_guard(self):
+        d = fixture()
+        report = run(d)
+        self.assertTrue(report["checks"]["reboot_mode_clear_and_one_nine_branch"])
+        self.assertTrue(report["checks"]["separate_boot_threshold_below_100_observed"])
+        code = d["u"]["analyzed_functions"]["0x00100fe4"]["pseudocode"]
+        d["u"]["analyzed_functions"]["0x00100fe4"]["pseudocode"] = (
+            code.replace("if (uVar4 == 9) goto", "if (uVar4 != 9) goto"))
+        self.assertFalse(run(d)["checks"]["reboot_mode_clear_and_one_nine_branch"])
 
     def test_mmc1_disabled_negative(self):
         d=fixture()
