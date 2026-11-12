@@ -865,6 +865,51 @@ class Lab:
                 "success": False, "error": str(exc),
             }
             self.notes.append("Wide multi-track question synthesis: " + str(exc))
+        # Direct-boot focus: tie the community Fastboot/OpenAZ0x leads to
+        # this exact owner SHA-verified P3 U-Boot binary. Do not send commands.
+        try:
+            direct_module = load_module(
+                "tools/mpc-one/synthesize_direct_boot_focus.py",
+                "mpfree_directboot_evidence",
+            )
+            direct = direct_module.build(
+                lambda path: (self.out / path).read_bytes()
+            )
+            (self.out / "direct-boot-focus.json").write_text(
+                json.dumps(direct, indent=2) + "\n")
+            (self.out / "direct-boot-focus.md").write_text(
+                direct_module.render_md(direct))
+            topic_count = len(set(q["topic"] for q in direct["questions"]))
+            required = (
+                "token_prefix_comparison_37_bytes",
+                "oem_grants_permission_pointer",
+                "global_0x14d690_written_at_0x12289e",
+                "global_0x14d690_read_at_0x122838",
+                "download_gate_present",
+                "flash_gate_present",
+                "erase_gate_present",
+                "boot_completion_calls_bootm",
+                "normal_script_bootz",
+            )
+            passed = all(direct["checks"].get(key) for key in required)
+            record["direct_boot_focus"] = {
+                "report": "direct-boot-focus.json",
+                "questions":len(direct["questions"]),
+                "topics":topic_count,
+                "required_owner_evidence":passed,
+                "permission_pointer_probe":direct.get("probe",{}),
+            }
+            self.stages["direct-boot-focus-evidence"] = {
+                "success":passed and len(direct["questions"])>=25 and topic_count==7,
+                "questions":len(direct["questions"]),"topics":topic_count,
+                "required_static_checks_passed":passed,
+            }
+        except Exception as exc:
+            record["direct_boot_focus_error"]=str(exc)
+            self.stages["direct-boot-focus-evidence"] = {
+                "success":False,"error":str(exc)
+            }
+            self.notes.append("Direct-boot focus synthesis: " + str(exc))
         (self.out / "cross-evidence.json").write_text(json.dumps(record, indent=2) + "\n")
         summary = [
             "# MPFree integrated bootchain run",
@@ -921,6 +966,15 @@ class Lab:
                 summary.append("- " + label + ": " + str(count))
             summary.append("- See wide-research-matrix.md for findings, evidence and next actions.")
             summary.append("- Physical MaskROM, fuse policy and independent restore remain unproven.")
+        summary += ["", "## Direct boot from existing vendor U-Boot"]
+        direct = record.get("direct_boot_focus")
+        if direct:
+            summary.append("- Focused questions: " + str(direct["questions"]) +
+                           " across " + str(direct["topics"]) + " topics.")
+            summary.append("- OEM grant, download gate, flash/erase, bootm/bootz evidence: " +
+                           str(direct["required_owner_evidence"]))
+            summary.append("- See direct-boot-focus.md for individual evidence, limitations and follow-ups.")
+            summary.append("- No Fastboot commands sent; no rootfs, eMMC or device modified.")
         summary += ["", "## Guest/static image consistency"]
         if record["match_tests"]:
             for entry in record["match_tests"]:
