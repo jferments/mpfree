@@ -324,8 +324,10 @@ def mpfree_v11_entrypoint():
             off+=take
         constants={
             'pmu_boot_counter_register':0xff7300a0,
+            'pmu_syscon_register_base':0xff730000,
             'pmu_reboot_mode_register':0xff730094,
             'bootcount_upper16_magic':0xb0010000,
+            'bootcount_halfword_magic':0x0000b001,
             'rom_download_magic':0xef08a53c,
             'fastboot_permission_global':0x0014d690,
         }
