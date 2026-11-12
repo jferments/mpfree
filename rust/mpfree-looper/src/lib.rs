@@ -1648,7 +1648,13 @@ impl Looper {
                 match p.filter(|p| l.print_live(p, self.prints[s].next.is_some())) {
                     Some(p) if l.print_on > 0.0 => {
                         let frames = p.frames;
-                        self.loops[s].start_fit(&mut self.store, &mut self.stats, s, frames, self.now)
+                        self.loops[s].start_fit(
+                            &mut self.store,
+                            &mut self.stats,
+                            s,
+                            frames,
+                            self.now,
+                        )
                     }
                     _ => self.stats.refused += 1,
                 }
@@ -2235,7 +2241,14 @@ impl Loop {
     /// Start fitting the loop to its print (`frames` long) in the period
     /// starting at `now`: the print is copied into a new layer at
     /// [`FIT_SPEED`], which then takes the layers' place.
-    fn start_fit(&mut self, store: &mut Store, stats: &mut Stats, me: usize, frames: usize, now: u64) {
+    fn start_fit(
+        &mut self,
+        store: &mut Store,
+        stats: &mut Stats,
+        me: usize,
+        frames: usize,
+        now: u64,
+    ) {
         let ready = self.phase == Phase::Playing
             && !self.od_open
             && !self.first_open
@@ -3080,8 +3093,11 @@ impl Loop {
             // The print plays alone: as `follow` and `read` frame by frame.
             let (origin, len_ticks, lenf) =
                 (self.origin as f64, self.len_ticks as f64, self.len as f64);
-            let (p_origin, p_ticks, pf) =
-                (self.p_origin as f64, self.p_ticks as f64, self.p_frames as f64);
+            let (p_origin, p_ticks, pf) = (
+                self.p_origin as f64,
+                self.p_ticks as f64,
+                self.p_frames as f64,
+            );
             let g = self.gain * self.level;
             for (y, &t) in ys.iter_mut().zip(ticks) {
                 let rel = rem_ticks(t - origin, len_ticks);

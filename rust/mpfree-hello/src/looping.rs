@@ -15,17 +15,30 @@
 //!   nothing) or the line input. It logs a `looper:` line for each press and
 //!   each change, and builds the loop's waveform for the Looper tab a slice
 //!   at a time.
+//! - [`Printer`] keeps each loop's pitch at another tempo: when a loop is
+//!   playing at a tempo other than its own, the host bounces it
+//!   ([`Looper::bounce_print`]), a worker thread stretches the bounce to
+//!   the loop's length at the tempo (`mpfree_looper::print`, on the
+//!   sampler's stretch engine), and the print goes back to the looper
+//!   ([`Looper::print`]), which plays it in place of the layers. Until it
+//!   is ready (a fraction of a second on the workstation, more on the MPC)
+//!   the loop plays like tape. Buffers are made and dropped on the worker.
+//!   Overdub over a print fits the loop to the tempo first (see
+//!   `mpfree-looper`).
 //!
 //! Which jacks the two capture channels are is not verified (line in L/R is
 //! the likely reading). Opening the capture device is a state change on the
 //! MPC: it waits for the owner's go in the round 6 runbook.
 
 use crate::alsa;
+use mpfree_looper::print::{frames_at, PrintJob};
 use mpfree_looper::{
-    Command, LayerCommand, LayerInfo, Looper, Memory, Phase, Stats, Status, MAX_LAYERS, MAX_LOOPS,
+    Bounce, Command, LayerCommand, LayerInfo, Looper, Memory, Phase, Print, Stats, Status,
+    MAX_LAYERS, MAX_LOOPS,
 };
 use mpfree_transport::Block;
 use mpfree_ui::wave::{Peaks, WaveColumn};
+use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::Arc;
 
 pub const PERIOD: usize = 128;
@@ -521,6 +534,216 @@ pub struct LoopHost {
     meter: [f32; 2],
     beats_per_bar: u32,
     rate: u32,
+    printer: Printer,
+}
+
+/// What the worker is asked: a buffer for a bounce, a print, or to drop
+/// what the audio loop is done with.
+enum ToPrinter {
+    Buffer(usize),
+    Print(Bounce, usize),
+    Drop(Option<Print>, Vec<f32>),
+}
+
+enum FromPrinter {
+    Buffer(Vec<f32>),
+    /// The print for (loop, frames), or None if it could not be made.
+    Done(usize, usize, Option<Print>),
+}
+
+/// One print under way: for loop `n`, `frames` long, from the loop at
+/// `version`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Wanted {
+    n: usize,
+    frames: usize,
+    version: u64,
+}
+
+/// Prints made on a worker thread, one at a time (see the module notes).
+pub struct Printer {
+    rate: u32,
+    tx: Option<Sender<ToPrinter>>,
+    rx: Option<Receiver<FromPrinter>>,
+    /// A buffer from the worker, for the next bounce.
+    buf: Option<Vec<f32>>,
+    asked: bool,
+    /// The print under way, and whether its bounce is rendering.
+    doing: Option<Wanted>,
+    bouncing: bool,
+    /// Prints handed to the looper, and ones made too late to use.
+    pub made: u64,
+    pub stale: u64,
+    pub failed: u64,
+}
+
+impl Printer {
+    fn new(rate: u32) -> Printer {
+        let (tx, jobs) = channel::<ToPrinter>();
+        let (done, rx) = channel();
+        let spawned = std::thread::Builder::new()
+            .name("mpfree-print".into())
+            .spawn(move || {
+                for m in jobs {
+                    let reply = match m {
+                        ToPrinter::Buffer(n) => FromPrinter::Buffer(Vec::with_capacity(n)),
+                        ToPrinter::Print(b, frames) => {
+                            let p = PrintJob::new(&b, rate, frames).ok().and_then(|mut j| {
+                                while !j.run(1 << 15) {}
+                                j.finish()
+                            });
+                            FromPrinter::Done(b.from_loop, frames, p)
+                        }
+                        ToPrinter::Drop(p, b) => {
+                            drop((p, b));
+                            continue;
+                        }
+                    };
+                    if done.send(reply).is_err() {
+                        break;
+                    }
+                }
+            })
+            .is_ok();
+        Printer {
+            rate,
+            tx: spawned.then_some(tx),
+            rx: spawned.then_some(rx),
+            buf: None,
+            asked: false,
+            doing: None,
+            bouncing: false,
+            made: 0,
+            stale: 0,
+            failed: 0,
+        }
+    }
+
+    fn send(&self, m: ToPrinter) {
+        if let Some(tx) = &self.tx {
+            let _ = tx.send(m);
+        }
+    }
+
+    /// One period's look after the looper ran at `bpm`: hand over what
+    /// the worker made, take a finished bounce to it, drop old prints, and
+    /// start the next print a loop needs (or take away one it no longer
+    /// does). Cheap when nothing changes. It allocates nothing itself;
+    /// a message to the worker can (a block of the channel, now and then),
+    /// and only goes when a print starts, arrives or is dropped.
+    fn tend(&mut self, looper: &mut Looper, bpm: f64) {
+        if self.tx.is_none() || !(bpm > 0.0) {
+            return;
+        }
+        for n in 0..MAX_LOOPS {
+            if let Some(p) = looper.take_print(n) {
+                self.send(ToPrinter::Drop(Some(p), Vec::new()));
+            }
+        }
+        while let Some(m) = self.rx.as_ref().and_then(|rx| rx.try_recv().ok()) {
+            match m {
+                FromPrinter::Buffer(b) => {
+                    self.asked = false;
+                    self.buf = Some(b);
+                }
+                FromPrinter::Done(n, frames, p) => {
+                    self.doing = None;
+                    let Some(p) = p else {
+                        self.failed += 1;
+                        continue;
+                    };
+                    let now = looper.loop_status(n);
+                    let wanted = now.is_some_and(|s| {
+                        s.version == p.version && Some(frames) == want(&s, bpm, self.rate)
+                    });
+                    if !wanted {
+                        self.stale += 1;
+                        self.send(ToPrinter::Drop(Some(p), Vec::new()));
+                        continue;
+                    }
+                    match looper.print(n, Some(p)) {
+                        Ok(()) => self.made += 1,
+                        Err(p) => self.send(ToPrinter::Drop(p, Vec::new())),
+                    }
+                }
+            }
+        }
+        if self.bouncing {
+            match looper.take_bounce() {
+                Some(b) => {
+                    self.bouncing = false;
+                    let d = self.doing.expect("a print is under way");
+                    if b.complete && b.version == d.version {
+                        self.send(ToPrinter::Print(b, d.frames));
+                    } else {
+                        self.doing = None;
+                        self.send(ToPrinter::Drop(None, b.audio));
+                    }
+                }
+                None if looper.bounce_progress().is_none() => {
+                    self.bouncing = false;
+                    self.doing = None;
+                }
+                None => {}
+            }
+        }
+        if self.doing.is_some() {
+            return;
+        }
+        for n in 0..MAX_LOOPS {
+            let Some(s) = looper.loop_status(n) else {
+                break;
+            };
+            let have = looper.print_info(n);
+            match want(&s, bpm, self.rate) {
+                None if have.is_some() && s.phase == Phase::Playing => {
+                    let _ = looper.print(n, None);
+                }
+                None => {}
+                Some(frames) if have == Some((frames, s.ticks, s.version)) => {}
+                Some(frames) => {
+                    let need = 2 * s.frames;
+                    match self.buf.take() {
+                        Some(b) if b.capacity() >= need => match looper.bounce_print(n, b) {
+                            Ok(()) => {
+                                self.doing = Some(Wanted {
+                                    n,
+                                    frames,
+                                    version: s.version,
+                                });
+                                self.bouncing = true;
+                            }
+                            Err(b) => self.buf = Some(b),
+                        },
+                        Some(b) => {
+                            self.send(ToPrinter::Drop(None, b));
+                            self.ask(need);
+                        }
+                        None => self.ask(need),
+                    }
+                    return;
+                }
+            }
+        }
+    }
+
+    fn ask(&mut self, samples: usize) {
+        if !self.asked {
+            self.asked = true;
+            self.send(ToPrinter::Buffer(samples));
+        }
+    }
+}
+
+/// The print loop `s` needs at `bpm`: its length then, if that is not its
+/// own (within a frame) and it is playing; within the stretch's 10x.
+fn want(s: &Status, bpm: f64, rate: u32) -> Option<usize> {
+    if s.phase != Phase::Playing || s.frames == 0 || s.ticks <= 0 {
+        return None;
+    }
+    let frames = frames_at(s.ticks, bpm, rate);
+    let r = frames as f64 / s.frames as f64;
+    (frames.abs_diff(s.frames) > 1 && (0.1..=10.0).contains(&r)).then_some(frames)
 }
 
 impl LoopHost {
@@ -545,6 +768,7 @@ impl LoopHost {
             meter: [0.0; 2],
             beats_per_bar: 4,
             rate,
+            printer: Printer::new(rate),
         }
     }
 
@@ -559,6 +783,11 @@ impl LoopHost {
             (Command::Record, Phase::Armed) => "Record again: disarmed".to_string(),
             (Command::Record, Phase::Recording) => {
                 "Record during the first pass: it ends on the next bar line".to_string()
+            }
+            (Command::Record | Command::Overdub, Phase::Playing) if s.printed => {
+                "overdub on, once the loop is fitted to the tempo (its print becomes its layer; \
+                 Undo takes the fit back)"
+                    .to_string()
             }
             (Command::Record | Command::Overdub, Phase::Playing) => {
                 format!("overdub on (layer {})", s.layers + 1)
@@ -618,6 +847,11 @@ impl LoopHost {
                 "Resample again: as Record".to_string()
             }
             (Command::Resample, _) => "Resample: only on an empty loop".to_string(),
+            (Command::Fit, Phase::Playing) if s.printed => format!(
+                "fit to the tempo: the print becomes the loop's one layer ({} layers before; Undo takes it back)",
+                s.layers
+            ),
+            (Command::Fit, _) => "fit: refused, no print plays".to_string(),
         };
         if !self.looper.command(c) {
             return format!("looper: {what}: NOT done, the command queue is full");
@@ -758,6 +992,9 @@ impl LoopHost {
         }
         self.out.fill(0.0);
         self.looper.process(block, &self.input, &mut self.out);
+        if let Some(span) = block.spans().last() {
+            self.printer.tend(&mut self.looper, span.bpm);
+        }
         note
     }
 
@@ -802,13 +1039,15 @@ impl LoopHost {
         let st = self.looper.stats();
         format!("looper: {:?}, {} layers ({} to redo), loop {}, first pass length {}, latency {} frames, level {:.1} \
                  dB{}; records from {}; line input {}{}, monitor {}; {} overdubs refused, {} first passes thrown \
-                 away, {} commands dropped, {} periods kept within ±1",
+                 away, {} commands dropped, {} periods kept within ±1; {}prints {} made, {} too late, {} failed",
                 s.phase, s.layers, s.redo,
                 if s.frames > 0 { format!("{} frames ({:.2} s)", s.frames, s.frames as f64 / 44_100.0) } else { "none".to_string() },
                 bars_text(s.bars), s.latency, 20.0 * s.level.max(1e-6).log10(), if s.muted { ", muted" } else { "" },
                 self.source.name().to_lowercase(), if self.line.is_open() { "on" } else { "off" },
                 if self.line.is_open() || self.line.stats.periods > 0 { format!(" ({})", self.line.describe()) } else { String::new() },
-                if self.monitor { "on" } else { "off" }, st.refused, st.aborted, st.dropped_commands, self.clipped)
+                if self.monitor { "on" } else { "off" }, st.refused, st.aborted, st.dropped_commands, self.clipped,
+                if s.printed { "a print plays (pitch kept at this tempo); " } else { "" },
+                self.printer.made, self.printer.stale, self.printer.failed)
     }
 
     /// What the Looper tab shows; takes the meter's peaks.
@@ -1148,6 +1387,88 @@ mod tests {
 
     /// The audio thread's part: handing over the pads, a period, the log
     /// check and the wave step allocate nothing while nothing changes.
+    /// A loop recorded at 120 BPM, then the tempo at 100: it plays like
+    /// tape (lower) until the worker's print is in, then at its own pitch
+    /// and the new length; Overdub then fits it to the tempo.
+    #[test]
+    fn a_loop_at_another_tempo_gets_a_print_and_keeps_its_pitch() {
+        let mut h = LoopHost::new(44_100, 30);
+        let mut t = Transport::new(44_100, 120.0).unwrap();
+        let mut b = Block::new();
+        h.command(Command::SetBars(Some(1)));
+        h.command(Command::Record);
+        t.command(0, T::Play);
+        // 441 Hz: 100 frames a cycle, 882 to the bar.
+        let sine = |f: u64| 0.5 * (f as f64 * std::f64::consts::TAU / 100.0).sin() as f32;
+        let mut f = 0u64;
+        let mut period = |h: &mut LoopHost, t: &mut Transport, b: &mut Block, rec: bool| {
+            assert!(t.process(PERIOD as u32, b));
+            let (mut l, mut r) = ([0.0; PERIOD], [0.0; PERIOD]);
+            if rec {
+                for i in 0..PERIOD {
+                    l[i] = sine(f + i as u64);
+                    r[i] = l[i];
+                }
+            }
+            h.take_pads(&l, &r);
+            let (mut l, mut r) = ([0.0; PERIOD], [0.0; PERIOD]);
+            h.period(b, &mut l, &mut r);
+            f += PERIOD as u64;
+            l
+        };
+        while h.looper.status().phase != Phase::Playing {
+            period(&mut h, &mut t, &mut b, true);
+        }
+        assert_eq!(h.looper.status().frames, 88_200);
+        t.command(t.frame(), T::SetTempo(100.0));
+        // The pitch, from the first and last upward zero crossing.
+        let ups = |out: &[f32]| {
+            let x: Vec<usize> = (1..out.len())
+                .filter(|&i| out[i - 1] < 0.0 && out[i] >= 0.0)
+                .collect();
+            (x.len() - 1) as f64 * 44_100.0 / (x[x.len() - 1] - x[0]) as f64
+        };
+        // Like tape at first, once the tempo has changed (on the next 16th,
+        // up to 5,513 frames on).
+        for _ in 0..50 {
+            period(&mut h, &mut t, &mut b, false);
+        }
+        let mut out = Vec::new();
+        for _ in 0..30 {
+            out.extend(period(&mut h, &mut t, &mut b, false));
+        }
+        assert!(!h.looper.status().printed);
+        let tape = ups(&out);
+        assert!((tape - 367.5).abs() < 2.0, "tape {tape}");
+        let start = std::time::Instant::now();
+        while !h.looper.status().printed {
+            assert!(
+                start.elapsed().as_secs() < 120,
+                "no print: {}",
+                h.describe()
+            );
+            period(&mut h, &mut t, &mut b, false);
+            std::thread::sleep(std::time::Duration::from_micros(200));
+        }
+        let mut out = Vec::new();
+        for _ in 0..400 {
+            out.extend(period(&mut h, &mut t, &mut b, false));
+        }
+        let kept = ups(&out[1_000..]);
+        assert!((kept - 441.0).abs() < 2.0, "print {kept}");
+        assert!(h.describe().contains("a print plays"), "{}", h.describe());
+        assert!(h.describe().contains("prints 1 made"), "{}", h.describe());
+        // Overdub fits the loop to the tempo first.
+        assert!(h
+            .command(Command::Overdub)
+            .contains("once the loop is fitted"));
+        for _ in 0..40 {
+            period(&mut h, &mut t, &mut b, false);
+        }
+        let s = h.looper.status();
+        assert_eq!((s.phase, s.frames), (Phase::Overdubbing, 105_840));
+    }
+
     #[test]
     fn a_steady_period_never_allocates() {
         let mut h = LoopHost::new(44_100, 20);
