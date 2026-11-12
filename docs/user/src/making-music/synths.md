@@ -107,6 +107,8 @@ MPFree reads Scala tuning files, the format thousands of published tunings come 
 
 The MPC's pads sense how hard you keep pressing after the hit. Each synth's **Pressure** page sets what that does. By default on Poly, pressing harder opens the filter, so a held chord brightens as you lean into it. You choose up to four things for pressure to change, how much, and how hard you must press before it starts.
 
+Clips record pad pressure too, so a recorded part plays back with the same swells: see [Pad pressure](clips.md#pad-pressure) in Clips and patterns.
+
 ## Velocity
 
 How hard you hit a pad sets how loud the note plays, as with drums. **FULL LEVEL** and Half Level, and the velocity curve in [Prefs](../reference/prefs.md), work the same for the synth.

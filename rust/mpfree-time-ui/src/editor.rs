@@ -1,19 +1,25 @@
 //! The note editor of the Arrange page (the MPC's Grid View and List
-//! Edit): one clip's notes on a piano roll or as a list, the tools along
-//! the bottom, and beside it the Edit options: Timing Correct, and the
-//! selection's nudge, transpose, velocity and length.
+//! Edit): one clip's notes through one of three lenses ([`Lens`]): a
+//! piano roll, a list, or a tracker (one row per step, empty steps
+//! included). The tools run along the bottom, and beside it the Edit
+//! options: Timing Correct; the selection's nudge, transpose, velocity,
+//! length, chance, condition and ratchet; and the Euclidean fill.
 //!
-//! [`Editor`] is the editor's state (the clip, the selection, the view,
-//! the tool, the snap and the Timing Correct settings). [`Editor::act`]
+//! [`Editor`] is the editor's state (the clip, the selection, the lens,
+//! the tool, the snap, the Timing Correct settings, the sound being
+//! worked on and the Euclidean pattern). [`Editor::act`]
 //! turns an [`EditAction`] into an [`Edit`] from [`mpfree_seq::notes`],
 //! which the app applies as one undoable take, then calls
 //! [`Editor::applied`] so the selection follows the notes.
 //!
 //! [`NoteGrid`] draws the clip and reports touches:
 //!
-//! - a note (on the roll or a row of the list): `Select(index)`;
+//! - a note (on the roll, or a row of the list or the tracker):
+//!   `Select(index)`;
 //! - empty space on the roll: `Cell { row: note, col: tick }`, the tick
 //!   under the finger snapped down to the snap's line;
+//! - an empty step of the tracker: `Cell { row: `[`PEN`]`, col: tick }`,
+//!   the step's line (the app draws the editor's sound there);
 //! - a note dragged: when the finger lifts, `Marker { index, frame }`,
 //!   the move packed into `frame` ([`drop_frame`], [`drop_of`]);
 //! - the velocity lane: `Value(v)`, 0 to 1, as the finger goes down and
@@ -24,8 +30,8 @@
 //! become [`EditAction::Row`] and [`EditAction::PickRow`].
 
 use mpfree_seq::notes::{self, Snap, Tc, TcKind, Which, DIVISIONS};
-use mpfree_seq::steps::Edit;
-use mpfree_seq::{Clip, Note};
+use mpfree_seq::steps::{Edit, Euclid, Grid, MAX_EUCLID_STEPS};
+use mpfree_seq::{Clip, Cond, Lock, Note};
 use mpfree_transport::time::{Tick, PPQ};
 use mpfree_ui::widgets::OptionRow;
 use mpfree_ui::{Align, Color, EventKind, FontId, PaintCx, Rect, Touch, Widget};
@@ -34,7 +40,7 @@ use mpfree_ui::{Align, Color, EventKind, FontId, PaintCx, Rect, Touch, Widget};
 /// place of their name (see [`NoteGrid::button_label`]).
 pub const EDIT_BUTTONS: [&str; 8] = [
     "‹ Clips",
-    "List",
+    "Grid",
     "Tool",
     "Snap",
     "All",
@@ -43,8 +49,10 @@ pub const EDIT_BUTTONS: [&str; 8] = [
     "TC",
 ];
 /// The Edit options, top to bottom. The first six are Timing Correct's
-/// settings (TC applies them); the last four change the selection at once.
-pub const EDIT_ROWS: [&str; 10] = [
+/// settings (TC applies them); the next seven change the selection at
+/// once; the last four are the Euclidean fill: the sound it writes, then
+/// its hits, steps and rotation, each turn writing the pattern.
+pub const EDIT_ROWS: [&str; 17] = [
     "Correct",
     "Division",
     "Swing",
@@ -55,7 +63,21 @@ pub const EDIT_ROWS: [&str; 10] = [
     "Transpose",
     "Velocity",
     "Length",
+    "Chance",
+    "Condition",
+    "Ratchet",
+    "Euclid",
+    "Hits",
+    "Steps",
+    "Rotate",
 ];
+/// The first of the Euclidean fill's rows in [`EDIT_ROWS`].
+pub const EUCLID_ROW: usize = 13;
+/// A tracker step tapped: `Cell`'s row says the editor's sound.
+pub const PEN: usize = usize::MAX;
+/// The step the tracker and the Euclidean fill use when the snap is off
+/// or finer than a grid allows (1/32): a 1/16.
+pub const STEP_FALLBACK: Tick = PPQ as Tick / 4;
 /// The snaps the Snap button steps through: the divisions, then off.
 pub const SNAPS: usize = DIVISIONS.len() + 1;
 /// The snap a new editor starts with: 1/16.
@@ -67,6 +89,37 @@ const DRAW_VELOCITY: u8 = 100;
 /// Join keys, so turning a row or dragging the velocity lane makes one
 /// undoable take.
 const JOIN: u64 = 0xED17_0000_0000;
+
+/// How the editor shows the clip.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Lens {
+    /// The piano roll, with the velocity lane.
+    #[default]
+    Grid,
+    /// One row per note, in time order.
+    List,
+    /// One row per step at the snap, empty steps too, with every note's
+    /// chance, condition, ratchet and locks.
+    Tracker,
+}
+
+impl Lens {
+    pub fn name(self) -> &'static str {
+        match self {
+            Lens::Grid => "Grid",
+            Lens::List => "List",
+            Lens::Tracker => "Tracker",
+        }
+    }
+
+    fn next(self) -> Lens {
+        match self {
+            Lens::Grid => Lens::List,
+            Lens::List => Lens::Tracker,
+            Lens::Tracker => Lens::Grid,
+        }
+    }
+}
 
 /// What a tap on the roll does.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -109,6 +162,8 @@ pub enum EditAction {
     Note(usize),
     /// Empty space on the roll tapped.
     Empty { tick: Tick, note: u8 },
+    /// An empty step of the tracker tapped, by its line.
+    Step(Tick),
     /// The selection dragged by this many ticks and notes.
     Drop { ticks: Tick, notes: i32 },
     /// The velocity lane: the selection's velocity, 0 to 1.
@@ -136,6 +191,9 @@ pub struct Done {
     /// The selected notes before the edit that stay selected if the edit
     /// leaves them alone (empty when the selection starts again).
     kept: Vec<Note>,
+    /// After the edit, select every note of this sound (the Euclidean
+    /// fill), in place of the above.
+    select_sound: Option<u8>,
 }
 
 impl Done {
@@ -154,8 +212,7 @@ pub struct Editor {
     pub slot: usize,
     /// The selected notes, as indexes into the clip's notes.
     pub sel: Vec<usize>,
-    /// The list in place of the roll.
-    pub list: bool,
+    pub lens: Lens,
     pub tool: Tool,
     /// Index into the divisions, or [`DIVISIONS`]`.len()` for no snap.
     pub snap: usize,
@@ -164,8 +221,13 @@ pub struct Editor {
     pub row: usize,
     /// The roll's lowest note.
     pub low: u8,
-    /// The list's first row.
+    /// The list's or the tracker's first row.
     pub first: usize,
+    /// The sound being worked on (a pad or note number): the last note
+    /// tapped or drawn. A tracker step tapped with Draw gets it, and the
+    /// Euclidean fill writes it.
+    pub sound: u8,
+    pub euclid: Euclid,
 }
 
 impl Editor {
@@ -183,17 +245,26 @@ impl Editor {
             let low = if max >= c + ROLL_ROWS { min } else { c };
             low.min(128 - ROLL_ROWS)
         };
+        // The lowest sound the clip plays, or the first pad, or C3.
+        let sound = clip
+            .notes
+            .iter()
+            .map(|n| n.note)
+            .min()
+            .unwrap_or(if pads(clip) { 0 } else { 60 });
         Editor {
             track,
             slot,
             sel: Vec::new(),
-            list: false,
+            lens: Lens::Grid,
             tool: Tool::Select,
             snap: DEFAULT_SNAP,
             tc: Tc::default(),
             row: 0,
             low,
             first: 0,
+            sound,
+            euclid: Euclid::default(),
         }
     }
 
@@ -204,6 +275,12 @@ impl Editor {
 
     pub fn snap_name(&self) -> &'static str {
         DIVISIONS.get(self.snap).map_or("Off", |d| d.1)
+    }
+
+    /// The steps of the tracker and the Euclidean fill: the snap, or a
+    /// 1/16 when the snap is off or finer than 1/32 (the legend says so).
+    pub fn grid(&self) -> Grid {
+        step_grid(self.snap_ticks())
     }
 
     fn snap_mode(&self) -> Snap {
@@ -256,15 +333,18 @@ impl Editor {
                 }
             }
             EditAction::Button(1) => {
-                self.list = !self.list;
-                return Done::line(
-                    if self.list {
-                        "edit: list"
-                    } else {
-                        "edit: grid"
+                self.lens = self.lens.next();
+                // The tracker opens on the first picked note's step.
+                self.first = match (self.lens, sel.first()) {
+                    (Lens::Tracker, Some(&i)) => {
+                        let rows = track_rows(&clip.notes, clip.length, self.grid());
+                        rows.iter()
+                            .position(|r| r.note == Some(i))
+                            .map_or(0, |k| k.saturating_sub(2))
                     }
-                    .into(),
-                );
+                    _ => 0,
+                };
+                return Done::line(format!("edit: {}", self.lens.name().to_lowercase()));
             }
             EditAction::Button(2) => {
                 self.tool = self.tool.next();
@@ -325,11 +405,13 @@ impl Editor {
                     format!("edit: note {} erased", i + 1),
                 ),
                 // A tap on a selected note keeps the group, so a drag
-                // moves it; on another note it selects that one.
+                // moves it; on another note it selects that one. Its sound
+                // is the one worked on.
                 _ => {
                     if !sel.contains(&i) {
                         self.sel = vec![i];
                     }
+                    self.sound = clip.notes[i].note;
                     return Done::default();
                 }
             },
@@ -337,12 +419,31 @@ impl Editor {
             EditAction::Empty { tick, note } => match self.tool {
                 Tool::Draw if tick < clip.length => {
                     let n = Note::new(tick, self.step(), note.min(127), DRAW_VELOCITY);
+                    self.sound = n.note;
                     (
                         notes::add(clip, n),
                         None,
                         true,
                         false,
                         format!("edit: note {} drawn at tick {tick}", note_name(note)),
+                    )
+                }
+                Tool::Select => {
+                    self.sel.clear();
+                    return Done::default();
+                }
+                _ => return Done::default(),
+            },
+            EditAction::Step(tick) => match self.tool {
+                // The editor's sound, a step long, on the step's line.
+                Tool::Draw if (0..clip.length).contains(&tick) => {
+                    let n = Note::new(tick, self.grid().size(), self.sound, DRAW_VELOCITY);
+                    (
+                        notes::add(clip, n),
+                        None,
+                        true,
+                        false,
+                        format!("edit: {} drawn at tick {tick}", self.sound_name(clip)),
                     )
                 }
                 Tool::Select => {
@@ -408,15 +509,88 @@ impl Editor {
                         true,
                         String::new(),
                     ),
+                    10 => (
+                        notes::chance(clip, &sel, 5 * d),
+                        key(10),
+                        true,
+                        true,
+                        String::new(),
+                    ),
+                    11 => (
+                        notes::condition(clip, &sel, d),
+                        key(11),
+                        true,
+                        true,
+                        String::new(),
+                    ),
+                    12 => (
+                        notes::ratchet(clip, &sel, d),
+                        key(12),
+                        true,
+                        true,
+                        String::new(),
+                    ),
+                    // The sound the fill writes: its notes are picked, so
+                    // the roll shows which.
+                    13 => {
+                        let top = if pads(clip) { 15 } else { 127 };
+                        self.sound = (i32::from(self.sound) + d).clamp(0, top) as u8;
+                        self.sel = (0..clip.notes.len())
+                            .filter(|&i| clip.notes[i].note == self.sound)
+                            .collect();
+                        return Done::line(format!("edit: euclid on {}", self.sound_name(clip)));
+                    }
+                    14..=16 => {
+                        let mut e = self.euclid;
+                        match row {
+                            14 => {
+                                e.hits = (i32::from(e.hits) + d).clamp(0, i32::from(e.steps)) as u8
+                            }
+                            15 => {
+                                let steps = i32::from(e.steps) + d;
+                                e.steps = steps.clamp(1, i32::from(MAX_EUCLID_STEPS)) as u8;
+                            }
+                            _ => {
+                                let steps = i32::from(e.steps.max(1));
+                                e.rotate = (i32::from(e.rotate) + d).rem_euclid(steps) as u8;
+                            }
+                        }
+                        let e = e.fit();
+                        self.euclid = e;
+                        // New hits play as loud as the sound's first note.
+                        let velocity = clip
+                            .notes
+                            .iter()
+                            .filter(|n| n.note == self.sound)
+                            .min_by_key(|n| n.tick)
+                            .map_or(DRAW_VELOCITY, |n| n.velocity);
+                        let edit = self.grid().euclid(clip, self.sound, e, velocity);
+                        return Done {
+                            edit,
+                            // One key for the three rows: a run of turns is
+                            // one take.
+                            join: key(14),
+                            line: String::new(),
+                            close: false,
+                            select_added: false,
+                            kept: Vec::new(),
+                            select_sound: Some(self.sound),
+                        };
+                    }
                     _ => return Done::default(),
                 }
             }
             EditAction::Scroll(d) => {
-                if self.list {
-                    let last = clip.notes.len().saturating_sub(1) as i64;
-                    self.first = (self.first as i64 + i64::from(d)).clamp(0, last.max(0)) as usize;
-                } else {
+                let rows = match self.lens {
+                    Lens::Grid => 0,
+                    Lens::List => clip.notes.len(),
+                    Lens::Tracker => track_rows(&clip.notes, clip.length, self.grid()).len(),
+                };
+                if self.lens == Lens::Grid {
                     self.low = (i32::from(self.low) + d).clamp(0, 127) as u8;
+                } else {
+                    let last = rows.saturating_sub(1) as i64;
+                    self.first = (self.first as i64 + i64::from(d)).clamp(0, last) as usize;
                 }
                 return Done::default();
             }
@@ -428,13 +602,25 @@ impl Editor {
             close: false,
             select_added,
             kept: if keep { kept } else { Vec::new() },
+            select_sound: None,
         }
+    }
+
+    /// The editor's sound as the rows name it: a pad or a note.
+    fn sound_name(&self, clip: &Clip) -> String {
+        sound_name(self.sound, pads(clip))
     }
 
     /// After the app applied `done`'s edit to `clip`: the selection is the
     /// notes the edit put in (when it selects them) and the selected notes
     /// it left alone.
     pub fn applied(&mut self, clip: &Clip, done: &Done) {
+        if let Some(s) = done.select_sound {
+            self.sel = (0..clip.notes.len())
+                .filter(|&i| clip.notes[i].note == s)
+                .collect();
+            return;
+        }
         let mut want: Vec<Note> = Vec::new();
         let mut erased = done.edit.erase.clone();
         for n in &done.kept {
@@ -501,7 +687,7 @@ pub fn edit_rows(ed: &Editor, clip: &Clip) -> Vec<OptionRow> {
     };
     let of_sel = |f: &dyn Fn(&Note) -> i64, show: &dyn Fn(i64) -> String| -> String {
         match sel.first() {
-            None => "select notes".into(),
+            None => "pick notes".into(),
             Some(n) if sel.iter().all(|m| f(m) == f(n)) => show(f(n)),
             Some(_) => "mixed".into(),
         }
@@ -514,13 +700,22 @@ pub fn edit_rows(ed: &Editor, clip: &Clip) -> Vec<OptionRow> {
         format!("{} %", tc.strength),
         format!("{} ticks", tc.shift),
         if sel.is_empty() {
-            "select notes".into()
+            "pick notes".into()
         } else {
             format!("by {}", ed.snap_name())
         },
         of_sel(&|n| i64::from(n.note), &|v| note_name(v as u8)),
         of_sel(&|n| i64::from(n.velocity), &|v| v.to_string()),
         of_sel(&|n| n.len, &length_name),
+        of_sel(&|n| i64::from(n.chance), &|v| format!("{v} %")),
+        of_sel(&|n| cond_index(n.cond), &|v| {
+            cond_name(Cond::all()[v as usize]).to_string()
+        }),
+        of_sel(&|n| i64::from(n.ratchet), &|v| hits_name(v as u8)),
+        sound_name(ed.sound, pads(clip)),
+        ed.euclid.hits.to_string(),
+        format!("{} × {}", ed.euclid.steps, step_name(ed.grid().size())),
+        ed.euclid.rotate.to_string(),
     ];
     EDIT_ROWS
         .iter()
@@ -530,6 +725,119 @@ pub fn edit_rows(ed: &Editor, clip: &Clip) -> Vec<OptionRow> {
             value,
         })
         .collect()
+}
+
+/// A trig condition as the editor names it ("Always", "1:2", "FILL" ...).
+pub fn cond_name(c: Cond) -> String {
+    match c {
+        Cond::Always => "Always".into(),
+        c => c.to_string(),
+    }
+}
+
+/// Where `c` is in [`Cond::all`] (0 for one out of range).
+fn cond_index(c: Cond) -> i64 {
+    Cond::all().iter().position(|&a| a == c).unwrap_or(0) as i64
+}
+
+/// A ratchet: "1 hit", "3 hits".
+pub fn hits_name(n: u8) -> String {
+    if n == 1 {
+        "1 hit".into()
+    } else {
+        format!("{n} hits")
+    }
+}
+
+/// A sound as the editor names it: "Pad 3" on a pad clip, else the note.
+pub fn sound_name(n: u8, pads: bool) -> String {
+    if pads {
+        format!("Pad {}", u16::from(n) + 1)
+    } else {
+        note_name(n)
+    }
+}
+
+/// The steps for a snap of `snap` ticks: the snap, or [`STEP_FALLBACK`]
+/// when it is off (0) or finer than 1/32.
+pub fn step_grid(snap: Tick) -> Grid {
+    Grid::new(snap)
+        .or_else(|| Grid::new(STEP_FALLBACK))
+        .expect("a 1/16 is a step size")
+}
+
+/// A step size as a division's name ("1/16"), else in ticks.
+pub fn step_name(size: Tick) -> String {
+    length_name(size)
+}
+
+/// A row of the tracker: the step, and the note on it (an index into the
+/// clip's notes) or None for an empty step. `first` marks a step's first
+/// row; the rest of its notes follow on rows of their own.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TrackRow {
+    pub step: usize,
+    pub note: Option<usize>,
+    pub first: bool,
+}
+
+/// Something with a tick and a sound: the clip's notes, or the editor's
+/// boxes for them.
+pub trait Placed {
+    fn tick(&self) -> Tick;
+    fn sound(&self) -> u8;
+}
+
+impl Placed for Note {
+    fn tick(&self) -> Tick {
+        self.tick
+    }
+    fn sound(&self) -> u8 {
+        self.note
+    }
+}
+
+/// The tracker's rows for `notes` in a clip `length` ticks long, cut into
+/// `grid`'s steps: every step in order, its notes lowest sound first (then
+/// earliest), an empty step as one row of its own.
+pub fn track_rows<N: Placed>(notes: &[N], length: Tick, grid: Grid) -> Vec<TrackRow> {
+    let steps = grid.steps(length);
+    let mut on: Vec<Vec<(u8, Tick, usize)>> = vec![Vec::new(); steps];
+    for (i, n) in notes.iter().enumerate() {
+        let (step, nudge) = grid.place(length, n.tick());
+        if let Some(v) = on.get_mut(step) {
+            v.push((n.sound(), nudge, i));
+        }
+    }
+    let mut rows = Vec::with_capacity(steps + notes.len());
+    for (step, mut v) in on.into_iter().enumerate() {
+        if v.is_empty() {
+            rows.push(TrackRow {
+                step,
+                note: None,
+                first: true,
+            });
+            continue;
+        }
+        v.sort_unstable();
+        for (k, &(_, _, i)) in v.iter().enumerate() {
+            rows.push(TrackRow {
+                step,
+                note: Some(i),
+                first: k == 0,
+            });
+        }
+    }
+    rows
+}
+
+/// A count of locks: "1 lock", "3 locks".
+fn locks_name(n: usize) -> String {
+    if n == 1 {
+        "1 lock".into()
+    } else {
+        format!("{n} locks")
+    }
 }
 
 /// The clip plays the pads (every note below 16, or none): the roll shows
@@ -590,7 +898,52 @@ pub struct NoteBox {
     pub len: Tick,
     pub note: u8,
     pub velocity: u8,
+    pub chance: u8,
+    pub cond: Cond,
+    pub ratchet: u8,
     pub selected: bool,
+}
+
+impl NoteBox {
+    /// The box for `n`.
+    pub fn of(n: &Note, selected: bool) -> NoteBox {
+        NoteBox {
+            tick: n.tick,
+            len: n.len,
+            note: n.note,
+            velocity: n.velocity,
+            chance: n.chance,
+            cond: n.cond,
+            ratchet: n.ratchet,
+            selected,
+        }
+    }
+}
+
+impl Placed for NoteBox {
+    fn tick(&self) -> Tick {
+        self.tick
+    }
+    fn sound(&self) -> u8 {
+        self.note
+    }
+}
+
+/// A lock as the tracker counts it: its tick and its row (None for the
+/// whole step).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LockMark {
+    pub tick: Tick,
+    pub sound: Option<u8>,
+}
+
+impl LockMark {
+    pub fn of(l: &Lock) -> LockMark {
+        LockMark {
+            tick: l.tick,
+            sound: l.sound,
+        }
+    }
 }
 
 /// The roll or the list (see the module notes).
@@ -611,10 +964,14 @@ pub struct NoteGrid {
     pub snap: Tick,
     pub snap_name: String,
     pub tool: Tool,
-    pub list: bool,
-    /// The list's first row.
+    pub lens: Lens,
+    /// The list's or the tracker's first row.
     pub first: usize,
     pub color: Color,
+    /// The tracker's step, in ticks ([`step_grid`]).
+    pub step: Tick,
+    /// The clip's locks, for the tracker's Locks column.
+    pub locks: Vec<LockMark>,
     drag: Option<Drag>,
 }
 
@@ -640,6 +997,21 @@ const ROW_H: i32 = 18;
 /// About how many rows the roll shows on the Arrange page.
 pub const ROLL_ROWS: u8 = 22;
 const LIST_H: i32 = 34;
+/// A tracker row: tighter than the list's, so a bar of 1/16s shows.
+const TRACK_H: i32 = 26;
+/// The tracker's columns. A note's row fills them all; an empty step's
+/// row shows its position and dots.
+const TRACK_COLS: [(&str, i32); 9] = [
+    ("Step", 82),
+    ("Note", 76),
+    ("Vel", 50),
+    ("Length", 88),
+    ("Nudge", 64),
+    ("Chance", 72),
+    ("Cond", 64),
+    ("Ratchet", 74),
+    ("Locks", 84),
+];
 /// The list's columns: number, position, note, velocity, length, chance.
 const LIST_COLS: [(&str, i32); 6] = [
     ("#", 48),
@@ -664,9 +1036,11 @@ impl Default for NoteGrid {
             snap: PPQ as Tick / 4,
             snap_name: "1/16".into(),
             tool: Tool::Select,
-            list: false,
+            lens: Lens::Grid,
             first: 0,
             color: Color::rgb(0x6EA8FE),
+            step: STEP_FALLBACK,
+            locks: Vec::new(),
             drag: None,
         }
     }
@@ -694,10 +1068,12 @@ impl NoteGrid {
             && self.legend == other.legend
             && (self.length, self.bar, self.low, self.pads)
                 == (other.length, other.bar, other.low, other.pads)
-            && (self.snap, self.tool, self.list, self.first)
-                == (other.snap, other.tool, other.list, other.first)
+            && (self.snap, self.tool, self.lens, self.first)
+                == (other.snap, other.tool, other.lens, other.first)
             && self.snap_name == other.snap_name
             && self.color == other.color
+            && self.step == other.step
+            && self.locks == other.locks
     }
 
     /// Show what `other` shows, keeping a drag in progress.
@@ -711,7 +1087,7 @@ impl NoteGrid {
         let body = r.inset(14).take_top(34).1;
         let (tools, rest) = body.take_bottom(TOOLS_H);
         let rest = Rect::new(rest.x, rest.y, rest.w, rest.h - GAP);
-        let (vel, rest) = if self.list {
+        let (vel, rest) = if self.lens != Lens::Grid {
             (Rect::new(rest.x, rest.bottom(), rest.w, 0), rest)
         } else {
             let (v, rest) = rest.take_bottom(VEL_H);
@@ -785,7 +1161,8 @@ impl NoteGrid {
         Some(Rect::new(x0, y + 1, x1 - x0, self.row_h(&g) - 2))
     }
 
-    /// Where row `k` of the list is (0 is the heading), if it shows.
+    /// Where row `k` of the list or the tracker is (0 is the heading), if
+    /// it shows.
     pub fn list_rect(&self, r: Rect, k: usize) -> Option<Rect> {
         let g = self.geo(r);
         let area = Rect::new(
@@ -794,8 +1171,23 @@ impl NoteGrid {
             g.keys.w + g.roll.w,
             g.roll.bottom() - g.ruler.y,
         );
-        let y = area.y + k as i32 * LIST_H;
-        (y + LIST_H <= area.bottom()).then(|| Rect::new(area.x, y, area.w, LIST_H))
+        let h = if self.lens == Lens::Tracker {
+            TRACK_H
+        } else {
+            LIST_H
+        };
+        let y = area.y + k as i32 * h;
+        (y + h <= area.bottom()).then(|| Rect::new(area.x, y, area.w, h))
+    }
+
+    /// The tracker's steps.
+    fn grid(&self) -> Grid {
+        step_grid(self.step)
+    }
+
+    /// The tracker's rows.
+    pub fn track_rows(&self) -> Vec<TrackRow> {
+        track_rows(&self.notes, self.length, self.grid())
     }
 
     /// The buttons along the bottom.
@@ -813,7 +1205,7 @@ impl NoteGrid {
     pub fn button_label(&self, k: usize) -> String {
         let any = self.notes.iter().any(|n| n.selected);
         match k {
-            1 => if self.list { "Grid" } else { "List" }.into(),
+            1 => self.lens.name().into(),
             2 => self.tool.name().into(),
             3 => format!("Snap {}", self.snap_name),
             4 => if any { "None" } else { "All" }.into(),
@@ -823,11 +1215,7 @@ impl NoteGrid {
     }
 
     fn row_name(&self, note: u8) -> String {
-        if self.pads {
-            format!("Pad {}", note + 1)
-        } else {
-            note_name(note)
-        }
+        sound_name(note, self.pads)
     }
 
     /// The tick a dragged note's start lands on: snapped to a line.
@@ -975,7 +1363,7 @@ impl NoteGrid {
                 self.row_name(n.note),
                 n.velocity.to_string(),
                 length_name(n.len),
-                String::new(),
+                format!("{} %", n.chance),
             ];
             let mut x = row.x + 8;
             for ((_, w), text) in LIST_COLS.iter().zip(cells) {
@@ -985,6 +1373,155 @@ impl NoteGrid {
                     Rect::new(x, row.y, *w, row.h),
                     Align::Left,
                     t.text,
+                    &text,
+                );
+                x += w;
+            }
+        }
+    }
+
+    /// A step's line as bar.beat, with the step in the beat after a third
+    /// dot when steps are shorter than a beat ("2.3.2" is bar 2, beat 3,
+    /// its second 1/16).
+    fn step_name(&self, step: usize) -> String {
+        let beat = PPQ as Tick;
+        let bar = self.bar.max(1);
+        let size = self.grid().size();
+        let t = step as Tick * size;
+        let head = format!("{}.{}", t / bar + 1, (t % bar) / beat + 1);
+        if size < beat {
+            format!("{head}.{}", (t % beat) / size + 1)
+        } else {
+            head
+        }
+    }
+
+    /// The cells of tracker row `row`, and whether they are faint (an
+    /// empty step).
+    fn track_cells(&self, row: &TrackRow) -> ([String; 9], bool) {
+        let dot = || "·".to_string();
+        let pos = if row.first {
+            self.step_name(row.step)
+        } else {
+            String::new()
+        };
+        let grid = self.grid();
+        let at_step = |tick: Tick| grid.place(self.length, tick).0 == row.step;
+        let Some(i) = row.note else {
+            // Trigless locks on an empty step still show.
+            let locks = self.locks.iter().filter(|l| at_step(l.tick)).count();
+            let lock = if locks > 0 { locks_name(locks) } else { dot() };
+            return (
+                [pos, dot(), dot(), dot(), dot(), dot(), dot(), dot(), lock],
+                true,
+            );
+        };
+        let n = &self.notes[i];
+        let nudge = grid.place(self.length, n.tick).1;
+        // The row's own locks on the step, and the whole step's on its
+        // first row.
+        let locks = self
+            .locks
+            .iter()
+            .filter(|l| at_step(l.tick))
+            .filter(|l| l.sound == Some(n.note) || (row.first && l.sound.is_none()))
+            .count();
+        let cells = [
+            pos,
+            self.row_name(n.note),
+            n.velocity.to_string(),
+            length_name(n.len),
+            if nudge == 0 {
+                dot()
+            } else {
+                format!("{nudge:+}")
+            },
+            if n.chance == 100 {
+                dot()
+            } else {
+                format!("{} %", n.chance)
+            },
+            if n.cond == Cond::Always {
+                dot()
+            } else {
+                n.cond.to_string()
+            },
+            if n.ratchet == 1 {
+                dot()
+            } else {
+                format!("×{}", n.ratchet)
+            },
+            if locks == 0 { dot() } else { locks_name(locks) },
+        ];
+        (cells, false)
+    }
+
+    fn paint_tracker(&self, cx: &mut PaintCx, r: Rect) {
+        let t = cx.theme.clone();
+        let Some(head) = self.list_rect(r, 0) else {
+            return;
+        };
+        let mut x = head.x + 8;
+        for (name, w) in TRACK_COLS {
+            cx.text(
+                FontId::Bold,
+                t.size_small - 1.0,
+                Rect::new(x, head.y, w, head.h),
+                Align::Left,
+                t.text_dim,
+                name,
+            );
+            x += w;
+        }
+        let beat = PPQ as Tick;
+        let bar = self.bar.max(1);
+        let size = self.grid().size();
+        let playing = self.playhead.map(|p| {
+            self.grid()
+                .place(self.length, p.rem_euclid(self.length.max(1)))
+                .0
+        });
+        for (k, row) in self.track_rows().iter().skip(self.first).enumerate() {
+            let Some(rr) = self.list_rect(r, k + 1) else {
+                break;
+            };
+            let line = row.step as Tick * size;
+            let picked = row.note.is_some_and(|i| self.notes[i].selected);
+            if picked {
+                cx.canvas
+                    .fill_round_rect(rr, 6, t.raised.mix(t.accent, 0.3));
+            } else if row.first && line % beat == 0 {
+                // Beats stand out, as a tracker's every fourth row does.
+                cx.canvas.fill_rect(rr, t.surface);
+            }
+            if row.first && line % bar == 0 && row.step > 0 {
+                cx.canvas
+                    .fill_rect(Rect::new(rr.x, rr.y, rr.w, 1), t.text_faint);
+            }
+            if playing == Some(row.step) {
+                cx.canvas
+                    .fill_rect(Rect::new(rr.x, rr.y + 2, 4, rr.h - 4), t.good);
+            }
+            let (cells, faint) = self.track_cells(row);
+            let mut x = rr.x + 8;
+            for (c, ((_, w), text)) in TRACK_COLS.iter().zip(cells).enumerate() {
+                let ink = if c == 0 {
+                    if line % beat == 0 {
+                        t.text_dim
+                    } else {
+                        t.text_faint
+                    }
+                } else if faint || text == "·" {
+                    t.text_faint
+                } else {
+                    t.text
+                };
+                cx.text(
+                    if c == 0 { FontId::Mono } else { FontId::Sans },
+                    t.size_small - 1.0,
+                    Rect::new(x, rr.y, *w, rr.h),
+                    Align::Left,
+                    ink,
                     &text,
                 );
                 x += w;
@@ -1006,13 +1543,13 @@ impl Widget for NoteGrid {
         let t = cx.theme.clone();
         cx.titled_panel(r, &self.title, &self.legend);
         let g = self.geo(r);
-        if self.list {
-            self.paint_list(cx, r);
-        } else {
-            self.paint_roll(cx, r, &g);
+        match self.lens {
+            Lens::Grid => self.paint_roll(cx, r, &g),
+            Lens::List => self.paint_list(cx, r),
+            Lens::Tracker => self.paint_tracker(cx, r),
         }
         for (k, br) in self.button_rects(r).iter().enumerate() {
-            let lit = (k == 1 && self.list) || (k == 2 && self.tool != Tool::Select);
+            let lit = (k == 1 && self.lens != Lens::Grid) || (k == 2 && self.tool != Tool::Select);
             let fill = if lit { t.accent } else { t.raised };
             let ink = if lit { t.on_accent } else { t.text };
             cx.canvas.fill_round_rect(*br, 10, fill);
@@ -1034,7 +1571,22 @@ impl Widget for NoteGrid {
                 if let Some(k) = self.button_rects(r).iter().position(|b| b.contains(x, y)) {
                     return Some(EventKind::Tab(k));
                 }
-                if self.list {
+                if self.lens == Lens::Tracker {
+                    let rows = self.track_rows();
+                    let k = (1..)
+                        .map_while(|k| self.list_rect(r, k).map(|rr| (k, rr)))
+                        .find(|(_, rr)| rr.contains(x, y))?
+                        .0;
+                    let row = rows.get(self.first + k - 1)?;
+                    return Some(match row.note {
+                        Some(i) => EventKind::Select(i),
+                        None => EventKind::Cell {
+                            row: PEN,
+                            col: row.step * self.grid().size() as usize,
+                        },
+                    });
+                }
+                if self.lens == Lens::List {
                     let order = self.list_order();
                     let k = (1..)
                         .map_while(|k| self.list_rect(r, k).map(|rr| (k, rr)))
@@ -1278,7 +1830,7 @@ mod tests {
         assert_eq!(rows[9].value, "1/8");
         // With nothing selected the rows say so, and change nothing.
         ed.sel.clear();
-        assert_eq!(edit_rows(&ed, &c)[8].value, "select notes");
+        assert_eq!(edit_rows(&ed, &c)[8].value, "pick notes");
         assert!(ed
             .act(EditAction::Row { row: 7, delta: 1 }, &c)
             .edit
@@ -1296,11 +1848,15 @@ mod tests {
         assert_eq!((ed.snap_name(), ed.snap_ticks()), ("Off", 0));
         ed.act(EditAction::Button(3), &c);
         assert_eq!(ed.snap_name(), "1 bar");
-        ed.act(EditAction::Button(1), &c);
-        assert!(ed.list);
+        assert_eq!(ed.act(EditAction::Button(1), &c).line, "edit: list");
+        assert_eq!(ed.lens, Lens::List);
         ed.act(EditAction::Scroll(5), &c);
         assert_eq!(ed.first, 0, "one note: the list cannot scroll");
-        ed.act(EditAction::Button(1), &c);
+        assert_eq!(ed.act(EditAction::Button(1), &c).line, "edit: tracker");
+        // A bar of whole-bar steps (the snap is 1 bar): one row.
+        ed.act(EditAction::Scroll(5), &c);
+        assert_eq!(ed.first, 0);
+        assert_eq!(ed.act(EditAction::Button(1), &c).line, "edit: grid");
         ed.act(EditAction::Scroll(-12), &c);
         assert_eq!(ed.low, 48);
         assert!(ed.act(EditAction::Button(0), &c).close);
@@ -1308,6 +1864,193 @@ mod tests {
         assert_eq!(ed.tc.kind, TcKind::Legato);
         ed.act(EditAction::Row { row: 2, delta: 1 }, &c);
         assert_eq!(ed.tc.swing, 51);
+    }
+
+    #[test]
+    fn tracker_steps_draw_the_sound_and_the_euclid_rows_fill_it() {
+        let mut c = clip(&[(0, 240, 1), (960, 240, 3)]);
+        let mut ed = Editor::new(0, 0, &c);
+        assert_eq!(ed.sound, 1, "the lowest sound to begin with");
+        ed.act(EditAction::Note(1), &c);
+        assert_eq!(ed.sound, 3, "the note tapped");
+        ed.act(EditAction::Note(0), &c);
+        // Draw on an empty step puts the sound there, a step long.
+        ed.act(EditAction::Button(2), &c);
+        let done = run(&mut ed, &mut c, EditAction::Step(480));
+        assert_eq!(done.line, "edit: Pad 2 drawn at tick 480");
+        assert_eq!(ticks_of(&c, &ed.sel), vec![(480, 1)]);
+        assert_eq!(c.notes[2].len, 240);
+        assert!(ed.act(EditAction::Step(3840), &c).edit.is_empty());
+        // Select on an empty step lets the notes go.
+        ed.act(EditAction::Button(2), &c);
+        ed.act(EditAction::Button(2), &c);
+        assert_eq!(ed.tool, Tool::Select);
+        ed.act(EditAction::Step(720), &c);
+        assert!(ed.sel.is_empty());
+        // Hits down from 4 to 3: 3 of 16 on pad 2 (x.....x....x....),
+        // the note drawn at 480 goes, and the sound's notes are picked.
+        let a = run(&mut ed, &mut c, EditAction::Row { row: 14, delta: -1 });
+        let on = |c: &Clip, p: u8| -> Vec<Tick> {
+            let mut v: Vec<Tick> = c
+                .notes
+                .iter()
+                .filter(|n| n.note == p)
+                .map(|n| n.tick)
+                .collect();
+            v.sort_unstable();
+            v
+        };
+        assert_eq!(on(&c, 1), vec![0, 1440, 2640]);
+        assert_eq!(on(&c, 3), vec![960], "other sounds stay");
+        assert_eq!(ticks_of(&c, &ed.sel), vec![(0, 1), (1440, 1), (2640, 1)]);
+        // Rotate one step later: the same take.
+        let b = run(&mut ed, &mut c, EditAction::Row { row: 16, delta: 1 });
+        assert!(a.join.is_some() && a.join == b.join);
+        assert_eq!(on(&c, 1), vec![240, 1680, 2880]);
+        let rows = edit_rows(&ed, &c);
+        assert_eq!(rows[EUCLID_ROW].value, "Pad 2");
+        assert_eq!(
+            (
+                rows[14].value.as_str(),
+                rows[15].value.as_str(),
+                rows[16].value.as_str()
+            ),
+            ("3", "16 × 1/16", "1")
+        );
+        // The Euclid row picks another sound and writes nothing.
+        let done = ed.act(
+            EditAction::Row {
+                row: EUCLID_ROW,
+                delta: 1,
+            },
+            &c,
+        );
+        assert!(done.edit.is_empty());
+        assert_eq!(done.line, "edit: euclid on Pad 3");
+        assert!(ed.sel.is_empty(), "pad 3 plays nothing");
+        ed.act(
+            EditAction::Row {
+                row: EUCLID_ROW,
+                delta: 1,
+            },
+            &c,
+        );
+        assert_eq!(ticks_of(&c, &ed.sel), vec![(960, 3)], "pad 4's note");
+        // Chance, condition and ratchet on the picked note.
+        run(&mut ed, &mut c, EditAction::Row { row: 10, delta: -1 });
+        run(&mut ed, &mut c, EditAction::Row { row: 11, delta: 1 });
+        run(&mut ed, &mut c, EditAction::Row { row: 12, delta: 1 });
+        let rows = edit_rows(&ed, &c);
+        assert_eq!(
+            (
+                rows[10].value.as_str(),
+                rows[11].value.as_str(),
+                rows[12].value.as_str()
+            ),
+            ("95 %", "1:2", "2 hits")
+        );
+        ed.sel.clear();
+        assert_eq!(edit_rows(&ed, &c)[11].value, "pick notes");
+        // With the snap off the steps are 1/16s.
+        ed.snap = DIVISIONS.len();
+        assert_eq!(ed.grid().size(), STEP_FALLBACK);
+    }
+
+    #[test]
+    fn the_tracker_opens_on_the_picked_note_and_scrolls_its_rows() {
+        let notes: Vec<(Tick, Tick, u8)> = (0..16).map(|k| (k * 240, 120, 60)).collect();
+        let mut c = clip(&notes);
+        c.add_note(Note::new(0, 120, 64, 100)).unwrap();
+        let mut ed = Editor::new(0, 0, &c);
+        ed.act(EditAction::Note(10), &c);
+        ed.act(EditAction::Button(1), &c);
+        ed.act(EditAction::Button(1), &c);
+        assert_eq!(ed.lens, Lens::Tracker);
+        // 16 steps and the chord's second note: note 10 is on row 11.
+        let rows = track_rows(&c.notes, c.length, ed.grid());
+        assert_eq!(rows.len(), 17);
+        assert_eq!(ed.first, 9);
+        ed.act(EditAction::Scroll(50), &c);
+        assert_eq!(ed.first, 16);
+        ed.act(EditAction::Scroll(-50), &c);
+        assert_eq!(ed.first, 0);
+    }
+
+    #[test]
+    fn the_tracker_shows_every_step_and_each_notes_settings() {
+        let mut odd = Note::new(960, 240, 0, 90);
+        odd.chance = 50;
+        odd.cond = Cond::Every { a: 1, b: 2 };
+        odd.ratchet = 3;
+        let mut g = NoteGrid {
+            notes: vec![
+                NoteBox::of(&Note::new(0, 240, 2, 100), false),
+                NoteBox::of(&Note::new(0, 240, 0, 120), false),
+                NoteBox::of(&Note::new(258, 240, 1, 80), true),
+                NoteBox::of(&odd, false),
+            ],
+            length: 3840,
+            bar: 3840,
+            pads: true,
+            lens: Lens::Tracker,
+            locks: vec![
+                LockMark {
+                    tick: 960,
+                    sound: Some(0),
+                },
+                // A trigless lock on an empty step.
+                LockMark {
+                    tick: 480,
+                    sound: None,
+                },
+            ],
+            ..NoteGrid::default()
+        };
+        let rows = g.track_rows();
+        assert_eq!(rows.len(), 17, "16 steps, one with two notes");
+        // Step 0: pad 1 first, then pad 3 on a row of its own.
+        assert_eq!(
+            (rows[0], rows[1]),
+            (
+                TrackRow {
+                    step: 0,
+                    note: Some(1),
+                    first: true
+                },
+                TrackRow {
+                    step: 0,
+                    note: Some(0),
+                    first: false
+                }
+            )
+        );
+        let cells = |k: usize| g.track_cells(&rows[k]);
+        assert_eq!(cells(0).0[..2], ["1.1.1".to_string(), "Pad 1".to_string()]);
+        assert_eq!(cells(1).0[0], "");
+        assert_eq!(cells(2).0[4], "+18");
+        assert_eq!(cells(2).0[5], "·");
+        let (empty, faint) = cells(3);
+        assert!(faint);
+        assert_eq!((empty[0].as_str(), empty[8].as_str()), ("1.1.3", "1 lock"));
+        let busy = cells(5).0;
+        assert_eq!(busy[0], "1.2.1");
+        assert_eq!(busy[5..].to_vec(), vec!["50 %", "1:2", "×3", "1 lock"]);
+        // A note's row picks it; an empty step's row asks for the sound
+        // on its line.
+        let probe = g.clone();
+        let row = move |k: usize| mid(probe.list_rect(R, k + 1).unwrap());
+        let (x, y) = row(2);
+        assert_eq!(g.touch(1, Touch::Down, x, y, R), Some(EventKind::Select(2)));
+        let (x, y) = row(4);
+        assert_eq!(
+            g.touch(2, Touch::Down, x, y, R),
+            Some(EventKind::Cell { row: PEN, col: 720 })
+        );
+        // Scrolled: the first row shown is row `first`.
+        g.first = 5;
+        let (x, y) = row(0);
+        assert_eq!(g.touch(3, Touch::Down, x, y, R), Some(EventKind::Select(3)));
+        assert_eq!(g.button_label(1), "Tracker");
     }
 
     #[test]
@@ -1327,20 +2070,8 @@ mod tests {
     fn grid() -> NoteGrid {
         NoteGrid {
             notes: vec![
-                NoteBox {
-                    tick: 0,
-                    len: 240,
-                    note: 50,
-                    velocity: 100,
-                    selected: false,
-                },
-                NoteBox {
-                    tick: 960,
-                    len: 480,
-                    note: 52,
-                    velocity: 64,
-                    selected: true,
-                },
+                NoteBox::of(&Note::new(0, 240, 50, 100), false),
+                NoteBox::of(&Note::new(960, 480, 52, 64), true),
             ],
             length: 3840,
             bar: 3840,
@@ -1422,23 +2153,27 @@ mod tests {
             other => panic!("{other:?}"),
         }
         assert_eq!(g.touch(1, Touch::Up, v.x + 10, v.bottom(), R), None);
-        g.list = true;
+        g.lens = Lens::List;
         // Row 1 is the first note in time order.
         let row = g.list_rect(R, 2).unwrap();
         assert_eq!(
             g.touch(2, Touch::Down, mid(row).0, mid(row).1, R),
             Some(EventKind::Select(1))
         );
-        assert_eq!(g.button_label(1), "Grid");
+        assert_eq!(g.button_label(1), "List", "the lens showing");
     }
 
     #[test]
-    fn it_paints_both_views() {
+    fn it_paints_every_lens() {
         use mpfree_ui::{Fonts, SoftCanvas, Theme, Ui};
         let mut g = grid();
         g.playhead = Some(1000);
-        for list in [false, true] {
-            g.list = list;
+        g.locks = vec![LockMark {
+            tick: 960,
+            sound: Some(52),
+        }];
+        for lens in [Lens::Grid, Lens::List, Lens::Tracker] {
+            g.lens = lens;
             let mut ui = Ui::new(Theme::dark(), Fonts::embedded(), R.w, R.h);
             ui.add("notes", g.clone());
             ui.add_page("Edit", "col(notes:*)").unwrap();

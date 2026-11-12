@@ -857,6 +857,12 @@ impl Synth {
     /// Pad pressure, 0 to 127, on every note the pad plays. A note two pads
     /// hold takes the harder press.
     pub fn pressure(&mut self, pad: usize, value: u8) {
+        self.pressure_at(pad, value, 0);
+    }
+
+    /// [`Synth::pressure`] `offset` frames into the next render (a clip's
+    /// recorded pressure, on its frame).
+    pub fn pressure_at(&mut self, pad: usize, value: u8, offset: u32) {
         if pad >= PADS || self.playing[pad].len == 0 {
             return;
         }
@@ -871,7 +877,7 @@ impl Synth {
             }
             self.push(
                 self.settings.engine,
-                0,
+                offset,
                 NodeEvent::Pressure { note, value: v },
             );
         }
