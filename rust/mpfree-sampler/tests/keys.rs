@@ -268,3 +268,246 @@ fn map_to_keys_refuses_an_empty_pad_and_changes_nothing() {
     assert_eq!(p.revision(), rev);
     assert_eq!(p.pad(0).unwrap().keys, None);
 }
+
+#[test]
+fn edges_fade_on_an_equal_power_curve_but_not_at_the_ends() {
+    // No fade: full level inside, nothing outside.
+    assert_eq!(edge_gain(60, 48, 72, 0, 0, 127), 1.0);
+    assert_eq!(edge_gain(47, 48, 72, 4, 0, 127), 0.0);
+    // A fade of 4 rises over the first four notes and falls over the last four.
+    let g: Vec<f32> = (48..=72).map(|n| edge_gain(n, 48, 72, 4, 0, 127)).collect();
+    let ramp = [0.309017, 0.587785, 0.809017, 0.951057];
+    for k in 0..4 {
+        assert!((g[k] - ramp[k]).abs() < 1e-5, "{k}: {}", g[k]);
+        assert!((g[24 - k] - ramp[k]).abs() < 1e-5, "{k}: {}", g[24 - k]);
+    }
+    assert!(g[4..=20].iter().all(|&x| x == 1.0));
+    // Two zones overlapping by the fade sum to full power on every note.
+    for n in 56..=63 {
+        let a = edge_gain(n, 40, 59, 4, 0, 127);
+        let b = edge_gain(n, 56, 80, 4, 0, 127);
+        assert!((a * a + b * b - 1.0).abs() < 1e-5, "note {n}: {a} {b}");
+    }
+    // The ends of the range never fade.
+    assert_eq!(edge_gain(0, 0, 20, 8, 0, 127), 1.0);
+    assert_eq!(edge_gain(127, 100, 127, 8, 0, 127), 1.0);
+    assert_eq!(edge_gain(1, 1, 64, 8, 1, 127), 1.0);
+    assert_eq!(edge_gain(1, 0, 64, 8, 1, 127), 1.0);
+}
+
+fn rms(x: &[f32]) -> f32 {
+    let x = &x[2000..10_000];
+    (x.iter().map(|s| s * s).sum::<f32>() / x.len() as f32).sqrt()
+}
+
+/// One gate pad of a 220 Hz sine, its level fixed whatever the velocity.
+fn fading(keys: Option<Keys>, key_fade: u8, vel_fade: u8) -> Project {
+    let s = sine(1.0, 220.0);
+    let mut p = Project::new();
+    p.add_source(s.clone());
+    let mut r = Region::whole(&s);
+    r.mode = PlayMode::Gate;
+    let mut pad = Pad::new("keys", Layer::new(r));
+    pad.vel_to_level = 0.0;
+    pad.keys = keys;
+    pad.key_fade = key_fade;
+    pad.vel_fade = vel_fade;
+    pad.polyphony = KEYGROUP_POLYPHONY;
+    p.set_pad(0, Some(pad), None).unwrap();
+    p
+}
+
+#[test]
+fn a_key_fade_lowers_the_notes_near_the_zones_edges_on_its_curve() {
+    let keys = Keys {
+        lo: 52,
+        hi: 72,
+        root: 57,
+    };
+    let p = fading(Some(keys), 4, 0);
+    let level = |note: u8| {
+        let mut e = engine(&p);
+        e.apply(Event::Key {
+            note,
+            velocity: 100,
+        });
+        rms(&render(&mut e, 12_000))
+    };
+    let full = level(60);
+    for note in [52u8, 53, 54, 55, 56, 69, 72] {
+        let want = edge_gain(note, 52, 72, 4, 0, 127);
+        let got = level(note) / full;
+        assert!((got - want).abs() < 0.02, "note {note}: {got} for {want}");
+    }
+    // A hit on the pad itself plays it as recorded.
+    let mut e = engine(&p);
+    e.apply(Event::NoteOn {
+        pad: 0,
+        velocity: 100,
+    });
+    assert!((rms(&render(&mut e, 12_000)) / full - 1.0).abs() < 0.02);
+    // Without the fade every note is at full level.
+    let p = fading(Some(keys), 0, 0);
+    let mut e = engine(&p);
+    e.apply(Event::Key {
+        note: 52,
+        velocity: 100,
+    });
+    assert!((rms(&render(&mut e, 12_000)) / full - 1.0).abs() < 0.02);
+}
+
+#[test]
+fn a_velocity_fade_crossfades_overlapping_layers() {
+    // Two stacked layers, soft 1-80 and hard 73-127: they overlap by 8.
+    let mut p = fading(None, 0, 8);
+    let mut pad = p.pad(0).unwrap().clone();
+    let mut hard = pad.layers[0].clone();
+    pad.layers[0].vel_hi = 80;
+    hard.vel_lo = 73;
+    pad.layers.push(hard);
+    p.set_pad(0, Some(pad.clone()), None).unwrap();
+    let level = |p: &Project, velocity: u8| {
+        let mut e = engine(p);
+        e.apply(Event::NoteOn { pad: 0, velocity });
+        rms(&render(&mut e, 12_000))
+    };
+    let one = level(&p, 40);
+    for v in [73u8, 76, 80] {
+        let soft = edge_gain(v, 1, 80, 8, 1, 127);
+        let hard = edge_gain(v, 73, 127, 8, 1, 127);
+        // The layers are the same sound in phase: their levels add.
+        let got = level(&p, v) / one;
+        assert!((got - (soft + hard)).abs() < 0.02, "velocity {v}: {got}");
+    }
+    assert!((level(&p, 127) / one - 1.0).abs() < 0.02, "127 is the top");
+    // In Cycle, each set of round robins takes turns and the overlapping
+    // sets both play: two round robins at each velocity, four layers.
+    let mut rr = pad.clone();
+    rr.select = LayerSelect::Cycle;
+    let (soft, hard) = (rr.layers[0].clone(), rr.layers[1].clone());
+    rr.layers = vec![soft.clone(), hard.clone(), soft, hard];
+    p.set_pad(0, Some(rr.clone()), None).unwrap();
+    let mut e = engine(&p);
+    e.apply(Event::NoteOn {
+        pad: 0,
+        velocity: 76,
+    });
+    render(&mut e, 256);
+    assert_eq!(e.active_voices(), 2, "one of each set in the overlap");
+    let mut e = engine(&p);
+    e.apply(Event::NoteOn {
+        pad: 0,
+        velocity: 40,
+    });
+    render(&mut e, 256);
+    assert_eq!(e.active_voices(), 1, "one round robin below the overlap");
+    // Without a fade, Cycle takes turns over every matching layer, as before.
+    rr.vel_fade = 0;
+    p.set_pad(0, Some(rr), None).unwrap();
+    let mut e = engine(&p);
+    e.apply(Event::NoteOn {
+        pad: 0,
+        velocity: 76,
+    });
+    render(&mut e, 256);
+    assert_eq!(e.active_voices(), 1);
+}
+
+#[test]
+fn fades_past_their_limits_are_refused() {
+    let mut p = fading(None, 0, 0);
+    let mut pad = p.pad(0).unwrap().clone();
+    pad.key_fade = MAX_KEY_FADE + 1;
+    assert!(p.set_pad(0, Some(pad.clone()), None).is_err());
+    pad.key_fade = MAX_KEY_FADE;
+    pad.vel_fade = MAX_VEL_FADE + 1;
+    assert!(p.set_pad(0, Some(pad.clone()), None).is_err());
+    pad.vel_fade = MAX_VEL_FADE;
+    assert!(p.set_pad(0, Some(pad), None).is_ok());
+}
+
+#[test]
+fn ranges_that_meet_overlap_by_the_fade_centred_where_they_met() {
+    // Three velocity layers edge to edge, as auto-sample makes them.
+    let mut r = vec![(1, 40), (41, 90), (91, 127)];
+    overlap_ranges(&mut r, 8);
+    assert_eq!(r, vec![(1, 44), (37, 94), (87, 127)]);
+    // Again with another fade: the same edges move, from the same middle.
+    overlap_ranges(&mut r, 3);
+    assert_eq!(r, vec![(1, 42), (40, 92), (90, 127)]);
+    overlap_ranges(&mut r, 0);
+    assert_eq!(r, vec![(1, 40), (41, 90), (91, 127)]);
+    // A gap, a stack and a fade wider than a range are left sensible.
+    let mut r = vec![(0, 30), (40, 60), (40, 127)];
+    overlap_ranges(&mut r, 6);
+    assert_eq!(r, vec![(0, 30), (40, 60), (40, 127)], "a gap and a stack");
+    let mut r = vec![(0, 50), (51, 53), (54, 127)];
+    overlap_ranges(&mut r, 24);
+    assert!(
+        r.windows(2).all(|w| w[0].0 < w[1].0 && w[0].1 < w[1].1),
+        "{r:?}"
+    );
+}
+
+#[test]
+fn a_velocity_fade_moves_the_layers_to_overlap_round_robins_together() {
+    let mut pad = fading(None, 0, 0).pad(0).unwrap().clone();
+    let l = pad.layers[0].clone();
+    pad.layers.clear();
+    for (lo, hi) in [(1, 40), (41, 90), (91, 127)] {
+        for _ in 0..2 {
+            let mut x = l.clone();
+            (x.vel_lo, x.vel_hi) = (lo, hi);
+            pad.layers.push(x);
+        }
+    }
+    pad.set_vel_fade(8);
+    let got: Vec<(u8, u8)> = pad.layers.iter().map(|l| (l.vel_lo, l.vel_hi)).collect();
+    assert_eq!(
+        got,
+        vec![(1, 44), (1, 44), (37, 94), (37, 94), (87, 127), (87, 127)]
+    );
+    assert_eq!(pad.vel_fade, 8);
+    pad.set_vel_fade(200);
+    assert_eq!(pad.vel_fade, MAX_VEL_FADE);
+}
+
+#[test]
+fn a_key_fade_for_the_kit_overlaps_the_zones_and_one_undo_takes_it_back() {
+    // Three keygroups edge to edge, as Map to keys leaves them, and a
+    // pad that isn't one.
+    let s = sine(1.0, 220.0);
+    let mut p = Project::new();
+    p.add_source(s.clone());
+    let pad = Pad::new("keys", Layer::new(Region::whole(&s)));
+    for (i, (lo, hi, root)) in [(0, 52, 48), (53, 62, 57), (63, 127, 67)]
+        .into_iter()
+        .enumerate()
+    {
+        let mut q = pad.clone();
+        q.keys = Some(Keys { lo, hi, root });
+        p.set_pad(i, Some(q), None).unwrap();
+    }
+    p.set_pad(5, Some(pad), None).unwrap();
+    assert_eq!(p.key_fade(), Some(0));
+    p.set_key_fade(4).unwrap();
+    let zones: Vec<(u8, u8)> = (0..3)
+        .map(|i| p.pad(i).unwrap().keys.map(|k| (k.lo, k.hi)).unwrap())
+        .collect();
+    assert_eq!(zones, vec![(0, 54), (51, 64), (61, 127)]);
+    assert_eq!(p.key_fade(), Some(4));
+    assert_eq!(p.pad(5).unwrap().key_fade, 0, "not a keygroup");
+    // Each note in an overlap sums to full power.
+    for n in 51..=54 {
+        let a = edge_gain(n, 0, 54, 4, 0, 127);
+        let b = edge_gain(n, 51, 64, 4, 0, 127);
+        assert!((a * a + b * b - 1.0).abs() < 1e-5, "note {n}");
+    }
+    assert!(p.undo());
+    assert_eq!(p.key_fade(), Some(0));
+    assert_eq!(p.pad(1).unwrap().keys.map(|k| (k.lo, k.hi)), Some((53, 62)));
+    // A kit without keygroups has no key fade to set.
+    let mut q = Project::new();
+    assert_eq!(q.key_fade(), None);
+    assert!(q.set_key_fade(3).is_err());
+}

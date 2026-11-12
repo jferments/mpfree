@@ -484,6 +484,20 @@ impl Player {
             )
     }
 
+    /// Pad pressure, 0 to 127, `offset` frames into the next render (a
+    /// clip's recorded pressure).
+    pub fn pressure_at(&mut self, pad: usize, value: u8, offset: u32) {
+        if pad < 16 {
+            self.engine.schedule(
+                offset,
+                Event::Pressure {
+                    pad: pad as u8,
+                    value: value.min(127),
+                },
+            );
+        }
+    }
+
     /// Pad pressure, 0 to 127, from the next render on.
     pub fn pressure(&mut self, pad: usize, value: u8) {
         if pad < 16 {
@@ -555,8 +569,8 @@ impl Player {
     /// split) until `deadline` at most: past it their sound is left out of
     /// that part of the period, and no event is lost (see
     /// [`Engine::render_routed_until`]).
-    // Not called yet: the audio loop turns the split on behind the Dev
-    // switch (app rounds thread).
+    // Not called: the audio loop renders with `render_routed`, whose lane
+    // waits as long as its part of the period lasts (cores.rs).
     #[allow(dead_code)]
     pub fn render_routed_until(&mut self, frames: usize, out: &mut impl PadOut, deadline: Instant) {
         self.engine.render_routed_until(frames, out, deadline);
@@ -568,10 +582,7 @@ impl Player {
     /// audio thread renders the rest (see [`Engine::split`]). Allocates
     /// and starts a thread: call it before the sound starts. Returns what
     /// the lane got (threaded, pinned, FIFO), or None with fewer than 2
-    /// voices.
-    // Not called yet: the audio loop turns the split on behind the Dev
-    // switch (app rounds thread).
-    #[allow(dead_code)]
+    /// voices. The audio loop calls it with `--sound-cores two` (cores.rs).
     pub fn split(&mut self, config: LaneConfig) -> Option<LaneSetup> {
         self.engine.split(config).cloned()
     }
@@ -579,8 +590,8 @@ impl Player {
     /// The lane's counters once split (posted, joined, late, busy, worker
     /// allocations); [`Player::counters`] has the engine's lane parts and
     /// late parts.
-    // Not called yet: the audio loop turns the split on behind the Dev
-    // switch (app rounds thread).
+    // Not called: the Dev page shows the engine's lane parts and late parts
+    // (`counters`, cores.rs).
     #[allow(dead_code)]
     pub fn lane_stats(&self) -> Option<LaneStats> {
         self.engine.lane_stats()

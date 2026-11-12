@@ -1,0 +1,23 @@
+[package]
+name = "mpfree-gpu"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+publish = false
+
+# Not part of the main workspace: it loads the system's EGL and OpenGL ES at
+# run time (libEGL.so.1), so it builds as a normal dynamically linked program,
+# while the app stays one static program. Like mpfree-splash-gl.
+[workspace]
+
+[dependencies]
+mpfree-ui = { path = "../mpfree-ui" }
+mpfree-screen-log = { path = "../mpfree-screen-log" }
+khronos-egl = { version = "6.0.0", features = ["dynamic"] }
+libloading = "0.8.9"
+glow = "0.16.0"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1

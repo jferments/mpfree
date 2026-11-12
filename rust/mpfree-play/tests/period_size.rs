@@ -39,6 +39,7 @@ fn notes(step: i64, count: i64, len: i64, pitch: impl Fn(i64) -> u8) -> Vec<Note
             chance: 100,
             cond: mpfree_seq::Cond::Always,
             ratchet: 1,
+            touch: mpfree_seq::Touch::NONE,
         })
         .collect()
 }
@@ -101,6 +102,7 @@ fn session() -> PlayView {
             chance: 40 + (i % 3) as u8 * 30,
             cond: mpfree_seq::Cond::Always,
             ratchet: 1,
+            touch: mpfree_seq::Touch::NONE,
         })
         .collect();
     c.locks = vec![Lock::new(
@@ -278,6 +280,10 @@ fn the_same_events_for_every_period_size() {
                 locked.insert((e.1, addr));
                 lanes += 1;
             }
+            Event::Pressure { note, .. } => assert!(
+                sounding.contains(&(e.1, e.2, note)),
+                "{e:?} presses a silent note"
+            ),
         }
     }
     assert!(reference.iter().any(|e| e.3 == Event::AllOff));

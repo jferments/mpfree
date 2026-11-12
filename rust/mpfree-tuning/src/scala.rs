@@ -54,6 +54,14 @@ impl Scale {
         self.cents.is_empty()
     }
 
+    /// The tuning with 1/1 on `key` at `hz` Hz and each key the next
+    /// degree: what [`tuning`] gives with [`KeyMap::linear`]`(key, key, hz)`,
+    /// to the bit, but without allocating, so the audio thread may call it
+    /// to move a scale to another root or A4.
+    pub fn rooted(&self, key: i32, hz: f64) -> Tuning {
+        Tuning::linear(&self.cents, key, hz)
+    }
+
     /// The pitch of any degree, in cents above 1/1: degree 0 is 1/1, degree
     /// N the period, negative degrees go down.
     pub fn degree_cents(&self, d: i64) -> f64 {
@@ -391,5 +399,31 @@ mod tests {
         let t = load(&scl, None).unwrap();
         assert!(close(t.hz(73.0) / t.hz(60.0), 3.0));
         assert!(close(t.hz(47.0) / t.hz(60.0), 1.0 / 3.0));
+    }
+
+    #[test]
+    fn a_rooted_scale_is_the_linear_map_on_that_root_to_the_bit() {
+        let mut bp = String::from("Bohlen-Pierce\n13\n");
+        for i in 1..13 {
+            bp.push_str(&format!("{:.6}\n", 1200.0 * 3f64.log2() * i as f64 / 13.0));
+        }
+        bp.push_str("3/1\n");
+        let scales = [
+            TET12.to_string(),
+            "Dorian, just\n7\n9/8\n6/5\n4/3\n3/2\n5/3\n9/5\n2/1\n".to_string(),
+            "one\n1\n3/2\n".to_string(),
+            bp,
+        ];
+        for text in &scales {
+            let s = parse_scl(text).unwrap();
+            for (key, hz) in [(60, 261.6256), (62, 290.0), (-10, 3.5), (127, 12_000.0)] {
+                let want = tuning(&s, &KeyMap::linear(key, key, hz)).unwrap();
+                assert_eq!(s.rooted(key, hz), want, "{} on key {key}", s.description);
+            }
+        }
+        // Middle C at its usual pitch is Scala's default map.
+        let s = parse_scl(TET12).unwrap();
+        let std = KeyMap::standard();
+        assert_eq!(s.rooted(60, std.ref_hz), tuning(&s, &std).unwrap());
     }
 }

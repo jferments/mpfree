@@ -352,18 +352,32 @@ impl Builtin {
         let Some(degrees) = self.degrees() else {
             return Tuning::equal(if self == Builtin::Equal24 { 24 } else { 12 }, a4_hz);
         };
-        let a4 = Tuning::equal(12, a4_hz);
         let key = 60 + i32::from(root % 12);
-        let base = f64::from(a4.hz(key as f32)).log2();
-        let period = degrees[11];
-        // Scala's degree arithmetic (`Scale::degree_cents`), with the root
-        // on `key` at its 12-TET pitch: every key has a pitch.
+        Tuning::linear(&degrees, key, root_hz(key, a4_hz))
+    }
+}
+
+/// Key `key`'s 12-TET pitch in Hz for A4 at `a4_hz` (clamped as
+/// [`Tuning::equal`] clamps it): where a tuning on that root puts it.
+pub fn root_hz(key: i32, a4_hz: f32) -> f64 {
+    f64::from(Tuning::equal(12, a4_hz).hz(key as f32))
+}
+
+impl Tuning {
+    /// Each key the next degree of `cents` (degrees above 1/1, the last
+    /// the period) from `key`, which plays 1/1 at `hz`: Scala's degree
+    /// arithmetic (`Scale::degree_cents`) with every key given a pitch, so
+    /// it never allocates.
+    pub(crate) fn linear(cents: &[f64], key: i32, hz: f64) -> Tuning {
+        let base = hz.log2();
+        let n = cents.len().max(1) as i64;
+        let period = cents.last().copied().unwrap_or(1200.0);
         Tuning::from_every_log2(|k| {
-            let off = i64::from(k - key);
-            let i = off.rem_euclid(12) as usize;
-            let within = if i == 0 { 0.0 } else { degrees[i - 1] };
-            let cents = off.div_euclid(12) as f64 * period + within;
-            base + cents / 1200.0
+            let off = i64::from(k) - i64::from(key);
+            let i = off.rem_euclid(n) as usize;
+            let within = if i == 0 { 0.0 } else { cents[i - 1] };
+            let c = off.div_euclid(n) as f64 * period + within;
+            base + c / 1200.0
         })
     }
 }

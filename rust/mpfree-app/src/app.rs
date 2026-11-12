@@ -38,6 +38,7 @@ pub use mapper::{Code, MapView, Mark};
 use mpfree_arp::scale::pads::Pad as PadNotes;
 pub use synth_pads::SynthItem;
 
+use crate::cores::SoundCores;
 use crate::looping::{LoopAction, LoopSource};
 use mpfree_arp::{Events, LatchMode, Mode, Pattern, Rate, RecordMode, Recorder};
 use mpfree_controller::mpc_one::button;
@@ -543,6 +544,9 @@ pub struct Settings {
     /// Prefs > Appearance: the theme in use, a built-in name (see
     /// [`THEMES`]); `--theme` can also set a theme file for one run.
     pub theme: String,
+    /// Prefs "Sound cores": where the sound runs from the next start
+    /// (cores.rs); `--sound-cores` can set it for one run.
+    pub sound_cores: SoundCores,
 }
 
 impl Settings {
@@ -577,6 +581,7 @@ impl Default for Settings {
             loop_latency_set: false,
             loop_level_db: 0.0,
             theme: "default".to_string(),
+            sound_cores: SoundCores::Shared,
         }
     }
 }
@@ -593,6 +598,11 @@ pub const THEMES: [(&str, &str); 4] = [
 /// The store owner whose files are the themes folder: theme files the
 /// user puts in `files/themes/` on the data partition, named `NAME.theme`.
 pub const THEMES_FOLDER: &str = "themes";
+
+/// The store owner whose files are the tunings folder: Scala scales the
+/// user puts in `files/tunings/` on the data partition (`NAME.scl`, with an
+/// optional keyboard map `NAME.kbm`), offered on the Synth tab.
+pub const TUNINGS_FOLDER: &str = "tunings";
 
 /// Which part of Prefs is on screen.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -618,6 +628,8 @@ pub enum Item {
     CalibrateTouch,
     TouchLab,
     DebugMode,
+    /// Prefs: where the sound runs from the next start (cores.rs).
+    SoundCores,
     MapControls,
     SystemInfo,
     Rate,
@@ -839,6 +851,12 @@ pub struct App {
     /// `--data`): the file name, which is what `settings.theme` holds, and
     /// the theme's own name for the Appearance row. After [`THEMES`].
     pub theme_files: Vec<(String, String)>,
+    /// Tuning files found in the tunings folder at start (`files/tunings/`
+    /// in `--data`), in the synth's order ([`crate::synth::Synth::tuning_files`]):
+    /// each one's name and whether its keyboard map sets the root and
+    /// pitch. The Synth tab's Tuning row offers them after the built-in
+    /// tunings.
+    pub tuning_files: Vec<(String, bool)>,
     /// The mode the Arp panel picked. NOTE REPEAT and Latch turn on Repeat
     /// when it is Direct.
     arp_mode: Mode,
@@ -904,6 +922,9 @@ pub struct App {
     swallowed: [bool; 128],
     /// The Looper tab's Mute.
     loop_muted: bool,
+    /// Where the sound runs in this start (cores.rs); Prefs' "Sound cores"
+    /// says "(next start)" while the setting differs.
+    sound_cores_now: SoundCores,
     /// Prefs or a button changed since the last look (`saved.rs`), and
     /// the text last handed to the store for "app" and "map".
     save_dirty: bool,
@@ -919,6 +940,7 @@ const PREFS_ROWS: &[Item] = &[
     Item::Buffer,
     Item::FindButtons,
     Item::DebugMode,
+    Item::SoundCores,
     Item::MapControls,
     Item::LineInput,
     Item::SystemInfo,
@@ -996,7 +1018,9 @@ impl App {
             swallowed: [false; 128],
             prefs_section: PrefsSection::Main,
             theme_files: Vec::new(),
+            tuning_files: Vec::new(),
             loop_muted: false,
+            sound_cores_now: SoundCores::Shared,
             save_dirty: false,
             saved: Default::default(),
         };
@@ -1487,7 +1511,10 @@ impl App {
         } else if is(m.q_link) {
             // Q-LINK: the column's next bank (Macros 1-4, 5-8, the page's
             // own knobs), where the column has macro banks (layout spec 4b).
-            if matches!(self.view, View::Play | View::Chain | View::Macros) {
+            if matches!(
+                self.view,
+                View::Play | View::Arrange | View::Chain | View::Macros
+            ) {
                 vec![Effect::QLinkBank]
             } else {
                 Vec::new()
@@ -1912,6 +1939,12 @@ impl App {
         ))]
     }
 
+    /// Where the sound runs in this start (`player_session`, once the
+    /// sound's cores are set up).
+    pub fn set_sound_cores_now(&mut self, mode: SoundCores) {
+        self.sound_cores_now = mode;
+    }
+
     /// The mapper's list starts from what the app knows (measured buttons,
     /// and those found since).
     fn refresh_mapper(&mut self) {
@@ -2161,6 +2194,14 @@ impl App {
                 "Show developer tools",
                 if s.debug_mode { "On" } else { "Off" }.to_string(),
             ),
+            Item::SoundCores => (
+                "Sound cores",
+                if s.sound_cores == self.sound_cores_now {
+                    s.sound_cores.row().to_string()
+                } else {
+                    format!("{} (next start)", s.sound_cores.row())
+                },
+            ),
             Item::MapControls => ("Map controls", "Open".to_string()),
             Item::SystemInfo => ("System info", "Open".to_string()),
             Item::Rate => ("Note repeat rate", s.rate.label().to_string()),
@@ -2284,6 +2325,14 @@ impl App {
                 "audio render time), Map controls and the",
                 "Console. The numbers also go to the log",
                 "every 30 s. SHIFT + wheel picks the page.",
+            ],
+            Item::SoundCores => vec![
+                "Which of the MPC's cores make the sound,",
+                "from the next start. Shared: as before.",
+                "Core 3: the audio on a core of its own.",
+                "Cores 3 and 2: some drums and effects on",
+                "core 2 too. Cores 3, 2 and 1 (a test): and",
+                "the synth on core 1. Dev > CPU by engine.",
             ],
             Item::MapControls => vec![
                 "Find the numbers of the MPC's buttons, one at",
@@ -2520,6 +2569,17 @@ impl App {
             Item::TouchLab => return vec![Effect::TouchLab],
             Item::SystemInfo => return self.show(View::System),
             Item::DebugMode => fx.extend(self.set_debug_mode(d > 0)),
+            Item::SoundCores => {
+                let next = cycle(&SoundCores::ALL, s.sound_cores, d);
+                if next != s.sound_cores {
+                    s.sound_cores = next;
+                    fx.push(Effect::Note(format!(
+                        "sound cores: {} from the next start (now {})",
+                        next.name(),
+                        self.sound_cores_now.name()
+                    )));
+                }
+            }
             Item::MapControls => {
                 let mut fx = self.set_debug_mode(true);
                 fx.push(Effect::Settings(self.settings.clone()));
@@ -3091,6 +3151,67 @@ mod tests {
     }
 
     #[test]
+    fn prefs_sound_cores_is_kept_and_used_from_the_next_start() {
+        let mut app = App::new(44_100, false);
+        app.map.menu = Some(MENU);
+        app.button(button::SHIFT, true, 0.0);
+        press(&mut app, MENU);
+        app.button(button::SHIFT, false, 0.0);
+        // Right after Show developer tools; Touch screen stays the last row.
+        let at = row(&app, Item::SoundCores);
+        assert_eq!(at, row(&app, Item::DebugMode) + 1);
+        assert_eq!(app.items().last(), Some(&Item::TouchSection));
+        let value = |fx: &[Effect]| match fx.last() {
+            Some(Effect::Menu(m)) => m.rows[at].clone(),
+            _ => panic!("{fx:?}"),
+        };
+        assert_eq!(value(&app.step_item(at, -1)).1, "Shared", "the default");
+        let fx = app.step_item(at, 1);
+        assert_eq!(
+            value(&fx),
+            ("Sound cores".to_string(), "Core 3 (next start)".to_string())
+        );
+        assert!(fx.contains(&Effect::Note(
+            "sound cores: core3 from the next start (now shared)".into()
+        )));
+        assert_eq!(value(&app.step_item(at, 1)).1, "Cores 3 and 2 (next start)");
+        assert_eq!(
+            value(&app.step_item(at, 1)).1,
+            "Cores 3, 2 and 1 (next start)"
+        );
+        assert_eq!(
+            value(&app.step_item(at, 1)).1,
+            "Cores 3, 2 and 1 (next start)",
+            "the last value"
+        );
+        assert_eq!(app.settings.sound_cores, SoundCores::Three);
+        assert_eq!(
+            value(&app.step_item(at, -1)).1,
+            "Cores 3 and 2 (next start)"
+        );
+        assert_eq!(app.settings.sound_cores, SoundCores::Two);
+        // Kept, and what the next start runs: then the row says no more.
+        let kept = app.app_settings();
+        assert_eq!(kept.get_str("sound-cores"), Some("two"));
+        let mut next = App::new(44_100, false);
+        let notes = next.restore(&kept, &mpfree_store::Settings::default());
+        assert_eq!(next.settings.sound_cores, SoundCores::Two);
+        assert!(notes[0].ends_with(", sound cores two"), "{notes:?}");
+        next.set_sound_cores_now(SoundCores::Two);
+        assert_eq!(next.item_text(Item::SoundCores).1, "Cores 3 and 2");
+        // A value it doesn't know is left out, and the default stays.
+        let mut odd = mpfree_store::Settings::default();
+        odd.set_str("sound-cores", "four");
+        let mut other = App::new(44_100, false);
+        let notes = other.restore(&odd, &mpfree_store::Settings::default());
+        assert_eq!(other.settings.sound_cores, SoundCores::Shared);
+        assert!(
+            notes.iter().any(|n| n.contains("sound-cores = four")),
+            "{notes:?}"
+        );
+    }
+
+    #[test]
     fn appearance_offers_every_built_in_theme() {
         let names: Vec<&str> = THEMES.iter().map(|t| t.0).collect();
         assert_eq!(names, mpfree_ui::theme::BUILTIN);
@@ -3236,6 +3357,62 @@ mod tests {
         assert_eq!(app.synth_pads.tuning.root, 11);
         assert_eq!(app.synth_pads.engine, crate::synth::Engine::Poly);
         assert_eq!(app.synth_pads.scale, None);
+    }
+
+    #[test]
+    fn the_synth_options_offer_tuning_files_after_the_built_in_tunings() {
+        use crate::synth::Builtin;
+        let mut app = ready();
+        app.tuning_files = vec![
+            ("werckmeister3".to_string(), false),
+            ("bohlen-pierce-with-a-long-name".to_string(), true),
+        ];
+        app.open_tab(View::Synth);
+        press(&mut app, MENU);
+        let row = |a: SynthItem| {
+            synth_pads::SYNTH_OPTIONS
+                .iter()
+                .position(|&i| i == Item::Synth(a))
+                .unwrap()
+        };
+        let at = row(SynthItem::Tuning);
+        let step = |app: &mut App, d: i32| {
+            let fx = app.step_item(at, d);
+            let tuning = fx.iter().find_map(|e| match e {
+                Effect::SynthPads(p) => Some(p.tuning),
+                _ => None,
+            });
+            let rows = match fx.last() {
+                Some(Effect::Menu(m)) => m.rows[at..at + 3]
+                    .iter()
+                    .map(|r| r.1.clone())
+                    .collect::<Vec<_>>(),
+                _ => Vec::new(),
+            };
+            (tuning, rows)
+        };
+        for _ in 1..Builtin::ALL.len() {
+            step(&mut app, 1);
+        }
+        assert_eq!(app.synth_pads.tuning.builtin, Builtin::Equal24);
+        // The first file: its root and A4 apply.
+        let (t, rows) = step(&mut app, 1);
+        assert_eq!(t.unwrap().file, Some(0));
+        assert_eq!(rows, ["werckmeister3", "C", "440 Hz"]);
+        // The second: its keyboard map sets them, and a long name is cut.
+        let (t, rows) = step(&mut app, 1);
+        assert_eq!(t.unwrap().file, Some(1));
+        assert_eq!(
+            rows,
+            ["bohlen-pierce-with-…", "set by its .kbm", "set by its .kbm"]
+        );
+        assert_eq!(step(&mut app, 1).0, None, "no further");
+        // Back down past the files to the last built-in tuning.
+        step(&mut app, -1);
+        let (t, rows) = step(&mut app, -1);
+        assert_eq!(t.unwrap().file, None);
+        assert_eq!(app.synth_pads.tuning.builtin, Builtin::Equal24);
+        assert_eq!(rows, ["24-TET quarter tones", "C (not used)", "440 Hz"]);
     }
 
     #[test]

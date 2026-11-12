@@ -88,7 +88,9 @@ jobs:
           MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_kexec_boot.py
           MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_app_mpc.py
           MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_host_bench_mpc.py
+          MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_host_disktest_mpc.py
           MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_app_start_capture.py
+          MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_midi_capture.py
           MPFREE_REQUIRE_OFFLINE_TOOLS=1 python3 tools/mpc-one/tests/test_offline_factory_kit.py
           MPFREE_REQUIRE_OFFLINE_TOOLS=1 python3 tools/mpc-one/tests/test_read_stick_logs.py
       - name: Check the remote survey contains no known destructive operations
@@ -534,6 +536,7 @@ jobs:
         run: |
           cargo "+$MPFREE_CLIPPY_TOOLCHAIN" fmt --manifest-path rust/Cargo.toml --all --check
           cargo "+$MPFREE_CLIPPY_TOOLCHAIN" fmt --manifest-path rust/mpfree-splash-gl/Cargo.toml --all --check
+          cargo "+$MPFREE_CLIPPY_TOOLCHAIN" fmt --manifest-path rust/mpfree-gpu/Cargo.toml --all --check
       - name: Clippy on the whole workspace, every target
         run: |
           # Index loops are the clearest way to write much of our DSP, and
@@ -1253,3 +1256,50 @@ jobs:
           assert frames[0] != frames[1], "the galaxy should turn between frames"
           print("PASS: two 1280x800 frames rendered headless; they differ")
           PY
+
+  gpu:
+    name: GPU renderer (OpenGL ES through EGL, Mesa's software GPU)
+    # Self-hosted like splash-gl: the mpfree-ci runners have Mesa.
+    runs-on: [self-hosted, linux, x64, mpfree-ci]
+    timeout-minutes: 60
+    env:
+      RUSTUP_TOOLCHAIN: stable
+      MPFREE_CLIPPY_TOOLCHAIN: "1.97.0"
+      MPFREE_CARGO_TARGET_BUDGET_GIB: 15
+    steps:
+      - name: Clear the last job's /tmp files (self-hosted only)
+        if: runner.environment == 'self-hosted'
+        run: find /tmp -maxdepth 1 -name 'mpfree-*' -user "$(id -u)" -exec rm -rf {} +
+      - uses: actions/checkout@v4
+      - name: Keep the Cargo target between runs (self-hosted only)
+        if: runner.environment == 'self-hosted'
+        run: |
+          all="$RUNNER_WORKSPACE/cargo-target"
+          t="$all/gpu"
+          mkdir -p "$t"
+          used=$(du -s -BG "$all" | cut -f1 | tr -d G)
+          if [ "$used" -gt "$MPFREE_CARGO_TARGET_BUDGET_GIB" ]; then
+            echo "Cargo targets hold ${used} GiB, over ${MPFREE_CARGO_TARGET_BUDGET_GIB}: starting gpu afresh"
+            rm -rf "$t" && mkdir -p "$t"
+          fi
+          echo "CARGO_TARGET_DIR=$t" >> "$GITHUB_ENV"
+      - name: Put the runner account's rustup on PATH (self-hosted only)
+        if: runner.environment == 'self-hosted'
+        run: echo "${CARGO_HOME:-$HOME/.cargo}/bin" >> "$GITHUB_PATH"
+      - name: Install Rust stable (self-hosted only; GitHub's hosts have it)
+        if: runner.environment == 'self-hosted'
+        run: rustup toolchain install stable --profile minimal --component clippy
+      - name: Install the lint job's pinned clippy
+        run: rustup toolchain install "$MPFREE_CLIPPY_TOOLCHAIN" --profile minimal --component clippy
+      - name: Install Mesa (GitHub-hosted only; the runners have it)
+        run: |
+          [ "$RUNNER_ENVIRONMENT" = self-hosted ] || sudo apt-get update -qq
+          [ "$RUNNER_ENVIRONMENT" = self-hosted ] || sudo apt-get install -y --no-install-recommends libegl1 libegl-mesa0 libgles2 libgl1-mesa-dri
+      - name: Clippy
+        # The same pinned clippy as the lint job, so a new stable's lints do
+        # not turn this job red by themselves.
+        run: cargo "+$MPFREE_CLIPPY_TOOLCHAIN" clippy --manifest-path rust/mpfree-gpu/Cargo.toml --all-targets --locked -- -D warnings
+      - name: The GPU's frame against the software path's
+        # The tests fail, saying why, if EGL or the GPU is missing: they never
+        # pass without drawing.
+        run: cargo test --manifest-path rust/mpfree-gpu/Cargo.toml --locked -- --nocapture

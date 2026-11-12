@@ -1,6 +1,6 @@
 # UI architecture
 
-**Status:** 2026-11-10. The toolkit is [`rust/mpfree-ui`](../../../rust/mpfree-ui); its first app is the Hello MPC pad player ([`gui.rs`](../../../rust/mpfree-app/src/gui.rs) draws it, [`app.rs`](../../../rust/mpfree-app/src/app.rs) decides what buttons and touches do). It first ran on the MPC in [round 4](../guides/mpfree-app.md#round-4-results-2026-11-10); round 5 starts it at power-on.
+**Status:** 2026-11-12 (the display list and the banded copy); first written 2026-11-10. The toolkit is [`rust/mpfree-ui`](../../../rust/mpfree-ui); its first app is the Hello MPC pad player ([`gui.rs`](../../../rust/mpfree-app/src/gui.rs) draws it, [`app.rs`](../../../rust/mpfree-app/src/app.rs) decides what buttons and touches do). It first ran on the MPC in [round 4](../guides/mpfree-app.md#round-4-results-2026-11-10); round 5 starts it at power-on.
 
 ## What the owner asked for
 
@@ -15,7 +15,8 @@ From the bottom up:
 | Layer | What it is | Where |
 |---|---|---|
 | Canvas | The only code that touches pixels: rectangles, rounded rectangles (anti-aliased), outlines, glyph masks, a clip rectangle. `SoftCanvas` draws into a plain XRGB8888 buffer. | [`canvas.rs`](../../../rust/mpfree-ui/src/canvas.rs) |
-| Screen output | `FbTarget` copies only the changed rectangles to `/dev/fb0`, turned to the panel's mounting (the MPC One's panel is 800×1280, mounted turned, so the UI sees 1280×800). It also handles 16-bit framebuffers. It writes at least two whole native rows at a time: a write of exactly one row gives the kernel's framebuffer emulation a zero-width damage rectangle, and that row is never shown (found in round 4). `capture` reads the framebuffer back as a picture, which the loading page uses as its backdrop. | [`fb.rs`](../../../rust/mpfree-ui/src/fb.rs) |
+| Display list | `Recorder` is a canvas that keeps a frame's calls as a short list (`Op`s), with each mask and image stored once by content, and plays them back on any other canvas. Played back on a `SoftCanvas` the picture is the same bit for bit (a test checks all the sample screens). It is the seam for the GPU renderer: see "Drawing on the GPU" below. | [`record.rs`](../../../rust/mpfree-ui/src/record.rs) |
+| Screen output | `FbTarget` copies only the changed rectangles to `/dev/fb0`, turned to the panel's mounting (the MPC One's panel is 800×1280, mounted turned, so the UI sees 1280×800). Turned 90 or 270 degrees, it reads the canvas in bands of 16 native rows, so the cache serves each band's pixels together (about 30 % less time for a whole frame on the workstation; the device number is still to come). It also handles 16-bit framebuffers. It writes at least two whole native rows at a time: a write of exactly one row gives the kernel's framebuffer emulation a zero-width damage rectangle, and that row is never shown (found in round 4). `capture` reads the framebuffer back as a picture, which the loading page uses as its backdrop. | [`fb.rs`](../../../rust/mpfree-ui/src/fb.rs) |
 | Theme | Every colour, size, radius and gap in one place, plus tones (normal, dim, accent, good, warning, bad) that widgets use instead of colours. Four built-in themes and user theme files; effects (corner shape, glow, backdrop, font roles) applied under the widgets by `Styled`. See [UI themes](ui-themes.md). | [`theme.rs`](../../../rust/mpfree-ui/src/theme.rs), [`style.rs`](../../../rust/mpfree-ui/src/style.rs) |
 | Fonts | Three faces (sans, bold, mono), rasterised by `fontdue` and cached per size. Built in: Inter and JetBrains Mono (SIL OFL 1.1), cut down to Latin, about 1 MB in RAM. Any TTF or OTF file can replace them (`--font`, `--bold-font`, `--mono-font`). | [`text.rs`](../../../rust/mpfree-ui/src/text.rs), [`fonts/`](../../../rust/mpfree-ui/fonts/README.md) |
 | Widgets | Draw themselves into the rectangle they are given and turn touches into events. They never talk to hardware or the audio engine. | [`widgets.rs`](../../../rust/mpfree-ui/src/widgets.rs) |
@@ -77,9 +78,19 @@ Measured on the workstation (x86, one core): a full 1280×800 paint takes about 
 - Unit tests cover layouts, drawing (pixels inside their rectangles, anti-aliased corners), text fitting, the framebuffer's rotation, widget touches and partial redraws. CI runs them on the workstation and as 32-bit ARM under qemu.
 - `mpfree --preview DIR` draws every screen with sample data into PNG files. CI runs it for ARM under qemu. When checked on 2026-11-10, the ARM pictures matched the workstation's pixel for pixel.
 
+## Drawing on the GPU
+
+Jay, 12 Nov: "we should ABSOLUTELY be drawing on the GPU", drawn in the panel's own orientation instead of turned afterwards. The plan is the "GPU drawing and compute" tab of the performance plan (https://claude.ai/artifact/Su4KF6BVbzkm9d5NfnWQMT); in short:
+
+- **What is proven:** the MPC's Mali-T760 draws offscreen through Mesa's Panfrost driver (OpenGL ES 3.1; 2.4 ms a frame for an 800×480 test scene, [gpu-panfrost-offscreen.md](../milestones/gpu-panfrost-offscreen.md)). Nothing from the GPU has been shown on the panel yet.
+- **The seam:** every screen draws through `Canvas`, so a frame recorded by `Recorder` is everything a renderer needs. The list for a whole screen is 8 to 490 KB on its first frame with an empty store (most of it glyphs and stroke masks seen for the first time) and 0 to 62 KB for the next frame (`every_sample_screen_plays_back_the_same_from_its_display_list` prints the table with `--nocapture`). The Sample and synth pages are the heaviest: their waveforms and curves are thousands of rectangles or large masks, which a GPU renderer would rather draw as lines.
+- **The renderer:** [`rust/mpfree-gpu`](../../../rust/mpfree-gpu/README.md) plays a list with OpenGL ES 2 straight into the panel's portrait orientation (the turn is part of the drawing; nothing is turned afterwards). On Mesa's software GPU its frame for a scene using all six calls matches the software path's bytes to within two levels per channel. It is its own workspace, a dynamically linked program that loads `libEGL.so.1` at run time.
+- **Recommended next:** run that renderer as a small process of its own on the MPC, fed the list through shared memory. The app stays a static program, a crash in the GPU driver cannot stop the sound, and if the GPU process fails the app draws in software (counted and shown).
+- **Why not just copy less:** copying only the changed part of each native row would need writes shorter than a row, and the kernel's framebuffer emulation turns a one-row write into a zero-width update (round 4, above). The GPU path, with the panel reading the GPU's buffers directly, removes the copy instead.
+
 ## Next
 
-- A GLES canvas behind the same `Canvas` trait, once a GPU path is qualified on the test build.
+- The GPU renderer on the MPC: a full-size offscreen timing run, then its own process fed by the app (the plan's steps G2 and G4); the read-only GPU inventory is in the app thread's next round. The panel showing the GPU's buffers (G5) changes the display settings in RAM and waits for Jay's go.
 - Gestures from `mpfree-touch` (swipe between pages, long press) and lists that scroll by drag.
 - Widgets for what comes next: a step grid, a waveform, a mixer strip, a sample browser.
 - Layouts and the theme read from files, so a layout can change without a rebuild. Parsing and applying both are done (`Theme::parse`, `Ui::apply_layouts`, see [UI themes](ui-themes.md)); a picker and a folder on the stick are next.

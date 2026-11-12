@@ -43,6 +43,11 @@ def draw_shots(out):
     return raw
 
 
+# The screen on the PDF cover: the busiest Play page the preview draws
+# (a loop, a pattern and a throw playing, the master meter moving).
+COVER = "play-all-loop"
+
+
 def shrink_shots(raw, dest, wanted):
     """Copy the screens the pages use, as small palette PNGs (about 10x smaller)."""
     from PIL import Image
@@ -214,7 +219,7 @@ def main():
     toc = mp.summary()
     pages = [p for k, _, p in toc if k == "page"]
     notes = mp.collect_mpc_notes(pages)
-    wanted = set()
+    wanted = {COVER}  # the PDF cover and the landing page use it too
     for p in pages:
         with open(os.path.join(mp.SRC, p), encoding="utf-8") as f:
             wanted |= {m.group(1) for m in mp.SHOT.finditer(f.read())}

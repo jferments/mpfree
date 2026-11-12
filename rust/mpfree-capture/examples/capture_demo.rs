@@ -224,6 +224,7 @@ fn to_sampler(engine: &mut Engine, offset: u32, event: Event) {
         },
         Event::NoteOff { note } => SEvent::NoteOff { pad: note },
         Event::AllOff => SEvent::AllOff,
+        Event::Pressure { note, value } => SEvent::Pressure { pad: note, value },
         Event::Lock { .. } | Event::Lane { .. } | Event::Unlock { .. } => return,
     };
     engine.schedule(offset, ev);
@@ -270,6 +271,7 @@ impl Session {
                 chance: 100,
                 cond: mpfree_seq::Cond::Always,
                 ratchet: 1,
+                touch: mpfree_seq::Touch::NONE,
             })
             .expect("in range");
         }
@@ -282,6 +284,7 @@ impl Session {
                 chance: 100,
                 cond: mpfree_seq::Cond::Always,
                 ratchet: 1,
+                touch: mpfree_seq::Touch::NONE,
             })
             .expect("in range");
         }
