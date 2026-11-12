@@ -12,6 +12,7 @@ FILES = {
     "uboot": "static/v11/v11-ghidra-uboot.json",
     "strings": "static/wide/p3-uboot-ghidra.json",
     "env": "static/wide/storage-env-boot-dtb.json",
+    "fdt": "static/wide/p1-p3-embedded-fdt-crossstage.json",
 }
 ERROR_MESSAGES = {
     "0x001010aa": "Recovery button ADC not found",
@@ -53,6 +54,11 @@ def build(read):
                 if s.get("text") == message and
                 any(norm(x["from"]) == address for x in s.get("xrefs", []))]
         diagnostics[address] = len(hits) == 1
+    dts = "\n".join(
+        d["fdt"]["uboot_stage_fdt"][0]["selected_dts_lines"])
+    adc_node = (
+        dts.split("saradc@ff100000 {", 1)[1].split("};",1)[0]
+        if "saradc@ff100000 {" in dts else "")
     env = d["env"]["p2"]["boot_related_variables"]
     slots = u.get("direct_boot_probe", {}).get(
         "reboot_mode_original_literal_slots", {})
@@ -63,6 +69,12 @@ def build(read):
                      if adc_pointer and exported_pointer else None)
     checks = {
         "three_diagnostic_xrefs_prove_recovery_adc": all(diagnostics.values()),
+        "original_uboot_fdt_saradc_enabled": all(
+            item in adc_node for item in (
+                'compatible = "rockchip,saradc";',
+                'reg = <0xff100000 0x100>;',
+                'status = "okay";'))
+            and 'adc0 = "/saradc@ff100000";' in dts,
         "adc_driver_calls_and_unsigned_comparison_original_arm": all(arm_matches.values()),
         "recovery_adc_threshold_100_in_decompiler": (
             "if (local_1c[0] < 100)" in recovery["pseudocode"]
@@ -93,6 +105,7 @@ def build(read):
         "diagnostic_string_xrefs": diagnostics,
         "original_arm_evidence": arm_matches,
         "checks": checks,
+        "saradc_base_from_original_uboot_fdt": "0xff100000",
         "adc_trigger_channel_argument": 1,
         "getvar_other_adc_channel_argument": 0,
         "adc_recovery_threshold_unsigned_max_inclusive": 99,
