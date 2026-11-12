@@ -8,3 +8,4 @@ description = "MPFree's effects on the shared mpfree-node interface: filters, dr
 [dependencies]
 mpfree-node = { path = "../mpfree-node" }
 mpfree-prof = { path = "../mpfree-prof" }
+mpfree-lanes = { path = "../mpfree-lanes" }

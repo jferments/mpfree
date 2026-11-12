@@ -31,6 +31,7 @@ pub mod drum;
 pub mod drum_params;
 pub mod dsp;
 pub mod dx7;
+pub mod expr;
 pub mod fm;
 pub mod fm_params;
 pub mod params;

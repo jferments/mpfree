@@ -61,7 +61,7 @@ pub const LAYOUT: &str = "col(header:60, smp-play-bar:60, \
                           row(smp-play-q1, smp-play-q2, smp-play-q3, smp-play-q4, smp-play-wheel:210):88, hint:26)";
 
 /// The tab's place in [`TABS`].
-pub const TAB: usize = 3;
+pub const TAB: usize = 4;
 
 /// The hint line the app shows under the tab.
 pub const HINT: &str = "Drag a layer's edges for its velocities · drag the envelope's points and the filter's dot · tap a \

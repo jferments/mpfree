@@ -208,9 +208,9 @@ MENU, NOTE REPEAT, TAP TEMPO, − and + were measured in round 5 and are built i
 | Clips page: a track's name | Arms that track, or disarms it |
 | Clips page: the wheel | Steps the record setting last touched (the armed track to begin with); SHIFT + wheel scrolls the slots |
 
-Clips play the current kit's pads. A click plays while counting in and recording. The status line also gives the transport, the takes and any notes lost.
+Clips play the current kit's pads. A click plays while counting in and recording. The status line also gives the transport, the takes and any notes or parameter locks lost.
 
-Every 30 s the app writes a status line to the system log: hits, underruns, pad-to-sound timing, and the note engine's dropped events and overflow.
+Every 30 s the app writes a status line to the system log: hits, underruns, pad-to-sound timing, and the note engine's dropped events and overflow. A `status: mod: ...` line gives the mod engine's targets (mixer controls a clip has locked), the values it sent, any it had no place for and any events dropped.
 
 **The check** (`MPFREE_HELLO_STEPS=app`, **read-only**): it copies, starts and stops nothing. It shows what the app wrote since power-on, then seven phases, each started by Enter and ended by Enter when you are done: the button guide; velocity with Full and Half Level; Note Repeat; Latch (two pads latched, let go, a new pad takes over, NOTE REPEAT stops it); the menus; the console, Debug page and touch; STOP. After each it shows the app's log lines from that time (events, pads with their velocities, buttons, wheel) and asks what you saw. Every line goes in the report.
 
@@ -275,6 +275,15 @@ Round 7 puts the pad player on the layout the owner approved (2026-11-11, [layou
 - **System info** (Prefs): the program's version, the system and the hardware.
 
 **The check** has twelve read-only phases now: developer tools and Map controls; the Dev pages; kits, banks and pad levels; Grains; the synth; Note Repeat and the arp; clips, overdub, undo and Capture; the audio looper; the Sample tab; Prefs, System info and saving; the Touch lab and Calibrate touch (both now in Prefs > Touch screen); menus, console and STOP. The line input step and the benchmark step each come after their own go, and a second boot shows whether the settings came back.
+
+### Dev > Touch (#145)
+
+With the developer tools on, the Dev strip has a **Touch** page between Map controls and Console. It tests the touchscreen, measures it and tunes it ([M17](../milestones/m17-touch-tuning.md)).
+
+- **The test area** draws each finger with its trail, its untuned position and the panel's raw reading, and names the gestures the current thresholds see. Its bar has Free, Targets (nine rings over the whole page), Swipes and Clear.
+- **The tuning list** shows each value now and suggested, with the reason. The wheel picks a value and - / + changes it at once. Use suggested, Defaults and Save work with wheel and + as well, so they never need the screen.
+- **MENU** opens Calibrate touch and the Touch lab.
+- **Save** writes `settings/touch.conf` to the data partition, which is read at the next start. The shift, stretch and hold filter apply to every touch. The gesture values apply to the Touch page and the Touch lab.
 
 ### The factory drum kits
 
