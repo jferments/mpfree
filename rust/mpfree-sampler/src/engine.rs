@@ -290,6 +290,29 @@ impl EngineView {
         self.pads_play
     }
 
+    /// Pad `pad`'s own value of `field`, as edited: what [`Event::PadLive`]
+    /// with NaN goes back to, so a caller can give its changes as offsets
+    /// on it. Cutoff and Resonance only where the pad has a filter; None for
+    /// a pad without a sound.
+    pub fn pad_own(&self, pad: usize, field: PadField) -> Option<f32> {
+        let p = self
+            .pads
+            .get(pad)?
+            .as_ref()
+            .filter(|p| !p.layers.is_empty())?;
+        let filtered = p.filter.kind != FilterKind::Off;
+        match field {
+            PadField::Level => Some(p.level_db),
+            PadField::Pan => Some(p.pan),
+            PadField::Tune => Some(p.tune_cents as f32),
+            PadField::Cutoff => filtered.then_some(p.filter.cutoff_hz),
+            PadField::Resonance => filtered.then_some(p.filter.resonance),
+            PadField::Attack => Some(p.amp.attack_ms),
+            PadField::Decay => Some(p.amp.decay_ms),
+            PadField::Release => Some(p.amp.release_ms),
+        }
+    }
+
     /// Layer `layer` of pad `pad`, as resolved.
     pub fn layer(&self, pad: usize, layer: usize) -> Option<&ViewLayer> {
         self.pads.get(pad)?.as_ref()?.layers.get(layer)
@@ -2441,6 +2464,12 @@ fn retarget(v: &mut Voice, live: &[f32; PadField::COUNT], program: &[f32; Progra
     } else {
         program[ProgramField::Tune as usize]
     };
+    if !f.moving {
+        // A voice that had landed may have run on through the rest of
+        // that render call's loop, or not: its steps start afresh on the
+        // event's frame, so blocks of any size play it the same.
+        f.count = 0;
+    }
     f.moving = true;
 }
 
