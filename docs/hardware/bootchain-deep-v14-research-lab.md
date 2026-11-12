@@ -21,6 +21,8 @@ python3 -m py_compile \
   "$R/tools/mpc-one/run_fastboot_directboot_v12.py" \
   "$R/tools/mpc-one/offline_fastboot_boot_assets_v13.py" \
   "$R/tools/mpc-one/tests/test_bootchain_deep_v14.py" && \
+arm-linux-gnueabihf-gcc -std=c11 -Wall -Wextra -Werror -fsyntax-only \
+  "$R/tools/mpc-one/v14_owner_boot_fixture.c" && \
 python3 -m unittest discover \
   -s "$R/tools/mpc-one/tests" \
   -p 'test_bootchain_deep_v14.py' -v && \
@@ -100,6 +102,7 @@ The owner-private output includes:
 - V14-85-QUESTION-EVIDENCE-LEDGER.json: 85 questions, evidence sources,
   probe execution flags, explicit status and remaining proof boundaries.
 - V14-PROPOSITION-EVIDENCE.json: concrete facts with evidence pointers.
+- verified-prior-v13/*: SHA-checked relevant original V13 static evidence.
 - v14-full-p1-ghidra.json: entire P1 recognized-function scan.
 - v14-full-p3-ghidra.json: entire P3 recognized-function scan.
 - updater-v11/*: SHA-validated static analysis from the updater track.
