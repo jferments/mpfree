@@ -937,13 +937,13 @@ pub struct XyPad {
 impl Default for XyPad {
     fn default() -> Self {
         XyPad {
-            title: "XY · Filter + delay".into(),
+            title: "XY · DJ filter + echo".into(),
             right: "hold to play".into(),
-            x_axis: "cutoff  →".into(),
-            y_axis: "↑ delay feedback".into(),
+            x_axis: "LP  ←  off  →  HP".into(),
+            y_axis: "↑ echo".into(),
             label: String::new(),
             x: 0.5,
-            y: 0.3,
+            y: 0.0,
             on: false,
             trail: VecDeque::new(),
             finger: None,

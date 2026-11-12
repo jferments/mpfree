@@ -17,10 +17,15 @@
 //! that is a meter) loads as a free knob, so a preset outlives a parameter
 //! taken away.
 //!
-//! The sets reach the Q-Link column through `mpfree-mod`'s bindings; which
-//! button steps them and where the cards sit is the app's layout.
+//! **On the Q-Links:** [`to_banks`] makes the sets into `mpfree-mod` banks
+//! for `Bindings::set_page_sets`, and after a learn
+//! (`Bindings::take_sets_edited`) [`from_banks`] reads them back to save
+//! with the sound. Which button steps them and where the cards sit is the
+//! app's layout.
 
+use mpfree_mod::{Bank, Binding};
 use mpfree_node::{NodeInfo, ParamInfo};
+use mpfree_param::{Owner, ParamAddr};
 
 use crate::pages::{plan, qlink_targets};
 
@@ -354,6 +359,62 @@ pub fn load(text: &str, params: &[ParamInfo]) -> Option<Vec<QSet>> {
     (!sets.is_empty()).then_some(sets)
 }
 
+/// The sets as Q-Link banks for `Bindings::set_page_sets`: one bank per
+/// set, with the set's name, each knob turning its parameter on `owner`
+/// (the sound's instrument, `Owner::Inst(track)`) over its whole range and
+/// named as the parameter is. A free knob, an id the node doesn't have and
+/// a meter are free knobs. For Drums, pass the sets [`on_pad`] gives for
+/// the pad hit last.
+pub fn to_banks(sets: &[QSet], params: &[ParamInfo], owner: Owner) -> Vec<Bank> {
+    sets.iter()
+        .take(MAX_SETS)
+        .map(|s| Bank {
+            name: s.name.clone(),
+            knobs: s.params.map(|p| {
+                let id = p?;
+                let info = params.iter().find(|i| i.id == id && !i.readonly)?;
+                Some(Binding::new(ParamAddr::new(owner, id), *info, info.name))
+            }),
+        })
+        .collect()
+}
+
+/// The banks back as sets, to save with the sound after a learn changed
+/// them (`Bindings::take_sets_edited`): the inverse of [`to_banks`]. Only
+/// the sound's own parameters travel with its preset, so a knob learned to
+/// anything not on `owner` (an effect, a macro, another track's sound), or
+/// to an id the node doesn't have, is saved free. A Drums pad's parameter
+/// is kept as pad 1's ([`pad_relative`]), so it follows the pad. A knob's
+/// part-range is not saved: it loads over the whole range.
+pub fn from_banks(
+    info: &NodeInfo,
+    banks: &[Bank],
+    params: &[ParamInfo],
+    owner: Owner,
+) -> Vec<QSet> {
+    banks
+        .iter()
+        .take(MAX_SETS)
+        .enumerate()
+        .map(|(n, b)| {
+            let name = clip_name(&b.name);
+            QSet {
+                name: if name.is_empty() {
+                    format!("Set {}", n + 1)
+                } else {
+                    name
+                },
+                params: b.knobs.each_ref().map(|k| {
+                    let t = k.as_ref()?.target;
+                    let ok =
+                        t.owner == owner && params.iter().any(|i| i.id == t.param && !i.readonly);
+                    ok.then(|| pad_relative(info, t.param))
+                }),
+            }
+        })
+        .collect()
+}
+
 /// A name a set can carry: one line of printable characters, trimmed, at
 /// most [`MAX_NAME`] characters.
 fn clip_name(name: &str) -> String {
@@ -373,6 +434,7 @@ fn clip_name(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mpfree_mod::Bindings;
     use mpfree_node::{Curve, Kind, Node, Unit};
     use mpfree_synth::{Drums, Fm, Pluck, Poly, Wavetable};
 
@@ -573,5 +635,83 @@ mod tests {
             "a page of meters gives no set"
         );
         assert!(sets.len() <= MAX_SETS);
+    }
+
+    #[test]
+    fn sets_go_to_the_qlinks_and_come_back() {
+        let owner = Owner::Inst(2);
+        for e in engines() {
+            let (info, params) = (e.info(), e.params());
+            let sets = factory(info, params);
+            let banks = to_banks(&sets, params, owner);
+            assert_eq!(banks.len(), sets.len(), "{}", info.name);
+            for (s, b) in sets.iter().zip(&banks) {
+                assert_eq!(b.name, s.name, "{}", info.name);
+                for (p, k) in s.params.iter().zip(&b.knobs) {
+                    let pi = params.iter().find(|i| Some(i.id) == *p).unwrap();
+                    let k = k.as_ref().expect("a curated knob is bound");
+                    assert_eq!(k.target, ParamAddr::new(owner, pi.id));
+                    assert_eq!((k.info, k.label.as_str()), (*pi, pi.name));
+                    assert_eq!((k.from, k.to, k.colour), (0.0, 1.0, None));
+                }
+            }
+            assert_eq!(
+                from_banks(info, &banks, params, owner),
+                sets,
+                "{}",
+                info.name
+            );
+        }
+        // A free knob and an id the node doesn't have are free knobs.
+        let p = Poly::new(48_000);
+        let odd = QSet {
+            name: "Odd".to_string(),
+            params: [Some(9_999), None, Some(pp::CUTOFF), None],
+        };
+        let banks = to_banks(&[odd], p.params(), owner);
+        let bound: Vec<bool> = banks[0].knobs.iter().map(Option::is_some).collect();
+        assert_eq!(bound, [false, false, true, false]);
+        // Drums: the sets on pad 6 come back as pad 1's.
+        let d = Drums::new(48_000);
+        let sets = factory(d.info(), d.params());
+        let banks = to_banks(&on_pad(d.info(), &sets, 5), d.params(), owner);
+        assert_eq!(
+            banks[0].knobs[0].as_ref().map(|k| k.target.param),
+            Some(pad_id(5, df::TUNE))
+        );
+        assert_eq!(from_banks(d.info(), &banks, d.params(), owner), sets);
+    }
+
+    #[test]
+    fn a_learn_on_the_qlinks_saves_with_the_sound_when_it_can() {
+        let p = Poly::new(48_000);
+        let (info, params) = (p.info(), p.params());
+        let owner = Owner::Inst(0);
+        let sets = factory(info, params);
+        let mut b = Bindings::with_macros(&[]);
+        b.set_page_sets("synth", "Poly", to_banks(&sets, params, owner));
+        assert_eq!(b.title(), "Poly · Tone");
+        let w = b.turn(0, 1, false).expect("knob 1 moves the cutoff");
+        assert_eq!(w.addr, ParamAddr::new(owner, pp::CUTOFF));
+        // Glide learned to knob 4 of Env goes with the sound.
+        b.next_set();
+        let glide = *params.iter().find(|i| i.id == pp::GLIDE).unwrap();
+        b.learn(ParamAddr::new(owner, pp::GLIDE), glide, glide.name);
+        assert_eq!(b.turn(3, 1, false), None);
+        assert!(b.take_sets_edited());
+        let mut want = sets.clone();
+        want[1].params[3] = Some(pp::GLIDE);
+        let saved = from_banks(info, b.page_sets(), params, owner);
+        assert_eq!(saved, want);
+        assert_eq!(load(&save(&saved), params), Some(want.clone()));
+        // Another track's sound or a macro can't travel with the preset.
+        b.learn(ParamAddr::new(Owner::Inst(1), pp::CUTOFF), glide, "Cutoff");
+        b.turn(1, 1, false);
+        b.learn(ParamAddr::macro_value(0), glide, "Wash");
+        b.turn(2, 1, false);
+        assert!(b.take_sets_edited());
+        want[1].params[1] = None;
+        want[1].params[2] = None;
+        assert_eq!(from_banks(info, b.page_sets(), params, owner), want);
     }
 }

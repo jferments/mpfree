@@ -38,7 +38,7 @@
 use mpfree_arp::scale::pads::{
     self, InKeyRows, Pad, PadLayout, PadRole, PadSetup, DEFAULT_BANKS, MAX_PAD_NOTES, PADS,
 };
-use mpfree_arp::scale::Scale;
+use mpfree_arp::scale::{Scale, NOTE_NAMES};
 use mpfree_instruments::preset::{engine_of, Error as PresetError, Preset as SoundPreset};
 use mpfree_node::{Ctx, Node, NodeEvent, ParamInfo, Timed};
 use mpfree_synth::drum_params;
@@ -46,6 +46,8 @@ use mpfree_synth::fm_params::FmPreset;
 use mpfree_synth::{Drums, Fm, Pluck, Poly, Preset, Wavetable};
 use mpfree_synth_ui::format::value_line;
 use mpfree_synth_ui::SynthState;
+pub use mpfree_tuning::Builtin;
+use mpfree_tuning::Tuning;
 use mpfree_ui::Color;
 use std::time::{Duration, Instant};
 
@@ -140,9 +142,56 @@ impl Engine {
     }
 }
 
+/// The lowest and highest A4 the Synth tab's options offer, in Hz.
+pub const A4_MIN: u16 = 380;
+pub const A4_MAX: u16 = 480;
+
+/// The synth's tuning, from the Synth tab's options: a built-in tuning, its
+/// root for the tunings that have one (0 = C to 11 = B) and A4 in whole Hz.
+/// Every engine but Drums plays through it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TuningPick {
+    pub builtin: Builtin,
+    pub root: u8,
+    pub a4_hz: u16,
+}
+
+impl Default for TuningPick {
+    fn default() -> Self {
+        TuningPick {
+            builtin: Builtin::Equal12,
+            root: 0,
+            a4_hz: 440,
+        }
+    }
+}
+
+impl TuningPick {
+    /// The tuning itself. Never allocates.
+    pub fn tuning(&self) -> Tuning {
+        self.builtin
+            .tuning(self.root % 12, f32::from(self.a4_hz.clamp(A4_MIN, A4_MAX)))
+    }
+
+    /// "Just (5-limit) on D, A4 432 Hz"; "12-TET" on its own at 440.
+    pub fn label(&self) -> String {
+        let root = if self.builtin.has_root() {
+            format!(" on {}", NOTE_NAMES[usize::from(self.root % 12)])
+        } else {
+            String::new()
+        };
+        let a4 = if self.a4_hz == 440 {
+            String::new()
+        } else {
+            format!(", A4 {} Hz", self.a4_hz)
+        };
+        format!("{}{root}{a4}", self.builtin.name())
+    }
+}
+
 /// How the synth's pads are set up, from the Synth tab's options: the
-/// engine, the scale (None is Off), how In key fills its rows, and each
-/// bank's layout as (layout, octaves above the pads' octave).
+/// engine, the scale (None is Off), how In key fills its rows, each bank's
+/// layout as (layout, octaves above the pads' octave), and the tuning.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PadSettings {
     pub engine: Engine,
@@ -150,6 +199,7 @@ pub struct PadSettings {
     pub rows: InKeyRows,
     pub banks: [(PadLayout, i8); BANKS],
     pub bank: usize,
+    pub tuning: TuningPick,
 }
 
 impl Default for PadSettings {
@@ -160,6 +210,7 @@ impl Default for PadSettings {
             rows: InKeyRows::Sequence,
             banks: DEFAULT_BANKS,
             bank: 0,
+            tuning: TuningPick::default(),
         }
     }
 }
@@ -443,10 +494,25 @@ impl Synth {
         if switched {
             self.all_off();
         }
+        let retune = settings.tuning != self.settings.tuning;
         self.settings = settings;
         self.settings.bank %= BANKS;
+        if retune {
+            self.retune();
+        }
         self.relayout();
         switched
+    }
+
+    /// Hands every engine the tuning picked; sounding notes move to it on
+    /// their next control step. Drums ignore tunings. Never allocates.
+    fn retune(&mut self) {
+        let t = self.settings.tuning.tuning();
+        self.poly.set_tuning(&t);
+        self.fm.set_tuning(&t);
+        self.drums.set_tuning(&t);
+        self.pluck.set_tuning(&t);
+        self.wt.set_tuning(&t);
     }
 
     /// Works the pads' notes out again: Drums' kit notes, or the layout.
@@ -1117,7 +1183,7 @@ impl Synth {
 /// A scale's name for the chip and the log: "D Dorian", or its notes'
 /// count when it isn't one of the built-in scales ("D, 6 notes").
 pub fn scale_name(s: &Scale) -> String {
-    use mpfree_arp::scale::{NOTE_NAMES, SCALES};
+    use mpfree_arp::scale::SCALES;
     let root = NOTE_NAMES[usize::from(s.root % 12)];
     match SCALES.iter().find(|d| d.mask == s.mask && d.down == s.down) {
         Some(d) => format!("{root} {}", d.name),
@@ -1806,6 +1872,58 @@ mod tests {
     }
 
     #[test]
+    fn the_tuning_picked_reaches_every_engine_but_drums() {
+        let just = TuningPick {
+            builtin: Builtin::Just,
+            root: 0,
+            a4_hz: 440,
+        };
+        let a432 = TuningPick {
+            a4_hz: 432,
+            ..TuningPick::default()
+        };
+        // Pad 5: E3 on the synths (386 cents above C in just intonation,
+        // 400 in 12-TET), a drum on Drums.
+        let play = |engine: Engine, picks: &[TuningPick]| {
+            let mut s = Synth::new(44_100);
+            with(&mut s, |p| p.engine = engine);
+            for &t in picks {
+                with(&mut s, |p| p.tuning = t);
+            }
+            let mut frame = 0;
+            s.note_on(4, 100, 0);
+            run(&mut s, &mut frame, 60, 128)
+        };
+        for engine in Engine::ALL {
+            let plain = play(engine, &[]);
+            assert!(peak(&plain) > 0.01, "{engine:?} is silent");
+            let back = play(engine, &[just, a432, TuningPick::default()]);
+            assert_eq!(
+                back, plain,
+                "{engine:?}: back to 12-TET at 440 plays as before"
+            );
+            for t in [just, a432] {
+                let tuned = play(engine, &[t]);
+                if engine == Engine::Drums {
+                    assert_eq!(tuned, plain, "Drums keep their own pitch");
+                } else {
+                    assert_ne!(tuned, plain, "{engine:?} ignored {}", t.label());
+                }
+            }
+        }
+        assert_eq!(TuningPick::default().label(), "12-TET");
+        assert_eq!(
+            TuningPick {
+                root: 2,
+                a4_hz: 432,
+                ..just
+            }
+            .label(),
+            "Just (5-limit) on D, A4 432 Hz"
+        );
+    }
+
+    #[test]
     fn the_audio_threads_part_never_allocates() {
         let mut s = Synth::new(44_100);
         let (mut l, mut r) = ([0f32; 128], [0f32; 128]);
@@ -1846,6 +1964,12 @@ mod tests {
                     set.scale = if p % 2 == 0 { minor } else { None };
                     set.bank = p / 211 % BANKS;
                     set.engine = Engine::ALL[p / 300 % ENGINES];
+                    // A new tuning is worked out on this thread too.
+                    set.tuning = TuningPick {
+                        builtin: Builtin::ALL[p / 211 % Builtin::ALL.len()],
+                        root: (p % 12) as u8,
+                        a4_hz: A4_MIN + (p % 100) as u16,
+                    };
                     s.set_settings(set);
                 }
                 if p % 307 == 0 {
