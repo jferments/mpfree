@@ -2288,6 +2288,12 @@ fn player_session(
         let t = mpfree_touch::tuning::Tuning::from_lookup(|k| touch.get_f64(k));
         out.show(gui::ToUi::TouchTuning(t));
     }
+    // --theme wins over the saved theme for this run; otherwise the screen
+    // switches to the saved one (Prefs > Appearance).
+    if let Some(t) = &o.theme {
+        app.settings.theme = t.clone();
+    }
+    out.show(gui::ToUi::Settings(app.settings.clone()));
     out.say(&match (&o.data, store.saves()) {
         (None, _) => {
             "saving: off (no --data); settings and found buttons reset at every start".to_string()
