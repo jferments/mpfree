@@ -319,7 +319,7 @@ Still to come in the app: hold MAIN + pad to pick a track, SHIFT + NEXT SEQ for 
 
 ### The live test of rounds 8 to 10
 
-The app check (`MPFREE_HELLO_STEPS=app`, read-only) has sixteen phases for this round, in this order, because later phases use the buttons the first one maps:
+The app check (`MPFREE_APP_STEPS=app` with `collect-over-ssh.sh --app`, read-only) has sixteen phases for this round, in this order, because later phases use the buttons the first one maps:
 
 1. Developer tools and Map controls: REC, OVERDUB, PLAY, PLAY START, UNDO, ERASE, TAP TEMPO, the PAD BANK buttons, TRACK MIX, TRACK MUTE, Q-LINK and the six mode buttons first.
 2. The Dev pages.
