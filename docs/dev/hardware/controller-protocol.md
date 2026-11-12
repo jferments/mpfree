@@ -30,7 +30,7 @@
 | Button LEDs | CC on cable 1, channel 1, **CC number = button note number** | Values 0–4 seen. 0 = off; 1 and 3 dominate (dim/bright, inferred). TAP TEMPO (CC 53) blinks 1/3 at the tempo; CC 67 (UNDO, per prior art) toggled 1/3 during Q-Link edits. The pad player uses 1 for off and 3 for on, as the app does |
 | Pad RGB | SysEx on cable 0: `F0 47 7F 46 65 00 04 <pad 0–15> <R> <G> <B> F7` | 7-bit color components; pad index is 0-based in display order |
 | `5A` setup message | SysEx on cable 0: `F0 47 7F 46 5A 00 20 …` (32-byte payload) | Sent twice at the app's startup; full bytes [below](#akais-app-at-startup-hello-mpc-round-2-2026-11-10). Meaning unknown (the earlier guess, bulk pad colours, is not supported by the bytes) |
-| CV/Gate jacks | CC pairs on cable 1, **channel 16**: output 1 on CC 0 and 1, output 2 on CC 2 and 3, and so on, high 7 bits first | One 14-bit value per output. A CV track's pitch is `floor((note − 36) × 16383 / 60)`, its gate 16383 or 0. Volts per count not measured ([below](#second-round-the-cv-scale-and-the-next-outputs-2026-11-12)) |
+| CV/Gate jacks | CC pairs on cable 1, **channel 16**: Akai's CV port 1 on CC 0 and 1, port 2 on CC 2 and 3, and so on, high 7 bits first | One 14-bit value per port, whatever it is used for. A CV track's pitch is `floor((note − 36) × 16383 / 60)`, its gate 16383 or 0. Volts per count not measured ([below](#second-round-the-cv-scale-and-the-next-outputs-2026-11-12)) |
 | Session ping | Host → cable 0: `F0 47 00 46 52 00 04 <token> F7` every 4–5 s | Controller answers on cable 1: `F0 47 7F 46 53 00 05 <token> <status> F7`. The app picks a new 4-byte token at each start and keeps it for the whole run ([below](#akais-app-at-startup-hello-mpc-round-2-2026-11-10)) |
 
 ## Comparison with prior art
@@ -137,14 +137,14 @@ Every note gave CC 2 and 3 at 127 at the key down and 0 at the key up, as in rou
 
 | Phase | What changed against idle |
 | --- | --- |
-| The CV track moved to its next outputs, one C (60) | **CC 4 and 5** = 51, 25 (6553, the pitch of note 60) and **CC 6 and 7** = 127, 127 at the key down; CC 6 and 7 back to 0 at the key up. Nothing on CC 0 to 3 |
+| The CV track's CV Port set to 3 and Gate Port to 4 (they were 1 and 2), one C (60) | **CC 4 and 5** = 51, 25 (6553, the pitch of note 60) and **CC 6 and 7** = 127, 127 at the key down; CC 6 and 7 back to 0 at the key up. Nothing on CC 0 to 3 |
 | Keys and pads 1 and 13 on a MIDI track (output meant to be the MIDI Out jack) | The keys on cable 2 in and the pads on cable 1 in (channel 10 notes and pressure), as usual. **Nothing out on cable 2, and no change on any OUT cable**, the same as round 1 |
 
-- **OBSERVED:** each CV output is one 14-bit value (0 to 16383) sent as two CCs on cable 1, channel 16, the high 7 bits first. The first output is CC 0 and 1, the second CC 2 and 3, the third CC 4 and 5, the fourth CC 6 and 7.
+- **OBSERVED:** each CV port is one 14-bit value (0 to 16383) sent as two CCs on cable 1, channel 16, the high 7 bits first. Akai's port 1 is CC 0 and 1, port 2 CC 2 and 3, port 3 CC 4 and 5, port 4 CC 6 and 7. The pair belongs to the port number, not to its use: a CV track's CV Port and Gate Port fields can be set to any port (the owner, 2026-11-12), and ports 1 and 3 carried pitch while 2 and 4 carried the gate only because that is how they were set.
 - **OBSERVED:** a CV track's pitch is `floor((note − 36) × 16383 / 60)`: 0 at note 36, about 273 per semitone, 16383 five octaves up (note 96). Its gate is 16383 while the note is held and 0 after.
-- **INFERENCE:** outputs five to eight are CC 8 to 15, and notes outside 36 to 96 clamp to the ends.
+- **INFERENCE:** ports 5 to 8 are CC 8 to 15, and notes outside 36 to 96 clamp to the ends.
 - **INFERENCE:** full scale is 5 V. Five octaves over the full range fits 1 V/oct at 0 to 5 V, but no meter has been on a jack, so the volts per count are **UNKNOWN** until one is.
-- **UNKNOWN:** which jack, and tip or ring, each output number is.
+- **UNKNOWN:** which jack, and tip or ring, each port number is.
 - **UNKNOWN:** how Akai's app sends to the MIDI Out jack. In both rounds a MIDI track sent nothing over USB. The track's MIDI Output Port field, and the Output Ports list in Preferences > MIDI / Sync (the port's Track tick, guide "Preferences", "MIDI / Sync"), were not recorded, so a wrong setting has not been ruled out. Akai's app holds no serial device ([resource-ownership](resource-ownership.md)), so a path other than the controller's USB-MIDI would be a surprise.
 - The bytes are written down as code in `rust/mpfree-midi/src/cv_wire.rs`, with tests holding every value above. Sending any of these CCs from MPFree is a **state-changing** write to the controller and waits for the owner's go ([midi-io](../design/midi-io.md), step M6).
 

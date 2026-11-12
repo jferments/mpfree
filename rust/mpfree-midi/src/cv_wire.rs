@@ -13,7 +13,10 @@
 //!   (status [`CV_STATUS`]).
 //! - Each output is one 14-bit value sent as two CCs, the high 7 bits
 //!   first: output 0 on CC 0 and 1, output 1 on CC 2 and 3, output 2 on
-//!   CC 4 and 5, output 3 on CC 6 and 7 ([`ccs`]).
+//!   CC 4 and 5, output 3 on CC 6 and 7 ([`ccs`]). Output `n` here is
+//!   Akai's CV port `n + 1`. The pair belongs to the port, not to its
+//!   use: Akai's CV track lets either its CV Port or its Gate Port be any
+//!   port, as [`crate::cv::CvAssign`] does.
 //! - A CV track's gate output goes to full scale (127 and 127) at a note
 //!   and to 0 at its release.
 //! - A CV track's pitch is `floor((note - 36) * 16383 / 60)` for every
@@ -130,8 +133,8 @@ mod tests {
         assert_eq!(ccs(7), Some((14, 15)));
         assert_eq!(ccs(8), None);
         assert_eq!(encode(8, 0), None);
-        // The second capture's next outputs: pitch of note 60 on output
-        // 2, the gate on output 3.
+        // The second capture: CV Port 3 and Gate Port 4 (outputs 2 and
+        // 3 here), pitch of note 60 and the gate.
         assert_eq!(
             encode(2, akai_pitch_counts(60)),
             Some([[0xBF, 4, 51], [0xBF, 5, 25]])
