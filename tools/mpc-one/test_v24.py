@@ -34,6 +34,8 @@ def sample_raw():
         location=first+i*28
         words=(text,10,1,v24.P3BASE+0x40001+32*i,0,0,0)
         for w,value in enumerate(words):word(location+4*w,value)
+    environment=b"boot_targets=mmc0 mmc1 usb0\x00"
+    raw[0x50000:0x50000+len(environment)]=environment
     return bytes(raw)
 def fake_v23_zip(path,bad=False):
     files={
@@ -80,6 +82,11 @@ class V24Contracts(unittest.TestCase):
                          json.dumps(report))
         self.assertEqual(report["valid_descriptor_ratio"],1.0)
         self.assertFalse(report["hardware_MMC_index_assigned"])
+        defaults=report["static_default_environment_candidates"]["boot_targets"]
+        self.assertEqual(len(defaults),1)
+        self.assertEqual(defaults[0]["boot_target_tokens"],["mmc0","mmc1","usb0"])
+        self.assertTrue(defaults[0]["value_redacted"])
+        self.assertNotIn("mmc0 mmc1 usb0",json.dumps(report))
 
     def test_invalid_table_is_rejected_not_invented(self):
         broken=bytearray(sample_raw())
