@@ -163,7 +163,7 @@ static int v26_guest_mmcinfo(const char *name){
         put32(p+0x7cu,0u);
         put32(p+0x140u,0u);
     }
-    unsigned uart=0,alt=0,serial=0,init=0,write=0,erase=0,ctl=0,cfg=0,transport=0;
+    unsigned uart=0,alt=0,serial=0,init=0,write=0,erase=0,ctl=0,cfg=0,transport=0,persist=0,reset=0;
     if(!intercept(0x0011f580u,0u,&uart) ||
        !intercept(0x0011f2d6u,0u,&alt) ||
        !intercept(0x0012e96au,0u,&serial) ||
@@ -173,6 +173,8 @@ static int v26_guest_mmcinfo(const char *name){
        !intercept(0x0011c912u,0u,&cfg) ||
        !intercept(0x0011de50u,0u,&write) ||
        !intercept(0x0011dd4cu,0u,&erase) ||
+       !intercept(0x00108110u,1u,&persist) ||
+       !intercept(0x0011622au,1u,&reset) ||
        !seal())return 4;
     uint32_t (*original_mmcinfo)(uint32_t,uint32_t,uint32_t,uint32_t)=
         (uint32_t(*)(uint32_t,uint32_t,uint32_t,uint32_t))handler;
@@ -180,7 +182,8 @@ static int v26_guest_mmcinfo(const char *name){
     uint32_t rc=original_mmcinfo((uint32_t)descriptor,0u,1u,0u);
     bool guard=calls(write)==0u && calls(erase)==0u &&
                calls(ctl)==0u && calls(cfg)==0u &&
-               calls(transport)==0u;
+               calls(transport)==0u && calls(persist)==0u &&
+               calls(reset)==0u;
     printf("{\"trace\":\"v26-genuine-native-mmcinfo\","
            "\"test\":\"%s\",\"synthetic_current_mmc\":%u,"
            "\"original_handler_status\":%u,\"guest_UART_calls\":%u,"
