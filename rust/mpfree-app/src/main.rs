@@ -3450,6 +3450,8 @@ fn player_session(
     // The mixer sums everything; the Level is its master fader (mixing.rs).
     let mut mix = mixing::MixHost::new(RATE, level_db, max_db);
     mix.set_plugins(std::sync::Arc::clone(&found_plugins));
+    // The screen opens projects' plugins with the same rack.
+    out.show(gui::ToUi::Plugins(std::sync::Arc::clone(&found_plugins)));
     // The plugin synths, for the Synth tab's Instrument row after the engines.
     app.plugin_synths = found_plugins
         .instruments()
@@ -3946,22 +3948,62 @@ fn player_session(
                     if let Some(m) = o.mix.take() {
                         mix.open(m);
                     }
-                    // Tracks' own instruments aren't in projects yet: every
-                    // track plays the kit again, and the log says so.
-                    let pads = synth.pads_for(synth.engine());
-                    let mut emptied = 0;
+                    // Each track's own instrument: the project's (made on
+                    // the screen thread), or none, so the track plays the
+                    // kit. The old ones ring out. One the host can't take
+                    // goes back in the box, to be freed on the screen thread.
+                    let mut changed = 0;
+                    let mut playing = 0;
                     for track in 0..instruments::SLOTS {
-                        if mix.instruments.holds(track) {
-                            if mix.instruments.put(track, None, pads).is_ok() {
-                                emptied += 1;
-                            }
-                            app.set_track_sound(track, mix.instruments.held(track));
-                        }
                         track_presets[track] = None;
+                        let at = o
+                            .instruments
+                            .iter()
+                            .position(|l| l.as_ref().is_some_and(|l| l.track == track));
+                        let loaded = at.and_then(|k| o.instruments[k].take());
+                        if loaded.is_none() && !mix.instruments.holds(track) {
+                            continue;
+                        }
+                        changed += 1;
+                        match loaded {
+                            Some(l) => {
+                                let engine = synth::Engine::from_node_id(l.held.id);
+                                let pads = synth.pads_for(engine.unwrap_or(synth::Engine::Poly));
+                                mix.instruments.set_tuning(track, &synth.tuning_now());
+                                let held = l.held;
+                                match mix.instruments.put(track, Some((l.instrument, held)), pads) {
+                                    Ok(()) => playing += 1,
+                                    Err(back) => {
+                                        if let (Some(instrument), Some(k)) = (back, at) {
+                                            o.instruments[k] = Some(project::Loaded {
+                                                track,
+                                                instrument,
+                                                held,
+                                            });
+                                        }
+                                        out.note(&format!(
+                                            "project: track {}: {} not put in (its last sound is still ringing out); it keeps what it had",
+                                            track + 1,
+                                            held.name
+                                        ));
+                                    }
+                                }
+                            }
+                            None => {
+                                let pads = synth.pads_for(synth.engine());
+                                if mix.instruments.put(track, None, pads).is_err() {
+                                    out.note(&format!(
+                                        "project: track {} keeps its instrument (its last sound is still ringing out)",
+                                        track + 1
+                                    ));
+                                }
+                            }
+                        }
+                        app.set_track_sound(track, mix.instruments.held(track));
                     }
-                    if emptied > 0 {
+                    if changed > 0 {
                         out.note(&format!(
-                            "project: {emptied} tracks play the kit again (a track's own instrument isn't saved in projects yet)"
+                            "project: {playing} tracks play their own instrument, the rest the kit"
                         ));
                     }
                     if let Some((options, sounds)) = o.synth.take() {
@@ -3978,7 +4020,7 @@ fn player_session(
                         // on the screen thread.
                         o.synth = Some((options, sounds));
                     }
-                    if emptied > 0 {
+                    if changed > 0 {
                         out.show(gui::ToUi::Synth(synth_tab(
                             &synth,
                             &mix.instruments,
@@ -5217,6 +5259,7 @@ fn player_session(
                 modu: mix.modu.save(),
                 synth: project::synth_text(&app.synth_settings(), &synth.sounds()),
                 arp: app.arp_part(),
+                instruments: project::instruments_text(&mix.instruments),
                 loops,
             })));
         }
