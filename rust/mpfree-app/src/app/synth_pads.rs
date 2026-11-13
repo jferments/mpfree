@@ -123,6 +123,9 @@ fn step_in<T: Copy + PartialEq>(all: &[T], now: T, d: i32) -> T {
     all[(at + d).clamp(0, all.len() as i32 - 1) as usize]
 }
 
+/// The Scale row's choice for Major (0 is Off; Chromatic is skipped).
+const MAJOR_CHOICE: usize = 1;
+
 impl App {
     /// The Scale row's choices: 0 is Off, then the built-in scales but
     /// Chromatic (which lays the pads out as Off does), then the owner's.
@@ -352,25 +355,48 @@ impl App {
     }
 
     /// The pads panel's Chromatic | In key switch (Jay, 12:22Z): the bank
-    /// playing takes In key (`in_key`) or Chromatic. In key needs a scale;
-    /// without one the pads stay Chromatic and a note says so.
+    /// playing takes In key (`in_key`) or Chromatic. In key needs a scale:
+    /// with none yet, the tap picks Major on the Scale root (the tap is the
+    /// opt-in; no key is forced before it), and the screen says which, so
+    /// the switch visibly works (live test 3). Every tap says what the pads
+    /// play now.
     pub fn synth_pick_layout(&mut self, in_key: bool) -> Vec<Effect> {
+        let mut picked = false;
         if in_key && self.synth_pads.scale.is_none() {
-            return vec![Effect::Note(
-                "pads: pick a scale first (MENU on the Synth tab, Scale)".to_string(),
-            )];
+            self.pad_scale_pick = MAJOR_CHOICE;
+            self.synth_pads.scale = self
+                .pad_scale_entry(MAJOR_CHOICE)
+                .map(|(_, up, down)| Scale::with_down(self.pad_scale_root, up, down));
+            picked = true;
         }
         let want = if in_key {
             PadLayout::InKey
         } else {
             PadLayout::Chromatic
         };
-        if self.synth_pads.layout() == want {
-            return Vec::new();
+        let scale = match self.pad_scale_entry(self.pad_scale_choice()) {
+            Some((name, ..)) => format!(
+                "{} {name}",
+                NOTE_NAMES[usize::from(self.pad_scale_root % 12)]
+            ),
+            None => "no scale".to_string(),
+        };
+        if self.synth_pads.layout() == want && !picked {
+            return vec![Effect::Tell(format!(
+                "pads: already {} ({scale})",
+                if in_key { "In key" } else { "Chromatic" }
+            ))];
         }
         self.synth_pads.set_layout(want);
         self.save_dirty = true;
-        vec![Effect::SynthPads(self.synth_pads)]
+        let line = if in_key && picked {
+            format!("pads: In key, {scale} (MENU on the Synth tab, Scale, changes it)")
+        } else if in_key {
+            format!("pads: In key, {scale}")
+        } else {
+            format!("pads: Chromatic ({scale} lit)")
+        };
+        vec![Effect::SynthPads(self.synth_pads), Effect::Tell(line)]
     }
 
     /// The pads take bank `bank`'s layout (0 = A to 7 = H): the PAD BANK

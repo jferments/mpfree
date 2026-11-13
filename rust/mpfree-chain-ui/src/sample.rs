@@ -800,6 +800,11 @@ mod tests {
         let l = ui.get::<ChainView>(crate::CHAIN).unwrap().layout(r);
         let add = l.add.unwrap();
         tap(&mut ui, add.x + 10, add.y + 10);
+        // The app hears the picker open, so its next state keeps it open.
+        assert_eq!(
+            crate::take_chain_actions(&mut ui),
+            [ChainAction::Picker(true)]
+        );
         let l = ui.get::<ChainView>(crate::CHAIN).unwrap().layout(r);
         assert!(ui.get::<ChainView>(crate::CHAIN).unwrap().state().picking);
         let picks = crate::state::picks(KEYS);
@@ -821,7 +826,7 @@ mod tests {
         );
         assert!(!ui.get::<ChainView>(crate::CHAIN).unwrap().state().picking);
         assert!(mpfree_fx_ui::make("mpfree.fx.cloud").is_some());
-        // Open again and cancel: no action.
+        // Open again and cancel: the app hears both.
         tap(&mut ui, add.x + 10, add.y + 10);
         let c = ui
             .get::<ChainView>(crate::CHAIN)
@@ -830,7 +835,10 @@ mod tests {
             .cancel
             .unwrap();
         tap(&mut ui, c.x + 5, c.y + 5);
-        assert!(crate::take_chain_actions(&mut ui).is_empty());
+        assert_eq!(
+            crate::take_chain_actions(&mut ui),
+            [ChainAction::Picker(true), ChainAction::Picker(false)]
+        );
         assert!(!ui.get::<ChainView>(crate::CHAIN).unwrap().state().picking);
         // Every pick is an effect the catalogue makes, with a line about it.
         for p in crate::state::picks(Strip::Master) {

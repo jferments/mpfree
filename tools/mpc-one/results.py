@@ -132,6 +132,9 @@ def run(name, cmd):
         def from_child(fd):
             data = os.read(fd, 65536)
             log.write(data)
+            # At once: a terminal closed mid-run used to lose the last 8 KB
+            # (live test 3).
+            log.flush()
             return data
 
         def from_user(fd):
