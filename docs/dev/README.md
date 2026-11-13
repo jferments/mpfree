@@ -1,5 +1,7 @@
 # MPFree developer documentation
 
+> **MPC One boot and firmware reference (2026-11-13):** Start with the [comprehensive MPC One Linux and Boot Architecture](hardware/mpc-one-boot-architecture.md), [hardware documentation index](hardware/README.md), [firmware 3.10.1 compatibility](hardware/firmware-3.10.1-compatibility.md) and [installer/recovery contract](hardware/installer-recovery-contract.md). Dated November hardware records are preserved [in the archive](hardware/archive/2026-11/README.md).
+
 For people who build MPFree: how it is designed, why, how to build and test it, and what we know about the MPC One's hardware. If you make music with MPFree, read the [user manual](../user/README.md) instead. Rules for AI agents working in this repository are in [docs/agents](../agents/README.md).
 
 Every design page opens with a **Status** line (proposal, approved, built, on main, ran on the device) and a date. Trust the code and the tests over a page whose status is old. When a pull request changes how something works, it updates its page here in the same PR ([how docs stay current](../agents/docs-system.md)).
