@@ -374,7 +374,10 @@ mod tests {
         // High is at 5.0 V already: the tap selects it and says why.
         let f = sec.field_rect("cv:4", 2, AREA).unwrap();
         tap(&mut sec, f.x + 10, f.y + 10);
-        assert_eq!(s.lock().unwrap().setup.cv[4], CvAssign::Run { volts: MAX_VOLTS });
+        assert_eq!(
+            s.lock().unwrap().setup.cv[4],
+            CvAssign::Run { volts: MAX_VOLTS }
+        );
         assert_eq!(
             sec.take_note().as_deref(),
             Some("CV 5 High is at its highest, 5.0 V high: - or Q-Link 3 lowers it")

@@ -647,6 +647,29 @@ impl RecTab {
                 st.can_flatten && !recording,
                 !recording,
             ];
+            let cannot = if !st.live {
+                OFF_NOTE
+            } else if st.target.is_none() {
+                "No empty pad left for a take"
+            } else {
+                "Wait for Flatten to finish"
+            };
+            b.why = vec![
+                cannot.to_string(),
+                if recording {
+                    "Stop the take first"
+                } else {
+                    cannot
+                }
+                .to_string(),
+                if recording {
+                    "Stop the take first"
+                } else {
+                    "Flatten needs a pad with a sound, and an empty pad to put it on"
+                }
+                .to_string(),
+                "Stop the take first".to_string(),
+            ];
         }
         self.sources = st.sources.clone();
         self.show_wheel(ui);

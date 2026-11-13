@@ -866,9 +866,58 @@ pub fn action(ev: &UiEvent, st: &TimeState) -> Option<TimeAction> {
                 _ => None,
             }
         }
-        (TAKES, EventKind::Tab(0)) => Some(TimeAction::Undo),
-        (TAKES, EventKind::Tab(1)) => Some(TimeAction::Redo),
-        (TAKES, EventKind::Tab(2)) => Some(TimeAction::Capture),
+        // Each only while it has something to do (it is faint otherwise).
+        (TAKES, EventKind::Tab(0)) => (!st.done.is_empty()).then_some(TimeAction::Undo),
+        (TAKES, EventKind::Tab(1)) => (!st.undone.is_empty()).then_some(TimeAction::Redo),
+        (TAKES, EventKind::Tab(2)) => st.capture.is_some().then_some(TimeAction::Capture),
+        _ => None,
+    }
+}
+
+/// Why a touch that [`action`] answers with nothing changes nothing, for
+/// the hint line: a faint button, or a setting already at its end (Jay, 13
+/// Nov: say in place when a press would send nothing).
+pub fn why_not(ev: &UiEvent, st: &TimeState) -> Option<String> {
+    let end = |delta: i32, low: &str, high: &str| {
+        if delta < 0 {
+            low.to_string()
+        } else {
+            high.to_string()
+        }
+    };
+    match (ev.widget.as_str(), &ev.kind) {
+        (MORPH, EventKind::Tab(0 | 1)) if !st.morph.on => {
+            Some("Move the crossfader first: Snap back and Keep work on a morph".to_string())
+        }
+        (TAKES, EventKind::Tab(0)) => Some("Nothing to undo yet".to_string()),
+        (TAKES, EventKind::Tab(1)) => Some("Nothing to redo: Undo something first".to_string()),
+        (TAKES, EventKind::Tab(2)) => {
+            Some("Nothing to capture yet: play the pads while not recording".to_string())
+        }
+        (SONG, EventKind::Tab(4 | 5)) if st.selected.is_none() => {
+            Some("Tap a block in the song first".to_string())
+        }
+        (RECORD, EventKind::Step { index: 2, delta }) => Some(end(
+            *delta,
+            "Count-in is off already",
+            &format!("Count-in is at its longest, {MAX_COUNT_IN} bars"),
+        )),
+        (RECORD, EventKind::Step { index: 3, delta }) => Some(end(
+            *delta,
+            "The loop is off already",
+            &format!(
+                "The loop is at its longest, {} bars",
+                LOOP_BARS[LOOP_BARS.len() - 1]
+            ),
+        )),
+        (RECORD, EventKind::Step { index: 4, delta }) => Some(end(
+            *delta,
+            &format!("The tempo is at its lowest, {MIN_BPM:.0} BPM"),
+            &format!("The tempo is at its highest, {MAX_BPM:.0} BPM"),
+        )),
+        (RECORD, EventKind::Step { index: 5, .. }) if st.armed.is_none() => {
+            Some("Arm a track first: pressure records on the armed track".to_string())
+        }
         _ => None,
     }
 }

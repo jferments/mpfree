@@ -484,6 +484,10 @@ pub struct ListView {
     pub title: String,
     pub items: Vec<ListItem>,
     pub selected: usize,
+    /// A tap only picks a row (the kit's sounds), so the row picked already
+    /// changes nothing when tapped. Off for lists whose tap loads (kits,
+    /// presets): a tap on the row playing loads it again.
+    pub picks_only: bool,
 }
 
 const ROW_H: i32 = 46;
@@ -494,6 +498,7 @@ impl ListView {
             title: title.to_string(),
             items: Vec::new(),
             selected: 0,
+            picks_only: false,
         }
     }
 
@@ -584,6 +589,7 @@ impl Widget for ListView {
             .map(|k| {
                 let row = Rect::new(body.x, body.y + (k - first) as i32 * ROW_H, body.w, ROW_H);
                 Target::tap("row", k, self.items[k].text.clone(), row)
+                    .disabled_if(self.picks_only && k == self.selected)
             })
             .collect()
     }
@@ -1308,7 +1314,8 @@ impl Widget for OptionList {
             let reach = OptionList::arrow_reach(row, value);
             let name = &self.rows[k].name;
             let pick = Rect::new(row.x, row.y, value.x - row.x, row.h);
-            out.push(Target::tap("row", k, name.clone(), pick));
+            // The row picked already: a tap picks nothing new.
+            out.push(Target::tap("row", k, name.clone(), pick).disabled_if(k == self.selected));
             let (less, rest) = value.take_left(reach);
             let more = rest.take_right(reach).0;
             out.push(Target::tap("row-less", k, format!("{name} ‹"), less));

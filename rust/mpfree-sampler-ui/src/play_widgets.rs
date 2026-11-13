@@ -256,7 +256,10 @@ impl Widget for LayerMap {
             // The middle picks the layer; each end drags its velocity edge.
             let mid = b.inset_xy(EDGE + 1, 0);
             if !mid.is_empty() {
-                out.push(Target::tap("layer", k, name.clone(), mid));
+                // The layer picked already: a tap picks nothing new.
+                out.push(
+                    Target::tap("layer", k, name.clone(), mid).disabled_if(k == self.selected),
+                );
             }
             let edge = |x: i32| Rect::new(x - EDGE / 2, b.y, EDGE, b.h);
             out.push(Target::drag("layer-low", k, format!("{name} low"), edge(b.x)).towards(20, 0));

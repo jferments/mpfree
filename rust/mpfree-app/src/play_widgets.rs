@@ -279,7 +279,7 @@ impl Widget for PlayTransport {
         let mut out: Vec<Target> = segs
             .iter()
             .enumerate()
-            .map(|(i, s)| Target::tap("view", i, VIEWS[i], *s))
+            .map(|(i, s)| Target::tap("view", i, VIEWS[i], *s).disabled_if(i == self.look.view))
             .collect();
         if let Some((pr, _, a)) = self.painted.borrow().as_ref() {
             if *pr == r && !a.bpm.is_empty() {

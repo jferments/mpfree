@@ -114,7 +114,8 @@ impl Widget for PadBar {
     fn targets(&self, r: Rect) -> Vec<Target> {
         (0..self.tabs.len())
             .map(|i| {
-                let on = self.enabled.get(i).copied().unwrap_or(false);
+                // Faint tabs, and the tab already open, change nothing.
+                let on = self.enabled.get(i).copied().unwrap_or(false) && i != self.active;
                 Target::tap("tab", i, self.tabs[i].clone(), self.tab_rect(r, i)).disabled_if(!on)
             })
             .collect()
@@ -138,7 +139,8 @@ impl Widget for PadBar {
 /// A Q-Link's card: a knob showing where its marker sits in the sound, the
 /// Q-Link's job, and the marker's position in bars and beats (or seconds).
 /// A tap gives [`EventKind::Select`]`(0)`; the page makes it the wheel's
-/// focus.
+/// focus. A tap on a faint card with a reason in `why` gives
+/// [`EventKind::Select`]`(1)`, for the page to say why.
 pub struct KnobCard {
     pub label: String,
     pub value: String,
@@ -151,6 +153,8 @@ pub struct KnobCard {
     pub focused: bool,
     /// Nothing for this Q-Link to move (a loop point without a loop).
     pub enabled: bool,
+    /// Why the card is faint, for the hint line; empty for no reason.
+    pub why: String,
 }
 
 /// The knob's arc: from 135° (down-left) round 270° to 45° (down-right).
@@ -167,6 +171,7 @@ impl KnobCard {
             color,
             focused: false,
             enabled: true,
+            why: String::new(),
         }
     }
 }
@@ -263,11 +268,19 @@ impl Widget for KnobCard {
     }
 
     fn targets(&self, r: Rect) -> Vec<Target> {
-        vec![Target::tap("card", 0, self.label.clone(), r).disabled_if(!self.enabled)]
+        // The card the wheel is on already: a tap changes nothing.
+        vec![Target::tap("card", 0, self.label.clone(), r)
+            .disabled_if(!self.enabled || self.focused)]
     }
 
     fn touch(&mut self, _f: u64, phase: Touch, _x: i32, _y: i32, _r: Rect) -> Option<EventKind> {
-        (phase == Touch::Down && self.enabled).then_some(EventKind::Select(0))
+        if phase != Touch::Down {
+            None
+        } else if self.enabled {
+            Some(EventKind::Select(0))
+        } else {
+            (!self.why.is_empty()).then_some(EventKind::Select(1))
+        }
     }
 }
 
@@ -404,12 +417,16 @@ impl Widget for SettingList {
                 continue;
             };
             let name = &self.rows[k].name;
-            out.push(Target::tap(
-                "row",
-                k,
-                name.clone(),
-                Rect::new(row.x, row.y, value.x - row.x, row.h),
-            ));
+            // The row picked already: a tap picks nothing new.
+            out.push(
+                Target::tap(
+                    "row",
+                    k,
+                    name.clone(),
+                    Rect::new(row.x, row.y, value.x - row.x, row.h),
+                )
+                .disabled_if(k == self.selected),
+            );
             out.push(Target::tap(
                 "row-less",
                 k,
@@ -495,11 +512,15 @@ impl Widget for InfoCard {
 
 /// A row of buttons sharing the width. A tap on an enabled button `i`
 /// gives [`EventKind::Tab`]`(i)`; the `primary` one is filled with the
-/// accent colour.
+/// accent colour. A tap on a faint one with a reason in `why` gives
+/// [`EventKind::Select`]`(i)`, for the page to say why.
 pub struct ButtonRow {
     pub labels: Vec<String>,
     pub enabled: Vec<bool>,
     pub primary: Option<usize>,
+    /// Why each faint button is faint, for the hint line (Jay, 13 Nov:
+    /// faint controls say why); empty for none.
+    pub why: Vec<String>,
 }
 
 const BUTTON_GAP: i32 = 8;
@@ -510,6 +531,22 @@ impl ButtonRow {
             labels: labels.iter().map(|s| s.to_string()).collect(),
             enabled: vec![true; labels.len()],
             primary: None,
+            why: Vec::new(),
+        }
+    }
+
+    /// Why button `i` is faint, if it is and there is a reason.
+    pub fn why_faint(&self, i: usize) -> Option<&str> {
+        let on = self.enabled.get(i).copied().unwrap_or(false);
+        let why = self
+            .why
+            .get(i)
+            .map(String::as_str)
+            .filter(|w| !w.is_empty());
+        if on {
+            None
+        } else {
+            why
         }
     }
 
@@ -579,11 +616,11 @@ impl Widget for ButtonRow {
             return None;
         }
         let i = (0..self.labels.len()).find(|&i| self.button_rect(r, i).contains(x, y))?;
-        self.enabled
-            .get(i)
-            .copied()
-            .unwrap_or(false)
-            .then_some(EventKind::Tab(i))
+        if self.enabled.get(i).copied().unwrap_or(false) {
+            Some(EventKind::Tab(i))
+        } else {
+            self.why_faint(i).map(|_| EventKind::Select(i))
+        }
     }
 }
 

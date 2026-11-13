@@ -109,6 +109,9 @@ pub fn sweep(screen: &str, p: &mut Player, fresh: &mut dyn FnMut() -> Player) ->
     let mut c = SoftCanvas::new(w, h);
     let page = p.page().to_string();
     let view = p.view();
+    // Painted first: some widgets (the top bar's chips, the Play page's
+    // transport) measure their controls when they draw.
+    snapshot(p, &mut c);
     let targets: Vec<PageTarget> = p.ui.targets();
     let mut rows = Vec::new();
     let mut last: Option<String> = None;
@@ -124,12 +127,21 @@ pub fn sweep(screen: &str, p: &mut Player, fresh: &mut dyn FnMut() -> Player) ->
                 *p = fresh();
             }
         }
-        // The control as it stands now (an earlier press may have moved it).
-        let now = p.ui.targets().into_iter().find(|o| {
-            o.widget == pt.widget
-                && o.target.id == pt.target.id
-                && o.target.index == pt.target.index
-        });
+        // The control as it stands now (an earlier press may have moved it,
+        // or taken it away: then on the screen as it first was).
+        let find = |p: &mut Player, c: &mut SoftCanvas| {
+            snapshot(p, c);
+            p.ui.targets().into_iter().find(|o| {
+                o.widget == pt.widget
+                    && o.target.id == pt.target.id
+                    && o.target.index == pt.target.index
+            })
+        };
+        let mut now = find(p, &mut c);
+        if now.is_none() {
+            *p = fresh();
+            now = find(p, &mut c);
+        }
         let Some(now) = now else {
             if debug() {
                 eprintln!(
@@ -146,20 +158,41 @@ pub fn sweep(screen: &str, p: &mut Player, fresh: &mut dyn FnMut() -> Player) ->
             });
             continue;
         };
-        let before = snapshot(p, &mut c);
-        let keys = target_keys(p);
-        let tells = p.tells();
-        let acts = press(p, &now.target);
-        let after = snapshot(p, &mut c);
-        let left = p.page() != page || target_keys(p) != keys;
+        // The control as last pressed: faint or not there.
+        let mut pressed = now.target.clone();
+        let (mut acts, mut changed, mut left) = press_and_see(p, &now.target, &page, &mut c);
+        if acts.is_empty() && !changed && !left && now.target.gesture == Gesture::Drag {
+            // A slider or knob at the end of its travel moves only the
+            // other way.
+            let mut back = now.target.clone();
+            back.towards = (-back.towards.0, -back.towards.1);
+            (acts, changed, left) = press_and_see(p, &back, &page, &mut c);
+        }
+        if acts.is_empty() && !changed && !left && now.target.enabled {
+            // Dead after the presses before it: once more on the screen as
+            // it first was, as a finger arriving fresh would find it (an
+            // earlier press may have left a selection or a zoom that this
+            // press only repeats).
+            *p = fresh();
+            snapshot(p, &mut c);
+            let first = p.ui.targets().into_iter().find(|o| {
+                o.widget == now.widget
+                    && o.target.id == now.target.id
+                    && o.target.index == now.target.index
+            });
+            if let Some(first) = first {
+                (acts, changed, left) = press_and_see(p, &first.target, &page, &mut c);
+                pressed = first.target;
+            }
+        }
         if left {
             last = Some(now.widget.clone());
         }
         let outcome = if !acts.is_empty() {
             Outcome::Acted(acts.iter().map(short).collect())
-        } else if before != after || left || p.tells() != tells {
+        } else if changed || left {
             Outcome::Shown
-        } else if !now.target.enabled {
+        } else if !pressed.enabled {
             Outcome::Off
         } else {
             Outcome::Dead
@@ -173,6 +206,23 @@ pub fn sweep(screen: &str, p: &mut Player, fresh: &mut dyn FnMut() -> Player) ->
         });
     }
     rows
+}
+
+/// Press `t` and see what came of it: the actions, whether the screen
+/// changed or told something, and whether the page (or its controls) went.
+fn press_and_see(
+    p: &mut Player,
+    t: &mpfree_ui::Target,
+    page: &str,
+    c: &mut SoftCanvas,
+) -> (Vec<FromUi>, bool, bool) {
+    let before = snapshot(p, c);
+    let keys = target_keys(p);
+    let tells = p.tells();
+    let acts = press(p, t);
+    let changed = snapshot(p, c) != before || p.tells() != tells;
+    let left = p.page() != page || target_keys(p) != keys;
+    (acts, changed, left)
 }
 
 fn debug() -> bool {
@@ -297,13 +347,23 @@ pub fn report(rows: &[Row]) -> String {
 mod tests {
     use super::*;
 
+    /// The sweep, once for the tests that read it (it takes a few
+    /// minutes in a debug build).
+    fn swept() -> &'static [Row] {
+        static ROWS: std::sync::OnceLock<Vec<Row>> = std::sync::OnceLock::new();
+        ROWS.get_or_init(|| {
+            let rows = sweep_all();
+            if let Ok(path) = std::env::var("MPFREE_AUDIT_OUT") {
+                std::fs::write(&path, report(&rows)).expect("the audit report is written");
+            }
+            rows
+        })
+    }
+
     /// Every control on every sample screen does something when pressed.
     #[test]
     fn every_control_on_every_screen_does_something() {
-        let rows = sweep_all();
-        if let Ok(path) = std::env::var("MPFREE_AUDIT_OUT") {
-            std::fs::write(&path, report(&rows)).expect("the audit report is written");
-        }
+        let rows = swept();
         let dead: Vec<&Row> = rows
             .iter()
             .filter(|r| r.outcome == Outcome::Dead)
@@ -324,5 +384,26 @@ mod tests {
             .collect();
         println!("{} controls pressed, {} dead", rows.len(), lines.len());
         assert!(lines.is_empty(), "dead controls:\n{}", lines.join("\n"));
+    }
+
+    /// Every kind of control the sweep finds is explained in the controls
+    /// catalogue (Jay, 13 Nov: "for every single button/control in the app,
+    /// you should have a clear explanation of what the UI control is for,
+    /// how it is supposed to be used, and an example workflow").
+    #[test]
+    fn every_swept_control_is_in_the_catalogue() {
+        let text = std::fs::read_to_string(catalogue::PATH).expect("docs/dev/guides/controls.md");
+        let listed = catalogue::keys(&text);
+        let mut missing: Vec<String> = swept()
+            .iter()
+            .map(Row::key)
+            .filter(|k| !listed.contains(k))
+            .collect();
+        missing.sort();
+        missing.dedup();
+        assert!(
+            missing.is_empty(),
+            "controls with no entry in docs/dev/guides/controls.md: {missing:?}"
+        );
     }
 }

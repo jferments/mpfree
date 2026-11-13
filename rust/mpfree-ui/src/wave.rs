@@ -179,6 +179,10 @@ pub struct Marker {
     pub frame: u64,
     pub label: String,
     pub kind: MarkerKind,
+    /// Stays put: its tab shows, a touch on it still comes as
+    /// [`EventKind::Marker`] (so the owner can say why), but a drag doesn't
+    /// move it.
+    pub fixed: bool,
 }
 
 impl Marker {
@@ -187,7 +191,14 @@ impl Marker {
             frame,
             label: label.to_string(),
             kind,
+            fixed: false,
         }
+    }
+
+    /// The same marker, staying put ([`Marker::fixed`]).
+    pub fn fixed(mut self) -> Marker {
+        self.fixed = true;
+        self
     }
 }
 
@@ -626,7 +637,10 @@ impl Widget for Waveform {
         let painted = self.painted.borrow();
         for (i, tab) in painted.tabs.iter().enumerate().take(self.markers.len()) {
             if let Some(t) = tab {
-                out.push(Target::drag("marker", i, self.markers[i].label.clone(), *t));
+                out.push(
+                    Target::drag("marker", i, self.markers[i].label.clone(), *t)
+                        .disabled_if(self.markers[i].fixed),
+                );
             }
         }
         out
@@ -697,6 +711,9 @@ impl Widget for Waveform {
                 }
                 match self.grab {
                     Some((g, Grab::Marker(i))) if g == finger => {
+                        if self.markers.get(i).is_some_and(|m| m.fixed) {
+                            return None;
+                        }
                         let f = self
                             .view
                             .frame_at(f64::from(x - wave.x))
@@ -857,7 +874,9 @@ impl Widget for WaveOverview {
         if self.peaks.is_none() {
             return Vec::new();
         }
-        vec![Target::tap("overview", 0, "overview", Self::inner(r))]
+        // Zoomed all the way out the view has nowhere to move.
+        let whole = self.shown.0 <= 0.0 && self.shown.1 >= self.frames() as f64;
+        vec![Target::tap("overview", 0, "overview", Self::inner(r)).disabled_if(whole)]
     }
 
     fn touch(&mut self, _finger: u64, phase: Touch, x: i32, _y: i32, r: Rect) -> Option<EventKind> {

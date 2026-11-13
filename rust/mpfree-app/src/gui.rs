@@ -86,6 +86,12 @@ pub const SYSLOG_LAYOUT: &str = "col(header:60, syslog:*, hint:26)";
 pub const SYSTEM_LAYOUT: &str = "col(header:60, row(syssw:*, syshw:*):*, hint:26)";
 pub const OPTIONS_LAYOUT: &str = "col(header:60, row(options:*, help:470):*, hint:26)";
 pub const GUIDE_LAYOUT: &str = "col(header:60, row(guide:*, found:400):*, hint:26)";
+/// The list of kits, over whatever page showed: a tap on the header's kit
+/// chip opens it (Jay's card, 13 Nov 14:57Z).
+pub const KITS_PAGE: &str = "Kits";
+pub const KITS_LAYOUT: &str = "col(header:60, row(kits:*, kits-card:400):*, hint:26)";
+const KITS_HINT: &str =
+    "Tap a kit: load it on the pads   ·   Back, the kit chip or a tab: close the list";
 
 const CONSOLE_HINT: &str =
     "Switch the MPC off with its power switch to return to the stock firmware";
@@ -586,6 +592,9 @@ pub enum FromUi {
     Workspace(Box<WsAction>),
     /// The arp chip in the header: open or close the panel.
     ArpChip,
+    /// The Full level or Half level chip in the header: the pads play as
+    /// hit again.
+    PadLevelOff,
     /// A touch on the transport bar or the Arrange page.
     Time(TimeAction),
     /// A change on the Synth page, for the synth on the audio thread.
@@ -800,6 +809,17 @@ pub struct Player {
     clock_from: Option<String>,
     /// The tempo chip's place among the header's chips, while it shows.
     tempo_chip: Option<usize>,
+    /// The kit chip's place among the header's chips: a tap opens the list
+    /// of kits over the page.
+    kit_chip: Option<usize>,
+    /// The Full level or Half level chip's place: a tap turns it off.
+    level_chip: Option<usize>,
+    /// The list of kits is open over the page (the kit chip); the view
+    /// underneath stays `view`.
+    kit_list: bool,
+    /// What each header chip that only shows (CPU, RAM, session, time
+    /// left) says when tapped, by its place; empty for the others.
+    chip_why: Vec<String>,
     /// Fingers on the screen: a page change lets go of them first, so a pad
     /// held on the screen never sticks.
     fingers: Vec<u64>,
@@ -865,6 +885,21 @@ impl Player {
         ui.add("loading", loading);
         ui.add(play_page::PADS, MiniPads::default());
         ui.add("kits", ListView::new("Kits"));
+        let mut kits_card = Card::new("Load a kit");
+        kits_card.heading = "Kits".to_string();
+        kits_card.lines = vec![
+            (
+                "Tap a kit to load it on the pads.".to_string(),
+                Tone::Normal,
+            ),
+            (
+                "The list closes and the page comes back.".to_string(),
+                Tone::Dim,
+            ),
+            ("Back keeps the kit that is playing.".to_string(), Tone::Dim),
+        ];
+        kits_card.buttons = vec!["Back".to_string()];
+        ui.add("kits-card", kits_card);
         ui.add("timing", StatList::new("Timing"));
         ui.add(play_page::TRANSPORT, PlayTransport::default());
         ui.add(play_page::MASTER, MasterBar::new());
@@ -900,6 +935,7 @@ impl Player {
         ui.add_page("Options", OPTIONS_LAYOUT)
             .expect("options layout");
         ui.add_page("Guide", GUIDE_LAYOUT).expect("guide layout");
+        ui.add_page(KITS_PAGE, KITS_LAYOUT).expect("kits layout");
         ui.add_page("System info", SYSTEM_LAYOUT)
             .expect("system info layout");
         let patterns = crate::app::built_in_patterns();
@@ -1014,6 +1050,10 @@ impl Player {
             arp_chip: None,
             clock_from: None,
             tempo_chip: None,
+            kit_chip: None,
+            level_chip: None,
+            kit_list: false,
+            chip_why: Vec::new(),
             fingers: Vec::new(),
             outbox: Vec::new(),
             time_page,
@@ -1599,6 +1639,18 @@ impl Player {
                     }),
                 )));
             }
+            Some(Turn::Pad(knob, _)) if self.sample.pad_knobs(self.play.last_pad).is_none() => {
+                // No sound on the pad: say so in place (its card shows "-").
+                let what = if knob == Knob::Tune {
+                    "tune"
+                } else {
+                    "shorten"
+                };
+                self.tell(&format!(
+                    "Pad {} has no sound to {what}: hit a pad with one, or load one on the Pads tab",
+                    self.play.last_pad + 1
+                ));
+            }
             Some(Turn::Pad(knob, d)) => {
                 let pad = self.play.last_pad;
                 let which = if knob == Knob::Tune {
@@ -1655,15 +1707,23 @@ impl Player {
         // The first chip sits at the right end (the mockups: the CPU, then
         // the kit). The session shows only when something is wrong with it.
         let mut chips = Vec::new();
+        // A tap on a chip that only shows says what it shows.
+        let mut why = Vec::new();
         if let Some((text, tone)) = self.engines.as_deref().and_then(crate::engines::cpu_chip) {
+            why.push(format!("{text}: how much of the processor the sound uses"));
             chips.push(Chip::new(text, tone));
         }
         if let Some(p) = self.ram_pct {
+            why.push(format!("RAM {p:.0} %: how much of the memory is in use"));
             chips.push(Chip::new(format!("RAM {p:.0} %"), ram_tone(p)));
         }
         if self.session.1 != Tone::Good || !self.ready {
+            why.push(format!("{}: the state of the audio session", self.session.0));
             chips.push(Chip::new(self.session.0.clone(), self.session.1));
         }
+        // A tap on the kit chip opens the list of kits (Jay's card, 13 Nov
+        // 14:57Z).
+        self.kit_chip = self.kits.get(self.kit).map(|_| chips.len());
         match self.kits.get(self.kit) {
             Some(KitView {
                 chip: Some(chip), ..
@@ -1703,15 +1763,24 @@ impl Player {
             self.arp_chip = Some(chips.len());
             chips.push(arp);
         }
-        let s = &self.status;
-        match s.pad_level {
-            PadLevel::Full => chips.push(Chip::new("Full level", Tone::Warn)),
-            PadLevel::Half => chips.push(Chip::new("Half level", Tone::Warn)),
-            PadLevel::Off => {}
+        // A tap on the level chip turns that level off (Jay's card, 13 Nov
+        // 14:57Z).
+        self.level_chip = None;
+        let level = match self.status.pad_level {
+            PadLevel::Full => Some("Full level"),
+            PadLevel::Half => Some("Half level"),
+            PadLevel::Off => None,
+        };
+        if let Some(text) = level {
+            self.level_chip = Some(chips.len());
+            chips.push(Chip::new(text, Tone::Warn));
         }
+        why.resize(chips.len(), String::new());
         if let Some(left) = self.timing.seconds_left {
+            why.push(format!("{left} s left in this timed run"));
             chips.push(Chip::new(format!("{left} s left"), Tone::Dim));
         }
+        self.chip_why = why;
         // Only when a chip changed: this runs every second, and the header
         // spans the screen, so redrawing it rewrites nearly every row of the
         // panel (it is mounted turned).
@@ -1738,7 +1807,9 @@ impl Player {
             Mode::Pattern => "pattern",
             Mode::Direct | Mode::Repeat => "rate",
         };
-        let text = if self.status.shift
+        let text = if self.kit_list {
+            KITS_HINT.to_string()
+        } else if self.status.shift
             && self.ready
             && matches!(self.view, View::Prefs | View::Options)
         {
@@ -2007,7 +2078,9 @@ impl Player {
         self.refresh_hint();
     }
 
-    /// How many times [`Player::tell`] has said something.
+    /// How many times [`Player::tell`] has said something (the smoke tests
+    /// count a told line as the press doing something).
+    #[cfg(test)]
     pub fn tells(&self) -> u64 {
         self.tells
     }
@@ -2667,6 +2740,8 @@ impl Player {
                 };
                 if let Some(a) = time_view::action(&ev, &self.time) {
                     self.outbox.push(FromUi::Time(a));
+                } else if let Some(why) = time_view::why_not(&ev, &self.time) {
+                    self.tell(&why);
                 }
             }
             ToUi::Quit => {}
@@ -3535,6 +3610,8 @@ impl Player {
 
     fn show_view(&mut self, v: View) {
         self.close_touch_page();
+        // Any page change closes the list of kits.
+        self.kit_list = false;
         let page = match v {
             View::Play if self.band_showing() && self.ready => QUICK_PAGE.to_string(),
             View::Play => self.play.view.page().to_string(),
@@ -3634,6 +3711,24 @@ impl Player {
         self.mark_tab();
         self.refresh_hint();
         self.refresh_qlinks();
+    }
+
+    /// The kit chip: the list of kits over the page, or the page again.
+    fn toggle_kit_list(&mut self) {
+        if self.kit_list {
+            self.show_view(self.view);
+            return;
+        }
+        self.close_touch_page();
+        self.switch_page(KITS_PAGE);
+        self.kit_list = true;
+        self.refresh_hint();
+    }
+
+    /// The list of kits is open over the page.
+    #[cfg(test)]
+    pub fn kit_list(&self) -> bool {
+        self.kit_list
     }
 
     /// The header highlights the page's tab, or none (Prefs, menus, the guide).
@@ -3889,7 +3984,17 @@ impl Player {
                 Some(FromUi::Pad { pad: index, down })
             }
             (play_page::PADS, EventKind::Tab(i)) => Some(FromUi::PadsLayout { in_key: i == 1 }),
-            ("kits", EventKind::Select(k)) => Some(FromUi::Kit(k)),
+            ("kits", EventKind::Select(k)) => {
+                if self.kit_list {
+                    self.show_view(self.view);
+                }
+                Some(FromUi::Kit(k))
+            }
+            // The list of kits' Back.
+            ("kits-card", EventKind::Tab(_)) => {
+                self.show_view(self.view);
+                None
+            }
             (play_page::TRANSPORT, EventKind::Select(crate::play_widgets::TAP_BPM)) => {
                 Some(FromUi::TapTempo)
             }
@@ -4013,6 +4118,18 @@ impl Player {
             ("options", EventKind::Step { index, delta }) => Some(FromUi::MenuStep(index, delta)),
             ("guide", EventKind::Tab(i)) => Some(FromUi::GuideButton(i)),
             ("header", EventKind::Select(i)) if Some(i) == self.arp_chip => Some(FromUi::ArpChip),
+            ("header", EventKind::Select(i)) if Some(i) == self.kit_chip => {
+                self.toggle_kit_list();
+                None
+            }
+            ("header", EventKind::Select(i)) if Some(i) == self.level_chip => {
+                Some(FromUi::PadLevelOff)
+            }
+            ("header", EventKind::Select(i)) if self.chip_why.get(i).is_some_and(|w| !w.is_empty()) => {
+                let why = self.chip_why[i].clone();
+                self.tell(&why);
+                None
+            }
             ("header", EventKind::Select(i)) if Some(i) == self.tempo_chip => {
                 // The I/O view at Sync; before the Sync section exists, the
                 // I/O view as it was left.
@@ -4029,10 +4146,15 @@ impl Player {
                 self.refresh_hint();
                 a.map(|a| FromUi::Workspace(Box::new(a)))
             }
-            (w, _) if w.starts_with("arp-") => self
-                .arp_panel
-                .action(&ev, &self.arp, &mut self.qlink_focus)
-                .map(FromUi::Arp),
+            (w, _) if w.starts_with("arp-") => {
+                let a = self.arp_panel.action(&ev, &self.arp, &mut self.qlink_focus);
+                if a.is_none() {
+                    if let Some(why) = self.arp_panel.why_not(&ev, &self.arp) {
+                        self.tell(why);
+                    }
+                }
+                a.map(FromUi::Arp)
+            }
             (
                 time_view::TRANSPORT
                 | time_view::CLIPS
@@ -4043,7 +4165,16 @@ impl Player {
                 | time_view::NOTES
                 | time_view::EDIT_OPTIONS,
                 _,
-            ) => time_view::action(&ev, &self.time).map(FromUi::Time),
+            ) => {
+                let a = time_view::action(&ev, &self.time);
+                // A faint button or a setting at its end says why in place.
+                if a.is_none() {
+                    if let Some(why) = time_view::why_not(&ev, &self.time) {
+                        self.tell(&why);
+                    }
+                }
+                a.map(FromUi::Time)
+            }
             _ => None,
         }
     }
@@ -5574,6 +5705,11 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     });
     out.push(("loading-failed", failed));
     out.push(("play", sample_player(fonts())));
+    // The list of kits the kit chip opens over the page (Jay's card, 13 Nov
+    // 14:57Z).
+    let mut kits = sample_player(fonts());
+    kits.toggle_kit_list();
+    out.push(("kits", kits));
     // The Play page's views, as mockups F to I.
     for (name, v) in [
         ("play-all-loop", PlayView::All),
@@ -11715,11 +11851,14 @@ mod tests {
         for (name, mut p) in sample_screens(Fonts::embedded) {
             let (w, h) = p.ui.size();
             let mut canvas = SoftCanvas::new(w, h);
-            // Settle: what the sample's set-up left to draw, and the
-            // first second's chips.
-            for _ in 0..40 {
+            // Settle: what the sample's set-up left to draw, the first
+            // second's chips, and a line the set-up told on the hint line
+            // (it goes back to the page's hint after TELL_SECONDS).
+            let mut settle = 0;
+            while settle < 40 || (p.told.is_some() && settle < 200) {
                 p.tick(0.033);
                 p.ui.paint(&mut canvas);
+                settle += 1;
             }
             let mut frames = 0;
             // Three seconds of frames with nothing happening.

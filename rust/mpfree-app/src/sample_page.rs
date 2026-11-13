@@ -405,6 +405,10 @@ pub struct SamplePage {
     renamed: Vec<usize>,
     /// The kit or pad changed since the page was last built.
     stale: bool,
+    /// The last touch's tab answered it with an action (see
+    /// [`SamplePage::event`]).
+    answered: bool,
+
     /// The wheel's push opened the picked row of the settings list: the
     /// wheel changes its value (`app::RowKey`). Kept here so a list made
     /// again (another pad or tab) shows it too.
@@ -547,6 +551,7 @@ impl SamplePage {
             cloud_shown: false,
             renamed: Vec::new(),
             stale: true,
+            answered: false,
             editing: false,
             dirty: Vec::new(),
             in_flight: false,
@@ -1266,6 +1271,7 @@ impl SamplePage {
                 None => left.push(self.pad_text(kit, pad)),
             }
         }
+        let mut mapped = !roots.is_empty();
         let what = if roots.is_empty() {
             "no pad has a note to map to keys (none in its name, no clear pitch)".to_string()
         } else {
@@ -1300,9 +1306,21 @@ impl SamplePage {
                     }
                     what
                 }
-                Err(e) => format!("not mapped to keys ({e:?})"),
+                Err(e) => {
+                    mapped = false;
+                    format!("not mapped to keys ({e:?})")
+                }
             }
         };
+        // On the hint line too when nothing was mapped: nothing else on the
+        // screen changes then. A mapping shows itself on the keys.
+        if !mapped {
+            let mut told = what.clone();
+            if let Some(c) = told.get_mut(0..1) {
+                c.make_ascii_uppercase();
+            }
+            self.told.push(told);
+        }
         let kit = self.kit_text_of(kit);
         self.lines.push(format!("sample: {kit}: {what}"));
     }
@@ -1362,7 +1380,52 @@ impl SamplePage {
     /// A touch on one of the editor's widgets. Taps that play the pad go
     /// in `out`, for the audio thread.
     pub fn event(&mut self, ui: &mut Ui, ev: &UiEvent, out: &mut Vec<FromUi>) {
+        let before = touched_row(ui, ev);
+        let card = touched_card(ui, ev);
+        // A faint button or Q-Link card tapped: why it is faint, and nothing
+        // else.
+        if let EventKind::Select(i) = ev.kind {
+            let card = ui
+                .get::<mpfree_sampler_ui::widgets::KnobCard>(&ev.widget)
+                .filter(|c| i == 1 && !c.enabled)
+                .map(|c| c.why.clone());
+            let why = ui
+                .get::<mpfree_sampler_ui::widgets::ButtonRow>(&ev.widget)
+                .and_then(|b| b.why_faint(i))
+                .map(str::to_string)
+                .or(card);
+            if let Some(why) = why {
+                self.told.push(why);
+                return;
+            }
+        }
+        self.answered = false;
         self.event_on(ui, ev, out);
+        // A tap on a Q-Link card the wheel can't move to (the Chop tab's):
+        // what the card is for.
+        if let Some((label, focused)) = card {
+            if !self.answered
+                && self.told.is_empty()
+                && touched_card(ui, ev).is_some_and(|(_, now)| now == focused)
+            {
+                self.told
+                    .push(format!("{label}: turn the knob on the MPC to change it"));
+            }
+        }
+        // A step on a settings row that nothing answered and that left the
+        // row as it was says so in place (Jay, 13 Nov).
+        if let Some((row, delta)) = before {
+            if !self.answered
+                && self.told.is_empty()
+                && touched_row(ui, ev).is_some_and(|(now, _)| now == row)
+            {
+                let way = if delta < 0 { "lower" } else { "higher" };
+                self.told.push(format!(
+                    "{} stays {}: it goes no {way} here",
+                    row.name, row.value
+                ));
+            }
+        }
         // The FX tab: the chain editor on the pad's channel, in the page's
         // place (the audio loop owns the mixer it edits).
         if let Some(pad) = self.fx_open.take() {
@@ -1385,7 +1448,11 @@ impl SamplePage {
             let (Some(tab), Some(st)) = (self.chop.as_mut(), self.chop_state.as_ref()) else {
                 return;
             };
-            if let Some(a) = tab.action(ui, ev, st) {
+            let a = tab.action(ui, ev, st);
+            if let Some(note) = tab.take_note() {
+                self.told.push(note);
+            }
+            if let Some(a) = self.took(a) {
                 self.act_chop(ui, a, out);
             }
             return;
@@ -1394,7 +1461,8 @@ impl SamplePage {
             let (Some(tab), Some(st)) = (self.play.as_mut(), self.play_state.as_ref()) else {
                 return;
             };
-            if let Some(a) = tab.action(ui, ev, st) {
+            let a = tab.action(ui, ev, st);
+            if let Some(a) = self.took(a) {
                 self.act_play(ui, a, out);
             }
             return;
@@ -1403,7 +1471,8 @@ impl SamplePage {
             let (Some(tab), Some(st)) = (self.grain.as_mut(), self.grain_state.as_ref()) else {
                 return;
             };
-            if let Some(a) = tab.action(ui, ev, st) {
+            let a = tab.action(ui, ev, st);
+            if let Some(a) = self.took(a) {
                 self.act_grain(ui, a);
             }
             return;
@@ -1412,7 +1481,8 @@ impl SamplePage {
             let (Some(tab), Some(st)) = (self.rec.as_mut(), self.rec_state.as_ref()) else {
                 return;
             };
-            if let Some(a) = tab.action(ui, ev, st) {
+            let a = tab.action(ui, ev, st);
+            if let Some(a) = self.took(a) {
                 self.act_rec(ui, a);
             }
             return;
@@ -1421,7 +1491,8 @@ impl SamplePage {
             let (Some(tab), Some(st)) = (self.auto.as_mut(), self.auto_state.as_ref()) else {
                 return;
             };
-            match tab.action(ui, ev, st) {
+            let a = tab.action(ui, ev, st);
+            match self.took(a) {
                 Some(a) => self.act_auto(ui, a),
                 // A row stepped: the pads it would go onto follow.
                 None => self.refresh_auto_state(ui),
@@ -1432,7 +1503,8 @@ impl SamplePage {
             let (Some(tab), Some(st)) = (self.warp.as_mut(), self.state.as_ref()) else {
                 return;
             };
-            if let Some(a) = tab.action(ui, ev, st) {
+            let a = tab.action(ui, ev, st);
+            if let Some(a) = self.took(a) {
                 self.act(ui, a, out);
             }
             return;
@@ -1441,7 +1513,11 @@ impl SamplePage {
             let (Some(tab), Some(st)) = (self.pads.as_mut(), self.pads_state.as_ref()) else {
                 return;
             };
-            if let Some(a) = tab.action(ui, ev, st) {
+            let a = tab.action(ui, ev, st);
+            if let Some(note) = tab.take_note() {
+                self.told.push(note);
+            }
+            if let Some(a) = self.took(a) {
                 self.act_pads(ui, a, out);
             }
             return;
@@ -1449,9 +1525,16 @@ impl SamplePage {
         let (Some(tab), Some(st)) = (self.tab.as_mut(), self.state.as_ref()) else {
             return;
         };
-        if let Some(a) = tab.action(ui, ev, st) {
+        let a = tab.action(ui, ev, st);
+        if let Some(a) = self.took(a) {
             self.act(ui, a, out);
         }
+    }
+
+    /// Notes whether a tab answered the touch with an action.
+    fn took<T>(&mut self, a: Option<T>) -> Option<T> {
+        self.answered = a.is_some();
+        a
     }
 
     /// A press on the buttons beside the bar ([`send::BUTTONS`]).
@@ -3836,11 +3919,15 @@ impl SamplePage {
                 if let Some(d) = self.dirty.get_mut(kit) {
                     *d = true;
                 }
-                self.lines.push(format!(
-                    "sample: {name}: scene {} stored ({n} pad{})",
+                let what = format!(
+                    "{} stored ({n} pad{})",
                     ["A", "B"][k],
                     if n == 1 { "" } else { "s" }
-                ));
+                );
+                // On the hint line too: storing again changes nothing else
+                // on the screen.
+                self.told.push(format!("Scene {what}"));
+                self.lines.push(format!("sample: {name}: scene {what}"));
             }
             SceneAction::Store(_) => {}
             SceneAction::Fade(x) => {
@@ -4273,6 +4360,29 @@ fn read_one(path: &Path) -> Loaded {
         .unwrap_or_default();
     let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
     sound_file::read(&name, &bytes)
+}
+
+/// The Q-Link card a tap touches: its label and whether the wheel is on it.
+fn touched_card(ui: &Ui, ev: &UiEvent) -> Option<(String, bool)> {
+    if !matches!(ev.kind, EventKind::Select(_)) {
+        return None;
+    }
+    let c = ui.get::<mpfree_sampler_ui::widgets::KnobCard>(&ev.widget)?;
+    Some((c.label.clone(), c.focused))
+}
+
+/// The settings row a step touches (its name and value as shown), and the
+/// step's way.
+fn touched_row(ui: &Ui, ev: &UiEvent) -> Option<(mpfree_sampler_ui::widgets::Setting, i32)> {
+    let EventKind::Step { index, delta } = ev.kind else {
+        return None;
+    };
+    let row = ui
+        .get::<mpfree_sampler_ui::widgets::SettingList>(&ev.widget)?
+        .rows
+        .get(index)?
+        .clone();
+    Some((row, delta))
 }
 
 #[cfg(test)]

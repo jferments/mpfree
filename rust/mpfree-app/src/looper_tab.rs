@@ -864,7 +864,10 @@ impl Widget for LoopEditor {
             .into_iter()
             .enumerate()
             .map(|(i, b)| {
-                let (label, on) = self.tools.get(i).map_or((String::new(), false), |t| (t.0.clone(), t.1));
+                let (label, on) = self
+                    .tools
+                    .get(i)
+                    .map_or((String::new(), false), |t| (t.0.clone(), t.1));
                 Target::tap("tool", i, label, b).disabled_if(!on)
             })
             .collect();
@@ -1357,7 +1360,9 @@ impl Widget for UseLoop {
         self.row_rects(r)
             .into_iter()
             .enumerate()
-            .map(|(i, rr)| Target::tap("use", i, self.rows[i].0.clone(), rr).disabled_if(!self.rows[i].2))
+            .map(|(i, rr)| {
+                Target::tap("use", i, self.rows[i].0.clone(), rr).disabled_if(!self.rows[i].2)
+            })
             .collect()
     }
 

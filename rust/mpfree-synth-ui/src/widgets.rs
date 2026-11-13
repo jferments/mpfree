@@ -247,7 +247,11 @@ impl Widget for TitleBar {
 
     fn targets(&self, r: Rect) -> Vec<Target> {
         (0..self.tabs.len())
-            .map(|i| Target::tap("tab", i, self.tabs[i].clone(), self.tab_rect(r, i)))
+            // The page shown: a tap shows nothing new.
+            .map(|i| {
+                Target::tap("tab", i, self.tabs[i].clone(), self.tab_rect(r, i))
+                    .disabled_if(i == self.active)
+            })
             .collect()
     }
 
@@ -485,12 +489,16 @@ impl Widget for Visuals {
             let cr = self.card_rect(r, i);
             let p = Visuals::plot_rect(cr);
             // The card's title line picks the card; a box on it picks that box.
-            out.push(Target::tap(
-                "card",
-                i,
-                c.title.clone(),
-                Rect::new(cr.x, cr.y, cr.w, (p.y - cr.y).max(8)),
-            ));
+            // The card of the page shown (marked) has nothing new to show.
+            out.push(
+                Target::tap(
+                    "card",
+                    i,
+                    c.title.clone(),
+                    Rect::new(cr.x, cr.y, cr.w, (p.y - cr.y).max(8)),
+                )
+                .disabled_if(c.active),
+            );
             for (k, n) in c.nodes.iter().enumerate() {
                 out.push(Target::tap(
                     "node",

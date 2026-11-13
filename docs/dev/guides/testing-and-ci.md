@@ -8,6 +8,7 @@ meant to grow. Status as of 2026-11-11.
 | Tier | What it proves | Where it runs | Who starts it |
 | --- | --- | --- | --- |
 | Unit and crate tests | Each crate's logic: engines, DSP, parsers, UI layout and drawing | `cargo test` in `rust/`; CI on every PR | Anyone, CI |
+| GUI smoke | Every control on every screen does something; random and scripted sequences of controls keep the screen and the engines together (below) | `cargo test -p mpfree-app` (`smoke`); CI on every PR | Anyone, CI |
 | Host integration | Whole programs with no hardware: headless engine with null audio, session offline check, groove and sampler WAV renders, display previews, C++/Rust WAV parity | CI's `core` and `rust` jobs | CI |
 | ARMv7 under qemu | The device build: static ARM binaries, ABI layouts against the kernel's headers, the app and UI tests as 32-bit ARM, preview screens | CI's `rust` job | CI |
 | Device tools offline | Survey, backup, kexec and update tools against fake MPCs, fake images and BusyBox | CI's `syntax` job | CI |
@@ -93,6 +94,61 @@ cd rust && cargo llvm-cov --workspace --all-targets --locked --no-report
 cargo llvm-cov report --json --summary-only --output-path /tmp/cov.json
 python3 ../tools/ci/coverage_summary.py /tmp/cov.json
 ~~~
+
+## GUI smoke tests
+
+Jay asked on 13 Nov 2026 for every button to do something when touched,
+and for the sequences and combinations of controls musicians use to be
+tested, not only single presses. Three kinds of test in
+`rust/mpfree-app/src/smoke/` do that, all without a device. They press
+controls as a finger would, through the same touch path as the
+touchscreen, using the list of controls each widget gives
+(`Widget::targets`, see [UI architecture](../design/ui-architecture.md#controls-and-the-smoke-tests)).
+
+- **The sweep** (`smoke.rs`, `every_control_on_every_screen_does_something`)
+  opens every sample screen and presses every control on it: a tap, a
+  drag or a long press, as the control says. A press passes when it sends
+  an action to the app or the audio thread, changes the screen, or says
+  something on the hint line. A drag that does nothing is tried the other
+  way (a slider at its end), and a press that does nothing after the ones
+  before it is tried again on the screen as it first was. A control drawn
+  faint, or already lit (the tab or row picked), may do nothing; any other
+  that does nothing fails the test by name. `catalogue::KNOWN_DEAD` lists
+  controls that may do nothing for now, each with who builds it; it is
+  empty. `MPFREE_AUDIT_OUT=<file>` writes the whole report, one row per
+  control. The sweep paints each screen before listing its controls,
+  because some widgets (the top bar's chips) measure them when they draw.
+- **The catalogue check** (`every_swept_control_is_in_the_catalogue`)
+  reads the same sweep (it runs once for both tests) and fails on any
+  `widget/id` the [controls catalogue](controls.md) doesn't explain. A new
+  kind of control needs its entry there in the same pull request.
+- **Random walks** (`smoke/walk.rs`) start a whole session (the screen,
+  the app, the mixer, the time engine, the looper, the chain editor) and
+  take seeded random steps: a control on the page, a hardware button
+  (alone or with SHIFT), the wheel, a pad, or time passing. After each step
+  the checks in `walk::check` must hold: the page the screen shows is the
+  app's, the transport and tempo on screen are the time engine's, the
+  master bar shows the Level, the step grid shows the clip and the mutes,
+  the chain editor shows the mixer's chain, and more. A failure names the
+  seed and every step. `MPFREE_WALK_SEED=<n>` walks one seed again,
+  `MPFREE_WALKS` and `MPFREE_WALK_STEPS` walk more or longer, and
+  `MPFREE_WALK_OUT=<file>` writes the presses that did nothing. One walk
+  covers every page; the other stays on the mixer's FX pages.
+- **Workflows** (`smoke/workflows.rs`) script what a musician does, step by
+  step, and check each step against the engine, not only the screen: an
+  insert added on the mixer, bypassed, moved and removed; a knob given to a
+  macro; steps tapped on Beats playing in time; REC and Undo; mutes from
+  the Play page, the pad mixer and TRACK MUTE; the synth staying on the pads;
+  the tempo tapped; the master level from both ends; the kit from the
+  wheel and from the kit chip; Full level turned off from its chip. A new
+  feature a musician uses gets a workflow here.
+
+`Session` (`smoke/session.rs`) is the test harness: the screen and every
+engine wired together as `main.rs` wires them, run in simulated time
+(`run_for`), with helpers to press a control by widget, id and label
+(`press`), press a hardware button (`button`, `button_with`), turn the wheel
+or a Q-Link, and hit a pad. The routing from screen to engines is shared
+with `main.rs` (`desk.rs`), so the tests drive the real code.
 
 ## Rules for changes
 
