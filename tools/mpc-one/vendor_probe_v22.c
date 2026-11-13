@@ -203,6 +203,9 @@ static int v22_registered_write(const char *name){
     return result(name,ok,
         "actual-U-Boot-registered-write-handler-with-low-level-transport-stubbed");
 }
+#ifdef MPFREE_V23_WRAPPING
+#define main mpfree_v22_legacy_main
+#endif
 int main(int argc,char **argv){
     if(argc!=3){
         fputs("usage: vendor_probe_v22 CASE SHA-verified-owner-P3.raw\n",stderr);
@@ -218,3 +221,7 @@ int main(int argc,char **argv){
     if(!strncmp(argv[1],"v22_write_",10))return v22_registered_write(argv[1]);
     return result(argv[1],false,"unknown-v22-case");
 }
+
+#ifdef MPFREE_V23_WRAPPING
+#undef main
+#endif
