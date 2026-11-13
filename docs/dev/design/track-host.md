@@ -1,6 +1,6 @@
 # Track host: each track's instrument into its mixer track
 
-**Status:** 2026-11-11, host-only and tested. The code is [`rust/mpfree-track`](../../../rust/mpfree-track). Nothing calls it yet: the pad player still holds its synth itself ([Synths](synths.md), "In the pad player"). Wiring it into the pad player is the next step and is shared with the Hello MPC work, which owns the app.
+**Status:** 2026-11-13, in the app: each sequencer track can play its own instrument, a copy of a built-in engine or a plugin synth (see [In the app](#in-the-app)). The code is [`rust/mpfree-track`](../../../rust/mpfree-track), and the app's side is [`rust/mpfree-app/src/instruments.rs`](../../../rust/mpfree-app/src/instruments.rs). The pads' shared synth ([Synths](synths.md), "In the pad player") still plays as before for a track without one.
 
 The track host sits between the notes and the mixer. The sequencer, the pads and the arp send it notes; it plays each track's instrument and adds the sound into that track's mixer input. Effects aren't in it: every mixer strip has its own insert chain ([FX](fx.md)).
 
@@ -71,8 +71,28 @@ On the 4-core cloud workstation VM (release build, 2026-11-11), the host alone t
 - `tests/host.rs`: a slot plays into its own track and only there, and routing moves it; a note held by two sources ends with the last of them; the same events give the same samples in blocks of 1, 31, 64, 128 and 1000 frames; a swapped-out instrument rings out, goes quiet and comes back to be dropped; STOP silences every slot within 10 ms; a slot's tuning reaches its instrument and the next one swapped in (bit-identical to a Poly tuned directly, the other slot unchanged), and a change while a note sounds retunes it; a node that outputs NaN is reset and counted; a full queue counts what it drops, and long blocks are counted; Poly and FM go through the real mixer and out of the master.
 - `tests/no_alloc.rs`: 3000 periods of notes, sequencer notes, parameters, tunings, swaps, `AllOff` and STOP with Poly and FM into the real mixer, under a counting allocator. The audio thread's part makes no allocation and no free.
 
+## In the app
+
+[`rust/mpfree-app/src/instruments.rs`](../../../rust/mpfree-app/src/instruments.rs) wraps a `TrackHost` with one slot per sequencer track (`mpfree_seq::MAX_TRACKS`). Jay's call (13 Nov): every track holds its own instrument, picked on the Synth tab for the selected (armed) track, rather than one plugin engine on the shared synth.
+
+- **Routing.** Slot `t` plays sequencer track `t` into mixer track `TRACKS + t`, after Drums, Synth, Loop and Audio (`mixing.rs`). The mixer is made with all of them; `MixHost::poll_state` shows a track's channel ("Track 1") only while its slot holds or rings out an instrument (`Instruments::in_use`).
+- **Notes in.** `SeqPads` (`main.rs`) sends a track's notes to its slot when the slot holds one: clip events in `out` (`clip_own`: pads are mapped to notes with the slot's own pad map; pressure goes to every note the pad plays) and the hardware pads and per-track arps in `live` (`live_own`). A pad's notes are remembered as they start, so a pad lifted after the layout changed ends what it started. A track without an instrument goes to the sampler or the shared synth as before. STOP and `AllOff` reach every slot.
+- **Picking.** The Synth tab's top options row, "Track N instrument" (`app/synth_pads.rs`), steps Kit, the five engines (`Engine::node_id`), then the plugin synths the rack found (`Rack::instruments`), and gives `Effect::TrackSound`. An engine starts as a copy of the shared synth's sound for that engine (`Synth::sound_of`, `synth::fresh_node`); a plugin is made by the rack, in its own process.
+- **Off the audio thread.** The builder thread makes the instrument (`control::make_instrument`, `Instrument::new` allocates and a plugin waits for its process), and the audio loop puts it in with `swap` between periods (`MixHost::poll_instruments`). The old one rings out; `pop_retired` hands it back and it is dropped on the builder thread. `MadeInstrument` carries a plain `Tuning`, so nothing the audio loop drops frees memory. If the builder is busy, the pick is refused, said on screen in place of the hint (`ToUi::Tell`) and in the log, and the row is set back.
+- **The Synth tab** shows and edits the selected track's own instrument (`Synth::state_of`, labelled "Track N"). A knob goes straight to the slot (`Instruments::param`). A preset is loaded into a scratch copy (`Synth::preset_values`) and given to the track as a new instrument, so the old sound rings out. The pad layout, octave and tuning follow the shared Synth options for every slot.
+- **Counted.** The 30 s status adds `status: tracks' own instruments: track 1 Poly (N notes, N dropped, N resets), ...` and how many swaps were refused. A plugin that can't be made is said on screen and in the log, and the track keeps what it had.
+- **Tests.** `instruments.rs` (an empty track plays nothing; an instrument plays into its own channel; a pad ends its notes after the map changed; a clip and a held pad end with the last; a track takes a copy of the Synth tab's sound; emptying rings out and hands the instrument back) and `rt_safety.rs` (Poly on track 1 plays a clip with no allocation on the audio thread, and the mixer shows its channel with a peak; live pads on a track with an instrument play it, not the sampler).
+
+Not yet:
+
+- A track's instrument isn't in the project file yet (the project save's next part). Opening a project or New empties every slot (`FromUi::OpenProject` in `main.rs`, with a log line), and after a restart every track plays the kit.
+- The Synth tab's meters and the knob log line follow the shared synth, not a track's own instrument.
+- The slots render on the main audio core, not the sound cores.
+- CV out for a track with its own instrument uses the shared pad notes.
+
 ## Next
 
-- Wire it into the pad player with the Hello MPC work: the Synth tab's instrument moves into a slot, the pads and the arp send to it, and the sequencer's tracks get their destinations.
-- New engines (the drum and pluck synths, the wavetable synth) arrive as instruments in slots; the mod matrix and macros drive them through `param`.
-- Plugin hosting: a CLAP plugin, in-process or sandboxed, in a slot ([Plugins](plugins.md)).
+- Save each track's instrument and its state in the project.
+- Show and change a track's instrument beside it on the Play and Arrange pages (agreed with Jay, 13 Nov).
+- Per-step locks on a track instrument's parameters through `param`, the mod matrix and macros.
+- Move the slots onto the sound cores when their cost needs it.

@@ -5276,6 +5276,7 @@ pub fn apply_effects(p: &mut Player, fx: Vec<crate::app::Effect>) {
             | Effect::Looper(_)
             | Effect::SavePatterns(_)
             | Effect::SynthPads(_)
+            | Effect::TrackSound { .. }
             | Effect::ProgEdit
             | Effect::Metronome { .. }
             | Effect::Fill(_)
@@ -5465,6 +5466,53 @@ fn sample_app() -> crate::app::App {
     ) = (Some(90), Some(91), Some(92), Some(93));
     app.start();
     app
+}
+
+/// The mixer's Tracks view over the real mixer with tracks 1 and 2 playing
+/// their own instruments (Poly, FM): a chord each for a few periods, the
+/// costs fixed so the picture is the same on every run.
+fn sample_instrument_mixer(synth: &crate::synth::Synth) -> mpfree_mixer_ui::MixState {
+    use crate::synth::Engine;
+    let mut mix = crate::mixing::MixHost::new(44_100, -18.0, -12.0);
+    let plugins = std::sync::Arc::clone(mix.plugins());
+    for (track, engine, notes) in [
+        (0usize, Engine::Poly, [57u8, 60, 64]),
+        (1, Engine::Fm, [45, 52, 57]),
+    ] {
+        let (id, values) = synth.sound_of(engine);
+        let made = crate::instruments::make(&plugins, id, &values, 44_100, crate::PERIOD);
+        let _ = mix.instruments.put(track, made, synth.pads_for(engine));
+        for n in notes {
+            mix.instruments.note_on(track, n, 100, 0);
+        }
+    }
+    let silent = [0f32; crate::PERIOD];
+    let (mut l, mut r) = ([0f32; crate::PERIOD], [0f32; crate::PERIOD]);
+    for k in 0..40u64 {
+        let ctx = mpfree_node::Ctx::new(44_100, k * crate::PERIOD as u64);
+        mix.period(
+            &ctx,
+            (&silent, &silent),
+            (&silent, &silent),
+            (&silent, &silent),
+            (&silent, &silent),
+            &mut l,
+            &mut r,
+        );
+    }
+    mix.show(Some(mpfree_mixer_ui::MixView::Tracks));
+    let mut st = mix
+        .poll_state(std::time::Instant::now())
+        .expect("the mixer shows");
+    st.selected = Some(mpfree_fx::StripId::Track(crate::mixing::TRACKS + 1));
+    st.cost_pct = st.cost_pct.map(|_| 12.0);
+    for (k, v) in st.strips.iter_mut().chain([&mut st.master]).enumerate() {
+        v.cost_pct = v.cost_pct.map(|_| 0.5 + k as f32 * 0.25);
+        for i in &mut v.inserts {
+            i.cost_pct = i.cost_pct.map(|_| 1.5);
+        }
+    }
+    st
 }
 
 /// Every screen of the pad player with sample contents, as (name, player
@@ -6108,6 +6156,47 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     fx.extend(a.select(3));
     apply_effects(&mut options, fx);
     out.push(("synth-options", options));
+    // The Instrument row on track 2 stepped past the engines to a plugin
+    // synth (two found), its help open.
+    let mut inst = sample_player(fonts());
+    let mut a = sample_app();
+    a.plugin_synths = vec![
+        ("clap:com.example.dexed", "Dexed"),
+        ("clap:com.example.surge-xt", "Surge XT"),
+    ];
+    a.set_track(1);
+    let mut fx = a.open_tab(View::Synth);
+    fx.extend(a.button(mpfree_controller::mpc_one::button::MENU, true, 0.0));
+    fx.extend(a.button(mpfree_controller::mpc_one::button::MENU, false, 0.0));
+    // Kit, the engines, Dexed, Surge XT.
+    for _ in 0..crate::synth::Engine::ALL.len() + 2 {
+        fx.extend(a.step_item(0, 1));
+    }
+    fx.extend(a.select(0));
+    apply_effects(&mut inst, fx);
+    out.push(("synth-instrument", inst));
+    // The Synth tab on track 2's own FM, its second preset loaded.
+    let mut own = sample_player(fonts());
+    let (id, values) = fm
+        .preset_values(crate::synth::Engine::Fm, 1)
+        .map(|(_, v)| (crate::synth::Engine::Fm.node_id(), v))
+        .unwrap_or_else(|| fm.sound_of(crate::synth::Engine::Fm));
+    if let Some(node) = crate::synth::fresh_node(id, &values, 44_100) {
+        own.apply(ToUi::Synth(fm.state_of(
+            node.as_ref(),
+            Some(crate::synth::Engine::Fm),
+            "Track 2",
+            Some(1),
+        )));
+    }
+    own.apply(ToUi::Show(View::Synth));
+    out.push(("synth-track", own));
+    // The mixer with two tracks playing their own instruments (Poly on
+    // track 1, FM on track 2): their channels after Drums, Synth, Loop and Audio.
+    let mut mixer = sample_player(fonts());
+    mixer.apply(ToUi::Show(View::Mixer));
+    mixer.apply(ToUi::Mixer(Box::new(sample_instrument_mixer(&fm))));
+    out.push(("mixer-instruments", mixer));
     // The Sample page: the loop on kit 1's pad 5, then zoomed round the
     // loop start after a Q-Link 3 turn, then a pad without a sound, then
     // the Chop tab.

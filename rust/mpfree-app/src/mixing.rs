@@ -55,6 +55,7 @@ use mpfree_node::{Ctx, Node, NodeEvent, Timed};
 use mpfree_play::mpfree_param::{Owner, ParamAddr};
 use mpfree_sampler::engine::PadOut;
 
+use crate::instruments::{self, Instruments};
 use crate::plugins::Plugins;
 use crate::PERIOD;
 use mpfree_fx::ids::perform as perf;
@@ -172,6 +173,7 @@ pub fn name(s: StripId) -> String {
         StripId::Track(SYNTH) => "Synth".into(),
         StripId::Track(LOOP) => "Loop".into(),
         StripId::Track(AUDIO) => "Audio".into(),
+        StripId::Track(t) if t >= TRACKS => format!("Track {}", t - TRACKS + 1),
         LINE => "Line in".into(),
         s => default_name(s),
     }
@@ -205,6 +207,21 @@ pub struct MixHost {
     plugins: Arc<Plugins>,
     /// A project's mixer being swapped in ([`MixHost::open`]).
     opening: Option<Box<Open>>,
+    /// Each track's own instrument (instruments.rs), rendered into its
+    /// mixer track before the mixer runs.
+    pub instruments: Instruments,
+    /// Instruments made without a builder (the tests), waiting to go in.
+    made: Vec<crate::control::MadeInstrument>,
+}
+
+/// What [`MixHost::poll_instruments`] put in (or couldn't) for the log.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Landed {
+    /// Track `track` now plays `name`.
+    Playing { track: usize, name: &'static str },
+    /// Instrument `id` couldn't be made for track `track`; it keeps what
+    /// it had.
+    Failed { track: usize, id: &'static str },
 }
 
 /// A project's mixer going in over a few periods: the old inserts out,
@@ -232,7 +249,8 @@ impl MixHost {
         let cfg = MixerConfig {
             inputs: 1,
             pads: PADS,
-            tracks: TRACKS,
+            // The engines' tracks, then one per track's own instrument.
+            tracks: TRACKS + instruments::SLOTS,
             slots: SLOTS,
             max_latency_ms: 50.0,
         };
@@ -282,6 +300,65 @@ impl MixHost {
             landing: None,
             plugins: Arc::new(Plugins::none()),
             opening: None,
+            instruments: Instruments::new(rate, PERIOD),
+            made: Vec::new(),
+        }
+    }
+
+    /// Asks for a track's own instrument (`job`): made on the builder
+    /// thread and put in by [`MixHost::poll_instruments`]; without a
+    /// builder (the tests), made here. False if the builder is busy.
+    pub fn build_instrument(&mut self, job: crate::control::InstrumentJob) -> bool {
+        let rate = self.mixer.rate();
+        if let Some(b) = self.builder.as_mut() {
+            return b.instrument(Box::new(job), rate, PERIOD);
+        }
+        let made = crate::control::make_instrument(job, &self.plugins, rate, PERIOD);
+        self.made.push(made);
+        true
+    }
+
+    /// Once a period: puts in an instrument the builder made, if one is
+    /// ready (the old one rings out), and drops retired ones off the audio
+    /// thread. Never waits or allocates.
+    pub fn poll_instruments(&mut self) -> Option<Landed> {
+        while let Some(old) = self.instruments.pop_retired() {
+            self.drop_instrument(old);
+        }
+        let m = match self.builder.as_mut() {
+            Some(b) => b.take_instrument()?,
+            None => self.made.pop()?,
+        };
+        let Some((inst, held)) = m.made else {
+            return Some(Landed::Failed {
+                track: m.track,
+                id: m.id,
+            });
+        };
+        self.instruments.set_tuning(m.track, &m.tuning);
+        match self.instruments.put(m.track, Some((inst, held)), m.pads) {
+            Ok(()) => Some(Landed::Playing {
+                track: m.track,
+                name: held.name,
+            }),
+            Err(back) => {
+                if let Some(i) = back {
+                    self.drop_instrument(i);
+                }
+                Some(Landed::Failed {
+                    track: m.track,
+                    id: m.id,
+                })
+            }
+        }
+    }
+
+    fn drop_instrument(&mut self, inst: mpfree_track::Instrument) {
+        match self.builder.as_mut() {
+            Some(b) => {
+                b.drop_instrument_later(inst);
+            }
+            None => drop(inst),
         }
     }
 
@@ -792,6 +869,8 @@ impl MixHost {
                 dr[..PERIOD].copy_from_slice(r);
             }
         }
+        // Each track's own instrument into its mixer track.
+        self.instruments.render(ctx, PERIOD, &mut self.mixer);
         if self.line_open {
             let (hl, hr) = self.mixer.hw_input();
             hl[..PERIOD].copy_from_slice(line.0);
@@ -882,6 +961,15 @@ impl MixHost {
         }
         self.state_at = Some(now);
         let mut st = MixState::from_mixer(&mut self.mixer, view, &name);
+        // Tracks' own instruments' channels show only while in use.
+        let used = self.instruments.in_use();
+        let shown = |s: StripId| match s {
+            StripId::Track(t) if t >= TRACKS => used & (1 << (t - TRACKS)) != 0,
+            _ => true,
+        };
+        st.strips.retain(|v| shown(v.id));
+        st.counts[0] = TRACKS + used.count_ones() as usize;
+        st.tracks = TRACKS;
         st.selected = self.selected;
         Some(st)
     }
