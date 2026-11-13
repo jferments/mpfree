@@ -25,6 +25,7 @@ pub const POLY_TARGETS: &[&str] = &[
     "Width",
     "Sub",
     "Noise",
+    "Distortion",
 ];
 /// FM's targets, by slot target index.
 pub const FM_TARGETS: &[&str] = &[
@@ -55,7 +56,7 @@ pub const WT_TARGETS: &[&str] = &[
 ///
 /// - Cutoff 4 octaves, Resonance 100 %, Width (pulse width) 45 %, Sub and
 ///   Noise 100 % of their level.
-/// - Level: a 24 dB swell. Drive: 24 dB more drive.
+/// - Level: a 24 dB swell. Drive and Distortion: 24 dB more.
 /// - Vibrato 1 semitone deep. Pitch 12 semitones. LFO rate 2 octaves (4 times
 ///   as fast); the LFO is shared, so it follows the highest pressure.
 /// - Position (Wavetable): the whole table. Warp (Wavetable): the whole
@@ -70,7 +71,7 @@ pub fn full_scale(target: &str) -> Option<(f32, Unit)> {
         "Vibrato" => (1.0, Unit::Semitones),
         "LFO rate" => (2.0, Unit::Octaves),
         "Pitch" => (12.0, Unit::Semitones),
-        "Drive" => (24.0, Unit::Db),
+        "Drive" | "Distortion" => (24.0, Unit::Db),
         "Width" => (45.0, Unit::Percent),
         "Sub" | "Noise" | "Tremolo" | "Position" | "Warp" => (100.0, Unit::Percent),
         "Brightness" => (24.0, Unit::None),
