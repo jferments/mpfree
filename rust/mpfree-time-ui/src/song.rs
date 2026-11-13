@@ -136,6 +136,23 @@ pub struct AudioBlock {
     pub fade_out: u32,
 }
 
+/// One of an audio track's takes, as its take lane shows it: see
+/// [`take_lanes`].
+#[derive(Clone, Debug, PartialEq)]
+pub struct TakeLane {
+    pub take: u16,
+    /// "take 3": the track's takes count from 1, oldest first, as the
+    /// regions' tags do.
+    pub name: String,
+    /// Where its audio lies on the song, and the frames it spans.
+    pub start: Tick,
+    pub end: Tick,
+    pub frames: f64,
+    pub recording: bool,
+    /// Where the track plays it now (its regions of this take).
+    pub used: Vec<(Tick, Tick)>,
+}
+
 /// An audio track's lane.
 #[derive(Clone, Debug, PartialEq)]
 pub struct AudioLane {
@@ -159,6 +176,8 @@ pub struct AudioLane {
     pub solo: bool,
     /// Its regions, in order (`AudioTracks::regions`).
     pub blocks: Vec<AudioBlock>,
+    /// Its takes, newest first, for its take lanes ([`take_lanes`]).
+    pub takes: Vec<TakeLane>,
     /// Recording: the punch in (the take's anchor). The red block runs
     /// from it to the playhead.
     pub recording: Option<Tick>,
@@ -195,6 +214,11 @@ pub struct SongLanes {
     pub region: Option<(usize, usize)>,
     /// The audio track whose panel is open over the lanes.
     pub panel: Option<usize>,
+    /// The audio track whose take lanes show under its lane.
+    pub takes_open: Option<usize>,
+    /// A finger swiping across a take lane: the take, where it went down
+    /// and where it is now (x).
+    pub(crate) swipe: Option<(u16, i32, i32)>,
     /// The first lane shown (MIDI lanes, then audio lanes, then "+ Audio").
     pub first_lane: usize,
     /// A finger on the name column: where it went down, the first lane
@@ -209,6 +233,8 @@ const LANE_MAX: i32 = 56;
 const GAP: i32 = 6;
 /// Pixels a finger moves on the name column before it scrolls.
 const DRAG_SLOP: i32 = 8;
+/// A take lane's height.
+const TAKE_H: i32 = 28;
 /// The track panel's size at most, its rows' height and its labels'
 /// width.
 const PANEL_W: i32 = 560;
@@ -255,6 +281,8 @@ impl Default for SongLanes {
             waves: Vec::new(),
             region: None,
             panel: None,
+            takes_open: None,
+            swipe: None,
             first_lane: 0,
             drag: None,
         }
@@ -264,9 +292,8 @@ impl Default for SongLanes {
 struct Geo {
     ruler: Rect,
     lanes: Rect,
+    /// The height of every lane but the take lanes.
     lane_h: i32,
-    /// Lanes in view at once.
-    visible: usize,
     tools: Rect,
 }
 
@@ -276,6 +303,8 @@ enum Lane {
     Midi(usize),
     /// An index into `audio`.
     Audio(usize),
+    /// Take lane `k` (an index into its `takes`) of audio lane `a`.
+    Take(usize, usize),
     Add,
 }
 
@@ -306,6 +335,41 @@ pub fn same_waves(a: &[TakeWave], b: &[TakeWave]) -> bool {
 /// and pass; the tag shows on all but the newest), and the frames it spans
 /// along `map` at `rate`. `takes` is every take (`AudioTracks::takes`);
 /// a region whose take is not among them gets no tag.
+/// Track `track`'s takes as its take lanes show them, newest first:
+/// each one's name (numbered as [`audio_blocks`] tags them), its stretch
+/// of the song along the tempo map, and where `regions` (the track's)
+/// play it.
+pub fn take_lanes(
+    track: usize,
+    regions: &[Region],
+    takes: &[TakeInfo],
+    map: &TempoMap,
+    rate: u32,
+) -> Vec<TakeLane> {
+    let mut mine: Vec<&TakeInfo> = takes.iter().filter(|t| t.track == track).collect();
+    mine.sort_by_key(|t| (t.group, t.pass, t.id));
+    mine.iter()
+        .enumerate()
+        .rev()
+        .map(|(n, t)| {
+            let end = mpfree_audiotracks::tick_after(map, t.anchor, t.frames as f64, rate);
+            TakeLane {
+                take: t.id,
+                name: format!("take {}", n + 1),
+                start: t.anchor.ceil() as Tick,
+                end: (end.floor() as Tick).max(t.anchor.ceil() as Tick),
+                frames: t.frames as f64,
+                recording: t.recording,
+                used: regions
+                    .iter()
+                    .filter(|r| r.take == t.id)
+                    .map(|r| (r.start, r.end))
+                    .collect(),
+            }
+        })
+        .collect()
+}
+
 pub fn audio_blocks(
     track: usize,
     regions: &[Region],
@@ -348,6 +412,7 @@ impl SongLanes {
     pub fn keep_scroll(&mut self, old: &SongLanes) {
         self.first_lane = old.first_lane;
         self.drag = old.drag;
+        self.swipe = old.swipe;
     }
 
     /// A copy with no waveforms (they can be large).
@@ -371,27 +436,68 @@ impl SongLanes {
             waves,
             region: self.region,
             panel: self.panel,
+            takes_open: self.takes_open,
+            swipe: self.swipe,
             first_lane: self.first_lane,
             drag: self.drag,
         }
     }
 
-    /// Lanes in all: the MIDI lanes, the audio lanes, then "+ Audio" while
-    /// there is room for another audio track.
+    /// The audio lane whose take lanes show (an index into `audio`), and
+    /// how many there are.
+    fn open_takes(&self) -> Option<(usize, usize)> {
+        let t = self.takes_open?;
+        let a = self.audio.iter().position(|l| l.track == t)?;
+        Some((a, self.audio[a].takes.len()))
+    }
+
+    fn take_count(&self) -> usize {
+        self.open_takes().map_or(0, |o| o.1)
+    }
+
+    /// Lanes in all: the MIDI lanes, the audio lanes (with the open
+    /// track's take lanes under it), then "+ Audio" while there is room
+    /// for another audio track.
     fn lane_count(&self) -> usize {
-        self.tracks.len() + self.audio.len() + usize::from(self.audio.len() < MAX_AUDIO)
+        self.tracks.len()
+            + self.audio.len()
+            + self.take_count()
+            + usize::from(self.audio.len() < MAX_AUDIO)
     }
 
     fn lane(&self, k: usize) -> Option<Lane> {
         let m = self.tracks.len();
         if k < m {
-            Some(Lane::Midi(k))
-        } else if k < m + self.audio.len() {
-            Some(Lane::Audio(k - m))
-        } else if k < self.lane_count() {
-            Some(Lane::Add)
-        } else {
-            None
+            return Some(Lane::Midi(k));
+        }
+        let open = self.open_takes();
+        let mut j = k - m;
+        for a in 0..self.audio.len() {
+            if j == 0 {
+                return Some(Lane::Audio(a));
+            }
+            j -= 1;
+            if let Some((oa, n)) = open.filter(|o| o.0 == a) {
+                if j < n {
+                    return Some(Lane::Take(oa, j));
+                }
+                j -= n;
+            }
+        }
+        (j == 0 && self.audio.len() < MAX_AUDIO).then_some(Lane::Add)
+    }
+
+    /// The lane number of audio lane `a` (an index into `audio`).
+    fn audio_k(&self, a: usize) -> usize {
+        let before = self.open_takes().filter(|o| o.0 < a).map_or(0, |o| o.1);
+        self.tracks.len() + a + before
+    }
+
+    /// Lane `k`'s height: take lanes are thin.
+    fn height(&self, g: &Geo, k: usize) -> i32 {
+        match self.lane(k) {
+            Some(Lane::Take(..)) => TAKE_H,
+            _ => g.lane_h,
         }
     }
 
@@ -404,32 +510,57 @@ impl SongLanes {
         );
         let (ruler, lanes) = rest.take_top(RULER_H);
         let lanes = Rect::new(lanes.x, lanes.y + GAP, lanes.w, lanes.h - GAP);
-        let n = self.lane_count().max(1) as i32;
-        let lane_h = (lanes.h / n).clamp(MIN_LANE.min(lanes.h.max(8)), LANE_MAX);
-        let visible = (lanes.h / lane_h.max(1)).max(1) as usize;
+        // Take lanes keep their height; the others share what is left.
+        let takes = self.take_count() as i32;
+        let n = (self.lane_count() as i32 - takes).max(1);
+        let room = lanes.h - takes * TAKE_H;
+        let lane_h = (room / n).clamp(MIN_LANE.min(lanes.h.max(8)), LANE_MAX);
         Geo {
             ruler,
             lanes,
             lane_h,
-            visible,
             tools,
         }
     }
 
+    /// The last lane that can be first: from it to the end, the lanes fit.
+    fn max_first(&self, g: &Geo) -> usize {
+        let n = self.lane_count();
+        let mut used = 0;
+        let mut k = n;
+        while k > 0 {
+            let h = self.height(g, k - 1);
+            if used + h > g.lanes.h {
+                break;
+            }
+            used += h;
+            k -= 1;
+        }
+        k.min(n.saturating_sub(1))
+    }
+
     /// The first lane shown, kept in range for `g`.
     fn first(&self, g: &Geo) -> usize {
-        self.first_lane
-            .min(self.lane_count().saturating_sub(g.visible))
+        self.first_lane.min(self.max_first(g))
+    }
+
+    /// Lanes in view from the first.
+    fn shown(&self, g: &Geo) -> usize {
+        let first = self.first(g);
+        (first..self.lane_count())
+            .take_while(|&k| self.lane_rect(g, k).is_some())
+            .count()
     }
 
     /// Lane `k`'s rectangle (names included), if it is in view.
     fn lane_rect(&self, g: &Geo, k: usize) -> Option<Rect> {
         let first = self.first(g);
-        if k < first || k >= first + g.visible || k >= self.lane_count() {
+        if k < first || k >= self.lane_count() {
             return None;
         }
-        let y = g.lanes.y + (k - first) as i32 * g.lane_h;
-        Some(Rect::new(g.lanes.x, y, g.lanes.w, g.lane_h))
+        let y = g.lanes.y + (first..k).map(|j| self.height(g, j)).sum::<i32>();
+        let h = self.height(g, k);
+        (y + h <= g.lanes.bottom()).then(|| Rect::new(g.lanes.x, y, g.lanes.w, h))
     }
 
     /// The x of song tick `t` in `area` (the lanes past the names).
@@ -460,7 +591,7 @@ impl SongLanes {
     /// clipped to the view, if it shows.
     pub fn region_rect(&self, r: Rect, a: usize, i: usize) -> Option<Rect> {
         let b = self.audio.get(a)?.blocks.get(i)?;
-        self.span_rect(&self.geo(r), self.tracks.len() + a, b.start, b.end)
+        self.span_rect(&self.geo(r), self.audio_k(a), b.start, b.end)
     }
 
     /// Audio lane `a`'s header (its part of the name column), if in view.
@@ -468,7 +599,7 @@ impl SongLanes {
         if a >= self.audio.len() {
             return None;
         }
-        let row = self.lane_rect(&self.geo(r), self.tracks.len() + a)?;
+        let row = self.lane_rect(&self.geo(r), self.audio_k(a))?;
         Some(Rect::new(row.x, row.y, NAME_W - 8, row.h))
     }
 
@@ -532,7 +663,7 @@ impl SongLanes {
         // if the lane is scrolled away.
         let a = self.audio.iter().position(|l| l.track == track)?;
         let (top, bottom) = (g.lanes.y + 2, g.lanes.bottom() - 2);
-        let y = match self.lane_rect(&g, self.tracks.len() + a) {
+        let y = match self.lane_rect(&g, self.audio_k(a)) {
             Some(row) if row.bottom() + 2 + h <= bottom => row.bottom() + 2,
             Some(row) if row.y - 2 - h >= top => row.y - 2 - h,
             Some(row) if bottom - row.bottom() >= row.y - top => bottom - h,
@@ -735,6 +866,102 @@ impl SongLanes {
             .find(|w| w.id == take && w.frames_per_column > 0)
     }
 
+    /// Take `take`'s waveform in `wave` (its columns from `cols.x` to
+    /// `cols.right()`): the column at x shows the frames from `src + (x -
+    /// x0) * per_px` on.
+    #[allow(clippy::too_many_arguments)]
+    fn paint_wave(
+        &self,
+        cx: &mut PaintCx,
+        take: u16,
+        wave: Rect,
+        cols: Rect,
+        x0: i32,
+        src: f64,
+        per_px: f64,
+        ink: Color,
+    ) {
+        let Some(w) = self.wave_of(take) else {
+            return;
+        };
+        let mid = wave.y + wave.h / 2;
+        let half = f64::from((wave.h - 4) / 2);
+        for x in cols.x..cols.right() {
+            let f0 = src + f64::from(x - x0) * per_px;
+            let f1 = f0 + per_px;
+            let c0 = (f0.max(0.0) / w.frames_per_column as f64) as usize;
+            let c1 = ((f1.max(0.0) / w.frames_per_column as f64).ceil() as usize).max(c0 + 1);
+            let (mut lo, mut hi) = (0.0f32, 0.0f32);
+            if f1 > 0.0 && f0 < w.frames as f64 {
+                for &(l, h) in w.columns.iter().take(c1).skip(c0) {
+                    lo = lo.min(l);
+                    hi = hi.max(h);
+                }
+            }
+            let top = mid - (f64::from(hi.clamp(0.0, 1.0)) * half).round() as i32;
+            let bottom = mid - (f64::from(lo.clamp(-1.0, 0.0)) * half).round() as i32;
+            cx.canvas
+                .fill_rect(Rect::new(x, top, 1, (bottom - top).max(1)), ink);
+        }
+    }
+
+    /// Take lane `k` (an index into its `takes`) of audio lane `a`, in
+    /// `row`: the take's stretch with its waveform, brighter where the
+    /// track plays it, and a swipe under way.
+    fn paint_take(&self, cx: &mut PaintCx, g: &Geo, a: usize, k: usize, row: Rect) {
+        let t = cx.theme.clone();
+        let lane = &self.audio[a];
+        let take = &lane.takes[k];
+        let body = Rect::new(row.x + NAME_W, row.y, row.w - NAME_W, row.h);
+        let old = cx.canvas.clip();
+        cx.canvas.set_clip(old.intersect(body));
+        let lane_k = self.audio_k(a) + 1 + k;
+        if let Some(br) = self.span_rect(g, lane_k, take.start, take.end.max(take.start + 1)) {
+            cx.canvas
+                .fill_round_rect(br, 4, t.raised.mix(lane.color, 0.16));
+            for &(from, to) in &take.used {
+                if let Some(ur) = self.span_rect(g, lane_k, from, to) {
+                    cx.canvas
+                        .fill_round_rect(ur, 4, t.raised.mix(lane.color, 0.45));
+                }
+            }
+            let x0 = self.x_of(g.lanes, take.start);
+            let x1 = self.x_of(g.lanes, take.end).max(x0 + 1);
+            let per_px = take.frames / f64::from(x1 - x0);
+            let ink = lane.color.mix(t.text, 0.45);
+            self.paint_wave(cx, take.take, br.inset_xy(0, 1), br, x0, 0.0, per_px, ink);
+        }
+        if let Some((id, x0, x1)) = self.swipe {
+            if id == take.take {
+                let (l, r) = (x0.min(x1), x0.max(x1));
+                let sr = Rect::new(l, row.y + 1, (r - l).max(2), row.h - 2);
+                cx.canvas.stroke_round_rect(sr, 4, 2, t.accent);
+            }
+        }
+        cx.canvas.set_clip(old);
+    }
+
+    /// The song tick at x in `area` (the lanes past the names).
+    fn tick_at(&self, area: Rect, x: i32) -> Tick {
+        let span = (self.bars.max(1) * self.bar.max(1)) as f64;
+        let from = (self.first_bar * self.bar) as f64;
+        let w = f64::from((area.w - NAME_W).max(1));
+        (from + f64::from(x - area.x - NAME_W) / w * span).round() as Tick
+    }
+
+    /// The take lane whose body (past the names) is under (x, y): its
+    /// take.
+    fn take_hit(&self, g: &Geo, x: i32, y: i32) -> Option<u16> {
+        let (a, n) = self.open_takes()?;
+        if x < g.lanes.x + NAME_W {
+            return None;
+        }
+        let k0 = self.audio_k(a) + 1;
+        (0..n)
+            .find(|&k| self.lane_rect(g, k0 + k).is_some_and(|r| r.contains(x, y)))
+            .map(|k| self.audio[a].takes[k].take)
+    }
+
     /// An audio region: its block, waveform, fades and tag.
     fn paint_region(
         &self,
@@ -757,27 +984,7 @@ impl SongLanes {
         let label_h = if br.h >= 26 { 14 } else { 0 };
         let wave = br.inset_xy(0, 2);
         let ink = lane.color.mix(t.text, 0.6);
-        if let Some(w) = self.wave_of(b.take) {
-            let mid = wave.y + wave.h / 2;
-            let half = f64::from((wave.h - 4) / 2);
-            for x in br.x..br.right() {
-                let f0 = b.src as f64 + f64::from(x - x0) * per_px;
-                let f1 = f0 + per_px;
-                let c0 = (f0.max(0.0) / w.frames_per_column as f64) as usize;
-                let c1 = ((f1.max(0.0) / w.frames_per_column as f64).ceil() as usize).max(c0 + 1);
-                let (mut lo, mut hi) = (0.0f32, 0.0f32);
-                if f1 > 0.0 && f0 < w.frames as f64 {
-                    for &(l, h) in w.columns.iter().take(c1).skip(c0) {
-                        lo = lo.min(l);
-                        hi = hi.max(h);
-                    }
-                }
-                let top = mid - (f64::from(hi.clamp(0.0, 1.0)) * half).round() as i32;
-                let bottom = mid - (f64::from(lo.clamp(-1.0, 0.0)) * half).round() as i32;
-                cx.canvas
-                    .fill_rect(Rect::new(x, top, 1, (bottom - top).max(1)), ink);
-            }
-        }
+        self.paint_wave(cx, b.take, wave, br, x0, b.src as f64, per_px, ink);
         // Fades: the part above each slope is dimmed.
         let shade = t.surface.mix(lane.color, 0.15);
         for (frames, rising) in [(b.fade_in, true), (b.fade_out, false)] {
@@ -921,11 +1128,12 @@ impl Widget for SongLanes {
         }
         // A scroll bar at the left edge when the lanes scroll.
         let n = self.lane_count();
-        if n > g.visible {
+        let shown = self.shown(&g);
+        if n > shown {
             let first = self.first(&g);
             let track_h = g.lanes.h;
-            let h = (track_h * g.visible as i32 / n as i32).max(16);
-            let y = g.lanes.y + (track_h - h) * first as i32 / (n - g.visible) as i32;
+            let h = (track_h * shown as i32 / n as i32).max(16);
+            let y = g.lanes.y + (track_h - h) * first as i32 / self.max_first(&g).max(1) as i32;
             cx.canvas
                 .fill_round_rect(Rect::new(g.lanes.x - 9, y, 3, h), 1, t.text_faint);
         }
@@ -955,6 +1163,32 @@ impl Widget for SongLanes {
                 Some(Lane::Audio(a)) => {
                     let h = Rect::new(row.x, row.y, NAME_W - 8, row.h);
                     self.paint_header(cx, h, &self.audio[a]);
+                }
+                Some(Lane::Take(a, j)) => {
+                    let lane = &self.audio[a];
+                    let take = &lane.takes[j];
+                    let used = !take.used.is_empty();
+                    cx.text(
+                        FontId::Sans,
+                        t.size_small - 3.0,
+                        Rect::new(row.x + 20, row.y, NAME_W - 28, row.h),
+                        Align::Left,
+                        if used {
+                            lane.color.mix(t.text, 0.4)
+                        } else {
+                            t.text_faint
+                        },
+                        &if take.recording {
+                            format!("{} · rec", take.name)
+                        } else {
+                            take.name.clone()
+                        },
+                    );
+                    cx.canvas.fill_rect(
+                        Rect::new(row.x + 8, row.y + 4, 2, row.h - 8),
+                        lane.color.mix(t.surface, 0.5),
+                    );
+                    self.paint_take(cx, &g, a, j, row);
                 }
                 Some(Lane::Add) => {
                     if let Some(b) = self.add_rect(r) {
@@ -1010,7 +1244,7 @@ impl Widget for SongLanes {
             }
             // Recording: red from the punch in to the playhead.
             if let (Some(from), Some(now)) = (lane.recording, self.playhead) {
-                let lane_k = self.tracks.len() + a;
+                let lane_k = self.audio_k(a);
                 if let Some(br) = self.span_rect(&g, lane_k, from, now.max(from + 1)) {
                     cx.canvas.fill_round_rect(br, 6, t.bad.mix(t.surface, 0.35));
                     cx.canvas.stroke_round_rect(br, 6, 1, t.bad);
@@ -1078,13 +1312,38 @@ impl Widget for SongLanes {
         let names = Rect::new(g.lanes.x - 12, g.lanes.y, NAME_W + 12, g.lanes.h);
         match phase {
             Touch::Down => {}
+            Touch::Move if self.swipe.is_some() => {
+                if let Some(sw) = self.swipe.as_mut() {
+                    sw.2 = x.clamp(g.lanes.x + NAME_W, g.lanes.right());
+                }
+                return None;
+            }
+            Touch::Up if self.swipe.is_some() => {
+                let (take, x0, _) = self.swipe.take()?;
+                let x1 = x.clamp(g.lanes.x + NAME_W, g.lanes.right());
+                return Some(if (x1 - x0).abs() < DRAG_SLOP {
+                    // A tap: the whole take.
+                    EventKind::Span {
+                        index: usize::from(take),
+                        from: 0,
+                        to: 0,
+                    }
+                } else {
+                    let (l, r) = (x0.min(x1), x0.max(x1));
+                    EventKind::Span {
+                        index: usize::from(take),
+                        from: self.tick_at(g.lanes, l),
+                        to: self.tick_at(g.lanes, r),
+                    }
+                });
+            }
             Touch::Move => {
                 let (y0, first, moved) = self.drag?;
                 if !moved && (y - y0).abs() < DRAG_SLOP {
                     return None;
                 }
                 let rows = (y0 - y) / g.lane_h.max(1);
-                let last = self.lane_count().saturating_sub(g.visible) as i32;
+                let last = self.max_first(&g) as i32;
                 self.first_lane = (first as i32 + rows).clamp(0, last) as usize;
                 self.drag = Some((y0, first, true));
                 return None;
@@ -1111,6 +1370,7 @@ impl Widget for SongLanes {
             }
             Touch::Cancel => {
                 self.drag = None;
+                self.swipe = None;
                 return None;
             }
         }
@@ -1125,6 +1385,10 @@ impl Widget for SongLanes {
         }
         if let Some(asked) = self.panel_touch(r, x, y) {
             return asked;
+        }
+        if let Some(take) = self.take_hit(&g, x, y) {
+            self.swipe = Some((take, x, x));
+            return None;
         }
         if names.contains(x, y) {
             self.first_lane = self.first(&g);
@@ -1240,6 +1504,7 @@ mod tests {
             mute: false,
             solo: false,
             blocks,
+            takes: Vec::new(),
             recording: None,
         }
     }
@@ -1447,6 +1712,161 @@ mod tests {
         assert!(!ui.paint(&mut c).is_empty());
     }
 
+    fn take(id: u16, name: &str, start: Tick, end: Tick, used: Vec<(Tick, Tick)>) -> TakeLane {
+        TakeLane {
+            take: id,
+            name: name.into(),
+            start,
+            end,
+            frames: 88_200.0,
+            recording: false,
+            used,
+        }
+    }
+
+    /// Layout spec 4c: Takes opens the track's take lanes, thin, under
+    /// its lane, newest first; the other lanes give them room. A tap on
+    /// one asks for the whole take and a swipe for the stretch it crossed.
+    #[test]
+    fn take_lanes_open_under_their_track_and_report_taps_and_swipes() {
+        let mut s = lanes();
+        let mut vocal = audio_lane(0, "Vocal", vec![block(0, 3840, 1)]);
+        vocal.takes = vec![
+            take(1, "take 2", 0, 3840, vec![(0, 3840)]),
+            take(0, "take 1", 0, 3840, Vec::new()),
+        ];
+        s.audio = vec![vocal, audio_lane(1, "Guitar", Vec::new())];
+        let r = Rect::new(12, 140, 814, 534);
+        assert_eq!(s.lane_count(), 5, "closed: no take lanes");
+        s.takes_open = Some(0);
+        let g = s.geo(r);
+        // Drums, Bass, Vocal, take 2, take 1, Guitar, + Audio.
+        assert_eq!(s.lane_count(), 7);
+        assert_eq!(s.lane(2), Some(Lane::Audio(0)));
+        assert_eq!(s.lane(3), Some(Lane::Take(0, 0)));
+        assert_eq!(s.lane(4), Some(Lane::Take(0, 1)));
+        assert_eq!(s.lane(5), Some(Lane::Audio(1)));
+        assert_eq!(s.lane(6), Some(Lane::Add));
+        assert_eq!(s.audio_k(1), 5);
+        let lane = s.lane_rect(&g, 2).unwrap();
+        let t2 = s.lane_rect(&g, 3).unwrap();
+        let t1 = s.lane_rect(&g, 4).unwrap();
+        assert_eq!((t2.h, t1.h), (TAKE_H, TAKE_H));
+        assert_eq!((t2.y, t1.y), (lane.bottom(), t2.bottom()));
+        assert_eq!(s.header_rect(r, 1).unwrap().y, t1.bottom());
+        assert!(
+            s.lane_rect(&g, 6).unwrap().bottom() <= g.lanes.bottom(),
+            "all in view"
+        );
+        // A tap on take 1's lane: the whole take.
+        let (x, y) = (t1.x + NAME_W + 100, t1.y + 10);
+        assert_eq!(s.touch(1, Touch::Down, x, y, r), None);
+        assert_eq!(
+            s.touch(1, Touch::Up, x + 2, y, r),
+            Some(EventKind::Span {
+                index: 0,
+                from: 0,
+                to: 0
+            })
+        );
+        // A swipe: the stretch it crossed, either way round, even if the
+        // finger drifts off the lane.
+        let want = Some(EventKind::Span {
+            index: 0,
+            from: s.tick_at(g.lanes, x),
+            to: s.tick_at(g.lanes, x + 120),
+        });
+        s.touch(2, Touch::Down, x, y, r);
+        assert_eq!(s.touch(2, Touch::Move, x + 120, y + 40, r), None);
+        assert_eq!(s.touch(2, Touch::Up, x + 120, y + 40, r), want);
+        s.touch(3, Touch::Down, x + 120, y, r);
+        assert_eq!(s.touch(3, Touch::Up, x, y, r), want);
+        assert!(s.tick_at(g.lanes, x) < s.tick_at(g.lanes, x + 120));
+        // Take 2's lane is its own.
+        let (x2, y2) = (t2.x + NAME_W + 50, t2.y + 5);
+        s.touch(4, Touch::Down, x2, y2, r);
+        assert_eq!(
+            s.touch(4, Touch::Up, x2, y2, r),
+            Some(EventKind::Span {
+                index: 1,
+                from: 0,
+                to: 0
+            })
+        );
+        // A cancelled swipe asks for nothing; the names still scroll.
+        s.touch(5, Touch::Down, x, y, r);
+        assert_eq!(s.touch(5, Touch::Cancel, x, y, r), None);
+        assert_eq!(s.swipe, None);
+        assert_eq!(s.touch(6, Touch::Down, t1.x + 30, y, r), None);
+        assert!(s.drag.is_some(), "a finger on the names");
+        s.touch(6, Touch::Cancel, t1.x + 30, y, r);
+        // The audio lane's own region still picks.
+        let br = s.region_rect(r, 0, 0).unwrap();
+        assert_eq!(
+            s.touch(7, Touch::Down, br.x + 4, br.y + 4, r),
+            Some(EventKind::Cell { row: 0, col: 0 })
+        );
+        // Many take lanes push the rest down and the lanes scroll.
+        let mut many = s.clone();
+        many.audio[0].takes = (0..12)
+            .rev()
+            .map(|k| take(k, &format!("take {}", k + 1), 0, 3840, Vec::new()))
+            .collect();
+        let g = many.geo(r);
+        assert!(many.max_first(&g) > 0, "they no longer fit");
+        assert!(many.shown(&g) < many.lane_count());
+        let mut ui = mpfree_ui::Ui::new(
+            mpfree_ui::Theme::dark(),
+            mpfree_ui::Fonts::embedded(),
+            1280,
+            800,
+        );
+        s.swipe = Some((0, x, x + 60));
+        ui.add("song", s);
+        ui.add_page("p", "song").unwrap();
+        ui.show("p").unwrap();
+        let mut c = mpfree_ui::SoftCanvas::new(1280, 800);
+        assert!(!ui.paint(&mut c).is_empty());
+    }
+
+    #[test]
+    fn take_lanes_name_takes_oldest_first_and_list_them_newest_first() {
+        let map = TempoMap::constant(120.0).unwrap();
+        let info = |id: u16, track: usize, group: u16, pass: u16| TakeInfo {
+            id,
+            track,
+            group,
+            pass,
+            bpm: 120.0,
+            anchor: 0.0,
+            frames: 44_100,
+            channels: 1,
+            recording: false,
+            cut_short: false,
+        };
+        let takes = [
+            info(4, 0, 1, 0),
+            info(2, 0, 0, 0),
+            info(3, 1, 0, 0),
+            info(7, 0, 0, 1),
+        ];
+        let regions = [Region {
+            start: 0,
+            end: 960,
+            take: 7,
+            src: 0,
+            gain: 1.0,
+            fade_in: 0,
+            fade_out: 0,
+        }];
+        let lanes = take_lanes(0, &regions, &takes, &map, 44_100);
+        let shown: Vec<_> = lanes.iter().map(|l| (l.take, l.name.as_str())).collect();
+        assert_eq!(shown, [(4, "take 3"), (7, "take 2"), (2, "take 1")]);
+        assert_eq!(lanes[1].used, [(0, 960)]);
+        // One second at 120 BPM is two beats.
+        assert_eq!((lanes[0].start, lanes[0].end), (0, 2 * 960));
+    }
+
     #[test]
     fn input_chips_name_every_input() {
         let chips: Vec<&str> = [Input::Left, Input::Right, Input::Sum, Input::Stereo]
@@ -1469,7 +1889,8 @@ mod tests {
         let g = s.geo(r);
         // 8 + 6 + "+ Audio" = 15 lanes at 32 px do not fit.
         assert_eq!(g.lane_h, MIN_LANE);
-        assert!(g.visible < 15, "{}", g.visible);
+        let visible = s.shown(&g);
+        assert!(visible < 15, "{visible}");
         assert!(
             s.region_rect(r, 5, 0).is_none(),
             "the last audio lane is below"
@@ -1492,7 +1913,8 @@ mod tests {
         s.touch(2, Touch::Down, x, y, r);
         s.touch(2, Touch::Move, x, y - 2000, r);
         s.touch(2, Touch::Up, x, y - 2000, r);
-        assert_eq!(s.first_lane, 15 - g.visible);
+        assert_eq!(s.first_lane, 15 - visible);
+        assert_eq!(s.first_lane, s.max_first(&g));
         assert!(s.region_rect(r, 5, 0).is_some());
         assert!(
             s.block_rect(r, &s.blocks[0].clone()).is_none(),

@@ -68,7 +68,7 @@ To record onto an audio track:
   - **Input**: what the track records from. **L** (the left jack, the default), **R**, **L+R** (both jacks mixed into one) or **ST** (stereo). The input can't change while the track records.
   - **Monitor**: when you hear the input through the track. **Auto** (the default) plays it while the track is armed, except during playback. **In** always plays it, armed or not. **Off** never does.
   - **Level** and **Pan**, with a step either way. Q1 and Q2 turn them too while the panel is open, and Q3 and Q4 turn a region's gain and fades once you pick one of the track's regions.
-  - **Takes** is for the take lanes, which aren't built yet.
+  - **Takes** opens the track's take lanes (below).
 
 {{shot: arrange-song-panel | The guitar's track panel: armed, soloed and set to stereo, with its level and pan on the Q-Links.}}
 
@@ -76,13 +76,20 @@ To record onto an audio track:
   - **Split** cuts the region at the playhead, so put the playhead inside it first.
   - **Erase** takes the region out. **Undo** brings it back.
   - While a region is picked, the four Q-Links on the right turn the track's **Level** (Q1) and **Pan** (Q2), and the region's **Gain** (Q3) and **Fades** (Q4, the fade in and the fade out together). Hold SHIFT for fine steps. **Gain** and **Fades** in the bottom row point you to those knobs.
+- **Takes** (in the track panel, or in the bottom row with a region picked) opens the track's **take lanes**: a thin lane for each recording under the track's lane, newest first. Each take lane shows that take's waveform, brighter where the track plays it now. Tap **Takes** again to close them.
+  - **Swipe** across a take lane to play that stretch of the take on the track, in place of what was there. The swipe snaps to sixteenth notes; hold SHIFT for a free swipe.
+  - **Tap** a take lane to play that take everywhere it has audio.
+  - This is called comping: record a part a few times, then keep the best bits of each. **Undo** takes each swipe back.
+
+{{shot: arrange-song-takes | The vocal's take lanes: take 2 plays over bars 5 to 8 and take 1 everywhere else.}}
+
 - When there are more lanes than fit, drag up or down on the names to scroll them.
 - All the audio tracks play through one **Audio** strip in the mixer (TRACK MIX).
 - Audio tracks make up for the line input's delay with the looper's **Latency to make up for** setting (MENU on the Looper tab), so a take lines up with the beat you played it against. Change it there and both follow.
 - The audio tracks share one minute of stereo memory; **Audio track memory** in [Prefs](../reference/prefs.md) sets 30 seconds to 10 minutes, from the next start. The Song view's legend says how much is free ("Audio 0:42 of 1:00 free"). A recording that runs out of memory stops there and keeps what it got.
 
 > [!NOTE]
-> Coming: **Takes** (swiping across takes to keep the best parts of each), dragging a region to move it, and saving audio tracks with the project. In this build **Takes** says it isn't built yet, and recorded audio is gone when MPFree stops.
+> Coming: dragging a region to move it, and saving audio tracks with the project. In this build recorded audio is gone when MPFree stops.
 
 ## Recording a performance into the song
 
