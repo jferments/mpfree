@@ -1828,6 +1828,19 @@ impl App {
         fx
     }
 
+    /// A tap on Play's tempo (live test 3): a tap of the tempo, as TAP
+    /// TEMPO, and the screen says what it did.
+    pub fn tap_on_screen(&mut self, t: f64) -> Vec<Effect> {
+        let mut fx = self.tap(t);
+        let set = fx.iter().any(|e| matches!(e, Effect::Status(_)));
+        fx.push(Effect::Tell(if set {
+            format!("tempo: {:.1} BPM (tapped)", self.settings.bpm)
+        } else {
+            "tempo: keep tapping in time to set it".to_string()
+        }));
+        fx
+    }
+
     fn tap(&mut self, t: f64) -> Vec<Effect> {
         if self.taps.last().is_some_and(|&last| t - last > 2.0) {
             self.taps.clear();
@@ -5349,6 +5362,23 @@ mod tests {
             app.tick(20.9),
             Some(Effect::Light(button::TAP_TEMPO, LIGHT_OFF))
         );
+    }
+
+    /// Live test 3: taps on Play's tempo tap the tempo, and say so.
+    #[test]
+    fn taps_on_plays_tempo_set_it() {
+        let mut app = ready();
+        let fx = app.tap_on_screen(10.0);
+        assert!(fx
+            .iter()
+            .any(|e| matches!(e, Effect::Tell(t) if t.contains("keep tapping"))));
+        app.tap_on_screen(10.5);
+        app.tap_on_screen(11.0);
+        let fx = app.tap_on_screen(11.5);
+        assert_eq!(app.settings.bpm, 120.0);
+        assert!(fx
+            .iter()
+            .any(|e| matches!(e, Effect::Tell(t) if t == "tempo: 120.0 BPM (tapped)")));
     }
 
     #[test]

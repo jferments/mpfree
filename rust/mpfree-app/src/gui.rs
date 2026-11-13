@@ -506,6 +506,8 @@ pub enum FromUi {
     PadsLayout {
         in_key: bool,
     },
+    /// A tap on Play's tempo: a tap of the tempo, as TAP TEMPO.
+    TapTempo,
     Tab(usize),
     MenuSelect(usize),
     MenuStep(usize, i32),
@@ -3395,6 +3397,9 @@ impl Player {
             }
             (play_page::PADS, EventKind::Tab(i)) => Some(FromUi::PadsLayout { in_key: i == 1 }),
             ("kits", EventKind::Select(k)) => Some(FromUi::Kit(k)),
+            (play_page::TRANSPORT, EventKind::Select(crate::play_widgets::TAP_BPM)) => {
+                Some(FromUi::TapTempo)
+            }
             (play_page::TRANSPORT, EventKind::Tab(i)) => {
                 self.show_play_view(PlayView::from_index(i));
                 None
@@ -6934,6 +6939,23 @@ mod tests {
         assert_eq!(fx.first(), Some(&Effect::Mixer(Some(MixView::Pads))));
         apply_effects(&mut p, fx);
         assert_eq!(p.page(), MIXER_PAGE);
+    }
+
+    /// Live test 3: a tap on Play's tempo is a tap of the tempo.
+    #[test]
+    fn a_tap_on_plays_tempo_taps_it() {
+        let mut p = sample_player(Fonts::embedded());
+        p.apply(ToUi::Show(View::Play));
+        p.ui.paint(&mut SoftCanvas::new(SCREEN.0, SCREEN.1));
+        let b =
+            p.ui.get::<PlayTransport>(play_page::TRANSPORT)
+                .unwrap()
+                .bpm_area()
+                .expect("the transport was drawn");
+        assert!(b.w >= 64);
+        let got = p.touch(1, Touch::Down, b.x + b.w / 2, b.y + b.h / 2);
+        p.touch(1, Touch::Up, b.x + b.w / 2, b.y + b.h / 2);
+        assert_eq!(got, Some(FromUi::TapTempo));
     }
 
     /// Live test 3: a refusal used to go only to the Dev tab's log. Now

@@ -3471,6 +3471,7 @@ fn player_session(
                     }
                 }
                 gui::FromUi::PadsLayout { in_key } => fx.extend(app.synth_pick_layout(in_key)),
+                gui::FromUi::TapTempo => fx.extend(app.tap_on_screen(t)),
                 // A strip's insert row or "+": the chain editor in the mixer's place.
                 gui::FromUi::Mixer(mpfree_mixer_ui::MixAction::OpenInsert { strip, slot }) => {
                     fx.extend(panels.open_insert(&mut app, &mix, strip, Some(slot)))
