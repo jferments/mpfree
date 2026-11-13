@@ -51,6 +51,12 @@ case "$1" in
   panel) n=$(ls pages | grep -c '\.mpdl$'); echo "panel: $n pages drawn on the GPU and shown 1500 ms each"
          echo "panel: the framebuffer holds what was written: yes"
          echo "summary: panel showed $n pages from the GPU"; exit "$FAKE_PANEL_RC" ;;
+  flip) n=$(ls pages | grep -c '\.mpdl$'); echo "flip: /dev/dri/card0: connector 33 on CRTC 31, mode 800x1280 at 60 Hz"
+        [ "$FAKE_FLIP_RC" = 2 ] && { echo "STOP: the test card is not in the screen buffer"; exit 2; }
+        echo "flip: SCREEN CHANGES NOW: $n pages drawn on the GPU straight into the buffers the panel shows, 1500 ms each"
+        echo "summary: flip gpu whole page: whole p50 9.10"
+        [ "$FAKE_FLIP_BACK" = 1 ] && echo "flip: the screen is back as it was (CRTC 31 showing framebuffer 40); 200 page flips in all"
+        exit "$FAKE_FLIP_RC" ;;
 esac
 '''
 
@@ -130,7 +136,8 @@ class GpuBenchTests(unittest.TestCase):
                     "MPFREE_APP_TEST": "1", "MPFREE_ACCEPT_GPU_BENCH": "YES", "FAKE_STAGE": self.stage,
                     "FAKE_LOG": self.log, "FAKE_ROOT": self.root, "FAKE_REMOTE_PATH": remote, "FAKE_SCREEN": screen,
                     "FAKE_APP": app, "FAKE_ACVS": "inactive", "FAKE_PROGRAM": standin,
-                    "FAKE_RENDERER": "Mali-T760 (Panfrost)", "FAKE_SCREENS_RC": "0", "FAKE_PANEL_RC": "0"}
+                    "FAKE_RENDERER": "Mali-T760 (Panfrost)", "FAKE_SCREENS_RC": "0", "FAKE_PANEL_RC": "0",
+                    "FAKE_FLIP_RC": "0", "FAKE_FLIP_BACK": "1"}
         self.key = os.path.join(t, "key")
         th.write(self.key, "fake key\n", 0o600)
         self.program = os.path.join(t, "build", "mpfree-gpu-bench")
@@ -148,16 +155,16 @@ class GpuBenchTests(unittest.TestCase):
         os.makedirs(f"{r}/sys/block/sda")
         th.write(f"{r}/proc/mounts", "/dev/root / ext4 ro,relatime 0 0\ntmpfs /run tmpfs rw,nosuid,nodev,mode=755 0 0\n")
         os.makedirs(f"{r}/run")
-        for f in ("dev/dri/renderD128", "lib/ld-linux-armhf.so.3", "lib/libc.so.6", "lib/libgcc_s.so.1",
+        for f in ("dev/dri/renderD128", "dev/dri/card0", "lib/ld-linux-armhf.so.3", "lib/libc.so.6", "lib/libgcc_s.so.1",
                   "usr/lib/libEGL.so.1", "usr/lib/libGLESv2.so.2"):
             th.write(os.path.join(r, f), "")
 
     def tearDown(self):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
-    def run_helper(self, answers="\n" * 5, pages=True, **env):
+    def run_helper(self, answers="\n" * 5, pages=True, extra=(), **env):
         cmd = [sys.executable, "-I", HELPER, "--ip", "192.0.2.141", "--key", self.key, "--work", self.work,
-               "--report", self.report, "--program", self.program]
+               "--report", self.report, "--program", self.program, *extra]
         if pages:
             cmd += ["--pages", self.pages]
         return subprocess.run(cmd, input=answers, env=dict(self.env, **env), text=True, stdout=subprocess.PIPE,
@@ -255,6 +262,49 @@ class GpuBenchTests(unittest.TestCase):
         changes = [c for c in self.lines("systemctl: ") if not c.startswith("is-active ")]
         self.assertIn("start mpfree-test-screen.service", changes)
         self.assertEqual(changes[-1:], ["start mpfree-test-screen.service"])
+
+    def test_the_flip_step_runs_only_with_the_flag_and_with_the_display_free(self):
+        res = self.run_helper(extra=["--flip"], answers="\n" * 6)
+        self.assertEqual(res.returncode, 0, res.stdout)
+        for text in ("[7/7] The GPU drawing straight into the panel's own buffers", "display: /dev/dri/card0",
+                     "CARD-FREE", "STATE-CHANGING, RAM only", "SCREEN CHANGES NOW",
+                     "flip: the screen is back as it was", "pad player: active (started again)",
+                     "RESULT: the GPU benchmark ran"):
+            self.assertIn(text, res.stdout)
+        self.assertEqual(self.lines("bench: ")[-2:], ["panel pages --hold-ms 1500 --frames 60",
+                                                      "flip pages --hold-ms 1500 --frames 60"])
+        # Without the flag: six steps, no flip.
+        res = self.run_helper(answers="\n" * 6)
+        self.assertEqual(res.returncode, 0, res.stdout)
+        self.assertNotIn("[7/", res.stdout)
+        self.assertEqual(self.lines("bench: ").count("flip pages --hold-ms 1500 --frames 60"), 1)
+        # Skipped at its prompt: it does not run.
+        res = self.run_helper(extra=["--flip"], answers="\n" * 4 + "s\n")
+        self.assertEqual(res.returncode, 0, res.stdout)
+        self.assertEqual(self.lines("bench: ").count("flip pages --hold-ms 1500 --frames 60"), 1)
+
+    def test_the_flip_step_is_refused_while_another_program_has_the_display(self):
+        os.makedirs(f"{self.root}/proc/4242/fd")
+        th.write(f"{self.root}/proc/4242/comm", "compositor\n")
+        os.symlink("/dev/dri/card0", f"{self.root}/proc/4242/fd/7")
+        res = self.run_helper(extra=["--flip"], answers="\n" * 6)
+        self.assertEqual(res.returncode, 1, res.stdout)
+        self.assertIn("PROBLEM: /dev/dri/card0 is open in pid 4242 (compositor)", res.stdout)
+        self.assertIn("another program has it open; the screen was not changed", res.stdout)
+        self.assertNotIn("flip pages --hold-ms 1500 --frames 60", self.lines("bench: "))
+        self.assertIn("pad player: active (started again)", res.stdout)
+
+    def test_a_flip_that_fails_says_whether_the_screen_changed_and_how_to_undo(self):
+        res = self.run_helper(extra=["--flip"], answers="\n" * 6, FAKE_FLIP_RC="2", FAKE_FLIP_BACK="0")
+        self.assertEqual(res.returncode, 1, res.stdout)
+        self.assertIn("flip ended with exit code 2 (before the screen changed)", res.stdout)
+        self.assertNotIn("did not say the screen is back", res.stdout)
+        res = self.run_helper(extra=["--flip"], answers="\n" * 6, FAKE_FLIP_RC="1", FAKE_FLIP_BACK="0")
+        self.assertEqual(res.returncode, 1, res.stdout)
+        self.assertIn("The program did not say the screen is back", res.stdout)
+        self.assertIn("switch the MPC off with its power switch and on again", res.stdout)
+        self.assertIn("flip ended with exit code 1", res.stdout)
+        self.assertIn("pad player: active (started again)", res.stdout)
 
     def test_q_stops_before_the_copy(self):
         res = self.run_helper(answers="q\n")
