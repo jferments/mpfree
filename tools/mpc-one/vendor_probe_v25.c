@@ -50,9 +50,11 @@ static int v25_guest_mmc(const char *name){
         return result(name,false,"failed-safe-synthetic-MMC-registry");
     uint32_t original_permission=get32(FLAG);
     uint32_t original_handler=get32(V25_MMC_DESCRIPTOR+12u);
-    unsigned init=0,transport=0,write=0,erase=0,persist=0,reset=0,log=0;
+    unsigned init=0,transport=0,controller=0,config=0,write=0,erase=0,persist=0,reset=0,log=0;
     if(!intercept(0x0011daf4u,0u,&init) ||
        !intercept(0x0011ca78u,1u,&transport) ||
+       !intercept(0x0011c4e8u,1u,&controller) ||
+       !intercept(0x0011c912u,0u,&config) ||
        !intercept(0x0011de50u,0u,&write) ||
        !intercept(0x0011dd4cu,0u,&erase) ||
        !intercept(0x00108110u,1u,&persist) ||
@@ -97,6 +99,8 @@ static int v25_guest_mmc(const char *name){
            "\"argv2\":\"%s\",\"argc\":%u,"
            "\"owner_handler_return\":%d,\"mock_device_init_calls\":%u,"
            "\"blocked_controller_transport_calls\":%u,"
+           "\"blocked_controller_command_calls\":%u,"
+           "\"blocked_controller_config_calls\":%u,"
            "\"blocked_real_write_callbacks\":%u,"
            "\"blocked_real_erase_callbacks\":%u,"
            "\"blocked_saveenv_calls\":%u,"
@@ -107,7 +111,7 @@ static int v25_guest_mmc(const char *name){
            name,v25_argv[which][0],
            v25_argv[which][1]?v25_argv[which][1]:"",
            v25_argv[which][2]?v25_argv[which][2]:"",
-           argc,status,calls(init),calls(transport),calls(write),
+           argc,status,calls(init),calls(transport),calls(controller),calls(config),calls(write),
            calls(erase),calls(persist),calls(reset));
     return result(name,guard,
        "original-native-Uboot-MMC-handler-returned-with-physical-write-guard");
