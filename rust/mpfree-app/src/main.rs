@@ -96,6 +96,7 @@ mod kit;
 mod looper_page;
 mod looper_tab;
 mod looping;
+mod memory;
 mod midi_in;
 mod midi_out;
 mod midi_saved;
