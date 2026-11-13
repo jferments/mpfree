@@ -97,6 +97,7 @@ mod looper_tab;
 mod looping;
 mod midi_in;
 mod midi_out;
+mod midi_saved;
 mod mixing;
 mod modmix;
 mod modpanels;
@@ -3353,6 +3354,15 @@ fn player_session(
     // What the mixer's I/O view shows and edits (MIDI, Sync and CV). The
     // loop only ever try_locks it (MusicIn::sync).
     let io_model = midi_in::io_model();
+    // The I/O view as it was left (midi_saved.rs): kept in the store until
+    // whole projects are saved, then the project's `midi` part.
+    if let Some(bytes) = store.read(midi_saved::OWNER, midi_saved::FILE) {
+        let text = String::from_utf8_lossy(&bytes);
+        for w in midi_saved::restore(&io_model, &text) {
+            out.note(&format!("midi: setting not read: {w}"));
+        }
+    }
+    let mut midi_saver = midi_saved::Saver::new(&io_model);
     out.show(gui::ToUi::IoModel(io_model.clone()));
     // MIDI Out (midi_out.rs): tracks whose "Plays on" is the 5-pin jacks play
     // there. State-changing on the MPC (note bytes on cable 2, never SysEx),
@@ -4889,6 +4899,16 @@ fn player_session(
                     }
                 }
             }
+            // The I/O view's settings changed: kept for the next start.
+            if let Some(text) = midi_saver.take(&io_model) {
+                if store.saves() {
+                    if let Err(e) =
+                        store.write(midi_saved::OWNER, midi_saved::FILE, text.into_bytes())
+                    {
+                        out.note(&format!("not saved: midi: {e}"));
+                    }
+                }
+            }
             if !strip_shown(app.view()) {
                 out.show(gui::ToUi::Looper(Box::new(looper.view(app.settings.bpm))));
             }
@@ -4985,6 +5005,9 @@ fn player_session(
         if store.saves() {
             let _ = store.save_settings(owner, &settings);
         }
+    }
+    if let (Some(text), true) = (midi_saver.take(&io_model), store.saves()) {
+        let _ = store.write(midi_saved::OWNER, midi_saved::FILE, text.into_bytes());
     }
     store.flush();
     out.say(&engines::log_line(&engines.lifetime()));
