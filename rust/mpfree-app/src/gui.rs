@@ -4025,7 +4025,21 @@ impl Player {
                 | time_view::NOTES
                 | time_view::EDIT_OPTIONS,
                 _,
-            ) => time_view::action(&ev, &self.time).map(FromUi::Time),
+            ) => time_view::action(&ev, &self.time).map(|a| {
+                // A swipe across a take lane is free with SHIFT held.
+                let a = match a {
+                    TimeAction::Audio(AudioAction::Comp { take, from, to, .. }) => {
+                        TimeAction::Audio(AudioAction::Comp {
+                            take,
+                            from,
+                            to,
+                            fine: self.status.shift,
+                        })
+                    }
+                    a => a,
+                };
+                FromUi::Time(a)
+            }),
             _ => None,
         }
     }
@@ -6016,6 +6030,18 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         }
         Err(e) => eprintln!("arrange-song-panel sample: {e}"),
     }
+    // The vocal's take lanes open under its lane (layout spec 4c): take 2
+    // plays over bars 5-8, take 1 everywhere else.
+    match mpfree_time_ui::sample::song_audio_state() {
+        Ok(mut state) => {
+            state.audio_takes = Some(0);
+            let mut p = quiet_player(fonts());
+            p.apply(ToUi::Time(Box::new(state)));
+            p.apply(ToUi::Show(View::Arrange));
+            out.push(("arrange-song-takes", p));
+        }
+        Err(e) => eprintln!("arrange-song-takes sample: {e}"),
+    }
     match sample_looper(fonts()) {
         Ok(p) => out.push(("looper", p)),
         Err(e) => eprintln!("looper sample: {e}"),
@@ -7813,6 +7839,7 @@ mod tests {
                 fade_in: 441,
                 fade_out: 0,
             }],
+            takes: Vec::new(),
             recording: None,
         }];
         p.apply(ToUi::Time(Box::new(st.clone())));
@@ -7893,6 +7920,34 @@ mod tests {
                 fine: false
             }))]
         );
+    }
+
+    /// Layout spec 4c: a swipe across a take lane snaps to the grid, and
+    /// with SHIFT held it is free.
+    #[test]
+    fn a_take_lane_swipe_with_shift_is_free() {
+        let mut p = sample_player(Fonts::embedded());
+        let swipe = |p: &mut Player| {
+            p.on_event(mpfree_ui::UiEvent {
+                widget: time_view::SONG.to_string(),
+                kind: mpfree_ui::EventKind::Span {
+                    index: 2,
+                    from: 100,
+                    to: 900,
+                },
+            })
+        };
+        let comp = |fine| {
+            Some(FromUi::Time(TimeAction::Audio(AudioAction::Comp {
+                take: 2,
+                from: 100,
+                to: 900,
+                fine,
+            })))
+        };
+        assert_eq!(swipe(&mut p), comp(false));
+        p.status.shift = true;
+        assert_eq!(swipe(&mut p), comp(true));
     }
 
     #[test]

@@ -28,7 +28,7 @@
 
 use mpfree_audiotracks::host::{AudioHost, TakeWave, MAX_COLUMNS};
 use mpfree_audiotracks::{Command, Input, Monitor, TakeInfo, MAX_TRACKS, PEAK_BLOCK};
-use mpfree_time_ui::song::{audio_blocks, AudioLane, MONITORS};
+use mpfree_time_ui::song::{audio_blocks, take_lanes, AudioLane, MONITORS};
 use mpfree_time_ui::view::{audio_color, AudioAction, RegionId, TimeState, TransportInfo};
 use mpfree_transport::{Block, TempoMap, Tick};
 use mpfree_ui::qlink::QLinkCard;
@@ -115,8 +115,10 @@ pub struct TrackHost {
     monitor: [Monitor; MAX_TRACKS],
     mute: [bool; MAX_TRACKS],
     solo: [bool; MAX_TRACKS],
-    /// The track whose panel is open over the lanes.
+    /// The track whose panel is open over the lanes, and the track whose
+    /// take lanes show.
     panel: Option<usize>,
+    takes_open: Option<usize>,
     /// The last `SetActive` sent.
     active: bool,
     /// The input latency last sent (frames), None before the first.
@@ -152,6 +154,7 @@ impl TrackHost {
             mute: [false; MAX_TRACKS],
             solo: [false; MAX_TRACKS],
             panel: None,
+            takes_open: None,
             active: false,
             latency: None,
             waves: Vec::with_capacity(mpfree_audiotracks::MAX_TAKES),
@@ -289,6 +292,7 @@ impl TrackHost {
         let mut h = Fnv::new();
         h.add(self.shown as u64);
         h.add(self.panel.map_or(u64::MAX, |t| t as u64));
+        h.add(self.takes_open.map_or(u64::MAX, |t| t as u64));
         for t in 0..MAX_TRACKS {
             h.add(u64::from(tr.armed(t)));
             h.add(u64::from(self.volume[t].to_bits()));
@@ -337,6 +341,7 @@ impl TrackHost {
                 mute: self.mute[t],
                 solo: self.solo[t],
                 blocks: audio_blocks(t, tr.regions(t), &takes, map, self.rate),
+                takes: take_lanes(t, tr.regions(t), &takes, map, self.rate),
                 recording: tr
                     .recording(t)
                     .and_then(|id| tr.take(id))
@@ -345,6 +350,7 @@ impl TrackHost {
             .collect();
         st.waves = self.waves.clone();
         st.audio_panel = self.panel;
+        st.audio_takes = self.takes_open;
         st.audio_free = (!st.audio.is_empty()).then(|| {
             let m = tr.memory();
             let per_sec = 2.0 * self.rate as f64;
@@ -556,8 +562,77 @@ impl TrackHost {
                     }
                 )
             }
-            AudioAction::Takes(_) => {
-                return Err("the take lanes are not built yet (they come next)".into())
+            AudioAction::Takes(t) => {
+                let n = self.track_no(t)?;
+                if self.takes_open == Some(t) {
+                    self.takes_open = None;
+                    self.changed = true;
+                    return Ok(String::new());
+                }
+                let count = tr.takes().filter(|k| k.track == t).count();
+                if count == 0 {
+                    return Err(format!("audio {n} has no takes yet: REC records one"));
+                }
+                // The lanes go under the track's lane, where the panel
+                // may sit.
+                self.takes_open = Some(t);
+                self.panel = None;
+                self.changed = true;
+                format!(
+                    "audio {n}: {count} take{} under the lane: swipe across one to play that stretch, tap it to use it all",
+                    if count == 1 { "" } else { "s" }
+                )
+            }
+            AudioAction::Comp {
+                take,
+                from,
+                to,
+                fine,
+            } => {
+                let k = tr
+                    .take(take)
+                    .ok_or_else(|| "that take is gone".to_string())?;
+                if tr.recording(k.track).is_some() {
+                    return Err(format!(
+                        "audio {}: comping waits until the recording stops",
+                        k.track + 1
+                    ));
+                }
+                let (from, to) = if fine {
+                    (from, to)
+                } else {
+                    snap_span(from, to)
+                };
+                let name = take_name(tr, take);
+                self.send(Command::Comp { take, from, to })?;
+                format!(
+                    "audio {}: {name} plays from {} to {}",
+                    k.track + 1,
+                    bar_beat(from, t),
+                    bar_beat(to, t)
+                )
+            }
+            AudioAction::UseTake(take) => {
+                let k = tr
+                    .take(take)
+                    .ok_or_else(|| "that take is gone".to_string())?;
+                if tr.recording(k.track).is_some() {
+                    return Err(format!(
+                        "audio {}: comping waits until the recording stops",
+                        k.track + 1
+                    ));
+                }
+                let name = take_name(tr, take);
+                // The engine keeps it to where the take has audio.
+                self.send(Command::Comp {
+                    take,
+                    from: Tick::MIN,
+                    to: Tick::MAX,
+                })?;
+                format!(
+                    "audio {}: {name} plays everywhere it has audio",
+                    k.track + 1
+                )
             }
             // The time engine keeps the pick (`TimeControl`).
             AudioAction::Pick(_) => String::new(),
@@ -732,6 +807,42 @@ fn region(
 /// at most [`MAX_COLUMNS`].
 fn columns(k: &TakeInfo) -> usize {
     (k.frames * k.channels / PEAK_BLOCK).clamp(1, MAX_COLUMNS)
+}
+
+/// The comp grid: a sixteenth note (layout spec 4c; SHIFT is free).
+const GRID: Tick = mpfree_transport::time::PPQ as Tick / 4;
+
+/// A swipe's stretch on the grid: each end to the nearest line, at least
+/// one step long.
+fn snap_span(from: Tick, to: Tick) -> (Tick, Tick) {
+    let near = |t: Tick| (t + GRID / 2).div_euclid(GRID) * GRID;
+    let (a, b) = (near(from.min(to)), near(from.max(to)));
+    (a, b.max(a + GRID))
+}
+
+/// "take 3": the track's takes count from 1, oldest first, as the lanes
+/// name them.
+fn take_name(tr: &mpfree_audiotracks::AudioTracks, take: u16) -> String {
+    let Some(k) = tr.take(take) else {
+        return "the take".into();
+    };
+    let mut mine: Vec<TakeInfo> = tr.takes().filter(|t| t.track == k.track).collect();
+    mine.sort_by_key(|t| (t.group, t.pass, t.id));
+    match mine.iter().position(|t| t.id == take) {
+        Some(n) => format!("take {}", n + 1),
+        None => "the take".into(),
+    }
+}
+
+/// A song tick as "5.2" (bar and beat, from 1) in `t`'s meter.
+fn bar_beat(tick: Tick, t: &TransportInfo) -> String {
+    let bar = t.meter.bar_ticks().max(1);
+    let beat = t.meter.beat_ticks().max(1);
+    format!(
+        "{}.{}",
+        tick.div_euclid(bar) + 1,
+        tick.rem_euclid(bar) / beat + 1
+    )
 }
 
 /// What an input records, for the log.
@@ -985,11 +1096,7 @@ mod tests {
             .h
             .action(AudioAction::Arm { track: 8, on: true }, &r.info(), true)
             .is_err());
-        assert!(r
-            .h
-            .action(AudioAction::Takes(0), &r.info(), true)
-            .unwrap_err()
-            .contains("not built yet"));
+        assert!(r.h.action(AudioAction::Takes(8), &r.info(), true).is_err());
         // Every lane added: "+ Audio" says so.
         for _ in 1..MAX_TRACKS {
             r.h.action(AudioAction::Add, &r.info(), true).unwrap();
@@ -1220,11 +1327,130 @@ mod tests {
         let knobs = audio_knobs(&st).unwrap();
         assert_eq!((knobs.track, knobs.region), (1, None));
         assert_eq!(r.h.host.tracks.stats().refused, 0);
-        assert!(r
-            .h
-            .action(AudioAction::Takes(0), &r.info(), true)
-            .unwrap_err()
-            .contains("not built yet"));
+    }
+
+    /// Layout spec 4c: Takes opens the track's take lanes (newest first);
+    /// a swipe across one plays that stretch, snapped to the grid unless
+    /// fine, and a tap uses the take everywhere it has audio.
+    #[test]
+    fn take_lanes_open_under_the_track_and_a_swipe_comps_a_stretch() {
+        let mut r = Rig::new();
+        let act = |r: &mut Rig, a| {
+            let out = r.h.action(a, &r.info(), true);
+            r.periods(2);
+            out
+        };
+        act(&mut r, AudioAction::Arm { track: 0, on: true }).unwrap();
+        let e = act(&mut r, AudioAction::Takes(0)).unwrap_err();
+        assert!(e.contains("no takes yet"), "{e}");
+        // Two recordings over bar 1.
+        r.live = true;
+        for _ in 0..2 {
+            r.command(T::Locate(0));
+            r.periods(2);
+            r.command(T::Record);
+            while r.t.position() < 3840 {
+                r.period();
+            }
+            r.command(T::Stop);
+            r.periods(10);
+        }
+        act(
+            &mut r,
+            AudioAction::Arm {
+                track: 0,
+                on: false,
+            },
+        )
+        .unwrap();
+        let ids: Vec<u16> = {
+            let mut k: Vec<TakeInfo> = r.h.host.tracks.takes().collect();
+            k.sort_by_key(|t| (t.group, t.pass, t.id));
+            k.iter().map(|t| t.id).collect()
+        };
+        assert_eq!(ids.len(), 2);
+        let (old, new) = (ids[0], ids[1]);
+        let plays = |r: &Rig| -> Vec<(Tick, Tick, u16)> {
+            r.h.host
+                .tracks
+                .regions(0)
+                .iter()
+                .map(|g| (g.start, g.end, g.take))
+                .collect()
+        };
+        let end = plays(&r)[0].1;
+        assert_eq!(plays(&r), [(0, end, new)], "the newest plays");
+        // Takes opens the lanes and closes the panel, which sat there.
+        act(&mut r, AudioAction::Panel(0)).unwrap();
+        let line = act(&mut r, AudioAction::Takes(0)).unwrap();
+        assert!(line.contains("2 takes under the lane"), "{line}");
+        let st = r.state();
+        assert_eq!((st.audio_takes, st.audio_panel), (Some(0), None));
+        let lane = &st.audio[0];
+        let names: Vec<_> = lane.takes.iter().map(|k| k.name.as_str()).collect();
+        assert_eq!(names, ["take 2", "take 1"], "newest first");
+        assert_eq!(lane.takes[0].used, [(0, end)]);
+        assert!(lane.takes[1].used.is_empty());
+        assert!(lane.takes[1].start <= 0 && lane.takes[1].end >= end - 1);
+        // A swipe over beats 2 and 3 of take 1, snapped to sixteenths.
+        let line = act(
+            &mut r,
+            AudioAction::Comp {
+                take: old,
+                from: 997,
+                to: 2830,
+                fine: false,
+            },
+        )
+        .unwrap();
+        assert_eq!(line, "audio 1: take 1 plays from 1.2 to 1.4");
+        assert_eq!(
+            plays(&r),
+            [(0, 960, new), (960, 2880, old), (2880, end, new)]
+        );
+        // With SHIFT it is free.
+        act(
+            &mut r,
+            AudioAction::Comp {
+                take: old,
+                from: 3001,
+                to: 3005,
+                fine: true,
+            },
+        )
+        .unwrap();
+        assert!(plays(&r).contains(&(3001, 3005, old)));
+        // Undo takes the edits back one at a time.
+        act(&mut r, AudioAction::Undo).unwrap();
+        act(&mut r, AudioAction::Undo).unwrap();
+        assert_eq!(plays(&r), [(0, end, new)]);
+        // A tap: the take everywhere it has audio.
+        let line = act(&mut r, AudioAction::UseTake(old)).unwrap();
+        assert_eq!(line, "audio 1: take 1 plays everywhere it has audio");
+        assert!(plays(&r).iter().all(|p| p.2 == old), "{:?}", plays(&r));
+        assert!(r.h.take_changed());
+        // Takes again closes them.
+        act(&mut r, AudioAction::Takes(0)).unwrap();
+        assert_eq!(r.state().audio_takes, None);
+        // Comping waits for a recording to stop, and a gone take says so.
+        act(&mut r, AudioAction::Arm { track: 0, on: true }).unwrap();
+        r.command(T::Locate(0));
+        r.command(T::Record);
+        r.periods(20);
+        let e = act(&mut r, AudioAction::UseTake(new)).unwrap_err();
+        assert!(e.contains("waits until the recording stops"), "{e}");
+        r.command(T::Stop);
+        r.periods(10);
+        assert!(act(&mut r, AudioAction::UseTake(999)).is_err());
+        assert_eq!(r.h.host.tracks.stats().refused, 0);
+    }
+
+    #[test]
+    fn a_swipe_snaps_to_sixteenths_and_is_never_empty() {
+        assert_eq!(snap_span(997, 2830), (960, 2880));
+        assert_eq!(snap_span(2830, 997), (960, 2880), "either way round");
+        assert_eq!(snap_span(250, 260), (240, 480), "one step at least");
+        assert_eq!(snap_span(-130, 100), (-240, 0));
     }
 
     #[test]

@@ -762,6 +762,13 @@ impl AudioSession {
                 &self.map,
                 AUDIO_RATE,
             ),
+            takes: crate::song::take_lanes(
+                track,
+                self.tracks.regions(track),
+                &takes,
+                &self.map,
+                AUDIO_RATE,
+            ),
             recording: None,
         })
         .collect();
