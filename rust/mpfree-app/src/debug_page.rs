@@ -227,7 +227,12 @@ impl DebugPages {
         };
         d.show_audio(ui);
         d.show_proc(ui);
-        DebugPages::set_engines(ui, &[(None, None); engines::STAGES.len()], Vec::new());
+        DebugPages::set_engines(
+            ui,
+            &[(None, None); engines::STAGES.len()],
+            Vec::new(),
+            Vec::new(),
+        );
         DebugPages::set_procs(ui, &procs::ProcView::default());
         Ok(d)
     }
@@ -339,6 +344,12 @@ impl DebugPages {
         }
     }
 
+    /// The app's resident memory and the system's total, from the last
+    /// /proc sample (debug mode: every 2 s), in kB.
+    pub fn memory_kb(&self) -> (Option<u64>, Option<u64>) {
+        (self.proc_view.rss_kb, self.proc_view.mem_total_kb)
+    }
+
     pub fn set_proc(&mut self, ui: &mut Ui, v: ProcView) {
         self.proc_view = v;
         self.show_proc(ui);
@@ -393,9 +404,16 @@ impl DebugPages {
     /// The CPU by engine page, from the audio loop's published numbers.
     /// `cores`: where the sound runs and its lanes' counts (cores.rs), under
     /// the budgets.
-    pub fn set_engines(ui: &mut Ui, s: &engines::Snapshot, cores: Vec<crate::cores::Row>) {
+    pub fn set_engines(
+        ui: &mut Ui,
+        s: &engines::Snapshot,
+        memory: Vec<crate::cores::Row>,
+        cores: Vec<crate::cores::Row>,
+    ) {
         if let Some(l) = ui.get_mut::<StatList>("engnow") {
-            l.set(engines::now_rows(s));
+            let mut rows = engines::now_rows(s);
+            rows.extend(memory);
+            l.set(rows);
         }
         if let Some(l) = ui.get_mut::<StatList>("engsession") {
             let mut rows = engines::session_rows(s);
