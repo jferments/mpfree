@@ -127,6 +127,9 @@ pub struct ChainState {
     /// `MixAction::AddInsert`). The editor opens it itself from its own
     /// "+ Add effect".
     pub picking: bool,
+    /// Plugin effects the picker offers after the built-in ones (the app's
+    /// plugin rack); empty when there are none.
+    pub plugins: Vec<Pick>,
 }
 
 impl Default for ChainState {
@@ -149,6 +152,7 @@ impl Default for ChainState {
             scopes: Vec::new(),
             scope: 0,
             picking: false,
+            plugins: Vec::new(),
         }
     }
 }
@@ -314,6 +318,7 @@ impl ChainState {
             scopes: Vec::new(),
             scope: 0,
             picking: false,
+            plugins: Vec::new(),
         }
     }
 
@@ -500,8 +505,10 @@ pub fn picture(
     visual::strip(&st, page, None, &scratch, t).cards
 }
 
-/// One effect the picker offers: its id (for `mpfree_fx_ui::make`), its
-/// name, a line about it and its category (the picker's heading).
+/// One effect the picker offers: its id (for `mpfree_fx_ui::make`, or a
+/// plugin's `clap:` id, which the app's plugin rack makes), its name, a
+/// line about it and its category (the picker's heading; plugins are
+/// [`mpfree_fx::Category::Plugins`]).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Pick {
     pub id: &'static str,
@@ -510,8 +517,8 @@ pub struct Pick {
     pub category: mpfree_fx::Category,
 }
 
-/// The effects the picker offers on `strip`, in the registry's order
-/// (grouped by category). Master safety only on the master strip.
+/// The built-in effects the picker offers on `strip`, in the registry's
+/// order (grouped by category). Master safety only on the master strip.
 pub fn picks(strip: Strip) -> Vec<Pick> {
     mpfree_fx::registry::offered(strip == Strip::Master)
         .map(|e| Pick {
@@ -521,4 +528,14 @@ pub fn picks(strip: Strip) -> Vec<Pick> {
             category: e.category,
         })
         .collect()
+}
+
+impl ChainState {
+    /// Everything the picker offers: the built-in effects for the strip,
+    /// then the plugins ([`ChainState::plugins`]).
+    pub fn picks(&self) -> Vec<Pick> {
+        let mut p = picks(self.strip);
+        p.extend_from_slice(&self.plugins);
+        p
+    }
 }

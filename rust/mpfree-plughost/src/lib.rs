@@ -27,6 +27,7 @@
 //! node (`clap:` and the plugin id), so a project doesn't care which runs.
 
 pub mod child;
+pub mod rack;
 pub mod shm;
 pub mod wire;
 
@@ -114,7 +115,7 @@ struct Ctl {
 /// What the node and the control handle share.
 struct Shared {
     map: Mapping,
-    exe: PathBuf,
+    program: Program,
     plugin: PathBuf,
     id: String,
     ctl: Mutex<Option<Ctl>>,
@@ -127,6 +128,9 @@ struct Shared {
     prepared: AtomicU64,
     crashes: AtomicU64,
     restarts: AtomicU64,
+    /// The plugin's state as [`Sandbox::refresh_state`] last read it: what
+    /// a project save and a restart use, read without asking the process.
+    snapshot: Mutex<Option<Vec<u8>>>,
 }
 
 impl Shared {
@@ -171,7 +175,7 @@ impl Drop for Shared {
 }
 
 /// Starts a process on the shared block and reads its hello.
-fn start(exe: &Path, plugin: &Path, id: &str, map: &Mapping) -> Result<(Ctl, Hello), Error> {
+fn start(program: &Program, plugin: &Path, id: &str, map: &Mapping) -> Result<(Ctl, Hello), Error> {
     let (ours, theirs) = UnixStream::pair()?;
     ours.set_read_timeout(Some(CONTROL_TIMEOUT))?;
     // Copies at 10 and up, so the dup2 calls in the child can't clobber
@@ -186,7 +190,7 @@ fn start(exe: &Path, plugin: &Path, id: &str, map: &Mapping) -> Result<(Ctl, Hel
     if shm_fd < 0 || ctl_fd < 0 {
         return Err(Error::Io(io::Error::last_os_error()));
     }
-    let mut cmd = Command::new(exe);
+    let mut cmd = program.command();
     cmd.arg("--plugin")
         .arg(plugin)
         .arg("--id")
@@ -240,11 +244,156 @@ fn start(exe: &Path, plugin: &Path, id: &str, map: &Mapping) -> Result<(Ctl, Hel
     }
 }
 
+/// How to start the plugin process: a program and the arguments that go
+/// before the process's own. The `mpfree-plughost` binary takes none; a
+/// program that serves as the plugin process behind a subcommand (the app
+/// does, `mpfree plughost ...`) takes that word.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Program {
+    pub exe: PathBuf,
+    pub lead: Vec<std::ffi::OsString>,
+}
+
+impl Program {
+    /// The `mpfree-plughost` binary at `exe`.
+    pub fn new(exe: &Path) -> Program {
+        Program {
+            exe: exe.to_path_buf(),
+            lead: Vec::new(),
+        }
+    }
+
+    /// `exe` with `lead` before the process's arguments.
+    pub fn with_lead(exe: &Path, lead: &[&str]) -> Program {
+        Program {
+            exe: exe.to_path_buf(),
+            lead: lead.iter().map(Into::into).collect(),
+        }
+    }
+
+    fn command(&self) -> Command {
+        let mut c = Command::new(&self.exe);
+        c.args(&self.lead);
+        c
+    }
+}
+
+/// One plugin in a `.clap` file, as [`list`] read it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Listed {
+    pub id: String,
+    pub name: String,
+    pub vendor: String,
+    pub kind: Kind,
+}
+
+/// Reads one line of `mpfree-plughost --list` ([`child::list_line`]).
+pub fn parse_list_line(line: &str) -> Option<Listed> {
+    let mut f = line.split('\t');
+    if f.next()? != "plugin" {
+        return None;
+    }
+    let (id, name, vendor) = (f.next()?, f.next()?, f.next()?);
+    let kind = match f.next()? {
+        "instrument" => Kind::Instrument,
+        "effect" => Kind::Effect,
+        _ => return None,
+    };
+    if f.next().is_some() || id.is_empty() {
+        return None;
+    }
+    Some(Listed {
+        id: id.to_string(),
+        name: name.to_string(),
+        vendor: vendor.to_string(),
+        kind,
+    })
+}
+
+/// Lists the plugins in the `.clap` file `plugin` by starting the plugin
+/// process with `--list`, so a plugin file that crashes
+/// or hangs while loading can't take MPFree with it. Waits at most
+/// [`CONTROL_TIMEOUT`], then kills the process. Control thread only.
+pub fn list(program: &Program, plugin: &Path) -> Result<Vec<Listed>, Error> {
+    use std::io::Read;
+    use std::process::Stdio;
+    let mut cmd = program.command();
+    cmd.arg("--list")
+        .arg(plugin)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    // SAFETY: only async-signal-safe calls between fork and exec.
+    unsafe {
+        cmd.pre_exec(|| {
+            libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL);
+            let none = libc::rlimit {
+                rlim_cur: 0,
+                rlim_max: 0,
+            };
+            libc::setrlimit(libc::RLIMIT_CORE, &none);
+            Ok(())
+        });
+    }
+    let mut child = cmd.spawn()?;
+    // Read both pipes on their own threads so a chatty plugin can't fill
+    // one and stall while we wait.
+    let mut out = child.stdout.take().expect("piped");
+    let mut err = child.stderr.take().expect("piped");
+    let out = std::thread::spawn(move || {
+        let mut s = String::new();
+        let _ = out.read_to_string(&mut s);
+        s
+    });
+    let err = std::thread::spawn(move || {
+        let mut s = String::new();
+        let _ = err.read_to_string(&mut s);
+        s
+    });
+    let until = Instant::now() + CONTROL_TIMEOUT;
+    let status = loop {
+        match child.try_wait()? {
+            Some(st) => break st,
+            None if Instant::now() < until => std::thread::sleep(Duration::from_millis(5)),
+            None => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(Error::Plugin(format!(
+                    "{} took longer than {} s to list",
+                    plugin.display(),
+                    CONTROL_TIMEOUT.as_secs()
+                )));
+            }
+        }
+    };
+    let out = out.join().unwrap_or_default();
+    let err = err.join().unwrap_or_default();
+    if !status.success() {
+        use std::os::unix::process::ExitStatusExt;
+        let why = match (status.code(), status.signal()) {
+            (_, Some(sig)) => format!("crashed while loading (signal {sig})"),
+            _ => err.lines().next().unwrap_or("would not load").to_string(),
+        };
+        return Err(Error::Plugin(format!("{}: {why}", plugin.display())));
+    }
+    Ok(out.lines().filter_map(parse_list_line).collect())
+}
+
 /// Starts `exe` (the `mpfree-plughost` binary) for plugin `id` in the
 /// `.clap` file `plugin`. Control thread only.
 pub fn spawn(exe: &Path, plugin: &Path, id: &str) -> Result<(SandboxNode, Sandbox), Error> {
+    spawn_with(&Program::new(exe), plugin, id)
+}
+
+/// [`spawn`] with any [`Program`] (the app itself, say, with `plughost`
+/// in front of the arguments).
+pub fn spawn_with(
+    program: &Program,
+    plugin: &Path,
+    id: &str,
+) -> Result<(SandboxNode, Sandbox), Error> {
     let map = Mapping::create()?;
-    let (ctl, hello) = start(exe, plugin, id, &map)?;
+    let (ctl, hello) = start(program, plugin, id, &map)?;
     let info = intern_info(&hello.id, &hello.name, hello.kind);
     let params = intern_params(&hello.id, hello.params.clone());
     let values: Box<[AtomicU32]> = params
@@ -253,7 +402,7 @@ pub fn spawn(exe: &Path, plugin: &Path, id: &str) -> Result<(SandboxNode, Sandbo
         .collect();
     let shared = Arc::new(Shared {
         map,
-        exe: exe.to_path_buf(),
+        program: program.clone(),
         plugin: plugin.to_path_buf(),
         id: id.to_string(),
         ctl: Mutex::new(Some(ctl)),
@@ -263,6 +412,7 @@ pub fn spawn(exe: &Path, plugin: &Path, id: &str) -> Result<(SandboxNode, Sandbo
         prepared: AtomicU64::new(0),
         crashes: AtomicU64::new(0),
         restarts: AtomicU64::new(0),
+        snapshot: Mutex::new(None),
     });
     let node = SandboxNode {
         shared: Arc::clone(&shared),
@@ -296,6 +446,20 @@ pub struct SandboxNode {
 }
 
 impl SandboxNode {
+    /// The plugin's state as the control thread last read it
+    /// ([`Sandbox::refresh_state`]), for a project file. Never asks the
+    /// process and never waits: None if no state was read yet, or the
+    /// control thread is storing a new one this moment. It copies the
+    /// bytes (an allocation), so not on the audio thread's period.
+    pub fn saved_state(&self) -> Option<Vec<u8>> {
+        self.shared.snapshot.try_lock().ok()?.clone()
+    }
+
+    /// The `.clap` file the plugin came from.
+    pub fn plugin_file(&self) -> &Path {
+        &self.shared.plugin
+    }
+
     pub fn set_deadline(&mut self, d: Deadline) {
         self.deadline = d;
     }
@@ -629,7 +793,7 @@ impl Sandbox {
             (*p).done.store(req, Ordering::Release);
         }
         let (ctl, _hello) = start(
-            &self.shared.exe,
+            &self.shared.program,
             &self.shared.plugin,
             &self.shared.id,
             &self.shared.map,
@@ -675,6 +839,57 @@ impl Sandbox {
             Ok(ToHost::Text(t)) => t,
             _ => None,
         }
+    }
+
+    /// Reads the plugin's state from the process and keeps it as the
+    /// snapshot that [`SandboxNode::saved_state`] and
+    /// [`Sandbox::restart_from_snapshot`] use. A round trip to the process:
+    /// control thread only. False if the process didn't answer with a
+    /// state (the old snapshot stays).
+    pub fn refresh_state(&self) -> bool {
+        match self.save_state() {
+            Some(s) => {
+                *self
+                    .shared
+                    .snapshot
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner()) = Some(s);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Sets the snapshot (a state loaded from a project, before the
+    /// process has been asked).
+    pub fn set_snapshot(&self, state: Option<Vec<u8>>) {
+        *self
+            .shared
+            .snapshot
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = state;
+    }
+
+    /// [`Sandbox::restart`] with the last snapshot.
+    pub fn restart_from_snapshot(&self) -> Result<(), Error> {
+        let state = self
+            .shared
+            .snapshot
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        self.restart(state.as_deref())
+    }
+
+    /// The node has been dropped: only this handle is left, and the
+    /// process can be ended by dropping it.
+    pub fn orphaned(&self) -> bool {
+        Arc::strong_count(&self.shared) == 1
+    }
+
+    /// The plugin's CLAP id (the node's id is `clap:` and this).
+    pub fn plugin_id(&self) -> &str {
+        &self.shared.id
     }
 
     /// The process's id, while it runs.
