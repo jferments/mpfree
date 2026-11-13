@@ -32,12 +32,14 @@
 
 use std::io::{self, ErrorKind, Write};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TrySendError};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use mpfree_fx::{Insert, StripId};
+
+use crate::plugins::Plugins;
 
 /// Controller messages this long or shorter travel without an allocation.
 pub const SHORT: usize = 32;
@@ -426,15 +428,29 @@ pub struct Builder {
 }
 
 impl Builder {
-    /// Starts the thread (allocates; call it before the loop).
-    pub fn start() -> io::Result<Builder> {
+    /// Starts the thread (allocates; call it before the loop). It also
+    /// starts the plugins' processes when one is added, and watches them
+    /// every [`mpfree_plughost::rack::WATCH_EVERY`] ([`Plugins::watch`]).
+    pub fn start(plugins: Arc<Plugins>) -> io::Result<Builder> {
         let (tx, rx) = mpsc::sync_channel::<Job>(BUILD_QUEUE);
         let (built_tx, built) = mpsc::sync_channel::<Built>(BUILD_QUEUE);
         let thread = thread::Builder::new()
             .name("mpfree-build".into())
             .spawn(move || {
                 let _ = crate::cores::background();
-                for job in rx {
+                let mut watched = Instant::now();
+                loop {
+                    let job = match rx.recv_timeout(mpfree_plughost::rack::WATCH_EVERY) {
+                        Ok(job) => Some(job),
+                        Err(RecvTimeoutError::Timeout) => None,
+                        Err(RecvTimeoutError::Disconnected) => return,
+                    };
+                    let now = Instant::now();
+                    if now.duration_since(watched) >= mpfree_plughost::rack::WATCH_EVERY {
+                        plugins.watch(now);
+                        watched = now;
+                    }
+                    let Some(job) = job else { continue };
                     match job {
                         Job::Build {
                             strip,
@@ -442,8 +458,15 @@ impl Builder {
                             rate,
                             block,
                         } => {
-                            let insert =
-                                mpfree_fx_ui::make(id).map(|node| Insert::new(node, rate, block));
+                            let node = if Plugins::is_plugin(id) {
+                                // Its own process; a refusal is said by
+                                // the plugins' lines, and the chain
+                                // editor hears "no maker".
+                                plugins.make(id).ok()
+                            } else {
+                                mpfree_fx_ui::make(id)
+                            };
+                            let insert = node.map(|node| Insert::new(node, rate, block));
                             // Room for every request (`pending` is checked
                             // against the queue), so this waits only if the
                             // audio thread stopped taking them.
@@ -677,7 +700,7 @@ mod tests {
 
     #[test]
     fn effects_are_built_and_dropped_on_the_builder_thread() {
-        let mut b = Builder::start().unwrap();
+        let mut b = Builder::start(Arc::new(Plugins::none())).unwrap();
         assert!(b.build(StripId::Track(1), "mpfree.fx.drive", 44_100, 128));
         assert!(b.build(StripId::Track(2), "no.such.effect", 44_100, 128));
         assert_eq!(b.pending(), 2);
