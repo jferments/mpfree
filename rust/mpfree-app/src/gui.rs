@@ -554,6 +554,9 @@ pub enum FromUi {
     },
     /// The Looper tab: pick loop `n` for the controls.
     LoopPick(usize),
+    /// Loop `n`'s mute turned over without picking it (the picked loop's
+    /// with None).
+    LoopMute(Option<usize>),
     /// The Looper tab: a command for the picked loop (an edit tool, Fade
     /// old, the seam fade, After recording).
     LoopCommand(mpfree_looper::Command),
@@ -1339,6 +1342,10 @@ impl Player {
                     if let Some(n) = self.looper_page.first_empty() {
                         out.push(FromUi::LoopPick(n));
                     }
+                }
+                LoopAct::Mute(n) => out.push(FromUi::LoopMute(Some(n))),
+                LoopAct::Clear => {
+                    out.push(FromUi::LoopCommand(mpfree_looper::Command::Clear))
                 }
                 LoopAct::Layer(k) => self.looper_page.pick_layer(&mut self.ui, k),
                 LoopAct::LayerCmd(k, command) => {
@@ -6218,16 +6225,26 @@ mod tests {
         };
         // Loop 2, then a new loop (loop 3, the first empty one).
         let r = p.ui.rect_of(LOOPS).unwrap();
-        let (rows, new, _) = p.ui.get::<LoopList>(LOOPS).unwrap().parts(r);
+        let parts = p.ui.get::<LoopList>(LOOPS).unwrap().parts(r);
+        let rows = parts.rows;
         assert_eq!(rows.len(), 4);
         assert_eq!(
             tap(&mut p, (rows[1].x + 10, rows[1].y + 10)),
             Some(FromUi::LoopPick(1))
         );
-        let new = new.unwrap();
+        let new = parts.new.unwrap();
         assert_eq!(
             tap(&mut p, (new.x + 10, new.y + 10)),
             Some(FromUi::LoopPick(2))
+        );
+        // Loop 2's speaker (it is muted) lets it play, without picking it;
+        // Clear loop clears the picked loop.
+        let (sx, sy) = crate::looper_tab::LoopList::speaker_at(rows[1]);
+        assert_eq!(tap(&mut p, (sx, sy)), Some(FromUi::LoopMute(Some(1))));
+        let clear = parts.clear.expect("loop 1 has sound");
+        assert_eq!(
+            tap(&mut p, (clear.x + 10, clear.y + 10)),
+            Some(FromUi::LoopCommand(mpfree_looper::Command::Clear))
         );
         // The chop's speaker (it is muted) unmutes it by its id.
         let (_, view) = recorded_loop();

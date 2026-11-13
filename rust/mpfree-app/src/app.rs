@@ -1001,8 +1001,6 @@ pub struct App {
     /// Buttons pressed while the mapper listened: their release is kept
     /// from the rest of the app too.
     swallowed: [bool; 128],
-    /// The Looper tab's Mute.
-    loop_muted: bool,
     /// Where the sound runs in this start (cores.rs); Prefs' "Sound cores"
     /// says "(next start)" while the setting differs.
     sound_cores_now: SoundCores,
@@ -1105,7 +1103,6 @@ impl App {
             menu_editing: false,
             theme_files: Vec::new(),
             tuning_files: Vec::new(),
-            loop_muted: false,
             sound_cores_now: SoundCores::Shared,
             save_dirty: false,
             saved: Default::default(),
@@ -2241,10 +2238,9 @@ impl App {
             B_UNDO => vec![c(LoopCommand::Undo)],
             B_REDO => vec![c(LoopCommand::Redo)],
             B_CLEAR => vec![c(LoopCommand::Clear)],
-            B_MUTE => {
-                self.loop_muted = !self.loop_muted;
-                vec![c(LoopCommand::Mute(self.loop_muted))]
-            }
+            // The picked loop's own mute, turned over (each loop keeps
+            // its own).
+            B_MUTE => vec![Effect::Looper(LoopAction::ToggleMute(None))],
             B_MONITOR if self.settings.line_input => {
                 self.settings.loop_monitor = !self.settings.loop_monitor;
                 let mut fx = vec![

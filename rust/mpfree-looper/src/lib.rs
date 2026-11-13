@@ -1258,6 +1258,11 @@ impl Looper {
         self.selected
     }
 
+    /// Room left in the command queue this period.
+    pub fn room(&self) -> usize {
+        QUEUE - self.queued
+    }
+
     fn push(&mut self, q: Queued) -> bool {
         if self.queued == QUEUE {
             self.stats.dropped_commands += 1;
