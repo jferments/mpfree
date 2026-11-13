@@ -1434,6 +1434,38 @@ class Lab:
             self.stages["update-format-and-spl-evidence"]={
                 "success":False,"error":str(exc)}
             self.notes.append("Format/verification/SPL audit: "+str(exc))
+        # Static U-Boot Fastboot download -> fixed RAM buffer -> bootm.
+        # Accepted length is not a safe memory region and no command
+        # has been issued to the physical MPC during this investigation.
+        try:
+            ram_model = load_module(
+                "tools/mpc-one/synthesize_fastboot_ram_path.py",
+                "mpfree_static_fastboot_ram_path",
+            )
+            ram_report = ram_model.build(
+                lambda path: (self.out / path).read_bytes()
+            )
+            (self.out / "fastboot-ram-path.json").write_text(
+                json.dumps(ram_report, indent=2) + "\n")
+            (self.out / "fastboot-ram-path.md").write_text(
+                ram_model.markdown(ram_report))
+            record["fastboot_ram_path"] = {
+                "report":"fastboot-ram-path.json",
+                "static_evidence_passed":ram_report["all_static_evidence_passed"],
+                "receive_base":ram_report["ram_receive_base"],
+                "advertised_max_bytes":ram_report["max_advertised_download_bytes"],
+                "physical_ram_layout_verified":False,
+            }
+            self.stages["fastboot-ram-path-evidence"] = {
+                "success":bool(ram_report["all_static_evidence_passed"]),
+                "source_checks":len(ram_report["checks"]),
+                "safe_ram_boot_tested":False,
+            }
+        except Exception as exc:
+            record["fastboot_ram_path_error"]=str(exc)
+            self.stages["fastboot-ram-path-evidence"]={
+                "success":False,"error":str(exc)}
+            self.notes.append("Fastboot RAM boot static path: "+str(exc))
         (self.out / "cross-evidence.json").write_text(json.dumps(record, indent=2) + "\n")
         summary = [
             "# MPFree integrated bootchain run",
@@ -1599,6 +1631,16 @@ class Lab:
             summary.append("- Verification state 2 and option 2 bypass *rechecking*;")
             summary.append("  error -13 meaning/object reuse and actual policy unproven.")
             summary.append("- See update-format-and-spl.json and .md.")
+        summary += ["", "## U-Boot Fastboot download / RAM / bootm"]
+        ram = record.get("fastboot_ram_path")
+        if ram:
+            summary.append("- Static upload base: " + hex(ram["receive_base"]))
+            summary.append("- Advertised maximum bytes (NOT known free RAM): " +
+                           hex(ram["advertised_max_bytes"]))
+            summary.append("- Download permission and legacy/FDT bootm paths: " +
+                           str(ram["static_evidence_passed"]))
+            summary.append("- No verified physical RAM/FDT layout or Fastboot execution.")
+            summary.append("- See fastboot-ram-path.json and .md.")
         summary += ["", "## Guest/static image consistency"]
         if record["match_tests"]:
             for entry in record["match_tests"]:
