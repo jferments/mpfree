@@ -388,8 +388,30 @@ every sample screen for three idle seconds and fails if any page draws,
 except the ones that show something live (the I/O view's lights, the touch
 test, the Rec tab's input).
 
-Still to do: wait on touch rather than waking every 4 ms (the status line
-counts the wakeups), and redraw live parts at the rate they need.
+**The pages' clock and the loop's sleep** (fixed 13 Nov, `pace.rs`,
+`touch_bell.rs`). The screen loop woke every 4 ms to look at the
+touchscreen, and while nothing redrew it ticked the pages on each of those
+passes by the time since the last frame drawn (up to 0.1 s a tick). The
+pages' clocks ran about 23 times fast: one idle second on the workstation
+was 241 wakeups and 233 ticks that moved the clocks 22.8 s, so a told line
+(4 s) went in about 0.2 s, holding a macro card opened the macros panel in
+well under the half second the manual gives, and the top bar looked at its
+chips many times a second. Now the pages tick every 33 ms, drawn or not,
+each by the time since the last tick, and the next tick waits a frame after
+a frame finishes drawing, as before. Between ticks the thread sleeps until a
+message, the next tick or the touchscreen's doorbell: a thread of its own
+(`mpfree-touch-bell`) sleeps in read(2) on a second read-only handle on the
+panel (each evdev reader gets its own copy of every event, and nothing is
+grabbed) and wakes the screen thread when a report comes, once until the
+screen thread reads. Idle: 32 wakeups and 32 ticks a second, 0.998 s of
+clock. If the doorbell cannot open or stops, the thread reads the panel
+every 4 ms as before; that is logged (`touch: no doorbell` or `touch:
+doorbell stopped`), counted, and shown after the reader's line in the Touch
+lab. Tests: `the_idle_screen_thread_keeps_time_and_sleeps` and
+`without_the_doorbell_the_screen_thread_reads_the_panel_every_4_ms` (gui.rs),
+`pace.rs` and `touch_bell.rs`.
+
+Still to do: redraw live parts at the rate they need.
 
 ## CI
 
