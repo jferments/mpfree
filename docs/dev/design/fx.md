@@ -65,6 +65,10 @@ Every effect is a `Node`, so it takes sample-timed parameter events (automation,
 - **A NaN guard:** a node that puts out a non-finite sample is reset, its slot plays dry for that block, and the chain counts it.
 - **Block-size independent,** including where a tail starts and ends. The one exception: a node with an endless tail (a frozen delay) that is bypassed and then unfrozen picks up its new tail at the end of that block.
 
+### Saved with the project
+
+Each insert is saved in the project's `mixer` part with its slot id, on or off, node id, sidechain key, parameters and, for a node that keeps more than its parameters, its state: `Node::save_state` (bytes, called on the audio thread between periods, never blocking) and `Node::load_state`. `Node::save_extras` names what it needs to be made again (a plug-in's file). An open makes each effect by id (`project::make_node`) on the screen thread and puts the chain in through the mixer's queued edits (`MixHost::open`). See [browser.md](browser.md#the-parts).
+
 ## The mixer
 
 `Mixer` (in `src/mixer.rs`; the module docs have the details) is the one place audio is summed. It covers what the MPC 3.6 mixer can route, in fixed stages so nothing can feed back:

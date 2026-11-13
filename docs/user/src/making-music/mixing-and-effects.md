@@ -1,7 +1,7 @@
 <!--
 status: changing
 covers: rust/mpfree-fx rust/mpfree-mixer-ui rust/mpfree-fx-ui rust/mpfree-chain-ui rust/mpfree-app/src/chain_page.rs rust/mpfree-app/src/mixing.rs rust/mpfree-fx/src/perform.rs
-checked: 2026-11-13 7497b1a
+checked: 2026-11-13 9560b32
 -->
 
 # Mixing and effects
@@ -56,7 +56,7 @@ Under Audio come three more sections, for the gear around the MPC (see [Playing 
 - **Sync** sets **Tempo from** (MPFree itself or a port's clock), what following does with start, stop and the position, the clock arriving now, and which ports send **Clock out**.
 - **CV** has a row for each of the eight CV/gate outputs: its **Job**, the **Track** it follows and its setting, with the volts it gives now.
 
-A setting for a device that isn't plugged in, or for a part of MPFree that doesn't work yet, says so on its own row, and is kept. For now these settings last until you switch off; saving them with the project is coming.
+A setting for a device that isn't plugged in, or for a part of MPFree that doesn't work yet, says so on its own row, and is kept. The MIDI, Sync and CV settings are saved with the project, and so is the rest of the mixer: levels, pans, sends, mutes and every effect with its settings (see [Saving your work](saving.md#projects)). The line input's source, monitoring and arming are not part of a project, so opening one never turns the input on.
 
 ## Using the Q-Links in the mixer
 
