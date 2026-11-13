@@ -38,6 +38,8 @@ While the music plays, hold **PLAY** for a fill: notes set to play only in fills
 
 There is no separate mute page. Each pattern row's name is its **mute button**, with a speaker icon in a box: tap anywhere on the name to mute that pad (the box turns red and the speaker shows a ×), and again to bring it back. On the loop strip, each layer's name and speaker are one button that mutes that layer.
 
+Hold **ERASE** and tap a row's name to delete that sound's steps from the pattern instead. **UNDO** brings them back.
+
 ### Muting tracks and pads
 
 **TRACK MUTE** turns the pads into mute buttons over whatever page you are on, so you can drop parts in and out without leaving the screen you are using. Pads 1-8 are tracks 1-8: green while the track plays a clip, dim green when it has nothing playing, red while it is muted. Tap a pad to mute or unmute its track; the track's clip keeps its place, so it comes back in time. **SHIFT + TRACK MUTE** does the same for the pads of the kit: a pad lit in the kit's colour plays, a red one is muted. Press the same button again to play the pads as usual. The hint line at the bottom of the screen says which mode the pads are in.

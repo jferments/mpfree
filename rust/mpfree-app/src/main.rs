@@ -2878,6 +2878,8 @@ fn time_action(
     if let TimeAction::Transport(Command::SetTempo(bpm)) = a {
         return app.set_tempo(bpm);
     }
+    // ERASE + a clip: said in place of the hint, refused or done.
+    let erase = matches!(a, TimeAction::DeleteClip { .. });
     let r = match a {
         // The scene morph runs on the mixer's mod engine.
         TimeAction::MorphRows { .. }
@@ -2888,6 +2890,7 @@ fn time_action(
         _ => time.act(a),
     };
     match r {
+        Ok(line) | Err(line) if erase => return vec![app::Effect::Tell(line)],
         Ok(line) if !line.is_empty() => out.note(&format!("time: {line}")),
         Ok(_) => {}
         Err(e) => out.note(&format!("time: {e}")),
@@ -3518,11 +3521,21 @@ fn player_session(
                 gui::FromUi::OpenIo => fx.extend(app.open_io()),
                 // The Play page: filters, sends, faders, speakers, throws, XY.
                 gui::FromUi::PlayFx(p) => mix.play(p),
-                gui::FromUi::Steps(a) => match time.step_action(a) {
-                    Ok(line) if !line.is_empty() => out.note(&line),
-                    Ok(_) => {}
-                    Err(e) => out.note(&format!("steps: {e}")),
-                },
+                gui::FromUi::Steps(a) => {
+                    // ERASE + a lane's name: said in place of the hint.
+                    let erase = matches!(a, time::StepAction::ClearPad { .. });
+                    match time.step_action(a) {
+                        Ok(line) if erase => fx.push(app::Effect::Tell(if line.is_empty() {
+                            "steps: that lane has no steps to erase".to_string()
+                        } else {
+                            format!("{line} (UNDO brings them back)")
+                        })),
+                        Ok(line) if !line.is_empty() => out.note(&line),
+                        Ok(_) => {}
+                        Err(e) if erase => fx.push(app::Effect::Tell(format!("steps: {e}"))),
+                        Err(e) => out.note(&format!("steps: {e}")),
+                    }
+                }
                 gui::FromUi::Tab(k) => fx.extend(app.tab(k)),
                 gui::FromUi::MenuSelect(k) => fx.extend(app.select(k)),
                 gui::FromUi::MenuStep(k, d) => fx.extend(app.step_item(k, d)),

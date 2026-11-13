@@ -686,6 +686,13 @@ impl StepGrid {
         let g = self.geom(r);
         self.shown(g.rows).iter().map(|l| l.pad).collect()
     }
+
+    /// The middle of row `k`'s name, left of its mute (for the app's tests).
+    #[cfg(test)]
+    pub fn name_at(&self, r: Rect, k: usize) -> (i32, i32) {
+        let g = self.geom(r);
+        (g.names.x + 20, g.row_y(k) + g.rh / 2)
+    }
 }
 
 impl Widget for StepGrid {

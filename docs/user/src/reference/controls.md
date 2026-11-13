@@ -96,7 +96,7 @@ The mode buttons along the top of the MPC go to the MPFree page that does the sa
 | **PROG EDIT** | The sound the pads play: the Synth tab while the synth is on the pads, otherwise the Pads tab's Pad view. | Next build |
 | **TRACK MUTE** | The pads become mute keys over any page: pads 1-8 mute and unmute tracks 1-8. **SHIFT + TRACK MUTE**: each pad mutes and unmutes itself in the kit. Press the same button again to play the pads. See [Playing live](../making-music/playing-live.md#muting-tracks-and-pads). | Next build |
 | **Q-LINK** | Steps the Q-Links through Macros 1-4, Macros 5-8 and the page's own knobs (the Play page, Arrange and the chain editor). See [Mixing and effects](../making-music/mixing-and-effects.md#macros). | Next build |
-| **ERASE** | Live erase while recording. | Planned |
+| **ERASE** | Hold **ERASE** and tap something on the screen to delete it: a clip on the Arrange tab, a pattern row's name on the Play page (that sound's steps), or a layer on the Looper tab. **UNDO** brings it back. The hint line says what you can tap while you hold it. A clip used in the song, a whole loop, effects and macros can't be deleted this way yet. Works once Map controls has found ERASE. Live erase while recording is planned. | Next build |
 | **BROWSE** | Opens or closes the browser. **SHIFT + BROWSE** saves the project. See [Saving your work](../making-music/saving.md). | Planned |
 | **The data wheel's push** | See [Everywhere](#everywhere). Works once Map controls has found it. | Next build |
 | **COPY**, **TC** | Not assigned yet. | Planned |

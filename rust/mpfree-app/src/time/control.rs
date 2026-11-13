@@ -524,6 +524,11 @@ impl TimeControl {
                 Some(change.key(pad, step)),
                 format!("step {} of pad {}: {change:?}", step + 1, pad + 1),
             ),
+            StepAction::ClearPad { pad } => (
+                grid.clear_row(clip, pad),
+                None,
+                format!("pad {}'s steps", pad + 1),
+            ),
         };
         if edit.is_empty() && made.is_none() {
             return Ok(String::new());
@@ -539,6 +544,7 @@ impl TimeControl {
                 self.project.tracks[track].name
             ),
             (None, StepAction::Tap { .. }) => format!("steps: {what} {on}"),
+            (None, StepAction::ClearPad { .. }) => format!("steps: {what} erased"),
             (None, _) => String::new(),
         })
     }
@@ -725,6 +731,31 @@ impl TimeControl {
                 }
                 Ok(format!(
                     "new clip in slot {} of track {}, recording",
+                    slot + 1,
+                    track + 1
+                ))
+            }
+            TimeAction::DeleteClip { track, slot } => {
+                // A clip the song plays stays: its song blocks would go
+                // silent, and the song's edits have no undo yet.
+                let in_song = self.project.arrangement.placements.iter().any(|p| {
+                    p.track == track
+                        && matches!(p.source, mpfree_seq::arrange::Source::Slot(s) if s == slot)
+                });
+                if in_song {
+                    return Err(format!(
+                        "clip {} of track {} is in the song: delete its song blocks first",
+                        slot + 1,
+                        track + 1
+                    ));
+                }
+                self.takes
+                    .remove_clip(&mut self.project, track, slot)
+                    .map_err(|_| format!("slot {} of track {} is empty", slot + 1, track + 1))?;
+                // Its launch and cues go with it (compile drops them).
+                self.compile()?;
+                Ok(format!(
+                    "erase: clip {} of track {} deleted (UNDO brings it back)",
                     slot + 1,
                     track + 1
                 ))

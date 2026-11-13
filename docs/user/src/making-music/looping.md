@@ -68,6 +68,8 @@ The picked loop's waveform runs across the top, with its length, tempo and sourc
 - **a level** you can drag,
 - **×** to delete the layer. A deleted layer can be brought back with UNDO, like an overdub. On the loop's only layer (the first pass, once the others are gone), **×** clears the whole loop, like **Clear loop**.
 
+You can also hold **ERASE** and tap a layer's lane to delete it, with the same UNDO. ERASE leaves the loops in the list alone, since a cleared loop can't be brought back.
+
 Tap a lane to pick that layer for the Q-Links:
 
 | Q-Link | Turns |
