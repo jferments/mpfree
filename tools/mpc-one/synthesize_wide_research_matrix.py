@@ -126,6 +126,14 @@ def build(read):
         "Yes: mapping IDs 1/2/3 point to original strings MMC1, MMC2, MMC2_2. The sentinel fourth pair remains opaque; label is not physical port proof.",
         "Map names through MMC driver and actual RK3288 controller addresses.",
         "static/v11/v11-ghidra-spl.json + static/wide/p1-sram-ghidra.json")
+    spl_source=d["spl"].get("analyzed_functions",{}).get(
+        "0xff704120",{}).get("pseudocode","")
+    row("SPL","Does the SPL discovery helper generate device codes 1 and 8?",
+        confirmed(all(x in spl_source for x in (
+            "uVar2 = 1;","uVar2 = 8;","iVar1 == 0x35"))),
+        "The boot-source resolver defaults to code 1 in several unsuccessful discovery cases and returns code 8 when a lower helper yields 0x35. Code 8 is not mapped to physical SD/USB.",
+        "Trace FUN_ff7089fc, FF708770, FF705AF2 and FF705B16 and the selector's handling of code 8.",
+        "static/v11/v11-ghidra-spl.json")
     row("SPL","Do the backup P1 offsets and size identify stage location?",confirmed(b["p1"]["lba"]==64 and b["p1"]["bytes"]==65536),
         "The first-stage partition starts at LBA 64 and spans 64KiB in the owner's backup.",
         "Confirm an independent ROM loader can accept an owner-built SRAM payload.","static/wide/storage-env-boot-dtb.json")
@@ -372,6 +380,38 @@ def build(read):
         "Yes: EVP_DigestVerify with SHA-256 and 256-byte signature argument. Key algorithm, active keys, and universal enforcement have not been established.",
         "Trace get_public_key/image signature records and failure-state policy before claiming secure updates.",
         "static/v11/v11-ghidra-libaz01-prog.json")
+    opener=library.get("0x0001738c",{}).get("pseudocode","")
+    verify_state=library.get("0x00017554",{}).get("pseudocode","")
+    compressed=library.get("0x0001798c",{}).get("pseudocode","")
+    row("Update","Does the image parser dispatch three header families?",
+        confirmed(all(x in opener for x in (
+            "pcVar3[3] == 'x'","pcVar3[3] != '1'",
+            "*pcVar3 != -0x30","pcVar3[2] != -2"))),
+        "az01_open_image distinguishes AZ0x, AZ01 and 0xD00DFEED FDT-magic header branches via indirect handler functions. FDT header is not proof that a signed FIT will be accepted.",
+        "Resolve the original format handler pointer table, image-specific verify methods and actual signature policy.",
+        "static/v11/v11-ghidra-libaz01-prog.json")
+    row("Update","Does image verification have a cached -13/state2/option2 rule?",
+        confirmed(all(x in verify_state for x in (
+            "param_1[7] == 1","param_1[7] != 0",
+            "param_2 >> 1","iVar1 == -0xd","param_1[7] = 2;"))),
+        "On original callback return -13, the image object's state is set to 2; a later option 2 call with any nonzero state returns success without rechecking. Error semantics and object reuse are UNKNOWN.",
+        "Trace -13 message, image format callbacks and lifetimes; do not infer a practical bypass.",
+        "static/v11/v11-ghidra-libaz01-prog.json")
+    row("Update","Does XZ bootloader extraction check a 10 MiB output bound?",
+        confirmed(all(x in compressed for x in (
+            "(*__s1 == 'x')","0xa00000 < local_3c",
+            "lzma_stream_buffer_decode","az01_write_bootloader("))),
+        "Observed xz bootloader branch compares its reported decoded length against 0xA00000 before buffered extraction/write. It is not a universal bootloader limit or a complete safety proof.",
+        "Trace decoded-size derivation and actual compressed data length and overflow checks.",
+        "static/v11/v11-ghidra-libaz01-prog.json")
+    row("Update","Does XZ partition streaming require a backend stream callback?",
+        confirmed(all(x in compressed for x in (
+            "lzma_stream_decoder","malloc(0x100000)",
+            "while (ppiVar4 != local_dc + 3)",
+            "az01_stream_partition("))),
+        "The xz partition branch allocates four 1 MiB buffers, starts a worker thread and calls generic az01_stream_partition; the generic callback slot is NULL for the RockUSB-like backend.",
+        "Verify target-format and transport selection, callback errors and memory bounds on synthetic inputs only.",
+        "static/v11/v11-ghidra-libaz01-prog.json + usb-protocol-evidence.json")
     row("Update","Are file, network and USB updater modes exposed?","static-supported",
         "Updater executable strings and symbols expose file/net/USB update paths; execution path still unproven.",
         "Trace CLI entry→verification→image apply→reboot in Ghidra.","static/wide/firmware-3.10-bootchain-v4-compare.json")
