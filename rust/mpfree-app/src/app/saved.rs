@@ -93,6 +93,7 @@ impl App {
         out.set_bool("metronome", s.metronome);
         out.set_i64("metronome-level", i64::from(s.metronome_db));
         out.set_bool("timing-strip", s.timing_strip);
+        out.set_i64("audio-memory", i64::from(s.audio_memory.seconds()));
         out.set_str("at-start", if s.open_last { "last" } else { "new" });
         // The Looper's level, and the line input's latency once it was set
         // by hand (measured with a cable). The line input itself, and so
@@ -179,6 +180,9 @@ impl App {
                     .map(|&d| s.metronome_db = d)
                     .is_some(),
                 "timing-strip" => app.get_bool(k).map(|b| s.timing_strip = b).is_some(),
+                "audio-memory" => crate::audiotracks::AudioMemory::parse(v)
+                    .map(|m| s.audio_memory = m)
+                    .is_some(),
                 "at-start" => match v {
                     "new" => Some(false),
                     "last" => Some(true),

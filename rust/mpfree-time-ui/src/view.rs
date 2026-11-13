@@ -31,12 +31,17 @@ use crate::editor::{
     drop_of, edit_rows, pads, step_name, EditAction, Editor, Lens, LockMark, NoteBox, NoteGrid,
     PEN, STEP_FALLBACK,
 };
-use crate::song::{AudioLane, SongBlock, SongLanes, ADD_AUDIO, AUDIO_BUTTONS, NONE, PANEL, REC};
+use crate::song::{
+    AudioLane, SongBlock, SongLanes, ADD_AUDIO, AUDIO_BUTTONS, INPUTS, MONITORS, NONE, PANEL,
+    PANEL_CLOSE, PANEL_INPUT, PANEL_MONITOR, PANEL_MUTE, PANEL_SOLO, PANEL_TAKES, REC,
+    REGION_SLOTS,
+};
 use crate::widgets::{
     BarButton, BarItem, CellState, ClipGrid, GridCell, GridTrack, MorphBar, Run, TakeItem,
     TakeList, TransportBar, GRID_COLS,
 };
 use mpfree_audiotracks::host::TakeWave;
+use mpfree_audiotracks::{Input, Monitor};
 use mpfree_play::{anchored, Cue, Launch, Take, Takes};
 use mpfree_seq::{Clip, Project, Source, Speed, SLOTS};
 use mpfree_transport::time::{Meter, Swing, Tick, MAX_BPM, MIN_BPM, PPQ};
@@ -323,6 +328,12 @@ pub struct TimeState {
     /// streaming counts. Fallbacks and losses are always shown. The app
     /// sets them.
     pub audio_counts: Vec<(String, u32)>,
+    /// The audio track whose panel is open over the lanes (layout spec
+    /// 4c), if any. The app sets it.
+    pub audio_panel: Option<usize>,
+    /// The audio track whose take lanes show under its lane (layout spec
+    /// 4c), if any. The app sets it.
+    pub audio_takes: Option<usize>,
 }
 
 /// An audio region: region `index` of audio track `track`
@@ -461,6 +472,8 @@ impl TimeState {
             region: None,
             audio_free: None,
             audio_counts: Vec::new(),
+            audio_panel: None,
+            audio_takes: None,
         }
     }
 
@@ -590,8 +603,29 @@ pub enum AudioAction {
         on: bool,
     },
     /// The header's name or input chip: open the track's panel (Arm,
-    /// Input, Monitor, level, pan, mute, solo, Takes) over the lanes.
+    /// Input, Monitor, level, pan, mute, solo, Takes) over the lanes, or
+    /// close it if it is that track's.
     Panel(usize),
+    /// The panel's Close.
+    ClosePanel,
+    /// The panel: what the track records from, when it hears its input,
+    /// and its mute and solo.
+    Input {
+        track: usize,
+        input: Input,
+    },
+    Monitor {
+        track: usize,
+        monitor: Monitor,
+    },
+    Mute {
+        track: usize,
+        on: bool,
+    },
+    Solo {
+        track: usize,
+        on: bool,
+    },
     /// "+ Audio": show the next audio track's lane.
     Add,
     /// Pick a region, or none. Picking one drops the placement picked.
@@ -603,8 +637,41 @@ pub enum AudioAction {
     Erase(RegionId),
     Fades(RegionId),
     Gain(RegionId),
+    /// Show the track's take lanes under its lane, or hide them if they
+    /// show.
     Takes(usize),
     Undo,
+    /// A swipe across a take lane: play take `take` from `from` to `to`
+    /// on its track, over what was there (`Command::Comp`), snapped to the
+    /// grid unless `fine` (SHIFT held: the app sets it).
+    Comp {
+        take: u16,
+        from: Tick,
+        to: Tick,
+        fine: bool,
+    },
+    /// A tap on a take lane: play the take everywhere it has audio.
+    UseTake(u16),
+    /// A region dragged sideways: move it to start at `to`, snapped to
+    /// the grid unless `fine` (SHIFT held: the app sets it).
+    Move {
+        region: RegionId,
+        to: Tick,
+        fine: bool,
+    },
+    /// A Q-Link on Arrange while an audio region is picked or the track
+    /// panel is open (layout spec 4c), or the panel's level and pan
+    /// steps: knob 0 the track's level, 1 its pan, 2 the region's gain, 3
+    /// its fades (`region`, an index into the track's regions: None when
+    /// none is picked on the track); `ticks` detents, `fine` with SHIFT
+    /// held. The app keeps the values and says them back in the lanes.
+    Turn {
+        track: usize,
+        region: Option<usize>,
+        knob: usize,
+        ticks: i32,
+        fine: bool,
+    },
 }
 
 /// Where a clip launched now starts: on the next bar line while the
@@ -778,6 +845,59 @@ pub fn action(ev: &UiEvent, st: &TimeState) -> Option<TimeAction> {
             }))
         }
         (SONG, EventKind::Tab(ADD_AUDIO)) => Some(TimeAction::Audio(AudioAction::Add)),
+        (SONG, EventKind::Tab(k)) if *k >= PANEL_CLOSE => {
+            let track = st.audio_panel?;
+            let lane = st.audio.iter().find(|l| l.track == track);
+            let (mute, solo) = lane.map_or((false, false), |l| (l.mute, l.solo));
+            Some(TimeAction::Audio(match *k {
+                PANEL_CLOSE => AudioAction::ClosePanel,
+                PANEL_MUTE => AudioAction::Mute { track, on: !mute },
+                PANEL_SOLO => AudioAction::Solo { track, on: !solo },
+                PANEL_TAKES => AudioAction::Takes(track),
+                k if (PANEL_INPUT..PANEL_INPUT + INPUTS.len()).contains(&k) => AudioAction::Input {
+                    track,
+                    input: INPUTS[k - PANEL_INPUT].1,
+                },
+                k if (PANEL_MONITOR..PANEL_MONITOR + MONITORS.len()).contains(&k) => {
+                    AudioAction::Monitor {
+                        track,
+                        monitor: MONITORS[k - PANEL_MONITOR].1,
+                    }
+                }
+                _ => return None,
+            }))
+        }
+        (SONG, EventKind::Marker { index, frame }) => Some(TimeAction::Audio(AudioAction::Move {
+            region: RegionId {
+                track: index / REGION_SLOTS,
+                index: index % REGION_SLOTS,
+            },
+            to: Tick::try_from(*frame).ok()?,
+            fine: false,
+        })),
+        (SONG, EventKind::Span { index, from, to }) => {
+            let take = u16::try_from(*index).ok()?;
+            Some(TimeAction::Audio(if from == to {
+                AudioAction::UseTake(take)
+            } else {
+                AudioAction::Comp {
+                    take,
+                    from: *from,
+                    to: *to,
+                    fine: false,
+                }
+            }))
+        }
+        (SONG, EventKind::Step { index, delta }) => {
+            let track = st.audio_panel?;
+            Some(TimeAction::Audio(AudioAction::Turn {
+                track,
+                region: st.region.filter(|r| r.track == track).map(|r| r.index),
+                knob: *index,
+                ticks: *delta,
+                fine: false,
+            }))
+        }
         (SONG, EventKind::Toggle(track)) => Some(TimeAction::Audio(AudioAction::Arm {
             track: *track,
             on: !st.audio.iter().any(|l| l.track == *track && l.armed),
@@ -1201,6 +1321,8 @@ pub fn song_lanes(st: &TimeState, first_bar: i64) -> SongLanes {
         rec: st.song_rec,
         audio: st.audio.clone(),
         region: st.region.map(|r| (r.track, r.index)),
+        panel: st.audio_panel,
+        takes_open: st.audio_takes,
         ..SongLanes::default()
     }
 }
@@ -1852,8 +1974,13 @@ mod tests {
             name: "Vocal".into(),
             color: audio_color(2),
             armed: true,
-            input: "L".into(),
+            input: Input::Left,
             level: 0.3,
+            volume: 1.0,
+            pan: 0.0,
+            monitor: Monitor::Auto,
+            mute: false,
+            solo: false,
             blocks: vec![AudioBlock {
                 start: 0,
                 end: BAR,
@@ -1861,9 +1988,11 @@ mod tests {
                 tag: String::new(),
                 src: 0,
                 frames: 88_200.0,
+                gain: 1.0,
                 fade_in: 0,
                 fade_out: 0,
             }],
+            takes: Vec::new(),
             recording: None,
         }];
         let song = |k: EventKind, st: &TimeState| action(&ev(SONG, k), st);
@@ -1939,6 +2068,177 @@ mod tests {
         );
         assert!(lanes.alert, "a loss shows in the warning colour");
         assert!(lanes.waves.is_empty(), "update copies the waves");
+    }
+
+    /// Layout spec 4c: the track panel's controls ask for the open
+    /// panel's track; with no panel open they ask for nothing.
+    #[test]
+    fn the_track_panel_asks_for_its_track() {
+        use crate::song::{
+            AudioLane, PANEL_CLOSE, PANEL_INPUT, PANEL_LEVEL, PANEL_MONITOR, PANEL_MUTE, PANEL_PAN,
+            PANEL_SOLO, PANEL_TAKES,
+        };
+        let mut st = state();
+        st.song_view = true;
+        st.audio = vec![AudioLane {
+            track: 3,
+            name: "Audio 4".into(),
+            color: audio_color(3),
+            armed: false,
+            input: Input::Left,
+            level: 0.0,
+            volume: 1.0,
+            pan: 0.0,
+            monitor: Monitor::Auto,
+            mute: true,
+            solo: false,
+            blocks: Vec::new(),
+            takes: Vec::new(),
+            recording: None,
+        }];
+        let song = |k: EventKind, st: &TimeState| action(&ev(SONG, k), st);
+        let audio = |a: AudioAction| Some(TimeAction::Audio(a));
+        assert_eq!(song(EventKind::Tab(PANEL_MUTE), &st), None, "no panel");
+        assert_eq!(
+            song(
+                EventKind::Step {
+                    index: PANEL_LEVEL,
+                    delta: 1
+                },
+                &st
+            ),
+            None
+        );
+        st.audio_panel = Some(3);
+        assert_eq!(lanes_panel(&st), Some(3));
+        let tab = |k: usize, st: &TimeState| song(EventKind::Tab(k), st);
+        assert_eq!(tab(PANEL_CLOSE, &st), audio(AudioAction::ClosePanel));
+        assert_eq!(
+            tab(PANEL_MUTE, &st),
+            audio(AudioAction::Mute {
+                track: 3,
+                on: false
+            }),
+            "muted: Mute unmutes"
+        );
+        assert_eq!(
+            tab(PANEL_SOLO, &st),
+            audio(AudioAction::Solo { track: 3, on: true })
+        );
+        assert_eq!(tab(PANEL_TAKES, &st), audio(AudioAction::Takes(3)));
+        assert_eq!(
+            tab(PANEL_INPUT + 3, &st),
+            audio(AudioAction::Input {
+                track: 3,
+                input: Input::Stereo
+            })
+        );
+        assert_eq!(
+            tab(PANEL_INPUT + 2, &st),
+            audio(AudioAction::Input {
+                track: 3,
+                input: Input::Sum
+            })
+        );
+        assert_eq!(
+            tab(PANEL_MONITOR + 2, &st),
+            audio(AudioAction::Monitor {
+                track: 3,
+                monitor: Monitor::Off
+            })
+        );
+        assert_eq!(tab(PANEL_MONITOR + 3, &st), None, "past the last");
+        let step = |index, delta, st: &TimeState| song(EventKind::Step { index, delta }, st);
+        let turn = |knob, ticks, region| {
+            audio(AudioAction::Turn {
+                track: 3,
+                region,
+                knob,
+                ticks,
+                fine: false,
+            })
+        };
+        assert_eq!(step(PANEL_LEVEL, -1, &st), turn(0, -1, None));
+        // A region picked on another track is not this track's.
+        st.region = Some(RegionId { track: 1, index: 0 });
+        assert_eq!(step(PANEL_PAN, 1, &st), turn(1, 1, None));
+        st.region = Some(RegionId { track: 3, index: 2 });
+        assert_eq!(step(PANEL_PAN, 1, &st), turn(1, 1, Some(2)));
+        // The region's row still answers with the panel open.
+        assert_eq!(
+            song(EventKind::Tab(0), &st),
+            audio(AudioAction::Split(RegionId { track: 3, index: 2 }))
+        );
+    }
+
+    /// Layout spec 4c: a tap on a take lane uses the take, a swipe comps
+    /// the stretch; the Song view shows the open track's take lanes.
+    #[test]
+    fn take_lanes_ask_to_comp() {
+        let mut st = state();
+        st.song_view = true;
+        let song = |k: EventKind, st: &TimeState| action(&ev(SONG, k), st);
+        let audio = |a: AudioAction| Some(TimeAction::Audio(a));
+        assert_eq!(
+            song(
+                EventKind::Span {
+                    index: 3,
+                    from: 0,
+                    to: 0
+                },
+                &st
+            ),
+            audio(AudioAction::UseTake(3))
+        );
+        assert_eq!(
+            song(
+                EventKind::Span {
+                    index: 3,
+                    from: 960,
+                    to: 2880
+                },
+                &st
+            ),
+            audio(AudioAction::Comp {
+                take: 3,
+                from: 960,
+                to: 2880,
+                fine: false
+            })
+        );
+        assert_eq!(
+            song(
+                EventKind::Span {
+                    index: 70_000,
+                    from: 0,
+                    to: 0
+                },
+                &st
+            ),
+            None,
+            "no such take"
+        );
+        st.audio_takes = Some(2);
+        assert_eq!(song_lanes(&st, 0).takes_open, Some(2));
+        // A region dragged: its track and index, and where it starts now.
+        assert_eq!(
+            song(
+                EventKind::Marker {
+                    index: 3 * crate::song::REGION_SLOTS + 4,
+                    frame: 7680
+                },
+                &st
+            ),
+            audio(AudioAction::Move {
+                region: RegionId { track: 3, index: 4 },
+                to: 7680,
+                fine: false
+            })
+        );
+    }
+
+    fn lanes_panel(st: &TimeState) -> Option<usize> {
+        song_lanes(st, 0).panel
     }
 
     /// The waveforms reach the widget, and are copied again only when they

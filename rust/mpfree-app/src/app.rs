@@ -603,6 +603,9 @@ pub struct Settings {
     /// Play's options "Timing strip": the Beats view shows Your timing
     /// under the pattern (Jay 13 Nov folded the Drum view into Beats).
     pub timing_strip: bool,
+    /// Prefs "Audio track memory": the audio tracks' size from the next
+    /// start.
+    pub audio_memory: crate::audiotracks::AudioMemory,
     /// Prefs "At start": open the last project (true) or start with a new
     /// one (the default). The screen opens it once the sound is going.
     pub open_last: bool,
@@ -649,6 +652,7 @@ impl Default for Settings {
             metronome: false,
             metronome_db: crate::time::CLICK_DB as i8,
             timing_strip: true,
+            audio_memory: crate::audiotracks::AudioMemory::default(),
             open_last: false,
         }
     }
@@ -725,6 +729,8 @@ pub enum Item {
     MetronomeLevel,
     /// Play's options: the Beats view's Your timing strip on or off.
     TimingStrip,
+    /// Prefs: the audio tracks' size from the next start.
+    AudioMemory,
     /// The arp's own settings (the Options menu opened from the Arp panel).
     Arp(ArpItem),
     /// The synth's engine and pad layouts (the Synth tab's options).
@@ -817,9 +823,22 @@ pub enum Effect {
     /// SHIFT + wheel on Play: move the synth's pads by octaves (the kit, as
     /// before, when a drum kit is playing).
     Octave(i32),
+    /// 16 LEVEL: 16 Levels on for the pad hit last, with its panel on
+    /// Play, or off if they are on (the screen holds the kit and says back
+    /// with [`App::levels_shown`]).
+    SixteenLevels,
+    /// The wheel while the 16 Levels panel shows: the next or previous kind.
+    LevelsWheel(i32),
     /// The Synth tab's options changed: the engine, the scale or the pad
     /// layouts, for the synth on the audio thread.
     SynthPads(crate::synth::PadSettings),
+    /// The Synth tab's Instrument row: track `track` plays its own instrument
+    /// `id` (an engine's node id, or a plugin synth's), or the kit again
+    /// (None).
+    TrackSound {
+        track: usize,
+        id: Option<&'static str>,
+    },
     /// The mixer opened on a view, or closed (`None`): the audio thread
     /// sends the panel its state only while it is open.
     Mixer(Option<mpfree_mixer_ui::MixView>),
@@ -1005,6 +1024,8 @@ pub struct App {
     play_pressed_at: Option<f64>,
     /// TRACK MUTE: the pads play, or mute tracks or the kit's pads.
     mute_keys: MuteKeys,
+    /// The 16 Levels panel shows on Play: the wheel picks its kind.
+    levels_open: bool,
     view: View,
     /// The page to go back to from Console, Options or the guide.
     back: View,
@@ -1056,6 +1077,13 @@ pub struct App {
     /// The synth pads' engine, scale and bank layouts (the Synth tab's
     /// options), as handed to the synth.
     synth_pads: crate::synth::PadSettings,
+    /// What each track plays as its own instrument (None: the kit), as
+    /// the audio loop last said ([`App::set_track_sound`]); the Synth tab's
+    /// Instrument row shows and sets the armed track's.
+    track_sounds: [Option<crate::instruments::Held>; mpfree_seq::MAX_TRACKS],
+    /// The plugin synths found (node id, name), offered on the Instrument row
+    /// after the built-in engines.
+    pub plugin_synths: Vec<(&'static str, &'static str)>,
     /// The pads' Scale row's choice and root, as `scale_pick` and
     /// `scale_root` are for the arp.
     pad_scale_pick: usize,
@@ -1119,6 +1147,8 @@ pub struct App {
     /// The looper's size in this start, and the rate it is counted at;
     /// Prefs' "Loop memory" says "(next start)" while the setting differs.
     loop_memory_now: LoopMemory,
+    /// The audio tracks' size in this start.
+    audio_memory_now: crate::audiotracks::AudioMemory,
     sample_rate: u32,
     /// Prefs or a button changed since the last look (`saved.rs`), and
     /// the text last handed to the store for "app" and "map".
@@ -1144,8 +1174,12 @@ const PREFS_ROWS: &[Item] = &[
     Item::DebugMode,
     Item::SoundCores,
     Item::LoopMemory,
+    Item::AudioMemory,
     Item::MapControls,
     Item::LineInput,
+    // Layout spec 4c: the line input's latency, shared by the looper and
+    // the audio tracks.
+    Item::LoopLatency,
     Item::SystemInfo,
     Item::Appearance,
     Item::AtStart,
@@ -1183,6 +1217,7 @@ impl App {
             fill: Fill::Off,
             play_pressed_at: None,
             mute_keys: MuteKeys::Off,
+            levels_open: false,
             view: View::Play,
             back: View::Play,
             chain_back: View::Mixer,
@@ -1200,6 +1235,8 @@ impl App {
             custom_scales: Vec::new(),
             scale_pick: 0,
             synth_pads: Default::default(),
+            track_sounds: [None; mpfree_seq::MAX_TRACKS],
+            plugin_synths: Vec::new(),
             pad_scale_pick: 0,
             pad_scale_root: 0,
             clock: None,
@@ -1232,6 +1269,7 @@ impl App {
             tuning_files: Vec::new(),
             sound_cores_now: SoundCores::Shared,
             loop_memory_now: LoopMemory::default(),
+            audio_memory_now: crate::audiotracks::AudioMemory::default(),
             sample_rate,
             save_dirty: false,
             saved: Default::default(),
@@ -1913,9 +1951,11 @@ impl App {
             ]
         } else if is(m.sixteen_level) {
             // SHIFT + 16 LEVEL: the synth pads' Chromatic | In key switch.
-            // 16 LEVEL itself comes with 16 Levels for kits.
+            // 16 LEVEL: 16 Levels on (with its panel on Play) or off.
             if !shift {
-                return Some(Vec::new());
+                let mut fx = self.go(View::Play);
+                fx.push(Effect::SixteenLevels);
+                return Some(fx);
             }
             let in_key = self.synth_pads.layout() != mpfree_arp::scale::pads::PadLayout::InKey;
             let mut fx = self.synth_pick_layout(in_key);
@@ -1930,6 +1970,17 @@ impl App {
             return None;
         };
         Some(fx)
+    }
+
+    /// The screen turned 16 Levels on or off (`on`) and shows its panel or
+    /// not (`open`): 16 LEVEL lights while they are on, and the wheel
+    /// turns the panel's kind while it shows.
+    pub fn levels_shown(&mut self, on: bool, open: bool) -> Vec<Effect> {
+        self.levels_open = open;
+        match self.map.sixteen_level {
+            Some(note) => vec![Effect::Light(note, if on { LIGHT_ON } else { LIGHT_OFF })],
+            None => Vec::new(),
+        }
     }
 
     /// A page from a mode button: shown, unless it shows already.
@@ -2085,6 +2136,8 @@ impl App {
             View::Touch => vec![Effect::TouchWheel(delta)],
             // NOTE REPEAT held or the Arp panel: the rate, order or pattern.
             _ if self.repeat_held || self.view == View::Arp => self.arp_wheel(delta),
+            // The 16 Levels panel: what the levels change.
+            View::Play if self.levels_open => vec![Effect::LevelsWheel(delta)],
             // SHIFT + wheel keeps each page's second job: scroll Arrange,
             // the Synth tab's pages, the pads with a sound.
             View::Arrange if self.shift => vec![Effect::ClipsWheel {
@@ -2406,6 +2459,11 @@ impl App {
         self.loop_memory_now = size;
     }
 
+    /// The audio tracks' size in this start (main, once they are made).
+    pub fn set_audio_memory_now(&mut self, size: crate::audiotracks::AudioMemory) {
+        self.audio_memory_now = size;
+    }
+
     /// The mapper's list starts from what the app knows (measured buttons,
     /// and those found since).
     fn refresh_mapper(&mut self) {
@@ -2723,7 +2781,11 @@ impl App {
             ),
             Item::LoopBars => ("First pass length", crate::looping::bars_text(s.loop_bars)),
             Item::LoopLatency => (
-                "Latency to make up for",
+                if self.view == View::Prefs {
+                    "Line input latency"
+                } else {
+                    "Latency to make up for"
+                },
                 format!(
                     "{} frames, {:.1} ms{}",
                     s.loop_latency,
@@ -2742,6 +2804,14 @@ impl App {
                     s.loop_memory.row(self.sample_rate)
                 } else {
                     format!("{} (next start)", s.loop_memory.row(self.sample_rate))
+                },
+            ),
+            Item::AudioMemory => (
+                "Audio track memory",
+                if s.audio_memory == self.audio_memory_now {
+                    s.audio_memory.row(self.sample_rate)
+                } else {
+                    format!("{} (next start)", s.audio_memory.row(self.sample_rate))
                 },
             ),
             Item::AtStart => (
@@ -2907,11 +2977,11 @@ impl App {
                 "until the bar line after Record again.",
             ],
             Item::LoopLatency => vec![
-                "How late your playing reaches the looper:",
-                "the output buffer, the input buffer and the",
-                "converters. Estimated from the audio buffer",
-                "until you set it. Measure it with a cable",
-                "from an output to the input.",
+                "How late your playing reaches the looper and",
+                "the audio tracks: the output buffer, the input",
+                "buffer and the converters. Estimated from the",
+                "audio buffer until you set it. Measure it with",
+                "a cable from an output to the input.",
             ],
             Item::LoopLevel => vec![
                 "The loop's playback level, -24 to +6 dB.",
@@ -2923,6 +2993,13 @@ impl App {
                 "of stereo. It is kept in memory from the",
                 "start, so a new size applies from the next",
                 "start. The Looper tab shows what is left.",
+            ],
+            Item::AudioMemory => vec![
+                "How much sound the audio tracks on the",
+                "Song view can hold, every take together:",
+                "30 seconds to 10 minutes of stereo. It is",
+                "kept in memory from the start, so a new",
+                "size applies from the next start.",
             ],
             Item::AtStart => vec![
                 "What MPFree opens when it starts.",
@@ -3145,6 +3222,17 @@ impl App {
                         "loop memory: {} min from the next start (now {} min)",
                         next.minutes(),
                         self.loop_memory_now.minutes()
+                    )));
+                }
+            }
+            Item::AudioMemory => {
+                let next = cycle(&crate::audiotracks::AudioMemory::ALL, s.audio_memory, d);
+                if next != s.audio_memory {
+                    s.audio_memory = next;
+                    fx.push(Effect::Note(format!(
+                        "audio track memory: {} from the next start (now {})",
+                        next.time(),
+                        self.audio_memory_now.time()
                     )));
                 }
             }
@@ -3951,6 +4039,83 @@ mod tests {
         assert_eq!(l.items().last(), Some(&Item::LoopMemory));
     }
 
+    /// Layout spec 4c: Prefs "Line input latency", after Line input and
+    /// before System info, is the looper's "Latency to make up for": one
+    /// setting, which the audio tracks follow too.
+    #[test]
+    fn prefs_line_input_latency_is_the_loopers_latency() {
+        let mut app = App::new(44_100, false);
+        app.map.menu = Some(MENU);
+        app.button(button::SHIFT, true, 0.0);
+        press(&mut app, MENU);
+        app.button(button::SHIFT, false, 0.0);
+        let at = row(&app, Item::LoopLatency);
+        assert_eq!(at, row(&app, Item::LineInput) + 1);
+        assert_eq!(at + 1, row(&app, Item::SystemInfo));
+        assert_eq!(app.item_text(Item::LoopLatency).0, "Line input latency");
+        let before = app.settings.loop_latency;
+        let fx = app.step_item(at, 1);
+        assert_eq!(app.settings.loop_latency, before + 16);
+        assert!(app.settings.loop_latency_set);
+        assert!(fx.iter().any(|e| matches!(
+            e,
+            Effect::Looper(LoopAction::Command(LoopCommand::SetLatency(_)))
+        )));
+        assert!(!app.item_text(Item::LoopLatency).1.contains("estimated"));
+    }
+
+    /// Layout spec 4c: Prefs "Audio track memory", right after Loop
+    /// memory, picks 30 s to 10 min of stereo, kept, from the next start.
+    #[test]
+    fn audio_track_memory_is_kept_and_used_from_the_next_start() {
+        use crate::audiotracks::AudioMemory;
+        let mut app = App::new(44_100, false);
+        app.map.menu = Some(MENU);
+        app.button(button::SHIFT, true, 0.0);
+        press(&mut app, MENU);
+        app.button(button::SHIFT, false, 0.0);
+        let at = row(&app, Item::AudioMemory);
+        assert_eq!(at, row(&app, Item::LoopMemory) + 1);
+        assert!(at < row(&app, Item::SystemInfo), "before System info");
+        let value = |fx: &[Effect]| match fx.last() {
+            Some(Effect::Menu(m)) => m.rows[at].1.clone(),
+            _ => panic!("{fx:?}"),
+        };
+        assert_eq!(app.item_text(Item::AudioMemory).0, "Audio track memory");
+        assert_eq!(app.item_text(Item::AudioMemory).1, "1:00 stereo, 22 MB");
+        let fx = app.step_item(at, 1);
+        assert_eq!(value(&fx), "2:00 stereo, 43 MB (next start)");
+        assert!(fx.contains(&Effect::Note(
+            "audio track memory: 2:00 from the next start (now 1:00)".into()
+        )));
+        for _ in 0..6 {
+            app.step_item(at, 1);
+        }
+        assert_eq!(app.settings.audio_memory, AudioMemory::Min10);
+        for _ in 0..6 {
+            app.step_item(at, -1);
+        }
+        assert_eq!(app.settings.audio_memory, AudioMemory::Sec30);
+        // Kept as seconds; the next start makes it and says no more.
+        let kept = app.app_settings();
+        assert_eq!(kept.get_i64("audio-memory"), Some(30));
+        let mut next = App::new(44_100, false);
+        next.restore(&kept, &mpfree_store::Settings::default());
+        assert_eq!(next.settings.audio_memory, AudioMemory::Sec30);
+        next.set_audio_memory_now(AudioMemory::Sec30);
+        assert_eq!(next.item_text(Item::AudioMemory).1, "0:30 stereo, 11 MB");
+        // A size it doesn't offer is left out, and the default stays.
+        let mut odd = mpfree_store::Settings::default();
+        odd.set_i64("audio-memory", 45);
+        let mut other = App::new(44_100, false);
+        let notes = other.restore(&odd, &mpfree_store::Settings::default());
+        assert_eq!(other.settings.audio_memory, AudioMemory::Min1);
+        assert!(
+            notes.iter().any(|n| n.contains("audio-memory = 45")),
+            "{notes:?}"
+        );
+    }
+
     #[test]
     fn appearance_offers_every_built_in_theme() {
         let names: Vec<&str> = THEMES.iter().map(|t| t.0).collect();
@@ -4231,12 +4396,14 @@ mod tests {
         app.save_dirty = true;
         app.take_saves();
         assert!(!app.take_project_edit(), "nothing changed yet");
+        // The Instrument row now picks the selected track's own sound; the
+        // shared synth's engine is still kept and restored.
+        app.synth_pads.engine = Engine::Fm;
         let mut step = |a: SynthItem, d: i32, times: usize| {
             for _ in 0..times {
                 app.step_item(row(a), d);
             }
         };
-        step(SynthItem::Engine, 1, 1);
         step(SynthItem::Scale, 1, 2);
         step(SynthItem::Root, 1, 9);
         step(SynthItem::Layout, 1, 2);
@@ -4357,7 +4524,7 @@ mod tests {
         assert_eq!(
             names,
             [
-                "Engine",
+                "Track 1 instrument",
                 "Scale",
                 "Scale root",
                 "Pad layout",
@@ -4371,7 +4538,7 @@ mod tests {
                 "Latch"
             ]
         );
-        assert_eq!(m.rows[0].1, "Poly");
+        assert_eq!(m.rows[0].1, "Kit");
         assert_eq!(m.rows[5].1, "12-TET");
         assert_eq!(m.rows[6].1, "C (not used)");
         assert_eq!(m.rows[7].1, "440 Hz");
@@ -4389,19 +4556,42 @@ mod tests {
                 _ => None,
             })
         };
-        // Engine: FM, Drums, Pluck, Wavetable, and no further; then back to Poly.
-        for want in [Engine::Fm, Engine::Drums, Engine::Pluck, Engine::Wavetable] {
-            let p = pads(&app.step_item(row(SynthItem::Engine), 1)).unwrap();
-            assert_eq!(p.engine, want);
+        // Instrument: the selected track's own sound. Kit, then Poly, FM,
+        // Drums, Pluck, Wavetable and the plugin synths; then back to Kit.
+        let sound = |fx: &[Effect]| {
+            fx.iter().find_map(|e| match e {
+                Effect::TrackSound { track, id } => Some((*track, *id)),
+                _ => None,
+            })
+        };
+        for want in Engine::ALL {
+            let fx = app.step_item(row(SynthItem::Engine), 1);
+            assert_eq!(sound(&fx), Some((0, Some(want.node_id()))));
+            assert_eq!(pads(&fx), None, "the shared synth is left alone");
         }
         assert_eq!(
-            pads(&app.step_item(row(SynthItem::Engine), 1)),
+            sound(&app.step_item(row(SynthItem::Engine), 1)),
             None,
-            "Wavetable is the last"
+            "Wavetable is the last with no plugin synths"
         );
-        for _ in 0..4 {
+        app.plugin_synths = vec![("clap:org.example.synth", "Example Synth")];
+        assert_eq!(
+            sound(&app.step_item(row(SynthItem::Engine), 1)),
+            Some((0, Some("clap:org.example.synth")))
+        );
+        assert_eq!(app.synth_item_text(SynthItem::Engine).1, "Example Synth");
+        // Each track keeps its own: track 2 still plays the kit, and the
+        // row names the track it sets.
+        app.set_track(1);
+        assert_eq!(
+            app.synth_item_text(SynthItem::Engine),
+            ("Track 2 instrument", "Kit".to_string())
+        );
+        app.set_track(0);
+        for _ in 0..6 {
             app.step_item(row(SynthItem::Engine), -1);
         }
+        assert_eq!(app.track_sound(0), None, "back to the kit");
         assert_eq!(app.synth_pads.engine, Engine::Poly);
         // Chromatic is already on: a tap says so.
         assert!(matches!(
@@ -6060,8 +6250,21 @@ mod tests {
         assert!(only_status(press(&mut app, 60)));
         assert!(only_status(shifted(&mut app, 60)));
         assert!(!app.erase_held, "let go");
+        // 16 LEVEL: Play, and 16 Levels on or off (the screen holds the
+        // kit and says back what it did: the light and the wheel follow).
+        let fx = press(&mut app, 62);
+        assert!(fx.contains(&Effect::Show(View::Play)), "{fx:?}");
+        assert_eq!(fx.last(), Some(&Effect::SixteenLevels));
+        assert_eq!(press(&mut app, 62), [Effect::SixteenLevels]);
+        assert_eq!(app.levels_shown(true, true), [Effect::Light(62, LIGHT_ON)]);
+        assert_eq!(app.wheel(-1), [Effect::LevelsWheel(-1)]);
+        assert_eq!(app.levels_shown(true, false), [Effect::Light(62, LIGHT_ON)]);
+        assert!(!app.wheel(1).contains(&Effect::LevelsWheel(1)));
+        assert_eq!(
+            app.levels_shown(false, false),
+            [Effect::Light(62, LIGHT_OFF)]
+        );
         // SHIFT + 16 LEVEL: Chromatic | In key (no scale yet: Major).
-        assert!(press(&mut app, 62).is_empty());
         assert!(shifted(&mut app, 62)
             .iter()
             .any(|e| matches!(e, Effect::Tell(n) if n.contains("In key, C Major"))));

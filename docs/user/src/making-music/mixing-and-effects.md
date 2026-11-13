@@ -1,6 +1,6 @@
 <!--
 status: changing
-covers: rust/mpfree-fx rust/mpfree-mixer-ui rust/mpfree-fx-ui rust/mpfree-chain-ui rust/mpfree-app/src/chain_page.rs rust/mpfree-app/src/mixing.rs rust/mpfree-fx/src/perform.rs
+covers: rust/mpfree-fx rust/mpfree-mixer-ui rust/mpfree-fx-ui rust/mpfree-chain-ui rust/mpfree-app/src/plugins.rs rust/mpfree-plughost/src/rack.rs rust/mpfree-app/src/chain_page.rs rust/mpfree-app/src/mixing.rs rust/mpfree-fx/src/perform.rs
 checked: 2026-11-13 9560b32
 -->
 
@@ -18,11 +18,13 @@ Along the top are the mixer's five views:
 
 | View | Shows |
 |---|---|
-| **Tracks** | One strip per instrument. Today these are **Drums** (the kit on the pads), **Synth**, **Loop** and **Audio** (every audio track on the Song view, summed). |
+| **Tracks** | One strip per instrument: **Drums** (the kit on the pads), **Synth**, **Loop** and **Audio** (every audio track on the Song view, summed), then a strip for each track that has its own instrument (**Track 1**, **Track 2** ...), shown only while it has one (see [A synth for each track](synths.md#a-synth-for-each-track)). |
 | **Pads** | A strip for each of the kit's 16 pads, so you can set the kick's level or put an effect on just the snare. |
 | **Inputs** | The line input. |
 | **Submixes** | Eight submixes for grouping, then the four send returns A to D. |
 | **I/O** | Where everything goes, as a list: see [The I/O view](#the-io-view). |
+
+{{shot: mixer-instruments | The Tracks view with tracks 1 and 2 playing their own instruments (Poly and FM): their strips come after Drums, Synth, Loop and Audio.}}
 
 The **< >** buttons page through the strips when there are more than fit. The chip beside them shows how much of the MPC's processor the mixer and its effects are using.
 
@@ -94,6 +96,25 @@ These effects can go on any strip. The list of effects groups them: Dynamics, EQ
 
 Adding, removing or reordering an effect while the music plays doesn't click: that strip dips out for a moment and comes back.
 
+## Plugins
+
+MPFree can also use **CLAP plugin effects** built for the MPC One's ARM chip. Plugins made for a computer (Windows, macOS or ordinary Linux PCs) won't run on it.
+
+1. Put the `.clap` files on the MPFREE-DATA partition of your MPFree stick, in the folder `files/plugins/`.
+2. Start MPFree. The plugins' effects join the list you add effects from, under **Plugins** after the built-in ones, each with its maker's name.
+3. Add one to a strip as you would any effect. Its knobs show in the chain editor, in the plugin's own groups, and the Q-Links, macros and MIDI Learn work on them.
+
+Each plugin runs on its own, apart from the rest of MPFree, so a plugin that crashes or freezes can't stop the music:
+
+- If a plugin is too slow for a moment, its strip plays dry (the sound goes straight through) for that moment.
+- If a plugin crashes, MPFree starts it again with the settings it had a few seconds before.
+- If it crashes four times in a minute, MPFree leaves it off and the strip plays dry. Remove it and add it again to try once more.
+
+Every one of these is written in MPFree's report, so nothing goes wrong without you hearing about it.
+
+> [!NOTE]
+> **Not yet:** a plugin's settings aren't saved with your project, plugin instruments (synths) can't go on a track, and MPFree doesn't come with any plugins yet. A pack of free plugins built for the MPC (Airwindows, Surge XT and Dexed) is coming.
+
 ## The chain editor
 
 Tap an effect in a strip's insert row to open the **chain editor** on it, in the mixer's place. Tap the strip's **+ FX** button to add an effect, with the list of effects already open; a new effect goes at the end of the chain. **+ FX** fills all of the strip's empty insert rows, so on a strip with no effects it is a big button under the strip's name. In the chain editor, **+ Add effect** opens the list again and **Cancel** closes it; you can also reorder (**Up**, **Down**), bypass (the power button on each row) and **Remove** effects, and turn the selected effect's knobs. If the chain is full or the mixer is busy, the line at the bottom of the screen says so for a few seconds.
@@ -126,6 +147,7 @@ Each of these costs almost nothing until you use it.
 
 ## Coming next
 
+- **Plugins**: settings saved with the project, and the plugin pack. Plugin synths already play as a track's own instrument.
 - **Automation**: knob moves recorded into clips.
 - **Perform FX on pads**: effects played from the pads.
 
