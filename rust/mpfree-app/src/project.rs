@@ -13,6 +13,9 @@
 //! | `synth` | the synth | [`synth_text`]: the Synth tab's options and every engine's sound | the options go through the app (as at start), the sounds onto the engines |
 //! | `sampler` | the Sample tab | `SamplePage::save_part`, with its sounds in `samples/` | `SamplePage::open_part` |
 //! | `midi` | the I/O view | `mpfree_midi_ui::MidiPart` | the same |
+//! | `looper` | the Looper | [`loops_part`], a WAV a layer in `samples/` | [`loops_open`] on a thread, then `LoopHost::open` |
+//! | `arp` | the arps | `App::arp_part` | `App::open_arp` |
+//! | `audiotracks` | the audio tracks | [`audio_part`]: each track's settings and regions, a WAV a take in `samples/` | [`audio_open`] on a thread, then [`crate::audiotracks::TrackHost::open`] |
 //!
 //! The project's tempo is `project.txt`'s `tempo`.
 //!
@@ -52,6 +55,8 @@ pub const MIDI: &str = "midi";
 pub const LOOPER: &str = "looper";
 /// Each track's arp and its Note Repeat rate (`App::arp_part`).
 pub const ARP: &str = "arp";
+/// The Song view's audio tracks and their takes ([`audio_part`]).
+pub const AUDIOTRACKS: &str = "audiotracks";
 
 /// The mixer part's first line.
 pub const MIXER_FORMAT: &str = "mpfree-mixer 1";
@@ -76,6 +81,10 @@ pub struct Collected {
     /// [`crate::looping::LoopHost::save`]); None when the looper couldn't
     /// save. Freed on the screen thread.
     pub loops: Option<mpfree_looper::save::Saved>,
+    /// The audio tracks with every take's audio (read over a few periods:
+    /// [`mpfree_audiotracks::host::AudioHost::save`]); None when they
+    /// couldn't save. Freed on the screen thread.
+    pub audio: Option<mpfree_audiotracks::save::Saved>,
 }
 
 impl std::fmt::Debug for Collected {
@@ -110,6 +119,10 @@ pub struct Opening {
     /// it is New). Its loops, read on a thread of their own, follow
     /// (`FromUi::OpenLoops`).
     pub clear_loops: bool,
+    /// The audio tracks are emptied (the project has an audio tracks part,
+    /// or it is New). Its tracks and takes, read on a thread of their own,
+    /// follow (`FromUi::OpenAudio`).
+    pub clear_audio: bool,
 }
 
 impl std::fmt::Debug for Opening {
@@ -223,6 +236,7 @@ pub fn opening(snap: &Snapshot, rate: u32, what: &str) -> Opening {
         notes,
         what: what.to_string(),
         clear_loops: snap.part(LOOPER).is_some(),
+        clear_audio: snap.part(AUDIOTRACKS).is_some(),
     }
 }
 
@@ -292,6 +306,83 @@ pub fn loops_open(
         }
         true
     });
+    Ok((saved, notes))
+}
+
+// ------------------------------------------------------------ the audio tracks
+
+/// A take's audio for the project's `samples/`: its file name, its
+/// samples (interleaved) and channels.
+pub type TakeAudio = (String, Vec<f32>, usize);
+
+/// The audio tracks' part and their takes' sounds for the project's
+/// `samples/`, each take named for its audio (`take-<id>.wav`), so a take
+/// saved before is not written again. The audio is moved, not copied.
+pub fn audio_part(mut saved: mpfree_audiotracks::save::Saved) -> (String, Vec<TakeAudio>) {
+    let mut files: Vec<TakeAudio> = Vec::new();
+    for k in &mut saved.takes {
+        let audio = std::mem::take(&mut k.audio);
+        // The channels count in the name: the same samples as mono and as
+        // stereo are two sounds.
+        let tag = saved.rate ^ ((k.channels as u32) << 30);
+        k.file = format!("take-{}.wav", audio_id(&audio, tag));
+        if !files.iter().any(|(name, _, _)| *name == k.file) {
+            files.push((k.file.clone(), audio, k.channels));
+        }
+    }
+    (mpfree_audiotracks::save::to_text(&saved), files)
+}
+
+/// Reads the audio tracks' part and each take's sound (`read` gives a
+/// file's bytes from the project's `samples/`); `rate` is the sound's.
+/// The files can be big: run it off the screen thread. A take whose sound
+/// can't be read, or isn't the take's, is left out with the regions
+/// playing it, and a line says so.
+pub fn audio_open(
+    text: &str,
+    rate: u32,
+    read: impl Fn(&str) -> Result<Vec<u8>, String>,
+) -> Result<(mpfree_audiotracks::save::Saved, Vec<String>), String> {
+    let mut saved = mpfree_audiotracks::save::from_text(text)?;
+    let mut notes = Vec::new();
+    if saved.rate != rate {
+        notes.push(format!(
+            "project: the audio tracks were recorded at {} Hz and play at {rate} Hz, so they sound off-speed",
+            saved.rate
+        ));
+    }
+    let mut gone = Vec::new();
+    saved.takes.retain_mut(|k| {
+        let got = read(&k.file)
+            .and_then(|b| mpfree_audiotracks::save::from_wav(&b))
+            .and_then(|(audio, ch, _)| {
+                if ch != k.channels || audio.len() != k.frames * k.channels {
+                    Err("not this take's sound".to_string())
+                } else {
+                    Ok(audio)
+                }
+            });
+        match got {
+            Ok(audio) => {
+                k.audio = audio;
+                true
+            }
+            Err(e) => {
+                notes.push(format!(
+                    "project: a take of audio {} wasn't opened ({}: {e}); the regions playing it are left out",
+                    k.track + 1,
+                    k.file
+                ));
+                gone.push(k.id);
+                false
+            }
+        }
+    });
+    if !gone.is_empty() {
+        for t in &mut saved.tracks {
+            t.regions.retain(|r| !gone.contains(&r.take));
+        }
+    }
     Ok((saved, notes))
 }
 
@@ -901,6 +992,111 @@ mod tests {
             "{notes:?}"
         );
         assert!(loops_open("nope", read).is_err());
+    }
+
+    #[test]
+    fn audio_takes_are_named_for_their_audio_and_a_missing_one_is_said() {
+        use mpfree_audiotracks::save::{Saved, TakeFile, TrackFile};
+        use mpfree_audiotracks::{Input, Monitor, Region};
+        let take = |id: u16, channels: usize, audio: Vec<f32>| TakeFile {
+            id,
+            track: 0,
+            group: 1,
+            pass: id,
+            bpm: 120.0,
+            anchor: 0.0,
+            frames: audio.len() / channels,
+            channels,
+            file: String::new(),
+            audio,
+        };
+        let region = |start, end, take| Region {
+            start,
+            end,
+            take,
+            src: 0,
+            gain: 1.0,
+            fade_in: 0,
+            fade_out: 0,
+        };
+        let a: Vec<f32> = (0..400).map(|k| k as f32 / 400.0).collect();
+        let saved = Saved {
+            rate: 44_100,
+            tracks: vec![TrackFile {
+                index: 0,
+                input: Input::Stereo,
+                monitor: Monitor::In,
+                level: 0.8,
+                pan: 0.25,
+                muted: false,
+                solo: false,
+                regions: vec![region(0, 960, 0), region(960, 1920, 2)],
+            }],
+            // Take 1 has take 0's samples (one file for both); take 2 the
+            // same samples as stereo (a sound of its own).
+            takes: vec![
+                take(0, 1, a.clone()),
+                take(1, 1, a.clone()),
+                take(2, 2, a.clone()),
+            ],
+        };
+        let (text, files) = audio_part(saved);
+        assert_eq!(files.len(), 2);
+        assert!(files.iter().all(|(f, _, _)| f.starts_with("take-")));
+        assert_ne!(files[0].0, files[1].0);
+        assert_eq!((files[1].1.len(), files[1].2), (400, 2));
+        let wavs: Vec<(String, Vec<u8>)> = files
+            .iter()
+            .map(|(f, audio, ch)| {
+                let mut w = Vec::new();
+                mpfree_audiotracks::save::write_wav(&mut w, audio, *ch, 44_100).unwrap();
+                (f.clone(), w)
+            })
+            .collect();
+        let read = |f: &str| {
+            wavs.iter()
+                .find(|(n, _)| n == f)
+                .map(|(_, b)| b.clone())
+                .ok_or_else(|| "not there".to_string())
+        };
+        let (back, notes) = audio_open(&text, 44_100, read).unwrap();
+        assert!(notes.is_empty(), "{notes:?}");
+        assert_eq!(back.takes.len(), 3);
+        assert_eq!(back.takes[1].audio, a);
+        assert_eq!(back.takes[2].channels, 2);
+        assert_eq!(back.takes[2].audio, a);
+        assert_eq!(back.tracks[0].input, Input::Stereo);
+        assert_eq!(back.tracks[0].regions.len(), 2);
+        // Take 2's file gone: it is left out with its region, and said;
+        // another rate is said too.
+        let (back, notes) = audio_open(&text, 48_000, |f| {
+            if f == files[1].0 {
+                Err("gone".into())
+            } else {
+                read(f)
+            }
+        })
+        .unwrap();
+        assert_eq!(back.takes.len(), 2);
+        assert_eq!(back.tracks[0].regions, vec![region(0, 960, 0)]);
+        assert!(notes[0].contains("44100 Hz"), "{notes:?}");
+        assert!(
+            notes[1].starts_with("project: a take of audio 1 wasn't opened"),
+            "{notes:?}"
+        );
+        // A file that isn't the take's sound (another length) is refused.
+        let short = mpfree_audiotracks::save::wav(&a[..100], 1, 44_100);
+        let (back, notes) = audio_open(&text, 44_100, |f| {
+            if f == files[0].0 {
+                Ok(short.clone())
+            } else {
+                read(f)
+            }
+        })
+        .unwrap();
+        assert_eq!(back.takes.len(), 1);
+        assert!(notes.iter().all(|n| n.contains("not this take's sound")));
+        assert!(audio_open("nope", 44_100, read).is_err());
     }
 
     #[test]
