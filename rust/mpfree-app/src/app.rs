@@ -588,6 +588,9 @@ pub struct Settings {
     pub metronome: bool,
     /// The click's level, dBFS: [`METRONOME_DBS`].
     pub metronome_db: i8,
+    /// Prefs "Audio track memory": the audio tracks' size from the next
+    /// start.
+    pub audio_memory: crate::audiotracks::AudioMemory,
 }
 
 /// The click levels Play's options step through, dBFS. -24 by default;
@@ -630,6 +633,7 @@ impl Default for Settings {
             loop_memory: LoopMemory::default(),
             metronome: false,
             metronome_db: crate::time::CLICK_DB as i8,
+            audio_memory: crate::audiotracks::AudioMemory::default(),
         }
     }
 }
@@ -701,6 +705,8 @@ pub enum Item {
     /// Play's options: the metronome on or off, and its level.
     Metronome,
     MetronomeLevel,
+    /// Prefs: the audio tracks' size from the next start.
+    AudioMemory,
     /// The arp's own settings (the Options menu opened from the Arp panel).
     Arp(ArpItem),
     /// The synth's engine and pad layouts (the Synth tab's options).
@@ -1064,6 +1070,8 @@ pub struct App {
     /// The looper's size in this start, and the rate it is counted at;
     /// Prefs' "Loop memory" says "(next start)" while the setting differs.
     loop_memory_now: LoopMemory,
+    /// The audio tracks' size in this start.
+    audio_memory_now: crate::audiotracks::AudioMemory,
     sample_rate: u32,
     /// Prefs, a button or a Synth tab option changed since the last look
     /// (`saved.rs`), and the text last handed to the store for "app",
@@ -1083,6 +1091,7 @@ const PREFS_ROWS: &[Item] = &[
     Item::DebugMode,
     Item::SoundCores,
     Item::LoopMemory,
+    Item::AudioMemory,
     Item::MapControls,
     Item::LineInput,
     Item::SystemInfo,
@@ -1168,6 +1177,7 @@ impl App {
             tuning_files: Vec::new(),
             sound_cores_now: SoundCores::Shared,
             loop_memory_now: LoopMemory::default(),
+            audio_memory_now: crate::audiotracks::AudioMemory::default(),
             sample_rate,
             save_dirty: false,
             saved: Default::default(),
@@ -2291,6 +2301,11 @@ impl App {
         self.loop_memory_now = size;
     }
 
+    /// The audio tracks' size in this start (main, once they are made).
+    pub fn set_audio_memory_now(&mut self, size: crate::audiotracks::AudioMemory) {
+        self.audio_memory_now = size;
+    }
+
     /// The mapper's list starts from what the app knows (measured buttons,
     /// and those found since).
     fn refresh_mapper(&mut self) {
@@ -2624,6 +2639,14 @@ impl App {
                     format!("{} (next start)", s.loop_memory.row(self.sample_rate))
                 },
             ),
+            Item::AudioMemory => (
+                "Audio track memory",
+                if s.audio_memory == self.audio_memory_now {
+                    s.audio_memory.row(self.sample_rate)
+                } else {
+                    format!("{} (next start)", s.audio_memory.row(self.sample_rate))
+                },
+            ),
             Item::Arp(a) => self.arp_item_text(a),
             Item::Synth(a) => self.synth_item_text(a),
         }
@@ -2788,6 +2811,13 @@ impl App {
                 "of stereo. It is kept in memory from the",
                 "start, so a new size applies from the next",
                 "start. The Looper tab shows what is left.",
+            ],
+            Item::AudioMemory => vec![
+                "How much sound the audio tracks on the",
+                "Song view can hold, every take together:",
+                "30 seconds to 10 minutes of stereo. It is",
+                "kept in memory from the start, so a new",
+                "size applies from the next start.",
             ],
             Item::Arp(a) => Self::arp_item_help(a),
             Item::Synth(a) => Self::synth_item_help(a),
@@ -2999,6 +3029,17 @@ impl App {
                         "loop memory: {} min from the next start (now {} min)",
                         next.minutes(),
                         self.loop_memory_now.minutes()
+                    )));
+                }
+            }
+            Item::AudioMemory => {
+                let next = cycle(&crate::audiotracks::AudioMemory::ALL, s.audio_memory, d);
+                if next != s.audio_memory {
+                    s.audio_memory = next;
+                    fx.push(Effect::Note(format!(
+                        "audio track memory: {} from the next start (now {})",
+                        next.time(),
+                        self.audio_memory_now.time()
                     )));
                 }
             }
@@ -3795,6 +3836,58 @@ mod tests {
         l.view = View::Looper;
         l.back = View::Looper;
         assert_eq!(l.items().last(), Some(&Item::LoopMemory));
+    }
+
+    /// Layout spec 4c: Prefs "Audio track memory", right after Loop
+    /// memory, picks 30 s to 10 min of stereo, kept, from the next start.
+    #[test]
+    fn audio_track_memory_is_kept_and_used_from_the_next_start() {
+        use crate::audiotracks::AudioMemory;
+        let mut app = App::new(44_100, false);
+        app.map.menu = Some(MENU);
+        app.button(button::SHIFT, true, 0.0);
+        press(&mut app, MENU);
+        app.button(button::SHIFT, false, 0.0);
+        let at = row(&app, Item::AudioMemory);
+        assert_eq!(at, row(&app, Item::LoopMemory) + 1);
+        assert!(at < row(&app, Item::SystemInfo), "before System info");
+        let value = |fx: &[Effect]| match fx.last() {
+            Some(Effect::Menu(m)) => m.rows[at].1.clone(),
+            _ => panic!("{fx:?}"),
+        };
+        assert_eq!(app.item_text(Item::AudioMemory).0, "Audio track memory");
+        assert_eq!(app.item_text(Item::AudioMemory).1, "1:00 stereo, 22 MB");
+        let fx = app.step_item(at, 1);
+        assert_eq!(value(&fx), "2:00 stereo, 43 MB (next start)");
+        assert!(fx.contains(&Effect::Note(
+            "audio track memory: 2:00 from the next start (now 1:00)".into()
+        )));
+        for _ in 0..6 {
+            app.step_item(at, 1);
+        }
+        assert_eq!(app.settings.audio_memory, AudioMemory::Min10);
+        for _ in 0..6 {
+            app.step_item(at, -1);
+        }
+        assert_eq!(app.settings.audio_memory, AudioMemory::Sec30);
+        // Kept as seconds; the next start makes it and says no more.
+        let kept = app.app_settings();
+        assert_eq!(kept.get_i64("audio-memory"), Some(30));
+        let mut next = App::new(44_100, false);
+        next.restore(&kept, &mpfree_store::Settings::default());
+        assert_eq!(next.settings.audio_memory, AudioMemory::Sec30);
+        next.set_audio_memory_now(AudioMemory::Sec30);
+        assert_eq!(next.item_text(Item::AudioMemory).1, "0:30 stereo, 11 MB");
+        // A size it doesn't offer is left out, and the default stays.
+        let mut odd = mpfree_store::Settings::default();
+        odd.set_i64("audio-memory", 45);
+        let mut other = App::new(44_100, false);
+        let notes = other.restore(&odd, &mpfree_store::Settings::default());
+        assert_eq!(other.settings.audio_memory, AudioMemory::Min1);
+        assert!(
+            notes.iter().any(|n| n.contains("audio-memory = 45")),
+            "{notes:?}"
+        );
     }
 
     #[test]

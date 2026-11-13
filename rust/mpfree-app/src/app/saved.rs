@@ -94,6 +94,7 @@ impl App {
         out.set_i64("loop-memory", i64::from(s.loop_memory.minutes()));
         out.set_bool("metronome", s.metronome);
         out.set_i64("metronome-level", i64::from(s.metronome_db));
+        out.set_i64("audio-memory", i64::from(s.audio_memory.seconds()));
         // A built-in theme or one from the themes folder; a theme file given
         // with --theme is for that run only.
         if self.offers_theme(&s.theme) {
@@ -170,6 +171,9 @@ impl App {
                     .get_i64(k)
                     .and_then(|n| super::METRONOME_DBS.iter().find(|&&d| i64::from(d) == n))
                     .map(|&d| s.metronome_db = d)
+                    .is_some(),
+                "audio-memory" => crate::audiotracks::AudioMemory::parse(v)
+                    .map(|m| s.audio_memory = m)
                     .is_some(),
                 // Built in, or in the themes folder (listed before restore).
                 "theme" => themes

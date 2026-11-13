@@ -34,9 +34,60 @@ use mpfree_ui::qlink::QLinkCard;
 
 use crate::PERIOD;
 
-/// Seconds of stereo the takes share: layout spec 4c's default, 60 s
-/// (about 21 MB at 44.1 kHz). Prefs "Audio track memory" comes later.
-pub const SECONDS: u32 = 60;
+/// Prefs "Audio track memory" (layout spec 4c): the stereo seconds every
+/// take shares, 60 s by default (about 21 MB at 44.1 kHz). It is set aside,
+/// and kept in RAM, when MPFree starts, so a new size applies from the next
+/// start, like Loop memory.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum AudioMemory {
+    Sec30,
+    #[default]
+    Min1,
+    Min2,
+    Min5,
+    Min10,
+}
+
+impl AudioMemory {
+    pub const ALL: [AudioMemory; 5] = [
+        AudioMemory::Sec30,
+        AudioMemory::Min1,
+        AudioMemory::Min2,
+        AudioMemory::Min5,
+        AudioMemory::Min10,
+    ];
+
+    pub fn seconds(self) -> u32 {
+        match self {
+            AudioMemory::Sec30 => 30,
+            AudioMemory::Min1 => 60,
+            AudioMemory::Min2 => 120,
+            AudioMemory::Min5 => 300,
+            AudioMemory::Min10 => 600,
+        }
+    }
+
+    /// The kept setting's value: the seconds.
+    pub fn parse(v: &str) -> Option<AudioMemory> {
+        let n = v.trim().parse::<u32>().ok()?;
+        AudioMemory::ALL.into_iter().find(|m| m.seconds() == n)
+    }
+
+    /// What it costs, in whole megabytes, at `rate` (stereo f32).
+    pub fn megabytes(self, rate: u32) -> usize {
+        (rate as usize * self.seconds() as usize * 2 * 4).div_ceil(1_000_000)
+    }
+
+    /// "1:00".
+    pub fn time(self) -> String {
+        format!("{}:{:02}", self.seconds() / 60, self.seconds() % 60)
+    }
+
+    /// Prefs' value for it: "1:00 stereo, 22 MB".
+    pub fn row(self, rate: u32) -> String {
+        format!("{} stereo, {} MB", self.time(), self.megabytes(rate))
+    }
+}
 /// Periods between checks for a change the Song view should show (about
 /// 23 ms at 128 frames).
 const CHECK_EVERY: u64 = 8;
