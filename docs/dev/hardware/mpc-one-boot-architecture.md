@@ -249,7 +249,7 @@ Factory automount commonly uses `noexec` for FAT/exFAT USB media. The original `
 
 ### 5.2 U-Boot Fastboot and recovery path
 
-**Verified in image:** The board has a Fastboot-oriented recovery selection. SARADC channel 1 at a threshold near `≤99` affects a shared state flag at approximately `0x001462FC`. U-Boot startup interprets that state through `dorecovery` and `az01_recovercmd`, entering `fastboot 0` before the normal Linux rootfs is read. The manufacturer documents a power-on Update Mode button combination (FULL LEVEL + BROWSE + PAD BANK C/G), but the actual gesture and subsequent recovery steps have **not** been end-to-end rehearsed on this reference device.
+**Verified in image, with qualification:** U-Boot's recovery selection includes an ADC-based comparison against **100**; its observed predicate is consistent with readings 0–99 selecting a recovery branch. An earlier code report associates this with a candidate channel-1 state variable near `0x001462FC`, but the precise flag-address mapping and physical-button-to-ADC relationship have **not been independently proven**. The saved environment contains `dorecovery`/`az01_recovercmd` and the recovery command `fastboot 0`, entered before the normal Linux rootfs is read when selected. The manufacturer documents a power-on Update Mode button combination (FULL LEVEL + BROWSE + PAD BANK C/G), but the actual gesture and subsequent recovery steps have **not** been end-to-end rehearsed on this reference device.
 
 U-Boot registers the Fastboot command family `getvar`, `download`, `boot`, `continue`, `flash`, `erase`, `oem` and `reboot`. The offline program study found RAM receive base `0x00800800`, length/cursor globals near `0x0014D684`/`0x0014D680`, and an advertised download limit `0x70000000`. **That advertised number is not a proven safe physical RAM budget.** The `boot` dispatch path reaches a `bootm`-related image execution function, but accepted image format, real execution, FDT handoff and memory safety remain unproven.
 
@@ -259,7 +259,7 @@ The early-stage `reset_bootloader` logic sets a Fastboot-related Rockchip reboot
 
 ### 5.3 Updater USB backends and semantics
 
-Offline 3.10-era analysis isolated three transport implementations, including Fastboot request family `FF/42/03`, another `FF/61/7A` backend, and a RockUSB-compatible interface. Their streaming, write and commit pathways differ. Their static state transitions and synthetic host models do **not** demonstrate physical USB enumeration, acceptance of a whole image, safe writes or recovery on the MPC One. A portable installer must select only a **physically qualified** backend for the observed device/firmware, and should not treat transports as interchangeable.
+Offline 3.10-era work described **candidate** USB transport families, including request patterns `FF/42/03`, `FF/61/7A`, and a RockUSB-compatible model. The `FF/61/7A` response matcher was tested synthetically; this does **not** establish a working physical MPC One USB exchange or a confirmed protocol identity. Their modeled streaming, write and commit pathways differ. Their static state transitions and synthetic host models do **not** demonstrate physical USB enumeration, acceptance of a whole image, safe writes or recovery on the MPC One. A portable installer must select only a **physically qualified** backend for the observed device/firmware, and should not treat transports as interchangeable.
 
 ### 5.4 What USB means for truly independent boot
 
