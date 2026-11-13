@@ -174,6 +174,9 @@ static int v24_mmc(const char *test){
     return result(test,valid,
                   "real-owner-MMC-ID-selector-with-synthetic-list-and-no-media");
 }
+#ifdef MPFREE_V25_WRAPPING
+#define main mpfree_v24_legacy_main
+#endif
 int main(int argc,char **argv){
     if(argc!=3){
         fputs("usage: vendor_probe_v24 CASE private-SHA-pinned-P3.raw\n",stderr);
@@ -191,3 +194,7 @@ int main(int argc,char **argv){
         return v24_mmc(argv[1]);
     return result(argv[1],false,"unrecognized-V24-experiment");
 }
+
+#ifdef MPFREE_V25_WRAPPING
+#undef main
+#endif
