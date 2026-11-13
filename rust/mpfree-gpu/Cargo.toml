@@ -15,6 +15,7 @@ mpfree-ui = { path = "../mpfree-ui" }
 mpfree-screen-log = { path = "../mpfree-screen-log" }
 khronos-egl = { version = "6.0.0", features = ["dynamic"] }
 libloading = "0.8.9"
+libc = "0.2.191"
 glow = "0.16.0"
 
 [profile.release]
