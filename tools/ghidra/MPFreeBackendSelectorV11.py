@@ -330,9 +330,9 @@ def mpfree_v11_entrypoint():
             def original_references_to(addr):
                 values=[]
                 try:
-                    itr=prog.getReferenceManager().getReferencesTo(A(addr))
-                    while itr.hasNext() and len(values)<48:
-                        ref=itr.next()
+                    refs=prog.getReferenceManager().getReferencesTo(A(addr))
+                    for ref in refs:
+                        if len(values)>=48:break
                         values.append({
                             'from':addr_hex(ref.getFromAddress().getOffset()),
                             'type':str(ref.getReferenceType()),
