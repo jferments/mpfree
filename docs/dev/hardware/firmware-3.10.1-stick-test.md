@@ -1,6 +1,6 @@
 # Trying firmware 3.10.1 from the USB stick before installing it
 
-**Status:** runbook, 2026-11-13. Phases 1 and 2 are done (results below): the firmware matches, developer mode's files have been read, and 3.10.1 runs the pad player from the stick with the eMMC untouched. Phase 3 needs a stick builder option that is not written yet. **Scope:** the reference MPC One (Gen 1) on 3.6.0 with MOD-001 and MOD-002.
+**Status:** runbook, 2026-11-13. Phases 1 and 2 are done (results below): the firmware matches, developer mode's files have been read, and 3.10.1 runs the pad player from the stick with the eMMC untouched. Phase 3's tools are ready and its blocks are below; running it waits for the owner's go, since it is the first time Akai's app runs on the test build. **Scope:** the reference MPC One (Gen 1) on 3.6.0 with MOD-001 and MOD-002.
 
 The owner wants to move MPFree's way in from our own persistent SSH ([MOD-001/002](archive/2026-11/device-modifications.md)) to the developer mode Akai added in 3.10.1 ([compatibility page](firmware-3.10.1-compatibility.md)), and to check first that 3.10.1 does everything we need. Installing it is the one step that cannot be undone safely: it rewrites the rootfs, may rewrite the bootloader partitions, and a downgrade to 3.6.0 has not been checked. So 3.10.1 is tried the way 3.10.0 was ([kexec test boot](archive/2026-11/kexec-test-boot.md)): 3.6.0 starts it by kexec, its root filesystem comes from the USB stick, and the eMMC and SD card are hidden from it. A power-cycle brings 3.6.0 back.
 
@@ -10,7 +10,7 @@ The owner wants to move MPFree's way in from our own persistent SSH ([MOD-001/00
 |---|---|---|---|
 | 1. Offline survey | Workstation only | What does 3.10.1 ship for developer mode (SSH server, its login rules, the script runner)? Does it ship any peripheral firmware the MPC's chips don't already have? Is the kernel the one we already boot? | New folders under `~/mpfree-work` and `~/mpfree-results` only |
 | 2. Stick test, Akai's app off | MPC RAM, from the stick | Does 3.10.1's userspace boot from the stick with our kexec, and does the pad player run on it? Does the changed `az01-signed-fs` get in the way? | The stick (erased and rewritten, partition 4 kept); nothing on the MPC that survives a power-cycle |
-| 3. Stick test, Akai's app on | MPC RAM, from the stick | Does developer mode open SSH and run `autorun.sh` the way the tools need: port, user, password rules, host key, which drives, as which user, when? | As phase 2. **Not ready:** needs a builder option |
+| 3. Stick test, Akai's app on | MPC RAM, from the stick | Does developer mode open SSH and run `autorun.sh` the way the tools need: port, user, password rules, host key, which drives, as which user, when? Does Akai's lock-down to a key work? | As phase 2, plus a spare USB drive for the autorun test (optional) |
 
 What the stick cannot answer: whether developer mode survives a reboot of an installed 3.10.1, whether 3.10.1's kernel can kexec into MPFree (the stick turns kexec off in the test build by design; the offline comparison found the 3.10.1 kernel unchanged from the 3.10.0 one we already boot into), and anything about the installer itself.
 
@@ -63,7 +63,7 @@ Two runs, from the owner's zips `mpfree-results-20261113T130512Z` (clone 5f2d71c
     - `media-acvs\x2dcontent.mount`: the eMMC content partition, hidden on the stick.
 - None of the new units flashes a chip by its unit file. Nothing in the stick builder's mask or stub lists needs to change for phase 2, and the stick's own SSH server reads only its own config (`sshd -f /etc/mpfree-test/sshd_config`), so Akai's new `sshd_config.d` files don't touch it.
 
-**What happens next.** Phase 2 runs with the blocks given in the thread. Phase 3 is possible now that the firmware matches, once its builder option exists.
+**What happens next.** Phase 2 runs with the blocks given in the thread. Phase 3 is possible now that the firmware matches.
 
 **One side effect.** After block 1.1 the newest unpacked image is 3.10.1, so `offline-kexec-stick.py` builds 3.10.1 sticks by default from then on, for every thread. To build a 3.10.0 stick again, pass `--image` with the 3.10.0 folder's `rootfs.img`.
 
@@ -93,15 +93,121 @@ From the owner's zip `mpfree-results-20261113T135046Z` (owner-local). **Passed.*
 
 So 3.10.1's userspace runs MPFree's test build as 3.10.0's did. What it cannot show is developer mode, which needs Akai's app: that is phase 3.
 
-## Phase 3: developer mode on the stick (not ready)
+## Phase 3: developer mode on the stick
 
-Developer mode is switched on from inside Akai's app (hold SHIFT + MENU, choose Developer; Akai's [release notes](https://cdn.inmusicbrands.com/Software/MPC/MOPN4PCOPEN/MPC%203.10.1%20-%20Release%20Notes.pdf)), so this phase needs Akai's app running on the test build. Today's sticks mask it, and stub its launcher, because it can flash the pad and button controller ([updater findings](archive/2026-11/akai-updater-offline.md)).
+Developer mode is switched on from inside Akai's app (Akai's [release notes](https://cdn.inmusicbrands.com/Software/MPC/MOPN4PCOPEN/MPC%203.10.1%20-%20Release%20Notes.pdf)), so this phase runs Akai's app on the test build for the first time. Earlier sticks mask it and stub its launcher, because it can flash the pad and button controller ([updater findings](archive/2026-11/akai-updater-offline.md)).
 
-The plan, to be built only after phase 1:
+**What the stick holds.** `offline-kexec-stick.py --akai-app` leaves `acvs.service` and its launcher `/usr/bin/az01-launch-MPC` as Akai ships them, and keeps the rest of phase 2:
 
-- A builder option that leaves `acvs.service` and its launcher in place, keeps every other mask and stub (`dfu-util`, `midifirmup`, `touch-fw-upd`, `xmosdfu`, `fw_setenv`, `az01-update`, `kexec` and the rest), keeps the eMMC and SD hidden and `/data` in RAM. `az01-script-runner.service` stays masked: phase 1 found developer mode's script runner inside Akai's app.
-- It can run because phase 1 found no firmware the MPC's chips don't already have, so even if a blocked flashing program were reached some other way, it would have nothing new to write.
-- On the MPC: hold SHIFT + MENU, choose Developer. From the workstation, a read-only check records the SSH port, the login it accepts, and the host key's fingerprint. A harmless `autorun.sh` that only writes one file onto the stick shows when the script runner starts it, as which user, and from which drive. Phase 1 found that developer mode opens root SSH with no authentication (above), so the MPC stays on the direct Ethernet cable only.
+- Every other mask and stub stays: `dfu-util`, `midifirmup`, `touch-fw-upd`, `xmosdfu`, `fw_setenv`, `az01-update`, `kexec`, `az01-script-runner.service` and the rest.
+- The eMMC and SD card stay hidden, `/data` is RAM and kexec is off.
+- The launcher runs `dfu-util -l` to look for a controller waiting for an update. The stub finds none, so the launcher never runs `SME0/Firmware/update.sh` and starts the app. One `mpfree-test: blocked /usr/bin/dfu-util -l` line in the journal is expected.
+- Phase 1 found no firmware the MPC's chips don't already have. So even a flashing program reached some other way would have nothing new to write.
+- There is no pad player or startup screen. Partitions 3 and 4 are made as with `--app`, so the stick's saved settings stay in place.
+- Akai's firewall units stay masked, so port 22 can be reached on the stick. The build report quotes the rules they would load on an installed 3.10.1, which decide whether port 22 can be reached there.
+
+**The two new tools:**
+
+- [`host_devmode_check.py`](../../../tools/mpc-one/host_devmode_check.py), run as `collect-over-ssh.sh --devmode-check`. **Read-only** unless you type `LOCK`.
+    - Over our port 2222 (the build's own host key only), it reads what developer mode changed: the `/etc` overlay, `/data/ssh`, the SSH server's settings as it reads them (`sshd -T`), its host key, the listening ports, the kind of root's password field (never its value), mounted drives, the journal and the autorun result.
+    - It then logs in on port 22 from the workstation with no key and no password, and again with your key, and runs only `id -u`. It accepts only the host key it just read over port 2222.
+    - After a typed `LOCK` it does Akai's own lock-down. This is **state-changing, RAM only**. It copies both files to `/run/mpfree-devmode`, empties `/data/ssh/sshd_config.d/allow-access.conf`, adds your public key to `/data/ssh/authorized_keys` and reloads Akai's SSH server. Then the login with no key must be refused and your key must get in.
+    - It checks that `/data` is RAM before it changes anything. A power-cycle undoes it, and our port 2222 is never affected.
+    - The login with no key and the lock-down were rehearsed against a real OpenSSH 9.6 server set up with Akai's files: the no-key login got in before the lock-down and was refused after it, and the key got in.
+- [`write-autorun-drive.py`](../../../tools/mpc-one/write-autorun-drive.py), on the workstation only. It adds a harmless `autorun.sh` to the one mounted FAT32 or exFAT USB drive that is not the test stick, after a typed `WRITE`.
+    - On the MPC the script writes one kernel log line and `mpfree-autorun-result.txt` next to itself (or in `/run` if the drive is read-only). It records the time, user, script path, parent process and cgroup, and changes nothing else.
+    - The tool refuses a drive that already holds an `autorun.sh` or result file it did not write.
+    - Undo: delete the two files from the drive.
+
+**You need:**
+
+- The MPC on the direct Ethernet cable only: while developer mode is on, anyone on its network can get a root shell with no password.
+- For the autorun test (optional), a spare FAT32 or exFAT USB drive and the MPC's second USB-A port.
+- 3.6.0 has its own script runner, and whether it would run this script has not been checked. So the spare drive goes into the MPC only while the test build runs.
+
+**Block 3.1: update, check, build** (workstation only):
+
+```bash
+cd /home/jesse/code/mpfree-hardware-survey && git fetch origin claude/project-thread-r73rb5:refs/remotes/origin/claude/project-thread-r73rb5 && git switch --no-track -C review-3101 origin/claude/project-thread-r73rb5 && git log --oneline -1 && python3 tools/mpc-one/results.py status && python3 tools/mpc-one/results.py run local-checks -- bash -c 'MPFREE_REQUIRE_OFFLINE_TOOLS=1 python3 tools/mpc-one/tests/test_offline_kexec_stick.py && python3 tools/mpc-one/tests/test_write_test_stick.py && MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_kexec_boot.py && MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_devmode_check.py && python3 tools/mpc-one/tests/test_write_autorun_drive.py && MPFREE_REQUIRE_OFFLINE_TOOLS=1 python3 tools/mpc-one/tests/test_read_stick_logs.py && python3 tools/mpc-one/tests/test_results.py && echo LOCAL-CHECKS-OK' && python3 tools/mpc-one/results.py run build-arm -- bash -c 'export CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER=arm-linux-gnueabihf-gcc RUSTFLAGS="-C target-feature=+crt-static -C relocation-model=static" && cargo build --manifest-path rust/Cargo.toml --release --locked --target armv7-unknown-linux-gnueabihf -p mpfree-screen-log && sha256sum rust/target/armv7-unknown-linux-gnueabihf/release/mpfree-screen-log' && python3 tools/mpc-one/results.py run build-stick -- python3 tools/mpc-one/offline-kexec-stick.py --akai-app
+```
+
+The build report says `akai app: on (--akai-app)`, lists `dfu-util` among the stubs and no stub for `az01-launch-MPC`, and quotes Akai's firewall rules.
+
+**Block 3.2 (optional): the autorun drive** (workstation only; plug in the spare drive and let the desktop mount it first; asks for `WRITE`):
+
+```bash
+cd /home/jesse/code/mpfree-hardware-survey && python3 tools/mpc-one/results.py run autorun-drive -- python3 tools/mpc-one/write-autorun-drive.py
+```
+
+Eject the drive afterwards and keep it out of the MPC for now.
+
+**Block 3.3: write the stick** (**erases the stick's partitions 1 to 3**, keeps partition 4, asks for `WRITE`):
+
+```bash
+cd /home/jesse/code/mpfree-hardware-survey && python3 tools/mpc-one/results.py run write-stick -- python3 tools/mpc-one/write-test-stick.py
+```
+
+Put the stick into the MPC and switch it on as usual. 3.6.0 starts as in every round.
+
+**Block 3.4: boot map before** (read-only):
+
+```bash
+cd /home/jesse/code/mpfree-hardware-survey && python3 tools/mpc-one/results.py run boot-map-before -- bash tools/mpc-one/collect-over-ssh.sh --boot-map
+```
+
+**Block 3.5: start the test build** (**state-changing, RAM only**; you type `BOOT 3.10`):
+
+```bash
+cd /home/jesse/code/mpfree-hardware-survey && python3 tools/mpc-one/results.py run kexec-boot -- env MPFREE_ACCEPT_KEXEC_BOOT=YES bash tools/mpc-one/collect-over-ssh.sh --kexec-boot
+```
+
+It says the build runs Akai's app, and its checks on the test build print `Akai's app (acvs.service, expected in this build): active`. Every other masked unit must still be inactive.
+
+**On the MPC, after block 3.5:**
+
+1. Wait for Akai's app. It starts with empty settings, as on a new MPC, because `/data` is RAM. **Answer No or Cancel to anything that offers to update, format or erase**, and note what it asked.
+2. Menu > Preferences > Enhancements: switch on the developer panel.
+3. Hold SHIFT and press MENU, then choose Developer. Note what the screen shows.
+4. Optional: plug the spare drive into the MPC's free USB-A port. If the MPC asks whether to run the drive's autorun script, answer yes. Note its exact words, and whether it asked at all.
+
+**Block 3.6: the developer mode check** (read-only, unless you type `LOCK`: then **state-changing, RAM only**). Typing `LOCK` is recommended, since it checks that Akai's lock-down works:
+
+```bash
+cd /home/jesse/code/mpfree-hardware-survey && python3 tools/mpc-one/results.py run devmode-check -- bash tools/mpc-one/collect-over-ssh.sh --devmode-check
+```
+
+Then switch the MPC off, take out the stick and the spare drive, wait 10 s and switch it on. 3.6.0 starts from the eMMC.
+
+**Block 3.7: boot map after** (read-only):
+
+```bash
+cd /home/jesse/code/mpfree-hardware-survey && python3 tools/mpc-one/results.py run boot-map-after -- bash tools/mpc-one/collect-over-ssh.sh --boot-map
+```
+
+**Block 3.8: stick logs and the zip** (workstation only; the stick in the workstation, read-only):
+
+```bash
+cd /home/jesse/code/mpfree-hardware-survey && python3 tools/mpc-one/results.py run stick-logs -- python3 tools/mpc-one/read-stick-logs.py ; python3 tools/mpc-one/results.py zip
+```
+
+Upload the zip, with your notes from the MPC's screen. The reports quote Akai's files: upload them to this project only.
+
+**Passes when:**
+
+- The kexec boot ends with its `RESULT` line, with Akai's app active and no other masked unit active.
+- The developer mode check prints `CHECKS-OK` and records what port 22 accepts. With `LOCK`, it ends with `Akai's lock-down works`.
+- The only `mpfree-test: blocked` line is the launcher's `dfu-util -l`, or each other one is explained.
+- The boot maps before and after match, with 0 sectors written to p1 to p6 and boot0/1.
+- The autorun test, if run, shows a result file or a kernel line, or the MPC's notes say why not.
+
+**What it cannot show:**
+
+- Whether developer mode is still on after a reboot of an installed 3.10.1. The app's settings live in `/data`, which is RAM here, so developer mode is off at every start of the test build.
+- For the same reason, whether the script runner offers a drive that is already in at power-on.
+- Whether 3.10.1's kernel can kexec into MPFree, since the test build turns kexec off.
+- Whether Akai's firewall lets port 22 through on an installed 3.10.1. The build report quotes its rules for reading.
+
+**Undo:** as phase 2. Developer mode, the lock-down and the autorun result in `/run` live in RAM only. To go back to the pad player stick, run phase 2's build and write blocks again.
 
 ## After the test
 

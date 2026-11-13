@@ -97,7 +97,7 @@ case "$1" in
       *) echo 310 > "$FAKE_STAGE" ;;
     esac ;;
   --failed) echo "  (none)" ;;
-  is-active) echo inactive ;;
+  is-active) case " $FAKE_ACTIVE " in *" $2 "*) echo active ;; *) echo inactive ;; esac ;;
   *) echo "systemctl stand-in: refusing $*" >&2; exit 99 ;;
 esac
 '''
@@ -154,7 +154,7 @@ class KexecBootTests(unittest.TestCase):
         self.env = {"PATH": fakebin + os.pathsep + os.environ.get("PATH", "/usr/bin:/bin"),
                     "HOME": t, "MPFREE_KEXEC_BOOT_TEST": "1", "FAKE_STAGE": self.stage, "FAKE_LOG": self.log,
                     "FAKE_ROOT36": self.r36, "FAKE_ROOT310": self.r310, "FAKE_REMOTE_PATH": remote,
-                    "FAKE_OLD": OLD, "FAKE_NEW": NEW, "FAKE_SCENARIO": "ok"}
+                    "FAKE_OLD": OLD, "FAKE_NEW": NEW, "FAKE_SCENARIO": "ok", "FAKE_ACTIVE": ""}
         self.key = os.path.join(t, "key")
         write(self.key, "fake key\n", 0o600)
         self.folder = self.build()
@@ -164,7 +164,7 @@ class KexecBootTests(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
-    def build(self, emmc="disabled"):
+    def build(self, emmc="disabled", akai=False):
         folder = os.path.join(self.work, "kexec-stick-20260101T000000Z-abc")
         tree = board_tree(serial="FAKE-SERIAL", mac=bytes.fromhex("020000000001"))
         tree.find("/dwmmc@ff0f0000").set_prop("status", (emmc + "\0").encode())
@@ -178,7 +178,8 @@ class KexecBootTests(unittest.TestCase):
                 raw = data if isinstance(data, bytes) else data.encode()
                 fh.write(f"{hashlib.sha256(raw).hexdigest()}  {name}\n")
         write(os.path.join(folder, "report.txt"), f"its kernel release: {NEW}\n"
-                                                  f"running release: {OLD} (the only other boot-files release)\n")
+                                                  f"running release: {OLD} (the only other boot-files release)\n"
+              + ("akai app: on (--akai-app)\n" if akai else ""))
         return folder
 
     def root36(self):
@@ -224,8 +225,8 @@ class KexecBootTests(unittest.TestCase):
                 "--expect-mac", TEST_MAC, "--work", self.work, "--report", self.report, "--wait", "3",
                 "--poll", "0.05", "--still-up-after", "0.3", "--arp", self.arp]
 
-    def run_helper(self, answer="BOOT 3.10\n", scenario="ok"):
-        env = dict(self.env, FAKE_SCENARIO=scenario)
+    def run_helper(self, answer="BOOT 3.10\n", scenario="ok", active=""):
+        env = dict(self.env, FAKE_SCENARIO=scenario, FAKE_ACTIVE=active)
         return subprocess.run(self.helper_cmd(), input=answer, env=env, text=True, stdout=subprocess.PIPE,
                               stderr=subprocess.STDOUT, timeout=120)
 
@@ -269,6 +270,28 @@ class KexecBootTests(unittest.TestCase):
         self.assertIn("systemctl: kexec", log)
         with open(self.report) as fh:
             self.assertIn("RESULT: the test build is running", fh.read(), "the report gets the same lines")
+
+    def test_build_that_runs_akais_app(self):
+        res = self.run_helper(active="acvs.service")
+        self.assertEqual(res.returncode, 1, res.stdout)
+        self.assertIn("PROBLEM: acvs.service is active", res.stdout, "a normal build must not run Akai's app")
+        self.assertNotIn("this build runs Akai's app", res.stdout)
+        self.folder = self.build(akai=True)
+        write(self.stage, "36\n")
+        write(f"{self.r36}/sys/kernel/kexec_loaded", "0\n")
+        res = self.run_helper(active="acvs.service")
+        self.assertEqual(res.returncode, 0, res.stdout)
+        out = res.stdout
+        for text in ("this build runs Akai's app (made with --akai-app); every flashing program in it is a stub",
+                     "Akai's app starting", "Akai's app (acvs.service, expected in this build): active",
+                     "CHECKS-OK", "RESULT: the test build is running from the stick"):
+            self.assertIn(text, out)
+        self.assertNotIn("PROBLEM", out)
+        write(self.stage, "36\n")
+        write(f"{self.r36}/sys/kernel/kexec_loaded", "0\n")
+        res = self.run_helper(active="acvs.service xmos-update.service")
+        self.assertEqual(res.returncode, 1, res.stdout)
+        self.assertIn("PROBLEM: xmos-update.service is active", res.stdout, "the other masks still count")
 
     def test_anything_but_the_phrase_unloads_and_stops(self):
         for answer in ("boot 3.10\n", "yes\n", "\n", ""):
@@ -431,6 +454,14 @@ class StaticTests(unittest.TestCase):
         spec.loader.exec_module(mod)
         scripts = {name: getattr(mod, name) for name in
                    ("CHECK_36", "PREPARE", "RECEIVE", "HASHES", "LOAD", "UNDO", "JUMP", "STATE", "CHECK_310")}
+        for akai in (False, True):
+            filled = mod.check_310({"new": NEW, "p1": P1, "akai": akai})
+            self.assertNotIn("@@", filled)
+            loop = re.search(r"^for u in (.*); do$", filled, re.M).group(1).split()
+            self.assertEqual("acvs" in loop, not akai, loop)
+            self.assertEqual(len(loop), 7 if akai else 8, loop)
+            self.assertEqual("is-active acvs.service" in filled, akai)
+            scripts[f"CHECK_310 akai={akai}"] = filled
         for name, text in scripts.items():
             self.assertTrue(text.startswith("R=''"), name)
             self.assertIsNone(re.search(r"(?<![0-9])>\s*\S*/dev/", text), f"{name}: writes to a device")
