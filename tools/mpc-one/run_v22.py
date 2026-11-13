@@ -209,7 +209,7 @@ def analyze(out,prior,stages):
        "total_new_vendor_cases_passed":dynamic.get("passed",0),
        "registered_backend_callback_source":{
           "registration_function":"FUN_0011D8E8",
-          "physical_block_write_function":"FUN_0011DE50",
+          "registered_vendor_block_write_function":"FUN_0011DE50",
           "erase_function":"FUN_0011DD4C",
           "transport_dispatch_function":"FUN_0011CA78",
           "device_driver_through_function_table":True,
@@ -313,7 +313,7 @@ def main():
             "stages":stages,"new_arm_cases_requested":len(cases()),
             "new_arm_cases_observed":stages.get("actual_arm_guest",{}).get("tests_observed",0),
             "physical_MPC_access":False,"host_MMC_USB_passthrough":False,
-            "real_storage_write_executed":False,"proprietary_firmware_bin_in_zip":False,
+            "persistent_media_write_performed":False,"proprietary_firmware_bin_in_zip":False,
             "questions_with_new_evidence":findings.get("questions_with_new_evidence",0)})
         summary=["# MPFree V22: original U-Boot block-write and low-level transport","",
            "The previous V21 SIGILL at 0x0012ee08 was caused by patching an",
