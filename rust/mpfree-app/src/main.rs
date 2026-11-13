@@ -3354,13 +3354,17 @@ fn player_session(
     // What the mixer's I/O view shows and edits (MIDI, Sync and CV). The
     // loop only ever try_locks it (MusicIn::sync).
     let io_model = midi_in::io_model();
-    // The I/O view as it was left (midi_saved.rs): kept in the store until
-    // whole projects are saved, then the project's `midi` part.
-    if let Some(bytes) = store.read(midi_saved::OWNER, midi_saved::FILE) {
-        let text = String::from_utf8_lossy(&bytes);
-        for w in midi_saved::restore(&io_model, &text) {
-            out.note(&format!("midi: setting not read: {w}"));
-        }
+    // The I/O view as it was left (midi_saved.rs): the rig's port inputs
+    // and thru for every project, and the last project part until whole
+    // projects are saved.
+    let kept = |file| {
+        store
+            .read(midi_saved::OWNER, file)
+            .map(|b| String::from_utf8_lossy(&b).into_owned())
+    };
+    let (rig_text, project_text) = (kept(midi_saved::RIG), kept(midi_saved::PROJECT));
+    for w in midi_saved::restore(&io_model, rig_text.as_deref(), project_text.as_deref()) {
+        out.note(&format!("midi: setting not read: {w}"));
     }
     let mut midi_saver = midi_saved::Saver::new(&io_model);
     out.show(gui::ToUi::IoModel(io_model.clone()));
@@ -4900,12 +4904,10 @@ fn player_session(
                 }
             }
             // The I/O view's settings changed: kept for the next start.
-            if let Some(text) = midi_saver.take(&io_model) {
+            for (file, text) in midi_saver.take(&io_model) {
                 if store.saves() {
-                    if let Err(e) =
-                        store.write(midi_saved::OWNER, midi_saved::FILE, text.into_bytes())
-                    {
-                        out.note(&format!("not saved: midi: {e}"));
+                    if let Err(e) = store.write(midi_saved::OWNER, file, text.into_bytes()) {
+                        out.note(&format!("not saved: midi/{file}: {e}"));
                     }
                 }
             }
@@ -5006,8 +5008,10 @@ fn player_session(
             let _ = store.save_settings(owner, &settings);
         }
     }
-    if let (Some(text), true) = (midi_saver.take(&io_model), store.saves()) {
-        let _ = store.write(midi_saved::OWNER, midi_saved::FILE, text.into_bytes());
+    for (file, text) in midi_saver.take(&io_model) {
+        if store.saves() {
+            let _ = store.write(midi_saved::OWNER, file, text.into_bytes());
+        }
     }
     store.flush();
     out.say(&engines::log_line(&engines.lifetime()));
