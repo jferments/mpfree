@@ -27,15 +27,15 @@ use mpfree_seq::steps::Grid;
 use mpfree_seq::{Clip, ModelError, Project, TouchPoint, SLOTS};
 use mpfree_time_ui::editor::{EditAction, Editor};
 use mpfree_time_ui::view::{
-    bars_label, clips_after, AudioAction, EditInfo, MorphInfo, RegionId, TimeAction, TimeState,
-    TransportInfo,
+    bars_label, clips_after, AudioAction, EditInfo, MorphInfo, RegionId, TakeRow, TimeAction,
+    TimeState, TransportInfo,
 };
 use mpfree_transport::time::Tick;
 use mpfree_transport::{Block, Command, State};
 
 use super::follow::FollowCounts;
 use super::link::{Counts, PeriodEnd, Rx, ToAudio, ToControl, Tracks, Tx};
-use super::{take_name, StepAction, StepClip, StepsData, NEW_CLIP_BARS, RECORD_ROOM, STEP_TICKS};
+use super::{StepAction, StepClip, StepsData, NEW_CLIP_BARS, RECORD_ROOM, STEP_TICKS};
 
 /// Started cues one period may bring before the list grows.
 const STARTED_ROOM: usize = 64;
@@ -420,6 +420,25 @@ impl TimeControl {
 
     /// The clip the Play page's pattern edits: the armed track's (track 1
     /// if none is armed) launched clip, else its first clip.
+    /// "take 3 · Drums / 1", as the takes list names it: what UNDO and
+    /// REDO say they did.
+    fn take_said(&self, row: Option<TakeRow>) -> String {
+        let Some(r) = row else {
+            return "take".into();
+        };
+        match r.at {
+            Some((track, slot)) => {
+                let name = self
+                    .project
+                    .tracks
+                    .get(track)
+                    .map_or_else(|| format!("Track {}", track + 1), |t| t.name.clone());
+                format!("{} · {name} / {}", r.short(), slot + 1)
+            }
+            None => r.short(),
+        }
+    }
+
     fn step_focus(&self) -> (usize, Option<usize>) {
         let track = self.armed.unwrap_or(0);
         let launched = self
@@ -618,20 +637,21 @@ impl TimeControl {
             }
             TimeAction::Undo => match self.takes.undo(&mut self.project) {
                 Some(_) => {
-                    let row = self.takes.undone().last().map(|t| (t.captured, t.number));
-                    if row.is_some_and(|(captured, _)| captured) {
+                    let row = self.takes.undone().last().map(TakeRow::of);
+                    if row.is_some_and(|r| r.captured) {
                         // It can be kept again.
                         self.capture.forget_kept();
                         self.pending = self.capture.pending();
                     }
-                    self.compile().map(|_| format!("undo: {}", take_name(row)))
+                    let said = self.take_said(row);
+                    self.compile().map(|_| format!("undo: {said}"))
                 }
                 None => Ok("undo: nothing to undo".into()),
             },
             TimeAction::Redo => match self.takes.redo(&mut self.project) {
                 Some(_) => {
-                    let row = self.takes.done().last().map(|t| (t.captured, t.number));
-                    self.compile().map(|_| format!("redo: {}", take_name(row)))
+                    let said = self.take_said(self.takes.done().last().map(TakeRow::of));
+                    self.compile().map(|_| format!("redo: {said}"))
                 }
                 None => Ok("redo: nothing to redo".into()),
             },

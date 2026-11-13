@@ -297,6 +297,9 @@ pub enum ToUi {
     /// A line shown in place of the hint for [`TELL_SECONDS`] (it was
     /// logged as a `Line` too): why something did nothing.
     Tell(String),
+    /// UNDO (true: SHIFT + UNDO, redo) on a page whose history the screen
+    /// picks ([`Player::undo`]).
+    Undo(bool),
     /// A line for the Events log only (not printed).
     Event(String),
     /// A MIDI message in or out, as one line (also printed).
@@ -790,6 +793,12 @@ pub struct Player {
     /// A line said in place of the hint ([`ToUi::Tell`]) and the seconds
     /// it has left.
     told: Option<(String, f32)>,
+    /// Which of the Play page's histories changed last, for UNDO on the
+    /// All view: the loop's (true) or the takes' (false); and the counts
+    /// each was last seen at.
+    undo_loop: bool,
+    seen_takes: (usize, usize),
+    seen_loop: (usize, usize, usize),
 }
 
 impl Player {
@@ -917,6 +926,9 @@ impl Player {
         };
         let mut p = Player {
             told: None,
+            undo_loop: false,
+            seen_takes: (0, 0),
+            seen_loop: (0, 0, 0),
             ui,
             kits: Vec::new(),
             kit: 0,
@@ -1956,6 +1968,40 @@ impl Player {
     }
 
     /// Shows `line` in place of the hint for [`TELL_SECONDS`].
+    /// UNDO, or SHIFT + UNDO (`redo`), on a page whose history the screen
+    /// picks (the Looper tab and the Sample and Pads tabs have theirs in
+    /// the app). It follows what the page shows (Jay, 13 Nov 13:53Z): the
+    /// loop on Play's Loop view, the takes on Beats, on Arrange and on the
+    /// Arp and pattern screens, and on All whichever of the two changed
+    /// last. Other pages say they have nothing to undo.
+    fn undo(&mut self, redo: bool) {
+        use mpfree_looper::Command;
+        let looper = FromUi::LoopCommand(if redo { Command::Redo } else { Command::Undo });
+        let takes = FromUi::Time(if redo {
+            TimeAction::Redo
+        } else {
+            TimeAction::Undo
+        });
+        let to = match self.view {
+            View::Play => match self.play.view {
+                PlayView::Loop => looper,
+                PlayView::Beats => takes,
+                PlayView::All if self.undo_loop => looper,
+                PlayView::All => takes,
+            },
+            View::Arrange | View::Arp | View::Pattern => takes,
+            _ => {
+                self.tell(if redo {
+                    "Nothing to redo on this page"
+                } else {
+                    "Nothing to undo on this page"
+                });
+                return;
+            }
+        };
+        self.outbox.push(to);
+    }
+
     pub fn tell(&mut self, line: &str) {
         self.told = Some((tell_text(line), TELL_SECONDS));
         self.refresh_hint();
@@ -1964,6 +2010,7 @@ impl Player {
     pub fn apply(&mut self, msg: ToUi) {
         match msg {
             ToUi::Tell(l) => self.tell(&l),
+            ToUi::Undo(redo) => self.undo(redo),
             ToUi::Line(l) | ToUi::Event(l) => {
                 let tone = tone_of(&l);
                 if let Some(e) = self.ui.get_mut::<LogPanel>("events") {
@@ -2207,6 +2254,13 @@ impl Player {
             ToUi::Map(m) => DebugPages::set_map(&mut self.ui, &m),
             ToUi::Engines(shared) => self.engines = Some(shared),
             ToUi::Looper(v) => {
+                // The picked loop's history moved: UNDO on All takes it.
+                let h = &v.history;
+                let seen = (v.selected, h.done().len(), h.redo().len());
+                if seen.0 == self.seen_loop.0 && seen != self.seen_loop {
+                    self.undo_loop = true;
+                }
+                self.seen_loop = seen;
                 self.looper = *v;
                 if matches!(self.view, View::Looper | View::Play) {
                     self.refresh_looper();
@@ -2543,6 +2597,12 @@ impl Player {
                 // The lens the note editor shows, if it is open.
                 let lens = |t: &TimeState| t.edit.as_ref().map(|e| e.editor.lens);
                 let swapped = st.song_view != self.time.song_view || lens(&st) != lens(&self.time);
+                // A take made, undone or redone: UNDO on All takes the takes.
+                let seen = (st.done.len(), st.undone.len());
+                if seen != self.seen_takes {
+                    self.undo_loop = false;
+                    self.seen_takes = seen;
+                }
                 self.time = *st;
                 self.sample.set_tempo(self.time.transport.bpm);
                 self.time_page.update(&mut self.ui, &self.time);
@@ -4810,6 +4870,7 @@ pub fn apply_effects(p: &mut Player, fx: Vec<crate::app::Effect>) {
                 p.apply(ToUi::Line(l.clone()));
                 p.apply(ToUi::Tell(l));
             }
+            Effect::Undo { redo } => p.apply(ToUi::Undo(redo)),
             Effect::ClipsWheel { delta, scroll } => p.apply(ToUi::ClipsWheel { delta, scroll }),
             Effect::Map(m) => p.apply(ToUi::Map(Box::new(m))),
             Effect::SynthPage(d) => p.apply(ToUi::SynthPage(d)),
@@ -6600,6 +6661,60 @@ mod tests {
         // The hint says what the tab's controls do.
         let hint = &p.ui.get::<Label>("hint").unwrap().text;
         assert!(hint.contains("Tap a loop or a layer"), "{hint}");
+    }
+
+    /// UNDO follows the page (Jay, 13 Nov 13:53Z): the loop on the Loop
+    /// view, the takes on Beats, and on All whichever changed last.
+    #[test]
+    fn undo_follows_the_page_and_the_play_view() {
+        use mpfree_time_ui::view::TakeRow;
+        let mut p = sample_play(Fonts::embedded(), PlayView::All);
+        p.take_actions();
+        let undo = |p: &mut Player, redo: bool| {
+            p.apply(ToUi::Undo(redo));
+            p.take_actions()
+        };
+        let looper = |c| vec![FromUi::LoopCommand(c)];
+        let takes = |a| vec![FromUi::Time(a)];
+        use mpfree_looper::Command as L;
+        // All: a take was made last, so the takes.
+        let mut st = p.time.clone();
+        st.done.push(TakeRow {
+            number: 9,
+            captured: false,
+            edited: true,
+            made: false,
+            at: Some((0, 0)),
+            added: 1,
+            erased: 0,
+            deleted: false,
+        });
+        p.apply(ToUi::Time(Box::new(st.clone())));
+        assert_eq!(undo(&mut p, false), takes(TimeAction::Undo));
+        // The loop's history moved since: the loop, both ways.
+        p.apply(ToUi::Looper(Box::default()));
+        assert_eq!(undo(&mut p, false), looper(L::Undo));
+        assert_eq!(undo(&mut p, true), looper(L::Redo));
+        // The same takes again change nothing; a new take does.
+        p.apply(ToUi::Time(Box::new(st.clone())));
+        assert_eq!(undo(&mut p, false), looper(L::Undo));
+        st.undone.push(st.done.pop().unwrap());
+        p.apply(ToUi::Time(Box::new(st)));
+        assert_eq!(undo(&mut p, true), takes(TimeAction::Redo));
+        // The Loop view: the loop; Beats: the takes; Arrange: the takes.
+        p.apply(ToUi::PlayView(Some(PlayView::Loop)));
+        assert_eq!(undo(&mut p, false), looper(L::Undo));
+        p.apply(ToUi::PlayView(Some(PlayView::Beats)));
+        assert_eq!(undo(&mut p, false), takes(TimeAction::Undo));
+        p.apply(ToUi::Show(View::Arrange));
+        assert_eq!(undo(&mut p, false), takes(TimeAction::Undo));
+        // A page with no history of its own says so and does nothing.
+        p.apply(ToUi::Show(View::Prefs));
+        assert!(undo(&mut p, false).is_empty());
+        assert_eq!(
+            p.told.as_ref().map(|t| t.0.as_str()),
+            Some("Nothing to undo on this page")
+        );
     }
 
     /// ERASE held (Jay after live test 3): the tap deletes what it lands

@@ -849,6 +849,12 @@ pub enum Effect {
     /// to read ([`crate::gui::TELL_SECONDS`]): why something did nothing,
     /// or was refused (Jay, 12 Nov: say in place when it would do nothing).
     Tell(String),
+    /// UNDO (or SHIFT + UNDO, `redo`) on a page without its own in the
+    /// app: the screen knows what the page shows, so it picks the history
+    /// (Jay, 13 Nov 13:53Z: UNDO follows the page you're on).
+    Undo {
+        redo: bool,
+    },
     /// What the arp screens show: the panel, the quick band and the chip.
     Arp(ArpView),
     /// The arp's pattern list (names and patterns), when it changes.
@@ -1643,11 +1649,8 @@ impl App {
         } else if Some(note) == self.map.undo && self.view.sampler() {
             fx.push(Effect::SampleUndo { redo: shift });
         } else if Some(note) == self.map.undo {
-            fx.push(Effect::Time(if shift {
-                TimeAction::Redo
-            } else {
-                TimeAction::Undo
-            }));
+            // The Play page's view, Arrange and the rest: the screen picks.
+            fx.push(Effect::Undo { redo: shift });
         } else if Some(note) == self.map.note_repeat {
             let double = self
                 .repeat_pressed_at
@@ -4398,7 +4401,8 @@ mod tests {
         press(&mut app, MENU);
         assert_eq!(app.view(), View::Sample);
         app.tab(0);
-        assert_eq!(press(&mut app, 92), vec![Effect::Time(TimeAction::Undo)]);
+        // Back on Play, the screen picks the history (the Play view's).
+        assert_eq!(press(&mut app, 92), vec![Effect::Undo { redo: false }]);
     }
 
     #[test]
@@ -5653,10 +5657,11 @@ mod tests {
             press(&mut app, 91),
             vec![time(TimeAction::Transport(Command::ToggleOverdub))]
         );
-        assert_eq!(press(&mut app, 92), vec![time(TimeAction::Undo)]);
+        // UNDO follows the page: the screen knows the Play view, so it picks.
+        assert_eq!(press(&mut app, 92), vec![Effect::Undo { redo: false }]);
         assert_eq!(
             held(&mut app, button::SHIFT, |a| press(a, 92)),
-            vec![time(TimeAction::Redo)]
+            vec![Effect::Undo { redo: true }]
         );
         // Rolling, STOP stops the transport and leaves the sounds alone.
         app.set_rolling(true);

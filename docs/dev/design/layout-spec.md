@@ -194,7 +194,7 @@ Approved by Jay at 22:34Z (the mod thread's card, "Approve as proposed"). The mo
 - **NOTE REPEAT:** repeat. Press it twice, or SHIFT + it, to Latch.
 - **NOTE REPEAT + MENU:** the Arp panel.
 - **TRACK MIX:** the mixer. SHIFT + TRACK MIX: the pad mixer, as the FX thread proposed. The guide names the button "Track Mix / Pad Mix"; the pad player hasn't seen it yet, and round 7's mapper lists it.
-- **REC, OVERDUB, UNDO:** they act on the page showing (Arrange, Looper, Sample), otherwise on the clips.
+- **REC, OVERDUB, UNDO:** they act on the page showing (Arrange, Looper, Sample), otherwise on the clips. **UNDO follows the page you're on** (Jay, 13 Nov 13:53Z): the Looper tab and Play's Loop view undo the loop; Play's Beats view, Arrange and the Arp and pattern screens undo the takes; Play's All view undoes whichever of the two changed last; the Sample and Pads tabs undo their edits; other pages say "Nothing to undo on this page". The line in place of the hint says what was undone ("Undid take 3 · Drums / 1", "Undo: layer 3 fades out"). SHIFT + UNDO redoes, the same way.
 - **PAD BANK A–D:** banks. SHIFT, or a second press, gives E–H.
 - **SHIFT + REC:** Capture, on every page.
 - **SHIFT + PLAY START:** the metronome on or off.

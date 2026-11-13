@@ -2807,6 +2807,12 @@ fn looper_action(
     a: looping::LoopAction,
 ) -> Vec<app::Effect> {
     match a {
+        // UNDO and REDO say what they did in place of the hint.
+        looping::LoopAction::Command(
+            c @ (mpfree_looper::Command::Undo | mpfree_looper::Command::Redo),
+        ) => {
+            vec![app::Effect::Tell(looper.command(c))]
+        }
         looping::LoopAction::Command(c) => {
             out.note(&looper.command(c));
             Vec::new()
@@ -2878,7 +2884,8 @@ fn time_action(
     if let TimeAction::Transport(Command::SetTempo(bpm)) = a {
         return app.set_tempo(bpm);
     }
-    // ERASE + a clip: said in place of the hint, refused or done.
+    // ERASE + a clip, UNDO and REDO: said in place of the hint.
+    let undo = matches!(a, TimeAction::Undo | TimeAction::Redo);
     let erase = matches!(a, TimeAction::DeleteClip { .. });
     let r = match a {
         // The scene morph runs on the mixer's mod engine.
@@ -2891,11 +2898,24 @@ fn time_action(
     };
     match r {
         Ok(line) | Err(line) if erase => return vec![app::Effect::Tell(line)],
+        Ok(line) | Err(line) if undo => return vec![app::Effect::Tell(undo_said(&line))],
         Ok(line) if !line.is_empty() => out.note(&format!("time: {line}")),
         Ok(_) => {}
         Err(e) => out.note(&format!("time: {e}")),
     }
     Vec::new()
+}
+
+/// The time engine's "undo: take 3 · Drums / 1" as the screen says it:
+/// "Undid take 3 · Drums / 1", or that there is nothing to undo.
+fn undo_said(line: &str) -> String {
+    match line.split_once(": ") {
+        Some(("undo", "nothing to undo")) => "Nothing to undo in the takes".into(),
+        Some(("redo", "nothing to redo")) => "Nothing to redo in the takes".into(),
+        Some(("undo", what)) => format!("Undid {what}"),
+        Some(("redo", what)) => format!("Redid {what}"),
+        _ => line.to_string(),
+    }
 }
 
 /// The synth's part of the status line.
@@ -4150,6 +4170,7 @@ fn player_session(
                     out.note(&s);
                     out.show(gui::ToUi::Tell(s));
                 }
+                app::Effect::Undo { redo } => out.show(gui::ToUi::Undo(redo)),
                 app::Effect::Quit => stop = true,
                 app::Effect::Show(v) => {
                     // Opening the Synth tab hands the pads to the synth, and
@@ -5528,6 +5549,58 @@ mod tests {
 
     fn args(s: &str) -> Vec<String> {
         s.split_whitespace().map(String::from).collect()
+    }
+
+    /// UNDO on the takes says what it took back, in place of the hint.
+    #[test]
+    fn undo_and_redo_say_what_they_did() {
+        assert_eq!(
+            undo_said("undo: take 3 · Drums / 1"),
+            "Undid take 3 · Drums / 1"
+        );
+        assert_eq!(
+            undo_said("redo: delete 6 · Bass / 2"),
+            "Redid delete 6 · Bass / 2"
+        );
+        assert_eq!(
+            undo_said("undo: nothing to undo"),
+            "Nothing to undo in the takes"
+        );
+        assert_eq!(
+            undo_said("redo: nothing to redo"),
+            "Nothing to redo in the takes"
+        );
+        // ERASE + a clip, then UNDO: the clip is back, and the line says so.
+        let mut out = Out {
+            console: None,
+            sink: None,
+            dropped: 0,
+            report: None,
+            queued: None,
+            last_draw: Instant::now(),
+        };
+        let mut time = time::TimeHost::new(RATE, 120.0).unwrap();
+        let mut app = app::App::new(RATE, false);
+        let mut mix = mixing::MixHost::new(RATE, -6.0, -6.0);
+        time.put_clip(mpfree_seq::Clip::new("beat", 3840)).unwrap();
+        let fx = time_action(
+            &mut out,
+            &mut time,
+            &mut app,
+            &mut mix,
+            TimeAction::DeleteClip { track: 0, slot: 0 },
+        );
+        assert!(
+            matches!(fx.as_slice(), [app::Effect::Tell(l)] if l.contains("deleted")),
+            "{fx:?}"
+        );
+        let fx = time_action(&mut out, &mut time, &mut app, &mut mix, TimeAction::Undo);
+        assert!(
+            matches!(fx.as_slice(), [app::Effect::Tell(l)]
+                if l.starts_with("Undid delete ") && l.ends_with("Track 1 / 1")),
+            "{fx:?}"
+        );
+        assert!(time.state().clip(0, 0).is_some());
     }
 
     /// TRACK MUTE's keys mute a track, or a pad in the kit, and the pads
