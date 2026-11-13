@@ -57,6 +57,28 @@ impl Window {
     }
 }
 
+/// One second of frames, for the Performance page's "Screen" row.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Second {
+    pub fps: f64,
+    /// Mean paint and copy times, and the slowest frame (both together),
+    /// in milliseconds. While the GPU draws (drawing.rs), painting records
+    /// the frame's list and the copy is sending it.
+    pub paint_ms: f64,
+    pub copy_ms: f64,
+    pub slowest_ms: f64,
+}
+
+impl Second {
+    /// The row as the software path shows it.
+    pub fn row(&self) -> String {
+        format!(
+            "{:.0} fps · paint {:.1} ms · copy {:.1} ms · slowest {:.1} ms",
+            self.fps, self.paint_ms, self.copy_ms, self.slowest_ms
+        )
+    }
+}
+
 /// The screen thread's counts.
 #[derive(Debug)]
 pub struct ScreenCost {
@@ -93,22 +115,22 @@ impl ScreenCost {
         }
     }
 
-    /// The Performance page's "Screen" row, once a second; else None.
-    pub fn second(&mut self, now: Instant) -> Option<String> {
+    /// The last second's numbers for the Performance page's "Screen" row,
+    /// once a second; else None.
+    pub fn second(&mut self, now: Instant) -> Option<Second> {
         let (start, w) = &self.second;
         let took = now.saturating_duration_since(*start);
         if took < SECOND {
             return None;
         }
-        let fps = w.frames as f64 / took.as_secs_f64();
-        let text = format!(
-            "{fps:.0} fps · paint {:.1} ms · copy {:.1} ms · slowest {:.1} ms",
-            w.mean_ms(w.paint),
-            w.mean_ms(w.copy),
-            w.worst.as_secs_f64() * 1e3
-        );
+        let s = Second {
+            fps: w.frames as f64 / took.as_secs_f64(),
+            paint_ms: w.mean_ms(w.paint),
+            copy_ms: w.mean_ms(w.copy),
+            slowest_ms: w.worst.as_secs_f64() * 1e3,
+        };
         self.second = (now, Window::default());
-        Some(text)
+        Some(s)
     }
 
     /// The `status: screen (30 s): ...` line, every [`STATUS_EVERY`]; else
@@ -166,7 +188,7 @@ mod tests {
         }
         c.frame(View::Pads, 8 * MS, 12 * MS, 853);
         assert_eq!(c.second(t + 500 * MS), None, "not a second yet");
-        let row = c.second(t + SECOND).unwrap();
+        let row = c.second(t + SECOND).unwrap().row();
         assert_eq!(row, "11 fps · paint 2.5 ms · copy 4.7 ms · slowest 20.0 ms");
         assert_eq!(c.second(t + SECOND + MS), None, "once a second");
         assert_eq!(c.status(t + SECOND), None, "not 30 s yet");
