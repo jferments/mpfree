@@ -31,7 +31,8 @@ PINNED={
  0x1a9bc,0x1aabc,0x1afd4,0x1b35c,0x1b27c,0x1b150,
  0x1be1c,0x1c2bc,0x1d8c4],
  'spl':[0xff704004,0xff704060,0xff704068,0xff704120,0xff7041a8,
-        0xff704160,0xff704164,0xff7041e8,0xff705208,0xff7052c0,
+        0xff704160,0xff704164,0xff7041e8,0xff7089fc,0xff708770,
+        0xff705af2,0xff705b16,0xff705208,0xff7052c0,
         0xff705310,0xff705316,0xff705342,0xff705350,0xff705418,0xff705480,
         0xff7054a4,0xff7056a8,0xff7069e0,0xff707d28,0xff707de4,
         0xff708b74],
@@ -205,7 +206,7 @@ def mpfree_v11_entrypoint():
             if fm.getFunctionContaining(A(near)):selected.add(near)
     priority=sorted(selected,key=lambda va:(va not in original, va))
     # Expanded direction: ROM entry, loader handoff, fastboot auth and update flow.
-    lim={'az01-update':30,'libaz01-prog':180,'spl':60,'uboot':160}[role]
+    lim={'az01-update':30,'libaz01-prog':180,'spl':80,'uboot':160}[role]
     if not priority:raise RuntimeError('No functions selected for analysis')
     decoder=DecompInterface();decoder.toggleCCode(True)
     if not decoder.openProgram(prog):raise RuntimeError('Decompiler unavailable')
@@ -223,8 +224,14 @@ def mpfree_v11_entrypoint():
             # where Ghidra C return types and structure offsets are uncertain.
             # These records are written ONLY to the private owner ZIP.
             capture_by_role={
-                'libaz01-prog':('0x0001a314','0x0001a674','0x0001a8d0','0x0001aabc','0x0001d644','0x0001a178','0x0001b35c','0x0001afd4'),
-                'spl':('0xff704004','0xff704120','0xff7041a8','0xff705310','0xff705316','0xff705342','0xff705350','0xff7054a4','0xff7056a8','0xff708b74'),
+                'libaz01-prog':('0x0001738c','0x00017554','0x0001798c',
+                                 '0x0001f094','0x0001a314','0x0001a674',
+                                 '0x0001a8d0','0x0001aabc','0x0001d644',
+                                 '0x0001a178','0x0001b35c','0x0001afd4'),
+                'spl':('0xff704004','0xff704120','0xff7089fc','0xff708770',
+                       '0xff705af2','0xff705b16','0xff7041a8','0xff705310',
+                       '0xff705316','0xff705342','0xff705350','0xff7054a4',
+                       '0xff7056a8','0xff708b74'),
                 'uboot':('0x00100fe4','0x001011e0','0x00101744','0x001017fc','0x00101bb4','0x0010a6a4','0x0010f388','0x00112228','0x0012247c','0x001226b4','0x00122734','0x00122780','0x00122834','0x00122854','0x00122964','0x00122980','0x00122948','0x00122cf8','0x00122d38','0x00122bf8','0x00122c5c','0x00110084','0x001100c8','0x00110270','0x0010fde8','0x00100fe4','0x00100edc','0x00100ef0','0x001147f0','0x00115f30','0x00115ef4','0x001147d4',
                          '0x001011e0','0x001146cc','0x001147a2',
                          '0x00115e98','0x0011415e','0x001140ac',
