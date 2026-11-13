@@ -429,6 +429,9 @@ pub struct MixerView {
     io_live: Option<usize>,
     /// Outside sections that changed a setting on a touch, in order.
     io_changed: Vec<usize>,
+    /// What a section's last touch, key or Q-Link couldn't do, and why
+    /// ([`IoSection::take_note`]), until the app takes it.
+    io_note: Option<String>,
 }
 
 impl Default for MixerView {
@@ -452,6 +455,7 @@ impl MixerView {
             io_per_page: Cell::new(12),
             io_live: None,
             io_changed: Vec::new(),
+            io_note: None,
         }
     }
 
@@ -1688,6 +1692,20 @@ impl MixerView {
         std::mem::take(&mut self.io_changed)
     }
 
+    /// What a section's last touch, key or Q-Link couldn't do, and why
+    /// ([`IoSection::take_note`]), once.
+    pub fn take_io_note(&mut self) -> Option<String> {
+        self.grab_io_note();
+        self.io_note.take()
+    }
+
+    /// Keeps a section's note until the app takes it.
+    fn grab_io_note(&mut self) {
+        if let Some(n) = self.io.sections.iter_mut().find_map(|s| s.take_note()) {
+            self.io_note = Some(n);
+        }
+    }
+
     /// The data wheel, - and + or the page arrows while the I/O view shows.
     /// On Audio the wheel moves the selected row and - and + step its
     /// output (both queue actions); an outside section gets them itself.
@@ -2350,7 +2368,13 @@ impl Widget for MixerView {
             for (i, row) in self.io_rows(il.panel) {
                 let s = &self.state.strips[i];
                 let p = io::row_parts(row);
-                out.push(Target::tap("io-name", i, s.name.clone(), p.name));
+                // The selected strip's name opens its menu only with takes,
+                // as on the strips.
+                let picked = self.state.selected == Some(s.id);
+                out.push(
+                    Target::tap("io-name", i, s.name.clone(), p.name)
+                        .disabled_if(picked && !self.state.takes),
+                );
                 if s.has_output() {
                     out.push(Target::tap(
                         "io-output",
@@ -2454,6 +2478,7 @@ impl Widget for MixerView {
     fn touch(&mut self, finger: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
         let before = self.actions.len();
         let changed_before = self.io_changed.len();
+        let section = self.io.sel;
         match phase {
             Touch::Down => self.down(finger, x, y, r),
             Touch::Move => self.drag(finger, x, y, r),
@@ -2461,10 +2486,17 @@ impl Widget for MixerView {
             Touch::Cancel => self.lift(finger, true, x, y, r),
         }
         self.sync_shown();
+        self.grab_io_note();
         // Paging, the picker and the copy under the finger all show at once.
         self.mark(Dirty::All);
-        (self.actions.len() > before || changed_before < self.io_changed.len())
-            .then_some(EventKind::Select(self.actions.len()))
+        // The app hears of actions, of a section's change, of another
+        // section picked (its hint and Q-Links follow) and of a note to
+        // say.
+        (self.actions.len() > before
+            || changed_before < self.io_changed.len()
+            || self.io.sel != section
+            || self.io_note.is_some())
+        .then_some(EventKind::Select(self.actions.len()))
     }
 
     fn changed_parts(&self, r: Rect) -> Option<Vec<Rect>> {

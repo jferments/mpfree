@@ -608,6 +608,31 @@ pub fn tool_command(i: usize, s: &Status, rate: u32) -> Option<Command> {
     })
 }
 
+/// Why the editor's tool `i` can't be used now, for the screen to say in
+/// place when its faint button is tapped.
+pub fn why_no_tool(i: usize, s: &Status) -> &'static str {
+    match s.phase {
+        Phase::Empty => "Record a loop first: the tools edit the loop that plays",
+        Phase::Armed | Phase::Recording => "The tools work once the first pass is recorded and plays",
+        Phase::Overdubbing => "The tools work while the loop plays, not while it overdubs",
+        Phase::Playing if s.merging.is_some() => "Wait for the merge to finish",
+        Phase::Playing if i == 6 => "Merge needs two layers or more: overdub one first",
+        Phase::Playing => "That tool can't change this loop now",
+    }
+}
+
+/// Why Use the loop's row `i` can't be used now, for the screen to say in
+/// place when its faint row is tapped.
+pub fn why_no_use(i: usize, v: &LooperView) -> &'static str {
+    if i != USE_RESAMPLE {
+        return "Not built yet: Resample works now (the bounce to a pad, a clip or a file comes next)";
+    }
+    if !v.loops.iter().any(|l| l.phase == Phase::Empty) {
+        return "Every loop is in use: clear one to resample into it";
+    }
+    "Resample needs a loop that plays and isn't muted"
+}
+
 /// The tools as the editor shows them: each one's name (the seam fade's
 /// with its length, the merge's progress) and whether it works now.
 pub fn tools(s: &Status, rate: u32) -> Vec<(String, bool)> {

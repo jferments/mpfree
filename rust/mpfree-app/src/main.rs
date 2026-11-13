@@ -3896,17 +3896,9 @@ fn player_session(
                         } else {
                             delta as i32
                         };
-                        if ticks != 0 && page == app::View::Synth {
-                            out.show(gui::ToUi::SynthQLink(k, ticks));
-                        } else if ticks != 0 && page == app::View::Mixer {
-                            out.show(gui::ToUi::MixerQLink(k, ticks));
-                        } else if ticks != 0 && page == app::View::Looper {
-                            out.show(gui::ToUi::LooperQLink(k, ticks));
-                        } else if ticks != 0 && matches!(page, app::View::Chain | app::View::Macros)
-                        {
-                            out.show(gui::ToUi::ChainQLink(k, ticks));
-                        } else if ticks != 0 {
-                            out.show(gui::ToUi::SampleQLink(k, ticks));
+                        // The page's screen decides what each knob turns (desk.rs).
+                        if let Some(m) = desk::qlink_to_screen(page, k, ticks) {
+                            out.show(m);
                         }
                     } else if let Some(e) =
                         app.qlink(knob as usize, delta as i32, public.then(|| m.bytes[2]))
@@ -3922,8 +3914,8 @@ fn player_session(
                         } else {
                             delta as i32
                         };
-                        if ticks != 0 {
-                            out.show(gui::ToUi::PlayQLink(k, ticks));
+                        if let Some(m) = desk::qlink_to_screen(page, k, ticks) {
+                            out.show(m);
                         }
                     } else if knob == 0 {
                         level_db =

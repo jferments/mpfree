@@ -87,6 +87,7 @@ pub enum Step {
     Shift(&'static str),
     Wheel(i32),
     Pad(usize),
+    QLink(usize, i32),
     Wait,
 }
 
@@ -106,9 +107,34 @@ impl std::fmt::Display for Step {
             Step::Shift(b) => write!(f, "SHIFT + {b}"),
             Step::Wheel(d) => write!(f, "wheel {d:+}"),
             Step::Pad(p) => write!(f, "pad {}", p + 1),
+            Step::QLink(k, d) => write!(f, "Q-Link {} {d:+}", k + 1),
             Step::Wait => write!(f, "wait 0.5 s"),
         }
     }
+}
+
+/// Press `t` and note it in `s.dead` when it did nothing although drawn
+/// as working. A drag that did nothing is tried the other way once: a
+/// slider at its end only moves back.
+fn press_and_judge(s: &mut Session, step: &Step, t: &mpfree_ui::Target) {
+    let did = |s: &mut Session, t: &mpfree_ui::Target| {
+        let before = s.pixels();
+        let (sent, tells) = (s.sent.len(), s.screen.tells());
+        s.press_target(t);
+        // Something sent, drawn or said in place (the same words again
+        // count: they were said).
+        s.sent.len() != sent || s.screen.tells() != tells || s.pixels() != before
+    };
+    if did(s, t) || !t.enabled {
+        return;
+    }
+    if t.gesture == Gesture::Drag {
+        let back = t.clone().towards(-t.towards.0, -t.towards.1);
+        if did(s, &back) {
+            return;
+        }
+    }
+    s.dead.push(step.to_string());
 }
 
 /// Take one step chosen by `rng`. Returns the step taken.
@@ -130,12 +156,7 @@ pub fn step(s: &mut Session, rng: &mut Rng) -> Step {
                 gesture: c.target.gesture,
             };
             let t = c.target.clone();
-            let before = s.pixels();
-            let sent = s.sent.len();
-            s.press_target(&t);
-            if t.enabled && s.sent.len() == sent && s.pixels() == before {
-                s.dead.push(step.to_string());
-            }
+            press_and_judge(s, &step, &t);
             return step;
         }
     }
@@ -158,6 +179,63 @@ pub fn step(s: &mut Session, rng: &mut Rng) -> Step {
         let p = rng.below(16);
         s.pad(p, 100, 0.1);
         return Step::Pad(p);
+    }
+    s.run_for(0.5);
+    Step::Wait
+}
+
+/// One step of an FX walk: it keeps to the mixer, its insert rows, the
+/// chain editor and the macros panel (Jay, 13 Nov: "really closely examine
+/// the FX pages in the mixer"), opening the mixer when a step left it.
+pub fn fx_step(s: &mut Session, rng: &mut Rng) -> Step {
+    use crate::app::View;
+    if !matches!(s.app.view(), View::Mixer | View::Chain | View::Macros) {
+        let c = s.control("header", "mixer-icon", "").expect("the header's mixer icon");
+        let step = Step::Control {
+            page: s.page(),
+            widget: c.widget.clone(),
+            id: c.target.id,
+            label: c.target.label.clone(),
+            gesture: c.target.gesture,
+        };
+        s.press_target(&c.target);
+        return step;
+    }
+    let roll = rng.below(100);
+    if roll < 78 {
+        let controls: Vec<_> = s
+            .controls()
+            .into_iter()
+            .filter(|c| !(c.widget == "header" && c.target.id == "tab"))
+            .collect();
+        if !controls.is_empty() {
+            let c = &controls[rng.below(controls.len())];
+            let step = Step::Control {
+                page: s.page(),
+                widget: c.widget.clone(),
+                id: c.target.id,
+                label: c.target.label.clone(),
+                gesture: c.target.gesture,
+            };
+            let t = c.target.clone();
+            press_and_judge(s, &step, &t);
+            return step;
+        }
+    }
+    if roll < 90 {
+        let (k, d) = (rng.below(4), [-4, -1, 1, 4][rng.below(4)]);
+        s.qlink(k, d);
+        return Step::QLink(k, d);
+    }
+    if roll < 94 {
+        let d = [-1, 1][rng.below(2)];
+        s.wheel(d);
+        return Step::Wheel(d);
+    }
+    if roll < 98 {
+        let b = ["-", "+", "Q-LINK", "DATA DIAL PUSH"][rng.below(4)];
+        s.button(b);
+        return Step::Button(b);
     }
     s.run_for(0.5);
     Step::Wait
@@ -272,6 +350,36 @@ pub fn check(s: &mut Session) -> Vec<String> {
             }
         }
     }
+    // The chain editor shows the strip's chain as the mixer has it: its
+    // inserts (name, on or bypassed), the one selected, and its knobs.
+    if s.app.view() == crate::app::View::Chain {
+        let truth = s.panels.chain_state(&s.mix);
+        let shown = s.screen.ui.get::<mpfree_chain_ui::ChainView>(mpfree_chain_ui::CHAIN).map(|v| v.state().clone());
+        match (truth, shown) {
+            (Some(t), Some(v)) => {
+                let slots = |c: &mpfree_chain_ui::ChainState| -> Vec<(String, bool)> {
+                    c.slots.iter().map(|x| (x.name.clone(), x.on)).collect()
+                };
+                if slots(&t) != slots(&v) {
+                    bad.push(format!("the chain editor shows {:?} but {} has {:?}", slots(&v), t.title, slots(&t)));
+                }
+                if t.selected != v.selected {
+                    bad.push(format!("the chain editor has insert {:?} picked but the panel {:?}", v.selected, t.selected));
+                }
+                if t.selected == v.selected && t.group == v.group && t.params.len() == v.params.len() {
+                    // A knob the matrix moves (an LFO) moves between the
+                    // screen's updates; the rest must agree.
+                    for (a, b) in t.params.iter().zip(&v.params).filter(|(a, _)| a.mod_range.is_none()) {
+                        if a.addr == b.addr && (a.value - b.value).abs() > 1e-3 * a.value.abs().max(1.0) {
+                            bad.push(format!("{} shows {} but is {}", a.info.name, b.text(), a.text()));
+                        }
+                    }
+                }
+            }
+            (None, _) => bad.push("the chain editor shows but no chain is open".into()),
+            (_, None) => bad.push("the chain editor is not on the screen".into()),
+        }
+    }
     // The buttons' lights say what the app is doing.
     let lit = |s: &Session, note: Option<u8>| note.map(|n| s.lights[usize::from(n & 0x7F)]);
     let on = crate::app::LIGHT_ON;
@@ -320,6 +428,15 @@ pub fn replay(seed: u64, steps: usize) -> (Session, Vec<Step>) {
 /// A walk of `steps` steps from `seed`. Err names the seed and the steps
 /// up to the one that failed, and what failed.
 pub fn walk(seed: u64, steps: usize) -> Result<Vec<String>, String> {
+    walk_with(seed, steps, step)
+}
+
+/// [`walk`] with its steps chosen by `pick` ([`step`] or [`fx_step`]).
+pub fn walk_with(
+    seed: u64,
+    steps: usize,
+    pick: fn(&mut Session, &mut Rng) -> Step,
+) -> Result<Vec<String>, String> {
     let mut s = Session::new();
     let mut rng = Rng::new(seed);
     let mut trail: Vec<Step> = Vec::new();
@@ -327,7 +444,7 @@ pub fn walk(seed: u64, steps: usize) -> Result<Vec<String>, String> {
         let mut taken = None;
         let dead_before = s.dead.len();
         let r = catch_unwind(AssertUnwindSafe(|| {
-            taken = Some(step(&mut s, &mut rng));
+            taken = Some(pick(&mut s, &mut rng));
             check(&mut s)
         }));
         if let Some(t) = taken.clone() {
@@ -380,29 +497,30 @@ mod tests {
     use super::super::on_big_stack;
     use super::*;
 
-    /// Walks from fixed seeds (a seed of your own with MPFREE_WALK_SEED,
-    /// and more or longer walks with MPFREE_WALKS and MPFREE_WALK_STEPS).
-    #[test]
-    fn random_walks_keep_the_screen_and_the_engines_together() {
+    /// Walks from fixed seeds: a seed of your own with MPFREE_WALK_SEED,
+    /// and more or longer walks with MPFREE_WALKS and MPFREE_WALK_STEPS.
+    /// MPFREE_WALK_OUT=<file> writes the controls that did nothing when
+    /// pressed, by how often, with the first walk and step each was seen.
+    fn run_walks(pick: fn(&mut Session, &mut Rng) -> Step, walks: u64, steps: u64) {
         let var = |k: &str, d: u64| {
             std::env::var(k)
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(d)
         };
-        let steps = var("MPFREE_WALK_STEPS", 60) as usize;
+        let steps = var("MPFREE_WALK_STEPS", steps) as usize;
         let seeds: Vec<u64> = match std::env::var("MPFREE_WALK_SEED")
             .ok()
             .and_then(|v| v.parse().ok())
         {
             Some(seed) => vec![seed],
-            None => (1..=var("MPFREE_WALKS", 12)).collect(),
+            None => (1..=var("MPFREE_WALKS", walks)).collect(),
         };
         let (failures, dead) = on_big_stack(move || {
             let mut failures = Vec::new();
             let mut dead: Vec<String> = Vec::new();
             for seed in seeds {
-                match walk(seed, steps) {
+                match walk_with(seed, steps, pick) {
                     Ok(d) => dead.extend(d),
                     Err(e) => failures.push(e),
                 }
@@ -431,5 +549,18 @@ mod tests {
             failures.len(),
             failures.join("\n\n")
         );
+    }
+
+    /// Walks over every page.
+    #[test]
+    fn random_walks_keep_the_screen_and_the_engines_together() {
+        run_walks(step, 12, 60);
+    }
+
+    /// Walks over the mixer's FX pages: its insert rows, the chain editor
+    /// and the macros panel.
+    #[test]
+    fn fx_walks_keep_the_chain_editor_and_the_mixer_together() {
+        run_walks(fx_step, 12, 60);
     }
 }

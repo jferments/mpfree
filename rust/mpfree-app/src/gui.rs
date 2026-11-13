@@ -786,6 +786,10 @@ pub struct Player {
     /// A line said in place of the hint ([`ToUi::Tell`]) and the seconds
     /// it has left.
     told: Option<(String, f32)>,
+    /// How many times something was said in place (the control audit
+    /// counts a tell as a press that did something, even when the same
+    /// words were already showing).
+    tells: u64,
 }
 
 impl Player {
@@ -907,6 +911,7 @@ impl Player {
         };
         let mut p = Player {
             told: None,
+            tells: 0,
             ui,
             kits: Vec::new(),
             kit: 0,
@@ -1197,6 +1202,15 @@ impl Player {
         let _ = mpfree_mixer_ui::take_io_changes(&mut self.ui);
         self.refresh_qlinks();
         self.refresh_hint();
+        self.say_io_note();
+    }
+
+    /// What the I/O section couldn't do (a value at its end, a field that
+    /// can't change), said in place.
+    fn say_io_note(&mut self) {
+        if let Some(n) = mpfree_mixer_ui::take_io_note(&mut self.ui) {
+            self.tell(&n);
+        }
     }
 
     /// Opens the mixer's I/O view on the section titled `title` (the tempo
@@ -1211,6 +1225,34 @@ impl Player {
         }
         self.outbox.push(FromUi::OpenIo);
         true
+    }
+
+    /// Whether the Q-Link column's card `k` is blank: nothing on this page
+    /// for it to move.
+    fn qlink_blank(&self, k: usize) -> bool {
+        self.ui
+            .get::<QLinkColumn>(play_page::QLINKS)
+            .is_some_and(|q| q.cards.get(k).is_some_and(|c| c.name.is_empty()))
+    }
+
+    /// Why a blank Q-Link card has nothing to move, for the hint line.
+    fn qlink_blank_why(&self) -> &'static str {
+        match self.view {
+            View::Mixer if mpfree_mixer_ui::qlinks(&self.ui).name.is_empty() => {
+                "Tap a strip's name: its Volume, Pan and sends go on the Q-Links"
+            }
+            View::Mixer => "That strip has nothing on this Q-Link",
+            View::Chain
+                if self
+                    .ui
+                    .get::<mpfree_chain_ui::ChainView>(mpfree_chain_ui::CHAIN)
+                    .is_none_or(|v| v.state().selected.is_none()) =>
+            {
+                "Pick an effect in the chain: its knobs go on the Q-Links"
+            }
+            View::Chain => "This page of the effect has fewer knobs than Q-Links",
+            _ => "Nothing on this Q-Link on this page",
+        }
     }
 
     /// Q-Link `k` (a knob, a drag on its card, or the wheel as Q-Link 1)
@@ -1462,6 +1504,13 @@ impl Player {
                 }
                 // The bounce to a pad, a clip or a file comes next.
                 LoopAct::Use(_) => {}
+                // Faint ones say why in place (Jay, 12 Nov).
+                LoopAct::FaintTool(i) => {
+                    self.tell(crate::looper_page::why_no_tool(i, &self.looper.status));
+                }
+                LoopAct::FaintUse(i) => {
+                    self.tell(crate::looper_page::why_no_use(i, &self.looper));
+                }
             }
         }
         let mut it = out.into_iter();
@@ -1648,11 +1697,14 @@ impl Player {
                      + MENU: Arp panel")
         } else if self.view == View::Play && self.chain_page.drives(View::Play) {
             format!("Q-Links: {}   ·   Q-LINK: next bank   ·   hold a macro's card: the macros panel   ·   \
-                     Wheel or tap: kit   ·   {stop}", self.chain_page.bind.title())
+                     Wheel: kit   ·   {stop}", self.chain_page.bind.title())
         } else {
             match self.view {
-                View::Play => format!("Tap All, Beats, Loop or Drum: the view   ·   Wheel or tap: kit   ·   Q-Link 1 or \
-                                       the master bar: level   ·   NOTE REPEAT: repeat   ·   MENU: options   ·   {stop}"),
+                // Play has no kit list to tap since 12 Nov, and Q-Link 1
+                // is Swing: the wheel picks the kit, the master bar is the
+                // level.
+                View::Play => format!("Tap All, Beats, Loop or Drum: the view   ·   Wheel: kit   ·   the master bar: \
+                                       level   ·   NOTE REPEAT: repeat   ·   MENU: options   ·   {stop}"),
                 View::Arrange if self.time.edit.is_some() => {
                     time_view::edit_hint(self.time.edit.as_ref().map_or(Lens::Grid, |e| e.editor.lens))
                         .to_string()
@@ -1881,7 +1933,13 @@ impl Player {
     /// Shows `line` in place of the hint for [`TELL_SECONDS`].
     pub fn tell(&mut self, line: &str) {
         self.told = Some((tell_text(line), TELL_SECONDS));
+        self.tells += 1;
         self.refresh_hint();
+    }
+
+    /// How many times [`Player::tell`] has said something.
+    pub fn tells(&self) -> u64 {
+        self.tells
     }
 
     pub fn apply(&mut self, msg: ToUi) {
@@ -3470,6 +3528,12 @@ impl Player {
             (play_page::MASTER, EventKind::Value(v)) => {
                 Some(FromUi::LevelDb(mpfree_ui::draw::meter_db(v)))
             }
+            // A blank card has nothing to move here: say why in place.
+            (play_page::QLINKS, EventKind::Step { index, .. }) if self.qlink_blank(index) => {
+                let why = self.qlink_blank_why();
+                self.tell(why);
+                None
+            }
             (play_page::QLINKS, EventKind::Step { index, delta }) if self.view == View::Mixer => {
                 self.mixer_qlink(index, delta);
                 None
@@ -3540,6 +3604,7 @@ impl Player {
                     // A section picked, or a detail opened: its hint.
                     let _ = mpfree_mixer_ui::take_io_changes(&mut self.ui);
                     self.refresh_hint();
+                    self.say_io_note();
                 }
                 self.refresh_qlinks();
                 first

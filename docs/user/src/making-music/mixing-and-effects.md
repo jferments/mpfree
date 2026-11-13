@@ -64,7 +64,7 @@ Tap a strip's name to select it. The four Q-Links then turn its **Volume**, **Pa
 
 ## The master and Master safety
 
-The **Master** strip on the right is everything you hear. Its fader is the same level as the master bar on the Play page and Q-Link 1 there.
+The **Master** strip on the right is everything you hear. Its fader is the same level as the master bar on the Play page.
 
 The last thing on the master is **Master safety**, a limiter that keeps the output from going past -0.3 dB, so a loud moment never distorts harshly or hurts your ears. It shows how many times it has caught a peak. If it is catching all the time, turn something down.
 

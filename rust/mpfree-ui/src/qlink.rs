@@ -188,7 +188,12 @@ impl Widget for QLinkColumn {
         QLinkColumn::card_rects(r)
             .iter()
             .enumerate()
-            .map(|(k, c)| Target::drag("knob-card", k, self.cards[k].name.clone(), *c))
+            // A card with nothing to move on this page is drawn blank.
+            .map(|(k, c)| {
+                let name = self.cards[k].name.clone();
+                let blank = name.is_empty();
+                Target::drag("knob-card", k, name, *c).disabled_if(blank)
+            })
             .collect()
     }
 

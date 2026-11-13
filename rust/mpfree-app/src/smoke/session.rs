@@ -186,6 +186,10 @@ impl Session {
         s.out.show(ToUi::IoModel(midi_in::io_model()));
         s.fx = s.app.start();
         s.settle();
+        // The first fifth of a second: the built-in inserts (the DJ
+        // filters, Perform FX) land, as they do before anyone can reach
+        // the screen.
+        s.run_for(0.2);
         s
     }
 
@@ -226,14 +230,16 @@ impl Session {
         self.screen.view()
     }
 
-    /// The controls on the page now.
-    pub fn controls(&self) -> Vec<PageTarget> {
+    /// The controls on the page now, as drawn (some widgets measure their
+    /// controls as they paint, so the page is drawn first).
+    pub fn controls(&mut self) -> Vec<PageTarget> {
+        self.screen.ui.paint(&mut self.canvas);
         self.screen.ui.targets()
     }
 
     /// The control `widget/id` on the page whose label is `label` (or the
     /// first one, for an empty label).
-    pub fn control(&self, widget: &str, id: &str, label: &str) -> Option<PageTarget> {
+    pub fn control(&mut self, widget: &str, id: &str, label: &str) -> Option<PageTarget> {
         self.controls().into_iter().find(|o| {
             o.widget == widget && o.target.id == id && (label.is_empty() || o.target.label == label)
         })
@@ -323,6 +329,24 @@ impl Session {
         let t = self.t();
         let fx = self.app.button(h, false, t);
         self.fx.extend(fx);
+        self.run_periods(4)
+    }
+
+    /// Turn Q-Link `knob` (0 to 3) by `delta` on the controller, routed by
+    /// page as player_session routes it (the relative port).
+    pub fn qlink(&mut self, knob: usize, delta: i32) -> &mut Session {
+        let page = self.app.view();
+        if let Some(m) = crate::desk::qlink_to_screen(page, knob, delta).filter(|_| !matches!(page, View::Play | View::Arrange)) {
+            self.out.show(m);
+        } else if let Some(e) = self.app.qlink(knob, delta, None) {
+            self.fx.extend(e);
+        } else if let Some(m) = crate::desk::qlink_to_screen(page, knob, delta) {
+            self.out.show(m);
+        } else if knob == 0 {
+            self.level_db = (self.level_db + crate::LEVEL_STEP_DB * delta as f32).clamp(crate::LEVEL_MIN_DB, MAX_DB);
+            self.mix.set_level(self.level_db);
+            self.out.show(ToUi::Level { db: self.level_db });
+        }
         self.run_periods(4)
     }
 
@@ -464,6 +488,16 @@ impl Session {
         if let Some(c) = self.cloud.take() {
             self.out.show(ToUi::SampleGrains(c));
         }
+        // The mixer's period (silence in): edits to its chains land here,
+        // as they do in player_session's.
+        if let Some(line) = self.mix.poll_built() {
+            self.out.note(line);
+        }
+        let ctx = mixing::ctx(RATE, self.periods * PERIOD as u64, self.app.settings.bpm, self.time.block());
+        let z = [0f32; PERIOD];
+        let (mut l, mut r) = ([0f32; PERIOD], [0f32; PERIOD]);
+        self.mix.drums(0, &mut l, &mut r);
+        self.mix.period(&ctx, (&z, &z), (&z, &z), (&z, &z), &mut l, &mut r);
         let now = self.now();
         if let Some(st) = self.mix.poll_state(now) {
             self.out.show(ToUi::Mixer(Box::new(st)));
@@ -682,6 +716,15 @@ impl Session {
     /// The log lines written since line `from` (see [`Session::mark`]).
     pub fn lines_since(&self, from: usize) -> &[String] {
         &self.lines[from.min(self.lines.len())..]
+    }
+
+    /// The hint line at the foot of the screen (where a control says in
+    /// place why it can't work now).
+    pub fn hint(&self) -> String {
+        self.screen
+            .ui
+            .get::<mpfree_ui::widgets::Label>("hint")
+            .map_or(String::new(), |l| l.text.clone())
     }
 
     /// Where the log is now, for [`Session::lines_since`].

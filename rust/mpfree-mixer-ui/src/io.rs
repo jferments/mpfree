@@ -121,6 +121,13 @@ pub trait IoSection: Send {
         false
     }
 
+    /// What the last touch, key or Q-Link couldn't do, and why (a value at
+    /// its end, a field that can't change), once: the app says it on the
+    /// hint line for a few seconds, so nothing is pressed in silence.
+    fn take_note(&mut self) -> Option<String> {
+        None
+    }
+
     /// The hint line while it shows; `None` keeps the I/O view's own
     /// ([`crate::MIXER_HINT_IO`]).
     fn hint(&self) -> Option<&str> {
