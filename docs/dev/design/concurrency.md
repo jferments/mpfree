@@ -70,12 +70,23 @@ sound starts:
   for room in the MIDI port's buffer; before, the audio thread slept there
   1 ms at a time. A full queue drops the message and counts it (a log line
   at most once a second); a message the port refuses is logged and the
-  sound plays on (a lost controller is still found by the port's poll). The
-  end of the session says how many were written, refused and dropped.
+  sound plays on (a lost controller is still found by the port's poll). A
+  watchdog says when the thread has written nothing for 2 s with messages
+  waiting (`controller output: the lights' thread has written nothing ...`)
+  and when it writes again: the session ping waits behind the lights, and
+  the controller drops the session after about 10 s without one. Refused,
+  dropped and stalled messages are counted on the Dev tab (CPU by engine,
+  under the budgets). The end of the session says how many were written,
+  refused, dropped and stalled.
 - **The report's lines** (`control::Report`, thread `mpfree-report`). Each
   log line was a write to `/run/mpfree-app/report.txt` by the audio thread;
   now it is queued, and a buffered writer writes it. Lines a full queue
-  drops are counted in the report when the session ends.
+  drops are counted in the report when the session ends, and on the Dev
+  tab. One cost: if the program aborts (release builds abort on a panic),
+  the lines still queued or buffered are lost, and those are the last
+  lines before the crash. The screen thread prints each line to the
+  system journal (`journalctl`) as soon as it gets it, so read the end of
+  a crashed run there rather than in report.txt.
 - **Effects** (`control::Builder`, thread `mpfree-build`). Building an
   effect allocates all it will use (the Cloud reverb about 9 MB, every page
   locked under `mlockall`). The chain editor's Add now asks the builder,
