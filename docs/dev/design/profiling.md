@@ -362,7 +362,13 @@ frame leaves the thread, where a GPU drawing process would take it), with
 the native rows the copy wrote and the loop's wakeups.
 
 - **Dev > Performance, "Screen" row**, every second: `N fps · paint X ms ·
-  copy Y ms · slowest Z ms`.
+  copy Y ms · slowest Z ms`. While the GPU draws (`--gpu-screen`,
+  drawing.rs): `GPU · N fps · paint X · send Y · GPU Z ms`, where painting
+  records the frame's list, sending hands it to the GPU process, and Z is
+  that process's slowest frame in the second (building and drawing it).
+  After a fallback to software, in the warning colour: `software, GPU off
+  1× · N fps · slowest Z ms`. In the 30 s line the copy is the send while
+  the GPU draws, and it writes no native rows.
 - **`status: screen (30 s): ...`** every 30 s in the log: frames, the share
   of a core spent drawing, paint and copy mean and worst, native rows a
   frame, wakeups a second, and the page that cost the most. The app check
