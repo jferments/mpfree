@@ -33,12 +33,14 @@ use crate::debug_page::{AudioNumbers, DebugPages};
 use crate::looper_page::{LooperPage, LOOPER_PAGE};
 use crate::looping::{LoopWave, LooperView};
 use crate::mixing::{PlayFx, PlayLevels};
+use crate::pace::{Pace, TOUCH_POLL};
 use crate::perf::ProcView;
 use crate::play_page::{self, Knob, PadInfo, PadsBar, PlayPage, PlayView, SynthPads, Turn};
 use crate::play_widgets::{MiniPads, PlayTransport, StepGrid, Throws, XyPad, YourTiming};
 use crate::sample_page::{self, SamplePage};
 use crate::sampler::{Cloud, Playheads, ViewSwap};
 use crate::time::{HitInfo, StepAction, StepsData};
+use crate::touch_bell::Doorbell;
 use crate::touch_dev::{self, TouchTest, TuneList};
 use crate::touchlab_page::{TouchLabView, TouchPage};
 use mpfree_arp::{Mode, Pattern};
@@ -530,6 +532,9 @@ pub enum ToUi {
         peak_db: [f32; 2],
         limit_db: f32,
     },
+    /// The touchscreen has something to read (touch_bell.rs): the screen
+    /// thread reads it on this pass.
+    TouchBell,
     Quit,
 }
 
@@ -2611,7 +2616,7 @@ impl Player {
                     self.outbox.push(FromUi::Time(a));
                 }
             }
-            ToUi::Quit => {}
+            ToUi::TouchBell | ToUi::Quit => {}
         }
         self.print_sample_lines();
     }
@@ -4096,6 +4101,8 @@ pub struct TouchIn {
     reader: TouchReader<Box<dyn TouchSource + Send>>,
     events: Vec<PointerEvent>,
     pub contacts: u64,
+    /// The device node, for the doorbell's own handle (touch_bell.rs).
+    path: Option<String>,
 }
 
 impl TouchIn {
@@ -4103,7 +4110,9 @@ impl TouchIn {
         let dev = EvdevFile::open(path).map_err(|e| format!("{path}: {e}"))?;
         dev.check_profile(&MPC_ONE)
             .map_err(|e| format!("{path}: {e}"))?;
-        TouchIn::from_source(Box::new(dev), size)
+        let mut t = TouchIn::from_source(Box::new(dev), size)?;
+        t.path = Some(path.to_string());
+        Ok(t)
     }
 
     fn from_source(
@@ -4116,7 +4125,15 @@ impl TouchIn {
             reader,
             events: Vec::new(),
             contacts: 0,
+            path: None,
         })
+    }
+
+    /// A second handle on the same touchscreen for the doorbell: read-only
+    /// and blocking, never grabbed (touch_bell.rs). None for a stand-in.
+    fn bell_handle(&self) -> Option<Result<std::fs::File, String>> {
+        let path = self.path.as_deref()?;
+        Some(std::fs::File::open(path).map_err(|e| format!("{path}: {e}")))
     }
 
     /// Raw input events read so far.
@@ -4212,6 +4229,12 @@ pub struct ScreenReport {
     pub max_ms: f64,
     pub touches: u64,
     pub error: Option<String>,
+    /// Passes of the screen loop, the pages' ticks and the seconds those
+    /// ticks moved the pages' clocks on (the same as the time the thread
+    /// ran, when the clock keeps time).
+    pub wakes: u64,
+    pub ticks: u64,
+    pub ticked_s: f64,
 }
 
 /// Run the pad player's screen until `Quit` arrives or the sender goes away.
@@ -4224,14 +4247,32 @@ pub struct ScreenReport {
 ///
 /// With `gpu`, the GPU draws the screen in a process of its own, and any
 /// failure there draws in software again (drawing.rs).
+///
+/// `bell` is a sender to `rx` for the touchscreen's doorbell
+/// (touch_bell.rs), which wakes the thread when the panel sends something;
+/// between frames the thread sleeps until then, a message or the next tick
+/// (pace.rs). Without it the thread looks at the panel every 4 ms. The
+/// bell's thread holds that sender, so with a bell the screen thread stops
+/// on `Quit` (which the app always sends before it joins the thread), not
+/// when the other senders go.
 pub fn spawn(
     mut player: Player,
     mut fb: Option<FbTarget>,
     gpu: Option<crate::drawing::GpuStart>,
     mut open_touch: Option<OpenTouch>,
+    bell: Option<SyncSender<ToUi>>,
     rx: Receiver<ToUi>,
     tx: SyncSender<FromUi>,
 ) -> io::Result<JoinHandle<ScreenReport>> {
+    let bell = match bell {
+        Some(to_screen) => Some(Doorbell::start(move || {
+            !matches!(
+                to_screen.try_send(ToUi::TouchBell),
+                Err(TrySendError::Disconnected(_))
+            )
+        })?),
+        None => None,
+    };
     thread::Builder::new()
         .name("mpfree-screen".into())
         .spawn(move || {
@@ -4246,7 +4287,7 @@ pub fn spawn(
                 crate::drawing::Drawing::start(gpu.as_ref(), &mut player, fb.as_ref());
             let mut report = ScreenReport::default();
             let mut total_ms = 0.0;
-            let mut last_frame = Instant::now() - Duration::from_secs(1);
+            let mut pace = Pace::new(Instant::now());
             // What each frame costs: the Performance page's Screen row every
             // second, and a status line every 30 s (screen_cost.rs).
             let mut cost = crate::screen_cost::ScreenCost::new(Instant::now());
@@ -4262,7 +4303,14 @@ pub fn spawn(
             let mut quit = false;
             while !quit {
                 cost.wake();
-                match rx.recv_timeout(Duration::from_millis(4)) {
+                report.wakes += 1;
+                // Sleep until the next tick, a message or the doorbell;
+                // without the doorbell, look at the touchscreen every 4 ms.
+                let mut wait = pace.wait(Instant::now());
+                if touch.is_some() && !bell.as_ref().is_some_and(Doorbell::ringing) {
+                    wait = wait.min(TOUCH_POLL);
+                }
+                match rx.recv_timeout(wait) {
                     Ok(m) => quit |= take(&mut player, m),
                     Err(RecvTimeoutError::Timeout) => {}
                     Err(RecvTimeoutError::Disconnected) => quit = true,
@@ -4278,7 +4326,22 @@ pub fn spawn(
                         match open() {
                             Ok(t) => {
                                 println!("{}", t.status_line());
-                                player.set_touch_status(&t.status_line());
+                                if let (Some(b), Some(h)) = (bell.as_ref(), t.bell_handle()) {
+                                    match h {
+                                        Ok(f) => {
+                                            b.give(Box::new(f));
+                                            println!(
+                                                "touch: doorbell on; the screen sleeps until \
+                                                 the panel sends something"
+                                            );
+                                        }
+                                        Err(e) => println!(
+                                            "touch: no doorbell ({e}); reading the panel \
+                                             every 4 ms"
+                                        ),
+                                    }
+                                }
+                                player.set_touch_status(&touch_status_text(&t, bell.as_ref()));
                                 touch_status = (Instant::now(), t.raw_events());
                                 touch = Some(t);
                             }
@@ -4297,6 +4360,9 @@ pub fn spawn(
                     }
                 }
                 if let Some(t) = touch.as_mut() {
+                    if let Some(b) = bell.as_ref() {
+                        b.answer();
+                    }
                     match t.read() {
                         Ok(list) => {
                             for (finger, phase, x, y, time_us) in list {
@@ -4311,7 +4377,7 @@ pub fn spawn(
                                 if t.raw_events() != touch_status.1 {
                                     println!("{}", t.status_line());
                                 }
-                                player.set_touch_status(&t.status_line());
+                                player.set_touch_status(&touch_status_text(t, bell.as_ref()));
                                 touch_status = (Instant::now(), t.raw_events());
                             }
                         }
@@ -4374,11 +4440,16 @@ pub fn spawn(
                     engines_at = None;
                 }
                 drawing.poll(&mut player, fb.as_ref());
-                let since = last_frame.elapsed();
-                if since < Duration::from_millis(33) && !quit {
+                // The pages tick every frame, drawn or not, by the time since
+                // the last tick, so their clocks keep time (pace.rs).
+                let Some(step) = pace.tick(Instant::now(), quit) else {
                     continue;
-                }
-                player.tick(since.as_secs_f32().min(0.1));
+                };
+                player.tick(step);
+                report.ticks += 1;
+                report.ticked_s += f64::from(step);
+                // What the tick asked for goes now, not a frame later.
+                send_actions(&mut player, &tx);
                 if !player.ui.needs_paint() {
                     continue;
                 }
@@ -4394,7 +4465,7 @@ pub fn spawn(
                     }
                 };
                 let t2 = Instant::now();
-                last_frame = t2;
+                pace.drawn(t2);
                 let ms = (t2 - t0).as_secs_f64() * 1e3;
                 report.frames += 1;
                 total_ms += ms;
@@ -4416,6 +4487,15 @@ pub fn spawn(
             };
             report
         })
+}
+
+/// The touch status on the Touch lab: the reader's line, and how the screen
+/// thread learns of touches (the doorbell, or a look every 4 ms).
+fn touch_status_text(t: &TouchIn, bell: Option<&Doorbell>) -> String {
+    match bell {
+        Some(b) => format!("{}; {}", t.status_line(), b.note()),
+        None => t.status_line(),
+    }
 }
 
 /// Copies a painted frame's changed rectangles to the panel; says how many
@@ -4461,6 +4541,7 @@ fn take(player: &mut Player, m: ToUi) -> bool {
             let _ = io::stdout().flush();
         }
         ToUi::Quit => return true,
+        ToUi::TouchBell => return false,
         _ => {}
     }
     player.apply(m);
@@ -11616,6 +11697,82 @@ mod tests {
         // Raw Y runs right to left (2048 = left edge); raw X runs top to bottom.
         assert_eq!((x, y), (0, 400));
         assert_eq!(t2.contacts, 1);
+    }
+
+    /// One finger down near raw (1024, 2048), as the panel reports it.
+    fn one_finger_report() -> Vec<u8> {
+        let ev = |t: u16, c: u16, v: i32| {
+            let mut b = vec![0u8; EVENT_SIZE];
+            let base = EVENT_SIZE - 8;
+            b[base..base + 2].copy_from_slice(&t.to_ne_bytes());
+            b[base + 2..base + 4].copy_from_slice(&c.to_ne_bytes());
+            b[base + 4..].copy_from_slice(&v.to_ne_bytes());
+            b
+        };
+        let mut evs = Vec::new();
+        for (t, c, v) in [
+            (3, 0x2f, 0),
+            (3, 0x39, 5),
+            (3, 0x35, 1024),
+            (3, 0x36, 2048),
+            (0, 0, 0),
+        ] {
+            evs.extend(ev(t, c, v));
+        }
+        evs
+    }
+
+    /// Runs the screen thread headless for `run`, with `open_touch`, and
+    /// returns its report and how long it ran.
+    fn run_screen(run: Duration, open_touch: Option<OpenTouch>) -> (ScreenReport, f64) {
+        let (to_ui, rx) = std::sync::mpsc::sync_channel(64);
+        let (tx, _from_ui) = std::sync::mpsc::sync_channel(64);
+        let p = Player::new(Fonts::embedded(), SCREEN, false, None);
+        let started = Instant::now();
+        let h = spawn(p, None, None, open_touch, Some(to_ui.clone()), rx, tx).unwrap();
+        std::thread::sleep(run);
+        to_ui.send(ToUi::Quit).unwrap();
+        let r = h.join().unwrap();
+        (r, started.elapsed().as_secs_f64())
+    }
+
+    /// The screen thread left alone for a second with nothing to draw: the
+    /// pages' clock keeps time, and the thread sleeps between ticks. Until
+    /// 13 Nov it woke every 4 ms and, while nothing redrew, ticked on each
+    /// of those passes by the time since the last frame drawn: in one idle
+    /// second on the build workstation, 241 wakeups and 233 ticks that
+    /// moved the pages' clock 22.8 s (a told line's 4 s went in about 0.2 s).
+    #[test]
+    fn the_idle_screen_thread_keeps_time_and_sleeps() {
+        let (r, took) = run_screen(Duration::from_secs(1), None);
+        assert!(
+            r.ticked_s <= took + 0.01 && r.ticked_s >= took * 0.5,
+            "{:.3} s ticked in {took:.3} s",
+            r.ticked_s
+        );
+        // About 31 ticks (one every 33 ms), and a wakeup for each and for Quit.
+        assert!((20..=35).contains(&r.ticks), "{} ticks", r.ticks);
+        assert!(r.wakes <= 45, "{} wakeups", r.wakes);
+    }
+
+    /// A touchscreen with no doorbell (a stand-in has no device node for
+    /// one): the screen thread still reads it every 4 ms.
+    #[test]
+    fn without_the_doorbell_the_screen_thread_reads_the_panel_every_4_ms() {
+        let open: OpenTouch = Box::new(|| {
+            TouchIn::from_source(
+                Box::new(FakeTouch(VecDeque::from([Vec::new(), one_finger_report()]))),
+                SCREEN,
+            )
+        });
+        let (r, took) = run_screen(Duration::from_millis(500), Some(open));
+        assert_eq!(r.touches, 1);
+        assert!(
+            r.wakes as f64 / took > 100.0,
+            "{} wakeups in {took:.3} s",
+            r.wakes
+        );
+        assert!(r.ticked_s <= took + 0.01, "{:.3} s ticked", r.ticked_s);
     }
 
     /// No page redraws while nothing happens, except the ones that show
