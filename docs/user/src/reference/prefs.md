@@ -1,7 +1,7 @@
 <!--
 status: changing
 covers: rust/mpfree-app/src/app.rs rust/mpfree-app/src/gui.rs
-checked: 2026-11-12 15df706
+checked: 2026-11-13 dcaefdd
 -->
 
 # Prefs

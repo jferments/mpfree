@@ -579,6 +579,31 @@ class AppTests(unittest.TestCase):
         self.assertNotIn("status: looper: Empty", summary)
         self.assertIn("RESULT: all steps ran", res.stdout)
 
+    def test_app_step_runs_only_the_chosen_phases(self):
+        """Live test 3: MPFREE_APP_PHASES redoes only the phases asked for, with no prompt for the rest."""
+        write(self.app, "active\n")
+        # Start-up: Enter + note; then phases 9, 10, 11 and 16 to 19: Enter, Enter when done, note.
+        answers = "\nok\n" + "\n\nfine\n" * 7
+        res = self.run_helper(answers, MPFREE_APP_STEPS="app", MPFREE_APP_PHASES="9-11, 16-19")
+        self.assertEqual(res.returncode, 0, res.stdout)
+        out = res.stdout
+        self.assertIn("MPFREE_APP_PHASES: only phases 9, 10, 11, 16, 17, 18, 19", out)
+        for k in (9, 10, 11, 16, 17, 18, 19):
+            self.assertIn(f"Phase {k} of 19:", out)
+        for k in (1, 2, 3, 8, 12, 15):
+            self.assertNotIn(f"Phase {k} of 19:", out)
+        self.assertEqual(out.count("your answer: fine"), 7)
+        self.assertIn("RESULT: all steps ran", out)
+        with open(self.report) as fh:
+            self.assertIn("Phase 1 of 19: Developer tools and Map controls: not chosen", fh.read())
+
+    def test_app_step_refuses_phases_it_does_not_have(self):
+        for bad in ("0", "20", "9-30", "nine", "3-1"):
+            res = self.run_helper("", MPFREE_APP_STEPS="app", MPFREE_APP_PHASES=bad)
+            self.assertNotEqual(res.returncode, 0, res.stdout)
+            self.assertIn("MPFREE_APP_PHASES:", res.stdout)
+            self.assertNotIn("Phase 1 of 19", res.stdout)
+
     def test_app_step_reads_partition_4_and_its_grow(self):
         """Read-only: partition 4's size and free space, and what the online grow at power-on said."""
         write(self.app, "active\n")

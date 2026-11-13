@@ -379,8 +379,9 @@ elif [[ "${1:-}" == "--kexec-boot" ]]; then
   fi
 elif [[ "${1:-}" == "--app" ]]; then
   # Not redirected: each step waits for Enter in the terminal. The helper writes the same lines to $REPORT.
-  # Up to an hour: the app step's phases each wait for you.
-  if ! timeout --foreground 3600 python3 -I "$SCRIPT_DIR/host_app_mpc.py" \
+  # Up to three hours: the app step's phases each wait for you, and all nineteen took longer than one
+  # hour in live test 3. MPFREE_APP_PHASES picks fewer.
+  if ! timeout --foreground 10800 python3 -I "$SCRIPT_DIR/host_app_mpc.py" \
       --ip "$MPC_IP" --port "$MPC_PORT" --user "$MPC_USER" --key "$MPC_KEY" \
       --work "$work_abs" --report "$REPORT"; then
     echo "mpfree stopped early or a step failed; log: $REPORT" >&2

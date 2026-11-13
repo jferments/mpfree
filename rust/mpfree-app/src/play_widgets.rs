@@ -64,7 +64,14 @@ impl Default for TransportLook {
 struct TransportAreas {
     pos: Rect,
     dots: Rect,
+    /// The tempo and its "BPM": a tap there is a tap of the tempo.
+    bpm: Rect,
 }
+
+/// [`PlayTransport`]'s event for a tap on the tempo
+/// ([`EventKind::Select`] with this index): a tap of the tempo, as TAP
+/// TEMPO (live test 3: Jay wants the BPM tappable).
+pub const TAP_BPM: usize = 0;
 
 /// The transport card. A tap on the switch gives `Tab(view)`.
 #[derive(Default)]
@@ -77,6 +84,12 @@ const SWITCH_SEG_W: i32 = 70;
 const SWITCH_SEG_H: i32 = 44;
 
 impl PlayTransport {
+    #[cfg(test)]
+    /// Where the tempo was drawn (its tap area), once painted.
+    pub fn bpm_area(&self) -> Option<Rect> {
+        self.painted.borrow().as_ref().map(|(_, _, a)| a.bpm)
+    }
+
     fn inner(r: Rect) -> Rect {
         r.inset_xy(16, 12)
     }
@@ -254,7 +267,11 @@ impl Widget for PlayTransport {
         let gw = 16 * 9 + 3 * 6;
         let dots = Rect::new(b.x - 22 - gw, inner.y + 6, gw, 18 + 26);
         self.paint_dots(cx, dots);
-        *self.painted.borrow_mut() = Some((r, self.look.clone(), TransportAreas { pos, dots }));
+        // The tempo's tap area: its number and "BPM", the card's full height
+        // (at least 64 px wide for a finger).
+        let bpm = Rect::new(x - 8, r.y, (bw + 52).max(64), r.h);
+        *self.painted.borrow_mut() =
+            Some((r, self.look.clone(), TransportAreas { pos, dots, bpm }));
     }
 
     fn touch(&mut self, _f: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
@@ -262,9 +279,15 @@ impl Widget for PlayTransport {
             return None;
         }
         let (_, segs) = PlayTransport::switch(r);
-        segs.iter()
-            .position(|s| s.contains(x, y))
-            .map(EventKind::Tab)
+        if let Some(i) = segs.iter().position(|s| s.contains(x, y)) {
+            return Some(EventKind::Tab(i));
+        }
+        let on_bpm = self
+            .painted
+            .borrow()
+            .as_ref()
+            .is_some_and(|(pr, _, a)| *pr == r && a.bpm.contains(x, y));
+        on_bpm.then_some(EventKind::Select(TAP_BPM))
     }
 }
 

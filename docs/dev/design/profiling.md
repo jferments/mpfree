@@ -343,6 +343,43 @@ data side is here:
   run (a full song, the lanes on) should be read the same way. The lines
   are in the project files, `hello-mpc/live-test-2-0623/control-lines.txt`.
 
+## The screen's cost
+
+The software screen thread (`mpfree-screen`) took 18 to 40 % of a core in
+live tests 2 and 3, the largest user after the sound. `screen_cost.rs`
+times each frame on that thread: painting the changed widgets into the
+canvas, and copying them to the panel (`gui::present`, the one place a
+frame leaves the thread, where a GPU drawing process would take it), with
+the native rows the copy wrote and the loop's wakeups.
+
+- **Dev > Performance, "Screen" row**, every second: `N fps · paint X ms ·
+  copy Y ms · slowest Z ms`.
+- **`status: screen (30 s): ...`** every 30 s in the log: frames, the share
+  of a core spent drawing, paint and copy mean and worst, native rows a
+  frame, wakeups a second, and the page that cost the most. The app check
+  (`host_app_mpc.py`) keeps these lines in its summary.
+
+**Why the copy matters more than the paint.** The panel is mounted turned:
+its native rows are the screen's columns. A changed rectangle's width is
+the number of native rows copied, so a thin strip across the screen (the
+top bar, 1256 by 60) rewrites 1256 of the panel's 1280 rows, about 4 MB.
+On the build workstation (13 Nov) that strip took 0.07 ms to paint and 1.2
+to 1.8 ms to copy.
+
+**Idle redraws** (fixed 13 Nov). Two things redrew with nothing changing:
+the Pads tab's browser, at every frame (30 a second: 0.5 ms paint and 0.9
+ms copy each on the workstation, so roughly 30 to 40 % of a core on the
+MPC by round 7's 6.6 to 10 times, an estimate), because reaching for its widget to take
+its inputs marked it changed (`Ui::get_mut`; `Ui::get_mut_quiet` is for
+state a widget does not draw); and the top bar, every second, whether or
+not a chip changed. The test `no_page_redraws_while_idle` (gui.rs) ticks
+every sample screen for three idle seconds and fails if any page draws,
+except the ones that show something live (the I/O view's lights, the touch
+test, the Rec tab's input).
+
+Still to do: wait on touch rather than waking every 4 ms (the status line
+counts the wakeups), and redraw live parts at the rate they need.
+
 ## CI
 
 - `cargo run --release -p mpfree-bench -- --quick --check-allocs` is a gate

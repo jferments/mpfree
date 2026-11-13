@@ -92,6 +92,8 @@ impl App {
         out.set_bool("developer-tools", s.debug_mode);
         out.set_str("sound-cores", s.sound_cores.name());
         out.set_i64("loop-memory", i64::from(s.loop_memory.minutes()));
+        out.set_bool("metronome", s.metronome);
+        out.set_i64("metronome-level", i64::from(s.metronome_db));
         // A built-in theme or one from the themes folder; a theme file given
         // with --theme is for that run only.
         if self.offers_theme(&s.theme) {
@@ -163,6 +165,12 @@ impl App {
                 "loop-memory" => crate::looping::LoopMemory::parse(v)
                     .map(|m| s.loop_memory = m)
                     .is_some(),
+                "metronome" => app.get_bool(k).map(|b| s.metronome = b).is_some(),
+                "metronome-level" => app
+                    .get_i64(k)
+                    .and_then(|n| super::METRONOME_DBS.iter().find(|&&d| i64::from(d) == n))
+                    .map(|&d| s.metronome_db = d)
+                    .is_some(),
                 // Built in, or in the themes folder (listed before restore).
                 "theme" => themes
                     .iter()
@@ -177,12 +185,13 @@ impl App {
         }
         if !app.is_empty() {
             notes.push(format!("saved settings: pad curve {}, screen velocity {}, latch {}, audio buffer {} periods, \
-                                developer tools {}, theme {}, sound cores {}, loop memory {} min", self.settings.curve.label(),
+                                developer tools {}, theme {}, sound cores {}, loop memory {} min, metronome {} at {} dB", self.settings.curve.label(),
                                self.settings.screen_velocity,
                                if self.settings.latch_mode == LatchMode::Toggle { "toggle" } else { "replace" },
                                self.settings.periods, if self.settings.debug_mode { "on" } else { "off" },
                                self.settings.theme, self.settings.sound_cores.name(),
-                               self.settings.loop_memory.minutes()));
+                               self.settings.loop_memory.minutes(),
+                               if self.settings.metronome { "on" } else { "off" }, self.settings.metronome_db));
         }
         let (mut found, mut gone) = (0, 0);
         for (k, v) in map.iter() {
