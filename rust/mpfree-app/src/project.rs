@@ -49,6 +49,7 @@ pub const MOD: &str = "mod";
 pub const SYNTH: &str = "synth";
 pub const SAMPLER: &str = "sampler";
 pub const MIDI: &str = "midi";
+pub const LOOPER: &str = "looper";
 
 /// The mixer part's first line.
 pub const MIXER_FORMAT: &str = "mpfree-mixer 1";
@@ -61,10 +62,16 @@ pub const SYNTH_FORMAT: &str = "mpfree-synth 1";
 /// but the parts the screen thread has itself (the kits, the I/O setup).
 pub struct Collected {
     pub tempo: f64,
+    /// The transport's swing (the Play page's Swing knob).
+    pub swing: mpfree_transport::time::Swing,
     pub clips: mpfree_seq::Project,
     pub mixer: String,
     pub modu: String,
     pub synth: String,
+    /// The Looper's loops with their layers' audio (read as they play:
+    /// [`crate::looping::LoopHost::save`]); None when the looper couldn't
+    /// save. Freed on the screen thread.
+    pub loops: Option<mpfree_looper::save::Saved>,
 }
 
 impl std::fmt::Debug for Collected {
@@ -82,6 +89,7 @@ impl std::fmt::Debug for Collected {
 /// is optional: a project without a part leaves that engine as it is.
 pub struct Opening {
     pub tempo: Option<f64>,
+    pub swing: Option<mpfree_transport::time::Swing>,
     pub time: Option<Box<TimeHost>>,
     pub mix: Option<Box<MixLoad>>,
     /// The Synth tab's options (`settings/synth.conf`'s lines) and the
@@ -91,6 +99,10 @@ pub struct Opening {
     pub notes: Vec<String>,
     /// What it is, for the log ("Night drive", "a new project").
     pub what: String,
+    /// The Looper's loops are cleared (the project has a looper part, or
+    /// it is New). Its loops, read on a thread of their own, follow
+    /// (`FromUi::OpenLoops`).
+    pub clear_loops: bool,
 }
 
 impl std::fmt::Debug for Opening {
@@ -123,8 +135,21 @@ pub struct Defaults {
     pub synth: String,
 }
 
+/// `project.txt`'s line for the transport's swing: `swing = 240 58`
+/// (the grid in ticks, then the amount).
+pub const SWING: &str = "swing";
+
+fn swing_text(s: mpfree_transport::time::Swing) -> String {
+    format!("{} {}", s.grid, s.amount)
+}
+
+fn parse_swing(v: &str) -> Option<mpfree_transport::time::Swing> {
+    let (g, a) = v.trim().split_once(' ')?;
+    mpfree_transport::time::Swing::new(g.trim().parse().ok()?, a.trim().parse().ok()?)
+}
+
 /// The project as text, from what the loop collected and the screen's own
-/// parts (`extra`: the sampler's, the I/O setup's).
+/// parts (`extra`: the sampler's, the I/O setup's, the loops').
 pub fn snapshot(c: &Collected, extra: Vec<(String, String)>) -> Snapshot {
     let mut parts = vec![
         (CLIPS.to_string(), mpfree_seq::save::to_text(&c.clips)),
@@ -137,6 +162,7 @@ pub fn snapshot(c: &Collected, extra: Vec<(String, String)>) -> Snapshot {
         meta: mpfree_library::Meta {
             tempo: c.tempo,
             app: format!("mpfree {}", env!("CARGO_PKG_VERSION")),
+            extra: vec![(SWING.to_string(), swing_text(c.swing))],
             ..Default::default()
         },
         parts,
@@ -150,6 +176,12 @@ pub fn snapshot(c: &Collected, extra: Vec<(String, String)>) -> Snapshot {
 pub fn opening(snap: &Snapshot, rate: u32, what: &str) -> Opening {
     let mut notes = Vec::new();
     let tempo = Some(snap.meta.tempo).filter(|t| t.is_finite() && *t >= 20.0 && *t <= 300.0);
+    let swing = snap
+        .meta
+        .extra
+        .iter()
+        .find(|(k, _)| k == SWING)
+        .and_then(|(_, v)| parse_swing(v));
     let time = snap.part(CLIPS).and_then(|text| {
         let p = mpfree_seq::save::from_text(text)
             .map_err(|e| notes.push(format!("project: the clips weren't opened ({e})")))
@@ -175,12 +207,83 @@ pub fn opening(snap: &Snapshot, rate: u32, what: &str) -> Opening {
     }
     Opening {
         tempo,
+        swing,
         time,
         mix,
         synth,
         notes,
         what: what.to_string(),
+        clear_loops: snap.part(LOOPER).is_some(),
     }
+}
+
+// ------------------------------------------------------------ the looper
+
+/// The looper's part and its layers' sounds for the project's `samples/`,
+/// each layer named for its audio (`loop-<id>.wav`), so a layer saved
+/// before is not written again.
+pub fn loops_part(mut saved: mpfree_looper::save::Saved) -> (String, Vec<(String, Vec<f32>)>) {
+    let mut files = Vec::new();
+    for (_, f) in &mut saved.loops {
+        let n = 2 * f.frames;
+        for y in &mut f.layers {
+            let mut audio = std::mem::take(&mut y.audio);
+            audio.truncate(n);
+            y.file = format!("loop-{}.wav", audio_id(&audio, saved.rate));
+            if !files.iter().any(|(name, _)| *name == y.file) {
+                files.push((y.file.clone(), audio));
+            }
+        }
+    }
+    (mpfree_looper::save::to_text(&saved), files)
+}
+
+/// 128 bits for a layer's audio: two FNV-1a lanes over the samples' bits,
+/// the rate and the length, each mixed at the end (splitmix64).
+fn audio_id(audio: &[f32], rate: u32) -> String {
+    let (mut a, mut b) = (0xcbf2_9ce4_8422_2325u64, 0x6c62_272e_07bb_0142u64);
+    for x in std::iter::once(rate)
+        .chain(std::iter::once(audio.len() as u32))
+        .chain(audio.iter().map(|v| v.to_bits()))
+    {
+        a = (a ^ u64::from(x)).wrapping_mul(0x0000_0100_0000_01b3);
+        b = (b ^ u64::from(x.rotate_left(16))).wrapping_mul(0x9e37_79b9_7f4a_7c15 | 1);
+    }
+    let mix = |mut z: u64| {
+        z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+        z ^ (z >> 31)
+    };
+    format!("{:016x}{:016x}", mix(a), mix(b))
+}
+
+/// Reads the looper's part and each layer's sound (`read` gives a file's
+/// bytes from the project's `samples/`). The files can be big: run it off
+/// the screen thread. A loop whose sound can't be read is left out, with
+/// a line saying so.
+pub fn loops_open(
+    text: &str,
+    read: impl Fn(&str) -> Result<Vec<u8>, String>,
+) -> Result<(mpfree_looper::save::Saved, Vec<String>), String> {
+    let mut saved = mpfree_looper::save::from_text(text)?;
+    let mut notes = Vec::new();
+    saved.loops.retain_mut(|(n, f)| {
+        for y in &mut f.layers {
+            match read(&y.file).and_then(|b| mpfree_looper::save::from_wav(&b)) {
+                Ok((audio, _)) => y.audio = audio,
+                Err(e) => {
+                    notes.push(format!(
+                        "project: loop {} wasn't opened ({}: {e})",
+                        *n + 1,
+                        y.file
+                    ));
+                    return false;
+                }
+            }
+        }
+        true
+    });
+    Ok((saved, notes))
 }
 
 /// New project: the parts the app started with, and an empty song.
@@ -195,6 +298,10 @@ pub fn new_snapshot(d: &Defaults) -> Snapshot {
     Snapshot {
         meta: mpfree_library::Meta {
             tempo: d.tempo,
+            extra: vec![(
+                SWING.to_string(),
+                swing_text(mpfree_transport::time::Swing::default()),
+            )],
             ..Default::default()
         },
         parts: vec![
@@ -705,6 +812,86 @@ mod tests {
         assert!(mixer_load("mpfree-mixer 9\n", None, 44_100).is_err());
         assert!(mixer_load(&format!("{MIXER_FORMAT}\nparam 0 1\n"), None, 44_100).is_err());
         assert!(mixer_load(&format!("{MIXER_FORMAT}\nstrip zz 0=1\n"), None, 44_100).is_err());
+    }
+
+    #[test]
+    fn loop_layers_are_named_for_their_audio_and_a_missing_one_is_said() {
+        use mpfree_looper::save::{LayerFile, LoopFile, Saved};
+        let layer = |audio: Vec<f32>| LayerFile {
+            level: 1.0,
+            pan: 0.0,
+            muted: false,
+            solo: false,
+            faded: 1.0,
+            file: String::new(),
+            audio,
+        };
+        let one = |n: usize, layers: Vec<LayerFile>| {
+            (
+                n,
+                LoopFile {
+                    frames: 2,
+                    ticks: 96,
+                    origin: 0,
+                    level: 1.0,
+                    muted: false,
+                    bars: None,
+                    after: mpfree_looper::After::Play,
+                    fade_old: 1.0,
+                    layers,
+                },
+            )
+        };
+        let saved = Saved {
+            rate: 44_100,
+            selected: 0,
+            loops: vec![
+                // The same audio twice is one file; a layer read longer
+                // than the loop is cut to it.
+                one(
+                    0,
+                    vec![
+                        layer(vec![0.1, 0.2, 0.3, 0.4]),
+                        layer(vec![0.1, 0.2, 0.3, 0.4, 9.0]),
+                    ],
+                ),
+                one(3, vec![layer(vec![0.5; 4])]),
+            ],
+        };
+        let (text, files) = loops_part(saved.clone());
+        assert_eq!(files.len(), 2);
+        assert!(files
+            .iter()
+            .all(|(f, a)| f.starts_with("loop-") && f.len() == 41 && a.len() == 4));
+        assert_ne!(files[0].0, files[1].0);
+        // Named the same each time.
+        assert_eq!(loops_part(saved).1[0].0, files[0].0);
+        let read = |f: &str| {
+            files
+                .iter()
+                .find(|(n, _)| n == f)
+                .map(|(_, a)| mpfree_looper::save::wav(a, 44_100))
+                .ok_or_else(|| "not there".to_string())
+        };
+        let (back, notes) = loops_open(&text, read).unwrap();
+        assert!(notes.is_empty());
+        assert_eq!(back.loops.len(), 2);
+        assert_eq!(back.loops[1].1.layers[0].audio, vec![0.5; 4]);
+        // Loop 4's file gone: it is left out, and said.
+        let (back, notes) = loops_open(&text, |f| {
+            if f == files[1].0 {
+                Err("gone".into())
+            } else {
+                read(f)
+            }
+        })
+        .unwrap();
+        assert_eq!(back.loops.len(), 1);
+        assert!(
+            notes[0].starts_with("project: loop 4 wasn't opened"),
+            "{notes:?}"
+        );
+        assert!(loops_open("nope", read).is_err());
     }
 
     #[test]

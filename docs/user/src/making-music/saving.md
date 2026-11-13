@@ -32,18 +32,19 @@ A **project** is one song: everything you need to pick it up again where you lef
 
 | Kept in a project | Not yet |
 |---|---|
-| The tempo | The Looper's loops |
-| The clips and the song on Arrange, with their scenes | The arpeggiator's settings on each track |
+| The tempo and the swing | The arpeggiator's settings on each track |
+| The clips and the song on Arrange, with their scenes | |
 | The kits, with every sound on their pads and each pad's settings | |
 | The synth sounds and the Synth tab's options | |
 | The mixer: each strip's level, pan, sends and mutes, the effects and their settings, and the macros | |
+| The Looper's loops, with each layer's mix | |
 | The MIDI, sync and CV setup | |
 
 The **Level** (the master volume) is never taken from a project: it stays where you set it, so opening a project can't suddenly be loud.
 
 ### Saving
 
-Press **SHIFT + BROWSE** on any page to save. The first save needs no typing: the project is named after the date and time (Project 2026-11-13 21.04), and you can rename it in the browser later. After that, SHIFT + BROWSE saves over the same project.
+Press **SHIFT + BROWSE** on any page to save. The loops keep playing while they are saved; if one is recording, the save waits until it stops. The first save needs no typing: the project is named after the date and time (Project 2026-11-13 21.04), and you can rename it in the browser later. After that, SHIFT + BROWSE saves over the same project.
 
 In the browser's **Projects** place you also have:
 
@@ -57,11 +58,11 @@ The last ten saves of each project are kept. Pick a project and press **Earlier 
 
 ### Opening a project
 
-Press **BROWSE**, pick **Projects** on the left, pick a project and push the data wheel (or press **Open**). Playback stops, and the project's clips, kits, synth sounds and mixer come in together. A part MPFree can't read (from a newer version, say) is left as it is, and the Events log says which.
+Press **BROWSE**, pick **Projects** on the left, pick a project and push the data wheel (or press **Open**). Playback stops, and the project's clips, kits, synth sounds and mixer come in together. The loops you had fade out, and the project's loops come in a moment later. A part MPFree can't read (from a newer version, say) is left as it is, and the Events log says which.
 
 ### Starting a new project
 
-**New project** in the Projects place starts again from nothing: an empty song with 8 tracks, the factory kits, and the synth sounds and mixer as they are when MPFree starts. Nothing is saved until you save, and the first save names a new project.
+**New project** in the Projects place starts again from nothing: an empty song with 8 tracks, no loops, the factory kits, and the synth sounds and mixer as they are when MPFree starts. Nothing is saved until you save, and the first save names a new project.
 
 If you have changed anything since you last saved or opened, opening a project or New project asks first, so you never lose work by accident. Playing the pads, changing page or the Level doesn't count as a change.
 
