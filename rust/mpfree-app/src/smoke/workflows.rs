@@ -897,8 +897,7 @@ mod tests {
             let synth = s
                 .controls()
                 .into_iter()
-                .filter(|c| c.widget == "kits" && c.target.id == "row")
-                .last();
+                .rfind(|c| c.widget == "kits" && c.target.id == "row");
             s.press_target(&synth.expect("the synth's row").target)
                 .run_for(0.2);
             assert!(s.synth_on, "the pads play the synth");

@@ -21,7 +21,7 @@
 use crate::app::{self, App, Effect, View};
 use crate::gui::{self, FromUi, Player, ToUi};
 use crate::{audiotracks, cores, desk, looping, midi_in, mixing, modpanels, synth, time, Out};
-use mpfree_ui::{Fonts, PageTarget, Tone, Touch};
+use mpfree_ui::{Fonts, PageTarget, Tone};
 use std::sync::mpsc::{sync_channel, Receiver};
 use std::time::{Duration, Instant};
 
@@ -278,18 +278,6 @@ impl Session {
     /// Press `t` as a finger would, and let the session run a few periods.
     pub fn press_target(&mut self, t: &mpfree_ui::Target) -> &mut Session {
         let acts = super::press(&mut self.screen, t);
-        for a in acts {
-            self.route(a);
-        }
-        self.run_periods(4)
-    }
-
-    /// A tap at a point.
-    pub fn tap_at(&mut self, x: i32, y: i32) -> &mut Session {
-        let mut acts = Vec::new();
-        acts.extend(self.screen.touch(super::FINGER, Touch::Down, x, y));
-        acts.extend(self.screen.touch(super::FINGER, Touch::Up, x, y));
-        acts.extend(self.screen.take_actions());
         for a in acts {
             self.route(a);
         }
@@ -754,11 +742,6 @@ impl Session {
 
     // ------------------------------------------------------------- checks
 
-    /// The log lines written since line `from` (see [`Session::mark`]).
-    pub fn lines_since(&self, from: usize) -> &[String] {
-        &self.lines[from.min(self.lines.len())..]
-    }
-
     /// The hint line at the foot of the screen (where a control says in
     /// place why it can't work now).
     pub fn hint(&self) -> String {
@@ -766,10 +749,5 @@ impl Session {
             .ui
             .get::<mpfree_ui::widgets::Label>("hint")
             .map_or(String::new(), |l| l.text.clone())
-    }
-
-    /// Where the log is now, for [`Session::lines_since`].
-    pub fn mark(&self) -> usize {
-        self.lines.len()
     }
 }

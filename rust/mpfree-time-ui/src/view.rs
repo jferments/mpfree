@@ -2080,6 +2080,26 @@ mod tests {
             action(&ev(TRANSPORT, EventKind::Select(0)), &st),
             Some(TimeAction::Chip(0))
         );
+        // With nothing to undo, redo or capture, the take buttons are faint:
+        // they send nothing and say why in place.
+        for i in 0..3 {
+            let e = ev(TAKES, EventKind::Tab(i));
+            assert_eq!(action(&e, &st), None, "take button {i}");
+            assert!(why_not(&e, &st).is_some(), "take button {i} says why");
+        }
+        let take = TakeRow {
+            number: 1,
+            captured: false,
+            edited: false,
+            made: true,
+            at: Some((0, 0)),
+            added: 4,
+            erased: 0,
+        };
+        let mut st = st;
+        st.done = vec![take];
+        st.undone = vec![take];
+        st.capture = Some("2 bars".to_string());
         assert_eq!(
             action(&ev(TAKES, EventKind::Tab(0)), &st),
             Some(TimeAction::Undo)

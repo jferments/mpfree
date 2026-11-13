@@ -445,22 +445,9 @@ pub fn check(s: &mut Session) -> Vec<String> {
     bad
 }
 
-/// The first `steps` steps of walk `seed`, unchecked, and what they were:
-/// to look at a failed walk's session at the step that failed.
-pub fn replay(seed: u64, steps: usize) -> (Session, Vec<Step>) {
-    let mut s = Session::new();
-    let mut rng = Rng::new(seed);
-    let trail = (0..steps).map(|_| step(&mut s, &mut rng)).collect();
-    (s, trail)
-}
-
-/// A walk of `steps` steps from `seed`. Err names the seed and the steps
-/// up to the one that failed, and what failed.
-pub fn walk(seed: u64, steps: usize) -> Result<Vec<String>, String> {
-    walk_with(seed, steps, step)
-}
-
-/// [`walk`] with its steps chosen by `pick` ([`step`] or [`fx_step`]).
+/// A walk of `steps` steps from `seed`, each chosen by `pick` ([`step`] or
+/// [`fx_step`]). Err names the seed and the steps up to the one that
+/// failed, and what failed.
 pub fn walk_with(
     seed: u64,
     steps: usize,
@@ -563,7 +550,7 @@ mod tests {
             counts.entry(what).or_insert((0, at)).0 += 1;
         }
         let mut by: Vec<(&str, (usize, &str))> = counts.into_iter().collect();
-        by.sort_by(|a, b| b.1 .0.cmp(&a.1 .0));
+        by.sort_by_key(|b| std::cmp::Reverse(b.1 .0));
         let report: Vec<String> = by
             .iter()
             .map(|(d, (n, at))| format!("{n:>5}  {d}  {at}"))
