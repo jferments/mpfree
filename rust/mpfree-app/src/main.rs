@@ -109,6 +109,7 @@ mod play_page;
 mod play_widgets;
 mod port_writer;
 mod preview;
+mod project;
 mod qlink_touch;
 #[cfg(test)]
 mod rt_safety;
@@ -3256,6 +3257,19 @@ fn player_session(
     // insert row opens the editor; a long press on a macro card the panel.
     // The macros' values go out once for the Q-Link column's macro banks.
     let mut panels = modpanels::Panels::new();
+    // Projects (project.rs): the parts New project goes back to, sent to
+    // the screen once the mixer's start-up inserts are in; a save asked
+    // for (SHIFT + BROWSE, or the browser's Save), done after the period's
+    // effects; and the engines an open replaced, on their way back to the
+    // screen thread to be freed there.
+    let mut defaults_sent = false;
+    let mut save_asked = false;
+    let mut project_back: Option<gui::ToUi> = None;
+    // A save waiting for the Looper's loops to be read, one to collect
+    // this period, and the parts waiting for room on the way to the screen.
+    let mut loops_saving = false;
+    let mut collect_now = false;
+    let mut parts_out: Option<gui::ToUi> = None;
     // MIDI Learn: values for parameters a control can't set yet, and the
     // I/O view's names taken at this generation of the model.
     let mut learn_misses = 0u64;
@@ -3320,13 +3334,8 @@ fn player_session(
         },
     }
     app.pattern_file = store.saves();
-    // The Synth tab's options, now that the owner's scales (above) and the
-    // tuning files are known. The synth takes them with the first period.
-    let (notes, synth_fx) = app.restore_synth(&store.settings(app::saved::SYNTH));
-    for line in notes {
-        out.say(&line);
-    }
-    fx.extend(synth_fx);
+    // The Synth tab's options are the project's (project.rs): they start at
+    // their defaults, and an open puts back the project's.
     let (mut left, mut right) = ([0f32; PERIOD], [0f32; PERIOD]);
     // Each engine's period, for its track, and the pads' sound for the looper.
     let (mut drums_l, mut drums_r) = ([0f32; PERIOD], [0f32; PERIOD]);
@@ -3698,6 +3707,70 @@ fn player_session(
                         p.stop();
                     }
                 }
+                gui::FromUi::SaveProject => save_asked = true,
+                // The loops go in once the old ones have faded out.
+                gui::FromUi::OpenLoops(l) => looper.open(*l),
+                gui::FromUi::OpenProject(mut o) => {
+                    // Everything stops first: the clips change under the
+                    // transport, and held notes would hang.
+                    fx.push(app::Effect::Time(TimeAction::Transport(Command::Stop)));
+                    fx.push(app::Effect::StopSounds);
+                    if let Some(bpm) = o.tempo {
+                        fx.extend(app.set_tempo(bpm));
+                    }
+                    if let Some(mut t) = o.time.take() {
+                        // The metronome is the system's: it stays as it is.
+                        (t.metronome, t.click_gain) = (time.metronome, time.click_gain);
+                        std::mem::swap(&mut time, &mut *t);
+                        // The old engine goes back in the box, to be freed
+                        // on the screen thread.
+                        o.time = Some(t);
+                        out.show(gui::ToUi::Time(Box::new(time.state())));
+                    }
+                    if let Some(s) = o.swing {
+                        fx.push(app::Effect::Time(TimeAction::Transport(Command::SetSwing(
+                            s,
+                        ))));
+                    }
+                    if let Some(m) = o.mix.take() {
+                        mix.open(m);
+                    }
+                    if let Some((options, sounds)) = o.synth.take() {
+                        for line in synth.set_sounds(&sounds) {
+                            out.note(&line);
+                        }
+                        let (notes, synth_fx) = app.open_synth(&options);
+                        for line in notes {
+                            out.note(&format!("project: {line}"));
+                        }
+                        fx.extend(synth_fx);
+                        out.show(gui::ToUi::Synth(synth.state()));
+                        // The options and sounds are dropped with the box,
+                        // on the screen thread.
+                        o.synth = Some((options, sounds));
+                    }
+                    // The arps: the project's, or every one at its default.
+                    let (notes, arp_fx) = app.open_arp(o.arp.as_deref());
+                    for line in notes {
+                        out.note(&line);
+                    }
+                    fx.extend(arp_fx);
+                    if o.clear_loops {
+                        // A save waiting for the old loops stops with them.
+                        out.note(&looper.clear_all());
+                        (loops_saving, collect_now) = (false, false);
+                    }
+                    for line in o.notes.drain(..) {
+                        out.note(&line);
+                    }
+                    out.note(&format!("project: {} is in", o.what));
+                    if let Some(old) = project_back.replace(gui::ToUi::ProjectBack(o)) {
+                        // Only one open travels at a time; an older one is
+                        // freed here (not expected).
+                        drop(old);
+                        out.note("project: two opens going back; one freed on the audio thread");
+                    }
+                }
                 gui::FromUi::SaveBrowserLists(text) => {
                     if !store.saves() {
                         out.note("browser: Recent and Favourites not kept (no data folder)");
@@ -3786,6 +3859,9 @@ fn player_session(
         }
         if let Some(m) = view_back.take() {
             view_back = out.try_show(m).err();
+        }
+        if let Some(m) = project_back.take() {
+            project_back = out.try_show(m).err();
         }
         parts.lap(parts::SCREEN_ACTIONS);
         ports.show_pressure = app.settings.show_pressure;
@@ -3968,12 +4044,14 @@ fn player_session(
                     // On the Sample page they move Start, End and the loop.
                     let page = app.view();
                     // While the mixer is open they move the selected strip; on the chain
-                    // editor and the macros panel, the knobs or macros the column shows.
+                    // editor and the macros panel, the knobs or macros the column shows. In
+                    // the browser: scroll, filter, preview level, place.
                     if matches!(
                         page,
                         app::View::Synth
                             | app::View::Sample
                             | app::View::Pads
+                            | app::View::Browser
                             | app::View::Mixer
                             | app::View::Looper
                             | app::View::Chain
@@ -4225,6 +4303,7 @@ fn player_session(
                 app::Effect::PlayView(v) => out.show(gui::ToUi::PlayView(v)),
                 app::Effect::SampleEditor(e) => out.show(gui::ToUi::SampleEditor(e)),
                 app::Effect::Browse(k) => out.show(gui::ToUi::Browse(k)),
+                app::Effect::SaveProject => save_asked = true,
                 // PROG EDIT: the sound the pads play (Jay, 20:40Z).
                 app::Effect::ProgEdit => {
                     let synth_now = kit_to.map_or(synth_on, |k| k == synth_kit);
@@ -4716,6 +4795,73 @@ fn player_session(
         if let Some(line) = mix.poll_built() {
             out.note(line);
         }
+        if mix.opening() {
+            if let Some(line) = mix.tend_open() {
+                out.note(&line);
+            }
+        }
+        // The parts New project goes back to: the engines as they started,
+        // once the mixer's own inserts are in (a few small allocations,
+        // once, before anything can have been played).
+        // A screen too busy to take them gets them made again next period.
+        if !defaults_sent && mix.mixer.edits_pending() == 0 && mix.inserts_building() == 0 {
+            defaults_sent = out
+                .try_show(gui::ToUi::ProjectDefaults(Box::new(project::Defaults {
+                    tempo: app.settings.bpm,
+                    mixer: project::mixer_text(&mix.mixer, mix.pad_mutes()),
+                    modu: mix.modu.save(),
+                    synth: project::synth_text(&app.synth_settings(), &synth.sounds()),
+                })))
+                .is_ok();
+        }
+        // A save: what the engines hold, copied for the screen thread,
+        // which writes the parts and hands them to the library's worker.
+        // Small allocations, once a save; nothing is written here.
+        // The Looper's loops are read first, as they play (a few periods,
+        // longer while a loop records); the rest is copied once they are.
+        if looper.opening() {
+            if let Some(line) = looper.tend_open() {
+                out.note(&line);
+            }
+        }
+        if std::mem::take(&mut save_asked) {
+            if mix.opening() || looper.opening() {
+                out.note("project: not saved, a project is still opening (try again in a moment)");
+            } else if loops_saving || parts_out.is_some() {
+                out.note("project: already saving");
+            } else {
+                let line = looper.save();
+                loops_saving = looper.saving().is_some();
+                if !loops_saving {
+                    out.note(&format!("project: saving without the loops ({line})"));
+                }
+                collect_now = true;
+            }
+        }
+        let loops = if loops_saving {
+            let l = looper.take_saved();
+            loops_saving = l.is_none();
+            l
+        } else {
+            None
+        };
+        if std::mem::take(&mut collect_now) && !loops_saving || loops.is_some() {
+            parts_out = Some(gui::ToUi::ProjectParts(Box::new(project::Collected {
+                tempo: app.settings.bpm,
+                swing: time.info().swing,
+                clips: time.project().clone(),
+                mixer: project::mixer_text(&mix.mixer, mix.pad_mutes()),
+                modu: mix.modu.save(),
+                synth: project::synth_text(&app.synth_settings(), &synth.sounds()),
+                arp: app.arp_part(),
+                loops,
+            })));
+        }
+        // A screen too busy keeps them here (the loops' audio is never
+        // freed on this thread) until it has room.
+        if let Some(m) = parts_out.take() {
+            parts_out = out.try_show(m).err();
+        }
         parts.lap(parts::PADS);
         let t_mix = Span::start();
         mix.follow(looper.line.is_open(), looper.monitor);
@@ -4976,6 +5122,11 @@ fn player_session(
                         out.note(&format!("not saved: midi/{file}: {e}"));
                     }
                 }
+            }
+            // A Synth tab option or the arp changed with the controls: the
+            // project has unsaved work.
+            if app.take_project_edit() {
+                out.show(gui::ToUi::Edited);
             }
             if !strip_shown(app.view()) {
                 out.show(gui::ToUi::Looper(Box::new(looper.view(app.settings.bpm))));

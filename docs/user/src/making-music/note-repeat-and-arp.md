@@ -159,7 +159,7 @@ Drag a cell up or down, or select it and turn the data wheel, to change it. **Ro
 5. Tap **Save**.
 
 > [!NOTE]
-> Saved patterns are kept on the MPFree stick, so they are still there after you switch off. See [Saving your work](saving.md).
+> Saved patterns are kept on the MPFree stick, so they are still there after you switch off. Each track's arp, with its pattern as you left it, is saved in your project too, and comes back when you open it. See [Saving your work](saving.md).
 
 > [!MPC]
 > On the MPC, Note Repeat and the Arpeggiator are separate, and the arpeggiator is a full-screen editor. In MPFree they are one engine: NOTE REPEAT's – and + switch between repeat, arp and pattern while you play, and the Arp panel takes the Play page's view while the transport bar, the master bar and the Q-Links stay on screen. Latch is a double press of NOTE REPEAT. MPFree's patterns (steps with ratchets, chance, ties and octave jumps) have no equivalent on the MPC.
