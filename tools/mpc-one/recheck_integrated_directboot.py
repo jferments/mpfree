@@ -29,10 +29,13 @@ def audit(archive: Path) -> dict:
     script = load("verify_uboot_script_wrapper.py", "mpfree_script_preflight")
     security = load("synthesize_310_security_utilities.py", "mpfree_sec_preflight")
     adc = load("synthesize_recovery_adc.py", "mpfree_adc_preflight")
+    follow = load("synthesize_multitrack_followups.py", "mpfree_follow_preflight")
     with zipfile.ZipFile(archive) as z:
         members = wide.verify_zip(z)
+        matrix = wide.build(z.read)
         focus = direct.build(z.read)
         stock_recovery = adc.build(z.read)
+        owner_followups = follow.build(z.read)
         comparison = json.loads(
             z.read("static/wide/firmware-3.10-bootchain-v4-compare.json"))
         guest_hex = z.read("qemu-guest-boot_script_hex.txt").decode("utf-8")
@@ -58,6 +61,15 @@ def audit(archive: Path) -> dict:
             "script_commands_match_official"],
         "original_adc_recovery_proven_by_arm_strings_and_fdt": (
             stock_recovery["all_existing_cross_checks_passed"]),
+        "seven_track_57_question_research": (
+            len(matrix["questions"])>=57 and
+            len({q["track"] for q in matrix["questions"]})==7),
+        "spl_order_and_mmc_label_evidence": all(
+            owner_followups["spl"]["checks"].values()),
+        "exact_adc_power_classification_evidence": all(
+            owner_followups["power_source"]["checks"].values()),
+        "updater_verify_crypto_and_callback_evidence": all(
+            owner_followups["updater"]["checks"].values()),
         "loadpin_ioctl_identified": utilities["loadpin_trustpoints"][
             "ioctl_request"] == "0x40044c00",
     }
@@ -67,7 +79,13 @@ def audit(archive: Path) -> dict:
         "sha256_index_entries_verified": members,
         "physical_device_access": False,
         "vendor_binary_executed": False,
+        "broad_questions":len(matrix["questions"]),
+        "broad_tracks":len({q["track"] for q in matrix["questions"]}),
         "focus_questions": len(focus["questions"]),
+        "new_power_source_threshold_values":owner_followups[
+            "power_source"]["original_threshold_words"],
+        "spl_second_callback_original_word":owner_followups[
+            "spl"]["second_callback_original_word"],
         "focus_topics": len(set(q["topic"] for q in focus["questions"])),
         "passed_checks": checks,
         "success": (
