@@ -203,6 +203,26 @@ pub struct MixHost {
     /// The CLAP plugins found (plugins.rs): the picker's plugin cards and
     /// what the builder makes `clap:` effects with.
     plugins: Arc<Plugins>,
+    /// A project's mixer being swapped in ([`MixHost::open`]).
+    opening: Option<Box<Open>>,
+}
+
+/// A project's mixer going in over a few periods: the old inserts out,
+/// then the new ones in, each as an edit the mixer makes while the strip
+/// has ducked out; then the keys, the strips' controls and the mod engine.
+pub struct Open {
+    load: Box<crate::project::MixLoad>,
+    stage: OpenStage,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum OpenStage {
+    /// Taking every strip's inserts out.
+    Clear,
+    /// Putting the project's in.
+    Fill,
+    /// Waiting for the last edits, then the rest.
+    Finish,
 }
 
 impl MixHost {
@@ -261,6 +281,154 @@ impl MixHost {
             builder: None,
             landing: None,
             plugins: Arc::new(Plugins::none()),
+            opening: None,
+        }
+    }
+
+    /// Starts swapping in a project's mixer (built on the screen thread:
+    /// `project::mixer_load`). [`MixHost::tend_open`] does it, a few edits
+    /// a period; until then the old mixer plays on. A second open replaces
+    /// one under way (its effects are dropped off this thread).
+    pub fn open(&mut self, load: Box<crate::project::MixLoad>) {
+        if let Some(mut old) = self.opening.take() {
+            self.drop_load(&mut old.load);
+        }
+        self.opening = Some(Box::new(Open {
+            load,
+            stage: OpenStage::Clear,
+        }));
+    }
+
+    /// Whether a project's mixer is still going in.
+    pub fn opening(&self) -> bool {
+        self.opening.is_some()
+    }
+
+    /// The effects of a load not used, dropped off the audio thread.
+    fn drop_load(&mut self, load: &mut crate::project::MixLoad) {
+        for (_, chain) in load.chains.drain(..) {
+            for (ins, _) in chain {
+                let _ = self.drop_off_thread(ins);
+            }
+        }
+        // The rest is small (a few vectors): dropped here.
+    }
+
+    /// Once a period while [`MixHost::opening`]: the next edits of the
+    /// swap. Returns a line for the log when it is done. Edits never wait:
+    /// one the mixer has no room for is made on a later period. Allocates
+    /// only at the end, when the mod engine reads its part.
+    pub fn tend_open(&mut self) -> Option<String> {
+        let mut open = self.opening.take()?;
+        if self.mixer.edits_pending() > 0 {
+            self.opening = Some(open);
+            return None;
+        }
+        let strips: [StripId; 32] = std::array::from_fn(|k| self.strip_at(k));
+        match open.stage {
+            OpenStage::Clear => {
+                let mut left = false;
+                for &st in strips.iter().take(self.strip_count()) {
+                    let n = self.mixer.chain(st).map_or(0, |c| c.len());
+                    for _ in 0..n {
+                        if self.mixer.edit(Edit::Remove { strip: st, at: 0 }).is_err() {
+                            left = true;
+                            break;
+                        }
+                    }
+                }
+                if !left {
+                    open.stage = OpenStage::Fill;
+                }
+            }
+            OpenStage::Fill => {
+                let mut left = false;
+                let load = &mut *open.load;
+                for (st, chain) in load.chains.iter_mut() {
+                    while !chain.is_empty() {
+                        let at = self.mixer.chain(*st).map_or(0, |c| c.len());
+                        let (ins, key) = chain.remove(0);
+                        match self.mixer.edit(Edit::Insert {
+                            strip: *st,
+                            at,
+                            insert: ins,
+                        }) {
+                            Ok(()) => {
+                                // Its key once it is in (Finish).
+                                if let Some(k) = key {
+                                    load.keys.push((*st, at, k));
+                                }
+                            }
+                            Err(Edit::Insert { insert, .. }) => {
+                                chain.insert(0, (insert, key));
+                                left = true;
+                                break;
+                            }
+                            Err(_) => {}
+                        }
+                    }
+                    if left {
+                        break;
+                    }
+                }
+                if !left {
+                    open.stage = OpenStage::Finish;
+                }
+            }
+            OpenStage::Finish => {
+                let load = &open.load;
+                for &(st, ref values) in &load.strips {
+                    if self.mixer.chain(st).is_none() && !matches!(st, StripId::Master) {
+                        // A strip this mixer hasn't got.
+                        if self.mixer.strips().all(|s| s != st) {
+                            continue;
+                        }
+                    }
+                    for &(id, v) in values {
+                        self.mixer.set_now(st, id, v);
+                    }
+                }
+                for &(st, slot, k) in &load.keys {
+                    self.mixer.set_key(st, slot, Some(k));
+                }
+                self.pad_mutes = load.pad_mutes;
+                self.apply_mutes();
+                let effects: usize = self
+                    .mixer
+                    .strips()
+                    .map(|s| self.mixer.chain(s).map_or(0, |c| c.len()))
+                    .sum();
+                let skipped = match &load.modu {
+                    Some(text) => self.modu.load(&self.mixer, text),
+                    None => 0,
+                };
+                let mut line = format!("mixer: the project's mixer is in ({effects} effects)");
+                if skipped > 0 {
+                    line += &format!("; {skipped} mod lines skipped");
+                }
+                return Some(line);
+            }
+        }
+        self.opening = Some(open);
+        None
+    }
+
+    fn strip_count(&self) -> usize {
+        self.mixer.strips().count().min(32)
+    }
+
+    fn strip_at(&self, k: usize) -> StripId {
+        self.mixer.strips().nth(k).unwrap_or(StripId::Master)
+    }
+
+    /// One period of silence through the mixer (tests: edits land).
+    #[cfg(test)]
+    pub fn run_silent_period(&mut self) {
+        let (mut l, mut r) = ([0f32; PERIOD], [0f32; PERIOD]);
+        let ctx = Ctx::new(self.mixer.rate(), 0);
+        self.mixer.process(&ctx, &mut l, &mut r);
+        while let Some(old) = self.mixer.pop_retired() {
+            drop(old);
         }
     }
 
