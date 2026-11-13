@@ -3476,7 +3476,15 @@ impl Player {
             let snap = crate::engines::read(shared);
             let mut rows = crate::cores::rows(&shared.cores);
             rows.extend(crate::parts::rows(&shared.parts));
-            DebugPages::set_engines(&mut self.ui, &snap, rows);
+            let (rss_kb, total_kb) = self.debug.memory_kb();
+            let memory = crate::memory::rows(&crate::memory::Held {
+                samples: self.sample.memory(),
+                loops: (self.looper.memory.used, self.looper.memory.capacity),
+                synth: mpfree_synth::wavetable::factory::factory_bytes(),
+                rss_kb,
+                total_kb,
+            });
+            DebugPages::set_engines(&mut self.ui, &snap, memory, rows);
         }
     }
 
@@ -5595,6 +5603,17 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
             .worst_part
             .store(crate::parts::MIDI_IN as u64, Relaxed);
     }
+    // Memory by engine: Boom Bap's sounds, and a resident size like live
+    // test 3's peak (195.8 MB of 2016.7 MB).
+    eng.apply(ToUi::SampleKits {
+        projects: vec![boom_bap_project()],
+        rate: 44_100,
+    });
+    eng.set_proc(ProcView {
+        rss_kb: Some(191_211),
+        mem_total_kb: Some(1_969_436),
+        ..ProcView::default()
+    });
     eng.apply(ToUi::Engines(probes.shared()));
     eng.apply(ToUi::Show(View::Engines));
     eng.refresh_engines();
@@ -11426,5 +11445,36 @@ mod tests {
             }
         }
         assert!(busy.is_empty(), "redrawn while idle: {busy:?}");
+    }
+
+    /// Memory by engine counts a sound two kits share once, and the rows
+    /// land under the audio loop's rows on CPU by engine.
+    #[test]
+    fn memory_by_engine_counts_shared_sounds_once() {
+        let mut p = sample_player(Fonts::embedded());
+        let bb = boom_bap_project();
+        let one = {
+            let mut q = sample_player(Fonts::embedded());
+            q.apply(ToUi::SampleKits {
+                projects: vec![bb.clone()],
+                rate: 44_100,
+            });
+            q.sample.memory()
+        };
+        assert!(one.count > 0 && one.sounds > 0, "{one:?}");
+        // The same project in two kits: its sounds are the same buffers.
+        p.apply(ToUi::SampleKits {
+            projects: vec![bb.clone(), bb],
+            rate: 44_100,
+        });
+        assert_eq!(p.sample.memory(), one);
+        let rows = crate::memory::rows(&crate::memory::Held {
+            samples: one,
+            ..Default::default()
+        });
+        assert_eq!(
+            rows[1].1,
+            format!("{:.1} MB · {} sounds", one.sounds as f64 / 1e6, one.count)
+        );
     }
 }
