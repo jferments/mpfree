@@ -55,7 +55,8 @@ use mpfree_synth_ui::view as synth_view;
 use mpfree_synth_ui::{SynthAction, SynthPanel, SynthState};
 use mpfree_time_ui::editor::Lens;
 use mpfree_time_ui::view::{
-    self as time_view, TimePage, TimeState, TransportInfo, CLIPS_HINT, CLIPS_PAGE, SONG_HINT,
+    self as time_view, AudioAction, TimePage, TimeState, TransportInfo, CLIPS_HINT, CLIPS_PAGE,
+    SONG_HINT,
 };
 use mpfree_time_ui::TimeAction;
 use mpfree_touch::mt::Phase;
@@ -1181,6 +1182,7 @@ impl Player {
         // The chain editor, the macros panel, and Play on a macro bank.
         let chain = (!arp && self.chain_page.drives(self.view))
             .then(|| self.chain_page.cards(&self.ui.theme));
+        let audio = self.audio_cards().map(|k| (k.title(), k));
         let (title, cards) = if let Some((title, cards)) = &chain {
             (title.as_str(), cards.clone())
         } else if let Some(knobs) = self
@@ -1210,6 +1212,11 @@ impl Player {
                 },
                 cards,
             )
+        } else if let Some((title, knobs)) = &audio {
+            // An audio region picked on Arrange's Song view, or a track
+            // panel open (layout spec 4c): the track's level and pan, the
+            // region's gain and fades.
+            (title.as_str(), knobs.cards.clone())
         } else if arp {
             let rows = self
                 .ui
@@ -2156,6 +2163,8 @@ impl Player {
                 if self.chain_page.drives(self.view) {
                     // Q-LINK shows a macro bank on Play or Arrange.
                     self.chain_qlink(k, ticks);
+                } else if self.audio_qlink(k, ticks) {
+                    // An audio region's knobs.
                 } else if matches!(self.view, View::Play | View::Arrange) {
                     self.play_qlink(k, ticks);
                 }
@@ -2574,6 +2583,10 @@ impl Player {
                 self.time_page.update(&mut self.ui, &self.time);
                 self.play.set_transport(self.time.transport);
                 self.refresh_play();
+                if self.view == View::Arrange {
+                    // A region picked or let go, or its values changed.
+                    self.refresh_qlinks();
+                }
                 if swapped {
                     // The Song view and the note editor have their own
                     // hint lines.
@@ -3374,6 +3387,33 @@ impl Player {
         self.status.repeat
     }
 
+    /// The Q-Link cards for the audio region picked on Arrange's Song
+    /// view, if one is (and NOTE REPEAT doesn't hold the knobs).
+    fn audio_cards(&self) -> Option<crate::audiotracks::AudioKnobs> {
+        if self.view != View::Arrange || self.band_showing() || !self.time.song_view {
+            return None;
+        }
+        crate::audiotracks::audio_knobs(&self.time)
+    }
+
+    /// Q-Link `k` turned `ticks` with an audio region picked or a track
+    /// panel open: to the audio tracks. False (nothing sent) when their
+    /// cards do not show.
+    fn audio_qlink(&mut self, k: usize, ticks: i32) -> bool {
+        let Some(knobs) = self.audio_cards() else {
+            return false;
+        };
+        self.outbox
+            .push(FromUi::Time(TimeAction::Audio(AudioAction::Turn {
+                track: knobs.track,
+                region: knobs.region,
+                knob: k,
+                ticks,
+                fine: self.status.shift,
+            })));
+        true
+    }
+
     /// The pattern step the engine is on, while a pattern plays.
     fn playing_step(&self) -> Option<usize> {
         let a = &self.arp;
@@ -3860,7 +3900,9 @@ impl Player {
             (play_page::QLINKS, EventKind::Step { index, delta })
                 if matches!(self.view, View::Play | View::Arrange) && !self.band_showing() =>
             {
-                self.play_qlink(index, delta);
+                if !self.audio_qlink(index, delta) {
+                    self.play_qlink(index, delta);
+                }
                 None
             }
             (play_page::STEPS, EventKind::Cell { row, col }) => {
@@ -5955,6 +5997,25 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         }
         Err(e) => eprintln!("arrange-song-audio sample: {e}"),
     }
+    // The same with the guitar's track panel open (layout spec 4c), its
+    // input on ST, soloed, and nothing picked: the Q-Links are its level
+    // and pan.
+    match mpfree_time_ui::sample::song_audio_state() {
+        Ok(mut state) => {
+            state.region = None;
+            state.audio_panel = Some(1);
+            if let Some(l) = state.audio.iter_mut().find(|l| l.track == 1) {
+                l.solo = true;
+                l.volume = 0.71;
+                l.pan = 0.3;
+            }
+            let mut p = quiet_player(fonts());
+            p.apply(ToUi::Time(Box::new(state)));
+            p.apply(ToUi::Show(View::Arrange));
+            out.push(("arrange-song-panel", p));
+        }
+        Err(e) => eprintln!("arrange-song-panel sample: {e}"),
+    }
     match sample_looper(fonts()) {
         Ok(p) => out.push(("looper", p)),
         Err(e) => eprintln!("looper sample: {e}"),
@@ -7710,6 +7771,130 @@ mod tests {
     /// Arrange has Play's column (layout spec 4c): the same knobs, turned
     /// by the Q-Links and by a drag on a card, and Q-LINK steps the same
     /// macro banks, which Play then still shows.
+    #[test]
+    /// Layout spec 4c: with an audio region picked on the Song view, the
+    /// Q-Links are the track's level and pan and the region's gain and
+    /// fades, and a turn goes to the audio tracks. Letting the region go
+    /// gives Play's knobs back.
+    fn an_audio_region_picked_on_arrange_takes_the_q_links() {
+        use mpfree_time_ui::song::{AudioBlock, AudioLane};
+        let mut p = sample_player(Fonts::embedded());
+        let mut app = sample_app();
+        apply_effects(&mut p, app.tab(2));
+        assert_eq!(p.view, View::Arrange);
+        let title = |p: &Player| {
+            p.ui.get::<QLinkColumn>(play_page::QLINKS)
+                .unwrap()
+                .title
+                .clone()
+        };
+        let mut st = p.time.clone();
+        st.song_view = true;
+        st.audio = vec![AudioLane {
+            track: 1,
+            name: "Audio 2".into(),
+            color: time_view::audio_color(1),
+            armed: false,
+            input: mpfree_audiotracks::Input::Left,
+            level: 0.0,
+            volume: 0.5,
+            pan: -0.2,
+            monitor: mpfree_audiotracks::Monitor::Auto,
+            mute: false,
+            solo: false,
+            blocks: vec![AudioBlock {
+                start: 0,
+                end: 3840,
+                take: 0,
+                tag: String::new(),
+                src: 0,
+                frames: 88_200.0,
+                gain: 2.0,
+                fade_in: 441,
+                fade_out: 0,
+            }],
+            recording: None,
+        }];
+        p.apply(ToUi::Time(Box::new(st.clone())));
+        assert_eq!(
+            title(&p),
+            "Q-Links · Arrange",
+            "nothing picked: Play's knobs"
+        );
+        st.region = Some(time_view::RegionId { track: 1, index: 0 });
+        p.apply(ToUi::Time(Box::new(st.clone())));
+        assert_eq!(title(&p), "Q-Links · Audio region");
+        let cards =
+            p.ui.get::<QLinkColumn>(play_page::QLINKS)
+                .unwrap()
+                .cards
+                .clone();
+        let shown: Vec<_> = cards
+            .iter()
+            .map(|c| (c.name.as_str(), c.scope.as_str(), c.value.as_str()))
+            .collect();
+        assert_eq!(
+            shown,
+            [
+                ("Level", "AUDIO 2", "-6.0 dB"),
+                ("Pan", "AUDIO 2", "L20"),
+                ("Gain", "REGION", "6.0 dB"),
+                ("Fades", "REGION", "10 ms"),
+            ]
+        );
+        assert!(cards[1].bipolar);
+        p.take_actions();
+        p.apply(ToUi::PlayQLink(2, 3));
+        assert_eq!(
+            p.take_actions(),
+            vec![FromUi::Time(TimeAction::Audio(AudioAction::Turn {
+                track: 1,
+                region: Some(0),
+                knob: 2,
+                ticks: 3,
+                fine: false
+            }))]
+        );
+        // A drag on a card is a turn too.
+        let _ = p.on_event(mpfree_ui::UiEvent {
+            widget: play_page::QLINKS.to_string(),
+            kind: mpfree_ui::EventKind::Step {
+                index: 0,
+                delta: -1,
+            },
+        });
+        assert_eq!(
+            p.take_actions(),
+            vec![FromUi::Time(TimeAction::Audio(AudioAction::Turn {
+                track: 1,
+                region: Some(0),
+                knob: 0,
+                ticks: -1,
+                fine: false
+            }))]
+        );
+        st.region = None;
+        p.apply(ToUi::Time(Box::new(st.clone())));
+        assert_eq!(title(&p), "Q-Links · Arrange");
+        // The track panel open: the track's level and pan, and Q3 and Q4
+        // ask for a region.
+        st.audio_panel = Some(1);
+        p.apply(ToUi::Time(Box::new(st)));
+        assert_eq!(title(&p), "Q-Links · Audio 2");
+        p.take_actions();
+        p.apply(ToUi::PlayQLink(1, 2));
+        assert_eq!(
+            p.take_actions(),
+            vec![FromUi::Time(TimeAction::Audio(AudioAction::Turn {
+                track: 1,
+                region: None,
+                knob: 1,
+                ticks: 2,
+                fine: false
+            }))]
+        );
+    }
+
     #[test]
     fn arrange_has_plays_q_links_and_their_banks() {
         let mut p = sample_player(Fonts::embedded());
