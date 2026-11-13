@@ -1466,6 +1466,49 @@ class Lab:
             self.stages["fastboot-ram-path-evidence"]={
                 "success":False,"error":str(exc)}
             self.notes.append("Fastboot RAM boot static path: "+str(exc))
+        # Original P1 SPL's header parser populates the +0x0c
+        # second-stage callback from the legacy uImage load/entry
+        # fields. Compare P3's CRC/SHA-verified factory header and
+        # require both newly captured context literals before claiming
+        # exact static pointer identity. No vendor code is executed.
+        try:
+            handoff_module = load_module(
+                "tools/mpc-one/synthesize_spl_image_handoff.py",
+                "mpfree_spl_uimage_header_handoff_static",
+            )
+            handoff_report = handoff_module.build(
+                lambda path: (self.out / path).read_bytes()
+            )
+            (self.out / "spl-image-handoff.json").write_text(
+                json.dumps(handoff_report, indent=2) + "\n")
+            (self.out / "spl-image-handoff.md").write_text(
+                handoff_module.markdown(handoff_report))
+            record["spl_image_handoff"] = {
+                "report": "spl-image-handoff.json",
+                "original_header_to_handoff_evidence":
+                    handoff_report["all_prior_static_evidence_passed"],
+                "new_original_context_literals_verified":
+                    handoff_report["all_new_literal_checks_passed"],
+                "factory_P3_load_and_entry":
+                    handoff_report["factory_P3_verified_legacy_header"],
+                "real_ROM_or_SRAM_execution_proven":False,
+            }
+            self.stages["spl-image-header-handoff-evidence"] = {
+                "success":bool(
+                    handoff_report["all_prior_static_evidence_passed"]
+                    and handoff_report["all_new_literal_checks_passed"]),
+                "source_checks":len(handoff_report["checks"]),
+                "new_literal_checks":len(handoff_report[
+                    "new_literal_pointer_checks"]),
+                "original_factory_second_stage_entry":handoff_report[
+                    "factory_P3_verified_legacy_header"]["entry_address"],
+                "real_hardware_execution_tested":False,
+            }
+        except Exception as exc:
+            record["spl_image_handoff_error"] = str(exc)
+            self.stages["spl-image-header-handoff-evidence"]={
+                "success":False, "error":str(exc)}
+            self.notes.append("SPL uImage header handoff: "+str(exc))
         (self.out / "cross-evidence.json").write_text(json.dumps(record, indent=2) + "\n")
         summary = [
             "# MPFree integrated bootchain run",
@@ -1641,6 +1684,17 @@ class Lab:
                            str(ram["static_evidence_passed"]))
             summary.append("- No verified physical RAM/FDT layout or Fastboot execution.")
             summary.append("- See fastboot-ram-path.json and .md.")
+        summary += ["", "## SPL legacy U-Boot image-header handoff"]
+        handoff = record.get("spl_image_handoff")
+        if handoff:
+            summary.append("- Legacy image header populates the SPL +0x0c indirect target: " +
+                           str(handoff["original_header_to_handoff_evidence"]))
+            summary.append("- New parser/context original literal pointer verification: " +
+                           str(handoff["new_original_context_literals_verified"]))
+            summary.append("- Factory P3 CRC-verified load/entry: " +
+                           str(handoff["factory_P3_load_and_entry"]))
+            summary.append("- ROM acceptance, physical DDR and custom image policy remain unproven.")
+            summary.append("- See spl-image-handoff.json and .md.")
         summary += ["", "## Guest/static image consistency"]
         if record["match_tests"]:
             for entry in record["match_tests"]:
