@@ -118,6 +118,10 @@ def build(read):
         "image_format_prefixes":[
             "AZ0x","AZ01","D0 0D FE ED (FDT header; FIT candidate only)"],
         "FDT_image_must_be_valid_FIT_proven":False,
+        "original_format_dispatch_PIC_slots":(
+            (lib.get("direct_boot_probe") or {}).get(
+                "format_handler_candidate_original_words")),
+        "format_handler_live_target_proven":False,
         "verification_state_examples":{
             "fresh_0_option0_error_minus13":verification_state_step(0,0,-13),
             "reused_2_option2":verification_state_step(2,2,-13),
