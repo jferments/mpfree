@@ -759,15 +759,6 @@ impl TimeHost {
     }
 }
 
-/// "take 3" or "capture 2", for log lines.
-fn take_name(row: Option<(bool, u32)>) -> String {
-    match row {
-        Some((true, n)) => format!("capture {n}"),
-        Some((false, n)) => format!("take {n}"),
-        None => "take".into(),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1255,7 +1246,10 @@ mod tests {
             points.last().map(|p| p.kind),
             Some(mpfree_seq::mpfree_moves::Kind::End)
         );
-        assert_eq!(h.act(TimeAction::Undo).unwrap(), "undo: capture 1");
+        assert_eq!(
+            h.act(TimeAction::Undo).unwrap(),
+            "undo: capture 1 · Track 1 / 1"
+        );
         assert!(h.control.project.clip(0, 0).is_none());
     }
 
@@ -1364,11 +1358,17 @@ mod tests {
             assert!(f.abs_diff(want) <= 23 && *p == pad, "{back:?}");
         }
         // Undo takes the take out; the next pass is silent.
-        assert_eq!(h.act(TimeAction::Undo).unwrap(), "undo: take 1");
+        assert_eq!(
+            h.act(TimeAction::Undo).unwrap(),
+            "undo: take 1 · Track 3 / 1"
+        );
         pads.hits.clear();
         run(&mut h, &mut pads, 6 * BAR, &[]);
         assert!(pads.hits.is_empty());
-        assert_eq!(h.act(TimeAction::Redo).unwrap(), "redo: take 1");
+        assert_eq!(
+            h.act(TimeAction::Redo).unwrap(),
+            "redo: take 1 · Track 3 / 1"
+        );
         h.act(TimeAction::Transport(Command::Record)).unwrap();
         run(&mut h, &mut pads, 8 * BAR, &[]);
         assert_eq!(pads.hits.len(), 2, "redo brings both back");
@@ -1412,7 +1412,10 @@ mod tests {
             "{out:?}"
         );
         assert_eq!(h.dropped(), 0);
-        assert_eq!(h.act(TimeAction::Undo).unwrap(), "undo: take 1");
+        assert_eq!(
+            h.act(TimeAction::Undo).unwrap(),
+            "undo: take 1 · Track 3 / 1"
+        );
         let clip = h.control.project.tracks[2].slots[0].as_ref().unwrap();
         assert!(clip.notes.is_empty() && clip.locks.is_empty());
     }
@@ -2098,7 +2101,10 @@ mod tests {
         for ((f, p), (want, pad)) in back.iter().zip([(4 * BAR + 500, 9), (5 * BAR + 1000, 4)]) {
             assert!(f.abs_diff(want) <= 23 && *p == pad, "{back:?}");
         }
-        assert_eq!(h.act(TimeAction::Undo).unwrap(), "undo: capture 1");
+        assert_eq!(
+            h.act(TimeAction::Undo).unwrap(),
+            "undo: capture 1 · Track 1 / 1"
+        );
         let st = h.state();
         assert!(st.clip(0, 0).is_none() && st.launch(0).is_none());
         assert_eq!(
@@ -2106,7 +2112,10 @@ mod tests {
             Some("2 bars"),
             "it can be kept again"
         );
-        assert_eq!(h.act(TimeAction::Redo).unwrap(), "redo: capture 1");
+        assert_eq!(
+            h.act(TimeAction::Redo).unwrap(),
+            "redo: capture 1 · Track 1 / 1"
+        );
         assert_eq!(h.dropped(), 0);
     }
 
@@ -2176,7 +2185,10 @@ mod tests {
         assert_eq!(back, [(5, 40), (5, 90), (5, 20)]);
         assert!(pads.pressure[0].0.abs_diff(3 * BAR + 2_000) <= 23);
         // Undone, then kept by a track that leaves pressure out.
-        assert_eq!(h.act(TimeAction::Undo).unwrap(), "undo: capture 1");
+        assert_eq!(
+            h.act(TimeAction::Undo).unwrap(),
+            "undo: capture 1 · Track 1 / 1"
+        );
         h.act(TimeAction::RecordPressure {
             track: 0,
             on: false,

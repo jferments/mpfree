@@ -29,7 +29,7 @@ The looper holds five minutes of stereo sound across all its loops and layers (t
 
 ## The buttons
 
-These are on the Play page's Loop view. The MPC's own **REC**, **OVERDUB** and **UNDO** buttons do the same while the Looper tab is open, on the loop picked there:
+These are on the Play page's Loop view. The MPC's own **REC**, **OVERDUB** and **UNDO** buttons do the same while the Looper tab is open, on the loop picked there. **UNDO** (and **SHIFT + UNDO** for Redo) also works on the loop from the Play page's Loop view, and from the All view when the loop is what you changed last:
 
 | Button | Empty loop | Recording the first pass | Playing |
 |---|---|---|---|
