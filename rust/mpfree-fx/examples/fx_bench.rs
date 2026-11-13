@@ -113,6 +113,14 @@ fn main() {
     node("Delay", || Box::new(Delay::new()), &[]);
     node("Compressor", || Box::new(Compressor::new()), &[]);
     node(
+        "Compressor (RMS, SC filter)",
+        || Box::new(Compressor::new()),
+        &[
+            (ids::compressor::DETECT, 1.0),
+            (ids::compressor::SC_FILTER, 100.0),
+        ],
+    );
+    node(
         "Ducker (tempo)",
         || Box::new(Ducker::new()),
         &[(ids::ducker::SOURCE, 1.0)],
