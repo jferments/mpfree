@@ -52,7 +52,20 @@ pub struct GrainCloud {
     grab: Option<u64>,
 }
 
+/// [`GrainCloud`]'s button over a layer that doesn't play grains: set
+/// its mode to Granular ([`EventKind::Select`] with this index).
+pub const PLAY_AS_GRAINS: usize = 0;
+
 impl GrainCloud {
+    /// The "Play this pad as grains" button, in the middle of the plot,
+    /// tall enough for a finger (64 px).
+    pub fn note_button(r: Rect) -> Rect {
+        let plot = GrainCloud::plot(r);
+        let w = (plot.w - 40).clamp(0, 420);
+        let h = 64.min(plot.h);
+        Rect::new(plot.x + (plot.w - w) / 2, plot.y + (plot.h - h) / 2, w, h)
+    }
+
     pub fn new(title: &str) -> GrainCloud {
         GrainCloud {
             title: title.into(),
@@ -187,13 +200,15 @@ impl Widget for GrainCloud {
                 cx.canvas.fill_round_rect(bar, 2, c);
             }
         } else if !self.note.is_empty() {
-            let note = Rect::new(plot.x, mid - 30, plot.w, 26);
+            // A button, not a line: a tap plays the pad as grains.
+            let b = GrainCloud::note_button(r);
+            cx.canvas.fill_round_rect(b, t.radius, t.accent);
             cx.text(
                 FontId::Bold,
                 t.size_body,
-                note,
+                b,
                 Align::Center,
-                t.text,
+                t.on_accent,
                 &self.note,
             );
         }
@@ -211,6 +226,12 @@ impl Widget for GrainCloud {
     fn touch(&mut self, finger: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
         match phase {
             Touch::Down => {
+                if !self.granular
+                    && !self.note.is_empty()
+                    && GrainCloud::note_button(r).contains(x, y)
+                {
+                    return Some(EventKind::Select(PLAY_AS_GRAINS));
+                }
                 if !GrainCloud::plot(r).contains(x, y) {
                     return None;
                 }
