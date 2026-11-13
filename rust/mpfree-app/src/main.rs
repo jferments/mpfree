@@ -83,6 +83,7 @@
 mod akai;
 mod alsa;
 mod app;
+mod audiotracks;
 mod calibrate_page;
 mod chain_page;
 mod control;
@@ -95,8 +96,10 @@ mod kit;
 mod looper_page;
 mod looper_tab;
 mod looping;
+mod memory;
 mod midi_in;
 mod midi_out;
+mod midi_saved;
 mod mixing;
 mod modmix;
 mod modpanels;
@@ -124,6 +127,7 @@ use mpfree_controller::mpc_one::{self, ControlEvent, OBSERVED_KEEPALIVE_TOKEN};
 use mpfree_core::{float_to_s32, ClickConfig, ClickEngine};
 use mpfree_screen_log::Rotation;
 use mpfree_synth_ui::SynthAction;
+use mpfree_time_ui::view::AudioAction;
 use mpfree_time_ui::{TimeAction, TransportInfo};
 use mpfree_transport::Command;
 use mpfree_ui::fb::FbTarget;
@@ -2871,12 +2875,30 @@ fn looper_action(
 fn time_action(
     out: &mut Out,
     time: &mut time::TimeHost,
+    tracks: &mut audiotracks::TrackHost,
+    looper: &looping::LoopHost,
     app: &mut app::App,
     mix: &mut mixing::MixHost,
     a: TimeAction,
 ) -> Vec<app::Effect> {
     if let TimeAction::Transport(Command::SetTempo(bpm)) = a {
         return app.set_tempo(bpm);
+    }
+    // The audio lanes' touches go to the audio tracks; a pick stays with
+    // the time engine, which keeps the selection.
+    if let TimeAction::Audio(aa) = a {
+        if !matches!(aa, AudioAction::Pick(_)) {
+            match tracks.action(aa, &time.info(), looper.line.is_open()) {
+                Ok(line) if !line.is_empty() => out.note(&line),
+                Ok(_) => {}
+                Err(e) => out.note(&format!("audio tracks: {e}")),
+            }
+            // An erase leaves the picked region's place empty.
+            if matches!(aa, AudioAction::Erase(_)) {
+                let _ = time.act(TimeAction::Audio(AudioAction::Pick(None)));
+            }
+            return Vec::new();
+        }
     }
     let r = match a {
         // The scene morph runs on the mixer's mod engine.
@@ -2893,6 +2915,13 @@ fn time_action(
         Err(e) => out.note(&format!("time: {e}")),
     }
     Vec::new()
+}
+
+/// Everything the time pages show, with the audio tracks' lanes.
+fn time_state(time: &time::TimeHost, tracks: &audiotracks::TrackHost) -> mpfree_time_ui::TimeState {
+    let mut st = time.state();
+    tracks.fill(&mut st, time.tempo_map());
+    st
 }
 
 /// The synth's part of the status line.
@@ -3197,7 +3226,13 @@ fn player_session(
     ));
     let mut loop_time = RenderTime::default();
     let mut loop_shown_at = Instant::now();
-    out.show(gui::ToUi::Time(Box::new(time.state())));
+    // The audio tracks on the Song view: their memory is set aside here too.
+    let mut tracks = audiotracks::TrackHost::new(RATE, audiotracks::SECONDS);
+    out.say(&format!(
+        "audio tracks: {} s of stereo memory for takes",
+        audiotracks::SECONDS
+    ));
+    out.show(gui::ToUi::Time(Box::new(time_state(&time, &tracks))));
     let (mut shown_transport, mut transport_shown_at) = (time.info(), Instant::now());
     let mut periods = app.settings.periods;
     // Where the sound runs (Prefs "Sound cores" as saved, or --sound-cores
@@ -3297,6 +3332,7 @@ fn player_session(
     let (mut drums_l, mut drums_r) = ([0f32; PERIOD], [0f32; PERIOD]);
     let (mut synth_l, mut synth_r) = ([0f32; PERIOD], [0f32; PERIOD]);
     let (mut loop_l, mut loop_r) = ([0f32; PERIOD], [0f32; PERIOD]);
+    let (mut audio_l, mut audio_r) = ([0f32; PERIOD], [0f32; PERIOD]);
     let (mut pads_l, mut pads_r) = ([0f32; PERIOD], [0f32; PERIOD]);
     let mut frames = [0i32; PERIOD * 2];
     let mut buf = [0u8; 256];
@@ -3354,6 +3390,19 @@ fn player_session(
     // What the mixer's I/O view shows and edits (MIDI, Sync and CV). The
     // loop only ever try_locks it (MusicIn::sync).
     let io_model = midi_in::io_model();
+    // The I/O view as it was left (midi_saved.rs): the rig's port inputs
+    // and thru for every project, and the last project part until whole
+    // projects are saved.
+    let kept = |file| {
+        store
+            .read(midi_saved::OWNER, file)
+            .map(|b| String::from_utf8_lossy(&b).into_owned())
+    };
+    let (rig_text, project_text) = (kept(midi_saved::RIG), kept(midi_saved::PROJECT));
+    for w in midi_saved::restore(&io_model, rig_text.as_deref(), project_text.as_deref()) {
+        out.note(&format!("midi: setting not read: {w}"));
+    }
+    let mut midi_saver = midi_saved::Saver::new(&io_model);
     out.show(gui::ToUi::IoModel(io_model.clone()));
     // MIDI Out (midi_out.rs): tracks whose "Plays on" is the 5-pin jacks play
     // there. State-changing on the MPC (note bytes on cable 2, never SysEx),
@@ -3530,9 +3579,15 @@ fn player_session(
                 gui::FromUi::Arp(a) => fx.extend(app.arp_action(a)),
                 gui::FromUi::Workspace(a) => fx.extend(app.workspace_action(*a)),
                 gui::FromUi::ArpChip => fx.extend(app.toggle_panel()),
-                gui::FromUi::Time(a) => {
-                    fx.extend(time_action(out, &mut time, &mut app, &mut mix, a))
-                }
+                gui::FromUi::Time(a) => fx.extend(time_action(
+                    out,
+                    &mut time,
+                    &mut tracks,
+                    &looper,
+                    &mut app,
+                    &mut mix,
+                    a,
+                )),
                 gui::FromUi::DebugPage(k) => fx.extend(app.debug_page(k)),
                 gui::FromUi::SaveTouch(t) => {
                     let mut settings = mpfree_store::Settings::default();
@@ -4225,9 +4280,15 @@ fn player_session(
                 }
                 // What it gives back (the tempo's status line and note) is
                 // handled with the next period's effects.
-                app::Effect::Time(a) => {
-                    later.extend(time_action(out, &mut time, &mut app, &mut mix, a))
-                }
+                app::Effect::Time(a) => later.extend(time_action(
+                    out,
+                    &mut time,
+                    &mut tracks,
+                    &looper,
+                    &mut app,
+                    &mut mix,
+                    a,
+                )),
                 app::Effect::Looper(a) => {
                     later.extend(looper_action(out, &mut looper, &mut app, audio, a))
                 }
@@ -4484,8 +4545,9 @@ fn player_session(
         if let Some(line) = time.take_song_note() {
             out.note(&format!("time: {line}"));
         }
-        if time.take_changed() {
-            out.show(gui::ToUi::Time(Box::new(time.state())));
+        // `|`, not `||`: both flags are taken.
+        if time.take_changed() | tracks.take_changed() {
+            out.show(gui::ToUi::Time(Box::new(time_state(&time, &tracks))));
             (shown_transport, transport_shown_at) = (time.info(), Instant::now());
         } else {
             let now = time.info();
@@ -4615,6 +4677,16 @@ fn player_session(
         // The loop, for its track; the line input comes with it.
         let t_loop = Instant::now();
         let line_note = looper.run(time.block(), &mut loop_l, &mut loop_r);
+        // The audio tracks record the same line input onto the Song view's
+        // lanes, and play into the mixer's Audio track (song mode only).
+        tracks.follow_latency(app.settings.loop_latency);
+        tracks.period(
+            time.block(),
+            time.tempo_map(),
+            time.song_on(),
+            looper.input(),
+            (&mut audio_l, &mut audio_r),
+        );
         // The strip's waveform, built a slice at a time: its cost counts in
         // the looper's stage, so the stage numbers show it.
         let loop_wave = looper.wave_step(i, LOOP_WAVE_PERIODS);
@@ -4655,6 +4727,7 @@ fn player_session(
             &ctx,
             (&synth_l, &synth_r),
             (&loop_l, &loop_r),
+            (&audio_l, &audio_r),
             looper.input(),
             &mut left,
             &mut right,
@@ -4831,6 +4904,7 @@ fn player_session(
                 looper.describe(),
                 loop_time.describe()
             ));
+            out.note(&format!("status: {}", tracks.describe()));
             out.note(&format!("status: {}", mix.modu.describe()));
             out.note(&format!(
                 "status: {}",
@@ -4892,6 +4966,14 @@ fn player_session(
                 if store.saves() {
                     if let Err(e) = store.save_settings(owner, &settings) {
                         out.note(&format!("not saved: {owner}: {e}"));
+                    }
+                }
+            }
+            // The I/O view's settings changed: kept for the next start.
+            for (file, text) in midi_saver.take(&io_model) {
+                if store.saves() {
+                    if let Err(e) = store.write(midi_saved::OWNER, file, text.into_bytes()) {
+                        out.note(&format!("not saved: midi/{file}: {e}"));
                     }
                 }
             }
@@ -4981,6 +5063,7 @@ fn player_session(
         out.say(&looper.line.close());
     }
     out.say(&format!("{}; {}", looper.describe(), loop_time.describe()));
+    out.say(&tracks.describe());
     out.say(&mix.modu.describe());
     if let Some(line) = param_log.flush(&synth) {
         out.say(&line);
@@ -4990,6 +5073,11 @@ fn player_session(
     for (owner, settings) in app.take_saves() {
         if store.saves() {
             let _ = store.save_settings(owner, &settings);
+        }
+    }
+    for (file, text) in midi_saver.take(&io_model) {
+        if store.saves() {
+            let _ = store.write(midi_saved::OWNER, file, text.into_bytes());
         }
     }
     store.flush();
@@ -5963,7 +6051,7 @@ mod tests {
             let (mut l, mut r) = ([0f32; PERIOD], [0f32; PERIOD]);
             for _ in 0..periods {
                 let ctx = mpfree_node::Ctx::new(RATE, at * PERIOD as u64);
-                mix.period(&ctx, (&z, &z), (&z, &z), (&z, &z), &mut l, &mut r);
+                mix.period(&ctx, (&z, &z), (&z, &z), (&z, &z), (&z, &z), &mut l, &mut r);
                 at += 1;
             }
         };

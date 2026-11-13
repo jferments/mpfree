@@ -8,8 +8,8 @@ use std::time::Instant;
 use mpfree_fx::ids;
 use mpfree_fx::mpfree_node::{Ctx, Node, MAX_BLOCK};
 use mpfree_fx::{
-    Chain, Character, Chorus, Cloud, Compressor, Crush, Delay, DjFilter, Drive, Eq, Flanger, LoFi,
-    MasterSafety, MultiFilter, Phaser,
+    Chain, Character, Chorus, Cloud, Compressor, Crush, Delay, DjFilter, Drive, Ducker, Eq,
+    Flanger, LoFi, MasterSafety, MultiFilter, Phaser, PitchShifter, TransientShaper,
 };
 
 const RATE: u32 = 48_000;
@@ -93,6 +93,13 @@ fn main() {
     }
     node("Delay", Box::new(Delay::new()), &[]);
     node("Compressor", Box::new(Compressor::new()), &[]);
+    node(
+        "Ducker (tempo)",
+        Box::new(Ducker::new()),
+        &[(ids::ducker::SOURCE, 1.0)],
+    );
+    node("Transient shaper", Box::new(TransientShaper::new()), &[]);
+    node("Pitch shifter", Box::new(PitchShifter::new()), &[]);
     node(
         "EQ (4 bands and both cuts)",
         Box::new(Eq::new()),

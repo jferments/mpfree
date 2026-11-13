@@ -19,6 +19,12 @@
 //!   that ride the music, tone and width, all under one Amount.
 //! - [`Compressor`]: soft-knee, log-domain compressor with parallel mix and
 //!   a sidechain input.
+//! - [`Ducker`]: the pump: a volume envelope (attack, hold, shaped
+//!   release) triggered by a sidechain key or by the tempo.
+//! - [`TransientShaper`]: more or less attack and sustain on each hit, with
+//!   no threshold.
+//! - [`PitchShifter`]: two octaves down to two up without changing speed,
+//!   with fine tune, stereo spread and feedback.
 //! - [`Cloud`]: a lush algorithmic reverb ported from Cloud Seed, with
 //!   five characters (plate, room, hall, cloud, echoes) and freeze.
 //! - [`MasterSafety`]: the last stage of every output: DC block, trim, a
@@ -31,6 +37,10 @@
 //! - [`XyPad`]: the XY pad's logic (two parameters, snap back or hold).
 //! - [`Chain`]: serial inserts with click-free bypass, tails that keep
 //!   ringing after bypass, latency-matched dry paths and a NaN guard.
+//!
+//! [`registry`] lists every effect in one table (id, name, a line about
+//! it, its [`Category`], a factory and its presets): the one place a new
+//! effect joins.
 //!
 //! # Clipping
 //!
@@ -57,6 +67,7 @@ mod comp;
 mod crush;
 mod delay;
 mod drive;
+mod ducker;
 mod eq;
 mod lofi;
 mod master;
@@ -64,9 +75,12 @@ mod mixer;
 mod modfx;
 mod oversample;
 mod perform;
+mod pitch;
 mod presets;
 pub mod print;
+pub mod registry;
 mod svf;
+mod transient;
 mod xy;
 
 pub use chain::{Chain, ChainStats, Insert, MAX_SLOT_EVENTS};
@@ -77,6 +91,9 @@ pub use comp::Compressor;
 pub use crush::Crush;
 pub use delay::Delay;
 pub use drive::Drive;
+pub use ducker::{
+    Ducker, RATES as DUCKER_RATES, RATE_BEATS as DUCKER_RATE_BEATS, SOURCES as DUCKER_SOURCES,
+};
 pub use eq::Eq;
 pub use lofi::{LoFi, PRESETS as LOFI_PRESETS};
 pub use master::{MasterSafety, MasterStats};
@@ -92,9 +109,12 @@ pub use perform::{
     LENGTHS as PERFORM_LENGTHS, LENGTH_BEATS as PERFORM_LENGTH_BEATS, MAX_LOOP_SECONDS,
     SLOTS as PERFORM_SLOTS,
 };
+pub use pitch::PitchShifter;
 pub use presets::presets;
 pub use print::{wav_f32, Frozen, Print, PrintError, PrintJob, PrintState, Printed, Tail};
+pub use registry::{Category, FxEntry, EFFECTS};
 pub use svf::{DjFilter, MultiFilter, Svf, SvfMode};
+pub use transient::TransientShaper;
 pub use xy::{XyAxis, XyPad};
 
 pub use mpfree_lanes;
@@ -110,6 +130,7 @@ pub mod ids {
     pub use crate::crush::ids as crush;
     pub use crate::delay::ids as delay;
     pub use crate::drive::ids as drive;
+    pub use crate::ducker::ids as ducker;
     pub use crate::eq::ids as eq;
     pub use crate::lofi::ids as lofi;
     pub use crate::master::ids as master;
@@ -118,8 +139,10 @@ pub mod ids {
     pub use crate::modfx::flanger;
     pub use crate::modfx::phaser;
     pub use crate::perform::ids as perform;
+    pub use crate::pitch::ids as pitch;
     pub use crate::svf::dj as dj_filter;
     pub use crate::svf::multi as filter;
+    pub use crate::transient::ids as transient;
 }
 
 /// A factory preset: a name and the parameter values that differ from the
