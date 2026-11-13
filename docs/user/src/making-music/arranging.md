@@ -70,7 +70,7 @@ To record onto an audio track:
 - When there are more lanes than fit, drag up or down on the names to scroll them.
 - All the audio tracks play through one **Audio** strip in the mixer (TRACK MIX).
 - Audio tracks make up for the line input's delay with the looper's **Latency to make up for** setting (MENU on the Looper tab), so a take lines up with the beat you played it against. Change it there and both follow.
-- The audio tracks share 60 seconds of stereo memory. The Song view's legend says how much is free ("Audio 0:42 of 1:00 free"). A recording that runs out of memory stops there and keeps what it got.
+- The audio tracks share one minute of stereo memory; **Audio track memory** in [Prefs](../reference/prefs.md) sets 30 seconds to 10 minutes, from the next start. The Song view's legend says how much is free ("Audio 0:42 of 1:00 free"). A recording that runs out of memory stops there and keeps what it got.
 
 > [!NOTE]
 > Coming: tapping a track's name for its settings (input, monitoring, level, pan, mute, solo), **Takes** (swiping across takes to keep the best parts of each), dragging a region to move it, and saving audio tracks with the project. In this build the track name and **Takes** say they aren't built yet, and recorded audio is gone when MPFree stops.
