@@ -135,6 +135,11 @@ The scenes are saved with the kit.
 
 **Granular** playback plays the sound as a cloud of tiny overlapping pieces (grains). It can freeze a moment, stretch it into a pad, or scatter it into texture. Touch the square to move the **position** in the sound and the **size** of the grains together, and use the Q-Links for **position**, **size**, **density** and **pitch**. **Scan speed** moves through the sound on its own.
 
+Grains play only when the pad's **Mode** is **Granular**. Until then the page says so over the picture.
+
+> [!NOTE]
+> **In this build, set Granular on the Wave page.** The Grain page's own **Mode** row stops at **Toggle**: it can't step on to **Loop**, so it never reaches **Granular**. On **Wave**, step **Mode** with **–** and **+** through **Loop** to **Granular** (Loop gets a loop region of its own on the way), then come back to **Grain**.
+
 ## FX: effects on one pad, or on the whole kit
 
 **FX**, in the Sample tab's row of pages, opens the **chain editor** (see [Mixing and effects](mixing-and-effects.md#the-chain-editor)) on the pad you are editing, in the Sample tab's place. **Back** comes back to the Sample tab.

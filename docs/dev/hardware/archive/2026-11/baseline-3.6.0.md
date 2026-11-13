@@ -33,7 +33,7 @@ The reference workstation and MPC were connected directly by Ethernet; their add
 
 A successful SSH session **does not** mean a replacement OS was installed or that the factory system has been altered. The autorun launcher created runtime SSH files under `/run/mpc-one-autorun-ssh`, a RAM-backed mount, plus limited diagnostic files on the removable USB. It has not been demonstrated that autorun works on firmware newer than the upstream author-tested range.
 
-The reproducibility and safety runbook is in [developer-access.md](../guides/developer-access.md). The bootstrap uses upstream [TheKikGen/MPC-LiveXplore](https://github.com/TheKikGen/MPC-LiveXplore) static/manifest/validation files exactly as published at upstream commit `4955a83686227690495aaad68e3ba4e39f5afaec`. Their exact byte hashes are checked rather than regenerating an unofficial validation token. Do not modify those immutable upstream files.
+The reproducibility and safety runbook is in [developer-access.md](../../../guides/developer-access.md). The bootstrap uses upstream [TheKikGen/MPC-LiveXplore](https://github.com/TheKikGen/MPC-LiveXplore) static/manifest/validation files exactly as published at upstream commit `4955a83686227690495aaad68e3ba4e39f5afaec`. Their exact byte hashes are checked rather than regenerating an unofficial validation token. Do not modify those immutable upstream files.
 
 ## 2. Kernel and operating system
 
@@ -103,7 +103,7 @@ Do **not** copy proprietary executables, embedded assets, activation data, licen
 2. Preserve original service ownership until device and audio interfaces are mapped. Reading device enumeration is not the same as acquiring exclusive handles or sniffing private protocols.
 3. Store raw inventory files **locally**, review and redact identifiers and potentially licensed paths before uploading or publishing.
 4. Only after inventory: design read-only images of critical partitions, cryptographic verification, and **independently verified restoration** before persistent experiments.
-5. Use the [read-only collector](../../../tools/mpc-one/collect-over-ssh.sh) from the workstation; add new OBSERVED findings, exact commands and dates here after review.
+5. Use the [read-only collector](../../../../../tools/mpc-one/collect-over-ssh.sh) from the workstation; add new OBSERVED findings, exact commands and dates here after review.
 
 ## 7. Confidence and scope
 

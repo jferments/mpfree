@@ -210,7 +210,7 @@ Approved by Jay at 22:34Z (the mod thread's card, "Approve as proposed"). The mo
 - **Found with Map controls first:** ERASE, Q-LINK and the mode buttons have no measured note yet, so each works once Map controls has found it (TRACK MUTE, NEXT SEQ, STEP SEQ, SAMPLER, SAMPLE EDIT, PROG EDIT and the data dial's push have rows since round 9).
 - **The data dial's push** (Jay, 12 Nov 08:11Z): in Prefs and the options menus, it opens the picked row (its value box outlined), the wheel changes the value, and a second push sets it and gives the wheel back to the rows. On a row that opens something (System info, Touch screen, Back, Find the buttons again, Map controls, Calibrate touch, Touch lab) it opens it, as + does.
 - **The data wheel on a page with rows** (Jay, 13 Nov 06:27Z): on Sample (every sub-page with a settings list), the Pads tab's Pad view, Synth and Arrange, the wheel moves the highlight through the rows (on Synth, the tiles) and - / + step the highlighted one, as in the menus. A push opens the highlighted row for the wheel (its value box outlined, the Synth tile raised); the wheel then changes it, and a second push gives the wheel back to the rows. Changing page closes it. SHIFT keeps each page's second wheel job: SHIFT + wheel is the next pad with a sound on Sample and Pads, the Synth page on Synth and scrolling on Arrange; SHIFT + - / + zooms the wave on Wave, Warp and Chop. The Play page (the kit), the Looper tab and Pads' Browse view keep the wheel they had.
-- **The transport lights** (Jay, 13 Nov 06:37Z, card "Capture Akai's lights first"): STOP is lit while the transport is stopped and dims while it plays. PLAY, REC and OVERDUB light only once a read-only capture under Akai's 3.6.0 shows the message its software sends for them; until then the app sends nothing for them and says so once in the Console.
+- **The transport lights** (Jay, 13 Nov 06:37Z, card "Capture Akai's lights first"): PLAY, REC and OVERDUB light only once a read-only capture under Akai's 3.6.0 shows the message its software sends for them; until then the app sends nothing for them and says so once in the Console. **The capture ran in live test 3 (13 Nov 09:33Z):** PLAY is lit while playing, REC and OVERDUB blink while armed (with PLAY) and while recording, all with values 3 and 0 (controller protocol page, "Akai's transport lights"). Wiring them is the next build. The MPC One's STOP button has **no LED** (Jay, 13 Nov), so the STOP light the app sends shows nothing on this model.
 - **Still to come from the control map:** hold MAIN + pad to pick a track; SHIFT + NEXT SEQ (Perform FX); 16 LEVEL, COPY, TC and BROWSE.
 
 ## 7. How changes happen
@@ -232,6 +232,23 @@ Approved by Jay at 22:34Z (the mod thread's card, "Approve as proposed"). The mo
   - the Perform FX page (16 pads with lights, the XY pad with Hold, the selected pad's settings) opens the same way from the Perform FX insert on the master; its pads and XY view can also sit in a Play view;
   - the DJ knob is Q-Link 1 on that page (it stops at the middle on the way through), and can be a Play Q-Link too.
   - **The app thread proposes:** the pages use the 168 px Q-Link column instead of a strip of their own, so the frame stays the same everywhere; Play's throws and XY pad are on the Perform engine since round 10, with no layout change.
+
+## Asked for by Jay after live test 3 (13 Nov 11:46Z), not built yet
+
+Jay asked for these in the app thread (message of 13 Nov 11:46Z). The ones that change the shared layout are his decision already; each needs this file updated in the same pull request that builds it. Details, causes and file references: mpfree-claude `handoffs/2026-11-13-app-thread.md`.
+
+- **A Mix/FX tab** in the top bar for the mixer and effects (today the mixer opens with TRACK MIX or the mixer icon), and a **dramatic overhaul of adding effects** to pads, tracks and audio channels. On the mixer, **+ Insert** becomes **+ FX** (or a button).
+- **BROWSE opens the top-level browser** (projects, samples and the rest), as the browser plan's overlay under the top bar; projects load from it and **save**. A **New project** button starts from a fresh, empty project.
+- **Touch targets big enough to hit, or reachable with the wheel and – / +**, everywhere: the sequencer tracks' mute speakers, the mixer's insert rows (+ Insert is the example Jay gave) and the FX page's buttons first.
+- **Higher contrast for buttons as a general rule** (light grey text on a mid-grey button is out): the Looper tab's top and bottom buttons first.
+- **RAM %** beside CPU % in the top bar. The "Kit N of 10" chip names the kit instead.
+- **A tap on the tempo** on the Play page (and its views) sets the tempo.
+- **More steps and more tracks** in the sequencer, with a clear way to add them (32, 64, 128 steps; more than 8 tracks).
+- **ERASE + a clip deletes the clip.**
+- **Several throws at once** with several fingers on the Play page.
+- **Typing a number** for fields with a wide range (Warp tempo first), instead of only the wheel.
+- **A clear way to granular** from the Sample tab's Grain page.
+- **The metronome** off by default, with a toggle, and much quieter (Jay, live test 3 phase 6).
 
 ## Where things stand (2026-11-11 08:10Z)
 

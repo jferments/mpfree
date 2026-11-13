@@ -2,7 +2,7 @@
 
 **Objective:** a reproducible, legally distributable, evidence-based map of MPC One firmware/hardware interfaces that other developers can use without proprietary firmware copies. This is a work queue and evidence schema. Nothing marked UNKNOWN should be interpreted as a published hardware specification.
 
-Reference baseline: [MPC One 3.6.0](baseline-3.6.0.md). Latest redacted evidence: [initial survey](survey-2026-11-09.md), [focused ownership survey](resource-ownership.md), and [44.1-kHz audio/runtime survey](audio-runtime.md). Read-only collection: [developer access](../guides/developer-access.md).
+Reference baseline: [MPC One 3.6.0](baseline-3.6.0.md). Latest redacted evidence: [initial survey](survey-2026-11-09.md), [focused ownership survey](resource-ownership.md), and [44.1-kHz audio/runtime survey](audio-runtime.md). Read-only collection: [developer access](../../../guides/developer-access.md).
 
 ## Evidence procedure
 
@@ -44,9 +44,9 @@ Organize evidence into per-firmware notes and cross-version comparison tables. *
 
 ## Current implemented software milestone
 
-**M0 (host-only) is implemented and owner-validated on ML-tower:** [Deterministic audio core and WAV renderer](../milestones/m00-cpp-audio-core.md). A C++17 sample-frame click engine with a bounded, precomputed wavetable and saturating float-to-S32 converter; offline WAV demo and CI tests. Does not access MPC devices. This is a software foundation, not a proof of audio-driver takeover or ROM recovery.
+**M0 (host-only) is implemented and owner-validated on ML-tower:** [Deterministic audio core and WAV renderer](../../../milestones/m00-cpp-audio-core.md). A C++17 sample-frame click engine with a bounded, precomputed wavetable and saturating float-to-S32 converter; offline WAV demo and CI tests. Does not access MPC devices. This is a software foundation, not a proof of audio-driver takeover or ROM recovery.
 
-[Ethernet/USB capability and auxiliary compute design](../research/auxiliary-compute.md) covers device-role constraints, link/USB speed probes, optional small benchmark and raw PCM bandwidth/latency model. **Both on-device `end0` gigabit PHY and USB-A 480 Mbit/s **are now confirmed**, as are 20 short ICMP RTT probes and bounded SSH goodput. **Actual native UDP streaming deadlines, audio latency, and USB gadget functionality remain unmeasured**.**
+[Ethernet/USB capability and auxiliary compute design](../../../research/auxiliary-compute.md) covers device-role constraints, link/USB speed probes, optional small benchmark and raw PCM bandwidth/latency model. **Both on-device `end0` gigabit PHY and USB-A 480 Mbit/s **are now confirmed**, as are 20 short ICMP RTT probes and bounded SSH goodput. **Actual native UDP streaming deadlines, audio latency, and USB gadget functionality remain unmeasured**.**
 
 ## Research order
 
@@ -60,7 +60,7 @@ Organize evidence into per-firmware notes and cross-version comparison tables. *
 
 **Gate E — independent MPFree userspace:** split device-specific adapters from engine/core; test C++ or Rust code on workstation simulation and cross-compile for the observed device ABI; no bootloader changes.
 
-**Gate F — one-USB installer:** implement only after A–E and proven rollback. Compatibility allowlist and cryptographic release validation required. See [installer architecture](../design/usb-installer.md).
+**Gate F — one-USB installer:** implement only after A–E and proven rollback. Compatibility allowlist and cryptographic release validation required. See [installer architecture](../../../design/usb-installer.md).
 
 ## Recommended public artifact layout
 
