@@ -57,6 +57,8 @@ pub struct TrackHost {
     inputs: [Input; MAX_TRACKS],
     /// The last `SetActive` sent.
     active: bool,
+    /// The input latency last sent (frames), None before the first.
+    latency: Option<u32>,
     /// Waveforms read so far, a take each, and the take being read.
     waves: Vec<TakeWave>,
     reading: Option<u16>,
@@ -83,6 +85,7 @@ impl TrackHost {
             shown: 0,
             inputs: [Input::Left; MAX_TRACKS],
             active: false,
+            latency: None,
             waves: Vec::with_capacity(mpfree_audiotracks::MAX_TAKES),
             reading: None,
             grown_at: 0,
@@ -125,6 +128,15 @@ impl TrackHost {
                 self.seen = now;
                 self.changed = true;
             }
+        }
+    }
+
+    /// The line input's latency, in frames: the looper's "Latency to make
+    /// up for" (layout spec 4c: one line input latency, shared with the
+    /// looper). Sent to the tracks when it changes; call it every period.
+    pub fn follow_latency(&mut self, frames: u32) {
+        if self.latency != Some(frames) && self.host.command(Command::SetLatency(frames)) {
+            self.latency = Some(frames);
         }
     }
 
@@ -653,6 +665,21 @@ mod tests {
             0,
             "nothing reached the engine to be refused"
         );
+    }
+
+    #[test]
+    fn the_line_input_latency_follows_the_loopers_setting() {
+        let mut r = Rig::new();
+        assert_eq!(r.h.host.tracks.latency(), 0);
+        r.h.follow_latency(384);
+        r.period();
+        assert_eq!(r.h.host.tracks.latency(), 384);
+        // The same value is not sent again; a new one is.
+        r.h.follow_latency(384);
+        r.h.follow_latency(512);
+        r.period();
+        assert_eq!(r.h.host.tracks.latency(), 512);
+        assert_eq!(r.h.host.tracks.stats().dropped, 0);
     }
 
     /// Steady play of a recorded take, with its waveform read, neither

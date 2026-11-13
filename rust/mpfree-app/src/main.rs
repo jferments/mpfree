@@ -4658,6 +4658,7 @@ fn player_session(
         let line_note = looper.run(time.block(), &mut loop_l, &mut loop_r);
         // The audio tracks record the same line input onto the Song view's
         // lanes, and play into the mixer's Audio track (song mode only).
+        tracks.follow_latency(app.settings.loop_latency);
         tracks.period(
             time.block(),
             time.tempo_map(),

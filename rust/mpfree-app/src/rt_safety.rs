@@ -265,6 +265,7 @@ impl Rig {
         let note = looper.run(time.block(), loop_l, loop_r);
         assert!(note.is_none(), "period {i}: {note:?}");
         let [audio_l, audio_r] = audio_out;
+        tracks.follow_latency(app.settings.loop_latency);
         tracks.period(
             time.block(),
             time.tempo_map(),
