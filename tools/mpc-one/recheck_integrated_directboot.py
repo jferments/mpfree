@@ -62,7 +62,7 @@ def audit(archive: Path) -> dict:
         "original_adc_recovery_proven_by_arm_strings_and_fdt": (
             stock_recovery["all_existing_cross_checks_passed"]),
         "seven_track_57_question_research": (
-            len(matrix["questions"])>=57 and
+            len(matrix["questions"])>=59 and
             len({q["track"] for q in matrix["questions"]})==7),
         "spl_order_and_mmc_label_evidence": all(
             owner_followups["spl"]["checks"].values()),
