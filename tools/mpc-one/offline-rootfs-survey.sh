@@ -264,27 +264,30 @@ with open(sys.argv[1], "rb") as fh, mmap.mmap(fh.fileno(), 0, access=mmap.ACCESS
 }
 BLOCK_SIZE="$(dfs stats | sed -n 's/^Block size: *\([0-9][0-9]*\)$/\1/p')"
 [[ "$BLOCK_SIZE" =~ ^[0-9]+$ ]] || die "debugfs did not report the block size"
-NEEDLES=(ramfs-update erase-data-partition fastboot mmcblk0boot /dev/mmcblk0 xmosdfu touch-fw-upd dfu-util
-         update-bootloader flash-bootloader uboot-spl reboot-argument=)
-for needle in "${NEEDLES[@]}"; do
-  blocks="$(match_offsets "$needle" |
-    awk -v bs="$BLOCK_SIZE" '{ print int($1 / bs) }' | sort -un | head -n 500 | tr '\n' ' ')"
-  if [[ -z "${blocks// /}" ]]; then echo "$needle: no match"; continue; fi
-  owners="$(dfs "icheck $blocks")"
-  unowned="$(awk 'NR > 1 && /block not found/' <<<"$owners" | wc -l)"
-  inodes="$(awk 'NR > 1 && $2 ~ /^[0-9]+$/ { print $2 }' <<<"$owners" | sort -un | tr '\n' ' ')"
-  (( unowned == 0 )) || echo "$needle: $unowned match(es) outside file data (free space or metadata)"
-  [[ -n "${inodes// /}" ]] || continue
-  while IFS=$'\t' read -r ino path; do
-    [[ "$ino" =~ ^[0-9]+$ ]] || continue
-    while [[ "$path" == *//* ]]; do path="${path//\/\//\/}"; done
-    if [[ "$(rootfs_type "$path")" == directory ]]; then
-      echo "$needle: $path (a file name in this folder)"
-    else
-      echo "$needle: $path"
-    fi
-  done < <(dfs "ncheck $inodes")
-done
+mentions() {  # each argument is a needle; prints "needle: path" for every file whose data holds it
+  local needle blocks owners unowned inodes ino path
+  for needle in "$@"; do
+    blocks="$(match_offsets "$needle" |
+      awk -v bs="$BLOCK_SIZE" '{ print int($1 / bs) }' | sort -un | head -n 500 | tr '\n' ' ')"
+    if [[ -z "${blocks// /}" ]]; then echo "$needle: no match"; continue; fi
+    owners="$(dfs "icheck $blocks")"
+    unowned="$(awk 'NR > 1 && /block not found/' <<<"$owners" | wc -l)"
+    inodes="$(awk 'NR > 1 && $2 ~ /^[0-9]+$/ { print $2 }' <<<"$owners" | sort -un | tr '\n' ' ')"
+    (( unowned == 0 )) || echo "$needle: $unowned match(es) outside file data (free space or metadata)"
+    [[ -n "${inodes// /}" ]] || continue
+    while IFS=$'\t' read -r ino path; do
+      [[ "$ino" =~ ^[0-9]+$ ]] || continue
+      while [[ "$path" == *//* ]]; do path="${path//\/\//\/}"; done
+      if [[ "$(rootfs_type "$path")" == directory ]]; then
+        echo "$needle: $path (a file name in this folder)"
+      else
+        echo "$needle: $path"
+      fi
+    done < <(dfs "ncheck $inodes")
+  done
+}
+mentions ramfs-update erase-data-partition fastboot mmcblk0boot /dev/mmcblk0 xmosdfu touch-fw-upd dfu-util \
+         update-bootloader flash-bootloader uboot-spl reboot-argument=
 echo
 
 echo "=== 7. Akai's own programs, scripts and firmware updaters ==="
@@ -392,6 +395,69 @@ if [[ -n "$release" ]]; then
     fi
   fi
   rm -rf -- "$fresh"
+fi
+echo
+
+echo "=== 9. Developer mode: SSH and the script runner ==="
+# MPC OS 3.10.1 adds a developer mode: a shell with the app's rights, an SSH
+# server and a script runner that runs autorun.sh from any drive (Akai's
+# release notes). This shows the pieces an image ships for it, so the stick
+# test and the tools can be planned before the version runs anywhere.
+DEV_PATTERN='(ssh|dropbear|script|runner|autorun|devel|shell|terminal|remote)'
+for d in "${UNIT_DIRS[@]}"; do
+  while read -r kind name; do
+    [[ "$kind" == dir ]] && continue
+    [[ "$name" =~ $DEV_PATTERN ]] && show_file "$d/$name"
+  done < <(names_in "$d" | sort -k2)
+done
+for f in /etc/ssh/sshd_config /etc/default/dropbear /etc/pam.d/sshd; do show_file "$f"; done
+if [[ "$(rootfs_type /etc/ssh/sshd_config.d)" == directory ]]; then
+  while read -r kind name; do
+    [[ "$kind" != dir ]] && show_file "/etc/ssh/sshd_config.d/$name"
+  done < <(names_in /etc/ssh/sshd_config.d | sort -k2)
+fi
+echo "--- root's password field in /etc/shadow (what kind it is, never its value)"
+if [[ "$(rootfs_type /etc/shadow)" == regular ]]; then
+  rm -f -- "$WORK/shadow.tmp"
+  dfs "dump /etc/shadow $WORK/shadow.tmp"
+  awk -F: '$1 == "root" { found = 1
+    if ($2 == "") print "root: empty (no password asked)"
+    else if ($2 ~ /^[!*]/) print "root: locked for password logins (starts with " substr($2, 1, 1) ")"
+    else print "root: a password hash is set" }
+    END { if (!found) print "root: no line" }' "$WORK/shadow.tmp"
+  rm -f -- "$WORK/shadow.tmp"
+else
+  echo "(/etc/shadow: not in the image)"
+fi
+echo "--- files that mention developer mode, autorun.sh or SSH login options"
+mentions autorun.sh script-runner "Developer mode" "developer mode" dropbear PermitRootLogin \
+         PermitEmptyPasswords
+echo
+
+echo "=== 10. Peripheral firmware files (sha256; offline-firmware-compare.py compares two reports) ==="
+# One "fw <sha256> <path>" line per file that Akai's updaters or app could flash
+# into a chip outside the eMMC: everything under the firmware folders (3 levels)
+# and in /usr/share/Akai/*/Firmware. A name debugfs can't take as a path, or a
+# folder too deep, gets an "fw-skipped" line instead, so a comparison still
+# shows it.
+FW_NAME='^[A-Za-z0-9@._+-]+$'
+fw_walk() {  # $1 = folder, $2 = levels left
+  local kind name
+  while read -r kind name; do
+    if [[ ! "$name" =~ $FW_NAME ]]; then echo "fw-skipped $1/ (a $kind whose name has spaces or other characters)"; continue; fi
+    case "$kind" in
+      file) echo "fw $(file_sha "$1/$name") $1/$name" ;;
+      dir) if (( $2 > 1 )); then fw_walk "$1/$name" $(( $2 - 1 )); else echo "fw-skipped $1/$name/ (too deep)"; fi ;;
+      link) echo "fw-link $1/$name -> $(link_target "$1/$name")" ;;
+    esac
+  done < <(names_in "$1" | sort -k2)
+}
+while read -r d; do fw_walk "$d" 3; done < <(unique_dirs /usr/lib/firmware /lib/firmware)
+if [[ "$(rootfs_type /usr/share/Akai)" == directory ]]; then
+  while read -r kind name; do
+    [[ "$kind" == dir && "$name" =~ $FW_NAME ]] || continue
+    [[ "$(rootfs_type "/usr/share/Akai/$name/Firmware")" == directory ]] && fw_walk "/usr/share/Akai/$name/Firmware" 2
+  done < <(names_in /usr/share/Akai | sort -k2)
 fi
 echo
 
