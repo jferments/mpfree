@@ -33,7 +33,7 @@
 
 **External corroboration:** The official [Yocto 5.0 Scarthgap release notes](https://docs.yoctoproject.org/5.0/migration-guides/release-notes-5.0.html) specify **glibc 2.39** as their baseline. Combined with this vendor-derived az0x distro's Scarthgap declaration and observed `GLIBC_2.39` string, this strongly increases confidence that the installed libc is 2.39-based. **A custom inMusic build can still differ from the default Yocto recipe**; the exact release remains explicitly unverified until the on-device libc banner or target ABI is independently inspected.
 
-**Correction to the earlier checker:** the original `check-arm-abi.py` aborted without `getconf`, which is absent on the device. A revised checker now distinguishes **explicit getconf/release-banner confirmation** from the weaker `GLIBC_*` string ceiling. If only the strings are present, it provides a useful explanatory *NOT QUALIFIED* result (exit 4) rather than converting 2.39 into an asserted release version. An updated `--abi` survey tries to read an embedded GNU libc release banner **as read-only text** without executing libc. See [ABI comparison runbook](../research/armv7-userspace-compat.md).
+**Correction to the earlier checker:** the original `check-arm-abi.py` aborted without `getconf`, which is absent on the device. A revised checker now distinguishes **explicit getconf/release-banner confirmation** from the weaker `GLIBC_*` string ceiling. If only the strings are present, it provides a useful explanatory *NOT QUALIFIED* result (exit 4) rather than converting 2.39 into an asserted release version. An updated `--abi` survey tries to read an embedded GNU libc release banner **as read-only text** without executing libc. See [ABI comparison runbook](../../../research/armv7-userspace-compat.md).
 
 ## Factory service graph and lifecycle
 
@@ -109,7 +109,7 @@ The initial scheduling probe did **not** show policy or RT priority for the thre
 
 Systemd reported `LimitMEMLOCK=8388608` (8 MiB), while the stock application's `VmLck` was ~1,016 MiB. **This discrepancy is not resolved**; process privileges/capabilities, inherited locks or alternative memory-mapping APIs could matter, but should not be assumed as the cause. A read-only process capability and memory-map inspection would be needed before attributing the mechanism.
 
-The long-term strategy is to reclaim hardware resources **first by replacing the factory application while reusing the working kernel/drivers**, then optionally build a minimal, independent MPFree Linux userspace only after recovery is proven. See [hardware ownership strategy](../research/hardware-ownership.md).
+The long-term strategy is to reclaim hardware resources **first by replacing the factory application while reusing the working kernel/drivers**, then optionally build a minimal, independent MPFree Linux userspace only after recovery is proven. See [hardware ownership strategy](../../../research/hardware-ownership.md).
 
 ## Recovery blocker and next observations
 
@@ -129,6 +129,6 @@ bash tools/mpc-one/collect-over-ssh.sh --abi
 bash tools/mpc-one/collect-over-ssh.sh --rtthreads
 ~~~
 
-Review both new reports for identifying metadata before sharing. Compare a *host-built* ARM binary using `tools/mpc-one/check-arm-abi.py` and the updated ABI report. See the completely side-effect-free Rust [handoff simulator](../research/reversible-handoff.md): it cannot affect factory services.
+Review both new reports for identifying metadata before sharing. Compare a *host-built* ARM binary using `tools/mpc-one/check-arm-abi.py` and the updated ABI report. See the completely side-effect-free Rust [handoff simulator](../../../research/reversible-handoff.md): it cannot affect factory services.
 
 **Never send these reports to public GitHub unredacted. Do not stop/kill/disable/mask factory services or open their PCM/DRM devices.**

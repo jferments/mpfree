@@ -2,11 +2,11 @@
 
 **Status:** run by the owner on the real backup on 2026-11-10. Both hashes matched the boot map. [Findings](#findings-2026-11-10) below.
 
-Before the reference unit takes any official update, and before the Tier 2 gate in the [recovery strategy](../research/recovery-and-os-strategy.md), we need to know what an Akai update writes: which partitions, in what order, and what it checks first. Part of the answer is on the MPC already: `/opt/ramfs-update.squashfs` sits in the rootfs (`p6`), and the [eMMC backup](emmc-backup.md) holds a verified copy of it.
+Before the reference unit takes any official update, and before the Tier 2 gate in the [recovery strategy](../../../research/recovery-and-os-strategy.md), we need to know what an Akai update writes: which partitions, in what order, and what it checks first. Part of the answer is on the MPC already: `/opt/ramfs-update.squashfs` sits in the rootfs (`p6`), and the [eMMC backup](emmc-backup.md) holds a verified copy of it.
 
 ## What it does
 
-[`offline-akai-updater.sh`](../../../tools/mpc-one/offline-akai-updater.sh) runs **on the workstation only**. It makes no SSH or network connection, so the MPC doesn't need to be on.
+[`offline-akai-updater.sh`](../../../../../tools/mpc-one/offline-akai-updater.sh) runs **on the workstation only**. It makes no SSH or network connection, so the MPC doesn't need to be on.
 
 1. Picks the newest verified backup (a folder with `SHA256SUMS`) in `~/mpfree-backups`.
 2. Copies the `p6` region of `mmcblk0.img` into a new work folder and checks it against the `p6` hash in the [boot map](boot-map.md). It stops if they differ. The backup itself is only read.
@@ -72,7 +72,7 @@ The flag list and argument order are reconstructed from neighbouring strings, so
 
 **What this means for MPFree:**
 
-- **Akai uses kexec on this board for every USB and online update.** It boots its own kernel from the running system with a RAM disk, which is the route we planned for testing our own kernel in RAM ([recovery strategy](../research/recovery-and-os-strategy.md), option 1). It doesn't prove our kernel will come up cleanly, but it shows this hardware and kernel handle kexec in normal use.
+- **Akai uses kexec on this board for every USB and online update.** It boots its own kernel from the running system with a RAM disk, which is the route we planned for testing our own kernel in RAM ([recovery strategy](../../../research/recovery-and-os-strategy.md), option 1). It doesn't prove our kernel will come up cleanly, but it shows this hardware and kernel handle kexec in normal use.
 - **There are three ways an update reaches the eMMC.** The desktop updater writes over USB in Update Mode (U-Boot fastboot). Standard U-Boot fastboot can flash any GPT partition by name, including `uboot-spl` and `uboot`, but whether Akai's build allows that is unverified. USB-drive and online updates run the RAM updater above, which can write U-Boot itself and erase `/data`.
 - **Updates and factory reset need mains power.** The library refuses both without it, which lowers the risk of a half-written bootloader.
 
@@ -82,11 +82,11 @@ These workstation-only tools read a downloaded update image. None of them contac
 
 | Tool | What it does | Writes |
 | --- | --- | --- |
-| [`offline-update-image.py`](../../../tools/mpc-one/offline-update-image.py) | Lists every field of the container, with a SHA-256 and format guess for each payload | Nothing |
-| [`offline-update-extract.py`](../../../tools/mpc-one/offline-update-extract.py) | Checks each payload against the image's own hashes, then decompresses it | A new folder `~/mpfree-work/akai-unpacked-<UTC>-<random>/` |
-| [`offline-rootfs-survey.sh`](../../../tools/mpc-one/offline-rootfs-survey.sh) | Reads a rootfs image with `debugfs` (read-only) and reports what it mounts, which units start at boot, its flashing programs, Akai's own programs and scripts, firmware hashes, and which files mention the eMMC or flashing. Section 8 covers what a kexec boot needs: the drivers built into the kernel, the kernel's embedded config, and the board's device trees | A new folder `~/mpfree-work/rootfs-survey-<UTC>-<random>/`, and a copy of `/boot` in `~/mpfree-work/boot-files/<kernel release>/` (never overwritten) |
-| [`offline-kernel-config.py`](../../../tools/mpc-one/offline-kernel-config.py) | Prints the build config embedded in a zImage (`CONFIG_IKCONFIG`), all of it or only the symbols that matter for a kexec boot | Nothing |
-| [`offline-dtb.py`](../../../tools/mpc-one/offline-dtb.py) | Lists, summarises, compares and shows device trees. A comparison leaves values out unless asked, and `show` never prints the MAC address or serial number, so both are safe on the tree read from the MPC | Nothing |
+| [`offline-update-image.py`](../../../../../tools/mpc-one/offline-update-image.py) | Lists every field of the container, with a SHA-256 and format guess for each payload | Nothing |
+| [`offline-update-extract.py`](../../../../../tools/mpc-one/offline-update-extract.py) | Checks each payload against the image's own hashes, then decompresses it | A new folder `~/mpfree-work/akai-unpacked-<UTC>-<random>/` |
+| [`offline-rootfs-survey.sh`](../../../../../tools/mpc-one/offline-rootfs-survey.sh) | Reads a rootfs image with `debugfs` (read-only) and reports what it mounts, which units start at boot, its flashing programs, Akai's own programs and scripts, firmware hashes, and which files mention the eMMC or flashing. Section 8 covers what a kexec boot needs: the drivers built into the kernel, the kernel's embedded config, and the board's device trees | A new folder `~/mpfree-work/rootfs-survey-<UTC>-<random>/`, and a copy of `/boot` in `~/mpfree-work/boot-files/<kernel release>/` (never overwritten) |
+| [`offline-kernel-config.py`](../../../../../tools/mpc-one/offline-kernel-config.py) | Prints the build config embedded in a zImage (`CONFIG_IKCONFIG`), all of it or only the symbols that matter for a kexec boot | Nothing |
+| [`offline-dtb.py`](../../../../../tools/mpc-one/offline-dtb.py) | Lists, summarises, compares and shows device trees. A comparison leaves values out unless asked, and `show` never prints the MAC address or serial number, so both are safe on the tree read from the MPC | Nothing |
 
 ```bash
 python3 tools/mpc-one/offline-update-image.py ~/mpfree-work/akai-update-files

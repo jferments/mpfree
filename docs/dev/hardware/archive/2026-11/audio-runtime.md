@@ -12,7 +12,7 @@ Earlier research:
 - [First board/eMMC/ALSA/display map](survey-2026-11-09.md)
 - [Factory process device-file ownership map](resource-ownership.md)
 - [Hardware evidence matrix](research-matrix.md)
-- [Machine-readable device profile](data/mpc-one-3.6.0-observed.json)
+- [Machine-readable device profile](../../data/mpc-one-3.6.0-observed.json)
 
 ## 1. Verified active audio stream settings
 

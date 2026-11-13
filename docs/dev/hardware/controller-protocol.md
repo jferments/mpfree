@@ -39,7 +39,7 @@ TheKikGen's MPCLiveXplore-libs lists the same device ID (0x46), the same pad not
 
 ## Still unknown
 
-- Remaining button numbers (52 and 73 seen but not named) and LED color/brightness meaning of values 0–4 (capture each button once).
+- Remaining button numbers (52 seen but not named; 73 is REC, 2026-11-13) and LED color/brightness meaning of values 0–4 (capture each button once).
 - Data wheel push, any display/screen messages, and what each setup message (`41`, `5A`, `62`–`6A`) means.
 - Which of the setup messages switches the controls to cable 1, and what happens to that mode when the session lapses.
 
@@ -170,3 +170,22 @@ Before this round the owner set the MIDI track's MIDI Out routing (to "MPC", 1) 
 - **UNKNOWN:** why pad velocity 13 went out as 12 while 127 and 17 went out unchanged (a pad curve in Akai's app, perhaps).
 - **UNKNOWN:** clock out. PLAY and STOP sent no clock, start or stop. Whether Sync was ticked for the port in Preferences > MIDI / Sync was not recorded.
 - Writing to cable 2 from MPFree is a **state-changing** write to the controller (notes leave the jack) and waits for the owner's go ([midi-io](../design/midi-io.md), step M3).
+
+## Akai's transport lights (live test 3, 2026-11-13)
+
+> **Evidence type:** owner-run `results.py run lights-capture -- env MPFREE_ACCEPT_USBMON=YES MPFREE_CAPTURE_PHASES=transport bash tools/mpc-one/collect-over-ssh.sh --midi-capture` on stock 3.6.0, 2026-11-13 09:33 UTC, Akai's app on its Main page, the stick out. Five guided 8 s phases: idle, PLAY then STOP, REC then PLAY then STOP, OVERDUB then PLAY then STOP, PLAY START then STOP. Report `mpc-one-midi-capture-20261113T093347Z-cm06QW.txt` (owner-local, not committed). Nothing was sent to the controller by MPFree.
+
+Every transport light is a **CC on cable 1, channel 1, CC number = the button's note**, as for the other buttons. The values the app uses for these buttons are **0 (off), 1 (dim) and 3 (bright)**.
+
+| Button (note) | What Akai's app sends (OBSERVED) |
+|---|---|
+| PLAY (82, `0x52`) | `B0 52 03` when playing starts, and it stays lit while playing. `B0 52 00` on STOP. While REC or OVERDUB waits for PLAY, PLAY blinks with it: `03`, `00`, `03`, `00`, switching about every 0.3 s (the project's tempo wasn't recorded, so whether that follows the tempo is unknown). |
+| REC (73, `0x49`) | Armed (REC pressed, transport stopped): blinks `03`/`00` together with PLAY. Recording (after PLAY): keeps blinking `03`/`00`. |
+| OVERDUB (80, `0x50`) | Armed: blinks `03`/`00` together with PLAY. Overdubbing: keeps blinking `03`/`00`. |
+| PLAY START (83, `0x53`) | `03` while held, `01` after it is let go. Playing then lights PLAY as above. |
+| STOP (81, `0x51`) | `01` while playing, `03` once stopped. **The MPC One's STOP button has no LED** (owner, 13 Nov), so these messages light nothing on this model. |
+| UNDO (67, `0x43`) | Blinks `03`/`01` while recording or overdubbing. |
+| TAP TEMPO (53, `0x35`) | Blinks `03`/`01` on the beat all the time, also while stopped. |
+
+- **OBSERVED:** after a PLAY press the app also sent a full refresh of the page's button lights and pad colours (the same CCs and `F0 47 7F 46 65 …` messages as at startup).
+- MPFree's allowed lights (`akai::STARTUP_BUTTON_LIGHTS`, through `akai::app_lights`) don't include 73, 80 and 82, so the app sends nothing for them yet. Adding them with the values above is next ([handoff](https://github.com/jferments/mpfree-claude/blob/main/handoffs/2026-11-13-app-thread.md)). Unlike the other buttons, these three use `00`, not `01`, for off.
