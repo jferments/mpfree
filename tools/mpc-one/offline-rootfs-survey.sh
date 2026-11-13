@@ -151,7 +151,7 @@ show_file() {  # $1 = path in the image; prints a small text file, or a binary's
   else
     echo "--- $path: $kind ($size bytes), sha256 $(sha256sum -- "$tmp" | awk '{print $1}')"
     if [[ "$kind" == ELF* ]]; then
-      strings -a -n 6 -- "$tmp" | grep -E -i -- "$STRINGS_PATTERN" | head -n 200 | sed 's/^/    /'
+      strings -a -n 6 -- "$tmp" | grep -E -i -- "$STRINGS_PATTERN" | awk 'NR <= 200 { print "    " $0 }'
     fi
   fi
   rm -f -- "$tmp"
