@@ -2860,6 +2860,10 @@ fn looper_action(
             out.note(&looper.select(n));
             Vec::new()
         }
+        looping::LoopAction::ToggleMute(n) => {
+            out.note(&looper.toggle_mute(n));
+            Vec::new()
+        }
     }
 }
 
@@ -3545,6 +3549,9 @@ fn player_session(
                 }
                 gui::FromUi::LoopPick(n) => {
                     fx.push(app::Effect::Looper(looping::LoopAction::Select(n)))
+                }
+                gui::FromUi::LoopMute(n) => {
+                    fx.push(app::Effect::Looper(looping::LoopAction::ToggleMute(n)))
                 }
                 gui::FromUi::LooperSetting(item, d) => fx.extend(app.looper_setting(item, d)),
                 gui::FromUi::LoopCommand(c) => {

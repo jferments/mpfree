@@ -23,6 +23,8 @@ The looper is part of the song, not a separate machine running beside it:
 
 The first pass is the loop's first **layer**. Each overdub adds another, up to 16. **Undo** fades out the newest layer and **Redo** brings it back, until you record a new overdub. The loop shows the layers in different colours, and on the Play page each layer has a speaker icon to mute it on its own.
 
+To get rid of a whole loop, first pass included, use **Clear** (on the Play page, or **Clear loop** on the Looper tab). The **×** on a loop's last remaining layer does the same.
+
 The looper holds a minute of stereo sound across all its layers (the Looper tab shows how much is left). At 120 BPM a bar lasts two seconds, so a 4-bar loop can have about seven layers. Keep loops short and layer them.
 
 ## The buttons
@@ -50,6 +52,9 @@ The **Looper** tab is where you set up and mix your loops. It has room for up to
 
 The list on the left shows each loop with its length and number of layers, and whether it is playing, muted or empty. Tap a loop to pick it: the editor shows it, and REC, OVERDUB and UNDO act on it. **+ New loop** picks the first empty one, ready to record.
 
+- **The speaker** on each loop's card decides whether the loop plays. Tap it to mute the loop (the speaker shows a ×): the loop is kept and keeps its place in the song, but stays silent when you press PLAY. Tap it again and the loop comes back in, in time. You don't have to pick a loop to mute it.
+- **Clear loop** (under + New loop, outlined in red) deletes the picked loop, every layer and the first pass, so you can record it again. It fades out rather than cutting off.
+
 Every loop plays at once, in time with the song, but only one records at a time: starting to record in one loop ends the recording in the others.
 
 **Loop memory** at the bottom shows how much of the looper's minute of stereo sound is used, shared between all the loops and their layers.
@@ -61,7 +66,7 @@ The picked loop's waveform runs across the top, with its length, tempo and sourc
 - **the speaker** to mute that layer,
 - **S** to solo it (hear only this layer of the loop),
 - **a level** you can drag,
-- **×** to delete the layer. A deleted layer can be brought back with UNDO, like an overdub.
+- **×** to delete the layer. A deleted layer can be brought back with UNDO, like an overdub. On the loop's only layer (the first pass, once the others are gone), **×** clears the whole loop, like **Clear loop**.
 
 Tap a lane to pick that layer for the Q-Links:
 

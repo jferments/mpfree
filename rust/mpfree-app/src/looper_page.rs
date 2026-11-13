@@ -1085,6 +1085,7 @@ impl LooperPage {
                     detail: loop_detail(l, v.beats_per_bar),
                     state: state_of(l).map(|(a, b)| (a.to_string(), b)),
                     colour: LOOP_COLOURS[i % LOOP_COLOURS.len()],
+                    speaker: (l.phase != Phase::Empty).then_some(l.muted),
                 }
             })
             .collect();
@@ -1102,16 +1103,22 @@ impl LooperPage {
             },
         );
         let new_loop = v.loops.iter().any(|l| l.phase == Phase::Empty);
+        let clear = v
+            .loops
+            .get(v.selected)
+            .is_some_and(|l| l.phase != Phase::Empty);
         if let Some(l) = ui.get_mut::<LoopList>(LOOPS) {
             if l.rows != rows
                 || l.picked != v.selected
                 || l.memory != memory
                 || l.new_loop != new_loop
+                || l.clear != clear
             {
                 l.rows = rows;
                 l.picked = v.selected;
                 l.memory = memory;
                 l.new_loop = new_loop;
+                l.clear = clear;
             }
         }
         // The editor and the Q-Links.
