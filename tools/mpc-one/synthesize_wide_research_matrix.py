@@ -134,6 +134,40 @@ def build(read):
         "The boot-source resolver defaults to code 1 in several unsuccessful discovery cases and returns code 8 when a lower helper yields 0x35. Code 8 is not mapped to physical SD/USB.",
         "Trace FUN_ff7089fc, FF708770, FF705AF2 and FF705B16 and the selector's handling of code 8.",
         "static/v11/v11-ghidra-spl.json")
+    parser=d["spl"]["analyzed_functions"].get(
+        "0xff7052c0",{}).get("pseudocode","")
+    fallback=d["spl"]["analyzed_functions"].get(
+        "0xff70529c",{}).get("pseudocode","")
+    handoff=d["spl"]["analyzed_functions"].get(
+        "0xff705310",{}).get("pseudocode","")
+    uimage_magic=d["p1"].get("literal_hits",{}).get(
+        "legacy_uimage_magic",[])
+    row("SPL","Does SPL populate its indirect second-stage entry from a legacy image header?",
+        confirmed(all(v in parser for v in (
+            "*param_1 == DAT_ff705308",
+            "param_1[4]","param_1[5]",
+            "piVar2[3] = uVar3 << 0x18",
+            "DAT_ff70530c[3] = uVar3"))
+            and "(**(code **)(param_1 + 0xc))()" in handoff
+            and any(x.get("address")=="0xff705308" for x in uimage_magic)),
+        "Original P1 header parser reads and endian-swaps legacy load/entry fields; stores selected header value in context word 3 that the indirect handoff calls. Original callback slot begins at zero.",
+        "Verify image-header parser and handoff share exact context pointer; establish actual stage memory constraints.",
+        "static/v11/v11-ghidra-spl.json + static/wide/p1-sram-ghidra.json")
+    row("SPL","Does fallback image initialization provide a default second-stage target?",
+        confirmed("puVar1[3] = 0x100000;" in fallback and
+                  "DAT_ff7052b8" in fallback),
+        "When header parser rejects the recognized magic, fallback initializer writes 0x00100000 into its context entry slot; this does not guarantee that an invalid image will boot.",
+        "Determine branch reachability, loader validation and resulting context pointer before any hardware exercise.",
+        "static/v11/v11-ghidra-spl.json")
+    factory=d["env"]["p3"]
+    row("SPL","Does original factory U-Boot P3 have a zero entry field but nonzero load address?",
+        confirmed(factory.get("valid") and
+                  factory.get("load_address")=="0x00100000" and
+                  factory.get("entry_address")=="0x00000000" and
+                  factory.get("payload_crc32_valid")),
+        "Original CRC-verified legacy firmware P3 has load=0x00100000 and entry=0x00000000. SPL cannot simply branch to the unmodified entry field without another adjustment.",
+        "Resolve how SPL's context flag selects load vs entry for this factory image; header CRC is not signature authentication.",
+        "static/wide/storage-env-boot-dtb.json")
     row("SPL","Do the backup P1 offsets and size identify stage location?",confirmed(b["p1"]["lba"]==64 and b["p1"]["bytes"]==65536),
         "The first-stage partition starts at LBA 64 and spans 64KiB in the owner's backup.",
         "Confirm an independent ROM loader can accept an owner-built SRAM payload.","static/wide/storage-env-boot-dtb.json")
