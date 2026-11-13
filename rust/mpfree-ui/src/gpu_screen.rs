@@ -153,9 +153,12 @@ pub struct GpuScreen {
 
 impl GpuScreen {
     /// Starts `program` with `args` and waits for it to say it is ready, for
-    /// screens `w` x `h`. Fails (with the reason) if it can't start, says
-    /// it failed, draws at another size, or says nothing for
-    /// [`STUCK_AFTER`] (plus `start_grace`, for setting up the driver).
+    /// screens `w` x `h`. Fails (with the reason, naming the program) if it
+    /// can't start, says it failed, draws at another size, or says nothing
+    /// for [`STUCK_AFTER`] (plus `start_grace`, for setting up the driver).
+    /// A program that isn't there fails at the spawn, or, where the spawn
+    /// can't report it (under qemu-user), as a process that ended with
+    /// status 127 before it was ready.
     pub fn start(
         program: &Path,
         args: &[String],
@@ -170,6 +173,7 @@ impl GpuScreen {
             .stderr(Stdio::inherit())
             .spawn()
             .map_err(|e| format!("{}: {e}", program.display()))?;
+        let name = program.display();
         let stdin = child.stdin.take().ok_or("no pipe to the GPU process")?;
         let stdout = child.stdout.take().ok_or("no pipe from the GPU process")?;
         let (frames, replies) = match pipes(stdin, stdout) {
@@ -201,13 +205,13 @@ impl GpuScreen {
                 Ok(None) | Err(RecvTimeoutError::Disconnected) => {
                     let status = g.reap();
                     return Err(format!(
-                        "the GPU process ended before it was ready ({status})"
+                        "{name}: the GPU process ended before it was ready ({status})"
                     ));
                 }
                 Err(RecvTimeoutError::Timeout) => {
                     g.stop();
                     return Err(format!(
-                        "the GPU process was not ready after {:.1} s",
+                        "{name}: the GPU process was not ready after {:.1} s",
                         (STUCK_AFTER + start_grace).as_secs_f64()
                     ));
                 }
@@ -221,7 +225,7 @@ impl GpuScreen {
                     if logical != (w, h) {
                         g.stop();
                         return Err(format!(
-                            "the GPU process draws {}x{}; the screens are {w}x{h}",
+                            "{name}: the GPU process draws {}x{}; the screens are {w}x{h}",
                             logical.0, logical.1
                         ));
                     }
@@ -231,7 +235,7 @@ impl GpuScreen {
                 }
                 Reply::Failed(e) => {
                     let status = g.reap();
-                    return Err(format!("{e} ({status})"));
+                    return Err(format!("{name}: {e} ({status})"));
                 }
                 Reply::Note(n) => g.notes.push(n),
                 other => g.notes.push(format!("before ready: {other:?}")),
@@ -526,7 +530,9 @@ mod tests {
         )
         .err()
         .unwrap();
-        assert!(e.contains("/nonexistent/mpfree-gpu-screen"), "{e}");
+        // The spawn's error, or (under qemu-user, which can't report it) the
+        // process's status 127: either way it names the program.
+        assert!(e.starts_with("/nonexistent/mpfree-gpu-screen: "), "{e}");
     }
 
     #[test]
@@ -540,7 +546,7 @@ mod tests {
         )
         .err()
         .unwrap();
-        assert!(e.contains("no GPU here"), "{e}");
+        assert!(e.starts_with("/bin/sh: no GPU here"), "{e}");
     }
 
     #[test]
