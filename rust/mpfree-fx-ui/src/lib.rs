@@ -48,5 +48,5 @@ pub mod visual;
 
 pub use lock::Locks;
 pub use perform::{PerformAction, PerformPanel};
-pub use state::{make, preset_values, presets, FxState, Scratch, CATALOGUE};
+pub use state::{make, preset_values, presets, FxState, Scratch};
 pub use view::{FxAction, FxPanel};
