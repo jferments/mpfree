@@ -202,6 +202,45 @@ def decode_command_table(raw):
            "0x%08x"%(P3BASE+m.start()) for m in
            __import__("re").finditer(b"\x00\x00\x0c\xff",raw)][:80],
     }
+    # Discover *default environment* candidates, including KEY=VALUE
+    # strings, rather than only the NUL-terminated environment keys.
+    # Values can contain vendor credentials, so report only SHA and
+    # allowlisted boot-device tokens, never arbitrary script text.
+    env_keys=("boot_targets","bootcmd","bootdelay","mmcdev","mmcpart",
+              "distro_bootcmd","bootargs")
+    defaults={}
+    for key in env_keys:
+        needle=(key+"=").encode("ascii")
+        found=[]
+        for match in re.finditer(re.escape(needle),raw):
+            pos=match.end()
+            terminator=raw.find(b"\0",pos,min(pos+512,len(raw)))
+            if terminator<0:continue
+            value=raw[pos:terminator]
+            if not value or any(c<32 or c>126 for c in value):continue
+            record_env={
+                "literal_at":"0x%08x"%(P3BASE+match.start()),
+                "value_length":len(value),
+                "value_SHA256":hashlib.sha256(value).hexdigest(),
+                "contains_mmc":b"mmc" in value.lower(),
+                "contains_ext4load":b"ext4load" in value.lower(),
+                "contains_fatload":b"fatload" in value.lower(),
+                "contains_bootz":b"bootz" in value.lower(),
+                "contains_source":b"source" in value.lower(),
+                "contains_saveenv":b"saveenv" in value.lower(),
+                "value_redacted":True,
+            }
+            if key=="boot_targets":
+                # These are *literal tokens in a default string*, NOT
+                # verified U-Boot indices or physical device selection.
+                record_env["boot_target_tokens"]=[
+                    token.decode("ascii") for token in value.split()
+                    if re.fullmatch(rb"(mmc|usb|pxe|dhcp|sata|scsi)[0-9]{0,2}",token)
+                ]
+            found.append(record_env)
+            if len(found)>=40:break
+        defaults[key]=found
+    report["static_default_environment_candidates"]=defaults
     report["hardware_MMC_index_assigned"]=False
     report["scope_limitations"]=[
         "Linux DT alias numbering does not prove U-Boot MMC device numbering.",
@@ -468,7 +507,7 @@ def main():
             temp=Path(private)
             with ThreadPoolExecutor(max_workers=4) as pool:
                 jobs={
-                  "new_SLP_media_p1_ghidra":pool.submit(timed,ghidra,"p1",output,temp),
+                  "new_SPL_media_p1_ghidra":pool.submit(timed,ghidra,"p1",output,temp),
                   "new_command_p3_ghidra":pool.submit(timed,ghidra,"p3",output,temp)
                 }
                 jobs["independent_command_decoder"]=pool.submit(
