@@ -6,9 +6,11 @@ For full details read [the canonical architecture](mpc-one-boot-architecture.md#
 
 ## Official developer interfaces
 
-MPC OS 3.10.1 introduces optional **Developer Panel**, built-in Linux terminal, **SSH activation**, resource/log monitoring and an official ARM32/ARM64 [MPC Plugin SDK](https://github.com/inmusic-software/mpc-plugin-builder-sdk). The SDK installs native instruments/effects into the factory MPC host; it does **not** mean a complete alternative Linux OS is officially installable. Remote screen/audio, external plugin support, USB mouse and screenshots are additional optional enhancements. Enable external plugins under **Preferences → Enhancements**, according to the firmware's interface.
+MPC OS 3.10.1 introduces optional experimental enhancements, switched on under **Menu → Preferences → Enhancements**: a **developer panel**, external plugin support with an official ARM32/ARM64 [MPC Plugin SDK](https://github.com/inmusic-software/mpc-plugin-builder-sdk), remote screen and audio, USB mouse and screenshots. The SDK installs native instruments/effects into the factory MPC host; it does **not** mean a complete alternative Linux OS is officially installable.
 
-The Developer Panel means an owner need not use the earlier USB `autorun.sh` technique solely to obtain an interactive Linux shell. A high-access SSH service should run only on a controlled network, with credentials/authentication verified. Exact port, default login, persistence and privilege behavior on this physical MPC have not yet been established.
+According to Akai's [3.10.1 release notes](https://cdn.inmusicbrands.com/Software/MPC/MOPN4PCOPEN/MPC%203.10.1%20-%20Release%20Notes.pdf), developer mode is entered by holding SHIFT + MENU and choosing Developer from the mode menu. The panel has an on-screen terminal, `dmesg`, `journalctl`, services, a resource monitor, voice statistics and plugin management. Its shell has "full access to this product's Linux system, with the same rights as the product itself"; turning it on also starts the SSH server, and turning it off stops both. It adds a **script runner that runs `autorun.sh` on any drive while in developer mode**. The notes name no port, login or password, and say nothing about booting another kernel. A community FAQ says the SSH login is root with no password ([Open MPC](https://open-mpc.github.io/faq.html)); that is not confirmed by Akai or on this unit.
+
+The developer mode means an owner need not use the earlier USB `autorun.sh` technique or a rootfs change (MOD-001) solely to obtain a shell. An SSH service with those rights should run only on a controlled network. Its port, login, persistence across reboots and privileges on this physical MPC have not been established; the [stick test runbook](firmware-3.10.1-stick-test.md) plans how to check them before installing 3.10.1.
 
 ## Offline comparison findings
 
@@ -27,6 +29,6 @@ These are **image-level findings**, not hardware validation after a 3.10.1 updat
 
 ## Update gate
 
-Retain verified off-device backups; complete analysis of the changed integrity component; qualify SSH/authentication and per-partition changes on an appropriate device; and preserve a proven factory return path. Do not treat the existence of official SSH as proof of independent OS boot.
+Retain verified off-device backups; complete analysis of the changed integrity component; qualify SSH/authentication and per-partition changes on an appropriate device; and preserve a proven factory return path. Do not treat the existence of official SSH as proof of independent OS boot. The [stick test runbook](firmware-3.10.1-stick-test.md) covers the checks that can be made before installing.
 
 **Sources:** [Akai firmware](https://www.akaipro.com/downloads-and-support/downloads/firmware/mpc/), [release notes](https://www.akaipro.com/mpc-release-notes/), [inMusic SDK](https://github.com/inmusic-software/mpc-plugin-builder-sdk).
