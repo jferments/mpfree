@@ -8154,9 +8154,9 @@ mod tests {
         assert_eq!(p.touch(2, Touch::Down, cr.x + 5, cr.y + 5), None);
         assert_eq!(p.take_actions(), [FromUi::OpenIo]);
         assert!(!p.open_io_section("Sync"), "no Sync section yet");
-        // The model arrives (once, at start): MIDI, Sync and CV join the
-        // list after Audio, and the chip's tap opens Sync. A second model
-        // adds nothing.
+        // The model arrives (once, at start): MIDI, Sync, CV and Monitor
+        // join the list after Audio, and the chip's tap opens Sync. A
+        // second model adds nothing.
         let model = std::sync::Arc::new(std::sync::Mutex::new(mpfree_midi_ui::sample::rig()));
         p.apply(ToUi::IoModel(model.clone()));
         p.apply(ToUi::IoModel(model));
@@ -8165,7 +8165,8 @@ mod tests {
             [
                 mpfree_midi_ui::MIDI,
                 mpfree_midi_ui::SYNC,
-                mpfree_midi_ui::CV
+                mpfree_midi_ui::CV,
+                mpfree_midi_ui::MONITOR
             ]
         );
         assert!(p.open_io_section("Sync"));
