@@ -613,7 +613,9 @@ pub fn tool_command(i: usize, s: &Status, rate: u32) -> Option<Command> {
 pub fn why_no_tool(i: usize, s: &Status) -> &'static str {
     match s.phase {
         Phase::Empty => "Record a loop first: the tools edit the loop that plays",
-        Phase::Armed | Phase::Recording => "The tools work once the first pass is recorded and plays",
+        Phase::Armed | Phase::Recording => {
+            "The tools work once the first pass is recorded and plays"
+        }
         Phase::Overdubbing => "The tools work while the loop plays, not while it overdubs",
         Phase::Playing if s.merging.is_some() => "Wait for the merge to finish",
         Phase::Playing if i == 6 => "Merge needs two layers or more: overdub one first",

@@ -279,7 +279,10 @@ impl<F: Form> FormSection<F> {
         let items: Vec<usize> = (0..rows.len()).filter(|&j| rows[j].is_item()).collect();
         let at = items.iter().position(|&j| j == i).unwrap_or(0) as i32;
         let to = (at + d).clamp(0, items.len() as i32 - 1) as usize;
-        if items[to] == i && self.sel.is_some() {
+        // With nothing picked yet the first row shows picked, so a move
+        // that stays there says so too.
+        if items[to] == i {
+            self.sel = Some((rows[i].key.clone(), col));
             self.note = Some(
                 if d > 0 {
                     "The last row is selected"

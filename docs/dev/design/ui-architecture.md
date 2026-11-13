@@ -1,6 +1,6 @@
 # UI architecture
 
-**Status:** 2026-11-12 (the display list and the banded copy); first written 2026-11-10. The toolkit is [`rust/mpfree-ui`](../../../rust/mpfree-ui); its first app is the Hello MPC pad player ([`gui.rs`](../../../rust/mpfree-app/src/gui.rs) draws it, [`app.rs`](../../../rust/mpfree-app/src/app.rs) decides what buttons and touches do). It first ran on the MPC in [round 4](../guides/mpfree-app.md#round-4-results-2026-11-10); round 5 starts it at power-on.
+**Status:** 2026-11-13 (controls listed for the smoke tests, and saying why in place); first written 2026-11-10. The toolkit is [`rust/mpfree-ui`](../../../rust/mpfree-ui); its first app is the Hello MPC pad player ([`gui.rs`](../../../rust/mpfree-app/src/gui.rs) draws it, [`app.rs`](../../../rust/mpfree-app/src/app.rs) decides what buttons and touches do). It first ran on the MPC in [round 4](../guides/mpfree-app.md#round-4-results-2026-11-10); round 5 starts it at power-on.
 
 ## What the owner asked for
 
@@ -55,6 +55,16 @@ Most pages keep a gap at the screen's edges; `add_full_page` makes one with none
 Widgets show state and report what was touched; the app decides what that means. A touch becomes an `EventKind` (`Tab`, `Pad { index, down }`, `Select`, `Value`, `Step { index, delta }`) tagged with the widget's name. In the pad player, `app.rs` holds that meaning for buttons and touches alike (pages, menus, Note Repeat, Latch, Full Level, the button guide) and returns effects (show a page, light a button, change the sound); it never draws, so it is tested without a screen. The pad player turns those into the same actions the hardware produces: a tap on a screen pad and a hit on a real pad both become "play pad N"; a tap on the kit list and a turn of the wheel both become "select kit K". So any control can later come from the pads, the screen, an encoder or MIDI without the widgets knowing.
 
 Each finger belongs to the widget it first touched until it lifts, so a finger that slides off the level slider keeps moving the slider rather than hitting a pad.
+
+### Controls and the smoke tests
+
+Every widget lists the controls it draws: `Widget::targets(&self, r)` returns a `Target` for each (default none), and `Ui::targets()` lists the page's, widget by widget in layout order, as `PageTarget { widget, target }`. Paint before listing: some widgets (the top bar's chips, the I/O settings) measure their controls when they draw.
+
+A `Target` has an `id` that names the kind of control within its widget ("tab", "row-less", "knob-card"; the controls catalogue is keyed by `widget/id`), an `index` when there are several, the `label` the screen shows on it, the `rect` where it answers a finger, the `gesture` a finger makes on it (`Tap`, `Drag` or `Hold`), `towards` for a drag (which way the finger moves), and `enabled`. `enabled` is false (`disabled_if`) when the control is drawn faint, or is the one already lit (the tab shown, the row picked), so a press has nothing to change. The [GUI smoke tests](../guides/testing-and-ci.md#gui-smoke-tests) press every target the way its gesture says and fail on one that does nothing.
+
+When a press can't do what it asks, the screen says so in place rather than doing nothing (Jay, 13 Nov 2026). A faint button or card still answers a tap, and the page puts why on the hint line (`Player::tell`): a faint looper tool, a blank Q-Link card, a faint take button or morph button on Arrange, a faint sampler button (`ButtonRow::why`) or Q-Link card (`KnobCard::why`), a sampler or Arrange setting already at its end (`time_view::why_not`, and `SamplePage` notices a step that changed nothing), an I/O setting that can't move (`IoSection::take_note`, read through the mixer's `take_io_note`). Controls that only show (status chips) say what they show.
+
+The routing from the screen's actions to the engines (`FromUi` to the app, the mixer, the time engine, the looper and the chain editor) lives in `desk.rs`, shared by `main.rs` and the test `Session`, so the smoke tests drive the code the MPC runs.
 
 ### Threads and timing
 

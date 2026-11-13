@@ -131,7 +131,10 @@ mod tests {
             // Q-Link 2 is Ratio.
             let before = node_param(&s, drums, 1, "Ratio");
             s.qlink(1, 4);
-            assert!(node_param(&s, drums, 1, "Ratio") > before, "Q-Link 2 raised Ratio");
+            assert!(
+                node_param(&s, drums, 1, "Ratio") > before,
+                "Q-Link 2 raised Ratio"
+            );
             agree(&mut s, "Q-Link 2 turned");
 
             // ON bypasses it and lets it in again.
@@ -186,7 +189,10 @@ mod tests {
             s.press("mixer", "add-insert", "Loop + Insert");
             s.press("chain", "cancel", "Cancel").run_for(0.1);
             assert_eq!(s.view(), View::Chain);
-            assert!(s.control("chain", "pick", "").is_none(), "the picker closed");
+            assert!(
+                s.control("chain", "pick", "").is_none(),
+                "the picker closed"
+            );
             assert_eq!(names(&engine(&mut s)), ["DJ filter"]);
             agree(&mut s, "cancelled");
             // "+ Add effect" opens the picker again; Back closes the editor.
@@ -256,7 +262,11 @@ mod tests {
             s.press("chain", "learn", "Learn");
             let n = s.sent.len();
             s.qlink(2, 4);
-            assert!(s.sent[n..].iter().any(|a| a == "ChainLearned"), "{:?}", &s.sent[n..]);
+            assert!(
+                s.sent[n..].iter().any(|a| a == "ChainLearned"),
+                "{:?}",
+                &s.sent[n..]
+            );
             let cards: Vec<String> = s
                 .controls()
                 .into_iter()
@@ -266,7 +276,10 @@ mod tests {
             assert_eq!(cards[2], "Position", "Q-Link 3 has it: {cards:?}");
             let at = node_param(&s, drums, 0, "Position");
             s.qlink(2, -6).run_for(0.1);
-            assert!(node_param(&s, drums, 0, "Position") < at, "Q-Link 3 lowered it");
+            assert!(
+                node_param(&s, drums, 0, "Position") < at,
+                "Q-Link 3 lowered it"
+            );
             agree(&mut s, "learned and turned");
         });
     }
@@ -305,7 +318,10 @@ mod tests {
 
             s.press("header", "tab", "Sample");
             assert_eq!(s.view(), View::Sample);
-            assert!(s.control("smp-bar", "tab", "FX").is_some(), "the sound editor's bar");
+            assert!(
+                s.control("smp-bar", "tab", "FX").is_some(),
+                "the sound editor's bar"
+            );
 
             s.press("header", "mixer-icon", "").run_for(0.1);
             assert_eq!(strip_inserts(&s, "Drums"), ["DJ filter", "Delay"]);
@@ -314,7 +330,12 @@ mod tests {
 
     /// The strip as the mixer screen shows it.
     fn strip(s: &Session, name: &str) -> mpfree_mixer_ui::StripView {
-        let st = s.screen.ui.get::<MixerView>(MIXER).expect("the mixer").state();
+        let st = s
+            .screen
+            .ui
+            .get::<MixerView>(MIXER)
+            .expect("the mixer")
+            .state();
         st.strips
             .iter()
             .chain(std::iter::once(&st.master))
@@ -338,13 +359,27 @@ mod tests {
                 s.run_for(0.1);
                 let v = strip(s, "Drums");
                 let m = &s.mix.mixer;
-                assert!((v.volume_db - m.param(drums, mx::VOLUME)).abs() < 0.05, "{when}: volume");
+                assert!(
+                    (v.volume_db - m.param(drums, mx::VOLUME)).abs() < 0.05,
+                    "{when}: volume"
+                );
                 assert_eq!(v.mute, m.param(drums, mx::MUTE) > 0.5, "{when}: M");
                 assert_eq!(v.solo, m.param(drums, mx::SOLO) > 0.5, "{when}: S");
-                assert_eq!(f32::from(v.output), m.param(drums, mx::OUTPUT), "{when}: output");
+                assert_eq!(
+                    f32::from(v.output),
+                    m.param(drums, mx::OUTPUT),
+                    "{when}: output"
+                );
                 let a = v.sends.expect("Drums has sends")[0];
-                assert!((a.db - m.param(drums, mx::send(0))).abs() < 0.05 || a.db < -60.0, "{when}: send A");
-                assert_eq!(a.pre, m.param(drums, mx::send_pre(0)) > 0.5, "{when}: send A pre");
+                assert!(
+                    (a.db - m.param(drums, mx::send(0))).abs() < 0.05 || a.db < -60.0,
+                    "{when}: send A"
+                );
+                assert_eq!(
+                    a.pre,
+                    m.param(drums, mx::send_pre(0)) > 0.5,
+                    "{when}: send A pre"
+                );
             };
 
             let v0 = p(&s, mx::VOLUME);
@@ -364,7 +399,10 @@ mod tests {
 
             s.press("mixer", "solo", "Drums S");
             assert_eq!(p(&s, mx::SOLO), 1.0);
-            assert!(!s.mix.mixer.is_audible(synth), "the synth is quiet while Drums is soloed");
+            assert!(
+                !s.mix.mixer.is_audible(synth),
+                "the synth is quiet while Drums is soloed"
+            );
             shows(&mut s, "soloed");
             s.press("mixer", "solo", "Drums S");
             assert!(s.mix.mixer.is_audible(synth));
@@ -412,12 +450,18 @@ mod tests {
             let mixer = s.screen.ui.rect_of(MIXER).unwrap();
             for c in s.controls().into_iter().filter(|c| c.target.id == "field") {
                 let r = c.target.rect;
-                assert!(r.right() <= mixer.right() - 150, "{} at {r:?} runs under the master strip", c.target.label);
+                assert!(
+                    r.right() <= mixer.right() - 150,
+                    "{} at {r:?} runs under the master strip",
+                    c.target.label
+                );
             }
             // CV 1: Off, then Pitch, then Gate (High starts at 5.0 V).
             s.press("mixer", "field", "CV 1: Off");
             s.press("mixer", "field", "CV 1: Pitch");
-            let high = s.control("mixer", "field", "CV 1: 5.0 V high").expect("Gate's High");
+            let high = s
+                .control("mixer", "field", "CV 1: 5.0 V high")
+                .expect("Gate's High");
             let tells = s.screen.tells();
             s.press_target(&high.target);
             assert_eq!(s.screen.tells(), tells + 1, "the tap said something");
@@ -442,84 +486,463 @@ mod tests {
             s.press("chain", "knob", "Resonance");
             assert!(s.control("chain", "depth", "").is_none());
             s.press("chain", "add-lfo", "+ LFO").run_for(0.1);
-            let row = s.control("chain", "depth", "row 1 depth").expect("the LFO's row");
+            let row = s
+                .control("chain", "depth", "row 1 depth")
+                .expect("the LFO's row");
             let t = engine(&mut s);
-            let res = t.params.iter().find(|p| p.info.name == "Resonance").unwrap();
+            let res = t
+                .params
+                .iter()
+                .find(|p| p.info.name == "Resonance")
+                .unwrap();
             assert!(res.mod_range.is_some(), "the LFO moves Resonance");
             s.press_target(&row.target).run_for(0.1);
             s.press("chain", "remove-row", "row 1 ×").run_for(0.1);
-            assert!(s.control("chain", "depth", "").is_none(), "the row came off");
+            assert!(
+                s.control("chain", "depth", "").is_none(),
+                "the row came off"
+            );
             let t = engine(&mut s);
-            let res = t.params.iter().find(|p| p.info.name == "Resonance").unwrap();
+            let res = t
+                .params
+                .iter()
+                .find(|p| p.info.name == "Resonance")
+                .unwrap();
             assert!(res.mod_range.is_none(), "nothing moves Resonance now");
         });
     }
-}
 
-#[cfg(test)]
-mod explore {
-    use super::super::{on_big_stack, Session};
-    fn dump(s: &mut Session, what: &str) {
-        println!("== {what}: {} view {:?} hint: {}", s.page(), s.view(), s.hint());
-        let mut last = String::new();
-        let mut n = 0;
-        for c in s.controls() {
-            let key = format!("{}/{}", c.widget, c.target.id);
-            if c.widget == "header" || c.widget == "qlinks" { continue; }
-            if key == last { n += 1; if n > 3 { continue; } } else { n = 0; last = key.clone(); }
-            println!("  {key} #{} \"{}\" {:?}{}", c.target.index, c.target.label, c.target.gesture, if c.target.enabled { "" } else { " (off)" });
-        }
+    // ------------------------------------------------ musician workflows
+
+    /// A lane of the Play page's step grid: its pad, steps and speaker.
+    fn lane(s: &Session, name: &str) -> (usize, Vec<bool>, bool) {
+        let g = s
+            .screen
+            .ui
+            .get::<crate::play_widgets::StepGrid>(crate::play_page::STEPS)
+            .expect("the step grid");
+        let l = g
+            .lanes
+            .iter()
+            .find(|l| l.name == name)
+            .unwrap_or_else(|| panic!("the grid has a {name} lane"));
+        (l.pad, l.steps.iter().map(|&v| v > 0).collect(), l.muted)
     }
+
+    /// The steps of `pad`'s row in the clip the grid shows, as the time
+    /// engine has it.
+    fn clip_row(s: &Session, pad: usize) -> Vec<bool> {
+        let c = s.time.steps().clip.expect("the track has a clip");
+        c.row(pad as u8).iter().map(Option::is_some).collect()
+    }
+
+    fn on(steps: &[bool]) -> Vec<usize> {
+        steps
+            .iter()
+            .enumerate()
+            .filter(|(_, &v)| v)
+            .map(|(i, _)| i + 1)
+            .collect()
+    }
+
+    fn hits_on(s: &Session, pad: usize, from: usize) -> usize {
+        s.hits.on[from..].iter().filter(|h| h.0 == pad).count()
+    }
+
+    /// Play > Beats: four Kick steps tapped make the pattern, PLAY plays
+    /// the kick four times a bar, and a step tapped again comes off.
     #[test]
-    fn explore() {
+    fn steps_tapped_on_beats_play_in_time() {
         on_big_stack(|| {
             let mut s = Session::new();
-            let info = |s: &Session| { let i = s.time.info(); format!("{:?} od {} bpm {}", i.state, i.overdub, i.bpm) };
             s.press("play-transport", "view", "Beats");
-            let g = s.screen.ui.get::<crate::play_widgets::StepGrid>(crate::play_page::STEPS).unwrap();
-            println!("lanes {:?}", g.lanes.iter().map(|l| (l.name.clone(), l.pad)).collect::<Vec<_>>());
-            let m0 = s.mark();
-            s.button("REC");
-            println!("after REC: {}", info(&s));
-            s.button("PLAY");
-            println!("after PLAY: {}", info(&s));
-            s.run_for(0.3);
-            println!("0.3 s: {}", info(&s));
-            s.run_for(2.0);
-            println!("2.3 s: {}", info(&s));
-            let h = s.hits.on.len();
-            println!("pos {} armed? steps track {}", s.time.position_text(), s.time.steps().track);
-            s.pad(0, 100, 0.05);
-            println!("hits {} -> {} : {:?}", h, s.hits.on.len(), &s.hits.on[h..]);
-            s.run_for(0.4);
-            println!("pos {}", s.time.position_text());
-            let g = s.screen.ui.get::<crate::play_widgets::StepGrid>(crate::play_page::STEPS).unwrap();
-            println!("grid kick {:?} clip {:?}", g.lanes[0].steps, s.time.steps().clip.as_ref().map(|c| c.name.clone()));
-            let m = s.mark();
+            for k in [1, 5, 9, 13] {
+                s.press("steps", "step", &format!("Kick step {k}"));
+            }
+            let (kick, shown, _) = lane(&s, "Kick");
+            assert_eq!(
+                on(&clip_row(&s, kick)),
+                [1, 5, 9, 13],
+                "the clip has the taps"
+            );
+            assert_eq!(on(&shown), [1, 5, 9, 13], "the grid shows them");
+
+            let from = s.hits.on.len();
+            s.button("PLAY").run_for(2.0);
+            let n = hits_on(&s, kick, from);
+            assert!(
+                (4..=5).contains(&n),
+                "one bar at 120 BPM plays the kick 4 times, not {n}"
+            );
             s.button("STOP");
-            s.run_for(0.2);
-            let g = s.screen.ui.get::<crate::play_widgets::StepGrid>(crate::play_page::STEPS).unwrap();
-            println!("after STOP: {} grid kick {:?} clip {:?} lines {:?}", info(&s), g.lanes[0].steps, s.time.steps().clip.as_ref().map(|c| c.name.clone()), s.lines_since(m));
-            println!("all lines since REC: {:#?}", s.lines_since(m0));
-            let st = s.time.state();
-            println!("tracks: {:?}", st.tracks.iter().take(3).map(|t| (t.name.clone(), format!("{:?}", t.slots))).collect::<Vec<_>>());
-            s.button("UNDO");
-            s.run_for(0.2);
-            let g = s.screen.ui.get::<crate::play_widgets::StepGrid>(crate::play_page::STEPS).unwrap();
-            println!("after UNDO grid kick {:?} hint {}", g.lanes[0].steps, s.hint());
+
+            // A tap on a step that is on picks it (the Q-Links edit it); a
+            // second tap takes it off.
+            s.press("steps", "step", "Kick step 5");
+            assert_eq!(
+                on(&clip_row(&s, kick)),
+                [1, 5, 9, 13],
+                "the first tap picks it"
+            );
+            let card = s.control("qlinks", "knob-card", "").map(|c| c.target.label);
+            assert_eq!(
+                card.as_deref(),
+                Some("Velocity"),
+                "Q-Link 1 is its velocity"
+            );
+            s.press("steps", "step", "Kick step 5");
+            assert_eq!(
+                on(&clip_row(&s, kick)),
+                [1, 9, 13],
+                "the second takes it off"
+            );
+            assert_eq!(on(&lane(&s, "Kick").1), [1, 9, 13]);
+        });
+    }
+
+    /// Recording on Beats into the pattern: a pad hit while REC records
+    /// shows on the grid while it records (not only after STOP), the clip
+    /// has it after STOP, and UNDO takes the take back out, bringing back
+    /// the step REC recorded over.
+    #[test]
+    fn rec_on_beats_shows_hits_as_they_go_in_and_undo_takes_them_out() {
+        on_big_stack(|| {
+            let mut s = Session::new();
+            s.press("play-transport", "view", "Beats");
+            // A step first: the pattern's clip (REC has nothing to record
+            // into on an empty track yet; see the app thread).
+            s.press("steps", "step", "Snare step 1");
+            let (snare, kick) = (lane(&s, "Snare").0, lane(&s, "Kick").0);
+            s.button("REC");
+            assert_eq!(s.time.info().state, mpfree_transport::State::Recording);
+            s.run_for(0.55);
+            s.pad(kick, 100, 0.05);
+            s.run_for(0.4);
+            assert_eq!(s.time.info().state, mpfree_transport::State::Recording);
+            let shown = on(&lane(&s, "Kick").1);
+            assert_eq!(shown.len(), 1, "the hit shows while recording: {shown:?}");
+            assert_eq!(shown, on(&clip_row(&s, kick)), "as the clip has it");
+
+            s.run_for(1.5);
+            s.button("STOP").run_for(0.2);
+            assert_eq!(on(&lane(&s, "Kick").1), shown, "kept after STOP");
+            assert_eq!(
+                on(&clip_row(&s, snare)),
+                Vec::<usize>::new(),
+                "REC recorded over the snare"
+            );
+
+            s.button("UNDO").run_for(0.2);
+            assert!(on(&clip_row(&s, kick)).is_empty(), "UNDO took the hit out");
+            assert!(on(&lane(&s, "Kick").1).is_empty(), "and the grid shows it");
+            assert_eq!(on(&clip_row(&s, snare)), [1], "the snare step is back");
+            assert_eq!(on(&lane(&s, "Snare").1), [1]);
+        });
+    }
+
+    /// The Kick's speaker on Play and Pad 1's M in the pad mixer are one
+    /// mute: each shows what the other did.
+    #[test]
+    fn a_speaker_on_play_and_m_in_the_pad_mixer_are_one_mute() {
+        on_big_stack(|| {
+            let mut s = Session::new();
+            s.press("play-transport", "view", "Beats");
+            let kick = lane(&s, "Kick").0;
+            s.press("steps", "mute", "Kick speaker");
+            assert!(
+                s.mix.play_levels().pad_mutes & (1 << kick) != 0,
+                "the speaker muted pad 1"
+            );
+            assert!(lane(&s, "Kick").2, "drawn muted");
+
             s.press("header", "mixer-icon", "");
-            s.press("mixer", "view", "Pads");
-            dump(&mut s, "mixer pads");
-            s.press("header", "tab", "Synth");
-            println!("synth tab: synth_on {}", s.synth_on);
-            s.press("header", "tab", "Looper");
-            dump(&mut s, "looper");
+            s.press("mixer", "view", "Pads").run_for(0.1);
+            assert!(strip(&s, "Pad 1").mute, "the pad mixer shows Pad 1 muted");
+            s.press("mixer", "mute", "Pad 1 M").run_for(0.1);
+            assert!(!strip(&s, "Pad 1").mute);
+            assert_eq!(
+                s.mix.play_levels().pad_mutes & (1 << kick),
+                0,
+                "M let it play"
+            );
+
             s.press("header", "tab", "Play");
-            let k = s.kit;
-            s.wheel(1);
-            let chip = s.control("header", "chip", "").map(|c| c.target.label); println!("wheel: kit {} -> {} chip {:?}", k, s.kit, chip);
+            assert_eq!(s.view(), View::Play);
+            assert!(!lane(&s, "Kick").2, "the speaker shows it playing");
+        });
+    }
+
+    /// TRACK MUTE: the pads mute tracks (pad 1 is track 1, playing its
+    /// pattern); the hint says so; TRACK MUTE again and the pads play.
+    #[test]
+    fn track_mute_turns_the_pads_into_track_mutes_and_back() {
+        on_big_stack(|| {
+            let mut s = Session::new();
+            s.press("play-transport", "view", "Beats");
+            for k in [1, 5, 9, 13] {
+                s.press("steps", "step", &format!("Kick step {k}"));
+            }
+            let kick = lane(&s, "Kick").0;
+            s.button("PLAY").run_for(0.1);
             s.button("TRACK MUTE");
-            println!("track mute: hint {}", s.hint());
+            assert!(s.hint().starts_with("TRACK MUTE:"), "{}", s.hint());
+            let from = s.hits.on.len();
+            s.pad(0, 100, 0.05);
+            assert!(s.time.state().tracks[0].mute, "pad 1 muted track 1");
+            assert_eq!(hits_on(&s, kick, from), 0, "pad 1 didn't play the kick");
+            s.run_for(2.0);
+            assert_eq!(hits_on(&s, kick, from), 0, "track 1 is quiet");
+            s.pad(0, 100, 0.05);
+            assert!(!s.time.state().tracks[0].mute, "again: playing");
+            s.run_for(2.0);
+            assert!(hits_on(&s, kick, from) >= 3, "track 1 plays again");
+
+            s.button("TRACK MUTE");
+            assert!(!s.hint().starts_with("TRACK MUTE:"), "{}", s.hint());
+            let from = s.hits.on.len();
+            s.button("STOP");
+            s.pad(0, 100, 0.05);
+            assert_eq!(hits_on(&s, kick, from), 1, "pad 1 plays the kick");
+        });
+    }
+
+    /// The Synth tab puts the synth on the pads, and it stays there after
+    /// leaving (the header says so) until the wheel on Play picks a kit.
+    #[test]
+    fn the_synth_stays_on_the_pads_until_a_kit_is_picked() {
+        on_big_stack(|| {
+            let mut s = Session::new();
+            let chip = |s: &mut Session| s.control("header", "chip", "").unwrap().target.label;
+            assert!(!s.synth_on);
+            s.press("header", "tab", "Synth");
+            assert_eq!(s.view(), View::Synth);
+            assert!(s.synth_on, "the pads play the synth on its tab");
+            s.press("header", "tab", "Play");
+            assert!(s.synth_on, "and still on Play");
+            assert!(chip(&mut s).starts_with("Poly"), "{}", chip(&mut s));
+            s.wheel(-1).run_for(0.2);
+            assert!(!s.synth_on, "the wheel picked a kit");
+            assert_eq!(s.kit, s.kits() - 1, "the last kit, just before the synth");
+            assert!(chip(&mut s).contains("· Bank"), "{}", chip(&mut s));
+        });
+    }
+
+    /// The Looper with no loop yet: its faint tools and uses say why on
+    /// the hint line instead of doing nothing.
+    #[test]
+    fn faint_looper_tools_say_why() {
+        on_big_stack(|| {
+            let mut s = Session::new();
+            s.press("header", "tab", "Looper");
+            let faint: Vec<_> = s
+                .controls()
+                .into_iter()
+                .filter(|c| matches!(c.target.id, "tool" | "use") && !c.target.enabled)
+                .collect();
+            assert!(!faint.is_empty(), "with no loop, the tools are faint");
+            let normal = s.hint();
+            for c in faint {
+                let n = s.screen.tells();
+                s.press_target(&c.target);
+                assert_eq!(s.screen.tells(), n + 1, "{} said something", c.target.label);
+                assert_ne!(s.hint(), normal, "{} said why", c.target.label);
+            }
+        });
+    }
+
+    /// The tempo tapped on Play: four taps 0.4 s apart make 150 BPM, on
+    /// the transport and on the screen.
+    #[test]
+    fn the_tempo_tapped_on_play_sets_the_transport() {
+        on_big_stack(|| {
+            let mut s = Session::new();
+            for _ in 0..4 {
+                s.press("play-transport", "tempo", "");
+                s.run_for(0.4 - 4.0 * super::super::session::PERIOD_S);
+            }
+            s.run_for(1.0);
+            let bpm = s.time.info().bpm;
+            assert!(
+                (bpm - 150.0).abs() < 2.0,
+                "tapped 150 BPM, the transport has {bpm}"
+            );
+            let label = s
+                .control("play-transport", "tempo", "")
+                .unwrap()
+                .target
+                .label;
+            assert_eq!(
+                label,
+                format!("{bpm:.1} BPM"),
+                "the screen shows the transport's"
+            );
+        });
+    }
+
+    /// The level: the master bar on Play and the mixer's Master fader are
+    /// one level, whichever moves it.
+    #[test]
+    fn the_master_bar_and_the_mixer_master_are_one_level() {
+        use mpfree_fx::ids::mixer as mx;
+        on_big_stack(|| {
+            let mut s = Session::new();
+            let before = s.level_db;
+            s.press("master", "level", "");
+            assert!(s.level_db > before, "the bar went up");
+            let master = s.mix.mixer.param(StripId::Master, mx::VOLUME);
+            assert!(
+                (master - s.level_db).abs() < 0.05,
+                "the mixer's master is {master}"
+            );
+
+            s.press("header", "mixer-icon", "").run_for(0.1);
+            assert!((strip(&s, "Master").volume_db - s.level_db).abs() < 0.05);
+            s.press("mixer", "value", "Master level (to 0 dB)")
+                .run_for(0.1);
+            let lv = s.level_db;
+            assert!((s.mix.mixer.param(StripId::Master, mx::VOLUME) - lv).abs() < 0.05);
+            s.press("header", "tab", "Play");
+            let bar = s.control("master", "level", "").unwrap().target.label;
+            assert_eq!(bar, format!("{lv:.1}"), "the bar shows the mixer's level");
+        });
+    }
+
+    /// The wheel on Play changes the kit: the header names it, and the
+    /// pads play it.
+    #[test]
+    fn the_wheel_on_play_changes_the_kit() {
+        on_big_stack(|| {
+            let mut s = Session::new();
+            let chip = |s: &mut Session| s.control("header", "chip", "").unwrap().target.label;
+            let first = chip(&mut s);
+            assert_eq!(s.kit, 0);
+            s.wheel(1).run_for(0.2);
+            assert_eq!(s.kit, 1, "the next kit plays");
+            assert_ne!(chip(&mut s), first, "the header names it");
+            assert!(chip(&mut s).ends_with("Bank B"), "{}", chip(&mut s));
+            s.wheel(-1).run_for(0.2);
+            assert_eq!(s.kit, 0);
+            assert_eq!(chip(&mut s), first);
+        });
+    }
+
+    /// The header's kit chip, whatever chips sit beside it.
+    fn kit_chip(s: &mut Session) -> mpfree_ui::Target {
+        s.controls()
+            .into_iter()
+            .find(|c| {
+                c.widget == "header" && c.target.id == "chip" && c.target.label.contains("· Bank")
+            })
+            .map(|c| c.target)
+            .expect("the kit chip")
+    }
+
+    /// The kit chip opens the list of kits over any page: a kit tapped
+    /// there loads and the page comes back; Back, the chip again or a tab
+    /// close it and keep the kit (Jay's card, 13 Nov 14:57Z).
+    #[test]
+    fn the_kit_chip_opens_a_list_of_kits_over_the_page() {
+        on_big_stack(|| {
+            let mut s = Session::new();
+            let play = s.page();
+            let chip = kit_chip(&mut s);
+            s.press_target(&chip);
+            assert_eq!(s.page(), crate::gui::KITS_PAGE, "the list is open");
+            assert_eq!(s.view(), View::Play, "over Play");
+            assert!(s.hint().starts_with("Tap a kit"), "{}", s.hint());
+            let rows: Vec<_> = s
+                .controls()
+                .into_iter()
+                .filter(|c| c.widget == "kits" && c.target.id == "row")
+                .collect();
+            assert_eq!(rows.len(), s.kits() + 1, "every kit, then the synth");
+            s.press_target(&rows[2].target).run_for(0.2);
+            assert_eq!(s.kit, 2, "the kit tapped plays");
+            assert_eq!(s.page(), play, "and Play is back");
+            assert!(
+                kit_chip(&mut s).label.ends_with("Bank C"),
+                "{}",
+                kit_chip(&mut s).label
+            );
+
+            // Over the mixer: Back keeps the kit and the mixer.
+            s.press("header", "mixer-icon", "").run_for(0.1);
+            let mixer = s.page();
+            let chip = kit_chip(&mut s);
+            s.press_target(&chip);
+            assert_eq!(s.page(), crate::gui::KITS_PAGE);
+            s.press("kits-card", "button", "Back");
+            assert_eq!((s.page(), s.view()), (mixer.clone(), View::Mixer));
+            assert_eq!(s.kit, 2, "Back changed no kit");
+
+            // The chip again closes it.
+            let chip = kit_chip(&mut s);
+            s.press_target(&chip);
+            let chip = kit_chip(&mut s);
+            s.press_target(&chip);
+            assert_eq!(s.page(), mixer, "the chip closed the list");
+
+            // A tab closes it and opens its page.
+            let chip = kit_chip(&mut s);
+            s.press_target(&chip);
+            s.press("header", "tab", "Arrange");
+            assert_eq!(s.view(), View::Arrange);
+            assert_ne!(s.page(), crate::gui::KITS_PAGE);
+            assert!(!s.hint().starts_with("Tap a kit"), "{}", s.hint());
+            assert_eq!(s.kit, 2);
+
+            // The list's last row is the synth, as the wheel's last step.
+            let chip = kit_chip(&mut s);
+            s.press_target(&chip);
+            let synth = s
+                .controls()
+                .into_iter()
+                .filter(|c| c.widget == "kits" && c.target.id == "row")
+                .last();
+            s.press_target(&synth.expect("the synth's row").target)
+                .run_for(0.2);
+            assert!(s.synth_on, "the pads play the synth");
+            assert_eq!(s.view(), View::Arrange);
+        });
+    }
+
+    /// FULL LEVEL shows a Full level chip; a tap on it turns it off, as
+    /// FULL LEVEL again would. SHIFT + FULL LEVEL's Half level chip too.
+    #[test]
+    fn a_tap_on_the_level_chip_turns_that_level_off() {
+        on_big_stack(|| {
+            let mut s = Session::new();
+            let as_played = s.app.velocity(40);
+            let light = s.button_note("FULL LEVEL") as usize;
+            for (held, chip, velocity) in
+                [(None, "Full level", 127), (Some("SHIFT"), "Half level", 64)]
+            {
+                match held {
+                    Some(h) => s.button_with(h, "FULL LEVEL"),
+                    None => s.button("FULL LEVEL"),
+                };
+                assert_eq!(
+                    s.app.velocity(40),
+                    velocity,
+                    "{chip}: every hit at {velocity}"
+                );
+                assert_eq!(s.lights[light], crate::app::LIGHT_ON);
+                s.press("header", "chip", chip);
+                assert_eq!(
+                    s.app.velocity(40),
+                    as_played,
+                    "{chip} off: the pads play as hit"
+                );
+                assert_eq!(
+                    s.lights[light],
+                    crate::app::LIGHT_OFF,
+                    "FULL LEVEL's light is off"
+                );
+                assert!(
+                    s.control("header", "chip", chip).is_none(),
+                    "the {chip} chip went"
+                );
+            }
         });
     }
 }

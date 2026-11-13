@@ -190,7 +190,9 @@ pub fn step(s: &mut Session, rng: &mut Rng) -> Step {
 pub fn fx_step(s: &mut Session, rng: &mut Rng) -> Step {
     use crate::app::View;
     if !matches!(s.app.view(), View::Mixer | View::Chain | View::Macros) {
-        let c = s.control("header", "mixer-icon", "").expect("the header's mixer icon");
+        let c = s
+            .control("header", "mixer-icon", "")
+            .expect("the header's mixer icon");
         let step = Step::Control {
             page: s.page(),
             widget: c.widget.clone(),
@@ -354,24 +356,51 @@ pub fn check(s: &mut Session) -> Vec<String> {
     // inserts (name, on or bypassed), the one selected, and its knobs.
     if s.app.view() == crate::app::View::Chain {
         let truth = s.panels.chain_state(&s.mix);
-        let shown = s.screen.ui.get::<mpfree_chain_ui::ChainView>(mpfree_chain_ui::CHAIN).map(|v| v.state().clone());
+        let shown = s
+            .screen
+            .ui
+            .get::<mpfree_chain_ui::ChainView>(mpfree_chain_ui::CHAIN)
+            .map(|v| v.state().clone());
         match (truth, shown) {
             (Some(t), Some(v)) => {
                 let slots = |c: &mpfree_chain_ui::ChainState| -> Vec<(String, bool)> {
                     c.slots.iter().map(|x| (x.name.clone(), x.on)).collect()
                 };
                 if slots(&t) != slots(&v) {
-                    bad.push(format!("the chain editor shows {:?} but {} has {:?}", slots(&v), t.title, slots(&t)));
+                    bad.push(format!(
+                        "the chain editor shows {:?} but {} has {:?}",
+                        slots(&v),
+                        t.title,
+                        slots(&t)
+                    ));
                 }
                 if t.selected != v.selected {
-                    bad.push(format!("the chain editor has insert {:?} picked but the panel {:?}", v.selected, t.selected));
+                    bad.push(format!(
+                        "the chain editor has insert {:?} picked but the panel {:?}",
+                        v.selected, t.selected
+                    ));
                 }
-                if t.selected == v.selected && t.group == v.group && t.params.len() == v.params.len() {
+                if t.selected == v.selected
+                    && t.group == v.group
+                    && t.params.len() == v.params.len()
+                {
                     // A knob the matrix moves (an LFO) moves between the
                     // screen's updates; the rest must agree.
-                    for (a, b) in t.params.iter().zip(&v.params).filter(|(a, _)| a.mod_range.is_none()) {
-                        if a.addr == b.addr && (a.value - b.value).abs() > 1e-3 * a.value.abs().max(1.0) {
-                            bad.push(format!("{} shows {} but is {}", a.info.name, b.text(), a.text()));
+                    for (a, b) in t
+                        .params
+                        .iter()
+                        .zip(&v.params)
+                        .filter(|(a, _)| a.mod_range.is_none())
+                    {
+                        if a.addr == b.addr
+                            && (a.value - b.value).abs() > 1e-3 * a.value.abs().max(1.0)
+                        {
+                            bad.push(format!(
+                                "{} shows {} but is {}",
+                                a.info.name,
+                                b.text(),
+                                a.text()
+                            ));
                         }
                     }
                 }

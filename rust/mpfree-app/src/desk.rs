@@ -126,6 +126,7 @@ impl Desk<'_> {
             gui::FromUi::Arp(a) => fx.extend(app.arp_action(a)),
             gui::FromUi::Workspace(a) => fx.extend(app.workspace_action(*a)),
             gui::FromUi::ArpChip => fx.extend(app.toggle_panel()),
+            gui::FromUi::PadLevelOff => fx.extend(app.pad_level_off()),
             gui::FromUi::Time(a) => {
                 fx.extend(crate::time_action(out, time, tracks, looper, app, mix, a))
             }
@@ -300,4 +301,3 @@ pub fn qlink_to_screen(page: app::View, k: usize, ticks: i32) -> Option<gui::ToU
         _ => return None,
     })
 }
-

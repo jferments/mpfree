@@ -143,8 +143,10 @@ pub struct Target {
     /// pixels. Up and to the right unless the control says otherwise (a
     /// grip at an end moves inwards).
     pub towards: (i32, i32),
-    /// False when the control is drawn as unavailable (faint, greyed): the
-    /// audit reports what it does but does not count it dead.
+    /// False when the control is drawn as unavailable (faint, greyed), or
+    /// is the one already chosen (the lit tab of a switch), so a press has
+    /// nothing to change: the audit reports what it does but does not count
+    /// it dead.
     pub enabled: bool,
 }
 

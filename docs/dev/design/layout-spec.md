@@ -19,6 +19,8 @@
 - **Tabs** start at the left edge. There is no MPFree wordmark: that belongs to the startup and loading screens only (Jay, 08:02Z).
 - **Status chips** sit on the right: CPU %, RAM % (green under 70 %, amber under 85 %, red above), session, the kit's name and bank ("Classic House · Bank A"; or "Poly · C3 to D#4" when the synth is on the pads), level, tempo, and the arp chip.
   - Chips never push tabs off the bar, and tabs never push chips off.
+  - **A tap on the kit chip** opens the list of kits over the page: every kit, then the synth (as the wheel steps them), beside a card with **Back**. A tap on a kit loads it and closes the list; Back, the kit chip again or any tab closes it and keeps the kit. The hint line says so while it is open. **A tap on the Full level or Half level chip** turns that level off, as FULL LEVEL again would. (Jay's card on the UI audit thread, 13 Nov 14:57Z.)
+  - The CPU, RAM, session and time-left chips only show: a tap says on the hint line what the chip shows.
 - **Width:** up to 6 tabs are drawn at full width (112 px). More tabs share that room.
 - **Active tab:** the page's own tab is highlighted. Prefs, the mixer, menus and the guide highlight none.
 - **The mixer icon:** a small mixer (sliders) icon at the bar's right edge, after the chips, once the mixer is built. A tap opens the mixer (Jay, 09:17Z).

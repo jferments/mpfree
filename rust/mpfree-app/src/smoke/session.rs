@@ -20,7 +20,7 @@
 
 use crate::app::{self, App, Effect, View};
 use crate::gui::{self, FromUi, Player, ToUi};
-use crate::{cores, desk, looping, midi_in, mixing, modpanels, synth, time, Out};
+use crate::{audiotracks, cores, desk, looping, midi_in, mixing, modpanels, synth, time, Out};
 use mpfree_ui::{Fonts, PageTarget, Tone, Touch};
 use std::sync::mpsc::{sync_channel, Receiver};
 use std::time::{Duration, Instant};
@@ -28,7 +28,7 @@ use std::time::{Duration, Instant};
 const RATE: u32 = crate::RATE;
 const PERIOD: usize = crate::PERIOD;
 /// How long one period is, in seconds.
-const PERIOD_S: f64 = PERIOD as f64 / RATE as f64;
+pub const PERIOD_S: f64 = PERIOD as f64 / RATE as f64;
 /// The device's default level: 6 dB under a -12 dB top (`--gain-db`).
 const MAX_DB: f32 = -12.0;
 
@@ -57,6 +57,9 @@ pub struct Session {
     pub time: time::TimeHost,
     pub panels: modpanels::Panels,
     pub looper: looping::LoopHost,
+    /// The audio tracks on the Song view's lanes (a short memory: the
+    /// tests record no takes).
+    pub tracks: audiotracks::TrackHost,
     pub music: midi_in::MusicIn,
     pub synth: cores::SynthSlot,
     pub level_db: f32,
@@ -144,6 +147,7 @@ impl Session {
             time,
             panels,
             looper: looping::LoopHost::new(RATE, 20),
+            tracks: audiotracks::TrackHost::new(RATE, 2),
             music,
             synth,
             level_db,
@@ -178,7 +182,8 @@ impl Session {
         });
         s.out.show(ToUi::Session("Akai session".into(), Tone::Good));
         s.out.show(ToUi::Settings(s.app.settings.clone()));
-        s.out.show(ToUi::Time(Box::new(s.time.state())));
+        s.out
+            .show(ToUi::Time(Box::new(crate::time_state(&s.time, &s.tracks))));
         s.out.show(ToUi::Level { db: s.level_db });
         s.out
             .show(ToUi::Macros(Box::new(s.panels.macros_state(&s.mix))));
@@ -191,6 +196,11 @@ impl Session {
         // the screen.
         s.run_for(0.2);
         s
+    }
+
+    /// How many drum kits there are (the synth comes after them).
+    pub fn kits(&self) -> usize {
+        self.kits
     }
 
     /// Seconds into the session.
@@ -210,6 +220,7 @@ impl Session {
                 time: &mut self.time,
                 panels: &mut self.panels,
                 looper: &mut self.looper,
+                tracks: &mut self.tracks,
                 music: &mut self.music,
                 level_db: &mut self.level_db,
                 max_db: MAX_DB,
@@ -336,14 +347,17 @@ impl Session {
     /// page as player_session routes it (the relative port).
     pub fn qlink(&mut self, knob: usize, delta: i32) -> &mut Session {
         let page = self.app.view();
-        if let Some(m) = crate::desk::qlink_to_screen(page, knob, delta).filter(|_| !matches!(page, View::Play | View::Arrange)) {
+        if let Some(m) = crate::desk::qlink_to_screen(page, knob, delta)
+            .filter(|_| !matches!(page, View::Play | View::Arrange))
+        {
             self.out.show(m);
         } else if let Some(e) = self.app.qlink(knob, delta, None) {
             self.fx.extend(e);
         } else if let Some(m) = crate::desk::qlink_to_screen(page, knob, delta) {
             self.out.show(m);
         } else if knob == 0 {
-            self.level_db = (self.level_db + crate::LEVEL_STEP_DB * delta as f32).clamp(crate::LEVEL_MIN_DB, MAX_DB);
+            self.level_db = (self.level_db + crate::LEVEL_STEP_DB * delta as f32)
+                .clamp(crate::LEVEL_MIN_DB, MAX_DB);
             self.mix.set_level(self.level_db);
             self.out.show(ToUi::Level { db: self.level_db });
         }
@@ -480,8 +494,12 @@ impl Session {
         if let Some(line) = self.time.take_song_note() {
             self.out.note(&format!("time: {line}"));
         }
-        if self.time.take_changed() {
-            self.out.show(ToUi::Time(Box::new(self.time.state())));
+        // `|`, not `||`: both flags are taken.
+        if self.time.take_changed() | self.tracks.take_changed() {
+            self.out.show(ToUi::Time(Box::new(crate::time_state(
+                &self.time,
+                &self.tracks,
+            ))));
         } else {
             self.out.show(ToUi::Transport(self.time.info()));
         }
@@ -493,11 +511,32 @@ impl Session {
         if let Some(line) = self.mix.poll_built() {
             self.out.note(line);
         }
-        let ctx = mixing::ctx(RATE, self.periods * PERIOD as u64, self.app.settings.bpm, self.time.block());
+        let ctx = mixing::ctx(
+            RATE,
+            self.periods * PERIOD as u64,
+            self.app.settings.bpm,
+            self.time.block(),
+        );
         let z = [0f32; PERIOD];
         let (mut l, mut r) = ([0f32; PERIOD], [0f32; PERIOD]);
+        let (mut al, mut ar) = ([0f32; PERIOD], [0f32; PERIOD]);
+        self.tracks.period(
+            self.time.block(),
+            self.time.tempo_map(),
+            self.time.song_on(),
+            (&z, &z),
+            (&mut al, &mut ar),
+        );
         self.mix.drums(0, &mut l, &mut r);
-        self.mix.period(&ctx, (&z, &z), (&z, &z), (&z, &z), &mut l, &mut r);
+        self.mix.period(
+            &ctx,
+            (&z, &z),
+            (&z, &z),
+            (&al, &ar),
+            (&z, &z),
+            &mut l,
+            &mut r,
+        );
         let now = self.now();
         if let Some(st) = self.mix.poll_state(now) {
             self.out.show(ToUi::Mixer(Box::new(st)));
@@ -600,7 +639,9 @@ impl Session {
                 match e {
                     Effect::Light(note, value) => self.lights[usize::from(note & 0x7F)] = value,
                     Effect::Kit(d) => {
-                        let now = self.kit_to.unwrap_or(self.kit) as i64;
+                        // From the synth, when it has the pads (as main.rs).
+                        let playing = if self.synth_on { self.kits } else { self.kit };
+                        let now = self.kit_to.unwrap_or(playing) as i64;
                         self.kit_to =
                             Some((now + d as i64).rem_euclid(self.kits as i64 + 1) as usize);
                     }

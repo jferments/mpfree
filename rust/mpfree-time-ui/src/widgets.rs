@@ -1057,12 +1057,11 @@ impl Widget for MorphBar {
         }
         out.push(Target::drag("crossfader", 0, "crossfader", fader).towards(fader.w / 3, 0));
         for (i, br) in buttons.iter().enumerate() {
-            out.push(Target::tap(
-                "button",
-                i,
-                ["Snap back", "Keep", "Save"][i],
-                *br,
-            ));
+            // Snap back and Keep are faint until the crossfader morphs.
+            out.push(
+                Target::tap("button", i, ["Snap back", "Keep", "Save"][i], *br)
+                    .disabled_if(i < 2 && !self.on),
+            );
         }
         out
     }
@@ -1199,7 +1198,8 @@ pub struct TakeItem {
 /// The takes, newest first, with Undo and Redo buttons along the bottom.
 /// The row `current` (the take Undo would take back) is highlighted;
 /// undone takes are dimmed. A tap on Undo gives `Tab(0)`, on Redo `Tab(1)`,
-/// each only while it has something to do.
+/// on Capture `Tab(2)`, faint or not: the page says why a faint one does
+/// nothing.
 pub struct TakeList {
     pub title: String,
     pub right: String,
@@ -1379,6 +1379,7 @@ impl Widget for TakeList {
     }
 
     fn targets(&self, r: Rect) -> Vec<Target> {
+        let live = [&self.undo, &self.redo, &self.capture];
         (0..3)
             .map(|i| {
                 Target::tap(
@@ -1387,6 +1388,7 @@ impl Widget for TakeList {
                     ["Undo", "Redo", "Capture"][i],
                     TakeList::button_rect(r, i),
                 )
+                .disabled_if(live[i].is_none())
             })
             .collect()
     }
@@ -1395,9 +1397,9 @@ impl Widget for TakeList {
         if phase != Touch::Down {
             return None;
         }
-        let i = (0..3).find(|&i| TakeList::button_rect(r, i).contains(x, y))?;
-        let live = [&self.undo, &self.redo, &self.capture][i].is_some();
-        live.then_some(EventKind::Tab(i))
+        (0..3)
+            .find(|&i| TakeList::button_rect(r, i).contains(x, y))
+            .map(EventKind::Tab)
     }
 }
 
@@ -1597,25 +1599,29 @@ mod tests {
         assert!(g.scene_rect(r, 1).is_none());
     }
 
+    /// Faint or not, a take button answers (the page says why a faint one
+    /// does nothing); its target is off while it is faint.
     #[test]
-    fn take_buttons_answer_only_with_something_to_do() {
+    fn take_buttons_answer_and_are_off_while_faint() {
         let mut l = TakeList::new("Takes");
         let r = Rect::new(0, 0, 400, 260);
         let undo = TakeList::button_rect(r, 0);
         let redo = TakeList::button_rect(r, 1);
         assert!(undo.right() < redo.x && redo.right() <= r.right() - 14);
-        assert_eq!(l.touch(1, Touch::Down, undo.x + 2, undo.y + 2, r), None);
-        l.undo = Some("take 1".into());
+        let on = |l: &TakeList| l.targets(r).iter().map(|t| t.enabled).collect::<Vec<_>>();
+        assert_eq!(on(&l), [false, false, false]);
         assert_eq!(
             l.touch(1, Touch::Down, undo.x + 2, undo.y + 2, r),
             Some(EventKind::Tab(0))
         );
-        assert_eq!(l.touch(1, Touch::Down, redo.x + 2, redo.y + 2, r), None);
+        l.undo = Some("take 1".into());
+        assert_eq!(on(&l), [true, false, false]);
         l.redo = Some("take 2".into());
         assert_eq!(
             l.touch(1, Touch::Down, redo.x + 2, redo.y + 2, r),
             Some(EventKind::Tab(1))
         );
+        assert_eq!(on(&l), [true, true, false]);
     }
 
     #[test]
