@@ -302,10 +302,10 @@ def build(read):
           checks["stock_recovery_adc_unsigned_le99_original_arm"]),
       "Original ARM unsigned <=99 and three recovery-button ADC diagnostics establish channel-1 button detection, not a JC11S boot counter.",
       "Resolve the board-to-ADC hardware pin mapping and flag export without device writes.")
-    q("Recovery button","Does the board startup export the recovery flag into dorecovery?",
-      "static-candidate-pointer-pending",
-      "Original 0x1011E0 checks the board recovery flag and sets environment variable dorecovery. The exact equality with the ADC writer must be proved by literal-pool dereferencing.",
-      "Require ADC writer and board environment reader pointers to resolve to the same global.")
+    q("Recovery button","Does the board startup export the same ADC recovery flag into dorecovery?",
+      yes(probe.get("recovery_adc_to_environment_pointer_equal") is True),
+      "The original 0x1011E0 board reader and 0x100FE4 ADC writer both dereference global 0x001462FC; board setup then sets dorecovery and saved bootcmd invokes Fastboot. Static chain only.",
+      "Verify physical button ADC values and recovery entry read-only; immutable MaskROM remains separate.")
     q("Boot counter","Can synthetic B001 counter stand in for MPC tests?","related-board-only","B001 format reported on JC11S, not validated MPC threshold.","Keep board hypothesis distinct from device proof.")
     q("3.10 policy","Does 3.10 add a bootloader signature utility?",yes(checks["az01_bootloader_sig_present_3_10"]),"az01-bootloader-sig added in 3.10.","Trace whether updater/boot scripts call it.")
     q("3.10 policy","Does 3.10 add an early LoadPin service?",yes(checks["loadpin_oneshot_present_3_10"]),"az0x-loadpin-trustpoints systemd oneshot exists.","Trace kernel enforcement and service dependency.")
