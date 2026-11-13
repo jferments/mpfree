@@ -178,6 +178,31 @@ impl Console {
 }
 
 /// A colour for a log line from how it starts.
+/// How long a told line ([`ToUi::Tell`]) stays in place of the hint.
+pub const TELL_SECONDS: f32 = 4.0;
+
+/// A log line as the screen says it: without the log's `area:` tag, a
+/// model's refusal in words, starting with a capital.
+pub fn tell_text(line: &str) -> String {
+    let mut l = line.trim();
+    if let Some((tag, rest)) = l.split_once(": ") {
+        if !tag.is_empty() && tag.chars().all(|c| c.is_ascii_lowercase() || c == '-') {
+            l = rest;
+        }
+    }
+    let mut out = l.to_string();
+    // `edit of pad A7 not made (BadRegion("loop mode needs loop points"))`
+    if let (Some(a), Some(b)) = (out.find("(BadRegion(\""), out.rfind("\"))")) {
+        let why = out[a + 12..b].to_string();
+        out = format!("{}: {why}", out[..a].trim_end());
+    }
+    let mut c = out.chars();
+    match c.next() {
+        Some(f) => f.to_uppercase().chain(c).collect(),
+        None => out,
+    }
+}
+
 pub fn tone_of(line: &str) -> Tone {
     let l = line.trim_start();
     if l.starts_with("STOP") || l.contains("failed") || l.contains("underrun at") {
@@ -234,6 +259,9 @@ pub struct Timing {
 pub enum ToUi {
     /// A line for the terminal and the Events log.
     Line(String),
+    /// A line shown in place of the hint for [`TELL_SECONDS`] (it was
+    /// logged as a `Line` too): why something did nothing.
+    Tell(String),
     /// A line for the Events log only (not printed).
     Event(String),
     /// A MIDI message in or out, as one line (also printed).
@@ -720,6 +748,9 @@ pub struct Player {
     filter: Filter,
     tuning: Tuning,
     saved_tuning: Tuning,
+    /// A line said in place of the hint ([`ToUi::Tell`]) and the seconds
+    /// it has left.
+    told: Option<(String, f32)>,
 }
 
 impl Player {
@@ -840,6 +871,7 @@ impl Player {
             mute_keys: MuteKeys::Off,
         };
         let mut p = Player {
+            told: None,
             ui,
             kits: Vec::new(),
             kit: 0,
@@ -1666,9 +1698,14 @@ impl Player {
                 View::Pattern => self.workspace.hint().to_string(),
             }
         };
+        let (text, tone) = match &self.told {
+            Some((t, _)) => (t.clone(), Tone::Warn),
+            None => (text, Tone::Dim),
+        };
         if let Some(h) = self.ui.get_mut::<Label>("hint") {
-            if h.text != text {
+            if h.text != text || h.tone != tone {
                 h.text = text;
+                h.tone = tone;
             }
         }
     }
@@ -1794,8 +1831,15 @@ impl Player {
         }
     }
 
+    /// Shows `line` in place of the hint for [`TELL_SECONDS`].
+    pub fn tell(&mut self, line: &str) {
+        self.told = Some((tell_text(line), TELL_SECONDS));
+        self.refresh_hint();
+    }
+
     pub fn apply(&mut self, msg: ToUi) {
         match msg {
+            ToUi::Tell(l) => self.tell(&l),
             ToUi::Line(l) | ToUi::Event(l) => {
                 let tone = tone_of(&l);
                 if let Some(e) = self.ui.get_mut::<LogPanel>("events") {
@@ -2557,6 +2601,9 @@ impl Player {
     /// The Sample page's log lines, to the terminal (the system log) and
     /// the Events log.
     fn print_sample_lines(&mut self) {
+        if let Some(t) = self.sample.take_told().pop() {
+            self.tell(&t);
+        }
         let lines = self.sample.take_lines();
         if lines.is_empty() {
             return;
@@ -3498,6 +3545,14 @@ impl Player {
 
     /// Advance animations by `dt` seconds.
     pub fn tick(&mut self, dt: f32) {
+        // A told line goes back to the hint once read.
+        if let Some((_, left)) = self.told.as_mut() {
+            *left -= dt.max(0.0);
+            if *left <= 0.0 {
+                self.told = None;
+                self.refresh_hint();
+            }
+        }
         // The I/O section showing updates its live values (lights, the
         // clock's tempo); it marks what it needs drawn.
         self.io_clock += Duration::from_secs_f32(dt.max(0.0));
@@ -4576,6 +4631,10 @@ pub fn apply_effects(p: &mut Player, fx: Vec<crate::app::Effect>) {
             Effect::TouchWheel(d) => p.apply(ToUi::TouchWheel(d)),
             Effect::TouchStep(d) => p.apply(ToUi::TouchStep(d)),
             Effect::Note(l) => p.apply(ToUi::Line(l)),
+            Effect::Tell(l) => {
+                p.apply(ToUi::Line(l.clone()));
+                p.apply(ToUi::Tell(l));
+            }
             Effect::ClipsWheel { delta, scroll } => p.apply(ToUi::ClipsWheel { delta, scroll }),
             Effect::Map(m) => p.apply(ToUi::Map(Box::new(m))),
             Effect::SynthPage(d) => p.apply(ToUi::SynthPage(d)),
@@ -6877,6 +6936,37 @@ mod tests {
         assert_eq!(p.page(), MIXER_PAGE);
     }
 
+    /// Live test 3: a refusal used to go only to the Dev tab's log. Now
+    /// it shows in place of the hint, long enough to read, then the hint
+    /// comes back.
+    #[test]
+    fn a_refusal_is_said_in_place_then_the_hint_comes_back() {
+        let mut p = sample_player(Fonts::embedded());
+        let hint = p.ui.get::<Label>("hint").unwrap().text.clone();
+        p.apply(ToUi::Tell(
+            "sample: edit of pad A7 not made (BadRegion(\"loop mode needs loop points\"))".into(),
+        ));
+        let l = p.ui.get::<Label>("hint").unwrap();
+        assert_eq!(
+            l.text,
+            "Edit of pad A7 not made: loop mode needs loop points"
+        );
+        assert_eq!(l.tone, Tone::Warn);
+        p.tick(TELL_SECONDS - 1.0);
+        assert!(p
+            .ui
+            .get::<Label>("hint")
+            .unwrap()
+            .text
+            .starts_with("Edit of pad A7"));
+        p.tick(1.1);
+        let l = p.ui.get::<Label>("hint").unwrap();
+        assert_eq!(l.text, hint);
+        assert_eq!(l.tone, Tone::Dim);
+        assert_eq!(tell_text("pads: In key, C Major"), "In key, C Major");
+        assert_eq!(tell_text("The chain is full"), "The chain is full");
+    }
+
     /// Live test 3: every tap in the chain editor and the macros panel
     /// reaches the app (they used to stop in the widget). A tap on a
     /// row, + Add effect, a pick, Cancel and Back, each through
@@ -6896,20 +6986,29 @@ mod tests {
             got.extend(p.take_actions());
             got
         };
-        let l = p.ui.get::<ChainView>(mpfree_chain_ui::CHAIN).unwrap().layout(r);
+        let l =
+            p.ui.get::<ChainView>(mpfree_chain_ui::CHAIN)
+                .unwrap()
+                .layout(r);
         let row = l.rows[0];
         let got = tap(&mut p, row.x + 20, row.y + row.h / 2);
         assert_eq!(got, vec![FromUi::Chain(ChainAction::Select(0))]);
         let add = l.add.expect("the chain has room for + Add effect");
         let got = tap(&mut p, add.x + 10, add.y + 10);
         assert_eq!(got, vec![FromUi::Chain(ChainAction::Picker(true))]);
-        let l = p.ui.get::<ChainView>(mpfree_chain_ui::CHAIN).unwrap().layout(r);
+        let l =
+            p.ui.get::<ChainView>(mpfree_chain_ui::CHAIN)
+                .unwrap()
+                .layout(r);
         let c = l.cancel.expect("the picker has a Cancel");
         let got = tap(&mut p, c.x + 5, c.y + 5);
         assert_eq!(got, vec![FromUi::Chain(ChainAction::Picker(false))]);
         let got = tap(&mut p, add.x + 10, add.y + 10);
         assert_eq!(got, vec![FromUi::Chain(ChainAction::Picker(true))]);
-        let l = p.ui.get::<ChainView>(mpfree_chain_ui::CHAIN).unwrap().layout(r);
+        let l =
+            p.ui.get::<ChainView>(mpfree_chain_ui::CHAIN)
+                .unwrap()
+                .layout(r);
         let pick = l.picks[0];
         let got = tap(&mut p, pick.x + 10, pick.y + 10);
         assert!(

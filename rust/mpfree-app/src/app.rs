@@ -816,6 +816,10 @@ pub enum Effect {
     ClearConsole,
     /// A line for the log.
     Note(String),
+    /// A line for the log that the screen also shows in place, long enough
+    /// to read ([`crate::gui::TELL_SECONDS`]): why something did nothing,
+    /// or was refused (Jay, 12 Nov: say in place when it would do nothing).
+    Tell(String),
     /// What the arp screens show: the panel, the quick band and the chip.
     Arp(ArpView),
     /// The arp's pattern list (names and patterns), when it changes.
@@ -4131,12 +4135,25 @@ mod tests {
             app.step_item(row(SynthItem::Engine), -1);
         }
         assert_eq!(app.synth_pads.engine, Engine::Poly);
-        // No scale: the pads panel's In key only says so; Chromatic is already on.
+        // Chromatic is already on: a tap says so.
         assert!(matches!(
-            app.synth_pick_layout(true).as_slice(),
-            [Effect::Note(_)]
+            app.synth_pick_layout(false).as_slice(),
+            [Effect::Tell(t)] if t.contains("already Chromatic")
         ));
-        assert!(app.synth_pick_layout(false).is_empty());
+        // No scale: In key picks Major on the root and says so (live test 3).
+        let fx = app.synth_pick_layout(true);
+        let p = pads(&fx).unwrap();
+        assert_eq!(p.layout(), PadLayout::InKey);
+        assert!(p.scale.is_some());
+        assert!(
+            fx.iter()
+                .any(|e| matches!(e, Effect::Tell(t) if t.contains("In key, C Major"))),
+            "{fx:?}"
+        );
+        // Back to no scale and Chromatic for the rest.
+        app.step_item(row(SynthItem::Scale), -1);
+        assert!(app.synth_pads.scale.is_none());
+        app.synth_pick_layout(false);
         // Scale: Major (Chromatic is skipped; Off stands for it), root D.
         let p = pads(&app.step_item(row(SynthItem::Scale), 1)).unwrap();
         let major = mpfree_arp::scale::by_name("Major").unwrap();
@@ -4170,7 +4187,12 @@ mod tests {
             pads(&app.synth_pick_layout(true)).unwrap().layout(),
             PadLayout::InKey
         );
-        assert!(app.synth_pick_layout(true).is_empty(), "In key already");
+        assert!(
+            !app.synth_pick_layout(true)
+                .iter()
+                .any(|e| matches!(e, Effect::SynthPads(_))),
+            "In key already"
+        );
         let p = pads(&app.synth_bank(2)).unwrap();
         assert_eq!((p.bank, p.layout()), (2, PadLayout::Chords));
         assert!(app.synth_bank(2).is_empty());
@@ -5521,11 +5543,11 @@ mod tests {
         // ERASE and SHIFT + ERASE do nothing yet (Jay, 22:12Z).
         assert!(press(&mut app, 60).is_empty());
         assert!(shifted(&mut app, 60).is_empty());
-        // SHIFT + 16 LEVEL: Chromatic | In key (here: no scale yet).
+        // SHIFT + 16 LEVEL: Chromatic | In key (no scale yet: Major).
         assert!(press(&mut app, 62).is_empty());
         assert!(shifted(&mut app, 62)
             .iter()
-            .any(|e| matches!(e, Effect::Note(n) if n.contains("pick a scale first"))));
+            .any(|e| matches!(e, Effect::Tell(n) if n.contains("In key, C Major"))));
     }
 
     #[test]

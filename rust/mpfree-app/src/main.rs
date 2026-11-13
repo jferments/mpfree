@@ -4131,6 +4131,10 @@ fn player_session(
                 }
                 app::Effect::Audio(p) => audio_change = Some(p),
                 app::Effect::Note(s) => out.note(&s),
+                app::Effect::Tell(s) => {
+                    out.note(&s);
+                    out.show(gui::ToUi::Tell(s));
+                }
                 app::Effect::Quit => stop = true,
                 app::Effect::Show(v) => {
                     // Opening the Synth tab hands the pads to the synth, and
