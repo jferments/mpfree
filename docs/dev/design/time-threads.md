@@ -5,7 +5,7 @@ checked: 2026-11-12 a02d2cd
 
 # The time engine on two threads
 
-**Status:** steps 1 and 2 built, 2026-11-12. The time engine is two halves that speak only through two queues, with a facade (`TimeHost`) that still runs both on the audio thread, so `main.rs` has not changed. Step 3, the control half on the app thread's control thread, is next. The app thread, which owns `main.rs` and the control thread ([concurrency.md](concurrency.md), plan step 2), agreed to the shape on 12 Nov (07:20Z) with three asks, which are rules 1 to 3 below. Nothing here has run on the MPC yet.
+**Status:** steps 1 and 2 built, 2026-11-12. The time engine is two halves that speak only through two queues, with a facade (`TimeHost`) that still runs both on the audio thread, so `main.rs` has not changed. Step 3, the control half on the app thread's control thread, waits: live test 2 (13 Nov) found no slow period on the audio thread, so it is done only when a device run's `control: slow period` lines name MIDI in or the screen's actions ([concurrency.md](concurrency.md), plan step 2). The app thread, which owns `main.rs` and the control thread ([concurrency.md](concurrency.md), plan step 2), agreed to the shape on 12 Nov (07:20Z) with three asks, which are rules 1 to 3 below. Nothing here has run on the MPC yet.
 
 ## Why
 
