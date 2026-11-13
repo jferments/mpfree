@@ -279,6 +279,13 @@ fn steady_play_never_allocates(synth_on: bool, sound_cores: cores::SoundCores) {
     // starts the lanes' threads).
     let mut c = cores::Cores::start_unpinned(sound_cores, &mut rig.player, &mut rig.synth);
     c.start_mixer(&mut rig.mix.mixer);
+    let lanes = matches!(
+        sound_cores,
+        cores::SoundCores::Two | cores::SoundCores::Three
+    );
+    if lanes {
+        late_reverb(&mut rig.mix.mixer);
+    }
     // Setup, which may allocate: a new clip on track 1, which starts
     // recording the pads, and the looper recording its first bar.
     // Recording is an edit: each finished note goes into the clip, and the
@@ -335,11 +342,32 @@ fn steady_play_never_allocates(synth_on: bool, sound_cores: cores::SoundCores) {
     // qemu or a busy machine a lane can be slow, and a late part allocates
     // nothing either.)
     let n = cores::Counts::read(&rig.player, &rig.mix.mixer, &rig.synth);
+    if lanes {
+        // The reverb ran a block late on its lane the whole time.
+        assert!(n.returns_blocks > 12_000, "{n:?}");
+        assert!(n.returns_starts >= 1, "{n:?}");
+        assert_eq!(n.returns_lost, 0, "{n:?}");
+    }
     match sound_cores {
         cores::SoundCores::Two if !synth_on => assert!(n.voice_parts > 100, "{n:?}"),
         cores::SoundCores::Two => {}
         cores::SoundCores::Three => assert_eq!(n.synth_periods, i, "{n:?}"),
         _ => assert_eq!(n, cores::Counts::default()),
+    }
+}
+
+/// A send reverb that goes a block late on the returns lane (cores.rs):
+/// a Cloud all wet with a pre-delay on Return B, and the Drums and Synth
+/// tracks sent to it.
+fn late_reverb(m: &mut mpfree_fx::Mixer) {
+    use mpfree_fx::ids::{cloud, mixer as mx};
+    use mpfree_fx::StripId;
+    let c = m.chain_mut(StripId::Return(1)).unwrap();
+    c.push(Box::new(mpfree_fx::Cloud::new()));
+    c.set_param(0, cloud::MIX, 100.0);
+    c.set_param(0, cloud::PRE_DELAY, 20.0);
+    for t in [mixing::DRUMS, mixing::SYNTH] {
+        m.set_now(StripId::Track(t), mx::send(1), 0.0);
     }
 }
 
