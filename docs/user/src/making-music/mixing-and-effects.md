@@ -1,6 +1,6 @@
 <!--
 status: changing
-covers: rust/mpfree-fx rust/mpfree-mixer-ui rust/mpfree-fx-ui rust/mpfree-chain-ui rust/mpfree-app/src/plugins.rs rust/mpfree-plughost/src/rack.rs rust/mpfree-app/src/chain_page.rs rust/mpfree-app/src/mixing.rs rust/mpfree-fx/src/perform.rs
+covers: rust/mpfree-fx rust/mpfree-mixer-ui rust/mpfree-fx-ui rust/mpfree-chain-ui rust/mpfree-app/src/chain_page.rs rust/mpfree-app/src/mixing.rs rust/mpfree-fx/src/perform.rs
 checked: 2026-11-13 9560b32
 -->
 
@@ -94,25 +94,6 @@ These effects can go on any strip. The list of effects groups them: Dynamics, EQ
 
 Adding, removing or reordering an effect while the music plays doesn't click: that strip dips out for a moment and comes back.
 
-## Plugins
-
-MPFree can also use **CLAP plugin effects** built for the MPC One's ARM chip. Plugins made for a computer (Windows, macOS or ordinary Linux PCs) won't run on it.
-
-1. Put the `.clap` files on the MPFREE-DATA partition of your MPFree stick, in the folder `files/plugins/`.
-2. Start MPFree. The plugins' effects join the list you add effects from, under **Plugins** after the built-in ones, each with its maker's name.
-3. Add one to a strip as you would any effect. Its knobs show in the chain editor, in the plugin's own groups, and the Q-Links, macros and MIDI Learn work on them.
-
-Each plugin runs on its own, apart from the rest of MPFree, so a plugin that crashes or freezes can't stop the music:
-
-- If a plugin is too slow for a moment, its strip plays dry (the sound goes straight through) for that moment.
-- If a plugin crashes, MPFree starts it again with the settings it had a few seconds before.
-- If it crashes four times in a minute, MPFree leaves it off and the strip plays dry. Remove it and add it again to try once more.
-
-Every one of these is written in MPFree's report, so nothing goes wrong without you hearing about it.
-
-> [!NOTE]
-> **Not yet:** a plugin's settings aren't saved with your project, plugin instruments (synths) can't go on a track, and MPFree doesn't come with any plugins yet. A pack of free plugins built for the MPC (Airwindows, Surge XT and Dexed) is coming.
-
 ## The chain editor
 
 Tap an effect in a strip's insert row to open the **chain editor** on it, in the mixer's place. Tap the strip's **+ Insert** to add an effect, with the list of effects already open; a new effect goes at the end of the chain. In the chain editor, **+ Add effect** opens the list again and **Cancel** closes it; you can also reorder (**Up**, **Down**), bypass (the power button on each row) and **Remove** effects, and turn the selected effect's knobs. If the chain is full or the mixer is busy, the line at the bottom of the screen says so for a few seconds.
@@ -145,7 +126,6 @@ Each of these costs almost nothing until you use it.
 
 ## Coming next
 
-- **Plugins**: settings saved with the project, plugin instruments on tracks, and the plugin pack.
 - **Automation**: knob moves recorded into clips.
 - **Perform FX on pads**: effects played from the pads.
 

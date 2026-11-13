@@ -11,9 +11,8 @@
 //!   host sends `SetActive` as song mode turns on and off. Monitoring goes
 //!   on either way. REC records an armed track as the transport records.
 //! - [`TrackHost::action`] answers the Song view's [`AudioAction`]s: arm,
-//!   "+ Audio", the track panel (input, monitor, mute, solo, level and
-//!   pan), Split (at the playhead), Erase, Undo and the Q-Links. Each
-//!   answer is a line for the log; a refusal says why.
+//!   "+ Audio", Split (at the playhead), Erase and Undo. Each answer is a
+//!   line for the log; a refusal says why.
 //! - [`TrackHost::fill`] puts the lanes, the waveforms, the memory gauge
 //!   and the counters into the time engine's [`TimeState`], for the Song
 //!   view. [`TrackHost::take_changed`] says when they changed, checked a
@@ -27,68 +26,16 @@
 //! speed test (rule zero: it needs Jay's go).
 
 use mpfree_audiotracks::host::{AudioHost, TakeWave, MAX_COLUMNS};
-use mpfree_audiotracks::{Command, Input, Monitor, TakeInfo, MAX_TRACKS, PEAK_BLOCK};
-use mpfree_time_ui::song::{audio_blocks, AudioLane, MONITORS};
+use mpfree_audiotracks::{Command, Input, TakeInfo, MAX_TRACKS, PEAK_BLOCK};
+use mpfree_time_ui::song::{audio_blocks, AudioLane};
 use mpfree_time_ui::view::{audio_color, AudioAction, RegionId, TimeState, TransportInfo};
 use mpfree_transport::{Block, TempoMap, Tick};
-use mpfree_ui::qlink::QLinkCard;
 
 use crate::PERIOD;
 
-/// Prefs "Audio track memory" (layout spec 4c): the stereo seconds every
-/// take shares, 60 s by default (about 21 MB at 44.1 kHz). It is set aside,
-/// and kept in RAM, when MPFree starts, so a new size applies from the next
-/// start, like Loop memory.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum AudioMemory {
-    Sec30,
-    #[default]
-    Min1,
-    Min2,
-    Min5,
-    Min10,
-}
-
-impl AudioMemory {
-    pub const ALL: [AudioMemory; 5] = [
-        AudioMemory::Sec30,
-        AudioMemory::Min1,
-        AudioMemory::Min2,
-        AudioMemory::Min5,
-        AudioMemory::Min10,
-    ];
-
-    pub fn seconds(self) -> u32 {
-        match self {
-            AudioMemory::Sec30 => 30,
-            AudioMemory::Min1 => 60,
-            AudioMemory::Min2 => 120,
-            AudioMemory::Min5 => 300,
-            AudioMemory::Min10 => 600,
-        }
-    }
-
-    /// The kept setting's value: the seconds.
-    pub fn parse(v: &str) -> Option<AudioMemory> {
-        let n = v.trim().parse::<u32>().ok()?;
-        AudioMemory::ALL.into_iter().find(|m| m.seconds() == n)
-    }
-
-    /// What it costs, in whole megabytes, at `rate` (stereo f32).
-    pub fn megabytes(self, rate: u32) -> usize {
-        (rate as usize * self.seconds() as usize * 2 * 4).div_ceil(1_000_000)
-    }
-
-    /// "1:00".
-    pub fn time(self) -> String {
-        format!("{}:{:02}", self.seconds() / 60, self.seconds() % 60)
-    }
-
-    /// Prefs' value for it: "1:00 stereo, 22 MB".
-    pub fn row(self, rate: u32) -> String {
-        format!("{} stereo, {} MB", self.time(), self.megabytes(rate))
-    }
-}
+/// Seconds of stereo the takes share: layout spec 4c's default, 60 s
+/// (about 21 MB at 44.1 kHz). Prefs "Audio track memory" comes later.
+pub const SECONDS: u32 = 60;
 /// Periods between checks for a change the Song view should show (about
 /// 23 ms at 128 frames).
 const CHECK_EVERY: u64 = 8;
@@ -108,15 +55,6 @@ pub struct TrackHost {
     /// What each track records from (the engine keeps it too; this is for
     /// the header's chip).
     inputs: [Input; MAX_TRACKS],
-    /// Each track's level (0 to 2) and balance (-1 to 1), monitor mode,
-    /// mute and solo, as last sent.
-    volume: [f32; MAX_TRACKS],
-    pan: [f32; MAX_TRACKS],
-    monitor: [Monitor; MAX_TRACKS],
-    mute: [bool; MAX_TRACKS],
-    solo: [bool; MAX_TRACKS],
-    /// The track whose panel is open over the lanes.
-    panel: Option<usize>,
     /// The last `SetActive` sent.
     active: bool,
     /// The input latency last sent (frames), None before the first.
@@ -146,12 +84,6 @@ impl TrackHost {
             out: Box::new([0.0; 2 * PERIOD]),
             shown: 0,
             inputs: [Input::Left; MAX_TRACKS],
-            volume: [1.0; MAX_TRACKS],
-            pan: [0.0; MAX_TRACKS],
-            monitor: [Monitor::Auto; MAX_TRACKS],
-            mute: [false; MAX_TRACKS],
-            solo: [false; MAX_TRACKS],
-            panel: None,
             active: false,
             latency: None,
             waves: Vec::with_capacity(mpfree_audiotracks::MAX_TAKES),
@@ -215,11 +147,7 @@ impl TrackHost {
 
     fn shows(&self, t: usize) -> bool {
         let tr = &self.host.tracks;
-        t < self.shown
-            || self.panel == Some(t)
-            || tr.armed(t)
-            || !tr.regions(t).is_empty()
-            || tr.recording(t).is_some()
+        t < self.shown || tr.armed(t) || !tr.regions(t).is_empty() || tr.recording(t).is_some()
     }
 
     /// A waveform read: into the list.
@@ -288,14 +216,8 @@ impl TrackHost {
         let tr = &self.host.tracks;
         let mut h = Fnv::new();
         h.add(self.shown as u64);
-        h.add(self.panel.map_or(u64::MAX, |t| t as u64));
         for t in 0..MAX_TRACKS {
             h.add(u64::from(tr.armed(t)));
-            h.add(u64::from(self.volume[t].to_bits()));
-            h.add(u64::from(self.pan[t].to_bits()));
-            h.add(self.inputs[t] as u64);
-            h.add(self.monitor[t] as u64);
-            h.add(u64::from(self.mute[t]) | u64::from(self.solo[t]) << 1);
             h.add(tr.recording(t).map_or(u64::MAX, u64::from));
             for r in tr.regions(t) {
                 h.add(r.start as u64);
@@ -329,13 +251,8 @@ impl TrackHost {
                 name: format!("Audio {}", t + 1),
                 color: audio_color(t),
                 armed: tr.armed(t),
-                input: self.inputs[t],
+                input: input_chip(self.inputs[t]).into(),
                 level: 0.0,
-                volume: self.volume[t],
-                pan: self.pan[t],
-                monitor: self.monitor[t],
-                mute: self.mute[t],
-                solo: self.solo[t],
                 blocks: audio_blocks(t, tr.regions(t), &takes, map, self.rate),
                 recording: tr
                     .recording(t)
@@ -344,7 +261,6 @@ impl TrackHost {
             })
             .collect();
         st.waves = self.waves.clone();
-        st.audio_panel = self.panel;
         st.audio_free = (!st.audio.is_empty()).then(|| {
             let m = tr.memory();
             let per_sec = 2.0 * self.rate as f64;
@@ -430,148 +346,18 @@ impl TrackHost {
                 self.send(Command::Undo)?;
                 "audio tracks: undone".into()
             }
-            AudioAction::Gain(r) => {
-                region(tr, r)?;
-                "Q3 turns the region's gain, SHIFT for fine steps".into()
-            }
-            AudioAction::Fades(r) => {
-                region(tr, r)?;
-                "Q4 turns the region's fades, SHIFT for fine steps".into()
-            }
-            AudioAction::Turn {
-                track: t,
-                region: index,
-                knob,
-                ticks,
-                fine,
-            } => {
-                if t >= MAX_TRACKS {
-                    return Err(format!("there is no audio track {}", t + 1));
-                }
-                // Q3 and Q4 need a region: the level and pan do not.
-                let reg = match index {
-                    Some(index) => Some(region(tr, RegionId { track: t, index })?),
-                    None => None,
-                };
-                let picked = || {
-                    reg.ok_or_else(|| {
-                        format!("Q{}: pick a region of audio {} first", knob + 1, t + 1)
-                    })
-                };
-                match knob {
-                    0 => {
-                        let step = if fine { 0.1 } else { 0.5 };
-                        let v = from_db(to_db(self.volume[t]) + step * ticks as f32, LEVEL_MAX_DB);
-                        self.send(Command::SetLevel(t, v))?;
-                        self.volume[t] = v;
-                    }
-                    1 => {
-                        let step = if fine { 0.01 } else { 0.02 };
-                        let v = (self.pan[t] + step * ticks as f32).clamp(-1.0, 1.0);
-                        // Snap to the middle near it, so centre is easy to find.
-                        let v = if v.abs() < 0.005 { 0.0 } else { v };
-                        self.send(Command::SetPan(t, v))?;
-                        self.pan[t] = v;
-                    }
-                    2 => {
-                        let reg = picked()?;
-                        let step = if fine { 0.1 } else { 0.5 };
-                        let gain = from_db(to_db(reg.gain) + step * ticks as f32, GAIN_MAX_DB);
-                        self.send(Command::SetGain {
-                            track: t,
-                            at: reg.start,
-                            gain,
-                        })?;
-                    }
-                    3 => {
-                        let reg = picked()?;
-                        let ms = if fine { 1.0 } else { 5.0 };
-                        let step = (self.rate as f32 * ms / 1000.0) as i64;
-                        let now = i64::from(reg.fade_in.max(reg.fade_out));
-                        let v =
-                            (now + step * i64::from(ticks)).clamp(0, i64::from(u32::MAX)) as u32;
-                        // The engine keeps each fade to half the region.
-                        self.send(Command::SetFades {
-                            track: t,
-                            at: reg.start,
-                            fade_in: v,
-                            fade_out: v,
-                        })?;
-                    }
-                    _ => return Err(format!("Q-Link {} has nothing to turn here", knob + 1)),
-                }
-                self.changed = true;
-                String::new()
-            }
-            AudioAction::Panel(t) => {
-                if t >= MAX_TRACKS {
-                    return Err(format!("there is no audio track {}", t + 1));
-                }
-                self.panel = if self.panel == Some(t) { None } else { Some(t) };
-                self.changed = true;
-                String::new()
-            }
-            AudioAction::ClosePanel => {
-                self.panel = None;
-                self.changed = true;
-                String::new()
-            }
-            AudioAction::Input { track, input } => {
-                let n = self.track_no(track)?;
-                if tr.recording(track).is_some() {
-                    return Err(format!(
-                        "audio {n} is recording: change its input after it stops"
-                    ));
-                }
-                self.send(Command::SetInput(track, input))?;
-                self.inputs[track] = input;
-                self.changed = true;
-                format!("audio {n} records {}", input_words(input))
-            }
-            AudioAction::Monitor { track, monitor } => {
-                let n = self.track_no(track)?;
-                self.send(Command::SetMonitor(track, monitor))?;
-                self.monitor[track] = monitor;
-                self.changed = true;
-                format!("audio {n} monitor: {}", monitor_words(monitor))
-            }
-            AudioAction::Mute { track, on } => {
-                let n = self.track_no(track)?;
-                self.send(Command::Mute(track, on))?;
-                self.mute[track] = on;
-                self.changed = true;
-                format!("audio {n} {}", if on { "muted" } else { "unmuted" })
-            }
-            AudioAction::Solo { track, on } => {
-                let n = self.track_no(track)?;
-                self.send(Command::Solo(track, on))?;
-                self.solo[track] = on;
-                self.changed = true;
-                format!(
-                    "audio {n} {}",
-                    if on {
-                        "soloed (among the audio tracks)"
-                    } else {
-                        "unsoloed"
-                    }
-                )
-            }
-            AudioAction::Takes(_) => {
-                return Err("the take lanes are not built yet (they come next)".into())
+            AudioAction::Panel(_)
+            | AudioAction::Fades(_)
+            | AudioAction::Gain(_)
+            | AudioAction::Takes(_) => {
+                return Err(format!(
+                    "{a:?} is not built yet (the track panel, fades, gain and take lanes come next)"
+                ))
             }
             // The time engine keeps the pick (`TimeControl`).
             AudioAction::Pick(_) => String::new(),
         };
         Ok(line)
-    }
-
-    /// Track `t`'s number as the screen writes it, if there is one.
-    fn track_no(&self, t: usize) -> Result<usize, String> {
-        if t < MAX_TRACKS {
-            Ok(t + 1)
-        } else {
-            Err(format!("there is no audio track {}", t + 1))
-        }
     }
 
     fn send(&mut self, c: Command) -> Result<(), String> {
@@ -600,120 +386,6 @@ impl TrackHost {
     }
 }
 
-/// The track level's top: +6 dB. A region's gain goes to the engine's
-/// 4 (+12 dB). Below -60 dB is off.
-const LEVEL_MAX_DB: f32 = 6.0;
-const GAIN_MAX_DB: f32 = 12.0;
-const FLOOR_DB: f32 = -60.0;
-
-/// A level as dB, with off as the floor.
-fn to_db(v: f32) -> f32 {
-    if v <= 0.0 {
-        FLOOR_DB
-    } else {
-        (20.0 * v.log10()).max(FLOOR_DB)
-    }
-}
-
-/// dB as a level, at most `max` dB; at the floor or under it is off.
-fn from_db(db: f32, max: f32) -> f32 {
-    let db = db.min(max);
-    if db <= FLOOR_DB {
-        0.0
-    } else {
-        10f32.powf(db / 20.0)
-    }
-}
-
-/// "-3.0 dB", or "off".
-fn db_text(v: f32) -> String {
-    if v <= 0.0 {
-        "off".into()
-    } else {
-        format!("{:.1} dB", to_db(v))
-    }
-}
-
-/// "C", "L15", "R40", as the mixer writes a pan.
-fn pan_text(p: f32) -> String {
-    let n = (p.abs() * 100.0).round() as i32;
-    match n {
-        0 => "C".into(),
-        _ if p < 0.0 => format!("L{n}"),
-        _ => format!("R{n}"),
-    }
-}
-
-/// What the Q-Links turn on Arrange with an audio region picked or a
-/// track panel open (layout spec 4c): see [`audio_knobs`].
-#[derive(Clone, Debug, PartialEq)]
-pub struct AudioKnobs {
-    /// The audio track whose level and pan Q1 and Q2 turn.
-    pub track: usize,
-    /// The region (an index into the track's) whose gain and fades Q3 and
-    /// Q4 turn: None when none of the track's is picked.
-    pub region: Option<usize>,
-    pub cards: [QLinkCard; 4],
-}
-
-impl AudioKnobs {
-    /// The column's title: "Q-Links · Audio region" or "Q-Links · Audio 2".
-    pub fn title(&self) -> String {
-        match self.region {
-            Some(_) => "Q-Links · Audio region".into(),
-            None => format!("Q-Links · Audio {}", self.track + 1),
-        }
-    }
-}
-
-/// The Q-Link cards for `st` (layout spec 4c): with the track panel open,
-/// that track's; else with an audio region picked, its track's. Q1 the
-/// track's level, Q2 its pan, Q3 the region's gain, Q4 its fades (they
-/// say "pick a region" when none of the track's is picked). None when
-/// neither is so, or the track is not in the lanes.
-pub fn audio_knobs(st: &TimeState) -> Option<AudioKnobs> {
-    let t = st.audio_panel.or(st.region.map(|r| r.track))?;
-    let lane = st.audio.iter().find(|l| l.track == t)?;
-    let index = st.region.filter(|r| r.track == t).map(|r| r.index);
-    let b = index.and_then(|i| lane.blocks.get(i));
-    let track = format!("AUDIO {}", t + 1);
-    let pos = |v: f32, max: f32| (to_db(v) - FLOOR_DB) / (max - FLOOR_DB);
-    let mut pan = QLinkCard::new("Pan", &track, &pan_text(lane.pan), (lane.pan + 1.0) / 2.0);
-    pan.bipolar = true;
-    let level = QLinkCard::new(
-        "Level",
-        &track,
-        &db_text(lane.volume),
-        pos(lane.volume, LEVEL_MAX_DB),
-    );
-    let [gain, fades] = match b {
-        Some(b) => {
-            let ms = (b.fade_in.max(b.fade_out) as f64 / RATE_FOR_TEXT * 1000.0).round();
-            [
-                QLinkCard::new("Gain", "REGION", &db_text(b.gain), pos(b.gain, GAIN_MAX_DB)),
-                QLinkCard::new(
-                    "Fades",
-                    "REGION",
-                    &format!("{ms:.0} ms"),
-                    (ms / 2000.0).clamp(0.0, 1.0) as f32,
-                ),
-            ]
-        }
-        None => [
-            QLinkCard::new("Gain", "REGION", "pick one", 0.0),
-            QLinkCard::new("Fades", "REGION", "pick one", 0.0),
-        ],
-    };
-    Some(AudioKnobs {
-        track: t,
-        region: b.and(index),
-        cards: [level, pan, gain, fades],
-    })
-}
-
-/// The rate the cards turn frames into milliseconds at (the app's).
-const RATE_FOR_TEXT: f64 = crate::RATE as f64;
-
 /// Region `r` as the tracks have it now.
 fn region(
     tr: &mpfree_audiotracks::AudioTracks,
@@ -734,25 +406,14 @@ fn columns(k: &TakeInfo) -> usize {
     (k.frames * k.channels / PEAK_BLOCK).clamp(1, MAX_COLUMNS)
 }
 
-/// What an input records, for the log.
-fn input_words(i: Input) -> &'static str {
+/// The header's input chip.
+pub fn input_chip(i: Input) -> &'static str {
     match i {
-        Input::Left => "the left input (mono)",
-        Input::Right => "the right input (mono)",
-        Input::Sum => "left and right summed (mono)",
-        Input::Stereo => "both inputs (stereo)",
+        Input::Left => "L",
+        Input::Right => "R",
+        Input::Sum => "L+R",
+        Input::Stereo => "ST",
     }
-}
-
-/// A monitor mode, for the log.
-fn monitor_words(m: Monitor) -> String {
-    let name = MONITORS.iter().find(|x| x.1 == m).map_or("?", |x| x.0);
-    let what = match m {
-        Monitor::Auto => "hear the input while armed, except during playback",
-        Monitor::In => "always hear the input",
-        Monitor::Off => "never hear the input",
-    };
-    format!("{name} ({what})")
 }
 
 /// FNV-1a over u64s.
@@ -876,7 +537,7 @@ mod tests {
         let st = r.state();
         assert_eq!(st.audio.len(), 1);
         assert!(st.audio[0].armed);
-        assert_eq!(st.audio[0].input, Input::Left);
+        assert_eq!(st.audio[0].input, "L");
         assert_eq!(st.audio[0].name, "Audio 1");
         let (free, all) = st.audio_free.unwrap();
         assert!((all - 10.0).abs() < 0.5 && free <= all, "{free} of {all}");
@@ -1004,227 +665,6 @@ mod tests {
             0,
             "nothing reached the engine to be refused"
         );
-    }
-
-    #[test]
-    fn the_q_links_turn_level_pan_gain_and_fades_and_the_cards_say_them() {
-        let mut r = Rig::new();
-        r.h.action(AudioAction::Arm { track: 0, on: true }, &r.info(), true)
-            .unwrap();
-        r.live = true;
-        r.command(T::Record);
-        while r.t.position() < 3840 {
-            r.period();
-        }
-        r.command(T::Stop);
-        r.periods(10);
-        let region = RegionId { track: 0, index: 0 };
-        let turn = |r: &mut Rig, knob, ticks, fine| {
-            let a = AudioAction::Turn {
-                track: 0,
-                region: Some(0),
-                knob,
-                ticks,
-                fine,
-            };
-            let line = r.h.action(a, &r.info(), true).unwrap();
-            r.periods(2);
-            line
-        };
-        assert_eq!(turn(&mut r, 0, -12, false), "", "turns write no log line");
-        turn(&mut r, 1, 10, false);
-        turn(&mut r, 1, 5, true);
-        turn(&mut r, 2, 7, false);
-        turn(&mut r, 2, -5, true);
-        turn(&mut r, 3, 4, false);
-        let mut st = r.state();
-        st.region = Some(region);
-        let knobs = audio_knobs(&st).unwrap();
-        assert_eq!((knobs.track, knobs.region), (0, Some(0)));
-        assert_eq!(knobs.title(), "Q-Links · Audio region");
-        let shown: Vec<_> = knobs.cards.iter().map(|c| c.value.as_str()).collect();
-        assert_eq!(shown, ["-6.0 dB", "R25", "3.0 dB", "20 ms"]);
-        assert!(r.h.take_changed());
-        // The level goes off at the floor and stops at +6 dB.
-        turn(&mut r, 0, -200, false);
-        assert_eq!(r.h.volume[0], 0.0);
-        turn(&mut r, 0, 400, false);
-        assert!((to_db(r.h.volume[0]) - 6.0).abs() < 1e-3);
-        // Gain and Fades point at their knobs; a fifth knob has nothing.
-        assert!(r
-            .h
-            .action(AudioAction::Gain(region), &r.info(), true)
-            .unwrap()
-            .contains("Q3"));
-        assert!(r
-            .h
-            .action(AudioAction::Fades(region), &r.info(), true)
-            .unwrap()
-            .contains("Q4"));
-        let a = AudioAction::Turn {
-            track: 0,
-            region: Some(0),
-            knob: 4,
-            ticks: 1,
-            fine: false,
-        };
-        assert!(r.h.action(a, &r.info(), true).is_err());
-        // Without a region, Q3 and Q4 ask for one; Q1 still turns.
-        let bare = |knob| AudioAction::Turn {
-            track: 0,
-            region: None,
-            knob,
-            ticks: 1,
-            fine: false,
-        };
-        let err = r.h.action(bare(2), &r.info(), true).unwrap_err();
-        assert!(err.contains("pick a region of audio 1"), "{err}");
-        assert!(r.h.action(bare(3), &r.info(), true).is_err());
-        assert!(r.h.action(bare(0), &r.info(), true).is_ok());
-        assert_eq!(r.h.host.tracks.stats().refused, 0);
-        // No region picked and no panel open: no cards.
-        st.region = None;
-        assert!(audio_knobs(&st).is_none());
-    }
-
-    /// Layout spec 4c: the header opens the track's panel; its Input,
-    /// Monitor, Mute and Solo reach the engine and show in the lane, and
-    /// the Q-Links follow the panel's track.
-    #[test]
-    fn the_track_panel_sets_the_track_and_the_q_links_follow_it() {
-        let mut r = Rig::new();
-        let act = |r: &mut Rig, a| {
-            let out = r.h.action(a, &r.info(), true);
-            r.periods(2);
-            out
-        };
-        // The panel opens on an empty track: its lane shows while it is
-        // open, and the header toggles it.
-        act(&mut r, AudioAction::Panel(2)).unwrap();
-        let st = r.state();
-        assert_eq!(st.audio_panel, Some(2));
-        assert_eq!(st.audio.iter().map(|l| l.track).collect::<Vec<_>>(), [2]);
-        assert!(r.h.take_changed());
-        let knobs = audio_knobs(&st).unwrap();
-        assert_eq!((knobs.track, knobs.region), (2, None));
-        assert_eq!(knobs.title(), "Q-Links · Audio 3");
-        let shown: Vec<_> = knobs.cards.iter().map(|c| c.value.as_str()).collect();
-        assert_eq!(shown, ["0.0 dB", "C", "pick one", "pick one"]);
-        act(&mut r, AudioAction::Panel(2)).unwrap();
-        assert_eq!(r.state().audio_panel, None);
-        assert!(r.state().audio.is_empty(), "closed: the empty lane goes");
-        act(&mut r, AudioAction::Panel(1)).unwrap();
-        act(&mut r, AudioAction::ClosePanel).unwrap();
-        assert_eq!(r.state().audio_panel, None);
-        assert!(act(&mut r, AudioAction::Panel(MAX_TRACKS)).is_err());
-
-        // Monitor In hears the line input on an unarmed track, stopped
-        // and in clip mode too; Off never does.
-        r.song = false;
-        r.live = true;
-        act(&mut r, AudioAction::Panel(0)).unwrap();
-        r.periods(4);
-        assert_eq!(r.heard, 0.0, "Auto, unarmed: silent");
-        let line = act(
-            &mut r,
-            AudioAction::Monitor {
-                track: 0,
-                monitor: Monitor::In,
-            },
-        )
-        .unwrap();
-        assert!(line.contains("In (always hear the input)"), "{line}");
-        r.periods(4);
-        assert!(r.heard > 0.1, "In: heard {}", r.heard);
-        act(
-            &mut r,
-            AudioAction::Monitor {
-                track: 0,
-                monitor: Monitor::Off,
-            },
-        )
-        .unwrap();
-        act(&mut r, AudioAction::Arm { track: 0, on: true }).unwrap();
-        r.periods(4);
-        assert_eq!(r.heard, 0.0, "Off, armed: silent");
-        act(
-            &mut r,
-            AudioAction::Monitor {
-                track: 0,
-                monitor: Monitor::Auto,
-            },
-        )
-        .unwrap();
-        r.periods(4);
-        assert!(r.heard > 0.1, "Auto, armed and stopped: heard");
-        // Mute silences the track; Solo of another track does too.
-        act(&mut r, AudioAction::Mute { track: 0, on: true }).unwrap();
-        r.periods(4);
-        assert_eq!(r.heard, 0.0, "muted");
-        act(
-            &mut r,
-            AudioAction::Mute {
-                track: 0,
-                on: false,
-            },
-        )
-        .unwrap();
-        act(&mut r, AudioAction::Solo { track: 1, on: true }).unwrap();
-        r.periods(4);
-        assert_eq!(r.heard, 0.0, "another track soloed");
-        act(&mut r, AudioAction::Solo { track: 0, on: true }).unwrap();
-        r.periods(4);
-        assert!(r.heard > 0.1, "soloed too: heard");
-
-        // The input: the lane's chip says it; it waits while recording.
-        let line = act(
-            &mut r,
-            AudioAction::Input {
-                track: 0,
-                input: Input::Stereo,
-            },
-        )
-        .unwrap();
-        assert!(line.contains("both inputs (stereo)"), "{line}");
-        let st = r.state();
-        let lane = st.audio.iter().find(|l| l.track == 0).unwrap();
-        assert_eq!(
-            (lane.input, lane.monitor, lane.mute, lane.solo),
-            (Input::Stereo, Monitor::Auto, false, true)
-        );
-        r.song = true;
-        r.command(T::Record);
-        r.periods(20);
-        assert!(r.h.host.tracks.recording(0).is_some());
-        let err = act(
-            &mut r,
-            AudioAction::Input {
-                track: 0,
-                input: Input::Left,
-            },
-        )
-        .unwrap_err();
-        assert!(err.contains("after it stops"), "{err}");
-        r.command(T::Stop);
-        r.periods(10);
-        // A region picked on the panel's track gives Q3 and Q4 to it; one
-        // on another track leaves them asking.
-        let mut st = r.state();
-        st.region = Some(RegionId { track: 0, index: 0 });
-        assert_eq!(audio_knobs(&st).unwrap().region, Some(0));
-        st.audio_panel = Some(1);
-        st.audio.push(AudioLane {
-            track: 1,
-            ..st.audio[0].clone()
-        });
-        let knobs = audio_knobs(&st).unwrap();
-        assert_eq!((knobs.track, knobs.region), (1, None));
-        assert_eq!(r.h.host.tracks.stats().refused, 0);
-        assert!(r
-            .h
-            .action(AudioAction::Takes(0), &r.info(), true)
-            .unwrap_err()
-            .contains("not built yet"));
     }
 
     #[test]
