@@ -1107,7 +1107,7 @@ impl Widget for SongLanes {
                 out.push(Target::tap("audio-header", a, lane.name.clone(), rest));
             }
             for i in 0..lane.blocks.len() {
-                if let Some(br) = self.region_rect(r, a, i).and_then(|br| shown(br)) {
+                if let Some(br) = self.region_rect(r, a, i).and_then(&shown) {
                     out.push(Target::tap(
                         "region",
                         a * 1000 + i,
@@ -1118,7 +1118,7 @@ impl Widget for SongLanes {
             }
         }
         for b in &self.blocks {
-            if let Some(br) = self.block_rect(r, b).and_then(|br| shown(br)) {
+            if let Some(br) = self.block_rect(r, b).and_then(&shown) {
                 out.push(Target::tap("block", b.index, b.name.clone(), br));
             }
         }
