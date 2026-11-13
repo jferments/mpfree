@@ -51,6 +51,18 @@ use mpfree_transport::Command;
 /// cable. Akai's app sends 1 and 3 (dim and bright, inferred); so do we.
 pub const LIGHT_OFF: u8 = 1;
 pub const LIGHT_ON: u8 = 3;
+
+/// What the transport buttons' lights show ([`App::transport_lights`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TransportLights {
+    /// The transport plays, records or counts in.
+    pub rolling: bool,
+    /// The transport records or counts in, or a loop is armed or records
+    /// its first pass.
+    pub recording: bool,
+    /// The transport's overdub is on, or a loop overdubs.
+    pub overdub: bool,
+}
 /// Two NOTE REPEAT presses this close together (in seconds) latch, as
 /// SHIFT + NOTE REPEAT does.
 pub const DOUBLE_PRESS_SECONDS: f64 = 0.4;
@@ -969,6 +981,9 @@ pub struct App {
     arp_dirty: bool,
     /// The transport is rolling (the audio loop says each period).
     rolling: bool,
+    /// What the transport buttons' lights last showed
+    /// ([`App::transport_lights`]).
+    lights_shown: TransportLights,
     /// The synth's pad layout while the synth is on the pads
     /// ([`App::set_pad_layout`]): the pads then feed the arp the layout's
     /// notes, and its events carry notes rather than pad slots.
@@ -1079,6 +1094,7 @@ impl App {
             sent_notes,
             arp_dirty: true,
             rolling: false,
+            lights_shown: TransportLights::default(),
             pad_layout: None,
             pad_pressed: [PadNotes::default(); 16],
             note_holds: [0; 128],
@@ -1114,6 +1130,35 @@ impl App {
     /// tells it each period).
     pub fn set_rolling(&mut self, rolling: bool) {
         self.rolling = rolling;
+    }
+
+    /// The transport buttons' lights for what the transport and the
+    /// looper are doing now: STOP lit while stopped, PLAY while rolling,
+    /// REC while recording, counting in or a loop is armed, OVERDUB while
+    /// overdubbing. Only the lights that changed, as [`Effect::Light`];
+    /// the audio loop sends those Akai's app was seen sending and notes
+    /// the others once (REC, OVERDUB and PLAY wait for the capture of
+    /// Akai's lights, Jay 13 Nov). The start matches Akai's startup
+    /// lights: STOP lit, the rest not.
+    pub fn transport_lights(&mut self, now: TransportLights) -> Vec<Effect> {
+        let was = std::mem::replace(&mut self.lights_shown, now);
+        let light = |on: bool| if on { LIGHT_ON } else { LIGHT_OFF };
+        let mut fx = Vec::new();
+        if now.rolling != was.rolling {
+            fx.push(Effect::Light(button::STOP, light(!now.rolling)));
+            fx.push(Effect::Light(button::PLAY, light(now.rolling)));
+        }
+        if now.recording != was.recording {
+            if let Some(rec) = self.map.rec {
+                fx.push(Effect::Light(rec, light(now.recording)));
+            }
+        }
+        if now.overdub != was.overdub {
+            if let Some(dub) = self.map.overdub {
+                fx.push(Effect::Light(dub, light(now.overdub)));
+            }
+        }
+        fx
     }
 
     /// FILL let go, if it was on.
@@ -5060,6 +5105,51 @@ mod tests {
         let fx = app.button(button::STOP, true, 21.0);
         assert_eq!(fills(&fx), [false]);
         assert!(fx.contains(&Effect::Time(TimeAction::Transport(Command::Stop))));
+    }
+
+    /// The transport buttons' lights follow the transport and the loops,
+    /// only when they change (13 Nov live test: none lit).
+    #[test]
+    fn the_transport_lights_follow_play_record_and_overdub() {
+        const REC: u8 = 73;
+        const OVERDUB: u8 = 80;
+        let mut app = ready();
+        let lights = |rolling, recording, overdub| TransportLights {
+            rolling,
+            recording,
+            overdub,
+        };
+        // As Akai's startup left them: nothing to send.
+        assert!(app.transport_lights(lights(false, false, false)).is_empty());
+        // OVERDUB not found: no light for it.
+        app.map.learn(mapper::Job::Rec, Some(REC));
+        app.map.learn(mapper::Job::Overdub, None);
+        assert!(app.transport_lights(lights(false, false, true)).is_empty());
+        assert_eq!(
+            app.transport_lights(lights(true, true, false)),
+            vec![
+                Effect::Light(button::STOP, LIGHT_OFF),
+                Effect::Light(button::PLAY, LIGHT_ON),
+                Effect::Light(REC, LIGHT_ON)
+            ]
+        );
+        app.map.learn(mapper::Job::Overdub, Some(OVERDUB));
+        assert_eq!(
+            app.transport_lights(lights(true, false, true)),
+            vec![
+                Effect::Light(REC, LIGHT_OFF),
+                Effect::Light(OVERDUB, LIGHT_ON)
+            ]
+        );
+        assert!(app.transport_lights(lights(true, false, true)).is_empty());
+        assert_eq!(
+            app.transport_lights(lights(false, false, false)),
+            vec![
+                Effect::Light(button::STOP, LIGHT_ON),
+                Effect::Light(button::PLAY, LIGHT_OFF),
+                Effect::Light(OVERDUB, LIGHT_OFF)
+            ]
+        );
     }
 
     /// TRACK MUTE (control map decision 5), once Map controls has found

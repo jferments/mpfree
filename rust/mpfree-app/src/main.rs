@@ -4325,6 +4325,21 @@ fn player_session(
         parts.lap(parts::APP);
         let time_span = Span::start();
         app.set_rolling(time.info().state.rolling());
+        // The transport buttons' lights follow the transport and the
+        // loops (only the ones that changed; next period's effects).
+        {
+            let info = time.info();
+            let (loop_rec, loop_dub) = looper.recording();
+            fx.extend(app.transport_lights(app::TransportLights {
+                rolling: info.state.rolling(),
+                recording: loop_rec
+                    || matches!(
+                        info.state,
+                        mpfree_transport::State::Recording | mpfree_transport::State::CountIn
+                    ),
+                overdub: loop_dub || info.overdub,
+            }));
+        }
         // Another device's clock, when the project's tempo is from a port
         // (M4): the leader's bytes read this period go to the follower
         // before the transport runs, as read at the period's top.

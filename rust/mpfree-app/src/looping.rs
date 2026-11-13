@@ -1657,6 +1657,20 @@ impl LoopHost {
         lines
     }
 
+    /// Whether a loop is armed or records its first pass, and whether one
+    /// overdubs: the REC and OVERDUB lights ([`crate::app::App::transport_lights`]).
+    pub fn recording(&self) -> (bool, bool) {
+        let (mut rec, mut dub) = (false, false);
+        for s in (0..MAX_LOOPS).filter_map(|n| self.looper.loop_status(n)) {
+            match s.phase {
+                Phase::Armed | Phase::Recording => rec = true,
+                Phase::Overdubbing => dub = true,
+                Phase::Empty | Phase::Playing => {}
+            }
+        }
+        (rec, dub)
+    }
+
     /// The `status: looper: ...` line.
     pub fn describe(&self) -> String {
         let s = self.looper.status();
