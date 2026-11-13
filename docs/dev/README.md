@@ -1,6 +1,6 @@
 # MPFree developer documentation
 
-> **MPC One boot and firmware reference (2026-11-13):** Start with the [comprehensive MPC One Linux and Boot Architecture](hardware/mpc-one-boot-architecture.md), [hardware documentation index](hardware/README.md), [firmware 3.10.1 compatibility](hardware/firmware-3.10.1-compatibility.md) and [installer/recovery contract](hardware/installer-recovery-contract.md). Dated November hardware records are preserved [in the archive](hardware/archive/2026-11/README.md).
+> **MPC One hardware and boot:** Start with the [operating-system architecture](hardware/mpc-one-boot-architecture.md) and the dedicated [bootloader guide](hardware/bootloader.md). The [hardware index](hardware/README.md) groups specialized interfaces; [firmware 3.10.1](hardware/firmware-3.10.1-compatibility.md) and the [installer/recovery contract](hardware/installer-recovery-contract.md) have focused references. Original dated reports live only in the [archive](hardware/archive/2026-11/README.md).
 
 For people who build MPFree: how it is designed, why, how to build and test it, and what we know about the MPC One's hardware. If you make music with MPFree, read the [user manual](../user/README.md) instead. Rules for AI agents working in this repository are in [docs/agents](../agents/README.md).
 
