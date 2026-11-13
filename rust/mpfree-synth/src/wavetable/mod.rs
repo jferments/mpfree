@@ -1,7 +1,7 @@
 //! Wavetable: two wavetable oscillators per voice that scan through a stack
 //! of single-cycle frames, each with a phase warp (bend, sync, mirror, FM
 //! from the other oscillator) and up to eight unison stacks; a sub sine and
-//! noise; Poly's ladder or state-variable filter, then its drive; an amp
+//! noise; Poly's drive, ladder or state-variable filter and distortion; an amp
 //! envelope and a mod envelope (cutoff, positions, warp); a tempo-syncable
 //! LFO (pitch, cutoff, positions, level); poly, mono and legato with glide.
 //!
@@ -235,6 +235,10 @@ struct Voice {
     drive_amt: f32,
     /// Keeps the driven voice at its undriven level (dsp::DriveLevel).
     drive_level: DriveLevel,
+    /// The distortion after the filter, with its own level keeper.
+    dist_gain: f32,
+    dist_amt: f32,
+    dist_level: DriveLevel,
     press: Pressure,
     pv: f32,
     /// Its note's own slide and tone.
@@ -275,6 +279,9 @@ impl Voice {
             drive_gain: 1.0,
             drive_amt: 0.0,
             drive_level: DriveLevel::new(),
+            dist_gain: 1.0,
+            dist_amt: 0.0,
+            dist_level: DriveLevel::new(),
             press: Pressure::new(),
             pv: 0.0,
             ex: VoiceExpr::default(),
@@ -299,6 +306,7 @@ struct Smoothed {
     cutoff: Smooth,
     res: Smooth,
     drive: Smooth,
+    dist: Smooth,
     out_l: Smooth,
     out_r: Smooth,
     bend: Smooth,
@@ -313,6 +321,8 @@ struct Shared {
     noise: f32,
     drive_gain: f32,
     drive_amt: f32,
+    dist_gain: f32,
+    dist_amt: f32,
     out_l: f32,
     out_r: f32,
     unison: usize,
@@ -384,6 +394,7 @@ impl Wavetable {
             cutoff: Smooth::new(v(CUTOFF).log2()),
             res: Smooth::new(v(RESONANCE) / 100.0),
             drive: Smooth::new(v(DRIVE)),
+            dist: Smooth::new(v(DIST)),
             out_l: Smooth::new(1.0),
             out_r: Smooth::new(1.0),
             bend: Smooth::new(0.0),
@@ -557,6 +568,7 @@ impl Wavetable {
         self.sm.cutoff.target = self.v(CUTOFF).log2();
         self.sm.res.target = self.v(RESONANCE) / 100.0;
         self.sm.drive.target = self.v(DRIVE);
+        self.sm.dist.target = self.v(DIST);
         self.sm.out_l.target = lvl * (1.0 - pan).sqrt();
         self.sm.out_r.target = lvl * (1.0 + pan).sqrt();
     }
@@ -600,6 +612,7 @@ impl Wavetable {
             &mut sm.noise,
             &mut sm.res,
             &mut sm.drive,
+            &mut sm.dist,
             &mut sm.out_l,
             &mut sm.out_r,
             &mut sm.cutoff,
@@ -750,6 +763,7 @@ impl Wavetable {
         v.kill_gain = 1.0;
         v.snap = true;
         v.drive_level.clear();
+        v.dist_level.clear();
     }
 
     fn steal(&mut self) {
@@ -883,11 +897,14 @@ impl Wavetable {
         sm.cutoff.next();
         sm.res.next();
         let drive = sm.drive.next();
+        let dist = sm.dist.next();
         s.out_l = sm.out_l.next();
         s.out_r = sm.out_r.next();
         sm.bend.next();
         s.drive_gain = 10f32.powf(drive / 20.0);
         s.drive_amt = (drive / 3.0).min(1.0);
+        s.dist_gain = 10f32.powf(dist / 20.0);
+        s.dist_amt = (dist / 3.0).min(1.0);
         s.mode = self.values[FILTER_MODE as usize] as u8;
         s.unison = (self.values[UNISON as usize] as usize).clamp(1, UNISON_MAX);
 
@@ -988,6 +1005,7 @@ impl Wavetable {
             self.v(osc_id(1, WARP_MODE)) as u8,
         ];
         let (drive_gain, drive_amt) = (self.sh.drive_gain, self.sh.drive_amt);
+        let (dist_gain, dist_amt) = (self.sh.dist_gain, self.sh.dist_amt);
         let norm = VOICE_GAIN / (unison as f32).sqrt();
         let tabs = [&self.tables[0], &self.tables[1]];
         let expr_c = self.expr_c;
@@ -1057,15 +1075,23 @@ impl Wavetable {
         v.coefs = FilterCoefs::new(exp2(oct), res, rate);
         v.drive_gain = drive_gain;
         v.drive_amt = drive_amt;
+        v.dist_gain = dist_gain;
+        v.dist_amt = dist_amt;
         let vg = (1.0 - vel_amp) + vel_amp * v.vel * v.vel;
         let swell = swell_gain(d.get(target::LEVEL).clamp(-1.0, 1.0), p);
-        // The drive's level correction, from the step just rendered.
-        let level = if v.drive_amt > 0.0 {
+        // The drive's and the distortion's level corrections, from the
+        // step just rendered.
+        let mut level = if v.drive_amt > 0.0 {
             v.drive_level.step(CTRL, self.rate)
         } else {
             v.drive_level.clear();
             1.0
         };
+        if v.dist_amt > 0.0 {
+            level *= v.dist_level.step(CTRL, self.rate);
+        } else {
+            v.dist_level.clear();
+        }
         let gain = norm * vg * trem * swell * level;
         v.gain_inc = (gain - v.gain) / CTRL as f32;
     }
@@ -1118,13 +1144,19 @@ fn run_voice<const MONO: bool>(
     let da = ta.levels()[v.level[0]].data();
     let db = tb.levels()[v.level[1]].data();
     let (use_sub, use_noise) = (s.sub != 0.0, s.noise != 0.0);
-    // The drive's gain and level scale, once per run rather than per
-    // sample: it sees the mix as one full oscillator, however many stacks
-    // and sources feed it (dsp::drive_scales).
+    // The drive's and the distortion's gains and level scales, once per
+    // run rather than per sample: they see the mix as one full oscillator,
+    // however many stacks and sources feed it (dsp::drive_scales).
+    let lv = mix_level(s.unison, s.lvl, s.sub, s.noise);
     let (dg, dn, damt) = if v.drive_amt > 0.0 {
-        let lv = mix_level(s.unison, s.lvl, s.sub, s.noise);
         let (k, n) = drive_scales(v.drive_gain, lv);
         (k, n, v.drive_amt)
+    } else {
+        (1.0, 1.0, 0.0)
+    };
+    let (eg, en, eamt) = if v.dist_amt > 0.0 {
+        let (k, n) = drive_scales(v.dist_gain, lv);
+        (k, n, v.dist_amt)
     } else {
         (1.0, 1.0, 0.0)
     };
@@ -1164,18 +1196,24 @@ fn run_voice<const MONO: bool>(
         if use_noise {
             c += rng.bipolar() * s.noise;
         }
-        // The filter, then the drive (as Poly's: after the filter, so a
-        // low cutoff doesn't take out the grit).
-        let x = v.filt[0].process(mode, &v.coefs, l + c);
+        // The drive into the filter, then the distortion (as Poly's: after
+        // the filter, so a low cutoff doesn't take out its grit).
+        let x = l + c;
         let l = drive_n(x, dg, dn, damt);
         if damt > 0.0 {
             v.drive_level.add(x, l);
         }
+        let x = v.filt[0].process(mode, &v.coefs, l);
+        let l = drive_n(x, eg, en, eamt);
+        if eamt > 0.0 {
+            v.dist_level.add(x, l);
+        }
         let r = if MONO {
             l
         } else {
-            let r = v.filt[1].process(mode, &v.coefs, r + c);
-            drive_n(r, dg, dn, damt)
+            let r = drive_n(r + c, dg, dn, damt);
+            let r = v.filt[1].process(mode, &v.coefs, r);
+            drive_n(r, eg, en, eamt)
         };
         let mut g = v.amp.next() * v.gain;
         v.gain += v.gain_inc;

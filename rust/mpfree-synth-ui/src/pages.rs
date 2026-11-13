@@ -457,12 +457,13 @@ mod tests {
             .map(|&i| PARAMS[i].name)
             .collect();
         assert_eq!(q, ["Threshold", "Full at", "Depth 1", "Depth 2"]);
-        // The Q-Links turn the filter page's first four knobs, not its Type.
+        // The Q-Links turn the filter page's first four knobs, not its Type:
+        // both kinds of grit side by side (Jay after live test 3).
         let q: Vec<&str> = qlink_targets(&pages[1], PARAMS)
             .iter()
             .map(|&i| PARAMS[i].name)
             .collect();
-        assert_eq!(q, ["Cutoff", "Resonance", "Drive", "Env amount"]);
+        assert_eq!(q, ["Cutoff", "Resonance", "Drive", "Distortion"]);
         // A page of choices still gets four.
         let lfo = qlink_targets(&pages[3], PARAMS);
         assert_eq!(lfo.len(), 4);
