@@ -749,7 +749,12 @@ impl WarpTab {
             let centre = selected
                 .and_then(|i| v.warp.pins.get(i))
                 .map_or(first + span / 2.0, |p| p.beat);
-            let new = (span / WHEEL_ZOOM.powi(delta)).clamp(MIN_SPAN, total * 1.02);
+            // Never `clamp` here: a sound shorter than MIN_SPAN beats (a
+            // 0.02 s hit at 120 BPM is 0.05 beats) puts the ceiling under
+            // the floor, and clamp panics on that (13 Nov live test).
+            let new = (span / WHEEL_ZOOM.powi(delta))
+                .max(MIN_SPAN)
+                .min(total * 1.02);
             if new >= total {
                 v.span = 0.0;
                 v.first = 0.0;

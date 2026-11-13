@@ -1764,7 +1764,7 @@ impl App {
                 self.step_item(self.selected, delta.signum())
             }
             _ if self.in_menu() => {
-                let last = self.items().len() as i32 - 1;
+                let last = (self.items().len() as i32 - 1).max(0);
                 self.select((self.selected as i32 + delta).clamp(0, last) as usize)
             }
             View::Pattern => vec![Effect::WorkspaceWheel(delta)],
