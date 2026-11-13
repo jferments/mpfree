@@ -172,8 +172,13 @@ static int v22_registered_write(const char *name){
        This invokes genuine U-Boot write chunking/limit/command logic,
        but the lower-level command transport is a zero-I/O stub. */
     v21_phase=13;
-    uint32_t(*write_fn)(uint32_t,uint32_t,uint32_t,uint32_t)=
-         (uint32_t(*)(uint32_t,uint32_t,uint32_t))V22_OWNER_WRITE;
+    /* Confirmed from Ghidra FUN_0011de50 signature: four uint32_t args.
+       The cast MUST match the declaration; otherwise -Werror rejects V22. */
+    typedef uint32_t (*v22_registered_write_fn)(
+        uint32_t interface_ptr, uint32_t start_sector,
+        uint32_t block_count, uint32_t source_ptr);
+    v22_registered_write_fn write_fn =
+        (v22_registered_write_fn)V22_OWNER_WRITE;
     uint32_t observed=write_fn((uint32_t)(V22_WRITE_BACKEND+0xc8u),
                                start,count,(uint32_t)V22_GUEST_DATA);
     uint32_t expected=(variant==2||variant==3||variant==4||
