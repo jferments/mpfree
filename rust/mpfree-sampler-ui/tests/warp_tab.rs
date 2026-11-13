@@ -287,6 +287,24 @@ fn the_wheel_zooms_round_the_pin_and_q_link_4_scrolls() {
     assert!(!s.ui.get::<KnobCard>(warp_tab::QLINKS[3]).unwrap().enabled);
 }
 
+/// 13 Nov live test: the wheel on a sound shorter than half a beat (the
+/// fewest beats the picture zooms to) panicked in `f64::clamp` and took
+/// the app down. Now it shows the whole sound and stays there.
+#[test]
+fn the_wheel_on_a_sound_shorter_than_half_a_beat_shows_it_whole() {
+    let mut s = sample();
+    let mut st = s.state.clone();
+    // About 0.02 s: 0.03 beats at 92 BPM.
+    st.region.end = st.region.start + 900;
+    s.tab.update(&mut s.ui, &st);
+    assert!(s.ui.get::<WarpView>(VIEW).unwrap().total() < 0.5);
+    for d in [1, 1, 3, -1, -4, 2] {
+        s.tab.wheel(&mut s.ui, &st, d);
+        let v = s.ui.get::<WarpView>(VIEW).unwrap();
+        assert_eq!(v.span, 0.0, "after {d}: the whole sound stays shown");
+    }
+}
+
 #[test]
 fn moving_the_start_on_the_wave_tab_keeps_the_pins_on_their_hits() {
     let mut s = sample();

@@ -2302,7 +2302,7 @@ impl Player {
             }
             ToUi::TouchWheel(d) => {
                 if let Some(l) = self.ui.get_mut::<TuneList>(touch_dev::TUNE) {
-                    let last = l.len() as i32 - 1;
+                    let last = (l.len() as i32 - 1).max(0);
                     l.selected = (l.selected as i32 + d).clamp(0, last) as usize;
                 }
             }

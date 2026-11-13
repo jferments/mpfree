@@ -317,7 +317,7 @@ impl Widget for MasterBar {
         if self.limit_db > 0.05 {
             let gh = (self.limit_db / LIMIT_SCALE_DB * bars.h as f32) as i32;
             cx.canvas
-                .fill_rect(Rect::new(gx, bars.y, 5, gh.clamp(3, bars.h)), t.warn);
+                .fill_rect(Rect::new(gx, bars.y, 5, gh.clamp(3, bars.h.max(3))), t.warn);
         }
         let fy = MasterBar::y_of(bars, self.fader_db);
         cx.canvas
