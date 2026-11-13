@@ -282,6 +282,36 @@ fn a_dropped_mask_is_uploaded_again_when_it_comes_back() {
     assert!(r.read_native(&gpu) == before);
 }
 
+/// Live test 3's garbled panel: pages recorded apart number their masks
+/// from 0 again, so one renderer playing page after page drew the last
+/// page's glyphs under the new page's numbers. With `forget_all` between
+/// stores, the second page matches the software path.
+#[test]
+fn a_page_from_another_store_draws_its_own_glyphs_after_forget_all() {
+    let gpu = gpu();
+    let (_, first) = software_of(800, 1280, Rotation::Deg270, &text_page);
+    let (want, second) = software_of(800, 1280, Rotation::Deg270, &|c, f| {
+        let (w, h) = c.size();
+        c.fill_rect(Rect::new(0, 0, w, h), Color::rgb(0x0E1118));
+        for row in 0..12 {
+            let text = format!("Other words {row}: xyzzy QWERTY {}", row * 13);
+            f.face(FontId::Bold)
+                .draw(c, 18.0, 16, 30 + row * 40, Color::rgb(0xF0F0F0), &text);
+        }
+    });
+    let mut r = Renderer::new(&gpu, 800, 1280, Rotation::Deg270).unwrap();
+    r.play(&gpu, first.ops(), first.store(), &[]);
+    // As the panel bench did: the next page's list straight after. Its
+    // mask numbers collide with the first page's, so it is wrong.
+    r.play(&gpu, second.ops(), second.store(), &[]);
+    let stale = compare(&want, &r.read_native(&gpu));
+    assert!(stale.max > 3, "the collision this test is about: {stale:?}");
+    r.forget_all(&gpu);
+    r.play(&gpu, second.ops(), second.store(), &[]);
+    let d = compare(&want, &r.read_native(&gpu));
+    assert!(d.max <= 3 && d.over_1 * 1000 < want.len(), "{d:?}");
+}
+
 #[test]
 fn a_box_narrower_than_nothing_draws_nothing_and_does_not_panic() {
     // A widget laid out narrower than it draws can ask for a box of
