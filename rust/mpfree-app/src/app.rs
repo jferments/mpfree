@@ -130,6 +130,11 @@ pub enum View {
     /// press on a macro card in the Q-Link column (layout spec 4b). Not a
     /// tab; its Back goes back to the page it opened over.
     Macros,
+    /// The browser (mpfree-browser-ui) over the page under the top bar:
+    /// BROWSE opens and closes it (controls decision 13; Jay's ask after
+    /// live test 3). Projects (New, Open, Save), samples and the rest. Not
+    /// a tab.
+    Browser,
 }
 
 /// The header's tabs, in the order of the approved layout spec
@@ -194,7 +199,8 @@ impl View {
             | View::System
             | View::Mixer
             | View::Chain
-            | View::Macros => None,
+            | View::Macros
+            | View::Browser => None,
             v => Some(v),
         }
     }
@@ -235,6 +241,7 @@ impl View {
             View::Mixer => "Mixer",
             View::Chain => "FX chain",
             View::Macros => "Macros",
+            View::Browser => "Browser",
         }
     }
 }
@@ -383,6 +390,8 @@ pub struct ButtonMap {
     pub track_mute: Option<u8>,
     /// The data dial's push, found with the control mapper.
     pub data_push: Option<u8>,
+    /// BROWSE (SHIFT: save the project), found with the control mapper.
+    pub browse: Option<u8>,
 }
 
 impl ButtonMap {
@@ -497,6 +506,7 @@ impl ButtonMap {
             Job::QLink => self.q_link,
             Job::TrackMute => self.track_mute,
             Job::DataPush => self.data_push,
+            Job::Browse => self.browse,
         }
     }
 
@@ -527,6 +537,7 @@ impl ButtonMap {
             Job::QLink => &mut self.q_link,
             Job::TrackMute => &mut self.track_mute,
             Job::DataPush => &mut self.data_push,
+            Job::Browse => &mut self.browse,
         };
         *slot = code;
     }
@@ -584,10 +595,14 @@ pub struct Settings {
     /// Prefs "Loop memory": the looper's size from the next start.
     pub loop_memory: LoopMemory,
     /// The metronome (click while counting in and recording): off by
-    /// default (live test 3), Play's options or SHIFT + PLAY START.
+    /// default (live test 3), Play's options or SHIFT + PLAY START. How
+    /// you like to work, so kept in Prefs, not the project.
     pub metronome: bool,
     /// The click's level, dBFS: [`METRONOME_DBS`].
     pub metronome_db: i8,
+    /// Prefs "At start": open the last project (true) or start with a new
+    /// one (the default). The screen opens it once the sound is going.
+    pub open_last: bool,
 }
 
 /// The click levels Play's options step through, dBFS. -24 by default;
@@ -630,6 +645,7 @@ impl Default for Settings {
             loop_memory: LoopMemory::default(),
             metronome: false,
             metronome_db: crate::time::CLICK_DB as i8,
+            open_last: false,
         }
     }
 }
@@ -698,6 +714,8 @@ pub enum Item {
     /// Prefs and the looper's options: the looper's size from the next
     /// start.
     LoopMemory,
+    /// Prefs: what opens at start, a new project or the last one.
+    AtStart,
     /// Play's options: the metronome on or off, and its level.
     Metronome,
     MetronomeLevel,
@@ -891,8 +909,12 @@ pub enum Effect {
     /// has them, otherwise the Pads tab's Pad view (the audio loop knows
     /// which).
     ProgEdit,
-    /// A control for the Pads tab's browser while it shows (Browse).
+    /// A control for the browser while it shows (BROWSE, or the Pads
+    /// tab's Browse view).
     Browse(BrowseKey),
+    /// SHIFT + BROWSE: save the project (the audio loop gathers its
+    /// engines' parts and the screen saves them).
+    SaveProject,
     /// The metronome on or off, and its level in dBFS (SHIFT + PLAY
     /// START, Play's options, and at the start from the saved settings).
     Metronome {
@@ -919,6 +941,9 @@ pub enum BrowseKey {
     Enter,
     /// PLAY: hear the sound picked.
     Play,
+    /// ERASE: the item picked to the Trash (asks first). The full browser
+    /// only.
+    Erase,
 }
 
 pub struct App {
@@ -1065,11 +1090,17 @@ pub struct App {
     /// Prefs' "Loop memory" says "(next start)" while the setting differs.
     loop_memory_now: LoopMemory,
     sample_rate: u32,
-    /// Prefs, a button or a Synth tab option changed since the last look
-    /// (`saved.rs`), and the text last handed to the store for "app",
-    /// "map" and "synth".
+    /// Prefs or a button changed since the last look (`saved.rs`), and
+    /// the text last handed to the store for "app" and "map".
     save_dirty: bool,
-    saved: [String; 3],
+    saved: [String; 2],
+    /// Something the project keeps (a Synth tab option, the arp) changed
+    /// with the controls since the audio loop last looked: the screen
+    /// counts the work as unsaved ([`App::take_project_edit`]).
+    project_edit: bool,
+    /// The arps as the project last saw them (`arp/part.rs`): any change
+    /// from the panel, its options, the workspace or a Q-Link is an edit.
+    arp_seen: u64,
 }
 
 /// Prefs' main rows. The touch screen settings sit in their own section,
@@ -1087,6 +1118,7 @@ const PREFS_ROWS: &[Item] = &[
     Item::LineInput,
     Item::SystemInfo,
     Item::Appearance,
+    Item::AtStart,
     Item::TouchSection,
 ];
 /// Prefs' touch screen section.
@@ -1171,6 +1203,8 @@ impl App {
             sample_rate,
             save_dirty: false,
             saved: Default::default(),
+            project_edit: false,
+            arp_seen: 0,
         };
         // Every track's arp starts on the first pattern, as the panel does.
         for t in 0..mpfree_seq::MAX_TRACKS {
@@ -1178,9 +1212,7 @@ impl App {
             app.track_ui[t].pattern = pattern;
         }
         app.update_engine();
-        // The Synth tab's options start at their defaults: nothing to save
-        // until one changes.
-        app.saved[saved::SYNTH_SLOT] = app.synth_settings().to_text();
+        app.arp_seen = app.arp_fingerprint();
         app
     }
 
@@ -1298,6 +1330,9 @@ impl App {
         fx.push(Effect::Looper(LoopAction::Command(
             LoopCommand::SetLatency(s.loop_latency_now()),
         )));
+        fx.push(Effect::Looper(LoopAction::Command(LoopCommand::SetLevel(
+            10f32.powf(s.loop_level_db / 20.0),
+        ))));
         // Buttons not known yet are found with the control mapper (Debug
         // mode), at the owner's pace: nothing asks for them at power-on.
         fx.push(Effect::Show(self.view));
@@ -1608,6 +1643,11 @@ impl App {
         } else if Some(note) == self.map.play_start {
             self.arps.engine_at_mut(self.track).resume();
             fx.push(Effect::Time(TimeAction::Transport(Command::PlayStart)));
+        } else if Some(note) == self.map.browse && shift {
+            // SHIFT + BROWSE: save the project, from any page.
+            fx.push(Effect::SaveProject);
+        } else if Some(note) == self.map.browse {
+            fx.extend(self.toggle(View::Browser));
         } else if Some(note) == self.map.track_mix {
             fx.extend(self.toggle_mixer(shift));
         } else if let Some(e) = self.mode_button(note, shift) {
@@ -1741,8 +1781,12 @@ impl App {
         let fx = if is(m.erase) {
             // ERASE and SHIFT + ERASE wait for live erase and the FX lock
             // mode (with a step held); alone they do nothing. Held with
-            // SHIFT, TAP TEMPO opens the Console.
+            // SHIFT, TAP TEMPO opens the Console. In the browser, ERASE
+            // moves the item picked to the Trash (asking first).
             self.erase_held = true;
+            if self.view == View::Browser && !shift {
+                return Some(vec![Effect::Browse(BrowseKey::Erase)]);
+            }
             return Some(Vec::new());
         } else if is(m.main) {
             // MAIN: Play; on Play, the next view (All, Beats, Loop, Drum).
@@ -1982,6 +2026,8 @@ impl App {
                 scroll: true,
             }],
             View::Synth if self.shift => vec![Effect::SynthPage(delta.signum())],
+            View::Browser if self.shift => vec![Effect::Browse(BrowseKey::Places(delta.signum()))],
+            View::Browser => vec![Effect::Browse(BrowseKey::Wheel(delta))],
             View::Pads if self.pads_browse && self.shift => {
                 vec![Effect::Browse(BrowseKey::Places(delta.signum()))]
             }
@@ -2209,7 +2255,7 @@ impl App {
 
     /// The wheel, its push, - / + and PLAY go to the Pads tab's browser.
     fn browsing(&self) -> bool {
-        self.view == View::Pads && self.pads_browse
+        (self.view == View::Pads && self.pads_browse) || self.view == View::Browser
     }
 
     /// A page whose rows the wheel, - / + and the wheel's push work
@@ -2624,6 +2670,15 @@ impl App {
                     format!("{} (next start)", s.loop_memory.row(self.sample_rate))
                 },
             ),
+            Item::AtStart => (
+                "At start",
+                if s.open_last {
+                    "Last project"
+                } else {
+                    "New project"
+                }
+                .to_string(),
+            ),
             Item::Arp(a) => self.arp_item_text(a),
             Item::Synth(a) => self.synth_item_text(a),
         }
@@ -2788,6 +2843,12 @@ impl App {
                 "of stereo. It is kept in memory from the",
                 "start, so a new size applies from the next",
                 "start. The Looper tab shows what is left.",
+            ],
+            Item::AtStart => vec![
+                "What MPFree opens when it starts.",
+                "New project: an empty song (the default).",
+                "Last project: the project you last saved",
+                "or opened, once the sound is going.",
             ],
             Item::Arp(a) => Self::arp_item_help(a),
             Item::Synth(a) => Self::synth_item_help(a),
@@ -2991,6 +3052,7 @@ impl App {
                     )));
                 }
             }
+            Item::AtStart => s.open_last = d > 0,
             Item::LoopMemory => {
                 let next = cycle(&LoopMemory::ALL, s.loop_memory, d);
                 if next != s.loop_memory {
@@ -4057,8 +4119,8 @@ mod tests {
     }
 
     #[test]
-    fn the_synth_options_are_kept_between_starts() {
-        use crate::synth::{Builtin, Engine};
+    fn the_synth_options_go_in_the_project_not_in_prefs() {
+        use crate::synth::{Builtin, Engine, PadSettings};
         use mpfree_arp::scale::pads::{InKeyRows, PadLayout};
         use mpfree_arp::scale::SCALES;
         use mpfree_store::Settings;
@@ -4073,13 +4135,10 @@ mod tests {
                 .position(|&i| i == Item::Synth(a))
                 .unwrap()
         };
-        // No restore here, so "app" and "map" are handed out once; the
-        // Synth tab's options at their defaults are not.
+        // No restore here, so "app" and "map" are handed out once.
         app.save_dirty = true;
-        assert!(
-            !app.take_saves().iter().any(|(o, _)| *o == saved::SYNTH),
-            "nothing changed yet"
-        );
+        app.take_saves();
+        assert!(!app.take_project_edit(), "nothing changed yet");
         let mut step = |a: SynthItem, d: i32, times: usize| {
             for _ in 0..times {
                 app.step_item(row(a), d);
@@ -4093,12 +4152,10 @@ mod tests {
         step(SynthItem::Tuning, 1, Builtin::ALL.len());
         step(SynthItem::TuningRoot, 1, 2);
         step(SynthItem::A4, -1, 8);
-        let saves = app.take_saves();
-        assert_eq!(
-            saves.iter().map(|(o, _)| *o).collect::<Vec<_>>(),
-            vec![saved::SYNTH]
-        );
-        let kept = saves[0].1.clone();
+        assert!(app.take_saves().is_empty(), "they aren't Prefs");
+        assert!(app.take_project_edit(), "they are the project's");
+        assert!(!app.take_project_edit(), "said once");
+        let kept = app.synth_settings();
         for (k, v) in [
             ("engine", "fm"),
             ("scale", SCALES[2].name),
@@ -4112,14 +4169,14 @@ mod tests {
         ] {
             assert_eq!(kept.get_str(k), Some(v), "{k}");
         }
-        // The bank playing isn't kept, so switching banks saves nothing.
+        // The bank playing isn't kept, so switching banks is no edit.
         app.synth_bank(2);
-        assert!(app.take_saves().is_empty());
+        assert!(!app.take_project_edit());
 
-        // The next start: every option comes back, on bank A.
+        // Opening the project: every option comes back, on the bank playing.
         let mut next = ready();
         next.tuning_files = files.clone();
-        let (notes, fx) = next.restore_synth(&kept);
+        let (notes, fx) = next.open_synth(&kept);
         let mut want = app.synth_pads;
         want.bank = 0;
         assert_eq!(next.synth_pads, want);
@@ -4133,28 +4190,23 @@ mod tests {
         assert_eq!(fx, vec![Effect::SynthPads(want)]);
         assert_eq!(notes.len(), 1, "{notes:?}");
         assert!(
-            notes[0].starts_with("saved synth options: FM, scale ")
+            notes[0].starts_with("synth options: FM, scale ")
                 && notes[0].ends_with("tuning werckmeister3 (root D, A4 432 Hz)"),
             "{notes:?}"
         );
-        let synth_saves = |a: &mut App| {
-            a.save_dirty = true;
-            a.take_saves()
-                .into_iter()
-                .filter(|(o, _)| *o == saved::SYNTH)
-                .count()
-        };
-        assert_eq!(synth_saves(&mut next), 0, "what was read is what's kept");
+        assert!(!next.take_project_edit(), "an open is no edit");
+        assert!(next.take_saves().is_empty(), "nor a Prefs change");
 
-        // A tuning file or scale that's gone, and words not understood, are
-        // left out and said; the rest comes back.
-        let mut gone = ready();
+        // Another project whose tuning file or scale is gone, or with words
+        // not understood: those are said and left at the defaults, never
+        // the last project's.
+        next.tuning_files.clear();
         let mut odd = kept.clone();
         odd.set_str("engine", "banjo");
         odd.set_str("scale", "No such scale");
         odd.set_i64("a4", 900);
         odd.set_str("bank-c", "sideways");
-        let (notes, _) = gone.restore_synth(&odd);
+        let (notes, _) = next.open_synth(&odd);
         let left = notes.last().unwrap();
         for k in [
             "engine = banjo",
@@ -4165,28 +4217,32 @@ mod tests {
         ] {
             assert!(left.contains(k), "{k}: {notes:?}");
         }
-        let p = gone.synth_pads;
+        let p = next.synth_pads;
+        let fresh = PadSettings::default();
         assert_eq!(
-            (p.engine, p.scale, p.tuning.file),
-            (Engine::Poly, None, None)
+            (p.engine, p.scale, p.tuning.file, p.tuning.builtin),
+            (Engine::Poly, None, None, fresh.tuning.builtin)
         );
         assert_eq!(
             (p.tuning.a4_hz, p.tuning.root, p.rows),
             (440, 2, InKeyRows::Fourths)
         );
-        assert_eq!(
-            synth_saves(&mut gone),
-            1,
-            "the next save writes what is in use"
-        );
+        assert_eq!(p.banks[2].0, fresh.banks[2].0);
+        assert_eq!(next.pad_scale_pick, 0);
 
-        // The owner's own scales come back by name; nothing kept, nothing done.
+        // A project with no options at all (New): the defaults.
+        let (_, fx) = next.open_synth(&Settings::default());
+        assert_eq!(fx, vec![Effect::SynthPads(fresh)]);
+        assert_eq!((next.pad_scale_pick, next.pad_scale_root), (0, 0));
+
+        // The owner's own scales come back by name; nothing given, nothing
+        // done.
         let mut own = ready();
         own.custom_scales
             .push(("Mine".to_string(), SCALES[3].mask, SCALES[3].down));
         let mut mine = Settings::default();
         mine.set_str("scale", "Mine");
-        own.restore_synth(&mine);
+        own.open_synth(&mine);
         assert_eq!(own.pad_scale_pick, SCALES.len());
         assert!(own.synth_pads.scale.is_some());
         assert_eq!(
@@ -4405,6 +4461,38 @@ mod tests {
         app.set_pads_browse(true);
         app.tab(0);
         assert!(!press(&mut app, button::PLAY).contains(&Effect::Browse(BrowseKey::Play)));
+    }
+
+    #[test]
+    fn browse_opens_the_browser_over_the_page_and_shift_browse_saves() {
+        let mut app = ready();
+        // Not found yet: BROWSE does nothing.
+        assert!(press(&mut app, 120).is_empty());
+        app.map.browse = Some(120);
+        app.map.erase = Some(121);
+        app.map.data_push = Some(111);
+        app.tab(2);
+        assert_eq!(app.view(), View::Arrange);
+        assert_eq!(press(&mut app, 120), vec![Effect::Show(View::Browser)]);
+        assert_eq!(View::Browser.tab_index(false), None);
+        // The wheel, its push, SHIFT + wheel and ERASE are the browser's.
+        assert_eq!(app.wheel(1), vec![Effect::Browse(BrowseKey::Wheel(1))]);
+        assert_eq!(press(&mut app, 111), vec![Effect::Browse(BrowseKey::Push)]);
+        assert_eq!(press(&mut app, 121), vec![Effect::Browse(BrowseKey::Erase)]);
+        app.button(button::SHIFT, true, 0.0);
+        assert_eq!(app.wheel(-2), vec![Effect::Browse(BrowseKey::Places(-1))]);
+        // SHIFT + BROWSE saves, from here or any page, and stays.
+        assert_eq!(press(&mut app, 120), vec![Effect::SaveProject]);
+        app.button(button::SHIFT, false, 0.0);
+        assert_eq!(app.view(), View::Browser);
+        // BROWSE again: back to the page it opened over.
+        assert_eq!(press(&mut app, 120)[0], Effect::Show(View::Arrange));
+        app.button(button::SHIFT, true, 0.0);
+        assert_eq!(press(&mut app, 120), vec![Effect::SaveProject]);
+        app.button(button::SHIFT, false, 0.0);
+        assert_eq!(app.view(), View::Arrange);
+        // ERASE elsewhere is still ERASE.
+        assert!(!press(&mut app, 121).contains(&Effect::Browse(BrowseKey::Erase)));
     }
 
     #[test]
@@ -5099,6 +5187,93 @@ mod tests {
         assert_eq!(gaps(false, Some((240, 75)), true), straight);
         let free = gaps(true, Some((240, 75)), false);
         assert!(free.iter().all(|&g| g.abs_diff(5512) <= 1), "{free:?}");
+    }
+
+    #[test]
+    fn the_arps_go_in_the_project_and_an_open_puts_them_back() {
+        let mut app = ready();
+        assert!(!app.take_project_edit(), "nothing changed yet");
+        // Track 1: Arp mode at 1/8, Down. Then track 3: D Dorian (or the
+        // second scale), its own swing, latched.
+        app.toggle_panel();
+        app.arp_action(ArpAction::Mode(Mode::Arp));
+        app.arp_action(ArpAction::Rate(Rate::Eighth));
+        app.arp_action(ArpAction::Order(Order::Down));
+        assert!(app.take_project_edit(), "an arp change is an edit");
+        app.set_track(2);
+        assert!(!app.take_project_edit(), "arming a track isn't");
+        app.step_arp_item(ArpItem::Scale, 1);
+        app.step_arp_item(ArpItem::Root, 1);
+        app.step_arp_item(ArpItem::Root, 1);
+        app.step_arp_item(ArpItem::SwingFrom, -1);
+        app.arp_action(ArpAction::Rate(Rate::SixteenthTriplet));
+        app.arp_action(ArpAction::Latch);
+        assert!(app.take_project_edit());
+        let part = app.arp_part();
+        assert!(
+            part.starts_with("mpfree-arp 1\ntrack 1\nmode = arp\n"),
+            "{part}"
+        );
+        for line in [
+            "rate = 1/8",
+            "order = down",
+            "root = D",
+            "swing-from = arp",
+            "rate = 1/16T",
+            "track 16",
+        ] {
+            assert!(part.lines().any(|l| l == line), "{line}: {part}");
+        }
+
+        // Another start opens it: every track's arp as it was, Latch off.
+        let mut next = ready();
+        let (notes, fx) = next.open_arp(Some(&part));
+        assert!(notes.is_empty(), "{notes:?}");
+        assert!(fx.iter().any(|e| matches!(e, Effect::Arp(_))));
+        assert_eq!(next.arp_fingerprint(), app.arp_fingerprint());
+        assert!(!next.take_project_edit(), "an open isn't an edit");
+        assert!(!next.latched);
+        // Track 3 isn't armed there: its arp plays as it did, at 1/16T.
+        let (a, b) = (
+            app.arps.engine_at(2).settings(),
+            next.arps.engine_at(2).settings(),
+        );
+        assert_eq!(
+            (b.mode, b.rate, b.scale),
+            (a.mode, Rate::SixteenthTriplet, a.scale)
+        );
+        assert!(b.scale.is_some_and(|s| s.root == 2));
+        assert_eq!(next.arps.engine_at(2).latch(), LatchMode::Off);
+        // The armed track (1) takes its own back.
+        assert_eq!(
+            (next.arp_mode, next.settings.rate, next.arp.order),
+            (Mode::Arp, Rate::Eighth, Order::Down)
+        );
+        next.set_track(2);
+        assert_eq!(next.scale_root, 2);
+        assert!(!next.swing_from_transport);
+
+        // New: every arp at its default, not the last project's.
+        next.open_arp(None);
+        assert_eq!(next.arp_fingerprint(), ready().arp_fingerprint());
+
+        // Words not understood are said and left at their defaults; a part
+        // that isn't one is refused whole.
+        let (notes, _) = next.open_arp(Some(
+            "mpfree-arp 1\ntrack 2\ngate = 300\nscale = Nope\nmode = arp\n",
+        ));
+        assert_eq!(notes.len(), 1, "{notes:?}");
+        assert!(
+            notes[0].contains("track 2 gate = 300") && notes[0].contains("track 2 scale = Nope"),
+            "{notes:?}"
+        );
+        next.set_track(1);
+        assert_eq!((next.arp_mode, next.arp.gate), (Mode::Arp, 50));
+        let (notes, _) = next.open_arp(Some("junk"));
+        assert!(
+            notes[0].starts_with("project: the arps weren't opened"),
+            "{notes:?}"
+        );
     }
 
     #[test]

@@ -1,8 +1,10 @@
 # mpfree-gpu
 
 Plays mpfree-ui display lists on the GPU with OpenGL ES 2, straight into the
-panel's own orientation. It is step G4 of the performance plan's "GPU drawing
-and compute" tab, and the renderer behind
+panel's own orientation and, through DRM/KMS page flips, straight into the
+buffers the panel shows. `mpfree-gpu-screen` draws the app's screen that way
+in a process of its own (step G4 of the performance plan's "GPU drawing and
+compute" tab). It is the renderer behind
 [the UI's GPU seam](../../docs/dev/design/ui-architecture.md#drawing-on-the-gpu).
 
 - Every screen draws through `mpfree_ui::Canvas`; `mpfree_ui::record::Recorder`
@@ -26,11 +28,86 @@ and compute" tab, and the renderer behind
   atlas is drawn alone. Both are counted in `DrawStats` (`atlas_cleared`,
   `masks_alone`) and the benchmark prints them; neither happened on the
   sample pages.
+- Most pixels are plain: a fill, or the inside of a rounded rectangle or an
+  outline. A quad marked plain skips the shader's coverage maths and writes
+  its colour. A rounded rectangle is drawn as three plain bands and four
+  shaded corners, and an outline as four plain edges and four shaded corners
+  (a whole shaded quad only when it is too small to split). The picture is
+  the same; on the sample pages the shaded pixels per page fell from about
+  3 million to 50,000 to 100,000. `DrawStats` counts plain, shaded and
+  copied pixels.
+- Only what changed is drawn: `list_damage` finds the rectangles a list
+  touches (up to 16, merged), and drawing is cut to them (a scissor), so the
+  GPU's fragment work covers the change, not the screen.
 
 It is its own Cargo workspace, outside `rust/Cargo.toml`, because it is a
 normal dynamically linked program (it loads the system's EGL), while the app
 is one static program. On the device it is meant to run as its own process,
 so a crash in the GPU driver cannot stop the sound.
+
+## Straight to the panel (page flips)
+
+Live test 3 (13 Nov) timed the GPU's way to the panel at 63 ms a frame
+against software's 32 ms: the GPU drew into its own memory, the frame was
+read back and copied to `/dev/fb0`, and every pixel paid for coverage
+maths. `kms` and `scanout` remove the read-back and the copy:
+
+- `kms::KmsDisplay` (raw DRM ioctls on `/dev/dri/card0`, no libdrm) finds
+  the lit connector and its CRTC, makes three screen buffers in RAM (dumb
+  buffers at the panel's native 800 x 1280, XRGB8888) and hands each to the
+  GPU as a dma-buf. The first frame shown takes the display (DRM master)
+  and points the CRTC at a buffer in the mode it already runs; after that
+  each frame is a page flip, and the next frame waits for the flip to
+  happen. It saves the CRTC as it found it (framebuffer, position, mode) and
+  puts it back when it is closed or dropped. If the process is killed
+  instead, the kernel gives the screen back to the framebuffer when the
+  display's last file closes; a power cycle undoes everything. Nothing is
+  stored.
+- `scanout::import_dmabuf` turns a screen buffer into a texture the GPU
+  draws into (`EGL_EXT_image_dma_buf_import`), and `Scanout` shows two in
+  turn: while one is on the panel the other is drawn, so nothing is seen
+  half drawn. Each buffer keeps the rectangles it missed while the other
+  was shown, and copies them from the front buffer in the same pass before
+  the new list is drawn.
+- Memory row 0 is the panel's top row: the picture is drawn in the panel's
+  own portrait orientation, with no flip.
+
+`mpfree-gpu-bench flip` and `mpfree-gpu-screen` both check, before anything
+is shown, that the GPU's picture is in the screen buffer's own memory as
+drawn (read back once through the buffer's mapping), and stop if not.
+
+## The screen process (G4)
+
+`mpfree-gpu-screen` draws the app's screen. The app (`mpfree app
+--gpu-screen PROGRAM`, or `play`) starts it with `--rotation`, sends each
+frame's display list down its stdin in the wire format of
+`mpfree_ui::record`, and reads one answer per frame from its stdout
+(`mpfree_ui::gpu_screen` has the protocol and the client):
+
+- `ready NWxNH LWxLH HOW` when it is set up;
+- `shown SEQ DRAW_US GPU_US WAIT_US PLAIN SHADED COPIED` for a frame shown;
+- `same SEQ` for a frame that changed nothing;
+- `fail: REASON` when it stops (it puts the screen back first).
+
+A crash or hang in the GPU's driver ends this process, never the app or its
+sound. The app notices the process gone, failed, or 1.5 s without an
+answer, stops it, and draws in software from then on: counted, logged and
+shown on the Timing panel's Screen row (`rust/mpfree-app/src/drawing.rs`).
+It does not try the GPU again until the app starts again.
+
+A pipe, not shared memory: after a page's first frame a list is 0 to 62 KB,
+which a pipe copies in microseconds, and a pipe brings order and end of file
+(the app gone) for free.
+
+`--offscreen [--size WxH] [--last-frame FILE]` draws into the GPU's own
+memory and shows nothing, for tests. `--test-fail-after N` and
+`--test-stall-after N` fail or hang after N frames, for testing the app's
+fallback. `tests/screen_process.rs` runs it as the app does and checks that
+every frame is answered (also when several arrive at once), that the last
+frame is software's picture (at most 3 levels apart; 1 on llvmpipe), and
+that a failure and a hang are each noticed. `MPFREE_GPU_SCREEN=PROGRAM`
+points those tests at another build: on 13 Nov they passed against the ARM
+build run under qemu-arm with Ubuntu's ARM Mesa (llvmpipe).
 
 ## Test it on the workstation
 
@@ -69,6 +146,16 @@ cargo run --release --manifest-path rust/mpfree-gpu/Cargo.toml --bin mpfree-gpu-
 - `compute [--iterations N]` runs an FIR filter over a stereo block on the
   GPU (upload, run, read back; OpenGL ES 3.1 compute shader) and on one CPU
   core, for one period with 64 and 1024 taps and for 32 periods.
+- `flip DIR [--hold-ms N] [--frames N] [--card PATH]` draws on the GPU
+  straight into buffers the panel shows (above). **It changes what the
+  screen shows, in RAM.** With the screen untouched it checks the first
+  page in screen buffer 0's memory and the GPU's picture against
+  software's; then it prints `SCREEN CHANGES NOW`, shows each page for N ms
+  (1500), and times the whole page and a tick's redraw N times (60) the
+  GPU's way (into the next buffer, then a flip) and software's (draw, turn
+  and copy into a screen buffer that is never shown), with the CPU each
+  takes. It puts the screen back and says `the screen is back as it was`,
+  also on Ctrl-C, SIGTERM, SIGHUP or a failure.
 - `panel DIR [--hold-ms N] [--frames N]` puts the GPU's pictures on the
   panel: each page is drawn on the GPU, read back and written to
   `/dev/fb0` (through `mpfree_ui::fb::FbTarget`, as the app's screen
@@ -89,23 +176,27 @@ linked: it opens the MPC's `libEGL.so.1` and `libGLESv2.so.2` itself):
 sudo apt-get install gcc-arm-linux-gnueabihf                  # once
 CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER=arm-linux-gnueabihf-gcc \
   cargo build --release --manifest-path rust/mpfree-gpu/Cargo.toml \
-  --target armv7-unknown-linux-gnueabihf --bin mpfree-gpu-bench
+  --target armv7-unknown-linux-gnueabihf --bins
 ```
 
-That build loads with `/lib/ld-linux-armhf.so.3`, links only `libc.so.6` and
-`libgcc_s.so.1`, and asks for nothing newer than glibc 2.34 (the MPC has
-2.39). `tools/mpc-one/host_gpu_mpc.py` checks all that, copies it and the
-pages into the test build's RAM, and runs it there: offscreen, then (step 6)
-on the panel. On 2026-11-12 the ARM build ran every step under qemu-arm
+Both programs (`mpfree-gpu-bench` and `mpfree-gpu-screen`) load with
+`/lib/ld-linux-armhf.so.3`, link only `libc.so.6` and `libgcc_s.so.1`, and
+ask for nothing newer than glibc 2.34 (the MPC has 2.39).
+`tools/mpc-one/host_gpu_mpc.py` checks all that, copies the benchmark and
+the pages into the test build's RAM, and runs it there: offscreen, then
+(step 6) on the panel, then, only with `--flip` and when no program has the
+display open, `flip` (step 7). On 2026-11-12 the ARM build ran every step under qemu-arm
 with Ubuntu's ARM Mesa (llvmpipe), with the GPU's pictures within 2 levels
 of software and, for the panel step, a fake framebuffer that read back what
 was written; the times there are an emulator's and mean nothing.
 
 ## Not yet
 
-- The renderer as its own process on the MPC, fed the display list through
-  shared memory (the wire format in `mpfree_ui::record` is that feed).
-- Showing the frame on the panel without reading it back (DRM/KMS page
-  flips): it changes the display settings in RAM and waits for Jay's go.
-  Until then the panel gets the GPU's frame by reading it back and copying
-  it, as `panel` does.
+- On the MPC: `flip` (step 7 of the device tool) and then the app with
+  `--gpu-screen` have not run yet; each waits for Jay's go. The app's run
+  needs `mpfree-gpu-screen` copied beside the app on the stick.
+- Plain pixels are still drawn about three times over on a busy page
+  (panels over the background); drawing front to back with a depth test
+  could skip the hidden ones.
+- The third screen buffer is made but not used; a frame never waits for
+  more than one flip today.

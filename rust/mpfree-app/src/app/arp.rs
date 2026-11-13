@@ -69,6 +69,8 @@ pub fn built_in_patterns() -> Vec<(String, Pattern)> {
 /// octaves have few values, so they need a longer turn.
 const QLINK_UNITS: [i32; 4] = [3, 1, 1, 4];
 /// The panel's mode tabs, and the modes NOTE REPEAT can turn on.
+mod part;
+
 const MODES: [Mode; 4] = [Mode::Direct, Mode::Repeat, Mode::Arp, Mode::Pattern];
 const GENERATING: [Mode; 3] = [Mode::Repeat, Mode::Arp, Mode::Pattern];
 const MUTATE_AMOUNT: u8 = 35;
@@ -1200,6 +1202,37 @@ impl Default for TrackUi {
 }
 
 impl App {
+    /// The armed track's arp as the panel holds it now.
+    fn current_ui(&self) -> TrackUi {
+        TrackUi {
+            arp: self.arp,
+            arp_mode: self.arp_mode,
+            rate: self.settings.rate,
+            latched: self.latched,
+            scale_root: self.scale_root,
+            scale_pick: self.scale_pick,
+            swing_from_transport: self.swing_from_transport,
+            pattern_index: self.pattern_index,
+            pattern: self.pattern,
+            mutations: self.mutations,
+        }
+    }
+
+    /// The panel takes `u` for the armed track, and its engine follows.
+    fn take_ui(&mut self, u: TrackUi) -> Vec<Effect> {
+        self.arp = u.arp;
+        self.arp_mode = u.arp_mode;
+        self.settings.rate = u.rate;
+        self.latched = u.latched;
+        self.scale_root = u.scale_root;
+        self.scale_pick = u.scale_pick;
+        self.swing_from_transport = u.swing_from_transport;
+        self.pattern_index = u.pattern_index;
+        self.mutations = u.mutations;
+        let _ = self.set_pattern(u.pattern);
+        self.arp_changed()
+    }
+
     /// The armed track, whose arp the pads play and the arp screens show.
     pub fn track(&self) -> usize {
         self.track
@@ -1227,31 +1260,9 @@ impl App {
                 }
             }
         }
-        self.track_ui[self.track] = TrackUi {
-            arp: self.arp,
-            arp_mode: self.arp_mode,
-            rate: self.settings.rate,
-            latched: self.latched,
-            scale_root: self.scale_root,
-            scale_pick: self.scale_pick,
-            swing_from_transport: self.swing_from_transport,
-            pattern_index: self.pattern_index,
-            pattern: self.pattern,
-            mutations: self.mutations,
-        };
+        self.track_ui[self.track] = self.current_ui();
         self.track = track;
-        let u = self.track_ui[track];
-        self.arp = u.arp;
-        self.arp_mode = u.arp_mode;
-        self.settings.rate = u.rate;
-        self.latched = u.latched;
-        self.scale_root = u.scale_root;
-        self.scale_pick = u.scale_pick;
-        self.swing_from_transport = u.swing_from_transport;
-        self.pattern_index = u.pattern_index;
-        self.mutations = u.mutations;
-        let _ = self.set_pattern(u.pattern);
-        let mut fx = self.arp_changed();
+        let mut fx = self.take_ui(self.track_ui[track]);
         fx.push(Effect::Note(format!(
             "arp: track {} ({})",
             track + 1,

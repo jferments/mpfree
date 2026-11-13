@@ -246,8 +246,9 @@ fn filters_keep_folders_and_the_right_files() {
     assert_eq!(names(&b), ["Drums", "Field recordings", "Loops", "Vox"]);
     b.go_source(src("Projects"));
     assert_eq!(names(&b), ["Live set", "Night drive", "Sunday chops"]);
-    // No New folder in Projects: projects are made by saving.
-    assert!(b.screen().list_buttons.is_empty());
+    // No New folder in Projects: projects are made by saving (New
+    // project, Save as and Save instead).
+    assert!(!b.screen().list_buttons.contains(&Button::NewFolder));
 }
 
 #[test]
@@ -670,4 +671,51 @@ fn newest_first_puts_the_last_changed_first_after_folders() {
     assert_eq!(names(&b)[..2], ["Clap.wav", "Rim.wav"]);
     b.input(Input::Sort);
     assert_eq!(names(&b), by_name);
+}
+
+#[test]
+fn projects_offer_new_save_and_save_as_and_new_asks_over_unsaved_work() {
+    let (mut b, _) = browser();
+    b.go_source(src("Projects"));
+    assert_eq!(
+        b.screen().list_buttons,
+        [Button::NewProject, Button::SaveAs, Button::Save]
+    );
+    // Other places keep their own buttons.
+    b.go_source(src("Samples"));
+    assert!(!b.screen().list_buttons.contains(&Button::Save));
+    b.go_source(src("Projects"));
+    // Save asks the app for the parts.
+    b.input(Input::Button(Button::Save));
+    assert_eq!(b.take_actions(), [BrowseAction::SaveRequested]);
+    // Save as opens the keyboard with a name ready.
+    b.input(Input::Button(Button::SaveAs));
+    assert!(
+        matches!(&b.screen().modal, Modal::Keyboard { text, .. } if text.starts_with("Project "))
+    );
+    b.input(Input::Key(Key::Cancel));
+    // New project with nothing unsaved: at once.
+    select(&mut b, "Night drive");
+    b.push();
+    b.take_actions();
+    assert!(b.project().is_some());
+    b.input(Input::Button(Button::NewProject));
+    assert_eq!(b.take_actions(), [BrowseAction::NewProject]);
+    assert_eq!(b.project(), None);
+    // Over unsaved work it asks first; No keeps everything.
+    b.set_unsaved(true);
+    b.input(Input::Button(Button::NewProject));
+    assert!(matches!(&b.screen().modal, Modal::Confirm { text, .. } if text.contains("Unsaved")));
+    b.input(Input::ConfirmNo);
+    assert!(b.take_actions().is_empty());
+    assert!(b.unsaved());
+    b.input(Input::Button(Button::NewProject));
+    b.input(Input::ConfirmYes);
+    assert_eq!(b.take_actions(), [BrowseAction::NewProject]);
+    assert!(!b.unsaved());
+    // A picker offers none of them.
+    b.open_picker(Pick::Project);
+    assert_eq!(b.screen().list_buttons, [Button::Cancel]);
+    b.input(Input::Button(Button::NewProject));
+    assert!(b.take_actions().is_empty());
 }
