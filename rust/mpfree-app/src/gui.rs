@@ -6877,6 +6877,57 @@ mod tests {
         assert_eq!(p.page(), MIXER_PAGE);
     }
 
+    /// Live test 3: every tap in the chain editor and the macros panel
+    /// reaches the app (they used to stop in the widget). A tap on a
+    /// row, + Add effect, a pick, Cancel and Back, each through
+    /// `Player::touch` as the screen sends them.
+    #[test]
+    fn the_chain_editors_taps_reach_the_app() {
+        use mpfree_chain_ui::ChainView;
+        let mut p = sample_player(Fonts::embedded());
+        sample_panels(&mut p, View::Chain);
+        assert_eq!(p.page(), mpfree_chain_ui::CHAIN_PAGE);
+        p.ui.paint(&mut SoftCanvas::new(SCREEN.0, SCREEN.1));
+        let r = p.ui.rect_of(mpfree_chain_ui::CHAIN).unwrap();
+        let mut tap = |p: &mut Player, x: i32, y: i32| {
+            let mut got: Vec<FromUi> = Vec::new();
+            got.extend(p.touch(1, Touch::Down, x, y));
+            got.extend(p.touch(1, Touch::Up, x, y));
+            got.extend(p.take_actions());
+            got
+        };
+        let l = p.ui.get::<ChainView>(mpfree_chain_ui::CHAIN).unwrap().layout(r);
+        let row = l.rows[0];
+        let got = tap(&mut p, row.x + 20, row.y + row.h / 2);
+        assert_eq!(got, vec![FromUi::Chain(ChainAction::Select(0))]);
+        let add = l.add.expect("the chain has room for + Add effect");
+        let got = tap(&mut p, add.x + 10, add.y + 10);
+        assert_eq!(got, vec![FromUi::Chain(ChainAction::Picker(true))]);
+        let l = p.ui.get::<ChainView>(mpfree_chain_ui::CHAIN).unwrap().layout(r);
+        let c = l.cancel.expect("the picker has a Cancel");
+        let got = tap(&mut p, c.x + 5, c.y + 5);
+        assert_eq!(got, vec![FromUi::Chain(ChainAction::Picker(false))]);
+        let got = tap(&mut p, add.x + 10, add.y + 10);
+        assert_eq!(got, vec![FromUi::Chain(ChainAction::Picker(true))]);
+        let l = p.ui.get::<ChainView>(mpfree_chain_ui::CHAIN).unwrap().layout(r);
+        let pick = l.picks[0];
+        let got = tap(&mut p, pick.x + 10, pick.y + 10);
+        assert!(
+            matches!(got.as_slice(), [FromUi::Chain(ChainAction::Add(_))]),
+            "{got:?}"
+        );
+        let back = l.back.expect("opened from the mixer: ‹ Mixer");
+        let got = tap(&mut p, back.x + 5, back.y + 5);
+        assert_eq!(got, vec![FromUi::Chain(ChainAction::Back)]);
+        // The macros panel's Back too.
+        p.apply(ToUi::Show(View::Macros));
+        p.ui.paint(&mut SoftCanvas::new(SCREEN.0, SCREEN.1));
+        let r = p.ui.rect_of(mpfree_chain_ui::MACROS_W).unwrap();
+        let b = mpfree_chain_ui::macros::layout(r).back;
+        let got = tap(&mut p, b.x + 5, b.y + 5);
+        assert_eq!(got, vec![FromUi::Macros(MacroAction::Back)]);
+    }
+
     /// Q-LINK on Play: Macros 1-4, Macros 5-8, then Play's own knobs; the
     /// knobs turn the macros meanwhile. Other pages keep their Q-Links.
     #[test]

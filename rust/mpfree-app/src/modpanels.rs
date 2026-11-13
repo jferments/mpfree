@@ -304,6 +304,7 @@ impl ChainHost {
             ChainAction::RemoveRow(row) => {
                 let _ = h.modu.change(&h.mixer, Change::RemoveRow(row as u8));
             }
+            ChainAction::Picker(on) => self.picking = on,
             ChainAction::Back => return ChainOut::Back,
             ChainAction::Scope(i) => {
                 if i < self.scopes.len() {

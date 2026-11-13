@@ -93,6 +93,10 @@ pub enum ChainAction {
     Back,
     /// Show chain `i` of `ChainState::scopes` (the pad's or the track's).
     Scope(usize),
+    /// "+ Add effect" opened the effect picker (`true`), or its Cancel
+    /// closed it (`false`). The app keeps the picker's state, so it must
+    /// hear both, or the next state it sends undoes the tap.
+    Picker(bool),
 }
 
 /// The columns' widths (the effect column takes the rest).
@@ -372,6 +376,7 @@ impl ChainView {
         if self.state.picking {
             if l.cancel.is_some_and(|c| c.contains(x, y)) {
                 self.state.picking = false;
+                self.push(ChainAction::Picker(false));
                 return;
             }
             if let Some(i) = l.picks.iter().position(|r| r.contains(x, y)) {
@@ -400,6 +405,7 @@ impl ChainView {
         }
         if l.add.is_some_and(|r| r.contains(x, y)) {
             self.state.picking = true;
+            self.push(ChainAction::Picker(true));
             return;
         }
         if let Some(sel) = st.selected {
@@ -827,7 +833,18 @@ impl Widget for ChainView {
         paint_side(cx, &l, st);
     }
 
+    /// Passes the touch on to the app (an event) whenever it made actions,
+    /// as the mixer does: `Ui::touch` drops a widget's touch that answers
+    /// None, and the app takes the actions only when it gets the event.
     fn touch(&mut self, finger: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
+        let before = self.actions.len();
+        self.touch_inner(finger, phase, x, y, r);
+        (self.actions.len() > before).then_some(EventKind::Select(self.actions.len()))
+    }
+}
+
+impl ChainView {
+    fn touch_inner(&mut self, finger: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
         let l = self.layout(r);
         match phase {
             Touch::Down => {
