@@ -485,3 +485,210 @@ The **earliest potentially factory-independent stage** is the RK3288 silicon Boo
 
 For MPFree’s requirement that the original system remain recoverable, the present operational answer is: **use the verified `kexec` approach with internal storage disabled for kernel development; use U-Boot only for read-only characterization until a nonpersistent kernel boot has been demonstrated; and leave early eMMC boot partitions unchanged until independent recovery is established**.
 
+
+## 12. Paths from today's system to a truly independent MPFree OS
+
+There is no need to jump directly from running a Rust application under factory Linux to replacing the first-stage loader. The available architecture permits a gradual sequence in which each milestone yields a more independent operating environment and protects the existing system until the next recovery method has been proven.
+
+### 12.1 Stage A: MPFree as the only music application on the factory kernel
+
+The simplest useful environment keeps the installed kernel and its proven hardware drivers but starts MPFree instead of `/usr/bin/MPC`. There are two ways to test this without making it the permanent startup mode: run on a deliberately isolated Linux image where factory `acvs.service` never starts, or perform a controlled handoff from the running factory service under the supervision of an independent watchdog.
+
+The latter requires careful state management. `acvs.service` has restart behavior; a direct process kill may immediately start another MPC instance and reacquire ALSA or DRM devices. A proper handoff stops the service through systemd, checks that the relevant process and device descriptors have gone away, starts MPFree and confirms its UI/audio health. If MPFree exits or fails to initialize, the supervisor brings back the normal factory service. None of this needs changes to U-Boot.
+
+This stage is valuable for hardware development and DSP performance tuning. It does not satisfy the goal of a complete independent Linux OS, because MPFree still depends on the factory kernel, shared libraries and service layout.
+
+### 12.2 Stage B: an MPFree kernel and rootfs started by `kexec`
+
+This is the best-supported next milestone. We have already proven the technique with the 3.10.0 test environment. Replace the temporary Akai userspace image with a **reproducible MPFree root filesystem** and, in time, a purpose-built kernel using the correct RK3288/az01 configuration. The first boot should retain the existing no-eMMC-access constraints, because driver initialization and userspace correctness can be tested without internal storage being accessible.
+
+The rootfs can contain just the services MPFree needs: a deliberately configured init environment, device setup, audio/MIDI handling, the graphical shell, logging and a debugging interface on direct Ethernet. It need not launch the factory MPC program at all. A power cycle still selects the unchanged factory rootfs, making iteration relatively forgiving.
+
+This stage removes dependence on the **factory userspace after the kernel handoff**, but it still needs factory Linux to initiate that handoff. The next stage addresses that last dependency.
+
+### 12.3 Stage C: kernel selection inside factory U-Boot
+
+The installed U-Boot understands filesystem loading, standard boot scripts and ARM kernel execution. This provides two plausible ways of selecting MPFree before factory Linux starts.
+
+One is to place a compatible kernel, device tree and rootfs on a removable SD or other medium that U-Boot can enumerate. We would then need a verified method of selecting that medium while the factory p6 remains healthy. U-Boot’s `boot_targets=mmc0 mmc1` is a starting point for understanding the scanner, not proof of an existing user-facing alternative-boot key or a preferred-SD configuration. A robust design should prefer **temporary** selection for initial tests, rather than persistent changes to the environment partition.
+
+The other is to use the installed U-Boot’s Fastboot `download` and `boot` functions as a **RAM-only pre-Linux kernel launch path**. This is particularly attractive because a workstation could supply a fresh MPFree build without rewriting storage. It also makes the fallback easy to reason about: if boot-critical state never changed, an ordinary cold boot should still use the existing factory files. However, that reasoning becomes a proven guarantee only after actual image acceptance, memory placement, FDT handoff and fallback have been demonstrated on this hardware.
+
+Achieving either nonpersistent U-Boot boot would meet an important milestone: **MPFree Linux starts without factory Linux ever running**, while the factory first-stage and U-Boot remain intact. That is already a substantial and useful form of OS independence.
+
+### 12.4 Stage D: a persistent but recoverable dual-boot policy
+
+Once nonpersistent U-Boot boot and independent recovery are proven, MPFree can introduce a persistent selection mechanism. Its main responsibility would not be drawing a boot menu; it would be guaranteeing that the last known-good system remains reachable.
+
+An appropriate policy should distinguish the factory entry, the currently confirmed MPFree release, and a candidate release awaiting its first successful boot. A staged candidate should be verified by hash and release signature **before** it becomes selectable. The boot manager should record that it is trying the candidate, let the new system prove that key services started, and mark it confirmed only after a health check. If the candidate fails repeatedly or the removable medium disappears, selection should return automatically to the last known-good entry.
+
+Where this state is stored is a safety-critical choice. It might eventually use a bootloader-supported environment mechanism or a small separate state area, but no persistent boot-selection format should be chosen merely for convenience while the recovery path is unproven. Power loss during any update must not destroy the only known-good boot state. This is the real meaning of a transactional OS installer.
+
+### 12.5 Stage E: independent first-stage loading and recovery
+
+Replacing the Rockchip first-stage loader and U-Boot with owner-built equivalents would remove another dependency on factory software. It would also increase responsibility for DRAM initialization, early storage access, board-specific clocks and boot selection. That work is technically credible on RK3288, but it is not needed to validate the rest of MPFree Linux.
+
+Before attempting it on the reference MPC, the project needs to demonstrate a reliable route into genuine silicon-ROM loading, execution of a small independently built SRAM program, adequate board-specific DRAM/USB/eMMC support, and **full read-back of the installed eMMC** using that independent path. A separate, carefully approved restoration rehearsal would then make early bootloader changes genuinely recoverable. Without that proof, using an accurately backed-up p1 image to overwrite a still-working p1 is an avoidable risk.
+
+The important engineering principle is to **gain a new working entry path before retiring an old one**, rather than hoping an untested replacement will boot.
+
+## 13. What an MPFree installer should actually do
+
+The ideal end-user experience is simple: prepare an MPFree release, connect approved media, confirm the board, install the release and choose which system to start. The implementation must be substantially more careful than that description suggests, because an ordinary Linux program has access to more storage and hardware than it should be allowed to modify during experimentation.
+
+A good design separates the **host-side builder**, **device-side installer**, **boot selector** and **recovery tool**. All four work together, but they are not the same executable and need not be delivered at the same time.
+
+### 13.1 The host is where we prepare and verify the image
+
+The Linux workstation should compile MPFree for the exact ARMv7 hard-float target, build the kernel and FDT, assemble a root filesystem and create a release manifest. The manifest should state which MPC hardware profile and boot method the release supports, which kernel and device tree are bundled, where the rootfs lives, what eMMC access is expected and how the device returns to a known-good state.
+
+The host can verify file hashes, check ELF metadata, inspect partition geometry and confirm that an image fits its intended media. It should also retain the private per-unit eMMC backup and recovery logs outside GitHub. This division is useful because a workstation has substantially more storage and computing power than the MPC and can reject a bad image **before it ever reaches the device**.
+
+A proposed manifest for the currently proven kind of test might look like:
+
+```yaml
+schema: 1
+project: mpfree
+target:
+  model: akai-mpc-one-gen1
+  compatible:
+    - inmusic,acva
+    - inmusic,az01
+    - rockchip,rk3288
+  abi: armv7-eabihf
+boot:
+  method: kexec-test
+  kernel: images/zImage
+  device_tree: images/rk3288-az01-acva.dtb
+  rootfs: usb-ext4
+  disable_internal_mmc: true
+  persistent_emmc_writes: false
+integrity:
+  kernel_sha256: "<digest>"
+  dtb_sha256: "<digest>"
+  rootfs_sha256: "<digest>"
+rollback:
+  factory_boot_unchanged: true
+  method: cold-power-cycle
+```
+
+This format is an **MPFree design proposal**. It is not a structure understood by the current U-Boot or the official firmware updater. Hashes can detect corruption of a release, while an MPFree-maintained release-signing key can establish that a release was produced by a trusted builder. Those functions should not be confused.
+
+### 13.2 The device agent is deliberately conservative
+
+When running on the MPC, the device-side agent should first identify the hardware instead of assuming every MPC model is equivalent. It can inspect device-tree `compatible` strings, kernel identity, partition layout and firmware-version markers. Its compatibility policy should explicitly recognize the tested board and refuse unknown combinations. It should never guess that a Gen 2 model uses the same processor, storage or bootloader as this Gen 1 unit.
+
+Next it should verify that required backup and recovery conditions have been met. For a temporary `kexec` experiment, that may mean checking the owner-held backup manifest, confirming unchanged boot-critical hashes and ensuring the new FDT disables internal MMC. For a persistent installation, it also means validating writable-data backup and rollback. For boot-critical changes, it must require an independently proven restoration path—not simply a file named `mmcblk0.img`.
+
+The agent then stages the release to an approved destination, rechecks the staged bytes and asks for explicit approval before activating a test. Failure at any point should leave the stock boot path unchanged and produce a meaningful report. It should never auto-format an unexpected USB drive because it happens to be plugged in.
+
+### 13.3 A small state machine is better than a long installer script
+
+A robust installer has distinct transitions, not an unstructured series of privileged commands:
+
+```text
+Identify exact MPC board and firmware
+      │
+      ▼
+Read boot/storage state and compatibility profile
+      │
+      ▼
+Verify backup and recovery qualification
+      │
+      ▼
+Verify release, media and power conditions
+      │
+      ▼
+Stage immutable candidate image
+      │
+      ▼
+Re-read candidate bytes and verify hashes
+      │
+      ▼
+Owner approves qualified activation method
+      │
+      ▼
+Temporary boot / trial selection
+      │
+      ▼
+Independent health check
+      ├──────── failure ────────► retain factory default
+      │
+      └──────── success ────────► confirm supported release
+```
+
+The state-machine approach makes failures easier to reason about. If release verification fails, no boot selection should be changed. If staging fails because the USB device was removed, the incomplete release should be ignored. If the new system fails to initialize audio or display, its health check must not promote it to the default. If power is lost during a trial, the next boot must still have an unambiguous known-good selection.
+
+### 13.4 Keep application installation separate from bootloader installation
+
+A versioned directory of MPFree binaries under approved removable media or `/data/mpfree` is a different kind of operation from writing `p2` or `p6`. The former is an application installation with a manageable cleanup procedure. The latter can change which operating system runs at power-on.
+
+Early releases should avoid modifying the factory rootfs, U-Boot environment and GPT. They can provide a developer-facing launcher that starts a temporary kernel or a controlled userspace environment. A future independent boot selector can be introduced only after a nonpersistent pre-Linux path and its restoration behavior have been demonstrated.
+
+### 13.5 Proprietary sounds and user data should remain separate
+
+The MPFree OS should be redistributable without Akai firmware images or licensed instruments. A user may legitimately own samples, kits and project files on their MPC; a local importer can extract supported data from the user’s own device or backup and place it in MPFree’s private storage. That is conceptually different from distributing the factory assets inside an MPFree image.
+
+The installer should never use factory content partitions as scratch space, and it should not erase p8 while staging MPFree. Its removal procedure should distinguish application files, imported personal content and user-created MPFree projects so that uninstalling an experimental boot manager never means losing music.
+
+## 14. What “safe recovery” means at each failure level
+
+The phrase “we have a backup” describes only one part of recovery. A full recovery promise needs to answer: **what still runs when the system is broken, what device or loader can reach the affected storage, and how do we know that path can restore the exact bytes?**
+
+If a temporary MPFree `kexec` session hangs while internal MMC was unavailable, the normal power-on sequence is still intact. This is the kind of failure that the reference tests actually exercised: power cycling returned to factory 3.6.0 and the protected partition hashes stayed unchanged. That is our strongest present recovery result.
+
+If a normal MPFree application crashes while factory Linux is running, the recovery action can be a service restart or power cycle, provided the application did not change persistent configuration. A supervised service handoff must prove that its cleanup and restart logic really returns audio, display and input devices to the factory environment. Stopping an application is not automatically equivalent to restoring every hardware state it changed.
+
+If the factory `p6` rootfs becomes unusable, the earlier bootloader stages may still load. U-Boot’s Fastboot Update Mode could then accept an official firmware installation without needing p6 to boot. The architecture supports this expectation, but the exact full restoration flow remains to be demonstrated on a suitable fixture.
+
+If U-Boot’s own `p3` image or the first-stage `p1` becomes invalid, its Fastboot command may never become available. Recovery would need a mechanism below those partitions, such as a genuinely independent silicon-ROM SRAM loader. That path remains unproven on the reference MPC. This is why the initial installer must not write p1/p3, even when a full backup exists.
+
+Finally, some persistent hardware state is not represented by the eMMC user-area image: eMMC boot configuration, RPMB state, and possible one-time security provisioning. These need their own hardware-aware understanding. No software installer should casually alter them as part of ordinary MPFree boot development.
+
+### 14.1 A practical qualification ladder
+
+| Level | What MPFree is allowed to do | What has to be true |
+|---|---|---|
+| **G0: observation** | Read-only hardware surveys and firmware/image comparison | Correct board identified |
+| **G1: temporary kernel** | RAM-based isolated `kexec`, removable rootfs, factory power-cycle return | No-eMMC-write design and measurable integrity |
+| **G2: persistent application** | Isolated files on approved removable storage or scoped `/data/mpfree` | Backup, service rollback and compatibility tested |
+| **G3: direct pre-Linux test** | Qualified U-Boot RAM/removable boot with no critical storage changes | Real image acceptance, safe memory layout and fallback demonstrated |
+| **G4: boot-critical install** | Persistent boot selection, p6 replacement, or first-stage changes | Independent recovery and restoration rehearsal already complete |
+
+The system should refuse an operation that requires a gate the device has not passed. A convincing synthetic USB test, an offline bootloader code path, a successful QEMU image boot or the presence of `fastboot` in a command table is not a substitute for the corresponding actual-hardware proof.
+
+## 15. The next engineering milestones, in order
+
+The first immediate task is a **reproducible MPFree Linux test image**. It should use the correct ARMv7 toolchain and board FDT, run an MPFree-controlled init environment, isolate internal MMC and boot through the already demonstrated `kexec` mechanism. It should start MPFree audio/UI services without factory `acvs.service`, retain a diagnostic network path and check touch, pads, MIDI and ALSA behavior systematically. This will establish the independent operating system itself.
+
+The second task is to document **firmware 3.10.1 on actual hardware** under a controlled upgrade gate. Official developer SSH should be tested for configuration, authentication, persistence and service behavior. The changed `az01-signed-fs` component should be understood before the reference unit is treated as fully qualified under that firmware. The system's kernel/DTB/bootloader and partition facts should be re-recorded after any approved update.
+
+The third task is **direct pre-Linux image boot**. Establish actual U-Boot MMC numbering and the full scanning order, then determine a nonpersistent way to select an MPFree image. In parallel, qualify the U-Boot Fastboot RAM `boot` path, including its accepted image format, FDT handling and safe memory limits. The desired result is a working MPFree kernel from removable or RAM media without factory Linux starting and without an eMMC boot selection change.
+
+The fourth task is **independent low-level recovery**. Demonstrate genuine silicon-ROM entry, execution of owner-built SRAM code, board-compatible storage access and complete read-back matched to the saved eMMC backup. Only after a separately tested restore procedure is available should MPFree experiment with persistent U-Boot selection, factory p6 replacement or an owner-built first stage.
+
+The fifth task is the **transactional factory/MPFree boot manager**. It should use the smallest qualified persistent state surface, preserve the factory fallback, verify staged images before boot, mark a release confirmed only after a health check, and recover cleanly from failed releases or power loss. Its design must be grounded in the *actual U-Boot and recovery behavior* of the MPC One rather than a generic embedded-board recipe.
+
+In parallel with those boot milestones, the Rust-based music-production application can continue to mature. Audio DSP, sequencing, sampling, GUI, input handling and external media are largely independent of whether the current kernel was launched from factory U-Boot, `kexec` or a future owner bootloader. Keeping these workstreams separate reduces the chance that bootloader uncertainty stalls the development of the operating system itself.
+
+## 16. What a new MPFree developer should retain
+
+The original MPC One is a conventional 32-bit RK3288 Linux computer with custom music hardware. Its boot chain begins in immutable silicon, loads a small SRAM program from eMMC sector 64, then loads U-Boot from partition 3. U-Boot reads a kernel, board DTB and boot script from the ext4 root filesystem in partition 6, and starts a Yocto-based 6.6 PREEMPT_RT Linux environment. Linux mounts p6 read-only, writes persistent data to p8, and uses p8-backed overlays for `/etc` and `/var`. The music application is launched by `acvs.service` and normally owns ALSA, MIDI, display and input hardware.
+
+A different Linux system has already started on the physical MPC One by `kexec`, using a USB rootfs and a modified device tree that made internal MMC inaccessible. Three tests established the replacement kernel’s operation, on-screen output, functional Ethernet/SSH after a retry, preserved boot-critical storage and restoration of the factory startup through a power cycle.
+
+The installed U-Boot has MMC/filesystem boot functions and a pre-Linux Fastboot interface containing an image-receive and kernel-execution path. These are credible candidates for an independent cold boot without installing a new first stage, but we have not yet completed their on-device kernel-acceptance tests. Genuine silicon-ROM USB recovery and independent first-stage execution are also not yet established.
+
+MPC OS 3.10.1 brings official developer shell/SSH access and an external plugin SDK. Offline comparison indicates that the examined kernel, DTBs, boot script and `kexec` support remain compatible at the file/configuration level; a changed signed-filesystem component needs further qualification. Official developer access improves how we work with a supported running device, but it is not currently a verified replacement-OS installer.
+
+**The safest route to MPFree is therefore incremental:** finish and test our own Linux on the proven reversible `kexec` path; demonstrate a no-write pre-Linux U-Boot boot; establish independent recovery; and only then create a persistent, automatically recoverable boot selection. Each milestone should make the owner less dependent on the factory system without risking the only working copy of it.
+
+---
+
+### Technical references and evidence history
+
+The current detailed low-level reference is [The MPC One bootloader](bootloader.md). The [hardware documentation index](README.md) identifies specialized audio, display, input, networking and storage information. The [Installer and Recovery Contract](installer-recovery-contract.md) defines the practical boundary between temporary testing and persistent changes; the [MPC OS 3.10.1 compatibility page](firmware-3.10.1-compatibility.md) tracks firmware-specific implications.
+
+The original November measurements, including [the storage and boot map](archive/2026-11/boot-map.md), [the 3.6.0 baseline](archive/2026-11/baseline-3.6.0.md), [the three 3.10.0 kernel trials](archive/2026-11/kexec-test-boot.md), [the eMMC backup account](archive/2026-11/emmc-backup.md), [the firmware update study](archive/2026-11/akai-updater-offline.md) and [the independent recovery plan](archive/2026-11/owner-rom-recovery-plan.md), are preserved [in the dated source archive](archive/2026-11/README.md). A more specialized early-loader and USB-program study remains at [docs/dev/research/bootrom.md](../research/bootrom.md).
+
+This reference describes **observed device behavior** where tests were completed and explicitly identifies **image-based findings** and **unverified behaviors** where only stored software or platform documentation is available. Future measurements should update the current explanation, retain the dated source material and state which board/firmware combination was actually tested. No private whole-device image or proprietary factory content is distributed with these documentation files.
