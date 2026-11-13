@@ -30,9 +30,9 @@ PINNED={
  0x164b0,0x165f0,0x1a178,0x1a314,0x1a674,0x1a8d0,
  0x1a9bc,0x1aabc,0x1afd4,0x1b35c,0x1b27c,0x1b150,
  0x1be1c,0x1c2bc,0x1d8c4],
- 'spl':[0xff704004,0xff704060,0xff704068,0xff7041a8,
+ 'spl':[0xff704004,0xff704060,0xff704068,0xff704120,0xff7041a8,
         0xff704160,0xff704164,0xff7041e8,0xff705208,0xff7052c0,
-        0xff705310,0xff705316,0xff705350,0xff705418,0xff705480,
+        0xff705310,0xff705316,0xff705342,0xff705350,0xff705418,0xff705480,
         0xff7054a4,0xff7056a8,0xff7069e0,0xff707d28,0xff707de4,
         0xff708b74],
  'uboot':[0x100fe4,0x1011e0,0x100da0,0x101744,0x1017fc,
@@ -205,7 +205,7 @@ def mpfree_v11_entrypoint():
             if fm.getFunctionContaining(A(near)):selected.add(near)
     priority=sorted(selected,key=lambda va:(va not in original, va))
     # Expanded direction: ROM entry, loader handoff, fastboot auth and update flow.
-    lim={'az01-update':30,'libaz01-prog':180,'spl':45,'uboot':160}[role]
+    lim={'az01-update':30,'libaz01-prog':180,'spl':60,'uboot':160}[role]
     if not priority:raise RuntimeError('No functions selected for analysis')
     decoder=DecompInterface();decoder.toggleCCode(True)
     if not decoder.openProgram(prog):raise RuntimeError('Decompiler unavailable')
@@ -224,7 +224,7 @@ def mpfree_v11_entrypoint():
             # These records are written ONLY to the private owner ZIP.
             capture_by_role={
                 'libaz01-prog':('0x0001a314','0x0001a674','0x0001a8d0','0x0001aabc','0x0001d644','0x0001a178','0x0001b35c','0x0001afd4'),
-                'spl':('0xff704004','0xff7041a8','0xff705310','0xff705316','0xff705350','0xff7054a4','0xff7056a8','0xff708b74'),
+                'spl':('0xff704004','0xff704120','0xff7041a8','0xff705310','0xff705316','0xff705342','0xff705350','0xff7054a4','0xff7056a8','0xff708b74'),
                 'uboot':('0x00100fe4','0x001011e0','0x00101744','0x001017fc','0x00101bb4','0x0010a6a4','0x0010f388','0x00112228','0x0012247c','0x001226b4','0x00122734','0x00122780','0x00122834','0x00122854','0x00122964','0x00122980','0x00122948','0x00122cf8','0x00122d38','0x00122bf8','0x00122c5c','0x00110084','0x001100c8','0x00110270','0x0010fde8','0x00100fe4','0x00100edc','0x00100ef0','0x001147f0','0x00115f30','0x00115ef4','0x001147d4',
                          '0x001011e0','0x001146cc','0x001147a2',
                          '0x00115e98','0x0011415e','0x001140ac',
@@ -313,6 +313,33 @@ def mpfree_v11_entrypoint():
                 except Exception:
                     pass
                 return None
+            def original_ascii(ptr, max_chars=48):
+                try:
+                    block=mem.getBlock(A(ptr))
+                    if block is None or not block.isInitialized():
+                        return None
+                    chars=[]
+                    for n in range(max_chars):
+                        char=int(mem.getByte(A(ptr+n))) & 255
+                        if char==0:return ''.join(chars) if chars else None
+                        if char<32 or char>126:return None
+                        chars.append(chr(char))
+                except Exception:
+                    pass
+                return None
+            def original_references_to(addr):
+                values=[]
+                try:
+                    itr=prog.getReferenceManager().getReferencesTo(A(addr))
+                    while itr.hasNext() and len(values)<48:
+                        ref=itr.next()
+                        values.append({
+                            'from':addr_hex(ref.getFromAddress().getOffset()),
+                            'type':str(ref.getReferenceType()),
+                        })
+                except Exception:
+                    pass
+                return values
             table_words={}
             for name, pointer_slot, count in (
                 ('device_order',0xff7053fc,5),
@@ -324,7 +351,13 @@ def mpfree_v11_entrypoint():
                         value=original_word(address+n*4)
                         words.append({
                             'address':addr_hex(address+n*4),
-                            'word':addr_hex(value) if value is not None else None})
+                            'word':addr_hex(value) if value is not None else None,
+                            'original_ascii_at_pointer':(
+                                original_ascii(value) if (
+                                    name=='device_mapping' and n%2==1
+                                    and value is not None) else None),
+                            'direct_static_xrefs':original_references_to(
+                                address+n*4)})
                 table_words[name]={'origin_slot':addr_hex(pointer_slot),
                                    'table_start':addr_hex(address) if address is not None else None,
                                    'entries':words,
@@ -345,6 +378,15 @@ def mpfree_v11_entrypoint():
                 'indirect_handoff_function_pointer_slot':addr_hex(handoff_slot) if handoff_slot is not None else None,
                 'indirect_handoff_original_word':addr_hex(handoff_value) if handoff_value is not None else None,
                 'indirect_handoff_original_word_is_runtime_proof':False,
+                'second_handoff_initial_word_zero':handoff_value==0,
+                'second_handoff_pointer_slot_static_xrefs':(
+                    original_references_to(handoff_slot) if
+                    handoff_slot is not None else []),
+                'boot_order_initialization_writer_decompiled':(
+                    'FUN_ff704120()' in details.get(
+                        '0xff705342',{}).get('pseudocode','')
+                    and '*param_1 = uVar1;' in details.get(
+                        '0xff705342',{}).get('pseudocode','')),
                 'opaque_media_table_words':table_words,
             }
         elif role=='az01-update':
