@@ -33,6 +33,8 @@ def audit(archive: Path) -> dict:
     usb_backend = load("synthesize_usb_backend_coverage.py", "mpfree_usb_backend_preflight")
     update_format = load("synthesize_update_format_and_spl.py",
                          "mpfree_update_format_spl_preflight")
+    ram_boot = load("synthesize_fastboot_ram_path.py",
+                    "mpfree_fastboot_ram_preflight")
     with zipfile.ZipFile(archive) as z:
         members = wide.verify_zip(z)
         matrix = wide.build(z.read)
@@ -41,6 +43,7 @@ def audit(archive: Path) -> dict:
         owner_followups = follow.build(z.read)
         usb_backend_report = usb_backend.build(z.read)
         format_report = update_format.build(z.read)
+        ram_report = ram_boot.build(z.read)
         comparison = json.loads(
             z.read("static/wide/firmware-3.10-bootchain-v4-compare.json"))
         guest_hex = z.read("qemu-guest-boot_script_hex.txt").decode("utf-8")
@@ -70,7 +73,9 @@ def audit(archive: Path) -> dict:
             usb_backend_report["all_source_only_backends_matched"]),
         "image_formats_verify_cache_xz_and_spl_static_evidence": (
             format_report["all_checkable_static_claims_passed"]),
-        "seven_track_64_question_research": (
+        "static_fastboot_receive_and_bootm_classifier": (
+            ram_report["all_static_evidence_passed"]),
+        "seven_track_67_question_research": (
             len(matrix["questions"])>=67 and
             len({q["track"] for q in matrix["questions"]})==7),
         "spl_order_and_mmc_label_evidence": all(
@@ -98,6 +103,8 @@ def audit(archive: Path) -> dict:
         "format_dispatch_headers":format_report["image_format_prefixes"],
         "xz_buffer_count":format_report["xz_partition_buffer_count_observed"],
         "verify_error_minus13_policy_proven":False,
+        "static_fastboot_download_ram_base":ram_report["ram_receive_base"],
+        "advertised_download_max_is_safe_ram":False,
         "focus_topics": len(set(q["topic"] for q in focus["questions"])),
         "passed_checks": checks,
         "success": (
