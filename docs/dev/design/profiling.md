@@ -331,6 +331,17 @@ data side is here:
   that build; #223 has since spread it over periods inside the probe). The
   same rows show the controller output's refused, dropped and stalled
   messages and the report lines dropped (control.rs).
+- **Memory by engine** (`memory.rs`, 13 Nov; Jay asked for RAM beside
+  CPU): under the audio loop's rows on CPU by engine, what each part holds,
+  from what it knows of its own buffers: every kit's sounds (those undo
+  keeps included, a sound two kits share counted once), the stretched
+  copies, the Rec tab's input buffer while it is held, the looper's sound
+  used and set aside, and the synth's wavetables. Then "Everything else",
+  the app's resident memory (from the developer tools' /proc sample) less
+  what the rows count, where a leak would show, and the app in all against
+  the system's memory. Live test 3's resident size peaked at 195.8 MB of
+  2016.7 MB, most of it the looper's 110 MB set aside. There is no memory
+  budget per engine yet: these rows are what one would be judged by.
   **First device numbers (live test 2, 13 Nov, main 7b2cae9, sound cores
   shared, about 11 minutes of free play, at most 10 sounds):** no slow
   period. Each part's worst in any 30 s window stayed between 0.03 and
