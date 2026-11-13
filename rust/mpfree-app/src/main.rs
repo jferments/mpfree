@@ -104,6 +104,7 @@ mod midi_saved;
 mod mixing;
 mod modmix;
 mod modpanels;
+mod pace;
 mod parts;
 mod perf;
 mod play_page;
@@ -121,6 +122,7 @@ mod synth;
 mod sys;
 mod sysinfo;
 mod time;
+mod touch_bell;
 mod touch_dev;
 mod touchlab_page;
 
@@ -2344,8 +2346,16 @@ fn player(o: &Options, timed: bool) -> Result<(), String> {
         }
         (None, _) => None,
     };
-    let screen = gui::spawn(player, fb, gpu, Some(open_touch), from_audio, to_audio)
-        .map_err(|e| format!("screen thread: {e}"))?;
+    let screen = gui::spawn(
+        player,
+        fb,
+        gpu,
+        Some(open_touch),
+        Some(to_ui.clone()),
+        from_audio,
+        to_audio,
+    )
+    .map_err(|e| format!("screen thread: {e}"))?;
     out.sink = Some(to_ui.clone());
     if !timed {
         follow_journal(to_ui.clone());
