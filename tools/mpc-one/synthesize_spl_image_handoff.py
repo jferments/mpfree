@@ -12,6 +12,8 @@ SCHEMA = "mpfree-spl-image-header-handoff-v1"
 INPUTS = {
     "spl": "static/v11/v11-ghidra-spl.json",
     "p1": "static/wide/p1-sram-ghidra.json",
+    "factory_p3": "static/wide/storage-env-boot-dtb.json",
+    "uboot": "static/v11/v11-ghidra-uboot.json",
 }
 # Standard legacy U-Boot image header (big-endian 32-bit fields).
 HEADER_WORD_OFFSETS = {"size": 0x0c, "load": 0x10, "entry": 0x14}
@@ -25,10 +27,19 @@ EXPECTED_CONTEXT = "0xff70a244"
 def build(read):
     docs = {role: json.loads(read(path)) for role, path in INPUTS.items()}
     spl, p1 = docs["spl"], docs["p1"]
+    factory_p3 = docs["factory_p3"]["p3"]
+    uboot = docs["uboot"]
     source = spl.get("source_sha256_prechecked_by_launcher")
     if (spl.get("role") != "spl" or not isinstance(source, str)
             or len(source) != 64 or p1.get("sha256") != source):
         raise ValueError("SPL/P1 SHA provenance mismatch")
+    if (not factory_p3.get("valid") or
+        not factory_p3.get("header_crc32_valid") or
+        not factory_p3.get("payload_crc32_valid") or
+        factory_p3.get("sha256") !=
+            uboot.get("source_sha256_prechecked_by_launcher") or
+        uboot.get("role") != "uboot"):
+        raise ValueError("Factory P3 header and original U-Boot SHA not matched")
     funcs = spl["analyzed_functions"]
     def code(addr):
         return funcs.get(addr, {}).get("pseudocode", "")
@@ -76,6 +87,13 @@ def build(read):
                 == EXPECTED_CALLBACK_SLOT),
         "original_callback_slot_zero_before_loading": (
             context.get("indirect_handoff_original_word") == "0x00000000"),
+        "original_factory_p3_image_loads_at_0x00100000": (
+            factory_p3.get("load_address") == "0x00100000"),
+        "original_factory_p3_entry_header_field_is_zero": (
+            factory_p3.get("entry_address") == "0x00000000"),
+        "original_factory_p3_is_legacy_type5_arm": (
+            factory_p3.get("legacy_type_id") == 5 and
+            factory_p3.get("arch_id") == 2),
     }
     raw_magic = original.get("image_header_magic_literal_word")
     context_ptr = original.get("image_header_context_ptr")
@@ -115,6 +133,14 @@ def build(read):
             "legacy header entry offset +0x14 (flag-dependent "
             "alternate header load field offset +0x10)"),
         "SPL_entry_address_runtime_value_known": False,
+        "factory_P3_verified_legacy_header": {
+            "image_type_id": factory_p3["legacy_type_id"],
+            "load_address": factory_p3["load_address"],
+            "entry_address": factory_p3["entry_address"],
+            "crc32_header_valid": factory_p3["header_crc32_valid"],
+            "crc32_payload_valid": factory_p3["payload_crc32_valid"],
+        },
+        "factory_P3_zero_entry_requires_load_branch_or_other_adjustment": True,
         "physical_proofs": physical,
         "notes": [
             "Header offset relationship, unlike a fixed callback pointer, "
