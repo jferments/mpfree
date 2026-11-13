@@ -708,6 +708,18 @@ impl TimeHost {
         self.audio.block()
     }
 
+    /// The transport's tempo map (for the audio tracks, which place their
+    /// regions on song ticks).
+    pub fn tempo_map(&self) -> &mpfree_transport::TempoMap {
+        self.audio.tempo_map()
+    }
+
+    /// Song mode is on: the song plays on tracks with no clip launched.
+    /// Audio tracks play and record only then (layout spec 4c).
+    pub fn song_on(&self) -> bool {
+        self.control.song_on()
+    }
+
     /// The song position as bar.beat.tick, for log lines.
     pub fn position_text(&self) -> String {
         self.audio.position_text()
@@ -785,7 +797,7 @@ mod tests {
             let (mut l, mut r) = ([0f32; crate::PERIOD], [0f32; crate::PERIOD]);
             for i in from..from + 40 {
                 let ctx = mpfree_fx::mpfree_node::Ctx::new(RATE, i * crate::PERIOD as u64);
-                mix.period(&ctx, (&z, &z), (&z, &z), (&z, &z), &mut l, &mut r);
+                mix.period(&ctx, (&z, &z), (&z, &z), (&z, &z), (&z, &z), &mut l, &mut r);
             }
         };
         // The crossfader's first move loads rows 1 and 2.

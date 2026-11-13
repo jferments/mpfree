@@ -1169,6 +1169,11 @@ impl TimeControl {
         std::mem::take(&mut self.changed)
     }
 
+    /// Song mode is on.
+    pub fn song_on(&self) -> bool {
+        self.song
+    }
+
     /// Everything the screens show.
     pub fn state(&self) -> TimeState {
         let mut st = TimeState::from_engine(

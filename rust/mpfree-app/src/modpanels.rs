@@ -738,7 +738,7 @@ mod tests {
             for _ in 0..periods {
                 let ctx = Ctx::new(RATE, self.period * PERIOD as u64);
                 self.h
-                    .period(&ctx, (&z, &z), (&z, &z), (&z, &z), &mut l, &mut r);
+                    .period(&ctx, (&z, &z), (&z, &z), (&z, &z), (&z, &z), &mut l, &mut r);
                 self.period += 1;
             }
         }

@@ -14,8 +14,8 @@
 //! ALSA.
 
 use crate::{
-    app, cores, cv_out, kit, looping, midi_in, midi_out, mixing, sampler, synth, time, SeqPads,
-    MAX_LIVE_HITS, PERIOD, RATE,
+    app, audiotracks, cores, cv_out, kit, looping, midi_in, midi_out, mixing, sampler, synth, time,
+    SeqPads, MAX_LIVE_HITS, PERIOD, RATE,
 };
 use mpfree_arp::{EventKind, Events, Mode};
 use mpfree_arp_ui::view::ArpAction;
@@ -31,6 +31,9 @@ struct Rig {
     player: sampler::Player,
     synth: cores::SynthSlot,
     looper: looping::LoopHost,
+    /// The audio tracks, track 1 armed (song mode is off, so it only
+    /// monitors).
+    tracks: audiotracks::TrackHost,
     mix: mixing::MixHost,
     events: Events,
     synth_on: bool,
@@ -40,6 +43,7 @@ struct Rig {
     drums: [[f32; PERIOD]; 2],
     synth_out: [[f32; PERIOD]; 2],
     loop_out: [[f32; PERIOD]; 2],
+    audio_out: [[f32; PERIOD]; 2],
     pads_out: [[f32; PERIOD]; 2],
     peak: f32,
     /// Notes the arp started, and hits the clip played.
@@ -77,6 +81,11 @@ impl Rig {
             player: sampler::Player::new(&mut kits, &PAD_NOTES, RATE).unwrap(),
             synth: cores::SynthSlot::new(synth::Synth::new(RATE)),
             looper: looping::LoopHost::new(RATE, 20),
+            tracks: {
+                let mut t = audiotracks::TrackHost::new(RATE, 20);
+                t.host.command(mpfree_audiotracks::Command::Arm(0, true));
+                t
+            },
             // The device's default: 6 dB under a -12 dB maximum.
             mix: mixing::MixHost::new(RATE, -18.0, -12.0),
             time: time::TimeHost::new(RATE, 120.0).unwrap(),
@@ -88,6 +97,7 @@ impl Rig {
             drums: [[0.0; PERIOD]; 2],
             synth_out: [[0.0; PERIOD]; 2],
             loop_out: [[0.0; PERIOD]; 2],
+            audio_out: [[0.0; PERIOD]; 2],
             pads_out: [[0.0; PERIOD]; 2],
             peak: 0.0,
             arp_notes: 0,
@@ -128,6 +138,7 @@ impl Rig {
             player,
             synth,
             looper,
+            tracks,
             mix,
             events,
             synth_on,
@@ -136,6 +147,7 @@ impl Rig {
             drums,
             synth_out,
             loop_out,
+            audio_out,
             pads_out,
             arp_notes,
             clip_hits,
@@ -252,6 +264,14 @@ impl Rig {
         let [loop_l, loop_r] = loop_out;
         let note = looper.run(time.block(), loop_l, loop_r);
         assert!(note.is_none(), "period {i}: {note:?}");
+        let [audio_l, audio_r] = audio_out;
+        tracks.period(
+            time.block(),
+            time.tempo_map(),
+            time.song_on(),
+            looper.input(),
+            (audio_l, audio_r),
+        );
         mix.follow(looper.line.is_open(), looper.monitor);
         let ctx = mixing::ctx(RATE, i * PERIOD as u64, app.settings.bpm, time.block());
         mix.mixer.set_lane_deadline(Some(until));
@@ -259,6 +279,7 @@ impl Rig {
             &ctx,
             (synth_l, synth_r),
             (loop_l, loop_r),
+            (audio_l, audio_r),
             looper.input(),
             left,
             right,
