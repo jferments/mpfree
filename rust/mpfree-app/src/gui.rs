@@ -779,6 +779,10 @@ pub struct Player {
     project_rate: u32,
     /// When the last open landed ([`OPEN_SETTLE`]).
     opened_at: Option<Instant>,
+    /// How many of the actions in the outbox an open or New project put
+    /// there (with any before them): the open's own, never an edit,
+    /// however long its own work (the kits, say) took on a slow machine.
+    open_actions: usize,
     /// An opened project's loops being read (the files can be big).
     loops_load: Option<std::sync::mpsc::Receiver<LoopsRead>>,
     /// The browser's preview level, in dB (its Q-Link 3).
@@ -999,6 +1003,7 @@ impl Player {
             start_checked: false,
             project_rate: 44_100,
             opened_at: None,
+            open_actions: 0,
             loops_load: None,
             preview_db: crate::preview::LEVEL_DB,
             preview_load: None,
@@ -3016,6 +3021,7 @@ impl Player {
         }
         // The kits and engines coming in are the open's own news.
         self.opened_at = Some(Instant::now());
+        self.open_actions = self.outbox.len();
         self.say(format!("project: opening {}", loc.name()));
     }
 
@@ -3062,6 +3068,11 @@ impl Player {
             self.say("project: the kits haven't come yet; they stay as they are".to_string());
         }
         self.sample_changed();
+        // The factory kits' sound goes out with New's own actions.
+        if let Some(a) = self.sample.take_view() {
+            self.outbox.push(a);
+        }
+        self.open_actions = self.outbox.len();
         self.say("project: new project".to_string());
     }
 
@@ -3444,7 +3455,8 @@ impl Player {
         // A stretched copy coming in says so.
         self.print_sample_lines();
         let out = std::mem::take(&mut self.outbox);
-        for a in &out {
+        let own = std::mem::take(&mut self.open_actions).min(out.len());
+        for a in &out[own..] {
             self.saw_action(a);
         }
         out
@@ -8450,6 +8462,9 @@ mod tests {
             // Over unsaved work it asks first; the push says yes.
             b.push();
             p.step_browser();
+            // As on a slow machine: the kits took longer than the settle
+            // time. What New sent is still its own, not an edit.
+            p.opened_at = p.opened_at.and_then(|t| t.checked_sub(OPEN_SETTLE * 2));
             p.take_actions().into_iter().find_map(|a| match a {
                 FromUi::OpenProject(o) => Some(o),
                 _ => None,
