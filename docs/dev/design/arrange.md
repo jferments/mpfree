@@ -105,6 +105,7 @@ The audio tracks (`rust/mpfree-audiotracks`, the audio tracks thread's engine: s
 - Every compile calls `PlayView::set_song`.
 - `act(RecSong)` arms or disarms live to song. After every period the recorder sees the transport's block and the cues that started. When the transport stops, the recording goes into the song and compiles, and the log says how many placements and morph points went in (`TimeHost::take_song_note`).
 - While recording, the morph bar's moves go into the song as they reach the mixer's mod engine (`TimeHost::morph`, see [scenes.md](scenes.md#the-scene-morph-t10-mpfree_performmorph)): each crossfader position, and new rows chosen while morphing.
+- **Saved and opened with the project.** `mpfree_seq::save::to_text` writes the whole `Project` (tracks, clips, scenes, the song) as the `clips` part, and `from_text` reads it back, checked (`Project::check`), skipping lines it doesn't know. An open builds a new `TimeHost` from it on the screen thread (`TimeHost::with_project`) and the audio loop swaps it in with the transport stopped; the old one is freed on the screen thread. See [browser.md](browser.md#projects-in-the-pad-player).
 
 ## Tests
 
@@ -139,4 +140,4 @@ The audio tracks (`rust/mpfree-audiotracks`, the audio tracks thread's engine: s
 - Recording notes straight into the song. REC records into the session's clips, and live to song records which clips played.
 - Hand mutes in live to song. The pad player has no mute button for the time engine yet, so only a scene's mutes are recorded there.
 - The morph's rows in song mode. The song lane plays the crossfader on the mixer's mod engine, but the rows the song keeps are not loaded at their ticks yet, so it morphs between the rows loaded at the time.
-- Song mode is not saved with the project yet: the project has no file format so far.
+- Song mode itself (on or off) is not saved: the project keeps the song (placements, markers, morphs, song lanes) and the scenes, in the `clips` part (`mpfree_seq::save`, format `mpfree-clips 1`; see [browser.md](browser.md#the-parts)), and opens with song mode off.
