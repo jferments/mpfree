@@ -404,3 +404,84 @@ Public Rockchip descriptions include other boot-mode values and USB SRAM-loading
 
 That is a legitimate operating-system engineering goal, but **not** a dependency for the immediate `kexec` development path. MPFree can keep progressing while the independent recovery mechanism is qualified separately.
 
+
+## 9. How official firmware updates actually work
+
+Akai's firmware update system is relevant to an independent operating system for two reasons. It shows that the manufacturer already designed a kernel-to-kernel maintenance transition, and it defines which internal storage regions may change when a factory update is installed.
+
+The reference rootfs includes `/usr/sbin/az01-update` and `/opt/ramfs-update.squashfs`. The latter is a compact Linux userspace intended to run in RAM. It contains a separate init program and enough utilities to verify an update image, locate target storage and install partition contents. The update library `libaz01-prog.so.1.3` includes code consistent with invoking `kexec` to start that RAM environment. One observed command shape loads a kernel from `/boot/zImage` and supplies the updater squashfs as a RAM disk.
+
+The important conceptual step is that the manufacturer does **not** need to update the live root filesystem while its full ordinary userspace remains active. Instead, normal Linux prepares a separate small operating environment, switches to it and lets that environment perform storage maintenance. The normal music-production process and most factory services are no longer running while the updater writes its target partitions.
+
+The updater understands image metadata, board compatibility and individual partition records. It has logic associated with checking image integrity, locating partitions by name, writing compressed contents, updating bootloader regions when required and optionally erasing user data. That means it is unsafe to describe a firmware update as “just copying a new MPC executable.” Depending on the image, the update can affect the Linux rootfs and potentially the earlier boot components.
+
+### 9.1 A firmware update image is not a raw filesystem image
+
+The MPC firmware download is a container that describes what is to be installed. Different generations and device families have used different container layouts. Older inMusic formats can use an FDT/FIT-style container with nodes describing payloads and their checksums. The 3.10.0 Gen 1 image examined for this project used an `AZ01` container. Its header identifies compatible boards, firmware metadata and partition records, followed by compressed payload bytes.
+
+In the studied 3.10.0 case the image contained a rootfs partition record with compressed data. The image format is important for planning a **comparison** between firmware versions, but it is not a general-purpose filesystem and should not be written directly to `/dev/mmcblk0`. The correct interpretation depends on the container's record structure, verification rules and expected installation backend.
+
+The project has host-side tools to examine update images without contacting the MPC. These can report the container structure, extract images into a private work directory and compare the resulting kernel, DTBs, services and userspace files. Such comparison is a good first stage before any official upgrade, especially now that MPFree depends on features such as `kexec` and official developer access.
+
+### 9.2 Two maintenance entry paths
+
+There are two distinct routes into maintenance:
+
+**The USB/network update route** begins in ordinary running Linux, verifies an update and starts a RAM updater kernel via `kexec`. This explains why `kexec` was already supported by the installed kernel and why the facility is not an exotic addition made solely for MPFree.
+
+**The desktop update route** enters U-Boot's pre-Linux Fastboot mode. That path can run without loading the normal Linux rootfs, assuming the installed early loaders remain healthy. It is a plausible recovery mechanism if a factory kernel or p6 rootfs is broken; it has not yet been demonstrated as a complete restoration procedure on this reference MPC.
+
+A related factory-reset operation can use the RAM maintenance environment with an instruction to erase user data. This is another reason MPFree should not place its only copy of projects or release files under `/data`.
+
+### 9.3 The relationship to factory updates and persistence
+
+A firmware update that rewrites `p6` will likely remove any custom systemd unit installed directly in that rootfs, including the earlier persistent MPFree SSH service. Data stored on `p8` may survive, and so may old overlay configuration. Alternatively, the updater includes pathways that can erase data in selected workflows. Both possibilities matter: MPFree cannot assume that its binary survives every factory update, and it cannot assume that persistent overlay state will always be fresh enough for a new kernel/userspace version.
+
+This is why the first real MPFree installer should store its releases in a clearly versioned location that can be removed without destroying the factory rootfs. It should also maintain an exact firmware compatibility record so a developer knows when the installed kernel, C library, device tree or service layout has changed. A successful test on 3.6.0 is evidence for 3.6.0, not a universal guarantee across every future Akai firmware.
+
+## 10. MPC OS 3.10.1 changes the developer-access story
+
+In November 2026, MPC OS 3.10.1 introduced a more explicit set of developer-oriented features. This matters because earlier MPFree work needed a special USB autorun entry and a separately installed SSH service to obtain comfortable command-line access. The official firmware now provides a Developer Panel with terminal and SSH functionality on supported standalone devices, along with an official SDK for external instrument and effect plugins.
+
+The distinction is worth emphasizing. A Linux terminal and SSH service are **access to a running factory system**. The plugin SDK is a supported interface for extending the factory music application. Neither is, by itself, a documented independent bootloader for replacing the complete operating system. Nonetheless, official developer access is a useful step: it reduces the amount of custom setup needed to inspect the board, run diagnostics, transfer a compiled binary or initiate a deliberately controlled development session.
+
+### 10.1 What the official developer facilities provide
+
+The 3.10.1 enhancement controls appear under **Menu → Preferences → Enhancements** on supported devices. The Developer Panel includes Linux terminal access, system logs, service and resource views, and related diagnostics. Developer SSH can be enabled from the user-facing interface. This means an MPFree developer should no longer assume that USB `autorun.sh` is the only plausible way to reach a shell on a current MPC One.
+
+The same release introduces official external-plugin support. The [inMusic MPC Plugin SDK](https://github.com/inmusic-software/mpc-plugin-builder-sdk) provides tooling for building ARM32 and ARM64 instrument/effect plugins and packaging them for installation through the factory host's external-plugin feature. For the Gen 1 MPC One the relevant architecture is ARM32. The SDK and release documentation distinguish the standalone device family from desktop software and explicitly require a supported firmware version and enabled enhancement.
+
+Other optional 3.10.1 facilities include mouse input, screenshot capture, remote-screen/audio access, expanded audio/plugin track limits and additional performance controls. These features matter to general development but do not change the hardware boot sequence on their own.
+
+Because the Developer Panel can expose high-access administration, it must be configured with the same care as any embedded Linux SSH service. A developer should confirm its actual authentication behavior and network exposure on the physical unit. An isolated direct Ethernet connection remains preferable to leaving a highly privileged interface accessible on an untrusted network. The exact server port, credentials and persistence on this reference unit have **not** been established in a post-upgrade hardware test.
+
+### 10.2 What we actually established about firmware 3.10.1
+
+Before updating the reference MPC, the 3.10.1 Gen 1 update image was compared offline with the prior tested firmware materials. The comparison found that several important components were unchanged: the examined kernel image, board DTBs, U-Boot boot script, update launcher and supporting update library. The embedded kernel configuration still contained the relevant `kexec` options, including `CONFIG_KEXEC_CORE`, `CONFIG_KEXEC` and `CONFIG_KEXEC_FILE`.
+
+Those are meaningful results. They suggest that the 3.10.1 developers did not remove the kernel feature we have used for reversible alternative-Linux boots. An unchanged board FDT and boot script also reduce the likelihood of an unrelated difference in those specific files disrupting the known handoff. The compared update RAM environment differed only in version/timestamp information, and examined legacy SSH/autorun-related components were not removed.
+
+However, one component named `az01-signed-fs` **did change materially**. The study reported a change in executable code size and many differing bytes. We do not yet have an established account of the changed component's runtime behavior. It would be irresponsible to conclude either that the change makes owner-controlled kernels unusable or that it is completely irrelevant without understanding its integration points and checking the resulting system.
+
+The important engineering conclusion is therefore more precise than “3.10.1 is safe” or “3.10.1 prevents custom operating systems.” The examined kernel and boot-script surfaces preserved the features we care about, but the actual post-installation behavior of the reference MPC has **not** been measured, and the changed signed-filesystem component still needs qualification. Neither generic Linux kernel configuration nor a byte-identical updater library describes every policy a device might enforce at runtime.
+
+### 10.3 What the offline comparison cannot prove
+
+An update image is a description of an installation, not a complete physical measurement of what the MPC will look like afterward. It does not demonstrate the U-Boot environment the updated unit will retain, the actual eMMC configuration, the contents of every early bootloader region after an update, or which runtime services will be enabled by default. It does not prove that an arbitrary Linux image can start through Fastboot or silicon ROM. And it does not prove that the updated Linux SSH service behaves exactly as the earlier experimental service.
+
+The fact that the official firmware now supports development is encouraging, but **we should verify it, not assume it extends into every boot layer**. A planned expansion of OS-level access in public discussions is a direction of development rather than an installer interface we can ship against today. Our independent boot design must remain functional on the basis of capabilities we have measured.
+
+The focused [3.10.1 compatibility page](firmware-3.10.1-compatibility.md) summarizes the comparison and the remaining upgrade gate. Official information is available from [Akai’s firmware download page](https://www.akaipro.com/downloads-and-support/downloads/firmware/mpc/), [Akai release notes](https://www.akaipro.com/mpc-release-notes/) and [the inMusic SDK](https://github.com/inmusic-software/mpc-plugin-builder-sdk). The November 12, 2026 [Sonic State report](https://sonicstate.com/news/2026/11/12/adc26-akais-new-mpc-os-opens-up-all-models/) also describes the developer-access features and the manufacturer's broader direction.
+
+## 11. The lowest-level access we reliably have today
+
+This question has a surprisingly subtle answer because “access” can mean the ability to observe a component, invoke a service that component exposes, or independently execute owner-provided code **at that stage**.
+
+We can observe the early loader's image, understand where it resides, read U-Boot’s persistent environment and see that U-Boot provides MMC, filesystem and Fastboot functions. That is solid architectural knowledge about code which runs before Linux. But the **earliest stage where we have already started a different Linux kernel on the physical device** is still the factory Linux `kexec` interface. Its no-eMMC-write test behavior was established through repeated runs and before/after measurements.
+
+The **earliest pre-Linux facility known to exist** is U-Boot itself. It has a recovery/USB transport and kernel-execution functions. Once we qualify a RAM-loaded or removable-media image accepted by that installed U-Boot, it may become our earliest *proven* owner-kernel execution stage without modifying boot partitions.
+
+The **earliest potentially factory-independent stage** is the RK3288 silicon BootROM. It is architecturally below the installed first-stage loader, but we have not yet established a reliable software entry into genuine ROM service or an owner-built SRAM loader running through it. It should therefore be treated as a recovery-development objective rather than an already available installer backend.
+
+For MPFree’s requirement that the original system remain recoverable, the present operational answer is: **use the verified `kexec` approach with internal storage disabled for kernel development; use U-Boot only for read-only characterization until a nonpersistent kernel boot has been demonstrated; and leave early eMMC boot partitions unchanged until independent recovery is established**.
+
