@@ -368,3 +368,249 @@ Replacing p6 with a fully compatible MPFree Linux and `/boot` might allow instal
 ### 8.7 The preferred eventual design
 
 **Proposed:** Preserve factory `p1`/`p3` and a known-good recovery path, while making a separately stored MPFree image the selected normal kernel/rootfs. Use an A/B or equivalent health-confirmed selection mechanism that never loses the last known-good factory boot. Once genuine silicon-ROM recovery has been qualified, evaluate whether replacing first-stage components adds sufficient value. Separate the *bootloader* project from the *Linux userspace* project so either can evolve without risking the other.
+
+
+## 9. Official firmware update system
+
+### 9.1 Factory firmware update architecture
+
+Two related maintenance mechanisms exist:
+
+- **Running-Linux update:** The factory update launcher/library verifies an image and compatibility/power requirements, prepares a kernel plus in-RAM update environment, then invokes `/usr/sbin/kexec`. A `/opt/ramfs-update.squashfs` payload contains a compact Yocto/BusyBox userland and a compiled inMusic updater. The updater can address internal storage, and has code paths for bootloader updates and partition operations.
+- **Pre-Linux USB Update Mode:** The installed U-Boot starts its own `fastboot 0` transport. This is intended for desktop-assisted firmware maintenance and does not require the normal p6 rootfs to boot.
+
+Update image families and related handlers include `AZ0x`, `AZ01` and FDT information. A code path that can install a bootloader does not imply that every update actually rewrites p1/p3. Equally, a message such as “bootloader unchanged” is not a promise that all future updates are rootfs-only. Version, device compatibility, image metadata, installer actions and before/after partition hashes should be reviewed for every release.
+
+### 9.2 Why a new firmware version matters for MPFree
+
+An official update may replace factory `p6`, changing the kernel ABI, device trees, systemd units, device permissions or the app's resource ownership. It can also remove a custom service placed inside p6; our reference `MOD-001` SSH service may be lost on such an update. Persistent `p8` contents and overlays can remain, so stale configuration must be considered. Update facilities also have the technical capability to service bootloader partitions. The presence of an independent backup does not alone establish that the device can be restored if those early stages cease functioning.
+
+**Policy:** Keep the owner-held baseline backup and firmware images outside the public repository; compare images offline before installation; keep MPFree data on isolated external media or a clearly scoped `/data/mpfree` directory for early releases; refuse unsupported firmware/hardware combinations; do not enable automatic installation of a release that has not passed compatibility and recovery gates.
+
+## 10. MPC OS 3.10.1: official developer facilities and boot-system compatibility
+
+**Release context:** MPC OS 3.10.1 was published in November 2026 for supported standalone Gen 1 and Gen 2 models. It includes inMusic's official MPC Plugin SDK, optional enhancements, a Developer Panel and remote-screen facilities. The MPC OS remains a proprietary factory operating system; the SDK and developer features are **interfaces for developers**, not an already established official mechanism to install a replacement system.
+
+### 10.1 Official development access
+
+The 3.10.1 enhancements include:
+
+| Feature | Practical function |
+|---|---|
+| Developer Panel | Linux terminal, SSH activation, logs, resources and developer diagnostics |
+| Official MPC Plugin SDK | Build native ARM32/ARM64 instrument and effect libraries |
+| External Plugin Support | Make independently developed plugins visible in the factory MPC host |
+| Remote Screen | View/control supported MPC UI remotely and stream screen/audio |
+| Optional enhancements | USB mouse, screenshots, expanded project limits and performance settings |
+
+The official SDK is published at [inmusic-software/mpc-plugin-builder-sdk](https://github.com/inmusic-software/mpc-plugin-builder-sdk), with examples and build tools. External Plugin Support is enabled under **Preferences → Enhancements**. Developer access is provided through firmware UI rather than requiring the earlier custom `autorun.sh` SSH bootstrap. The SDK's in-process plug-ins are not a replacement Linux environment and remain subject to factory host behavior.
+
+**Operational caution:** The official developer SSH service may have weaker/default root authentication than the project's earlier key-only temporary SSH setup. Treat it as high-access administration: use a trusted direct Ethernet link or isolated network; verify SSH identity and authentication; limit service lifetime; keep sensitive keys off shared USB devices; disable developer SSH when unused. Do not infer the exact SSH port, persistence or login policy of a physical unit until measured in that firmware.
+
+### 10.2 November 13 offline 3.10.1 findings
+
+The owner-provided `MPC-3.10.1-Gen1-update.img` was compared with prior Gen 1 firmware materials. These findings are **verified from examined images**, **not a report of 3.10.1 installed on the reference MPC One**:
+
+| Surface examined | Finding | Engineering interpretation |
+|---|---|---|
+| Linux kernel image | Unchanged in examined comparison | No detected kernel image change undermining known kexec development workflow |
+| Board FDT/DTB files | Unchanged | No observed board-description difference in these artifacts |
+| `boot.scr.uimg` | Unchanged | Normal script-level root/kernel boot logic appears preserved |
+| Kernel `CONFIG_KEXEC_CORE`/`CONFIG_KEXEC`/`CONFIG_KEXEC_FILE` | All `y` | Kernel was still built with kexec capability |
+| Generic Lockdown/module-signature/IMA enforcement | No new enforcement enabled in compared kernel config | Reassuring but does not settle separate integrity components |
+| Updater and `libaz01-prog` | Byte-identical in compared artifacts | No observed updater code difference there |
+| Update RAMFS | Examined contents differed only in `/etc/timestamp` and `/etc/version` | No known rewrite of updater program logic |
+| SSH and autorun components | Identical in compared areas | No identified loss of the older compatibility mechanisms |
+| Bootloader signature and LoadPin helper executables/config | No executable/config differences detected | No evidence of behavioral change in these unchanged objects |
+| `az01-signed-fs` | **Material difference**, including ~152 bytes increase in `.text` and thousands of differing bytes | **Unresolved functional risk**; must qualify runtime semantics |
+
+The changed `az01-signed-fs` deserves a separate work item. Do not assert that its behavior is harmless based only on a naming convention or compare percentage. The unchanged kernel/DTB/script/updater findings also **do not prove** that actual eMMC bootloader partitions, runtime enforcement, user-defined boot images or rollback behavior after a firmware installation are unchanged.
+
+### 10.3 Upgrade decision
+
+The available evidence does **not** show a general new 3.10.1 restriction on the known kexec/kernel/script/update paths. It also does **not** prove there are no hidden or component-specific restrictions, particularly around the changed signed-filesystem component. The reference unit's own installed post-update environment and eMMC layout remain unmeasured. **Do not confuse an offline no-difference finding with a completed safe firmware upgrade.**
+
+Before changing the reference unit: complete the 3.10.1 integrity-component assessment; make the preserved baseline and backup readily available off-device; test the official developer mode in a controlled setup; and retain the stronger recovery gate before any bootloader or eMMC configuration writes.
+
+### 10.4 Official sources and project implications
+
+- [Akai MPC firmware downloads](https://www.akaipro.com/downloads-and-support/downloads/firmware/mpc/)
+- [Akai MPC release notes](https://www.akaipro.com/mpc-release-notes/)
+- [Official inMusic MPC Plugin SDK](https://github.com/inmusic-software/mpc-plugin-builder-sdk)
+- [inMusic open-source package releases](https://github.com/inmusic-software/az0x-open-source)
+- [Akai firmware update walkthrough](https://support.akaipro.com/en/support/solutions/articles/69000816160-akai-pro-mpc-series-firmware-update-walkthrough)
+
+A stated long-term plan for expanded developer/OS access is **not** a current device-level compatibility guarantee. MPFree should rely on tested interfaces and owner-controlled packaging, not an assumed future vendor promise.
+
+## 11. Installer and boot-manager architecture
+
+### 11.1 Separate an early installer from a future cold-boot selector
+
+**Subsystem A: `mpfree-launch`, current-development path.** Runs in an existing compatible Linux environment, detects exact board and firmware, checks owner consent and off-device backups, stages the MPFree kernel/DTB/rootfs on removable media, validates checksums, launches a controlled transient `kexec`, captures boot logs, and retains factory boot on power cycle. It should never write the stock loader or rootfs merely to test a kernel.
+
+**Subsystem B: `mpfree-boot`, future independent path.** Operates in a verified pre-Linux boot environment, selects a known-good MPFree image or stock fallback, verifies manifests, boots a kernel without starting factory Linux, tracks trial/confirmed boot outcomes, and supports deterministic rollback after crash or media removal. Its actual implementation must follow the *hardware-proven* U-Boot/ROM capabilities, not a generic board abstraction.
+
+**Subsystem C: `mpfree-recover`, independent service tool.** Uses independently verified low-level recovery to identify the board, read the full eMMC and boot configuration, compare a private reference image and, only on explicit owner request with separate gates, restore exact regions. Until genuine silicon-ROM or equivalent restoration is qualified, this subsystem is a design objective, not a released repair capability.
+
+### 11.2 Trust, release packaging and data separation
+
+A release manifest should bind a package to exact compatible hardware and kernel assumptions:
+
+```yaml
+schema: 1
+project: mpfree
+board:
+  model: mpc-one-gen1
+  compatible: ["inmusic,acva", "inmusic,az01", "rockchip,rk3288"]
+  arch: armv7-eabihf
+boot:
+  method: kexec-test
+  kernel: images/zImage
+  device_tree: images/rk3288-az01-acva.dtb
+  rootfs: usb-ext4
+  disable_internal_mmc: true
+  allow_emmc_writes: false
+integrity:
+  kernel_sha256: "<sha256>"
+  dtb_sha256: "<sha256>"
+  rootfs_sha256: "<sha256>"
+fallback:
+  method: cold-power-cycle
+  factory_boot_state_unchanged: true
+```
+
+**This YAML is a proposed MPFree manifest, not a structure recognized by the installed U-Boot.** MPFree should distinguish hashes used for integrity from signatures used to authenticate MPFree's own releases. Never redistribute full vendor firmware, licensed instruments, proprietary samples, factory activation data or owner-specific storage images. An optional installer-side importer can read files from the owner's legitimately held device into private local storage.
+
+Suggested clean component boundaries:
+
+```text
+workstation:
+  build and sign MPFree, validate ARMv7 binaries and image geometry
+  prepare removable-media rootfs; capture private backup reports
+  generate reproducible per-firmware evidence
+
+device session agent:
+  identify model/DTB/kernel/GPT; deny unknown devices
+  enforce no-write sandbox; stage and checksum kernel/FDT
+  controlled kexec; gather logs and boot-area check results
+
+future boot selector:
+  known-good and candidate image entries
+  image verification and trial boot
+  health-confirmed commit and deterministic factory fallback
+
+future recovery program:
+  independently booted owner service environment
+  read-only eMMC and boot configuration survey
+  separately approved, transactional region restoration
+```
+
+### 11.3 Installer state transitions
+
+```text
+DETECT_BOARD
+  → VALIDATE_COMPATIBILITY
+  → IDENTIFY_CURRENT_BOOT_AND_FILESYSTEMS
+  → VERIFY_PRIVATE_BACKUP_AND_RECOVERY_LEVEL
+  → CHECK_POWER_AND_MEDIA
+  → VERIFY_MPFree_RELEASE
+  → STAGE_TO_REMOVABLE_OR_VOLATILE_STORAGE
+  → CHECK_STAGED_BYTES
+  → EXPLICIT_OWNER_CONFIRMATION
+  → ACTIVATE_ONLY_PERMITTED_BOOT_PATH
+  → WATCHDOG_AND_HEALTHCHECK
+  → COMMIT_HEALTHY_RELEASE or RESTORE_LAST_KNOWN_GOOD
+```
+
+Any missing board profile, unexpected GPT region, inadequate backup, incompatible kernel ABI, disabled rollback or bad hash must fail **before** an irreversible operation. During early stages, there should be **no irreversible operations** in the installer at all.
+
+### 11.4 Qualification gates
+
+| Gate | Permitted work | Prerequisites | Status |
+|---|---|---|---|
+| **G0 — Inventory** | Read-only device/sysfs/GPT/hashes/USB and offline firmware files | Board identity | Achieved extensively |
+| **G1 — Temporary runtime** | Volatile execution and no-eMMC-access `kexec` test; removable test media | Private backup, isolated FDT, no-write checks and power-cycle fallback | 3.10.0 form achieved |
+| **G2 — Persistent MPFree app data** | Versioned files on approved SD/USB or scoped `/data/mpfree`; opt-in launcher | Data backup, service rollback rehearsal, compatibility matrix | Partially designed |
+| **G3 — Pre-Linux independent boot** | Qualified U-Boot removable/RAM kernel launch without altering critical boot storage | Real on-device image acceptance and fallback proof | Not yet achieved |
+| **G4 — Boot-critical changes** | Modifying p1–p6, p2 env, GPT, boot0/1 or hardware boot settings | Independent owner ROM/recovery proof, full read-back, restoration rehearsal | **Not yet authorized by evidence** |
+
+The strongest project policy is to ship a no-write G1 developer runtime before attempting G4. A full backup is mandatory preparation, **not** proof that G4 is safe.
+
+### 11.5 Recovery must be classified by failure layer
+
+| Failed layer | Candidate recovery | Important dependency | Demonstration |
+|---|---|---|---|
+| MPFree temporary session | Power-cycle | Stock eMMC unchanged | **Observed** |
+| Factory `acvs` session | Restart factory service or power-cycle | Factory Linux still bootable | Service handoff recovery needs qualification |
+| `p8` data/settings | Owner-held backup; controlled restore | Working Linux or qualified recovery | Not rehearsed end-to-end |
+| `p6` rootfs | Factory Update Mode / Fastboot with official image | Functional p1/p2/p3 | Plausible, not a complete tested restore |
+| `p1`/`p3` early bootloader | Independent RK3288 ROM loader and full device access | ROM entry and owner-code execution | **Not proven** |
+| eMMC configuration/RPMB/OTP | Specialized hardware-aware service | Exact device state and protection semantics | **Not proven** |
+
+**Critical:** “U-Boot supports Fastboot” is not synonymous with “all firmware damage is recoverable.” A loader that lives in p3 cannot help if p3 is invalid. Likewise, a private backup does not help if the only path for writing it requires the already-damaged installed Linux.
+
+### 11.6 Power-loss objectives
+
+For G0/G1: a sudden power loss should not modify the boot-critical eMMC regions, and the next cold power-on should start the unchanged factory system. For G2: incomplete external-media staging must be ignored, and the factory OS should remain the default. For G3/G4: the installer may only promote a new default after a trial boot has passed health checks, and it must retain a bootable known-good entry and an independently rehearsed recovery mechanism. Do not install a one-slot “replacement OS” and present it as A/B.
+
+## 12. ROM-level independent recovery: unresolved engineering problem
+
+The RK3288 BootROM can theoretically provide a lowest-level owner-controlled starting point even when normal eMMC boot is unavailable. However, an engineering promise must be grounded in this particular board.
+
+**Established:** A valid Rockchip ID block and SRAM stage exist at the expected sector range; BootROM runs before U-Boot; internal eMMC and both hardware boot areas are backed up; the USB OTG controller and likely host-facing connector are identified; the software path presently associated with reset is Fastboot-oriented, not a proven silicon-ROM request. Blank-looking secure-boot-related NVMEM observations exist, but mapping them to definitive ROM policy is **not confirmed**.
+
+**Still unresolved:** A reliable software-only request for genuine ROM USB mode; a safely accessible board entry mechanism; source-built owner SRAM code demonstrably accepted and executed; DDR and USB transport bring-up with no storage writes; a complete independent eMMC read-back; and a restoration rehearsal.
+
+A disciplined progression is: identify passive USB/serial behavior → confirm true ROM mode without altering eMMC → build the smallest SRAM-only diagnostic that changes no storage/OTP/PMIC configuration → verify execution through an external observation → add RAM-only transport → independently read and hash all relevant regions → only then qualify restoration, preferably on an appropriate fixture. Never test by erasing the working ID block first. Public instructions for unrelated RK3288 boards and other MPC variants do not establish electrical safety here.
+
+**Security-state caution:** Software reports of an unprogrammed security field or unchanged signature helper cannot rule out all ROM or future update constraints. Independent observations of silicon state, boot acceptance and actual loader execution are needed before publishing a “firmware-proof” recovery guarantee.
+
+## 13. Verification matrix and open decisions
+
+| Engineering question | Best current answer | Decisive next test |
+|---|---|---|
+| Is the eMMC layout known? | **Yes**, observed, backed up, hashed | Compare after any physical upgrade |
+| Where do SPL/U-Boot/kernel live? | **p1/p3/p6**, respectively | Passive cold-boot trace if required |
+| Can another Linux kernel run? | **Yes**, `kexec` trial repeated three times | Boot independently built MPFree kernel |
+| Did those trials write factory boot partitions? | **No**, tested hashes/counters matched | Keep checks in regression suite |
+| Can stock U-Boot run `bootz` and MMC commands? | **Yes, verified in image** | Hardware script/device mapping |
+| Does U-Boot have pre-Linux Fastboot? | **Yes, verified in image** | Read-only hardware enumeration and `getvar` |
+| Does “Update Mode” recover a broken p6? | **Plausible**, not restored in test | Restoration fixture rehearsal |
+| Can SD win over healthy factory p6 without env edit? | **Unknown** | No-write boot-selection trial |
+| Can Fastboot `boot` execute owner Linux? | **Unknown** | Qualified RAM-only trial with small known image |
+| Can software reach genuine silicon ROM? | **Not proven** | Board-specific no-write mode test |
+| Will ROM execute independently built SRAM stage? | **Not proven** | Source-built SRAM minimal runtime proof |
+| Can owner restore damaged p1/p3? | **Not proven** | Independent full read-back and restore rehearsal |
+| Is 3.10.1 official developer SSH offered? | **Yes**, publicly described | Confirm exact auth/persistence when installed |
+| Is 3.10.1 kernel kexec support retained? | **Yes**, image verified | Physical controlled trial when firmware approved |
+| Is 3.10.1 signed-filesystem change harmless? | **Unknown** | Runtime/behavioral qualification |
+| Is stock factory A/B recovery configured? | **Not demonstrated** | Boot selection/partition state study |
+| Is full MPFree cold boot ready to ship? | **No** | G3 + tested G4 recovery/fallback |
+
+## 14. Implementation milestones
+
+**M1 — Freeze board and firmware evidence.** Keep the per-unit geometry, partition hashes, compatible strings, U-Boot command/environment evidence and documented modifications distinct by firmware version. Preserve dated raw notes in the archive.
+
+**M2 — Independent MPFree Linux test image.** Create a reproducible ARMv7 hard-float kernel/FDT/rootfs toolchain. Base the initial FDT on `rk3288-az01-acva`, preserve board fixups, disable internal MMC, isolate `/data` and mask update services. Boot using the proven `kexec` mechanism. Test touch/display/ALSA/MIDI/network and keep a supervised fallback.
+
+**M3 — Official developer access profile.** Qualify the 3.10.1 Developer Panel/SSH service on the exact physical model without assuming the old autorun path or former SSH credentials. Confirm permissions, auth mode, service lifetime and relevant firmware update deltas.
+
+**M4 — Verified direct pre-Linux RAM/removable boot.** Map exact U-Boot `mmc` numbering, boot script precedence and Fastboot image format. Find a truly nonpersistent owner-image selection path and prove it repeatedly with factory fallback.
+
+**M5 — Independent ROM recovery qualification.** Genuine silicon-ROM USB enumeration, independently built SRAM stage, full eMMC read-back matched to private backup and separately gated restore rehearsal.
+
+**M6 — Transactional boot selection.** Implement factory/MPFree entries with clear trial/confirmed state, reliable rollback and no single point of failure in custom boot selection; only after proven hardware support.
+
+**M7 — Full open-source runtime.** Make the MPFree audio/MIDI/UI/recording stack self-sufficient and remove factory-userspace dependency; retain optional local-only user-authorized content import tools.
+
+## 15. New-engineer handoff summary
+
+The reference MPC One is an RK3288 ARMv7 embedded Linux machine with ~2 GiB RAM and ~7.28 GiB eMMC. Silicon BootROM loads the Rockchip ID block/SRAM stage from eMMC user-area LBA 64; that stage loads U-Boot from p3; U-Boot uses p2 environment, scans boot targets, loads a kernel and board DTB from the p6 root filesystem and calls `bootz`. Factory Linux is a 6.6 PREEMPT_RT Yocto system with a read-only p6 root, writable p8 data and persistent overlays for `/etc`/`/var`. The primary MPC application is controlled by `acvs.service`. A working `kexec` path has already booted a different 3.10.0 Linux from USB three times, without changing boot storage; a power cycle restored the original boot. U-Boot has Fastboot and MMC commands, but direct owner-image cold boot and independent recovery after p1/p3 failure have not been demonstrated.
+
+Firmware 3.10.1 officially adds a Linux developer panel, SSH and a native plugin SDK. Offline comparisons retained the examined kernel/DTB/boot script/kexec/updater behavior; a material `az01-signed-fs` change remains unresolved, and 3.10.1 was **not yet installed on the reference hardware** for these claims. The project should pursue the proven reversible `kexec` development path first, a demonstrated nonpersistent pre-Linux boot second, and only then a transactional independent boot manager backed by independently tested ROM recovery.
+
+## 16. Repository references and documentation organization
+
+Read [hardware documentation index](README.md) for current developer-facing materials and [the dated evidence archive](archive/2026-11/README.md) for retained original measurements. Existing detailed references include [boot map](boot-map.md), [baseline 3.6.0](baseline-3.6.0.md), [kexec test boots](kexec-test-boot.md), [eMMC backup](emmc-backup.md), [USB/ROM notes](maskrom-usb.md), [firmware updater](akai-updater-offline.md), [ABI and service handoff](abi-handoff-survey.md), [resource ownership](resource-ownership.md), [access guide](../guides/developer-access.md), [installer design](../design/usb-installer.md), and [recovery strategy](../research/recovery-and-os-strategy.md).
+
+When a finding changes, amend the current architecture with a date and a precise evidence label. Retain the prior observation rather than silently rewriting history. Keep raw proprietary update images and complete private user storage backups outside GitHub.
