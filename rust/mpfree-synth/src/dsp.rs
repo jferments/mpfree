@@ -351,18 +351,161 @@ impl Filter {
     }
 }
 
-/// Soft drive before the filter. `amount` 0 leaves the signal untouched;
-/// above that it blends in a `tanh` stage pushed by `gain`.
+/// The drive's clipping level for a mix at level 1 (one oscillator at
+/// full level; see [`drive_scales`]): a signal peaking here leaves the
+/// `tanh` stage peaking here too, at any gain, so a driven voice starts
+/// out near its own level and [`DriveLevel`] only has the waveform's shape
+/// left to correct. (Until live test 2 the stage divided by the gain's
+/// square root, and a full voice came out up to 14 dB quieter at 24 dB of
+/// drive: "Drive seems to make synths quieter".)
+pub const DRIVE_REF: f32 = 1.0;
+
+/// The quietest mix [`drive_scales`] scales for: quieter mixes are driven
+/// as if they were this loud, so a nearly silent oscillator is not pushed
+/// up into full distortion.
+const MIN_DRIVE_LEVEL: f32 = 0.1;
+
+/// What the drive's `tanh` stage is scaled by at `gain` for a mix at
+/// level 1 (see [`DRIVE_REF`]). Work it out once a run or a hit.
+#[inline]
+pub fn drive_norm(gain: f32) -> f32 {
+    DRIVE_REF / (gain * DRIVE_REF).tanh()
+}
+
+/// About how loud a mix into the drive is, for [`drive_scales`]: `stacks`
+/// unison stacks of two oscillators at `osc` levels, plus a sub and noise.
+/// Stacks detuned against each other add in power, so four stacks are
+/// about twice as loud as one.
+#[inline]
+pub fn mix_level(stacks: usize, osc: [f32; 2], sub: f32, noise: f32) -> f32 {
+    (stacks as f32 * (osc[0] * osc[0] + osc[1] * osc[1]) + sub * sub + noise * noise).sqrt()
+}
+
+/// The drive's input gain and output scale at `gain` for a mix at `level`
+/// ([`mix_level`]), for [`drive_n`] and [`drive_run_n`]: the drive treats
+/// the mix as if one full oscillator fed it, so how hard it drives and how
+/// loud it comes out don't depend on how many oscillators and unison
+/// stacks feed it.
+#[inline]
+pub fn drive_scales(gain: f32, level: f32) -> (f32, f32) {
+    let lv = level.max(MIN_DRIVE_LEVEL);
+    (gain / lv, drive_norm(gain) * lv)
+}
+
+/// Soft drive before the filter, for a mix at level 1. `amount` 0 leaves
+/// the signal untouched; above that it blends in a `tanh` stage pushed by
+/// `gain`, scaled to keep the level ([`DRIVE_REF`]).
 #[inline]
 pub fn drive(x: f32, gain: f32, amount: f32) -> f32 {
+    drive_n(x, gain, drive_norm(gain), amount)
+}
+
+/// [`drive`] with the input gain `k` and output scale `n` worked out
+/// ([`drive_scales`], or `gain` and [`drive_norm`] for level 1).
+#[inline]
+pub fn drive_n(x: f32, k: f32, n: f32, amount: f32) -> f32 {
     if amount <= 0.0 {
         return x;
     }
-    x + ((x * gain).tanh() / gain.sqrt() - x) * amount
+    x + ((x * k).tanh() * n - x) * amount
 }
 
-/// [`drive`] with the gain's square root already worked out as `sq`: the
-/// same sample.
+/// How long [`DriveLevel`] listens: its powers follow the sound with
+/// about this time constant, long enough to span a low note's cycle.
+const DRIVE_LEVEL_SECONDS: f32 = 0.04;
+
+/// Keeps a driven voice as loud as it was without the drive, whatever its
+/// waveform: the power going into the drive and coming out is summed as it
+/// runs ([`drive_run_level`] or [`DriveLevel::add`]), and once a control
+/// step [`DriveLevel::step`] gives the gain that brings the output back to
+/// the input's level, for the voice's gain (which already ramps across the
+/// step, so the correction never clicks). The drive then adds grit, not
+/// level, as the FX Drive's auto-gain does. A static scale alone can't do
+/// it: a pad or organ table with a high crest factor comes out of a
+/// clipper much louder than a saw does.
+#[derive(Clone, Copy, Debug)]
+pub struct DriveLevel {
+    sum_in: f32,
+    sum_out: f32,
+    p_in: f32,
+    p_out: f32,
+    gain: f32,
+}
+
+impl Default for DriveLevel {
+    fn default() -> DriveLevel {
+        DriveLevel::new()
+    }
+}
+
+impl DriveLevel {
+    pub const fn new() -> DriveLevel {
+        DriveLevel {
+            sum_in: 0.0,
+            sum_out: 0.0,
+            p_in: 0.0,
+            p_out: 0.0,
+            gain: 1.0,
+        }
+    }
+
+    /// One sample into the drive, `x`, and out of it, `y`.
+    #[inline]
+    pub fn add(&mut self, x: f32, y: f32) {
+        self.sum_in += x * x;
+        self.sum_out += y * y;
+    }
+
+    /// Once a control step of `frames` at `rate`: folds the step's sums
+    /// into the running powers and gives the gain (1 until there is
+    /// something to measure; never more than 18 dB either way).
+    pub fn step(&mut self, frames: u64, rate: u32) -> f32 {
+        let (si, so) = (self.sum_in, self.sum_out);
+        self.sum_in = 0.0;
+        self.sum_out = 0.0;
+        if self.p_in == 0.0 && self.p_out == 0.0 {
+            // The first step of a note: its own sums, not a slow rise.
+            self.p_in = si;
+            self.p_out = so;
+        } else {
+            let a = (frames as f32 / (DRIVE_LEVEL_SECONDS * rate as f32)).min(1.0);
+            self.p_in += a * (si - self.p_in);
+            self.p_out += a * (so - self.p_out);
+        }
+        if self.p_in > 1e-12 && self.p_out > 1e-12 {
+            self.gain = (self.p_in / self.p_out).sqrt().clamp(0.125, 8.0);
+        }
+        self.gain
+    }
+
+    /// Forget everything (a fresh note, or the drive turned off).
+    pub fn clear(&mut self) {
+        *self = DriveLevel::new();
+    }
+}
+
+/// [`drive_run_n`], summing the power in and out into `level`.
+#[inline]
+pub fn drive_run_level(buf: &mut [f32], k: f32, n: f32, amount: f32, level: &mut DriveLevel) {
+    if amount <= 0.0 {
+        return;
+    }
+    let (mut si, mut so) = (level.sum_in, level.sum_out);
+    for x in buf {
+        let y = *x + ((*x * k).tanh() * n - *x) * amount;
+        si += *x * *x;
+        so += y * y;
+        *x = y;
+    }
+    level.sum_in = si;
+    level.sum_out = so;
+}
+
+/// The drum voices' drive (until live test 2, every engine's): a `tanh`
+/// stage divided by the gain's square root `sq`. A drum hit comes into it
+/// well under full level, where this lifts it by up to the square root of
+/// the gain, so drums keep it; at full level it loses level, which is why
+/// the synths moved to [`drive_n`].
 #[inline]
 pub fn drive_sq(x: f32, gain: f32, sq: f32, amount: f32) -> f32 {
     if amount <= 0.0 {
@@ -371,16 +514,20 @@ pub fn drive_sq(x: f32, gain: f32, sq: f32, amount: f32) -> f32 {
     x + ((x * gain).tanh() / sq - x) * amount
 }
 
-/// [`drive`] over a buffer in place, with the gain's square root worked
-/// out once: the same samples.
+/// [`drive`] over a buffer in place: the same samples.
 #[inline]
 pub fn drive_run(buf: &mut [f32], gain: f32, amount: f32) {
+    drive_run_n(buf, gain, drive_norm(gain), amount);
+}
+
+/// [`drive_n`] over a buffer in place: the same samples.
+#[inline]
+pub fn drive_run_n(buf: &mut [f32], k: f32, n: f32, amount: f32) {
     if amount <= 0.0 {
         return;
     }
-    let sq = gain.sqrt();
     for x in buf {
-        *x = *x + ((*x * gain).tanh() / sq - *x) * amount;
+        *x = *x + ((*x * k).tanh() * n - *x) * amount;
     }
 }
 

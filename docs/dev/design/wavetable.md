@@ -17,7 +17,7 @@ the same output for any block size (tests check both).
 | Warp | Bend (phase distortion, the cycle squeezed to the front), Sync (the cycle repeats up to 8 times a period), Mirror (forward then back), FM (the other oscillator moves this one's phase) |
 | Unison | 1 to 8 stacks on both oscillators, detune and stereo spread |
 | Mix | A sub sine an octave under Osc A, and noise |
-| Filter | Poly's: ladder LP 24, state-variable LP 12, BP 12, HP 12, with drive, key track, velocity |
+| Filter | Poly's: ladder LP 24, state-variable LP 12, BP 12, HP 12, with drive (level-matched as Poly's, see [Synths](synths.md)), key track, velocity |
 | Mod env | ADSR to cutoff, to Position A and B, and to warp; velocity to position |
 | Amp env | ADSR, velocity to level |
 | LFO | Sine, triangle, saw, square, S&H, free or synced to the transport; to pitch, cutoff, Position A and B, level |
