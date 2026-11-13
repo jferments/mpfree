@@ -8,8 +8,8 @@
 //! tab's pages from its parameter groups.
 
 use mpfree_fx::ids::{
-    character, chorus, cloud, comb, compressor as comp, crush, delay, dj_filter as dj, drive, eq,
-    filter, flanger, lofi, master, perform, phaser,
+    character, chorus, cloud, comb, compressor as comp, crush, delay, dj_filter as dj, drive,
+    ducker, eq, filter, flanger, lofi, master, perform, phaser, pitch, transient,
 };
 use mpfree_node::{NodeInfo, ParamInfo};
 pub use mpfree_synth_ui::pages::Page;
@@ -89,6 +89,19 @@ fn known(info: &NodeInfo, count: u16) -> Option<Vec<Plan>> {
         "mpfree.fx.character" => one(&[character::AMOUNT, character::OUTPUT, character::MIX]),
         "mpfree.fx.compressor" => one(&[comp::THRESHOLD, comp::RATIO, comp::ATTACK, comp::MAKEUP]),
         "mpfree.fx.master_safety" => one(&[master::TRIM, master::CEILING, master::RELEASE]),
+        "mpfree.fx.ducker" => one(&[
+            ducker::DEPTH,
+            ducker::THRESHOLD,
+            ducker::RELEASE,
+            ducker::SHAPE,
+        ]),
+        "mpfree.fx.transient" => one(&[
+            transient::ATTACK,
+            transient::SUSTAIN,
+            transient::SPEED,
+            transient::OUTPUT,
+        ]),
+        "mpfree.fx.pitch" => one(&[pitch::PITCH, pitch::FINE, pitch::FEEDBACK, pitch::MIX]),
         "mpfree.fx.cloud" => Some(vec![
             pg(
                 "Reverb",
