@@ -27,17 +27,17 @@ The tempo is the speed of the music, in beats per minute (BPM), shown in the tra
 
 A **pattern** is a loop of steps, like a grid: each row is a pad, each column a moment in time. A lit square plays that pad at that moment.
 
-1. Tap **Beats** in the view switch on the right of the transport bar. The pattern fills the screen.
+1. Tap **Beats** in the view switch on the right of the transport bar. The pattern fills most of the screen.
 2. Tap squares to light them. A classic start: kick on steps 1, 5, 9 and 13; snare on 5 and 13; hi-hat on every odd step.
 3. Press **PLAY**. The pattern plays round and round, and a line moves across the grid to show where it is.
 4. Tap more squares while it plays. Changes play the next time round.
 5. Press **STOP** to stop.
 
-{{shot: play-beats | The Beats view: the whole pattern, one row per pad. The picked step's velocity, length, nudge and chance are on the Q-Links.}}
+{{shot: play-beats | The Beats view: the pattern, one row per pad, with your timing under it. The picked step's velocity, length, nudge and chance are on the Q-Links.}}
 
 **Fine-tune a step.** Tap a lit square once to pick it: the Q-Links now show its **velocity** (how hard it plays), **length**, **nudge** (a little early or late) and **chance** (how often it plays, for variations). Tap it again to turn it off.
 
-**Mute a row.** The speaker icon beside each row's name mutes that pad, so you can drop the kick out and bring it back.
+**Mute a row.** Each row's name is its mute button (the speaker in the box beside the name shows it): tap the name to mute that pad, so you can drop the kick out and bring it back.
 
 > [!MPC]
 > On the MPC, step sequencing has its own mode (**STEP SEQ**) where the pads become step buttons. In MPFree the pattern is on the screen, and **STEP SEQ** takes you to this Beats view. Velocity, length, nudge and chance live on the Q-Links for the picked step, rather than in an event list.

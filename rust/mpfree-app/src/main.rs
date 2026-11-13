@@ -4453,7 +4453,7 @@ fn player_session(
             mix.lane(offset, addr, value);
         }
         time.clear_locks();
-        // The Play page: where the hits fell (Drum view), and the pattern.
+        // The Play page: where the hits fell (Beats' timing strip), and the pattern.
         for h in time.hits() {
             out.show(gui::ToUi::Hit(*h));
         }

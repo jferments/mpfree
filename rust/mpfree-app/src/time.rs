@@ -158,7 +158,7 @@ pub enum StepAction {
 }
 
 /// A pad hit while the transport rolls: where it fell, for the Play page's
-/// timing (Drum view).
+/// timing (the Beats view's timing strip).
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct HitInfo {
     pub pad: u8,

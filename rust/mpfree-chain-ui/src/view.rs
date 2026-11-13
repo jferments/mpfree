@@ -585,7 +585,7 @@ impl Widget for ChainView {
                 cx.canvas
                     .fill_round_rect(Rect::new(row.x, row.y + 8, 3, row.h - 16), 1, t.accent);
             }
-            let ink = if s.on { t.text } else { t.text_faint };
+            let ink = t.button_ink(s.on);
             let badge = Rect::new(row.x + 12, row.y + (row.h - 28) / 2, 28, 28);
             cx.canvas.fill_round_rect(
                 badge,
@@ -710,7 +710,7 @@ impl Widget for ChainView {
                 t.size_small,
                 *b,
                 Align::Center,
-                if ok { t.text } else { t.text_faint },
+                t.button_ink(ok),
                 label,
             );
         }

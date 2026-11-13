@@ -9,7 +9,7 @@
 
 use crate::looping::LoopWave;
 use mpfree_looper::LayerCommand;
-use mpfree_ui::draw::{self, card, card_head, dot, speaker, speaker_hit};
+use mpfree_ui::draw::{self, card, card_head, dot, speaker};
 use mpfree_ui::{Align, Color, EventKind, FontId, PaintCx, Rect, Tone, Touch, Ui, Widget};
 use std::cell::RefCell;
 use std::sync::Arc;
@@ -144,6 +144,14 @@ impl LoopList {
     pub(crate) fn speaker_at(rr: Rect) -> (i32, i32) {
         (rr.right() - 22, rr.bottom() - 18)
     }
+
+    /// Where loop card `rr` answers a tap to mute: its bottom right, 64 px
+    /// wide and up to the state line (Jay after live test 3: bigger
+    /// mutes).
+    pub(crate) fn mute_hit(rr: Rect) -> Rect {
+        let top = (rr.y + 24).min(rr.bottom() - 30).max(rr.y);
+        Rect::new(rr.right() - 64, top, 64, rr.bottom() - top)
+    }
 }
 
 /// [`LoopList::parts`]: the cards, the buttons and the gauge.
@@ -215,6 +223,10 @@ impl Widget for LoopList {
             }
             if let Some(muted) = row.speaker {
                 let (x, y) = LoopList::speaker_at(*rr);
+                if rr.h >= 44 {
+                    let b = Rect::new(x - 18, y - 14, 38, 28);
+                    cx.canvas.stroke_round_rect(b, 7, 1, t.outline);
+                }
                 speaker(
                     cx,
                     x,
@@ -277,8 +289,7 @@ impl Widget for LoopList {
             rows, new, clear, ..
         } = self.parts(r);
         if let Some(i) = rows.iter().position(|rr| rr.contains(x, y)) {
-            let (sx, sy) = LoopList::speaker_at(rows[i]);
-            if self.rows[i].speaker.is_some() && speaker_hit(sx, sy).contains(x, y) {
+            if self.rows[i].speaker.is_some() && LoopList::mute_hit(rows[i]).contains(x, y) {
                 self.acts.push(LoopAct::Mute(i));
                 return Some(EventKind::Toggle(i));
             }
@@ -557,6 +568,13 @@ impl LoopEditor {
             .collect()
     }
 
+    /// Where layer row `rr` answers a tap to mute: the speaker's whole
+    /// column under the name, up to the S button.
+    pub(crate) fn mute_hit(rr: Rect) -> Rect {
+        let top = (rr.y + 30).min(rr.bottom() - 32).max(rr.y);
+        Rect::new(rr.x, top, 42, rr.bottom() - top)
+    }
+
     pub(crate) fn row_parts(rr: Rect) -> RowParts {
         let low = rr.y + rr.h * 2 / 3 + 1;
         RowParts {
@@ -636,11 +654,7 @@ impl Widget for LoopEditor {
                 13.0,
                 *tr,
                 Align::Center,
-                match (lit, *on) {
-                    (true, _) => t.bg,
-                    (false, true) => t.text,
-                    (false, false) => t.text_faint,
-                },
+                if lit { t.bg } else { t.button_ink(*on) },
                 label,
             );
         }
@@ -721,6 +735,8 @@ impl Widget for LoopEditor {
                 &l.detail,
             );
             let p = LoopEditor::row_parts(rr);
+            let b = Rect::new(p.speaker.0 - 18, p.speaker.1 - 13, 38, 26);
+            cx.canvas.stroke_round_rect(b, 7, 1, t.outline);
             speaker(cx, p.speaker.0, p.speaker.1, t.text_dim, l.muted);
             cx.canvas.fill_round_rect(
                 p.solo,
@@ -859,7 +875,7 @@ impl Widget for LoopEditor {
                     .find(|(_, rr)| rr.contains(x, y))?;
                 let l = self.layers[k].clone();
                 let p = LoopEditor::row_parts(rr);
-                let act = if speaker_hit(p.speaker.0, p.speaker.1).contains(x, y) {
+                let act = if LoopEditor::mute_hit(rr).contains(x, y) {
                     LoopAct::LayerCmd(k, LayerCommand::Mute(!l.muted))
                 } else if p.solo.inset(-4).contains(x, y) {
                     LoopAct::LayerCmd(k, LayerCommand::Solo(!l.solo))
@@ -1231,10 +1247,10 @@ impl Widget for UseLoop {
                 14.0,
                 inner,
                 Align::Left,
-                if *on { t.text } else { t.text_faint },
+                t.button_ink(*on),
                 title,
             );
-            cx.text(FontId::Sans, 12.0, inner, Align::Right, t.text_faint, what);
+            cx.text(FontId::Sans, 12.0, inner, Align::Right, t.text_dim, what);
         }
     }
 

@@ -838,6 +838,11 @@ impl Player {
         for v in PlayView::ALL {
             ui.add_page(v.page(), &v.layout()).expect("play layout");
         }
+        ui.add_page(
+            play_page::BEATS_TIMING_PAGE,
+            &PlayView::Beats.layout_for(true),
+        )
+        .expect("beats with timing layout");
         let debug = DebugPages::add(&mut ui).expect("debug layouts");
         ui.add_page("Console", SYSLOG_LAYOUT)
             .expect("console layout");
@@ -1031,18 +1036,6 @@ impl Player {
                     format!("Synth · Bank {}", crate::app::bank_letter(s.bank)),
                     kit.name.clone(),
                     switch(Some(s)),
-                ),
-                // The Drum view says how hits are played (the mockups);
-                // the others name the kit.
-                None if self.play.view == PlayView::Drum => (
-                    format!("Pads · Bank {}", crate::app::bank_letter(self.kit)),
-                    match self.status.pad_level {
-                        PadLevel::Off => "velocity on",
-                        PadLevel::Full => "full level",
-                        PadLevel::Half => "half level",
-                    }
-                    .to_string(),
-                    None,
                 ),
                 None => (
                     format!("Pads · Bank {}", crate::app::bank_letter(self.kit)),
@@ -1276,12 +1269,19 @@ impl Player {
         self.refresh_pads_bar();
         self.refresh_play();
         self.refresh_qlinks();
+        let timing = self.settings.timing_strip;
         let _ = self
             .arp_panel
-            .set_quick_layout(&mut self.ui, &v.quick_layout());
+            .set_quick_layout(&mut self.ui, &v.quick_layout_for(timing));
         if self.ready && self.view == View::Play {
             self.show_view(View::Play);
         }
+    }
+
+    /// Whether Your timing is on screen: Play's Beats view with the
+    /// timing strip on.
+    fn timing_shown(&self) -> bool {
+        self.view == View::Play && self.play.view == PlayView::Beats && self.settings.timing_strip
     }
 
     /// The Play view showing (for tests and the app check's log).
@@ -1362,9 +1362,17 @@ impl Player {
                 }
             }
         }
-        if self.view == View::Play && self.play.view == PlayView::Drum {
-            if let Some(t) = self.ui.get_mut::<YourTiming>(play_page::TIMING) {
-                self.play.fill_timing(t);
+        if self.timing_shown() {
+            // Compare first: reaching the widget mutably redraws it, and
+            // with the transport stopped nothing changes.
+            let fresh = self.ui.get::<YourTiming>(play_page::TIMING).and_then(|t| {
+                let mut new = t.clone();
+                self.play.fill_timing(&mut new);
+                (new != *t).then_some(new)
+            });
+            if let (Some(new), Some(t)) = (fresh, self.ui.get_mut::<YourTiming>(play_page::TIMING))
+            {
+                *t = new;
             }
         }
     }
@@ -1651,7 +1659,7 @@ impl Player {
                      Wheel or tap: kit   ·   {stop}", self.chain_page.bind.title())
         } else {
             match self.view {
-                View::Play => format!("Tap All, Beats, Loop or Drum: the view   ·   Wheel or tap: kit   ·   Q-Link 1 or \
+                View::Play => format!("Tap All, Beats or Loop: the view   ·   Wheel or tap: kit   ·   Q-Link 1 or \
                                        the master bar: level   ·   NOTE REPEAT: repeat   ·   MENU: options   ·   {stop}"),
                 View::Arrange if self.time.edit.is_some() => {
                     time_view::edit_hint(self.time.edit.as_ref().map_or(Lens::Grid, |e| e.editor.lens))
@@ -1845,7 +1853,21 @@ impl Player {
                 self.ui.set_theme(t);
             }
         }
+        let timing = self.settings.timing_strip != s.timing_strip;
         self.settings = s;
+        if timing {
+            // Play's options turned the Beats view's timing strip on or
+            // off: its page changes.
+            let v = self.play.view;
+            let _ = self.arp_panel.set_quick_layout(
+                &mut self.ui,
+                &v.quick_layout_for(self.settings.timing_strip),
+            );
+            self.refresh_play();
+            if self.ready && self.view == View::Play {
+                self.show_view(View::Play);
+            }
+        }
         // The sampler keeps the line input only while it is on.
         let line = self.settings.line_input;
         self.sample.set_line_input(&mut self.ui, line);
@@ -2051,7 +2073,7 @@ impl Player {
             }
             ToUi::Hit(h) => {
                 self.play.hit(h);
-                if self.view == View::Play && self.play.view == PlayView::Drum {
+                if self.timing_shown() {
                     self.refresh_play();
                 }
             }
@@ -3127,7 +3149,11 @@ impl Player {
         self.close_touch_page();
         let page = match v {
             View::Play if self.band_showing() && self.ready => QUICK_PAGE.to_string(),
-            View::Play => self.play.view.page().to_string(),
+            View::Play => self
+                .play
+                .view
+                .page_for(self.settings.timing_strip)
+                .to_string(),
             View::Arrange => CLIPS_PAGE.to_string(),
             View::Synth => "Synth".to_string(),
             View::Looper => LOOPER_PAGE.to_string(),
@@ -4393,7 +4419,7 @@ pub fn sample_pattern(p: &mut Player, sixteenths: i64) {
 }
 
 /// Hits played on the pads over the last two bars, a little off the grid
-/// as hands are (mostly early, as mockup I), for the Drum view's timing.
+/// as hands are (mostly early, as mockup I), for Beats' timing strip.
 pub fn sample_hits(p: &mut Player) {
     let t = p.play.transport;
     let bar = t.meter.bar_ticks() as f64;
@@ -4481,8 +4507,6 @@ pub fn sample_play(fonts: Fonts, v: PlayView) -> Player {
         PlayView::All => 1,
         PlayView::Beats => 6,
         PlayView::Loop => 8,
-        // Bar 10: late in the timing view's two bars, as mockup I.
-        PlayView::Drum => 26,
     };
     sample_pattern(&mut p, at);
     // The kits' projects (Boom Bap's pads with sounds behind them), so the
@@ -4491,7 +4515,7 @@ pub fn sample_play(fonts: Fonts, v: PlayView) -> Player {
         projects: vec![mpfree_sampler::model::Project::new(), boom_bap_project()],
         rate: 44_100,
     });
-    p.play.last_pad = if v == PlayView::Drum { 4 } else { 0 };
+    p.play.last_pad = 0;
     p.apply(ToUi::Level { db: -1.5 });
     for _ in 0..3 {
         p.apply(ToUi::Meter {
@@ -4521,18 +4545,14 @@ pub fn sample_play(fonts: Fonts, v: PlayView) -> Player {
             p.play.xy.touch(0.68, 0.62);
         }
         PlayView::Beats => {
+            // Your timing's strip, from two bars of hits.
+            sample_hits(&mut p);
             p.play.selected = Some((0, 6));
             p.play.throw(2, true);
             p.apply(ToUi::QLinkTouch(0, true));
         }
         PlayView::Loop => {
             p.play.throw(2, true);
-            p.play.xy.touch(0.68, 0.62);
-        }
-        PlayView::Drum => {
-            sample_hits(&mut p);
-            p.play.throw(2, true);
-            p.apply(ToUi::QLinkTouch(2, true));
             p.play.xy.touch(0.68, 0.62);
         }
     }
@@ -5110,7 +5130,6 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         ("play-all-loop", PlayView::All),
         ("play-beats", PlayView::Beats),
         ("play-loop", PlayView::Loop),
-        ("play-drum", PlayView::Drum),
     ] {
         out.push((name, sample_play(fonts(), v)));
     }
@@ -6421,9 +6440,10 @@ mod tests {
         assert_eq!(p.play_view(), PlayView::All);
         p.apply(ToUi::PlayView(None));
         assert_eq!(p.play_view(), PlayView::Beats);
-        p.apply(ToUi::PlayView(Some(PlayView::Drum)));
         p.apply(ToUi::PlayView(None));
-        assert_eq!(p.play_view(), PlayView::All, "after Drum comes All again");
+        assert_eq!(p.play_view(), PlayView::Loop);
+        p.apply(ToUi::PlayView(None));
+        assert_eq!(p.play_view(), PlayView::All, "after Loop comes All again");
         let mut p = sample_sampler(Fonts::embedded());
         assert_eq!(p.page(), sample_page::PAGE);
         p.apply(ToUi::SampleEditor(sample_page::Editor::Chop));
@@ -6551,14 +6571,23 @@ mod tests {
                 .view,
             2
         );
-        assert_eq!(tap(&mut p, seg(3)), None);
-        assert_eq!(p.page(), "Play · Drum");
+        // Beats, with Your timing as a strip under the pattern (Jay 13
+        // Nov: the Drum view folded into Beats).
+        assert_eq!(segs.len(), 3, "All, Beats, Loop: no Drum view");
+        assert_eq!(tap(&mut p, seg(1)), None);
+        assert_eq!(p.page(), play_page::BEATS_TIMING_PAGE);
         assert!(p.ui.rect_of(play_page::TIMING).is_some());
-        assert_eq!(names(&p), ["Tune", "Decay", "Swing", "FX mix"]);
+        assert_eq!(names(&p), ["Swing", "Tune", "Filter", "Delay send"]);
         // Another tab and back: the view is kept.
         p.apply(ToUi::Show(View::Synth));
         p.apply(ToUi::Show(View::Play));
-        assert_eq!(p.page(), "Play · Drum");
+        assert_eq!(p.page(), play_page::BEATS_TIMING_PAGE);
+        // Play's options turn the strip off: the pattern has the room.
+        let mut s = p.settings.clone();
+        s.timing_strip = false;
+        p.apply(ToUi::Settings(s));
+        assert_eq!(p.page(), "Play · Beats");
+        assert!(p.ui.rect_of(play_page::TIMING).is_none());
         // Each view fits under the transport card, left of the master.
         for v in PlayView::ALL {
             tap(&mut p, seg(v.index()));
@@ -6742,8 +6771,9 @@ mod tests {
     }
 
     #[test]
-    fn the_drum_view_shows_your_timing() {
-        let p = sample_play(Fonts::embedded(), PlayView::Drum);
+    fn the_beats_view_shows_your_timing() {
+        let p = sample_play(Fonts::embedded(), PlayView::Beats);
+        assert_eq!(p.page(), play_page::BEATS_TIMING_PAGE);
         let t = p.ui.get::<YourTiming>(play_page::TIMING).unwrap();
         assert_eq!(
             t.lanes.iter().map(|l| l.1.as_str()).collect::<Vec<_>>(),

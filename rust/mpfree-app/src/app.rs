@@ -588,6 +588,9 @@ pub struct Settings {
     pub metronome: bool,
     /// The click's level, dBFS: [`METRONOME_DBS`].
     pub metronome_db: i8,
+    /// Play's options "Timing strip": the Beats view shows Your timing
+    /// under the pattern (Jay 13 Nov folded the Drum view into Beats).
+    pub timing_strip: bool,
 }
 
 /// The click levels Play's options step through, dBFS. -24 by default;
@@ -630,6 +633,7 @@ impl Default for Settings {
             loop_memory: LoopMemory::default(),
             metronome: false,
             metronome_db: crate::time::CLICK_DB as i8,
+            timing_strip: true,
         }
     }
 }
@@ -701,6 +705,8 @@ pub enum Item {
     /// Play's options: the metronome on or off, and its level.
     Metronome,
     MetronomeLevel,
+    /// Play's options: the Beats view's Your timing strip on or off.
+    TimingStrip,
     /// The arp's own settings (the Options menu opened from the Arp panel).
     Arp(ArpItem),
     /// The synth's engine and pad layouts (the Synth tab's options).
@@ -2487,6 +2493,7 @@ impl App {
                 Item::Tempo,
                 Item::Metronome,
                 Item::MetronomeLevel,
+                Item::TimingStrip,
                 Item::PadLevel,
                 Item::Latch,
             ],
@@ -2564,6 +2571,10 @@ impl App {
                 if s.metronome { "On" } else { "Off" }.to_string(),
             ),
             Item::MetronomeLevel => ("Metronome level", format!("{} dB", s.metronome_db)),
+            Item::TimingStrip => (
+                "Timing strip",
+                if s.timing_strip { "On" } else { "Off" }.to_string(),
+            ),
             Item::PadLevel => (
                 "Pad level",
                 match self.pad_level {
@@ -2728,6 +2739,12 @@ impl App {
                 "SHIFT + PLAY START turns it on or off too.",
             ],
             Item::MetronomeLevel => vec!["How loud the click is, -36 to -6 dB."],
+            Item::TimingStrip => vec![
+                "Your timing under the pattern in Beats:",
+                "how early or late your hits land, the",
+                "spread and the velocity. Off gives the",
+                "pattern more lanes.",
+            ],
             Item::PadLevel => vec![
                 "FULL LEVEL plays every hit at 127,",
                 "SHIFT + FULL LEVEL (Half Level) at 64.",
@@ -3025,6 +3042,7 @@ impl App {
                 s.metronome_db = cycle(&METRONOME_DBS, s.metronome_db, d);
                 fx.push(self.metronome());
             }
+            Item::TimingStrip => s.timing_strip = !s.timing_strip,
             Item::PadLevel => {
                 self.pad_level = cycle(
                     &[PadLevel::Off, PadLevel::Full, PadLevel::Half],
@@ -5035,7 +5053,7 @@ mod tests {
         app.toggle_panel();
         press(&mut app, MENU);
         assert!(
-            matches!(app.menu_view(), Effect::Menu(m) if m.title == "Play options" && m.rows.len() == 6)
+            matches!(app.menu_view(), Effect::Menu(m) if m.title == "Play options" && m.rows.len() == 7)
         );
     }
 
