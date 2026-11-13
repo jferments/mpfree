@@ -130,7 +130,7 @@ The audio tracks (`rust/mpfree-audiotracks`, the audio tracks thread's engine: s
 
 ## Not yet
 
-- Audio lanes: the take lanes for comping (swiping a take), dragging a region to move it, and the SHIFT + wheel lane scroll (the wheel scrolls bars today; the layout spec gives SHIFT + wheel to the lanes). The app thread wires the engine: until it does, `TimeHost` answers the audio actions other than the pick with an error the log shows.
+- Audio lanes: the take lanes for comping (swiping a take), dragging a region to move it, and the lane scroll (a drag on the name column, as the layout spec has it; SHIFT + wheel keeps scrolling the bars, and the plain wheel picks a Record setting). The app thread wires the engine: until it does, `TimeHost` answers the audio actions other than the pick with an error the log shows.
 
 - Moving, resizing and copying placements by touch, and adding or naming markers on screen. The model has them; the Song view only selects, makes unique and deletes for now.
 - Undo for song edits.

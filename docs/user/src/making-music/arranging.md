@@ -1,7 +1,7 @@
 <!--
 status: changing
 covers: rust/mpfree-seq/src/scenes.rs rust/mpfree-seq/src/arrange.rs rust/mpfree-perform rust/mpfree-time-ui/src/song.rs rust/mpfree-time-ui/src/widgets.rs
-checked: 2026-11-12 ae9c39c
+checked: 2026-11-13 f8cc558
 -->
 
 # Arranging a song
@@ -39,7 +39,7 @@ The song is your clips laid out on a timeline, one lane per track. Tap **Song �
 - **Scenes → song** adds every row that has clips to the end of the song, one after another, with each scene's name above the bars where it starts.
 - **Song on** plays the song. A track plays the song wherever you have not launched a clip on it. Launch a clip and it takes that track over. Stop it and the track goes back to the song.
 - **Song → scenes** goes the other way. It cuts the song into its parts and puts each part into empty rows, set to play one after another. It never writes over a row that has clips.
-- Turn the wheel to scroll through the bars. Tap a block to select it.
+- Hold **SHIFT** and turn the wheel to scroll through the bars. Tap a block to select it.
 
 A block in the song is linked to its clip, so when you edit the clip, every block that uses it changes too. **Make unique** gives the selected block its own copy, so you can change it without touching the others. A unique block has a small dot in its corner. **Delete** removes the selected block.
 

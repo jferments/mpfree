@@ -1,7 +1,7 @@
 <!--
 status: changing
 covers: rust/mpfree-app/src/play_page.rs rust/mpfree-app/src/kit.rs rust/mpfree-app/src/app.rs rust/mpfree-seq rust/mpfree-transport
-checked: 2026-11-12 15df706
+checked: 2026-11-13 f8cc558
 -->
 
 # Your first beat
@@ -21,7 +21,7 @@ MPFree starts on the **Play** page with a drum kit on the pads. Hit a few pads: 
 The tempo is the speed of the music, in beats per minute (BPM), shown in the transport bar. 90 BPM suits hip-hop, 120 house, 170 drum and bass.
 
 - **Tap it:** press **TAP TEMPO** in time with the beat you have in your head, four or five times.
-- **Type it in:** press **MENU**, pick **Tempo**, and turn the data wheel or press **–** and **+**. Press **MENU** again to close.
+- **Type it in:** press **MENU**, pick **Tempo** with the data wheel, and press **–** and **+** (or push the wheel and turn it). Press **MENU** again to close.
 
 ## Program a pattern
 
