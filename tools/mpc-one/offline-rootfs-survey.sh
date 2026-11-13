@@ -431,13 +431,46 @@ else
 fi
 echo "--- files that mention developer mode, autorun.sh or SSH login options"
 mentions autorun.sh script-runner "Developer mode" "developer mode" dropbear PermitRootLogin \
-         PermitEmptyPasswords
+         PermitEmptyPasswords user-access
+# 3.10.1 ships the files its developer mode puts in place under /usr/lib/az0x/user-access
+# (found by the first 3.10.1 survey, 2026-11-13): print them all.
+show_tree() {  # $1 = folder, $2 = levels left; show_file for every file, a line for anything else
+  local kind name
+  while read -r kind name; do
+    if [[ ! "$name" =~ ^[A-Za-z0-9@._+-]+$ ]]; then echo "($1/: a $kind whose name has spaces or other characters)"; continue; fi
+    case "$kind" in
+      file) show_file "$1/$name" ;;
+      link) echo "--- $1/$name -> $(link_target "$1/$name")" ;;
+      dir) if (( $2 > 1 )); then show_tree "$1/$name" $(( $2 - 1 )); else echo "($1/$name/: too deep, not shown)"; fi ;;
+    esac
+  done < <(names_in "$1" | sort -k2)
+}
+for d in /usr/lib/az0x/user-access /etc/ssh/sshd_config_readonly; do
+  case "$(rootfs_type "$d")" in
+    directory) echo "--- everything in $d"; show_tree "$d" 5 ;;
+    regular) show_file "$d" ;;
+    *) echo "($d: not in the image)" ;;
+  esac
+done
+echo "--- what Akai's app (/usr/bin/MPC) says about developer mode, its shell, SSH and autorun.sh"
+if [[ "$(rootfs_type /usr/bin/MPC)" == regular ]]; then
+  rm -f -- "$WORK/mpc.tmp"
+  dfs "dump /usr/bin/MPC $WORK/mpc.tmp"
+  echo "sha256 $(sha256sum -- "$WORK/mpc.tmp" | awk '{print $1}'), $(stat -c %s -- "$WORK/mpc.tmp") bytes"
+  { strings -a -n 6 -- "$WORK/mpc.tmp" |
+      grep -E -i -- '(autorun|user-access|data-skel|developer|dev mode|devmode|sshd|ssh.server|script.?runner|allow-access|terminal|/bin/sh|systemctl)' |
+      head -n 400 || true; } | sed 's/^/    /'
+  rm -f -- "$WORK/mpc.tmp"
+else
+  echo "(/usr/bin/MPC: not a regular file in the image)"
+fi
 echo
 
 echo "=== 10. Peripheral firmware files (sha256; offline-firmware-compare.py compares two reports) ==="
 # One "fw <sha256> <path>" line per file that Akai's updaters or app could flash
 # into a chip outside the eMMC: everything under the firmware folders (3 levels)
-# and in /usr/share/Akai/*/Firmware. A name debugfs can't take as a path, or a
+# and in /usr/share/Akai/*/Firmware (4 levels: 3.10.1 keeps SysEx files in
+# Firmware/<board>/SysEx). A name debugfs can't take as a path, or a
 # folder too deep, gets an "fw-skipped" line instead, so a comparison still
 # shows it.
 FW_NAME='^[A-Za-z0-9@._+-]+$'
@@ -456,7 +489,7 @@ while read -r d; do fw_walk "$d" 3; done < <(unique_dirs /usr/lib/firmware /lib/
 if [[ "$(rootfs_type /usr/share/Akai)" == directory ]]; then
   while read -r kind name; do
     [[ "$kind" == dir && "$name" =~ $FW_NAME ]] || continue
-    [[ "$(rootfs_type "/usr/share/Akai/$name/Firmware")" == directory ]] && fw_walk "/usr/share/Akai/$name/Firmware" 2
+    [[ "$(rootfs_type "/usr/share/Akai/$name/Firmware")" == directory ]] && fw_walk "/usr/share/Akai/$name/Firmware" 4
   done < <(names_in /usr/share/Akai | sort -k2)
 fi
 echo

@@ -26,6 +26,7 @@ SME0_BLOB = bytes(range(256)) * 8
 SIG_MARKER = b"\0FAKE-SIG verify /dev/mmcblk0p3 with key FAKE-KEY\0harmless-unmatched-text\0"
 ILITEK = b"\x00" * 3000
 XMOS_MID = b"FAKE-XMOS-FIRMWARE" * 10
+SYSEX = b"\xf0\x47\x7f\x00\xf7"
 LONG = "x" * 70 + "-update.service"  # too long for a fast symlink
 ZIMAGE = zimage("gzip")
 
@@ -82,6 +83,13 @@ def build_image(base, name="rootfs.img"):
         "usr/lib/firmware/xmos/a/mid.bin": XMOS_MID,
         "usr/lib/firmware/xmos/a/b/deep.bin": b"too deep",
         "usr/lib/firmware/xmos/odd name.bin": b"odd",
+        "usr/share/Akai/SME0/Firmware/ACVA/SysEx/enter-dfu.syx": SYSEX,
+        "usr/share/Akai/SME0/Firmware/ACVA/update.dfu": b"FAKE-DFU",
+        "usr/lib/az0x/user-access/data-skel/ssh/sshd_config.d/allow-access.conf":
+            "PermitRootLogin yes\nPermitEmptyPasswords yes # FAKE-ALLOW-ACCESS\n",
+        "usr/lib/az0x/user-access/enable.sh": "#!/bin/sh\ncp -r data-skel/ssh /data/ # FAKE-ENABLE\n",
+        "usr/bin/MPC": b"\x7fELF-not-really\0Developer mode: starting shell FAKE-MPC-DEV\0"
+                       b"/usr/lib/az0x/user-access/enable.sh\0unrelated-mpc-text\0run autorun.sh FAKE-MPC-RUN\0",
     }
     for path, data in files.items():
         write(os.path.join(root, path), data)
@@ -228,6 +236,16 @@ class OfflineRootfsSurveyTests(unittest.TestCase):
         self.assertIn("autorun.sh: /usr/bin/az01-script-runner", section)
         self.assertIn("PermitEmptyPasswords: /etc/ssh/sshd_config", section)
         self.assertIn("dropbear: no match", section)
+        self.assertIn("--- everything in /usr/lib/az0x/user-access\n", section)
+        self.assertIn("--- /usr/lib/az0x/user-access/data-skel/ssh/sshd_config.d/allow-access.conf\n"
+                      "PermitRootLogin yes\nPermitEmptyPasswords yes # FAKE-ALLOW-ACCESS", section)
+        self.assertIn("cp -r data-skel/ssh /data/ # FAKE-ENABLE", section)
+        self.assertIn("(/etc/ssh/sshd_config_readonly: not in the image)", section)
+        self.assertIn("    Developer mode: starting shell FAKE-MPC-DEV\n", section)
+        self.assertIn("    /usr/lib/az0x/user-access/enable.sh\n", section)
+        self.assertIn("    run autorun.sh FAKE-MPC-RUN\n", section)
+        self.assertNotIn("unrelated-mpc-text", section)
+        self.assertIn("user-access: /usr/bin/MPC", section)
 
     def check_firmware_section(self, out):
         section = out[out.index("=== 10. Peripheral firmware"):out.index("DONE. Report:")]
@@ -239,6 +257,8 @@ class OfflineRootfsSurveyTests(unittest.TestCase):
         self.assertIn("fw-skipped /usr/lib/firmware/xmos/ (a file whose name has spaces or other characters)", section)
         self.assertIn(f"fw {sha(SME0_BLOB)} /usr/share/Akai/SME0/Firmware/fw.bin\n", section)
         self.assertIn("/usr/share/Akai/SME0/Firmware/update.sh\n", section)
+        self.assertIn(f"fw {sha(SYSEX)} /usr/share/Akai/SME0/Firmware/ACVA/SysEx/enter-dfu.syx\n", section)
+        self.assertIn(f"fw {sha(b'FAKE-DFU')} /usr/share/Akai/SME0/Firmware/ACVA/update.dfu\n", section)
         self.assertNotIn("readme.txt", section)
         self.assertEqual(section.count("/usr/lib/firmware/ilitek/fw.bin"), 1, "/lib is a link: list it once")
 
