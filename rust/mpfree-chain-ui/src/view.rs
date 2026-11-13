@@ -844,7 +844,14 @@ impl Widget for ChainView {
 }
 
 impl ChainView {
-    fn touch_inner(&mut self, finger: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
+    fn touch_inner(
+        &mut self,
+        finger: u64,
+        phase: Touch,
+        x: i32,
+        y: i32,
+        r: Rect,
+    ) -> Option<EventKind> {
         let l = self.layout(r);
         match phase {
             Touch::Down => {
