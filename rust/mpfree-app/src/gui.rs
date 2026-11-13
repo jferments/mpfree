@@ -178,6 +178,37 @@ impl Console {
 }
 
 /// A colour for a log line from how it starts.
+/// The RAM chip's colour: green under 70 %, amber under 85 %, red above.
+fn ram_tone(pct: f64) -> Tone {
+    if pct < 70.0 {
+        Tone::Good
+    } else if pct < 85.0 {
+        Tone::Warn
+    } else {
+        Tone::Bad
+    }
+}
+
+/// A kit's name as the header's chip shows it: words, not dashes
+/// (`ClassicHouse-Kit-Classy` is "ClassicHouse Kit Classy"), at most 28
+/// characters; "Kit N" for a kit with no name.
+pub fn chip_kit_name(name: &str, kit: usize) -> String {
+    let words: String = name
+        .chars()
+        .map(|c| if c == '-' || c == '_' { ' ' } else { c })
+        .collect();
+    let words = words.split_whitespace().collect::<Vec<_>>().join(" ");
+    if words.is_empty() {
+        return format!("Kit {}", kit + 1);
+    }
+    if words.chars().count() > 28 {
+        let cut: String = words.chars().take(27).collect();
+        format!("{}…", cut.trim_end())
+    } else {
+        words
+    }
+}
+
 /// How long a told line ([`ToUi::Tell`]) stays in place of the hint.
 pub const TELL_SECONDS: f32 = 4.0;
 
@@ -744,6 +775,8 @@ pub struct Player {
     chain_page: Box<ChainPage>,
     /// When the CPU chip was last read.
     cpu_at: f32,
+    /// The memory in use, % of all ([`Player::set_ram`]); None until read.
+    ram_pct: Option<f64>,
     /// Touch tuning: every finger goes through the filter first (the
     /// correction and the hold filter); `tuning` is what it applies and
     /// `saved_tuning` what the store has.
@@ -923,6 +956,7 @@ impl Player {
             play: PlayPage::default(),
             chain_page: Box::default(),
             cpu_at: 0.0,
+            ram_pct: None,
             filter: Filter::new((size.0 as f32, size.1 as f32)),
             tuning: Tuning::default(),
             saved_tuning: Tuning::default(),
@@ -1511,6 +1545,9 @@ impl Player {
         if let Some((text, tone)) = self.engines.as_deref().and_then(crate::engines::cpu_chip) {
             chips.push(Chip::new(text, tone));
         }
+        if let Some(p) = self.ram_pct {
+            chips.push(Chip::new(format!("RAM {p:.0} %"), ram_tone(p)));
+        }
         if self.session.1 != Tone::Good || !self.ready {
             chips.push(Chip::new(self.session.0.clone(), self.session.1));
         }
@@ -1518,11 +1555,12 @@ impl Player {
             Some(KitView {
                 chip: Some(chip), ..
             }) => chips.push(Chip::new(chip.clone(), Tone::Normal)),
-            Some(_) => chips.push(Chip::new(
+            // The kit's name (live test 3: "Kit 1 of 10" said nothing about
+            // which kit was Grains), and its bank.
+            Some(k) => chips.push(Chip::new(
                 format!(
-                    "Kit {} of {} · Bank {}",
-                    self.kit + 1,
-                    self.kits.len(),
+                    "{} · Bank {}",
+                    chip_kit_name(&k.name, self.kit),
                     crate::app::bank_letter(self.kit)
                 ),
                 Tone::Normal,
@@ -3218,6 +3256,16 @@ impl Player {
         DebugPages::set_procs(&mut self.ui, v);
     }
 
+    /// The memory in use, % of all, for the header's RAM chip (the screen
+    /// thread reads /proc/meminfo every 2 s).
+    pub fn set_ram(&mut self, pct: f64) {
+        let changed = self.ram_pct.is_none_or(|p| p.round() != pct.round());
+        self.ram_pct = Some(pct);
+        if changed {
+            self.refresh_chips();
+        }
+    }
+
     /// Process and system numbers, from the screen thread's sampler.
     pub fn set_proc(&mut self, v: ProcView) {
         self.debug.set_proc(&mut self.ui, v);
@@ -3807,6 +3855,7 @@ pub fn spawn(
             // Debug mode: /proc and /sys every 2 s, and a perf: line every 30 s.
             let mut perf = crate::perf::Sampler::new();
             let (mut perf_at, mut perf_logged): (Option<Instant>, Option<Instant>) = (None, None);
+            let mut ram_at: Option<Instant> = None;
             // The Processes page: /proc once a second, only while it shows (a
             // fresh table each time the page opens, so CPU starts again).
             let mut procs: Option<(mpfree_prof::procs::ProcTable, Instant)> = None;
@@ -3879,6 +3928,16 @@ pub fn spawn(
                     }
                 }
                 send_actions(&mut player, &tx);
+                // The header's RAM chip, every 2 s, whatever shows.
+                if ram_at.is_none_or(|t| t.elapsed() >= PERF_EVERY) {
+                    ram_at = Some(Instant::now());
+                    if let Some(p) = std::fs::read_to_string("/proc/meminfo")
+                        .ok()
+                        .and_then(|m| crate::perf::ram_used_pct(&m))
+                    {
+                        player.set_ram(p);
+                    }
+                }
                 if !player.debug_mode() {
                     perf_at = None;
                 } else if perf_at.is_none_or(|t| t.elapsed() >= PERF_EVERY) {
