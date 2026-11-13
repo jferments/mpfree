@@ -43,6 +43,9 @@
 //! - [`XyPad`]: the XY pad's logic (two parameters, snap back or hold).
 //! - [`Chain`]: serial inserts with click-free bypass, tails that keep
 //!   ringing after bypass, latency-matched dry paths and a NaN guard.
+//! - [`bounce`]: the mixer's capture points streamed to 24-bit WAV files
+//!   while the song plays (the export's mixdown and stems), lined up for
+//!   each point's latency.
 //!
 //! [`registry`] lists every effect in one table (id, name, a line about
 //! it, its [`Category`], a factory and its presets): the one place a new
@@ -66,6 +69,7 @@
 #![forbid(unsafe_code)]
 
 mod amp;
+pub mod bounce;
 mod chain;
 mod character;
 mod cloud;
@@ -106,6 +110,7 @@ mod xy;
 pub mod xyfx;
 
 pub use amp::{Amp, Exciter};
+pub use bounce::{bounce, BounceIn, BounceOut, Pumped};
 pub use chain::{Chain, ChainStats, Insert, MAX_SLOT_EVENTS};
 pub use character::Character;
 pub use cloud::{Cloud, PRESETS as CLOUD_PRESETS};

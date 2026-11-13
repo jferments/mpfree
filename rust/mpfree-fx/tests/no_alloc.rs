@@ -682,3 +682,64 @@ fn freezing_and_printing_never_allocate() {
     assert!(!taken.is_empty(), "some takes finished");
     drop((taken, back, spare, prints));
 }
+
+#[test]
+fn bouncing_never_allocates_on_the_sound_thread() {
+    // The mixer with a mixdown and two stems captured, each block pushed
+    // into the bounce; the writer pumps on another thread, as it would.
+    let rate = 48_000;
+    let cfg = MixerConfig {
+        inputs: 0,
+        pads: 0,
+        tracks: 2,
+        slots: 1,
+        max_latency_ms: 20.0,
+    };
+    let mut m = Mixer::new(cfg, rate, MAX_BLOCK);
+    let points = [
+        (StripId::Master, CapturePoint::AfterSafety),
+        (StripId::Track(0), CapturePoint::AfterFader),
+        (StripId::Track(1), CapturePoint::AfterFader),
+    ];
+    for (slot, p) in points.iter().enumerate() {
+        assert!(m.set_capture(slot, Some(*p)));
+    }
+    let lat: Vec<u32> = (0..3).map(|s| m.capture_latency(s).unwrap()).collect();
+    let (mut bin, mut bout) = bounce(&lat, 1 << 16, rate);
+    let writer = std::thread::spawn(move || {
+        let mut files: Vec<std::io::Cursor<Vec<u8>>> =
+            (0..3).map(|_| std::io::Cursor::new(Vec::new())).collect();
+        loop {
+            match bout.pump(&mut files).unwrap() {
+                Pumped::Working(_) => std::thread::yield_now(),
+                done => return done,
+            }
+        }
+    });
+    let mut rng = Lcg(7);
+    let mut l = vec![0.0f32; MAX_BLOCK];
+    let mut r = vec![0.0f32; MAX_BLOCK];
+    let mut frame = 0u64;
+    watch(true);
+    for _ in 0..2000 {
+        let len = 1 + (rng.next() as usize) % 300;
+        for t in 0..2 {
+            let (il, ir) = m.strip_input(StripId::Track(t)).unwrap();
+            for i in 0..len {
+                il[i] = 0.3 * (rng.unit() * 2.0 - 1.0);
+                ir[i] = 0.3 * (rng.unit() * 2.0 - 1.0);
+            }
+        }
+        m.process(&Ctx::new(rate, frame), &mut l[..len], &mut r[..len]);
+        for s in 0..3 {
+            let (cl, cr) = m.capture(s).unwrap();
+            bin.push(s, cl, cr);
+        }
+        let _ = bin.quiet(0);
+        frame += len as u64;
+    }
+    bin.finish();
+    watch(false);
+    assert_eq!(CALLS.load(Ordering::Relaxed), 0, "bouncing allocated");
+    assert!(matches!(writer.join().unwrap(), Pumped::Done(_)));
+}
