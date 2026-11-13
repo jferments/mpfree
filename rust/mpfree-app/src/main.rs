@@ -105,10 +105,12 @@ mod midi_saved;
 mod mixing;
 mod modmix;
 mod modpanels;
+mod pace;
 mod parts;
 mod perf;
 mod play_page;
 mod play_widgets;
+mod plugins;
 mod port_writer;
 mod preview;
 mod project;
@@ -124,6 +126,7 @@ mod synth;
 mod sys;
 mod sysinfo;
 mod time;
+mod touch_bell;
 mod touch_dev;
 mod touchlab_page;
 
@@ -2347,8 +2350,16 @@ fn player(o: &Options, timed: bool) -> Result<(), String> {
         }
         (None, _) => None,
     };
-    let screen = gui::spawn(player, fb, gpu, Some(open_touch), from_audio, to_audio)
-        .map_err(|e| format!("screen thread: {e}"))?;
+    let screen = gui::spawn(
+        player,
+        fb,
+        gpu,
+        Some(open_touch),
+        Some(to_ui.clone()),
+        from_audio,
+        to_audio,
+    )
+    .map_err(|e| format!("screen thread: {e}"))?;
     out.sink = Some(to_ui.clone());
     if !timed {
         follow_journal(to_ui.clone());
@@ -3194,6 +3205,15 @@ fn player_session(
     // only), offered on the Synth tab after the built-in tunings. The scales
     // are read and the keyboard maps worked out here, before the sound
     // starts.
+    // CLAP plugins in files/plugins/ (plugins.rs), each listed by its own
+    // plugin process so a bad file can't take the app with it. Done here,
+    // before the sound starts, since a file may take a while to answer.
+    let (found_plugins, notes) =
+        plugins::scan(plugins::program(&plugins::app_path()), o.data.as_deref());
+    for line in notes {
+        out.say(&line);
+    }
+    let found_plugins = std::sync::Arc::new(found_plugins);
     let (tuning_files, notes) = load_tuning_files(&store);
     for line in notes {
         out.say(&line);
@@ -3252,10 +3272,13 @@ fn player_session(
     let mut loop_time = RenderTime::default();
     let mut loop_shown_at = Instant::now();
     // The audio tracks on the Song view: their memory is set aside here too.
-    let mut tracks = audiotracks::TrackHost::new(RATE, audiotracks::SECONDS);
+    let audio_memory = app.settings.audio_memory;
+    let mut tracks = audiotracks::TrackHost::new(RATE, audio_memory.seconds());
+    app.set_audio_memory_now(audio_memory);
     out.say(&format!(
-        "audio tracks: {} s of stereo memory for takes",
-        audiotracks::SECONDS
+        "audio tracks: {} of stereo memory for takes ({} MB, Prefs > Audio track memory)",
+        audio_memory.time(),
+        audio_memory.megabytes(RATE)
     ));
     out.show(gui::ToUi::Time(Box::new(time_state(&time, &tracks))));
     let (mut shown_transport, mut transport_shown_at) = (time.info(), Instant::now());
@@ -3273,6 +3296,7 @@ fn player_session(
     out.show(gui::ToUi::Level { db: level_db });
     // The mixer sums everything; the Level is its master fader (mixing.rs).
     let mut mix = mixing::MixHost::new(RATE, level_db, max_db);
+    mix.set_plugins(std::sync::Arc::clone(&found_plugins));
     cores.start_mixer(&mut mix.mixer);
     for line in cores.take_lines() {
         out.say(&line);
@@ -4669,6 +4693,13 @@ fn player_session(
         if let Some(line) = mix.poll_built() {
             out.note(line);
         }
+        // What the plugin rack said (a plugin started, crashed, restarted
+        // or was left off): never hidden. No allocation when quiet.
+        if let Some(lines) = found_plugins.take_lines() {
+            for line in lines {
+                out.note(&line);
+            }
+        }
         if mix.opening() {
             if let Some(line) = mix.tend_open() {
                 out.note(&line);
@@ -4926,6 +4957,9 @@ fn player_session(
             ));
             out.note(&format!("status: {}", tracks.describe()));
             out.note(&format!("status: {}", mix.modu.describe()));
+            if let Some(line) = found_plugins.summary().and_then(|s| s.line()) {
+                out.note(&format!("status: plugins: {line}"));
+            }
             out.note(&format!(
                 "status: {}",
                 engines::log_line(&engines.lifetime())
@@ -5587,6 +5621,12 @@ fn display_lists(o: &Options) -> Result<(), String> {
 }
 
 fn main() {
+    // `mpfree plughost ...`: this program serving as one plugin's process
+    // for the plugin sandbox (plugins.rs), before anything else starts.
+    let mut raw = std::env::args_os().skip(1);
+    if raw.next().is_some_and(|a| a == plugins::SUBCOMMAND) {
+        std::process::exit(plugins::serve(raw));
+    }
     let args: Vec<String> = std::env::args().skip(1).collect();
     let result = parse_args(&args).and_then(|o| {
         if o.preview.is_some() {
