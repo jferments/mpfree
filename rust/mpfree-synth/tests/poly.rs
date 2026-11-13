@@ -429,3 +429,46 @@ fn turning_the_drive_up_keeps_every_preset_about_as_loud() {
         }
     }
 }
+
+/// Live test 3: "Drive has almost no effect". The drive comes after the
+/// filter, so Grit Bass's low cutoff (260 Hz) no longer takes the grit
+/// out: at its own 18 dB of drive, the harmonics from the 5th up carry
+/// several times the share of the power they carry with no drive (about
+/// 2 % to 21 % on E2; with the drive before the filter it was 5 %), and
+/// the level stays put.
+#[test]
+fn grit_bass_drive_is_heard_through_its_low_cutoff() {
+    let grit = Poly::presets()
+        .iter()
+        .find(|p| p.name == "Grit Bass")
+        .unwrap();
+    let (note, f0) = (40u8, 82.407f32);
+    let play = |drive: f32| {
+        let mut s = Poly::new(RATE);
+        s.load_preset(grit);
+        s.set_param(DRIVE, drive);
+        let (l, _) = render(&mut s, 72_000, &[(0, on(note, 100))], |_| 128);
+        l[24_000..].to_vec()
+    };
+    // Power at harmonic `k` (Goertzel), and the share from the 5th up.
+    let upper = |x: &[f32]| {
+        let power = |hz: f32| {
+            let c = 2.0 * (2.0 * std::f32::consts::PI * hz / RATE as f32).cos();
+            let (mut s1, mut s2) = (0.0f32, 0.0f32);
+            for &v in x {
+                let s0 = v + c * s1 - s2;
+                s2 = s1;
+                s1 = s0;
+            }
+            s1 * s1 + s2 * s2 - c * s1 * s2
+        };
+        let h: Vec<f32> = (1..=60).map(|k| power(f0 * k as f32)).collect();
+        h[4..].iter().sum::<f32>() / h.iter().sum::<f32>()
+    };
+    let rms = |x: &[f32]| (x.iter().map(|v| v * v).sum::<f32>() / x.len() as f32).sqrt();
+    let (dry, wet) = (play(0.0), play(18.0));
+    let (a, b) = (upper(&dry), upper(&wet));
+    assert!(b > 4.0 * a, "harmonics 5-60: {a:.3} dry, {b:.3} at 18 dB");
+    let change = 20.0 * (rms(&wet) / rms(&dry)).log10();
+    assert!(change.abs() < 1.0, "level {change:+.1} dB");
+}
