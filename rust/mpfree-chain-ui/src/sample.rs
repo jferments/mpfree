@@ -780,6 +780,10 @@ mod tests {
             .add
             .unwrap();
         tap(&mut ui, add.x + 10, add.y + 10);
+        assert_eq!(
+            crate::take_chain_actions(&mut ui),
+            [ChainAction::Picker(true)]
+        );
         let l = ui.get::<ChainView>(crate::CHAIN).unwrap().layout(r);
         assert_eq!(l.picks.len(), all.len(), "a card for the plugin too");
         let t = *l.picks.last().unwrap();
