@@ -2,8 +2,8 @@
 //! values, where it sits, its presets, and the tempo for synced times.
 
 use mpfree_fx::{
-    Character, Chorus, Cloud, Comb, Compressor, Crush, Delay, DjFilter, Drive, Eq, Flanger, LoFi,
-    MasterSafety, MultiFilter, Perform, Phaser, Preset,
+    Character, Chorus, Comb, Compressor, Delay, DjFilter, Drive, Eq, Flanger, LoFi, MasterSafety,
+    MultiFilter, Phaser, Preset,
 };
 use mpfree_node::{Node, NodeInfo, ParamInfo};
 use mpfree_ui::Color;
@@ -108,48 +108,10 @@ pub fn preset_values(st: &FxState, i: usize) -> Vec<(u16, f32)> {
         .collect()
 }
 
-/// The effects by id, as the chain's "+ Add effect" lists them. Each is a
-/// new node with its defaults (the previews and tests build them here).
-pub const CATALOGUE: &[(&str, &str)] = &[
-    ("mpfree.fx.eq", "EQ"),
-    ("mpfree.fx.filter", "Multi filter"),
-    ("mpfree.fx.dj_filter", "DJ filter"),
-    ("mpfree.fx.drive", "Drive"),
-    ("mpfree.fx.comb", "Comb"),
-    ("mpfree.fx.crush", "Crush"),
-    ("mpfree.fx.delay", "Delay"),
-    ("mpfree.fx.chorus", "Chorus"),
-    ("mpfree.fx.flanger", "Flanger"),
-    ("mpfree.fx.phaser", "Phaser"),
-    ("mpfree.fx.lofi", "Lo-fi"),
-    ("mpfree.fx.character", "Character"),
-    ("mpfree.fx.compressor", "Compressor"),
-    ("mpfree.fx.cloud", "Cloud reverb"),
-    ("mpfree.fx.master_safety", "Master safety"),
-    ("mpfree.fx.perform", "Perform FX"),
-];
-
-/// A new effect by id, at its defaults.
+/// A new effect by id, at its defaults (from [`mpfree_fx::registry`],
+/// the one list of effects).
 pub fn make(id: &str) -> Option<Box<dyn Node>> {
-    Some(match id {
-        "mpfree.fx.eq" => Box::new(Eq::new()),
-        "mpfree.fx.filter" => Box::new(MultiFilter::new()),
-        "mpfree.fx.dj_filter" => Box::new(DjFilter::new()),
-        "mpfree.fx.drive" => Box::new(Drive::new()),
-        "mpfree.fx.comb" => Box::new(Comb::new()),
-        "mpfree.fx.crush" => Box::new(Crush::new()),
-        "mpfree.fx.delay" => Box::new(Delay::new()),
-        "mpfree.fx.chorus" => Box::new(Chorus::new()),
-        "mpfree.fx.flanger" => Box::new(Flanger::new()),
-        "mpfree.fx.phaser" => Box::new(Phaser::new()),
-        "mpfree.fx.lofi" => Box::new(LoFi::new()),
-        "mpfree.fx.character" => Box::new(Character::new()),
-        "mpfree.fx.compressor" => Box::new(Compressor::new()),
-        "mpfree.fx.cloud" => Box::new(Cloud::new()),
-        "mpfree.fx.master_safety" => Box::new(MasterSafety::new()),
-        "mpfree.fx.perform" => Box::new(Perform::new()),
-        _ => return None,
-    })
+    mpfree_fx::registry::make(id)
 }
 
 /// A small copy of an effect that the page draws from: the node's own
