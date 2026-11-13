@@ -3,6 +3,9 @@
 //! it frames, and must get every frame answered, the picture the software
 //! path draws, and a clear error when the process fails or hangs. Needs
 //! EGL (Mesa's llvmpipe is enough), as the library's tests do.
+//!
+//! `MPFREE_GPU_SCREEN=PROGRAM` tests another build of the process instead
+//! of this one's: for the ARM build, a script that runs it under qemu-arm.
 
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -18,8 +21,9 @@ const PROGRAM: &str = env!("CARGO_BIN_EXE_mpfree-gpu-screen");
 fn start(extra: &[&str]) -> GpuScreen {
     let mut args = vec!["--offscreen".to_string()];
     args.extend(extra.iter().map(|s| s.to_string()));
+    let program = std::env::var("MPFREE_GPU_SCREEN").unwrap_or_else(|_| PROGRAM.to_string());
     GpuScreen::start(
-        Path::new(PROGRAM),
+        Path::new(&program),
         &args,
         1280,
         800,
@@ -116,8 +120,10 @@ fn a_gpu_process_that_fails_is_noticed_with_its_reason() {
     let mut g = start(&["--test-fail-after", "2"]);
     let mut fonts = Fonts::embedded();
     let mut err = None;
+    // Small frames: under emulation (the ARM build in qemu) a whole page
+    // takes longer than the client waits for an answer.
     for i in 0..20 {
-        paint(i % 4, g.canvas(), &mut fonts);
+        paint(1 + i % 3, g.canvas(), &mut fonts);
         if let Err(e) = g.send() {
             err = Some(e);
             break;

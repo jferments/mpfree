@@ -255,7 +255,15 @@ where it pays. Before any of it runs in the app, `mpfree-gpu-bench`
   `FbTarget`; no display setting changes) and held 1.5 s; then the busiest
   page is drawn and copied to the panel 60 times each way, GPU and software,
   timed. It answers what a whole frame costs to reach the panel from the
-  GPU today, before page flips (G5) remove the read back.
+  GPU with a read back (live test 3: 63 ms a frame, against software's 32).
+- `flip`: the GPU drawing straight into buffers the panel shows (DRM/KMS
+  page flips; no read back, no copy). With the screen untouched it checks
+  the first page in a screen buffer's own memory and against software;
+  then it takes the display, points the screen at its buffers in the mode
+  it already runs, shows each page 1.5 s and times 60 frames each way: the
+  GPU's (draw into the next buffer, flip) and software's (draw, turn and
+  copy into a buffer that is never shown), with the CPU each takes. It puts
+  the screen back as it found it before it exits.
 - `compute`: an FIR filter over a stereo block as an OpenGL ES 3.1 compute
   shader, uploaded, run and read back, against the same job on one CPU core:
   one period with 64 and with 1024 taps, and 32 periods with 1024 taps. It
@@ -272,12 +280,13 @@ of the app, checks on the MPC (read-only) that the GPU's render node and
 the program and the pages to `/run/mpfree-gpu`, stops our pad player and log
 display for a clean run (started again at the end, whatever happens), and
 runs `describe`, `compute --iterations 500`, `screens pages --frames 30` and
-`panel pages --hold-ms 1500 --frames 60`. The program draws through Mesa's
+`panel pages --hold-ms 1500 --frames 60`, and, only with `--flip`, step 7:
+`flip pages --hold-ms 1500 --frames 60`. The program draws through Mesa's
 surfaceless EGL on the render node, as the 9 Nov offscreen tests did: no
 display, no DRM master, no display setting changed. Only the last step
 writes anything: the screen's picture, as the app does (the log display,
 stopped for the run, redraws when it starts again; if it was not running,
-the last page stays until something draws over it). It stops after `describe` if Mesa answers with its software renderer
+the last page stays until something draws over it). **Step 7 is state-changing, in RAM:** it first checks (read-only) that `/dev/dri/card0` is there and no program has a display node open (so the kernel can take the screen back if the program were killed), then waits for Enter; the program takes the display (DRM master) and points the lit CRTC at its own buffers, changing no mode, timing or panel setting, and puts the CRTC back before it exits, also on Ctrl-C, a closed session or a failure. If it ends without saying "the screen is back as it was", the tool says to switch the MPC off and on; nothing is stored. It stops after `describe` if Mesa answers with its software renderer
 instead of the Mali, since the numbers would not be the GPU's. It needs
 `MPFREE_ACCEPT_GPU_BENCH=YES` and a terminal; each step waits for Enter. Its
 tests (`tests/test_host_gpu_mpc.py`) run it against a fake test build under
