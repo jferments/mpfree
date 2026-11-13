@@ -63,6 +63,15 @@ To record onto an audio track:
 - While a track records, a red block grows from where it started.
 - On the left of each lane: the **arm dot** (red while armed: tap it to arm or disarm), the track's name, its input (**L** by default: the MPC One's line input records on the left jack) and a thin level bar along the bottom.
 - **+ Audio** at the bottom adds the next audio track, up to 8.
+- Tap a track's name (or its input) to open its **track panel** over the lanes. Tap the name again, or **Close**, to shut it.
+  - **Arm**, **Mute** and **Solo**. Solo works among the audio tracks: a soloed track silences the other audio tracks, not the drums or the synth.
+  - **Input**: what the track records from. **L** (the left jack, the default), **R**, **L+R** (both jacks mixed into one) or **ST** (stereo). The input can't change while the track records.
+  - **Monitor**: when you hear the input through the track. **Auto** (the default) plays it while the track is armed, except during playback. **In** always plays it, armed or not. **Off** never does.
+  - **Level** and **Pan**, with a step either way. Q1 and Q2 turn them too while the panel is open, and Q3 and Q4 turn a region's gain and fades once you pick one of the track's regions.
+  - **Takes** is for the take lanes, which aren't built yet.
+
+{{shot: arrange-song-panel | The guitar's track panel: armed, soloed and set to stereo, with its level and pan on the Q-Links.}}
+
 - Tap a region to pick it. The buttons along the bottom become **Split**, **Erase**, **Fades**, **Gain**, **Takes** and **Undo** for that region. Tap empty space to go back to the song's own buttons.
   - **Split** cuts the region at the playhead, so put the playhead inside it first.
   - **Erase** takes the region out. **Undo** brings it back.
@@ -73,7 +82,7 @@ To record onto an audio track:
 - The audio tracks share one minute of stereo memory; **Audio track memory** in [Prefs](../reference/prefs.md) sets 30 seconds to 10 minutes, from the next start. The Song view's legend says how much is free ("Audio 0:42 of 1:00 free"). A recording that runs out of memory stops there and keeps what it got.
 
 > [!NOTE]
-> Coming: tapping a track's name for its settings (input, monitoring, level, pan, mute, solo), **Takes** (swiping across takes to keep the best parts of each), dragging a region to move it, and saving audio tracks with the project. In this build the track name and **Takes** say they aren't built yet, and recorded audio is gone when MPFree stops.
+> Coming: **Takes** (swiping across takes to keep the best parts of each), dragging a region to move it, and saving audio tracks with the project. In this build **Takes** says it isn't built yet, and recorded audio is gone when MPFree stops.
 
 ## Recording a performance into the song
 
