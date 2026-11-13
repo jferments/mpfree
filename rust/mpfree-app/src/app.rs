@@ -1125,6 +1125,9 @@ const PREFS_ROWS: &[Item] = &[
     Item::AudioMemory,
     Item::MapControls,
     Item::LineInput,
+    // Layout spec 4c: the line input's latency, shared by the looper and
+    // the audio tracks.
+    Item::LoopLatency,
     Item::SystemInfo,
     Item::Appearance,
     Item::AtStart,
@@ -2664,7 +2667,11 @@ impl App {
             ),
             Item::LoopBars => ("First pass length", crate::looping::bars_text(s.loop_bars)),
             Item::LoopLatency => (
-                "Latency to make up for",
+                if self.view == View::Prefs {
+                    "Line input latency"
+                } else {
+                    "Latency to make up for"
+                },
                 format!(
                     "{} frames, {:.1} ms{}",
                     s.loop_latency,
@@ -2850,11 +2857,11 @@ impl App {
                 "until the bar line after Record again.",
             ],
             Item::LoopLatency => vec![
-                "How late your playing reaches the looper:",
-                "the output buffer, the input buffer and the",
-                "converters. Estimated from the audio buffer",
-                "until you set it. Measure it with a cable",
-                "from an output to the input.",
+                "How late your playing reaches the looper and",
+                "the audio tracks: the output buffer, the input",
+                "buffer and the converters. Estimated from the",
+                "audio buffer until you set it. Measure it with",
+                "a cable from an output to the input.",
             ],
             Item::LoopLevel => vec![
                 "The loop's playback level, -24 to +6 dB.",
@@ -3898,6 +3905,31 @@ mod tests {
         l.view = View::Looper;
         l.back = View::Looper;
         assert_eq!(l.items().last(), Some(&Item::LoopMemory));
+    }
+
+    /// Layout spec 4c: Prefs "Line input latency", after Line input and
+    /// before System info, is the looper's "Latency to make up for": one
+    /// setting, which the audio tracks follow too.
+    #[test]
+    fn prefs_line_input_latency_is_the_loopers_latency() {
+        let mut app = App::new(44_100, false);
+        app.map.menu = Some(MENU);
+        app.button(button::SHIFT, true, 0.0);
+        press(&mut app, MENU);
+        app.button(button::SHIFT, false, 0.0);
+        let at = row(&app, Item::LoopLatency);
+        assert_eq!(at, row(&app, Item::LineInput) + 1);
+        assert_eq!(at + 1, row(&app, Item::SystemInfo));
+        assert_eq!(app.item_text(Item::LoopLatency).0, "Line input latency");
+        let before = app.settings.loop_latency;
+        let fx = app.step_item(at, 1);
+        assert_eq!(app.settings.loop_latency, before + 16);
+        assert!(app.settings.loop_latency_set);
+        assert!(fx.iter().any(|e| matches!(
+            e,
+            Effect::Looper(LoopAction::Command(LoopCommand::SetLatency(_)))
+        )));
+        assert!(!app.item_text(Item::LoopLatency).1.contains("estimated"));
     }
 
     /// Layout spec 4c: Prefs "Audio track memory", right after Loop
