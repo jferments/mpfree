@@ -149,3 +149,123 @@ They are not a guarantee that the image is a perfect live snapshot of every writ
 
 The full private image also contains proprietary firmware, factory samples, personal projects, device identifiers and SSH material. It belongs on the owner’s protected workstation or offline backup media, not in the MPFree Git repository. Public documentation can use partition geometry, nonidentifying hashes and independently developed tools without distributing those contents.
 
+
+## 4. What Linux mounts, and where changes really persist
+
+After U-Boot starts Linux, the kernel mounts `p6` as its root filesystem. The reference system mounts it **read-only**, as ext4 without a journal. This is a deliberate embedded-system design: the operating system’s base programs and libraries are intended to remain relatively stable, while user data and configuration are stored in separate writable areas.
+
+If that were the whole story, modifying a configuration file under `/etc` might appear impossible, because `/etc` normally lives on the root filesystem. The MPC instead uses **overlayfs**. Overlayfs combines a lower layer, which supplies the original files, with a writable upper layer that stores changes and replacements. A process opening `/etc/some.conf` sees one apparent directory, even though the underlying bytes can come from different partitions.
+
+On the reference MPC, the upper layers for `/etc` and `/var` are stored under `/data/system` on the writable `p8` partition. That means a command which appears to modify `/etc` may be writing persistent eMMC data even while the root ext4 filesystem itself is still mounted read-only. This distinction has repeatedly mattered in MPFree planning because a “read-only root” is not equivalent to a **read-only whole system**.
+
+The important observed mounts are:
+
+| What Linux sees | Backing storage | Persistence |
+|---|---|---|
+| `/` | `/dev/mmcblk0p6`, ext4 read-only | Changes require special action; baseline intended immutable |
+| `/data` | `/dev/mmcblk0p8`, ext4 read-write | Persistent |
+| `/media/az01-internal` | Second mount of **the same p8** | Persistent; not separate space |
+| `/media/acvs-content` | `/dev/mmcblk0p7` | Persistent factory content |
+| `/etc` | Overlay with upperdir `/data/system/etc/overlay` | **Persistent** |
+| `/var` | Overlay with upperdir `/data/system/var/overlay` | **Persistent** |
+| `/run` and `/tmp` | RAM-backed tmpfs | Lost at reboot |
+| Typical USB FAT/exFAT media | Automounted under `/media` | External and frequently `noexec` |
+
+For an OS developer, there are two implications. First, treat the overlay-backed files as genuine persistent configuration, and back up or isolate them before changing services. Second, choose installation paths deliberately. A temporary test that must disappear at power-off should stage its files under a verified RAM-backed path, not under `/data` or an overlay-upper directory. A persistent but reversible MPFree install should normally use an explicit isolated directory on approved removable media or under `/data/mpfree`, with a separate backup and cleanup policy.
+
+### 4.1 Read-only is a property of a mount, not an absolute barrier
+
+Even within a read-only Linux mount, a program with sufficient access can interact with raw devices or ask the kernel to change mount state. Conversely, the absence of a visible mount is not proof that a block device does not exist. Therefore a rigorous no-eMMC-write test does not stop at “we mounted the root read-only.”
+
+The temporary 3.10.0 boot environment used a stronger strategy: the replacement device tree marked the internal eMMC controller `ff0f0000` and the SD controller `ff0c0000` as disabled. The replacement kernel consequently did not bind the corresponding MMC block drivers, and the expected internal `/dev/mmcblk*` devices were absent. This made it impossible for ordinary update programs in the replacement userspace to open those Linux block devices. The test also replaced `/data` with tmpfs, masked updater-related services and prevented another `kexec` handoff.
+
+Those measures were layered deliberately. If a startup service unexpectedly attempted to touch internal data, the expected device nodes were unavailable. If a setting was written under `/etc`, the overlay upperdir pointed into RAM. If an updater attempted to launch yet another kernel with different device-tree settings, that path was not available in the isolated image. Finally, measurements before and after confirmed that the protected boot partitions had not changed.
+
+This is a useful *pattern* for MPFree. It is not a universal physical write-protection guarantee against arbitrary privileged code that deliberately changes device-tree bindings, performs raw register operations or controls other physical peripherals. The guarantee belongs to the **tested image and its enforceable restrictions**, not to any Linux kernel simply because its root filesystem is on USB.
+
+### 4.2 What the directories mean to an installer
+
+Several filesystem locations deserve distinct treatment:
+
+**`/boot`** is part of the rootfs and carries the kernel, DTBs and U-Boot script. A release which replaces these files changes how the next cold boot works. It is boot-critical even though it looks like an ordinary directory.
+
+**`/usr/lib/systemd/system`** contains service definitions. An earlier MPFree experiment installed a persistent SSH unit here by temporarily making p6 writable. That has been documented and checked, but repeating such rootfs modifications is not recommended for the normal installer because the rootfs is small, nearly full and nonjournaled.
+
+**`/etc` and `/var`** contain persistent overlays. A harmless-looking edit to a service configuration can survive a reboot and interact badly with a later factory firmware update. These directories should not become the default MPFree deployment location.
+
+**`/data`** is the main persistent user/system area. A scoped `/data/mpfree` directory could be an appropriate location for an opted-in MPFree application installer, but a future factory update or reset could erase or alter this partition. Essential MPFree releases and user projects should have an independent removable-media or workstation backup.
+
+**`/media/acvs-content`** contains factory assets. Its data should be treated as owner-held content, not scratch space. MPFree may eventually provide local-only tools to import compatible sounds and instruments without redistributing licensed files.
+
+**`/run` and temporary filesystems** are suited to transient helper binaries, logs and handoff state. They disappear after reboot, which is exactly what we want for early reversible experiments.
+
+## 5. The factory Linux distribution and service graph
+
+The factory system is not a tiny monolithic executable. It is a Yocto-built distribution with glibc, BusyBox and other Unix tools, systemd, device-specific shared libraries and several services for board initialization. The main music-production executable eventually runs as a systemd service. Understanding that lifecycle is necessary whether MPFree intends to replace only the application or eventually replace all of Linux.
+
+The key service is `acvs.service`. It invokes `/usr/bin/az01-launch-MPC`, which in turn launches the executable at `/usr/bin/MPC`. The service is configured to restart after failure, with a short restart delay. Therefore killing the user-facing application process does not necessarily release the audio and display hardware for an alternative program; systemd may simply start it again. A controlled handoff needs to stop the service as a unit and verify that the relevant processes and file descriptors have closed.
+
+The application also participates in a wider dependency graph. Other services initialize network MIDI, touch and peripheral firmware, audio support, device communication and USB script handling. Some of these are necessary for hardware to function even if the MPC application is not running; others are specifically part of factory workflows. We must identify that boundary rather than disable every service whose name begins with `az01`.
+
+### 5.1 Two strategies for replacing the factory music application
+
+The **application-replacement strategy** leaves the factory kernel and system services running, then stops the main MPC service and starts MPFree. This is the least intrusive way to develop the DSP, sampler, sequencer, UI and controller handling, because the existing kernel already knows how to initialize the board. It requires a reversible service handoff, a timeout and a supervisor that can restart factory services if MPFree exits or fails its health check.
+
+The **independent-userspace strategy** boots another root filesystem and starts only the services we select. A `kexec` boot is one way to achieve this while leaving the installed U-Boot and eMMC untouched. It gives MPFree control over its own init configuration, device service ordering and application lifecycle without competing with a live factory MPC process. The tradeoff is that we must now supply the necessary userspace libraries and hardware setup ourselves.
+
+The second strategy is closer to the eventual independent MPFree OS. It separates the actual music-production runtime from factory user-space assumptions while still using the proven factory startup path as a temporary launcher.
+
+### 5.2 ARM ABI and binary compatibility
+
+The installed system has 32-bit ARM EABI5 hard-float userspace, not AArch64. A binary’s file format must match the processor and runtime. For Rust, the usual target is `armv7-unknown-linux-gnueabihf`, and the build needs a suitable ARM hard-float linker. Existing MPFree Rust components were cross-compiled for this architecture and have run on the physical device, including rendering and sequencer tests.
+
+For dynamically linked binaries, merely compiling with an ARMv7 target is not sufficient. The executable’s `PT_INTERP` entry names the dynamic loader it expects, and its `DT_NEEDED` entries identify the shared libraries it needs. Individual symbols may require particular glibc versions. The reference libc has been explicitly identified as glibc **2.39**, and the dynamic loader path is `/lib/ld-linux-armhf.so.3`. Some earlier conclusions based only on `GLIBC_*` strings were weaker; later measurements established the actual release. Every new binary should still be checked against the intended target firmware rather than assume library compatibility across all MPC revisions.
+
+A static helper program reduces dependence on factory shared libraries and is attractive for an early launcher. It does not solve everything: device-specific access may depend on kernel modules, udev rules, userspace firmware and graphics/audio libraries. A fully independent MPFree Linux distribution will eventually provide its own versions or properly licensed components for these facilities.
+
+### 5.3 Realtime audio requirements are separate from boot requirements
+
+The factory `PREEMPT_RT` kernel is an important advantage, but an audio engine needs more than a realtime-capable kernel. It must choose appropriate scheduling, CPU affinity, memory-locking behavior, buffer sizes and ALSA device access. The reference command line’s `isolcpus=2-3` suggests an intended partitioning of CPU work, but observed per-process scheduling and affinity must be interpreted separately. The MPC’s main process was seen holding approximately a gigabyte of locked memory in one snapshot, while one service-limit report suggested a much smaller per-process memory-lock limit. That discrepancy remains unresolved and should not be turned into an assumed recipe for MPFree.
+
+The audio engine can initially use the stock kernel’s known ALSA/DRM drivers. The move to a new kernel should be an independent qualification step: measure actual round-trip audio behavior, IRQ routing, XRUNs, CPU scheduling and device initialization. No amount of early bootloader work replaces the need for those realtime tests.
+
+## 6. Hardware devices exposed to Linux
+
+The operating system communicates with the MPC hardware through normal Linux device subsystems. Much of the work required to build a free music environment is therefore about documenting **which kernel interface corresponds to which physical feature** and establishing how the factory application uses it.
+
+### 6.1 Audio and MIDI
+
+The reference system exposes an ALSA card labelled `ACVA` with playback and capture PCM devices, plus an MPC MIDI card. Several raw MIDI ports were enumerated, including Public, Private and MIDI Port interfaces. We also observed that the factory application opens relevant ALSA, MIDI sequencer and raw-MIDI handles during normal operation.
+
+That ownership is why an alternative audio application may fail to open a PCM device while the stock MPC process is running. It is not necessarily evidence of a missing driver or permission problem. The first question is whether the device is currently in use by `acvs.service`; the second is whether MPFree has chosen the right ALSA card, direction and format. Some MIDI and controller interfaces have different behavior depending on whether the factory process has initialized them. The project’s existing controller and MIDI documents describe those differences in greater detail.
+
+For an independent OS, the goal is to initialize the sound hardware directly and let MPFree own the PCM and MIDI endpoints without needing the factory application to prepare them. That requires confirming codec/mixer controls, routing, buffer format, sample rates, firmware dependencies and safe shutdown behavior. The kernel exposes the basic interfaces, but the full audio hardware initialization contract deserves its own tests.
+
+### 6.2 Display, graphics and touchscreen
+
+The device contains a DSI display driven by the Rockchip display subsystem. The live Linux interface includes DRM/KMS devices and a framebuffer, and the graphics stack exposes Panfrost GPU functionality for the Mali GPU. The observed panel mode is 800 × 1280 in the native DRM orientation; user-facing screen orientation and rendering transforms are separate concerns.
+
+The touchscreen appears as an Ilitek ILI2117 input device, and physical keys appear through another event interface. In the initial survey, touchscreen and GPIO keys were available as `/dev/input/event0` and `/dev/input/event1` respectively. Those event numbers are **enumeration results**, not guaranteed identities across every boot or firmware release. A robust application identifies devices by name, properties and stable paths rather than hard-coding event indices.
+
+A future MPFree compositor or direct framebuffer UI has to manage DRM mastership, modesets, touch coordinates and device ownership. The factory process normally owns key UI resources. In the isolated 3.10.0 boot, we demonstrated an independent on-screen log and a small application without running the factory UI. This is particularly useful evidence: MPFree does not need to wait for a replacement cold bootloader to begin developing its independent graphics environment.
+
+### 6.3 USB host, USB device and removable storage
+
+The board has two relevant DWC2 controller roles. Linux describes `usb@ff540000` as a host controller and `usb@ff580000` as the peripheral/OTG controller. The latter appears as `/sys/class/udc/ff580000.usb`, and a `usb-otg-mux` component exposes selectable roles. The standard USB-A sockets support storage and peripherals through host mode. The rear USB-B interface is the likely connection for the device-side controller used in the desktop update workflow.
+
+These USB paths play different roles throughout the boot sequence. A USB drive inserted into a host port can carry files for factory Linux, including the older autorun script and a removable MPFree rootfs. The device-side USB-B port can carry Fastboot or other protocols when the corresponding low-level loader is active. And the silicon RK3288 has a ROM-level USB recovery facility whose physical entry is still not demonstrated on this MPC. **All three may involve USB, but they are not the same service and do not have the same recovery properties.**
+
+The stock firmware commonly mounts FAT/exFAT USB volumes with `noexec` and related flags. A shell autorun file can still be interpreted by a script runner, but that does not imply a compiled ARM executable can be started directly from the same mount. The development launcher should use a known executable RAM-backed directory or an approved Linux filesystem rather than assume that “being on a USB stick” is sufficient.
+
+### 6.4 Ethernet and networked development
+
+The MPC has a Rockchip GMAC at `0xff290000` and a Realtek RTL8211E Gigabit PHY. Direct Ethernet between the workstation and MPC was used for SSH, file transfer and repeated hardware surveys. A working 1-Gb/s link was measured. Ethernet is an excellent development transport because it keeps command/control separate from the USB-B bootloader service and avoids continually changing USB media for small updates.
+
+The PHY’s reset behavior also became an important part of the alternative-kernel work. After the first `kexec` handoff, the new Linux kernel initially failed to read the PHY’s ID. Later changes to the FDT provided an explicit PHY identifier and correct reset timing. One subsequent network initialization still failed on its first attempt, but a retry successfully established a 1-Gb/s link and SSH. This shows that the exact FDT and **hardware state across a warm kernel handoff** matter even when the driver is present in both kernels.
+
+### 6.5 Other peripheral controllers
+
+A complete open-source music workstation must eventually qualify hardware controls, firmware update requirements for peripheral microcontrollers, LEDs, pads, storage adapters, MIDI routing, power management and audio codec behavior. Some existing services update touch, XMOS or other peripheral firmware under specific conditions. Those services should not run automatically in a test root where their dependencies and target hardware have not been qualified. Equally, an independent OS should not disable an unknown service and then assume a peripheral works without its initialization.
+
+The preferred implementation discipline is to track every hardware interface by controller/FDT node, Linux driver, device file, factory owner, experimental MPFree owner and validated initialization/shutdown procedure. The existing [audio](audio-runtime.md), [controller](controller-protocol.md), [resource-ownership](resource-ownership.md), [network/USB](ethernet-usb.md) and [touchscreen/display](touchscreen-display.md) references provide the starting inventory.
+
