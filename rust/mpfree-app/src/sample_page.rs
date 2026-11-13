@@ -2353,6 +2353,12 @@ impl SamplePage {
                 .is_some_and(|t| t.method() == mpfree_sampler_ui::chop_tab::Method::Live)
     }
 
+    /// Whether UNDO has something to take back in the playing kit (for
+    /// the UNDO light).
+    pub fn can_undo(&self) -> bool {
+        self.projects.get(self.kit).is_some_and(Project::can_undo)
+    }
+
     /// UNDO (or redo) in the playing kit.
     pub fn undo(&mut self, ui: &mut Ui, redo: bool) {
         self.lift();

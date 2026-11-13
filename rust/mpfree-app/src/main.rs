@@ -118,6 +118,7 @@ mod sysinfo;
 mod time;
 mod touch_dev;
 mod touchlab_page;
+mod undo;
 
 use mpfree_controller::midi::{Message, Parser};
 use mpfree_controller::mpc_one::{self, ControlEvent, OBSERVED_KEEPALIVE_TOKEN};
@@ -2918,6 +2919,34 @@ fn undo_said(line: &str) -> String {
     }
 }
 
+/// What UNDO (or REDO) of a synth knob says: "Undid Filter Cutoff (now
+/// 1.2 kHz)".
+fn synth_turn_said(synth: &synth::Synth, id: u16, redo: bool) -> String {
+    let done = if redo { "Redid" } else { "Undid" };
+    match synth.param_info(id) {
+        Some(p) => {
+            let name = if p.group == p.name {
+                p.name.to_string()
+            } else {
+                format!("{} {}", p.group, p.name)
+            };
+            let now = mpfree_synth_ui::format::value_line(p, synth.value(id));
+            format!("{done} {name} (now {now})")
+        }
+        None => format!("{done} a synth knob"),
+    }
+}
+
+/// What UNDO (or REDO) of a mixer control says: "Undid Drums Volume".
+fn mix_turn_said(strip: mpfree_fx::StripId, id: u16, redo: bool) -> String {
+    let done = if redo { "Redid" } else { "Undid" };
+    let name = mpfree_fx::strip_params()
+        .iter()
+        .find(|p| p.id == id)
+        .map_or("a control", |p| p.name);
+    format!("{done} {} {name}", mixing::name(strip))
+}
+
 /// The synth's part of the status line.
 fn synth_status(synth: &synth::Synth, time: &RenderTime) -> String {
     let c = synth.counters();
@@ -3028,6 +3057,11 @@ fn player_session(
     let n = drum_kits + 1;
     let mut synth_on = false;
     let mut param_log = synth::ParamLog::default();
+    // UNDO on the Synth tab and the mixer: their knob and fader turns.
+    let mut synth_turns: undo::Turns<u16> = undo::Turns::default();
+    let mut mix_turns: undo::Turns<(mpfree_fx::StripId, u16)> = undo::Turns::default();
+    // What the screen was last told about them, for the UNDO light.
+    let mut turns_told = (false, false);
     let mut synth_time = RenderTime::default();
     // Q-Links on the Public port (no Akai session) send positions; the Synth
     // page wants turns, so the last position of each is kept.
@@ -3531,10 +3565,75 @@ fn player_session(
                 }
                 // The mixer panel. Its master fader is the Level, so the Play page follows it.
                 gui::FromUi::Mixer(a) => {
+                    let turn = match a {
+                        mpfree_mixer_ui::MixAction::Set { strip, id, .. } => {
+                            Some((strip, id, mix.value(strip, id)))
+                        }
+                        _ => None,
+                    };
                     if let Some(db) = mix.action(&a) {
                         level_db = db;
                         out.show(gui::ToUi::Level { db: level_db });
                     }
+                    if let (
+                        Some((strip, id, from)),
+                        mpfree_mixer_ui::MixAction::Set { value, .. },
+                    ) = (turn, a)
+                    {
+                        let to = if (strip, id)
+                            == (mpfree_fx::StripId::Master, mpfree_fx::ids::mixer::VOLUME)
+                        {
+                            level_db
+                        } else {
+                            value
+                        };
+                        mix_turns.turned((strip, id), from, to, t_read);
+                    }
+                }
+                gui::FromUi::UndoReady(ready) => app.set_undo_ready(ready),
+                gui::FromUi::UndoOn { on, redo } => {
+                    let line = match on {
+                        gui::UndoOn::Synth => {
+                            let turn = if redo {
+                                synth_turns.redo()
+                            } else {
+                                synth_turns.undo()
+                            };
+                            turn.map(|t| {
+                                let v = if redo { t.to } else { t.from };
+                                synth.set(t.key, v);
+                                out.show(gui::ToUi::SynthValues(synth.values()));
+                                synth_turn_said(&synth, t.key, redo)
+                            })
+                        }
+                        gui::UndoOn::Mixer => {
+                            let turn = if redo {
+                                mix_turns.redo()
+                            } else {
+                                mix_turns.undo()
+                            };
+                            turn.map(|t| {
+                                let (strip, id) = t.key;
+                                let value = if redo { t.to } else { t.from };
+                                if let Some(db) = mix.action(&mpfree_mixer_ui::MixAction::Set {
+                                    strip,
+                                    id,
+                                    value,
+                                }) {
+                                    level_db = db;
+                                    out.show(gui::ToUi::Level { db: level_db });
+                                }
+                                mix_turn_said(strip, id, redo)
+                            })
+                        }
+                    };
+                    let line = line.unwrap_or_else(|| {
+                        format!(
+                            "Nothing to {} on this page",
+                            if redo { "redo" } else { "undo" }
+                        )
+                    });
+                    fx.push(app::Effect::Tell(line));
                 }
                 gui::FromUi::MixerIcon => fx.extend(app.toggle_mixer(false)),
                 gui::FromUi::IoIcon => fx.extend(app.toggle_io(io_shown(&mix))),
@@ -3604,7 +3703,9 @@ fn player_session(
                     fx.push(app::Effect::Looper(looping::LoopAction::Steps(n)))
                 }
                 gui::FromUi::Synth(SynthAction::Set { id, value }) => {
+                    let from = synth.value(id);
                     synth.set(id, value);
+                    synth_turns.turned(id, from, synth.value(id), t_read);
                     if let Some(line) = param_log.set(&synth, id, value, t_read) {
                         out.note(&line);
                     }
@@ -3737,6 +3838,8 @@ fn player_session(
                     if let Some(line) = param_log.flush(&synth) {
                         out.note(&line);
                     }
+                    // The turns were of the old sound.
+                    synth_turns.clear();
                     if let Some(name) = synth.load_preset(k).map(str::to_string) {
                         out.note(&format!(
                             "synth: preset {} of {}, {name}",
@@ -3756,6 +3859,14 @@ fn player_session(
         }
         if let Some(line) = param_log.poll(&synth, t_read) {
             out.note(&line);
+        }
+        let turns_ready = (!synth_turns.done().is_empty(), !mix_turns.done().is_empty());
+        if turns_ready != turns_told {
+            turns_told = turns_ready;
+            out.show(gui::ToUi::TurnsReady {
+                synth: turns_ready.0,
+                mixer: turns_ready.1,
+            });
         }
         if let Some(b) = preview_back.take() {
             if let Err(gui::ToUi::PreviewBack(b)) = out.try_show(gui::ToUi::PreviewBack(b)) {
@@ -5549,6 +5660,26 @@ mod tests {
 
     fn args(s: &str) -> Vec<String> {
         s.split_whitespace().map(String::from).collect()
+    }
+
+    /// UNDO on the Synth tab and the mixer names the knob or fader.
+    #[test]
+    fn undo_of_a_turn_names_it() {
+        assert_eq!(
+            mix_turn_said(
+                mpfree_fx::StripId::Track(mixing::DRUMS),
+                mpfree_fx::ids::mixer::VOLUME,
+                false
+            ),
+            "Undid Drums Volume"
+        );
+        let synth = synth::Synth::new(RATE);
+        let p = (0..256u16).find_map(|id| synth.param_info(id)).unwrap();
+        let said = synth_turn_said(&synth, p.id, true);
+        assert!(
+            said.starts_with("Redid ") && said.contains(p.name) && said.contains("(now "),
+            "{said}"
+        );
     }
 
     /// UNDO on the takes says what it took back, in place of the hint.

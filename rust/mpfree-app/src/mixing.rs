@@ -401,6 +401,17 @@ impl MixHost {
             .queue_insert(strip, slot, Timed::new(0, NodeEvent::Param { id, value }));
     }
 
+    /// A strip control as the mixer panel set it, for UNDO: a pad's mute
+    /// is its own, not Drop drums' held over it.
+    pub fn value(&self, strip: StripId, id: u16) -> f32 {
+        match strip {
+            StripId::Pad(p) if id == mx::MUTE && p < PADS => {
+                f32::from(u8::from(self.pad_mutes & (1 << p) != 0))
+            }
+            _ => self.mixer.param(strip, id),
+        }
+    }
+
     /// Sets a strip control from the start of the next period: through the
     /// mod engine once a lock has made it a target, else straight to the
     /// mixer.
@@ -751,6 +762,21 @@ mod tests {
             caught |= c;
         }
         (peak, caught)
+    }
+
+    /// UNDO on the mixer sets a pad's mute back to the pad's own, not to
+    /// Drop drums' held over it.
+    #[test]
+    fn a_pads_mute_reads_as_its_own_under_drop_drums() {
+        let mut h = MixHost::new(RATE, -6.0, -6.0);
+        h.play(PlayFx::PadMute { pad: 2, mute: true });
+        h.play(PlayFx::Drop(0b11));
+        assert_eq!(h.value(StripId::Pad(2), mx::MUTE), 1.0);
+        assert_eq!(
+            h.value(StripId::Pad(0), mx::MUTE),
+            0.0,
+            "dropped, not muted"
+        );
     }
 
     #[test]
