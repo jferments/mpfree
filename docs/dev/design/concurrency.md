@@ -25,7 +25,8 @@ the sound on cores 3 and 2 instead, for the device rounds to compare.
 | `mpfree-build` | Builds the chain editor's effects, and drops the ones edits take out |
 | `midi-out`, `cv-out` | MIDI Out and CV out to other gear (`port_writer.rs`), SCHED_FIFO 60 on the MPC |
 | `usb-midi-scan`, `sample-open`, `sample-load`, `preview-load`, `mpfree-print` | Helper threads: USB keyboards, loading sounds, the looper's buffers |
-| `mpfree-screen` | Touch, the raster, the framebuffer |
+| `mpfree-screen` | Touch, the raster, the framebuffer. Ticks the pages every 33 ms and sleeps between ([profiling.md](profiling.md#the-screens-cost)) |
+| `mpfree-touch-bell` | The touchscreen's doorbell: sleeps in read(2) on a second read-only handle on the panel and wakes `mpfree-screen` when it sends something |
 | `mpfree-store` | Saved settings and patterns |
 | `mpfree-journal` | The console's log |
 | `mpfree-stretch`, the Sample tab's worker | Time-stretch jobs |
