@@ -46,6 +46,16 @@ impl Rotation {
         }
     }
 
+    /// The turn in degrees, as [`Rotation::from_degrees`] takes it.
+    pub fn degrees(self) -> u32 {
+        match self {
+            Rotation::Deg0 => 0,
+            Rotation::Deg90 => 90,
+            Rotation::Deg180 => 180,
+            Rotation::Deg270 => 270,
+        }
+    }
+
     fn quarter(self) -> bool {
         matches!(self, Rotation::Deg90 | Rotation::Deg270)
     }
