@@ -156,7 +156,7 @@ error propagation and commit lifecycle require more analysis.
 - Ghidra captures additional SPL device discovery helpers,
   libaz01 image-open/verification/XZ/signature ARM instructions,
   and original PIC format-handler candidate words.
-- Broad seven-track matrix expands from 59 to **64 questions**.
+- Broad seven-track matrix expands from 59 to **67 questions**.
   Focused direct-boot remains 42 questions across ten topics.
 - Same integrated Ghidra/QEMU harness will produce
   `update-format-and-spl.json` and `.md` in a SHA-indexed private ZIP.
@@ -166,6 +166,46 @@ The latest changes were source-checked; the local offline
 archive and five local positive/negative tests passed. The
 repository's newly committed eight synthetic tests and full
 integration still require a workstation execution.
+
+## Fastboot RAM receive path — fixed base, not verified safe memory
+
+A separate SHA-pinned owner U-Boot analysis now confirms the ordinary
+Fastboot download receive/copy path:
+
+- `download:` uses the shared OEM authorization helper.
+- Nonzero requested length must be less than 0x70000001;
+  the maximum accepted *request value* is 0x70000000.
+- `mpf_fastboot_receive` copies each received payload fragment
+  starting at address 0x00800800 plus the running byte cursor.
+  The fragment length is capped to the requested bytes remaining.
+- The handler advances received-byte and expected-byte state.
+  The latest original literal-pool probe will separately test whether
+  `download:` and `receive` refer to identical length/cursor globals.
+- Fastboot `boot` completion invokes `bootm`, with reset handling
+  if it returns. The image classifier selects legacy uImage and
+  FDT-structured branches; legacy header/data CRC checks are present,
+  while FIT signature requirements have not been demonstrated.
+- 0x00800800 + 0x70000000 = 0x70800800 is only a mathematical
+  upper endpoint. **Neither a physical RAM map nor safe kernel,
+  initramfs and FDT layout has been established.**
+- The RX handler is called only after authorization/USB setup.
+  We have not established an authorized physical RAM-only
+  custom kernel experiment.
+
+New offline `synthesize_fastboot_ram_path.py` tests ten original
+conditions, with six synthetic positive/negative tests. The
+integrated ZIP and existing-archive preflight collect its evidence,
+without issuing Fastboot commands.
+
+## Updated scope after all source-only additions
+
+The next integrated run has two additional source-only evidence stages
+(`update-format-and-spl-evidence`, `fastboot-ram-path-evidence`),
+so the expected count is **21** if all previous 19 stages remain.
+The broad matrix now covers **67 questions across seven tracks**;
+the ten-topic focused direct-boot report still tracks 42 questions.
+The private evidence files are `update-format-and-spl.json`,
+`fastboot-ram-path.json` and their Markdown summaries.
 
 ## Recovery and installation boundaries
 
