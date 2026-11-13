@@ -67,7 +67,7 @@ The model is in `rust/mpfree-seq/src/arrange.rs`, song-mode playback in `rust/mp
 
 On the Clips page, the **Song ›** button at the right of the grid's title swaps the grid for the Song view, and its **Clips** button swaps back.
 
-- **The lanes.** Each track is a lane, its name on the left. Each placement is a block in the track's colour, with its clip's name. A unique placement has a small dot in its corner, and the selected one has an accent outline.
+- **The lanes.** Each track is a lane, its name on the left with what it plays under it when the lane is at least 34 px tall (`SongLanes::sounds`, from `TrackInfo::sound`; with take lanes open the names stand alone). Each placement is a block in the track's colour, with its clip's name. A unique placement has a small dot in its corner, and the selected one has an accent outline.
 - **The ruler** shows the bar numbers and the markers' names in amber, and the playhead is a line over every lane (green while song mode is on).
 - **Scrolling** moves the timeline a bar a step. It shows 16 bars, and the title line says how long the song is.
 - **Tapping a block** selects it, and tapping an empty lane selects nothing.

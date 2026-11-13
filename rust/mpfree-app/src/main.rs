@@ -3231,6 +3231,9 @@ fn player_session(
     // page wants turns, so the last position of each is kept.
     let mut qlink_at: [Option<u8>; 4] = [None; 4];
     let mut synth_meters = synth.meters();
+    // What each track plays, as the screen last heard it (the line under
+    // its name on Arrange).
+    let mut sounds_shown: gui::TrackSounds = [None; instruments::SLOTS];
     // Each sounding voice's pressure, for the Synth tab's Pressure page.
     let mut synth_pressures = [0f32; 16];
     let mut shown_pressures = 0usize;
@@ -3744,6 +3747,26 @@ fn player_session(
                 }
                 gui::FromUi::Pad { .. } => {}
                 gui::FromUi::Kit(k) => kit_to = Some(k.min(n - 1)),
+                // A tap on a track's sound line on Arrange: the track is
+                // selected (armed, as the Record panel's Armed row) and the
+                // Synth tab's MENU opens on its Instrument row.
+                gui::FromUi::TrackInstrument(track)
+                    if track < time.project().tracks.len().min(instruments::SLOTS) =>
+                {
+                    if time.armed() != Some(track) {
+                        fx.push(app::Effect::Time(TimeAction::Arm(Some(track))));
+                    }
+                    fx.extend(app.open_track_instrument(track));
+                    out.show(gui::ToUi::Synth(synth_tab(
+                        &synth,
+                        &mix.instruments,
+                        track,
+                        track_presets[track],
+                    )));
+                }
+                gui::FromUi::TrackInstrument(track) => {
+                    out.note(&format!("arrange: no track {}", track + 1));
+                }
                 gui::FromUi::SaveTouch(t) => {
                     let mut settings = mpfree_store::Settings::default();
                     for (k, v) in t.to_pairs() {
@@ -5434,6 +5457,11 @@ fn player_session(
             }
             if !strip_shown(app.view()) {
                 out.show(gui::ToUi::Looper(Box::new(looper.view(app.settings.bpm))));
+            }
+            let sounds: gui::TrackSounds = std::array::from_fn(|t| mix.instruments.held(t));
+            if sounds != sounds_shown {
+                sounds_shown = sounds;
+                out.show(gui::ToUi::TrackSounds(Box::new(sounds)));
             }
             let meters = synth.meters();
             if meters != synth_meters {
