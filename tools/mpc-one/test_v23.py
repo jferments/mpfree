@@ -68,6 +68,51 @@ class V23(unittest.TestCase):
         self.assertNotIn("system(",source)
         self.assertIn("real-controller-configuration-routine",source)
 
+    def test_original_DTB_crosswalk_distinguishes_SD_and_eMMC(self):
+        controllers={}
+        for name,address,bus,removable,okay in (
+            ("mmc0","ff0f0000",8,False,True),
+            ("mmc1","ff0c0000",4,True,True),
+            ("mmc2","ff0d0000",4,False,False),
+            ("mmc3","ff0e0000",None,False,False),
+        ):
+            controllers[name]={
+                "path":"/dwmmc@"+address,
+                "reg":{"value":[0,int(address,16),0,16384]},
+                "status":{"value":["okay" if okay else "disabled"]},
+                **({"bus-width":{"value":[bus]}} if bus else {}),
+                **({"cd-gpios":{"value":[1,2,3]}} if removable else {}),
+                **({"non-removable":{"value":[]}} if name=="mmc0" else {}),
+            }
+        data={}
+        for board in ("acva","acva_c"):
+            data[board]={"nodes":{
+                "/aliases":{name:{"value":[v["path"]]}
+                            for name,v in controllers.items()},
+                **{v["path"]:{k:x for k,x in v.items() if k!="path"}
+                   for v in controllers.values()}
+            }}
+        medium="$"+"{devtype} "+"$"+"{devnum}:"+"$"+"{distro_bootpart} "
+        kernel="$"+"{kernel_addr_r}";fdt="$"+"{fdt_addr_r}"
+        data["script"]={
+            "header_crc_valid":True,"payload_crc_valid":True,
+            "script_commands":[
+                "load "+medium+kernel+" "+ "$"+"{prefix}zImage || exit",
+                "load "+medium+fdt+" "+ "$"+"{prefix}"+"$"+"{fdtfile} || exit",
+                "setenv bootargs hello","bootz "+kernel+" - "+fdt,
+            ]
+        }
+        found=v23.dtb_crosswalk(data)
+        self.assertEqual(
+            found["boards"]["acva"]["mmc0"]["controller_base"],
+            "0xff0f0000")
+        self.assertEqual(
+            found["boards"]["acva_c"]["mmc1"]["controller_base"],
+            "0xff0c0000")
+        self.assertFalse(found["linux_aliases_prove_uboot_indices"])
+        self.assertFalse(found["boot_script"]["contains_saveenv"])
+        self.assertTrue(found["boot_script"]["loads_kernel_and_DTB_from_current_device"])
+
     def test_existing_source_uses_compatible_main_wrappers(self):
         ancestor=(ROOT/"tools/mpc-one/vendor_probe_v22.c").read_text()
         self.assertIn("#ifdef MPFREE_V23_WRAPPING",ancestor)
