@@ -66,7 +66,7 @@ class V23(unittest.TestCase):
         self.assertNotIn("intercept(0x0011c912u",source)
         self.assertNotIn("0xffffffedu)",source)
         self.assertNotIn("system(",source)
-        self.assertIn("original-controller-configuration-routine",source)
+        self.assertIn("real-controller-configuration-routine",source)
 
     def test_existing_source_uses_compatible_main_wrappers(self):
         ancestor=(ROOT/"tools/mpc-one/vendor_probe_v22.c").read_text()
