@@ -817,6 +817,13 @@ pub enum Effect {
     /// The Synth tab's options changed: the engine, the scale or the pad
     /// layouts, for the synth on the audio thread.
     SynthPads(crate::synth::PadSettings),
+    /// The Synth tab's Instrument row: track `track` plays its own instrument
+    /// `id` (an engine's node id, or a plugin synth's), or the kit again
+    /// (None).
+    TrackSound {
+        track: usize,
+        id: Option<&'static str>,
+    },
     /// The mixer opened on a view, or closed (`None`): the audio thread
     /// sends the panel its state only while it is open.
     Mixer(Option<mpfree_mixer_ui::MixView>),
@@ -1038,6 +1045,13 @@ pub struct App {
     /// The synth pads' engine, scale and bank layouts (the Synth tab's
     /// options), as handed to the synth.
     synth_pads: crate::synth::PadSettings,
+    /// What each track plays as its own instrument (None: the kit), as
+    /// the audio loop last said ([`App::set_track_sound`]); the Synth tab's
+    /// Instrument row shows and sets the armed track's.
+    track_sounds: [Option<crate::instruments::Held>; mpfree_seq::MAX_TRACKS],
+    /// The plugin synths found (node id, name), offered on the Instrument row
+    /// after the built-in engines.
+    pub plugin_synths: Vec<(&'static str, &'static str)>,
     /// The pads' Scale row's choice and root, as `scale_pick` and
     /// `scale_root` are for the arp.
     pad_scale_pick: usize,
@@ -1179,6 +1193,8 @@ impl App {
             custom_scales: Vec::new(),
             scale_pick: 0,
             synth_pads: Default::default(),
+            track_sounds: [None; mpfree_seq::MAX_TRACKS],
+            plugin_synths: Vec::new(),
             pad_scale_pick: 0,
             pad_scale_root: 0,
             clock: None,
@@ -4232,12 +4248,14 @@ mod tests {
         app.save_dirty = true;
         app.take_saves();
         assert!(!app.take_project_edit(), "nothing changed yet");
+        // The Instrument row now picks the selected track's own sound; the
+        // shared synth's engine is still kept and restored.
+        app.synth_pads.engine = Engine::Fm;
         let mut step = |a: SynthItem, d: i32, times: usize| {
             for _ in 0..times {
                 app.step_item(row(a), d);
             }
         };
-        step(SynthItem::Engine, 1, 1);
         step(SynthItem::Scale, 1, 2);
         step(SynthItem::Root, 1, 9);
         step(SynthItem::Layout, 1, 2);
@@ -4358,7 +4376,7 @@ mod tests {
         assert_eq!(
             names,
             [
-                "Engine",
+                "Track 1 instrument",
                 "Scale",
                 "Scale root",
                 "Pad layout",
@@ -4372,7 +4390,7 @@ mod tests {
                 "Latch"
             ]
         );
-        assert_eq!(m.rows[0].1, "Poly");
+        assert_eq!(m.rows[0].1, "Kit");
         assert_eq!(m.rows[5].1, "12-TET");
         assert_eq!(m.rows[6].1, "C (not used)");
         assert_eq!(m.rows[7].1, "440 Hz");
@@ -4390,19 +4408,42 @@ mod tests {
                 _ => None,
             })
         };
-        // Engine: FM, Drums, Pluck, Wavetable, and no further; then back to Poly.
-        for want in [Engine::Fm, Engine::Drums, Engine::Pluck, Engine::Wavetable] {
-            let p = pads(&app.step_item(row(SynthItem::Engine), 1)).unwrap();
-            assert_eq!(p.engine, want);
+        // Instrument: the selected track's own sound. Kit, then Poly, FM,
+        // Drums, Pluck, Wavetable and the plugin synths; then back to Kit.
+        let sound = |fx: &[Effect]| {
+            fx.iter().find_map(|e| match e {
+                Effect::TrackSound { track, id } => Some((*track, *id)),
+                _ => None,
+            })
+        };
+        for want in Engine::ALL {
+            let fx = app.step_item(row(SynthItem::Engine), 1);
+            assert_eq!(sound(&fx), Some((0, Some(want.node_id()))));
+            assert_eq!(pads(&fx), None, "the shared synth is left alone");
         }
         assert_eq!(
-            pads(&app.step_item(row(SynthItem::Engine), 1)),
+            sound(&app.step_item(row(SynthItem::Engine), 1)),
             None,
-            "Wavetable is the last"
+            "Wavetable is the last with no plugin synths"
         );
-        for _ in 0..4 {
+        app.plugin_synths = vec![("clap:org.example.synth", "Example Synth")];
+        assert_eq!(
+            sound(&app.step_item(row(SynthItem::Engine), 1)),
+            Some((0, Some("clap:org.example.synth")))
+        );
+        assert_eq!(app.synth_item_text(SynthItem::Engine).1, "Example Synth");
+        // Each track keeps its own: track 2 still plays the kit, and the
+        // row names the track it sets.
+        app.set_track(1);
+        assert_eq!(
+            app.synth_item_text(SynthItem::Engine),
+            ("Track 2 instrument", "Kit".to_string())
+        );
+        app.set_track(0);
+        for _ in 0..6 {
             app.step_item(row(SynthItem::Engine), -1);
         }
+        assert_eq!(app.track_sound(0), None, "back to the kit");
         assert_eq!(app.synth_pads.engine, Engine::Poly);
         // Chromatic is already on: a tap says so.
         assert!(matches!(

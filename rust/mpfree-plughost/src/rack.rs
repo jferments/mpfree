@@ -222,6 +222,11 @@ impl Rack {
         self.entries.iter().filter(|e| e.kind == Kind::Effect)
     }
 
+    /// The instruments, in the order found.
+    pub fn instruments(&self) -> impl Iterator<Item = &Entry> {
+        self.entries.iter().filter(|e| e.kind == Kind::Instrument)
+    }
+
     pub fn find(&self, node_id: &str) -> Option<&Entry> {
         self.entries.iter().find(|e| e.node_id == node_id)
     }
