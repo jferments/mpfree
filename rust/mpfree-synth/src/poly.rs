@@ -1,7 +1,7 @@
 //! Poly: a subtractive synth. Two band-limited oscillators per voice with
-//! up to four unison stacks, a sub oscillator and noise, a drive stage into
-//! a ladder or state-variable filter, two ADSR envelopes, a tempo-syncable
-//! LFO, poly, mono and legato modes with glide.
+//! up to four unison stacks, a sub oscillator and noise, a ladder or
+//! state-variable filter with a drive stage after it, two ADSR envelopes,
+//! a tempo-syncable LFO, poly, mono and legato modes with glide.
 //!
 //! Pad pressure goes through the shared shaper ([`mpfree_node::pressure`])
 //! into four slots ([`crate::pressure::POLY_TARGETS`]): cutoff, resonance,
@@ -1029,15 +1029,17 @@ impl Poly {
                 }
             }
             // The drive sees the mix as one full oscillator, however many
-            // stacks and sources feed it (dsp::drive_scales).
+            // stacks and sources feed it (dsp::drive_scales). It comes after
+            // the filter (Jay after live test 3, "Drive has almost no
+            // effect"): before it, a low cutoff took out the grit.
             let (dk, dn) = if v.drive_amt > 0.0 {
                 let lv = mix_level(s.unison, [s.lvl1, s.lvl2], v.sub, v.noise);
                 drive_scales(v.drive_gain, lv)
             } else {
                 (1.0, 1.0)
             };
-            drive_run_level(l, dk, dn, v.drive_amt, &mut v.drive_level);
             v.filt[0].run(mode, &v.coefs, l);
+            drive_run_level(l, dk, dn, v.drive_amt, &mut v.drive_level);
             if mono {
                 v.filt[1] = v.filt[0];
                 for j in 0..end {
@@ -1050,8 +1052,8 @@ impl Poly {
                         *rj += cj;
                     }
                 }
-                drive_run_n(r, dk, dn, v.drive_amt);
                 v.filt[1].run(mode, &v.coefs, r);
+                drive_run_n(r, dk, dn, v.drive_amt);
                 for j in 0..end {
                     left[from + j] += l[j] * g[j] * s.out_l;
                     right[from + j] += r[j] * g[j] * s.out_r;

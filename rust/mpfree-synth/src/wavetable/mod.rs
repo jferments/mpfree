@@ -1,7 +1,7 @@
 //! Wavetable: two wavetable oscillators per voice that scan through a stack
 //! of single-cycle frames, each with a phase warp (bend, sync, mirror, FM
 //! from the other oscillator) and up to eight unison stacks; a sub sine and
-//! noise; drive into Poly's ladder or state-variable filter; an amp
+//! noise; Poly's ladder or state-variable filter, then its drive; an amp
 //! envelope and a mod envelope (cutoff, positions, warp); a tempo-syncable
 //! LFO (pitch, cutoff, positions, level); poly, mono and legato with glide.
 //!
@@ -1164,17 +1164,18 @@ fn run_voice<const MONO: bool>(
         if use_noise {
             c += rng.bipolar() * s.noise;
         }
-        let x = l + c;
+        // The filter, then the drive (as Poly's: after the filter, so a
+        // low cutoff doesn't take out the grit).
+        let x = v.filt[0].process(mode, &v.coefs, l + c);
         let l = drive_n(x, dg, dn, damt);
         if damt > 0.0 {
             v.drive_level.add(x, l);
         }
-        let l = v.filt[0].process(mode, &v.coefs, l);
         let r = if MONO {
             l
         } else {
-            let r = drive_n(r + c, dg, dn, damt);
-            v.filt[1].process(mode, &v.coefs, r)
+            let r = v.filt[1].process(mode, &v.coefs, r + c);
+            drive_n(r, dg, dn, damt)
         };
         let mut g = v.amp.next() * v.gain;
         v.gain += v.gain_inc;
