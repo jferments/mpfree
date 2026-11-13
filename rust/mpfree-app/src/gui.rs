@@ -85,6 +85,14 @@ pub const SYSLOG_LAYOUT: &str = "col(header:60, syslog:*, hint:26)";
 /// Prefs > System info: the software on the left, the hardware on the right.
 pub const SYSTEM_LAYOUT: &str = "col(header:60, row(syssw:*, syshw:*):*, hint:26)";
 pub const OPTIONS_LAYOUT: &str = "col(header:60, row(options:*, help:470):*, hint:26)";
+/// The number pad (Jay after live test 3: type a number for a field with a
+/// wide range), over the page it was asked from.
+pub const NUMPAD: &str = "numpad";
+pub const NUMPAD_PAGE: &str = "Type a number";
+const NUMPAD_LAYOUT: &str = "col(header:60, numpad:*, hint:26)";
+const NUMPAD_HINT: &str = "Tap the number, then Enter   ·   wheel or - / +: step it   ·   push the wheel: Enter   ·   Cancel: leave it as it was";
+/// How long a finger stays on Play's BPM to type the tempo, seconds.
+const TEMPO_HOLD: f32 = 0.6;
 pub const GUIDE_LAYOUT: &str = "col(header:60, row(guide:*, found:400):*, hint:26)";
 
 const CONSOLE_HINT: &str =
@@ -279,6 +287,21 @@ pub fn tone_of(line: &str) -> Tone {
 }
 
 // ---------------------------------------------------------------- pad player
+
+/// Where a typed number goes, and the page the number pad was opened over.
+#[derive(Clone, Debug)]
+struct Typing {
+    to: TypeTo,
+    back: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum TypeTo {
+    /// The Sample tab's field that asked ([`sample_page::SamplePage::typed`]).
+    Sample,
+    /// The tempo (a long press on Play's BPM).
+    Tempo,
+}
 
 /// What the pad player shows about one kit.
 #[derive(Clone, Debug)]
@@ -875,6 +898,11 @@ pub struct Player {
     /// each was last seen at.
     undo_loop: bool,
     seen_takes: (usize, usize),
+    /// The number pad is open: where the number goes, and the page to go
+    /// back to.
+    typing: Option<Typing>,
+    /// A finger on Play's BPM: which, how long (s) and where it landed.
+    tempo_press: Option<(u64, f32, i32, i32)>,
     seen_loop: (usize, usize, usize),
     /// The Synth tab's and the mixer's turns can be undone (the audio
     /// thread keeps them), and what the UNDO light was last told.
@@ -918,6 +946,7 @@ impl Player {
         ui.add("syslog", LogPanel::new("Console", true, CONSOLE_BACKLOG));
         ui.add("options", OptionList::new("Options"));
         ui.add("help", Card::new("About this setting"));
+        ui.add(NUMPAD, mpfree_ui::numpad::NumPad::default());
         ui.add("guide", Card::new("Button guide"));
         ui.add("found", StatList::new("Buttons"));
         // The hint line starts where the panels do (the mockups).
@@ -944,6 +973,8 @@ impl Player {
         ui.add_page("Options", OPTIONS_LAYOUT)
             .expect("options layout");
         ui.add_page("Guide", GUIDE_LAYOUT).expect("guide layout");
+        ui.add_page(NUMPAD_PAGE, NUMPAD_LAYOUT)
+            .expect("number pad layout");
         ui.add_page("System info", SYSTEM_LAYOUT)
             .expect("system info layout");
         let patterns = crate::app::built_in_patterns();
@@ -1016,6 +1047,8 @@ impl Player {
             told: None,
             undo_loop: false,
             seen_takes: (0, 0),
+            typing: None,
+            tempo_press: None,
             seen_loop: (0, 0, 0),
             turns_ready: (false, false),
             undo_ready: false,
@@ -1797,7 +1830,9 @@ impl Player {
             Mode::Pattern => "pattern",
             Mode::Direct | Mode::Repeat => "rate",
         };
-        let text = if self.status.shift
+        let text = if self.typing.is_some() {
+            NUMPAD_HINT.to_string()
+        } else if self.status.shift
             && self.ready
             && matches!(self.view, View::Prefs | View::Options)
         {
@@ -2159,7 +2194,100 @@ impl Player {
         self.refresh_hint();
     }
 
+    /// Opens the number pad for `ask` over the page showing.
+    fn open_numpad(&mut self, ask: mpfree_ui::numpad::NumberAsk, to: TypeTo) {
+        let back = self.ui.page().to_string();
+        if let Some(p) = self.ui.get_mut::<mpfree_ui::numpad::NumPad>(NUMPAD) {
+            p.open(ask);
+        }
+        if self.ui.show(NUMPAD_PAGE).is_ok() {
+            self.typing = Some(Typing { to, back });
+            self.refresh_hint();
+        }
+    }
+
+    /// Closes the number pad (nothing typed goes anywhere) and shows the
+    /// page it was opened over.
+    fn close_numpad(&mut self) {
+        let Some(t) = self.typing.take() else {
+            return;
+        };
+        if let Some(p) = self.ui.get_mut::<mpfree_ui::numpad::NumPad>(NUMPAD) {
+            p.close();
+        }
+        let _ = self.ui.show(&t.back);
+        self.refresh_hint();
+    }
+
+    /// Enter on the number pad: the number goes to its field and the pad
+    /// closes; out of range, the pad stays and says the range; with
+    /// nothing typed, it closes.
+    fn numpad_enter(&mut self) -> Option<FromUi> {
+        let p = self.ui.get_mut::<mpfree_ui::numpad::NumPad>(NUMPAD)?;
+        let value = p.entered();
+        if value.is_none() && !p.warning.is_empty() {
+            return None;
+        }
+        let key = p.ask.as_ref().map(|a| a.key.clone()).unwrap_or_default();
+        let to = self.typing.as_ref().map(|t| t.to);
+        self.close_numpad();
+        let v = value?;
+        match to? {
+            TypeTo::Sample => {
+                self.sample.typed(&mut self.ui, &key, v, &mut self.outbox);
+                self.print_sample_lines();
+                None
+            }
+            TypeTo::Tempo => {
+                self.tell(&format!("Tempo: {v:.1} BPM"));
+                Some(FromUi::Time(TimeAction::Transport(
+                    mpfree_transport::Command::SetTempo(v),
+                )))
+            }
+        }
+    }
+
+    /// The number pad for the tempo (a long press on Play's BPM).
+    fn type_tempo(&mut self) {
+        self.open_numpad(
+            mpfree_ui::numpad::NumberAsk {
+                key: "tempo".to_string(),
+                title: "Tempo".to_string(),
+                unit: "BPM".to_string(),
+                value: (self.play.transport.bpm * 10.0).round() / 10.0,
+                min: mpfree_transport::time::MIN_BPM,
+                max: mpfree_transport::time::MAX_BPM,
+                decimals: 1,
+            },
+            TypeTo::Tempo,
+        );
+    }
+
     pub fn apply(&mut self, msg: ToUi) {
+        // The number pad takes the wheel, - / + and the push while open;
+        // a change of page closes it.
+        if self.typing.is_some() {
+            use crate::app::RowKey;
+            let nudge = match &msg {
+                ToUi::SampleWheel(d) | ToUi::Rows(RowKey::Pick(d) | RowKey::Step(d)) => Some(*d),
+                _ => None,
+            };
+            if let Some(d) = nudge {
+                if let Some(p) = self.ui.get_mut::<mpfree_ui::numpad::NumPad>(NUMPAD) {
+                    p.nudge(d);
+                }
+                return;
+            }
+            if matches!(msg, ToUi::Rows(RowKey::Editing(_))) {
+                if let Some(a) = self.numpad_enter() {
+                    self.outbox.push(a);
+                }
+                return;
+            }
+            if matches!(msg, ToUi::Show(_) | ToUi::PlayView(_)) {
+                self.close_numpad();
+            }
+        }
         // The engines' news of an edit made with the controls (a clip
         // recorded, a knob turned): the work is unsaved.
         if matches!(
@@ -3952,6 +4080,7 @@ impl Player {
             .ui
             .touch(finger, phase, x, y)
             .and_then(|ev| self.on_event(ev));
+        self.watch_tempo_press(finger, phase, x, y, &action);
         if matches!(phase, Touch::Up | Touch::Cancel) && self.view.sampler() {
             // A drag on the Sample page ends with its finger: one undo step.
             self.sample.lift();
@@ -3982,6 +4111,35 @@ impl Player {
         }
     }
 
+    /// A finger on Play's BPM (its tap taps the tempo): held still for
+    /// [`TEMPO_HOLD`], it opens the number pad for the tempo
+    /// ([`Self::tick`]). A slide or a lift lets it go.
+    fn watch_tempo_press(
+        &mut self,
+        finger: u64,
+        phase: Touch,
+        x: i32,
+        y: i32,
+        action: &Option<FromUi>,
+    ) {
+        match phase {
+            Touch::Down if matches!(action, Some(FromUi::TapTempo)) => {
+                self.tempo_press = Some((finger, 0.0, x, y));
+            }
+            Touch::Move => {
+                if let Some((f, _, x0, y0)) = self.tempo_press {
+                    if f == finger && ((x - x0).pow(2) + (y - y0).pow(2)) > 20 * 20 {
+                        self.tempo_press = None;
+                    }
+                }
+            }
+            Touch::Up | Touch::Cancel if self.tempo_press.is_some_and(|p| p.0 == finger) => {
+                self.tempo_press = None;
+            }
+            _ => {}
+        }
+    }
+
     /// A touch meant something: hand it to the audio thread, which decides.
     pub fn on_event(&mut self, ev: UiEvent) -> Option<FromUi> {
         let synth_widget = [
@@ -4001,6 +4159,9 @@ impl Player {
             let name = self.auto_synth_name();
             self.sample.set_auto_synth(&mut self.ui, name);
             self.sample.event(&mut self.ui, &ev, &mut self.outbox);
+            if let Some(ask) = self.sample.take_number_ask() {
+                self.open_numpad(ask, TypeTo::Sample);
+            }
             if let Some(plan) = self.sample.take_auto_request() {
                 // A copy of the patch, made here: the audio thread keeps
                 // playing its own and is never asked for anything.
@@ -4065,6 +4226,12 @@ impl Player {
             (play_page::TRANSPORT, EventKind::Select(crate::play_widgets::TAP_BPM)) => {
                 Some(FromUi::TapTempo)
             }
+            (NUMPAD, EventKind::Tab(mpfree_ui::numpad::KEY_ENTER)) => self.numpad_enter(),
+            (NUMPAD, EventKind::Tab(mpfree_ui::numpad::KEY_CANCEL)) => {
+                self.close_numpad();
+                None
+            }
+            (NUMPAD, _) => None,
             (play_page::TRANSPORT, EventKind::Tab(i)) => {
                 self.show_play_view(PlayView::from_index(i));
                 None
@@ -4240,6 +4407,18 @@ impl Player {
 
     /// Advance animations by `dt` seconds.
     pub fn tick(&mut self, dt: f32) {
+        // A finger held on Play's BPM: type the tempo.
+        if let Some((f, held, x, y)) = self.tempo_press {
+            let held = held + dt.max(0.0);
+            if held >= TEMPO_HOLD {
+                self.tempo_press = None;
+                if self.view == View::Play && self.typing.is_none() {
+                    self.type_tempo();
+                }
+            } else {
+                self.tempo_press = Some((f, held, x, y));
+            }
+        }
         // The UNDO light follows whether the page has something to undo.
         let ready = self.undo_ready();
         if ready != self.undo_ready {
@@ -5901,6 +6080,14 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         }
     }
     out.push(("prefs-touch", touch));
+    // The number pad, typing Play's tempo (a long press on its BPM).
+    let mut typing = sample_player(fonts());
+    typing.apply(ToUi::Show(View::Play));
+    typing.type_tempo();
+    if let Some(n) = typing.ui.get_mut::<mpfree_ui::numpad::NumPad>(NUMPAD) {
+        n.typed = "98.5".to_string();
+    }
+    out.push(("numpad-tempo", typing));
     // Prefs with the Appearance row selected, stepped to Synthwave.
     let mut look = sample_player(fonts());
     let mut l = crate::app::App::new(44_100, false);
@@ -8040,6 +8227,128 @@ mod tests {
             crate::perf::ram_used_pct("MemTotal: 2000 kB\nMemAvailable: 1500 kB\n"),
             Some(25.0)
         );
+    }
+
+    /// Jay after live test 3: the Warp tempo can be typed. A tap on its
+    /// value opens the number pad; Enter sets it (one undo step), a number
+    /// out of range keeps the pad open and says why, Cancel changes
+    /// nothing, and the wheel steps the number with its push as Enter.
+    #[test]
+    fn the_warp_tempo_can_be_typed_on_the_number_pad() {
+        use crate::app::RowKey;
+        use mpfree_sampler_ui::wave_tab::{Row, REGION};
+        use mpfree_sampler_ui::widgets::SettingList;
+        use mpfree_ui::numpad::{NumPad, KEY_CANCEL, KEY_ENTER, KEY_POINT};
+        let mut p = sample_sampler(Fonts::embedded());
+        let row = |r: Row| Row::ALL.iter().position(|k| *k == r).unwrap();
+        p.on_event(UiEvent {
+            widget: REGION.into(),
+            kind: EventKind::Step {
+                index: row(Row::Warp),
+                delta: 1,
+            },
+        });
+        p.apply(ToUi::SampleLift);
+        let bpm = |p: &Player| p.sample.state().unwrap().region.warp.as_ref().unwrap().bpm;
+        let before = bpm(&p);
+        let tap = |p: &mut Player, (x, y): (i32, i32)| {
+            let a = p.touch(4, Touch::Down, x, y);
+            p.touch(4, Touch::Up, x, y);
+            a
+        };
+        let open = |p: &mut Player| {
+            p.ui.paint(&mut SoftCanvas::new(SCREEN.0, SCREEN.1));
+            let r = p.ui.rect_of(REGION).unwrap();
+            let list = p.ui.get::<SettingList>(REGION).unwrap();
+            assert_eq!(list.typed, [row(Row::WarpTempo)], "warped: it can be typed");
+            let (_, value) = list.row_rects(r, row(Row::WarpTempo)).expect("in view");
+            tap(p, (value.x + value.w / 2, value.y + value.h / 2));
+            assert_eq!(p.page(), NUMPAD_PAGE);
+        };
+        let key = |p: &mut Player, k: usize| {
+            let r = p.ui.rect_of(NUMPAD).unwrap();
+            tap(p, NumPad::key_at(r, k))
+        };
+        open(&mut p);
+        assert!(p
+            .ui
+            .get::<Label>("hint")
+            .unwrap()
+            .text
+            .starts_with("Tap the number"));
+        for k in [1, 2, 8, KEY_POINT, 5] {
+            key(&mut p, k);
+        }
+        assert_eq!(key(&mut p, KEY_ENTER), None);
+        assert_eq!(p.page(), sample_page::PAGE);
+        assert_eq!(bpm(&p), 128.5);
+        // One undo step takes it back.
+        p.apply(ToUi::SampleUndo(false));
+        assert_eq!(bpm(&p), before);
+        // Out of range: the pad stays and says the range.
+        open(&mut p);
+        for k in [1, 5, 0, 0] {
+            key(&mut p, k);
+        }
+        key(&mut p, KEY_ENTER);
+        assert_eq!(p.page(), NUMPAD_PAGE);
+        assert_eq!(
+            p.ui.get::<NumPad>(NUMPAD).unwrap().warning,
+            "Warp tempo: type 20 to 999 BPM"
+        );
+        key(&mut p, KEY_CANCEL);
+        assert_eq!((p.page(), bpm(&p)), (sample_page::PAGE, before));
+        // The wheel steps from the tempo now (a tenth a detent here) and
+        // its push is Enter.
+        open(&mut p);
+        p.apply(ToUi::SampleWheel(3));
+        p.apply(ToUi::Rows(RowKey::Editing(true)));
+        assert_eq!(p.page(), sample_page::PAGE);
+        assert!((bpm(&p) - (before + 0.3)).abs() < 0.001, "{}", bpm(&p));
+    }
+
+    /// Jay after live test 3: a finger held on Play's BPM types the tempo.
+    #[test]
+    fn a_long_press_on_plays_tempo_types_it() {
+        use mpfree_ui::numpad::{NumPad, KEY_ENTER};
+        let mut p = sample_player(Fonts::embedded());
+        p.apply(ToUi::Show(View::Play));
+        p.ui.paint(&mut SoftCanvas::new(SCREEN.0, SCREEN.1));
+        let b =
+            p.ui.get::<PlayTransport>(play_page::TRANSPORT)
+                .unwrap()
+                .bpm_area()
+                .unwrap();
+        let (x, y) = (b.x + b.w / 2, b.y + b.h / 2);
+        // A quick tap only taps.
+        p.touch(1, Touch::Down, x, y);
+        p.tick(0.2);
+        p.touch(1, Touch::Up, x, y);
+        p.tick(1.0);
+        assert_ne!(p.page(), NUMPAD_PAGE);
+        // Held: the number pad, for the tempo.
+        assert_eq!(p.touch(2, Touch::Down, x, y), Some(FromUi::TapTempo));
+        p.tick(0.4);
+        p.tick(0.3);
+        assert_eq!(p.page(), NUMPAD_PAGE);
+        p.touch(2, Touch::Up, x, y);
+        let r = p.ui.rect_of(NUMPAD).unwrap();
+        let tap = |p: &mut Player, k: usize| {
+            let (x, y) = NumPad::key_at(r, k);
+            let a = p.touch(3, Touch::Down, x, y);
+            p.touch(3, Touch::Up, x, y);
+            a
+        };
+        for k in [9, 5] {
+            tap(&mut p, k);
+        }
+        assert_eq!(
+            tap(&mut p, KEY_ENTER),
+            Some(FromUi::Time(TimeAction::Transport(
+                mpfree_transport::Command::SetTempo(95.0)
+            )))
+        );
+        assert_eq!(p.page(), "Play");
     }
 
     /// Live test 3: a tap on Play's tempo is a tap of the tempo.
