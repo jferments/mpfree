@@ -55,10 +55,14 @@ GROUPS={
                                   0x00106000,0x00101744,0x0010e390]
  },
  "p1":{
-  "first_stage_boot_media":[0xff704060,0xff705350,0xff705310,
-                            0xff705316,0xff7054a4,0xff708f98],
-  "handoff_rom":[0xff705208,0xff7055b0,0xff7055bc,0xff705444],
-  "recovery_and_sram":[0xff7056a8,0xff708b74,0xff708cdc,0xff707f48],
+  "MaskROM_and_first_stage_entry":[0xff704004,0xff704060,0xff704068,
+                                  0xff7040b4,0xff7040f4],
+  "first_stage_MMC_media_selector":[0xff705310,0xff705350,0xff705398,
+                                    0xff7053c2,0xff7054a4,0xff708f98],
+  "SPL_owner_loader_handoff":[0xff705208,0xff7052c0,0xff705308,
+                               0xff7055b0,0xff7055bc,0xff705444],
+  "bootloader_USB_recovery_branches":[0xff705316,0xff7056a8,
+                                      0xff708b74,0xff708cdc,0xff707f48],
  }
 }
 WATCH={
