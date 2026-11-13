@@ -78,7 +78,9 @@ pub fn add(ui: &mut Ui, browser: &Browser) -> Result<(), String> {
 /// results come in, the widget shows the new screen. Returns what the app
 /// must do.
 pub fn step(ui: &mut Ui, browser: &mut Browser) -> Vec<BrowseAction> {
-    let (inputs, rows) = match ui.get_mut::<BrowserView>(BROWSER) {
+    // Taking the inputs changes nothing on screen: the view is redrawn
+    // only when something changed (below), not every frame.
+    let (inputs, rows) = match ui.get_mut_quiet::<BrowserView>(BROWSER) {
         Some(v) => (v.take_inputs(), v.visible_rows()),
         None => (Vec::new(), 0),
     };
@@ -106,7 +108,7 @@ fn needs_show(ui: &Ui, browser: &Browser) -> bool {
 
 /// Shows the browser's screen now (after a hardware press).
 pub fn show(ui: &mut Ui, browser: &Browser) {
-    if let Some(v) = ui.get_mut::<BrowserView>(BROWSER) {
+    if let Some(v) = ui.get_mut_quiet::<BrowserView>(BROWSER) {
         v.show(browser.screen());
     }
 }
