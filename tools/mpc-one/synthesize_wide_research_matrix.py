@@ -376,6 +376,33 @@ def build(read):
         "Updater executable strings and symbols expose file/net/USB update paths; execution path still unproven.",
         "Trace CLI entry→verification→image apply→reboot in Ghidra.","static/wide/firmware-3.10-bootchain-v4-compare.json")
     usbs=d["usb"]["verified_backend_interfaces"]
+    usb_slots={
+        "/".join((x["usb_descriptor"]["class"].lower(),
+                  x["usb_descriptor"]["subclass"].lower(),
+                  x["usb_descriptor"]["protocol"].lower())):{
+            row["offset"]:row.get("resolved_function")
+            for row in x["backend_callback_evidence"]}
+        for x in d["usb"]["verified_backend_interfaces"]}
+    row("USB","Does vendor write API route through backend write/commit slots?",
+        confirmed(all(key in d["library"]["analyzed_functions"].get(addr,{}).get(
+            "pseudocode","") for addr,key in (
+                ("0x00014b98","+ 0x18"),
+                ("0x00014c50","+ 0x1c"),
+                ("0x00014ac8","+ 0x2c")))),
+        "Yes: generic libaz01-prog API dereferences backend-function slots for bootloader write (+0x18), partition write (+0x1C), and bootloader commit (+0x2C). Actual selection and USB execution unproven.",
+        "Match every slot against original backend table and keep null callback semantics distinct from hardware capability.",
+        "static/v11/v11-ghidra-libaz01-prog.json")
+    row("USB","Do Fastboot, proprietary FF/61/7A, and RockUSB have identical storage callbacks?",
+        confirmed(len(usb_slots)==3 and
+            usb_slots.get("0xff/0x42/0x03",{}).get("+0x20") is not None and
+            usb_slots.get("0xff/0x42/0x03",{}).get("+0x2c") is not None and
+            usb_slots.get("0xff/0x61/0x7a",{}).get("+0x20") is not None and
+            usb_slots.get("0xff/0x61/0x7a",{}).get("+0x2c") is None and
+            usb_slots.get("0xff/0x06/0x05",{}).get("+0x20") is None and
+            usb_slots.get("0xff/0x06/0x05",{}).get("+0x2c") is None),
+        "No: original Fastboot table has stream+commit callbacks; FF/61/7A has stream but no commit; RockUSB-like table has neither. All have a partition-write callback.",
+        "Trace callback return/error contracts per transport; null slots do not exclude an alternate write protocol.",
+        "usb-protocol-evidence.json")
     row("USB","How many updater USB interface backends are selected?",
         confirmed(len(usbs)==3),
         "Three interfaces FF/42/03, FF/61/7A and FF/06/05 are selected.",
