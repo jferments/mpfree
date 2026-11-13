@@ -1,6 +1,6 @@
 <!--
 covers: rust/mpfree-seq/src/notes.rs rust/mpfree-seq/src/steps.rs rust/mpfree-time-ui/src/editor.rs rust/mpfree-time-ui/src/view.rs rust/mpfree-app/src/time.rs
-checked: 2026-11-12 ea72d6c
+checked: 2026-11-13 f8cc558
 -->
 
 # The note editor: piano roll, list, tracker and Timing Correct
@@ -36,7 +36,7 @@ Nothing here changes a clip. Every function returns a `steps::Edit` (the notes t
 - **Touches on the tracker**: a note's row picks it (Erase takes it out); an empty step's row gives `Cell { row: PEN, col: tick }` (`EditAction::Step`), which with Draw puts the editor's sound there, a step long, and with Select lets the notes go.
 - **Touches**: a note picks it (a tap on a note already in the selection keeps the group, so a drag moves them all); a drag moves the selection by ticks and notes, snapped; a tap on empty space draws a note with the Draw tool or clears the selection with Select; the velocity lane sets the selection's velocity.
 - **The buttons**: ‹ Clips (close), the lens (it shows the lens on screen, Grid, List or Tracker, lit when not Grid, and a tap goes to the next), the tool (Select, Draw, Erase), the snap (13 settings: the divisions and off), All/None, Duplicate, Delete, and TC (TC sel. with notes selected, else TC all).
-- **The Edit options**: Correct, Division, Swing, Window, Strength, Shift (Timing Correct's settings), then Nudge, Transpose, Velocity, Length, Chance (5 % a step), Condition and Ratchet, which act on the selection a step at a time, then the Euclidean fill's four rows. The wheel steps the option picked; the list scrolls to keep it in view.
+- **The Edit options**: Correct, Division, Swing, Window, Strength, Shift (Timing Correct's settings), then Nudge, Transpose, Velocity, Length, Chance (5 % a step), Condition and Ratchet, which act on the selection a step at a time, then the Euclidean fill's four rows. The wheel picks an option and - / + step it (the wheel too, once its push opened the option); the list scrolls to keep it in view.
 
 ### Euclidean fill
 
