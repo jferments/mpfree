@@ -373,9 +373,10 @@ mod tests {
             .iter()
             .map(|r| {
                 format!(
-                    "{} on {}: {} #{} \"{}\"",
+                    "{} on {} (page {}): {} #{} \"{}\"",
                     r.key(),
                     r.screen,
+                    r.page,
                     r.target.id,
                     r.target.index,
                     r.target.label

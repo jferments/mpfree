@@ -156,7 +156,7 @@ The Sample tab edits the pad hit last, with an editor per tab (Wave, Warp, Chop,
 ## The mixer, its I/O view and the effects
 
 - **`mixer/view`**: Tracks, Pads, Inputs, Submixes, I/O. *Test:* `the_mixer_strip_controls_set_the_mixer`.
-- **`mixer/prev`**, **`mixer/next`**: the page arrows (more strips, more I/O rows, the section's rows); faint at either end.
+- **`mixer/prev`**, **`mixer/next`**: the page arrows: more strips, or more Audio rows on the I/O view, faint at either end. In a MIDI, Sync or CV section they move the selection a page, and say so at the first or last row.
 - **`mixer/fader`**, **`mixer/pan`**, **`mixer/send`**, **`mixer/send-pre`**, **`mixer/value`**: a strip's fader, pan, sends A–D (and pre or post fader), and its level (a tap sets 0 dB). *Test:* `the_mixer_strip_controls_set_the_mixer`.
 - **`mixer/mute`**, **`mixer/solo`**, **`mixer/output`**: M, S, and the output (a tap opens the picker). *Test:* `the_mixer_strip_controls_set_the_mixer`.
 - **`mixer/strip-name`**: picks the strip for the Q-Links; on the picked strip, opens its menu (Freeze, Print) where offered.

@@ -1718,7 +1718,10 @@ impl Player {
             chips.push(Chip::new(format!("RAM {p:.0} %"), ram_tone(p)));
         }
         if self.session.1 != Tone::Good || !self.ready {
-            why.push(format!("{}: the state of the audio session", self.session.0));
+            why.push(format!(
+                "{}: the state of the audio session",
+                self.session.0
+            ));
             chips.push(Chip::new(self.session.0.clone(), self.session.1));
         }
         // A tap on the kit chip opens the list of kits (Jay's card, 13 Nov
@@ -3725,12 +3728,6 @@ impl Player {
         self.refresh_hint();
     }
 
-    /// The list of kits is open over the page.
-    #[cfg(test)]
-    pub fn kit_list(&self) -> bool {
-        self.kit_list
-    }
-
     /// The header highlights the page's tab, or none (Prefs, menus, the guide).
     fn mark_tab(&mut self) {
         let tab = self.view.tab_index(self.settings.debug_mode);
@@ -4125,7 +4122,9 @@ impl Player {
             ("header", EventKind::Select(i)) if Some(i) == self.level_chip => {
                 Some(FromUi::PadLevelOff)
             }
-            ("header", EventKind::Select(i)) if self.chip_why.get(i).is_some_and(|w| !w.is_empty()) => {
+            ("header", EventKind::Select(i))
+                if self.chip_why.get(i).is_some_and(|w| !w.is_empty()) =>
+            {
                 let why = self.chip_why[i].clone();
                 self.tell(&why);
                 None
