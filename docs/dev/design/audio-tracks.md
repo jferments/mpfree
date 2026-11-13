@@ -160,6 +160,7 @@ How big the buffer must be depends on the stick, so `mpfree-disktest` measures i
 [`rust/mpfree-app/src/audiotracks.rs`](../../../rust/mpfree-app/src/audiotracks.rs) holds `TrackHost`, which owns the `AudioHost` in the app's audio loop.
 
 - **Each period**, right after the looper (which reads the line input), `TrackHost::period` runs the tracks on the time engine's block and tempo map (`TimeHost::block`, `TimeHost::tempo_map`) with the looper's copy of the line input, and gives their sound to the mixer's fourth track, **Audio** (`mixing::AUDIO`). It sends `SetActive` as song mode turns on and off (`TimeHost::song_on`), so the tracks play and record in song mode only (layout spec 4c); monitoring goes on either way. REC records an armed track as the transport records.
+- **Latency:** `TrackHost::follow_latency` sends the looper's line input latency (`Settings::loop_latency`, "Latency to make up for", estimated from the audio buffer until set by hand) to the tracks as `SetLatency` whenever it changes, every period from the loop. Layout spec 4c asks for one line input latency shared with the looper; this is it.
 - **Memory:** 60 s of stereo (`audiotracks::SECONDS`, about 21 MB), set aside at start. Prefs "Audio track memory" (layout spec 4c) comes with the track panel. Takes stay in RAM: streaming from the stick waits for the stick speed test, which needs Jay's go (rule zero).
 - **The Song view:** `TrackHost::fill` puts the lanes (`AudioLane`, built with `song::audio_blocks`), the waveforms, `audio_free` and `audio_counts` (refused, dropped, cut short, fits failed: shown while not zero) into the `TimeState` the app sends. `TrackHost::take_changed` checks a fingerprint of the lanes every 8 periods without allocating, so the state goes out again when a region, an arm, a recording or a counter changes.
 - **Waveforms** are read a take at a time with `AudioHost::wave` (one column per block of the peak table, at most 4096); a recording take is read again about every quarter second as it grows. Replaced waves go back to the host's worker to be freed (`AudioHost::drop_wave`), so the audio thread never frees.
@@ -181,7 +182,7 @@ How big the buffer must be depends on the stick, so `mpfree-disktest` measures i
 ## Not built yet
 
 - The app's wiring for streaming: the folder per project (agreed with the project thread: the library's work folder `.work/audiotracks/` while a project is unsaved, the project's `samples/` once saved), the memory size, and showing `missed` and the disk errors on screen.
-- In the pad player: the track panel, Fades, Gain, take lanes and comping, dragging regions, the header's level bar, Prefs "Audio track memory" and "Line input latency", and saving with the project.
+- In the pad player: the track panel, Fades, Gain, take lanes and comping, dragging regions, the header's level bar, Prefs "Audio track memory" (the line input latency is the looper's setting, shared), and saving with the project.
 - Clearing out take files that no save names.
 - Fitting takes on its own when the tempo changes. The host fits one take when asked; deciding when to ask is the app's call.
 - Device runs. Opening the line input on the MPC needs Jay's go, step by step (rule zero).

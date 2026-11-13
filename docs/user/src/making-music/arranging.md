@@ -68,6 +68,7 @@ To record onto an audio track:
   - **Erase** takes the region out. **Undo** brings it back.
 - When there are more lanes than fit, drag up or down on the names to scroll them.
 - All the audio tracks play through one **Audio** strip in the mixer (TRACK MIX).
+- Audio tracks make up for the line input's delay with the looper's **Latency to make up for** setting (MENU on the Looper tab), so a take lines up with the beat you played it against. Change it there and both follow.
 - The audio tracks share 60 seconds of stereo memory. The Song view's legend says how much is free ("Audio 0:42 of 1:00 free"). A recording that runs out of memory stops there and keeps what it got.
 
 > [!NOTE]
