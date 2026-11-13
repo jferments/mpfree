@@ -7000,6 +7000,36 @@ mod tests {
         assert_eq!(p.page(), MIXER_PAGE);
     }
 
+    /// Live test 3: the kit chip names the kit (not "Kit 1 of 10"), and a
+    /// RAM chip sits beside the CPU's.
+    #[test]
+    fn the_header_names_the_kit_and_shows_ram() {
+        let mut p = sample_player(Fonts::embedded());
+        p.set_ram(17.4);
+        let chips: Vec<String> =
+            p.ui.get::<Header>("header")
+                .unwrap()
+                .chips
+                .iter()
+                .map(|c| c.text.clone())
+                .collect();
+        assert!(chips.iter().any(|c| c == "RAM 17 %"), "{chips:?}");
+        assert!(!chips.iter().any(|c| c.contains(" of ")), "{chips:?}");
+        assert_eq!(
+            chip_kit_name("ClassicHouse-Kit-Classy", 0),
+            "ClassicHouse Kit Classy"
+        );
+        assert_eq!(chip_kit_name("", 2), "Kit 3");
+        assert_eq!(
+            chip_kit_name("A-very-long-kit-name-that-goes-on-and-on", 0),
+            "A very long kit name that g…"
+        );
+        assert_eq!(
+            crate::perf::ram_used_pct("MemTotal: 2000 kB\nMemAvailable: 1500 kB\n"),
+            Some(25.0)
+        );
+    }
+
     /// Live test 3: a tap on Play's tempo is a tap of the tempo.
     #[test]
     fn a_tap_on_plays_tempo_taps_it() {
@@ -10327,7 +10357,7 @@ mod tests {
                 .collect()
         };
         assert!(
-            chips(&p).contains(&"Kit 1 of 7 · Bank A".to_string()),
+            chips(&p).contains(&"Classic House · Bank A".to_string()),
             "{:?}",
             chips(&p)
         );
