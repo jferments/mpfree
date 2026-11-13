@@ -683,7 +683,8 @@ SUMMARY_PREFIXES = ("touchscreen: ", "touch-reader: ", "button guide done: ", "b
                     "arp: ", "arp order: ", "arp pattern: ", "pattern ", "recording ", "time: ", "tempo ",
                     "touch-lab-open", "touch-lab: ", "touch-lab-exit", "touch-calibrate", "touch-orientation: ",
                     "STOP: ", "track mute: ", "morph: ", "song: ", "chain: ", "macros: ", "q-link bank: ",
-                    "mixer: ", "playing ", "sound cores", "status: sound cores ", "browser: ", "preview",
+                    "mixer: ", "playing ", "sound cores", "status: sound cores ", "status: screen ", "browser: ",
+                    "preview",
                     "MIDI in: ", "MIDI Out", "controller output", "report: ", "chain editor: ", "control: ")
 APP_LINE = re.compile(r"^\[\s*(\d+\.\d+)\]\s+(.*)$")
 MIDI_LINE = re.compile(r"^\+\d+\.\d+ s (->\s*)?(Public|Private|MIDI Port)\b")
