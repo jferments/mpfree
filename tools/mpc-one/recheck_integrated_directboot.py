@@ -66,7 +66,7 @@ def audit(archive: Path) -> dict:
         "three_usb_backend_original_table_and_callback_crosscheck": (
             usb_backend_report["all_source_only_backends_matched"]),
         "seven_track_59_question_research": (
-            len(matrix["questions"])>=59 and
+            len(matrix["questions"])>=64 and
             len({q["track"] for q in matrix["questions"]})==7),
         "spl_order_and_mmc_label_evidence": all(
             owner_followups["spl"]["checks"].values()),
