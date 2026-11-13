@@ -30,6 +30,7 @@ use mpfree_audiotracks::{Command, Input, TakeInfo, MAX_TRACKS, PEAK_BLOCK};
 use mpfree_time_ui::song::{audio_blocks, AudioLane};
 use mpfree_time_ui::view::{audio_color, AudioAction, RegionId, TimeState, TransportInfo};
 use mpfree_transport::{Block, TempoMap, Tick};
+use mpfree_ui::qlink::QLinkCard;
 
 use crate::PERIOD;
 
@@ -55,6 +56,9 @@ pub struct TrackHost {
     /// What each track records from (the engine keeps it too; this is for
     /// the header's chip).
     inputs: [Input; MAX_TRACKS],
+    /// Each track's level (0 to 2) and balance (-1 to 1), as last sent.
+    volume: [f32; MAX_TRACKS],
+    pan: [f32; MAX_TRACKS],
     /// The last `SetActive` sent.
     active: bool,
     /// The input latency last sent (frames), None before the first.
@@ -84,6 +88,8 @@ impl TrackHost {
             out: Box::new([0.0; 2 * PERIOD]),
             shown: 0,
             inputs: [Input::Left; MAX_TRACKS],
+            volume: [1.0; MAX_TRACKS],
+            pan: [0.0; MAX_TRACKS],
             active: false,
             latency: None,
             waves: Vec::with_capacity(mpfree_audiotracks::MAX_TAKES),
@@ -218,6 +224,8 @@ impl TrackHost {
         h.add(self.shown as u64);
         for t in 0..MAX_TRACKS {
             h.add(u64::from(tr.armed(t)));
+            h.add(u64::from(self.volume[t].to_bits()));
+            h.add(u64::from(self.pan[t].to_bits()));
             h.add(tr.recording(t).map_or(u64::MAX, u64::from));
             for r in tr.regions(t) {
                 h.add(r.start as u64);
@@ -253,6 +261,8 @@ impl TrackHost {
                 armed: tr.armed(t),
                 input: input_chip(self.inputs[t]).into(),
                 level: 0.0,
+                volume: self.volume[t],
+                pan: self.pan[t],
                 blocks: audio_blocks(t, tr.regions(t), &takes, map, self.rate),
                 recording: tr
                     .recording(t)
@@ -346,12 +356,68 @@ impl TrackHost {
                 self.send(Command::Undo)?;
                 "audio tracks: undone".into()
             }
-            AudioAction::Panel(_)
-            | AudioAction::Fades(_)
-            | AudioAction::Gain(_)
-            | AudioAction::Takes(_) => {
+            AudioAction::Gain(r) => {
+                region(tr, r)?;
+                "Q3 turns the region's gain, SHIFT for fine steps".into()
+            }
+            AudioAction::Fades(r) => {
+                region(tr, r)?;
+                "Q4 turns the region's fades, SHIFT for fine steps".into()
+            }
+            AudioAction::Turn {
+                region: r,
+                knob,
+                ticks,
+                fine,
+            } => {
+                let reg = region(tr, r)?;
+                let t = r.track;
+                match knob {
+                    0 => {
+                        let step = if fine { 0.1 } else { 0.5 };
+                        let v = from_db(to_db(self.volume[t]) + step * ticks as f32, LEVEL_MAX_DB);
+                        self.send(Command::SetLevel(t, v))?;
+                        self.volume[t] = v;
+                    }
+                    1 => {
+                        let step = if fine { 0.01 } else { 0.02 };
+                        let v = (self.pan[t] + step * ticks as f32).clamp(-1.0, 1.0);
+                        // Snap to the middle near it, so centre is easy to find.
+                        let v = if v.abs() < 0.005 { 0.0 } else { v };
+                        self.send(Command::SetPan(t, v))?;
+                        self.pan[t] = v;
+                    }
+                    2 => {
+                        let step = if fine { 0.1 } else { 0.5 };
+                        let gain = from_db(to_db(reg.gain) + step * ticks as f32, GAIN_MAX_DB);
+                        self.send(Command::SetGain {
+                            track: t,
+                            at: reg.start,
+                            gain,
+                        })?;
+                    }
+                    3 => {
+                        let ms = if fine { 1.0 } else { 5.0 };
+                        let step = (self.rate as f32 * ms / 1000.0) as i64;
+                        let now = i64::from(reg.fade_in.max(reg.fade_out));
+                        let v =
+                            (now + step * i64::from(ticks)).clamp(0, i64::from(u32::MAX)) as u32;
+                        // The engine keeps each fade to half the region.
+                        self.send(Command::SetFades {
+                            track: t,
+                            at: reg.start,
+                            fade_in: v,
+                            fade_out: v,
+                        })?;
+                    }
+                    _ => return Err(format!("Q-Link {} has nothing to turn here", knob + 1)),
+                }
+                self.changed = true;
+                String::new()
+            }
+            AudioAction::Panel(_) | AudioAction::Takes(_) => {
                 return Err(format!(
-                    "{a:?} is not built yet (the track panel, fades, gain and take lanes come next)"
+                    "{a:?} is not built yet (the track panel and the take lanes come next)"
                 ))
             }
             // The time engine keeps the pick (`TimeControl`).
@@ -385,6 +451,86 @@ impl TrackHost {
         )
     }
 }
+
+/// The track level's top: +6 dB. A region's gain goes to the engine's
+/// 4 (+12 dB). Below -60 dB is off.
+const LEVEL_MAX_DB: f32 = 6.0;
+const GAIN_MAX_DB: f32 = 12.0;
+const FLOOR_DB: f32 = -60.0;
+
+/// A level as dB, with off as the floor.
+fn to_db(v: f32) -> f32 {
+    if v <= 0.0 {
+        FLOOR_DB
+    } else {
+        (20.0 * v.log10()).max(FLOOR_DB)
+    }
+}
+
+/// dB as a level, at most `max` dB; at the floor or under it is off.
+fn from_db(db: f32, max: f32) -> f32 {
+    let db = db.min(max);
+    if db <= FLOOR_DB {
+        0.0
+    } else {
+        10f32.powf(db / 20.0)
+    }
+}
+
+/// "-3.0 dB", or "off".
+fn db_text(v: f32) -> String {
+    if v <= 0.0 {
+        "off".into()
+    } else {
+        format!("{:.1} dB", to_db(v))
+    }
+}
+
+/// "C", "L15", "R40", as the mixer writes a pan.
+fn pan_text(p: f32) -> String {
+    let n = (p.abs() * 100.0).round() as i32;
+    match n {
+        0 => "C".into(),
+        _ if p < 0.0 => format!("L{n}"),
+        _ => format!("R{n}"),
+    }
+}
+
+/// The Q-Link cards for the audio region picked in `st` (layout spec 4c):
+/// Q1 the track's level, Q2 its pan, Q3 the region's gain, Q4 its fades.
+/// None when no region is picked or it is not in the lanes.
+pub fn region_cards(st: &TimeState) -> Option<(RegionId, [QLinkCard; 4])> {
+    let r = st.region?;
+    let lane = st.audio.iter().find(|l| l.track == r.track)?;
+    let b = lane.blocks.get(r.index)?;
+    let track = format!("AUDIO {}", r.track + 1);
+    let pos = |v: f32, max: f32| (to_db(v) - FLOOR_DB) / (max - FLOOR_DB);
+    let ms = (b.fade_in.max(b.fade_out) as f64 / RATE_FOR_TEXT * 1000.0).round();
+    let mut pan = QLinkCard::new("Pan", &track, &pan_text(lane.pan), (lane.pan + 1.0) / 2.0);
+    pan.bipolar = true;
+    Some((
+        r,
+        [
+            QLinkCard::new(
+                "Level",
+                &track,
+                &db_text(lane.volume),
+                pos(lane.volume, LEVEL_MAX_DB),
+            ),
+            pan,
+            QLinkCard::new("Gain", "REGION", &db_text(b.gain), pos(b.gain, GAIN_MAX_DB)),
+            QLinkCard::new(
+                "Fades",
+                "REGION",
+                &format!("{ms:.0} ms"),
+                (ms / 2000.0).clamp(0.0, 1.0) as f32,
+            ),
+        ],
+    ))
+}
+
+/// The rate the cards turn frames into milliseconds at (the app's).
+const RATE_FOR_TEXT: f64 = crate::RATE as f64;
 
 /// Region `r` as the tracks have it now.
 fn region(
@@ -665,6 +811,71 @@ mod tests {
             0,
             "nothing reached the engine to be refused"
         );
+    }
+
+    #[test]
+    fn the_q_links_turn_level_pan_gain_and_fades_and_the_cards_say_them() {
+        let mut r = Rig::new();
+        r.h.action(AudioAction::Arm { track: 0, on: true }, &r.info(), true)
+            .unwrap();
+        r.live = true;
+        r.command(T::Record);
+        while r.t.position() < 3840 {
+            r.period();
+        }
+        r.command(T::Stop);
+        r.periods(10);
+        let region = RegionId { track: 0, index: 0 };
+        let turn = |r: &mut Rig, knob, ticks, fine| {
+            let a = AudioAction::Turn {
+                region,
+                knob,
+                ticks,
+                fine,
+            };
+            let line = r.h.action(a, &r.info(), true).unwrap();
+            r.periods(2);
+            line
+        };
+        assert_eq!(turn(&mut r, 0, -12, false), "", "turns write no log line");
+        turn(&mut r, 1, 10, false);
+        turn(&mut r, 1, 5, true);
+        turn(&mut r, 2, 7, false);
+        turn(&mut r, 2, -5, true);
+        turn(&mut r, 3, 4, false);
+        let mut st = r.state();
+        st.region = Some(region);
+        let (_, cards) = region_cards(&st).unwrap();
+        let shown: Vec<_> = cards.iter().map(|c| c.value.as_str()).collect();
+        assert_eq!(shown, ["-6.0 dB", "R25", "3.0 dB", "20 ms"]);
+        assert!(r.h.take_changed());
+        // The level goes off at the floor and stops at +6 dB.
+        turn(&mut r, 0, -200, false);
+        assert_eq!(r.h.volume[0], 0.0);
+        turn(&mut r, 0, 400, false);
+        assert!((to_db(r.h.volume[0]) - 6.0).abs() < 1e-3);
+        // Gain and Fades point at their knobs; a fifth knob has nothing.
+        assert!(r
+            .h
+            .action(AudioAction::Gain(region), &r.info(), true)
+            .unwrap()
+            .contains("Q3"));
+        assert!(r
+            .h
+            .action(AudioAction::Fades(region), &r.info(), true)
+            .unwrap()
+            .contains("Q4"));
+        let a = AudioAction::Turn {
+            region,
+            knob: 4,
+            ticks: 1,
+            fine: false,
+        };
+        assert!(r.h.action(a, &r.info(), true).is_err());
+        assert_eq!(r.h.host.tracks.stats().refused, 0);
+        // No region picked: no cards.
+        st.region = None;
+        assert!(region_cards(&st).is_none());
     }
 
     #[test]

@@ -747,6 +747,8 @@ impl AudioSession {
                 armed: self.tracks.armed(track),
                 input: input.into(),
                 level,
+                volume: 1.0,
+                pan: 0.0,
                 blocks: crate::song::audio_blocks(
                     track,
                     self.tracks.regions(track),

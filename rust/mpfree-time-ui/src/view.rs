@@ -593,6 +593,16 @@ pub enum AudioAction {
     Gain(RegionId),
     Takes(usize),
     Undo,
+    /// A Q-Link on Arrange while an audio region is picked (layout spec
+    /// 4c): knob 0 the track's level, 1 its pan, 2 the region's gain, 3
+    /// its fades; `ticks` detents, `fine` with SHIFT held. The app keeps
+    /// the values and says them back in the lanes.
+    Turn {
+        region: RegionId,
+        knob: usize,
+        ticks: i32,
+        fine: bool,
+    },
 }
 
 /// Where a clip launched now starts: on the next bar line while the
@@ -1839,6 +1849,8 @@ mod tests {
             armed: true,
             input: "L".into(),
             level: 0.3,
+            volume: 1.0,
+            pan: 0.0,
             blocks: vec![AudioBlock {
                 start: 0,
                 end: BAR,
@@ -1846,6 +1858,7 @@ mod tests {
                 tag: String::new(),
                 src: 0,
                 frames: 88_200.0,
+                gain: 1.0,
                 fade_in: 0,
                 fade_out: 0,
             }],

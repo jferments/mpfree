@@ -66,13 +66,14 @@ To record onto an audio track:
 - Tap a region to pick it. The buttons along the bottom become **Split**, **Erase**, **Fades**, **Gain**, **Takes** and **Undo** for that region. Tap empty space to go back to the song's own buttons.
   - **Split** cuts the region at the playhead, so put the playhead inside it first.
   - **Erase** takes the region out. **Undo** brings it back.
+  - While a region is picked, the four Q-Links on the right turn the track's **Level** (Q1) and **Pan** (Q2), and the region's **Gain** (Q3) and **Fades** (Q4, the fade in and the fade out together). Hold SHIFT for fine steps. **Gain** and **Fades** in the bottom row point you to those knobs.
 - When there are more lanes than fit, drag up or down on the names to scroll them.
 - All the audio tracks play through one **Audio** strip in the mixer (TRACK MIX).
 - Audio tracks make up for the line input's delay with the looper's **Latency to make up for** setting (MENU on the Looper tab), so a take lines up with the beat you played it against. Change it there and both follow.
 - The audio tracks share 60 seconds of stereo memory. The Song view's legend says how much is free ("Audio 0:42 of 1:00 free"). A recording that runs out of memory stops there and keeps what it got.
 
 > [!NOTE]
-> Coming: tapping a track's name for its settings (input, monitoring, level, pan, mute, solo), **Fades**, **Gain** and **Takes** (swiping across takes to keep the best parts of each), dragging a region to move it, and saving audio tracks with the project. In this build those buttons say they aren't built yet, and recorded audio is gone when MPFree stops.
+> Coming: tapping a track's name for its settings (input, monitoring, level, pan, mute, solo), **Takes** (swiping across takes to keep the best parts of each), dragging a region to move it, and saving audio tracks with the project. In this build the track name and **Takes** say they aren't built yet, and recorded audio is gone when MPFree stops.
 
 ## Recording a performance into the song
 
