@@ -182,7 +182,8 @@ impl Desk<'_> {
             | gui::FromUi::SaveProject
             | gui::FromUi::OpenProject(_)
             | gui::FromUi::OpenLoops(_)
-            | gui::FromUi::OpenAudio(_)) => return Some(a),
+            | gui::FromUi::OpenAudio(_)
+            | gui::FromUi::TrackInstrument(_)) => return Some(a),
         }
         None
     }
