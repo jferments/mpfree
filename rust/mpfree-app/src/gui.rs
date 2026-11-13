@@ -633,7 +633,8 @@ pub struct Player {
     midi: u64,
     midi_held_back: u64,
     timing: Timing,
-    screen_row: String,
+    /// The Timing panel's Screen row: how the screen is drawn, and how fast.
+    screen_row: (String, Tone),
     /// The timed `play` step (STOP ends it) rather than the app.
     timed: bool,
     /// The menu's selected row is open for the wheel (its push opened it).
@@ -849,7 +850,7 @@ impl Player {
                 last_ms: f32::NAN,
                 ..Timing::default()
             },
-            screen_row: "-".to_string(),
+            screen_row: ("-".to_string(), Tone::Dim),
             timed,
             menu_editing: false,
             sample_keys: (false, false),
@@ -1727,7 +1728,11 @@ impl Player {
                 ),
                 Tone::Dim,
             ),
-            ("Screen".to_string(), self.screen_row.clone(), Tone::Dim),
+            (
+                "Screen".to_string(),
+                self.screen_row.0.clone(),
+                self.screen_row.1,
+            ),
         ];
         if let Some(s) = self.ui.get_mut::<StatList>("timing") {
             s.set(rows);
@@ -3573,8 +3578,8 @@ impl Player {
         }
     }
 
-    pub fn set_screen_row(&mut self, text: String) {
-        self.screen_row = text;
+    pub fn set_screen_row(&mut self, text: String, tone: Tone) {
+        self.screen_row = (text, tone);
         self.show_timing();
     }
 }
@@ -3730,9 +3735,13 @@ pub struct ScreenReport {
 /// `open_touch` opens the touchscreen. It is tried at once and then every
 /// second while there is none (the driver may not have probed yet at power-on,
 /// or a read failed), so touch comes back by itself.
+///
+/// With `gpu`, the GPU draws the screen in a process of its own, and any
+/// failure there draws in software again (drawing.rs).
 pub fn spawn(
     mut player: Player,
     mut fb: Option<FbTarget>,
+    gpu: Option<crate::drawing::GpuStart>,
     mut open_touch: Option<OpenTouch>,
     rx: Receiver<ToUi>,
     tx: SyncSender<FromUi>,
@@ -3747,6 +3756,8 @@ pub fn spawn(
             let mut touch_status = (Instant::now(), 0u64);
             let (w, h) = player.ui.size();
             let mut canvas = SoftCanvas::new(w, h);
+            let mut drawing =
+                crate::drawing::Drawing::start(gpu.as_ref(), &mut player, fb.as_ref());
             let mut report = ScreenReport::default();
             let mut total_ms = 0.0;
             let mut last_frame = Instant::now() - Duration::from_secs(1);
@@ -3864,6 +3875,7 @@ pub fn spawn(
                 } else {
                     engines_at = None;
                 }
+                drawing.poll(&mut player, fb.as_ref());
                 let since = last_frame.elapsed();
                 if since < Duration::from_millis(33) && !quit {
                     continue;
@@ -3873,9 +3885,16 @@ pub fn spawn(
                     continue;
                 }
                 let t0 = Instant::now();
-                let damage = player.ui.paint(&mut canvas);
-                let t1 = Instant::now();
-                let rows = present(&mut fb, &canvas, &damage, &mut report);
+                // On the GPU, painting records the frame's list and the
+                // "copy" is sending it; in software, the copy to the panel.
+                let (t1, rows) = match drawing.frame(&mut player, fb.as_ref()) {
+                    Some(painted) => (t0 + painted, 0),
+                    None => {
+                        let damage = player.ui.paint(&mut canvas);
+                        let t1 = Instant::now();
+                        (t1, present(&mut fb, &canvas, &damage, &mut report))
+                    }
+                };
                 let t2 = Instant::now();
                 last_frame = t2;
                 let ms = (t2 - t0).as_secs_f64() * 1e3;
@@ -3883,13 +3902,15 @@ pub fn spawn(
                 total_ms += ms;
                 report.max_ms = report.max_ms.max(ms);
                 cost.frame(player.view(), t1 - t0, t2 - t1, rows);
-                if let Some(row) = cost.second(t2) {
-                    player.set_screen_row(row);
+                if let Some(second) = cost.second(t2) {
+                    let (row, tone) = drawing.screen_row(&second);
+                    player.set_screen_row(row, tone);
                 }
                 if let Some(line) = cost.status(t2) {
                     println!("{line}");
                 }
             }
+            drawing.finish(&mut player, &mut canvas, fb.as_mut());
             report.mean_ms = if report.frames > 0 {
                 total_ms / report.frames as f64
             } else {
@@ -4062,7 +4083,10 @@ pub fn sample_player(fonts: Fonts) -> Player {
             peak_grains: 0,
         },
     }));
-    p.set_screen_row("30 fps · paint 1.2 ms · copy 3.1 ms · slowest 6.4 ms".into());
+    p.set_screen_row(
+        "30 fps · paint 1.2 ms · copy 3.1 ms · slowest 6.4 ms".into(),
+        Tone::Dim,
+    );
     for l in ["+0.012 s -> Public: F0 7E 00 06 01 F7 = identity request",
               "+0.013 s -> Public: F0 47 00 46 52 00 04 15 21 6D 43 F7 = session ping",
               "+0.020 s Private: F0 47 7F 46 53 00 05 15 21 6D 43 02 F7 = session reply, token 15 21 6D 43, accepted",

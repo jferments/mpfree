@@ -175,6 +175,55 @@ impl Scanout {
     }
 }
 
+/// Pixels where a screen buffer's own memory (`bytes`: rows `pitch` bytes
+/// apart, XRGB8888, as the display controller reads it) differs from what
+/// the GPU drew into `target`, the same buffer seen through EGL. Zero means
+/// the panel would show exactly the GPU's picture, right way up.
+pub fn buffer_differs(
+    gpu: &Gpu,
+    r: &Renderer,
+    target: Target,
+    bytes: &[u8],
+    pitch: usize,
+) -> usize {
+    let (nw, _) = r.native_size();
+    let want = r.read_target(gpu, target);
+    let mut wrong = 0usize;
+    for (ny, row) in want.chunks_exact(nw as usize).enumerate() {
+        let Some(line) = bytes.get(ny * pitch..ny * pitch + nw as usize * 4) else {
+            wrong += row.len();
+            continue;
+        };
+        for (p, b) in row.iter().zip(line.as_chunks::<4>().0) {
+            wrong += (u32::from_le_bytes(*b) & 0xFF_FFFF != *p) as usize;
+        }
+    }
+    wrong
+}
+
+/// A test card for checking a screen buffer: bands of distinct colours and
+/// a rounded box, so a buffer read upside down, turned, shifted or in
+/// another byte order cannot pass for it.
+pub fn test_card(w: i32, h: i32) -> mpfree_ui::record::Recorder {
+    use mpfree_ui::{Canvas, Color};
+    let mut rec = mpfree_ui::record::Recorder::new(w, h);
+    rec.begin_frame();
+    let colours = [
+        0xFF0000, 0x00FF00, 0x0000FF, 0xFFFF00, 0x00FFFF, 0xFF00FF, 0xFFFFFF, 0x808080,
+    ];
+    let band = (w / colours.len() as i32).max(1);
+    for (i, c) in colours.iter().enumerate() {
+        rec.fill_rect(Rect::new(i as i32 * band, 0, band, h), Color::rgb(*c));
+    }
+    rec.fill_rect(Rect::new(0, 0, w, h / 8), Color::rgb(0x102030));
+    rec.fill_round_rect(
+        Rect::new(w / 3, h / 3, w / 3, h / 3),
+        24,
+        Color::rgb(0xF0A020).with_alpha(200),
+    );
+    rec
+}
+
 // ------------------------------------------------------------ dma-bufs into EGL
 
 /// EGL_LINUX_DMA_BUF_EXT and its attributes (EGL_EXT_image_dma_buf_import).

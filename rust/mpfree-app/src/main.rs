@@ -89,6 +89,7 @@ mod control;
 mod cores;
 mod cv_out;
 mod debug_page;
+mod drawing;
 mod engines;
 mod gui;
 mod kit;
@@ -182,6 +183,10 @@ struct Options {
     /// Drive the CV/gate jacks (CV 1 to 4) from the project's CV outputs
     /// (`app` only; cv_out.rs). Off until a device round has checked it.
     cv_out: bool,
+    /// Draw the screen on the GPU, in this program of its own
+    /// (`mpfree-gpu-screen`; `play` and `app`; drawing.rs). Off until a
+    /// device round has checked it; any failure draws in software again.
+    gpu_screen: Option<PathBuf>,
 }
 
 fn parse_args(args: &[String]) -> Result<Options, String> {
@@ -205,6 +210,7 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
         sound_cores: None,
         midi_out: false,
         cv_out: false,
+        gpu_screen: None,
     };
     let mut it = args.iter();
     while let Some(arg) = it.next() {
@@ -248,6 +254,7 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
             "--midi-out" => o.midi_out = true,
             "--cv-out" => o.cv_out = true,
             "--data" => o.data = Some(PathBuf::from(value()?)),
+            "--gpu-screen" => o.gpu_screen = Some(PathBuf::from(value()?)),
             "--sound-cores" => {
                 o.sound_cores =
                     Some(cores::SoundCores::parse(&value()?).ok_or_else(|| {
@@ -295,6 +302,9 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
     }
     if args.iter().any(|a| a == "--sound-cores") && o.command != "app" && o.command != "play" {
         return Err("--sound-cores goes with app or play".to_string());
+    }
+    if o.gpu_screen.is_some() && o.command != "app" && o.command != "play" {
+        return Err("--gpu-screen goes with app or play".to_string());
     }
     Ok(o)
 }
@@ -2318,7 +2328,18 @@ fn player(o: &Options, timed: bool) -> Result<(), String> {
     let (to_audio, from_ui) = sync_channel::<gui::FromUi>(256);
     // The screen thread starts before this thread asks for real-time priority,
     // so it keeps normal priority.
-    let screen = gui::spawn(player, fb, Some(open_touch), from_audio, to_audio)
+    // With --gpu-screen, the GPU draws the screen in a process of its own,
+    // turned as the framebuffer is; without a framebuffer there is nothing
+    // to fall back to, so the software draws (or nothing does).
+    let gpu = match (&o.gpu_screen, &fb) {
+        (Some(program), Some(f)) => Some(drawing::GpuStart::new(program, f.layout.rotation)),
+        (Some(_), None) => {
+            out.say("screen: not drawn on the GPU (no framebuffer to fall back to)");
+            None
+        }
+        (None, _) => None,
+    };
+    let screen = gui::spawn(player, fb, gpu, Some(open_touch), from_audio, to_audio)
         .map_err(|e| format!("screen thread: {e}"))?;
     out.sink = Some(to_ui.clone());
     if !timed {
@@ -5683,6 +5704,16 @@ mod tests {
         assert!(!parse_args(&args("app")).unwrap().cv_out);
         assert!(parse_args(&args("app --cv-out")).unwrap().cv_out);
         assert!(parse_args(&args("pads --cv-out")).is_err());
+        // The GPU draws the screen only when asked, for the pad player.
+        assert_eq!(parse_args(&args("app")).unwrap().gpu_screen, None);
+        let o = parse_args(&args("app --gpu-screen /run/mpfree-app/mpfree-gpu-screen")).unwrap();
+        assert_eq!(
+            o.gpu_screen,
+            Some(PathBuf::from("/run/mpfree-app/mpfree-gpu-screen"))
+        );
+        assert!(parse_args(&args("play --seconds 5 --gpu-screen g")).is_ok());
+        assert!(parse_args(&args("pads --gpu-screen g")).is_err());
+        assert!(parse_args(&args("app --gpu-screen")).is_err());
         // Where the sound runs: Prefs' setting unless asked for this run, and
         // only for the pad player.
         assert_eq!(parse_args(&args("app")).unwrap().sound_cores, None);
