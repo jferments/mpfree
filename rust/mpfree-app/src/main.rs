@@ -103,6 +103,7 @@ mod midi_saved;
 mod mixing;
 mod modmix;
 mod modpanels;
+mod pace;
 mod parts;
 mod perf;
 mod play_page;
@@ -119,6 +120,7 @@ mod synth;
 mod sys;
 mod sysinfo;
 mod time;
+mod touch_bell;
 mod touch_dev;
 mod touchlab_page;
 
@@ -2322,8 +2324,15 @@ fn player(o: &Options, timed: bool) -> Result<(), String> {
     let (to_audio, from_ui) = sync_channel::<gui::FromUi>(256);
     // The screen thread starts before this thread asks for real-time priority,
     // so it keeps normal priority.
-    let screen = gui::spawn(player, fb, Some(open_touch), from_audio, to_audio)
-        .map_err(|e| format!("screen thread: {e}"))?;
+    let screen = gui::spawn(
+        player,
+        fb,
+        Some(open_touch),
+        Some(to_ui.clone()),
+        from_audio,
+        to_audio,
+    )
+    .map_err(|e| format!("screen thread: {e}"))?;
     out.sink = Some(to_ui.clone());
     if !timed {
         follow_journal(to_ui.clone());
