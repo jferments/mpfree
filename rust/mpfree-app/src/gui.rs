@@ -95,6 +95,19 @@ const NUMPAD_LAYOUT: &str = "col(header:60, numpad:*, hint:26)";
 const NUMPAD_HINT: &str = "Tap the number, then Enter   ·   wheel or - / +: step it   ·   push the wheel: Enter   ·   Cancel: leave it as it was";
 /// How long a finger stays on Play's BPM to type the tempo, seconds.
 const TEMPO_HOLD: f32 = 0.6;
+/// The undo history (Jay after live test 3: hold UNDO to see the page's
+/// history and jump back several steps at once), over the page it was
+/// opened from.
+pub const HISTORY: &str = "history";
+pub const HISTORY_PAGE: &str = "Undo history";
+const HISTORY_LAYOUT: &str = "col(header:60, history:*, hint:26)";
+const HISTORY_HINT: &str = "Tap a step to go back or forward to it   ·   wheel or - / +: pick a step   ·   push the wheel: go there   ·   \
+                            UNDO: one step back (SHIFT: forward)   ·   Close: done";
+/// How long UNDO is held to open the page's undo history, seconds.
+pub const UNDO_HOLD: f32 = 0.6;
+/// How often the Synth tab's or the mixer's history is asked for again
+/// while its list is open, seconds.
+const HISTORY_ASK: f32 = 0.5;
 pub const GUIDE_LAYOUT: &str = "col(header:60, row(guide:*, found:400):*, hint:26)";
 
 const CONSOLE_HINT: &str =
@@ -290,6 +303,29 @@ pub fn tone_of(line: &str) -> Tone {
 
 // ---------------------------------------------------------------- pad player
 
+/// Whose history UNDO and the undo history list follow on the page
+/// showing (Jay, 13 Nov 13:53Z: UNDO follows the page you're on).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HistoryOf {
+    /// The picked loop's.
+    Loop,
+    /// The sequencer's takes.
+    Takes,
+    /// The playing kit's sample edits.
+    Sample,
+    /// The Synth tab's or the mixer's turns, which the app keeps.
+    Turns(UndoOn),
+}
+
+/// The undo history open over a page: whose, the page to go back to, and
+/// (for the app's histories) when to ask for it again.
+#[derive(Clone, Debug)]
+struct HistoryOpen {
+    of: HistoryOf,
+    back: String,
+    ask_in: f32,
+}
+
 /// Where a typed number goes, and the page the number pad was opened over.
 #[derive(Clone, Debug)]
 struct Typing {
@@ -362,6 +398,16 @@ pub enum ToUi {
     /// UNDO (true: SHIFT + UNDO, redo) on a page whose history the screen
     /// picks ([`Player::undo`]).
     Undo(bool),
+    /// The UNDO button went down (true) or up, on any page: held for
+    /// [`UNDO_HOLD`], it opens the page's undo history.
+    UndoButton(bool),
+    /// The Synth tab's or the mixer's undo history, as asked for with
+    /// [`FromUi::UndoHistory`]: its rows and the row that is now.
+    UndoHistory {
+        on: UndoOn,
+        rows: Vec<String>,
+        now: usize,
+    },
     /// REC (false) or OVERDUB (true) on the Play page ([`Player::play_rec`]).
     PlayRec(bool),
     /// Whether the Synth tab's and the mixer's turns ([`crate::undo`])
@@ -651,6 +697,13 @@ pub enum FromUi {
     /// Whether the page showing has something to undo, when that changes
     /// (for the UNDO light).
     UndoReady(bool),
+    /// The Synth tab's or the mixer's undo history, for the list that
+    /// holding UNDO opens: the app answers with [`ToUi::UndoHistory`].
+    UndoHistory(UndoOn),
+    /// A list or pad over the page (the number pad, the undo history) is
+    /// open (true) or closed: while open, the wheel, its push and - / +
+    /// are its (as [`crate::app::RowKey`]s) on every page.
+    Overlay(bool),
     /// A kit's engine view, built again after an edit on the Sample page,
     /// for the audio thread to swap in (it sends the old one back).
     SampleView(Box<ViewSwap>),
@@ -912,6 +965,10 @@ pub struct Player {
     typing: Option<Typing>,
     /// A finger on Play's BPM: which, how long (s) and where it landed.
     tempo_press: Option<(u64, f32, i32, i32)>,
+    /// The undo history is open over a page.
+    history: Option<HistoryOpen>,
+    /// UNDO is held, and for how long (s).
+    undo_held: Option<f32>,
     seen_loop: (usize, usize, usize),
     /// The Synth tab's and the mixer's turns can be undone (the audio
     /// thread keeps them), and what the UNDO light was last told.
@@ -956,6 +1013,7 @@ impl Player {
         ui.add("options", OptionList::new("Options"));
         ui.add("help", Card::new("About this setting"));
         ui.add(NUMPAD, mpfree_ui::numpad::NumPad::default());
+        ui.add(HISTORY, mpfree_ui::history::HistoryPanel::default());
         ui.add("guide", Card::new("Button guide"));
         ui.add("found", StatList::new("Buttons"));
         // The hint line starts where the panels do (the mockups).
@@ -984,6 +1042,8 @@ impl Player {
         ui.add_page("Guide", GUIDE_LAYOUT).expect("guide layout");
         ui.add_page(NUMPAD_PAGE, NUMPAD_LAYOUT)
             .expect("number pad layout");
+        ui.add_page(HISTORY_PAGE, HISTORY_LAYOUT)
+            .expect("undo history layout");
         ui.add_page("System info", SYSTEM_LAYOUT)
             .expect("system info layout");
         let patterns = crate::app::built_in_patterns();
@@ -1058,6 +1118,8 @@ impl Player {
             seen_takes: (0, 0),
             typing: None,
             tempo_press: None,
+            history: None,
+            undo_held: None,
             seen_loop: (0, 0, 0),
             turns_ready: (false, false),
             undo_ready: false,
@@ -1842,6 +1904,8 @@ impl Player {
         };
         let text = if self.typing.is_some() {
             NUMPAD_HINT.to_string()
+        } else if self.history.is_some() {
+            HISTORY_HINT.to_string()
         } else if self.status.shift
             && self.ready
             && matches!(self.view, View::Prefs | View::Options)
@@ -2126,29 +2190,23 @@ impl Player {
     /// last. Other pages say they have nothing to undo.
     fn undo(&mut self, redo: bool) {
         use mpfree_looper::Command;
-        let looper = FromUi::LoopCommand(if redo { Command::Redo } else { Command::Undo });
-        let takes = FromUi::Time(if redo {
-            TimeAction::Redo
-        } else {
-            TimeAction::Undo
-        });
-        let to = match self.view {
-            View::Play => match self.play.view {
-                PlayView::Loop => looper,
-                PlayView::Beats => takes,
-                PlayView::All if self.undo_loop => looper,
-                PlayView::All => takes,
-            },
-            View::Arrange | View::Arp | View::Pattern => takes,
-            View::Synth => FromUi::UndoOn {
-                on: UndoOn::Synth,
-                redo,
-            },
-            View::Mixer => FromUi::UndoOn {
-                on: UndoOn::Mixer,
-                redo,
-            },
-            _ => {
+        let to = match self.undo_source() {
+            Some(HistoryOf::Loop) => {
+                FromUi::LoopCommand(if redo { Command::Redo } else { Command::Undo })
+            }
+            Some(HistoryOf::Takes) => FromUi::Time(if redo {
+                TimeAction::Redo
+            } else {
+                TimeAction::Undo
+            }),
+            Some(HistoryOf::Turns(on)) => FromUi::UndoOn { on, redo },
+            Some(HistoryOf::Sample) => {
+                let before = self.sample.page();
+                self.sample.undo(&mut self.ui, redo);
+                self.sample_after(before);
+                return;
+            }
+            None => {
                 self.tell(if redo {
                     "Nothing to redo on this page"
                 } else {
@@ -2158,6 +2216,182 @@ impl Player {
             }
         };
         self.outbox.push(to);
+        // The app's histories: the list, when open, asks again at once.
+        if let Some(h) = self.history.as_mut() {
+            h.ask_in = 0.0;
+        }
+    }
+
+    /// Whose history UNDO follows on the page showing: the loop on Play's
+    /// Loop view and the Looper tab, the takes on Beats, Arrange and the
+    /// Arp and pattern screens, on All whichever of the two changed last,
+    /// the kit's edits on the Sample and Pads tabs, and the turns on the
+    /// Synth tab and the mixer. None elsewhere.
+    fn undo_source(&self) -> Option<HistoryOf> {
+        Some(match self.view {
+            View::Play => match self.play.view {
+                PlayView::Loop => HistoryOf::Loop,
+                PlayView::Beats => HistoryOf::Takes,
+                PlayView::All if self.undo_loop => HistoryOf::Loop,
+                PlayView::All => HistoryOf::Takes,
+            },
+            View::Arrange | View::Arp | View::Pattern => HistoryOf::Takes,
+            View::Looper => HistoryOf::Loop,
+            View::Sample | View::Pads => HistoryOf::Sample,
+            View::Synth => HistoryOf::Turns(UndoOn::Synth),
+            View::Mixer => HistoryOf::Turns(UndoOn::Mixer),
+            _ => return None,
+        })
+    }
+
+    /// Opens the undo history of the page showing (UNDO held for
+    /// [`UNDO_HOLD`]); on a page without one it says so.
+    fn open_history(&mut self) {
+        let Some(of) = self.undo_source() else {
+            self.tell("Nothing to undo on this page");
+            return;
+        };
+        if self.history.is_some() {
+            return;
+        }
+        self.close_numpad();
+        let back = self.ui.page().to_string();
+        if let Some(p) = self.ui.get_mut::<mpfree_ui::history::HistoryPanel>(HISTORY) {
+            p.clear();
+        }
+        if self.ui.show(HISTORY_PAGE).is_ok() {
+            self.history = Some(HistoryOpen {
+                of,
+                back,
+                ask_in: 0.0,
+            });
+            self.outbox.push(FromUi::Overlay(true));
+            self.refresh_history();
+            self.refresh_hint();
+        }
+    }
+
+    /// Closes the undo history and shows the page it was opened over.
+    fn close_history(&mut self) {
+        let Some(h) = self.history.take() else {
+            return;
+        };
+        if let Some(p) = self.ui.get_mut::<mpfree_ui::history::HistoryPanel>(HISTORY) {
+            p.clear();
+        }
+        let _ = self.ui.show(&h.back);
+        self.outbox.push(FromUi::Overlay(false));
+        self.refresh_hint();
+    }
+
+    /// The open list follows its history: the screen's own (the loop, the
+    /// takes, the kit's edits) as they stand, the app's (the turns) asked
+    /// for every [`HISTORY_ASK`] and on each change made here.
+    fn refresh_history(&mut self) {
+        let Some(h) = self.history.as_mut() else {
+            return;
+        };
+        let of = h.of;
+        if let HistoryOf::Turns(on) = of {
+            if h.ask_in <= 0.0 {
+                h.ask_in = HISTORY_ASK;
+                self.outbox.push(FromUi::UndoHistory(on));
+            }
+            return;
+        }
+        let Some((title, rows, now)) = self.history_rows(of) else {
+            return;
+        };
+        self.show_history(&title, rows, now);
+    }
+
+    /// Puts `rows` in the list when they are not what it shows.
+    fn show_history(&mut self, title: &str, rows: Vec<String>, now: usize) {
+        let Some(p) = self.ui.get::<mpfree_ui::history::HistoryPanel>(HISTORY) else {
+            return;
+        };
+        if p.title == title && p.rows == rows && p.now == now {
+            return;
+        }
+        if let Some(p) = self.ui.get_mut::<mpfree_ui::history::HistoryPanel>(HISTORY) {
+            p.set(title, rows, now);
+        }
+    }
+
+    /// The screen's own histories as the list shows them: its title, its
+    /// rows ("Start", the steps UNDO takes back, oldest first, then REDO's)
+    /// and the row that is now.
+    fn history_rows(&self, of: HistoryOf) -> Option<(String, Vec<String>, usize)> {
+        let title = |what: &str| format!("Undo history · {what}");
+        match of {
+            HistoryOf::Loop => {
+                let (name, h) = self.looper_page.history_rows();
+                Some((title(&name), h.rows, h.now))
+            }
+            HistoryOf::Takes => {
+                let st = &self.time;
+                let name =
+                    |r: &mpfree_time_ui::view::TakeRow| mpfree_time_ui::view::take_title(st, r);
+                let mut rows = vec!["Start: before these takes".to_string()];
+                rows.extend(st.done.iter().map(name));
+                let now = rows.len() - 1;
+                rows.extend(st.undone.iter().rev().map(name));
+                Some((title("Takes"), rows, now))
+            }
+            HistoryOf::Sample => {
+                let (kit, rows, now) = self.sample.history_rows()?;
+                Some((title(&kit), rows, now))
+            }
+            HistoryOf::Turns(_) => None,
+        }
+    }
+
+    /// A row of the undo history picked (a tap, or the wheel's push): back
+    /// or forward to just after that step, as many steps as it takes.
+    fn history_jump(&mut self, row: usize) {
+        let Some(h) = self.history.as_ref() else {
+            return;
+        };
+        let of = h.of;
+        let Some(p) = self.ui.get::<mpfree_ui::history::HistoryPanel>(HISTORY) else {
+            return;
+        };
+        if row >= p.rows.len() {
+            return;
+        }
+        let steps = row as i32 - p.now as i32;
+        if steps == 0 {
+            return;
+        }
+        let redo = steps > 0;
+        let n = steps.unsigned_abs() as usize;
+        match of {
+            HistoryOf::Loop => self.outbox.push(FromUi::LoopSteps(steps)),
+            HistoryOf::Takes => {
+                let a = if redo {
+                    TimeAction::Redo
+                } else {
+                    TimeAction::Undo
+                };
+                self.outbox.extend((0..n).map(|_| FromUi::Time(a)));
+            }
+            HistoryOf::Sample => {
+                let before = self.sample.page();
+                for _ in 0..n {
+                    self.sample.undo(&mut self.ui, redo);
+                }
+                self.sample_after(before);
+                self.print_sample_lines();
+            }
+            HistoryOf::Turns(on) => {
+                self.outbox
+                    .extend((0..n).map(|_| FromUi::UndoOn { on, redo }));
+                if let Some(h) = self.history.as_mut() {
+                    h.ask_in = 0.0;
+                }
+            }
+        }
+        self.refresh_history();
     }
 
     /// REC (or OVERDUB, `overdub`) on the Play page (Jay, 13 Nov 14:37Z):
@@ -2181,21 +2415,13 @@ impl Player {
     /// [`Self::undo`] picks the history (the Looper tab and the Sample and
     /// Pads tabs too, whose UNDO the app sends straight on).
     fn undo_ready(&self) -> bool {
-        let takes = !self.time.done.is_empty();
-        let looper = !self.looper.history.done().is_empty();
-        match self.view {
-            View::Play => match self.play.view {
-                PlayView::Loop => looper,
-                PlayView::Beats => takes,
-                PlayView::All if self.undo_loop => looper,
-                PlayView::All => takes,
-            },
-            View::Arrange | View::Arp | View::Pattern => takes,
-            View::Looper => looper,
-            View::Sample | View::Pads => self.sample.can_undo(),
-            View::Synth => self.turns_ready.0,
-            View::Mixer => self.turns_ready.1,
-            _ => false,
+        match self.undo_source() {
+            Some(HistoryOf::Loop) => !self.looper.history.done().is_empty(),
+            Some(HistoryOf::Takes) => !self.time.done.is_empty(),
+            Some(HistoryOf::Sample) => self.sample.can_undo(),
+            Some(HistoryOf::Turns(UndoOn::Synth)) => self.turns_ready.0,
+            Some(HistoryOf::Turns(UndoOn::Mixer)) => self.turns_ready.1,
+            None => false,
         }
     }
 
@@ -2212,6 +2438,7 @@ impl Player {
         }
         if self.ui.show(NUMPAD_PAGE).is_ok() {
             self.typing = Some(Typing { to, back });
+            self.outbox.push(FromUi::Overlay(true));
             self.refresh_hint();
         }
     }
@@ -2226,6 +2453,7 @@ impl Player {
             p.close();
         }
         let _ = self.ui.show(&t.back);
+        self.outbox.push(FromUi::Overlay(false));
         self.refresh_hint();
     }
 
@@ -2298,6 +2526,31 @@ impl Player {
                 self.close_numpad();
             }
         }
+        // The undo history takes them too: the wheel and - / + move its
+        // outline, the push goes to the step outlined.
+        if self.history.is_some() {
+            use crate::app::RowKey;
+            match &msg {
+                ToUi::SampleWheel(d) | ToUi::Rows(RowKey::Pick(d) | RowKey::Step(d)) => {
+                    if let Some(p) = self.ui.get_mut::<mpfree_ui::history::HistoryPanel>(HISTORY) {
+                        p.wheel(*d);
+                    }
+                    return;
+                }
+                ToUi::Rows(RowKey::Editing(_)) => {
+                    let picked = self
+                        .ui
+                        .get::<mpfree_ui::history::HistoryPanel>(HISTORY)
+                        .map(|p| p.picked);
+                    if let Some(row) = picked {
+                        self.history_jump(row);
+                    }
+                    return;
+                }
+                ToUi::Show(_) | ToUi::PlayView(_) => self.close_history(),
+                _ => {}
+            }
+        }
         // The engines' news of an edit made with the controls (a clip
         // recorded, a knob turned): the work is unsaved.
         if matches!(
@@ -2314,6 +2567,22 @@ impl Player {
         match msg {
             ToUi::Tell(l) => self.tell(&l),
             ToUi::Undo(redo) => self.undo(redo),
+            ToUi::UndoButton(down) => {
+                self.undo_held = (down && self.typing.is_none()).then_some(0.0);
+            }
+            ToUi::UndoHistory { on, rows, now } => {
+                if self
+                    .history
+                    .as_ref()
+                    .is_some_and(|h| h.of == HistoryOf::Turns(on))
+                {
+                    let title = match on {
+                        UndoOn::Synth => "Undo history · Synth sound",
+                        UndoOn::Mixer => "Undo history · Mixer",
+                    };
+                    self.show_history(title, rows, now);
+                }
+            }
             ToUi::PlayRec(overdub) => self.play_rec(overdub),
             ToUi::TurnsReady { synth, mixer } => self.turns_ready = (synth, mixer),
             ToUi::Line(l) | ToUi::Event(l) => {
@@ -4268,6 +4537,15 @@ impl Player {
                 None
             }
             (NUMPAD, _) => None,
+            (HISTORY, EventKind::Select(row)) => {
+                self.history_jump(row);
+                None
+            }
+            (HISTORY, EventKind::Tab(mpfree_ui::history::TAB_CLOSE)) => {
+                self.close_history();
+                None
+            }
+            (HISTORY, _) => None,
             (play_page::TRANSPORT, EventKind::Tab(i)) => {
                 self.show_play_view(PlayView::from_index(i));
                 None
@@ -4443,6 +4721,21 @@ impl Player {
 
     /// Advance animations by `dt` seconds.
     pub fn tick(&mut self, dt: f32) {
+        // UNDO held: the page's undo history.
+        if let Some(held) = self.undo_held {
+            let held = held + dt.max(0.0);
+            if held >= UNDO_HOLD {
+                self.undo_held = None;
+                self.open_history();
+            } else {
+                self.undo_held = Some(held);
+            }
+        }
+        // The undo history open: it follows its history.
+        if let Some(h) = self.history.as_mut() {
+            h.ask_in -= dt.max(0.0);
+            self.refresh_history();
+        }
         // A finger held on Play's BPM: type the tempo.
         if let Some((f, held, x, y)) = self.tempo_press {
             let held = held + dt.max(0.0);
@@ -5680,6 +5973,7 @@ pub fn apply_effects(p: &mut Player, fx: Vec<crate::app::Effect>) {
                 p.apply(ToUi::Tell(l));
             }
             Effect::Undo { redo } => p.apply(ToUi::Undo(redo)),
+            Effect::UndoButton(down) => p.apply(ToUi::UndoButton(down)),
             Effect::PlayRec { overdub } => p.apply(ToUi::PlayRec(overdub)),
             Effect::ClipsWheel { delta, scroll } => p.apply(ToUi::ClipsWheel { delta, scroll }),
             Effect::Map(m) => p.apply(ToUi::Map(Box::new(m))),
@@ -6200,6 +6494,34 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         n.typed = "98.5".to_string();
     }
     out.push(("numpad-tempo", typing));
+    // UNDO held on Play's Beats view: the takes' history, two undone, the
+    // wheel's outline one step back from now.
+    let mut undo = sample_player(fonts());
+    undo.apply(ToUi::Show(View::Play));
+    undo.apply(ToUi::PlayView(Some(PlayView::Beats)));
+    let mut st = undo.time.clone();
+    let take = |n: u32, track: usize, captured: bool, edited: bool| mpfree_time_ui::view::TakeRow {
+        number: n,
+        captured,
+        edited,
+        made: n == 1,
+        at: Some((track, 0)),
+        added: 4 + n as usize,
+        erased: usize::from(edited),
+        deleted: false,
+    };
+    st.done = vec![
+        take(1, 0, false, false),
+        take(2, 0, false, true),
+        take(3, 1, true, false),
+        take(4, 0, false, true),
+    ];
+    st.undone = vec![take(6, 1, false, false), take(5, 0, false, true)];
+    undo.apply(ToUi::Time(Box::new(st)));
+    undo.apply(ToUi::UndoButton(true));
+    undo.tick(UNDO_HOLD);
+    undo.apply(ToUi::Rows(crate::app::RowKey::Pick(-1)));
+    out.push(("undo-history", undo));
     // Prefs with the Appearance row selected, stepped to Synthwave.
     let mut look = sample_player(fonts());
     let mut l = crate::app::App::new(44_100, false);
@@ -7565,6 +7887,170 @@ mod tests {
         assert!(hint(&p).contains("16 steps is the fewest"), "{}", hint(&p));
     }
 
+    /// Jay after live test 3: hold UNDO to see the page's history and
+    /// jump back several steps at once.
+    #[test]
+    fn holding_undo_opens_the_pages_history_and_a_tap_jumps_several_steps() {
+        use crate::app::RowKey;
+        use mpfree_time_ui::view::TakeRow;
+        use mpfree_ui::history::HistoryPanel;
+        let mut p = sample_play(Fonts::embedded(), PlayView::Beats);
+        let take = |n: u32| TakeRow {
+            number: n,
+            captured: false,
+            edited: true,
+            made: false,
+            at: Some((0, 0)),
+            added: 1,
+            erased: 0,
+            deleted: false,
+        };
+        let mut st = p.time.clone();
+        st.done = vec![take(1), take(2), take(3)];
+        st.undone = vec![take(5), take(4)];
+        p.apply(ToUi::Time(Box::new(st)));
+        p.take_actions();
+        // A quick press only undoes (the app sent that already).
+        p.apply(ToUi::UndoButton(true));
+        p.tick(0.3);
+        p.apply(ToUi::UndoButton(false));
+        p.tick(1.0);
+        assert_ne!(p.page(), HISTORY_PAGE);
+        // Held: the takes' history, now after take 3, redo's next first.
+        let beats = p.page().to_string();
+        p.apply(ToUi::UndoButton(true));
+        p.tick(0.3);
+        p.tick(0.4);
+        assert_eq!(p.page(), HISTORY_PAGE);
+        assert!(p.take_actions().contains(&FromUi::Overlay(true)));
+        assert!(p
+            .ui
+            .get::<Label>("hint")
+            .unwrap()
+            .text
+            .starts_with("Tap a step"));
+        p.apply(ToUi::UndoButton(false));
+        let panel = |p: &Player| {
+            let h = p.ui.get::<HistoryPanel>(HISTORY).unwrap();
+            (h.title.clone(), h.rows.len(), h.now)
+        };
+        assert_eq!(panel(&p), ("Undo history · Takes".to_string(), 6, 3));
+        let rows = p.ui.get::<HistoryPanel>(HISTORY).unwrap().rows.clone();
+        assert_eq!(rows[0], "Start: before these takes");
+        assert!(rows[3].starts_with("Edit 3") && rows[4].starts_with("Edit 4"));
+        // A tap on take 1: two takes undone at once.
+        p.ui.paint(&mut SoftCanvas::new(SCREEN.0, SCREEN.1));
+        let r = p.ui.rect_of(HISTORY).unwrap();
+        let tap = |p: &mut Player, (x, y): (i32, i32)| {
+            p.touch(5, Touch::Down, x, y);
+            p.touch(5, Touch::Up, x, y);
+            p.take_actions()
+        };
+        let at = |p: &Player, k: usize| {
+            let (_, rr) =
+                p.ui.get::<HistoryPanel>(HISTORY)
+                    .unwrap()
+                    .row_rects(r)
+                    .into_iter()
+                    .find(|(i, _)| *i == k)
+                    .unwrap();
+            (rr.x + rr.w / 2, rr.y + rr.h / 2)
+        };
+        let undo = || FromUi::Time(TimeAction::Undo);
+        let redo = || FromUi::Time(TimeAction::Redo);
+        let at1 = at(&p, 1);
+        let acts = tap(&mut p, at1);
+        assert_eq!(acts, [undo(), undo()]);
+        // The wheel outlines a row and its push goes there: forward to 5.
+        p.apply(ToUi::Rows(RowKey::Pick(2)));
+        p.apply(ToUi::Rows(RowKey::Step(-1)));
+        p.apply(ToUi::Rows(RowKey::Pick(3)));
+        p.apply(ToUi::Rows(RowKey::Editing(true)));
+        assert_eq!(p.take_actions(), [redo(), redo()]);
+        // Close goes back to the page it was opened over.
+        let c = HistoryPanel::close_rect(r);
+        tap(&mut p, (c.x + 10, c.y + 10));
+        assert_eq!(p.page(), beats);
+        // The mixer: the app keeps its turns, so the list asks for them.
+        p.apply(ToUi::Show(View::Mixer));
+        p.take_actions();
+        p.apply(ToUi::UndoButton(true));
+        p.tick(0.7);
+        assert!(p
+            .take_actions()
+            .contains(&FromUi::UndoHistory(UndoOn::Mixer)));
+        p.apply(ToUi::UndoHistory {
+            on: UndoOn::Mixer,
+            rows: vec![
+                "Start".into(),
+                "Drums Volume to -6.0 dB".into(),
+                "Bass Pan to L 20".into(),
+            ],
+            now: 2,
+        });
+        assert_eq!(panel(&p), ("Undo history · Mixer".to_string(), 3, 2));
+        let at0 = at(&p, 0);
+        let acts = tap(&mut p, at0);
+        let back = || FromUi::UndoOn {
+            on: UndoOn::Mixer,
+            redo: false,
+        };
+        assert_eq!(acts, [back(), back(), FromUi::UndoHistory(UndoOn::Mixer)]);
+        // Another page closes the list.
+        p.apply(ToUi::Show(View::Play));
+        assert_ne!(p.page(), HISTORY_PAGE);
+        assert!(p.take_actions().contains(&FromUi::Overlay(false)));
+        // A page with no history says so and opens nothing.
+        p.apply(ToUi::Show(View::Prefs));
+        p.apply(ToUi::UndoButton(true));
+        p.tick(0.7);
+        assert_ne!(p.page(), HISTORY_PAGE);
+        assert_eq!(
+            p.ui.get::<Label>("hint").unwrap().text,
+            "Nothing to undo on this page"
+        );
+    }
+
+    /// The Sample tab's list: the kit's edits, named by their pads; a tap
+    /// on Start takes them all back.
+    #[test]
+    fn the_sample_tabs_history_lists_the_kits_edits() {
+        use mpfree_sampler_ui::wave_tab::{Row, REGION};
+        use mpfree_ui::history::HistoryPanel;
+        let mut p = sample_sampler(Fonts::embedded());
+        let row = |r: Row| Row::ALL.iter().position(|k| *k == r).unwrap();
+        let warp = |p: &mut Player, delta: i32| {
+            p.on_event(UiEvent {
+                widget: REGION.into(),
+                kind: EventKind::Step {
+                    index: row(Row::Warp),
+                    delta,
+                },
+            });
+            p.apply(ToUi::SampleLift);
+        };
+        let warped = |p: &Player| p.sample.state().unwrap().region.warp.is_some();
+        assert!(!warped(&p));
+        warp(&mut p, 1);
+        assert!(warped(&p));
+        p.apply(ToUi::UndoButton(true));
+        p.tick(0.7);
+        assert_eq!(p.page(), HISTORY_PAGE);
+        let h = p.ui.get::<HistoryPanel>(HISTORY).unwrap();
+        assert!(h.title.starts_with("Undo history · Kit 1"), "{}", h.title);
+        assert_eq!(h.rows.len(), 2);
+        assert!(h.rows[1].starts_with("Pad A"), "{:?}", h.rows);
+        assert_eq!(h.now, 1);
+        // The wheel's push on Start: the edit is taken back, the list
+        // follows (now on Start, the edit to redo).
+        p.apply(ToUi::Rows(crate::app::RowKey::Pick(-5)));
+        p.apply(ToUi::Rows(crate::app::RowKey::Editing(true)));
+        assert!(!warped(&p));
+        p.tick(0.0);
+        let h = p.ui.get::<HistoryPanel>(HISTORY).unwrap();
+        assert_eq!((h.rows.len(), h.now), (2, 0));
+    }
+
     #[test]
     fn undo_follows_the_page_and_the_play_view() {
         use mpfree_time_ui::view::TakeRow;
@@ -8443,6 +8929,8 @@ mod tests {
         p.tick(0.4);
         p.tick(0.3);
         assert_eq!(p.page(), NUMPAD_PAGE);
+        // The app hands it the wheel and - / + (on Play they pick kits).
+        assert!(p.take_actions().contains(&FromUi::Overlay(true)));
         p.touch(2, Touch::Up, x, y);
         let r = p.ui.rect_of(NUMPAD).unwrap();
         let tap = |p: &mut Player, k: usize| {

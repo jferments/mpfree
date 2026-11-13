@@ -30,6 +30,7 @@ pub mod draw;
 pub mod fb;
 pub mod geom;
 pub mod gpu_screen;
+pub mod history;
 pub mod layout;
 pub mod numpad;
 pub mod png;

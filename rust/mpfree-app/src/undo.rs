@@ -97,6 +97,17 @@ impl<K: Copy + PartialEq> Turns<K> {
     pub fn done(&self) -> &[Turn<K>] {
         &self.done
     }
+
+    /// The history as the list that holding UNDO opens shows it: `start`,
+    /// each turn UNDO takes back, oldest first, then REDO's, the next one
+    /// first, each named by `name`; and the row that is now.
+    pub fn rows(&self, start: &str, name: impl Fn(&Turn<K>) -> String) -> (Vec<String>, usize) {
+        let mut rows = vec![start.to_string()];
+        rows.extend(self.done.iter().map(&name));
+        let now = rows.len() - 1;
+        rows.extend(self.undone.iter().rev().map(&name));
+        (rows, now)
+    }
 }
 
 #[cfg(test)]
@@ -135,6 +146,24 @@ mod tests {
         assert_eq!(h.done().iter().map(|t| t.key).collect::<Vec<_>>(), [1, 3]);
         h.clear();
         assert!(h.done().is_empty() && h.undo().is_none());
+    }
+
+    #[test]
+    fn the_rows_list_start_the_turns_then_redo_next_first() {
+        let t0 = Instant::now();
+        let at = |s: u64| t0 + Duration::from_secs(s);
+        let mut h = Turns::default();
+        for k in 1..=4u16 {
+            h.turned(k, 0.0, 1.0, at(k as u64 * 10));
+        }
+        h.undo();
+        h.undo();
+        let (rows, now) = h.rows("Start", |t| format!("knob {}", t.key));
+        assert_eq!(rows, ["Start", "knob 1", "knob 2", "knob 3", "knob 4"]);
+        assert_eq!(now, 2);
+        // Redo's rows come next one first: after a redo, now moves on.
+        h.redo();
+        assert_eq!(h.rows("Start", |t| format!("knob {}", t.key)).1, 3);
     }
 
     #[test]
