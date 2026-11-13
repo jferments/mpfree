@@ -13,7 +13,13 @@
 //! - an audio lane's header: its arm dot `Toggle(audio track)`, its name
 //!   or input chip `Cell { row: audio track, col: PANEL }` (on the lift,
 //!   unless the finger dragged to scroll);
-//! - "+ Audio", the last lane: `Tab(ADD_AUDIO)`.
+//! - "+ Audio", the last lane: `Tab(ADD_AUDIO)`;
+//! - the track panel, while one is open ([`SongLanes::panel`]): Close
+//!   `Tab(PANEL_CLOSE)`, Arm `Toggle(audio track)`, Mute, Solo and Takes
+//!   `Tab(PANEL_MUTE)` and so on, an input `Tab(PANEL_INPUT + k)` for
+//!   [`INPUTS`]`[k]`, a monitor mode `Tab(PANEL_MONITOR + k)` for
+//!   [`MONITORS`]`[k]`, and the level's and pan's steps `Step { index:
+//!   PANEL_LEVEL or PANEL_PAN, delta: -1 or 1 }`.
 //!
 //! A drag up or down the name column scrolls the lanes when there are more
 //! than fit ([`MIN_LANE`] pixels each at least). The scroll is the
@@ -27,10 +33,17 @@
 //! fades as slopes. While a track records, a red block grows from its
 //! punch in to the playhead. The header has the name, an arm dot, the
 //! input chip and a 3 px level bar along its bottom edge.
+//!
+//! **The track panel** (layout spec 4c) opens over the lanes, right of the
+//! names, for the track in [`SongLanes::panel`]: Arm, Mute, Solo and
+//! Takes, the input (L, R, L+R, ST), the monitor mode (Auto, In, Off), and
+//! the level and pan with a step either way (Q1 and Q2 turn them too). It
+//! covers the top lanes, so the audio lanes under the MIDI ones stay in
+//! view; touches on it go to it alone.
 
 use crate::widgets::{rec_song_pill, REC_SONG_W};
 use mpfree_audiotracks::host::TakeWave;
-use mpfree_audiotracks::{frames_from, Region, TakeInfo};
+use mpfree_audiotracks::{frames_from, Input, Monitor, Region, TakeInfo};
 use mpfree_transport::time::{TempoMap, Tick};
 use mpfree_ui::{Align, Color, EventKind, FontId, PaintCx, Rect, Target, Touch, Widget};
 
@@ -54,6 +67,37 @@ pub const REC: usize = SONG_BUTTONS.len();
 pub const ADD_AUDIO: usize = REC + 1;
 /// The `col` of a `Cell` for a tap on an audio lane's name or input chip.
 pub const PANEL: usize = usize::MAX;
+/// The track panel's Close, Mute, Solo and Takes, as Tab reports them.
+pub const PANEL_CLOSE: usize = ADD_AUDIO + 1;
+pub const PANEL_MUTE: usize = PANEL_CLOSE + 1;
+pub const PANEL_SOLO: usize = PANEL_CLOSE + 2;
+pub const PANEL_TAKES: usize = PANEL_CLOSE + 3;
+/// The panel's inputs: `Tab(PANEL_INPUT + k)` for [`INPUTS`]`[k]`.
+pub const PANEL_INPUT: usize = PANEL_CLOSE + 4;
+/// The panel's monitor modes: `Tab(PANEL_MONITOR + k)` for
+/// [`MONITORS`]`[k]`.
+pub const PANEL_MONITOR: usize = PANEL_INPUT + INPUTS.len();
+/// The `index` of the panel's level and pan steps.
+pub const PANEL_LEVEL: usize = 0;
+pub const PANEL_PAN: usize = 1;
+/// What a track can record from, as the header's chip and the panel name
+/// them.
+pub const INPUTS: [(&str, Input); 4] = [
+    ("L", Input::Left),
+    ("R", Input::Right),
+    ("L+R", Input::Sum),
+    ("ST", Input::Stereo),
+];
+/// When a track hears its input, as the panel names it.
+pub const MONITORS: [(&str, Monitor); 3] = [
+    ("Auto", Monitor::Auto),
+    ("In", Monitor::In),
+    ("Off", Monitor::Off),
+];
+/// The chip for input `i`.
+pub fn input_chip(i: Input) -> &'static str {
+    INPUTS.iter().find(|x| x.1 == i).map_or("", |x| x.0)
+}
 /// Audio tracks at most (`mpfree_audiotracks::MAX_TRACKS`).
 pub const MAX_AUDIO: usize = mpfree_audiotracks::MAX_TRACKS;
 /// A lane is never thinner than this: past it the lanes scroll.
@@ -85,6 +129,8 @@ pub struct AudioBlock {
     /// along the tempo map: the waveform under the block.
     pub src: i64,
     pub frames: f64,
+    /// Its level, 0 to 4 (1 is as recorded).
+    pub gain: f32,
     /// Its fades, in frames.
     pub fade_in: u32,
     pub fade_out: u32,
@@ -98,10 +144,19 @@ pub struct AudioLane {
     pub name: String,
     pub color: Color,
     pub armed: bool,
-    /// The input chip: "L", "R", "L+R" or "ST".
-    pub input: String,
+    /// What it records from: the input chip, "L", "R", "L+R" or "ST".
+    pub input: Input,
     /// The level bar along the header's bottom edge, 0 to 1.
     pub level: f32,
+    /// The track's level, 0 to 2 (1 is as recorded), and its balance, -1
+    /// (left) to 1 (right): what Q1 and Q2 turn with a region picked.
+    pub volume: f32,
+    pub pan: f32,
+    /// When it hears its input, and whether it is muted or soloed: for
+    /// the panel.
+    pub monitor: Monitor,
+    pub mute: bool,
+    pub solo: bool,
     /// Its regions, in order (`AudioTracks::regions`).
     pub blocks: Vec<AudioBlock>,
     /// Recording: the punch in (the take's anchor). The red block runs
@@ -138,6 +193,8 @@ pub struct SongLanes {
     pub waves: Vec<TakeWave>,
     /// The picked audio region: (audio track, region index).
     pub region: Option<(usize, usize)>,
+    /// The audio track whose panel is open over the lanes.
+    pub panel: Option<usize>,
     /// The first lane shown (MIDI lanes, then audio lanes, then "+ Audio").
     pub first_lane: usize,
     /// A finger on the name column: where it went down, the first lane
@@ -152,6 +209,31 @@ const LANE_MAX: i32 = 56;
 const GAP: i32 = 6;
 /// Pixels a finger moves on the name column before it scrolls.
 const DRAG_SLOP: i32 = 8;
+/// The track panel's size at most, its rows' height and its labels'
+/// width.
+const PANEL_W: i32 = 560;
+const PANEL_H: i32 = 176;
+const PANEL_ROW: i32 = 36;
+const PANEL_LABEL: i32 = 52;
+
+/// Where the track panel's controls are: see [`SongLanes::panel_parts`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PanelParts {
+    /// The audio track it is for.
+    pub track: usize,
+    pub panel: Rect,
+    pub close: Rect,
+    pub arm: Rect,
+    pub mute: Rect,
+    pub solo: Rect,
+    pub takes: Rect,
+    /// A button for each of [`INPUTS`] and [`MONITORS`].
+    pub inputs: [Rect; 4],
+    pub monitors: [Rect; 3],
+    /// The level's and the pan's step down, value and step up.
+    pub level: [Rect; 3],
+    pub pan: [Rect; 3],
+}
 
 impl Default for SongLanes {
     fn default() -> SongLanes {
@@ -172,6 +254,7 @@ impl Default for SongLanes {
             audio: Vec::new(),
             waves: Vec::new(),
             region: None,
+            panel: None,
             first_lane: 0,
             drag: None,
         }
@@ -247,6 +330,7 @@ pub fn audio_blocks(
                 },
                 src: r.src,
                 frames: frames_from(map, r.start as f64, r.end as f64, rate),
+                gain: r.gain,
                 fade_in: r.fade_in,
                 fade_out: r.fade_out,
             }
@@ -286,6 +370,7 @@ impl SongLanes {
             audio: self.audio.clone(),
             waves,
             region: self.region,
+            panel: self.panel,
             first_lane: self.first_lane,
             drag: self.drag,
         }
@@ -433,6 +518,217 @@ impl SongLanes {
         out
     }
 
+    /// The track panel's parts, while one is open: over the lanes, right
+    /// of the names, from the top.
+    pub fn panel_parts(&self, r: Rect) -> Option<PanelParts> {
+        let track = self
+            .panel
+            .filter(|&t| self.audio.iter().any(|l| l.track == t))?;
+        let g = self.geo(r);
+        let w = (g.lanes.w - NAME_W).min(PANEL_W);
+        let h = (g.lanes.h - 4).min(PANEL_H);
+        // Under the track's lane if it fits, else over it, so the lane
+        // stays in view; else on the side with more room, and at the top
+        // if the lane is scrolled away.
+        let a = self.audio.iter().position(|l| l.track == track)?;
+        let (top, bottom) = (g.lanes.y + 2, g.lanes.bottom() - 2);
+        let y = match self.lane_rect(&g, self.tracks.len() + a) {
+            Some(row) if row.bottom() + 2 + h <= bottom => row.bottom() + 2,
+            Some(row) if row.y - 2 - h >= top => row.y - 2 - h,
+            Some(row) if bottom - row.bottom() >= row.y - top => bottom - h,
+            _ => top,
+        };
+        let panel = Rect::new(g.lanes.x + NAME_W, y, w, h);
+        let inner = panel.inset(12);
+        let row = |k: i32| inner.y + 32 + k * (PANEL_ROW + 6);
+        let at = |x: i32, k: i32, w: i32| Rect::new(x, row(k), w, PANEL_ROW);
+        let close = Rect::new(inner.right() - 72, inner.y - 2, 72, 28);
+        let x1 = inner.x + PANEL_LABEL;
+        let arm = at(inner.x, 0, 104);
+        let mute = at(arm.right() + 8, 0, 72);
+        let solo = at(mute.right() + 8, 0, 72);
+        let takes = at(inner.right() - 90, 0, 90);
+        let inputs: [Rect; 4] = std::array::from_fn(|k| at(x1 + k as i32 * 52, 1, 48));
+        let mx = inputs[3].right() + 20 + PANEL_LABEL + 14;
+        let monitors = std::array::from_fn(|k| at(mx + k as i32 * 60, 1, 56));
+        let level = [at(x1, 2, 36), at(x1 + 40, 2, 84), at(x1 + 128, 2, 36)];
+        let px = level[2].right() + 30 + 20 + 40;
+        let pan = [at(px, 2, 36), at(px + 40, 2, 64), at(px + 108, 2, 36)];
+        Some(PanelParts {
+            track,
+            panel,
+            close,
+            arm,
+            mute,
+            solo,
+            takes,
+            inputs,
+            monitors,
+            level,
+            pan,
+        })
+    }
+
+    /// The track panel: its name, Close, then a row a control.
+    fn paint_panel(&self, cx: &mut PaintCx, p: &PanelParts) {
+        let t = cx.theme.clone();
+        let Some(lane) = self.audio.iter().find(|l| l.track == p.track) else {
+            return;
+        };
+        // A shadow under it, so it lifts off the lanes.
+        let shadow = Rect::new(p.panel.x + 2, p.panel.y + 4, p.panel.w, p.panel.h);
+        cx.canvas.fill_round_rect(shadow, 12, t.bg);
+        let old = cx.canvas.clip();
+        cx.canvas.set_clip(old.intersect(p.panel));
+        cx.canvas
+            .fill_round_rect(p.panel, 12, t.surface.mix(t.raised, 0.35));
+        cx.canvas.stroke_round_rect(p.panel, 12, 1, t.outline);
+        let inner = p.panel.inset(12);
+        cx.canvas
+            .fill_round_rect(Rect::new(inner.x, inner.y + 4, 4, 18), 2, lane.color);
+        let state = if lane.recording.is_some() {
+            " · recording"
+        } else if lane.armed {
+            " · armed"
+        } else {
+            ""
+        };
+        cx.text(
+            FontId::Bold,
+            t.size_small,
+            Rect::new(inner.x + 12, inner.y - 2, p.close.x - inner.x - 16, 28),
+            Align::Left,
+            lane.color.mix(t.text, 0.25),
+            &format!("{}{state}", lane.name),
+        );
+        let button = |cx: &mut PaintCx, b: Rect, word: &str, on: bool, tone: Color| {
+            cx.canvas
+                .fill_round_rect(b, 8, if on { tone } else { t.raised });
+            let ink = if on { t.bg } else { t.text };
+            cx.text(
+                FontId::Bold,
+                t.size_small - 1.0,
+                b,
+                Align::Center,
+                ink,
+                word,
+            );
+        };
+        button(cx, p.close, "Close", false, t.accent);
+        button(
+            cx,
+            p.arm,
+            if lane.armed { "● Armed" } else { "○ Arm" },
+            lane.armed,
+            t.bad,
+        );
+        button(cx, p.mute, "Mute", lane.mute, t.warn);
+        button(cx, p.solo, "Solo", lane.solo, t.good);
+        button(cx, p.takes, "Takes", false, t.accent);
+        let label = |cx: &mut PaintCx, b: Rect, word: &str| {
+            cx.text(
+                FontId::Sans,
+                t.size_small - 1.0,
+                b,
+                Align::Left,
+                t.text_dim,
+                word,
+            );
+        };
+        let lab = |b: Rect| Rect::new(inner.x, b.y, PANEL_LABEL - 8, b.h);
+        label(cx, lab(p.inputs[0]), "Input");
+        for (k, b) in p.inputs.iter().enumerate() {
+            button(cx, *b, INPUTS[k].0, lane.input == INPUTS[k].1, t.accent);
+        }
+        let mon = p.monitors[0];
+        label(
+            cx,
+            Rect::new(mon.x - PANEL_LABEL - 14, mon.y, PANEL_LABEL + 12, mon.h),
+            "Monitor",
+        );
+        for (k, b) in p.monitors.iter().enumerate() {
+            button(
+                cx,
+                *b,
+                MONITORS[k].0,
+                lane.monitor == MONITORS[k].1,
+                t.accent,
+            );
+        }
+        label(cx, lab(p.level[0]), "Level");
+        let pan_label = Rect::new(p.pan[0].x - 40, p.pan[0].y, 36, p.pan[0].h);
+        label(cx, pan_label, "Pan");
+        let level = if lane.volume <= 0.0 {
+            "off".to_string()
+        } else {
+            format!("{:.1} dB", 20.0 * lane.volume.log10())
+        };
+        let pan_n = (lane.pan.abs() * 100.0).round() as i32;
+        let pan = match pan_n {
+            0 => "C".to_string(),
+            _ if lane.pan < 0.0 => format!("L{pan_n}"),
+            _ => format!("R{pan_n}"),
+        };
+        for (parts, value, q) in [(&p.level, level, "Q1"), (&p.pan, pan, "Q2")] {
+            button(cx, parts[0], "−", false, t.accent);
+            button(cx, parts[2], "+", false, t.accent);
+            cx.text(
+                FontId::Bold,
+                t.size_small,
+                parts[1],
+                Align::Center,
+                t.text,
+                &value,
+            );
+            cx.text(
+                FontId::Bold,
+                t.size_small - 3.0,
+                Rect::new(parts[2].right() + 6, parts[2].y, 28, parts[2].h),
+                Align::Left,
+                t.text_faint,
+                q,
+            );
+        }
+        cx.canvas.set_clip(old);
+    }
+
+    /// What a touch at (x, y) on the open panel asks for. Some(None) on
+    /// the panel's empty space: it takes the touch and asks for nothing.
+    fn panel_touch(&self, r: Rect, x: i32, y: i32) -> Option<Option<EventKind>> {
+        let p = self.panel_parts(r)?;
+        if !p.panel.contains(x, y) {
+            return None;
+        }
+        let hit = |b: &Rect| b.contains(x, y);
+        let tab = |k: usize| Some(EventKind::Tab(k));
+        let step = |index: usize, delta: i32| Some(EventKind::Step { index, delta });
+        Some(if hit(&p.close) {
+            tab(PANEL_CLOSE)
+        } else if hit(&p.arm) {
+            Some(EventKind::Toggle(p.track))
+        } else if hit(&p.mute) {
+            tab(PANEL_MUTE)
+        } else if hit(&p.solo) {
+            tab(PANEL_SOLO)
+        } else if hit(&p.takes) {
+            tab(PANEL_TAKES)
+        } else if let Some(k) = p.inputs.iter().position(hit) {
+            tab(PANEL_INPUT + k)
+        } else if let Some(k) = p.monitors.iter().position(hit) {
+            tab(PANEL_MONITOR + k)
+        } else if hit(&p.level[0]) {
+            step(PANEL_LEVEL, -1)
+        } else if hit(&p.level[2]) {
+            step(PANEL_LEVEL, 1)
+        } else if hit(&p.pan[0]) {
+            step(PANEL_PAN, -1)
+        } else if hit(&p.pan[2]) {
+            step(PANEL_PAN, 1)
+        } else {
+            None
+        })
+    }
+
     fn wave_of(&self, take: u16) -> Option<&TakeWave> {
         self.waves
             .iter()
@@ -530,18 +826,22 @@ impl SongLanes {
         } else {
             cx.canvas.stroke_round_rect(dot, 6, 2, t.text_dim);
         }
-        let chip_w = cx.measure(FontId::Bold, t.size_small - 3.0, &lane.input) + 10;
+        let word = input_chip(lane.input);
+        let chip_w = cx.measure(FontId::Bold, t.size_small - 3.0, word) + 10;
         let chip = Rect::new(h.right() - chip_w, h.y + h.h / 2 - 9, chip_w, 18);
-        if !lane.input.is_empty() {
-            cx.canvas.fill_round_rect(chip, 5, t.raised);
-            cx.text(
-                FontId::Bold,
-                t.size_small - 3.0,
-                chip,
-                Align::Center,
-                t.text_dim,
-                &lane.input,
-            );
+        cx.canvas.fill_round_rect(chip, 5, t.raised);
+        cx.text(
+            FontId::Bold,
+            t.size_small - 3.0,
+            chip,
+            Align::Center,
+            t.text_dim,
+            word,
+        );
+        if self.panel == Some(lane.track) {
+            // Its panel is open.
+            cx.canvas
+                .stroke_round_rect(h.inset_xy(-2, 1), 6, 1, t.accent);
         }
         cx.text(
             FontId::Bold,
@@ -735,6 +1035,9 @@ impl Widget for SongLanes {
                     .fill_rect(Rect::new(x, g.ruler.y, 2, g.lanes.bottom() - g.ruler.y), c);
             }
         }
+        if let Some(p) = self.panel_parts(r) {
+            self.paint_panel(cx, &p);
+        }
         let audio = self.region.is_some();
         let selected = self.selected.is_some();
         for (k, br) in self.button_rects(r).iter().enumerate() {
@@ -865,6 +1168,9 @@ impl Widget for SongLanes {
         if self.add_rect(r).is_some_and(|b| b.contains(x, y)) {
             return Some(EventKind::Tab(ADD_AUDIO));
         }
+        if let Some(asked) = self.panel_touch(r, x, y) {
+            return asked;
+        }
         if names.contains(x, y) {
             self.first_lane = self.first(&g);
             self.drag = Some((y, self.first_lane, false));
@@ -971,8 +1277,13 @@ mod tests {
             name: name.into(),
             color: Color::rgb(0x2EC4B6),
             armed: false,
-            input: "L".into(),
+            input: Input::Left,
             level: 0.5,
+            volume: 1.0,
+            pan: 0.0,
+            monitor: Monitor::Auto,
+            mute: false,
+            solo: false,
             blocks,
             recording: None,
         }
@@ -986,6 +1297,7 @@ mod tests {
             tag: String::new(),
             src: 0,
             frames: 1000.0,
+            gain: 1.0,
             fade_in: 0,
             fade_out: 0,
         }
@@ -1077,6 +1389,116 @@ mod tests {
         ui.show("p").unwrap();
         let mut c = mpfree_ui::SoftCanvas::new(1280, 800);
         assert!(!ui.paint(&mut c).is_empty());
+    }
+
+    /// Layout spec 4c: the track panel opens over the lanes, right of the
+    /// names, and its controls report themselves; touches on it never
+    /// reach the blocks under it.
+    #[test]
+    fn the_track_panel_sits_over_the_lanes_and_reports_its_controls() {
+        let mut s = lanes();
+        s.audio = vec![audio_lane(1, "Vocal", vec![block(0, 3840, 0)])];
+        let r = Rect::new(12, 140, 814, 534);
+        assert_eq!(s.panel_parts(r), None, "no panel open");
+        s.panel = Some(4);
+        assert_eq!(s.panel_parts(r), None, "no lane for that track");
+        s.panel = Some(1);
+        let p = s.panel_parts(r).unwrap();
+        let g = s.geo(r);
+        assert!(p.panel.x >= g.lanes.x + NAME_W && p.panel.right() <= g.lanes.right());
+        assert!(p.panel.y >= g.lanes.y && p.panel.bottom() <= g.lanes.bottom());
+        let every = [p.close, p.arm, p.mute, p.solo, p.takes]
+            .into_iter()
+            .chain(p.inputs)
+            .chain(p.monitors)
+            .chain(p.level)
+            .chain(p.pan);
+        for b in every {
+            assert!(
+                p.panel.inset(4).contains(b.x, b.y),
+                "{b:?} in {:?}",
+                p.panel
+            );
+            assert!(
+                b.right() <= p.panel.right() - 4 && b.bottom() <= p.panel.bottom() - 4,
+                "{b:?} in {:?}",
+                p.panel
+            );
+        }
+        // The track's lane stays in view: the panel goes under it here,
+        // and over it when the lane is low.
+        let lane = s.lane_rect(&g, s.tracks.len()).unwrap();
+        assert!(lane.bottom() <= p.panel.y, "{lane:?} over {:?}", p.panel);
+        let mut low = s.clone();
+        low.tracks = (0..5)
+            .map(|k| (format!("T{k}"), Color::rgb(0x6EA8FE)))
+            .collect();
+        let lp = low.panel_parts(r).unwrap();
+        let lane = low.lane_rect(&low.geo(r), low.tracks.len()).unwrap();
+        assert!(lp.panel.bottom() <= lane.y, "{lane:?} under {:?}", lp.panel);
+        let mut tap = |b: Rect| s.touch(1, Touch::Down, b.x + 3, b.y + 3, r);
+        assert_eq!(tap(p.close), Some(EventKind::Tab(PANEL_CLOSE)));
+        assert_eq!(tap(p.arm), Some(EventKind::Toggle(1)));
+        assert_eq!(tap(p.mute), Some(EventKind::Tab(PANEL_MUTE)));
+        assert_eq!(tap(p.solo), Some(EventKind::Tab(PANEL_SOLO)));
+        assert_eq!(tap(p.takes), Some(EventKind::Tab(PANEL_TAKES)));
+        for k in 0..INPUTS.len() {
+            assert_eq!(tap(p.inputs[k]), Some(EventKind::Tab(PANEL_INPUT + k)));
+        }
+        for k in 0..MONITORS.len() {
+            assert_eq!(tap(p.monitors[k]), Some(EventKind::Tab(PANEL_MONITOR + k)));
+        }
+        let step = |index, delta| Some(EventKind::Step { index, delta });
+        assert_eq!(tap(p.level[0]), step(PANEL_LEVEL, -1));
+        assert_eq!(tap(p.level[2]), step(PANEL_LEVEL, 1));
+        assert_eq!(tap(p.pan[0]), step(PANEL_PAN, -1));
+        assert_eq!(tap(p.pan[2]), step(PANEL_PAN, 1));
+        // Its empty space and its value read-outs take the touch and ask
+        // for nothing, even with a block under them.
+        assert_eq!(tap(p.level[1]), None);
+        low.blocks.push(SongBlock {
+            index: 2,
+            track: 3,
+            start: 0,
+            length: 4 * 3840,
+            name: "Under".into(),
+            unique: false,
+        });
+        let under = low.block_rect(r, &low.blocks[2].clone()).unwrap();
+        assert!(lp.panel.contains(under.x + 3, under.y + 3));
+        assert_eq!(low.touch(1, Touch::Down, under.x + 3, under.y + 3, r), None);
+        low.panel = None;
+        assert_eq!(
+            low.touch(1, Touch::Down, under.x + 3, under.y + 3, r),
+            Some(EventKind::Select(2))
+        );
+        // The names stay live: another header opens its own panel.
+        let h = s.header_rect(r, 0).unwrap();
+        s.touch(1, Touch::Down, h.x + 40, h.y + 5, r);
+        assert_eq!(
+            s.touch(1, Touch::Up, h.x + 40, h.y + 5, r),
+            Some(EventKind::Cell { row: 1, col: PANEL })
+        );
+        let mut ui = mpfree_ui::Ui::new(
+            mpfree_ui::Theme::dark(),
+            mpfree_ui::Fonts::embedded(),
+            1280,
+            800,
+        );
+        ui.add("song", s);
+        ui.add_page("p", "song").unwrap();
+        ui.show("p").unwrap();
+        let mut c = mpfree_ui::SoftCanvas::new(1280, 800);
+        assert!(!ui.paint(&mut c).is_empty());
+    }
+
+    #[test]
+    fn input_chips_name_every_input() {
+        let chips: Vec<&str> = [Input::Left, Input::Right, Input::Sum, Input::Stereo]
+            .into_iter()
+            .map(input_chip)
+            .collect();
+        assert_eq!(chips, ["L", "R", "L+R", "ST"]);
     }
 
     #[test]

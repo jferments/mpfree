@@ -32,7 +32,7 @@ use mpfree_synth_ui::draw::Mask;
 use mpfree_synth_ui::widgets::{knob, Card, Visuals};
 use mpfree_ui::{Align, EventKind, FontId, PaintCx, Rect, Target, Touch, Widget};
 
-use crate::state::{macro_color, picks, ChainState, KNOBS_PER_PAGE};
+use crate::state::{macro_color, ChainState, KNOBS_PER_PAGE};
 
 /// What a touch on the chain editor meant, for the app to apply.
 #[derive(Clone, Debug, PartialEq)]
@@ -51,7 +51,7 @@ pub enum ChainAction {
     },
     /// Take an insert out (`Edit::Remove`).
     Remove(usize),
-    /// Add effect `id` (one of [`crate::state::picks`]) at the end of the
+    /// Add effect `id` (one of [`ChainState::picks`]) at the end of the
     /// chain: `mpfree_fx_ui::make(id)`, then `Edit::Insert`.
     Add(&'static str),
     /// Open insert `slot`'s full effect page (`mpfree_fx_ui::FxPanel`): a
@@ -121,7 +121,7 @@ pub struct Layout {
     pub title: Rect,
     /// The effect page's drawings, when there are any.
     pub picture: Option<Rect>,
-    /// The picker's Cancel and its tiles, in [`picks`] order (none when the
+    /// The picker's Cancel and its tiles, in [`ChainState::picks`] order (none when the
     /// picker is shut or the chain is full).
     pub cancel: Option<Rect>,
     pub picks: Vec<Rect>,
@@ -196,7 +196,7 @@ pub fn layout(r: Rect, st: &ChainState, picture: bool) -> Layout {
         tabs.clear();
         cancel = Some(Rect::new(head.right() - 104, head.y + 4, 104, 36));
         if st.slots.len() < st.room {
-            let n = picks(st.strip).len() as i32;
+            let n = st.picks().len() as i32;
             let cols = if grid.w >= 420 { 3 } else { 2 };
             let rows_n = (n + cols - 1) / cols;
             let w = (grid.w - (cols - 1) * PICK_GAP) / cols;
@@ -380,7 +380,7 @@ impl ChainView {
                 return;
             }
             if let Some(i) = l.picks.iter().position(|r| r.contains(x, y)) {
-                if let Some(p) = picks(self.state.strip).get(i) {
+                if let Some(p) = self.state.picks().get(i) {
                     self.state.picking = false;
                     self.push(ChainAction::Add(p.id));
                 }
@@ -851,7 +851,8 @@ impl Widget for ChainView {
             if let Some(c) = l.cancel {
                 out.push(Target::tap("cancel", 0, "Cancel", c));
             }
-            let names = picks(st.strip);
+            // The built-in effects, then the plugins (as the picker draws them).
+            let names = st.picks();
             for (i, pr) in l.picks.iter().enumerate() {
                 let label = names.get(i).map_or("", |p| p.name);
                 out.push(Target::tap("pick", i, label, *pr));
@@ -1197,7 +1198,7 @@ fn paint_picker(cx: &mut PaintCx, l: &Layout, st: &ChainState, head: Rect) {
         );
         return;
     }
-    for (p, r) in picks(st.strip).iter().zip(&l.picks) {
+    for (p, r) in st.picks().iter().zip(&l.picks) {
         cx.canvas.fill_round_rect(*r, 10, t.raised);
         let inner = r.inset_xy(12, 10);
         let (name, about) = inner.take_top(26);

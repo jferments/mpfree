@@ -6,7 +6,9 @@
 use mpfree_clap::testplug::{gain_params, synth_params, GAIN_ID, SYNTH_ID};
 use mpfree_clap::{ClapNode, Library};
 use mpfree_node::{Ctx, Kind, Node, NodeEvent, Timed};
-use mpfree_plughost::{spawn, Deadline, Error, Health, Sandbox, SandboxNode};
+use mpfree_plughost::{
+    list, parse_list_line, spawn, Deadline, Error, Health, Listed, Program, Sandbox, SandboxNode,
+};
 use mpfree_track::{Instrument, Sum, TrackHost};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -552,4 +554,92 @@ fn a_sandboxed_synth_plays_on_a_track() {
     }
     assert!(loud > 0.01, "the sandboxed plugin sounds on its track");
     assert_eq!(sb.poll(), Health::Running);
+}
+
+#[test]
+fn a_plugin_file_is_listed_from_its_own_process() {
+    let got = list(&Program::new(&exe()), &plugin_file()).expect("list");
+    let kinds: Vec<(&str, Kind)> = got.iter().map(|l| (l.id.as_str(), l.kind)).collect();
+    assert_eq!(
+        kinds,
+        vec![(SYNTH_ID, Kind::Instrument), (GAIN_ID, Kind::Effect)]
+    );
+    let here = Library::open(&plugin_file()).unwrap().plugins();
+    for (l, d) in got.iter().zip(&here) {
+        assert_eq!((&l.name, &l.vendor), (&d.name, &d.vendor));
+    }
+    match list(&Program::new(&exe()), Path::new("/nonexistent/none.clap")) {
+        Err(Error::Plugin(msg)) => assert!(msg.contains("none.clap"), "{msg}"),
+        other => panic!("expected a plugin error, got {other:?}"),
+    }
+    assert!(matches!(
+        list(
+            &Program::new(Path::new("/nonexistent/mpfree-plughost")),
+            &plugin_file()
+        ),
+        Err(Error::Io(_))
+    ));
+}
+
+#[test]
+fn list_lines_read_back_and_junk_is_refused() {
+    let line = mpfree_plughost::child::list_line("a.b", "Na\tme", "V\nendor", Kind::Effect);
+    assert_eq!(
+        parse_list_line(&line),
+        Some(Listed {
+            id: "a.b".into(),
+            name: "Na me".into(),
+            vendor: "V endor".into(),
+            kind: Kind::Effect
+        })
+    );
+    for junk in [
+        "",
+        "plugin",
+        "plugin\ta\tb\tc\tsynth",
+        "plugin\t\tb\tc\teffect",
+        "x\ta\tb\tc\teffect",
+        "plugin\ta\tb\tc\teffect\textra",
+    ] {
+        assert_eq!(parse_list_line(junk), None, "{junk:?}");
+    }
+}
+
+#[test]
+fn a_crash_restarts_from_the_snapshot_and_the_node_reads_it() {
+    let here = local(GAIN_ID, 256);
+    let (gain, crash) = (
+        here.param_index(gain_params::GAIN).unwrap(),
+        here.param_index(gain_params::CRASH).unwrap(),
+    );
+    let (mut n, sb) = sandboxed(GAIN_ID, 256);
+    assert_eq!(n.saved_state(), None, "nothing read yet");
+    assert_eq!(n.plugin_file(), plugin_file().as_path());
+    assert_eq!(sb.plugin_id(), GAIN_ID);
+    let (dry_l, _) = input(256);
+    n.set_param(gain, half_db());
+    let _ = block(&mut n, 0);
+    assert!(sb.refresh_state());
+    let snap = n.saved_state().expect("the snapshot");
+    assert_eq!(Some(snap.clone()), sb.save_state());
+    n.set_param(crash, 1.0);
+    n.set_deadline(Deadline::Fixed(Duration::from_millis(300)));
+    let _ = block(&mut n, 256);
+    let until = Instant::now() + Duration::from_secs(5);
+    while sb.poll() == Health::Running {
+        assert!(Instant::now() < until, "the process didn't go");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(!sb.refresh_state(), "a gone process gives no state");
+    assert_eq!(n.saved_state(), Some(snap), "the old snapshot stays");
+    sb.restart_from_snapshot().expect("restart");
+    n.set_deadline(PATIENT);
+    let (l, _) = block(&mut n, 512);
+    assert!(
+        close(&l, &scaled(&dry_l, 0.5)),
+        "the snapshot's gain is back"
+    );
+    assert!(!sb.orphaned());
+    drop(n);
+    assert!(sb.orphaned(), "only the handle is left");
 }
