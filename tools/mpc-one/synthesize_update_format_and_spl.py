@@ -121,6 +121,9 @@ def build(read):
         "original_format_dispatch_PIC_slots":(
             (lib.get("direct_boot_probe") or {}).get(
                 "format_handler_candidate_original_words")),
+        "computed_original_format_descriptor_slots":(
+            (lib.get("direct_boot_probe") or {}).get(
+                "computed_PIC_descriptor_table_slots")),
         "format_handler_live_target_proven":False,
         "verification_state_examples":{
             "fresh_0_option0_error_minus13":verification_state_step(0,0,-13),
