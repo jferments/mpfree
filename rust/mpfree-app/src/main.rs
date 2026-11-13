@@ -115,6 +115,8 @@ mod rt_safety;
 mod sample_page;
 mod sampler;
 mod screen_cost;
+#[cfg(test)]
+mod smoke;
 mod synth;
 mod sys;
 mod sysinfo;

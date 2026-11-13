@@ -4,7 +4,7 @@
 
 use crate::draw::Mask;
 use mpfree_ui::text::FontId;
-use mpfree_ui::{Align, Color, EventKind, PaintCx, Rect, Theme, Touch, Widget};
+use mpfree_ui::{Align, Color, EventKind, PaintCx, Rect, Target, Theme, Touch, Widget};
 use std::f32::consts::PI;
 
 // Panels build their tiles, cards and nodes without knowing the theme, so
@@ -245,6 +245,12 @@ impl Widget for TitleBar {
         }
     }
 
+    fn targets(&self, r: Rect) -> Vec<Target> {
+        (0..self.tabs.len())
+            .map(|i| Target::tap("tab", i, self.tabs[i].clone(), self.tab_rect(r, i)))
+            .collect()
+    }
+
     fn touch(&mut self, _f: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
         if phase != Touch::Down {
             return None;
@@ -470,6 +476,32 @@ impl Widget for Visuals {
             paint_nodes(cx, p, &card.nodes);
             cx.canvas.set_clip(clip);
         }
+    }
+
+    fn targets(&self, r: Rect) -> Vec<Target> {
+        let mut out = Vec::new();
+        let mut first = 0;
+        for (i, c) in self.cards.iter().enumerate() {
+            let cr = self.card_rect(r, i);
+            let p = Visuals::plot_rect(cr);
+            // The card's title line picks the card; a box on it picks that box.
+            out.push(Target::tap(
+                "card",
+                i,
+                c.title.clone(),
+                Rect::new(cr.x, cr.y, cr.w, (p.y - cr.y).max(8)),
+            ));
+            for (k, n) in c.nodes.iter().enumerate() {
+                out.push(Target::tap(
+                    "node",
+                    first + k,
+                    n.label.clone(),
+                    node_rect(p, n),
+                ));
+            }
+            first += c.nodes.len();
+        }
+        out
     }
 
     fn touch(&mut self, _f: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
@@ -829,6 +861,44 @@ impl Widget for TileGrid {
         }
     }
 
+    fn targets(&self, r: Rect) -> Vec<Target> {
+        let mut out = Vec::new();
+        for (i, tile) in self.tiles.iter().enumerate() {
+            let tr = self.tile_rect(r, i);
+            match &tile.kind {
+                TileKind::Knob { .. } => {
+                    out.push(Target::drag("knob", i, tile.label.clone(), tr).towards(0, -40))
+                }
+                TileKind::Choice { names, index } => {
+                    let parts = TileGrid::choice_rects(tr, names.len());
+                    let arrows = parts.len() != names.len() || names.len() > 4;
+                    for (k, pr) in parts.iter().enumerate() {
+                        if arrows {
+                            let id = if k == 0 { "choice-less" } else { "choice-more" };
+                            out.push(Target::tap(
+                                id,
+                                i,
+                                format!("{} {}", tile.label, ["‹", "›"][k.min(1)]),
+                                *pr,
+                            ));
+                        } else if k != *index {
+                            let name = names.get(k).cloned().unwrap_or_default();
+                            out.push(Target::tap(
+                                "choice",
+                                i * 16 + k,
+                                format!("{}: {name}", tile.label),
+                                *pr,
+                            ));
+                        }
+                    }
+                }
+                TileKind::Toggle(_) => out.push(Target::tap("toggle", i, tile.label.clone(), tr)),
+                TileKind::Meter => {}
+            }
+        }
+        out
+    }
+
     fn touch(&mut self, finger: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
         match phase {
             Touch::Down => {
@@ -1045,6 +1115,19 @@ impl Widget for QLinkStrip {
             t.text,
             &self.wheel_value,
         );
+    }
+
+    fn targets(&self, r: Rect) -> Vec<Target> {
+        (0..self.cells.len().min(4))
+            .map(|i| {
+                Target::tap(
+                    "cell",
+                    i,
+                    self.cells[i].label.clone(),
+                    QLinkStrip::cell_rect(r, i),
+                )
+            })
+            .collect()
     }
 
     fn touch(&mut self, _f: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {

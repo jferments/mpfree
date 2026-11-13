@@ -109,6 +109,101 @@ pub struct UiEvent {
     pub kind: EventKind,
 }
 
+/// How a finger uses a control: what the control audit's smoke tests do to
+/// it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Gesture {
+    /// A tap: down and up in place (a button, a row, a pad, a tab).
+    Tap,
+    /// A drag from the middle (a slider, a knob card, an XY pad, a marker).
+    Drag,
+    /// A finger held still for a moment (a long press).
+    Hold,
+}
+
+/// One control a widget draws: something a finger can tap, drag or hold.
+/// Widgets list theirs with [`Widget::targets`]; the control audit taps
+/// each one on every sample screen and checks that it does something, and
+/// the controls catalogue (`docs/dev/guides/controls.md`) explains each
+/// kind by its widget and `id`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Target {
+    /// What kind of control this is, stable and unique within its widget
+    /// ("add-effect", "pad", "row-value"). The catalogue is keyed by it.
+    pub id: &'static str,
+    /// Which one of several of the same kind (pad 3, row 2); 0 when there
+    /// is only one.
+    pub index: usize,
+    /// What the screen shows on it, for reports ("+ Add effect").
+    pub label: String,
+    /// Where it answers a finger, in screen pixels.
+    pub rect: Rect,
+    pub gesture: Gesture,
+    /// For a drag: how far the finger moves from the middle, (x, y) in
+    /// pixels. Up and to the right unless the control says otherwise (a
+    /// grip at an end moves inwards).
+    pub towards: (i32, i32),
+    /// False when the control is drawn as unavailable (faint, greyed): the
+    /// audit reports what it does but does not count it dead.
+    pub enabled: bool,
+}
+
+impl Target {
+    pub fn tap(id: &'static str, index: usize, label: impl Into<String>, rect: Rect) -> Target {
+        Target {
+            id,
+            index,
+            label: label.into(),
+            rect,
+            gesture: Gesture::Tap,
+            towards: (36, -60),
+            enabled: true,
+        }
+    }
+
+    pub fn drag(id: &'static str, index: usize, label: impl Into<String>, rect: Rect) -> Target {
+        Target {
+            gesture: Gesture::Drag,
+            ..Target::tap(id, index, label, rect)
+        }
+    }
+
+    pub fn hold(id: &'static str, index: usize, label: impl Into<String>, rect: Rect) -> Target {
+        Target {
+            gesture: Gesture::Hold,
+            ..Target::tap(id, index, label, rect)
+        }
+    }
+
+    /// The same drag, the other way: `(dx, dy)` pixels from the middle.
+    pub fn towards(self, dx: i32, dy: i32) -> Target {
+        Target {
+            towards: (dx, dy),
+            ..self
+        }
+    }
+
+    /// The same control, drawn as unavailable when `off` is true.
+    pub fn disabled_if(self, off: bool) -> Target {
+        Target {
+            enabled: self.enabled && !off,
+            ..self
+        }
+    }
+
+    /// The point a test touches: the middle of the control.
+    pub fn centre(&self) -> (i32, i32) {
+        (self.rect.x + self.rect.w / 2, self.rect.y + self.rect.h / 2)
+    }
+}
+
+/// A control on the page showing, with the name of the widget it is on.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PageTarget {
+    pub widget: String,
+    pub target: Target,
+}
+
 pub trait Widget: Any + Send {
     /// Draw into `r`, which the widget fills completely (background included).
     fn paint(&self, cx: &mut PaintCx, r: Rect);
@@ -129,6 +224,16 @@ pub trait Widget: Any + Send {
     /// True while the widget animates and wants to be drawn again next frame.
     fn animating(&self) -> bool {
         false
+    }
+
+    /// Every control this widget draws in `r` as it stands now: each
+    /// button, row, pad, arrow, slider or card a finger can use, where a
+    /// touch on it reaches the widget. The control audit taps each one and
+    /// checks that it does something; a widget that only shows things
+    /// lists none. Keep it in step with `touch`: the audit also probes the
+    /// widget and fails on a touch that answers outside every target.
+    fn targets(&self, _r: Rect) -> Vec<Target> {
+        Vec::new()
     }
 
     /// When the widget has changed, the parts of `r` that need drawing again;
@@ -404,6 +509,41 @@ impl Ui {
         page.slots
             .iter()
             .any(|(i, _)| self.widgets[*i].2 || self.widgets[*i].1.animating())
+    }
+
+    /// Every control a finger can reach on the current page: each widget's
+    /// [`Widget::targets`], less any whose middle another widget covers
+    /// (a touch goes to the topmost slot), in the page's slot order.
+    pub fn targets(&self) -> Vec<PageTarget> {
+        let Some(page) = self.pages.get(self.current) else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        for (k, (wi, r)) in page.slots.iter().enumerate() {
+            let (name, w, _) = &self.widgets[*wi];
+            for t in w.targets(*r) {
+                let (x, y) = t.centre();
+                let covered = page.slots[k + 1..].iter().any(|(_, o)| o.contains(x, y));
+                if r.contains(x, y) && !covered {
+                    out.push(PageTarget {
+                        widget: name.clone(),
+                        target: t,
+                    });
+                }
+            }
+        }
+        out
+    }
+
+    /// The widgets on the current page and where they sit, in slot order.
+    pub fn slots(&self) -> Vec<(String, Rect)> {
+        let Some(page) = self.pages.get(self.current) else {
+            return Vec::new();
+        };
+        page.slots
+            .iter()
+            .map(|(wi, r)| (self.widgets[*wi].0.clone(), *r))
+            .collect()
     }
 
     /// Route a touch. A finger belongs to the widget it first touched until it

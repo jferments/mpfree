@@ -12,7 +12,7 @@ use std::cell::Cell;
 use std::time::Duration;
 
 use mpfree_mixer_ui::{IoInput, IoKnob, IoReply, IoSection};
-use mpfree_ui::{Align, FontId, PaintCx, Rect, Touch};
+use mpfree_ui::{Align, FontId, PaintCx, Rect, Target, Touch};
 
 use crate::{IoModel, Shared};
 
@@ -658,6 +658,49 @@ impl<F: Form> IoSection for FormSection<F> {
             Some(p) => self.paint_picker(cx, r, &p),
             None => self.paint_rows(cx, r),
         }
+    }
+
+    fn targets(&self, r: Rect) -> Vec<Target> {
+        if let Some((key, col)) = &self.open {
+            let m = self.model.lock().unwrap_or_else(|e| e.into_inner());
+            let Some(p) = self.form.picker(&m, key, *col) else {
+                return Vec::new();
+            };
+            let (done, chips, _) = Self::picker_layout(&p, r);
+            let mut out = vec![Target::tap("picker-done", 0, "Done", done)];
+            for (k, (g, i, cr)) in chips.iter().enumerate() {
+                out.push(Target::tap(
+                    "picker-choice",
+                    k,
+                    format!("choice {g}.{i}"),
+                    *cr,
+                ));
+            }
+            return out;
+        }
+        let (banner, rows) = self.rows();
+        let (_, placed) = self.place(banner.is_some(), &rows, r);
+        let mut out = Vec::new();
+        for (i, rr) in placed {
+            if !rows[i].is_item() {
+                continue;
+            }
+            let rects = self.field_rects(rr, rows[i].fields.len());
+            let title = &rows[i].title;
+            let left = rects.first().map_or(rr.right(), |f| f.x);
+            out.push(Target::tap(
+                "row",
+                i,
+                title.clone(),
+                Rect::new(rr.x, rr.y, left - rr.x, rr.h),
+            ));
+            for (c, f) in rects.iter().enumerate() {
+                let field = &rows[i].fields[c];
+                let label = format!("{title}: {}", field.text);
+                out.push(Target::tap("field", i * 16 + c, label, *f).disabled_if(!field.enabled));
+            }
+        }
+        out
     }
 
     fn touch(&mut self, finger: u64, phase: Touch, x: i32, y: i32, r: Rect) -> IoReply {

@@ -2,7 +2,7 @@
 //! own, they only show what the page put in their fields and report touches.
 
 use mpfree_ui::text::FontId;
-use mpfree_ui::{Align, EventKind, PaintCx, Rect, Tone, Touch, Widget};
+use mpfree_ui::{Align, EventKind, PaintCx, Rect, Target, Tone, Touch, Widget};
 
 // ---------------------------------------------------------------- segments
 
@@ -59,6 +59,12 @@ impl Widget for Segments {
                 name,
             );
         }
+    }
+
+    fn targets(&self, r: Rect) -> Vec<Target> {
+        (0..self.items.len())
+            .map(|i| Target::tap("segment", i, self.items[i].clone(), self.cell(r, i)))
+            .collect()
     }
 
     fn touch(&mut self, _f: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
@@ -167,6 +173,16 @@ impl Widget for MiniBar {
             ink,
             if self.latched { "LATCHED" } else { "LATCH" },
         );
+    }
+
+    fn targets(&self, r: Rect) -> Vec<Target> {
+        let [slower, faster, latch, name] = self.parts(r);
+        vec![
+            Target::tap("slower", 0, "‹ slower", slower).disabled_if(!self.can_slower),
+            Target::tap("faster", 0, "faster ›", faster).disabled_if(!self.can_faster),
+            Target::tap("latch", 0, "Latch", latch),
+            Target::tap("open", 0, self.mode.clone(), name),
+        ]
     }
 
     fn touch(&mut self, _f: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
@@ -278,6 +294,20 @@ impl Widget for SliderStack {
             cx.canvas
                 .fill_round_rect(Rect::new(kx - 9, track.y - 5, 18, 18), 9, t.text);
         }
+    }
+
+    fn targets(&self, r: Rect) -> Vec<Target> {
+        (0..self.rows.len())
+            .map(|i| {
+                Target::drag(
+                    "slider",
+                    i,
+                    self.rows[i].label.clone(),
+                    self.row_rects(r, i).0,
+                )
+                .towards(30, 0)
+            })
+            .collect()
     }
 
     fn touch(&mut self, finger: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
@@ -444,6 +474,19 @@ impl Widget for StepStrip {
         }
     }
 
+    fn targets(&self, r: Rect) -> Vec<Target> {
+        (0..self.cells.len())
+            .map(|i| {
+                Target::tap(
+                    "step",
+                    self.first + i,
+                    format!("step {}", self.first + i + 1),
+                    self.cell(r, i),
+                )
+            })
+            .collect()
+    }
+
     fn touch(&mut self, _f: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
         if phase != Touch::Down {
             return None;
@@ -537,6 +580,16 @@ impl Widget for ButtonRow {
             };
             cx.text(FontId::Bold, t.size_body, br, Align::Center, ink, &b.label);
         }
+    }
+
+    fn targets(&self, r: Rect) -> Vec<Target> {
+        (0..self.buttons.len())
+            .map(|i| {
+                let b = &self.buttons[i];
+                Target::tap("button", i, b.label.clone(), self.button_rect(r, i))
+                    .disabled_if(b.disabled)
+            })
+            .collect()
     }
 
     fn touch(&mut self, _f: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
@@ -697,6 +750,23 @@ impl Widget for LaneGrid {
                 );
             }
         }
+    }
+
+    fn targets(&self, r: Rect) -> Vec<Target> {
+        let mut out = Vec::new();
+        for row in 0..self.rows.len() {
+            let have = self.cells.get(row).map_or(0, |c| c.len());
+            for col in 0..have.min(self.columns) {
+                let label = format!("{} step {}", self.rows[row], self.first + col + 1);
+                out.push(Target::tap(
+                    "cell",
+                    row * self.columns + col,
+                    label,
+                    self.cell(r, row, col),
+                ));
+            }
+        }
+        out
     }
 
     fn touch(&mut self, finger: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {

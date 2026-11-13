@@ -395,6 +395,27 @@ impl Widget for LoopStrip {
         )])
     }
 
+    fn targets(&self, r: Rect) -> Vec<mpfree_ui::Target> {
+        use mpfree_ui::Target;
+        let mut out: Vec<Target> = self
+            .speakers
+            .borrow()
+            .iter()
+            .enumerate()
+            .map(|(k, h)| {
+                let name = self.names.get(k).cloned().unwrap_or_default();
+                Target::tap("layer-mute", k, format!("{name} speaker"), *h)
+            })
+            .collect();
+        if let Some(row) = LoopStrip::parts(r).1 {
+            for (i, b) in self.button_rects(row).into_iter().enumerate() {
+                let label = self.buttons.get(i).map_or(String::new(), |b| b.0.clone());
+                out.push(Target::tap("button", i, label, b));
+            }
+        }
+        out
+    }
+
     fn touch(&mut self, _f: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
         if phase != Touch::Down {
             return None;

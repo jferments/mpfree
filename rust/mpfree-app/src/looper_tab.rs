@@ -10,7 +10,7 @@
 use crate::looping::LoopWave;
 use mpfree_looper::LayerCommand;
 use mpfree_ui::draw::{self, card, card_head, dot, speaker, speaker_hit};
-use mpfree_ui::{Align, Color, EventKind, FontId, PaintCx, Rect, Tone, Touch, Ui, Widget};
+use mpfree_ui::{Align, Color, EventKind, FontId, PaintCx, Rect, Target, Tone, Touch, Ui, Widget};
 use std::cell::RefCell;
 use std::sync::Arc;
 
@@ -267,6 +267,37 @@ impl Widget for LoopList {
             cx.canvas
                 .fill_round_rect(Rect::new(track.x, track.y, w, track.h), 4, c);
         }
+    }
+
+    fn targets(&self, r: Rect) -> Vec<Target> {
+        let ListParts {
+            rows, new, clear, ..
+        } = self.parts(r);
+        let mut out = Vec::new();
+        for (i, rr) in rows.iter().enumerate() {
+            let name = &self.rows[i].name;
+            if self.rows[i].speaker.is_some() {
+                let (sx, sy) = LoopList::speaker_at(*rr);
+                let hit = speaker_hit(sx, sy);
+                out.push(Target::tap("loop-mute", i, format!("{name} speaker"), hit));
+                // The row less its speaker picks the loop.
+                out.push(Target::tap(
+                    "loop",
+                    i,
+                    name.clone(),
+                    Rect::new(rr.x, rr.y, hit.x - rr.x, rr.h),
+                ));
+            } else {
+                out.push(Target::tap("loop", i, name.clone(), *rr));
+            }
+        }
+        if let Some(b) = new {
+            out.push(Target::tap("new-loop", 0, "+ New loop", b));
+        }
+        if let Some(b) = clear {
+            out.push(Target::tap("clear", 0, "Clear", b));
+        }
+        out
     }
 
     fn touch(&mut self, _f: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
@@ -820,6 +851,58 @@ impl Widget for LoopEditor {
         )])
     }
 
+    fn targets(&self, r: Rect) -> Vec<Target> {
+        let (tool_row, wave_r, rows) = LoopEditor::parts(r);
+        let mut out: Vec<Target> = self
+            .tool_rects(tool_row)
+            .into_iter()
+            .enumerate()
+            .map(|(i, b)| {
+                let label = self.tools.get(i).map_or(String::new(), |t| t.0.clone());
+                Target::tap("tool", i, label, b)
+            })
+            .collect();
+        if self.trim_ticks.is_some_and(|t| t > 0) {
+            let (start, end) = LoopEditor::trim_grips(wave_r.inset_xy(10, 6));
+            out.push(Target::drag("trim-start", 0, "trim start", start));
+            // The end grip moves left: a drag right would leave it whole.
+            out.push(Target::drag("trim-end", 0, "trim end", end).towards(-60, 0));
+        }
+        if let Some(h) = &self.history {
+            for (k, sr) in self.step_rects(rows) {
+                if k != h.now {
+                    out.push(Target::tap("history-step", k, h.rows[k].clone(), sr));
+                }
+            }
+            return out;
+        }
+        for (k, rr) in self.row_rects(rows) {
+            let p = LoopEditor::row_parts(rr);
+            let name = &self.layers[k].name;
+            out.push(Target::tap(
+                "layer-mute",
+                k,
+                format!("{name} speaker"),
+                speaker_hit(p.speaker.0, p.speaker.1),
+            ));
+            out.push(Target::tap("layer-solo", k, format!("{name} S"), p.solo));
+            out.push(Target::tap(
+                "layer-delete",
+                k,
+                format!("{name} delete"),
+                p.delete,
+            ));
+            out.push(Target::drag(
+                "layer-level",
+                k,
+                format!("{name} level"),
+                p.level,
+            ));
+            out.push(Target::tap("layer", k, name.clone(), p.wave));
+        }
+        out
+    }
+
     fn touch(&mut self, finger: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
         let (tool_row, _, rows) = LoopEditor::parts(r);
         match phase {
@@ -1177,6 +1260,31 @@ impl Widget for LoopSettings {
         }
     }
 
+    fn targets(&self, r: Rect) -> Vec<Target> {
+        let mut out = Vec::new();
+        for (i, rr) in self.row_rects(r).into_iter().enumerate() {
+            // Rows that only show a value (the input's peak) are no controls.
+            if !self.rows[i].steps {
+                continue;
+            }
+            let label = &self.rows[i].label;
+            let (less, more) = rr.take_left(rr.w / 2);
+            out.push(Target::tap(
+                "setting-less",
+                i,
+                format!("{label} (left half)"),
+                less,
+            ));
+            out.push(Target::tap(
+                "setting-more",
+                i,
+                format!("{label} (right half)"),
+                more,
+            ));
+        }
+        out
+    }
+
     fn touch(&mut self, _f: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
         if phase != Touch::Down {
             return None;
@@ -1236,6 +1344,14 @@ impl Widget for UseLoop {
             );
             cx.text(FontId::Sans, 12.0, inner, Align::Right, t.text_faint, what);
         }
+    }
+
+    fn targets(&self, r: Rect) -> Vec<Target> {
+        self.row_rects(r)
+            .into_iter()
+            .enumerate()
+            .map(|(i, rr)| Target::tap("use", i, self.rows[i].0.clone(), rr))
+            .collect()
     }
 
     fn touch(&mut self, _f: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
