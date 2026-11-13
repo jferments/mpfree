@@ -124,6 +124,7 @@ with outfile.open("w") as sink:
             visited.add(loc)
             try:
                 ctx=PseudoDisassemblerContext(P.getProgramContext())
+                ctx.flowStart(A(loc))
                 ctx.setValue(tmode,BigInteger.ONE if pointer&1 else BigInteger.ZERO)
                 instr=pseudo.disassemble(A(loc),ctx,False)
                 text=str(instr)
