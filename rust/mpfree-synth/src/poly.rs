@@ -733,8 +733,12 @@ impl Poly {
         sm.bend.next();
         s.drive_gain = 10f32.powf(drive / 20.0);
         s.drive_amt = (drive / 3.0).min(1.0);
-        s.dist_gain = 10f32.powf(dist / 20.0);
-        s.dist_amt = (dist / 3.0).min(1.0);
+        // Most sounds have none: no power worked out each step for it.
+        (s.dist_gain, s.dist_amt) = if dist > 0.0 {
+            (10f32.powf(dist / 20.0), (dist / 3.0).min(1.0))
+        } else {
+            (1.0, 0.0)
+        };
         s.mode = self.values[FILTER_MODE as usize] as u8;
         s.wave1 = self.values[OSC1_WAVE as usize] as u8;
         s.wave2 = self.values[OSC2_WAVE as usize] as u8;
@@ -924,6 +928,7 @@ impl Poly {
             v.drive_amt = (db / 3.0).min(1.0);
         }
         let de = d.get(target::DIST);
+        let dist_was = v.dist_amt;
         if de == 0.0 {
             v.dist_gain = sh_dist_gain;
             v.dist_amt = sh_dist_amt;
@@ -946,7 +951,8 @@ impl Poly {
         };
         if v.dist_amt > 0.0 {
             level *= v.dist_level.step(CTRL, rate_bits);
-        } else {
+        } else if dist_was > 0.0 {
+            // Off: nothing more is summed, so one clear does.
             v.dist_level.clear();
         }
         let gain = norm * vg * trem * swell * level;
@@ -1069,24 +1075,23 @@ impl Poly {
             // the distortion. The drive goes into the filter, as on an
             // analog synth; the distortion comes after it, so a low cutoff
             // can't take its grit out (Jay after live test 3: "add both").
-            let lv = if v.drive_amt > 0.0 || v.dist_amt > 0.0 {
-                mix_level(s.unison, [s.lvl1, s.lvl2], v.sub, v.noise)
-            } else {
-                1.0
-            };
+            // Most sounds have no distortion: one test a step skips it.
             let (dk, dn) = if v.drive_amt > 0.0 {
+                let lv = mix_level(s.unison, [s.lvl1, s.lvl2], v.sub, v.noise);
                 drive_scales(v.drive_gain, lv)
-            } else {
-                (1.0, 1.0)
-            };
-            let (ek, en) = if v.dist_amt > 0.0 {
-                drive_scales(v.dist_gain, lv)
             } else {
                 (1.0, 1.0)
             };
             drive_run_level(l, dk, dn, v.drive_amt, &mut v.drive_level);
             v.filt[0].run(mode, &v.coefs, l);
-            drive_run_level(l, ek, en, v.dist_amt, &mut v.dist_level);
+            let dist = if v.dist_amt > 0.0 {
+                let lv = mix_level(s.unison, [s.lvl1, s.lvl2], v.sub, v.noise);
+                let (ek, en) = drive_scales(v.dist_gain, lv);
+                drive_run_level(l, ek, en, v.dist_amt, &mut v.dist_level);
+                Some((ek, en))
+            } else {
+                None
+            };
             if mono {
                 v.filt[1] = v.filt[0];
                 for j in 0..end {
@@ -1101,7 +1106,9 @@ impl Poly {
                 }
                 drive_run_n(r, dk, dn, v.drive_amt);
                 v.filt[1].run(mode, &v.coefs, r);
-                drive_run_n(r, ek, en, v.dist_amt);
+                if let Some((ek, en)) = dist {
+                    drive_run_n(r, ek, en, v.dist_amt);
+                }
                 for j in 0..end {
                     left[from + j] += l[j] * g[j] * s.out_l;
                     right[from + j] += r[j] * g[j] * s.out_r;
