@@ -506,6 +506,13 @@ impl AudioHost {
         self.wave.take()
     }
 
+    /// Give back a waveform the screen is done with, to be dropped on the
+    /// worker rather than here (the audio thread never frees). Without a
+    /// worker it is dropped here.
+    pub fn drop_wave(&self, w: TakeWave) {
+        self.send(ToWorker::DropWave(w));
+    }
+
     fn tend(&mut self, frames: usize) {
         while let Some(v) = self.tracks.take_returned() {
             self.send(ToWorker::Drop(v));

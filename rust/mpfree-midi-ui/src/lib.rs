@@ -130,8 +130,11 @@ pub struct IoModel {
     pub gen: u64,
 }
 
-/// The project's `midi` part (`parts/midi.txt`): the setup the sections
-/// edit, saved and opened with the project.
+/// The project's `midi` part (`parts/midi.txt`): the song's share of the
+/// setup the sections edit ([`MidiSetup::project`]: tracks' outputs, Tempo
+/// from, clock out, CV jobs, learned controls), saved and opened with the
+/// project. Each port's input and thru are the rig's, kept for every
+/// project by the app ([`MidiSetup::rig`]); opening a project leaves them.
 pub struct MidiPart(pub Shared);
 
 /// The part's file name in a project.
@@ -147,7 +150,7 @@ impl mpfree_library::Part for MidiPart {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .setup
-            .to_text()
+            .project_text()
     }
 
     /// Reads what it can. Lines it can't read are skipped, kept in
@@ -156,7 +159,7 @@ impl mpfree_library::Part for MidiPart {
     fn load(&mut self, text: &str) -> Result<(), String> {
         let (setup, warnings) = MidiSetup::parse(text);
         let mut m = self.0.lock().unwrap_or_else(|e| e.into_inner());
-        m.setup = setup;
+        m.setup.set_project(&setup);
         m.warnings = warnings;
         m.gen += 1;
         Ok(())
@@ -206,11 +209,21 @@ mod tests {
         let mut part = MidiPart(other.clone());
         assert_eq!(part.owner(), "midi");
         part.load(&text).unwrap();
-        assert_eq!(other.lock().unwrap().setup, model.lock().unwrap().setup);
+        let project = || model.lock().unwrap().setup.project();
+        assert_eq!(other.lock().unwrap().setup, project());
         assert!(other.lock().unwrap().warnings.is_empty());
         part.load(&format!("{text}cv.9 = off\n")).unwrap();
         assert_eq!(other.lock().unwrap().warnings.len(), 1);
-        assert_eq!(other.lock().unwrap().setup, model.lock().unwrap().setup);
+        assert_eq!(other.lock().unwrap().setup, project());
+        // Opening a project keeps the rig's port inputs.
+        other.lock().unwrap().setup.set_port("Keystep 37", |p| {
+            p.input = mpfree_midi::setup::PortInput::LearnOnly
+        });
+        part.load(&text).unwrap();
+        assert_eq!(
+            other.lock().unwrap().setup.port("Keystep 37").input,
+            mpfree_midi::setup::PortInput::LearnOnly
+        );
     }
 
     #[test]

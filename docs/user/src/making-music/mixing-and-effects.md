@@ -18,7 +18,7 @@ Along the top are the mixer's five views:
 
 | View | Shows |
 |---|---|
-| **Tracks** | One strip per instrument. Today these are **Drums** (the kit on the pads), **Synth** and **Loop**. |
+| **Tracks** | One strip per instrument. Today these are **Drums** (the kit on the pads), **Synth**, **Loop** and **Audio** (every audio track on the Song view, summed). |
 | **Pads** | A strip for each of the kit's 16 pads, so you can set the kick's level or put an effect on just the snare. |
 | **Inputs** | The line input. |
 | **Submixes** | Eight submixes for grouping, then the four send returns A to D. |
@@ -96,7 +96,7 @@ Adding, removing or reordering an effect while the music plays doesn't click: th
 MPFree can also use **CLAP plugin effects** built for the MPC One's ARM chip. Plugins made for a computer (Windows, macOS or ordinary Linux PCs) won't run on it.
 
 1. Put the `.clap` files on the MPFREE-DATA partition of your MPFree stick, in the folder `files/plugins/`.
-2. Start MPFree. The plugins' effects join the list you add effects from, after the built-in ones, each with its maker's name.
+2. Start MPFree. The plugins' effects join the list you add effects from, under **Plugins** after the built-in ones, each with its maker's name.
 3. Add one to a strip as you would any effect. Its knobs show in the chain editor, in the plugin's own groups, and the Q-Links, macros and MIDI Learn work on them.
 
 Each plugin runs on its own, apart from the rest of MPFree, so a plugin that crashes or freezes can't stop the music:

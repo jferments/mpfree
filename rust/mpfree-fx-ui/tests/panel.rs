@@ -7,9 +7,7 @@ use mpfree_fx_ui::perform::{self, PerformPads, XyView};
 use mpfree_fx_ui::sample::{app_ui, samples, BPM, RATE};
 use mpfree_fx_ui::view::{self, FxAction, PLAIN_LAYOUT};
 use mpfree_fx_ui::visual::has_visuals;
-use mpfree_fx_ui::{
-    make, preset_values, FxPanel, FxState, Locks, PerformAction, PerformPanel, CATALOGUE,
-};
+use mpfree_fx_ui::{make, preset_values, FxPanel, FxState, Locks, PerformAction, PerformPanel};
 use mpfree_synth_ui::widgets::TitleBar;
 use mpfree_synth_ui::widgets::{TileGrid, Visuals};
 use mpfree_ui::{Color, EventKind, Fonts, SoftCanvas, Touch, Ui, UiEvent};
@@ -60,7 +58,8 @@ fn every_sample_screen_draws() {
 
 #[test]
 fn every_effect_gets_a_page_and_its_drawings_stay_in_their_cards() {
-    for (id, name) in CATALOGUE {
+    for fx in mpfree_fx::EFFECTS {
+        let (id, name) = (&fx.id, &fx.name);
         let (ui, p) = panel(id, &[]);
         assert!(!p.pages().is_empty(), "{name} has no page");
         let placed: usize = p.pages().iter().map(|pg| pg.params.len()).sum();
