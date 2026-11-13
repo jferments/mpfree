@@ -156,6 +156,27 @@ class DirectBootSourceGuards(unittest.TestCase):
         self.assertNotIn("subprocess.", preflight_src)
         self.assertNotIn("os.system(", preflight_src)
 
+    def test_update_format_cache_xz_and_spl_analysis_is_source_only(self):
+        module = ROOT / "tools/mpc-one/synthesize_update_format_and_spl.py"
+        tests = ROOT / "tools/mpc-one/tests/test_update_format_and_spl.py"
+        source = module.read_text()
+        ghidra = GHIDRA.read_text()
+        runner = RUNNER.read_text()
+        preflight = (ROOT/"tools/mpc-one/recheck_integrated_directboot.py").read_text()
+        ast.parse(source, filename=str(module))
+        ast.parse(tests.read_text(), filename=str(tests))
+        self.assertIn("verification_state_step",source)
+        self.assertIn("xz_partition_buffer_count_observed",source)
+        self.assertIn("physical_maskrom_or_emmc_restore_proven",source)
+        self.assertIn("update-format-and-spl.json",runner)
+        self.assertIn("format_report = update_format.build(z.read)",preflight)
+        self.assertIn("matrix_count >= 64 and matrix_tracks == 7",runner)
+        self.assertIn("'spl':80",ghidra)
+        self.assertIn("az01_open_image_FDT_offset",ghidra)
+        self.assertNotIn("subprocess.",source)
+        self.assertNotIn("shell=True",source)
+        self.assertNotIn("os.system(",source)
+
     def test_focus_syntax_and_no_physical_fastboot(self):
         s=FOCUS.read_text()
         ast.parse(s,filename=str(FOCUS))
