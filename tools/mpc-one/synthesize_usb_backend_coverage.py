@@ -46,8 +46,16 @@ def build(read):
     outputs=[]
     for item in usb["verified_backend_interfaces"]:
         desc=item["usb_descriptor"]
-        identity="/".join([desc["class"].lower(),
-                           desc["subclass"].lower(),desc["protocol"].lower()])
+        # V11 records USB fields as hexadecimal strings with 0x prefixes,
+        # while the compact backend names omit prefixes. Normalize BOTH.
+        # int(..., 16) accepts "ff"/"42"/"03" and "0xff"/"0x42"/"0x03".
+        try:
+            identity="/".join(
+                format(int(desc[field], 16), "02x")
+                for field in ("class", "subclass", "protocol")
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError("Invalid USB descriptor field") from exc
         if identity not in EXPECTED:
             raise ValueError("Unknown USB descriptor family "+identity)
         matches=[x for x in all_tables
