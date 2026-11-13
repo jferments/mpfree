@@ -112,6 +112,18 @@ class StageIndirectionTests(unittest.TestCase):
             self.assertTrue(value["stub_decompilation_bad_or_missing"])
             self.assertFalse(value["dynamic_library_implementation_resolved"])
 
+    def test_logical_updater_key_uses_real_v11_role(self):
+        # The file is indexed as "updater" by this analyzer, while the
+        # SHA-pinned Ghidra report identifies its firmware role as
+        # "az01-update". Both correct data and wrong-role rejection matter.
+        self.assertEqual(M.INPUTS["updater"],
+                         "static/v11/v11-ghidra-az01-update.json")
+        self.assertEqual(M.EXPECTED_SOURCE_ROLES["updater"], "az01-update")
+        data=fixture()
+        self.assertEqual(data["updater"]["role"], "az01-update")
+        self.assertEqual(run(data)["source_images_sha256"]["updater"],
+                         "3"*64)
+
     def test_corrupt_source_role_is_fatal(self):
         data=fixture()
         data["updater"]["role"]="uboot"
