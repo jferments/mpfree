@@ -884,6 +884,35 @@ mod tests {
         assert!(h.put_clip(clip).unwrap_err().contains("no empty slot"));
     }
 
+    /// REC on a fresh project (found by the UI audit): the armed track gets
+    /// a clip to record into, launched, so what the pads play is kept.
+    #[test]
+    fn rec_with_nothing_to_record_into_makes_the_armed_tracks_clip() {
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        assert_eq!(h.control.armed, Some(0), "track 1 armed");
+        assert_eq!(
+            h.act(TimeAction::Transport(Command::Record)).unwrap(),
+            "transport: Record, new clip in slot 1 of track 1"
+        );
+        assert!(h.control.project.clip(0, 0).is_some());
+        assert!(h
+            .control
+            .launches
+            .iter()
+            .any(|l| l.track == 0 && l.slot == 0));
+        // Pressed again before the transport moves: no second clip.
+        h.act(TimeAction::Transport(Command::Record)).unwrap();
+        assert!(h.control.project.clip(0, 1).is_none());
+        // A track with a clip but none playing: that clip is launched.
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        h.control.project.tracks[0].slots[3] = Some(Clip::new("beat", 3840));
+        assert!(h
+            .act(TimeAction::Transport(Command::Record))
+            .unwrap()
+            .ends_with("slot 4 of track 1 launched"));
+        assert!(h.control.project.clip(0, 0).is_none());
+    }
+
     /// ERASE + a tap (Jay after live test 3): a lane's steps or a whole
     /// clip go as one take, and UNDO brings them back; a clip the song
     /// plays stays, since the song's edits have no undo yet.

@@ -420,6 +420,44 @@ impl TimeControl {
 
     /// The clip the Play page's pattern edits: the armed track's (track 1
     /// if none is armed) launched clip, else its first clip.
+    /// REC with nothing to record into (a fresh project, found by the UI
+    /// audit): the armed track's clip the pattern shows is launched, or a
+    /// new clip goes in its first empty slot, as a tap on an empty slot on
+    /// Arrange does. Without it the recorder had no clip and REC kept
+    /// nothing. Returns what it did, if anything.
+    fn ready_to_record(&mut self) -> Result<Option<String>, String> {
+        let Some(track) = self.armed else {
+            return Ok(None);
+        };
+        if self.launches.iter().any(|l| l.track == track) {
+            return Ok(None);
+        }
+        let info = self.info;
+        let (slot, line) = match self.step_focus().1 {
+            Some(s) => (s, format!("slot {} of track {} launched", s + 1, track + 1)),
+            None => {
+                let bar = info.meter.bar_ticks();
+                let length = info.loop_range.map_or(NEW_CLIP_BARS * bar, |(a, b)| b - a);
+                let t = self.project.tracks.get_mut(track).ok_or("no such track")?;
+                let s = t
+                    .slots
+                    .iter()
+                    .position(Option::is_none)
+                    .ok_or_else(|| format!("{} has no empty slot to record into", t.name))?;
+                t.slots[s] = Some(Clip::new(&format!("Clip {}", s + 1), length));
+                (
+                    s,
+                    format!("new clip in slot {} of track {}", s + 1, track + 1),
+                )
+            }
+        };
+        let launch = TimeAction::Launch { track, slot };
+        (self.launches, self.cues) =
+            clips_after(&self.project, &self.launches, &self.cues, &launch, &info);
+        self.compile()?;
+        Ok(Some(line))
+    }
+
     /// "take 3 · Drums / 1", as the takes list names it: what UNDO and
     /// REDO say they did.
     fn take_said(&self, row: Option<TakeRow>) -> String {
@@ -629,6 +667,18 @@ impl TimeControl {
     pub fn act(&mut self, a: TimeAction) -> Result<String, String> {
         let info = self.info;
         match a {
+            TimeAction::Transport(Command::Record)
+                if !matches!(info.state, State::Recording | State::CountIn) =>
+            {
+                let made = self.ready_to_record()?;
+                if !self.command(Command::Record) {
+                    return Err("transport: command queue full".into());
+                }
+                Ok(match made {
+                    Some(line) => format!("transport: Record, {line}"),
+                    None => "transport: Record".into(),
+                })
+            }
             TimeAction::Transport(cmd) => {
                 if !self.command(cmd) {
                     return Err("transport: command queue full".into());
