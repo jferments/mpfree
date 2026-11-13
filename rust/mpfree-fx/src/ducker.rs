@@ -179,6 +179,19 @@ fn release_curve(t: f32, shape: f32) -> f32 {
     1.0 - (a + (b - a) * frac)
 }
 
+/// `x.floor() as i64`, without the library calls `floor` and the
+/// 64-bit conversion are on the MPC's ARM while `x` fits an `i32` (the
+/// tempo cell for decades of playing); the same value either way.
+#[inline]
+fn floor_i64(x: f64) -> i64 {
+    if x.abs() < 2_000_000_000.0 {
+        let i = x as i32;
+        i64::from(if f64::from(i) > x { i - 1 } else { i })
+    } else {
+        x.floor() as i64
+    }
+}
+
 /// A ducker: a volume envelope triggered by a sidechain key or the tempo.
 pub struct Ducker {
     v: [f32; 10],
@@ -302,7 +315,7 @@ impl Ducker {
                     } else {
                         (ctx.frame as f64 + at) * per_frame
                     };
-                    let cell = (b / beats).floor() as i64;
+                    let cell = floor_i64(b / beats);
                     if self.cell != Some(cell) {
                         self.cell = Some(cell);
                         self.trigger();
@@ -423,6 +436,15 @@ impl Node for Ducker {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn floor_i64_is_floor() {
+        for x in [
+            0.0, 0.5, 0.999_999, 1.0, -0.0, -0.25, -1.0, -1.5, 7.0, 1e9, -1e9, 3e9, -3e9,
+        ] {
+            assert_eq!(floor_i64(x), x.floor() as i64, "{x}");
+        }
+    }
 
     #[test]
     fn release_curve_ends_and_bends() {

@@ -132,6 +132,23 @@ impl Engine {
         self as usize
     }
 
+    /// The engine's node id (`mpfree.poly` ...), as a track's own
+    /// instrument and the project name it.
+    pub fn node_id(self) -> &'static str {
+        match self {
+            Engine::Poly => "mpfree.poly",
+            Engine::Fm => "mpfree.fm",
+            Engine::Drums => "mpfree.drums",
+            Engine::Pluck => "mpfree.pluck",
+            Engine::Wavetable => "mpfree.wavetable",
+        }
+    }
+
+    /// The engine whose node id is `id`.
+    pub fn from_node_id(id: &str) -> Option<Engine> {
+        Engine::ALL.into_iter().find(|e| e.node_id() == id)
+    }
+
     /// The engine whose user presets live in `folder` under the library's
     /// Instruments place: the folder is the engine's name ("Poly", "FM"),
     /// in any case.
@@ -526,13 +543,44 @@ impl Synth {
     }
 
     fn node(&self) -> &dyn Node {
-        match self.settings.engine {
+        self.node_of(self.settings.engine)
+    }
+
+    fn node_of(&self, engine: Engine) -> &dyn Node {
+        match engine {
             Engine::Poly => &self.poly,
             Engine::Fm => &self.fm,
             Engine::Drums => &self.drums,
             Engine::Pluck => &self.pluck,
             Engine::Wavetable => &self.wt,
         }
+    }
+
+    /// Engine `engine`'s sound as it is now, for a copy a track plays as
+    /// its own instrument ([`fresh_node`], `instruments.rs`): the node's id
+    /// and every value in its parameter order. Allocates.
+    pub fn sound_of(&self, engine: Engine) -> (&'static str, Vec<f32>) {
+        let node = self.node_of(engine);
+        let values = node.params().iter().map(|p| node.param(p.id)).collect();
+        (node.info().id, values)
+    }
+
+    /// The pads' notes for engine `engine` with the settings now: Drums'
+    /// kit notes, or the layout. Never allocates.
+    pub fn pads_for(&self, engine: Engine) -> [Pad; PADS] {
+        match engine {
+            Engine::Drums => {
+                let base = self.drums.param(drum_params::BASE_NOTE).round() as i16;
+                std::array::from_fn(|p| Pad::single(base + p as i16))
+            }
+            _ => pads::layout(&self.setup()),
+        }
+    }
+
+    /// The tuning the engines play in now (the Synth tab's), for the
+    /// tracks' own instruments.
+    pub fn tuning_now(&self) -> Tuning {
+        self.settings.tuning.tuning(&self.tuning_files)
     }
 
     fn node_mut(&mut self) -> &mut dyn Node {
@@ -717,13 +765,7 @@ impl Synth {
 
     /// Works the pads' notes out again: Drums' kit notes, or the layout.
     fn relayout(&mut self) {
-        self.pads = match self.settings.engine {
-            Engine::Drums => {
-                let base = self.drums.param(drum_params::BASE_NOTE).round() as i16;
-                std::array::from_fn(|p| Pad::single(base + p as i16))
-            }
-            _ => pads::layout(&self.setup()),
-        };
+        self.pads = self.pads_for(self.settings.engine);
     }
 
     /// The sound on each of Drums' pads.
@@ -1384,6 +1426,70 @@ impl Synth {
     pub fn param_info(&self, id: u16) -> Option<&'static ParamInfo> {
         self.node().params().iter().find(|p| p.id == id)
     }
+
+    /// Engine `engine`'s factory presets' names.
+    pub fn preset_names(&self, engine: Engine) -> Vec<String> {
+        match engine {
+            Engine::Fm => self.fm_presets.iter().map(|p| p.name.clone()).collect(),
+            e => static_presets(e)
+                .iter()
+                .map(|p| p.name.to_string())
+                .collect(),
+        }
+    }
+
+    /// Preset `i` of engine `engine` as every value in the node's order
+    /// (and its name), for a track's own copy of the engine: loaded into a
+    /// scratch engine, so this synth's sound is left alone. Allocates.
+    pub fn preset_values(&self, engine: Engine, i: usize) -> Option<(String, Vec<f32>)> {
+        fn values(n: &dyn Node) -> Vec<f32> {
+            n.params().iter().map(|p| n.param(p.id)).collect()
+        }
+        let rate = self.rate;
+        if engine == Engine::Fm {
+            let p = self.fm_presets.get(i)?;
+            let mut n = Fm::new(rate);
+            n.load_preset(p);
+            return Some((p.name.clone(), values(&n)));
+        }
+        let p = static_presets(engine).get(i)?;
+        let v = match engine {
+            Engine::Drums => {
+                let mut n = Drums::new(rate);
+                n.load_preset(p);
+                values(&n)
+            }
+            Engine::Pluck => {
+                let mut n = Pluck::new(rate);
+                n.load_preset(p);
+                values(&n)
+            }
+            Engine::Wavetable => {
+                let mut n = Wavetable::new(rate);
+                n.load_preset(p);
+                values(&n)
+            }
+            Engine::Poly | Engine::Fm => {
+                let mut n = Poly::new(rate);
+                n.load_preset(p);
+                values(&n)
+            }
+        };
+        Some((p.name.to_string(), v))
+    }
+
+    /// What the Synth tab shows for a track's own instrument `node`
+    /// (`engine`'s, or a plugin's with no presets), labelled `track`.
+    pub fn state_of(
+        &self,
+        node: &dyn Node,
+        engine: Option<Engine>,
+        track: &str,
+        preset: Option<usize>,
+    ) -> SynthState {
+        let presets = engine.map(|e| self.preset_names(e)).unwrap_or_default();
+        SynthState::from_node(node, track, Color::from_pad(PAD_WHITE), presets, preset)
+    }
 }
 
 /// A scale's name for the chip and the log: "D Dorian", or its notes'
@@ -1442,6 +1548,15 @@ impl ParamLog {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn every_engines_node_id_is_its_nodes() {
+        let synth = super::Synth::new(44_100);
+        for e in super::Engine::ALL {
+            assert_eq!(synth.sound_of(e).0, e.node_id());
+            assert_eq!(super::Engine::from_node_id(e.node_id()), Some(e));
+        }
+    }
+
     use super::*;
     use mpfree_arp::scale::by_name;
     use mpfree_synth::params as pp;
