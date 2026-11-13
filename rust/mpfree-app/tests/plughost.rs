@@ -13,15 +13,35 @@ use std::time::Duration;
 
 /// The app as the plugin process. Under CI's ARMv7 step (qemu-arm as
 /// cargo's runner) the ARM program is started through the runner.
+///
+/// The device build is static, and a plugin file is a shared library that
+/// needs the device's own `libc.so.6` and `libgcc_s.so.1` from `/lib`. On
+/// an x86 host those are the cross toolchain's ARM copies, so qemu is told
+/// to look there first (`-L`, as `QEMU_LD_PREFIX` would), unless
+/// `QEMU_LD_PREFIX` already says where.
 fn program() -> Program {
     let exe = env!("CARGO_BIN_EXE_mpfree");
     match std::env::var("CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_RUNNER")
         .ok()
         .filter(|_| cfg!(target_arch = "arm"))
     {
+        Some(r) if is_qemu(&r) && std::env::var_os("QEMU_LD_PREFIX").is_none() => {
+            Program::with_lead(r.as_ref(), &["-L", ARM_LIBS, exe, "plughost"])
+        }
         Some(r) => Program::with_lead(r.as_ref(), &[exe, "plughost"]),
         None => Program::with_lead(exe.as_ref(), &["plughost"]),
     }
+}
+
+/// Where Ubuntu's ARMv7 hard-float cross toolchain keeps the target's
+/// `lib/` (gcc-arm-linux-gnueabihf, libc6-armhf-cross).
+const ARM_LIBS: &str = "/usr/arm-linux-gnueabihf";
+
+fn is_qemu(runner: &str) -> bool {
+    std::path::Path::new(runner)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .is_some_and(|n| n.starts_with("qemu-arm"))
 }
 
 fn run(args: &[&str]) -> std::process::Output {
@@ -82,7 +102,9 @@ fn the_app_lists_a_plugin_file_as_the_plugin_process() {
 
 #[test]
 fn a_plugin_made_with_the_app_as_its_process_plays() {
-    let d = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("mpfree-plughost-app");
+    // Its own folder, so runs at once never share (or delete) one file.
+    let d = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
+        .join(format!("mpfree-plughost-app-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();
     std::fs::copy(plugin_file(), d.join("test.clap")).unwrap();
