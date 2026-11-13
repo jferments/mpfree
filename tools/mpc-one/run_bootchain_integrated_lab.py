@@ -1316,6 +1316,51 @@ class Lab:
             self.stages["elf-relocation-crosscheck"]={
                 "success":False,"error":str(exc)}
             self.notes.append("ELF relocation crosscheck: "+str(exc))
+        # Independent direct checks across SPL media initialization,
+        # exact Fastboot ADC thresholds, and the genuine libaz01-prog
+        # verification/compatibility/write orchestration functions.
+        # Source-only: do NOT run updater, loader or any device backend.
+        try:
+            follow = load_module(
+                "tools/mpc-one/synthesize_multitrack_followups.py",
+                "mpfree_verified_multitrack_followups",
+            )
+            follow_report = follow.build(
+                lambda path: (self.out / path).read_bytes()
+            )
+            (self.out / "multitrack-followups.json").write_text(
+                json.dumps(follow_report, indent=2) + "\n")
+            (self.out / "multitrack-followups.md").write_text(
+                follow.markdown(follow_report))
+            record["multitrack_followups"] = {
+                "report":"multitrack-followups.json",
+                "all_original_source_checks":follow_report[
+                    "all_static_preconditions_passed"],
+                "spl_boot_order_initially_sentinel":follow_report[
+                    "spl"]["checks"]["boot_order_five_original_words_are_deadbeef"],
+                "power_source_thresholds":follow_report[
+                    "power_source"]["original_threshold_words"],
+                "onboard_key_and_verification_code_observed":follow_report[
+                    "updater"]["checks"]["onboard_key_lookup_precedes_download_verification"],
+                "real_maskrom_or_updater_execution_proven":False,
+            }
+            self.stages["multitrack-owner-followups"] = {
+                "success":bool(follow_report[
+                    "all_static_preconditions_passed"]),
+                "spl_media_mapping_strings":[
+                    x["original_string"] for x in follow_report[
+                        "spl"]["mapping_name_pairs"][:3]],
+                "power_source_threshold_values":follow_report[
+                    "power_source"]["original_threshold_words"],
+                "openssl_sha256_verify_256byte_signature":follow_report[
+                    "updater"]["checks"]["openssl_sha256_256byte_signature_verify"],
+                "vendor_executed":False,
+            }
+        except Exception as exc:
+            record["multitrack_followups_error"]=str(exc)
+            self.stages["multitrack-owner-followups"]={
+                "success":False,"error":str(exc)}
+            self.notes.append("SPL/ADC/updater verification: "+str(exc))
         (self.out / "cross-evidence.json").write_text(json.dumps(record, indent=2) + "\n")
         summary = [
             "# MPFree integrated bootchain run",
@@ -1449,6 +1494,17 @@ class Lab:
                            str(links["matched_target_symbols"]) + "/3 targets.")
             summary.append("- Read-only ELF metadata; actual linker bindings and updater execution unproven.")
             summary.append("- See elf-relocation-crosscheck.json for explicit relocation offsets.")
+        summary += ["", "## Owner source followups: SPL, ADC, update verification"]
+        owner = record.get("multitrack_followups")
+        if owner:
+            summary.append("- SPL stored device priority is sentinel, not live order: " +
+                           str(owner["spl_boot_order_initially_sentinel"]))
+            summary.append("- Original power-source boundaries: " +
+                           str(owner["power_source_thresholds"]))
+            summary.append("- Update-library onboard key / verify-before-apply observed: " +
+                           str(owner["onboard_key_and_verification_code_observed"]))
+            summary.append("- Image verification is cached/flag-dependent; runtime security unproven.")
+            summary.append("- See multitrack-followups.json/.md.")
         summary += ["", "## Guest/static image consistency"]
         if record["match_tests"]:
             for entry in record["match_tests"]:
