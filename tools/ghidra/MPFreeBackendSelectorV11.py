@@ -417,6 +417,38 @@ def mpfree_v11_entrypoint():
             'indirect_spl_handoff_target_proven':False,
             'live_updater_trampoline_target_proven':False,
         }
+    # Owner-private library image-format dispatch probes. The
+    # az01_open_image routine selects format handlers through PIC/GOT
+    # expressions, so raw words here are NOT resolved runtime methods.
+    if role=='libaz01-prog':
+        slots=(
+            ('az01_open_image_pic_base',0x000174f4),
+            ('az01_open_image_AZ01_offset',0x000174f8),
+            ('az01_open_image_AZ0x_offset',0x000174fc),
+            ('az01_open_image_FDT_offset',0x00017500),
+        )
+        saved={}
+        for label,address in slots:
+            raw=None
+            block=mem.getBlock(A(address))
+            if block is not None and block.isInitialized():
+                try:
+                    raw=int(mem.getInt(A(address))) & 0xffffffff
+                except Exception:
+                    raw=None
+            saved[label]={
+                'address':addr_hex(address),
+                'original_memory_word':addr_hex(raw) if raw is not None else None,
+                'runtime_relocation_or_callback_not_proven':True,
+            }
+        direct_boot={
+            'schema':'mpfree-original-image-format-dispatch-words-v1',
+            'source_stage':'libaz01-prog',
+            'image_format_prefixes':['AZ0x','AZ01','D00DFEED'],
+            'format_handler_candidate_original_words':saved,
+            'no_vendor_execution':True,
+            'runtime_dispatch_resolved':False,
+        }
     # Explicit P3 direct-boot/protocol research. Read literal-pool values and
     # original bytes from the SHA-verified saved project. No code execution.
     if role=='uboot':
