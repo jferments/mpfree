@@ -331,6 +331,17 @@ data side is here:
   that build; #223 has since spread it over periods inside the probe). The
   same rows show the controller output's refused, dropped and stalled
   messages and the report lines dropped (control.rs).
+  **First device numbers (live test 2, 13 Nov, main 7b2cae9, sound cores
+  shared, about 11 minutes of free play, at most 10 sounds):** no slow
+  period. Each part's worst in any 30 s window stayed between 0.03 and
+  0.37 ms, against the 1.45 ms mark (13 % of a period at most). The 0.37 ms
+  were screen actions: a step-editor tap and a synth preset load. MIDI in
+  and buttons peaked at 0.26 ms, and "after the write" ran 0.16 to 0.25 ms.
+  There were no controller output, report or chain editor problems, and 1
+  underrun in 216 968 periods, at the start. So nothing more moves to a
+  control thread for now (see [concurrency.md](concurrency.md)). A busier
+  run (a full song, the lanes on) should be read the same way. The lines
+  are in the project files, `hello-mpc/live-test-2-0623/control-lines.txt`.
 
 ## CI
 

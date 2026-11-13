@@ -20,6 +20,14 @@ import manual_pages as mp  # noqa: E402
 ROOT = mp.ROOT
 OLD_DIRS = ("project", "decisions", "guides", "hardware", "milestones", "perf", "research")
 FENCE = re.compile(r"^(```|~~~).*?^\1", re.S | re.M)
+# Dated archives keep old pages byte for byte (their blob SHAs are listed in
+# each archive's README), so their old relative links are not checked, and a
+# page there is listed when its archive's README links it.
+ARCHIVES = ("docs/dev/hardware/archive/",)
+
+
+def archived(f):
+    return f.startswith(ARCHIVES) and os.path.basename(f) != "README.md"
 
 
 def tracked_md():
@@ -31,6 +39,8 @@ def tracked_md():
 
 def check_links(files, errors):
     for f in files:
+        if archived(f):
+            continue
         with open(os.path.join(ROOT, f), encoding="utf-8", errors="replace") as fh:
             text = FENCE.sub("", fh.read())
         text = re.sub(r"`[^`\n]*`", "", text)
@@ -65,6 +75,10 @@ def check_layout(files, errors):
             errors.append(f"{f}: old docs path; run python3 docs/tools/migrate_doc_paths.py")
     for folder, index in (("docs/dev", "docs/dev/README.md"), ("docs/agents", "docs/agents/README.md")):
         linked = linked_from(index, folder)
+        for readme in files:
+            if readme.startswith(ARCHIVES) and readme.startswith(folder + "/") \
+                    and os.path.basename(readme) == "README.md":
+                linked |= linked_from(readme, os.path.dirname(readme))
         for f in files:
             if f.startswith(folder + "/") and f != index and f not in linked:
                 errors.append(f"{f}: not listed in {index}")
