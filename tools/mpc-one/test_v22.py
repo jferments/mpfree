@@ -55,6 +55,13 @@ class V22Contracts(unittest.TestCase):
         self.assertIn("V22_DIVISION ((uintptr_t)0x0012ee08u)",c)
         self.assertIn("v22_udiv",c)
         self.assertIn("V22_OWNER_WRITE ((uintptr_t)0x0011de51u)",c)
+        # Ghidra FUN_0011de50(int, uint, uint, int) takes FOUR
+        # parameters. The original V22 typo used a three-argument cast,
+        # which the ARM compiler correctly rejected under -Werror.
+        self.assertIn("typedef uint32_t (*v22_registered_write_fn)(",c)
+        self.assertIn("uint32_t block_count, uint32_t source_ptr);",c)
+        self.assertIn("(v22_registered_write_fn)V22_OWNER_WRITE;",c)
+        self.assertNotIn("(uint32_t(*)(uint32_t,uint32_t,uint32_t))V22_OWNER_WRITE",c)
         self.assertIn("V22_WRITE_POINTER_LITERAL",c)
         self.assertIn("v22_synthetic_media_write",c)
         self.assertIn("0x0011ca78u",c)
