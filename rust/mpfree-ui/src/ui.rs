@@ -377,6 +377,17 @@ impl Ui {
         any.downcast_mut::<W>()
     }
 
+    /// Reach a widget without redrawing it: only for state it does not
+    /// draw, such as taking the inputs it queued. Anything that changes
+    /// what it draws goes through [`Ui::get_mut`]. (Reaching for a widget
+    /// every frame through `get_mut` redraws it every frame: the Pads tab's
+    /// browser did, at 30 frames a second, until 13 Nov.)
+    pub fn get_mut_quiet<W: Widget>(&mut self, name: &str) -> Option<&mut W> {
+        let (_, w, _) = self.widgets.iter_mut().find(|(n, _, _)| n == name)?;
+        let any: &mut dyn Any = w.as_mut();
+        any.downcast_mut::<W>()
+    }
+
     /// Redraw everything at the next `paint`.
     pub fn invalidate(&mut self) {
         self.full = true;

@@ -579,7 +579,24 @@ impl Widget for MacrosView {
         }
     }
 
+    /// Passes the touch on to the app (an event) whenever it made actions:
+    /// `Ui::touch` drops a widget's touch that answers None.
     fn touch(&mut self, finger: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
+        let before = self.actions.len();
+        self.touch_inner(finger, phase, x, y, r);
+        (self.actions.len() > before).then_some(EventKind::Select(self.actions.len()))
+    }
+}
+
+impl MacrosView {
+    fn touch_inner(
+        &mut self,
+        finger: u64,
+        phase: Touch,
+        x: i32,
+        y: i32,
+        r: Rect,
+    ) -> Option<EventKind> {
         let l = layout(r);
         match phase {
             Touch::Down => {

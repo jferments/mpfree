@@ -270,12 +270,20 @@ struct Click {
     phase: f32,
     freq: f32,
     env: f32,
+    /// The click's level, as a gain.
+    pub gain: f32,
 }
 
-/// The click's level (about -12 dBFS) and decay (a quarter of its level
-/// after 15 ms).
-const CLICK_GAIN: f32 = 0.25;
+/// The click's level by default (-24 dBFS; it was -12 until live test 3,
+/// "far too loud") and decay (a quarter of its level after 15 ms). Play's
+/// options set the level (`Settings::metronome_db`).
+pub const CLICK_DB: f32 = -24.0;
 const CLICK_MS: f32 = 15.0;
+
+/// A level in dB as a gain.
+pub fn click_gain(db: f32) -> f32 {
+    10f32.powf(db / 20.0)
+}
 
 impl Click {
     fn new(rate: u32) -> Click {
@@ -286,6 +294,7 @@ impl Click {
             phase: 0.0,
             freq: 0.0,
             env: 0.0,
+            gain: click_gain(CLICK_DB),
         }
     }
 
@@ -310,7 +319,7 @@ impl Click {
                 next += 1;
             }
             if self.env > 1e-4 {
-                let s = CLICK_GAIN * self.env * (self.phase * TAU).sin();
+                let s = self.gain * self.env * (self.phase * TAU).sin();
                 self.phase = (self.phase + self.freq / self.rate).fract();
                 self.env *= decay;
                 left[f] = (left[f] + s).clamp(-1.0, 1.0);
@@ -332,8 +341,11 @@ impl Click {
 pub struct TimeHost {
     control: TimeControl,
     audio: TimeAudio,
-    /// Click while counting in and recording.
+    /// Click while counting in and recording (off by default since live
+    /// test 3; Play's options and SHIFT + PLAY START turn it on).
     pub metronome: bool,
+    /// The click's level, as a gain ([`click_gain`]).
+    pub click_gain: f32,
 }
 
 /// A step's parameter lock (`value`) or its end (`None`), `offset` frames
@@ -379,7 +391,8 @@ impl TimeHost {
         let mut host = TimeHost {
             control,
             audio,
-            metronome: true,
+            metronome: false,
+            click_gain: click_gain(CLICK_DB),
         };
         host.audio.receive();
         Ok(host)
@@ -405,6 +418,7 @@ impl TimeHost {
     pub fn split(self) -> (TimeControl, TimeAudio) {
         let mut audio = self.audio;
         audio.metronome = self.metronome;
+        audio.set_click_gain(self.click_gain);
         (self.control, audio)
     }
 
@@ -709,6 +723,7 @@ impl TimeHost {
     /// for a recording with no room left in place).
     fn run(&mut self, frames: u32, pads: &mut impl Pads, arps: Option<&mut TrackArps>) {
         self.audio.metronome = self.metronome;
+        self.audio.set_click_gain(self.click_gain);
         self.audio.run(frames, pads, arps);
         self.control.poll();
         self.audio.receive();
@@ -2189,6 +2204,8 @@ mod tests {
     #[test]
     fn the_click_counts_in_and_follows_recording_only() {
         let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        assert!(!h.metronome, "off by default (live test 3)");
+        h.metronome = true;
         let mut pads = Fake::default();
         let (mut l, mut r) = ([0f32; PERIOD as usize], [0f32; PERIOD as usize]);
         let mut onsets = Vec::new();

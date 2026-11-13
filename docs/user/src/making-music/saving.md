@@ -27,7 +27,7 @@ These are saved on the stick as soon as you change them, and are back the next t
 | What | Where you set it |
 |---|---|
 | Your Prefs: pad velocity curve, how Latch keeps pads, the audio buffer, the loop memory, developer tools, the theme, what opens at start, screen pad velocity | [Prefs](../reference/prefs.md) |
-| The metronome on or off | **SHIFT + PLAY START** |
+| The metronome on or off, and its level | **SHIFT + PLAY START**, or the Play page's options (**MENU**) |
 | The Looper's level, and the line input's latency once you have set it by hand | The Looper tab's options (see [Recording loops](looping.md)) |
 | The buttons MPFree has learned | Prefs > Map controls, or the button guide |
 | Arpeggiator patterns you save, and your own scales | The pattern workspace's **Save** (see [Note Repeat, Latch and the arpeggiator](note-repeat-and-arp.md#the-pattern-workspace)) |

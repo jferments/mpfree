@@ -91,6 +91,7 @@ impl App {
         out.set_str("sound-cores", s.sound_cores.name());
         out.set_i64("loop-memory", i64::from(s.loop_memory.minutes()));
         out.set_bool("metronome", s.metronome);
+        out.set_i64("metronome-level", i64::from(s.metronome_db));
         out.set_str("at-start", if s.open_last { "last" } else { "new" });
         // The Looper's level, and the line input's latency once it was set
         // by hand (measured with a cable). The line input itself, and so
@@ -171,6 +172,11 @@ impl App {
                     .map(|m| s.loop_memory = m)
                     .is_some(),
                 "metronome" => app.get_bool(k).map(|b| s.metronome = b).is_some(),
+                "metronome-level" => app
+                    .get_i64(k)
+                    .and_then(|n| super::METRONOME_DBS.iter().find(|&&d| i64::from(d) == n))
+                    .map(|&d| s.metronome_db = d)
+                    .is_some(),
                 "at-start" => match v {
                     "new" => Some(false),
                     "last" => Some(true),
@@ -205,7 +211,7 @@ impl App {
             let on = |b: bool| if b { "on" } else { "off" };
             notes.push(format!(
                 "saved settings: pad curve {}, screen velocity {}, latch {}, audio buffer {} periods, \
-                 developer tools {}, theme {}, sound cores {}, loop memory {} min, metronome {}, \
+                 developer tools {}, theme {}, sound cores {}, loop memory {} min, metronome {} at {} dB, \
                  loop level {:+.0} dB, line input latency {}, at start {}",
                 s.curve.label(),
                 s.screen_velocity,
@@ -216,6 +222,7 @@ impl App {
                 s.sound_cores.name(),
                 s.loop_memory.minutes(),
                 on(s.metronome),
+                s.metronome_db,
                 s.loop_level_db,
                 if s.loop_latency_set {
                     format!("{} frames", s.loop_latency)
@@ -340,7 +347,7 @@ mod tests {
         a.step_item(r, 1);
         // The metronome, and the Looper's level and measured latency (its
         // tab's rows), are the system's too.
-        a.settings.metronome = false;
+        a.settings.metronome = true;
         let r = row(&a, Item::AtStart);
         a.step_item(r, 1);
         a.looper_setting(Item::LoopLevel, -1);
@@ -361,7 +368,7 @@ mod tests {
         let (app, map) = (saves[0].1.clone(), saves[1].1.clone());
         assert_eq!(app.get_str("audio-buffer"), Some("2"));
         assert_eq!(app.get_bool("developer-tools"), Some(true));
-        assert_eq!(app.get_bool("metronome"), Some(false));
+        assert_eq!(app.get_bool("metronome"), Some(true));
         assert_eq!(app.get_str("at-start"), Some("last"));
         assert_eq!(app.get_str("loop-level"), Some("-2"));
         let latency = a.settings.loop_latency;
@@ -396,7 +403,7 @@ mod tests {
                 b.settings.loop_level_db,
                 b.settings.open_last
             ),
-            (false, -2.0, true)
+            (true, -2.0, true)
         );
         assert_eq!(
             (b.settings.loop_latency, b.settings.loop_latency_set),
