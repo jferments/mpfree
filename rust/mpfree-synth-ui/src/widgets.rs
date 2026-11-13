@@ -587,7 +587,8 @@ struct Drag {
 
 /// The page's parameters as tiles, four to a row.
 ///
-/// - A finger down on a tile selects it: `Select(i)`. The wheel then turns it.
+/// - A finger down on a tile selects it: `Select(i)`. - / + then step it,
+///   and so does the wheel once its push opened the tile (`editing`).
 /// - Dragging a knob up or down turns it: `Value(pos)` for the selected
 ///   tile, [`DRAG_PX`] pixels for the whole range.
 /// - Lifting on a choice's button, or on an arrow, gives
@@ -598,6 +599,9 @@ pub struct TileGrid {
     pub caption: String,
     pub tiles: Vec<Tile>,
     pub selected: Option<usize>,
+    /// The wheel's push opened the selected tile: it is outlined more
+    /// strongly while the wheel turns it.
+    pub editing: bool,
     drag: Option<Drag>,
 }
 
@@ -616,6 +620,7 @@ impl TileGrid {
             caption: String::new(),
             tiles: Vec::new(),
             selected: None,
+            editing: false,
             drag: None,
         }
     }
@@ -705,9 +710,12 @@ impl Widget for TileGrid {
         for (i, tile) in self.tiles.iter().enumerate() {
             let tr = self.tile_rect(r, i);
             let color = themed(&t, tile.color);
-            cx.canvas.fill_round_rect(tr, 12, fill);
-            if self.selected == Some(i) {
-                cx.canvas.stroke_round_rect(tr, 12, 2, t.accent);
+            let on = self.selected == Some(i);
+            cx.canvas
+                .fill_round_rect(tr, 12, if on && self.editing { t.raised } else { fill });
+            if on {
+                cx.canvas
+                    .stroke_round_rect(tr, 12, if self.editing { 3 } else { 2 }, t.accent);
             }
             let label = tile.label.to_uppercase();
             match &tile.kind {

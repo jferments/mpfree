@@ -95,13 +95,13 @@ pub const KEY_VELOCITY: u8 = 100;
 pub const TAB: usize = 3;
 
 /// The hint line the app shows under the tab.
-pub const HINT: &str = "Drag a layer's edges for its velocities · drag the envelope's points and the filter's dot · tap a \
-                        row, then the wheel changes it · SHIFT + Q-Link: finer";
+pub const HINT: &str = "Drag a layer's edges for its velocities · drag the envelope's points and the filter's dot · the wheel picks a \
+                        row, - / + change it · SHIFT + Q-Link: finer";
 
 /// The hint line while the keyboard shows.
 pub const KEYS_HINT: &str =
     "Drag the pad's zone edges and root dot · tap a zone to pick its pad · press keys to hear \
-                             them · tap a row, then the wheel changes it";
+                             them · the wheel picks a row, - / + change it";
 
 /// The highest note pad 1 may play, so that pad 16 is a MIDI note.
 const MAX_PADS_FROM: u8 = 127 - 15;
@@ -602,7 +602,7 @@ impl PlayTab {
                 KnobCard::new(&format!("Q-Link {} · {}", k + 1, row.label()), colors[k]),
             );
         }
-        ui.add(WHEEL, InfoCard::new("Wheel · the row picked"));
+        ui.add(WHEEL, InfoCard::new("The row picked"));
         ui.add(
             SCENES,
             ButtonRow::new(&["Store A", "Store B", "Return to A"]),

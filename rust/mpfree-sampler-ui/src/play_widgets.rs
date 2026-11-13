@@ -273,7 +273,7 @@ impl Widget for LayerMap {
                     l.hi = (v - 1).clamp(i32::from(l.lo), 127) as u8;
                     l.hi
                 } else {
-                    l.lo = v.clamp(1, i32::from(l.hi)) as u8;
+                    l.lo = v.clamp(1, i32::from(l.hi).max(1)) as u8;
                     l.lo
                 };
                 Some(EventKind::Marker {

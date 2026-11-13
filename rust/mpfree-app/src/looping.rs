@@ -59,7 +59,8 @@ pub const WAVE_COLUMNS: usize = 600;
 /// period on the MPC), so the wave never makes the sound late. A two-bar
 /// loop at 120 BPM takes a quarter of a second. All the loops' layers
 /// together hold at most `LoopHost::new`'s seconds, so the longest wave
-/// (the app's 60 s) takes under 4 s.
+/// takes under 4 s a minute of loop memory (Prefs' largest, 20 minutes,
+/// filled by one loop: about 80 s, drawn as it goes).
 const WAVE_BUDGET: usize = 2048;
 /// The fewest and most frames of each layer read in a period (16 layers
 /// of the fewest are the budget).
@@ -94,6 +95,60 @@ impl LoopSource {
     }
 }
 
+/// Prefs "Loop memory": the sound every loop and layer shares. It is set
+/// aside, and kept in RAM, when MPFree starts (the sound can't wait for
+/// memory), so a new size applies from the next start, like Sound cores.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum LoopMemory {
+    /// A minute: what every build before live test 3 had.
+    Min1,
+    Min2,
+    #[default]
+    Min5,
+    Min10,
+    Min20,
+}
+
+impl LoopMemory {
+    pub const ALL: [LoopMemory; 5] = [
+        LoopMemory::Min1,
+        LoopMemory::Min2,
+        LoopMemory::Min5,
+        LoopMemory::Min10,
+        LoopMemory::Min20,
+    ];
+
+    pub fn minutes(self) -> u32 {
+        match self {
+            LoopMemory::Min1 => 1,
+            LoopMemory::Min2 => 2,
+            LoopMemory::Min5 => 5,
+            LoopMemory::Min10 => 10,
+            LoopMemory::Min20 => 20,
+        }
+    }
+
+    pub fn seconds(self) -> u32 {
+        60 * self.minutes()
+    }
+
+    /// The kept setting's value: the minutes.
+    pub fn parse(v: &str) -> Option<LoopMemory> {
+        let m = v.trim().parse::<u32>().ok()?;
+        LoopMemory::ALL.into_iter().find(|l| l.minutes() == m)
+    }
+
+    /// What it costs, in whole megabytes, at `rate`.
+    pub fn megabytes(self, rate: u32) -> usize {
+        mpfree_looper::bytes_for(rate, self.seconds()).div_ceil(1_000_000)
+    }
+
+    /// Prefs' value for it: "5 min, 110 MB".
+    pub fn row(self, rate: u32) -> String {
+        format!("{} min, {} MB", self.minutes(), self.megabytes(rate))
+    }
+}
+
 /// What the app asks of the looper and the line input.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum LoopAction {
@@ -115,6 +170,9 @@ pub enum LoopAction {
     Resample(usize),
     /// The undo history: back `n` steps (below 0) or forward (above 0).
     Steps(i32),
+    /// Loop `n`'s mute turned over without picking it, or the picked
+    /// loop's (None): a muted loop stays silent when PLAY starts.
+    ToggleMute(Option<usize>),
 }
 
 /// What the line input counted since it was opened.
@@ -827,6 +885,9 @@ pub struct LoopHost {
     saved: Option<Saved>,
     /// Saves started again because a loop changed while it was read.
     pub save_restarts: u64,
+    /// The loop the last pick asked for: commands queued after it act on
+    /// it ([`LoopHost::toggle_mute`] picks it back).
+    picked: usize,
     /// Undo (below 0) or Redo (above 0) presses the undo history asked for
     /// that the command queue had no room for yet ([`LoopHost::steps`]).
     steps_left: i32,
@@ -1124,6 +1185,7 @@ impl LoopHost {
             saved: None,
             save_restarts: 0,
             steps_left: 0,
+            picked: 0,
         }
     }
 
@@ -1203,6 +1265,7 @@ impl LoopHost {
             }
         }
         self.looper.select_loop(saved.selected);
+        self.picked = saved.selected;
         let mut note = format!("looper: loading loops {}", done.join(", "));
         if done.is_empty() {
             note = "looper: no loops to load".into();
@@ -1470,6 +1533,7 @@ impl LoopHost {
                 n + 1
             );
         }
+        self.picked = n;
         format!(
             "looper: Resample into loop {}: armed, its first pass records the other loops as heard from the next bar line",
             n + 1
@@ -1497,7 +1561,47 @@ impl LoopHost {
                 n + 1
             );
         }
+        self.picked = n;
         format!("looper: loop {} picked ({what})", n + 1)
+    }
+
+    /// Loop `n`'s mute turned over (the picked loop's with None), leaving
+    /// the pick as it was: the loop cards' speakers and the Mute button.
+    pub fn toggle_mute(&mut self, n: Option<usize>) -> String {
+        let picked = self.picked;
+        let n = n.unwrap_or(picked).min(MAX_LOOPS - 1);
+        let Some(s) = self.looper.loop_status(n) else {
+            return format!("looper: loop {}: not there", n + 1);
+        };
+        if s.phase == Phase::Empty {
+            return format!("looper: loop {}: empty, nothing to mute", n + 1);
+        }
+        let on = !s.muted;
+        // Pick it, mute, pick the old one back: all three or none.
+        let need = if n == picked { 1 } else { 3 };
+        if self.looper.room() < need {
+            return format!(
+                "looper: loop {} {}: NOT done, the command queue is full",
+                n + 1,
+                if on { "mute" } else { "unmute" }
+            );
+        }
+        if n != picked {
+            self.looper.select_loop(n);
+        }
+        self.looper.command(Command::Mute(on));
+        if n != picked {
+            self.looper.select_loop(picked);
+        }
+        format!(
+            "looper: loop {} {}",
+            n + 1,
+            if on {
+                "muted: silent, PLAY doesn't start it"
+            } else {
+                "unmuted: it plays with the others"
+            }
+        )
     }
 
     /// A layer's control, by the layer's id, with its `looper:` line for
@@ -1505,6 +1609,15 @@ impl LoopHost {
     pub fn layer_command(&mut self, id: u8, c: LayerCommand) -> String {
         if c == LayerCommand::Delete {
             self.steps_left = 0;
+            // The last layer can't be deleted on its own (the looper keeps
+            // it): its × clears the loop, as Clear does (13 Nov live test,
+            // where the first pass's × said "deleted" and stayed).
+            let s = self.looper.status();
+            let last = s.layers <= 1
+                && (0..MAX_LAYERS).any(|k| self.looper.layer_info(k).is_some_and(|l| l.id == id));
+            if last && s.phase != Phase::Empty {
+                return self.command(Command::Clear);
+            }
         }
         let k = (0..MAX_LAYERS)
             .find(|&k| self.looper.layer_info(k).is_some_and(|l| l.id == id))
@@ -1655,6 +1768,20 @@ impl LoopHost {
             ));
         }
         lines
+    }
+
+    /// Whether a loop is armed or records its first pass, and whether one
+    /// overdubs: the REC and OVERDUB lights ([`crate::app::App::transport_lights`]).
+    pub fn recording(&self) -> (bool, bool) {
+        let (mut rec, mut dub) = (false, false);
+        for s in (0..MAX_LOOPS).filter_map(|n| self.looper.loop_status(n)) {
+            match s.phase {
+                Phase::Armed | Phase::Recording => rec = true,
+                Phase::Overdubbing => dub = true,
+                Phase::Empty | Phase::Playing => {}
+            }
+        }
+        (rec, dub)
     }
 
     /// The `status: looper: ...` line.
@@ -2093,6 +2220,66 @@ mod tests {
         );
         run(&mut h, 1);
         assert!(h.view(120.0).layers[1].unwrap().audible);
+    }
+
+    /// 13 Nov live test: the first pass's × said "deleted" and the loop
+    /// stayed. The last layer's × now clears the loop; a loop card's
+    /// speaker mutes that loop without picking it, and a muted loop stays
+    /// silent when PLAY starts.
+    #[test]
+    fn the_last_layers_x_clears_and_a_loop_mutes_without_being_picked() {
+        let mut h = LoopHost::new(44_100, 8);
+        let mut t = Transport::new(44_100, 120.0).unwrap();
+        let mut b = Block::new();
+        h.command(Command::SetBars(Some(1)));
+        h.command(Command::SetLatency(0));
+        h.command(Command::Record);
+        t.command(0, T::Play);
+        let mut run = |h: &mut LoopHost, periods: u64| {
+            for _ in 0..periods {
+                assert!(t.process(PERIOD as u32, &mut b));
+                let (mut l, mut r) = ([0.0; PERIOD], [0.0; PERIOD]);
+                h.period(&b, &mut l, &mut r);
+            }
+        };
+        run(&mut h, 700);
+        // Loop 2 records too, and loop 1 is picked again.
+        h.select(1);
+        h.command(Command::SetBars(Some(1)));
+        h.command(Command::Record);
+        run(&mut h, 1400);
+        assert_eq!(h.view(120.0).loops[1].phase, Phase::Playing);
+        h.select(0);
+        run(&mut h, 1);
+        // Loop 2's speaker: muted, and loop 1 stays picked.
+        assert_eq!(
+            h.toggle_mute(Some(1)),
+            "looper: loop 2 muted: silent, PLAY doesn't start it"
+        );
+        run(&mut h, 2);
+        let v = h.view(120.0);
+        assert!(v.loops[1].muted && !v.loops[0].muted);
+        assert_eq!(v.selected, 0);
+        assert_eq!(
+            h.toggle_mute(Some(2)),
+            "looper: loop 3: empty, nothing to mute"
+        );
+        // The Mute button: the picked loop's own mute.
+        assert!(h.toggle_mute(None).contains("loop 1 muted"));
+        run(&mut h, 2);
+        assert!(h.view(120.0).loops[0].muted);
+        h.toggle_mute(None);
+        run(&mut h, 2);
+        // Loop 1 has one layer: its × clears it.
+        let v = h.view(120.0);
+        assert_eq!(v.status.layers, 1);
+        let only = v.layers[0].unwrap();
+        let line = h.layer_command(only.id, LayerCommand::Delete);
+        assert_eq!(line, "looper: Clear: the loop fades out (1 layers)");
+        run(&mut h, 20);
+        let v = h.view(120.0);
+        assert_eq!(v.loops[0].phase, Phase::Empty);
+        assert_eq!(v.loops[1].phase, Phase::Playing, "the other loop stays");
     }
 
     /// The pads' sound for song frame `n`: different every frame.

@@ -2510,9 +2510,6 @@ fn strip_shown(view: app::View) -> bool {
 const METER_EVERY: Duration = Duration::from_millis(50);
 /// How often the Sample page's playheads are sent while it shows.
 const SAMPLE_HEADS_EVERY: Duration = Duration::from_millis(40);
-/// Seconds of stereo audio the looper keeps for all its layers (about
-/// 21 MB, allocated once at the start).
-const LOOP_SECONDS: u32 = 60;
 /// While overdubbing, the loop's waveform is redrawn about once a second.
 const LOOP_WAVE_PERIODS: u64 = 344;
 
@@ -2860,6 +2857,10 @@ fn looper_action(
             out.note(&looper.select(n));
             Vec::new()
         }
+        looping::LoopAction::ToggleMute(n) => {
+            out.note(&looper.toggle_mute(n));
+            Vec::new()
+        }
     }
 }
 
@@ -3183,8 +3184,16 @@ fn player_session(
     // The time engine (transport, clips, takes) runs in this loop too.
     let mut time = time::TimeHost::new(RATE, app.settings.bpm)?;
     // The looper follows the transport; the line input stays closed until
-    // the Prefs row "Line input" opens it.
-    let mut looper = looping::LoopHost::new(RATE, LOOP_SECONDS);
+    // the Prefs row "Line input" opens it. Its memory (Prefs "Loop memory",
+    // as saved) is set aside once, here, and locked in RAM with the rest.
+    let loop_memory = app.settings.loop_memory;
+    let mut looper = looping::LoopHost::new(RATE, loop_memory.seconds());
+    app.set_loop_memory_now(loop_memory);
+    out.say(&format!(
+        "looper: {} min of loop memory ({} MB, Prefs > Loop memory)",
+        loop_memory.minutes(),
+        loop_memory.megabytes(RATE)
+    ));
     let mut loop_time = RenderTime::default();
     let mut loop_shown_at = Instant::now();
     out.show(gui::ToUi::Time(Box::new(time.state())));
@@ -3545,6 +3554,9 @@ fn player_session(
                 }
                 gui::FromUi::LoopPick(n) => {
                     fx.push(app::Effect::Looper(looping::LoopAction::Select(n)))
+                }
+                gui::FromUi::LoopMute(n) => {
+                    fx.push(app::Effect::Looper(looping::LoopAction::ToggleMute(n)))
                 }
                 gui::FromUi::LooperSetting(item, d) => fx.extend(app.looper_setting(item, d)),
                 gui::FromUi::LoopCommand(c) => {
@@ -4108,9 +4120,9 @@ fn player_session(
                     out.show(gui::ToUi::ChainQLink(knob, delta))
                 }
                 app::Effect::QLinkBank => out.show(gui::ToUi::QLinkBank),
-                app::Effect::SynthWheel(d) => out.show(gui::ToUi::SynthWheel(d)),
                 app::Effect::SynthPage(d) => out.show(gui::ToUi::SynthPage(d)),
                 app::Effect::SampleWheel(d) => out.show(gui::ToUi::SampleWheel(d)),
+                app::Effect::Rows(k) => out.show(gui::ToUi::Rows(k)),
                 app::Effect::SamplePad(d) => out.show(gui::ToUi::SamplePad(d)),
                 app::Effect::SampleUndo { redo } => out.show(gui::ToUi::SampleUndo(redo)),
                 app::Effect::StopSounds => {
@@ -4325,6 +4337,21 @@ fn player_session(
         parts.lap(parts::APP);
         let time_span = Span::start();
         app.set_rolling(time.info().state.rolling());
+        // The transport buttons' lights follow the transport and the
+        // loops (only the ones that changed; next period's effects).
+        {
+            let info = time.info();
+            let (loop_rec, loop_dub) = looper.recording();
+            fx.extend(app.transport_lights(app::TransportLights {
+                rolling: info.state.rolling(),
+                recording: loop_rec
+                    || matches!(
+                        info.state,
+                        mpfree_transport::State::Recording | mpfree_transport::State::CountIn
+                    ),
+                overdub: loop_dub || info.overdub,
+            }));
+        }
         // Another device's clock, when the project's tempo is from a port
         // (M4): the leader's bytes read this period go to the follower
         // before the transport runs, as read at the period's top.

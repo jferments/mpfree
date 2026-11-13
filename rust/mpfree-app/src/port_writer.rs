@@ -139,9 +139,12 @@ impl Writer {
         }
     }
 
-    /// The port failed and the thread stopped.
+    /// The port failed and the thread stopped. Acquire pairs with the
+    /// thread's Release store, which comes after its last log line: a
+    /// caller that sees `gone` and then calls [`Writer::log_lines`] gets
+    /// the failure's line too.
     pub fn gone(&self) -> bool {
-        self.stats.gone.load(Ordering::Relaxed)
+        self.stats.gone.load(Ordering::Acquire)
     }
 
     pub fn written(&self) -> u64 {
@@ -228,7 +231,8 @@ fn write_loop<W: Write>(mut w: W, rx: Receiver<Wire>, stats: &Stats, say: &Say) 
                 let _ = say
                     .log
                     .send(format!("{label}: writing {} failed: {e}", hex(b)));
-                stats.gone.store(true, Ordering::Relaxed);
+                // After the line (Release): see `Writer::gone`.
+                stats.gone.store(true, Ordering::Release);
                 return;
             }
         }

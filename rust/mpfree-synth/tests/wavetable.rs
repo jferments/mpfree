@@ -264,3 +264,32 @@ fn factory_tables_fit_the_memory_budget() {
     eprintln!("factory tables: {mb:.2} MB");
     assert!(mb < 10.0);
 }
+
+/// As Poly's: turning the drive up keeps every preset within 2 dB of its
+/// level with no drive ("Drive seems to make synths quieter", live test
+/// 2). A static scale alone left the Organ 12 dB louder at full drive.
+#[test]
+fn turning_the_drive_up_keeps_every_preset_about_as_loud() {
+    let rms = |x: &[f32]| (x.iter().map(|v| v * v).sum::<f32>() / x.len() as f32).sqrt();
+    let level = |preset: &mpfree_synth::Preset, drive: f32, notes: &[u8]| {
+        let mut s = Wavetable::new(RATE);
+        s.load_preset(preset);
+        s.set_param(DRIVE, drive);
+        let ev: Vec<(u64, NodeEvent)> = notes.iter().map(|&n| (0, on(n, 110))).collect();
+        let (l, r) = render(&mut s, 36_000, &ev, |_| 128);
+        20.0 * (rms(&l[12_000..]) + rms(&r[12_000..])).log10()
+    };
+    for preset in Wavetable::presets() {
+        for notes in [&[60u8][..], &[48, 55, 60, 64]] {
+            let dry = level(preset, 0.0, notes);
+            for drive in [3.0, 6.0, 12.0, 18.0, 24.0] {
+                let change = level(preset, drive, notes) - dry;
+                assert!(
+                    (-2.0..=2.0).contains(&change),
+                    "{} {notes:?}: {drive} dB of drive changes the level by {change:+.1} dB",
+                    preset.name
+                );
+            }
+        }
+    }
+}

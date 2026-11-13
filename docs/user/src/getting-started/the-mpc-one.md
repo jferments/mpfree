@@ -24,7 +24,7 @@ The large touchscreen shows what MPFree is doing and lets you change it with you
 
 Around the screen:
 
-- The **data wheel** (the big dial) changes whatever is selected. On the Play page it changes the drum kit.
+- The **data wheel** (the big dial) moves through the settings on a page, and **–** and **+** change the one picked; push the wheel and turning it changes that setting instead, until you push it again. On the Play page the wheel changes the drum kit.
 - The **–** and **+** buttons beside it step a value down or up.
 - **UNDO** undoes your last recording or edit; **SHIFT + UNDO** redoes it.
 - **SHIFT** gives many buttons a second job, printed in red under their name on the panel. Hold it, then press the other button.

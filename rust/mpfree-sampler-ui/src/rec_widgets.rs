@@ -408,7 +408,7 @@ impl Widget for InputView {
             };
             let w = 60;
             let lr = Rect::new(
-                (x - w / 2).clamp(caption.x, caption.right() - w),
+                (x - w / 2).clamp(caption.x, (caption.right() - w).max(caption.x)),
                 caption.y,
                 w,
                 caption.h,
