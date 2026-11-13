@@ -232,8 +232,13 @@ pub const STARTUP_BUTTON_LIGHTS: [[u8; 2]; 58] = [
 /// sends only a message the app sends. A note learned by the button guide may be something else, such
 /// as a Q-Link's touch, whose CC the app never sent.
 pub fn app_lights(note: u8) -> bool {
-    STARTUP_BUTTON_LIGHTS.iter().any(|&[n, _]| n == note)
+    STARTUP_BUTTON_LIGHTS.iter().any(|&[n, _]| n == note) || TRANSPORT_LIGHTS.contains(&note)
 }
+
+/// Lights Akai's app was seen sending outside its startup: REC (73),
+/// OVERDUB (80) and PLAY (82), with 0, 1 and 3 (live test 3's capture,
+/// `docs/dev/hardware/controller-protocol.md`, "Akai's transport lights").
+pub const TRANSPORT_LIGHTS: [u8; 3] = [0x49, 0x50, 0x52];
 
 /// One button light message: B0 <note> <value>, for the Private port.
 pub fn button_light(note: u8, value: u8) -> [u8; 3] {
@@ -320,7 +325,7 @@ mod tests {
 
     #[test]
     fn only_lights_the_app_was_seen_sending() {
-        for note in [0x27, 0x35, 0x51, 0x0B] {
+        for note in [0x27, 0x35, 0x51, 0x0B, 0x49, 0x50, 0x52, 0x43] {
             assert!(app_lights(note), "{note}");
         }
         for note in [0x54, 0x01, 0x10, 0x64] {

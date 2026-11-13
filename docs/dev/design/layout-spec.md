@@ -17,7 +17,7 @@
 ## 2. The top bar
 
 - **Tabs** start at the left edge. There is no MPFree wordmark: that belongs to the startup and loading screens only (Jay, 08:02Z).
-- **Status chips** sit on the right: session, kit and bank (or "Poly · C3 to D#4" when the synth is on the pads), level, tempo, and the arp chip.
+- **Status chips** sit on the right: CPU %, RAM % (green under 70 %, amber under 85 %, red above), session, the kit's name and bank ("Classic House · Bank A"; or "Poly · C3 to D#4" when the synth is on the pads), level, tempo, and the arp chip.
   - Chips never push tabs off the bar, and tabs never push chips off.
 - **Width:** up to 6 tabs are drawn at full width (112 px). More tabs share that room.
 - **Active tab:** the page's own tab is highlighted. Prefs, the mixer, menus and the guide highlight none.
@@ -68,7 +68,7 @@ Built in round 8 (PR #106) to Jay's approved mockups F to I (10:05Z), with real 
 - **Throws and the XY pad** play Perform FX (`mpfree_fx::Perform`) on the master while held: each throw holds a pad of its default bank (Delay throw the 1/8 dotted echo throw, Reverb wash the wash throw, Filter dip the 1-bar low-pass sweep), entering on the next 1/16 while the transport plays; the XY pad plays its DJ filter across (low-pass left, off in the middle, high-pass right) and its echo up, and glides home when the finger lifts; the FX mix Q-Link is its Mix (round 10); Drop drums mutes the kick, snare and hat pads while held.
 - **No pads panel** (Jay, 12 Nov 15:45Z). The Chromatic | In key switch for the synth pads (Jay, 12:22Z) is in the heading over the Synth tab's presets, and SHIFT + 16 LEVEL works everywhere.
 - **Q-Links on Play,** by view: All and Beats: swing, tune and the drums' filter and delay send (a picked step in Beats: its velocity, length, nudge and chance); Loop: loop level, loop delay send, line level, loop filter; Drum: tune, decay, swing, FX mix. The master bar sets the level. While NOTE REPEAT is held or the Arp panel is open, the cards show the arp's four (rate, gate, swing, octaves).
-- **The header** keeps to the CPU and kit chips; the session chip shows only when something is wrong, the arp chip only while the arp, a repeat or a latch is on.
+- **The header** keeps to the CPU, RAM and kit chips; the session chip shows only when something is wrong, the arp chip only while the arp, a repeat or a latch is on.
 - **The hint line** starts where the panels do (left-aligned, as the mockups).
 - **NOTE REPEAT's strip** takes the top of the view's first panel, so nothing else moves.
 - **The Arp panel** takes the view under the transport bar.
@@ -241,14 +241,17 @@ Jay asked for these in the app thread (message of 13 Nov 11:46Z). The ones that 
 - **BROWSE opens the top-level browser** (projects, samples and the rest), as the browser plan's overlay under the top bar; projects load from it and **save**. A **New project** button starts from a fresh, empty project.
 - **Touch targets big enough to hit, or reachable with the wheel and – / +**, everywhere: the sequencer tracks' mute speakers, the mixer's insert rows (+ Insert is the example Jay gave) and the FX page's buttons first.
 - **Higher contrast for buttons as a general rule** (light grey text on a mid-grey button is out): the Looper tab's top and bottom buttons first.
-- **RAM %** beside CPU % in the top bar. The "Kit N of 10" chip names the kit instead.
-- **A tap on the tempo** on the Play page (and its views) sets the tempo.
 - **More steps and more tracks** in the sequencer, with a clear way to add them (32, 64, 128 steps; more than 8 tracks).
 - **ERASE + a clip deletes the clip.**
 - **Several throws at once** with several fingers on the Play page.
 - **Typing a number** for fields with a wide range (Warp tempo first), instead of only the wheel.
-- **A clear way to granular** from the Sample tab's Grain page.
-- **The metronome** off by default, with a toggle, and much quieter (Jay, live test 3 phase 6).
+
+**Built in the live test 3 fixes PR** (the app thread, 13 Nov), so no longer open above:
+- **RAM %** beside CPU % in the top bar, and the kit chip names the kit (section 1, Status chips).
+- **A tap on the tempo** on Play's transport bar taps the tempo, as TAP TEMPO does (taps in time set it). The tap area is the tempo and its "BPM", the bar's full height and at least 64 px wide.
+- **A clear way to granular:** the Grain page's Mode row reaches Granular, and the note over its picture is a "tap to play this pad as grains" button, 64 px tall.
+- **The metronome** off by default, at -24 dB, with **Metronome** and **Metronome level** rows in the Play page's options; SHIFT + PLAY START still toggles it, and the choice is saved.
+- **Saying in place why something did nothing** (Jay, 12 Nov 07:00Z): the hint line shows the reason in amber for 4 s, then the hint comes back.
 
 ## Where things stand (2026-11-11 08:10Z)
 

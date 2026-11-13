@@ -1,6 +1,6 @@
 <!--
 covers: rust/mpfree-seq/src/notes.rs rust/mpfree-seq/src/steps.rs rust/mpfree-time-ui/src/editor.rs rust/mpfree-time-ui/src/view.rs rust/mpfree-app/src/time.rs
-checked: 2026-11-13 f8cc558
+checked: 2026-11-13 dcaefdd
 -->
 
 # The note editor: piano roll, list, tracker and Timing Correct

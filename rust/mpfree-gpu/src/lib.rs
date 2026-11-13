@@ -698,9 +698,24 @@ impl Renderer {
         }
     }
 
+    /// Forgets every mask and image it has uploaded. Call it before playing
+    /// lists from a new store: a list recorded apart numbers its masks
+    /// from 0 again, and without this the renderer would draw the masks it
+    /// kept under those numbers (live test 3: the panel bench showed one
+    /// page's glyphs and knob rings in the next page's text).
+    pub fn forget_all(&mut self, gpu: &Gpu) {
+        self.atlas.clear();
+        for (_, (t, _, _)) in self.textures.drain() {
+            // SAFETY: a texture this renderer made.
+            unsafe { gpu.gl.delete_texture(t) };
+        }
+    }
+
     /// Plays a frame's list into the frame. Masks and images are uploaded
     /// the first time a list names them; `dropped` (from
-    /// `Store::take_changes`) frees the ones the store let go.
+    /// `Store::take_changes`) frees the ones the store let go. Every list
+    /// played must come from the same store; for another store, call
+    /// [`Renderer::forget_all`] first.
     ///
     /// Shapes and masks gather into one draw call until an image (or a
     /// mask too big for the atlas) or the end of the list. A clip needs no

@@ -110,7 +110,7 @@ impl TimeAudio {
             follower: Follower::new(rate),
             follow_sent: FollowCounts::default(),
             click: Click::new(rate),
-            metronome: true,
+            metronome: false,
             advanced: None,
             jump_pending: false,
             hits: [HitInfo::default(); MAX_HITS],
@@ -423,6 +423,11 @@ impl TimeAudio {
     /// the clips into `pads` (through `arps` if given), recording into the
     /// view in place, the click; then everything the control half needs
     /// from it, ending with [`ToControl::Period`].
+    /// The click's level, as a gain.
+    pub fn set_click_gain(&mut self, gain: f32) {
+        self.click.gain = gain;
+    }
+
     pub fn run(&mut self, frames: u32, pads: &mut impl Pads, arps: Option<&mut TrackArps>) {
         let ok = match self.advanced.take() {
             Some(ok) => ok,
