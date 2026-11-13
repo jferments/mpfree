@@ -1092,9 +1092,9 @@ impl LooperPage {
         let rate = f64::from(v.rate.max(1));
         let memory = (
             format!(
-                "{:.0} s of {:.0} s",
-                v.memory.used as f64 / rate,
-                v.memory.capacity as f64 / rate
+                "{} of {}",
+                memory_time(v.memory.used as f64 / rate, false),
+                memory_time(v.memory.capacity as f64 / rate, true)
             ),
             if v.memory.capacity == 0 {
                 0.0
@@ -1417,6 +1417,20 @@ fn bars_of(ticks: i64, beats_per_bar: u32) -> usize {
 }
 
 /// A loop's line in the list: "4 bars · 3 layers", "empty".
+/// The memory gauge's times: "37 s" under a minute, "1:42" above, and the
+/// whole size in minutes ("5 min"; it is a little over, whole blocks).
+fn memory_time(seconds: f64, whole: bool) -> String {
+    let s = seconds.max(0.0);
+    if s < 60.0 {
+        format!("{s:.0} s")
+    } else if whole {
+        format!("{:.0} min", (s / 60.0).floor())
+    } else {
+        let t = s.round() as u64;
+        format!("{}:{:02}", t / 60, t % 60)
+    }
+}
+
 fn loop_detail(l: &mpfree_looper::Status, beats_per_bar: u32) -> String {
     match l.phase {
         Phase::Empty => "empty".to_string(),
@@ -1506,7 +1520,7 @@ mod tests {
     }
 
     /// Loop 1 playing four bars at 92 BPM with three layers (the third
-    /// muted), loop 2 two bars and muted, 16 s of 60 s used.
+    /// muted), loop 2 two bars and muted, 16 s of a minute used.
     fn two_loops() -> LooperView {
         let mut v = LooperView {
             frames_per_beat: 44_100.0 * 60.0 / 92.0,
@@ -1564,7 +1578,12 @@ mod tests {
                 ("Loop 4", "empty", None),
             ]
         );
-        assert_eq!(list.memory.0, "16 s of 60 s");
+        assert_eq!(list.memory.0, "16 s of 1 min");
+        // Above a minute, minutes and seconds, and the size in minutes.
+        assert_eq!(super::memory_time(102.4, false), "1:42");
+        assert_eq!(super::memory_time(300.4, true), "5 min");
+        assert_eq!(super::memory_time(1200.9, true), "20 min");
+        assert_eq!(super::memory_time(59.4, true), "59 s");
         assert!((list.memory.1 - 16.0 / 60.0).abs() < 1e-4);
         assert!(list.new_loop && list.picked == 0);
         let e = ui.get::<LoopEditor>(EDITOR).unwrap();

@@ -39,7 +39,7 @@ use mpfree_arp::scale::pads::Pad as PadNotes;
 pub use synth_pads::SynthItem;
 
 use crate::cores::SoundCores;
-use crate::looping::{LoopAction, LoopSource};
+use crate::looping::{LoopAction, LoopMemory, LoopSource};
 use mpfree_arp::{Events, LatchMode, Mode, Pattern, Rate, RecordMode, Recorder};
 use mpfree_controller::mpc_one::button;
 use mpfree_looper::Command as LoopCommand;
@@ -575,6 +575,8 @@ pub struct Settings {
     /// Prefs "Sound cores": where the sound runs from the next start
     /// (cores.rs); `--sound-cores` can set it for one run.
     pub sound_cores: SoundCores,
+    /// Prefs "Loop memory": the looper's size from the next start.
+    pub loop_memory: LoopMemory,
 }
 
 impl Settings {
@@ -610,6 +612,7 @@ impl Default for Settings {
             loop_level_db: 0.0,
             theme: "default".to_string(),
             sound_cores: SoundCores::Shared,
+            loop_memory: LoopMemory::default(),
         }
     }
 }
@@ -675,6 +678,9 @@ pub enum Item {
     LoopBars,
     LoopLatency,
     LoopLevel,
+    /// Prefs and the looper's options: the looper's size from the next
+    /// start.
+    LoopMemory,
     /// The arp's own settings (the Options menu opened from the Arp panel).
     Arp(ArpItem),
     /// The synth's engine and pad layouts (the Synth tab's options).
@@ -1004,6 +1010,10 @@ pub struct App {
     /// Where the sound runs in this start (cores.rs); Prefs' "Sound cores"
     /// says "(next start)" while the setting differs.
     sound_cores_now: SoundCores,
+    /// The looper's size in this start, and the rate it is counted at;
+    /// Prefs' "Loop memory" says "(next start)" while the setting differs.
+    loop_memory_now: LoopMemory,
+    sample_rate: u32,
     /// Prefs, a button or a Synth tab option changed since the last look
     /// (`saved.rs`), and the text last handed to the store for "app",
     /// "map" and "synth".
@@ -1021,6 +1031,7 @@ const PREFS_ROWS: &[Item] = &[
     Item::FindButtons,
     Item::DebugMode,
     Item::SoundCores,
+    Item::LoopMemory,
     Item::MapControls,
     Item::LineInput,
     Item::SystemInfo,
@@ -1104,6 +1115,8 @@ impl App {
             theme_files: Vec::new(),
             tuning_files: Vec::new(),
             sound_cores_now: SoundCores::Shared,
+            loop_memory_now: LoopMemory::default(),
+            sample_rate,
             save_dirty: false,
             saved: Default::default(),
         };
@@ -2121,6 +2134,11 @@ impl App {
         self.sound_cores_now = mode;
     }
 
+    /// The looper's size in this start (main, once the looper is made).
+    pub fn set_loop_memory_now(&mut self, size: LoopMemory) {
+        self.loop_memory_now = size;
+    }
+
     /// The mapper's list starts from what the app knows (measured buttons,
     /// and those found since).
     fn refresh_mapper(&mut self) {
@@ -2302,6 +2320,7 @@ impl App {
                 Item::LoopBars,
                 Item::LoopLatency,
                 Item::LoopLevel,
+                Item::LoopMemory,
             ],
             (_, View::Debug | View::Perf | View::Engines | View::Procs | View::Map) => {
                 &[Item::ShowPressure, Item::MidiLog, Item::ClearLogs]
@@ -2433,6 +2452,14 @@ impl App {
                 ),
             ),
             Item::LoopLevel => ("Loop level", format!("{:+.0} dB", s.loop_level_db)),
+            Item::LoopMemory => (
+                "Loop memory",
+                if s.loop_memory == self.loop_memory_now {
+                    s.loop_memory.row(self.sample_rate)
+                } else {
+                    format!("{} (next start)", s.loop_memory.row(self.sample_rate))
+                },
+            ),
             Item::Arp(a) => self.arp_item_text(a),
             Item::Synth(a) => self.synth_item_text(a),
         }
@@ -2584,6 +2611,13 @@ impl App {
             Item::LoopLevel => vec![
                 "The loop's playback level, -24 to +6 dB.",
                 "0 dB plays it as it was recorded.",
+            ],
+            Item::LoopMemory => vec![
+                "How much sound the loops can hold, all",
+                "loops and layers together: 1 to 20 minutes",
+                "of stereo. It is kept in memory from the",
+                "start, so a new size applies from the next",
+                "start. The Looper tab shows what is left.",
             ],
             Item::Arp(a) => Self::arp_item_help(a),
             Item::Synth(a) => Self::synth_item_help(a),
@@ -2777,6 +2811,17 @@ impl App {
                         "sound cores: {} from the next start (now {})",
                         next.name(),
                         self.sound_cores_now.name()
+                    )));
+                }
+            }
+            Item::LoopMemory => {
+                let next = cycle(&LoopMemory::ALL, s.loop_memory, d);
+                if next != s.loop_memory {
+                    s.loop_memory = next;
+                    fx.push(Effect::Note(format!(
+                        "loop memory: {} min from the next start (now {} min)",
+                        next.minutes(),
+                        self.loop_memory_now.minutes()
                     )));
                 }
             }
@@ -3495,7 +3540,7 @@ mod tests {
         let mut next = App::new(44_100, false);
         let notes = next.restore(&kept, &mpfree_store::Settings::default());
         assert_eq!(next.settings.sound_cores, SoundCores::Two);
-        assert!(notes[0].ends_with(", sound cores two"), "{notes:?}");
+        assert!(notes[0].contains(", sound cores two,"), "{notes:?}");
         next.set_sound_cores_now(SoundCores::Two);
         assert_eq!(next.item_text(Item::SoundCores).1, "Cores 3 and 2");
         // A value it doesn't know is left out, and the default stays.
@@ -3508,6 +3553,63 @@ mod tests {
             notes.iter().any(|n| n.contains("sound-cores = four")),
             "{notes:?}"
         );
+    }
+
+    /// Live test 2: a minute of loops was too little. Prefs (and the
+    /// looper's options) pick 1 to 20 minutes, kept, from the next start.
+    #[test]
+    fn loop_memory_is_kept_and_used_from_the_next_start() {
+        let mut app = App::new(44_100, false);
+        app.map.menu = Some(MENU);
+        app.button(button::SHIFT, true, 0.0);
+        press(&mut app, MENU);
+        app.button(button::SHIFT, false, 0.0);
+        let at = row(&app, Item::LoopMemory);
+        assert_eq!(at, row(&app, Item::SoundCores) + 1);
+        let value = |fx: &[Effect]| match fx.last() {
+            Some(Effect::Menu(m)) => m.rows[at].1.clone(),
+            _ => panic!("{fx:?}"),
+        };
+        assert_eq!(app.item_text(Item::LoopMemory).1, "5 min, 110 MB");
+        let fx = app.step_item(at, 1);
+        assert_eq!(value(&fx), "10 min, 219 MB (next start)");
+        assert!(fx.contains(&Effect::Note(
+            "loop memory: 10 min from the next start (now 5 min)".into()
+        )));
+        assert_eq!(value(&app.step_item(at, 1)), "20 min, 437 MB (next start)");
+        assert_eq!(value(&app.step_item(at, 1)), "20 min, 437 MB (next start)");
+        for _ in 0..5 {
+            app.step_item(at, -1);
+        }
+        assert_eq!(app.settings.loop_memory, LoopMemory::Min1);
+        assert_eq!(
+            app.item_text(Item::LoopMemory).1,
+            "1 min, 22 MB (next start)"
+        );
+        // Kept as minutes; the next start makes it and says no more.
+        let kept = app.app_settings();
+        assert_eq!(kept.get_i64("loop-memory"), Some(1));
+        let mut next = App::new(44_100, false);
+        let notes = next.restore(&kept, &mpfree_store::Settings::default());
+        assert_eq!(next.settings.loop_memory, LoopMemory::Min1);
+        assert!(notes[0].ends_with(", loop memory 1 min"), "{notes:?}");
+        next.set_loop_memory_now(LoopMemory::Min1);
+        assert_eq!(next.item_text(Item::LoopMemory).1, "1 min, 22 MB");
+        // A size it doesn't offer is left out, and the default stays.
+        let mut odd = mpfree_store::Settings::default();
+        odd.set_i64("loop-memory", 7);
+        let mut other = App::new(44_100, false);
+        let notes = other.restore(&odd, &mpfree_store::Settings::default());
+        assert_eq!(other.settings.loop_memory, LoopMemory::Min5);
+        assert!(
+            notes.iter().any(|n| n.contains("loop-memory = 7")),
+            "{notes:?}"
+        );
+        // The looper's own options have the same row.
+        let mut l = App::new(44_100, false);
+        l.view = View::Looper;
+        l.back = View::Looper;
+        assert_eq!(l.items().last(), Some(&Item::LoopMemory));
     }
 
     #[test]

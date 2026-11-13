@@ -2510,9 +2510,6 @@ fn strip_shown(view: app::View) -> bool {
 const METER_EVERY: Duration = Duration::from_millis(50);
 /// How often the Sample page's playheads are sent while it shows.
 const SAMPLE_HEADS_EVERY: Duration = Duration::from_millis(40);
-/// Seconds of stereo audio the looper keeps for all its layers (about
-/// 21 MB, allocated once at the start).
-const LOOP_SECONDS: u32 = 60;
 /// While overdubbing, the loop's waveform is redrawn about once a second.
 const LOOP_WAVE_PERIODS: u64 = 344;
 
@@ -3187,8 +3184,16 @@ fn player_session(
     // The time engine (transport, clips, takes) runs in this loop too.
     let mut time = time::TimeHost::new(RATE, app.settings.bpm)?;
     // The looper follows the transport; the line input stays closed until
-    // the Prefs row "Line input" opens it.
-    let mut looper = looping::LoopHost::new(RATE, LOOP_SECONDS);
+    // the Prefs row "Line input" opens it. Its memory (Prefs "Loop memory",
+    // as saved) is set aside once, here, and locked in RAM with the rest.
+    let loop_memory = app.settings.loop_memory;
+    let mut looper = looping::LoopHost::new(RATE, loop_memory.seconds());
+    app.set_loop_memory_now(loop_memory);
+    out.say(&format!(
+        "looper: {} min of loop memory ({} MB, Prefs > Loop memory)",
+        loop_memory.minutes(),
+        loop_memory.megabytes(RATE)
+    ));
     let mut loop_time = RenderTime::default();
     let mut loop_shown_at = Instant::now();
     out.show(gui::ToUi::Time(Box::new(time.state())));

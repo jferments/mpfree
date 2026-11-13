@@ -25,7 +25,7 @@ The first pass is the loop's first **layer**. Each overdub adds another, up to 1
 
 To get rid of a whole loop, first pass included, use **Clear** (on the Play page, or **Clear loop** on the Looper tab). The **×** on a loop's last remaining layer does the same.
 
-The looper holds a minute of stereo sound across all its layers (the Looper tab shows how much is left). At 120 BPM a bar lasts two seconds, so a 4-bar loop can have about seven layers. Keep loops short and layer them.
+The looper holds five minutes of stereo sound across all its loops and layers (the Looper tab shows how much is left). At 120 BPM a bar lasts two seconds, so that is room for about 37 four-bar layers, spread over up to eight loops of up to 16 layers each. If you need more or less, **Loop memory** in [Prefs](../reference/prefs.md) (also in the Looper tab's MENU) sets it from 1 to 20 minutes. The memory is set aside when MPFree starts, so a new size takes effect from the next start; the row says "(next start)" until then, and shows how many megabytes it uses.
 
 ## The buttons
 
@@ -57,7 +57,7 @@ The list on the left shows each loop with its length and number of layers, and w
 
 Every loop plays at once, in time with the song, but only one records at a time: starting to record in one loop ends the recording in the others.
 
-**Loop memory** at the bottom shows how much of the looper's minute of stereo sound is used, shared between all the loops and their layers.
+**Loop memory** at the bottom shows how much of the looper's memory is used ("1:42 of 5 min"), shared between all the loops and their layers.
 
 ### The editor
 
@@ -92,7 +92,7 @@ The panel at the bottom left holds how the looper records. The Play page's loope
 
 **After recording** sets what the loop does when its first pass ends: **play**, or go straight into **overdub**. **Start** (next bar line) shows how the looper works today and can't be changed yet. **At another tempo** still reads "like tape" in this build, but loops keep their pitch, as described above.
 
-Press **MENU** on the Looper tab for the same settings as a list, with an explanation beside each, plus **Loop level** (-24 to +6 dB).
+Press **MENU** on the Looper tab for the same settings as a list, with an explanation beside each, plus **Loop level** (-24 to +6 dB) and **Loop memory**.
 
 ### Editing a loop
 

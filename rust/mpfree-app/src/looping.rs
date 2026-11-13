@@ -59,7 +59,8 @@ pub const WAVE_COLUMNS: usize = 600;
 /// period on the MPC), so the wave never makes the sound late. A two-bar
 /// loop at 120 BPM takes a quarter of a second. All the loops' layers
 /// together hold at most `LoopHost::new`'s seconds, so the longest wave
-/// (the app's 60 s) takes under 4 s.
+/// takes under 4 s a minute of loop memory (Prefs' largest, 20 minutes,
+/// filled by one loop: about 80 s, drawn as it goes).
 const WAVE_BUDGET: usize = 2048;
 /// The fewest and most frames of each layer read in a period (16 layers
 /// of the fewest are the budget).
@@ -91,6 +92,60 @@ impl LoopSource {
             LoopSource::Pads => "Pads and synth",
             LoopSource::Line => "Line input",
         }
+    }
+}
+
+/// Prefs "Loop memory": the sound every loop and layer shares. It is set
+/// aside, and kept in RAM, when MPFree starts (the sound can't wait for
+/// memory), so a new size applies from the next start, like Sound cores.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum LoopMemory {
+    /// A minute: what every build before live test 3 had.
+    Min1,
+    Min2,
+    #[default]
+    Min5,
+    Min10,
+    Min20,
+}
+
+impl LoopMemory {
+    pub const ALL: [LoopMemory; 5] = [
+        LoopMemory::Min1,
+        LoopMemory::Min2,
+        LoopMemory::Min5,
+        LoopMemory::Min10,
+        LoopMemory::Min20,
+    ];
+
+    pub fn minutes(self) -> u32 {
+        match self {
+            LoopMemory::Min1 => 1,
+            LoopMemory::Min2 => 2,
+            LoopMemory::Min5 => 5,
+            LoopMemory::Min10 => 10,
+            LoopMemory::Min20 => 20,
+        }
+    }
+
+    pub fn seconds(self) -> u32 {
+        60 * self.minutes()
+    }
+
+    /// The kept setting's value: the minutes.
+    pub fn parse(v: &str) -> Option<LoopMemory> {
+        let m = v.trim().parse::<u32>().ok()?;
+        LoopMemory::ALL.into_iter().find(|l| l.minutes() == m)
+    }
+
+    /// What it costs, in whole megabytes, at `rate`.
+    pub fn megabytes(self, rate: u32) -> usize {
+        mpfree_looper::bytes_for(rate, self.seconds()).div_ceil(1_000_000)
+    }
+
+    /// Prefs' value for it: "5 min, 110 MB".
+    pub fn row(self, rate: u32) -> String {
+        format!("{} min, {} MB", self.minutes(), self.megabytes(rate))
     }
 }
 
