@@ -339,6 +339,19 @@ pub fn rec_sources() -> Vec<(String, RecSource)> {
     v
 }
 
+/// What the Sample tab's sounds hold in memory (Dev > CPU by engine,
+/// `memory.rs`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SampleMemory {
+    /// Every kit's sounds, those undo keeps included, each counted once.
+    pub sounds: usize,
+    pub count: usize,
+    /// The stretched copies warped pads play.
+    pub copies: usize,
+    /// The Rec tab's input buffer, while it is held.
+    pub input: usize,
+}
+
 /// The sampler's input buffer's size: stereo `f32`.
 pub fn input_bytes(rate: u32) -> u64 {
     u64::from(INPUT_SECONDS) * u64::from(rate) * 2 * 4
@@ -748,6 +761,29 @@ impl SamplePage {
     #[cfg(test)]
     pub fn state(&self) -> Option<&WaveState> {
         self.state.as_ref()
+    }
+
+    /// What the sounds hold in memory: every kit's sounds (a sound two
+    /// kits share counted once), the stretched copies, the input buffer.
+    pub fn memory(&self) -> SampleMemory {
+        let mut seen: Vec<(usize, usize)> = self
+            .projects
+            .iter()
+            .flat_map(Project::held)
+            .map(|s| (s.data().as_ptr() as usize, s.data().len()))
+            .collect();
+        seen.sort_unstable();
+        seen.dedup();
+        SampleMemory {
+            sounds: seen.iter().map(|&(_, n)| n * 4).sum(),
+            count: seen.len(),
+            copies: self.warps.bytes(),
+            input: if self.input.is_some() {
+                input_bytes(self.rate) as usize
+            } else {
+                0
+            },
+        }
     }
 
     #[cfg(test)]
