@@ -55,8 +55,8 @@ pub const LAYOUT: &str = "col(header:60, row(smp-auto-bar:*, smp-send:330):60, \
 
 /// The hint line the app shows under the page.
 pub const HINT: &str =
-    "Auto-sample plays the synth or your gear note by note and makes a keygroup of it · tap a \
-                        row, then the wheel changes it · UNDO takes the instrument off";
+    "Auto-sample plays the synth or your gear note by note and makes a keygroup of it · the wheel picks a \
+                        row, - / + change it · UNDO takes the instrument off";
 
 const HOLDS_MS: [u32; 9] = [100, 250, 500, 1000, 2000, 3000, 5000, 10_000, 20_000];
 const TAILS_MS: [u32; 8] = [0, 500, 1000, 2000, 4000, 8000, 12_000, 20_000];
@@ -467,7 +467,7 @@ impl AutoTab {
         let mut buttons = ButtonRow::new(&["Start", "Rec"]);
         buttons.primary = Some(0);
         ui.add(BUTTONS, buttons);
-        ui.add(WHEEL, InfoCard::new("Wheel · the row picked"));
+        ui.add(WHEEL, InfoCard::new("The row picked"));
         ui.add_page(name, LAYOUT)?;
         let mut tab = AutoTab {
             name: name.to_string(),

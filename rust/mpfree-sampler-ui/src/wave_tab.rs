@@ -68,7 +68,7 @@ pub const FX_TAB: usize = 5;
 pub const TAB: usize = 0;
 
 /// The hint line the app shows under the tab.
-pub const HINT: &str = "Drag markers by their tabs · drag to scroll, pinch or turn the wheel to zoom · tap the wave to \
+pub const HINT: &str = "Drag markers by their tabs · drag to scroll, pinch or SHIFT + - / + to zoom · tap the wave to \
                         hear the pad · SHIFT + Q-Link: one frame at a time";
 
 /// Shortest region and shortest loop, in frames.
@@ -501,7 +501,7 @@ impl WaveTab {
                 KnobCard::new(&format!("Q-Link {} · {}", k + 1, m.label()), colors[k]),
             );
         }
-        ui.add(WHEEL, InfoCard::new("Wheel · zoom"));
+        ui.add(WHEEL, InfoCard::new("SHIFT + - / + · zoom"));
         ui.add_page(name, LAYOUT)?;
         let wave = slot(ui, WAVE).ok_or("no waveform slot")?;
         let mut tab = WaveTab {

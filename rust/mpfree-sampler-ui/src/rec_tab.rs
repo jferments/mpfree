@@ -75,8 +75,8 @@ pub const TAB: usize = 6;
 
 /// The hint line the app shows under the tab.
 pub const HINT: &str =
-    "Record, or keep what just came in with Skip back · Flatten resamples the pad picked · tap a \
-                        row, then the wheel changes it · UNDO takes a take off its pad again";
+    "Record, or keep what just came in with Skip back · Flatten resamples the pad picked · the wheel picks a \
+                        row, - / + change it · UNDO takes a take off its pad again";
 
 /// The third button: resample the pad picked.
 pub const FLATTEN_LABEL: &str = "Flatten";
@@ -548,7 +548,7 @@ impl RecTab {
         let mut buttons = ButtonRow::new(&["Record", "Skip back", FLATTEN_LABEL, AUTO_LABEL]);
         buttons.primary = Some(0);
         ui.add(BUTTONS, buttons);
-        ui.add(WHEEL, InfoCard::new("Wheel · the row picked"));
+        ui.add(WHEEL, InfoCard::new("The row picked"));
         ui.add_page(name, LAYOUT)?;
         let mut tab = RecTab {
             name: name.to_string(),

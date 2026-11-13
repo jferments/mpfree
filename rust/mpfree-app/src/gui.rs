@@ -106,6 +106,8 @@ const SHIFT_MENU_HINT: &str =
 const OPTIONS_HINT: &str =
     "Wheel or tap: pick a row   ·   push the wheel, - / + or the arrows: change it   ·   MENU: close";
 /// A menu row the wheel's push opened.
+/// The wheel on a page with rows (`app::RowKey`), for the hint lines.
+const ROWS_HINT: &str = "Wheel: pick a row   ·   - / +, or push the wheel and turn: change it";
 const OPTIONS_EDIT_HINT: &str = "Wheel: change it   ·   push the wheel: set it   ·   - / + or the arrows: change it   ·   MENU: close";
 const GUIDE_HINT: &str = "STOP: skip this button   ·   The pads still play while the guide is open";
 const LOADING_HINT: &str = "Tap the screen for the console";
@@ -361,8 +363,11 @@ pub enum ToUi {
     PreviewBack(Box<crate::preview::Preview>),
     /// On the Sample page: a Q-Link let go (the turn is one undo step).
     SampleLift,
-    /// On the Sample page: the wheel (zoom).
+    /// On the Sample page: SHIFT + - / + (zoom on Wave, Warp and Chop).
     SampleWheel(i32),
+    /// The wheel, - / + or the wheel's push on a page with rows (the
+    /// Sample and Pads pages, the Synth tab, Arrange): `app::RowKey`.
+    Rows(crate::app::RowKey),
     /// On the Sample page: the previous or next pad with a sound.
     SamplePad(i32),
     /// On the Sample page: UNDO (false) or redo (true).
@@ -1580,32 +1585,32 @@ impl Player {
                 View::Looper => format!("Tap a loop or a layer: pick it   ·   Q-Links: layer level and pan, Fade old, \
                                          seam fade   ·   REC: record   ·   OVERDUB: overdub   ·   UNDO: undo (SHIFT: redo)   ·   \
                                          {stop}"),
-                View::Synth => format!("Pads play {}   ·   Q-Links 1-4: the marked knobs   ·   Wheel: the selected knob   ·   \
-                                        - / +: page   ·   MENU: engine, scale   ·   {stop}",
+                View::Synth => format!("Pads play {}   ·   Q-Links 1-4: the marked knobs   ·   Wheel: pick a knob   ·   \
+                                        - / +, or push the wheel and turn: change it   ·   SHIFT + wheel: page   ·   {stop}",
                                        self.synth.as_ref().map_or("the synth", |p| p.state.info.name)),
                 View::Sample if self.sample.page() == sample_page::PAGE => {
-                    "Hit a pad to edit it   ·   Q-Links 1-4: Start, End, loop   ·   Wheel: zoom   ·   - / +: pad   ·   \
-                     UNDO: undo   ·   tap the wave: play".to_string()
+                    format!("Hit a pad to edit it   ·   Q-Links 1-4: Start, End, loop   ·   {ROWS_HINT}   ·   \
+                     SHIFT + - / +: zoom")
                 }
                 View::Sample if self.sample.page() == sample_page::WARP_PAGE => {
-                    "Tap a hit: pin it to the grid   ·   drag a pin along the beats   ·   Q-Links 1-4: pin, its beat, \
-                     warp tempo, scroll   ·   Wheel: zoom   ·   UNDO: undo".to_string()
+                    format!("Tap a hit: pin it to the grid   ·   Q-Links 1-4: pin, its beat, warp tempo, scroll   ·   \
+                     {ROWS_HINT}   ·   SHIFT + - / +: zoom")
                 }
                 View::Sample if self.sample.chop_live_method() => {
                     "Start plays the sound: hit pads in time to drop cuts   ·   Pull to hits: each onto the nearest hit   ·   \
                      Stop ends the take   ·   then Chop to: onto the pads".to_string()
                 }
                 View::Sample if self.sample.page() == sample_page::CHOP_PAGE => {
-                    "Hit a pad to chop it   ·   tap a slice: hear it   ·   Q-Links 1-4: slice, its start, setting, first pad   ·   \
-                     Wheel: zoom   ·   UNDO: undo".to_string()
+                    format!("Hit a pad to chop it   ·   tap a slice: hear it   ·   Q-Links 1-4: slice, its start, setting, first pad   ·   \
+                     {ROWS_HINT}   ·   SHIFT + - / +: zoom")
                 }
                 View::Pads if self.sample.page() == sample_page::PADS_BROWSE_PAGE => {
                     "Hit or tap a pad to pick it   ·   Load: onto the pad picked   ·   Load to pad: onto the next pad hit   ·   \
                      PLAY: hear it   ·   Wheel: move   ·   push: open or load   ·   - / +: up / into a folder".to_string()
                 }
                 View::Pads if self.sample.page() == sample_page::PADS_PAGE => {
-                    "Hit or tap a pad to pick it, tap again to hear it   ·   Q-Links 1-4: level, pan, tune, voices   ·   \
-                     Wheel: the row picked   ·   UNDO: undo".to_string()
+                    format!("Hit or tap a pad to pick it, again to hear it   ·   Q-Links 1-4: level, pan, tune, voices   ·   \
+                     {ROWS_HINT}")
                 }
                 View::Pads => format!("Pick a drum kit on Play to see its pads here   ·   {stop}"),
                 View::Sample if self.sample.play_takes_pads(&self.ui) => {
@@ -1613,26 +1618,25 @@ impl Player {
                      tap another row when done   ·   UNDO: undo".to_string()
                 }
                 View::Sample if self.sample.page() == sample_page::PLAY_PAGE && self.sample.play_keys_shown() => {
-                    "Press keys to hear the kit   ·   drag the pad's zone edges and root   ·   tap a zone: its pad   ·   \
-                     Q-Links 1-4: Attack, Decay, Cutoff, Resonance   ·   Wheel: the row picked   ·   UNDO: undo".to_string()
+                    format!("Press keys to hear the kit   ·   drag the zone edges and root   ·   \
+                     Q-Links 1-4: Attack, Decay, Cutoff, Resonance   ·   {ROWS_HINT}")
                 }
                 View::Sample if self.sample.page() == sample_page::PLAY_PAGE => {
-                    "Hit a pad: its velocity shows on the layers   ·   Q-Links 1-4: Attack, Decay, Cutoff, Resonance   ·   \
-                     Wheel: the row picked   ·   - / +: pad   ·   UNDO: undo".to_string()
+                    format!("Hit a pad: its velocity shows on the layers   ·   Q-Links 1-4: Attack, Decay, Cutoff, Resonance   ·   \
+                     {ROWS_HINT}")
                 }
                 View::Sample if self.sample.page() == sample_page::GRAIN_PAGE => {
-                    "Hit the pad to see its grains   ·   Q-Links 1-4: position, size, density, pitch (SHIFT: sprays, \
-                     finer)   ·   Wheel: the row picked   ·   - / +: pad   ·   UNDO: undo".to_string()
+                    format!("Hit the pad to see its grains   ·   Q-Links 1-4: position, size, density, pitch (SHIFT: sprays, \
+                     finer)   ·   {ROWS_HINT}")
                 }
                 View::Sample if self.sample.page() == sample_page::REC_PAGE => {
-                    "Record or Skip back onto the pad named   ·   tap a row: the wheel changes it   ·   hit a pad to \
-                     record next to it   ·   UNDO: take a take off".to_string()
+                    format!("Record or Skip back onto the pad named   ·   {ROWS_HINT}   ·   UNDO: take a take off")
                 }
                 View::Sample if self.sample.page() == sample_page::AUTO_PAGE => {
-                    "Start samples the Synth tab's patch or your gear onto the pads named   ·   tap a row: the wheel \
-                     changes it   ·   UNDO: take the instrument off".to_string()
+                    format!("Start samples the Synth tab's patch or your gear onto the pads named   ·   {ROWS_HINT}")
                 }
-                View::Sample => format!("Hit a pad with a sound to edit it   ·   - / +: next pad with a sound   ·   {stop}"),
+                View::Sample => format!("Hit a pad with a sound to edit it   ·   - / + or SHIFT + wheel: next pad with a \
+                                         sound   ·   {stop}"),
                 View::Debug => format!("Every MIDI message in and out, newest at the bottom   ·   SHIFT + wheel or - / +: \
                                         Dev page   ·   MENU: options   ·   {stop}"),
                 View::Perf => format!("CPU per thread and memory every 2 s, audio every 0.25 s; a perf: line goes to \
@@ -2263,6 +2267,7 @@ impl Player {
             }
             ToUi::SampleLift => self.sample.lift(),
             ToUi::SampleWheel(d) => self.sample.wheel(&mut self.ui, d),
+            ToUi::Rows(k) => self.rows(k),
             ToUi::SamplePad(d) => {
                 self.sample.step_pad(d);
                 self.sample_changed();
@@ -2420,6 +2425,77 @@ impl Player {
             ToUi::Quit => {}
         }
         self.print_sample_lines();
+    }
+
+    /// The wheel, - / + or the wheel's push on a page with rows
+    /// (`app::RowKey`): pick a row, step it, or open it for the wheel.
+    fn rows(&mut self, k: crate::app::RowKey) {
+        use crate::app::RowKey;
+        if let RowKey::Editing(on) = k {
+            // Every page with rows keeps it, so the page that shows next
+            // agrees with the app (which closes it on a page change).
+            self.sample.set_editing(&mut self.ui, on);
+            if let Some(p) = self.synth.as_mut() {
+                p.set_editing(&mut self.ui, on);
+            }
+            for list in [time_view::RECORD, time_view::EDIT_OPTIONS] {
+                if let Some(l) = self.ui.get_mut::<OptionList>(list) {
+                    l.editing = on;
+                }
+            }
+            return;
+        }
+        match (self.view, k) {
+            (View::Synth, RowKey::Pick(d)) => {
+                if let Some(p) = self.synth.as_mut() {
+                    p.pick_tile(&mut self.ui, d);
+                }
+            }
+            (View::Synth, RowKey::Step(d)) => self.apply(ToUi::SynthWheel(d)),
+            (View::Arrange, RowKey::Pick(d)) => {
+                let list = self.time_page.wheel_list(&self.ui);
+                let Some(l) = self.ui.get_mut::<OptionList>(list) else {
+                    return;
+                };
+                let last = l.rows.len().saturating_sub(1) as i64;
+                let k = (l.selected as i64 + i64::from(d)).clamp(0, last) as usize;
+                l.selected = k;
+                // As a tap on the row: the note editor keeps its row.
+                let ev = UiEvent {
+                    widget: list.to_string(),
+                    kind: EventKind::Select(k),
+                };
+                if let Some(a) = time_view::action(&ev, &self.time) {
+                    self.outbox.push(FromUi::Time(a));
+                }
+            }
+            (View::Arrange, RowKey::Step(d)) => self.apply(ToUi::ClipsWheel {
+                delta: d,
+                scroll: false,
+            }),
+            (v, RowKey::Pick(d)) if v.sampler() => {
+                if let Some(ev) = self.sample.pick_row(&mut self.ui, d) {
+                    self.on_event(ev);
+                }
+            }
+            (v, RowKey::Step(d)) if v.sampler() && !self.sample.has_list() => {
+                // A pad with no sound has no rows: - / + go to the next pad
+                // with one, as they used to.
+                self.apply(ToUi::SamplePad(d.signum()));
+            }
+            (v, RowKey::Step(d)) if v.sampler() => {
+                // A page whose wheel stepped the row picked does as it did
+                // (one undo step a turn); the others step it as its arrow.
+                match self.sample.step_row(&mut self.ui, d) {
+                    Some(ev) => {
+                        self.on_event(ev);
+                    }
+                    None => self.sample.wheel(&mut self.ui, d),
+                }
+                self.sample.show_editing(&mut self.ui);
+            }
+            _ => {}
+        }
     }
 
     /// The Sample page's kit, pad or project changed: show it again if it
@@ -4501,10 +4577,10 @@ pub fn apply_effects(p: &mut Player, fx: Vec<crate::app::Effect>) {
             Effect::TouchStep(d) => p.apply(ToUi::TouchStep(d)),
             Effect::Note(l) => p.apply(ToUi::Line(l)),
             Effect::ClipsWheel { delta, scroll } => p.apply(ToUi::ClipsWheel { delta, scroll }),
-            Effect::SynthWheel(d) => p.apply(ToUi::SynthWheel(d)),
             Effect::Map(m) => p.apply(ToUi::Map(Box::new(m))),
             Effect::SynthPage(d) => p.apply(ToUi::SynthPage(d)),
             Effect::SampleWheel(d) => p.apply(ToUi::SampleWheel(d)),
+            Effect::Rows(k) => p.apply(ToUi::Rows(k)),
             Effect::SamplePad(d) => p.apply(ToUi::SamplePad(d)),
             Effect::SampleUndo { redo } => p.apply(ToUi::SampleUndo(redo)),
             Effect::PlayView(v) => p.apply(ToUi::PlayView(v)),
@@ -7336,6 +7412,39 @@ mod tests {
         });
         let w = p.sample.state().unwrap().region.warp.clone().unwrap();
         assert!(w.pins.len() >= 4, "{:?}", w.pins);
+        // The wheel navigation (app::RowKey, live test 2): the wheel picks
+        // the list's rows, its push opens one, and the wheel or - / + then
+        // step it, as a tap on its arrow; SHIFT + - / + still zoom.
+        {
+            use crate::app::RowKey;
+            use mpfree_sampler_ui::widgets::SettingList;
+            let list = |p: &Player| {
+                let l = p.ui.get::<SettingList>(warp_tab::LIST).unwrap();
+                (
+                    l.selected,
+                    l.editing,
+                    l.rows[Row::Grid.index()].value.clone(),
+                )
+            };
+            assert_eq!(list(&p).0, Row::Warp.index());
+            p.apply(ToUi::Rows(RowKey::Pick(Row::Grid.index() as i32)));
+            assert_eq!(list(&p).0, Row::Grid.index());
+            p.apply(ToUi::Rows(RowKey::Pick(-1)));
+            p.apply(ToUi::Rows(RowKey::Pick(1)));
+            let (at, editing, grid) = list(&p);
+            assert_eq!((at, editing), (Row::Grid.index(), false));
+            p.apply(ToUi::Rows(RowKey::Editing(true)));
+            assert!(list(&p).1);
+            p.apply(ToUi::Rows(RowKey::Step(1)));
+            assert_ne!(list(&p).2, grid, "the wheel stepped Grid");
+            p.apply(ToUi::Rows(RowKey::Step(-1)));
+            assert_eq!(list(&p).2, grid, "and back");
+            p.apply(ToUi::Rows(RowKey::Editing(false)));
+            assert!(!list(&p).1);
+            p.apply(ToUi::SampleWheel(1));
+            p.apply(ToUi::Rows(RowKey::Pick(-99)));
+            assert_eq!(list(&p).0, 0);
+        }
         // The copy made through the pins comes back and is played.
         let t = Instant::now();
         let sent = loop {
@@ -10031,6 +10140,28 @@ mod tests {
         );
         p.apply(ToUi::SynthWheel(-3));
         assert_eq!(p.take_actions().len(), 1);
+        // The wheel navigation (app::RowKey): the wheel picks tiles, - / +
+        // and an opened tile's wheel turn the tile picked.
+        use crate::app::RowKey;
+        let tiles = |p: &Player| {
+            let g =
+                p.ui.get::<mpfree_synth_ui::widgets::TileGrid>(synth_view::TILES)
+                    .unwrap();
+            (g.selected, g.editing, g.tiles.len())
+        };
+        let (at, _, n) = tiles(&p);
+        let at = at.unwrap();
+        p.apply(ToUi::Rows(RowKey::Pick(1)));
+        assert_eq!(tiles(&p).0, Some((at + 1).min(n - 1)));
+        p.apply(ToUi::Rows(RowKey::Pick(-99)));
+        assert_eq!(tiles(&p).0, Some(0));
+        assert!(p.take_actions().is_empty(), "picking changes nothing");
+        p.apply(ToUi::Rows(RowKey::Editing(true)));
+        assert!(tiles(&p).1);
+        p.apply(ToUi::Rows(RowKey::Step(1)));
+        assert_eq!(p.take_actions().len(), 1);
+        p.apply(ToUi::Rows(RowKey::Editing(false)));
+        assert_eq!(tiles(&p), (Some(0), false, n));
         // A preset touched goes to the audio thread, whose values come back.
         let ev = UiEvent {
             widget: synth_view::PRESETS.to_string(),

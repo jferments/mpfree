@@ -738,6 +738,22 @@ pub struct Status {
     pub mute_keys: MuteKeys,
 }
 
+/// Jay's wheel navigation (live test 2, 13 Nov) on a page with rows: the
+/// Sample and Pads pages' settings lists, the Synth tab's tiles, and
+/// Arrange's Record settings or Edit options. As in the menus: the wheel
+/// moves the highlight from row to row; - and + step the highlighted
+/// row's value; the wheel's push opens the row, so the wheel changes its
+/// value, and the next push gives the wheel back to the rows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RowKey {
+    /// Move the highlight this many rows (tiles on the Synth tab).
+    Pick(i32),
+    /// Step the highlighted row's value.
+    Step(i32),
+    /// The wheel now changes the value (true), or picks rows again.
+    Editing(bool),
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum Effect {
     Show(View),
@@ -777,14 +793,18 @@ pub enum Effect {
     },
     /// Q-LINK: the Q-Link column's next bank.
     QLinkBank,
-    /// The wheel on the Synth page: turn the selected knob.
-    SynthWheel(i32),
-    /// SHIFT + wheel, - or + on the Synth page: the next or previous page.
+    /// SHIFT + wheel, or SHIFT + - / +, on the Synth page: the next or
+    /// previous page.
     SynthPage(i32),
-    /// The wheel on the Sample page: zoom the waveform.
+    /// SHIFT + - / + on the Sample page: zoom the waveform (Wave, Warp,
+    /// Chop); on the pages without one, step the row picked.
     SampleWheel(i32),
-    /// SHIFT + wheel, - or + on the Sample page: the previous or next pad
-    /// with a sound.
+    /// The wheel, - / + and the wheel's push on a page with rows (the
+    /// Sample and Pads pages' settings, the Synth tab's tiles, Arrange's
+    /// Record settings or Edit options): see [`RowKey`].
+    Rows(RowKey),
+    /// SHIFT + wheel on the Sample page: the previous or next pad with a
+    /// sound.
     SamplePad(i32),
     /// UNDO (or SHIFT + UNDO, redo) on the Sample page: the last edit there.
     SampleUndo {
@@ -928,6 +948,9 @@ pub struct App {
     prefs_section: PrefsSection,
     /// The wheel's push opened the selected menu row (see `wheel_push`).
     menu_editing: bool,
+    /// The wheel's push opened the picked row of a page with rows: the
+    /// wheel changes its value until the next push (see [`RowKey`]).
+    page_editing: bool,
     /// Theme files found in the themes folder at start (`files/themes/` in
     /// `--data`): the file name, which is what `settings.theme` holds, and
     /// the theme's own name for the Appearance row. After [`THEMES`].
@@ -1112,6 +1135,7 @@ impl App {
             swallowed: [false; 128],
             prefs_section: PrefsSection::Main,
             menu_editing: false,
+            page_editing: false,
             theme_files: Vec::new(),
             tuning_files: Vec::new(),
             sound_cores_now: SoundCores::Shared,
@@ -1599,7 +1623,7 @@ impl App {
                 fx.extend(self.debug_step(d));
             } else if self.repeat_held || self.view == View::Arp {
                 fx.extend(self.arp_mode_step(d));
-            } else if self.view == View::Synth {
+            } else if self.view == View::Synth && shift {
                 fx.push(Effect::SynthPage(d));
             } else if self.browsing() {
                 fx.push(Effect::Browse(if d > 0 {
@@ -1607,8 +1631,12 @@ impl App {
                 } else {
                     BrowseKey::Back
                 }));
-            } else if self.view.sampler() {
-                fx.push(Effect::SamplePad(d));
+            } else if self.view.sampler() && shift {
+                // SHIFT + - / +: zoom the waveform (Wave, Warp, Chop).
+                fx.push(Effect::SampleWheel(d));
+            } else if self.has_rows() {
+                // - / + step the highlighted row, as in the menus.
+                fx.push(Effect::Rows(RowKey::Step(d)));
             } else if self.view == View::Mixer {
                 fx.push(Effect::MixerStep(d));
             } else {
@@ -1849,18 +1877,27 @@ impl App {
             View::Touch => vec![Effect::TouchWheel(delta)],
             // NOTE REPEAT held or the Arp panel: the rate, order or pattern.
             _ if self.repeat_held || self.view == View::Arp => self.arp_wheel(delta),
-            View::Arrange => vec![Effect::ClipsWheel {
+            // SHIFT + wheel keeps each page's second job: scroll Arrange,
+            // the Synth tab's pages, the pads with a sound.
+            View::Arrange if self.shift => vec![Effect::ClipsWheel {
                 delta,
-                scroll: self.shift,
+                scroll: true,
             }],
             View::Synth if self.shift => vec![Effect::SynthPage(delta.signum())],
-            View::Synth => vec![Effect::SynthWheel(delta)],
             View::Pads if self.pads_browse && self.shift => {
                 vec![Effect::Browse(BrowseKey::Places(delta.signum()))]
             }
             View::Pads if self.pads_browse => vec![Effect::Browse(BrowseKey::Wheel(delta))],
             View::Sample | View::Pads if self.shift => vec![Effect::SamplePad(delta.signum())],
-            View::Sample | View::Pads => vec![Effect::SampleWheel(delta)],
+            // Pages with rows: the wheel picks a row, or, once the wheel's
+            // push opened it, changes its value (RowKey).
+            View::Arrange | View::Synth | View::Sample | View::Pads => {
+                vec![Effect::Rows(if self.page_editing {
+                    RowKey::Step(delta)
+                } else {
+                    RowKey::Pick(delta)
+                })]
+            }
             View::Play if self.shift => vec![Effect::Octave(delta.signum())],
             _ => vec![Effect::Kit(delta)],
         }
@@ -1876,6 +1913,7 @@ impl App {
     /// a menu, the guide or the workspace (whose Back goes to the panel).
     fn show(&mut self, v: View) -> Vec<Effect> {
         self.menu_editing = false;
+        let was_editing = std::mem::take(&mut self.page_editing);
         if self.view != v
             && matches!(
                 self.view,
@@ -1898,6 +1936,10 @@ impl App {
             self.back = self.view;
         }
         let mut fx = Vec::new();
+        if was_editing {
+            // The row the wheel was changing closes with its page.
+            fx.push(Effect::Rows(RowKey::Editing(false)));
+        }
         if self.view == View::Mixer && v != View::Mixer {
             fx.push(Effect::Mixer(None));
         }
@@ -2070,6 +2112,18 @@ impl App {
     /// The wheel, its push, - / + and PLAY go to the Pads tab's browser.
     fn browsing(&self) -> bool {
         self.view == View::Pads && self.pads_browse
+    }
+
+    /// A page whose rows the wheel, - / + and the wheel's push work
+    /// ([`RowKey`]): the Sample tab, the Pads tab's Pad view, the Synth tab
+    /// and Arrange. Not while NOTE REPEAT holds the wheel for the arp.
+    fn has_rows(&self) -> bool {
+        !self.repeat_held
+            && match self.view {
+                View::Sample | View::Synth | View::Arrange => true,
+                View::Pads => !self.pads_browse,
+                _ => false,
+            }
     }
 
     pub fn open_tab(&mut self, v: View) -> Vec<Effect> {
@@ -2693,9 +2747,16 @@ impl App {
     /// now changes that value (as it turns), and the next push sets it and
     /// gives the wheel back to the rows. On a row that opens something
     /// (System info, Touch screen, Back…), it opens it, as + does (Jay,
-    /// 12 Nov 08:11Z). Elsewhere it does nothing yet.
+    /// 12 Nov 08:11Z). On a page with rows, the same for the row
+    /// highlighted ([`RowKey`]). Elsewhere it does nothing yet.
     pub fn wheel_push(&mut self) -> Vec<Effect> {
         if !self.in_menu() {
+            // A page with rows: open the highlighted row for the wheel, or
+            // close it again (RowKey).
+            if self.has_rows() {
+                self.page_editing = !self.page_editing;
+                return vec![Effect::Rows(RowKey::Editing(self.page_editing))];
+            }
             return Vec::new();
         }
         if self.menu_editing {
@@ -3670,6 +3731,59 @@ mod tests {
         assert_eq!(app.items(), PREFS_ROWS);
     }
 
+    /// Live test 2 (Jay, 13 Nov): on a page with rows the wheel scrolls
+    /// through them, - / + cycle the highlighted row's options, and the
+    /// wheel's push makes the wheel cycle them until the next push. The
+    /// same on the Sample tab, the Pads tab's Pad view, the Synth tab and
+    /// Arrange; SHIFT keeps each page's second job.
+    #[test]
+    fn the_wheel_picks_rows_and_its_push_opens_one_on_every_page_with_rows() {
+        let mut app = ready();
+        app.map.minus = Some(40);
+        app.map.plus = Some(41);
+        app.map.data_push = Some(42);
+        let pick = |d| vec![Effect::Rows(RowKey::Pick(d))];
+        let step = |d| vec![Effect::Rows(RowKey::Step(d))];
+        app.set_pads_browse(false);
+        for v in [View::Sample, View::Synth, View::Arrange, View::Pads] {
+            app.open_tab(v);
+            assert_eq!(app.view(), v);
+            assert_eq!(app.wheel(1), pick(1), "{v:?}");
+            assert_eq!(app.wheel(-3), pick(-3), "{v:?}");
+            assert_eq!(press(&mut app, 41), step(1), "{v:?}");
+            assert_eq!(press(&mut app, 40), step(-1), "{v:?}");
+            // The push opens the row: the wheel changes it, - / + still do.
+            assert_eq!(
+                press(&mut app, 42),
+                vec![Effect::Rows(RowKey::Editing(true))]
+            );
+            assert_eq!(app.wheel(2), step(2), "{v:?}");
+            assert_eq!(press(&mut app, 40), step(-1), "{v:?}");
+            // The next push gives the wheel back to the rows.
+            assert_eq!(
+                press(&mut app, 42),
+                vec![Effect::Rows(RowKey::Editing(false))]
+            );
+            assert_eq!(app.wheel(1), pick(1), "{v:?}");
+        }
+        // SHIFT keeps the second jobs: pads, pages, scrolling, zoom.
+        app.open_tab(View::Sample);
+        app.button(button::SHIFT, true, 0.0);
+        assert_eq!(app.wheel(2), vec![Effect::SamplePad(1)]);
+        assert_eq!(press(&mut app, 41), vec![Effect::SampleWheel(1)]);
+        app.button(button::SHIFT, false, 0.0);
+        // A row left open closes with its page.
+        press(&mut app, 42);
+        let fx = app.open_tab(View::Play);
+        assert!(fx.contains(&Effect::Rows(RowKey::Editing(false))), "{fx:?}");
+        assert_eq!(app.wheel(1), vec![Effect::Kit(1)]);
+        app.open_tab(View::Sample);
+        assert_eq!(app.wheel(1), pick(1));
+        // A menu's own rows are as before.
+        press(&mut app, MENU);
+        assert!(matches!(app.wheel(1).last(), Some(Effect::Menu(_))));
+    }
+
     #[test]
     fn the_synth_tab_takes_the_wheel_and_shift_wheel_moves_octaves_on_play() {
         let mut app = ready();
@@ -3680,15 +3794,17 @@ mod tests {
         assert_eq!(app.wheel(-2), vec![Effect::Kit(-2)]);
         assert_eq!(app.open_tab(View::Synth), vec![Effect::Show(View::Synth)]);
         assert_eq!(app.view(), View::Synth);
-        assert_eq!(app.wheel(2), vec![Effect::SynthWheel(2)]);
+        // The wheel picks tiles (RowKey; see the wheel navigation test).
+        assert_eq!(app.wheel(2), vec![Effect::Rows(RowKey::Pick(2))]);
         app.button(button::SHIFT, true, 0.0);
         assert_eq!(app.wheel(-4), vec![Effect::SynthPage(-1)]);
-        app.button(button::SHIFT, false, 0.0);
-        // - and + step pages once the guide knows them.
+        // SHIFT + - and + step pages once the guide knows them.
         app.map.minus = Some(40);
         app.map.plus = Some(41);
         assert_eq!(press(&mut app, 41), vec![Effect::SynthPage(1)]);
         assert_eq!(press(&mut app, 40), vec![Effect::SynthPage(-1)]);
+        app.button(button::SHIFT, false, 0.0);
+        assert_eq!(press(&mut app, 41), vec![Effect::Rows(RowKey::Step(1))]);
         // MENU on the Synth page opens its options and goes back to it.
         let fx = press(&mut app, MENU);
         assert!(matches!(&fx[0], Effect::Menu(m) if m.title == "Synth options"));
@@ -4085,8 +4201,8 @@ mod tests {
         assert_eq!(View::Sample.tab_index(true), Some(5));
         assert_eq!(app.tab(5), vec![Effect::Show(View::Sample)]);
         assert_eq!(app.view(), View::Sample);
-        // The wheel zooms; SHIFT + wheel and - / + pick the pad.
-        assert_eq!(app.wheel(2), vec![Effect::SampleWheel(2)]);
+        // The wheel picks a row (RowKey); SHIFT + wheel picks the pad.
+        assert_eq!(app.wheel(2), vec![Effect::Rows(RowKey::Pick(2))]);
         app.button(button::SHIFT, true, 0.0);
         assert_eq!(app.wheel(-3), vec![Effect::SamplePad(-1)]);
         // UNDO undoes the Sample page's edits there (SHIFT: redo), and the
@@ -4097,10 +4213,11 @@ mod tests {
             press(&mut app, 92),
             vec![Effect::SampleUndo { redo: false }]
         );
+        // - / + step the row picked.
         app.map.minus = Some(40);
         app.map.plus = Some(41);
-        assert_eq!(press(&mut app, 41), vec![Effect::SamplePad(1)]);
-        assert_eq!(press(&mut app, 40), vec![Effect::SamplePad(-1)]);
+        assert_eq!(press(&mut app, 41), vec![Effect::Rows(RowKey::Step(1))]);
+        assert_eq!(press(&mut app, 40), vec![Effect::Rows(RowKey::Step(-1))]);
         // MENU opens the options and goes back to the Sample page.
         let fx = press(&mut app, MENU);
         assert!(matches!(&fx[0], Effect::Menu(m) if m.title == "Sample options"));
@@ -4138,8 +4255,8 @@ mod tests {
         );
         // The Pad view: the Sample tab's controls.
         app.set_pads_browse(false);
-        assert_eq!(app.wheel(2), vec![Effect::SampleWheel(2)]);
-        assert_eq!(press(&mut app, 41), vec![Effect::SamplePad(1)]);
+        assert_eq!(app.wheel(2), vec![Effect::Rows(RowKey::Pick(2))]);
+        assert_eq!(press(&mut app, 41), vec![Effect::Rows(RowKey::Step(1))]);
         assert!(press(&mut app, button::PLAY)
             .contains(&Effect::Time(TimeAction::Transport(Command::Play))));
         // Elsewhere PLAY is the transport's again.
@@ -5325,13 +5442,7 @@ mod tests {
         let mut app = ready();
         app.open_tab(View::Arrange);
         assert_eq!(app.view(), View::Arrange);
-        assert_eq!(
-            app.wheel(1),
-            vec![Effect::ClipsWheel {
-                delta: 1,
-                scroll: false
-            }]
-        );
+        assert_eq!(app.wheel(1), vec![Effect::Rows(RowKey::Pick(1))]);
         assert_eq!(
             held(&mut app, button::SHIFT, |a| a.wheel(-1)),
             vec![Effect::ClipsWheel {

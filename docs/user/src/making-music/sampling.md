@@ -48,7 +48,7 @@ Both buttons are faint while the pad picked has no sound.
 
 {{shot: sample | The Wave page: the whole sample at the top, the zoomed region below, and the region's settings on the right. Send to pad and Chop to pads are at the top right.}}
 
-The **Wave** page shows the sample. Set where it **starts** and **ends**, and where its **loop** starts and ends, with the four Q-Links. Turn the data wheel to zoom in. Tap the wave to hear it. On the right, set the region's **gain**, **tune**, **crossfade** (smooths a loop's seam), **warp** (play in time with the tempo) and **reverse**.
+The **Wave** page shows the sample. Set where it **starts** and **ends**, and where its **loop** starts and ends, with the four Q-Links. Hold **SHIFT** and press **+** to zoom in, **SHIFT + –** to zoom out (the Warp and Chop pages too). Tap the wave to hear it. On the right, set the region's **gain**, **tune**, **crossfade** (smooths a loop's seam), **warp** (play in time with the tempo) and **reverse**.
 
 ## Chop: slice across the pads
 

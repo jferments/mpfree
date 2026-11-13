@@ -490,7 +490,7 @@ impl ChopTab {
                 KnobCard::new(&format!("Q-Link {} · {label}", k + 1), *color),
             );
         }
-        ui.add(WHEEL, InfoCard::new("Wheel · zoom"));
+        ui.add(WHEEL, InfoCard::new("SHIFT + - / + · zoom"));
         ui.add_page(name, LAYOUT)?;
         let wave = slot(ui, WAVE).ok_or("no waveform slot")?;
         let mut tab = ChopTab {

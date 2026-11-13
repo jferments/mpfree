@@ -30,16 +30,17 @@ On the current test build, some buttons (REC, OVERDUB, UNDO, PLAY START, TRACK M
 | **UNDO** | Undoes the last recording or edit on the page you are on (the Looper tab: the last loop layer; the Sample tab: the last edit; elsewhere: the last clip take). **SHIFT + UNDO** redoes it. | Works |
 | **SHIFT + REC** | Capture: keeps what you just played as a clip, even if you weren't recording. | Next build |
 | **SHIFT + PLAY START** | Metronome on or off. | Next build |
-
-**The transport lights.** STOP is lit while the transport is stopped and dims while it plays. PLAY is meant to light while playing, REC while recording, counting in or while a loop waits to record, and OVERDUB while overdubbing. Those three stay dark for now: MPFree only sends the light messages it has seen Akai's own software send, and these three are being checked first. Until then the Console says `button N: no light sent` once for each.
 | **TAP TEMPO** | Tap four times in time to set the tempo. | Works |
 | **TRACK MIX** | Opens or closes the mixer over the page you are on. **SHIFT + TRACK MIX** opens the pad mixer. | Works |
 | **PAD BANK A–D** | Switches the pads to bank A, B, C or D. **SHIFT** + a bank button, or a second press, gives banks E–H. | Works |
 | **FULL LEVEL** | Every pad plays at full velocity, however hard you hit it. Press again to turn it off. **SHIFT + FULL LEVEL** is Half Level (every hit at half velocity). | Works |
 | **16 LEVEL** | Planned. **SHIFT + 16 LEVEL** switches the synth pads between Chromatic and In key. | Next build (SHIFT) |
 | **Q-Link knobs 1–4** | Turn the four parameters shown in the Q-Link column at the right of the screen. What they control depends on the page. | Works |
-| **Data wheel** | Changes the selected value; on the Play page, picks the kit. | Works |
-| **–** and **+** | Step the selected menu row down or up. | Works |
+| **Data wheel** | On a page with settings (the menus, Prefs, the Sample tab, the Pads tab's Pad view, the Synth tab, Arrange): picks a row. On the Play page, picks the kit. | Works (pages: next build) |
+| **–** and **+** | Step the picked row's value down or up. | Works (pages: next build) |
+| **The data wheel's push** | Opens the picked row: its value is outlined and the wheel changes it. Push again to go back to picking rows. On a row that opens something, opens it. | Works in menus (pages: next build) |
+
+**The transport lights.** STOP is lit while the transport is stopped and dims while it plays. PLAY is meant to light while playing, REC while recording, counting in or while a loop waits to record, and OVERDUB while overdubbing. Those three stay dark for now: MPFree only sends the light messages it has seen Akai's own software send, and these three are being checked first. Until then the Console says `button N: no light sent` once for each.
 
 ## Repeat and arpeggiator
 
@@ -53,13 +54,13 @@ On the current test build, some buttons (REC, OVERDUB, UNDO, PLAY START, TRACK M
 
 | Control | What it does | When |
 |---|---|---|
-| **Data wheel** | Changes the picked row of the Record settings, or of the Edit options while the note editor is open. | Works |
+| **Data wheel** | Picks a row of the Record settings, or of the Edit options while the note editor is open. **–** and **+** change it; push the wheel and the wheel changes it. | Next build |
 | **SHIFT + data wheel** | Scrolls the clip grid, the song, or the note editor's roll, list or tracker. | Works |
 | **Q-Link knobs 1-4** | The same knobs as on the Play page, as the cards on the right show; Q-LINK steps to the macro banks. See [Clips and patterns](../making-music/clips.md#the-q-links-on-arrange). | Next build |
 
 ## Pads tab
 
-While the Pads tab shows its **Browse** view, the controls work the browser beside the pads. On its **Pad** view they work as on the Sample tab: the wheel changes the picked row, **–** and **+** step through the pads with a sound. See [Sampling](../making-music/sampling.md#the-pads-tab-sounds-onto-pads).
+While the Pads tab shows its **Browse** view, the controls work the browser beside the pads. On its **Pad** view they work as on the Sample tab (below): the wheel picks a row, **–** and **+** change it, and **SHIFT** + wheel steps through the pads with a sound. See [Sampling](../making-music/sampling.md#the-pads-tab-sounds-onto-pads).
 
 | Control | What it does | When |
 |---|---|---|
@@ -70,6 +71,16 @@ While the Pads tab shows its **Browse** view, the controls work the browser besi
 | **+** | Into the folder picked. | Next build |
 | **PLAY** | Hears the sound picked (press again to stop it). PLAY doesn't start playback while Browse shows. | Next build |
 | **Q-Link knobs 1–4** | 1: moves through the list. 3: the level you hear sounds at. 4: the places. | Next build |
+
+## Sample and Synth tabs
+
+| Control | What it does | When |
+|---|---|---|
+| **Data wheel** | Picks a row of the settings on the right (on the Synth tab, a tile). | Next build |
+| **–** and **+** | Change the row or tile picked. | Next build |
+| **The data wheel's push** | Opens the row or tile picked: the wheel changes it until you push again. | Next build |
+| **SHIFT + data wheel** | Sample: the previous or next pad with a sound. Synth: the previous or next page. | Works |
+| **SHIFT + –** and **SHIFT + +** | Wave, Warp and Chop pages: zoom out and in. Synth: the previous or next page. | Next build |
 
 ## Mode buttons
 
@@ -87,7 +98,7 @@ The mode buttons along the top of the MPC go to the MPFree page that does the sa
 | **Q-LINK** | Steps the Q-Links through Macros 1-4, Macros 5-8 and the page's own knobs (the Play page, Arrange and the chain editor). See [Mixing and effects](../making-music/mixing-and-effects.md#macros). | Next build |
 | **ERASE** | Live erase while recording. | Planned |
 | **BROWSE** | Opens or closes the browser. **SHIFT + BROWSE** saves the project. See [Saving your work](../making-music/saving.md). | Planned |
-| **The data wheel's push** | In Prefs and the options menus: opens the picked row, so the wheel changes its value; press again to set it. Works once Map controls has found it. | Next build |
+| **The data wheel's push** | See [Everywhere](#everywhere). Works once Map controls has found it. | Next build |
 | **COPY**, **TC** | Not assigned yet. | Planned |
 
 ## For developers

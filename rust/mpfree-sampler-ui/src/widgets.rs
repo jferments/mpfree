@@ -276,6 +276,9 @@ pub struct SettingList {
     pub right: String,
     pub rows: Vec<Setting>,
     pub selected: usize,
+    /// The wheel's push opened the selected row: its value box is outlined
+    /// and its arrows lit, as in the menus, while the wheel changes it.
+    pub editing: bool,
 }
 
 const SET_ROW_H: i32 = 44;
@@ -289,6 +292,7 @@ impl SettingList {
             right: String::new(),
             rows: Vec::new(),
             selected: 0,
+            editing: false,
         }
     }
 
@@ -353,22 +357,20 @@ impl Widget for SettingList {
             );
             cx.canvas
                 .fill_round_rect(value, 8, if on { t.surface } else { t.raised });
+            let open = on && self.editing;
+            if open {
+                cx.canvas.stroke_round_rect(value, 8, 2, t.accent);
+            }
+            let arrows = if open { t.accent } else { t.text_dim };
             let (left, mid) = value.take_left(SET_ARROW_W);
             let (right, mid) = mid.take_right(SET_ARROW_W);
-            cx.text(
-                FontId::Bold,
-                t.size_title,
-                left,
-                Align::Center,
-                t.text_dim,
-                "‹",
-            );
+            cx.text(FontId::Bold, t.size_title, left, Align::Center, arrows, "‹");
             cx.text(
                 FontId::Bold,
                 t.size_title,
                 right,
                 Align::Center,
-                t.text_dim,
+                arrows,
                 "›",
             );
             cx.text(
