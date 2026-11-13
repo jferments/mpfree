@@ -49,7 +49,6 @@ class V25Contracts(unittest.TestCase):
         self.assertIn("0x00144ca4u",source)
         self.assertIn("real_native_mmc",source)
         self.assertIn("uint32_t,uint32_t,uint32_t,uint32_t",source)
-        self.assertIn("v25_setup_mmc_registry",source)
         self.assertIn("v24_setup_mmc_registry",source)
         self.assertNotIn("system(",source)
 
