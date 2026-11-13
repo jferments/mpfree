@@ -27,7 +27,7 @@ use mpfree_touch::mt::{ContactId, Phase};
 use mpfree_touch::pointer::PointerEvent;
 use mpfree_touch::profile::MPC_ONE;
 use mpfree_touch::tuning::{suggest, Measure, Param, Reason, Sample, Tuning};
-use mpfree_ui::{Align, Color, EventKind, FontId, PaintCx, Rect, Tone, Touch, Widget};
+use mpfree_ui::{Align, Color, EventKind, FontId, PaintCx, Rect, Target, Tone, Touch, Widget};
 use std::collections::VecDeque;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -528,6 +528,18 @@ impl Widget for TouchTest {
         }
     }
 
+    fn targets(&self, r: Rect) -> Vec<Target> {
+        let (bar, area) = Self::body(r);
+        let mut out: Vec<Target> = Self::bar_cells(bar)
+            .into_iter()
+            .enumerate()
+            .map(|(i, c)| Target::tap("mode", i, MODES[i], c))
+            .collect();
+        // A finger anywhere in the area leaves its trail.
+        out.push(Target::drag("area", 0, "test area", area));
+        out
+    }
+
     fn touch(&mut self, finger: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
         let t = self.stamp();
         self.event_time = None;
@@ -749,6 +761,28 @@ impl Widget for TuneList {
                 &s,
             );
         }
+    }
+
+    fn targets(&self, r: Rect) -> Vec<Target> {
+        let body = Self::body(r);
+        let mut out = Vec::new();
+        for i in 0..self.rows.len() {
+            let rr = Self::row_rect(body, i);
+            let (minus, plus) = Self::steppers(rr);
+            let label = self.rows[i].label;
+            out.push(Target::tap(
+                "row",
+                i,
+                label,
+                Rect::new(rr.x, rr.y, minus.x - rr.x, rr.h),
+            ));
+            out.push(Target::tap("row-minus", i, format!("{label} -"), minus));
+            out.push(Target::tap("row-plus", i, format!("{label} +"), plus));
+        }
+        for (i, b) in self.action_rects(body).into_iter().enumerate() {
+            out.push(Target::tap("action", i, ACTIONS[i], b));
+        }
+        out
     }
 
     fn touch(&mut self, _f: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {

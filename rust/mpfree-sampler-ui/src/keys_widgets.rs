@@ -5,7 +5,7 @@
 
 use mpfree_analysis::note_name;
 use mpfree_sampler::model::Keys;
-use mpfree_ui::{Align, Color, EventKind, FontId, PaintCx, Rect, Touch, Widget};
+use mpfree_ui::{Align, Color, EventKind, FontId, PaintCx, Rect, Target, Touch, Widget};
 
 use crate::play_widgets::fade_cut;
 
@@ -413,6 +413,47 @@ impl Widget for KeyZones {
                 &self.caption,
             );
         }
+    }
+
+    fn targets(&self, r: Rect) -> Vec<Target> {
+        let (_, keys, ..) = KeyZones::areas(r);
+        // The keyboard plays the note under the finger.
+        let mut out = vec![Target::tap("keys", 0, "keyboard", keys)];
+        let picked = self.picked_index();
+        for (i, z) in self.zones.iter().enumerate() {
+            let Some(zr) = self.zone_rect(r, i) else {
+                continue;
+            };
+            if Some(i) == picked {
+                // The picked zone's handles: its low and high ends and its root.
+                let k = z.keys;
+                let h = |x: i32| Rect::new(x - HANDLE / 2, zr.y, HANDLE, zr.h);
+                if k.lo >= self.first {
+                    out.push(
+                        Target::drag("zone-low", i, format!("{} low", z.label), h(zr.x))
+                            .towards(-40, 0),
+                    );
+                }
+                if k.hi <= self.last {
+                    out.push(
+                        Target::drag("zone-high", i, format!("{} high", z.label), h(zr.right()))
+                            .towards(40, 0),
+                    );
+                }
+                out.push(
+                    Target::drag(
+                        "zone-root",
+                        i,
+                        format!("{} root", z.label),
+                        h(self.root_x(r, k)),
+                    )
+                    .towards(30, 0),
+                );
+            } else {
+                out.push(Target::tap("zone", i, z.label.clone(), zr));
+            }
+        }
+        out
     }
 
     fn touch(&mut self, finger: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {

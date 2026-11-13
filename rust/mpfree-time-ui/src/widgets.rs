@@ -5,7 +5,9 @@
 //! about the transport, the clips or the audio thread.
 
 use mpfree_ui::widgets::Chip;
-use mpfree_ui::{Align, Canvas, Color, EventKind, FontId, PaintCx, Rect, Tone, Touch, Widget};
+use mpfree_ui::{
+    Align, Canvas, Color, EventKind, FontId, PaintCx, Rect, Target, Tone, Touch, Widget,
+};
 use std::cell::RefCell;
 use std::f32::consts::TAU;
 
@@ -380,6 +382,27 @@ impl Widget for TransportBar {
             x += w;
         }
         *self.hits.borrow_mut() = hits;
+    }
+
+    fn targets(&self, _r: Rect) -> Vec<Target> {
+        // What the last paint drew to be touched: the transport buttons,
+        // the mode, the chips and Undo.
+        let names = ["Stop", "Play", "Rec", "Mode", "Undo"];
+        self.hits
+            .borrow()
+            .iter()
+            .map(|(h, k)| match k {
+                EventKind::Tab(i) => {
+                    let id = ["stop", "play", "rec", "mode", "undo"][(*i).min(4)];
+                    Target::tap(id, 0, names[(*i).min(4)], *h)
+                }
+                EventKind::Select(i) => {
+                    let label = self.chips.get(*i).map_or(String::new(), |c| c.text.clone());
+                    Target::tap("chip", *i, label, *h)
+                }
+                _ => Target::tap("other", 0, "", *h),
+            })
+            .collect()
     }
 
     fn touch(&mut self, _f: u64, phase: Touch, x: i32, y: i32, _r: Rect) -> Option<EventKind> {
@@ -800,6 +823,42 @@ impl Widget for ClipGrid {
         }
     }
 
+    fn targets(&self, r: Rect) -> Vec<Target> {
+        let mut out = vec![
+            Target::tap("song", 0, "Song", self.song_rect(r)),
+            Target::tap("rec-song", 0, "Rec song", self.rec_rect(r)),
+            Target::tap("edit", 0, "Edit", self.edit_rect(r)),
+        ];
+        if self.tracks.is_empty() {
+            return out;
+        }
+        out.push(Target::tap(
+            "stop-all",
+            0,
+            "Stop all",
+            self.stop_all_rect(r),
+        ));
+        for slot in self.first_row..self.slots {
+            if let Some(b) = self.scene_rect(r, slot) {
+                out.push(Target::tap("scene", slot, format!("Scene {}", slot + 1), b));
+            }
+        }
+        let tracks = self.first_track..(self.first_track + GRID_COLS).min(self.tracks.len());
+        for track in tracks {
+            let name = &self.tracks[track].name;
+            if let Some(h) = self.head_rect(r, track) {
+                out.push(Target::tap("track", track, name.clone(), h));
+            }
+            for slot in self.first_row..self.slots {
+                if let Some(c) = self.cell_rect(r, track, slot) {
+                    let label = format!("{name} slot {}", slot + 1);
+                    out.push(Target::tap("slot", track * self.slots + slot, label, c));
+                }
+            }
+        }
+        out
+    }
+
     fn touch(&mut self, _f: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
         if phase != Touch::Down {
             return None;
@@ -975,6 +1034,37 @@ impl Widget for MorphBar {
                 &word,
             );
         }
+    }
+
+    fn targets(&self, r: Rect) -> Vec<Target> {
+        let (a, fader, b, buttons) = MorphBar::parts(r);
+        let mut out = Vec::new();
+        for (index, chip) in [a, b].iter().enumerate() {
+            let name = ["A", "B"][index];
+            let (down, up) = chip.take_left(chip.w / 2);
+            out.push(Target::tap(
+                "row-down",
+                index,
+                format!("{name} (left half)"),
+                down,
+            ));
+            out.push(Target::tap(
+                "row-up",
+                index,
+                format!("{name} (right half)"),
+                up,
+            ));
+        }
+        out.push(Target::drag("crossfader", 0, "crossfader", fader).towards(fader.w / 3, 0));
+        for (i, br) in buttons.iter().enumerate() {
+            out.push(Target::tap(
+                "button",
+                i,
+                ["Snap back", "Keep", "Save"][i],
+                *br,
+            ));
+        }
+        out
     }
 
     fn touch(&mut self, _f: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
@@ -1286,6 +1376,19 @@ impl Widget for TakeList {
                 }
             }
         }
+    }
+
+    fn targets(&self, r: Rect) -> Vec<Target> {
+        (0..3)
+            .map(|i| {
+                Target::tap(
+                    "button",
+                    i,
+                    ["Undo", "Redo", "Capture"][i],
+                    TakeList::button_rect(r, i),
+                )
+            })
+            .collect()
     }
 
     fn touch(&mut self, _f: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {

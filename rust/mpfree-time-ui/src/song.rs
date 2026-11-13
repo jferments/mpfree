@@ -32,7 +32,7 @@ use crate::widgets::{rec_song_pill, REC_SONG_W};
 use mpfree_audiotracks::host::TakeWave;
 use mpfree_audiotracks::{frames_from, Region, TakeInfo};
 use mpfree_transport::time::{TempoMap, Tick};
-use mpfree_ui::{Align, Color, EventKind, FontId, PaintCx, Rect, Touch, Widget};
+use mpfree_ui::{Align, Color, EventKind, FontId, PaintCx, Rect, Target, Touch, Widget};
 
 /// The buttons along the bottom, left to right.
 pub const SONG_BUTTONS: [&str; 6] = [
@@ -768,6 +768,51 @@ impl Widget for SongLanes {
             };
             cx.text(FontId::Bold, t.size_small, *br, Align::Center, ink, word);
         }
+    }
+
+    fn targets(&self, r: Rect) -> Vec<Target> {
+        let audio = self.region.is_some();
+        let mut out: Vec<Target> = self
+            .button_rects(r)
+            .iter()
+            .enumerate()
+            .map(|(k, b)| {
+                let word = if audio {
+                    AUDIO_BUTTONS[k]
+                } else {
+                    SONG_BUTTONS[k]
+                };
+                let id = if audio { "region-button" } else { "button" };
+                Target::tap(id, k, word, *b)
+            })
+            .collect();
+        out.push(Target::tap("rec-song", 0, "Rec song", self.rec_rect(r)));
+        if let Some(b) = self.add_rect(r) {
+            out.push(Target::tap("add-audio", 0, "+ Audio", b));
+        }
+        for (a, lane) in self.audio.iter().enumerate() {
+            if let (Some(d), Some(h)) = (self.arm_rect(r, a), self.header_rect(r, a)) {
+                out.push(Target::tap("arm", a, format!("{} arm", lane.name), d));
+                let rest = Rect::new(d.right(), h.y, h.right() - d.right(), h.h);
+                out.push(Target::tap("audio-header", a, lane.name.clone(), rest));
+            }
+            for i in 0..lane.blocks.len() {
+                if let Some(br) = self.region_rect(r, a, i) {
+                    out.push(Target::tap(
+                        "region",
+                        a * 1000 + i,
+                        format!("{} region {}", lane.name, i + 1),
+                        br,
+                    ));
+                }
+            }
+        }
+        for b in &self.blocks {
+            if let Some(br) = self.block_rect(r, b) {
+                out.push(Target::tap("block", b.index, b.name.clone(), br));
+            }
+        }
+        out
     }
 
     fn touch(&mut self, _f: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {

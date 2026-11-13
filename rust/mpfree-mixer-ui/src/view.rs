@@ -24,7 +24,9 @@ use std::cell::Cell;
 
 use mpfree_fx::ids::mixer::{self as mx, output};
 use mpfree_fx::{StripId, BUSES, SILENT_DB};
-use mpfree_ui::{Align, Color, EventKind, FontId, PaintCx, Rect, Theme, Tone, Touch, Widget};
+use mpfree_ui::{
+    Align, Color, EventKind, FontId, PaintCx, Rect, Target, Theme, Tone, Touch, Widget,
+};
 
 use crate::io::{self, IoFrame, IoInput, IoKnob, IoReply, IoSection};
 use crate::state::{choice, output_label, peak_db, MixState, MixView, StripView, TakeView};
@@ -2142,6 +2144,10 @@ impl Widget for IoIcon {
         }
     }
 
+    fn targets(&self, r: Rect) -> Vec<Target> {
+        vec![Target::tap("icon", 0, "I/O", r)]
+    }
+
     fn touch(&mut self, _f: u64, phase: Touch, _x: i32, _y: i32, _r: Rect) -> Option<EventKind> {
         (phase == Touch::Down).then_some(EventKind::Tab(0))
     }
@@ -2180,6 +2186,10 @@ impl Widget for MixerIcon {
             cx.canvas
                 .fill_round_rect(Rect::new(x - 3, ky, 8, 6), 2, ink);
         }
+    }
+
+    fn targets(&self, r: Rect) -> Vec<Target> {
+        vec![Target::tap("icon", 0, "mixer", r)]
     }
 
     fn touch(&mut self, _f: u64, phase: Touch, _x: i32, _y: i32, _r: Rect) -> Option<EventKind> {
@@ -2291,6 +2301,154 @@ impl Widget for MixerView {
         if let Some(s) = self.menu {
             self.paint_menu(cx, &l, s);
         }
+    }
+
+    fn targets(&self, r: Rect) -> Vec<Target> {
+        let l = layout(r);
+        // A menu or the output picker takes the panel while it is open.
+        if let Some(s) = self.menu {
+            let v = self.state.strip(s);
+            return self
+                .menu_buttons(&l, s)
+                .into_iter()
+                .map(|(m, b)| {
+                    let label = v.map_or("", |v| m.text(v).0);
+                    Target::tap("menu", m as usize, label, b)
+                })
+                .collect();
+        }
+        if let Some(s) = self.picker {
+            return self
+                .picker_buttons(&l, s)
+                .into_iter()
+                .enumerate()
+                .map(|(i, ((out, track), b))| {
+                    Target::tap("output-choice", i, output_label(out, track), b)
+                })
+                .collect();
+        }
+        let mut out: Vec<Target> = MixView::ALL
+            .iter()
+            .enumerate()
+            .map(|(i, v)| {
+                // The view showing is drawn lit: a tap on it changes nothing.
+                Target::tap("view", i, v.label(), l.chips[i]).disabled_if(*v == self.state.view)
+            })
+            .collect();
+        let (first, shown, n, outside) = self.span(&l);
+        out.push(Target::tap("prev", 0, "<", l.prev).disabled_if(!(outside || first > 0)));
+        out.push(Target::tap("next", 0, ">", l.next).disabled_if(!(outside || first + shown < n)));
+        if self.state.view == MixView::Io {
+            let il = io::io_layout(l.strips, self.io.sections.len() + 1);
+            for (i, (b, label)) in il.list.iter().zip(self.io.labels()).enumerate() {
+                out.push(Target::tap("io-section", i, label, *b).disabled_if(i == self.io.sel));
+            }
+            if let Some(sec) = self.io.section() {
+                out.extend(sec.targets(il.panel));
+                return out;
+            }
+            for (i, row) in self.io_rows(il.panel) {
+                let s = &self.state.strips[i];
+                let p = io::row_parts(row);
+                out.push(Target::tap("io-name", i, s.name.clone(), p.name));
+                if s.has_output() {
+                    out.push(Target::tap(
+                        "io-output",
+                        i,
+                        format!("{} output", s.name),
+                        p.output,
+                    ));
+                }
+                if s.input.is_some() {
+                    out.push(Target::tap(
+                        "io-source",
+                        i,
+                        format!("{} source", s.name),
+                        p.source,
+                    ));
+                    out.push(Target::tap(
+                        "io-monitor",
+                        i,
+                        format!("{} monitor", s.name),
+                        p.monitor,
+                    ));
+                }
+            }
+            return out;
+        }
+        let mut strips: Vec<(&StripView, Rect)> = self
+            .shown(&l)
+            .into_iter()
+            .map(|(i, sr)| (&self.state.strips[i], sr))
+            .collect();
+        strips.push((&self.state.master, l.master));
+        for (k, (s, sr)) in strips.into_iter().enumerate() {
+            let p = parts(sr);
+            let name = &s.name;
+            // The selected strip's name opens its menu only with takes.
+            let picked = self.state.selected == Some(s.id);
+            out.push(
+                Target::tap("strip-name", k, name.clone(), p.name)
+                    .disabled_if(picked && !self.state.takes),
+            );
+            let rows = if s.input.is_some() { 2 } else { 4 };
+            for (i, row) in p.inserts.iter().enumerate() {
+                if let Some(_inp) = s.input.filter(|_| i >= 2) {
+                    let id = if i == 2 { "source" } else { "monitor" };
+                    out.push(Target::tap(id, k, format!("{name} {id}"), *row));
+                } else if i < rows && i < s.inserts.len().min(4) {
+                    let label = s.inserts.get(i).map_or(String::new(), |v| v.name.clone());
+                    out.push(Target::tap("insert", k * 4 + i, label, *row));
+                } else if i < rows && i == s.inserts.len() && s.inserts.len() < s.slots {
+                    out.push(Target::tap(
+                        "add-insert",
+                        k,
+                        format!("{name} + Insert"),
+                        *row,
+                    ));
+                }
+            }
+            if s.sends.is_some() {
+                for (j, row) in p.sends.iter().enumerate() {
+                    let (letter, bar) = row.take_left(18);
+                    let send = ["A", "B", "C", "D"][j.min(3)];
+                    out.push(Target::tap(
+                        "send-pre",
+                        k * 4 + j,
+                        format!("{name} send {send} pre/post"),
+                        letter,
+                    ));
+                    out.push(
+                        Target::drag("send", k * 4 + j, format!("{name} send {send}"), bar)
+                            .towards(40, 0),
+                    );
+                }
+            }
+            out.push(Target::drag("pan", k, format!("{name} pan"), p.pan).towards(40, 0));
+            out.push(Target::drag("fader", k, format!("{name} fader"), p.fader).towards(0, -40));
+            out.push(Target::tap(
+                "value",
+                k,
+                format!("{name} level (to 0 dB)"),
+                p.value,
+            ));
+            if s.id != StripId::Master {
+                let n = if s.input.is_some() { 3 } else { 2 };
+                for (j, b) in buttons(p.buttons, n).into_iter().enumerate() {
+                    let id = ["mute", "solo", "arm"][j];
+                    out.push(Target::tap(
+                        id,
+                        k,
+                        format!("{name} {}", ["M", "S", "Arm"][j]),
+                        b,
+                    ));
+                }
+            }
+            if s.has_output() {
+                out.push(Target::tap("output", k, format!("{name} output"), p.output));
+            }
+        }
+        out
     }
 
     fn touch(&mut self, finger: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {

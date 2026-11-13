@@ -2,7 +2,7 @@
 //! those, they only show what the page put in their fields and report
 //! touches.
 
-use mpfree_ui::{Align, Color, EventKind, FontId, PaintCx, Rect, Touch, Widget};
+use mpfree_ui::{Align, Color, EventKind, FontId, PaintCx, Rect, Target, Touch, Widget};
 
 // ---------------------------------------------------------------- pad bar
 
@@ -109,6 +109,15 @@ impl Widget for PadBar {
                 name,
             );
         }
+    }
+
+    fn targets(&self, r: Rect) -> Vec<Target> {
+        (0..self.tabs.len())
+            .map(|i| {
+                let on = self.enabled.get(i).copied().unwrap_or(false);
+                Target::tap("tab", i, self.tabs[i].clone(), self.tab_rect(r, i)).disabled_if(!on)
+            })
+            .collect()
     }
 
     fn touch(&mut self, _f: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
@@ -253,6 +262,10 @@ impl Widget for KnobCard {
         }
     }
 
+    fn targets(&self, r: Rect) -> Vec<Target> {
+        vec![Target::tap("card", 0, self.label.clone(), r).disabled_if(!self.enabled)]
+    }
+
     fn touch(&mut self, _f: u64, phase: Touch, _x: i32, _y: i32, _r: Rect) -> Option<EventKind> {
         (phase == Touch::Down && self.enabled).then_some(EventKind::Select(0))
     }
@@ -382,6 +395,35 @@ impl Widget for SettingList {
                 &self.rows[k].value,
             );
         }
+    }
+
+    fn targets(&self, r: Rect) -> Vec<Target> {
+        let mut out = Vec::new();
+        for k in 0..self.rows.len() {
+            let Some((row, value)) = self.row_rects(r, k) else {
+                continue;
+            };
+            let name = &self.rows[k].name;
+            out.push(Target::tap(
+                "row",
+                k,
+                name.clone(),
+                Rect::new(row.x, row.y, value.x - row.x, row.h),
+            ));
+            out.push(Target::tap(
+                "row-less",
+                k,
+                format!("{name} ‹"),
+                value.take_left(SET_ARROW_W).0,
+            ));
+            out.push(Target::tap(
+                "row-more",
+                k,
+                format!("{name} ›"),
+                value.take_right(SET_ARROW_W).0,
+            ));
+        }
+        out
     }
 
     fn touch(&mut self, _f: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
@@ -520,6 +562,16 @@ impl Widget for ButtonRow {
                 label,
             );
         }
+    }
+
+    fn targets(&self, r: Rect) -> Vec<Target> {
+        (0..self.labels.len())
+            .map(|i| {
+                let on = self.enabled.get(i).copied().unwrap_or(false);
+                Target::tap("button", i, self.labels[i].clone(), self.button_rect(r, i))
+                    .disabled_if(!on)
+            })
+            .collect()
     }
 
     fn touch(&mut self, _f: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
@@ -667,6 +719,20 @@ impl Widget for PadMap {
                 );
             }
         }
+    }
+
+    fn targets(&self, r: Rect) -> Vec<Target> {
+        (0..self.cells.len())
+            .map(|k| {
+                let c = &self.cells[k];
+                let label = if c.name.is_empty() {
+                    c.label.clone()
+                } else {
+                    format!("{} {}", c.label, c.name)
+                };
+                Target::tap("pad", k, label, self.cell_rect(r, k))
+            })
+            .collect()
     }
 
     fn touch(&mut self, finger: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {

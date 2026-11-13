@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use mpfree_sampler::model::{Ahdsr, Filter, FilterKind};
 use mpfree_ui::wave::Peaks;
-use mpfree_ui::{Align, Color, EventKind, FontId, PaintCx, Rect, Touch, Widget};
+use mpfree_ui::{Align, Color, EventKind, FontId, PaintCx, Rect, Target, Touch, Widget};
 
 /// Below a titled panel's title, as `PaintCx::titled_panel` lays it out.
 fn body(r: Rect) -> Rect {
@@ -244,6 +244,28 @@ impl Widget for LayerMap {
                 &format!("last hit {v}"),
             );
         }
+    }
+
+    fn targets(&self, r: Rect) -> Vec<Target> {
+        let mut out = Vec::new();
+        for k in 0..self.layers.len() {
+            let Some(b) = self.bar_rect(r, k) else {
+                continue;
+            };
+            let name = format!("layer {}", k + 1);
+            // The middle picks the layer; each end drags its velocity edge.
+            let mid = b.inset_xy(EDGE + 1, 0);
+            if !mid.is_empty() {
+                out.push(Target::tap("layer", k, name.clone(), mid));
+            }
+            let edge = |x: i32| Rect::new(x - EDGE / 2, b.y, EDGE, b.h);
+            out.push(Target::drag("layer-low", k, format!("{name} low"), edge(b.x)).towards(20, 0));
+            out.push(
+                Target::drag("layer-high", k, format!("{name} high"), edge(b.right()))
+                    .towards(-20, 0),
+            );
+        }
+        out
     }
 
     fn touch(&mut self, finger: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
@@ -524,6 +546,23 @@ impl Widget for EnvelopeView {
         );
     }
 
+    fn targets(&self, r: Rect) -> Vec<Target> {
+        EnvPoint::ALL
+            .iter()
+            .enumerate()
+            .map(|(i, &p)| {
+                let (px, py) = self.point_xy(r, p);
+                let pr = Rect::new(px - POINT / 2, py - POINT / 2, POINT, POINT);
+                let towards = if p == EnvPoint::Sustain {
+                    (0, -30)
+                } else {
+                    (30, 0)
+                };
+                Target::drag("point", i, format!("{p:?}"), pr).towards(towards.0, towards.1)
+            })
+            .collect()
+    }
+
     fn touch(&mut self, finger: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
         match phase {
             Touch::Down => {
@@ -715,6 +754,13 @@ impl Widget for FilterCurve {
             t.text_dim,
             &self.caption,
         );
+    }
+
+    fn targets(&self, r: Rect) -> Vec<Target> {
+        let plot = FilterCurve::plot(r);
+        vec![Target::drag("cutoff", 0, "cutoff", plot)
+            .towards(-40, 0)
+            .disabled_if(self.filter.kind == FilterKind::Off)]
     }
 
     fn touch(&mut self, finger: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {

@@ -25,7 +25,7 @@ use crate::color::Color;
 use crate::geom::Rect;
 use crate::text::{Align, FontId};
 use crate::theme::Theme;
-use crate::ui::{EventKind, PaintCx, Touch, Widget};
+use crate::ui::{EventKind, PaintCx, Target, Touch, Widget};
 
 /// One pixel column of a waveform, in full scale (-1 to 1).
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -615,6 +615,23 @@ impl Widget for Waveform {
         )
     }
 
+    fn targets(&self, r: Rect) -> Vec<Target> {
+        if self.peaks.is_none() {
+            return Vec::new();
+        }
+        let wave = Self::wave_rect(r);
+        // A tap picks a frame (and plays from it), a drag scrolls; the
+        // marker tabs drag their marker.
+        let mut out = vec![Target::tap("wave", 0, "waveform", wave)];
+        let painted = self.painted.borrow();
+        for (i, tab) in painted.tabs.iter().enumerate().take(self.markers.len()) {
+            if let Some(t) = tab {
+                out.push(Target::drag("marker", i, self.markers[i].label.clone(), *t));
+            }
+        }
+        out
+    }
+
     fn touch(&mut self, finger: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
         let wave = Self::wave_rect(r);
         let frames = self.frames();
@@ -834,6 +851,13 @@ impl Widget for WaveOverview {
         );
         cx.canvas.fill_round_rect(b, 6, t.accent.with_alpha(40));
         cx.canvas.stroke_round_rect(b, 6, 2, t.accent);
+    }
+
+    fn targets(&self, r: Rect) -> Vec<Target> {
+        if self.peaks.is_none() {
+            return Vec::new();
+        }
+        vec![Target::tap("overview", 0, "overview", Self::inner(r))]
     }
 
     fn touch(&mut self, _finger: u64, phase: Touch, x: i32, _y: i32, r: Rect) -> Option<EventKind> {

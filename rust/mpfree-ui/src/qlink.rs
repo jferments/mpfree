@@ -22,7 +22,7 @@ use crate::color::Color;
 use crate::draw;
 use crate::geom::Rect;
 use crate::text::{Align, FontId};
-use crate::ui::{EventKind, PaintCx, Touch, Widget};
+use crate::ui::{EventKind, PaintCx, Target, Touch, Widget};
 
 /// The column's width on the Play page, in pixels.
 pub const COLUMN_WIDTH: i32 = 168;
@@ -184,6 +184,14 @@ impl Widget for QLinkColumn {
         }
     }
 
+    fn targets(&self, r: Rect) -> Vec<Target> {
+        QLinkColumn::card_rects(r)
+            .iter()
+            .enumerate()
+            .map(|(k, c)| Target::drag("knob-card", k, self.cards[k].name.clone(), *c))
+            .collect()
+    }
+
     fn touch(&mut self, _f: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
         match phase {
             Touch::Down => {
@@ -334,6 +342,14 @@ impl Widget for MasterBar {
                 &format!("LIM {:.1}", self.limit_db),
             );
         }
+    }
+
+    fn targets(&self, r: Rect) -> Vec<Target> {
+        let tr = MasterBar::track(r);
+        if tr.h <= 0 {
+            return Vec::new();
+        }
+        vec![Target::drag("level", 0, self.text.clone(), r)]
     }
 
     fn touch(&mut self, _f: u64, phase: Touch, _x: i32, y: i32, r: Rect) -> Option<EventKind> {
