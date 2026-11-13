@@ -5,7 +5,7 @@
 use mpfree_fx::mpfree_node::{Curve, Node, ParamInfo};
 use mpfree_fx::{Chain, StripId};
 use mpfree_fx_ui::visual;
-use mpfree_fx_ui::{FxState, Scratch, CATALOGUE};
+use mpfree_fx_ui::{FxState, Scratch};
 use mpfree_mod::{value_text, Binding, MapCurve, ModEngine, Source, KNOBS, MACROS};
 use mpfree_param::{Owner, ParamAddr, Strip};
 use mpfree_synth_ui::widgets::Card;
@@ -506,25 +506,26 @@ pub fn picture(
 }
 
 /// One effect the picker offers: its id (for `mpfree_fx_ui::make`, or a
-/// plugin's `clap:` id, which the app's plugin rack makes), its name and a
-/// line about it.
+/// plugin's `clap:` id, which the app's plugin rack makes), its name, a
+/// line about it and its category (the picker's heading; plugins are
+/// [`mpfree_fx::Category::Plugins`]).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Pick {
     pub id: &'static str,
     pub name: &'static str,
     pub about: &'static str,
+    pub category: mpfree_fx::Category,
 }
 
-/// The built-in effects the picker offers on `strip`, in the catalogue's
-/// order. Master safety only on the master strip.
+/// The built-in effects the picker offers on `strip`, in the registry's
+/// order (grouped by category). Master safety only on the master strip.
 pub fn picks(strip: Strip) -> Vec<Pick> {
-    CATALOGUE
-        .iter()
-        .filter(|(id, _)| *id != "mpfree.fx.master_safety" || strip == Strip::Master)
-        .map(|&(id, name)| Pick {
-            id,
-            name,
-            about: about(id),
+    mpfree_fx::registry::offered(strip == Strip::Master)
+        .map(|e| Pick {
+            id: e.id,
+            name: e.name,
+            about: e.about,
+            category: e.category,
         })
         .collect()
 }
@@ -536,27 +537,5 @@ impl ChainState {
         let mut p = picks(self.strip);
         p.extend_from_slice(&self.plugins);
         p
-    }
-}
-
-fn about(id: &str) -> &'static str {
-    match id {
-        "mpfree.fx.eq" => "Shelves and bands",
-        "mpfree.fx.filter" => "Low, high, band, notch",
-        "mpfree.fx.dj_filter" => "One knob: low-pass to high-pass",
-        "mpfree.fx.drive" => "Tube, tape, fold, fuzz",
-        "mpfree.fx.comb" => "Tuned resonance",
-        "mpfree.fx.crush" => "Bits and sample rate",
-        "mpfree.fx.delay" => "Synced echoes",
-        "mpfree.fx.chorus" => "Width and shimmer",
-        "mpfree.fx.flanger" => "Jet sweeps",
-        "mpfree.fx.phaser" => "Swirling notches",
-        "mpfree.fx.lofi" => "Wear, wow and noise",
-        "mpfree.fx.character" => "Console, tape, iron, soften",
-        "mpfree.fx.compressor" => "Glue and pump",
-        "mpfree.fx.cloud" => "Plate, room, hall, cloud",
-        "mpfree.fx.master_safety" => "Keeps the output from clipping",
-        "mpfree.fx.perform" => "Throws, stutters, the XY pad",
-        _ => "",
     }
 }

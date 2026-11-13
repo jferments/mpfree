@@ -48,21 +48,31 @@ A block in the song is linked to its clip, so when you edit the clip, every bloc
 
 ### Audio in the song
 
-Audio you record from the line input goes on **audio tracks**, which have their own lanes under the clip lanes, on the same timeline. A lane shows once its track is armed or has audio on it.
-
-> [!NOTE]
-> Coming: the Song view can show audio lanes, but the audio tracks aren't connected to it in this build, so no lanes appear yet. This section describes how they will work.
+Audio you record from the line input goes on **audio tracks**, which have their own lanes under the clip lanes, on the same timeline. A lane shows once its track is armed or has audio on it. Audio tracks play in song mode only: with song mode off they stay silent, though an armed track still lets you hear its input.
 
 {{shot: arrange-song-audio | The Song view with two audio lanes: a vocal recorded twice, its newer part picked, and a guitar armed.}}
 
+To record onto an audio track:
+
+1. Turn on **Prefs > Line input** (SHIFT + MENU). The input stays off until you turn it on.
+2. On Arrange, open the Song view and turn song mode on.
+3. Tap **+ Audio** at the bottom of the lanes to add a track, then tap its **arm dot** so it turns red.
+4. Press **REC**, then **PLAY**, and play. Press **STOP** when you're done. The take shows as a region with its waveform.
+
 - Each recording is a **region**: a block in the track's colour with its waveform. When an older take plays, the block says which one ("take 1"). A fade shows as a slope.
 - While a track records, a red block grows from where it started.
-- On the left of each lane: the **arm dot** (red while armed: tap it to arm or disarm), the track's name, its input (**L**, **R**, **L+R** or **ST**) and a thin level bar along the bottom.
+- On the left of each lane: the **arm dot** (red while armed: tap it to arm or disarm), the track's name, its input (**L** by default: the MPC One's line input records on the left jack) and a thin level bar along the bottom.
 - **+ Audio** at the bottom adds the next audio track, up to 8.
 - Tap a region to pick it. The buttons along the bottom become **Split**, **Erase**, **Fades**, **Gain**, **Takes** and **Undo** for that region. Tap empty space to go back to the song's own buttons.
+  - **Split** cuts the region at the playhead, so put the playhead inside it first.
+  - **Erase** takes the region out. **Undo** brings it back.
 - When there are more lanes than fit, drag up or down on the names to scroll them.
+- All the audio tracks play through one **Audio** strip in the mixer (TRACK MIX).
+- Audio tracks make up for the line input's delay with the looper's **Latency to make up for** setting (MENU on the Looper tab), so a take lines up with the beat you played it against. Change it there and both follow.
+- The audio tracks share 60 seconds of stereo memory. The Song view's legend says how much is free ("Audio 0:42 of 1:00 free"). A recording that runs out of memory stops there and keeps what it got.
 
-Also coming: tapping a track's name for its settings (input, monitoring, level, pan, mute, solo), swiping across takes to keep the best parts of each, and dragging a region to move it.
+> [!NOTE]
+> Coming: tapping a track's name for its settings (input, monitoring, level, pan, mute, solo), **Fades**, **Gain** and **Takes** (swiping across takes to keep the best parts of each), dragging a region to move it, and saving audio tracks with the project. In this build those buttons say they aren't built yet, and recorded audio is gone when MPFree stops.
 
 ## Recording a performance into the song
 

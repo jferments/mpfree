@@ -31,6 +31,8 @@ mpfree-synth-ui = { path = "../mpfree-synth-ui" }
 mpfree-instruments = { path = "../mpfree-instruments" }
 mpfree-sampler-ui = { path = "../mpfree-sampler-ui" }
 mpfree-looper = { path = "../mpfree-looper" }
+# Audio tracks on the Song view (audiotracks.rs).
+mpfree-audiotracks = { path = "../mpfree-audiotracks" }
 mpfree-store = { path = "../mpfree-store" }
 # The mixer (every sound is summed in it) and its screen.
 mpfree-fx = { path = "../mpfree-fx" }

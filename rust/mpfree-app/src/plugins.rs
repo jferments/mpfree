@@ -69,13 +69,14 @@ pub fn app_path() -> PathBuf {
 }
 
 /// The chain editor picker's plugin cards: the effects, after the
-/// built-in ones.
+/// built-in ones, under the Plugins heading.
 pub fn picks(rack: &Plugins) -> Vec<Pick> {
     rack.effects()
         .map(|e| Pick {
             id: e.node_id,
             name: e.name,
             about: e.about,
+            category: mpfree_fx::Category::Plugins,
         })
         .collect()
 }

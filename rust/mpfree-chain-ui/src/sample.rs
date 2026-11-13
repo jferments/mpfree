@@ -756,6 +756,7 @@ mod tests {
             id: "clap:org.example.verb",
             name: "Example Verb",
             about: "Plugin · Example",
+            category: mpfree_fx::Category::Plugins,
         };
         let mut st = song.chain_state(KEYS, 0, 0, None);
         st.plugins = vec![plug];
