@@ -790,6 +790,12 @@ pub enum Effect {
     /// SHIFT + wheel on Play: move the synth's pads by octaves (the kit, as
     /// before, when a drum kit is playing).
     Octave(i32),
+    /// 16 LEVEL: 16 Levels on for the pad hit last, with its panel on
+    /// Play, or off if they are on (the screen holds the kit and says back
+    /// with [`App::levels_shown`]).
+    SixteenLevels,
+    /// The wheel while the 16 Levels panel shows: the next or previous kind.
+    LevelsWheel(i32),
     /// The Synth tab's options changed: the engine, the scale or the pad
     /// layouts, for the synth on the audio thread.
     SynthPads(crate::synth::PadSettings),
@@ -956,6 +962,8 @@ pub struct App {
     play_pressed_at: Option<f64>,
     /// TRACK MUTE: the pads play, or mute tracks or the kit's pads.
     mute_keys: MuteKeys,
+    /// The 16 Levels panel shows on Play: the wheel picks its kind.
+    levels_open: bool,
     view: View,
     /// The page to go back to from Console, Options or the guide.
     back: View,
@@ -1121,6 +1129,7 @@ impl App {
             fill: Fill::Off,
             play_pressed_at: None,
             mute_keys: MuteKeys::Off,
+            levels_open: false,
             view: View::Play,
             back: View::Play,
             chain_back: View::Mixer,
@@ -1805,9 +1814,11 @@ impl App {
             ]
         } else if is(m.sixteen_level) {
             // SHIFT + 16 LEVEL: the synth pads' Chromatic | In key switch.
-            // 16 LEVEL itself comes with 16 Levels for kits.
+            // 16 LEVEL: 16 Levels on (with its panel on Play) or off.
             if !shift {
-                return Some(Vec::new());
+                let mut fx = self.go(View::Play);
+                fx.push(Effect::SixteenLevels);
+                return Some(fx);
             }
             let in_key = self.synth_pads.layout() != mpfree_arp::scale::pads::PadLayout::InKey;
             let mut fx = self.synth_pick_layout(in_key);
@@ -1822,6 +1833,17 @@ impl App {
             return None;
         };
         Some(fx)
+    }
+
+    /// The screen turned 16 Levels on or off (`on`) and shows its panel or
+    /// not (`open`): 16 LEVEL lights while they are on, and the wheel
+    /// turns the panel's kind while it shows.
+    pub fn levels_shown(&mut self, on: bool, open: bool) -> Vec<Effect> {
+        self.levels_open = open;
+        match self.map.sixteen_level {
+            Some(note) => vec![Effect::Light(note, if on { LIGHT_ON } else { LIGHT_OFF })],
+            None => Vec::new(),
+        }
     }
 
     /// A page from a mode button: shown, unless it shows already.
@@ -1975,6 +1997,8 @@ impl App {
             View::Touch => vec![Effect::TouchWheel(delta)],
             // NOTE REPEAT held or the Arp panel: the rate, order or pattern.
             _ if self.repeat_held || self.view == View::Arp => self.arp_wheel(delta),
+            // The 16 Levels panel: what the levels change.
+            View::Play if self.levels_open => vec![Effect::LevelsWheel(delta)],
             // SHIFT + wheel keeps each page's second job: scroll Arrange,
             // the Synth tab's pages, the pads with a sound.
             View::Arrange if self.shift => vec![Effect::ClipsWheel {
@@ -5724,8 +5748,21 @@ mod tests {
         // ERASE and SHIFT + ERASE do nothing yet (Jay, 22:12Z).
         assert!(press(&mut app, 60).is_empty());
         assert!(shifted(&mut app, 60).is_empty());
+        // 16 LEVEL: Play, and 16 Levels on or off (the screen holds the
+        // kit and says back what it did: the light and the wheel follow).
+        let fx = press(&mut app, 62);
+        assert!(fx.contains(&Effect::Show(View::Play)), "{fx:?}");
+        assert_eq!(fx.last(), Some(&Effect::SixteenLevels));
+        assert_eq!(press(&mut app, 62), [Effect::SixteenLevels]);
+        assert_eq!(app.levels_shown(true, true), [Effect::Light(62, LIGHT_ON)]);
+        assert_eq!(app.wheel(-1), [Effect::LevelsWheel(-1)]);
+        assert_eq!(app.levels_shown(true, false), [Effect::Light(62, LIGHT_ON)]);
+        assert!(!app.wheel(1).contains(&Effect::LevelsWheel(1)));
+        assert_eq!(
+            app.levels_shown(false, false),
+            [Effect::Light(62, LIGHT_OFF)]
+        );
         // SHIFT + 16 LEVEL: Chromatic | In key (no scale yet: Major).
-        assert!(press(&mut app, 62).is_empty());
         assert!(shifted(&mut app, 62)
             .iter()
             .any(|e| matches!(e, Effect::Tell(n) if n.contains("In key, C Major"))));

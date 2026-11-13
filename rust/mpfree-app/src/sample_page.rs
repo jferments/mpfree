@@ -73,8 +73,8 @@ use mpfree_sampler::engine::EngineView;
 use mpfree_sampler::export;
 use mpfree_sampler::keymap::{self, RootFrom};
 use mpfree_sampler::model::{
-    ChannelPick, Fade, LoopMode, Pad, PadsPlay, PlayMode, Project, Region, Source, SourceId, Warp,
-    WARP_BPM,
+    ChannelPick, Fade, Levels, LoopMode, Pad, PadsPlay, PlayMode, Project, Region, Source,
+    SourceId, Warp, WARP_BPM,
 };
 use mpfree_sampler::phrase::Phrase;
 use mpfree_sampler::record::{self, Input, Looped, Progress, Recording};
@@ -821,6 +821,62 @@ impl SamplePage {
             PadsPlay::Levels { pad: of, .. } if pad < 16 => usize::from(of),
             _ => pad,
         }
+    }
+
+    /// The kit the pads play now (past the kits: the synth).
+    pub fn kit(&self) -> usize {
+        self.kit
+    }
+
+    /// The pad the page edits: the one hit last (with 16 Levels on, the
+    /// pad they play).
+    pub fn pad(&self) -> usize {
+        self.pad
+    }
+
+    /// The pad 16 Levels play and what they step through, while the
+    /// playing kit's pads play 16 Levels.
+    pub fn levels(&self) -> Option<(usize, Levels)> {
+        match self.projects.get(self.kit)?.pads_play() {
+            PadsPlay::Levels { pad, by } => Some((usize::from(pad), by)),
+            _ => None,
+        }
+    }
+
+    /// Pad `pad`'s name as the 16 Levels panel shows it ("A2") and its
+    /// sound's name (empty without one).
+    pub fn pad_names(&self, pad: usize) -> (String, String) {
+        let name = self
+            .projects
+            .get(self.kit)
+            .and_then(|p| p.pad(pad))
+            .map(|p| p.name.clone())
+            .unwrap_or_default();
+        (self.pad_text(self.kit, pad), name)
+    }
+
+    /// 16 Levels of `pad` by `by` on the playing kit, or (None) its pads
+    /// back to their own sounds: one undo step and a `sample:` line, as
+    /// the Play tab's Pads play row. False if there is no kit to change.
+    pub fn set_levels(&mut self, ui: &mut Ui, levels: Option<(usize, Levels)>) -> bool {
+        if self.projects.get(self.kit).is_none() {
+            return false;
+        }
+        let play = match levels {
+            Some((pad, by)) if pad < 16 => PadsPlay::Levels { pad: pad as u8, by },
+            Some(_) => return false,
+            None => PadsPlay::Pads,
+        };
+        if self.projects[self.kit].pads_play() == play {
+            return true;
+        }
+        let mut out = Vec::new();
+        self.act_play(ui, PlayAction::PadsPlay(play), &mut out);
+        self.lift();
+        if let Some((pad, _)) = levels {
+            self.pick(pad);
+        }
+        true
     }
 
     fn light(&mut self, ui: &mut Ui, pad: usize, down: bool) {

@@ -3579,6 +3579,7 @@ fn player_session(
                 gui::FromUi::Arp(a) => fx.extend(app.arp_action(a)),
                 gui::FromUi::Workspace(a) => fx.extend(app.workspace_action(*a)),
                 gui::FromUi::ArpChip => fx.extend(app.toggle_panel()),
+                gui::FromUi::Levels { on, open } => fx.extend(app.levels_shown(on, open)),
                 gui::FromUi::Time(a) => fx.extend(time_action(
                     out,
                     &mut time,
@@ -4222,6 +4223,13 @@ fn player_session(
                     out.show(gui::ToUi::ClipsWheel { delta, scroll })
                 }
                 app::Effect::Map(m) => out.show(gui::ToUi::Map(Box::new(m))),
+                // 16 LEVEL: the screen holds the kits; the synth's pads have
+                // no 16 Levels.
+                app::Effect::SixteenLevels if synth_on || kit_to == Some(synth_kit) => {
+                    out.note("16 LEVEL: 16 Levels plays a kit; pick a kit with the wheel first")
+                }
+                app::Effect::SixteenLevels => out.show(gui::ToUi::SixteenLevels),
+                app::Effect::LevelsWheel(d) => out.show(gui::ToUi::LevelsWheel(d)),
                 app::Effect::PlayView(v) => out.show(gui::ToUi::PlayView(v)),
                 app::Effect::SampleEditor(e) => out.show(gui::ToUi::SampleEditor(e)),
                 app::Effect::Browse(k) => out.show(gui::ToUi::Browse(k)),
