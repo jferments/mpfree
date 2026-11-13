@@ -42,8 +42,7 @@ static int v25_guest_mmc(const char *name){
     unsigned which=0;
     if(sscanf(name,"v25_native_mmc_%u",&which)!=1 || which>=20u)
         return result(name,false,"unexpected-V25-MMC-case");
-    if(get32(V25_MMC_DESCRIPTOR)!=0x00137c75u &&
-       !v24_original_string(get32(V25_MMC_DESCRIPTOR),"mmc"))
+    if(!v24_original_string(get32(V25_MMC_DESCRIPTOR),"mmc"))
         return result(name,false,"original-native-MMC-descriptor-name-mismatch");
     if(get32(V25_MMC_DESCRIPTOR+12u)!=V25_MMC_HANDLER)
         return result(name,false,"original-MMC-command-handler-pointer-mismatch");
