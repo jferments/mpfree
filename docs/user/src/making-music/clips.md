@@ -39,7 +39,7 @@ Set up the recording in the Record panel, beside the grid:
 - **Tempo:** the song's tempo, in BPM.
 - **Pressure:** whether the armed track records how hard you press the pads while they're held (**Recorded**, the setting for a new track, or **Off**). It's the last row: pick Loop or Tempo and the list moves up to show it.
 
-Tap a row's arrows, or the left or right of its value, to change it. Or tap the row and turn the data wheel.
+Tap a row's arrows, or the left or right of its value, to change it. Or turn the data wheel to pick a row and press **–** or **+**. Push the wheel and turning it changes the row picked; push again to go back to picking rows.
 
 Then press **REC**, play, and press **STOP**. The new notes go into the armed track's clip.
 

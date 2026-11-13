@@ -145,6 +145,9 @@ pub struct SynthPanel {
     page: usize,
     /// The selected tile, as an index into the node's parameters.
     focus: Option<usize>,
+    /// The wheel's push opened the selected tile: the wheel turns it (the
+    /// app's wheel navigation); otherwise the wheel picks tiles.
+    editing: bool,
     visuals: bool,
     /// The page a tap on each visual card opens, and on each box.
     card_pages: Vec<String>,
@@ -257,6 +260,7 @@ impl SynthPanel {
             pages: Vec::new(),
             page: 0,
             focus: None,
+            editing: false,
             visuals: false,
             card_pages: Vec::new(),
             node_pages: Vec::new(),
@@ -362,6 +366,34 @@ impl SynthPanel {
         let n = self.pages.len() as i32;
         if n > 0 {
             self.show_page(ui, (self.page as i32 + delta).rem_euclid(n) as usize);
+        }
+    }
+
+    /// The wheel picking tiles: the page's tile `delta` along from the
+    /// selected one (stopping at the ends; from the first or last when
+    /// none is selected), selected as a tap on it would.
+    pub fn pick_tile(&mut self, ui: &mut Ui, delta: i32) {
+        let Some(page) = self.pages.get(self.page) else {
+            return;
+        };
+        let n = page.params.len() as i64;
+        if n == 0 || delta == 0 {
+            return;
+        }
+        let at = self
+            .focus
+            .and_then(|f| page.params.iter().position(|&i| i == f))
+            .map_or(if delta > 0 { -1 } else { n }, |k| k as i64);
+        let k = (at + i64::from(delta)).clamp(0, n - 1) as usize;
+        self.focus = Some(page.params[k]);
+        self.refresh(ui);
+    }
+
+    /// The wheel's push opened (true) or closed the selected tile.
+    pub fn set_editing(&mut self, ui: &mut Ui, on: bool) {
+        if self.editing != on {
+            self.editing = on;
+            self.refresh(ui);
         }
     }
 
@@ -518,6 +550,7 @@ impl SynthPanel {
             w.selected = self
                 .focus
                 .and_then(|f| page.params.iter().position(|&i| i == f));
+            w.editing = self.editing;
         }
         if let Some(w) = ui.get_mut::<ListView>(PRESETS) {
             w.title = format!("Presets · {}", st.presets.len());

@@ -61,7 +61,7 @@ pub const TAB: usize = 4;
 
 /// The hint line the app shows under the tab.
 pub const HINT: &str = "Hit the pad to hear the cloud · drag on the sound for the position, on the pad for position and \
-                        size · tap a row, then the wheel changes it · SHIFT + Q-Link 1 / 4: spray, pitch spray";
+                        size · the wheel picks a row, - / + change it · SHIFT + Q-Link 1 / 4: spray, pitch spray";
 
 /// Grain sizes the arrows step through, in ms.
 const SIZES_MS: [f32; 19] = [
@@ -305,7 +305,7 @@ impl GrainTab {
                 KnobCard::new(&format!("Q-Link {} · {}", k + 1, row.label()), colors[k]),
             );
         }
-        ui.add(WHEEL, InfoCard::new("Wheel · the row picked"));
+        ui.add(WHEEL, InfoCard::new("The row picked"));
         ui.add_page(name, LAYOUT)?;
         let mut tab = GrainTab {
             name: name.to_string(),

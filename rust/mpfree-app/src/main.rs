@@ -4120,9 +4120,9 @@ fn player_session(
                     out.show(gui::ToUi::ChainQLink(knob, delta))
                 }
                 app::Effect::QLinkBank => out.show(gui::ToUi::QLinkBank),
-                app::Effect::SynthWheel(d) => out.show(gui::ToUi::SynthWheel(d)),
                 app::Effect::SynthPage(d) => out.show(gui::ToUi::SynthPage(d)),
                 app::Effect::SampleWheel(d) => out.show(gui::ToUi::SampleWheel(d)),
+                app::Effect::Rows(k) => out.show(gui::ToUi::Rows(k)),
                 app::Effect::SamplePad(d) => out.show(gui::ToUi::SamplePad(d)),
                 app::Effect::SampleUndo { redo } => out.show(gui::ToUi::SampleUndo(redo)),
                 app::Effect::StopSounds => {

@@ -79,20 +79,20 @@ pub const CLIPS_HINT: &str =
     "Tap a clip: it plays from the next bar, or stops   ·   a row's number plays the whole row   ·   + records into an empty slot   ·   a track's name arms it";
 /// The hint line under the Song view.
 pub const SONG_HINT: &str =
-    "Tap a block to pick it   ·   Song on: the song plays where no clip is launched   ·   Scenes → song adds the rows at its end   ·   wheel: bars";
+    "Tap a block to pick it   ·   Song on: the song plays where no clip is launched   ·   Scenes → song adds the rows at its end   ·   SHIFT + wheel: bars";
 /// The same page with the note editor (a piano roll or a list) in place
 /// of the grid, and the Edit options in place of the record settings.
 pub const EDIT_LAYOUT: &str =
     "col(header:60, row(col(transport:44, row(notes:*, col(edit-options:*, takes:240):250):*):*, qlinks:168):*, hint:26)";
 /// The hint line under the note editor's piano roll.
 pub const EDIT_HINT: &str =
-    "Tap a note to pick it, drag to move   ·   Tool: select, draw, erase   ·   TC corrects the picked notes (all if none)   ·   wheel: the option picked";
+    "Tap a note to pick it, drag to move   ·   Tool: select, draw, erase   ·   TC corrects the picked notes (all if none)   ·   wheel: pick an option, - / +: change it";
 /// The hint line under the note editor's list.
 pub const EDIT_LIST_HINT: &str =
-    "Tap a row to pick its note   ·   SHIFT + wheel: scroll   ·   TC corrects the picked notes (all if none)   ·   wheel: the option picked";
+    "Tap a row to pick its note   ·   SHIFT + wheel: scroll   ·   TC corrects the picked notes (all if none)   ·   wheel: pick an option, - / +: change it";
 /// The hint line under the note editor's tracker.
 pub const EDIT_TRACKER_HINT: &str =
-    "Tap a row to pick its note   ·   Draw: tap an empty step   ·   SHIFT + wheel: scroll   ·   wheel: the option picked";
+    "Tap a row to pick its note   ·   Draw: tap an empty step   ·   SHIFT + wheel: scroll   ·   wheel: pick an option, - / +: change it";
 
 /// The hint line under the note editor showing `lens`.
 pub fn edit_hint(lens: Lens) -> &'static str {
