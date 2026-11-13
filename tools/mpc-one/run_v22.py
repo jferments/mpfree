@@ -181,25 +181,37 @@ def analyze(out,prior,stages):
         }
     v21=json.loads(prior["V21-REGISTRY-DISCOVERY-AND-85-QUESTIONS.json"])
     rows=[]
-    relevant={
-      "FASTBOOT_RUNTIME-02","REMOVABLE_DIRECTBOOT-01",
-      "REMOVABLE_DIRECTBOOT-03","REMOVABLE_DIRECTBOOT-05",
-      "REMOVABLE_DIRECTBOOT-06","BOOT_SELECTION-04",
-      "BOOT_SELECTION-06","RECOVERY_SECURITY-12",
+    static_scope={
+      "FASTBOOT_RUNTIME-02":"Reachable block-write code and authorization/storage relationship; no persistent side-effect proof.",
+      "REMOVABLE_DIRECTBOOT-01":"Boot-source control flow and concrete storage-write backend, not a working SD boot.",
+      "REMOVABLE_DIRECTBOOT-03":"P3 MMC-related function paths only; SPL boot-source priority not retested.",
+      "REMOVABLE_DIRECTBOOT-05":"P3 device-driver table and storage IDs, NOT physical MMC numbering.",
+      "REMOVABLE_DIRECTBOOT-08":"P3 command dispatcher/boot source roots, NOT proof of a safe transient command.",
+      "BOOT_SELECTION-04":"Owner bootz/bootm and load-source control-flow candidates.",
+      "RECOVERY_SECURITY-10":"Concrete block-write handler code, NOT proof of updater P6 LBA boundaries.",
     }
+    dynamic_scope={
+      "FASTBOOT_RUNTIME-02":"Genuine registered write handler under fake transport, showing a potential write mechanism, not a live eMMC side effect.",
+      "REMOVABLE_DIRECTBOOT-01":"Original U-Boot write-wrapper executes with nonwriting mock media; does not establish external boot.",
+      "REMOVABLE_DIRECTBOOT-08":"Nonwriting wrapper branch supports transient-command safety investigation, but does not execute a real command.",
+      "RECOVERY_SECURITY-10":"Actual block-count/bounds behavior under fake media, not official P6 partition-write proof.",
+    }
+    runtime_has_support=(
+      section_counts["real_registered_block_write_with_mocked_IO"]["passed"]>0 or
+      section_counts["real_storage_wrapper_with_unpatched_arm_division"]["passed"]>0)
     for old in v21["questions"]:
         row={"id":old["id"],"question":old["question"],
              "v21_research_status":old.get("answered_in_v21"),
              "v22_new_evidence":[],"answered_by_v22":False}
-        if old["id"] in relevant:
-            if stages.get("new_p3_ghidra",{}).get("success"):
-                row["v22_new_evidence"].append({
-                  "file":"deep-p3/V22-p3-SUMMARY.json",
-                  "scope":"concrete owner write/erase callbacks and driver transport dataflow"})
-            if section_counts["real_registered_block_write_with_mocked_IO"]["passed"]>0:
-                row["v22_new_evidence"].append({
-                  "file":"V22-REAL-OWNER-ARM-RUNTIME.json",
-                  "scope":"real vendor block-write function with all device transport stubbed"})
+        if old["id"] in static_scope and stages.get("new_p3_ghidra",{}).get("success"):
+            row["v22_new_evidence"].append({
+                "file":"deep-p3/V22-p3-SUMMARY.json",
+                "scope":static_scope[old["id"]],"kind":"NEW_STATIC_SOURCE_ANALYSIS"})
+        if old["id"] in dynamic_scope and runtime_has_support:
+            row["v22_new_evidence"].append({
+                "file":"V22-REAL-OWNER-ARM-RUNTIME.json",
+                "scope":dynamic_scope[old["id"]],
+                "kind":"ISOLATED_ACTUAL_OWNER_ARM_NO_PHYSICAL_IO"})
         rows.append(row)
     findings={
        "schema":"mpfree-v22-actual-block-transport-results",
