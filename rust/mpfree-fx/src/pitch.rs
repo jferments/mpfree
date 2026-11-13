@@ -185,7 +185,17 @@ impl Head {
         // The heads move through the delay at (1 - ratio) a frame: going
         // up shortens the delay, going down lengthens it.
         let mut ph = self.phase + (1.0 - ratio) / win;
-        ph -= ph.floor();
+        // The step is far below one window, so one add or subtract wraps it
+        // (the same value `ph - ph.floor()` gives, without the library
+        // call `floor` is on the MPC's ARM).
+        if ph >= 1.0 {
+            ph -= 1.0;
+        } else if ph < 0.0 {
+            ph += 1.0;
+        }
+        if !(0.0..1.0).contains(&ph) {
+            ph -= ph.floor();
+        }
         self.phase = ph;
         let pb = if ph >= 0.5 { ph - 0.5 } else { ph + 0.5 };
         let (wa, wb) = (sin_pi(ph), sin_pi(pb));

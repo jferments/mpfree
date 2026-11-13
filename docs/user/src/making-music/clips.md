@@ -26,7 +26,7 @@ The four Q-Link cards run down the right edge of Arrange, in the same place as o
 
 Coming:
 - With an audio region picked in the Song view, the cards become the audio track's level and pan, and the region's gain and fade.
-- The sequencer tracks have no mixer strips of their own yet (they all play the kit), so their own level and pan aren't on the knobs.
+- A track with its own instrument has its own mixer channel (see [A synth for each track](synths.md#a-synth-for-each-track)), but its level and pan aren't on the knobs here yet. Tracks that play the kit share the kit's channels.
 
 ## Recording a clip
 
