@@ -103,7 +103,7 @@ pub use mixer::{
     MAX_SLOTS, MAX_TRACKS, RETURNS, SILENT_DB,
 };
 pub use modfx::{Chorus, Flanger, Phaser};
-pub use oversample::{Down2, IirDown2, IirUp2, Up2};
+pub use oversample::{Down2, IirDown2, IirPhase, IirUp2, Up2};
 pub use perform::{
     state as perform_state, Perform, AMOUNT_MEANS as PERFORM_AMOUNTS, EFFECTS as PERFORM_EFFECTS,
     LENGTHS as PERFORM_LENGTHS, LENGTH_BEATS as PERFORM_LENGTH_BEATS, MAX_LOOP_SECONDS,

@@ -394,9 +394,14 @@ fn drive_latency_is_whole_and_the_same_in_both_qualities() {
         let at = (0..l.len())
             .max_by(|&a, &b| l[a].abs().total_cmp(&l[b].abs()))
             .unwrap();
+        // HQ's linear-phase FIRs peak exactly on the latency. Eco's IIR
+        // half-bands are padded so low frequencies are on time (2.02 frames
+        // of their own, padded to 55); their impulse is not symmetric and
+        // peaks a frame later.
+        let want = if quality == 0.0 { 156 } else { 155 };
         assert_eq!(
             at,
-            155,
+            want,
             "quality {quality}: the impulse peaks {} frames late",
             at - 100
         );
@@ -420,8 +425,11 @@ fn drive_latency_is_whole_and_the_same_in_both_qualities() {
         "Eco and HQ differ by {}",
         rms(&diff) / rms(&outs[0][4800..])
     );
-    // The dry side of the mix is delayed to match: Mix 0 is the input, late.
-    let mut d = set_up(Box::new(Drive::new()), &[(MIX, 0.0)]);
+    // The dry side of the mix is delayed to match: in HQ, Mix 0 is the
+    // input, late. In Eco the dry side also takes the IIR half-bands' phase
+    // (an all-pass), so Mix 0 is the input at the same level, on time at
+    // low frequencies (`drive_eco_blends_with_the_dry_side_at_any_mix`).
+    let mut d = set_up(Box::new(Drive::new()), &[(MIX, 0.0), (QUALITY, 1.0)]);
     let x = program(4800);
     let (mut l, mut r) = x.clone();
     run_once(d.as_mut(), &mut l, &mut r);
@@ -1058,4 +1066,43 @@ fn the_comb_rings_in_tune_and_notes_play_it() {
         at > -1.5 && between < at - 15.0,
         "curve: {at} dB, {between} dB"
     );
+}
+
+#[test]
+fn drive_eco_blends_with_the_dry_side_at_any_mix() {
+    use ids::drive::*;
+    // A quiet sine, so the curve is nearly a straight line: wet and dry add
+    // back to the sine at any Mix, in Eco (the dry side takes the IIR
+    // half-bands' phase) as in HQ (both sides linear phase). Only the
+    // wet side's tone low-pass and DC blocker are left to differ.
+    for hz in [100.0, 1000.0, 5000.0, 10_000.0, 15_000.0, 18_000.0] {
+        let x = sine(hz, 0.01, 9600);
+        let level = |mix: f32, q: f32| {
+            let mut d = set_up(
+                Box::new(Drive::new()),
+                &[
+                    (DRIVE, 0.0),
+                    (BIAS, 0.0),
+                    (AUTO_GAIN, 0.0),
+                    (MIX, mix),
+                    (QUALITY, q),
+                ],
+            );
+            let (mut l, mut r) = (x.clone(), x.clone());
+            run_once(d.as_mut(), &mut l, &mut r);
+            rms(&l[4800..])
+        };
+        for q in [0.0, 1.0] {
+            let full = level(100.0, q);
+            for mix in [0.0, 25.0, 50.0, 75.0] {
+                let db = gain_to_db(level(mix, q) / full);
+                assert!(db.abs() < 1.0, "quality {q}, {hz} Hz, Mix {mix}: {db} dB");
+            }
+        }
+        let (eco, hq) = (level(50.0, 0.0), level(50.0, 1.0));
+        println!(
+            "Mix 50, {hz} Hz: Eco {:.2} dB from HQ",
+            gain_to_db(eco / hq)
+        );
+    }
 }

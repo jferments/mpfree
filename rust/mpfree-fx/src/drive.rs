@@ -1,6 +1,8 @@
 //! Drive: deliberate distortion done cleanly. The shaper runs at 2x (Eco)
 //! or 4x (HQ) the sample rate so its new harmonics are filtered before they
-//! can fold back as aliasing; a DC blocker removes the offset an
+//! can fold back as aliasing. Eco resamples with polyphase IIR half-bands
+//! (a few multiplies a frame); HQ with linear-phase FIR half-bands, so its
+//! wet signal keeps the dry signal's phase at any Mix. A DC blocker removes the offset an
 //! asymmetric curve makes; auto-gain keeps the level where it was, so more
 //! drive means more grit, not just louder.
 
@@ -8,7 +10,7 @@ use std::f32::consts::{FRAC_PI_2, PI};
 
 use mpfree_node::{Ctx, Curve, Kind, Node, NodeEvent, NodeInfo, ParamInfo, Smooth, Timed, Unit};
 
-use crate::oversample::{Down2, Up2, TAPS_2X, TAPS_4X};
+use crate::oversample::{Down2, IirDown2, IirPhase, IirUp2, Up2, TAPS_2X, TAPS_4X};
 use crate::svf::{Segs, Svf, SvfMode};
 use crate::{db_to_gain, defaults, fast_tanh, gain_to_db, DcBlock, FixedDelay};
 
@@ -143,6 +145,19 @@ static PARAMS: [ParamInfo; 9] = [
 /// sound in time.
 const LATENCY: usize = (TAPS_2X - 1) / 2 + (TAPS_4X - 1).div_ceil(4);
 const PAD_2X: usize = LATENCY - (TAPS_2X - 1) / 2;
+/// Eco's half-bands: [`ECO_SECTIONS`] first-order all-pass sections, flat
+/// to 0.19 of the 2x rate (18 kHz at 48 kHz) and at least 71 dB down from
+/// 0.31 (30 kHz). Measured against the FIR pair with a 5 kHz sine through
+/// tanh at +18 dB, the worst alias is the same (-59 dB): at 2x it comes
+/// from harmonics folding inside the 2x band, not from the filters. A
+/// fifth of the cost of the 95-tap FIR pair on the MPC's ARM.
+const ECO_SECTIONS: usize = 5;
+const ECO_TBW: f64 = 0.06;
+/// The Eco pair's delay at low frequencies in base frames (2.02; 2.2 at
+/// 10 kHz, 2.8 at 18 kHz), padded up to [`LATENCY`] so switching quality
+/// never moves the sound in time.
+const ECO_DELAY: usize = 2;
+const ECO_PAD: usize = LATENCY - ECO_DELAY;
 const _: () = assert!(
     2 * PAD_2X == (TAPS_4X - 1) / 2 + 1,
     "the 4x path pads exactly one 2x sample"
@@ -204,6 +219,12 @@ struct Channel {
     down1: Down2,
     up2: Up2,
     down2: Down2,
+    eco_up: IirUp2,
+    eco_down: IirDown2,
+    /// Eco's dry side: the pair's all-pass phase, then the same pad, so
+    /// any Mix adds wet and dry in phase.
+    eco_dry: IirPhase,
+    eco_dry_pad: FixedDelay,
     pad: FixedDelay,
     /// The 4x path's one-sample pad at the 2x rate.
     z: f32,
@@ -218,7 +239,11 @@ impl Channel {
             down1: Down2::new(TAPS_2X),
             up2: Up2::new(TAPS_4X),
             down2: Down2::new(TAPS_4X),
-            pad: FixedDelay::new(PAD_2X),
+            eco_up: IirUp2::new(ECO_SECTIONS, ECO_TBW),
+            eco_down: IirDown2::new(ECO_SECTIONS, ECO_TBW),
+            eco_dry: IirPhase::new(ECO_SECTIONS, ECO_TBW),
+            eco_dry_pad: FixedDelay::new(ECO_PAD),
+            pad: FixedDelay::new(ECO_PAD),
             z: 0.0,
             dry: FixedDelay::new(LATENCY),
             dc: DcBlock::new(),
@@ -229,6 +254,10 @@ impl Channel {
         self.down1.reset();
         self.up2.reset();
         self.down2.reset();
+        self.eco_up.reset();
+        self.eco_down.reset();
+        self.eco_dry.reset();
+        self.eco_dry_pad.reset();
         self.pad.reset();
         self.z = 0.0;
         self.dry.reset();
@@ -326,6 +355,11 @@ impl Drive {
                     c.down1.reset();
                     c.up2.reset();
                     c.down2.reset();
+                    c.eco_up.reset();
+                    c.eco_down.reset();
+                    c.eco_dry.reset();
+                    c.eco_dry_pad.reset();
+                    c.dry.reset();
                     c.pad.reset();
                     c.z = 0.0;
                 }
@@ -365,8 +399,8 @@ impl Drive {
             for c in 0..2 {
                 let chn = &mut self.ch[c];
                 let pre = x[c] * g;
-                let [a, bb] = chn.up1.run(pre);
                 let wet = if hq {
+                    let [a, bb] = chn.up1.run(pre);
                     let [a0, a1] = chn.up2.run(a);
                     let [b0, b1] = chn.up2.run(bb);
                     let sa = chn.down2.run([shape(mode, a0, b), shape(mode, a1, b)]);
@@ -375,12 +409,17 @@ impl Drive {
                     chn.z = sb;
                     w
                 } else {
-                    let w = chn.down1.run([shape(mode, a, b), shape(mode, bb, b)]);
+                    let [a, bb] = chn.eco_up.run(pre);
+                    let w = chn.eco_down.run([shape(mode, a, b), shape(mode, bb, b)]);
                     chn.pad.run(w)
                 };
                 let wet = chn.dc.run(wet) * comp;
                 let wet = self.tone.run(c, wet);
-                let dry = chn.dry.run(x[c]);
+                let dry = if hq {
+                    chn.dry.run(x[c])
+                } else {
+                    chn.eco_dry_pad.run(chn.eco_dry.run(x[c]))
+                };
                 y[c] = crate::lerp(dry, wet, mix) * out;
             }
             let k = self.ms_coef;
