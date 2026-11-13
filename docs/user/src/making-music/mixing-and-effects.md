@@ -18,7 +18,7 @@ Along the top are the mixer's five views:
 
 | View | Shows |
 |---|---|
-| **Tracks** | One strip per instrument. Today these are **Drums** (the kit on the pads), **Synth** and **Loop**. |
+| **Tracks** | One strip per instrument. Today these are **Drums** (the kit on the pads), **Synth**, **Loop** and **Audio** (every audio track on the Song view, summed). |
 | **Pads** | A strip for each of the kit's 16 pads, so you can set the kick's level or put an effect on just the snare. |
 | **Inputs** | The line input. |
 | **Submixes** | Eight submixes for grouping, then the four send returns A to D. |

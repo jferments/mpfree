@@ -367,6 +367,7 @@ version = "0.1.0"
 dependencies = [
  "mpfree-arp",
  "mpfree-arp-ui",
+ "mpfree-audiotracks",
  "mpfree-browser-ui",
  "mpfree-capture",
  "mpfree-chain-ui",
