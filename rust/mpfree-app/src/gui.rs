@@ -340,6 +340,9 @@ pub enum ToUi {
     ProjectParts(Box<crate::project::Collected>),
     /// The parts New project goes back to (sent once, early).
     ProjectDefaults(Box<crate::project::Defaults>),
+    /// The CLAP plugins found at start (sent once, early): an open makes a
+    /// project's plugins with them, here on the screen thread.
+    Plugins(std::sync::Arc<crate::plugins::Plugins>),
     /// An open done: the engines it replaced, to free here.
     ProjectBack(Box<crate::project::Opening>),
     /// Something the project keeps changed with the controls (a Synth tab
@@ -815,6 +818,9 @@ pub struct Player {
     io_model: Option<mpfree_midi_ui::Shared>,
     /// The parts New project goes back to, once the audio loop sent them.
     project_defaults: Option<crate::project::Defaults>,
+    /// The plugins an open makes a project's plugin effects and synths
+    /// with ([`ToUi::Plugins`]; none until then).
+    project_plugins: std::sync::Arc<crate::plugins::Plugins>,
     /// Prefs > At start was looked at (once, when the sound is going).
     start_checked: bool,
     /// The sound's rate, for an opened project's engines.
@@ -1050,6 +1056,7 @@ impl Player {
             browser: None,
             io_model: None,
             project_defaults: None,
+            project_plugins: std::sync::Arc::new(crate::plugins::Plugins::none()),
             start_checked: false,
             project_rate: 44_100,
             opened_at: None,
@@ -2361,6 +2368,7 @@ impl Player {
             }
             ToUi::ProjectParts(c) => self.save_project(c),
             ToUi::ProjectDefaults(d) => self.project_defaults = Some(*d),
+            ToUi::Plugins(p) => self.project_plugins = p,
             ToUi::Edited => {}
             // The engines an open replaced: freed here. The open is in:
             // nothing is unsaved (its own news in the next moments isn't
@@ -3080,7 +3088,7 @@ impl Player {
             }
         }
         self.open_midi(snap.part(crate::project::MIDI));
-        let o = crate::project::opening(snap, self.project_rate, loc.name());
+        let o = crate::project::opening(snap, self.project_rate, loc.name(), &self.project_plugins);
         self.outbox.push(FromUi::OpenProject(Box::new(o)));
         // The loops, on a thread: the layers' files can be big. A read
         // still going for an earlier open is dropped with its channel.
@@ -3145,7 +3153,12 @@ impl Player {
             return;
         };
         let snap = crate::project::new_snapshot(d);
-        let mut o = crate::project::opening(&snap, self.project_rate, "a new project");
+        let mut o = crate::project::opening(
+            &snap,
+            self.project_rate,
+            "a new project",
+            &self.project_plugins,
+        );
         o.clear_loops = true;
         self.open_midi(None);
         self.outbox.push(FromUi::OpenProject(Box::new(o)));
@@ -9016,6 +9029,7 @@ mod tests {
             modu: String::new(),
             synth: project::synth_text(&Default::default(), &synth.sounds()),
             arp: "mpfree-arp 1\ntrack 1\nmode = arp\n".to_string(),
+            instruments: String::new(),
             loops: Some(loops),
         };
         p.apply(ToUi::ProjectParts(Box::new(c)));

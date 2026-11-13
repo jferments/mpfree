@@ -48,8 +48,9 @@ A **project** is one song: everything you need to pick it up again where you lef
 | The clips and the song on Arrange, with their scenes |
 | The kits, with every sound on their pads and each pad's settings |
 | The synth sounds, and the Synth tab's options: the engine on the pads, the scale and its root, each pad bank's layout, In key rows, and the tuning with its root and A4 |
+| Each track's own instrument (Poly, FM, a plugin synth...), with its sound or the plugin's settings |
 | Each track's arpeggiator: its mode, rate (the rate Note Repeat plays at too), order, octaves, gate, swing, scale and the other options, and its pattern with your edits |
-| The mixer: each strip's level, pan, sends and mutes, the effects and their settings, and the macros |
+| The mixer: each strip's level, pan, sends and mutes, the effects and their settings (plugins' too), and the macros |
 | The Looper's loops, with each layer's mix |
 | The MIDI, sync and CV setup: what each track plays on, where the tempo comes from, clock out, the CV outputs and the controls you learned |
 
@@ -73,11 +74,11 @@ The last ten saves of each project are kept. Pick a project and press **Earlier 
 
 ### Opening a project
 
-Press **BROWSE**, pick **Projects** on the left, pick a project and push the data wheel (or press **Open**). Playback stops, and the project's clips, kits, synth sounds and mixer come in together. The loops you had fade out, and the project's loops come in a moment later. A part MPFree can't read (from a newer version, say) is left as it is, and the Events log says which.
+Press **BROWSE**, pick **Projects** on the left, pick a project and push the data wheel (or press **Open**). Playback stops, and the project's clips, kits, synth sounds, tracks' instruments and mixer come in together. A plugin the project used that isn't in `files/plugins/` on this stick is left out, and the Events log names its file so you can put it back: a missing plugin effect leaves its strip without it, and a track whose plugin synth is missing plays the kit. The loops you had fade out, and the project's loops come in a moment later. A part MPFree can't read (from a newer version, say) is left as it is, and the Events log says which.
 
 ### Starting a new project
 
-**New project** in the Projects place starts again from nothing: an empty song with 8 tracks, no loops, the factory kits, every arp at its default, the MIDI, sync and CV settings at their defaults, the synth sounds and mixer as they are when MPFree starts, and the synth pads chromatic in C, tuned to A4 = 440 Hz. Your Prefs and the other things MPFree keeps for you stay as they are. Nothing is saved until you save, and the first save names a new project.
+**New project** in the Projects place starts again from nothing: an empty song with 8 tracks, every track on the kit, no loops, the factory kits, every arp at its default, the MIDI, sync and CV settings at their defaults, the synth sounds and mixer as they are when MPFree starts, and the synth pads chromatic in C, tuned to A4 = 440 Hz. Your Prefs and the other things MPFree keeps for you stay as they are. Nothing is saved until you save, and the first save names a new project.
 
 If you have changed anything since you last saved or opened, opening a project or New project asks first, so you never lose work by accident. Playing the pads, changing page or the Level doesn't count as a change.
 
