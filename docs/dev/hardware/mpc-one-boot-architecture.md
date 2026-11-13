@@ -225,3 +225,146 @@ Service process permissions, exclusive device ownership, Linux kernel capabiliti
 ### 4.4 Load-time integrity facilities
 
 The 3.10.0 build had `CONFIG_SECURITY_LOADPIN_ENFORCE=y` recorded; exact behavior for modules or firmware sourced from removable media was not fully settled. The 3.10.1 comparison saw no new generic kernel Lockdown, mandatory module-signature or IMA enforcement in the compared kernel config. Yet another component, `az01-signed-fs`, changed substantially, and its runtime consequences are **unknown**. Developers must not equate the absence of one generic kernel setting with unrestricted acceptance of all images at all boot stages.
+
+
+## 5. USB controller architecture and boot-mode distinctions
+
+The word “USB” covers **at least five different functions** on this board. A connector's physical presence cannot by itself establish which stage controls it.
+
+| Function | Controller/code | Available during | Use | Dependence |
+|---|---|---|---|---|
+| Normal USB-A host | Linux and `usb@ff540000` host-side logic | Running factory/custom Linux | USB disks, MIDI, peripherals, autorun stick | Requires Linux |
+| Linux USB device/gadget | DWC2 peripheral `usb@ff580000` | Running compatible Linux | USB functions configured through Linux | Requires Linux |
+| Akai Update Mode | U-Boot `fastboot 0` | Pre-Linux, after p1/p3 load | Desktop firmware update, queries, image transfers | Requires stock first stages |
+| RockUSB-compatible loader mode | Loader in RAM or U-Boot | Loader-specific | Rockchip-style flash/loader transfer | Depends on actual loader and entry path |
+| RK3288 silicon USB ROM mode | Immutable SoC BootROM | Before RAM loader/installed U-Boot | Initial SRAM code load and potential recovery | No factory Linux required; entry not yet proven |
+
+**Observed:** Linux's live device tree identifies `usb@ff580000` as `rockchip,rk3288-usb` / `snps,dwc2` with `dr_mode=peripheral`. A corresponding UDC appears at `/sys/class/udc/ff580000.usb`. Another DWC2 controller at `ff540000` is in host mode. A board-specific `usb-otg-mux` advertises `otg`, `host` and `peripheral` states. The complete physical cabling, regulator switching and safe runtime mux behavior must be qualified separately.
+
+**Inferred:** The rear USB-B connector used by the desktop updater is linked to the `ff580000` peripheral path; it is therefore a strong candidate for silicon ROM USB access, if the SoC can be placed in that mode. USB-B Fastboot enumeration alone would not prove this ROM path is active.
+
+### 5.1 USB removable filesystems and executable files
+
+Factory automount commonly uses `noexec` for FAT/exFAT USB media. The original `autorun.sh` mechanism works because the vendor script-runner interprets a shell file; a compiled ARM executable is **not** thereby guaranteed to execute directly from the mounted USB partition. Validated approaches include copying a checked binary into volatile executable `/run` storage, mounting a suitably prepared external Linux filesystem (subject to its mount flags), or starting an isolated USB root with `kexec`. Avoid modifying rootfs merely to defeat a removable-media mount restriction.
+
+### 5.2 U-Boot Fastboot and recovery path
+
+**Verified in image:** The board has a Fastboot-oriented recovery selection. SARADC channel 1 at a threshold near `≤99` affects a shared state flag at approximately `0x001462FC`. U-Boot startup interprets that state through `dorecovery` and `az01_recovercmd`, entering `fastboot 0` before the normal Linux rootfs is read. The manufacturer documents a power-on Update Mode button combination (FULL LEVEL + BROWSE + PAD BANK C/G), but the actual gesture and subsequent recovery steps have **not** been end-to-end rehearsed on this reference device.
+
+U-Boot registers the Fastboot command family `getvar`, `download`, `boot`, `continue`, `flash`, `erase`, `oem` and `reboot`. The offline program study found RAM receive base `0x00800800`, length/cursor globals near `0x0014D684`/`0x0014D680`, and an advertised download limit `0x70000000`. **That advertised number is not a proven safe physical RAM budget.** The `boot` dispatch path reaches a `bootm`-related image execution function, but accepted image format, real execution, FDT handoff and memory safety remain unproven.
+
+The U-Boot `oem` command family includes a board-specific authorization workflow associated with write/erase/download handling. Those functions belong to the installed firmware's maintenance interface; this architecture does not rely on using them. What matters for planning is the **capability boundary**: access to Fastboot does not mean every command is safe or currently permitted.
+
+The early-stage `reset_bootloader` logic sets a Fastboot-related Rockchip reboot register value `0x5242C309` at `0xFF730094`. **This does not demonstrate any usable software transition into silicon-ROM USB mode.** Other register patterns that may apply to other boards and loaders must not be assumed to work on the MPC One.
+
+### 5.3 Updater USB backends and semantics
+
+Offline 3.10-era analysis isolated three transport implementations, including Fastboot request family `FF/42/03`, another `FF/61/7A` backend, and a RockUSB-compatible interface. Their streaming, write and commit pathways differ. Their static state transitions and synthetic host models do **not** demonstrate physical USB enumeration, acceptance of a whole image, safe writes or recovery on the MPC One. A portable installer must select only a **physically qualified** backend for the observed device/firmware, and should not treat transports as interchangeable.
+
+### 5.4 What USB means for truly independent boot
+
+Akai's U-Boot Fastboot mode is a **pre-Linux** interface and potentially valuable for nonpersistent RAM boot and factory rootfs recovery. It **still requires intact p1/p3**. By contrast, genuine silicon-ROM mode could potentially start an independently developed SRAM loader with no factory boot code, but entering that mode and executing code on the physical MPC remain open.
+
+It is therefore inaccurate to describe the current USB-B Update Mode as a guaranteed way to recover **any** storage failure. Its strongest plausible role is recovery or update of p6/p7/p8 while the original first-stage and U-Boot are functional.
+
+## 6. A demonstrated fully reversible Linux boot: 3.10.0 via kexec
+
+This is the most important hardware result to carry into a new engineering effort. It happened on the actual MPC One, not just in a virtual machine.
+
+### 6.1 Boot arrangement
+
+```text
+Power-on → factory RK3288 loader → factory U-Boot → factory Linux 3.6.0
+   |
+   | owner initiates prepared kexec from verified transient stage
+   v
+3.10.0 zImage + modified board FDT + USB-resident rootfs
+   |
+   | internal eMMC and SD controllers disabled in new FDT
+   | /data is tmpfs
+   | update/formatting services are masked
+   | second kexec is disabled
+   v
+3.10.0 independent runtime: services, display, Ethernet and SSH
+   |
+   | physically power cycle
+   v
+Unchanged factory U-Boot and 3.6.0 rootfs from eMMC
+```
+
+The test image explicitly marked both Rockchip MMC controllers (eMMC `ff0f0000` and SD `ff0c0000`) `disabled`, preventing Linux from creating those corresponding block devices. It also substituted RAM for `/data`, prevented further `kexec`, masked manufacturer updater/formatter functions, and replaced dangerous maintenance utilities with inert controls. The replacement system had no normal MMC devices available to its programs. A writable external log area did remain available. **Any process that intentionally changes another supported physical peripheral would need a separate safety review; this particular storage result is not a universal promise of zero side effects.**
+
+### 6.2 Trial history
+
+| Actual run | Result | Lesson |
+|---|---|---|
+| **First, 2026-11-10** | 3.10.0 userspace started ~7.7 s after new kernel start; SSH service listened but Ethernet PHY detection failed; on-screen output not yet available. Boot storage unchanged. | Need correct live board FDT and explicit PHY initialization. |
+| **Second, 2026-11-10** | Live screen status/log visible; PHY recognized as RTL8211E; initial GMAC DMA setup timed out. Boot storage unchanged. | Display is viable; warm-reset PHY/clock state affects network. |
+| **Third, 2026-11-10** | Initial network setup failed, but a later `ip link set eth0 up` succeeded; link 1 Gb/s, DHCP and authenticated SSH worked; boot storage unchanged. | One retry after PHY reinitialization is a proven workaround. |
+
+The first kernel had trouble identifying the Ethernet PHY immediately after the warm handoff. The test FDT added `ethernet-phy-id001c.c915` and preserved the Realtek RTL8211E reset behavior on GPIO4 B0 (10 ms assertion and 30 ms deassertion). On the third run, the network retry at about 20.6 seconds succeeded, gigabit link arrived around 23.1 seconds, DHCP around 28 seconds and workstation SSH by ~32.9 seconds. The low-level reason for the first DMA timeout remains **unresolved**, despite comparison of clock and reset state before/after the test. Do not elevate EEE or clock-settling hypotheses into facts.
+
+### 6.3 Integrity observation
+
+Partition hashes and write counters for the boot-critical regions were checked before and after temporary boots against the saved baseline. `p1` through `p6` and boot0/boot1 retained their reference contents. The 3.10.0 test kernel reported no MMC block device. Power cycling brought back the factory 3.6.0 boot. This demonstrates a **real no-eMMC-write Linux test environment** and motivates the same design for early MPFree kernel builds.
+
+### 6.4 What this proves—and what it does not
+
+**Proven:** Another Linux kernel can run; another isolated userspace can start from USB; local screen and, after retry, network/SSH operate; factory boot remains available on reboot; tested boot-critical eMMC regions were unchanged.
+
+**Not proven:** Kernel acceptance by Fastboot or silicon ROM; U-Boot booting owner files directly from SD; an independent MPFree distro power-on boot; recovery from written/invalid p1 or p3; direct physical 3.10.1 kexec test; ability to freely modify eMMC while preserving a reliable restore option.
+
+**Recommended use:** Treat `kexec` as the lowest-risk *qualified means of running a wholly different kernel*, not as an already independent cold boot.
+
+## 7. What is the lowest-level reliable boot access today?
+
+A precise answer requires distinguishing **three different senses of “lowest-level”**:
+
+1. **Actually exercised to launch owner-controlled Linux on this hardware:** Linux root plus `kexec`. It starts after the factory Linux boot but has a demonstrated reversible outcome when storage controllers are disabled.
+2. **Earliest installed pre-Linux software with meaningful boot functions:** Factory U-Boot, with MMC/file loaders, `bootz`, recovery selection and Fastboot. Its code path exists without p6, but arbitrary owner kernel RAM boot and fallback have **not** been validated on real hardware.
+3. **Earliest silicon-independent recovery mechanism:** RK3288 BootROM USB mode. It is a documented platform facility, but genuine device entry, execution of an independently built first stage and recoverable eMMC service remain **unknown** for this board.
+
+**There is currently no proven, fully autonomous MPFree cold-boot selection that meets the project's strict stock-preservation standard.** U-Boot's existing features are enough to formulate credible tests; they are not permission to change the boot-critical environment today.
+
+## 8. Candidate custom-OS boot paths, ranked by maturity
+
+| Path | Starts without factory Linux? | eMMC boot-critical writes? | State |
+|---|---|---|---|
+| A. New MPFree userspace with factory kernel | No | None required for session-only use | Viable integration path |
+| B. Custom MPFree Linux by `kexec` from USB | No | None in proven isolated design | **3.10.0 form demonstrated** |
+| C. U-Boot boot from SD/USB-compatible storage | Potentially yes | None if selection already supported; otherwise p2 write | **Unproven selection** |
+| D. U-Boot Fastboot RAM `boot` | Potentially yes | Not inherently, for a RAM-only command | **Unproven execution format** |
+| E. Full independent SRAM/DDR loader from silicon ROM | Yes in principle | None for RAM-first tests | **ROM entry/loader unproven** |
+| F. Factory p6 replacement with MPFree root | Yes, if existing U-Boot accepts it | **Yes: destructive replacement** | Credible, **not yet safe** |
+
+### 8.1 A — independent userspace on factory Linux
+
+Build the Rust-first music environment, using C/C++ libraries only as needed for hardware integration. Start it from a reversible developer-controlled session, or from a purpose-built test rootfs where `acvs.service` is disabled. Stop/release the factory audio/UI stack cleanly and restore it on failure. This exploits the already working RT kernel, ALSA, DRM, MIDI, display and other drivers. It does **not** remove dependence on factory Linux or on its initial boot.
+
+### 8.2 B — independent Linux via kexec
+
+Build and stage an MPFree kernel, correct FDT, initramfs and rootfs on the workstation/removable media. Use the observed 3.10.0 test technique: exact board identity, MMC disabled, RAM `/data`, update services masked, no additional kexec and observable boot logs. Add a watchdog and explicit power-cycle fallback. Once the OS has run without any internal MMC access, qualify audio/UI/network, then only consider controlled writable storage later. This is the **recommended immediate development path**.
+
+### 8.3 C — U-Boot booting an SD image
+
+The installed U-Boot contains `mmc`, `ext4load`, `fatload`, `source`, `bootz` and distro boot scanning. A self-contained SD image with compatible kernel/FDT/boot script and root filesystem is therefore a plausible cold-boot target. **Still required:** empirically map U-Boot MMC indexes to sockets, discover how an alternative target is chosen with healthy p6 present, test board reset state, understand any extlinux/boot script precedence, and prove that removal of the SD returns to factory boot. The current `boot_targets` order is **not** proof of SD precedence.
+
+Changing `p2` with `saveenv` is a boot-critical persistent change; it is **not** a suitable first test just because the partition is small.
+
+### 8.4 D — U-Boot Fastboot booting a RAM image
+
+The existing Fastboot `download`/`boot` callback tree offers a potential nonpersistent pre-Linux execution interface. To qualify it, determine the **actual** accepted container (e.g., legacy image vs ARM `zImage`), entrypoint and FDT data handling, validated RAM bounds and recovery response to invalid images. The currently advertised download maximum is not a safe test payload target. There is no physical demonstration of a working arbitrary ARM kernel RAM boot through this command. Test only in a strictly no-flash context.
+
+### 8.5 E — independent silicon-ROM first-stage loader
+
+This is the long-term route to independence from the installed loader and to recovery after early-stage failure. A complete proof requires real ROM USB entry, a source-built SRAM stage accepted and executed on this board, DRAM initialization if needed, correct USB/serial observability, independent access to eMMC blocks and checked recovery tooling. Public RK3288 documentation and other boards are references, not substitutes for this proof.
+
+Do not erase the existing loader to induce ROM recovery. Do not use another board's exposed eMMC clock/test-point procedure without electrical qualification of this MPC One revision.
+
+### 8.6 F — factory p6 replacement
+
+Replacing p6 with a fully compatible MPFree Linux and `/boot` might allow installed U-Boot to boot MPFree directly without ever launching the factory application or Linux. But this would overwrite the only normal rootfs, not install a proven dual-boot system. It depends on exact kernel/DTB/boot args, correct partition geometry and a **tested** p6 restoration method. It is a deferred, higher-risk option, even with a complete private disk image.
+
+### 8.7 The preferred eventual design
+
+**Proposed:** Preserve factory `p1`/`p3` and a known-good recovery path, while making a separately stored MPFree image the selected normal kernel/rootfs. Use an A/B or equivalent health-confirmed selection mechanism that never loses the last known-good factory boot. Once genuine silicon-ROM recovery has been qualified, evaluate whether replacing first-stage components adds sufficient value. Separate the *bootloader* project from the *Linux userspace* project so either can evolve without risking the other.
