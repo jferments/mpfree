@@ -28,8 +28,9 @@ Phase sets (--phases, or MPFREE_CAPTURE_PHASES in collect-over-ssh.sh):
 - transport: which light messages Akai's app sends for REC, OVERDUB, PLAY,
   PLAY START and STOP as the transport plays, records and overdubs. Their
   lights were never in Akai's startup lights, so mpfree does not send them
-  until this shows them (owner, 2026-11-13). Recording goes only into the
-  project open in RAM, never saved (TRANSPORT_SETUP).
+  until this shows them (owner, 2026-11-13). The REC phase records into the
+  open project as ordinary use does, and the owner does not save it
+  (TRANSPORT_SETUP).
 usbmon's text interface shows at most 32 data bytes per transfer, so longer
 transfers (for example big LED SysEx bursts) are marked as truncated.
 """
@@ -144,8 +145,8 @@ TRANSPORT_PHASES = (
 TRANSPORT_SETUP = (
     "Before you press Enter, in Akai's app (stock 3.6, normal use, nothing saved):",
     "  1. Stay on the Main page with the transport stopped.",
-    "  2. The REC phase records a few seconds into the project open in memory. Do not save the",
-    "     project or change Preferences; power off as usual afterwards and nothing is kept.",
+    "  2. The REC phase records a few seconds into the open project, as in ordinary use. Do not",
+    "     save the project or change Preferences; power off as after any session you don't save.",
 )
 
 PHASE_SETS = {"controller": PHASES, "midi-cv": MIDI_CV_PHASES, "cv-scale": CV_SCALE_PHASES,

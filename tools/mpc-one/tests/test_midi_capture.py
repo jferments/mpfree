@@ -208,7 +208,7 @@ class MidiCaptureWrapperTests(unittest.TestCase):
         rc, out = self.run_wrapper("\n" * 6, MPFREE_CAPTURE_PHASES="transport")
         self.assertEqual(rc, 0, out)
         self.assertIn("Stay on the Main page with the transport stopped.", out)
-        self.assertIn("Do not save the", out)
+        self.assertIn("save the project or change Preferences", out)
         for name in ("idle", "play_stop", "rec_play", "overdub_play", "play_start"):
             self.assertIn(f"] {name}: ", out)
         self.assertIn("phase set: transport", self.report())
