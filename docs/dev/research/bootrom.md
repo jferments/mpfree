@@ -10,7 +10,7 @@ This note covers the reference **Akai MPC One** and its existing verified **3.6.
 - **Corroborated by external source:** Rockchip image-format fields, RK3288 SRAM load convention, ARM/Thumb and U-Boot reset API behavior.
 - **Inferred or unknown:** p1's exact BootROM-return behavior, post-reset boot decision, true MaskROM entry on this board, secure-boot eFuse state, and whether the entire p1 stage operates like upstream SPL.
 
-Existing project context: [boot map](../hardware/boot-map.md), [MaskROM/USB investigation](../hardware/maskrom-usb.md), [verified full eMMC backup](../hardware/emmc-backup.md). The raw, device-specific binary files and reports remain private on the owner's Linux workstation and MUST NOT be committed.
+Existing project context: [boot map](../hardware/archive/2026-11/boot-map.md), [MaskROM/USB investigation](../hardware/archive/2026-11/maskrom-usb.md), [verified full eMMC backup](../hardware/archive/2026-11/emmc-backup.md). The raw, device-specific binary files and reports remain private on the owner's Linux workstation and MUST NOT be committed.
 
 ## 1. Boot chain and disk geometry
 
@@ -224,7 +224,7 @@ Next technical checkpoints, in priority order:
 - RK3288 `CONFIG_SPL_TEXT_BASE=0xff704004`: https://android.googlesource.com/platform/external/u-boot/+/f7aa2094d4b1f8121384a030e95177327d873339/include/configs/rk3288_common.h
 - Legacy Rockchip image `header0_info`, `init_boot_size` rationale: https://sources.debian.org/src/u-boot/2021.01%2Bdfsg-5/tools/rkcommon.c/
 - Ghidra ARM-state disassembly command: https://github.com/NationalSecurityAgency/ghidra/blob/master/Ghidra/Features/Base/src/main/java/ghidra/app/cmd/disassemble/ArmDisassembleCommand.java
-- U-Boot source code and architecture details also discussed in [MaskROM USB research](../hardware/maskrom-usb.md).
+- U-Boot source code and architecture details also discussed in [MaskROM USB research](../hardware/archive/2026-11/maskrom-usb.md).
 
 ## 8. Follow-up: first Ghidra audit of p1 SPL (owner, 2026-11-10)
 
@@ -410,7 +410,7 @@ Next: collect the private Ghidra report from the separately distributed `MPFreeP
 
 The owner asked to expand the investigation beyond reset handling, to **early boot-mode decisions, Fastboot command behavior, complete architecture, and true MaskROM/BootROM code**. The latest owner report is `p1-reset-driver-trace-20261110T133440.txt`. Findings about this unit below derive from that report and earlier verified owner surveys; general RK3288/U-Boot behavior is labelled **upstream** and is **not assumed to be present** in the 2019 InMusic binary.
 
-**Important for versions:** the existing [Akai updater offline research](../hardware/akai-updater-offline.md) established that the official `MPC-3.10.0-Gen1-update.img` is an **AZ01 container with a single xz-compressed rootfs partition**; it **does not contain replacement p1/p3 bootloader payloads**. Thus the reference unit's verified 2019 p1/p3 loaders remain the ones to map for the 3.6.0-to-3.10.0 RAM-only kexec tests. The rootfs/kernel/DTB and software-update logic do change. This statement is about the specific examined 3.10.0 image, **not** a guarantee that all future Akai update images leave the bootloader untouched.
+**Important for versions:** the existing [Akai updater offline research](../hardware/archive/2026-11/akai-updater-offline.md) established that the official `MPC-3.10.0-Gen1-update.img` is an **AZ01 container with a single xz-compressed rootfs partition**; it **does not contain replacement p1/p3 bootloader payloads**. Thus the reference unit's verified 2019 p1/p3 loaders remain the ones to map for the 3.6.0-to-3.10.0 RAM-only kexec tests. The rootfs/kernel/DTB and software-update logic do change. This statement is about the specific examined 3.10.0 image, **not** a guarantee that all future Akai update images leave the bootloader untouched.
 
 ### 12.1 Direct result of latest SPL reset-driver trace
 
@@ -1398,7 +1398,7 @@ This documents an **RK3288-specific** two-stage USB ROM loader candidate, and is
 
 ### 30.7 Critical caveat: a RAM-only OS test can still change non-eMMC firmware
 
-The project's verified offline 3.6/3.10 updater investigations (`docs/dev/hardware/akai-updater-offline.md`) identify **separate peripheral microcontroller firmware update paths**: an Ilitek ILI2117 touch-controller update via its sysfs `update_fw`, a pad/controller updater using `dfu-util` and `midifirmup` invoked from MPC application startup, and XMOS-related service logic. They report identical `ili2117.bin` payloads for 3.6 and 3.10 and conditional update logic, but **do not prove all boards or all future versions keep these payloads identical**. There is also `az01config`, which can write configuration directly to eMMC partitions, although the project has not confirmed a boot-time caller on this board.
+The project's verified offline 3.6/3.10 updater investigations (`docs/dev/hardware/archive/2026-11/akai-updater-offline.md`) identify **separate peripheral microcontroller firmware update paths**: an Ilitek ILI2117 touch-controller update via its sysfs `update_fw`, a pad/controller updater using `dfu-util` and `midifirmup` invoked from MPC application startup, and XMOS-related service logic. They report identical `ili2117.bin` payloads for 3.6 and 3.10 and conditional update logic, but **do not prove all boards or all future versions keep these payloads identical**. There is also `az01config`, which can write configuration directly to eMMC partitions, although the project has not confirmed a boot-time caller on this board.
 
 Therefore **kexec / RAM rootfs alone is not a sufficient "no persistent write" guarantee**. A new kernel's init services or MPC app can perform DFU, sysfs firmware updates or eMMC config writes even if the root filesystem itself is in RAM. A no-write test must launch only an audited minimal initramfs with an explicit service allowlist, disable all automatic peripheral firmware updaters, and inspect block-layer writes and device firmware versions before/after any approved run. The controlled proof-of-concept is not "boot 3.10 full stock userspace and hope", but "boot a minimal MPFree-owned test environment".
 
@@ -1612,8 +1612,8 @@ The decoded first word little-endian is **0x0ff0aa55** (valid Rockchip ID-header
 
 - **Added host-only Python tool**: tools/mpc-one/offline-rk3288-rom.py. Subcommand **idblock** reads precisely p1's 64 KiB from an ordinary backup file, checks the reference partition SHA256, decodes only the first 512 header bytes, reports init size/RC4 flag/RK32 first-stage signature. **rkimage** subcommand inspects a local source-built USB SRAM payload, accepting either plain RK32 or RC4-obfuscated prefix. No USB access, no SSH, no raw block-device opens and no writes.
 - **Added synthetic tests**: tools/mpc-one/tests/test_offline_rk3288_rom.py (RC4 known vector, mock first-stage encrypted/plain, wrong signature/hash, symlink/block-device rejection, RKIMAGE identification). The actual private eMMC file is not copied into tests or git.
-- **Added owner ROM engineering plan**: docs/dev/hardware/owner-rom-recovery-plan.md. Separate initial **SRAM** code-execution proof from DDR training, Rockusb eMMC readback and permanent owner boot. Do not assume USB upload ACK proves ARM execution.
-- **Corrected outdated maskrom notes** in docs/dev/hardware/maskrom-usb.md: secure eFuse regions have now all read zero (subject to vendor secure NVMEM mapping); PHYTEC RK3288 ROM priority is eMMC before SD; universal eMMC clock-short claims are unsafe and withdrawn.
+- **Added owner ROM engineering plan**: docs/dev/hardware/archive/2026-11/owner-rom-recovery-plan.md. Separate initial **SRAM** code-execution proof from DDR training, Rockusb eMMC readback and permanent owner boot. Do not assume USB upload ACK proves ARM execution.
+- **Corrected outdated maskrom notes** in docs/dev/hardware/archive/2026-11/maskrom-usb.md: secure eFuse regions have now all read zero (subject to vendor secure NVMEM mapping); PHYTEC RK3288 ROM priority is eMMC before SD; universal eMMC clock-short claims are unsafe and withdrawn.
 - **Strengthened Tier 3 recovery gate** in docs/dev/research/recovery-and-os-strategy.md: true silicon ROM entry, actual source-built owner SPL execution, and whole eMMC readback required before modifying the bootloader or its environment.
 
 **Crucial new boot route:** upstream U-Boot's historical RK3288 documentation describes a direct **USB-to-internal-SRAM** code-loading path using a chip-specific RK32 image header at 0xff704000, without first requiring external DRAM. This offers a short, non-flashing **owner-code acceptance probe** once genuine ROM entry is safely established. The old USB example additionally RC4-encodes the transmitted RKIMAGE; that is **not** the same as the mandatory header0 obfuscation at SD/eMMC sector64. USB SPL acceptance and SDRAM initialization are separate milestones. Modern upstream maintainers express uncertainty about continued RKIMAGE support for all SoCs; it is not yet demonstrated on the MPC One. Sources:
@@ -1658,7 +1658,7 @@ The reference MPC One's offline p1 inspector was run successfully against the ex
 - New tools/mpc-one/extract-p1-sram-for-ghidra.py: validates the original p1 64-KiB partition SHA256 and 4/64/1088 header fields, then creates a **new, owner-private 32768-byte stage file** (not committed). Refuses raw block devices, symlinks and overwrites.
 - New tools/ghidra/MPFreeSPLAudit.py: native PyGhidra CPython 3 pre/post analysis; imports stage at **0xff704000**, candidate ARM-state code entry **0xff704004**, seeds code, traces function candidates and exports a local JSON with selected decompilation, call references and any back-to-BootROM literal hits. Decompilation and ARM-vs-Thumb state are hypotheses to verify. All analysis changes are confined to the new local Ghidra project.
 - New tools/ghidra/run_p1_sram_analysis.sh: one-command new Ghidra project + JSON, using Snap `snap run ghidra.ghidra -H` or explicit GHIDRA_HOME PyGhidra launcher. It does **not** SSH into MPC, reboot it, transmit a ROM image, or write any eMMC or OTP.
-- docs/dev/hardware/owner-rom-recovery-plan.md updated with verified full-header values and this next experiment.
+- docs/dev/hardware/archive/2026-11/owner-rom-recovery-plan.md updated with verified full-header values and this next experiment.
 
 Run on Linux workstation:
 

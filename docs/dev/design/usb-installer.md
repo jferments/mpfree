@@ -20,7 +20,7 @@ Separate these deliverables clearly:
 | Mode | Target | Persistent factory changes | Gate |
 | --- | --- | --- | --- |
 | A: Developer survey | temporary SSH under `/run`; no installed MPFree | None deliberately; USB diagnostic files only | **DONE** on reference MPC One |
-| A+: Persistent developer SSH | early-boot SSH unit in rootfs + keys in `/data/mpfree/ssh` | **Yes: rootfs and `/data`** ([MOD-001/002](../hardware/device-modifications.md)) | **DONE** on reference unit; owner decision to keep. Not an end-user pattern: a rootfs write is Tier 3 |
+| A+: Persistent developer SSH | early-boot SSH unit in rootfs + keys in `/data/mpfree/ssh` | **Yes: rootfs and `/data`** ([MOD-001/002](../hardware/archive/2026-11/device-modifications.md)) | **DONE** on reference unit; owner decision to keep. Not an end-user pattern: a rootfs write is Tier 3 |
 | B: Portable proof of concept | RAM-backed MPFree binary/config; data from removable storage | None to internal partitions | Need actual sysroot, device map, runtime loader and executable-mount tests |
 | C: Reversible MPFree userspace | versioned files on known safe storage with opt-in launch, stock OS fallback | May write a dedicated MPFree directory if explicitly authorized | Verified backups + recovery + transactional install |
 | D: Independent Linux image | alternate kernel/rootfs or boot arrangement | Potentially boot-critical internal changes | **Out of scope until the Tier 3 recovery gate passes** ([recovery strategy](../research/recovery-and-os-strategy.md)) |
@@ -131,4 +131,4 @@ MPFree can develop tools to import user-accessible projects, audio, samples and 
 - Reproducible ARMv7 builds, deterministic release artifacts and signing
 - End-user USB builder and one-touch consent UI
 
-This design should evolve in response to the evidence in [hardware/baseline-3.6.0.md](../hardware/baseline-3.6.0.md), not to guesses about proprietary system internals.
+This design should evolve in response to the evidence in [hardware/baseline-3.6.0.md](../hardware/archive/2026-11/baseline-3.6.0.md), not to guesses about proprietary system internals.

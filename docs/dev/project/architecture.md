@@ -42,7 +42,7 @@ Use a deterministic sequencer model that can be unit-tested on a desktop before 
 
 ### MPC One hardware findings (November 2026 verified evidence)
 
-See [first hardware survey](../hardware/survey-2026-11-09.md) and [factory resource-ownership survey](../hardware/resource-ownership.md). These **observations** supersede earlier guesses that the target audio and GUI interfaces were unknown:
+See [first hardware survey](../hardware/archive/2026-11/survey-2026-11-09.md) and [factory resource-ownership survey](../hardware/resource-ownership.md). These **observations** supersede earlier guesses that the target audio and GUI interfaces were unknown:
 
 - **SoC/CPU:** Rockchip RK3288; four ARMv7 cores (NEON/VFPv4), performance governor observed at 1.608 GHz; ~2 GiB memory, zero swap.
 - **Realtime kernel:** OpenEmbedded az0x 5.0.8 Linux 6.6.95 PREEMPT_RT. Neither a replacement kernel nor a supported ARM ABI is yet implemented.

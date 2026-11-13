@@ -1,48 +1,37 @@
-# MPC One Hardware Documentation
+# MPC One hardware and operating-system documentation
 
-**Canonical developer reference:** [MPC One Linux and Boot Architecture](mpc-one-boot-architecture.md) — the complete source for RK3288 ROM/SPL/U-Boot, eMMC, filesystem mounts, Linux rights and kexec, USB, firmware 3.10.1, direct-boot possibilities, and installer/recovery design.
+The original MPC One is an RK3288-based embedded Linux computer. The documents here describe the actual board, its factory operating system, its bootloader and the interfaces that MPFree must control to run as a separate music-production environment. They are written for developers building and testing MPFree on **hardware they own**.
 
-## Start here
+## Operating system and boot
 
-1. [Comprehensive Boot and Linux Architecture](mpc-one-boot-architecture.md) — current technical specification and evidence matrix.
-2. [Firmware 3.10.1 Compatibility](firmware-3.10.1-compatibility.md) — official developer facilities, image comparison and outstanding concerns.
-3. [Installer and Recovery Contract](installer-recovery-contract.md) — gates for no-write experiments versus persistent boot changes.
-4. [Development Access Guide](../guides/developer-access.md) — device communication and commands (check firmware-specific applicability).
-5. [Dated Hardware Evidence Archive](archive/2026-11/README.md) — preserved original measurements and development-session notes.
+**[MPC One operating-system architecture](mpc-one-boot-architecture.md)** is the complete introduction. It follows the machine from power-on through Linux, explains the eMMC and filesystem layout, developer access, realtime audio and hardware ownership, and documents how an independent kernel has already been booted. It ends with the installer and recovery architecture required for MPFree to start without factory Linux.
 
-## Specialized hardware interfaces
+**[MPC One bootloader](bootloader.md)** is the dedicated, detailed guide to the **RK3288 BootROM, Rockchip ID block, SRAM first stage, U-Boot, persistent environment, boot scripts and USB Fastboot**. It explains how the stages execute, where their images are stored, how U-Boot finds a kernel, which pre-Linux launch mechanisms appear usable for MPFree, and which recovery functions still need physical verification. This is the recommended reference for anyone implementing the installer or boot selector.
 
-| Interface | Detailed reference |
-|---|---|
-| ARM ABI, systemd, and handoff | [ABI/handoff](abi-handoff-survey.md) |
-| ALSA / MIDI device inventory | [Audio and MIDI](audio-midi-survey.md) |
-| Audio engine operation | [Audio runtime](audio-runtime.md) |
-| Pad and controller interfaces | [Controller protocol](controller-protocol.md) |
-| Ethernet and USB controllers | [Network and USB](ethernet-usb.md) |
-| MIDI events | [MIDI activity](midi-activity-map.md) |
-| Factory hardware ownership | [Resource ownership](resource-ownership.md) |
-| Display, touchscreen and GPU | [Touchscreen/display](touchscreen-display.md) |
-| Structured machine-readable board facts | [Observed data](data/) |
+**[Firmware 3.10.1 compatibility and developer access](firmware-3.10.1-compatibility.md)** describes the official Developer Panel, terminal/SSH, plugin SDK and the results and limits of the offline firmware comparison.
 
-## Historical technical records
+**[Installer and recovery contract](installer-recovery-contract.md)** specifies the minimum evidence required for temporary kernel boots, persistent MPFree application installation, direct boot and boot-critical storage changes.
 
-The previous top-level research/session files remain addressable as landing pages and their **entire original contents** are archived unchanged. For primary facts, interpretations and dates see [the archive](archive/2026-11/README.md).
+## Hardware interfaces
 
-| Topic | Original file |
-|---|---|
-| Reference 3.6.0 Linux baseline | [baseline-3.6.0.md](baseline-3.6.0.md) |
-| GPT/eMMC, loader and boot script | [boot-map.md](boot-map.md) |
-| Full eMMC backup | [emmc-backup.md](emmc-backup.md) |
-| Three 3.10.0 temporary boots | [kexec-test-boot.md](kexec-test-boot.md) |
-| ROM and USB boot modes | [maskrom-usb.md](maskrom-usb.md) |
-| Owner first-stage recovery | [owner-rom-recovery-plan.md](owner-rom-recovery-plan.md) |
-| Factory updater | [akai-updater-offline.md](akai-updater-offline.md) |
-| Reference unit persistent modifications | [device-modifications.md](device-modifications.md) |
-| Dated detailed survey | [survey-2026-11-09.md](survey-2026-11-09.md) |
-| Original evidence backlog | [research-matrix.md](research-matrix.md) |
+These are the active, specialized developer references for programming the board. They retain their original technical detail rather than being replaced with navigation-only pages.
 
-## Editorial and evidence policy
+| Area | Reference | What it answers |
+|---|---|---|
+| Processor ABI and factory service lifecycle | [ARM ABI and service handoff](abi-handoff-survey.md) | Which binaries run on the device, what systemd starts and how hardware resources are owned |
+| Audio and MIDI | [Audio/MIDI inventory](audio-midi-survey.md) and [audio runtime](audio-runtime.md) | Which ALSA cards and PCM/MIDI interfaces are present, and what the realtime runtime must handle |
+| Pads and controls | [Controller protocol](controller-protocol.md) and [MIDI activity map](midi-activity-map.md) | How physical controls are represented in Linux and MIDI |
+| Networking and USB controllers | [Ethernet and USB hardware](ethernet-usb.md) | Gigabit link, USB host/peripheral controllers and measurable I/O behavior |
+| Touchscreen and graphics | [Display and touchscreen](touchscreen-display.md) | DSI/DRM/Panfrost interfaces, panel properties and touch input |
+| Service/resource ownership | [Resource ownership](resource-ownership.md) | Which factory processes hold PCM, MIDI, DRM and input devices |
+| Structured board measurements | [Observed hardware data](data/) | Recorded machine-readable hardware profiles and touchscreen properties |
 
-New developers should not add standalone timestamped reports to this directory. Keep the **current interpretation** in the architecture and focused reference documents, and retain raw run/session material in a dated archive. Date findings and label them *observed on device*, *verified in image*, *public platform behavior*, *inferred*, *proposed*, or *unknown*. Do not promote a successful VM or static program test into a physical-device claim. Do not put private full eMMC images, proprietary firmware distributions, hardware identifiers, SSH keys or factory samples in GitHub.
+For hands-on work, see the [developer access guide](../guides/developer-access.md) and the [MPFree application test guide](../guides/mpfree-app.md). Exact firmware, device revision and test date matter: never assume that an observation made on the original MPC One applies to all related products.
 
-A verified backup is **not** a proven restore. Boot-critical persistent writes remain prohibited until independent recovery is demonstrated.
+## Earlier engineering records
+
+The original dated reports on firmware 3.6.0, eMMC acquisition, the boot map, the three 3.10.0 temporary boots, factory updates and independent-ROM recovery have been **moved entirely into the [November 2026 archive](archive/2026-11/README.md)**. They are preserved byte-for-byte, including their measurements, historical interpretations and detailed command transcripts. They are not duplicated here as placeholder documents. Use the current architecture and bootloader pages for an integrated, up-to-date explanation.
+
+### Keeping the documentation current
+
+When a physical test resolves an open question, update the relevant current reference and identify the tested hardware and firmware. Preserve the original evidence in the dated archive. Distinguish what was observed on the MPC from what was verified in an image or proposed for a future installer. In particular, a complete eMMC backup is not yet a demonstrated independent restore procedure for a damaged first-stage loader.
