@@ -855,6 +855,12 @@ pub enum Effect {
     Undo {
         redo: bool,
     },
+    /// REC (or OVERDUB) on the Play page: the screen knows the view, so it
+    /// picks (Jay, 13 Nov 14:37Z): the looper on All and Loop, the takes
+    /// on Beats.
+    PlayRec {
+        overdub: bool,
+    },
     /// What the arp screens show: the panel, the quick band and the chip.
     Arp(ArpView),
     /// The arp's pattern list (names and patterns), when it changes.
@@ -1656,6 +1662,12 @@ impl App {
             } else {
                 crate::looper_page::B_UNDO
             }));
+        } else if self.view == View::Play
+            && (Some(note) == self.map.rec || Some(note) == self.map.overdub)
+        {
+            fx.push(Effect::PlayRec {
+                overdub: Some(note) == self.map.overdub,
+            });
         } else if Some(note) == self.map.rec {
             fx.push(Effect::Time(TimeAction::Transport(Command::Record)));
         } else if Some(note) == self.map.overdub {
@@ -4586,9 +4598,10 @@ mod tests {
         let fx = app.open_tab(View::Play);
         assert!(fx.iter().any(|e| matches!(e, Effect::Note(n) if n.starts_with("map summary: ")
                                              && n.contains("REC button 73") && n.contains("PAD BANK A/E button 35"))));
+        // On Play, the screen picks what REC records (the Play view's).
         assert_eq!(
             press(&mut app, 73),
-            vec![Effect::Time(TimeAction::Transport(Command::Record))]
+            vec![Effect::PlayRec { overdub: false }]
         );
         assert_eq!(
             press(&mut app, 35),
@@ -5676,6 +5689,14 @@ mod tests {
             press(&mut app, 93),
             vec![time(TimeAction::Transport(Command::PlayStart))]
         );
+        // REC and OVERDUB on Play: the screen picks by the view (the loop
+        // on All and Loop, takes on Beats); on Arrange, the takes.
+        assert_eq!(
+            press(&mut app, 90),
+            vec![Effect::PlayRec { overdub: false }]
+        );
+        assert_eq!(press(&mut app, 91), vec![Effect::PlayRec { overdub: true }]);
+        app.open_tab(View::Arrange);
         assert_eq!(
             press(&mut app, 90),
             vec![time(TimeAction::Transport(Command::Record))]
@@ -5684,6 +5705,7 @@ mod tests {
             press(&mut app, 91),
             vec![time(TimeAction::Transport(Command::ToggleOverdub))]
         );
+        app.open_tab(View::Play);
         // UNDO follows the page: the screen knows the Play view, so it picks.
         assert_eq!(press(&mut app, 92), vec![Effect::Undo { redo: false }]);
         assert_eq!(

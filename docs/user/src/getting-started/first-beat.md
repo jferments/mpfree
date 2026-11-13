@@ -46,7 +46,7 @@ A **pattern** is a loop of steps, like a grid: each row is a pad, each column a 
 
 Programming steps is precise; playing in feels human. Try both.
 
-1. Press **REC**. MPFree starts playing and records what you play on the pads.
+1. On the Beats view, press **REC**. MPFree starts playing and records what you play on the pads. (On the All and Loop views, REC records a loop instead; see [Your first loop](first-loop.md).)
 2. Play a beat. Keep it simple: kick and snare first.
 3. Press **STOP**. What you played appears on the pattern.
 4. To add a hi-hat without erasing the rest, press **OVERDUB** first to switch overdub on, then **REC**, play the hi-hat, and press **STOP**. With overdub off, a new recording replaces what was there; with it on, it adds. Press **OVERDUB** again to switch it off.
