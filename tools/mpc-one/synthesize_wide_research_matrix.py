@@ -278,6 +278,30 @@ def build(read):
         "Yes: original literals bound the computed result to invalid <=624999, battery <=1089999, ac <=1249999, else invalid-ac; fixed-point multiplier is ~1/1000. Physical units unknown.",
         "Verify exact ARM signed/unsigned arithmetic and ADC reference units, not live voltages.",
         "static/v11/v11-ghidra-uboot.json")
+    fastboot_receive=functions.get("0x00122a10",{}).get("pseudocode","")
+    bootm_classifier=functions.get("0x0010e390",{}).get("pseudocode","")
+    bootm_loader=functions.get("0x0010a6a4",{}).get("pseudocode","")
+    row("U-Boot","Does stock Fastboot receive a payload at a fixed RAM base?",
+        confirmed(all(x in fastboot_receive for x in (
+            "&DAT_00800800 + *DAT_00122ac4",
+            "*DAT_00122ad4 - *DAT_00122ac4",
+            "mpf_memcpy_candidate("))),
+        "The U-Boot receive callback copies up to the requested remaining byte count into RAM from base 0x00800800. Advertised maximum 0x70000000 bytes does not establish free RAM.",
+        "Resolve receive/request cursor globals and fit actual image + initramfs + FDT within an independently proven board RAM map.",
+        "static/v11/v11-ghidra-uboot.json")
+    row("U-Boot","Does stock bootm classify legacy and FDT-structured images?",
+        confirmed("mpf_fdt_header_checker()" in bootm_classifier and
+                  "mpf_legacy_header_crc(" in bootm_loader and
+                  "mpf_legacy_payload_crc(" in bootm_loader and
+                  "FUN_0010f8a4(" in bootm_loader),
+        "Original bootm has legacy header/payload CRC checks and a distinct FDT/FIT-style loading branch. Neither a raw zImage path nor required signatures are established.",
+        "Trace FIT verification configuration, bootm relocation, and physical startup state before attempting RAM execution.",
+        "static/v11/v11-ghidra-uboot.json")
+    row("U-Boot","Is a safe nonpersistent Fastboot RAM boot authorized and memory-qualified?",
+        "unresolved",
+        "No live Fastboot session, initial unlock state, physical DRAM map, bootm accepted image format or FDT overlap proof exists; the nominal RAM cap is not sufficient.",
+        "First qualify original bootloader image parsing and memory ranges in offline fixtures; any hardware test must be owner-authorized and RAM-only.",
+        "static/v11/v11-ghidra-uboot.json")
     row("U-Boot","Does Fastboot RAM boot reach bootm?",
         confirmed(p3_paths["fastboot_ram_boot_to_bootm"]["direct_call_path_found"]),
         "Direct path from 0x1226B4 to 0x101744 and image loader 0x10A6A4.",
