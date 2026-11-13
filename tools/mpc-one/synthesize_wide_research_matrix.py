@@ -159,7 +159,7 @@ def build(read):
         "When header parser rejects the recognized magic, fallback initializer writes 0x00100000 into its context entry slot; this does not guarantee that an invalid image will boot.",
         "Determine branch reachability, loader validation and resulting context pointer before any hardware exercise.",
         "static/v11/v11-ghidra-spl.json")
-    factory=d["env"]["p3"]
+    factory=d["boot"]["p3"]
     row("SPL","Does original factory U-Boot P3 have a zero entry field but nonzero load address?",
         confirmed(factory.get("valid") and
                   factory.get("load_address")=="0x00100000" and
