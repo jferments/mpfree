@@ -4346,15 +4346,18 @@ fn player_session(
         {
             let info = time.info();
             let (loop_rec, loop_dub) = looper.recording();
-            fx.extend(app.transport_lights(app::TransportLights {
-                rolling: info.state.rolling(),
-                recording: loop_rec
-                    || matches!(
-                        info.state,
-                        mpfree_transport::State::Recording | mpfree_transport::State::CountIn
-                    ),
-                overdub: loop_dub || info.overdub,
-            }));
+            fx.extend(app.transport_lights(
+                app::TransportLights {
+                    rolling: info.state.rolling(),
+                    recording: loop_rec
+                        || matches!(
+                            info.state,
+                            mpfree_transport::State::Recording | mpfree_transport::State::CountIn
+                        ),
+                    overdub: loop_dub || info.overdub,
+                },
+                t,
+            ));
         }
         // Another device's clock, when the project's tempo is from a port
         // (M4): the leader's bytes read this period go to the follower

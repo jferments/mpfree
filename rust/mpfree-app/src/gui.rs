@@ -6979,7 +6979,7 @@ mod tests {
         assert_eq!(p.page(), mpfree_chain_ui::CHAIN_PAGE);
         p.ui.paint(&mut SoftCanvas::new(SCREEN.0, SCREEN.1));
         let r = p.ui.rect_of(mpfree_chain_ui::CHAIN).unwrap();
-        let mut tap = |p: &mut Player, x: i32, y: i32| {
+        let tap = |p: &mut Player, x: i32, y: i32| {
             let mut got: Vec<FromUi> = Vec::new();
             got.extend(p.touch(1, Touch::Down, x, y));
             got.extend(p.touch(1, Touch::Up, x, y));

@@ -51,6 +51,12 @@ use mpfree_transport::Command;
 /// cable. Akai's app sends 1 and 3 (dim and bright, inferred); so do we.
 pub const LIGHT_OFF: u8 = 1;
 pub const LIGHT_ON: u8 = 3;
+/// Fully dark: PLAY, REC and OVERDUB use 0, not 1, for off (Akai's
+/// transport lights, live test 3 capture).
+pub const LIGHT_DARK: u8 = 0;
+/// Akai's transport lights blink about every 0.3 s (each half of the
+/// blink; observed in live test 3's capture, tempo not recorded).
+pub const BLINK_HALF_SECONDS: f64 = 0.3;
 
 /// What the transport buttons' lights show ([`App::transport_lights`]).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -1014,9 +1020,9 @@ pub struct App {
     arp_dirty: bool,
     /// The transport is rolling (the audio loop says each period).
     rolling: bool,
-    /// What the transport buttons' lights last showed
-    /// ([`App::transport_lights`]).
-    lights_shown: TransportLights,
+    /// What the transport buttons' lights last showed, by note
+    /// ([`App::transport_lights`]); `None` until first sent.
+    lights_shown: [Option<u8>; 128],
     /// The synth's pad layout while the synth is on the pads
     /// ([`App::set_pad_layout`]): the pads then feed the arp the layout's
     /// notes, and its events carry notes rather than pad slots.
@@ -1130,7 +1136,7 @@ impl App {
             sent_notes,
             arp_dirty: true,
             rolling: false,
-            lights_shown: TransportLights::default(),
+            lights_shown: Self::startup_transport_lights(),
             pad_layout: None,
             pad_pressed: [PadNotes::default(); 16],
             note_holds: [0; 128],
@@ -1170,30 +1176,69 @@ impl App {
         self.rolling = rolling;
     }
 
+    /// The transport lights as Akai's startup leaves them: STOP bright,
+    /// PLAY, REC and OVERDUB dark, UNDO dim.
+    fn startup_transport_lights() -> [Option<u8>; 128] {
+        let mut l = [None; 128];
+        l[button::STOP as usize] = Some(LIGHT_ON);
+        l[button::PLAY as usize] = Some(LIGHT_DARK);
+        l
+    }
+
     /// The transport buttons' lights for what the transport and the
-    /// looper are doing now: STOP lit while stopped, PLAY while rolling,
-    /// REC while recording, counting in or a loop is armed, OVERDUB while
-    /// overdubbing. Only the lights that changed, as [`Effect::Light`];
-    /// the audio loop sends those Akai's app was seen sending and notes
-    /// the others once (REC, OVERDUB and PLAY wait for the capture of
-    /// Akai's lights, Jay 13 Nov). The start matches Akai's startup
-    /// lights: STOP lit, the rest not.
-    pub fn transport_lights(&mut self, now: TransportLights) -> Vec<Effect> {
-        let was = std::mem::replace(&mut self.lights_shown, now);
-        let light = |on: bool| if on { LIGHT_ON } else { LIGHT_OFF };
-        let mut fx = Vec::new();
-        if now.rolling != was.rolling {
-            fx.push(Effect::Light(button::STOP, light(!now.rolling)));
-            fx.push(Effect::Light(button::PLAY, light(now.rolling)));
+    /// looper are doing now, at `t` seconds, as Akai's app lights them
+    /// (live test 3 capture, `docs/dev/hardware/controller-protocol.md`):
+    /// - PLAY bright while rolling, dark when stopped; while REC or
+    ///   OVERDUB waits for PLAY it blinks bright/dark with them.
+    /// - REC blinks bright/dark while armed and while recording; OVERDUB
+    ///   the same while armed and overdubbing. Dark otherwise.
+    /// - UNDO blinks bright/dim while recording or overdubbing.
+    /// - STOP dim while rolling, bright when stopped (the MPC One's STOP
+    ///   has no LED; harmless).
+    ///
+    /// Only the lights that changed, as [`Effect::Light`]. REC, OVERDUB and
+    /// UNDO only once Map controls (or the defaults) know their buttons.
+    pub fn transport_lights(&mut self, now: TransportLights, t: f64) -> Vec<Effect> {
+        let blink_on = (t / BLINK_HALF_SECONDS).floor().rem_euclid(2.0) < 1.0;
+        let blink = |on: bool, low: u8| match (on, blink_on) {
+            (false, _) => low,
+            (true, true) => LIGHT_ON,
+            (true, false) => {
+                if low == LIGHT_DARK {
+                    LIGHT_DARK
+                } else {
+                    LIGHT_OFF
+                }
+            }
+        };
+        let waiting = !now.rolling && (now.recording || now.overdub);
+        let play = if waiting {
+            blink(true, LIGHT_DARK)
+        } else if now.rolling {
+            LIGHT_ON
+        } else {
+            LIGHT_DARK
+        };
+        let stop = if now.rolling { LIGHT_OFF } else { LIGHT_ON };
+        let mut want: Vec<(u8, u8)> = vec![(button::STOP, stop), (button::PLAY, play)];
+        if let Some(rec) = self.map.rec {
+            want.push((rec, blink(now.recording, LIGHT_DARK)));
         }
-        if now.recording != was.recording {
-            if let Some(rec) = self.map.rec {
-                fx.push(Effect::Light(rec, light(now.recording)));
+        if let Some(dub) = self.map.overdub {
+            want.push((dub, blink(now.overdub, LIGHT_DARK)));
+        }
+        if let Some(undo) = self.map.undo {
+            let on = now.rolling && (now.recording || now.overdub);
+            if on || self.lights_shown[undo as usize & 0x7F].is_some() {
+                want.push((undo, blink(on, LIGHT_OFF)));
             }
         }
-        if now.overdub != was.overdub {
-            if let Some(dub) = self.map.overdub {
-                fx.push(Effect::Light(dub, light(now.overdub)));
+        let mut fx = Vec::new();
+        for (note, v) in want {
+            let slot = &mut self.lights_shown[note as usize & 0x7F];
+            if *slot != Some(v) {
+                *slot = Some(v);
+                fx.push(Effect::Light(note, v));
             }
         }
         fx
@@ -5344,48 +5389,92 @@ mod tests {
         assert!(fx.contains(&Effect::Time(TimeAction::Transport(Command::Stop))));
     }
 
-    /// The transport buttons' lights follow the transport and the loops,
-    /// only when they change (13 Nov live test: none lit).
+    /// The transport buttons' lights follow the transport and the loops
+    /// as Akai's app lights them (live test 3 capture), only when they
+    /// change: PLAY steady while rolling; REC and OVERDUB blink 3/0 while
+    /// armed (PLAY blinking with them) and while recording; UNDO blinks
+    /// 3/1 while recording.
     #[test]
-    fn the_transport_lights_follow_play_record_and_overdub() {
+    fn the_transport_lights_follow_play_record_and_overdub_as_akais_do() {
         const REC: u8 = 73;
         const OVERDUB: u8 = 80;
+        const UNDO: u8 = 67;
         let mut app = ready();
         let lights = |rolling, recording, overdub| TransportLights {
             rolling,
             recording,
             overdub,
         };
-        // As Akai's startup left them: nothing to send.
-        assert!(app.transport_lights(lights(false, false, false)).is_empty());
-        // OVERDUB not found: no light for it.
-        app.map.learn(mapper::Job::Rec, Some(REC));
+        // Stopped, as Akai's startup left them: nothing to send.
+        app.map.learn(mapper::Job::Rec, None);
         app.map.learn(mapper::Job::Overdub, None);
-        assert!(app.transport_lights(lights(false, false, true)).is_empty());
+        app.map.learn(mapper::Job::Undo, None);
+        assert!(app
+            .transport_lights(lights(false, false, false), 0.0)
+            .is_empty());
+        // Playing: PLAY bright, STOP dim.
         assert_eq!(
-            app.transport_lights(lights(true, true, false)),
+            app.transport_lights(lights(true, false, false), 1.0),
             vec![
                 Effect::Light(button::STOP, LIGHT_OFF),
                 Effect::Light(button::PLAY, LIGHT_ON),
-                Effect::Light(REC, LIGHT_ON)
             ]
         );
+        assert!(app
+            .transport_lights(lights(true, false, false), 1.4)
+            .is_empty());
+        app.transport_lights(lights(false, false, false), 2.0);
+        app.map.learn(mapper::Job::Rec, Some(REC));
         app.map.learn(mapper::Job::Overdub, Some(OVERDUB));
+        app.map.learn(mapper::Job::Undo, Some(UNDO));
+        // REC armed while stopped: REC and PLAY blink 3/0 together.
+        let fx = app.transport_lights(lights(false, true, false), 3.0);
+        assert!(
+            fx.contains(&Effect::Light(button::PLAY, LIGHT_ON)),
+            "{fx:?}"
+        );
+        assert!(fx.contains(&Effect::Light(REC, LIGHT_ON)), "{fx:?}");
+        assert!(fx.contains(&Effect::Light(OVERDUB, LIGHT_DARK)), "{fx:?}");
+        let fx = app.transport_lights(lights(false, true, false), 3.0 + BLINK_HALF_SECONDS);
         assert_eq!(
-            app.transport_lights(lights(true, false, true)),
+            fx,
             vec![
-                Effect::Light(REC, LIGHT_OFF),
-                Effect::Light(OVERDUB, LIGHT_ON)
+                Effect::Light(button::PLAY, LIGHT_DARK),
+                Effect::Light(REC, LIGHT_DARK)
             ]
         );
-        assert!(app.transport_lights(lights(true, false, true)).is_empty());
+        // Recording: PLAY steady, REC still blinking, UNDO blinking 3/1.
+        let fx = app.transport_lights(lights(true, true, false), 3.0 + 3.0 * BLINK_HALF_SECONDS);
+        assert!(
+            fx.contains(&Effect::Light(button::PLAY, LIGHT_ON)),
+            "{fx:?}"
+        );
+        assert!(fx.contains(&Effect::Light(UNDO, LIGHT_OFF)), "{fx:?}");
+        assert!(
+            !fx.contains(&Effect::Light(REC, LIGHT_ON)),
+            "REC on its dark half"
+        );
+        let fx = app.transport_lights(lights(true, true, false), 3.0 + 4.0 * BLINK_HALF_SECONDS);
         assert_eq!(
-            app.transport_lights(lights(false, false, false)),
-            vec![
-                Effect::Light(button::STOP, LIGHT_ON),
-                Effect::Light(button::PLAY, LIGHT_OFF),
-                Effect::Light(OVERDUB, LIGHT_OFF)
-            ]
+            fx,
+            vec![Effect::Light(REC, LIGHT_ON), Effect::Light(UNDO, LIGHT_ON)]
+        );
+        // STOP: everything back, UNDO dim.
+        let fx = app.transport_lights(lights(false, false, false), 9.0);
+        for want in [
+            Effect::Light(button::STOP, LIGHT_ON),
+            Effect::Light(button::PLAY, LIGHT_DARK),
+            Effect::Light(REC, LIGHT_DARK),
+            Effect::Light(UNDO, LIGHT_OFF),
+        ] {
+            assert!(fx.contains(&want), "{want:?} in {fx:?}");
+        }
+        // Overdub armed: OVERDUB and PLAY blink.
+        let fx = app.transport_lights(lights(false, false, true), 9.0);
+        assert!(fx.contains(&Effect::Light(OVERDUB, LIGHT_ON)), "{fx:?}");
+        assert!(
+            fx.contains(&Effect::Light(button::PLAY, LIGHT_ON)),
+            "{fx:?}"
         );
     }
 
