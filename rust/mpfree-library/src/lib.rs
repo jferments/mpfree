@@ -49,6 +49,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 pub const LIBRARY: &str = "library";
 /// The Trash's folder inside the library.
 pub const TRASH: &str = ".trash";
+/// Engines' work folders inside the library ([`Library::work_dir`]).
+pub const WORK: &str = ".work";
 /// The largest file the library copies.
 pub const MAX_FILE: u64 = 2 << 30;
 /// The most entries a folder listing returns.
@@ -869,6 +871,41 @@ impl Library {
         }
         sync_dir(&trash)?;
         Ok(freed)
+    }
+
+    /// `owner`'s work folder, `library/.work/<owner>/`, made if missing:
+    /// where an engine keeps the files of work not saved yet (an audio
+    /// track's takes), on the library's own drive. A save copies them
+    /// into the project ([`NewSample::file`]). `owner` is a part's owner
+    /// name ([`project::valid_owner`]).
+    pub fn work_dir(&self, owner: &str) -> io::Result<PathBuf> {
+        if !project::valid_owner(owner) {
+            return Err(err(io::ErrorKind::InvalidInput, "bad owner name".into()));
+        }
+        let work = self.root.join(WORK);
+        Self::ensure_dir(&work)?;
+        let dir = work.join(owner);
+        Self::ensure_dir(&dir)?;
+        Ok(dir)
+    }
+
+    /// Empties `owner`'s work folder (New project, or another project
+    /// opened over unsaved work): the files in it, not links or folders.
+    /// The number removed.
+    pub fn clear_work(&self, owner: &str) -> io::Result<usize> {
+        let dir = self.work_dir(owner)?;
+        let mut n = 0;
+        for e in fs::read_dir(&dir)? {
+            let p = e?.path();
+            if fs::symlink_metadata(&p)?.file_type().is_file() {
+                fs::remove_file(&p)?;
+                n += 1;
+            }
+        }
+        if n > 0 {
+            sync_dir(&dir)?;
+        }
+        Ok(n)
     }
 
     /// Bytes used by a place (the Trash included), counted on the disk.
