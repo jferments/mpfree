@@ -39,6 +39,7 @@ PINNED={
  'uboot':[0x100fe4,0x1011e0,0x100da0,0x101744,0x1017fc,
           0x101bb4,0x10228c,0x1018fc,0x1021a8,0x10a6a4,
           0x10b74c,0x10cc64,0x10d14c,0x10d588,0x10e000,0x10e02a,
+          0x10e390,
           0x10f188,0x10f388,0x10f45c,0x10f728,
           0x110084,0x1100c8,0x110270,0x110484,0x112228,0x11622a,
           0x10fde8,0x100edc,0x100ef0,0x1147f0,0x115f30,
@@ -46,7 +47,7 @@ PINNED={
           0x1147a2,0x115e98,0x11415e,0x1140ac,0x115d04,
           0x115f90,0x11a9f8,0x11aa10,
           0x12247c,0x1226b4,0x122734,0x122780,
-          0x122834,0x122854,0x122980,0x122948,0x122cf8,0x122d38,0x122bd0,0x122bf8,0x122c5c]
+          0x122834,0x122854,0x122980,0x122a10,0x122948,0x122cf8,0x122d38,0x122bd0,0x122bf8,0x122c5c]
 }
 OFFSETS={'open':0x08,'write_bootloader':0x18,'write_partition':0x1c,
          'stream_partition':0x20,'commit_bootloader':0x2c,'reset':0x34}
@@ -235,7 +236,8 @@ def mpfree_v11_entrypoint():
                 'uboot':('0x00100fe4','0x001011e0','0x00101744','0x001017fc','0x00101bb4','0x0010a6a4','0x0010f388','0x00112228','0x0012247c','0x001226b4','0x00122734','0x00122780','0x00122834','0x00122854','0x00122964','0x00122980','0x00122948','0x00122cf8','0x00122d38','0x00122bf8','0x00122c5c','0x00110084','0x001100c8','0x00110270','0x0010fde8','0x00100fe4','0x00100edc','0x00100ef0','0x001147f0','0x00115f30','0x00115ef4','0x001147d4',
                          '0x001011e0','0x001146cc','0x001147a2',
                          '0x00115e98','0x0011415e','0x001140ac',
-                         '0x00115d04','0x00115f90'),
+                         '0x00115d04','0x00115f90',
+                         '0x00122a10','0x0010e390','0x0010e000','0x0010e02a'),
                 'az01-update':('0x0001091c','0x00010be4')
             }
             if key in capture_by_role.get(role,()):
@@ -646,6 +648,31 @@ def mpfree_v11_entrypoint():
             'continue_registration_literal':original_word_metadata(0x0012295c),
             'continue_registration_target':read_word(0x0012295c),
         }
+        # Both the request-length handler and the receive callback
+        # reference globals through original little-endian literal
+        # slots. Equality of these pointers is a static hypothesis
+        # until verified; values are NOT observed runtime RAM state.
+        download_ram_slots=(
+            ('download_requested_length_global',0x001229f4),
+            ('download_received_cursor_global',0x001229f8),
+            ('receive_expected_length_global',0x00122ad4),
+            ('receive_received_cursor_global',0x00122ac4),
+            ('receive_buffer_early_pointer',0x001224b0),
+            ('receive_buffer_late_pointer',0x001224b4),
+            ('bootm_argument_string',0x001226f4),
+            ('bootm_diagnostic_string',0x001226f8),
+            ('bootm_argument_value_pointer',0x001226fc),
+            ('bootm_argument_format',0x00122700),
+        )
+        download_ram_words={
+            label:{
+                'original_literal_slot':addr_hex(address),
+                'original_literal_word':addr_hex(read_word(address))
+                    if read_word(address) is not None else None,
+                'original_image_word_not_runtime_state':True,
+            }
+            for label,address in download_ram_slots
+        }
         direct_boot={
             'schema':'mpfree-p3-directboot-literal-evidence-v1',
             'permission_read_slot':ptrs['permission_read_literal'],
@@ -681,6 +708,21 @@ def mpfree_v11_entrypoint():
                 '0x00115ed8','0x001147d4'
             ],
             'registered_callback_pointer_metadata':completion_callbacks,
+            'fastboot_download_ram_original_literal_slots':download_ram_words,
+            'request_and_receive_length_global_pointer_equal':(
+                download_ram_words['download_requested_length_global'][
+                    'original_literal_word'] is not None and
+                download_ram_words['download_requested_length_global'][
+                    'original_literal_word'] ==
+                download_ram_words['receive_expected_length_global'][
+                    'original_literal_word']),
+            'request_and_receive_cursor_pointer_equal':(
+                download_ram_words['download_received_cursor_global'][
+                    'original_literal_word'] is not None and
+                download_ram_words['download_received_cursor_global'][
+                    'original_literal_word'] ==
+                download_ram_words['receive_received_cursor_global'][
+                    'original_literal_word']),
             'fastboot_command_table_pointer':(
                 addr_hex(command_table_pointer) if command_table_pointer is not None else None),
             'fastboot_command_table':command_dispatch,
