@@ -35,6 +35,8 @@ def audit(archive: Path) -> dict:
                          "mpfree_update_format_spl_preflight")
     ram_boot = load("synthesize_fastboot_ram_path.py",
                     "mpfree_fastboot_ram_preflight")
+    spl_header = load("synthesize_spl_image_handoff.py",
+                      "mpfree_spl_legacy_uimage_preflight")
     with zipfile.ZipFile(archive) as z:
         members = wide.verify_zip(z)
         matrix = wide.build(z.read)
@@ -44,6 +46,7 @@ def audit(archive: Path) -> dict:
         usb_backend_report = usb_backend.build(z.read)
         format_report = update_format.build(z.read)
         ram_report = ram_boot.build(z.read)
+        spl_header_report = spl_header.build(z.read)
         comparison = json.loads(
             z.read("static/wide/firmware-3.10-bootchain-v4-compare.json"))
         guest_hex = z.read("qemu-guest-boot_script_hex.txt").decode("utf-8")
@@ -75,7 +78,9 @@ def audit(archive: Path) -> dict:
             format_report["all_checkable_static_claims_passed"]),
         "static_fastboot_receive_and_bootm_classifier": (
             ram_report["all_static_evidence_passed"]),
-        "seven_track_67_question_research": (
+        "spl_original_legacy_header_to_handoff_evidence":(
+            spl_header_report["all_prior_static_evidence_passed"]),
+        "seven_track_70_question_research": (
             len(matrix["questions"])>=70 and
             len({q["track"] for q in matrix["questions"]})==7),
         "spl_order_and_mmc_label_evidence": all(
@@ -105,6 +110,11 @@ def audit(archive: Path) -> dict:
         "verify_error_minus13_policy_proven":False,
         "static_fastboot_download_ram_base":ram_report["ram_receive_base"],
         "advertised_download_max_is_safe_ram":False,
+        "spl_original_factory_P3_header":spl_header_report[
+            "factory_P3_verified_legacy_header"],
+        "spl_new_context_literal_checks":spl_header_report[
+            "new_literal_pointer_checks"],
+        "new_SPL_literals_missing_from_old_Ghidra_is_not_a_failure":True,
         "focus_topics": len(set(q["topic"] for q in focus["questions"])),
         "passed_checks": checks,
         "success": (
