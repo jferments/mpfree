@@ -176,6 +176,7 @@ impl ChainHost {
             },
         };
         st.macro_names = h.modu.names().to_vec();
+        st.plugins = crate::plugins::picks(h.plugins());
         st.learning = self.learning;
         st.back = self.back.clone();
         if self.scopes.len() > 1 {
