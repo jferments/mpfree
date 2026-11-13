@@ -58,8 +58,8 @@ pub const AFTER: usize = 5;
 const N: usize = PARTS.len();
 
 /// A period whose parts outside the engines take this long or longer is
-/// slow: half a period (128 frames at 44.1 kHz), as much as every engine
-/// together may take on a busy song.
+/// slow: half of a 128-frame period at 44.1 kHz (64 frames, 1.45 ms), as
+/// much as every engine together may take on a busy song.
 pub const SLOW: Duration = Duration::from_nanos(PERIOD_NS / 2);
 const PERIOD_NS: u64 = crate::PERIOD as u64 * 1_000_000_000 / 44_100;
 /// A single action, effect or event this long or longer is named.
