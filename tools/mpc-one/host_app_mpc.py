@@ -676,7 +676,8 @@ PROBE_AFTER = ("Developer pages: Performance, CPU by engine, Processes",
                "Looper tab: record, layers, tools, undo history, trim")
 # The session summary at the end of the app step: every line that starts with one of these, from
 # power-on to the end (the last three status lines only).
-SUMMARY_PREFIXES = ("touchscreen: ", "touch-reader: ", "button guide done: ", "button guide: ", "developer tools: ",
+SUMMARY_PREFIXES = ("touchscreen: ", "touch-reader: ", "touch: doorbell", "touch: no doorbell",
+                    "button guide done: ", "button guide: ", "developer tools: ",
                     "looper: ", "line input: ", "saving: ", "saved settings", "saved buttons", "not saved: ",
                     "storage: ", "capture", "sample: ",
                     "map: ", "map summary: ", "bank", "pad level: ", "kit ", "synth: ", "pads: ", "Latch ",
