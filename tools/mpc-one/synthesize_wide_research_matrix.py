@@ -102,16 +102,39 @@ def build(read):
         "static/v11/v11-ghidra-spl.json")
     row("SPL","Is the second context-based function-pointer handoff target established?",
         "unresolved",
-        "SPL selector calls 0xFF705310 with context 0xFF70A244. That function dereferences callback at context+0xC, candidate slot 0xFF70A250. Runtime mutation and final target remain unverified.",
-        "Read the original context callback word and find every initializer/writer before identifying the final U-Boot handoff.",
+        "Original callback slot 0xFF70A250 is 0x00000000 in saved SPL. The 0xFF705310 indirect caller needs runtime initialization or a different control path; the executed handoff target remains unknown.",
+        "Trace all writers to context 0xFF70A244+0xC and the later backend initializer; zero original bytes do not prove a null runtime call.",
         "static/v11/v11-ghidra-spl.json")
+    spl_probe=d["spl"].get("direct_boot_probe",{}).get(
+        "extended_stage_evidence",{})
+    spl_tables=spl_probe.get("opaque_media_table_words",{})
+    source_labels={x.get("at","").lower():x.get("text") for x in
+                   d["p1"].get("strings",[])}
+    map_entries=spl_tables.get("device_mapping",{}).get("entries",[])
+    order_entries=spl_tables.get("device_order",{}).get("entries",[])
+    labels=[source_labels.get(map_entries[j]["word"].lower())
+            for j in (1,3,5)] if len(map_entries)==8 else []
+    row("SPL","Does the original five-slot boot priority table contain live priorities?",
+        "static-supported" if (len(order_entries)==5 and all(
+            x.get("word")=="0xdeadbeef" for x in order_entries))
+        else "unresolved",
+        "No: all five saved table slots are 0xDEADBEEF; the selector invokes 0xFF705342 which writes FUN_ff704120's selected boot-device value into the first slot before iteration.",
+        "Trace runtime order initialization and actual boot-device source; do not infer eMMC/SD order from placeholders.",
+        "static/v11/v11-ghidra-spl.json")
+    row("SPL","Can the first three SPL media ID labels be identified?",
+        confirmed(labels==["MMC1","MMC2","MMC2_2"]),
+        "Yes: mapping IDs 1/2/3 point to original strings MMC1, MMC2, MMC2_2. The sentinel fourth pair remains opaque; label is not physical port proof.",
+        "Map names through MMC driver and actual RK3288 controller addresses.",
+        "static/v11/v11-ghidra-spl.json + static/wide/p1-sram-ghidra.json")
     row("SPL","Do the backup P1 offsets and size identify stage location?",confirmed(b["p1"]["lba"]==64 and b["p1"]["bytes"]==65536),
         "The first-stage partition starts at LBA 64 and spans 64KiB in the owner's backup.",
         "Confirm an independent ROM loader can accept an owner-built SRAM payload.","static/wide/storage-env-boot-dtb.json")
-    row("SPL","Does initial SRAM entry reach boot selector?",
-        confirmed(p1_paths["initial_sram_to_boot_loop"]["direct_call_path_found"]),
-        "No direct Ghidra call chain yet connects proposed SRAM entry and media selection.",
-        "Trace ARM/Thumb interworking and indirect branch targets.","static/wide/bootchain-v5-synthesis.json")
+    row("SPL","Does SPL initializer 0xFF705208 indirectly reach boot selector?",
+        confirmed(spl_entry=="0xff705351" and
+                  "(*DAT_ff705274)(" in spl_initial),
+        "Yes: 0xFF705208 calls via pointer 0xFF705274 into Thumb 0xFF705350. This is a local SPL graph edge, NOT proof ROM reached initializer.",
+        "Continue tracing immutable-ROM handoff and second-stage runtime callback initialization.",
+        "static/v11/v11-ghidra-spl.json")
     row("SPL","Can SPL selection reach media load?",
         confirmed(p1_paths["boot_loop_to_media_load"]["direct_call_path_found"]),
         "Boot selector 0xFF705350 directly calls loader 0xFF7054A4.",
@@ -212,9 +235,10 @@ def build(read):
         "Decode getvar request key and status text, but do not interpret channel-0 voltage without source evidence.",
         "static/v11/v11-ghidra-uboot.json")
     row("U-Boot","Does the recovery flag reach dorecovery and Fastboot?",
-        "static-partial",
-        "Board setup checks a recovery flag and sets environment dorecovery; the saved bootcmd tests it and invokes fastboot 0. Address equality to the ADC writer needs byte-level confirmation.",
-        "Dereference board setup PTR_DAT_001013ac versus ADC DAT_00101154 in the next Ghidra run.",
+        confirmed(d["uboot"].get("direct_boot_probe",{}).get(
+            "recovery_adc_to_environment_pointer_equal") is True),
+        "Original ADC writer and board environment reader pointers both equal 0x001462FC; board setup exports dorecovery and saved environment selects fastboot 0.",
+        "Identify physical button and confirm ADC threshold read-only on an owner-authorized live device.",
         "static/v11/v11-ghidra-uboot.json + static/wide/storage-env-boot-dtb.json")
     row("U-Boot","Are extlinux and external script fallback configured?","static-supported",
         "Saved U-Boot environment scans extlinux.conf and boot.scr.uimg/boot.scr in mmc targets.",
@@ -230,6 +254,22 @@ def build(read):
         "Yes: request key power-source is read from the original literal pool; the getvar callback starts channel 0 and scales its ADC reading/reference voltage into a categorical response.",
         "Decode the actual scale, boundaries and four response labels; no physical voltage has been measured.",
         "static/v11/v11-ghidra-uboot.json")
+    pwr=d["uboot"].get("direct_boot_probe",{}).get(
+        "reboot_mode_original_literal_slots",{})
+    def pw_word(key):
+        val=pwr.get(key,{}).get("value")
+        return int(val,16) if isinstance(val,str) else None
+    pwr_bounds=[pw_word("getvar_power_source_threshold_"+str(i))
+                for i in (1,2,3)]
+    pwr_labels=[pwr.get("getvar_power_source_label_"+str(i)+"_string",{}).get(
+        "printable_string") for i in (1,2,3,4)]
+    row("U-Boot","Are exact Fastboot power-source responses and thresholds known?",
+        confirmed(pwr_bounds==[624999,1089999,1249999] and
+                  pwr_labels==["invalid","battery","ac","invalid-ac"] and
+                  pw_word("getvar_power_source_scale")==0x10624dd3),
+        "Yes: original literals bound the computed result to invalid <=624999, battery <=1089999, ac <=1249999, else invalid-ac; fixed-point multiplier is ~1/1000. Physical units unknown.",
+        "Verify exact ARM signed/unsigned arithmetic and ADC reference units, not live voltages.",
+        "static/v11/v11-ghidra-uboot.json")
     row("U-Boot","Does Fastboot RAM boot reach bootm?",
         confirmed(p3_paths["fastboot_ram_boot_to_bootm"]["direct_call_path_found"]),
         "Direct path from 0x1226B4 to 0x101744 and image loader 0x10A6A4.",
@@ -238,9 +278,11 @@ def build(read):
     row("U-Boot","Are Fastboot flash and erase write-permission gated?",confirmed(writes),
         "Both static flash and erase handlers call mpf_fastboot_permission.",
         "Trace permission global writes and OEM unlock candidate without running commands.","static/v11/v11-ghidra-uboot.json")
-    row("U-Boot","Is Fastboot RAM boot governed by the same write gate?","unresolved",
-        "RAM-boot handler differs from storage-write handlers; shared permission gating not established.",
-        "Compare dispatch table and separate RAM-boot authorization.","static/v11/v11-ghidra-uboot.json")
+    row("U-Boot","Is Fastboot RAM boot governed by the same write gate?",
+        "static-partial",
+        "The boot callback contains no local permission helper; normal image delivery through download: is explicitly permission gated. Alternative RAM delivery routes and live state remain unproven.",
+        "Trace initialized download buffer and accepted bootm image types, avoiding physical writes.",
+        "static/v11/v11-ghidra-uboot.json")
     row("U-Boot","Is Fastboot unlocked on the physical MPC?","hardware-gated",
         "Ghidra shows a global permission check but not live initialization.",
         "Use read-only runtime inquiry if reachable.","static/v11/v11-ghidra-uboot.json")
@@ -301,9 +343,35 @@ def build(read):
             "0x00014028","0x00014040","0x00014070"))
     row("Update","Do three recognized updater trampoline addresses prove library implementations?",
         "static-supported" if stub_bad else "unresolved",
-        "No: addresses 0x14028/0x14040/0x14070 have invalid-instruction Ghidra stubs. Symbol name/linkage is not verified library implementation or execution.",
-        "Follow ELF relocations and imports to libaz01-prog functions, then distinguish verification from partition writes.",
-        "static/v11/v11-ghidra-az01-update.json")
+        "The invalid-instruction addresses are updater linkage stubs; verified ELF32 ARM relocations pair all three imports with defined libaz01-prog exports. Actual runtime binding and function side effects remain unproven.",
+        "Trace the exported library implementations, cryptographic checks, and indirect backend callbacks.",
+        "static/v11/v11-ghidra-az01-update.json + elf-relocation-crosscheck.json")
+    library=d["library"].get("analyzed_functions",{})
+    download_code=library.get("0x0001b9bc",{}).get("pseudocode","")
+    write_code=library.get("0x0001e194",{}).get("pseudocode","")
+    signature_code=library.get("0x0001f094",{}).get("pseudocode","")
+    row("Update","Does the updater download path attempt verification before applying?",
+        confirmed(all(x in download_code for x in (
+            "az01_image_set_onboard_key_lookup(local_1064)",
+            "az01_verify_image(local_1064,0)",
+            "az01_apply_image("))),
+        "libaz01-prog downloaded-image path selects onboard key lookup and checks verification before entering apply_image. No vendor execution or signature policy guarantee.",
+        "Trace verification callback return propagation and which image families choose this path.",
+        "static/v11/v11-ghidra-libaz01-prog.json")
+    row("Update","Does library partition write orchestrate verification before preparing storage?",
+        confirmed("az01_verify_image(param_1,2)" in write_code and
+                  "az01_prepare_to_write(" in write_code and
+                  "az01_image_is_compatible(" in write_code),
+        "az01_write_image invokes verification first, then flag-conditional device/partition compatibility, then prepare_to_write and partition enumeration. Cached verification state changes semantics.",
+        "Trace all flag states, callback error propagation, and commit behavior.",
+        "static/v11/v11-ghidra-libaz01-prog.json")
+    row("Update","Does libaz01-prog implement an OpenSSL SHA-256 signature verification helper?",
+        confirmed(all(x in signature_code for x in (
+            "EVP_sha256()","EVP_DigestVerifyInit(",
+            "EVP_DigestVerify(ctx,param_4,0x100,param_2,param_3)"))),
+        "Yes: EVP_DigestVerify with SHA-256 and 256-byte signature argument. Key algorithm, active keys, and universal enforcement have not been established.",
+        "Trace get_public_key/image signature records and failure-state policy before claiming secure updates.",
+        "static/v11/v11-ghidra-libaz01-prog.json")
     row("Update","Are file, network and USB updater modes exposed?","static-supported",
         "Updater executable strings and symbols expose file/net/USB update paths; execution path still unproven.",
         "Trace CLI entry→verification→image apply→reboot in Ghidra.","static/wide/firmware-3.10-bootchain-v4-compare.json")
