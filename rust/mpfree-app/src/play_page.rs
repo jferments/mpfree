@@ -964,9 +964,6 @@ impl PlayPage {
         let bars = clip.map_or(1, |c| c.steps.div_ceil(16).max(1));
         let pages = clip.map_or(1, |c| c.steps.div_ceil(PAGE).max(1));
         let mut right = format!("1/16 · {bars} bar{}", if bars == 1 { "" } else { "s" });
-        if pages > 1 {
-            right.push_str(&format!(" · page {} of {pages}", self.page + 1));
-        }
         if clip.is_none() {
             right.push_str(" · tap a step to start one");
         } else if self.view == PlayView::Beats {
@@ -1002,6 +999,55 @@ impl PlayPage {
         }
         if g.selected != selected {
             g.selected = selected;
+        }
+        let length = clip.map_or(0, |c| c.steps);
+        if (g.page, g.pages, g.length) != (self.page, pages, length) {
+            (g.page, g.pages, g.length) = (self.page, pages, length);
+        }
+    }
+
+    /// The pattern head's ‹ or › (`delta` -1 or 1): the page before or
+    /// after, stopping at the ends. False when it did not move.
+    pub fn turn_page(&mut self, delta: i32) -> bool {
+        let n = self.steps.clip.as_ref().map_or(PAGE, |c| c.steps);
+        let last = n.div_ceil(PAGE).max(1) - 1;
+        let to = (self.page as i64 + delta as i64).clamp(0, last as i64) as usize;
+        let moved = to != self.page;
+        self.page = to;
+        if moved {
+            // The step picked was on the page left.
+            self.selected = None;
+        }
+        moved
+    }
+
+    /// The pattern head's - or + (`longer`): half or twice the steps, from
+    /// 16 to 128 (Jay after live test 3). Twice repeats the steps there are
+    /// over the new ones, so the beat plays on as it was; half takes the
+    /// notes on the steps that go (UNDO brings them back). The error says
+    /// why nothing changes.
+    pub fn length_action(&self, longer: bool) -> Result<StepAction, String> {
+        use crate::play_widgets::{MAX_STEPS, MIN_STEPS};
+        let Some(c) = self.steps.clip.as_ref() else {
+            return Err("steps: tap a step to start a pattern first".into());
+        };
+        let n = c.steps;
+        if longer {
+            if n >= MAX_STEPS {
+                return Err(format!("steps: {MAX_STEPS} steps is the most"));
+            }
+            Ok(StepAction::Length {
+                steps: (n * 2).min(MAX_STEPS),
+                copy: true,
+            })
+        } else {
+            if n <= MIN_STEPS {
+                return Err(format!("steps: {MIN_STEPS} steps is the fewest here"));
+            }
+            Ok(StepAction::Length {
+                steps: (n / 2).max(MIN_STEPS),
+                copy: false,
+            })
         }
     }
 

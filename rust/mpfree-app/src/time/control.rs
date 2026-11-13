@@ -586,6 +586,9 @@ impl TimeControl {
                 None,
                 format!("pad {}'s steps", pad + 1),
             ),
+            StepAction::Length { steps, copy } => {
+                (grid.resize(clip, steps, copy), None, clip.name.clone())
+            }
         };
         if edit.is_empty() && made.is_none() {
             return Ok(String::new());
@@ -602,6 +605,16 @@ impl TimeControl {
             ),
             (None, StepAction::Tap { .. }) => format!("steps: {what} {on}"),
             (None, StepAction::ClearPad { .. }) => format!("steps: {what} erased"),
+            (None, StepAction::Length { steps, copy }) => {
+                let bars = steps.div_ceil(16);
+                let s = if bars == 1 { "" } else { "s" };
+                let how = if copy {
+                    " · the new steps repeat the ones before them"
+                } else {
+                    " · UNDO brings the rest back"
+                };
+                format!("steps: {what} is {steps} steps ({bars} bar{s}){how}")
+            }
             (None, _) => String::new(),
         })
     }

@@ -78,7 +78,7 @@ UNDO takes a capture back like any other take.
 
 ## Steps
 
-The pattern on the Play page's **Beats** view is a clip shown as a grid of steps. Each step can have its own **velocity**, **length**, **nudge** (early or late) and **chance** (how often it plays). See [Your first beat](../getting-started/first-beat.md#program-a-pattern).
+The pattern on the Play page's **Beats** view is a clip shown as a grid of steps, 16 to a page. Each step can have its own **velocity**, **length**, **nudge** (early or late) and **chance** (how often it plays). The **+** and **–** at the top right of the pattern double or halve its steps (16, 32, 64 or 128), and **‹** and **›** turn its pages. See [Your first beat](../getting-started/first-beat.md#program-a-pattern).
 
 ## Editing notes
 

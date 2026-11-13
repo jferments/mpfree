@@ -3722,7 +3722,11 @@ fn player_session(
                 gui::FromUi::Steps(a) => {
                     // ERASE + a lane's name: said in place of the hint.
                     let erase = matches!(a, time::StepAction::ClearPad { .. });
+                    // The pattern's length: said in place of the hint too.
+                    let length = matches!(a, time::StepAction::Length { .. });
                     match time.step_action(a) {
+                        Ok(line) if length && !line.is_empty() => fx.push(app::Effect::Tell(line)),
+                        Err(e) if length => fx.push(app::Effect::Tell(format!("steps: {e}"))),
                         Ok(line) if erase => fx.push(app::Effect::Tell(if line.is_empty() {
                             "steps: that lane has no steps to erase".to_string()
                         } else {

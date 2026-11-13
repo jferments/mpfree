@@ -25,6 +25,7 @@ There is no fixed number of steps. A clip has as many steps as its length holds,
 - **`remove_page(clip)`** takes the last 16 steps off, with their notes. A clip keeps at least one page.
 - **`resize(clip, steps, copy)`** sets any number of steps, such as 13 against a 16-step track for polymeter.
 - **`copy_page(clip, from, to)`** copies one page over another, step for step.
+- **On the Play page's pattern** (`mpfree-app`, `play_widgets::StepGrid`), the head's ‹ and › turn the pages shown, and its + and – send `StepAction::Length { steps, copy }`: + doubles the steps up to 128 (`MAX_STEPS`) with `copy`, – halves them down to 16 (`MIN_STEPS`) without. `TimeControl` makes it `resize`, one take, so UNDO brings back the steps and notes – took off.
 
 A note that plays early on step 0 (just before the clip comes round) stays just before the end when the clip grows or shrinks.
 

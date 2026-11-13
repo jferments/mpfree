@@ -566,7 +566,10 @@ pub struct Lane {
 /// The pattern: a lane per sound (as many as fit, the ones that play
 /// first, in pad order), 16 steps a page in groups of four, the playhead's
 /// column lit, the step picked outlined. A tap on a step gives
-/// `Cell { row: pad, col: step }`, on a lane's speaker `Toggle(pad)`.
+/// `Cell { row: pad, col: step }`, on a lane's speaker `Toggle(pad)`. The
+/// head's controls (Jay after live test 3: 32, 64 and 128 steps) give
+/// `Tab(HEAD_PREV)` and `Tab(HEAD_NEXT)` for the page, `Tab(HEAD_SHORTER)`
+/// and `Tab(HEAD_LONGER)` for the length.
 #[derive(Default)]
 pub struct StepGrid {
     /// "Pattern 1 · Drums".
@@ -582,8 +585,22 @@ pub struct StepGrid {
     pub play: Option<usize>,
     /// The step picked: (pad, step on the page).
     pub selected: Option<(usize, usize)>,
+    /// The page shown (from 0) and how many there are.
+    pub page: usize,
+    pub pages: usize,
+    /// The clip's length in steps; 0 with no clip yet.
+    pub length: usize,
     painted: RefCell<Option<(Rect, StepLook)>>,
 }
+
+/// The head's controls, as `Tab` indices.
+pub const HEAD_PREV: usize = 0;
+pub const HEAD_NEXT: usize = 1;
+pub const HEAD_SHORTER: usize = 2;
+pub const HEAD_LONGER: usize = 3;
+/// The most steps the pattern's + makes, and the fewest its - leaves.
+pub const MAX_STEPS: usize = 128;
+pub const MIN_STEPS: usize = 16;
 
 /// What a paint drew, to find what changed.
 #[derive(Clone, Debug, PartialEq)]
@@ -594,6 +611,64 @@ struct StepLook {
     steps: usize,
     play: Option<usize>,
     selected: Option<(usize, usize)>,
+    page: (usize, usize, usize),
+}
+
+/// The pattern head's controls, right to left: + and - round the length,
+/// then › and ‹ round the page number. Each answers over the head's whole
+/// height.
+struct Head {
+    title: Rect,
+    prev: Rect,
+    page: Rect,
+    next: Rect,
+    shorter: Rect,
+    length: Rect,
+    longer: Rect,
+}
+
+/// A head button's width.
+const HEAD_BTN: i32 = 56;
+
+impl Head {
+    fn of(r: Rect) -> Head {
+        let (h, body) = card_head(r);
+        let band = Rect::new(h.x, r.y, h.w, body.y - 2 - r.y);
+        let mut x = h.right();
+        let mut take = |w: i32| {
+            x -= w;
+            Rect::new(x, band.y, w, band.h)
+        };
+        let longer = take(HEAD_BTN);
+        let length = take(78);
+        let shorter = take(HEAD_BTN);
+        take(14);
+        let next = take(HEAD_BTN);
+        let page = take(52);
+        let prev = take(HEAD_BTN);
+        Head {
+            title: Rect::new(h.x, h.y, (prev.x - 12 - h.x).max(0), h.h),
+            prev,
+            page,
+            next,
+            shorter,
+            length,
+            longer,
+        }
+    }
+
+    /// The control under (`x`, `y`), as its `Tab` index.
+    fn at(&self, x: i32, y: i32) -> Option<usize> {
+        [
+            (self.prev, HEAD_PREV),
+            (self.next, HEAD_NEXT),
+            (self.shorter, HEAD_SHORTER),
+            (self.longer, HEAD_LONGER),
+        ]
+        .into_iter()
+        .find(|(b, _)| b.contains(x, y))
+        .map(|(_, i)| i)
+    }
 }
 
 /// Lanes are about this tall at least.
@@ -677,7 +752,83 @@ impl StepGrid {
             steps: self.steps,
             play: self.play,
             selected: self.selected,
+            page: (self.page, self.pages, self.length),
         }
+    }
+
+    /// The middle of head control `k` (`HEAD_PREV` ...), for the app's
+    /// tests.
+    #[cfg(test)]
+    pub fn head_at(r: Rect, k: usize) -> (i32, i32) {
+        let h = Head::of(r);
+        let b = [h.prev, h.next, h.shorter, h.longer][k];
+        (b.x + b.w / 2, b.y + b.h / 2)
+    }
+
+    /// Which head controls can be used now: (‹, ›, -, +).
+    fn usable(&self) -> (bool, bool, bool, bool) {
+        let clip = self.length > 0;
+        (
+            self.page > 0,
+            self.page + 1 < self.pages,
+            clip && self.length > MIN_STEPS,
+            clip && self.length < MAX_STEPS,
+        )
+    }
+
+    /// The head: the title on the left, then the details, the page with
+    /// ‹ and ›, and the length with - and +.
+    fn paint_head(&self, cx: &mut PaintCx, r: Rect) {
+        let t = cx.theme.clone();
+        let hd = Head::of(r);
+        let (h, _) = card_head(r);
+        if !self.right.is_empty() {
+            cx.text(
+                FontId::Sans,
+                draw::HEAD_PX,
+                hd.title,
+                Align::Right,
+                t.text_faint,
+                &self.right,
+            );
+        }
+        let (prev, next, shorter, longer) = self.usable();
+        let mid = h.y + h.h / 2;
+        let button = |cx: &mut PaintCx, b: Rect, label: &str, usable: bool| {
+            let face = Rect::new(b.x + 4, mid - 13, b.w - 8, 26);
+            cx.canvas.fill_round_rect(face, 8, t.raised);
+            cx.text(
+                FontId::Bold,
+                16.0,
+                face,
+                Align::Center,
+                t.button_ink(usable),
+                label,
+            );
+        };
+        button(cx, hd.prev, "‹", prev);
+        button(cx, hd.next, "›", next);
+        button(cx, hd.shorter, "−", shorter);
+        button(cx, hd.longer, "+", longer);
+        let row = |b: Rect| Rect::new(b.x, h.y, b.w, h.h);
+        let page = format!("{}/{}", self.page + 1, self.pages.max(1));
+        cx.text(
+            FontId::Bold,
+            draw::HEAD_PX,
+            row(hd.page),
+            Align::Center,
+            t.text_dim,
+            &page,
+        );
+        let length = format!("{} steps", self.length.max(MIN_STEPS));
+        cx.text(
+            FontId::Bold,
+            draw::HEAD_PX,
+            row(hd.length),
+            Align::Center,
+            t.text_dim,
+            &length,
+        );
     }
 
     /// The lanes shown on a page this tall (for the app's tests).
@@ -724,7 +875,8 @@ impl Widget for StepGrid {
     fn paint(&self, cx: &mut PaintCx, r: Rect) {
         let t = cx.theme.clone();
         cx.canvas.fill_rect(r, t.bg);
-        card(cx, r, &self.title, &self.right);
+        card(cx, r, &self.title, "");
+        self.paint_head(cx, r);
         let g = self.geom(r);
         let lanes = self.shown(g.rows);
         if let Some(p) = self.play.filter(|&p| p < self.steps) {
@@ -802,6 +954,9 @@ impl Widget for StepGrid {
     fn touch(&mut self, _f: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
         if phase != Touch::Down {
             return None;
+        }
+        if let Some(i) = Head::of(r).at(x, y) {
+            return Some(EventKind::Tab(i));
         }
         let g = self.geom(r);
         let lanes = self.shown(g.rows);

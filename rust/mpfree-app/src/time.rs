@@ -157,6 +157,11 @@ pub enum StepAction {
     },
     /// ERASE + a lane's name: every step of `pad` comes out of the clip.
     ClearPad { pad: u8 },
+    /// The pattern's - / + on Play (Jay after live test 3: 32, 64 and 128
+    /// steps): make the clip `steps` steps long. With `copy`, new steps
+    /// repeat the ones before them; steps that go take their notes along.
+    /// One take, so UNDO puts the old length and notes back.
+    Length { steps: usize, copy: bool },
 }
 
 /// A pad hit while the transport rolls: where it fell, for the Play page's
@@ -932,6 +937,61 @@ mod tests {
     /// ERASE + a tap (Jay after live test 3): a lane's steps or a whole
     /// clip go as one take, and UNDO brings them back; a clip the song
     /// plays stays, since the song's edits have no undo yet.
+    #[test]
+    fn the_patterns_length_doubles_with_its_steps_and_undo_puts_it_back() {
+        use mpfree_seq::Note;
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut beat = Clip::new("beat", 3840);
+        beat.notes = vec![Note::new(0, 100, 0, 100), Note::new(960, 100, 2, 100)];
+        h.control.project.tracks[0].slots[0] = Some(beat);
+        h.act(TimeAction::Launch { track: 0, slot: 0 }).unwrap();
+        let clip = |h: &TimeHost| {
+            let c = h.control.project.clip(0, 0).unwrap();
+            let mut ticks: Vec<_> = c.notes.iter().map(|n| n.tick).collect();
+            ticks.sort();
+            (c.length, ticks)
+        };
+        // Twice the steps: the new bar repeats the first.
+        assert_eq!(
+            h.step_action(StepAction::Length {
+                steps: 32,
+                copy: true
+            })
+            .unwrap(),
+            "steps: beat is 32 steps (2 bars) · the new steps repeat the ones before them"
+        );
+        assert_eq!(clip(&h), (7680, vec![0, 960, 3840, 4800]));
+        h.step_action(StepAction::Length {
+            steps: 64,
+            copy: true,
+        })
+        .unwrap();
+        assert_eq!(clip(&h).0, 4 * 3840);
+        assert_eq!(clip(&h).1.len(), 8);
+        // Half: the steps that go take their notes; UNDO brings them back.
+        h.step_action(StepAction::Length {
+            steps: 16,
+            copy: false,
+        })
+        .unwrap();
+        assert_eq!(clip(&h), (3840, vec![0, 960]));
+        h.act(TimeAction::Undo).unwrap();
+        assert_eq!(clip(&h).0, 4 * 3840, "UNDO: four bars again");
+        assert_eq!(clip(&h).1.len(), 8);
+        h.act(TimeAction::Undo).unwrap();
+        h.act(TimeAction::Undo).unwrap();
+        assert_eq!(clip(&h), (3840, vec![0, 960]), "back to the start");
+        // The same length again is no take.
+        assert_eq!(
+            h.step_action(StepAction::Length {
+                steps: 16,
+                copy: true
+            })
+            .unwrap(),
+            ""
+        );
+    }
+
     #[test]
     fn erase_takes_a_lanes_steps_or_a_clip_and_undo_brings_them_back() {
         use mpfree_seq::Note;
