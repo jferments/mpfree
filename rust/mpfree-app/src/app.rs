@@ -1056,6 +1056,9 @@ pub struct App {
     /// What the transport buttons' lights last showed, by note
     /// ([`App::transport_lights`]); `None` until first sent.
     lights_shown: [Option<u8>; 128],
+    /// The page showing has something to undo (the screen says): UNDO's
+    /// light is bright while idle.
+    undo_ready: bool,
     /// The synth's pad layout while the synth is on the pads
     /// ([`App::set_pad_layout`]): the pads then feed the arp the layout's
     /// notes, and its events carry notes rather than pad slots.
@@ -1170,6 +1173,7 @@ impl App {
             arp_dirty: true,
             rolling: false,
             lights_shown: Self::startup_transport_lights(),
+            undo_ready: false,
             pad_layout: None,
             pad_pressed: [PadNotes::default(); 16],
             note_holds: [0; 128],
@@ -1225,12 +1229,21 @@ impl App {
     ///   OVERDUB waits for PLAY it blinks bright/dark with them.
     /// - REC blinks bright/dark while armed and while recording; OVERDUB
     ///   the same while armed and overdubbing. Dark otherwise.
-    /// - UNDO blinks bright/dim while recording or overdubbing.
+    /// - UNDO blinks bright/dim while recording or overdubbing; otherwise
+    ///   bright while the page has something to undo, dim when not. (That
+    ///   idle light is inferred: an earlier capture saw Akai's app take
+    ///   UNDO from dim to bright during Q-Link edits. Not confirmed.)
     /// - STOP dim while rolling, bright when stopped (the MPC One's STOP
     ///   has no LED; harmless).
     ///
     /// Only the lights that changed, as [`Effect::Light`]. REC, OVERDUB and
     /// UNDO only once Map controls (or the defaults) know their buttons.
+    /// The screen says whether the page showing has something to undo;
+    /// the UNDO light follows at the next [`Self::transport_lights`].
+    pub fn set_undo_ready(&mut self, ready: bool) {
+        self.undo_ready = ready;
+    }
+
     pub fn transport_lights(&mut self, now: TransportLights, t: f64) -> Vec<Effect> {
         let blink_on = (t / BLINK_HALF_SECONDS).floor().rem_euclid(2.0) < 1.0;
         let blink = |on: bool, low: u8| match (on, blink_on) {
@@ -1262,8 +1275,9 @@ impl App {
         }
         if let Some(undo) = self.map.undo {
             let on = now.rolling && (now.recording || now.overdub);
-            if on || self.lights_shown[undo as usize & 0x7F].is_some() {
-                want.push((undo, blink(on, LIGHT_OFF)));
+            let idle = if self.undo_ready { LIGHT_ON } else { LIGHT_OFF };
+            if on || self.undo_ready || self.lights_shown[undo as usize & 0x7F].is_some() {
+                want.push((undo, blink(on, idle)));
             }
         }
         let mut fx = Vec::new();
@@ -5603,6 +5617,19 @@ mod tests {
         assert!(
             fx.contains(&Effect::Light(button::PLAY, LIGHT_ON)),
             "{fx:?}"
+        );
+        // Idle, UNDO is bright while the page has something to undo
+        // (inferred from Akai's), and dim again when it has not.
+        app.transport_lights(lights(false, false, false), 10.0);
+        app.set_undo_ready(true);
+        assert_eq!(
+            app.transport_lights(lights(false, false, false), 10.1),
+            vec![Effect::Light(UNDO, LIGHT_ON)]
+        );
+        app.set_undo_ready(false);
+        assert_eq!(
+            app.transport_lights(lights(false, false, false), 10.2),
+            vec![Effect::Light(UNDO, LIGHT_OFF)]
         );
     }
 

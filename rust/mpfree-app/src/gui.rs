@@ -213,6 +213,15 @@ pub fn chip_kit_name(name: &str, kit: usize) -> String {
     }
 }
 
+/// The pages whose UNDO takes back knob and fader turns ([`crate::undo`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UndoOn {
+    /// The Synth tab's sound.
+    Synth,
+    /// The mixer's strips.
+    Mixer,
+}
+
 /// How long a told line ([`ToUi::Tell`]) stays in place of the hint.
 pub const TELL_SECONDS: f32 = 4.0;
 
@@ -300,6 +309,12 @@ pub enum ToUi {
     /// UNDO (true: SHIFT + UNDO, redo) on a page whose history the screen
     /// picks ([`Player::undo`]).
     Undo(bool),
+    /// Whether the Synth tab's and the mixer's turns ([`crate::undo`])
+    /// have something to undo, when that changes.
+    TurnsReady {
+        synth: bool,
+        mixer: bool,
+    },
     /// A line for the Events log only (not printed).
     Event(String),
     /// A MIDI message in or out, as one line (also printed).
@@ -560,6 +575,15 @@ pub enum FromUi {
     Time(TimeAction),
     /// A change on the Synth page, for the synth on the audio thread.
     Synth(SynthAction),
+    /// UNDO (or SHIFT + UNDO, `redo`) on a page whose turns the audio
+    /// thread keeps ([`crate::undo`]).
+    UndoOn {
+        on: UndoOn,
+        redo: bool,
+    },
+    /// Whether the page showing has something to undo, when that changes
+    /// (for the UNDO light).
+    UndoReady(bool),
     /// A kit's engine view, built again after an edit on the Sample page,
     /// for the audio thread to swap in (it sends the old one back).
     SampleView(Box<ViewSwap>),
@@ -799,6 +823,10 @@ pub struct Player {
     undo_loop: bool,
     seen_takes: (usize, usize),
     seen_loop: (usize, usize, usize),
+    /// The Synth tab's and the mixer's turns can be undone (the audio
+    /// thread keeps them), and what the UNDO light was last told.
+    turns_ready: (bool, bool),
+    undo_ready: bool,
 }
 
 impl Player {
@@ -929,6 +957,8 @@ impl Player {
             undo_loop: false,
             seen_takes: (0, 0),
             seen_loop: (0, 0, 0),
+            turns_ready: (false, false),
+            undo_ready: false,
             ui,
             kits: Vec::new(),
             kit: 0,
@@ -1990,6 +2020,14 @@ impl Player {
                 PlayView::All => takes,
             },
             View::Arrange | View::Arp | View::Pattern => takes,
+            View::Synth => FromUi::UndoOn {
+                on: UndoOn::Synth,
+                redo,
+            },
+            View::Mixer => FromUi::UndoOn {
+                on: UndoOn::Mixer,
+                redo,
+            },
             _ => {
                 self.tell(if redo {
                     "Nothing to redo on this page"
@@ -2002,6 +2040,28 @@ impl Player {
         self.outbox.push(to);
     }
 
+    /// Whether UNDO on the page showing has something to take back, as
+    /// [`Self::undo`] picks the history (the Looper tab and the Sample and
+    /// Pads tabs too, whose UNDO the app sends straight on).
+    fn undo_ready(&self) -> bool {
+        let takes = !self.time.done.is_empty();
+        let looper = !self.looper.history.done().is_empty();
+        match self.view {
+            View::Play => match self.play.view {
+                PlayView::Loop => looper,
+                PlayView::Beats => takes,
+                PlayView::All if self.undo_loop => looper,
+                PlayView::All => takes,
+            },
+            View::Arrange | View::Arp | View::Pattern => takes,
+            View::Looper => looper,
+            View::Sample | View::Pads => self.sample.can_undo(),
+            View::Synth => self.turns_ready.0,
+            View::Mixer => self.turns_ready.1,
+            _ => false,
+        }
+    }
+
     pub fn tell(&mut self, line: &str) {
         self.told = Some((tell_text(line), TELL_SECONDS));
         self.refresh_hint();
@@ -2011,6 +2071,7 @@ impl Player {
         match msg {
             ToUi::Tell(l) => self.tell(&l),
             ToUi::Undo(redo) => self.undo(redo),
+            ToUi::TurnsReady { synth, mixer } => self.turns_ready = (synth, mixer),
             ToUi::Line(l) | ToUi::Event(l) => {
                 let tone = tone_of(&l);
                 if let Some(e) = self.ui.get_mut::<LogPanel>("events") {
@@ -3751,6 +3812,12 @@ impl Player {
 
     /// Advance animations by `dt` seconds.
     pub fn tick(&mut self, dt: f32) {
+        // The UNDO light follows whether the page has something to undo.
+        let ready = self.undo_ready();
+        if ready != self.undo_ready {
+            self.undo_ready = ready;
+            self.outbox.push(FromUi::UndoReady(ready));
+        }
         // A told line goes back to the hint once read.
         if let Some((_, left)) = self.told.as_mut() {
             *left -= dt.max(0.0);
@@ -6708,6 +6775,43 @@ mod tests {
         assert_eq!(undo(&mut p, false), takes(TimeAction::Undo));
         p.apply(ToUi::Show(View::Arrange));
         assert_eq!(undo(&mut p, false), takes(TimeAction::Undo));
+        // The Synth tab and the mixer: their own turns.
+        p.apply(ToUi::Show(View::Synth));
+        assert_eq!(
+            undo(&mut p, true),
+            [FromUi::UndoOn {
+                on: UndoOn::Synth,
+                redo: true
+            }]
+        );
+        p.apply(ToUi::Show(View::Mixer));
+        assert_eq!(
+            undo(&mut p, false),
+            [FromUi::UndoOn {
+                on: UndoOn::Mixer,
+                redo: false
+            }]
+        );
+        // The UNDO light: the mixer's turns, as the audio thread says.
+        let light = |p: &mut Player| {
+            p.tick(0.0);
+            p.take_actions()
+                .into_iter()
+                .filter_map(|a| match a {
+                    FromUi::UndoReady(r) => Some(r),
+                    _ => None,
+                })
+                .next_back()
+        };
+        light(&mut p);
+        p.apply(ToUi::TurnsReady {
+            synth: false,
+            mixer: true,
+        });
+        assert_eq!(light(&mut p), Some(true));
+        assert_eq!(light(&mut p), None, "said once");
+        p.apply(ToUi::Show(View::Prefs));
+        assert_eq!(light(&mut p), Some(false), "Prefs has none");
         // A page with no history of its own says so and does nothing.
         p.apply(ToUi::Show(View::Prefs));
         assert!(undo(&mut p, false).is_empty());
