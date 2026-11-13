@@ -364,6 +364,9 @@ pub type ReadSample = Box<dyn Fn(&str) -> Result<Vec<u8>, String> + Send>;
 pub struct SamplePage {
     projects: Vec<Project>,
     names: Vec<String>,
+    /// The kits and their names as the app first gave them (kits.bin):
+    /// what New project goes back to ([`SamplePage::reset_kits`]).
+    factory: Option<(Vec<Project>, Vec<String>)>,
     rate: u32,
     /// Waveform peaks, tempo and root note, per source, made the first time
     /// a pad using the source is shown.
@@ -520,6 +523,7 @@ impl SamplePage {
         let mut p = SamplePage {
             projects: Vec::new(),
             names: Vec::new(),
+            factory: None,
             rate: 44_100,
             sources: HashMap::new(),
             kit: 0,
@@ -608,6 +612,10 @@ impl SamplePage {
         }
         self.dirty = vec![false; projects.len()];
         self.in_flight = false;
+        if self.factory.is_none() {
+            // The sounds are shared (Arc): this copy costs the lists only.
+            self.factory = Some((projects.clone(), Vec::new()));
+        }
         self.projects = projects;
         self.rate = rate;
         self.sources.clear();
@@ -633,6 +641,9 @@ impl SamplePage {
 
     /// The kits' names, for the page and the log.
     pub fn set_names(&mut self, names: Vec<String>) {
+        if let Some((_, n)) = self.factory.as_mut().filter(|(_, n)| n.is_empty()) {
+            n.clone_from(&names);
+        }
         self.names = names;
         self.stale = true;
     }
@@ -2852,6 +2863,34 @@ impl SamplePage {
             1 => "sample: 1 kit opened".to_string(),
             n => format!("sample: {n} kits opened"),
         });
+    }
+
+    /// New project: every kit back as the app first had it (the factory
+    /// kits, no edits, no undo), kit 1 playing. A take, auto-sample or
+    /// open under way is dropped. False before the kits have come.
+    pub fn reset_kits(&mut self, ui: &mut Ui) -> bool {
+        let Some((projects, names)) = self.factory.clone() else {
+            return false;
+        };
+        self.opening = None;
+        self.loading = None;
+        self.assign = None;
+        let rate = self.rate;
+        let n = projects.len();
+        self.set_kits(ui, projects, rate);
+        if !names.is_empty() {
+            self.set_names(names);
+        }
+        for k in 0..n {
+            self.dirty[k] = true;
+            self.mark_renamed(k);
+        }
+        if self.kit != 0 {
+            self.wanted_kit = Some(0);
+        }
+        self.lines
+            .push("sample: the kits are back as they started (new project)".to_string());
+        true
     }
 
     fn poll_load(&mut self, ui: &mut Ui) {

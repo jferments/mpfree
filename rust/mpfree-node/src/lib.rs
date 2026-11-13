@@ -383,6 +383,25 @@ pub trait Node: Send {
     fn lead_out(&mut self, ctx: &Ctx, left: &[f32], right: &[f32]) {
         let _ = (ctx, left, right);
     }
+    /// State a project keeps beyond the parameters (a plugin's chunk), as
+    /// opaque bytes. Called on the audio thread between periods when a
+    /// project is saved (it may allocate, once), so it must never block
+    /// or wait: a plugin hands the latest snapshot it already has. The
+    /// default: none.
+    fn save_state(&self) -> Option<Vec<u8>> {
+        None
+    }
+    /// Takes back what [`Node::save_state`] gave, off the audio thread,
+    /// before the node goes into a chain. The default takes nothing.
+    fn load_state(&mut self, state: &[u8]) -> Result<(), String> {
+        let _ = state;
+        Ok(())
+    }
+    /// `key = value` words a project keeps with the node so it can be made
+    /// again (a plugin's file name). The default: none.
+    fn save_extras(&self) -> Vec<(String, String)> {
+        Vec::new()
+    }
 }
 
 /// A one-pole smoother for a continuous parameter, stepped once per frame.
