@@ -193,6 +193,8 @@ A take is undone and redone as a whole: the notes it recorded come out and the n
 - **The history.** `Takes` lives on the control thread. `Takes::add` and `Takes::erase` change the clip and remember the note with its take. `Takes::undo` and `Takes::redo` return the take's number, or None. A new take ends redo. It keeps the last 32 takes by default (`Takes::new(limit)`); older ones stay as they are.
 - **Late notes.** A note that quantise moves past a punch out waits for the playhead, so it can arrive after the next take has begun. Its number puts it in its own take.
 - **By value.** Notes are named as the clip stores them, so editing other notes between takes does not disturb undo. When undo or redo can't apply a note, it skips it. That happens when the clip is gone, or no longer has room or reach for the note (it was shortened). A take undone while it is still recording goes on as a new take, and redo can no longer bring back the undone part.
+- **A deleted clip** (ERASE + a clip on Arrange). `Takes::remove_clip(project, track, slot)` takes the clip out of its slot as an edit take of its own ("Delete N" in the takes list) that holds the clip. Undo puts it back if the slot is still empty, and redo takes it out again. The control half refuses a clip a song placement plays (`Source::Slot`), since song edits have no undo yet, and compiles afterwards, which drops the clip's launch and cues.
+- **What UNDO says.** The control half names the take it undid or redid as the list does ("take 3 · Drums / 1"); the app shows it in place of the hint ("Undid take 3 · Drums / 1").
 
 ## Tests
 
