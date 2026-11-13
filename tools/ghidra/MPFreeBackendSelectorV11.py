@@ -230,7 +230,8 @@ def mpfree_v11_entrypoint():
                                  '0x0001a8d0','0x0001aabc','0x0001d644',
                                  '0x0001a178','0x0001b35c','0x0001afd4'),
                 'spl':('0xff704004','0xff704120','0xff7089fc','0xff708770',
-                       '0xff705af2','0xff705b16','0xff7041a8','0xff705310',
+                       '0xff705af2','0xff705b16','0xff7041a8',
+                       '0xff7052c0','0xff70529c','0xff705310',
                        '0xff705316','0xff705342','0xff705350','0xff7054a4',
                        '0xff7056a8','0xff708b74'),
                 'uboot':('0x00100fe4','0x001011e0','0x00101744','0x001017fc','0x00101bb4','0x0010a6a4','0x0010f388','0x00112228','0x0012247c','0x001226b4','0x00122734','0x00122780','0x00122834','0x00122854','0x00122964','0x00122980','0x00122948','0x00122cf8','0x00122d38','0x00122bf8','0x00122c5c','0x00110084','0x001100c8','0x00110270','0x0010fde8','0x00100fe4','0x00100edc','0x00100ef0','0x001147f0','0x00115f30','0x00115ef4','0x001147d4',
@@ -372,6 +373,24 @@ def mpfree_v11_entrypoint():
                                    'entries':words,
                                    'interpretation_not_verified':True}
             context=original_word(0xff70540c)
+            legacy_header_original_words={
+                'image_header_magic_literal_word':(
+                    addr_hex(original_word(0xff705308))
+                    if original_word(0xff705308) is not None else None),
+                'image_header_context_ptr':(
+                    addr_hex(original_word(0xff70530c))
+                    if original_word(0xff70530c) is not None else None),
+                'image_header_default_context_ptr':(
+                    addr_hex(original_word(0xff7052b8))
+                    if original_word(0xff7052b8) is not None else None),
+                'default_header_data_ptr':(
+                    addr_hex(original_word(0xff7052bc))
+                    if original_word(0xff7052bc) is not None else None),
+                'context_header_flag_at_plus_0x14':(
+                    addr_hex(original_word(context+0x14))
+                    if context is not None and
+                    original_word(context+0x14) is not None else None),
+            }
             handoff_slot=context+0xc if context is not None else None
             handoff_value=original_word(handoff_slot) if handoff_slot is not None else None
             entry=original_word(0xff705274)
@@ -391,6 +410,7 @@ def mpfree_v11_entrypoint():
                 'second_handoff_pointer_slot_static_xrefs':(
                     original_references_to(handoff_slot) if
                     handoff_slot is not None else []),
+                'legacy_image_header_original_words':legacy_header_original_words,
                 'boot_order_initialization_writer_decompiled':(
                     'FUN_ff704120()' in details.get(
                         '0xff705342',{}).get('pseudocode','')
@@ -443,11 +463,47 @@ def mpfree_v11_entrypoint():
                 'original_memory_word':addr_hex(raw) if raw is not None else None,
                 'runtime_relocation_or_callback_not_proven':True,
             }
+        # Evaluate the PIC-relative pointer-table slots described
+        # by az01_open_image. This reads original Ghidra memory only.
+        # The pointer table may already be relocated by import, and
+        # each slot points to a handler descriptor, NOT necessarily
+        # directly to executable code.
+        raw_base=saved['az01_open_image_pic_base']['original_memory_word']
+        format_table_slot_words={}
+        for label in ('AZ01','AZ0x','FDT'):
+            offset_key='az01_open_image_'+label+'_offset'
+            offset_word=saved[offset_key]['original_memory_word']
+            computed=None
+            if raw_base is not None and offset_word is not None:
+                computed=(int(raw_base,16)+0x173c0+int(offset_word,16))
+            value=None
+            entry_first_word=None
+            if computed is not None:
+                try:
+                    b=mem.getBlock(A(computed))
+                    if b is not None and b.isInitialized():
+                        value=int(mem.getInt(A(computed))) & 0xffffffff
+                except Exception:
+                    pass
+                if value is not None:
+                    try:
+                        b=mem.getBlock(A(value))
+                        if b is not None and b.isInitialized():
+                            entry_first_word=int(mem.getInt(A(value))) & 0xffffffff
+                    except Exception:
+                        pass
+            format_table_slot_words[label]={
+                'computed_PIC_table_slot':addr_hex(computed) if computed is not None else None,
+                'descriptor_pointer_image_word':addr_hex(value) if value is not None else None,
+                'descriptor_first_word_image':addr_hex(entry_first_word) if entry_first_word is not None else None,
+                'dynamic_PIC_relocation_and_executable_target_unproven':True,
+            }
         direct_boot={
             'schema':'mpfree-original-image-format-dispatch-words-v1',
             'source_stage':'libaz01-prog',
             'image_format_prefixes':['AZ0x','AZ01','D00DFEED'],
             'format_handler_candidate_original_words':saved,
+            'computed_PIC_descriptor_table_slots':format_table_slot_words,
             'no_vendor_execution':True,
             'runtime_dispatch_resolved':False,
         }
