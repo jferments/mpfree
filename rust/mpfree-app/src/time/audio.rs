@@ -591,6 +591,10 @@ impl TimeAudio {
         &self.block
     }
 
+    pub fn tempo_map(&self) -> &mpfree_transport::TempoMap {
+        self.transport.tempo_map()
+    }
+
     pub fn position_text(&self) -> String {
         let t = &self.transport;
         t.meter().position(t.position()).to_string()

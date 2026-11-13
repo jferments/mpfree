@@ -330,3 +330,4 @@ Cues that start become launches right after the period they started in (`Started
 - The step sequencer's model is built (steps with velocity, length, nudge, chance, trig conditions, ratchets and parameter locks, 16 to a page and as many pages as the clip holds, chords, undoable edits): see [steps.md](steps.md). The Play page's step grid edits it (the app's `play_page.rs`), and the note editor's tracker lens shows it as rows ([note-editor.md](note-editor.md)).
 - Pad pressure: editing it in the note editor, and showing it in the list and the tracker ([note-editor.md](note-editor.md)). Buttons for half and double speed, which stretch the pressure with the notes.
 - The looper (T4) is built: [looper.md](looper.md).
+- Audio tracks run in the app on the transport's block and tempo map, after the looper, in song mode only (`TimeHost::tempo_map`, `TimeHost::song_on`): [audio-tracks.md](audio-tracks.md#in-the-pad-player).
