@@ -4681,7 +4681,7 @@ fn player_session(
             // - and + on the mixer step the I/O view's row; on a strips view
             // they step the kit, as elsewhere.
             let e = match e {
-                app::Effect::MixerStep(d) if !io_shown(&mix) => app::Effect::Kit(d),
+                app::Effect::MixerStep(d) if !io_shown(&mix) => app::Effect::Nav(app::Nav::Step(d)),
                 e => e,
             };
             let (t_item, item) = (Instant::now(), parts::Name::of(&e));
@@ -4716,11 +4716,6 @@ fn player_session(
                             "button {note}: no light sent (Akai's app was never seen lighting it)"
                         ));
                     }
-                }
-                app::Effect::Kit(d) => {
-                    let now = if synth_on { synth_kit } else { player.kit() };
-                    let from = kit_to.unwrap_or(now) as i64;
-                    kit_to = Some((from + d as i64).rem_euclid(n as i64) as usize);
                 }
                 app::Effect::Octave(d)
                     if synth_on

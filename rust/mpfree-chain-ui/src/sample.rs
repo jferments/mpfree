@@ -705,6 +705,51 @@ mod tests {
     }
 
     #[test]
+    fn the_data_wheel_turns_a_knob_as_a_finger_would() {
+        let mut song = Song::new();
+        let st = song.chain_state(DRUMS, 1, 0, None);
+        let mut ui = screen(Fonts::embedded(), &mut song, Place::Mixer, Some(st), None).unwrap();
+        let mut c = mpfree_ui::SoftCanvas::new(1280, 800);
+        ui.paint(&mut c);
+        let r = ui.rect_of(crate::CHAIN).unwrap();
+        let knobs = ui.get::<ChainView>(crate::CHAIN).unwrap().layout(r).knobs;
+        let param = |ui: &Ui, i: usize| {
+            ui.get::<ChainView>(crate::CHAIN).unwrap().state().params[i].clone()
+        };
+        // The Drive's Drive knob (its Mode is the chooser, not a knob).
+        let k = knobs[0];
+        let t = ui.focus_at(k.x + k.w / 2, k.y + k.h / 2).unwrap();
+        assert_eq!((t.id, t.index), ("knob", 0));
+        assert!(ui.focus_steps());
+        let before = param(&ui, 0);
+        assert!(ui.focus_step(2).is_some());
+        let acts = crate::take_chain_actions(&mut ui);
+        let addr = before.addr;
+        let want = before.info.from_unit(before.pos + 0.02);
+        assert_eq!(
+            acts,
+            vec![
+                ChainAction::Focus(addr),
+                ChainAction::Set { addr, value: want },
+                ChainAction::Release(addr)
+            ]
+        );
+        // Tone is at the top of its travel: up does nothing, down moves it.
+        let k = knobs[1];
+        ui.focus_at(k.x + k.w / 2, k.y + k.h / 2);
+        let tone = param(&ui, 1);
+        assert_eq!(tone.pos, 1.0, "{}", tone.info.name);
+        assert!(ui.focus_step(1).is_none());
+        assert!(crate::take_chain_actions(&mut ui).is_empty());
+        assert!(ui.focus_step(-1).is_some());
+        let acts = crate::take_chain_actions(&mut ui);
+        let Some(ChainAction::Set { value, .. }) = acts.get(1) else {
+            panic!("{acts:?}")
+        };
+        assert!(*value < tone.value, "{} -> {value}", tone.value);
+    }
+
+    #[test]
     fn chain_touches_become_actions() {
         let mut song = Song::new();
         let mut st = song.chain_state(DRUMS, 1, 0, None);

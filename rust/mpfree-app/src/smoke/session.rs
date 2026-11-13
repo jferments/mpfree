@@ -500,6 +500,20 @@ impl Session {
         self.run_periods(4)
     }
 
+    /// Hold `held` (SHIFT, say) while turning the data wheel.
+    pub fn wheel_with(&mut self, held: &str, delta: i32) -> &mut Session {
+        let h = self.button_note(held);
+        let t = self.t();
+        let fx = self.app.button(h, true, t);
+        self.fx.extend(fx);
+        self.run_periods(1);
+        self.wheel(delta);
+        let t = self.t();
+        let fx = self.app.button(h, false, t);
+        self.fx.extend(fx);
+        self.run_periods(4)
+    }
+
     /// Hit a pad on the controller (down, then up after `hold` seconds).
     pub fn pad(&mut self, pad: usize, velocity: u8, hold: f64) -> &mut Session {
         self.pad_edge(pad, velocity, true);
@@ -1047,13 +1061,6 @@ impl Session {
                 let Some(e) = rest else { continue };
                 match e {
                     Effect::Light(note, value) => self.lights[usize::from(note & 0x7F)] = value,
-                    Effect::Kit(d) => {
-                        // From the synth, when it has the pads (as main.rs).
-                        let playing = if self.synth_on { self.kits } else { self.kit };
-                        let now = self.kit_to.unwrap_or(playing) as i64;
-                        self.kit_to =
-                            Some((now + d as i64).rem_euclid(self.kits as i64 + 1) as usize);
-                    }
                     Effect::Octave(d) if self.synth_on => {
                         if self.synth.shift_octave(d) {
                             self.app.set_pad_layout(Some(self.synth.pad_layout()));

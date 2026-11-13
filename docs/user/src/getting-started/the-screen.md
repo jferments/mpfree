@@ -68,6 +68,19 @@ In a list of settings like this one, turn the data wheel or tap to pick a row, a
 
 The settings beside the Sample tab's pages and the Pads tab's Pad view, the Synth tab's tiles and Arrange's Record settings work the same way: the wheel picks, **–** and **+** change, and the push lets the wheel change it. Holding **SHIFT** gives the wheel its other job on that page (the next pad, the next page, scrolling).
 
+## The wheel's outline
+
+On the Play page, the Looper tab, the mixer and the FX chain editor, the data wheel takes you round the screen without touching it (next build):
+
+- **Tap a control** and an outline appears on it. **Turn the wheel** and the outline moves to the next control, left to right and top to bottom through that part of the screen, then on into the next part. On Play and the Looper tab you can also just turn the wheel: the outline starts on the first control.
+- **Push the wheel** to press the control the outline is on, as a tap would. On a throw, the push holds it on until you push again.
+- **On a value** (a fader, a pan, a send, a Q-Link card, the master level, an effect's knob), the push grabs it: the outline gets thicker and the wheel turns the value. Push again to let go, and the wheel moves the outline again. **–** and **+** step an outlined value without the push.
+- Some values can't be turned with the wheel yet (the XY pad, the Looper tab's trims); the line at the bottom says to drag them.
+- On the mixer and the chain editor, the wheel keeps its old job (the selected strip's volume, the first knob) until you tap a control. Changing page, or tapping an empty spot, takes the outline away.
+- While the list of effects is open, the wheel moves through the effects and its push opens presets and then adds, as always (see [Adding an effect](../making-music/mixing-and-effects.md#adding-an-effect)).
+
+To change the kit, tap the kit chip, press a **PAD BANK** button, or hold **SHIFT** and turn the wheel on the Play page.
+
 ## Touch
 
 - **Tap** to press a button, pick a tab, a pad or a step.

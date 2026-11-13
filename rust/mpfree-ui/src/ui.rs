@@ -363,6 +363,21 @@ pub trait Widget: Any + Send {
         Vec::new()
     }
 
+    /// True when the data wheel can turn control `t` (one of
+    /// [`Widget::targets`], a drag): the wheel's push then grabs it and
+    /// [`Widget::step`] turns it. False leaves it to a finger.
+    fn steps(&self, _t: &Target) -> bool {
+        false
+    }
+
+    /// The data wheel turned the grabbed control `t` by `delta` detents (up
+    /// is positive): change it by a small step per detent, as a drag would,
+    /// and say so as [`Widget::touch`] would. None when nothing changed (the
+    /// value is at its end). Only called where [`Widget::steps`] is true.
+    fn step(&mut self, _t: &Target, _delta: i32, _r: Rect) -> Option<EventKind> {
+        None
+    }
+
     /// When the widget has changed, the parts of `r` that need drawing again;
     /// None means all of it. `paint` is then called once per part, clipped.
     fn changed_parts(&self, _r: Rect) -> Option<Vec<Rect>> {
@@ -389,6 +404,65 @@ pub struct Ui {
     /// Layouts from a layout file, by page name or variant key: they win
     /// over the spec the app passes whenever that page is added again.
     overrides: Vec<(String, String)>,
+    /// The control the data wheel's outline is on (see [`Ui::focus_move`]).
+    focus: Option<Focus>,
+    /// Widgets drawn whole at the next paint: the outline left or reached
+    /// them, or was grabbed or let go there.
+    refocus: Vec<usize>,
+}
+
+/// The control the wheel's outline is on: its widget (by index) and its
+/// [`Target`]'s `id` and `index`, found again in each new list, so the
+/// outline stays on it while the widget changes round it.
+#[derive(Clone, Debug, PartialEq)]
+struct Focus {
+    widget: usize,
+    id: &'static str,
+    index: usize,
+    /// The wheel turns it (a drag) or holds it down (a hold).
+    grabbed: bool,
+}
+
+impl Focus {
+    fn on(widget: usize, t: &Target) -> Focus {
+        Focus {
+            widget,
+            id: t.id,
+            index: t.index,
+            grabbed: false,
+        }
+    }
+
+    fn is(&self, widget: usize, t: &Target) -> bool {
+        self.widget == widget && self.id == t.id && self.index == t.index
+    }
+}
+
+/// The outline's line width, and the grabbed outline's, in pixels.
+const OUTLINE_W: i32 = 3;
+const GRABBED_W: i32 = 5;
+
+/// Sort one widget's controls into reading order: rows top to bottom, each
+/// left to right. Two controls share a row when either's middle is level
+/// with the other (a short button beside a tall knob card).
+fn reading_order(ts: Vec<Target>) -> Vec<Target> {
+    let mut ts = ts;
+    ts.sort_by_key(|t| (t.centre().1, t.centre().0));
+    let mut rows: Vec<Vec<Target>> = Vec::new();
+    for t in ts {
+        let level = |a: &Target, b: &Target| {
+            let cy = a.centre().1;
+            cy >= b.rect.y && cy < b.rect.bottom()
+        };
+        match rows.last_mut() {
+            Some(row) if level(&t, &row[0]) || level(&row[0], &t) => row.push(t),
+            _ => rows.push(vec![t]),
+        }
+    }
+    for row in &mut rows {
+        row.sort_by_key(|t| t.rect.x);
+    }
+    rows.concat()
 }
 
 impl Ui {
@@ -404,6 +478,8 @@ impl Ui {
             full: true,
             fingers: Vec::new(),
             overrides: Vec::new(),
+            focus: None,
+            refocus: Vec::new(),
         }
     }
 
@@ -572,6 +648,8 @@ impl Ui {
             self.current = i;
             self.full = true;
             self.fingers.clear();
+            self.focus = None;
+            self.refocus.clear();
         }
         Ok(())
     }
@@ -627,7 +705,7 @@ impl Ui {
 
     /// True if the next `paint` would draw something.
     pub fn needs_paint(&self) -> bool {
-        if self.full {
+        if self.full || !self.refocus.is_empty() {
             return true;
         }
         let Some(page) = self.pages.get(self.current) else {
@@ -671,6 +749,165 @@ impl Ui {
             .iter()
             .map(|(wi, r)| (self.widgets[*wi].0.clone(), *r))
             .collect()
+    }
+
+    // ------------------------------------------------- the wheel's outline
+
+    /// The controls the wheel's outline moves through on the current page,
+    /// with their widgets: panel by panel in reading order (by each panel's
+    /// top, then its left), each panel's controls in reading order
+    /// ([`reading_order`]). Controls drawn as unavailable, or under another
+    /// widget, are left out.
+    fn nav_order(&self) -> Vec<(usize, Target)> {
+        let Some(page) = self.pages.get(self.current) else {
+            return Vec::new();
+        };
+        let mut panels: Vec<(Rect, Vec<(usize, Target)>)> = Vec::new();
+        for (k, (wi, r)) in page.slots.iter().enumerate() {
+            let ts: Vec<Target> = self.widgets[*wi]
+                .1
+                .targets(*r)
+                .into_iter()
+                .filter(|t| {
+                    let (x, y) = t.centre();
+                    t.enabled
+                        && r.contains(x, y)
+                        && !page.slots[k + 1..].iter().any(|(_, o)| o.contains(x, y))
+                })
+                .collect();
+            if !ts.is_empty() {
+                let ts = reading_order(ts).into_iter().map(|t| (*wi, t)).collect();
+                panels.push((*r, ts));
+            }
+        }
+        panels.sort_by_key(|(r, _)| (r.y, r.x));
+        panels.into_iter().flat_map(|(_, ts)| ts).collect()
+    }
+
+    fn set_focus(&mut self, f: Option<Focus>) {
+        if self.focus == f {
+            return;
+        }
+        for w in [&self.focus, &f].into_iter().flatten() {
+            if !self.refocus.contains(&w.widget) {
+                self.refocus.push(w.widget);
+            }
+        }
+        self.focus = f;
+    }
+
+    /// A finger came down at (`x`, `y`): the outline goes on the control
+    /// there (the smallest, where controls nest), or away when there is
+    /// none. Returns the control.
+    pub fn focus_at(&mut self, x: i32, y: i32) -> Option<Target> {
+        let hit = self
+            .nav_order()
+            .into_iter()
+            .filter(|(_, t)| t.rect.contains(x, y))
+            .min_by_key(|(_, t)| t.rect.w as i64 * t.rect.h as i64);
+        self.set_focus(hit.as_ref().map(|(wi, t)| Focus::on(*wi, t)));
+        hit.map(|(_, t)| t)
+    }
+
+    /// The wheel turned `delta` detents with nothing grabbed: the outline
+    /// moves that many controls on in [`Ui::nav_order`], stopping at the
+    /// first and the last. With no outline yet it appears on the first
+    /// control (the last when turned back). Returns the control it is on.
+    pub fn focus_move(&mut self, delta: i32) -> Option<Target> {
+        let order = self.nav_order();
+        if order.is_empty() {
+            self.set_focus(None);
+            return None;
+        }
+        let last = order.len() - 1;
+        let at = self
+            .focus
+            .as_ref()
+            .and_then(|f| order.iter().position(|(wi, t)| f.is(*wi, t)));
+        let k = match at {
+            Some(k) => (k as i64 + delta as i64).clamp(0, last as i64) as usize,
+            None if delta < 0 => last,
+            None => 0,
+        };
+        let (wi, t) = order[k].clone();
+        self.set_focus(Some(Focus::on(wi, &t)));
+        Some(t)
+    }
+
+    /// The control the outline is on, as its widget lists it now, and the
+    /// widget's name. None when there is no outline, or its control has
+    /// gone (the outline then waits for the next turn or tap).
+    pub fn focused(&self) -> Option<PageTarget> {
+        let f = self.focus.as_ref()?;
+        let (wi, t) = self.nav_order().into_iter().find(|(wi, t)| f.is(*wi, t))?;
+        Some(PageTarget {
+            widget: self.widgets[wi].0.clone(),
+            target: t,
+        })
+    }
+
+    /// True while the outline is on a control (it may have gone from the
+    /// widget since: see [`Ui::focused`]). Cheap: lists nothing.
+    pub fn has_focus(&self) -> bool {
+        self.focus.is_some()
+    }
+
+    /// True when the wheel's push grabbed the outlined control.
+    pub fn focus_grabbed(&self) -> bool {
+        self.focus.as_ref().is_some_and(|f| f.grabbed)
+    }
+
+    /// Grab the outlined control, or let it go: drawn thicker while grabbed.
+    pub fn set_focus_grabbed(&mut self, on: bool) {
+        if let Some(f) = &self.focus {
+            let f = Focus {
+                grabbed: on,
+                ..f.clone()
+            };
+            if self.focus.as_ref() != Some(&f) {
+                self.refocus.push(f.widget);
+                self.focus = Some(f);
+            }
+        }
+    }
+
+    /// Take the outline away.
+    pub fn clear_focus(&mut self) {
+        self.set_focus(None);
+    }
+
+    /// True when the wheel can turn the outlined control ([`Widget::steps`]).
+    pub fn focus_steps(&self) -> bool {
+        let Some((wi, t)) = self.focus_slot() else {
+            return false;
+        };
+        self.widgets[wi].1.steps(&t)
+    }
+
+    /// The wheel turned the outlined control by `delta` detents
+    /// ([`Widget::step`]): what it said, as a touch would.
+    pub fn focus_step(&mut self, delta: i32) -> Option<UiEvent> {
+        let (wi, t) = self.focus_slot()?;
+        let r = self.pages[self.current]
+            .slots
+            .iter()
+            .find(|(w, _)| *w == wi)?
+            .1;
+        let (name, w, dirty) = &mut self.widgets[wi];
+        if !w.steps(&t) {
+            return None;
+        }
+        let kind = w.step(&t, delta, r)?;
+        *dirty = true;
+        Some(UiEvent {
+            widget: name.clone(),
+            kind,
+        })
+    }
+
+    fn focus_slot(&self) -> Option<(usize, Target)> {
+        let f = self.focus.as_ref()?;
+        self.nav_order().into_iter().find(|(wi, t)| f.is(*wi, t))
     }
 
     /// Route a touch. A finger belongs to the widget it first touched until it
@@ -740,13 +977,20 @@ impl Ui {
             }
             damage.push(screen);
         }
+        let refocus = std::mem::take(&mut self.refocus);
+        let focus = self.focus.clone();
+        let mut outline_under = false;
         let (fonts, widgets, full) = (&mut self.fonts, &mut self.widgets, &mut self.full);
         for &(wi, r) in &page.slots {
             let (_, w, dirty) = &mut widgets[wi];
-            if !(*full || *dirty || w.animating()) {
+            let whole = *full || refocus.contains(&wi);
+            if !(whole || *dirty || w.animating()) {
                 continue;
             }
-            let parts = if *full {
+            // The outline sits on this widget: draw it again over whatever
+            // the widget draws now.
+            outline_under |= focus.as_ref().is_some_and(|f| f.widget == wi);
+            let parts = if whole {
                 vec![r]
             } else {
                 w.changed_parts(r).unwrap_or_else(|| vec![r])
@@ -774,6 +1018,30 @@ impl Ui {
                 cleared.settle(None);
                 if !*full {
                     damage.push(part);
+                }
+            }
+        }
+        // The wheel's outline, over its control, inside the control's widget
+        // (so drawing the widget again takes it away).
+        if let Some(f) = focus.filter(|_| outline_under) {
+            let slot = page.slots.iter().find(|(wi, _)| *wi == f.widget);
+            if let Some(&(wi, r)) = slot {
+                let t = widgets[wi].1.targets(r).into_iter().find(|t| f.is(wi, t));
+                if let Some(t) = t {
+                    let (width, colour) = if f.grabbed {
+                        (GRABBED_W, theme.accent2)
+                    } else {
+                        (OUTLINE_W, theme.accent)
+                    };
+                    let o = t.rect.intersect(r);
+                    if !o.is_empty() {
+                        canvas.set_clip(r);
+                        let radius = (theme.radius / 2).min(o.w.min(o.h) / 2).max(0);
+                        canvas.stroke_round_rect(o, radius, width, colour);
+                        if !*full {
+                            damage.push(o);
+                        }
+                    }
                 }
             }
         }
@@ -820,6 +1088,172 @@ mod tests {
             paints: std::cell::Cell::new(0),
             touches: Vec::new(),
         }
+    }
+
+    /// Four controls in a square: two buttons over two sliders, listed
+    /// sliders first (the outline goes in reading order, not list order).
+    struct Square {
+        value: [f32; 2],
+    }
+
+    impl Square {
+        fn cells(r: Rect) -> [Rect; 4] {
+            let (w, h) = (r.w / 2, r.h / 2);
+            [
+                Rect::new(r.x, r.y + h, w, h),
+                Rect::new(r.x + w, r.y + h, w, h),
+                Rect::new(r.x, r.y, w, h),
+                Rect::new(r.x + w, r.y, w, h),
+            ]
+        }
+    }
+
+    impl Widget for Square {
+        fn paint(&self, cx: &mut PaintCx, r: Rect) {
+            cx.canvas.fill_rect(r, Color::rgb(0x202020));
+        }
+
+        fn targets(&self, r: Rect) -> Vec<Target> {
+            let c = Square::cells(r);
+            vec![
+                Target::drag("slider", 0, "slider 1", c[0]),
+                Target::drag("slider", 1, "slider 2", c[1]),
+                Target::tap("button", 0, "button 1", c[2]),
+                Target::tap("button", 1, "button 2", c[3]),
+            ]
+        }
+
+        fn steps(&self, t: &Target) -> bool {
+            t.id == "slider"
+        }
+
+        fn step(&mut self, t: &Target, delta: i32, _r: Rect) -> Option<EventKind> {
+            let v = &mut self.value[t.index];
+            let to = (*v + delta as f32 * 0.25).clamp(0.0, 1.0);
+            (to != *v).then(|| {
+                *v = to;
+                EventKind::Value(to)
+            })
+        }
+    }
+
+    fn square_ui() -> Ui {
+        let mut ui = Ui::new(Theme::dark(), Fonts::embedded(), 400, 200);
+        ui.add("left", Square { value: [0.5; 2] });
+        ui.add("right", Square { value: [0.5; 2] });
+        ui.add("plain", probe());
+        ui.add_page("nav", "row(left, right)").unwrap();
+        ui.add_page("other", "col(plain)").unwrap();
+        ui.show("nav").unwrap();
+        ui
+    }
+
+    fn label(ui: &Ui) -> Option<String> {
+        ui.focused()
+            .map(|f| format!("{} {}", f.widget, f.target.label))
+    }
+
+    #[test]
+    fn the_wheel_outline_moves_in_reading_order_panel_by_panel() {
+        let mut ui = square_ui();
+        assert_eq!(label(&ui), None);
+        let mut seen = Vec::new();
+        for _ in 0..9 {
+            ui.focus_move(1);
+            seen.push(label(&ui).unwrap());
+        }
+        assert_eq!(
+            seen,
+            [
+                "left button 1",
+                "left button 2",
+                "left slider 1",
+                "left slider 2",
+                "right button 1",
+                "right button 2",
+                "right slider 1",
+                "right slider 2",
+                "right slider 2",
+            ],
+            "buttons first (they are on top), then on into the next panel, stopping at the end"
+        );
+        ui.focus_move(-3);
+        assert_eq!(label(&ui).unwrap(), "right button 1");
+        // With no outline, turning back starts at the last control.
+        ui.clear_focus();
+        ui.focus_move(-1);
+        assert_eq!(label(&ui).unwrap(), "right slider 2");
+        // Another page takes the outline away.
+        ui.show("other").unwrap();
+        assert_eq!(label(&ui), None);
+        assert_eq!(
+            ui.focus_move(1),
+            None,
+            "a page with no controls has no outline"
+        );
+    }
+
+    #[test]
+    fn a_tap_puts_the_outline_on_its_control_and_the_wheel_turns_a_grabbed_one() {
+        let mut ui = square_ui();
+        let r = ui.rect_of("right").unwrap();
+        let c = Square::cells(r);
+        let (x, y) = (c[0].x + 4, c[0].y + 4);
+        assert_eq!(ui.focus_at(x, y).unwrap().label, "slider 1");
+        assert_eq!(label(&ui).unwrap(), "right slider 1");
+        assert!(ui.focus_steps(), "a slider turns from the wheel");
+        ui.set_focus_grabbed(true);
+        assert!(ui.focus_grabbed());
+        let ev = ui.focus_step(1).unwrap();
+        assert_eq!(
+            (ev.widget.as_str(), ev.kind),
+            ("right", EventKind::Value(0.75))
+        );
+        assert_eq!(ui.focus_step(1).unwrap().kind, EventKind::Value(1.0));
+        assert_eq!(ui.focus_step(1), None, "at its end nothing changes");
+        // A button has no steps.
+        ui.focus_move(-1);
+        assert!(!ui.focus_grabbed(), "moving lets go");
+        assert_eq!(label(&ui).unwrap(), "right button 2");
+        assert!(!ui.focus_steps());
+        assert_eq!(ui.focus_step(1), None);
+        // A tap on nothing takes the outline away.
+        ui.focus_at(-5, -5);
+        assert_eq!(label(&ui), None);
+    }
+
+    #[test]
+    fn the_outline_is_drawn_over_its_control_and_wiped_when_it_moves() {
+        let mut ui = square_ui();
+        let mut c = SoftCanvas::new(400, 200);
+        ui.paint(&mut c);
+        let left = Square::cells(ui.rect_of("left").unwrap());
+        let edge = (left[2].x + 1, left[2].y + left[2].h / 2);
+        let plain = Color::rgb(0x202020);
+        assert_eq!(c.pixel(edge.0, edge.1), plain);
+        ui.focus_move(1);
+        assert!(ui.needs_paint());
+        let damage = ui.paint(&mut c);
+        assert_eq!(
+            c.pixel(edge.0, edge.1),
+            ui.theme.accent,
+            "the outline's edge"
+        );
+        assert!(damage.iter().any(|d| d.contains(edge.0, edge.1)));
+        assert_eq!(
+            c.pixel(left[2].x + left[2].w / 2, left[2].y + left[2].h / 2),
+            plain,
+            "the control inside the outline still shows"
+        );
+        ui.set_focus_grabbed(true);
+        ui.paint(&mut c);
+        assert_eq!(c.pixel(edge.0, edge.1), ui.theme.accent2, "grabbed");
+        ui.focus_move(1);
+        ui.paint(&mut c);
+        assert_eq!(c.pixel(edge.0, edge.1), plain, "the old outline is gone");
+        let next = (left[3].x + 1, left[3].y + left[3].h / 2);
+        assert_eq!(c.pixel(next.0, next.1), ui.theme.accent);
+        assert!(!ui.needs_paint(), "nothing more to draw");
     }
 
     fn ui() -> Ui {
