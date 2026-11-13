@@ -47,6 +47,15 @@ pub fn kb_field(text: &str, key: &str) -> Option<u64> {
     })
 }
 
+/// The memory in use, as a share of all of it, 0 to 100: MemTotal less
+/// MemAvailable, from /proc/meminfo's text. For the header's RAM chip
+/// (live test 3: Jay wants RAM % beside CPU %).
+pub fn ram_used_pct(meminfo: &str) -> Option<f64> {
+    let total = kb_field(meminfo, "MemTotal").filter(|&t| t > 0)?;
+    let free = kb_field(meminfo, "MemAvailable")?.min(total);
+    Some((total - free) as f64 * 100.0 / total as f64)
+}
+
 /// (busy, total) ticks from the `cpu` line of /proc/stat, and the number of
 /// cores (`cpuN` lines).
 pub fn cpu_line(text: &str) -> Option<(u64, u64, usize)> {

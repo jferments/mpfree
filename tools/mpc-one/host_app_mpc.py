@@ -55,6 +55,10 @@ started by you pressing Enter:
      within 20 s it plays without Akai's setup. Turn the volume knob down first.
  12. click: plays a 120 BPM click on the ACVA output for 10 s, quietly, and
      counts underruns and late periods. Turn the volume knob down first.
+  MPFREE_APP_PHASES picks the app step's phases by number, comma-separated,
+  with ranges (for example 9-11,16-19): the others are skipped without a
+  prompt, so a run can redo only what needs it. The start-up check and the
+  summary at the end still read the whole session. Default: every phase.
   MPFREE_APP_STEPS picks the steps after the copy, by name, comma-separated
   (default: inventory,screen,touch,pads,click). They always run in the order
   app, line, then the numbered ones above. After lights, drums, setup and play it
@@ -679,7 +683,8 @@ SUMMARY_PREFIXES = ("touchscreen: ", "touch-reader: ", "button guide done: ", "b
                     "arp: ", "arp order: ", "arp pattern: ", "pattern ", "recording ", "time: ", "tempo ",
                     "touch-lab-open", "touch-lab: ", "touch-lab-exit", "touch-calibrate", "touch-orientation: ",
                     "STOP: ", "track mute: ", "morph: ", "song: ", "chain: ", "macros: ", "q-link bank: ",
-                    "mixer: ", "playing ", "sound cores", "status: sound cores ", "browser: ", "preview",
+                    "mixer: ", "playing ", "sound cores", "status: sound cores ", "status: screen ", "browser: ",
+                    "preview",
                     "MIDI in: ", "MIDI Out", "controller output", "report: ", "chain editor: ", "control: ")
 APP_LINE = re.compile(r"^\[\s*(\d+\.\d+)\]\s+(.*)$")
 MIDI_LINE = re.compile(r"^\+\d+\.\d+ s (->\s*)?(Public|Private|MIDI Port)\b")
@@ -794,7 +799,13 @@ def app_check(mpc, out, n, total):
         out.say("  The pad player is not running, so the other phases are left out. Its log is above; if it")
         out.say("  stopped with an error, the log display started in its place.")
         return
+    phases = chosen_phases(os.environ.get("MPFREE_APP_PHASES", ""), len(APP_PHASES))
+    if len(phases) < len(APP_PHASES):
+        out.say(f"  MPFREE_APP_PHASES: only phases {', '.join(str(k) for k in sorted(phases))}")
     for k, (title, todo, question) in enumerate(APP_PHASES, start=1):
+        if k not in phases:
+            log_only(out, f"\n  Phase {k} of {len(APP_PHASES)}: {title}: not chosen (MPFREE_APP_PHASES)")
+            continue
         out.say(f"\n  Phase {k} of {len(APP_PHASES)}: {title}")
         for line in todo:
             out.say(f"    {line}")
@@ -966,6 +977,24 @@ def copy_program(mpc, out, total, program, digest, kit, kit_digest):
         out.say("  drum kits copied; their hash on the MPC matches")
 
 
+def chosen_phases(text, count):
+    """The app step's phases MPFREE_APP_PHASES names (1-based), as a set; every phase when it is empty."""
+    text = (text or "").strip()
+    if not text:
+        return set(range(1, count + 1))
+    chosen = set()
+    for part in text.split(","):
+        part = part.strip()
+        m = re.fullmatch(r"(\d{1,2})(?:-(\d{1,2}))?", part)
+        if not m:
+            raise Stop(f"MPFREE_APP_PHASES: {part!r} is not a phase number or a range like 9-11")
+        lo, hi = int(m.group(1)), int(m.group(2) or m.group(1))
+        if not 1 <= lo <= hi <= count:
+            raise Stop(f"MPFREE_APP_PHASES: {part!r} is outside phases 1 to {count}")
+        chosen.update(range(lo, hi + 1))
+    return chosen
+
+
 def main(argv):
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument("--ip", required=True)
@@ -979,6 +1008,8 @@ def main(argv):
     out = kexec.Out(args.report)
     out.say("mpfree on the test build (changes RAM on the MPC only)")
     steps = chosen_steps(os.environ.get("MPFREE_APP_STEPS", DEFAULT_STEPS))
+    # Checked before anything else, so a typo stops the run at once.
+    chosen_phases(os.environ.get("MPFREE_APP_PHASES", ""), len(APP_PHASES))
     # The app and line steps use the pad player started at power-on; the program is copied only for the others.
     copy = any(n not in APP_STEPS for n in steps)
     total = (3 if copy else 2) + len(steps)
