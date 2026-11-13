@@ -35,13 +35,17 @@ the sound on cores 3 and 2 instead, for the device rounds to compare.
 1. **Pin the audio thread to core 3.** No parallel code needed. Built:
    `--sound-cores core3` (below), off by default until a device round has
    measured it.
-2. **A control thread on core 1**: MIDI in, the screen's actions, lights
-   and the session ping leave the timed period; the audio thread gets a
-   ready list of timed events through a lock-free queue. The first part is
-   built (below): the lights, the report's lines and effect building are on
-   threads of their own, and helper threads keep off the sound's cores.
-   Next: MIDI in, the screen's actions and the app logic, through
-   `TimeHost::split`.
+2. **The control side**: work that is not sound leaves the audio thread.
+   Built in two parts (below), and measured first, as Jay chose ("measure,
+   then move", 12 Nov). Part 1 (#261): the lights, the report's lines and
+   effect building run on threads of their own, and helper threads keep off
+   the sound's cores. Part 2 (#267): the loop times its own parts outside
+   the engines and names any slow period
+   ([profiling.md](profiling.md#dev-tools-pages)). Live test 2 (13 Nov)
+   found no slow period: the worst part took 0.37 ms, 13 % of a period. So
+   MIDI in, the screen's actions and the app logic stay on the audio thread
+   for now. Any of them moves (through `TimeHost::split`) only when a device
+   run's `control: slow period` lines name it.
 3. **A second audio core** with lanes (`rust/mpfree-lanes`, below): half the
    sampler's voices, the synth, mixer stages, then pipelined returns. Built
    for the sampler and the mixer: `--sound-cores two` (below), off by default
@@ -51,8 +55,8 @@ the sound on cores 3 and 2 instead, for the device rounds to compare.
 
 | Core | Runs |
 | --- | --- |
-| 0 | The screen and touch, the store, the journal, loading |
-| 1 | The control thread, background jobs, offload sockets later |
+| 0 | The screen and touch, the store, the journal; helper threads at normal priority |
+| 1 | Helper threads at normal priority (lights, report, effect building, loading, MIDI and CV out at FIFO 60), background jobs, offload sockets later |
 | 2 | Audio lane B, SCHED_FIFO 69 |
 | 3 | The audio thread (lane A), SCHED_FIFO 70 |
 

@@ -14,7 +14,7 @@ MPFree changes every day: screens get redrawn, tabs get renamed, buttons get new
 
 Notes that only matter to the people and agents running the project (thread handoffs, private memory, device logs, anything with a serial number) go in the private `jferments/mpfree-claude` repository, never here.
 
-A new page goes in one of those folders and gets a line in that folder's index (`docs/user/src/SUMMARY.md`, `docs/dev/README.md` or `docs/agents/README.md`). `check_docs.py` fails if a page is in none of the indexes.
+A new page goes in one of those folders and gets a line in that folder's index (`docs/user/src/SUMMARY.md`, `docs/dev/README.md` or `docs/agents/README.md`). `check_docs.py` fails if a page is in none of the indexes. Pages in a dated archive (`docs/dev/hardware/archive/`) are kept byte for byte: they count as listed when their archive's README links them, and their old relative links are not checked.
 
 ## 2. One fact, one place
 
