@@ -1,6 +1,6 @@
 <!--
 covers: rust/mpfree-app/src/time.rs rust/mpfree-app/src/time/link.rs rust/mpfree-app/src/time/audio.rs rust/mpfree-app/src/time/control.rs rust/mpfree-play/src/view.rs rust/mpfree-play/src/player.rs rust/mpfree-play/src/recorded.rs
-checked: 2026-11-12 a02d2cd
+checked: 2026-11-13 dcaefdd
 -->
 
 # The time engine on two threads

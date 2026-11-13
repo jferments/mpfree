@@ -1,7 +1,7 @@
 <!--
 status: changing
 covers: rust/mpfree-fx rust/mpfree-mixer-ui rust/mpfree-fx-ui rust/mpfree-chain-ui rust/mpfree-app/src/chain_page.rs rust/mpfree-app/src/mixing.rs rust/mpfree-fx/src/perform.rs
-checked: 2026-11-13 1b7dbba
+checked: 2026-11-13 9560b32
 -->
 
 # Mixing and effects
@@ -93,7 +93,7 @@ Adding, removing or reordering an effect while the music plays doesn't click: th
 
 ## The chain editor
 
-Tap an effect in a strip's insert row to open the **chain editor** on it, in the mixer's place. Tap the strip's **+ Insert** to add an effect, with the list of effects already open; a new effect goes at the end of the chain. In the chain editor you can reorder, bypass and remove effects, and turn the selected effect's knobs.
+Tap an effect in a strip's insert row to open the **chain editor** on it, in the mixer's place. Tap the strip's **+ Insert** to add an effect, with the list of effects already open; a new effect goes at the end of the chain. In the chain editor, **+ Add effect** opens the list again and **Cancel** closes it; you can also reorder (**Up**, **Down**), bypass (the power button on each row) and **Remove** effects, and turn the selected effect's knobs. If the chain is full or the mixer is busy, the line at the bottom of the screen says so for a few seconds.
 
 The Q-Links turn the selected effect's first four knobs, and the data wheel works as Q-Link 1. **‹ Mixer** goes back to the mixer as you left it.
 
@@ -102,9 +102,6 @@ The Sample tab's **FX** opens the chain editor too, on the pad you are editing (
 To give a knob a control of its own, touch it and tap **Learn to a Q-Link**, then turn a Q-Link, or move a knob or fader on your keyboard (see [MIDI Learn](midi-and-cv.md#midi-learn)).
 
 {{shot: chain | The chain editor on the drum bus, with Drive selected.}}
-
-> [!NOTE]
-> **In this build the chain editor doesn't answer taps.** Its buttons (**+ Add effect**, the effects in the list, **Cancel**, **Up**, **Down**, **Remove** and **‹ Mixer**) do nothing yet, so you can't add an effect from the screen. The effects already on a track play, and the Q-Links still turn the selected effect's knobs. To leave the editor, tap a tab at the top or press **MAIN**. This is fixed in the next build.
 
 ## Macros
 
