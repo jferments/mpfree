@@ -2458,6 +2458,57 @@ impl SamplePage {
         }
     }
 
+    /// The playing kit's undo history as the list shows it (hold UNDO):
+    /// "Start", each step undo takes back, oldest first, then redo's, and
+    /// the row that is now. None while the synth has the pads.
+    pub fn history_rows(&self) -> Option<(String, Vec<String>, usize)> {
+        let kit = self.kit;
+        let p = self.projects.get(kit)?;
+        let (done, redo) = p.history();
+        let mut rows = vec!["Start: before these edits".to_string()];
+        rows.extend(done.iter().map(|&i| self.step_name(kit, i)));
+        let now = rows.len() - 1;
+        rows.extend(redo.iter().map(|&i| self.step_name(kit, i)));
+        let mut title = self.kit_text();
+        if let Some(c) = title.get_mut(0..1) {
+            c.make_ascii_uppercase();
+        }
+        Some((title, rows, now))
+    }
+
+    /// An undo step as the history names it: "Pad A3", "Chop to 8 pads
+    /// from A5", "New sample on pad A1".
+    fn step_name(&self, kit: usize, i: mpfree_sampler::model::StepInfo) -> String {
+        let first = i
+            .first_pad
+            .map(|p| self.pad_text(kit, p))
+            .unwrap_or_default();
+        let pads = |n: usize| {
+            if n == 1 {
+                format!("pad {first}")
+            } else {
+                format!("{n} pads from {first}")
+            }
+        };
+        match i {
+            _ if i.chop && i.pads > 0 => format!("Chop to {}", pads(i.pads)),
+            _ if i.pads_play && i.pads > 0 => format!("Keys on {}", pads(i.pads)),
+            _ if i.pads_play => "What the pads play".to_string(),
+            _ if i.sources > 0 && i.pads > 0 => format!("New sample on {}", pads(i.pads)),
+            _ if i.sources > 0 => "New sample".to_string(),
+            _ if i.chop => "New chop".to_string(),
+            _ if i.master => "Master effect".to_string(),
+            _ if i.pads > 0 => {
+                let p = pads(i.pads);
+                let mut c = p.chars();
+                c.next()
+                    .map(|f| f.to_uppercase().collect::<String>() + c.as_str())
+                    .unwrap_or(p)
+            }
+            _ => "Edit".to_string(),
+        }
+    }
+
     // ------------------------------------------------------------ rec
 
     /// What the Rec tab shows besides the input: the pad picked and where

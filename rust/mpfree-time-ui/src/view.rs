@@ -943,7 +943,7 @@ pub fn bars_label(bars: i64) -> String {
     }
 }
 
-fn take_title(st: &TimeState, row: &TakeRow) -> String {
+pub fn take_title(st: &TimeState, row: &TakeRow) -> String {
     let mut word = row.word().to_string();
     word[..1].make_ascii_uppercase();
     match row.at {

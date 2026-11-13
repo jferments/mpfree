@@ -2991,6 +2991,36 @@ fn synth_turn_said(synth: &synth::Synth, id: u16, redo: bool) -> String {
     }
 }
 
+/// A synth knob's turn as the undo history lists it: "Filter Cutoff to
+/// 1.2 kHz".
+fn synth_turn_row(synth: &synth::Synth, id: u16, to: f32) -> String {
+    match synth.param_info(id) {
+        Some(p) => {
+            let name = if p.group == p.name {
+                p.name.to_string()
+            } else {
+                format!("{} {}", p.group, p.name)
+            };
+            format!("{name} to {}", mpfree_synth_ui::format::value_line(p, to))
+        }
+        None => "A synth knob".to_string(),
+    }
+}
+
+/// A mixer control's turn as the undo history lists it: "Drums Volume to
+/// -6.0 dB".
+fn mix_turn_row(strip: mpfree_fx::StripId, id: u16, to: f32) -> String {
+    match mpfree_fx::strip_params().iter().find(|p| p.id == id) {
+        Some(p) => format!(
+            "{} {} to {}",
+            mixing::name(strip),
+            p.name,
+            mpfree_synth_ui::format::value_line(p, to)
+        ),
+        None => format!("{} control", mixing::name(strip)),
+    }
+}
+
 /// What UNDO (or REDO) of a mixer control says: "Undid Drums Volume".
 fn mix_turn_said(strip: mpfree_fx::StripId, id: u16, redo: bool) -> String {
     let done = if redo { "Redid" } else { "Undid" };
@@ -3680,6 +3710,20 @@ fn player_session(
                     }
                 }
                 gui::FromUi::UndoReady(ready) => app.set_undo_ready(ready),
+                gui::FromUi::Overlay(on) => app.set_overlay(on),
+                gui::FromUi::UndoHistory(on) => {
+                    let (rows, now) = match on {
+                        gui::UndoOn::Synth => synth_turns
+                            .rows("Start: the sound before these turns", |t| {
+                                synth_turn_row(&synth, t.key, t.to)
+                            }),
+                        gui::UndoOn::Mixer => mix_turns
+                            .rows("Start: the mix before these turns", |t| {
+                                mix_turn_row(t.key.0, t.key.1, t.to)
+                            }),
+                    };
+                    out.show(gui::ToUi::UndoHistory { on, rows, now });
+                }
                 gui::FromUi::UndoOn { on, redo } => {
                     let line = match on {
                         gui::UndoOn::Synth => {
@@ -4450,6 +4494,7 @@ fn player_session(
                     out.show(gui::ToUi::Tell(s));
                 }
                 app::Effect::Undo { redo } => out.show(gui::ToUi::Undo(redo)),
+                app::Effect::UndoButton(down) => out.show(gui::ToUi::UndoButton(down)),
                 app::Effect::PlayRec { overdub } => out.show(gui::ToUi::PlayRec(overdub)),
                 app::Effect::Quit => stop = true,
                 app::Effect::Show(v) => {

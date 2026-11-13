@@ -746,6 +746,16 @@ impl LooperPage {
         (row != now && row <= rows).then(|| row as i32 - now as i32)
     }
 
+    /// The picked loop's undo history for the list that holding UNDO
+    /// opens: the loop's name, and its rows as the editor lists them.
+    pub fn history_rows(&self) -> (String, HistoryList) {
+        let v = &self.view;
+        (
+            format!("Loop {}", v.selected + 1),
+            history_list(&v.history, &self.layers, v.rate),
+        )
+    }
+
     /// A tap on a layer's row: that layer goes on the Q-Links.
     pub fn pick_layer(&mut self, ui: &mut Ui, k: usize) {
         self.layer = k;

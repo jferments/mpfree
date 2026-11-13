@@ -873,6 +873,9 @@ pub enum Effect {
     Undo {
         redo: bool,
     },
+    /// The UNDO button went down (true) or up, on every page: held, the
+    /// screen opens the page's undo history (Jay after live test 3).
+    UndoButton(bool),
     /// REC (or OVERDUB) on the Play page: the screen knows the view, so it
     /// picks (Jay, 13 Nov 14:37Z): the looper on All and Loop, the takes
     /// on Beats.
@@ -1090,6 +1093,9 @@ pub struct App {
     /// The page showing has something to undo (the screen says): UNDO's
     /// light is bright while idle.
     undo_ready: bool,
+    /// A list or pad over the page is open (the number pad, the undo
+    /// history): the wheel, its push and - / + go to it.
+    overlay: bool,
     /// The synth's pad layout while the synth is on the pads
     /// ([`App::set_pad_layout`]): the pads then feed the arp the layout's
     /// notes, and its events carry notes rather than pad slots.
@@ -1212,6 +1218,7 @@ impl App {
             rolling: false,
             lights_shown: Self::startup_transport_lights(),
             undo_ready: false,
+            overlay: false,
             pad_layout: None,
             pad_pressed: [PadNotes::default(); 16],
             note_holds: [0; 128],
@@ -1280,6 +1287,12 @@ impl App {
     /// the UNDO light follows at the next [`Self::transport_lights`].
     pub fn set_undo_ready(&mut self, ready: bool) {
         self.undo_ready = ready;
+    }
+
+    /// The screen opened (true) or closed a list or pad over the page
+    /// ([`crate::gui::FromUi::Overlay`]).
+    pub fn set_overlay(&mut self, on: bool) {
+        self.overlay = on;
     }
 
     pub fn transport_lights(&mut self, now: TransportLights, t: f64) -> Vec<Effect> {
@@ -1581,6 +1594,9 @@ impl App {
             return fx;
         }
         if !pressed {
+            if Some(note) == self.map.undo {
+                fx.push(Effect::UndoButton(false));
+            }
             if Some(note) == self.map.erase && self.erase_held {
                 self.erase_held = false;
                 fx.push(self.status());
@@ -1702,6 +1718,7 @@ impl App {
             } else {
                 crate::looper_page::B_UNDO
             }));
+            fx.push(Effect::UndoButton(true));
         } else if self.view == View::Play
             && (Some(note) == self.map.rec || Some(note) == self.map.overdub)
         {
@@ -1714,9 +1731,11 @@ impl App {
             fx.push(Effect::Time(TimeAction::Transport(Command::ToggleOverdub)));
         } else if Some(note) == self.map.undo && self.view.sampler() {
             fx.push(Effect::SampleUndo { redo: shift });
+            fx.push(Effect::UndoButton(true));
         } else if Some(note) == self.map.undo {
             // The Play page's view, Arrange and the rest: the screen picks.
             fx.push(Effect::Undo { redo: shift });
+            fx.push(Effect::UndoButton(true));
         } else if Some(note) == self.map.note_repeat {
             let double = self
                 .repeat_pressed_at
@@ -1763,7 +1782,10 @@ impl App {
             fx.extend(self.wheel_push());
         } else if Some(note) == self.map.minus || Some(note) == self.map.plus {
             let d = if Some(note) == self.map.plus { 1 } else { -1 };
-            if self.in_menu() {
+            if self.overlay {
+                // A list or pad over the page: - / + step in it.
+                fx.push(Effect::Rows(RowKey::Step(d)));
+            } else if self.in_menu() {
                 fx.extend(self.step_item(self.selected, d));
             } else if self.view == View::Touch && !shift {
                 // The value picked on the Touch page, one step.
@@ -2024,6 +2046,8 @@ impl App {
     pub fn wheel(&mut self, delta: i32) -> Vec<Effect> {
         match self.view {
             View::Guide | View::System => Vec::new(),
+            // A list or pad over the page: the wheel moves in it.
+            _ if self.overlay => vec![Effect::Rows(RowKey::Pick(delta))],
             // In a menu the wheel moves between rows and - / + change the
             // value, so menus work without touch; SHIFT + wheel also changes
             // the value, in case - and + are not known yet.
@@ -2099,6 +2123,9 @@ impl App {
     /// a menu, the guide or the workspace (whose Back goes to the panel).
     fn show(&mut self, v: View) -> Vec<Effect> {
         self.menu_editing = false;
+        // The screen closes a list or pad over the page when the page
+        // changes.
+        self.overlay = false;
         let was_editing = std::mem::take(&mut self.page_editing);
         if self.view != v
             && matches!(
@@ -2980,6 +3007,10 @@ impl App {
     /// 12 Nov 08:11Z). On a page with rows, the same for the row
     /// highlighted ([`RowKey`]). Elsewhere it does nothing yet.
     pub fn wheel_push(&mut self) -> Vec<Effect> {
+        if self.overlay {
+            // A list or pad over the page: the push is its Enter.
+            return vec![Effect::Rows(RowKey::Editing(true))];
+        }
         if !self.in_menu() {
             // A page with rows: open the highlighted row for the wheel, or
             // close it again (RowKey).
@@ -4443,6 +4474,38 @@ mod tests {
         assert_eq!(p.scale, None);
     }
 
+    /// A list or pad over the page (the number pad, the undo history)
+    /// takes the wheel, its push and - / + on every page, Play's too;
+    /// UNDO says when it goes down and up, so the screen can tell it is
+    /// held (Jay after live test 3: hold UNDO for the page's history).
+    #[test]
+    fn an_overlay_takes_the_wheel_and_undo_says_when_it_goes_down_and_up() {
+        let mut app = ready();
+        app.open_tab(View::Play);
+        app.map.minus = Some(40);
+        app.map.plus = Some(41);
+        assert_eq!(app.wheel(1), vec![Effect::Kit(1)]);
+        app.set_overlay(true);
+        assert_eq!(app.wheel(2), vec![Effect::Rows(RowKey::Pick(2))]);
+        assert_eq!(app.wheel_push(), vec![Effect::Rows(RowKey::Editing(true))]);
+        assert_eq!(press(&mut app, 41), vec![Effect::Rows(RowKey::Step(1))]);
+        assert_eq!(press(&mut app, 40), vec![Effect::Rows(RowKey::Step(-1))]);
+        // Another page: the screen closes it, so the wheel is the page's.
+        app.open_tab(View::Arrange);
+        app.open_tab(View::Play);
+        assert_eq!(app.wheel(1), vec![Effect::Kit(1)]);
+        // UNDO down and up, here and on the Looper tab.
+        assert_eq!(
+            app.button(92, true, 0.0),
+            vec![Effect::Undo { redo: false }, Effect::UndoButton(true)]
+        );
+        assert_eq!(app.button(92, false, 0.7), vec![Effect::UndoButton(false)]);
+        app.open_tab(View::Looper);
+        let fx = app.button(92, true, 1.0);
+        assert_eq!(fx.last(), Some(&Effect::UndoButton(true)));
+        assert_eq!(fx.len(), 2, "the loop's undo, then the button: {fx:?}");
+    }
+
     #[test]
     fn the_sample_tab_comes_after_looper_and_takes_the_wheel_the_pads_and_undo() {
         let mut app = ready();
@@ -4466,11 +4529,14 @@ mod tests {
         assert_eq!(app.wheel(-3), vec![Effect::SamplePad(-1)]);
         // UNDO undoes the Sample page's edits there (SHIFT: redo), and the
         // time engine's takes elsewhere.
-        assert_eq!(press(&mut app, 92), vec![Effect::SampleUndo { redo: true }]);
+        assert_eq!(
+            press(&mut app, 92),
+            vec![Effect::SampleUndo { redo: true }, Effect::UndoButton(true)]
+        );
         app.button(button::SHIFT, false, 0.0);
         assert_eq!(
             press(&mut app, 92),
-            vec![Effect::SampleUndo { redo: false }]
+            vec![Effect::SampleUndo { redo: false }, Effect::UndoButton(true)]
         );
         // - / + step the row picked.
         app.map.minus = Some(40);
@@ -4484,7 +4550,10 @@ mod tests {
         assert_eq!(app.view(), View::Sample);
         app.tab(0);
         // Back on Play, the screen picks the history (the Play view's).
-        assert_eq!(press(&mut app, 92), vec![Effect::Undo { redo: false }]);
+        assert_eq!(
+            press(&mut app, 92),
+            vec![Effect::Undo { redo: false }, Effect::UndoButton(true)]
+        );
     }
 
     #[test]
@@ -4511,7 +4580,7 @@ mod tests {
         // UNDO undoes the pads' edits, as on Sample.
         assert_eq!(
             press(&mut app, 92),
-            vec![Effect::SampleUndo { redo: false }]
+            vec![Effect::SampleUndo { redo: false }, Effect::UndoButton(true)]
         );
         // The Pad view: the Sample tab's controls.
         app.set_pads_browse(false);
@@ -5882,10 +5951,13 @@ mod tests {
         );
         app.open_tab(View::Play);
         // UNDO follows the page: the screen knows the Play view, so it picks.
-        assert_eq!(press(&mut app, 92), vec![Effect::Undo { redo: false }]);
+        assert_eq!(
+            press(&mut app, 92),
+            vec![Effect::Undo { redo: false }, Effect::UndoButton(true)]
+        );
         assert_eq!(
             held(&mut app, button::SHIFT, |a| press(a, 92)),
-            vec![Effect::Undo { redo: true }]
+            vec![Effect::Undo { redo: true }, Effect::UndoButton(true)]
         );
         // Rolling, STOP stops the transport and leaves the sounds alone.
         app.set_rolling(true);
