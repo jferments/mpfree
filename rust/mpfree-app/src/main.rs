@@ -111,6 +111,7 @@ mod qlink_touch;
 mod rt_safety;
 mod sample_page;
 mod sampler;
+mod screen_cost;
 mod synth;
 mod sys;
 mod sysinfo;
