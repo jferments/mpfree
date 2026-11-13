@@ -29,7 +29,7 @@ It may write diagnostic status/fingerprint files on the removable USB. The authe
 
 ### Persistent SSH (current primary access, 2026-11-09)
 
-USB autorun is no longer needed after each reboot. An early-boot `mpfree-sshd.service` in the rootfs starts key-only root SSH on port `2222` (secondary `2223`), with configuration and keys under `/data/mpfree/ssh/`. Installing it required a temporary read-write remount of `/`, so **the reference unit is no longer stock**. The exact paths, risk, the effect of an Akai update, and the undo steps are in [device-modifications.md](../hardware/device-modifications.md). USB autorun remains the fallback if an update removes the unit.
+USB autorun is no longer needed after each reboot. An early-boot `mpfree-sshd.service` in the rootfs starts key-only root SSH on port `2222` (secondary `2223`), with configuration and keys under `/data/mpfree/ssh/`. Installing it required a temporary read-write remount of `/`, so **the reference unit is no longer stock**. The exact paths, risk, the effect of an Akai update, and the undo steps are in [device-modifications.md](../hardware/archive/2026-11/device-modifications.md). USB autorun remains the fallback if an update removes the unit.
 
 ### Reference lab network (not general defaults)
 
@@ -85,7 +85,7 @@ Never use `mount -o remount,rw /`, `fw_setenv`, `flashcp`, `dd of=/dev/mmcblk...
 
 ### Verified first inventory and the focused follow-up
 
-The reference device's first baseline inventory succeeded on **2026-11-09 05:00:46 UTC** after loading the dedicated private key into `ssh-agent`. Local report SHA-256: `4172d29e33359eee106cfcf03665d3a94cd4e4deed75d009a1fe1065ea53850b`. It revealed the Rockchip RK3288 SoC, real eMMC partition labels, ACVA ALSA, three USB MIDI endpoints, DRM/Panfrost and ILI2117 input, and the real factory application unit **`acvs.service`**. See [the redacted field report](../hardware/survey-2026-11-09.md).
+The reference device's first baseline inventory succeeded on **2026-11-09 05:00:46 UTC** after loading the dedicated private key into `ssh-agent`. Local report SHA-256: `4172d29e33359eee106cfcf03665d3a94cd4e4deed75d009a1fe1065ea53850b`. It revealed the Rockchip RK3288 SoC, real eMMC partition labels, ACVA ALSA, three USB MIDI endpoints, DRM/Panfrost and ILI2117 input, and the real factory application unit **`acvs.service`**. See [the redacted field report](../hardware/archive/2026-11/survey-2026-11-09.md).
 
 **First collector limitation:** BusyBox rejected some GNU-style utilities; `ps -eo ... | head` produced empty output without activating its fallback, the expected `inmusic-mpc.service` did not exist, and `aplay`/`arecord`/`aconnect` were not installed. New builds use `/proc` for process names, query `acvs.service`, distinguish missing userspace tools, and **redact the unique `Serial:` field from `/proc/cpuinfo`**.
 

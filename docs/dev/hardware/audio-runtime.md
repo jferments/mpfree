@@ -9,9 +9,9 @@
 > **Collector:** `tools/mpc-one/read-only-runtime.sh`, invoked with the identity-gated `collect-over-ssh.sh --runtime`. No audio device opened, data sent to MIDI, services stopped, DRM master requested or internal storage written. This document is a **redacted and interpreted observation**, not a factory-specification claim.
 
 Earlier research:
-- [First board/eMMC/ALSA/display map](survey-2026-11-09.md)
+- [First board/eMMC/ALSA/display map](archive/2026-11/survey-2026-11-09.md)
 - [Factory process device-file ownership map](resource-ownership.md)
-- [Hardware evidence matrix](research-matrix.md)
+- [Hardware evidence matrix](archive/2026-11/research-matrix.md)
 - [Machine-readable device profile](data/mpc-one-3.6.0-observed.json)
 
 ## 1. Verified active audio stream settings

@@ -6,7 +6,7 @@
 >
 > **Source collector:** `tools/mpc-one/read-only-detail.sh` at branch commit `b2632ae603d844c92968eaec9f2634d2ae2e880a`. The report is **not** in GitHub: it includes a workstation-specific IP/MAC. This file includes only redacted, non-unique device values. Do not publish factory binaries or a raw filesystem/USB dump.
 
-Companion baseline: [first hardware survey](survey-2026-11-09.md). The device's kernel is `6.6.95-az01-2025-06-27-rt55`, OpenEmbedded-derived az0x `5.0.8`, ARMv7 on Rockchip RK3288. Neither survey modified internal partitions, services, PCM streams, raw-MIDI streams, or DRM output.
+Companion baseline: [first hardware survey](archive/2026-11/survey-2026-11-09.md). The device's kernel is `6.6.95-az01-2025-06-27-rt55`, OpenEmbedded-derived az0x `5.0.8`, ARMv7 on Rockchip RK3288. Neither survey modified internal partitions, services, PCM streams, raw-MIDI streams, or DRM output.
 
 ## 1. Most important finding — actual live factory device usage
 
