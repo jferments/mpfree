@@ -479,6 +479,9 @@ pub struct SamplePage {
     auto_synth: Option<String>,
     /// A plan Start asked for: the app makes the patch's copy for it.
     auto_request: Option<Plan>,
+    /// A number to be typed, asked for by a tab (the Warp tempo): the
+    /// screen opens the number pad ([`SamplePage::take_number_ask`]).
+    number_ask: Option<mpfree_ui::numpad::NumberAsk>,
     auto_job: Option<AutoJob>,
     /// The last instrument made, or why not, in a line.
     auto_last: String,
@@ -586,6 +589,7 @@ impl SamplePage {
             auto_state: None,
             auto_synth: None,
             auto_request: None,
+            number_ask: None,
             auto_job: None,
             auto_last: String::new(),
             fx_open: None,
@@ -2271,6 +2275,29 @@ impl SamplePage {
             }
             WaveAction::Audition { pad } => self.audition(pad, out),
             WaveAction::Tab(i) => self.open(ui, i),
+            WaveAction::Ask(ask) => self.number_ask = Some(ask),
+        }
+    }
+
+    /// A number a tab asked to be typed (Jay after live test 3: the Warp
+    /// tempo), for the screen's number pad.
+    pub fn take_number_ask(&mut self) -> Option<mpfree_ui::numpad::NumberAsk> {
+        self.number_ask.take()
+    }
+
+    /// The number typed for `key`: the tab showing makes the change, an
+    /// undo step of its own.
+    pub fn typed(&mut self, ui: &mut Ui, key: &str, value: f64, out: &mut Vec<FromUi>) {
+        let Some(st) = self.state.as_ref() else {
+            return;
+        };
+        let a = match self.editor {
+            Editor::Warp => self.warp.as_mut().and_then(|t| t.typed(st, key, value)),
+            _ => self.tab.as_mut().and_then(|t| t.typed(st, key, value)),
+        };
+        if let Some(a) = a {
+            self.act(ui, a, out);
+            self.lift();
         }
     }
 

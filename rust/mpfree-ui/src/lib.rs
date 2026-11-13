@@ -31,6 +31,7 @@ pub mod fb;
 pub mod geom;
 pub mod gpu_screen;
 pub mod layout;
+pub mod numpad;
 pub mod png;
 pub mod qlink;
 pub mod record;

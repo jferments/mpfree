@@ -27,7 +27,7 @@ Every page in MPFree is laid out the same way, so once you know one, you know th
 
 ## The transport bar
 
-On the Play page, a bar under the tabs shows time: whether MPFree is stopped, playing or recording, the position (bar, beat and step), the tempo in BPM (tap it in time to set the tempo, as with **TAP TEMPO**), and dots that light up with each bar and beat. On the right of it is the view switch; see [Playing live](../making-music/playing-live.md).
+On the Play page, a bar under the tabs shows time: whether MPFree is stopped, playing or recording, the position (bar, beat and step), the tempo in BPM (tap it in time to set the tempo, as with **TAP TEMPO**, or hold a finger on it to type the tempo), and dots that light up with each bar and beat. On the right of it is the view switch; see [Playing live](../making-music/playing-live.md).
 
 ## The Q-Link column and the master bar
 

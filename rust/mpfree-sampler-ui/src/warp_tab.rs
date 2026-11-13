@@ -31,7 +31,10 @@ use mpfree_sampler::model::{Region, SourceId, Warp, WarpMethod, WARP_BPM};
 use mpfree_ui::{EventKind, Ui, UiEvent};
 
 use crate::warp_widgets::{beat_text, WarpView, PER_BAR, TICKS};
-use crate::wave_tab::{self, pad_color, pad_label, region_tempo, WaveAction, WaveState, TABS};
+use crate::wave_tab::{
+    self, pad_color, pad_label, region_tempo, warp_tempo_ask, with_warp_tempo, WaveAction,
+    WaveState, TABS, TYPED_WARP_TEMPO,
+};
 use crate::widgets::{ButtonRow, InfoCard, KnobCard, PadBar, Setting, SettingList};
 
 /// Widget names the tab adds. The app's own are `header` and `hint`.
@@ -264,6 +267,19 @@ impl WarpTab {
         self.gesture = None;
     }
 
+    /// A number typed for the field `key` asked for ([`WaveAction::Ask`]):
+    /// the change, as an undo step of its own.
+    pub fn typed(&mut self, st: &WaveState, key: &str, value: f64) -> Option<WaveAction> {
+        let r = match key {
+            TYPED_WARP_TEMPO => with_warp_tempo(st, &st.region, value)?,
+            _ => return None,
+        };
+        self.lift();
+        let out = self.edit(st, Key::Row(Row::WarpTempo), r);
+        self.lift();
+        out
+    }
+
     /// Where the pad's voices are playing, in source frames.
     pub fn set_playheads(&self, ui: &mut Ui, frames: &[u64]) {
         if let Some(v) = ui.get_mut::<WarpView>(VIEW) {
@@ -386,6 +402,11 @@ impl WarpTab {
         if let Some(list) = ui.get_mut::<SettingList>(LIST) {
             list.rows = rows;
             list.right = self.grid.label().to_string();
+            list.typed = if r.warp.is_some() {
+                vec![Row::WarpTempo.index()]
+            } else {
+                Vec::new()
+            };
         }
         let warped = r.warp.is_some();
         let has_pins = !w.pins.is_empty();
@@ -539,6 +560,9 @@ impl WarpTab {
             (BUTTONS, EventKind::Tab(b)) => self.button(ui, st, *b),
             (LIST, EventKind::Step { index, delta }) => {
                 self.step(ui, st, *Row::ALL.get(*index)?, *delta)
+            }
+            (LIST, EventKind::Type(index)) if Row::ALL.get(*index) == Some(&Row::WarpTempo) => {
+                warp_tempo_ask(r).map(WaveAction::Ask)
             }
             (LIST, EventKind::Select(_)) => None,
             (name, EventKind::Select(_)) if QLINKS.contains(&name) => None,

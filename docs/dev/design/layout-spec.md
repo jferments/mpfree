@@ -14,6 +14,7 @@
   - the hint line, 26 px, which says what the buttons do on that page.
 - **Full-screen pages** (Loading, Touch lab, Calibrate touch) have no top bar. Any page change or MENU closes them.
 - **Touch targets** (Jay after live test 3, 13 Nov): anything tapped answers over its whole visible button, and packed rows (pattern lanes, list rows) answer over the row's full pitch with no dead gap between them. A mute is at least the width of the name it belongs to, never a bare 32 px icon. Where a control can't be that big, the wheel and – / + reach it.
+- **Typing a number** (Jay after live test 3: "Warp tempo (and other numeric fields with large range) should have ability to enter a number, instead of only being able to use dial"): a field that can be typed has a dotted line under its value, and a tap on the value opens the number pad over the page, under the top bar (keys 0 to 9, the point and the minus where the field takes them, Delete, Cancel and a two-row Enter, every key at least 64 px). It shows the range and the value now; Enter out of range keeps the pad open and says the range in red; Cancel or a change of page leaves the field as it was. The wheel and – / + step the number, and the wheel's push is Enter. Fields so far: the Sample tab's Warp tempo (Wave and Warp pages) and the tempo (hold Play's BPM). A typed value is one undo step.
 - **Button labels** (Jay after live test 3: "light gray on a medium gray button is no bueno"): a label on a `raised` fill is `text`, or `text_dim` while the button can't be used (`Theme::button_ink`); `text_faint` is not for labels. `Theme::check` holds both inks at 4.5:1 on `raised` in every theme, and the built-in themes are tested against it.
 
 ## 2. The top bar
@@ -247,11 +248,11 @@ Jay asked for these in the app thread (message of 13 Nov 11:46Z). The ones that 
 - **Touch targets big enough to hit, or reachable with the wheel and – / +**, everywhere. The rule is in section 1, and the mutes and + FX are built (below); the FX page's buttons and the rest of the app still need a pass.
 - **More steps and more tracks** in the sequencer, with a clear way to add them (32, 64, 128 steps; more than 8 tracks). (**The steps** are built: the pattern's head in section 4. More than 8 tracks is still to do.)
 - **Several throws at once** with several fingers on the Play page. The screen and the mixer already hold one throw per finger (tests `two_fingers_hold_two_throws_at_once` and `two_throws_held_at_once_each_hold_their_pad`), so what's left is the panel: the next device run checks that it reports two fingers (app check phase 18).
-- **Typing a number** for fields with a wide range (Warp tempo first), instead of only the wheel.
+- **Typing a number** for fields with a wide range (Warp tempo first), instead of only the wheel. (**Built** for the Warp tempo and the tempo: section 1, Typing a number. Other wide fields can ask for the same pad.)
 
 **Built in the live test 3 fixes PR** (the app thread, 13 Nov), so no longer open above:
 - **RAM %** beside CPU % in the top bar, and the kit chip names the kit (section 1, Status chips).
-- **A tap on the tempo** on Play's transport bar taps the tempo, as TAP TEMPO does (taps in time set it). The tap area is the tempo and its "BPM", the bar's full height and at least 64 px wide.
+- **A tap on the tempo** on Play's transport bar taps the tempo, as TAP TEMPO does (taps in time set it). The tap area is the tempo and its "BPM", the bar's full height and at least 64 px wide. Held still for 0.6 s, it opens the number pad to type the tempo (section 1, Typing a number; batch 3).
 - **A clear way to granular:** the Grain page's Mode row reaches Granular, and the note over its picture is a "tap to play this pad as grains" button, 64 px tall.
 - **The metronome** off by default, at -24 dB, with **Metronome** and **Metronome level** rows in the Play page's options; SHIFT + PLAY START still toggles it, and the choice is saved.
 - **Saying in place why something did nothing** (Jay, 12 Nov 07:00Z): the hint line shows the reason in amber for 4 s, then the hint comes back.
