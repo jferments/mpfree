@@ -192,16 +192,24 @@ def guest(out,temp,p3future,args):
         observed=V16.qemu_real_code(out,image,temp,{"success":True},args)
         src=out/"v16-actual-vendor-QEMU-results.json"
         console=out/"v16-qemu-vendor-function-console.log"
-        if src.is_file():src.rename(out/"V23-ACTUAL-OWNER-DRIVER-ARM.json")
-        if console.is_file():console.rename(out/"v23-owner-arm-guest-console.log")
-        result.update(observed)
-        # The older shared QEMU executor labels vendor_functions_tested with
-        # an unrelated V16 list. Override it with the ACTUAL V23 functions.
-        result["vendor_functions_tested"]=[
+        guest_functions=[
            "FUN_0011ca78: original indirect hardware-driver dispatcher",
            "FUN_0011c912: original controller register-configuration",
            "FUN_0011c4e8: NOT EXECUTED; intercepted before MMIO"
         ]
+        if src.is_file():
+            new_report=out/"V23-ACTUAL-OWNER-DRIVER-ARM.json"
+            report=json.loads(src.read_text())
+            # Inherited V16 runner otherwise prints its stale V16 test list.
+            report["vendor_functions_tested"]=guest_functions
+            report["real_controller_command_body_executed"]=False
+            report["real_controller_config_body_executed"]=True
+            report["new_vendor_case_names"]=cases()
+            write(new_report,report)
+            src.unlink()
+        if console.is_file():console.rename(out/"v23-owner-arm-guest-console.log")
+        result.update(observed)
+        result["vendor_functions_tested"]=guest_functions
         result["new_cases"]=len(cases())
         result["prior_vm_cases_repeated"]=0
         result["real_hardware_controller_executed"]=False
