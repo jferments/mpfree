@@ -112,6 +112,7 @@ mod qlink_touch;
 mod rt_safety;
 mod sample_page;
 mod sampler;
+mod screen_cost;
 mod synth;
 mod sys;
 mod sysinfo;
@@ -3184,8 +3185,6 @@ fn player_session(
     });
     // The time engine (transport, clips, takes) runs in this loop too.
     let mut time = time::TimeHost::new(RATE, app.settings.bpm)?;
-    // The metronome as Prefs kept it (on until it is turned off).
-    time.metronome = app.settings.metronome;
     // The looper follows the transport; the line input stays closed until
     // the Prefs row "Line input" opens it. Its memory (Prefs "Loop memory",
     // as saved) is set aside once, here, and locked in RAM with the rest.
@@ -3482,6 +3481,7 @@ fn player_session(
                     }
                 }
                 gui::FromUi::PadsLayout { in_key } => fx.extend(app.synth_pick_layout(in_key)),
+                gui::FromUi::TapTempo => fx.extend(app.tap_on_screen(t)),
                 // A strip's insert row or "+": the chain editor in the mixer's place.
                 gui::FromUi::Mixer(mpfree_mixer_ui::MixAction::OpenInsert { strip, slot }) => {
                     fx.extend(panels.open_insert(&mut app, &mix, strip, Some(slot)))
@@ -3664,7 +3664,8 @@ fn player_session(
                         fx.extend(app.set_tempo(bpm));
                     }
                     if let Some(mut t) = o.time.take() {
-                        t.metronome = time.metronome;
+                        // The metronome is the system's: it stays as it is.
+                        (t.metronome, t.click_gain) = (time.metronome, time.click_gain);
                         std::mem::swap(&mut time, &mut *t);
                         // The old engine goes back in the box, to be freed
                         // on the screen thread.
@@ -4210,6 +4211,10 @@ fn player_session(
                 }
                 app::Effect::Audio(p) => audio_change = Some(p),
                 app::Effect::Note(s) => out.note(&s),
+                app::Effect::Tell(s) => {
+                    out.note(&s);
+                    out.show(gui::ToUi::Tell(s));
+                }
                 app::Effect::Quit => stop = true,
                 app::Effect::Show(v) => {
                     // Opening the Synth tab hands the pads to the synth, and
@@ -4257,12 +4262,9 @@ fn player_session(
                     }
                 }
                 app::Effect::Fill(on) => time.set_fill(on, 0),
-                app::Effect::Metronome(on) => {
+                app::Effect::Metronome { on, db } => {
                     time.metronome = on;
-                    out.note(&format!(
-                        "SHIFT + PLAY START: metronome {}",
-                        if time.metronome { "on" } else { "off" }
-                    ));
+                    time.click_gain = crate::time::click_gain(f32::from(db));
                 }
                 // A PAD BANK button: banks A-H are kits 1-8 (9-16 and the
                 // Grains kit are banks A-H again, from kit 9 on).
@@ -4422,15 +4424,18 @@ fn player_session(
         {
             let info = time.info();
             let (loop_rec, loop_dub) = looper.recording();
-            fx.extend(app.transport_lights(app::TransportLights {
-                rolling: info.state.rolling(),
-                recording: loop_rec
-                    || matches!(
-                        info.state,
-                        mpfree_transport::State::Recording | mpfree_transport::State::CountIn
-                    ),
-                overdub: loop_dub || info.overdub,
-            }));
+            fx.extend(app.transport_lights(
+                app::TransportLights {
+                    rolling: info.state.rolling(),
+                    recording: loop_rec
+                        || matches!(
+                            info.state,
+                            mpfree_transport::State::Recording | mpfree_transport::State::CountIn
+                        ),
+                    overdub: loop_dub || info.overdub,
+                },
+                t,
+            ));
         }
         // Another device's clock, when the project's tempo is from a port
         // (M4): the leader's bytes read this period go to the follower

@@ -421,7 +421,7 @@ impl GrainTab {
             c.grain_len = g.size_ms * 0.001 * rate / st.region.frames().max(1) as f32;
             c.granular = st.granular();
             c.note = format!(
-                "{}: set Mode to Granular to play grains",
+                "Mode is {}: tap to play this pad as grains",
                 mode_label(st.region.mode)
             );
             if !c.granular {
@@ -477,6 +477,11 @@ impl GrainTab {
     pub fn action(&mut self, ui: &mut Ui, ev: &UiEvent, st: &GrainState) -> Option<GrainAction> {
         match (ev.widget.as_str(), &ev.kind) {
             (BAR, EventKind::Tab(i)) => Some(GrainAction::Tab(*i)),
+            (CLOUD, EventKind::Select(crate::grain_widgets::PLAY_AS_GRAINS)) => {
+                let mut r = st.region.clone();
+                r.mode = PlayMode::Granular;
+                self.edit(st, Key::Row(Row::Mode), r)
+            }
             (CLOUD, EventKind::Value(x)) => {
                 let mut r = st.region.clone();
                 r.grain.position = round_to(*x, 0.001).clamp(0.0, 1.0);
@@ -592,6 +597,11 @@ pub fn stepped(r: &Region, row: Row, delta: i32) -> Region {
         Row::Mode => {
             let i = MODES.iter().position(|m| *m == r.mode).unwrap_or(0);
             r.mode = MODES[shift(i, delta, MODES.len())];
+            // Loop mode needs a loop, or the sampler refuses the edit and
+            // the row stops there (live test 3); as the Wave tab does.
+            if r.mode == PlayMode::Loop && r.sustain_loop.is_none() {
+                r.sustain_loop = Some(crate::wave_tab::default_loop(&r));
+            }
         }
         Row::Scan => g.scan = step_list(&SCANS, g.scan, delta),
         Row::Spray => g.spray = round_to(g.spray + d * 0.05, 0.01).clamp(0.0, 1.0),

@@ -51,6 +51,12 @@ use mpfree_transport::Command;
 /// cable. Akai's app sends 1 and 3 (dim and bright, inferred); so do we.
 pub const LIGHT_OFF: u8 = 1;
 pub const LIGHT_ON: u8 = 3;
+/// Fully dark: PLAY, REC and OVERDUB use 0, not 1, for off (Akai's
+/// transport lights, live test 3 capture).
+pub const LIGHT_DARK: u8 = 0;
+/// Akai's transport lights blink about every 0.3 s (each half of the
+/// blink; observed in live test 3's capture, tempo not recorded).
+pub const BLINK_HALF_SECONDS: f64 = 0.3;
 
 /// What the transport buttons' lights show ([`App::transport_lights`]).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -588,13 +594,20 @@ pub struct Settings {
     pub sound_cores: SoundCores,
     /// Prefs "Loop memory": the looper's size from the next start.
     pub loop_memory: LoopMemory,
-    /// The metronome clicks while the transport plays (SHIFT + PLAY
-    /// START). How you like to work, so kept in Prefs, not the project.
+    /// The metronome (click while counting in and recording): off by
+    /// default (live test 3), Play's options or SHIFT + PLAY START. How
+    /// you like to work, so kept in Prefs, not the project.
     pub metronome: bool,
+    /// The click's level, dBFS: [`METRONOME_DBS`].
+    pub metronome_db: i8,
     /// Prefs "At start": open the last project (true) or start with a new
     /// one (the default). The screen opens it once the sound is going.
     pub open_last: bool,
 }
+
+/// The click levels Play's options step through, dBFS. -24 by default;
+/// -12 was the old fixed level ("far too loud", live test 3).
+pub const METRONOME_DBS: [i8; 6] = [-36, -30, -24, -18, -12, -6];
 
 impl Settings {
     /// The latency the looper makes up for: none for the pads, which are
@@ -630,7 +643,8 @@ impl Default for Settings {
             theme: "default".to_string(),
             sound_cores: SoundCores::Shared,
             loop_memory: LoopMemory::default(),
-            metronome: true,
+            metronome: false,
+            metronome_db: crate::time::CLICK_DB as i8,
             open_last: false,
         }
     }
@@ -702,6 +716,9 @@ pub enum Item {
     LoopMemory,
     /// Prefs: what opens at start, a new project or the last one.
     AtStart,
+    /// Play's options: the metronome on or off, and its level.
+    Metronome,
+    MetronomeLevel,
     /// The arp's own settings (the Options menu opened from the Arp panel).
     Arp(ArpItem),
     /// The synth's engine and pad layouts (the Synth tab's options).
@@ -837,6 +854,10 @@ pub enum Effect {
     ClearConsole,
     /// A line for the log.
     Note(String),
+    /// A line for the log that the screen also shows in place, long enough
+    /// to read ([`crate::gui::TELL_SECONDS`]): why something did nothing,
+    /// or was refused (Jay, 12 Nov: say in place when it would do nothing).
+    Tell(String),
     /// What the arp screens show: the panel, the quick band and the chip.
     Arp(ArpView),
     /// The arp's pattern list (names and patterns), when it changes.
@@ -894,8 +915,12 @@ pub enum Effect {
     /// SHIFT + BROWSE: save the project (the audio loop gathers its
     /// engines' parts and the screen saves them).
     SaveProject,
-    /// SHIFT + PLAY START: the metronome on (true) or off. Kept in Prefs.
-    Metronome(bool),
+    /// The metronome on or off, and its level in dBFS (SHIFT + PLAY
+    /// START, Play's options, and at the start from the saved settings).
+    Metronome {
+        on: bool,
+        db: i8,
+    },
     /// FILL on or off from the coming period: notes with the FILL and
     /// !FILL trig conditions follow it.
     Fill(bool),
@@ -1038,9 +1063,9 @@ pub struct App {
     arp_dirty: bool,
     /// The transport is rolling (the audio loop says each period).
     rolling: bool,
-    /// What the transport buttons' lights last showed
-    /// ([`App::transport_lights`]).
-    lights_shown: TransportLights,
+    /// What the transport buttons' lights last showed, by note
+    /// ([`App::transport_lights`]); `None` until first sent.
+    lights_shown: [Option<u8>; 128],
     /// The synth's pad layout while the synth is on the pads
     /// ([`App::set_pad_layout`]): the pads then feed the arp the layout's
     /// notes, and its events carry notes rather than pad slots.
@@ -1161,7 +1186,7 @@ impl App {
             sent_notes,
             arp_dirty: true,
             rolling: false,
-            lights_shown: TransportLights::default(),
+            lights_shown: Self::startup_transport_lights(),
             pad_layout: None,
             pad_pressed: [PadNotes::default(); 16],
             note_holds: [0; 128],
@@ -1201,33 +1226,80 @@ impl App {
         self.rolling = rolling;
     }
 
+    /// The transport lights as Akai's startup leaves them: STOP bright,
+    /// PLAY, REC and OVERDUB dark, UNDO dim.
+    fn startup_transport_lights() -> [Option<u8>; 128] {
+        let mut l = [None; 128];
+        l[button::STOP as usize] = Some(LIGHT_ON);
+        l[button::PLAY as usize] = Some(LIGHT_DARK);
+        l
+    }
+
     /// The transport buttons' lights for what the transport and the
-    /// looper are doing now: STOP lit while stopped, PLAY while rolling,
-    /// REC while recording, counting in or a loop is armed, OVERDUB while
-    /// overdubbing. Only the lights that changed, as [`Effect::Light`];
-    /// the audio loop sends those Akai's app was seen sending and notes
-    /// the others once (REC, OVERDUB and PLAY wait for the capture of
-    /// Akai's lights, Jay 13 Nov). The start matches Akai's startup
-    /// lights: STOP lit, the rest not.
-    pub fn transport_lights(&mut self, now: TransportLights) -> Vec<Effect> {
-        let was = std::mem::replace(&mut self.lights_shown, now);
-        let light = |on: bool| if on { LIGHT_ON } else { LIGHT_OFF };
-        let mut fx = Vec::new();
-        if now.rolling != was.rolling {
-            fx.push(Effect::Light(button::STOP, light(!now.rolling)));
-            fx.push(Effect::Light(button::PLAY, light(now.rolling)));
+    /// looper are doing now, at `t` seconds, as Akai's app lights them
+    /// (live test 3 capture, `docs/dev/hardware/controller-protocol.md`):
+    /// - PLAY bright while rolling, dark when stopped; while REC or
+    ///   OVERDUB waits for PLAY it blinks bright/dark with them.
+    /// - REC blinks bright/dark while armed and while recording; OVERDUB
+    ///   the same while armed and overdubbing. Dark otherwise.
+    /// - UNDO blinks bright/dim while recording or overdubbing.
+    /// - STOP dim while rolling, bright when stopped (the MPC One's STOP
+    ///   has no LED; harmless).
+    ///
+    /// Only the lights that changed, as [`Effect::Light`]. REC, OVERDUB and
+    /// UNDO only once Map controls (or the defaults) know their buttons.
+    pub fn transport_lights(&mut self, now: TransportLights, t: f64) -> Vec<Effect> {
+        let blink_on = (t / BLINK_HALF_SECONDS).floor().rem_euclid(2.0) < 1.0;
+        let blink = |on: bool, low: u8| match (on, blink_on) {
+            (false, _) => low,
+            (true, true) => LIGHT_ON,
+            (true, false) => {
+                if low == LIGHT_DARK {
+                    LIGHT_DARK
+                } else {
+                    LIGHT_OFF
+                }
+            }
+        };
+        let waiting = !now.rolling && (now.recording || now.overdub);
+        let play = if waiting {
+            blink(true, LIGHT_DARK)
+        } else if now.rolling {
+            LIGHT_ON
+        } else {
+            LIGHT_DARK
+        };
+        let stop = if now.rolling { LIGHT_OFF } else { LIGHT_ON };
+        let mut want: Vec<(u8, u8)> = vec![(button::STOP, stop), (button::PLAY, play)];
+        if let Some(rec) = self.map.rec {
+            want.push((rec, blink(now.recording, LIGHT_DARK)));
         }
-        if now.recording != was.recording {
-            if let Some(rec) = self.map.rec {
-                fx.push(Effect::Light(rec, light(now.recording)));
+        if let Some(dub) = self.map.overdub {
+            want.push((dub, blink(now.overdub, LIGHT_DARK)));
+        }
+        if let Some(undo) = self.map.undo {
+            let on = now.rolling && (now.recording || now.overdub);
+            if on || self.lights_shown[undo as usize & 0x7F].is_some() {
+                want.push((undo, blink(on, LIGHT_OFF)));
             }
         }
-        if now.overdub != was.overdub {
-            if let Some(dub) = self.map.overdub {
-                fx.push(Effect::Light(dub, light(now.overdub)));
+        let mut fx = Vec::new();
+        for (note, v) in want {
+            let slot = &mut self.lights_shown[note as usize & 0x7F];
+            if *slot != Some(v) {
+                *slot = Some(v);
+                fx.push(Effect::Light(note, v));
             }
         }
         fx
+    }
+
+    /// The metronome as the settings have it, for the time engine.
+    fn metronome(&self) -> Effect {
+        Effect::Metronome {
+            on: self.settings.metronome,
+            db: self.settings.metronome_db,
+        }
     }
 
     /// FILL let go, if it was on.
@@ -1249,6 +1321,7 @@ impl App {
             self.arp_view(),
         ];
         fx.extend(self.repeat_light());
+        fx.push(self.metronome());
         let s = &self.settings;
         fx.push(Effect::Looper(LoopAction::Source(s.loop_source)));
         fx.push(Effect::Looper(LoopAction::Command(LoopCommand::SetBars(
@@ -1559,7 +1632,14 @@ impl App {
         } else if Some(note) == self.map.play_start && shift {
             self.settings.metronome = !self.settings.metronome;
             self.save_dirty = true;
-            fx.push(Effect::Metronome(self.settings.metronome));
+            fx.push(self.metronome());
+            fx.push(Effect::Tell(format!(
+                "SHIFT + PLAY START: metronome {}",
+                if self.settings.metronome { "on" } else { "off" }
+            )));
+            if self.in_menu() {
+                fx.push(self.menu_view());
+            }
         } else if Some(note) == self.map.play_start {
             self.arps.engine_at_mut(self.track).resume();
             fx.push(Effect::Time(TimeAction::Transport(Command::PlayStart)));
@@ -1825,6 +1905,19 @@ impl App {
             self.status(),
         ];
         fx.extend(self.repeat_light());
+        fx
+    }
+
+    /// A tap on Play's tempo (live test 3): a tap of the tempo, as TAP
+    /// TEMPO, and the screen says what it did.
+    pub fn tap_on_screen(&mut self, t: f64) -> Vec<Effect> {
+        let mut fx = self.tap(t);
+        let set = fx.iter().any(|e| matches!(e, Effect::Status(_)));
+        fx.push(Effect::Tell(if set {
+            format!("tempo: {:.1} BPM (tapped)", self.settings.bpm)
+        } else {
+            "tempo: keep tapping in time to set it".to_string()
+        }));
         fx
     }
 
@@ -2435,7 +2528,14 @@ impl App {
             (_, View::Console) => &[Item::ConsoleFollow, Item::ClearConsole],
             (_, View::Arp) => &arp::ARP_OPTIONS,
             (_, View::Synth) => &synth_pads::SYNTH_OPTIONS,
-            _ => &[Item::Rate, Item::Tempo, Item::PadLevel, Item::Latch],
+            _ => &[
+                Item::Rate,
+                Item::Tempo,
+                Item::Metronome,
+                Item::MetronomeLevel,
+                Item::PadLevel,
+                Item::Latch,
+            ],
         }
     }
 
@@ -2505,6 +2605,11 @@ impl App {
             Item::SystemInfo => ("System info", "Open".to_string()),
             Item::Rate => ("Note repeat rate", s.rate.label().to_string()),
             Item::Tempo => ("Tempo", format!("{:.1} BPM", s.bpm)),
+            Item::Metronome => (
+                "Metronome",
+                if s.metronome { "On" } else { "Off" }.to_string(),
+            ),
+            Item::MetronomeLevel => ("Metronome level", format!("{} dB", s.metronome_db)),
             Item::PadLevel => (
                 "Pad level",
                 match self.pad_level {
@@ -2672,6 +2777,12 @@ impl App {
                 "Note Repeat follow. TAP TEMPO sets it too:",
                 "tap it three or four times.",
             ],
+            Item::Metronome => vec![
+                "A click on each beat while counting in and",
+                "recording, higher on the bar. Off to start;",
+                "SHIFT + PLAY START turns it on or off too.",
+            ],
+            Item::MetronomeLevel => vec!["How loud the click is, -36 to -6 dB."],
             Item::PadLevel => vec![
                 "FULL LEVEL plays every hit at 127,",
                 "SHIFT + FULL LEVEL (Half Level) at 64.",
@@ -2967,6 +3078,14 @@ impl App {
                 s.bpm = (s.bpm + d as f64).clamp(30.0, 300.0).round();
                 self.update_engine();
                 fx.push(self.status());
+            }
+            Item::Metronome => {
+                s.metronome = !s.metronome;
+                fx.push(self.metronome());
+            }
+            Item::MetronomeLevel => {
+                s.metronome_db = cycle(&METRONOME_DBS, s.metronome_db, d);
+                fx.push(self.metronome());
             }
             Item::PadLevel => {
                 self.pad_level = cycle(
@@ -4192,12 +4311,25 @@ mod tests {
             app.step_item(row(SynthItem::Engine), -1);
         }
         assert_eq!(app.synth_pads.engine, Engine::Poly);
-        // No scale: the pads panel's In key only says so; Chromatic is already on.
+        // Chromatic is already on: a tap says so.
         assert!(matches!(
-            app.synth_pick_layout(true).as_slice(),
-            [Effect::Note(_)]
+            app.synth_pick_layout(false).as_slice(),
+            [Effect::Tell(t)] if t.contains("already Chromatic")
         ));
-        assert!(app.synth_pick_layout(false).is_empty());
+        // No scale: In key picks Major on the root and says so (live test 3).
+        let fx = app.synth_pick_layout(true);
+        let p = pads(&fx).unwrap();
+        assert_eq!(p.layout(), PadLayout::InKey);
+        assert!(p.scale.is_some());
+        assert!(
+            fx.iter()
+                .any(|e| matches!(e, Effect::Tell(t) if t.contains("In key, C Major"))),
+            "{fx:?}"
+        );
+        // Back to no scale and Chromatic for the rest.
+        app.step_item(row(SynthItem::Scale), -1);
+        assert!(app.synth_pads.scale.is_none());
+        app.synth_pick_layout(false);
         // Scale: Major (Chromatic is skipped; Off stands for it), root D.
         let p = pads(&app.step_item(row(SynthItem::Scale), 1)).unwrap();
         let major = mpfree_arp::scale::by_name("Major").unwrap();
@@ -4231,7 +4363,12 @@ mod tests {
             pads(&app.synth_pick_layout(true)).unwrap().layout(),
             PadLayout::InKey
         );
-        assert!(app.synth_pick_layout(true).is_empty(), "In key already");
+        assert!(
+            !app.synth_pick_layout(true)
+                .iter()
+                .any(|e| matches!(e, Effect::SynthPads(_))),
+            "In key already"
+        );
         let p = pads(&app.synth_bank(2)).unwrap();
         assert_eq!((p.bank, p.layout()), (2, PadLayout::Chords));
         assert!(app.synth_bank(2).is_empty());
@@ -4986,7 +5123,7 @@ mod tests {
         app.toggle_panel();
         press(&mut app, MENU);
         assert!(
-            matches!(app.menu_view(), Effect::Menu(m) if m.title == "Play options" && m.rows.len() == 4)
+            matches!(app.menu_view(), Effect::Menu(m) if m.title == "Play options" && m.rows.len() == 6)
         );
     }
 
@@ -5464,6 +5601,23 @@ mod tests {
         );
     }
 
+    /// Live test 3: taps on Play's tempo tap the tempo, and say so.
+    #[test]
+    fn taps_on_plays_tempo_set_it() {
+        let mut app = ready();
+        let fx = app.tap_on_screen(10.0);
+        assert!(fx
+            .iter()
+            .any(|e| matches!(e, Effect::Tell(t) if t.contains("keep tapping"))));
+        app.tap_on_screen(10.5);
+        app.tap_on_screen(11.0);
+        let fx = app.tap_on_screen(11.5);
+        assert_eq!(app.settings.bpm, 120.0);
+        assert!(fx
+            .iter()
+            .any(|e| matches!(e, Effect::Tell(t) if t == "tempo: 120.0 BPM (tapped)")));
+    }
+
     #[test]
     fn play_held_while_rolling_is_a_fill_and_twice_latches_it() {
         let mut app = ready();
@@ -5502,48 +5656,92 @@ mod tests {
         assert!(fx.contains(&Effect::Time(TimeAction::Transport(Command::Stop))));
     }
 
-    /// The transport buttons' lights follow the transport and the loops,
-    /// only when they change (13 Nov live test: none lit).
+    /// The transport buttons' lights follow the transport and the loops
+    /// as Akai's app lights them (live test 3 capture), only when they
+    /// change: PLAY steady while rolling; REC and OVERDUB blink 3/0 while
+    /// armed (PLAY blinking with them) and while recording; UNDO blinks
+    /// 3/1 while recording.
     #[test]
-    fn the_transport_lights_follow_play_record_and_overdub() {
+    fn the_transport_lights_follow_play_record_and_overdub_as_akais_do() {
         const REC: u8 = 73;
         const OVERDUB: u8 = 80;
+        const UNDO: u8 = 67;
         let mut app = ready();
         let lights = |rolling, recording, overdub| TransportLights {
             rolling,
             recording,
             overdub,
         };
-        // As Akai's startup left them: nothing to send.
-        assert!(app.transport_lights(lights(false, false, false)).is_empty());
-        // OVERDUB not found: no light for it.
-        app.map.learn(mapper::Job::Rec, Some(REC));
+        // Stopped, as Akai's startup left them: nothing to send.
+        app.map.learn(mapper::Job::Rec, None);
         app.map.learn(mapper::Job::Overdub, None);
-        assert!(app.transport_lights(lights(false, false, true)).is_empty());
+        app.map.learn(mapper::Job::Undo, None);
+        assert!(app
+            .transport_lights(lights(false, false, false), 0.0)
+            .is_empty());
+        // Playing: PLAY bright, STOP dim.
         assert_eq!(
-            app.transport_lights(lights(true, true, false)),
+            app.transport_lights(lights(true, false, false), 1.0),
             vec![
                 Effect::Light(button::STOP, LIGHT_OFF),
                 Effect::Light(button::PLAY, LIGHT_ON),
-                Effect::Light(REC, LIGHT_ON)
             ]
         );
+        assert!(app
+            .transport_lights(lights(true, false, false), 1.4)
+            .is_empty());
+        app.transport_lights(lights(false, false, false), 2.0);
+        app.map.learn(mapper::Job::Rec, Some(REC));
         app.map.learn(mapper::Job::Overdub, Some(OVERDUB));
+        app.map.learn(mapper::Job::Undo, Some(UNDO));
+        // REC armed while stopped: REC and PLAY blink 3/0 together.
+        let fx = app.transport_lights(lights(false, true, false), 3.0);
+        assert!(
+            fx.contains(&Effect::Light(button::PLAY, LIGHT_ON)),
+            "{fx:?}"
+        );
+        assert!(fx.contains(&Effect::Light(REC, LIGHT_ON)), "{fx:?}");
+        assert!(fx.contains(&Effect::Light(OVERDUB, LIGHT_DARK)), "{fx:?}");
+        let fx = app.transport_lights(lights(false, true, false), 3.0 + BLINK_HALF_SECONDS);
         assert_eq!(
-            app.transport_lights(lights(true, false, true)),
+            fx,
             vec![
-                Effect::Light(REC, LIGHT_OFF),
-                Effect::Light(OVERDUB, LIGHT_ON)
+                Effect::Light(button::PLAY, LIGHT_DARK),
+                Effect::Light(REC, LIGHT_DARK)
             ]
         );
-        assert!(app.transport_lights(lights(true, false, true)).is_empty());
+        // Recording: PLAY steady, REC still blinking, UNDO blinking 3/1.
+        let fx = app.transport_lights(lights(true, true, false), 3.0 + 3.0 * BLINK_HALF_SECONDS);
+        assert!(
+            fx.contains(&Effect::Light(button::PLAY, LIGHT_ON)),
+            "{fx:?}"
+        );
+        assert!(fx.contains(&Effect::Light(UNDO, LIGHT_OFF)), "{fx:?}");
+        assert!(
+            !fx.contains(&Effect::Light(REC, LIGHT_ON)),
+            "REC on its dark half"
+        );
+        let fx = app.transport_lights(lights(true, true, false), 3.0 + 4.0 * BLINK_HALF_SECONDS);
         assert_eq!(
-            app.transport_lights(lights(false, false, false)),
-            vec![
-                Effect::Light(button::STOP, LIGHT_ON),
-                Effect::Light(button::PLAY, LIGHT_OFF),
-                Effect::Light(OVERDUB, LIGHT_OFF)
-            ]
+            fx,
+            vec![Effect::Light(REC, LIGHT_ON), Effect::Light(UNDO, LIGHT_ON)]
+        );
+        // STOP: everything back, UNDO dim.
+        let fx = app.transport_lights(lights(false, false, false), 9.0);
+        for want in [
+            Effect::Light(button::STOP, LIGHT_ON),
+            Effect::Light(button::PLAY, LIGHT_DARK),
+            Effect::Light(REC, LIGHT_DARK),
+            Effect::Light(UNDO, LIGHT_OFF),
+        ] {
+            assert!(fx.contains(&want), "{want:?} in {fx:?}");
+        }
+        // Overdub armed: OVERDUB and PLAY blink.
+        let fx = app.transport_lights(lights(false, false, true), 9.0);
+        assert!(fx.contains(&Effect::Light(OVERDUB, LIGHT_ON)), "{fx:?}");
+        assert!(
+            fx.contains(&Effect::Light(button::PLAY, LIGHT_ON)),
+            "{fx:?}"
         );
     }
 
@@ -5701,11 +5899,11 @@ mod tests {
         // ERASE and SHIFT + ERASE do nothing yet (Jay, 22:12Z).
         assert!(press(&mut app, 60).is_empty());
         assert!(shifted(&mut app, 60).is_empty());
-        // SHIFT + 16 LEVEL: Chromatic | In key (here: no scale yet).
+        // SHIFT + 16 LEVEL: Chromatic | In key (no scale yet: Major).
         assert!(press(&mut app, 62).is_empty());
         assert!(shifted(&mut app, 62)
             .iter()
-            .any(|e| matches!(e, Effect::Note(n) if n.contains("pick a scale first"))));
+            .any(|e| matches!(e, Effect::Tell(n) if n.contains("In key, C Major"))));
     }
 
     #[test]
@@ -5725,10 +5923,10 @@ mod tests {
             );
         }
         // SHIFT + PLAY START (93): the metronome.
-        assert_eq!(
-            held(&mut app, SHIFT, |a| press(a, 93)),
-            [Effect::Metronome(false)]
-        );
-        assert!(!app.settings.metronome, "kept in Prefs");
+        let fx = held(&mut app, SHIFT, |a| press(a, 93));
+        assert_eq!(fx[0], Effect::Metronome { on: true, db: -24 });
+        assert!(app.save_dirty, "the toggle is saved");
+        let fx = held(&mut app, SHIFT, |a| press(a, 93));
+        assert_eq!(fx[0], Effect::Metronome { on: false, db: -24 });
     }
 }

@@ -1,7 +1,7 @@
 <!--
 status: changing
 covers: rust/mpfree-sampler rust/mpfree-sampler-ui rust/mpfree-grain rust/mpfree-app/src/sample_page.rs rust/mpfree-app/src/sampler.rs
-checked: 2026-11-13 f8cc558
+checked: 2026-11-13 9560b32
 -->
 
 # Sampling
@@ -135,10 +135,7 @@ The scenes are saved with the kit.
 
 **Granular** playback plays the sound as a cloud of tiny overlapping pieces (grains). It can freeze a moment, stretch it into a pad, or scatter it into texture. Touch the square to move the **position** in the sound and the **size** of the grains together, and use the Q-Links for **position**, **size**, **density** and **pitch**. **Scan speed** moves through the sound on its own.
 
-Grains play only when the pad's **Mode** is **Granular**. Until then the page says so over the picture.
-
-> [!NOTE]
-> **In this build, set Granular on the Wave page.** The Grain page's own **Mode** row stops at **Toggle**: it can't step on to **Loop**, so it never reaches **Granular**. On **Wave**, step **Mode** with **–** and **+** through **Loop** to **Granular** (Loop gets a loop region of its own on the way), then come back to **Grain**.
+Grains play only when the pad's **Mode** is **Granular**. Until then a button over the picture says which mode the pad is in: tap it to play the pad as grains. The **Mode** row steps through every mode to **Granular** too (on the way, **Loop** gets a loop region of its own, as on the Wave page).
 
 ## FX: effects on one pad, or on the whole kit
 

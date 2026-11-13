@@ -413,6 +413,8 @@ pub struct SamplePage {
     play_turn: Option<(usize, PadKnob, u64)>,
     shown_heads: Vec<u64>,
     lines: Vec<String>,
+    /// Refused edits, for the screen to say in place.
+    told: Vec<String>,
     /// Edits applied, and views sent to the audio thread.
     pub edits: u64,
     pub views_sent: u64,
@@ -542,6 +544,7 @@ impl SamplePage {
             play_turn: None,
             shown_heads: Vec::new(),
             lines: Vec::new(),
+            told: Vec::new(),
             edits: 0,
             views_sent: 0,
             warps: Warps::default(),
@@ -1770,10 +1773,14 @@ impl SamplePage {
                         }
                         self.mark_renamed(kit);
                     }
-                    Err(e) => self.lines.push(format!(
-                        "sample: edit of pad {} not made ({e:?})",
-                        self.pad_text(kit, pad)
-                    )),
+                    Err(e) => {
+                        let line = format!(
+                            "sample: edit of pad {} not made ({e:?})",
+                            self.pad_text(kit, pad)
+                        );
+                        self.told.push(line.clone());
+                        self.lines.push(line);
+                    }
                 }
                 if one_step {
                     // Copy, paste, clear and put are a step each: log it now.
@@ -1882,10 +1889,14 @@ impl SamplePage {
                             *d = true;
                         }
                     }
-                    Err(e) => self.lines.push(format!(
-                        "sample: edit of pad {} not made ({e:?})",
-                        self.pad_text(kit, pad)
-                    )),
+                    Err(e) => {
+                        let line = format!(
+                            "sample: edit of pad {} not made ({e:?})",
+                            self.pad_text(kit, pad)
+                        );
+                        self.told.push(line.clone());
+                        self.lines.push(line);
+                    }
                 }
                 self.refresh(ui);
             }
@@ -1928,10 +1939,14 @@ impl SamplePage {
                             *d = true;
                         }
                     }
-                    Err(e) => self.lines.push(format!(
-                        "sample: edit of pad {} not made ({e:?})",
-                        self.pad_text(kit, pad)
-                    )),
+                    Err(e) => {
+                        let line = format!(
+                            "sample: edit of pad {} not made ({e:?})",
+                            self.pad_text(kit, pad)
+                        );
+                        self.told.push(line.clone());
+                        self.lines.push(line);
+                    }
                 }
                 self.refresh(ui);
             }
@@ -2207,10 +2222,14 @@ impl SamplePage {
                             *d = true;
                         }
                     }
-                    Err(e) => self.lines.push(format!(
-                        "sample: edit of pad {} not made ({e:?})",
-                        self.pad_text(kit, pad)
-                    )),
+                    Err(e) => {
+                        let line = format!(
+                            "sample: edit of pad {} not made ({e:?})",
+                            self.pad_text(kit, pad)
+                        );
+                        self.told.push(line.clone());
+                        self.lines.push(line);
+                    }
                 }
                 self.refresh(ui);
             }
@@ -3979,6 +3998,11 @@ impl SamplePage {
     }
 
     /// Lines for the log since the last call.
+    /// Refusals to show in place (they are in `take_lines` too).
+    pub fn take_told(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.told)
+    }
+
     pub fn take_lines(&mut self) -> Vec<String> {
         std::mem::take(&mut self.lines)
     }
