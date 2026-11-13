@@ -35,7 +35,7 @@ use crate::looping::{LoopWave, LooperView};
 use crate::mixing::{PlayFx, PlayLevels};
 use crate::perf::ProcView;
 use crate::play_page::{self, Knob, PadInfo, PadsBar, PlayPage, PlayView, SynthPads, Turn};
-use crate::play_widgets::{MiniPads, PlayTransport, StepGrid, Throws, XyPad, YourTiming};
+use crate::play_widgets::{self, MiniPads, PlayTransport, StepGrid, Throws, XyPad, YourTiming};
 use crate::sample_page::{self, SamplePage};
 use crate::sampler::{Cloud, Playheads, ViewSwap};
 use crate::time::{HitInfo, StepAction, StepsData};
@@ -1425,6 +1425,7 @@ impl Player {
             g.steps = old.steps;
             g.play = old.play;
             g.selected = old.selected;
+            (g.page, g.pages, g.length) = (old.page, old.pages, old.length);
         }
         self.play.fill_steps(&mut g);
         let same = self
@@ -1437,6 +1438,7 @@ impl Player {
                     && old.steps == g.steps
                     && old.play == g.play
                     && old.selected == g.selected
+                    && (old.page, old.pages, old.length) == (g.page, g.pages, g.length)
             });
         if !same {
             if let Some(w) = self.ui.get_mut::<StepGrid>(play_page::STEPS) {
@@ -1446,6 +1448,7 @@ impl Player {
                 w.steps = g.steps;
                 w.play = g.play;
                 w.selected = g.selected;
+                (w.page, w.pages, w.length) = (g.page, g.pages, g.length);
             }
         }
         let mut th = Throws::default();
@@ -4090,6 +4093,31 @@ impl Player {
                 self.refresh_play();
                 self.refresh_qlinks();
                 a.map(FromUi::Steps)
+            }
+            // The pattern head: the page, and the length (32, 64, 128 steps).
+            (play_page::STEPS, EventKind::Tab(k))
+                if k == play_widgets::HEAD_PREV || k == play_widgets::HEAD_NEXT =>
+            {
+                let d = if k == play_widgets::HEAD_PREV { -1 } else { 1 };
+                if !self.play.turn_page(d) {
+                    self.tell(if d < 0 {
+                        "steps: this is the first page"
+                    } else {
+                        "steps: this is the last page (+ adds steps)"
+                    });
+                }
+                self.refresh_play();
+                self.refresh_qlinks();
+                None
+            }
+            (play_page::STEPS, EventKind::Tab(k)) => {
+                match self.play.length_action(k == play_widgets::HEAD_LONGER) {
+                    Ok(a) => Some(FromUi::Steps(a)),
+                    Err(why) => {
+                        self.tell(&why);
+                        None
+                    }
+                }
             }
             (play_page::STEPS, EventKind::Toggle(pad)) if pad < 16 => {
                 let mute = self.play.levels.pad_mutes & (1 << pad) == 0;
@@ -7168,6 +7196,76 @@ mod tests {
 
     /// UNDO follows the page (Jay, 13 Nov 13:53Z): the loop on the Loop
     /// view, the takes on Beats, and on All whichever changed last.
+    /// Jay after live test 3: 32, 64 and 128 steps, with a clear way to
+    /// get them. The pattern's head has ‹ › for the page and - + for the
+    /// length.
+    #[test]
+    fn the_patterns_head_turns_pages_and_doubles_or_halves_its_steps() {
+        use play_widgets::{HEAD_LONGER, HEAD_NEXT, HEAD_PREV, HEAD_SHORTER};
+        let mut p = sample_play(Fonts::embedded(), PlayView::Beats);
+        p.take_actions();
+        let r = p.ui.rect_of(play_page::STEPS).unwrap();
+        let tap = |p: &mut Player, k: usize| {
+            let (x, y) = StepGrid::head_at(r, k);
+            let a = p.touch(3, Touch::Down, x, y);
+            p.touch(3, Touch::Up, x, y);
+            a
+        };
+        let grid = |p: &Player| {
+            let g = p.ui.get::<StepGrid>(play_page::STEPS).unwrap();
+            (g.page, g.pages, g.length)
+        };
+        assert_eq!(grid(&p), (0, 1, 16));
+        // + asks for twice the steps, repeating the ones there are.
+        assert_eq!(
+            tap(&mut p, HEAD_LONGER),
+            Some(FromUi::Steps(StepAction::Length {
+                steps: 32,
+                copy: true
+            }))
+        );
+        // One page: › says so in place of the hint.
+        assert_eq!(tap(&mut p, HEAD_NEXT), None);
+        let hint = |p: &Player| p.ui.get::<Label>("hint").unwrap().text.clone();
+        assert!(hint(&p).contains("last page"), "{}", hint(&p));
+        // The time engine made it 32 steps: › shows the second page.
+        let mut st = p.play.steps.clone();
+        let c = st.clip.as_mut().unwrap();
+        c.steps = 32;
+        for (_, row) in &mut c.rows {
+            let first = row.clone();
+            row.extend(first);
+        }
+        p.apply(ToUi::Steps(Box::new(st)));
+        assert_eq!(grid(&p), (0, 2, 32));
+        assert_eq!(tap(&mut p, HEAD_NEXT), None);
+        assert_eq!(grid(&p), (1, 2, 32));
+        // A tap on the first step there is step 17 (an empty lane's).
+        assert_eq!(
+            p.play.tap_step(15, 0),
+            Some(StepAction::Tap {
+                pad: 15,
+                step: 16,
+                velocity: play_page::TAP_VELOCITY
+            })
+        );
+        assert_eq!(tap(&mut p, HEAD_PREV), None);
+        assert_eq!(grid(&p).0, 0);
+        // - halves it, down to 16; at 16 it says why not.
+        assert_eq!(
+            tap(&mut p, HEAD_SHORTER),
+            Some(FromUi::Steps(StepAction::Length {
+                steps: 16,
+                copy: false
+            }))
+        );
+        let mut st = p.play.steps.clone();
+        st.clip.as_mut().unwrap().steps = 16;
+        p.apply(ToUi::Steps(Box::new(st)));
+        assert_eq!(tap(&mut p, HEAD_SHORTER), None);
+        assert!(hint(&p).contains("16 steps is the fewest"), "{}", hint(&p));
+    }
+
     #[test]
     fn undo_follows_the_page_and_the_play_view() {
         use mpfree_time_ui::view::TakeRow;
