@@ -1,6 +1,6 @@
 # Plugins: the CLAP host
 
-**Status:** 2026-11-13. Steps P1 (the host) and P2 (the sandbox) of the plugin plan are built and tested on the workstation and on ARMv7 under qemu. The code is [`rust/mpfree-clap`](../../../rust/mpfree-clap) and [`rust/mpfree-plughost`](../../../rust/mpfree-plughost). The app uses them for **plugin effects as mixer inserts** ([In the app](#in-the-app)); plugin instruments wait for the [track host](track-host.md) in the app, and no third-party plugin has been tried on the MPC yet. The plan for plugins is in the synth skill tree (P1 to P6). The first plugin pack (P3) is Airwindows, Surge XT and Dexed (Jay, 13 Nov), CLAP only until P5.
+**Status:** 2026-11-11, steps P1 (the host) and P2 (the sandbox) of the plugin plan, host-only and tested on the workstation and on ARMv7 under qemu. The code is [`rust/mpfree-clap`](../../../rust/mpfree-clap) and [`rust/mpfree-plughost`](../../../rust/mpfree-plughost). Nothing in the pad player uses them yet, and no third-party plugin has been tried. The plan for plugins is in the design doc "MPFree synths and plugins: design" and the synth skill tree (P1 to P6).
 
 MPFree runs native engines first (Poly, FM, the drum, pluck and wavetable synths). Plugins add what we don't build, which means CLAP, LV2 and VST3 plugins built for ARM Linux. Desktop builds can't run on the MPC's ARM chip, and Akai's own plugins aren't a path. CLAP comes first: it is MIT-licensed, plain C, and made for hosts like ours (sample-exact events, per-note expression, a clear threading model).
 
@@ -59,35 +59,6 @@ Real time: the node's side of a block never allocates or locks. `tests/no_alloc.
 
 `cargo run --release -p mpfree-plughost --example roundtrip` (from `rust/`) measures it with the test gain at the MPC's period (128 frames at 44.1 kHz), in-process and sandboxed. On the 4-core cloud workstation VM (2026-11-11) the round trip was 46 us on average and 110 us at the 99th percentile: 1.6 % and 3.8 % of the 2.9 ms period. The worst block took 3.6 ms, a scheduler stall in the VM, which at the default deadline would have been a miss. The MPC's numbers aren't measured yet. They come with the plugin passports (P4), with the process's audio thread at real-time priority.
 
-- **Listing a file.** `list(program, file)` starts the process with `--list FILE`. It loads the file, prints one tab-separated line per plugin (`plugin`, id, name, vendor, `instrument` or `effect`) and exits. A file that crashes or hangs while loading costs only that process: the host waits at most `CONTROL_TIMEOUT` and kills it. A plugin is an instrument when its CLAP features include `instrument`.
-- **The program.** `Program` is the executable plus any words before the process's own arguments. `spawn(exe, ...)` uses the `mpfree-plughost` binary. `spawn_with(program, ...)` takes any program, such as the app itself as `mpfree plughost` (below).
-- **State snapshots.** `Sandbox::refresh_state()` reads the plugin's state (a round trip) and keeps it. `SandboxNode::saved_state()` copies that snapshot without asking the process or waiting, for a project save from any thread but the audio thread's period. `restart_from_snapshot()` restarts with it. `Sandbox::orphaned()` says the node was dropped and only the handle is left.
-
-### The rack
-
-`mpfree_plughost::rack::Rack` holds the plugins found in a folder and the processes running:
-
-- `Rack::scan(program, dir, shown)` lists every `.clap` file in `dir`, in name order, each with `list`. It returns lines for the report for what it found and for each file it left out: one that won't load, one with no plugins, a plugin id another file already has. It keeps at most 128 plugins. Node ids (`clap:` and the plugin's id), names and the "Plugin · Vendor" line are `'static`, kept for the program's life like the nodes' own descriptions.
-- `Rack::make(node_id)` starts the plugin's process, takes a first snapshot and keeps the handle. The node waits for its process until `Rack::set_deadline` (half the block by default).
-- `Rack::watch(now)`, every 250 ms from a control thread:
-  - lets go of handles whose node is gone, which ends their process;
-  - restarts a crashed process from its last snapshot, at most 3 times a minute. A fourth crash in that minute leaves the plugin down: an effect passes its input through, an instrument is silent. Making it again tries once more;
-  - refreshes each running plugin's snapshot every 5 s.
-- `Rack::refresh_states()` reads every snapshot now, before a project save.
-- Every start, failed start, crash, restart and give-up is a line (`take_lines`). `summary()` counts plugins found, running and down, crashes, restarts and failures. Neither waits: they use `try_lock`.
-
-## In the app
-
-[`rust/mpfree-app/src/plugins.rs`](../../../rust/mpfree-app/src/plugins.rs):
-
-- **The plugin process** is `mpfree-plughost` beside the app (or `MPFREE_PLUGHOST`), and otherwise the app itself: `mpfree plughost ...` is handled first thing in `main` and runs the same process code. A stick with only the app on it still hosts plugins.
-- **The device build is static** (`+crt-static`), and a plugin is a shared library that needs the MPC's own `libc.so.6` and `libgcc_s.so.1`. A static program loads one with glibc's static `dlopen`, which the linker warns about: the MPC's glibc must be the release the app was linked with. Ubuntu noble's cross toolchain links 2.39 and the MPC reports 2.39 ([ARMv7 userspace](../research/armv7-userspace-compat.md)). It works for the test plugins under qemu with the toolchain's ARM libraries standing in for the MPC's `/lib`; no plugin has been loaded on the MPC yet. If it fails there, a dynamically linked `mpfree-plughost` put beside the app takes over with no change to the app (the stick tool would have to copy it).
-- **At start**, before the sound, the rack scans `files/plugins/` in the data folder. The lines go in the report.
-- **The chain editor's picker** lists the plugin effects after the built-in ones, under the Plugins heading (`ChainState::plugins`, `ChainState::picks`, each a `Pick` with `Category::Plugins` from the FX registry). A tap sends `ChainAction::Add("clap:...")` as for any effect.
-- **The builder thread** (`control.rs`, `mpfree-build`) builds a `clap:` id with `Rack::make`, so starting a process never happens on the audio thread. It also calls `Rack::watch` every 250 ms while it waits for jobs. A removed insert is dropped there too, and the next watch ends its process.
-- **Nothing is hidden.** The audio loop passes the rack's lines to the report each period when there are any (no allocation when there are none), and the 30-second status adds `status: plugins: N found · running · down · crashes · restarts · failed`.
-- **Not yet in the app:** plugin state in the project file (the project thread's `parts/mixer.txt`, with `SandboxNode::saved_state`), plugin instruments (the track host isn't in the app yet), the plugin's own Dev page row and an on-screen warning, and the `mpfree-plughost` binary on the stick (not needed: the app serves).
-
 Not yet:
 
 - The plugin's restart and rescan requests (CLAP `request_restart`, a parameter or port rescan) are seen inside the process but not passed back to MPFree.
@@ -139,11 +110,6 @@ The same tests pass for `armv7-unknown-linux-gnueabihf` under qemu, including th
 - dropping the node and the handle ends and reaps the process;
 - a sandboxed synth plays on a track host track (`tests/sandbox.rs`);
 - no allocation on the node's side of a block (`tests/no_alloc.rs`).
-- a plugin file is listed from its own process, with the same names as in-process; a missing file and a missing binary fail cleanly; the list lines read back and junk is refused;
-- a crash restarts from the snapshot, the node reads the snapshot, a gone process gives none and the old one stays, and a dropped node leaves the handle orphaned;
-- `tests/rack.rs`: a scan of a real folder finds the test plugins and says why it left out a duplicate and a file that isn't a library (and ignores a text file); a plugin made from the rack is restarted from its snapshot three times, then left off and dry on the fourth crash in a minute, with every step said; a dropped node's process is let go; an empty folder finds and says nothing.
-
-`cargo test --locked -p mpfree-app --test plughost` runs the app as the plugin process: it lists the test plugins' file, refuses to run without the sandbox's arguments, and plays the test gain through a rack whose program is `mpfree plughost`. CI also runs it in the static ARMv7 step under qemu. There the test starts the app as `qemu-arm -L /usr/arm-linux-gnueabihf`, so the plugin's `libc.so.6` and `libgcc_s.so.1` come from the cross toolchain as they would from the MPC's `/lib` (unless `QEMU_LD_PREFIX` is set). Each run uses its own folder, and eight runs at once all passed.
 
 These pass for `armv7-unknown-linux-gnueabihf` under qemu too. There, `MPFREE_PLUGHOST_TEST_EXE` names a wrapper that starts the ARM build of the process under qemu, because a process started from inside qemu-user runs on the host CPU. Under load (eight runs at once, 80 runs) they passed every time.
 
@@ -151,4 +117,4 @@ These pass for `armv7-unknown-linux-gnueabihf` under qemu too. There, `MPFREE_PL
 
 - **P3, ARM builds:** reproducible armv7 build recipes for free plugins (Surge XT, Dexed, Airwindows first), with their licenses and sources.
 - **P4, passports:** automatic tests on the MPC for each plugin: does it load, does it stay free of NaN, does its state round-trip, what it costs per voice, its latency.
-- In the app: plugin state saved with the project, a plugin as a track host instrument once the track host is in the app, plugins in the instrument browser, and the rack's counts on the Dev page.
+- In the app: a plugin as a track host instrument and as a mixer insert, and plugins in the instrument browser. The pad player's wiring goes through the Hello MPC work.
