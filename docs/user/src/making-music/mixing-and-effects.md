@@ -103,6 +103,9 @@ To give a knob a control of its own, touch it and tap **Learn to a Q-Link**, the
 
 {{shot: chain | The chain editor on the drum bus, with Drive selected.}}
 
+> [!NOTE]
+> **In this build the chain editor doesn't answer taps.** Its buttons (**+ Add effect**, the effects in the list, **Cancel**, **Up**, **Down**, **Remove** and **‹ Mixer**) do nothing yet, so you can't add an effect from the screen. The effects already on a track play, and the Q-Links still turn the selected effect's knobs. To leave the editor, tap a tab at the top or press **MAIN**. This is fixed in the next build.
+
 ## Macros
 
 **Macros** are knobs that move several settings at once (Wash, Grit and so on). There are eight. The **Q-LINK** button steps the Q-Links through **Macros 1-4**, **Macros 5-8** and back to the page's own knobs, on the Play page and in the chain editor.

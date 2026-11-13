@@ -1,7 +1,7 @@
 # MPC One / az0x 3.6.0: internal controller USB-MIDI protocol (observed)
 
 > **Evidence type:** owner-run `collect-over-ssh.sh --midi-capture` (opt-in passive usbmon), 2026-11-09 22:52 UTC, factory app running. Report SHA-256 `b38a0962d5c377b054009111eca15d34e355c3aa79a3e5863869f8e891b50daf` (owner-local, not committed). Everything below was **observed on this unit** with the factory app driving the controller. Values marked "inferred" are not yet proven.
-> **Method:** [audio-midi-diagnostics](../guides/audio-midi-diagnostics.md). Nothing was sent to the controller by MPFree.
+> **Method:** [audio-midi-diagnostics](../../../guides/audio-midi-diagnostics.md). Nothing was sent to the controller by MPFree.
 
 ## Transport
 
@@ -45,7 +45,7 @@ TheKikGen's MPCLiveXplore-libs lists the same device ID (0x46), the same pad not
 
 ## Without Akai's app (Hello MPC rounds 1 and 2, 2026-11-10)
 
-On the [kexec test build](kexec-test-boot.md) (Akai 3.10.0 rootfs, kernel 6.18, Akai's app masked), our [`mpfree-hello`](../../../rust/mpfree-app) listened while the owner hit pads, turned Q-Links and the wheel, and pressed buttons. Nothing was sent to the controller in round 2's listening step.
+On the [kexec test build](kexec-test-boot.md) (Akai 3.10.0 rootfs, kernel 6.18, Akai's app masked), our [`mpfree-hello`](../../../../../rust/mpfree-app) listened while the owner hit pads, turned Q-Links and the wheel, and pressed buttons. Nothing was sent to the controller in round 2's listening step.
 
 Round 1 listened on cable 1 only and heard nothing. With the old keep-alive (`F0 47 00 46 52 00 04 7D 6D 57 35 F7` every 5 s) the controller answered on cable 1, but no control data arrived there.
 
@@ -148,7 +148,7 @@ Every note gave CC 2 and 3 at 127 at the key down and 0 at the key up, as in rou
 - **INFERENCE:** full scale is 5 V. Five octaves over the full range fits 1 V/oct at 0 to 5 V, but no meter has been on a jack, so the volts per count are **UNKNOWN** until one is.
 - **UNKNOWN:** which jack, and tip or ring, each port number is.
 - **Found in the third round (below):** why the MIDI track sent nothing in rounds 1 and 2. Only its MIDI Output Ch was set; its MIDI Out routing had to be set as well.
-- The bytes are written down as code in `rust/mpfree-midi/src/cv_wire.rs`, with tests holding every value above. Sending any of these CCs from MPFree is a **state-changing** write to the controller and waits for the owner's go ([midi-io](../design/midi-io.md), step M6).
+- The bytes are written down as code in `rust/mpfree-midi/src/cv_wire.rs`, with tests holding every value above. Sending any of these CCs from MPFree is a **state-changing** write to the controller and waits for the owner's go ([midi-io](../../../design/midi-io.md), step M6).
 
 ### Third round: the MIDI Out jack (2026-11-12)
 
@@ -169,4 +169,4 @@ Before this round the owner set the MIDI track's MIDI Out routing (to "MPC", 1) 
 - **OBSERVED:** round 1's CV-track pads were notes 72 and 93 by the CV formula. Pads 1 and 13 on this MIDI track sent the same notes, 72 and 93.
 - **UNKNOWN:** why pad velocity 13 went out as 12 while 127 and 17 went out unchanged (a pad curve in Akai's app, perhaps).
 - **UNKNOWN:** clock out. PLAY and STOP sent no clock, start or stop. Whether Sync was ticked for the port in Preferences > MIDI / Sync was not recorded.
-- Writing to cable 2 from MPFree is a **state-changing** write to the controller (notes leave the jack) and waits for the owner's go ([midi-io](../design/midi-io.md), step M3).
+- Writing to cable 2 from MPFree is a **state-changing** write to the controller (notes leave the jack) and waits for the owner's go ([midi-io](../../../design/midi-io.md), step M3).

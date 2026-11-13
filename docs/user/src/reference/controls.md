@@ -40,7 +40,7 @@ On the current test build, some buttons (REC, OVERDUB, UNDO, PLAY START, TRACK M
 | **–** and **+** | Step the picked row's value down or up. | Works (pages: next build) |
 | **The data wheel's push** | Opens the picked row: its value is outlined and the wheel changes it. Push again to go back to picking rows. On a row that opens something, opens it. | Works in menus (pages: next build) |
 
-**The transport lights.** STOP is lit while the transport is stopped and dims while it plays. PLAY is meant to light while playing, REC while recording, counting in or while a loop waits to record, and OVERDUB while overdubbing. Those three stay dark for now: MPFree only sends the light messages it has seen Akai's own software send, and these three are being checked first. Until then the Console says `button N: no light sent` once for each.
+**The transport lights.** The MPC One's STOP button has no light of its own. PLAY, REC and OVERDUB stay dark in this build: MPFree only sends the light messages it has seen Akai's own software send. Those messages were recorded on 13 November, and a later build lights PLAY while playing, REC while recording or waiting to record, and OVERDUB while overdubbing, the way Akai's software does. Until then the Console says `button N: no light sent` once for each.
 
 ## Repeat and arpeggiator
 

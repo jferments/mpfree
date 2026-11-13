@@ -1,7 +1,7 @@
 # MPC One / az0x 3.6.0: which internal MIDI port carries which control
 
 > **Evidence type:** owner-run `collect-over-ssh.sh --midi-activity` (read-only RawMIDI counter deltas), 2026-11-09 22:31 UTC, factory app running (PID 317 in this boot). Report SHA-256 `7919cc567c41debf59362d98ce2174bf03d8466f757fd3f8d58d3e3fcc2c4501` (owner-local, not committed).
-> **Method:** for each phase the owner did one kind of action for ~8.2 s; the tool diffed `/proc/asound/card0/midi0` byte counters before and after. Nothing was opened or sent. See [audio-midi-diagnostics](../guides/audio-midi-diagnostics.md).
+> **Method:** for each phase the owner did one kind of action for ~8.2 s; the tool diffed `/proc/asound/card0/midi0` byte counters before and after. Nothing was opened or sent. See [audio-midi-diagnostics](../../../guides/audio-midi-diagnostics.md).
 
 ## Raw deltas (bytes per ~8.2 s window)
 
