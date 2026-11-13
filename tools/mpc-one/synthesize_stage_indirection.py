@@ -14,11 +14,18 @@ INPUTS={
     "uboot":"static/v11/v11-ghidra-uboot.json",
     "updater":"static/v11/v11-ghidra-az01-update.json",
 }
+# Keys name logical analysis stages; V11 reports keep their real firmware role.
+# In particular the "updater" stage is the "az01-update" executable.
+EXPECTED_SOURCE_ROLES={
+    "spl":"spl",
+    "uboot":"uboot",
+    "updater":"az01-update",
+}
 
 def build(read):
     docs={role:json.loads(read(path)) for role,path in INPUTS.items()}
     for role,doc in docs.items():
-        if (doc.get("role")!=role
+        if (doc.get("role")!=EXPECTED_SOURCE_ROLES[role]
             or len(str(doc.get("source_sha256_prechecked_by_launcher","")))!=64):
             raise ValueError("Missing source SHA/role: "+role)
     spl=docs["spl"]
@@ -152,7 +159,7 @@ def build(read):
         "original_vendor_code_executed":False,
         "next_experiments":[
             "Resolve SPL second handoff at context+0x0c without mistaking a mutable context for an immutable target.",
-            "Decode five order words and ten mapping words against actual driver selection cases and media aliases.",
+            "Decode five boot-order words and eight mapping words against actual driver selection cases and media aliases.",
             "Inspect power-source ADC channel-0 original thresholds, scale and four response strings.",
             "Resolve imported az01-update functions to libaz01-prog implementations using ELF relocation/symbol metadata.",
             "Continue independent ROM/USB entry and all-device restoration research.",
