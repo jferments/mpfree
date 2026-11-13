@@ -8,7 +8,7 @@ checked: 2026-11-12 870b4ce
 
 The **MIDI IN** and **MIDI OUT** jacks, a USB keyboard on the **USB** port and the **CV/Gate** outputs connect MPFree to other instruments. Playing MPFree from a keyboard and [MIDI Learn](#midi-learn) work now. Following another device's clock works too. Playing gear from **MIDI OUT** and the CV outputs stay off until they've been checked on an MPC One. This page says what each will do, so you can plan your setup.
 
-All of these settings are in one place: the mixer's [I/O view](mixing-and-effects.md#the-io-view), opened with the I/O icon beside the mixer icon, in its **MIDI**, **Sync** and **CV** sections. A row whose part isn't working yet says so, and keeps what you set. MPFree keeps these settings when it quits and puts them back at the next start (with a data folder on the stick). Each port's input and thru describe your gear, so they stay the same for every project; everything else (what each track plays on, where the tempo comes from, clock out, the CV outputs and learned controls) belongs to the project, and will be saved with each project once projects can be saved.
+All of these settings are in one place: the mixer's [I/O view](mixing-and-effects.md#the-io-view), opened with the I/O icon beside the mixer icon, in its **MIDI**, **Sync** and **CV** sections. A row whose part isn't working yet says so, and keeps what you set. Each port's input and thru describe your gear, so they stay the same for every project: MPFree keeps them when it quits and puts them back at the next start (with a data folder on the stick). Everything else (what each track plays on, where the tempo comes from, clock out, the CV outputs and learned controls) belongs to the song: it is saved with the project and comes back when you open it, and a new project starts from the defaults.
 
 ## Playing MPFree from a keyboard
 
@@ -60,7 +60,7 @@ Each learned control is listed in the mixer's I/O view, under **MIDI** and then 
 
 Tap **Forget** to take a learned control off. A row in amber says why its control does nothing: the device isn't plugged in, or its port is set to **Plays tracks**, which keeps every message for playing. A port set to **Learn only** turns knobs but plays no notes.
 
-Learned controls are kept between starts with the other MIDI settings. Still to come: keeping them with each project, learning any value on the screen rather than only effect knobs, a range for each control so a fader's top can stop at 0 dB, and a control that waits until it reaches the knob's value before taking over.
+Learned controls are saved with the project. Still to come: learning any value on the screen rather than only effect knobs, a range for each control so a fader's top can stop at 0 dB, and a control that waits until it reaches the knob's value before taking over.
 
 ## CV and gate
 
