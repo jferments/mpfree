@@ -203,6 +203,19 @@ class MidiCaptureWrapperTests(unittest.TestCase):
             ssh = [ln for ln in fh.read().splitlines() if ln.startswith("ssh: ")]
         self.assertEqual(ssh, ["ssh: sh -s"])
 
+    def test_transport_phases(self):
+        # Enter after the setup list, then Enter for each of the five phases.
+        rc, out = self.run_wrapper("\n" * 6, MPFREE_CAPTURE_PHASES="transport")
+        self.assertEqual(rc, 0, out)
+        self.assertIn("Stay on the Main page with the transport stopped.", out)
+        self.assertIn("Do not save the", out)
+        for name in ("idle", "play_stop", "rec_play", "overdub_play", "play_start"):
+            self.assertIn(f"] {name}: ", out)
+        self.assertIn("phase set: transport", self.report())
+        with open(self.log) as fh:
+            ssh = [ln for ln in fh.read().splitlines() if ln.startswith("ssh: ")]
+        self.assertEqual(ssh, ["ssh: sh -s"])
+
     def test_default_is_the_controller_set(self):
         rc, out = self.run_wrapper("\n" * 10)
         self.assertEqual(rc, 0, out)
@@ -226,7 +239,8 @@ class MidiCaptureWrapperTests(unittest.TestCase):
     def test_wrapper_refuses_an_unknown_phase_set(self):
         rc, out = self.run_wrapper("\n" * 7, MPFREE_CAPTURE_PHASES="cv")
         self.assertNotEqual(rc, 0, out)
-        self.assertIn("MPFREE_CAPTURE_PHASES must be controller, midi-cv, cv-scale or midi-out, not: cv", out)
+        self.assertIn("MPFREE_CAPTURE_PHASES must be controller, midi-cv, cv-scale, midi-out or transport, not: cv",
+                      out)
         with open(self.log) as fh:
             self.assertNotIn("ssh:", fh.read())
 
@@ -234,10 +248,10 @@ class MidiCaptureWrapperTests(unittest.TestCase):
 class StaticTests(unittest.TestCase):
     def test_phase_sets(self):
         mod = load_helper()
-        self.assertEqual(sorted(mod.PHASE_SETS), ["controller", "cv-scale", "midi-cv", "midi-out"])
-        self.assertEqual(sorted(mod.SETUPS), ["cv-scale", "midi-cv", "midi-out"])
+        self.assertEqual(sorted(mod.PHASE_SETS), ["controller", "cv-scale", "midi-cv", "midi-out", "transport"])
+        self.assertEqual(sorted(mod.SETUPS), ["cv-scale", "midi-cv", "midi-out", "transport"])
         self.assertIs(mod.PHASE_SETS["controller"], mod.PHASES)
-        for phases in (mod.MIDI_CV_PHASES, mod.CV_SCALE_PHASES, mod.MIDI_OUT_PHASES):
+        for phases in (mod.MIDI_CV_PHASES, mod.CV_SCALE_PHASES, mod.MIDI_OUT_PHASES, mod.TRANSPORT_PHASES):
             names = [n for n, _ in phases]
             self.assertEqual(names[0], "idle")  # the baseline the per-cable counts compare against
             self.assertEqual(len(names), len(set(names)))
