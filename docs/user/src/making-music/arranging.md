@@ -85,7 +85,7 @@ To record onto an audio track:
 
 - When there are more lanes than fit, drag up or down on the names to scroll them.
 - All the audio tracks play through one **Audio** strip in the mixer (TRACK MIX).
-- Audio tracks make up for the line input's delay with the looper's **Latency to make up for** setting (MENU on the Looper tab), so a take lines up with the beat you played it against. Change it there and both follow.
+- Audio tracks make up for the line input's delay with **Line input latency** in [Prefs](../reference/prefs.md), so a take lines up with the beat you played it against. It's the same setting as the Looper's **Latency to make up for** (MENU on the Looper tab): change either and both follow.
 - The audio tracks share one minute of stereo memory; **Audio track memory** in [Prefs](../reference/prefs.md) sets 30 seconds to 10 minutes, from the next start. The Song view's legend says how much is free ("Audio 0:42 of 1:00 free"). A recording that runs out of memory stops there and keeps what it got.
 
 > [!NOTE]
