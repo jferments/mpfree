@@ -167,7 +167,7 @@ impl Console {
     pub fn draw(&mut self) -> Result<(), String> {
         let damage = self.ui.paint(&mut self.canvas);
         match self.fb.as_mut() {
-            Some(fb) if !damage.is_empty() => fb.present(&self.canvas, &damage),
+            Some(fb) if !damage.is_empty() => fb.present(&self.canvas, &damage).map(|_| ()),
             _ => Ok(()),
         }
     }
@@ -1599,8 +1599,15 @@ impl Player {
         if let Some(left) = self.timing.seconds_left {
             chips.push(Chip::new(format!("{left} s left"), Tone::Dim));
         }
-        if let Some(h) = self.ui.get_mut::<Header>("header") {
-            if h.chips != chips {
+        // Only when a chip changed: this runs every second, and the header
+        // spans the screen, so redrawing it rewrites nearly every row of the
+        // panel (it is mounted turned).
+        if self
+            .ui
+            .get::<Header>("header")
+            .is_some_and(|h| h.chips != chips)
+        {
+            if let Some(h) = self.ui.get_mut::<Header>("header") {
                 h.chips = chips;
             }
         }
@@ -3851,7 +3858,9 @@ pub fn spawn(
             let mut report = ScreenReport::default();
             let mut total_ms = 0.0;
             let mut last_frame = Instant::now() - Duration::from_secs(1);
-            let mut window = (Instant::now(), 0u32, 0f64);
+            // What each frame costs: the Performance page's Screen row every
+            // second, and a status line every 30 s (screen_cost.rs).
+            let mut cost = crate::screen_cost::ScreenCost::new(Instant::now());
             // Debug mode: /proc and /sys every 2 s, and a perf: line every 30 s.
             let mut perf = crate::perf::Sampler::new();
             let (mut perf_at, mut perf_logged): (Option<Instant>, Option<Instant>) = (None, None);
@@ -3863,6 +3872,7 @@ pub fn spawn(
             let mut engines_at: Option<Instant> = None;
             let mut quit = false;
             while !quit {
+                cost.wake();
                 match rx.recv_timeout(Duration::from_millis(4)) {
                     Ok(m) => quit |= take(&mut player, m),
                     Err(RecvTimeoutError::Timeout) => {}
@@ -3983,25 +3993,20 @@ pub fn spawn(
                 }
                 let t0 = Instant::now();
                 let damage = player.ui.paint(&mut canvas);
-                if let Some(f) = fb.as_mut() {
-                    if let Err(e) = f.present(&canvas, &damage) {
-                        println!("screen: {e} (drawing stopped)");
-                        report.error = Some(e);
-                        fb = None;
-                    }
-                }
-                let ms = t0.elapsed().as_secs_f64() * 1e3;
-                last_frame = Instant::now();
+                let t1 = Instant::now();
+                let rows = present(&mut fb, &canvas, &damage, &mut report);
+                let t2 = Instant::now();
+                last_frame = t2;
+                let ms = (t2 - t0).as_secs_f64() * 1e3;
                 report.frames += 1;
                 total_ms += ms;
                 report.max_ms = report.max_ms.max(ms);
-                window.1 += 1;
-                window.2 = window.2.max(ms);
-                if window.0.elapsed() >= Duration::from_secs(1) {
-                    let fps = window.1 as f64 / window.0.elapsed().as_secs_f64();
-                    player
-                        .set_screen_row(format!("{fps:.0} fps, slowest frame {:.1} ms", window.2));
-                    window = (Instant::now(), 0, 0.0);
+                cost.frame(player.view(), t1 - t0, t2 - t1, rows);
+                if let Some(row) = cost.second(t2) {
+                    player.set_screen_row(row);
+                }
+                if let Some(line) = cost.status(t2) {
+                    println!("{line}");
                 }
             }
             report.mean_ms = if report.frames > 0 {
@@ -4011,6 +4016,30 @@ pub fn spawn(
             };
             report
         })
+}
+
+/// Copies a painted frame's changed rectangles to the panel; says how many
+/// native rows it wrote. The one place a frame leaves the screen thread
+/// (where a GPU drawing process would take it instead). A screen that
+/// fails stops drawing, and says why once.
+fn present(
+    fb: &mut Option<FbTarget>,
+    canvas: &SoftCanvas,
+    damage: &[mpfree_ui::Rect],
+    report: &mut ScreenReport,
+) -> usize {
+    let Some(f) = fb.as_mut() else {
+        return 0;
+    };
+    match f.present(canvas, damage) {
+        Ok(rows) => rows,
+        Err(e) => {
+            println!("screen: {e} (drawing stopped)");
+            report.error = Some(e);
+            *fb = None;
+            0
+        }
+    }
 }
 
 /// Hands the screen's actions to the audio thread. A kit view that finds no
@@ -4152,7 +4181,7 @@ pub fn sample_player(fonts: Fonts) -> Player {
             peak_grains: 0,
         },
     }));
-    p.set_screen_row("30 fps, slowest frame 6.4 ms".into());
+    p.set_screen_row("30 fps · paint 1.2 ms · copy 3.1 ms · slowest 6.4 ms".into());
     for l in ["+0.012 s -> Public: F0 7E 00 06 01 F7 = identity request",
               "+0.013 s -> Public: F0 47 00 46 52 00 04 15 21 6D 43 F7 = session ping",
               "+0.020 s Private: F0 47 7F 46 53 00 05 15 21 6D 43 02 F7 = session reply, token 15 21 6D 43, accepted",
@@ -10905,5 +10934,64 @@ mod tests {
         // Raw Y runs right to left (2048 = left edge); raw X runs top to bottom.
         assert_eq!((x, y), (0, 400));
         assert_eq!(t2.contacts, 1);
+    }
+
+    /// No page redraws while nothing happens, except the ones that show
+    /// something live. Each idle redraw costs the screen thread a paint and
+    /// a copy, 30 times a second on the MPC: the Pads tab's browser did
+    /// that until 13 Nov, and the top bar redrew every second whether or
+    /// not a chip changed (and, spanning the turned panel, rewrote nearly
+    /// every row of it).
+    #[test]
+    fn no_page_redraws_while_idle() {
+        // The sample screens outgrow the 2 MiB test thread in a debug build
+        // (as above).
+        std::thread::Builder::new()
+            .stack_size(8 << 20)
+            .spawn(idle_pages_stay_still)
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
+    fn idle_pages_stay_still() {
+        // Pages whose live parts redraw on their own, and why.
+        const LIVE: [&str; 3] = [
+            // The I/O view's lights and the clock's tempo, a small part.
+            "mixer-io",
+            // The touch test's trails fade.
+            "debug-touch",
+            // The Rec tab's input meter and waveform follow the input.
+            "sample-rec",
+        ];
+        let mut busy = Vec::new();
+        for (name, mut p) in sample_screens(Fonts::embedded) {
+            let (w, h) = p.ui.size();
+            let mut canvas = SoftCanvas::new(w, h);
+            // Settle: what the sample's set-up left to draw, and the
+            // first second's chips.
+            for _ in 0..40 {
+                p.tick(0.033);
+                p.ui.paint(&mut canvas);
+            }
+            let mut frames = 0;
+            // Three seconds of frames with nothing happening.
+            for _ in 0..90 {
+                p.tick(0.033);
+                if p.ui.needs_paint() {
+                    frames += 1;
+                    p.ui.paint(&mut canvas);
+                }
+            }
+            if LIVE.contains(&name) {
+                assert!(
+                    frames > 0,
+                    "{name} shows something live: listed for nothing"
+                );
+            } else if frames > 0 {
+                busy.push(format!("{name}: {frames} of 90 frames"));
+            }
+        }
+        assert!(busy.is_empty(), "redrawn while idle: {busy:?}");
     }
 }

@@ -290,16 +290,18 @@ impl FbTarget {
     }
 
     /// Copy the given rectangles of `canvas` to the screen, as whole native
-    /// rows, two or more per write.
-    pub fn present(&mut self, canvas: &SoftCanvas, damage: &[Rect]) -> Result<(), String> {
+    /// rows, two or more per write. Says how many native rows it wrote.
+    pub fn present(&mut self, canvas: &SoftCanvas, damage: &[Rect]) -> Result<usize, String> {
         let stride = self.layout.geometry.stride;
+        let mut rows = 0;
         for (first, end) in self.layout.row_spans(damage) {
             self.layout.rows(canvas, first, end, &mut self.buf);
             self.file
                 .write_all_at(&self.buf, (first * stride) as u64)
                 .map_err(|e| format!("writing the screen: {e}"))?;
+            rows += end - first;
         }
-        Ok(())
+        Ok(rows)
     }
 }
 

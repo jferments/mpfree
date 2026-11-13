@@ -23,6 +23,17 @@
 //!   shares it with ordinary threads (it runs ahead of them) and with any
 //!   interrupts sent there: finding out what that costs is the test.
 //!
+//! **Reverb returns a block late** (`two` and `three`;
+//! `Mixer::set_pipelined_returns`, #260): a return whose reverb can take a
+//! block back from its pre-delay (a Cloud all wet, with at least a block of
+//! pre-delay, no sidechain) runs its inserts on a lane on core 2 one period
+//! behind and still sounds on time, bit for bit. Every other return (the
+//! Play page's delay, a reverb with no pre-delay or a dry mix) stays on the
+//! audio thread. The returns lane runs at SCHED_FIFO 68, one below the
+//! other lanes: the mixer posts it at the start of the block and joins it
+//! at the returns, after the pad channels, tracks and submixes, so the
+//! inserts lane (joined first) takes core 2 from it whenever both have work.
+//!
 //! **One deadline per period** ([`lane_deadline`]). Every lane join in a
 //! period (the sampler's parts, the synth, each mixer stage and the
 //! returns) waits until the same moment at most: when the sound card's
@@ -84,6 +95,9 @@ pub const AUDIO_CORE: usize = 3;
 pub const LANE_CORE: usize = 2;
 pub const SYNTH_CORE: usize = 1;
 pub const LANE_FIFO: i32 = 69;
+/// The reverb returns' lane, one below the other lanes on core 2: it has
+/// until the returns to finish, the inserts lane only until its stage ends.
+pub const RETURNS_FIFO: i32 = LANE_FIFO - 1;
 
 /// The cores the program's helper threads run on while the sound has
 /// cores of its own: 0 and 1 (the screen, the writers, the loaders).
@@ -229,6 +243,18 @@ pub struct Counts {
     /// Late synth periods still not back by the next period's deadline,
     /// which the audio thread then waited for (a stall).
     pub synth_waits: u64,
+    /// Blocks whose reverb returns ran a block late on the returns lane.
+    pub returns_blocks: u64,
+    /// Of those, the ones it was late for (the returns silent for that
+    /// block and the next: a fallback).
+    pub returns_late: u64,
+    /// Times a return started and stopped running a block late (a knob or
+    /// a new effect moved it; each seamless).
+    pub returns_starts: u64,
+    pub returns_stops: u64,
+    /// Stops with no late input left to hand the reverb: a block of the
+    /// return's input lost (a fallback; it should stay 0).
+    pub returns_lost: u64,
 }
 
 impl Counts {
@@ -242,14 +268,24 @@ impl Counts {
             synth_periods: synth.periods,
             synth_late: synth.late,
             synth_waits: synth.waits,
+            returns_blocks: m.pipe_posts,
+            returns_late: m.pipe_late,
+            returns_starts: m.pipe_starts,
+            returns_stops: m.pipe_stops,
+            returns_lost: m.pipe_lost_input,
         }
     }
 
     fn late(&self) -> u64 {
-        self.voice_late + self.mix_late + self.synth_late + self.synth_waits
+        self.voice_late
+            + self.mix_late
+            + self.synth_late
+            + self.synth_waits
+            + self.returns_late
+            + self.returns_lost
     }
 
-    fn values(&self) -> [u64; 7] {
+    fn values(&self) -> [u64; COUNTS] {
         [
             self.voice_parts,
             self.voice_late,
@@ -258,9 +294,17 @@ impl Counts {
             self.synth_periods,
             self.synth_late,
             self.synth_waits,
+            self.returns_blocks,
+            self.returns_late,
+            self.returns_starts,
+            self.returns_stops,
+            self.returns_lost,
         ]
     }
 }
+
+/// How many numbers [`Counts`] holds.
+const COUNTS: usize = 12;
 
 /// The synth, played on the audio thread, or (`three`) on a lane on core
 /// 1 while the drums render. Between periods it is always here, so the
@@ -436,7 +480,7 @@ impl std::ops::DerefMut for SynthSlot {
 pub struct CoreShared {
     /// The mode, whether its lanes started, and the set-up rows.
     setup: OnceLock<(SoundCores, bool, Vec<Row>)>,
-    counts: [AtomicU64; 7],
+    counts: [AtomicU64; COUNTS],
 }
 
 impl CoreShared {
@@ -451,6 +495,11 @@ impl CoreShared {
             synth_periods: get(4),
             synth_late: get(5),
             synth_waits: get(6),
+            returns_blocks: get(7),
+            returns_late: get(8),
+            returns_starts: get(9),
+            returns_stops: get(10),
+            returns_lost: get(11),
         }
     }
 
@@ -572,9 +621,11 @@ impl Cores {
         c
     }
 
-    /// `two`: runs about half the pad channels' and tracks' inserts on a
-    /// lane on core 2. Call it right after the mixer is made, before the
-    /// loop: it allocates and starts the mixer's lane thread.
+    /// `two` and `three`: runs about half the pad channels' and tracks'
+    /// inserts on a lane on core 2, and the reverb returns a block late on
+    /// another lane on core 2 one priority lower. Call it right after the
+    /// mixer is made, before the loop: it allocates and starts the mixer's
+    /// lane threads.
     pub fn start_mixer(&mut self, mixer: &mut Mixer) {
         if !self.lanes {
             return;
@@ -587,6 +638,17 @@ impl Cores {
         self.lines.push(format!("sound cores: mixer lane {text}"));
         self.rows
             .push(("Mixer inserts lane".to_string(), text, tone));
+        let cfg = LaneConfig {
+            fifo: self.pins.fifo.map(|_| RETURNS_FIFO),
+            ..self.lane("mpfree-lane-returns", self.pins.lane)
+        };
+        let (text, tone) = match mixer.set_pipelined_returns(Some(cfg), PERIOD_TIME) {
+            Some(s) => lane_text(&s, "reverb returns a block late"),
+            None => ("not started".to_string(), Tone::Bad),
+        };
+        self.lines.push(format!("sound cores: returns lane {text}"));
+        self.rows
+            .push(("Reverb returns lane".to_string(), text, tone));
     }
 
     fn lane(&self, name: &str, core: Option<usize>) -> LaneConfig {
@@ -633,19 +695,28 @@ impl Cores {
             c.synth_late - self.noted.synth_late,
             c.synth_waits - self.noted.synth_waits,
         );
+        let (dr, dl) = (
+            c.returns_late - self.noted.returns_late,
+            c.returns_lost - self.noted.returns_lost,
+        );
         self.noted = c;
         self.noted_at = Some(now);
         let s = |n: u64| if n == 1 { "" } else { "s" };
         Some(format!(
             "sound cores: late: {dv} part{} with half the drum voices unheard, {dm} mixer stage{} \
-             with those strips silent and {ds} period{} with the synth left out (fallbacks), {dw} \
-             wait{} for the synth past the next deadline; {}, {}, {} and {} since the start",
+             with those strips silent, {dr} returns block{} with the reverbs silent, {dl} block{} \
+             of a return's input lost and {ds} period{} with the synth left out (fallbacks), {dw} \
+             wait{} for the synth past the next deadline; {}, {}, {}, {}, {} and {} since the start",
             s(dv),
             s(dm),
+            s(dr),
+            s(dl),
             s(ds),
             s(dw),
             c.voice_late,
             c.mix_late,
+            c.returns_late,
+            c.returns_lost,
             c.synth_late,
             c.synth_waits
         ))
@@ -655,12 +726,18 @@ impl Cores {
     pub fn status(&self, c: Counts) -> String {
         let lanes = || {
             format!(
-                "sound cores {}: drum voices {} parts on core 2, {} late; mixer {} stages on core 2, {} late",
+                "sound cores {}: drum voices {} parts on core 2, {} late; mixer {} stages on core 2, \
+                 {} late; returns {} blocks on core 2, {} late, {} starts, {} stops, {} lost",
                 self.mode.name(),
                 c.voice_parts,
                 c.voice_late,
                 c.mix_stages,
-                c.mix_late
+                c.mix_late,
+                c.returns_blocks,
+                c.returns_late,
+                c.returns_starts,
+                c.returns_stops,
+                c.returns_lost
             )
         };
         match self.mode {
@@ -728,6 +805,14 @@ pub fn rows(shared: &CoreShared) -> Vec<Row> {
             format!("{} stages · {} late", c.mix_stages, c.mix_late),
             tone(c.mix_late),
         ));
+        rows.push((
+            "Reverb returns on core 2 · late · lost".to_string(),
+            format!(
+                "{} blocks · {} late · {} lost",
+                c.returns_blocks, c.returns_late, c.returns_lost
+            ),
+            tone(c.returns_late + c.returns_lost),
+        ));
     }
     if *mode == SoundCores::Three {
         rows.push((
@@ -746,16 +831,17 @@ pub fn rows(shared: &CoreShared) -> Vec<Row> {
 /// (`--preview` and the golden screens): fixed set-up rows and counts,
 /// with 3 late mixer stages to show how a late one looks.
 pub fn sample(shared: &CoreShared) {
-    let lane = |what: &str| {
+    let lane_at = |fifo: i32, what: &str| {
         lane_text(
             &LaneSetup {
                 threaded: Ok(()),
                 pinned: Some(Ok(LANE_CORE)),
-                fifo: Some(Ok(LANE_FIFO)),
+                fifo: Some(Ok(fifo)),
             },
             what,
         )
     };
+    let lane = |what: &str| lane_at(LANE_FIFO, what);
     let row = |label: &str, (text, tone): (String, Tone)| (label.to_string(), text, tone);
     let rows = vec![
         row(
@@ -768,6 +854,10 @@ pub fn sample(shared: &CoreShared) {
         ),
         row("Drum voices lane", lane("half the drum voices")),
         row("Mixer inserts lane", lane("about half the inserts")),
+        row(
+            "Reverb returns lane",
+            lane_at(RETURNS_FIFO, "reverb returns a block late"),
+        ),
     ];
     let _ = shared.setup.set((SoundCores::Two, true, rows));
     shared.store(Counts {
@@ -775,6 +865,8 @@ pub fn sample(shared: &CoreShared) {
         voice_late: 0,
         mix_stages: 20_640,
         mix_late: 3,
+        returns_blocks: 20_610,
+        returns_starts: 1,
         ..Counts::default()
     });
 }
@@ -826,6 +918,7 @@ mod tests {
         c.start_mixer(&mut mix.mixer);
         assert_eq!(p.lane_stats(), None);
         assert!(!mix.mixer.lane_on());
+        assert!(!mix.mixer.pipelined_returns());
         let shared = CoreShared::default();
         assert!(rows(&shared).is_empty(), "nothing before the loop sets up");
         c.show(&shared);
@@ -844,8 +937,9 @@ mod tests {
         c.start_mixer(&mut mix.mixer);
         assert!(p.lane_stats().is_some(), "the sampler is split");
         assert!(mix.mixer.lane_on(), "the mixer has its lane");
+        assert!(mix.mixer.pipelined_returns(), "the returns go late");
         let lines = c.take_lines();
-        assert_eq!(lines.len(), 4, "{lines:?}");
+        assert_eq!(lines.len(), 5, "{lines:?}");
         assert!(
             lines[2].contains("any core, the priority it inherits: half the drum voices"),
             "{lines:?}"
@@ -853,6 +947,10 @@ mod tests {
         assert!(
             lines[3].starts_with("sound cores: mixer lane any core"),
             "{lines:?}"
+        );
+        assert_eq!(
+            lines[4],
+            "sound cores: returns lane any core, the priority it inherits: reverb returns a block late"
         );
         // Two hits: the second goes to the lane's half of the voices. A far
         // deadline, so a slow machine (qemu in CI) is never late here.
@@ -884,12 +982,16 @@ mod tests {
                 "Audio thread",
                 "Drum voices lane",
                 "Mixer inserts lane",
+                "Reverb returns lane",
                 "Drum voices on core 2 · late",
-                "Mixer inserts on core 2 · late"
+                "Mixer inserts on core 2 · late",
+                "Reverb returns on core 2 · late · lost"
             ]
         );
-        assert_eq!(rows[4].1, format!("{} parts · 0 late", n.voice_parts));
-        assert_eq!(rows[4].2, Tone::Good);
+        assert_eq!(rows[5].1, format!("{} parts · 0 late", n.voice_parts));
+        assert_eq!(rows[5].2, Tone::Good);
+        assert_eq!(rows[7].1, "0 blocks · 0 late · 0 lost");
+        assert_eq!(rows[7].2, Tone::Good);
         assert!(c.status(n).starts_with("sound cores two: drum voices "));
     }
 
@@ -918,12 +1020,16 @@ mod tests {
         assert!(line.contains("0 parts with half"), "{line}");
         assert!(
             line.contains(
-                "2 mixer stages with those strips silent and 0 periods with the synth left out \
+                "2 mixer stages with those strips silent, 0 returns blocks with the reverbs \
+                 silent, 0 blocks of a return's input lost and 0 periods with the synth left out \
                  (fallbacks), 0 waits"
             ),
             "{line}"
         );
-        assert!(line.ends_with("; 1, 2, 0 and 0 since the start"), "{line}");
+        assert!(
+            line.ends_with("; 1, 2, 0, 0, 0 and 0 since the start"),
+            "{line}"
+        );
         // A late synth is left out, and a wait for it past the next
         // deadline is logged the same way.
         n.synth_late = 1;
@@ -940,14 +1046,38 @@ mod tests {
             None,
             "no new ones"
         );
+        // A late returns block, and a block of a return's input lost.
+        n.returns_blocks = 30;
+        n.returns_late = 1;
+        n.returns_lost = 1;
+        let line = c.late_note(n, t + Duration::from_secs(6)).unwrap();
+        assert!(
+            line.contains(
+                "1 returns block with the reverbs silent, 1 block of a return's input lost"
+            ),
+            "{line}"
+        );
+        assert!(
+            line.ends_with("; 1, 2, 1, 1, 1 and 1 since the start"),
+            "{line}"
+        );
         // Late ones show red on the Dev page.
         let shared = CoreShared::default();
-        let two = Cores::start_on(SoundCores::Two, &mut p, &mut slot(), NONE);
+        let mut two = Cores::start_on(SoundCores::Two, &mut p, &mut slot(), NONE);
+        two.start_mixer(&mut mixing_host().mixer);
         two.show(&shared);
         two.publish(&shared, n);
         let r = rows(&shared);
-        assert_eq!(r.last().unwrap().1, "40 stages · 2 late");
+        let mix = r
+            .iter()
+            .find(|r| r.0.starts_with("Mixer inserts on"))
+            .unwrap();
+        assert_eq!((mix.1.as_str(), mix.2), ("40 stages · 2 late", Tone::Bad));
+        assert_eq!(r.last().unwrap().1, "30 blocks · 1 late · 1 lost");
         assert_eq!(r.last().unwrap().2, Tone::Bad);
+        assert!(two
+            .status(n)
+            .ends_with("; returns 30 blocks on core 2, 1 late, 0 starts, 0 stops, 1 lost"));
     }
 
     /// The synth's notes for a few periods: two held notes and pressure.
@@ -971,8 +1101,9 @@ mod tests {
         c.start_mixer(&mut mix.mixer);
         assert!(p.lane_stats().is_some(), "the sampler is split too");
         assert!(mix.mixer.lane_on(), "and the mixer has its lane");
+        assert!(mix.mixer.pipelined_returns(), "and the returns go late");
         let lines = c.take_lines();
-        assert_eq!(lines.len(), 5, "{lines:?}");
+        assert_eq!(lines.len(), 6, "{lines:?}");
         assert_eq!(
             lines[3],
             "sound cores: synth lane any core, the priority it inherits: the synth beside the drums"
@@ -1017,12 +1148,14 @@ mod tests {
                 "Drum voices lane",
                 "Synth lane",
                 "Mixer inserts lane",
+                "Reverb returns lane",
                 "Drum voices on core 2 · late",
                 "Mixer inserts on core 2 · late",
+                "Reverb returns on core 2 · late · lost",
                 "Synth on core 1 · late · waited"
             ]
         );
-        assert_eq!(rows[7].1, "60 periods · 0 late · 0 waited");
+        assert_eq!(rows[9].1, "60 periods · 0 late · 0 waited");
         let status = c.status(n);
         assert!(
             status.starts_with("sound cores three: drum voices "),
@@ -1123,6 +1256,7 @@ mod tests {
         c.start_mixer(&mut mix.mixer);
         assert_eq!(p.lane_stats(), None, "the drums are not split");
         assert!(!mix.mixer.lane_on(), "the mixer has no lane");
+        assert!(!mix.mixer.pipelined_returns(), "the returns stay on time");
         assert!(synth.lane.is_none(), "the synth has no lane");
         let shared = CoreShared::default();
         c.show(&shared);
@@ -1163,11 +1297,16 @@ mod tests {
             lines[3].starts_with("sound cores: mixer lane on the audio thread (strict lane"),
             "{lines:?}"
         );
+        assert!(
+            lines[4].starts_with("sound cores: returns lane on the audio thread (strict lane"),
+            "{lines:?}"
+        );
         let shared = CoreShared::default();
         c.show(&shared);
         let r = rows(&shared);
         assert_eq!(r[2].2, Tone::Bad, "{r:?}");
         assert_eq!(r[3].2, Tone::Bad, "{r:?}");
+        assert_eq!(r[4].2, Tone::Bad, "{r:?}");
     }
 
     #[test]

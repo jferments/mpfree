@@ -111,6 +111,7 @@ mod qlink_touch;
 mod rt_safety;
 mod sample_page;
 mod sampler;
+mod screen_cost;
 mod synth;
 mod sys;
 mod sysinfo;
@@ -5190,7 +5191,8 @@ fn open_acva(out: &mut Out, periods: u32) -> Result<alsa::Pcm, String> {
 }
 
 /// A running ACVA stream: writes one period at a time, recovers from
-/// underruns, and keeps the timing of every period.
+/// underruns, and keeps the timing of every period (a running mean and
+/// worst, [`Gaps`]).
 struct Playback {
     pcm: alsa::Pcm,
     /// Periods in the buffer.
@@ -5198,7 +5200,7 @@ struct Playback {
     xruns: u64,
     late: u64,
     errors: u64,
-    gaps: Vec<Duration>,
+    gaps: Gaps,
     notes: Vec<String>,
     started: Instant,
     prev: Instant,
@@ -5219,7 +5221,7 @@ impl Playback {
             xruns: 0,
             late: 0,
             errors: 0,
-            gaps: Vec::with_capacity(1 << 16),
+            gaps: Gaps::default(),
             notes: Vec::new(),
             started: Instant::now(),
             prev: Instant::now(),
@@ -5259,7 +5261,7 @@ impl Playback {
         let gap = now - self.prev;
         self.prev = now;
         if i >= self.queued as u64 {
-            self.gaps.push(gap);
+            self.gaps.add(gap);
             if gap > period_time() * 2 {
                 self.late += 1;
                 if self.notes.len() < 20 {
@@ -5283,7 +5285,7 @@ impl Playback {
         for n in &self.notes {
             out.say(n);
         }
-        let (avg, max) = gap_stats(&self.gaps);
+        let (avg, max) = self.gaps.mean_max();
         Ok(format!("{} periods ({:.1} s), {} underruns, {} late periods (over 2 periods apart), {} other errors; \
                     period gap mean {:.3} ms, max {:.3} ms (one period is {:.3} ms)",
                    self.periods, self.started.elapsed().as_secs_f64(), self.xruns, self.late, self.errors,
@@ -5335,13 +5337,36 @@ fn click(o: &Options) -> Result<(), String> {
     Ok(())
 }
 
-fn gap_stats(gaps: &[Duration]) -> (f64, f64) {
-    if gaps.is_empty() {
-        return (0.0, 0.0);
+/// The time between period writes: a count, a sum and the worst, kept on
+/// the audio thread with no allocation. (Until 13 Nov every gap went into a
+/// `Vec` that was never emptied: each time it doubled, past 2^16 periods,
+/// the audio thread copied it, 8 MB at 2^19 periods and 16 MB at 2^20 on
+/// the MPC, and live test 3's only two underruns came 4 periods after
+/// 2^19 and 2^20, right after those copies.)
+#[derive(Clone, Copy, Debug, Default)]
+struct Gaps {
+    n: u64,
+    sum: Duration,
+    max: Duration,
+}
+
+impl Gaps {
+    fn add(&mut self, gap: Duration) {
+        self.n += 1;
+        self.sum += gap;
+        self.max = self.max.max(gap);
     }
-    let sum: f64 = gaps.iter().map(|g| g.as_secs_f64()).sum();
-    let max = gaps.iter().map(|g| g.as_secs_f64()).fold(0.0, f64::max);
-    (sum / gaps.len() as f64, max)
+
+    /// The mean and the worst gap in seconds; 0 and 0 before any.
+    fn mean_max(&self) -> (f64, f64) {
+        if self.n == 0 {
+            return (0.0, 0.0);
+        }
+        (
+            self.sum.as_secs_f64() / self.n as f64,
+            self.max.as_secs_f64(),
+        )
+    }
 }
 
 // ---------------------------------------------------------------- preview (host)
@@ -5895,9 +5920,30 @@ mod tests {
 
     #[test]
     fn gap_statistics() {
-        let (avg, max) = gap_stats(&[Duration::from_millis(2), Duration::from_millis(4)]);
+        let mut g = Gaps::default();
+        assert_eq!(g.mean_max(), (0.0, 0.0));
+        g.add(Duration::from_millis(2));
+        g.add(Duration::from_millis(4));
+        let (avg, max) = g.mean_max();
         assert!((avg - 0.003).abs() < 1e-9 && (max - 0.004).abs() < 1e-9);
-        assert_eq!(gap_stats(&[]), (0.0, 0.0));
+    }
+
+    /// Keeping the gaps never allocates, however long the sound plays
+    /// (past 2^20 periods, where a growing list of them used to be copied
+    /// on the audio thread).
+    #[test]
+    fn keeping_the_gaps_never_allocates() {
+        let mut g = Gaps::default();
+        let gap = Duration::from_micros(2902);
+        let ((), calls) = crate::sys::alloc_count::calls(|| {
+            for _ in 0..(1u32 << 20) + 8 {
+                g.add(gap);
+            }
+        });
+        assert_eq!(calls, 0);
+        assert_eq!(g.n, (1 << 20) + 8);
+        let (avg, max) = g.mean_max();
+        assert!((avg - 0.002902).abs() < 1e-9 && (max - 0.002902).abs() < 1e-12);
     }
 
     /// A learned control's 0 to 1 sets a mixer value over its own range,
