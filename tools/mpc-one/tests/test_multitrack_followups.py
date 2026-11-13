@@ -136,7 +136,7 @@ class MultiTrackTests(unittest.TestCase):
     def test_unknown_boot_order_not_misreported_as_priority(self):
         data=fixture()
         data["spl"]["direct_boot_probe"]["extended_stage_evidence"][
-            "opaque_media_table_words"]["device_order"][0]["word"]="0x1"
+            "opaque_media_table_words"]["device_order"]["entries"][0]["word"]="0x1"
         res=run(data)
         self.assertFalse(res["spl"]["checks"][
             "boot_order_five_original_words_are_deadbeef"])
