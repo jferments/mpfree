@@ -29,3 +29,6 @@ rust/target/
 rust/mpfree-splash-gl/target/
 /splash-font-*
 docs/user/build/
+
+# Build output (also when it is a symlink, which target/ would not match)
+/rust/target
