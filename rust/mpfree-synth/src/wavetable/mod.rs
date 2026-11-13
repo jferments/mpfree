@@ -233,6 +233,8 @@ struct Voice {
     gain_inc: f32,
     drive_gain: f32,
     drive_amt: f32,
+    /// Keeps the driven voice at its undriven level (dsp::DriveLevel).
+    drive_level: DriveLevel,
     press: Pressure,
     pv: f32,
     /// Its note's own slide and tone.
@@ -272,6 +274,7 @@ impl Voice {
             gain_inc: 0.0,
             drive_gain: 1.0,
             drive_amt: 0.0,
+            drive_level: DriveLevel::new(),
             press: Pressure::new(),
             pv: 0.0,
             ex: VoiceExpr::default(),
@@ -746,6 +749,7 @@ impl Wavetable {
         v.pv = 0.0;
         v.kill_gain = 1.0;
         v.snap = true;
+        v.drive_level.clear();
     }
 
     fn steal(&mut self) {
@@ -1055,7 +1059,14 @@ impl Wavetable {
         v.drive_amt = drive_amt;
         let vg = (1.0 - vel_amp) + vel_amp * v.vel * v.vel;
         let swell = swell_gain(d.get(target::LEVEL).clamp(-1.0, 1.0), p);
-        let gain = norm * vg * trem * swell;
+        // The drive's level correction, from the step just rendered.
+        let level = if v.drive_amt > 0.0 {
+            v.drive_level.step(CTRL, self.rate)
+        } else {
+            v.drive_level.clear();
+            1.0
+        };
+        let gain = norm * vg * trem * swell * level;
         v.gain_inc = (gain - v.gain) / CTRL as f32;
     }
 
@@ -1107,8 +1118,16 @@ fn run_voice<const MONO: bool>(
     let da = ta.levels()[v.level[0]].data();
     let db = tb.levels()[v.level[1]].data();
     let (use_sub, use_noise) = (s.sub != 0.0, s.noise != 0.0);
-    // The drive's gain root, once per run rather than per sample.
-    let (dg, dsq, damt) = (v.drive_gain, v.drive_gain.sqrt(), v.drive_amt);
+    // The drive's gain and level scale, once per run rather than per
+    // sample: it sees the mix as one full oscillator, however many stacks
+    // and sources feed it (dsp::drive_scales).
+    let (dg, dn, damt) = if v.drive_amt > 0.0 {
+        let lv = mix_level(s.unison, s.lvl, s.sub, s.noise);
+        let (k, n) = drive_scales(v.drive_gain, lv);
+        (k, n, v.drive_amt)
+    } else {
+        (1.0, 1.0, 0.0)
+    };
     for k in span {
         let (ra, rb) = (v.run[0], v.run[1]);
         let mut l = 0.0;
@@ -1145,12 +1164,16 @@ fn run_voice<const MONO: bool>(
         if use_noise {
             c += rng.bipolar() * s.noise;
         }
-        let l = drive_sq(l + c, dg, dsq, damt);
+        let x = l + c;
+        let l = drive_n(x, dg, dn, damt);
+        if damt > 0.0 {
+            v.drive_level.add(x, l);
+        }
         let l = v.filt[0].process(mode, &v.coefs, l);
         let r = if MONO {
             l
         } else {
-            let r = drive_sq(r + c, dg, dsq, damt);
+            let r = drive_n(r + c, dg, dn, damt);
             v.filt[1].process(mode, &v.coefs, r)
         };
         let mut g = v.amp.next() * v.gain;

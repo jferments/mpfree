@@ -85,6 +85,8 @@ struct Voice {
     /// Drive, sub and noise for this voice (pressure can move them).
     drive_gain: f32,
     drive_amt: f32,
+    /// Keeps the driven voice at its undriven level (dsp::DriveLevel).
+    drive_level: DriveLevel,
     sub: f32,
     noise: f32,
     press: Pressure,
@@ -131,6 +133,7 @@ impl Voice {
             gain_inc: 0.0,
             drive_gain: 1.0,
             drive_amt: 0.0,
+            drive_level: DriveLevel::new(),
             sub: 0.0,
             noise: 0.0,
             press: Pressure::new(),
@@ -571,6 +574,7 @@ impl Poly {
         v.press.clear();
         v.pv = 0.0;
         v.kill_gain = 1.0;
+        v.drive_level.clear();
     }
 
     /// Fades out one sounding voice: the quietest releasing one, else the
@@ -902,7 +906,14 @@ impl Poly {
         v.noise = (sh_noise + p * d.get(target::NOISE)).clamp(0.0, 1.0);
         let vg = (1.0 - vel_amp) + vel_amp * v.vel * v.vel;
         let swell = swell_gain(d.get(target::LEVEL).clamp(-1.0, 1.0), p);
-        let gain = norm * vg * trem * swell;
+        // The drive's level correction, from the step just rendered.
+        let level = if v.drive_amt > 0.0 {
+            v.drive_level.step(CTRL, rate_bits)
+        } else {
+            v.drive_level.clear();
+            1.0
+        };
+        let gain = norm * vg * trem * swell * level;
         v.gain_inc = (gain - v.gain) / CTRL as f32;
     }
 
@@ -1017,7 +1028,15 @@ impl Poly {
                     *lj += cj;
                 }
             }
-            drive_run(l, v.drive_gain, v.drive_amt);
+            // The drive sees the mix as one full oscillator, however many
+            // stacks and sources feed it (dsp::drive_scales).
+            let (dk, dn) = if v.drive_amt > 0.0 {
+                let lv = mix_level(s.unison, [s.lvl1, s.lvl2], v.sub, v.noise);
+                drive_scales(v.drive_gain, lv)
+            } else {
+                (1.0, 1.0)
+            };
+            drive_run_level(l, dk, dn, v.drive_amt, &mut v.drive_level);
             v.filt[0].run(mode, &v.coefs, l);
             if mono {
                 v.filt[1] = v.filt[0];
@@ -1031,7 +1050,7 @@ impl Poly {
                         *rj += cj;
                     }
                 }
-                drive_run(r, v.drive_gain, v.drive_amt);
+                drive_run_n(r, dk, dn, v.drive_amt);
                 v.filt[1].run(mode, &v.coefs, r);
                 for j in 0..end {
                     left[from + j] += l[j] * g[j] * s.out_l;

@@ -41,6 +41,8 @@ Each synth also has an **Init** preset (Init Kit on Drums): a plain starting poi
 - **The Q-Links** turn the four tiles marked Q1 to Q4. Each preset chooses which four, so the knobs always do something useful for that sound. Each Q-Link has its own colour, the same on its tile's mark and knob and in the Q-Link row along the bottom.
 - **The presets** are listed on the right. Tap one to load it. Once you change anything, the preset is marked **edited**.
 
+**Drive**, on the Filter page of Poly and Wavetable, saturates the sound before the filter. It keeps the sound at about the same level as you turn it up (within about 2 dB on every preset), so it adds grit and thickness, not volume; turn up the synth's level for that.
+
 Each synth has its own pages. FM has Algo, Mod and Pressure, a page for each of its six operators and three keyboard-scaling pages; Drums has a page for each of its 16 pads plus a Kit page.
 
 The Synth tab takes its colours from the theme picked in **Prefs > Appearance**, like the rest of MPFree: the Q-Link colours, the curves and the boxes in the pictures all change with it.

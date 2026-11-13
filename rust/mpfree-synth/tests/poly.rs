@@ -398,3 +398,34 @@ fn tempo_synced_lfo_follows_the_beat() {
         "first {first}, second {second}"
     );
 }
+
+/// Live test 2: "Drive seems to make synths quieter". Turning the drive up
+/// on any preset, one note or a chord, keeps it within 2 dB of its level
+/// with no drive (the most is Acid's resonant filter, about -1.7 dB).
+/// Before the fix, 24 dB of drive took up to 14 dB off.
+#[test]
+fn turning_the_drive_up_keeps_every_preset_about_as_loud() {
+    let rms = |x: &[f32]| (x.iter().map(|v| v * v).sum::<f32>() / x.len() as f32).sqrt();
+    let level = |preset: &mpfree_synth::Preset, drive: f32, notes: &[u8]| {
+        let mut s = Poly::new(RATE);
+        s.load_preset(preset);
+        s.set_param(DRIVE, drive);
+        let ev: Vec<(u64, NodeEvent)> = notes.iter().map(|&n| (0, on(n, 110))).collect();
+        let (l, r) = render(&mut s, 36_000, &ev, |_| 128);
+        // The sustain, after every attack.
+        20.0 * (rms(&l[12_000..]) + rms(&r[12_000..])).log10()
+    };
+    for preset in Poly::presets() {
+        for notes in [&[60u8][..], &[48, 55, 60, 64]] {
+            let dry = level(preset, 0.0, notes);
+            for drive in [3.0, 6.0, 12.0, 18.0, 24.0] {
+                let change = level(preset, drive, notes) - dry;
+                assert!(
+                    (-2.0..=2.0).contains(&change),
+                    "{} {notes:?}: {drive} dB of drive changes the level by {change:+.1} dB",
+                    preset.name
+                );
+            }
+        }
+    }
+}
