@@ -518,6 +518,12 @@ pub enum TimeAction {
         track: usize,
         slot: usize,
     },
+    /// ERASE + a clip: take the clip out of its slot, as a take that UNDO
+    /// puts back (Jay after live test 3).
+    DeleteClip {
+        track: usize,
+        slot: usize,
+    },
     /// Chip `i` on the bar was tapped.
     Chip(usize),
     /// Keep what was just played (CAPTURE): into the armed track's playing

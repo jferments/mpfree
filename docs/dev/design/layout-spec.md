@@ -190,7 +190,7 @@ Approved by Jay at 22:34Z (the mod thread's card, "Approve as proposed"). The mo
 - **STOP:** the transport, then silence.
 - **SHIFT + STOP:** as on the MPC: stop, silence everything and go back to bar 1 (Jay, 20:40Z, control map decision 2).
 - **The Console:** hold SHIFT, hold ERASE, then press TAP TEMPO (and the same again to go back). Jay wants a chord nothing else uses, since only developers open it (22:12Z); the hardware control map thread picked this one. The press is no tempo tap, and nothing fires on the way into the chord. The Dev tab's Console page opens it too. It works without developer tools, but has no strip then.
-- **ERASE and SHIFT + ERASE** do nothing yet (live erase, and the FX lock mode with a step held, come later).
+- **ERASE held + a tap deletes what the tap lands on**, where UNDO brings it back (Jay after live test 3, 13 Nov 13:27Z): a clip on Arrange (the takes' undo; a clip the song uses is refused, since song edits have no undo yet), a pattern lane's name on Play (that sound's steps, one take), and a layer on the Looper tab (the looper's undo; the last layer stays). An empty slot or a loop card says why nothing happened. While ERASE is held the hint line lists what it deletes; those taps only delete (no mute, launch or new clip), and taps elsewhere work as usual. Song blocks, whole loops, effects, macros and chop slices wait until they have an undo. Live erase (ERASE + a pad while recording) and the FX lock mode with a step held come later.
 - **NOTE REPEAT:** repeat. Press it twice, or SHIFT + it, to Latch.
 - **NOTE REPEAT + MENU:** the Arp panel.
 - **TRACK MIX:** the mixer. SHIFT + TRACK MIX: the pad mixer, as the FX thread proposed. The guide names the button "Track Mix / Pad Mix"; the pad player hasn't seen it yet, and round 7's mapper lists it.
@@ -243,7 +243,6 @@ Jay asked for these in the app thread (message of 13 Nov 11:46Z). The ones that 
 - **BROWSE opens the top-level browser** (projects, samples and the rest), as the browser plan's overlay under the top bar; projects load from it and **save**. A **New project** button starts from a fresh, empty project.
 - **Touch targets big enough to hit, or reachable with the wheel and – / +**, everywhere. The rule is in section 1, and the mutes and + FX are built (below); the FX page's buttons and the rest of the app still need a pass.
 - **More steps and more tracks** in the sequencer, with a clear way to add them (32, 64, 128 steps; more than 8 tracks).
-- **ERASE + a clip deletes the clip.**
 - **Several throws at once** with several fingers on the Play page.
 - **Typing a number** for fields with a wide range (Warp tempo first), instead of only the wheel.
 
@@ -259,6 +258,7 @@ Jay asked for these in the app thread (message of 13 Nov 11:46Z). The ones that 
 - **+ FX on the mixer:** a strip's empty insert rows are one "+ FX" button (on a strip with no effects, all four rows), and a tap on any of them adds an effect.
 - **The contrast rule** for button labels (section 1), with the Looper tab's tools and Use the loop rows and the chain editor's and mixer's off effects fixed first.
 - **The Drum view folded into Beats** as the Your timing strip (Jay's pick, 13 Nov 13:09Z; section 4).
+- **ERASE + a tap deletes** a clip, a pattern lane's steps or a Looper layer, each with its undo (section 6).
 
 ## Where things stand (2026-11-11 08:10Z)
 

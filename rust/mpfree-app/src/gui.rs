@@ -89,6 +89,10 @@ pub const GUIDE_LAYOUT: &str = "col(header:60, row(guide:*, found:400):*, hint:2
 
 const CONSOLE_HINT: &str =
     "Switch the MPC off with its power switch to return to the stock firmware";
+/// The hint line while ERASE is held (Jay after live test 3: ERASE + a
+/// tap deletes what is tapped).
+pub const ERASE_HINT: &str = "ERASE held: tap a clip (Arrange), a lane's name (Play) or a layer (Looper) to delete it   ·   \
+                              UNDO brings it back";
 const SHIFT_HINT: &str =
     "SHIFT +   wheel: synth octave   ·   FULL LEVEL: Half Level   ·   NOTE REPEAT: Latch   ·   MENU: Prefs   ·   STOP: back to bar 1";
 /// TRACK MUTE's keys, over whatever page shows (control map decision 5).
@@ -909,6 +913,7 @@ impl Player {
             rate: "1/16",
             bpm: 120.0,
             mute_keys: MuteKeys::Off,
+            erase: false,
         };
         let mut p = Player {
             told: None,
@@ -1411,12 +1416,60 @@ impl Player {
         }
     }
 
+    /// ERASE held (Jay after live test 3): a tap on something whose delete
+    /// UNDO takes back deletes it. `Some` is the answer to the touch; `None`
+    /// lets the tap do what it always does. Only deletes with an undo are
+    /// here: an Arrange clip (the takes' undo), a Play lane's steps (the
+    /// same), and a Looper tab layer (the looper's undo). Song blocks,
+    /// whole loops, effects and macros have no undo yet, so ERASE leaves
+    /// them alone.
+    fn erase_tap(&mut self, ev: &UiEvent) -> Option<Option<FromUi>> {
+        match (ev.widget.as_str(), &ev.kind) {
+            (play_page::STEPS, EventKind::Toggle(pad)) if *pad < 16 => {
+                Some(Some(FromUi::Steps(StepAction::ClearPad {
+                    pad: *pad as u8,
+                })))
+            }
+            (time_view::CLIPS, EventKind::Select(i)) => {
+                let slots = mpfree_seq::SLOTS;
+                let (track, slot) = (i / slots, i % slots);
+                if self.time.clip(track, slot).is_some() {
+                    Some(Some(FromUi::Time(TimeAction::DeleteClip { track, slot })))
+                } else {
+                    self.tell("ERASE: that slot is empty, nothing to delete");
+                    Some(None)
+                }
+            }
+            _ => None,
+        }
+    }
+
     /// What the Looper tab's panels asked for: the first as the answer to
-    /// the touch, the rest after it.
+    /// the touch, the rest after it. With ERASE held, a layer tapped is
+    /// deleted (the looper's UNDO brings it back).
     fn looper_acts(&mut self) -> Option<FromUi> {
         use crate::looper_tab::LoopAct;
         let mut out = Vec::new();
+        let erase = self.status.erase;
+        // A tap on a layer's speaker also picks the row: one delete.
+        let mut erased = Vec::new();
         for a in crate::looper_tab::take_actions(&mut self.ui) {
+            let a = match a {
+                LoopAct::Layer(k) | LoopAct::LayerCmd(k, _) if erase => {
+                    if erased.contains(&k) {
+                        continue;
+                    }
+                    erased.push(k);
+                    LoopAct::LayerCmd(k, mpfree_looper::LayerCommand::Delete)
+                }
+                LoopAct::Pick(_) | LoopAct::Clear if erase => {
+                    self.tell(
+                        "ERASE: a whole loop has no undo yet, so ERASE leaves it; Clear removes it",
+                    );
+                    continue;
+                }
+                a => a,
+            };
             match a {
                 LoopAct::Pick(n) => out.push(FromUi::LoopPick(n)),
                 LoopAct::NewLoop => {
@@ -1644,6 +1697,8 @@ impl Player {
             SHIFT_SAMPLE_HINT.to_string()
         } else if self.status.shift && self.ready {
             SHIFT_HINT.to_string()
+        } else if self.status.erase && self.ready {
+            ERASE_HINT.to_string()
         } else if self.status.mute_keys == MuteKeys::Tracks {
             TRACK_MUTE_HINT.to_string()
         } else if self.status.mute_keys == MuteKeys::Pads {
@@ -3434,6 +3489,11 @@ impl Player {
             self.print_sample_lines();
             return None;
         }
+        if self.status.erase {
+            if let Some(answer) = self.erase_tap(&ev) {
+                return answer;
+            }
+        }
         match (ev.widget.as_str(), ev.kind.clone()) {
             ("header", EventKind::Tab(i)) => {
                 // The header moved its own highlight; the page follows when the app says.
@@ -4173,6 +4233,7 @@ pub fn sample_player(fonts: Fonts) -> Player {
         rate: "1/16",
         bpm: 120.0,
         mute_keys: MuteKeys::Off,
+        erase: false,
     }));
     for (pad, v) in [(0usize, 112u8), (5, 87), (10, 64)] {
         p.apply(ToUi::PadDown { pad, velocity: v });
@@ -4492,6 +4553,7 @@ pub fn sample_play(fonts: Fonts, v: PlayView) -> Player {
         rate: "1/16",
         bpm: 92.0,
         mute_keys: MuteKeys::Off,
+        erase: false,
     }));
     sample_loop(&mut p);
     if v == PlayView::Loop {
@@ -5502,6 +5564,7 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         rate: "1/16",
         bpm: 120.0,
         mute_keys: MuteKeys::Off,
+        erase: false,
     }));
     play_synth.apply(ToUi::Kit(synth_kit));
     for (pad, v) in [(0usize, 96u8), (4, 90), (7, 101)] {
@@ -5535,6 +5598,7 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         rate: "1/16",
         bpm: 120.0,
         mute_keys: MuteKeys::Off,
+        erase: false,
     }));
     chords.apply(ToUi::KitChanged {
         kit: synth_kit,
@@ -6536,6 +6600,88 @@ mod tests {
         // The hint says what the tab's controls do.
         let hint = &p.ui.get::<Label>("hint").unwrap().text;
         assert!(hint.contains("Tap a loop or a layer"), "{hint}");
+    }
+
+    /// ERASE held (Jay after live test 3): the tap deletes what it lands
+    /// on, where UNDO brings it back; elsewhere a tap does what it does.
+    #[test]
+    fn erase_held_deletes_a_clip_a_lanes_steps_or_a_layer() {
+        let tap = |p: &mut Player, (x, y): (i32, i32)| {
+            let down = p.touch(1, Touch::Down, x, y);
+            down.or(p.touch(1, Touch::Up, x, y))
+        };
+        let erase = |p: &mut Player, on: bool| {
+            let mut s = p.status.clone();
+            s.erase = on;
+            p.apply(ToUi::Status(s));
+        };
+        let hint = |p: &Player| p.ui.get::<Label>("hint").unwrap().text.clone();
+        // Play: a lane's name clears its steps; its mute stays as it was.
+        let mut p = sample_play(Fonts::embedded(), PlayView::All);
+        p.ui.paint(&mut SoftCanvas::new(SCREEN.0, SCREEN.1));
+        erase(&mut p, true);
+        assert!(hint(&p).starts_with("ERASE held"), "{}", hint(&p));
+        let r = p.ui.rect_of(play_page::STEPS).unwrap();
+        let g = p.ui.get::<StepGrid>(play_page::STEPS).unwrap();
+        let (lane1, name1) = (g.lanes_shown(r)[1], g.name_at(r, 1));
+        let mutes = p.play.levels.pad_mutes;
+        assert_eq!(
+            tap(&mut p, name1),
+            Some(FromUi::Steps(StepAction::ClearPad { pad: lane1 as u8 }))
+        );
+        assert_eq!(p.play.levels.pad_mutes, mutes, "no mute while erasing");
+        // Let go of ERASE: the name mutes again.
+        erase(&mut p, false);
+        assert!(!hint(&p).starts_with("ERASE held"));
+        assert!(matches!(
+            tap(&mut p, name1),
+            Some(FromUi::PlayFx(PlayFx::PadMute { .. }))
+        ));
+        // Arrange: a clip is deleted; an empty slot says so and makes none.
+        use mpfree_time_ui::widgets::ClipGrid;
+        let mut p = sample_clips(Fonts::embedded()).unwrap();
+        erase(&mut p, true);
+        let grid = p.ui.rect_of(time_view::CLIPS).unwrap();
+        let cell = |p: &Player, track, slot| {
+            let r =
+                p.ui.get::<ClipGrid>(time_view::CLIPS)
+                    .unwrap()
+                    .cell_rect(grid, track, slot)
+                    .unwrap();
+            (r.x + r.w / 2, r.y + r.h / 2)
+        };
+        let playing = cell(&p, 0, 0);
+        assert_eq!(
+            tap(&mut p, playing),
+            Some(FromUi::Time(TimeAction::DeleteClip { track: 0, slot: 0 }))
+        );
+        let empty = cell(&p, 1, 0);
+        assert_eq!(tap(&mut p, empty), None, "no new clip while erasing");
+        assert!(hint(&p).contains("empty"), "{}", hint(&p));
+        // Looper tab: a layer's row or its speaker deletes it; a loop is
+        // left alone (Clear loop has no undo).
+        use crate::looper_tab::{LoopEditor, LoopList, EDITOR, LOOPS};
+        let mut p = sample_looper(Fonts::embedded()).unwrap();
+        p.ui.paint(&mut SoftCanvas::new(SCREEN.0, SCREEN.1));
+        erase(&mut p, true);
+        let (_, view) = recorded_loop();
+        let chop = view.layers[2].unwrap().id;
+        let r = p.ui.rect_of(EDITOR).unwrap();
+        let e = p.ui.get::<LoopEditor>(EDITOR).unwrap();
+        let (_, rr) = e.row_rects(LoopEditor::parts(r).2)[2];
+        let parts = LoopEditor::row_parts(rr);
+        assert_eq!(
+            tap(&mut p, parts.speaker),
+            Some(FromUi::LoopLayer {
+                id: chop,
+                command: mpfree_looper::LayerCommand::Delete,
+            })
+        );
+        let r = p.ui.rect_of(LOOPS).unwrap();
+        let row = p.ui.get::<LoopList>(LOOPS).unwrap().parts(r).rows[1];
+        assert_eq!(tap(&mut p, (row.x + 10, row.y + 10)), None);
+        assert!(hint(&p).contains("Clear"), "{}", hint(&p));
+        assert_eq!(p.take_actions(), vec![]);
     }
 
     #[test]
@@ -10582,6 +10728,7 @@ mod tests {
             rate: "1/8",
             bpm: 96.0,
             mute_keys: MuteKeys::Off,
+            erase: false,
         };
         p.apply(ToUi::Status(s.clone()));
         assert_eq!(p.ui.get::<Label>("hint").unwrap().text, SHIFT_HINT);

@@ -762,6 +762,9 @@ pub struct Status {
     pub bpm: f64,
     /// TRACK MUTE: what the pads are, the hint line says.
     pub mute_keys: MuteKeys,
+    /// ERASE held: the next tap on the screen deletes what it lands on
+    /// (Jay after live test 3).
+    pub erase: bool,
 }
 
 /// Jay's wheel navigation (live test 2, 13 Nov) on a page with rows: the
@@ -1470,6 +1473,7 @@ impl App {
             rate: self.settings.rate.label(),
             bpm: self.settings.bpm,
             mute_keys: self.mute_keys,
+            erase: self.erase_held,
         })
     }
 
@@ -1516,8 +1520,9 @@ impl App {
             return fx;
         }
         if !pressed {
-            if Some(note) == self.map.erase {
+            if Some(note) == self.map.erase && self.erase_held {
                 self.erase_held = false;
+                fx.push(self.status());
             }
             if Some(note) == self.map.note_repeat && self.repeat_held {
                 self.repeat_held = false;
@@ -1745,13 +1750,15 @@ impl App {
         let m = self.map;
         let is = |b: Option<u8>| b == Some(note);
         let fx = if is(m.erase) {
-            // ERASE and SHIFT + ERASE wait for live erase and the FX lock
-            // mode (with a step held); alone they do nothing. Held with
-            // SHIFT, TAP TEMPO opens the Console.
+            // Held, ERASE makes the next tap on the screen delete what it
+            // lands on (Jay after live test 3); the screen knows from the
+            // status. Live erase (ERASE + a pad while recording) and the FX
+            // lock mode come later. Held with SHIFT, TAP TEMPO opens the
+            // Console.
             self.erase_held = true;
-            return Some(Vec::new());
+            return Some(vec![self.status()]);
         } else if is(m.main) {
-            // MAIN: Play; on Play, the next view (All, Beats, Loop, Drum).
+            // MAIN: Play; on Play, the next view (All, Beats, Loop).
             if self.view == View::Play {
                 vec![Effect::PlayView(None)]
             } else {
@@ -3543,7 +3550,11 @@ mod tests {
         app.map.learn(mapper::Job::Erase, Some(ERASE));
         let tap = app.map.tap_tempo.unwrap();
         app.button(button::SHIFT, true, 0.0);
-        assert!(app.button(ERASE, true, 0.0).is_empty());
+        // ERASE held tells the screen (ERASE + a tap deletes), nothing more.
+        assert!(matches!(
+            app.button(ERASE, true, 0.0).as_slice(),
+            [Effect::Status(s)] if s.erase
+        ));
         assert_eq!(press(&mut app, tap), vec![Effect::Show(View::Console)]);
         assert!(app.taps.is_empty(), "no tempo tap");
         assert_eq!(press(&mut app, tap), vec![Effect::Show(View::Play)]);
@@ -3552,7 +3563,10 @@ mod tests {
         press(&mut app, tap);
         assert_eq!(app.taps.len(), 1);
         app.button(button::SHIFT, true, 0.0);
-        app.button(ERASE, false, 0.0);
+        assert!(matches!(
+            app.button(ERASE, false, 0.0).as_slice(),
+            [Effect::Status(s)] if !s.erase
+        ));
         assert!(!press(&mut app, tap)
             .iter()
             .any(|e| matches!(e, Effect::Show(View::Console))));
@@ -5739,9 +5753,12 @@ mod tests {
         assert_eq!(fx[0], Effect::SampleEditor(Editor::Wave));
         assert!(fx.contains(&Effect::Show(View::Sample)));
         assert_eq!(press(&mut app, 67), [Effect::ProgEdit]);
-        // ERASE and SHIFT + ERASE do nothing yet (Jay, 22:12Z).
-        assert!(press(&mut app, 60).is_empty());
-        assert!(shifted(&mut app, 60).is_empty());
+        // ERASE and SHIFT + ERASE only tell the screen while they are held
+        // (ERASE + a tap deletes); they go to no page.
+        let only_status = |fx: Vec<Effect>| fx.iter().all(|e| matches!(e, Effect::Status(_)));
+        assert!(only_status(press(&mut app, 60)));
+        assert!(only_status(shifted(&mut app, 60)));
+        assert!(!app.erase_held, "let go");
         // SHIFT + 16 LEVEL: Chromatic | In key (no scale yet: Major).
         assert!(press(&mut app, 62).is_empty());
         assert!(shifted(&mut app, 62)

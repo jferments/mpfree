@@ -17,6 +17,7 @@ The grid has a column per **track** (up to 16) and a row per **slot**. Each trac
 - **Tap a clip** to launch it. It starts on the next bar line, so it always lands in time. Tap a playing clip to stop it at the next bar.
 - **Tap +** in an empty slot to record a new clip there.
 - **Tap a track's name** to **arm** it: the pads record into that track.
+- **Hold ERASE and tap a clip** to delete it. **UNDO** brings it back. A clip the song uses stays until you delete its blocks in the song.
 
 A clip's border tells you what it's doing: a ring going round as it plays one pass, amber while it waits for the next bar, red while recording.
 

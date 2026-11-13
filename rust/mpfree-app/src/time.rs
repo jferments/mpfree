@@ -155,6 +155,8 @@ pub enum StepAction {
         step: usize,
         change: Change,
     },
+    /// ERASE + a lane's name: every step of `pad` comes out of the clip.
+    ClearPad { pad: u8 },
 }
 
 /// A pad hit while the transport rolls: where it fell, for the Play page's
@@ -877,6 +879,68 @@ mod tests {
             h.control.project.tracks[2].slots[s] = Some(Clip::new("full", 960));
         }
         assert!(h.put_clip(clip).unwrap_err().contains("no empty slot"));
+    }
+
+    /// ERASE + a tap (Jay after live test 3): a lane's steps or a whole
+    /// clip go as one take, and UNDO brings them back; a clip the song
+    /// plays stays, since the song's edits have no undo yet.
+    #[test]
+    fn erase_takes_a_lanes_steps_or_a_clip_and_undo_brings_them_back() {
+        use mpfree_seq::Note;
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut beat = Clip::new("beat", 3840);
+        beat.notes = vec![
+            Note::new(0, 100, 0, 100),
+            Note::new(960, 100, 2, 100),
+            Note::new(1920, 100, 0, 90),
+        ];
+        h.control.project.tracks[0].slots[0] = Some(beat.clone());
+        h.control.project.tracks[0].slots[1] = Some(Clip::new("fill", 960));
+        h.act(TimeAction::Launch { track: 0, slot: 0 }).unwrap();
+        // A lane's name: pad 1's steps go, pad 3's stay.
+        assert_eq!(
+            h.step_action(StepAction::ClearPad { pad: 0 }).unwrap(),
+            "steps: pad 1's steps erased"
+        );
+        // The pads' notes, in time order.
+        let notes = |h: &TimeHost| -> Vec<u8> {
+            let mut v: Vec<_> = h.control.project.clip(0, 0).unwrap().notes.clone();
+            v.sort_by_key(|n| n.tick);
+            v.iter().map(|n| n.note).collect()
+        };
+        assert_eq!(notes(&h), [2]);
+        // An empty lane: nothing to do, no take.
+        assert_eq!(h.step_action(StepAction::ClearPad { pad: 9 }).unwrap(), "");
+        h.act(TimeAction::Undo).unwrap();
+        assert_eq!(notes(&h), [0, 2, 0], "UNDO: the lane is back");
+        // A clip: gone, with its launch; UNDO puts it back, REDO takes it again.
+        assert!(h
+            .act(TimeAction::DeleteClip { track: 0, slot: 0 })
+            .unwrap()
+            .contains("deleted"));
+        assert!(h.control.project.clip(0, 0).is_none());
+        assert!(h.control.launches.iter().all(|l| l.track != 0));
+        h.act(TimeAction::Undo).unwrap();
+        assert_eq!(notes(&h), [0, 2, 0], "UNDO: the clip is back");
+        assert_eq!(h.control.project.clip(0, 0).unwrap().name, beat.name);
+        h.act(TimeAction::Redo).unwrap();
+        assert!(h.control.project.clip(0, 0).is_none());
+        // An empty slot says so.
+        assert!(h
+            .act(TimeAction::DeleteClip { track: 0, slot: 0 })
+            .unwrap_err()
+            .contains("empty"));
+        // A clip in the song stays.
+        h.control
+            .project
+            .arrangement
+            .placements
+            .push(mpfree_seq::arrange::Placement::linked(0, 1, 0, 960));
+        assert!(h
+            .act(TimeAction::DeleteClip { track: 0, slot: 1 })
+            .unwrap_err()
+            .contains("in the song"));
+        assert!(h.control.project.clip(0, 1).is_some());
     }
 
     const RATE: u32 = 44_100;
