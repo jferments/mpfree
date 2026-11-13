@@ -48,8 +48,8 @@ the sound on cores 3 and 2 instead, for the device rounds to compare.
    run's `control: slow period` lines name it.
 3. **A second audio core** with lanes (`rust/mpfree-lanes`, below): half the
    sampler's voices, the synth, mixer stages, then pipelined returns. Built
-   for the sampler and the mixer: `--sound-cores two` (below), off by default
-   until a device round has measured it.
+   for the sampler, the mixer and the reverb returns: `--sound-cores two`
+   (below), off by default until a device round has measured it.
 4. **Background work** on cores 0 and 1: loading at boot in parallel, looper
    bounce and Sample tab analysis on workers.
 
@@ -57,7 +57,7 @@ the sound on cores 3 and 2 instead, for the device rounds to compare.
 | --- | --- |
 | 0 | The screen and touch, the store, the journal; helper threads at normal priority |
 | 1 | Helper threads at normal priority (lights, report, effect building, loading, MIDI and CV out at FIFO 60), background jobs, offload sockets later |
-| 2 | Audio lane B, SCHED_FIFO 69 |
+| 2 | Audio lane B, SCHED_FIFO 69; the reverb returns' lane at SCHED_FIFO 68 |
 | 3 | The audio thread (lane A), SCHED_FIFO 70 |
 
 ## The control side and helper threads
@@ -209,7 +209,7 @@ runs again after the second boot it already makes to check saved settings;
 | --- | --- | --- | --- |
 | `shared` | SCHED_FIFO 70, wherever the kernel puts it (cores 0 and 1 on the test stick) | idle | shared with the rest |
 | `core3` | pinned to core 3, SCHED_FIFO 70 | idle | the rest |
-| `two` | pinned to core 3, SCHED_FIFO 70 | two lanes at SCHED_FIFO 69: the sampler's second voice pool (`Engine::split`, half the voices) and about half the pad channels' and tracks' inserts (`Mixer::set_lane`) | the rest |
+| `two` | pinned to core 3, SCHED_FIFO 70 | two lanes at SCHED_FIFO 69: the sampler's second voice pool (`Engine::split`, half the voices) and about half the pad channels' and tracks' inserts (`Mixer::set_lane`); and the reverb returns a block late at SCHED_FIFO 68 (`Mixer::set_pipelined_returns`) | the rest |
 | `three` (a test) | pinned to core 3, SCHED_FIFO 70 | as `two` | the synth's lane at SCHED_FIFO 69 (`SynthSlot`), beside the rest |
 
 Core 0 is never asked for: Linux on ARM sends hardware interrupts to core 0
@@ -242,10 +242,27 @@ there. Jay (12 Nov): keep one core for interrupts.
   made, all before the first period. Nothing changes while the sound plays.
   An audio buffer change in Prefs reopens the sound card on the same thread,
   which keeps its core.
-- **One core for both lanes.** Each lane has its own worker thread (the
-  sampler and the mixer each own theirs), both on core 2. They never run at
-  once: within a period the sampler's lane is joined before the mixer posts.
-  A late sampler lane can delay the mixer's, and both are counted.
+- **One core for three lanes.** Each lane has its own worker thread (the
+  sampler, the mixer's inserts and the reverb returns each own theirs), all
+  on core 2. The sampler's lane never runs at the same time as the mixer's
+  two: within a period it is joined before the mixer posts. The returns'
+  lane is posted at the start of the mixer's block and joined at the
+  returns, after the pad channels, tracks and submixes, so it overlaps the
+  inserts lane's stages. It runs one priority lower (SCHED_FIFO 68): the
+  inserts lane, which is joined first, takes core 2 from it whenever both
+  have work, and the returns finish in the time left before their join. A
+  late sampler lane can delay the mixer's, and all of them are counted.
+- **Reverb returns a block late** (`two` and `three`; #260 for the engine,
+  wired in the app by `Cores::start_mixer`). A return whose reverb can take
+  the block back from its pre-delay goes late; every other return stays on
+  the audio thread (see the mixer's section below). The app's own Return A
+  is the Play page's delay, so the lane only has work once a reverb with a
+  pre-delay, all wet, is put on a return. A late returns lane leaves the
+  returns silent for that block and the next, and a block of the return's
+  input is lost when it goes back on time: both are fallbacks, counted on
+  the Dev row "Reverb returns on core 2 · late · lost", in the status line
+  (`returns N blocks on core 2, N late, N starts, N stops, N lost`) and in
+  the `sound cores: late:` line.
 - **One deadline per period** (`cores::lane_deadline`, 12 Nov, after an
   outside review). Every join in a period waits until the same moment at
   most: the sampler's parts (`render_routed_until`), the synth, each mixer
@@ -263,9 +280,11 @@ there. Jay (12 Nov): keep one core for interrupts.
 - **Late is a fallback, and never silent** (Jay, 12 Nov): a late sampler
   part leaves half the voices out of that part of the period; a late mixer
   stage leaves those strips silent for the block; a late synth is left out
-  of the period. The counts are on the Dev tab's CPU by engine page (red
+  of the period; a late returns lane leaves the reverb returns silent for
+  two blocks. The counts are on the Dev tab's CPU by engine page (red
   once one is late), in the 30 s `status:` line (`sound cores two: drum
-  voices N parts on core 2, N late; mixer N stages on core 2, N late`, and
+  voices N parts on core 2, N late; mixer N stages on core 2, N late;
+  returns N blocks on core 2, N late, N starts, N stops, N lost`, and
   `three` adds `; synth N periods on core 1, N late (left out), N waited
   for`), and in a log line within a second of a late one (`sound cores:
   late: ...`). A late part is a bug or an over-budget design to fix, not a
@@ -293,7 +312,8 @@ there. Jay (12 Nov): keep one core for interrupts.
   mixer's tests that a block's deadline holds for every join in it and only
   that block; `rt_safety.rs`
   runs the sound path for 35 s on two cores, and with the synth on three
-  (unpinned), with no allocation on the sound path.
+  (unpinned), with a reverb on a return running a block late, with no
+  allocation on the sound path.
 - **Other devices.** The cores above are the MPC One's. The MPC Gen 2 (8
   cores, 4 GB, bookmarked by Jay 12 Nov for later) would get its own plan:
   more lanes (each synth, the mixer and the returns on cores of their own),
@@ -310,8 +330,9 @@ reverb leaves the audio core. The reverb takes the block back from its
 pre-delay (`Node::lead_in`, `Chain::lead_slot`), so the output is the
 reference on time, bit for bit; a return that cannot do that (no pre-delay,
 a dry mix, a delay, parallel compression or drive) stays on time
-(`mpfree-fx/tests/late_returns.rs`). It has its own lane; with both on, put
-the two lanes on different cores or expect them to queue.
+(`mpfree-fx/tests/late_returns.rs`). It has its own lane. The app puts it
+on core 2 beside the inserts lane, one priority below it (above), so the
+two queue in the order their joins need.
 
 ## Measuring it: `mpfree-bench --lanes`
 
