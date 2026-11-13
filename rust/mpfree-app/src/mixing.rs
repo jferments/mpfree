@@ -1216,6 +1216,33 @@ mod tests {
         assert_eq!(pads.len(), all.len());
     }
 
+    /// Jay after live test 3: several throws at once, a finger on each.
+    #[test]
+    fn two_throws_held_at_once_each_hold_their_pad() {
+        let mut h = MixHost::new(RATE, 0.0, 0.0);
+        let held = |h: &MixHost, fx: ThrowFx| {
+            h.mixer
+                .chain(StripId::Master)
+                .and_then(|c| c.node(PERFORM_SLOT))
+                .map(|n| n.param(perf::hold(fx.pad())))
+        };
+        run(&mut h, 10, 0.0, 0.0);
+        for fx in [ThrowFx::Delay, ThrowFx::Reverb] {
+            h.play(PlayFx::Throw { fx, down: true });
+        }
+        run(&mut h, 2, 0.0, 0.0);
+        assert_eq!(held(&h, ThrowFx::Delay), Some(1.0));
+        assert_eq!(held(&h, ThrowFx::Reverb), Some(1.0));
+        // The first finger lifts: the other throw keeps playing.
+        h.play(PlayFx::Throw {
+            fx: ThrowFx::Delay,
+            down: false,
+        });
+        run(&mut h, 2, 0.0, 0.0);
+        assert_eq!(held(&h, ThrowFx::Delay), Some(0.0));
+        assert_eq!(held(&h, ThrowFx::Reverb), Some(1.0));
+    }
+
     /// Runs periods (polling as the app does) until track 2's chain has
     /// `len` inserts, for at most 5 s.
     fn until_chain(h: &mut MixHost, len: usize) -> usize {

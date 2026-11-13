@@ -26,6 +26,8 @@ There are no pads on the Play page: you play the real ones, and the room goes to
 
 **Drop drums** mutes the kick, snare and hi-hats while you hold it: the classic breakdown move.
 
+**Several at once.** Hold throws with different fingers and they play together: Delay throw and Reverb wash stack, and Filter dip and Drop drums go on top of anything. Stutter, Tape stop, Beat repeat and Vinyl brake each take over the sound, so of those only the one you pressed last plays; let it go and the one you held before comes back.
+
 ## The XY pad
 
 The **XY pad** is a filter and an echo under one finger. Left of the middle is a low-pass filter (darker), right of it a high-pass filter (thinner), and the middle is no filter at all. Higher up adds more echo. When you lift your finger the pad glides back to the middle and the bottom, so the sound comes back clean. Its label says where it is, for example "HP 173 Hz · echo 62 %".
