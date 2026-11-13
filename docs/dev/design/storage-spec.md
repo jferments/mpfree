@@ -7,7 +7,7 @@
 
 - **On the test stick, never on the MPC.** The eMMC (p1–p6, the U-Boot environment, the rootfs) and the SD card are never written. On the test boot, the eMMC and SD controllers are disabled in the device tree anyway.
 - **Root file system:** the stick's partition 1 stays read-only, and /data is RAM.
-- **A new partition 4, "MPFREE-DATA":** ext4 with a journal, built by `offline-kexec-stick.py` at 1 GiB. It fills the rest of the stick (plan decision 1, approved 2026-11-12): `stick.img` holds a 64 MiB one, `write-test-stick.py` makes the partition run to the end of the stick, and the filesystem grows to fill it at boot ([how](../hardware/kexec-test-boot.md#saved-settings-partition-4)).
+- **A new partition 4, "MPFREE-DATA":** ext4 with a journal, built by `offline-kexec-stick.py` at 1 GiB. It fills the rest of the stick (plan decision 1, approved 2026-11-12): `stick.img` holds a 64 MiB one, `write-test-stick.py` makes the partition run to the end of the stick, and the filesystem grows to fill it at boot ([how](../hardware/archive/2026-11/kexec-test-boot.md#saved-settings-partition-4)).
   - `start-app.sh` mounts it read-write at `/run/mpfree-data` (nosuid, nodev, noexec) and passes `--data /run/mpfree-data` to the pad player.
   - If the mount fails, the app runs without saving and logs why.
 - **Kept across rounds:** `write-test-stick.py` leaves partition 4 where it is when the stick already has it at 1 GiB, and rewrites only partitions 1 to 3 and the partition table. A stick with the old 64 MiB layout has its partition 4 saved to the build folder first, then moved. `--fresh-data` starts empty; `--data-from FILE` writes a saved copy.
