@@ -53,6 +53,9 @@ pub enum LoopAct {
     Setting(usize, i32),
     /// One of the editor's tools ([`LoopEditor::tools`]).
     Tool(usize),
+    /// A tool drawn faint (it can't work now) was tapped: the screen says
+    /// why in place.
+    FaintTool(usize),
     /// Go to row `r` of the undo history ([`HistoryList::rows`]): back or
     /// forward to just after that step.
     Step(usize),
@@ -60,6 +63,9 @@ pub enum LoopAct {
     Trim(i64, i64),
     /// One of Use the loop's rows.
     Use(usize),
+    /// A row drawn faint (it can't work now) was tapped: the screen says
+    /// why in place.
+    FaintUse(usize),
 }
 
 /// Every [`LoopAct`] the Looper tab's panels have kept since the last call.
@@ -858,8 +864,8 @@ impl Widget for LoopEditor {
             .into_iter()
             .enumerate()
             .map(|(i, b)| {
-                let label = self.tools.get(i).map_or(String::new(), |t| t.0.clone());
-                Target::tap("tool", i, label, b)
+                let (label, on) = self.tools.get(i).map_or((String::new(), false), |t| (t.0.clone(), t.1));
+                Target::tap("tool", i, label, b).disabled_if(!on)
             })
             .collect();
         if self.trim_ticks.is_some_and(|t| t > 0) {
@@ -916,7 +922,8 @@ impl Widget for LoopEditor {
                         self.acts.push(LoopAct::Tool(i));
                         return Some(EventKind::Tab(i));
                     }
-                    return None;
+                    self.acts.push(LoopAct::FaintTool(i));
+                    return Some(EventKind::Tab(i));
                 }
                 let (_, wave_r, _) = LoopEditor::parts(r);
                 let w = wave_r.inset_xy(10, 6);
@@ -1307,7 +1314,7 @@ impl Widget for LoopSettings {
 // ------------------------------------------------------------- use
 
 /// What to do with the loop: each row a title and what it does; rows that
-/// cannot work yet are drawn faint and do nothing.
+/// cannot work yet are drawn faint, and a tap on one says why.
 #[derive(Default)]
 pub struct UseLoop {
     pub rows: Vec<(String, String, bool)>,
@@ -1350,7 +1357,7 @@ impl Widget for UseLoop {
         self.row_rects(r)
             .into_iter()
             .enumerate()
-            .map(|(i, rr)| Target::tap("use", i, self.rows[i].0.clone(), rr))
+            .map(|(i, rr)| Target::tap("use", i, self.rows[i].0.clone(), rr).disabled_if(!self.rows[i].2))
             .collect()
     }
 
@@ -1360,7 +1367,8 @@ impl Widget for UseLoop {
         }
         let i = self.row_rects(r).iter().position(|rr| rr.contains(x, y))?;
         if !self.rows[i].2 {
-            return None;
+            self.acts.push(LoopAct::FaintUse(i));
+            return Some(EventKind::Select(i));
         }
         self.acts.push(LoopAct::Use(i));
         Some(EventKind::Select(i))
@@ -1505,8 +1513,9 @@ mod tests {
         );
     }
 
+    /// A working tool acts; a faint one asks the screen to say why.
     #[test]
-    fn only_working_tools_answer_a_tap() {
+    fn working_tools_act_and_faint_ones_say_why() {
         let mut ui = page_of(EDITOR, editor(1));
         let r = ui.rect_of(EDITOR).unwrap();
         let tools = ui
@@ -1514,7 +1523,8 @@ mod tests {
             .unwrap()
             .tool_rects(LoopEditor::parts(r).0);
         assert_eq!(tools.len(), TOOLS.len(), "every tool fits");
-        assert_eq!(tap(&mut ui, tools[0].x + 4, tools[0].y + 4), None);
+        tap(&mut ui, tools[0].x + 4, tools[0].y + 4);
+        assert_eq!(take_actions(&mut ui), [LoopAct::FaintTool(0)]);
         assert_eq!(
             tap(&mut ui, tools[2].x + 4, tools[2].y + 4),
             Some(EventKind::Tab(2))
@@ -1718,7 +1728,8 @@ mod tests {
         let mut ui = page_of(USE, use_loop);
         let r = ui.rect_of(USE).unwrap();
         let rects = ui.get::<UseLoop>(USE).unwrap().row_rects(r);
-        assert_eq!(tap(&mut ui, rects[0].x + 5, rects[0].y + 5), None);
+        tap(&mut ui, rects[0].x + 5, rects[0].y + 5);
+        assert_eq!(take_actions(&mut ui), [LoopAct::FaintUse(0)]);
         tap(&mut ui, rects[1].x + 5, rects[1].y + 5);
         assert_eq!(take_actions(&mut ui), [LoopAct::Use(1)]);
     }

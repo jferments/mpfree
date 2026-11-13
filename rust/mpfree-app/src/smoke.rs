@@ -148,6 +148,7 @@ pub fn sweep(screen: &str, p: &mut Player, fresh: &mut dyn FnMut() -> Player) ->
         };
         let before = snapshot(p, &mut c);
         let keys = target_keys(p);
+        let tells = p.tells();
         let acts = press(p, &now.target);
         let after = snapshot(p, &mut c);
         let left = p.page() != page || target_keys(p) != keys;
@@ -156,7 +157,7 @@ pub fn sweep(screen: &str, p: &mut Player, fresh: &mut dyn FnMut() -> Player) ->
         }
         let outcome = if !acts.is_empty() {
             Outcome::Acted(acts.iter().map(short).collect())
-        } else if before != after || left {
+        } else if before != after || left || p.tells() != tells {
             Outcome::Shown
         } else if !now.target.enabled {
             Outcome::Off

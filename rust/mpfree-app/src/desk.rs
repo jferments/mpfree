@@ -278,3 +278,25 @@ impl Desk<'_> {
         None
     }
 }
+
+/// What a Q-Link turned on the controller (`ticks` steps of knob `k`)
+/// means to the screen on `page`, for the pages whose screen decides what
+/// each knob turns; None elsewhere (the app or the Level takes it).
+/// player_session asks the app first on Play and Arrange (NOTE REPEAT held,
+/// the arp panel), and only then hands the turn to their page.
+pub fn qlink_to_screen(page: app::View, k: usize, ticks: i32) -> Option<gui::ToUi> {
+    use app::View;
+    if k >= 4 || ticks == 0 {
+        return None;
+    }
+    Some(match page {
+        View::Synth => gui::ToUi::SynthQLink(k, ticks),
+        View::Mixer => gui::ToUi::MixerQLink(k, ticks),
+        View::Looper => gui::ToUi::LooperQLink(k, ticks),
+        View::Chain | View::Macros => gui::ToUi::ChainQLink(k, ticks),
+        View::Sample | View::Pads => gui::ToUi::SampleQLink(k, ticks),
+        View::Play | View::Arrange => gui::ToUi::PlayQLink(k, ticks),
+        _ => return None,
+    })
+}
+
