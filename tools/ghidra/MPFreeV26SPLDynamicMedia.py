@@ -85,7 +85,7 @@ roots=[
   0xff705350,0xff705316,0xff708f98,0xff7054a4,0xff705310,
   0xff705298,0xff705208,0xff7052c0,0xff708b74,0xff708cdc,
   0xff7056a8,0xff705342,0xff704120,0xff7041a8,
-  0xff705418,0xff70604a,0xff708e10
+  0xff705418,0xff70604a,0xff708e10,0xff705b16,0xff705af2,0xff7089fc,0xff708770
 ]
 edges=defaultdict(set);back=defaultdict(set);sites=defaultdict(list)
 for address,fn in fns.items():
@@ -194,7 +194,8 @@ result={
 # initialization function. The original code reads board/ROM state at
 # runtime, so exact priority cannot be inferred solely from 5 literals.
 critical=(0xff704120,0xff705342,0xff705350,0xff705418,
-          0xff705316,0xff708b74,0xff708cdc,0xff7041a8)
+          0xff705316,0xff708b74,0xff708cdc,0xff7041a8,
+          0xff705b16,0xff705af2,0xff7089fc,0xff708770)
 source_rows=[]
 deep=DecompInterface();deep.toggleCCode(True)
 deep.setSimplificationStyle("decompile")
@@ -243,6 +244,11 @@ source_audit={
     "dynamic_write_target":"0xff709c70",
     "dynamic_write_function":"0xff705342",
     "dynamic_value_function":"0xff704120",
+    "source_value_static_range_from_owner_decompilation":[1,8],
+    "special_condition_comparison_value":"0x35",
+    "special_condition_origin_function":"0xff705b16",
+    "source_value_1_means_physical_eMMC":False,
+    "source_value_8_means_physical_SD":False,
     "loop":"0xff705350",
     "full_decompiled_source_and_instruction_context":source_rows,
     "hardware_sampling_not_executed_in_Ghidra":True,
