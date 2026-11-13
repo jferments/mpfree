@@ -3471,9 +3471,14 @@ fn player_session(
     let mut defaults_sent = false;
     let mut save_asked = false;
     let mut project_back: Option<gui::ToUi> = None;
-    // A save waiting for the Looper's loops to be read, one to collect
-    // this period, and the parts waiting for room on the way to the screen.
+    // A save: the Looper's loops and the audio tracks' takes being read,
+    // what of them is read already, whether the parts are to be collected
+    // (once both are), and the parts waiting for room on the way to the
+    // screen.
     let mut loops_saving = false;
+    let mut audio_saving = false;
+    let mut loops_held: Option<mpfree_looper::save::Saved> = None;
+    let mut audio_held: Option<mpfree_audiotracks::save::Saved> = None;
     let mut collect_now = false;
     let mut parts_out: Option<gui::ToUi> = None;
     // MIDI Learn: values for parameters a control can't set yet, and the
@@ -3921,11 +3926,26 @@ fn player_session(
                 gui::FromUi::SaveProject => save_asked = true,
                 // The loops go in once the old ones have faded out.
                 gui::FromUi::OpenLoops(l) => looper.open(*l),
+                // The audio tracks' part goes in once they are empty.
+                gui::FromUi::OpenAudio(a) => tracks.open(*a),
                 gui::FromUi::OpenProject(mut o) => {
                     // Everything stops first: the clips change under the
                     // transport, and held notes would hang.
                     fx.push(app::Effect::Time(TimeAction::Transport(Command::Stop)));
                     fx.push(app::Effect::StopSounds);
+                    // A save under way stops: the project changes under it.
+                    if collect_now {
+                        looper.cancel_save();
+                        tracks.host.cancel_save();
+                        if let Some(l) = loops_held.take() {
+                            looper.drop_saved(l);
+                        }
+                        if let Some(a) = audio_held.take() {
+                            tracks.host.drop_saved(a);
+                        }
+                        (loops_saving, audio_saving, collect_now) = (false, false, false);
+                        out.note("project: the save stopped, a project is opening");
+                    }
                     if let Some(bpm) = o.tempo {
                         fx.extend(app.set_tempo(bpm));
                     }
@@ -3993,9 +4013,11 @@ fn player_session(
                     }
                     fx.extend(arp_fx);
                     if o.clear_loops {
-                        // A save waiting for the old loops stops with them.
                         out.note(&looper.clear_all());
-                        (loops_saving, collect_now) = (false, false);
+                    }
+                    if o.clear_audio {
+                        // Recordings end; the tracks empty once they have.
+                        tracks.clear();
                     }
                     for line in o.notes.drain(..) {
                         out.note(&line);
@@ -5187,10 +5209,13 @@ fn player_session(
                 out.note(&line);
             }
         }
+        if let Some(line) = tracks.take_note() {
+            out.note(&line);
+        }
         if std::mem::take(&mut save_asked) {
-            if mix.opening() || looper.opening() {
+            if mix.opening() || looper.opening() || tracks.opening() {
                 out.note("project: not saved, a project is still opening (try again in a moment)");
-            } else if loops_saving || parts_out.is_some() {
+            } else if collect_now || parts_out.is_some() {
                 out.note("project: already saving");
             } else {
                 let line = looper.save();
@@ -5198,17 +5223,31 @@ fn player_session(
                 if !loops_saving {
                     out.note(&format!("project: saving without the loops ({line})"));
                 }
+                // The takes are read once no track records.
+                audio_saving = tracks.host.save();
+                if !audio_saving {
+                    out.note(
+                        "project: saving without the audio tracks (their worker did not start)",
+                    );
+                } else if (0..mpfree_audiotracks::MAX_TRACKS)
+                    .any(|t| tracks.host.tracks.recording(t).is_some())
+                {
+                    out.note("project: saving once the audio tracks stop recording");
+                }
                 collect_now = true;
             }
         }
-        let loops = if loops_saving {
-            let l = looper.take_saved();
-            loops_saving = l.is_none();
-            l
-        } else {
-            None
-        };
-        if std::mem::take(&mut collect_now) && !loops_saving || loops.is_some() {
+        if loops_saving {
+            loops_held = looper.take_saved();
+            loops_saving = loops_held.is_none();
+        }
+        if audio_saving {
+            audio_held = tracks.host.take_saved();
+            audio_saving = audio_held.is_none();
+        }
+        if collect_now && !loops_saving && !audio_saving {
+            collect_now = false;
+            let (loops, audio) = (loops_held.take(), audio_held.take());
             parts_out = Some(gui::ToUi::ProjectParts(Box::new(project::Collected {
                 tempo: app.settings.bpm,
                 swing: time.info().swing,
@@ -5218,6 +5257,7 @@ fn player_session(
                 synth: project::synth_text(&app.synth_settings(), &synth.sounds()),
                 arp: app.arp_part(),
                 loops,
+                audio,
             })));
         }
         // A screen too busy keeps them here (the loops' audio is never

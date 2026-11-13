@@ -89,8 +89,7 @@ To record onto an audio track:
 - Audio tracks make up for the line input's delay with **Line input latency** in [Prefs](../reference/prefs.md), so a take lines up with the beat you played it against. It's the same setting as the Looper's **Latency to make up for** (MENU on the Looper tab): change either and both follow.
 - The audio tracks share one minute of stereo memory; **Audio track memory** in [Prefs](../reference/prefs.md) sets 30 seconds to 10 minutes, from the next start. The Song view's legend says how much is free ("Audio 0:42 of 1:00 free"). A recording that runs out of memory stops there and keeps what it got.
 
-> [!NOTE]
-> Coming: saving audio tracks with the project. In this build recorded audio is gone when MPFree stops.
+- The audio tracks are saved with the project (**SHIFT + BROWSE**): every take, the regions you comped from them, and each track's input, monitor, level, pan, mute and solo. If a track is recording when you save, the save waits until it stops. Opening a project ends any recording and replaces the audio tracks with the project's; New project empties them.
 
 ## Recording a performance into the song
 
