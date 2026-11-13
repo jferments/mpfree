@@ -50,12 +50,15 @@ use mpfree_arp_ui::workspace::{self, Editor, PatternWorkspace, Row, WsAction};
 use mpfree_chain_ui::{ChainAction, ChainState, MacroAction, MacrosState};
 use mpfree_fx_ui::FxState;
 use mpfree_play::mpfree_param::ParamAddr;
+use mpfree_sampler::model::Levels;
 use mpfree_sampler::model::Project;
+use mpfree_sampler_ui::levels_panel::{self, LevelsAction, LevelsModel, LevelsPanel};
 use mpfree_synth_ui::view as synth_view;
 use mpfree_synth_ui::{SynthAction, SynthPanel, SynthState};
 use mpfree_time_ui::editor::Lens;
 use mpfree_time_ui::view::{
-    self as time_view, TimePage, TimeState, TransportInfo, CLIPS_HINT, CLIPS_PAGE, SONG_HINT,
+    self as time_view, AudioAction, TimePage, TimeState, TransportInfo, CLIPS_HINT, CLIPS_PAGE,
+    SONG_HINT,
 };
 use mpfree_time_ui::TimeAction;
 use mpfree_touch::mt::Phase;
@@ -119,6 +122,26 @@ pub const ERASE_HINT: &str = "ERASE held: tap a clip (Arrange), a lane's name (P
 const SHIFT_HINT: &str =
     "SHIFT +   wheel: synth octave   ·   FULL LEVEL: Half Level   ·   NOTE REPEAT: Latch   ·   MENU: Prefs   ·   STOP: back to bar 1";
 /// TRACK MUTE's keys, over whatever page shows (control map decision 5).
+/// The hint while the 16 Levels panel shows on Play.
+const LEVELS_HINT: &str = "16 LEVEL or Off: back to the kit   ·   Wheel or tap: what the levels change   ·   \
+                           Pick pad, then hit one: the pad they play   ·   Close: keep playing them";
+
+/// The 16 Levels panel's state on the screen thread. Whether 16 Levels are
+/// on is the playing kit's (`SamplePage::levels`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct LevelsUi {
+    /// The panel shows on Play.
+    open: bool,
+    /// The kind the levels step through next time they are turned on.
+    by: Levels,
+    /// Pick pad: the next hit picks the pad the levels play.
+    picking: bool,
+    /// The pad held now, lit bright on the panel.
+    lit: Option<usize>,
+    /// What the app was last told (on, open), so it hears each change once.
+    told: Option<(bool, bool)>,
+}
+
 const TRACK_MUTE_HINT: &str = "TRACK MUTE:   pads 1-8 mute and unmute tracks 1-8   ·   green: playing, red: muted   ·   \
                                SHIFT + TRACK MUTE: the kit's pads   ·   TRACK MUTE: the pads play again";
 const PAD_MUTE_HINT: &str =
@@ -161,6 +184,8 @@ const LOADING_HINT: &str = "Tap the screen for the console";
 /// and the pattern workspace (editing, and recording on the pads).
 pub const ARP_PAGE: &str = "Arp";
 pub const QUICK_PAGE: &str = "Play, NOTE REPEAT held";
+/// Play with the 16 Levels panel under the transport card (16 LEVEL).
+pub const LEVELS_PAGE: &str = "Play · 16 Levels";
 
 pub const PATTERN_PAGE: &str = "Pattern";
 pub const RECORD_PAGE: &str = "Pattern, recording";
@@ -581,6 +606,12 @@ pub enum ToUi {
     /// What the arp screens show. (Patterns are large, so they travel
     /// boxed: the channel keeps a slot of the largest message per place.)
     Arp(Box<ArpView>),
+    /// 16 LEVEL: 16 Levels on the playing kit, of the pad hit last, with
+    /// the panel on Play; or, while they are on, off.
+    SixteenLevels,
+    /// The wheel while the 16 Levels panel shows: the next or previous
+    /// kind.
+    LevelsWheel(i32),
     /// The arp's pattern list.
     Patterns(Vec<(String, Pattern)>),
     Workspace(Box<WorkspaceView>),
@@ -684,6 +715,12 @@ pub enum FromUi {
     Workspace(Box<WsAction>),
     /// The arp chip in the header: open or close the panel.
     ArpChip,
+    /// 16 Levels are on the playing kit (`on`; 16 LEVEL lights) and the
+    /// panel shows on Play (`open`; the wheel turns its kind).
+    Levels {
+        on: bool,
+        open: bool,
+    },
     /// A touch on the transport bar or the Arrange page.
     Time(TimeAction),
     /// A change on the Synth page, for the synth on the audio thread.
@@ -907,6 +944,8 @@ pub struct Player {
     /// over `view`, which it returns to.
     touch_page: Option<&'static str>,
     arp_panel: ArpPanel,
+    /// The 16 Levels panel's state (16 LEVEL).
+    levels: LevelsUi,
     pub workspace: PatternWorkspace,
     /// What the arp screens show, from the app.
     pub arp: ArpState,
@@ -1068,6 +1107,12 @@ impl Player {
         arp_panel
             .set_quick_layout(&mut ui, &PlayView::All.quick_layout())
             .expect("quick band layout");
+        ui.add(levels_panel::PANEL, LevelsPanel::new());
+        ui.add_page(
+            LEVELS_PAGE,
+            &play_page::frame(&format!("{}:*", levels_panel::PANEL)),
+        )
+        .expect("16 Levels layout");
         let workspace = PatternWorkspace::add(&mut ui, PATTERN_PAGE, RECORD_PAGE, &name, pattern)
             .expect("workspace layouts");
         ui.add("touchlab", TouchLabView::new());
@@ -1162,6 +1207,11 @@ impl Player {
             preview_db: crate::preview::LEVEL_DB,
             preview_load: None,
             arp_panel,
+            // 16 Levels start off: the app hears only a change.
+            levels: LevelsUi {
+                told: Some((false, false)),
+                ..LevelsUi::default()
+            },
             workspace,
             arp,
             qlink_focus: None,
@@ -1323,6 +1373,7 @@ impl Player {
         // The chain editor, the macros panel, and Play on a macro bank.
         let chain = (!arp && self.chain_page.drives(self.view))
             .then(|| self.chain_page.cards(&self.ui.theme));
+        let audio = self.audio_cards().map(|k| (k.title(), k));
         let (title, cards) = if let Some((title, cards)) = &chain {
             (title.as_str(), cards.clone())
         } else if let Some(knobs) = self
@@ -1352,6 +1403,11 @@ impl Player {
                 },
                 cards,
             )
+        } else if let Some((title, knobs)) = &audio {
+            // An audio region picked on Arrange's Song view, or a track
+            // panel open (layout spec 4c): the track's level and pan, the
+            // region's gain and fades.
+            (title.as_str(), knobs.cards.clone())
         } else if arp {
             let rows = self
                 .ui
@@ -1873,6 +1929,13 @@ impl Player {
             PadLevel::Half => chips.push(Chip::new("Half level", Tone::Warn)),
             PadLevel::Off => {}
         }
+        // 16 LEVEL: the kit's pads play 16 Levels of one pad.
+        if let Some((_, by)) = self.sample.levels() {
+            chips.push(Chip::new(
+                format!("16 Levels · {}", by.label().to_lowercase()),
+                Tone::Warn,
+            ));
+        }
         if let Some(left) = self.timing.seconds_left {
             chips.push(Chip::new(format!("{left} s left"), Tone::Dim));
         }
@@ -1929,6 +1992,8 @@ impl Player {
         } else if self.view == View::Play && self.band_showing() {
             format!("Wheel: {wheel}   ·   - / +: Repeat, Arp, Pattern   ·   Q-Links: rate, gate, swing, octaves   ·   \
                      + MENU: Arp panel")
+        } else if self.view == View::Play && self.levels.open {
+            LEVELS_HINT.to_string()
         } else if self.view == View::Play && self.chain_page.drives(View::Play) {
             format!("Q-Links: {}   ·   Q-LINK: next bank   ·   hold a macro's card: the macros panel   ·   \
                      Wheel or tap: kit   ·   {stop}", self.chain_page.bind.title())
@@ -2665,6 +2730,7 @@ impl Player {
                 // page's Tune and Decay turn it.
                 let shown = self.view == View::Sample;
                 self.sample.press(&mut self.ui, pad, velocity, shown);
+                self.levels_hit(pad, true);
                 // Load to pad or Send to pad may have put a sound on it.
                 self.sample_names();
                 self.sample_changed();
@@ -2696,6 +2762,7 @@ impl Player {
                     g.release(pad);
                 }
                 self.sample.pad_up(&mut self.ui, pad);
+                self.levels_hit(pad, false);
             }
             ToUi::PadFlash { pad, velocity } => {
                 if let Some(g) = self
@@ -2766,6 +2833,8 @@ impl Player {
                 if self.chain_page.drives(self.view) {
                     // Q-LINK shows a macro bank on Play or Arrange.
                     self.chain_qlink(k, ticks);
+                } else if self.audio_qlink(k, ticks) {
+                    // An audio region's knobs.
                 } else if matches!(self.view, View::Play | View::Arrange) {
                     self.play_qlink(k, ticks);
                 }
@@ -3087,6 +3156,7 @@ impl Player {
                 let before = self.sample.page();
                 self.sample.undo(&mut self.ui, redo);
                 self.sample_after(before);
+                self.refresh_levels();
             }
             ToUi::SamplePlayheads(h) => {
                 if self.view == View::Sample {
@@ -3152,6 +3222,11 @@ impl Player {
                 a.bpm = v.bpm;
                 self.refresh_arp();
             }
+            ToUi::SixteenLevels => self.toggle_levels(),
+            ToUi::LevelsWheel(d) => {
+                let by = LevelsPanel::wheel(self.levels.by, d);
+                self.levels_by(by);
+            }
             ToUi::Patterns(list) => {
                 self.arp.patterns = list;
                 self.refresh_arp();
@@ -3197,6 +3272,10 @@ impl Player {
                 self.time_page.update(&mut self.ui, &self.time);
                 self.play.set_transport(self.time.transport);
                 self.refresh_play();
+                if self.view == View::Arrange {
+                    // A region picked or let go, or its values changed.
+                    self.refresh_qlinks();
+                }
                 if swapped {
                     // The Song view and the note editor have their own
                     // hint lines.
@@ -3321,6 +3400,9 @@ impl Player {
         if self.ready && self.view.sampler() && self.touch_page.is_none() {
             self.show_view(self.view);
         }
+        // The Play tab's Pads play row, an undo or another kit may have
+        // turned 16 Levels on or off.
+        self.refresh_levels();
     }
 
     /// The Synth tab's patch by engine and preset ("Poly Pluck"), for the
@@ -4022,6 +4104,33 @@ impl Player {
         self.status.repeat
     }
 
+    /// The Q-Link cards for the audio region picked on Arrange's Song
+    /// view, if one is (and NOTE REPEAT doesn't hold the knobs).
+    fn audio_cards(&self) -> Option<crate::audiotracks::AudioKnobs> {
+        if self.view != View::Arrange || self.band_showing() || !self.time.song_view {
+            return None;
+        }
+        crate::audiotracks::audio_knobs(&self.time)
+    }
+
+    /// Q-Link `k` turned `ticks` with an audio region picked or a track
+    /// panel open: to the audio tracks. False (nothing sent) when their
+    /// cards do not show.
+    fn audio_qlink(&mut self, k: usize, ticks: i32) -> bool {
+        let Some(knobs) = self.audio_cards() else {
+            return false;
+        };
+        self.outbox
+            .push(FromUi::Time(TimeAction::Audio(AudioAction::Turn {
+                track: knobs.track,
+                region: knobs.region,
+                knob: k,
+                ticks,
+                fine: self.status.shift,
+            })));
+        true
+    }
+
     /// The pattern step the engine is on, while a pattern plays.
     fn playing_step(&self) -> Option<usize> {
         let a = &self.arp;
@@ -4033,6 +4142,118 @@ impl Player {
     }
 
     /// Show the arp state on the panel, the band, the workspace and the chip.
+    /// 16 LEVEL: on (of the pad hit last, by the kind picked last, with the
+    /// panel) or, while on, off.
+    fn toggle_levels(&mut self) {
+        let want = match self.sample.levels() {
+            Some(_) => None,
+            None => Some((self.sample.pad(), self.levels.by)),
+        };
+        if !self.sample.set_levels(&mut self.ui, want) {
+            let l = "16 LEVEL: there is no kit to play 16 Levels of yet";
+            println!("{l}");
+            if let Some(e) = self.ui.get_mut::<LogPanel>("events") {
+                e.push(l, Tone::Dim);
+            }
+            return;
+        }
+        self.levels.open = want.is_some();
+        self.levels.picking = false;
+        self.after_levels_change();
+    }
+
+    /// The levels step through `by` from now on.
+    fn levels_by(&mut self, by: Levels) {
+        self.levels.by = by;
+        if let Some((pad, _)) = self.sample.levels() {
+            self.sample.set_levels(&mut self.ui, Some((pad, by)));
+            self.after_levels_change();
+        } else {
+            self.refresh_levels();
+        }
+    }
+
+    /// A pad down (`down`) or up: lit on the panel while held, and with
+    /// Pick pad armed, the pad the levels play from now on.
+    fn levels_hit(&mut self, pad: usize, down: bool) {
+        if pad >= 16 || self.sample.levels().is_none() {
+            return;
+        }
+        if down && self.levels.picking {
+            self.levels.picking = false;
+            self.sample
+                .set_levels(&mut self.ui, Some((pad, self.levels.by)));
+            self.after_levels_change();
+        }
+        self.levels.lit = if down {
+            Some(pad)
+        } else if self.levels.lit == Some(pad) {
+            None
+        } else {
+            self.levels.lit
+        };
+        self.refresh_levels();
+    }
+
+    /// The kit's pads changed between their own sounds and 16 Levels: the
+    /// panel, its page, the names on Play and the edits go out.
+    fn after_levels_change(&mut self) {
+        let on = self.sample.levels().is_some();
+        if !on {
+            self.levels.open = false;
+            self.levels.picking = false;
+            self.levels.lit = None;
+        }
+        self.sample_names();
+        self.sample_changed();
+        self.refresh_levels();
+        if self.view == View::Play {
+            self.show_view(View::Play);
+        }
+        self.refresh_hint();
+    }
+
+    /// The panel shows the kit as it is; the app hears when 16 Levels or
+    /// the panel turned on or off.
+    fn refresh_levels(&mut self) {
+        let levels = self.sample.levels();
+        if levels.is_none() && self.levels.open {
+            self.levels.open = false;
+            self.levels.picking = false;
+            if self.view == View::Play {
+                self.show_view(View::Play);
+            }
+        }
+        if let Some((_, by)) = levels {
+            self.levels.by = by;
+        }
+        let pad = levels.map_or(self.sample.pad(), |(p, _)| p);
+        let (pad_label, pad_name) = self.sample.pad_names(pad);
+        let model = LevelsModel {
+            pad_label,
+            pad_name,
+            by: self.levels.by,
+            picking: self.levels.picking,
+            lit: self.levels.lit,
+            colour: crate::akai::kit_colour(self.sample.kit()),
+        };
+        if let Some(w) = self.ui.get_mut::<LevelsPanel>(levels_panel::PANEL) {
+            if w.model != model {
+                w.model = model;
+            }
+        }
+        let now = (levels.is_some(), self.levels.open);
+        if self.levels.told != Some(now) {
+            self.levels.told = Some(now);
+            // The 16 Levels chip comes or goes.
+            self.refresh_chips();
+            self.outbox.push(FromUi::Levels {
+                on: now.0,
+                open: now.1,
+            });
+        }
+    }
+
     fn refresh_arp(&mut self) {
         let _ = self.arp_panel.update(&mut self.ui, &self.arp);
         let playing = self.playing_step();
@@ -4133,6 +4354,7 @@ impl Player {
         self.close_touch_page();
         let page = match v {
             View::Play if self.band_showing() && self.ready => QUICK_PAGE.to_string(),
+            View::Play if self.levels.open && self.ready => LEVELS_PAGE.to_string(),
             View::Play => self
                 .play
                 .view
@@ -4566,7 +4788,9 @@ impl Player {
             (play_page::QLINKS, EventKind::Step { index, delta })
                 if matches!(self.view, View::Play | View::Arrange) && !self.band_showing() =>
             {
-                self.play_qlink(index, delta);
+                if !self.audio_qlink(index, delta) {
+                    self.play_qlink(index, delta);
+                }
                 None
             }
             (play_page::STEPS, EventKind::Cell { row, col }) => {
@@ -4652,6 +4876,36 @@ impl Player {
                 self.refresh_qlinks();
                 first
             }
+            (levels_panel::PANEL, _) => {
+                let actions = self
+                    .ui
+                    .get_mut::<LevelsPanel>(levels_panel::PANEL)
+                    .map(LevelsPanel::take_actions)
+                    .unwrap_or_default();
+                for a in actions {
+                    match a {
+                        LevelsAction::By(by) => self.levels_by(by),
+                        LevelsAction::PickPad => {
+                            self.levels.picking = !self.levels.picking;
+                            self.refresh_levels();
+                        }
+                        LevelsAction::Close => {
+                            self.levels.open = false;
+                            self.levels.picking = false;
+                            self.refresh_levels();
+                            if self.view == View::Play {
+                                self.show_view(View::Play);
+                            }
+                            self.refresh_hint();
+                        }
+                        LevelsAction::Off => {
+                            self.sample.set_levels(&mut self.ui, None);
+                            self.after_levels_change();
+                        }
+                    }
+                }
+                None
+            }
             (mpfree_chain_ui::CHAIN, _) => {
                 let mut acts = mpfree_chain_ui::take_chain_actions(&mut self.ui)
                     .into_iter()
@@ -4714,7 +4968,26 @@ impl Player {
                 | time_view::NOTES
                 | time_view::EDIT_OPTIONS,
                 _,
-            ) => time_view::action(&ev, &self.time).map(FromUi::Time),
+            ) => time_view::action(&ev, &self.time).map(|a| {
+                // A swipe across a take lane and a region's drag are free
+                // with SHIFT held.
+                let fine = self.status.shift;
+                let a = match a {
+                    TimeAction::Audio(AudioAction::Comp { take, from, to, .. }) => {
+                        TimeAction::Audio(AudioAction::Comp {
+                            take,
+                            from,
+                            to,
+                            fine,
+                        })
+                    }
+                    TimeAction::Audio(AudioAction::Move { region, to, .. }) => {
+                        TimeAction::Audio(AudioAction::Move { region, to, fine })
+                    }
+                    a => a,
+                };
+                FromUi::Time(a)
+            }),
             _ => None,
         }
     }
@@ -5957,6 +6230,8 @@ pub fn apply_effects(p: &mut Player, fx: Vec<crate::app::Effect>) {
             Effect::Status(s) => p.apply(ToUi::Status(s)),
             Effect::Settings(s) => p.apply(ToUi::Settings(s)),
             Effect::Arp(v) => p.apply(ToUi::Arp(Box::new(v))),
+            Effect::SixteenLevels => p.apply(ToUi::SixteenLevels),
+            Effect::LevelsWheel(d) => p.apply(ToUi::LevelsWheel(d)),
             Effect::Patterns(l) => p.apply(ToUi::Patterns(l)),
             Effect::Workspace(w) => p.apply(ToUi::Workspace(Box::new(w))),
             Effect::Recorded(pat, next) => p.apply(ToUi::Recorded(Box::new(pat), next)),
@@ -5997,6 +6272,7 @@ pub fn apply_effects(p: &mut Player, fx: Vec<crate::app::Effect>) {
             | Effect::Looper(_)
             | Effect::SavePatterns(_)
             | Effect::SynthPads(_)
+            | Effect::TrackSound { .. }
             | Effect::ProgEdit
             | Effect::Metronome { .. }
             | Effect::Fill(_)
@@ -6186,6 +6462,53 @@ fn sample_app() -> crate::app::App {
     ) = (Some(90), Some(91), Some(92), Some(93));
     app.start();
     app
+}
+
+/// The mixer's Tracks view over the real mixer with tracks 1 and 2 playing
+/// their own instruments (Poly, FM): a chord each for a few periods, the
+/// costs fixed so the picture is the same on every run.
+fn sample_instrument_mixer(synth: &crate::synth::Synth) -> mpfree_mixer_ui::MixState {
+    use crate::synth::Engine;
+    let mut mix = crate::mixing::MixHost::new(44_100, -18.0, -12.0);
+    let plugins = std::sync::Arc::clone(mix.plugins());
+    for (track, engine, notes) in [
+        (0usize, Engine::Poly, [57u8, 60, 64]),
+        (1, Engine::Fm, [45, 52, 57]),
+    ] {
+        let (id, values) = synth.sound_of(engine);
+        let made = crate::instruments::make(&plugins, id, &values, 44_100, crate::PERIOD);
+        let _ = mix.instruments.put(track, made, synth.pads_for(engine));
+        for n in notes {
+            mix.instruments.note_on(track, n, 100, 0);
+        }
+    }
+    let silent = [0f32; crate::PERIOD];
+    let (mut l, mut r) = ([0f32; crate::PERIOD], [0f32; crate::PERIOD]);
+    for k in 0..40u64 {
+        let ctx = mpfree_node::Ctx::new(44_100, k * crate::PERIOD as u64);
+        mix.period(
+            &ctx,
+            (&silent, &silent),
+            (&silent, &silent),
+            (&silent, &silent),
+            (&silent, &silent),
+            &mut l,
+            &mut r,
+        );
+    }
+    mix.show(Some(mpfree_mixer_ui::MixView::Tracks));
+    let mut st = mix
+        .poll_state(std::time::Instant::now())
+        .expect("the mixer shows");
+    st.selected = Some(mpfree_fx::StripId::Track(crate::mixing::TRACKS + 1));
+    st.cost_pct = st.cost_pct.map(|_| 12.0);
+    for (k, v) in st.strips.iter_mut().chain([&mut st.master]).enumerate() {
+        v.cost_pct = v.cost_pct.map(|_| 0.5 + k as f32 * 0.25);
+        for i in &mut v.inserts {
+            i.cost_pct = i.cost_pct.map(|_| 1.5);
+        }
+    }
+    st
 }
 
 /// Every screen of the pad player with sample contents, as (name, player
@@ -6753,6 +7076,37 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         }
         Err(e) => eprintln!("arrange-song-audio sample: {e}"),
     }
+    // The same with the guitar's track panel open (layout spec 4c), its
+    // input on ST, soloed, and nothing picked: the Q-Links are its level
+    // and pan.
+    match mpfree_time_ui::sample::song_audio_state() {
+        Ok(mut state) => {
+            state.region = None;
+            state.audio_panel = Some(1);
+            if let Some(l) = state.audio.iter_mut().find(|l| l.track == 1) {
+                l.solo = true;
+                l.volume = 0.71;
+                l.pan = 0.3;
+            }
+            let mut p = quiet_player(fonts());
+            p.apply(ToUi::Time(Box::new(state)));
+            p.apply(ToUi::Show(View::Arrange));
+            out.push(("arrange-song-panel", p));
+        }
+        Err(e) => eprintln!("arrange-song-panel sample: {e}"),
+    }
+    // The vocal's take lanes open under its lane (layout spec 4c): take 2
+    // plays over bars 5-8, take 1 everywhere else.
+    match mpfree_time_ui::sample::song_audio_state() {
+        Ok(mut state) => {
+            state.audio_takes = Some(0);
+            let mut p = quiet_player(fonts());
+            p.apply(ToUi::Time(Box::new(state)));
+            p.apply(ToUi::Show(View::Arrange));
+            out.push(("arrange-song-takes", p));
+        }
+        Err(e) => eprintln!("arrange-song-takes sample: {e}"),
+    }
     match sample_looper(fonts()) {
         Ok(p) => out.push(("looper", p)),
         Err(e) => eprintln!("looper sample: {e}"),
@@ -6847,6 +7201,47 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     fx.extend(a.select(3));
     apply_effects(&mut options, fx);
     out.push(("synth-options", options));
+    // The Instrument row on track 2 stepped past the engines to a plugin
+    // synth (two found), its help open.
+    let mut inst = sample_player(fonts());
+    let mut a = sample_app();
+    a.plugin_synths = vec![
+        ("clap:com.example.dexed", "Dexed"),
+        ("clap:com.example.surge-xt", "Surge XT"),
+    ];
+    a.set_track(1);
+    let mut fx = a.open_tab(View::Synth);
+    fx.extend(a.button(mpfree_controller::mpc_one::button::MENU, true, 0.0));
+    fx.extend(a.button(mpfree_controller::mpc_one::button::MENU, false, 0.0));
+    // Kit, the engines, Dexed, Surge XT.
+    for _ in 0..crate::synth::Engine::ALL.len() + 2 {
+        fx.extend(a.step_item(0, 1));
+    }
+    fx.extend(a.select(0));
+    apply_effects(&mut inst, fx);
+    out.push(("synth-instrument", inst));
+    // The Synth tab on track 2's own FM, its second preset loaded.
+    let mut own = sample_player(fonts());
+    let (id, values) = fm
+        .preset_values(crate::synth::Engine::Fm, 1)
+        .map(|(_, v)| (crate::synth::Engine::Fm.node_id(), v))
+        .unwrap_or_else(|| fm.sound_of(crate::synth::Engine::Fm));
+    if let Some(node) = crate::synth::fresh_node(id, &values, 44_100) {
+        own.apply(ToUi::Synth(fm.state_of(
+            node.as_ref(),
+            Some(crate::synth::Engine::Fm),
+            "Track 2",
+            Some(1),
+        )));
+    }
+    own.apply(ToUi::Show(View::Synth));
+    out.push(("synth-track", own));
+    // The mixer with two tracks playing their own instruments (Poly on
+    // track 1, FM on track 2): their channels after Drums, Synth, Loop and Audio.
+    let mut mixer = sample_player(fonts());
+    mixer.apply(ToUi::Show(View::Mixer));
+    mixer.apply(ToUi::Mixer(Box::new(sample_instrument_mixer(&fm))));
+    out.push(("mixer-instruments", mixer));
     // The Sample page: the loop on kit 1's pad 5, then zoomed round the
     // loop start after a Q-Link 3 turn, then a pad without a sound, then
     // the Chop tab.
@@ -7266,6 +7661,19 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         });
         levels.take_actions();
         out.push(("sample-play-levels", levels));
+    }
+    // 16 LEVEL on Play: the 16 Levels panel, by tune, pad 12 held.
+    {
+        let mut levels = sample_sampler(fonts());
+        levels.apply(ToUi::Show(View::Play));
+        levels.apply(ToUi::SixteenLevels);
+        levels.apply(ToUi::LevelsWheel(1));
+        levels.apply(ToUi::PadDown {
+            pad: 11,
+            velocity: 100,
+        });
+        levels.take_actions();
+        out.push(("play-16-levels", levels));
     }
     // The Chop tab putting four slices on keys.
     {
@@ -9107,6 +9515,175 @@ mod tests {
     /// by the Q-Links and by a drag on a card, and Q-LINK steps the same
     /// macro banks, which Play then still shows.
     #[test]
+    /// Layout spec 4c: with an audio region picked on the Song view, the
+    /// Q-Links are the track's level and pan and the region's gain and
+    /// fades, and a turn goes to the audio tracks. Letting the region go
+    /// gives Play's knobs back.
+    fn an_audio_region_picked_on_arrange_takes_the_q_links() {
+        use mpfree_time_ui::song::{AudioBlock, AudioLane};
+        let mut p = sample_player(Fonts::embedded());
+        let mut app = sample_app();
+        apply_effects(&mut p, app.tab(2));
+        assert_eq!(p.view, View::Arrange);
+        let title = |p: &Player| {
+            p.ui.get::<QLinkColumn>(play_page::QLINKS)
+                .unwrap()
+                .title
+                .clone()
+        };
+        let mut st = p.time.clone();
+        st.song_view = true;
+        st.audio = vec![AudioLane {
+            track: 1,
+            name: "Audio 2".into(),
+            color: time_view::audio_color(1),
+            armed: false,
+            input: mpfree_audiotracks::Input::Left,
+            level: 0.0,
+            volume: 0.5,
+            pan: -0.2,
+            monitor: mpfree_audiotracks::Monitor::Auto,
+            mute: false,
+            solo: false,
+            blocks: vec![AudioBlock {
+                start: 0,
+                end: 3840,
+                take: 0,
+                tag: String::new(),
+                src: 0,
+                frames: 88_200.0,
+                gain: 2.0,
+                fade_in: 441,
+                fade_out: 0,
+            }],
+            takes: Vec::new(),
+            recording: None,
+        }];
+        p.apply(ToUi::Time(Box::new(st.clone())));
+        assert_eq!(
+            title(&p),
+            "Q-Links · Arrange",
+            "nothing picked: Play's knobs"
+        );
+        st.region = Some(time_view::RegionId { track: 1, index: 0 });
+        p.apply(ToUi::Time(Box::new(st.clone())));
+        assert_eq!(title(&p), "Q-Links · Audio region");
+        let cards =
+            p.ui.get::<QLinkColumn>(play_page::QLINKS)
+                .unwrap()
+                .cards
+                .clone();
+        let shown: Vec<_> = cards
+            .iter()
+            .map(|c| (c.name.as_str(), c.scope.as_str(), c.value.as_str()))
+            .collect();
+        assert_eq!(
+            shown,
+            [
+                ("Level", "AUDIO 2", "-6.0 dB"),
+                ("Pan", "AUDIO 2", "L20"),
+                ("Gain", "REGION", "6.0 dB"),
+                ("Fades", "REGION", "10 ms"),
+            ]
+        );
+        assert!(cards[1].bipolar);
+        p.take_actions();
+        p.apply(ToUi::PlayQLink(2, 3));
+        assert_eq!(
+            p.take_actions(),
+            vec![FromUi::Time(TimeAction::Audio(AudioAction::Turn {
+                track: 1,
+                region: Some(0),
+                knob: 2,
+                ticks: 3,
+                fine: false
+            }))]
+        );
+        // A drag on a card is a turn too.
+        let _ = p.on_event(mpfree_ui::UiEvent {
+            widget: play_page::QLINKS.to_string(),
+            kind: mpfree_ui::EventKind::Step {
+                index: 0,
+                delta: -1,
+            },
+        });
+        assert_eq!(
+            p.take_actions(),
+            vec![FromUi::Time(TimeAction::Audio(AudioAction::Turn {
+                track: 1,
+                region: Some(0),
+                knob: 0,
+                ticks: -1,
+                fine: false
+            }))]
+        );
+        st.region = None;
+        p.apply(ToUi::Time(Box::new(st.clone())));
+        assert_eq!(title(&p), "Q-Links · Arrange");
+        // The track panel open: the track's level and pan, and Q3 and Q4
+        // ask for a region.
+        st.audio_panel = Some(1);
+        p.apply(ToUi::Time(Box::new(st)));
+        assert_eq!(title(&p), "Q-Links · Audio 2");
+        p.take_actions();
+        p.apply(ToUi::PlayQLink(1, 2));
+        assert_eq!(
+            p.take_actions(),
+            vec![FromUi::Time(TimeAction::Audio(AudioAction::Turn {
+                track: 1,
+                region: None,
+                knob: 1,
+                ticks: 2,
+                fine: false
+            }))]
+        );
+    }
+
+    /// Layout spec 4c: a swipe across a take lane snaps to the grid, and
+    /// with SHIFT held it is free.
+    #[test]
+    fn a_take_lane_swipe_with_shift_is_free() {
+        let mut p = sample_player(Fonts::embedded());
+        let swipe = |p: &mut Player| {
+            p.on_event(mpfree_ui::UiEvent {
+                widget: time_view::SONG.to_string(),
+                kind: mpfree_ui::EventKind::Span {
+                    index: 2,
+                    from: 100,
+                    to: 900,
+                },
+            })
+        };
+        let comp = |fine| {
+            Some(FromUi::Time(TimeAction::Audio(AudioAction::Comp {
+                take: 2,
+                from: 100,
+                to: 900,
+                fine,
+            })))
+        };
+        assert_eq!(swipe(&mut p), comp(false));
+        p.status.shift = true;
+        assert_eq!(swipe(&mut p), comp(true));
+        // A region's drag too.
+        let moved = p.on_event(mpfree_ui::UiEvent {
+            widget: time_view::SONG.to_string(),
+            kind: mpfree_ui::EventKind::Marker {
+                index: mpfree_time_ui::song::REGION_SLOTS + 2,
+                frame: 3850,
+            },
+        });
+        assert_eq!(
+            moved,
+            Some(FromUi::Time(TimeAction::Audio(AudioAction::Move {
+                region: time_view::RegionId { track: 1, index: 2 },
+                to: 3850,
+                fine: true,
+            })))
+        );
+    }
+
+    #[test]
     fn arrange_has_plays_q_links_and_their_banks() {
         let mut p = sample_player(Fonts::embedded());
         let mut app = sample_app();
@@ -10837,6 +11414,123 @@ mod tests {
         p.apply(ToUi::PadUp(0));
         assert_eq!(p.sample.play().unwrap().1.pad, pad);
         assert_eq!(p.page(), sample_page::PLAY_PAGE);
+    }
+
+    #[test]
+    fn sixteen_level_turns_levels_on_with_the_panel_and_off_again() {
+        use mpfree_sampler::model::PadsPlay;
+        let pad = mpfree_sampler_ui::sample::PAD;
+        let mut p = sample_sampler(Fonts::embedded());
+        p.apply(ToUi::Show(View::Play));
+        p.take_actions();
+        let told = |acts: &[FromUi]| {
+            acts.iter()
+                .rev()
+                .filter_map(|a| match a {
+                    FromUi::Levels { on, open } => Some((*on, *open)),
+                    _ => None,
+                })
+                .next()
+        };
+        // 16 LEVEL: 16 Levels of the pad hit last, by velocity, with the panel.
+        p.apply(ToUi::SixteenLevels);
+        let kit = || PadsPlay::Levels {
+            pad: pad as u8,
+            by: Levels::Velocity,
+        };
+        assert_eq!(p.sample.project(0).unwrap().pads_play(), kit());
+        assert_eq!(p.page(), LEVELS_PAGE);
+        let (sent, rest) = views(p.take_actions());
+        assert!(
+            !sent.is_empty(),
+            "the kit's new view goes to the audio thread"
+        );
+        assert_eq!(told(&rest), Some((true, true)));
+        let panel = |p: &Player| {
+            p.ui.get::<LevelsPanel>(levels_panel::PANEL)
+                .unwrap()
+                .model
+                .clone()
+        };
+        assert_eq!(panel(&p).pad_label, "A5");
+        assert_eq!(panel(&p).pad_name, "Break 92");
+        assert_eq!(panel(&p).colour, crate::akai::kit_colour(0));
+        let chips = |p: &Player| -> Vec<String> {
+            p.ui.get::<Header>("header")
+                .unwrap()
+                .chips
+                .iter()
+                .map(|c| c.text.clone())
+                .collect()
+        };
+        assert!(chips(&p).contains(&"16 Levels · velocity".to_string()));
+        // The wheel: Tune.
+        p.apply(ToUi::LevelsWheel(1));
+        assert_eq!(
+            p.sample.project(0).unwrap().pads_play(),
+            PadsPlay::Levels {
+                pad: pad as u8,
+                by: Levels::Tune
+            }
+        );
+        assert_eq!(panel(&p).by, Levels::Tune);
+        // A held pad lights its cell.
+        p.apply(ToUi::PadDown {
+            pad: 3,
+            velocity: 90,
+        });
+        assert_eq!(panel(&p).lit, Some(3));
+        p.apply(ToUi::PadUp(3));
+        assert_eq!(panel(&p).lit, None);
+        // Pick pad, then a hit: the levels play pad 2.
+        let r = p.ui.rect_of(levels_panel::PANEL).unwrap();
+        let tap = |p: &mut Player, b: mpfree_ui::Rect| {
+            let (x, y) = (b.x + b.w / 2, b.y + b.h / 2);
+            p.touch(1, Touch::Down, x, y);
+            p.touch(1, Touch::Up, x, y);
+        };
+        tap(&mut p, LevelsPanel::button_rect(r, 0));
+        assert!(panel(&p).picking);
+        p.apply(ToUi::PadDown {
+            pad: 1,
+            velocity: 90,
+        });
+        p.apply(ToUi::PadUp(1));
+        assert!(!panel(&p).picking);
+        assert_eq!(
+            p.sample.project(0).unwrap().pads_play(),
+            PadsPlay::Levels {
+                pad: 1,
+                by: Levels::Tune
+            }
+        );
+        // A tap on Decay.
+        tap(&mut p, LevelsPanel::kind_rect(r, Levels::Decay));
+        assert_eq!(
+            p.sample.project(0).unwrap().pads_play(),
+            PadsPlay::Levels {
+                pad: 1,
+                by: Levels::Decay
+            }
+        );
+        // Close: the panel goes, the levels stay.
+        p.take_actions();
+        tap(&mut p, LevelsPanel::button_rect(r, 1));
+        assert_ne!(p.page(), LEVELS_PAGE);
+        assert!(p.sample.levels().is_some());
+        assert_eq!(told(&p.take_actions()), Some((true, false)));
+        // 16 LEVEL again: the pads play their own sounds.
+        p.apply(ToUi::SixteenLevels);
+        assert_eq!(p.sample.project(0).unwrap().pads_play(), PadsPlay::Pads);
+        assert_eq!(told(&p.take_actions()), Some((false, false)));
+        assert!(!chips(&p).iter().any(|c| c.starts_with("16 Levels")));
+        // On again keeps the kind picked last; Off on the panel ends it.
+        p.apply(ToUi::SixteenLevels);
+        assert_eq!(p.page(), LEVELS_PAGE);
+        assert_eq!(panel(&p).by, Levels::Decay);
+        tap(&mut p, LevelsPanel::button_rect(r, 2));
+        assert_eq!(p.sample.project(0).unwrap().pads_play(), PadsPlay::Pads);
+        assert_ne!(p.page(), LEVELS_PAGE);
     }
 
     #[test]

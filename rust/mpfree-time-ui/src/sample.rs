@@ -738,25 +738,40 @@ impl AudioSession {
         Vec<mpfree_audiotracks::host::TakeWave>,
     ) {
         let takes: Vec<_> = self.tracks.takes().collect();
-        let lanes = [(0, "Vocal", "L", 0.42), (1, "Guitar", "ST", 0.63)]
-            .into_iter()
-            .map(|(track, name, input, level)| crate::song::AudioLane {
+        let lanes = [
+            (0, "Vocal", mpfree_audiotracks::Input::Left, 0.42),
+            (1, "Guitar", mpfree_audiotracks::Input::Stereo, 0.63),
+        ]
+        .into_iter()
+        .map(|(track, name, input, level)| crate::song::AudioLane {
+            track,
+            name: name.into(),
+            color: crate::view::audio_color(track),
+            armed: self.tracks.armed(track),
+            input,
+            level,
+            volume: 1.0,
+            pan: 0.0,
+            monitor: mpfree_audiotracks::Monitor::Auto,
+            mute: false,
+            solo: false,
+            blocks: crate::song::audio_blocks(
                 track,
-                name: name.into(),
-                color: crate::view::audio_color(track),
-                armed: self.tracks.armed(track),
-                input: input.into(),
-                level,
-                blocks: crate::song::audio_blocks(
-                    track,
-                    self.tracks.regions(track),
-                    &takes,
-                    &self.map,
-                    AUDIO_RATE,
-                ),
-                recording: None,
-            })
-            .collect();
+                self.tracks.regions(track),
+                &takes,
+                &self.map,
+                AUDIO_RATE,
+            ),
+            takes: crate::song::take_lanes(
+                track,
+                self.tracks.regions(track),
+                &takes,
+                &self.map,
+                AUDIO_RATE,
+            ),
+            recording: None,
+        })
+        .collect();
         let waves = takes.iter().filter_map(|t| self.wave(t.id, 600)).collect();
         (lanes, waves)
     }

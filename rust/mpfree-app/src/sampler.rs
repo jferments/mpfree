@@ -618,6 +618,12 @@ impl Player {
         self.engine.active_voices()
     }
 
+    /// Hits the engine has played (the tests).
+    #[cfg(test)]
+    pub fn hits(&self) -> u64 {
+        self.engine.stats().hits
+    }
+
     pub fn counters(&self) -> Counters {
         let s = self.engine.stats();
         Counters {

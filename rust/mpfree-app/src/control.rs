@@ -32,12 +32,17 @@
 
 use std::io::{self, ErrorKind, Write};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TrySendError};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
+use mpfree_arp::scale::pads::{Pad, PADS};
 use mpfree_fx::{Insert, StripId};
+use mpfree_node::Tuning;
+use mpfree_track::Instrument;
+
+use crate::plugins::Plugins;
 
 /// Controller messages this long or shorter travel without an allocation.
 pub const SHORT: usize = 32;
@@ -405,6 +410,29 @@ pub struct Built {
     pub insert: Option<Insert>,
 }
 
+/// A track's own instrument asked for on the Synth tab, made on the
+/// builder thread (`instruments.rs`): the track, its pad map and tuning
+/// as they were asked for, and the instrument (None: it couldn't be made;
+/// for a plugin the plugins' lines say why).
+pub struct MadeInstrument {
+    pub track: usize,
+    pub id: &'static str,
+    pub made: Option<(Instrument, crate::instruments::Held)>,
+    pub pads: [Pad; PADS],
+    /// Plain data, so dropping this on the audio thread frees nothing.
+    pub tuning: Tuning,
+}
+
+/// What a track's instrument is made from.
+pub struct InstrumentJob {
+    pub track: usize,
+    pub id: &'static str,
+    /// A synth engine's sound (none for a plugin).
+    pub values: Vec<f32>,
+    pub pads: [Pad; PADS],
+    pub tuning: Tuning,
+}
+
 enum Job {
     Build {
         strip: StripId,
@@ -412,7 +440,9 @@ enum Job {
         rate: u32,
         block: usize,
     },
+    Instrument(Box<InstrumentJob>, u32, usize),
     Drop(Insert),
+    DropInstrument(Instrument),
 }
 
 /// Builds effects for the chain editor, and drops the ones edits take out,
@@ -420,21 +450,37 @@ enum Job {
 pub struct Builder {
     tx: SyncSender<Job>,
     built: Receiver<Built>,
+    instruments: Receiver<MadeInstrument>,
     /// Asked for and not back yet.
     pending: usize,
     _thread: JoinHandle<()>,
 }
 
 impl Builder {
-    /// Starts the thread (allocates; call it before the loop).
-    pub fn start() -> io::Result<Builder> {
+    /// Starts the thread (allocates; call it before the loop). It also
+    /// starts the plugins' processes when one is added, and watches them
+    /// every [`mpfree_plughost::rack::WATCH_EVERY`] ([`Plugins::watch`]).
+    pub fn start(plugins: Arc<Plugins>) -> io::Result<Builder> {
         let (tx, rx) = mpsc::sync_channel::<Job>(BUILD_QUEUE);
         let (built_tx, built) = mpsc::sync_channel::<Built>(BUILD_QUEUE);
+        let (inst_tx, instruments) = mpsc::sync_channel::<MadeInstrument>(BUILD_QUEUE);
         let thread = thread::Builder::new()
             .name("mpfree-build".into())
             .spawn(move || {
                 let _ = crate::cores::background();
-                for job in rx {
+                let mut watched = Instant::now();
+                loop {
+                    let job = match rx.recv_timeout(mpfree_plughost::rack::WATCH_EVERY) {
+                        Ok(job) => Some(job),
+                        Err(RecvTimeoutError::Timeout) => None,
+                        Err(RecvTimeoutError::Disconnected) => return,
+                    };
+                    let now = Instant::now();
+                    if now.duration_since(watched) >= mpfree_plughost::rack::WATCH_EVERY {
+                        plugins.watch(now);
+                        watched = now;
+                    }
+                    let Some(job) = job else { continue };
                     match job {
                         Job::Build {
                             strip,
@@ -442,8 +488,15 @@ impl Builder {
                             rate,
                             block,
                         } => {
-                            let insert =
-                                mpfree_fx_ui::make(id).map(|node| Insert::new(node, rate, block));
+                            let node = if Plugins::is_plugin(id) {
+                                // Its own process; a refusal is said by
+                                // the plugins' lines, and the chain
+                                // editor hears "no maker".
+                                plugins.make(id).ok()
+                            } else {
+                                mpfree_fx_ui::make(id)
+                            };
+                            let insert = node.map(|node| Insert::new(node, rate, block));
                             // Room for every request (`pending` is checked
                             // against the queue), so this waits only if the
                             // audio thread stopped taking them.
@@ -451,13 +504,21 @@ impl Builder {
                                 return;
                             }
                         }
+                        Job::Instrument(job, rate, block) => {
+                            let made = make_instrument(*job, &plugins, rate, block);
+                            if inst_tx.send(made).is_err() {
+                                return;
+                            }
+                        }
                         Job::Drop(insert) => drop(insert),
+                        Job::DropInstrument(inst) => drop(inst),
                     }
                 }
             })?;
         Ok(Builder {
             tx,
             built,
+            instruments,
             pending: 0,
             _thread: thread,
         })
@@ -494,6 +555,30 @@ impl Builder {
         Some(b)
     }
 
+    /// Asks for a track's own instrument, made for `rate` and blocks of
+    /// `block` frames and handed back by [`Builder::take_instrument`].
+    /// False if the queue is full. Never waits.
+    pub fn instrument(&mut self, job: Box<InstrumentJob>, rate: u32, block: usize) -> bool {
+        self.tx.try_send(Job::Instrument(job, rate, block)).is_ok()
+    }
+
+    /// The next track instrument made, if one is ready. Never waits.
+    pub fn take_instrument(&mut self) -> Option<MadeInstrument> {
+        self.instruments.try_recv().ok()
+    }
+
+    /// Drops an instrument the track host retired, on the builder thread.
+    /// False if the queue was full: then it was dropped here.
+    pub fn drop_instrument_later(&mut self, inst: Instrument) -> bool {
+        match self.tx.try_send(Job::DropInstrument(inst)) {
+            Ok(()) => true,
+            Err(TrySendError::Full(job) | TrySendError::Disconnected(job)) => {
+                drop(job);
+                false
+            }
+        }
+    }
+
     /// Drops `insert` on the builder thread. False if its queue was full
     /// (or the thread gone): then the insert was dropped here, on the
     /// calling thread, and the caller says so.
@@ -505,6 +590,23 @@ impl Builder {
                 false
             }
         }
+    }
+}
+
+/// Makes a track's instrument (`instruments::make`): on the builder
+/// thread, or here when there is none (the tests).
+pub fn make_instrument(
+    job: InstrumentJob,
+    plugins: &Plugins,
+    rate: u32,
+    block: usize,
+) -> MadeInstrument {
+    MadeInstrument {
+        track: job.track,
+        id: job.id,
+        made: crate::instruments::make(plugins, job.id, &job.values, rate, block),
+        pads: job.pads,
+        tuning: job.tuning,
     }
 }
 
@@ -677,7 +779,7 @@ mod tests {
 
     #[test]
     fn effects_are_built_and_dropped_on_the_builder_thread() {
-        let mut b = Builder::start().unwrap();
+        let mut b = Builder::start(Arc::new(Plugins::none())).unwrap();
         assert!(b.build(StripId::Track(1), "mpfree.fx.drive", 44_100, 128));
         assert!(b.build(StripId::Track(2), "no.such.effect", 44_100, 128));
         assert_eq!(b.pending(), 2);

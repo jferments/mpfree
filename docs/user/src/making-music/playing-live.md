@@ -1,6 +1,6 @@
 <!--
 status: changing
-covers: rust/mpfree-app/src/play_page.rs rust/mpfree-app/src/play_widgets.rs rust/mpfree-app/src/mixing.rs rust/mpfree-fx/src/perform.rs
+covers: rust/mpfree-sampler-ui/src/levels_panel.rs rust/mpfree-app/src/play_page.rs rust/mpfree-app/src/play_widgets.rs rust/mpfree-app/src/mixing.rs rust/mpfree-fx/src/perform.rs
 checked: 2026-11-13 dcaefdd
 -->
 
@@ -45,6 +45,19 @@ Hold **ERASE** and tap a row's name to delete that sound's steps from the patter
 ### Muting tracks and pads
 
 **TRACK MUTE** turns the pads into mute buttons over whatever page you are on, so you can drop parts in and out without leaving the screen you are using. Pads 1-8 are tracks 1-8: green while the track plays a clip, dim green when it has nothing playing, red while it is muted. Tap a pad to mute or unmute its track; the track's clip keeps its place, so it comes back in time. **SHIFT + TRACK MUTE** does the same for the pads of the kit: a pad lit in the kit's colour plays, a red one is muted. Press the same button again to play the pads as usual. The hint line at the bottom of the screen says which mode the pads are in.
+
+## 16 Levels
+
+**16 LEVEL** spreads one sound over all 16 pads: the pad you hit last plays on every pad, each one a step of something else. Press **16 LEVEL** and the 16 Levels panel opens on the Play page, under the transport bar:
+
+- The cells are the pads, pad 1 at the bottom left. Each one shows what that pad plays, and they are lit in the same colour as the pads, with the pad you are holding bright.
+- The column on the right picks what the steps change: **Velocity** (8 to 127), **Tune** (a semitone a pad, pad 9 as recorded), **Cutoff** (100 Hz to 20 kHz), **Decay** (25 ms to 4.5 s) or **Start** (where in the sound it starts). Tap one, or turn the wheel.
+- **Pick pad**, then hit a pad: the levels play that pad's sound instead.
+- **Close** hides the panel and keeps the pads on 16 Levels. **Off**, or **16 LEVEL** again, gives the pads their own sounds back. The 16 LEVEL button is lit while 16 Levels is on, and a **16 Levels** chip in the top bar says what the steps change.
+
+16 Levels belongs to the kit, so it is saved with it and one UNDO on the Sample tab takes it back. The synth's pads don't have it: pick a kit first.
+
+{{shot: play-16-levels | The 16 Levels panel by Tune: pad 9 plays the sound as recorded, the others a semitone apart, and pad 12 is held.}}
 
 ## Your timing
 

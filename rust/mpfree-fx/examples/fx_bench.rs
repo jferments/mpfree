@@ -2,6 +2,13 @@
 //! real time at 48 kHz. Run with `--release`. On the build host this is a
 //! desktop core; the MPC One's Cortex-A17 needs its own run before slot
 //! limits are set.
+//!
+//! For instruction counts (steadier than this VM's clock), run one effect
+//! under cachegrind with a fixed number of blocks and subtract a run with
+//! none: `FX_BENCH_ONLY=Compressor FX_BENCH_BLOCKS=2000 valgrind
+//! --tool=cachegrind target/release/examples/fx_bench`, then the same with
+//! `FX_BENCH_BLOCKS=0`. `FX_BENCH_ONLY` keeps the effects whose name
+//! contains it.
 
 use std::time::Instant;
 
@@ -21,7 +28,10 @@ type Process<'a> = dyn FnMut(&Ctx, &mut [f32], &mut [f32]) + 'a;
 fn time(name: &str, process: &mut Process) {
     let mut l = vec![0.0f32; BLOCK];
     let mut r = vec![0.0f32; BLOCK];
-    let blocks = SECONDS * RATE as usize / BLOCK;
+    let blocks = std::env::var("FX_BENCH_BLOCKS")
+        .ok()
+        .and_then(|b| b.parse().ok())
+        .unwrap_or(SECONDS * RATE as usize / BLOCK);
     let mut seed = 1u32;
     let start = Instant::now();
     for b in 0..blocks {
@@ -36,13 +46,22 @@ fn time(name: &str, process: &mut Process) {
     let secs = start.elapsed().as_secs_f64();
     println!(
         "  {name:<28} {:>6.2} % of real time ({:.2} us per block)",
-        100.0 * secs / SECONDS as f64,
-        1e6 * secs / blocks as f64
+        100.0 * secs / (blocks * BLOCK) as f64 * RATE as f64,
+        1e6 * secs / blocks.max(1) as f64
     );
     std::hint::black_box(&l);
 }
 
-fn node(name: &str, mut n: Box<dyn Node>, params: &[(u16, f32)]) {
+fn wanted(name: &str) -> bool {
+    std::env::var("FX_BENCH_ONLY").map_or(true, |f| name.contains(&f))
+}
+
+fn node(name: &str, make: impl FnOnce() -> Box<dyn Node>, params: &[(u16, f32)]) {
+    if !wanted(name) {
+        return;
+    }
+    // Made only when wanted, so a run for one effect sets up only that one.
+    let mut n = make();
     n.prepare(RATE, MAX_BLOCK);
     for &(id, v) in params {
         n.set_param(id, v);
@@ -55,12 +74,12 @@ fn main() {
     println!("mpfree-fx, one stereo instance on {BLOCK}-frame blocks at {RATE} Hz:");
     node(
         "Multi filter (LP 12)",
-        Box::new(MultiFilter::new()),
+        || Box::new(MultiFilter::new()),
         &[(ids::filter::CUTOFF, 800.0)],
     );
     node(
         "Multi filter (LP 24, drive)",
-        Box::new(MultiFilter::new()),
+        || Box::new(MultiFilter::new()),
         &[
             (ids::filter::CUTOFF, 800.0),
             (ids::filter::SLOPE, 1.0),
@@ -69,16 +88,16 @@ fn main() {
     );
     node(
         "DJ filter",
-        Box::new(DjFilter::new()),
+        || Box::new(DjFilter::new()),
         &[(ids::dj_filter::POSITION, -40.0)],
     );
-    node("Drive (Eco 2x)", Box::new(Drive::new()), &[]);
+    node("Drive (Eco 2x)", || Box::new(Drive::new()), &[]);
     node(
         "Drive (HQ 4x)",
-        Box::new(Drive::new()),
+        || Box::new(Drive::new()),
         &[(ids::drive::QUALITY, 1.0)],
     );
-    node("Crush", Box::new(Crush::new()), &[]);
+    node("Crush", || Box::new(Crush::new()), &[]);
     for (name, mode) in [
         ("Character (Console)", ids::character::CONSOLE),
         ("Character (Tape)", ids::character::TAPE),
@@ -87,22 +106,22 @@ fn main() {
     ] {
         node(
             name,
-            Box::new(Character::new()),
+            || Box::new(Character::new()),
             &[(ids::character::MODE, mode), (ids::character::AMOUNT, 70.0)],
         );
     }
-    node("Delay", Box::new(Delay::new()), &[]);
-    node("Compressor", Box::new(Compressor::new()), &[]);
+    node("Delay", || Box::new(Delay::new()), &[]);
+    node("Compressor", || Box::new(Compressor::new()), &[]);
     node(
         "Ducker (tempo)",
-        Box::new(Ducker::new()),
+        || Box::new(Ducker::new()),
         &[(ids::ducker::SOURCE, 1.0)],
     );
-    node("Transient shaper", Box::new(TransientShaper::new()), &[]);
-    node("Pitch shifter", Box::new(PitchShifter::new()), &[]);
+    node("Transient shaper", || Box::new(TransientShaper::new()), &[]);
+    node("Pitch shifter", || Box::new(PitchShifter::new()), &[]);
     node(
         "EQ (4 bands and both cuts)",
-        Box::new(Eq::new()),
+        || Box::new(Eq::new()),
         &[
             (ids::eq::LOW_SLOPE, 2.0),
             (ids::eq::HIGH_SLOPE, 2.0),
@@ -112,25 +131,25 @@ fn main() {
             (ids::eq::gain(3), 2.0),
         ],
     );
-    node("Chorus (2 voices)", Box::new(Chorus::new()), &[]);
+    node("Chorus (2 voices)", || Box::new(Chorus::new()), &[]);
     node(
         "Chorus (4 voices)",
-        Box::new(Chorus::new()),
+        || Box::new(Chorus::new()),
         &[(ids::chorus::VOICES, 4.0)],
     );
-    node("Flanger", Box::new(Flanger::new()), &[]);
-    node("Phaser (4 stages)", Box::new(Phaser::new()), &[]);
+    node("Flanger", || Box::new(Flanger::new()), &[]);
+    node("Phaser (4 stages)", || Box::new(Phaser::new()), &[]);
     node(
         "Phaser (12 stages)",
-        Box::new(Phaser::new()),
+        || Box::new(Phaser::new()),
         &[(ids::phaser::STAGES, 4.0)],
     );
     node(
         "Lo-fi",
-        Box::new(LoFi::new()),
+        || Box::new(LoFi::new()),
         &[(ids::lofi::AMOUNT, 100.0)],
     );
-    node("Master safety", Box::new(MasterSafety::new()), &[]);
+    node("Master safety", || Box::new(MasterSafety::new()), &[]);
     for (k, name) in ["Plate", "Room", "Hall", "Cloud", "Echoes"]
         .iter()
         .enumerate()
@@ -138,7 +157,7 @@ fn main() {
         for (q, quality) in ["", ", Light", ", Eco"].iter().enumerate() {
             node(
                 &format!("Cloud reverb ({name}{quality})"),
-                Box::new(Cloud::new()),
+                || Box::new(Cloud::new()),
                 &[
                     (ids::cloud::CHARACTER, k as f32),
                     (ids::cloud::MIX, 100.0),
@@ -146,6 +165,9 @@ fn main() {
                 ],
             );
         }
+    }
+    if !wanted("Chain") {
+        return;
     }
     let mut chain = Chain::new();
     chain.prepare(RATE, MAX_BLOCK);
