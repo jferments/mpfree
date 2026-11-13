@@ -43,7 +43,6 @@
 //! of CPU by engine; the state for the screen allocates, a few times a
 //! second while the panel shows, as the other pages' states do.
 
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use mpfree_fx::ids::mixer::output;
@@ -55,7 +54,6 @@ use mpfree_node::{Ctx, Node, NodeEvent, Timed};
 use mpfree_play::mpfree_param::{Owner, ParamAddr};
 use mpfree_sampler::engine::PadOut;
 
-use crate::plugins::Plugins;
 use crate::PERIOD;
 use mpfree_fx::ids::perform as perf;
 
@@ -200,9 +198,6 @@ pub struct MixHost {
     /// A built effect the mixer had no room for yet (its edits were full),
     /// put in on a later period.
     landing: Option<crate::control::Built>,
-    /// The CLAP plugins found (plugins.rs): the picker's plugin cards and
-    /// what the builder makes `clap:` effects with.
-    plugins: Arc<Plugins>,
     /// A project's mixer being swapped in ([`MixHost::open`]).
     opening: Option<Box<Open>>,
 }
@@ -280,7 +275,6 @@ impl MixHost {
             dropped: 0,
             builder: None,
             landing: None,
-            plugins: Arc::new(Plugins::none()),
             opening: None,
         }
     }
@@ -432,22 +426,12 @@ impl MixHost {
         }
     }
 
-    /// The plugins the chain editor offers and the builder makes. Before
-    /// [`MixHost::build_off_thread`], which hands them to the builder.
-    pub fn set_plugins(&mut self, plugins: Arc<Plugins>) {
-        self.plugins = plugins;
-    }
-
-    pub fn plugins(&self) -> &Arc<Plugins> {
-        &self.plugins
-    }
-
     /// From now on effects added in the chain editor are built on the
     /// `mpfree-build` thread, and the effects edits take out are dropped
     /// there (control.rs). Allocates and starts the thread: call it before
     /// the loop.
     pub fn build_off_thread(&mut self) -> std::io::Result<()> {
-        self.builder = Some(crate::control::Builder::start(Arc::clone(&self.plugins))?);
+        self.builder = Some(crate::control::Builder::start()?);
         Ok(())
     }
 
@@ -464,13 +448,7 @@ impl MixHost {
                 Err("The mixer is busy")
             };
         }
-        let node = if Plugins::is_plugin(id) {
-            self.plugins
-                .make(id)
-                .map_err(|_| "The plugin would not start")?
-        } else {
-            mpfree_fx_ui::make(id).ok_or("No such effect")?
-        };
+        let node = mpfree_fx_ui::make(id).ok_or("No such effect")?;
         let at = self.mixer.chain(strip).map_or(0, |c| c.len());
         self.mixer
             .edit(Edit::Insert {

@@ -55,8 +55,7 @@ use mpfree_synth_ui::view as synth_view;
 use mpfree_synth_ui::{SynthAction, SynthPanel, SynthState};
 use mpfree_time_ui::editor::Lens;
 use mpfree_time_ui::view::{
-    self as time_view, AudioAction, TimePage, TimeState, TransportInfo, CLIPS_HINT, CLIPS_PAGE,
-    SONG_HINT,
+    self as time_view, TimePage, TimeState, TransportInfo, CLIPS_HINT, CLIPS_PAGE, SONG_HINT,
 };
 use mpfree_time_ui::TimeAction;
 use mpfree_touch::mt::Phase;
@@ -785,6 +784,10 @@ pub struct Player {
     project_rate: u32,
     /// When the last open landed ([`OPEN_SETTLE`]).
     opened_at: Option<Instant>,
+    /// How many of the actions in the outbox an open or New project put
+    /// there (with any before them): the open's own, never an edit,
+    /// however long its own work (the kits, say) took on a slow machine.
+    open_actions: usize,
     /// An opened project's loops being read (the files can be big).
     loops_load: Option<std::sync::mpsc::Receiver<LoopsRead>>,
     /// The browser's preview level, in dB (its Q-Link 3).
@@ -1005,6 +1008,7 @@ impl Player {
             start_checked: false,
             project_rate: 44_100,
             opened_at: None,
+            open_actions: 0,
             loops_load: None,
             preview_db: crate::preview::LEVEL_DB,
             preview_load: None,
@@ -1182,7 +1186,6 @@ impl Player {
         // The chain editor, the macros panel, and Play on a macro bank.
         let chain = (!arp && self.chain_page.drives(self.view))
             .then(|| self.chain_page.cards(&self.ui.theme));
-        let audio = self.audio_cards().map(|k| (k.title(), k));
         let (title, cards) = if let Some((title, cards)) = &chain {
             (title.as_str(), cards.clone())
         } else if let Some(knobs) = self
@@ -1212,11 +1215,6 @@ impl Player {
                 },
                 cards,
             )
-        } else if let Some((title, knobs)) = &audio {
-            // An audio region picked on Arrange's Song view, or a track
-            // panel open (layout spec 4c): the track's level and pan, the
-            // region's gain and fades.
-            (title.as_str(), knobs.cards.clone())
         } else if arp {
             let rows = self
                 .ui
@@ -2163,8 +2161,6 @@ impl Player {
                 if self.chain_page.drives(self.view) {
                     // Q-LINK shows a macro bank on Play or Arrange.
                     self.chain_qlink(k, ticks);
-                } else if self.audio_qlink(k, ticks) {
-                    // An audio region's knobs.
                 } else if matches!(self.view, View::Play | View::Arrange) {
                     self.play_qlink(k, ticks);
                 }
@@ -2583,10 +2579,6 @@ impl Player {
                 self.time_page.update(&mut self.ui, &self.time);
                 self.play.set_transport(self.time.transport);
                 self.refresh_play();
-                if self.view == View::Arrange {
-                    // A region picked or let go, or its values changed.
-                    self.refresh_qlinks();
-                }
                 if swapped {
                     // The Song view and the note editor have their own
                     // hint lines.
@@ -2992,7 +2984,6 @@ impl Player {
     /// the I/O setup here; the audio loop's are read and built here and
     /// sent in one piece (project.rs).
     fn open_project(&mut self, loc: &mpfree_library::Loc, snap: &mpfree_library::Snapshot) {
-        use mpfree_library::Part as _;
         if let Some(text) = snap.part(crate::project::SAMPLER) {
             if let Some(lib) = self.browser.as_ref().map(|b| b.library().clone()) {
                 let loc = loc.clone();
@@ -3006,11 +2997,7 @@ impl Player {
                 );
             }
         }
-        if let (Some(text), Some(m)) = (snap.part(crate::project::MIDI), &self.io_model) {
-            if let Err(e) = mpfree_midi_ui::MidiPart(m.clone()).load(text) {
-                self.say(format!("project: the MIDI setup wasn't opened ({e})"));
-            }
-        }
+        self.open_midi(snap.part(crate::project::MIDI));
         let o = crate::project::opening(snap, self.project_rate, loc.name());
         self.outbox.push(FromUi::OpenProject(Box::new(o)));
         // The loops, on a thread: the layers' files can be big. A read
@@ -3039,7 +3026,31 @@ impl Player {
         }
         // The kits and engines coming in are the open's own news.
         self.opened_at = Some(Instant::now());
+        self.open_actions = self.outbox.len();
         self.say(format!("project: opening {}", loc.name()));
+    }
+
+    /// The I/O setup's song settings (tracks' outputs, Tempo from, clock
+    /// out, CV jobs, learned controls): the project's `midi` part, or the
+    /// defaults for New or a project without one, never the last
+    /// project's. The rig's (each port's input and thru) stay as they are.
+    /// The audio loop follows the model's change.
+    fn open_midi(&mut self, text: Option<&str>) {
+        use mpfree_library::Part as _;
+        let Some(m) = &self.io_model else {
+            return;
+        };
+        let fresh;
+        let text = match text {
+            Some(t) => t,
+            None => {
+                fresh = mpfree_midi_ui::MidiSetup::default().project_text();
+                &fresh
+            }
+        };
+        if let Err(e) = mpfree_midi_ui::MidiPart(m.clone()).load(text) {
+            self.say(format!("project: the MIDI setup wasn't opened ({e})"));
+        }
     }
 
     /// New project: the parts the app started with, the factory kits.
@@ -3054,6 +3065,7 @@ impl Player {
         let snap = crate::project::new_snapshot(d);
         let mut o = crate::project::opening(&snap, self.project_rate, "a new project");
         o.clear_loops = true;
+        self.open_midi(None);
         self.outbox.push(FromUi::OpenProject(Box::new(o)));
         self.loops_load = None;
         self.opened_at = Some(Instant::now());
@@ -3061,6 +3073,11 @@ impl Player {
             self.say("project: the kits haven't come yet; they stay as they are".to_string());
         }
         self.sample_changed();
+        // The factory kits' sound goes out with New's own actions.
+        if let Some(a) = self.sample.take_view() {
+            self.outbox.push(a);
+        }
+        self.open_actions = self.outbox.len();
         self.say("project: new project".to_string());
     }
 
@@ -3387,33 +3404,6 @@ impl Player {
         self.status.repeat
     }
 
-    /// The Q-Link cards for the audio region picked on Arrange's Song
-    /// view, if one is (and NOTE REPEAT doesn't hold the knobs).
-    fn audio_cards(&self) -> Option<crate::audiotracks::AudioKnobs> {
-        if self.view != View::Arrange || self.band_showing() || !self.time.song_view {
-            return None;
-        }
-        crate::audiotracks::audio_knobs(&self.time)
-    }
-
-    /// Q-Link `k` turned `ticks` with an audio region picked or a track
-    /// panel open: to the audio tracks. False (nothing sent) when their
-    /// cards do not show.
-    fn audio_qlink(&mut self, k: usize, ticks: i32) -> bool {
-        let Some(knobs) = self.audio_cards() else {
-            return false;
-        };
-        self.outbox
-            .push(FromUi::Time(TimeAction::Audio(AudioAction::Turn {
-                track: knobs.track,
-                region: knobs.region,
-                knob: k,
-                ticks,
-                fine: self.status.shift,
-            })));
-        true
-    }
-
     /// The pattern step the engine is on, while a pattern plays.
     fn playing_step(&self) -> Option<usize> {
         let a = &self.arp;
@@ -3470,7 +3460,8 @@ impl Player {
         // A stretched copy coming in says so.
         self.print_sample_lines();
         let out = std::mem::take(&mut self.outbox);
-        for a in &out {
+        let own = std::mem::take(&mut self.open_actions).min(out.len());
+        for a in &out[own..] {
             self.saw_action(a);
         }
         out
@@ -3900,9 +3891,7 @@ impl Player {
             (play_page::QLINKS, EventKind::Step { index, delta })
                 if matches!(self.view, View::Play | View::Arrange) && !self.band_showing() =>
             {
-                if !self.audio_qlink(index, delta) {
-                    self.play_qlink(index, delta);
-                }
+                self.play_qlink(index, delta);
                 None
             }
             (play_page::STEPS, EventKind::Cell { row, col }) => {
@@ -5997,25 +5986,6 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         }
         Err(e) => eprintln!("arrange-song-audio sample: {e}"),
     }
-    // The same with the guitar's track panel open (layout spec 4c), its
-    // input on ST, soloed, and nothing picked: the Q-Links are its level
-    // and pan.
-    match mpfree_time_ui::sample::song_audio_state() {
-        Ok(mut state) => {
-            state.region = None;
-            state.audio_panel = Some(1);
-            if let Some(l) = state.audio.iter_mut().find(|l| l.track == 1) {
-                l.solo = true;
-                l.volume = 0.71;
-                l.pan = 0.3;
-            }
-            let mut p = quiet_player(fonts());
-            p.apply(ToUi::Time(Box::new(state)));
-            p.apply(ToUi::Show(View::Arrange));
-            out.push(("arrange-song-panel", p));
-        }
-        Err(e) => eprintln!("arrange-song-panel sample: {e}"),
-    }
     match sample_looper(fonts()) {
         Ok(p) => out.push(("looper", p)),
         Err(e) => eprintln!("looper sample: {e}"),
@@ -7772,130 +7742,6 @@ mod tests {
     /// by the Q-Links and by a drag on a card, and Q-LINK steps the same
     /// macro banks, which Play then still shows.
     #[test]
-    /// Layout spec 4c: with an audio region picked on the Song view, the
-    /// Q-Links are the track's level and pan and the region's gain and
-    /// fades, and a turn goes to the audio tracks. Letting the region go
-    /// gives Play's knobs back.
-    fn an_audio_region_picked_on_arrange_takes_the_q_links() {
-        use mpfree_time_ui::song::{AudioBlock, AudioLane};
-        let mut p = sample_player(Fonts::embedded());
-        let mut app = sample_app();
-        apply_effects(&mut p, app.tab(2));
-        assert_eq!(p.view, View::Arrange);
-        let title = |p: &Player| {
-            p.ui.get::<QLinkColumn>(play_page::QLINKS)
-                .unwrap()
-                .title
-                .clone()
-        };
-        let mut st = p.time.clone();
-        st.song_view = true;
-        st.audio = vec![AudioLane {
-            track: 1,
-            name: "Audio 2".into(),
-            color: time_view::audio_color(1),
-            armed: false,
-            input: mpfree_audiotracks::Input::Left,
-            level: 0.0,
-            volume: 0.5,
-            pan: -0.2,
-            monitor: mpfree_audiotracks::Monitor::Auto,
-            mute: false,
-            solo: false,
-            blocks: vec![AudioBlock {
-                start: 0,
-                end: 3840,
-                take: 0,
-                tag: String::new(),
-                src: 0,
-                frames: 88_200.0,
-                gain: 2.0,
-                fade_in: 441,
-                fade_out: 0,
-            }],
-            recording: None,
-        }];
-        p.apply(ToUi::Time(Box::new(st.clone())));
-        assert_eq!(
-            title(&p),
-            "Q-Links · Arrange",
-            "nothing picked: Play's knobs"
-        );
-        st.region = Some(time_view::RegionId { track: 1, index: 0 });
-        p.apply(ToUi::Time(Box::new(st.clone())));
-        assert_eq!(title(&p), "Q-Links · Audio region");
-        let cards =
-            p.ui.get::<QLinkColumn>(play_page::QLINKS)
-                .unwrap()
-                .cards
-                .clone();
-        let shown: Vec<_> = cards
-            .iter()
-            .map(|c| (c.name.as_str(), c.scope.as_str(), c.value.as_str()))
-            .collect();
-        assert_eq!(
-            shown,
-            [
-                ("Level", "AUDIO 2", "-6.0 dB"),
-                ("Pan", "AUDIO 2", "L20"),
-                ("Gain", "REGION", "6.0 dB"),
-                ("Fades", "REGION", "10 ms"),
-            ]
-        );
-        assert!(cards[1].bipolar);
-        p.take_actions();
-        p.apply(ToUi::PlayQLink(2, 3));
-        assert_eq!(
-            p.take_actions(),
-            vec![FromUi::Time(TimeAction::Audio(AudioAction::Turn {
-                track: 1,
-                region: Some(0),
-                knob: 2,
-                ticks: 3,
-                fine: false
-            }))]
-        );
-        // A drag on a card is a turn too.
-        let _ = p.on_event(mpfree_ui::UiEvent {
-            widget: play_page::QLINKS.to_string(),
-            kind: mpfree_ui::EventKind::Step {
-                index: 0,
-                delta: -1,
-            },
-        });
-        assert_eq!(
-            p.take_actions(),
-            vec![FromUi::Time(TimeAction::Audio(AudioAction::Turn {
-                track: 1,
-                region: Some(0),
-                knob: 0,
-                ticks: -1,
-                fine: false
-            }))]
-        );
-        st.region = None;
-        p.apply(ToUi::Time(Box::new(st.clone())));
-        assert_eq!(title(&p), "Q-Links · Arrange");
-        // The track panel open: the track's level and pan, and Q3 and Q4
-        // ask for a region.
-        st.audio_panel = Some(1);
-        p.apply(ToUi::Time(Box::new(st)));
-        assert_eq!(title(&p), "Q-Links · Audio 2");
-        p.take_actions();
-        p.apply(ToUi::PlayQLink(1, 2));
-        assert_eq!(
-            p.take_actions(),
-            vec![FromUi::Time(TimeAction::Audio(AudioAction::Turn {
-                track: 1,
-                region: None,
-                knob: 1,
-                ticks: 2,
-                fine: false
-            }))]
-        );
-    }
-
-    #[test]
     fn arrange_has_plays_q_links_and_their_banks() {
         let mut p = sample_player(Fonts::embedded());
         let mut app = sample_app();
@@ -8522,6 +8368,7 @@ mod tests {
         use mpfree_browser_ui::{Button, Input};
         use mpfree_fx::ids::mixer as mx;
         use mpfree_fx::StripId;
+        use mpfree_midi::setup::{PortInput, TempoSource, DIN_NAME};
         let dir = std::env::temp_dir().join(format!("mpfree-project-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
@@ -8529,6 +8376,14 @@ mod tests {
         let mut p = sample_sampler(Fonts::embedded());
         p.set_browser(mpfree_browser_ui::Browser::inline(lib.clone()), "");
         p.take_actions();
+        // The I/O setup: its song settings go in the project (Tempo from a
+        // port, here), the rig's (a port's input) stay with the MPC.
+        let io: mpfree_midi_ui::Shared =
+            std::sync::Arc::new(std::sync::Mutex::new(mpfree_midi_ui::sample::rig()));
+        p.apply(ToUi::IoModel(io.clone()));
+        let keystep = || io.lock().unwrap().setup.port("Keystep 37").input;
+        let tempo_from = || io.lock().unwrap().setup.tempo.clone();
+        assert_eq!(keystep(), PortInput::LearnOnly);
         // BROWSE: the whole browser over the page.
         p.apply(ToUi::Show(View::Browser));
         assert_eq!(p.page(), mpfree_browser_ui::BROWSER_PAGE);
@@ -8604,6 +8459,7 @@ mod tests {
             project::SAMPLER,
             project::LOOPER,
             project::ARP,
+            project::MIDI,
         ] {
             assert!(snap.part(part).is_some(), "{part}");
         }
@@ -8612,7 +8468,8 @@ mod tests {
             .iter()
             .any(|l| *l == format!("project: saved {}", loc.name())));
         // Open it from the Projects list: the engines come built, for the
-        // loop to swap in.
+        // loop to swap in, and the I/O setup's song settings come back.
+        io.lock().unwrap().setup.tempo = TempoSource::Internal;
         let b = p.browser.as_mut().unwrap();
         b.go_source(source("Projects"));
         select(b, loc.name());
@@ -8626,6 +8483,7 @@ mod tests {
                 _ => None,
             })
             .expect("opened");
+        assert_eq!(tempo_from(), TempoSource::Port(DIN_NAME.into()));
         assert_eq!(opened.tempo, Some(98.0));
         assert_eq!(opened.swing, mpfree_transport::time::Swing::new(240, 62));
         assert!(opened.notes.is_empty(), "{:?}", opened.notes);
@@ -8685,6 +8543,9 @@ mod tests {
             // Over unsaved work it asks first; the push says yes.
             b.push();
             p.step_browser();
+            // As on a slow machine: the kits took longer than the settle
+            // time. What New sent is still its own, not an edit.
+            p.opened_at = p.opened_at.and_then(|t| t.checked_sub(OPEN_SETTLE * 2));
             p.take_actions().into_iter().find_map(|a| match a {
                 FromUi::OpenProject(o) => Some(o),
                 _ => None,
@@ -8715,6 +8576,10 @@ mod tests {
         assert_eq!(fresh.tempo, Some(120.0));
         assert_eq!(fresh.swing, Some(Default::default()));
         assert_eq!(fresh.arp, None, "every arp at its default");
+        // The I/O setup's song settings at their defaults; the rig's kept.
+        assert_eq!(tempo_from(), TempoSource::Internal);
+        assert!(io.lock().unwrap().setup.tracks.iter().all(Option::is_none));
+        assert_eq!(keystep(), PortInput::LearnOnly);
         let song = fresh.time.as_ref().unwrap().project();
         assert_eq!(song.tracks.len(), crate::time::TRACKS);
         assert!(song
