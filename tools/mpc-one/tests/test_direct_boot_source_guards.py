@@ -81,7 +81,7 @@ class DirectBootSourceGuards(unittest.TestCase):
             self.assertIn(phrase,source)
         self.assertIn("multitrack-followups.json",runner)
         self.assertIn("owner_followups = follow.build(z.read)",preflight)
-        self.assertIn("matrix_count >= 67 and matrix_tracks == 7",runner)
+        self.assertIn("matrix_count >= 70 and matrix_tracks == 7",runner)
         self.assertIn("'spl':80",ghidra)
         self.assertIn("second_handoff_pointer_slot_static_xrefs",ghidra)
         self.assertNotIn("subprocess.",source)
@@ -170,7 +170,7 @@ class DirectBootSourceGuards(unittest.TestCase):
         self.assertIn("physical_maskrom_or_emmc_restore_proven",source)
         self.assertIn("update-format-and-spl.json",runner)
         self.assertIn("format_report = update_format.build(z.read)",preflight)
-        self.assertIn("matrix_count >= 67 and matrix_tracks == 7",runner)
+        self.assertIn("matrix_count >= 70 and matrix_tracks == 7",runner)
         self.assertIn("'spl':80",ghidra)
         self.assertIn("az01_open_image_FDT_offset",ghidra)
         self.assertNotIn("subprocess.",source)
@@ -198,9 +198,32 @@ class DirectBootSourceGuards(unittest.TestCase):
         self.assertIn("ram_report = ram_boot.build(z.read)", preflight)
         self.assertIn("0x00122a10", ghidra)
         self.assertIn("request_and_receive_cursor_pointer_equal", ghidra)
-        self.assertIn("matrix_count >= 67 and matrix_tracks == 7", runner)
+        self.assertIn("matrix_count >= 70 and matrix_tracks == 7", runner)
         self.assertNotIn("subprocess.", source)
         self.assertNotIn("os.system(", source)
+
+    def test_spl_legacy_header_handoff_provenance_and_hardware_gates(self):
+        srcpath=ROOT/"tools/mpc-one/synthesize_spl_image_handoff.py"
+        testpath=ROOT/"tools/mpc-one/tests/test_spl_image_handoff.py"
+        source=srcpath.read_text()
+        ghidra=GHIDRA.read_text()
+        runner=RUNNER.read_text()
+        ast.parse(source,filename=str(srcpath))
+        ast.parse(testpath.read_text(),filename=str(testpath))
+        for term in ("all_prior_static_evidence_passed",
+                     "all_new_literal_checks_passed",
+                     "factory_P3_verified_legacy_header",
+                     "SPL_entry_address_runtime_value_known",
+                     "rom_execution_or_maskrom_accepted"):
+            self.assertIn(term,source)
+        for term in ("legacy_image_header_original_words",
+                     "'image_header_context_ptr'",
+                     "'image_header_default_context_ptr'"):
+            self.assertIn(term,ghidra)
+        self.assertIn("spl-image-handoff.json",runner)
+        self.assertIn("matrix_count >= 70 and matrix_tracks == 7",runner)
+        self.assertNotIn("subprocess.",source)
+        self.assertNotIn("os.system(",source)
 
     def test_focus_syntax_and_no_physical_fastboot(self):
         s=FOCUS.read_text()
