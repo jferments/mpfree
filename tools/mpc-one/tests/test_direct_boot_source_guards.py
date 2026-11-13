@@ -82,7 +82,7 @@ class DirectBootSourceGuards(unittest.TestCase):
         self.assertIn("multitrack-followups.json",runner)
         self.assertIn("owner_followups = follow.build(z.read)",preflight)
         self.assertIn("matrix_count >= 67 and matrix_tracks == 7",runner)
-        self.assertIn("'spl':60",ghidra)
+        self.assertIn("'spl':80",ghidra)
         self.assertIn("second_handoff_pointer_slot_static_xrefs",ghidra)
         self.assertNotIn("subprocess.",source)
         self.assertNotIn("shell=True",source)
