@@ -48,6 +48,7 @@
 
 pub mod arrange;
 pub mod notes;
+pub mod save;
 pub mod scenes;
 pub mod steps;
 

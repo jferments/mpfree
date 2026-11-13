@@ -56,7 +56,7 @@ Under Audio come three more sections, for the gear around the MPC (see [Playing 
 - **Sync** sets **Tempo from** (MPFree itself or a port's clock), what following does with start, stop and the position, the clock arriving now, and which ports send **Clock out**.
 - **CV** has a row for each of the eight CV/gate outputs: its **Job**, the **Track** it follows and its setting, with the volts it gives now.
 
-A setting for a device that isn't plugged in, or for a part of MPFree that doesn't work yet, says so on its own row, and is kept. For now these settings last until you switch off; saving them with the project is coming.
+A setting for a device that isn't plugged in, or for a part of MPFree that doesn't work yet, says so on its own row, and is kept. The MIDI, Sync and CV settings are saved with the project, and so is the rest of the mixer: levels, pans, sends, mutes and every effect with its settings (see [Saving your work](saving.md#projects)). The line input's source, monitoring and arming are not part of a project, so opening one never turns the input on.
 
 ## Using the Q-Links in the mixer
 
@@ -73,7 +73,7 @@ The last thing on the master is **Master safety**, a limiter that keeps the outp
 
 ## The effects
 
-These effects can go on any strip:
+These effects can go on any strip. The list of effects groups them: Dynamics, EQ and filter, Drive and colour, Modulation, Delay and reverb, Pitch and vocal, and Performance.
 
 | Effect | What it does |
 |---|---|
@@ -87,6 +87,9 @@ These effects can go on any strip:
 | **Chorus**, **Flanger**, **Phaser** | Movement and width. |
 | **Lo-fi** | Old sampler and worn tape character. |
 | **Compressor** | Evens out levels and adds punch. It can be keyed from another strip, for side-chain pumping. |
+| **Ducker** | The pump: turns the sound down on each kick (keyed from another strip) or on every 1/16, 1/8, 1/4, 1/2 or bar of the tempo, and brings it back on a curve you shape. |
+| **Transient shaper** | More or less punch at the start of each hit and more or less ring after it, at any level, with no threshold to set. |
+| **Pitch shifter** | Moves the sound up to two octaves up or down without changing its speed. Spread detunes left and right for a wide double; feedback makes rising or falling stairs. |
 | **Cloud reverb** | A large, lush reverb. |
 
 Adding, removing or reordering an effect while the music plays doesn't click: that strip dips out for a moment and comes back.
