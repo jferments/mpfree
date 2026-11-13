@@ -903,8 +903,12 @@ impl Wavetable {
         sm.bend.next();
         s.drive_gain = 10f32.powf(drive / 20.0);
         s.drive_amt = (drive / 3.0).min(1.0);
-        s.dist_gain = 10f32.powf(dist / 20.0);
-        s.dist_amt = (dist / 3.0).min(1.0);
+        // Most sounds have none: no power worked out each step for it.
+        (s.dist_gain, s.dist_amt) = if dist > 0.0 {
+            (10f32.powf(dist / 20.0), (dist / 3.0).min(1.0))
+        } else {
+            (1.0, 0.0)
+        };
         s.mode = self.values[FILTER_MODE as usize] as u8;
         s.unison = (self.values[UNISON as usize] as usize).clamp(1, UNISON_MAX);
 
@@ -1075,6 +1079,7 @@ impl Wavetable {
         v.coefs = FilterCoefs::new(exp2(oct), res, rate);
         v.drive_gain = drive_gain;
         v.drive_amt = drive_amt;
+        let dist_was = v.dist_amt;
         v.dist_gain = dist_gain;
         v.dist_amt = dist_amt;
         let vg = (1.0 - vel_amp) + vel_amp * v.vel * v.vel;
@@ -1089,7 +1094,8 @@ impl Wavetable {
         };
         if v.dist_amt > 0.0 {
             level *= v.dist_level.step(CTRL, self.rate);
-        } else {
+        } else if dist_was > 0.0 {
+            // Off: nothing more is summed, so one clear does.
             v.dist_level.clear();
         }
         let gain = norm * vg * trem * swell * level;
