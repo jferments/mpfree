@@ -277,25 +277,33 @@ pub fn short(a: &FromUi) -> String {
 /// a thread with the main thread's 8 MiB (as `every_sample_screen_draws`).
 /// A screen a press cannot be brought back from is taken fresh from a spare
 /// set of screens (built when there is none left for it).
+///
+/// Memory: the Play screens need 17 fresh copies each, and keeping every
+/// spare of 17 sets ran the 32-bit ARM test out of memory (13 Nov). So every
+/// screen shares one copy of the fonts (they were most of a screen), and at
+/// most [`SPARE_SETS`] sets' worth of spares are kept, the screens swept
+/// soonest first.
 pub fn sweep_all() -> Vec<Row> {
     on_big_stack(|| {
+        let fonts = Fonts::embedded();
         let mut rows = Vec::new();
-        let first: Vec<(&'static str, Player)> = gui::sample_screens(Fonts::embedded);
+        let first: Vec<(&'static str, Player)> = gui::sample_screens(|| fonts.clone());
+        let cap = SPARE_SETS * first.len();
         let mut spares: Vec<Vec<Option<Player>>> = Vec::new();
         for (i, (name, mut p)) in first.into_iter().enumerate() {
             let mut fresh = || {
                 if let Some(p) = spares.iter_mut().find_map(|set| set[i].take()) {
                     return p;
                 }
-                let set: Vec<Option<Player>> = gui::sample_screens(Fonts::embedded)
+                let mut set: Vec<Option<Player>> = gui::sample_screens(|| fonts.clone())
                     .into_iter()
                     .map(|(_, p)| Some(p))
                     .collect();
+                let p = set[i].take().expect("the same screens again");
+                set[..i].iter_mut().for_each(|s| *s = None);
                 spares.push(set);
-                spares
-                    .last_mut()
-                    .and_then(|set| set[i].take())
-                    .expect("the same screens again")
+                keep_nearest(&mut spares, cap);
+                p
             };
             rows.extend(sweep(name, &mut p, &mut fresh));
             // The spares of this screen are not needed again.
@@ -305,6 +313,27 @@ pub fn sweep_all() -> Vec<Row> {
         }
         rows
     })
+}
+
+/// Sets' worth of spare screens the sweep keeps at most (see [`sweep_all`]):
+/// about 40 sets are built in all, against 17 if every spare were kept.
+const SPARE_SETS: usize = 3;
+
+/// Drop spares until at most `cap` are left, the screens furthest on first.
+fn keep_nearest(spares: &mut Vec<Vec<Option<Player>>>, cap: usize) {
+    let mut kept = spares.iter().flatten().filter(|s| s.is_some()).count();
+    let screens = spares.first().map_or(0, Vec::len);
+    for j in (0..screens).rev() {
+        for set in spares.iter_mut() {
+            if kept <= cap {
+                break;
+            }
+            if set[j].take().is_some() {
+                kept -= 1;
+            }
+        }
+    }
+    spares.retain(|set| set.iter().any(Option::is_some));
 }
 
 /// Run `f` on a thread with the main thread's stack.

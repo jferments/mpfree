@@ -126,7 +126,10 @@ The Sample tab edits the pad hit last, with an editor per tab (Wave, Warp, Chop,
 - **`morph/crossfader`**: drag between scene A and B (the morph). **`morph/row-down`**, **`morph/row-up`**: step the A and B scenes. **`morph/button`**: Snap back and Keep (faint unless morphing), Save.
 - **`takes/button`**: Undo, Redo and Capture for takes; faint when there is nothing to undo, redo or capture, and a tap says so.
 - **`song/block`**: a block of the song: tap to pick it. **`song/button`**: Clips, Play song, Scenes → song, Song → scenes (the last two need a pick and say so). **`song/rec-song`**: Rec song.
-- **`song/add-audio`**, **`song/arm`**, **`song/audio-header`**, **`song/region`**, **`song/region-button`**: audio tracks in the song: add one, arm it, pick it, pick a region, and Split, Erase, Fades and Gain on the region.
+- **`song/add-audio`**, **`song/arm`**, **`song/audio-header`**, **`song/region`**, **`song/region-button`**: audio tracks in the song: add one, arm it, open its panel (a tap on its name or input chip), pick a region, and Split, Erase, Fades, Gain and Takes on the region.
+- **`song/panel-close`**, **`song/panel-arm`**, **`song/panel-mute`**, **`song/panel-solo`**, **`song/panel-takes`**: the audio track's panel over the lanes: Close, arm the track to record, mute, solo, and its takes. A block under the panel can be tapped only where it shows.
+- **`song/panel-input`**, **`song/panel-monitor`**: what the track records from (L, R, L+R, ST) and when you hear its input (Auto, In, Off); the lit one is chosen.
+- **`song/panel-level-less`**, **`song/panel-level-more`**, **`song/panel-pan-less`**, **`song/panel-pan-more`**: the track's level and pan, a step at a time (Q-Links 1 and 2 turn them too). *Example:* open Guitar's panel, tap ST, tap Level − twice: the guitar records in stereo at −3 dB.
 - **`notes/button`**: the note editor's buttons (‹ Clips, the lens: grid, list or tracker, the tool: select, draw or erase, Snap).
 - **`notes/note`**, **`notes/roll`**, **`notes/velocity`**: a note (tap to pick, drag to move), the empty roll (draw a note with Draw), the velocity lane (drag).
 - **`notes/list-row`**, **`notes/tracker-row`**: a row of the list or tracker: tap to pick its note.
