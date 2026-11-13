@@ -259,6 +259,9 @@ pub enum ToUi {
     ProjectDefaults(Box<crate::project::Defaults>),
     /// An open done: the engines it replaced, to free here.
     ProjectBack(Box<crate::project::Opening>),
+    /// Something the project keeps changed with the controls (a Synth tab
+    /// option, the arp): the work is unsaved.
+    Edited,
     /// A line for the Events log only (not printed).
     Event(String),
     /// A MIDI message in or out, as one line (also printed).
@@ -708,6 +711,8 @@ pub struct Player {
     io_model: Option<mpfree_midi_ui::Shared>,
     /// The parts New project goes back to, once the audio loop sent them.
     project_defaults: Option<crate::project::Defaults>,
+    /// Prefs > At start was looked at (once, when the sound is going).
+    start_checked: bool,
     /// The sound's rate, for an opened project's engines.
     project_rate: u32,
     /// When the last open landed ([`OPEN_SETTLE`]).
@@ -923,6 +928,7 @@ impl Player {
             browser: None,
             io_model: None,
             project_defaults: None,
+            start_checked: false,
             project_rate: 44_100,
             opened_at: None,
             loops_load: None,
@@ -1863,6 +1869,7 @@ impl Player {
                 | ToUi::SynthValues(_)
                 | ToUi::Chain(_)
                 | ToUi::Macros(_)
+                | ToUi::Edited
         ) {
             self.mark_unsaved();
         }
@@ -2179,6 +2186,7 @@ impl Player {
             }
             ToUi::ProjectParts(c) => self.save_project(c),
             ToUi::ProjectDefaults(d) => self.project_defaults = Some(*d),
+            ToUi::Edited => {}
             // The engines an open replaced: freed here. The open is in:
             // nothing is unsaved (its own news in the next moments isn't
             // an edit).
@@ -2760,6 +2768,9 @@ impl Player {
             A::NewProject => self.new_project(),
             A::ProjectOpened { loc, snap } => self.open_project(&loc, &snap),
             A::ProjectSaved { loc } => self.say(format!("project: saved {}", loc.name())),
+            A::LastNotOpened(e) => self.say(format!(
+                "project: the last project wasn't opened ({e}); the new one stays"
+            )),
             // The Pads tab's browser offers sounds only; anything else
             // is said, never dropped quietly.
             other => self.say(format!(
@@ -2934,6 +2945,33 @@ impl Player {
         }
         self.sample_changed();
         self.say("project: new project".to_string());
+    }
+
+    /// Prefs > At start, once the sound is going (the start's parts have
+    /// come): the last project saved or opened opens, or the new, empty
+    /// one the app started with stays.
+    fn open_at_start(&mut self) {
+        if self.start_checked || self.project_defaults.is_none() {
+            return;
+        }
+        self.start_checked = true;
+        if !self.settings.open_last {
+            return;
+        }
+        let Some(b) = self.browser.as_mut() else {
+            self.say(
+                "project: At start is Last project, but there is no library (no --data)".into(),
+            );
+            return;
+        };
+        let line = match b.last_project().map(|l| l.name().to_string()) {
+            Some(name) if b.open_last() => {
+                format!("project: opening the last project, {name} (Prefs > At start)")
+            }
+            _ => "project: no project saved or opened yet; a new one (Prefs > At start)".into(),
+        };
+        self.say(line);
+        self.step_browser();
     }
 
     /// An opened project's loops, once read: to the audio thread.
@@ -3855,6 +3893,7 @@ impl Player {
         }
         self.poll_preview();
         self.poll_loops();
+        self.open_at_start();
         if let Some(k) = self.sample.take_wanted_kit() {
             // An opened project's kit: the audio thread switches and says so.
             self.outbox.push(FromUi::Kit(k));
@@ -4931,7 +4970,7 @@ pub fn apply_effects(p: &mut Player, fx: Vec<crate::app::Effect>) {
             | Effect::SavePatterns(_)
             | Effect::SynthPads(_)
             | Effect::ProgEdit
-            | Effect::Metronome
+            | Effect::Metronome(_)
             | Effect::Fill(_)
             | Effect::Mixer(_) => {}
             Effect::MixerWheel(d) => p.apply(if p.io_showing() {
@@ -7945,6 +7984,7 @@ mod tests {
             mixer: project::mixer_text(&mix.mixer, 0),
             modu: String::new(),
             synth: project::synth_text(&Default::default(), &synth.sounds()),
+            arp: "mpfree-arp 1\ntrack 1\nmode = arp\n".to_string(),
             loops: Some(loops),
         };
         p.apply(ToUi::ProjectParts(Box::new(c)));
@@ -7964,6 +8004,7 @@ mod tests {
             project::SYNTH,
             project::SAMPLER,
             project::LOOPER,
+            project::ARP,
         ] {
             assert!(snap.part(part).is_some(), "{part}");
         }
@@ -7999,6 +8040,10 @@ mod tests {
         assert!(t2.1.contains(&(mx::VOLUME, -3.0)));
         assert_eq!(opened.synth.as_ref().unwrap().1, synth.sounds());
         assert!(opened.clear_loops);
+        assert_eq!(
+            opened.arp.as_deref(),
+            Some("mpfree-arp 1\ntrack 1\nmode = arp\n")
+        );
         p.apply(ToUi::ProjectBack(opened));
         // The loops follow, read on their own thread, with their audio.
         let end = Instant::now() + Duration::from_secs(5);
@@ -8029,6 +8074,10 @@ mod tests {
         assert!(!p.browser.as_ref().unwrap().unsaved());
         p.saw_action(&FromUi::Time(TimeAction::NewClip { track: 0, slot: 1 }));
         assert!(p.browser.as_ref().unwrap().unsaved());
+        // A Synth tab option or the arp changed with the controls.
+        p.browser.as_mut().unwrap().set_unsaved(false);
+        p.apply(ToUi::Edited);
+        assert!(p.browser.as_ref().unwrap().unsaved());
         // New project before the sound has started says so.
         let new = |p: &mut Player| {
             let b = p.browser.as_mut().unwrap();
@@ -8048,19 +8097,25 @@ mod tests {
             .any(|l| l.starts_with("project: not ready for a new project")));
         // With the start's parts: an empty song of 8 tracks, the factory
         // kits, and no project (Save names a new one).
-        let d = Defaults {
-            tempo: 120.0,
-            mixer: project::mixer_text(&crate::mixing::MixHost::new(44_100, -6.0, 0.0).mixer, 0),
-            modu: String::new(),
-            synth: project::synth_text(&Default::default(), &synth.sounds()),
+        let defaults = || {
+            Box::new(Defaults {
+                tempo: 120.0,
+                mixer: project::mixer_text(
+                    &crate::mixing::MixHost::new(44_100, -6.0, 0.0).mixer,
+                    0,
+                ),
+                modu: String::new(),
+                synth: project::synth_text(&Default::default(), &synth.sounds()),
+            })
         };
-        p.apply(ToUi::ProjectDefaults(Box::new(d)));
+        p.apply(ToUi::ProjectDefaults(defaults()));
         p.browser.as_mut().unwrap().set_unsaved(true);
         let fresh = new(&mut p).expect("a new project");
         assert_eq!(fresh.what, "a new project");
         assert!(fresh.clear_loops);
         assert_eq!(fresh.tempo, Some(120.0));
         assert_eq!(fresh.swing, Some(Default::default()));
+        assert_eq!(fresh.arp, None, "every arp at its default");
         let song = fresh.time.as_ref().unwrap().project();
         assert_eq!(song.tracks.len(), crate::time::TRACKS);
         assert!(song
@@ -8070,6 +8125,59 @@ mod tests {
         assert!(fresh.notes.is_empty(), "{:?}", fresh.notes);
         assert!(p.browser.as_ref().unwrap().project().is_none());
         assert!(!p.browser.as_ref().unwrap().unsaved());
+
+        // The next start, with Prefs > At start on Last project: once the
+        // sound is going, the project saved above opens, and the Pads
+        // tab's picker stays where it is.
+        let lists = p.browser.as_ref().unwrap().lists_text();
+        assert!(
+            lists.contains(&format!("project = {}\n", loc.to_line())),
+            "{lists}"
+        );
+        let opens = |q: &mut Player| {
+            q.tick(0.033);
+            q.take_actions().into_iter().find_map(|a| match a {
+                FromUi::OpenProject(o) => Some(o),
+                _ => None,
+            })
+        };
+        let last = Settings {
+            open_last: true,
+            ..Default::default()
+        };
+        let mut q = sample_sampler(Fonts::embedded());
+        q.set_browser(mpfree_browser_ui::Browser::inline(lib.clone()), &lists);
+        q.take_actions();
+        q.apply(ToUi::Settings(last.clone()));
+        assert!(opens(&mut q).is_none(), "not before the sound is going");
+        q.apply(ToUi::ProjectDefaults(defaults()));
+        let at_start = opens(&mut q).expect("the last project opens");
+        assert_eq!(at_start.what, loc.name());
+        assert!(q.browser.as_ref().unwrap().picking().is_some());
+        assert!(opens(&mut q).is_none(), "once");
+        // New project (the default) leaves the empty one.
+        let mut n = sample_sampler(Fonts::embedded());
+        n.set_browser(mpfree_browser_ui::Browser::inline(lib.clone()), &lists);
+        n.take_actions();
+        n.apply(ToUi::ProjectDefaults(defaults()));
+        assert!(opens(&mut n).is_none());
+        // A last project gone since is said; the new one stays.
+        let mut r = sample_sampler(Fonts::embedded());
+        r.set_browser(
+            mpfree_browser_ui::Browser::inline(lib.clone()),
+            "project = Projects/Nowhere\n",
+        );
+        r.take_actions();
+        r.apply(ToUi::Settings(last));
+        r.apply(ToUi::ProjectDefaults(defaults()));
+        assert!(opens(&mut r).is_none());
+        assert!(
+            events_log(&r)
+                .iter()
+                .any(|l| l.starts_with("project: the last project wasn't opened")),
+            "{:?}",
+            events_log(&r)
+        );
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

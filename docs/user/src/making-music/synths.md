@@ -98,7 +98,7 @@ Out of the box every synth plays in standard tuning: twelve equal steps to the o
 
 The drum synth keeps its own pitches whatever you pick here.
 
-Everything in the Synth tab's options (the engine, scale, pad layouts and tuning) is kept on the stick and comes back the next time MPFree starts. If a tuning file or one of your own scales is gone by then, that one choice goes back to its default, and the Console says so.
+Everything in the Synth tab's options (the engine, scale, pad layouts and tuning) is the song's: it is saved in your project and comes back when you open it, and New project starts chromatic in C at A4 = 440 Hz (see [Saving your work](saving.md)). If a tuning file or one of your own scales is gone by then, that one choice goes back to its default, and the Console says so.
 
 ### Your own tunings
 

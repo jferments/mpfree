@@ -1,7 +1,7 @@
 <!--
 status: changing
-covers: rust/mpfree-app/src/app.rs rust/mpfree-app/src/gui.rs
-checked: 2026-11-12 15df706
+covers: rust/mpfree-app/src/app.rs rust/mpfree-app/src/gui.rs rust/mpfree-app/src/app/saved.rs
+checked: 2026-11-13 7ba56df
 -->
 
 # Prefs
@@ -22,7 +22,10 @@ checked: 2026-11-12 15df706
 | **Map controls** | Teach MPFree the MPC's other buttons, one at a time: pick a control, press **+** and press the button (**–** skips it). It also turns on the developer tools. |
 | **Line input** | Turns the INPUTS on the back on or off. It is off every time MPFree starts. |
 | **System info** | MPFree's version, and details of the MPC it runs on. **MENU** goes back to Prefs. |
+| **At start** | What MPFree opens when it starts. **New project** (the default): an empty song. **Last project:** the project you last saved or opened, once the sound is going. See [Saving your work](../making-music/saving.md#at-start). |
 | **Touch screen** | Opens the touchscreen's own rows: **Screen pad velocity** (the velocity of pads played on the screen, which can't sense how hard you tap), **Calibrate touch** (tap a target in each corner to check touches land where you touch; this version only reports the result) and **Touch lab** (a test page for touches). |
+
+Prefs are yours, not the song's: they are kept on the stick and stay the same whichever project you open (see [Saving your work](../making-music/saving.md#your-song-and-your-setup)). The line input is the exception: it is off every time MPFree starts.
 
 > [!MPC]
 > On the MPC, **SHIFT + MENU** opens Preferences too, but MPFree's are far fewer: most settings live on the page they belong to, under **MENU**.

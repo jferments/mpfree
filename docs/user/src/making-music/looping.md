@@ -92,7 +92,7 @@ The panel at the bottom left holds how the looper records. The Play page's loope
 
 **After recording** sets what the loop does when its first pass ends: **play**, or go straight into **overdub**. **Start** (next bar line) shows how the looper works today and can't be changed yet. **At another tempo** still reads "like tape" in this build, but loops keep their pitch, as described above.
 
-Press **MENU** on the Looper tab for the same settings as a list, with an explanation beside each, plus **Loop level** (-24 to +6 dB) and **Loop memory**.
+Press **MENU** on the Looper tab for the same settings as a list, with an explanation beside each, plus **Loop level** (-24 to +6 dB) and **Loop memory**. The Loop level, and the latency once you set it by hand, are kept for you whatever project is open; the line input is off at every start, so the Looper records the pads until you turn it on.
 
 ### Editing a loop
 
