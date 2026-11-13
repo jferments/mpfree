@@ -257,6 +257,75 @@ impl MidiSetup {
         true
     }
 
+    /// The settings that belong to the song, saved in the project's `midi`
+    /// part: tracks' outputs, Tempo from and following, each port's clock
+    /// out, the CV jobs and learned controls. Each port's input and thru
+    /// are the rig's ([`MidiSetup::rig`]) and are left at their defaults.
+    pub fn project(&self) -> MidiSetup {
+        let mut m = self.clone();
+        for name in self
+            .ports
+            .iter()
+            .map(|p| p.name.clone())
+            .collect::<Vec<_>>()
+        {
+            m.set_port(&name, |p| {
+                p.input = PortInput::default();
+                p.thru = false;
+            });
+        }
+        m
+    }
+
+    /// The settings that belong to the gear on the desk, kept for every
+    /// project (owner, 13 Nov 2026: project settings apart from system-wide
+    /// ones): each port's input (Plays tracks, Learn only, Both) and thru.
+    pub fn rig(&self) -> MidiSetup {
+        let mut m = MidiSetup::default();
+        for p in &self.ports {
+            m.set_port(&p.name, |q| {
+                q.input = p.input;
+                q.thru = p.thru;
+            });
+        }
+        m
+    }
+
+    /// `project`'s song settings with this setup's rig settings: a project
+    /// opened, or a new one ([`MidiSetup::default`]).
+    pub fn set_project(&mut self, project: &MidiSetup) {
+        let rig = self.rig();
+        *self = project.project();
+        self.set_rig(&rig);
+    }
+
+    /// `rig`'s port inputs and thru, this setup's song settings kept.
+    pub fn set_rig(&mut self, rig: &MidiSetup) {
+        let names: Vec<String> = self
+            .ports
+            .iter()
+            .chain(rig.ports.iter())
+            .map(|p| p.name.clone())
+            .collect();
+        for name in names {
+            let want = rig.port(&name);
+            self.set_port(&name, |p| {
+                p.input = want.input;
+                p.thru = want.thru;
+            });
+        }
+    }
+
+    /// The project part's text ([`MidiSetup::project`]).
+    pub fn project_text(&self) -> String {
+        self.project().to_text()
+    }
+
+    /// The rig's text ([`MidiSetup::rig`]), in the same form.
+    pub fn rig_text(&self) -> String {
+        self.rig().to_text()
+    }
+
     /// The part's text. Only what differs from the defaults is written,
     /// after the header.
     pub fn to_text(&self) -> String {
@@ -687,6 +756,49 @@ fn parse_cv(v: &str) -> Result<CvAssign, String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_project_and_the_rig_split_and_join_again() {
+        let mut m = MidiSetup {
+            tempo: TempoSource::Port(DIN_NAME.into()),
+            follow_position: false,
+            ..MidiSetup::default()
+        };
+        m.set_port(DIN_NAME, |p| {
+            p.input = PortInput::LearnOnly;
+            p.thru = true;
+            p.clock_out = ClockOut::Always;
+        });
+        m.set_port("Keystep 37", |p| p.input = PortInput::PlaysTracks);
+        m.tracks[0] = Some(TrackOut::new(DIN_NAME, 9));
+        let project = m.project();
+        let rig = m.rig();
+        // The song keeps the clock out, not the input or thru.
+        assert_eq!(project.port(DIN_NAME).clock_out, ClockOut::Always);
+        assert_eq!(project.port(DIN_NAME).input, PortInput::default());
+        assert!(!project.port(DIN_NAME).thru);
+        assert!(project.ports.iter().all(|p| p.name != "Keystep 37"));
+        assert_eq!(project.tracks[0], m.tracks[0]);
+        // The rig keeps only the inputs and thru.
+        assert_eq!(rig.port(DIN_NAME).input, PortInput::LearnOnly);
+        assert!(rig.port(DIN_NAME).thru);
+        assert_eq!(rig.port(DIN_NAME).clock_out, ClockOut::default());
+        assert_eq!(rig.tempo, TempoSource::Internal);
+        assert!(rig.tracks.iter().all(Option::is_none));
+        // Both texts read back, and join to the whole.
+        let (p2, w1) = MidiSetup::parse(&m.project_text());
+        let (r2, w2) = MidiSetup::parse(&m.rig_text());
+        assert!(w1.is_empty() && w2.is_empty(), "{w1:?} {w2:?}");
+        let mut joined = r2.clone();
+        joined.set_project(&p2);
+        assert_eq!(joined.project(), m.project());
+        assert_eq!(joined.rig(), m.rig());
+        // A new project: the song back to defaults, the rig kept.
+        let mut fresh = m.clone();
+        fresh.set_project(&MidiSetup::default());
+        assert_eq!(fresh.rig(), m.rig());
+        assert_eq!(fresh.project(), MidiSetup::default());
+    }
+
     use super::*;
 
     fn busy() -> MidiSetup {

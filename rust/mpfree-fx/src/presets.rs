@@ -6,28 +6,15 @@
 //! Perform FX (its own pad banks) have none.
 
 use crate::ids::{
-    character, chorus, comb, compressor as comp, crush, delay, drive, eq, filter, flanger, phaser,
+    character, chorus, comb, compressor as comp, crush, delay, drive, ducker, eq, filter, flanger,
+    phaser, pitch, transient,
 };
 use crate::Preset;
 
-/// An effect's factory presets by its node id (empty for one without).
+/// An effect's factory presets by its node id (empty for one without), as
+/// the [registry](crate::registry) lists them.
 pub fn presets(id: &str) -> &'static [Preset] {
-    match id {
-        "mpfree.fx.eq" => EQ,
-        "mpfree.fx.filter" => FILTER,
-        "mpfree.fx.drive" => DRIVE,
-        "mpfree.fx.comb" => COMB,
-        "mpfree.fx.crush" => CRUSH,
-        "mpfree.fx.delay" => DELAY,
-        "mpfree.fx.chorus" => CHORUS,
-        "mpfree.fx.flanger" => FLANGER,
-        "mpfree.fx.phaser" => PHASER,
-        "mpfree.fx.compressor" => COMPRESSOR,
-        "mpfree.fx.character" => CHARACTER,
-        "mpfree.fx.lofi" => crate::lofi::PRESETS,
-        "mpfree.fx.cloud" => crate::cloud::PRESETS,
-        _ => &[],
-    }
+    crate::registry::entry(id).map_or(&[], |e| e.presets)
 }
 
 // EQ band types and cut slopes (band 1 is a low shelf, band 4 a high
@@ -676,5 +663,126 @@ pub static CHARACTER: &[Preset] = &[
             (character::MODE, character::SOFTEN),
             (character::AMOUNT, 50.0),
         ],
+    },
+];
+
+// Ducker sources and rates.
+const TEMPO: f32 = 1.0;
+const R16: f32 = 0.0;
+const R8: f32 = 1.0;
+const R2: f32 = 3.0;
+
+/// Ducker: the kick pushing the bass and pads down, or a pump in time.
+pub static DUCKER: &[Preset] = &[
+    Preset {
+        name: "Kick duck",
+        values: &[
+            (ducker::DEPTH, 12.0),
+            (ducker::ATTACK, 1.0),
+            (ducker::HOLD, 10.0),
+            (ducker::RELEASE, 120.0),
+        ],
+    },
+    Preset {
+        name: "Big pump",
+        values: &[
+            (ducker::SOURCE, TEMPO),
+            (ducker::RELEASE, 350.0),
+            (ducker::SHAPE, 70.0),
+        ],
+    },
+    Preset {
+        name: "Eighth pulse",
+        values: &[
+            (ducker::SOURCE, TEMPO),
+            (ducker::RATE, R8),
+            (ducker::DEPTH, 20.0),
+            (ducker::HOLD, 0.0),
+            (ducker::RELEASE, 160.0),
+            (ducker::SHAPE, 30.0),
+        ],
+    },
+    Preset {
+        name: "Sixteenth gate",
+        values: &[
+            (ducker::SOURCE, TEMPO),
+            (ducker::RATE, R16),
+            (ducker::DEPTH, 36.0),
+            (ducker::ATTACK, 0.5),
+            (ducker::HOLD, 0.0),
+            (ducker::RELEASE, 90.0),
+            (ducker::SHAPE, 100.0),
+        ],
+    },
+    Preset {
+        name: "Slow swell",
+        values: &[
+            (ducker::SOURCE, TEMPO),
+            (ducker::RATE, R2),
+            (ducker::DEPTH, 24.0),
+            (ducker::ATTACK, 20.0),
+            (ducker::RELEASE, 1500.0),
+            (ducker::SHAPE, 0.0),
+        ],
+    },
+];
+
+/// Transient shaper: punch, softness and room on drums and plucks.
+pub static TRANSIENT: &[Preset] = &[
+    Preset {
+        name: "Punchy kick",
+        values: &[(transient::ATTACK, 80.0), (transient::SUSTAIN, -20.0)],
+    },
+    Preset {
+        name: "Snappy snare",
+        values: &[
+            (transient::ATTACK, 70.0),
+            (transient::SUSTAIN, 20.0),
+            (transient::SPEED, 8.0),
+        ],
+    },
+    Preset {
+        name: "Tight room",
+        values: &[(transient::ATTACK, 10.0), (transient::SUSTAIN, -70.0)],
+    },
+    Preset {
+        name: "Soft hits",
+        values: &[(transient::ATTACK, -60.0), (transient::SPEED, 30.0)],
+    },
+    Preset {
+        name: "Long tails",
+        values: &[
+            (transient::ATTACK, 0.0),
+            (transient::SUSTAIN, 70.0),
+            (transient::OUTPUT, -4.0),
+        ],
+    },
+];
+
+/// Pitch shifter: octaves, harmony and doubling.
+pub static PITCH: &[Preset] = &[
+    Preset {
+        name: "Octave down",
+        values: &[(pitch::PITCH, -12.0), (pitch::WINDOW, 80.0)],
+    },
+    Preset {
+        name: "Fifth up",
+        values: &[(pitch::PITCH, 7.0)],
+    },
+    Preset {
+        name: "Wide doubler",
+        values: &[
+            (pitch::PITCH, 0.0),
+            (pitch::SPREAD, 24.0),
+            (pitch::WINDOW, 30.0),
+        ],
+    },
+    Preset {
+        name: "Rising stairs",
+        values: &[(pitch::PITCH, 5.0), (pitch::FEEDBACK, 60.0)],
+    },
+    Preset {
+        name: "Chipmunk",
+        values: &[(pitch::PITCH, 19.0), (pitch::WINDOW, 25.0)],
     },
 ];

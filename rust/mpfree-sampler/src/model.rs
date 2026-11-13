@@ -1325,6 +1325,12 @@ impl Project {
         &self.sources
     }
 
+    /// Every source the project holds in memory: its sources, and those
+    /// undo took out and redo may bring back.
+    pub fn held(&self) -> impl Iterator<Item = &Source> {
+        self.sources.iter().chain(&self.removed)
+    }
+
     pub fn pad(&self, index: usize) -> Option<&Pad> {
         self.pads.get(index).and_then(|p| p.as_ref())
     }
