@@ -93,7 +93,7 @@ Adding, removing or reordering an effect while the music plays doesn't click: th
 
 ## The chain editor
 
-Tap an effect in a strip's insert row to open the **chain editor** on it, in the mixer's place. Tap the strip's **+ Insert** to add an effect, with the list of effects already open; a new effect goes at the end of the chain. In the chain editor, **+ Add effect** opens the list again and **Cancel** closes it; you can also reorder (**Up**, **Down**), bypass (the power button on each row) and **Remove** effects, and turn the selected effect's knobs. If the chain is full or the mixer is busy, the line at the bottom of the screen says so for a few seconds.
+Tap an effect in a strip's insert row to open the **chain editor** on it, in the mixer's place. Tap the strip's **+ FX** button to add an effect, with the list of effects already open; a new effect goes at the end of the chain. **+ FX** fills all of the strip's empty insert rows, so on a strip with no effects it is a big button under the strip's name. In the chain editor, **+ Add effect** opens the list again and **Cancel** closes it; you can also reorder (**Up**, **Down**), bypass (the power button on each row) and **Remove** effects, and turn the selected effect's knobs. If the chain is full or the mixer is busy, the line at the bottom of the screen says so for a few seconds.
 
 The Q-Links turn the selected effect's first four knobs, and the data wheel works as Q-Link 1. **‹ Mixer** goes back to the mixer as you left it.
 

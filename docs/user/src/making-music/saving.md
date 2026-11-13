@@ -17,7 +17,7 @@ These are saved on the stick as soon as you change them, and are back the next t
 
 | What | Where you set it |
 |---|---|
-| Your Prefs: pad velocity curve, how Latch keeps pads, the audio buffer, the loop memory, developer tools, screen pad velocity; the metronome (on or off) and its level | [Prefs](../reference/prefs.md) |
+| Your Prefs: pad velocity curve, how Latch keeps pads, the audio buffer, the loop memory, developer tools, screen pad velocity; the metronome (on or off) and its level; whether Beats shows the timing strip | [Prefs](../reference/prefs.md) |
 | The buttons MPFree has learned | Prefs > Map controls, or the button guide |
 | Arpeggiator patterns you save | The pattern workspace's **Save** (see [Note Repeat, Latch and the arpeggiator](note-repeat-and-arp.md#the-pattern-workspace)) |
 | The Synth tab's options: the engine on the pads, the scale and its root, each pad bank's layout, In key rows, and the tuning with its root and A4. The pads still start on bank A, in their usual octave. | MENU on the Synth tab (see [Synths](synths.md)) |

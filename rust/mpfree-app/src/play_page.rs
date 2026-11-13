@@ -11,10 +11,14 @@
 //!   the four Q-Link cards (168 px) next to the MPC's Q-Link knobs;
 //! - **All** (home, F): the looper strip, the pattern, and the throws
 //!   beside the XY pad;
-//! - **Beats** (G): the whole pattern, then the throws;
+//! - **Beats** (G): the whole pattern, then (unless Play's options turn
+//!   it off) the Your timing strip, then the throws;
 //! - **Loop** (H): the loop big with its buttons, then the throws and the
-//!   XY pad;
-//! - **Drum** (I): your timing beside the XY pad, then the throws.
+//!   XY pad.
+//!
+//! The Drum view (I) is gone since 13 Nov: Jay folded its timing into
+//! Beats as a strip after live test 3 ("Fold timing into Beats, drop
+//! Drum").
 //!
 //! No view has a pads panel since 12 Nov (Jay's pick A, 15:45Z): the
 //! pattern, the loop and your timing take its room, and the pads have
@@ -57,7 +61,11 @@ pub const TIMING: &str = "play-timing";
 pub const SYNTH_PADS_HEAD: &str = "synth-pads-head";
 
 /// The views, in the switch's order.
-pub const VIEWS: [&str; 4] = ["All", "Beats", "Loop", "Drum"];
+pub const VIEWS: [&str; 3] = ["All", "Beats", "Loop"];
+/// Beats with the Your timing strip (Play's options, Timing strip On).
+pub const BEATS_TIMING_PAGE: &str = "Play · Beats · timing";
+/// The Your timing strip's height in Beats.
+pub const TIMING_STRIP_H: i32 = 72;
 /// The transport card's height.
 pub const TRANSPORT_H: i32 = 84;
 
@@ -67,23 +75,17 @@ pub enum PlayView {
     All,
     Beats,
     Loop,
-    Drum,
 }
 
 impl PlayView {
-    pub const ALL: [PlayView; 4] = [
-        PlayView::All,
-        PlayView::Beats,
-        PlayView::Loop,
-        PlayView::Drum,
-    ];
+    pub const ALL: [PlayView; 3] = [PlayView::All, PlayView::Beats, PlayView::Loop];
 
     pub fn index(self) -> usize {
         self as usize
     }
 
     pub fn from_index(i: usize) -> PlayView {
-        PlayView::ALL[i.min(3)]
+        PlayView::ALL[i.min(PlayView::ALL.len() - 1)]
     }
 
     pub fn name(self) -> &'static str {
@@ -97,14 +99,23 @@ impl PlayView {
             PlayView::All => "Play",
             PlayView::Beats => "Play · Beats",
             PlayView::Loop => "Play · Loop",
-            PlayView::Drum => "Play · Drum",
+        }
+    }
+
+    /// The page showing for this view: Beats has a second page with the
+    /// Your timing strip, for when `timing` (Play's options) is on.
+    pub fn page_for(self, timing: bool) -> &'static str {
+        if self == PlayView::Beats && timing {
+            BEATS_TIMING_PAGE
+        } else {
+            self.page()
         }
     }
 
     /// The view under the transport card, as the mockups lay it out. With
     /// `band`, NOTE REPEAT's strip takes the top of the first panel, so
     /// nothing else moves.
-    fn body(self, band: bool) -> String {
+    fn body(self, band: bool, timing: bool) -> String {
         let first = |slot: &str| {
             if band {
                 format!("col({}:{}, {slot}:*):*", arp_view::MINI, arp_view::MINI_H)
@@ -118,19 +129,31 @@ impl PlayView {
                 "{strip}:150, {}, row({THROWS}:*, {XY}:280):120",
                 first(STEPS)
             ),
+            PlayView::Beats if timing => {
+                format!("{}, {TIMING}:{TIMING_STRIP_H}, {THROWS}:196", first(STEPS))
+            }
             PlayView::Beats => format!("{}, {THROWS}:196", first(STEPS)),
             PlayView::Loop => format!("{}, row({THROWS}:*, {XY}:300):196", first(strip)),
-            PlayView::Drum => format!("row({}, {XY}:330):*, {THROWS}:196", first(TIMING)),
         }
     }
 
     pub fn layout(self) -> String {
-        frame(&self.body(false))
+        self.layout_for(false)
+    }
+
+    /// The layout of [`PlayView::page_for`]`(timing)`.
+    pub fn layout_for(self, timing: bool) -> String {
+        frame(&self.body(false, timing))
     }
 
     /// The view while NOTE REPEAT is held or pads are latched.
     pub fn quick_layout(self) -> String {
-        frame(&self.body(true))
+        self.quick_layout_for(false)
+    }
+
+    /// [`PlayView::quick_layout`] with or without the timing strip.
+    pub fn quick_layout_for(self, timing: bool) -> String {
+        frame(&self.body(true, timing))
     }
 }
 
@@ -301,16 +324,14 @@ impl Widget for PadsBar {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Knob {
     Swing,
-    /// The pad hit last: its tuning and its decay (the Sample tab's).
+    /// The pad hit last: its tuning (the Sample tab's).
     Tune,
-    Decay,
     DrumsFilter,
     DrumsSend,
     LoopLevel,
     LoopSend,
     LineLevel,
     LoopFilter,
-    FxMix,
     /// The step picked in Beats.
     Velocity,
     Length,
@@ -574,7 +595,6 @@ impl PlayPage {
                 Knob::LineLevel,
                 Knob::LoopFilter,
             ],
-            PlayView::Drum => [Knob::Tune, Knob::Decay, Knob::Swing, Knob::FxMix],
         }
     }
 
@@ -641,18 +661,6 @@ impl PlayPage {
                     c
                 }
             },
-            Knob::Decay => match pad {
-                Some((_, Some(ms))) => QLinkCard::new(
-                    "Decay",
-                    &self.pad_scope(self.last_pad),
-                    &decay_text(ms),
-                    (ms / DECAY_MAX_MS).sqrt().clamp(0.0, 1.0),
-                ),
-                Some((_, None)) => {
-                    QLinkCard::new("Decay", &self.pad_scope(self.last_pad), "Full", 1.0)
-                }
-                None => QLinkCard::new("Decay", &self.pad_scope(self.last_pad), "-", 0.0),
-            },
             Knob::DrumsFilter | Knob::LoopFilter => {
                 let (v, scope) = if knob == Knob::DrumsFilter {
                     (l.drums_filter, "Drums")
@@ -684,7 +692,6 @@ impl PlayPage {
                 &db_text(l.line_db),
                 ((l.line_db + 60.0) / 66.0).clamp(0.0, 1.0),
             ),
-            Knob::FxMix => QLinkCard::new("FX mix", "Throws + XY", &pct(l.fx_mix), l.fx_mix),
             Knob::Velocity | Knob::Length | Knob::Nudge | Knob::Chance => {
                 let Some((pad, i, s)) = self.selected_step() else {
                     return QLinkCard::default();
@@ -755,7 +762,7 @@ impl PlayPage {
                 self.transport.swing.amount = a;
                 Turn::Swing(a)
             }
-            Knob::Tune | Knob::Decay => Turn::Pad(knob, ticks),
+            Knob::Tune => Turn::Pad(knob, ticks),
             Knob::DrumsFilter | Knob::LoopFilter => {
                 let (v, strip) = if knob == Knob::DrumsFilter {
                     (&mut l.drums_filter, StripId::Track(mixing::DRUMS))
@@ -794,10 +801,6 @@ impl PlayPage {
                     id: mixer_ids::VOLUME,
                     value: *db,
                 })
-            }
-            Knob::FxMix => {
-                l.fx_mix = (l.fx_mix + d * if fine { 0.005 } else { 0.02 }).clamp(0.0, 1.0);
-                Turn::Fx(PlayFx::FxMix(l.fx_mix))
             }
             Knob::Velocity | Knob::Length | Knob::Nudge | Knob::Chance => {
                 let (pad, i, s) = self.selected_step()?;
@@ -1216,14 +1219,6 @@ impl PlayPage {
 /// The decay's longest time on the card: past it the sound plays out.
 pub const DECAY_MAX_MS: f32 = 4000.0;
 
-fn decay_text(ms: f32) -> String {
-    if ms >= 1000.0 {
-        format!("{:.1} s", ms / 1000.0)
-    } else {
-        format!("{ms:.0} ms")
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1287,7 +1282,8 @@ mod tests {
     #[test]
     fn every_view_keeps_the_frame() {
         for v in PlayView::ALL {
-            for spec in [v.layout(), v.quick_layout()] {
+            let timing = [v.layout_for(true), v.quick_layout_for(true)];
+            for spec in [v.layout(), v.quick_layout()].into_iter().chain(timing) {
                 assert_eq!(
                     rect(&spec, TRANSPORT),
                     Rect::new(12, 84, 998, TRANSPORT_H),
@@ -1325,10 +1321,18 @@ mod tests {
         assert_eq!(rect(&lp, strip), Rect::new(12, 180, 998, 362));
         assert_eq!(rect(&lp, THROWS), Rect::new(12, 554, 686, 196));
         assert_eq!(rect(&lp, XY), Rect::new(710, 554, 300, 196));
-        let drum = PlayView::Drum.layout();
-        assert_eq!(rect(&drum, TIMING), Rect::new(12, 180, 656, 362));
-        assert_eq!(rect(&drum, XY), Rect::new(680, 180, 330, 362));
-        assert_eq!(rect(&drum, THROWS), Rect::new(12, 554, 998, 196));
+        // Beats with the timing strip (Jay 13 Nov: the Drum view's
+        // timing folded into Beats): the pattern keeps six lanes, as All's.
+        let timed = PlayView::Beats.layout_for(true);
+        assert_eq!(rect(&timed, STEPS), Rect::new(12, 180, 998, 278));
+        assert_eq!(
+            rect(&timed, TIMING),
+            Rect::new(12, 470, 998, TIMING_STRIP_H)
+        );
+        assert_eq!(rect(&timed, THROWS), rect(&beats, THROWS));
+        const { assert!(TIMING_STRIP_H < crate::play_widgets::YourTiming::FULL_H) };
+        assert_eq!(PlayView::Beats.page_for(true), BEATS_TIMING_PAGE);
+        assert_eq!(PlayView::Loop.page_for(true), PlayView::Loop.page());
         // No view has a pads panel.
         for v in PlayView::ALL {
             for spec in [v.layout(), v.quick_layout()] {
@@ -1340,9 +1344,11 @@ mod tests {
     #[test]
     fn the_band_never_moves_the_panels_below_it() {
         for v in PlayView::ALL {
-            let (plain, band) = (v.layout(), v.quick_layout());
-            assert_eq!(rect(&plain, THROWS), rect(&band, THROWS), "{v:?}");
-            assert_eq!(rect(&band, arp_view::MINI).h, arp_view::MINI_H, "{v:?}");
+            for timing in [false, true] {
+                let (plain, band) = (v.layout_for(timing), v.quick_layout_for(timing));
+                assert_eq!(rect(&plain, THROWS), rect(&band, THROWS), "{v:?}");
+                assert_eq!(rect(&band, arp_view::MINI).h, arp_view::MINI_H, "{v:?}");
+            }
         }
     }
 

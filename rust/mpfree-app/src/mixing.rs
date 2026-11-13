@@ -123,8 +123,6 @@ pub enum PlayFx {
     /// The XY pad: where the finger is (0 to 1 each way), and whether it
     /// is down.
     Xy { x: f32, y: f32, down: bool },
-    /// The XY pad's effects' mix, 0 to 1.
-    FxMix(f32),
 }
 
 /// The performance effects a throw holds.
@@ -374,14 +372,6 @@ impl MixHost {
                 for (axis, pos) in [(pad.x, x), (pad.y, y)] {
                     self.insert(StripId::Master, PERFORM_SLOT, axis.param, axis.value(pos));
                 }
-            }
-            PlayFx::FxMix(mix) => {
-                self.insert(
-                    StripId::Master,
-                    PERFORM_SLOT,
-                    perf::MIX,
-                    100.0 * mix.clamp(0.0, 1.0),
-                );
             }
             PlayFx::PadMute { pad, mute } if pad < PADS => {
                 if mute {
@@ -987,7 +977,6 @@ mod tests {
             y: 1.0,
             down: true,
         });
-        h.play(PlayFx::FxMix(0.5));
         run(&mut h, 2, 0.0, 0.0);
         assert_eq!(
             perform(&h, perf::hold(9)),
@@ -996,7 +985,6 @@ mod tests {
         );
         assert_eq!(perform(&h, perf::DJ_FILTER), Some(-100.0), "low-pass");
         assert_eq!(perform(&h, perf::ECHO), Some(100.0));
-        assert_eq!(h.play_levels().fx_mix, 0.5);
         h.play(PlayFx::Throw {
             fx: ThrowFx::Delay,
             down: false,

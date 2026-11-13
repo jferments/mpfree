@@ -88,7 +88,7 @@ The mode buttons along the top of the MPC go to the MPFree page that does the sa
 
 | Button | Goes to | When |
 |---|---|---|
-| **MAIN** | The Play page. Pressed on the Play page, the next view (All, Beats, Loop, Drum). | Next build |
+| **MAIN** | The Play page. Pressed on the Play page, the next view (All, Beats, Loop). | Next build |
 | **STEP SEQ** | The Play page's Beats view. | Next build |
 | **NEXT SEQ** | The Arrange tab. | Next build |
 | **SAMPLER** | The Sample tab. **SHIFT + SAMPLER** goes to the Looper tab. | Next build |

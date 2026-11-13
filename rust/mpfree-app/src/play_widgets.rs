@@ -17,7 +17,7 @@
 
 use crate::play_page::{SynthPads, LAYOUT_SWITCH, VIEWS};
 use mpfree_arp::scale::pads::PadLayout;
-use mpfree_ui::draw::{self, card, card_head, dot, pill, speaker, speaker_hit, KNOB};
+use mpfree_ui::draw::{self, card, card_head, dot, pill, speaker, KNOB};
 use mpfree_ui::widgets::{Pad, PadGrid};
 use mpfree_ui::{Align, Color, EventKind, FontId, PaintCx, Rect, Tone, Touch, Widget};
 use std::cell::RefCell;
@@ -95,7 +95,7 @@ impl PlayTransport {
     }
 
     /// The view switch's box and its segments.
-    pub fn switch(r: Rect) -> (Rect, [Rect; 4]) {
+    pub fn switch(r: Rect) -> (Rect, [Rect; VIEWS.len()]) {
         let inner = PlayTransport::inner(r);
         let w = VIEWS.len() as i32 * SWITCH_SEG_W + 8;
         let b = Rect::new(
@@ -600,7 +600,7 @@ struct StepLook {
 const LANE_MIN_H: i32 = 34;
 const LANE_MAX_H: i32 = 44;
 const LANE_GAP: i32 = 5;
-const NAMES_W: i32 = 118;
+const NAMES_W: i32 = 132;
 
 /// Where a pattern's parts sit in its rectangle.
 struct GridGeom {
@@ -625,8 +625,23 @@ impl GridGeom {
         Rect::new(self.col_x(s), self.row_y(k), self.cw, self.rh)
     }
 
-    fn speaker(&self, k: usize) -> (i32, i32) {
-        (self.names.right() - 20, self.row_y(k) + self.rh / 2)
+    /// Lane `k`'s mute button as drawn: a box with the speaker in it at
+    /// the right of the names.
+    fn mute_button(&self, k: usize) -> Rect {
+        Rect::new(self.names.right() - 50, self.row_y(k), 40, self.rh)
+    }
+
+    /// Where lane `k` answers a tap to mute: its whole name and button,
+    /// the lane's full height with half the gap above and below (Jay
+    /// after live test 3: bigger mutes).
+    fn mute_hit(&self, k: usize) -> Rect {
+        let half = LANE_GAP / 2;
+        Rect::new(
+            self.names.x,
+            self.row_y(k) - half,
+            self.names.w - 4,
+            self.rh + LANE_GAP,
+        )
     }
 }
 
@@ -716,7 +731,8 @@ impl Widget for StepGrid {
         }
         for (k, lane) in lanes.iter().enumerate() {
             let y = g.row_y(k);
-            let nr = Rect::new(g.names.x, y, g.names.w - 10, g.rh);
+            let mb = g.mute_button(k);
+            let nr = Rect::new(g.names.x, y, mb.x - 4 - g.names.x, g.rh);
             let c = lane.color;
             cx.canvas
                 .fill_round_rect(Rect::new(nr.x, y + g.rh / 2 - 5, 10, 10), 3, c);
@@ -724,13 +740,20 @@ impl Widget for StepGrid {
             cx.text(
                 FontId::Sans,
                 14.0,
-                nr.take_left(18).1.take_right(30).1,
+                nr.take_left(18).1,
                 Align::Left,
                 ink,
                 &lane.name,
             );
-            let (sx, sy) = g.speaker(k);
-            speaker(cx, sx + 10, sy, t.text_dim, lane.muted);
+            // The mute button: a box round the speaker, red-tinted while
+            // muted.
+            if lane.muted {
+                cx.canvas.fill_round_rect(mb, 6, t.raised.mix(t.bad, 0.3));
+            } else {
+                cx.canvas.fill_round_rect(mb, 6, t.raised);
+            }
+            cx.canvas.stroke_round_rect(mb, 6, 1, t.outline);
+            speaker(cx, mb.x + mb.w / 2 + 1, mb.y + mb.h / 2, t.text, lane.muted);
             for s in 0..16 {
                 let sr = g.cell(k, s);
                 if s >= self.steps {
@@ -776,8 +799,7 @@ impl Widget for StepGrid {
         let g = self.geom(r);
         let lanes = self.shown(g.rows);
         for (k, lane) in lanes.iter().enumerate() {
-            let (sx, sy) = g.speaker(k);
-            if speaker_hit(sx + 6, sy).contains(x, y) {
+            if g.mute_hit(k).contains(x, y) {
                 return Some(EventKind::Toggle(lane.pad));
             }
             for s in 0..self.steps.min(16) {
@@ -1141,6 +1163,7 @@ pub struct TimedHit {
 /// Your timing: the last two bars of your hits against the 1/16 grid, a
 /// lane for each of the four sounds you hit most, then the average
 /// offset, the spread, the velocity and how the offsets spread.
+#[derive(Clone, Debug, PartialEq)]
 pub struct YourTiming {
     pub right: String,
     /// (pad, name, colour, hits in the window).
@@ -1181,6 +1204,10 @@ impl Widget for YourTiming {
     fn paint(&self, cx: &mut PaintCx, r: Rect) {
         let t = cx.theme.clone();
         cx.canvas.fill_rect(r, t.bg);
+        if r.h < YourTiming::FULL_H {
+            self.paint_strip(cx, r);
+            return;
+        }
         let body = card(cx, r, "Your timing", &self.right);
         let (stats, lanes) = body.take_bottom(92);
         let lanes = lanes.take_bottom(10).1;
@@ -1236,8 +1263,48 @@ impl Widget for YourTiming {
             cx.canvas
                 .fill_rect(Rect::new(sx(now), grid.y - 2, 2, grid.h + 4), t.text);
         }
-        // The numbers, then how the offsets spread.
         let (nums, hist) = stats.take_left(360);
+        self.paint_numbers(cx, nums.take_top(14).1, false);
+        self.paint_spread(cx, hist.inset_xy(0, 10), false);
+    }
+}
+
+impl YourTiming {
+    /// Shorter than this, it draws as the Beats view's strip: no lanes,
+    /// only the numbers and how the offsets spread.
+    pub const FULL_H: i32 = 150;
+
+    /// The strip in Beats (Jay 13 Nov: fold the Drum view's timing into
+    /// Beats): the title, the three numbers, then the spread of offsets.
+    fn paint_strip(&self, cx: &mut PaintCx, r: Rect) {
+        let t = cx.theme.clone();
+        cx.panel(r);
+        let inner = r.inset_xy(12, 8);
+        let (title, rest) = inner.take_left(180);
+        let (a, b) = title.take_top(title.h / 2);
+        cx.text(
+            FontId::Bold,
+            draw::HEAD_PX,
+            a,
+            Align::Left,
+            t.text_dim,
+            "YOUR TIMING",
+        );
+        // The strip has no lanes, so the offsets' magnifying is moot.
+        let caption = self.right.split(" · offsets").next().unwrap_or("");
+        cx.text(FontId::Sans, 12.0, b, Align::Left, t.text_faint, caption);
+        let (nums, hist) = rest.take_left(390);
+        self.paint_numbers(cx, nums, true);
+        self.paint_spread(cx, hist, true);
+        if self.lanes.is_empty() && !self.note.is_empty() {
+            let note = "Play the pads to see your timing";
+            cx.text(FontId::Sans, 13.0, hist, Align::Center, t.text_dim, note);
+        }
+    }
+
+    /// AVERAGE, SPREAD and VELOCITY side by side in `nums`.
+    fn paint_numbers(&self, cx: &mut PaintCx, nums: Rect, strip: bool) {
+        let t = cx.theme.clone();
         let avg = match self.average_ms {
             Some(a) if a < -0.5 => format!("{:.0} ms early", -a),
             Some(a) if a > 0.5 => format!("{a:.0} ms late"),
@@ -1256,16 +1323,25 @@ impl Widget for YourTiming {
             ("VELOCITY", vel, t.text),
         ];
         let iw = nums.w / 3;
+        let (label_h, value_px) = if strip { (20, 18.0) } else { (22, 20.0) };
         for (i, (k, v, c)) in items.iter().enumerate() {
-            let ir = Rect::new(nums.x + i as i32 * iw, nums.y + 14, iw, nums.h - 14);
-            let (a, b) = ir.take_top(22);
+            let ir = Rect::new(nums.x + i as i32 * iw, nums.y, iw, nums.h);
+            let (a, b) = ir.take_top(label_h);
             cx.text(FontId::Sans, 12.0, a, Align::Left, t.text_faint, k);
-            cx.text(FontId::Bold, 20.0, b.take_top(34).0, Align::Left, *c, v);
+            cx.text(FontId::Bold, value_px, b.take_top(34).0, Align::Left, *c, v);
         }
-        let hist = hist.inset_xy(0, 10);
+    }
+
+    /// How the offsets spread, 30 ms early to 30 ms late, in `hist`.
+    fn paint_spread(&self, cx: &mut PaintCx, hist: Rect, strip: bool) {
+        let t = cx.theme.clone();
         cx.canvas.fill_round_rect(hist, 8, t.bg.mix(t.surface, 0.4));
-        let hb = hist.inset_xy(12, 10);
-        let (axis, bars_r) = hb.take_bottom(16);
+        let hb = if strip {
+            hist.inset_xy(10, 5)
+        } else {
+            hist.inset_xy(12, 10)
+        };
+        let (axis, bars_r) = hb.take_bottom(if strip { 14 } else { 16 });
         let n = self.histogram.len() as i32;
         let top = self.histogram.iter().copied().max().unwrap_or(0).max(1);
         let bw = (bars_r.w - (n - 1) * 3) / n;
@@ -1329,7 +1405,8 @@ mod tests {
                 Some(EventKind::Tab(i))
             );
         }
-        assert!(segs[3].right() <= r.right() - 16);
+        assert_eq!(segs.len(), 3, "All, Beats, Loop");
+        assert!(segs[2].right() <= r.right() - 16);
     }
 
     #[test]
@@ -1385,11 +1462,21 @@ mod tests {
             g.touch(1, Touch::Down, c.x + 3, c.y + 3, r),
             Some(EventKind::Cell { row: 10, col: 5 })
         );
-        let (sx, sy) = geom.speaker(0);
-        assert_eq!(
-            g.touch(1, Touch::Down, sx + 6, sy, r),
-            Some(EventKind::Toggle(8))
-        );
+        // The mute answers anywhere on the lane's name, its full height
+        // and gaps: far more than the old 32 px square.
+        let m = geom.mute_hit(0);
+        assert!(m.w >= 110 && m.h >= geom.rh + LANE_GAP, "{m:?}");
+        for (x, y) in [(m.x + 2, m.y + 1), (m.right() - 1, m.bottom() - 1)] {
+            assert_eq!(
+                g.touch(1, Touch::Down, x, y, r),
+                Some(EventKind::Toggle(8)),
+                "({x}, {y})"
+            );
+        }
+        // The lanes' mute areas meet with no gap and don't overlap.
+        assert_eq!(geom.mute_hit(0).bottom(), geom.mute_hit(1).y);
+        let b = geom.mute_button(0);
+        assert!(m.contains(b.x, b.y) && m.contains(b.right() - 1, b.bottom() - 1));
     }
 
     #[test]

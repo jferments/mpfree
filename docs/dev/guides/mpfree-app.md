@@ -305,7 +305,7 @@ The kits are Akai's copyrighted content, under the [factory content policy](../p
 
 None of rounds 8 to 10 has run on the MPC yet; they are tested on the workstation (unit tests, the golden screens from `mpfree --preview DIR`, and the bench). The [layout spec](../design/layout-spec.md) has every page in detail; this is the short list of what to try.
 
-- **Round 8 (#106): the Play page.** No big pads: the transport bar with the view switch (All, Beats, Loop, Drum), the loop strip, the pattern with a speaker per lane, eight throws, the XY pad, the thin master bar and the Q-Link column on the right. Clips became **Arrange**. Its mini pads came off after the 12 Nov live test (the owner's pick A): the pattern, loop or timing panel takes their room.
+- **Round 8 (#106): the Play page.** No big pads: the transport bar with the view switch (All, Beats, Loop, Drum; Drum folded into Beats on 13 Nov), the loop strip, the pattern with a speaker per lane, eight throws, the XY pad, the thin master bar and the Q-Link column on the right. Clips became **Arrange**. Its mini pads came off after the 12 Nov live test (the owner's pick A): the pattern, loop or timing panel takes their room.
 - **Round 9 (#136): the Looper tab and the control map.** The Looper tab edits and sets up the loops (mockup J): the loops and their layers, the wave, the tools row, Q-Links for the layer's level and pan. Every mode button goes to the page with the same job (MAIN, STEP SEQ, NEXT SEQ, SAMPLER, SAMPLE EDIT, PROG EDIT), SHIFT + STOP goes back to bar 1, SHIFT + REC is Capture, SHIFT + PLAY START the metronome, SHIFT + 16 LEVEL the synth pads' Chromatic | In key. The Console is hold SHIFT + hold ERASE + TAP TEMPO. Buttons without a measured note work once Map controls (Dev tab) has found them.
 - **Round 10 (#186 and the PR after it):**
   - **The FX chain editor** opens from a mixer strip's insert row (or its "+", with the effect picker up), in the mixer's place; Back returns to the mixer. The Q-Links turn the effect's first four knobs.
@@ -325,8 +325,8 @@ The app check (`MPFREE_APP_STEPS=app` with `collect-over-ssh.sh --app`, read-onl
 1. Developer tools and Map controls: REC, OVERDUB, PLAY, PLAY START, UNDO, ERASE, TAP TEMPO, the PAD BANK buttons, TRACK MIX, TRACK MUTE, Q-LINK, DATA DIAL PUSH and the six mode buttons first.
 2. The Dev pages.
 3. Kits, banks, Full and Half Level.
-4. The Play page's four views without pads, the loop strip's symbols, the Q-Link cards (no flicker), the pattern, the master bar and the mode buttons (PROG EDIT opens the Pads tab), and STOP's light (PLAY, REC and OVERDUB stay dark until Akai's messages for them are captured).
-5. Throws, the XY pad on Perform FX, and FILL.
+4. The Play page's three views without pads (the Drum view folded into Beats as the timing strip, 13 Nov), the Timing strip option, the loop strip's symbols, the Q-Link cards (no flicker), the pattern and its mute buttons (a lane's whole name), the master bar and the mode buttons (PROG EDIT opens the Pads tab), and the PLAY, REC and OVERDUB lights.
+5. Throws (two at once with two fingers), the XY pad on Perform FX, and FILL.
 6. Arrange: clips, takes, Capture, the note editor (Grid, List, Tracker, Timing Correct, the Euclid rows set with the wheel, - / + and the push), the Song view, the morph bar and Rec song.
 7. TRACK MUTE and SHIFT + TRACK MUTE.
 8. Grains.

@@ -94,6 +94,7 @@ impl App {
         out.set_i64("loop-memory", i64::from(s.loop_memory.minutes()));
         out.set_bool("metronome", s.metronome);
         out.set_i64("metronome-level", i64::from(s.metronome_db));
+        out.set_bool("timing-strip", s.timing_strip);
         // A built-in theme or one from the themes folder; a theme file given
         // with --theme is for that run only.
         if self.offers_theme(&s.theme) {
@@ -171,6 +172,7 @@ impl App {
                     .and_then(|n| super::METRONOME_DBS.iter().find(|&&d| i64::from(d) == n))
                     .map(|&d| s.metronome_db = d)
                     .is_some(),
+                "timing-strip" => app.get_bool(k).map(|b| s.timing_strip = b).is_some(),
                 // Built in, or in the themes folder (listed before restore).
                 "theme" => themes
                     .iter()
