@@ -18,11 +18,13 @@ Along the top are the mixer's five views:
 
 | View | Shows |
 |---|---|
-| **Tracks** | One strip per instrument. Today these are **Drums** (the kit on the pads), **Synth**, **Loop** and **Audio** (every audio track on the Song view, summed). |
+| **Tracks** | One strip per instrument: **Drums** (the kit on the pads), **Synth**, **Loop** and **Audio** (every audio track on the Song view, summed), then a strip for each track that has its own instrument (**Track 1**, **Track 2** ...), shown only while it has one (see [A synth for each track](synths.md#a-synth-for-each-track)). |
 | **Pads** | A strip for each of the kit's 16 pads, so you can set the kick's level or put an effect on just the snare. |
 | **Inputs** | The line input. |
 | **Submixes** | Eight submixes for grouping, then the four send returns A to D. |
 | **I/O** | Where everything goes, as a list: see [The I/O view](#the-io-view). |
+
+{{shot: mixer-instruments | The Tracks view with tracks 1 and 2 playing their own instruments (Poly and FM): their strips come after Drums, Synth, Loop and Audio.}}
 
 The **< >** buttons page through the strips when there are more than fit. The chip beside them shows how much of the MPC's processor the mixer and its effects are using.
 
@@ -145,7 +147,7 @@ Each of these costs almost nothing until you use it.
 
 ## Coming next
 
-- **Plugins**: settings saved with the project, plugin instruments on tracks, and the plugin pack.
+- **Plugins**: settings saved with the project, and the plugin pack. Plugin synths already play as a track's own instrument.
 - **Automation**: knob moves recorded into clips.
 - **Perform FX on pads**: effects played from the pads.
 

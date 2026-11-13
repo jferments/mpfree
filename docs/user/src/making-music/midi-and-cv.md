@@ -60,7 +60,7 @@ Each learned control is listed in the mixer's I/O view, under **MIDI** and then 
 
 Tap **Forget** to take a learned control off. A row in amber says why its control does nothing: the device isn't plugged in, or its port is set to **Plays tracks**, which keeps every message for playing. A port set to **Learn only** turns knobs but plays no notes.
 
-Learned controls are kept between starts with the other MIDI settings. Still to come: keeping them with each project, learning any value on the screen rather than only effect knobs, a range for each control so a fader's top can stop at 0 dB, and a control that waits until it reaches the knob's value before taking over.
+Learned controls are saved with the project. Still to come: learning any value on the screen rather than only effect knobs, a range for each control so a fader's top can stop at 0 dB, and a control that waits until it reaches the knob's value before taking over.
 
 ## CV and gate
 
