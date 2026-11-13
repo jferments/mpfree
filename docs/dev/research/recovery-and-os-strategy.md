@@ -9,7 +9,7 @@ is recorded below.
 ## Owner direction (Jay, 2026-11-09)
 
 1. **Keep persistent SSH.** It is the primary development path, and it is recorded in
-   [device-modifications.md](../hardware/device-modifications.md).
+   [device-modifications.md](../hardware/archive/2026-11/device-modifications.md).
 2. **Product goal: one-click USB install.** The user inserts a USB stick in the
    back of the MPC. It installs the MPFree OS/userspace and sets up an SSH
    server the user can log into over Ethernet.
@@ -47,7 +47,7 @@ A gate should match what an experiment can actually damage.
 
 
 
-**Owner freedom gate (2026-11-11 update):** generic Rockchip loader access or an intact vendor Fastboot is **not** adequate proof that an owner can install arbitrary code after a firmware update. Before any boot-critical write, prove that the actual silicon ROM can execute an **independently built** owner first stage, and that a separate RAM recovery path can read back all relevant eMMC sectors. See [owner ROM recovery plan](../hardware/owner-rom-recovery-plan.md). The reference unit's security enable, RSA key-hash region and write-lock region presently read blank through Linux NVMEM, but physical fuse-programming voltage and true ROM code acceptance remain unresolved.
+**Owner freedom gate (2026-11-11 update):** generic Rockchip loader access or an intact vendor Fastboot is **not** adequate proof that an owner can install arbitrary code after a firmware update. Before any boot-critical write, prove that the actual silicon ROM can execute an **independently built** owner first stage, and that a separate RAM recovery path can read back all relevant eMMC sectors. See [owner ROM recovery plan](../hardware/archive/2026-11/owner-rom-recovery-plan.md). The reference unit's security enable, RSA key-hash region and write-lock region presently read blank through Linux NVMEM, but physical fuse-programming voltage and true ROM code acceptance remain unresolved.
 
 Tier 1 does not need MaskROM because nothing on the eMMC changes, and the
 kernel's write counters (`/sys/class/block/mmcblk0pN/stat`, field 7 =
@@ -67,7 +67,7 @@ this plan existed. See device-modifications.md.
 | `p6` rootfs, `p7`, `p8` | Akai Update Mode: FULL LEVEL + BROWSE + PAD BANK C/G at power-on ([Akai walkthrough](https://support.akaipro.com/en/support/solutions/articles/69000816160-akai-pro-mpc-series-firmware-update-walkthrough)). This is U-Boot `fastboot 0` | `p1`–`p3` only (**confirmed from the U-Boot environment**). Does **not** need `p6` | No |
 | `p1`–`p5`, `boot0/1` | RK3288 MaskROM + `rkdeveloptool` writing the backup image back | USB-B port reaching the RK3288 OTG controller; a way to force MaskROM | No |
 
-**Confirmed by `--boot-map` (2026-11-09):** the kernel, DTBs and U-Boot's boot script live in `p6:/boot`, and `boot0/boot1` are empty, so the device boots from the user-area loader at sector 64. See [boot map](../hardware/boot-map.md). **Confirmed by the second run:** Update Mode is U-Boot's own `fastboot 0`, entered before `p6` is read, so it can reflash a destroyed rootfs. **The real brick surface is therefore `p1` (idbloader), `p3` (U-Boot) and possibly `p2` (environment).** Only MaskROM recovers those. MPFree must never write them before Tier 3.
+**Confirmed by `--boot-map` (2026-11-09):** the kernel, DTBs and U-Boot's boot script live in `p6:/boot`, and `boot0/boot1` are empty, so the device boots from the user-area loader at sector 64. See [boot map](../hardware/archive/2026-11/boot-map.md). **Confirmed by the second run:** Update Mode is U-Boot's own `fastboot 0`, entered before `p6` is read, so it can reflash a destroyed rootfs. **The real brick surface is therefore `p1` (idbloader), `p3` (U-Boot) and possibly `p2` (environment).** Only MaskROM recovers those. MPFree must never write them before Tier 3.
 
 ## Testing another OS without touching the existing one
 
@@ -80,7 +80,7 @@ increasing effort:
    RAM and jump to it. There are no eMMC writes, and a reboot returns to stock. Risk: drivers left
    in odd states by the first kernel. `--boot-map` reports kexec support. **Akai uses this route
    itself:** USB-drive and online updates kexec `/boot/zImage` with `/opt/ramfs-update.squashfs` as
-   a RAM disk (inferred from `libaz01-prog` strings, [findings](../hardware/akai-updater-offline.md#how-an-update-is-launched)).
+   a RAM disk (inferred from `libaz01-prog` strings, [findings](../hardware/archive/2026-11/akai-updater-offline.md#how-an-update-is-launched)).
 2. **Fastboot RAM boot (to evaluate).** Update Mode is U-Boot fastboot. Many
    U-Boot fastboot builds accept `fastboot boot <image>`, which loads a kernel into
    RAM and boots it without flashing. Whether Akai's build allows this is unknown.
@@ -103,7 +103,7 @@ to the untouched Akai slot.
 | Area | Rewritten? | Effect |
 | --- | --- | --- |
 | `p6` rootfs (kernel, DT, glibc, `acvs.service`) | Yes, almost certainly | Removes MOD-001 (persistent SSH). New ABI/units: MPFree must re-qualify. Our `p6` backup becomes the older version |
-| `p1`–`p3` bootloader, `p2` env | **Can be.** Akai's RAM updater handles U-Boot partitions and logs "bootloader unchanged", so it probably writes them only when they differ (inferred from strings, [findings](../hardware/akai-updater-offline.md#findings-2026-11-10)) | An interrupted flash here is the main brick risk of an update; recovery would be MaskROM |
+| `p1`–`p3` bootloader, `p2` env | **Can be.** Akai's RAM updater handles U-Boot partitions and logs "bootloader unchanged", so it probably writes them only when they differ (inferred from strings, [findings](../hardware/archive/2026-11/akai-updater-offline.md#findings-2026-11-10)) | An interrupted flash here is the main brick risk of an update; recovery would be MaskROM |
 | `p4`/`p5` splash | Possibly | None |
 | `p7` content | Expansion installs only | None |
 | `p8` data, `/etc`/`/var` overlays | Usually kept, but **the updater can erase the data partition** if the image asks (inferred from strings) | Tier 2 files on `/data` could vanish, so keep a copy on SD/USB too; stale overlay files could clash |
@@ -131,18 +131,18 @@ Policy:
 
 Steps 1–5 are read-only or offline. Step 6 changes device state and needs the owner's go-ahead.
 
-1. ~~Run `--boot-map`~~ **Done 2026-11-09** ([boot map](../hardware/boot-map.md)). The second run captured the U-Boot environment and boot script.
+1. ~~Run `--boot-map`~~ **Done 2026-11-09** ([boot map](../hardware/archive/2026-11/boot-map.md)). The second run captured the U-Boot environment and boot script.
 2. Extract `/opt/ramfs-update.squashfs` from the backup's rootfs on the workstation (no MPC contact), `unsquashfs` it there,
    and do the same with Akai's public 3.6.0 update file. Document which partitions an update writes
    and whether it checks `p6` before writing. Commit findings, never binaries.
-   **On-device copy read 2026-11-10** with [`offline-akai-updater.sh`](../hardware/akai-updater-offline.md):
+   **On-device copy read 2026-11-10** with [`offline-akai-updater.sh`](../hardware/archive/2026-11/akai-updater-offline.md):
    no scripts, a signed-image updater that can write U-Boot and erase `/data`. The MPC software starts it
    with kexec for USB-drive and online updates. Only 3.10.0 is offered for download. Its image (a new `AZ01`
-   format) carries **only the rootfs**, no bootloader ([layout](../hardware/akai-updater-offline.md#two-container-formats)).
+   format) carries **only the rootfs**, no bootloader ([layout](../hardware/archive/2026-11/akai-updater-offline.md#two-container-formats)).
    Its rootfs runs kernel 6.18 and has the same peripheral firmware updaters as 3.6.0 (touch controller at boot,
    a USB DFU updater near the app launcher), plus new LoadPin and bootloader-signature pieces.
 3. Full eMMC + `boot0/boot1` backup streamed over SSH, with per-partition SHA-256 and two private copies.
-   Label it `MOD-001+MOD-002`. **Done 2026-11-09** with [`--backup`](../hardware/emmc-backup.md): verified,
+   Label it `MOD-001+MOD-002`. **Done 2026-11-09** with [`--backup`](../hardware/archive/2026-11/emmc-backup.md): verified,
    second copy verified on another disk.
 4. Host-side write-counter diff tool: fails if `p1`–`p6` show writes between two `--boot-map` snapshots.
 5. Board photos to locate a MaskROM button or eMMC clock test point. Opening the case is the owner's decision.

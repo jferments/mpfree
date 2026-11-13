@@ -47,7 +47,7 @@ Verified USB unmounted before insertion: PASS
 MPC autorun launches key-only temporary SSH: PASS on this device
 ~~~
 
-The temporary SSH configuration used TCP port `2222`, root public-key login, and RAM-backed runtime under `/run/mpc-one-autorun-ssh`. It did not write factory rootfs or alter boot partitions. (A *later*, separate persistent-SSH setup did write the rootfs; see [device-modifications.md](../hardware/device-modifications.md).) It **did** write the approved autorun folder to the research USB and could record status/fingerprint there.
+The temporary SSH configuration used TCP port `2222`, root public-key login, and RAM-backed runtime under `/run/mpc-one-autorun-ssh`. It did not write factory rootfs or alter boot partitions. (A *later*, separate persistent-SSH setup did write the rootfs; see [device-modifications.md](../hardware/archive/2026-11/device-modifications.md).) It **did** write the approved autorun folder to the research USB and could record status/fingerprint there.
 
 ## Why not distribute this as the end-user installer?
 
