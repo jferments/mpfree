@@ -82,7 +82,7 @@ Every design page opens with a **Status** line (proposal, approved, built, on ma
 - [USB autorun reference](guides/usb-autorun-reference.md): the exact lab tooling used to first get SSH. Not a general installer.
 - [mpfree on the test build](guides/mpfree-app.md): the app on the kexec test build (Phase 1 called it Hello MPC): our own program on the screen, touchscreen, pads, pad lights and audio output, with factory drum kits read from the backup, and the pad player with MPFree's first GUI, one step at a time (`--app`).
 - [Audio and MIDI diagnostics](guides/audio-midi-diagnostics.md): the `--audio-midi`, `--midi-activity` and `--midi-capture` modes, what each reads and why.
-- [Device modifications](hardware/device-modifications.md): every persistent change made to the reference MPC One (currently persistent SSH, MOD-001/MOD-002), with verification and undo steps.
+- [Device modifications](hardware/archive/2026-11/device-modifications.md): every persistent change made to the reference MPC One (currently persistent SSH, MOD-001/MOD-002), with verification and undo steps.
 
 ## Milestones
 
@@ -123,8 +123,8 @@ M4 was host-only safety tooling and the [handoff state-machine simulator](../../
 
 ## Hardware findings (MPC One, firmware 3.6.0)
 
-- [Baseline](hardware/baseline-3.6.0.md): kernel, distribution, storage and known unknowns (2026-11-08).
-- [Hardware survey](hardware/survey-2026-11-09.md): SoC, eMMC partitions, audio, MIDI, display, touch.
+- [Baseline](hardware/archive/2026-11/baseline-3.6.0.md): kernel, distribution, storage and known unknowns (2026-11-08).
+- [Hardware survey](hardware/archive/2026-11/survey-2026-11-09.md): SoC, eMMC partitions, audio, MIDI, display, touch.
 - [Resource ownership](hardware/resource-ownership.md): which factory process holds PCM, MIDI, DRM and input devices.
 - [Audio runtime](hardware/audio-runtime.md): the live ALSA stream, threads and MIDI routing.
 - [ABI and handoff survey](hardware/abi-handoff-survey.md): userspace ABI, CPU affinity and locked memory.
@@ -133,12 +133,12 @@ M4 was host-only safety tooling and the [handoff state-machine simulator](../../
 - [MIDI activity map](hardware/midi-activity-map.md): which internal MIDI port carries pads, knobs and buttons.
 - [Controller protocol](hardware/controller-protocol.md): the internal controller's USB-MIDI messages, observed with passive usbmon.
 - [Touchscreen and display](hardware/touchscreen-display.md): ILI2117 driver, evdev, DSI panel and Panfrost.
-- [Boot chain and recovery map](hardware/boot-map.md): eMMC layout, U-Boot environment and boot order, boot-partition hashes, and kexec support (2026-11-09).
-- [eMMC backup](hardware/emmc-backup.md): a read-only copy of the whole eMMC to the workstation, checked against the boot map (2026-11-09).
-- [Reading Akai's updater offline](hardware/akai-updater-offline.md): what Akai's updater and the 3.10.0 update image write and check, read on the workstation only (2026-11-10).
-- [Test-booting another firmware version by kexec](hardware/kexec-test-boot.md): booting 3.10.0 from a USB stick with the eMMC hidden from it; booted three times, storage unchanged, Ethernet and SSH work after one retry (2026-11-10).
-- [MaskROM over USB](hardware/maskrom-usb.md): how the RK3288 boot ROM's USB recovery mode could be reached on the MPC One, what it can do RAM-only, secure-boot risk, and the first checks (research, 2026-11-10).
-- [Owner-controlled BootROM bring-up](hardware/owner-rom-recovery-plan.md): a plan for owner-controlled boot through the RK3288 boot ROM, even if Akai changes its own boot chain (offline analysis only).
-- [Research matrix](hardware/research-matrix.md): subsystem-by-subsystem mapping plan and safety gates.
+- [Boot chain and recovery map](hardware/archive/2026-11/boot-map.md): eMMC layout, U-Boot environment and boot order, boot-partition hashes, and kexec support (2026-11-09).
+- [eMMC backup](hardware/archive/2026-11/emmc-backup.md): a read-only copy of the whole eMMC to the workstation, checked against the boot map (2026-11-09).
+- [Reading Akai's updater offline](hardware/archive/2026-11/akai-updater-offline.md): what Akai's updater and the 3.10.0 update image write and check, read on the workstation only (2026-11-10).
+- [Test-booting another firmware version by kexec](hardware/archive/2026-11/kexec-test-boot.md): booting 3.10.0 from a USB stick with the eMMC hidden from it; booted three times, storage unchanged, Ethernet and SSH work after one retry (2026-11-10).
+- [MaskROM over USB](hardware/archive/2026-11/maskrom-usb.md): how the RK3288 boot ROM's USB recovery mode could be reached on the MPC One, what it can do RAM-only, secure-boot risk, and the first checks (research, 2026-11-10).
+- [Owner-controlled BootROM bring-up](hardware/archive/2026-11/owner-rom-recovery-plan.md): a plan for owner-controlled boot through the RK3288 boot ROM, even if Akai changes its own boot chain (offline analysis only).
+- [Research matrix](hardware/archive/2026-11/research-matrix.md): subsystem-by-subsystem mapping plan and safety gates.
 - [Observed data (JSON)](hardware/data/mpc-one-3.6.0-observed.json): redacted, machine-readable observations.
 - [Touch profile (JSON)](hardware/data/mpc-one-touch-profile.json): touch orientation and ranges measured by M12 (2026-11-10).

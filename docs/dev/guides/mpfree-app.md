@@ -4,7 +4,7 @@ The app is called mpfree. Phase 1 called it Hello MPC, and its crate was `mpfree
 
 **Status:** round 3 ran on 2026-11-10, and every Phase 1 part now works on the test build: the screen, touch, pads, Q-Links, wheel, buttons, pad lights, and sound from the pads. A factory drum kit played from the pads with 0 underruns, and Akai's setup, replayed, moved the controls to the Private port with relative Q-Links ([results](#round-3-results-2026-11-10)). Round 4 ran [the pad player](#round-4-the-pad-player-and-mpfrees-first-gui), MPFree's first GUI: 323 hits in 120 s with 0 underruns and 8.7 ms from pad to sound ([results](#round-4-results-2026-11-10)). Round 5, [straight into the pad player at power-on](#round-5-straight-into-the-pad-player), is ready to run. Rounds 8 to 10 are built and tested on the workstation but have not run on the MPC yet ([what they add](#rounds-8-to-10-the-app-as-it-stands)).
 
-Phase 1 is the first time MPFree's own code drives the MPC One's hardware: the screen, the touchscreen, the pads and the audio output. It runs on the [kexec test build](../hardware/kexec-test-boot.md): Akai's 3.10.0 system started from the USB stick, with Akai's app blocked and the eMMC and SD card hidden from it. A power-cycle brings back stock 3.6.0.
+Phase 1 is the first time MPFree's own code drives the MPC One's hardware: the screen, the touchscreen, the pads and the audio output. It runs on the [kexec test build](../hardware/archive/2026-11/kexec-test-boot.md): Akai's 3.10.0 system started from the USB stick, with Akai's app blocked and the eMMC and SD card hidden from it. A power-cycle brings back stock 3.6.0.
 
 ## What runs, and what it changes
 
@@ -65,7 +65,7 @@ cargo build --manifest-path rust/Cargo.toml --release --locked \
   --target armv7-unknown-linux-gnueabihf -p mpfree-app
 ```
 
-Then, with the test build running (`--kexec-boot`, see [the kexec test boot](../hardware/kexec-test-boot.md)):
+Then, with the test build running (`--kexec-boot`, see [the kexec test boot](../hardware/archive/2026-11/kexec-test-boot.md)):
 
 ```bash
 MPFREE_ACCEPT_APP=YES bash tools/mpc-one/collect-over-ssh.sh --app
@@ -118,7 +118,7 @@ Two measurements, in one round:
 
    The report lists every message between the app and the controller from the restart on, decoded and in order, and every captured transfer in hex.
 
-Why the restart cannot flash the controller (from [the updater notes](../hardware/akai-updater-offline.md); the second point is an inference): the app's launcher flashes the controller only if it is already in its firmware-update mode, which the checks rule out (`09e8:0046` is its normal MIDI mode). And this same app starts at every power-on of this unit, with the same controller firmware, without re-flashing it: with the app running, the controller was still USB device 2 on its bus in the 2026-11-09 capture, so it had connected only once since power-on, and a flash would have reconnected it in another mode. If Akai's app does not come back, switch the MPC off and on.
+Why the restart cannot flash the controller (from [the updater notes](../hardware/archive/2026-11/akai-updater-offline.md); the second point is an inference): the app's launcher flashes the controller only if it is already in its firmware-update mode, which the checks rule out (`09e8:0046` is its normal MIDI mode). And this same app starts at every power-on of this unit, with the same controller firmware, without re-flashing it: with the app running, the controller was still USB device 2 on its bus in the 2026-11-09 capture, so it had connected only once since power-on, and a flash would have reconnected it in another mode. If Akai's app does not come back, switch the MPC off and on.
 
 Messages are sent to the controller only after they have been seen in this capture and listed for the owner's OK (round 3).
 
@@ -176,7 +176,7 @@ From the owner's results zip (clone at `a0b136f`):
 
 The owner asked (2026-11-10) to go from the loading screen to the app without running a command and without the console on screen, with a progress bar and plain messages while it starts, a button to switch to the raw console, pad velocity, Full Level and Half Level, Latch with Note Repeat, and MENU and SHIFT + MENU for options and Prefs.
 
-**At power-on.** A stick built with `offline-kexec-stick.py --app` ([the kexec test boot](../hardware/kexec-test-boot.md#tools-in-order)) starts the pad player instead of the log display: the startup screen for 6 s (Synthwave's, from `mpfree-startup`; the galaxy on sticks built before 12 Nov), then a loading page over it with a progress bar and what it is doing (loading the drum kits, finding the pads and buttons, finding the sound card, connecting, lighting the pads, starting the sound), then the pad player. If something fails, the loading page says what, and a tap shows the console. The drum kits are on the stick's partition 3, mounted read-only. If the program stops with an error, the log display starts instead.
+**At power-on.** A stick built with `offline-kexec-stick.py --app` ([the kexec test boot](../hardware/archive/2026-11/kexec-test-boot.md#tools-in-order)) starts the pad player instead of the log display: the startup screen for 6 s (Synthwave's, from `mpfree-startup`; the galaxy on sticks built before 12 Nov), then a loading page over it with a progress bar and what it is doing (loading the drum kits, finding the pads and buttons, finding the sound card, connecting, lighting the pads, starting the sound), then the pad player. If something fails, the loading page says what, and a tap shows the console. The drum kits are on the stick's partition 3, mounted read-only. If the program stops with an error, the log display starts instead.
 
 **Controls** (logic in [`app.rs`](../../../rust/mpfree-app/src/app.rs), with tests):
 
@@ -271,7 +271,7 @@ Round 7 puts the pad player on the layout the owner approved (2026-11-11, [layou
 - **Saved settings.** The test stick gets a fourth partition, `MPFREE-DATA` (GPT name `mpfree-test-data`, 64 MiB, ext4 with a journal). The test build mounts it at `/run/mpfree-data` (`rw,nosuid,nodev,noexec,noatime`) and starts the pad player with `--data /run/mpfree-data`. If it does not mount, the pad player starts without saving and the kernel log says so.
   - Kept: the Prefs rows pad velocity curve, screen pad velocity, Latch keeps pads, audio buffer and Show developer tools (`settings/app.conf`), and every control found with Map controls or the button guide (`settings/map.conf`). Line input is never kept.
   - All writes go through `mpfree-store`'s one writer thread: a `.part` file, flushed, then renamed, then the folder flushed. It never follows a link, never writes outside the folder and refuses a folder that is not its own. At start the log says `saved settings: …`, `saved buttons: …` and `saving: …`.
-  - The eMMC and the SD card are never written. `write-test-stick.py` keeps partition 4 from the stick it rewrites. Since 2026-11-12 it sits at 1 GiB and fills the rest of the stick: it is left in place when it is already there, or saved to the build folder and moved from the old 64 MiB layout ([details](../hardware/kexec-test-boot.md#saved-settings-partition-4)). `--fresh-data` starts it empty, and `--data-from FILE` writes a saved copy back.
+  - The eMMC and the SD card are never written. `write-test-stick.py` keeps partition 4 from the stick it rewrites. Since 2026-11-12 it sits at 1 GiB and fills the rest of the stick: it is left in place when it is already there, or saved to the build folder and moved from the old 64 MiB layout ([details](../hardware/archive/2026-11/kexec-test-boot.md#saved-settings-partition-4)). `--fresh-data` starts it empty, and `--data-from FILE` writes a saved copy back.
 - **The Sample tab** (#75, #78): the sampler's pad editor on the pad hit last, with the Wave and Chop tabs. Edits stay in memory.
 - **Capture** (#80): the Clips tab's Capture button keeps the phrase just played as a take, even when nothing was recording.
 - **The arp:** the Arp panel's MENU has its options, including scales, chords and the scale run. Its MIDI out and MIDI clock are built as bytes only; no MIDI port is opened yet. NOTE REPEAT pressed twice quickly latches, as SHIFT + NOTE REPEAT does.
@@ -290,7 +290,7 @@ With the developer tools on, the Dev strip has a **Touch** page between Map cont
 
 ### The factory drum kits
 
-[`offline-factory-kit.py`](../../../tools/mpc-one/offline-factory-kit.py) runs **on the workstation only** and never contacts the MPC. It reads the owner's [eMMC backup](../hardware/emmc-backup.md):
+[`offline-factory-kit.py`](../../../tools/mpc-one/offline-factory-kit.py) runs **on the workstation only** and never contacts the MPC. It reads the owner's [eMMC backup](../hardware/archive/2026-11/emmc-backup.md):
 
 1. It finds the newest `~/mpfree-backups/mpc-one-emmc-*/mmcblk0.img`, reads its GPT (checking both CRCs) and finds the partition named `content` (p7, `/media/acvs-content` on the MPC).
 2. It lists that ext4 file system with `debugfs`, which opens the image read-only (no `-w`) at the partition's offset. Nothing is mounted and no `sudo` is needed.
