@@ -132,3 +132,129 @@ The U-Boot image header can be inspected independently, including its metadata a
 
 We have a good account of the image container, early ARM control flow, boot-device iteration and raw next-stage loading. The complete last handoff, every fallback branch, and the exact response to all candidate boot media are not fully demonstrated by device-origin traces. That distinction matters if MPFree eventually implements its own SRAM stage. It must reproduce the required DRAM, clock, pinmux and storage initialization for *this board*, not merely copy the observed jump addresses.
 
+
+## 5. Stage two: U-Boot proper
+
+The second stage is U-Boot 2016.05 with inMusic board additions. Its role is qualitatively different from the SRAM stage. By the time it runs, enough of the SoC has been initialized to use external RAM, execute a larger codebase, communicate over USB and serial, inspect block devices and read files from supported filesystems. That makes it the first part of the normal boot chain that has the *kind* of functionality MPFree eventually needs for a dual-boot manager.
+
+The U-Boot image occupies the GPT `uboot` partition, `p3`, beginning at sector 256. It begins with the four-byte legacy uImage signature `27 05 19 56` and contains image metadata plus the actual executable payload. The payload has been identified as ARM code with Thumb callback functions. Legacy image inspection establishes the container header, expected payload size and checksums; image validation on a workstation does not itself prove every instruction will execute on a particular board.
+
+One especially important property is that U-Boot is **not** the Linux kernel and does not need the p6 root filesystem to exist before it can begin its own work. Provided that the BootROM, SRAM stage, U-Boot image and necessary hardware configuration are functional, U-Boot can run its commands even if p6 has an invalid ext4 filesystem. That is why the factory Update Mode is a plausible rootfs recovery path. It is *not* sufficient for a failure that prevents U-Boot itself from loading.
+
+### 5.1 The environment: configuration rather than executable code
+
+U-Boot stores persistent settings separately from its executable image. On this MPC that storage is the tiny `env` partition, `p2`, at LBA 192. Linux can read it through the installed `fw_printenv` utility, whose location/configuration is described by `/etc/fw_env.config`. It is helpful to think of the environment as a small, persistent pre-Linux configuration database: it contains scripts and variables describing what to boot, in what order, and what to do when something fails.
+
+The significant reference values are:
+
+```text
+bootcmd=run az01_bootcmd
+
+az01_bootcmd=if test x${dorecovery} = x1; then
+                 run az01_recovercmd;
+             fi;
+             run distro_bootcmd;
+             echo 'Boot failed, resetting to bootloader...';
+             reset_bootloader
+
+az01_recovercmd=echo 'Starting fastboot...'; fastboot 0
+
+boot_targets=mmc0 mmc1
+boot_prefixes=/ /boot/
+boot_scripts=boot.scr.uimg boot.scr
+bootdelay=0
+stdin=serial,gpio-keys
+stdout=serial
+```
+
+The human-readable wrapping above preserves the logic; the environment stores commands as strings rather than a shell script file with these exact line breaks. The essential condition is `dorecovery`. When the running board logic supplies a value selecting recovery, `az01_bootcmd` invokes `az01_recovercmd` and enters Fastboot. Otherwise it invokes the distro boot scan. After all normal boot targets fail, the script calls `reset_bootloader`. We know that command and its associated reset logic exist; what the complete failure cycle does in every state is not established.
+
+The setting `bootdelay=0` means the user does not normally see a pause at a U-Boot prompt. The environment identifies serial and GPIO-key input, but an appropriate board-specific serial interface, voltage level and actual boot-interrupt behavior must be established before claiming a useful interactive console. In the device tree the console corresponds to UART2 at 115200 baud. UART access would be valuable for observing cold boot without touching flash; electrical mapping of a safely accessible header remains a separate hardware task.
+
+Two values, `fdtfile` and `dorecovery`, were not found as ordinary saved variables in the recorded environment. Their effect is visible in the boot process, so board-specific initialization is a plausible source. They should not be treated as owner-editable persistent settings until their initialization sequence is verified.
+
+### 5.2 What `distro_bootcmd` actually does
+
+U-Boot’s distro boot conventions let a board describe a list of storage interfaces and candidate file locations rather than hard-code a single kernel image in its executable. The MPC’s environment sets `boot_targets=mmc0 mmc1` and looks under `/` and `/boot/` for boot scripts such as `boot.scr.uimg` and `boot.scr`. Where U-Boot’s build supports it, an `extlinux/extlinux.conf` file is another conventional boot description.
+
+It would be tempting to read “mmc0 mmc1” as “eMMC then SD” and conclude that an inserted SD card can override the installed OS. This is premature for two reasons.
+
+First, Linux device names and U-Boot device numbers are produced by different software. The Linux device tree associates the internal eMMC controller with `ff0f0000` and removable SD with `ff0c0000`; the U-Boot `mmc` enumeration needs its own board-level confirmation. The names are likely aligned, but that is not yet a measured U-Boot bus map.
+
+Second, if the **first** target contains a bootable script and kernel, U-Boot normally has no reason to inspect the second. On a working MPC with a valid factory p6, simply inserting an SD card is therefore unlikely to select it automatically. This is a selection-policy problem, not evidence that the SD controller or U-Boot’s filesystem reader is incapable of loading Linux. A future MPFree boot manager must distinguish “U-Boot can read SD” from “U-Boot will choose SD while factory boot is healthy.”
+
+An effective direct-boot system needs one of three mechanisms: a verified existing user-controlled boot selection before distro scan, a **temporary** boot command supplied through a qualified pre-Linux interface, or a persistent boot policy that can be recovered if it points at a missing/corrupt image. The first two are preferable for development because they avoid modifying `p2`.
+
+### 5.3 The stock kernel is a filesystem file
+
+The factory Linux kernel is not in a raw kernel partition. U-Boot reads it out of the rootfs ext4 partition `p6`. On the reference device, the relevant files include the Linux `zImage`, the board’s flattened device-tree blob (DTB), and `/boot/boot.scr.uimg`. That means the stock bootloader must understand enough of the filesystem to load several named files rather than simply jumping to a hard-coded disk offset.
+
+The 535-byte U-Boot script performs the last part of the job. It obtains the ARM kernel image and the chosen FDT, applies a board-specific overlay when appropriate, sets up the kernel command line and calls `bootz`. The reference rootfs contains several closely related DTBs, but the tested MPC One uses `rk3288-az01-acva.dtb`. A related `rk3288-az01-acva-c.dtb` is not an interchangeable cosmetic variant: it includes different CPU-frequency information. Selecting the wrong DTB can change device initialization or make warm kernel handoff fail unexpectedly.
+
+The factory command line included a root PARTUUID, `rootwait ro`, `rfkill.default_state=0`, `fsck.repair=yes` and `isolcpus=2-3`. The PARTUUID identifies the factory rootfs independently of any temporary Linux `/dev/mmcblkN` numbering. The `ro` flag directs Linux to mount the root read-only during early startup. `isolcpus=2-3` is part of the factory real-time scheduling approach, but its effect should not be extrapolated into a complete description of the audio thread's scheduling or CPU ownership.
+
+U-Boot also adjusts the live FDT. During the 3.10.0 alternate-kernel tests it was necessary to preserve relevant live hardware information and account for reserved-memory regions and board-specific PHY behavior. Therefore an MPFree installer should not naively copy a random DTB and assume it is equivalent to the tree given to factory Linux at a cold boot.
+
+### 5.4 Image formats and the meaning of a valid header
+
+The installed U-Boot understands its legacy uImage container. Later code paths also recognize FDT/FIT-style structures, which are introduced by the big-endian `0xD00DFEED` FDT magic. The observed legacy-image handling includes routines consistent with header checks and data CRC verification, along with informational printing of the image’s OS, architecture, compression, size, load address and entry address.
+
+These checks answer different questions. An image with the right **format** can still be incompatible with the CPU. An image with matching **CRC32** can still target the wrong memory address. An ARM Linux kernel with the right **load address** can still fail because it receives the wrong DTB. And image-format acceptance says nothing by itself about all board-specific release or integrity policies. A usable MPFree boot image must satisfy every relevant condition and then actually start on hardware.
+
+## 6. U-Boot Update Mode and its USB interface
+
+The MPC’s familiar firmware update entry is implemented before Linux. The U-Boot environment explicitly defines `az01_recovercmd` as `fastboot 0`. The board code contains recovery-selection logic, including an analog key input comparison. Some observations suggest that ADC readings below 100 select a recovery path. The exact mapping from the physical key combination to the ADC channel and internal state word is not fully proven, so a developer should describe the *capability* without claiming that every register in the selection path is completely characterized.
+
+This design has a practical consequence: the USB firmware updater does not require the p6 Linux root filesystem to start before the board can communicate. If a factory kernel is missing or the rootfs is unreadable, U-Boot may still be able to receive a manufacturer update. That makes Update Mode an important part of the recovery plan for MPFree. It is not yet a fully rehearsed recovery guarantee on the reference MPC, and it depends on intact first-stage and second-stage bootloaders.
+
+The pre-Linux Fastboot command table contains **eight registered command prefixes**, each associated with a Thumb callback:
+
+| Command prefix | Purpose implied by handler | Verified callback code address |
+|---|---|---|
+| `reboot` | Reset device from the USB session | `0x00122CF8` |
+| `getvar:` | Return bootloader/device variables | `0x00122D38` |
+| `download:` | Receive an image or data into RAM | `0x00122980` |
+| `boot` | Schedule execution of a downloaded image | `0x00122964` |
+| `continue` | Leave the Fastboot session/resume boot path | `0x00122948` |
+| `flash` | Storage update operation | `0x00122C5C` |
+| `erase` | Storage erase operation | `0x00122BF8` |
+| `oem` | Manufacturer-defined commands | `0x00122854` |
+
+The low bit of each stored function pointer indicates Thumb instruction state; the addresses in the table are the corresponding instruction addresses. These values come from the particular original bootloader, not a published API. The presence of handlers makes each path a genuine part of the compiled U-Boot, but it does not mean each operation is necessarily enabled or safe in every runtime state.
+
+### 6.1 Why the `boot` command is especially interesting
+
+For MPFree, `download` and `boot` are the most promising pre-Linux functions. If the bootloader can accept a correctly packaged kernel into RAM and then execute it, an owner could potentially start an independent Linux image **without booting factory Linux and without writing internal eMMC**. This would be a major improvement over the current `kexec` pathway.
+
+The two operations are distinct. `download` receives data; `boot` asks the bootloader to interpret and execute an image that has already been received. The recorded code shows that the immediate `boot` command handler does not jump to the kernel directly. Instead, it installs a USB request completion callback, sends the protocol response and then executes the follow-up handler after the USB response has been transmitted. That ordering matters because an immediate kernel jump would prevent the USB host from learning whether its request was accepted.
+
+The `boot` completion code constructs a short argument array and invokes a function consistent with U-Boot’s `bootm` command path. The underlying image classifier understands legacy image structures and FDT/FIT headers. This establishes that U-Boot has a meaningful execution pathway; it does **not** establish an accepted complete MPC One kernel/DTB/ramdisk combination. We have not sent a real `fastboot boot` test image to the reference MPC and watched it become a functioning MPFree Linux system.
+
+### 6.2 How the data reaches memory
+
+The Fastboot download implementation contains an image buffer base near `0x00800800`. Separate RAM state tracks the requested length and the amount received. Each incoming USB request is copied into the buffer after the previous bytes, subject to the code’s length checks. The decoded implementation includes a nominal download limit of `0x70000000` bytes.
+
+That value is **not** a recommended transfer size. A theoretical limit in a parser is not a memory allocation plan. Actual safe RAM occupancy depends on U-Boot’s own text/data/stack, USB DMA, FDT, reserved regions, kernel decompression workspace and Linux’s early boot placement rules. Our actual hardware has approximately 2 GiB of RAM, but this does not permit an arbitrary file to occupy 1.75 GiB without colliding with bootloader state. The first useful test should use the smallest known-good image whose memory layout can be checked thoroughly.
+
+There are also state checks in some Fastboot callbacks for download and persistent operations. Their exact initialization and every decision branch have not been demonstrated through physical tests. As a result, the existence of a callback cannot be equated with unrestricted availability of the command in every maintenance session.
+
+### 6.3 `continue`, `flash` and `erase` are not alternative names for boot
+
+`continue` is a control-flow operation that allows the loader to leave the current maintenance session; it is not equivalent to executing the downloaded kernel. Its completion callback affects a Fastboot exit flag, but the final caller's exact return path has not been observed on the reference unit.
+
+`flash` and `erase` are persistent storage operations. The firmware uses partition names that include `rootfs`, `content` and `data`, and some maintenance components understand bootloader regions. These commands therefore have completely different consequences from a RAM-only image transfer. An MPFree proof-of-concept should not issue state-changing storage commands in order to establish whether a USB connection or image parser works.
+
+The custom `oem` subcommands belong to the manufacturer's maintenance interface. They have command-specific behavior, and no current MPFree installer design depends on exercising them. The useful task is to understand which *nonpersistent* facilities U-Boot already provides and whether they can boot a prepared open-source kernel.
+
+### 6.4 How to distinguish USB states on a workstation
+
+There are at least three related but distinct USB personalities:
+
+**Akai U-Boot Fastboot** runs *after* the eMMC first and second stages and is therefore expected to remain accessible when Linux is damaged but U-Boot is healthy.
+
+**RockUSB loader mode** is implemented by a loader or compatible U-Boot facility, not by the MPC application. Its particular capabilities depend on the loaded program; it should not be assumed to be the same protocol as Fastboot.
+
+**Genuine RK3288 ROM USB mode** comes from silicon before any installed U-Boot. In appropriate circumstances, a compatible host can send an early SRAM payload. We have not yet demonstrated entry into that mode on this physical board.
+
+A workstation listing a USB device cannot establish all of these details by vendor name alone. Look at the actual reported mode, expected protocol and reproducible behavior. In the MPFree project, the existence of U-Boot Fastboot must never be used as proof that independent ROM recovery is available.
+
