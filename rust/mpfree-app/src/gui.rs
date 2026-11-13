@@ -103,6 +103,21 @@ const SHIFT_SAMPLE_HINT: &str =
     "SHIFT +   wheel: pad   ·   Q-Links: finer   ·   UNDO: redo   ·   MENU: Prefs   ·   STOP: back to bar 1";
 const SHIFT_MENU_HINT: &str =
     "SHIFT +   wheel: change the value   ·   MENU: Prefs   ·   STOP: back to bar 1";
+/// The browser's hint without a library (no --data).
+const NO_LIBRARY_HINT: &str =
+    "No library: the app was started without a data folder, so nothing can be saved or opened   ·   BROWSE closes";
+
+/// After an open lands, the engines' news for this long is the open's
+/// own, not an edit.
+const OPEN_SETTLE: Duration = Duration::from_millis(1500);
+
+/// Seconds since 1970 (UTC) now: when a project is saved.
+fn now_utc() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
+}
+
 const OPTIONS_HINT: &str =
     "Wheel or tap: pick a row   ·   push the wheel, - / + or the arrows: change it   ·   MENU: close";
 /// A menu row the wheel's push opened.
@@ -234,6 +249,13 @@ pub struct Timing {
 pub enum ToUi {
     /// A line for the terminal and the Events log.
     Line(String),
+    /// A save: what the audio loop's engines hold, for the screen to write
+    /// with its own parts and hand to the library (project.rs).
+    ProjectParts(Box<crate::project::Collected>),
+    /// The parts New project goes back to (sent once, early).
+    ProjectDefaults(Box<crate::project::Defaults>),
+    /// An open done: the engines it replaced, to free here.
+    ProjectBack(Box<crate::project::Opening>),
     /// A line for the Events log only (not printed).
     Event(String),
     /// A MIDI message in or out, as one line (also printed).
@@ -454,6 +476,12 @@ pub enum FromUi {
         pad: usize,
         down: bool,
     },
+    /// Save the project: the audio loop sends its engines' parts back
+    /// (`ToUi::ProjectParts`).
+    SaveProject,
+    /// Open a project (or a new one): the pieces built here, swapped in
+    /// between two periods (project.rs).
+    OpenProject(Box<crate::project::Opening>),
     /// The Pads tab's switch: Browse or Pad (`mpfree_sampler_ui::pads_tab`).
     PadsView(usize),
     /// The browser's preview: hear this sound once (it replaces one
@@ -667,8 +695,17 @@ pub struct Player {
     /// The Sample page and the kits' projects it edits (the Pads tab's
     /// screens too).
     pub sample: SamplePage,
-    /// The Pads tab's browser, once the app has a library (--data).
+    /// The browser, once the app has a library (--data): the Pads tab's
+    /// picker, and the whole library over every page (BROWSE).
     browser: Option<mpfree_browser_ui::Browser>,
+    /// The I/O view's model (its MIDI setup is the project's `midi` part).
+    io_model: Option<mpfree_midi_ui::Shared>,
+    /// The parts New project goes back to, once the audio loop sent them.
+    project_defaults: Option<crate::project::Defaults>,
+    /// The sound's rate, for an opened project's engines.
+    project_rate: u32,
+    /// When the last open landed ([`OPEN_SETTLE`]).
+    opened_at: Option<Instant>,
     /// The browser's preview level, in dB (its Q-Link 3).
     preview_db: f32,
     /// A sound file being read for the preview.
@@ -823,6 +860,13 @@ impl Player {
         mpfree_mixer_ui::add(&mut ui).expect("mixer layout");
         ui.add_page(mpfree_mixer_ui::MIXER_PAGE, MIXER_LAYOUT)
             .expect("mixer layout");
+        // The browser over the page, under the top bar (BROWSE): the same
+        // widget as the Pads tab's Browse view.
+        ui.add_page(
+            mpfree_browser_ui::BROWSER_PAGE,
+            mpfree_browser_ui::BROWSER_LAYOUT,
+        )
+        .expect("browser layout");
         // The I/O view's MIDI, Sync and CV sections join when the model
         // they edit arrives (ToUi::IoModel).
         let io_sections = Vec::new();
@@ -869,6 +913,10 @@ impl Player {
             synth: None,
             sample,
             browser: None,
+            io_model: None,
+            project_defaults: None,
+            project_rate: 44_100,
+            opened_at: None,
             preview_db: crate::preview::LEVEL_DB,
             preview_load: None,
             arp_panel,
@@ -1664,6 +1712,8 @@ impl Player {
                 View::Arp => format!("Wheel: {wheel}   ·   - / +: mode   ·   Q-Links: rate, gate, swing, octaves   ·   \
                                       MENU: options   ·   NOTE REPEAT + MENU: close"),
                 View::Pattern => self.workspace.hint().to_string(),
+                View::Browser if self.browser.is_none() => NO_LIBRARY_HINT.to_string(),
+                View::Browser => mpfree_browser_ui::BROWSER_HINT.to_string(),
             }
         };
         if let Some(h) = self.ui.get_mut::<Label>("hint") {
@@ -1795,6 +1845,18 @@ impl Player {
     }
 
     pub fn apply(&mut self, msg: ToUi) {
+        // The engines' news of an edit made with the controls (a clip
+        // recorded, a knob turned): the work is unsaved.
+        if matches!(
+            msg,
+            ToUi::Time(_)
+                | ToUi::Steps(_)
+                | ToUi::SynthValues(_)
+                | ToUi::Chain(_)
+                | ToUi::Macros(_)
+        ) {
+            self.mark_unsaved();
+        }
         match msg {
             ToUi::Line(l) | ToUi::Event(l) => {
                 let tone = tone_of(&l);
@@ -2104,6 +2166,19 @@ impl Player {
                 if self.io_sections.is_empty() {
                     self.io_sections = add_io_sections(&mut self.ui, &model);
                 }
+                self.io_model = Some(model);
+            }
+            ToUi::ProjectParts(c) => self.save_project(&c),
+            ToUi::ProjectDefaults(d) => self.project_defaults = Some(*d),
+            // The engines an open replaced: freed here. The open is in:
+            // nothing is unsaved (its own news in the next moments isn't
+            // an edit).
+            ToUi::ProjectBack(old) => {
+                drop(old);
+                self.opened_at = Some(Instant::now());
+                if let Some(b) = self.browser.as_mut() {
+                    b.set_unsaved(false);
+                }
             }
             ToUi::Show(v) => {
                 self.ready = true;
@@ -2254,6 +2329,7 @@ impl Player {
                 }
             }
             ToUi::SampleKits { projects, rate } => {
+                self.project_rate = rate;
                 self.sample.set_kits(&mut self.ui, projects, rate);
                 self.sample_changed();
             }
@@ -2609,6 +2685,9 @@ impl Player {
         b.load_lists(lists);
         b.open_picker(mpfree_browser_ui::Pick::Pads);
         self.browser = Some(b);
+        // The start's own news (the empty song, the first states) is not
+        // an edit.
+        self.opened_at = Some(Instant::now());
         self.sample
             .set_browse_with(&mut self.ui, mpfree_browser_ui::BROWSER);
         self.step_browser();
@@ -2616,7 +2695,8 @@ impl Player {
 
     /// The Pads tab shows its browser.
     fn browsing(&self) -> bool {
-        self.view == View::Pads && self.sample.page() == sample_page::PADS_BROWSE_PAGE
+        (self.view == View::Pads && self.sample.page() == sample_page::PADS_BROWSE_PAGE)
+            || self.view == View::Browser
     }
 
     /// A control on the Pads tab's browser (the app sends them only while
@@ -2633,6 +2713,7 @@ impl Player {
             BrowseKey::Back => b.back(),
             BrowseKey::Enter => b.enter(),
             BrowseKey::Play => b.play(),
+            BrowseKey::Erase => b.erase(),
         }
         mpfree_browser_ui::show(&mut self.ui, b);
         self.step_browser();
@@ -2665,6 +2746,11 @@ impl Player {
             }
             A::SaveLists(text) => self.outbox.push(FromUi::SaveBrowserLists(text)),
             A::PickerClosed { .. } => {}
+            // Projects (project.rs).
+            A::SaveRequested => self.outbox.push(FromUi::SaveProject),
+            A::NewProject => self.new_project(),
+            A::ProjectOpened { loc, snap } => self.open_project(&loc, &snap),
+            A::ProjectSaved { loc } => self.say(format!("project: saved {}", loc.name())),
             // The Pads tab's browser offers sounds only; anything else
             // is said, never dropped quietly.
             other => self.say(format!(
@@ -2696,6 +2782,103 @@ impl Player {
             }
             Err(e) => self.say(format!("preview: not heard ({e})")),
         }
+    }
+
+    // ------------------------------------------------------------ projects
+
+    /// The audio loop's parts of a save came: the screen's own (the kits
+    /// with their sounds, the I/O setup) join them, and the browser's
+    /// worker saves the lot, whole or not at all (mpfree-library).
+    fn save_project(&mut self, c: &crate::project::Collected) {
+        use mpfree_library::Part as _;
+        if self.browser.is_none() {
+            self.say(
+                "project: not saved, there is no library (the app was started without --data)"
+                    .to_string(),
+            );
+            return;
+        }
+        let mut extra = Vec::new();
+        let (text, sounds) = self.sample.save_part();
+        extra.push((crate::project::SAMPLER.to_string(), text));
+        if let Some(m) = &self.io_model {
+            extra.push((
+                crate::project::MIDI.to_string(),
+                mpfree_midi_ui::MidiPart(m.clone()).save(),
+            ));
+        }
+        let samples = sounds
+            .into_iter()
+            .map(|(file, src)| {
+                mpfree_library::NewSample::new(
+                    file,
+                    std::sync::Arc::new(move |w: &mut dyn std::io::Write| {
+                        mpfree_sampler::wav::write(&src, w)
+                    }),
+                )
+            })
+            .collect();
+        let snap = crate::project::snapshot(c, extra);
+        let Some(b) = self.browser.as_mut() else {
+            return;
+        };
+        b.save_with(snap, samples, now_utc());
+        mpfree_browser_ui::show(&mut self.ui, b);
+        let line = match b.project() {
+            Some(l) => format!("project: saving {}", l.name()),
+            None => "project: saving".to_string(),
+        };
+        self.say(line);
+    }
+
+    /// An opened project's parts: the screen's own go to the Sample tab and
+    /// the I/O setup here; the audio loop's are read and built here and
+    /// sent in one piece (project.rs).
+    fn open_project(&mut self, loc: &mpfree_library::Loc, snap: &mpfree_library::Snapshot) {
+        use mpfree_library::Part as _;
+        if let Some(text) = snap.part(crate::project::SAMPLER) {
+            if let Some(lib) = self.browser.as_ref().map(|b| b.library().clone()) {
+                let loc = loc.clone();
+                self.sample.open_part(
+                    text.to_string(),
+                    Box::new(move |f| {
+                        lib.sample_path(&loc, f)
+                            .and_then(std::fs::read)
+                            .map_err(|e| e.to_string())
+                    }),
+                );
+            }
+        }
+        if let (Some(text), Some(m)) = (snap.part(crate::project::MIDI), &self.io_model) {
+            if let Err(e) = mpfree_midi_ui::MidiPart(m.clone()).load(text) {
+                self.say(format!("project: the MIDI setup wasn't opened ({e})"));
+            }
+        }
+        let o = crate::project::opening(snap, self.project_rate, loc.name());
+        self.outbox.push(FromUi::OpenProject(Box::new(o)));
+        // The kits and engines coming in are the open's own news.
+        self.opened_at = Some(Instant::now());
+        self.say(format!("project: opening {}", loc.name()));
+    }
+
+    /// New project: the parts the app started with, the factory kits.
+    fn new_project(&mut self) {
+        let Some(d) = self.project_defaults.as_ref() else {
+            self.say(
+                "project: not ready for a new project yet (the sound is still starting)"
+                    .to_string(),
+            );
+            return;
+        };
+        let snap = crate::project::new_snapshot(d);
+        let o = crate::project::opening(&snap, self.project_rate, "a new project");
+        self.outbox.push(FromUi::OpenProject(Box::new(o)));
+        self.opened_at = Some(Instant::now());
+        if !self.sample.reset_kits(&mut self.ui) {
+            self.say("project: the kits haven't come yet; they stay as they are".to_string());
+        }
+        self.sample_changed();
+        self.say("project: new project".to_string());
     }
 
     /// A Q-Link on the Pads tab's browser: 1 scrolls, 3 is the preview
@@ -3026,7 +3209,48 @@ impl Player {
         }
         // A stretched copy coming in says so.
         self.print_sample_lines();
-        std::mem::take(&mut self.outbox)
+        let out = std::mem::take(&mut self.outbox);
+        for a in &out {
+            self.saw_action(a);
+        }
+        out
+    }
+
+    /// The work changed since it was saved or opened when the screen sent
+    /// an edit (not a pad played, a page or kit picked, the Level, the
+    /// transport, a preview), so opening another project or New asks
+    /// first.
+    pub fn saw_action(&mut self, a: &FromUi) {
+        let edit = !matches!(
+            a,
+            FromUi::Pad { .. }
+                | FromUi::PadsView(_)
+                | FromUi::Preview(_)
+                | FromUi::PreviewStop
+                | FromUi::SaveBrowserLists(_)
+                | FromUi::SaveProject
+                | FromUi::OpenProject(_)
+                | FromUi::Kit(_)
+                | FromUi::LevelDb(_)
+                | FromUi::Tab(_)
+                | FromUi::MenuSelect(_)
+                | FromUi::GuideButton(_)
+                | FromUi::Time(TimeAction::Transport(_))
+        );
+        if edit {
+            self.mark_unsaved();
+        }
+    }
+
+    /// The work changed (an edit seen on the screen, or the engines saying
+    /// so), unless an open has only just landed (its own news).
+    fn mark_unsaved(&mut self) {
+        if self.opened_at.is_some_and(|t| t.elapsed() < OPEN_SETTLE) {
+            return;
+        }
+        if let Some(b) = self.browser.as_mut() {
+            b.set_unsaved(true);
+        }
     }
 
     fn show_view(&mut self, v: View) {
@@ -3069,7 +3293,27 @@ impl Player {
             View::Guide => "Guide".to_string(),
             View::Arp => ARP_PAGE.to_string(),
             View::Pattern => self.workspace.page().to_string(),
+            View::Browser => {
+                // The same browser as the Pads tab's, its picker put
+                // away: the whole library, Projects with New, Save and
+                // Save as.
+                if let Some(b) = self.browser.as_mut() {
+                    if b.picking().is_some() {
+                        b.cancel_picker();
+                        b.take_actions();
+                    }
+                } else {
+                    self.say("browser: no library (the app was started without --data); nothing can be saved or opened".to_string());
+                }
+                mpfree_browser_ui::BROWSER_PAGE.to_string()
+            }
         };
+        if self.view == View::Browser && v != View::Browser {
+            // The Pads tab's picker again, where it was.
+            if let Some(b) = self.browser.as_mut() {
+                b.open_picker(mpfree_browser_ui::Pick::Pads);
+            }
+        }
         let relabel = (self.view == View::Pattern) != (v == View::Pattern);
         if self.view.sampler() && v != self.view {
             // A pad a tap on the waveform (or the pad map) holds is let go.
@@ -3794,6 +4038,7 @@ pub fn spawn(
                             for (finger, phase, x, y, time_us) in list {
                                 player.set_touch_time(time_us);
                                 if let Some(a) = player.touch(finger, phase, x, y) {
+                                    player.saw_action(&a);
                                     let _ = tx.try_send(a);
                                 }
                             }
@@ -4586,6 +4831,7 @@ pub fn apply_effects(p: &mut Player, fx: Vec<crate::app::Effect>) {
             Effect::PlayView(v) => p.apply(ToUi::PlayView(v)),
             Effect::SampleEditor(e) => p.apply(ToUi::SampleEditor(e)),
             Effect::Browse(k) => p.apply(ToUi::Browse(k)),
+            Effect::SaveProject => p.outbox.push(FromUi::SaveProject),
             Effect::Light(..)
             | Effect::StopSounds
             | Effect::Kit(_)
@@ -7540,6 +7786,147 @@ mod tests {
                 .any(|l| l.starts_with("sample: the project's kits weren't opened"))
         });
         assert!(q.sample.project(0).unwrap().pad(pad).is_some());
+    }
+
+    /// BROWSE, SHIFT + BROWSE, Open and New project through the screen, on
+    /// a library in a scratch folder.
+    #[test]
+    fn a_project_saves_opens_again_and_new_starts_empty() {
+        use crate::project::{self, Collected, Defaults};
+        use mpfree_browser_ui::sample::{select, source};
+        use mpfree_browser_ui::{Button, Input};
+        use mpfree_fx::ids::mixer as mx;
+        use mpfree_fx::StripId;
+        let dir = std::env::temp_dir().join(format!("mpfree-project-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let lib = mpfree_library::Library::at(&dir).unwrap();
+        let mut p = sample_sampler(Fonts::embedded());
+        p.set_browser(mpfree_browser_ui::Browser::inline(lib.clone()), "");
+        p.take_actions();
+        // BROWSE: the whole browser over the page.
+        p.apply(ToUi::Show(View::Browser));
+        assert_eq!(p.page(), mpfree_browser_ui::BROWSER_PAGE);
+        // SHIFT + BROWSE: the loop's parts come, the screen adds its own and
+        // the lot is saved, named for the time.
+        let mut mix = crate::mixing::MixHost::new(44_100, -6.0, 0.0);
+        mix.mixer.set_now(StripId::Track(2), mx::VOLUME, -3.0);
+        for _ in 0..50 {
+            mix.run_silent_period();
+        }
+        let mut clips = crate::time::TimeHost::new(44_100, 98.0)
+            .unwrap()
+            .project()
+            .clone();
+        let mut clip = mpfree_seq::Clip::new("Groove", 1920);
+        clip.add_note(mpfree_seq::Note::new(0, 240, 36, 100))
+            .unwrap();
+        clips.tracks[0].slots[0] = Some(clip);
+        let synth = crate::synth::Synth::new(44_100);
+        let c = Collected {
+            tempo: 98.0,
+            clips: clips.clone(),
+            mixer: project::mixer_text(&mix.mixer, 0),
+            modu: String::new(),
+            synth: project::synth_text(&Default::default(), &synth.sounds()),
+        };
+        p.apply(ToUi::ProjectParts(Box::new(c)));
+        p.step_browser();
+        let loc = p
+            .browser
+            .as_ref()
+            .unwrap()
+            .project()
+            .cloned()
+            .expect("saved");
+        let snap = lib.open_project(&loc).unwrap();
+        for part in [
+            project::CLIPS,
+            project::MIXER,
+            project::MOD,
+            project::SYNTH,
+            project::SAMPLER,
+        ] {
+            assert!(snap.part(part).is_some(), "{part}");
+        }
+        assert_eq!(snap.meta.tempo, 98.0);
+        assert!(events_log(&p)
+            .iter()
+            .any(|l| *l == format!("project: saved {}", loc.name())));
+        // Open it from the Projects list: the engines come built, for the
+        // loop to swap in.
+        let b = p.browser.as_mut().unwrap();
+        b.go_source(source("Projects"));
+        select(b, loc.name());
+        b.push();
+        p.step_browser();
+        let opened = p
+            .take_actions()
+            .into_iter()
+            .find_map(|a| match a {
+                FromUi::OpenProject(o) => Some(o),
+                _ => None,
+            })
+            .expect("opened");
+        assert_eq!(opened.tempo, Some(98.0));
+        assert!(opened.notes.is_empty(), "{:?}", opened.notes);
+        assert_eq!(opened.time.as_ref().unwrap().project(), &clips);
+        let mixed = opened.mix.as_ref().unwrap();
+        let t2 = mixed
+            .strips
+            .iter()
+            .find(|(s, _)| *s == StripId::Track(2))
+            .unwrap();
+        assert!(t2.1.contains(&(mx::VOLUME, -3.0)));
+        assert_eq!(opened.synth.as_ref().unwrap().1, synth.sounds());
+        p.apply(ToUi::ProjectBack(opened));
+        assert!(!p.browser.as_ref().unwrap().unsaved());
+        // Once the open settles, a pad played isn't an edit; a new clip is.
+        p.opened_at = None;
+        p.saw_action(&FromUi::PreviewStop);
+        assert!(!p.browser.as_ref().unwrap().unsaved());
+        p.saw_action(&FromUi::Time(TimeAction::NewClip { track: 0, slot: 1 }));
+        assert!(p.browser.as_ref().unwrap().unsaved());
+        // New project before the sound has started says so.
+        let new = |p: &mut Player| {
+            let b = p.browser.as_mut().unwrap();
+            b.go_source(source("Projects"));
+            b.input(Input::Button(Button::NewProject));
+            // Over unsaved work it asks first; the push says yes.
+            b.push();
+            p.step_browser();
+            p.take_actions().into_iter().find_map(|a| match a {
+                FromUi::OpenProject(o) => Some(o),
+                _ => None,
+            })
+        };
+        assert!(new(&mut p).is_none());
+        assert!(events_log(&p)
+            .iter()
+            .any(|l| l.starts_with("project: not ready for a new project")));
+        // With the start's parts: an empty song of 8 tracks, the factory
+        // kits, and no project (Save names a new one).
+        let d = Defaults {
+            tempo: 120.0,
+            mixer: project::mixer_text(&crate::mixing::MixHost::new(44_100, -6.0, 0.0).mixer, 0),
+            modu: String::new(),
+            synth: project::synth_text(&Default::default(), &synth.sounds()),
+        };
+        p.apply(ToUi::ProjectDefaults(Box::new(d)));
+        p.browser.as_mut().unwrap().set_unsaved(true);
+        let fresh = new(&mut p).expect("a new project");
+        assert_eq!(fresh.what, "a new project");
+        assert_eq!(fresh.tempo, Some(120.0));
+        let song = fresh.time.as_ref().unwrap().project();
+        assert_eq!(song.tracks.len(), crate::time::TRACKS);
+        assert!(song
+            .tracks
+            .iter()
+            .all(|t| t.slots.iter().all(Option::is_none)));
+        assert!(fresh.notes.is_empty(), "{:?}", fresh.notes);
+        assert!(p.browser.as_ref().unwrap().project().is_none());
+        assert!(!p.browser.as_ref().unwrap().unsaved());
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

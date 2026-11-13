@@ -226,6 +226,13 @@ pub enum Button {
     Cancel,
     /// A project's earlier saves, to open one.
     Versions,
+    /// Saves the work as the current project (the first time, as a new
+    /// one named for the time): the same as SHIFT + BROWSE.
+    Save,
+    /// Saves the work under a name typed on the keyboard.
+    SaveAs,
+    /// Starts a new, empty project (asks first over unsaved work).
+    NewProject,
 }
 
 impl Button {
@@ -246,6 +253,9 @@ impl Button {
             Button::EmptyTrash => "Empty Trash",
             Button::Cancel => "Cancel",
             Button::Versions => "Earlier saves",
+            Button::Save => "Save",
+            Button::SaveAs => "Save as",
+            Button::NewProject => "New project",
         }
     }
 }
@@ -297,6 +307,13 @@ impl Sort {
             Sort::Newest => "Newest",
         }
     }
+}
+
+/// Seconds since 1970 (UTC) now, for a name made from the time.
+fn now_utc() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
 }
 
 /// What the app must do (the browser does everything else itself).
@@ -360,9 +377,13 @@ pub enum BrowseAction {
     ProjectSaved {
         loc: Loc,
     },
-    /// Save as was given a name: call [`Browser::save`] with the engines'
-    /// parts now.
+    /// Save (or Save as, once given a name) was pressed: call
+    /// [`Browser::save`] with the engines' parts now.
     SaveRequested,
+    /// New project was pressed (and, over unsaved work, agreed to): the
+    /// app puts every engine back to a fresh, empty project. The browser
+    /// has already forgotten the project it had ([`Browser::new_project`]).
+    NewProject,
     /// Recent and Favourites changed: save this text as the "browser"
     /// owner's file in the store ([`Browser::lists_text`]).
     SaveLists(String),
@@ -377,6 +398,8 @@ pub enum Confirm {
     Open(Loc),
     /// Open this earlier save of a project over unsaved changes.
     OpenVersion(Loc, String),
+    /// Start a new, empty project over unsaved changes.
+    NewProject,
 }
 
 /// What the keyboard is typing.
@@ -1337,6 +1360,18 @@ impl Browser {
         }
         match b {
             Button::Cancel => self.cancel_picker(),
+            Button::Save => self.actions.push(BrowseAction::SaveRequested),
+            Button::SaveAs => self.save_as(now_utc()),
+            Button::NewProject => {
+                if self.unsaved {
+                    self.modal = Modal::Confirm {
+                        text: "Unsaved changes. Start a new, empty project anyway?".into(),
+                        what: Confirm::NewProject,
+                    };
+                } else {
+                    self.start_new_project();
+                }
+            }
             Button::Versions => {
                 let Some(r) = row else { return };
                 let Some(loc) = loc.filter(|_| r.kind == Kind::Project) else {
@@ -1549,6 +1584,7 @@ impl Browser {
                 Confirm::EmptyTrash => self.send(Job::EmptyTrash),
                 Confirm::Open(loc) => self.send(Job::OpenProject(loc)),
                 Confirm::OpenVersion(loc, id) => self.send(Job::OpenVersion(loc, id)),
+                Confirm::NewProject => self.start_new_project(),
             }
         }
     }
@@ -1693,6 +1729,23 @@ impl Browser {
         self.created = 0;
     }
 
+    /// New project, agreed: forget the project and ask the app for a
+    /// fresh one ([`BrowseAction::NewProject`]).
+    fn start_new_project(&mut self) {
+        self.new_project();
+        self.unsaved = false;
+        self.status = Some((
+            "New project: nothing saved yet (Save names it for the time)".into(),
+            false,
+        ));
+        self.actions.push(BrowseAction::NewProject);
+    }
+
+    /// Whether the work has changed since it was last saved or opened.
+    pub fn unsaved(&self) -> bool {
+        self.unsaved
+    }
+
     // ------------------------------------------------------------ out
 
     /// What the app must do since the last call.
@@ -1730,9 +1783,10 @@ impl Browser {
                 _ if self.mode != Mode::Folder => Vec::new(),
                 Source::Place(Place::Trash) => vec![Button::EmptyTrash],
                 Source::Place(p) => {
-                    // Projects are made by saving, so no New folder there.
+                    // Projects are made by saving, so no New folder there:
+                    // New project, Save and Save as instead.
                     let mut v = if p == Place::Projects {
-                        Vec::new()
+                        vec![Button::NewProject, Button::SaveAs, Button::Save]
                     } else {
                         vec![Button::NewFolder]
                     };
