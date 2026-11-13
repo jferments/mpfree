@@ -54,7 +54,8 @@ class V25Contracts(unittest.TestCase):
 
     def test_no_real_persistent_command_ever_permitted(self):
         s=(ROOT/"tools/mpc-one/vendor_probe_v25.c").read_text()
-        for function in ("0x0011daf4u","0x0011ca78u","0x0011de50u",
+        for function in ("0x0011daf4u","0x0011ca78u","0x0011c4e8u",
+                         "0x0011c912u","0x0011de50u",
                          "0x0011dd4cu","0x00108110u","0x0011622au"):
             self.assertIn("intercept("+function,s)
         self.assertIn("calls(write)==0u",s)
