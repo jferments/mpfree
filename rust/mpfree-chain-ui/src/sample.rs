@@ -750,6 +750,48 @@ mod tests {
     }
 
     #[test]
+    fn plugins_follow_the_built_in_effects_in_the_picker() {
+        let mut song = Song::new();
+        let plug = crate::Pick {
+            id: "clap:org.example.verb",
+            name: "Example Verb",
+            about: "Plugin · Example",
+        };
+        let mut st = song.chain_state(KEYS, 0, 0, None);
+        st.plugins = vec![plug];
+        let all = st.picks();
+        let built_in = crate::state::picks(KEYS);
+        assert_eq!(all.len(), built_in.len() + 1);
+        assert_eq!(&all[..built_in.len()], &built_in[..]);
+        assert_eq!(all.last(), Some(&plug));
+        let mut ui = screen(
+            Fonts::embedded(),
+            &mut song,
+            Place::Mixer,
+            Some(st.clone()),
+            None,
+        )
+        .unwrap();
+        let r = ui.rect_of(crate::CHAIN).unwrap();
+        let add = ui
+            .get::<ChainView>(crate::CHAIN)
+            .unwrap()
+            .layout(r)
+            .add
+            .unwrap();
+        tap(&mut ui, add.x + 10, add.y + 10);
+        let l = ui.get::<ChainView>(crate::CHAIN).unwrap().layout(r);
+        assert_eq!(l.picks.len(), all.len(), "a card for the plugin too");
+        let t = *l.picks.last().unwrap();
+        assert!(t.h >= 48, "the cards still take a finger: {t:?}");
+        tap(&mut ui, t.x + 10, t.y + 10);
+        assert_eq!(
+            crate::take_chain_actions(&mut ui),
+            [ChainAction::Add("clap:org.example.verb")]
+        );
+    }
+
+    #[test]
     fn the_picker_adds_an_effect_or_cancels() {
         let mut song = Song::new();
         let st = song.chain_state(KEYS, 0, 0, None);

@@ -64,6 +64,10 @@ pub fn parse_args(args: impl IntoIterator<Item = OsString>) -> Option<Args> {
 
 /// The process's whole life; returns its exit status.
 pub fn child_main(args: impl IntoIterator<Item = OsString>) -> i32 {
+    let args: Vec<OsString> = args.into_iter().collect();
+    if args.len() == 2 && args[0] == "--list" {
+        return list_main(&PathBuf::from(&args[1]));
+    }
     let Some(a) = parse_args(args) else {
         eprintln!("usage: mpfree-plughost --plugin FILE --id PLUGIN-ID --shm-fd N --ctl-fd N");
         eprintln!("(started by MPFree's plugin sandbox, not by hand)");
@@ -111,6 +115,51 @@ pub fn child_main(args: impl IntoIterator<Item = OsString>) -> i32 {
     drop(control);
     drop(node);
     i32::from(served.is_err())
+}
+
+/// `--list FILE`: loads the file and prints one line per plugin in it
+/// ([`list_line`]), so MPFree can see what a plugin file holds without
+/// loading it into its own process. Exit 0 with the lines, 2 if the file
+/// won't load (the reason on stderr).
+fn list_main(file: &std::path::Path) -> i32 {
+    match Library::open(file) {
+        Ok(lib) => {
+            use std::io::Write;
+            let mut out = io::stdout().lock();
+            for d in lib.plugins() {
+                let kind = if d.features.iter().any(|f| f == "instrument") {
+                    Kind::Instrument
+                } else {
+                    Kind::Effect
+                };
+                if writeln!(out, "{}", list_line(&d.id, &d.name, &d.vendor, kind)).is_err() {
+                    return 2;
+                }
+            }
+            0
+        }
+        Err(e) => {
+            eprintln!("{e}");
+            2
+        }
+    }
+}
+
+/// One plugin as `--list` prints it: `plugin`, then its id, name, vendor
+/// and `instrument` or `effect`, separated by tabs (tabs and line breaks
+/// in the plugin's own text become spaces).
+pub fn list_line(id: &str, name: &str, vendor: &str, kind: Kind) -> String {
+    let clean = |s: &str| s.replace(['\t', '\n', '\r'], " ");
+    let kind = match kind {
+        Kind::Instrument => "instrument",
+        Kind::Effect => "effect",
+    };
+    format!(
+        "plugin\t{}\t{}\t{}\t{kind}",
+        clean(id),
+        clean(name),
+        clean(vendor)
+    )
 }
 
 /// The main thread: answers the host until it says quit or goes away.
