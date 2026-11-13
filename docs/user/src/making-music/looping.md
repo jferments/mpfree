@@ -92,7 +92,7 @@ The panel at the bottom left holds how the looper records. The Play page's loope
 
 **After recording** sets what the loop does when its first pass ends: **play**, or go straight into **overdub**. **Start** (next bar line) shows how the looper works today and can't be changed yet. **At another tempo** still reads "like tape" in this build, but loops keep their pitch, as described above.
 
-Press **MENU** on the Looper tab for the same settings as a list, with an explanation beside each, plus **Loop level** (-24 to +6 dB) and **Loop memory**.
+Press **MENU** on the Looper tab for the same settings as a list, with an explanation beside each, plus **Loop level** (-24 to +6 dB) and **Loop memory**. The Loop level, and the latency once you set it by hand, are kept for you whatever project is open; the line input is off at every start, so the Looper records the pads until you turn it on.
 
 ### Editing a loop
 
@@ -136,7 +136,7 @@ Recording MPFree's own pads needs nothing made up: they are already in time. For
 
 - **To a pad**: send a loop to a pad as a sample on the Sample tab.
 - **To a clip**: send it to the Arrange tab as an audio clip.
-- **Save loop**: keep it on the stick with its layers. Loops will also be saved with your project once projects arrive (see [Saving your work](saving.md)).
+- **Save loop**: keep it on the stick with its layers. Your loops are also saved with your project, every layer with its mix (see [Saving your work](saving.md)).
 
 > [!MPC]
 > On the MPC the Looper is a separate screen with one loop, which can run free of the transport and start when the input passes a threshold. MPFree has up to eight loops with a mixable lane per layer. Its loops always follow the song's bars and tempo, can record MPFree's own pads and synth as well as the inputs, and make up for the input's latency so overdubs land in time.

@@ -29,6 +29,7 @@ pub mod color;
 pub mod draw;
 pub mod fb;
 pub mod geom;
+pub mod gpu_screen;
 pub mod layout;
 pub mod png;
 pub mod qlink;
