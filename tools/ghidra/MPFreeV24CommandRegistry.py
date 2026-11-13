@@ -82,7 +82,20 @@ WATCH={
   "MMC_device_registry_counter":0x0011c3f8,
   "current_MMC_selection":0x00105828,
  },
- "p1":{}
+ "p1":{
+   "SPL_media_priority_end_marker":0xff7053f8,
+   "SPL_media_priority_table":0xff7053fc,
+   "SPL_media_status_message":0xff705400,
+   "SPL_media_kind_table":0xff705404,
+   "SPL_media_handler_descriptor":0xff705408,
+   "SPL_fallback_handler_pointer":0xff70540c,
+   "SPL_retry_message_pointer":0xff705410,
+   "SPL_termination_status_pointer":0xff705414,
+   "SPL_read_buffer_pointer":0xff705598,
+   "SPL_read_failure_message":0xff70559c,
+   "SPL_stage_handoff_pointer":0xff705274,
+   "SPL_first_stage_memory_end":0xff705270,
+ }
 }
 argv=list(getScriptArgs())
 if len(argv)!=4:raise RuntimeError("usage: p1|p3 /abs/report-dir /abs/raw-or-none /abs/ready-or-none")
