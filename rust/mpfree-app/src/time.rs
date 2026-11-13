@@ -365,15 +365,26 @@ impl TimeHost {
     /// Stopped at bar 1 with an empty project of [`TRACKS`] tracks, track 1
     /// armed.
     pub fn new(rate: u32, bpm: f64) -> Result<TimeHost, String> {
-        let transport =
-            Box::new(Transport::new(rate, bpm).map_err(|e| format!("transport: {e:?}"))?);
         let mut project = Project::new();
         for i in 0..TRACKS {
             project
                 .tracks
                 .push(Track::new(&format!("Track {}", i + 1), i as u16));
         }
-        let tracks = Tracks::of(&project, Some(0));
+        TimeHost::with_project(rate, bpm, project)
+    }
+
+    /// Stopped at bar 1 with `project` (an opened one), track 1 armed when
+    /// it has a track. Builds and compiles everything here (allocates):
+    /// the app makes it on the screen thread and swaps it in.
+    pub fn with_project(rate: u32, bpm: f64, project: Project) -> Result<TimeHost, String> {
+        project
+            .check()
+            .map_err(|e| format!("the clips don't hold together: {e:?}"))?;
+        let transport =
+            Box::new(Transport::new(rate, bpm).map_err(|e| format!("transport: {e:?}"))?);
+        let armed = (!project.tracks.is_empty()).then_some(0);
+        let tracks = Tracks::of(&project, armed);
         let info = TransportInfo::of(&transport);
         let (to_audio, from_control) = link::link(link::TO_AUDIO);
         let (to_control, from_audio) = link::link(link::TO_CONTROL);
@@ -423,6 +434,11 @@ impl TimeHost {
     /// follow), if any.
     pub fn armed(&self) -> Option<usize> {
         self.control.armed()
+    }
+
+    /// The project the clips are in (for a save: `project.rs`).
+    pub fn project(&self) -> &Project {
+        &self.control.project
     }
 
     /// "Clips through the arp" for `track` (see `Track::through_arp`).
@@ -2935,5 +2951,37 @@ mod tests {
             period(&mut h, &mut pads);
         }
         assert_eq!(h.info().bpm, 120.0);
+    }
+
+    /// A project's clips, saved and read back, make an engine that plays
+    /// them; clips that don't hold together are refused.
+    #[test]
+    fn an_opened_projects_clips_play() {
+        let mut p = TimeHost::new(RATE, 120.0).unwrap().project().clone();
+        let mut clip = Clip::new("Opened", 3840);
+        clip.add_note(mpfree_seq::Note::new(0, 100, 7, 90)).unwrap();
+        clip.add_note(mpfree_seq::Note::new(1920, 100, 3, 80))
+            .unwrap();
+        p.tracks[2].slots[1] = Some(clip);
+        let read = mpfree_seq::save::from_text(&mpfree_seq::save::to_text(&p)).unwrap();
+        assert_eq!(read, p);
+        let mut h = TimeHost::with_project(RATE, 120.0, read).unwrap();
+        assert_eq!(h.project(), &p);
+        assert_eq!(h.state().armed, Some(0));
+        let mut pads = Fake::default();
+        h.act(TimeAction::Launch { track: 2, slot: 1 }).unwrap();
+        h.command(Command::Play);
+        run(&mut h, &mut pads, BAR - 1000, &[]);
+        let hits: Vec<(u64, usize, u8)> = pads.hits.clone();
+        assert_eq!(hits, vec![(0, 7, 90), (BAR / 2, 3, 80)]);
+        // Too many tracks: refused, with why.
+        let mut bad = p.clone();
+        while bad.tracks.len() <= mpfree_seq::MAX_TRACKS {
+            bad.tracks.push(mpfree_seq::Track::new("more", 0));
+        }
+        assert!(TimeHost::with_project(RATE, 120.0, bad).is_err());
+        // An empty project has nothing armed.
+        let none = TimeHost::with_project(RATE, 120.0, mpfree_seq::Project::new()).unwrap();
+        assert_eq!(none.state().armed, None);
     }
 }
