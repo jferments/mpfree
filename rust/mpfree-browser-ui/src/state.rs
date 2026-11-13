@@ -1746,6 +1746,13 @@ impl Browser {
         self.unsaved
     }
 
+    /// Whether the worker has jobs not answered yet (a save, say): the app
+    /// keeps stepping the browser while it doesn't show, so the answer
+    /// lands.
+    pub fn busy(&self) -> bool {
+        self.pending > 0
+    }
+
     // ------------------------------------------------------------ out
 
     /// What the app must do since the last call.

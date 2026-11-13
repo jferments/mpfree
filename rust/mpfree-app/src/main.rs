@@ -3229,6 +3229,11 @@ fn player_session(
     let mut defaults_sent = false;
     let mut save_asked = false;
     let mut project_back: Option<gui::ToUi> = None;
+    // A save waiting for the Looper's loops to be read, one to collect
+    // this period, and the parts waiting for room on the way to the screen.
+    let mut loops_saving = false;
+    let mut collect_now = false;
+    let mut parts_out: Option<gui::ToUi> = None;
     // MIDI Learn: values for parameters a control can't set yet, and the
     // I/O view's names taken at this generation of the model.
     let mut learn_misses = 0u64;
@@ -3651,6 +3656,8 @@ fn player_session(
                     }
                 }
                 gui::FromUi::SaveProject => save_asked = true,
+                // The loops go in once the old ones have faded out.
+                gui::FromUi::OpenLoops(l) => looper.open(*l),
                 gui::FromUi::OpenProject(mut o) => {
                     // Everything stops first: the clips change under the
                     // transport, and held notes would hang.
@@ -3666,6 +3673,11 @@ fn player_session(
                         // on the screen thread.
                         o.time = Some(t);
                         out.show(gui::ToUi::Time(Box::new(time.state())));
+                    }
+                    if let Some(s) = o.swing {
+                        fx.push(app::Effect::Time(TimeAction::Transport(Command::SetSwing(
+                            s,
+                        ))));
                     }
                     if let Some(m) = o.mix.take() {
                         mix.open(m);
@@ -3683,6 +3695,11 @@ fn player_session(
                         // The options and sounds are dropped with the box,
                         // on the screen thread.
                         o.synth = Some((options, sounds));
+                    }
+                    if o.clear_loops {
+                        // A save waiting for the old loops stops with them.
+                        out.note(&looper.clear_all());
+                        (loops_saving, collect_now) = (false, false);
                     }
                     for line in o.notes.drain(..) {
                         out.note(&line);
@@ -4720,21 +4737,49 @@ fn player_session(
         // A save: what the engines hold, copied for the screen thread,
         // which writes the parts and hands them to the library's worker.
         // Small allocations, once a save; nothing is written here.
-        if std::mem::take(&mut save_asked) {
-            if mix.opening() {
-                out.note("project: not saved, a project is still opening (try again in a moment)");
-            } else {
-                let parts = gui::ToUi::ProjectParts(Box::new(project::Collected {
-                    tempo: app.settings.bpm,
-                    clips: time.project().clone(),
-                    mixer: project::mixer_text(&mix.mixer, mix.pad_mutes()),
-                    modu: mix.modu.save(),
-                    synth: project::synth_text(&app.synth_settings(), &synth.sounds()),
-                }));
-                if out.try_show(parts).is_err() {
-                    out.note("project: not saved, the screen was busy (try again)");
-                }
+        // The Looper's loops are read first, as they play (a few periods,
+        // longer while a loop records); the rest is copied once they are.
+        if looper.opening() {
+            if let Some(line) = looper.tend_open() {
+                out.note(&line);
             }
+        }
+        if std::mem::take(&mut save_asked) {
+            if mix.opening() || looper.opening() {
+                out.note("project: not saved, a project is still opening (try again in a moment)");
+            } else if loops_saving || parts_out.is_some() {
+                out.note("project: already saving");
+            } else {
+                let line = looper.save();
+                loops_saving = looper.saving().is_some();
+                if !loops_saving {
+                    out.note(&format!("project: saving without the loops ({line})"));
+                }
+                collect_now = true;
+            }
+        }
+        let loops = if loops_saving {
+            let l = looper.take_saved();
+            loops_saving = l.is_none();
+            l
+        } else {
+            None
+        };
+        if std::mem::take(&mut collect_now) && !loops_saving || loops.is_some() {
+            parts_out = Some(gui::ToUi::ProjectParts(Box::new(project::Collected {
+                tempo: app.settings.bpm,
+                swing: time.info().swing,
+                clips: time.project().clone(),
+                mixer: project::mixer_text(&mix.mixer, mix.pad_mutes()),
+                modu: mix.modu.save(),
+                synth: project::synth_text(&app.synth_settings(), &synth.sounds()),
+                loops,
+            })));
+        }
+        // A screen too busy keeps them here (the loops' audio is never
+        // freed on this thread) until it has room.
+        if let Some(m) = parts_out.take() {
+            parts_out = out.try_show(m).err();
         }
         parts.lap(parts::PADS);
         let t_mix = Span::start();
