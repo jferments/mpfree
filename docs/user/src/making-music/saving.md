@@ -31,6 +31,7 @@ These are saved on the stick as soon as you change them, and are back the next t
 | The Looper's level, and the line input's latency once you have set it by hand | The Looper tab's options (see [Recording loops](looping.md)) |
 | Whether the Play page's Beats view shows the timing strip | The Play page's options (**MENU**) |
 | The buttons MPFree has learned | Prefs > Map controls, or the button guide |
+| Each MIDI port's input (Plays tracks, Learn only or Both) and thru | The mixer's I/O view, MIDI section (see [MIDI, sync and CV](midi-and-cv.md)) |
 | Arpeggiator patterns you save, and your own scales | The pattern workspace's **Save** (see [Note Repeat, Latch and the arpeggiator](note-repeat-and-arp.md#the-pattern-workspace)) |
 | Recent and Favourites in the browser | The browser |
 
@@ -51,7 +52,7 @@ A **project** is one song: everything you need to pick it up again where you lef
 | Each track's arpeggiator: its mode, rate (the rate Note Repeat plays at too), order, octaves, gate, swing, scale and the other options, and its pattern with your edits |
 | The mixer: each strip's level, pan, sends and mutes, the effects and their settings, and the macros |
 | The Looper's loops, with each layer's mix |
-| The MIDI, sync and CV setup |
+| The MIDI, sync and CV setup: what each track plays on, where the tempo comes from, clock out, the CV outputs and the controls you learned |
 
 Latch isn't kept: it is how you play, not part of the song, so every arp lets go when a project opens. The pads stay on the bank and octave you were playing.
 
@@ -77,7 +78,7 @@ Press **BROWSE**, pick **Projects** on the left, pick a project and push the dat
 
 ### Starting a new project
 
-**New project** in the Projects place starts again from nothing: an empty song with 8 tracks, no loops, the factory kits, every arp at its default, the synth sounds and mixer as they are when MPFree starts, and the synth pads chromatic in C, tuned to A4 = 440 Hz. Your Prefs and the other things MPFree keeps for you stay as they are. Nothing is saved until you save, and the first save names a new project.
+**New project** in the Projects place starts again from nothing: an empty song with 8 tracks, no loops, the factory kits, every arp at its default, the MIDI, sync and CV settings at their defaults, the synth sounds and mixer as they are when MPFree starts, and the synth pads chromatic in C, tuned to A4 = 440 Hz. Your Prefs and the other things MPFree keeps for you stay as they are. Nothing is saved until you save, and the first save names a new project.
 
 If you have changed anything since you last saved or opened, opening a project or New project asks first, so you never lose work by accident. Playing the pads, changing page or the Level doesn't count as a change.
 
