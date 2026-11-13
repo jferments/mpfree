@@ -269,3 +269,138 @@ A complete open-source music workstation must eventually qualify hardware contro
 
 The preferred implementation discipline is to track every hardware interface by controller/FDT node, Linux driver, device file, factory owner, experimental MPFree owner and validated initialization/shutdown procedure. The existing [audio](audio-runtime.md), [controller](controller-protocol.md), [resource-ownership](resource-ownership.md), [network/USB](ethernet-usb.md) and [touchscreen/display](touchscreen-display.md) references provide the starting inventory.
 
+
+## 7. The practical breakthrough: booting another Linux kernel with `kexec`
+
+One of the most useful discoveries was that the installed kernel supports `kexec`. This is a Linux facility for loading and starting a replacement kernel **without returning through the ordinary firmware boot sequence**. The running kernel allocates memory for the replacement image and its associated data, coordinates shutdown of the current system and transfers control to the new kernel. The new kernel then initializes the hardware as a new instance of Linux.
+
+The difference from an ordinary application launch is substantial. Starting MPFree as a process under factory Linux still shares that kernel, its devices, its rootfs and potentially its service graph. Starting MPFree Linux by `kexec` means that the factory kernel stops running. The new Linux can have its own init system, root filesystem, device configuration, update policy and application startup. It can, for example, start our sampler and UI directly without ever launching `acvs.service` in the new environment.
+
+The difference from cold boot is equally important. A `kexec` launch **does not begin at the processor's BootROM**. To reach it, the MPC has already started the factory first-stage loader, U-Boot and at least enough factory Linux to run a developer command. That is why `kexec` is an ideal bridge toward OS independence but not the final bootloader solution.
+
+The reference 3.6.0 kernel contains `CONFIG_KEXEC_CORE=y`, `CONFIG_KEXEC=y` and `CONFIG_KEXEC_FILE=y`, and it ships the executable at `/usr/sbin/kexec`. The official update mechanism also invokes `kexec` to switch into an update-specific Linux environment. Those facts established that the hardware/software stack was designed to support a kernel handoff. We then went beyond configuration inspection: a completely separate firmware 3.10.0 kernel and userspace were started from removable storage **three times on the actual MPC One**.
+
+### 7.1 What the first temporary boot really changed
+
+The test did not install the 3.10.0 firmware onto the MPC’s eMMC. Instead, its root filesystem and associated files were prepared on the workstation and placed on a USB stick. The active 3.6.0 Linux system loaded the replacement kernel and a deliberately modified board FDT from the removable test environment, then transferred control through `kexec`. From that point on, the 3.10.0 kernel and its systemd services were the running operating system.
+
+The most important part of the preparation was **storage isolation**. A normal 3.10.0 kernel would be capable of detecting internal eMMC and running factory maintenance services that knew how to write it. We did not want a temporary test system to have that ability. The new FDT therefore marked the internal eMMC controller at `ff0f0000` and the SD-card controller at `ff0c0000` as disabled. When the new kernel started, it had no corresponding MMC block devices. A service expecting `/dev/mmcblk0` could not access that block device because the controller driver had not been bound.
+
+The test also replaced `/data` with a tmpfs mount. That was necessary because the normal `/etc` and `/var` overlays obtain their writable upper layers from persistent `/data/system`. Without changing the mount arrangement, an apparently temporary kernel boot could still write to the same long-lived configuration directories used by factory Linux. Moving those writable layers into RAM made such changes disappear at power-off.
+
+Additional service controls disabled or replaced the factory app launcher, firmware update helpers, formatting functions, the USB script runner and other programs that were not required for the test. A second `kexec` was disabled to prevent the temporary environment from starting a different kernel that could re-enable MMC controllers. These measures were not necessary for a kernel simply to execute, but they were necessary to make the test’s **eMMC preservation claim meaningful**.
+
+The actual control flow looked like this:
+
+```text
+Normal power-on:
+  BootROM → SRAM loader → U-Boot → factory Linux 3.6.0
+                                         │
+                         host-verified temporary launch
+                                         │
+                           kexec: kernel + FDT in RAM
+                                         │
+                                         ▼
+                                   Linux 3.10.0
+                                         │
+                          root filesystem on USB media
+                          /data backed by RAM
+                          internal eMMC + SD unavailable
+                          factory update services inactive
+                                         │
+                          screen / logs / Ethernet / SSH
+                                         │
+                             physical power cycle
+                                         │
+                                         ▼
+                             original factory Linux
+```
+
+We checked the boot-critical partition hashes and block-layer write counters around the experiment. The protected regions matched the reference baseline afterward, and the factory 3.6.0 installation came back after power cycling. This was repeatable, not a single optimistic observation.
+
+### 7.2 First run: the kernel and userspace work, but peripherals need more care
+
+In the first hardware trial on November 10, 2026, the replacement 3.10.0 userspace completed its startup in roughly **7.7 seconds** after the new kernel began. The intended SSH service reached its listening state and the periodic test log was running. The absence of MMC devices and unchanged partition measurements established that the storage isolation was working.
+
+But the Ethernet interface failed. The Rockchip GMAC driver appeared, while the MDIO bus could not identify the PHY at address 1. On the stock system the interface is backed by a Realtek RTL8211E. The most likely cause involved hardware state carried across the warm `kexec` handoff: factory Linux had shut its Ethernet interface down, affecting the PHY's reset and clocks, and the new kernel attempted device discovery before the PHY was in the state it expected. The exact causal mechanism had not been proven.
+
+The display driver also initialized, but a normal framebuffer console was not available, so the kernel's text output did not simply appear on the MPC screen. This was a useful architectural lesson. The fact that a kernel exposes `fb0` does not mean it includes a framebuffer-console driver; an application that wants to display information may need to render explicitly through the framebuffer or DRM subsystem.
+
+### 7.3 Second run: screen output succeeds and the PHY becomes identifiable
+
+For the second trial, the test environment included an on-screen log/status program. It successfully displayed output on the MPC panel. This demonstrated an independently controlled display path in the replacement Linux image without needing the factory music application.
+
+The FDT was also revised to describe the Ethernet PHY more precisely. Its `compatible` property included `ethernet-phy-id001c.c915`, and the documented GPIO4 B0 reset line used the board's active-low behavior with approximately 10 ms asserted and 30 ms deasserted. The new kernel could now identify the RTL8211E PHY correctly. However, the first attempt to bring the Ethernet MAC fully online still failed with a DMA reset timeout. The PHY was now recognized, but its clock or interface state during initial GMAC setup was not yet correct.
+
+This observation separated two different problems that initially looked like one. A missing PHY on MDIO is not the same failure as a MAC DMA engine timing out after PHY identification. A replacement OS needs to distinguish them and not simply conclude that “Ethernet is broken.”
+
+### 7.4 Third run: Ethernet and SSH work after a controlled retry
+
+The third trial repeated the initial GMAC DMA initialization problem, but the test setup retried `ip link set eth0 up` after the system had been running for a short time. That retry succeeded. The relevant timings were approximately:
+
+| Event | Time after replacement kernel started |
+|---|---:|
+| Initial network start attempted | ~7.8 seconds |
+| First DMA initialization timed out | ~8.0 seconds |
+| Retry of interface-up request | ~20.6 seconds |
+| Gigabit link reported | ~23.1 seconds |
+| DHCP address obtained | ~28.0 seconds |
+| Workstation SSH session established | ~32.9 seconds |
+
+The link reported **1 Gb/s full duplex**, and the MDIO bus handled transfers without observed errors in the subsequent test. Screen output remained functional. The device's boot-critical partition hashes matched the original baseline before and after. A power cycle returned to the installed 3.6.0 system.
+
+What actually fixed the first network initialization remains a narrower open question. The retry causes additional PHY and MAC reinitialization, and state observations were consistent with the PHY having been reset again. The study considered clock-output settling and Energy Efficient Ethernet behavior as candidates, but neither explanation was proven. A new MPFree kernel can use the measured retry strategy for early tests while a more deterministic first-initialization sequence is developed.
+
+### 7.5 What these tests established for the future OS
+
+The three trials mean we no longer need to speculate about whether this board can run another Linux distribution. It has already done so, with its own root filesystem, services, display output, networking and SSH. We also learned that an isolated test root can be built without giving itself access to internal MMC storage, and that the factory system returns after power cycling when its boot-critical state remains unchanged.
+
+This is the current **lowest-risk demonstrated path** for developing a wholly independent MPFree Linux kernel and userspace on the real hardware. It does **not** prove U-Boot can select a removable image at cold boot or that the BootROM can execute an owner-supplied recovery loader. Those are separate goals.
+
+For complete test details and tool paths, see [the archived 3.10.0 test-boot record](archive/2026-11/kexec-test-boot.md). It includes the original per-run observations and host preparation workflow.
+
+## 8. USB and the boot process: three very different functions
+
+USB is particularly important because it is both a convenient way to supply an alternative OS image and a possible route for servicing the bootloader itself. But it is easy to confuse different software layers that happen to communicate through USB connectors.
+
+The normal USB-A ports are **host ports**. When Linux runs, it detects connected storage and MIDI devices and mounts media using its ordinary drivers. A USB stick can contain the root filesystem for a `kexec` test, private logs, installer data and MPFree application assets. This does not imply that the silicon BootROM or factory U-Boot will treat every USB stick as a bootable operating system.
+
+The rear USB-B port is used in **device** mode for the factory desktop updater. The Linux device tree exposes the Rockchip DWC2 peripheral controller at `ff580000`, which is the expected underlying device controller. When factory U-Boot enters its Fastboot Update Mode, it can present a USB firmware-transfer interface before Linux starts. This is one reason we are interested in its `download` and `boot` handlers: they may provide a way to transfer a RAM-only kernel over USB-B from the workstation.
+
+Finally, the RK3288 silicon ROM has its own USB loading/recovery behavior, which executes before the installed first-stage loader. This would be the most valuable independent recovery layer if we could reliably enter it on the MPC and execute a source-built SRAM program. **That has not yet been demonstrated on the reference unit**, and Fastboot activity must not be mistaken for it.
+
+### 8.1 What the U-Boot Fastboot code already tells us
+
+The existing U-Boot program registers handlers for `reboot`, `getvar`, `download`, `boot`, `continue`, `flash`, `erase` and manufacturer-defined `oem` commands. The code for `download` collects incoming USB data in RAM, and the `boot` path schedules a completion callback that reaches a U-Boot image execution function after acknowledging the USB request. The image-processing path recognizes legacy U-Boot image structures and FDT/FIT headers. These are concrete implementation findings.
+
+They make a nonpersistent pre-Linux MPFree boot look technically plausible. An operating system could theoretically be prepared on the workstation, delivered to the bootloader's RAM buffer and started before the factory rootfs is mounted. But there are still operational uncertainties: which exact image package and FDT placement the bootloader accepts, what its runtime command state allows, how much RAM is safe to occupy, and whether a failed kernel attempt leaves the factory boot available after a power cycle.
+
+Fastboot also has persistent storage commands. They must be kept separate from the RAM-only objective. Their existence is one reason the normal MPFree installer should not experiment with arbitrary Fastboot sequences against the only known-good reference board.
+
+### 8.2 Recovery depends on which stage failed
+
+The important difference is that U-Boot Fastboot **depends on U-Boot**. If `p6` is damaged but the earlier loaders are intact, a desktop firmware update is a credible way to repair the root filesystem. If `p1` or `p3` is invalid, the Fastboot code may never execute. At that point the recovery mechanism must live below the damaged stage, such as an independently demonstrated silicon-ROM loader.
+
+This gives us a clear hierarchy:
+
+```text
+Broken MPFree session:
+    → power-cycle if internal storage was unchanged
+Broken factory userspace or rootfs:
+    → U-Boot Update Mode may remain available (needs rehearsal)
+Broken factory U-Boot or first stage:
+    → independently qualified silicon ROM recovery required
+Changed eMMC hardware boot config or one-time state:
+    → board-specific recovery, not covered by disk-image backup alone
+```
+
+The factory Update Mode itself is not a completed recovery guarantee merely because its commands appear in the firmware. The full restoration procedure must be exercised on suitable hardware before an installer relies on it.
+
+### 8.3 Why software-only silicon-ROM entry remains an open problem
+
+The reference first-stage image includes a Fastboot-related reset mode written to the RK3288 reboot-mode register. That proves a software-controlled way of selecting at least a **loader maintenance** path. It does not prove the installed loader recognizes a request to return to immutable BootROM USB service.
+
+Public Rockchip descriptions include other boot-mode values and USB SRAM-loading mechanisms, but the corresponding behavior was not demonstrated on this MPC. In addition, the actual board must route USB signals, boot-source selection and any required power states in a way that permits entry without damaging the existing system. The safe progression is to establish a genuine ROM USB state, run a minimal independently built SRAM program with no eMMC writes, and then prove full eMMC read-back against the owner-held backup.
+
+That is a legitimate operating-system engineering goal, but **not** a dependency for the immediate `kexec` development path. MPFree can keep progressing while the independent recovery mechanism is qualified separately.
+
