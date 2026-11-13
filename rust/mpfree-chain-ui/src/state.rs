@@ -127,6 +127,9 @@ pub struct ChainState {
     /// `MixAction::AddInsert`). The editor opens it itself from its own
     /// "+ Add effect".
     pub picking: bool,
+    /// Plugin effects the picker offers after the built-in ones (the app's
+    /// plugin rack); empty when there are none.
+    pub plugins: Vec<Pick>,
 }
 
 impl Default for ChainState {
@@ -149,6 +152,7 @@ impl Default for ChainState {
             scopes: Vec::new(),
             scope: 0,
             picking: false,
+            plugins: Vec::new(),
         }
     }
 }
@@ -314,6 +318,7 @@ impl ChainState {
             scopes: Vec::new(),
             scope: 0,
             picking: false,
+            plugins: Vec::new(),
         }
     }
 
@@ -500,8 +505,9 @@ pub fn picture(
     visual::strip(&st, page, None, &scratch, t).cards
 }
 
-/// One effect the picker offers: its id (for `mpfree_fx_ui::make`), its
-/// name and a line about it.
+/// One effect the picker offers: its id (for `mpfree_fx_ui::make`, or a
+/// plugin's `clap:` id, which the app's plugin rack makes), its name and a
+/// line about it.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Pick {
     pub id: &'static str,
@@ -509,8 +515,8 @@ pub struct Pick {
     pub about: &'static str,
 }
 
-/// The effects the picker offers on `strip`, in the catalogue's order.
-/// Master safety only on the master strip.
+/// The built-in effects the picker offers on `strip`, in the catalogue's
+/// order. Master safety only on the master strip.
 pub fn picks(strip: Strip) -> Vec<Pick> {
     CATALOGUE
         .iter()
@@ -521,6 +527,16 @@ pub fn picks(strip: Strip) -> Vec<Pick> {
             about: about(id),
         })
         .collect()
+}
+
+impl ChainState {
+    /// Everything the picker offers: the built-in effects for the strip,
+    /// then the plugins ([`ChainState::plugins`]).
+    pub fn picks(&self) -> Vec<Pick> {
+        let mut p = picks(self.strip);
+        p.extend_from_slice(&self.plugins);
+        p
+    }
 }
 
 fn about(id: &str) -> &'static str {

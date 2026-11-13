@@ -52,4 +52,13 @@ mpfree-midi-ui = { path = "../mpfree-midi-ui" }
 # The library in the data folder and its browser (the Pads tab's Browse
 # view): places, folders, Load, Load to pad and the preview.
 mpfree-library = { path = "../mpfree-library" }
+# CLAP plugins (plugins.rs): each in its own mpfree-plughost process, as
+# mixer inserts from the chain editor.
+mpfree-plughost = { path = "../mpfree-plughost" }
 mpfree-browser-ui = { path = "../mpfree-browser-ui" }
+
+[dev-dependencies]
+# The test plugins as a real .clap file, for the plugin tests
+# (tests/plughost.rs: the app serving as the plugin process).
+mpfree-clap-testplug = { path = "../mpfree-clap-testplug" }
+mpfree-clap = { path = "../mpfree-clap" }

@@ -104,6 +104,7 @@ mod parts;
 mod perf;
 mod play_page;
 mod play_widgets;
+mod plugins;
 mod port_writer;
 mod preview;
 mod qlink_touch;
@@ -3139,6 +3140,15 @@ fn player_session(
     // only), offered on the Synth tab after the built-in tunings. The scales
     // are read and the keyboard maps worked out here, before the sound
     // starts.
+    // CLAP plugins in files/plugins/ (plugins.rs), each listed by its own
+    // plugin process so a bad file can't take the app with it. Done here,
+    // before the sound starts, since a file may take a while to answer.
+    let (found_plugins, notes) =
+        plugins::scan(plugins::program(&plugins::app_path()), o.data.as_deref());
+    for line in notes {
+        out.say(&line);
+    }
+    let found_plugins = std::sync::Arc::new(found_plugins);
     let (tuning_files, notes) = load_tuning_files(&store);
     for line in notes {
         out.say(&line);
@@ -3212,6 +3222,7 @@ fn player_session(
     out.show(gui::ToUi::Level { db: level_db });
     // The mixer sums everything; the Level is its master fader (mixing.rs).
     let mut mix = mixing::MixHost::new(RATE, level_db, max_db);
+    mix.set_plugins(std::sync::Arc::clone(&found_plugins));
     cores.start_mixer(&mut mix.mixer);
     for line in cores.take_lines() {
         out.say(&line);
@@ -4638,6 +4649,13 @@ fn player_session(
         if let Some(line) = mix.poll_built() {
             out.note(line);
         }
+        // What the plugin rack said (a plugin started, crashed, restarted
+        // or was left off): never hidden. No allocation when quiet.
+        if let Some(lines) = found_plugins.take_lines() {
+            for line in lines {
+                out.note(&line);
+            }
+        }
         parts.lap(parts::PADS);
         let t_mix = Span::start();
         mix.follow(looper.line.is_open(), looper.monitor);
@@ -4826,6 +4844,9 @@ fn player_session(
                 loop_time.describe()
             ));
             out.note(&format!("status: {}", mix.modu.describe()));
+            if let Some(line) = found_plugins.summary().and_then(|s| s.line()) {
+                out.note(&format!("status: plugins: {line}"));
+            }
             out.note(&format!(
                 "status: {}",
                 engines::log_line(&engines.lifetime())
@@ -5468,6 +5489,12 @@ fn display_lists(o: &Options) -> Result<(), String> {
 }
 
 fn main() {
+    // `mpfree plughost ...`: this program serving as one plugin's process
+    // for the plugin sandbox (plugins.rs), before anything else starts.
+    let mut raw = std::env::args_os().skip(1);
+    if raw.next().is_some_and(|a| a == plugins::SUBCOMMAND) {
+        std::process::exit(plugins::serve(raw));
+    }
     let args: Vec<String> = std::env::args().skip(1).collect();
     let result = parse_args(&args).and_then(|o| {
         if o.preview.is_some() {
