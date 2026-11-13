@@ -107,7 +107,7 @@ Representative environment, with machine-specific values removed:
 
 ```text
 bootcmd=run az01_bootcmd
-az01_bootcmd=if test x(dorecovery) = x1; then run az01_recovercmd; fi;
+az01_bootcmd=if test x${dorecovery} = x1; then run az01_recovercmd; fi;
              run distro_bootcmd;
              echo 'Boot failed, resetting to bootloader...';
              reset_bootloader
@@ -123,7 +123,7 @@ fastboot.partition-type:content=ext4
 fastboot.partition-type:data=ext4
 ```
 
-The first line above is a **readable schematic** of the environment condition; the original literal uses U-Boot variable expansion for `dorecovery`. U-Boot has an 86-command registry containing `mmc`, `load`, `ext4load`, `fatload`, `bootz`, `source`, `run`, `setenv` and `saveenv`. Its distro scan can look for boot scripts and, where configured, extlinux entries.
+U-Boot has an 86-command registry containing `mmc`, `load`, `ext4load`, `fatload`, `bootz`, `source`, `run`, `setenv` and `saveenv`. Its distro scan can look for boot scripts and, where configured, extlinux entries.
 
 Linux's FDT maps `ff0f0000` to internal eMMC and `ff0c0000` to removable SD. The **U-Boot** numbering of `mmc0`/`mmc1` has not been independently validated against these Linux aliases. Even if they match, the first functional boot target normally wins; inserting an SD card does not prove it will preempt a healthy eMMC installation.
 
