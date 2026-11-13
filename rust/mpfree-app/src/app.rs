@@ -583,7 +583,16 @@ pub struct Settings {
     pub sound_cores: SoundCores,
     /// Prefs "Loop memory": the looper's size from the next start.
     pub loop_memory: LoopMemory,
+    /// The metronome (click while counting in and recording): off by
+    /// default (live test 3), Play's options or SHIFT + PLAY START.
+    pub metronome: bool,
+    /// The click's level, dBFS: [`METRONOME_DBS`].
+    pub metronome_db: i8,
 }
+
+/// The click levels Play's options step through, dBFS. -24 by default;
+/// -12 was the old fixed level ("far too loud", live test 3).
+pub const METRONOME_DBS: [i8; 6] = [-36, -30, -24, -18, -12, -6];
 
 impl Settings {
     /// The latency the looper makes up for: none for the pads, which are
@@ -619,6 +628,8 @@ impl Default for Settings {
             theme: "default".to_string(),
             sound_cores: SoundCores::Shared,
             loop_memory: LoopMemory::default(),
+            metronome: false,
+            metronome_db: crate::time::CLICK_DB as i8,
         }
     }
 }
@@ -687,6 +698,9 @@ pub enum Item {
     /// Prefs and the looper's options: the looper's size from the next
     /// start.
     LoopMemory,
+    /// Play's options: the metronome on or off, and its level.
+    Metronome,
+    MetronomeLevel,
     /// The arp's own settings (the Options menu opened from the Arp panel).
     Arp(ArpItem),
     /// The synth's engine and pad layouts (the Synth tab's options).
@@ -879,8 +893,12 @@ pub enum Effect {
     ProgEdit,
     /// A control for the Pads tab's browser while it shows (Browse).
     Browse(BrowseKey),
-    /// SHIFT + PLAY START: the metronome on or off.
-    Metronome,
+    /// The metronome on or off, and its level in dBFS (SHIFT + PLAY
+    /// START, Play's options, and at the start from the saved settings).
+    Metronome {
+        on: bool,
+        db: i8,
+    },
     /// FILL on or off from the coming period: notes with the FILL and
     /// !FILL trig conditions follow it.
     Fill(bool),
@@ -1244,6 +1262,14 @@ impl App {
         fx
     }
 
+    /// The metronome as the settings have it, for the time engine.
+    fn metronome(&self) -> Effect {
+        Effect::Metronome {
+            on: self.settings.metronome,
+            db: self.settings.metronome_db,
+        }
+    }
+
     /// FILL let go, if it was on.
     fn fill_off(&mut self) -> Option<Effect> {
         if self.fill == Fill::Off {
@@ -1263,6 +1289,7 @@ impl App {
             self.arp_view(),
         ];
         fx.extend(self.repeat_light());
+        fx.push(self.metronome());
         let s = &self.settings;
         fx.push(Effect::Looper(LoopAction::Source(s.loop_source)));
         fx.push(Effect::Looper(LoopAction::Command(LoopCommand::SetBars(
@@ -1568,7 +1595,16 @@ impl App {
             self.arps.engine_at_mut(self.track).resume();
             fx.push(Effect::Time(TimeAction::Transport(Command::Play)));
         } else if Some(note) == self.map.play_start && shift {
-            fx.push(Effect::Metronome);
+            self.settings.metronome = !self.settings.metronome;
+            self.save_dirty = true;
+            fx.push(self.metronome());
+            fx.push(Effect::Tell(format!(
+                "SHIFT + PLAY START: metronome {}",
+                if self.settings.metronome { "on" } else { "off" }
+            )));
+            if self.in_menu() {
+                fx.push(self.menu_view());
+            }
         } else if Some(note) == self.map.play_start {
             self.arps.engine_at_mut(self.track).resume();
             fx.push(Effect::Time(TimeAction::Transport(Command::PlayStart)));
@@ -2446,7 +2482,14 @@ impl App {
             (_, View::Console) => &[Item::ConsoleFollow, Item::ClearConsole],
             (_, View::Arp) => &arp::ARP_OPTIONS,
             (_, View::Synth) => &synth_pads::SYNTH_OPTIONS,
-            _ => &[Item::Rate, Item::Tempo, Item::PadLevel, Item::Latch],
+            _ => &[
+                Item::Rate,
+                Item::Tempo,
+                Item::Metronome,
+                Item::MetronomeLevel,
+                Item::PadLevel,
+                Item::Latch,
+            ],
         }
     }
 
@@ -2516,6 +2559,11 @@ impl App {
             Item::SystemInfo => ("System info", "Open".to_string()),
             Item::Rate => ("Note repeat rate", s.rate.label().to_string()),
             Item::Tempo => ("Tempo", format!("{:.1} BPM", s.bpm)),
+            Item::Metronome => (
+                "Metronome",
+                if s.metronome { "On" } else { "Off" }.to_string(),
+            ),
+            Item::MetronomeLevel => ("Metronome level", format!("{} dB", s.metronome_db)),
             Item::PadLevel => (
                 "Pad level",
                 match self.pad_level {
@@ -2674,6 +2722,12 @@ impl App {
                 "Note Repeat follow. TAP TEMPO sets it too:",
                 "tap it three or four times.",
             ],
+            Item::Metronome => vec![
+                "A click on each beat while counting in and",
+                "recording, higher on the bar. Off to start;",
+                "SHIFT + PLAY START turns it on or off too.",
+            ],
+            Item::MetronomeLevel => vec!["How loud the click is, -36 to -6 dB."],
             Item::PadLevel => vec![
                 "FULL LEVEL plays every hit at 127,",
                 "SHIFT + FULL LEVEL (Half Level) at 64.",
@@ -2962,6 +3016,14 @@ impl App {
                 s.bpm = (s.bpm + d as f64).clamp(30.0, 300.0).round();
                 self.update_engine();
                 fx.push(self.status());
+            }
+            Item::Metronome => {
+                s.metronome = !s.metronome;
+                fx.push(self.metronome());
+            }
+            Item::MetronomeLevel => {
+                s.metronome_db = cycle(&METRONOME_DBS, s.metronome_db, d);
+                fx.push(self.metronome());
             }
             Item::PadLevel => {
                 self.pad_level = cycle(
@@ -3715,7 +3777,7 @@ mod tests {
         let mut next = App::new(44_100, false);
         let notes = next.restore(&kept, &mpfree_store::Settings::default());
         assert_eq!(next.settings.loop_memory, LoopMemory::Min1);
-        assert!(notes[0].ends_with(", loop memory 1 min"), "{notes:?}");
+        assert!(notes[0].contains(", loop memory 1 min,"), "{notes:?}");
         next.set_loop_memory_now(LoopMemory::Min1);
         assert_eq!(next.item_text(Item::LoopMemory).1, "1 min, 22 MB");
         // A size it doesn't offer is left out, and the default stays.
@@ -4973,7 +5035,7 @@ mod tests {
         app.toggle_panel();
         press(&mut app, MENU);
         assert!(
-            matches!(app.menu_view(), Effect::Menu(m) if m.title == "Play options" && m.rows.len() == 4)
+            matches!(app.menu_view(), Effect::Menu(m) if m.title == "Play options" && m.rows.len() == 6)
         );
     }
 
@@ -5686,6 +5748,10 @@ mod tests {
             );
         }
         // SHIFT + PLAY START (93): the metronome.
-        assert_eq!(held(&mut app, SHIFT, |a| press(a, 93)), [Effect::Metronome]);
+        let fx = held(&mut app, SHIFT, |a| press(a, 93));
+        assert_eq!(fx[0], Effect::Metronome { on: true, db: -24 });
+        assert!(app.save_dirty, "the toggle is saved");
+        let fx = held(&mut app, SHIFT, |a| press(a, 93));
+        assert_eq!(fx[0], Effect::Metronome { on: false, db: -24 });
     }
 }

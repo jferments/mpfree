@@ -289,7 +289,6 @@ impl Widget for PlayTransport {
             .is_some_and(|(pr, _, a)| *pr == r && a.bpm.contains(x, y));
         on_bpm.then_some(EventKind::Select(TAP_BPM))
     }
-
 }
 
 // ------------------------------------------------------------- pads

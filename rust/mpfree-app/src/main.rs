@@ -4182,12 +4182,9 @@ fn player_session(
                     }
                 }
                 app::Effect::Fill(on) => time.set_fill(on, 0),
-                app::Effect::Metronome => {
-                    time.metronome = !time.metronome;
-                    out.note(&format!(
-                        "SHIFT + PLAY START: metronome {}",
-                        if time.metronome { "on" } else { "off" }
-                    ));
+                app::Effect::Metronome { on, db } => {
+                    time.metronome = on;
+                    time.click_gain = crate::time::click_gain(f32::from(db));
                 }
                 // A PAD BANK button: banks A-H are kits 1-8 (9-16 and the
                 // Grains kit are banks A-H again, from kit 9 on).

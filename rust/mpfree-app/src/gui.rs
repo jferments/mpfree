@@ -4662,7 +4662,7 @@ pub fn apply_effects(p: &mut Player, fx: Vec<crate::app::Effect>) {
             | Effect::SavePatterns(_)
             | Effect::SynthPads(_)
             | Effect::ProgEdit
-            | Effect::Metronome
+            | Effect::Metronome { .. }
             | Effect::Fill(_)
             | Effect::Mixer(_) => {}
             Effect::MixerWheel(d) => p.apply(if p.io_showing() {
