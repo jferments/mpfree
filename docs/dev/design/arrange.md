@@ -90,7 +90,7 @@ The audio tracks (`rust/mpfree-audiotracks`, the audio tracks thread's engine: s
 - **Take lanes.** While `TimeState::audio_takes` names a track with a lane, its takes (`AudioLane::takes`, from `song::take_lanes`) show as thin lanes (`TAKE_H`, 28 px) under it, newest first, each named in the name column ("take 2", with "· rec" while it records). A take lane shows the take's stretch with its waveform, brighter where the track plays it (`TakeLane::used`). The other lanes share what is left (32 px at least, then they scroll), so lane heights now differ: `lane_rect` adds them up from the first lane shown, and `max_first` is the last lane that can be first. A finger down on a take lane (past the names) starts a swipe, drawn as an outline, which ends on the lift as `Span { index: take, from, to }` in song ticks (`tick_at`), either way round; a lift within 8 px of where it went down is a tap, `Span` with `from == to`. Sample screen: `arrange-song-takes`.
 - **Scrolling the lanes.** When the lanes don't fit at 32 px each, a drag up or down the name column scrolls them, and a thin bar at the left edge shows where you are. The scroll is the widget's own (`SongLanes::first_lane`), kept across updates.
 - **Touches** (`view::action`), as `TimeAction::Audio(AudioAction)`:
-  - a region: `Pick(Some(RegionId { track, index }))` (an index into `regions(track)`);
+  - a region: `Pick(Some(RegionId { track, index }))` (an index into `regions(track)`) as the finger goes down; dragged sideways more than 8 px and let go (an outline shows where it would land), `Move { region, to, fine: false }` with its new start (never before 0), from the widget's `Marker { index: track * REGION_SLOTS + index, frame: to }`; the app sets `fine` while SHIFT is held;
   - the arm dot: `Arm { track, on }`; the name or the chip: `Panel(track)` (on the lift, unless the finger scrolled);
   - "+ Audio": `Add`;
   - a take lane: a tap `UseTake(take)`, a swipe `Comp { take, from, to, fine: false }` (the app sets `fine` while SHIFT is held);
@@ -135,7 +135,7 @@ The audio tracks (`rust/mpfree-audiotracks`, the audio tracks thread's engine: s
 
 ## Not yet
 
-- Audio lanes: dragging a region to move it. The app wires the engine (`rust/mpfree-app/src/audiotracks.rs`, see [audio-tracks.md](audio-tracks.md)).
+- Audio lanes: dragging a region to another track. The app wires the engine (`rust/mpfree-app/src/audiotracks.rs`, see [audio-tracks.md](audio-tracks.md)).
 
 - Moving, resizing and copying placements by touch, and adding or naming markers on screen. The model has them; the Song view only selects, makes unique and deletes for now.
 - Undo for song edits.

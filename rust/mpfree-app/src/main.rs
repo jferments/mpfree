@@ -4669,6 +4669,10 @@ fn player_session(
         if let Some(line) = time.take_song_note() {
             out.note(&format!("time: {line}"));
         }
+        // A region just moved is picked again where it went.
+        if let Some(r) = tracks.take_repick() {
+            let _ = time.act(TimeAction::Audio(AudioAction::Pick(Some(r))));
+        }
         // `|`, not `||`: both flags are taken.
         if time.take_changed() | tracks.take_changed() {
             out.show(gui::ToUi::Time(Box::new(time_state(&time, &tracks))));

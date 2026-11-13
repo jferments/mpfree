@@ -4026,15 +4026,20 @@ impl Player {
                 | time_view::EDIT_OPTIONS,
                 _,
             ) => time_view::action(&ev, &self.time).map(|a| {
-                // A swipe across a take lane is free with SHIFT held.
+                // A swipe across a take lane and a region's drag are free
+                // with SHIFT held.
+                let fine = self.status.shift;
                 let a = match a {
                     TimeAction::Audio(AudioAction::Comp { take, from, to, .. }) => {
                         TimeAction::Audio(AudioAction::Comp {
                             take,
                             from,
                             to,
-                            fine: self.status.shift,
+                            fine,
                         })
+                    }
+                    TimeAction::Audio(AudioAction::Move { region, to, .. }) => {
+                        TimeAction::Audio(AudioAction::Move { region, to, fine })
                     }
                     a => a,
                 };
@@ -7948,6 +7953,22 @@ mod tests {
         assert_eq!(swipe(&mut p), comp(false));
         p.status.shift = true;
         assert_eq!(swipe(&mut p), comp(true));
+        // A region's drag too.
+        let moved = p.on_event(mpfree_ui::UiEvent {
+            widget: time_view::SONG.to_string(),
+            kind: mpfree_ui::EventKind::Marker {
+                index: mpfree_time_ui::song::REGION_SLOTS + 2,
+                frame: 3850,
+            },
+        });
+        assert_eq!(
+            moved,
+            Some(FromUi::Time(TimeAction::Audio(AudioAction::Move {
+                region: time_view::RegionId { track: 1, index: 2 },
+                to: 3850,
+                fine: true,
+            })))
+        );
     }
 
     #[test]

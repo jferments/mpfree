@@ -34,6 +34,7 @@ use crate::editor::{
 use crate::song::{
     AudioLane, SongBlock, SongLanes, ADD_AUDIO, AUDIO_BUTTONS, INPUTS, MONITORS, NONE, PANEL,
     PANEL_CLOSE, PANEL_INPUT, PANEL_MONITOR, PANEL_MUTE, PANEL_SOLO, PANEL_TAKES, REC,
+    REGION_SLOTS,
 };
 use crate::widgets::{
     BarButton, BarItem, CellState, ClipGrid, GridCell, GridTrack, MorphBar, Run, TakeItem,
@@ -639,6 +640,13 @@ pub enum AudioAction {
     },
     /// A tap on a take lane: play the take everywhere it has audio.
     UseTake(u16),
+    /// A region dragged sideways: move it to start at `to`, snapped to
+    /// the grid unless `fine` (SHIFT held: the app sets it).
+    Move {
+        region: RegionId,
+        to: Tick,
+        fine: bool,
+    },
     /// A Q-Link on Arrange while an audio region is picked or the track
     /// panel is open (layout spec 4c), or the panel's level and pan
     /// steps: knob 0 the track's level, 1 its pan, 2 the region's gain, 3
@@ -847,6 +855,14 @@ pub fn action(ev: &UiEvent, st: &TimeState) -> Option<TimeAction> {
                 _ => return None,
             }))
         }
+        (SONG, EventKind::Marker { index, frame }) => Some(TimeAction::Audio(AudioAction::Move {
+            region: RegionId {
+                track: index / REGION_SLOTS,
+                index: index % REGION_SLOTS,
+            },
+            to: Tick::try_from(*frame).ok()?,
+            fine: false,
+        })),
         (SONG, EventKind::Span { index, from, to }) => {
             let take = u16::try_from(*index).ok()?;
             Some(TimeAction::Audio(if from == to {
@@ -2189,6 +2205,21 @@ mod tests {
         );
         st.audio_takes = Some(2);
         assert_eq!(song_lanes(&st, 0).takes_open, Some(2));
+        // A region dragged: its track and index, and where it starts now.
+        assert_eq!(
+            song(
+                EventKind::Marker {
+                    index: 3 * crate::song::REGION_SLOTS + 4,
+                    frame: 7680
+                },
+                &st
+            ),
+            audio(AudioAction::Move {
+                region: RegionId { track: 3, index: 4 },
+                to: 7680,
+                fine: false
+            })
+        );
     }
 
     fn lanes_panel(st: &TimeState) -> Option<usize> {
