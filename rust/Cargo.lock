@@ -401,6 +401,7 @@ dependencies = [
  "mpfree-time-ui",
  "mpfree-touch",
  "mpfree-touch-evdev",
+ "mpfree-track",
  "mpfree-transport",
  "mpfree-tuning",
  "mpfree-ui",

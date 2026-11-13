@@ -86,7 +86,8 @@ Real time: the node's side of a block never allocates or locks. `tests/no_alloc.
 - **The chain editor's picker** lists the plugin effects after the built-in ones, under the Plugins heading (`ChainState::plugins`, `ChainState::picks`, each a `Pick` with `Category::Plugins` from the FX registry). A tap sends `ChainAction::Add("clap:...")` as for any effect.
 - **The builder thread** (`control.rs`, `mpfree-build`) builds a `clap:` id with `Rack::make`, so starting a process never happens on the audio thread. It also calls `Rack::watch` every 250 ms while it waits for jobs. A removed insert is dropped there too, and the next watch ends its process.
 - **Nothing is hidden.** The audio loop passes the rack's lines to the report each period when there are any (no allocation when there are none), and the 30-second status adds `status: plugins: N found · running · down · crashes · restarts · failed`.
-- **Not yet in the app:** plugin state in the project file (the project thread's `parts/mixer.txt`, with `SandboxNode::saved_state`), plugin instruments (the track host isn't in the app yet), the plugin's own Dev page row and an on-screen warning, and the `mpfree-plughost` binary on the stick (not needed: the app serves).
+- **Plugin synths as track instruments.** `Rack::instruments` lists the plugins whose features include `instrument`. They follow the five engines on the Synth tab's "Track N instrument" row, and a pick makes the plugin on the builder thread and puts it in that track's slot of the track host ([Track host](track-host.md#in-the-app)). The Synth tab shows its parameters as for any node, with no presets.
+- **Not yet in the app:** plugin state in the project file (the project thread's `parts/mixer.txt`, with `SandboxNode::saved_state`), the plugin's own Dev page row and an on-screen warning, and the `mpfree-plughost` binary on the stick (not needed: the app serves).
 
 Not yet:
 
@@ -151,4 +152,4 @@ These pass for `armv7-unknown-linux-gnueabihf` under qemu too. There, `MPFREE_PL
 
 - **P3, ARM builds:** reproducible armv7 build recipes for free plugins (Surge XT, Dexed, Airwindows first), with their licenses and sources.
 - **P4, passports:** automatic tests on the MPC for each plugin: does it load, does it stay free of NaN, does its state round-trip, what it costs per voice, its latency.
-- In the app: plugin state saved with the project, a plugin as a track host instrument once the track host is in the app, plugins in the instrument browser, and the rack's counts on the Dev page.
+- In the app: plugin state saved with the project (effects and track instruments), plugins in the instrument browser, and the rack's counts on the Dev page.

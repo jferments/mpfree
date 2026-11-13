@@ -609,7 +609,14 @@ fn subtitle(st: &SynthState) -> String {
     };
     let mut parts = vec![kind.to_string()];
     if !st.track.is_empty() {
-        parts.insert(0, format!("{} track", st.track));
+        // "Pads" reads "Pads track"; a track's own name ("Track 2") stands
+        // as it is.
+        let track = if st.track.to_ascii_lowercase().contains("track") {
+            st.track.clone()
+        } else {
+            format!("{} track", st.track)
+        };
+        parts.insert(0, track);
     }
     if st.info.id == "mpfree.poly" {
         let mode = pp::VOICE_MODES

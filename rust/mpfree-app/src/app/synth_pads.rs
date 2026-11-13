@@ -180,7 +180,7 @@ impl App {
         let file = self.tuning_file();
         let mapped = file.is_some_and(|f| f.1);
         match item {
-            SynthItem::Engine => ("Engine", p.engine.name().to_string()),
+            SynthItem::Engine => (instrument_label(self.track), self.engine_text()),
             SynthItem::Scale => (
                 "Scale",
                 match self.pad_scale_entry(self.pad_scale_choice()) {
@@ -239,12 +239,15 @@ impl App {
     pub(super) fn synth_item_help(item: SynthItem) -> Vec<&'static str> {
         match item {
             SynthItem::Engine => vec![
-                "The synth the pads play: Poly (subtractive),",
-                "FM (six operators), Drums (a sound on each",
-                "pad; no scale or octave) or Pluck (strings",
-                "and mallets). A note still ringing on the",
-                "other one finishes its release. The Synth",
-                "tab shows the engine picked.",
+                "What the selected track plays: Kit (the pads'",
+                "kit, as every track starts), or its own",
+                "instrument: Poly (subtractive), FM (six",
+                "operators), Drums (a sound on each pad), Pluck",
+                "(strings and mallets), Wavetable, then the",
+                "plugin synths in files/plugins/. It starts as",
+                "a copy of the Synth tab's sound, and the tab",
+                "then edits the track's own. The pads play the",
+                "selected track; the old sound rings out.",
             ],
             SynthItem::Scale => vec![
                 "The pads' own scale (the arp has its own).",
@@ -301,9 +304,7 @@ impl App {
     pub(super) fn step_synth_item(&mut self, item: SynthItem, d: i32) -> Vec<Effect> {
         let before = (self.synth_pads, self.pad_scale_pick, self.pad_scale_root);
         match item {
-            SynthItem::Engine => {
-                self.synth_pads.engine = step_in(&Engine::ALL, self.synth_pads.engine, d)
-            }
+            SynthItem::Engine => return self.step_track_sound(d),
             SynthItem::Scale => {
                 self.pad_scale_pick = (self.pad_scale_choice() as i32 + d)
                     .clamp(0, self.pad_scale_choices() as i32 - 1)
@@ -354,6 +355,60 @@ impl App {
         }
         self.project_edit = true;
         vec![Effect::SynthPads(self.synth_pads)]
+    }
+
+    /// The Instrument row's choices for a track: Kit (None), the built-in
+    /// engines, then the plugin synths, as (node id, name).
+    fn sound_choices(&self) -> Vec<Option<(&'static str, &'static str)>> {
+        std::iter::once(None)
+            .chain(Engine::ALL.iter().map(|e| Some((e.node_id(), e.name()))))
+            .chain(self.plugin_synths.iter().map(|&p| Some(p)))
+            .collect()
+    }
+
+    /// The Instrument row's value: what the selected track plays.
+    fn engine_text(&self) -> String {
+        match self.track_sound(self.track) {
+            Some(h) => h.name.to_string(),
+            None => "Kit".to_string(),
+        }
+    }
+
+    /// The Instrument row stepped by `d`: the selected track's sound, Kit first,
+    /// then the engines and the plugin synths.
+    fn step_track_sound(&mut self, d: i32) -> Vec<Effect> {
+        let choices = self.sound_choices();
+        let now = self.track_sound(self.track).map(|h| h.id);
+        let at = choices
+            .iter()
+            .position(|c| c.map(|c| c.0) == now)
+            .unwrap_or(0);
+        let to = (at as i32 + d).clamp(0, choices.len() as i32 - 1) as usize;
+        if to == at {
+            return Vec::new();
+        }
+        let pick = choices[to];
+        let track = self.track;
+        self.set_track_sound(
+            track,
+            pick.map(|(id, name)| crate::instruments::Held { id, name }),
+        );
+        vec![Effect::TrackSound {
+            track,
+            id: pick.map(|c| c.0),
+        }]
+    }
+
+    /// What track `track` plays as its own instrument (None: the kit).
+    pub fn track_sound(&self, track: usize) -> Option<crate::instruments::Held> {
+        self.track_sounds.get(track).copied().flatten()
+    }
+
+    /// Track `track`'s own instrument as the audio loop has it now.
+    pub fn set_track_sound(&mut self, track: usize, held: Option<crate::instruments::Held>) {
+        if let Some(t) = self.track_sounds.get_mut(track) {
+            *t = held;
+        }
     }
 
     /// The pads panel's Chromatic | In key switch (Jay, 12:22Z): the bank
@@ -549,7 +604,7 @@ impl App {
             let text = |item| self.synth_item_text(item).1;
             notes.push(format!(
                 "synth options: {}, scale {} on {}, pad layout {}, tuning {} (root {}, A4 {})",
-                text(SynthItem::Engine),
+                self.synth_pads.engine.name(),
                 text(SynthItem::Scale),
                 text(SynthItem::Root),
                 text(SynthItem::Layout),
@@ -571,4 +626,28 @@ impl App {
         };
         (notes, fx)
     }
+}
+
+/// The Instrument row's label, naming the selected track so the row says
+/// whose sound it sets ("Track 2 instrument").
+fn instrument_label(track: usize) -> &'static str {
+    const LABELS: [&str; 16] = [
+        "Track 1 instrument",
+        "Track 2 instrument",
+        "Track 3 instrument",
+        "Track 4 instrument",
+        "Track 5 instrument",
+        "Track 6 instrument",
+        "Track 7 instrument",
+        "Track 8 instrument",
+        "Track 9 instrument",
+        "Track 10 instrument",
+        "Track 11 instrument",
+        "Track 12 instrument",
+        "Track 13 instrument",
+        "Track 14 instrument",
+        "Track 15 instrument",
+        "Track 16 instrument",
+    ];
+    LABELS.get(track).copied().unwrap_or("Instrument")
 }

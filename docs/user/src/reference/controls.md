@@ -34,7 +34,7 @@ On the current test build, some buttons (REC, OVERDUB, UNDO, PLAY START, TRACK M
 | **TRACK MIX** | Opens or closes the mixer over the page you are on. **SHIFT + TRACK MIX** opens the pad mixer. | Works |
 | **PAD BANK A–D** | Switches the pads to bank A, B, C or D. **SHIFT** + a bank button, or a second press, gives banks E–H. | Works |
 | **FULL LEVEL** | Every pad plays at full velocity, however hard you hit it. Press again to turn it off. **SHIFT + FULL LEVEL** is Half Level (every hit at half velocity). | Works |
-| **16 LEVEL** | Planned. **SHIFT + 16 LEVEL** switches the synth pads between Chromatic and In key (with no scale picked yet, In key picks C Major; the line at the bottom of the screen says which). | Next build (SHIFT) |
+| **16 LEVEL** | 16 Levels: the pad you hit last plays on all 16 pads, each a step of velocity, tune, cutoff, decay or start, and the [16 Levels panel](../making-music/playing-live.md#16-levels) opens on Play. Press again to turn it off. **SHIFT + 16 LEVEL** switches the synth pads between Chromatic and In key (with no scale picked yet, In key picks C Major; the line at the bottom of the screen says which). | Next build |
 | **Q-Link knobs 1–4** | Turn the four parameters shown in the Q-Link column at the right of the screen. What they control depends on the page. | Works |
 | **Data wheel** | On a page with settings (the menus, Prefs, the Sample tab, the Pads tab's Pad view, the Synth tab, Arrange): picks a row. On the Play page, picks the kit. | Works (pages: next build) |
 | **–** and **+** | Step the picked row's value down or up. | Works (pages: next build) |

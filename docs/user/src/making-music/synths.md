@@ -1,6 +1,6 @@
 <!--
 status: changing
-covers: rust/mpfree-synth rust/mpfree-synth-ui rust/mpfree-scale rust/mpfree-app/src/synth.rs rust/mpfree-app/src/app/synth_pads.rs
+covers: rust/mpfree-synth rust/mpfree-synth-ui rust/mpfree-scale rust/mpfree-app/src/synth.rs rust/mpfree-app/src/app/synth_pads.rs rust/mpfree-app/src/instruments.rs
 checked: 2026-11-13 9560b32
 -->
 
@@ -10,16 +10,17 @@ MPFree has five synths built in. Put one on the pads and they become a keyboard:
 
 ## Put a synth on the pads
 
-There are two ways:
+There are three ways:
 
+- Give a track its own synth: see [A synth for each track](#a-synth-for-each-track). The pads play it whenever that track is selected, and so do the track's clips.
 - Tap the **Synth** tab. The pads play the synth while you are there and after you leave, until you pick a kit.
-- Or, on the Play page, turn the data wheel past the last kit. The list ends with **Synth: Poly** (or whichever synth you picked last).
+- Or, on the Play page, turn the data wheel past the last kit. The list ends with **Synth: Poly** (or the synth it had before tracks got their own).
 
-To go back to drums, pick a kit with the data wheel on the Play page.
+To go back to drums, pick a kit with the data wheel on the Play page, or set the track's instrument back to **Kit**.
 
 ## The five synths
 
-Press **MENU** on the Synth tab and change **Engine** to switch synth. A note still sounding on the old one finishes naturally.
+Any of the five can be a track's own instrument (see [A synth for each track](#a-synth-for-each-track)), and any track can have a different one.
 
 | Synth | What it is | Good for | Presets |
 |---|---|---|---|
@@ -30,6 +31,30 @@ Press **MENU** on the Synth tab and change **Engine** to switch synth. A note st
 | **Wavetable** | Two oscillators that sweep through stacks of waveforms | Evolving pads, vocal leads, growling basses | Morph Pad, Vowel Lead, Sync Sweep, Digital Bell, Growl Bass, Organ, Harmonic Pluck, FM Keys |
 
 Each synth also has an **Init** preset (Init Kit on Drums): a plain starting point to build your own sound.
+
+## A synth for each track
+
+Every track can play its own instrument: Poly on one, FM on another, a plugin synth on a third, while the rest play the kit. The selected track is the one on the **Armed** row of the Record panel (see [Clips and patterns](clips.md#recording-a-clip)).
+
+1. Select the track.
+2. Press **MENU** on the Synth tab. The top row is named after the track: **Track 2 instrument**.
+3. Change it. It steps through **Kit** (the pads' kit, as every track starts), **Poly**, **FM**, **Drums**, **Pluck** and **Wavetable**, then any plugin synths you have put in `files/plugins/` on the stick.
+
+{{shot: synth-instrument | Track 2's instrument set to a plugin synth, with the row's help on the right.}}
+
+- **It starts as a copy** of the synth's sound on the Synth tab, edits included. From then on it is the track's own: the Synth tab edits the selected track's instrument, and its title says whose it is ("Track 2"). Loading a preset gives the track a fresh copy with that preset.
+- **The pads play the selected track.** Select another track and the pads play its instrument, or the kit if it has none. The track's clips play its instrument too, whichever track is selected.
+- **Changing it is smooth.** Notes still sounding on the old instrument finish naturally while the new one starts. **Kit** takes the instrument away, and the track plays the kit again.
+- **Its own mixer channel.** A track with an instrument gets a channel named after it (**Track 1**, **Track 2**) in the mixer's Tracks view, with its own fader, inserts and sends. The channel only shows while the track has an instrument. See [Mixing and effects](mixing-and-effects.md).
+- **Shared options.** The scale, pad layouts, tuning and octave on the Synth tab's options are the same for every track's instrument.
+- **A plugin synth** runs in a process of its own, as plugin effects do. If it crashes, the track goes quiet and the plugin restarts on its own, while the rest of MPFree plays on. If it can't be started at all, the line along the bottom of the screen says so for a few seconds and the track keeps what it had. Its controls show on the Synth tab like a built-in synth's, without presets.
+
+{{shot: synth-track | The Synth tab editing track 2's own FM, with the Glass Keys preset.}}
+
+Coming:
+- A track's instrument isn't saved with the project yet: when MPFree starts, and when you open a project or start a new one, every track plays the kit again.
+- The instrument's name beside each track on the Play and Arrange pages, and changing it there.
+- The voices and meters on the Synth tab's Output page show the pads' synth, not a track's own.
 
 ## The Synth tab
 
@@ -98,7 +123,7 @@ Out of the box every synth plays in standard tuning: twelve equal steps to the o
 
 The drum synth keeps its own pitches whatever you pick here.
 
-Everything in the Synth tab's options (the engine, scale, pad layouts and tuning) is the song's: it is saved in your project and comes back when you open it, and New project starts chromatic in C at A4 = 440 Hz (see [Saving your work](saving.md)). If a tuning file or one of your own scales is gone by then, that one choice goes back to its default, and the Console says so.
+Everything else in the Synth tab's options (the scale, pad layouts and tuning) is the song's: it is saved in your project and comes back when you open it, and New project starts chromatic in C at A4 = 440 Hz (see [Saving your work](saving.md)). If a tuning file or one of your own scales is gone by then, that one choice goes back to its default, and the Console says so.
 
 ### Your own tunings
 
@@ -122,4 +147,4 @@ How hard you hit a pad sets how loud the note plays, as with drums. **FULL LEVEL
 Note Repeat, Latch and the arpeggiator all play the synth too: see [Note Repeat, Latch and the arpeggiator](note-repeat-and-arp.md).
 
 > [!MPC]
-> The MPC's plugin instruments (such as its bass and electric-piano plugins) and expansions are not in MPFree. MPFree has its own five synths instead, with their controls on one tab and the Q-Links following each preset. The scales and chords of the MPC's Pad Perform mode are replaced by the scale settings and the per-bank pad layouts here: switch layouts with the PAD BANK buttons without leaving the page you are on.
+> The MPC's plugin instruments (such as its bass and electric-piano plugins) and expansions are not in MPFree. MPFree has its own five synths instead, with their controls on one tab and the Q-Links following each preset, and it can host CLAP plugin synths. As on the MPC, where each track plays a program, each track can play its own instrument; a track without one plays the kit on the pads. The scales and chords of the MPC's Pad Perform mode are replaced by the scale settings and the per-bank pad layouts here: switch layouts with the PAD BANK buttons without leaving the page you are on.
