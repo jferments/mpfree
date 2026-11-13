@@ -124,6 +124,11 @@ pub enum View {
     /// press on a macro card in the Q-Link column (layout spec 4b). Not a
     /// tab; its Back goes back to the page it opened over.
     Macros,
+    /// The browser (mpfree-browser-ui) over the page under the top bar:
+    /// BROWSE opens and closes it (controls decision 13; Jay's ask after
+    /// live test 3). Projects (New, Open, Save), samples and the rest. Not
+    /// a tab.
+    Browser,
 }
 
 /// The header's tabs, in the order of the approved layout spec
@@ -188,7 +193,8 @@ impl View {
             | View::System
             | View::Mixer
             | View::Chain
-            | View::Macros => None,
+            | View::Macros
+            | View::Browser => None,
             v => Some(v),
         }
     }
@@ -229,6 +235,7 @@ impl View {
             View::Mixer => "Mixer",
             View::Chain => "FX chain",
             View::Macros => "Macros",
+            View::Browser => "Browser",
         }
     }
 }
@@ -377,6 +384,8 @@ pub struct ButtonMap {
     pub track_mute: Option<u8>,
     /// The data dial's push, found with the control mapper.
     pub data_push: Option<u8>,
+    /// BROWSE (SHIFT: save the project), found with the control mapper.
+    pub browse: Option<u8>,
 }
 
 impl ButtonMap {
@@ -491,6 +500,7 @@ impl ButtonMap {
             Job::QLink => self.q_link,
             Job::TrackMute => self.track_mute,
             Job::DataPush => self.data_push,
+            Job::Browse => self.browse,
         }
     }
 
@@ -521,6 +531,7 @@ impl ButtonMap {
             Job::QLink => &mut self.q_link,
             Job::TrackMute => &mut self.track_mute,
             Job::DataPush => &mut self.data_push,
+            Job::Browse => &mut self.browse,
         };
         *slot = code;
     }
@@ -867,8 +878,12 @@ pub enum Effect {
     /// has them, otherwise the Pads tab's Pad view (the audio loop knows
     /// which).
     ProgEdit,
-    /// A control for the Pads tab's browser while it shows (Browse).
+    /// A control for the browser while it shows (BROWSE, or the Pads
+    /// tab's Browse view).
     Browse(BrowseKey),
+    /// SHIFT + BROWSE: save the project (the audio loop gathers its
+    /// engines' parts and the screen saves them).
+    SaveProject,
     /// SHIFT + PLAY START: the metronome on or off.
     Metronome,
     /// FILL on or off from the coming period: notes with the FILL and
@@ -891,6 +906,9 @@ pub enum BrowseKey {
     Enter,
     /// PLAY: hear the sound picked.
     Play,
+    /// ERASE: the item picked to the Trash (asks first). The full browser
+    /// only.
+    Erase,
 }
 
 pub struct App {
@@ -1523,6 +1541,11 @@ impl App {
         } else if Some(note) == self.map.play_start {
             self.arps.engine_at_mut(self.track).resume();
             fx.push(Effect::Time(TimeAction::Transport(Command::PlayStart)));
+        } else if Some(note) == self.map.browse && shift {
+            // SHIFT + BROWSE: save the project, from any page.
+            fx.push(Effect::SaveProject);
+        } else if Some(note) == self.map.browse {
+            fx.extend(self.toggle(View::Browser));
         } else if Some(note) == self.map.track_mix {
             fx.extend(self.toggle_mixer(shift));
         } else if let Some(e) = self.mode_button(note, shift) {
@@ -1656,8 +1679,12 @@ impl App {
         let fx = if is(m.erase) {
             // ERASE and SHIFT + ERASE wait for live erase and the FX lock
             // mode (with a step held); alone they do nothing. Held with
-            // SHIFT, TAP TEMPO opens the Console.
+            // SHIFT, TAP TEMPO opens the Console. In the browser, ERASE
+            // moves the item picked to the Trash (asking first).
             self.erase_held = true;
+            if self.view == View::Browser && !shift {
+                return Some(vec![Effect::Browse(BrowseKey::Erase)]);
+            }
             return Some(Vec::new());
         } else if is(m.main) {
             // MAIN: Play; on Play, the next view (All, Beats, Loop, Drum).
@@ -1884,6 +1911,8 @@ impl App {
                 scroll: true,
             }],
             View::Synth if self.shift => vec![Effect::SynthPage(delta.signum())],
+            View::Browser if self.shift => vec![Effect::Browse(BrowseKey::Places(delta.signum()))],
+            View::Browser => vec![Effect::Browse(BrowseKey::Wheel(delta))],
             View::Pads if self.pads_browse && self.shift => {
                 vec![Effect::Browse(BrowseKey::Places(delta.signum()))]
             }
@@ -2111,7 +2140,7 @@ impl App {
 
     /// The wheel, its push, - / + and PLAY go to the Pads tab's browser.
     fn browsing(&self) -> bool {
-        self.view == View::Pads && self.pads_browse
+        (self.view == View::Pads && self.pads_browse) || self.view == View::Browser
     }
 
     /// A page whose rows the wheel, - / + and the wheel's push work
@@ -4263,6 +4292,38 @@ mod tests {
         app.set_pads_browse(true);
         app.tab(0);
         assert!(!press(&mut app, button::PLAY).contains(&Effect::Browse(BrowseKey::Play)));
+    }
+
+    #[test]
+    fn browse_opens_the_browser_over_the_page_and_shift_browse_saves() {
+        let mut app = ready();
+        // Not found yet: BROWSE does nothing.
+        assert!(press(&mut app, 120).is_empty());
+        app.map.browse = Some(120);
+        app.map.erase = Some(121);
+        app.map.data_push = Some(111);
+        app.tab(2);
+        assert_eq!(app.view(), View::Arrange);
+        assert_eq!(press(&mut app, 120), vec![Effect::Show(View::Browser)]);
+        assert_eq!(View::Browser.tab_index(false), None);
+        // The wheel, its push, SHIFT + wheel and ERASE are the browser's.
+        assert_eq!(app.wheel(1), vec![Effect::Browse(BrowseKey::Wheel(1))]);
+        assert_eq!(press(&mut app, 111), vec![Effect::Browse(BrowseKey::Push)]);
+        assert_eq!(press(&mut app, 121), vec![Effect::Browse(BrowseKey::Erase)]);
+        app.button(button::SHIFT, true, 0.0);
+        assert_eq!(app.wheel(-2), vec![Effect::Browse(BrowseKey::Places(-1))]);
+        // SHIFT + BROWSE saves, from here or any page, and stays.
+        assert_eq!(press(&mut app, 120), vec![Effect::SaveProject]);
+        app.button(button::SHIFT, false, 0.0);
+        assert_eq!(app.view(), View::Browser);
+        // BROWSE again: back to the page it opened over.
+        assert_eq!(press(&mut app, 120)[0], Effect::Show(View::Arrange));
+        app.button(button::SHIFT, true, 0.0);
+        assert_eq!(press(&mut app, 120), vec![Effect::SaveProject]);
+        app.button(button::SHIFT, false, 0.0);
+        assert_eq!(app.view(), View::Arrange);
+        // ERASE elsewhere is still ERASE.
+        assert!(!press(&mut app, 121).contains(&Effect::Browse(BrowseKey::Erase)));
     }
 
     #[test]

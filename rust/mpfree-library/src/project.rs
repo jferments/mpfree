@@ -106,6 +106,22 @@ impl NewSample {
             data,
         }
     }
+
+    /// A sound already in a file (an audio track's take in its
+    /// [`Library::work_dir`]), copied in whole with the save as any other
+    /// (the project keeps its own copy). A link is not followed.
+    pub fn file(file: impl Into<String>, path: PathBuf) -> NewSample {
+        NewSample::new(
+            file,
+            Arc::new(move |w: &mut dyn Write| {
+                let mut f = OpenOptions::new()
+                    .read(true)
+                    .custom_flags(0x20000) // O_NOFOLLOW
+                    .open(&path)?;
+                io::copy(&mut f, w).map(|_| ())
+            }),
+        )
+    }
 }
 
 impl std::fmt::Debug for NewSample {
@@ -1034,6 +1050,39 @@ mod tests {
             fs::read(lib.sample_path(&p, "closure.wav").unwrap()).unwrap(),
             b"RIFF a closure"
         );
+    }
+
+    #[test]
+    fn takes_in_a_work_folder_are_copied_in_and_cleared() {
+        let d = temp();
+        let lib = Library::at(&d).unwrap();
+        let work = lib.work_dir("audiotracks").unwrap();
+        assert_eq!(work, lib.root().join(".work/audiotracks"));
+        assert!(lib.work_dir("../x").is_err());
+        assert!(lib.work_dir("Bad").is_err());
+        fs::write(work.join("take-1.wav"), b"RIFF take one").unwrap();
+        let p = Loc::top(Place::Projects).join("Song").unwrap();
+        let snap = Snapshot {
+            meta: meta("Song", 1),
+            parts: vec![("audiotracks".into(), "take take-1.wav".into())],
+        };
+        let take = NewSample::file("take-1.wav", work.join("take-1.wav"));
+        lib.save_project_with(&p, &snap, 10, &[take]).unwrap();
+        let kept = lib.sample_path(&p, "take-1.wav").unwrap();
+        assert_eq!(fs::read(&kept).unwrap(), b"RIFF take one");
+        // The project has its own copy: clearing the work folder leaves it.
+        fs::create_dir(work.join("folder")).unwrap();
+        assert_eq!(lib.clear_work("audiotracks").unwrap(), 1);
+        assert!(!work.join("take-1.wav").exists());
+        assert!(work.join("folder").is_dir());
+        assert_eq!(fs::read(&kept).unwrap(), b"RIFF take one");
+        // A file that has gone fails the save, which leaves the last one.
+        let gone = NewSample::file("take-2.wav", work.join("take-2.wav"));
+        assert!(lib.save_project_with(&p, &snap, 10, &[gone]).is_err());
+        assert!(lib.sample_path(&p, "take-2.wav").is_err());
+        assert_eq!(lib.open_project(&p).unwrap().meta.saved, 1);
+        // The work folder isn't a place: the browser never shows it.
+        assert!(Place::ALL.iter().all(|pl| pl.folder() != ".work"));
     }
 
     #[test]

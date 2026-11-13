@@ -1,6 +1,6 @@
 # The browser and projects
 
-**Status:** built (crates `mpfree-library` and `mpfree-browser-ui`). In the pad player since 12 Nov 2026 as the Pads tab's Browse view (`Pick::Pads`, layout spec section 4e); the full browser over every page (BROWSE) is not wired yet. The design, its research and the open decisions are in the plan doc: https://claude.ai/artifact/DQbPuih2LPA4pUkQUx3QyW. Controls decision 13 (Jay, 2026-11-11): BROWSE opens the browser, SHIFT + BROWSE saves the project.
+**Status:** built (crates `mpfree-library` and `mpfree-browser-ui`). In the pad player since 12 Nov 2026 as the Pads tab's Browse view (`Pick::Pads`, layout spec section 4e), and since 13 Nov as the full browser over every page (BROWSE), with whole projects: SHIFT + BROWSE, Save, Save as, Open and New project (section "Projects in the pad player"). The design, its research and the open decisions are in the plan doc: https://claude.ai/artifact/DQbPuih2LPA4pUkQUx3QyW. Controls decision 13 (Jay, 2026-11-11): BROWSE opens the browser, SHIFT + BROWSE saves the project.
 
 ## What it does
 
@@ -47,6 +47,7 @@ library/
   Samples/  Kits/  Patterns/  Recordings/
   Instruments/<engine>/<name>.preset   user presets (Jay, 2026-11-11 22:47Z)
   .trash/<id>/<name>      with origin.txt (where it was, when)
+  .work/<owner>/          an engine's files for work not saved yet (Library::work_dir)
 ```
 
 - A location is a place plus checked names (`Loc`), never a typed path. Every folder on the way must be a real folder; links are never followed for reads or writes.
@@ -66,6 +67,31 @@ A project is one folder, complete in itself, readable on any computer.
 - `samples/`: every sound the project uses, copied in and named by a 128-bit hash of its bytes and its length, so the same sound is stored once and a project never misses a sample because a drive is gone. Two different sounds that hash the same are told apart by comparing bytes.
 - `versions/<id>/`: the last 10 saves before this one, each with its `project.txt` and `parts/`. **Earlier saves** on a project lists them, newest first, by when they were saved. Open on one gives its parts to the app in place of the project's (it asks first over unsaved work) and marks the work unsaved; the next save makes it the newest, and the save it replaces becomes an earlier save, so nothing is lost. An earlier save's row only opens: Delete, Rename and the rest do nothing there.
 - A save writes the new parts to `.parts-new/`, syncs them, moves the old `parts/` into `versions/`, renames the new parts into place, then replaces `project.txt` through a `.part` file. Opening a project finishes or undoes a save that was cut off.
+- The Projects place's list has **New project**, **Save as** and **Save** at the top (pickers never show them). Save asks the app for its parts (`BrowseAction::SaveRequested`); Save as asks for a name first; New project asks first over unsaved work (`Confirm::NewProject`), forgets the project and sends `BrowseAction::NewProject`. The app says when the work changes (`Browser::set_unsaved`), so Open and New ask before throwing it away.
+- **Work folders.** `Library::work_dir(owner)` is `library/.work/<owner>/` (made when missing, never shown: it is not a place): where an engine keeps the files of work not saved yet, such as an audio track's takes, on the library's own drive. A save copies them in with `NewSample::file(name, path)` (read without following a link, written as any other sample), so the project keeps its own copy. `Library::clear_work(owner)` removes the files in it (not links or folders), for New project or an open over unsaved work.
+
+### The parts
+
+The pad player's parts, one file each in `parts/`. Each is text: a first line naming its format and version, then lines a reader skips when it doesn't know them, so an older build opens a newer project as far as it can. Code: `mpfree-app/src/project.rs`, `mpfree-seq/src/save.rs`.
+
+| Owner | Engine | Format | What it holds |
+|---|---|---|---|
+| `clips` | the time engine (`mpfree-seq`) | `mpfree-clips 1` | Every track (name, destination, swing, mute, through-arp, record touch) and its clips: length, speed, swing, quantise, follow action, notes with chance, condition, ratchet and touch, locks, and move lanes. Then the scenes (names, mutes, follow, stored values) and the song (placements, markers, morphs, song lanes). `Project::check` runs on what was read. |
+| `mixer` | the mixer (`mpfree-fx`) | `mpfree-mixer 1` | `padmutes`, each strip's controls (`strip t0 1=-6 2=0.25 ...`), and each insert in order: `insert <strip> <uid> <on> <node id> [key=<strip>] [extras]`, its `param` lines and its `state` (base64, from `Node::save_state`). Left out: the master's volume (the Level stays the room's, never a file's), the line input's source, monitor and arm (Prefs), and the pads' mute controls (in `padmutes`). |
+| `mod` | the mod engine (`modmix.rs`) | `ModMix::save` | The mod engine's set-up (the macros' targets, the matrix) and the macros' names. Loaded after the mixer's inserts are in. |
+| `synth` | the synth (`synth.rs`) | `mpfree-synth 1` | `[options]` (the Synth tab's options, as `settings/synth.conf`), then one `[sound <engine>]` section per engine with its sound (`SoundPreset::capture`) and preset name. |
+| `sampler` | the kits (`sample_page.rs`) | `mpfree_sampler::save` | The kits, their pads and settings; their sounds go in `samples/` as WAV, named by the sound's id, written only when missing. |
+| `midi` | the I/O model (`mpfree-midi-ui`) | `MidiPart` | MIDI ports, sync and CV. |
+
+Effects are made by id through `project::make_node(id, extras)` (today `mpfree_fx_ui::make`; the CLAP host adds `clap:` ids there). A node keeps more than its parameters with `Node::save_state` / `load_state` and names what it needs to be made again (a plug-in's file) with `save_extras`. An effect this build can't make is left out of the open with a line in the log, and the rest of the chain opens.
+
+### Projects in the pad player
+
+- **Save** (SHIFT + BROWSE on any page, or Save in the browser). The audio loop copies its engines' parts between periods (`project::Collected`: the tempo, a copy of the clips, the mixer's and mod engine's text, the synth's) and sends them to the screen thread (`ToUi::ProjectParts`), which adds its own (the kits with their sounds, the I/O setup) and gives the lot to the browser's worker (`Browser::save_with`). The worker writes it whole or not at all. While an open is still landing, a save is refused with a line in the log.
+- **Open** (a project's row, Open or an earlier save). The screen thread reads the parts and builds what is costly there (`project::opening`: the time engine compiled from the clips, the mixer's effects made and loaded), opens the kits itself (`SamplePage::open_part`) and the I/O setup, then sends one box to the audio loop (`FromUi::OpenProject`). The loop stops the transport and every sound, sets the tempo, swaps the time engine in, gives the synth its sounds and options, and opens the mixer over the next periods (`MixHost::open` / `tend_open`: every insert out, the new ones in order, then the strips' controls, the pad mutes and the mod engine), using the mixer's queued edits so no period allocates. The engines it replaced go back to the screen thread in the same box to be freed (`ToUi::ProjectBack`). A part that doesn't read is left out with a line in the log; its engine keeps what it has.
+- **New project.** Once the start-up effects are in, the audio loop sends its parts as they are at start, once (`ToUi::ProjectDefaults`). New project opens a project made from them with an empty song of 8 tracks (`project::new_snapshot`), and the kits go back to the factory kits loaded at start (`SamplePage::reset_kits`).
+- **Unsaved work.** The screen marks the work unsaved when it sends an edit (`Player::saw_action`: anything but pads played, pages, kits picked, the Level, the transport, previews and the browser's own) or an engine reports one (clips, steps, synth, chain and macros), except in the moments after an open or New lands (that is the open's own news). It errs on the side of asking: a clip launched counts too, since the time engine reports launches with its edits.
+- **Not in a project yet:** the looper's loops (`LoopHost` saves and loads already; it needs a clear for New), the per-track arps, and the audio tracks (their thread adds a part with takes through `work_dir` and `NewSample::file`).
 
 ## For the app (Hello MPC thread wires it)
 
@@ -110,8 +136,8 @@ if let Some(text) = snap.part("sampler") {
 
 ## Not yet
 
-- The full browser over every page (BROWSE, SHIFT + BROWSE to save) and the other pickers in the pad player (app thread). The Pads tab's picker is wired (above).
-- `LoadKit` and `LoadFactoryKit`: a kit file's format and saving a kit on its own come later (sampler thread).
-- Each engine's part (`transport`, `clips`, `sampler`, `synth`, `mixer`, `fx`, `mod`, `arp`, `looper` ...): each thread adds its own.
+- The other pickers in the pad player (presets on the Synth tab). The Pads tab's picker and the full browser are wired (above).
+- `LoadKit` and `LoadFactoryKit`, and `LoadPreset` / `TryPreset` in the full browser: a kit file's format and saving a kit on its own come later (sampler thread); presets with the synth thread's picker.
+- The looper's, the arps' and the audio tracks' parts (above).
 - Autosave.
 - Sharing the library over Ethernet (WebDAV and a web page), a desktop `mpfree-sync`, and USB file mode: plan section 9, decisions 9 to 11.

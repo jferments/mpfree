@@ -50,7 +50,7 @@ The Synth tab takes its colours from the theme picked in **Prefs > Appearance**,
 {{shot: synth-fm | The FM synth: the algorithm diagram shows which operators modulate which, and the levels show the six operators.}}
 
 > [!NOTE]
-> Edits to a preset last until you load another preset or switch off. Saving your own presets comes with the browser (see [Saving your work](saving.md)).
+> Each synth's sound, edits and all, is saved with the project (see [Saving your work](saving.md#projects)). Saving an edited sound as a preset of its own comes later.
 
 ## Playing the synth on the pads
 
