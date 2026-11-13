@@ -100,6 +100,7 @@ mod midi_out;
 mod mixing;
 mod modmix;
 mod modpanels;
+mod parts;
 mod perf;
 mod play_page;
 mod play_widgets;
@@ -377,6 +378,11 @@ impl Out {
                 ));
             }
         }
+    }
+
+    /// Report lines the queue had no room for so far.
+    fn report_dropped(&self) -> u64 {
+        self.queued.as_ref().map_or(0, |q| q.dropped())
     }
 
     /// Writes what is queued (up to a second) and goes back to writing the
@@ -1306,16 +1312,42 @@ impl Ports {
         self.lights.as_ref().map_or(0, |l| l.dropped())
     }
 
+    /// The lights' thread's counts for the Dev page: refused by the port,
+    /// dropped with the queue full, stalls.
+    fn queue_counts(&self) -> (u64, u64, u64) {
+        self.lights
+            .as_ref()
+            .map_or((0, 0, 0), |l| (l.failed(), l.dropped(), l.stalls()))
+    }
+
+    /// The lights' thread's watchdog (control.rs): a line when it has
+    /// written nothing for 2 s with messages waiting, and when it writes
+    /// again. Allocates only for those lines.
+    fn queue_watch(&mut self, now: Instant) -> Option<String> {
+        match self.lights.as_mut()?.watch(now)? {
+            control::LightsWatch::Stalled { waiting } => Some(format!(
+                "controller output: the lights' thread has written nothing for {} s with {waiting} messages \
+                 waiting (the port takes nothing); the lights and the session ping are late",
+                control::STALL.as_secs()
+            )),
+            control::LightsWatch::Resumed { after } => Some(format!(
+                "controller output: the lights' thread is writing again, {:.1} s after the stall was seen",
+                after.as_secs_f64()
+            )),
+        }
+    }
+
     /// Stops queueing: the lights' thread writes what is left (up to a
     /// second) and the line says what it did.
     fn unqueue(&mut self) -> Option<String> {
         let s = self.lights.take()?.finish(Duration::from_secs(1));
         Some(format!(
             "controller output (its own thread): {} messages written, {} refused by the port, {} dropped with \
-             the queue full{}",
+             the queue full, {} stalls{}",
             s.written,
             s.failed,
             s.dropped,
+            s.stalls,
             if s.unfinished {
                 "; still writing at the end"
             } else {
@@ -3301,6 +3333,9 @@ fn player_session(
     let mut engines = engines::EngineProbes::new();
     out.show(gui::ToUi::Engines(engines.shared()));
     let engine_shared = engines.shared();
+    // The period's parts outside the engines, timed so a slow period says
+    // where its time went (parts.rs).
+    let mut parts = parts::Parts::new(engines.shared());
     cores.show(&engine_shared.cores);
     // MIDI from outside (midi_in.rs): the 5-pin MIDI In (cable 2, already
     // open with the controller's other cables) and USB keyboards, read only,
@@ -3366,6 +3401,7 @@ fn player_session(
     while i < total_periods {
         let t_read = Instant::now();
         let period_span = Span::start();
+        parts.begin();
         let t = started.elapsed().as_secs_f64();
         let mut kit_to: Option<usize> = None;
         let mut audio_change: Option<u32> = None;
@@ -3373,6 +3409,7 @@ fn player_session(
         // Hits are timed only when they sound at once (not on the arp's grid).
         let direct = !app.generating();
         while let Ok(a) = from_ui.try_recv() {
+            let (t_item, item) = (Instant::now(), parts::Name::of(&a));
             match a {
                 gui::FromUi::Pad { pad, down: true }
                     if pad < 16 && app.mute_keys() != app::MuteKeys::Off =>
@@ -3663,6 +3700,7 @@ fn player_session(
                     }
                 }
             }
+            parts.item_named(parts::SCREEN_ACTIONS, t_item, &item);
         }
         // MIDI Learn listens only while the chain editor's learn is armed:
         // Back or closing the editor stops it too.
@@ -3680,6 +3718,7 @@ fn player_session(
         if let Some(m) = view_back.take() {
             view_back = out.try_show(m).err();
         }
+        parts.lap(parts::SCREEN_ACTIONS);
         ports.show_pressure = app.settings.show_pressure;
         let mut got = ports.poll(out, &mut buf)?;
         let mt = ports.t();
@@ -3786,6 +3825,7 @@ fn player_session(
             }
         }
         for m in got {
+            let (t_item, event) = (Instant::now(), m.event);
             if let Some((token, status)) = akai::session_reply(&m.bytes) {
                 if token == akai::SESSION_TOKEN && status == akai::SESSION_RUNNING {
                     last_reply = Instant::now();
@@ -3941,7 +3981,9 @@ fn player_session(
                     fx.extend(app.known_control(app::Code::Cc(cc)));
                 }
             }
+            parts.item(parts::MIDI_IN, t_item, &event);
         }
+        parts.lap(parts::MIDI_IN);
         // Letting go of a Q-Link unlights its card, and ends a turn on the
         // Sample page (one undo step).
         for (k, _) in touch_hold.due(t).iter().enumerate().filter(|(_, &d)| d) {
@@ -3970,6 +4012,7 @@ fn player_session(
                 app::Effect::MixerStep(d) if !io_shown(&mix) => app::Effect::Kit(d),
                 e => e,
             };
+            let (t_item, item) = (Instant::now(), parts::Name::of(&e));
             match e {
                 app::Effect::Light(note, value) if akai::app_lights(note) => {
                     // Through CV out's writer while it shares the port.
@@ -4182,6 +4225,7 @@ fn player_session(
                     }
                 }
             }
+            parts.item_named(parts::APP, t_item, &item);
         }
         fx.append(&mut later);
         if let Some(p) = audio_change {
@@ -4278,6 +4322,7 @@ fn player_session(
                 }
             }
         }
+        parts.lap(parts::APP);
         let time_span = Span::start();
         app.set_rolling(time.info().state.rolling());
         // Another device's clock, when the project's tempo is from a port
@@ -4349,6 +4394,7 @@ fn player_session(
         // (the pads' notes start here; their sounds are the sampler's or
         // the synth's).
         engines.stop(engines::TIME, time_span);
+        parts.begin();
         // The pads' own hits: the first sound of a press shows the pad
         // down; the arp's repeats flash it.
         for &(pad, v) in &seq.live_hits[..seq.n_live] {
@@ -4496,6 +4542,7 @@ fn player_session(
             out.show(gui::ToUi::Session("No reply".into(), Tone::Bad));
         }
         voices = voices.max(player.playing() + synth.active_voices());
+        parts.lap(parts::PADS);
         let t_render = Instant::now();
         // Warped pads play at the transport's tempo.
         player.set_tempo(time.info().bpm);
@@ -4560,9 +4607,11 @@ fn player_session(
         // safety. The input strip follows the line input and Monitor.
         // Effects the builder made go into their chains; the ones edits took
         // out go back to it to be dropped.
+        parts.begin();
         if let Some(line) = mix.poll_built() {
             out.note(line);
         }
+        parts.lap(parts::PADS);
         let t_mix = Span::start();
         mix.follow(looper.line.is_open(), looper.monitor);
         let ctx = mixing::ctx(RATE, i * PERIOD as u64, app.settings.bpm, time.block());
@@ -4592,6 +4641,7 @@ fn player_session(
                 engines.add(engines::SAMPLER, t_rec.elapsed());
             }
         }
+        parts.begin();
         if let Some(st) = mix.poll_state(Instant::now()) {
             out.show(gui::ToUi::Mixer(Box::new(st)));
         }
@@ -4655,6 +4705,7 @@ fn player_session(
             frames[2 * f + 1] = float_to_s32(right[f]);
         }
         let xruns = play.xruns;
+        parts.lap(parts::SCREEN);
         engines.stop(engines::PERIOD, period_span);
         play.write(&frames, i)?;
         // How much the card has queued now sets the next period's deadline
@@ -4669,6 +4720,7 @@ fn player_session(
         // A synth left out of this period (late) comes back before anything
         // plays it again.
         synth.settle(lane_until);
+        parts.begin();
         match delay {
             // An underrun in this write dropped the period: no timing for it.
             Ok(d) if play.xruns == xruns => {
@@ -4691,6 +4743,9 @@ fn player_session(
         // no room for (at most a line a second).
         if let Some(e) = ports.queue_error() {
             out.note(&e);
+        }
+        if let Some(line) = ports.queue_watch(Instant::now()) {
+            out.note(&line);
         }
         let d = ports.queue_dropped();
         if d != lights_dropped && lights_noted.elapsed() >= Duration::from_secs(1) {
@@ -4752,6 +4807,7 @@ fn player_session(
                 "status: {}",
                 cores.status(cores::Counts::read(&player, &mix.mixer, &synth))
             ));
+            out.note(&format!("status: {}", parts.status()));
             out.note(&format!("status: {}", touch_hold.describe()));
         }
         if last_timing.elapsed() >= Duration::from_millis(250) {
@@ -4787,6 +4843,10 @@ fn player_session(
             }));
             window_peak = 0.0;
             engines.publish();
+            let (failed, dropped, stalls) = ports.queue_counts();
+            engine_shared
+                .parts
+                .set_counts(failed, dropped, stalls, out.report_dropped());
             // The second core's late parts: on the Dev page, and in the log
             // within a second (a fallback is never silent).
             let counts = cores::Counts::read(&player, &mix.mixer, &synth);
@@ -4816,6 +4876,10 @@ fn player_session(
                 out.show(gui::ToUi::SynthPressures(bars[..n].to_vec()));
                 (shown_pressures, synth_pressures) = (n, bars);
             }
+        }
+        parts.lap(parts::AFTER);
+        if let Some(line) = parts.end(Instant::now(), t) {
+            out.note(&line);
         }
         i += 1;
         if stop {
