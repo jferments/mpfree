@@ -320,24 +320,24 @@ Still to come in the app: hold MAIN + pad to pick a track, SHIFT + NEXT SEQ for 
 
 ### The live test
 
-The app check (`MPFREE_APP_STEPS=app` with `collect-over-ssh.sh --app`, read-only) has nineteen phases, in this order, because later phases use the buttons the first one maps. The 12 Nov run skipped most of them, so the next run repeats them all with what has merged since:
+The app check (`MPFREE_APP_STEPS=app` with `collect-over-ssh.sh --app`, read-only) has nineteen phases, in this order, because later phases use the buttons the first one maps. The 12 Nov run skipped most of them, and the 13 Nov run stopped at phase 1, so the next run repeats them all with what has merged since (the live test 2 fixes in four phases, 4, 9, 11 and 14, and the retest of the Warp crash in 14):
 
 1. Developer tools and Map controls: REC, OVERDUB, PLAY, PLAY START, UNDO, ERASE, TAP TEMPO, the PAD BANK buttons, TRACK MIX, TRACK MUTE, Q-LINK, DATA DIAL PUSH and the six mode buttons first.
 2. The Dev pages.
 3. Kits, banks, Full and Half Level.
-4. The Play page's four views without pads, the loop strip's symbols, the Q-Link cards (no flicker), the pattern, the master bar and the mode buttons (PROG EDIT opens the Pads tab).
+4. The Play page's four views without pads, the loop strip's symbols, the Q-Link cards (no flicker), the pattern, the master bar and the mode buttons (PROG EDIT opens the Pads tab), and STOP's light (PLAY, REC and OVERDUB stay dark until Akai's messages for them are captured).
 5. Throws, the XY pad on Perform FX, and FILL.
-6. Arrange: clips, takes, Capture, the note editor (Grid, List, Tracker, Timing Correct, the Euclid rows), the Song view, the morph bar and Rec song.
+6. Arrange: clips, takes, Capture, the note editor (Grid, List, Tracker, Timing Correct, the Euclid rows set with the wheel, - / + and the push), the Song view, the morph bar and Rec song.
 7. TRACK MUTE and SHIFT + TRACK MUTE.
 8. Grains.
-9. The Synth tab's five engines (Poly, FM, Drums, Pluck, Wavetable), and Tuning and A4 in its options.
+9. The Synth tab's five engines (Poly, FM, Drums, Pluck, Wavetable), the wheel picking tiles, Drive turned up on Grit Bass (grittier, not quieter), and Tuning and A4 in its options.
 10. Note Repeat and the arp.
-11. The Looper tab: the live wave, STOP stopping the loop, layers, the tools, the undo history, trim, several loops and Resample.
+11. The Looper tab: the live wave, STOP stopping the loop, layers, the tools, the undo history, trim, several loops, Resample, a loop card's speaker (mute), Clear loop, and × on the last layer.
 12. The mixer, the chain editor, the I/O view (Audio, MIDI, Sync, CV; MIDI out is off in this build), the Q-LINK banks and the macros panel.
-13. The Pads tab: the pads, Browse, Pad, Copy, Paste, Clear, and Map to keys.
-14. The Sample tab: Wave, Chop, live chop, Stops, Also plays, Latch and Send to pad.
+13. The Pads tab: the pads, Browse, Pad (the wheel picks a row), Copy, Paste, Clear, and Map to keys.
+14. The Sample tab: the wheel on its rows and SHIFT + - / + zoom, the Warp retest on a very short sound (the 13 Nov crash), Wave, Chop, live chop, Stops, Also plays, Latch and Send to pad.
 15. The Sample tab's scenes (Store A, Store B, the crossfader, Return to A) and FX (the chain editor on the pad's channel and on Drums).
-16. Prefs (every row, the wheel's push), System info and saving.
+16. Prefs (every row, the wheel's push, Loop memory set to 10 min for the second boot), System info and saving.
 17. A MIDI keyboard on the 5-pin MIDI IN, if there is one: kit pads and the synth from the keys. Never a USB keyboard while the stick holds the running system.
 18. Touch: the Touch lab, Calibrate touch, and Dev > Touch (Save writes only the stick's partition 4).
 19. Menus, the Console chord, TAP TEMPO and STOP.
