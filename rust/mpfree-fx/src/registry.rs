@@ -17,7 +17,7 @@ use crate::presets as p;
 use crate::{
     Character, Chorus, Cloud, Comb, Compressor, Crush, Delay, DjFilter, Drive, Ducker, Eq, Flanger,
     Harmonizer, LoFi, MasterSafety, MultiFilter, Perform, Phaser, PitchCorrect, PitchShifter,
-    Preset, TransientShaper,
+    Preset, TransientShaper, Tuner,
 };
 
 /// Where an effect sits in the picker.
@@ -275,6 +275,14 @@ pub static EFFECTS: &[FxEntry] = &[
         "Throws, stutters, the XY pad",
         Performance,
         || Box::new(Perform::new()),
+        &[],
+    ),
+    e(
+        "mpfree.fx.tuner",
+        "Tuner",
+        "Tune a guitar, a bass or a voice",
+        Utility,
+        || Box::new(Tuner::new()),
         &[],
     ),
     FxEntry {

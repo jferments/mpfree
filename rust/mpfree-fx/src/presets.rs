@@ -2,8 +2,8 @@
 //! [`presets`] by node id. A preset holds the values that differ from the
 //! node's defaults; the effect page keeps the Mix and Quality the effect
 //! has (a preset sets the sound, not how much of it is heard or what it
-//! costs). The DJ filter (one knob), Master safety (a safety stage) and
-//! Perform FX (its own pad banks) have none.
+//! costs). The DJ filter (one knob), Master safety (a safety stage),
+//! Perform FX (its own pad banks) and the Tuner (a meter) have none.
 
 use crate::ids::{
     character, chorus, comb, compressor as comp, crush, delay, drive, ducker, eq, filter, flanger,

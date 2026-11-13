@@ -8,7 +8,7 @@ use crate::view::{self, FxPanel};
 use mpfree_fx::ids::{
     character, chorus, cloud, comb, compressor as comp, crush, delay, dj_filter as dj, drive,
     ducker, eq, filter, flanger, harmonizer as harm, master, perform as pf, phaser, pitch,
-    pitch_correct as tune, transient,
+    pitch_correct as tune, transient, tuner,
 };
 use mpfree_fx::{perform_state, presets};
 use mpfree_ui::widgets::{Chip, Header, Label};
@@ -315,7 +315,7 @@ const CHARACTER: Scene = Scene {
 
 /// The effects added with the registry, after Character so the earlier
 /// screens keep their numbers.
-const NEW_FX: [Scene; 6] = [
+const NEW_FX: [Scene; 7] = [
     Scene {
         name: "22-ducker-tempo",
         about: "Ducker, Big pump preset: two quarter-note cycles of the pump at the song's tempo",
@@ -390,6 +390,22 @@ const NEW_FX: [Scene; 6] = [
         focus: Some(harm::VOICE1),
         levels: None,
         meters: &[(harm::NOTE, 64.0)],
+    },
+    Scene {
+        name: "28-tuner",
+        about: "Tuner on the line input: a bass's A string 7 cents flat",
+        id: "mpfree.fx.tuner",
+        place: "Input 1 · insert 1",
+        values: &[],
+        preset: None,
+        page: "Tuner",
+        focus: Some(tuner::REFERENCE),
+        levels: Some((-18.0, -18.0)),
+        meters: &[
+            (tuner::NOTE, 45.0),
+            (tuner::CENTS, -7.0),
+            (tuner::HZ, 109.56),
+        ],
     },
 ];
 
