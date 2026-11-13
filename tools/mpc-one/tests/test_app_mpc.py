@@ -43,8 +43,12 @@ LIBRARY_NEEDLES = (
     # names checked by valid_name (Library::path), or a .part / temp / trash slot beside one; links are refused
     # (symlink_metadata, O_NOFOLLOW). The Pads tab's browser reaches none of these: its picker refuses every
     # button but Load, Load to pad, Open, Audition and Favourite (Pick::allows), which read; Recent and
-    # Favourites are saved through mpfree-store. At start, Library::at makes library/ and its place folders
-    # when they are missing (mkdir, the DirBuilder check below), on the --data folder only.
+    # Favourites are saved through mpfree-store. The full browser (BROWSE, 13 Nov 2026) reaches them all:
+    # New folder, Rename, Copy and Paste, Delete into the Trash (asks first; Put back undoes it), Empty
+    # Trash (asks first; for good, the Trash only) and the project save (SHIFT + BROWSE, Save, Save as),
+    # each inside library/ under --data and nowhere else. At start, Library::at makes library/ and its
+    # place folders when they are missing, and work_dir makes library/.work/<owner> (mkdir, the DirBuilder
+    # check below), on the --data folder only.
     ("mpfree-library/lib.rs", "fs::rename(&part, fp.join(&name))?;"),                  # write_new: .part renamed in
     ("mpfree-library/lib.rs", "let _ = fs::remove_file(&part);"),                       # write_new, copy: a cut-off .part
     ("mpfree-library/lib.rs", "fs::rename(&p, &tp)?;"),                                 # rename in place
@@ -57,8 +61,9 @@ LIBRARY_NEEDLES = (
     ("mpfree-library/lib.rs", "fs::rename(slot.join(&item.name), dst_dir.join(&name))?;"),  # restore from the Trash
     ("mpfree-library/lib.rs", "let _ = fs::remove_file(slot.join(\"origin.txt\"));"),   # restore: the slot's note
     ("mpfree-library/lib.rs", "let _ = fs::remove_dir(&slot);"),                        # restore: the empty slot
-    ("mpfree-library/lib.rs", "fs::remove_dir_all(&p)?;"),                              # empty_trash (Prefs), Trash only
-    ("mpfree-library/lib.rs", "fs::remove_file(&p)?;"),                                 # empty_trash (Prefs), Trash only
+    ("mpfree-library/lib.rs", "fs::remove_dir_all(&p)?;"),                              # empty_trash (Prefs, browser), Trash only
+    ("mpfree-library/lib.rs", "fs::remove_file(&p)?;"),                                 # empty_trash (Prefs, browser), Trash only;
+                                                                                        # clear_work: files (not links) in .work/<owner>
     ("mpfree-library/project.rs", "fs::remove_dir_all(&new)?;"),                        # project save: a stale parts.new
     ("mpfree-library/project.rs", "fs::rename(&parts, v.join(PARTS))?;"),               # project save: old parts kept
     ("mpfree-library/project.rs", "fs::rename(&new, &parts)?;"),                        # project save: new parts in
@@ -995,7 +1000,8 @@ class StaticTests(unittest.TestCase):
             "if let Ok(mut f) = OpenOptions::new().create(true).append(true).open(Path::new(REPORT_DIR).join(\"report.txt\")) {",
             # the framebuffer and its sysfs pan file (mpfree-ui's FbTarget)
             "let file = OpenOptions::new().write(true).open(fb).map_err(|e| format!(\"{}: {e}\", fb.display()))?;",
-            "let _ = OpenOptions::new().write(true).open(sysfs.join(\"pan\")).and_then(|mut f| f.write_all(b\"0,0\\n\"));",
+            # (FbTarget::show, at open and again after the GPU's process has had the screen)
+            "let _ = OpenOptions::new().write(true).open(&self.pan).and_then(|mut f| f.write_all(b\"0,0\\n\"));",
             # the host-only preview pictures (never on the MPC)
             "OpenOptions::new().write(true).create_new(true).open(path).and_then(|mut f| f.write_all(&png))"
             ".map_err(|e| format!(\"{}: {e}\", path.display()))?;",
@@ -1024,10 +1030,16 @@ class StaticTests(unittest.TestCase):
                 if not line.lstrip().startswith("//"):
                     self.assertNotIn("/run/mpfree-data", line, name)
 
-    def test_the_only_program_it_starts_is_a_read_only_journalctl(self):
+    def test_it_starts_only_a_read_only_journalctl_and_the_gpu_process_it_is_given(self):
         code = "".join(c for _, c in self.program_sources())
-        self.assertEqual(code.count("Command::new("), 1)
+        self.assertEqual(code.count("Command::new("), 2)
         self.assertIn('Command::new("journalctl")', code)
+        # The GPU drawing process (mpfree_ui::gpu_screen), only with --gpu-screen PROGRAM: that program, with
+        # the app's frames on its stdin and its answers on its stdout.
+        gpu = dict(self.program_sources())["mpfree-ui/gpu_screen.rs"]
+        self.assertIn("Command::new(program)", gpu)
+        main = dict(self.program_sources())["mpfree-app/main.rs"]
+        self.assertIn('"--gpu-screen" => o.gpu_screen = Some(PathBuf::from(value()?)),', main)
         self.assertIn('.args(["-b", "-f", "-n", "300", "--no-pager", "-o", "short-monotonic", "--no-hostname"])', code)
         for needle in ("systemctl", "std::net", "kexec"):
             self.assertNotIn(needle, "\n".join(l for l in code.splitlines() if not l.lstrip().startswith("//")))

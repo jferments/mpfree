@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """mpfree-gpu-bench on the kexec test build: what drawing on the MPC One's GPU costs. RAM ONLY on the MPC
-(and, in step 6, the screen's picture).
+(and, in step 6, the screen's picture; with --flip, step 7 points the screen at the GPU's buffers, in RAM).
 
 The performance plan's step G2 ("GPU drawing and compute"). Run it after
 `collect-over-ssh.sh --kexec-boot` has started the test build from the USB
@@ -47,11 +47,29 @@ first waits for you to press Enter:
      changes no display setting. The log display was stopped in step 3; if
      it was running it starts again and redraws, otherwise the last page
      stays on the screen until something draws over it.
+  7. Only with --flip. STATE-CHANGING, in RAM: `mpfree-gpu-bench flip pages
+     --hold-ms 1500 --frames 60` (about two minutes): the GPU draws straight
+     into buffers the panel shows (DRM/KMS page flips: no read-back, no
+     copy). First a read-only check that no program has the display
+     (/dev/dri/card*) open. The program then makes three screen buffers
+     (RAM), draws the first page into one with the GPU and reads that
+     buffer's memory back; if it is not the expected picture it stops there,
+     before any change. Then it prints "SCREEN CHANGES NOW", takes the
+     display (DRM master) and points the lit CRTC at its own buffers, in the
+     mode the CRTC already runs (no mode, timing or panel setting changes),
+     shows each page for 1.5 s, and times 60 frames the GPU's way and 60
+     software's. It puts the CRTC back as it found it (the framebuffer's
+     picture) before it exits, also on Ctrl-C, a closed SSH session or a
+     failure, and says "the screen is back as it was". If it were killed
+     outright, the kernel takes the screen back for the framebuffer when the
+     display's last file closes (why nothing else may have it open). Undo for
+     anything left: switch the MPC off and on. Nothing is stored.
 
 The benchmark draws through Mesa's surfaceless EGL on the GPU's render
 node, as the offscreen GPU tests of 9 Nov did: it opens no display, takes no
 DRM master and changes no display setting. Steps 4 and 5 leave the screen
-as it is; step 6 writes pictures to it as above. It runs as an ordinary
+as it is; step 6 writes pictures to it as above. Step 7, only with --flip,
+opens the display (/dev/dri/card0) as well, as above. It runs as an ordinary
 process (no real-time priority) and writes nothing else on the MPC; its
 output goes into this report.
 
@@ -94,6 +112,7 @@ DESCRIBE = ("describe", 120)
 COMPUTE = ("compute --iterations 500", 600)
 SCREENS = ("screens pages --frames 30", 1500)
 PANEL = ("panel pages --hold-ms 1500 --frames 60", 900)
+FLIP = ("flip pages --hold-ms 1500 --frames 60", 900)
 DEFAULT_SSH = {
     "ip": os.environ.get("MPC_IP", "10.42.0.141"),
     "port": int(os.environ.get("MPC_PORT", "2222")),
@@ -125,6 +144,19 @@ for f in "$R"/proc/[0-9]*/fd/*; do
 done
 [ "$n" = 0 ] && say "  none"
 [ "$ok" = 1 ] && say GPU-OK || say GPU-STOP
+"""
+# Read-only: the display's node is there and no program has a display node (/dev/dri/card*) open.
+CARD_CHECK = r"""R=''
+say() { printf '%s\n' "$*"; }
+ok=1
+if [ -e "$R/dev/dri/card0" ]; then say "display: /dev/dri/card0"; else say "PROBLEM: no /dev/dri/card0 (the display)"; ok=0; fi
+for f in "$R"/proc/[0-9]*/fd/*; do
+  t=$(readlink "$f" 2>/dev/null) || continue
+  case "$t" in
+    /dev/dri/card*) p=${f#"$R"/proc/}; p=${p%%/*}; say "PROBLEM: $t is open in pid $p ($(cat "$R/proc/$p/comm" 2>/dev/null))"; ok=0 ;;
+  esac
+done
+[ "$ok" = 1 ] && say CARD-FREE || say CARD-HELD
 """
 # Writes only into /run/mpfree-gpu (RAM).
 PREPARE = r"""R=''
@@ -260,6 +292,33 @@ def check_pages(out, folder):
     return pages
 
 
+def flip(mpc, out, total, pages):
+    """Step 7: the GPU drawing straight into buffers the panel shows. State-changing, in RAM."""
+    out.say(f"\n[7/{total}] The GPU drawing straight into the panel's own buffers (page flips)")
+    rc, text = mpc.run(CARD_CHECK, test=True)
+    for line in text.splitlines():
+        out.say(f"  {line}")
+    if rc != 0 or text.strip().splitlines()[-1:] != ["CARD-FREE"]:
+        raise Stop("the display is missing or another program has it open; the screen was not changed")
+    answer = app.ready(out, f"STATE-CHANGING, RAM only: takes the display and points the screen at the GPU's own "
+                            f"buffers, in the mode it already runs, showing each of the {pages} pages for 1.5 s, "
+                            "then times 60 frames each way (about two minutes). It puts the screen back before it "
+                            "exits; if anything is left, switch the MPC off and on.")
+    if answer == "quit":
+        raise Stop("stopped by you")
+    if answer != "go":
+        return
+    run_args, timeout = FLIP
+    rc, text = app.stream(mpc, kexec.fill(RUN, ARGS=run_args), timeout, out)
+    changed = "SCREEN CHANGES NOW" in text
+    back = "flip: the screen is back as it was" in text
+    if changed and not back:
+        out.say("  The program did not say the screen is back. If the screen does not show the framebuffer's "
+                "picture, switch the MPC off with its power switch and on again (nothing was stored).")
+    if rc != 0:
+        raise Stop(f"flip ended with exit code {rc}" + ("" if changed else " (before the screen changed)"))
+
+
 def main(argv):
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument("--ip", default=DEFAULT_SSH["ip"])
@@ -271,6 +330,8 @@ def main(argv):
     p.add_argument("--host-app", default=HOST_APP)
     p.add_argument("--pages", help="a folder of .mpdl pages already written by mpfree --display-lists")
     p.add_argument("--report")
+    p.add_argument("--flip", action="store_true",
+                   help="also run step 7: the GPU drawing straight into buffers the panel shows (state-changing, RAM)")
     args = p.parse_args(argv)
     if os.environ.get("MPFREE_ACCEPT_GPU_BENCH") != "YES":
         raise Stop("opt-in required (copies the GPU benchmark into the test build's RAM and runs it): "
@@ -278,8 +339,9 @@ def main(argv):
     if not app.TESTING and not sys.stdin.isatty():
         raise Stop("run this from a terminal: each step waits for you to press Enter")
     out = kexec.Out(args.report)
-    out.say("MPFree GPU benchmark on the test build (changes RAM on the MPC only; step 6 draws on the screen)")
-    total = 6
+    out.say("MPFree GPU benchmark on the test build (changes RAM on the MPC only; step 6 draws on the screen"
+            + ("; step 7 points the screen at the GPU's buffers)" if args.flip else ")"))
+    total = 7 if args.flip else 6
 
     out.say(f"\n[1/{total}] Workstation checks (read-only on the MPC)")
     program, digest = check_program(out, args.program)
@@ -373,7 +435,7 @@ def main(argv):
             if rc != 0:
                 raise Stop(f"screens ended with exit code {rc}")
 
-        out.say(f"\n[{total}/{total}] The GPU's pictures on the screen, then GPU against software to the panel")
+        out.say(f"\n[6/{total}] The GPU's pictures on the screen, then GPU against software to the panel")
         answer = app.ready(out, f"Shows each of the {len(pages)} pages for 1.5 s, drawn by the GPU (about two "
                                 "minutes). Writes the screen as the app does; no display setting changes.")
         if answer == "quit":
@@ -385,6 +447,8 @@ def main(argv):
                 raise Stop(f"panel ended with exit code {rc}")
             if app.SCREEN_START not in stopped:
                 out.say("  (the screen keeps the last page until something draws over it)")
+        if args.flip:
+            flip(mpc, out, total, len(pages))
         result = 0
     except (Stop, KeyboardInterrupt) as err:
         out.say(f"\nSTOP: {str(err) or 'interrupted (Ctrl-C)'}")

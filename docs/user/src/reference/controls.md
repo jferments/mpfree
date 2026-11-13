@@ -72,6 +72,21 @@ While the Pads tab shows its **Browse** view, the controls work the browser besi
 | **PLAY** | Hears the sound picked (press again to stop it). PLAY doesn't start playback while Browse shows. | Next build |
 | **Q-Link knobs 1–4** | 1: moves through the list. 3: the level you hear sounds at. 4: the places. | Next build |
 
+## The browser
+
+While the browser shows (**BROWSE**), the controls work it. See [Saving your work](../making-music/saving.md#the-browser).
+
+| Control | What it does | When |
+|---|---|---|
+| **Data wheel** | Moves through the list. | Next build |
+| **SHIFT + data wheel** | Moves through the places on the left. | Next build |
+| **The data wheel's push** | Opens the folder or project picked, loads anything else, or answers yes to the question on screen. | Next build |
+| **–** | Back up one folder. | Next build |
+| **+** | Into the folder picked. | Next build |
+| **PLAY** | Hears the sound picked. | Next build |
+| **ERASE** | Moves the item picked to the Trash (asks first). | Next build |
+| **Q-Link knobs 1–4** | 1: moves through the list. 2: the filter. 3: the level you hear sounds at. 4: the places. | Next build |
+
 ## Sample and Synth tabs
 
 | Control | What it does | When |
@@ -96,8 +111,8 @@ The mode buttons along the top of the MPC go to the MPFree page that does the sa
 | **PROG EDIT** | The sound the pads play: the Synth tab while the synth is on the pads, otherwise the Pads tab's Pad view. | Next build |
 | **TRACK MUTE** | The pads become mute keys over any page: pads 1-8 mute and unmute tracks 1-8. **SHIFT + TRACK MUTE**: each pad mutes and unmutes itself in the kit. Press the same button again to play the pads. See [Playing live](../making-music/playing-live.md#muting-tracks-and-pads). | Next build |
 | **Q-LINK** | Steps the Q-Links through Macros 1-4, Macros 5-8 and the page's own knobs (the Play page, Arrange and the chain editor). See [Mixing and effects](../making-music/mixing-and-effects.md#macros). | Next build |
-| **ERASE** | Hold **ERASE** and tap something on the screen to delete it: a clip on the Arrange tab, a pattern row's name on the Play page (that sound's steps), or a layer on the Looper tab. **UNDO** brings it back. The hint line says what you can tap while you hold it. A clip used in the song, a whole loop, effects and macros can't be deleted this way yet. Works once Map controls has found ERASE. Live erase while recording is planned. | Next build |
-| **BROWSE** | Opens or closes the browser. **SHIFT + BROWSE** saves the project. See [Saving your work](../making-music/saving.md). | Planned |
+| **ERASE** | Hold **ERASE** and tap something on the screen to delete it: a clip on the Arrange tab, a pattern row's name on the Play page (that sound's steps), or a layer on the Looper tab. **UNDO** brings it back. The hint line says what you can tap while you hold it. A clip used in the song, a whole loop, effects and macros can't be deleted this way yet. In the browser, **ERASE** moves the item picked to the Trash (asking first). Works once Map controls has found ERASE. Live erase while recording is planned. | Next build |
+| **BROWSE** | Opens the browser over the page, and goes back to the page. **SHIFT + BROWSE** saves the project, on any page. See [Saving your work](../making-music/saving.md). Works once Map controls has found it. | Next build |
 | **The data wheel's push** | See [Everywhere](#everywhere). Works once Map controls has found it. | Next build |
 | **COPY**, **TC** | Not assigned yet. | Planned |
 

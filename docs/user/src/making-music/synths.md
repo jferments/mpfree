@@ -51,7 +51,7 @@ The Synth tab takes its colours from the theme picked in **Prefs > Appearance**,
 {{shot: synth-fm | The FM synth: the algorithm diagram shows which operators modulate which, and the levels show the six operators.}}
 
 > [!NOTE]
-> Edits to a preset last until you load another preset or switch off. Saving your own presets comes with the browser (see [Saving your work](saving.md)).
+> Each synth's sound, edits and all, is saved with the project (see [Saving your work](saving.md#projects)). Saving an edited sound as a preset of its own comes later.
 
 ## Playing the synth on the pads
 
@@ -99,7 +99,7 @@ Out of the box every synth plays in standard tuning: twelve equal steps to the o
 
 The drum synth keeps its own pitches whatever you pick here.
 
-Everything in the Synth tab's options (the engine, scale, pad layouts and tuning) is kept on the stick and comes back the next time MPFree starts. If a tuning file or one of your own scales is gone by then, that one choice goes back to its default, and the Console says so.
+Everything in the Synth tab's options (the engine, scale, pad layouts and tuning) is the song's: it is saved in your project and comes back when you open it, and New project starts chromatic in C at A4 = 440 Hz (see [Saving your work](saving.md)). If a tuning file or one of your own scales is gone by then, that one choice goes back to its default, and the Console says so.
 
 ### Your own tunings
 
