@@ -1361,6 +1361,39 @@ class Lab:
             self.stages["multitrack-owner-followups"]={
                 "success":False,"error":str(exc)}
             self.notes.append("SPL/ADC/updater verification: "+str(exc))
+        # Connect the three original USB descriptor selectors to their
+        # candidate callback tables and Ghidra-resolved function bodies.
+        # A missing operation slot means no callback in THIS backend
+        # table; it is not a claim about physical device capabilities.
+        try:
+            usb_module = load_module(
+                "tools/mpc-one/synthesize_usb_backend_coverage.py",
+                "mpfree_usb_backend_storage_dispatch_static",
+            )
+            usb_report = usb_module.build(
+                lambda path: (self.out / path).read_bytes()
+            )
+            (self.out / "usb-backend-callback-coverage.json").write_text(
+                json.dumps(usb_report, indent=2) + "\n")
+            (self.out / "usb-backend-callback-coverage.md").write_text(
+                usb_module.markdown(usb_report))
+            record["usb_backend_callback_coverage"] = {
+                "report":"usb-backend-callback-coverage.json",
+                "source_provenance_matched":usb_report[
+                    "all_source_only_backends_matched"],
+                "backend_count":len(usb_report["backends"]),
+                "physical_usb_or_maskrom_execution_proven":False,
+            }
+            self.stages["usb-backend-callback-coverage"] = {
+                "success":bool(usb_report["all_source_only_backends_matched"]),
+                "backend_count":len(usb_report["backends"]),
+                "physical_device_tested":False,
+            }
+        except Exception as exc:
+            record["usb_backend_callback_coverage_error"]=str(exc)
+            self.stages["usb-backend-callback-coverage"]={
+                "success":False,"error":str(exc)}
+            self.notes.append("USB backend callback coverage: "+str(exc))
         (self.out / "cross-evidence.json").write_text(json.dumps(record, indent=2) + "\n")
         summary = [
             "# MPFree integrated bootchain run",
@@ -1505,6 +1538,13 @@ class Lab:
                            str(owner["onboard_key_and_verification_code_observed"]))
             summary.append("- Image verification is cached/flag-dependent; runtime security unproven.")
             summary.append("- See multitrack-followups.json/.md.")
+        summary += ["", "## Three USB backend callback capabilities"]
+        usb_slots = record.get("usb_backend_callback_coverage")
+        if usb_slots:
+            summary.append("- Three original table and Ghidra callback sets match: " +
+                           str(usb_slots["source_provenance_matched"]))
+            summary.append("- Fastboot has stream+commit slots; FF/61/7A lacks commit; RockUSB-like lacks stream+commit.")
+            summary.append("- Static slots only: neither physical MaskROM nor recovery is proven.")
         summary += ["", "## Guest/static image consistency"]
         if record["match_tests"]:
             for entry in record["match_tests"]:
