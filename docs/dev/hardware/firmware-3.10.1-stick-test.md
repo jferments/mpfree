@@ -1,6 +1,6 @@
 # Trying firmware 3.10.1 from the USB stick before installing it
 
-**Status:** runbook, 2026-11-13. Phase 1 is done (results below): the firmware matches and developer mode's files have been read. Phase 2 uses the tools live test 3 used. Phase 3 needs a stick builder option that is not written yet. **Scope:** the reference MPC One (Gen 1) on 3.6.0 with MOD-001 and MOD-002.
+**Status:** runbook, 2026-11-13. Phases 1 and 2 are done (results below): the firmware matches, developer mode's files have been read, and 3.10.1 runs the pad player from the stick with the eMMC untouched. Phase 3 needs a stick builder option that is not written yet. **Scope:** the reference MPC One (Gen 1) on 3.6.0 with MOD-001 and MOD-002.
 
 The owner wants to move MPFree's way in from our own persistent SSH ([MOD-001/002](archive/2026-11/device-modifications.md)) to the developer mode Akai added in 3.10.1 ([compatibility page](firmware-3.10.1-compatibility.md)), and to check first that 3.10.1 does everything we need. Installing it is the one step that cannot be undone safely: it rewrites the rootfs, may rewrite the bootloader partitions, and a downgrade to 3.6.0 has not been checked. So 3.10.1 is tried the way 3.10.0 was ([kexec test boot](archive/2026-11/kexec-test-boot.md)): 3.6.0 starts it by kexec, its root filesystem comes from the USB stick, and the eMMC and SD card are hidden from it. A power-cycle brings 3.6.0 back.
 
@@ -76,6 +76,22 @@ In order: build `mpfree-screen-log`, `mpfree-startup` and `mpfree` for ARM; `off
 **Passes when:** the kexec boot ends with `RESULT: the test build is running from the stick, and it cannot see the eMMC or SD card.`; the pad player starts and plays; the stick logs show no failed unit we didn't expect and no `mpfree-test: blocked` call we can't explain; and the boot maps before and after match, with 0 sectors written to p1 to p6 and boot0/1.
 
 **Undo:** switch off, take the stick out, wait 10 s, switch on: U-Boot boots 3.6.0 from the eMMC as before. The stick's old partitions 1 to 3 are gone (rebuild a 3.10.0 stick to go back); partition 4, the pad player's saved settings, stays.
+
+### Phase 2 results (2026-11-13, clone 236de3f)
+
+From the owner's zip `mpfree-results-20261113T135046Z` (owner-local). **Passed.**
+
+- **The boot:** the stick was built from the 3.10.1 image (`akai-unpacked-20261113T130442Z-*`). After `BOOT 3.10` the test build answered SSH in 24 s and the boot step printed its `RESULT` line: release `6.18.44-az01-2026-08-10-rt6`, no MMC device, kexec off, `/` the stick's partition 1 read-only, `/data` tmpfs. Ethernet came up without the retry (`eth0 is up at 20 s; no retry needed`).
+- **Nothing failed or was blocked:** 0 failed units, no masked Akai unit active, and no `mpfree-test: blocked` line in the boot step or the journal.
+- **The pad player** was playing about 15 s after the jump and ran for about 8 minutes: 1,319 hits, up to 24 sounds at once, 0 underruns in 165,447 periods, pad to sound 8.65 ms on average (8.45 to 8.68), the same as live test 3 on 3.10.0. The saved settings and found buttons came back from partition 4. The app's processes used 20 to 44 % of one core; its memory peaked at 141 MB.
+- **3.10.1's new units:**
+    - `az0x-info.service` logged hardware and software details (exited normally).
+    - `az0x-loadpin-trustpoints.service` printed `empty list of trusted verity digests: Protocol error` and finished; the kernel's LoadPin pinned the filesystem of `/usr/lib/az0x/trusted-verity-digests`, which on the stick is partition 1.
+    - `media-acvs\x2dcontent.mount` bind-mounts `/storage` on `/media/acvs-content`. On the stick `/storage` is an empty folder in the read-only root, so nothing of the eMMC is involved.
+    - `az01-signed-fs` did not get in the way: nothing about it appears in the journal.
+- **The eMMC:** the boot maps before and after have the same 8 boot-area hashes, with 0 sectors written to p1 to p6 and boot0/1 since the power-on after the test. The p7 and p8 writes are stock 3.6.0's own use, as in every round.
+
+So 3.10.1's userspace runs MPFree's test build as 3.10.0's did. What it cannot show is developer mode, which needs Akai's app: that is phase 3.
 
 ## Phase 3: developer mode on the stick (not ready)
 
