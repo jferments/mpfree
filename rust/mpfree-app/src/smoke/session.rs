@@ -697,6 +697,24 @@ impl Session {
                     Effect::Audio(p) => self.out.note(&format!("audio buffer: {p} periods")),
                     Effect::Quit => self.quit = true,
                     Effect::SavePatterns(_) => {}
+                    // 16 LEVEL, as main.rs: the synth's pads have none.
+                    Effect::SixteenLevels if self.synth_on || self.kit_to == Some(self.kits) => {
+                        self.out.note(
+                            "16 LEVEL: 16 Levels plays a kit; pick a kit with the wheel first",
+                        )
+                    }
+                    Effect::SixteenLevels => self.out.show(ToUi::SixteenLevels),
+                    // A track's own instrument is built beside the audio
+                    // thread, which the session leaves out: the track keeps
+                    // what it had, and the screen hears so.
+                    Effect::TrackSound { track, .. } => {
+                        self.out.note(&format!(
+                            "track {}: own instruments are not built in the test session",
+                            track + 1
+                        ));
+                        let held = self.mix.instruments.held(track);
+                        self.app.set_track_sound(track, held);
+                    }
                     other => panic!("the desk handed back {other:?}"),
                 }
             }

@@ -34,6 +34,7 @@ use crate::editor::{
 use crate::song::{
     AudioLane, SongBlock, SongLanes, ADD_AUDIO, AUDIO_BUTTONS, INPUTS, MONITORS, NONE, PANEL,
     PANEL_CLOSE, PANEL_INPUT, PANEL_MONITOR, PANEL_MUTE, PANEL_SOLO, PANEL_TAKES, REC,
+    REGION_SLOTS,
 };
 use crate::widgets::{
     BarButton, BarItem, CellState, ClipGrid, GridCell, GridTrack, MorphBar, Run, TakeItem,
@@ -324,6 +325,9 @@ pub struct TimeState {
     /// The audio track whose panel is open over the lanes (layout spec
     /// 4c), if any. The app sets it.
     pub audio_panel: Option<usize>,
+    /// The audio track whose take lanes show under its lane (layout spec
+    /// 4c), if any. The app sets it.
+    pub audio_takes: Option<usize>,
 }
 
 /// An audio region: region `index` of audio track `track`
@@ -463,6 +467,7 @@ impl TimeState {
             audio_free: None,
             audio_counts: Vec::new(),
             audio_panel: None,
+            audio_takes: None,
         }
     }
 
@@ -620,8 +625,28 @@ pub enum AudioAction {
     Erase(RegionId),
     Fades(RegionId),
     Gain(RegionId),
+    /// Show the track's take lanes under its lane, or hide them if they
+    /// show.
     Takes(usize),
     Undo,
+    /// A swipe across a take lane: play take `take` from `from` to `to`
+    /// on its track, over what was there (`Command::Comp`), snapped to the
+    /// grid unless `fine` (SHIFT held: the app sets it).
+    Comp {
+        take: u16,
+        from: Tick,
+        to: Tick,
+        fine: bool,
+    },
+    /// A tap on a take lane: play the take everywhere it has audio.
+    UseTake(u16),
+    /// A region dragged sideways: move it to start at `to`, snapped to
+    /// the grid unless `fine` (SHIFT held: the app sets it).
+    Move {
+        region: RegionId,
+        to: Tick,
+        fine: bool,
+    },
     /// A Q-Link on Arrange while an audio region is picked or the track
     /// panel is open (layout spec 4c), or the panel's level and pan
     /// steps: knob 0 the track's level, 1 its pan, 2 the region's gain, 3
@@ -828,6 +853,27 @@ pub fn action(ev: &UiEvent, st: &TimeState) -> Option<TimeAction> {
                     }
                 }
                 _ => return None,
+            }))
+        }
+        (SONG, EventKind::Marker { index, frame }) => Some(TimeAction::Audio(AudioAction::Move {
+            region: RegionId {
+                track: index / REGION_SLOTS,
+                index: index % REGION_SLOTS,
+            },
+            to: Tick::try_from(*frame).ok()?,
+            fine: false,
+        })),
+        (SONG, EventKind::Span { index, from, to }) => {
+            let take = u16::try_from(*index).ok()?;
+            Some(TimeAction::Audio(if from == to {
+                AudioAction::UseTake(take)
+            } else {
+                AudioAction::Comp {
+                    take,
+                    from: *from,
+                    to: *to,
+                    fine: false,
+                }
             }))
         }
         (SONG, EventKind::Step { index, delta }) => {
@@ -1310,6 +1356,7 @@ pub fn song_lanes(st: &TimeState, first_bar: i64) -> SongLanes {
         audio: st.audio.clone(),
         region: st.region.map(|r| (r.track, r.index)),
         panel: st.audio_panel,
+        takes_open: st.audio_takes,
         ..SongLanes::default()
     }
 }
@@ -1979,6 +2026,7 @@ mod tests {
                 fade_in: 0,
                 fade_out: 0,
             }],
+            takes: Vec::new(),
             recording: None,
         }];
         let song = |k: EventKind, st: &TimeState| action(&ev(SONG, k), st);
@@ -2079,6 +2127,7 @@ mod tests {
             mute: true,
             solo: false,
             blocks: Vec::new(),
+            takes: Vec::new(),
             recording: None,
         }];
         let song = |k: EventKind, st: &TimeState| action(&ev(SONG, k), st);
@@ -2153,6 +2202,72 @@ mod tests {
         assert_eq!(
             song(EventKind::Tab(0), &st),
             audio(AudioAction::Split(RegionId { track: 3, index: 2 }))
+        );
+    }
+
+    /// Layout spec 4c: a tap on a take lane uses the take, a swipe comps
+    /// the stretch; the Song view shows the open track's take lanes.
+    #[test]
+    fn take_lanes_ask_to_comp() {
+        let mut st = state();
+        st.song_view = true;
+        let song = |k: EventKind, st: &TimeState| action(&ev(SONG, k), st);
+        let audio = |a: AudioAction| Some(TimeAction::Audio(a));
+        assert_eq!(
+            song(
+                EventKind::Span {
+                    index: 3,
+                    from: 0,
+                    to: 0
+                },
+                &st
+            ),
+            audio(AudioAction::UseTake(3))
+        );
+        assert_eq!(
+            song(
+                EventKind::Span {
+                    index: 3,
+                    from: 960,
+                    to: 2880
+                },
+                &st
+            ),
+            audio(AudioAction::Comp {
+                take: 3,
+                from: 960,
+                to: 2880,
+                fine: false
+            })
+        );
+        assert_eq!(
+            song(
+                EventKind::Span {
+                    index: 70_000,
+                    from: 0,
+                    to: 0
+                },
+                &st
+            ),
+            None,
+            "no such take"
+        );
+        st.audio_takes = Some(2);
+        assert_eq!(song_lanes(&st, 0).takes_open, Some(2));
+        // A region dragged: its track and index, and where it starts now.
+        assert_eq!(
+            song(
+                EventKind::Marker {
+                    index: 3 * crate::song::REGION_SLOTS + 4,
+                    frame: 7680
+                },
+                &st
+            ),
+            audio(AudioAction::Move {
+                region: RegionId { track: 3, index: 4 },
+                to: 7680,
+                fine: false
+            })
         );
     }
 

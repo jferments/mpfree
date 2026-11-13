@@ -127,6 +127,7 @@ impl Desk<'_> {
             gui::FromUi::Workspace(a) => fx.extend(app.workspace_action(*a)),
             gui::FromUi::ArpChip => fx.extend(app.toggle_panel()),
             gui::FromUi::PadLevelOff => fx.extend(app.pad_level_off()),
+            gui::FromUi::Levels { on, open } => fx.extend(app.levels_shown(on, open)),
             gui::FromUi::Time(a) => {
                 fx.extend(crate::time_action(out, time, tracks, looper, app, mix, a))
             }
@@ -250,6 +251,7 @@ impl Desk<'_> {
                 out.show(gui::ToUi::ClipsWheel { delta, scroll })
             }
             app::Effect::Map(m) => out.show(gui::ToUi::Map(Box::new(m))),
+            app::Effect::LevelsWheel(d) => out.show(gui::ToUi::LevelsWheel(d)),
             app::Effect::PlayView(v) => out.show(gui::ToUi::PlayView(v)),
             app::Effect::SampleEditor(e) => out.show(gui::ToUi::SampleEditor(e)),
             app::Effect::Browse(k) => out.show(gui::ToUi::Browse(k)),
@@ -277,6 +279,8 @@ impl Desk<'_> {
             | app::Effect::Show(_)
             | app::Effect::ProgEdit
             | app::Effect::SaveProject
+            | app::Effect::TrackSound { .. }
+            | app::Effect::SixteenLevels
             | app::Effect::Bank { .. }
             | app::Effect::SavePatterns(_)) => return Some(e),
         }

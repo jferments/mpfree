@@ -364,9 +364,65 @@ impl IirDown2 {
     }
 }
 
+/// The pass-band phase of an [`IirUp2`] then [`IirDown2`] of the same
+/// design, at the base rate. With a straight line between them the pair
+/// is exactly one all-pass, the product of every section of both branches
+/// (the up-sampler's even branch feeds the down-sampler's odd one and the
+/// other way round), so a dry path through this stays in phase with a wet
+/// path through the pair at every frequency, and a mix of the two never
+/// combs. `n` sections a frame.
+#[derive(Clone, Debug)]
+pub struct IirPhase(Vec<Ap1>);
+
+impl IirPhase {
+    /// Allocates (control thread): the same `n` and `tbw` as the pair.
+    pub fn new(n: usize, tbw: f64) -> IirPhase {
+        IirPhase(
+            iir_halfband(n, tbw)
+                .iter()
+                .map(|&a| Ap1 {
+                    a,
+                    ..Ap1::default()
+                })
+                .collect(),
+        )
+    }
+
+    #[inline]
+    pub fn run(&mut self, x: f32) -> f32 {
+        let mut y = x;
+        for s in &mut self.0 {
+            y = s.run(y);
+        }
+        y
+    }
+
+    pub fn reset(&mut self) {
+        for s in &mut self.0 {
+            s.x1 = 0.0;
+            s.y1 = 0.0;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_phase_match_is_the_pair_with_a_straight_line_between() {
+        let (mut up, mut down) = (IirUp2::new(5, 0.06), IirDown2::new(5, 0.06));
+        let mut phase = IirPhase::new(5, 0.06);
+        let mut seed = 3u32;
+        for _ in 0..4000 {
+            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            let x = (seed >> 9) as f32 / (1u32 << 22) as f32 - 1.0;
+            let [a, b] = up.run(x);
+            let wet = down.run([a, b]);
+            let dry = phase.run(x);
+            assert!((wet - dry).abs() < 1e-5, "{wet} vs {dry}");
+        }
+    }
 
     #[test]
     fn halfband_shape() {
