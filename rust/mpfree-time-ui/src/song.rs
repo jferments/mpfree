@@ -85,6 +85,8 @@ pub struct AudioBlock {
     /// along the tempo map: the waveform under the block.
     pub src: i64,
     pub frames: f64,
+    /// Its level, 0 to 4 (1 is as recorded).
+    pub gain: f32,
     /// Its fades, in frames.
     pub fade_in: u32,
     pub fade_out: u32,
@@ -102,6 +104,10 @@ pub struct AudioLane {
     pub input: String,
     /// The level bar along the header's bottom edge, 0 to 1.
     pub level: f32,
+    /// The track's level, 0 to 2 (1 is as recorded), and its balance, -1
+    /// (left) to 1 (right): what Q1 and Q2 turn with a region picked.
+    pub volume: f32,
+    pub pan: f32,
     /// Its regions, in order (`AudioTracks::regions`).
     pub blocks: Vec<AudioBlock>,
     /// Recording: the punch in (the take's anchor). The red block runs
@@ -247,6 +253,7 @@ pub fn audio_blocks(
                 },
                 src: r.src,
                 frames: frames_from(map, r.start as f64, r.end as f64, rate),
+                gain: r.gain,
                 fade_in: r.fade_in,
                 fade_out: r.fade_out,
             }
@@ -928,6 +935,8 @@ mod tests {
             armed: false,
             input: "L".into(),
             level: 0.5,
+            volume: 1.0,
+            pan: 0.0,
             blocks,
             recording: None,
         }
@@ -941,6 +950,7 @@ mod tests {
             tag: String::new(),
             src: 0,
             frames: 1000.0,
+            gain: 1.0,
             fade_in: 0,
             fade_out: 0,
         }
