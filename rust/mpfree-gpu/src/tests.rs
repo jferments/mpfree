@@ -5,7 +5,7 @@
 use super::*;
 use mpfree_screen_log::Geometry;
 use mpfree_ui::fb::FbLayout;
-use mpfree_ui::record::Recorder;
+use mpfree_ui::record::{replay, Recorder};
 use mpfree_ui::{Canvas, FontId, Fonts, Image, SoftCanvas};
 
 /// Everything the six calls can do: opaque and see-through fills, round
@@ -366,5 +366,214 @@ fn a_compute_job_comes_back_with_the_cpus_answer() {
             r.max_error
         );
         assert!(r.gpu_p50_us > 0.0 && r.gpu_p99_us >= r.gpu_p50_us);
+    }
+}
+
+#[test]
+fn each_logical_rectangle_lands_on_the_native_pixels_the_software_path_uses() {
+    for (nw, nh) in [(800usize, 1280usize), (600, 520)] {
+        let g = Geometry::new(nw, nh, nw * 4, 32).unwrap();
+        for rotation in [
+            Rotation::Deg0,
+            Rotation::Deg90,
+            Rotation::Deg180,
+            Rotation::Deg270,
+        ] {
+            let turn = Turn::new(rotation, nw as f32, nh as f32);
+            let (lw, lh) = g.logical_size(rotation);
+            for r in [
+                Rect::new(0, 0, lw as i32, lh as i32),
+                Rect::new(10, 20, 30, 7),
+                Rect::new(lw as i32 - 5, lh as i32 - 9, 5, 9),
+            ] {
+                let mut want = Rect::default();
+                for y in r.y..r.bottom() {
+                    for x in r.x..r.right() {
+                        let (nx, ny) = g.native(rotation, x as usize, y as usize);
+                        want = want.union(Rect::new(nx as i32, ny as i32, 1, 1));
+                    }
+                }
+                assert_eq!(turn.rect(r), want, "{rotation:?} {r:?}");
+            }
+        }
+    }
+}
+
+#[test]
+fn changes_merge_into_few_rectangles() {
+    let mut d = Damage::default();
+    d.add(Rect::new(0, 0, 100, 100));
+    d.add(Rect::new(10, 10, 5, 5));
+    assert_eq!(d.rects(), &[Rect::new(0, 0, 100, 100)]);
+    // Far apart: kept apart, so a copy does not cover the space between.
+    d.add(Rect::new(900, 600, 10, 10));
+    assert_eq!(d.rects().len(), 2);
+    // Next to the first: merged.
+    d.add(Rect::new(100, 0, 4, 100));
+    assert!(d.rects().contains(&Rect::new(0, 0, 104, 100)), "{d:?}");
+    // Past the limit, everything becomes one.
+    let mut many = Damage::default();
+    for i in 0..(MAX_DAMAGE as i32 + 1) {
+        many.add(Rect::new(i * 70, (i % 2) * 400, 8, 8));
+    }
+    assert_eq!(many.rects().len(), 1);
+    assert_eq!(many.bounds(), many.rects()[0]);
+    // Nothing from nothing.
+    many.add(Rect::new(5, 5, 0, 9));
+    assert_eq!(many.rects().len(), 1);
+}
+
+#[test]
+fn an_outline_draws_only_its_edges_and_corners() {
+    let gpu = gpu();
+    let draw = |c: &mut dyn Canvas, _: &mut Fonts| {
+        let (w, h) = c.size();
+        c.fill_rect(Rect::new(0, 0, w, h), Color::rgb(0x202830));
+        c.stroke_round_rect(
+            Rect::new(100, 50, 1000, 600),
+            12,
+            2,
+            Color::rgb(0xFFCC00).with_alpha(200),
+        );
+    };
+    let (want, rec) = software_of(800, 1280, Rotation::Deg270, &draw);
+    let mut r = Renderer::new(&gpu, 800, 1280, Rotation::Deg270).unwrap();
+    let s = r.play(&gpu, rec.ops(), rec.store(), &[]);
+    // The background, the four straight edges; only the corners shaded.
+    let edges = 2 * (1000 - 24) * 2 + 2 * (600 - 24) * 2;
+    assert_eq!(s.shaded_px, 4 * 12 * 12, "{s:?}");
+    assert_eq!(s.plain_px, 1280 * 800 + edges, "{s:?}");
+    let d = compare(&want, &r.read_native(&gpu));
+    assert!(d.max <= 3 && d.over_1 * 1000 < want.len(), "{d:?}");
+}
+
+#[test]
+fn a_small_change_touches_only_its_own_pixels() {
+    let gpu = gpu();
+    let (_, rec) = software(800, 1280, Rotation::Deg270, 0);
+    let mut r = Renderer::new(&gpu, 800, 1280, Rotation::Deg270).unwrap();
+    r.play(&gpu, rec.ops(), rec.store(), &[]);
+    assert_eq!(r.damage(), &[Rect::new(0, 0, 800, 1280)]);
+    let mut next = Recorder::new(1280, 800);
+    next.begin_frame();
+    next.set_clip(Rect::new(0, 0, 105, 1000));
+    next.fill_rect(Rect::new(100, 200, 10, 20), Color::rgb(0xFF0000));
+    let s = r.play(&gpu, next.ops(), next.store(), &[]);
+    // Logical x 100..105 (clipped), y 200..220: native x 200..220, y
+    // 1280-105..1280-100.
+    assert_eq!(r.damage(), &[Rect::new(200, 1175, 20, 5)]);
+    assert_eq!((s.plain_px, s.shaded_px), (100, 0));
+}
+
+/// Frame after frame through two panel buffers: each one shown must be
+/// the whole picture the software path has by then, though every list
+/// after the first redraws only a little of it.
+#[test]
+fn every_frame_shown_from_two_buffers_is_the_whole_picture() {
+    let gpu = gpu();
+    let layout = FbLayout {
+        geometry: Geometry::new(800, 1280, 3200, 32).unwrap(),
+        rotation: Rotation::Deg270,
+    };
+    let mut r = Renderer::new(&gpu, 800, 1280, Rotation::Deg270).unwrap();
+    let targets = (0..2)
+        .map(|_| Target::new(&gpu, 800, 1280).unwrap())
+        .collect();
+    let mut scanout = scanout::Scanout::new(&gpu, &r, targets).unwrap();
+    let mut display = scanout::Offscreen::default();
+    let mut rec = Recorder::new(1280, 800);
+    let mut soft = SoftCanvas::new(1280, 800);
+    let mut fonts = Fonts::embedded();
+    type Step = Box<dyn Fn(&mut dyn Canvas, &mut Fonts)>;
+    let steps: Vec<Step> = vec![
+        Box::new(|c, f| scene(c, f, 0)),
+        Box::new(|c, _| c.fill_rect(Rect::new(300, 300, 40, 30), Color::rgb(0xFF0000))),
+        Box::new(|c, f| {
+            c.set_clip(Rect::new(20, 140, 400, 30));
+            c.fill_rect(Rect::new(0, 0, 1280, 800), Color::rgb(0x101420));
+            f.face(FontId::Bold)
+                .draw(c, 20.0, 24, 162, Color::rgb(0xFFFFFF), "Changed");
+        }),
+        Box::new(|c, _| {
+            c.fill_round_rect(
+                Rect::new(900, 500, 200, 120),
+                20,
+                Color::rgb(0x33AA66).with_alpha(180),
+            )
+        }),
+        Box::new(|c, _| c.fill_rect(Rect::new(1200, 10, 60, 20), Color::rgb(0x0000FF))),
+        Box::new(|c, _| {
+            c.stroke_round_rect(Rect::new(50, 600, 300, 150), 16, 3, Color::rgb(0xFFFFFF))
+        }),
+    ];
+    for (i, step) in steps.iter().enumerate() {
+        rec.begin_frame();
+        step(&mut rec, &mut fonts);
+        let (_, dropped) = rec.store_mut().take_changes();
+        let shown = scanout
+            .present(&gpu, &mut r, &mut display, rec.ops(), rec.store(), &dropped)
+            .unwrap()
+            .expect("a frame that draws is shown");
+        // A frame's list starts with the whole canvas as its clip.
+        soft.set_clip(Rect::new(0, 0, 1280, 800));
+        replay(rec.ops(), rec.store(), &mut soft);
+        let mut bytes = Vec::new();
+        layout.rows(&soft, 0, 1280, &mut bytes);
+        let want: Vec<u32> = bytes
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|b| u32::from_le_bytes(*b) & 0xFF_FFFF)
+            .collect();
+        let got = scanout.read_front(&gpu).unwrap();
+        let d = compare(&want, &got);
+        eprintln!(
+            "frame {i}: buffer {}, {} draws, {} px plain, {} shaded, {} copied; {d:?}",
+            shown.buffer,
+            shown.draw.draws,
+            shown.draw.plain_px,
+            shown.draw.shaded_px,
+            shown.draw.copied_px
+        );
+        assert!(
+            d.max <= 3 && d.over_1 * 1000 < want.len(),
+            "frame {i}: {d:?}"
+        );
+        assert_eq!(shown.buffer, i % 2);
+        if i >= 2 {
+            // Only what the frame before changed is copied: never the panel.
+            assert!(
+                shown.draw.copied_px > 0 && shown.draw.copied_px < 200_000,
+                "frame {i}: {} px copied",
+                shown.draw.copied_px
+            );
+        }
+    }
+    assert_eq!(display.shown, vec![0, 1, 0, 1, 0, 1]);
+    // A list that draws nothing shows nothing.
+    rec.begin_frame();
+    let none = scanout
+        .present(&gpu, &mut r, &mut display, rec.ops(), rec.store(), &[])
+        .unwrap();
+    assert!(none.is_none());
+    assert_eq!(display.shown.len(), 6);
+}
+
+#[test]
+fn a_panel_with_one_buffer_is_refused() {
+    let gpu = gpu();
+    let r = Renderer::new(&gpu, 64, 48, Rotation::Deg0).unwrap();
+    let one = vec![Target::new(&gpu, 64, 48).unwrap()];
+    assert!(scanout::Scanout::new(&gpu, &r, one).is_err());
+}
+
+#[test]
+fn the_gpu_says_whether_it_can_draw_into_screen_buffers() {
+    // Mesa's surfaceless EGL has these with a hardware driver; llvmpipe may
+    // not. Either way it must answer, not crash.
+    let gpu = gpu();
+    match scanout::import_support(&gpu) {
+        Ok(()) => eprintln!("dma-buf import: yes"),
+        Err(e) => eprintln!("dma-buf import: no ({e})"),
     }
 }
