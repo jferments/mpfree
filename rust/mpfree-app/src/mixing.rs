@@ -4,8 +4,9 @@
 //! - The playing kit's 16 pads each have a pad channel (Pad Mix), and all
 //!   16 go to Track 1 "Drums" (the sampler renders each pad into its own
 //!   channel: `render_routed`; the clips play the kit too). Track 2
-//!   "Synth" is Poly, Track 3 "Loop" is the audio looper's playback. The
-//!   tracks go to the master.
+//!   "Synth" is Poly, Track 3 "Loop" is the audio looper's playback, and
+//!   Track 4 "Audio" is the audio tracks on the Song view
+//!   (`audiotracks.rs`). The tracks go to the master.
 //! - Input 1 "Line in" is the line input, as the stereo pair, going to the
 //!   master. It is heard while the looper's Monitor is on (the strip's
 //!   Monitor follows it), and it is off while the line input is closed. The
@@ -60,7 +61,10 @@ use mpfree_fx::ids::perform as perf;
 pub const DRUMS: usize = 0;
 pub const SYNTH: usize = 1;
 pub const LOOP: usize = 2;
-pub const TRACKS: usize = 3;
+/// The audio tracks (`audiotracks.rs`), summed after each track's own
+/// level, pan, mute and solo.
+pub const AUDIO: usize = 3;
+pub const TRACKS: usize = 4;
 /// Pad channels: the playing kit's pads.
 pub const PADS: usize = 16;
 /// The line input's strip.
@@ -165,6 +169,7 @@ pub fn name(s: StripId) -> String {
         StripId::Track(DRUMS) => "Drums".into(),
         StripId::Track(SYNTH) => "Synth".into(),
         StripId::Track(LOOP) => "Loop".into(),
+        StripId::Track(AUDIO) => "Audio".into(),
         LINE => "Line in".into(),
         s => default_name(s),
     }
@@ -578,16 +583,20 @@ impl MixHost {
     /// into the input (the pads are in already: [`MixHost::pads`]), the
     /// master out into `left` and `right`. Returns the output's peak and
     /// whether master safety caught anything.
+    // The sounds come in as they are made; a struct of them would only be
+    // taken apart again here.
+    #[allow(clippy::too_many_arguments)]
     pub fn period(
         &mut self,
         ctx: &Ctx,
         synth: Stereo,
         looped: Stereo,
+        audio: Stereo,
         line: Stereo,
         left: &mut [f32; PERIOD],
         right: &mut [f32; PERIOD],
     ) -> (f32, bool) {
-        for (t, (l, r)) in [(SYNTH, synth), (LOOP, looped)] {
+        for (t, (l, r)) in [(SYNTH, synth), (LOOP, looped), (AUDIO, audio)] {
             if let Some((dl, dr)) = self.mixer.track_input(t) {
                 dl[..PERIOD].copy_from_slice(l);
                 dr[..PERIOD].copy_from_slice(r);
@@ -753,7 +762,7 @@ mod tests {
                 pr[..PERIOD].iter_mut().zip(&d).for_each(|(o, x)| *o += x);
             }
             let ctx = Ctx::new(RATE, (p * PERIOD) as u64);
-            let (pk, c) = h.period(&ctx, (&z, &z), (&z, &z), (&i, &i), &mut l, &mut r);
+            let (pk, c) = h.period(&ctx, (&z, &z), (&z, &z), (&z, &z), (&i, &i), &mut l, &mut r);
             // The loudest of the last half: after the glides.
             if p >= periods / 2 {
                 peak = peak.max(pk);
@@ -801,7 +810,7 @@ mod tests {
             }
             let ctx = Ctx::new(RATE, at as u64);
             let (mut l, mut r) = ([0f32; PERIOD], [0f32; PERIOD]);
-            h.period(&ctx, (&z, &z), (&z, &z), (&z, &z), &mut l, &mut r);
+            h.period(&ctx, (&z, &z), (&z, &z), (&z, &z), (&z, &z), &mut l, &mut r);
             at += PERIOD;
             let peak = |x: &[f32]| x.iter().fold(0f32, |m, v| m.max(v.abs()));
             let cap = h.rec_capture().map(|(cl, cr, lat)| {
@@ -871,7 +880,7 @@ mod tests {
                 .iter()
                 .map(|s| s.name.as_str())
                 .collect::<Vec<_>>(),
-            ["Drums", "Synth", "Loop"]
+            ["Drums", "Synth", "Loop", "Audio"]
         );
         assert!(st.strips[0].peak[0] > 0.1);
         assert_eq!(st.master.volume_db, -6.0);

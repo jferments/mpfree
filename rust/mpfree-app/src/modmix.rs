@@ -405,7 +405,7 @@ mod tests {
         let (mut l, mut r) = ([0f32; PERIOD], [0f32; PERIOD]);
         for i in from..from + periods {
             let ctx = Ctx::new(RATE, i * PERIOD as u64);
-            h.period(&ctx, (&z, &z), (&z, &z), (&z, &z), &mut l, &mut r);
+            h.period(&ctx, (&z, &z), (&z, &z), (&z, &z), (&z, &z), &mut l, &mut r);
         }
     }
 
