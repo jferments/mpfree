@@ -177,6 +177,31 @@ class DirectBootSourceGuards(unittest.TestCase):
         self.assertNotIn("shell=True",source)
         self.assertNotIn("os.system(",source)
 
+    def test_fastboot_receive_ram_path_proof_stays_static(self):
+        module = ROOT / "tools/mpc-one/synthesize_fastboot_ram_path.py"
+        tests = ROOT / "tools/mpc-one/tests/test_fastboot_ram_path.py"
+        source = module.read_text()
+        runner = RUNNER.read_text()
+        preflight = (ROOT/"tools/mpc-one/recheck_integrated_directboot.py").read_text()
+        ghidra = GHIDRA.read_text()
+        ast.parse(source, filename=str(module))
+        ast.parse(tests.read_text(), filename=str(tests))
+        for marker in (
+            "RAM_BASE=0x00800800",
+            "MAX_ADVERTISED=0x70000000",
+            "download_permission_gate",
+            "safe_nonpersistent_kernel_initramfs_FDT_layout_proven",
+            "FIT_signature_required_proven",
+        ):
+            self.assertIn(marker, source)
+        self.assertIn("fastboot-ram-path.json", runner)
+        self.assertIn("ram_report = ram_boot.build(z.read)", preflight)
+        self.assertIn("0x00122a10", ghidra)
+        self.assertIn("request_and_receive_cursor_pointer_equal", ghidra)
+        self.assertIn("matrix_count >= 67 and matrix_tracks == 7", runner)
+        self.assertNotIn("subprocess.", source)
+        self.assertNotIn("os.system(", source)
+
     def test_focus_syntax_and_no_physical_fastboot(self):
         s=FOCUS.read_text()
         ast.parse(s,filename=str(FOCUS))
