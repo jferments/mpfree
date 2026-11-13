@@ -1394,6 +1394,46 @@ class Lab:
             self.stages["usb-backend-callback-coverage"]={
                 "success":False,"error":str(exc)}
             self.notes.append("USB backend callback coverage: "+str(exc))
+        # Offline cross-stage image format / verified state / XZ / SPL
+        # analysis. This consumes only SHA-indexed Ghidra and preverified
+        # USB callback reports; NO vendor binary or physical MPC is run.
+        try:
+            fmt = load_module(
+                "tools/mpc-one/synthesize_update_format_and_spl.py",
+                "mpfree_update_image_formats_source_only",
+            )
+            format_report = fmt.build(
+                lambda path: (self.out / path).read_bytes()
+            )
+            (self.out / "update-format-and-spl.json").write_text(
+                json.dumps(format_report, indent=2) + "\n")
+            (self.out / "update-format-and-spl.md").write_text(
+                fmt.markdown(format_report))
+            record["update_format_and_spl"] = {
+                "report":"update-format-and-spl.json",
+                "source_checks":format_report[
+                    "all_checkable_static_claims_passed"],
+                "image_format_signatures":format_report[
+                    "image_format_prefixes"],
+                "compressed_bootloader_branch_max_bytes":format_report[
+                    "xz_bootloader_check_max_bytes_on_this_path"],
+                "xz_streaming_buffer_count":format_report[
+                    "xz_partition_buffer_count_observed"],
+                "real_vendor_execution_or_maskrom_proven":False,
+            }
+            self.stages["update-format-and-spl-evidence"] = {
+                "success":bool(format_report[
+                    "all_checkable_static_claims_passed"]),
+                "checks":len(format_report["checks"]),
+                "xz_streaming_buffers":format_report[
+                    "xz_partition_buffer_count_observed"],
+                "physical_device_tested":False,
+            }
+        except Exception as exc:
+            record["update_format_and_spl_error"]=str(exc)
+            self.stages["update-format-and-spl-evidence"]={
+                "success":False,"error":str(exc)}
+            self.notes.append("Format/verification/SPL audit: "+str(exc))
         (self.out / "cross-evidence.json").write_text(json.dumps(record, indent=2) + "\n")
         summary = [
             "# MPFree integrated bootchain run",
@@ -1545,6 +1585,20 @@ class Lab:
                            str(usb_slots["source_provenance_matched"]))
             summary.append("- Fastboot has stream+commit slots; FF/61/7A lacks commit; RockUSB-like lacks stream+commit.")
             summary.append("- Static slots only: neither physical MaskROM nor recovery is proven.")
+        summary += ["", "## 3.10 image format / verification / XZ and SPL"]
+        formats = record.get("update_format_and_spl")
+        if formats:
+            summary.append("- Source image signatures: " +
+                           str(formats["image_format_signatures"]))
+            summary.append("- Observed xz bootloader branch size check: " +
+                           str(formats["compressed_bootloader_branch_max_bytes"]) +
+                           " bytes.")
+            summary.append("- XZ partition streaming allocates " +
+                           str(formats["xz_streaming_buffer_count"]) +
+                           " x 1 MiB buffers in this branch.")
+            summary.append("- Verification state 2 and option 2 bypass *rechecking*;")
+            summary.append("  error -13 meaning/object reuse and actual policy unproven.")
+            summary.append("- See update-format-and-spl.json and .md.")
         summary += ["", "## Guest/static image consistency"]
         if record["match_tests"]:
             for entry in record["match_tests"]:
