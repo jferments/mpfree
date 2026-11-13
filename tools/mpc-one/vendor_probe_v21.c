@@ -188,6 +188,9 @@ static int v21_transfer(const char *name){
            calls(lookup),calls(ready),calls(load),calls(done));
     return result(name,ok,"actual-owner-backend-indirect-call-with-fake-media");
 }
+#ifdef MPFREE_V22_WRAPPING
+#define main mpfree_v21_legacy_main
+#endif
 int main(int argc,char **argv){
     if(argc!=3){fputs("usage: v21 CASE private-pinned-owner-P3\n",stderr);return 2;}
     if(strncmp(argv[1],"v21_",4))return mpfree_v20_legacy_main(argc,argv);
@@ -200,3 +203,7 @@ int main(int argc,char **argv){
     if(!strncmp(argv[1],"v21_transfer_",13))return v21_transfer(argv[1]);
     return result(argv[1],false,"unrecognized-v21-guest-probe");
 }
+
+#ifdef MPFREE_V22_WRAPPING
+#undef main
+#endif
