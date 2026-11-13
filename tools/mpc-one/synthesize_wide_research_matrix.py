@@ -376,13 +376,16 @@ def build(read):
         "Updater executable strings and symbols expose file/net/USB update paths; execution path still unproven.",
         "Trace CLI entry→verification→image apply→reboot in Ghidra.","static/wide/firmware-3.10-bootchain-v4-compare.json")
     usbs=d["usb"]["verified_backend_interfaces"]
-    usb_slots={
-        "/".join((x["usb_descriptor"]["class"].lower(),
-                  x["usb_descriptor"]["subclass"].lower(),
-                  x["usb_descriptor"]["protocol"].lower())):{
-            row["offset"]:row.get("resolved_function")
-            for row in x["backend_callback_evidence"]}
-        for x in d["usb"]["verified_backend_interfaces"]}
+    usb_slots={}
+    for x in d["usb"]["verified_backend_interfaces"]:
+        desc=x.get("usb_descriptor",{})
+        if all(desc.get(k) for k in ("class","subclass","protocol")):
+            label="/".join(desc[k].lower() for k in
+                           ("class","subclass","protocol"))
+            usb_slots[label]={
+                row["offset"]:row.get("resolved_function")
+                for row in x.get("backend_callback_evidence",[])
+                if row.get("offset")}
     row("USB","Does vendor write API route through backend write/commit slots?",
         confirmed(all(key in d["library"]["analyzed_functions"].get(addr,{}).get(
             "pseudocode","") for addr,key in (
