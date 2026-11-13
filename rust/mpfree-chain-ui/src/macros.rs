@@ -589,7 +589,14 @@ impl Widget for MacrosView {
 }
 
 impl MacrosView {
-    fn touch_inner(&mut self, finger: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
+    fn touch_inner(
+        &mut self,
+        finger: u64,
+        phase: Touch,
+        x: i32,
+        y: i32,
+        r: Rect,
+    ) -> Option<EventKind> {
         let l = layout(r);
         match phase {
             Touch::Down => {
