@@ -178,6 +178,62 @@ impl Console {
 }
 
 /// A colour for a log line from how it starts.
+/// The RAM chip's colour: green under 70 %, amber under 85 %, red above.
+fn ram_tone(pct: f64) -> Tone {
+    if pct < 70.0 {
+        Tone::Good
+    } else if pct < 85.0 {
+        Tone::Warn
+    } else {
+        Tone::Bad
+    }
+}
+
+/// A kit's name as the header's chip shows it: words, not dashes
+/// (`ClassicHouse-Kit-Classy` is "ClassicHouse Kit Classy"), at most 28
+/// characters; "Kit N" for a kit with no name.
+pub fn chip_kit_name(name: &str, kit: usize) -> String {
+    let words: String = name
+        .chars()
+        .map(|c| if c == '-' || c == '_' { ' ' } else { c })
+        .collect();
+    let words = words.split_whitespace().collect::<Vec<_>>().join(" ");
+    if words.is_empty() {
+        return format!("Kit {}", kit + 1);
+    }
+    if words.chars().count() > 28 {
+        let cut: String = words.chars().take(27).collect();
+        format!("{}…", cut.trim_end())
+    } else {
+        words
+    }
+}
+
+/// How long a told line ([`ToUi::Tell`]) stays in place of the hint.
+pub const TELL_SECONDS: f32 = 4.0;
+
+/// A log line as the screen says it: without the log's `area:` tag, a
+/// model's refusal in words, starting with a capital.
+pub fn tell_text(line: &str) -> String {
+    let mut l = line.trim();
+    if let Some((tag, rest)) = l.split_once(": ") {
+        if !tag.is_empty() && tag.chars().all(|c| c.is_ascii_lowercase() || c == '-') {
+            l = rest;
+        }
+    }
+    let mut out = l.to_string();
+    // `edit of pad A7 not made (BadRegion("loop mode needs loop points"))`
+    if let (Some(a), Some(b)) = (out.find("(BadRegion(\""), out.rfind("\"))")) {
+        let why = out[a + 12..b].to_string();
+        out = format!("{}: {why}", out[..a].trim_end());
+    }
+    let mut c = out.chars();
+    match c.next() {
+        Some(f) => f.to_uppercase().chain(c).collect(),
+        None => out,
+    }
+}
+
 pub fn tone_of(line: &str) -> Tone {
     let l = line.trim_start();
     if l.starts_with("STOP") || l.contains("failed") || l.contains("underrun at") {
@@ -234,6 +290,9 @@ pub struct Timing {
 pub enum ToUi {
     /// A line for the terminal and the Events log.
     Line(String),
+    /// A line shown in place of the hint for [`TELL_SECONDS`] (it was
+    /// logged as a `Line` too): why something did nothing.
+    Tell(String),
     /// A line for the Events log only (not printed).
     Event(String),
     /// A MIDI message in or out, as one line (also printed).
@@ -478,6 +537,8 @@ pub enum FromUi {
     PadsLayout {
         in_key: bool,
     },
+    /// A tap on Play's tempo: a tap of the tempo, as TAP TEMPO.
+    TapTempo,
     Tab(usize),
     MenuSelect(usize),
     MenuStep(usize, i32),
@@ -714,12 +775,17 @@ pub struct Player {
     chain_page: Box<ChainPage>,
     /// When the CPU chip was last read.
     cpu_at: f32,
+    /// The memory in use, % of all ([`Player::set_ram`]); None until read.
+    ram_pct: Option<f64>,
     /// Touch tuning: every finger goes through the filter first (the
     /// correction and the hold filter); `tuning` is what it applies and
     /// `saved_tuning` what the store has.
     filter: Filter,
     tuning: Tuning,
     saved_tuning: Tuning,
+    /// A line said in place of the hint ([`ToUi::Tell`]) and the seconds
+    /// it has left.
+    told: Option<(String, f32)>,
 }
 
 impl Player {
@@ -840,6 +906,7 @@ impl Player {
             mute_keys: MuteKeys::Off,
         };
         let mut p = Player {
+            told: None,
             ui,
             kits: Vec::new(),
             kit: 0,
@@ -889,6 +956,7 @@ impl Player {
             play: PlayPage::default(),
             chain_page: Box::default(),
             cpu_at: 0.0,
+            ram_pct: None,
             filter: Filter::new((size.0 as f32, size.1 as f32)),
             tuning: Tuning::default(),
             saved_tuning: Tuning::default(),
@@ -1477,6 +1545,9 @@ impl Player {
         if let Some((text, tone)) = self.engines.as_deref().and_then(crate::engines::cpu_chip) {
             chips.push(Chip::new(text, tone));
         }
+        if let Some(p) = self.ram_pct {
+            chips.push(Chip::new(format!("RAM {p:.0} %"), ram_tone(p)));
+        }
         if self.session.1 != Tone::Good || !self.ready {
             chips.push(Chip::new(self.session.0.clone(), self.session.1));
         }
@@ -1484,11 +1555,12 @@ impl Player {
             Some(KitView {
                 chip: Some(chip), ..
             }) => chips.push(Chip::new(chip.clone(), Tone::Normal)),
-            Some(_) => chips.push(Chip::new(
+            // The kit's name (live test 3: "Kit 1 of 10" said nothing about
+            // which kit was Grains), and its bank.
+            Some(k) => chips.push(Chip::new(
                 format!(
-                    "Kit {} of {} · Bank {}",
-                    self.kit + 1,
-                    self.kits.len(),
+                    "{} · Bank {}",
+                    chip_kit_name(&k.name, self.kit),
                     crate::app::bank_letter(self.kit)
                 ),
                 Tone::Normal,
@@ -1673,9 +1745,14 @@ impl Player {
                 View::Pattern => self.workspace.hint().to_string(),
             }
         };
+        let (text, tone) = match &self.told {
+            Some((t, _)) => (t.clone(), Tone::Warn),
+            None => (text, Tone::Dim),
+        };
         if let Some(h) = self.ui.get_mut::<Label>("hint") {
-            if h.text != text {
+            if h.text != text || h.tone != tone {
                 h.text = text;
+                h.tone = tone;
             }
         }
     }
@@ -1801,8 +1878,15 @@ impl Player {
         }
     }
 
+    /// Shows `line` in place of the hint for [`TELL_SECONDS`].
+    pub fn tell(&mut self, line: &str) {
+        self.told = Some((tell_text(line), TELL_SECONDS));
+        self.refresh_hint();
+    }
+
     pub fn apply(&mut self, msg: ToUi) {
         match msg {
+            ToUi::Tell(l) => self.tell(&l),
             ToUi::Line(l) | ToUi::Event(l) => {
                 let tone = tone_of(&l);
                 if let Some(e) = self.ui.get_mut::<LogPanel>("events") {
@@ -2564,6 +2648,9 @@ impl Player {
     /// The Sample page's log lines, to the terminal (the system log) and
     /// the Events log.
     fn print_sample_lines(&mut self) {
+        if let Some(t) = self.sample.take_told().pop() {
+            self.tell(&t);
+        }
         let lines = self.sample.take_lines();
         if lines.is_empty() {
             return;
@@ -3176,6 +3263,16 @@ impl Player {
         DebugPages::set_procs(&mut self.ui, v);
     }
 
+    /// The memory in use, % of all, for the header's RAM chip (the screen
+    /// thread reads /proc/meminfo every 2 s).
+    pub fn set_ram(&mut self, pct: f64) {
+        let changed = self.ram_pct.is_none_or(|p| p.round() != pct.round());
+        self.ram_pct = Some(pct);
+        if changed {
+            self.refresh_chips();
+        }
+    }
+
     /// Process and system numbers, from the screen thread's sampler.
     pub fn set_proc(&mut self, v: ProcView) {
         self.debug.set_proc(&mut self.ui, v);
@@ -3355,6 +3452,9 @@ impl Player {
             }
             (play_page::PADS, EventKind::Tab(i)) => Some(FromUi::PadsLayout { in_key: i == 1 }),
             ("kits", EventKind::Select(k)) => Some(FromUi::Kit(k)),
+            (play_page::TRANSPORT, EventKind::Select(crate::play_widgets::TAP_BPM)) => {
+                Some(FromUi::TapTempo)
+            }
             (play_page::TRANSPORT, EventKind::Tab(i)) => {
                 self.show_play_view(PlayView::from_index(i));
                 None
@@ -3505,6 +3605,14 @@ impl Player {
 
     /// Advance animations by `dt` seconds.
     pub fn tick(&mut self, dt: f32) {
+        // A told line goes back to the hint once read.
+        if let Some((_, left)) = self.told.as_mut() {
+            *left -= dt.max(0.0);
+            if *left <= 0.0 {
+                self.told = None;
+                self.refresh_hint();
+            }
+        }
         // The I/O section showing updates its live values (lights, the
         // clock's tempo); it marks what it needs drawn.
         self.io_clock += Duration::from_secs_f32(dt.max(0.0));
@@ -3756,6 +3864,7 @@ pub fn spawn(
             // Debug mode: /proc and /sys every 2 s, and a perf: line every 30 s.
             let mut perf = crate::perf::Sampler::new();
             let (mut perf_at, mut perf_logged): (Option<Instant>, Option<Instant>) = (None, None);
+            let mut ram_at: Option<Instant> = None;
             // The Processes page: /proc once a second, only while it shows (a
             // fresh table each time the page opens, so CPU starts again).
             let mut procs: Option<(mpfree_prof::procs::ProcTable, Instant)> = None;
@@ -3829,6 +3938,16 @@ pub fn spawn(
                     }
                 }
                 send_actions(&mut player, &tx);
+                // The header's RAM chip, every 2 s, whatever shows.
+                if ram_at.is_none_or(|t| t.elapsed() >= PERF_EVERY) {
+                    ram_at = Some(Instant::now());
+                    if let Some(p) = std::fs::read_to_string("/proc/meminfo")
+                        .ok()
+                        .and_then(|m| crate::perf::ram_used_pct(&m))
+                    {
+                        player.set_ram(p);
+                    }
+                }
                 if !player.debug_mode() {
                     perf_at = None;
                 } else if perf_at.is_none_or(|t| t.elapsed() >= PERF_EVERY) {
@@ -4605,6 +4724,10 @@ pub fn apply_effects(p: &mut Player, fx: Vec<crate::app::Effect>) {
             Effect::TouchWheel(d) => p.apply(ToUi::TouchWheel(d)),
             Effect::TouchStep(d) => p.apply(ToUi::TouchStep(d)),
             Effect::Note(l) => p.apply(ToUi::Line(l)),
+            Effect::Tell(l) => {
+                p.apply(ToUi::Line(l.clone()));
+                p.apply(ToUi::Tell(l));
+            }
             Effect::ClipsWheel { delta, scroll } => p.apply(ToUi::ClipsWheel { delta, scroll }),
             Effect::Map(m) => p.apply(ToUi::Map(Box::new(m))),
             Effect::SynthPage(d) => p.apply(ToUi::SynthPage(d)),
@@ -4627,7 +4750,7 @@ pub fn apply_effects(p: &mut Player, fx: Vec<crate::app::Effect>) {
             | Effect::SavePatterns(_)
             | Effect::SynthPads(_)
             | Effect::ProgEdit
-            | Effect::Metronome
+            | Effect::Metronome { .. }
             | Effect::Fill(_)
             | Effect::Mixer(_) => {}
             Effect::MixerWheel(d) => p.apply(if p.io_showing() {
@@ -6904,6 +7027,144 @@ mod tests {
         assert_eq!(fx.first(), Some(&Effect::Mixer(Some(MixView::Pads))));
         apply_effects(&mut p, fx);
         assert_eq!(p.page(), MIXER_PAGE);
+    }
+
+    /// Live test 3: the kit chip names the kit (not "Kit 1 of 10"), and a
+    /// RAM chip sits beside the CPU's.
+    #[test]
+    fn the_header_names_the_kit_and_shows_ram() {
+        let mut p = sample_player(Fonts::embedded());
+        p.set_ram(17.4);
+        let chips: Vec<String> =
+            p.ui.get::<Header>("header")
+                .unwrap()
+                .chips
+                .iter()
+                .map(|c| c.text.clone())
+                .collect();
+        assert!(chips.iter().any(|c| c == "RAM 17 %"), "{chips:?}");
+        assert!(!chips.iter().any(|c| c.contains(" of ")), "{chips:?}");
+        assert_eq!(
+            chip_kit_name("ClassicHouse-Kit-Classy", 0),
+            "ClassicHouse Kit Classy"
+        );
+        assert_eq!(chip_kit_name("", 2), "Kit 3");
+        assert_eq!(
+            chip_kit_name("A-very-long-kit-name-that-goes-on-and-on", 0),
+            "A very long kit name that g…"
+        );
+        assert_eq!(
+            crate::perf::ram_used_pct("MemTotal: 2000 kB\nMemAvailable: 1500 kB\n"),
+            Some(25.0)
+        );
+    }
+
+    /// Live test 3: a tap on Play's tempo is a tap of the tempo.
+    #[test]
+    fn a_tap_on_plays_tempo_taps_it() {
+        let mut p = sample_player(Fonts::embedded());
+        p.apply(ToUi::Show(View::Play));
+        p.ui.paint(&mut SoftCanvas::new(SCREEN.0, SCREEN.1));
+        let b =
+            p.ui.get::<PlayTransport>(play_page::TRANSPORT)
+                .unwrap()
+                .bpm_area()
+                .expect("the transport was drawn");
+        assert!(b.w >= 64);
+        let got = p.touch(1, Touch::Down, b.x + b.w / 2, b.y + b.h / 2);
+        p.touch(1, Touch::Up, b.x + b.w / 2, b.y + b.h / 2);
+        assert_eq!(got, Some(FromUi::TapTempo));
+    }
+
+    /// Live test 3: a refusal used to go only to the Dev tab's log. Now
+    /// it shows in place of the hint, long enough to read, then the hint
+    /// comes back.
+    #[test]
+    fn a_refusal_is_said_in_place_then_the_hint_comes_back() {
+        let mut p = sample_player(Fonts::embedded());
+        let hint = p.ui.get::<Label>("hint").unwrap().text.clone();
+        p.apply(ToUi::Tell(
+            "sample: edit of pad A7 not made (BadRegion(\"loop mode needs loop points\"))".into(),
+        ));
+        let l = p.ui.get::<Label>("hint").unwrap();
+        assert_eq!(
+            l.text,
+            "Edit of pad A7 not made: loop mode needs loop points"
+        );
+        assert_eq!(l.tone, Tone::Warn);
+        p.tick(TELL_SECONDS - 1.0);
+        assert!(p
+            .ui
+            .get::<Label>("hint")
+            .unwrap()
+            .text
+            .starts_with("Edit of pad A7"));
+        p.tick(1.1);
+        let l = p.ui.get::<Label>("hint").unwrap();
+        assert_eq!(l.text, hint);
+        assert_eq!(l.tone, Tone::Dim);
+        assert_eq!(tell_text("pads: In key, C Major"), "In key, C Major");
+        assert_eq!(tell_text("The chain is full"), "The chain is full");
+    }
+
+    /// Live test 3: every tap in the chain editor and the macros panel
+    /// reaches the app (they used to stop in the widget). A tap on a
+    /// row, + Add effect, a pick, Cancel and Back, each through
+    /// `Player::touch` as the screen sends them.
+    #[test]
+    fn the_chain_editors_taps_reach_the_app() {
+        use mpfree_chain_ui::ChainView;
+        let mut p = sample_player(Fonts::embedded());
+        sample_panels(&mut p, View::Chain);
+        assert_eq!(p.page(), mpfree_chain_ui::CHAIN_PAGE);
+        p.ui.paint(&mut SoftCanvas::new(SCREEN.0, SCREEN.1));
+        let r = p.ui.rect_of(mpfree_chain_ui::CHAIN).unwrap();
+        let tap = |p: &mut Player, x: i32, y: i32| {
+            let mut got: Vec<FromUi> = Vec::new();
+            got.extend(p.touch(1, Touch::Down, x, y));
+            got.extend(p.touch(1, Touch::Up, x, y));
+            got.extend(p.take_actions());
+            got
+        };
+        let l =
+            p.ui.get::<ChainView>(mpfree_chain_ui::CHAIN)
+                .unwrap()
+                .layout(r);
+        let row = l.rows[0];
+        let got = tap(&mut p, row.x + 20, row.y + row.h / 2);
+        assert_eq!(got, vec![FromUi::Chain(ChainAction::Select(0))]);
+        let add = l.add.expect("the chain has room for + Add effect");
+        let got = tap(&mut p, add.x + 10, add.y + 10);
+        assert_eq!(got, vec![FromUi::Chain(ChainAction::Picker(true))]);
+        let l =
+            p.ui.get::<ChainView>(mpfree_chain_ui::CHAIN)
+                .unwrap()
+                .layout(r);
+        let c = l.cancel.expect("the picker has a Cancel");
+        let got = tap(&mut p, c.x + 5, c.y + 5);
+        assert_eq!(got, vec![FromUi::Chain(ChainAction::Picker(false))]);
+        let got = tap(&mut p, add.x + 10, add.y + 10);
+        assert_eq!(got, vec![FromUi::Chain(ChainAction::Picker(true))]);
+        let l =
+            p.ui.get::<ChainView>(mpfree_chain_ui::CHAIN)
+                .unwrap()
+                .layout(r);
+        let pick = l.picks[0];
+        let got = tap(&mut p, pick.x + 10, pick.y + 10);
+        assert!(
+            matches!(got.as_slice(), [FromUi::Chain(ChainAction::Add(_))]),
+            "{got:?}"
+        );
+        let back = l.back.expect("opened from the mixer: ‹ Mixer");
+        let got = tap(&mut p, back.x + 5, back.y + 5);
+        assert_eq!(got, vec![FromUi::Chain(ChainAction::Back)]);
+        // The macros panel's Back too.
+        p.apply(ToUi::Show(View::Macros));
+        p.ui.paint(&mut SoftCanvas::new(SCREEN.0, SCREEN.1));
+        let r = p.ui.rect_of(mpfree_chain_ui::MACROS_W).unwrap();
+        let b = mpfree_chain_ui::macros::layout(r).back;
+        let got = tap(&mut p, b.x + 5, b.y + 5);
+        assert_eq!(got, vec![FromUi::Macros(MacroAction::Back)]);
     }
 
     /// Q-LINK on Play: Macros 1-4, Macros 5-8, then Play's own knobs; the
@@ -10125,7 +10386,7 @@ mod tests {
                 .collect()
         };
         assert!(
-            chips(&p).contains(&"Kit 1 of 7 · Bank A".to_string()),
+            chips(&p).contains(&"Classic House · Bank A".to_string()),
             "{:?}",
             chips(&p)
         );

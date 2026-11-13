@@ -234,14 +234,19 @@ fn panel(dir: &Path, hold_ms: usize, frames: usize, fb: &Path, sysfs: &Path) -> 
         "page", "ops", "draws", "draw", "read", "copy", "whole"
     );
     let mut r = Renderer::new(&gpu, g.width as i32, g.height as i32, ROTATION)?;
-    let mut store = Store::new(usize::MAX);
     let mut frame = vec![0u8; g.frame_len()];
     let (mut cleared, mut alone) = (0usize, 0usize);
-    let mut busiest: Option<(String, Frame)> = None;
+    let mut busiest: Option<(String, Frame, Store)> = None;
     let mut checked = false;
     for path in &files {
         let (name, first) = first_frame(path, w, h)?;
+        // Each page was recorded on its own, so its masks are numbered from
+        // 0 again: a store of its own, and a renderer that forgets the last
+        // page's masks (live test 3's garbled text was the last page's
+        // glyphs drawn under this page's numbers).
+        let mut store = Store::new(usize::MAX);
         store.apply(&first);
+        r.forget_all(&gpu);
         let t = Instant::now();
         let drawn = r.play(&gpu, &first.ops, &store, &first.dropped);
         r.finish(&gpu);
@@ -292,14 +297,15 @@ fn panel(dir: &Path, hold_ms: usize, frames: usize, fb: &Path, sysfs: &Path) -> 
         }
         if busiest
             .as_ref()
-            .is_none_or(|(_, b)| first.ops.len() > b.ops.len())
+            .is_none_or(|(_, b, _)| first.ops.len() > b.ops.len())
         {
-            busiest = Some((name, first));
+            busiest = Some((name, first, store));
         }
         std::thread::sleep(Duration::from_millis(hold_ms as u64));
     }
     // One page, again and again, to the panel: the GPU's way and software's.
-    let (name, page) = busiest.ok_or("no pages")?;
+    let (name, page, store) = busiest.ok_or("no pages")?;
+    r.forget_all(&gpu);
     let mut soft = SoftCanvas::new(w, h);
     let mut buf = Vec::with_capacity(g.frame_len());
     let (mut g_draw, mut g_read, mut g_copy, mut g_all) =

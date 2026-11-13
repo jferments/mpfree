@@ -188,7 +188,7 @@ fn a_layer_that_doesnt_play_grains_says_how_and_mode_turns_it_on() {
     let mut s = grain(false);
     let cloud = s.ui.get::<GrainCloud>(grain_tab::CLOUD).unwrap();
     assert!(!cloud.granular);
-    assert_eq!(cloud.note, "Loop: set Mode to Granular to play grains");
+    assert_eq!(cloud.note, "Mode is Loop: tap to play this pad as grains");
     assert_eq!(row_value(&s, Row::Mode), "Loop");
     step_apply(&mut s, Row::Mode, 1);
     assert_eq!(
@@ -212,6 +212,62 @@ fn a_layer_that_doesnt_play_grains_says_how_and_mode_turns_it_on() {
         step(&mut s, Row::Mode, 1).is_none(),
         "Granular is the last mode"
     );
+}
+
+/// Live test 3: from a one-shot pad with no loop the Mode row stopped at
+/// Toggle, because Loop without loop points is refused. Now it gives Loop
+/// a loop, as the Wave tab does, and goes on to Granular.
+#[test]
+fn the_mode_row_reaches_granular_from_a_pad_with_no_loop() {
+    let mut s = grain(false);
+    {
+        let pad = s.project.pad(PAD).unwrap();
+        let mut r = pad.layers[0].region.clone();
+        r.mode = PlayMode::OneShot;
+        r.sustain_loop = None;
+        let a = GrainAction::Region {
+            pad: PAD,
+            layer: 0,
+            region: Box::new(r),
+            gesture: 1,
+        };
+        apply(&mut s, &a);
+    }
+    assert_eq!(row_value(&s, Row::Mode), "One shot");
+    for want in [
+        PlayMode::Gate,
+        PlayMode::Toggle,
+        PlayMode::Loop,
+        PlayMode::Granular,
+    ] {
+        step_apply(&mut s, Row::Mode, 1);
+        let r = &s.project.pad(PAD).unwrap().layers[0].region;
+        assert_eq!(r.mode, want);
+        if want == PlayMode::Loop {
+            assert!(r.sustain_loop.is_some(), "Loop got a loop");
+        }
+    }
+}
+
+/// The note over a layer that doesn't play grains is a button that does.
+#[test]
+fn the_play_as_grains_button_sets_granular() {
+    let mut s = grain(false);
+    let b = GrainCloud::note_button(rect(&s, grain_tab::CLOUD));
+    assert!(b.h >= 64, "a finger-sized button");
+    let acts = drag(
+        &mut s,
+        (b.x + b.w / 2, b.y + b.h / 2),
+        (b.x + b.w / 2, b.y + b.h / 2),
+    );
+    lift(&mut s);
+    let a = acts.first().expect("the tap asks for an edit");
+    apply(&mut s, a);
+    assert_eq!(
+        s.project.pad(PAD).unwrap().layers[0].region.mode,
+        PlayMode::Granular
+    );
+    assert!(s.ui.get::<GrainCloud>(grain_tab::CLOUD).unwrap().granular);
 }
 
 #[test]
