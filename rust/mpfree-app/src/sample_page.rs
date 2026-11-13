@@ -885,7 +885,7 @@ impl SamplePage {
         })
     }
 
-    /// - / + (or the wheel, once its push opened the row): the step of the
+    /// The minus and plus buttons (or the wheel, once its push opened the row): the step of the
     /// row picked, as a tap on its arrow, for the GUI to hand on. None on
     /// the pages whose wheel already stepped the row picked (Play, Grain,
     /// Rec, Auto, the Pads tab): [`SamplePage::wheel`] does it there, one

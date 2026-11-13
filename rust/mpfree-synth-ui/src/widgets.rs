@@ -587,7 +587,8 @@ struct Drag {
 
 /// The page's parameters as tiles, four to a row.
 ///
-/// - A finger down on a tile selects it: `Select(i)`. The wheel then turns it.
+/// - A finger down on a tile selects it: `Select(i)`. - / + then step it,
+///   and so does the wheel once its push opened the tile (`editing`).
 /// - Dragging a knob up or down turns it: `Value(pos)` for the selected
 ///   tile, [`DRAG_PX`] pixels for the whole range.
 /// - Lifting on a choice's button, or on an arrow, gives
