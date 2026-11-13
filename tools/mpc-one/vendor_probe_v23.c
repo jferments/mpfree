@@ -158,6 +158,9 @@ static int v23_config(const char *name){
     return result(name,ok,
                   "real-controller-configuration-routine-wrote-only-fake-registers");
 }
+#ifdef MPFREE_V24_WRAPPING
+#define main mpfree_v23_legacy_main
+#endif
 int main(int argc,char **argv){
     if(argc!=3){
         fputs("usage: vendor_probe_v23 CASE owner-P3-pinned-private.raw\n",stderr);
@@ -177,3 +180,7 @@ int main(int argc,char **argv){
         return v23_config(argv[1]);
     return result(argv[1],false,"unknown-V23-case");
 }
+
+#ifdef MPFREE_V24_WRAPPING
+#undef main
+#endif
