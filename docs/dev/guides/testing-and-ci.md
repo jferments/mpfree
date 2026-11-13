@@ -118,6 +118,11 @@ touchscreen, using the list of controls each widget gives
   empty. `MPFREE_AUDIT_OUT=<file>` writes the whole report, one row per
   control. The sweep paints each screen before listing its controls,
   because some widgets (the top bar's chips) measure them when they draw.
+  A press it cannot bring the page back from gets a fresh copy of the
+  screen from a spare set. The spares share one copy of the fonts, and at
+  most three sets' worth are kept, the screens swept soonest first, so
+  the sweep fits in the 32-bit ARM test's memory (it peaks at about
+  1.3 GB on x86-64, and takes about 3.5 minutes in a debug build).
 - **The catalogue check** (`every_swept_control_is_in_the_catalogue`)
   reads the same sweep (it runs once for both tests) and fails on any
   `widget/id` the [controls catalogue](controls.md) doesn't explain. A new

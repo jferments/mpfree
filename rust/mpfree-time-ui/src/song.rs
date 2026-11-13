@@ -1075,6 +1075,13 @@ impl Widget for SongLanes {
 
     fn targets(&self, r: Rect) -> Vec<Target> {
         let audio = self.region.is_some();
+        // The track panel takes the touches over it: a block under it can
+        // be tapped only where it shows.
+        let panel = self.panel_parts(r);
+        let shown = |br: Rect| match panel {
+            Some(p) => uncovered(br, p.panel),
+            None => Some(br),
+        };
         let mut out: Vec<Target> = self
             .button_rects(r)
             .iter()
@@ -1100,7 +1107,7 @@ impl Widget for SongLanes {
                 out.push(Target::tap("audio-header", a, lane.name.clone(), rest));
             }
             for i in 0..lane.blocks.len() {
-                if let Some(br) = self.region_rect(r, a, i) {
+                if let Some(br) = self.region_rect(r, a, i).and_then(|br| shown(br)) {
                     out.push(Target::tap(
                         "region",
                         a * 1000 + i,
@@ -1111,9 +1118,37 @@ impl Widget for SongLanes {
             }
         }
         for b in &self.blocks {
-            if let Some(br) = self.block_rect(r, b) {
+            if let Some(br) = self.block_rect(r, b).and_then(|br| shown(br)) {
                 out.push(Target::tap("block", b.index, b.name.clone(), br));
             }
+        }
+        if let (Some(p), Some(lane)) = (
+            panel,
+            panel.and_then(|p| self.audio.iter().find(|l| l.track == p.track)),
+        ) {
+            out.push(Target::tap("panel-close", 0, "Close", p.close));
+            let arm = if lane.armed { "Armed" } else { "Arm" };
+            out.push(Target::tap("panel-arm", 0, arm, p.arm));
+            out.push(Target::tap("panel-mute", 0, "Mute", p.mute));
+            out.push(Target::tap("panel-solo", 0, "Solo", p.solo));
+            out.push(Target::tap("panel-takes", 0, "Takes", p.takes));
+            // The input and monitor showing are lit: a tap changes nothing.
+            for (k, b) in p.inputs.iter().enumerate() {
+                out.push(
+                    Target::tap("panel-input", k, INPUTS[k].0, *b)
+                        .disabled_if(INPUTS[k].1 == lane.input),
+                );
+            }
+            for (k, b) in p.monitors.iter().enumerate() {
+                out.push(
+                    Target::tap("panel-monitor", k, MONITORS[k].0, *b)
+                        .disabled_if(MONITORS[k].1 == lane.monitor),
+                );
+            }
+            out.push(Target::tap("panel-level-less", 0, "Level -", p.level[0]));
+            out.push(Target::tap("panel-level-more", 0, "Level +", p.level[2]));
+            out.push(Target::tap("panel-pan-less", 0, "Pan -", p.pan[0]));
+            out.push(Target::tap("panel-pan-more", 0, "Pan +", p.pan[2]));
         }
         out
     }
@@ -1198,6 +1233,24 @@ impl Widget for SongLanes {
         }
         g.lanes.contains(x, y).then_some(EventKind::Select(NONE))
     }
+}
+
+/// The biggest part of `r` that `cover` leaves showing, beside it or above
+/// or below it; None when too little shows for a fingertip.
+fn uncovered(r: Rect, cover: Rect) -> Option<Rect> {
+    if r.intersect(cover).w == 0 {
+        return Some(r);
+    }
+    let parts = [
+        Rect::new(r.x, r.y, cover.x - r.x, r.h),
+        Rect::new(cover.right(), r.y, r.right() - cover.right(), r.h),
+        Rect::new(r.x, r.y, r.w, cover.y - r.y),
+        Rect::new(r.x, cover.bottom(), r.w, r.bottom() - cover.bottom()),
+    ];
+    parts
+        .into_iter()
+        .filter(|p| p.w >= 16 && p.h >= 16)
+        .max_by_key(|p| p.w * p.h)
 }
 
 #[cfg(test)]
