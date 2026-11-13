@@ -71,7 +71,7 @@ def audit(archive: Path) -> dict:
         "image_formats_verify_cache_xz_and_spl_static_evidence": (
             format_report["all_checkable_static_claims_passed"]),
         "seven_track_64_question_research": (
-            len(matrix["questions"])>=64 and
+            len(matrix["questions"])>=67 and
             len({q["track"] for q in matrix["questions"]})==7),
         "spl_order_and_mmc_label_evidence": all(
             owner_followups["spl"]["checks"].values()),
