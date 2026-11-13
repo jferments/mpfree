@@ -92,6 +92,7 @@ impl App {
         out.set_i64("loop-memory", i64::from(s.loop_memory.minutes()));
         out.set_bool("metronome", s.metronome);
         out.set_i64("metronome-level", i64::from(s.metronome_db));
+        out.set_i64("audio-memory", i64::from(s.audio_memory.seconds()));
         out.set_str("at-start", if s.open_last { "last" } else { "new" });
         // The Looper's level, and the line input's latency once it was set
         // by hand (measured with a cable). The line input itself, and so
@@ -176,6 +177,9 @@ impl App {
                     .get_i64(k)
                     .and_then(|n| super::METRONOME_DBS.iter().find(|&&d| i64::from(d) == n))
                     .map(|&d| s.metronome_db = d)
+                    .is_some(),
+                "audio-memory" => crate::audiotracks::AudioMemory::parse(v)
+                    .map(|m| s.audio_memory = m)
                     .is_some(),
                 "at-start" => match v {
                     "new" => Some(false),

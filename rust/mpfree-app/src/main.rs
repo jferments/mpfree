@@ -3259,10 +3259,13 @@ fn player_session(
     let mut loop_time = RenderTime::default();
     let mut loop_shown_at = Instant::now();
     // The audio tracks on the Song view: their memory is set aside here too.
-    let mut tracks = audiotracks::TrackHost::new(RATE, audiotracks::SECONDS);
+    let audio_memory = app.settings.audio_memory;
+    let mut tracks = audiotracks::TrackHost::new(RATE, audio_memory.seconds());
+    app.set_audio_memory_now(audio_memory);
     out.say(&format!(
-        "audio tracks: {} s of stereo memory for takes",
-        audiotracks::SECONDS
+        "audio tracks: {} of stereo memory for takes ({} MB, Prefs > Audio track memory)",
+        audio_memory.time(),
+        audio_memory.megabytes(RATE)
     ));
     out.show(gui::ToUi::Time(Box::new(time_state(&time, &tracks))));
     let (mut shown_transport, mut transport_shown_at) = (time.info(), Instant::now());
