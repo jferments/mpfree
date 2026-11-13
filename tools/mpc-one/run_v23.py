@@ -82,6 +82,81 @@ def verified_prior(path):
     if len(ledger.get("questions",[]))!=85:
         raise ValueError("V22 owner archive lacks complete 85-question inventory")
     return entries
+def dtb_crosswalk(owner):
+    """Identify physical storage controllers from both owner ACVA DTBs.
+    Linux aliases are NOT presumed to be U-Boot device indices.
+    """
+    result={"schema":"mpfree-v23-owner-DTB-MMC-crosswalk",
+            "linux_aliases_prove_uboot_indices":False,"boards":{}}
+    for board in ("acva","acva_c"):
+        nodes=owner[board]["nodes"]
+        aliases=nodes["/aliases"]
+        found={}
+        for alias in ("mmc0","mmc1","mmc2","mmc3"):
+            node_path=aliases[alias]["value"][0]
+            props=nodes[node_path]
+            reg=props.get("reg",{}).get("value",[])
+            if len(reg)!=4:raise ValueError("Unexpected DTB MMC register layout")
+            status=props.get("status",{}).get("value",["unspecified"])
+            bw=props.get("bus-width",{}).get("value",[])
+            found[alias]={"node":node_path,
+                 "controller_base":"0x%08x"%reg[1],
+                 "register_bytes":reg[3],
+                 "bus_width":bw[0] if bw else None,
+                 "status":status[0],
+                 "non_removable":"non-removable" in props,
+                 "card_detect_gpio":"cd-gpios" in props,
+                 "write_protect_gpio":"wp-gpios" in props}
+        if found["mmc0"]["controller_base"]!="0xff0f0000":
+            raise ValueError("Owner eMMC physical address mismatch")
+        if found["mmc1"]["controller_base"]!="0xff0c0000":
+            raise ValueError("Owner removable SDMMC address mismatch")
+        if not found["mmc0"]["non_removable"] or not found["mmc1"]["card_detect_gpio"]:
+            raise ValueError("Device-tree controller role evidence incomplete")
+        result["boards"][board]=found
+    script=owner["script"]
+    commands=script["script_commands"]
+    current_medium="$"+"{devtype} "+"$"+"{devnum}:"+"$"+"{distro_bootpart} "
+    kernel_address="$"+"{kernel_addr_r}"
+    dtb_address="$"+"{fdt_addr_r}"
+    required=("load "+current_medium+kernel_address,
+              "load "+current_medium+dtb_address,
+              "bootz "+kernel_address+" - "+dtb_address)
+    if (not script["header_crc_valid"] or not script["payload_crc_valid"]
+        or not all(any(line.startswith(x) for line in commands) for x in required)):
+        raise ValueError("Original medium-agnostic boot script is not verified")
+    result["boot_script"]={
+       "CRC_valid":True,"loads_kernel_and_DTB_from_current_device":True,
+       "final_kernel_command":"bootz",
+       "contains_saveenv":any("saveenv" in x for x in commands),
+       "contains_setenv":any("setenv " in x for x in commands),
+       "does_not_prove_Uboot_MMC_numbering":True}
+    result["limitations"]=[
+       "These aliases describe Linux FDT devices, not proven U-Boot mmc indices.",
+       "No physical SD boot, persistent environment change or controller write occurred."]
+    return result
+def offline_dtb(out,optional_previous):
+    result={"success":False,"new_vendor_ARM_executed":False}
+    try:
+        if optional_previous is None:
+            candidates=sorted(WORK.glob("bootchain-wide-*-v17-*.zip"),
+                              key=lambda p:p.stat().st_mtime,reverse=True)
+            if not candidates:raise ValueError("Previous original owner V17 DTB ZIP missing")
+            optional_previous=candidates[0]
+        optional_previous=regular(optional_previous)
+        contents=V17.load_zip(optional_previous)
+        key="v17-owner-full-boot-and-dtb.json"
+        if key not in contents:raise ValueError("Missing owner V17 FDT report")
+        evidence=dtb_crosswalk(json.loads(contents[key]))
+        evidence["previous_verified_archive_sha256"]=digest(optional_previous)
+        write(out/"V23-OWNER-DTB-MMC-AND-BOOT-SCRIPT.json",evidence)
+        result.update({"success":True,"controllers_crosschecked":8,
+                       "original_boot_script_CRC_verified":True})
+    except Exception as exc:
+        result["error"]=str(exc)
+        (out/"v23-DTB-crosswalk-error.log").write_text(traceback.format_exc()[-3500:])
+    return result
+
 def timed(fn,*args):
     begin=time.monotonic()
     try:result=fn(*args)
@@ -241,6 +316,7 @@ def audit(out,old,stages):
     p1=out/"deep-p1/V23-p1-SUMMARY.json"
     stat_p3=json.loads(p3.read_text()) if p3.is_file() else {}
     stat_p1=json.loads(p1.read_text()) if p1.is_file() else {}
+    dtb_valid=stages.get("owner_DTB_crosswalk",{}).get("success",False)
     p3_valid=stages.get("p3_driver_ghidra",{}).get("success",False)
     p1_valid=stages.get("p1_boot_ghidra",{}).get("success",False)
     owner_table=stat_p3.get("literal_evidence",{}).get("mmc_driver_table_mapping",{})
@@ -269,6 +345,12 @@ def audit(out,old,stages):
                 "file":"V23-ACTUAL-OWNER-DRIVER-ARM.json",
                 "scope":"real dispatcher to original table with controller body intercepted",
                 "proof_level":"ISOLATED_ARM_GUEST"})
+        if row["id"] in {"REMOVABLE_DIRECTBOOT-03","REMOVABLE_DIRECTBOOT-05",
+                         "BOOT_SELECTION-04","BOOT_SELECTION-05"} and dtb_valid:
+            row["new_V23_evidence"].append({
+               "file":"V23-OWNER-DTB-MMC-AND-BOOT-SCRIPT.json",
+               "scope":"Original owner eMMC/SD controller identities and CRC-valid medium-agnostic boot script; U-Boot indices unproven",
+               "proof_level":"STATIC_VERIFIED_DTB"})
         if row["id"] in {"REMOVABLE_DIRECTBOOT-03","BOOT_SELECTION-05",
                          "RECOVERY_SECURITY-04"} and p1_valid:
             row["new_V23_evidence"].append({
@@ -330,6 +412,8 @@ def package(out):
     return path,len(items)
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--prior-v17",type=Path,
+                        help="Owner-private V17 original DTB/boot script inventory")
     parser.add_argument("--prior-v22",type=Path,
                         help="Owner-private SHA-indexed V22 ZIP, newest autodetected")
     parser.add_argument("--qemu-boot-timeout",type=int,default=240)
@@ -355,10 +439,11 @@ def main():
     try:
         with tempfile.TemporaryDirectory(dir=WORK,prefix="mpfree-v23-private-") as td:
             temporary=Path(td)
-            with ThreadPoolExecutor(max_workers=3) as pool:
+            with ThreadPoolExecutor(max_workers=4) as pool:
                 jobs={
                     "p1_boot_ghidra":pool.submit(timed,ghidra,"p1",out,temporary),
-                    "p3_driver_ghidra":pool.submit(timed,ghidra,"p3",out,temporary)
+                    "p3_driver_ghidra":pool.submit(timed,ghidra,"p3",out,temporary),
+                    "owner_DTB_crosswalk":pool.submit(timed,offline_dtb,out,args.prior_v17)
                 }
                 if not args.skip_vm:
                     jobs["real_vendor_driver_guest"]=pool.submit(
