@@ -116,6 +116,9 @@ static int v25_guest_mmc(const char *name){
     return result(name,guard,
        "original-native-Uboot-MMC-handler-returned-with-physical-write-guard");
 }
+#ifdef MPFREE_V26_WRAPPING
+#define main mpfree_v25_legacy_main
+#endif
 int main(int argc,char **argv){
     if(argc!=3){
         fputs("usage: vendor_probe_v25 CASE SHA-pinned-owner-P3.raw\n",stderr);
@@ -131,3 +134,7 @@ int main(int argc,char **argv){
         return v25_guest_mmc(argv[1]);
     return result(argv[1],false,"unknown-V25-case");
 }
+
+#ifdef MPFREE_V26_WRAPPING
+#undef main
+#endif
