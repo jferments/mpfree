@@ -524,8 +524,11 @@ impl MidiOut {
     /// play on the pads again and the I/O view says MIDI out is off.
     pub fn tick(&mut self, log: &mut dyn FnMut(String)) {
         let Some(w) = &self.writer else { return };
+        // `gone` first, then the lines: a port that fails between the two
+        // still has its failure's line read before the writer goes.
+        let gone = w.gone();
         w.log_lines(log);
-        if w.gone() {
+        if gone {
             self.lost = true;
             log("MIDI Out stopped: tracks set to play on MIDI play on the pads again".to_string());
             self.writer = None;
