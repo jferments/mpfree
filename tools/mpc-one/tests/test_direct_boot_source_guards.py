@@ -63,6 +63,30 @@ class DirectBootSourceGuards(unittest.TestCase):
         self.assertNotIn("shell=True", src)
         self.assertNotIn("os.system(", src)
 
+    def test_multitrack_work_is_source_only_and_provenance_gated(self):
+        module = ROOT / "tools/mpc-one/synthesize_multitrack_followups.py"
+        source = module.read_text()
+        ast.parse(source, filename=str(module))
+        runner = RUNNER.read_text()
+        preflight = (ROOT / "tools/mpc-one/recheck_integrated_directboot.py").read_text()
+        ghidra = GHIDRA.read_text()
+        for phrase in (
+            'if p1.get("sha256")!=ssha',
+            '"three_id_to_mmc_label_pairs"',
+            '"three_exact_boundary_constants"',
+            '"openssl_sha256_256byte_signature_verify"',
+            '"real_boot_media_priority_proven":False',
+            '"physical_maskrom_entry_proven":False',
+        ):
+            self.assertIn(phrase,source)
+        self.assertIn("multitrack-followups.json",runner)
+        self.assertIn("owner_followups = follow.build(z.read)",preflight)
+        self.assertIn("matrix_count >= 57 and matrix_tracks == 7",runner)
+        self.assertIn("'spl':60",ghidra)
+        self.assertIn("second_handoff_pointer_slot_static_xrefs",ghidra)
+        self.assertNotIn("subprocess.",source)
+        self.assertNotIn("shell=True",source)
+
     def test_adc_source_present_and_pointer_proof_is_required(self):
         source = GHIDRA.read_text()
         runner = RUNNER.read_text()
