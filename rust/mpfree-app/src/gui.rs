@@ -309,6 +309,8 @@ pub enum ToUi {
     /// UNDO (true: SHIFT + UNDO, redo) on a page whose history the screen
     /// picks ([`Player::undo`]).
     Undo(bool),
+    /// REC (false) or OVERDUB (true) on the Play page ([`Player::play_rec`]).
+    PlayRec(bool),
     /// Whether the Synth tab's and the mixer's turns ([`crate::undo`])
     /// have something to undo, when that changes.
     TurnsReady {
@@ -2040,6 +2042,23 @@ impl Player {
         self.outbox.push(to);
     }
 
+    /// REC (or OVERDUB, `overdub`) on the Play page (Jay, 13 Nov 14:37Z):
+    /// the looper on the All and Loop views, as the loop strip's own
+    /// Record and Overdub; the takes on Beats.
+    fn play_rec(&mut self, overdub: bool) {
+        use crate::looper_page::{B_OVERDUB, B_RECORD};
+        let a = if self.view == View::Play && self.play.view != PlayView::Beats {
+            FromUi::Looper(if overdub { B_OVERDUB } else { B_RECORD })
+        } else {
+            FromUi::Time(TimeAction::Transport(if overdub {
+                mpfree_transport::Command::ToggleOverdub
+            } else {
+                mpfree_transport::Command::Record
+            }))
+        };
+        self.outbox.push(a);
+    }
+
     /// Whether UNDO on the page showing has something to take back, as
     /// [`Self::undo`] picks the history (the Looper tab and the Sample and
     /// Pads tabs too, whose UNDO the app sends straight on).
@@ -2071,6 +2090,7 @@ impl Player {
         match msg {
             ToUi::Tell(l) => self.tell(&l),
             ToUi::Undo(redo) => self.undo(redo),
+            ToUi::PlayRec(overdub) => self.play_rec(overdub),
             ToUi::TurnsReady { synth, mixer } => self.turns_ready = (synth, mixer),
             ToUi::Line(l) | ToUi::Event(l) => {
                 let tone = tone_of(&l);
@@ -4938,6 +4958,7 @@ pub fn apply_effects(p: &mut Player, fx: Vec<crate::app::Effect>) {
                 p.apply(ToUi::Tell(l));
             }
             Effect::Undo { redo } => p.apply(ToUi::Undo(redo)),
+            Effect::PlayRec { overdub } => p.apply(ToUi::PlayRec(overdub)),
             Effect::ClipsWheel { delta, scroll } => p.apply(ToUi::ClipsWheel { delta, scroll }),
             Effect::Map(m) => p.apply(ToUi::Map(Box::new(m))),
             Effect::SynthPage(d) => p.apply(ToUi::SynthPage(d)),
@@ -6775,6 +6796,22 @@ mod tests {
         assert_eq!(undo(&mut p, false), takes(TimeAction::Undo));
         p.apply(ToUi::Show(View::Arrange));
         assert_eq!(undo(&mut p, false), takes(TimeAction::Undo));
+        // REC and OVERDUB on Play: the loop on All and Loop, takes on Beats.
+        let rec = |p: &mut Player, overdub: bool| {
+            p.apply(ToUi::PlayRec(overdub));
+            p.take_actions()
+        };
+        use crate::looper_page::{B_OVERDUB, B_RECORD};
+        p.apply(ToUi::Show(View::Play));
+        p.apply(ToUi::PlayView(Some(PlayView::All)));
+        assert_eq!(rec(&mut p, false), [FromUi::Looper(B_RECORD)]);
+        p.apply(ToUi::PlayView(Some(PlayView::Loop)));
+        assert_eq!(rec(&mut p, true), [FromUi::Looper(B_OVERDUB)]);
+        p.apply(ToUi::PlayView(Some(PlayView::Beats)));
+        assert_eq!(
+            rec(&mut p, false),
+            takes(TimeAction::Transport(mpfree_transport::Command::Record))
+        );
         // The Synth tab and the mixer: their own turns.
         p.apply(ToUi::Show(View::Synth));
         assert_eq!(

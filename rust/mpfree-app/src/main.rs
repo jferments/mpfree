@@ -4282,6 +4282,7 @@ fn player_session(
                     out.show(gui::ToUi::Tell(s));
                 }
                 app::Effect::Undo { redo } => out.show(gui::ToUi::Undo(redo)),
+                app::Effect::PlayRec { overdub } => out.show(gui::ToUi::PlayRec(overdub)),
                 app::Effect::Quit => stop = true,
                 app::Effect::Show(v) => {
                     // Opening the Synth tab hands the pads to the synth, and
