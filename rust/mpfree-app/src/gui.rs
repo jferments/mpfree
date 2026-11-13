@@ -1344,9 +1344,7 @@ impl Player {
                     }
                 }
                 LoopAct::Mute(n) => out.push(FromUi::LoopMute(Some(n))),
-                LoopAct::Clear => {
-                    out.push(FromUi::LoopCommand(mpfree_looper::Command::Clear))
-                }
+                LoopAct::Clear => out.push(FromUi::LoopCommand(mpfree_looper::Command::Clear)),
                 LoopAct::Layer(k) => self.looper_page.pick_layer(&mut self.ui, k),
                 LoopAct::LayerCmd(k, command) => {
                     if let Some(l) = self.looper_page.layer_info(k) {
@@ -4769,8 +4767,8 @@ fn sample_looper(fonts: Fonts) -> Result<Player, String> {
     let mut v = view.clone();
     v.loops[1] = second.loops[1];
     v.memory.used += second.memory.used;
-    // The memory the app gives the loops (main's LOOP_SECONDS).
-    v.memory.capacity = 60 * RATE as usize;
+    // The memory the app gives the loops (Prefs "Loop memory" as it starts).
+    v.memory.capacity = crate::looping::LoopMemory::default().seconds() as usize * RATE as usize;
     v.meter_db = [-6.5, -6.5];
     if let Some(l) = v.layers[2].as_mut() {
         l.muted = true;

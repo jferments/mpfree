@@ -105,7 +105,7 @@ pub struct LoopList {
     pub new_loop: bool,
     /// "Clear loop N" shows while the picked loop has sound.
     pub clear: bool,
-    /// "16 s of 60 s" and how full, 0 to 1.
+    /// "16 s of 5 min" and how full, 0 to 1.
     pub memory: (String, f32),
     acts: Vec<LoopAct>,
 }
@@ -131,9 +131,7 @@ impl LoopList {
             below = b.bottom() + gap;
             b
         });
-        let clear = self
-            .clear
-            .then(|| Rect::new(body.x, below, body.w, button));
+        let clear = self.clear.then(|| Rect::new(body.x, below, body.w, button));
         ListParts {
             rows,
             new,
