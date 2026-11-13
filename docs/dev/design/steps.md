@@ -65,6 +65,8 @@ Turning a Q-Link through many values must not leave dozens of undo steps. `join`
 
 Adding, taking off or copying a page is one edit, so one UNDO takes the page back, notes and length. A length change never joins a turn.
 
+`Grid::clear_row(clip, sound)` is ERASE + a lane's name on the Play page: one edit that takes out every note and lock of that sound, so one UNDO brings the lane back.
+
 ## Chance
 
 `Note.chance` is 1 to 100 % (100 for every recorded note). A note below 100 % rolls each time it comes round. The roll is a hash of the note (its track, slot, tick and sound) and the absolute frame it would play on. So:
