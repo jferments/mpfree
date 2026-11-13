@@ -1,7 +1,7 @@
 <!--
 status: changing
 covers: rust/mpfree-app/src/app.rs rust/mpfree-controller docs/dev/design/layout-spec.md
-checked: 2026-11-12 15df706
+checked: 2026-11-13 9560b32
 -->
 
 # Buttons and controls
@@ -29,18 +29,18 @@ On the current test build, some buttons (REC, OVERDUB, UNDO, PLAY START, TRACK M
 | **OVERDUB** | Records on top of what is already there (a clip or a loop). | Works |
 | **UNDO** | Undoes the last recording or edit on the page you are on (the Looper tab: the last loop layer; the Sample tab: the last edit; elsewhere: the last clip take). **SHIFT + UNDO** redoes it. | Works |
 | **SHIFT + REC** | Capture: keeps what you just played as a clip, even if you weren't recording. | Next build |
-| **SHIFT + PLAY START** | Metronome on or off. | Next build |
-| **TAP TEMPO** | Tap four times in time to set the tempo. | Works |
+| **SHIFT + PLAY START** | Metronome on or off (it starts off; MPFree remembers your choice). The click plays while counting in and recording. Its level is in the Play page's options (**MENU**). | Next build |
+| **TAP TEMPO** | Tap four times in time to set the tempo. Tapping the tempo on the Play page does the same. | Works |
 | **TRACK MIX** | Opens or closes the mixer over the page you are on. **SHIFT + TRACK MIX** opens the pad mixer. | Works |
 | **PAD BANK A–D** | Switches the pads to bank A, B, C or D. **SHIFT** + a bank button, or a second press, gives banks E–H. | Works |
 | **FULL LEVEL** | Every pad plays at full velocity, however hard you hit it. Press again to turn it off. **SHIFT + FULL LEVEL** is Half Level (every hit at half velocity). | Works |
-| **16 LEVEL** | Planned. **SHIFT + 16 LEVEL** switches the synth pads between Chromatic and In key. | Next build (SHIFT) |
+| **16 LEVEL** | Planned. **SHIFT + 16 LEVEL** switches the synth pads between Chromatic and In key (with no scale picked yet, In key picks C Major; the line at the bottom of the screen says which). | Next build (SHIFT) |
 | **Q-Link knobs 1–4** | Turn the four parameters shown in the Q-Link column at the right of the screen. What they control depends on the page. | Works |
 | **Data wheel** | On a page with settings (the menus, Prefs, the Sample tab, the Pads tab's Pad view, the Synth tab, Arrange): picks a row. On the Play page, picks the kit. | Works (pages: next build) |
 | **–** and **+** | Step the picked row's value down or up. | Works (pages: next build) |
 | **The data wheel's push** | Opens the picked row: its value is outlined and the wheel changes it. Push again to go back to picking rows. On a row that opens something, opens it. | Works in menus (pages: next build) |
 
-**The transport lights.** The MPC One's STOP button has no light of its own. PLAY, REC and OVERDUB stay dark in this build: MPFree only sends the light messages it has seen Akai's own software send. Those messages were recorded on 13 November, and a later build lights PLAY while playing, REC while recording or waiting to record, and OVERDUB while overdubbing, the way Akai's software does. Until then the Console says `button N: no light sent` once for each.
+**The transport lights** (next build) light as Akai's own software lights them: **PLAY** stays lit while playing. **REC** and **OVERDUB** blink while they wait for PLAY, with PLAY blinking alongside, and keep blinking while recording or overdubbing. **UNDO** blinks while you record. **TAP TEMPO** blinks on the beat. The MPC One's STOP button has no light of its own. REC, OVERDUB and UNDO light once **Map controls** knows them.
 
 ## Repeat and arpeggiator
 
