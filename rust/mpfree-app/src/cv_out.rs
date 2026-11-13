@@ -358,8 +358,11 @@ impl CvOut {
     /// stopped is let go: the I/O view says CV out is off.
     pub fn tick(&mut self, log: &mut dyn FnMut(String)) {
         let Some(w) = &self.writer else { return };
+        // `gone` first, then the lines: a port that fails between the two
+        // still has its failure's line read before the writer goes.
+        let gone = w.gone();
         w.log_lines(log);
-        if w.gone() {
+        if gone {
             self.lost = true;
             log("CV out stopped: the CV/gate jacks are not driven".to_string());
             self.writer = None;

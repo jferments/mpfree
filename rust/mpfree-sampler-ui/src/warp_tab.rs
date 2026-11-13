@@ -53,7 +53,7 @@ pub const TAB: usize = 1;
 
 /// The hint line the app shows under the tab.
 pub const HINT: &str = "Tap a hit to pin it to the grid · drag a pin's handle along the beats · Pin hits pins them all · \
-                        Q-Link 1 picks a pin, 2 nudges it · the wheel zooms";
+                        Q-Link 1 picks a pin, 2 nudges it · SHIFT + - / + zoom";
 
 /// What the picture says while the layer isn't warped.
 pub const OFF_NOTE: &str = "Warp is off: turn it to Stretch to pin hits to the beat";
@@ -230,7 +230,7 @@ impl WarpTab {
         for (k, (label, color)) in cards.iter().enumerate() {
             ui.add(QLINKS[k], KnobCard::new(label, *color));
         }
-        ui.add(WHEEL, InfoCard::new("Wheel · zoom"));
+        ui.add(WHEEL, InfoCard::new("SHIFT + - / + · zoom"));
         ui.add_page(name, LAYOUT)?;
         let mut tab = WarpTab {
             name: name.to_string(),
@@ -749,7 +749,12 @@ impl WarpTab {
             let centre = selected
                 .and_then(|i| v.warp.pins.get(i))
                 .map_or(first + span / 2.0, |p| p.beat);
-            let new = (span / WHEEL_ZOOM.powi(delta)).clamp(MIN_SPAN, total * 1.02);
+            // Never `clamp` here: a sound shorter than MIN_SPAN beats (a
+            // 0.02 s hit at 120 BPM is 0.05 beats) puts the ceiling under
+            // the floor, and clamp panics on that (13 Nov live test).
+            let new = (span / WHEEL_ZOOM.powi(delta))
+                .max(MIN_SPAN)
+                .min(total * 1.02);
             if new >= total {
                 v.span = 0.0;
                 v.first = 0.0;

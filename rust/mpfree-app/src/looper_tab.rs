@@ -40,6 +40,11 @@ pub enum LoopAct {
     Pick(usize),
     /// Pick the first empty loop.
     NewLoop,
+    /// Loop `n`'s speaker: mute it or let it play, without picking it. A
+    /// muted loop stays silent when PLAY starts the others (Jay, 13 Nov).
+    Mute(usize),
+    /// Clear the picked loop: every layer, the first pass too.
+    Clear,
     /// Show layer `k` (play order) on the Q-Links.
     Layer(usize),
     /// A control of layer `k` (play order).
@@ -86,6 +91,8 @@ pub struct LoopRow {
     /// "PLAYING", "MUTED"; None when empty.
     pub state: Option<(String, Tone)>,
     pub colour: Color,
+    /// The speaker on the card: Some(muted) once the loop has sound.
+    pub speaker: Option<bool>,
 }
 
 /// The loops, the picked one outlined, a button for a new one, and the
@@ -96,30 +103,55 @@ pub struct LoopList {
     pub picked: usize,
     /// "+ New loop" shows while an empty loop is left.
     pub new_loop: bool,
-    /// "16 s of 60 s" and how full, 0 to 1.
+    /// "Clear loop N" shows while the picked loop has sound.
+    pub clear: bool,
+    /// "16 s of 5 min" and how full, 0 to 1.
     pub memory: (String, f32),
     acts: Vec<LoopAct>,
 }
 
 impl LoopList {
-    /// Each loop's card, the New loop button and the memory gauge's area.
-    pub(crate) fn parts(&self, r: Rect) -> (Vec<Rect>, Option<Rect>, Rect) {
+    /// Each loop's card, the New loop button, the Clear loop button and
+    /// the memory gauge's area.
+    pub(crate) fn parts(&self, r: Rect) -> ListParts {
         let (_, body) = card_head(r);
         let (gauge, body) = body.take_bottom(44);
         let n = self.rows.len().max(1) as i32;
         let button = 42;
         let gap = 8;
-        let room = body.h - if self.new_loop { button + gap } else { 0 };
+        let buttons = i32::from(self.new_loop) + i32::from(self.clear);
+        let room = body.h - buttons * (button + gap);
         let h = ((room - (n - 1) * gap) / n).clamp(30, 62);
         let rows: Vec<Rect> = (0..self.rows.len() as i32)
             .map(|i| Rect::new(body.x, body.y + i * (h + gap), body.w, h))
             .collect();
-        let below = rows.last().map_or(body.y, |l| l.bottom() + gap);
-        let new = self
-            .new_loop
-            .then(|| Rect::new(body.x, below, body.w, button));
-        (rows, new, gauge)
+        let mut below = rows.last().map_or(body.y, |l| l.bottom() + gap);
+        let new = self.new_loop.then(|| {
+            let b = Rect::new(body.x, below, body.w, button);
+            below = b.bottom() + gap;
+            b
+        });
+        let clear = self.clear.then(|| Rect::new(body.x, below, body.w, button));
+        ListParts {
+            rows,
+            new,
+            clear,
+            gauge,
+        }
     }
+
+    /// Where loop card `rr`'s speaker sits (bottom right).
+    pub(crate) fn speaker_at(rr: Rect) -> (i32, i32) {
+        (rr.right() - 22, rr.bottom() - 18)
+    }
+}
+
+/// [`LoopList::parts`]: the cards, the buttons and the gauge.
+pub(crate) struct ListParts {
+    pub rows: Vec<Rect>,
+    pub new: Option<Rect>,
+    pub clear: Option<Rect>,
+    pub gauge: Rect,
 }
 
 impl Widget for LoopList {
@@ -127,7 +159,12 @@ impl Widget for LoopList {
         let t = cx.theme.clone();
         cx.canvas.fill_rect(r, t.bg);
         card(cx, r, "Loops", "");
-        let (rows, new, gauge) = self.parts(r);
+        let ListParts {
+            rows,
+            new,
+            clear,
+            gauge,
+        } = self.parts(r);
         for (i, (rr, row)) in rows.iter().zip(&self.rows).enumerate() {
             let picked = i == self.picked;
             cx.canvas.fill_round_rect(
@@ -176,6 +213,16 @@ impl Widget for LoopList {
                     &row.detail,
                 );
             }
+            if let Some(muted) = row.speaker {
+                let (x, y) = LoopList::speaker_at(*rr);
+                speaker(
+                    cx,
+                    x,
+                    y,
+                    if muted { t.text_faint } else { t.text_dim },
+                    muted,
+                );
+            }
         }
         if let Some(b) = new {
             cx.canvas.stroke_round_rect(b, 10, 1, t.outline);
@@ -187,6 +234,11 @@ impl Widget for LoopList {
                 t.text_dim,
                 "+ New loop",
             );
+        }
+        if let Some(b) = clear {
+            cx.canvas.stroke_round_rect(b, 10, 1, t.bad);
+            let text = format!("Clear loop {}", self.picked + 1);
+            cx.text(FontId::Bold, 14.0, b, Align::Center, t.bad, &text);
         }
         // The memory every loop shares.
         let (label, bar) = gauge.take_top(26);
@@ -221,14 +273,25 @@ impl Widget for LoopList {
         if phase != Touch::Down {
             return None;
         }
-        let (rows, new, _) = self.parts(r);
+        let ListParts {
+            rows, new, clear, ..
+        } = self.parts(r);
         if let Some(i) = rows.iter().position(|rr| rr.contains(x, y)) {
+            let (sx, sy) = LoopList::speaker_at(rows[i]);
+            if self.rows[i].speaker.is_some() && speaker_hit(sx, sy).contains(x, y) {
+                self.acts.push(LoopAct::Mute(i));
+                return Some(EventKind::Toggle(i));
+            }
             self.acts.push(LoopAct::Pick(i));
             return Some(EventKind::Select(i));
         }
         if new.is_some_and(|b| b.contains(x, y)) {
             self.acts.push(LoopAct::NewLoop);
             return Some(EventKind::Tab(0));
+        }
+        if clear.is_some_and(|b| b.contains(x, y)) {
+            self.acts.push(LoopAct::Clear);
+            return Some(EventKind::Tab(1));
         }
         None
     }
@@ -1457,22 +1520,42 @@ mod tests {
             detail: "empty".into(),
             state: None,
             colour: LOOP_COLOURS[i],
+            speaker: (i == 0).then_some(false),
         };
         let list = LoopList {
             rows: (0..4).map(row).collect(),
             new_loop: true,
+            clear: true,
             ..LoopList::default()
         };
         let mut ui = page_of(LOOPS, list);
         let r = ui.rect_of(LOOPS).unwrap();
-        let (rows, new, _) = ui.get::<LoopList>(LOOPS).unwrap().parts(r);
+        let parts = ui.get::<LoopList>(LOOPS).unwrap().parts(r);
+        let rows = parts.rows;
         assert_eq!(
             tap(&mut ui, rows[1].x + 10, rows[1].y + 10),
             Some(EventKind::Select(1))
         );
-        let new = new.expect("an empty loop is left");
+        let new = parts.new.expect("an empty loop is left");
         tap(&mut ui, new.x + 10, new.y + 10);
-        assert_eq!(take_actions(&mut ui), [LoopAct::Pick(1), LoopAct::NewLoop]);
+        // Loop 1's speaker mutes it without picking it; loop 2 has none.
+        let (sx, sy) = LoopList::speaker_at(rows[0]);
+        tap(&mut ui, sx, sy);
+        let (sx, sy) = LoopList::speaker_at(rows[1]);
+        tap(&mut ui, sx, sy);
+        let clear = parts.clear.expect("the picked loop has sound");
+        assert!(clear.y >= new.bottom());
+        tap(&mut ui, clear.x + 10, clear.y + 10);
+        assert_eq!(
+            take_actions(&mut ui),
+            [
+                LoopAct::Pick(1),
+                LoopAct::NewLoop,
+                LoopAct::Mute(0),
+                LoopAct::Pick(1),
+                LoopAct::Clear
+            ]
+        );
     }
 
     #[test]

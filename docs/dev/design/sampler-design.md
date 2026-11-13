@@ -103,7 +103,7 @@ col(header:60, overview:64, wave:*, row(params:*, slices:380):210, hint:26)
 | Control | In the editor |
 |---|---|
 | Touch | Drag to scroll, pinch to zoom, tap to select or place a marker (in Manual mode), drag a marker by its handle |
-| Wheel | Zoom; SHIFT + wheel scrolls |
+| Wheel | Picks a row of the settings beside the editor; - / + step it; the wheel's push opens the row for the wheel (layout spec, section 6). SHIFT + - / + zooms; SHIFT + wheel is the next pad with a sound |
 | Q-Link 1-4 | Start, end, loop start, loop end of the selected region (or the selected marker in Chop) |
 | SHIFT + Q-Link | Fine adjustment, down to one sample |
 | Pads | Play the slice on that pad. In Chop, hitting a pad selects that slice for editing |

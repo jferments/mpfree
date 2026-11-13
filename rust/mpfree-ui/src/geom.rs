@@ -77,7 +77,7 @@ impl Rect {
 
     /// Split off the top `h` pixels: (top, rest).
     pub fn take_top(&self, h: i32) -> (Rect, Rect) {
-        let h = h.clamp(0, self.h);
+        let h = h.clamp(0, self.h.max(0));
         (
             Rect::new(self.x, self.y, self.w, h),
             Rect::new(self.x, self.y + h, self.w, self.h - h),
@@ -86,7 +86,7 @@ impl Rect {
 
     /// Split off the bottom `h` pixels: (bottom, rest).
     pub fn take_bottom(&self, h: i32) -> (Rect, Rect) {
-        let h = h.clamp(0, self.h);
+        let h = h.clamp(0, self.h.max(0));
         (
             Rect::new(self.x, self.bottom() - h, self.w, h),
             Rect::new(self.x, self.y, self.w, self.h - h),
@@ -95,7 +95,7 @@ impl Rect {
 
     /// Split off the left `w` pixels: (left, rest).
     pub fn take_left(&self, w: i32) -> (Rect, Rect) {
-        let w = w.clamp(0, self.w);
+        let w = w.clamp(0, self.w.max(0));
         (
             Rect::new(self.x, self.y, w, self.h),
             Rect::new(self.x + w, self.y, self.w - w, self.h),
@@ -104,7 +104,7 @@ impl Rect {
 
     /// Split off the right `w` pixels: (right, rest).
     pub fn take_right(&self, w: i32) -> (Rect, Rect) {
-        let w = w.clamp(0, self.w);
+        let w = w.clamp(0, self.w.max(0));
         (
             Rect::new(self.right() - w, self.y, w, self.h),
             Rect::new(self.x, self.y, self.w - w, self.h),

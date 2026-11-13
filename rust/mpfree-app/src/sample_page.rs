@@ -95,6 +95,7 @@ use mpfree_sampler_ui::warp_tab::{self, WarpTab};
 use mpfree_sampler_ui::wave_tab::{
     self, duration_text, mode_label, WaveAction, WaveState, WaveTab,
 };
+use mpfree_sampler_ui::widgets::SettingList;
 use mpfree_sampler_ui::SourceView;
 use mpfree_seq::{Clip, Note};
 use mpfree_transport::PPQ;
@@ -388,6 +389,10 @@ pub struct SamplePage {
     renamed: Vec<usize>,
     /// The kit or pad changed since the page was last built.
     stale: bool,
+    /// The wheel's push opened the picked row of the settings list: the
+    /// wheel changes its value (`app::RowKey`). Kept here so a list made
+    /// again (another pad or tab) shows it too.
+    editing: bool,
     /// Kits whose new view the audio thread doesn't have yet.
     dirty: Vec<bool>,
     /// A view is on its way to the audio thread (or back).
@@ -523,6 +528,7 @@ impl SamplePage {
             cloud_shown: false,
             renamed: Vec::new(),
             stale: true,
+            editing: false,
             dirty: Vec::new(),
             in_flight: false,
             morph: None,
@@ -830,6 +836,92 @@ impl SamplePage {
     pub fn refresh_if_stale(&mut self, ui: &mut Ui) {
         if self.stale {
             self.refresh(ui);
+        }
+        self.show_editing(ui);
+    }
+
+    // ------------------------------------------------------------ rows
+
+    /// The settings list of the page showing, if it has one: what the
+    /// wheel picks rows of, and - / + step (`app::RowKey`).
+    fn list(&self) -> Option<&'static str> {
+        Some(match self.page() {
+            PAGE => wave_tab::REGION,
+            WARP_PAGE => warp_tab::LIST,
+            CHOP_PAGE => chop_tab::LIST,
+            PLAY_PAGE => play_tab::LIST,
+            GRAIN_PAGE => grain_tab::LIST,
+            REC_PAGE => rec_tab::LIST,
+            AUTO_PAGE => auto_tab::LIST,
+            PADS_PAGE => pads_tab::LIST,
+            _ => return None,
+        })
+    }
+
+    /// Whether the page showing has a settings list (a pad with no sound,
+    /// the Browse view and the loading page have none).
+    pub fn has_list(&self) -> bool {
+        self.list().is_some()
+    }
+
+    /// The wheel picking rows: the list's next or previous row (`delta`
+    /// rows on, stopping at the ends), and the tap on it that the page
+    /// then gets, for the GUI to hand on as a touch. None when the page
+    /// has no list or the row did not move.
+    pub fn pick_row(&mut self, ui: &mut Ui, delta: i32) -> Option<UiEvent> {
+        let name = self.list()?;
+        let editing = self.editing;
+        let l = ui.get_mut::<SettingList>(name)?;
+        let last = l.rows.len().checked_sub(1)? as i64;
+        let k = (l.selected as i64 + i64::from(delta)).clamp(0, last) as usize;
+        l.editing = editing;
+        if k == l.selected {
+            return None;
+        }
+        l.selected = k;
+        Some(UiEvent {
+            widget: name.to_string(),
+            kind: EventKind::Select(k),
+        })
+    }
+
+    /// The minus and plus buttons (or the wheel, once its push opened the row): the step of the
+    /// row picked, as a tap on its arrow, for the GUI to hand on. None on
+    /// the pages whose wheel already stepped the row picked (Play, Grain,
+    /// Rec, Auto, the Pads tab): [`SamplePage::wheel`] does it there, one
+    /// undo step a turn. The Wave, Warp and Chop pages' wheel zoomed, so
+    /// their rows step here.
+    pub fn step_row(&mut self, ui: &mut Ui, delta: i32) -> Option<UiEvent> {
+        let name = match self.page() {
+            PAGE | WARP_PAGE | CHOP_PAGE => self.list()?,
+            _ => return None,
+        };
+        let index = ui.get::<SettingList>(name)?.selected;
+        Some(UiEvent {
+            widget: name.to_string(),
+            kind: EventKind::Step { index, delta },
+        })
+    }
+
+    /// The wheel's push opened (true) or closed the picked row.
+    pub fn set_editing(&mut self, ui: &mut Ui, on: bool) {
+        self.editing = on;
+        self.show_editing(ui);
+    }
+
+    /// The page's list shows whether the wheel changes its picked row.
+    pub fn show_editing(&self, ui: &mut Ui) {
+        let Some(name) = self.list() else {
+            return;
+        };
+        // Only a change is redrawn (get_mut marks the list for it).
+        if ui
+            .get::<SettingList>(name)
+            .is_some_and(|l| l.editing != self.editing)
+        {
+            if let Some(l) = ui.get_mut::<SettingList>(name) {
+                l.editing = self.editing;
+            }
         }
     }
 

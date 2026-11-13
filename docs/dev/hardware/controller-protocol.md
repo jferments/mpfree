@@ -62,6 +62,8 @@ Round 2 listened on all three cables. **Without Akai's app the controller sends 
 
 No light came on: no LED or pad colour message was sent, and the controller does not light anything by itself.
 
+**The transport lights are not known yet.** Akai's startup lights (below) include STOP (CC 81) and PLAY START (CC 83), but not REC (73), OVERDUB (80) or PLAY (82), so mpfree lights only STOP and notes the others as not sent (`App::transport_lights`). The read-only `MPFREE_CAPTURE_PHASES=transport` capture (added 2026-11-13, owner's choice to see them first) records what Akai's app sends as it plays, records and overdubs.
+
 ## Akai's app at startup (Hello MPC round 2, 2026-11-10)
 
 Captured on stock 3.6.0 with the binary usbmon reader while systemd restarted Akai's app (`collect-over-ssh.sh --app-start-capture`; owner-local report, not committed). Times are seconds from the capture's start. All host messages go to cable 0 unless stated. What each setup message means is not known; Hello MPC replays them byte for byte.

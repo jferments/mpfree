@@ -873,6 +873,23 @@ fn blocks_for(frames: usize) -> usize {
     frames.div_ceil(BLOCK)
 }
 
+/// The blocks [`Looper::new`] makes for `seconds` at `rate`: the seconds,
+/// one more per layer, and never more than a block number can name
+/// (65535 blocks, about 25 minutes at 44.1 kHz).
+fn n_blocks(rate: u32, seconds: u32) -> usize {
+    let frames = (rate as usize) * (seconds as usize);
+    (blocks_for(frames) + MAX_LAYERS).min(NONE as usize)
+}
+
+/// The memory [`Looper::new`] sets aside for `seconds` at `rate`, in
+/// bytes: the sound itself and its tables of blocks. For showing what a
+/// size costs before it is made.
+pub fn bytes_for(rate: u32, seconds: u32) -> usize {
+    let per_block = 2 * BLOCK * std::mem::size_of::<f32>()
+        + (MAX_LOOPS * MAX_LAYERS + 1) * std::mem::size_of::<u16>();
+    n_blocks(rate, seconds) * per_block
+}
+
 /// Playback frame `p` of a layer through its view: the audio frame the
 /// view plays there, crossfaded into the next piece over `seam` frames
 /// before each cut. Only the audio frames the layer has written count.
@@ -1218,8 +1235,7 @@ impl Looper {
     /// promise. [`Looper::memory`] gives the exact size. Allocates; call
     /// it before the sound starts.
     pub fn new(rate: u32, seconds: u32) -> Looper {
-        let frames = (rate as usize) * (seconds as usize);
-        let n_blocks = (blocks_for(frames) + MAX_LAYERS).min(NONE as usize);
+        let n_blocks = n_blocks(rate, seconds);
         Looper {
             store: Store::new(n_blocks),
             capacity: n_blocks * BLOCK,
@@ -1256,6 +1272,11 @@ impl Looper {
     /// The loop the commands act on (as of the last period).
     pub fn selected(&self) -> usize {
         self.selected
+    }
+
+    /// Room left in the command queue this period.
+    pub fn room(&self) -> usize {
+        QUEUE - self.queued
     }
 
     fn push(&mut self, q: Queued) -> bool {
@@ -3724,7 +3745,28 @@ impl Loop {
 
 #[cfg(test)]
 mod tests {
-    use super::rem_ticks;
+    use super::{bytes_for, n_blocks, rem_ticks, Looper, BLOCK, NONE};
+
+    /// `bytes_for` is what `Looper::new` really sets aside, and the
+    /// longest Prefs size (20 minutes) fits in the block numbers at both
+    /// rates, so it is never cut short without saying.
+    #[test]
+    fn bytes_for_is_the_memory_the_looper_takes() {
+        for seconds in [0, 1, 7, 60] {
+            let l = Looper::new(44_100, seconds);
+            let s = &l.store;
+            let real = s.pool.len() * 4 + s.tables.len() * 2 + s.free.len() * 2;
+            assert_eq!(bytes_for(44_100, seconds), real, "{seconds} s");
+            assert!(l.memory().capacity >= 44_100 * seconds as usize);
+        }
+        for rate in [44_100, 48_000] {
+            let n = n_blocks(rate, 20 * 60);
+            assert!(n < NONE as usize && n * BLOCK >= rate as usize * 1200);
+        }
+        assert_eq!(n_blocks(44_100, 3600), NONE as usize);
+        // Five minutes: about 109 MB, a fifth of it per minute.
+        assert_eq!(bytes_for(44_100, 300) / 1_000_000, 109);
+    }
 
     /// Bit for bit what `rem_euclid` gives, over song positions and loop
     /// lengths of every size, whole multiples and the places either side.

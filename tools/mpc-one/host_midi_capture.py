@@ -25,6 +25,12 @@ Phase sets (--phases, or MPFREE_CAPTURE_PHASES in collect-over-ssh.sh):
   been heard playing from a MIDI track (Akai's MIDI Out routing set): which
   cable carries MIDI Out, and how notes, a held note, pad velocities and
   (optionally) clock leave on it (MIDI_OUT_SETUP).
+- transport: which light messages Akai's app sends for REC, OVERDUB, PLAY,
+  PLAY START and STOP as the transport plays, records and overdubs. Their
+  lights were never in Akai's startup lights, so mpfree does not send them
+  until this shows them (owner, 2026-11-13). The REC phase records into the
+  open project as ordinary use does, and the owner does not save it
+  (TRANSPORT_SETUP).
 usbmon's text interface shows at most 32 data bytes per transfer, so longer
 transfers (for example big LED SysEx bursts) are marked as truncated.
 """
@@ -126,9 +132,27 @@ MIDI_OUT_SETUP = (
     "  3. Do not save the project or change Preferences.",
 )
 
+# Fourth set (owner, 2026-11-13): the transport buttons' lights under Akai's
+# app. Each phase fits its 8 s: count, don't rush.
+TRANSPORT_PHASES = (
+    ("idle", "Touch NOTHING (baseline). Akai's app is stopped."),
+    ("play_stop", "Press PLAY, count to three, then press STOP."),
+    ("rec_play", "Press REC once, count to two, press PLAY, count to three, then press STOP."),
+    ("overdub_play", "Press OVERDUB once, count to two, press PLAY, count to three, then press STOP."),
+    ("play_start", "Press PLAY START, count to two, then press STOP."),
+)
+
+TRANSPORT_SETUP = (
+    "Before you press Enter, in Akai's app (stock 3.6, normal use, nothing saved):",
+    "  1. Stay on the Main page with the transport stopped.",
+    "  2. The REC phase records a few seconds into the open project, as in ordinary use. Do not",
+    "     save the project or change Preferences; power off as after any session you don't save.",
+)
+
 PHASE_SETS = {"controller": PHASES, "midi-cv": MIDI_CV_PHASES, "cv-scale": CV_SCALE_PHASES,
-              "midi-out": MIDI_OUT_PHASES}
-SETUPS = {"midi-cv": MIDI_CV_SETUP, "cv-scale": CV_SCALE_SETUP, "midi-out": MIDI_OUT_SETUP}
+              "midi-out": MIDI_OUT_PHASES, "transport": TRANSPORT_PHASES}
+SETUPS = {"midi-cv": MIDI_CV_SETUP, "cv-scale": CV_SCALE_SETUP, "midi-out": MIDI_OUT_SETUP,
+          "transport": TRANSPORT_SETUP}
 
 CIN_LEN = {0x0: 3, 0x1: 3, 0x2: 2, 0x3: 3, 0x4: 3, 0x5: 1, 0x6: 2, 0x7: 3,
            0x8: 3, 0x9: 3, 0xA: 3, 0xB: 3, 0xC: 2, 0xD: 2, 0xE: 3, 0xF: 1}

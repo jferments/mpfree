@@ -35,11 +35,13 @@ Each synth also has an **Init** preset (Init Kit on Drums): a plain starting poi
 
 {{shot: synth | The Synth tab with Poly playing its Pluck preset. Pictures of the oscillators, filter, envelope and LFO across the top, the Osc page's controls below, and the presets on the right.}}
 
-- **The title** shows the synth and the preset. The tabs beside it are the synth's **pages**: for Poly, Osc, Filter, Env, LFO, Voice and Pressure. Tap a tab, or press **–** and **+**, to change page.
+- **The title** shows the synth and the preset. The tabs beside it are the synth's **pages**: for Poly, Osc, Filter, Env, LFO, Voice and Pressure. Tap a tab, or hold **SHIFT** and turn the data wheel, to change page.
 - **The pictures** across the top draw the sound as you change it: the oscillator waves, the filter's curve, the envelopes and the LFO. Tap one to jump to its page.
-- **The tiles** are the controls on this page. Drag a tile up or down to change it, or tap it and turn the data wheel.
+- **The tiles** are the controls on this page. Drag a tile up or down to change it. Or pick a tile with the data wheel (or a tap) and press **–** or **+**; push the wheel and turning it changes the tile picked (outlined more strongly) until you push it again.
 - **The Q-Links** turn the four tiles marked Q1 to Q4. Each preset chooses which four, so the knobs always do something useful for that sound. Each Q-Link has its own colour, the same on its tile's mark and knob and in the Q-Link row along the bottom.
 - **The presets** are listed on the right. Tap one to load it. Once you change anything, the preset is marked **edited**.
+
+**Drive**, on the Filter page of Poly and Wavetable, saturates the sound before the filter. It keeps the sound at about the same level as you turn it up (within about 2 dB on every preset), so it adds grit and thickness, not volume; turn up the synth's level for that.
 
 Each synth has its own pages. FM has Algo, Mod and Pressure, a page for each of its six operators and three keyboard-scaling pages; Drums has a page for each of its 16 pads plus a Kit page.
 
