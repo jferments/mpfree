@@ -246,7 +246,7 @@ Jay asked for these in the app thread (message of 13 Nov 11:46Z). The ones that 
 - **BROWSE opens the top-level browser** (projects, samples and the rest), as the browser plan's overlay under the top bar; projects load from it and **save**. A **New project** button starts from a fresh, empty project. **Built** by the project thread ("Add project New, Save and Load", 13 Nov): see section 3 ("Not tabs") and section 6 (BROWSE).
 - **Touch targets big enough to hit, or reachable with the wheel and – / +**, everywhere. The rule is in section 1, and the mutes and + FX are built (below); the FX page's buttons and the rest of the app still need a pass.
 - **More steps and more tracks** in the sequencer, with a clear way to add them (32, 64, 128 steps; more than 8 tracks). (**The steps** are built: the pattern's head in section 4. More than 8 tracks is still to do.)
-- **Several throws at once** with several fingers on the Play page.
+- **Several throws at once** with several fingers on the Play page. The screen and the mixer already hold one throw per finger (tests `two_fingers_hold_two_throws_at_once` and `two_throws_held_at_once_each_hold_their_pad`), so what's left is the panel: the next device run checks that it reports two fingers (app check phase 18).
 - **Typing a number** for fields with a wide range (Warp tempo first), instead of only the wheel.
 
 **Built in the live test 3 fixes PR** (the app thread, 13 Nov), so no longer open above:

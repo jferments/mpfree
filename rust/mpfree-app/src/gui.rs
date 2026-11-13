@@ -7566,6 +7566,44 @@ mod tests {
         assert_eq!((m.text.as_str(), m.fader_db), ("-6.0", -6.0));
     }
 
+    /// Jay after live test 3: several throws at once, a finger on each.
+    /// Each finger holds its own throw, and lifting one leaves the others.
+    #[test]
+    fn two_fingers_hold_two_throws_at_once() {
+        let mut p = sample_play(Fonts::embedded(), PlayView::All);
+        p.play.throw(2, false);
+        p.ui.paint(&mut SoftCanvas::new(SCREEN.0, SCREEN.1));
+        let r = p.ui.rect_of(play_page::THROWS).unwrap();
+        let cells = p.ui.get::<Throws>(play_page::THROWS).unwrap().cells(r);
+        let (a, b) = (cells[0], cells[1]);
+        let on = |p: &Player| -> Vec<bool> {
+            let t = p.ui.get::<Throws>(play_page::THROWS).unwrap();
+            t.items.iter().take(2).map(|i| i.on).collect()
+        };
+        let throw = |a: Option<FromUi>| match a {
+            Some(FromUi::PlayFx(PlayFx::Throw { fx, down })) => Some((fx, down)),
+            _ => None,
+        };
+        use crate::mixing::ThrowFx::{Delay, Reverb};
+        let first = p.touch(11, Touch::Down, a.x + 8, a.y + 8);
+        assert_eq!(throw(first), Some((Delay, true)));
+        let second = p.touch(12, Touch::Down, b.x + 8, b.y + 8);
+        assert_eq!(throw(second), Some((Reverb, true)));
+        assert_eq!(on(&p), [true, true]);
+        // The first finger slides a little and lifts; the second holds on.
+        assert_eq!(throw(p.touch(11, Touch::Move, a.x + 14, a.y + 10)), None);
+        assert_eq!(
+            throw(p.touch(11, Touch::Up, a.x + 14, a.y + 10)),
+            Some((Delay, false))
+        );
+        assert_eq!(on(&p), [false, true]);
+        assert_eq!(
+            throw(p.touch(12, Touch::Up, b.x + 8, b.y + 8)),
+            Some((Reverb, false))
+        );
+        assert_eq!(on(&p), [false, false]);
+    }
+
     #[test]
     fn the_pattern_throws_and_xy_pad_reach_the_engines() {
         let mut p = sample_play(Fonts::embedded(), PlayView::All);
