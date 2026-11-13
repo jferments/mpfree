@@ -226,6 +226,13 @@ pub enum Button {
     Cancel,
     /// A project's earlier saves, to open one.
     Versions,
+    /// Saves the work as the current project (the first time, as a new
+    /// one named for the time): the same as SHIFT + BROWSE.
+    Save,
+    /// Saves the work under a name typed on the keyboard.
+    SaveAs,
+    /// Starts a new, empty project (asks first over unsaved work).
+    NewProject,
 }
 
 impl Button {
@@ -246,6 +253,9 @@ impl Button {
             Button::EmptyTrash => "Empty Trash",
             Button::Cancel => "Cancel",
             Button::Versions => "Earlier saves",
+            Button::Save => "Save",
+            Button::SaveAs => "Save as",
+            Button::NewProject => "New project",
         }
     }
 }
@@ -297,6 +307,13 @@ impl Sort {
             Sort::Newest => "Newest",
         }
     }
+}
+
+/// Seconds since 1970 (UTC) now, for a name made from the time.
+fn now_utc() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
 }
 
 /// What the app must do (the browser does everything else itself).
@@ -360,12 +377,19 @@ pub enum BrowseAction {
     ProjectSaved {
         loc: Loc,
     },
-    /// Save as was given a name: call [`Browser::save`] with the engines'
-    /// parts now.
+    /// Save (or Save as, once given a name) was pressed: call
+    /// [`Browser::save`] with the engines' parts now.
     SaveRequested,
+    /// New project was pressed (and, over unsaved work, agreed to): the
+    /// app puts every engine back to a fresh, empty project. The browser
+    /// has already forgotten the project it had ([`Browser::new_project`]).
+    NewProject,
     /// Recent and Favourites changed: save this text as the "browser"
     /// owner's file in the store ([`Browser::lists_text`]).
     SaveLists(String),
+    /// [`Browser::open_last`]'s project couldn't be opened (why); the
+    /// work in progress stays as it was.
+    LastNotOpened(String),
 }
 
 /// What waits for a yes.
@@ -377,6 +401,8 @@ pub enum Confirm {
     Open(Loc),
     /// Open this earlier save of a project over unsaved changes.
     OpenVersion(Loc, String),
+    /// Start a new, empty project over unsaved changes.
+    NewProject,
 }
 
 /// What the keyboard is typing.
@@ -540,6 +566,11 @@ pub struct Browser {
     select_name: Option<String>,
     /// The project being worked on (where SHIFT + BROWSE saves).
     project: Option<Loc>,
+    /// The project last saved or opened, kept with Recent and Favourites:
+    /// Prefs > At start can open it again ([`Browser::open_last`]).
+    last: Option<Loc>,
+    /// [`Browser::open_last`] is waiting for the library.
+    opening_last: bool,
     /// When it was first saved.
     created: u64,
     actions: Vec<BrowseAction>,
@@ -592,6 +623,8 @@ impl Browser {
             favourites: Vec::new(),
             select_name: None,
             project: None,
+            last: None,
+            opening_last: false,
             created: 0,
             actions: Vec::new(),
             pick: None,
@@ -658,6 +691,9 @@ impl Browser {
                         return;
                     }
                 }
+                if std::mem::take(&mut self.opening_last) {
+                    self.actions.push(BrowseAction::LastNotOpened(e.clone()));
+                }
                 self.status = Some((e, true))
             }
             Ok(Outcome::Listed(loc, entries)) => {
@@ -701,6 +737,7 @@ impl Browser {
                 self.status = Some((format!("Saved {}", loc.name()), false));
                 self.unsaved = false;
                 self.project = Some(loc.clone());
+                self.last = Some(loc.clone());
                 self.remember(loc.clone());
                 self.actions.push(BrowseAction::ProjectSaved { loc });
                 self.refresh();
@@ -708,11 +745,14 @@ impl Browser {
             Ok(Outcome::Project(loc, snap)) => {
                 self.status = Some((format!("Opened {}", loc.name()), false));
                 self.project = Some(loc.clone());
+                self.last = Some(loc.clone());
                 self.created = snap.meta.created;
                 self.unsaved = false;
                 self.remember(loc.clone());
                 self.actions.push(BrowseAction::ProjectOpened { loc, snap });
-                if self.pick.is_some() {
+                // Opened at start (Prefs > At start), the Pads tab's
+                // picker stays where it is.
+                if self.pick.is_some() && !std::mem::take(&mut self.opening_last) {
                     self.close_pick(true);
                 }
             }
@@ -732,6 +772,7 @@ impl Browser {
                     false,
                 ));
                 self.project = Some(loc.clone());
+                self.last = Some(loc.clone());
                 self.created = snap.meta.created;
                 // Not the newest save: saving it keeps what it replaces.
                 self.unsaved = true;
@@ -991,12 +1032,16 @@ impl Browser {
         }
     }
 
-    /// Recent and Favourites, as saved by [`Browser::lists_text`].
+    /// Recent and Favourites, and the last project, as saved by
+    /// [`Browser::lists_text`].
     pub fn load_lists(&mut self, text: &str) {
         self.recent.clear();
         self.favourites.clear();
+        self.last = None;
         for line in text.lines() {
-            if let Some(l) = line.strip_prefix("recent = ").and_then(Loc::from_line) {
+            if let Some(l) = line.strip_prefix("project = ").and_then(Loc::from_line) {
+                self.last = Some(l);
+            } else if let Some(l) = line.strip_prefix("recent = ").and_then(Loc::from_line) {
                 if self.recent.len() < RECENT && !self.recent.contains(&l) {
                     self.recent.push(l);
                 }
@@ -1010,9 +1055,13 @@ impl Browser {
     }
 
     /// Recent and Favourites as text, one `recent = Samples/Drums/Kick.wav`
-    /// or `favourite = ...` line each.
+    /// or `favourite = ...` line each, after the last project's
+    /// (`project = Projects/Night drive`).
     pub fn lists_text(&self) -> String {
         let mut s = String::new();
+        if let Some(l) = &self.last {
+            s.push_str(&format!("project = {}\n", l.to_line()));
+        }
         for l in &self.recent {
             s.push_str(&format!("recent = {}\n", l.to_line()));
         }
@@ -1034,7 +1083,8 @@ impl Browser {
         let before = self.recent.len() + self.favourites.len();
         self.recent.retain(|r| !l.contains(r));
         self.favourites.retain(|r| !l.contains(r));
-        if self.recent.len() + self.favourites.len() != before {
+        let last = self.last.take_if(|p| l.contains(p)).is_some();
+        if last || self.recent.len() + self.favourites.len() != before {
             self.actions
                 .push(BrowseAction::SaveLists(self.lists_text()));
         }
@@ -1337,6 +1387,18 @@ impl Browser {
         }
         match b {
             Button::Cancel => self.cancel_picker(),
+            Button::Save => self.actions.push(BrowseAction::SaveRequested),
+            Button::SaveAs => self.save_as(now_utc()),
+            Button::NewProject => {
+                if self.unsaved {
+                    self.modal = Modal::Confirm {
+                        text: "Unsaved changes. Start a new, empty project anyway?".into(),
+                        what: Confirm::NewProject,
+                    };
+                } else {
+                    self.start_new_project();
+                }
+            }
             Button::Versions => {
                 let Some(r) = row else { return };
                 let Some(loc) = loc.filter(|_| r.kind == Kind::Project) else {
@@ -1549,6 +1611,7 @@ impl Browser {
                 Confirm::EmptyTrash => self.send(Job::EmptyTrash),
                 Confirm::Open(loc) => self.send(Job::OpenProject(loc)),
                 Confirm::OpenVersion(loc, id) => self.send(Job::OpenVersion(loc, id)),
+                Confirm::NewProject => self.start_new_project(),
             }
         }
     }
@@ -1630,6 +1693,24 @@ impl Browser {
         self.project.as_ref()
     }
 
+    /// The project last saved or opened, in this run or an earlier one.
+    pub fn last_project(&self) -> Option<&Loc> {
+        self.last.as_ref()
+    }
+
+    /// Opens the last project (Prefs > At start), as the Projects list
+    /// would, without closing the Pads tab's picker. False when there is
+    /// none. It comes as [`BrowseAction::ProjectOpened`], or
+    /// [`BrowseAction::LastNotOpened`] if the library can't open it.
+    pub fn open_last(&mut self) -> bool {
+        let Some(loc) = self.last.clone() else {
+            return false;
+        };
+        self.opening_last = true;
+        self.send(Job::OpenProject(loc));
+        true
+    }
+
     /// SHIFT + BROWSE: saves `snap` as the current project, or, the first
     /// time, as a new project named for the time (no typing needed;
     /// Rename changes it later). `now` is seconds since 1970 (UTC).
@@ -1693,6 +1774,30 @@ impl Browser {
         self.created = 0;
     }
 
+    /// New project, agreed: forget the project and ask the app for a
+    /// fresh one ([`BrowseAction::NewProject`]).
+    fn start_new_project(&mut self) {
+        self.new_project();
+        self.unsaved = false;
+        self.status = Some((
+            "New project: nothing saved yet (Save names it for the time)".into(),
+            false,
+        ));
+        self.actions.push(BrowseAction::NewProject);
+    }
+
+    /// Whether the work has changed since it was last saved or opened.
+    pub fn unsaved(&self) -> bool {
+        self.unsaved
+    }
+
+    /// Whether the worker has jobs not answered yet (a save, say): the app
+    /// keeps stepping the browser while it doesn't show, so the answer
+    /// lands.
+    pub fn busy(&self) -> bool {
+        self.pending > 0
+    }
+
     // ------------------------------------------------------------ out
 
     /// What the app must do since the last call.
@@ -1730,9 +1835,10 @@ impl Browser {
                 _ if self.mode != Mode::Folder => Vec::new(),
                 Source::Place(Place::Trash) => vec![Button::EmptyTrash],
                 Source::Place(p) => {
-                    // Projects are made by saving, so no New folder there.
+                    // Projects are made by saving, so no New folder there:
+                    // New project, Save and Save as instead.
                     let mut v = if p == Place::Projects {
-                        Vec::new()
+                        vec![Button::NewProject, Button::SaveAs, Button::Save]
                     } else {
                         vec![Button::NewFolder]
                     };

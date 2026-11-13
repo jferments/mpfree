@@ -44,6 +44,7 @@ The music tabs, in this order:
   - **Each page's options.** MENU opens them.
   - **The Arp panel.** NOTE REPEAT + MENU opens it; it belongs to Play.
   - **The mixer.** TRACK MIX or the mixer icon opens it over the current page, under the top bar, as Prefs does. The same button or icon again, or a tab, closes it (Jay, 09:17Z: the button or a small sliders icon in a corner; the FX thread builds it).
+  - **The browser.** BROWSE opens it over the current page, under the top bar, as the mixer does; BROWSE again or a tab closes it (controls decision 13; Jay after live test 3, 13 Nov 11:46Z; built by the project thread). Its Projects place has New project, Save as and Save. The Pads tab's Browse view stays the narrow picker of section 4e.
   - **The pattern workspace.**
   - **The button guide.**
   - **System info, Touch lab and Calibrate touch.** These open from Prefs.
@@ -170,7 +171,8 @@ Approved by Jay at 22:34Z (the mod thread's card, "Approve as proposed"). The mo
   7. Map controls
   8. Line input
   9. System info
-  10. Touch screen (opens its own rows)
+  10. At start (New project, the default, or Last project: what opens when MPFree starts, once the sound is going; Jay's pick on the project thread's settings card, 13 Nov 14:09Z)
+  11. Touch screen (opens its own rows)
 - **The Touch screen rows** ("Prefs · Touch screen", approved in the touch thread at 08:13Z, #69):
   1. Back
   2. Screen pad velocity
@@ -212,7 +214,8 @@ Approved by Jay at 22:34Z (the mod thread's card, "Approve as proposed"). The mo
 - **The data dial's push** (Jay, 12 Nov 08:11Z): in Prefs and the options menus, it opens the picked row (its value box outlined), the wheel changes the value, and a second push sets it and gives the wheel back to the rows. On a row that opens something (System info, Touch screen, Back, Find the buttons again, Map controls, Calibrate touch, Touch lab) it opens it, as + does.
 - **The data wheel on a page with rows** (Jay, 13 Nov 06:27Z): on Sample (every sub-page with a settings list), the Pads tab's Pad view, Synth and Arrange, the wheel moves the highlight through the rows (on Synth, the tiles) and - / + step the highlighted one, as in the menus. A push opens the highlighted row for the wheel (its value box outlined, the Synth tile raised); the wheel then changes it, and a second push gives the wheel back to the rows. Changing page closes it. SHIFT keeps each page's second wheel job: SHIFT + wheel is the next pad with a sound on Sample and Pads, the Synth page on Synth and scrolling on Arrange; SHIFT + - / + zooms the wave on Wave, Warp and Chop. The Play page (the kit), the Looper tab and Pads' Browse view keep the wheel they had.
 - **The transport lights** (Jay, 13 Nov 06:37Z, card "Capture Akai's lights first"): PLAY, REC and OVERDUB light only once a read-only capture under Akai's 3.6.0 shows the message its software sends for them; until then the app sends nothing for them and says so once in the Console. **The capture ran in live test 3 (13 Nov 09:33Z):** PLAY is lit while playing, REC and OVERDUB blink while armed (with PLAY) and while recording, all with values 3 and 0 (controller protocol page, "Akai's transport lights"). Wiring them is the next build. The MPC One's STOP button has **no LED** (Jay, 13 Nov), so the STOP light the app sends shows nothing on this model.
-- **Still to come from the control map:** hold MAIN + pad to pick a track; SHIFT + NEXT SEQ (Perform FX); COPY, TC and BROWSE.
+- **BROWSE** (controls decision 13; Jay after live test 3): opens the browser over the page and goes back to it (section 3, "Not tabs"). While it shows, the wheel, its push, - / +, PLAY and Q-Links 1-4 work it as on the Pads tab's Browse view, SHIFT + wheel moves through the places, and ERASE deletes the item picked (into the Trash, asking first). **SHIFT + BROWSE** saves the project on any page. BROWSE has no measured note yet, so it works once Map controls has found it.
+- **Still to come from the control map:** hold MAIN + pad to pick a track; SHIFT + NEXT SEQ (Perform FX); COPY and TC.
 
 ## 7. How changes happen
 
@@ -239,7 +242,7 @@ Approved by Jay at 22:34Z (the mod thread's card, "Approve as proposed"). The mo
 Jay asked for these in the app thread (message of 13 Nov 11:46Z). The ones that change the shared layout are his decision already; each needs this file updated in the same pull request that builds it. Details, causes and file references: mpfree-claude `handoffs/2026-11-13-app-thread.md`.
 
 - **A Mix/FX tab** in the top bar for the mixer and effects (today the mixer opens with TRACK MIX or the mixer icon), and a **dramatic overhaul of adding effects** to pads, tracks and audio channels. On the mixer, **+ Insert** becomes **+ FX** (or a button).
-- **BROWSE opens the top-level browser** (projects, samples and the rest), as the browser plan's overlay under the top bar; projects load from it and **save**. A **New project** button starts from a fresh, empty project.
+- **BROWSE opens the top-level browser** (projects, samples and the rest), as the browser plan's overlay under the top bar; projects load from it and **save**. A **New project** button starts from a fresh, empty project. **Built** by the project thread ("Add project New, Save and Load", 13 Nov): see section 3 ("Not tabs") and section 6 (BROWSE).
 - **Touch targets big enough to hit, or reachable with the wheel and – / +**, everywhere: the sequencer tracks' mute speakers, the mixer's insert rows (+ Insert is the example Jay gave) and the FX page's buttons first.
 - **Higher contrast for buttons as a general rule** (light grey text on a mid-grey button is out): the Looper tab's top and bottom buttons first.
 - **More steps and more tracks** in the sequencer, with a clear way to add them (32, 64, 128 steps; more than 8 tracks).
