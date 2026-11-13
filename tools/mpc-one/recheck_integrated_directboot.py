@@ -76,7 +76,7 @@ def audit(archive: Path) -> dict:
         "static_fastboot_receive_and_bootm_classifier": (
             ram_report["all_static_evidence_passed"]),
         "seven_track_67_question_research": (
-            len(matrix["questions"])>=67 and
+            len(matrix["questions"])>=70 and
             len({q["track"] for q in matrix["questions"]})==7),
         "spl_order_and_mmc_label_evidence": all(
             owner_followups["spl"]["checks"].values()),
