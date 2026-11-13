@@ -1000,7 +1000,8 @@ class StaticTests(unittest.TestCase):
             "if let Ok(mut f) = OpenOptions::new().create(true).append(true).open(Path::new(REPORT_DIR).join(\"report.txt\")) {",
             # the framebuffer and its sysfs pan file (mpfree-ui's FbTarget)
             "let file = OpenOptions::new().write(true).open(fb).map_err(|e| format!(\"{}: {e}\", fb.display()))?;",
-            "let _ = OpenOptions::new().write(true).open(sysfs.join(\"pan\")).and_then(|mut f| f.write_all(b\"0,0\\n\"));",
+            # (FbTarget::show, at open and again after the GPU's process has had the screen)
+            "let _ = OpenOptions::new().write(true).open(&self.pan).and_then(|mut f| f.write_all(b\"0,0\\n\"));",
             # the host-only preview pictures (never on the MPC)
             "OpenOptions::new().write(true).create_new(true).open(path).and_then(|mut f| f.write_all(&png))"
             ".map_err(|e| format!(\"{}: {e}\", path.display()))?;",
@@ -1029,10 +1030,16 @@ class StaticTests(unittest.TestCase):
                 if not line.lstrip().startswith("//"):
                     self.assertNotIn("/run/mpfree-data", line, name)
 
-    def test_the_only_program_it_starts_is_a_read_only_journalctl(self):
+    def test_it_starts_only_a_read_only_journalctl_and_the_gpu_process_it_is_given(self):
         code = "".join(c for _, c in self.program_sources())
-        self.assertEqual(code.count("Command::new("), 1)
+        self.assertEqual(code.count("Command::new("), 2)
         self.assertIn('Command::new("journalctl")', code)
+        # The GPU drawing process (mpfree_ui::gpu_screen), only with --gpu-screen PROGRAM: that program, with
+        # the app's frames on its stdin and its answers on its stdout.
+        gpu = dict(self.program_sources())["mpfree-ui/gpu_screen.rs"]
+        self.assertIn("Command::new(program)", gpu)
+        main = dict(self.program_sources())["mpfree-app/main.rs"]
+        self.assertIn('"--gpu-screen" => o.gpu_screen = Some(PathBuf::from(value()?)),', main)
         self.assertIn('.args(["-b", "-f", "-n", "300", "--no-pager", "-o", "short-monotonic", "--no-hostname"])', code)
         for needle in ("systemctl", "std::net", "kexec"):
             self.assertNotIn(needle, "\n".join(l for l in code.splitlines() if not l.lstrip().startswith("//")))
