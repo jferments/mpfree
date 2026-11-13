@@ -98,6 +98,10 @@ pub enum EventKind {
     Cell { row: usize, col: usize },
     /// Something switched on or off by a tap (a speaker's mute), by index.
     Toggle(usize),
+    /// A stretch of row `index` picked by a swipe along it, `from` before
+    /// `to` (in the widget's own units, such as song ticks), or the whole
+    /// row by a tap (`from == to`): a take lane's comp.
+    Span { index: usize, from: i64, to: i64 },
     /// A finger on a two-way pad: 0 to 1 left to right (`x`) and bottom to
     /// top (`y`), `down` until it lifts.
     Xy { x: f32, y: f32, down: bool },
