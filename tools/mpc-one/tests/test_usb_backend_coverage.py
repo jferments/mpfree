@@ -38,8 +38,9 @@ def make():
             evidence.append({"offset":slot,"resolved_function":actual,
                              "ghidra_function_recognized":bool(actual)})
         usbs.append({
+            # Match the actual 3.10 ZIP descriptor representation.
             "usb_descriptor":dict(zip(("class","subclass","protocol"),
-                                      desc.split("/"))),
+                                      ("0x"+part for part in desc.split("/")))),
             "candidate_table_vaddr":address,
             "initializer_vaddr":"0x0001aaaa",
             "initializer_references_table":True,
@@ -72,6 +73,23 @@ class BackendCoverageTests(unittest.TestCase):
         self.assertNotIn("stream_partition",by["ff/06/05"]["present_operations"])
         self.assertIn("commit_bootloader",by["ff/42/03"]["present_operations"])
         self.assertFalse(result["whole_emmc_recovery_proven"])
+
+    def test_compact_and_0x_prefixed_usb_descriptor_forms_match(self):
+        data=make()
+        self.assertTrue(run(data)["all_source_only_backends_matched"])
+        # Normalize exact same descriptor bytes regardless of JSON formatting.
+        for backend in data["usb"]["verified_backend_interfaces"]:
+            descriptor=backend["usb_descriptor"]
+            for field in ("class","subclass","protocol"):
+                descriptor[field]=descriptor[field][2:]
+        self.assertTrue(run(data)["all_source_only_backends_matched"])
+
+    def test_malformed_usb_descriptor_fails_closed(self):
+        data=make()
+        data["usb"]["verified_backend_interfaces"][0][
+            "usb_descriptor"]["class"]="not-hex"
+        with self.assertRaisesRegex(ValueError,"Invalid USB descriptor field"):
+            run(data)
 
     def test_wrong_relocated_callback_fails_closed(self):
         d=make()
