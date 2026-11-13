@@ -30,12 +30,14 @@ def audit(archive: Path) -> dict:
     security = load("synthesize_310_security_utilities.py", "mpfree_sec_preflight")
     adc = load("synthesize_recovery_adc.py", "mpfree_adc_preflight")
     follow = load("synthesize_multitrack_followups.py", "mpfree_follow_preflight")
+    usb_backend = load("synthesize_usb_backend_coverage.py", "mpfree_usb_backend_preflight")
     with zipfile.ZipFile(archive) as z:
         members = wide.verify_zip(z)
         matrix = wide.build(z.read)
         focus = direct.build(z.read)
         stock_recovery = adc.build(z.read)
         owner_followups = follow.build(z.read)
+        usb_backend_report = usb_backend.build(z.read)
         comparison = json.loads(
             z.read("static/wide/firmware-3.10-bootchain-v4-compare.json"))
         guest_hex = z.read("qemu-guest-boot_script_hex.txt").decode("utf-8")
@@ -61,7 +63,9 @@ def audit(archive: Path) -> dict:
             "script_commands_match_official"],
         "original_adc_recovery_proven_by_arm_strings_and_fdt": (
             stock_recovery["all_existing_cross_checks_passed"]),
-        "seven_track_57_question_research": (
+        "three_usb_backend_original_table_and_callback_crosscheck": (
+            usb_backend_report["all_source_only_backends_matched"]),
+        "seven_track_59_question_research": (
             len(matrix["questions"])>=59 and
             len({q["track"] for q in matrix["questions"]})==7),
         "spl_order_and_mmc_label_evidence": all(
