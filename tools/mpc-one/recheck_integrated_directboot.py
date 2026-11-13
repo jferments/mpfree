@@ -31,6 +31,8 @@ def audit(archive: Path) -> dict:
     adc = load("synthesize_recovery_adc.py", "mpfree_adc_preflight")
     follow = load("synthesize_multitrack_followups.py", "mpfree_follow_preflight")
     usb_backend = load("synthesize_usb_backend_coverage.py", "mpfree_usb_backend_preflight")
+    update_format = load("synthesize_update_format_and_spl.py",
+                         "mpfree_update_format_spl_preflight")
     with zipfile.ZipFile(archive) as z:
         members = wide.verify_zip(z)
         matrix = wide.build(z.read)
@@ -38,6 +40,7 @@ def audit(archive: Path) -> dict:
         stock_recovery = adc.build(z.read)
         owner_followups = follow.build(z.read)
         usb_backend_report = usb_backend.build(z.read)
+        format_report = update_format.build(z.read)
         comparison = json.loads(
             z.read("static/wide/firmware-3.10-bootchain-v4-compare.json"))
         guest_hex = z.read("qemu-guest-boot_script_hex.txt").decode("utf-8")
@@ -65,7 +68,9 @@ def audit(archive: Path) -> dict:
             stock_recovery["all_existing_cross_checks_passed"]),
         "three_usb_backend_original_table_and_callback_crosscheck": (
             usb_backend_report["all_source_only_backends_matched"]),
-        "seven_track_59_question_research": (
+        "image_formats_verify_cache_xz_and_spl_static_evidence": (
+            format_report["all_checkable_static_claims_passed"]),
+        "seven_track_64_question_research": (
             len(matrix["questions"])>=64 and
             len({q["track"] for q in matrix["questions"]})==7),
         "spl_order_and_mmc_label_evidence": all(
@@ -90,6 +95,9 @@ def audit(archive: Path) -> dict:
             "power_source"]["original_threshold_words"],
         "spl_second_callback_original_word":owner_followups[
             "spl"]["second_callback_original_word"],
+        "format_dispatch_headers":format_report["image_format_prefixes"],
+        "xz_buffer_count":format_report["xz_partition_buffer_count_observed"],
+        "verify_error_minus13_policy_proven":False,
         "focus_topics": len(set(q["topic"] for q in focus["questions"])),
         "passed_checks": checks,
         "success": (
