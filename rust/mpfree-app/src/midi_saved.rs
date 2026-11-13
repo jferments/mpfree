@@ -1,48 +1,64 @@
 //! The mixer's I/O view settings kept between starts.
 //!
-//! The project's MIDI settings (each port's input and thru, each track's
-//! "Plays on", the tempo source, clock out, the CV outputs and MIDI Learn)
-//! are the project's `midi` part (`mpfree_midi_ui::MidiPart`). Until the app
-//! saves and opens whole projects, the same text is kept in the store as
-//! `files/midi/setup.txt`, so the I/O view comes back as it was left:
+//! The settings split in two (the owner, 13 Nov 2026: project settings
+//! apart from system-wide ones):
 //!
-//! - [`restore`] reads it once at start, before the sound loop syncs the
-//!   model, through the part's own `load` (lines it can't read are kept as
-//!   warnings, shown in the MIDI section and logged).
-//! - [`Saver::take`] runs a few times a second in the sound loop. It only
-//!   `try_lock`s the model, and hands back the setup's text when the model's
-//!   `gen` has moved and the text differs from what was last kept; the
-//!   store's own thread writes it.
+//! - **The rig** (`MidiSetup::rig`): each port's input (Plays tracks, Learn
+//!   only, Both) and thru. They describe the gear on the desk, so they are
+//!   kept for every project, in the store as `files/midi/rig.txt`.
+//! - **The project** (`MidiSetup::project`): each track's "Plays on", Tempo
+//!   from and following, each port's clock out, the CV jobs and learned
+//!   controls. They are the project's `midi` part (`mpfree_midi_ui::MidiPart`).
+//!   Until the app saves whole projects, the last project part is also kept
+//!   in the store as `files/midi/project.txt`, so nothing is lost at a
+//!   restart; that copy goes once projects save.
 //!
-//! Once a project is opened, its `midi` part replaces what was restored, and
-//! the next change is kept here as before.
+//! [`restore`] reads both once at start, before the sound loop syncs the
+//! model (lines it can't read are kept as warnings, shown in the MIDI
+//! section and logged). [`Saver::take`] runs a few times a second in the
+//! sound loop: it only `try_lock`s the model, and hands back each text whose
+//! content changed since it was last kept; the store's own thread writes it.
 
 use std::sync::TryLockError;
 
 use mpfree_library::Part;
-use mpfree_midi_ui::{MidiPart, Shared};
+use mpfree_midi_ui::{MidiPart, MidiSetup, Shared};
 
-/// The owner and file the setup is kept under in the store.
+/// The owner the settings are kept under in the store, and the two files.
 pub const OWNER: &str = mpfree_midi_ui::PART;
-pub const FILE: &str = "setup.txt";
+pub const RIG: &str = "rig.txt";
+pub const PROJECT: &str = "project.txt";
 
-/// Puts the kept setup into `model`. Gives the lines that couldn't be read,
-/// for the log (they also show in the MIDI section).
-pub fn restore(model: &Shared, text: &str) -> Vec<String> {
-    let mut part = MidiPart(model.clone());
-    // MidiPart::load never fails: what it can't read becomes warnings.
-    let _ = part.load(text);
-    let m = model.lock().unwrap_or_else(|e| e.into_inner());
-    m.warnings.clone()
+/// Puts the kept rig and project texts into `model`. Gives the lines that
+/// couldn't be read, for the log (they also show in the MIDI section).
+pub fn restore(model: &Shared, rig: Option<&str>, project: Option<&str>) -> Vec<String> {
+    let mut warnings = Vec::new();
+    if let Some(text) = rig {
+        let (setup, w) = MidiSetup::parse(text);
+        warnings.extend(w.into_iter().map(|w| format!("{RIG}: {w}")));
+        let mut m = model.lock().unwrap_or_else(|e| e.into_inner());
+        m.setup.set_rig(&setup);
+        m.gen += 1;
+    }
+    if let Some(text) = project {
+        // MidiPart::load never fails: what it can't read becomes warnings.
+        let _ = MidiPart(model.clone()).load(text);
+        let m = model.lock().unwrap_or_else(|e| e.into_inner());
+        warnings.extend(m.warnings.iter().map(|w| format!("{PROJECT}: {w}")));
+    }
+    let mut m = model.lock().unwrap_or_else(|e| e.into_inner());
+    m.warnings = warnings.clone();
+    warnings
 }
 
-/// Hands the store the setup when it has changed.
+/// Hands the store the rig and the project part when they have changed.
 #[derive(Debug, Default)]
 pub struct Saver {
     /// The model's `gen` when it was last looked at.
     seen: Option<u64>,
-    /// The text last handed to the store (or restored).
-    kept: Option<String>,
+    /// The texts last handed to the store (or restored).
+    rig: String,
+    project: String,
 }
 
 impl Saver {
@@ -52,29 +68,36 @@ impl Saver {
         let m = model.lock().unwrap_or_else(|e| e.into_inner());
         Saver {
             seen: Some(m.gen),
-            kept: Some(m.setup.to_text()),
+            rig: m.setup.rig_text(),
+            project: m.setup.project_text(),
         }
     }
 
-    /// The setup's text, when it changed since the last call. Never waits
-    /// for the screen: if the screen holds the model, the next call looks.
-    pub fn take(&mut self, model: &Shared) -> Option<String> {
+    /// The files to write, `(file, text)`, for what changed since the last
+    /// call. Never waits for the screen: if the screen holds the model, the
+    /// next call looks.
+    pub fn take(&mut self, model: &Shared) -> Vec<(&'static str, String)> {
         let m = match model.try_lock() {
             Ok(m) => m,
             Err(TryLockError::Poisoned(e)) => e.into_inner(),
-            Err(TryLockError::WouldBlock) => return None,
+            Err(TryLockError::WouldBlock) => return Vec::new(),
         };
         if self.seen == Some(m.gen) {
-            return None;
+            return Vec::new();
         }
         self.seen = Some(m.gen);
-        let text = m.setup.to_text();
+        let (rig, project) = (m.setup.rig_text(), m.setup.project_text());
         drop(m);
-        if self.kept.as_deref() == Some(text.as_str()) {
-            return None;
+        let mut out = Vec::new();
+        if rig != self.rig {
+            self.rig = rig.clone();
+            out.push((RIG, rig));
         }
-        self.kept = Some(text.clone());
-        Some(text)
+        if project != self.project {
+            self.project = project.clone();
+            out.push((PROJECT, project));
+        }
+        out
     }
 }
 
@@ -89,30 +112,44 @@ mod tests {
         m.gen += 1;
     }
 
+    fn file<'a>(out: &'a [(&str, String)], name: &str) -> Option<&'a str> {
+        out.iter()
+            .find(|(f, _)| *f == name)
+            .map(|(_, t)| t.as_str())
+    }
+
     #[test]
-    fn a_change_is_kept_once_and_comes_back_at_the_next_start() {
+    fn a_change_is_kept_once_in_its_file_and_comes_back_at_the_next_start() {
         let model = crate::midi_in::io_model();
         let mut saver = Saver::new(&model);
-        assert_eq!(saver.take(&model), None, "nothing changed yet");
+        assert!(saver.take(&model).is_empty(), "nothing changed yet");
+        // A port's input is the rig's; Tempo from is the project's.
         changed(&model, |m| {
             m.setup
                 .set_port(DIN_NAME, |p| p.input = PortInput::LearnOnly);
+        });
+        let out = saver.take(&model);
+        assert_eq!(out.len(), 1, "{out:?}");
+        let rig = file(&out, RIG).expect("the rig").to_string();
+        changed(&model, |m| {
             m.setup.tempo = TempoSource::Port(DIN_NAME.into());
         });
-        let text = saver.take(&model).expect("the change is handed over");
-        assert_eq!(saver.take(&model), None, "only once");
-        // The same text again (a section bumped gen without a change).
+        let out = saver.take(&model);
+        assert_eq!(out.len(), 1, "{out:?}");
+        let project = file(&out, PROJECT).expect("the project").to_string();
+        assert!(saver.take(&model).is_empty(), "only once");
+        // The same texts again (a section bumped gen without a change).
         changed(&model, |_| {});
-        assert_eq!(saver.take(&model), None);
+        assert!(saver.take(&model).is_empty());
 
         // The next start.
         let again = crate::midi_in::io_model();
-        let warnings = restore(&again, &text);
+        let warnings = restore(&again, Some(&rig), Some(&project));
         assert!(warnings.is_empty(), "{warnings:?}");
         assert_eq!(again.lock().unwrap().setup, model.lock().unwrap().setup);
         // What was just read isn't written back.
         let mut saver = Saver::new(&again);
-        assert_eq!(saver.take(&again), None);
+        assert!(saver.take(&again).is_empty());
     }
 
     #[test]
@@ -121,11 +158,13 @@ mod tests {
         changed(&model, |m| {
             m.setup.tempo = TempoSource::Port(DIN_NAME.into());
         });
-        let text = model.lock().unwrap().setup.to_text();
+        let text = model.lock().unwrap().setup.project_text();
         let again = crate::midi_in::io_model();
-        let warnings = restore(&again, &format!("{text}cv.9 = off\n"));
+        let warnings = restore(&again, None, Some(&format!("{text}cv.9 = off\n")));
         assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(warnings[0].starts_with(PROJECT));
         assert_eq!(again.lock().unwrap().setup, model.lock().unwrap().setup);
+        assert_eq!(again.lock().unwrap().warnings.len(), 1);
     }
 
     #[test]
@@ -137,8 +176,8 @@ mod tests {
         });
         {
             let _held = model.lock().unwrap();
-            assert_eq!(saver.take(&model), None);
+            assert!(saver.take(&model).is_empty());
         }
-        assert!(saver.take(&model).is_some());
+        assert!(file(&saver.take(&model), PROJECT).is_some());
     }
 }
