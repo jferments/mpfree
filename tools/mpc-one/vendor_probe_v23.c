@@ -70,7 +70,7 @@ static int v23_dispatch(const char *name){
                   variant==14u?0x200u:0x31u;
     put32(V23_CMD,code);
     uint32_t ret= index<16u? (variant%3u==0u?0u:
-                              variant%3u==1u?1u:0xffffffedu)
+                              variant%3u==1u?1u:0xedu)
                           : index<32u?0u:0xffffffedu;
     uint32_t (*dispatch)(uint32_t,uint32_t,uint32_t)=
         (uint32_t(*)(uint32_t,uint32_t,uint32_t))V23_DISPATCH;
