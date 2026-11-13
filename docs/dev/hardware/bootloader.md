@@ -258,3 +258,95 @@ There are at least three related but distinct USB personalities:
 
 A workstation listing a USB device cannot establish all of these details by vendor name alone. Look at the actual reported mode, expected protocol and reproducible behavior. In the MPFree project, the existence of U-Boot Fastboot must never be used as proof that independent ROM recovery is available.
 
+
+## 7. The software reboot path: Fastboot is not silicon-ROM recovery
+
+A Rockchip system may use a register in the system-control block to communicate a requested reboot mode to an early loader. The installed MPC first-stage code refers to register `0xFF730094` and the Fastboot-related value `0x5242C309`. A function in the existing loader writes that value before resetting the processor. U-Boot exposes a `reset_bootloader` command, and its environment calls it when normal boot targets fail.
+
+This is an instructive result because it shows that some boot-mode transitions happen **below Linux**, within the installed early loader. It also explains why the same board can offer both an ordinary boot and a pre-Linux maintenance session without separate firmware filesystems. But the code supports a **Fastboot-oriented reboot**. No corresponding, confirmed source-level path has been demonstrated from an owner-accessible Linux command into genuine BootROM USB service.
+
+On some Rockchip systems a BootROM download request uses a different register value, conventionally `0xEF08A53C`, and other loader-mode values exist. The observed p1 image did not contain exact little-endian word matches for the common BootROM-download or RockUSB-loader values in the surveyed ranges, while it did contain the Fastboot value. Absence of an exact literal is not absolute proof that the mode is impossible: code can derive a value or use a different path. It is, however, a reason **not** to present a hypothetical ROM entry as working on the MPC One.
+
+If an independent bootloader is to remain usable after later Akai firmware changes, it must have a recovery path that does not depend on these vendor-specific reset functions. That is the rationale for eventually qualifying a real SRAM-first BootROM entry method.
+
+## 8. What can actually be done without changing the factory boot path?
+
+The lowest-level **proven** method for starting another Linux kernel on this MPC is currently `kexec`. That facility belongs to *running Linux*, not U-Boot. It can replace the kernel in RAM, and our 3.10.0 tests proved it works on real hardware without writing the factory boot partitions. Because it needs factory Linux to start, it does not satisfy the ultimate independent cold-boot requirement.
+
+U-Boot’s RAM `boot` and removable-media loading features are promising **one stage earlier**. If they can be exercised under a no-write policy, a developer could start a kernel before any factory Linux instructions execute. No such complete test has yet been demonstrated, so MPFree must treat these as experiments requiring a safe, checked image and a known power-cycle fallback.
+
+The following distinctions guide development:
+
+| Entry point | Requires factory Linux first? | Requires intact factory U-Boot? | Can avoid eMMC writes? | Physical result |
+|---|---|---|---|---|
+| Run MPFree app under existing kernel | Yes | Yes for normal boot | Yes, session-only | App components tested |
+| `kexec` to another Linux kernel | Yes | Yes for initial boot | Yes, with MMC isolated | **Three successful 3.10.0 boots** |
+| U-Boot removable-media boot | No, if selected | Yes | Potentially | Selection not proven |
+| U-Boot Fastboot RAM boot | No, if image accepted | Yes | Potentially | Kernel execution not proven |
+| Independently loaded BootROM SRAM stage | No | No | Potentially | ROM entry/execution not proven |
+| Replace p6 rootfs | No | Yes | **No; factory p6 changes** | Not an approved first installer path |
+
+### 8.1 A first practical milestone: read-only U-Boot characterization
+
+Before trying a replacement kernel, verify device enumeration and file-loading semantics without persisting environment changes. The exact U-Boot `mmc` mapping and boot-script lookup order matter more than the nominal availability of those commands. If we can demonstrate that the bootloader can read an SD card and start a *temporary* user-supplied kernel while leaving the factory installation untouched, the project can graduate from a Linux-mediated `kexec` workflow to direct pre-Linux development.
+
+Such a trial must establish which image types are accepted, where they are loaded, whether the correct FDT is supplied, whether the board’s clocks and peripherals initialize correctly, and what happens when the image or removable medium is absent. These are observable properties, not things to infer from a command name.
+
+### 8.2 Why “just change boot_targets” is not safe enough
+
+The environment might appear to offer a simple solution: change `boot_targets` so SD is scanned before eMMC. On a healthy machine that could make a removable image win the boot race. But `p2` is a persistent boot-critical partition, and a bad selection policy can leave the MPC without a normal startup even though both kernel images still exist. Recovery would then depend on the remaining key-based or USB maintenance mode, whose restoration behavior has not been qualified comprehensively.
+
+A complete installer should ultimately use a versioned, health-confirmed boot selection scheme. It would attempt a candidate MPFree image, mark it healthy only after successful startup, and automatically retain or restore a known-good factory choice if the attempt fails. That is a *design goal*. It should not be simulated by untested edits to an 8-KiB U-Boot environment on the only reference board.
+
+### 8.3 What a direct MPFree kernel must contain
+
+A successful pre-Linux handoff needs more than an ARM `zImage` file. The kernel must be the right architecture and memory format; it needs the exact board device tree and boot arguments; its root filesystem must reside on a device it can initialize early; and essential firmware/driver support must be available before the user interface appears.
+
+The 3.10.0 temporary boot tests also showed that even with a correct kernel and FDT, **warm** device state can matter. Ethernet initialization failed on its first attempt after `kexec` until the RTL8211E PHY was appropriately reinitialized and the interface brought up again. A cold U-Boot boot may have different hardware state and therefore needs its *own* acceptance test. A kernel that runs under `kexec` should not automatically be declared U-Boot-ready without verification.
+
+## 9. Recovery architecture and the protection of early boot storage
+
+The primary recovery principle is simple: **do not make the only known-good startup path dependent on an experimental replacement**.
+
+A factory root filesystem can plausibly be repaired while the installed first-stage and U-Boot still work. An invalid U-Boot image, however, means the `fastboot 0` code inside it may never run. Recovery then moves downward to an independent first-stage or silicon-ROM mechanism. That is why a known complete eMMC backup, though essential, is only the beginning of recovery engineering.
+
+The project has a verified owner-held backup of the entire 7,820,083,200-byte eMMC user area and both hardware boot areas. The original study checked device-side hashes against the backup, including boot-critical p1/p3–p6 regions. The two 4-MiB hardware boot areas contained only zero bytes. This supports accurate restoration **provided an independent means of writing the bytes is available**. That last condition remains open.
+
+ROM USB recovery would ideally start with a tiny, independently compiled SRAM program requiring no eMMC contents. After proving it executes, the project could bring up DRAM, a USB communication path and an eMMC read interface. A successful **complete read-back** compared to the private backup would be a strong next qualification. Only after a separate, carefully prepared restore rehearsal could the boot-critical partitions be considered serviceable.
+
+### 9.1 Why security-state observations are not enough
+
+The reference unit’s Linux NVMEM observations reported blank fields associated with a secure-boot enable value, trusted-key hash and lock state in a Rockchip secure eFuse bank. This supports—but does not prove—the hypothesis that the relevant silicon policy is unprovisioned on this device. The precise silicon mapping, electrical programming supply on the actual board and real ROM acceptance of an owner-built SRAM image still need independent confirmation.
+
+A later firmware package also includes software referring to bootloader signatures. That component does not, simply by existing, prove the MPC One’s silicon ROM currently requires a vendor-signed first stage or that an update programs one-time hardware state. Both optimistic and pessimistic interpretations must be checked against physical behavior. A recovery strategy should not rest solely on strings in a utility or the apparent absence of a register bit.
+
+### 9.2 Scope of recoverability
+
+| Failure | What would still run? | Candidate recovery | Qualification |
+|---|---|---|---|
+| Temporary MPFree kernel hangs | BootROM, stock p1/p3/p6 unchanged | Power-cycle | **Observed repeatedly** |
+| MPFree application service fails | Factory Linux still present | Restart service / power-cycle | Depends on service handoff test |
+| Factory rootfs p6 is invalid | BootROM and p1/p3 should still start | U-Boot Fastboot + official update | Architecture verified; restoration rehearsal outstanding |
+| U-Boot environment p2 is invalid | BootROM and initial stage may run | Board-dependent default/recovery behavior | Not comprehensively qualified |
+| First stage p1 or U-Boot p3 invalid | Normal pre-Linux chain may stop | Silicon-ROM owner recovery | **Not established on reference hardware** |
+| eMMC boot config or OTP changes | Depends on hardware state | Specialized board-aware service | Not qualified |
+
+Do not generalize “power cycle restores stock” beyond *those tested session-only operations that left eMMC unchanged*. It cannot undo an erased partition, changed boot configuration, or one-time hardware state.
+
+## 10. Recommended roadmap for the bootloader implementation
+
+The next release does **not** need a custom SPL. MPFree already has a working path to a separate Linux kernel using `kexec`. That path is well suited to building the actual OS: initialize display, audio, MIDI, inputs, persistence and independent userspace; test it repeatedly without giving the new system control of internal storage.
+
+In parallel, qualify the **factory U-Boot** as a possible temporary pre-Linux launcher. Confirm board enumeration and accepted image formats through observations that do not modify boot-critical state. The first substantial breakthrough would be a confirmed boot of an MPFree kernel from RAM or removable media *before the factory Linux kernel starts*, with reproducible power-cycle fallback.
+
+The next independent milestone is recovery: demonstrate real silicon-ROM entry on the board, execution of a source-built SRAM stage, and read-back of the original eMMC without the stock loader. Only then consider changing persistent U-Boot selection or replacing p6. If the long-term design uses an entirely owner-written SPL and U-Boot, the same recovery requirements apply even more strongly.
+
+Once both direct boot and recovery are proven, implement a small explicit **factory/MPFree boot contract**. It should specify what stores the last known-good selection, how the new image is checked before a trial boot, how health is acknowledged after startup, how power loss affects the selection, and how the user selects the factory environment even when MPFree is faulty. This is more important than any particular splash screen or menu implementation.
+
+## 11. Evidence register and related documentation
+
+The concrete source for the original partition layout, environment, image locations and checksums is the [archived boot map](archive/2026-11/boot-map.md). The first-stage header, SRAM mapping, U-Boot callbacks and image-format notes are retained in [the detailed boot-system source record](../research/bootrom.md). The [archived ROM recovery plan](archive/2026-11/owner-rom-recovery-plan.md) explains the uncompleted independent-recovery prerequisites. The [archived USB and ROM notes](archive/2026-11/maskrom-usb.md) distinguish device modes and physical-port evidence. The [archived temporary kernel boot history](archive/2026-11/kexec-test-boot.md) documents the actual 3.10.0 hardware trials.
+
+For the broader runtime environment, see [MPC One Linux and Operating-System Architecture](mpc-one-boot-architecture.md); for installation policy, see [Installer and Recovery Contract](installer-recovery-contract.md); for the current firmware review, see [MPC OS 3.10.1 Compatibility](firmware-3.10.1-compatibility.md).
+
+**Current bottom line:** We understand the normal bootchain well enough to build compatible kernel images and to identify credible independent-boot interfaces. We have verified the no-eMMC-write `kexec` bridge. We have **not** yet earned the right to describe arbitrary U-Boot RAM boot or silicon-ROM recovery as a completed, recoverable on-device workflow. The next phase should turn those particular hypotheses into repeatable measurements while preserving the known-good factory boot.
