@@ -1,7 +1,7 @@
 <!--
 status: changing
 covers: rust/mpfree-fx rust/mpfree-mixer-ui rust/mpfree-fx-ui rust/mpfree-chain-ui rust/mpfree-app/src/chain_page.rs rust/mpfree-app/src/mixing.rs rust/mpfree-fx/src/perform.rs
-checked: 2026-11-13 9560b32
+checked: 2026-11-13 7497b1a
 -->
 
 # Mixing and effects
@@ -73,7 +73,7 @@ The last thing on the master is **Master safety**, a limiter that keeps the outp
 
 ## The effects
 
-These effects can go on any strip:
+These effects can go on any strip. The list of effects groups them: Dynamics, EQ and filter, Drive and colour, Modulation, Delay and reverb, Pitch and vocal, and Performance.
 
 | Effect | What it does |
 |---|---|
@@ -87,6 +87,9 @@ These effects can go on any strip:
 | **Chorus**, **Flanger**, **Phaser** | Movement and width. |
 | **Lo-fi** | Old sampler and worn tape character. |
 | **Compressor** | Evens out levels and adds punch. It can be keyed from another strip, for side-chain pumping. |
+| **Ducker** | The pump: turns the sound down on each kick (keyed from another strip) or on every 1/16, 1/8, 1/4, 1/2 or bar of the tempo, and brings it back on a curve you shape. |
+| **Transient shaper** | More or less punch at the start of each hit and more or less ring after it, at any level, with no threshold to set. |
+| **Pitch shifter** | Moves the sound up to two octaves up or down without changing its speed. Spread detunes left and right for a wide double; feedback makes rising or falling stairs. |
 | **Cloud reverb** | A large, lush reverb. |
 
 Adding, removing or reordering an effect while the music plays doesn't click: that strip dips out for a moment and comes back.
