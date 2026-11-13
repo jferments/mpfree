@@ -1,8 +1,10 @@
 //! What the pad player keeps between starts (docs/dev/design/storage-spec.md):
-//! the Prefs rows that are settings, as the store's "app" settings, every
-//! control found with Map controls or the button guide, as its "map"
-//! settings, and the Synth tab's options, as its "synth" settings
-//! (`synth_pads.rs`). Line input is never kept: it is off at every start.
+//! the Prefs rows that are settings, the metronome and the Looper's input
+//! and level, as the store's "app" settings, and every control found with
+//! Map controls or the button guide, as its "map" settings. These are the
+//! system's settings, the same whichever project is open. The Synth tab's
+//! options and the arp are the song's: they go in the project
+//! (project.rs). Line input is never kept: it is off at every start.
 //!
 //! [`App::restore`] runs once at start, before the sound starts (the audio
 //! buffer is one of the settings). After that, Prefs and the mapper mark the
@@ -17,10 +19,6 @@ use mpfree_store::Settings;
 
 pub const APP: &str = "app";
 pub const MAP: &str = "map";
-/// The Synth tab's options ([`App::synth_settings`]).
-pub const SYNTH: &str = "synth";
-/// Where the "synth" text last handed to the store is kept.
-pub(super) const SYNTH_SLOT: usize = 2;
 /// The arp's owner name in the store, and its pattern library file there
 /// (the patterns Save keeps and the owner's own scales).
 pub const ARP: &str = "arp";
@@ -94,6 +92,14 @@ impl App {
         out.set_i64("loop-memory", i64::from(s.loop_memory.minutes()));
         out.set_bool("metronome", s.metronome);
         out.set_i64("metronome-level", i64::from(s.metronome_db));
+        out.set_str("at-start", if s.open_last { "last" } else { "new" });
+        // The Looper's level, and the line input's latency once it was set
+        // by hand (measured with a cable). The line input itself, and so
+        // what the Looper records from, is off at every start.
+        out.set_i64("loop-level", s.loop_level_db.round() as i64);
+        if s.loop_latency_set {
+            out.set_i64("loop-latency", i64::from(s.loop_latency));
+        }
         // A built-in theme or one from the themes folder; a theme file given
         // with --theme is for that run only.
         if self.offers_theme(&s.theme) {
@@ -171,6 +177,23 @@ impl App {
                     .and_then(|n| super::METRONOME_DBS.iter().find(|&&d| i64::from(d) == n))
                     .map(|&d| s.metronome_db = d)
                     .is_some(),
+                "at-start" => match v {
+                    "new" => Some(false),
+                    "last" => Some(true),
+                    _ => None,
+                }
+                .map(|b| s.open_last = b)
+                .is_some(),
+                "loop-level" => app
+                    .get_i64(k)
+                    .filter(|n| (-24..=6).contains(n))
+                    .map(|n| s.loop_level_db = n as f32)
+                    .is_some(),
+                "loop-latency" => app
+                    .get_i64(k)
+                    .filter(|n| (0..=4096).contains(n))
+                    .map(|n| (s.loop_latency, s.loop_latency_set) = (n as u32, true))
+                    .is_some(),
                 // Built in, or in the themes folder (listed before restore).
                 "theme" => themes
                     .iter()
@@ -184,14 +207,30 @@ impl App {
             }
         }
         if !app.is_empty() {
-            notes.push(format!("saved settings: pad curve {}, screen velocity {}, latch {}, audio buffer {} periods, \
-                                developer tools {}, theme {}, sound cores {}, loop memory {} min, metronome {} at {} dB", self.settings.curve.label(),
-                               self.settings.screen_velocity,
-                               if self.settings.latch_mode == LatchMode::Toggle { "toggle" } else { "replace" },
-                               self.settings.periods, if self.settings.debug_mode { "on" } else { "off" },
-                               self.settings.theme, self.settings.sound_cores.name(),
-                               self.settings.loop_memory.minutes(),
-                               if self.settings.metronome { "on" } else { "off" }, self.settings.metronome_db));
+            let s = &self.settings;
+            let on = |b: bool| if b { "on" } else { "off" };
+            notes.push(format!(
+                "saved settings: pad curve {}, screen velocity {}, latch {}, audio buffer {} periods, \
+                 developer tools {}, theme {}, sound cores {}, loop memory {} min, metronome {} at {} dB, \
+                 loop level {:+.0} dB, line input latency {}, at start {}",
+                s.curve.label(),
+                s.screen_velocity,
+                if s.latch_mode == LatchMode::Toggle { "toggle" } else { "replace" },
+                s.periods,
+                on(s.debug_mode),
+                s.theme,
+                s.sound_cores.name(),
+                s.loop_memory.minutes(),
+                on(s.metronome),
+                s.metronome_db,
+                s.loop_level_db,
+                if s.loop_latency_set {
+                    format!("{} frames", s.loop_latency)
+                } else {
+                    "estimated".to_string()
+                },
+                if s.open_last { "the last project" } else { "a new project" },
+            ));
         }
         let (mut found, mut gone) = (0, 0);
         for (k, v) in map.iter() {
@@ -233,15 +272,19 @@ impl App {
             ));
         }
         // What was just read is what the store holds: nothing to save yet.
-        // The Synth tab's options come back later (`restore_synth`); until
-        // then they are the defaults.
-        self.saved = [
-            self.app_settings().to_text(),
-            self.map_settings().to_text(),
-            self.synth_settings().to_text(),
-        ];
+        self.saved = [self.app_settings().to_text(), self.map_settings().to_text()];
         self.save_dirty = false;
         notes
+    }
+
+    /// True once after a control changed something the project keeps (a
+    /// Synth tab option, the arp): the screen counts the work as unsaved.
+    /// Load and New aren't edits.
+    /// Cheap: the arps are compared by a number, not as text.
+    pub fn take_project_edit(&mut self) -> bool {
+        let arps = self.arp_fingerprint();
+        let arp = std::mem::replace(&mut self.arp_seen, arps) != arps;
+        std::mem::take(&mut self.project_edit) || arp
     }
 
     /// The settings that changed since they were last handed out, if Prefs
@@ -252,13 +295,9 @@ impl App {
         }
         self.save_dirty = false;
         let mut out = Vec::new();
-        for (slot, (owner, settings)) in [
-            (APP, self.app_settings()),
-            (MAP, self.map_settings()),
-            (SYNTH, self.synth_settings()),
-        ]
-        .into_iter()
-        .enumerate()
+        for (slot, (owner, settings)) in [(APP, self.app_settings()), (MAP, self.map_settings())]
+            .into_iter()
+            .enumerate()
         {
             let text = settings.to_text();
             if text != self.saved[slot] {
@@ -306,6 +345,14 @@ mod tests {
         a.step_item(r, -1);
         let r = row(&a, Item::DebugMode);
         a.step_item(r, 1);
+        // The metronome, and the Looper's level and measured latency (its
+        // tab's rows), are the system's too.
+        a.settings.metronome = true;
+        let r = row(&a, Item::AtStart);
+        a.step_item(r, 1);
+        a.looper_setting(Item::LoopLevel, -1);
+        a.looper_setting(Item::LoopLevel, -1);
+        a.looper_setting(Item::LoopLatency, 1);
         a.map.learn(Job::Rec, Some(73));
         a.mapper.marks[CONTROLS.iter().position(|c| c.name == "COPY").unwrap()] =
             Mark::Found(Code::Button(52));
@@ -321,6 +368,16 @@ mod tests {
         let (app, map) = (saves[0].1.clone(), saves[1].1.clone());
         assert_eq!(app.get_str("audio-buffer"), Some("2"));
         assert_eq!(app.get_bool("developer-tools"), Some(true));
+        assert_eq!(app.get_bool("metronome"), Some(true));
+        assert_eq!(app.get_str("at-start"), Some("last"));
+        assert_eq!(app.get_str("loop-level"), Some("-2"));
+        let latency = a.settings.loop_latency;
+        assert_eq!(app.get_i64("loop-latency"), Some(i64::from(latency)));
+        assert_eq!(
+            app.get_str("loop-source"),
+            None,
+            "the line input is off at start"
+        );
         assert_eq!(map.get_str("rec"), Some("button 73"));
         assert_eq!(map.get_str("copy"), Some("button 52"));
         assert_eq!(map.get_str("sampler"), Some("button 56"));
@@ -339,6 +396,26 @@ mod tests {
         assert_eq!(
             (b.settings.curve, b.settings.periods, b.settings.debug_mode),
             (a.settings.curve, 2, true)
+        );
+        assert_eq!(
+            (
+                b.settings.metronome,
+                b.settings.loop_level_db,
+                b.settings.open_last
+            ),
+            (true, -2.0, true)
+        );
+        assert_eq!(
+            (b.settings.loop_latency, b.settings.loop_latency_set),
+            (latency, true)
+        );
+        assert!(
+            b.start().contains(&crate::app::Effect::Looper(
+                crate::looping::LoopAction::Command(mpfree_looper::Command::SetLevel(
+                    10f32.powf(-2.0 / 20.0)
+                ))
+            )),
+            "the Looper starts at its kept level"
         );
         assert_eq!((b.map.rec, b.map.sampler), (Some(73), Some(56)));
         assert_eq!(b.map_settings(), map);

@@ -19,7 +19,7 @@ use mpfree_screen_log::{Geometry, PixelFormat, Rotation};
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::os::unix::fs::FileExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 fn read_trimmed(path: &Path) -> Result<String, String> {
     fs::read_to_string(path)
@@ -247,6 +247,7 @@ pub struct FbTarget {
     file: File,
     pub layout: FbLayout,
     buf: Vec<u8>,
+    pan: PathBuf,
 }
 
 impl FbTarget {
@@ -258,15 +259,25 @@ impl FbTarget {
             .write(true)
             .open(fb)
             .map_err(|e| format!("{}: {e}", fb.display()))?;
-        let _ = OpenOptions::new()
-            .write(true)
-            .open(sysfs.join("pan"))
-            .and_then(|mut f| f.write_all(b"0,0\n"));
-        Ok(FbTarget {
+        let t = FbTarget {
             file,
             layout: FbLayout { geometry, rotation },
             buf: Vec::new(),
-        })
+            pan: sysfs.join("pan"),
+        };
+        t.show();
+        Ok(t)
+    }
+
+    /// Ask the kernel to show the framebuffer again (`pan` 0,0: a mode set
+    /// in RAM, nothing stored), as after the GPU's process has had the
+    /// screen. The kernel does nothing while another program holds the
+    /// display (DRM master); best effort.
+    pub fn show(&self) {
+        let _ = OpenOptions::new()
+            .write(true)
+            .open(&self.pan)
+            .and_then(|mut f| f.write_all(b"0,0\n"));
     }
 
     pub fn logical_size(&self) -> (i32, i32) {

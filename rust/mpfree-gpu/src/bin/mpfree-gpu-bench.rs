@@ -14,6 +14,14 @@
 //!   mpfree-gpu-bench compute [--iterations N]
 //!       a GPU compute round trip (an FIR filter over a stereo block: upload,
 //!       run, read back) against the same job on one CPU core
+//!   mpfree-gpu-bench flip DIR [--hold-ms N] [--frames N] [--card PATH]
+//!       the GPU drawing straight into the buffers the panel shows (DRM/KMS
+//!       page flips, nothing read back): checks first, with the screen
+//!       untouched, that what the GPU wrote into a screen buffer is the
+//!       picture expected; then shows each page for N ms; then times a
+//!       whole page and a tick's redraw the GPU's way, and software's (draw,
+//!       turn and copy into a screen buffer that is not shown); then puts
+//!       the screen back as it was (STATE-CHANGING, in RAM only: see below)
 //!   mpfree-gpu-bench panel DIR [--hold-ms N] [--frames N]
 //!       the GPU's pictures on the panel: draws each page on the GPU, reads
 //!       it back and writes it to /dev/fb0, holding each for N ms; then times
@@ -21,21 +29,31 @@
 //!       software, frame after frame (--fb and --sysfs name another
 //!       framebuffer, for tests)
 //!
-//! It draws through Mesa's surfaceless EGL on a render node: it opens no
-//! display, takes no DRM master and changes no display setting. It reads DIR
-//! and everything goes to stdout. Only `panel` writes anything: whole frames
-//! to the framebuffer, and `0,0` to its sysfs `pan` file, as the app's
-//! screen does (`mpfree_ui::fb::FbTarget`); it never creates either. A
-//! failure prints `STOP: reason` and exits with status 1.
+//! It draws through Mesa's surfaceless EGL on a render node. It reads DIR
+//! and everything goes to stdout. `describe`, `screens` and `compute` open
+//! no display, take no DRM master and change no display setting. `panel`
+//! writes whole frames to the framebuffer, and `0,0` to its sysfs `pan`
+//! file, as the app's screen does (`mpfree_ui::fb::FbTarget`); it never
+//! creates either. `flip` opens the display card (`/dev/dri/card0`), makes
+//! three screen buffers there, takes the card's master and points the lit
+//! CRTC at its own buffers in the mode it already runs: a display change,
+//! in RAM only. It reads the CRTC's settings first and sets them back at
+//! the end, on an error, and on SIGINT, SIGTERM or SIGHUP; if it dies
+//! anyway, the kernel frees its buffers and the framebuffer console takes
+//! the screen back when the card's last file closes, and a power cycle
+//! undoes everything. A failure prints `STOP: reason` and exits with
+//! status 1.
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+use mpfree_gpu::kms::{KmsDisplay, XRGB8888};
+use mpfree_gpu::scanout::{self, Display, Scanout};
 use mpfree_gpu::{compare, compute, Gpu, Renderer};
 use mpfree_screen_log::{Geometry, PixelFormat, Rotation};
 use mpfree_ui::fb::{FbLayout, FbTarget};
 use mpfree_ui::record::{replay, Frame, Store};
-use mpfree_ui::SoftCanvas;
+use mpfree_ui::{Canvas, SoftCanvas};
 
 /// The MPC One's panel: 800 x 1280, 32 bits a pixel, turned 270 degrees.
 const NATIVE: (usize, usize) = (800, 1280);
@@ -67,7 +85,8 @@ fn number(args: &[String], flag: &str, default: usize, max: usize) -> Result<usi
 
 fn run(args: &[String]) -> Result<(), String> {
     let usage = "usage: mpfree-gpu-bench describe | screens DIR [--frames N] | \
-                 compute [--iterations N] | panel DIR [--hold-ms N] [--frames N]";
+                 compute [--iterations N] | panel DIR [--hold-ms N] [--frames N] | \
+                 flip DIR [--hold-ms N] [--frames N] [--card PATH]";
     match args.first().map(String::as_str) {
         Some("describe") if args.len() == 1 => describe(),
         Some("screens") => {
@@ -101,6 +120,26 @@ fn run(args: &[String]) -> Result<(), String> {
                 &sysfs,
             )
         }
+        Some("flip") => {
+            let dir = args.get(1).filter(|a| !a.starts_with("--")).ok_or(usage)?;
+            let mut card = PathBuf::from("/dev/dri/card0");
+            let mut rest = args[2..].iter();
+            while let Some(a) = rest.next() {
+                match a.as_str() {
+                    "--hold-ms" | "--frames" => {
+                        rest.next();
+                    }
+                    "--card" => card = rest.next().ok_or("--card needs a path")?.into(),
+                    _ => return Err(format!("unknown argument {a}")),
+                }
+            }
+            flip(
+                Path::new(dir),
+                number(args, "--hold-ms", 1500, 10_000)?,
+                number(args, "--frames", 60, 1000)?,
+                &card,
+            )
+        }
         Some("compute") => {
             if let Some(a) = args[1..]
                 .iter()
@@ -117,6 +156,10 @@ fn run(args: &[String]) -> Result<(), String> {
 fn describe() -> Result<(), String> {
     let gpu = Gpu::surfaceless()?;
     println!("gpu: {}", gpu.describe());
+    match scanout::import_support(&gpu) {
+        Ok(()) => println!("gpu: draws into screen buffers (dma-buf import): yes"),
+        Err(e) => println!("gpu: draws into screen buffers (dma-buf import): no: {e}"),
+    }
     drop(gpu);
     match Gpu::surfaceless_es(3, 1) {
         Ok(g) => println!("gpu: OpenGL ES 3.1 (compute): yes: {}", g.describe()),
@@ -359,6 +402,309 @@ fn panel(dir: &Path, hold_ms: usize, frames: usize, fb: &Path, sysfs: &Path) -> 
     Ok(())
 }
 
+/// A page's name and its frames (the first, then the tick's redraw), which
+/// must be `w` x `h`.
+fn page_frames(path: &Path, w: i32, h: i32) -> Result<(String, Vec<Frame>), String> {
+    let name = path
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let bytes = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let frames = Frame::decode_all(&bytes).map_err(|e| format!("{}: {e}", path.display()))?;
+    match frames.first() {
+        None => Err(format!("{}: no frames", path.display())),
+        Some(f) if (f.w, f.h) != (w, h) => Err(format!(
+            "{}: a {}x{} page; this bench draws {w}x{h}",
+            path.display(),
+            f.w,
+            f.h
+        )),
+        Some(_) => Ok((name, frames)),
+    }
+}
+
+/// CPU time this process has used, all threads.
+fn cpu_time() -> Duration {
+    let mut t = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    // SAFETY: a plain clock_gettime into a timespec on the stack.
+    unsafe { libc::clock_gettime(libc::CLOCK_PROCESS_CPUTIME_ID, &mut t) };
+    Duration::new(t.tv_sec as u64, t.tv_nsec as u32)
+}
+
+/// Sleeps `ms`, waking early when a signal asks the program to stop.
+fn hold(ms: usize) {
+    let until = Instant::now() + Duration::from_millis(ms as u64);
+    while !scanout::stopping() && Instant::now() < until {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// The GPU drawing straight into the buffers the panel shows.
+fn flip(dir: &Path, hold_ms: usize, frames: usize, card: &Path) -> Result<(), String> {
+    scanout::stop_on_signals();
+    let files = page_files(dir)?;
+    let gpu = Gpu::surfaceless()?;
+    println!("gpu: {}", gpu.describe());
+    scanout::import_support(&gpu)?;
+    // Three screen buffers: two the panel shows in turn, one for timing
+    // software's copy (never shown). Nothing on the screen changes yet.
+    let mut kms = KmsDisplay::open(card, 3)?;
+    let (nw, nh) = kms.size();
+    let o = kms.output;
+    let mode = o.mode();
+    println!(
+        "flip: {}: connector {} on CRTC {}, mode {} at {} Hz, showing framebuffer {} from {},{}",
+        card.display(),
+        o.connector,
+        o.crtc.id,
+        mode.name(),
+        mode.vrefresh,
+        o.crtc.fb,
+        o.crtc.x,
+        o.crtc.y
+    );
+    if (nw as usize, nh as usize) != NATIVE {
+        return Err(format!(
+            "the screen runs {nw}x{nh}; this bench draws {}x{}",
+            NATIVE.0, NATIVE.1
+        ));
+    }
+    let mut r = Renderer::new(&gpu, nw, nh, ROTATION)?;
+    let (w, h) = r.logical_size();
+    let mut imports = Vec::new();
+    for i in 0..2 {
+        let b = kms.buffer(i);
+        println!(
+            "flip: screen buffer {i}: {}x{}, pitch {}, {} bytes",
+            b.width, b.height, b.pitch, b.size
+        );
+        let fd = kms.dmabuf(i)?;
+        use std::os::fd::AsFd;
+        match scanout::import_dmabuf(&gpu, fd.as_fd(), nw, nh, b.pitch, XRGB8888) {
+            Ok(imp) => imports.push(imp),
+            Err(e) => {
+                for imp in imports {
+                    imp.release(&gpu);
+                }
+                return Err(e);
+            }
+        }
+    }
+    let result = flip_run(
+        &gpu, &mut r, &mut kms, &imports, &files, hold_ms, frames, w, h,
+    );
+    // Put the screen back first, then free the GPU's side.
+    let restored = kms.restore();
+    for imp in imports {
+        imp.release(&gpu);
+    }
+    let flips = kms.flips();
+    drop(kms);
+    match &restored {
+        Ok(()) => println!(
+            "flip: the screen is back as it was (CRTC {} showing framebuffer {}); {flips} page flips in all",
+            o.crtc.id, o.crtc.fb
+        ),
+        Err(e) => println!("flip: putting the screen back failed: {e}"),
+    }
+    result?;
+    restored?;
+    if scanout::stopping() {
+        return Err("stopped by a signal (the screen was put back)".into());
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn flip_run(
+    gpu: &Gpu,
+    r: &mut Renderer,
+    kms: &mut KmsDisplay,
+    imports: &[scanout::Imported],
+    files: &[PathBuf],
+    hold_ms: usize,
+    frames: usize,
+    w: i32,
+    h: i32,
+) -> Result<(), String> {
+    let (nw, nh) = r.native_size();
+    let g = Geometry::new(nw as usize, nh as usize, kms.buffer(0).pitch as usize, 32)?;
+    let layout = FbLayout {
+        geometry: g,
+        rotation: ROTATION,
+    };
+    // 1. With the screen untouched: the GPU draws the first page into
+    //    screen buffer 0, and the CPU reads that buffer's own memory. It
+    //    must hold the expected picture, row 0 first, in XRGB8888: what the
+    //    panel would show. Anything else stops here, before any change.
+    let (name, first) = page_frames(&files[0], w, h)?;
+    let mut store = Store::new(usize::MAX);
+    store.apply(&first[0]);
+    let target = imports[0].target;
+    r.play_on(gpu, target, None, &first[0].ops, &store, &first[0].dropped);
+    r.finish(gpu);
+    let want = r.read_target(gpu, target);
+    let mapped = kms.map(0)?;
+    let pitch = g.stride;
+    let mut wrong = 0usize;
+    for (ny, row) in want.chunks_exact(nw as usize).enumerate() {
+        let line = &mapped.bytes()[ny * pitch..ny * pitch + nw as usize * 4];
+        for (p, b) in row.iter().zip(line.as_chunks::<4>().0) {
+            wrong += (u32::from_le_bytes(*b) & 0xFF_FFFF != *p) as usize;
+        }
+    }
+    drop(mapped);
+    let mut soft = SoftCanvas::new(w, h);
+    replay(&first[0].ops, &store, &mut soft);
+    let mut native = Vec::new();
+    layout.rows(&soft, 0, nh as usize, &mut native);
+    let sw: Vec<u32> = native
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|b| u32::from_le_bytes(*b) & 0xFF_FFFF)
+        .collect();
+    let d = compare(&sw, &want);
+    println!(
+        "flip: check before showing anything: page {name}: {wrong} pixels in the screen buffer differ from what the GPU drew; the GPU's picture is at most {} levels from software's",
+        d.max
+    );
+    if wrong != 0 || d.max > 3 {
+        return Err(
+            "the screen buffer does not hold the expected picture; nothing was shown".into(),
+        );
+    }
+    // 2. The pages, each shown straight from the GPU's buffers.
+    let mut scan = Scanout::new(gpu, r, imports.iter().map(|i| i.target).collect())?;
+    println!(
+        "flip: SCREEN CHANGES NOW: {} pages drawn on the GPU straight into the buffers the panel shows, {hold_ms} ms each",
+        files.len()
+    );
+    println!(
+        "{:<24} {:>5} {:>6} {:>6} | {:>6} {:>6} {:>6} {:>6}",
+        "page", "ops", "plainK", "shadeK", "wait", "draw", "gpu", "whole"
+    );
+    let mut busiest: Option<(String, Vec<Frame>, Store)> = None;
+    for path in files {
+        if scanout::stopping() {
+            return Ok(());
+        }
+        let (name, list) = page_frames(path, w, h)?;
+        let mut store = Store::new(usize::MAX);
+        store.apply(&list[0]);
+        r.forget_all(gpu);
+        let t = Instant::now();
+        let shown = scan.present(gpu, r, kms, &list[0].ops, &store, &list[0].dropped)?;
+        let whole = t.elapsed();
+        if let Some(p) = shown {
+            let ms = |d: Duration| d.as_secs_f64() * 1e3;
+            println!(
+                "{:<24} {:>5} {:>6} {:>6} | {:>6.2} {:>6.2} {:>6.2} {:>6.2}",
+                name,
+                list[0].ops.len(),
+                p.draw.plain_px / 1000,
+                p.draw.shaded_px / 1000,
+                ms(p.waited),
+                ms(p.drawn),
+                ms(p.finished),
+                ms(whole)
+            );
+        }
+        if busiest
+            .as_ref()
+            .is_none_or(|(_, b, _)| list[0].ops.len() > b[0].ops.len())
+        {
+            busiest = Some((name, list, store));
+        }
+        hold(hold_ms);
+    }
+    // 3. One page again and again: whole, then the tick's redraw, the GPU's
+    //    way (each frame shown by a page flip) and software's (draw, turn
+    //    and copy into screen buffer 2, never shown).
+    let (name, list, mut store) = busiest.ok_or("no pages")?;
+    r.forget_all(gpu);
+    let tick = list.get(1).cloned().unwrap_or_default();
+    store.apply(&tick);
+    let mut timed = |ops: &[mpfree_ui::record::Op], label: &str| -> Result<(), String> {
+        let (mut wait, mut draw, mut fin, mut all) =
+            (Times::new(), Times::new(), Times::new(), Times::new());
+        let cpu = cpu_time();
+        let started = Instant::now();
+        for _ in 0..frames {
+            if scanout::stopping() {
+                return Ok(());
+            }
+            let t = Instant::now();
+            if let Some(p) = scan.present(gpu, r, kms, ops, &store, &[])? {
+                wait.0.push(p.waited.as_secs_f64() * 1e3);
+                draw.0.push(p.drawn.as_secs_f64() * 1e3);
+                fin.0.push(p.finished.as_secs_f64() * 1e3);
+            }
+            all.0.push(t.elapsed().as_secs_f64() * 1e3);
+        }
+        kms.wait()?;
+        let wall = started.elapsed().as_secs_f64();
+        let used = (cpu_time() - cpu).as_secs_f64();
+        println!(
+            "summary: flip gpu {label}: wait for the flip p50 {:.2}, draw p50 {:.2}, gpu finish p50 {:.2} p95 {:.2}; whole p50 {:.2} p95 {:.2} max {:.2}; CPU {:.0} % of one core",
+            wait.at(0.5),
+            draw.at(0.5),
+            fin.at(0.5),
+            fin.at(0.95),
+            all.at(0.5),
+            all.at(0.95),
+            all.at(1.0),
+            100.0 * used / wall.max(1e-9)
+        );
+        Ok(())
+    };
+    println!(
+        "summary: flip, page {name} ({} ops whole, {} ops a tick), {frames} frames each",
+        list[0].ops.len(),
+        tick.ops.len()
+    );
+    timed(&list[0].ops, "whole page")?;
+    timed(&tick.ops, "tick")?;
+    let mut sw_buf = kms.map(2)?;
+    let mut soft = SoftCanvas::new(w, h);
+    let mut rows = Vec::with_capacity(g.frame_len());
+    let mut sw = |ops: &[mpfree_ui::record::Op], label: &str| {
+        let (mut draw, mut copy) = (Times::new(), Times::new());
+        let cpu = cpu_time();
+        let started = Instant::now();
+        for _ in 0..frames {
+            if scanout::stopping() {
+                return;
+            }
+            draw.time(|| {
+                soft.set_clip(mpfree_ui::Rect::new(0, 0, w, h));
+                replay(ops, &store, &mut soft)
+            });
+            copy.time(|| {
+                rows.clear();
+                layout.rows(&soft, 0, nh as usize, &mut rows);
+                let n = rows.len().min(sw_buf.bytes().len());
+                sw_buf.bytes_mut()[..n].copy_from_slice(&rows[..n]);
+            });
+        }
+        let wall = started.elapsed().as_secs_f64();
+        let used = (cpu_time() - cpu).as_secs_f64();
+        println!(
+            "summary: flip software {label}: draw p50 {:.2}, turn and copy (whole frame) p50 {:.2}; whole p50 {:.2}; CPU {:.0} % of one core",
+            draw.at(0.5),
+            copy.at(0.5),
+            draw.at(0.5) + copy.at(0.5),
+            100.0 * used / wall.max(1e-9)
+        );
+    };
+    sw(&list[0].ops, "whole page");
+    sw(&tick.ops, "tick");
+    Ok(())
+}
+
 fn screens(dir: &Path, frames: usize) -> Result<(), String> {
     let files = page_files(dir)?;
     let gpu = Gpu::surfaceless()?;
@@ -377,11 +723,13 @@ fn screens(dir: &Path, frames: usize) -> Result<(), String> {
         NATIVE.1
     );
     println!(
-        "{:<24} {:>5} {:>5} {:>5} | {:>6} {:>6} {:>6} {:>6} {:>6} | {:>6} | {:>6} {:>6} | {:>6} {:>4}",
+        "{:<24} {:>5} {:>5} {:>5} {:>6} {:>6} | {:>6} {:>6} {:>6} {:>6} {:>6} | {:>6} | {:>6} {:>6} | {:>6} {:>4}",
         "page",
         "ops",
         "draws",
         "items",
+        "plainK",
+        "shadeK",
         "first",
         "full50",
         "full95",
@@ -467,11 +815,13 @@ fn screens(dir: &Path, frames: usize) -> Result<(), String> {
             sw_tick.time(|| replay(&tick.ops, &store, &mut soft));
         }
         println!(
-            "{:<24} {:>5} {:>5} {:>5} | {:>6.2} {:>6.2} {:>6.2} {:>6.2} {:>6.2} | {:>6.2} | {:>6.2} {:>6.2} | {:>6} {:>4}",
+            "{:<24} {:>5} {:>5} {:>5} {:>6} {:>6} | {:>6.2} {:>6.2} {:>6.2} {:>6.2} {:>6.2} | {:>6.2} | {:>6.2} {:>6.2} | {:>6} {:>4}",
             name,
             first.ops.len(),
             drawn.draws,
             first.added.len(),
+            drawn.plain_px / 1000,
+            drawn.shaded_px / 1000,
             t_first.at(0.5),
             full.at(0.5),
             full.at(0.95),
