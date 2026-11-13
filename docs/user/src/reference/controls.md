@@ -29,7 +29,7 @@ On the current test build, some buttons (REC, OVERDUB, UNDO, PLAY START, TRACK M
 | **OVERDUB** | Records on top of what is already there (a clip or a loop). | Works |
 | **UNDO** | Undoes the last recording or edit on the page you are on (the Looper tab: the last loop layer; the Sample tab: the last edit; elsewhere: the last clip take). **SHIFT + UNDO** redoes it. | Works |
 | **SHIFT + REC** | Capture: keeps what you just played as a clip, even if you weren't recording. | Next build |
-| **SHIFT + PLAY START** | Metronome on or off. | Next build |
+| **SHIFT + PLAY START** | Metronome on or off; it stays as you left it next time. | Next build |
 | **TAP TEMPO** | Tap four times in time to set the tempo. | Works |
 | **TRACK MIX** | Opens or closes the mixer over the page you are on. **SHIFT + TRACK MIX** opens the pad mixer. | Works |
 | **PAD BANK A–D** | Switches the pads to bank A, B, C or D. **SHIFT** + a bank button, or a second press, gives banks E–H. | Works |

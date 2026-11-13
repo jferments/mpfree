@@ -50,6 +50,8 @@ pub const SYNTH: &str = "synth";
 pub const SAMPLER: &str = "sampler";
 pub const MIDI: &str = "midi";
 pub const LOOPER: &str = "looper";
+/// Each track's arp and its Note Repeat rate (`App::arp_part`).
+pub const ARP: &str = "arp";
 
 /// The mixer part's first line.
 pub const MIXER_FORMAT: &str = "mpfree-mixer 1";
@@ -68,6 +70,8 @@ pub struct Collected {
     pub mixer: String,
     pub modu: String,
     pub synth: String,
+    /// The arps ([`crate::app::App::arp_part`]).
+    pub arp: String,
     /// The Looper's loops with their layers' audio (read as they play:
     /// [`crate::looping::LoopHost::save`]); None when the looper couldn't
     /// save. Freed on the screen thread.
@@ -95,6 +99,9 @@ pub struct Opening {
     /// The Synth tab's options (`settings/synth.conf`'s lines) and the
     /// engines' sounds.
     pub synth: Option<(mpfree_store::Settings, Vec<(Engine, String)>)>,
+    /// The arp part's text; None (New, or a project saved before it had
+    /// one) puts every arp back to its default.
+    pub arp: Option<String>,
     /// Lines for the log: parts that didn't read.
     pub notes: Vec<String>,
     /// What it is, for the log ("Night drive", "a new project").
@@ -156,6 +163,7 @@ pub fn snapshot(c: &Collected, extra: Vec<(String, String)>) -> Snapshot {
         (MIXER.to_string(), c.mixer.clone()),
         (MOD.to_string(), c.modu.clone()),
         (SYNTH.to_string(), c.synth.clone()),
+        (ARP.to_string(), c.arp.clone()),
     ];
     parts.extend(extra);
     Snapshot {
@@ -211,6 +219,7 @@ pub fn opening(snap: &Snapshot, rate: u32, what: &str) -> Opening {
         time,
         mix,
         synth,
+        arp: snap.part(ARP).map(str::to_string),
         notes,
         what: what.to_string(),
         clear_loops: snap.part(LOOPER).is_some(),

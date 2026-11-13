@@ -1,7 +1,7 @@
 <!--
 status: changing
-covers: rust/mpfree-store rust/mpfree-library rust/mpfree-browser-ui rust/mpfree-app/src/app/saved.rs rust/mpfree-app/src/project.rs
-checked: 2026-11-13 e5c172f
+covers: rust/mpfree-store rust/mpfree-library rust/mpfree-browser-ui rust/mpfree-app/src/app/saved.rs rust/mpfree-app/src/project.rs rust/mpfree-app/src/app/arp/part.rs
+checked: 2026-11-13 7ba56df
 -->
 
 # Saving your work
@@ -11,18 +11,29 @@ MPFree keeps everything you save on its own USB stick. The MPC's internal storag
 > [!IMPORTANT]
 > Saving projects arrives in the next build. Until then your music lasts until you switch off; settings and arpeggiator patterns are already kept.
 
-## What is kept today
+## Your song, and your setup
 
-These are saved on the stick as soon as you change them, and are back the next time MPFree starts:
+MPFree keeps two kinds of things, and keeps them apart:
+
+- **The song's**, in its project: everything that makes the music sound the way it does. They change when you open another project, and go back to their defaults with New project.
+- **Yours**, in Prefs: how you like to play, your MPC and what is plugged into it. They stay the same whichever project is open, and New project leaves them alone.
+
+A good test: if you sent the project to a friend with another MPC, would they want it? Then it is the song's. If it is about your hands, your MPC or your desk, it is yours.
+
+## What MPFree keeps for you
+
+These are saved on the stick as soon as you change them, and are back the next time MPFree starts, whatever project you open:
 
 | What | Where you set it |
 |---|---|
-| Your Prefs: pad velocity curve, how Latch keeps pads, the audio buffer, the loop memory, developer tools, screen pad velocity | [Prefs](../reference/prefs.md) |
+| Your Prefs: pad velocity curve, how Latch keeps pads, the audio buffer, the loop memory, developer tools, the theme, what opens at start, screen pad velocity | [Prefs](../reference/prefs.md) |
+| The metronome on or off | **SHIFT + PLAY START** |
+| The Looper's level, and the line input's latency once you have set it by hand | The Looper tab's options (see [Recording loops](looping.md)) |
 | The buttons MPFree has learned | Prefs > Map controls, or the button guide |
-| Arpeggiator patterns you save | The pattern workspace's **Save** (see [Note Repeat, Latch and the arpeggiator](note-repeat-and-arp.md#the-pattern-workspace)) |
-| The Synth tab's options: the engine on the pads, the scale and its root, each pad bank's layout, In key rows, and the tuning with its root and A4. The pads still start on bank A, in their usual octave. | MENU on the Synth tab (see [Synths](synths.md)) |
+| Arpeggiator patterns you save, and your own scales | The pattern workspace's **Save** (see [Note Repeat, Latch and the arpeggiator](note-repeat-and-arp.md#the-pattern-workspace)) |
+| Recent and Favourites in the browser | The browser |
 
-The line input is never kept on: it is off every time MPFree starts, so a noisy input you forgot about is never suddenly loud.
+Two things are never kept, for safety: the line input is off every time MPFree starts (so a noisy input you forgot about is never suddenly loud, and the Looper records the pads until you turn it on), and the **Level** (the master volume) never comes from a project.
 
 Saving is safe to interrupt. Each file is written whole to the side and only then swapped in, so if the power goes off in the middle of a save, the previous version is still there.
 
@@ -30,15 +41,18 @@ Saving is safe to interrupt. Each file is written whole to the side and only the
 
 A **project** is one song: everything you need to pick it up again where you left it.
 
-| Kept in a project | Not yet |
-|---|---|
-| The tempo and the swing | The arpeggiator's settings on each track |
-| The clips and the song on Arrange, with their scenes | |
-| The kits, with every sound on their pads and each pad's settings | |
-| The synth sounds and the Synth tab's options | |
-| The mixer: each strip's level, pan, sends and mutes, the effects and their settings, and the macros | |
-| The Looper's loops, with each layer's mix | |
-| The MIDI, sync and CV setup | |
+| Kept in a project |
+|---|
+| The tempo and the swing |
+| The clips and the song on Arrange, with their scenes |
+| The kits, with every sound on their pads and each pad's settings |
+| The synth sounds, and the Synth tab's options: the engine on the pads, the scale and its root, each pad bank's layout, In key rows, and the tuning with its root and A4 |
+| Each track's arpeggiator: its mode, rate (the rate Note Repeat plays at too), order, octaves, gate, swing, scale and the other options, and its pattern with your edits |
+| The mixer: each strip's level, pan, sends and mutes, the effects and their settings, and the macros |
+| The Looper's loops, with each layer's mix |
+| The MIDI, sync and CV setup |
+
+Latch isn't kept: it is how you play, not part of the song, so every arp lets go when a project opens. The pads stay on the bank and octave you were playing.
 
 The **Level** (the master volume) is never taken from a project: it stays where you set it, so opening a project can't suddenly be loud.
 
@@ -62,9 +76,13 @@ Press **BROWSE**, pick **Projects** on the left, pick a project and push the dat
 
 ### Starting a new project
 
-**New project** in the Projects place starts again from nothing: an empty song with 8 tracks, no loops, the factory kits, and the synth sounds and mixer as they are when MPFree starts. Nothing is saved until you save, and the first save names a new project.
+**New project** in the Projects place starts again from nothing: an empty song with 8 tracks, no loops, the factory kits, every arp at its default, the synth sounds and mixer as they are when MPFree starts, and the synth pads chromatic in C, tuned to A4 = 440 Hz. Your Prefs and the other things MPFree keeps for you stay as they are. Nothing is saved until you save, and the first save names a new project.
 
 If you have changed anything since you last saved or opened, opening a project or New project asks first, so you never lose work by accident. Playing the pads, changing page or the Level doesn't count as a change.
+
+### At start
+
+MPFree starts with a new, empty project. To have it open the project you last saved or opened instead, set **At start** in [Prefs](../reference/prefs.md) to **Last project**: once the sound is going, the project opens as if you had opened it from the browser. If it has been deleted since, the Events log says so and the new project stays.
 
 ## The browser
 

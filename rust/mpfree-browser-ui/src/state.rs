@@ -387,6 +387,9 @@ pub enum BrowseAction {
     /// Recent and Favourites changed: save this text as the "browser"
     /// owner's file in the store ([`Browser::lists_text`]).
     SaveLists(String),
+    /// [`Browser::open_last`]'s project couldn't be opened (why); the
+    /// work in progress stays as it was.
+    LastNotOpened(String),
 }
 
 /// What waits for a yes.
@@ -563,6 +566,11 @@ pub struct Browser {
     select_name: Option<String>,
     /// The project being worked on (where SHIFT + BROWSE saves).
     project: Option<Loc>,
+    /// The project last saved or opened, kept with Recent and Favourites:
+    /// Prefs > At start can open it again ([`Browser::open_last`]).
+    last: Option<Loc>,
+    /// [`Browser::open_last`] is waiting for the library.
+    opening_last: bool,
     /// When it was first saved.
     created: u64,
     actions: Vec<BrowseAction>,
@@ -615,6 +623,8 @@ impl Browser {
             favourites: Vec::new(),
             select_name: None,
             project: None,
+            last: None,
+            opening_last: false,
             created: 0,
             actions: Vec::new(),
             pick: None,
@@ -681,6 +691,9 @@ impl Browser {
                         return;
                     }
                 }
+                if std::mem::take(&mut self.opening_last) {
+                    self.actions.push(BrowseAction::LastNotOpened(e.clone()));
+                }
                 self.status = Some((e, true))
             }
             Ok(Outcome::Listed(loc, entries)) => {
@@ -724,6 +737,7 @@ impl Browser {
                 self.status = Some((format!("Saved {}", loc.name()), false));
                 self.unsaved = false;
                 self.project = Some(loc.clone());
+                self.last = Some(loc.clone());
                 self.remember(loc.clone());
                 self.actions.push(BrowseAction::ProjectSaved { loc });
                 self.refresh();
@@ -731,11 +745,14 @@ impl Browser {
             Ok(Outcome::Project(loc, snap)) => {
                 self.status = Some((format!("Opened {}", loc.name()), false));
                 self.project = Some(loc.clone());
+                self.last = Some(loc.clone());
                 self.created = snap.meta.created;
                 self.unsaved = false;
                 self.remember(loc.clone());
                 self.actions.push(BrowseAction::ProjectOpened { loc, snap });
-                if self.pick.is_some() {
+                // Opened at start (Prefs > At start), the Pads tab's
+                // picker stays where it is.
+                if self.pick.is_some() && !std::mem::take(&mut self.opening_last) {
                     self.close_pick(true);
                 }
             }
@@ -755,6 +772,7 @@ impl Browser {
                     false,
                 ));
                 self.project = Some(loc.clone());
+                self.last = Some(loc.clone());
                 self.created = snap.meta.created;
                 // Not the newest save: saving it keeps what it replaces.
                 self.unsaved = true;
@@ -1014,12 +1032,16 @@ impl Browser {
         }
     }
 
-    /// Recent and Favourites, as saved by [`Browser::lists_text`].
+    /// Recent and Favourites, and the last project, as saved by
+    /// [`Browser::lists_text`].
     pub fn load_lists(&mut self, text: &str) {
         self.recent.clear();
         self.favourites.clear();
+        self.last = None;
         for line in text.lines() {
-            if let Some(l) = line.strip_prefix("recent = ").and_then(Loc::from_line) {
+            if let Some(l) = line.strip_prefix("project = ").and_then(Loc::from_line) {
+                self.last = Some(l);
+            } else if let Some(l) = line.strip_prefix("recent = ").and_then(Loc::from_line) {
                 if self.recent.len() < RECENT && !self.recent.contains(&l) {
                     self.recent.push(l);
                 }
@@ -1033,9 +1055,13 @@ impl Browser {
     }
 
     /// Recent and Favourites as text, one `recent = Samples/Drums/Kick.wav`
-    /// or `favourite = ...` line each.
+    /// or `favourite = ...` line each, after the last project's
+    /// (`project = Projects/Night drive`).
     pub fn lists_text(&self) -> String {
         let mut s = String::new();
+        if let Some(l) = &self.last {
+            s.push_str(&format!("project = {}\n", l.to_line()));
+        }
         for l in &self.recent {
             s.push_str(&format!("recent = {}\n", l.to_line()));
         }
@@ -1057,7 +1083,8 @@ impl Browser {
         let before = self.recent.len() + self.favourites.len();
         self.recent.retain(|r| !l.contains(r));
         self.favourites.retain(|r| !l.contains(r));
-        if self.recent.len() + self.favourites.len() != before {
+        let last = self.last.take_if(|p| l.contains(p)).is_some();
+        if last || self.recent.len() + self.favourites.len() != before {
             self.actions
                 .push(BrowseAction::SaveLists(self.lists_text()));
         }
@@ -1664,6 +1691,24 @@ impl Browser {
     /// The project being worked on, if it has been saved or opened.
     pub fn project(&self) -> Option<&Loc> {
         self.project.as_ref()
+    }
+
+    /// The project last saved or opened, in this run or an earlier one.
+    pub fn last_project(&self) -> Option<&Loc> {
+        self.last.as_ref()
+    }
+
+    /// Opens the last project (Prefs > At start), as the Projects list
+    /// would, without closing the Pads tab's picker. False when there is
+    /// none. It comes as [`BrowseAction::ProjectOpened`], or
+    /// [`BrowseAction::LastNotOpened`] if the library can't open it.
+    pub fn open_last(&mut self) -> bool {
+        let Some(loc) = self.last.clone() else {
+            return false;
+        };
+        self.opening_last = true;
+        self.send(Job::OpenProject(loc));
+        true
     }
 
     /// SHIFT + BROWSE: saves `snap` as the current project, or, the first

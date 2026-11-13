@@ -171,7 +171,8 @@ Approved by Jay at 22:34Z (the mod thread's card, "Approve as proposed"). The mo
   7. Map controls
   8. Line input
   9. System info
-  10. Touch screen (opens its own rows)
+  10. At start (New project, the default, or Last project: what opens when MPFree starts, once the sound is going; Jay's pick on the project thread's settings card, 13 Nov 14:09Z)
+  11. Touch screen (opens its own rows)
 - **The Touch screen rows** ("Prefs · Touch screen", approved in the touch thread at 08:13Z, #69):
   1. Back
   2. Screen pad velocity

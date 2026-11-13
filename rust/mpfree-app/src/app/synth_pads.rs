@@ -23,10 +23,12 @@
 //! Chromatic | In key switch ([`App::synth_pick_layout`]) and the PAD BANK
 //! buttons picking a bank's layout ([`App::synth_bank`]) change them too.
 //!
-//! They are kept between starts as the store's "synth" settings
-//! ([`App::synth_settings`], put back by [`App::restore_synth`]): every row
-//! above, and each bank's layout. The bank playing and the octave are not
-//! kept: the pads start on bank A, pad 1 at C3.
+//! They are the song's (Jay, 13 Nov): kept in the project's "synth" part
+//! ([`App::synth_settings`], put back by [`App::open_synth`]), not in
+//! Prefs, so a project's key and tuning don't follow you into the next
+//! one. New project starts chromatic in C at A4 = 440. Every row above is
+//! kept, and each bank's layout; the bank playing and the octave are not:
+//! the pads stay where they are.
 
 use super::{App, Effect, Item};
 use crate::synth::{Builtin, Engine, A4_MAX, A4_MIN, BANKS};
@@ -347,7 +349,7 @@ impl App {
         if (self.synth_pads, self.pad_scale_pick, self.pad_scale_root) == before {
             return Vec::new();
         }
-        self.save_dirty = true;
+        self.project_edit = true;
         vec![Effect::SynthPads(self.synth_pads)]
     }
 
@@ -369,7 +371,7 @@ impl App {
             return Vec::new();
         }
         self.synth_pads.set_layout(want);
-        self.save_dirty = true;
+        self.project_edit = true;
         vec![Effect::SynthPads(self.synth_pads)]
     }
 
@@ -415,12 +417,31 @@ impl App {
         out
     }
 
-    /// Puts back the Synth tab's options kept as the "synth" settings. Call
-    /// it once at start, after the owner's scales (the arp's patterns file)
-    /// and the tuning files are known. Returns the lines for the log (what
-    /// was put back, and anything left out: a word not understood, a scale
-    /// or tuning file that is gone) and the effect that hands the synth its
-    /// settings (none when nothing was kept).
+    /// A project's Synth tab options (its "synth" part), over the
+    /// defaults: an option the project doesn't have (or can't be used) is
+    /// the default, never the last project's. Returns the lines for the log
+    /// and the effect that hands the synth its settings.
+    pub fn open_synth(&mut self, s: &Settings) -> (Vec<String>, Vec<Effect>) {
+        // The bank playing and each bank's octave stay where they are.
+        let old = self.synth_pads;
+        self.synth_pads = crate::synth::PadSettings {
+            bank: old.bank,
+            ..Default::default()
+        };
+        for (b, (_, octave)) in self.synth_pads.banks.iter_mut().zip(old.banks) {
+            b.1 = octave;
+        }
+        (self.pad_scale_pick, self.pad_scale_root) = (0, 0);
+        let (notes, _) = self.restore_synth(s);
+        (notes, vec![Effect::SynthPads(self.synth_pads)])
+    }
+
+    /// Puts back the Synth tab's options from `s` (words as
+    /// [`App::synth_settings`] writes them) over the ones in use. The
+    /// owner's scales and the tuning files must be known. Returns the lines
+    /// for the log (what was put back, and anything left out: a word not
+    /// understood, a scale or tuning file that is gone) and the effect that
+    /// hands the synth its settings (none when `s` is empty).
     pub fn restore_synth(&mut self, s: &Settings) -> (Vec<String>, Vec<Effect>) {
         let mut skipped = Vec::new();
         let mut scale = None;
@@ -501,7 +522,7 @@ impl App {
         if !s.is_empty() {
             let text = |item| self.synth_item_text(item).1;
             notes.push(format!(
-                "saved synth options: {}, scale {} on {}, pad layout {}, tuning {} (root {}, A4 {})",
+                "synth options: {}, scale {} on {}, pad layout {}, tuning {} (root {}, A4 {})",
                 text(SynthItem::Engine),
                 text(SynthItem::Scale),
                 text(SynthItem::Root),
@@ -513,13 +534,10 @@ impl App {
         }
         if !skipped.is_empty() {
             notes.push(format!(
-                "saved synth options left out (not understood, or the scale or tuning file is gone): {}",
+                "synth options left out (not understood, or the scale or tuning file is gone): {}",
                 skipped.join(", ")
             ));
         }
-        // What was just read is what the store holds. If something was left
-        // out, the next save (after any change) writes what is in use.
-        self.saved[super::saved::SYNTH_SLOT] = s.to_text();
         let fx = if s.is_empty() {
             Vec::new()
         } else {

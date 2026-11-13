@@ -3184,6 +3184,8 @@ fn player_session(
     });
     // The time engine (transport, clips, takes) runs in this loop too.
     let mut time = time::TimeHost::new(RATE, app.settings.bpm)?;
+    // The metronome as Prefs kept it (on until it is turned off).
+    time.metronome = app.settings.metronome;
     // The looper follows the transport; the line input stays closed until
     // the Prefs row "Line input" opens it. Its memory (Prefs "Loop memory",
     // as saved) is set aside once, here, and locked in RAM with the rest.
@@ -3298,13 +3300,8 @@ fn player_session(
         },
     }
     app.pattern_file = store.saves();
-    // The Synth tab's options, now that the owner's scales (above) and the
-    // tuning files are known. The synth takes them with the first period.
-    let (notes, synth_fx) = app.restore_synth(&store.settings(app::saved::SYNTH));
-    for line in notes {
-        out.say(&line);
-    }
-    fx.extend(synth_fx);
+    // The Synth tab's options are the project's (project.rs): they start at
+    // their defaults, and an open puts back the project's.
     let (mut left, mut right) = ([0f32; PERIOD], [0f32; PERIOD]);
     // Each engine's period, for its track, and the pads' sound for the looper.
     let (mut drums_l, mut drums_r) = ([0f32; PERIOD], [0f32; PERIOD]);
@@ -3686,7 +3683,7 @@ fn player_session(
                         for line in synth.set_sounds(&sounds) {
                             out.note(&line);
                         }
-                        let (notes, synth_fx) = app.restore_synth(&options);
+                        let (notes, synth_fx) = app.open_synth(&options);
                         for line in notes {
                             out.note(&format!("project: {line}"));
                         }
@@ -3696,6 +3693,12 @@ fn player_session(
                         // on the screen thread.
                         o.synth = Some((options, sounds));
                     }
+                    // The arps: the project's, or every one at its default.
+                    let (notes, arp_fx) = app.open_arp(o.arp.as_deref());
+                    for line in notes {
+                        out.note(&line);
+                    }
+                    fx.extend(arp_fx);
                     if o.clear_loops {
                         // A save waiting for the old loops stops with them.
                         out.note(&looper.clear_all());
@@ -4254,8 +4257,8 @@ fn player_session(
                     }
                 }
                 app::Effect::Fill(on) => time.set_fill(on, 0),
-                app::Effect::Metronome => {
-                    time.metronome = !time.metronome;
+                app::Effect::Metronome(on) => {
+                    time.metronome = on;
                     out.note(&format!(
                         "SHIFT + PLAY START: metronome {}",
                         if time.metronome { "on" } else { "off" }
@@ -4773,6 +4776,7 @@ fn player_session(
                 mixer: project::mixer_text(&mix.mixer, mix.pad_mutes()),
                 modu: mix.modu.save(),
                 synth: project::synth_text(&app.synth_settings(), &synth.sounds()),
+                arp: app.arp_part(),
                 loops,
             })));
         }
@@ -5031,6 +5035,11 @@ fn player_session(
                         out.note(&format!("not saved: {owner}: {e}"));
                     }
                 }
+            }
+            // A Synth tab option or the arp changed with the controls: the
+            // project has unsaved work.
+            if app.take_project_edit() {
+                out.show(gui::ToUi::Edited);
             }
             if !strip_shown(app.view()) {
                 out.show(gui::ToUi::Looper(Box::new(looper.view(app.settings.bpm))));
