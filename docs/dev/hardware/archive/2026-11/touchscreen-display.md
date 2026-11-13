@@ -1,6 +1,6 @@
 # MPC One touchscreen: Ilitek ILI2117, evdev, Rockchip DSI and Panfrost
 
-**Status: expanded owner-run `--touchscreen` passed** on the physical original MPC One 3.6.0. It verified the bound **`ili2117`** I²C kernel driver, EV_KEY/ABS with Type-B multitouch slot/position/tracking codes, active 800×1280 DSI, 32bpp framebuffer and Panfrost. Axis ranges, number of contacts and rotation remain **UNVERIFIED**. Factory owns DRM/evdev/audio; no I²C messages, evdev event reads, DRM opens, modesets or display changes were performed. See [sanitized physical findings](../milestones/m07-validation-record.md).
+**Status: expanded owner-run `--touchscreen` passed** on the physical original MPC One 3.6.0. It verified the bound **`ili2117`** I²C kernel driver, EV_KEY/ABS with Type-B multitouch slot/position/tracking codes, active 800×1280 DSI, 32bpp framebuffer and Panfrost. Axis ranges, number of contacts and rotation remain **UNVERIFIED**. Factory owns DRM/evdev/audio; no I²C messages, evdev event reads, DRM opens, modesets or display changes were performed. See [sanitized physical findings](../../../milestones/m07-validation-record.md).
 
 ## Currently observed on the real MPC One
 

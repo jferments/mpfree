@@ -17,7 +17,7 @@ Add a row here **before** (or in the same PR as) any future persistent change.
 
 ### MOD-001 / MOD-002: persistent SSH
 
-**Why:** USB autorun SSH (see [developer-access.md](../guides/developer-access.md)) had to be
+**Why:** USB autorun SSH (see [developer-access.md](../../../guides/developer-access.md)) had to be
 re-run after every reboot. Persistent SSH is now the primary way code is
 deployed and tested on the MPC.
 
@@ -39,7 +39,7 @@ Never commit key material or host keys.
 
 **Risk this carried:** the rootfs is ext4 mounted **without a journal**, so a power loss during the read-write window could have corrupted it. Remounting the read-only, ~96%-full rootfs and writing
 to it is a boot-critical write (Tier 3 in the
-[recovery strategy](../research/recovery-and-os-strategy.md)). It succeeded,
+[recovery strategy](../../../research/recovery-and-os-strategy.md)). It succeeded,
 and the unit has booted cleanly since. That success does not make it a pattern
 to repeat. The next change to the rootfs or boot partitions waits for the Tier 3 gate.
 

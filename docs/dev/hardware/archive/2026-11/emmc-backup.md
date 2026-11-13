@@ -2,7 +2,7 @@
 
 **Status:** first owner run **verified** on 2026-11-09 (see [First run](#first-run-2026-11-09)). Tested against a fake device in CI.
 
-A verified, off-device copy of the whole eMMC is the first condition of the Tier 1 recovery gate in the [recovery strategy](../research/recovery-and-os-strategy.md), and every later recovery path ends with "write the backup back." The reference unit is not stock ([device modifications](device-modifications.md)), so Akai's installer cannot recreate its current state. Only this backup can.
+A verified, off-device copy of the whole eMMC is the first condition of the Tier 1 recovery gate in the [recovery strategy](../../../research/recovery-and-os-strategy.md), and every later recovery path ends with "write the backup back." The reference unit is not stock ([device modifications](device-modifications.md)), so Akai's installer cannot recreate its current state. Only this backup can.
 
 ## What it does on the MPC
 
@@ -10,7 +10,7 @@ A verified, off-device copy of the whole eMMC is the first condition of the Tier
 
 | Command | What it reads |
 | --- | --- |
-| `sh -s hash` with [`read-only-backup-preflight.sh`](../../../tools/mpc-one/read-only-backup-preflight.sh) | Partition geometry, eMMC model, block-layer write counters, `boot_id`, and SHA-256 of sectors 0–63 (MBR and primary GPT), `p1`–`p6`, `boot0` and `boot1` via `dd if=… \| sha256sum`. Also EXT_CSD, the eMMC boot configuration, but only if debugfs is already mounted |
+| `sh -s hash` with [`read-only-backup-preflight.sh`](../../../../../tools/mpc-one/read-only-backup-preflight.sh) | Partition geometry, eMMC model, block-layer write counters, `boot_id`, and SHA-256 of sectors 0–63 (MBR and primary GPT), `p1`–`p6`, `boot0` and `boot1` via `dd if=… \| sha256sum`. Also EXT_CSD, the eMMC boot configuration, but only if debugfs is already mounted |
 | `dd if=/dev/mmcblk0 bs=1048576` | The whole user area, 7,820,083,200 bytes, sent to SSH stdout |
 | `dd if=/dev/mmcblk0boot0 bs=1048576` | Hardware boot area 0 (4 MiB, all zeros on this unit) |
 | `dd if=/dev/mmcblk0boot1 bs=1048576` | Hardware boot area 1 (4 MiB, all zeros on this unit) |
@@ -39,7 +39,7 @@ Backups go to `~/mpfree-backups/`, **outside the git clone**, so they can't be c
 
 ## Checks before an image is kept
 
-1. **Layout:** the disk size, every partition's start, length and name, the boot areas, and the eMMC model must match the [reference baseline](../../../tools/mpc-one/baselines/mpc-one-3.6.0-reference.txt) exactly, or nothing is copied.
+1. **Layout:** the disk size, every partition's start, length and name, the boot areas, and the eMMC model must match the [reference baseline](../../../../../tools/mpc-one/baselines/mpc-one-3.6.0-reference.txt) exactly, or nothing is copied.
 2. **Same bytes as the MPC sees:** the copied stream's MBR/GPT, `p1`–`p6`, `boot0` and `boot1` regions must hash the same as the MPC's own hashes from step 1.
 3. **No changes during the copy:** write and discard counters for `p1`–`p6`, `boot0` and `boot1` must not move between the first counter read and the end of the copy, and the MPC must not reboot.
 4. **Workstation disk:** each image is re-read from disk, with that file's page cache dropped, and must match the hash computed while receiving.
