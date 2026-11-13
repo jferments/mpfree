@@ -597,6 +597,7 @@ impl Widget for BrowserView {
                     crate::state::Confirm::Open(_) | crate::state::Confirm::OpenVersion(..) => {
                         "Open"
                     }
+                    crate::state::Confirm::NewProject => "New project",
                 };
                 button(cx, a.yes, yes, false, true);
             }

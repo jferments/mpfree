@@ -272,6 +272,7 @@ impl Desk<'_> {
             | app::Effect::Quit
             | app::Effect::Show(_)
             | app::Effect::ProgEdit
+            | app::Effect::SaveProject
             | app::Effect::Bank { .. }
             | app::Effect::SavePatterns(_)) => return Some(e),
         }

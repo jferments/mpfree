@@ -103,6 +103,24 @@ const SHIFT_SAMPLE_HINT: &str =
     "SHIFT +   wheel: pad   ·   Q-Links: finer   ·   UNDO: redo   ·   MENU: Prefs   ·   STOP: back to bar 1";
 const SHIFT_MENU_HINT: &str =
     "SHIFT +   wheel: change the value   ·   MENU: Prefs   ·   STOP: back to bar 1";
+/// The browser's hint without a library (no --data).
+const NO_LIBRARY_HINT: &str =
+    "No library: the app was started without a data folder, so nothing can be saved or opened   ·   BROWSE closes";
+
+/// After an open lands, the engines' news for this long is the open's
+/// own, not an edit.
+const OPEN_SETTLE: Duration = Duration::from_millis(1500);
+
+/// An opened project's loops as read, with lines about any left out.
+type LoopsRead = Result<(mpfree_looper::save::Saved, Vec<String>), String>;
+
+/// Seconds since 1970 (UTC) now: when a project is saved.
+fn now_utc() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
+}
+
 const OPTIONS_HINT: &str =
     "Wheel or tap: pick a row   ·   push the wheel, - / + or the arrows: change it   ·   MENU: close";
 /// A menu row the wheel's push opened.
@@ -290,6 +308,16 @@ pub struct Timing {
 pub enum ToUi {
     /// A line for the terminal and the Events log.
     Line(String),
+    /// A save: what the audio loop's engines hold, for the screen to write
+    /// with its own parts and hand to the library (project.rs).
+    ProjectParts(Box<crate::project::Collected>),
+    /// The parts New project goes back to (sent once, early).
+    ProjectDefaults(Box<crate::project::Defaults>),
+    /// An open done: the engines it replaced, to free here.
+    ProjectBack(Box<crate::project::Opening>),
+    /// Something the project keeps changed with the controls (a Synth tab
+    /// option, the arp): the work is unsaved.
+    Edited,
     /// A line shown in place of the hint for [`TELL_SECONDS`] (it was
     /// logged as a `Line` too): why something did nothing.
     Tell(String),
@@ -513,6 +541,15 @@ pub enum FromUi {
         pad: usize,
         down: bool,
     },
+    /// Save the project: the audio loop sends its engines' parts back
+    /// (`ToUi::ProjectParts`).
+    SaveProject,
+    /// Open a project (or a new one): the pieces built here, swapped in
+    /// between two periods (project.rs).
+    OpenProject(Box<crate::project::Opening>),
+    /// An opened project's loops, read on their own thread: they go in
+    /// once the old ones have faded out.
+    OpenLoops(Box<mpfree_looper::save::Saved>),
     /// The Pads tab's switch: Browse or Pad (`mpfree_sampler_ui::pads_tab`).
     PadsView(usize),
     /// The browser's preview: hear this sound once (it replaces one
@@ -694,7 +731,8 @@ pub struct Player {
     midi: u64,
     midi_held_back: u64,
     timing: Timing,
-    screen_row: String,
+    /// The Timing panel's Screen row: how the screen is drawn, and how fast.
+    screen_row: (String, Tone),
     /// The timed `play` step (STOP ends it) rather than the app.
     timed: bool,
     /// The menu's selected row is open for the wheel (its push opened it).
@@ -728,8 +766,21 @@ pub struct Player {
     /// The Sample page and the kits' projects it edits (the Pads tab's
     /// screens too).
     pub sample: SamplePage,
-    /// The Pads tab's browser, once the app has a library (--data).
+    /// The browser, once the app has a library (--data): the Pads tab's
+    /// picker, and the whole library over every page (BROWSE).
     browser: Option<mpfree_browser_ui::Browser>,
+    /// The I/O view's model (its MIDI setup is the project's `midi` part).
+    io_model: Option<mpfree_midi_ui::Shared>,
+    /// The parts New project goes back to, once the audio loop sent them.
+    project_defaults: Option<crate::project::Defaults>,
+    /// Prefs > At start was looked at (once, when the sound is going).
+    start_checked: bool,
+    /// The sound's rate, for an opened project's engines.
+    project_rate: u32,
+    /// When the last open landed ([`OPEN_SETTLE`]).
+    opened_at: Option<Instant>,
+    /// An opened project's loops being read (the files can be big).
+    loops_load: Option<std::sync::mpsc::Receiver<LoopsRead>>,
     /// The browser's preview level, in dB (its Q-Link 3).
     preview_db: f32,
     /// A sound file being read for the preview.
@@ -893,6 +944,13 @@ impl Player {
         mpfree_mixer_ui::add(&mut ui).expect("mixer layout");
         ui.add_page(mpfree_mixer_ui::MIXER_PAGE, MIXER_LAYOUT)
             .expect("mixer layout");
+        // The browser over the page, under the top bar (BROWSE): the same
+        // widget as the Pads tab's Browse view.
+        ui.add_page(
+            mpfree_browser_ui::BROWSER_PAGE,
+            mpfree_browser_ui::BROWSER_LAYOUT,
+        )
+        .expect("browser layout");
         // The I/O view's MIDI, Sync and CV sections join when the model
         // they edit arrives (ToUi::IoModel).
         let io_sections = Vec::new();
@@ -921,7 +979,7 @@ impl Player {
                 last_ms: f32::NAN,
                 ..Timing::default()
             },
-            screen_row: "-".to_string(),
+            screen_row: ("-".to_string(), Tone::Dim),
             timed,
             menu_editing: false,
             sample_keys: (false, false),
@@ -941,6 +999,12 @@ impl Player {
             synth: None,
             sample,
             browser: None,
+            io_model: None,
+            project_defaults: None,
+            start_checked: false,
+            project_rate: 44_100,
+            opened_at: None,
+            loops_load: None,
             preview_db: crate::preview::LEVEL_DB,
             preview_load: None,
             arp_panel,
@@ -1795,6 +1859,8 @@ impl Player {
                 View::Arp => format!("Wheel: {wheel}   ·   - / +: mode   ·   Q-Links: rate, gate, swing, octaves   ·   \
                                       MENU: options   ·   NOTE REPEAT + MENU: close"),
                 View::Pattern => self.workspace.hint().to_string(),
+                View::Browser if self.browser.is_none() => NO_LIBRARY_HINT.to_string(),
+                View::Browser => mpfree_browser_ui::BROWSER_HINT.to_string(),
             }
         };
         let (text, tone) = match &self.told {
@@ -1856,7 +1922,11 @@ impl Player {
                 ),
                 Tone::Dim,
             ),
-            ("Screen".to_string(), self.screen_row.clone(), Tone::Dim),
+            (
+                "Screen".to_string(),
+                self.screen_row.0.clone(),
+                self.screen_row.1,
+            ),
         ];
         if let Some(s) = self.ui.get_mut::<StatList>("timing") {
             s.set(rows);
@@ -1943,6 +2013,19 @@ impl Player {
     }
 
     pub fn apply(&mut self, msg: ToUi) {
+        // The engines' news of an edit made with the controls (a clip
+        // recorded, a knob turned): the work is unsaved.
+        if matches!(
+            msg,
+            ToUi::Time(_)
+                | ToUi::Steps(_)
+                | ToUi::SynthValues(_)
+                | ToUi::Chain(_)
+                | ToUi::Macros(_)
+                | ToUi::Edited
+        ) {
+            self.mark_unsaved();
+        }
         match msg {
             ToUi::Tell(l) => self.tell(&l),
             ToUi::Line(l) | ToUi::Event(l) => {
@@ -2253,6 +2336,20 @@ impl Player {
                 if self.io_sections.is_empty() {
                     self.io_sections = add_io_sections(&mut self.ui, &model);
                 }
+                self.io_model = Some(model);
+            }
+            ToUi::ProjectParts(c) => self.save_project(c),
+            ToUi::ProjectDefaults(d) => self.project_defaults = Some(*d),
+            ToUi::Edited => {}
+            // The engines an open replaced: freed here. The open is in:
+            // nothing is unsaved (its own news in the next moments isn't
+            // an edit).
+            ToUi::ProjectBack(old) => {
+                drop(old);
+                self.opened_at = Some(Instant::now());
+                if let Some(b) = self.browser.as_mut() {
+                    b.set_unsaved(false);
+                }
             }
             ToUi::Show(v) => {
                 self.ready = true;
@@ -2403,6 +2500,7 @@ impl Player {
                 }
             }
             ToUi::SampleKits { projects, rate } => {
+                self.project_rate = rate;
                 self.sample.set_kits(&mut self.ui, projects, rate);
                 self.sample_changed();
             }
@@ -2761,6 +2859,9 @@ impl Player {
         b.load_lists(lists);
         b.open_picker(mpfree_browser_ui::Pick::Pads);
         self.browser = Some(b);
+        // The start's own news (the empty song, the first states) is not
+        // an edit.
+        self.opened_at = Some(Instant::now());
         self.sample
             .set_browse_with(&mut self.ui, mpfree_browser_ui::BROWSER);
         self.step_browser();
@@ -2768,7 +2869,8 @@ impl Player {
 
     /// The Pads tab shows its browser.
     fn browsing(&self) -> bool {
-        self.view == View::Pads && self.sample.page() == sample_page::PADS_BROWSE_PAGE
+        (self.view == View::Pads && self.sample.page() == sample_page::PADS_BROWSE_PAGE)
+            || self.view == View::Browser
     }
 
     /// A control on the Pads tab's browser (the app sends them only while
@@ -2785,6 +2887,7 @@ impl Player {
             BrowseKey::Back => b.back(),
             BrowseKey::Enter => b.enter(),
             BrowseKey::Play => b.play(),
+            BrowseKey::Erase => b.erase(),
         }
         mpfree_browser_ui::show(&mut self.ui, b);
         self.step_browser();
@@ -2817,6 +2920,14 @@ impl Player {
             }
             A::SaveLists(text) => self.outbox.push(FromUi::SaveBrowserLists(text)),
             A::PickerClosed { .. } => {}
+            // Projects (project.rs).
+            A::SaveRequested => self.outbox.push(FromUi::SaveProject),
+            A::NewProject => self.new_project(),
+            A::ProjectOpened { loc, snap } => self.open_project(&loc, &snap),
+            A::ProjectSaved { loc } => self.say(format!("project: saved {}", loc.name())),
+            A::LastNotOpened(e) => self.say(format!(
+                "project: the last project wasn't opened ({e}); the new one stays"
+            )),
             // The Pads tab's browser offers sounds only; anything else
             // is said, never dropped quietly.
             other => self.say(format!(
@@ -2847,6 +2958,199 @@ impl Player {
                 self.outbox.push(FromUi::Preview(Box::new(p)));
             }
             Err(e) => self.say(format!("preview: not heard ({e})")),
+        }
+    }
+
+    // ------------------------------------------------------------ projects
+
+    /// The audio loop's parts of a save came: the screen's own (the kits
+    /// with their sounds, the I/O setup) join them, and the browser's
+    /// worker saves the lot, whole or not at all (mpfree-library).
+    fn save_project(&mut self, mut c: Box<crate::project::Collected>) {
+        use mpfree_library::Part as _;
+        if self.browser.is_none() {
+            self.say(
+                "project: not saved, there is no library (the app was started without --data)"
+                    .to_string(),
+            );
+            return;
+        }
+        if self.loops_load.is_some() {
+            self.say(
+                "project: not saved, the loops are still opening (try again in a moment)".into(),
+            );
+            return;
+        }
+        let mut extra = Vec::new();
+        let (text, sounds) = self.sample.save_part();
+        extra.push((crate::project::SAMPLER.to_string(), text));
+        if let Some(m) = &self.io_model {
+            extra.push((
+                crate::project::MIDI.to_string(),
+                mpfree_midi_ui::MidiPart(m.clone()).save(),
+            ));
+        }
+        let mut samples: Vec<_> = sounds
+            .into_iter()
+            .map(|(file, src)| {
+                mpfree_library::NewSample::new(
+                    file,
+                    std::sync::Arc::new(move |w: &mut dyn std::io::Write| {
+                        mpfree_sampler::wav::write(&src, w)
+                    }),
+                )
+            })
+            .collect();
+        // The loops: their part, and a WAV a layer.
+        if let Some(loops) = c.loops.take() {
+            let rate = loops.rate;
+            let (text, files) = crate::project::loops_part(loops);
+            extra.push((crate::project::LOOPER.to_string(), text));
+            samples.extend(files.into_iter().map(|(file, audio)| {
+                mpfree_library::NewSample::new(
+                    file,
+                    std::sync::Arc::new(move |w: &mut dyn std::io::Write| {
+                        w.write_all(&mpfree_looper::save::wav(&audio, rate))
+                    }),
+                )
+            }));
+        }
+        let snap = crate::project::snapshot(&c, extra);
+        let Some(b) = self.browser.as_mut() else {
+            return;
+        };
+        b.save_with(snap, samples, now_utc());
+        mpfree_browser_ui::show(&mut self.ui, b);
+        let line = match b.project() {
+            Some(l) => format!("project: saving {}", l.name()),
+            None => "project: saving".to_string(),
+        };
+        self.say(line);
+    }
+
+    /// An opened project's parts: the screen's own go to the Sample tab and
+    /// the I/O setup here; the audio loop's are read and built here and
+    /// sent in one piece (project.rs).
+    fn open_project(&mut self, loc: &mpfree_library::Loc, snap: &mpfree_library::Snapshot) {
+        use mpfree_library::Part as _;
+        if let Some(text) = snap.part(crate::project::SAMPLER) {
+            if let Some(lib) = self.browser.as_ref().map(|b| b.library().clone()) {
+                let loc = loc.clone();
+                self.sample.open_part(
+                    text.to_string(),
+                    Box::new(move |f| {
+                        lib.sample_path(&loc, f)
+                            .and_then(std::fs::read)
+                            .map_err(|e| e.to_string())
+                    }),
+                );
+            }
+        }
+        if let (Some(text), Some(m)) = (snap.part(crate::project::MIDI), &self.io_model) {
+            if let Err(e) = mpfree_midi_ui::MidiPart(m.clone()).load(text) {
+                self.say(format!("project: the MIDI setup wasn't opened ({e})"));
+            }
+        }
+        let o = crate::project::opening(snap, self.project_rate, loc.name());
+        self.outbox.push(FromUi::OpenProject(Box::new(o)));
+        // The loops, on a thread: the layers' files can be big. A read
+        // still going for an earlier open is dropped with its channel.
+        self.loops_load = None;
+        if let (Some(text), Some(lib)) = (
+            snap.part(crate::project::LOOPER),
+            self.browser.as_ref().map(|b| b.library().clone()),
+        ) {
+            let (text, loc) = (text.to_string(), loc.clone());
+            let (tx, rx) = std::sync::mpsc::channel();
+            let read = std::thread::Builder::new()
+                .name("loops-open".into())
+                .spawn(move || {
+                    let r = crate::project::loops_open(&text, |f| {
+                        lib.sample_path(&loc, f)
+                            .and_then(std::fs::read)
+                            .map_err(|e| e.to_string())
+                    });
+                    let _ = tx.send(r);
+                });
+            match read {
+                Ok(_) => self.loops_load = Some(rx),
+                Err(e) => self.say(format!("project: the loops weren't opened ({e})")),
+            }
+        }
+        // The kits and engines coming in are the open's own news.
+        self.opened_at = Some(Instant::now());
+        self.say(format!("project: opening {}", loc.name()));
+    }
+
+    /// New project: the parts the app started with, the factory kits.
+    fn new_project(&mut self) {
+        let Some(d) = self.project_defaults.as_ref() else {
+            self.say(
+                "project: not ready for a new project yet (the sound is still starting)"
+                    .to_string(),
+            );
+            return;
+        };
+        let snap = crate::project::new_snapshot(d);
+        let mut o = crate::project::opening(&snap, self.project_rate, "a new project");
+        o.clear_loops = true;
+        self.outbox.push(FromUi::OpenProject(Box::new(o)));
+        self.loops_load = None;
+        self.opened_at = Some(Instant::now());
+        if !self.sample.reset_kits(&mut self.ui) {
+            self.say("project: the kits haven't come yet; they stay as they are".to_string());
+        }
+        self.sample_changed();
+        self.say("project: new project".to_string());
+    }
+
+    /// Prefs > At start, once the sound is going (the start's parts have
+    /// come): the last project saved or opened opens, or the new, empty
+    /// one the app started with stays.
+    fn open_at_start(&mut self) {
+        if self.start_checked || self.project_defaults.is_none() {
+            return;
+        }
+        self.start_checked = true;
+        if !self.settings.open_last {
+            return;
+        }
+        let Some(b) = self.browser.as_mut() else {
+            self.say(
+                "project: At start is Last project, but there is no library (no --data)".into(),
+            );
+            return;
+        };
+        let line = match b.last_project().map(|l| l.name().to_string()) {
+            Some(name) if b.open_last() => {
+                format!("project: opening the last project, {name} (Prefs > At start)")
+            }
+            _ => "project: no project saved or opened yet; a new one (Prefs > At start)".into(),
+        };
+        self.say(line);
+        self.step_browser();
+    }
+
+    /// An opened project's loops, once read: to the audio thread.
+    fn poll_loops(&mut self) {
+        let Some(rx) = &self.loops_load else {
+            return;
+        };
+        let r = match rx.try_recv() {
+            Ok(r) => r,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => Err("its thread stopped".into()),
+        };
+        self.loops_load = None;
+        match r {
+            Ok((saved, notes)) => {
+                for n in notes {
+                    self.say(n);
+                }
+                self.outbox.push(FromUi::OpenLoops(Box::new(saved)));
+                self.opened_at = Some(Instant::now());
+            }
+            Err(e) => self.say(format!("project: the loops weren't opened ({e})")),
         }
     }
 
@@ -3178,7 +3482,55 @@ impl Player {
         }
         // A stretched copy coming in says so.
         self.print_sample_lines();
-        std::mem::take(&mut self.outbox)
+        let out = std::mem::take(&mut self.outbox);
+        for a in &out {
+            self.saw_action(a);
+        }
+        out
+    }
+
+    /// The work changed since it was saved or opened when the screen sent
+    /// an edit (not a pad played, a page or kit picked, the Level, the
+    /// transport, a preview), so opening another project or New asks
+    /// first.
+    pub fn saw_action(&mut self, a: &FromUi) {
+        // The swing is the project's; play, stop and the rest aren't.
+        if let FromUi::Time(TimeAction::Transport(c)) = a {
+            if matches!(c, mpfree_transport::Command::SetSwing(_)) {
+                self.mark_unsaved();
+            }
+            return;
+        }
+        let edit = !matches!(
+            a,
+            FromUi::Pad { .. }
+                | FromUi::PadsView(_)
+                | FromUi::Preview(_)
+                | FromUi::PreviewStop
+                | FromUi::SaveBrowserLists(_)
+                | FromUi::SaveProject
+                | FromUi::OpenProject(_)
+                | FromUi::OpenLoops(_)
+                | FromUi::Kit(_)
+                | FromUi::LevelDb(_)
+                | FromUi::Tab(_)
+                | FromUi::MenuSelect(_)
+                | FromUi::GuideButton(_)
+        );
+        if edit {
+            self.mark_unsaved();
+        }
+    }
+
+    /// The work changed (an edit seen on the screen, or the engines saying
+    /// so), unless an open has only just landed (its own news).
+    fn mark_unsaved(&mut self) {
+        if self.opened_at.is_some_and(|t| t.elapsed() < OPEN_SETTLE) {
+            return;
+        }
+        if let Some(b) = self.browser.as_mut() {
+            b.set_unsaved(true);
+        }
     }
 
     fn show_view(&mut self, v: View) {
@@ -3221,7 +3573,27 @@ impl Player {
             View::Guide => "Guide".to_string(),
             View::Arp => ARP_PAGE.to_string(),
             View::Pattern => self.workspace.page().to_string(),
+            View::Browser => {
+                // The same browser as the Pads tab's, its picker put
+                // away: the whole library, Projects with New, Save and
+                // Save as.
+                if let Some(b) = self.browser.as_mut() {
+                    if b.picking().is_some() {
+                        b.cancel_picker();
+                        b.take_actions();
+                    }
+                } else {
+                    self.say("browser: no library (the app was started without --data); nothing can be saved or opened".to_string());
+                }
+                mpfree_browser_ui::BROWSER_PAGE.to_string()
+            }
         };
+        if self.view == View::Browser && v != View::Browser {
+            // The Pads tab's picker again, where it was.
+            if let Some(b) = self.browser.as_mut() {
+                b.open_picker(mpfree_browser_ui::Pick::Pads);
+            }
+        }
         let relabel = (self.view == View::Pattern) != (v == View::Pattern);
         if self.view.sampler() && v != self.view {
             // A pad a tap on the waveform (or the pad map) holds is let go.
@@ -3706,12 +4078,15 @@ impl Player {
         // A take records on, whatever shows; it lands on its pad here.
         let before = self.sample.page();
         self.sample.tick(&mut self.ui, dt, self.view.sampler());
-        // The Pads tab's browser: its touches and the worker's answers;
-        // and a preview's file once read.
-        if self.browsing() {
+        // The browser: its touches and the worker's answers (a save's too,
+        // made from another page); a preview's file and an opened
+        // project's loops once read.
+        if self.browsing() || self.browser.as_ref().is_some_and(|b| b.busy()) {
             self.step_browser();
         }
         self.poll_preview();
+        self.poll_loops();
+        self.open_at_start();
         if let Some(k) = self.sample.take_wanted_kit() {
             // An opened project's kit: the audio thread switches and says so.
             self.outbox.push(FromUi::Kit(k));
@@ -3754,8 +4129,8 @@ impl Player {
         }
     }
 
-    pub fn set_screen_row(&mut self, text: String) {
-        self.screen_row = text;
+    pub fn set_screen_row(&mut self, text: String, tone: Tone) {
+        self.screen_row = (text, tone);
         self.show_timing();
     }
 }
@@ -3911,9 +4286,13 @@ pub struct ScreenReport {
 /// `open_touch` opens the touchscreen. It is tried at once and then every
 /// second while there is none (the driver may not have probed yet at power-on,
 /// or a read failed), so touch comes back by itself.
+///
+/// With `gpu`, the GPU draws the screen in a process of its own, and any
+/// failure there draws in software again (drawing.rs).
 pub fn spawn(
     mut player: Player,
     mut fb: Option<FbTarget>,
+    gpu: Option<crate::drawing::GpuStart>,
     mut open_touch: Option<OpenTouch>,
     rx: Receiver<ToUi>,
     tx: SyncSender<FromUi>,
@@ -3928,6 +4307,8 @@ pub fn spawn(
             let mut touch_status = (Instant::now(), 0u64);
             let (w, h) = player.ui.size();
             let mut canvas = SoftCanvas::new(w, h);
+            let mut drawing =
+                crate::drawing::Drawing::start(gpu.as_ref(), &mut player, fb.as_ref());
             let mut report = ScreenReport::default();
             let mut total_ms = 0.0;
             let mut last_frame = Instant::now() - Duration::from_secs(1);
@@ -3986,6 +4367,7 @@ pub fn spawn(
                             for (finger, phase, x, y, time_us) in list {
                                 player.set_touch_time(time_us);
                                 if let Some(a) = player.touch(finger, phase, x, y) {
+                                    player.saw_action(&a);
                                     let _ = tx.try_send(a);
                                 }
                             }
@@ -4056,6 +4438,7 @@ pub fn spawn(
                 } else {
                     engines_at = None;
                 }
+                drawing.poll(&mut player, fb.as_ref());
                 let since = last_frame.elapsed();
                 if since < Duration::from_millis(33) && !quit {
                     continue;
@@ -4065,9 +4448,16 @@ pub fn spawn(
                     continue;
                 }
                 let t0 = Instant::now();
-                let damage = player.ui.paint(&mut canvas);
-                let t1 = Instant::now();
-                let rows = present(&mut fb, &canvas, &damage, &mut report);
+                // On the GPU, painting records the frame's list and the
+                // "copy" is sending it; in software, the copy to the panel.
+                let (t1, rows) = match drawing.frame(&mut player, fb.as_ref()) {
+                    Some(painted) => (t0 + painted, 0),
+                    None => {
+                        let damage = player.ui.paint(&mut canvas);
+                        let t1 = Instant::now();
+                        (t1, present(&mut fb, &canvas, &damage, &mut report))
+                    }
+                };
                 let t2 = Instant::now();
                 last_frame = t2;
                 let ms = (t2 - t0).as_secs_f64() * 1e3;
@@ -4075,13 +4465,15 @@ pub fn spawn(
                 total_ms += ms;
                 report.max_ms = report.max_ms.max(ms);
                 cost.frame(player.view(), t1 - t0, t2 - t1, rows);
-                if let Some(row) = cost.second(t2) {
-                    player.set_screen_row(row);
+                if let Some(second) = cost.second(t2) {
+                    let (row, tone) = drawing.screen_row(&second);
+                    player.set_screen_row(row, tone);
                 }
                 if let Some(line) = cost.status(t2) {
                     println!("{line}");
                 }
             }
+            drawing.finish(&mut player, &mut canvas, fb.as_mut());
             report.mean_ms = if report.frames > 0 {
                 total_ms / report.frames as f64
             } else {
@@ -4254,7 +4646,10 @@ pub fn sample_player(fonts: Fonts) -> Player {
             peak_grains: 0,
         },
     }));
-    p.set_screen_row("30 fps · paint 1.2 ms · copy 3.1 ms · slowest 6.4 ms".into());
+    p.set_screen_row(
+        "30 fps · paint 1.2 ms · copy 3.1 ms · slowest 6.4 ms".into(),
+        Tone::Dim,
+    );
     for l in ["+0.012 s -> Public: F0 7E 00 06 01 F7 = identity request",
               "+0.013 s -> Public: F0 47 00 46 52 00 04 15 21 6D 43 F7 = session ping",
               "+0.020 s Private: F0 47 7F 46 53 00 05 15 21 6D 43 02 F7 = session reply, token 15 21 6D 43, accepted",
@@ -4811,6 +5206,7 @@ pub fn apply_effects(p: &mut Player, fx: Vec<crate::app::Effect>) {
             Effect::PlayView(v) => p.apply(ToUi::PlayView(v)),
             Effect::SampleEditor(e) => p.apply(ToUi::SampleEditor(e)),
             Effect::Browse(k) => p.apply(ToUi::Browse(k)),
+            Effect::SaveProject => p.outbox.push(FromUi::SaveProject),
             Effect::Light(..)
             | Effect::StopSounds
             | Effect::Kit(_)
@@ -7914,6 +8310,273 @@ mod tests {
                 .any(|l| l.starts_with("sample: the project's kits weren't opened"))
         });
         assert!(q.sample.project(0).unwrap().pad(pad).is_some());
+    }
+
+    /// BROWSE, SHIFT + BROWSE, Open and New project through the screen, on
+    /// a library in a scratch folder.
+    #[test]
+    fn a_project_saves_opens_again_and_new_starts_empty() {
+        use crate::project::{self, Collected, Defaults};
+        use mpfree_browser_ui::sample::{select, source};
+        use mpfree_browser_ui::{Button, Input};
+        use mpfree_fx::ids::mixer as mx;
+        use mpfree_fx::StripId;
+        let dir = std::env::temp_dir().join(format!("mpfree-project-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let lib = mpfree_library::Library::at(&dir).unwrap();
+        let mut p = sample_sampler(Fonts::embedded());
+        p.set_browser(mpfree_browser_ui::Browser::inline(lib.clone()), "");
+        p.take_actions();
+        // BROWSE: the whole browser over the page.
+        p.apply(ToUi::Show(View::Browser));
+        assert_eq!(p.page(), mpfree_browser_ui::BROWSER_PAGE);
+        // SHIFT + BROWSE: the loop's parts come, the screen adds its own and
+        // the lot is saved, named for the time.
+        let mut mix = crate::mixing::MixHost::new(44_100, -6.0, 0.0);
+        mix.mixer.set_now(StripId::Track(2), mx::VOLUME, -3.0);
+        for _ in 0..50 {
+            mix.run_silent_period();
+        }
+        let mut clips = crate::time::TimeHost::new(44_100, 98.0)
+            .unwrap()
+            .project()
+            .clone();
+        let mut clip = mpfree_seq::Clip::new("Groove", 1920);
+        clip.add_note(mpfree_seq::Note::new(0, 240, 36, 100))
+            .unwrap();
+        clips.tracks[0].slots[0] = Some(clip);
+        let synth = crate::synth::Synth::new(44_100);
+        // Loop 2 with one layer, as the looper's save gives it.
+        let layer: Vec<f32> = (0..2 * 4410).map(|k| (k % 97) as f32 / 200.0).collect();
+        let loops = mpfree_looper::save::Saved {
+            rate: 44_100,
+            selected: 1,
+            loops: vec![(
+                1,
+                mpfree_looper::save::LoopFile {
+                    frames: 4410,
+                    ticks: 96,
+                    origin: 0,
+                    level: 0.8,
+                    muted: false,
+                    bars: Some(1),
+                    after: mpfree_looper::After::Play,
+                    fade_old: 1.0,
+                    layers: vec![mpfree_looper::save::LayerFile {
+                        level: 0.5,
+                        pan: -0.25,
+                        muted: false,
+                        solo: false,
+                        faded: 1.0,
+                        file: String::new(),
+                        audio: layer.clone(),
+                    }],
+                },
+            )],
+        };
+        let c = Collected {
+            tempo: 98.0,
+            swing: mpfree_transport::time::Swing::new(240, 62).unwrap(),
+            clips: clips.clone(),
+            mixer: project::mixer_text(&mix.mixer, 0),
+            modu: String::new(),
+            synth: project::synth_text(&Default::default(), &synth.sounds()),
+            arp: "mpfree-arp 1\ntrack 1\nmode = arp\n".to_string(),
+            loops: Some(loops),
+        };
+        p.apply(ToUi::ProjectParts(Box::new(c)));
+        p.step_browser();
+        let loc = p
+            .browser
+            .as_ref()
+            .unwrap()
+            .project()
+            .cloned()
+            .expect("saved");
+        let snap = lib.open_project(&loc).unwrap();
+        for part in [
+            project::CLIPS,
+            project::MIXER,
+            project::MOD,
+            project::SYNTH,
+            project::SAMPLER,
+            project::LOOPER,
+            project::ARP,
+        ] {
+            assert!(snap.part(part).is_some(), "{part}");
+        }
+        assert_eq!(snap.meta.tempo, 98.0);
+        assert!(events_log(&p)
+            .iter()
+            .any(|l| *l == format!("project: saved {}", loc.name())));
+        // Open it from the Projects list: the engines come built, for the
+        // loop to swap in.
+        let b = p.browser.as_mut().unwrap();
+        b.go_source(source("Projects"));
+        select(b, loc.name());
+        b.push();
+        p.step_browser();
+        let opened = p
+            .take_actions()
+            .into_iter()
+            .find_map(|a| match a {
+                FromUi::OpenProject(o) => Some(o),
+                _ => None,
+            })
+            .expect("opened");
+        assert_eq!(opened.tempo, Some(98.0));
+        assert_eq!(opened.swing, mpfree_transport::time::Swing::new(240, 62));
+        assert!(opened.notes.is_empty(), "{:?}", opened.notes);
+        assert_eq!(opened.time.as_ref().unwrap().project(), &clips);
+        let mixed = opened.mix.as_ref().unwrap();
+        let t2 = mixed
+            .strips
+            .iter()
+            .find(|(s, _)| *s == StripId::Track(2))
+            .unwrap();
+        assert!(t2.1.contains(&(mx::VOLUME, -3.0)));
+        assert_eq!(opened.synth.as_ref().unwrap().1, synth.sounds());
+        assert!(opened.clear_loops);
+        assert_eq!(
+            opened.arp.as_deref(),
+            Some("mpfree-arp 1\ntrack 1\nmode = arp\n")
+        );
+        p.apply(ToUi::ProjectBack(opened));
+        // The loops follow, read on their own thread, with their audio.
+        let end = Instant::now() + Duration::from_secs(5);
+        let loops = loop {
+            p.tick(0.033);
+            if let Some(l) = p.take_actions().into_iter().find_map(|a| match a {
+                FromUi::OpenLoops(l) => Some(l),
+                _ => None,
+            }) {
+                break l;
+            }
+            assert!(Instant::now() < end, "{:?}", events_log(&p));
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        assert_eq!((loops.selected, loops.loops.len()), (1, 1));
+        let (n, f) = &loops.loops[0];
+        assert_eq!((*n, f.frames, f.level), (1, 4410, 0.8));
+        assert_eq!(f.layers[0].pan, -0.25);
+        assert_eq!(f.layers[0].audio, layer);
+        assert!(f.layers[0].file.starts_with("loop-"));
+        assert!(!p.browser.as_ref().unwrap().unsaved());
+        // Once the open settles, a pad played isn't an edit; a new clip is.
+        p.opened_at = None;
+        p.saw_action(&FromUi::PreviewStop);
+        p.saw_action(&FromUi::Time(TimeAction::Transport(
+            mpfree_transport::Command::Play,
+        )));
+        assert!(!p.browser.as_ref().unwrap().unsaved());
+        p.saw_action(&FromUi::Time(TimeAction::NewClip { track: 0, slot: 1 }));
+        assert!(p.browser.as_ref().unwrap().unsaved());
+        // A Synth tab option or the arp changed with the controls.
+        p.browser.as_mut().unwrap().set_unsaved(false);
+        p.apply(ToUi::Edited);
+        assert!(p.browser.as_ref().unwrap().unsaved());
+        // New project before the sound has started says so.
+        let new = |p: &mut Player| {
+            let b = p.browser.as_mut().unwrap();
+            b.go_source(source("Projects"));
+            b.input(Input::Button(Button::NewProject));
+            // Over unsaved work it asks first; the push says yes.
+            b.push();
+            p.step_browser();
+            p.take_actions().into_iter().find_map(|a| match a {
+                FromUi::OpenProject(o) => Some(o),
+                _ => None,
+            })
+        };
+        assert!(new(&mut p).is_none());
+        assert!(events_log(&p)
+            .iter()
+            .any(|l| l.starts_with("project: not ready for a new project")));
+        // With the start's parts: an empty song of 8 tracks, the factory
+        // kits, and no project (Save names a new one).
+        let defaults = || {
+            Box::new(Defaults {
+                tempo: 120.0,
+                mixer: project::mixer_text(
+                    &crate::mixing::MixHost::new(44_100, -6.0, 0.0).mixer,
+                    0,
+                ),
+                modu: String::new(),
+                synth: project::synth_text(&Default::default(), &synth.sounds()),
+            })
+        };
+        p.apply(ToUi::ProjectDefaults(defaults()));
+        p.browser.as_mut().unwrap().set_unsaved(true);
+        let fresh = new(&mut p).expect("a new project");
+        assert_eq!(fresh.what, "a new project");
+        assert!(fresh.clear_loops);
+        assert_eq!(fresh.tempo, Some(120.0));
+        assert_eq!(fresh.swing, Some(Default::default()));
+        assert_eq!(fresh.arp, None, "every arp at its default");
+        let song = fresh.time.as_ref().unwrap().project();
+        assert_eq!(song.tracks.len(), crate::time::TRACKS);
+        assert!(song
+            .tracks
+            .iter()
+            .all(|t| t.slots.iter().all(Option::is_none)));
+        assert!(fresh.notes.is_empty(), "{:?}", fresh.notes);
+        assert!(p.browser.as_ref().unwrap().project().is_none());
+        assert!(!p.browser.as_ref().unwrap().unsaved());
+
+        // The next start, with Prefs > At start on Last project: once the
+        // sound is going, the project saved above opens, and the Pads
+        // tab's picker stays where it is.
+        let lists = p.browser.as_ref().unwrap().lists_text();
+        assert!(
+            lists.contains(&format!("project = {}\n", loc.to_line())),
+            "{lists}"
+        );
+        let opens = |q: &mut Player| {
+            q.tick(0.033);
+            q.take_actions().into_iter().find_map(|a| match a {
+                FromUi::OpenProject(o) => Some(o),
+                _ => None,
+            })
+        };
+        let last = Settings {
+            open_last: true,
+            ..Default::default()
+        };
+        let mut q = sample_sampler(Fonts::embedded());
+        q.set_browser(mpfree_browser_ui::Browser::inline(lib.clone()), &lists);
+        q.take_actions();
+        q.apply(ToUi::Settings(last.clone()));
+        assert!(opens(&mut q).is_none(), "not before the sound is going");
+        q.apply(ToUi::ProjectDefaults(defaults()));
+        let at_start = opens(&mut q).expect("the last project opens");
+        assert_eq!(at_start.what, loc.name());
+        assert!(q.browser.as_ref().unwrap().picking().is_some());
+        assert!(opens(&mut q).is_none(), "once");
+        // New project (the default) leaves the empty one.
+        let mut n = sample_sampler(Fonts::embedded());
+        n.set_browser(mpfree_browser_ui::Browser::inline(lib.clone()), &lists);
+        n.take_actions();
+        n.apply(ToUi::ProjectDefaults(defaults()));
+        assert!(opens(&mut n).is_none());
+        // A last project gone since is said; the new one stays.
+        let mut r = sample_sampler(Fonts::embedded());
+        r.set_browser(
+            mpfree_browser_ui::Browser::inline(lib.clone()),
+            "project = Projects/Nowhere\n",
+        );
+        r.take_actions();
+        r.apply(ToUi::Settings(last));
+        r.apply(ToUi::ProjectDefaults(defaults()));
+        assert!(opens(&mut r).is_none());
+        assert!(
+            events_log(&r)
+                .iter()
+                .any(|l| l.starts_with("project: the last project wasn't opened")),
+            "{:?}",
+            events_log(&r)
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

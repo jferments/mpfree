@@ -545,6 +545,90 @@ impl Synth {
         }
     }
 
+    fn engine_node(&self, e: Engine) -> &dyn Node {
+        match e {
+            Engine::Poly => &self.poly,
+            Engine::Fm => &self.fm,
+            Engine::Drums => &self.drums,
+            Engine::Pluck => &self.pluck,
+            Engine::Wavetable => &self.wt,
+        }
+    }
+
+    fn engine_node_mut(&mut self, e: Engine) -> &mut dyn Node {
+        match e {
+            Engine::Poly => &mut self.poly,
+            Engine::Fm => &mut self.fm,
+            Engine::Drums => &mut self.drums,
+            Engine::Pluck => &mut self.pluck,
+            Engine::Wavetable => &mut self.wt,
+        }
+    }
+
+    /// Every engine's sound now, as preset text, for a project's `synth`
+    /// part (`project.rs`). Small: a few hundred values.
+    pub fn sounds(&self) -> Vec<(Engine, String)> {
+        Engine::ALL
+            .iter()
+            .map(|&e| {
+                let node = self.engine_node(e);
+                let name = match e {
+                    Engine::Fm => self
+                        .fm_presets
+                        .get(self.presets[e.index()])
+                        .map_or("", |p| p.name.as_str()),
+                    _ => static_presets(e)
+                        .get(self.presets[e.index()])
+                        .map_or("", |p| p.name),
+                };
+                (
+                    e,
+                    SoundPreset::capture(node, name, &[]).to_text(node.params()),
+                )
+            })
+            .collect()
+    }
+
+    /// Puts back the sounds [`Synth::sounds`] saved (notes keep sounding,
+    /// values glide, as with a preset). One that doesn't read leaves that
+    /// engine as it is; returns a line for each.
+    pub fn set_sounds(&mut self, sounds: &[(Engine, String)]) -> Vec<String> {
+        let mut notes = Vec::new();
+        for (e, text) in sounds {
+            let node = self.engine_node(*e);
+            let p = match SoundPreset::parse(text, node.info(), node.params()) {
+                Ok(p) => p,
+                Err(err) => {
+                    notes.push(format!(
+                        "synth: the project's {} sound didn't read ({err:?})",
+                        e.name()
+                    ));
+                    continue;
+                }
+            };
+            let names = self.drum_names();
+            if let Err(err) = p.apply(self.engine_node_mut(*e)) {
+                notes.push(format!(
+                    "synth: the project's {} sound didn't fit ({err:?})",
+                    e.name()
+                ));
+                continue;
+            }
+            if *e == Engine::Drums {
+                self.drums_moved(names);
+            }
+            // The preset list shows the saved name when it is a factory one.
+            let at = match e {
+                Engine::Fm => self.fm_presets.iter().position(|x| x.name == p.name),
+                _ => static_presets(*e).iter().position(|x| x.name == p.name),
+            };
+            if let Some(i) = at {
+                self.presets[e.index()] = i;
+            }
+        }
+        notes
+    }
+
     /// Voices one engine has sounding or fading.
     fn voices_of(&self, engine: Engine) -> usize {
         match engine {
