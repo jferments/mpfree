@@ -90,6 +90,7 @@ mod control;
 mod cores;
 mod cv_out;
 mod debug_page;
+mod desk;
 mod engines;
 mod gui;
 mod kit;
@@ -3471,6 +3472,24 @@ fn player_session(
         let direct = !app.generating();
         while let Ok(a) = from_ui.try_recv() {
             let (t_item, item) = (Instant::now(), parts::Name::of(&a));
+            // The app, the mixer, the time engine, the looper and the chain
+            // editor take theirs (desk.rs); the rest is this loop's.
+            let mut desk = desk::Desk {
+                app: &mut app,
+                mix: &mut mix,
+                time: &mut time,
+                panels: &mut panels,
+                looper: &mut looper,
+                tracks: &mut tracks,
+                music: &mut music,
+                level_db: &mut level_db,
+                max_db,
+                card: audio,
+            };
+            let Some(a) = desk.screen(a, t, out, &mut fx) else {
+                parts.item_named(parts::SCREEN_ACTIONS, t_item, &item);
+                continue;
+            };
             match a {
                 gui::FromUi::Pad { pad, down: true }
                     if pad < 16 && app.mute_keys() != app::MuteKeys::Off =>
@@ -3506,91 +3525,6 @@ fn player_session(
                 }
                 gui::FromUi::Pad { .. } => {}
                 gui::FromUi::Kit(k) => kit_to = Some(k.min(n - 1)),
-                gui::FromUi::LevelDb(db) => {
-                    level_db = db.clamp(LEVEL_MIN_DB, max_db);
-                    mix.set_level(level_db);
-                    out.show(gui::ToUi::Level { db: level_db });
-                }
-                // A drag on a Q-Link card on the Play page: as the knob turned.
-                gui::FromUi::QLink { knob, delta } => {
-                    if let Some(e) = app.qlink(knob, delta, None) {
-                        fx.extend(e);
-                    } else if knob == 0 {
-                        level_db =
-                            (level_db + LEVEL_STEP_DB * delta as f32).clamp(LEVEL_MIN_DB, max_db);
-                        mix.set_level(level_db);
-                        out.show(gui::ToUi::Level { db: level_db });
-                    }
-                }
-                gui::FromUi::PadsLayout { in_key } => fx.extend(app.synth_pick_layout(in_key)),
-                gui::FromUi::TapTempo => fx.extend(app.tap_on_screen(t)),
-                // A strip's insert row or "+": the chain editor in the mixer's place.
-                gui::FromUi::Mixer(mpfree_mixer_ui::MixAction::OpenInsert { strip, slot }) => {
-                    fx.extend(panels.open_insert(&mut app, &mix, strip, Some(slot)))
-                }
-                gui::FromUi::Mixer(mpfree_mixer_ui::MixAction::AddInsert { strip }) => {
-                    fx.extend(panels.open_insert(&mut app, &mix, strip, None))
-                }
-                // The Sample tab's FX: the chain editor on the pad's channel.
-                gui::FromUi::SampleFx { pad } => {
-                    fx.extend(panels.open_pad(&mut app, pad, mixing::DRUMS))
-                }
-                gui::FromUi::Chain(a) => {
-                    let recording = time.info().state == mpfree_transport::State::Recording;
-                    fx.extend(panels.chain(&mut app, &mut mix, &a, recording, &mut |m| {
-                        // MIDI Learn arms with the Q-Link learn: a control
-                        // moved on a keyboard can take the knob too (M5).
-                        if let gui::ToUi::ChainLearn(addr) = &m {
-                            music.arm(*addr);
-                        }
-                        out.show(m)
-                    }))
-                }
-                gui::FromUi::ChainLearned => {
-                    panels.learned();
-                    music.disarm();
-                }
-                gui::FromUi::Macros(a) => {
-                    let recording = time.info().state == mpfree_transport::State::Recording;
-                    fx.extend(panels.macros(&mut app, &mut mix, &a, recording))
-                }
-                gui::FromUi::OpenMacros(bank) => {
-                    fx.extend(panels.open_macros(&mut app, &mut mix, bank))
-                }
-                // The mixer panel. Its master fader is the Level, so the Play page follows it.
-                gui::FromUi::Mixer(a) => {
-                    if let Some(db) = mix.action(&a) {
-                        level_db = db;
-                        out.show(gui::ToUi::Level { db: level_db });
-                    }
-                }
-                gui::FromUi::MixerIcon => fx.extend(app.toggle_mixer(false)),
-                gui::FromUi::IoIcon => fx.extend(app.toggle_io(io_shown(&mix))),
-                gui::FromUi::OpenIo => fx.extend(app.open_io()),
-                // The Play page: filters, sends, faders, speakers, throws, XY.
-                gui::FromUi::PlayFx(p) => mix.play(p),
-                gui::FromUi::Steps(a) => match time.step_action(a) {
-                    Ok(line) if !line.is_empty() => out.note(&line),
-                    Ok(_) => {}
-                    Err(e) => out.note(&format!("steps: {e}")),
-                },
-                gui::FromUi::Tab(k) => fx.extend(app.tab(k)),
-                gui::FromUi::MenuSelect(k) => fx.extend(app.select(k)),
-                gui::FromUi::MenuStep(k, d) => fx.extend(app.step_item(k, d)),
-                gui::FromUi::GuideButton(k) => fx.extend(app.guide_button(k)),
-                gui::FromUi::Arp(a) => fx.extend(app.arp_action(a)),
-                gui::FromUi::Workspace(a) => fx.extend(app.workspace_action(*a)),
-                gui::FromUi::ArpChip => fx.extend(app.toggle_panel()),
-                gui::FromUi::Time(a) => fx.extend(time_action(
-                    out,
-                    &mut time,
-                    &mut tracks,
-                    &looper,
-                    &mut app,
-                    &mut mix,
-                    a,
-                )),
-                gui::FromUi::DebugPage(k) => fx.extend(app.debug_page(k)),
                 gui::FromUi::SaveTouch(t) => {
                     let mut settings = mpfree_store::Settings::default();
                     for (k, v) in t.to_pairs() {
@@ -3601,31 +3535,6 @@ fn player_session(
                     } else if let Err(e) = store.save_settings(app::saved::TOUCH, &settings) {
                         out.note(&format!("not saved: {}: {e}", app::saved::TOUCH));
                     }
-                }
-                gui::FromUi::MapRow(k) => fx.extend(app.map_row(k)),
-                gui::FromUi::MapButton(k) => fx.extend(app.map_button(k)),
-                gui::FromUi::Looper(k) => fx.extend(app.looper_tap(k)),
-                gui::FromUi::SamplePhrase(clip) => match time.put_clip(*clip) {
-                    Ok(line) | Err(line) => out.note(&format!("time: {line}")),
-                },
-                gui::FromUi::LoopLayer { id, command } => {
-                    fx.push(app::Effect::Looper(looping::LoopAction::Layer(id, command)))
-                }
-                gui::FromUi::LoopPick(n) => {
-                    fx.push(app::Effect::Looper(looping::LoopAction::Select(n)))
-                }
-                gui::FromUi::LoopMute(n) => {
-                    fx.push(app::Effect::Looper(looping::LoopAction::ToggleMute(n)))
-                }
-                gui::FromUi::LooperSetting(item, d) => fx.extend(app.looper_setting(item, d)),
-                gui::FromUi::LoopCommand(c) => {
-                    fx.push(app::Effect::Looper(looping::LoopAction::Command(c)))
-                }
-                gui::FromUi::LoopResample(n) => {
-                    fx.push(app::Effect::Looper(looping::LoopAction::Resample(n)))
-                }
-                gui::FromUi::LoopSteps(n) => {
-                    fx.push(app::Effect::Looper(looping::LoopAction::Steps(n)))
                 }
                 gui::FromUi::Synth(SynthAction::Set { id, value }) => {
                     synth.set(id, value);
@@ -3680,10 +3589,6 @@ fn player_session(
                 }
                 gui::FromUi::SampleKey { .. } => {}
                 gui::FromUi::SamplePadLive { kit, values } => player.pad_live(kit, &values),
-                // The Pads tab's switch: the browser or the pad's settings.
-                gui::FromUi::PadsView(v) => {
-                    app.set_pads_browse(v == mpfree_sampler_ui::pads_tab::BROWSE)
-                }
                 // The browser's preview: a new sound replaces the one
                 // playing, which goes back to be freed.
                 gui::FromUi::Preview(p) => {
@@ -3770,6 +3675,8 @@ fn player_session(
                         out.show(gui::ToUi::SynthValues(synth.values()));
                     }
                 }
+                // The desk's, taken above.
+                _ => {}
             }
             parts.item_named(parts::SCREEN_ACTIONS, t_item, &item);
         }
@@ -4084,6 +3991,22 @@ fn player_session(
                 e => e,
             };
             let (t_item, item) = (Instant::now(), parts::Name::of(&e));
+            let mut desk = desk::Desk {
+                app: &mut app,
+                mix: &mut mix,
+                time: &mut time,
+                panels: &mut panels,
+                looper: &mut looper,
+                tracks: &mut tracks,
+                music: &mut music,
+                level_db: &mut level_db,
+                max_db,
+                card: audio,
+            };
+            let Some(e) = desk.effect(e, out, &mut later) else {
+                parts.item_named(parts::APP, t_item, &item);
+                continue;
+            };
             match e {
                 app::Effect::Light(note, value) if akai::app_lights(note) => {
                     // Through CV out's writer while it shares the port.
@@ -4164,36 +4087,11 @@ fn player_session(
                         bank_lights = true;
                     }
                 }
-                app::Effect::Mixer(v) => mix.show(v),
-                // The wheel on the mixer: Q-Link 1 on a strips view, the
-                // section's selection on the I/O view.
-                app::Effect::MixerWheel(d) => out.show(if io_shown(&mix) {
-                    gui::ToUi::IoInput(mpfree_mixer_ui::IoInput::Wheel(d))
-                } else {
-                    gui::ToUi::MixerQLink(0, d)
-                }),
-                app::Effect::MixerStep(d) => {
-                    out.show(gui::ToUi::IoInput(mpfree_mixer_ui::IoInput::Step(d)))
-                }
-                app::Effect::ChainTurn { knob, delta } => {
-                    out.show(gui::ToUi::ChainQLink(knob, delta))
-                }
-                app::Effect::QLinkBank => out.show(gui::ToUi::QLinkBank),
-                app::Effect::SynthPage(d) => out.show(gui::ToUi::SynthPage(d)),
-                app::Effect::SampleWheel(d) => out.show(gui::ToUi::SampleWheel(d)),
-                app::Effect::Rows(k) => out.show(gui::ToUi::Rows(k)),
-                app::Effect::SamplePad(d) => out.show(gui::ToUi::SamplePad(d)),
-                app::Effect::SampleUndo { redo } => out.show(gui::ToUi::SampleUndo(redo)),
                 app::Effect::StopSounds => {
                     player.stop_all();
                     synth.stop();
                 }
                 app::Effect::Audio(p) => audio_change = Some(p),
-                app::Effect::Note(s) => out.note(&s),
-                app::Effect::Tell(s) => {
-                    out.note(&s);
-                    out.show(gui::ToUi::Tell(s));
-                }
                 app::Effect::Quit => stop = true,
                 app::Effect::Show(v) => {
                     // Opening the Synth tab hands the pads to the synth, and
@@ -4205,28 +4103,6 @@ fn player_session(
                     }
                     out.show(gui::ToUi::Show(v));
                 }
-                app::Effect::Menu(m) => out.show(gui::ToUi::Menu(m)),
-                app::Effect::Guide(g) => out.show(gui::ToUi::Guide(g)),
-                app::Effect::Status(s) => out.show(gui::ToUi::Status(s)),
-                app::Effect::Settings(s) => out.show(gui::ToUi::Settings(s)),
-                app::Effect::ClearLogs => out.show(gui::ToUi::ClearLogs),
-                app::Effect::ClearConsole => out.show(gui::ToUi::ClearConsole),
-                app::Effect::TouchLab => out.show(gui::ToUi::TouchLab),
-                app::Effect::CalibrateTouch => out.show(gui::ToUi::CalibrateTouch),
-                app::Effect::TouchWheel(d) => out.show(gui::ToUi::TouchWheel(d)),
-                app::Effect::TouchStep(d) => out.show(gui::ToUi::TouchStep(d)),
-                app::Effect::Arp(v) => out.show(gui::ToUi::Arp(Box::new(v))),
-                app::Effect::Patterns(list) => out.show(gui::ToUi::Patterns(list)),
-                app::Effect::Workspace(w) => out.show(gui::ToUi::Workspace(Box::new(w))),
-                app::Effect::Recorded(p, next) => out.show(gui::ToUi::Recorded(Box::new(p), next)),
-                app::Effect::WorkspaceWheel(d) => out.show(gui::ToUi::WorkspaceWheel(d)),
-                app::Effect::ClipsWheel { delta, scroll } => {
-                    out.show(gui::ToUi::ClipsWheel { delta, scroll })
-                }
-                app::Effect::Map(m) => out.show(gui::ToUi::Map(Box::new(m))),
-                app::Effect::PlayView(v) => out.show(gui::ToUi::PlayView(v)),
-                app::Effect::SampleEditor(e) => out.show(gui::ToUi::SampleEditor(e)),
-                app::Effect::Browse(k) => out.show(gui::ToUi::Browse(k)),
                 // PROG EDIT: the sound the pads play (Jay, 20:40Z).
                 app::Effect::ProgEdit => {
                     let synth_now = kit_to.map_or(synth_on, |k| k == synth_kit);
@@ -4238,11 +4114,6 @@ fn player_session(
                         out.show(gui::ToUi::PadsView(mpfree_sampler_ui::pads_tab::PAD_VIEW));
                         later.extend(app.open_tab(app::View::Pads));
                     }
-                }
-                app::Effect::Fill(on) => time.set_fill(on, 0),
-                app::Effect::Metronome { on, db } => {
-                    time.metronome = on;
-                    time.click_gain = crate::time::click_gain(f32::from(db));
                 }
                 // A PAD BANK button: banks A-H are kits 1-8 (9-16 and the
                 // Grains kit are banks A-H again, from kit 9 on).
@@ -4280,20 +4151,6 @@ fn player_session(
                     }
                     bank_lights = true;
                 }
-                // What it gives back (the tempo's status line and note) is
-                // handled with the next period's effects.
-                app::Effect::Time(a) => later.extend(time_action(
-                    out,
-                    &mut time,
-                    &mut tracks,
-                    &looper,
-                    &mut app,
-                    &mut mix,
-                    a,
-                )),
-                app::Effect::Looper(a) => {
-                    later.extend(looper_action(out, &mut looper, &mut app, audio, a))
-                }
                 app::Effect::SavePatterns(text) => {
                     // The store's own thread writes it and reports the save.
                     if let Err(e) =
@@ -4302,6 +4159,8 @@ fn player_session(
                         out.note(&format!("arp patterns: not saved ({e})"));
                     }
                 }
+                // The desk's, taken above.
+                _ => {}
             }
             parts.item_named(parts::APP, t_item, &item);
         }

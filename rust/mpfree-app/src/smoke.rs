@@ -20,6 +20,7 @@ use mpfree_ui::{Fonts, Gesture, PageTarget, SoftCanvas, Touch};
 
 mod catalogue;
 mod session;
+pub mod walk;
 mod workflows;
 
 pub use session::Session;
