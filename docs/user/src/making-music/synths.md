@@ -14,9 +14,9 @@ There are three ways:
 
 - Give a track its own synth: see [A synth for each track](#a-synth-for-each-track). The pads play it whenever that track is selected, and so do the track's clips.
 - Tap the **Synth** tab. The pads play the synth while you are there and after you leave, until you pick a kit.
-- Or, on the Play page, turn the data wheel past the last kit. The list ends with **Synth: Poly** (or the synth it had before tracks got their own).
+- Or tap the kit chip at the top right and pick the last row, **Synth: Poly** (or the synth it had before tracks got their own). On the Play page, holding **SHIFT** and turning the data wheel past the last kit does the same.
 
-To go back to drums, pick a kit with the data wheel on the Play page, or set the track's instrument back to **Kit**.
+To go back to drums, tap the chip (it names the synth now) and pick a kit, or set the track's instrument back to **Kit**. While the synth has the pads, **PAD BANK** changes their layout and **SHIFT** + the wheel their octave, not the kit.
 
 ## The nine synths
 

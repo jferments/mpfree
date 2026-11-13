@@ -1244,12 +1244,36 @@ impl Widget for ChainView {
         out
     }
 
+    fn steps(&self, t: &Target) -> bool {
+        t.id == "knob" && self.state.params.get(t.index).is_some()
+    }
+
+    /// The data wheel on a knob: a hundredth of its travel per detent (a
+    /// switch with few places moves one place), as a tap, a turn and a lift
+    /// of a finger would.
+    fn step(&mut self, t: &Target, delta: i32, _r: Rect) -> Option<EventKind> {
+        let p = self.state.params.get(t.index)?;
+        let (addr, pos, from) = (p.addr, p.pos, p.value);
+        let value = (1..=100)
+            .map(|n| p.info.from_unit(pos + (delta * n) as f32 * WHEEL_STEP))
+            .find(|v| *v != from)?;
+        if self.state.focus != Some(addr) {
+            self.push(ChainAction::Focus(addr));
+        }
+        self.push(ChainAction::Set { addr, value });
+        self.push(ChainAction::Release(addr));
+        Some(EventKind::Select(self.actions.len()))
+    }
+
     fn touch(&mut self, finger: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
         let before = self.actions.len();
         self.touch_inner(finger, phase, x, y, r);
         (self.actions.len() > before).then_some(EventKind::Select(self.actions.len()))
     }
 }
+
+/// A knob's step per detent of the data wheel, as a share of its travel.
+const WHEEL_STEP: f32 = 0.01;
 
 impl ChainView {
     fn touch_inner(
