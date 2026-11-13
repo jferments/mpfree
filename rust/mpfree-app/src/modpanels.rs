@@ -304,6 +304,7 @@ impl ChainHost {
             ChainAction::RemoveRow(row) => {
                 let _ = h.modu.change(&h.mixer, Change::RemoveRow(row as u8));
             }
+            ChainAction::Picker(on) => self.picking = on,
             ChainAction::Back => return ChainOut::Back,
             ChainAction::Scope(i) => {
                 if i < self.scopes.len() {
@@ -594,7 +595,7 @@ impl Panels {
             .then(|| ChainHost::for_pad(pad, track))
             .flatten();
         let Some(h) = host else {
-            return vec![Effect::Note(format!(
+            return vec![Effect::Tell(format!(
                 "chain: pad {} has no channel of its own in the mixer (only the first {} do)",
                 pad + 1,
                 mixing::PADS
@@ -632,7 +633,7 @@ impl Panels {
         self.sent_at = None;
         match h.action(mix, a, recording) {
             ChainOut::Shown => Vec::new(),
-            ChainOut::OpenPage { .. } => vec![Effect::Note(
+            ChainOut::OpenPage { .. } => vec![Effect::Tell(
                 "chain: an effect's own page comes with the FX pages; its knobs are on the editor"
                     .to_string(),
             )],
@@ -641,7 +642,7 @@ impl Panels {
                 Vec::new()
             }
             ChainOut::Back => app.close_chain(self.over_mix),
-            ChainOut::Refused(why) => vec![Effect::Note(format!("chain: {why}"))],
+            ChainOut::Refused(why) => vec![Effect::Tell(format!("chain: {why}"))],
         }
     }
 
@@ -669,7 +670,7 @@ impl Panels {
         match out {
             MacroOut::Shown => Vec::new(),
             MacroOut::Back => app.close_macros(self.over_mix),
-            MacroOut::Refused(why) => vec![Effect::Note(format!("macros: {why}"))],
+            MacroOut::Refused(why) => vec![Effect::Tell(format!("macros: {why}"))],
         }
     }
 
@@ -815,7 +816,7 @@ mod tests {
         // A pad past the 16 channels opens nothing and says why.
         let fx = p.open_pad(&mut app, 16, DRUMS);
         assert!(
-            matches!(&fx[..], [Effect::Note(n)] if n.contains("only the first 16")),
+            matches!(&fx[..], [Effect::Tell(n)] if n.contains("only the first 16")),
             "{fx:?}"
         );
         assert_eq!(app.view(), View::Sample);

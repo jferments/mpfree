@@ -1,7 +1,7 @@
 <!--
 status: changing
 covers: rust/mpfree-ui/src/widgets.rs rust/mpfree-ui/src/qlink.rs rust/mpfree-app/src/play_page.rs rust/mpfree-app/src/gui.rs
-checked: 2026-11-12 15df706
+checked: 2026-11-13 9560b32
 -->
 
 # The screen
@@ -23,11 +23,11 @@ Every page in MPFree is laid out the same way, so once you know one, you know th
 | **Looper** | Setting up and editing loops. |
 | **Sample** | Recording, chopping and shaping the sound on one pad. |
 
-**The status chips** on the right show what is going on: the kit and pad bank, whether Full Level is on, and anything that needs your attention. The small **mixer icon** at the far right opens the mixer, and the **I/O icon** just left of it opens the mixer's I/O view, where the project's audio, MIDI, sync and CV are routed. While the tempo follows a clock from another device, a tempo chip such as **120.0 from MIDI In** shows it, with a green dot.
+**The status chips** on the right show what is going on: the kit's name and pad bank, how much of the processor (**CPU**) and memory (**RAM**) is in use, whether Full Level is on, and anything that needs your attention. The small **mixer icon** at the far right opens the mixer, and the **I/O icon** just left of it opens the mixer's I/O view, where the project's audio, MIDI, sync and CV are routed. While the tempo follows a clock from another device, a tempo chip such as **120.0 from MIDI In** shows it, with a green dot.
 
 ## The transport bar
 
-On the Play page, a bar under the tabs shows time: whether MPFree is stopped, playing or recording, the position (bar, beat and step), the tempo in BPM, and dots that light up with each bar and beat. On the right of it is the view switch; see [Playing live](../making-music/playing-live.md).
+On the Play page, a bar under the tabs shows time: whether MPFree is stopped, playing or recording, the position (bar, beat and step), the tempo in BPM (tap it in time to set the tempo, as with **TAP TEMPO**), and dots that light up with each bar and beat. On the right of it is the view switch; see [Playing live](../making-music/playing-live.md).
 
 ## The Q-Link column and the master bar
 
@@ -38,6 +38,8 @@ Next to it, the **master bar** shows how loud MPFree's output is, with a meter t
 ## The hint line
 
 The line along the bottom of the screen always says what the buttons do on the page you are on. If you're not sure what to press, look there first.
+
+When something you asked for can't happen, or does nothing, the hint line says why in amber for a few seconds, then goes back to the hint. For example: "The chain is full", or why a sample edit was refused.
 
 ## Things that open over the page
 
