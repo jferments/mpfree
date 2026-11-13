@@ -119,6 +119,9 @@ pub struct TrackHost {
     /// take lanes show.
     panel: Option<usize>,
     takes_open: Option<usize>,
+    /// A region just moved: its track and new start, until the engine has
+    /// it and the screen can pick it again ([`TrackHost::take_repick`]).
+    repick: Option<(usize, Tick)>,
     /// The last `SetActive` sent.
     active: bool,
     /// The input latency last sent (frames), None before the first.
@@ -155,6 +158,7 @@ impl TrackHost {
             solo: [false; MAX_TRACKS],
             panel: None,
             takes_open: None,
+            repick: None,
             active: false,
             latency: None,
             waves: Vec::with_capacity(mpfree_audiotracks::MAX_TAKES),
@@ -209,6 +213,21 @@ impl TrackHost {
         if self.latency != Some(frames) && self.host.command(Command::SetLatency(frames)) {
             self.latency = Some(frames);
         }
+    }
+
+    /// The region just moved, once the engine has it where it went: pick
+    /// it again, as its index may have changed. Cheap: call it as often
+    /// as the change check.
+    pub fn take_repick(&mut self) -> Option<RegionId> {
+        let (track, at) = self.repick?;
+        let index = self
+            .host
+            .tracks
+            .regions(track)
+            .iter()
+            .position(|r| r.start == at)?;
+        self.repick = None;
+        Some(RegionId { track, index })
     }
 
     /// True once after the lanes, the waveforms or the counters changed.
@@ -612,6 +631,34 @@ impl TrackHost {
                     bar_beat(to, t)
                 )
             }
+            AudioAction::Move {
+                region: r,
+                to,
+                fine,
+            } => {
+                let reg = region(tr, r)?;
+                if tr.recording(r.track).is_some() {
+                    return Err(format!(
+                        "audio {}: moving waits until the recording stops",
+                        r.track + 1
+                    ));
+                }
+                let to = if fine { to } else { snap(to) }.max(0);
+                if to == reg.start {
+                    return Ok(String::new());
+                }
+                self.send(Command::Move {
+                    track: r.track,
+                    at: reg.start,
+                    to,
+                })?;
+                self.repick = Some((r.track, to));
+                format!(
+                    "audio {}: region moved to {} (Undo puts it back)",
+                    r.track + 1,
+                    bar_beat(to, t)
+                )
+            }
             AudioAction::UseTake(take) => {
                 let k = tr
                     .take(take)
@@ -812,11 +859,15 @@ fn columns(k: &TakeInfo) -> usize {
 /// The comp grid: a sixteenth note (layout spec 4c; SHIFT is free).
 const GRID: Tick = mpfree_transport::time::PPQ as Tick / 4;
 
+/// A tick to the nearest grid line.
+fn snap(t: Tick) -> Tick {
+    (t + GRID / 2).div_euclid(GRID) * GRID
+}
+
 /// A swipe's stretch on the grid: each end to the nearest line, at least
 /// one step long.
 fn snap_span(from: Tick, to: Tick) -> (Tick, Tick) {
-    let near = |t: Tick| (t + GRID / 2).div_euclid(GRID) * GRID;
-    let (a, b) = (near(from.min(to)), near(from.max(to)));
+    let (a, b) = (snap(from.min(to)), snap(from.max(to)));
     (a, b.max(a + GRID))
 }
 
@@ -1442,6 +1493,93 @@ mod tests {
         r.command(T::Stop);
         r.periods(10);
         assert!(act(&mut r, AudioAction::UseTake(999)).is_err());
+        assert_eq!(r.h.host.tracks.stats().refused, 0);
+    }
+
+    /// Layout spec 4c: dragging a region moves it, snapped to sixteenths
+    /// (free with SHIFT); the screen picks it again where it went.
+    #[test]
+    fn a_dragged_region_moves_on_the_grid_and_is_picked_again() {
+        let mut r = Rig::new();
+        let act = |r: &mut Rig, a| {
+            let out = r.h.action(a, &r.info(), true);
+            r.periods(2);
+            out
+        };
+        act(&mut r, AudioAction::Arm { track: 0, on: true }).unwrap();
+        r.live = true;
+        r.command(T::Record);
+        while r.t.position() < 3840 {
+            r.period();
+        }
+        r.command(T::Stop);
+        r.periods(10);
+        act(
+            &mut r,
+            AudioAction::Arm {
+                track: 0,
+                on: false,
+            },
+        )
+        .unwrap();
+        let reg = RegionId { track: 0, index: 0 };
+        let len = {
+            let g = r.h.host.tracks.regions(0)[0];
+            g.end - g.start
+        };
+        assert_eq!(r.h.take_repick(), None);
+        let line = act(
+            &mut r,
+            AudioAction::Move {
+                region: reg,
+                to: 7690,
+                fine: false,
+            },
+        )
+        .unwrap();
+        assert_eq!(line, "audio 1: region moved to 3.1 (Undo puts it back)");
+        let g = r.h.host.tracks.regions(0)[0];
+        assert_eq!((g.start, g.end), (7680, 7680 + len));
+        assert_eq!(r.h.take_repick(), Some(reg));
+        assert_eq!(r.h.take_repick(), None, "once");
+        // With SHIFT it lands where it was let go.
+        act(
+            &mut r,
+            AudioAction::Move {
+                region: reg,
+                to: 7701,
+                fine: true,
+            },
+        )
+        .unwrap();
+        assert_eq!(r.h.host.tracks.regions(0)[0].start, 7701);
+        // Where it already is: nothing to do.
+        assert_eq!(
+            act(
+                &mut r,
+                AudioAction::Move {
+                    region: reg,
+                    to: 7701,
+                    fine: true,
+                },
+            ),
+            Ok(String::new())
+        );
+        // Undo walks it back.
+        act(&mut r, AudioAction::Undo).unwrap();
+        act(&mut r, AudioAction::Undo).unwrap();
+        assert_eq!(r.h.host.tracks.regions(0)[0].start, 0);
+        let gone = RegionId { track: 0, index: 5 };
+        assert!(act(
+            &mut r,
+            AudioAction::Move {
+                region: gone,
+                to: 0,
+                fine: false
+            }
+        )
+        .unwrap_err()
+        .contains("gone"));
         assert_eq!(r.h.host.tracks.stats().refused, 0);
     }
 

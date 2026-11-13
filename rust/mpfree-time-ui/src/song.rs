@@ -9,7 +9,10 @@
 //! - the buttons along the bottom: `Tab(k)` for [`SONG_BUTTONS`]`[k]`, or
 //!   for [`AUDIO_BUTTONS`]`[k]` while an audio region is picked;
 //! - Rec song, at the right of the title line: `Tab(REC)`;
-//! - an audio region: `Cell { row: audio track, col: region index }`;
+//! - an audio region: `Cell { row: audio track, col: region index }` as
+//!   the finger goes down; dragged sideways and let go, `Marker { index:
+//!   audio track * REGION_SLOTS + region index, frame: its new start in
+//!   song ticks }`;
 //! - an audio lane's header: its arm dot `Toggle(audio track)`, its name
 //!   or input chip `Cell { row: audio track, col: PANEL }` (on the lift,
 //!   unless the finger dragged to scroll);
@@ -98,6 +101,9 @@ pub const MONITORS: [(&str, Monitor); 3] = [
 pub fn input_chip(i: Input) -> &'static str {
     INPUTS.iter().find(|x| x.1 == i).map_or("", |x| x.0)
 }
+/// A region drag's `Marker` index is the audio track times this, plus
+/// the region's index (`mpfree_audiotracks::MAX_REGIONS`).
+pub const REGION_SLOTS: usize = mpfree_audiotracks::MAX_REGIONS;
 /// Audio tracks at most (`mpfree_audiotracks::MAX_TRACKS`).
 pub const MAX_AUDIO: usize = mpfree_audiotracks::MAX_TRACKS;
 /// A lane is never thinner than this: past it the lanes scroll.
@@ -219,6 +225,9 @@ pub struct SongLanes {
     /// A finger swiping across a take lane: the take, where it went down
     /// and where it is now (x).
     pub(crate) swipe: Option<(u16, i32, i32)>,
+    /// A finger dragging an audio region: its lane (an index into
+    /// `audio`), its index, where it went down and where it is now (x).
+    pub(crate) moving: Option<(usize, usize, i32, i32)>,
     /// The first lane shown (MIDI lanes, then audio lanes, then "+ Audio").
     pub first_lane: usize,
     /// A finger on the name column: where it went down, the first lane
@@ -283,6 +292,7 @@ impl Default for SongLanes {
             panel: None,
             takes_open: None,
             swipe: None,
+            moving: None,
             first_lane: 0,
             drag: None,
         }
@@ -413,6 +423,7 @@ impl SongLanes {
         self.first_lane = old.first_lane;
         self.drag = old.drag;
         self.swipe = old.swipe;
+        self.moving = old.moving;
     }
 
     /// A copy with no waveforms (they can be large).
@@ -438,6 +449,7 @@ impl SongLanes {
             panel: self.panel,
             takes_open: self.takes_open,
             swipe: self.swipe,
+            moving: self.moving,
             first_lane: self.first_lane,
             drag: self.drag,
         }
@@ -1242,6 +1254,15 @@ impl Widget for SongLanes {
                 self.paint_region(cx, &g, lane, b, br, picked);
                 cx.canvas.set_clip(old);
             }
+            // A region being dragged: an outline where it would land.
+            if let Some((ma, mi, x0, x1)) = self.moving {
+                if ma == a && (x1 - x0).abs() >= DRAG_SLOP {
+                    if let Some(br) = self.region_rect(r, a, mi) {
+                        let ghost = Rect::new(br.x + x1 - x0, br.y, br.w, br.h);
+                        cx.canvas.stroke_round_rect(ghost, 6, 2, t.accent);
+                    }
+                }
+            }
             // Recording: red from the punch in to the playhead.
             if let (Some(from), Some(now)) = (lane.recording, self.playhead) {
                 let lane_k = self.audio_k(a);
@@ -1311,7 +1332,11 @@ impl Widget for SongLanes {
         let g = self.geo(r);
         let names = Rect::new(g.lanes.x - 12, g.lanes.y, NAME_W + 12, g.lanes.h);
         match phase {
-            Touch::Down => {}
+            Touch::Down => {
+                // A new finger: whatever an earlier one began is over.
+                self.swipe = None;
+                self.moving = None;
+            }
             Touch::Move if self.swipe.is_some() => {
                 if let Some(sw) = self.swipe.as_mut() {
                     sw.2 = x.clamp(g.lanes.x + NAME_W, g.lanes.right());
@@ -1335,6 +1360,25 @@ impl Widget for SongLanes {
                         from: self.tick_at(g.lanes, l),
                         to: self.tick_at(g.lanes, r),
                     }
+                });
+            }
+            Touch::Move if self.moving.is_some() => {
+                if let Some(m) = self.moving.as_mut() {
+                    m.3 = x;
+                }
+                return None;
+            }
+            Touch::Up if self.moving.is_some() => {
+                let (a, i, x0, _) = self.moving.take()?;
+                if (x - x0).abs() < DRAG_SLOP {
+                    return None;
+                }
+                let lane = self.audio.get(a)?;
+                let b = lane.blocks.get(i)?;
+                let to = (b.start + self.tick_at(g.lanes, x) - self.tick_at(g.lanes, x0)).max(0);
+                return Some(EventKind::Marker {
+                    index: lane.track * REGION_SLOTS + i,
+                    frame: to as u64,
                 });
             }
             Touch::Move => {
@@ -1371,6 +1415,7 @@ impl Widget for SongLanes {
             Touch::Cancel => {
                 self.drag = None;
                 self.swipe = None;
+                self.moving = None;
                 return None;
             }
         }
@@ -1409,6 +1454,8 @@ impl Widget for SongLanes {
                 self.region_rect(r, a, i)
                     .is_some_and(|br| br.contains(x, y))
             }) {
+                // Picked as the finger goes down; a drag then moves it.
+                self.moving = Some((a, i, x, x));
                 return Some(EventKind::Cell {
                     row: lane.track,
                     col: i,
@@ -1827,6 +1874,60 @@ mod tests {
         ui.show("p").unwrap();
         let mut c = mpfree_ui::SoftCanvas::new(1280, 800);
         assert!(!ui.paint(&mut c).is_empty());
+    }
+
+    /// Layout spec 4c: a region is picked as the finger goes down; dragged
+    /// sideways and let go, it asks to start where it was dropped.
+    #[test]
+    fn a_dragged_region_asks_for_its_new_start() {
+        let mut s = lanes();
+        s.audio = vec![
+            audio_lane(0, "Vocal", Vec::new()),
+            audio_lane(3, "Bass", vec![block(0, 3840, 0), block(7680, 11520, 1)]),
+        ];
+        let r = Rect::new(12, 140, 814, 534);
+        let g = s.geo(r);
+        let br = s.region_rect(r, 1, 1).unwrap();
+        let (x, y) = (br.x + 10, br.y + 10);
+        let bar_px = s.x_of(g.lanes, 3840) - s.x_of(g.lanes, 0);
+        assert_eq!(
+            s.touch(1, Touch::Down, x, y, r),
+            Some(EventKind::Cell { row: 3, col: 1 })
+        );
+        assert_eq!(s.touch(1, Touch::Move, x + bar_px, y + 3, r), None);
+        let Some(EventKind::Marker { index, frame }) = s.touch(1, Touch::Up, x + bar_px, y, r)
+        else {
+            panic!("no move");
+        };
+        assert_eq!(index, 3 * REGION_SLOTS + 1);
+        assert!((frame as i64 - 11520).abs() < 40, "a bar later: {frame}");
+        // A small wobble is a tap, not a move.
+        s.touch(2, Touch::Down, x, y, r);
+        assert_eq!(s.touch(2, Touch::Up, x + 3, y, r), None);
+        // Never before the song's start.
+        s.touch(3, Touch::Down, x, y, r);
+        let Some(EventKind::Marker { frame, .. }) = s.touch(3, Touch::Up, x - 4 * bar_px, y, r)
+        else {
+            panic!("no move");
+        };
+        assert_eq!(frame, 0);
+        // A drag in progress draws where it would land.
+        s.touch(4, Touch::Down, x, y, r);
+        s.touch(4, Touch::Move, x + 40, y, r);
+        assert!(s.moving.is_some());
+        let mut ui = mpfree_ui::Ui::new(
+            mpfree_ui::Theme::dark(),
+            mpfree_ui::Fonts::embedded(),
+            1280,
+            800,
+        );
+        ui.add("song", s.clone());
+        ui.add_page("p", "song").unwrap();
+        ui.show("p").unwrap();
+        let mut c = mpfree_ui::SoftCanvas::new(1280, 800);
+        assert!(!ui.paint(&mut c).is_empty());
+        assert_eq!(s.touch(4, Touch::Cancel, x + 40, y, r), None);
+        assert_eq!(s.moving, None);
     }
 
     #[test]

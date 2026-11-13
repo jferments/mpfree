@@ -75,6 +75,7 @@ To record onto an audio track:
 - Tap a region to pick it. The buttons along the bottom become **Split**, **Erase**, **Fades**, **Gain**, **Takes** and **Undo** for that region. Tap empty space to go back to the song's own buttons.
   - **Split** cuts the region at the playhead, so put the playhead inside it first.
   - **Erase** takes the region out. **Undo** brings it back.
+  - **Drag** a region sideways to move it. It snaps to sixteenth notes; hold SHIFT to move it freely. It stays picked where it lands, and **Undo** puts it back.
   - While a region is picked, the four Q-Links on the right turn the track's **Level** (Q1) and **Pan** (Q2), and the region's **Gain** (Q3) and **Fades** (Q4, the fade in and the fade out together). Hold SHIFT for fine steps. **Gain** and **Fades** in the bottom row point you to those knobs.
 - **Takes** (in the track panel, or in the bottom row with a region picked) opens the track's **take lanes**: a thin lane for each recording under the track's lane, newest first. Each take lane shows that take's waveform, brighter where the track plays it now. Tap **Takes** again to close them.
   - **Swipe** across a take lane to play that stretch of the take on the track, in place of what was there. The swipe snaps to sixteenth notes; hold SHIFT for a free swipe.
@@ -89,7 +90,7 @@ To record onto an audio track:
 - The audio tracks share one minute of stereo memory; **Audio track memory** in [Prefs](../reference/prefs.md) sets 30 seconds to 10 minutes, from the next start. The Song view's legend says how much is free ("Audio 0:42 of 1:00 free"). A recording that runs out of memory stops there and keeps what it got.
 
 > [!NOTE]
-> Coming: dragging a region to move it, and saving audio tracks with the project. In this build recorded audio is gone when MPFree stops.
+> Coming: saving audio tracks with the project. In this build recorded audio is gone when MPFree stops.
 
 ## Recording a performance into the song
 
