@@ -1,22 +1,27 @@
-//! Keys: an electric piano, two physical models behind one set of pages.
+//! Keys: an electric piano, two physical models behind one set of pages,
+//! built from the measurements in `docs/dev/research/electric-piano.md`:
+//! the vibrating part moves almost as a sine, and the pickup makes the tone.
 //!
-//! - **Tine**: a hammer strikes a stiff steel tine. Each voice is a small
-//!   modal bank (two-pole resonators): the tine's fundamental, which rings
-//!   for seconds, and two inharmonic bending modes that give the bell of
-//!   the attack and die in a fraction of a second. The tine moves in front
-//!   of a magnetic pickup, a soft, asymmetric curve: centred it is nearly
-//!   clean; set off centre (**Pickup**) it adds the second harmonic, and a
-//!   hard hit drives it into the growl players call bark (**Bark**).
-//! - **Reed**: a hammer strikes a flat steel reed in an electrostatic
-//!   pickup: stronger, less inharmonic upper modes, a shorter ring and a
-//!   pickup that breaks up sooner, so it is reedy and buzzes when hit hard.
+//! - **Tine**: a hammer strikes a steel tine. Each voice is a small modal
+//!   bank (two-pole resonators): the fundamental, which rings for seconds,
+//!   and the bending modes at 7.11 and 20.25 times it, which give the bell
+//!   of the attack. The tine moves in a magnetic pickup's bell-shaped field
+//!   ([`flux`]): centred (**Voicing** 0) the octave above the note
+//!   dominates, at the curve's inflection (100) it is nearly pure, and in
+//!   between a hard hit swings it across the curve into the growl players
+//!   call bark (**Bark**; low notes swing wider).
+//! - **Reed**: a hammer strikes a steel reed in an electrostatic pickup
+//!   ([`capacitance`], `1 / (1 - y)`): its decay in two stages, a beating
+//!   pair on its second mode, an RC high-pass and an asymmetric preamp
+//!   with the amplitude tremolo inside it.
 //!
-//! The hammer is a half-sine pulse of unit area: a harder hammer
-//! (**Hardness**, and the velocity through **Vel > tone**) is a shorter
-//! pulse, so it reaches the upper modes and the bell. The voices sum to a
-//! mono bus, as in the instrument, then a tilt **Tone**, an amp **Drive**
-//! and the **Tremolo** (pan or amplitude) make the stereo output. **Key
-//! noise** is the thump of the hammer and the damper.
+//! The pickup is a Hammerstein model: the curve of the displacement, then
+//! its change (Faraday's law, or a capacitor's current). The hammer is a
+//! half-sine contact of unit area whose length follows a nonlinear contact
+//! law ([`contact_secs`]). The voices sum to a mono bus, as in the
+//! instrument, then key noise, a tilt **Tone**, the **Drive** (or the
+//! reed's preamp) and the **Tremolo** (pan or amplitude) make the stereo
+//! output.
 //!
 //! Notes: a key held rings with Decay (higher notes shorter); letting go
 //! damps it over Release. Playing a note that is still ringing strikes the
@@ -24,10 +29,10 @@
 //! oldest note (released ones first) fades out over 3 ms. Pressure is
 //! ignored.
 //!
-//! Pitch (transpose, fine, bend), the tremolo and parameter changes run at
-//! a control rate of one step every [`CTRL`] frames aligned to the absolute
-//! frame, so the output does not depend on how the host cuts blocks.
-//! Nothing allocates; `process` never allocates.
+//! Pitch (transpose, fine, bend), the tremolo and retuning run at a control
+//! rate of one step every [`CTRL`] frames aligned to the absolute frame, so
+//! the output does not depend on how the host cuts blocks. Nothing
+//! allocates, not even `prepare`.
 
 use mpfree_node::{Ctx, Kind, Node, NodeEvent, NodeInfo, ParamInfo, Smooth, Timed, Tuning};
 
