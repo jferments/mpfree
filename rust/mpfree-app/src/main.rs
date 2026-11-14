@@ -94,6 +94,7 @@ mod debug_page;
 mod desk;
 mod drawing;
 mod engines;
+mod export;
 mod fxmodes;
 mod gui;
 mod instruments;
@@ -2612,6 +2613,36 @@ struct SeqPads<'a> {
     /// Tracks with their own instrument play it (instruments.rs), not the
     /// pads.
     own: &'a mut instruments::Instruments,
+    /// While an export runs, every event goes to its MIDI file too, as
+    /// MIDI Out would send it (export.rs).
+    tap: &'a mut export::Tap,
+}
+
+/// What the Export panel and plan need to know about the song (export.rs),
+/// gathered when Export is pressed.
+fn export_facts(
+    time: &time::TimeHost,
+    mix: &mixing::MixHost,
+    midi_out: &midi_out::MidiOut,
+    music: &midi_in::MusicIn,
+    cv_out: &cv_out::CvOut,
+    app: &app::App,
+    looper: &looping::LoopHost,
+) -> export::Facts {
+    let tracks = export::track_names(time);
+    let rig = mpfree_export::Rig {
+        external_midi: (0..tracks.len())
+            .filter(|&t| midi_out.takes(t as u16))
+            .map(|t| tracks[t].clone())
+            .collect(),
+        line_input: app.settings.line_input || looper.line.is_open(),
+        cv: cv_out.in_use(),
+        clock_out: midi_out.sends_clock(),
+        clock_in: music.leader_name().map(str::to_string),
+        offload: false,
+        plugins: export::plugins_in(&mix.mixer, &mix.instruments),
+    };
+    export::Facts::gather(time, mix, rig)
 }
 
 /// A learned MIDI control's value (0 to 1 over the parameter's range) set
@@ -2854,6 +2885,7 @@ impl time::Pads for SeqPads<'_> {
         };
         let is = midi_out::NoteIs::Pad(pad_notes(self.synth.as_deref(), pad));
         self.cv.send(o, is);
+        self.tap.send(o, is);
         let taken = self.midi.send(o, is) || self.clip_own(o);
         if let (true, Event::NoteOn { velocity, .. }) = (taken, o.event) {
             if let Some(f) = self.flashes.get_mut(pad) {
@@ -2979,7 +3011,9 @@ impl SeqPads<'_> {
             // A pad's note-off and pressure go to what its note-on sent.
             (false, _) => NoteIs::Pad(&[]),
         };
-        self.cv.send(&mpfree_play::Out { event, ..*o }, is);
+        let o = mpfree_play::Out { event, ..*o };
+        self.cv.send(&o, is);
+        self.tap.send(&o, is);
     }
 
     /// An arp's note on a track that plays on MIDI Out: sent there with
@@ -3807,6 +3841,9 @@ fn player_session(
     // there. State-changing on the MPC (note bytes on cable 2, never SysEx),
     // so it opens only with --midi-out until a device round has checked it.
     let mut midi_out = midi_out::MidiOut::new(RATE, MIDI_OUT_LEAD);
+    // Export (export.rs): a pass the screen sends plays the song into its
+    // files; its MIDI file hears the notes as MIDI Out would send them.
+    let mut export = export::Host::new();
     if o.midi_out {
         match midi_card().and_then(|card| open_output(card, MUSIC_CABLE, "MIDI Port", out)) {
             Ok(port) => match midi_out.open(port, started) {
@@ -4112,6 +4149,14 @@ fn player_session(
                     }
                 }
                 gui::FromUi::SaveProject => save_asked = true,
+                gui::FromUi::ExportAsk => {
+                    let f = export_facts(&time, &mix, &midi_out, &music, &cv_out, &app, &looper);
+                    out.show(gui::ToUi::ExportFacts(Box::new(f)));
+                }
+                gui::FromUi::Export(run) => match export.begin(run, &mut mix.mixer, &mut time) {
+                    Ok(()) => out.note("export: the pass started"),
+                    Err(run) => out.show(gui::ToUi::ExportOver(run)),
+                },
                 // The loops go in once the old ones have faded out.
                 gui::FromUi::OpenLoops(l) => looper.open(*l),
                 // The audio tracks' part goes in once they are empty.
@@ -5149,6 +5194,7 @@ fn player_session(
             midi: &mut midi_out,
             cv: &mut cv_out,
             own: &mut mix.instruments,
+            tap: &mut export.tap,
         };
         time.period_arps(PERIOD as u32, &mut seq, &mut app.arps);
         seq.midi.period_end(PERIOD as u32, t_read);
@@ -5507,6 +5553,15 @@ fn player_session(
         // The metronome goes on top; it keeps the samples within ±1 itself.
         let p = p.max(time.mix_click(&mut left, &mut right));
         engines.stop(engines::MIX, t_mix);
+        // Export: the pass takes this period's capture points and notes;
+        // once it is over, the transport goes back to where it was and the
+        // pass goes to the screen to finish (export.rs).
+        if export.running() {
+            export.notes(time.block());
+            if let Some(run) = export.period(&mut mix.mixer, &mut time) {
+                out.show(gui::ToUi::ExportOver(run));
+            }
+        }
         // Resampling: the point in the mix the Rec tab records (before the
         // metronome), with the bar lines as late as that point hears them.
         if let (Some(f), sampler::RecSource::Mix(..)) = (rec_feed.as_mut(), rec_source) {
@@ -5589,16 +5644,36 @@ fn player_session(
         let xruns = play.xruns;
         parts.lap(parts::SCREEN);
         engines.stop(engines::PERIOD, period_span);
-        play.write(&frames, i)?;
+        // A fast export runs the periods back to back with the card
+        // stopped (the speakers quiet), as fast as its files take them;
+        // after it the card fills and plays again (export.rs).
+        let fast = export.fast();
+        if fast != play.paused {
+            if fast {
+                play.pause()?;
+            } else {
+                play.resume()?;
+            }
+        }
+        if fast {
+            export.wait_for_room(i);
+        } else {
+            play.write(&frames, i)?;
+        }
         // How much the card has queued now sets the next period's deadline
-        // for the lanes, and times the hits of this period.
+        // for the lanes, and times the hits of this period. In a fast
+        // export the lanes are waited for, never left out.
         let written = Instant::now();
         let delay = play.pcm.delay();
-        lane_until = cores::lane_deadline(
-            written,
-            delay.as_ref().ok().map(|&d| i64::from(d)),
-            play.queued,
-        );
+        lane_until = if fast {
+            written + export::FAST_LANE_WAIT
+        } else {
+            cores::lane_deadline(
+                written,
+                delay.as_ref().ok().map(|&d| i64::from(d)),
+                play.queued,
+            )
+        };
         // A synth left out of this period (late) comes back before anything
         // plays it again.
         synth.settle(lane_until);
@@ -6093,9 +6168,39 @@ struct Playback {
     started: Instant,
     prev: Instant,
     periods: u64,
+    /// A fast export runs: the stream is stopped and nothing is written
+    /// ([`Playback::pause`]).
+    paused: bool,
 }
 
 impl Playback {
+    /// A fast export (export.rs): the stream stops at once, what it had
+    /// queued dropped, so the speakers go quiet and no underrun is
+    /// counted while the loop runs ahead of the card.
+    fn pause(&mut self) -> Result<(), String> {
+        self.pcm
+            .drop_stream()
+            .map_err(|e| format!("pause for the export: {e}"))?;
+        self.paused = true;
+        Ok(())
+    }
+
+    /// The export is over: the stream is prepared and filled with silence
+    /// again, as at the start, and plays on from the next write.
+    fn resume(&mut self) -> Result<(), String> {
+        self.pcm
+            .prepare()
+            .map_err(|e| format!("prepare after the export: {e}"))?;
+        for _ in 0..self.queued {
+            self.pcm
+                .write_frames(&[0i32; PERIOD * 2])
+                .map_err(|e| format!("refill after the export: {e}"))?;
+        }
+        self.paused = false;
+        self.prev = Instant::now();
+        Ok(())
+    }
+
     fn start(pcm: alsa::Pcm, queued: u32) -> Result<Playback, String> {
         pcm.prepare().map_err(|e| format!("prepare: {e}"))?;
         // Queue the whole buffer: the stream starts when it is full.
@@ -6114,6 +6219,7 @@ impl Playback {
             started: Instant::now(),
             prev: Instant::now(),
             periods: 0,
+            paused: false,
         })
     }
 

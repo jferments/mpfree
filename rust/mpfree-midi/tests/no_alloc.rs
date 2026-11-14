@@ -1,7 +1,7 @@
 //! The parts that can run on the audio thread (or the MIDI reader thread)
 //! must not allocate or free once made: routing input, routing output,
-//! writing and pacing a period's bytes, the CV engine, and the monitor's
-//! feed and its drain into the list. MIDI Learn is control-thread code and
+//! writing and pacing a period's bytes, the CV engine, the monitor's feed
+//! and its drain into the list, and the export's note log. MIDI Learn is control-thread code and
 //! is left out.
 //!
 //! This test file is its own program, so its global allocator (a
@@ -15,6 +15,7 @@ use mpfree_midi::cv::{CvAssign, CvEngine, Priority, Scale};
 use mpfree_midi::input::{In, InputMode, InputRouter, Listen};
 use mpfree_midi::monitor::{Dir, Feed, Monitor, KEEP};
 use mpfree_midi::output::{DinPacer, OutQueue, OutRoute, OutputRouter, Timed};
+use mpfree_midi::smf::NoteLog;
 use mpfree_midi::{Msg, PortId, DIN, MAX_PORTS};
 
 struct Counting;
@@ -201,4 +202,27 @@ fn the_monitor_never_allocates_once_made() {
     assert_eq!(CALLS.load(Ordering::Relaxed), 0, "the monitor allocated");
     assert_eq!(m.len(), 1);
     assert!(m.total() > KEEP as u64);
+}
+
+#[test]
+fn the_note_log_never_allocates_once_made() {
+    let mut log = NoteLog::with_capacity(1000);
+    watch(true);
+    for i in 0..1200u64 {
+        let note = (i % 128) as u8;
+        log.push(
+            i * 120,
+            (i % 16) as u16,
+            Msg::NoteOn {
+                ch: 0,
+                note,
+                vel: 100,
+            },
+        );
+    }
+    log.clear();
+    log.push(0, 0, Msg::Program { ch: 0, program: 1 });
+    watch(false);
+    assert_eq!(CALLS.load(Ordering::Relaxed), 0, "the note log allocated");
+    assert_eq!(log.len(), 1);
 }

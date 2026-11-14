@@ -2233,6 +2233,15 @@ impl Node for Cloud {
             self.run(&mut left[from..to], &mut right[from..to]);
         }
     }
+    fn rest_frames(&self) -> u32 {
+        // Its modulation keeps time across silence (reset, the wobble
+        // would start again elsewhere); without it, what it holds is its
+        // tail.
+        if self.v[ids::MODULATION as usize] > 0.0 || self.modu.value > 0.0 {
+            return u32::MAX;
+        }
+        self.tail_frames()
+    }
     fn tail_frames(&self) -> u32 {
         if self.v[13] >= 0.5 {
             return u32::MAX;
