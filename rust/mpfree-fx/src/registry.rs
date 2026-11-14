@@ -15,10 +15,11 @@ use mpfree_node::Node;
 
 use crate::presets as p;
 use crate::{
-    Amp, AutoPan, Character, Chorus, Cloud, Comb, Compressor, Crush, DeEsser, Delay, DjFilter,
-    Drive, Ducker, Eq, Exciter, Flanger, Gate, Harmonizer, Limiter, LoFi, MasterSafety,
-    MultiFilter, MultiTap, MultibandCompressor, Perform, Phaser, PitchCorrect, PitchShifter, Plate,
-    Preset, RingMod, Room, Rotary, Spring, TapeDelay, TransientShaper, Tremolo, Tuner, XyFx,
+    Amp, AutoPan, AutoWah, ChannelStrip, Character, Chorus, Cloud, Comb, Compressor, Crush,
+    DeEsser, Delay, DjFilter, Drive, Ducker, Eq, Exciter, Flanger, FreqShifter, Gate, Granulator,
+    Harmonizer, Limiter, LoFi, MasterSafety, MultiFilter, MultiTap, MultibandCompressor, Perform,
+    Phaser, PitchCorrect, PitchShifter, Plate, Preset, RingMod, Room, Rotary, SampleDelay, Spring,
+    StereoWidth, TalkBox, TapeDelay, TransientShaper, Tremolo, Tuner, XyFx,
 };
 
 /// Where an effect sits in the picker.
@@ -33,7 +34,7 @@ pub enum Category {
     Performance,
     /// Hosted plugins (none in [`EFFECTS`]).
     Plugins,
-    /// The master's safety stage.
+    /// Stereo tools, and the master's safety stage.
     Utility,
 }
 
@@ -175,6 +176,14 @@ pub static EFFECTS: &[FxEntry] = &[
         crate::dynamics::MULTIBAND_PRESETS,
     ),
     e(
+        "mpfree.fx.channel_strip",
+        "Channel strip",
+        "Gate, compressor and EQ in one",
+        Dynamics,
+        || Box::new(ChannelStrip::new()),
+        crate::strip::PRESETS,
+    ),
+    e(
         "mpfree.fx.eq",
         "EQ",
         "Shelves and bands",
@@ -205,6 +214,14 @@ pub static EFFECTS: &[FxEntry] = &[
         EqFilter,
         || Box::new(Comb::new()),
         p::COMB,
+    ),
+    e(
+        "mpfree.fx.autowah",
+        "Auto wah",
+        "A wah that follows the playing",
+        EqFilter,
+        || Box::new(AutoWah::new()),
+        crate::wah::AUTOWAH_PRESETS,
     ),
     e(
         "mpfree.fx.drive",
@@ -311,6 +328,14 @@ pub static EFFECTS: &[FxEntry] = &[
         crate::motion::ROTARY_PRESETS,
     ),
     e(
+        "mpfree.fx.freqshift",
+        "Freq shifter",
+        "Shifts every frequency up or down",
+        Modulation,
+        || Box::new(FreqShifter::new()),
+        crate::shift::PRESETS,
+    ),
+    e(
         "mpfree.fx.delay",
         "Delay",
         "Synced echoes",
@@ -367,6 +392,14 @@ pub static EFFECTS: &[FxEntry] = &[
         crate::rooms::SPRING_PRESETS,
     ),
     e(
+        "mpfree.fx.granulator",
+        "Granulator",
+        "Clouds of tiny grains",
+        DelayReverb,
+        || Box::new(Granulator::new()),
+        crate::grains::PRESETS,
+    ),
+    e(
         "mpfree.fx.pitch",
         "Pitch shifter",
         "Octaves, harmony, doubling",
@@ -391,6 +424,14 @@ pub static EFFECTS: &[FxEntry] = &[
         p::HARMONIZER,
     ),
     e(
+        "mpfree.fx.talkbox",
+        "Talk box",
+        "Makes a sound say vowels",
+        PitchVocal,
+        || Box::new(TalkBox::new()),
+        crate::wah::TALKBOX_PRESETS,
+    ),
+    e(
         "mpfree.fx.perform",
         "Perform FX",
         "Throws, stutters, the XY pad",
@@ -413,6 +454,22 @@ pub static EFFECTS: &[FxEntry] = &[
         Utility,
         || Box::new(Tuner::new()),
         &[],
+    ),
+    e(
+        "mpfree.fx.width",
+        "Stereo width",
+        "Narrower or wider, band by band",
+        Utility,
+        || Box::new(StereoWidth::new()),
+        crate::stereo::WIDTH_PRESETS,
+    ),
+    e(
+        "mpfree.fx.sample_delay",
+        "Sample delay",
+        "Nudges each side by samples",
+        Utility,
+        || Box::new(SampleDelay::new()),
+        crate::stereo::DELAY_PRESETS,
     ),
     FxEntry {
         master_only: true,

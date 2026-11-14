@@ -7,6 +7,7 @@
 //! Any other node (a hosted plugin, the sampler's grains) gets the Synth
 //! tab's pages from its parameter groups.
 
+use mpfree_fx::ids::{autowah, channel_strip as strip, granulator as grains, talkbox, width};
 use mpfree_fx::ids::{
     character, chorus, cloud, comb, compressor as comp, crush, delay, dj_filter as dj, drive,
     ducker, eq, filter, flanger, harmonizer as harm, lofi, master, perform, phaser, pitch,
@@ -187,6 +188,79 @@ fn known(info: &NodeInfo, count: u16) -> Option<Vec<Plan>> {
             }
             Some(pages)
         }
+        "mpfree.fx.autowah" => one(&[
+            autowah::CENTER,
+            autowah::DEPTH,
+            autowah::RESONANCE,
+            autowah::MIX,
+        ]),
+        "mpfree.fx.talkbox" => one(&[
+            talkbox::VOWEL,
+            talkbox::ENV_DEPTH,
+            talkbox::LFO_DEPTH,
+            talkbox::MIX,
+        ]),
+        "mpfree.fx.width" => one(&[width::WIDTH, width::LOW, width::HIGH, width::DELAY]),
+        "mpfree.fx.granulator" => one(&[grains::SIZE, grains::DENSITY, grains::PITCH, grains::MIX]),
+        "mpfree.fx.channel_strip" => Some(vec![
+            pg(
+                "Gate",
+                &[
+                    strip::GATE,
+                    strip::GATE_THRESHOLD,
+                    strip::GATE_RANGE,
+                    strip::GATE_GAIN,
+                    strip::GATE_ATTACK,
+                    strip::GATE_RELEASE,
+                ],
+                &[
+                    strip::GATE_THRESHOLD,
+                    strip::GATE_RANGE,
+                    strip::GATE_ATTACK,
+                    strip::GATE_RELEASE,
+                ],
+            ),
+            pg(
+                "Compressor",
+                &[
+                    strip::COMP,
+                    strip::COMP_THRESHOLD,
+                    strip::RATIO,
+                    strip::REDUCTION,
+                    strip::COMP_ATTACK,
+                    strip::COMP_RELEASE,
+                    strip::MAKEUP,
+                ],
+                &[
+                    strip::COMP_THRESHOLD,
+                    strip::RATIO,
+                    strip::COMP_ATTACK,
+                    strip::MAKEUP,
+                ],
+            ),
+            pg(
+                "EQ",
+                &[
+                    strip::EQ,
+                    strip::LOW_CUT,
+                    strip::ORDER,
+                    strip::OUTPUT,
+                    strip::LOW_FREQ,
+                    strip::MID_FREQ,
+                    strip::MID_Q,
+                    strip::HIGH_FREQ,
+                    strip::LOW_GAIN,
+                    strip::MID_GAIN,
+                    strip::HIGH_GAIN,
+                ],
+                &[
+                    strip::LOW_GAIN,
+                    strip::MID_FREQ,
+                    strip::MID_GAIN,
+                    strip::HIGH_GAIN,
+                ],
+            ),
+        ]),
         _ => None,
     }
 }
