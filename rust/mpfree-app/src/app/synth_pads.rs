@@ -30,7 +30,7 @@
 //! kept, and each bank's layout; the bank playing and the octave are not:
 //! the pads stay where they are.
 
-use super::{App, Effect, Item};
+use super::{App, Effect, Item, View};
 use crate::synth::{Builtin, Engine, A4_MAX, A4_MIN, BANKS};
 use mpfree_arp::scale::pads::{InKeyRows, PadLayout};
 use mpfree_arp::scale::{Scale, NOTE_NAMES, SCALES};
@@ -377,6 +377,13 @@ impl App {
     /// The Instrument row stepped by `d`: the selected track's sound, Kit first,
     /// then the engines and the plugin synths.
     fn step_track_sound(&mut self, d: i32) -> Vec<Effect> {
+        if self.track >= crate::instruments::SLOTS {
+            return vec![Effect::Tell(format!(
+                "Track {} plays the kit: tracks 1 to {} can have their own instrument for now",
+                self.track + 1,
+                crate::instruments::SLOTS
+            ))];
+        }
         let choices = self.sound_choices();
         let now = self.track_sound(self.track).map(|h| h.id);
         let at = choices
@@ -399,6 +406,22 @@ impl App {
             track,
             id: pick.map(|c| c.0),
         }]
+    }
+
+    /// A tap on track `track`'s sound line on Arrange: the Synth tab's
+    /// MENU opens on the Instrument row, for that track (the screen arms
+    /// it, so the selected track follows).
+    pub fn open_track_instrument(&mut self, track: usize) -> Vec<Effect> {
+        if self.view == View::Guide {
+            return Vec::new();
+        }
+        let mut fx = self.set_track(track);
+        if self.view != View::Synth {
+            fx.extend(self.show(View::Synth));
+        }
+        // MENU there: the Options rows, the Instrument row first.
+        fx.extend(self.show(View::Options));
+        fx
     }
 
     /// What track `track` plays as its own instrument (None: the kit).

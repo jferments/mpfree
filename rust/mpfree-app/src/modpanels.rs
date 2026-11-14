@@ -184,6 +184,7 @@ impl ChainHost {
             st.scope = self.scope;
         }
         st.picking = self.picking;
+        st.shelf = h.shelf.clone();
         st
     }
 
@@ -239,16 +240,26 @@ impl ChainHost {
                     s => s,
                 };
             }
-            ChainAction::Add(id) => {
+            ChainAction::Add(id) | ChainAction::AddPreset { id, .. } => {
                 self.picking = false;
                 if len + h.mixer.edits_pending() + h.inserts_building() >= SLOTS {
                     return ChainOut::Refused("The chain is full");
                 }
+                // The picker's presets: the effect is built with it, so
+                // it starts with that sound (no glide from its defaults).
+                let preset = match *a {
+                    ChainAction::AddPreset { id, preset } => mpfree_fx::picker::presets(id)
+                        .get(preset)
+                        .map_or(&[][..], |p| p.values),
+                    _ => &[],
+                };
                 // Built off the audio thread in the app (control.rs), then
                 // put in at the end of the chain.
-                if let Err(why) = h.add_insert(sid, id) {
+                if let Err(why) = h.add_insert_with(sid, id, preset) {
                     return ChainOut::Refused(why);
                 }
+                // Only an effect that is on its way goes into Recent.
+                h.shelf_dirty |= h.shelf.used(id);
                 // It lands once it is built and its strip ducks (about 10
                 // ms); until then the old selection stays.
                 if self.landing.is_none() {
@@ -306,6 +317,7 @@ impl ChainHost {
                 let _ = h.modu.change(&h.mixer, Change::RemoveRow(row as u8));
             }
             ChainAction::Picker(on) => self.picking = on,
+            ChainAction::Favourite { id, on } => h.shelf_dirty |= h.shelf.set_favourite(id, on),
             ChainAction::Back => return ChainOut::Back,
             ChainAction::Scope(i) => {
                 if i < self.scopes.len() {
@@ -965,6 +977,50 @@ mod tests {
             c.action(&mut r.h, &ChainAction::Back, false),
             ChainOut::Back
         );
+    }
+
+    #[test]
+    fn the_picker_adds_with_a_preset_and_keeps_favourites_and_recents() {
+        let mut r = Rig::new();
+        let mut c = ChainHost::from_mixer(drums(), None).unwrap();
+        let preset = &mpfree_fx::picker::presets("mpfree.fx.plate")[1];
+        let add = ChainAction::AddPreset {
+            id: "mpfree.fx.plate",
+            preset: 1,
+        };
+        assert_eq!(c.action(&mut r.h, &add, false), ChainOut::Shown);
+        r.run(20);
+        let chain = r.h.mixer.chain(drums()).unwrap();
+        let slot = chain.len() - 1;
+        let node = chain.node(slot).unwrap();
+        assert_eq!(node.info().id, "mpfree.fx.plate");
+        for &(p, v) in preset.values {
+            assert_eq!(node.param(p), v, "built with {}", preset.name);
+        }
+        // The add went to the front of Recent; a star keeps a favourite.
+        assert_eq!(r.h.shelf.recent, ["mpfree.fx.plate"]);
+        assert!(std::mem::take(&mut r.h.shelf_dirty));
+        let star = ChainAction::Favourite {
+            id: "mpfree.fx.gate",
+            on: true,
+        };
+        c.action(&mut r.h, &star, false);
+        assert!(r.h.shelf.is_favourite("mpfree.fx.gate"));
+        assert!(std::mem::take(&mut r.h.shelf_dirty));
+        c.action(&mut r.h, &star, false);
+        assert!(!r.h.shelf_dirty, "nothing changed, nothing to save");
+        let st = c.state(&r.h);
+        assert!(
+            st.shelf.is_favourite("mpfree.fx.gate"),
+            "the picker shows it"
+        );
+        // An add that is refused stays out of Recent, with nothing to save.
+        assert_eq!(
+            c.action(&mut r.h, &ChainAction::Add("mpfree.fx.nothing"), false),
+            ChainOut::Refused("No such effect")
+        );
+        assert_eq!(r.h.shelf.recent, ["mpfree.fx.plate"]);
+        assert!(!r.h.shelf_dirty);
     }
 
     #[test]

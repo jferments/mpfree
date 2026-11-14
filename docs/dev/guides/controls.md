@@ -189,7 +189,8 @@ The Sample tab edits the pad hit last, with an editor per tab (Wave, Warp, Chop,
 
 These show only in a state no sample screen starts in (a picker, a menu, a dialog open). The workflow tests reach some of them.
 
-- **`chain/pick`**, **`chain/cancel`**: the effect picker: tap an effect to add it; Cancel adds nothing. *Test:* `the_effect_pickers_cancel_adds_nothing`.
+- **`chain/pick`**, **`chain/cancel`**: the effect picker: tap an effect to add it at its defaults (a hold opens its presets); Cancel adds nothing. *Test:* `the_effect_pickers_cancel_adds_nothing`.
+- **`chain/section`**, **`chain/star`**, **`chain/presets`**, **`chain/preset`**, **`chain/presets-back`**, **`chain/page-prev`**, **`chain/page-next`**: the picker's groups down the left (Favourites, Recent, then each category; the open one is unavailable), an effect's star (favourite or not), its presets line (opens its presets), a preset in that list (Defaults first; adds the effect set that way), the way back to the effects, and the pages of a long group. *Tests:* `stars_keep_favourites_and_favourites_open_first`, `a_hold_or_the_presets_line_opens_presets_and_a_tap_adds_one`, `a_long_section_pages` (mpfree-chain-ui), `the_sample_tabs_fx_shows_the_pad_then_the_track`.
 - **`chain/scope`**: on the Sample tab's FX, the pad's chain or its track's. *Test:* `the_sample_tabs_fx_shows_the_pad_then_the_track`.
 - **`macros/editor-done`**, **`macros/editor-range`**, **`macros/editor-curve`**, **`macros/editor-flip`**, **`macros/editor-remove`**: a macro target's editor: its range, curve, flip, remove it, Done.
 - **`mixer/menu`**, **`mixer/output-choice`**: a strip's menu (Freeze, Thaw, Print, Cancel) and the output picker's choices.

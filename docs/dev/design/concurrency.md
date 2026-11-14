@@ -24,12 +24,14 @@ the sound on cores 3 and 2 instead, for the device rounds to compare.
 | `mpfree-report` | The report's lines (`/run/mpfree-app/report.txt`), queued by the audio loop |
 | `mpfree-build` | Builds the chain editor's effects, and drops the ones edits take out |
 | `midi-out`, `cv-out` | MIDI Out and CV out to other gear (`port_writer.rs`), SCHED_FIFO 60 on the MPC |
-| `usb-midi-scan`, `sample-open`, `sample-load`, `preview-load`, `mpfree-print` | Helper threads: USB keyboards, loading sounds, the looper's buffers |
+| `usb-midi-scan`, `sample-open`, `sample-load`, `preview-load` | Helper threads: USB keyboards, loading sounds |
+| `mpfree-print` | The looper's prints and buffers, at idle priority ([below](#the-control-side-and-helper-threads)) |
 | `mpfree-screen` | Touch, the raster, the framebuffer. Ticks the pages every 33 ms and sleeps between ([profiling.md](profiling.md#the-screens-cost)) |
 | `mpfree-touch-bell` | The touchscreen's doorbell: sleeps in read(2) on a second read-only handle on the panel and wakes `mpfree-screen` when it sends something |
 | `mpfree-store` | Saved settings and patterns |
 | `mpfree-journal` | The console's log |
-| `mpfree-stretch`, the Sample tab's worker | Time-stretch jobs |
+| `mpfree-stretch`, the Sample tab's worker | Time-stretch jobs, at idle priority |
+| `autosample` | An auto-sample: at idle priority for one of MPFree's instruments, at normal priority for external gear |
 
 ## The plan, in order
 
@@ -57,7 +59,7 @@ the sound on cores 3 and 2 instead, for the device rounds to compare.
 | Core | Runs |
 | --- | --- |
 | 0 | The screen and touch, the store, the journal; helper threads at normal priority |
-| 1 | Helper threads at normal priority (lights, report, effect building, loading, MIDI and CV out at FIFO 60), background jobs, offload sockets later |
+| 1 | Helper threads at normal priority (lights, report, effect building, loading, MIDI and CV out at FIFO 60), long jobs at idle priority, offload sockets later |
 | 2 | Audio lane B, SCHED_FIFO 69; the reverb returns' lane at SCHED_FIFO 68 |
 | 3 | The audio thread (lane A), SCHED_FIFO 70 |
 
@@ -121,13 +123,35 @@ it could hold the core in the middle of a period. Two fixes:
   (`port_writer.rs`) then ask for SCHED_FIFO 60 on the MPC (below the lanes
   and the audio thread), so each message still leaves on its moment; if
   that is refused the log says so and they run at the normal priority.
+- **Long jobs at idle priority** (14 Nov). The helper threads that do long
+  work nobody waits on frame by frame (`mpfree-stretch`, `mpfree-print`,
+  and `autosample` for one of MPFree's instruments) call
+  `mpfree_lanes::os::idle_job` instead: the same, then SCHED_IDLE, so they
+  run only when cores 0 and 1 have nothing else ready and the screen goes
+  first. At the normal priority a busy job on the screen's core shares it
+  with the screen: on the workstation (kernel 6.18, as the MPC's) a
+  frame's 8 ms of work took 15.4 ms on average and 21 ms at worst beside
+  one, and 8.1 ms (worst 9 ms) beside the same job at idle priority. The
+  kernel still gives an idle thread a sliver, so a job is slowed, never
+  stopped, while the cores are full. An auto-sample of external gear stays
+  at the normal priority, so each note goes out when the input reaches
+  its frame. The app turns this on at its start
+  (`mpfree_lanes::os::set_idle_jobs`, start line `threads: long jobs
+  (stretching, looper prints, sampling a synth) at idle priority, after
+  the screen`); tests leave it off, since every core is busy with other
+  tests there. A refusal leaves the job at the normal priority and is a
+  fallback: within a second the log and the console say `threads: a long
+  job runs at normal priority, idle priority refused (why); N of M since
+  the start`.
 
 Tests: control.rs (lights written in order without waiting; a port that
 stays full is counted and logged; a full queue drops and counts; report
 lines written and the file handed back; effects built and dropped on the
 builder), mixing.rs (effects built off the audio thread land in their
 chain; 40 adds and removes, past the old stall at 32), mpfree-lanes (a
-helper thread goes to the background cores at the normal priority).
+helper thread goes to the background cores at the normal priority; a long
+job runs at idle priority once the program allows it), cores.rs (a
+refusal's log line).
 
 ## Lanes (`rust/mpfree-lanes`)
 

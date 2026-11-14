@@ -1,6 +1,6 @@
 <!--
 status: changing
-covers: rust/mpfree-fx rust/mpfree-fx-ui rust/mpfree-chain-ui rust/mpfree-app/src/chain_page.rs rust/mpfree-app/src/plugins.rs rust/mpfree-plughost/src/rack.rs rust/mpfree-fx/src/perform.rs
+covers: rust/mpfree-fx rust/mpfree-fx-ui rust/mpfree-chain-ui rust/mpfree-app/src/chain_page.rs rust/mpfree-app/src/plugins.rs rust/mpfree-plughost/src/rack.rs rust/mpfree-fx/src/perform.rs rust/mpfree-fx/src/xyfx.rs rust/mpfree-fx/src/picker.rs rust/mpfree-chain-ui/src/picker.rs
 checked: 2026-11-14 b76c3c7
 -->
 
@@ -159,3 +159,5 @@ A plugin's settings are saved with your project. If you open the project on a st
 
 > [!MPC]
 > MPFree's effects open in the chain editor over the mixer rather than in a separate insert window. Effects with a delay of their own, such as Pitch correct, are lined up with the rest of the mix automatically, so nothing drifts out of time.
+>
+> Most MPC effects have an MPFree effect or preset in their place: the MPC's many Delay versions (Mono, Sync, Ping Pong, Analog, LP, HP) are the **Delay** and its presets, Delay Tape is the **Tape delay**, Reverb Small, Medium and In Gate are the **Room reverb**, Reverb Large and AIR Reverb the **Cloud reverb**, AIR Spring Reverb the **Spring reverb**, Distortion Amp the **Amp**, AIR Enhancer the **Exciter**, AIR Maximizer and AIR Limiter the **Limiter**, AIR Noise Gate the **Gate**, AIR Pumper and Mother Ducker the **Ducker**, Decimator and Resampler **Crush**, the AIR Vocal Tuner **Pitch correct**, the AIR Vocal Harmonizer the **Harmonizer**, and XYFX is **XY FX**. Not here yet: Auto Wah, the frequency shifters, AIR Stereo Width, AIR Talkbox and Granulator.
