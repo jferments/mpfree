@@ -75,7 +75,7 @@ The last thing on the master is **Master safety**, a limiter that keeps the outp
 
 ## The effects
 
-These effects can go on any strip. The list of effects groups them: Dynamics, EQ and filter, Drive and colour, Modulation, Delay and reverb, Pitch and vocal, and Performance.
+These effects can go on any strip. The list of effects groups them: Dynamics, EQ and filter, Drive and colour, Modulation, Delay and reverb, Pitch and vocal, Performance, and Utility (the Tuner, Stereo width and Sample delay).
 
 | Effect | What it does |
 |---|---|
@@ -115,6 +115,7 @@ These effects can go on any strip. The list of effects groups them: Dynamics, EQ
 | **Channel strip** | A gate, a compressor and an EQ in one, as on a mixing desk, each switched on or off on its own page. **Order** puts the EQ before or after the gate and compressor. |
 | **Granulator** | Cuts the sound into tiny grains and plays them back as a cloud: higher or lower, scattered, backwards, spread wide. **Freeze** holds what's in it, so a moment hangs in the air while you play over it. |
 | **XY FX** | One effect at a time played from two controls at once, X and Y: see [XY FX](#xy-fx). |
+| **Tuner** | Tunes a guitar, a bass, a voice or a synth: put it on the strip the instrument comes in on (an input, usually) and play one note at a time. It shows the note, how many cents sharp or flat (the needle is green when you're within 3 cents) and the frequency. **Reference** sets the pitch of A, 440 Hz unless your band tunes to something else; **Mute** silences the strip while you tune. It doesn't change the sound and adds no delay. |
 
 Pitch correct and the Harmonizer listen for one voice: a singer, or a solo instrument such as a whistle or a sax, not chords. Set **Range** to fit it: **Low** for bass and baritone voices, **Mid** for most singing, **High** for high voices. They hold the sound back a little while they listen (about 40 ms on Low, 28 on Mid and 17 on High), and the mixer holds everything else back to match, so the mix stays in time. When you sing live through one, High has the shortest delay.
 
@@ -145,7 +146,7 @@ Tap an effect in a strip's insert row to open the **chain editor** on it, in the
 
 The Q-Links turn the selected effect's first four knobs, and the data wheel works as Q-Link 1. **‹ Mixer** goes back to the mixer as you left it.
 
-Above the knobs, a drawing shows what the selected effect does, and changes as you turn: an EQ's curve, a delay's repeats, the Ducker's pump over two beats (or after a kick), the Transient shaper on a drum hit (dashed going in, solid coming out), where the Pitch shifter puts the sound, with the steps its feedback climbs, Pitch correct's steps onto the key's notes (with a dot on the note you are singing), and how far each Harmonizer voice moves on each note of the key.
+Above the knobs, a drawing shows what the selected effect does, and changes as you turn: an EQ's curve, a delay's repeats, the Ducker's pump over two beats (or after a kick), the Transient shaper on a drum hit (dashed going in, solid coming out), where the Pitch shifter puts the sound, with the steps its feedback climbs, Pitch correct's steps onto the key's notes (with a dot on the note you are singing), how far each Harmonizer voice moves on each note of the key, and the Tuner's needle.
 
 The Sample tab's **FX** opens the chain editor too, on the pad you are editing (its own channel, then the Drums track), and Back goes back to the Sample tab (see [Sampling](sampling.md#fx-effects-on-one-pad-or-on-the-whole-kit)).
 

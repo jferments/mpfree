@@ -32,7 +32,7 @@ impl Lcg {
     }
 }
 
-const NAMES: [&str; 20] = [
+const NAMES: [&str; 21] = [
     "filter",
     "dj filter",
     "drive",
@@ -53,6 +53,7 @@ const NAMES: [&str; 20] = [
     "pitch shifter",
     "pitch correct",
     "harmonizer",
+    "tuner",
 ];
 
 fn make(i: usize) -> Box<dyn Node> {
@@ -76,7 +77,8 @@ fn make(i: usize) -> Box<dyn Node> {
         16 => Box::new(TransientShaper::new()),
         17 => Box::new(PitchShifter::new()),
         18 => Box::new(PitchCorrect::new()),
-        _ => Box::new(Harmonizer::new()),
+        19 => Box::new(Harmonizer::new()),
+        _ => Box::new(Tuner::new()),
     }
 }
 

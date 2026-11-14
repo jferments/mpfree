@@ -209,6 +209,54 @@ const KEYS: &[Curated] = &[
     set("Amp", [ek::TREMOLO, ek::TREM_RATE, ek::DRIVE, ek::LEVEL]),
 ];
 
+use mpfree_synth::drawbar_params as eb;
+
+/// Drawbar: the drawbars in two sets (low and high), the tone, and the
+/// rest of what turns (the switches stay on the screen).
+const DRAWBAR: &[Curated] = &[
+    set("Low bars", [eb::DB_16, eb::DB_5_13, eb::DB_8, eb::DB_4]),
+    set("High bars", [eb::DB_2_23, eb::DB_2, eb::DB_1_35, eb::DB_1]),
+    set("Tone", [eb::DRIVE, eb::TONE, eb::CLICK, eb::LEAKAGE]),
+    set("Play", [eb::SCANNER, eb::SPREAD, eb::FINE, eb::LEVEL]),
+];
+
+use mpfree_synth::squelch_params as es;
+
+/// Squelch: the original's four filter knobs, the accent and slide, and
+/// the tone after the filter.
+const SQUELCH: &[Curated] = &[
+    set(
+        "Filter",
+        [es::CUTOFF, es::RESONANCE, es::ENV_MOD, es::DECAY],
+    ),
+    set(
+        "Accent",
+        [es::ACCENT, es::ACCENT_DECAY, es::SLIDE, es::AMP_DECAY],
+    ),
+    set("Tone", [es::DRIVE, es::KEY_TRACK, es::FINE, es::LEVEL]),
+];
+
+use mpfree_synth::analog_params as ea;
+
+/// Analog: the filter's four knobs, the envelopes' times, the vibrato and
+/// poly-mod depths, and the voice: how worn the cards are, the second
+/// oscillator's detune, the unison spread and the level.
+const ANALOG: &[Curated] = &[
+    set(
+        "Filter",
+        [ea::CUTOFF, ea::RESONANCE, ea::ENV_AMT, ea::DRIVE],
+    ),
+    set(
+        "Env",
+        [ea::F_ATTACK, ea::F_DECAY, ea::A_ATTACK, ea::A_RELEASE],
+    ),
+    set(
+        "Mod",
+        [ea::LFO_RATE, ea::LFO_PITCH, ea::PM_ENV, ea::PM_OSC2],
+    ),
+    set("Voice", [ea::AGE, ea::OSC2_FINE, ea::UNI_DETUNE, ea::LEVEL]),
+];
+
 use mpfree_synth::drum_params::{field as df, pad_id, PADS, STRIDE};
 
 /// Drums, on pad 1 ([`on_pad`] moves them): the hit, its body, its mix.
@@ -251,6 +299,9 @@ fn curated(id: &str) -> Option<&'static [Curated]> {
         "mpfree.wavetable" => Some(WT),
         "mpfree.pluck" => Some(PLUCK),
         "mpfree.keys" => Some(KEYS),
+        "mpfree.drawbar" => Some(DRAWBAR),
+        "mpfree.squelch" => Some(SQUELCH),
+        "mpfree.analog" => Some(ANALOG),
         DRUMS_ID => Some(DRUMS),
         _ => None,
     }
@@ -446,10 +497,13 @@ mod tests {
     use super::*;
     use mpfree_mod::Bindings;
     use mpfree_node::{Curve, Kind, Node, Unit};
-    use mpfree_synth::{Drums, Fm, Keys, Pluck, Poly, Wavetable};
+    use mpfree_synth::{Analog, Drawbar, Drums, Fm, Keys, Pluck, Poly, Squelch, Wavetable};
 
     fn engines() -> Vec<Box<dyn Node>> {
         vec![
+            Box::new(Analog::new(48_000)),
+            Box::new(Squelch::new(48_000)),
+            Box::new(Drawbar::new(48_000)),
             Box::new(Keys::new(48_000)),
             Box::new(Poly::new(48_000)),
             Box::new(Fm::new(48_000)),

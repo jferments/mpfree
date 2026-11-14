@@ -110,6 +110,65 @@ impl Rect {
             Rect::new(self.x, self.y, self.w - w, self.h),
         )
     }
+
+    /// The parts of this rectangle that none of `others` covers, as
+    /// rectangles that do not overlap: bands of rows, each cut into the
+    /// runs between the others, with alike bands one above the other
+    /// joined.
+    pub fn uncovered(&self, others: &[Rect]) -> Vec<Rect> {
+        let cut: Vec<Rect> = others
+            .iter()
+            .map(|o| o.intersect(*self))
+            .filter(|o| !o.is_empty())
+            .collect();
+        let mut ys: Vec<i32> = cut.iter().flat_map(|o| [o.y, o.bottom()]).collect();
+        ys.extend([self.y, self.bottom()]);
+        ys.sort_unstable();
+        ys.dedup();
+        let mut out: Vec<Rect> = Vec::new();
+        // The runs of the band just done, by their index in `out`.
+        let mut last: Vec<usize> = Vec::new();
+        for band in ys.windows(2) {
+            let (y0, y1) = (band[0], band[1]);
+            if y1 <= y0 || self.is_empty() {
+                continue;
+            }
+            let mut spans: Vec<(i32, i32)> = cut
+                .iter()
+                .filter(|o| o.y <= y0 && o.bottom() >= y1)
+                .map(|o| (o.x, o.right()))
+                .collect();
+            spans.sort_unstable();
+            let mut runs = Vec::new();
+            let mut x = self.x;
+            for (a, b) in spans {
+                if a > x {
+                    runs.push((x, a));
+                }
+                x = x.max(b);
+            }
+            if x < self.right() {
+                runs.push((x, self.right()));
+            }
+            let alike = runs.len() == last.len()
+                && runs.iter().zip(&last).all(|(&(a, b), &i)| {
+                    let r = out[i];
+                    r.x == a && r.right() == b && r.bottom() == y0
+                });
+            if alike {
+                for &i in &last {
+                    out[i].h += y1 - y0;
+                }
+            } else {
+                last.clear();
+                for (a, b) in runs {
+                    last.push(out.len());
+                    out.push(Rect::new(a, y0, b - a, y1 - y0));
+                }
+            }
+        }
+        out
+    }
 }
 
 #[cfg(test)]
@@ -137,5 +196,48 @@ mod tests {
         assert_eq!(r.take_right(30).0, Rect::new(80, 20, 30, 50));
         assert_eq!(r.take_left(200).1.w, 0);
         assert_eq!(r.inset(30), Rect::new(40, 50, 40, 0));
+    }
+
+    #[test]
+    fn what_is_left_uncovered() {
+        let screen = Rect::new(0, 0, 100, 60);
+        // Two panels side by side with a margin and a gap: the frame and the
+        // gap are left, in few rectangles.
+        let panels = [Rect::new(5, 5, 40, 50), Rect::new(50, 5, 45, 50)];
+        assert_eq!(
+            screen.uncovered(&panels),
+            vec![
+                Rect::new(0, 0, 100, 5),
+                Rect::new(0, 5, 5, 50),
+                Rect::new(45, 5, 5, 50),
+                Rect::new(95, 5, 5, 50),
+                Rect::new(0, 55, 100, 5),
+            ]
+        );
+        assert_eq!(screen.uncovered(&[]), vec![screen]);
+        assert!(screen.uncovered(&[Rect::new(-5, -5, 200, 200)]).is_empty());
+        // Random overlapping rectangles: every pixel is in exactly one of
+        // the others or the uncovered parts, never in two uncovered parts.
+        let mut seed = 0x2545_F491_4F6C_DD1Du64;
+        let mut next = |n: i32| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed % n as u64) as i32
+        };
+        for _ in 0..200 {
+            let others: Vec<Rect> = (0..next(8))
+                .map(|_| Rect::new(next(110) - 5, next(70) - 5, next(50), next(40)))
+                .collect();
+            let left = screen.uncovered(&others);
+            for y in -2..62 {
+                for x in -2..102 {
+                    let n = left.iter().filter(|r| r.contains(x, y)).count();
+                    let covered = others.iter().any(|o| o.contains(x, y));
+                    let want = usize::from(screen.contains(x, y) && !covered);
+                    assert_eq!(n, want, "({x}, {y}) with {others:?}: {left:?}");
+                }
+            }
+        }
     }
 }

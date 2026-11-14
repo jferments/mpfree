@@ -272,7 +272,19 @@ impl MixState {
     /// master, and their meters since the last call (it takes the peaks
     /// and, while profiling, the probe windows). `name` names each strip.
     pub fn from_mixer(m: &mut Mixer, view: MixView, name: &dyn Fn(StripId) -> String) -> MixState {
-        let ids: Vec<StripId> = match view {
+        Self::from_mixer_where(m, view, name, &|_| true)
+    }
+
+    /// [`MixState::from_mixer`] with only the strips `keep` keeps (the
+    /// master always): the others aren't read at all, so a mixer with many
+    /// unused tracks costs no more to show than the ones in use.
+    pub fn from_mixer_where(
+        m: &mut Mixer,
+        view: MixView,
+        name: &dyn Fn(StripId) -> String,
+        keep: &dyn Fn(StripId) -> bool,
+    ) -> MixState {
+        let mut ids: Vec<StripId> = match view {
             MixView::Tracks => (0..m.tracks()).map(StripId::Track).collect(),
             MixView::Pads => (0..m.pads()).map(StripId::Pad).collect(),
             MixView::Inputs => (0..m.inputs()).map(StripId::Input).collect(),
@@ -287,6 +299,7 @@ impl MixState {
                 .chain((0..BUSES).map(StripId::Bus))
                 .collect(),
         };
+        ids.retain(|&s| keep(s));
         let strips = ids.iter().map(|&s| read_strip(m, s, name)).collect();
         let master = read_strip(m, StripId::Master, name);
         let rate = m.rate();
