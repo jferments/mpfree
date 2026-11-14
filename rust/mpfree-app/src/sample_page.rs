@@ -2584,6 +2584,7 @@ impl SamplePage {
             return;
         };
         if if redo { p.redo() } else { p.undo() } {
+            self.edits += 1;
             if let Some(d) = self.dirty.get_mut(kit) {
                 *d = true;
             }
@@ -4054,6 +4055,7 @@ impl SamplePage {
                 let stored = scene::Scene::of(project);
                 let n = stored.sounds();
                 project.scenes[k] = Some(stored);
+                self.edits += 1;
                 // Saved with the kit; the new view puts the crossfader's
                 // values back (take_view).
                 if let Some(d) = self.dirty.get_mut(kit) {

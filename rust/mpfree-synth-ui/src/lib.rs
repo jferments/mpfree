@@ -20,6 +20,10 @@
 //!   their decays).
 //! - [`wt_visual`]: the Wavetable synth's: each table as a 3D stack of
 //!   frames with the one its Position reads drawn bright and warped.
+//! - [`inst_visual`]: the instrument engines': Keys (the pickup, the
+//!   hammer, decays, tremolo), Drawbar (the drawbars, the wave, the
+//!   percussion, the rotor), Squelch (the wave, the filter, the sweep) and
+//!   Analog (the oscillators, the filter, envelopes, LFO, the voice cards).
 //! - [`format`]: value text (260 Hz, 2.5 kHz, +3.2 oct).
 //! - [`draw`]: anti-aliased lines and arcs through `Canvas::blend_mask`.
 //! - [`sample`]: sample screens for the workstation preview and the tests.
@@ -31,6 +35,7 @@
 pub mod draw;
 pub mod fm_visual;
 pub mod format;
+pub mod inst_visual;
 pub mod kit_visual;
 pub mod pages;
 pub mod qsets;

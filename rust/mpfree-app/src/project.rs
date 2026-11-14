@@ -1384,10 +1384,12 @@ mod tests {
     #[test]
     fn a_tracks_instrument_that_cannot_be_made_is_left_out_and_said() {
         let plugins = crate::plugins::Plugins::none();
+        // One past the last track (numbered from 1, as the part names them).
+        let past = crate::instruments::TRACKS + 1;
         let text = format!(
             "{INSTRUMENTS_FORMAT}\n\
              track 1 clap:com.example.synth file=synth.clap\nparam 0 1\nstate AAEC\n\
-             track 99 mpfree.poly\nparam 0 1\n\
+             track {past} mpfree.poly\nparam 0 1\n\
              track 2 mpfree.poly\nparam 9999 1\nsparkle 3\n\
              track 2 mpfree.fm\n\
              track 3 mpfree.theremin\n"
@@ -1403,7 +1405,7 @@ mod tests {
                 && notes[0].ends_with("the track plays the kit"),
             "{notes:?}"
         );
-        assert!(notes[1].contains("track 99"), "{notes:?}");
+        assert!(notes[1].contains(&format!("track {past}")), "{notes:?}");
         assert!(notes[2].contains("track 2") && notes[2].contains("named twice"));
         assert!(notes[3].contains("mpfree.theremin") && notes[3].contains("can't make it"));
 

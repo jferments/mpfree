@@ -200,6 +200,46 @@ pub fn bar_level(pos: f32) -> f32 {
     }
 }
 
+/// Percussion's level against a drawbar at 8, `t` seconds after it fires,
+/// for the values `v` (0 while it is off). For the Synth tab's picture.
+pub fn perc_level(v: impl Fn(u16) -> f32, t: f32) -> f32 {
+    if v(PERC) < 0.5 {
+        return 0.0;
+    }
+    let level = if v(PERC_VOL) >= 0.5 {
+        PERC_SOFT
+    } else {
+        PERC_NORMAL
+    };
+    let t60 = if v(PERC_DECAY) >= 0.5 {
+        PERC_SLOW_S
+    } else {
+        PERC_FAST_S
+    };
+    level * (-6.9078 * t.max(0.0) / t60).exp()
+}
+
+/// The fastest a rotor turns, in turns per second (the horn on Fast).
+pub const ROTOR_MAX: f32 = HORN_FAST;
+
+/// The horn's and the drum's speeds in turns per second, `t` seconds
+/// after **Speed** is switched to `speed` (0 Stop, 1 Slow, 2 Fast): from
+/// Slow to Fast, or from Fast to Slow or Stop. For the Synth tab's
+/// picture.
+pub fn rotor_ramp(speed: f32, t: f32) -> (f32, f32) {
+    let ((h0, d0), (h1, d1)) = match speed.round() as i32 {
+        0 => ((HORN_FAST, DRUM_FAST), (0.0, 0.0)),
+        1 => ((HORN_FAST, DRUM_FAST), (HORN_SLOW, DRUM_SLOW)),
+        _ => ((HORN_SLOW, DRUM_SLOW), (HORN_FAST, DRUM_FAST)),
+    };
+    let up = h1 > h0;
+    let go = |from: f32, to: f32, tau: f32| to + (from - to) * (-t.max(0.0) / tau).exp();
+    (
+        go(h0, h1, if up { HORN_UP_S } else { HORN_DOWN_S }),
+        go(d0, d1, if up { DRUM_UP_S } else { DRUM_DOWN_S }),
+    )
+}
+
 /// A contact that never bounces.
 const NEVER: u16 = u16::MAX;
 

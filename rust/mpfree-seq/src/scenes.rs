@@ -90,9 +90,10 @@ impl Follow {
 pub struct Scene {
     /// Empty: shown as its number.
     pub name: String,
-    /// Tracks muted while it plays (bit `t` is track `t`), switched when
-    /// it starts; `None` leaves them as they are.
-    pub mutes: Option<u16>,
+    /// Tracks muted while it plays (bit `t` is track `t`, one bit for
+    /// each of [`MAX_TRACKS`]), switched when it starts; `None` leaves
+    /// them as they are.
+    pub mutes: Option<u128>,
     pub follow: Option<Follow>,
     /// Parameter values (in each parameter's own units) for the morph.
     pub values: Vec<(ParamAddr, f32)>,
@@ -110,7 +111,7 @@ impl Scene {
     /// the scene leaves it as it is.
     pub fn mutes_track(&self, t: usize) -> Option<bool> {
         let m = self.mutes?;
-        Some(t < 16 && m & (1 << t) != 0)
+        Some(t < MAX_TRACKS && m & (1 << t) != 0)
     }
 
     pub fn check(&self) -> Result<(), ModelError> {
@@ -119,7 +120,8 @@ impl Scene {
         }
         if self
             .mutes
-            .is_some_and(|m| MAX_TRACKS < 16 && m >> MAX_TRACKS != 0)
+            .and_then(|m| m.checked_shr(MAX_TRACKS as u32))
+            .is_some_and(|rest| rest != 0)
         {
             return Err(ModelError::BadScene);
         }
@@ -242,6 +244,12 @@ mod tests {
         s.mutes = Some(0b101);
         assert_eq!(s.mutes_track(0), Some(true));
         assert_eq!(s.mutes_track(1), Some(false));
+        assert_eq!(s.check(), Ok(()));
+        // The last of 128 tracks has its bit too.
+        s.mutes = Some(1 << 127 | 1);
+        assert_eq!(s.mutes_track(127), Some(true));
+        assert_eq!(s.mutes_track(126), Some(false));
+        assert_eq!(s.mutes_track(128), Some(false));
         assert_eq!(s.check(), Ok(()));
     }
 }

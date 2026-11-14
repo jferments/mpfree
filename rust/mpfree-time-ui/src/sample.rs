@@ -399,6 +399,78 @@ pub fn project() -> Project {
     p
 }
 
+/// The sample project grown to 24 tracks (Jay, 14 Nov: up to 128, like
+/// Akai's MPC): the eight above, then sixteen more with a clip or two.
+pub fn big_project() -> Project {
+    let mut p = project();
+    // (track name, [(slot, clip name, length)])
+    type Clips = &'static [(usize, &'static str, Tick)];
+    let more: [(&str, Clips); 16] = [
+        ("Keys", &[(0, "Rhodes", 4 * BAR), (1, "Rhodes B", 4 * BAR)]),
+        ("Lead", &[(1, "Hook", 2 * BAR)]),
+        ("Vox chop", &[(0, "Chop A", BAR), (2, "Chop B", BAR)]),
+        ("Perc", &[(0, "Congas", 2 * BAR)]),
+        ("Toms", &[(2, "Tom fill", BAR)]),
+        ("Clap", &[(0, "Clap 2+4", BAR), (1, "Clap roll", BAR)]),
+        ("Ride", &[(1, "Ride", 2 * BAR)]),
+        ("Strings", &[(0, "Strings", 8 * BAR)]),
+        ("Brass", &[(3, "Stabs", 2 * BAR)]),
+        (
+            "Pluck",
+            &[(0, "Pluck arp", 2 * BAR), (2, "Pluck 2", 2 * BAR)],
+        ),
+        ("Sub 2", &[(1, "Sub B", 4 * BAR)]),
+        ("Choir", &[(2, "Aahs", 8 * BAR)]),
+        ("Noise", &[(0, "Sweep", 4 * BAR)]),
+        ("Reverse", &[(3, "Rev cymbal", BAR)]),
+        ("Bell", &[(0, "Bells", 2 * BAR)]),
+        ("Organ", &[(1, "Organ", 4 * BAR)]),
+    ];
+    for (i, (name, clips)) in more.iter().enumerate() {
+        let mut t = Track::new(name, p.tracks.len() as u16);
+        for &(slot, clip_name, length) in *clips {
+            let note = (i % 16) as u8;
+            t.slots[slot] = Some(clip(clip_name, length, &every(BEAT, length, note, 90)));
+        }
+        p.tracks.push(t);
+    }
+    p
+}
+
+/// The 24-track project playing from bar 1 at 3.1, every track's slot 1
+/// that has a clip launched, and `armed` armed.
+pub fn big_playing(armed: usize) -> Result<Session, String> {
+    let p = big_project();
+    let launches = (0..p.tracks.len())
+        .filter(|&t| p.tracks[t].slots[0].is_some())
+        .map(|track| Launch {
+            track,
+            slot: 0,
+            origin: 0,
+            start: 0,
+        })
+        .collect();
+    let mut s = Session::new(p, launches, Some(armed))?;
+    s.command_at(0, Command::Play)?;
+    s.run_to(2 * BAR + SIXTEENTH)?;
+    Ok(s)
+}
+
+/// The Song view of the 24-track project: rows 1 to 4 made into a song,
+/// song mode on, scrolled down to the last tracks and "+ Track".
+pub fn big_song_state() -> Result<TimeState, String> {
+    let mut s = big_playing(19)?;
+    let rows: Vec<(usize, Tick)> = (0..4)
+        .filter(|&r| s.project.row_filled(r))
+        .map(|r| (r, scene_length(&s.project, r, BAR)))
+        .collect();
+    s.project.arrangement = scenes_to_song(&s.project, &rows, 0).map_err(|e| format!("{e:?}"))?;
+    let mut state = s.state();
+    state.song_view = true;
+    state.song_on = true;
+    Ok(state)
+}
+
 /// Every track's first clip from bar 1, the glitch from bar 3; the chords
 /// wait to be launched.
 fn launches() -> Vec<Launch> {
@@ -815,7 +887,7 @@ pub fn song_audio_state() -> Result<TimeState, String> {
 fn song_sample(fonts: Fonts) -> Result<Sample, String> {
     let state = song_state()?;
     let mut ui = app_ui(fonts, "Arrange", SONG_HINT);
-    let page = TimePage::add_to(&mut ui)?;
+    let mut page = TimePage::add_to(&mut ui)?;
     ui.show(CLIPS_PAGE)?;
     page.update(&mut ui, &state);
     Ok(Sample {
@@ -831,7 +903,7 @@ fn song_sample(fonts: Fonts) -> Result<Sample, String> {
 fn song_audio_sample(fonts: Fonts) -> Result<Sample, String> {
     let state = song_audio_state()?;
     let mut ui = app_ui(fonts, "Arrange", SONG_HINT);
-    let page = TimePage::add_to(&mut ui)?;
+    let mut page = TimePage::add_to(&mut ui)?;
     ui.show(CLIPS_PAGE)?;
     page.update(&mut ui, &state);
     Ok(Sample {
@@ -1066,7 +1138,7 @@ fn play_sample(fonts: Fonts, s: &Session) -> Result<Sample, String> {
     ]);
     ui.add("timing", timing);
     let layout = with_transport(APP_PLAY_LAYOUT).ok_or("the Play layout has no header")?;
-    let page = TimePage::add_to(&mut ui)?;
+    let mut page = TimePage::add_to(&mut ui)?;
     ui.add_page("Play", &layout)?;
     ui.show("Play")?;
     let mut state = s.state();

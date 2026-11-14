@@ -308,6 +308,7 @@ impl Desk<'_> {
             | app::Effect::TrackSound { .. }
             | app::Effect::SixteenLevels
             | app::Effect::Bank { .. }
+            | app::Effect::BankLights
             | app::Effect::SavePatterns(_)) => return Some(e),
         }
         None
