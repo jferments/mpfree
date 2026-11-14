@@ -301,12 +301,13 @@ pub fn main_page(id: &str) -> Option<&'static MainPage> {
 }
 
 /// The control `name` names among `params` ("Decay", or "Band 2/Gain"
-/// where a name repeats).
+/// where a name repeats; a name with a slash of its own, the Multiband's
+/// "Low/mid", is found as it is).
 pub fn find<'p>(params: &'p [ParamInfo], name: &str) -> Option<&'p ParamInfo> {
-    match name.split_once('/') {
-        Some((group, n)) => params.iter().find(|p| p.group == group && p.name == n),
-        None => params.iter().find(|p| p.name == name),
-    }
+    params.iter().find(|p| p.name == name).or_else(|| {
+        let (group, n) = name.split_once('/')?;
+        params.iter().find(|p| p.group == group && p.name == n)
+    })
 }
 
 /// The ids of a Main page's knobs among `params`, in its order.
