@@ -687,7 +687,7 @@ SUMMARY_PREFIXES = ("touchscreen: ", "touch-reader: ", "touch: doorbell", "touch
                     "mixer: ", "playing ", "sound cores", "status: sound cores ", "status: screen ", "browser: ",
                     "preview",
                     "MIDI in: ", "MIDI Out", "controller output", "report: ", "chain editor: ", "control: ",
-                    "threads: ")
+                    "threads: ", "PANIC: ", "safe start: ")
 APP_LINE = re.compile(r"^\[\s*(\d+\.\d+)\]\s+(.*)$")
 MIDI_LINE = re.compile(r"^\+\d+\.\d+ s (->\s*)?(Public|Private|MIDI Port)\b")
 SHOWN_PER_PHASE = 60

@@ -88,6 +88,7 @@ mod calibrate_page;
 mod chain_page;
 mod control;
 mod cores;
+mod crash;
 mod cv_out;
 mod debug_page;
 mod desk;
@@ -2290,6 +2291,21 @@ fn wait_for<T>(
 /// `app` (from power-on, until the power goes off).
 fn player(o: &Options, timed: bool) -> Result<(), String> {
     let mut out = Out::new(o, if timed { "pad player" } else { "app" }, false);
+    // Did the last run in this boot crash? Then this is a safe start
+    // (crash.rs). `_running` is this run's mark, removed when it ends well.
+    let (last_run, _running) = match crash::start(Path::new(REPORT_DIR)) {
+        (last, Ok(r)) => (last, Some(r)),
+        (last, Err(e)) => {
+            out.say(&format!(
+                "safe start: off for the next start (no {REPORT_DIR}/{}: {e})",
+                crash::RUNNING
+            ));
+            (last, None)
+        }
+    };
+    if let Some(line) = crash::report_line(&last_run) {
+        out.say(&line);
+    }
     // Long jobs run at idle priority, after the screen and every other
     // thread (mpfree_lanes::os::idle_job): set before any of them starts.
     mpfree_lanes::os::set_idle_jobs(true);
@@ -2320,14 +2336,18 @@ fn player(o: &Options, timed: bool) -> Result<(), String> {
     }
     let size = fb.as_ref().map(|f| f.logical_size()).unwrap_or(gui::SCREEN);
     // The startup screen's last frame stays on the panel; carry on from it.
+    // After a crash the panel holds the crashed run's last frame instead,
+    // so the built-in backdrop is used.
     let backdrop = match (&fb, o.keep_screen) {
-        (Some(f), true) => match mpfree_ui::fb::capture(&o.fb, &f.layout) {
-            Ok(img) => Some(std::sync::Arc::new(img)),
-            Err(e) => {
-                out.say(&format!("screen: could not read the startup screen back ({e}); using the built-in backdrop"));
-                None
+        (Some(f), true) if last_run == crash::LastRun::Fine => {
+            match mpfree_ui::fb::capture(&o.fb, &f.layout) {
+                Ok(img) => Some(std::sync::Arc::new(img)),
+                Err(e) => {
+                    out.say(&format!("screen: could not read the startup screen back ({e}); using the built-in backdrop"));
+                    None
+                }
             }
-        },
+        }
         _ => None,
     };
     // The screen thread opens the touchscreen, and keeps trying every second
@@ -2339,6 +2359,9 @@ fn player(o: &Options, timed: bool) -> Result<(), String> {
         Ok(t)
     });
     let mut player = gui::Player::new(fonts, size, timed, backdrop);
+    if last_run != crash::LastRun::Fine {
+        player.safe_start();
+    }
     match load_theme(o) {
         Ok(t) => player.ui.set_theme(t),
         Err(e) => out.say(&format!("{e}; using the default theme")),
@@ -6106,6 +6129,12 @@ fn main() {
     if raw.next().is_some_and(|a| a == plugins::SUBCOMMAND) {
         std::process::exit(plugins::serve(raw));
     }
+    // A panic says where and why in the report before the program ends
+    // (crash.rs): from here on, for every command.
+    crash::note_panics(
+        Path::new(REPORT_DIR).join("report.txt"),
+        Path::new(REPORT_DIR).join(crash::RUNNING),
+    );
     let args: Vec<String> = std::env::args().skip(1).collect();
     let result = parse_args(&args).and_then(|o| {
         if o.preview.is_some() {

@@ -869,6 +869,9 @@ pub struct Player {
     track_sounds: TrackSounds,
     /// Prefs > At start was looked at (once, when the sound is going).
     start_checked: bool,
+    /// The last run crashed: Prefs > At start opens nothing this time
+    /// (crash.rs, the safe start).
+    crashed: bool,
     /// The sound's rate, for an opened project's engines.
     project_rate: u32,
     /// When the last open landed ([`OPEN_SETTLE`]).
@@ -1140,6 +1143,7 @@ impl Player {
             project_plugins: std::sync::Arc::new(crate::plugins::Plugins::none()),
             track_sounds: [None; crate::instruments::SLOTS],
             start_checked: false,
+            crashed: false,
             project_rate: 44_100,
             opened_at: None,
             open_actions: 0,
@@ -2202,6 +2206,12 @@ impl Player {
                 );
             }
         }
+    }
+
+    /// The last run crashed: Prefs > At start opens nothing this time, and
+    /// once the sound is going the screen says why (crash.rs).
+    pub fn safe_start(&mut self) {
+        self.crashed = true;
     }
 
     /// Shows `line` in place of the hint for [`TELL_SECONDS`].
@@ -3444,6 +3454,17 @@ impl Player {
             return;
         }
         self.start_checked = true;
+        if self.crashed {
+            // A safe start: the new project stays, and the screen says why.
+            let last = match (&self.browser, self.settings.open_last) {
+                (Some(b), true) => b.last_project().map(|l| l.name().to_string()),
+                _ => None,
+            };
+            let words = crate::crash::screen_line(self.settings.open_last, last.as_deref());
+            self.say(format!("project: safe start: {words}"));
+            self.tell(&words);
+            return;
+        }
         if !self.settings.open_last {
             return;
         }
@@ -9767,6 +9788,30 @@ mod tests {
         n.take_actions();
         n.apply(ToUi::ProjectDefaults(defaults()));
         assert!(opens(&mut n).is_none());
+        // After a crash (a safe start, crash.rs) the last project does
+        // not open, and the screen says so.
+        let mut c = sample_sampler(Fonts::embedded());
+        c.set_browser(mpfree_browser_ui::Browser::inline(lib.clone()), &lists);
+        c.take_actions();
+        c.safe_start();
+        c.apply(ToUi::Settings(last.clone()));
+        c.apply(ToUi::ProjectDefaults(defaults()));
+        assert!(opens(&mut c).is_none(), "a safe start opens nothing");
+        let said = crate::crash::screen_line(true, Some(loc.name()));
+        assert!(said.contains(loc.name()), "{said}");
+        assert!(
+            events_log(&c)
+                .iter()
+                .any(|l| *l == format!("project: safe start: {said}")),
+            "{:?}",
+            events_log(&c)
+        );
+        assert_eq!(
+            c.told.as_ref().map(|t| t.0.clone()),
+            Some(tell_text(&said)),
+            "on the hint line"
+        );
+        assert!(opens(&mut c).is_none(), "nor later");
         // A last project gone since is said; the new one stays.
         let mut r = sample_sampler(Fonts::embedded());
         r.set_browser(

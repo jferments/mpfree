@@ -87,6 +87,8 @@ If you have changed anything since you last saved or opened, opening a project o
 
 MPFree starts with a new, empty project. To have it open the project you last saved or opened instead, set **At start** in [Prefs](../reference/prefs.md) to **Last project**: once the sound is going, the project opens as if you had opened it from the browser. If it has been deleted since, the Events log says so and the new project stays.
 
+**After a crash**, MPFree starts again by itself a few seconds later, and this time it opens nothing: the new, empty project stays even if At start says **Last project**, and for a few seconds the hint line at the bottom of the screen says which project wasn't opened (the Events log keeps it). Open it from **BROWSE** when you're ready. This way a project that makes MPFree crash as it opens can't do it again at every start. Anything you hadn't saved before the crash is lost, so save often. Switching the MPC off and on starts as usual.
+
 ## The browser
 
 **BROWSE** opens the browser over the page you are on, and pressing it again goes back to that page. It is a full file manager for MPFree's stick:
