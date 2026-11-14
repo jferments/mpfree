@@ -51,15 +51,19 @@ pub fn make(
     rate: u32,
     max_block: usize,
 ) -> Option<(Instrument, Held)> {
-    let (node, name) = if crate::plugins::Plugins::is_plugin(id) {
+    let (node, name, instance) = if crate::plugins::Plugins::is_plugin(id) {
         let name = plugins.find(id)?.name;
-        (plugins.make(id).ok()?, name)
+        let (instance, node) = plugins.make_instance(id).ok()?;
+        (node, name, instance)
     } else {
         let node = crate::synth::fresh_node(id, values, rate)?;
         let name = node.info().name;
-        (node, name)
+        (node, name, 0)
     };
-    Some((Instrument::new(node, rate, max_block), Held { id, name }))
+    Some((
+        Instrument::new(node, rate, max_block),
+        Held { id, name, instance },
+    ))
 }
 
 /// The tracks that can play their own instrument: every sequencer track.
@@ -96,6 +100,9 @@ pub struct Held {
     pub id: &'static str,
     /// Its name for the screen ("Poly", a plugin's name).
     pub name: &'static str,
+    /// A plugin's instance in the rack (`Rack::make_instance`), which its
+    /// presets load into; 0 for an engine (and in the app's own copy).
+    pub instance: u64,
 }
 
 /// Why [`Instruments::put`] handed an instrument back.
@@ -553,6 +560,7 @@ mod tests {
             Held {
                 id: "test.hum",
                 name: "Hum",
+                instance: 0,
             },
         )
     }

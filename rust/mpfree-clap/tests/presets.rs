@@ -128,6 +128,6 @@ fn presets_are_found_and_loaded() {
     // Without the folder, only the built-ins.
     std::env::remove_var(PRESETS_ENV);
     assert_eq!(lib.presets().presets.len(), 3);
-    assert!(MAX_PRESETS >= 1024);
+    const { assert!(MAX_PRESETS >= 1024) };
     let _ = std::fs::remove_dir_all(&dir);
 }

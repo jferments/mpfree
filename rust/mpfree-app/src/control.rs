@@ -436,6 +436,47 @@ pub struct InstrumentJob {
     pub tuning: Tuning,
 }
 
+/// A plugin synth's own presets, listed on the builder thread, or a
+/// preset loaded into a track's plugin (`Rack::presets`,
+/// `Rack::load_preset`).
+pub enum PresetNews {
+    /// Plugin `id`'s presets, or why they couldn't be listed.
+    Listed {
+        id: &'static str,
+        list: Result<Vec<mpfree_plughost::Preset>, String>,
+    },
+    /// Preset `index` (named `name`) went into track `track`'s plugin
+    /// `instance`, or the plugin's reason it didn't.
+    Loaded {
+        track: usize,
+        instance: u64,
+        index: usize,
+        name: String,
+        result: Result<(), String>,
+    },
+}
+
+/// A preset to load into a track's plugin.
+pub struct PresetJob {
+    pub track: usize,
+    pub instance: u64,
+    pub index: usize,
+    pub preset: mpfree_plughost::Preset,
+}
+
+impl PresetJob {
+    /// Loads it (on the builder thread, or here in the tests).
+    pub fn run(self, plugins: &Plugins) -> PresetNews {
+        PresetNews::Loaded {
+            track: self.track,
+            instance: self.instance,
+            index: self.index,
+            result: plugins.load_preset(self.instance, &self.preset),
+            name: self.preset.name,
+        }
+    }
+}
+
 enum Job {
     Build {
         strip: StripId,
@@ -448,6 +489,9 @@ enum Job {
         switch: Option<Box<(mpfree_fx::families::Switch, u16)>>,
     },
     Instrument(Box<InstrumentJob>, u32, usize),
+    /// List a plugin's presets (the first time: its own process, seconds).
+    Presets(&'static str),
+    LoadPreset(Box<PresetJob>),
     Drop(Insert),
     DropInstrument(Instrument),
 }
@@ -458,6 +502,7 @@ pub struct Builder {
     tx: SyncSender<Job>,
     built: Receiver<Built>,
     instruments: Receiver<MadeInstrument>,
+    presets: Receiver<PresetNews>,
     /// Asked for and not back yet.
     pending: usize,
     _thread: JoinHandle<()>,
@@ -471,6 +516,7 @@ impl Builder {
         let (tx, rx) = mpsc::sync_channel::<Job>(BUILD_QUEUE);
         let (built_tx, built) = mpsc::sync_channel::<Built>(BUILD_QUEUE);
         let (inst_tx, instruments) = mpsc::sync_channel::<MadeInstrument>(BUILD_QUEUE);
+        let (preset_tx, presets) = mpsc::sync_channel::<PresetNews>(BUILD_QUEUE);
         let thread = thread::Builder::new()
             .name("mpfree-build".into())
             .spawn(move || {
@@ -534,6 +580,20 @@ impl Builder {
                                 return;
                             }
                         }
+                        Job::Presets(id) => {
+                            let news = PresetNews::Listed {
+                                id,
+                                list: plugins.presets(id),
+                            };
+                            if preset_tx.send(news).is_err() {
+                                return;
+                            }
+                        }
+                        Job::LoadPreset(job) => {
+                            if preset_tx.send(job.run(&plugins)).is_err() {
+                                return;
+                            }
+                        }
                         Job::Drop(insert) => drop(insert),
                         Job::DropInstrument(inst) => drop(inst),
                     }
@@ -543,6 +603,7 @@ impl Builder {
             tx,
             built,
             instruments,
+            presets,
             pending: 0,
             _thread: thread,
         })
@@ -626,6 +687,25 @@ impl Builder {
     /// False if the queue is full. Never waits.
     pub fn instrument(&mut self, job: Box<InstrumentJob>, rate: u32, block: usize) -> bool {
         self.tx.try_send(Job::Instrument(job, rate, block)).is_ok()
+    }
+
+    /// Asks for plugin `id`'s presets, handed back by
+    /// [`Builder::take_preset_news`]. False if the queue is full. Never
+    /// waits.
+    pub fn presets(&mut self, id: &'static str) -> bool {
+        self.tx.try_send(Job::Presets(id)).is_ok()
+    }
+
+    /// Asks for a preset to be loaded into a track's plugin. False if the
+    /// queue is full. Never waits.
+    pub fn load_preset(&mut self, job: Box<PresetJob>) -> bool {
+        self.tx.try_send(Job::LoadPreset(job)).is_ok()
+    }
+
+    /// The next presets listed or preset loaded, if one is ready. Never
+    /// waits.
+    pub fn take_preset_news(&mut self) -> Option<PresetNews> {
+        self.presets.try_recv().ok()
     }
 
     /// The next track instrument made, if one is ready. Never waits.

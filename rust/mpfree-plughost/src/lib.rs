@@ -34,6 +34,10 @@ pub mod rack;
 pub mod shm;
 pub mod wire;
 
+/// A plugin's presets, as [`presets`] lists them and
+/// [`Sandbox::load_preset`] loads them.
+pub use mpfree_clap::{Place, Preset};
+
 use mpfree_clap::{intern_info, intern_params};
 use mpfree_node::{Ctx, Expr, Kind, Node, NodeEvent, NodeInfo, ParamInfo, Timed};
 use shm::{Mapping, ShmEvent};
