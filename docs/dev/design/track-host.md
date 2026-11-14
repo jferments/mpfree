@@ -73,7 +73,7 @@ On the 4-core cloud workstation VM (release build, 2026-11-11), the host alone t
 
 ## In the app
 
-[`rust/mpfree-app/src/instruments.rs`](../../../rust/mpfree-app/src/instruments.rs) wraps a `TrackHost` with one slot per sequencer track (`mpfree_seq::MAX_TRACKS`). Jay's call (13 Nov): every track holds its own instrument, picked on the Synth tab for the selected (armed) track, rather than one plugin engine on the shared synth.
+[`rust/mpfree-app/src/instruments.rs`](../../../rust/mpfree-app/src/instruments.rs) wraps a `TrackHost` with one slot for each of the first 16 sequencer tracks (`instruments::SLOTS`, no longer tied to `mpfree_seq::MAX_TRACKS`, which grows to 128 with Jay's 14 Nov call; a check at compile time keeps the slots' mixer tracks within the mixer's). A track past them plays the kit, and its Instrument row says so. Jay's call (13 Nov): every track holds its own instrument, picked on the Synth tab for the selected (armed) track, rather than one plugin engine on the shared synth.
 
 - **Routing.** Slot `t` plays sequencer track `t` into mixer track `TRACKS + t`, after Drums, Synth, Loop and Audio (`mixing.rs`). The mixer is made with all of them; `MixHost::poll_state` shows a track's channel ("Track 1") only while its slot holds or rings out an instrument (`Instruments::in_use`).
 - **Notes in.** `SeqPads` (`main.rs`) sends a track's notes to its slot when the slot holds one: clip events in `out` (`clip_own`: pads are mapped to notes with the slot's own pad map; pressure goes to every note the pad plays) and the hardware pads and per-track arps in `live` (`live_own`). A pad's notes are remembered as they start, so a pad lifted after the layout changed ends what it started. A track without an instrument goes to the sampler or the shared synth as before. STOP and `AllOff` reach every slot.
@@ -94,5 +94,6 @@ Not yet:
 ## Next
 
 - Show and change a track's instrument beside it on the Play page.
+- Slots lent to whichever track picks an instrument, so any of up to 128 tracks can have one (the mixer's tracks grown to match).
 - Per-step locks on a track instrument's parameters through `param`, the mod matrix and macros.
 - Move the slots onto the sound cores when their cost needs it.
