@@ -124,18 +124,15 @@ impl ChainPage {
     }
 
     /// The selected effect's drawings, from its values (none for an effect
-    /// the pages don't draw, or none selected), in theme `t`.
+    /// the pages don't draw, or none selected), in theme `t`: every one its
+    /// effect page draws (page `""`), each section of the chain editor
+    /// showing those its plan names.
     pub fn set_fx(&self, ui: &mut Ui, fx: Option<FxState>, t: &Theme) {
-        let page = self
-            .chain
-            .as_ref()
-            .and_then(|c| c.groups.get(c.group).map(String::as_str))
-            .unwrap_or("");
         let cards = match fx {
             Some(mut st) if visual::has_visuals(st.info.id) => {
                 st.color = t.accent;
                 let scratch = Scratch::new(&st);
-                visual::strip(&st, page, None, &scratch, t).cards
+                visual::strip(&st, "", None, &scratch, t).cards
             }
             _ => Vec::new(),
         };
@@ -391,25 +388,25 @@ mod tests {
         );
     }
 
-    /// Layout B: on any page of an effect with a Main page (the drum bus
-    /// EQ's Band 3 here) the Q-Links turn Main's four, the bands' gains,
-    /// and their cards show their values.
+    /// On any page of an effect with more than one (the Channel strip's
+    /// Gate page here) the Q-Links turn the four its plan picks, from its
+    /// Main page, and their cards show their values.
     #[test]
     fn the_q_links_stay_on_main_four_on_every_page() {
         let mut p = ChainPage::new();
         let mut ui = Ui::new(Theme::dark(), Fonts::embedded(), 1280, 800);
-        let st = Song::new().chain_state(DRUMS, 3, 4, None);
-        assert_eq!(st.groups[st.group], "Band 3");
+        let mut song = Song::new();
+        let strip = mpfree_fx::registry::make("mpfree.fx.channel_strip").unwrap();
+        let slot = song.keys.push(strip);
+        let st = song.chain_state(mpfree_chain_ui::sample::KEYS, slot, 1, None);
+        assert_eq!(st.groups[st.group], "Gate");
         let four = st.main_four.clone();
         assert_eq!(four.len(), 4);
         p.set_chain(&mut ui, st);
         p.entered(View::Chain);
         let (_, cards) = p.cards(&Theme::dark());
         let names: Vec<&str> = cards.iter().map(|c| c.name.as_str()).collect();
-        assert_eq!(
-            names,
-            ["Band 1 gain", "Band 2 gain", "Band 3 gain", "Band 4 gain"]
-        );
+        assert_eq!(names, ["Comp thresh", "Makeup", "Low cut", "High gain"]);
         match p.turn(3, 1, false) {
             Some(Turned::Chain(ChainAction::Set { addr, .. })) => assert_eq!(addr, four[3].addr),
             other => panic!("{other:?}"),

@@ -445,6 +445,12 @@ pub struct SamplePage {
     stretcher: Option<Worker>,
     /// Copies asked of it and not back yet.
     stretching: Vec<CopyKey>,
+    /// Copies refused for want of memory at this tempo, said once each
+    /// (their pads repitch).
+    unstretched: Vec<CopyKey>,
+    /// The memory free for new loads ([`crate::memory::free_bytes`]; a
+    /// test gives its own).
+    mem_free: fn() -> Option<u64>,
     /// The Warp tab, added the first time it is opened. It shows the Wave
     /// tab's state.
     warp: Option<WarpTab>,
@@ -576,6 +582,8 @@ impl SamplePage {
             warps: Warps::default(),
             stretcher: None,
             stretching: Vec::new(),
+            unstretched: Vec::new(),
+            mem_free: crate::memory::free_bytes,
             warp: None,
             rec: None,
             rec_state: None,
@@ -3016,11 +3024,21 @@ impl SamplePage {
     #[allow(dead_code)] // the app's browser wiring calls it
     pub fn open_part(&mut self, text: String, read: ReadSample) {
         let (tx, rx) = mpsc::channel();
+        let free = self.mem_free;
         let spawned = std::thread::Builder::new()
             .name("sample-open".into())
             .spawn(move || {
                 let _ = crate::cores::background(); // off the sound's cores and priority
-                let r = save::from_text(&text, &mut |f| wav::read(f, &read(f)?));
+                                                    // Each sound only while it leaves the memory MPFree keeps
+                                                    // free; one that doesn't is left out and the log says why.
+                let r = save::from_text(&text, &mut |f| {
+                    let bytes = read(f)?;
+                    crate::memory::room_in(
+                        free(),
+                        crate::memory::decode_need(f, bytes.len() as u64),
+                    )?;
+                    wav::read(f, &bytes)
+                });
                 let _ = tx.send(r);
             });
         match spawned {
@@ -3049,11 +3067,12 @@ impl SamplePage {
     #[allow(dead_code)] // the app's browser wiring calls it
     pub fn load_file(&mut self, path: PathBuf, to_pad: bool) {
         let (tx, rx) = mpsc::channel();
+        let free = self.mem_free;
         let spawned = std::thread::Builder::new()
             .name("sample-load".into())
             .spawn(move || {
                 let _ = crate::cores::background(); // off the sound's cores and priority
-                let _ = tx.send(read_sound(&path));
+                let _ = tx.send(read_sound(&path, free));
             });
         match spawned {
             Ok(_) => self.loading = Some((rx, to_pad)),
@@ -3088,6 +3107,17 @@ impl SamplePage {
     fn apply_opened(&mut self, ui: &mut Ui, o: Opened) {
         for n in &o.notes {
             self.lines.push(format!("sample: {n}"));
+        }
+        let short = o
+            .notes
+            .iter()
+            .filter(|n| n.contains(crate::memory::SHORT))
+            .count();
+        if short > 0 {
+            self.told.push(format!(
+                "{short} of the project's sounds left out: {}; the Console lists them",
+                crate::memory::SHORT
+            ));
         }
         let have = self.projects.len();
         if o.kits.len() > have {
@@ -3179,7 +3209,12 @@ impl SamplePage {
                 let (kit, pad) = (self.kit, self.pad);
                 self.keep_loaded(ui, kit, pad, l);
             }
-            Err(e) => self.lines.push(format!("sample: not loaded ({e})")),
+            Err(e) => {
+                if e.starts_with(crate::memory::SHORT) {
+                    self.told.push(format!("Not loaded: {e}"));
+                }
+                self.lines.push(format!("sample: not loaded ({e})"));
+            }
         }
     }
 
@@ -3647,6 +3682,16 @@ impl SamplePage {
         let notes = plan.notes();
         let per_note = plan.velocities.len() * usize::from(plan.round_robins);
         let est = plan.estimate();
+        if let Err(why) = crate::memory::room_in((self.mem_free)(), est.bytes_most) {
+            self.auto_last = format!("Not started: {why}");
+            self.lines.push(format!(
+                "sample: auto-sample of {} not started ({why})",
+                plan.name
+            ));
+            self.told.push(format!("Auto-sample not started: {why}"));
+            self.refresh_auto_state(ui);
+            return;
+        }
         let text = format!(
             "sample: auto-sample {}{how} started: {} notes ({} to {}), {} takes, {:.0} s of notes, up to {:.0} MB",
             plan.name,
@@ -3996,6 +4041,7 @@ impl SamplePage {
             w.cancel();
         }
         self.stretching.clear();
+        self.unstretched.clear();
     }
 
     /// Copies kit `kit` needs at the tempo go to the stretch thread.
@@ -4007,7 +4053,7 @@ impl SamplePage {
             .warps
             .missing(project)
             .into_iter()
-            .filter(|k| !self.stretching.contains(k))
+            .filter(|k| !self.stretching.contains(k) && !self.unstretched.contains(k))
             .collect();
         if missing.is_empty() {
             return;
@@ -4023,6 +4069,20 @@ impl SamplePage {
         }
         let Some(w) = &self.stretcher else { return };
         for k in missing {
+            // The copy, and the source's part the thread is handed.
+            let ch = project
+                .source(k.source)
+                .map_or(2, |s| u64::from(s.channels()));
+            let need = (k.frames + k.end.saturating_sub(k.start)) * ch * 4;
+            if let Err(why) = crate::memory::room_in((self.mem_free)(), need) {
+                self.unstretched.push(k);
+                self.lines.push(format!(
+                    "sample: not stretched, the pad repitches instead ({why})"
+                ));
+                self.told
+                    .push(format!("Not stretched, the pad repitches instead: {why}"));
+                continue;
+            }
             match Warps::spec(project, &k) {
                 Ok(spec) => {
                     if w.send(k, spec) {
@@ -4295,6 +4355,12 @@ impl SamplePage {
         self.cloud = Some(c);
     }
 
+    /// Gives the memory free for new loads from `f` (a test's).
+    #[cfg(test)]
+    pub fn set_mem_free(&mut self, f: fn() -> Option<u64>) {
+        self.mem_free = f;
+    }
+
     /// Lines for the log since the last call.
     /// Refusals to show in place (they are in `take_lines` too).
     pub fn take_told(&mut self) -> Vec<String> {
@@ -4476,14 +4542,15 @@ struct LoadedSound {
 type LoadedPad = Result<LoadedSound, String>;
 
 /// Reads and decodes `path` on a thread of its own; the answer comes on
-/// the channel (the browser's preview).
+/// the channel (the browser's preview). Refused, as a Load is, when it
+/// would leave less than the memory MPFree keeps free.
 pub fn read_in_thread(path: PathBuf) -> std::io::Result<Receiver<Loaded>> {
     let (tx, rx) = mpsc::channel();
     std::thread::Builder::new()
         .name("preview-load".into())
         .spawn(move || {
             let _ = crate::cores::background(); // off the sound's cores and priority
-            let _ = tx.send(read_one(&path));
+            let _ = tx.send(read_one(&path, crate::memory::free_bytes));
         })?;
     Ok(rx)
 }
@@ -4493,8 +4560,8 @@ pub fn read_in_thread(path: PathBuf) -> std::io::Result<Receiver<Loaded>> {
 /// (`Break 92.mpfree` beside `Break 92.wav`) read too, and the other
 /// sounds it names beside it.
 #[allow(dead_code)] // reached through load_file
-fn read_sound(path: &Path) -> LoadedPad {
-    let (src, note) = read_one(path)?;
+fn read_sound(path: &Path, free: fn() -> Option<u64>) -> LoadedPad {
+    let (src, note) = read_one(path, free)?;
     let side = path.with_extension(export::SIDECAR);
     let sidecar_name = side
         .file_name()
@@ -4512,7 +4579,7 @@ fn read_sound(path: &Path) -> LoadedPad {
             if name.is_empty() || name.contains(['/', '\\']) || name == ".." {
                 return Err("not beside it".to_string());
             }
-            read_one(&dir.join(name)).map(|(s, _)| s)
+            read_one(&dir.join(name), free).map(|(s, _)| s)
         })
     });
     Ok(LoadedSound {
@@ -4523,12 +4590,16 @@ fn read_sound(path: &Path) -> LoadedPad {
     })
 }
 
-/// One sound file, no bigger than the sampler holds in memory.
-fn read_one(path: &Path) -> Loaded {
+/// One sound file, no bigger than the sampler holds in memory, and only
+/// while that leaves the memory MPFree keeps free (`free`: what is free
+/// now).
+fn read_one(path: &Path, free: fn() -> Option<u64>) -> Loaded {
     let len = std::fs::metadata(path).map_err(|e| e.to_string())?.len();
     if len > wav::MAX_SAMPLES as u64 * 8 + (1 << 20) {
         return Err("too long to hold in memory".to_string());
     }
+    let file = path.to_string_lossy();
+    crate::memory::room_in(free(), crate::memory::decode_need(&file, len))?;
     let name = path
         .file_stem()
         .map(|s| s.to_string_lossy().into_owned())

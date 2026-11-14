@@ -46,7 +46,7 @@ MPFree can also send its own clock from **MIDI OUT**, so a drum machine or an ar
 MIDI Learn lets a knob, fader, button, key or pedal on your keyboard or controller turn an effect's knob.
 
 1. Open the effect in the [chain editor](effects.md#adding-an-effect-the-chain-editor) and touch the knob.
-2. Tap **Learn to a Q-Link**. It now reads **Turn a Q-Link or a MIDI control**.
+2. Tap **Learn** in the **Modulate** row under the page. It now reads **Turn a Q-Link**, and the line under the knob's name says it is learning.
 3. Move the control on your keyboard. From now on it turns that knob, as far up and down as the knob goes. (Turn a Q-Link instead, and the Q-Link learns it, as before.)
 
 The move that teaches a control doesn't play a note, and neither does a learned control. Teach a control again and it moves to the new knob.
