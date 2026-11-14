@@ -123,6 +123,11 @@ pub struct StripView {
     pub cost_pct: Option<f32>,
     /// It plays a take of its inserts in their place (a track or a pad).
     pub frozen: bool,
+    /// Its menu offers Freeze (or Thaw, while frozen). [`StripView::new`]
+    /// sets it for a track or a pad channel, the strips the mixer can
+    /// freeze; the app clears it where it has no loop to take (the looper,
+    /// the audio tracks).
+    pub freezable: bool,
     /// A freeze or print of it under way (the app's, from its `Print`).
     pub take: Option<TakeView>,
 }
@@ -155,13 +160,15 @@ impl StripView {
             }),
             cost_pct: None,
             frozen: false,
+            freezable: matches!(id, StripId::Track(_) | StripId::Pad(_)),
             take: None,
         }
     }
 
-    /// Whether the strip can be frozen (a track or a pad channel).
+    /// Whether the strip's menu offers Freeze or Thaw
+    /// ([`StripView::freezable`]; a frozen strip can always thaw).
     pub fn can_freeze(&self) -> bool {
-        matches!(self.id, StripId::Track(_) | StripId::Pad(_))
+        self.freezable || self.frozen
     }
 
     /// Whether the strip has an output to choose (a return and the master

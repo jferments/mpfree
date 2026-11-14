@@ -95,6 +95,6 @@ Copy the `.clap` files into `files/plugins/` in MPFree's data folder on the test
 
 ## Not yet
 
-- **Presets.** MPFree doesn't browse a plugin's own presets yet, so Surge XT starts on its init patch and Dexed on its first built-in voice; their parameters are all on the Synth tab. The pack already carries Surge XT's factory presets. Surge's third-party patches and wavetables (most of its 380 MB data folder) and its skins (no GUI here) are left out.
+- **More presets.** The Synth tab lists Surge XT's factory presets from the pack ([plugins in the app](../design/plugins.md#in-the-app)). Surge's third-party patches and wavetables (most of its 380 MB data folder) and its skins (no GUI here) are left out. Dexed keeps its voices in cartridges inside the plugin, with no CLAP presets to list, so it starts on its first built-in voice.
 - **Surge XT on 32-bit Linux** is something Surge's own build calls untested (`SURGE_BUILD_32BIT_LINUX`). The pack's checks pass, but it is the plugin to watch on the MPC.
 - **On the MPC:** loading, real-time cost per voice, NaN watch and state round trips there are the passports (P4).

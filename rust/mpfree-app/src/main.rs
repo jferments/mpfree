@@ -124,11 +124,13 @@ mod rt_safety;
 mod sample_page;
 mod sampler;
 mod screen_cost;
+mod shed;
 #[cfg(test)]
 mod smoke;
 mod synth;
 mod sys;
 mod sysinfo;
+mod takes;
 mod time;
 mod touch_bell;
 mod touch_dev;
@@ -2677,21 +2679,50 @@ fn pad_notes(synth: Option<&synth::Synth>, pad: usize) -> &[u8] {
 }
 
 /// What the Synth tab shows: the selected track's own synth when it has
-/// one (instruments.rs), else the shared synth.
+/// one (instruments.rs), else the shared synth. A plugin synth lists its
+/// own presets once they're listed ([`mixing::MixHost::plugin_presets`]).
 fn synth_tab(
     synth: &synth::Synth,
-    own: &instruments::Instruments,
+    mix: &mixing::MixHost,
     track: usize,
     preset: Option<usize>,
 ) -> SynthState {
+    let own = &mix.instruments;
     match (own.held(track), own.node(track)) {
-        (Some(h), Some(node)) => synth.state_of(
-            node,
-            synth::Engine::from_node_id(h.id),
-            &format!("Track {}", track + 1),
-            preset,
-        ),
+        (Some(h), Some(node)) => {
+            let engine = synth::Engine::from_node_id(h.id);
+            let mut st = synth.state_of(node, engine, &format!("Track {}", track + 1), preset);
+            if engine.is_none() {
+                st.presets = mix
+                    .plugin_presets(h.id)
+                    .unwrap_or_default()
+                    .iter()
+                    .map(plugin_preset_name)
+                    .collect();
+            }
+            st
+        }
         _ => synth.state(),
+    }
+}
+
+/// A plugin preset's line in the Synth tab's list: "Bass / Attacky", its
+/// folder or the plugin's category first, so the list reads in groups.
+fn plugin_preset_name(p: &mpfree_plughost::Preset) -> String {
+    if p.category.is_empty() {
+        p.name.clone()
+    } else {
+        format!("{} / {}", p.category, p.name)
+    }
+}
+
+/// Asks for the presets of every plugin synth a track has (listed once,
+/// on the builder thread), so they're there when the Synth tab opens.
+fn ask_plugin_presets(mix: &mut mixing::MixHost) {
+    for t in 0..instruments::TRACKS {
+        if let Some(id) = mix.instruments.held(t).map(|h| h.id) {
+            mix.ask_presets(id);
+        }
     }
 }
 
@@ -3426,6 +3457,9 @@ fn player_session(
     let mut synth_on = false;
     // Each track's own instrument's preset, as last picked (instruments.rs).
     let mut track_presets: [Option<usize>; instruments::TRACKS] = [None; instruments::TRACKS];
+    // When the Synth tab looks again at a track whose plugin just loaded a
+    // preset (its values may come later).
+    let mut preset_looks: Vec<(usize, Instant)> = Vec::with_capacity(8);
     let mut param_log = synth::ParamLog::default();
     // UNDO on the Synth tab and the mixer: their knob and fader turns.
     let mut synth_turns: undo::Turns<u16> = undo::Turns::default();
@@ -3710,6 +3744,9 @@ fn player_session(
     let mut audio_held: Option<mpfree_audiotracks::save::Saved> = None;
     let mut collect_now = false;
     let mut parts_out: Option<gui::ToUi> = None;
+    // A print for the screen to save, kept until the screen has room (its
+    // audio is never freed on this thread).
+    let mut print_out: Option<gui::ToUi> = None;
     // MIDI Learn: values for parameters a control can't set yet, and the
     // I/O view's names taken at this generation of the model.
     let mut learn_misses = 0u64;
@@ -3907,6 +3944,11 @@ fn player_session(
     // The lanes' deadline for this period (cores.rs): when the sound card's
     // queue would run dry, less a period. The buffer starts full.
     let mut lane_until = cores::lane_deadline(Instant::now(), None, periods);
+    // Load shedding (shed.rs): a period behind with the queue running down
+    // gives up the voices nobody hears. Each period's work runs from the
+    // last write to this one.
+    let mut shed = shed::Shed::new(PERIOD, RATE, periods);
+    let mut last_written = Instant::now();
     let mut i = 0u64;
     while i < total_periods {
         let t_read = Instant::now();
@@ -4066,7 +4108,7 @@ fn player_session(
                     fx.extend(app.open_track_instrument(track));
                     out.show(gui::ToUi::Synth(synth_tab(
                         &synth,
-                        &mix.instruments,
+                        &mix,
                         track,
                         track_presets.get(track).copied().flatten(),
                     )));
@@ -4299,12 +4341,8 @@ fn player_session(
                         o.synth = Some((options, sounds));
                     }
                     if changed > 0 {
-                        out.show(gui::ToUi::Synth(synth_tab(
-                            &synth,
-                            &mix.instruments,
-                            app.track(),
-                            None,
-                        )));
+                        ask_plugin_presets(&mut mix);
+                        out.show(gui::ToUi::Synth(synth_tab(&synth, &mix, app.track(), None)));
                     }
                     // The arps: the project's, or every one at its default.
                     let (notes, arp_fx) = app.open_arp(o.arp.as_deref());
@@ -4385,6 +4423,28 @@ fn player_session(
                     // older one is freed here.
                     if cloud.replace(c).is_some() {
                         out.note("sample: two grain clouds on the audio thread; one freed here");
+                    }
+                }
+                // A plugin synth's own preset: loaded into the running
+                // plugin on the builder thread (the plugin's own code
+                // reads the file); the news comes back below.
+                gui::FromUi::Synth(SynthAction::Preset(k))
+                    if mix
+                        .instruments
+                        .held(app.track())
+                        .is_some_and(|h| plugins::Plugins::is_plugin(h.id)) =>
+                {
+                    let track = app.track();
+                    if !mix.load_plugin_preset(track, k) {
+                        let s = format!(
+                            "Track {}: preset {} wasn't asked for: the plugin's presets aren't listed yet, or the builder is busy; try again in a moment",
+                            track + 1,
+                            k + 1
+                        );
+                        out.note(&s);
+                        out.show(gui::ToUi::Tell(s));
+                        let preset = track_presets.get(track).copied().flatten();
+                        out.show(gui::ToUi::Synth(synth_tab(&synth, &mix, track, preset)));
                     }
                 }
                 // A preset on a track's own synth: a new copy with the
@@ -4861,12 +4921,7 @@ fn player_session(
                         if let Some(p) = track_presets.get_mut(track) {
                             *p = None;
                         }
-                        out.show(gui::ToUi::Synth(synth_tab(
-                            &synth,
-                            &mix.instruments,
-                            track,
-                            None,
-                        )));
+                        out.show(gui::ToUi::Synth(synth_tab(&synth, &mix, track, None)));
                     }
                     // Not made at all while every place is taken.
                     Some(id) if !mix.instruments.has_room(track) => {
@@ -4989,6 +5044,7 @@ fn player_session(
             ));
             play = Playback::start(open_acva(out, p)?, p)?;
             lane_until = cores::lane_deadline(Instant::now(), None, p);
+            last_written = Instant::now();
             pending.clear();
         }
         // Drums' Pad 1 note, a pad's sound or another kit: the pad grid
@@ -5142,12 +5198,7 @@ fn player_session(
             // The Synth tab follows the selected track's own synth.
             if mix.instruments.holds(armed) || mix.instruments.holds(before) {
                 let preset = track_presets.get(armed).copied().flatten();
-                out.show(gui::ToUi::Synth(synth_tab(
-                    &synth,
-                    &mix.instruments,
-                    armed,
-                    preset,
-                )));
+                out.show(gui::ToUi::Synth(synth_tab(&synth, &mix, armed, preset)));
             }
         }
         if let Some(app::Effect::Arp(v)) = app.arp_poll() {
@@ -5160,14 +5211,10 @@ fn player_session(
             match landed {
                 mixing::Landed::Playing { track, name } => {
                     out.note(&format!("track {}: plays {name}", track + 1));
+                    ask_plugin_presets(&mut mix);
                     if track == app.track() {
                         let preset = track_presets.get(track).copied().flatten();
-                        out.show(gui::ToUi::Synth(synth_tab(
-                            &synth,
-                            &mix.instruments,
-                            track,
-                            preset,
-                        )));
+                        out.show(gui::ToUi::Synth(synth_tab(&synth, &mix, track, preset)));
                     }
                 }
                 mixing::Landed::Failed { track, id } => {
@@ -5188,6 +5235,71 @@ fn player_session(
             | mixing::Landed::Failed { track, .. }
             | mixing::Landed::Full { track, .. }) = landed;
             app.set_track_sound(track, mix.instruments.held(track));
+        }
+        // A plugin synth's presets listed, or one loaded, on the builder
+        // thread. A plugin may load in the background and send its new
+        // values over the next blocks, so the Synth tab looks again a
+        // second and three seconds later.
+        if let Some(news) = mix.poll_presets() {
+            let shown = match news {
+                control::PresetNews::Listed { id, list } => {
+                    if let Err(e) = &list {
+                        out.note(&format!("plugins: {id}: presets not listed: {e}"));
+                    }
+                    mix.instruments
+                        .held(app.track())
+                        .is_some_and(|h| h.id == id)
+                        .then_some(app.track())
+                }
+                control::PresetNews::Loaded {
+                    track,
+                    instance,
+                    index,
+                    name,
+                    result,
+                } => {
+                    let same = mix
+                        .instruments
+                        .held(track)
+                        .is_some_and(|h| h.instance == instance);
+                    match result {
+                        Ok(()) if same => {
+                            if let Some(p) = track_presets.get_mut(track) {
+                                *p = Some(index);
+                            }
+                            out.note(&format!("track {}: preset {name}", track + 1));
+                            preset_looks.retain(|(t, _)| *t != track);
+                            preset_looks.push((track, t_read + Duration::from_secs(1)));
+                            preset_looks.push((track, t_read + Duration::from_secs(3)));
+                        }
+                        Ok(()) => out.note(&format!(
+                            "track {}: preset {name} went into a plugin the track no longer plays",
+                            track + 1
+                        )),
+                        Err(e) => {
+                            let s = format!("Track {}: preset {name} didn't load: {e}", track + 1);
+                            out.note(&s);
+                            out.show(gui::ToUi::Tell(s));
+                        }
+                    }
+                    (track == app.track()).then_some(track)
+                }
+            };
+            if let Some(track) = shown {
+                let preset = track_presets.get(track).copied().flatten();
+                out.show(gui::ToUi::Synth(synth_tab(&synth, &mix, track, preset)));
+            }
+        }
+        if preset_looks.iter().any(|(_, at)| *at <= t_read) {
+            let track = app.track();
+            if preset_looks
+                .iter()
+                .any(|(t, at)| *t == track && *at <= t_read)
+            {
+                let preset = track_presets.get(track).copied().flatten();
+                out.show(gui::ToUi::Synth(synth_tab(&synth, &mix, track, preset)));
+            }
+            preset_looks.retain(|(_, at)| *at > t_read);
         }
         // The clips and every track's arp (the pads go through the armed
         // track's) play into the kit or the synth: the clips as recorded,
@@ -5572,6 +5684,31 @@ fn player_session(
                 out.show(gui::ToUi::ExportOver(run));
             }
         }
+        // Freeze and Print: the take under way and the frozen strips
+        // (takes.rs). A print goes to the screen to be saved.
+        let n_tracks = time.project().tracks.len();
+        match mix.takes_period(&ctx, n_tracks, &|t| time.now_playing(t)) {
+            Some(takes::Said::Note(l)) => {
+                let l = format!("mixer: {l}");
+                out.note(&l);
+                out.show(gui::ToUi::Tell(l));
+            }
+            Some(takes::Said::Printed(name, p)) if print_out.is_none() => {
+                print_out = Some(gui::ToUi::Printed(name, p));
+            }
+            Some(takes::Said::Printed(name, p)) => {
+                // One waits already (the screen is that busy): this one
+                // is dropped off this thread with the builder's next job.
+                out.note(&format!(
+                    "mixer: {name}: print not saved, the screen was busy"
+                ));
+                mix.drop_printed(p);
+            }
+            None => {}
+        }
+        if let Some(m) = print_out.take() {
+            print_out = out.try_show(m).err();
+        }
         // Resampling: the point in the mix the Rec tab records (before the
         // metronome), with the bar lines as late as that point hears them.
         if let (Some(f), sampler::RecSource::Mix(..)) = (rec_feed.as_mut(), rec_source) {
@@ -5654,6 +5791,7 @@ fn player_session(
         let xruns = play.xruns;
         parts.lap(parts::SCREEN);
         engines.stop(engines::PERIOD, period_span);
+        let work = last_written.elapsed();
         // A fast export runs the periods back to back with the card
         // stopped (the speakers quiet), as fast as its files take them;
         // after it the card fills and plays again (export.rs).
@@ -5674,6 +5812,7 @@ fn player_session(
         // for the lanes, and times the hits of this period. In a fast
         // export the lanes are waited for, never left out.
         let written = Instant::now();
+        last_written = written;
         let delay = play.pcm.delay();
         lane_until = if fast {
             written + export::FAST_LANE_WAIT
@@ -5687,6 +5826,34 @@ fn player_session(
         // A synth left out of this period (late) comes back before anything
         // plays it again.
         synth.settle(lane_until);
+        // A period behind, with the queue running down: give up the voices
+        // nobody hears (shed.rs). An underrun in this write emptied the
+        // queue. A fast export is never behind (the card is stopped and
+        // the loop waits for the files), so its file keeps every voice.
+        shed.set_queued(PERIOD, play.queued);
+        if !fast && work > period_time() {
+            let full = i64::from(play.queued) * PERIOD as i64;
+            let short = match &delay {
+                Ok(d) if play.xruns == xruns => Some(full - i64::from(*d)),
+                Ok(_) => Some(full),
+                Err(_) => None,
+            };
+            let behind = shed::Period {
+                work,
+                short,
+                voices: player.playing() + synth.active_voices() + mix.instruments.voices(),
+                voice_time: (t_synth - t_render) + synth_took + mix.instrument_time,
+            };
+            let n = shed.decide(&behind);
+            if n > 0 {
+                let mut engines: [&mut dyn shed::Voices; 3] =
+                    [&mut player, &mut *synth, &mut mix.instruments];
+                shed.give_up(n, &mut engines);
+            }
+        }
+        if let Some(line) = shed.note(written) {
+            out.note(&line);
+        }
         parts.begin();
         match delay {
             // An underrun in this write dropped the period: no timing for it.
@@ -5782,6 +5949,7 @@ fn player_session(
                 cores.status(cores::Counts::read(&player, &mix.mixer, &synth))
             ));
             out.note(&format!("status: {}", parts.status()));
+            out.note(&format!("status: {}", shed.describe()));
             out.note(&format!("status: {}", touch_hold.describe()));
         }
         if last_timing.elapsed() >= Duration::from_millis(250) {
@@ -5810,6 +5978,7 @@ fn player_session(
                         synth_max_us,
                         worst_us: (render_time.max + synth_time.max).as_secs_f32() * 1e6,
                         steals: c.steals,
+                        given_up: shed.totals().given_up,
                         dropped: c.dropped_events + app.arps.dropped(),
                         peak_grains: c.peak_grains,
                     }
@@ -6615,6 +6784,30 @@ mod tests {
             "{fx:?}"
         );
         assert!(time.state().clip(0, 0).is_some());
+    }
+
+    #[test]
+    fn a_plugin_preset_reads_with_its_folder_first() {
+        let mut p = mpfree_plughost::Preset {
+            name: "Attacky".into(),
+            place: mpfree_plughost::Place::Plugin,
+            load_key: None,
+            plugins: Vec::new(),
+            collection: String::new(),
+            category: "Bass".into(),
+            creator: String::new(),
+            flags: 0,
+        };
+        assert_eq!(plugin_preset_name(&p), "Bass / Attacky");
+        p.category.clear();
+        assert_eq!(plugin_preset_name(&p), "Attacky");
+        // A track without its own synth shows the shared synth's presets.
+        let synth = synth::Synth::new(RATE);
+        let mix = mixing::MixHost::new(RATE, -6.0, -6.0);
+        assert_eq!(
+            synth_tab(&synth, &mix, 0, None).presets,
+            synth.state().presets
+        );
     }
 
     /// TRACK MUTE's keys mute a track, or a pad in the kit, and the pads

@@ -1050,6 +1050,8 @@ struct Strip {
     fz: Fz,
     /// 1 while the transport rolls, 0 when stopped (frozen audio only).
     fz_gate: Smooth,
+    /// The frozen audio is held quiet ([`Mixer::set_frozen_quiet`]).
+    fz_quiet: bool,
 }
 
 impl Strip {
@@ -1107,6 +1109,7 @@ impl Strip {
                 g.set_time(rate, FREEZE_GATE_MS);
                 g
             },
+            fz_quiet: false,
         }
     }
 
@@ -1657,6 +1660,7 @@ impl Mixer {
         }
         st.frozen = Some(audio);
         st.fz = Fz::In(0.0);
+        st.fz_quiet = false;
         st.fz_gate.snap(if self.rolling { 1.0 } else { 0.0 });
         Ok(())
     }
@@ -1715,6 +1719,22 @@ impl Mixer {
             }
             _ => false,
         }
+    }
+
+    /// Holds strip `s`'s frozen audio quiet, or lets it play again: it
+    /// fades out and in as at a stop and a start of the transport (the
+    /// track it took was muted, say). A thaw ends it. False when not
+    /// frozen.
+    pub fn set_frozen_quiet(&mut self, s: StripId, quiet: bool) -> bool {
+        let Some(k) = self.plan.topo.order(s) else {
+            return false;
+        };
+        let st = &mut self.strips[k];
+        if st.frozen.is_none() {
+            return false;
+        }
+        st.fz_quiet = quiet;
+        true
     }
 
     /// Frozen audio a thaw is done with, to drop off the audio thread.
@@ -2445,7 +2465,7 @@ impl Mixer {
                             st.chain.flush_events();
                         }
                         if let Some(f) = &st.frozen {
-                            play_frozen(f, &base, &mut st.fz_gate, bl, br);
+                            play_frozen(f, &base, &mut st.fz_gate, st.fz_quiet, bl, br);
                         }
                     }
                     Fz::In(w) | Fz::Out(w) => {
@@ -2454,7 +2474,7 @@ impl Mixer {
                         let [fl, fr] = fz_buf;
                         let (fl, fr) = (&mut fl[..len], &mut fr[..len]);
                         match &st.frozen {
-                            Some(f) => play_frozen(f, &base, &mut st.fz_gate, fl, fr),
+                            Some(f) => play_frozen(f, &base, &mut st.fz_gate, st.fz_quiet, fl, fr),
                             None => {
                                 fl.fill(0.0);
                                 fr.fill(0.0);
@@ -2478,6 +2498,7 @@ impl Mixer {
                             },
                             Fz::In(_) => Fz::In(g),
                             _ if g <= 0.0 => {
+                                st.fz_quiet = false;
                                 if let Some(f) = st.frozen.take() {
                                     if thawed.len() < thawed.capacity() {
                                         thawed.push(f);
@@ -3193,8 +3214,15 @@ fn scan(l: &[f32], r: &[f32]) -> (bool, bool) {
 #[inline]
 /// Plays frozen audio into a block, faded out while the transport is
 /// stopped.
-fn play_frozen(f: &Frozen, ctx: &Ctx, gate: &mut Smooth, l: &mut [f32], r: &mut [f32]) {
-    gate.target = if ctx.playing { 1.0 } else { 0.0 };
+fn play_frozen(
+    f: &Frozen,
+    ctx: &Ctx,
+    gate: &mut Smooth,
+    quiet: bool,
+    l: &mut [f32],
+    r: &mut [f32],
+) {
+    gate.target = if ctx.playing && !quiet { 1.0 } else { 0.0 };
     if gate.settled() && gate.value == 0.0 {
         l.fill(0.0);
         r.fill(0.0);

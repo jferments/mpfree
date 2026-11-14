@@ -20,10 +20,14 @@ This folder is the source of MPFree's user manual, for musicians and producers. 
 ## Building
 
 ```sh
-cargo install --locked mdbook typst-cli      # once; pandoc 3.1+ and Pillow from your OS
-python3 docs/tools/build_manual.py           # draws the screens, then builds both
+cargo install --locked mdbook@0.5.4 typst-cli   # once (about 5 minutes); pandoc 3.1+ and Pillow from your OS
+python3 docs/tools/build_manual.py              # draws the screens, then builds both
 ```
 
 The website lands in `docs/user/build/site/index.html` and the PDF in `docs/user/build/mpfree-manual.pdf`. `--no-pdf` and `--no-site` build one of them; `--shots DIR` reuses screens already drawn with `mpfree --preview DIR`.
 
-The build stops if a page asks for a screen that MPFree no longer draws, so a renamed or removed screen can't leave a stale picture behind.
+The build stops if a page asks for a screen that MPFree no longer draws, so a renamed or removed screen can't leave a stale picture behind. The build also refreshes `docs/images/play-all-loop.png`, the same screen shown at the top of the project README; commit it when the build says it changed.
+
+In the PDF every heading's link target is named for its page as well as its title (`page--heading`), so two pages can use the same heading, and a link to a section that doesn't exist stops the PDF build. The website and the PDF come from the same pages, so check both after moving a section.
+
+To check the pages without building, run `python3 docs/tools/check_docs.py` from the repository's root: it checks links, the page headers, `SUMMARY.md` and the retired names in `terms.toml`.

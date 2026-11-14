@@ -616,6 +616,13 @@ impl TimeAudio {
         self.transport.tempo_map()
     }
 
+    /// What `track` plays now ([`mpfree_play::Player::now_playing`]): for
+    /// a frozen mixer strip that follows the track's loop (takes.rs).
+    pub fn now_playing(&self, track: usize) -> Option<mpfree_play::NowPlaying> {
+        self.player
+            .now_playing(&self.view, track, self.transport.position())
+    }
+
     pub fn position_text(&self) -> String {
         let t = &self.transport;
         t.meter().position(t.position()).to_string()

@@ -27,7 +27,7 @@ use mpfree_transport::time::{frames_between, Tick};
 use mpfree_transport::{Block, Command};
 
 use crate::midi_out::{Chords, NoteIs};
-use crate::mixing::{self, SAMPLER_CAPTURE, TRACKS};
+use crate::mixing::{self, TRACKS};
 use crate::PERIOD;
 
 /// Notes and controls one period can hand the MIDI file; more are counted
@@ -36,8 +36,9 @@ pub const TAP_ROOM: usize = 1024;
 /// Periods the transport may take to start before the export gives up
 /// (about a second).
 const START_PERIODS: u32 = 400;
-/// Capture slots an export may use: every one below the sampler's.
-pub const MAX_STREAMS: usize = SAMPLER_CAPTURE;
+/// Capture slots an export may use: every one below Freeze and Print's
+/// (takes.rs) and the sampler's.
+pub const MAX_STREAMS: usize = crate::takes::TAKE_CAPTURE;
 /// In a fast export, how long a period waits for its lanes on the other
 /// cores before going on without them (as the card's deadline would).
 pub const FAST_LANE_WAIT: Duration = Duration::from_millis(250);

@@ -121,3 +121,45 @@ fn a_plugin_made_with_the_app_as_its_process_plays() {
     assert_eq!(rack.summary().unwrap().running, 1);
     let _ = std::fs::remove_dir_all(&d);
 }
+
+#[test]
+fn the_app_lists_a_plugins_presets_and_loads_one_as_the_plugin_process() {
+    use mpfree_clap::testplug::{preset_file, HOME_PRESETS, PRESETS_ENV};
+    assert!(std::env::var_os(PRESETS_ENV).is_none());
+    let d = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!(
+        "mpfree-plughost-app-presets-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&d);
+    let (plugins, home) = (d.join("plugins"), d.join("plugin-home"));
+    std::fs::create_dir_all(&plugins).unwrap();
+    std::fs::create_dir_all(home.join(HOME_PRESETS)).unwrap();
+    std::fs::copy(plugin_file(), plugins.join("test.clap")).unwrap();
+    std::fs::write(
+        home.join(HOME_PRESETS).join("Lead.mptp"),
+        preset_file(-4.0, 700.0, 2.0),
+    )
+    .unwrap();
+    // The plugin's own presets folder is in the home the app gives it.
+    let (mut rack, notes) = Rack::scan(program().with_home(&home), &plugins, "files/plugins/");
+    rack.set_deadline(Deadline::Fixed(Duration::from_secs(5)));
+    assert_eq!(rack.entries().len(), 2, "{notes:?}");
+    let synth = format!("clap:{SYNTH_ID}");
+    let list = rack.presets(&synth).expect("listed");
+    let names: Vec<&str> = list.iter().map(|p| p.name.as_str()).collect();
+    assert_eq!(names, ["Soft Sine", "Bright Saw", "Short Square", "Lead"]);
+
+    let (instance, mut node) = rack.make_instance(&synth).expect("made");
+    node.prepare(44_100, 128);
+    let wave = node.params().iter().find(|p| p.name == "Wave").unwrap().id;
+    let (mut l, mut r) = (vec![0f32; 128], vec![0f32; 128]);
+    node.process(&Ctx::new(44_100, 0), &[], &mut l, &mut r);
+    assert_eq!(node.param(wave), 0.0);
+    rack.load_preset(instance, &list[3]).expect("loaded");
+    for k in 1..4 {
+        node.process(&Ctx::new(44_100, k * 128), &[], &mut l, &mut r);
+    }
+    assert_eq!(node.param(wave), 2.0, "the file preset's wave");
+    drop(node);
+    let _ = std::fs::remove_dir_all(&d);
+}
