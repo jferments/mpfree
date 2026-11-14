@@ -115,13 +115,17 @@ pub fn report_line(last: &LastRun) -> Option<String> {
 
 /// The screen's words for a safe start (the hint line, briefly, and the
 /// Events log): `open_last` is Prefs > At start, `last` the project it
-/// would have opened.
-pub fn screen_line(open_last: bool, last: Option<&str>) -> String {
-    match (open_last, last) {
-        (true, Some(name)) => {
-            format!("The last run crashed, so {name} was not opened. BROWSE opens it.")
-        }
-        _ => "The last run crashed; this is a new project.".to_string(),
+/// would have opened, `kept` the project the last run's unsaved work was
+/// set aside in (`Browser::keep_newer_autosave`), if any.
+pub fn screen_line(open_last: bool, last: Option<&str>, kept: Option<&str>) -> String {
+    let start = match (open_last, last) {
+        (true, Some(name)) => format!("The last run crashed, so {name} was not opened"),
+        _ => "The last run crashed; this is a new project".to_string(),
+    };
+    match kept {
+        Some(k) => format!("{start}. Unsaved work is in Projects > {k}."),
+        None if open_last && last.is_some() => format!("{start}. BROWSE opens it."),
+        None => format!("{start}."),
     }
 }
 
@@ -265,18 +269,28 @@ mod tests {
     }
 
     #[test]
-    fn the_screen_says_what_was_not_opened() {
+    fn the_screen_says_what_was_not_opened_and_where_the_unsaved_work_is() {
         assert_eq!(
-            screen_line(true, Some("Night Drive")),
+            screen_line(true, Some("Night Drive"), None),
             "The last run crashed, so Night Drive was not opened. BROWSE opens it."
         );
         assert_eq!(
-            screen_line(false, Some("Night Drive")),
+            screen_line(false, Some("Night Drive"), None),
             "The last run crashed; this is a new project."
         );
         assert_eq!(
-            screen_line(true, None),
+            screen_line(true, None, None),
             "The last run crashed; this is a new project."
+        );
+        assert_eq!(
+            screen_line(true, Some("Night Drive"), Some("Unsaved 2026-11-14 06.50")),
+            "The last run crashed, so Night Drive was not opened. \
+             Unsaved work is in Projects > Unsaved 2026-11-14 06.50."
+        );
+        assert_eq!(
+            screen_line(false, None, Some("Unsaved 2026-11-14 06.50")),
+            "The last run crashed; this is a new project. \
+             Unsaved work is in Projects > Unsaved 2026-11-14 06.50."
         );
     }
 
