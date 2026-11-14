@@ -65,6 +65,7 @@
 //! is cut into blocks. The tests in `tests/` check each of these.
 #![forbid(unsafe_code)]
 
+mod amp;
 mod chain;
 mod character;
 mod cloud;
@@ -74,23 +75,32 @@ mod crush;
 mod delay;
 mod drive;
 mod ducker;
+mod dynamics;
+mod echoes;
 mod eq;
+mod kit;
 mod lofi;
 mod master;
 mod mixer;
 mod modfx;
+mod motion;
+pub mod mpc;
 mod oversample;
 mod perform;
+pub mod picker;
 mod pitch;
 mod presets;
 pub mod print;
 pub mod registry;
+mod rooms;
 mod svf;
 mod transient;
 mod tuner;
 mod vocal;
 mod xy;
+pub mod xyfx;
 
+pub use amp::{Amp, Exciter};
 pub use chain::{Chain, ChainStats, Insert, MAX_SLOT_EVENTS};
 pub use character::Character;
 pub use cloud::{Cloud, PRESETS as CLOUD_PRESETS};
@@ -102,6 +112,8 @@ pub use drive::Drive;
 pub use ducker::{
     Ducker, RATES as DUCKER_RATES, RATE_BEATS as DUCKER_RATE_BEATS, SOURCES as DUCKER_SOURCES,
 };
+pub use dynamics::{DeEsser, Gate, Limiter, MultibandCompressor};
+pub use echoes::{MultiTap, TapeDelay};
 pub use eq::Eq;
 pub use lofi::{LoFi, PRESETS as LOFI_PRESETS};
 pub use master::{MasterSafety, MasterStats};
@@ -111,6 +123,7 @@ pub use mixer::{
     MAX_SLOTS, MAX_TRACKS, RETURNS, SILENT_DB,
 };
 pub use modfx::{Chorus, Flanger, Phaser};
+pub use motion::{AutoPan, RingMod, Rotary, Tremolo};
 pub use oversample::{Down2, IirDown2, IirPhase, IirUp2, Up2};
 pub use perform::{
     state as perform_state, Perform, AMOUNT_MEANS as PERFORM_AMOUNTS, EFFECTS as PERFORM_EFFECTS,
@@ -121,6 +134,7 @@ pub use pitch::PitchShifter;
 pub use presets::presets;
 pub use print::{wav_f32, Frozen, Print, PrintError, PrintJob, PrintState, Printed, Tail};
 pub use registry::{Category, FxEntry, EFFECTS};
+pub use rooms::{Plate, Room, Spring};
 pub use svf::{DjFilter, MultiFilter, Svf, SvfMode};
 pub use transient::TransientShaper;
 pub use tuner::Tuner;
@@ -129,6 +143,7 @@ pub use vocal::{
     KEYS as VOCAL_KEYS, RANGES as VOCAL_RANGES, SCALES as VOCAL_SCALES,
 };
 pub use xy::{XyAxis, XyPad};
+pub use xyfx::XyFx;
 
 pub use mpfree_lanes;
 pub use mpfree_node;
@@ -136,6 +151,8 @@ pub use mpfree_node;
 /// Parameter ids, one module per node (`ids::delay::FEEDBACK`). An id is
 /// also the parameter's index in the node's `params()` list.
 pub mod ids {
+    pub use crate::amp::amp_ids as amp;
+    pub use crate::amp::exciter;
     pub use crate::character::ids as character;
     pub use crate::cloud::ids as cloud;
     pub use crate::comb::ids as comb;
@@ -144,6 +161,12 @@ pub mod ids {
     pub use crate::delay::ids as delay;
     pub use crate::drive::ids as drive;
     pub use crate::ducker::ids as ducker;
+    pub use crate::dynamics::deesser;
+    pub use crate::dynamics::gate;
+    pub use crate::dynamics::limiter;
+    pub use crate::dynamics::multiband;
+    pub use crate::echoes::multitap;
+    pub use crate::echoes::tape;
     pub use crate::eq::ids as eq;
     pub use crate::lofi::ids as lofi;
     pub use crate::master::ids as master;
@@ -151,14 +174,22 @@ pub mod ids {
     pub use crate::modfx::chorus;
     pub use crate::modfx::flanger;
     pub use crate::modfx::phaser;
+    pub use crate::motion::autopan;
+    pub use crate::motion::ringmod;
+    pub use crate::motion::rotary;
+    pub use crate::motion::tremolo;
     pub use crate::perform::ids as perform;
     pub use crate::pitch::ids as pitch;
+    pub use crate::rooms::plate;
+    pub use crate::rooms::room;
+    pub use crate::rooms::spring;
     pub use crate::svf::dj as dj_filter;
     pub use crate::svf::multi as filter;
     pub use crate::transient::ids as transient;
     pub use crate::tuner::ids as tuner;
     pub use crate::vocal::harm_ids as harmonizer;
     pub use crate::vocal::tune_ids as pitch_correct;
+    pub use crate::xyfx::ids as xyfx;
 }
 
 /// A factory preset: a name and the parameter values that differ from the

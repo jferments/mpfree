@@ -20,6 +20,8 @@ use mpfree_ui::{Fonts, Gesture, PageTarget, SoftCanvas, Touch};
 
 mod catalogue;
 mod session;
+mod song_workflows;
+pub mod songs;
 pub mod walk;
 mod workflows;
 
