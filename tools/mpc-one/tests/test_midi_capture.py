@@ -203,6 +203,19 @@ class MidiCaptureWrapperTests(unittest.TestCase):
             ssh = [ln for ln in fh.read().splitlines() if ln.startswith("ssh: ")]
         self.assertEqual(ssh, ["ssh: sh -s"])
 
+    def test_cv_ports_phases(self):
+        # Enter after the setup list, then Enter for each of the four phases.
+        rc, out = self.run_wrapper("\n" * 5, MPFREE_CAPTURE_PHASES="cv-ports")
+        self.assertEqual(rc, 0, out)
+        self.assertIn("Find its CV Port and Gate Port fields", out)
+        self.assertIn("Do not save the project or change Preferences.", out)
+        for name in ("idle", "cv_ports_5_6", "cv_ports_7_8", "cv_ports_1_2"):
+            self.assertIn(f"] {name}: ", out)
+        self.assertIn("phase set: cv-ports", self.report())
+        with open(self.log) as fh:
+            ssh = [ln for ln in fh.read().splitlines() if ln.startswith("ssh: ")]
+        self.assertEqual(ssh, ["ssh: sh -s"])
+
     def test_transport_phases(self):
         # Enter after the setup list, then Enter for each of the five phases.
         rc, out = self.run_wrapper("\n" * 6, MPFREE_CAPTURE_PHASES="transport")
@@ -239,8 +252,8 @@ class MidiCaptureWrapperTests(unittest.TestCase):
     def test_wrapper_refuses_an_unknown_phase_set(self):
         rc, out = self.run_wrapper("\n" * 7, MPFREE_CAPTURE_PHASES="cv")
         self.assertNotEqual(rc, 0, out)
-        self.assertIn("MPFREE_CAPTURE_PHASES must be controller, midi-cv, cv-scale, midi-out or transport, not: cv",
-                      out)
+        self.assertIn("MPFREE_CAPTURE_PHASES must be controller, midi-cv, cv-scale, midi-out, cv-ports or "
+                      "transport, not: cv", out)
         with open(self.log) as fh:
             self.assertNotIn("ssh:", fh.read())
 
@@ -248,15 +261,28 @@ class MidiCaptureWrapperTests(unittest.TestCase):
 class StaticTests(unittest.TestCase):
     def test_phase_sets(self):
         mod = load_helper()
-        self.assertEqual(sorted(mod.PHASE_SETS), ["controller", "cv-scale", "midi-cv", "midi-out", "transport"])
-        self.assertEqual(sorted(mod.SETUPS), ["cv-scale", "midi-cv", "midi-out", "transport"])
+        self.assertEqual(sorted(mod.PHASE_SETS),
+                         ["controller", "cv-ports", "cv-scale", "midi-cv", "midi-out", "transport"])
+        self.assertEqual(sorted(mod.SETUPS), ["cv-ports", "cv-scale", "midi-cv", "midi-out", "transport"])
         self.assertIs(mod.PHASE_SETS["controller"], mod.PHASES)
-        for phases in (mod.MIDI_CV_PHASES, mod.CV_SCALE_PHASES, mod.MIDI_OUT_PHASES, mod.TRANSPORT_PHASES):
+        for phases in (mod.MIDI_CV_PHASES, mod.CV_SCALE_PHASES, mod.MIDI_OUT_PHASES, mod.CV_PORTS_PHASES,
+                       mod.TRANSPORT_PHASES):
             names = [n for n, _ in phases]
             self.assertEqual(names[0], "idle")  # the baseline the per-cable counts compare against
             self.assertEqual(len(names), len(set(names)))
             # The phases of 8 s plus the owner's Enter presses fit the remote script's 240 s window.
             self.assertLessEqual(len(names) * 8.0, 120)
+
+    def test_cv_ports_are_named(self):
+        mod = load_helper()
+        # Cable 1 (packet header 0x1B: cable 1, CIN B), channel 16 (BF): a pitch on CC 8 and 9 (port 5)
+        # and a gate on CC 10 and 11 (port 6). A button light (B0) and a pad note are not ports.
+        lines = [("cv_ports_5_6", "x 1 S Bo:1:002:2 -115 16 = 1bbf0833 1bbf0919 1bbf0a7f 1bbf0b7f"),
+                 ("cv_ports_5_6", "x 1 S Bo:1:002:2 -115 8 = 1bb04303 09903c64"),
+                 ("cv_ports_1_2", "x 1 S Bo:1:002:2 -115 8 = 1bbf0033 1bbf0119")]
+        text = mod.analyze(lines, 1, 2)
+        self.assertIn("  cv_ports_5_6: port 5 (CC 8, 9) 1x, port 6 (CC 10, 11) 1x", text)
+        self.assertIn("  cv_ports_1_2: port 1 (CC 0, 1) 1x", text)
 
     def test_analyze_counts_against_idle(self):
         mod = load_helper()
