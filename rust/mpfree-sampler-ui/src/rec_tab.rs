@@ -681,9 +681,13 @@ impl RecTab {
             matches!(r.progress(), Progress::Waiting | Progress::Recording { .. })
         });
         let settings = self.settings;
-        let Some(v) = ui.get_mut::<InputView>(VIEW) else {
+        // Redrawn only when its picture changes (InputView::look): the view
+        // spans most of the panel's rows.
+        let area = ui.rect_of(VIEW);
+        let Some(v) = ui.get_mut_quiet::<InputView>(VIEW) else {
             return;
         };
+        let before = area.map(|r| v.look(r));
         v.update(input, dt);
         let now = v.now;
         let rate = input.rate;
@@ -744,7 +748,13 @@ impl RecTab {
         v.caption = if matches!(settings.skip, Skip::Bars(_)) && v.skip.is_none() {
             "Skip back by bars: the transport has to play that many bars first".to_string()
         } else {
-            format!("{} held", duration_text(held, rate))
+            // Whole seconds: in hundredths the caption, and so the view,
+            // changed at every frame until the buffer was full.
+            let rate64 = u64::from(rate.max(1));
+            match (held + rate64 / 2) / rate64 {
+                0 => format!("{} held", duration_text(held, rate)),
+                secs => format!("{secs} s held"),
+            }
         };
         v.right = match input.bars.bar_frames() {
             Some(bar) => format!(
@@ -753,6 +763,9 @@ impl RecTab {
             ),
             None => "transport stopped".to_string(),
         };
+        if area.zip(before).is_none_or(|(r, b)| v.look(r) != b) {
+            ui.get_mut::<InputView>(VIEW);
+        }
         if was != self.recording {
             if let Some(b) = ui.get_mut::<ButtonRow>(BUTTONS) {
                 b.labels[0] = if self.recording { "Stop" } else { "Record" }.to_string();
@@ -768,22 +781,48 @@ impl RecTab {
 
     /// No input to show (the line input is off, or just turned on): the
     /// picture says so and the strip starts again.
+    ///
+    /// Called every frame while that lasts, so it changes the widgets (and
+    /// has them redrawn) only the first time.
     pub fn idle(&mut self, ui: &mut Ui, live: bool) {
         self.recording = false;
-        if let Some(v) = ui.get_mut::<InputView>(VIEW) {
-            v.strip.reset();
-            v.skip = None;
-            v.take = None;
-            v.bars.clear();
-            v.threshold = None;
-            v.meter_db = [f32::NEG_INFINITY; 2];
-            v.note = if live { "Starting the input" } else { OFF_NOTE }.to_string();
-            v.caption.clear();
-            v.right.clear();
+        let note = if live { "Starting the input" } else { OFF_NOTE };
+        let shown = ui.get::<InputView>(VIEW).is_none_or(|v| {
+            v.strip.read_to() == 0
+                && v.skip.is_none()
+                && v.take.is_none()
+                && v.bars.is_empty()
+                && v.threshold.is_none()
+                && v.meter_db == [f32::NEG_INFINITY; 2]
+                && v.note == note
+                && v.caption.is_empty()
+                && v.right.is_empty()
+        });
+        if !shown {
+            if let Some(v) = ui.get_mut::<InputView>(VIEW) {
+                v.strip.reset();
+                v.skip = None;
+                v.take = None;
+                v.bars.clear();
+                v.threshold = None;
+                v.meter_db = [f32::NEG_INFINITY; 2];
+                v.note = note.to_string();
+                v.caption.clear();
+                v.right.clear();
+            }
         }
-        if let Some(b) = ui.get_mut::<ButtonRow>(BUTTONS) {
-            b.labels[0] = "Record".to_string();
-            b.enabled = vec![false, false, b.enabled.get(2) == Some(&true), true];
+        let third = ui
+            .get::<ButtonRow>(BUTTONS)
+            .is_some_and(|b| b.enabled.get(2) == Some(&true));
+        let enabled = vec![false, false, third, true];
+        let buttons = ui.get::<ButtonRow>(BUTTONS).is_none_or(|b| {
+            b.labels.first().is_some_and(|l| l == "Record") && b.enabled == enabled
+        });
+        if !buttons {
+            if let Some(b) = ui.get_mut::<ButtonRow>(BUTTONS) {
+                b.labels[0] = "Record".to_string();
+                b.enabled = enabled;
+            }
         }
     }
 
