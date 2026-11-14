@@ -781,6 +781,11 @@ impl TimeHost {
         self.audio.info()
     }
 
+    /// What `track` plays now (takes.rs: a frozen strip follows it).
+    pub fn now_playing(&self, track: usize) -> Option<mpfree_play::NowPlaying> {
+        self.audio.now_playing(track)
+    }
+
     /// True once after the clips, launches or takes changed. Notes and
     /// locks being recorded are told at most every quarter second.
     pub fn take_changed(&mut self) -> bool {

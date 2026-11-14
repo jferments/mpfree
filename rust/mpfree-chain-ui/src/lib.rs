@@ -72,7 +72,7 @@ pub const MACROS_LAYOUT: &str = "col(header:60, row(macros:*, qlinks:168):*, hin
 /// here stays on the chain editor.
 pub const QLINK_PAGE: &str = "chain";
 /// The hint lines: what the buttons do on the page.
-pub const CHAIN_HINT: &str = "Q-Links: the first 4 knobs shown  ·  SHIFT + Q-Link: fine  ·  drag an effect: move it  ·  touch a knob, then a macro number, Learn or + LFO  ·  the strip button: another strip  ·  ‹ back";
+pub const CHAIN_HINT: &str = "Q-Links: the page's first 4 knobs, or Main's on every page  ·  SHIFT + Q-Link: fine  ·  drag an effect: move it  ·  touch a knob: macro, Learn, + LFO  ·  strip button: other strips";
 /// The hint line while the strip list is open.
 pub const STRIPS_HINT: &str =
     "Tap a strip: its chain  ·  Tracks, Pads and the rest: those strips  ·  Back: keep this one";

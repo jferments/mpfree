@@ -16,7 +16,7 @@
 //! Every part of a voice runs every frame, so the output does not depend on
 //! how the host cuts blocks. Nothing here allocates after `prepare`.
 
-use mpfree_node::{Ctx, Kind, Node, NodeEvent, NodeInfo, ParamInfo, Smooth, Timed};
+use mpfree_node::{Ctx, Cull, Kind, Node, NodeEvent, NodeInfo, ParamInfo, Smooth, Timed};
 
 use crate::drum_params::*;
 use crate::dsp::{drive_sq, osc, Rng, Wave};
@@ -280,6 +280,16 @@ impl Voice {
             self.state = State::Free;
         }
         out
+    }
+
+    /// About how loud the hit is now: its parts' envelopes times their
+    /// levels and the hit's gain (velocity, level, pan).
+    fn level(&self) -> f32 {
+        let parts = self.body * self.lvl_a.max(self.lvl_b)
+            + self.noise * (self.noise_lvl + self.metal_lvl)
+            + self.click * self.click_lvl
+            + if self.clap { self.burst } else { 0.0 };
+        parts * self.gain_l.max(self.gain_r) * std::f32::consts::SQRT_2
     }
 
     fn silent(&self) -> bool {
@@ -608,6 +618,24 @@ impl Drums {
         }
     }
 
+    /// The hit load shedding gives up first: the quietest one sounding. A
+    /// hit has no note-off, so none counts as releasing; its own decay
+    /// makes an old hit quiet. Hits already fading are left be.
+    fn cull_pick(&self) -> Option<(usize, Cull)> {
+        let mut best = None;
+        for (i, v) in self.voices.iter().enumerate() {
+            if v.state != State::On {
+                continue;
+            }
+            let c = Cull {
+                level: v.level(),
+                releasing: false,
+            };
+            best = Cull::first(best, Some((i, c)));
+        }
+        best
+    }
+
     fn hit(&mut self, pad: usize, velocity: u8) {
         if velocity == 0 {
             return;
@@ -761,6 +789,26 @@ impl Node for Drums {
 
     fn tail_frames(&self) -> u32 {
         (5.2 * self.rate as f32) as u32
+    }
+
+    fn sounding_voices(&self) -> usize {
+        self.active_voices()
+    }
+
+    fn cull_candidate(&self) -> Option<Cull> {
+        self.cull_pick().map(|(_, c)| c)
+    }
+
+    fn cull(&mut self) -> bool {
+        let Some((i, _)) = self.cull_pick() else {
+            return false;
+        };
+        let step = 1.0 / (KILL_MS * 0.001 * self.rate as f32).max(1.0);
+        let v = &mut self.voices[i];
+        v.state = State::Kill;
+        v.kill = 1.0;
+        v.kill_step = step;
+        true
     }
 }
 

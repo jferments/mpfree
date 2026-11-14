@@ -45,4 +45,4 @@ pub use recorded::{Behind, Includes, Rec, Recent, RECENT};
 pub use takes::{
     ClipDrop, MovePut, MoveWrite, Recorded, SongChange, SongEdit, Take, Takes, TAKE_ROOM,
 };
-pub use view::{anchored, CompileError, Cue, Launch, PlayView, Started, EARLIEST};
+pub use view::{anchored, CompileError, Cue, Launch, NowPlaying, PlayView, Started, EARLIEST};

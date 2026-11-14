@@ -38,7 +38,7 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use mpfree_arp::scale::pads::{Pad, PADS};
-use mpfree_fx::{Insert, StripId};
+use mpfree_fx::{Frozen, Insert, Print, Printed, StripId};
 use mpfree_node::Tuning;
 use mpfree_track::Instrument;
 
@@ -436,6 +436,47 @@ pub struct InstrumentJob {
     pub tuning: Tuning,
 }
 
+/// A plugin synth's own presets, listed on the builder thread, or a
+/// preset loaded into a track's plugin (`Rack::presets`,
+/// `Rack::load_preset`).
+pub enum PresetNews {
+    /// Plugin `id`'s presets, or why they couldn't be listed.
+    Listed {
+        id: &'static str,
+        list: Result<Vec<mpfree_plughost::Preset>, String>,
+    },
+    /// Preset `index` (named `name`) went into track `track`'s plugin
+    /// `instance`, or the plugin's reason it didn't.
+    Loaded {
+        track: usize,
+        instance: u64,
+        index: usize,
+        name: String,
+        result: Result<(), String>,
+    },
+}
+
+/// A preset to load into a track's plugin.
+pub struct PresetJob {
+    pub track: usize,
+    pub instance: u64,
+    pub index: usize,
+    pub preset: mpfree_plughost::Preset,
+}
+
+impl PresetJob {
+    /// Loads it (on the builder thread, or here in the tests).
+    pub fn run(self, plugins: &Plugins) -> PresetNews {
+        PresetNews::Loaded {
+            track: self.track,
+            instance: self.instance,
+            index: self.index,
+            result: plugins.load_preset(self.instance, &self.preset),
+            name: self.preset.name,
+        }
+    }
+}
+
 enum Job {
     Build {
         strip: StripId,
@@ -448,8 +489,16 @@ enum Job {
         switch: Option<Box<(mpfree_fx::families::Switch, u16)>>,
     },
     Instrument(Box<InstrumentJob>, u32, usize),
+    /// List a plugin's presets (the first time: its own process, seconds).
+    Presets(&'static str),
+    LoadPreset(Box<PresetJob>),
     Drop(Insert),
     DropInstrument(Instrument),
+    /// A take's memory (takes.rs): a print of so many seconds at a rate.
+    Print(u32, f32),
+    DropFrozen(Frozen),
+    DropPrint(Print),
+    DropPrinted(Box<Printed>),
 }
 
 /// Builds effects for the chain editor, and drops the ones edits take out,
@@ -458,6 +507,8 @@ pub struct Builder {
     tx: SyncSender<Job>,
     built: Receiver<Built>,
     instruments: Receiver<MadeInstrument>,
+    prints: Receiver<Print>,
+    presets: Receiver<PresetNews>,
     /// Asked for and not back yet.
     pending: usize,
     _thread: JoinHandle<()>,
@@ -471,6 +522,8 @@ impl Builder {
         let (tx, rx) = mpsc::sync_channel::<Job>(BUILD_QUEUE);
         let (built_tx, built) = mpsc::sync_channel::<Built>(BUILD_QUEUE);
         let (inst_tx, instruments) = mpsc::sync_channel::<MadeInstrument>(BUILD_QUEUE);
+        let (print_tx, prints) = mpsc::sync_channel::<Print>(BUILD_QUEUE);
+        let (preset_tx, presets) = mpsc::sync_channel::<PresetNews>(BUILD_QUEUE);
         let thread = thread::Builder::new()
             .name("mpfree-build".into())
             .spawn(move || {
@@ -534,8 +587,30 @@ impl Builder {
                                 return;
                             }
                         }
+                        Job::Presets(id) => {
+                            let news = PresetNews::Listed {
+                                id,
+                                list: plugins.presets(id),
+                            };
+                            if preset_tx.send(news).is_err() {
+                                return;
+                            }
+                        }
+                        Job::LoadPreset(job) => {
+                            if preset_tx.send(job.run(&plugins)).is_err() {
+                                return;
+                            }
+                        }
                         Job::Drop(insert) => drop(insert),
                         Job::DropInstrument(inst) => drop(inst),
+                        Job::Print(rate, seconds) => {
+                            if print_tx.send(Print::new(rate, seconds)).is_err() {
+                                return;
+                            }
+                        }
+                        Job::DropFrozen(f) => drop(f),
+                        Job::DropPrint(p) => drop(p),
+                        Job::DropPrinted(p) => drop(p),
                     }
                 }
             })?;
@@ -543,6 +618,8 @@ impl Builder {
             tx,
             built,
             instruments,
+            prints,
+            presets,
             pending: 0,
             _thread: thread,
         })
@@ -628,6 +705,25 @@ impl Builder {
         self.tx.try_send(Job::Instrument(job, rate, block)).is_ok()
     }
 
+    /// Asks for plugin `id`'s presets, handed back by
+    /// [`Builder::take_preset_news`]. False if the queue is full. Never
+    /// waits.
+    pub fn presets(&mut self, id: &'static str) -> bool {
+        self.tx.try_send(Job::Presets(id)).is_ok()
+    }
+
+    /// Asks for a preset to be loaded into a track's plugin. False if the
+    /// queue is full. Never waits.
+    pub fn load_preset(&mut self, job: Box<PresetJob>) -> bool {
+        self.tx.try_send(Job::LoadPreset(job)).is_ok()
+    }
+
+    /// The next presets listed or preset loaded, if one is ready. Never
+    /// waits.
+    pub fn take_preset_news(&mut self) -> Option<PresetNews> {
+        self.presets.try_recv().ok()
+    }
+
     /// The next track instrument made, if one is ready. Never waits.
     pub fn take_instrument(&mut self) -> Option<MadeInstrument> {
         self.instruments.try_recv().ok()
@@ -642,6 +738,48 @@ impl Builder {
                 drop(job);
                 false
             }
+        }
+    }
+
+    /// Asks for a take's memory: a print of `seconds` at `rate`, handed
+    /// back by [`Builder::take_print`]. False if the queue is full. Never
+    /// waits.
+    pub fn print(&mut self, rate: u32, seconds: f32) -> bool {
+        self.tx.try_send(Job::Print(rate, seconds)).is_ok()
+    }
+
+    /// The next take's memory made, if one is ready. Never waits.
+    pub fn take_print(&mut self) -> Option<Print> {
+        self.prints.try_recv().ok()
+    }
+
+    /// Drops a take a strip is done with on the builder thread (here if
+    /// the queue is full).
+    pub fn drop_frozen_later(&mut self, f: Frozen) {
+        if let Err(TrySendError::Full(job) | TrySendError::Disconnected(job)) =
+            self.tx.try_send(Job::DropFrozen(f))
+        {
+            drop(job);
+        }
+    }
+
+    /// Drops a print's memory on the builder thread (here if the queue is
+    /// full).
+    pub fn drop_print_later(&mut self, p: Print) {
+        if let Err(TrySendError::Full(job) | TrySendError::Disconnected(job)) =
+            self.tx.try_send(Job::DropPrint(p))
+        {
+            drop(job);
+        }
+    }
+
+    /// Drops a print that wasn't saved on the builder thread (here if the
+    /// queue is full).
+    pub fn drop_printed_later(&mut self, p: Box<Printed>) {
+        if let Err(TrySendError::Full(job) | TrySendError::Disconnected(job)) =
+            self.tx.try_send(Job::DropPrinted(p))
+        {
+            drop(job);
         }
     }
 

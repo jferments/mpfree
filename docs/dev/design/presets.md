@@ -56,5 +56,5 @@ qset = 31 32 34 33 Tone
 ## Not yet
 
 - A Wavetable sound on a user table (one made from a sample) saves the table choice "User" but not the table itself; the preset will name the table's file once the library holds it.
-- Plugins: a CLAP plugin's own state chunk is not saved yet.
+- Plugins: a CLAP plugin's own state chunk is not saved in a sound preset yet. A plugin's own presets (its factory and user files, listed and loaded through CLAP) are the plugin's, not this format: see [Plugins](plugins.md#in-the-app).
 - The catalogue (factory presets with tags, search, favourites) and the Save button come next. The picker's try, cancel and load are built on the app's side (`Synth::try_preset`, `revert_preset`, `load_preset_file`, and `save_preset` for the text a Save writes). The app links the library since the Pads tab (PR #250), but its browser offers sounds only and says "a preset is not wired" for the preset actions, so the Synth tab still needs to open the picker and hand those actions to the synth.
