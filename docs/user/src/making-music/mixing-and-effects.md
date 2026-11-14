@@ -175,7 +175,7 @@ In the chain editor the **mode chooser** sits under the effect's name: tap a mod
 To have two at once, add the effect twice and pick each one's mode: a Room, then a Plate, one after the other in the chain.
 
 > [!NOTE]
-> A Q-Link you learned to one of its knobs doesn't move with a switch; learn it again. Projects made before modes open as they were: a Cloud reverb set to its own Plate or Room shows as the **Cloud reverb**, in none of the modes.
+> A Q-Link you learned to one of its knobs doesn't follow a switch to another mode: it turns whichever control the new mode has in that knob's place, so learn it again. Projects made before modes open as they were: a Cloud reverb set to its own Plate or Room shows as the **Cloud reverb**, in none of the modes.
 
 ## XY FX
 
