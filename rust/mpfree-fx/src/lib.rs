@@ -388,6 +388,10 @@ impl FixedDelay {
     pub(crate) fn frames(&self) -> usize {
         self.buf.len()
     }
+    /// No delay: what goes in comes straight out.
+    pub(crate) fn is_empty(&self) -> bool {
+        self.buf.is_empty()
+    }
     #[inline]
     pub(crate) fn run(&mut self, x: f32) -> f32 {
         if self.buf.is_empty() {
