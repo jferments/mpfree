@@ -797,7 +797,14 @@ mod tests {
             ("Drive", 10, Some(0))
         );
         assert!(!drive.params.iter().any(|p| p.info.name == "Mode"));
-        let mut ui = screen(Fonts::embedded(), &mut song, Place::Mixer, Some(drive), None).unwrap();
+        let mut ui = screen(
+            Fonts::embedded(),
+            &mut song,
+            Place::Mixer,
+            Some(drive),
+            None,
+        )
+        .unwrap();
         let r = ui.rect_of(crate::CHAIN).unwrap();
         let v = ui.get::<ChainView>(crate::CHAIN).unwrap();
         let l = v.layout(r);
@@ -832,7 +839,10 @@ mod tests {
         }
         assert_eq!(
             crate::take_chain_actions(&mut ui),
-            [ChainAction::SetMode { slot: room, mode: 1 }]
+            [ChainAction::SetMode {
+                slot: room,
+                mode: 1
+            }]
         );
         let st = song.chain_state(DRUMS, cloud, 0, None);
         assert_eq!(st.mode.as_ref().unwrap().current, None);

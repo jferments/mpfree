@@ -733,10 +733,9 @@ impl ChainView {
             self.push(ChainAction::Group(g));
             return;
         }
-        if let (Some(&(_, mode)), Some(slot)) = (
-            l.modes.iter().find(|(r, _)| r.contains(x, y)),
-            st.selected,
-        ) {
+        if let (Some(&(_, mode)), Some(slot)) =
+            (l.modes.iter().find(|(r, _)| r.contains(x, y)), st.selected)
+        {
             if st.mode.as_ref().is_some_and(|m| m.current != Some(mode)) {
                 self.push(ChainAction::SetMode { slot, mode });
             }
@@ -917,14 +916,21 @@ impl Widget for ChainView {
                 row.h,
             );
             let (top, bottom) = text.take_top(row.h / 2 + 2);
-            // The name stops short of the macro dots and the wave mark
-            // ("Delay · Digital" is cut with "…" rather than run under them).
-            let marks = 12 * s.macros.len() as i32 + if s.modulated { 22 } else { 0 };
+            // The name stops short of the macro dots and the wave mark drawn
+            // below (a long "Reverb · Echoes" is cut with "…" rather than run
+            // under them): the dots are 9 px in 12 px steps from the right,
+            // the wave's ink about 5 px into its 20 px box left of them.
+            let dots = text.right() - 4 - 12 * s.macros.len() as i32;
+            let marks = match (s.modulated, s.macros.is_empty()) {
+                (true, _) => dots - 22 + 5 - 4,
+                (false, false) => dots - 4,
+                (false, true) => text.right(),
+            };
             let name = top.take_bottom(24).0;
             cx.text(
                 FontId::Bold,
                 t.size_body,
-                Rect::new(name.x, name.y, name.w - marks - 8 * i32::from(marks > 0), name.h),
+                Rect::new(name.x, name.y, marks - name.x, name.h),
                 Align::Left,
                 ink,
                 &s.name,
@@ -1596,7 +1602,14 @@ fn paint_modes(cx: &mut PaintCx, l: &Layout, mv: &crate::state::ModeView) {
                 Some(c) => format!("{}   {} of {}", mv.modes[c], c + 1, mv.modes.len()),
                 None => format!("{} mode", mv.family),
             };
-            cx.text(FontId::Bold, t.size_small, label, Align::Center, t.text, &text);
+            cx.text(
+                FontId::Bold,
+                t.size_small,
+                label,
+                Align::Center,
+                t.text,
+                &text,
+            );
         }
     }
 }
