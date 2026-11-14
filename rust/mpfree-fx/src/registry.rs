@@ -399,20 +399,20 @@ pub static EFFECTS: &[FxEntry] = &[
         &[],
     ),
     e(
-        "mpfree.fx.tuner",
-        "Tuner",
-        "Tune a guitar, a bass or a voice",
-        Utility,
-        || Box::new(Tuner::new()),
-        &[],
-    ),
-    e(
         "mpfree.fx.xy",
         "XY FX",
         "One effect played from an XY pad",
         Performance,
         || Box::new(XyFx::new()),
         crate::xyfx::PRESETS,
+    ),
+    e(
+        "mpfree.fx.tuner",
+        "Tuner",
+        "Tune a guitar, a bass or a voice",
+        Utility,
+        || Box::new(Tuner::new()),
+        &[],
     ),
     FxEntry {
         master_only: true,

@@ -95,7 +95,6 @@ These effects can go on any strip. The list of effects groups them: Dynamics, EQ
 | **Pitch correct** | Tunes a voice to the notes of a key. Pick the **Key** and **Scale**; **Speed** sets how quickly it pulls a note in (0 snaps straight to it, for the hard, stepped sound; 50 ms or more keeps slides and vibrato natural) and **Amount** how far. The **Note** and **Correction** readouts show the note it hears and how far it is moving it. |
 | **Harmonizer** | Sings along with you: up to two extra voices a 3rd, 4th, 5th, 6th or octave above or below each note you sing, that stay in the key (a 3rd is major or minor as the key has it), each with its own level and pan. **Glide** smooths a voice into its next note, and **Dry** is your own voice. |
 | **Cloud reverb** | A large, lush reverb. |
-| **Tuner** | Tunes a guitar, a bass, a voice or a synth: put it on the strip the instrument comes in on (an input, usually) and play one note at a time. It shows the note, how many cents sharp or flat (the needle is green when you're within 3 cents) and the frequency. **Reference** sets the pitch of A, 440 Hz unless your band tunes to something else; **Mute** silences the strip while you tune. It doesn't change the sound and adds no delay. |
 | **Limiter** | A brick wall: nothing gets past the ceiling. **True peak** also catches peaks between samples; **Auto release** keeps a loud mix from pumping. |
 | **Gate** | Silences (or turns down) what falls under the threshold, so drums stop ringing. It can open from another strip's sound, for rhythmic gating. |
 | **De-esser** | Turns down harsh "s" and "t" sounds. **Listen** plays only what it hears, to find the right frequency. |
@@ -109,6 +108,7 @@ These effects can go on any strip. The list of effects groups them: Dynamics, EQ
 | **Multi-tap delay** | Four echoes on the beat, each with its own level and pan. |
 | **Room reverb**, **Plate reverb**, **Spring reverb** | Smaller, classic reverbs. The room's **Gate** cuts its tail short, for the 1980s gated snare. |
 | **XY FX** | One effect at a time played from two controls at once, X and Y: see [XY FX](#xy-fx). |
+| **Tuner** | Tunes a guitar, a bass, a voice or a synth: put it on the strip the instrument comes in on (an input, usually) and play one note at a time. It shows the note, how many cents sharp or flat (the needle is green when you're within 3 cents) and the frequency. **Reference** sets the pitch of A, 440 Hz unless your band tunes to something else; **Mute** silences the strip while you tune. It doesn't change the sound and adds no delay. |
 
 Pitch correct and the Harmonizer listen for one voice: a singer, or a solo instrument such as a whistle or a sax, not chords. Set **Range** to fit it: **Low** for bass and baritone voices, **Mid** for most singing, **High** for high voices. They hold the sound back a little while they listen (about 40 ms on Low, 28 on Mid and 17 on High), and the mixer holds everything else back to match, so the mix stays in time. When you sing live through one, High has the shortest delay.
 
