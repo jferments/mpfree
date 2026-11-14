@@ -2287,6 +2287,13 @@ fn wait_for<T>(
 /// `app` (from power-on, until the power goes off).
 fn player(o: &Options, timed: bool) -> Result<(), String> {
     let mut out = Out::new(o, if timed { "pad player" } else { "app" }, false);
+    // Long jobs run at idle priority, after the screen and every other
+    // thread (mpfree_lanes::os::idle_job): set before any of them starts.
+    mpfree_lanes::os::set_idle_jobs(true);
+    out.say(
+        "threads: long jobs (stretching, looper prints, sampling a synth) at idle priority, \
+         after the screen",
+    );
     let fonts = load_fonts(o, &mut out);
     let mut fb = None;
     let fb_wait = if timed {
@@ -3572,6 +3579,8 @@ fn player_session(
     let (mut pings, mut last_ping, mut last_reply, mut lost) =
         (0u64, Instant::now(), Instant::now(), false);
     let mut last_timing = Instant::now();
+    // Long jobs refused idle priority, as last logged.
+    let mut idle_noted = 0;
     let mut last_status = Instant::now();
     // The Q-Links' touch sensors chatter: a release counts after 150 ms off.
     let mut touch_hold = qlink_touch::TouchHold::default();
@@ -5515,6 +5524,13 @@ fn player_session(
             cores.publish(&engine_shared.cores, counts);
             if let Some(line) = cores.late_note(counts, last_timing) {
                 out.note(&line);
+            }
+            // A long job refused idle priority: in the log (and the
+            // console) within a second, with the count.
+            let idle = mpfree_lanes::os::idle_counts();
+            if idle.refused != idle_noted {
+                idle_noted = idle.refused;
+                out.note(&cores::idle_note(idle));
             }
             // Prefs or found buttons changed: the store's thread writes them.
             for (owner, settings) in app.take_saves() {
