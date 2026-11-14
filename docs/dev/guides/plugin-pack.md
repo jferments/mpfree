@@ -59,7 +59,7 @@ Ubuntu's armhf compiler turns on 64-bit time and file offsets by default, so the
 
 The JUCE plugins (Dexed, Surge XT) need a few more things handled:
 
-- JUCE links FreeType (and JUCE 8 fontconfig) to draw text in an editor. [`static-deps.cmake`](../../../tools/plugin-pack/static-deps.cmake), included after each of their CMake projects, makes the build prefer static libraries, so the armhf packages' `.a` files (position-independent) go inside the `.clap` with what they need in turn.
+- JUCE links FreeType (and JUCE 8 fontconfig) to draw text in an editor. [`static-deps.cmake`](../../../tools/plugin-pack/static-deps.cmake), included after each of their CMake projects, answers JUCE's pkg-config search for those two with the armhf packages' `.a` files (position-independent), and adds what they need in turn, so they go inside the `.clap`. The C library stays shared.
 - ALSA is left out: Dexed with `DEXED_NO_ALSA=ON` (its MIDI out to a real DX7, from its editor) and Surge XT with `SURGE_SKIP_STANDALONE=ON` (no standalone app, so no ALSA or JACK).
 - JUCE opens its X11 libraries itself, only when it shows an editor, which MPFree never asks for; they aren't needed on the MPC.
 
