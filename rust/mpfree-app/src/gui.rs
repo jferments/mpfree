@@ -542,6 +542,9 @@ pub enum ToUi {
     /// What the chain editor shows (a few times a second while it is open,
     /// and after each change), boxed as the mixer's state is.
     Chain(Box<ChainState>),
+    /// An insert switched to another engine with its mode: Q-Links learned
+    /// on its controls follow them (`fxmodes::Landed`).
+    ParamsMoved(Box<crate::fxmodes::Landed>),
     /// The chain editor's selected effect's values, for its drawings (None:
     /// none selected, or one the pages don't draw).
     ChainFx(Option<Box<FxState>>),
@@ -3145,6 +3148,7 @@ impl Player {
                 | ToUi::Steps(_)
                 | ToUi::SynthValues(_)
                 | ToUi::Chain(_)
+                | ToUi::ParamsMoved(_)
                 | ToUi::Macros(_)
                 | ToUi::Edited
         ) {
@@ -3461,6 +3465,12 @@ impl Player {
             ToUi::IoInput(ev) => self.io_input(ev),
             ToUi::Chain(st) => {
                 self.chain_page.set_chain(&mut self.ui, *st);
+                if self.chain_page.drives(self.view) {
+                    self.refresh_qlinks();
+                }
+            }
+            ToUi::ParamsMoved(landed) => {
+                self.chain_page.bind.retarget(|a| landed.target(a));
                 if self.chain_page.drives(self.view) {
                     self.refresh_qlinks();
                 }
@@ -11163,6 +11173,50 @@ mod tests {
         let b = mpfree_chain_ui::macros::layout(r).back;
         let got = tap(&mut p, b.x + 5, b.y + 5);
         assert_eq!(got, vec![FromUi::Macros(MacroAction::Back)]);
+    }
+
+    /// A Q-Link learned on an insert's control follows it when the insert
+    /// switches engine with its mode (`ToUi::ParamsMoved`); one whose
+    /// control went nowhere is freed, and the bank's own knob shows again.
+    #[test]
+    fn a_learned_q_link_follows_its_control_to_a_new_engine() {
+        use mpfree_chain_ui::sample::{Song, DRUMS};
+        use mpfree_play::mpfree_param::Owner;
+        let mut p = sample_player(Fonts::embedded());
+        sample_panels(&mut p, View::Chain);
+        let song = Song::new();
+        let owner = Owner::Insert(DRUMS, song.drums.uid(1).unwrap());
+        let tone = ParamAddr::new(owner, mpfree_fx::ids::drive::TONE);
+        // Macros 1-4 shown, Tone learned on Q-Link 4 (the chain editor's).
+        p.chain_page.next_bank(View::Chain);
+        p.chain_page.learn(tone);
+        assert_eq!(p.chain_page.turn(3, 1, false), Some(Turned::Learned));
+        assert_eq!(p.chain_page.bind.card(3).target, Some(tone));
+        let info = p.chain_page.bind.card(3).target.and_then(|_| {
+            song.chain(DRUMS)
+                .node(1)
+                .and_then(|n| n.params().iter().find(|i| i.id == tone.param).copied())
+        });
+        let info = info.expect("the Drive has a Tone");
+        let moved = |to: Option<u16>| {
+            ToUi::ParamsMoved(Box::new(crate::fxmodes::Landed {
+                owner,
+                moves: vec![(
+                    to.map_or(40, |_| tone.param),
+                    to.map(|id| mpfree_node::ParamInfo { id, ..info }),
+                )],
+            }))
+        };
+        p.apply(moved(Some(40)));
+        let new = ParamAddr::new(owner, 40);
+        assert_eq!(p.chain_page.bind.card(3).target, Some(new));
+        assert_eq!(p.chain_page.bind.card(3).label, "Tone");
+        p.apply(moved(None));
+        assert_eq!(
+            p.chain_page.bind.card(3).target,
+            Some(ParamAddr::macro_value(3)),
+            "gone: Macro 4 again"
+        );
     }
 
     /// The wheel on the chain editor: Q-Link 1 while the picker is shut;
