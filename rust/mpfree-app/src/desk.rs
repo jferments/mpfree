@@ -181,7 +181,8 @@ impl Desk<'_> {
             | gui::FromUi::SampleGrains(_)
             | gui::FromUi::SaveProject
             | gui::FromUi::OpenProject(_)
-            | gui::FromUi::OpenLoops(_)) => return Some(a),
+            | gui::FromUi::OpenLoops(_)
+            | gui::FromUi::OpenAudio(_)) => return Some(a),
         }
         None
     }
