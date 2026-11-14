@@ -313,8 +313,12 @@ def check(args, out):
     for line in text.splitlines():
         out.say(f"  {line}")
     if rc == 255 and "CHECKS-" not in text:
-        raise Stop("the test build did not answer on port 2222. Start it first with the --kexec-boot block; "
-                   "on stock 3.6 this tool runs nothing")
+        if "Host key verification failed" in text or "IDENTIFICATION HAS CHANGED" in text:
+            raise Stop("port 2222 answered with another host key, so the MPC is not running this test build "
+                       "(stock 3.6 answers there with its own key). Nothing was run on it. Start the test build "
+                       "with the --kexec-boot block, and run this while it is still running")
+        raise Stop("the test build did not answer on port 2222. Start it first with the --kexec-boot block, and "
+                   "run this while it is still running; on stock 3.6 this tool runs nothing")
     if text.strip().splitlines()[-1:] != ["CHECKS-OK"]:
         raise Stop("the test build's safety checks did not pass (PROBLEM lines above); nothing was changed")
     overlay = "developer mode overlay: mounted" in text.splitlines()

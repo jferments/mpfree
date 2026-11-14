@@ -538,6 +538,17 @@ class KexecStickTests(unittest.TestCase):
                       self.dfs(root_img, "stat /etc/systemd/system/multi-user.target.wants/mpfree-test-sshd.service"))
         self.assertIn('Fast link dest: "/etc/systemd/system/mpfree-test-logs.service"',
                       self.dfs(root_img, "stat /etc/systemd/system/sysinit.target.wants/mpfree-test-logs.service"))
+        # 3.10.1 ships its rules files empty (0 bytes): the report says so rather than showing nothing.
+        build_rootfs(os.path.dirname(self.image), extra={
+            f"{UNITS}/ip6tables.service": "[Service]\nExecStart=/usr/sbin/ip6tables-restore "
+                                          "/etc/iptables/ip6tables.rules\n",
+            "etc/iptables/ip6tables.rules": ""})
+        self.image_sha = sha(self.image)
+        res = self.build("--akai-app")
+        self.assertEqual(res.returncode, 0, res.stdout)
+        self.assertIn("  /usr/lib/systemd/system/ip6tables.service: ExecStart=/usr/sbin/ip6tables-restore "
+                      "/etc/iptables/ip6tables.rules\n  --- /etc/iptables/ip6tables.rules\n"
+                      "    (empty: 0 bytes, so it loads no rules)\n", res.stdout)
 
     def test_akai_app_refuses_our_own_programs(self):
         self.kits_file("factory-kit-20260102T000000Z-new")

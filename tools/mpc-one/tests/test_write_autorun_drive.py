@@ -30,19 +30,28 @@ class WriteAutorunDriveTests(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.root, ignore_errors=True)
 
-    def disk(self, name, usb=True, partnames=("",)):
+    def disk(self, name, usb=True, partnames=("",), fs=None, size="60000000"):
+        """A disk in the fake /sys, its partitions, and udev's records: fs maps a node to (type, label)."""
         bus = "usb1/1-1/1-1:1.0/host6/target6:0:0/6:0:0:0" if usb else "ata1/host0/target0:0:0/0:0:0:0"
         real = f"{self.root}/sys/devices/pci0000:00/{bus}/block/{name}"
-        write(f"{real}/size", "60000000\n")
+        major, minor = 8, 16 * (ord(name[-1]) - ord("a"))
+        write(f"{real}/size", size + "\n")
+        write(f"{real}/dev", f"{major}:{minor}\n")
         write(f"{real}/device/vendor", "Generic\n" if usb else "ATA\n")
         write(f"{real}/device/model", "Flash Disk\n" if usb else "SSD\n")
         os.makedirs(f"{self.root}/sys/block", exist_ok=True)
         os.makedirs(f"{self.root}/sys/class/block", exist_ok=True)
         os.symlink(real, f"{self.root}/sys/block/{name}")
+        os.symlink(real, f"{self.root}/sys/class/block/{name}")
         for n, partname in enumerate(partnames, 1):
             write(f"{real}/{name}{n}/uevent", f"DEVNAME={name}{n}\n" + (f"PARTNAME={partname}\n" if partname else ""))
             write(f"{real}/{name}{n}/partition", f"{n}\n")
+            write(f"{real}/{name}{n}/dev", f"{major}:{minor + n}\n")
             os.symlink(f"{real}/{name}{n}", f"{self.root}/sys/class/block/{name}{n}")
+        for node, (fstype, label) in (fs or {}).items():
+            n = int(node[len(name):] or 0)
+            write(f"{self.root}/run/udev/data/b{major}:{minor + n}",
+                  f"S:disk/by-id/usb-{node}\nE:ID_FS_TYPE={fstype}\nE:ID_FS_LABEL={label}\nE:ID_BUS=usb\n")
 
     def mount(self, node, where, fs):
         os.makedirs(self.root + where, exist_ok=True)
@@ -120,9 +129,81 @@ class WriteAutorunDriveTests(unittest.TestCase):
     def test_no_drive(self):
         self.mounts = self.mounts[:1]
         write(f"{self.root}/proc/self/mountinfo", "".join(self.mounts))
+        shutil.rmtree(os.path.realpath(f"{self.root}/sys/block/sdc"))
+        os.unlink(f"{self.root}/sys/block/sdc")
         res = self.run_tool()
         self.assertEqual(res.returncode, 1, res.stdout)
+        self.assertIn("USB disks with nothing mounted (what udev says is on them):\n  (none)\n", res.stdout)
         self.assertIn("no spare drive to use", res.stdout)
+
+    def unmount_spare(self):
+        self.mounts = self.mounts[:1]
+        write(f"{self.root}/proc/self/mountinfo", "".join(self.mounts))
+
+    def test_a_stick_that_is_not_mounted_is_shown_with_what_to_do(self):
+        # The spare stick is FAT32 but the desktop has not mounted it; an empty card reader slot is left out.
+        self.unmount_spare()
+        write(f"{self.root}/run/udev/data/b8:33", "E:ID_FS_TYPE=vfat\nE:ID_FS_LABEL=SPARE\n")
+        self.disk("sdd", partnames=(), size="0")
+        res = self.run_tool()
+        self.assertEqual(res.returncode, 1, res.stdout)
+        self.assertIn("USB disks with nothing mounted (what udev says is on them):\n"
+                      "  /dev/sdc: Generic Flash Disk, 30.7 GB\n      /dev/sdc1: vfat, label SPARE\n", res.stdout)
+        self.assertNotIn("/dev/sdd", res.stdout)
+        self.assertIn("plugged in but not mounted: open it in the file manager", res.stdout)
+        self.assertNotIn("Format", res.stdout)
+        self.assertEqual(os.listdir(os.path.dirname(self.drive())), [])
+
+    def test_a_blank_stick_is_to_be_formatted_first(self):
+        self.unmount_spare()
+        shutil.rmtree(os.path.realpath(f"{self.root}/sys/block/sdc"))
+        os.unlink(f"{self.root}/sys/block/sdc")
+        self.disk("sdd", partnames=())
+        res = self.run_tool()
+        self.assertEqual(res.returncode, 1, res.stdout)
+        self.assertIn("  /dev/sdd: Generic Flash Disk, 30.7 GB\n      no partitions and no filesystem (blank)\n",
+                      res.stdout)
+        self.assertIn("has no filesystem yet, so the desktop cannot mount it. Format it as FAT first (this erases "
+                      "it): in the Disks app", res.stdout)
+        # A partition with nothing on it is blank too.
+        shutil.rmtree(os.path.realpath(f"{self.root}/sys/block/sdd"))
+        os.unlink(f"{self.root}/sys/block/sdd")
+        os.unlink(f"{self.root}/sys/class/block/sdd")
+        self.disk("sdd")
+        res = self.run_tool()
+        self.assertIn("      /dev/sdd1: no filesystem\n", res.stdout)
+        self.assertIn("Format it as FAT first", res.stdout)
+
+    def test_never_advises_erasing_the_test_stick_or_a_drive_with_data(self):
+        self.unmount_spare()
+        shutil.rmtree(os.path.realpath(f"{self.root}/sys/block/sdc"))
+        os.unlink(f"{self.root}/sys/block/sdc")
+        self.disk("sdb", partnames=("mpfree-test-root", "mpfree-test-log", "mpfree-test-kits", "mpfree-test-data"),
+                  fs={"sdb1": ("ext4", ""), "sdb4": ("ext4", "MPFREE-DATA")})
+        res = self.run_tool()
+        self.assertEqual(res.returncode, 1, res.stdout)
+        self.assertIn("  /dev/sdb: Generic Flash Disk, 30.7 GB (the MPFree test stick: never used)\n", res.stdout)
+        self.assertNotIn("sdb1", res.stdout)
+        self.assertIn("no spare drive to use", res.stdout)
+        self.assertNotIn("Format", res.stdout)
+        self.disk("sdd", fs={"sdd1": ("ntfs", "PHOTOS")})
+        res = self.run_tool()
+        self.assertIn("      /dev/sdd1: ntfs, label PHOTOS\n", res.stdout)
+        self.assertIn("holds no FAT32 or exFAT filesystem: use a FAT32 or exFAT drive instead", res.stdout)
+        self.assertNotIn("Format", res.stdout)
+
+    def test_a_stick_formatted_without_partitions(self):
+        # Some sticks hold their filesystem on the whole disk (/dev/sdd, no sdd1).
+        self.unmount_spare()
+        shutil.rmtree(os.path.realpath(f"{self.root}/sys/block/sdc"))
+        os.unlink(f"{self.root}/sys/block/sdc")
+        self.disk("sdd", partnames=(), fs={"sdd": ("vfat", "WHOLE")})
+        self.mount("sdd", "/run/media/jesse/WHOLE", "vfat")
+        res = self.run_tool()
+        self.assertEqual(res.returncode, 0, res.stdout)
+        self.assertIn("/dev/sdd on /run/media/jesse/WHOLE: Generic Flash Disk, vfat, 30.7 GB\n      CAN be used",
+                      res.stdout)
+        self.assertTrue(os.path.isfile(os.path.join(self.root, "run/media/jesse/WHOLE/autorun.sh")))
 
 
 if __name__ == "__main__":

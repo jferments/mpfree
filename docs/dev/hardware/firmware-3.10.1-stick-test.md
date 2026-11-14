@@ -133,7 +133,7 @@ Developer mode is switched on from inside Akai's app (Akai's [release notes](htt
 **You need:**
 
 - The MPC on the direct Ethernet cable only: while developer mode is on, anyone on its network can get a root shell with no password.
-- For the autorun test (optional), a spare FAT32 or exFAT USB drive and the MPC's second USB-A port.
+- For the autorun test (optional), a spare USB drive that your desktop mounts as FAT32 or exFAT, and the MPC's second USB-A port. A blank drive has nothing the desktop can mount, so format it as FAT first; block 3.2 says how when it finds no usable drive.
 - 3.6.0 has its own script runner, and whether it would run this script has not been checked. So the spare drive goes into the MPC only while the test build runs.
 
 **Block 3.1: update, check, build** (workstation only):
@@ -149,6 +149,8 @@ The build report says `akai app: on (--akai-app)`, lists `dfu-util` among the st
 ```bash
 cd /home/jesse/code/mpfree-hardware-survey && python3 tools/mpc-one/results.py run autorun-drive -- python3 tools/mpc-one/write-autorun-drive.py
 ```
+
+If it finds no usable drive, it lists the USB drives it sees with nothing mounted, and what udev says is on them, and says what to do: open a FAT32 drive in the file manager so it is mounted, or format a blank one as FAT in the Disks app. It never formats or mounts anything itself, and never suggests erasing the test stick or a drive that holds files.
 
 Eject the drive afterwards and keep it out of the MPC for now.
 
@@ -181,7 +183,7 @@ It says the build runs Akai's app, and its checks on the test build print `Akai'
 3. Hold SHIFT and press MENU, then choose Developer. Note what the screen shows.
 4. Optional: plug the spare drive into the MPC's free USB-A port. If the MPC asks whether to run the drive's autorun script, answer yes. Note its exact words, and whether it asked at all.
 
-**Block 3.6: the developer mode check** (read-only, unless you type `LOCK`: then **state-changing, RAM only**). Typing `LOCK` is recommended, since it checks that Akai's lock-down works:
+**Block 3.6: the developer mode check** (read-only, unless you type `LOCK`: then **state-changing, RAM only**). Typing `LOCK` is recommended, since it checks that Akai's lock-down works. **Run it while the test build is still running**, with Akai's app on the screen and developer mode on: everything it reads lives in the test build's RAM, and switching off loses it.
 
 ```bash
 cd /home/jesse/code/mpfree-hardware-survey && python3 tools/mpc-one/results.py run devmode-check -- bash tools/mpc-one/collect-over-ssh.sh --devmode-check
@@ -219,6 +221,24 @@ Upload the zip, with your notes from the MPC's screen. The reports quote Akai's 
 - Whether Akai's firewall lets port 22 through on an installed 3.10.1. The build report quotes its rules for reading.
 
 **Undo:** as phase 2. Developer mode, the lock-down and the autorun result in `/run` live in RAM only. To go back to the pad player stick, run phase 2's build and write blocks again.
+
+### Phase 3, first run (2026-11-14, clone dcce005)
+
+From the owner's zip `mpfree-results-20261114T233542Z` (owner-local). **Not finished:** developer mode came on, but the developer mode check never reached the test build, and the autorun drive was not made.
+
+- **The boot:** the stick was built with `--akai-app`. After `BOOT 3.10` the test build answered in 16 s, printed its `RESULT` line with `Akai's app (acvs.service, expected in this build): active`, and no other masked unit was active. The only blocked call was the launcher's `dfu-util -l`, as expected. Ethernet came up at 20 s without the retry, and no unit failed.
+- **Akai's app and the stick:** Akai's disk service (`edisksd`) mounted the stick's kits and data partitions read-write at `/media/MPFREE-KITS` and `/media/MPFREE-DATA`. The eMMC and SD card were not there to mount.
+- **Developer mode came on** 78 s after the jump. In the journal, in order:
+    - The overlay on `/etc` was mounted (`edisksd: unhandle mount table diff operation 4`).
+    - The app tried to start `az0x-webserver.service`, which is masked on the stick. So developer mode also starts Akai's web server on an installed 3.10.1 (what it serves is not known yet).
+    - `enable.sh`'s `systemctl reload sshd` failed: `sshd.service is not active, cannot reload`. Akai's SSH server is not running on 3.10.1 until developer mode is turned on.
+    - `sshd.service` then started: it made its host keys (`sshdgenkeys.service`) and listened on port 22, IPv4 and IPv6. What started it is not in the journal.
+- **Why the check missed:** the logs on the stick end at 23:22, about 5.5 minutes after the jump (they are copied every 10 s), and 3.6.0's partition links are dated 23:24. So the test build had stopped, switched off or restarted, before either check ran. The first check (23:24) got `Connection reset` while 3.6.0 was starting. The second (23:34) got 3.6.0's own host key on port 2222 and stopped without running anything, as designed. The check now says this plainly when another host key answers.
+- **The autorun drive:** both tries stopped with `no spare drive to use`, because the spare stick was not mounted and the tool listed only mounted drives. It now lists the USB drives it sees with nothing mounted and says what to do (block 3.2).
+- **Akai's firewall:** 3.10.1 ships `/etc/iptables/iptables.rules` and `ip6tables.rules` empty (0 bytes), so its firewall units load no rules from the image. Whether the app adds rules at run time on an installed 3.10.1, where `/etc`'s upper layer is in `/data`, is not known.
+- **The eMMC:** the same 8 boot-area hashes before and after, with 0 sectors written to p1 to p6 and boot0/1.
+
+Still to run: blocks 3.5 and 3.6 again with the check while the test build runs, and the autorun drive (blocks 3.2 and step 4 on the MPC).
 
 ## After the test
 
