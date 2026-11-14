@@ -114,13 +114,13 @@ mod tests {
             s.press("mixer", "look", "Effects");
             assert_eq!(mpfree_mixer_ui::look(&s.screen.ui), Look::Effects);
             assert_eq!(s.hint(), mpfree_mixer_ui::MIXER_HINT_EFFECTS);
-            assert_eq!(strip_inserts(&s, "Drums"), ["DJ filter"]);
+            assert_eq!(strip_inserts(&s, "Drums"), ["Filter · DJ"]);
 
             // + FX: the picker, and the effect lands in slot 2.
             s.press("mixer", "fx-add", "Drums + FX");
             assert_eq!(s.view(), View::Chain);
             s.press("chain", "pick", "Compressor").run_for(0.1);
-            assert_eq!(names(&engine(&mut s)), ["DJ filter", "Compressor"]);
+            assert_eq!(names(&engine(&mut s)), ["Filter · DJ", "Compressor"]);
             s.press("chain", "back", "").run_for(0.1);
             assert_eq!(s.view(), View::Mixer);
             assert_eq!(
@@ -128,7 +128,7 @@ mod tests {
                 Look::Effects,
                 "back on the look it came from"
             );
-            assert_eq!(strip_inserts(&s, "Drums"), ["DJ filter", "Compressor"]);
+            assert_eq!(strip_inserts(&s, "Drums"), ["Filter · DJ", "Compressor"]);
 
             // A tap picks it: Q-Link 2 is its Ratio.
             s.press("mixer", "fx", "Compressor").run_for(0.3);
@@ -155,7 +155,7 @@ mod tests {
                     .centre()
             };
             let (x, y) = at(&mut s, "Compressor");
-            let (x0, _) = at(&mut s, "DJ filter");
+            let (x0, _) = at(&mut s, "Filter · DJ");
             let mut acts: Vec<crate::gui::FromUi> =
                 s.screen.touch(9, Touch::Down, x, y).into_iter().collect();
             acts.extend(s.screen.touch(9, Touch::Move, (x + x0) / 2, y));
@@ -180,7 +180,7 @@ mod tests {
                 })
                 .collect();
             assert_eq!(order, ["Compressor", "DJ filter"], "moved in the mixer");
-            assert_eq!(strip_inserts(&s, "Drums"), ["Compressor", "DJ filter"]);
+            assert_eq!(strip_inserts(&s, "Drums"), ["Compressor", "Filter · DJ"]);
             assert_eq!(mpfree_mixer_ui::pick(&s.screen.ui), Some((drums, 0)));
             let before = node_param(&s, drums, 0, "Ratio");
             s.qlink(1, 4);
@@ -215,7 +215,7 @@ mod tests {
         on_big_stack(|| {
             let mut s = Session::new();
             s.press("header", "tab", "Mix");
-            s.press("mixer", "insert", "DJ filter").run_for(0.2);
+            s.press("mixer", "insert", "Filter · DJ").run_for(0.2);
             assert_eq!(s.view(), View::Chain);
             assert_eq!(engine(&mut s).title, "Drums FX");
             s.press("chain", "strip", "Drums").run_for(0.3);
@@ -293,7 +293,7 @@ mod tests {
             let mut s = Session::new();
             s.press("header", "tab", "Mix");
             assert_eq!(s.view(), View::Mixer);
-            assert_eq!(strip_inserts(&s, "Drums"), ["DJ filter"]);
+            assert_eq!(strip_inserts(&s, "Drums"), ["Filter · DJ"]);
 
             // "+ Insert" opens the editor in the mixer's place, picker up.
             s.press("mixer", "add-insert", "Drums + Insert");
@@ -348,7 +348,7 @@ mod tests {
             s.press("chain", "back", "");
             assert_eq!(s.view(), View::Mixer);
             s.run_for(0.1);
-            assert_eq!(strip_inserts(&s, "Drums"), ["Compressor", "DJ filter"]);
+            assert_eq!(strip_inserts(&s, "Drums"), ["Compressor", "Filter · DJ"]);
 
             // Its row opens the editor on it.
             s.press("mixer", "insert", "Compressor");
@@ -362,7 +362,7 @@ mod tests {
             assert_eq!(s.mix.mixer.chain(drums).unwrap().len(), 1);
             agree(&mut s, "removed");
             s.press("chain", "back", "").run_for(0.1);
-            assert_eq!(strip_inserts(&s, "Drums"), ["DJ filter"]);
+            assert_eq!(strip_inserts(&s, "Drums"), ["Filter · DJ"]);
         });
     }
 
@@ -389,7 +389,7 @@ mod tests {
             assert!(s.control("chain", "pick", "Delay").is_some());
             s.press("chain", "back", "").run_for(0.1);
             assert_eq!(s.view(), View::Mixer);
-            assert_eq!(strip_inserts(&s, "Loop"), ["DJ filter"]);
+            assert_eq!(strip_inserts(&s, "Loop"), ["Filter · DJ"]);
         });
     }
 
@@ -404,7 +404,7 @@ mod tests {
             let drums = StripId::Track(0);
             let mut s = Session::new();
             s.press("header", "tab", "Mix");
-            s.press("mixer", "insert", "DJ filter");
+            s.press("mixer", "insert", "Filter · DJ");
             s.press("chain", "knob", "Position");
             let at = node_param(&s, drums, 0, "Position");
             s.press("chain", "macro", "Macro 1");
@@ -446,7 +446,7 @@ mod tests {
             let drums = StripId::Track(0);
             let mut s = Session::new();
             s.press("header", "tab", "Mix");
-            s.press("mixer", "insert", "DJ filter");
+            s.press("mixer", "insert", "Filter · DJ");
             s.press("chain", "knob", "Position");
             s.press("chain", "learn", "Learn");
             let n = s.sent.len();
@@ -514,7 +514,10 @@ mod tests {
             );
 
             s.press("header", "tab", "Mix").run_for(0.1);
-            assert_eq!(strip_inserts(&s, "Drums"), ["DJ filter", "Delay"]);
+            assert_eq!(
+                strip_inserts(&s, "Drums"),
+                ["Filter · DJ", "Delay · Digital"]
+            );
         });
     }
 
@@ -672,7 +675,7 @@ mod tests {
         on_big_stack(|| {
             let mut s = Session::new();
             s.press("header", "tab", "Mix");
-            s.press("mixer", "insert", "DJ filter");
+            s.press("mixer", "insert", "Filter · DJ");
             s.press("chain", "knob", "Resonance");
             assert!(s.control("chain", "depth", "").is_none());
             s.press("chain", "add-lfo", "+ LFO").run_for(0.1);

@@ -938,13 +938,17 @@ impl Panels {
     }
 }
 
-/// The effects on each of the mixer's pad channels, in order.
+/// The effects on each of the mixer's pad channels, in order, named as the
+/// chain editor names them ("Reverb · Plate").
 fn pad_fx(mix: &MixHost) -> Vec<Vec<String>> {
     (0..mixing::PADS)
         .map(|p| {
             mix.mixer.chain(StripId::Pad(p)).map_or_else(Vec::new, |c| {
                 (0..c.len())
-                    .map(|i| c.node(i).map_or("?", |n| n.info().name).to_string())
+                    .map(|i| {
+                        c.node(i)
+                            .map_or_else(|| "?".to_string(), mpfree_fx::families::insert_name)
+                    })
                     .collect()
             })
         })

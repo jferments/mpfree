@@ -826,7 +826,7 @@ mod tests {
             crate::take_chain_actions(&mut ui),
             [ChainAction::Select(0), ChainAction::Move { from: 0, to: 2 }]
         );
-        let want = ["Drive", "Compressor", "Multi filter", "EQ"];
+        let want = ["Drive · Soft", "Compressor", "Filter · Multi", "EQ"];
         assert_eq!(names(&ui), (want.map(String::from).to_vec(), Some(2)));
         // Under a fingertip: a tap, it only picks.
         ui.touch(3, Touch::Down, x, mid(3));
@@ -854,7 +854,7 @@ mod tests {
             crate::take_chain_actions(&mut ui),
             [ChainAction::Move { from: 3, to: 1 }]
         );
-        let want = ["Drive", "EQ", "Compressor", "Multi filter"];
+        let want = ["Drive · Soft", "EQ", "Compressor", "Filter · Multi"];
         assert_eq!(names(&ui), (want.map(String::from).to_vec(), Some(1)));
         let f = ui.focused().unwrap().target;
         assert_eq!((f.id, f.index), ("slot", 1), "the outline goes with it");
