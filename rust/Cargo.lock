@@ -375,6 +375,7 @@ dependencies = [
  "mpfree-clap-testplug",
  "mpfree-controller",
  "mpfree-core",
+ "mpfree-export",
  "mpfree-fx",
  "mpfree-fx-ui",
  "mpfree-instruments",

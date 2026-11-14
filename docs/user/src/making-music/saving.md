@@ -26,7 +26,7 @@ These are saved on the stick as soon as you change them, and are back the next t
 
 | What | Where you set it |
 |---|---|
-| Your Prefs: pad velocity curve, how Latch keeps pads, the audio buffer, the loop memory, developer tools, the theme, what opens at start, screen pad velocity | [Prefs](../reference/prefs.md) |
+| Your Prefs: pad velocity curve, how Latch keeps pads, the audio buffer, the loop memory, developer tools, the theme, what opens at start, how exports play, screen pad velocity | [Prefs](../reference/prefs.md) |
 | The metronome on or off, and its level | **SHIFT + PLAY START**, or the Play page's options (**MENU**) |
 | The Looper's level, and the line input's latency once you have set it by hand | The Looper tab's options (see [Recording loops](looping.md)) |
 | Whether the Play page's Beats view shows the timing strip | The Play page's options (**MENU**) |
@@ -68,7 +68,8 @@ In the browser's **Projects** place you also have:
 
 - **Save**, the same as SHIFT + BROWSE;
 - **Save as**, which asks for a name and saves the work as a new project;
-- **New project**, below.
+- **New project**, below;
+- **Export**, which makes a mixdown, stems and a MIDI file of the song (see [Exporting your music](exporting.md)).
 
 A save is all or nothing. The project's new files are written to the side first and only then swapped in, so if the power goes off during a save, the project opens as it was at the save before. A save that can't finish (a full stick, say) says so and leaves the last save as it was.
 

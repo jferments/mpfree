@@ -22,6 +22,7 @@
 - [Mixing and effects](making-music/mixing-and-effects.md)
 - [Playing other gear: MIDI, sync and CV](making-music/midi-and-cv.md)
 - [Saving your work](making-music/saving.md)
+- [Exporting your music](making-music/exporting.md)
 
 # Reference
 
