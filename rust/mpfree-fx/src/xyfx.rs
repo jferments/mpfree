@@ -166,7 +166,7 @@ static MODES: [Mode; 9] = [
         style: Style::Insert,
         fixed: &[],
         x: smooth(
-            "Low-pass · high-pass",
+            "Filter",
             Unit::Percent,
             dj::POSITION,
             Map::Lin(-100.0, 100.0),
