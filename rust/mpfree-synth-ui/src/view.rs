@@ -182,13 +182,14 @@ impl Strip {
 }
 
 /// Whether the panel draws visuals for this node on this page: Poly, FM,
-/// Drums, Pluck and Wavetable on every page, any other engine with
-/// pressure on its Pressure page.
+/// Drums, Pluck, Wavetable, Keys, Drawbar, Squelch and Analog on every
+/// page, any other engine with pressure on its Pressure page.
 fn has_visuals(info: &NodeInfo, page: &str) -> bool {
     matches!(
         info.id,
         "mpfree.poly" | "mpfree.fm" | "mpfree.drums" | "mpfree.pluck" | "mpfree.wavetable"
-    ) || (page == "Pressure" && press_base(info).is_some())
+    ) || crate::inst_visual::draws(info.id)
+        || (page == "Pressure" && press_base(info).is_some())
 }
 
 /// The first pressure parameter of an engine that has them, and what its
@@ -527,6 +528,7 @@ impl SynthPanel {
                 _ if st.info.id == "mpfree.drums" => drum_cards(st, &page.name),
                 _ if st.info.id == "mpfree.pluck" => pluck_cards(st, &page.name),
                 _ if st.info.id == "mpfree.wavetable" => wt_cards(st, &page.name),
+                _ if crate::inst_visual::draws(st.info.id) => inst_cards(st, &page.name),
                 _ => poly_cards(st, &page.name),
             };
             self.card_pages = strip.pages;
@@ -1055,6 +1057,17 @@ fn wt_cards(st: &SynthState, page: &str) -> Strip {
     for c in crate::wt_visual::cards(&v, page) {
         let title = c.title.clone();
         s.push(c, &title);
+    }
+    s
+}
+
+/// Keys', Drawbar's, Squelch's and Analog's cards
+/// ([`crate::inst_visual`]).
+fn inst_cards(st: &SynthState, page: &str) -> Strip {
+    let v = |id: u16| st.value(id);
+    let mut s = Strip::new();
+    for (c, home) in crate::inst_visual::cards(st.info.id, &v, page) {
+        s.push(c, home);
     }
     s
 }

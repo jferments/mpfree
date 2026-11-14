@@ -47,7 +47,7 @@ To give a knob a control of its own, touch it and tap **Learn to a Q-Link**, the
 
 ## The effects
 
-The list of effects groups them: Dynamics, EQ and filter, Drive and colour, Modulation, Delay and reverb, Pitch and vocal, Performance, and Utility (the Tuner, Stereo width and Sample delay).
+The list of effects groups them: Dynamics, EQ and filter, Drive and colour, Modulation, Delay and reverb, Pitch and vocal, Performance, and Utility (the Tuner, Stereo width and Sample delay). **Reverb**, **Delay**, **Drive**, **Filter** and **Tremolo** each come in several modes (see [Effects with modes](#effects-with-modes)).
 
 | Effect | What it does |
 |---|---|
@@ -58,28 +58,23 @@ The list of effects groups them: Dynamics, EQ and filter, Drive and colour, Modu
 | **Gate** | Silences (or turns down) what falls under the threshold, so drums stop ringing. It can open from another strip's sound, for rhythmic gating. |
 | **De-esser** | Turns down harsh "s" and "t" sounds. **Listen** plays only what it hears, to find the right frequency. |
 | **Multiband comp** | Three compressors, on the lows, mids and highs. |
-| **Channel strip** | A gate, a compressor and an EQ in one, as on a mixing desk, each switched on or off on its own page. **Order** puts the EQ before or after the gate and compressor. |
+| **Channel strip** | A gate, a compressor and an EQ in one, as on a mixing desk. Its first page, **Strip**, switches each one on or off and holds **Order** (the EQ before or after the gate and compressor) and **Output**; then a page each for the gate, the compressor and the EQ. |
 | **EQ** | Shapes the tone with shelves and bands: cut mud, add air, thin out a sound. |
-| **Multi filter** | Low-pass, high-pass, band-pass and notch, with resonance. |
-| **DJ filter** | One knob: turn left for a low-pass, right for a high-pass. |
+| **Filter** | **Multi**: low-pass, high-pass, band-pass and more, with resonance. **DJ**: one knob, turn left for a low-pass, right for a high-pass. |
 | **Comb** | Short tuned delays for metallic, resonant tones. |
 | **Auto wah** | A wah that follows your playing: louder notes open it further. It can also sweep in time (**Source** LFO) or stay where you put it (**Source** Pedal: turn **Center** with a Q-Link, like rocking a pedal). |
-| **Drive** | Deliberate distortion, from warm to wrecked: **Soft**, **Hard**, **Tube**, **Foldback**, **Fuzz** and **Rectify**, with Tone and Bias. Auto-gain keeps the level steady as you turn it up, so you hear more grit, not more volume. |
-| **Character** | The colour of analog gear, with one **Amount** knob: **Console** (a mixing desk's rounded warmth), **Tape** (soft saturation and a fuller low end), **Iron** (a transformer's thick low end) or **Soften** (takes the edge off loud, harsh highs). Quiet parts stay at the level they came in. |
+| **Drive** | Warm saturation up to hard distortion: **Soft**, **Hard**, **Tube**, **Foldback**, **Fuzz** and **Rectify**; and the colour of a mixing desk or a tape machine: **Console**, **Tape**, **Iron** and **Soften**. Auto-gain keeps the level steady as you turn it up, so you hear more grit, not more volume. |
 | **Amp** | A guitar or bass amp (Clean, Crunch, Lead, Bass) with its tone controls and a speaker cabinet. |
 | **Exciter** | Adds sparkle and air to the top end. |
 | **Crush** | Bit and sample-rate reduction. |
 | **Lo-fi** | Old sampler and worn tape character: wear, wow and noise. |
 | **Chorus**, **Flanger**, **Phaser** | Movement and width. |
-| **Tremolo**, **Auto-pan** | Volume or position moved in time with the music. Tremolo's **Harmonic** mode is the swirl of 1960s amps. |
+| **Tremolo** | Volume (**Volume**) or position (**Auto-pan**) moved in time with the music. **Harmonic** is the swirl of 1960s amps. |
 | **Ring mod** | Bells, clangs and robot voices. |
 | **Rotary** | A spinning organ speaker: switch **Speed** between Slow and Fast and it ramps up or down like the real one. |
 | **Freq shifter** | Moves every frequency up or down by the same number of hertz, so a sound stops being in tune with itself: a few hertz is a slow, endless swirl, more makes drums metallic and voices robotic. **Feedback** sends it round again, climbing or falling. |
-| **Delay** | Echoes in time with the tempo. |
-| **Tape delay** | Echoes from a tape loop with up to three heads, wow and flutter, that darken and thicken as they repeat. |
-| **Multi-tap delay** | Four echoes on the beat, each with its own level and pan. |
-| **Cloud reverb** | A reverb with five characters: **Plate**, **Room**, **Hall**, **Cloud** (huge and lush) and **Echoes**. **Freeze** holds the tail for as long as it is on. |
-| **Room reverb**, **Plate reverb**, **Spring reverb** | Smaller, classic reverbs. The room's **Gate** cuts its tail short, for the 1980s gated snare. |
+| **Delay** | Echoes in time with the tempo. **Digital** is clean; **Tape** echoes from a tape loop with up to three heads, wow and flutter, that darken and thicken as they repeat; **Multi-tap** is four echoes on the beat, each with its own level and pan. |
+| **Reverb** | **Room**, **Plate** and **Spring** are the smaller, classic reverbs (the room's **Gate** cuts its tail short, for the 1980s gated snare); **Hall**, **Cloud** and **Echoes** are large and lush. **Freeze** holds the tail for as long as it is on. |
 | **Granulator** | Cuts the sound into tiny grains and plays them back as a cloud: higher or lower, scattered, backwards, spread wide. **Freeze** holds what's in it, so a moment hangs in the air while you play over it. |
 | **Pitch shifter** | Moves the sound up to two octaves up or down without changing its speed. Spread detunes left and right for a wide double; feedback makes rising or falling stairs. |
 | **Pitch correct** | Tunes a voice to the notes of a key. Pick the **Key** and **Scale**; **Speed** sets how quickly it pulls a note in (0 snaps straight to it, for the hard, stepped sound; 50 ms or more keeps slides and vibrato natural) and **Amount** how far. The **Note** and **Correction** readouts show the note it hears and how far it is moving it. |
@@ -100,6 +95,22 @@ They hold the sound back a little while they listen (about 40 ms on Low, 28 on M
 ### Master safety
 
 The master strip always ends in **Master safety**, a limiter that keeps the output from going past -0.3 dB. It isn't in the list: it is always there. See [The master and Master safety](mixing-and-effects.md#the-master-and-master-safety).
+
+## Effects with modes
+
+**Reverb**, **Delay**, **Drive**, **Filter** and **Tremolo** each show once in the list of effects, and come in several modes. Hold one (or tap its presets line) to see every mode's presets, with the mode under each name; a preset adds the effect in its mode. A tap adds it in its first mode (a Room, a Digital delay, a Soft drive).
+
+In the chain editor the **mode chooser** sits under the effect's name: tap a mode to switch to it. Drive has too many to fit, so step through them with **‹** and **›**. When you switch:
+
+- The knobs the two modes share stay where you set them (as far as the new mode's range goes), so a Room switched to a Plate keeps its Decay, Size and Mix.
+- Switch back and the first mode is as you left it, until you turn the MPC off.
+- A macro or an LFO on a knob moves to the new mode's knob of the same name. One on a knob the new mode doesn't have comes off, as do the effect's step locks.
+- The effect keeps its place in the chain, and stays bypassed if it was.
+
+To have two at once, add the effect twice and pick each one's mode: a Room, then a Plate, one after the other in the chain.
+
+> [!NOTE]
+> A Q-Link you learned to one of its knobs doesn't follow a switch to another mode: it turns whichever control the new mode has in that knob's place, so learn it again. Projects made before modes open as they were: a Cloud reverb set to its own Plate or Room shows as the **Cloud reverb**, in none of the modes.
 
 ## XY FX
 
@@ -155,6 +166,8 @@ Each plugin runs on its own, apart from the rest of MPFree, so a plugin that cra
 
 Each of these is written in the Events log, so nothing goes wrong without your being told.
 
+Some plugins keep files of their own: Surge XT its user folder, Dexed its cartridges. MPFree gives them the folder `files/plugin-home/` on the stick, so they never write anywhere else. To reset every plugin's own files, delete that folder from a computer.
+
 A plugin's settings are saved with your project. If you open the project on a stick without that plugin, the effect is left out and the Events log names the plugin's file. Plugin synths play as a track's own instrument (see [Synths](synths.md#a-synth-for-each-track)).
 
 > [!NOTE]
@@ -168,4 +181,4 @@ A plugin's settings are saved with your project. If you open the project on a st
 > [!MPC]
 > MPFree's effects open in the chain editor over the mixer rather than in a separate insert window. Effects with a delay of their own, such as Pitch correct, are lined up with the rest of the mix automatically, so nothing drifts out of time.
 >
-> Every MPC effect has an MPFree effect or preset in its place: the MPC's many Delay versions (Mono, Sync, Ping Pong, Analog, LP, HP) are the **Delay** and its presets, Delay Tape is the **Tape delay**, Reverb Small, Medium and In Gate are the **Room reverb**, Reverb Large and AIR Reverb the **Cloud reverb**, AIR Spring Reverb the **Spring reverb**, Distortion Amp the **Amp**, AIR Enhancer the **Exciter**, AIR Maximizer and AIR Limiter the **Limiter**, AIR Noise Gate the **Gate**, AIR Pumper and Mother Ducker the **Ducker**, Decimator and Resampler **Crush**, the AIR Vocal Tuner **Pitch correct**, the AIR Vocal Harmonizer the **Harmonizer**, XYFX is **XY FX**, Auto Wah the **Auto wah**, the Frequency Shifter and AIR Freq Shift the **Freq shifter**, AIR Stereo Width the **Stereo width**, AIR Talkbox the **Talk box**, AIR Channel Strip the **Channel strip**, Granulator the **Granulator**, and Sample Delay the **Sample delay**.
+> Every MPC effect has an MPFree effect or preset in its place: the MPC's many Delay versions (Mono, Sync, Ping Pong, Analog, LP, HP) are the **Delay** and its presets, Delay Tape is the **Delay** in its **Tape** mode, Reverb Small, Medium and In Gate are the **Reverb** in its **Room** mode, Reverb Large and AIR Reverb its **Hall**, AIR Spring Reverb its **Spring**, Distortion Amp the **Amp**, AIR Enhancer the **Exciter**, AIR Maximizer and AIR Limiter the **Limiter**, AIR Noise Gate the **Gate**, AIR Pumper and Mother Ducker the **Ducker**, Decimator and Resampler **Crush**, the AIR Vocal Tuner **Pitch correct**, the AIR Vocal Harmonizer the **Harmonizer**, XYFX is **XY FX**, Auto Wah the **Auto wah**, the Frequency Shifter and AIR Freq Shift the **Freq shifter**, AIR Stereo Width the **Stereo width**, AIR Talkbox the **Talk box**, AIR Channel Strip the **Channel strip**, Granulator the **Granulator**, and Sample Delay the **Sample delay**.

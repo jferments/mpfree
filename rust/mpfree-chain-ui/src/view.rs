@@ -60,6 +60,14 @@ pub enum ChainAction {
     OpenPage(usize),
     /// Show the selected insert's parameter group `g`.
     Group(usize),
+    /// Switch insert `slot` to mode `mode` of its family (an index into
+    /// [`crate::state::ModeView::modes`]): within one engine its fixed
+    /// values change, across engines the app swaps the engine in place
+    /// (`mpfree_fx::families`).
+    SetMode {
+        slot: usize,
+        mode: usize,
+    },
     /// A knob was touched: the modulation column works on it.
     Focus(ParamAddr),
     /// Set a parameter: send it to the mod engine as `ModEvent::hand`
@@ -124,6 +132,10 @@ const BUTTON_H: i32 = 44;
 const DRAG_TRAVEL: f32 = 300.0;
 /// The effect page's drawings, between the tabs and the knobs.
 const PICTURE_H: i32 = 140;
+/// The Mode chooser's row, under the title, for an effect with modes.
+const MODE_H: i32 = 40;
+/// The Mode chooser's arrows, when its modes don't fit the row as chips.
+const MODE_ARROW_W: i32 = 64;
 
 /// Where everything goes, from the widget's rectangle.
 pub struct Layout {
@@ -146,6 +158,11 @@ pub struct Layout {
     pub add: Option<Rect>,
     pub buttons: [Rect; 3],
     pub tabs: Vec<Rect>,
+    /// The Mode chooser: each place to tap and the mode it picks (a chip
+    /// per mode, or the two arrows when they don't fit), and the
+    /// arrows' label between them.
+    pub modes: Vec<(Rect, usize)>,
+    pub mode_label: Option<Rect>,
     pub knobs: Vec<Rect>,
     pub macros: [Rect; MACROS],
     pub learn: Rect,
@@ -197,6 +214,16 @@ pub fn layout(r: Rect, st: &ChainState, picture: bool, pv: &PickerView) -> Layou
     }
     tabs.reverse();
     let title = Rect::new(head.x, head.y, x + 6 - head.x - 8, 42);
+    let (mut modes, mut mode_label) = (Vec::new(), None);
+    let grid = match &st.mode {
+        Some(mv) if st.selected.is_some() && !st.picking => {
+            let (row, rest) = grid.take_top(MODE_H + 8);
+            let row = Rect::new(row.x, row.y + 8, row.w, MODE_H);
+            (modes, mode_label) = mode_row(row, mv);
+            rest
+        }
+        _ => grid,
+    };
     let (picture, grid) = if picture && st.selected.is_some() && !st.picking {
         let (p, rest) = grid.take_top(PICTURE_H + 8);
         (Some(Rect::new(p.x, p.y + 8, p.w, PICTURE_H)), rest)
@@ -269,6 +296,8 @@ pub fn layout(r: Rect, st: &ChainState, picture: bool, pv: &PickerView) -> Layou
         add,
         buttons,
         tabs,
+        modes,
+        mode_label,
         knobs,
         macros,
         learn,
@@ -276,6 +305,44 @@ pub fn layout(r: Rect, st: &ChainState, picture: bool, pv: &PickerView) -> Layou
         add_lfo,
         add_follower,
     }
+}
+
+/// The Mode chooser in `row`: a chip per mode when they fit (as wide as
+/// the group tabs), else an arrow each side of the mode's name, which step
+/// to the mode before and after (none past the ends).
+fn mode_row(row: Rect, mv: &crate::state::ModeView) -> (Vec<(Rect, usize)>, Option<Rect>) {
+    let widths: Vec<i32> = mv.modes.iter().map(|m| 24 + 9 * m.len() as i32).collect();
+    let need: i32 = widths.iter().sum::<i32>() + 6 * (widths.len() as i32 - 1).max(0);
+    if need <= row.w {
+        let mut x = row.x;
+        let chips = widths
+            .iter()
+            .enumerate()
+            .map(|(i, &w)| {
+                let r = Rect::new(x, row.y, w, row.h);
+                x += w + 6;
+                (r, i)
+            })
+            .collect();
+        return (chips, None);
+    }
+    let prev = Rect::new(row.x, row.y, MODE_ARROW_W, row.h);
+    let next = Rect::new(row.right() - MODE_ARROW_W, row.y, MODE_ARROW_W, row.h);
+    let label = Rect::new(prev.right() + 6, row.y, next.x - prev.right() - 12, row.h);
+    let mut out = Vec::new();
+    match mv.current {
+        Some(c) => {
+            if c > 0 {
+                out.push((prev, c - 1));
+            }
+            if c + 1 < mv.modes.len() {
+                out.push((next, c + 1));
+            }
+        }
+        // In no mode: either arrow goes to the first.
+        None => out.extend([(prev, 0), (next, 0)]),
+    }
+    (out, Some(label))
 }
 
 /// The effect and Modulate columns together, where the picker goes.
@@ -377,7 +444,7 @@ impl ChainView {
             return true;
         }
         let n = match pv.presets {
-            Some(id) => 1 + mpfree_fx::picker::presets(id).len(),
+            Some(id) => 1 + mpfree_fx::picker::preset_rows(id).len(),
             None => pv.picks(&self.state).len(),
         };
         if n > 0 {
@@ -413,7 +480,7 @@ impl ChainView {
 
     /// Opens an effect's presets, or adds it when it has none.
     fn open_or_add(&mut self, id: &'static str) {
-        if mpfree_fx::picker::presets(id).is_empty() {
+        if mpfree_fx::picker::preset_rows(id).is_empty() {
             self.state.picking = false;
             self.push(ChainAction::Add(id));
         } else {
@@ -423,13 +490,18 @@ impl ChainView {
         }
     }
 
-    /// Adds `id` with presets list row `row` (0 is "Defaults").
+    /// Adds `id` with presets list row `row` (0 is "Defaults"). A row of a
+    /// family's list adds the engine of its mode.
     fn add_preset(&mut self, id: &'static str, row: usize) {
         self.state.picking = false;
         self.picker.presets = None;
-        self.push(match row {
-            0 => ChainAction::Add(id),
-            r => ChainAction::AddPreset { id, preset: r - 1 },
+        let rows = mpfree_fx::picker::preset_rows(id);
+        self.push(match row.checked_sub(1).and_then(|r| rows.get(r)) {
+            Some(r) => ChainAction::AddPreset {
+                id: r.id,
+                preset: r.preset,
+            },
+            None => ChainAction::Add(id),
         });
     }
 
@@ -520,7 +592,7 @@ impl ChainView {
                 .picker
                 .picks(&self.state)
                 .get(i)
-                .is_some_and(|p| !mpfree_fx::picker::presets(p.id).is_empty())
+                .is_some_and(|p| !mpfree_fx::picker::preset_rows(p.id).is_empty())
     }
 
     /// Call every frame while the picker is open: a finger held on a tile
@@ -659,6 +731,14 @@ impl ChainView {
         }
         if let Some(g) = l.tabs.iter().position(|r| r.contains(x, y)) {
             self.push(ChainAction::Group(g));
+            return;
+        }
+        if let (Some(&(_, mode)), Some(slot)) =
+            (l.modes.iter().find(|(r, _)| r.contains(x, y)), st.selected)
+        {
+            if st.mode.as_ref().is_some_and(|m| m.current != Some(mode)) {
+                self.push(ChainAction::SetMode { slot, mode });
+            }
             return;
         }
         if let Some(sel) = st.selected.filter(|_| !st.picking) {
@@ -836,10 +916,21 @@ impl Widget for ChainView {
                 row.h,
             );
             let (top, bottom) = text.take_top(row.h / 2 + 2);
+            // The name stops short of the macro dots and the wave mark drawn
+            // below (a long "Reverb · Echoes" is cut with "…" rather than run
+            // under them): the dots are 9 px in 12 px steps from the right,
+            // the wave's ink about 5 px into its 20 px box left of them.
+            let dots = text.right() - 4 - 12 * s.macros.len() as i32;
+            let marks = match (s.modulated, s.macros.is_empty()) {
+                (true, _) => dots - 22 + 5 - 4,
+                (false, false) => dots - 4,
+                (false, true) => text.right(),
+            };
+            let name = top.take_bottom(24).0;
             cx.text(
                 FontId::Bold,
                 t.size_body,
-                top.take_bottom(24).0,
+                Rect::new(name.x, name.y, marks - name.x, name.h),
                 Align::Left,
                 ink,
                 &s.name,
@@ -966,6 +1057,9 @@ impl Widget for ChainView {
                 );
                 if let Some(pr) = l.picture {
                     self.picture.paint(cx, pr);
+                }
+                if let Some(mv) = &st.mode {
+                    paint_modes(cx, &l, mv);
                 }
                 for (g, (tr, name)) in l.tabs.iter().zip(&st.groups).enumerate() {
                     let on = g == st.group;
@@ -1099,6 +1193,15 @@ impl Widget for ChainView {
         for (g, tr) in l.tabs.iter().enumerate() {
             let label = st.groups.get(g).copied().unwrap_or("");
             out.push(Target::tap("group", g, label, *tr));
+        }
+        if let Some(mv) = &st.mode {
+            for &(r, m) in &l.modes {
+                let name = mv.modes.get(m).copied().unwrap_or("");
+                out.push(
+                    Target::tap("mode", m, format!("{} mode {name}", mv.family), r)
+                        .disabled_if(mv.current == Some(m)),
+                );
+            }
         }
         if st.selected.is_some() && !st.picking {
             out.push(Target::tap("title", 0, "effect page", l.title));
@@ -1446,6 +1549,71 @@ fn paint_picker(cx: &mut PaintCx, l: &Layout, st: &ChainState, pv: &PickerView) 
     }
 }
 
+/// The Mode chooser: chips with the current mode lit, or the arrows and
+/// the mode's name ("Tube   3 of 10"; "Reverb mode" when in none).
+fn paint_modes(cx: &mut PaintCx, l: &Layout, mv: &crate::state::ModeView) {
+    let t = cx.theme.clone();
+    match l.mode_label {
+        None => {
+            for &(r, m) in &l.modes {
+                let on = mv.current == Some(m);
+                cx.canvas
+                    .fill_round_rect(r, 9, if on { t.accent } else { t.raised });
+                cx.text(
+                    FontId::Bold,
+                    t.size_small,
+                    r,
+                    Align::Center,
+                    if on { t.on_accent } else { t.text },
+                    mv.modes[m],
+                );
+            }
+        }
+        Some(label) => {
+            let row = Rect::new(
+                label.x - MODE_ARROW_W - 6,
+                label.y,
+                label.w + 2 * (MODE_ARROW_W + 6),
+                label.h,
+            );
+            let prev = Rect::new(row.x, row.y, MODE_ARROW_W, row.h);
+            let next = Rect::new(row.right() - MODE_ARROW_W, row.y, MODE_ARROW_W, row.h);
+            for (r, glyph) in [(prev, "‹"), (next, "›")] {
+                let live = l.modes.iter().any(|(m, _)| *m == r);
+                cx.canvas.fill_round_rect(
+                    r,
+                    9,
+                    if live {
+                        t.raised
+                    } else {
+                        t.surface.mix(t.raised, 0.3)
+                    },
+                );
+                cx.text(
+                    FontId::Bold,
+                    t.size_body,
+                    r,
+                    Align::Center,
+                    if live { t.text } else { t.text_faint },
+                    glyph,
+                );
+            }
+            let text = match mv.current {
+                Some(c) => format!("{}   {} of {}", mv.modes[c], c + 1, mv.modes.len()),
+                None => format!("{} mode", mv.family),
+            };
+            cx.text(
+                FontId::Bold,
+                t.size_small,
+                label,
+                Align::Center,
+                t.text,
+                &text,
+            );
+        }
+    }
+}
+
 /// `text` in lines no wider than `w` (a word wider than `w` gets a line of
 /// its own).
 pub(crate) fn wrap(cx: &mut PaintCx, size: f32, text: &str, w: i32) -> Vec<String> {
@@ -1476,7 +1644,7 @@ fn picker_targets(pv: &PickerView, st: &ChainState, pl: &PickerLayout, out: &mut
             if let Some(b) = pl.back {
                 out.push(Target::tap("presets-back", 0, "‹ Effects", b));
             }
-            let presets = mpfree_fx::picker::presets(id);
+            let presets = mpfree_fx::picker::preset_rows(id);
             for (k, r) in pl.tiles.iter().enumerate() {
                 let item = pl.first + k;
                 let label = match item {
