@@ -14,10 +14,12 @@ is), it:
    ARM hard-float library that exports clap_entry, needs nothing but the C
    library (libc, libm, the loader and glibc's empty stubs), and no glibc
    symbol newer than the MPC's 2.39;
-4. writes OUT/<plugin>/licenses/, OUT/<plugin>/source/ (each source as a
+4. copies the plugin's data folders (presets, wavetables) from its source,
+   with every file's SHA-256 in OUT/<plugin>/SHA256SUMS;
+5. writes OUT/<plugin>/licenses/, OUT/<plugin>/source/ (each source as a
    tarball, and this recipe), and OUT/<plugin>/BUILD.txt (what was built,
    from what, with which tools, and each file's SHA-256);
-5. with --play, plays every plugin in each file under qemu-arm with
+6. with --play, plays every plugin in each file under qemu-arm with
    mpfree-clap's clap_check example (it needs cargo and the
    armv7-unknown-linux-gnueabihf Rust target), into OUT/<plugin>/PLAY.txt.
 
@@ -410,6 +412,19 @@ def make_plugin(plugin, pack, work, out, jobs, check):
             plays.append(f"## {outname}\n\n{text}\n")
             last = text.splitlines()[-1] if text else "no output"
             say(f"  played {outname}: {last}")
+
+    data = plugin.get("data", {})
+    if data:
+        report += ["", "## Data"]
+    for spec, outname in data.items():
+        src_name, rel = spec.split("/", 1)
+        target = dest / outname
+        shutil.copytree(srcs[src_name] / rel, target, symlinks=False)
+        files = sorted(f for f in target.rglob("*") if f.is_file())
+        size = sum(f.stat().st_size for f in files)
+        sums += [f"{sha256(f)}  {f.relative_to(dest).as_posix()}" for f in files]
+        report += ["", f"{outname}/ ({len(files)} files, {size / 1e6:.1f} MB), from {spec}; each file's SHA-256 is in SHA256SUMS"]
+        say(f"  {outname}/: {len(files)} files, {size / 1e6:.1f} MB")
 
     for spec, outname in plugin.get("licenses", {}).items():
         if spec.startswith("file:"):
