@@ -9,7 +9,8 @@
 
 use mpfree_fx::ids::{
     character, chorus, cloud, comb, compressor as comp, crush, delay, dj_filter as dj, drive,
-    ducker, eq, filter, flanger, lofi, master, perform, phaser, pitch, transient,
+    ducker, eq, filter, flanger, harmonizer as harm, lofi, master, perform, phaser, pitch,
+    pitch_correct as tune, transient,
 };
 use mpfree_node::{NodeInfo, ParamInfo};
 pub use mpfree_synth_ui::pages::Page;
@@ -119,6 +120,8 @@ fn known(info: &NodeInfo, count: u16) -> Option<Vec<Plan>> {
             transient::OUTPUT,
         ]),
         "mpfree.fx.pitch" => one(&[pitch::PITCH, pitch::FINE, pitch::FEEDBACK, pitch::MIX]),
+        "mpfree.fx.pitch_correct" => one(&[tune::KEY, tune::SCALE, tune::SPEED, tune::AMOUNT]),
+        "mpfree.fx.harmonizer" => one(&[harm::VOICE1, harm::LEVEL1, harm::VOICE2, harm::LEVEL2]),
         "mpfree.fx.cloud" => Some(vec![
             pg(
                 "Reverb",
