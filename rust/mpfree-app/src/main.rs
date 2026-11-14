@@ -3116,6 +3116,11 @@ fn looper_action(
             out.note(&looper.toggle_mute(n));
             Vec::new()
         }
+        // A dragged layer says what it did (or why not) in place of the
+        // hint.
+        looping::LoopAction::CopyLayer { from, id, to, keep } => {
+            vec![app::Effect::Tell(looper.copy_layer(from, id, to, keep))]
+        }
     }
 }
 

@@ -6,11 +6,20 @@
 //! touch with a plain event; the page collects them with [`take_actions`]
 //! and the app turns them into looper commands. The panels only draw what
 //! they are given ([`crate::looper_page::LooperPage::update`] fills them).
+//!
+//! A layer's row drags out of the editor (drag and drop, approved as drawn
+//! 14 Nov): moved a fingertip ([`LIFT_PX`]), a card of it follows the
+//! finger, the loops that can take it light up ([`DropSpot`]), and letting
+//! go on one asks for [`LoopAct::DropLayer`]. A tap on the row picks it on
+//! the lift. The page tells the list what the editor's drag is doing
+//! ([`LayerDrag`]), so the card and the lit loops show over both.
 
 use crate::looping::LoopWave;
 use mpfree_looper::LayerCommand;
 use mpfree_ui::draw::{self, card, card_head, dot, speaker, speaker_hit};
-use mpfree_ui::{Align, Color, EventKind, FontId, PaintCx, Rect, Target, Tone, Touch, Ui, Widget};
+use mpfree_ui::{
+    Align, Color, EventKind, FontId, PaintCx, Rect, Target, Theme, Tone, Touch, Ui, Widget,
+};
 use std::cell::RefCell;
 use std::sync::Arc;
 
@@ -66,6 +75,131 @@ pub enum LoopAct {
     /// A row drawn faint (it can't work now) was tapped: the screen says
     /// why in place.
     FaintUse(usize),
+    /// Layer `k` (play order) of the picked loop dragged onto a loop, or
+    /// onto + New loop (SHIFT held as it lifts: a copy).
+    DropLayer(usize, DropTo),
+    /// A layer let go on a loop that can't take it: the screen says why
+    /// ([`DropSpot::refused`]).
+    NoDrop(DropTo),
+}
+
+/// A finger moves this far before a layer's row lifts out of the editor
+/// (less is a tap).
+pub const LIFT_PX: i32 = 12;
+/// The card a lifted layer shows under the finger.
+const CARD_W: i32 = 280;
+const CARD_H: i32 = 58;
+
+/// Where a layer dragged out of the editor can go.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DropTo {
+    /// Onto loop `n`.
+    Loop(usize),
+    /// Onto + New loop: the layer becomes a loop of its own.
+    NewLoop,
+}
+
+/// A place on the screen a dragged layer can be let go: what it is, where
+/// (screen coordinates), and None if it takes the layer, else why not.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DropSpot {
+    pub to: DropTo,
+    pub rect: Rect,
+    pub refused: Option<String>,
+}
+
+/// A layer lifted out of the editor, as the loop list draws it over
+/// itself: the card (its row, where it is now, what letting go there
+/// does), where it would land and whether that takes it, and the places
+/// that do, lit.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LayerDrag {
+    pub row: LayerRow,
+    pub card: Rect,
+    /// The finger (or the loop the wheel points at): the panel under it
+    /// draws the card.
+    pub at: (i32, i32),
+    /// "Move to Loop 2", "Loop 3 is 2 bars and this layer 4" ...
+    pub says: String,
+    pub landing: Option<(DropTo, bool)>,
+    pub lit: Vec<DropTo>,
+}
+
+/// A layer's card while it is dragged: its colour, name and detail, and
+/// what letting go now does, raised above the screen.
+fn paint_card(cx: &mut PaintCx, d: &LayerDrag) {
+    let t = cx.theme.clone();
+    let r = d.card;
+    cx.canvas.fill_round_rect(r.inset(-2), 12, t.accent);
+    cx.canvas.fill_round_rect(r, 10, t.raised);
+    let line = Rect::new(r.x + 12, r.y + 8, r.w - 24, 20);
+    cx.canvas
+        .fill_round_rect(Rect::new(line.x, line.y + 5, 10, 10), 2, d.row.colour);
+    let nw = cx.measure(FontId::Bold, 15.0, &d.row.name);
+    cx.text(
+        FontId::Bold,
+        15.0,
+        Rect::new(line.x + 18, line.y, nw + 4, line.h),
+        Align::Left,
+        t.text,
+        &d.row.name,
+    );
+    cx.text(
+        FontId::Sans,
+        12.0,
+        Rect::new(line.x + 18 + nw + 10, line.y, line.w - nw - 28, line.h),
+        Align::Left,
+        t.text_faint,
+        &d.row.detail,
+    );
+    let ink = match d.landing {
+        Some((_, true)) => t.accent,
+        Some((_, false)) => t.bad,
+        None => t.text_dim,
+    };
+    cx.text(
+        FontId::Bold,
+        12.5,
+        Rect::new(line.x, line.bottom() + 2, line.w, 18),
+        Align::Left,
+        ink,
+        &d.says,
+    );
+}
+
+/// The places a dragged layer can go, drawn over a panel: lit where it
+/// would be taken, outlined bold where it lands (red where it would be
+/// refused). `spots` are the drag's places in this panel.
+fn paint_spots(cx: &mut PaintCx, d: &LayerDrag, spots: &[(DropTo, Rect)]) {
+    let t = cx.theme.clone();
+    for &(to, rr) in spots {
+        match d.landing {
+            Some((at, ok)) if at == to => {
+                cx.canvas
+                    .stroke_round_rect(rr, 10, 3, if ok { t.accent } else { t.bad });
+            }
+            _ if d.lit.contains(&to) => cx.canvas.stroke_round_rect(rr, 10, 2, t.accent),
+            _ => {}
+        }
+    }
+}
+
+/// The fill under a place the dragged layer would land on now (painted
+/// before the place's own words, so they stay readable).
+fn landing_fill(t: &Theme, d: Option<&LayerDrag>, to: DropTo) -> Option<Color> {
+    let (at, ok) = d?.landing?;
+    (at == to).then(|| if ok { t.accent } else { t.bad }.mix(t.bg, 0.84))
+}
+
+/// The card fitted into panel `r` for a finger at `at`: as wide as fits,
+/// above the finger (below it near the top) so the place it points at
+/// stays in sight.
+fn card_in(r: Rect, at: (i32, i32)) -> Rect {
+    let w = CARD_W.min(r.w - 16);
+    let x = (at.0 - w / 2).clamp(r.x + 8, r.x + r.w - 8 - w);
+    let above = at.1 - 30 - CARD_H;
+    let y = if above >= r.y + 8 { above } else { at.1 + 30 };
+    Rect::new(x, y.min(r.y + r.h - 8 - CARD_H), w, CARD_H)
 }
 
 /// Every [`LoopAct`] the Looper tab's panels have kept since the last call.
@@ -113,6 +247,9 @@ pub struct LoopList {
     pub clear: bool,
     /// "16 s of 5 min" and how full, 0 to 1.
     pub memory: (String, f32),
+    /// A layer dragged out of the editor: the loops that take it lit, and
+    /// its card while the finger is over the list.
+    pub drag: Option<LayerDrag>,
     acts: Vec<LoopAct>,
 }
 
@@ -181,15 +318,13 @@ impl Widget for LoopList {
         } = self.parts(r);
         for (i, (rr, row)) in rows.iter().zip(&self.rows).enumerate() {
             let picked = i == self.picked;
-            cx.canvas.fill_round_rect(
-                *rr,
-                10,
-                if picked {
-                    t.raised
-                } else {
-                    t.bg.mix(t.surface, 0.5)
-                },
-            );
+            let base = if picked {
+                t.raised
+            } else {
+                t.bg.mix(t.surface, 0.5)
+            };
+            let fill = landing_fill(&t, self.drag.as_ref(), DropTo::Loop(i)).unwrap_or(base);
+            cx.canvas.fill_round_rect(*rr, 10, fill);
             if picked {
                 cx.canvas.stroke_round_rect(*rr, 10, 2, draw::KNOB[0]);
             }
@@ -243,6 +378,9 @@ impl Widget for LoopList {
             }
         }
         if let Some(b) = new {
+            if let Some(c) = landing_fill(&t, self.drag.as_ref(), DropTo::NewLoop) {
+                cx.canvas.fill_round_rect(b, 10, c);
+            }
             cx.canvas.stroke_round_rect(b, 10, 1, t.outline);
             cx.text(
                 FontId::Bold,
@@ -257,6 +395,15 @@ impl Widget for LoopList {
             cx.canvas.stroke_round_rect(b, 10, 1, t.bad);
             let text = format!("Clear loop {}", self.picked + 1);
             cx.text(FontId::Bold, 14.0, b, Align::Center, t.bad, &text);
+        }
+        if let Some(d) = &self.drag {
+            let mut spots: Vec<(DropTo, Rect)> = rows
+                .iter()
+                .enumerate()
+                .map(|(i, rr)| (DropTo::Loop(i), *rr))
+                .collect();
+            spots.extend(new.map(|b| (DropTo::NewLoop, b)));
+            paint_spots(cx, d, &spots);
         }
         // The memory every loop shares.
         let (label, bar) = gauge.take_top(26);
@@ -284,6 +431,13 @@ impl Widget for LoopList {
             let c = if full > 0.9 { t.bad } else { draw::KNOB[0] };
             cx.canvas
                 .fill_round_rect(Rect::new(track.x, track.y, w, track.h), 4, c);
+        }
+        if let Some(d) = self.drag.as_ref().filter(|d| r.contains(d.at.0, d.at.1)) {
+            let d = LayerDrag {
+                card: card_in(r, d.at),
+                ..d.clone()
+            };
+            paint_card(cx, &d);
         }
     }
 
@@ -456,6 +610,18 @@ pub struct LoopEditor {
     top: usize,
     /// A finger on a level bar: its layer.
     dragging: Option<(u64, usize)>,
+    /// Where a dragged layer can be let go, on the screen (the page fills
+    /// them in from the loops' lengths and the list's layout).
+    pub drops: Vec<DropSpot>,
+    /// What letting the dragged layer go now does, as its card says it
+    /// (the page words it, SHIFT and all).
+    pub says: String,
+    /// A finger on a layer's row: it picks the layer on the lift, or once
+    /// it moves [`LIFT_PX`], drags it.
+    press: Option<Press>,
+    /// The wheel has picked layer `k` up and points at `drops[at]` (None:
+    /// back in its place).
+    wheel: Option<(usize, Option<usize>)>,
     /// The tools' widths as last drawn (a touch has no canvas to measure).
     tool_widths: RefCell<Vec<i32>>,
     /// The playhead's x and the rest as last drawn.
@@ -479,6 +645,20 @@ struct EditorLook {
     history: Option<(HistoryList, usize)>,
     trim: Option<i64>,
     trimming: Option<(i64, i64)>,
+    drag: Option<(usize, Rect, String, Option<DropSpot>)>,
+}
+
+/// A finger on a layer's row ([`LoopEditor`]): the layer, where the finger
+/// went down and is now, where it holds the card, and whether it has
+/// lifted.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Press {
+    finger: u64,
+    k: usize,
+    from: (i32, i32),
+    at: (i32, i32),
+    grip: (i32, i32),
+    lifted: bool,
 }
 
 /// Where a layer row's parts are.
@@ -623,6 +803,86 @@ impl LoopEditor {
         }
     }
 
+    /// The layer being dragged (play order) and where its card is now:
+    /// under the finger, or on the place the wheel points at. None while
+    /// nothing is lifted.
+    pub fn drag(&self) -> Option<(usize, Rect)> {
+        if let Some((k, _)) = self.wheel {
+            let (x, y) = self.finger()?;
+            return Some((k, Rect::new(x - CARD_W / 2, y - CARD_H / 2, CARD_W, CARD_H)));
+        }
+        let p = self.press.filter(|p| p.lifted)?;
+        Some((
+            p.k,
+            Rect::new(p.at.0 - p.grip.0, p.at.1 - p.grip.1, CARD_W, CARD_H),
+        ))
+    }
+
+    /// Where the drag points: the finger, or the loop the wheel points at
+    /// (the layer's own row before it points anywhere).
+    pub fn finger(&self) -> Option<(i32, i32)> {
+        if let Some((k, at)) = self.wheel {
+            return Some(match at.and_then(|i| self.drops.get(i)) {
+                Some(d) => (d.rect.x + d.rect.w / 2, d.rect.y + d.rect.h / 2),
+                None => self.drawn_row(k).map_or((0, 0), |r| (r.x + 140, r.y + 30)),
+            });
+        }
+        self.press.filter(|p| p.lifted).map(|p| p.at)
+    }
+
+    /// Where the dragged layer would land if let go now.
+    pub fn landing(&self) -> Option<&DropSpot> {
+        if let Some((_, at)) = self.wheel {
+            return at.and_then(|i| self.drops.get(i));
+        }
+        let p = self.press.filter(|p| p.lifted)?;
+        self.drops.iter().find(|d| d.rect.contains(p.at.0, p.at.1))
+    }
+
+    /// Layer `k`'s row as last drawn, if it shows.
+    fn drawn_row(&self, k: usize) -> Option<Rect> {
+        let (r, _, _) = self.drawn.borrow().as_ref()?.clone();
+        let rows = LoopEditor::parts(r).2;
+        self.row_rects(rows)
+            .into_iter()
+            .find(|(kk, _)| *kk == k)
+            .map(|(_, rr)| rr)
+    }
+
+    /// The wheel's push on layer `k`: pick it up (true), to point the
+    /// wheel at the places it can go. False when nothing can take it.
+    pub fn wheel_grab(&mut self, k: usize) -> bool {
+        if k >= self.layers.len() || self.drops.is_empty() {
+            return false;
+        }
+        self.press = None;
+        self.wheel = Some((k, None));
+        true
+    }
+
+    /// The wheel's push again: put the picked-up layer down where it
+    /// points, as a finger letting go there would.
+    pub fn wheel_drop(&mut self) -> Option<LoopAct> {
+        let (k, at) = self.wheel.take()?;
+        let d = self.drops.get(at?)?;
+        let act = match d.refused {
+            None => LoopAct::DropLayer(k, d.to),
+            Some(_) => LoopAct::NoDrop(d.to),
+        };
+        self.acts.push(act);
+        Some(act)
+    }
+
+    /// The outline moved away: the wheel's layer goes back to its place.
+    pub fn wheel_cancel(&mut self) {
+        self.wheel = None;
+    }
+
+    /// Whether the wheel holds a layer picked up.
+    pub fn wheel_held(&self) -> bool {
+        self.wheel.is_some()
+    }
+
     /// Keep the picked layer in view, with the editor in `r`.
     pub fn follow_in(&mut self, r: Rect) {
         let fit = LoopEditor::fit(LoopEditor::parts(r).2);
@@ -660,6 +920,9 @@ impl LoopEditor {
                 .map(|h| (h, self.history_top.unwrap_or(usize::MAX))),
             trim: self.trim_ticks,
             trimming: self.trimming.map(|t| (t.2, t.3)),
+            drag: self
+                .drag()
+                .map(|(k, card)| (k, card, self.says.clone(), self.landing().cloned())),
         }
     }
 }
@@ -831,6 +1094,11 @@ impl Widget for LoopEditor {
                 t.text_faint,
                 "×",
             );
+            // A lifted layer's old place.
+            if self.drag().is_some_and(|(dk, _)| dk == k) {
+                cx.canvas.fill_round_rect(rr, 10, t.bg.mix(t.surface, 0.3));
+                cx.canvas.stroke_round_rect(rr, 10, 2, t.text_faint);
+            }
         }
         if self.layers.len() > LoopEditor::fit(rows) {
             let more = format!(
@@ -847,6 +1115,20 @@ impl Widget for LoopEditor {
                 t.text_faint,
                 &more,
             );
+        }
+        let over = self.finger().filter(|&(x, y)| r.contains(x, y));
+        if let Some(((k, card), at)) = self.drag().zip(over) {
+            let x = card.x.clamp(r.x + 8, r.x + r.w - 8 - card.w);
+            let card = Rect::new(x, card.y, card.w, card.h);
+            let d = LayerDrag {
+                row: self.layers[k.min(self.layers.len().saturating_sub(1))].clone(),
+                card,
+                at,
+                says: self.says.clone(),
+                landing: self.landing().map(|d| (d.to, d.refused.is_none())),
+                lit: Vec::new(),
+            };
+            paint_card(cx, &d);
         }
         *self.drawn.borrow_mut() = Some((r, self.look(), play.unwrap_or(-1)));
     }
@@ -923,9 +1205,32 @@ impl Widget for LoopEditor {
                 format!("{name} level"),
                 p.level,
             ));
-            out.push(Target::tap("layer", k, name.clone(), p.wave));
+            // The wheel's push picks the layer up to drop on another loop.
+            out.push(
+                Target::tap("layer", k, name.clone(), p.wave).moves_if(!self.drops.is_empty()),
+            );
         }
         out
+    }
+
+    fn steps(&self, t: &Target) -> bool {
+        t.id == "layer" && !self.drops.is_empty()
+    }
+
+    fn step(&mut self, t: &Target, delta: i32, _r: Rect) -> Option<EventKind> {
+        if t.id != "layer" || self.drops.is_empty() {
+            return None;
+        }
+        if self.wheel.is_none_or(|(k, _)| k != t.index) {
+            self.wheel_grab(t.index);
+        }
+        let (k, at) = self.wheel?;
+        // Round the places, and back to its own place between the ends.
+        let n = self.drops.len() as i32 + 1;
+        let now = at.map_or(0, |i| i as i32 + 1);
+        let next = (now + delta).rem_euclid(n);
+        self.wheel = Some((k, (next > 0).then(|| next as usize - 1)));
+        Some(EventKind::Select(k))
     }
 
     fn touch(&mut self, finger: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
@@ -968,6 +1273,26 @@ impl Widget for LoopEditor {
                     .find(|(_, rr)| rr.contains(x, y))?;
                 let l = self.layers[k].clone();
                 let p = LoopEditor::row_parts(rr);
+                let control = LoopEditor::mute_hit(rr).contains(x, y)
+                    || p.solo.inset(-4).contains(x, y)
+                    || p.delete.contains(x, y)
+                    || p.level.inset_xy(-4, -14).contains(x, y);
+                if !control {
+                    // Picked on the lift, unless it moves first: a drag.
+                    self.wheel = None;
+                    self.press = Some(Press {
+                        finger,
+                        k,
+                        from: (x, y),
+                        at: (x, y),
+                        grip: (
+                            (x - rr.x).clamp(24, CARD_W - 24),
+                            (y - rr.y).clamp(12, CARD_H - 12),
+                        ),
+                        lifted: false,
+                    });
+                    return None;
+                }
                 let act = if LoopEditor::mute_hit(rr).contains(x, y) {
                     LoopAct::LayerCmd(k, LayerCommand::Mute(!l.muted))
                 } else if p.solo.inset(-4).contains(x, y) {
@@ -1018,6 +1343,18 @@ impl Widget for LoopEditor {
                 self.history_top = Some(top);
                 None
             }
+            Touch::Move if self.press.is_some_and(|p| p.finger == finger) => {
+                let p = self.press.as_mut()?;
+                let (dx, dy) = (x - p.from.0, y - p.from.1);
+                p.lifted |= dx * dx + dy * dy >= LIFT_PX * LIFT_PX;
+                p.at = (x, y);
+                // The page follows the drag (the list lights its loops).
+                p.lifted.then_some(EventKind::Xy {
+                    x: x as f32,
+                    y: y as f32,
+                    down: true,
+                })
+            }
             Touch::Move => {
                 let (f, k) = self.dragging?;
                 if f != finger {
@@ -1034,6 +1371,33 @@ impl Widget for LoopEditor {
                 Some(EventKind::Select(k))
             }
             Touch::Up | Touch::Cancel => {
+                if let Some(p) = self.press.filter(|p| p.finger == finger) {
+                    let landing = self.landing().cloned();
+                    self.press = None;
+                    let gone = Some(EventKind::Xy {
+                        x: x as f32,
+                        y: y as f32,
+                        down: false,
+                    });
+                    if phase == Touch::Cancel {
+                        return p.lifted.then_some(gone?);
+                    }
+                    if !p.lifted {
+                        // A tap: the layer goes on the Q-Links.
+                        self.picked = p.k;
+                        self.acts.push(LoopAct::Layer(p.k));
+                        return Some(EventKind::Select(p.k));
+                    }
+                    // Let go anywhere else (its own place too): nothing.
+                    match landing {
+                        Some(d) if d.refused.is_none() => {
+                            self.acts.push(LoopAct::DropLayer(p.k, d.to))
+                        }
+                        Some(d) => self.acts.push(LoopAct::NoDrop(d.to)),
+                        None => {}
+                    }
+                    return gone;
+                }
                 if self.dragging.is_some_and(|(f, _)| f == finger) {
                     self.dragging = None;
                 }
@@ -1502,6 +1866,104 @@ mod tests {
         tap(&mut ui, p.wave.x + 20, p.wave.y + 5);
         assert_eq!(take_actions(&mut ui), [LoopAct::Layer(1)]);
         assert_eq!(ui.get::<LoopEditor>(EDITOR).unwrap().picked, 1);
+    }
+
+    /// A row moved a fingertip lifts out: the card follows the finger,
+    /// and letting go on a place that takes it asks for the drop; on one
+    /// that doesn't, for why not; anywhere else, nothing. A small wobble
+    /// is still a tap, which picks the layer on the lift. The wheel picks
+    /// a layer up, turns round the places and drops it with its push.
+    #[test]
+    fn a_layer_drags_out_to_a_loop_and_a_tap_still_picks_it() {
+        let mut ui = page_of(EDITOR, editor(3));
+        let r = ui.rect_of(EDITOR).unwrap();
+        // Two places on the screen (as the page would give them): one that
+        // takes the layer and one that doesn't.
+        let ok = Rect::new(r.x + 20, r.y + 20, 160, 50);
+        let no = Rect::new(r.x + 200, r.y + 20, 160, 50);
+        {
+            let e = ui.get_mut::<LoopEditor>(EDITOR).unwrap();
+            e.drops = vec![
+                DropSpot {
+                    to: DropTo::Loop(1),
+                    rect: ok,
+                    refused: None,
+                },
+                DropSpot {
+                    to: DropTo::NewLoop,
+                    rect: no,
+                    refused: Some("no room".into()),
+                },
+            ];
+        }
+        let p = parts_of(&ui, 1);
+        let (x, y) = (p.wave.x + 40, p.wave.y + 10);
+        // A wobble is a tap: picked on the lift, not on the press.
+        assert_eq!(ui.touch(1, Touch::Down, x, y), None);
+        assert!(take_actions(&mut ui).is_empty());
+        assert_eq!(ui.touch(1, Touch::Move, x + 5, y + 5), None);
+        let e = ui.get::<LoopEditor>(EDITOR).unwrap();
+        assert!(e.drag().is_none());
+        assert_eq!(
+            ui.touch(1, Touch::Up, x + 5, y + 5).map(|e| e.kind),
+            Some(EventKind::Select(1))
+        );
+        assert_eq!(take_actions(&mut ui), [LoopAct::Layer(1)]);
+        // Moved more: lifted, the card under the finger, held where it
+        // was picked up.
+        ui.touch(1, Touch::Down, x, y);
+        assert!(ui.touch(1, Touch::Move, x - 30, y).is_some());
+        let e = ui.get::<LoopEditor>(EDITOR).unwrap();
+        let (k, card) = e.drag().unwrap();
+        assert_eq!(k, 1);
+        assert!(card.contains(x - 30, y));
+        assert!(e.landing().is_none());
+        // Over the place that takes it, then let go: the drop.
+        ui.touch(1, Touch::Move, ok.x + 10, ok.y + 10);
+        let e = ui.get::<LoopEditor>(EDITOR).unwrap();
+        assert_eq!(e.landing().map(|d| d.to), Some(DropTo::Loop(1)));
+        ui.touch(1, Touch::Up, ok.x + 10, ok.y + 10);
+        assert_eq!(
+            take_actions(&mut ui),
+            [LoopAct::DropLayer(1, DropTo::Loop(1))]
+        );
+        assert!(ui.get::<LoopEditor>(EDITOR).unwrap().drag().is_none());
+        // On the one that doesn't: why not.
+        ui.touch(1, Touch::Down, x, y);
+        ui.touch(1, Touch::Move, no.x + 10, no.y + 10);
+        ui.touch(1, Touch::Up, no.x + 10, no.y + 10);
+        assert_eq!(take_actions(&mut ui), [LoopAct::NoDrop(DropTo::NewLoop)]);
+        // Back on its own row, or cancelled: nothing.
+        ui.touch(1, Touch::Down, x, y);
+        ui.touch(1, Touch::Move, x + 40, y);
+        ui.touch(1, Touch::Up, x, y);
+        ui.touch(1, Touch::Down, x, y);
+        ui.touch(1, Touch::Move, ok.x + 10, ok.y + 10);
+        ui.touch(1, Touch::Cancel, ok.x + 10, ok.y + 10);
+        assert!(take_actions(&mut ui).is_empty());
+        // The wheel: the row's tap moves; a turn points it at the first
+        // place, two more come round to its own place; the push drops it.
+        let t = ui
+            .targets()
+            .into_iter()
+            .find(|t| t.target.id == "layer" && t.target.index == 2)
+            .unwrap();
+        assert!(t.target.moves);
+        let e = ui.get_mut::<LoopEditor>(EDITOR).unwrap();
+        assert!(e.wheel_grab(2));
+        assert_eq!(e.step(&t.target, 1, r), Some(EventKind::Select(2)));
+        assert_eq!(e.landing().map(|d| d.to), Some(DropTo::Loop(1)));
+        let (_, card) = e.drag().unwrap();
+        assert!(ok.contains(card.x + card.w / 2, card.y + card.h / 2));
+        e.step(&t.target, 2, r);
+        assert!(e.landing().is_none(), "round to its own place");
+        e.step(&t.target, -2, r);
+        assert_eq!(e.wheel_drop(), Some(LoopAct::DropLayer(2, DropTo::Loop(1))));
+        assert!(e.drag().is_none());
+        assert_eq!(
+            take_actions(&mut ui),
+            [LoopAct::DropLayer(2, DropTo::Loop(1))]
+        );
     }
 
     #[test]
