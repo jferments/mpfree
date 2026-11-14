@@ -166,7 +166,11 @@ touchscreen, using the list of controls each widget gives
   step; song mode following the arrangement; Scenes → song; TRACK MUTE
   mid-section; the morph crossfader; a REC overdub and a CAPTURE with
   their UNDO; and an edit (tempo, a step, a fader) saved with SHIFT +
-  BROWSE, a New project, and the song opened again as edited. The
+  BROWSE, a New project, and the song opened again as edited.
+  Exporting: Night Market's arrangement and 8 bars of Tidal Suite are
+  exported from BROWSE in fast mode (`Session::make_sounds` gives the
+  pads a kit of tones, so the files carry sound), and the mixdown,
+  stems and MIDI file are read back and checked against the song. The
   pattern legend for writing more songs is on `hits` in `songs.rs`.
 
 `Session` (`smoke/session.rs`) is the test harness: the screen and every
