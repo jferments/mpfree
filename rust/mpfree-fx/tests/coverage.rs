@@ -20,6 +20,11 @@ const COVERED: &[&str] = &[
     "mpfree.fx.gate",
     "mpfree.fx.deesser",
     "mpfree.fx.multiband",
+    "mpfree.fx.tape_delay",
+    "mpfree.fx.multitap",
+    "mpfree.fx.room",
+    "mpfree.fx.plate",
+    "mpfree.fx.spring",
 ];
 
 fn make(id: &str) -> Box<dyn Node> {
@@ -584,4 +589,155 @@ fn multiband_sums_flat_and_squashes_only_the_loud_band() {
     assert!(m.param(ids::multiband::reduction(0)) > 10.0);
     assert!(m.param(ids::multiband::reduction(2)) < 0.1);
     assert!(db(rms(&l[24_000..])) < db(rms(&lo[24_000..])) - 10.0);
+}
+
+// ------------------------------------------------------------ rooms
+
+/// The reverb's impulse response, fully wet.
+fn impulse_response(id: &str, set: &[(u16, f32)], frames: usize) -> (Vec<f32>, Vec<f32>) {
+    let mut n = make(id);
+    for &(p, v) in set {
+        n.set_param(p, v);
+    }
+    let mix = n.params().iter().find(|p| p.name == "Mix").unwrap().id;
+    n.set_param(mix, 100.0);
+    n.reset();
+    let mut x = vec![0.0f32; frames];
+    x[0] = 1.0;
+    render(&mut *n, &(x.clone(), x), &[], 256)
+}
+
+/// The time to fall 60 dB, from the backward-integrated energy between
+/// -5 and -35 dB (Schroeder's method), in seconds.
+fn rt60(x: &[f32]) -> f32 {
+    let mut edc = vec![0.0f64; x.len()];
+    let mut acc = 0.0f64;
+    for i in (0..x.len()).rev() {
+        acc += f64::from(x[i]) * f64::from(x[i]);
+        edc[i] = acc;
+    }
+    let total = edc[0];
+    let at = |db: f64| {
+        edc.iter()
+            .position(|&e| 10.0 * (e / total).log10() < db)
+            .unwrap_or(x.len())
+    };
+    let (a, b) = (at(-5.0), at(-35.0));
+    (b - a) as f32 / RATE as f32 * 2.0
+}
+
+#[test]
+fn reverbs_decay_in_about_their_decay_time() {
+    for (id, decay, damping) in [
+        ("mpfree.fx.plate", ids::plate::DECAY, ids::plate::DAMPING),
+        ("mpfree.fx.room", ids::room::DECAY, ids::room::DAMPING),
+    ] {
+        for secs in [0.8f32, 2.0] {
+            let (l, r) = impulse_response(
+                id,
+                &[(decay, secs * 1000.0), (damping, 0.0)],
+                4 * RATE as usize,
+            );
+            let t = rt60(&l).max(rt60(&r));
+            assert!(
+                (t / secs - 1.0).abs() < 0.3,
+                "{id}: {t} s for a decay of {secs} s"
+            );
+        }
+    }
+    let (l, _) = impulse_response(
+        "mpfree.fx.spring",
+        &[(ids::spring::DECAY, 2000.0)],
+        4 * RATE as usize,
+    );
+    let t = rt60(&l);
+    assert!((t / 2.0 - 1.0).abs() < 0.4, "spring: {t} s for 2 s");
+}
+
+#[test]
+fn plate_and_room_are_wide_and_room_gate_cuts_the_tail() {
+    for id in ["mpfree.fx.plate", "mpfree.fx.room"] {
+        let (l, r) = impulse_response(id, &[], RATE as usize);
+        let (mut lr, mut ll, mut rr) = (0.0f64, 0.0f64, 0.0f64);
+        for i in 0..l.len() {
+            lr += f64::from(l[i] * r[i]);
+            ll += f64::from(l[i] * l[i]);
+            rr += f64::from(r[i] * r[i]);
+        }
+        let corr = lr / (ll * rr).sqrt();
+        assert!(corr.abs() < 0.5, "{id}: left and right correlate {corr}");
+    }
+    let (l, _) = impulse_response(
+        "mpfree.fx.room",
+        &[(ids::room::DECAY, 3000.0), (ids::room::GATE, 200.0)],
+        RATE as usize,
+    );
+    assert!(rms(&l[2000..9000]) > 1e-3, "rings while the gate is open");
+    assert!(peak(&l[12_000..]) < 1e-6, "silent once the gate shuts");
+}
+
+#[test]
+fn spring_chirps_lows_after_highs() {
+    // The chain delays low frequencies more than high ones below its
+    // corner: a 300 Hz burst's first return comes later than a 3 kHz one's.
+    let arrival = |hz: f32| {
+        let mut n = make("mpfree.fx.spring");
+        n.set_param(ids::spring::MIX, 100.0);
+        n.set_param(ids::spring::LOW_CUT, 20.0);
+        n.reset();
+        let mut x = vec![0.0f32; 12_000];
+        for (i, v) in x.iter_mut().enumerate().take(480) {
+            let w = 0.5 - 0.5 * (std::f32::consts::TAU * i as f32 / 480.0).cos();
+            *v = w * (std::f32::consts::TAU * hz * i as f32 / RATE as f32).sin();
+        }
+        let (l, _) = render(&mut *n, &(x.clone(), x), &[], 128);
+        // The energy centre of the first return (before 1.5 Length).
+        let (mut num, mut den) = (0.0f64, 0.0f64);
+        for (i, v) in l.iter().enumerate().take(2800).skip(1000) {
+            num += i as f64 * f64::from(v * v);
+            den += f64::from(v * v);
+        }
+        num / den
+    };
+    let (lo, hi) = (arrival(300.0), arrival(3000.0));
+    assert!(lo > hi + 30.0, "300 Hz at {lo}, 3 kHz at {hi}");
+}
+
+#[test]
+fn tape_and_multitap_echo_at_their_times() {
+    let mut x = vec![0.0f32; 48_000];
+    x[0] = 1.0;
+    let mut t = make("mpfree.fx.tape_delay");
+    for (p, v) in [
+        (ids::tape::TIME, 250.0),
+        (ids::tape::WOW, 0.0),
+        (ids::tape::FLUTTER, 0.0),
+        (ids::tape::FEEDBACK, 0.0),
+        (ids::tape::MIX, 100.0),
+        (ids::tape::LOW_CUT, 20.0),
+        (ids::tape::TONE, 16_000.0),
+    ] {
+        t.set_param(p, v);
+    }
+    t.reset();
+    let (l, _) = render(&mut *t, &(x.clone(), x.clone()), &[], 128);
+    let at = (0..l.len())
+        .max_by(|&a, &b| l[a].abs().total_cmp(&l[b].abs()))
+        .unwrap();
+    assert!((at as i64 - 12_000).abs() < 30, "tape echo at {at}");
+
+    // At 120 BPM a sixteenth is 6000 frames: taps at 3, 6, 10 and 16.
+    let mut m = make("mpfree.fx.multitap");
+    m.set_param(ids::multitap::MIX, 100.0);
+    m.set_param(ids::multitap::FEEDBACK, 0.0);
+    m.set_param(ids::multitap::LOW_CUT, 20.0);
+    m.reset();
+    let mut x = vec![0.0f32; 110_000];
+    x[0] = 1.0;
+    let (l, r) = render(&mut *m, &(x.clone(), x), &[], 128);
+    for (tap, six) in [3usize, 6, 10, 16].into_iter().enumerate() {
+        let want = six * 6000;
+        let near = |y: &[f32]| peak(&y[want - 8..want + 8]);
+        assert!(near(&l).max(near(&r)) > 0.2, "tap {tap} at {want}");
+    }
 }

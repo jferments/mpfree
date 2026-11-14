@@ -16,8 +16,9 @@ use mpfree_node::Node;
 use crate::presets as p;
 use crate::{
     AutoPan, Character, Chorus, Cloud, Comb, Compressor, Crush, DeEsser, Delay, DjFilter, Drive,
-    Ducker, Eq, Flanger, Gate, Limiter, LoFi, MasterSafety, MultiFilter, MultibandCompressor,
-    Perform, Phaser, PitchShifter, Preset, RingMod, Rotary, TransientShaper, Tremolo,
+    Ducker, Eq, Flanger, Gate, Limiter, LoFi, MasterSafety, MultiFilter, MultiTap,
+    MultibandCompressor, Perform, Phaser, PitchShifter, Plate, Preset, RingMod, Room, Rotary,
+    Spring, TapeDelay, TransientShaper, Tremolo,
 };
 
 /// Where an effect sits in the picker.
@@ -302,12 +303,52 @@ pub static EFFECTS: &[FxEntry] = &[
         p::DELAY,
     ),
     e(
+        "mpfree.fx.tape_delay",
+        "Tape delay",
+        "Wow, flutter and dub repeats",
+        DelayReverb,
+        || Box::new(TapeDelay::new()),
+        crate::echoes::TAPE_PRESETS,
+    ),
+    e(
+        "mpfree.fx.multitap",
+        "Multi-tap delay",
+        "Four echoes on the grid",
+        DelayReverb,
+        || Box::new(MultiTap::new()),
+        crate::echoes::MULTITAP_PRESETS,
+    ),
+    e(
         "mpfree.fx.cloud",
         "Cloud reverb",
         "Plate, room, hall, cloud",
         DelayReverb,
         || Box::new(Cloud::new()),
         crate::cloud::PRESETS,
+    ),
+    e(
+        "mpfree.fx.room",
+        "Room reverb",
+        "Booths to studios, gated too",
+        DelayReverb,
+        || Box::new(Room::new()),
+        crate::rooms::ROOM_PRESETS,
+    ),
+    e(
+        "mpfree.fx.plate",
+        "Plate reverb",
+        "The classic bright plate",
+        DelayReverb,
+        || Box::new(Plate::new()),
+        crate::rooms::PLATE_PRESETS,
+    ),
+    e(
+        "mpfree.fx.spring",
+        "Spring reverb",
+        "Amp tank drip and splash",
+        DelayReverb,
+        || Box::new(Spring::new()),
+        crate::rooms::SPRING_PRESETS,
     ),
     e(
         "mpfree.fx.pitch",
