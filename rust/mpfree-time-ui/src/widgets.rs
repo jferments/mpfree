@@ -450,6 +450,9 @@ pub struct GridCell {
 #[derive(Clone, Debug, PartialEq)]
 pub struct GridTrack {
     pub name: String,
+    /// What it plays, under its name ("Kit", "FM · Glass Keys"); empty
+    /// shows only the name, in a shorter header.
+    pub sound: String,
     pub color: Color,
     /// Recording goes into this track.
     pub armed: bool,
@@ -461,7 +464,8 @@ pub struct GridTrack {
 /// clip launch and in Ableton's session view. A playing clip shows a ring
 /// that goes round once per pass; a queued one an amber outline; the one
 /// being recorded a red outline. A tap on a track's name gives
-/// `Tab(track)`; a tap on a cell gives `Select(track * slots + slot)`.
+/// `Tab(track)`, on the sound line under it `Tab(SOUND_TAP + track)`; a
+/// tap on a cell gives `Select(track * slots + slot)`.
 /// The app scrolls it with `first_track` and `first_row`.
 pub struct ClipGrid {
     pub title: String,
@@ -520,6 +524,10 @@ pub fn rec_song_pill(cx: &mut PaintCx, r: Rect, on: bool) {
 /// The scene buttons' column: each row's number launches the row.
 const LABEL_W: i32 = 48;
 const HEAD_H: i32 = 28;
+const HEAD_SOUND_H: i32 = 44;
+/// A tap on track `t`'s sound line, under its name, gives
+/// `Tab(SOUND_TAP + t)`.
+pub const SOUND_TAP: usize = 1 << 16;
 const CELL_GAP: i32 = 6;
 const ROW_MIN_H: i32 = 76;
 const RING: i32 = 26;
@@ -585,7 +593,16 @@ impl ClipGrid {
     /// Where the Stop all button is: over the scene buttons.
     pub fn stop_all_rect(&self, r: Rect) -> Rect {
         let g = self.geo(r);
-        Rect::new(g.body.x, g.body.y, LABEL_W, HEAD_H)
+        Rect::new(g.body.x, g.body.y, LABEL_W, self.head_h())
+    }
+
+    /// The track names' height: taller with a sound line under them.
+    fn head_h(&self) -> i32 {
+        if self.tracks.iter().any(|t| !t.sound.is_empty()) {
+            HEAD_SOUND_H
+        } else {
+            HEAD_H
+        }
     }
 
     fn geo(&self, r: Rect) -> Geo {
@@ -594,7 +611,7 @@ impl ClipGrid {
         let x0 = body.x + LABEL_W + CELL_GAP;
         let cols = GRID_COLS as i32;
         let col_w = ((body.right() - x0 - CELL_GAP * (cols - 1)) / cols).max(1);
-        let cells_y = body.y + HEAD_H + CELL_GAP;
+        let cells_y = body.y + self.head_h() + CELL_GAP;
         let avail = body.bottom() - cells_y;
         let rows =
             (((avail + CELL_GAP) / (ROW_MIN_H + CELL_GAP)).max(1) as usize).min(self.slots.max(1));
@@ -629,8 +646,18 @@ impl ClipGrid {
             g.x0 + c * (g.col_w + CELL_GAP),
             g.body.y,
             g.col_w,
-            HEAD_H,
+            self.head_h(),
         ))
+    }
+
+    /// Where track `track`'s sound line is (the lower half of its name),
+    /// if it has one and is in view.
+    pub fn sound_rect(&self, r: Rect, track: usize) -> Option<Rect> {
+        if self.tracks.get(track)?.sound.is_empty() {
+            return None;
+        }
+        let h = self.head_rect(r, track)?;
+        Some(Rect::new(h.x, h.y + h.h / 2, h.w, h.h - h.h / 2))
     }
 
     /// Where slot `slot` of track `track` is, if it is in view.
@@ -791,15 +818,30 @@ impl Widget for ClipGrid {
             };
             cx.canvas
                 .fill_round_rect(head, 8, base.mix(t.surface, 0.72));
-            let mut name = head.inset_xy(10, 0);
+            let two = !track.sound.is_empty();
+            let mut name = if two {
+                Rect::new(head.x + 10, head.y + 3, head.w - 20, 20)
+            } else {
+                head.inset_xy(10, 0)
+            };
             if track.armed {
                 cx.canvas.stroke_round_rect(head, 8, 2, t.bad);
                 cx.canvas.fill_round_rect(
-                    Rect::new(name.x, head.y + head.h / 2 - 4, 8, 8),
+                    Rect::new(name.x, name.y + name.h / 2 - 4, 8, 8),
                     4,
                     t.bad,
                 );
                 name = name.take_left(14).1;
+            }
+            if two {
+                cx.text(
+                    FontId::Sans,
+                    t.size_small - 2.0,
+                    Rect::new(head.x + 10, head.y + 22, head.w - 16, 18),
+                    Align::Left,
+                    if track.mute { t.text_faint } else { t.text_dim },
+                    &track.sound,
+                );
             }
             let ink = if track.mute {
                 t.text_faint
@@ -888,6 +930,9 @@ impl Widget for ClipGrid {
         }
         let tracks = self.first_track..(self.first_track + GRID_COLS).min(self.tracks.len());
         for track in tracks {
+            if self.sound_rect(r, track).is_some_and(|s| s.contains(x, y)) {
+                return Some(EventKind::Tab(SOUND_TAP + track));
+            }
             if self.head_rect(r, track).is_some_and(|h| h.contains(x, y)) {
                 return Some(EventKind::Tab(track));
             }
@@ -1476,6 +1521,7 @@ mod tests {
             };
             g.tracks.push(GridTrack {
                 name: format!("T{i}"),
+                sound: String::new(),
                 color: Color::rgb(0x3DDC97),
                 armed: i == 1,
                 mute: false,
@@ -1516,6 +1562,39 @@ mod tests {
         assert!(g
             .cell_rect(r, 2, 15)
             .is_some_and(|c| c.bottom() <= r.bottom()));
+    }
+
+    /// With what each track plays under its name, the names are taller
+    /// (the cells move down), and a tap on the sound line is its own:
+    /// `Tab(SOUND_TAP + track)`, while the name above still arms.
+    #[test]
+    fn a_tracks_sound_line_sits_under_its_name_and_is_tapped_on_its_own() {
+        let mut g = grid(10);
+        let r = Rect::new(12, 128, 814, 610);
+        let (one_line, first_cell) = (g.head_rect(r, 3).unwrap(), g.cell_rect(r, 3, 0).unwrap());
+        assert_eq!(g.sound_rect(r, 3), None, "no sound line");
+        for (i, t) in g.tracks.iter_mut().enumerate() {
+            t.sound = if i == 3 { "FM".into() } else { "Kit".into() };
+        }
+        let h = g.head_rect(r, 3).unwrap();
+        assert_eq!(h.h, HEAD_SOUND_H);
+        assert!(h.h > one_line.h);
+        assert_eq!(
+            g.cell_rect(r, 3, 0).unwrap().y,
+            first_cell.y + HEAD_SOUND_H - HEAD_H
+        );
+        let s = g.sound_rect(r, 3).unwrap();
+        assert!(h.intersect(s) == s && s.y > h.y);
+        assert_eq!(
+            g.touch(1, Touch::Down, s.x + 4, s.bottom() - 2, r),
+            Some(EventKind::Tab(SOUND_TAP + 3))
+        );
+        assert_eq!(
+            g.touch(1, Touch::Down, h.x + 4, h.y + 2, r),
+            Some(EventKind::Tab(3))
+        );
+        // Off to the right: no sound line in view.
+        assert_eq!(g.sound_rect(r, 9), None);
     }
 
     #[test]

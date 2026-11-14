@@ -392,6 +392,28 @@ top bar, 1256 by 60) rewrites 1256 of the panel's 1280 rows, about 4 MB.
 On the build workstation (13 Nov) that strip took 0.07 ms to paint and 1.2
 to 1.8 ms to copy.
 
+**Turning only what changed** (14 Nov). The copy used to turn whole native
+rows from the canvas, so that strip turned the whole screen to change
+1256 × 60 pixels. `FbTarget` now keeps a copy of what the panel shows, in
+the panel's own layout. It turns only the changed rectangles into that copy
+and writes the same whole rows from it, so the kernel gets the same bytes
+as before (`the_screen_gets_the_same_bytes_as_when_whole_rows_were_turned`,
+fb.rs). Measured on the workstation with `turn_speed` (fb.rs, ignored by
+default):
+
+| Changed | Whole rows turned | Only the rectangle |
+| --- | --- | --- |
+| A chip in the top bar, 120 × 40 | 0.12 ms | 0.005 ms |
+| The top bar, 1280 × 48 | 1.6 ms | 0.06 ms |
+| A meter, 24 × 300 | 0.022 ms | 0.007 ms |
+| A panel, 600 × 400 | 0.70 ms | 0.33 ms |
+| The whole screen | 1.7 ms | 0.8 ms |
+
+The whole screen gains too, because the old way cleared its buffer before
+each turn. The write itself is unchanged: whole native rows, as the kernel
+needs, so the strip still sends about 4 MB to the kernel. The MPC's numbers
+will come from the next app round's `status: screen` lines.
+
 **Idle redraws** (fixed 13 Nov). Two things redrew with nothing changing:
 the Pads tab's browser, at every frame (30 a second: 0.5 ms paint and 0.9
 ms copy each on the workstation, so roughly 30 to 40 % of a core on the
@@ -437,16 +459,26 @@ The strip moves a whole column at a time (the newest column's edge used to
 creep and jump back between columns), marks a fixed time back such as Skip
 back stay put, and "held" counts whole seconds (in hundredths it changed at
 every frame until the buffer was full). A still input now redraws 3 of 90
-frames (the caption, once a second), a loud one still every frame, and the
-test `the_strip_redraws_only_when_its_picture_changes` (mpfree-sampler-ui)
-checks that the screen always matches a full redraw. With no input at all
-the tab no longer redraws at every frame either. The I/O view asked for a
+frames (the caption, once a second). With no input at all the tab no longer
+redraws at every frame either. While input comes in, the picture moves at
+every frame, so the tab redraws it at most every other frame
+(`rec_tab::LIVE_GAP_S`, about 15 a second; meters included, since they
+share its rows): a loud input redraws 45 of 90 frames (was 90), 13,560
+native rows a second instead of 27,120 (14 Nov). The tab compares with the
+picture last painted (`InputView::painted`), whatever painted it, so the
+screen is never more than a frame behind; a change of settings still shows
+at the next frame. The test `the_strip_redraws_only_when_its_picture_changes`
+(mpfree-sampler-ui) checks both, and that the screen matches a full redraw
+whenever the picture is up to date. The I/O view asked for a
 frame at every tick and painted nothing (`io_tick` reached for its widget
 with `Ui::get_mut`); it now asks only when a section changed. The touch
 test (a developer page) still redraws its area at every frame.
 
-Still to do: the Rec view while input comes in (every frame, the whole
-strip moving).
+Still to do: a loud input still copies 904 native rows 15 times a second.
+The panel takes whole native rows, so the meters, which run across the
+view's width, cost about as much as the whole view; going lower needs a
+different picture (the meters upright at one side, the strip wiping
+across instead of scrolling), which is the owner's call.
 
 ## CI
 

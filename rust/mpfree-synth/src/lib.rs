@@ -19,6 +19,10 @@
 //!   factory tables, and [`wavetable::import`] for WAVs, Serum-style tables
 //!   and a pad's sample.
 //!
+//! - [`Keys`]: an electric piano, a struck tine or reed (a small modal
+//!   bank) in front of a soft, asymmetric pickup that barks when hit hard,
+//!   with tone, drive and tremolo, and factory presets.
+//!
 //! - [`pressure`]: what pad pressure drives in each engine. Both run it
 //!   through the shared shaper in [`mpfree_node::pressure`].
 //!
@@ -34,6 +38,8 @@ pub mod dx7;
 pub mod expr;
 pub mod fm;
 pub mod fm_params;
+pub mod keys;
+pub mod keys_params;
 pub mod params;
 pub mod pluck;
 pub mod pluck_params;
@@ -43,6 +49,7 @@ pub mod wavetable;
 
 pub use drum::Drums;
 pub use fm::Fm;
+pub use keys::Keys;
 pub use params::{Preset, PARAMS, PRESETS};
 pub use pluck::Pluck;
 pub use poly::Poly;

@@ -1299,9 +1299,12 @@ pub struct Finished {
 
 /// An auto-sample on its own worker thread: the session played
 /// ([`render`] for one of MPFree's instruments, [`Gear::run`] for external
-/// gear), then [`build`]. The thread runs at normal priority, below the
-/// audio thread's real-time one, and touches nothing the audio thread
-/// uses: a node is a copy made for it (a fresh instrument with the patch's
+/// gear), then [`build`]. For an instrument the thread runs at idle
+/// priority once the program allows it ([`mpfree_lanes::os::idle_job`]),
+/// after the screen and every other thread; for gear at normal priority,
+/// so each note goes out when the input reaches its frame. Either way it
+/// is below the audio thread's real-time priority and touches nothing the
+/// audio thread uses: a node is a copy made for it (a fresh instrument with the patch's
 /// values), and gear is heard through the input's rolling buffer, which
 /// the audio thread only writes. Poll [`Job::progress`], then
 /// [`Job::finish`] once [`Job::is_finished`].
@@ -1317,7 +1320,7 @@ impl Job {
     /// once) and starts auto-sampling `node` offline with one level test.
     pub fn start(plan: Plan, mut node: Box<dyn Node>) -> Result<Job, PlanError> {
         let session = Session::new(plan, 1)?;
-        Ok(Job::spawn(session, move |session, keep_going| {
+        Ok(Job::spawn(session, true, move |session, keep_going| {
             render(session, node.as_mut(), keep_going);
             None
         }))
@@ -1332,13 +1335,16 @@ impl Job {
         mut send: Box<dyn FnMut([u8; 3]) + Send>,
     ) -> Result<Job, PlanError> {
         let session = Session::new(plan, GEAR_TESTS)?;
-        Ok(Job::spawn(session, move |session, keep_going| {
+        Ok(Job::spawn(session, false, move |session, keep_going| {
             gear.run(session, send.as_mut(), keep_going)
         }))
     }
 
+    /// `idle`: a long job nobody waits on note by note
+    /// ([`mpfree_lanes::os::idle_job`]).
     fn spawn(
         mut session: Session,
+        idle: bool,
         play: impl FnOnce(&mut Session, &mut dyn FnMut(&Session) -> bool) -> Option<GearError>
             + Send
             + 'static,
@@ -1350,6 +1356,9 @@ impl Job {
         let handle = std::thread::Builder::new()
             .name("autosample".into())
             .spawn(move || {
+                if idle {
+                    mpfree_lanes::os::idle_job();
+                }
                 let t = Instant::now();
                 let stopped = play(&mut session, &mut |s: &Session| {
                     d.store(s.progress().done, Ordering::Relaxed);
