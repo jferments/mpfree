@@ -18,13 +18,14 @@ Nothing built goes in this repository: not the plugins, not their sources. The r
 | `dexed.clap` | Dexed, a DX7-style FM synth | GPL-3.0-or-later; JUCE 8 inside it is AGPL-3.0 | 1 instrument |
 | `surge-xt.clap` | Surge XT, the synth | GPL-3.0-or-later (JUCE 7 inside it is GPL-3.0) | 1 instrument |
 | `surge-xt-effects.clap` | Surge XT's effects as a plugin of their own | GPL-3.0-or-later | 1 effect |
+| `SurgeXTData/` | Surge XT's factory presets (637 patches), wavetables, effect and modulator presets and tunings, 35 MB, which both Surge XT files read | GPL-3.0-or-later | |
 
 92 plugins in all, under the rack's limit of 128. Each plugin's folder in the pack also has:
 
 - `licenses/`: the license of everything inside the file;
 - `source/`: a tarball of each source at the commit built, submodules included, and `mpfree-plugin-pack-recipe.tar.xz`, the recipe that built it (together, the complete corresponding source the GPL asks for);
 - `BUILD.txt`: what was built, from which commits, with which tools, what each file needs from the MPC and its SHA-256;
-- `SHA256SUMS`, and `PLAY.txt` when the pack was played (below).
+- `SHA256SUMS` (every file, the data folders' too), and `PLAY.txt` when the pack was played (below).
 
 ## Building it
 
@@ -90,10 +91,10 @@ Times under qemu say nothing about the MPC. What a plugin costs there is for the
 
 ## Putting it on the stick
 
-Copy the `.clap` files into `files/plugins/` in MPFree's data folder on the test stick ([storage](../design/storage-spec.md)); the app scans that folder at start ([plugins in the app](../design/plugins.md#in-the-app)). Keep each plugin's `licenses/` and `source/` with the files you give anyone. This writes only to the stick, never to the MPC's eMMC. Trying them on the MPC is a device step and waits for the owner's go.
+Copy the `.clap` files into `files/plugins/` in MPFree's data folder on the test stick, with Surge XT's `SurgeXTData/` folder beside them (Surge XT looks beside its `.clap` file, then in the folders above it) ([storage](../design/storage-spec.md)); the app scans that folder at start ([plugins in the app](../design/plugins.md#in-the-app)). Keep each plugin's `licenses/` and `source/` with the files you give anyone. This writes only to the stick, never to the MPC's eMMC. Trying them on the MPC is a device step and waits for the owner's go.
 
 ## Not yet
 
-- **Presets.** MPFree doesn't browse a plugin's own presets yet, so Surge XT starts on its init patch and Dexed on its first built-in voice; their parameters are all on the Synth tab. Surge XT's factory patches and wavetables (its `SurgeXTData` folder, 380 MB) aren't in the pack; when MPFree can load a plugin's presets, the folder goes beside `surge-xt.clap`, where Surge XT looks for it.
+- **Presets.** MPFree doesn't browse a plugin's own presets yet, so Surge XT starts on its init patch and Dexed on its first built-in voice; their parameters are all on the Synth tab. The pack already carries Surge XT's factory presets. Surge's third-party patches and wavetables (most of its 380 MB data folder) and its skins (no GUI here) are left out.
 - **Surge XT on 32-bit Linux** is something Surge's own build calls untested (`SURGE_BUILD_32BIT_LINUX`). The pack's checks pass, but it is the plugin to watch on the MPC.
 - **On the MPC:** loading, real-time cost per voice, NaN watch and state round trips there are the passports (P4).

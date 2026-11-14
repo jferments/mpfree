@@ -55,6 +55,8 @@ sha256 = "b4f5719b00ba3fecf8c0ce651e843651bd80f08a10cf4cf1f00e673a5bcaf23b"
 # cflags: extra C and C++ flags, after the toolchain's.
 # outputs: built file (a glob under the build folder) = name in the pack.
 # licenses: "<source>/<path>" or "file:<name>" = name in the pack's licenses/.
+# data: "<source>/<folder>" = folder in the pack, copied as it is (presets,
+#   wavetables: what the plugin reads at run time).
 
 [[plugin]]
 name = "airwindows"
@@ -108,3 +110,8 @@ cmake = [
 targets = ["surge-xt_CLAP", "surge-fx_CLAP"]
 outputs = { "**/CLAP/Surge XT.clap" = "surge-xt.clap", "**/CLAP/Surge XT Effects.clap" = "surge-xt-effects.clap" }
 licenses = { "surge/LICENSE" = "surge-xt.txt", "surge/libs/JUCE/LICENSE.md" = "juce.txt" }
+# Surge looks for a "SurgeXTData" folder beside its .clap (or in a folder
+# above it). The factory presets, wavetables, effect and modulator presets
+# and tunings: 35 MB. Left out: the third-party patches and wavetables
+# (most of Surge's 380 MB) and the skins (no GUI here).
+data = { "surge/resources/data/patches_factory" = "SurgeXTData/patches_factory", "surge/resources/data/wavetables" = "SurgeXTData/wavetables", "surge/resources/data/fx_presets" = "SurgeXTData/fx_presets", "surge/resources/data/modulator_presets" = "SurgeXTData/modulator_presets", "surge/resources/data/tuning_library" = "SurgeXTData/tuning_library" }
