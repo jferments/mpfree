@@ -400,8 +400,8 @@ its inputs marked it changed (`Ui::get_mut`; `Ui::get_mut_quiet` is for
 state a widget does not draw); and the top bar, every second, whether or
 not a chip changed. The test `no_page_redraws_while_idle` (gui.rs) ticks
 every sample screen for three idle seconds and fails if any page draws,
-except the ones that show something live (the I/O view's lights, the touch
-test, the Rec tab's input).
+except the ones that show something live (the touch test's fading trails,
+and the Rec tab's meters falling back after the input stops).
 
 **The pages' clock and the loop's sleep** (fixed 13 Nov, `pace.rs`,
 `touch_bell.rs`). The screen loop woke every 4 ms to look at the
@@ -426,7 +426,27 @@ lab. Tests: `the_idle_screen_thread_keeps_time_and_sleeps` and
 `without_the_doorbell_the_screen_thread_reads_the_panel_every_4_ms` (gui.rs),
 `pace.rs` and `touch_bell.rs`.
 
-Still to do: redraw live parts at the rate they need.
+**Live parts** (fixed 13 Nov). The Rec tab's input view (meters and the
+input strip, 904 by 494) redrew whole at every frame, input or not: on the
+workstation 0.42 ms to paint and 1.11 ms to copy its 904 native rows, so
+roughly 30 to 45 % of an MPC core while the tab shows (round 7's 6.6 to 10
+times, an estimate). Now it works out its picture in pixels
+(`InputView::look`: the meters' lengths and texts, each pixel column of the
+strip, the marks' places) and the tab redraws it only when that changes.
+The strip moves a whole column at a time (the newest column's edge used to
+creep and jump back between columns), marks a fixed time back such as Skip
+back stay put, and "held" counts whole seconds (in hundredths it changed at
+every frame until the buffer was full). A still input now redraws 3 of 90
+frames (the caption, once a second), a loud one still every frame, and the
+test `the_strip_redraws_only_when_its_picture_changes` (mpfree-sampler-ui)
+checks that the screen always matches a full redraw. With no input at all
+the tab no longer redraws at every frame either. The I/O view asked for a
+frame at every tick and painted nothing (`io_tick` reached for its widget
+with `Ui::get_mut`); it now asks only when a section changed. The touch
+test (a developer page) still redraws its area at every frame.
+
+Still to do: the Rec view while input comes in (every frame, the whole
+strip moving).
 
 ## CI
 

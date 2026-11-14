@@ -44,6 +44,7 @@ pub fn show(ui: &mut Ui, has_sound: bool, sending: bool) {
         }
         .to_string();
         b.enabled = vec![has_sound; BUTTONS.len()];
+        b.why = vec!["The pad picked has no sound".to_string(); BUTTONS.len()];
     }
 }
 

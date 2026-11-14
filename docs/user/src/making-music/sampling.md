@@ -33,7 +33,7 @@ The data wheel, its push, **–** and **+** move through the browser too; see [B
 
 {{shot: pads-pad | The Pads tab's Pad view: the picked pad's settings in the middle, and the sounds in the kit on the right.}}
 
-**Pad** sets up the pad picked: its **sound**, how it plays (**Mode**: **One shot** plays to the end, **Gate** only while you hold the pad, **Toggle** starts and stops with each hit, **Loop** repeats its loop region, **Granular** plays it as grains), how many notes can ring at once (**Polyphony**), a **mute group** (pads in the same group cut each other off, like an open and a closed hi-hat), and its **level**, **pan** and **tune**. Q-Links 1 to 4 turn level, pan, tune and voices. **Put on** places the sound picked on the right onto the pad.
+**Pad** sets up the pad picked: its **sound**, how it plays (**Mode**: **One shot** plays to the end, **Gate** only while you hold the pad, **Toggle** starts and stops with each hit, **Loop** repeats its loop region, **Granular** plays it as grains), how many notes can ring at once (**Polyphony**), a **mute group** (pads in the same group cut each other off, like an open and a closed hi-hat), and its **level**, **pan** and **tune**. Q-Links 1 to 4 turn level, pan, tune and voices. **Put on** places the sound picked on the right onto the pad, the whole of it; the hint line says when the pad plays all of it already.
 
 ## Send to pad and Chop to pads
 
@@ -58,7 +58,7 @@ The **Wave** page shows the sample. Set where it **starts** and **ends**, and wh
 
 1. Pick a **Method**: **Transient** cuts at each hit, **Beat** on the beats, **Grid** into equal pieces, **Silence** at the gaps, **Manual** leaves the cuts to you, and **Live** cuts where you play (below).
 2. Turn **Sensitivity** up for more slices, down for fewer.
-3. Tap a slice to hear it. **Split** and **Merge** add or remove a cut by hand; the Q-Links move the picked slice's start.
+3. Tap a slice to hear it. **Split** and **Merge** add or remove a cut by hand; drag a cut's tab, or turn the Q-Links, to move it. The first marker and **END** are the pad's own start and end, so they stay put here: move them on the Wave page.
 4. Tap **Chop to** to put the slices on the pads, starting at the first pad you chose.
 
 ### Live: chop by playing
