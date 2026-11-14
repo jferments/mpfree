@@ -979,7 +979,6 @@ impl Ui {
         }
         let refocus = std::mem::take(&mut self.refocus);
         let focus = self.focus.clone();
-        let mut outline_under = false;
         let (fonts, widgets, full) = (&mut self.fonts, &mut self.widgets, &mut self.full);
         for &(wi, r) in &page.slots {
             let (_, w, dirty) = &mut widgets[wi];
@@ -987,9 +986,21 @@ impl Ui {
             if !(whole || *dirty || w.animating()) {
                 continue;
             }
-            // The outline sits on this widget: draw it again over whatever
-            // the widget draws now.
-            outline_under |= focus.as_ref().is_some_and(|f| f.widget == wi);
+            // The wheel's outline, when it sits on this widget: its control's
+            // rectangle, how thick and in what colour. It is drawn again in
+            // each part the widget paints, clipped to that part, so a part
+            // painted alone gets it back and the rest keeps the one it has
+            // (drawing it twice would darken its blended corners).
+            let outline = focus.as_ref().filter(|f| f.widget == wi).and_then(|f| {
+                let t = w.targets(r).into_iter().find(|t| f.is(wi, t))?;
+                let o = t.rect.intersect(r);
+                let (width, colour) = if f.grabbed {
+                    (GRABBED_W, theme.accent2)
+                } else {
+                    (OUTLINE_W, theme.accent)
+                };
+                (!o.is_empty()).then_some((o, width, colour))
+            });
             let parts = if whole {
                 vec![r]
             } else {
@@ -1016,32 +1027,14 @@ impl Ui {
                     r,
                 );
                 cleared.settle(None);
+                if let Some((o, width, colour)) =
+                    outline.filter(|o| !o.0.intersect(part).is_empty())
+                {
+                    let radius = (theme.radius / 2).min(o.w.min(o.h) / 2).max(0);
+                    canvas.stroke_round_rect(o, radius, width, colour);
+                }
                 if !*full {
                     damage.push(part);
-                }
-            }
-        }
-        // The wheel's outline, over its control, inside the control's widget
-        // (so drawing the widget again takes it away).
-        if let Some(f) = focus.filter(|_| outline_under) {
-            let slot = page.slots.iter().find(|(wi, _)| *wi == f.widget);
-            if let Some(&(wi, r)) = slot {
-                let t = widgets[wi].1.targets(r).into_iter().find(|t| f.is(wi, t));
-                if let Some(t) = t {
-                    let (width, colour) = if f.grabbed {
-                        (GRABBED_W, theme.accent2)
-                    } else {
-                        (OUTLINE_W, theme.accent)
-                    };
-                    let o = t.rect.intersect(r);
-                    if !o.is_empty() {
-                        canvas.set_clip(r);
-                        let radius = (theme.radius / 2).min(o.w.min(o.h) / 2).max(0);
-                        canvas.stroke_round_rect(o, radius, width, colour);
-                        if !*full {
-                            damage.push(o);
-                        }
-                    }
                 }
             }
         }
@@ -1151,6 +1144,105 @@ mod tests {
     fn label(ui: &Ui) -> Option<String> {
         ui.focused()
             .map(|f| format!("{} {}", f.widget, f.target.label))
+    }
+
+    /// Four cells, each its own colour, every one a control; `changed` is
+    /// the one cell to paint again (None: the whole widget).
+    struct Cells {
+        colour: [u32; 4],
+        changed: Option<usize>,
+    }
+
+    impl Widget for Cells {
+        fn paint(&self, cx: &mut PaintCx, r: Rect) {
+            for (c, k) in Square::cells(r).iter().zip(self.colour) {
+                cx.canvas.fill_rect(*c, Color::rgb(k));
+            }
+        }
+
+        fn targets(&self, r: Rect) -> Vec<Target> {
+            Square::cells(r)
+                .iter()
+                .enumerate()
+                .map(|(i, c)| Target::tap("cell", i, format!("cell {i}"), *c))
+                .collect()
+        }
+
+        fn changed_parts(&self, r: Rect) -> Option<Vec<Rect>> {
+            self.changed.map(|k| vec![Square::cells(r)[k]])
+        }
+    }
+
+    /// The outline is drawn after the widgets, so painting what changed
+    /// must give the picture a whole paint gives: a part of the outlined
+    /// widget painted alone (holding the outline or not), the outline
+    /// moving to another widget and back, and grabbed.
+    #[test]
+    fn the_outline_paints_the_same_in_part_as_whole() {
+        let make = |colours: [[u32; 4]; 2]| {
+            let mut ui = Ui::new(Theme::dark(), Fonts::embedded(), 400, 200);
+            for (name, colour) in ["left", "right"].into_iter().zip(colours) {
+                ui.add(
+                    name,
+                    Cells {
+                        colour,
+                        changed: None,
+                    },
+                );
+            }
+            ui.add_page("p", "row(left, right)").unwrap();
+            ui.show("p").unwrap();
+            ui
+        };
+        let mut colours = [[0x203040, 0x304050, 0x405060, 0x506070]; 2];
+        colours[1].reverse();
+        // The picture a fresh screen paints whole, with the outline where
+        // `ui`'s is.
+        let whole = |ui: &Ui, colours: [[u32; 4]; 2]| {
+            let mut fresh = make(colours);
+            if let Some(f) = ui.focused() {
+                let (x, y) = f.target.centre();
+                fresh.focus_at(x, y);
+                fresh.set_focus_grabbed(ui.focus_grabbed());
+            }
+            let mut c = SoftCanvas::new(400, 200);
+            fresh.paint(&mut c);
+            c.px
+        };
+        let mut ui = make(colours);
+        let mut now = SoftCanvas::new(400, 200);
+        let c = Square::cells(ui.rect_of("left").unwrap())[3];
+        ui.focus_at(c.x + 5, c.y + 5).unwrap();
+        ui.paint(&mut now);
+        assert!(now.px == whole(&ui, colours), "whole");
+        // A part away from the outline, then the part under it.
+        for k in [0, 3] {
+            colours[0][k] ^= 0x00FF00;
+            let w = ui.get_mut::<Cells>("left").unwrap();
+            w.colour = colours[0];
+            w.changed = Some(k);
+            ui.paint(&mut now);
+            assert!(now.px == whole(&ui, colours), "part {k}");
+        }
+        // The outline moves on into the other widget, comes back, and is
+        // grabbed and let go, with only a part of each widget changing.
+        for step in 0..6 {
+            match step {
+                0..=2 => {
+                    ui.focus_move(1);
+                }
+                3 => {
+                    ui.focus_move(-3);
+                }
+                4 => ui.set_focus_grabbed(true),
+                _ => ui.set_focus_grabbed(false),
+            }
+            for name in ["left", "right"] {
+                ui.get_mut::<Cells>(name).unwrap().changed = Some(1);
+            }
+            ui.paint(&mut now);
+            assert!(now.px == whole(&ui, colours), "step {step}");
+        }
     }
 
     #[test]
