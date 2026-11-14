@@ -186,4 +186,15 @@ impl Node for Crush {
             self.run(&mut left[from..to], &mut right[from..to]);
         }
     }
+    fn rest_frames(&self) -> u32 {
+        // Dither makes noise from silence, and a lower rate keeps the
+        // place of its held samples across silence (reset, the steps would
+        // fall elsewhere).
+        let full = self.rate as f32;
+        if self.v[2] >= 0.5 || self.hz.target < full || self.hz.value < full {
+            return u32::MAX;
+        }
+        // One held sample.
+        1
+    }
 }

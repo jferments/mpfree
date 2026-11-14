@@ -344,6 +344,17 @@ pub trait Node: Send {
     fn latency(&self) -> u32 {
         0
     }
+    /// Frames of silent input after which the node is as good as reset:
+    /// its tail has rung out and nothing it holds (a filter's memory, a
+    /// compressor's envelope) would change what it does with the next
+    /// sound, so a host may reset it and stop calling it until sound comes
+    /// again (an effect chain's sleep). `u32::MAX`, the default: never,
+    /// for a node that makes sound from silence (noise, a frozen tail),
+    /// follows something else across silence (a sidechain key, an LFO
+    /// kept in time) or has not been checked.
+    fn rest_frames(&self) -> u32 {
+        u32::MAX
+    }
     /// Sets how notes become frequencies, from the next frame processed.
     /// The node copies it (a [`Tuning`] is plain data), so this may run on
     /// the audio thread between blocks. Sounding notes move to the new
