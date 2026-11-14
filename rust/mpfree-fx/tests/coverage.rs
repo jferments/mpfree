@@ -27,6 +27,7 @@ const COVERED: &[&str] = &[
     "mpfree.fx.spring",
     "mpfree.fx.amp",
     "mpfree.fx.exciter",
+    "mpfree.fx.xy",
 ];
 
 fn make(id: &str) -> Box<dyn Node> {

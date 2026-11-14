@@ -18,7 +18,7 @@ use crate::{
     Amp, AutoPan, Character, Chorus, Cloud, Comb, Compressor, Crush, DeEsser, Delay, DjFilter,
     Drive, Ducker, Eq, Exciter, Flanger, Gate, Limiter, LoFi, MasterSafety, MultiFilter, MultiTap,
     MultibandCompressor, Perform, Phaser, PitchShifter, Plate, Preset, RingMod, Room, Rotary,
-    Spring, TapeDelay, TransientShaper, Tremolo,
+    Spring, TapeDelay, TransientShaper, Tremolo, XyFx,
 };
 
 /// Where an effect sits in the picker.
@@ -381,6 +381,14 @@ pub static EFFECTS: &[FxEntry] = &[
         Performance,
         || Box::new(Perform::new()),
         &[],
+    ),
+    e(
+        "mpfree.fx.xy",
+        "XY FX",
+        "One effect played from an XY pad",
+        Performance,
+        || Box::new(XyFx::new()),
+        crate::xyfx::PRESETS,
     ),
     FxEntry {
         master_only: true,
