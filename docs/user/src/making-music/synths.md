@@ -6,7 +6,7 @@ checked: 2026-11-14 cf10b79
 
 # Synths
 
-MPFree has eight synths built in. Put one on the pads and they become a keyboard: bass lines, chords, leads and pads, played by hand, through the arpeggiator or into a pattern.
+MPFree has nine synths built in. Put one on the pads and they become a keyboard: bass lines, chords, leads and pads, played by hand, through the arpeggiator or into a pattern.
 
 ## Put a synth on the pads
 
@@ -18,9 +18,9 @@ There are three ways:
 
 To go back to drums, pick a kit with the data wheel on the Play page, or set the track's instrument back to **Kit**.
 
-## The eight synths
+## The nine synths
 
-Any of the eight can be a track's own instrument (see [A synth for each track](#a-synth-for-each-track)), and any track can have a different one.
+Any of the nine can be a track's own instrument (see [A synth for each track](#a-synth-for-each-track)), and any track can have a different one.
 
 | Synth | What it is | Good for | Presets |
 |---|---|---|---|
@@ -32,6 +32,7 @@ Any of the eight can be a track's own instrument (see [A synth for each track](#
 | **Keys** | A physically modelled electric piano: struck steel tines or reeds in front of their pickups | Soul and jazz chords, ballads, barking stabs, tremolo keys | Soft Tines, Bright Tines, Barking Tines, Bell Keys, Hollow Tines, Pan Tines, Ballad, Dusty Keys, Reed, Reed Bite, Trem Reed |
 | **Drawbar** | A tonewheel organ with drawbars, percussion, scanner vibrato and a rotating speaker | Jazz and gospel comping, rock riffs, church chords, soft pads | Jazz Perc, Gospel, Full Organ, Rock Drive, Ballad, Flute, Church, Reedy, Bright Perc, Hollow, Soft Bass |
 | **Squelch** | A mono acid bass: one oscillator into a squelchy resonant filter, with accent and slide | Acid lines, rubbery basses, screaming leads | Acid Line, Deep Bass, Square Acid, Distorted, Rubber, Plucky, Acid Lead, Screamer |
+| **Analog** | A vintage analog poly: voices that each sound a little different, poly-mod and a chorus | Brass, warm pads, string ensembles, sync leads, clangy bells | Poly Brass, Warm Pad, Sync Lead, Chorus Strings, Square Keys, Clang Bell, Unison Bass, Slow Sweep, Hollow Pulse, Worn Cards |
 
 Each synth also has an **Init** preset (Init Kit on Drums): a plain starting point to build your own sound.
 
@@ -41,7 +42,7 @@ Every track can play its own instrument: Poly on one, FM on another, a plugin sy
 
 1. Select the track.
 2. Press **MENU** on the Synth tab. The top row is named after the track: **Track 2 instrument**.
-3. Change it. It steps through **Kit** (the pads' kit, as every track starts), **Poly**, **FM**, **Drums**, **Pluck**, **Wavetable**, **Keys**, **Drawbar** and **Squelch**, then any plugin synths you have put in `files/plugins/` on the stick.
+3. Change it. It steps through **Kit** (the pads' kit, as every track starts), **Poly**, **FM**, **Drums**, **Pluck**, **Wavetable**, **Keys**, **Drawbar**, **Squelch** and **Analog**, then any plugin synths you have put in `files/plugins/` on the stick.
 
 {{shot: synth-instrument | Track 2's instrument set to a plugin synth, with the row's help on the right.}}
 
@@ -100,6 +101,16 @@ The classic move is to turn **Cutoff** and **Resonance** while a line plays; the
 - **Synth:** **Wave** (**Saw** or **Square**), **Cutoff** (where the filter rests between notes), **Resonance** (the squelch; at 100 the filter is on the edge of whistling and screams on high notes), **Env mod** (how far each note opens the filter), **Decay** (how fast it closes again) and **Accent** (how far accented notes jump out).
 - **Play:** **Slide** (how long a glide takes), **Accent at**, **Acc decay** (how fast the filter closes on accented notes), **Amp decay** (how long a held note takes to fade; short for plucked notes), **Key track** (how far the filter follows the note; at 0, as on the original, high notes come out darker) and **Drive** (distortion after the filter, as from a pedal).
 - **Voice:** transpose, fine tuning, bend range, level and pan.
+
+**Analog** plays like the polysynths of the late 1970s, which had a circuit board for each voice. No two boards were quite alike, and notes went to them in turn, so the same chord sounds a little different each time you play it. **Age** sets how much: at 0 every voice is identical, at 30 (the default) they differ slightly, and at 100 they differ as much as on an old synth that hasn't been calibrated in a while: each voice a few cents out of tune with the others, a little brighter or darker, quicker or slower. The higher it is, the more each oscillator also drifts slowly as it plays. It has five pages:
+
+- **Osc:** two oscillators, each **Saw**, **Pulse**, **Saw+Pulse** or **Triangle**, with their octave, the second's semitones and **Osc 2 fine** (its detune against the first, the source of the thick, beating sound), and each pulse's width (**PW**). **Sync** locks oscillator 1 to oscillator 2's cycle: tune oscillator 1 up and it tears rather than sweeps. **Osc 1**, **Osc 2**, **Sub** (a square an octave down) and **Noise** are the mix.
+- **Filter:** **Filter** **LP 24** is the classic four-pole: thick and smooth, and at **Resonance** 100 it whistles on its own. **LP 12**, **BP 12** and **HP 12** are a gentler two-pole that rings but never whistles. **Env amount** is how far the filter envelope opens it (below 0 it closes it), **Key track** how far it follows the note, **Vel > filter** how much softer notes open it less, and **Drive** how hard the oscillators push it (grit, not volume). Turning Resonance up thins the bass a little, as on the old synths.
+- **Envelopes:** the filter's (**F**) and the volume's (**A**) attack, decay, sustain and release, from 1 ms to 20 s, and **Vel > amp** (how much softer notes play quieter). The attack has the old synths' shape: fast, then bending over just before the top.
+- **Mod:** the **LFO** (**LFO rate**, **LFO wave**, and **LFO delay**, which fades it in after you start a phrase) on the pitch (**Vibrato**), both pulse widths (**LFO > PW**) and the filter (**LFO > cutoff**). **PMod env** and **PMod osc 2** are poly-mod: each voice's own filter envelope and its own oscillator 2 bend oscillator 1's pitch, its pulse width or the filter, as the three **PMod >** switches choose. The envelope on the pitch of a synced oscillator 1 is the classic sync sweep; oscillator 2 on the pitch or the filter at audio speed gives clangy, bell-like sounds.
+- **Voice:** **Mode** **Poly** or **Unison** (all the voices on one note, spread by **Detune**, for leads and basses), **Voices**, **Glide** (in Poly each voice glides from the last note it played, so chords smear into each other), **Age**, **Chorus** (**Slow** and **Fast** are the wide, swirling stereo chorus of the time, **Vibe** a quick shimmer), transpose, fine tuning, bend range, level and pan.
+
+The Q-Links take the pulse widths and detune on the Osc page, the filter's four main knobs on the Filter page, the envelopes' times, the vibrato and poly-mod depths on the Mod page, and Age, Glide, Detune and Level on the Voice page.
 
 The Synth tab takes its colours from the theme picked in **Prefs > Appearance**, like the rest of MPFree: the Q-Link colours, the curves and the boxes in the pictures all change with it.
 

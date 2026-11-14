@@ -28,7 +28,7 @@ use mpfree_seq::mpfree_param::{OnTrack, RelAddr};
 use mpfree_seq::{Clip, Lock, Note, Project as Song, Quantise, Speed, Track};
 use mpfree_synth::params::{POLYPHONY, UNISON, VOICE_MODE};
 use mpfree_synth::wavetable::params::{self as wt, PRESETS as WT_PRESETS};
-use mpfree_synth::{Drawbar, Drums, Keys, Pluck, Poly, Squelch, Wavetable, PRESETS};
+use mpfree_synth::{Analog, Drawbar, Drums, Keys, Pluck, Poly, Squelch, Wavetable, PRESETS};
 use mpfree_track::{Instrument, Sum, TrackHost};
 use mpfree_transport::time::{Swing, PPQ};
 use mpfree_transport::{Block as TBlock, Command as T, Transport};
@@ -930,6 +930,29 @@ pub fn all(rate: u32) -> Vec<Case> {
                 rate,
                 Box::new(Squelch::new(rate)),
                 p.values,
+            )
+        }));
+    }
+    // Analog: the plain init, the pad with the chorus, and the brass on
+    // the two-pole; Worn Cards adds Age's drift on every oscillator.
+    for (name, voices) in [
+        ("Init", 8),
+        ("Warm Pad", 8),
+        ("Poly Brass", 8),
+        ("Worn Cards", 16),
+    ] {
+        v.push(measured(|| {
+            let p = Analog::presets()
+                .iter()
+                .find(|p| p.name == name)
+                .unwrap_or_else(|| panic!("analog preset {name}"));
+            chords(
+                format!("Analog {name}, {voices} voices"),
+                rate,
+                Box::new(Analog::new(rate)),
+                p.values,
+                Some(mpfree_synth::analog_params::POLYPHONY),
+                voices,
             )
         }));
     }

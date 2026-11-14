@@ -236,6 +236,27 @@ const SQUELCH: &[Curated] = &[
     set("Tone", [es::DRIVE, es::KEY_TRACK, es::FINE, es::LEVEL]),
 ];
 
+use mpfree_synth::analog_params as ea;
+
+/// Analog: the filter's four knobs, the envelopes' times, the vibrato and
+/// poly-mod depths, and the voice: how worn the cards are, the second
+/// oscillator's detune, the unison spread and the level.
+const ANALOG: &[Curated] = &[
+    set(
+        "Filter",
+        [ea::CUTOFF, ea::RESONANCE, ea::ENV_AMT, ea::DRIVE],
+    ),
+    set(
+        "Env",
+        [ea::F_ATTACK, ea::F_DECAY, ea::A_ATTACK, ea::A_RELEASE],
+    ),
+    set(
+        "Mod",
+        [ea::LFO_RATE, ea::LFO_PITCH, ea::PM_ENV, ea::PM_OSC2],
+    ),
+    set("Voice", [ea::AGE, ea::OSC2_FINE, ea::UNI_DETUNE, ea::LEVEL]),
+];
+
 use mpfree_synth::drum_params::{field as df, pad_id, PADS, STRIDE};
 
 /// Drums, on pad 1 ([`on_pad`] moves them): the hit, its body, its mix.
@@ -280,6 +301,7 @@ fn curated(id: &str) -> Option<&'static [Curated]> {
         "mpfree.keys" => Some(KEYS),
         "mpfree.drawbar" => Some(DRAWBAR),
         "mpfree.squelch" => Some(SQUELCH),
+        "mpfree.analog" => Some(ANALOG),
         DRUMS_ID => Some(DRUMS),
         _ => None,
     }
@@ -475,10 +497,11 @@ mod tests {
     use super::*;
     use mpfree_mod::Bindings;
     use mpfree_node::{Curve, Kind, Node, Unit};
-    use mpfree_synth::{Drawbar, Drums, Fm, Keys, Pluck, Poly, Squelch, Wavetable};
+    use mpfree_synth::{Analog, Drawbar, Drums, Fm, Keys, Pluck, Poly, Squelch, Wavetable};
 
     fn engines() -> Vec<Box<dyn Node>> {
         vec![
+            Box::new(Analog::new(48_000)),
             Box::new(Squelch::new(48_000)),
             Box::new(Drawbar::new(48_000)),
             Box::new(Keys::new(48_000)),

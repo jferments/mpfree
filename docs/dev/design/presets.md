@@ -1,6 +1,6 @@
 # Sound presets (`rust/mpfree-instruments`)
 
-A sound on any instrument can be saved as a preset file and loaded back, on any engine: Poly, FM, Wavetable, Pluck, Keys, Drawbar, Squelch and Drums today, and any other node that lists its parameters. This is piece 3 of the plan "Four synth features" (2026-11-11). Jay chose to keep user presets in the library: `library/Instruments/<engine>/<name>.preset`, where `<engine>` is the engine's name (Poly, FM, Wavetable, Pluck, Drums).
+A sound on any instrument can be saved as a preset file and loaded back, on any engine: Poly, FM, Wavetable, Pluck, Keys, Drawbar, Squelch, Analog and Drums today, and any other node that lists its parameters. This is piece 3 of the plan "Four synth features" (2026-11-11). Jay chose to keep user presets in the library: `library/Instruments/<engine>/<name>.preset`, where `<engine>` is the engine's name (Poly, FM, Wavetable, Pluck, Drums).
 
 ## The file
 
