@@ -556,6 +556,9 @@ pub enum ToUi {
     Engines(Arc<crate::engines::EngineShared>),
     /// What the Looper tab shows: the looper, the line input's meter.
     Looper(Box<LooperView>),
+    /// The audio tracks' level bars, 0 to 1, by track (Arrange's Song
+    /// view, a few times a second).
+    AudioLevels([f32; mpfree_audiotracks::MAX_TRACKS]),
     /// The loop's waveform (no frames: the loop was cleared).
     LoopWave(Arc<LoopWave>),
     /// What the mixer panel shows (its strips and meters), a few times a
@@ -2819,6 +2822,17 @@ impl Player {
                     self.refresh_hint();
                 }
             }
+            ToUi::AudioLevels(levels) => {
+                let mut moved = false;
+                for lane in &mut self.time.audio {
+                    let l = levels.get(lane.track).copied().unwrap_or(0.0);
+                    moved |= lane.level != l;
+                    lane.level = l;
+                }
+                if moved && self.view == View::Arrange {
+                    self.time_page.update(&mut self.ui, &self.time);
+                }
+            }
             ToUi::Transport(info) => {
                 self.time.transport = info;
                 self.sample.set_tempo(info.bpm);
@@ -4559,10 +4573,13 @@ impl Player {
                     }
                 }
                 // A swipe across a take lane and a region's drag are free
-                // with SHIFT held.
+                // with SHIFT held, and SHIFT + Undo redoes (layout spec 4c).
                 let fine = self.status.shift;
                 a.map(|a| {
                     let a = match a {
+                        TimeAction::Audio(AudioAction::Undo) if fine => {
+                            TimeAction::Audio(AudioAction::Redo)
+                        }
                         TimeAction::Audio(AudioAction::Comp { take, from, to, .. }) => {
                             TimeAction::Audio(AudioAction::Comp {
                                 take,
@@ -8574,6 +8591,23 @@ mod tests {
     /// Layout spec 4c: a swipe across a take lane snaps to the grid, and
     /// with SHIFT held it is free.
     #[test]
+    fn the_audio_level_bars_come_on_their_own() {
+        let mut p = sample_player(Fonts::embedded());
+        let st = mpfree_time_ui::sample::song_audio_state().unwrap();
+        p.apply(ToUi::Time(Box::new(st)));
+        p.apply(ToUi::Show(View::Arrange));
+        assert!(!p.time.audio.is_empty());
+        let mut levels = [0.0; mpfree_audiotracks::MAX_TRACKS];
+        for (t, l) in levels.iter_mut().enumerate() {
+            *l = t as f32 / 10.0;
+        }
+        p.apply(ToUi::AudioLevels(levels));
+        for lane in &p.time.audio {
+            assert_eq!(lane.level, levels[lane.track]);
+        }
+    }
+
+    #[test]
     fn a_take_lane_swipe_with_shift_is_free() {
         let mut p = sample_player(Fonts::embedded());
         let swipe = |p: &mut Player| {
@@ -8613,6 +8647,18 @@ mod tests {
                 fine: true,
             })))
         );
+        // SHIFT + Undo on the audio row redoes (layout spec 4c).
+        p.time.region = Some(time_view::RegionId { track: 1, index: 0 });
+        let undo = |p: &mut Player| {
+            p.on_event(mpfree_ui::UiEvent {
+                widget: time_view::SONG.to_string(),
+                kind: mpfree_ui::EventKind::Tab(5),
+            })
+        };
+        let audio = |a| Some(FromUi::Time(TimeAction::Audio(a)));
+        assert_eq!(undo(&mut p), audio(AudioAction::Redo));
+        p.status.shift = false;
+        assert_eq!(undo(&mut p), audio(AudioAction::Undo));
     }
 
     #[test]
