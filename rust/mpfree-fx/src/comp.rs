@@ -380,6 +380,16 @@ impl Node for Compressor {
     fn tail_frames(&self) -> u32 {
         0
     }
+    fn rest_frames(&self) -> u32 {
+        // Keyed, the envelope follows the key through silence.
+        if self.v[ids::SIDECHAIN as usize] >= 0.5 {
+            return u32::MAX;
+        }
+        // The release, ten time constants (80 dB of reduction to under
+        // 0.01 dB), and the RMS detector falling below any threshold.
+        let ms = 10.0 * self.v[ids::RELEASE as usize] + 25.0 * RMS_MS;
+        (ms * 0.001 * self.rate as f32) as u32
+    }
 }
 
 #[cfg(test)]
