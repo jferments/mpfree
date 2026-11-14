@@ -437,16 +437,26 @@ The strip moves a whole column at a time (the newest column's edge used to
 creep and jump back between columns), marks a fixed time back such as Skip
 back stay put, and "held" counts whole seconds (in hundredths it changed at
 every frame until the buffer was full). A still input now redraws 3 of 90
-frames (the caption, once a second), a loud one still every frame, and the
-test `the_strip_redraws_only_when_its_picture_changes` (mpfree-sampler-ui)
-checks that the screen always matches a full redraw. With no input at all
-the tab no longer redraws at every frame either. The I/O view asked for a
+frames (the caption, once a second). With no input at all the tab no longer
+redraws at every frame either. While input comes in, the picture moves at
+every frame, so the tab redraws it at most every other frame
+(`rec_tab::LIVE_GAP_S`, about 15 a second; meters included, since they
+share its rows): a loud input redraws 45 of 90 frames (was 90), 13,560
+native rows a second instead of 27,120 (14 Nov). The tab compares with the
+picture last painted (`InputView::painted`), whatever painted it, so the
+screen is never more than a frame behind; a change of settings still shows
+at the next frame. The test `the_strip_redraws_only_when_its_picture_changes`
+(mpfree-sampler-ui) checks both, and that the screen matches a full redraw
+whenever the picture is up to date. The I/O view asked for a
 frame at every tick and painted nothing (`io_tick` reached for its widget
 with `Ui::get_mut`); it now asks only when a section changed. The touch
 test (a developer page) still redraws its area at every frame.
 
-Still to do: the Rec view while input comes in (every frame, the whole
-strip moving).
+Still to do: a loud input still copies 904 native rows 15 times a second.
+The panel takes whole native rows, so the meters, which run across the
+view's width, cost about as much as the whole view; going lower needs a
+different picture (the meters upright at one side, the strip wiping
+across instead of scrolling), which is the owner's call.
 
 ## CI
 
