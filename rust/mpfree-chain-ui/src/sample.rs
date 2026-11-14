@@ -876,7 +876,8 @@ mod tests {
         let ui = picking(&mut song, shelf);
         let v = ui.get::<ChainView>(crate::CHAIN).unwrap();
         let ids: Vec<_> = v.picker().picks(v.state()).iter().map(|p| p.id).collect();
-        assert_eq!(ids, ["mpfree.fx.spring", "mpfree.fx.gate"]);
+        // The spring is a Reverb mode: it shows as the Reverb tile.
+        assert_eq!(ids, ["mpfree.fx.room", "mpfree.fx.gate"]);
     }
 
     #[test]
@@ -884,7 +885,8 @@ mod tests {
         let mut song = Song::new();
         let mut ui = picking(&mut song, Default::default());
         open_section(&mut ui, Section::Category(mpfree_fx::Category::DelayReverb));
-        let t = tile_of(&ui, "mpfree.fx.plate").unwrap();
+        // The Reverb tile (its first mode, the room).
+        let t = tile_of(&ui, "mpfree.fx.room").unwrap();
         // Held for half a second: the presets open instead of an add.
         ui.touch(1, Touch::Down, t.x + 20, t.y + 20);
         ui.get_mut::<ChainView>(crate::CHAIN)
@@ -894,19 +896,49 @@ mod tests {
         assert!(crate::take_chain_actions(&mut ui).is_empty());
         let r = ui.rect_of(crate::CHAIN).unwrap();
         let v = ui.get::<ChainView>(crate::CHAIN).unwrap();
-        assert_eq!(v.picker().presets, Some("mpfree.fx.plate"));
+        assert_eq!(v.picker().presets, Some("mpfree.fx.room"));
         let pl = v.layout(r).picker.unwrap();
-        let n = mpfree_fx::picker::presets("mpfree.fx.plate").len();
-        assert_eq!(pl.tiles.len(), n + 1, "Defaults and every preset");
+        let rows = mpfree_fx::picker::preset_rows("mpfree.fx.room");
+        let n = rows.len().min(pl.tiles.len() - 1);
+        assert!(n >= 8, "every reverb mode's presets");
+        assert_eq!(pl.tiles.len(), n + 1, "Defaults and the presets");
         assert!(v.layout(r).picks.is_empty());
-        // A preset row adds the plate with that preset.
+        // A preset row adds the room with that preset.
         let row = pl.tiles[2];
         tap(&mut ui, row.x + 10, row.y + 10);
         assert_eq!(
             crate::take_chain_actions(&mut ui),
             [ChainAction::AddPreset {
-                id: "mpfree.fx.plate",
+                id: "mpfree.fx.room",
                 preset: 1
+            }]
+        );
+        // A Plate row adds the plate engine with its own preset.
+        let mut ui2 = picking(&mut song, Default::default());
+        open_section(
+            &mut ui2,
+            Section::Category(mpfree_fx::Category::DelayReverb),
+        );
+        let t = tile_of(&ui2, "mpfree.fx.room").unwrap();
+        ui2.touch(1, Touch::Down, t.x + 20, t.y + 20);
+        ui2.get_mut::<ChainView>(crate::CHAIN)
+            .unwrap()
+            .age_press(0.6);
+        ui2.touch(1, Touch::Up, t.x + 20, t.y + 20);
+        let k = rows.iter().position(|r| r.name == "Vocal plate").unwrap();
+        let pl = ui2
+            .get::<ChainView>(crate::CHAIN)
+            .unwrap()
+            .layout(r)
+            .picker
+            .unwrap();
+        let row = pl.tiles[k + 1];
+        tap(&mut ui2, row.x + 10, row.y + 10);
+        assert_eq!(
+            crate::take_chain_actions(&mut ui2),
+            [ChainAction::AddPreset {
+                id: "mpfree.fx.plate",
+                preset: 0
             }]
         );
         assert!(!ui.get::<ChainView>(crate::CHAIN).unwrap().state().picking);
@@ -958,7 +990,7 @@ mod tests {
         let mut ui = picking(&mut song, Default::default());
         open_section(&mut ui, Section::Category(mpfree_fx::Category::DelayReverb));
         let r = ui.rect_of(crate::CHAIN).unwrap();
-        let t = tile_of(&ui, "mpfree.fx.plate").unwrap();
+        let t = tile_of(&ui, "mpfree.fx.room").unwrap();
         ui.touch(1, Touch::Down, t.x + 20, t.y + 20);
         assert!(!crate::chain_hold(&mut ui), "not held long enough yet");
         ui.get_mut::<ChainView>(crate::CHAIN)
@@ -968,7 +1000,7 @@ mod tests {
         assert!(crate::chain_hold(&mut ui));
         assert_eq!(
             ui.get::<ChainView>(crate::CHAIN).unwrap().picker().presets,
-            Some("mpfree.fx.plate")
+            Some("mpfree.fx.room")
         );
         assert!(!crate::chain_hold(&mut ui), "once per press");
         // The finger now sits over a preset row: its lift adds nothing.
@@ -995,7 +1027,7 @@ mod tests {
         assert_eq!(
             crate::take_chain_actions(&mut ui),
             [ChainAction::AddPreset {
-                id: "mpfree.fx.plate",
+                id: "mpfree.fx.room",
                 preset: 0
             }]
         );
@@ -1061,24 +1093,24 @@ mod tests {
         v.wheel(100, false);
         let n = v.picker().picks(&st).len();
         assert_eq!(v.picker().highlight, Some(n - 1), "stops at the last");
-        let plate = v
+        let reverb = v
             .picker()
             .picks(&st)
             .iter()
-            .position(|p| p.id == "mpfree.fx.plate")
+            .position(|p| p.name == "Reverb")
             .unwrap();
-        v.wheel(plate as i32 - (n as i32 - 1), false);
-        // A push opens the plate's presets on Defaults; the wheel and a
-        // push add the plate with the second preset.
+        v.wheel(reverb as i32 - (n as i32 - 1), false);
+        // A push opens the Reverb's presets on Defaults; the wheel and a
+        // push add the room with its second preset.
         v.push_wheel();
-        assert_eq!(v.picker().presets, Some("mpfree.fx.plate"));
+        assert_eq!(v.picker().presets, Some("mpfree.fx.room"));
         assert_eq!(v.picker().highlight, Some(0));
         v.wheel(2, false);
         v.push_wheel();
         assert_eq!(
             v.take_actions(),
             [ChainAction::AddPreset {
-                id: "mpfree.fx.plate",
+                id: "mpfree.fx.room",
                 preset: 1
             }]
         );
@@ -1178,17 +1210,18 @@ mod tests {
         crate::update_chain(&mut ui, song.chain_state(KEYS, 0, 0, None));
         assert!(ui.get::<ChainView>(crate::CHAIN).unwrap().state().picking);
         open_section(&mut ui, Section::Category(mpfree_fx::Category::DelayReverb));
-        let t = tile_of(&ui, "mpfree.fx.cloud").unwrap();
+        // The Reverb tile adds its first mode, the room.
+        let t = tile_of(&ui, "mpfree.fx.room").unwrap();
         tap(&mut ui, t.x + 10, t.y + 10);
         assert_eq!(
             crate::take_chain_actions(&mut ui),
-            [ChainAction::Add("mpfree.fx.cloud")]
+            [ChainAction::Add("mpfree.fx.room")]
         );
         assert!(!ui.get::<ChainView>(crate::CHAIN).unwrap().state().picking);
         assert!(mpfree_fx_ui::make("mpfree.fx.cloud").is_some());
         // Open again (on the section left) and cancel: the app hears both.
         tap(&mut ui, add.x + 10, add.y + 10);
-        assert!(tile_of(&ui, "mpfree.fx.cloud").is_some(), "same section");
+        assert!(tile_of(&ui, "mpfree.fx.room").is_some(), "same section");
         let c = ui
             .get::<ChainView>(crate::CHAIN)
             .unwrap()

@@ -89,7 +89,7 @@ impl PickerView {
     /// list ("Defaults" first).
     fn items(&self, st: &ChainState) -> usize {
         match self.presets {
-            Some(id) => 1 + picker::presets(id).len(),
+            Some(id) => 1 + picker::preset_rows(id).len(),
             None => self.picks(st).len(),
         }
     }
@@ -193,7 +193,7 @@ pub fn layout(body: Rect, st: &ChainState, pv: &PickerView) -> PickerLayout {
         tiles.push(t);
         if pv.presets.is_none() {
             stars.push(Rect::new(t.right() - STAR, t.bottom() - STAR, STAR, STAR));
-            let has = !picker::presets(picks[first + k].id).is_empty();
+            let has = !picker::preset_rows(picks[first + k].id).is_empty();
             let w = (t.w - STAR).min(150);
             chips.push(has.then(|| Rect::new(t.x, t.bottom() - CHIP_H, w, CHIP_H)));
         }
@@ -313,15 +313,15 @@ pub fn paint(cx: &mut PaintCx, l: &PickerLayout, st: &ChainState, pv: &PickerVie
             t.text,
             &format!("{name} presets"),
         );
-        let presets = picker::presets(id);
+        let presets = picker::preset_rows(id);
         for (k, r) in l.tiles.iter().enumerate() {
             let i = l.first + k;
             let lit = pv.highlight == Some(i);
             tile_back(cx, *r, lit);
-            let (title, sub) = if i == 0 {
-                ("Defaults", "As it starts")
-            } else {
-                (presets[i - 1].name, "")
+            // A family's presets name the mode they play in.
+            let (title, sub) = match i.checked_sub(1).and_then(|i| presets.get(i)) {
+                Some(p) => (p.name, p.mode),
+                None => ("Defaults", "As it starts"),
             };
             let inner = r.inset_xy(14, 0);
             if sub.is_empty() {
@@ -375,7 +375,7 @@ pub fn paint(cx: &mut PaintCx, l: &PickerLayout, st: &ChainState, pv: &PickerVie
                 );
             }
             if let Some(c) = l.chips[k] {
-                let n = picker::presets(p.id).len();
+                let n = picker::preset_rows(p.id).len();
                 cx.text(
                     FontId::Sans,
                     size,
