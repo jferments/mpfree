@@ -8,7 +8,6 @@
 use mpfree_node::{Ctx, Curve, ParamInfo, Unit};
 
 use crate::flush;
-use crate::svf::{Svf, SvfMode};
 
 /// A parameter description, shorter to write than the struct.
 #[allow(clippy::too_many_arguments)]
@@ -218,35 +217,104 @@ impl Lfo {
     }
 }
 
+/// [`Smooth::next`] with a quick way out once the value has arrived: the
+/// same values bit for bit, at about a third of the cost on ARMv7 while
+/// the control holds still (most of the time).
+pub(crate) trait Glide {
+    fn glide(&mut self) -> f32;
+}
+
+impl Glide for mpfree_node::Smooth {
+    #[inline]
+    fn glide(&mut self) -> f32 {
+        if self.value == self.target {
+            self.value
+        } else {
+            self.next()
+        }
+    }
+}
+
+/// `x`, or `lo` if `x` is lower (or not a number). Cheaper than
+/// `f32::max` on ARMv7, which has no single instruction for it.
+#[inline]
+pub(crate) fn at_least(x: f32, lo: f32) -> f32 {
+    if x > lo {
+        x
+    } else {
+        lo
+    }
+}
+
+/// `x`, or `hi` if `x` is higher.
+#[inline]
+pub(crate) fn at_most(x: f32, hi: f32) -> f32 {
+    if x < hi {
+        x
+    } else {
+        hi
+    }
+}
+
+/// A fixed read point on a [`Line`] with its cubic weights (and a gain)
+/// worked out, for taps that move only while a control glides.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct Frac {
+    i: usize,
+    w: [f32; 4],
+}
+
 /// A mono delay line read at a fractional point (cubic interpolation).
+///
+/// The buffer is a power of two long (at least 8) and every index is
+/// masked by its length less one, so the compiler drops the bounds checks.
+/// A read takes its four neighbours as one slice when they don't wrap
+/// (all but three points in the ring), which on the MPC's ARM is about
+/// half the address work of four masked indices.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Line {
     buf: Vec<f32>,
-    mask: usize,
     w: usize,
+    /// The longest delay a read can ask for, as a float.
+    top: f32,
 }
 
 impl Line {
     /// Room for `frames` of delay (control thread).
     pub(crate) fn new(frames: usize) -> Line {
-        let n = (frames + 4).next_power_of_two();
+        let n = (frames + 4).next_power_of_two().max(8);
         Line {
             buf: vec![0.0; n],
-            mask: n - 1,
             w: 0,
+            top: (n - 4) as f32,
         }
     }
     /// The longest delay a read can ask for.
     pub(crate) fn max(&self) -> f32 {
-        self.buf.len().saturating_sub(4) as f32
+        self.top
     }
     #[inline]
     pub(crate) fn push(&mut self, x: f32) {
-        if self.buf.is_empty() {
+        let n = self.buf.len();
+        if n == 0 {
             return;
         }
-        self.buf[self.w] = x;
-        self.w = (self.w + 1) & self.mask;
+        self.buf[self.w & (n - 1)] = x;
+        self.w = (self.w + 1) & (n - 1);
+    }
+    /// The four frames from `i + 2` back to `i - 1` before the newest,
+    /// oldest first (the line must be built).
+    #[inline]
+    fn four(&self, i: usize) -> [f32; 4] {
+        let buf = &self.buf[..];
+        let m = buf.len() - 1;
+        let j = self.w.wrapping_sub(i).wrapping_sub(3) & m;
+        if j + 3 <= m {
+            let s = &buf[j..j + 4];
+            [s[0], s[1], s[2], s[3]]
+        } else {
+            [buf[j], buf[(j + 1) & m], buf[(j + 2) & m], buf[(j + 3) & m]]
+        }
     }
     /// The signal `d` frames before the last write (at least 1),
     /// interpolated.
@@ -255,25 +323,53 @@ impl Line {
         if self.buf.len() < 8 {
             return 0.0;
         }
-        let d = d.clamp(1.0, self.max());
+        let d = at_most(at_least(d, 1.0), self.top);
         let i = d as usize;
         let t = d - i as f32;
-        let last = self.w.wrapping_sub(1);
-        let at = |k: usize| self.buf[last.wrapping_sub(k) & self.mask];
-        let (x0, x1, x2, x3) = (at(i - 1), at(i), at(i + 1), at(i + 2));
+        let [x3, x2, x1, x0] = self.four(i);
         let c1 = 0.5 * (x2 - x0);
         let c2 = x0 - 2.5 * x1 + 2.0 * x2 - 0.5 * x3;
         let c3 = 0.5 * (x3 - x0) + 1.5 * (x1 - x2);
         ((c3 * t + c2) * t + c1) * t + x1
     }
+    /// A read point `d` frames back (as in [`Line::read`]) scaled by
+    /// `gain`, worked out once for a point that holds still.
+    pub(crate) fn frac(&self, d: f32, gain: f32) -> Frac {
+        let d = at_most(at_least(d, 1.0), self.top);
+        let i = d as usize;
+        let t = d - i as f32;
+        let (t2, t3) = (t * t, t * t * t);
+        // Oldest first, as `four` returns them.
+        Frac {
+            i,
+            w: [
+                gain * (-0.5 * t2 + 0.5 * t3),
+                gain * (0.5 * t + 2.0 * t2 - 1.5 * t3),
+                gain * (1.0 - 2.5 * t2 + 1.5 * t3),
+                gain * (-0.5 * t + t2 - 0.5 * t3),
+            ],
+        }
+    }
+    /// The line at a point from [`Line::frac`]: the same cubic as
+    /// [`Line::read`] without working out the weights.
+    #[inline]
+    pub(crate) fn read_at(&self, f: &Frac) -> f32 {
+        if self.buf.len() < 8 {
+            return 0.0;
+        }
+        let s = self.four(f.i);
+        f.w[0] * s[0] + f.w[1] * s[1] + f.w[2] * s[2] + f.w[3] * s[3]
+    }
     /// The frame `d - 1` frames before the newest (`tap(1)` is the newest).
     #[inline]
     pub(crate) fn tap(&self, d: usize) -> f32 {
-        if self.buf.is_empty() {
+        let buf = &self.buf[..];
+        let n = buf.len();
+        if n == 0 {
             return 0.0;
         }
-        let d = d.clamp(1, self.mask);
-        self.buf[self.w.wrapping_sub(d) & self.mask]
+        let d = d.clamp(1, n - 1);
+        buf[self.w.wrapping_sub(d) & (n - 1)]
     }
     pub(crate) fn clear(&mut self) {
         self.buf.fill(0.0);
@@ -281,37 +377,97 @@ impl Line {
     }
 }
 
+/// One 12 dB per octave Butterworth state-variable stage in Simper's
+/// trapezoidal form, stereo, giving its low-pass and band-pass at once
+/// (the high-pass is `x - SQRT_2 * band - low`, the all-pass
+/// `x - 2 SQRT_2 * band`), so a crossover needs three stages, not four.
+#[derive(Clone, Copy, Debug, Default)]
+struct Stage {
+    a1: f32,
+    a2: f32,
+    a3: f32,
+    ic1: [f32; 2],
+    ic2: [f32; 2],
+}
+
+/// The Butterworth stage's damping, 1 / Q.
+const BUTTER_K: f32 = std::f32::consts::SQRT_2;
+
+impl Stage {
+    fn set(&mut self, hz: f32, rate: u32) {
+        let g = (std::f32::consts::PI * hz.clamp(1.0, 0.45 * rate as f32) / rate as f32).tan();
+        self.a1 = 1.0 / (1.0 + g * (g + BUTTER_K));
+        self.a2 = g * self.a1;
+        self.a3 = g * self.a2;
+    }
+    /// `(low, band)` for one sample of channel `ch`.
+    #[inline]
+    fn run(&mut self, ch: usize, v0: f32) -> (f32, f32) {
+        let (ic1, ic2) = (self.ic1[ch], self.ic2[ch]);
+        let v3 = v0 - ic2;
+        let v1 = self.a1 * ic1 + self.a2 * v3;
+        let v2 = ic2 + self.a2 * ic1 + self.a3 * v3;
+        self.ic1[ch] = flush(2.0 * v1 - ic1);
+        self.ic2[ch] = flush(2.0 * v2 - ic2);
+        (v2, v1)
+    }
+    fn reset(&mut self) {
+        self.ic1 = [0.0; 2];
+        self.ic2 = [0.0; 2];
+    }
+}
+
 /// A fourth-order Linkwitz-Riley split of one channel into a low and a
-/// high band that sum back to an all-pass (flat in level).
+/// high band that sum back to an all-pass (flat in level): one stage
+/// gives the first low-pass and high-pass together, two more square them.
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct Crossover {
-    lp: [Svf; 2],
-    hp: [Svf; 2],
+    first: Stage,
+    lo: Stage,
+    hi: Stage,
 }
 
 impl Crossover {
     pub(crate) fn set(&mut self, hz: f32, rate: u32) {
-        let q = std::f32::consts::FRAC_1_SQRT_2;
-        for s in &mut self.lp {
-            s.set(SvfMode::LowPass, hz, q, 0.0, rate);
-        }
-        for s in &mut self.hp {
-            s.set(SvfMode::HighPass, hz, q, 0.0, rate);
+        for s in [&mut self.first, &mut self.lo, &mut self.hi] {
+            s.set(hz, rate);
         }
     }
     /// `(low, high)` for one sample of channel `ch`.
     #[inline]
     pub(crate) fn split(&mut self, ch: usize, x: f32) -> (f32, f32) {
-        let lo = self.lp[0].run(ch, x);
-        let lo = self.lp[1].run(ch, lo);
-        let hi = self.hp[0].run(ch, x);
-        let hi = self.hp[1].run(ch, hi);
-        (lo, hi)
+        let (l1, b1) = self.first.run(ch, x);
+        let h1 = x - BUTTER_K * b1 - l1;
+        let (lo, _) = self.lo.run(ch, l1);
+        let (l2, b2) = self.hi.run(ch, h1);
+        (lo, h1 - BUTTER_K * b2 - l2)
     }
     pub(crate) fn reset(&mut self) {
-        for s in self.lp.iter_mut().chain(&mut self.hp) {
+        for s in [&mut self.first, &mut self.lo, &mut self.hi] {
             s.reset();
         }
+    }
+}
+
+/// The all-pass a [`Crossover`] at the same frequency sums to (a
+/// second-order Butterworth all-pass), for keeping the phase of a band
+/// that skips that crossover in line with the bands that pass it.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct CrossoverPhase {
+    stage: Stage,
+}
+
+impl CrossoverPhase {
+    pub(crate) fn set(&mut self, hz: f32, rate: u32) {
+        self.stage.set(hz, rate);
+    }
+    #[inline]
+    pub(crate) fn run(&mut self, ch: usize, x: f32) -> f32 {
+        let (_, band) = self.stage.run(ch, x);
+        x - 2.0 * BUTTER_K * band
+    }
+    pub(crate) fn reset(&mut self) {
+        self.stage.reset();
     }
 }
 
@@ -402,6 +558,19 @@ mod tests {
     }
 
     #[test]
+    fn crossover_phase_matches_the_crossover_sum() {
+        let (mut x, mut p) = (Crossover::default(), CrossoverPhase::default());
+        x.set(2500.0, 48_000);
+        p.set(2500.0, 48_000);
+        for n in 0..4800u32 {
+            let s = kit_noise(n);
+            let (l, h) = x.split(1, s);
+            let a = p.run(1, s);
+            assert!((l + h - a).abs() < 1e-4, "{n}: {} {a}", l + h);
+        }
+    }
+
+    #[test]
     fn line_reads_whole_and_fractional() {
         let mut l = Line::new(16);
         for i in 0..10 {
@@ -412,6 +581,24 @@ mod tests {
         assert_eq!(l.tap(3), 7.0);
         assert_eq!(l.read(3.0), 6.0);
         assert!((l.read(2.5) - 6.5).abs() < 1e-5);
+    }
+
+    #[test]
+    fn a_fixed_point_reads_as_read_does() {
+        let mut l = Line::new(64);
+        for i in 0..40 {
+            l.push(kit_noise(i));
+        }
+        for d in [1.0, 1.3, 2.5, 7.75, 20.01, 59.9, 500.0, -3.0] {
+            let want = l.read(d) * 0.7;
+            let got = l.read_at(&l.frac(d, 0.7));
+            assert!((want - got).abs() < 1e-5, "{d}: {want} {got}");
+        }
+    }
+
+    fn kit_noise(i: u32) -> f32 {
+        let s = i.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+        (s >> 9) as f32 / (1u32 << 23) as f32 - 1.0
     }
 }
 

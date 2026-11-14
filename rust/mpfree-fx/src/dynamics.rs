@@ -9,7 +9,7 @@
 use mpfree_node::{Ctx, Kind, NodeInfo, ParamInfo, Smooth};
 
 use crate::kit::{
-    self, meter, node_impl, param, Choice, Db, Hz, Linear, Log, Ms, Percent, Toggle, NONE,
+    self, meter, node_impl, param, Choice, Db, Glide, Hz, Linear, Log, Ms, Percent, Toggle, NONE,
 };
 use crate::svf::{Svf, SvfMode};
 use crate::{
@@ -144,8 +144,11 @@ pub struct Limiter {
     box_buf: Vec<f32>,
     box_pos: usize,
     box_sum: f64,
-    /// Input history for the detector (newest last) and the audio delay.
-    hist: [[f32; TP_TAPS]; 2],
+    /// Input history for the detector, written twice so the last
+    /// TP_TAPS frames always sit side by side from `hist_at` (oldest
+    /// first), and the audio delay.
+    hist: [[f32; 2 * TP_TAPS]; 2],
+    hist_at: usize,
     tp: [[f32; TP_TAPS]; 3],
     delay: [kit::Line; 2],
     frame: u64,
@@ -178,7 +181,8 @@ impl Limiter {
             box_buf: Vec::new(),
             box_pos: 0,
             box_sum: 0.0,
-            hist: [[0.0; TP_TAPS]; 2],
+            hist: [[0.0; 2 * TP_TAPS]; 2],
+            hist_at: 0,
             tp: tp_phases(),
             delay: [kit::Line::default(), kit::Line::default()],
             frame: 0,
@@ -215,7 +219,7 @@ impl Limiter {
     /// points between it and the next sample when True peak is on).
     #[inline]
     fn level(&self, ch: usize, tp: bool) -> f32 {
-        let h = &self.hist[ch];
+        let h = &self.hist[ch][self.hist_at..self.hist_at + TP_TAPS];
         let mut p = h[TP_LAG - 1].abs();
         if tp {
             for ph in &self.tp {
@@ -231,22 +235,25 @@ impl Limiter {
 
     fn push_min(&mut self, g: f32) {
         let cap = self.dq.len();
+        // Indices wrap by one subtraction: a `%` is a library call on
+        // the MPC's ARM, which has no divide instruction.
+        let wrap = |i: usize| if i >= cap { i - cap } else { i };
         // Drop values no smaller than the new one from the back.
         while self.dq_len > 0 {
-            let back = (self.dq_head + self.dq_len - 1) % cap;
+            let back = wrap(self.dq_head + self.dq_len - 1);
             if self.dq[back].1 >= g {
                 self.dq_len -= 1;
             } else {
                 break;
             }
         }
-        let at = (self.dq_head + self.dq_len) % cap;
+        let at = wrap(self.dq_head + self.dq_len);
         self.dq[at] = (self.frame, g);
         self.dq_len += 1;
         // Drop the front once it leaves the window.
         let oldest = (self.frame + 1).saturating_sub(self.w as u64);
         while self.dq[self.dq_head].0 < oldest {
-            self.dq_head = (self.dq_head + 1) % cap;
+            self.dq_head = wrap(self.dq_head + 1);
             self.dq_len -= 1;
         }
     }
@@ -257,13 +264,17 @@ impl Limiter {
         let auto = self.v[limiter::AUTO as usize] >= 0.5;
         let inv_w = 1.0 / self.w as f64;
         for i in 0..l.len() {
-            let gain = self.gain.next();
-            let ceiling = self.ceiling.next();
+            let gain = self.gain.glide();
+            let ceiling = self.ceiling.glide();
             let x = [l[i] * gain, r[i] * gain];
             for ch in 0..2 {
-                self.hist[ch].copy_within(1..TP_TAPS, 0);
-                self.hist[ch][TP_TAPS - 1] = x[ch];
+                self.hist[ch][self.hist_at] = x[ch];
+                self.hist[ch][self.hist_at + TP_TAPS] = x[ch];
                 self.delay[ch].push(x[ch]);
+            }
+            self.hist_at += 1;
+            if self.hist_at == TP_TAPS {
+                self.hist_at = 0;
             }
             let peak = self.level(0, tp).max(self.level(1, tp));
             let want = if peak > ceiling { ceiling / peak } else { 1.0 };
@@ -290,7 +301,10 @@ impl Limiter {
             let m = self.dq[self.dq_head].1;
             self.box_sum += f64::from(m) - f64::from(self.box_buf[self.box_pos]);
             self.box_buf[self.box_pos] = m;
-            self.box_pos = (self.box_pos + 1) % self.w;
+            self.box_pos += 1;
+            if self.box_pos >= self.w {
+                self.box_pos = 0;
+            }
             self.frame += 1;
             let g = ((self.box_sum * inv_w) as f32).min(1.0);
             self.least = self.least.min(g);
@@ -324,7 +338,8 @@ impl Limiter {
         self.box_buf.fill(1.0);
         self.box_pos = 0;
         self.box_sum = self.w as f64;
-        self.hist = [[0.0; TP_TAPS]; 2];
+        self.hist = [[0.0; 2 * TP_TAPS]; 2];
+        self.hist_at = 0;
         for d in &mut self.delay {
             d.clear();
         }
@@ -746,7 +761,7 @@ impl DeEsser {
                 self.set_filters(hz);
             }
             self.tick = (self.tick + 1) & 15;
-            self.freq.next();
+            self.freq.glide();
             let key = 0.5 * (l[i] + r[i]);
             let band = self.detect.run(0, key);
             let b = fast_level_db(self.band_env.run(band));
@@ -929,7 +944,7 @@ pub struct MultibandCompressor {
     lo_x: kit::Crossover,
     hi_x: kit::Crossover,
     /// The low band's all-pass (the upper crossover's sum).
-    lo_ap: kit::Crossover,
+    lo_ap: kit::CrossoverPhase,
     x_lo: Smooth,
     x_hi: Smooth,
     tick: u32,
@@ -954,7 +969,7 @@ impl MultibandCompressor {
             rate: 48_000,
             lo_x: kit::Crossover::default(),
             hi_x: kit::Crossover::default(),
-            lo_ap: kit::Crossover::default(),
+            lo_ap: kit::CrossoverPhase::default(),
             x_lo: Smooth::new(v[0].log2()),
             x_hi: Smooth::new(v[1].log2()),
             tick: 0,
@@ -1009,15 +1024,14 @@ impl MultibandCompressor {
                 self.set_crossovers();
             }
             self.tick = (self.tick + 1) & 15;
-            self.x_lo.next();
-            self.x_hi.next();
+            self.x_lo.glide();
+            self.x_hi.glide();
             let x = [l[i], r[i]];
             let mut bands = [[0.0f32; 2]; 3];
             for ch in 0..2 {
                 let (lo, rest) = self.lo_x.split(ch, x[ch]);
                 let (mid, hi) = self.hi_x.split(ch, rest);
-                let (a, b) = self.lo_ap.split(ch, lo);
-                bands[0][ch] = a + b;
+                bands[0][ch] = self.lo_ap.run(ch, lo);
                 bands[1][ch] = mid;
                 bands[2][ch] = hi;
             }
@@ -1027,14 +1041,14 @@ impl MultibandCompressor {
                 let db = fast_level_db(self.env[b].run(level));
                 let red = knee_reduction(db - thr[b], ratio[b], 6.0);
                 self.most[b] = self.most[b].max(red);
-                let g = fast_db_to_gain(-red) * self.makeup[b].next();
+                let g = fast_db_to_gain(-red) * self.makeup[b].glide();
                 if solo == 0 || solo == b + 1 {
                     y[0] += bands[b][0] * g;
                     y[1] += bands[b][1] * g;
                 }
             }
-            let mix = self.mix.next();
-            let out = self.out.next();
+            let mix = self.mix.glide();
+            let out = self.out.glide();
             // Dry is the input itself: the mix is for parallel squash, so a
             // little phase difference between the two is part of the sound.
             l[i] = lerp(x[0], y[0], mix) * out;
