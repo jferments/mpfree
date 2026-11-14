@@ -350,10 +350,15 @@ impl DebugPages {
         }
     }
 
-    /// The app's resident memory and the system's total, from the last
-    /// /proc sample (debug mode: every 2 s), in kB.
-    pub fn memory_kb(&self) -> (Option<u64>, Option<u64>) {
-        (self.proc_view.rss_kb, self.proc_view.mem_total_kb)
+    /// The app's resident memory, the system's total and what is free
+    /// for new loads, from the last /proc sample (debug mode: every 2 s),
+    /// in kB.
+    pub fn memory_kb(&self) -> (Option<u64>, Option<u64>, Option<u64>) {
+        (
+            self.proc_view.rss_kb,
+            self.proc_view.mem_total_kb,
+            self.proc_view.mem_available_kb,
+        )
     }
 
     pub fn set_proc(&mut self, ui: &mut Ui, v: ProcView) {
