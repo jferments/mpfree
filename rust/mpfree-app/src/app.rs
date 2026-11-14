@@ -857,6 +857,12 @@ pub enum Effect {
         knob: usize,
         delta: i32,
     },
+    /// The wheel on the chain editor: the effect picker's tiles (SHIFT:
+    /// its sections) while it is open, else Q-Link 1 as [`Effect::ChainTurn`].
+    ChainWheel(i32),
+    /// The wheel's push on the chain editor: the picker's presets, then an
+    /// add.
+    ChainPush,
     /// Q-LINK: the Q-Link column's next bank.
     QLinkBank,
     /// SHIFT + wheel, or SHIFT + - / +, on the Synth page: the next or
@@ -2126,7 +2132,8 @@ impl App {
             // or on the I/O view the section's selection.
             View::Mixer => vec![Effect::MixerWheel(delta)],
             // The chain editor and the macros panel: the wheel is Q-Link 1.
-            View::Chain | View::Macros => vec![Effect::ChainTurn { knob: 0, delta }],
+            View::Chain => vec![Effect::ChainWheel(delta)],
+            View::Macros => vec![Effect::ChainTurn { knob: 0, delta }],
             // On the Debug tab SHIFT + wheel picks the page; on Map controls
             // the wheel picks the control.
             View::Debug
@@ -3099,6 +3106,9 @@ impl App {
         if self.overlay {
             // A list or pad over the page: the push is its Enter.
             return vec![Effect::Rows(RowKey::Editing(true))];
+        }
+        if !self.in_menu() && self.view == View::Chain {
+            return vec![Effect::ChainPush];
         }
         if !self.in_menu() {
             // A page with rows: open the highlighted row for the wheel, or
@@ -4237,6 +4247,17 @@ mod tests {
         // A menu's own rows are as before.
         press(&mut app, MENU);
         assert!(matches!(app.wheel(1).last(), Some(Effect::Menu(_))));
+    }
+
+    #[test]
+    fn the_chain_editor_hands_the_wheel_and_its_push_to_the_gui() {
+        let mut app = ready();
+        app.open_chain();
+        assert_eq!(app.view(), View::Chain);
+        // The screen gives them to the picker while it is open, else the
+        // wheel is Q-Link 1 (gui.rs).
+        assert_eq!(app.wheel(2), vec![Effect::ChainWheel(2)]);
+        assert_eq!(app.wheel_push(), vec![Effect::ChainPush]);
     }
 
     #[test]
