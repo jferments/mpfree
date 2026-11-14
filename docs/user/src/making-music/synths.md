@@ -69,8 +69,9 @@ Coming:
 - **The tiles** are the controls on this page. Drag a tile up or down to change it. Or pick a tile with the data wheel (or a tap) and press **–** or **+**; push the wheel and turning it changes the tile picked (outlined more strongly) until you push it again.
 - **The Q-Links** turn the four tiles marked Q1 to Q4. Each preset chooses which four, so the knobs always do something useful for that sound. Each Q-Link has its own colour, the same on its tile's mark and knob and in the Q-Link row along the bottom.
 - **The presets** are listed on the right. Tap one to load it. Once you change anything, the preset is marked **edited**.
+- **UNDO** takes back the last knob you turned on this tab (a run of turns of one knob is one UNDO), and **SHIFT + UNDO** puts it back. Loading a preset starts the list again.
 
-**Drive**, on the Filter page of Poly and Wavetable, saturates the sound before the filter. It keeps the sound at about the same level as you turn it up (within about 2 dB on every preset), so it adds grit and thickness, not volume; turn up the synth's level for that.
+**Drive** and **Distortion**, on the Filter page of Poly and Wavetable (Q-Links 3 and 4 there), both add grit. **Drive** pushes the sound into the filter, as on an analog synth: warm, and the filter smooths what it adds, so with the filter nearly closed you hear little of it. **Distortion** comes after the filter, so you hear its grit even with the filter almost closed (Grit Bass uses it). Both keep the sound at about the same level as you turn them up (within about 2 dB on every preset), so they add grit and thickness, not volume; turn up the synth's level for that. Pad pressure can push either one.
 
 Each synth has its own pages. FM has Algo, Mod and Pressure, a page for each of its six operators and three keyboard-scaling pages; Drums has a page for each of its 16 pads plus a Kit page.
 

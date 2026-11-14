@@ -1,5 +1,7 @@
 //! The few C library calls this program needs that std does not offer:
-//! ioctl (ALSA), fcntl (clear O_NONBLOCK), sched_setscheduler and mlockall.
+//! ioctl (ALSA), fcntl (clear O_NONBLOCK), sched_setscheduler, mlockall,
+//! and a stop handler (signal, unlink, raise) for the safe start
+//! ([`remove_on_stop`], crash.rs).
 //!
 //! Every ioctl request number and structure size here is for the MPC One's
 //! 32-bit ARM (armv7, EABI5 hard-float). They were checked against the
@@ -9,9 +11,14 @@
 
 #![allow(unsafe_code)]
 
+use std::ffi::CString;
 use std::io;
-use std::os::raw::{c_int, c_ulong};
+use std::os::raw::{c_char, c_int, c_ulong};
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::io::RawFd;
+use std::path::Path;
+use std::ptr;
+use std::sync::atomic::{AtomicPtr, Ordering};
 
 pub const IS_DEVICE_ABI: bool = cfg!(target_pointer_width = "32");
 
@@ -36,7 +43,19 @@ extern "C" {
     fn fcntl(fd: c_int, cmd: c_int, ...) -> c_int;
     fn sched_setscheduler(pid: c_int, policy: c_int, param: *const SchedParam) -> c_int;
     fn mlockall(flags: c_int) -> c_int;
+    // A handler is a pointer-sized value: SIG_DFL (0), SIG_ERR (-1) or a
+    // function's address.
+    fn signal(sig: c_int, handler: usize) -> usize;
+    fn raise(sig: c_int) -> c_int;
+    fn unlink(path: *const c_char) -> c_int;
 }
+
+// The same numbers on 32-bit ARM and x86-64 Linux (signal(7)).
+const SIGHUP: c_int = 1;
+const SIGINT: c_int = 2;
+const SIGTERM: c_int = 15;
+const SIG_DFL: usize = 0;
+const SIG_ERR: usize = usize::MAX;
 
 fn device_abi() -> io::Result<()> {
     if IS_DEVICE_ABI {
@@ -135,6 +154,50 @@ pub fn lock_memory() -> io::Result<()> {
         return Err(io::Error::last_os_error());
     }
     Ok(())
+}
+
+/// The file the stop handler removes: null, or a NUL-terminated C string
+/// that is never freed (a handler may be reading it when it is replaced).
+static ON_STOP: AtomicPtr<c_char> = AtomicPtr::new(ptr::null_mut());
+
+/// The stop handler: only async-signal-safe calls (unlink, signal, raise).
+extern "C" fn on_stop(sig: c_int) {
+    let path = ON_STOP.load(Ordering::Acquire);
+    // SAFETY: `path` is null or a C string that lives as long as the
+    // program; the signal number is the one this handler was called for.
+    unsafe {
+        if !path.is_null() {
+            unlink(path);
+        }
+        signal(sig, SIG_DFL);
+        raise(sig);
+    }
+}
+
+/// From now on a stop from outside (SIGTERM as `systemctl stop` sends it,
+/// SIGINT from Ctrl-C, SIGHUP when the terminal goes) first removes `path`,
+/// then ends the program as the signal always did: its default action,
+/// raised again, so the exit status is the same as without the handler.
+pub fn remove_on_stop(path: &Path) -> io::Result<()> {
+    let c = CString::new(path.as_os_str().as_bytes())
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
+    // The old string (if any) is leaked on purpose: see ON_STOP.
+    ON_STOP.store(c.into_raw(), Ordering::Release);
+    for sig in [SIGTERM, SIGINT, SIGHUP] {
+        let handler = on_stop as extern "C" fn(c_int) as usize;
+        // SAFETY: the handler only makes async-signal-safe calls.
+        if unsafe { signal(sig, handler) } == SIG_ERR {
+            return Err(io::Error::last_os_error());
+        }
+    }
+    Ok(())
+}
+
+/// A stop no longer removes anything (the run ended and removed the file
+/// itself). The handler stays and still ends the program as the signal
+/// would.
+pub fn forget_on_stop() {
+    ON_STOP.store(ptr::null_mut(), Ordering::Release);
 }
 
 /// Tests only: a pass-through global allocator that counts the calls made

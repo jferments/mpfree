@@ -226,12 +226,15 @@ pub struct TakeRow {
     pub at: Option<(usize, usize)>,
     pub added: usize,
     pub erased: usize,
+    /// It took a clip out of its slot (ERASE + a clip).
+    pub deleted: bool,
 }
 
 impl TakeRow {
     pub fn of(t: &Take) -> TakeRow {
         let made = t.made.first().map(|(track, slot, _)| (*track, *slot));
-        let at = made.or_else(|| {
+        let removed = t.removed.first().map(|(track, slot, _)| (*track, *slot));
+        let at = made.or(removed).or_else(|| {
             t.added
                 .first()
                 .or(t.erased.first())
@@ -246,12 +249,15 @@ impl TakeRow {
             at,
             added,
             erased: t.erased.len(),
+            deleted: removed.is_some(),
         }
     }
 
-    /// What it is: "take", "capture" or "edit".
+    /// What it is: "take", "capture", "edit" or "delete".
     pub fn word(&self) -> &'static str {
-        if self.captured {
+        if self.deleted {
+            "delete"
+        } else if self.captured {
             "capture"
         } else if self.edited {
             "edit"
@@ -532,6 +538,12 @@ pub enum TimeAction {
     Uncue(usize),
     /// Make a clip in this empty slot, launch it and arm its track.
     NewClip {
+        track: usize,
+        slot: usize,
+    },
+    /// ERASE + a clip: take the clip out of its slot, as a take that UNDO
+    /// puts back (Jay after live test 3).
+    DeleteClip {
         track: usize,
         slot: usize,
     },
@@ -1110,7 +1122,7 @@ pub fn bars_label(bars: i64) -> String {
     }
 }
 
-fn take_title(st: &TimeState, row: &TakeRow) -> String {
+pub fn take_title(st: &TimeState, row: &TakeRow) -> String {
     let mut word = row.word().to_string();
     word[..1].make_ascii_uppercase();
     match row.at {
@@ -1125,6 +1137,9 @@ fn take_title(st: &TimeState, row: &TakeRow) -> String {
 }
 
 fn take_detail(row: &TakeRow) -> String {
+    if row.deleted {
+        return "clip".into();
+    }
     let new = if row.made { "new " } else { "" };
     if row.erased > 0 {
         format!("{new}+{} −{}", row.added, row.erased)
@@ -2407,6 +2422,7 @@ mod tests {
             at: Some((0, 0)),
             added: 4,
             erased: 0,
+            deleted: false,
         };
         let mut st = st;
         st.done = vec![take];
@@ -2740,6 +2756,7 @@ mod tests {
             at: Some((2, 0)),
             added: n as usize,
             erased: 0,
+            deleted: false,
         };
         st.done = vec![row(1), row(2)];
         st.undone = vec![row(4), row(3)];
@@ -2768,6 +2785,7 @@ mod tests {
             at: Some((0, 3)),
             added: 9,
             erased: 0,
+            deleted: false,
         };
         let (items, _) = take_items(&st);
         assert_eq!(
@@ -2786,9 +2804,23 @@ mod tests {
             at: Some((1, 0)),
             added: 1,
             erased: 1,
+            deleted: false,
         };
         assert_eq!(take_items(&st).0[2].title, "Edit 5 · Bass / 1");
         assert_eq!(st.done[1].short(), "edit 5");
+        // ERASE + a clip: a delete, named by where the clip was.
+        st.done[1] = TakeRow {
+            number: 6,
+            deleted: true,
+            at: Some((1, 0)),
+            ..st.done[1]
+        };
+        let (items, _) = take_items(&st);
+        assert_eq!(
+            (items[2].title.as_str(), items[2].detail.as_str()),
+            ("Delete 6 · Bass / 1", "clip")
+        );
+        assert_eq!(take_title(&st, &st.done[1]), "Delete 6 · Bass / 1");
         assert_eq!(
             (bars_label(1), bars_label(4)),
             ("1 bar".to_string(), "4 bars".to_string())
