@@ -43,7 +43,7 @@ use mpfree_arp::scale::pads::{
 };
 use mpfree_arp::scale::{Scale, NOTE_NAMES};
 use mpfree_instruments::preset::{engine_of, Error as PresetError, Preset as SoundPreset};
-use mpfree_node::{Ctx, Node, NodeEvent, ParamInfo, Timed};
+use mpfree_node::{Ctx, Cull, Node, NodeEvent, ParamInfo, Timed};
 use mpfree_synth::drum_params;
 use mpfree_synth::fm_params::FmPreset;
 use mpfree_synth::{Analog, Drawbar, Drums, Fm, Keys, Pluck, Poly, Preset, Squelch, Wavetable};
@@ -1305,6 +1305,33 @@ impl Synth {
     /// Voices sounding or fading, on every engine.
     pub fn active_voices(&self) -> usize {
         Engine::ALL.iter().map(|&e| self.voices_of(e)).sum()
+    }
+
+    /// Load shedding (`shed.rs`): the voice to give up first across the
+    /// engines (the least audible, [`Cull::audibility`]), with its engine.
+    /// No allocation.
+    pub fn cull_candidate(&self) -> Option<(Engine, Cull)> {
+        Engine::ALL.into_iter().fold(None, |best, e| {
+            Cull::first(best, self.node_of(e).cull_candidate().map(|c| (e, c)))
+        })
+    }
+
+    /// Gives up the voice engine `e` names, with its steal's short fade.
+    /// True if it did. No allocation.
+    pub fn cull(&mut self, e: Engine) -> bool {
+        match e {
+            Engine::Poly => self.poly.cull(),
+            Engine::Fm => self.fm.cull(),
+            Engine::Drums => self.drums.cull(),
+            Engine::Pluck => self.pluck.cull(),
+            Engine::Wavetable => self.wt.cull(),
+            Engine::Keys => self.keys.cull(),
+            // The organ's wheels turn whatever the keys do, so a key given
+            // up saves little; Squelch is one voice. Neither offers one.
+            Engine::Drawbar => self.drawbar.cull(),
+            Engine::Squelch => self.squelch.cull(),
+            Engine::Analog => self.analog.cull(),
+        }
     }
 
     pub fn counters(&self) -> Counters {

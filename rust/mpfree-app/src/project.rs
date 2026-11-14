@@ -627,6 +627,17 @@ fn make_plugin(
     extras: &[(String, String)],
     plugins: &crate::plugins::Plugins,
 ) -> Result<Box<dyn Node>, String> {
+    check_plugin(id, extras, plugins)?;
+    plugins.make(id)
+}
+
+/// Whether plugin `id` is on this stick; if not, which file the project
+/// names.
+fn check_plugin(
+    id: &str,
+    extras: &[(String, String)],
+    plugins: &crate::plugins::Plugins,
+) -> Result<(), String> {
     if plugins.find(id).is_none() {
         let file = extras
             .iter()
@@ -636,7 +647,7 @@ fn make_plugin(
             "the plugin{file} isn't in files/plugins/ on this stick"
         ));
     }
-    plugins.make(id)
+    Ok(())
 }
 
 /// Reads the mixer part and builds its effects (allocates: not on the
@@ -838,10 +849,12 @@ pub fn instruments_load(
         _ => return Err(format!("not an {INSTRUMENTS_FORMAT} part")),
     }
     let mut notes = Vec::new();
-    let mut made: Vec<(usize, Box<dyn Node>)> = Vec::new();
+    // A track, its node and its plugin instance (0 for an engine).
+    type Made = (usize, Box<dyn Node>, u64);
+    let mut made: Vec<Made> = Vec::new();
     // The track being read: Some(None) while it is left out (its params
     // and state are skipped too).
-    let mut open: Option<Option<(usize, Box<dyn Node>)>> = None;
+    let mut open: Option<Option<Made>> = None;
     for (i, raw) in lines {
         let line = raw.trim();
         if line.is_empty() || line.starts_with('#') {
@@ -880,7 +893,7 @@ pub fn instruments_load(
                         None
                     }
                     Some(t) => match make_instrument_node(id, &extras, rate, plugins) {
-                        Ok(node) => Some((t, node)),
+                        Ok((node, instance)) => Some((t, node, instance)),
                         Err(e) => {
                             notes.push(format!(
                                 "project: track {n}'s instrument {id} is left out: {e}; the track plays the kit"
@@ -896,7 +909,7 @@ pub fn instruments_load(
                 };
                 let id: u16 = w.next().and_then(|x| x.parse().ok()).ok_or_else(bad)?;
                 let v: f32 = w.next().and_then(|x| x.parse().ok()).ok_or_else(bad)?;
-                if let Some((_, node)) = o.as_mut() {
+                if let Some((_, node, _)) = o.as_mut() {
                     if v.is_finite() && node.params().iter().any(|p| p.id == id && !p.readonly) {
                         node.set_param(id, v);
                     }
@@ -907,7 +920,7 @@ pub fn instruments_load(
                     return Err(bad());
                 };
                 let bytes = unbase64(w.next().unwrap_or("")).ok_or_else(bad)?;
-                if let Some((t, node)) = o.as_mut() {
+                if let Some((t, node, _)) = o.as_mut() {
                     if let Err(e) = node.load_state(&bytes) {
                         notes.push(format!(
                             "project: track {}'s instrument {} didn't take its state ({e})",
@@ -926,10 +939,11 @@ pub fn instruments_load(
     }
     let slots = made
         .into_iter()
-        .map(|(track, node)| {
+        .map(|(track, node, instance)| {
             let held = crate::instruments::Held {
                 id: node.info().id,
                 name: node.info().name,
+                instance,
             };
             Some(Loaded {
                 track,
@@ -942,17 +956,22 @@ pub fn instruments_load(
 }
 
 /// A track's instrument a project names: an engine at its defaults (the
-/// part's params follow) or a plugin through the rack.
+/// part's params follow) or a plugin through the rack, with its instance
+/// there (0 for an engine), which its presets load into.
 fn make_instrument_node(
     id: &str,
     extras: &[(String, String)],
     rate: u32,
     plugins: &crate::plugins::Plugins,
-) -> Result<Box<dyn Node>, String> {
+) -> Result<(Box<dyn Node>, u64), String> {
     if crate::plugins::Plugins::is_plugin(id) {
-        return make_plugin(id, extras, plugins);
+        check_plugin(id, extras, plugins)?;
+        let (instance, node) = plugins.make_instance(id)?;
+        return Ok((node, instance));
     }
-    crate::synth::engine_node(id, rate).ok_or_else(|| "this build can't make it".to_string())
+    crate::synth::engine_node(id, rate)
+        .map(|n| (n, 0))
+        .ok_or_else(|| "this build can't make it".to_string())
 }
 
 const B64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";

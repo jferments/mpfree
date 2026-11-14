@@ -837,6 +837,34 @@ pub enum RowKey {
     Editing(bool),
 }
 
+/// Jay's wheel navigation on every page (13 Nov, after live test 3): a
+/// tap puts an outline on a control, the wheel moves it from control to
+/// control in reading order, through the panel and on into the next, and
+/// the wheel's push does what a tap does. On a value (a fader, a knob card)
+/// the push grabs it: the wheel then turns it until the next push. - and +
+/// step an outlined value, or move the outline. The screen keeps the
+/// outline (it knows the controls); [`outlined`] says on which pages.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Nav {
+    /// The wheel turned: move the outline, or turn the grabbed value.
+    Turn(i32),
+    /// The wheel's push: press the outlined control, or grab or let go a
+    /// value.
+    Push,
+    /// - or +: step the outlined value, or move the outline.
+    Step(i32),
+}
+
+/// The pages where the wheel moves an outline between controls ([`Nav`]).
+/// The pages with rows (Arrange, Synth, Sample, Pads), the menus, the Arp
+/// panel, the workspace and the Dev tab keep the wheel's own jobs there.
+pub fn outlined(v: View) -> bool {
+    matches!(
+        v,
+        View::Play | View::Looper | View::Mixer | View::Chain | View::Macros
+    )
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum Effect {
     Show(View),
@@ -848,8 +876,8 @@ pub enum Effect {
     Light(u8, u8),
     /// Stop every sound now.
     StopSounds,
-    /// Move the kit by this many places.
-    Kit(i32),
+    /// The wheel, its push, - or + for the outline ([`Nav`]).
+    Nav(Nav),
     /// SHIFT + wheel on Play: move the synth's pads by octaves (the kit, as
     /// before, when a drum kit is playing).
     Octave(i32),
@@ -877,8 +905,7 @@ pub enum Effect {
     /// view it moves the section's selection.
     MixerWheel(i32),
     /// While the mixer is open: - (-1) or + (1). On the I/O view it steps
-    /// the section's selected row; on a strips view it steps the kit, as
-    /// [`Effect::Kit`].
+    /// the section's selected row; on a strips view it is [`Nav::Step`].
     MixerStep(i32),
     /// While the chain editor or the macros panel is open: Q-Link `knob`
     /// (or the wheel, as Q-Link 1) turned by `delta`, for the knobs the
@@ -1170,6 +1197,8 @@ pub struct App {
     /// A list or pad over the page is open (the number pad, the undo
     /// history): the wheel, its push and - / + go to it.
     overlay: bool,
+    /// The screen shows the wheel's outline on a control ([`Nav`]).
+    outline: bool,
     /// The synth's pad layout while the synth is on the pads
     /// ([`App::set_pad_layout`]): the pads then feed the arp the layout's
     /// notes, and its events carry notes rather than pad slots.
@@ -1306,6 +1335,7 @@ impl App {
             lights_shown: Self::startup_transport_lights(),
             undo_ready: false,
             overlay: false,
+            outline: false,
             pad_layout: None,
             pad_pressed: [PadNotes::default(); 16],
             note_holds: [0; 128],
@@ -1403,6 +1433,13 @@ impl App {
     /// ([`crate::gui::FromUi::Overlay`]).
     pub fn set_overlay(&mut self, on: bool) {
         self.overlay = on;
+    }
+
+    /// The screen says whether the wheel's outline is on a control: on the
+    /// mixer, the chain editor and the macros panel the wheel then moves it
+    /// (and turns their Q-Link 1 when there is none).
+    pub fn set_outline(&mut self, shown: bool) {
+        self.outline = shown;
     }
 
     pub fn transport_lights(&mut self, now: TransportLights, t: f64) -> Vec<Effect> {
@@ -1958,10 +1995,12 @@ impl App {
             } else if self.has_rows() {
                 // - / + step the highlighted row, as in the menus.
                 fx.push(Effect::Rows(RowKey::Step(d)));
-            } else if self.view == View::Mixer {
+            } else if self.view == View::Mixer && !self.outline {
+                // The I/O view's row; on the strips the outline.
                 fx.push(Effect::MixerStep(d));
-            } else {
-                fx.push(Effect::Kit(d));
+            } else if outlined(self.view) {
+                // The outlined value, or the outline (no longer the kit).
+                fx.push(Effect::Nav(Nav::Step(d)));
             }
         }
         fx
@@ -2190,7 +2229,8 @@ impl App {
         Some(Effect::Light(note, if on { LIGHT_ON } else { LIGHT_OFF }))
     }
 
-    /// The data wheel: values in a menu, kits elsewhere.
+    /// The data wheel: rows in a menu or on a page with rows, the outline
+    /// on the pages [`outlined`] names ([`Nav`]), each other page's own job.
     pub fn wheel(&mut self, delta: i32) -> Vec<Effect> {
         match self.view {
             View::Guide | View::System => Vec::new(),
@@ -2205,6 +2245,21 @@ impl App {
             _ if self.in_menu() => {
                 let last = (self.items().len() as i32 - 1).max(0);
                 self.select((self.selected as i32 + delta).clamp(0, last) as usize)
+            }
+            // The outline (Jay, 13 Nov): on Play and the Looper tab the
+            // wheel always moves it (it no longer steps the kit: the PAD
+            // BANK buttons do); on the mixer, the chain editor and the
+            // macros panel once a tap or a push has put it on a control.
+            // SHIFT + wheel and NOTE REPEAT keep their jobs.
+            // (The 16 Levels panel keeps the wheel for its kinds.)
+            View::Play if !self.shift && !self.repeat_held && !self.levels_open => {
+                vec![Effect::Nav(Nav::Turn(delta))]
+            }
+            View::Looper if !self.shift && !self.repeat_held => {
+                vec![Effect::Nav(Nav::Turn(delta))]
+            }
+            v if outlined(v) && self.outline && !self.shift && !self.repeat_held => {
+                vec![Effect::Nav(Nav::Turn(delta))]
             }
             View::Pattern => vec![Effect::WorkspaceWheel(delta)],
             // The mixer: the wheel is the selected strip's volume (Q-Link 1),
@@ -2260,7 +2315,7 @@ impl App {
                 })]
             }
             View::Play if self.shift => vec![Effect::Octave(delta.signum())],
-            _ => vec![Effect::Kit(delta)],
+            _ => Vec::new(),
         }
     }
 
@@ -3206,6 +3261,10 @@ impl App {
                 self.page_editing = !self.page_editing;
                 return vec![Effect::Rows(RowKey::Editing(self.page_editing))];
             }
+            // The outlined control: pressed, or grabbed (a value).
+            if outlined(self.view) && !self.repeat_held {
+                return vec![Effect::Nav(Nav::Push)];
+            }
             return Vec::new();
         }
         if self.menu_editing {
@@ -3996,10 +4055,10 @@ mod tests {
         app.select(row(&app, Item::SystemInfo));
         let fx = press(&mut app, PUSH);
         assert!(fx.contains(&Effect::Show(View::System)), "{fx:?}");
-        // Off the menus the push does nothing yet.
+        // Off the menus, on Play, the push presses the outlined control.
         press(&mut app, MENU);
         app.show(View::Play);
-        assert!(press(&mut app, PUSH).is_empty());
+        assert_eq!(press(&mut app, PUSH), vec![Effect::Nav(Nav::Push)]);
     }
 
     #[test]
@@ -4337,7 +4396,7 @@ mod tests {
         press(&mut app, 42);
         let fx = app.open_tab(View::Play);
         assert!(fx.contains(&Effect::Rows(RowKey::Editing(false))), "{fx:?}");
-        assert_eq!(app.wheel(1), vec![Effect::Kit(1)]);
+        assert_eq!(app.wheel(1), vec![Effect::Nav(Nav::Turn(1))]);
         app.open_tab(View::Sample);
         assert_eq!(app.wheel(1), pick(1));
         // A menu's own rows are as before.
@@ -4363,7 +4422,7 @@ mod tests {
         app.button(button::SHIFT, true, 0.0);
         assert_eq!(app.wheel(3), vec![Effect::Octave(1)]);
         app.button(button::SHIFT, false, 0.0);
-        assert_eq!(app.wheel(-2), vec![Effect::Kit(-2)]);
+        assert_eq!(app.wheel(-2), vec![Effect::Nav(Nav::Turn(-2))]);
         assert_eq!(app.open_tab(View::Synth), vec![Effect::Show(View::Synth)]);
         assert_eq!(app.view(), View::Synth);
         // The wheel picks tiles (RowKey; see the wheel navigation test).
@@ -4834,7 +4893,7 @@ mod tests {
         app.open_tab(View::Play);
         app.map.minus = Some(40);
         app.map.plus = Some(41);
-        assert_eq!(app.wheel(1), vec![Effect::Kit(1)]);
+        assert_eq!(app.wheel(1), vec![Effect::Nav(Nav::Turn(1))]);
         app.set_overlay(true);
         assert_eq!(app.wheel(2), vec![Effect::Rows(RowKey::Pick(2))]);
         assert_eq!(app.wheel_push(), vec![Effect::Rows(RowKey::Editing(true))]);
@@ -4843,7 +4902,7 @@ mod tests {
         // Another page: the screen closes it, so the wheel is the page's.
         app.open_tab(View::Arrange);
         app.open_tab(View::Play);
-        assert_eq!(app.wheel(1), vec![Effect::Kit(1)]);
+        assert_eq!(app.wheel(1), vec![Effect::Nav(Nav::Turn(1))]);
         // UNDO down and up, here and on the Looper tab.
         assert_eq!(
             app.button(92, true, 0.0),
@@ -5019,9 +5078,10 @@ mod tests {
         app.open_tab(View::Debug);
         press(&mut app, MENU);
         assert!(matches!(app.menu_view(), Effect::Menu(m) if m.title == "MIDI log options"));
-        // The wheel picks kits outside menus.
+        // Outside the menu the Debug page's wheel has no job (it no
+        // longer steps the kit: the PAD BANK buttons do).
         press(&mut app, MENU);
-        assert_eq!(app.wheel(-2), vec![Effect::Kit(-2)]);
+        assert_eq!(app.wheel(-2), Vec::<Effect>::new());
     }
 
     #[test]
@@ -5338,8 +5398,8 @@ mod tests {
         assert_eq!(app.eng().settings().mode, Mode::Direct);
         assert_eq!(
             app.wheel(1),
-            vec![Effect::Kit(1)],
-            "the wheel is the kit again"
+            vec![Effect::Nav(Nav::Turn(1))],
+            "the wheel moves the outline again"
         );
         // Held again, a while later: the arp, not Repeat.
         app.pad_down(0, 100);
@@ -6408,9 +6468,59 @@ mod tests {
         app.open_tab(View::Play);
         assert_eq!(
             app.wheel(1),
-            vec![Effect::Kit(1)],
-            "the wheel picks kits on Play"
+            vec![Effect::Nav(Nav::Turn(1))],
+            "the wheel moves the outline on Play"
         );
+    }
+
+    /// Jay's wheel navigation (13 Nov): on Play and the Looper tab the
+    /// wheel, its push and - / + go to the outline, never to the kit; on
+    /// the mixer and the chain editor once the outline is on a control.
+    #[test]
+    fn the_wheel_moves_the_outline_and_kits_stay_on_the_pad_bank_buttons() {
+        let mut app = ready();
+        let nav = |n| vec![Effect::Nav(n)];
+        for v in [View::Play, View::Looper] {
+            app.open_tab(v);
+            assert_eq!(app.wheel(2), nav(Nav::Turn(2)), "{v:?}");
+            assert_eq!(app.wheel_push(), nav(Nav::Push), "{v:?}");
+            assert_eq!(press(&mut app, button::PLUS), nav(Nav::Step(1)), "{v:?}");
+            assert_eq!(press(&mut app, button::MINUS), nav(Nav::Step(-1)), "{v:?}");
+        }
+        // SHIFT + wheel and NOTE REPEAT keep their jobs on Play.
+        app.open_tab(View::Play);
+        assert_eq!(
+            held(&mut app, button::SHIFT, |a| a.wheel(1)),
+            vec![Effect::Octave(1)]
+        );
+        app.button(REPEAT, true, 0.0);
+        assert!(!app.wheel(1).iter().any(|e| matches!(e, Effect::Nav(_))));
+        assert_eq!(app.wheel_push(), Vec::<Effect>::new());
+        app.button(REPEAT, false, 0.0);
+        // The mixer: the selected strip's volume and the I/O rows until a
+        // tap puts the outline on a control.
+        app.toggle_mixer(false);
+        assert_eq!(app.view(), View::Mixer);
+        assert_eq!(app.wheel(1), vec![Effect::MixerWheel(1)]);
+        assert_eq!(press(&mut app, button::PLUS), vec![Effect::MixerStep(1)]);
+        app.set_outline(true);
+        assert_eq!(app.wheel(1), nav(Nav::Turn(1)));
+        assert_eq!(app.wheel_push(), nav(Nav::Push));
+        assert_eq!(press(&mut app, button::MINUS), nav(Nav::Step(-1)));
+        // The chain editor: the screen's (the effect picker, else Q-Link
+        // 1) without an outline; the push is the screen's too, which gives
+        // it to the picker or the outline (gui.rs).
+        app.set_outline(false);
+        app.open_chain();
+        assert_eq!(app.view(), View::Chain);
+        assert_eq!(app.wheel(1), vec![Effect::ChainWheel(1)]);
+        assert_eq!(app.wheel_push(), vec![Effect::ChainPush]);
+        app.set_outline(true);
+        assert_eq!(app.wheel(-1), nav(Nav::Turn(-1)));
+        // A page with rows keeps its rows, outline or not.
+        app.open_tab(View::Synth);
+        assert_eq!(app.wheel(1), vec![Effect::Rows(RowKey::Pick(1))]);
+        assert_eq!(app.wheel_push(), vec![Effect::Rows(RowKey::Editing(true))]);
     }
 
     /// The mode buttons, ERASE and the SHIFT combos from the hardware

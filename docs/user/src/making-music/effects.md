@@ -22,7 +22,9 @@ Tap an effect already in a strip's insert row to open the chain editor on it. In
 
 - **+ Add effect** opens the list again, and **Cancel** closes it.
 - **Up** and **Down** move the selected effect in the chain, the power button on each row bypasses it, and **Remove** takes it out.
-- Drag a knob to turn it. The Q-Links turn the selected effect's first four knobs, and the data wheel works as Q-Link 1.
+- Drag a knob to turn it. An effect's knobs come in pages of up to eight, with a tab for each page under the effect's name. If there are more tabs than fit, **‹** and **›** at the ends step to the page before or after.
+- An effect with more than eight controls opens on its **Main** page, which holds the eight you reach for most; its other pages hold everything. The Channel strip's Main page also shows its stages (**Gate**, **Comp**, **EQ**): tap a stage's name to open its page, or its switch to turn it on or off.
+- The Q-Links turn the first four knobs of the page shown. An effect with a Main page is different: the Q-Links stay on Main's first four on every page, so you keep the same knobs under your hands while you look through the rest. The data wheel works as Q-Link 1 until you tap a control: then it moves the outline, and a push on a knob lets the wheel turn it (see [The wheel's outline](../getting-started/the-screen.md#the-wheels-outline)).
 - **‹ Mixer** goes back to the mixer as you left it.
 
 Above the knobs, a drawing shows what the selected effect does, and changes as you turn: an EQ's curve, a delay's repeats, the Ducker's pump over two beats (or after a kick), the Transient shaper on a drum hit (dashed going in, solid coming out), where the Pitch shifter puts the sound, with the steps its feedback climbs, Pitch correct's steps onto the key's notes (with a dot on the note you are singing), how far each Harmonizer voice moves on each note of the key, and the Tuner's needle.

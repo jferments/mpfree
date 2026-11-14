@@ -27,6 +27,9 @@
 //! - **State.** [`ClapControl`], taken before the node goes to the audio
 //!   thread, saves and loads the plugin's state and answers its main-thread
 //!   requests ([`ClapControl::idle`]).
+//! - **Presets.** [`Library::presets`] finds the plugin's own presets
+//!   through CLAP preset discovery ([`presets`]);
+//!   [`ClapControl::load_preset`] loads one through CLAP preset-load.
 //!
 //! # Threads and real time
 //!
@@ -48,6 +51,7 @@
 //! program, once per distinct plugin), since nodes describe themselves with
 //! `'static` data.
 
+pub mod presets;
 pub mod sys;
 #[doc(hidden)]
 pub mod testplug;
@@ -63,6 +67,8 @@ use std::ptr;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use sys::*;
+
+pub use presets::{Found, Place, Preset};
 
 /// Events one block can carry to the plugin (notes, pressure, parameters
 /// and the note-offs of an `AllOff`); more are counted and dropped.
@@ -247,6 +253,16 @@ impl Library {
         out
     }
 
+    /// Every preset the file's preset providers know of, for all its
+    /// plugins ([`Preset::is_for`] picks one plugin's). Control thread only;
+    /// it can take seconds, and runs the plugin's own code, so MPFree calls
+    /// it in a process of its own.
+    pub fn presets(&self) -> Found {
+        // SAFETY: the entry was started and stays so while `lib` lives;
+        // this is its main thread.
+        unsafe { presets::discover(self.lib.entry) }
+    }
+
     /// Makes plugin `id` (not yet active: [`Node::prepare`] activates it).
     /// Control thread only.
     pub fn create(&self, id: &str) -> Result<ClapNode, Error> {
@@ -277,6 +293,7 @@ impl Library {
                 state: ptr::null(),
                 latency: ptr::null(),
                 tail: ptr::null(),
+                preset_load: ptr::null(),
                 values: Box::new([]),
             };
             if !(*plugin).init.is_some_and(|i| i(plugin)) {
@@ -288,6 +305,10 @@ impl Library {
             inst.state = inst.ext(CLAP_EXT_STATE);
             inst.latency = inst.ext(CLAP_EXT_LATENCY);
             inst.tail = inst.ext(CLAP_EXT_TAIL);
+            inst.preset_load = inst.ext(CLAP_EXT_PRESET_LOAD);
+            if inst.preset_load.is_null() {
+                inst.preset_load = inst.ext(CLAP_EXT_PRESET_LOAD_COMPAT);
+            }
             let (notes_in, midi) = inst.note_input();
             let kind = if notes_in {
                 Kind::Instrument
@@ -391,6 +412,14 @@ pub mod request {
     pub const TAIL: u32 = 1 << 6;
     pub const STATE_DIRTY: u32 = 1 << 7;
     pub const PORTS_RESCAN: u32 = 1 << 8;
+    /// Parameter values (or their text) changed in the plugin; `idle` has
+    /// read them again.
+    pub const PARAMS_VALUES: u32 = 1 << 9;
+    /// Parameter names or flags changed (the host may show them again).
+    pub const PARAMS_INFO: u32 = 1 << 10;
+    /// The plugin said a preset finished loading; `idle` has read the
+    /// values again.
+    pub const PRESET_LOADED: u32 = 1 << 11;
 }
 
 /// The `clap_host` a plugin talks to, with what it asked for.
@@ -406,6 +435,8 @@ struct HostBox {
     /// Host calls CLAP marks main-thread only that came from the audio
     /// thread (a misbehaving plugin).
     misplaced: AtomicU32,
+    /// What the plugin said went wrong loading a preset, until read.
+    preset_error: Mutex<Option<String>>,
 }
 
 impl HostBox {
@@ -428,6 +459,7 @@ impl HostBox {
             warnings: AtomicU32::new(0),
             audio_thread: AtomicU64::new(0),
             misplaced: AtomicU32::new(0),
+            preset_error: Mutex::new(None),
         });
         let me: *mut HostBox = &mut *b;
         b.clap.host_data = me as *mut c_void;
@@ -498,6 +530,10 @@ static HOST_NOTE_PORTS: clap_host_note_ports = clap_host_note_ports {
     supported_dialects: Some(host_note_dialects),
     rescan: Some(host_ports_rescan),
 };
+static HOST_PRESET_LOAD: clap_host_preset_load = clap_host_preset_load {
+    on_error: Some(host_preset_error),
+    loaded: Some(host_preset_loaded),
+};
 
 unsafe extern "C" fn host_get_extension(_h: *const clap_host, id: *const c_char) -> *const c_void {
     if id.is_null() {
@@ -520,6 +556,8 @@ unsafe extern "C" fn host_get_extension(_h: *const clap_host, id: *const c_char)
         &HOST_AUDIO_PORTS as *const _ as *const c_void
     } else if id == CLAP_EXT_NOTE_PORTS {
         &HOST_NOTE_PORTS as *const _ as *const c_void
+    } else if id == CLAP_EXT_PRESET_LOAD || id == CLAP_EXT_PRESET_LOAD_COMPAT {
+        &HOST_PRESET_LOAD as *const _ as *const c_void
     } else {
         ptr::null()
     };
@@ -544,9 +582,19 @@ unsafe extern "C" fn host_is_audio(h: *const clap_host) -> bool {
     host_box(h).is_some_and(|b| b.audio_thread.load(Ordering::Relaxed) == this_thread())
 }
 
-unsafe extern "C" fn host_params_rescan(h: *const clap_host, _flags: u32) {
+unsafe extern "C" fn host_params_rescan(h: *const clap_host, flags: u32) {
     main_only(h);
-    request(h, request::PARAMS_RESCAN);
+    // Only RESCAN_ALL changes the parameter list itself; values, text and
+    // info change in place.
+    if flags & CLAP_PARAM_RESCAN_ALL != 0 {
+        request(h, request::PARAMS_RESCAN);
+    }
+    if flags & (CLAP_PARAM_RESCAN_VALUES | CLAP_PARAM_RESCAN_TEXT) != 0 {
+        request(h, request::PARAMS_VALUES);
+    }
+    if flags & CLAP_PARAM_RESCAN_INFO != 0 {
+        request(h, request::PARAMS_INFO);
+    }
 }
 unsafe extern "C" fn host_params_clear(h: *const clap_host, _id: clap_id, _flags: u32) {
     main_only(h);
@@ -573,6 +621,34 @@ unsafe extern "C" fn host_ports_rescan(h: *const clap_host, _flags: u32) {
 unsafe extern "C" fn host_note_dialects(_h: *const clap_host) -> u32 {
     CLAP_NOTE_DIALECT_CLAP | CLAP_NOTE_DIALECT_MIDI
 }
+unsafe extern "C" fn host_preset_error(
+    h: *const clap_host,
+    _kind: u32,
+    _location: *const c_char,
+    _load_key: *const c_char,
+    os_error: i32,
+    msg: *const c_char,
+) {
+    main_only(h);
+    let Some(b) = host_box(h) else { return };
+    let mut e = cstr(msg);
+    if e.is_empty() {
+        e = "the plugin couldn't load the preset".into();
+    }
+    if os_error != 0 {
+        e.push_str(&format!(" (error {os_error})"));
+    }
+    *b.preset_error.lock().unwrap_or_else(|p| p.into_inner()) = Some(e);
+}
+unsafe extern "C" fn host_preset_loaded(
+    h: *const clap_host,
+    _kind: u32,
+    _location: *const c_char,
+    _load_key: *const c_char,
+) {
+    main_only(h);
+    request(h, request::PRESET_LOADED);
+}
 
 // ------------------------------------------------------------------ instances
 
@@ -589,6 +665,7 @@ struct Instance {
     state: *const clap_plugin_state,
     latency: *const clap_plugin_latency,
     tail: *const clap_plugin_tail,
+    preset_load: *const clap_plugin_preset_load,
     /// Each visible parameter's value now, as f32 bits.
     values: Box<[AtomicU32]>,
 }
@@ -1758,17 +1835,74 @@ impl ClapControl {
         // SAFETY: main-thread call; the stream lives across it.
         let ok = unsafe { (*st).load.is_some_and(|l| l(self.inst.plugin, &is)) };
         if ok {
-            let map: Vec<PMap> = self
-                .map
-                .iter()
-                .map(|&id| PMap {
-                    id,
-                    cookie: ptr::null_mut(),
-                })
-                .collect();
-            self.inst.refresh_values(&map);
+            self.refresh();
         }
         ok
+    }
+
+    /// Reads every visible parameter's value from the plugin again.
+    fn refresh(&self) {
+        let map: Vec<PMap> = self
+            .map
+            .iter()
+            .map(|&id| PMap {
+                id,
+                cookie: ptr::null_mut(),
+            })
+            .collect();
+        self.inst.refresh_values(&map);
+    }
+
+    /// Whether the plugin loads presets ([`ClapControl::load_preset`]).
+    pub fn loads_presets(&self) -> bool {
+        !self.inst.preset_load.is_null()
+    }
+
+    /// Loads one of the plugin's presets, as [`Library::presets`] found it.
+    /// The node's values follow: at once, and again when the plugin says
+    /// it has finished (some plugins, such as Surge XT, load in the
+    /// background) or that its values changed ([`ClapControl::idle`]).
+    /// The error is the plugin's own message when it gave one.
+    pub fn load_preset(&self, p: &Preset) -> Result<(), String> {
+        let pl = self.inst.preset_load;
+        // SAFETY: a non-null extension table from the plugin.
+        let Some(from) = (!pl.is_null())
+            .then(|| unsafe { (*pl).from_location })
+            .flatten()
+        else {
+            return Err("this plugin doesn't load presets".into());
+        };
+        let (kind, location) = match &p.place {
+            Place::File(f) => (
+                CLAP_PRESET_DISCOVERY_LOCATION_FILE,
+                Some(
+                    CString::new(f.as_os_str().as_encoded_bytes())
+                        .map_err(|_| "the preset's path has a NUL byte".to_string())?,
+                ),
+            ),
+            Place::Plugin => (CLAP_PRESET_DISCOVERY_LOCATION_PLUGIN, None),
+        };
+        let key = match &p.load_key {
+            Some(k) => Some(CString::new(k.as_str()).map_err(|_| "bad preset key".to_string())?),
+            None => None,
+        };
+        let errors = &self.inst.host.preset_error;
+        errors.lock().unwrap_or_else(|e| e.into_inner()).take();
+        // SAFETY: main-thread call; the strings live across it.
+        let ok = unsafe {
+            from(
+                self.inst.plugin,
+                kind,
+                location.as_ref().map_or(ptr::null(), |c| c.as_ptr()),
+                key.as_ref().map_or(ptr::null(), |c| c.as_ptr()),
+            )
+        };
+        let said = errors.lock().unwrap_or_else(|e| e.into_inner()).take();
+        if !ok {
+            return Err(said.unwrap_or_else(|| "the plugin refused the preset".into()));
+        }
+        self.refresh();
+        Ok(())
     }
 
     /// How the plugin shows `value` of parameter `index` ("Saw", "-6 dB").
@@ -1779,11 +1913,13 @@ impl ClapControl {
     }
 
     /// Answers the plugin's requests: runs its `on_main_thread` if it asked
-    /// for a callback. Returns the request bits that were pending (see
-    /// [`request`]); `RESTART`, `PARAMS_RESCAN` and `PORTS_RESCAN` mean the
-    /// host should make the node again from saved state.
+    /// for a callback, and reads the parameter values again if it said they
+    /// changed or a preset finished loading. Returns the request bits that
+    /// were pending (see [`request`]); `RESTART`, `PARAMS_RESCAN` and
+    /// `PORTS_RESCAN` mean the host should make the node again from saved
+    /// state.
     pub fn idle(&self) -> u32 {
-        let bits = self.inst.host.requests.swap(0, Ordering::AcqRel);
+        let mut bits = self.inst.host.requests.swap(0, Ordering::AcqRel);
         if bits & request::CALLBACK != 0 {
             // SAFETY: main-thread call on a live plugin.
             unsafe {
@@ -1791,6 +1927,13 @@ impl ClapControl {
                     f(self.inst.plugin);
                 }
             }
+            // Values the callback changed count too (other requests it
+            // made wait for the next call).
+            let values = request::PARAMS_VALUES | request::PRESET_LOADED;
+            bits |= self.inst.host.requests.fetch_and(!values, Ordering::AcqRel) & values;
+        }
+        if bits & (request::PARAMS_VALUES | request::PRESET_LOADED) != 0 {
+            self.refresh();
         }
         bits
     }

@@ -37,7 +37,9 @@
 
 use std::sync::mpsc::{sync_channel, Receiver, SyncSender, TryRecvError, TrySendError};
 
-use mpfree_node::{Ctx, Curve, Kind, Node, NodeEvent, NodeInfo, ParamInfo, Smooth, Timed, Unit};
+use mpfree_node::{
+    Ctx, Cull, Curve, Kind, Node, NodeEvent, NodeInfo, ParamInfo, Smooth, Timed, Unit,
+};
 
 use crate::engine::{Engine, EngineView, Event, PadField, ProgramField};
 use crate::model::{PadsPlay, PADS};
@@ -605,5 +607,17 @@ impl Node for SamplerNode {
             }
             at = to;
         }
+    }
+
+    fn sounding_voices(&self) -> usize {
+        self.engine.active_voices()
+    }
+
+    fn cull_candidate(&self) -> Option<Cull> {
+        self.engine.cull_candidate()
+    }
+
+    fn cull(&mut self) -> bool {
+        self.engine.cull()
     }
 }
