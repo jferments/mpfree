@@ -66,7 +66,7 @@ Tap a strip's name to select it. The four Q-Links then turn its **Volume**, **Pa
 
 ## The master and Master safety
 
-The **Master** strip on the right is everything you hear. Its fader is the same level as the master bar on the Play page and Q-Link 1 there.
+The **Master** strip on the right is everything you hear. Its fader is the same level as the master bar on the Play page.
 
 The last thing on the master is **Master safety**, a limiter that keeps the output from going past -0.3 dB, so a loud moment never distorts harshly or hurts your ears. It shows how many times it has caught a peak. If it is catching all the time, turn something down.
 
@@ -88,7 +88,7 @@ These effects can go on any strip. The list of effects groups them: Dynamics, EQ
 | **Delay** | Echoes in time with the tempo. |
 | **Chorus**, **Flanger**, **Phaser** | Movement and width. |
 | **Lo-fi** | Old sampler and worn tape character. |
-| **Compressor** | Evens out levels and adds punch. It can be keyed from another strip, for side-chain pumping. |
+| **Compressor** | Evens out levels and adds punch. It can be keyed from another strip, for side-chain pumping. **SC filter** keeps low end (a kick) from pushing it, so a whole mix doesn't pump; **Detect** picks **Peak**, which catches every hit, or **RMS**, which follows the loudness and is smoother on a bus or a vocal. |
 | **Ducker** | The pump: turns the sound down on each kick (keyed from another strip) or on every 1/16, 1/8, 1/4, 1/2 or bar of the tempo, and brings it back on a curve you shape. |
 | **Transient shaper** | More or less punch at the start of each hit and more or less ring after it, at any level, with no threshold to set. |
 | **Pitch shifter** | Moves the sound up to two octaves up or down without changing its speed. Spread detunes left and right for a wide double; feedback makes rising or falling stairs. |
@@ -113,13 +113,15 @@ Each plugin runs on its own, apart from the rest of MPFree, so a plugin that cra
 Every one of these is written in MPFree's report, so nothing goes wrong without you hearing about it.
 
 > [!NOTE]
-> **Not yet:** a plugin's settings aren't saved with your project, plugin instruments (synths) can't go on a track, and MPFree doesn't come with any plugins yet. A pack of free plugins built for the MPC (Airwindows, Surge XT and Dexed) is coming.
+> A plugin's settings are saved with your project. If you open the project on a stick without that plugin, the effect is left out and the Events log names the plugin's file. Plugin synths play as a track's own instrument (see [Synths](synths.md#a-synth-for-each-track)). **Not yet:** MPFree doesn't come with any plugins yet. A pack of free plugins built for the MPC (Airwindows, Surge XT and Dexed) is coming.
 
 ## The chain editor
 
 Tap an effect in a strip's insert row to open the **chain editor** on it, in the mixer's place. Tap the strip's **+ FX** button to add an effect, with the list of effects already open; a new effect goes at the end of the chain. **+ FX** fills all of the strip's empty insert rows, so on a strip with no effects it is a big button under the strip's name. In the chain editor, **+ Add effect** opens the list again and **Cancel** closes it; you can also reorder (**Up**, **Down**), bypass (the power button on each row) and **Remove** effects, and turn the selected effect's knobs. If the chain is full or the mixer is busy, the line at the bottom of the screen says so for a few seconds.
 
 The Q-Links turn the selected effect's first four knobs, and the data wheel works as Q-Link 1. **‹ Mixer** goes back to the mixer as you left it.
+
+Above the knobs, a drawing shows what the selected effect does, and changes as you turn: an EQ's curve, a delay's repeats, the Ducker's pump over two beats (or after a kick), the Transient shaper on a drum hit (dashed going in, solid coming out), and where the Pitch shifter puts the sound, with the steps its feedback climbs.
 
 The Sample tab's **FX** opens the chain editor too, on the pad you are editing (its own channel, then the Drums track), and Back goes back to the Sample tab (see [Sampling](sampling.md#fx-effects-on-one-pad-or-on-the-whole-kit)).
 
@@ -147,7 +149,7 @@ Each of these costs almost nothing until you use it.
 
 ## Coming next
 
-- **Plugins**: settings saved with the project, and the plugin pack. Plugin synths already play as a track's own instrument.
+- **Plugins**: the plugin pack.
 - **Automation**: knob moves recorded into clips.
 - **Perform FX on pads**: effects played from the pads.
 

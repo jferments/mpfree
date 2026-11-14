@@ -562,6 +562,13 @@ impl Panels {
         self.sent_at = None;
     }
 
+    /// The chain editor's state as the mixer has it now, while the editor
+    /// is open (the smoke tests check the screen against it).
+    #[cfg(test)]
+    pub fn chain_state(&mut self, mix: &MixHost) -> Option<ChainState> {
+        self.chain.as_mut().map(|h| h.state(mix))
+    }
+
     /// The macros' values, for the Q-Link column's macro banks (at the
     /// start; the panels send them again while they show).
     pub fn macros_state(&self, mix: &MixHost) -> MacrosState {

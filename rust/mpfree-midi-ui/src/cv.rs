@@ -291,7 +291,7 @@ mod tests {
     use crate::form::FormSection;
     use crate::{Built, Live};
     use mpfree_midi::setup::MidiSetup;
-    use mpfree_mixer_ui::{IoReply, IoSection};
+    use mpfree_mixer_ui::{IoInput, IoReply, IoSection};
     use std::sync::{Arc, Mutex};
 
     fn model() -> crate::Shared {
@@ -363,6 +363,40 @@ mod tests {
         let (back, warn) = MidiSetup::parse(&m.setup.to_text());
         assert!(warn.is_empty(), "{warn:?}");
         assert_eq!(back.cv, m.setup.cv);
+    }
+
+    #[test]
+    fn a_tap_or_knob_that_cannot_move_a_setting_says_why() {
+        let s = model();
+        s.lock().unwrap().setup.cv[4] = CvAssign::Run { volts: MAX_VOLTS };
+        let mut sec = FormSection::new(Cv, s.clone());
+        let _ = paint(&sec);
+        // High is at 5.0 V already: the tap selects it and says why.
+        let f = sec.field_rect("cv:4", 2, AREA).unwrap();
+        tap(&mut sec, f.x + 10, f.y + 10);
+        assert_eq!(
+            s.lock().unwrap().setup.cv[4],
+            CvAssign::Run { volts: MAX_VOLTS }
+        );
+        assert_eq!(
+            sec.take_note().as_deref(),
+            Some("CV 5 High is at its highest, 5.0 V high: - or Q-Link 3 lowers it")
+        );
+        assert_eq!(sec.take_note(), None, "said once");
+        // Its Q-Link turned further up says the same; down moves it.
+        assert_eq!(sec.qlink_turn(2, 1, false), IoReply::Handled);
+        assert!(sec.take_note().is_some());
+        assert_eq!(sec.qlink_turn(2, -1, false), IoReply::Redraw);
+        assert_eq!(sec.take_note(), None);
+        // Run has no track: its Track field is faint and says it can't change.
+        let f = sec.field_rect("cv:4", 1, AREA).unwrap();
+        tap(&mut sec, f.x + 10, f.y + 10);
+        let n = sec.take_note().unwrap();
+        assert!(n.starts_with("CV 5 Track can't change"), "{n}");
+        // The page arrows at the last row say so.
+        sec.input(IoInput::Wheel(20));
+        assert_eq!(sec.input(IoInput::Page(1)), IoReply::Handled);
+        assert_eq!(sec.take_note().as_deref(), Some("The last row is selected"));
     }
 
     #[test]

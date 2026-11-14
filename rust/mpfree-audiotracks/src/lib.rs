@@ -274,6 +274,19 @@ pub struct TakeInfo {
     pub cut_short: bool,
 }
 
+/// A track's settings, as the commands last set them (or a load).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TrackSettings {
+    pub input: Input,
+    pub monitor: Monitor,
+    /// 0 to 2 (1 is as recorded).
+    pub level: f32,
+    /// -1 (left) to 1 (right).
+    pub pan: f32,
+    pub mute: bool,
+    pub solo: bool,
+}
+
 /// Counters for the screen and the tests.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Stats {
@@ -746,6 +759,19 @@ impl AudioTracks {
     /// The take a track is recording, if any.
     pub fn recording(&self, track: usize) -> Option<u16> {
         self.tracks.get(track)?.rec.map(|r| r.take)
+    }
+
+    /// A track's settings (None past the last track).
+    pub fn settings(&self, track: usize) -> Option<TrackSettings> {
+        let t = self.tracks.get(track)?;
+        Some(TrackSettings {
+            input: t.input,
+            monitor: t.monitor,
+            level: t.level,
+            pan: t.pan,
+            mute: t.mute,
+            solo: t.solo,
+        })
     }
 
     pub fn take(&self, id: u16) -> Option<TakeInfo> {
@@ -1323,6 +1349,47 @@ impl AudioTracks {
         t.regions[..t.n].copy_from_slice(&f.regions);
         self.h_done = 0;
         self.h_redo = 0;
+        true
+    }
+
+    /// Every track as new (no regions, unarmed, settings as at start)
+    /// and every take forgotten, its memory given back, with the undo
+    /// history: New project, or a project opening. The latency and
+    /// whether the tracks play are kept. Refused (false, nothing changed)
+    /// while a track records or a take copies in, or, streaming, while
+    /// audio is still going to the disk. Does not allocate.
+    pub fn clear(&mut self) -> bool {
+        let busy = self
+            .tracks
+            .iter()
+            .any(|t| t.rec.is_some() || t.tail.is_some())
+            || !self.loads.is_empty()
+            || (self.streaming && self.unwritten() > 0);
+        if busy {
+            return false;
+        }
+        for t in &mut self.tracks {
+            t.n = 0;
+            t.armed = false;
+            t.input = Input::Left;
+            t.monitor = Monitor::Auto;
+            t.level = 1.0;
+            t.pan = 0.0;
+            t.mute = false;
+            t.solo = false;
+            t.blocked = false;
+        }
+        for id in 0..MAX_TAKES {
+            if self.takes[id].live {
+                self.pool.release_take(id as u16);
+                self.takes[id] = NO_TAKE;
+            }
+        }
+        self.pending = [None; MAX_TRACKS];
+        self.groups = 0;
+        self.h_done = 0;
+        self.h_redo = 0;
+        self.replan = true;
         true
     }
 

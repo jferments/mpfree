@@ -5,7 +5,9 @@
 //! the last frame, so it costs next to nothing) and puts what to mark in
 //! the fields.
 
+use std::collections::hash_map::DefaultHasher;
 use std::collections::VecDeque;
+use std::hash::{Hash, Hasher};
 
 use mpfree_sampler::record::Input;
 use mpfree_ui::{Align, Color, FontId, PaintCx, Rect, Widget};
@@ -173,6 +175,9 @@ pub struct InputView {
 }
 
 const METER_H: i32 = 52;
+/// The meters' "L"/"R" column and their value column.
+const LABEL_W: i32 = 22;
+const VALUE_W: i32 = 76;
 
 impl InputView {
     pub fn new(title: &str, strip: Strip, rate: u32) -> InputView {
@@ -203,6 +208,120 @@ impl InputView {
             *m = db(p).max(fallen);
             if *m < FLOOR_DB - 6.0 {
                 *m = f32::NEG_INFINITY;
+            }
+        }
+    }
+
+    /// What the picture in `r` depends on, as one number: two states with
+    /// the same look paint the same pixels. The Rec tab redraws the view
+    /// only when its look changes, so the strip counts in pixels, not
+    /// frames: a silent input scrolling on, with nothing marked, draws
+    /// nothing new. (The view spans most of the turned panel's rows, so
+    /// each redraw rewrote 904 of its 1280 rows, 30 times a second, until
+    /// 13 Nov.)
+    pub fn look(&self, r: Rect) -> u64 {
+        let mut h = DefaultHasher::new();
+        (&self.title, &self.right, &self.note, &self.caption).hash(&mut h);
+        let (meters, plot, _) = InputView::areas(r);
+        let bar_w = meters.w - LABEL_W - VALUE_W;
+        for lvl in self.meter_db {
+            ((meter_place(lvl) * bar_w as f32) as i32, db_text(lvl)).hash(&mut h);
+        }
+        self.threshold.map(f32::to_bits).hash(&mut h);
+        let first = self.first();
+        for (tag, s) in [(0u8, &self.skip), (1, &self.take)] {
+            if let Some(s) = s.as_ref().filter(|s| self.shows(s)) {
+                let (x0, x1) = (self.x_of(plot, s.start), self.x_of(plot, s.end));
+                (tag, x0, x1, s.start < first, &s.label).hash(&mut h);
+            }
+        }
+        let edge = self.edge();
+        for &b in &self.bars {
+            if b > first && b <= edge {
+                self.x_of(plot, b).hash(&mut h);
+            }
+        }
+        // The strip as drawn: each pixel column's reach up and down, and
+        // whether it is the take's colour.
+        let w = plot.w.max(0) as usize;
+        let mut px = vec![None; 2 * w];
+        self.columns(plot, |side, x0, x1, up, down, take| {
+            for x in x0..x1 {
+                let at = usize::try_from(x - plot.x).ok().filter(|&i| i < w);
+                if let Some(i) = at {
+                    px[side * w + i] = Some((up, down, take));
+                }
+            }
+        });
+        px.hash(&mut h);
+        h.finish()
+    }
+
+    /// The frame on the strip's right edge: `now` back to the last whole
+    /// column, so the strip moves a column at a time and a silent input
+    /// draws the same picture until something comes (with `now` itself,
+    /// the newest column's edge crept and jumped back between columns).
+    fn edge(&self) -> u64 {
+        let per = self.strip.per();
+        self.now / per * per
+    }
+
+    /// The oldest frame the strip shows.
+    fn first(&self) -> u64 {
+        self.edge().saturating_sub(self.strip.span().max(1))
+    }
+
+    /// Where frame `f` falls across `plot`: the edge on the right, the
+    /// strip's span back on the left. On whole columns too, so a mark a
+    /// fixed time back from now (Skip back) stays put.
+    fn x_of(&self, plot: Rect, f: u64) -> i32 {
+        let span = self.strip.span().max(1);
+        let per = self.strip.per();
+        let edge = self.edge();
+        let back = edge - (f / per * per).clamp(self.first(), edge);
+        plot.right() - (back as f64 / span as f64 * f64::from(plot.w)).round() as i32
+    }
+
+    /// True if any of `s` is on the strip.
+    fn shows(&self, s: &Span) -> bool {
+        s.end > self.first() && s.start <= self.edge()
+    }
+
+    /// The two lanes' middle line and half height in `plot` (left above,
+    /// right below).
+    fn lane(plot: Rect, side: usize) -> (i32, f32) {
+        let lane_h = (plot.h - 2) / 2;
+        let mid = plot.y + 1 + side as i32 * (lane_h + 2) + lane_h / 2;
+        (mid, (lane_h / 2 - 2).max(1) as f32)
+    }
+
+    /// Each column kept, as drawn on each side: `each(side, x0, x1, up,
+    /// down, in the take)`, oldest first.
+    fn columns(&self, plot: Rect, mut each: impl FnMut(usize, i32, i32, i32, i32, bool)) {
+        let span = self.strip.span().max(1);
+        let first = self.first();
+        let per = self.strip.per();
+        let cols = (span / per) as i32;
+        for side in 0..2usize {
+            let (_, half) = InputView::lane(plot, side);
+            for k in 0..cols {
+                let index = first / per + k as u64;
+                let Some(c) = self.strip.column(index) else {
+                    continue;
+                };
+                let (lo, hi) = (c[2 * side], c[2 * side + 1]);
+                if hi < lo {
+                    continue;
+                }
+                let x0 = self.x_of(plot, index * per);
+                let x1 = self.x_of(plot, (index + 1) * per).max(x0 + 1);
+                let up = (lane_place(hi.max(0.0)) * half) as i32;
+                let down = (lane_place(lo.min(0.0)) * half) as i32;
+                let take = self
+                    .take
+                    .as_ref()
+                    .is_some_and(|s| index * per >= s.start && index * per < s.end);
+                each(side, x0, x1, up, down, take);
             }
         }
     }
@@ -257,8 +376,7 @@ impl Widget for InputView {
         let small = t.size_small - 1.0;
         // The meters: one bar a side, green, then amber above −12, red
         // above −3, with the threshold as a line across.
-        let label_w = 22;
-        let value_w = 76;
+        let (label_w, value_w) = (LABEL_W, VALUE_W);
         let row_h = (meters.h - 8) / 2;
         for side in 0..2 {
             let y = meters.y + side as i32 * (row_h + 6);
@@ -305,14 +423,11 @@ impl Widget for InputView {
         // The strip: left above, right below, newest on the right.
         cx.canvas.fill_round_rect(plot, 8, t.bg);
         let span = self.strip.span().max(1);
-        let first = self.now.saturating_sub(span);
+        let (first, edge) = (self.first(), self.edge());
         // Now is on the right edge, `span` frames back on the left.
-        let x_of = |f: u64| -> i32 {
-            let back = self.now - f.clamp(first, self.now);
-            plot.right() - (back as f64 / span as f64 * f64::from(plot.w)).round() as i32
-        };
+        let x_of = |f: u64| self.x_of(plot, f);
         let mark = |cx: &mut PaintCx, s: &Span, fill: Color, line: Color| {
-            if s.end <= first || s.start > self.now {
+            if !self.shows(s) {
                 return;
             }
             let (x0, x1) = (x_of(s.start), x_of(s.end));
@@ -337,18 +452,16 @@ impl Widget for InputView {
         // waveform, a tick at each edge).
         let bar_line = t.bg.mix(t.text_faint, 0.35);
         for &b in &self.bars {
-            if b > first && b <= self.now {
+            if b > first && b <= edge {
                 cx.canvas
                     .fill_rect(Rect::new(x_of(b), plot.y, 1, plot.h), bar_line);
             }
         }
-        let lane_h = (plot.h - 2) / 2;
         let wave = t.text_dim;
-        let per = self.strip.per();
-        let cols = (span / per) as i32;
+        // Each lane's middle line and the threshold; the lanes do not
+        // overlap, so the columns can go on after both.
         for side in 0..2usize {
-            let mid = plot.y + 1 + side as i32 * (lane_h + 2) + lane_h / 2;
-            let half = (lane_h / 2 - 2).max(1) as f32;
+            let (mid, half) = InputView::lane(plot, side);
             cx.canvas
                 .fill_rect(Rect::new(plot.x + 4, mid, plot.w - 8, 1), t.outline);
             if let Some(th) = self.threshold {
@@ -361,35 +474,16 @@ impl Widget for InputView {
                     }
                 }
             }
-            for k in 0..cols {
-                let index = first / per + k as u64;
-                let Some(c) = self.strip.column(index) else {
-                    continue;
-                };
-                let (lo, hi) = (c[2 * side], c[2 * side + 1]);
-                if hi < lo {
-                    continue;
-                }
-                let x0 = x_of(index * per);
-                let x1 = x_of((index + 1) * per).max(x0 + 1);
-                let up = (lane_place(hi.max(0.0)) * half) as i32;
-                let down = (lane_place(lo.min(0.0)) * half) as i32;
-                let color = if self
-                    .take
-                    .as_ref()
-                    .is_some_and(|s| index * per >= s.start && index * per < s.end)
-                {
-                    rec
-                } else {
-                    wave
-                };
-                cx.canvas
-                    .fill_rect(Rect::new(x0, mid - up, x1 - x0, (up + down).max(1)), color);
-            }
         }
+        self.columns(plot, |side, x0, x1, up, down, take| {
+            let (mid, _) = InputView::lane(plot, side);
+            let color = if take { rec } else { wave };
+            cx.canvas
+                .fill_rect(Rect::new(x0, mid - up, x1 - x0, (up + down).max(1)), color);
+        });
         // Seconds back from now under the strip.
         for &b in &self.bars {
-            if b > first && b <= self.now {
+            if b > first && b <= edge {
                 let x = x_of(b);
                 for y in [plot.y, plot.bottom() - 8] {
                     cx.canvas.fill_rect(Rect::new(x - 1, y, 3, 8), t.text_dim);

@@ -572,6 +572,9 @@ pub static COMPRESSOR: &[Preset] = &[
             (comp::RELEASE, 300.0),
             (comp::KNEE, 10.0),
             (comp::MAKEUP, 2.0),
+            // A bus compressor that follows the mix's body, not the kick.
+            (comp::SC_FILTER, 90.0),
+            (comp::DETECT, 1.0),
         ],
     },
     Preset {
@@ -594,6 +597,8 @@ pub static COMPRESSOR: &[Preset] = &[
             (comp::RELEASE, 120.0),
             (comp::KNEE, 8.0),
             (comp::MAKEUP, 5.0),
+            // Levels the phrase; consonants still come through.
+            (comp::DETECT, 1.0),
         ],
     },
     Preset {

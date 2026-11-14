@@ -316,6 +316,9 @@ impl TimeControl {
             self.since_told += u64::from(end.frames);
             if self.recorded && self.since_told >= self.tell_every {
                 self.changed = true;
+                // The step grid shows what recording added (and, without
+                // overdub, took away) as it goes, not only after it stops.
+                self.steps_changed = true;
                 self.recorded = false;
                 self.since_told = 0;
             }

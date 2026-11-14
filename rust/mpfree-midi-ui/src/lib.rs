@@ -227,6 +227,33 @@ mod tests {
     }
 
     #[test]
+    fn every_sections_controls_fit_the_io_panel() {
+        // The I/O view keeps the master strip at its right, so a section
+        // gets less than the screen's width; a field past its edge was
+        // drawn over the master and a tap on it went to the master.
+        use form::testing::{paint, AREA};
+        let model: Shared = Arc::new(Mutex::new(sample::rig()));
+        for s in sections(&model) {
+            let _ = paint(s.as_ref());
+            let ts = s.targets(AREA);
+            assert!(!ts.is_empty(), "{} has controls", s.label());
+            for t in ts {
+                let r = t.rect;
+                assert!(
+                    r.x >= AREA.x
+                        && r.y >= AREA.y
+                        && r.right() <= AREA.right()
+                        && r.y + r.h <= AREA.y + AREA.h,
+                    "{}: {} \"{}\" at {r:?} is outside {AREA:?}",
+                    s.label(),
+                    t.id,
+                    t.label
+                );
+            }
+        }
+    }
+
+    #[test]
     fn notes_are_named_as_in_the_app() {
         assert_eq!(note_name(48), "C3");
         assert_eq!(note_name(60), "C4");
