@@ -19,7 +19,10 @@ The model is in `rust/mpfree-seq/src/arrange.rs`, song-mode playback in `rust/mp
   - `make_unique(tracks, i)` gives placement `i` its own copy of its clip.
   - `unlink(tracks, track, slot)` gives every placement linked to a slot its own copy, before the slot is emptied.
   - `mark(at, name)` adds a marker.
-  - `clear(tracks, track, from, to)` takes a track's placements out of a stretch. Placements inside it go. Placements across an edge are cut there, and a cut at the start moves the offset on, so the rest plays as before.
+  - `clear(tracks, track, from, to)` takes a track's placements out of a stretch. Placements inside it go. Placements across an edge are cut there, and a cut at the start moves the offset on, so the rest plays as before (`Placement::from(tracks, at)` is the part after a cut).
+  - `move_placement(tracks, i, track, start, copy)` moves placement `i`, or puts a copy of it, on a track from a tick, and returns its index. Onto another track a linked placement takes its own copy of the clip, since its slot number would name that track's clip. It refuses (`BadPlacement`) an overlap or a start before 0, and changes nothing then.
+  - `set_length(i, length)` makes a placement longer or shorter, refused where it would run into the next one on its track.
+  - `section(k, bar)` is marker `k` to the next, the last one to the song's end in whole bars from its marker. `move_section(tracks, k, gap, copy, bar)` moves section `k`, or puts a copy of it, before section `gap` (after the last for the markers' count), on every track: the sections are laid out again from the first marker in the new order, so nothing is written over, and what comes before the first marker stays. Placements across a section's edge are cut there first, in phase. It refuses (`BadMoves`) while the song has morph moves or rows, which would not move with it.
 - **The song's own lanes.** `Arrangement::lanes` holds lanes for parameters that are not on a track. For now that is the morph crossfader (`MORPH_LANE`, on `ParamAddr::morph_pos(0)`).
   - The lanes are on song ticks and never loop (`SONG_LANE_LEN`, about 72 hours at 120 BPM).
   - `Arrangement::morphs` holds the two rows the morph is between, from each tick on (`MorphRows { at, a, b }`).
@@ -70,7 +73,14 @@ On the Clips page, the **Song ›** button at the right of the grid's title swap
 - **The lanes.** Each track is a lane, its name on the left with what it plays under it when the lane is at least 34 px tall (`SongLanes::sounds`, from `TrackInfo::sound`; with take lanes open the names stand alone). Each placement is a block in the track's colour, with its clip's name. A unique placement has a small dot in its corner, and the selected one has an accent outline. After the last track's lane, "+ Track" adds a track (`Tab(song::ADD_TRACK)`, `TimeAction::AddTrack`, as on the grid) while the project has fewer than 128 (`SongLanes::can_add_track`); the audio lanes and "+ Audio" come after it.
 - **The ruler** shows the bar numbers and the markers' names in amber, and the playhead is a line over every lane (green while song mode is on).
 - **Scrolling** moves the timeline a bar a step. It shows 16 bars, and the title line says how long the song is.
-- **Tapping a block** selects it, and tapping an empty lane selects nothing.
+- **Tapping a block** selects it as the finger lifts, and tapping an empty lane selects nothing.
+- **Drag and drop** (Jay, 14 Nov; layout spec 4g). A block, the picked block's end grip or a section's name on the ruler is held as the finger goes down (`SongLanes::grip`) and lifts once it moves `LIFT_PX` (12 px); a tap acts on the lift.
+  - A block follows the finger along its lane, its start snapped to the nearest bar, or up and down to another MIDI lane. Its old place is outlined, where it lands is outlined in the accent colour with a "bar 9" tag, and the block is drawn under the finger. Let go: `Place { index, row: track, at: start }`, and nothing where it started or off the MIDI lanes. `TimeAction::MovePlacement`, with `copy` from SHIFT held as it lifts (the app sets it).
+  - The picked block's end grip (two short bars at its right end, `end_rect`): its new end snapped to the bar, a bar line past its start at least, with an "N bars" tag. `Stretch { index, to: length }`, `TimeAction::StretchPlacement`.
+  - A section's name (`marker_rect`): a tap is `Tab(SECTION_TAP + k)`, `TimeAction::PickSection` (a second tap lets it go). Dragged, its span is outlined on every lane, a line marks the section edge nearest its start, and a chip with its name and length follows the finger, kept clear of the line. `Drop { from: k, to: gap }`, `TimeAction::MoveSection`; a move to where it is changes nothing.
+  - Held within 28 px of the left or right edge, the bars scroll one way, every 400 ms while it moves there: `Tab(BARS_BACK)` or `Tab(BARS_ON)`, which `TimePage::page_tracks` takes.
+  - The wheel. Arrange has no outline (the wheel picks the record row), so with a block or a section picked the wheel's push grabs it instead of opening the row (`Player::song_grab`): a turn moves the block a beat (`MovePlacement`), or the section a place (`MoveSection`), and the next push lets go.
+  - The hint line follows the pick (`view::song_hint`).
 - **The buttons along the bottom:**
   - **Clips** goes back to the grid.
   - **Song on/off** turns song mode on or off.
@@ -103,7 +113,8 @@ The audio tracks (`rust/mpfree-audiotracks`, the audio tracks thread's engine: s
 ## In the pad player (`TimeHost`)
 
 - `act(SongView)` swaps the view, and `act(SongMode)` turns song mode on and compiles.
-- `act(ScenesToSong)`, `SongToScenes`, `MakeUnique` and `DeletePlacement` edit the project, and compile. If the edit or the compile fails, the project goes back to what it was, and the log says why.
+- `act(ScenesToSong)`, `SongToScenes`, `MakeUnique`, `DeletePlacement`, `MovePlacement`, `StretchPlacement` and `MoveSection` edit the project, and compile. If the edit or the compile fails, the project goes back to what it was, and the log says why (the screen says it in place of the hint for a drag or a delete).
+- **Undo.** Every one of those but Song → scenes (which changes the rows) is an edit take holding the song before and after it (`Takes::song_edit`, `Take::song` with a `SongChange` naming it: "Move 5 · Bass, to bar 9" in the takes list). UNDO puts the song back as it was and redo as it became, while nothing else has changed the song in between; otherwise they leave it. A moved block stays picked at its new index, and a moved section stays picked; an undo or redo of a song edit drops the pick.
 - Every compile calls `PlayView::set_song`.
 - `act(RecSong)` arms or disarms live to song. After every period the recorder sees the transport's block and the cues that started. When the transport stops, the recording goes into the song and compiles, and the log says how many placements and morph points went in (`TimeHost::take_song_note`).
 - While recording, the morph bar's moves go into the song as they reach the mixer's mod engine (`TimeHost::morph`, see [scenes.md](scenes.md#the-scene-morph-t10-mpfree_performmorph)): each crossfader position, and new rows chosen while morphing.
@@ -128,7 +139,9 @@ The audio tracks (`rust/mpfree-audiotracks`, the audio tracks thread's engine: s
   - a mute in the middle of a two-bar clip leaving a gap, and the clip coming back in phase;
   - morph moves going into the song's lane with their rows, held across a pause, and playing back.
 - `mpfree-perform/tests/song_no_alloc.rs` records 200 periods where nothing starts, at periods of 1 to 4096 frames, under a counting allocator: none of them allocates.
-- `mpfree-time-ui` tests cover the Song view's blocks, buttons and empty space, and swapping between the grid and the Song view.
+- `mpfree-seq` unit tests cover moving and copying a placement along and across lanes, a length up to the next block, and moving and copying sections (cut in phase, what comes first kept, refused with morph moves).
+- `mpfree-time-ui` tests cover the Song view's blocks, buttons and empty space, swapping between the grid and the Song view, and the drags: a wobble still a tap, a block to the bar and to another lane, the end grip, sections picked and dropped, the edge scroll and the hint.
+- `mpfree-app`'s `song_drags_move_blocks_and_sections_and_undo_takes_them_back` runs the drags through `TimeHost` with their messages, a refusal, and undo and redo back to the start; `song_drags_copy_with_shift_and_the_wheel_moves_the_pick` checks SHIFT and the wheel's grab on the screen.
 - `mpfree-app`'s `rows_become_a_song_that_plays_and_goes_back_into_rows` runs it through `TimeHost` with the pads: Scenes → song, song mode, a launched clip taking a track over and the song playing on after its stop, Song → scenes, make unique and delete.
 - `mpfree-app`'s `rec_song_records_the_grid_into_the_song` arms Rec song, launches two rows and stops. The song holds what was played and plays it back the same.
 - `mpfree-app`'s `rec_song_keeps_the_morph_bar_moves_made_on_the_mixer` moves the morph bar on the real mixer's mod engine while Rec song records, changes rows, and checks the song's morph lane and rows.
@@ -137,8 +150,8 @@ The audio tracks (`rust/mpfree-audiotracks`, the audio tracks thread's engine: s
 
 - Audio lanes: dragging a region to another track. The app wires the engine (`rust/mpfree-app/src/audiotracks.rs`, see [audio-tracks.md](audio-tracks.md)).
 
-- Moving, resizing and copying placements by touch, and adding or naming markers on screen. The model has them; the Song view only selects, makes unique and deletes for now.
-- Undo for song edits.
+- Adding or naming markers on screen.
+- Moving sections with morph moves in the song (their lanes would need cutting and shifting with them).
 - Recording notes straight into the song. REC records into the session's clips, and live to song records which clips played.
 - Hand mutes in live to song. The pad player has no mute button for the time engine yet, so only a scene's mutes are recorded there.
 - The morph's rows in song mode. The song lane plays the crossfader on the mixer's mod engine, but the rows the song keeps are not loaded at their ticks yet, so it morphs between the rows loaded at the time.

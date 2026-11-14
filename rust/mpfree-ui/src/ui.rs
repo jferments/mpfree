@@ -230,6 +230,13 @@ pub enum EventKind {
     /// `from` dropped on place `to`, in the widget's own numbering (a
     /// clip grid's cells, the gaps between its rows).
     Drop { from: usize, to: usize },
+    /// Item `index` dragged to row `row` from `at` (the widget's own
+    /// units, such as song ticks): a block moved along or across the
+    /// Song view's lanes.
+    Place { index: usize, row: usize, at: i64 },
+    /// Item `index`'s end dragged so it is `to` long (the widget's own
+    /// units): a block made longer or shorter.
+    Stretch { index: usize, to: i64 },
 }
 
 #[derive(Clone, Debug, PartialEq)]

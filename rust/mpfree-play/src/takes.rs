@@ -34,6 +34,12 @@
 //! on the new track are undone before it goes, and no take ever names a
 //! track that moved.
 //!
+//! A Song view edit (a block moved, copied, made longer or deleted, a
+//! section moved: [`Takes::song_edit`]) is an edit too: it keeps the song
+//! before and after, so UNDO puts the song back as it was, and redo as it
+//! became, as long as nothing else changed the song in between (live to
+//! song, say); otherwise they leave it alone.
+//!
 //! A recorded note's pad pressure goes in with it ([`Takes::add_touched`]):
 //! into the clip's pressure first, which only ever grows, so undo and
 //! redo of the note need not touch it.
@@ -66,6 +72,7 @@
 //! [`Recorder::taken_locks`]: crate::Recorder::taken_locks
 //! [`Recorder::taken_moves`]: crate::Recorder::taken_moves
 
+use mpfree_seq::arrange::Arrangement;
 use mpfree_seq::mpfree_moves::{Kind, Map, Point, Target};
 use mpfree_seq::steps::{Edit, MovesEdit};
 use mpfree_seq::{
@@ -107,6 +114,54 @@ pub struct MovePut {
     /// What the lane had: (from, to, points) over clip ticks `from..to`,
     /// for undo (`Moves::restore`).
     pub saved: Vec<(u32, u32, Vec<Point>)>,
+}
+
+/// What a Song view edit did ([`Takes::song_edit`]), for the undo list.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SongChange {
+    /// A placement moved, or a copy of it put, on `track` from `start`.
+    Moved {
+        track: usize,
+        start: Tick,
+    },
+    Copied {
+        track: usize,
+        start: Tick,
+    },
+    /// A placement on `track` made `length` song ticks long.
+    Resized {
+        track: usize,
+        length: Tick,
+    },
+    /// A section moved, or a copy of it put, from song tick `at` on.
+    SectionMoved {
+        at: Tick,
+    },
+    SectionCopied {
+        at: Tick,
+    },
+    /// A placement on `track` at `start` deleted, or given its own copy
+    /// of its clip.
+    Deleted {
+        track: usize,
+        start: Tick,
+    },
+    Unique {
+        track: usize,
+        start: Tick,
+    },
+    /// Scenes → song: `rows` rows onto the song's end.
+    Scenes {
+        rows: usize,
+    },
+}
+
+/// A Song view edit: what it did, and the song before and after it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SongEdit {
+    pub change: SongChange,
+    pub before: Arrangement,
+    pub after: Arrangement,
 }
 
 /// Takes kept for undo when no limit is given.
@@ -154,6 +209,8 @@ pub struct Take {
     /// its clips are in `removed` and `made`, and undo and redo move the
     /// song's linked blocks, the scenes and the morph's rows with them.
     pub dropped: Option<ClipDrop>,
+    /// A Song view edit ([`Takes::song_edit`]).
+    pub song: Option<Box<SongEdit>>,
 }
 
 /// The takes that can be undone, oldest first, and the ones that can be
@@ -457,6 +514,26 @@ impl Takes {
         Ok((number, index))
     }
 
+    /// A Song view edit the caller has made: `before` is the song as it
+    /// was, the project's is the song now. An edit of its own, which undo
+    /// takes back and redo does again while nothing else has changed the
+    /// song (see the module notes). The edit's number.
+    pub fn song_edit(&mut self, project: &Project, change: SongChange, before: Arrangement) -> u32 {
+        self.edits += 1;
+        let number = self.edits;
+        self.push(Take {
+            number,
+            edited: true,
+            song: Some(Box::new(SongEdit {
+                change,
+                before,
+                after: project.arrangement.clone(),
+            })),
+            ..Take::default()
+        });
+        number
+    }
+
     /// CAPTURE into a clip that holds notes already (the one that was
     /// playing): add `notes` to clip `slot` of `track`, as a take of its
     /// own, with their pressure: each note's `touch` names its run in
@@ -677,6 +754,11 @@ impl Takes {
         if let Some(d) = take.dropped {
             drops::follow(project, d, true);
         }
+        if let Some(e) = take.song.as_deref() {
+            if project.arrangement == e.after {
+                project.arrangement = e.before.clone();
+            }
+        }
         if let Some((index, kept)) = &mut take.track_added {
             // Kept as it is now (its name, its clips), for redo.
             if project.tracks.len() == *index + 1 {
@@ -712,6 +794,11 @@ impl Takes {
         }
         if let Some(d) = take.dropped {
             drops::follow(project, d, false);
+        }
+        if let Some(e) = take.song.as_deref() {
+            if project.arrangement == e.before {
+                project.arrangement = e.after.clone();
+            }
         }
         for (track, slot, note) in &take.erased {
             if let Some(c) = clip(project, *track, *slot) {
@@ -921,6 +1008,36 @@ mod tests {
             .iter()
             .map(|n| n.tick)
             .collect()
+    }
+
+    #[test]
+    fn a_song_edit_undoes_and_redoes_unless_the_song_changed_since() {
+        use mpfree_seq::arrange::Placement;
+        let mut p = project();
+        p.arrangement
+            .place(Placement::linked(0, 0, 0, 3840))
+            .unwrap();
+        let mut t = Takes::default();
+        let before = p.arrangement.clone();
+        p.arrangement
+            .move_placement(&p.tracks, 0, 0, 7680, false)
+            .unwrap();
+        let moved = p.arrangement.clone();
+        let change = SongChange::Moved {
+            track: 0,
+            start: 7680,
+        };
+        assert_eq!(t.song_edit(&p, change, before.clone()), 1);
+        assert_eq!(t.done()[0].song.as_ref().unwrap().change, change);
+        assert_eq!(t.undo(&mut p), Some(1));
+        assert_eq!(p.arrangement, before);
+        assert_eq!(t.redo(&mut p), Some(1));
+        assert_eq!(p.arrangement, moved);
+        // Something else changes the song (a marker, say): undo leaves it.
+        p.arrangement.mark(0, "A").unwrap();
+        let now = p.arrangement.clone();
+        assert_eq!(t.undo(&mut p), Some(1));
+        assert_eq!(p.arrangement, now);
     }
 
     #[test]
