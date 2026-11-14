@@ -47,6 +47,12 @@ MPFREE_ACCEPT_USBMON=YES MPFREE_CAPTURE_PHASES=midi-cv bash tools/mpc-one/collec
 
 `MPFREE_CAPTURE_PHASES=midi-out` is the third round, for the MIDI Out jack only. Set it up once a synth on MIDI Out is heard playing from a MIDI track (in Akai's app that took the track's MIDI Out routing as well as its MIDI Output Ch). Then you play C, E and G on the keyboard into the MIDI track, hold one key for about 3 s, hit pad 1 softly and hard and pad 13 once, and, only if Sync is already ticked for that port in Akai's Preferences, press PLAY and STOP. The report shows which cable and channel the notes leave on.
 
+`MPFREE_CAPTURE_PHASES=cv-ports` checks CV ports 5 to 8, which MPFree doesn't send until a capture has shown them. With a CV track selected (nothing plugged into the jacks), you set its CV Port to 5 and Gate Port to 6 and play one C, then 7 and 8, then back to 1 and 2. Set each phase's ports before pressing Enter: the whole capture has 240 s. The report's "CV ports by phase" lines name each port that got a value (a port is the control-change pair `2 × (port − 1)` and the next, on cable 1, channel 16), so ports 5 to 8 should show as CC 8 to 15. It runs under Akai's app on 3.6 or 3.10.1; if the MPC's kernel has no usbmon, or debugfs isn't already mounted, the capture says so and stops without doing anything.
+
+```bash
+MPFREE_ACCEPT_USBMON=YES MPFREE_CAPTURE_PHASES=cv-ports bash tools/mpc-one/collect-over-ssh.sh --midi-capture
+```
+
 ## What comes next (not in this phase)
 
 These need separate, explicit opt-in steps, each with its own undo plan:
