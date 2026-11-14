@@ -138,6 +138,9 @@ const OPEN_SETTLE: Duration = Duration::from_millis(1500);
 
 /// An opened project's loops as read, with lines about any left out.
 type LoopsRead = Result<(mpfree_looper::save::Saved, Vec<String>), String>;
+/// An opened project's audio tracks, read on their own thread, with lines
+/// for the log.
+type AudioRead = Result<(mpfree_audiotracks::save::Saved, Vec<String>), String>;
 
 /// Seconds since 1970 (UTC) now: when a project is saved.
 fn now_utc() -> u64 {
@@ -586,6 +589,9 @@ pub enum FromUi {
     /// An opened project's loops, read on their own thread: they go in
     /// once the old ones have faded out.
     OpenLoops(Box<mpfree_looper::save::Saved>),
+    /// An opened project's audio tracks with their takes' audio, read on
+    /// their own thread: they go in once the old ones are emptied.
+    OpenAudio(Box<mpfree_audiotracks::save::Saved>),
     /// The Pads tab's switch: Browse or Pad (`mpfree_sampler_ui::pads_tab`).
     PadsView(usize),
     /// The browser's preview: hear this sound once (it replaces one
@@ -827,6 +833,9 @@ pub struct Player {
     open_actions: usize,
     /// An opened project's loops being read (the files can be big).
     loops_load: Option<std::sync::mpsc::Receiver<LoopsRead>>,
+    /// An opened project's audio tracks being read (the takes' files can
+    /// be big).
+    audio_load: Option<std::sync::mpsc::Receiver<AudioRead>>,
     /// The browser's preview level, in dB (its Q-Link 3).
     preview_db: f32,
     /// A sound file being read for the preview.
@@ -1055,6 +1064,7 @@ impl Player {
             opened_at: None,
             open_actions: 0,
             loops_load: None,
+            audio_load: None,
             preview_db: crate::preview::LEVEL_DB,
             preview_load: None,
             arp_panel,
@@ -3015,6 +3025,13 @@ impl Player {
             );
             return;
         }
+        if self.audio_load.is_some() {
+            self.say(
+                "project: not saved, the audio tracks are still opening (try again in a moment)"
+                    .into(),
+            );
+            return;
+        }
         let mut extra = Vec::new();
         let (text, sounds) = self.sample.save_part();
         extra.push((crate::project::SAMPLER.to_string(), text));
@@ -3045,6 +3062,21 @@ impl Player {
                     file,
                     std::sync::Arc::new(move |w: &mut dyn std::io::Write| {
                         w.write_all(&mpfree_looper::save::wav(&audio, rate))
+                    }),
+                )
+            }));
+        }
+        // The audio tracks: their part, and a WAV a take, written a piece
+        // at a time.
+        if let Some(audio) = c.audio.take() {
+            let rate = audio.rate;
+            let (text, files) = crate::project::audio_part(audio);
+            extra.push((crate::project::AUDIOTRACKS.to_string(), text));
+            samples.extend(files.into_iter().map(|(file, audio, channels)| {
+                mpfree_library::NewSample::new(
+                    file,
+                    std::sync::Arc::new(move |w: &mut dyn std::io::Write| {
+                        mpfree_audiotracks::save::write_wav(w, &audio, channels, rate)
                     }),
                 )
             }));
@@ -3106,6 +3138,30 @@ impl Player {
                 Err(e) => self.say(format!("project: the loops weren't opened ({e})")),
             }
         }
+        // The audio tracks, on a thread too: a take's file can be minutes
+        // long.
+        self.audio_load = None;
+        if let (Some(text), Some(lib)) = (
+            snap.part(crate::project::AUDIOTRACKS),
+            self.browser.as_ref().map(|b| b.library().clone()),
+        ) {
+            let (text, loc, rate) = (text.to_string(), loc.clone(), self.project_rate);
+            let (tx, rx) = std::sync::mpsc::channel();
+            let read = std::thread::Builder::new()
+                .name("audio-open".into())
+                .spawn(move || {
+                    let r = crate::project::audio_open(&text, rate, |f| {
+                        lib.sample_path(&loc, f)
+                            .and_then(std::fs::read)
+                            .map_err(|e| e.to_string())
+                    });
+                    let _ = tx.send(r);
+                });
+            match read {
+                Ok(_) => self.audio_load = Some(rx),
+                Err(e) => self.say(format!("project: the audio tracks weren't opened ({e})")),
+            }
+        }
         // The kits and engines coming in are the open's own news.
         self.opened_at = Some(Instant::now());
         self.open_actions = self.outbox.len();
@@ -3146,10 +3202,10 @@ impl Player {
         };
         let snap = crate::project::new_snapshot(d);
         let mut o = crate::project::opening(&snap, self.project_rate, "a new project");
-        o.clear_loops = true;
+        (o.clear_loops, o.clear_audio) = (true, true);
         self.open_midi(None);
         self.outbox.push(FromUi::OpenProject(Box::new(o)));
-        self.loops_load = None;
+        (self.loops_load, self.audio_load) = (None, None);
         self.opened_at = Some(Instant::now());
         if !self.sample.reset_kits(&mut self.ui) {
             self.say("project: the kits haven't come yet; they stay as they are".to_string());
@@ -3210,6 +3266,29 @@ impl Player {
                 self.opened_at = Some(Instant::now());
             }
             Err(e) => self.say(format!("project: the loops weren't opened ({e})")),
+        }
+    }
+
+    /// An opened project's audio tracks, once read: to the audio thread.
+    fn poll_audio(&mut self) {
+        let Some(rx) = &self.audio_load else {
+            return;
+        };
+        let r = match rx.try_recv() {
+            Ok(r) => r,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => Err("its thread stopped".into()),
+        };
+        self.audio_load = None;
+        match r {
+            Ok((saved, notes)) => {
+                for n in notes {
+                    self.say(n);
+                }
+                self.outbox.push(FromUi::OpenAudio(Box::new(saved)));
+                self.opened_at = Some(Instant::now());
+            }
+            Err(e) => self.say(format!("project: the audio tracks weren't opened ({e})")),
         }
     }
 
@@ -3710,6 +3789,7 @@ impl Player {
                 | FromUi::SaveProject
                 | FromUi::OpenProject(_)
                 | FromUi::OpenLoops(_)
+                | FromUi::OpenAudio(_)
                 | FromUi::Kit(_)
                 | FromUi::LevelDb(_)
                 | FromUi::Tab(_)
@@ -4330,6 +4410,7 @@ impl Player {
         }
         self.poll_preview();
         self.poll_loops();
+        self.poll_audio();
         self.open_at_start();
         if let Some(k) = self.sample.take_wanted_kit() {
             // An opened project's kit: the audio thread switches and says so.
@@ -9008,6 +9089,41 @@ mod tests {
                 },
             )],
         };
+        // Audio 2 with a region of a mono take, as the tracks' save gives it.
+        let take: Vec<f32> = (0..4410).map(|k| (k % 89) as f32 / 300.0).collect();
+        let audio = mpfree_audiotracks::save::Saved {
+            rate: 44_100,
+            tracks: vec![mpfree_audiotracks::save::TrackFile {
+                index: 1,
+                input: mpfree_audiotracks::Input::Right,
+                monitor: mpfree_audiotracks::Monitor::Auto,
+                level: 0.5,
+                pan: 0.0,
+                muted: false,
+                solo: true,
+                regions: vec![mpfree_audiotracks::Region {
+                    start: 0,
+                    end: 960,
+                    take: 4,
+                    src: 0,
+                    gain: 1.0,
+                    fade_in: 0,
+                    fade_out: 0,
+                }],
+            }],
+            takes: vec![mpfree_audiotracks::save::TakeFile {
+                id: 4,
+                track: 1,
+                group: 1,
+                pass: 0,
+                bpm: 98.0,
+                anchor: 0.0,
+                frames: 4410,
+                channels: 1,
+                file: String::new(),
+                audio: take.clone(),
+            }],
+        };
         let c = Collected {
             tempo: 98.0,
             swing: mpfree_transport::time::Swing::new(240, 62).unwrap(),
@@ -9017,6 +9133,7 @@ mod tests {
             synth: project::synth_text(&Default::default(), &synth.sounds()),
             arp: "mpfree-arp 1\ntrack 1\nmode = arp\n".to_string(),
             loops: Some(loops),
+            audio: Some(audio),
         };
         p.apply(ToUi::ProjectParts(Box::new(c)));
         p.step_browser();
@@ -9037,6 +9154,7 @@ mod tests {
             project::LOOPER,
             project::ARP,
             project::MIDI,
+            project::AUDIOTRACKS,
         ] {
             assert!(snap.part(part).is_some(), "{part}");
         }
@@ -9074,30 +9192,52 @@ mod tests {
         assert!(t2.1.contains(&(mx::VOLUME, -3.0)));
         assert_eq!(opened.synth.as_ref().unwrap().1, synth.sounds());
         assert!(opened.clear_loops);
+        assert!(opened.clear_audio);
         assert_eq!(
             opened.arp.as_deref(),
             Some("mpfree-arp 1\ntrack 1\nmode = arp\n")
         );
         p.apply(ToUi::ProjectBack(opened));
-        // The loops follow, read on their own thread, with their audio.
+        // The loops and the audio tracks follow, each read on its own
+        // thread, with their audio.
         let end = Instant::now() + Duration::from_secs(5);
-        let loops = loop {
+        let (mut loops, mut audio) = (None, None);
+        while loops.is_none() || audio.is_none() {
             p.tick(0.033);
-            if let Some(l) = p.take_actions().into_iter().find_map(|a| match a {
-                FromUi::OpenLoops(l) => Some(l),
-                _ => None,
-            }) {
-                break l;
+            for a in p.take_actions() {
+                match a {
+                    FromUi::OpenLoops(l) => loops = Some(l),
+                    FromUi::OpenAudio(a) => audio = Some(a),
+                    _ => {}
+                }
             }
             assert!(Instant::now() < end, "{:?}", events_log(&p));
             std::thread::sleep(Duration::from_millis(5));
-        };
+        }
+        let (loops, audio) = (loops.unwrap(), audio.unwrap());
         assert_eq!((loops.selected, loops.loops.len()), (1, 1));
         let (n, f) = &loops.loops[0];
         assert_eq!((*n, f.frames, f.level), (1, 4410, 0.8));
         assert_eq!(f.layers[0].pan, -0.25);
         assert_eq!(f.layers[0].audio, layer);
         assert!(f.layers[0].file.starts_with("loop-"));
+        // The audio tracks, with their take's audio from its WAV.
+        assert_eq!(audio.tracks.len(), 1);
+        let t = &audio.tracks[0];
+        assert_eq!(
+            (t.index, t.input, t.level, t.solo),
+            (1, mpfree_audiotracks::Input::Right, 0.5, true)
+        );
+        assert_eq!(t.regions[0].take, 4);
+        let k = &audio.takes[0];
+        assert_eq!((k.id, k.frames, k.channels), (4, 4410, 1));
+        assert_eq!(k.audio, take);
+        assert!(
+            k.file.starts_with("take-") && k.file.ends_with(".wav"),
+            "{}",
+            k.file
+        );
+        assert!(lib.sample_path(&loc, &k.file).is_ok());
         assert!(!p.browser.as_ref().unwrap().unsaved());
         // Once the open settles, a pad played isn't an edit; a new clip is.
         p.opened_at = None;
@@ -9150,6 +9290,7 @@ mod tests {
         let fresh = new(&mut p).expect("a new project");
         assert_eq!(fresh.what, "a new project");
         assert!(fresh.clear_loops);
+        assert!(fresh.clear_audio);
         assert_eq!(fresh.tempo, Some(120.0));
         assert_eq!(fresh.swing, Some(Default::default()));
         assert_eq!(fresh.arp, None, "every arp at its default");

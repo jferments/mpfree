@@ -201,6 +201,9 @@ pub struct AudioHost {
     rx: Option<Receiver<FromWorker>>,
     saving: Option<Saving>,
     saved: Option<Saved>,
+    /// Saves cancelled while the worker sized them: their room is dropped
+    /// when it comes.
+    cancelled: u8,
     fitting: Option<Fitting>,
     waving: Option<Waving>,
     wave: Option<TakeWave>,
@@ -271,6 +274,7 @@ impl AudioHost {
             rx: spawned.then_some(rx),
             saving: None,
             saved: None,
+            cancelled: 0,
             fitting: None,
             waving: None,
             wave: None,
@@ -380,6 +384,20 @@ impl AudioHost {
         self.saved.take()
     }
 
+    /// Stop the save under way, and drop one finished but not taken (a
+    /// project opening over the one being saved). What it had read goes
+    /// to the worker to drop. Does not allocate.
+    pub fn cancel_save(&mut self) {
+        match self.saving.take() {
+            Some(Saving::Reading { saved, .. }) => self.send(ToWorker::DropSaved(saved)),
+            Some(Saving::Sizing) => self.cancelled = self.cancelled.saturating_add(1),
+            Some(Saving::Waiting) | None => {}
+        }
+        if let Some(old) = self.saved.take() {
+            self.send(ToWorker::DropSaved(old));
+        }
+    }
+
     /// Put a saved part back: every take (copying in over the next
     /// periods) and every track. Takes or tracks that could not be put
     /// back are listed in the error; the rest are in. Any audio not taken
@@ -403,12 +421,15 @@ impl AudioHost {
                     bad.push(format!("track {}", t.index + 1));
                 }
             }
+            self.send(ToWorker::DropSaved(saved));
             return if bad.is_empty() {
                 Ok(())
             } else {
                 Err(format!("audio tracks: could not load {}", bad.join(", ")))
             };
         }
+        // Only a refusal allocates (its line); what is left of the part
+        // goes to the worker to drop.
         let mut bad = Vec::new();
         for k in saved.takes.drain(..) {
             if let Err(k) = self.tracks.load_take(k) {
@@ -421,6 +442,7 @@ impl AudioHost {
                 bad.push(format!("track {}", t.index + 1));
             }
         }
+        self.send(ToWorker::DropSaved(saved));
         if bad.is_empty() {
             Ok(())
         } else {
@@ -506,6 +528,23 @@ impl AudioHost {
         self.wave.take()
     }
 
+    /// Give back a part not loaded (a project opened over another still
+    /// waiting), to be dropped on the worker rather than here.
+    pub fn drop_saved(&self, s: Saved) {
+        self.send(ToWorker::DropSaved(s));
+    }
+
+    /// Stop the waveform being read and drop one finished but not taken
+    /// (the takes are going: a project opening). Does not allocate.
+    pub fn cancel_wave(&mut self) {
+        if let Some(Waving::Reading { wave, .. }) = self.waving.take() {
+            self.send(ToWorker::DropWave(wave));
+        }
+        if let Some(w) = self.wave.take() {
+            self.send(ToWorker::DropWave(w));
+        }
+    }
+
     /// Give back a waveform the screen is done with, to be dropped on the
     /// worker rather than here (the audio thread never frees). Without a
     /// worker it is dropped here.
@@ -520,6 +559,10 @@ impl AudioHost {
         self.tend_disk();
         while let Some(m) = self.rx.as_ref().and_then(|rx| rx.try_recv().ok()) {
             match m {
+                FromWorker::Sized(saved) if self.cancelled > 0 => {
+                    self.cancelled -= 1;
+                    self.send(ToWorker::DropSaved(saved));
+                }
                 FromWorker::Sized(saved) => {
                     self.saving = Some(Saving::Reading {
                         saved,
