@@ -38,11 +38,11 @@ use crate::song::{
 };
 use crate::widgets::{
     BarButton, BarItem, CellState, ClipGrid, GridCell, GridTrack, MorphBar, Run, TakeItem,
-    TakeList, TransportBar, ADD_TRACK, GRID_COLS, PAGE_BACK, PAGE_ON,
+    TakeList, TransportBar, ADD_TRACK, GRID_COLS, PAGE_BACK, PAGE_ON, ROWS_BACK, ROWS_ON, ROW_DROP,
 };
 use mpfree_audiotracks::host::TakeWave;
 use mpfree_audiotracks::{Input, Monitor};
-use mpfree_play::{anchored, Cue, Launch, Take, Takes};
+use mpfree_play::{anchored, ClipDrop, Cue, Launch, Take, Takes};
 use mpfree_seq::{Clip, Project, Source, Speed, MAX_TRACKS, SLOTS};
 use mpfree_transport::time::{Meter, Swing, Tick, MAX_BPM, MIN_BPM, PPQ};
 use mpfree_transport::transport::MAX_COUNT_IN;
@@ -81,7 +81,7 @@ pub const CLIPS_LAYOUT: &str =
 pub const SONG_LAYOUT: &str =
     "col(header:60, row(col(transport:44, row(col(song:*, morph:64):*, col(record:*, takes:240):250):*):*, qlinks:168):*, hint:26)";
 pub const CLIPS_HINT: &str =
-    "Tap a clip: it plays from the next bar, or stops   ·   a row's number plays the whole row   ·   + records into an empty slot   ·   a track's name arms it";
+    "Tap a clip: it plays from the next bar, or stops   ·   drag it: move it (SHIFT as you lift: copy)   ·   a row's number plays the row   ·   + records   ·   a track's name arms it";
 /// The hint line under the Song view.
 pub const SONG_HINT: &str =
     "Tap a block to pick it   ·   Song on: the song plays where no clip is launched   ·   Scenes → song adds the rows at its end   ·   SHIFT + wheel: bars";
@@ -230,18 +230,27 @@ pub struct TakeRow {
     pub deleted: bool,
     /// It added this track (+ Track).
     pub new_track: Option<usize>,
+    /// A drop on the Clips grid: a clip or a row moved, swapped or copied.
+    pub dropped: Option<ClipDrop>,
 }
 
 impl TakeRow {
     pub fn of(t: &Take) -> TakeRow {
         let made = t.made.first().map(|(track, slot, _)| (*track, *slot));
         let removed = t.removed.first().map(|(track, slot, _)| (*track, *slot));
-        let at = made.or(removed).or_else(|| {
-            t.added
-                .first()
-                .or(t.erased.first())
-                .map(|&(track, slot, _)| (track, slot))
-        });
+        let at = match t.dropped {
+            // Named by where the clip came from; a row by its number.
+            Some(ClipDrop::Moved(a, _) | ClipDrop::Swapped(a, _) | ClipDrop::Copied(a, _)) => {
+                Some(a)
+            }
+            Some(_) => None,
+            None => made.or(removed).or_else(|| {
+                t.added
+                    .first()
+                    .or(t.erased.first())
+                    .map(|&(track, slot, _)| (track, slot))
+            }),
+        };
         let added = t.added.len() + t.made.iter().map(|(_, _, c)| c.notes.len()).sum::<usize>();
         TakeRow {
             number: t.number,
@@ -253,11 +262,20 @@ impl TakeRow {
             erased: t.erased.len(),
             deleted: removed.is_some(),
             new_track: t.track_added.as_ref().map(|(i, _)| *i),
+            dropped: t.dropped,
         }
     }
 
-    /// What it is: "take", "capture", "edit" or "delete".
+    /// What it is: "take", "capture", "edit", "delete", or for a drop
+    /// "move", "swap" or "copy".
     pub fn word(&self) -> &'static str {
+        if let Some(d) = self.dropped {
+            return match d {
+                ClipDrop::Moved(..) | ClipDrop::RowMoved { .. } => "move",
+                ClipDrop::Swapped(..) => "swap",
+                ClipDrop::Copied(..) | ClipDrop::RowCopied { .. } => "copy",
+            };
+        }
         if self.deleted {
             "delete"
         } else if self.captured {
@@ -269,12 +287,15 @@ impl TakeRow {
         }
     }
 
-    /// What Undo and Redo name it: "take 3", "capture 2", "edit 5", or
-    /// "new track 9".
+    /// What Undo and Redo name it: "take 3", "capture 2", "edit 5",
+    /// "new track 9", or "move 7 · row 3" for a row.
     pub fn short(&self) -> String {
-        match self.new_track {
-            Some(t) => format!("new track {}", t + 1),
-            None => format!("{} {}", self.word(), self.number),
+        match (self.new_track, self.dropped) {
+            (Some(t), _) => format!("new track {}", t + 1),
+            (None, Some(ClipDrop::RowMoved { from, .. } | ClipDrop::RowCopied { from, .. })) => {
+                format!("{} {} · row {}", self.word(), self.number, from + 1)
+            }
+            _ => format!("{} {}", self.word(), self.number),
         }
     }
 }
@@ -554,6 +575,25 @@ pub enum TimeAction {
         track: usize,
         slot: usize,
     },
+    /// A clip dragged on the Clips grid and dropped on slot `to`, both
+    /// (track, slot) (Jay, 14 Nov: drag and drop): it moves into an
+    /// empty slot, or changes places with the clip there; with `copy`
+    /// (SHIFT held at the lift) a copy goes into an empty slot. One take,
+    /// which UNDO takes back.
+    DropClip {
+        from: (usize, usize),
+        to: (usize, usize),
+        copy: bool,
+    },
+    /// A row's number dragged on the Clips grid: row `from` goes in
+    /// before row `to` (a gap, 0 to the slots), the rows between moving
+    /// one, or with `copy` a copy goes in and the rows under it move down
+    /// one. One take, which UNDO takes back.
+    DropRow {
+        from: usize,
+        to: usize,
+        copy: bool,
+    },
     /// "+ Track": a new empty track at the end (up to 128), armed, as a
     /// take that UNDO takes away again (Jay, 14 Nov: up to 128 tracks).
     AddTrack,
@@ -828,8 +868,21 @@ pub fn action(ev: &UiEvent, st: &TimeState) -> Option<TimeAction> {
             r if r == SLOTS + 2 => TimeAction::RecSong(!st.song_rec),
             r if r == SLOTS + 3 => TimeAction::Edit(EditAction::Open),
             r if r == SLOTS + ADD_TRACK => TimeAction::AddTrack,
-            // The pager is the page's own: TimePage::page_tracks.
+            // The pager and the drag's edges are the page's own:
+            // TimePage::page_tracks.
             _ => return None,
+        }),
+        // A drop on the grid: a move or a swap; the app makes it a copy
+        // with SHIFT held.
+        (CLIPS, EventKind::Drop { from, to }) if *from >= ROW_DROP => Some(TimeAction::DropRow {
+            from: from - ROW_DROP,
+            to: *to,
+            copy: false,
+        }),
+        (CLIPS, EventKind::Drop { from, to }) => Some(TimeAction::DropClip {
+            from: (from / SLOTS, from % SLOTS),
+            to: (to / SLOTS, to % SLOTS),
+            copy: false,
         }),
         (NOTES, kind) => Some(TimeAction::Edit(match *kind {
             EventKind::Tab(k) => EditAction::Button(k),
@@ -1139,18 +1192,31 @@ pub fn bars_label(bars: i64) -> String {
 pub fn take_title(st: &TimeState, row: &TakeRow) -> String {
     let mut word = row.word().to_string();
     word[..1].make_ascii_uppercase();
-    match row.at {
-        Some((track, slot)) => format!(
+    match (row.at, row.dropped) {
+        (Some((track, slot)), _) => format!(
             "{word} {} · {} / {}",
             row.number,
             st.track_name(track),
             slot + 1
         ),
-        None => format!("{word} {}", row.number),
+        (None, Some(ClipDrop::RowMoved { from, .. } | ClipDrop::RowCopied { from, .. })) => {
+            format!("{word} {} · row {}", row.number, from + 1)
+        }
+        (None, _) => format!("{word} {}", row.number),
     }
 }
 
-fn take_detail(row: &TakeRow) -> String {
+fn take_detail(st: &TimeState, row: &TakeRow) -> String {
+    let cell = |(t, s): (usize, usize)| format!("{} / {}", st.track_name(t), s + 1);
+    match row.dropped {
+        Some(ClipDrop::Moved(_, b) | ClipDrop::Copied(_, b)) => return format!("to {}", cell(b)),
+        Some(ClipDrop::Swapped(_, b)) => return format!("with {}", cell(b)),
+        Some(ClipDrop::RowMoved { from, to }) => {
+            return format!("to row {}", if to > from { to } else { to + 1 })
+        }
+        Some(ClipDrop::RowCopied { to, .. }) => return format!("to row {}", to + 1),
+        None => {}
+    }
     if row.deleted {
         return "clip".into();
     }
@@ -1321,7 +1387,7 @@ pub fn record_rows(st: &TimeState) -> Vec<OptionRow> {
 pub fn take_items(st: &TimeState) -> (Vec<TakeItem>, Option<usize>) {
     let item = |r: &TakeRow, undone: bool| TakeItem {
         title: take_title(st, r),
-        detail: take_detail(r),
+        detail: take_detail(st, r),
         color: r.at.map(|(track, _)| track_color(track)),
         undone,
     };
@@ -1488,6 +1554,8 @@ pub struct TimePage {
     /// The armed track last shown, so a newly armed track off the page
     /// brings its page.
     armed_seen: Option<usize>,
+    /// The grid's rows in view, as of the last update.
+    rows_seen: usize,
 }
 
 impl TimePage {
@@ -1527,6 +1595,14 @@ impl TimePage {
         let step = match (ev.widget.as_str(), &ev.kind) {
             (CLIPS, EventKind::Toggle(k)) if *k == SLOTS + PAGE_BACK => -1,
             (CLIPS, EventKind::Toggle(k)) if *k == SLOTS + PAGE_ON => 1,
+            (CLIPS, EventKind::Toggle(k)) if *k == SLOTS + ROWS_BACK || *k == SLOTS + ROWS_ON => {
+                // A dragged clip or row held at the top or bottom edge.
+                let rows = self.rows_seen.max(1);
+                let last = SLOTS.saturating_sub(rows) as i64;
+                let d = if *k == SLOTS + ROWS_ON { 1 } else { -1 };
+                self.first_row = (self.first_row as i64 + d).clamp(0, last) as usize;
+                return true;
+            }
             _ => return false,
         };
         let last = st.tracks.len().saturating_sub(1) / GRID_COLS * GRID_COLS;
@@ -1597,6 +1673,7 @@ impl TimePage {
         }
         let tracks = grid_tracks(st);
         let rows = self.visible_rows(ui).max(1);
+        self.rows_seen = rows;
         let title = format!(
             "Clips · slots {}–{} of {SLOTS}",
             self.first_row + 1,
@@ -2523,6 +2600,7 @@ mod tests {
             erased: 0,
             deleted: false,
             new_track: None,
+            dropped: None,
         };
         let mut st = st;
         st.done = vec![take];
@@ -2858,6 +2936,7 @@ mod tests {
             erased: 0,
             deleted: false,
             new_track: None,
+            dropped: None,
         };
         st.done = vec![row(1), row(2)];
         st.undone = vec![row(4), row(3)];
@@ -2888,6 +2967,7 @@ mod tests {
             erased: 0,
             deleted: false,
             new_track: None,
+            dropped: None,
         };
         let (items, _) = take_items(&st);
         assert_eq!(
@@ -2908,6 +2988,7 @@ mod tests {
             erased: 1,
             deleted: false,
             new_track: None,
+            dropped: None,
         };
         assert_eq!(take_items(&st).0[2].title, "Edit 5 · Bass / 1");
         assert_eq!(st.done[1].short(), "edit 5");
@@ -2916,6 +2997,7 @@ mod tests {
             number: 6,
             deleted: true,
             new_track: None,
+            dropped: None,
             at: Some((1, 0)),
             ..st.done[1]
         };

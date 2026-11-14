@@ -193,6 +193,17 @@ Approved by Jay at 22:34Z (the mod thread's card, "Approve as proposed"). The mo
 - **The Song view:** "+ Track" is a lane after the last MIDI lane, above the audio lanes and "+ Audio" (section 4c). The lanes scroll as before, by a drag on the names.
 - **TRACK MUTE:** all 16 pads are tracks, and the PAD BANK buttons pick which 16, as on Akai's MPC: A is tracks 1-16, B 17-32, up to H, 113-128, with SHIFT or a second press for E-H as when picking kits (section 6). The kit playing stays, and the bank is kept for the next TRACK MUTE.
 
+## 4g. Drag and drop
+
+**Jay asked** on 14 Nov 2026 at 12:03Z for dragging effects up and down the chain besides Up and Down, and for drag and drop on the Clips grid, the Song view and the Looper's layers. He picked mockups first (12:12Z) and **approved them as drawn at 12:41Z** (https://claude.ai/artifact/Qj2hoe5JPWGFxgmPShJn4Z).
+
+- **On every screen:** a finger that moves more than a fingertip (12 px) picks a thing up; there is no hold. On a thing that can be dragged, a tap acts on the lift. Its own place stays outlined, and where it would land is outlined (or a line between rows). Lifted where it started, or cancelled, nothing changes. SHIFT held as the finger lifts drops a copy. UNDO takes back any drop. Dragged to an edge, the view pages or scrolls. The wheel: a push grabs, a turn moves, a push drops.
+- **The chain editor:** section 4b. Built.
+- **The Clips grid:** a clip dropped in an empty slot moves there; onto another clip the two change places (a copy goes only into an empty slot); in another track's column it plays that track's sound, and the song's blocks that use it go with it. A row's number dragged moves the whole row to the line, the rows below shifting down, so nothing is written over; with SHIFT a copy goes in. At the grid's edge the tracks page and the rows scroll. Built.
+- **The Song view** (to build): a block slides along its lane snapped to the bar, or up and down to another track's lane; the wheel moves the picked block a beat a detent; a picked block's end grip makes it longer (the clip repeats) or shorter. A section's name on the ruler drags the whole section, on every track, and the sections after shift so nothing is written over; with SHIFT a linked copy. Audio regions drag as they do already.
+- **The Looper** (to build): a layer dragged onto another loop moves there (with SHIFT a copy); onto + New loop it becomes a loop of its own; onto To a pad or To a clip just that layer goes. A loop of another length refuses it and says why.
+- **Left out:** moving tracks (every per-track table would shift) and reordering layers within a loop.
+
 ## 5. Prefs (SHIFT + MENU)
 
 - **Main rows, in order:**

@@ -120,8 +120,8 @@ The Sample tab edits the pad hit last, with an editor per tab (Wave, Warp, Chop,
 
 ## Arrange page
 
-- **`clips/slot`**: a clip slot. Tap a clip: it plays from the next bar, or stops; + on an empty slot records into it. *Test:* `the_clips_page_shows_the_engine_and_turns_taps_into_actions`.
-- **`clips/scene`**: a row's number: plays the whole row (a scene). *Test:* `the_clips_page_shows_the_engine_and_turns_taps_into_actions`.
+- **`clips/slot`**: a clip slot. Tap a clip: it plays from the next bar, or stops (on the lift); + on an empty slot records into it (on the touch). A clip dragged more than 12 px drops on the slot under the lift (`EventKind::Drop`, `TimeAction::DropClip`): it moves, swaps with a clip there, or with SHIFT is copied. *Test:* `the_clips_page_shows_the_engine_and_turns_taps_into_actions`, `clips_and_rows_drag_and_drop_and_a_still_finger_taps`.
+- **`clips/scene`**: a row's number: plays the whole row (a scene), on the lift. Dragged, it moves the row to the gap under the lift (`TimeAction::DropRow`), or with SHIFT copies it. *Test:* `the_clips_page_shows_the_engine_and_turns_taps_into_actions`, `clips_and_rows_drag_and_drop_and_a_still_finger_taps`.
 - **`clips/track`**: a track's name: arms it for recording.
 - **`clips/stop-all`**, **`clips/edit`**, **`clips/song`**, **`clips/rec-song`**: Stop all clips; Edit (the note editor on the picked clip); Song (the Song view); Rec song (record what the grid plays into the song).
 - **`clips/add-track`**: + Track: adds a track after the last one, named "Track 9" and so on and armed; UNDO takes it away. Faint at 128 tracks.

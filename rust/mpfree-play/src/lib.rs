@@ -42,5 +42,5 @@ pub use record::{
     TOUCH_ROOM,
 };
 pub use recorded::{Behind, Includes, Rec, Recent, RECENT};
-pub use takes::{MovePut, MoveWrite, Recorded, Take, Takes, TAKE_ROOM};
+pub use takes::{ClipDrop, MovePut, MoveWrite, Recorded, Take, Takes, TAKE_ROOM};
 pub use view::{anchored, CompileError, Cue, Launch, PlayView, Started, EARLIEST};

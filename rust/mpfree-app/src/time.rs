@@ -1056,6 +1056,57 @@ mod tests {
         assert!(h.control.project.clip(0, 1).is_some());
     }
 
+    /// Jay, 14 Nov: drag and drop on the Clips grid. A playing clip
+    /// dropped elsewhere keeps playing where it lands; onto another clip
+    /// the two change places; a row moves; UNDO takes each back, the
+    /// launch with it.
+    #[test]
+    fn a_dropped_clip_keeps_playing_where_it_lands_and_undo_takes_it_back() {
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        for (t, s, name) in [(0, 0, "Beat"), (0, 1, "Fill"), (1, 0, "Bass")] {
+            h.control.project.tracks[t].slots[s] = Some(Clip::new(name, 1920));
+        }
+        h.act(TimeAction::Launch { track: 0, slot: 0 }).unwrap();
+        let playing = |h: &TimeHost| {
+            h.control
+                .launches
+                .iter()
+                .map(|l| (l.track, l.slot))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(playing(&h), [(0, 0)]);
+        let drop = |from, to, copy| TimeAction::DropClip { from, to, copy };
+        let said = h.act(drop((0, 0), (0, 3), false)).unwrap();
+        assert!(said.contains("Beat moved to Track 1 / 4"), "{said}");
+        assert_eq!(playing(&h), [(0, 3)], "it plays on where it landed");
+        let said = h.act(drop((0, 3), (0, 1), false)).unwrap();
+        assert!(said.contains("Beat and Fill changed places"), "{said}");
+        assert_eq!(playing(&h), [(0, 1)]);
+        let said = h.act(drop((1, 0), (0, 1), true)).unwrap_err();
+        assert!(said.contains("a copy goes in an empty slot"), "{said}");
+        let said = h
+            .act(TimeAction::DropRow {
+                from: 1,
+                to: 0,
+                copy: false,
+            })
+            .unwrap();
+        assert!(said.contains("row 2 moved to row 1"), "{said}");
+        assert_eq!(h.control.project.clip(0, 0).unwrap().name, "Beat");
+        assert_eq!(playing(&h), [(0, 0)]);
+        let said = h.act(TimeAction::Undo).unwrap();
+        assert!(said.contains("move 3 · row 2"), "{said}");
+        assert_eq!(playing(&h), [(0, 1)]);
+        h.act(TimeAction::Undo).unwrap();
+        assert_eq!(playing(&h), [(0, 3)]);
+        let said = h.act(TimeAction::Undo).unwrap();
+        assert!(said.contains("move 1 · Track 1 / 1"), "{said}");
+        assert_eq!(playing(&h), [(0, 0)]);
+        assert_eq!(h.control.project.clip(0, 1).unwrap().name, "Fill");
+        h.act(TimeAction::Redo).unwrap();
+        assert_eq!(playing(&h), [(0, 3)], "redo: it moves again, playing");
+    }
+
     #[test]
     fn plus_track_adds_an_armed_track_up_to_128_and_undo_takes_it_away() {
         let mut h = TimeHost::new(RATE, 120.0).unwrap();

@@ -19,7 +19,7 @@
 
 use mpfree_capture::{keep, moves_for_clip, Capture, Now, Pending};
 use mpfree_perform::{Perform, SceneMorph, SongRecorder, When};
-use mpfree_play::{Cue, Includes, Launch, PlayView, Started, Takes};
+use mpfree_play::{ClipDrop, Cue, Includes, Launch, PlayView, Started, Takes};
 use mpfree_play::{MOVE_POINTS, TOUCH_POINTS};
 use mpfree_seq::arrange::{scene_length, scenes_to_song, song_to_scenes};
 use mpfree_seq::mpfree_moves::{Kind, MoveLog};
@@ -485,6 +485,59 @@ impl TimeControl {
 
     /// "take 3 · Drums / 1", as the takes list names it: what UNDO and
     /// REDO say they did.
+    /// A drop on the Clips grid went in: the launches and cues follow the
+    /// clips, and the views compile. If they don't, the drop is taken
+    /// back (and can't be redone) and the error says why.
+    fn drop_went_in(&mut self, drop: ClipDrop) -> Result<(), String> {
+        let before = (self.launches.clone(), self.cues.clone());
+        self.follow_launches(drop, false);
+        if let Err(e) = self.compile() {
+            self.takes.undo(&mut self.project);
+            self.takes.forget_undone();
+            (self.launches, self.cues) = before;
+            let _ = self.compile();
+            return Err(e);
+        }
+        Ok(())
+    }
+
+    /// A clip that was playing goes on playing where a drop (or its undo,
+    /// `back`) put it, on its own track; moved to another track, it plays
+    /// there unless that track has a clip playing. A launch waiting for
+    /// the bar line follows a clip on its track, and is dropped if the
+    /// clip left it.
+    fn follow_launches(&mut self, drop: ClipDrop, back: bool) {
+        let to = |c: (usize, usize)| {
+            if back {
+                drop.before(c)
+            } else {
+                Some(drop.after(c))
+            }
+        };
+        let stays = |l: &Launch| to((l.track, l.slot)) == Some((l.track, l.slot));
+        let mut out: Vec<Launch> = self.launches.iter().copied().filter(stays).collect();
+        for l in self.launches.iter().filter(|l| !stays(l)) {
+            if let Some((track, slot)) = to((l.track, l.slot)) {
+                if !out.iter().any(|o| o.track == track) {
+                    out.push(Launch { track, slot, ..*l });
+                }
+            }
+        }
+        out.sort_by_key(|l| l.track);
+        self.launches = out;
+        self.cues.retain_mut(|c| match c.slot {
+            Some(s) => match to((c.track, s)) {
+                Some((t, s2)) if t == c.track => {
+                    c.slot = Some(s2);
+                    true
+                }
+                _ => false,
+            },
+            None => true,
+        });
+        self.changed = true;
+    }
+
     fn take_said(&self, row: Option<TakeRow>) -> String {
         let Some(r) = row else {
             return "take".into();
@@ -726,6 +779,9 @@ impl TimeControl {
             TimeAction::Undo => match self.takes.undo(&mut self.project) {
                 Some(_) => {
                     let row = self.takes.undone().last().map(TakeRow::of);
+                    if let Some(d) = row.and_then(|r| r.dropped) {
+                        self.follow_launches(d, true);
+                    }
                     if row.is_some_and(|r| r.captured) {
                         // It can be kept again.
                         self.capture.forget_kept();
@@ -738,7 +794,11 @@ impl TimeControl {
             },
             TimeAction::Redo => match self.takes.redo(&mut self.project) {
                 Some(_) => {
-                    let said = self.take_said(self.takes.done().last().map(TakeRow::of));
+                    let row = self.takes.done().last().map(TakeRow::of);
+                    if let Some(d) = row.and_then(|r| r.dropped) {
+                        self.follow_launches(d, false);
+                    }
+                    let said = self.take_said(row);
                     self.compile().map(|_| format!("redo: {said}"))
                 }
                 None => Ok("redo: nothing to redo".into()),
@@ -867,6 +927,74 @@ impl TimeControl {
                     slot + 1,
                     track + 1
                 ))
+            }
+            TimeAction::DropClip { from, to, copy } => {
+                let name = |p: &Project, (t, s): (usize, usize)| {
+                    let track = p.tracks.get(t).map_or("", |t| t.name.as_str());
+                    format!("{track} / {}", s + 1)
+                };
+                let clip = self
+                    .project
+                    .clip(from.0, from.1)
+                    .map_or_else(String::new, |c| c.name.clone());
+                let (_, drop) =
+                    self.takes
+                        .drop_clip(&mut self.project, from, to, copy)
+                        .map_err(|e| match e {
+                            ModelError::NoRoom => format!(
+                                "clips: {} has a clip; a copy goes in an empty slot",
+                                name(&self.project, to)
+                            ),
+                            ModelError::BadPlacement => {
+                                format!(
+                            "clips: {clip}'s song blocks would sit on {}'s: move those first",
+                            self.project.tracks.get(to.0).map_or("", |t| t.name.as_str())
+                        )
+                            }
+                            _ => "clips: nothing to move there".to_string(),
+                        })?;
+                self.drop_went_in(drop)?;
+                let there = name(&self.project, to);
+                Ok(match drop {
+                    ClipDrop::Swapped(..) => {
+                        let other = self
+                            .project
+                            .clip(from.0, from.1)
+                            .map_or_else(String::new, |c| c.name.clone());
+                        format!("clips: {clip} and {other} changed places (UNDO takes it back)")
+                    }
+                    ClipDrop::Copied(..) => {
+                        format!("clips: a copy of {clip} in {there} (UNDO takes it back)")
+                    }
+                    _ => format!("clips: {clip} moved to {there} (UNDO takes it back)"),
+                })
+            }
+            TimeAction::DropRow { from, to, copy } => {
+                let (_, drop) = self
+                    .takes
+                    .drop_row(&mut self.project, from, to, copy)
+                    .map_err(|e| match e {
+                        ModelError::NoRoom => format!(
+                            "clips: row {SLOTS} is in use, so a copy has no room: empty it first"
+                        ),
+                        ModelError::BadPlacement => {
+                            "clips: the song's blocks would overlap".to_string()
+                        }
+                        _ => format!("clips: row {} stays where it is", from + 1),
+                    })?;
+                self.drop_went_in(drop)?;
+                Ok(match drop {
+                    ClipDrop::RowCopied { from, to } => format!(
+                        "clips: a copy of row {} in row {}, the rows under it down one (UNDO takes it back)",
+                        from + 1,
+                        to + 1
+                    ),
+                    _ => format!(
+                        "clips: row {} moved to row {} (UNDO takes it back)",
+                        from + 1,
+                        if to > from { to } else { to + 1 }
+                    ),
+                })
             }
             TimeAction::AddTrack => {
                 let name = format!("Track {}", self.project.tracks.len() + 1);
