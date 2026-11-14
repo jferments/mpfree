@@ -23,6 +23,12 @@
 //!   bank) in front of a soft, asymmetric pickup that barks when hit hard,
 //!   with tone, drive and tremolo, and factory presets.
 //!
+//! - [`Drawbar`]: a tonewheel organ, 91 free-running wheels tuned from the
+//!   organ's gears, nine drawbars with foldback, uneven key contacts (the
+//!   click), leakage, single-trigger percussion, the scanner vibrato and
+//!   chorus, drive, and a rotary speaker with horn and drum, with factory
+//!   presets.
+//!
 //! - [`pressure`]: what pad pressure drives in each engine. Both run it
 //!   through the shared shaper in [`mpfree_node::pressure`].
 //!
@@ -31,6 +37,8 @@
 //! output for any block size (`tests/` checks both).
 #![forbid(unsafe_code)]
 
+pub mod drawbar;
+pub mod drawbar_params;
 pub mod drum;
 pub mod drum_params;
 pub mod dsp;
@@ -47,6 +55,7 @@ pub mod poly;
 pub mod pressure;
 pub mod wavetable;
 
+pub use drawbar::Drawbar;
 pub use drum::Drums;
 pub use fm::Fm;
 pub use keys::Keys;

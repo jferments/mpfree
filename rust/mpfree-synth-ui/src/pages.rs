@@ -294,6 +294,30 @@ const KEYS: &[PlanPage] = &[
     ),
 ];
 
+use mpfree_synth::drawbar_params as db;
+
+/// Drawbar: the drawbars, percussion with the scanner, the rotary speaker
+/// with the tone, and the voice. The Q-Links pull the upper drawbars (the
+/// 16', 5 1/3' and 8' usually stay out); the switches stay on the screen.
+const DRAWBAR: &[PlanPage] = &[
+    pg(
+        "Drawbars",
+        &["Drawbars"],
+        &[db::DB_4, db::DB_2_23, db::DB_2, db::DB_1],
+    ),
+    pg("Percussion", &["Percussion", "Vibrato"], &[]),
+    pg(
+        "Rotary",
+        &["Rotary", "Tone"],
+        &[db::DRIVE, db::TONE, db::CLICK, db::SPREAD],
+    ),
+    pg(
+        "Voice",
+        &["Voice", "Output"],
+        &[db::TRANSPOSE, db::FINE, db::LEVEL, db::PAN],
+    ),
+];
+
 fn known(id: &str) -> Option<&'static [PlanPage]> {
     match id {
         "mpfree.poly" => Some(POLY),
@@ -302,6 +326,7 @@ fn known(id: &str) -> Option<&'static [PlanPage]> {
         "mpfree.drums" => Some(DRUMS),
         "mpfree.pluck" => Some(PLUCK),
         "mpfree.keys" => Some(KEYS),
+        "mpfree.drawbar" => Some(DRAWBAR),
         _ => None,
     }
 }
@@ -602,6 +627,32 @@ mod tests {
             .map(|&i| params[i].name)
             .collect();
         assert_eq!(q, ["Voicing", "Bark", "Tone", "Vel > tone"]);
+        for p in &pages {
+            for &i in &p.params {
+                assert!(tile_label(&p.name, &params[i]).len() <= 20);
+            }
+        }
+    }
+
+    #[test]
+    fn drawbar_has_its_own_pages() {
+        use mpfree_node::Node;
+        let s = mpfree_synth::Drawbar::new(48_000);
+        let params = s.params();
+        let pages = plan(s.info(), params);
+        let names: Vec<&str> = pages.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, ["Drawbars", "Percussion", "Rotary", "Voice"]);
+        every_param_once(&pages, params.len());
+        let q: Vec<&str> = qlink_targets(&pages[0], params)
+            .iter()
+            .map(|&i| params[i].name)
+            .collect();
+        assert_eq!(q, ["4'", "2 2/3'", "2'", "1'"]);
+        let q: Vec<&str> = qlink_targets(&pages[2], params)
+            .iter()
+            .map(|&i| params[i].name)
+            .collect();
+        assert_eq!(q, ["Drive", "Tone", "Click", "Spread"]);
         for p in &pages {
             for &i in &p.params {
                 assert!(tile_label(&p.name, &params[i]).len() <= 20);
