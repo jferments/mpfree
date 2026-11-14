@@ -23,7 +23,7 @@
 
 use std::time::Duration;
 
-use mpfree_ui::{PaintCx, Rect, Touch};
+use mpfree_ui::{PaintCx, Rect, Target, Touch};
 
 /// A press or turn the app passes to the I/O view
 /// ([`crate::io_input`]).
@@ -88,6 +88,12 @@ pub trait IoSection: Send {
     /// down inside `r` comes back here until it lifts, wherever it moves.
     fn touch(&mut self, finger: u64, phase: Touch, x: i32, y: i32, r: Rect) -> IoReply;
 
+    /// The controls it draws in `r` as it stands now (the control audit
+    /// presses each one; see [`mpfree_ui::Widget::targets`]).
+    fn targets(&self, _r: Rect) -> Vec<Target> {
+        Vec::new()
+    }
+
     /// The data wheel, - and +, or the page arrows, while it shows.
     fn input(&mut self, _ev: IoInput) -> IoReply {
         IoReply::Ignored
@@ -113,6 +119,13 @@ pub trait IoSection: Send {
     /// is open. True if it closed something.
     fn back(&mut self) -> bool {
         false
+    }
+
+    /// What the last touch, key or Q-Link couldn't do, and why (a value at
+    /// its end, a field that can't change), once: the app says it on the
+    /// hint line for a few seconds, so nothing is pressed in silence.
+    fn take_note(&mut self) -> Option<String> {
+        None
     }
 
     /// The hint line while it shows; `None` keeps the I/O view's own

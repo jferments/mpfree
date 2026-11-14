@@ -12,7 +12,7 @@ use std::cell::Cell;
 use std::time::Duration;
 
 use mpfree_mixer_ui::{IoInput, IoKnob, IoReply, IoSection};
-use mpfree_ui::{Align, FontId, PaintCx, Rect, Touch};
+use mpfree_ui::{Align, FontId, PaintCx, Rect, Target, Touch};
 
 use crate::{IoModel, Shared};
 
@@ -214,6 +214,9 @@ pub(crate) struct FormSection<F: Form> {
     down: Option<(u64, Option<Hit>)>,
     /// Rows that fit, from the last paint.
     fit: Cell<usize>,
+    /// What the last tap, key or knob couldn't do, and why (a value at its
+    /// end, a field that can't change), for the app to say in place.
+    note: Option<String>,
 }
 
 impl<F: Form> FormSection<F> {
@@ -228,6 +231,7 @@ impl<F: Form> FormSection<F> {
             open: None,
             down: None,
             fit: Cell::new(8),
+            note: None,
         }
     }
 
@@ -275,7 +279,18 @@ impl<F: Form> FormSection<F> {
         let items: Vec<usize> = (0..rows.len()).filter(|&j| rows[j].is_item()).collect();
         let at = items.iter().position(|&j| j == i).unwrap_or(0) as i32;
         let to = (at + d).clamp(0, items.len() as i32 - 1) as usize;
-        if items[to] == i && self.sel.is_some() {
+        // With nothing picked yet the first row shows picked, so a move
+        // that stays there says so too.
+        if items[to] == i {
+            self.sel = Some((rows[i].key.clone(), col));
+            self.note = Some(
+                if d > 0 {
+                    "The last row is selected"
+                } else {
+                    "The first row is selected"
+                }
+                .to_string(),
+            );
             return IoReply::Handled;
         }
         self.select(&rows, items[to], col);
@@ -300,10 +315,27 @@ impl<F: Form> FormSection<F> {
         match rows[i].fields.get(col) {
             Some(f) if f.enabled && !f.tap_only => {
                 let key = rows[i].key.clone();
-                self.step(&key, col, delta)
+                self.step_or_say(&rows[i], &key, col, delta)
             }
-            _ => IoReply::Handled,
+            Some(f) => {
+                self.note = Some(if f.enabled {
+                    format!("{} {}: tap it", rows[i].title, f.knob)
+                } else {
+                    stuck(&rows[i], col, delta)
+                });
+                IoReply::Handled
+            }
+            None => IoReply::Handled,
         }
+    }
+
+    /// Steps a field, or keeps why it didn't move for the app to say.
+    fn step_or_say(&mut self, row: &Row, key: &str, col: usize, delta: i32) -> IoReply {
+        let r = self.step(key, col, delta);
+        if r != IoReply::Redraw {
+            self.note = Some(stuck(row, col, delta));
+        }
+        r
     }
 
     /// Where each shown row goes in `r`, from `top`, and the field areas.
@@ -328,8 +360,22 @@ impl<F: Form> FormSection<F> {
         (banner_r, out)
     }
 
-    fn field_rects(&self, row: Rect, n: usize) -> Vec<Rect> {
+    /// The title's and the fields' widths in a row `row_w` wide: the
+    /// form's own, narrowed alike when they don't fit (the I/O panel keeps
+    /// the master strip at its right, so it is narrower than the screen).
+    fn columns(&self, row_w: i32) -> Vec<i32> {
         let w = self.form.widths();
+        let gaps = FIELD_GAP * (w.len() as i32 - 2).max(0);
+        let sum: i32 = w.iter().sum();
+        if sum + gaps <= row_w || sum == 0 {
+            return w.to_vec();
+        }
+        let room = (row_w - gaps).max(0);
+        w.iter().map(|c| c * room / sum).collect()
+    }
+
+    fn field_rects(&self, row: Rect, n: usize) -> Vec<Rect> {
+        let w = self.columns(row.w);
         let mut x = row.x + w[0];
         (0..n)
             .map(|c| {
@@ -436,6 +482,7 @@ impl<F: Form> FormSection<F> {
                 self.select(&rows, i, c);
                 let f = &row.fields[c];
                 if !f.enabled {
+                    self.note = Some(stuck(row, c, 1));
                     return IoReply::Redraw;
                 }
                 if f.picker {
@@ -443,7 +490,7 @@ impl<F: Form> FormSection<F> {
                     return IoReply::Redraw;
                 }
                 let key = row.key.clone();
-                self.step(&key, c, 1);
+                self.step_or_say(row, &key, c, 1);
                 IoReply::Redraw
             }
         }
@@ -504,7 +551,7 @@ impl<F: Form> FormSection<F> {
                 cx.canvas
                     .fill_round_rect(Rect::new(rr.x, rr.y + 10, 4, rr.h - 20), 2, t.accent);
             }
-            let w0 = self.form.widths()[0];
+            let w0 = self.columns(rr.w)[0];
             let mut tr = Rect::new(rr.x + 14, rr.y + 6, w0 - 20, rr.h - 12);
             if let Some(lit) = row.light {
                 let d = Rect::new(tr.x, tr.y + 9, 10, 10);
@@ -660,6 +707,55 @@ impl<F: Form> IoSection for FormSection<F> {
         }
     }
 
+    fn targets(&self, r: Rect) -> Vec<Target> {
+        if let Some((key, col)) = &self.open {
+            let m = self.model.lock().unwrap_or_else(|e| e.into_inner());
+            let Some(p) = self.form.picker(&m, key, *col) else {
+                return Vec::new();
+            };
+            let (done, chips, _) = Self::picker_layout(&p, r);
+            let mut out = vec![Target::tap("picker-done", 0, "Done", done)];
+            for (k, (g, i, cr)) in chips.iter().enumerate() {
+                out.push(Target::tap(
+                    "picker-choice",
+                    k,
+                    format!("choice {g}.{i}"),
+                    *cr,
+                ));
+            }
+            return out;
+        }
+        let (banner, rows) = self.rows();
+        let (_, placed) = self.place(banner.is_some(), &rows, r);
+        let sel = self.sel_index(&rows).map(|s| s.0);
+        let mut out = Vec::new();
+        for (i, rr) in placed {
+            if !rows[i].is_item() {
+                continue;
+            }
+            let rects = self.field_rects(rr, rows[i].fields.len());
+            let title = &rows[i].title;
+            let left = rects.first().map_or(rr.right(), |f| f.x);
+            // The selected row is drawn lit: a tap on its title changes
+            // nothing.
+            out.push(
+                Target::tap(
+                    "row",
+                    i,
+                    title.clone(),
+                    Rect::new(rr.x, rr.y, left - rr.x, rr.h),
+                )
+                .disabled_if(sel == Some(i)),
+            );
+            for (c, f) in rects.iter().enumerate() {
+                let field = &rows[i].fields[c];
+                let label = format!("{title}: {}", field.text);
+                out.push(Target::tap("field", i * 16 + c, label, *f).disabled_if(!field.enabled));
+            }
+        }
+        out
+    }
+
     fn touch(&mut self, finger: u64, phase: Touch, x: i32, y: i32, r: Rect) -> IoReply {
         match phase {
             Touch::Down => {
@@ -720,6 +816,10 @@ impl<F: Form> IoSection for FormSection<F> {
         self.open.take().is_some()
     }
 
+    fn take_note(&mut self) -> Option<String> {
+        self.note.take()
+    }
+
     fn qlinks(&self) -> Option<[IoKnob; 4]> {
         if self.open.is_some() {
             return None;
@@ -765,10 +865,38 @@ impl<F: Form> IoSection for FormSection<F> {
             Some(f) if f.enabled && !f.tap_only => {
                 let key = row.key.clone();
                 let d = if fine { detents.signum() } else { detents };
-                self.step(&key, knob, d)
+                self.step_or_say(row, &key, knob, d)
             }
             _ => IoReply::Ignored,
         }
+    }
+}
+
+/// Why stepping field `col` of `row` by `delta` changed nothing, as the
+/// hint line says it.
+fn stuck(row: &Row, col: usize, delta: i32) -> String {
+    let f = &row.fields[col];
+    let what = format!("{} {}", row.title, f.knob);
+    if !f.enabled {
+        return if row.note.is_empty() {
+            format!("{what} can't change here")
+        } else {
+            format!("{what} can't change: {}", row.note)
+        };
+    }
+    let other = if f.tap_only {
+        String::new()
+    } else if delta > 0 {
+        format!(": - or Q-Link {} lowers it", col + 1)
+    } else {
+        format!(": + or Q-Link {} raises it", col + 1)
+    };
+    match f.at {
+        Some((a, n)) if delta > 0 && a + 1 >= n => {
+            format!("{what} is at its highest, {}{other}", f.text)
+        }
+        Some((0, _)) if delta < 0 => format!("{what} is at its lowest, {}{other}", f.text),
+        _ => format!("{what} stays {}", f.text),
     }
 }
 
@@ -783,8 +911,9 @@ pub(crate) mod testing {
     use super::*;
     use mpfree_ui::{Fonts, SoftCanvas, Theme};
 
-    /// The section's area on the 1280 x 800 screen (as the mixer gives it).
-    pub const AREA: Rect = Rect::new(186, 64, 924, 692);
+    /// The section's area on the 1280 x 800 screen, as the mixer's I/O
+    /// view gives it (left of the master strip).
+    pub const AREA: Rect = Rect::new(194, 136, 732, 614);
 
     pub fn paint(s: &dyn IoSection) -> SoftCanvas {
         let mut c = SoftCanvas::new(1280, 800);

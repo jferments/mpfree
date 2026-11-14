@@ -19,7 +19,7 @@ use mpfree_mod::{value_text, MacroMap, MapCurve};
 use mpfree_param::ParamAddr;
 use mpfree_synth_ui::draw::Mask;
 use mpfree_synth_ui::widgets::knob;
-use mpfree_ui::{Align, EventKind, FontId, PaintCx, Rect, Touch, Widget};
+use mpfree_ui::{Align, EventKind, FontId, PaintCx, Rect, Target, Touch, Widget};
 
 use crate::state::{macro_color, range_text, MacrosState, TargetView};
 
@@ -581,6 +581,65 @@ impl Widget for MacrosView {
 
     /// Passes the touch on to the app (an event) whenever it made actions:
     /// `Ui::touch` drops a widget's touch that answers None.
+    fn targets(&self, r: Rect) -> Vec<Target> {
+        let l = layout(r);
+        let mut out = vec![Target::tap("back", 0, "‹ Back", l.back)];
+        for (b, br) in l.banks.iter().enumerate() {
+            out.push(Target::tap("bank", b, ["Macros 1-4", "Macros 5-8"][b], *br));
+        }
+        let editing = self.editing().is_some();
+        if editing {
+            let e = &l.editor;
+            out.push(Target::tap("editor-done", 0, "Done", e.done));
+            out.push(Target::drag("editor-range", 0, "range", e.track).towards(40, 0));
+            for (c, cr) in e.curves.iter().enumerate() {
+                out.push(Target::tap(
+                    "editor-curve",
+                    c,
+                    format!("{:?}", CURVES[c]),
+                    *cr,
+                ));
+            }
+            out.push(Target::tap("editor-flip", 0, "Flip", e.flip));
+            out.push(Target::tap("editor-remove", 0, "Remove", e.remove));
+        }
+        let covered = |rr: Rect| editing && !l.editor.area.intersect(rr).is_empty();
+        for (i, &(kx, ky, d)) in l.knobs.iter().enumerate() {
+            let m = self.state.bank * 4 + i;
+            let side = d as i32;
+            let kr = Rect::new(kx as i32 - side / 2, ky as i32 - side / 2, side, side);
+            if !covered(kr) {
+                out.push(Target::drag("knob", m, format!("Macro {}", m + 1), kr).towards(0, -40));
+            }
+        }
+        for (i, card) in l.cards.iter().enumerate() {
+            let m = self.state.bank * 4 + i;
+            let rows = target_rows(*card);
+            let fit = (rows.h / TARGET_H).max(1) as usize;
+            let n = self.state.macros.get(m).map_or(0, |v| v.targets.len());
+            for k in 0..n.min(fit) {
+                if k + 1 == fit && n > fit {
+                    break;
+                }
+                let rr = Rect::new(rows.x, rows.y + k as i32 * TARGET_H, rows.w, TARGET_H);
+                if !covered(rr) {
+                    out.push(Target::tap(
+                        "target",
+                        m * 64 + k,
+                        format!("Macro {} target {}", m + 1, k + 1),
+                        rr,
+                    ));
+                }
+            }
+        }
+        out.push(Target::drag("morph", 0, "morph", l.slider).towards(40, 0));
+        out.push(Target::tap("snap", 0, "Snap back", l.snap));
+        for (k, b) in l.save.iter().enumerate() {
+            out.push(Target::tap("save", k, ["Save A", "Save B"][k], *b));
+        }
+        out
+    }
+
     fn touch(&mut self, finger: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
         let before = self.actions.len();
         self.touch_inner(finger, phase, x, y, r);
