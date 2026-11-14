@@ -102,6 +102,11 @@ pub const OFF_NOTE: &str =
 /// The input the strip shows, in seconds, and its columns a second.
 pub const STRIP_SECONDS: u32 = 30;
 const STRIP_COLUMNS_PER_SECOND: u32 = 30;
+/// While the input view's picture moves, the shortest time between two
+/// redraws of it, in seconds: every other frame, about 15 a second. It
+/// spans 904 of the turned panel's 1280 rows, and a loud input moves it
+/// at every frame. A change of settings still shows at the next frame.
+pub const LIVE_GAP_S: f32 = 0.06;
 
 /// The longest take: three minutes (about 64 MB of stereo).
 pub const MAX_TAKE_SECONDS: u32 = 180;
@@ -528,6 +533,8 @@ pub struct RecTab {
     flattening: bool,
     /// The sources' names, as last shown.
     sources: Vec<String>,
+    /// Seconds since [`RecTab::feed`] last had the input view redrawn.
+    since_drawn: f32,
 }
 
 impl RecTab {
@@ -557,6 +564,7 @@ impl RecTab {
             recording: false,
             flattening: false,
             sources: st.sources.clone(),
+            since_drawn: f32::INFINITY,
         };
         tab.update(ui, st);
         Ok(tab)
@@ -681,13 +689,10 @@ impl RecTab {
             matches!(r.progress(), Progress::Waiting | Progress::Recording { .. })
         });
         let settings = self.settings;
-        // Redrawn only when its picture changes (InputView::look): the view
-        // spans most of the panel's rows.
         let area = ui.rect_of(VIEW);
         let Some(v) = ui.get_mut_quiet::<InputView>(VIEW) else {
             return;
         };
-        let before = area.map(|r| v.look(r));
         v.update(input, dt);
         let now = v.now;
         let rate = input.rate;
@@ -763,8 +768,13 @@ impl RecTab {
             ),
             None => "transport stopped".to_string(),
         };
-        if area.zip(before).is_none_or(|(r, b)| v.look(r) != b) {
+        // Redrawn only when its picture differs from the one on the screen
+        // (InputView::look), and at most every LIVE_GAP_S: the view spans
+        // most of the panel's rows.
+        self.since_drawn += dt;
+        if self.since_drawn >= LIVE_GAP_S && area.is_some_and(|r| v.painted() != Some(v.look(r))) {
             ui.get_mut::<InputView>(VIEW);
+            self.since_drawn = 0.0;
         }
         if was != self.recording {
             if let Some(b) = ui.get_mut::<ButtonRow>(BUTTONS) {
