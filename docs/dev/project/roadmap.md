@@ -92,7 +92,7 @@ These engineering milestones deliberately do **not** mark the Phase 1 or Phase 2
 - [ ] Flexible buses, sends, effects chains, sidechain routing.
 - [ ] Instrument/effect plugin architecture. (Built on the workstation: the node interface, per-track instruments (#298) and the CLAP host with each plugin in its own sandboxed process, as instruments and mixer inserts (#279). See [Plugins](../design/plugins.md).)
 - [ ] Browser with tags, auditioning, and content provenance. (Partly built: the browser with Recent, Favourites, Audition and projects (#282); tags and provenance are not. See [the browser and projects](../design/browser.md).)
-- [ ] Export stems, MIDI, and project archive.
+- [ ] Export stems, MIDI, and project archive. (Built on the workstation, 2026-11-14: the mixdown, stems and a MIDI file from one pass over the song (#335, #337). A project archive is not built. See [Export](../design/export.md).)
 
 ## Phase 5 — Compatibility and distribution
 - [ ] Optional local import of supported user-owned content.
