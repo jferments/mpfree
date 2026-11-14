@@ -210,6 +210,10 @@ impl Widget for PerformPads {
 /// A finger down or moving on the pad gives `Pad { index: 0, down: true }`
 /// with the place in [`XyView::finger`] (0 to 1 each way, y up); its lift
 /// gives `down: false`. A tap on Hold gives `Tab(0)`.
+///
+/// The XY FX page uses it too: with no place to rest (`show_rest` off) the
+/// top and bottom names sit on the left, and a stepped X (a beat division)
+/// draws its `columns` with their names along the bottom.
 pub struct XyView {
     pub title: String,
     /// What the four edges mean: left, right, bottom, top.
@@ -223,6 +227,11 @@ pub struct XyView {
     pub trail: Vec<(f32, f32)>,
     pub touched: bool,
     pub hold: bool,
+    /// Draw where the pad rests (the lines through it and its ring).
+    pub show_rest: bool,
+    /// For a stepped X, each column's name, left to right; empty draws
+    /// quarter lines.
+    pub columns: Vec<String>,
     /// Where the finger is now, for the panel to read after an event.
     pub finger: Option<(f32, f32)>,
     owner: Option<u64>,
@@ -245,6 +254,8 @@ impl XyView {
             trail: Vec::new(),
             touched: false,
             hold: false,
+            show_rest: true,
+            columns: Vec::new(),
             finger: None,
             owner: None,
         }
@@ -283,22 +294,31 @@ impl Widget for XyView {
         cx.titled_panel(r, &self.title, &self.readout);
         let a = XyView::area(r);
         cx.canvas.fill_round_rect(a, 10, t.raised);
-        // Quarter lines, and stronger lines through where it rests.
+        // Quarter lines (across, a stepped X's columns instead), and
+        // stronger lines through where it rests.
+        let cols = self.columns.len() as i32;
         for k in 1..4 {
             let x = a.x + a.w * k / 4;
             let y = a.y + a.h * k / 4;
-            cx.canvas
-                .fill_rect(Rect::new(x, a.y + 6, 1, a.h - 12), t.outline);
+            if cols == 0 {
+                cx.canvas
+                    .fill_rect(Rect::new(x, a.y + 6, 1, a.h - 12), t.outline);
+            }
             cx.canvas
                 .fill_rect(Rect::new(a.x + 6, y, a.w - 12, 1), t.outline);
         }
+        for k in 1..cols {
+            let x = a.x + a.w * k / cols;
+            cx.canvas
+                .fill_rect(Rect::new(x, a.y + 6, 1, a.h - 12), t.outline);
+        }
         let (rx, ry) = XyView::to_screen(a, self.rest);
         let rest_line = t.text_faint;
-        if self.rest.0 > 0.0 && self.rest.0 < 1.0 {
+        if self.show_rest && self.rest.0 > 0.0 && self.rest.0 < 1.0 {
             cx.canvas
                 .fill_rect(Rect::new(rx as i32, a.y + 6, 2, a.h - 12), rest_line);
         }
-        if self.rest.1 > 0.0 && self.rest.1 < 1.0 {
+        if self.show_rest && self.rest.1 > 0.0 && self.rest.1 < 1.0 {
             cx.canvas
                 .fill_rect(Rect::new(a.x + 6, ry as i32, a.w - 12, 2), rest_line);
         }
@@ -322,9 +342,15 @@ impl Widget for XyView {
             t.text_dim,
             &self.edges[1],
         );
-        // Beside the line through where it rests, so neither covers it.
-        let lx = (rx as i32 + 12).min(a.right() - 60);
-        let bottom = Rect::new(lx, a.bottom() - 26, a.right() - lx, 20);
+        // Beside the line through where it rests, so neither covers it
+        // (on the left with no resting place, over a stepped X's names).
+        let lx = if self.show_rest {
+            (rx as i32 + 12).min(a.right() - 60)
+        } else {
+            a.x + pad
+        };
+        let names_h = if cols > 0 { 22 } else { 0 };
+        let bottom = Rect::new(lx, a.bottom() - 26 - names_h, a.right() - lx, 20);
         cx.text(
             FontId::Bold,
             small,
@@ -342,17 +368,35 @@ impl Widget for XyView {
             t.text_dim,
             &self.edges[3],
         );
+        // A stepped X's column names, the one played picked out.
+        if cols > 0 {
+            let now = ((self.pos.0 * cols as f32) as i32).clamp(0, cols - 1);
+            for (k, name) in self.columns.iter().enumerate() {
+                let k = k as i32;
+                let x0 = a.x + a.w * k / cols;
+                let x1 = a.x + a.w * (k + 1) / cols;
+                let cell = Rect::new(x0, a.bottom() - 26, x1 - x0, 20);
+                let (font, ink) = if k == now {
+                    (FontId::Bold, t.accent)
+                } else {
+                    (FontId::Sans, t.text_dim)
+                };
+                cx.text(font, small, cell, Align::Center, ink, name);
+            }
+        }
         // Where it rests: a small ring.
-        let mut m = Mask::new(a.inset(-8));
-        m.arc(
-            rx,
-            ry.min(a.bottom() as f32 - 9.0),
-            7.0,
-            0.0,
-            2.0 * std::f32::consts::PI,
-            2.0,
-        );
-        m.draw(cx.canvas, t.text_faint);
+        if self.show_rest {
+            let mut m = Mask::new(a.inset(-8));
+            m.arc(
+                rx,
+                ry.min(a.bottom() as f32 - 9.0),
+                7.0,
+                0.0,
+                2.0 * std::f32::consts::PI,
+                2.0,
+            );
+            m.draw(cx.canvas, t.text_faint);
+        }
         // The trail, fading towards its oldest end.
         let n = self.trail.len();
         for k in 1..n {

@@ -584,8 +584,8 @@ impl Gate {
             self.least = self.least.min(self.g);
             self.delay[0].push(l[i]);
             self.delay[1].push(r[i]);
-            l[i] = self.delay[0].tap(self.ahead) * self.g;
-            r[i] = self.delay[1].tap(self.ahead) * self.g;
+            l[i] = self.delay[0].tap(self.ahead + 1) * self.g;
+            r[i] = self.delay[1].tap(self.ahead + 1) * self.g;
         }
         self.v[gate::GAIN as usize] = gain_to_db(self.least).max(-80.0);
         self.least = 1.0;
