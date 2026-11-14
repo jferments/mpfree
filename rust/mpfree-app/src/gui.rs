@@ -5381,13 +5381,14 @@ impl Player {
             let snap = crate::engines::read(shared);
             let mut rows = crate::cores::rows(&shared.cores);
             rows.extend(crate::parts::rows(&shared.parts));
-            let (rss_kb, total_kb) = self.debug.memory_kb();
+            let (rss_kb, total_kb, free_kb) = self.debug.memory_kb();
             let memory = crate::memory::rows(&crate::memory::Held {
                 samples: self.sample.memory(),
                 loops: (self.looper.memory.used, self.looper.memory.capacity),
                 synth: mpfree_synth::wavetable::factory::factory_bytes(),
                 rss_kb,
                 total_kb,
+                free_kb,
             });
             DebugPages::set_engines(&mut self.ui, &snap, memory, rows);
         }
@@ -6312,6 +6313,7 @@ pub fn spawn(
             let mut perf = crate::perf::Sampler::new();
             let (mut perf_at, mut perf_logged): (Option<Instant>, Option<Instant>) = (None, None);
             let mut ram_at: Option<Instant> = None;
+            let mut memory_watch = crate::memory::Watch::default();
             // The Processes page: /proc once a second, only while it shows (a
             // fresh table each time the page opens, so CPU starts again).
             let mut procs: Option<(mpfree_prof::procs::ProcTable, Instant)> = None;
@@ -6411,14 +6413,20 @@ pub fn spawn(
                     }
                 }
                 send_actions(&mut player, &tx);
-                // The header's RAM chip, every 2 s, whatever shows.
+                // The header's RAM chip, every 2 s, whatever shows, and a
+                // line when free memory falls under the floor loads keep.
                 if ram_at.is_none_or(|t| t.elapsed() >= PERF_EVERY) {
                     ram_at = Some(Instant::now());
-                    if let Some(p) = std::fs::read_to_string("/proc/meminfo")
-                        .ok()
-                        .and_then(|m| crate::perf::ram_used_pct(&m))
-                    {
-                        player.set_ram(p);
+                    if let Ok(m) = std::fs::read_to_string("/proc/meminfo") {
+                        if let Some(p) = crate::perf::ram_used_pct(&m) {
+                            player.set_ram(p);
+                        }
+                        if let Some(line) = crate::memory::free_in(&m)
+                            .and_then(|free| memory_watch.check(free, Instant::now()))
+                        {
+                            println!("{line}");
+                            player.tell(&line);
+                        }
                     }
                 }
                 if !player.debug_mode() {
@@ -11582,6 +11590,149 @@ mod tests {
         );
     }
 
+    /// Item 6 of the 14 Nov review: a stretched copy that would leave less
+    /// than the memory MPFree keeps free isn't made; the pad repitches,
+    /// and that is said once, until the tempo changes.
+    #[test]
+    fn a_stretched_copy_that_would_leave_too_little_memory_is_not_made_and_the_pad_repitches() {
+        use mpfree_sampler_ui::wave_tab::{Row, REGION};
+        let pad = mpfree_sampler_ui::sample::PAD;
+        let mut p = sample_sampler(Fonts::embedded());
+        p.sample.set_mem_free(|| Some(crate::memory::FLOOR));
+        let warp_row = Row::ALL.iter().position(|r| *r == Row::Warp).unwrap();
+        p.on_event(UiEvent {
+            widget: REGION.into(),
+            kind: EventKind::Step {
+                index: warp_row,
+                delta: 1,
+            },
+        });
+        let (sent, _) = views(p.take_actions());
+        let layer = sent[0].view.as_ref().unwrap().layer(pad, 0).unwrap();
+        assert_eq!(layer.stretched_frames(), None);
+        p.apply(ToUi::SampleViewBack(sent.into_iter().next().unwrap()));
+        p.tick(0.033);
+        let refused = |p: &Player| {
+            events_log(p)
+                .iter()
+                .filter(|l| {
+                    l.starts_with(
+                        "sample: not stretched, the pad repitches instead (not enough memory: needs about ",
+                    )
+                })
+                .count()
+        };
+        assert_eq!(refused(&p), 1, "{:?}", events_log(&p));
+        let hint = p.ui.get::<Label>("hint").unwrap().text.clone();
+        assert!(
+            hint.starts_with("Not stretched, the pad repitches instead: not enough memory"),
+            "{hint}"
+        );
+        // No copy comes.
+        let t = Instant::now();
+        while t.elapsed() < Duration::from_millis(200) {
+            let (sent, _) = views(p.take_actions());
+            assert!(sent.is_empty());
+            std::thread::sleep(Duration::from_millis(5));
+            p.tick(0.033);
+        }
+        // With memory free again, the next tempo's copy is made.
+        p.sample.set_mem_free(|| None);
+        p.apply(ToUi::Transport(TransportInfo {
+            bpm: 100.0,
+            ..TransportInfo::default()
+        }));
+        let t = Instant::now();
+        loop {
+            let (sent, _) = views(p.take_actions());
+            let copy = sent
+                .first()
+                .and_then(|s| s.view.as_ref()?.layer(pad, 0)?.stretched_frames());
+            for s in sent {
+                p.apply(ToUi::SampleViewBack(s));
+            }
+            if copy.is_some() {
+                break;
+            }
+            assert!(t.elapsed() < Duration::from_secs(30), "no copy");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(refused(&p), 1);
+    }
+
+    /// Item 6 of the 14 Nov review: a sound, or a project's sound, that
+    /// would leave less than the memory MPFree keeps free isn't loaded,
+    /// and the screen says so in place of the hint.
+    #[test]
+    fn a_load_or_open_that_would_leave_too_little_memory_is_refused_and_said() {
+        use mpfree_sampler::model::Source;
+        use mpfree_sampler::wav;
+        use std::collections::HashMap;
+        let dir = std::env::temp_dir().join(format!("mpfree-sample-short-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let s = Source::new("x", 44_100, 1, vec![0.25; 44_100]).unwrap();
+        let path = dir.join("Clap 3.wav");
+        std::fs::write(&path, wav::bytes(&s)).unwrap();
+        let pad = mpfree_sampler_ui::sample::PAD;
+        let mut p = sample_sampler(Fonts::embedded());
+        let name = |p: &Player| {
+            p.sample
+                .project(0)
+                .unwrap()
+                .pad(pad)
+                .map(|pd| pd.name.clone())
+        };
+        let before = name(&p);
+        // Just over the floor free: a second of sound doesn't fit.
+        p.sample
+            .set_mem_free(|| Some(crate::memory::FLOOR + 100_000));
+        p.sample.load_file(path.clone(), false);
+        tick_until(&mut p, |p| {
+            events_log(p)
+                .iter()
+                .any(|l| l.starts_with("sample: not loaded (not enough memory: needs about "))
+        });
+        assert_eq!(name(&p), before);
+        let hint = p.ui.get::<Label>("hint").unwrap().text.clone();
+        assert!(
+            hint.starts_with("Not loaded: not enough memory: needs about "),
+            "{hint}"
+        );
+        // A project's kits: each sound that doesn't fit is left out.
+        let (text, sounds) = p.sample.save_part();
+        let files: HashMap<String, Vec<u8>> = sounds
+            .iter()
+            .map(|(f, s)| (f.clone(), wav::bytes(s)))
+            .collect();
+        p.sample.open_part(
+            text,
+            Box::new(move |f| files.get(f).cloned().ok_or_else(|| "missing".to_string())),
+        );
+        tick_until(&mut p, |p| {
+            events_log(p)
+                .iter()
+                .any(|l| l.ends_with(" opened") && !l.contains("weren't"))
+        });
+        let log = events_log(&p);
+        assert!(
+            log.iter()
+                .any(|l| l.contains(" left out (not enough memory: needs about ")),
+            "{log:?}"
+        );
+        let hint = p.ui.get::<Label>("hint").unwrap().text.clone();
+        assert!(
+            hint.ends_with(
+                " of the project's sounds left out: not enough memory; the Console lists them"
+            ),
+            "{hint}"
+        );
+        // With room, the sound loads.
+        p.sample.set_mem_free(|| None);
+        p.sample.load_file(path, false);
+        tick_until(&mut p, |p| name(p).as_deref() == Some("Clap 3"));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
     #[test]
     fn the_warp_tab_pins_the_hits_and_the_copy_goes_through_them() {
         use mpfree_sampler_ui::warp_tab::{self, Row};
@@ -14442,6 +14593,26 @@ mod tests {
         let v = p.ui.get::<KeyMapView>(auto_tab::VIEW).unwrap();
         assert_eq!((v.zones.len(), v.layers.len()), (4, 1));
         assert!(p.ui.get::<ButtonRow>(auto_tab::BUTTONS).unwrap().enabled[0]);
+        // Too little memory for the takes: not started, and said
+        // (review item 6).
+        p.sample
+            .set_mem_free(|| Some(crate::memory::FLOOR + 1_000_000));
+        ev(&mut p, auto_tab::BUTTONS, EventKind::Tab(0));
+        p.tick(0.033);
+        assert!(!p.sample.auto_running());
+        let log = events_log(&p);
+        assert!(
+            log.iter().any(|l| l
+                == "sample: auto-sample of Poly Pluck not started (not enough memory: needs about 1.8 MB, 257 MB \
+                    free, 256 MB kept spare)"),
+            "{log:?}"
+        );
+        let hint = p.ui.get::<Label>("hint").unwrap().text.clone();
+        assert!(
+            hint.starts_with("Auto-sample not started: not enough memory"),
+            "{hint}"
+        );
+        p.sample.set_mem_free(|| None);
         // Start: a copy of the patch plays on a worker thread; the audio
         // thread is asked for nothing.
         ev(&mut p, auto_tab::BUTTONS, EventKind::Tab(0));

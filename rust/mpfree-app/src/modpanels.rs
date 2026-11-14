@@ -392,8 +392,9 @@ impl ChainHost {
         ))
     }
 
-    /// The selected effect's drawings for the page shown, in theme `t`
-    /// (`mpfree_chain_ui::set_chain_picture`).
+    /// The selected effect's drawings, every one its effect page draws, in
+    /// theme `t` (`mpfree_chain_ui::set_chain_picture`: each section shows
+    /// those its plan names).
     pub fn picture(
         &self,
         h: &MixHost,
@@ -404,8 +405,7 @@ impl ChainHost {
         let (Some(c), Some(slot)) = (h.mixer.chain(self.sid()), st.selected) else {
             return Vec::new();
         };
-        let page = st.groups.get(st.group).map_or("", String::as_str);
-        mpfree_chain_ui::picture(c, slot, page, t, h.mixer.rate(), bpm)
+        mpfree_chain_ui::picture(c, slot, "", t, h.mixer.rate(), bpm)
     }
 }
 
