@@ -53,6 +53,18 @@ fn hear_with(
     sleep: bool,
     next_block: &mut dyn FnMut() -> usize,
 ) -> Heard {
+    hear_changing(id, set, None, sleep, next_block)
+}
+
+/// [`hear_with`], changing parameter `change` in the long silence (the
+/// first parameter when `None`).
+fn hear_changing(
+    id: &str,
+    set: &[(u16, f32)],
+    change: Option<u16>,
+    sleep: bool,
+    next_block: &mut dyn FnMut() -> usize,
+) -> Heard {
     let (l, r) = program();
     let mut c = Chain::with_capacity(2);
     c.prepare(RATE, MAX_BLOCK);
@@ -61,7 +73,10 @@ fn hear_with(
         node.set_param(p, v);
     }
     node.reset();
-    let info = node.params().first().copied();
+    let info = match change {
+        Some(c) => node.params().iter().find(|p| p.id == c).copied(),
+        None => node.params().first().copied(),
+    };
     c.push(node);
     c.set_sleep(sleep);
     let (mut ol, mut or) = (l.clone(), r.clone());
@@ -102,17 +117,24 @@ fn worst(a: &(Vec<f32>, Vec<f32>), b: &(Vec<f32>, Vec<f32>)) -> f32 {
 /// (The transient shaper and Lo-fi sleep too, after longer silences: the
 /// shaper's slowest follower carries over some 10 s at its default speed,
 /// and Lo-fi's crackle and hiss fade for 4 s after the music; Delay sleeps
-/// once its tail is 100 dB down, and Cloud too without modulation (below).
-/// Crush sleeps only with its rate at full, where no held sample falls
-/// anywhere.)
+/// once its tail is 100 dB down, Cloud, Plate and Room too without
+/// modulation, and Spring (below). Crush sleeps only with its rate at
+/// full, where no held sample falls anywhere, and the Gate only on its own
+/// signal, not a key.)
 const SLEEPERS: &[&str] = &[
     "mpfree.fx.compressor",
+    "mpfree.fx.limiter",
+    "mpfree.fx.gate",
+    "mpfree.fx.deesser",
+    "mpfree.fx.multiband",
     "mpfree.fx.eq",
     "mpfree.fx.filter",
     "mpfree.fx.dj_filter",
     "mpfree.fx.comb",
     "mpfree.fx.drive",
     "mpfree.fx.character",
+    "mpfree.fx.amp",
+    "mpfree.fx.exciter",
 ];
 
 #[test]
@@ -160,15 +182,20 @@ fn sleeping_effects_give_the_same_output_for_any_block_size() {
     }
 }
 
-/// Delay and Cloud sleep once their tails are 100 dB down: here a delay
-/// with no feedback and a short room, half wet (all wet, a Cloud could
-/// lead a late return) and without modulation (which keeps time across
-/// silence), the only Clouds that sleep.
+/// Delay, Cloud and the reverbs sleep once their tails are 100 dB down:
+/// here a delay with no feedback and short rooms. Cloud is half wet (all
+/// wet, it could lead a late return); Cloud, Plate and Room are without
+/// modulation (which keeps time across silence), the only ones of them
+/// that sleep. The reverbs' first parameters (pre-delay, spring length)
+/// glide for over a second, longer than the silence after the change, and
+/// a slot that sleeps through a change wakes with the glide done; so for
+/// them the change is to Low cut, which takes effect at once.
 #[test]
-fn delay_and_cloud_sleep_once_their_tails_are_quiet() {
-    use mpfree_fx::ids::{cloud, delay};
-    let short: [(&str, &[(u16, f32)]); 2] = [
-        ("mpfree.fx.delay", &[(delay::FEEDBACK, 0.0)]),
+fn delay_cloud_and_reverbs_sleep_once_their_tails_are_quiet() {
+    use mpfree_fx::ids::{cloud, delay, plate, room, spring};
+    type Case<'a> = (&'a str, &'a [(u16, f32)], Option<u16>);
+    let short: [Case; 5] = [
+        ("mpfree.fx.delay", &[(delay::FEEDBACK, 0.0)], None),
         (
             "mpfree.fx.cloud",
             &[
@@ -176,16 +203,32 @@ fn delay_and_cloud_sleep_once_their_tails_are_quiet() {
                 (cloud::MIX, 50.0),
                 (cloud::MODULATION, 0.0),
             ],
+            None,
+        ),
+        (
+            "mpfree.fx.plate",
+            &[(plate::DECAY, 300.0), (plate::MOD, 0.0)],
+            Some(plate::LOW_CUT),
+        ),
+        (
+            "mpfree.fx.room",
+            &[(room::DECAY, 300.0), (room::MOD, 0.0)],
+            Some(room::LOW_CUT),
+        ),
+        (
+            "mpfree.fx.spring",
+            &[(spring::DECAY, 600.0)],
+            Some(spring::LOW_CUT),
         ),
     ];
-    for (id, set) in short {
-        let awake = hear_with(id, set, false, &mut || 256);
-        let asleep = hear_with(id, set, true, &mut || 256);
+    for (id, set, change) in short {
+        let awake = hear_changing(id, set, change, false, &mut || 256);
+        let asleep = hear_changing(id, set, change, true, &mut || 256);
         assert!(asleep.slept > 0, "{id} sleeps");
         let diff = worst(&awake.out, &asleep.out);
         assert!(diff <= 1e-4, "{id}: {diff:e}");
-        let reference = hear_with(id, set, true, &mut || 512).out;
-        let got = hear_with(id, set, true, &mut || 333).out;
+        let reference = hear_changing(id, set, change, true, &mut || 512).out;
+        let got = hear_changing(id, set, change, true, &mut || 333).out;
         assert_eq!(worst(&got, &reference), 0.0, "{id}: 333-frame blocks");
     }
 }

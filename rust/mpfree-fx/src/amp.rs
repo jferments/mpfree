@@ -612,12 +612,17 @@ impl Amp {
     fn tail(&self) -> u32 {
         self.rate / 20
     }
+    fn rest(&self) -> u32 {
+        // What it holds is its filters' tail: once rung out it is as good
+        // as reset.
+        self.tail()
+    }
     fn lat(&self) -> u32 {
         0
     }
 }
 
-node_impl!(Amp, AMP_INFO, AMP_PARAMS);
+node_impl!(Amp, AMP_INFO, AMP_PARAMS, rest);
 
 // ---------------------------------------------------------------- exciter
 
@@ -775,12 +780,17 @@ impl Exciter {
     fn tail(&self) -> u32 {
         0
     }
+    fn rest(&self) -> u32 {
+        // Its high-passes and the oversampler's half-bands settle within
+        // a few ms.
+        self.rate / 20
+    }
     fn lat(&self) -> u32 {
         0
     }
 }
 
-node_impl!(Exciter, EXCITER_INFO, EXCITER_PARAMS);
+node_impl!(Exciter, EXCITER_INFO, EXCITER_PARAMS, rest);
 
 #[cfg(test)]
 mod tests {
