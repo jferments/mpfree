@@ -4526,7 +4526,7 @@ mod tests {
             })
         };
         // Instrument: the selected track's own sound. Kit, then Poly, FM,
-        // Drums, Pluck, Wavetable, Keys, Drawbar and the plugin synths; then
+        // Drums, Pluck, Wavetable, Keys, Drawbar, Squelch and the plugin synths; then
         // back to Kit.
         let sound = |fx: &[Effect]| {
             fx.iter().find_map(|e| match e {
@@ -4544,7 +4544,7 @@ mod tests {
         assert_eq!(
             sound(&app.step_item(row(SynthItem::Engine), 1)),
             None,
-            "Drawbar is the last with no plugin synths"
+            "Squelch is the last with no plugin synths"
         );
         app.plugin_synths = vec![("clap:org.example.synth", "Example Synth")];
         assert_eq!(

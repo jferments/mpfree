@@ -220,6 +220,22 @@ const DRAWBAR: &[Curated] = &[
     set("Play", [eb::SCANNER, eb::SPREAD, eb::FINE, eb::LEVEL]),
 ];
 
+use mpfree_synth::squelch_params as es;
+
+/// Squelch: the original's four filter knobs, the accent and slide, and
+/// the tone after the filter.
+const SQUELCH: &[Curated] = &[
+    set(
+        "Filter",
+        [es::CUTOFF, es::RESONANCE, es::ENV_MOD, es::DECAY],
+    ),
+    set(
+        "Accent",
+        [es::ACCENT, es::ACCENT_DECAY, es::SLIDE, es::AMP_DECAY],
+    ),
+    set("Tone", [es::DRIVE, es::KEY_TRACK, es::FINE, es::LEVEL]),
+];
+
 use mpfree_synth::drum_params::{field as df, pad_id, PADS, STRIDE};
 
 /// Drums, on pad 1 ([`on_pad`] moves them): the hit, its body, its mix.
@@ -263,6 +279,7 @@ fn curated(id: &str) -> Option<&'static [Curated]> {
         "mpfree.pluck" => Some(PLUCK),
         "mpfree.keys" => Some(KEYS),
         "mpfree.drawbar" => Some(DRAWBAR),
+        "mpfree.squelch" => Some(SQUELCH),
         DRUMS_ID => Some(DRUMS),
         _ => None,
     }
@@ -458,10 +475,11 @@ mod tests {
     use super::*;
     use mpfree_mod::Bindings;
     use mpfree_node::{Curve, Kind, Node, Unit};
-    use mpfree_synth::{Drawbar, Drums, Fm, Keys, Pluck, Poly, Wavetable};
+    use mpfree_synth::{Drawbar, Drums, Fm, Keys, Pluck, Poly, Squelch, Wavetable};
 
     fn engines() -> Vec<Box<dyn Node>> {
         vec![
+            Box::new(Squelch::new(48_000)),
             Box::new(Drawbar::new(48_000)),
             Box::new(Keys::new(48_000)),
             Box::new(Poly::new(48_000)),

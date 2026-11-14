@@ -318,6 +318,28 @@ const DRAWBAR: &[PlanPage] = &[
     ),
 ];
 
+use mpfree_synth::squelch_params as sq;
+
+/// Squelch: the original's six controls, then how it is played (slide,
+/// accent, the envelopes' times, key tracking and drive), then the voice.
+const SQUELCH: &[PlanPage] = &[
+    pg(
+        "Synth",
+        &["Synth"],
+        &[sq::CUTOFF, sq::RESONANCE, sq::ENV_MOD, sq::DECAY],
+    ),
+    pg(
+        "Play",
+        &["Play"],
+        &[sq::SLIDE, sq::ACCENT_DECAY, sq::AMP_DECAY, sq::DRIVE],
+    ),
+    pg(
+        "Voice",
+        &["Voice", "Output"],
+        &[sq::TRANSPOSE, sq::FINE, sq::LEVEL, sq::PAN],
+    ),
+];
+
 fn known(id: &str) -> Option<&'static [PlanPage]> {
     match id {
         "mpfree.poly" => Some(POLY),
@@ -327,6 +349,7 @@ fn known(id: &str) -> Option<&'static [PlanPage]> {
         "mpfree.pluck" => Some(PLUCK),
         "mpfree.keys" => Some(KEYS),
         "mpfree.drawbar" => Some(DRAWBAR),
+        "mpfree.squelch" => Some(SQUELCH),
         _ => None,
     }
 }
@@ -627,6 +650,27 @@ mod tests {
             .map(|&i| params[i].name)
             .collect();
         assert_eq!(q, ["Voicing", "Bark", "Tone", "Vel > tone"]);
+        for p in &pages {
+            for &i in &p.params {
+                assert!(tile_label(&p.name, &params[i]).len() <= 20);
+            }
+        }
+    }
+
+    #[test]
+    fn squelch_has_its_own_pages() {
+        use mpfree_node::Node;
+        let s = mpfree_synth::Squelch::new(48_000);
+        let params = s.params();
+        let pages = plan(s.info(), params);
+        let names: Vec<&str> = pages.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, ["Synth", "Play", "Voice"]);
+        every_param_once(&pages, params.len());
+        let q: Vec<&str> = qlink_targets(&pages[0], params)
+            .iter()
+            .map(|&i| params[i].name)
+            .collect();
+        assert_eq!(q, ["Cutoff", "Resonance", "Env mod", "Decay"]);
         for p in &pages {
             for &i in &p.params {
                 assert!(tile_label(&p.name, &params[i]).len() <= 20);
