@@ -66,13 +66,21 @@ Coming:
 
 ## The Synth tab
 
-{{shot: synth | The Synth tab with Poly playing its Pluck preset. Pictures of the oscillators, filter, envelope and LFO across the top, the Osc page's controls below, and the presets on the right.}}
+{{shot: synth | The Synth tab with Poly playing its Pluck preset: the presets on the left, the Osc page's sections in the middle (both oscillators with their waves drawn, the mix as faders, unison), and the Q-Links on the right.}}
 
-- **The title** shows the synth and the preset. The tabs beside it are the synth's **pages**: for Poly, Osc, Filter, Env, LFO, Voice and Pressure. Tap a tab, or hold **SHIFT** and turn the data wheel, to change page.
-- **The pictures** across the top draw the sound as you change it: the oscillator waves, the filter's curve, the envelopes and the LFO. Tap one to jump to its page.
-- **The tiles** are the controls on this page. Drag a tile up or down to change it. Or pick a tile with the data wheel (or a tap) and press **–** or **+**; push the wheel and turning it changes the tile picked (outlined more strongly) until you push it again.
-- **The Q-Links** turn the four tiles marked Q1 to Q4. Each preset chooses which four, so the knobs always do something useful for that sound. Each Q-Link has its own colour, the same on its tile's mark and knob and in the Q-Link row along the bottom.
-- **The presets** are listed on the right. Tap one to load it. Once you change anything, the preset is marked **edited**.
+- **The title** shows the preset. The tabs beside it are the synth's **pages**: for Poly, Osc, Filter, Env, LFO, Voice and Pressure. Tap a tab, or hold **SHIFT** and turn the data wheel, to change page.
+- **The sections.** Each page is split into boxes, one for each job, with the job's name at the top: **Osc 1**, **Mix**, **Filter**, **Filter envelope**, **Output** and so on. The colour says what kind of job it is, the same on every synth and effect:
+  - **cyan**: what makes the sound (oscillators, wavetables, strings, drawbars)
+  - **coral**: what shapes its tone (filter, drive)
+  - **lime**: envelopes and dynamics
+  - **pink**: movement (LFOs, modulation)
+  - **grey**: voices, tuning and output
+- **The controls.** The biggest knobs on a page are the ones that matter most (Cutoff and Resonance on Filter). Drag a knob up or down to turn it. A choice with a few options shows them all as buttons: tap one. A longer one shows its value between **‹** and **›**. A whole number (octave, voices) has **–** and **+** either side. Envelopes and the mix are faders: drag them up. Drawbar's drawbars pull down, as on an organ. To use the data wheel instead, pick a control with the wheel (or a tap) and press **–** or **+**. Or push the wheel, and turning it changes the control picked (outlined more strongly) until you push it again.
+- **The pictures** sit in the section they belong to and draw the sound as you change it: the oscillator waves over the oscillators, the filter's curve over the filter, the envelope over its faders.
+- **Open ›** by a section's name takes you to the page that section is about. For example, the filter envelope's amount on the Filter page opens the Envelopes page.
+- **A control that does nothing** with the sound as it is, such as a pulse width while the wave is a saw, is drawn faint, and the section's heading says why ("Pulse width · pulse waves only").
+- **The Q-Links** turn the four controls marked **Q1** to **Q4**. The column on the right shows what each one turns on this page, the section it is in and its value. Drag a card there to turn it from the screen. Each Q-Link keeps its colour on its badge and its card, the same as on the Play tab.
+- **The presets** are listed on the left, under the synth's name. Tap one to load it. Once you change anything, the preset is marked **edited**.
 - **UNDO** takes back the last knob you turned on this tab (a run of turns of one knob is one UNDO), and **SHIFT + UNDO** puts it back. Loading a preset starts the list again.
 
 **Drive** and **Distortion**, on the Filter page of Poly and Wavetable (Q-Links 3 and 4 there), both add grit. **Drive** pushes the sound into the filter, as on an analog synth: warm, and the filter smooths what it adds, so with the filter nearly closed you hear little of it. **Distortion** comes after the filter, so you hear its grit even with the filter almost closed (Grit Bass uses it). Both keep the sound at about the same level as you turn them up (within about 2 dB on every preset), so they add grit and thickness, not volume; turn up the synth's level for that. Pad pressure can push either one.
@@ -95,7 +103,7 @@ Its pictures, all for middle C: the **Hammer** (a soft hit and a full one; a har
 - **Rotary:** the rotating speaker. **Speed** is **Slow** (a gentle swirl), **Fast** (a quick tremolo) or **Stop**; switching it is part of playing, and the treble horn speeds up and slows down quickly while the bass drum takes a few seconds. **Spread** is how wide the speaker sounds (0 is mono), and **Rotary** Off takes the speaker out. The tone controls are here too: **Click** is the spit of the key contacts at the start of each note, **Leakage** the faint bleed of other tonewheels, **Drive** the growl of a pushed amplifier, **Tone** darker or brighter, and **Wheels** **Gears** (the organ's own slightly uneven tuning) or **Exact**.
 - **Voice:** transpose, fine tuning, level and pan, and how many keys are held.
 
-Its pictures: the **Drawbars** as you have them (amber below the note, white the note and its octaves, grey the other harmonics, as on the organ), the **Wave** they add up to, how the **Percussion** fades, and how fast the horn and the drum turn after you switch Speed (**Rotor**).
+The drawbars themselves are coloured as on the organ: the two below the note in the section's colour, white the note and its octaves, grey the other harmonics. Its pictures: the **Wave** they add up to, how the **Percussion** fades, and how fast the horn and the drum turn after you switch Speed (**Rotor**).
 
 **Squelch** is a mono acid bass: it plays one note at a time, and a new pad takes over from the last. Two things in how you play shape it, as on the bass line machines it learns from:
 
@@ -122,7 +130,7 @@ Its pictures: both oscillators (**Osc**; with Sync on, oscillator 1 restarts wit
 
 The Q-Links take the pulse widths and detune on the Osc page, the filter's four main knobs on the Filter page, the envelopes' times, the vibrato and poly-mod depths on the Mod page, and Age, Glide, Detune and Level on the Voice page.
 
-The Synth tab takes its colours from the theme picked in **Prefs > Appearance**, like the rest of MPFree: the Q-Link colours, the curves and the boxes in the pictures all change with it.
+The Synth tab takes its colours from the theme picked in **Prefs > Appearance**, like the rest of MPFree: the sections' colours, the curves and the boxes in the pictures all change with it. The Q-Links keep their own four colours under every theme.
 
 {{shot: synth-fm | The FM synth: the algorithm diagram shows which operators modulate which, and the levels show the six operators.}}
 

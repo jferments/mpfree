@@ -1519,6 +1519,10 @@ impl Player {
                 },
                 cards,
             )
+        } else if let Some(p) = self.synth.as_ref().filter(|_| self.view == View::Synth) {
+            // The Synth tab: what the page's Q-Links turn, named as their
+            // sections show them (the badges Q1 to Q4 on the page).
+            ("Q-Links · Synth", p.qlink_cards())
         } else if let Some((title, knobs)) = &audio {
             // An audio region picked on Arrange's Song view, or a track
             // panel open (layout spec 4c): the track's level and pan, the
@@ -3304,18 +3308,21 @@ impl Player {
                     .add("syslog", LogPanel::new("Console", true, CONSOLE_BACKLOG));
                 self.console_backlog.clear();
             }
-            ToUi::Synth(state) => match self.synth.as_mut() {
-                Some(p) => {
-                    let _ = p.load(&mut self.ui, state);
-                }
-                None => match SynthPanel::add(&mut self.ui, "Synth", state) {
-                    Ok(mut p) => {
-                        let _ = p.set_layout_wrap(&mut self.ui, play_page::synth_with_pads);
-                        self.synth = Some(p);
+            ToUi::Synth(state) => {
+                match self.synth.as_mut() {
+                    Some(p) => {
+                        let _ = p.load(&mut self.ui, state);
                     }
-                    Err(e) => println!("screen: no Synth page ({e})"),
-                },
-            },
+                    None => match SynthPanel::add(&mut self.ui, "Synth", state) {
+                        Ok(mut p) => {
+                            let _ = p.set_layout_wrap(&mut self.ui, play_page::synth_with_pads);
+                            self.synth = Some(p);
+                        }
+                        Err(e) => println!("screen: no Synth page ({e})"),
+                    },
+                }
+                self.refresh_qlinks();
+            }
             ToUi::SynthValues(values) => {
                 if let Some(p) = self
                     .synth
@@ -3325,6 +3332,7 @@ impl Player {
                     p.state.values = values;
                     p.refresh(&mut self.ui);
                 }
+                self.refresh_qlinks();
             }
             ToUi::SynthMeters(meters) => {
                 if let Some(p) = self.synth.as_mut() {
@@ -3353,6 +3361,7 @@ impl Player {
                 {
                     self.outbox.push(FromUi::Synth(a));
                 }
+                self.refresh_qlinks();
             }
             ToUi::SynthWheel(ticks) => {
                 if let Some(a) = self
@@ -3362,11 +3371,13 @@ impl Player {
                 {
                     self.outbox.push(FromUi::Synth(a));
                 }
+                self.refresh_qlinks();
             }
             ToUi::SynthPage(delta) => {
                 if let Some(p) = self.synth.as_mut() {
                     p.step_page(&mut self.ui, delta);
                 }
+                self.refresh_qlinks();
             }
             ToUi::SampleKits { projects, rate } => {
                 self.project_rate = rate;
@@ -5116,15 +5127,17 @@ impl Player {
     pub fn on_event(&mut self, ev: UiEvent) -> Option<FromUi> {
         let synth_widget = [
             synth_view::TITLE,
-            synth_view::VISUALS,
+            synth_view::INST,
             synth_view::TILES,
             synth_view::PRESETS,
-            synth_view::QLINKS,
         ]
         .contains(&ev.widget.as_str());
         if synth_widget {
             let p = self.synth.as_mut()?;
-            return p.event(&mut self.ui, &ev).map(FromUi::Synth);
+            let a = p.event(&mut self.ui, &ev).map(FromUi::Synth);
+            // The page or a value changed: the Q-Link column follows.
+            self.refresh_qlinks();
+            return a;
         }
         if ev.widget.starts_with(sample_page::PREFIX) {
             let before = self.sample.page();
@@ -5239,6 +5252,11 @@ impl Player {
             (play_page::QLINKS, EventKind::Step { index, delta }) if self.view == View::Mixer => {
                 self.mixer_qlink(index, delta);
                 None
+            }
+            (play_page::QLINKS, EventKind::Step { index, delta }) if self.view == View::Synth => {
+                let a = self.synth.as_mut()?.qlink(&mut self.ui, index, delta);
+                self.refresh_qlinks();
+                a.map(FromUi::Synth)
             }
             (play_page::QLINKS, EventKind::Step { index, delta })
                 if self.chain_page.drives(self.view) && !self.band_showing() =>
@@ -14221,6 +14239,15 @@ mod tests {
             .unwrap()
             .text
             .contains("Q-Links 1-4"));
+        // The shared Q-Link column shows what the page's Q-Links turn.
+        let column = |p: &Player| {
+            let q = p.ui.get::<QLinkColumn>(play_page::QLINKS).unwrap();
+            (q.title.clone(), q.cards.clone())
+        };
+        assert!(p.ui.rect_of(play_page::QLINKS).is_some_and(|r| r.w == 168));
+        assert_eq!(column(&p).0, "Q-Links · Synth");
+        assert_eq!(column(&p).1, p.synth.as_ref().unwrap().qlink_cards());
+        let before = column(&p).1[0].value.clone();
         // A Q-Link turns its knob on screen at once and sends the change.
         assert!(p.take_actions().is_empty());
         p.apply(ToUi::SynthQLink(0, 5));
@@ -14229,16 +14256,33 @@ mod tests {
             matches!(acts.as_slice(), [FromUi::Synth(SynthAction::Set { .. })]),
             "{acts:?}"
         );
+        assert_ne!(column(&p).1[0].value, before, "the card follows");
+        // A drag on a card does the same.
+        let ev = UiEvent {
+            widget: play_page::QLINKS.to_string(),
+            kind: EventKind::Step {
+                index: 0,
+                delta: -5,
+            },
+        };
+        assert!(matches!(
+            p.on_event(ev),
+            Some(FromUi::Synth(SynthAction::Set { .. }))
+        ));
+        assert_eq!(column(&p).1[0].value, before);
         p.apply(ToUi::SynthWheel(-3));
         assert_eq!(p.take_actions().len(), 1);
         // The wheel navigation (app::RowKey): the wheel picks tiles, - / +
         // and an opened tile's wheel turn the tile picked.
         use crate::app::RowKey;
+        // The control picked, as a place in the page's order of controls.
         let tiles = |p: &Player| {
-            let g =
-                p.ui.get::<mpfree_synth_ui::widgets::TileGrid>(synth_view::TILES)
+            let v =
+                p.ui.get::<mpfree_synth_ui::section_view::SectionView>(synth_view::TILES)
                     .unwrap();
-            (g.selected, g.editing, g.tiles.len())
+            let order = p.synth.as_ref().unwrap().order();
+            let at = v.selected.and_then(|i| order.iter().position(|&o| o == i));
+            (at, v.editing, order.len())
         };
         let (at, _, n) = tiles(&p);
         let at = at.unwrap();
