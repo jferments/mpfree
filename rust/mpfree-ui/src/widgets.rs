@@ -676,6 +676,19 @@ impl Widget for Fader {
         vec![Target::drag("slider", 0, self.label.clone(), r)]
     }
 
+    fn steps(&self, _t: &Target) -> bool {
+        true
+    }
+
+    /// One hundredth of the travel per detent.
+    fn step(&mut self, _t: &Target, delta: i32, _r: Rect) -> Option<EventKind> {
+        let v = (self.value + delta as f32 * 0.01).clamp(0.0, 1.0);
+        (v != self.value).then(|| {
+            self.value = v;
+            EventKind::Value(v)
+        })
+    }
+
     fn touch(&mut self, _f: u64, phase: Touch, x: i32, _y: i32, r: Rect) -> Option<EventKind> {
         if !matches!(phase, Touch::Down | Touch::Move) {
             return None;

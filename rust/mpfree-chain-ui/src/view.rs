@@ -136,6 +136,13 @@ const PICTURE_H: i32 = 140;
 const MODE_H: i32 = 40;
 /// The Mode chooser's arrows, when its modes don't fit the row as chips.
 const MODE_ARROW_W: i32 = 64;
+/// The row of page tabs, under the title (and the Mode chooser).
+const TABS_H: i32 = 36;
+/// The arrows each end of the tab row, when its tabs don't all fit.
+const TAB_ARROW_W: i32 = 40;
+/// The stage strip on a Main page (the Channel strip's gate, compressor
+/// and EQ).
+const STAGES_H: i32 = 40;
 
 /// Where everything goes, from the widget's rectangle.
 pub struct Layout {
@@ -157,7 +164,15 @@ pub struct Layout {
     pub rows: Vec<Rect>,
     pub add: Option<Rect>,
     pub buttons: [Rect; 3],
+    /// A tab per page, in the order of `ChainState::groups`; a tab out of
+    /// view while the row scrolls is empty (nothing to draw or tap).
     pub tabs: Vec<Rect>,
+    /// The arrows to the page before and after, when the tabs don't all
+    /// fit the row.
+    pub tab_arrows: Option<(Rect, Rect)>,
+    /// On a Main page, each stage's name (a tap opens its page) and its
+    /// switch.
+    pub stages: Vec<(Rect, Rect)>,
     /// The Mode chooser: each place to tap and the mode it picks (a chip
     /// per mode, or the two arrows when they don't fit), and the
     /// arrows' label between them.
@@ -200,23 +215,16 @@ pub fn layout(r: Rect, st: &ChainState, picture: bool, pv: &PickerView) -> Layou
         .then(|| Rect::new(body.x, y, body.w, 44));
     let bw = (foot.w - 2 * 8) / 3;
     let buttons = [0, 1, 2].map(|i| Rect::new(foot.x + i * (bw + 8), foot.y, bw, BUTTON_H));
-    // Effect column: tabs along the top, the drawings, knobs in two rows
-    // of four. The picker takes the column's place.
+    // Effect column: the effect's name, its Mode chooser, its page tabs,
+    // a Main page's stages, the drawings, knobs in two rows of four. The
+    // picker takes the column's place.
     let einner = effect.inset(14);
     let (head, grid) = einner.take_top(52);
-    let mut tabs = Vec::new();
-    let mut x = head.right();
-    for g in st.groups.iter().rev() {
-        let w = 24 + 9 * g.len() as i32;
-        x -= w;
-        tabs.push(Rect::new(x, head.y + 8, w, 34));
-        x -= 6;
-    }
-    tabs.reverse();
-    let title = Rect::new(head.x, head.y, x + 6 - head.x - 8, 42);
+    let title = Rect::new(head.x, head.y, head.w, 42);
+    let shown = st.selected.is_some() && !st.picking;
     let (mut modes, mut mode_label) = (Vec::new(), None);
     let grid = match &st.mode {
-        Some(mv) if st.selected.is_some() && !st.picking => {
+        Some(mv) if shown => {
             let (row, rest) = grid.take_top(MODE_H + 8);
             let row = Rect::new(row.x, row.y + 8, row.w, MODE_H);
             (modes, mode_label) = mode_row(row, mv);
@@ -224,7 +232,30 @@ pub fn layout(r: Rect, st: &ChainState, picture: bool, pv: &PickerView) -> Layou
         }
         _ => grid,
     };
-    let (picture, grid) = if picture && st.selected.is_some() && !st.picking {
+    let (mut tabs, mut tab_arrows) = (Vec::new(), None);
+    let grid = if shown && st.groups.len() > 1 {
+        let (row, rest) = grid.take_top(TABS_H + 8);
+        (tabs, tab_arrows) = tab_row(Rect::new(row.x, row.y + 8, row.w, TABS_H), st);
+        rest
+    } else {
+        grid
+    };
+    let mut stages = Vec::new();
+    let grid = if shown && !st.stages.is_empty() {
+        let (row, rest) = grid.take_top(STAGES_H + 8);
+        let row = Rect::new(row.x, row.y + 8, row.w, STAGES_H);
+        let n = st.stages.len() as i32;
+        let w = (row.w - 8 * (n - 1)) / n;
+        for i in 0..n {
+            let chip = Rect::new(row.x + i * (w + 8), row.y, w, row.h);
+            let (switch, name) = chip.take_right(64);
+            stages.push((name, switch.inset_xy(6, 6)));
+        }
+        rest
+    } else {
+        grid
+    };
+    let (picture, grid) = if picture && shown {
         let (p, rest) = grid.take_top(PICTURE_H + 8);
         (Some(Rect::new(p.x, p.y + 8, p.w, PICTURE_H)), rest)
     } else {
@@ -235,6 +266,7 @@ pub fn layout(r: Rect, st: &ChainState, picture: bool, pv: &PickerView) -> Layou
     if st.picking {
         // The picker takes the effect and Modulate columns.
         tabs.clear();
+        tab_arrows = None;
         let (phead, body) = picker_area(effect, side).inset(14).take_top(52);
         cancel = Some(Rect::new(phead.right() - 104, phead.y + 4, 104, 36));
         if st.slots.len() < st.room {
@@ -296,6 +328,8 @@ pub fn layout(r: Rect, st: &ChainState, picture: bool, pv: &PickerView) -> Layou
         add,
         buttons,
         tabs,
+        tab_arrows,
+        stages,
         modes,
         mode_label,
         knobs,
@@ -305,6 +339,51 @@ pub fn layout(r: Rect, st: &ChainState, picture: bool, pv: &PickerView) -> Layou
         add_lfo,
         add_follower,
     }
+}
+
+/// The page tabs in `row`, left to right. When they don't all fit, an
+/// arrow each end steps to the page before and after, and the tabs shown
+/// are a run that holds the page shown (the rest are empty rects).
+fn tab_row(row: Rect, st: &ChainState) -> (Vec<Rect>, Option<(Rect, Rect)>) {
+    let widths: Vec<i32> = st
+        .groups
+        .iter()
+        .map(|g| 24 + 9 * g.chars().count() as i32)
+        .collect();
+    let need = |a: usize, b: usize| -> i32 {
+        widths[a..b].iter().sum::<i32>() + 6 * (b - a).saturating_sub(1) as i32
+    };
+    let lay = |area: Rect, first: usize| -> Vec<Rect> {
+        let mut x = area.x;
+        (0..widths.len())
+            .map(|i| {
+                if i < first {
+                    return Rect::new(0, 0, 0, 0);
+                }
+                if x + widths[i] > area.right() {
+                    // This one and every one after it are out of view.
+                    x = area.right() + 1;
+                    return Rect::new(0, 0, 0, 0);
+                }
+                let r = Rect::new(x, area.y, widths[i], area.h);
+                x += widths[i] + 6;
+                r
+            })
+            .collect()
+    };
+    if need(0, widths.len()) <= row.w {
+        return (lay(row, 0), None);
+    }
+    let prev = Rect::new(row.x, row.y, TAB_ARROW_W, row.h);
+    let next = Rect::new(row.right() - TAB_ARROW_W, row.y, TAB_ARROW_W, row.h);
+    let area = Rect::new(prev.right() + 6, row.y, next.x - prev.right() - 12, row.h);
+    // The first tab shown: as far left as keeps the page shown in view.
+    let sel = st.group.min(widths.len() - 1);
+    let mut first = 0;
+    while first < sel && need(first, sel + 1) > area.w {
+        first += 1;
+    }
+    (lay(area, first), Some((prev, next)))
 }
 
 /// The Mode chooser in `row`: a chip per mode when they fit (as wide as
@@ -638,7 +717,14 @@ impl ChainView {
             ChainAction::Scope(i) => self.state.scope = *i,
             ChainAction::Focus(addr) => self.state.focus = Some(*addr),
             ChainAction::Set { addr, value } => {
-                if let Some(p) = self.state.params.iter_mut().find(|p| p.addr == *addr) {
+                let st = &mut self.state;
+                let stages = st.stages.iter_mut().map(|s| &mut s.switch);
+                for p in st
+                    .params
+                    .iter_mut()
+                    .chain(stages)
+                    .filter(|p| p.addr == *addr)
+                {
                     p.value = *value;
                     p.pos = p.info.to_unit(*value);
                 }
@@ -732,6 +818,34 @@ impl ChainView {
         if let Some(g) = l.tabs.iter().position(|r| r.contains(x, y)) {
             self.push(ChainAction::Group(g));
             return;
+        }
+        if let Some((prev, next)) = l.tab_arrows {
+            let n = st.groups.len();
+            if prev.contains(x, y) {
+                if st.group > 0 {
+                    self.push(ChainAction::Group(st.group - 1));
+                }
+                return;
+            }
+            if next.contains(x, y) {
+                if st.group + 1 < n {
+                    self.push(ChainAction::Group(st.group + 1));
+                }
+                return;
+            }
+        }
+        for ((name, switch), stage) in l.stages.iter().zip(&st.stages) {
+            if switch.contains(x, y) {
+                let addr = stage.switch.addr;
+                let value = if stage.on() { 0.0 } else { 1.0 };
+                self.push(ChainAction::Set { addr, value });
+                self.push(ChainAction::Release(addr));
+                return;
+            }
+            if name.contains(x, y) {
+                self.push(ChainAction::Group(stage.page));
+                return;
+            }
         }
         if let (Some(&(_, mode)), Some(slot)) =
             (l.modes.iter().find(|(r, _)| r.contains(x, y)), st.selected)
@@ -1062,6 +1176,9 @@ impl Widget for ChainView {
                     paint_modes(cx, &l, mv);
                 }
                 for (g, (tr, name)) in l.tabs.iter().zip(&st.groups).enumerate() {
+                    if tr.is_empty() {
+                        continue;
+                    }
                     let on = g == st.group;
                     cx.canvas
                         .fill_round_rect(*tr, 9, if on { t.accent } else { t.raised });
@@ -1074,6 +1191,29 @@ impl Widget for ChainView {
                         name,
                     );
                 }
+                if let Some((prev, next)) = l.tab_arrows {
+                    let ends = [st.group == 0, st.group + 1 >= st.groups.len()];
+                    for ((r, glyph), end) in [(prev, "‹"), (next, "›")].into_iter().zip(ends) {
+                        cx.canvas.fill_round_rect(
+                            r,
+                            9,
+                            if end {
+                                t.surface.mix(t.raised, 0.3)
+                            } else {
+                                t.raised
+                            },
+                        );
+                        cx.text(
+                            FontId::Bold,
+                            t.size_body,
+                            r,
+                            Align::Center,
+                            if end { t.text_faint } else { t.text },
+                            glyph,
+                        );
+                    }
+                }
+                paint_stages(cx, &l, st);
                 for (p, kr) in st.params.iter().zip(&l.knobs) {
                     let focus = st.focus == Some(p.addr);
                     if focus {
@@ -1116,7 +1256,7 @@ impl Widget for ChainView {
                         Rect::new(kr.x, below.bottom() + 2, kr.w, 22),
                         Align::Center,
                         t.text_dim,
-                        p.info.name,
+                        &p.label,
                     );
                     if let Some(m) = p.macro_ {
                         let b = Rect::new(kr.right() - 40, kr.y + 6, 34, 22);
@@ -1191,8 +1331,26 @@ impl Widget for ChainView {
             }
         }
         for (g, tr) in l.tabs.iter().enumerate() {
-            let label = st.groups.get(g).copied().unwrap_or("");
-            out.push(Target::tap("group", g, label, *tr));
+            if tr.is_empty() {
+                continue;
+            }
+            let label = st.groups.get(g).map_or("", String::as_str);
+            out.push(Target::tap("group", g, label, *tr).disabled_if(g == st.group));
+        }
+        if let Some((prev, next)) = l.tab_arrows {
+            let n = st.groups.len();
+            out.push(Target::tap("group-prev", 0, "‹ pages", prev).disabled_if(st.group == 0));
+            out.push(Target::tap("group-next", 0, "pages ›", next).disabled_if(st.group + 1 >= n));
+        }
+        for (i, ((name, switch), stage)) in l.stages.iter().zip(&st.stages).enumerate() {
+            out.push(Target::tap("stage", i, format!("{} ›", stage.label), *name));
+            let word = if stage.on() { "on" } else { "off" };
+            out.push(Target::tap(
+                "stage-on",
+                i,
+                format!("{} {word}", stage.label),
+                *switch,
+            ));
         }
         if let Some(mv) = &st.mode {
             for &(r, m) in &l.modes {
@@ -1207,10 +1365,7 @@ impl Widget for ChainView {
             out.push(Target::tap("title", 0, "effect page", l.title));
         }
         for (i, kr) in l.knobs.iter().enumerate() {
-            let label = st
-                .params
-                .get(i)
-                .map_or(String::new(), |p| p.info.name.to_string());
+            let label = st.params.get(i).map_or(String::new(), |p| p.label.clone());
             out.push(Target::drag("knob", i, label, *kr).towards(0, -40));
         }
         if st.focus.is_some() {
@@ -1244,12 +1399,36 @@ impl Widget for ChainView {
         out
     }
 
+    fn steps(&self, t: &Target) -> bool {
+        t.id == "knob" && self.state.params.get(t.index).is_some()
+    }
+
+    /// The data wheel on a knob: a hundredth of its travel per detent (a
+    /// switch with few places moves one place), as a tap, a turn and a lift
+    /// of a finger would.
+    fn step(&mut self, t: &Target, delta: i32, _r: Rect) -> Option<EventKind> {
+        let p = self.state.params.get(t.index)?;
+        let (addr, pos, from) = (p.addr, p.pos, p.value);
+        let value = (1..=100)
+            .map(|n| p.info.from_unit(pos + (delta * n) as f32 * WHEEL_STEP))
+            .find(|v| *v != from)?;
+        if self.state.focus != Some(addr) {
+            self.push(ChainAction::Focus(addr));
+        }
+        self.push(ChainAction::Set { addr, value });
+        self.push(ChainAction::Release(addr));
+        Some(EventKind::Select(self.actions.len()))
+    }
+
     fn touch(&mut self, finger: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
         let before = self.actions.len();
         self.touch_inner(finger, phase, x, y, r);
         (self.actions.len() > before).then_some(EventKind::Select(self.actions.len()))
     }
 }
+
+/// A knob's step per detent of the data wheel, as a share of its travel.
+const WHEEL_STEP: f32 = 0.01;
 
 impl ChainView {
     fn touch_inner(
@@ -1367,7 +1546,7 @@ fn paint_side(cx: &mut PaintCx, l: &Layout, st: &ChainState) {
         head,
         Align::Left,
         t.text_dim,
-        &format!("MODULATE · {}", p.info.name.to_uppercase()),
+        &format!("MODULATE · {}", p.label.to_uppercase()),
     );
     cx.text(
         FontId::Sans,
@@ -1546,6 +1725,42 @@ fn paint_picker(cx: &mut PaintCx, l: &Layout, st: &ChainState, pv: &PickerView) 
                 "This chain is full: remove an effect first",
             );
         }
+    }
+}
+
+/// A Main page's stages: each one's name with "›" (its page) and its
+/// switch, the name dim while the stage is off.
+fn paint_stages(cx: &mut PaintCx, l: &Layout, st: &ChainState) {
+    let t = cx.theme.clone();
+    for ((name, switch), stage) in l.stages.iter().zip(&st.stages) {
+        let on = stage.on();
+        let chip = Rect::new(name.x, name.y, switch.right() + 6 - name.x, name.h);
+        cx.canvas.fill_round_rect(chip, 9, t.raised);
+        cx.text(
+            FontId::Bold,
+            t.size_small,
+            name.inset_xy(12, 0),
+            Align::Left,
+            if on { t.text } else { t.text_dim },
+            &format!("{}  ›", stage.label.to_uppercase()),
+        );
+        cx.canvas.fill_round_rect(
+            *switch,
+            switch.h / 2,
+            if on {
+                t.good.mix(t.surface, 0.3)
+            } else {
+                t.outline
+            },
+        );
+        cx.text(
+            FontId::Bold,
+            t.size_small - 2.0,
+            *switch,
+            Align::Center,
+            if on { t.on_accent } else { t.text_dim },
+            if on { "ON" } else { "OFF" },
+        );
     }
 }
 

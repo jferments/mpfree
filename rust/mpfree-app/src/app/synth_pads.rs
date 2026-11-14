@@ -402,7 +402,11 @@ impl App {
         self.project_edit = true;
         self.set_track_sound(
             track,
-            pick.map(|(id, name)| crate::instruments::Held { id, name }),
+            pick.map(|(id, name)| crate::instruments::Held {
+                id,
+                name,
+                instance: 0,
+            }),
         );
         vec![Effect::TrackSound {
             track,

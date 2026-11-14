@@ -618,6 +618,16 @@ impl Player {
         self.engine.active_voices()
     }
 
+    /// Load shedding (`shed.rs`): the voice the engine would give up
+    /// first, and giving it up. No allocation.
+    pub fn cull_candidate(&self) -> Option<mpfree_node::Cull> {
+        self.engine.cull_candidate()
+    }
+
+    pub fn cull(&mut self) -> bool {
+        self.engine.cull()
+    }
+
     /// Hits the engine has played (the tests).
     #[cfg(test)]
     pub fn hits(&self) -> u64 {

@@ -121,6 +121,11 @@ fn exercise(s: &mut dyn Node, params: &[mpfree_node::ParamInfo], rate: u32) -> u
         if block == 2000 {
             s.reset();
         }
+        // Load shedding between blocks.
+        if block % 29 == 0 && s.cull_candidate().is_some() {
+            s.cull();
+        }
+        let _ = s.sounding_voices();
     }
     watch(false);
     assert!(l.iter().all(|x| x.is_finite()));
@@ -339,6 +344,11 @@ fn process_never_allocates() {
         if block == 2000 {
             s.reset();
         }
+        // Load shedding between blocks.
+        if block % 29 == 0 && s.cull_candidate().is_some() {
+            s.cull();
+        }
+        let _ = s.sounding_voices();
     }
     watch(false);
     assert_eq!(CALLS.load(Ordering::Relaxed), 0, "process allocated");

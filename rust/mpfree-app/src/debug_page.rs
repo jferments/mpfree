@@ -61,6 +61,8 @@ pub struct AudioNumbers {
     /// The largest render time (sampler and synth) since the start, µs.
     pub worst_us: f32,
     pub steals: u64,
+    /// Voices given up under load (shed.rs).
+    pub given_up: u64,
     pub dropped: u64,
     pub peak_grains: usize,
 }
@@ -315,9 +317,13 @@ impl DebugPages {
                 tone(a.worst_us),
             ),
             (
-                "Voices stolen".to_string(),
-                a.steals.to_string(),
-                Tone::Normal,
+                "Voices stolen · given up".to_string(),
+                format!("{} · {}", a.steals, a.given_up),
+                if a.given_up == 0 {
+                    Tone::Normal
+                } else {
+                    Tone::Bad
+                },
             ),
             (
                 "Events dropped".to_string(),
