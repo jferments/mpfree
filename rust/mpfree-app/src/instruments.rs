@@ -53,8 +53,14 @@ pub fn make(
     Some((Instrument::new(node, rate, max_block), Held { id, name }))
 }
 
-/// Slots: one per sequencer track.
-pub const SLOTS: usize = mpfree_seq::MAX_TRACKS;
+/// Slots: the first `SLOTS` sequencer tracks can each play their own
+/// instrument; the rest play the kit. Not tied to `mpfree_seq::MAX_TRACKS`,
+/// which grows (Jay, 14 Nov: up to 128 tracks); slots lent to whichever
+/// track picks an instrument come later.
+pub const SLOTS: usize = 16;
+
+// Each slot has its own mixer track after the shared ones.
+const _: () = assert!(crate::mixing::TRACKS + SLOTS <= mpfree_fx::MAX_TRACKS);
 
 /// The mixer track slot 0 feeds; slot `t` feeds this plus `t`.
 pub const fn first_track() -> usize {

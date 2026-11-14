@@ -199,6 +199,8 @@ pub struct SongLanes {
     pub alert: bool,
     /// Each track's name and colour, top to bottom.
     pub tracks: Vec<(String, Color)>,
+    /// What each track plays, under its name; empty shows only the name.
+    pub sounds: Vec<String>,
     pub blocks: Vec<SongBlock>,
     pub markers: Vec<(Tick, String)>,
     /// Ticks a bar.
@@ -236,6 +238,8 @@ pub struct SongLanes {
 }
 
 const NAME_W: i32 = 96;
+/// The least lane height that shows what a track plays under its name.
+const SOUND_LANE_H: i32 = 34;
 const RULER_H: i32 = 26;
 const TOOLS_H: i32 = 48;
 const LANE_MAX: i32 = 56;
@@ -277,6 +281,7 @@ impl Default for SongLanes {
             legend: String::new(),
             alert: false,
             tracks: Vec::new(),
+            sounds: Vec::new(),
             blocks: Vec::new(),
             markers: Vec::new(),
             bar: 3840,
@@ -434,6 +439,7 @@ impl SongLanes {
             legend: self.legend.clone(),
             alert: self.alert,
             tracks: self.tracks.clone(),
+            sounds: self.sounds.clone(),
             blocks: self.blocks.clone(),
             markers: self.markers.clone(),
             bar: self.bar,
@@ -1163,14 +1169,34 @@ impl Widget for SongLanes {
             match self.lane(k) {
                 Some(Lane::Midi(i)) => {
                     let (name, color) = &self.tracks[i];
+                    // Under the name when the lane has room for two lines
+                    // (not with take lanes open, say).
+                    let sound = self
+                        .sounds
+                        .get(i)
+                        .filter(|s| !s.is_empty() && row.h >= SOUND_LANE_H);
+                    let at = match sound {
+                        Some(_) => Rect::new(row.x, row.y + row.h / 2 - 18, NAME_W - 8, 18),
+                        None => Rect::new(row.x, row.y, NAME_W - 8, row.h),
+                    };
                     cx.text(
                         FontId::Bold,
                         t.size_small,
-                        Rect::new(row.x, row.y, NAME_W - 8, row.h),
+                        at,
                         Align::Left,
                         color.mix(t.text, 0.25),
                         name,
                     );
+                    if let Some(s) = sound {
+                        cx.text(
+                            FontId::Sans,
+                            t.size_small - 2.0,
+                            Rect::new(row.x, row.y + row.h / 2, NAME_W - 8, 16),
+                            Align::Left,
+                            t.text_dim,
+                            s,
+                        );
+                    }
                 }
                 Some(Lane::Audio(a)) => {
                     let h = Rect::new(row.x, row.y, NAME_W - 8, row.h);
