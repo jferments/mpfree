@@ -80,6 +80,7 @@ mod modfx;
 mod motion;
 mod oversample;
 mod perform;
+pub mod picker;
 mod pitch;
 mod presets;
 pub mod print;

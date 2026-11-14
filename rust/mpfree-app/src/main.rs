@@ -3450,6 +3450,17 @@ fn player_session(
     // The mixer sums everything; the Level is its master fader (mixing.rs).
     let mut mix = mixing::MixHost::new(RATE, level_db, max_db);
     mix.set_plugins(std::sync::Arc::clone(&found_plugins));
+    // The effect picker's favourites and recents (files/fx/).
+    let shelf_file = |name| {
+        store
+            .read(mpfree_fx::picker::OWNER, name)
+            .map(|b| String::from_utf8_lossy(&b).into_owned())
+            .unwrap_or_default()
+    };
+    mix.shelf = mpfree_fx::picker::Shelf::read(
+        &shelf_file(mpfree_fx::picker::FAVOURITES),
+        &shelf_file(mpfree_fx::picker::RECENT),
+    );
     // The plugin synths, for the Synth tab's Instrument row after the engines.
     app.plugin_synths = found_plugins
         .instruments()
@@ -3759,7 +3770,20 @@ fn player_session(
                             music.arm(*addr);
                         }
                         out.show(m)
-                    }))
+                    }));
+                    // A star or an add changed the picker's favourites or
+                    // recents: saved whole, on the store's thread.
+                    if std::mem::take(&mut mix.shelf_dirty) {
+                        use mpfree_fx::picker as fxp;
+                        for (name, text) in [
+                            (fxp::FAVOURITES, mix.shelf.favourites_text()),
+                            (fxp::RECENT, mix.shelf.recent_text()),
+                        ] {
+                            if let Err(e) = store.write(fxp::OWNER, name, text.into_bytes()) {
+                                out.note(&format!("fx: {name} not saved: {e}"));
+                            }
+                        }
+                    }
                 }
                 gui::FromUi::ChainLearned => {
                     panels.learned();
@@ -4576,6 +4600,8 @@ fn player_session(
                 app::Effect::ChainTurn { knob, delta } => {
                     out.show(gui::ToUi::ChainQLink(knob, delta))
                 }
+                app::Effect::ChainWheel(d) => out.show(gui::ToUi::ChainWheel(d)),
+                app::Effect::ChainPush => out.show(gui::ToUi::ChainPush),
                 app::Effect::QLinkBank => out.show(gui::ToUi::QLinkBank),
                 app::Effect::SynthPage(d) => out.show(gui::ToUi::SynthPage(d)),
                 app::Effect::SampleWheel(d) => out.show(gui::ToUi::SampleWheel(d)),
