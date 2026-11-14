@@ -1,24 +1,25 @@
-//! The chain editor's widget.
+//! The chain editor's widget, in the effect page frame (layout spec
+//! section 4b; Jay, 14 Nov 2026: "Build it as drawn"):
 //!
-//! Three columns:
-//!
-//! - **Chain:** the strip's inserts in order, each with its number, name, a
-//!   line about its settings, a dot per macro that moves it, and a power
-//!   button (bypass with spillover). A tap selects an insert; the buttons
-//!   under the list move it up or down or remove it; the last row opens the
-//!   effect picker.
-//! - **Effect:** the selected insert's page: its name (a tap opens its full
-//!   effect page, `mpfree-fx-ui`'s), its parameter groups as tabs, the
-//!   effect page's drawings for it (its curve, its delay taps; a tap opens
-//!   the page too), and up to eight knobs. A knob shows a ring for how far
-//!   modulation moves it and a badge in its macro's colour. Drag a knob up
-//!   or down to turn it; touching one makes it the knob the right column
-//!   works on. While the picker is open, the column lists the effects the
-//!   strip can take, each with a line about it; a tap adds one at the end.
-//! - **Modulate:** for the touched knob: which macro moves it (tap a
+//! - **The chain** (220 px): ‹ back and the strip button (or the Sample
+//!   tab's scopes) over the strip's effects in order, each with its
+//!   number, name, a line about its settings, a dot per macro that moves
+//!   it, and its ON pill (bypass with spillover). A tap selects an effect
+//!   and a drag moves it along the chain; under the list, Add effect opens
+//!   the effect picker, and Up, Down and Remove act on the selected one.
+//! - **The effect** (the rest: 844 px on the MPC): a header with the
+//!   effect's name and its Mode chooser (a button per mode, or ‹ › round a
+//!   chip that opens the list of them), or its page tabs when it has more
+//!   than one page; then the page, its controls in labelled sections in
+//!   their job's colour with the effect page's drawings, drawn by the Synth
+//!   tab's section widget (`mpfree_synth_ui::section_view`) from the
+//!   effect's plan ([`crate::sections`]), each knob with a ring for how far
+//!   modulation moves it and a badge in its macro's colour; and under the
+//!   page the Modulate row, for the control last touched: its macro (tap a
 //!   number; tap it again to take it off), Learn (the next Q-Link turned
-//!   takes the knob), and its mod matrix rows (drag a row's bar to set its
-//!   depth, x to remove it, + LFO or + Follower to add one).
+//!   takes it), + LFO and + Follower, and a link that opens its mod matrix
+//!   rows over the page (drag a row's bar to set its depth, x to remove
+//!   it). While the picker is open it takes the effect column.
 //!
 //! The widget keeps a copy of what it shows and moves it under the finger
 //! at once; what the touches mean goes into a queue of [`ChainAction`]s
@@ -26,14 +27,17 @@
 
 use std::f32::consts::PI;
 
+use mpfree_fx::mpfree_node::Curve;
 use mpfree_mod::{Source, MACROS};
 use mpfree_param::{ParamAddr, Strip};
 use mpfree_synth_ui::draw::Mask;
-use mpfree_synth_ui::widgets::{knob, Card, Visuals};
+use mpfree_synth_ui::section_view::{Control, Kind, SectionBox, SectionView};
+use mpfree_synth_ui::sections::Job;
+use mpfree_synth_ui::widgets::Card;
 use mpfree_ui::{Align, EventKind, FontId, PaintCx, Rect, Target, Touch, Widget};
 
 use crate::picker::{Hit, PickerLayout, PickerView, HOLD};
-use crate::state::{macro_color, ChainState, StripList, KNOBS_PER_PAGE, STRIP_GROUPS};
+use crate::state::{macro_color, ChainState, ParamView, StripList, STRIP_GROUPS};
 
 /// What a touch on the chain editor meant, for the app to apply.
 #[derive(Clone, Debug, PartialEq)]
@@ -127,95 +131,142 @@ pub enum ChainAction {
     },
 }
 
-/// The columns' widths (the effect column takes the rest).
-pub const LIST_W: i32 = 270;
-pub const SIDE_W: i32 = 280;
-const GAP: i32 = 10;
-const ROW_H: i32 = 58;
-const ROW_GAP: i32 = 6;
-const HEAD_H: i32 = 40;
+/// The chain column's width (the effect column takes the rest: 844 px on
+/// the MPC, beside the app's 168 px Q-Link column).
+pub const LIST_W: i32 = 220;
+/// Space between the columns, and between the chain column's cards.
+const GAP: i32 = 12;
+/// The chain column's head card (‹ and the strip button), its list's
+/// caption ("EFFECTS · 3 of 8"), rows, Add effect and buttons.
+const HEAD_H: i32 = 64;
+const CAPTION_H: i32 = 28;
+const ROW_H: i32 = 54;
+const ROW_GAP: i32 = 4;
+const ADD_H: i32 = 48;
 const BUTTON_H: i32 = 44;
-/// Drag distance (pixels) for a knob's whole travel.
-const DRAG_TRAVEL: f32 = 300.0;
-/// The effect page's drawings, between the tabs and the knobs.
-const PICTURE_H: i32 = 140;
-/// The Mode chooser's row, under the title, for an effect with modes.
-const MODE_H: i32 = 40;
-/// The Mode chooser's arrows, when its modes don't fit the row as chips.
-const MODE_ARROW_W: i32 = 64;
-/// The row of page tabs, under the title (and the Mode chooser).
-const TABS_H: i32 = 36;
-/// The arrows each end of the tab row, when its tabs don't all fit.
-const TAB_ARROW_W: i32 = 40;
-/// The stage strip on a Main page (the Channel strip's gate, compressor
-/// and EQ).
-const STAGES_H: i32 = 40;
+/// The ON pill's end of an effect's row: a tap there bypasses it.
+const POWER_W: i32 = 52;
+/// The effect's header, the Modulate row under the page, and the space
+/// between them and the page.
+const PAGE_HEAD_H: i32 = 52;
+const MOD_H: i32 = 54;
+const PAGE_GAP: i32 = 10;
+/// The header's buttons (modes, page tabs), and their arrows when they
+/// don't all fit.
+const CHIP_H: i32 = 36;
+const ARROW_W: i32 = 44;
+/// The Mode chooser's chip between its arrows (Drive's ten), and the rows
+/// of the list it opens.
+const MODE_CHIP_W: i32 = 180;
+const MODE_ROW_H: i32 = 40;
+/// The Modulate row's buttons.
+const MACRO_W: i32 = 40;
+const LEARN_W: i32 = 120;
+const LFO_W: i32 = 84;
+const FOLLOWER_W: i32 = 112;
+/// The mod matrix rows over the page: the panel's width, a row's height,
+/// and its source's name left of its depth bar.
+const ROWS_W: i32 = 440;
+const DEPTH_ROW_H: i32 = 44;
+const SOURCE_W: i32 = 98;
+
+/// What the editor has open over its page.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Open {
+    /// The touched control's mod matrix rows (the Modulate row's link).
+    pub rows: bool,
+    /// The list of modes (the Mode chooser's chip, when the modes don't
+    /// fit the header as buttons).
+    pub modes: bool,
+}
 
 /// Where everything goes, from the widget's rectangle.
 pub struct Layout {
+    /// The chain column's head card: ‹, the strip button or the scopes (or
+    /// the chain's title).
+    pub head: Rect,
     pub back: Option<Rect>,
     /// The strip button (the strip's name and which it is): a tap opens
     /// the strip list. None with scopes, or for a chain no strip names.
     pub strip: Option<Rect>,
-    /// The selected effect's name: a tap opens its full page.
+    pub scopes: Vec<Rect>,
+    /// The list's card, its caption, a row per effect, Add effect (when
+    /// there is room) and Up, Down, Remove.
+    pub list: Rect,
+    pub caption: Rect,
+    pub rows: Vec<Rect>,
+    pub add: Option<Rect>,
+    pub buttons: [Rect; 3],
+    /// The effect column: the header, the page and the Modulate row (the
+    /// picker takes all of it).
+    pub effect: Rect,
+    /// The header's card and the effect's name in it.
+    pub header: Rect,
     pub title: Rect,
-    /// The effect page's drawings, when there are any.
-    pub picture: Option<Rect>,
+    /// The Mode chooser: its group, each place to tap and the mode it
+    /// picks (a button per mode, or the two arrows when they don't fit),
+    /// and the chip between the arrows (a tap opens the list of modes).
+    pub mode_group: Option<Rect>,
+    pub modes: Vec<(Rect, usize)>,
+    pub mode_label: Option<Rect>,
+    /// The list of modes, while it is open: its panel and a row per mode.
+    pub mode_list: Option<Rect>,
+    pub mode_rows: Vec<(Rect, usize)>,
+    /// The page tabs (two or more pages): their group, a tab per page in
+    /// the order of `ChainState::groups` (a tab out of view while the row
+    /// scrolls is empty: nothing to draw or tap), and the arrows to the
+    /// page before and after when they don't all fit.
+    pub tab_group: Option<Rect>,
+    pub tabs: Vec<Rect>,
+    pub tab_arrows: Option<(Rect, Rect)>,
+    /// The sections.
+    pub page: Rect,
     /// The picker's Cancel, its parts ([`crate::picker`]), and the effect
     /// tiles on show (the current section's page; none when the picker is
     /// shut, shows presets, or the chain is full).
     pub cancel: Option<Rect>,
     pub picker: Option<PickerLayout>,
     pub picks: Vec<Rect>,
-    pub scopes: Vec<Rect>,
-    pub list: Rect,
-    pub effect: Rect,
-    pub side: Rect,
-    pub rows: Vec<Rect>,
-    pub add: Option<Rect>,
-    pub buttons: [Rect; 3],
-    /// A tab per page, in the order of `ChainState::groups`; a tab out of
-    /// view while the row scrolls is empty (nothing to draw or tap).
-    pub tabs: Vec<Rect>,
-    /// The arrows to the page before and after, when the tabs don't all
-    /// fit the row.
-    pub tab_arrows: Option<(Rect, Rect)>,
-    /// On a Main page, each stage's name (a tap opens its page) and its
-    /// switch.
-    pub stages: Vec<(Rect, Rect)>,
-    /// The Mode chooser: each place to tap and the mode it picks (a chip
-    /// per mode, or the two arrows when they don't fit), and the
-    /// arrows' label between them.
-    pub modes: Vec<(Rect, usize)>,
-    pub mode_label: Option<Rect>,
-    pub knobs: Vec<Rect>,
+    /// The Modulate row: the control's name over the link to its rows,
+    /// macros 1 to 8, Learn, + LFO, + Follower.
+    pub modulate: Rect,
+    pub mod_name: Rect,
+    pub rows_link: Rect,
     pub macros: [Rect; MACROS],
     pub learn: Rect,
-    pub depth_rows: Vec<(Rect, Rect)>,
     pub add_lfo: Rect,
     pub add_follower: Rect,
+    /// The mod matrix rows over the page, while open: the panel, and each
+    /// row's depth bar (its source's name at its left) and its x.
+    pub rows_panel: Option<Rect>,
+    pub depth_rows: Vec<(Rect, Rect)>,
 }
 
-/// Where everything goes. `picture`: whether there are drawings to show
-/// (see [`ChainView::layout`]); `pv`: the picker's own state.
-pub fn layout(r: Rect, st: &ChainState, picture: bool, pv: &PickerView) -> Layout {
-    let (list, rest) = r.take_left(LIST_W);
-    let (side, effect) = rest.take_right(SIDE_W);
-    let effect = effect.inset_xy(GAP, 0);
-    // Chain column.
-    let inner = list.inset(12);
-    let (head, body) = inner.take_top(HEAD_H);
-    let back = st.back.is_some().then(|| Rect::new(head.x, head.y, 44, 34));
-    let sx = back.map_or(head.x, |b| b.right() + 8);
+/// Where everything goes. `pv`: the picker's own state; `open`: what is
+/// open over the page.
+pub fn layout(r: Rect, st: &ChainState, pv: &PickerView, open: Open) -> Layout {
+    let (chain, rest) = r.take_left(LIST_W);
+    let effect = rest.take_left(GAP).1;
+    // ---- The chain column: the head card, then the list's card.
+    let (head, list) = chain.take_top(HEAD_H);
+    let list = list.take_top(GAP).1;
+    let hin = head.inset_xy(10, (HEAD_H - 44) / 2);
+    let back = st
+        .back
+        .is_some()
+        .then(|| Rect::new(hin.x, hin.y, 44, hin.h));
+    let sx = back.map_or(hin.x, |b| b.right() + 8);
     let strip = (st.scopes.is_empty() && !st.strip_name.is_empty())
-        .then(|| Rect::new(sx, head.y, head.right() - sx, 34));
+        .then(|| Rect::new(sx, hin.y, hin.right() - sx, hin.h));
     let n = st.scopes.len() as i32;
     let scopes = (0..n)
         .map(|i| {
-            let w = (head.right() - sx) / n.max(1);
-            Rect::new(sx + i * w, head.y, w - if i + 1 < n { 4 } else { 0 }, 34)
+            let w = (hin.right() - sx) / n.max(1);
+            Rect::new(sx + i * w, hin.y, w - if i + 1 < n { 4 } else { 0 }, hin.h)
         })
         .collect();
+    let inner = list.inset_xy(10, 12);
+    let (caption, body) = inner.take_top(CAPTION_H);
     let (foot, body) = body.take_bottom(BUTTON_H);
     let mut y = body.y;
     let mut rows = Vec::new();
@@ -223,63 +274,55 @@ pub fn layout(r: Rect, st: &ChainState, picture: bool, pv: &PickerView) -> Layou
         rows.push(Rect::new(body.x, y, body.w, ROW_H));
         y += ROW_H + ROW_GAP;
     }
-    let add = (st.slots.len() < st.room && y + 44 <= body.bottom())
-        .then(|| Rect::new(body.x, y, body.w, 44));
-    let bw = (foot.w - 2 * 8) / 3;
-    let buttons = [0, 1, 2].map(|i| Rect::new(foot.x + i * (bw + 8), foot.y, bw, BUTTON_H));
-    // Effect column: the effect's name, its Mode chooser, its page tabs,
-    // a Main page's stages, the drawings, knobs in two rows of four. The
-    // picker takes the column's place.
-    let einner = effect.inset(14);
-    let (head, grid) = einner.take_top(52);
-    let title = Rect::new(head.x, head.y, head.w, 42);
+    let add = (st.slots.len() < st.room && y + 2 + ADD_H <= body.bottom())
+        .then(|| Rect::new(body.x, y + 2, body.w, ADD_H));
+    let bw = (foot.w - 2 * 6) / 3;
+    let buttons = [0, 1, 2].map(|i| Rect::new(foot.x + i * (bw + 6), foot.y, bw, BUTTON_H));
+    // ---- The effect column: the header, the page, the Modulate row.
+    let (header, rest) = effect.take_top(PAGE_HEAD_H);
+    let (modulate, rest) = rest.take_bottom(MOD_H);
+    let page = rest.inset_xy(0, PAGE_GAP);
     let shown = st.selected.is_some() && !st.picking;
-    let (mut modes, mut mode_label) = (Vec::new(), None);
-    let grid = match &st.mode {
-        Some(mv) if shown => {
-            let (row, rest) = grid.take_top(MODE_H + 8);
-            let row = Rect::new(row.x, row.y + 8, row.w, MODE_H);
-            (modes, mode_label) = mode_row(row, mv);
-            rest
+    let row = Rect::new(
+        header.x + 8,
+        header.y + (header.h - CHIP_H - 8) / 2,
+        header.w - 16,
+        CHIP_H + 8,
+    );
+    // The Mode chooser at the header's right, the tabs left of it, the
+    // name in what is left.
+    let mut right = row.right();
+    let (mut mode_group, mut modes, mut mode_label) = (None, Vec::new(), None);
+    if let (Some(mv), true) = (&st.mode, shown) {
+        let (g, m, label) = mode_row(row, mv);
+        right = g.x - 12;
+        (mode_group, modes, mode_label) = (Some(g), m, label);
+    }
+    let (mut tab_group, mut tabs, mut tab_arrows) = (None, Vec::new(), None);
+    if shown && st.groups.len() > 1 {
+        let area = Rect::new(row.x + 200, row.y, (right - row.x - 200).max(0), row.h);
+        let (g, t, arrows) = tab_row(area, st);
+        right = g.x - 12;
+        (tab_group, tabs, tab_arrows) = (Some(g), t, arrows);
+    }
+    let title = Rect::new(row.x + 8, header.y, (right - row.x - 8).max(0), header.h);
+    let (mut mode_list, mut mode_rows) = (None, Vec::new());
+    if let (true, Some(mv), Some(label)) = (open.modes, &st.mode, mode_label) {
+        let n = mv.modes.len() as i32;
+        let w = (label.w + 2 * ARROW_W + 16).max(240);
+        let fit = ((page.h - 16 + 4) / (MODE_ROW_H + 4)).max(1);
+        let h = 16 + n.min(fit) * (MODE_ROW_H + 4) - 4;
+        let panel = Rect::new(label.right() + ARROW_W + 4 - w, page.y, w, h);
+        for (k, _) in mv.modes.iter().enumerate().take(fit as usize) {
+            let y = panel.y + 8 + k as i32 * (MODE_ROW_H + 4);
+            mode_rows.push((Rect::new(panel.x + 8, y, panel.w - 16, MODE_ROW_H), k));
         }
-        _ => grid,
-    };
-    let (mut tabs, mut tab_arrows) = (Vec::new(), None);
-    let grid = if shown && st.groups.len() > 1 {
-        let (row, rest) = grid.take_top(TABS_H + 8);
-        (tabs, tab_arrows) = tab_row(Rect::new(row.x, row.y + 8, row.w, TABS_H), st);
-        rest
-    } else {
-        grid
-    };
-    let mut stages = Vec::new();
-    let grid = if shown && !st.stages.is_empty() {
-        let (row, rest) = grid.take_top(STAGES_H + 8);
-        let row = Rect::new(row.x, row.y + 8, row.w, STAGES_H);
-        let n = st.stages.len() as i32;
-        let w = (row.w - 8 * (n - 1)) / n;
-        for i in 0..n {
-            let chip = Rect::new(row.x + i * (w + 8), row.y, w, row.h);
-            let (switch, name) = chip.take_right(64);
-            stages.push((name, switch.inset_xy(6, 6)));
-        }
-        rest
-    } else {
-        grid
-    };
-    let (picture, grid) = if picture && shown {
-        let (p, rest) = grid.take_top(PICTURE_H + 8);
-        (Some(Rect::new(p.x, p.y + 8, p.w, PICTURE_H)), rest)
-    } else {
-        (None, grid)
-    };
-    let grid = grid.inset_xy(0, 8);
+        mode_list = Some(panel);
+    }
     let (mut cancel, mut picker_l, mut pick_rects) = (None, None, Vec::new());
     if st.picking {
-        // The picker takes the effect and Modulate columns.
-        tabs.clear();
-        tab_arrows = None;
-        let (phead, body) = picker_area(effect, side).inset(14).take_top(52);
+        // The picker takes the effect column.
+        let (phead, body) = effect.inset(14).take_top(52);
         cancel = Some(Rect::new(phead.right() - 104, phead.y + 4, 104, 36));
         if st.slots.len() < st.room {
             let pl = crate::picker::layout(body.inset_xy(0, 4), st, pv);
@@ -289,138 +332,150 @@ pub fn layout(r: Rect, st: &ChainState, picture: bool, pv: &PickerView) -> Layou
             picker_l = Some(pl);
         }
     }
-    // Four knobs a row where they fit, else three.
-    let n = if st.picking {
-        0
-    } else {
-        st.params.len().min(KNOBS_PER_PAGE) as i32
-    };
-    let cols = if grid.w >= 440 { 4 } else { 3 };
-    let rows_n = ((n + cols - 1) / cols).max(2);
-    let (cw, ch) = (grid.w / cols, (grid.h / rows_n).min(250));
-    let knobs = (0..n)
-        .map(|i| Rect::new(grid.x + (i % cols) * cw, grid.y + (i / cols) * ch, cw, ch).inset(4))
-        .collect();
-    // Modulate column.
-    let sinner = side.inset(14);
-    let (_, sbody) = sinner.take_top(30 + 26);
-    let chip = (sbody.w - 3 * 8) / 4;
-    let macros = std::array::from_fn(|m| {
-        Rect::new(
-            sbody.x + (m as i32 % 4) * (chip + 8),
-            sbody.y + 22 + (m as i32 / 4) * 46,
-            chip,
-            38,
-        )
-    });
-    let learn = Rect::new(sbody.x, sbody.y + 22 + 2 * 46 + 30, sbody.w, 44);
-    let mut ry = learn.bottom() + 52;
-    let mut depth_rows = Vec::new();
-    for _ in &st.rows {
-        let row = Rect::new(sbody.x, ry, sbody.w, 44);
-        let (x, bar) = row.take_right(40);
-        depth_rows.push((bar, x));
-        ry += 50;
+    // ---- The Modulate row: buttons from the right, macros left of them,
+    // the control's name in what is left.
+    let line = modulate.inset_xy(10, (MOD_H - 44) / 2);
+    let add_follower = Rect::new(line.right() - FOLLOWER_W, line.y, FOLLOWER_W, line.h);
+    let add_lfo = Rect::new(add_follower.x - 6 - LFO_W, line.y, LFO_W, line.h);
+    let learn = Rect::new(add_lfo.x - 6 - LEARN_W, line.y, LEARN_W, line.h);
+    let m0 = learn.x - 12 - (MACROS as i32 * (MACRO_W + 3) - 3);
+    let macros =
+        std::array::from_fn(|m| Rect::new(m0 + m as i32 * (MACRO_W + 3), line.y, MACRO_W, line.h));
+    let mod_name = Rect::new(line.x + 4, line.y, (m0 - 12 - line.x - 4).max(0), line.h);
+    let rows_link = Rect::new(mod_name.x, mod_name.y + 22, mod_name.w, mod_name.h - 22);
+    let (mut rows_panel, mut depth_rows) = (None, Vec::new());
+    if open.rows && shown && st.focus.is_some() {
+        let n = st.rows.len().max(1) as i32;
+        let h = (44 + n * (DEPTH_ROW_H + 6) + 8).min(page.h);
+        let panel = Rect::new(page.x, page.bottom() - h, ROWS_W.min(page.w), h);
+        for k in 0..st.rows.len() as i32 {
+            let row = Rect::new(
+                panel.x + 14,
+                panel.y + 44 + k * (DEPTH_ROW_H + 6),
+                panel.w - 28,
+                DEPTH_ROW_H,
+            );
+            if row.bottom() > panel.bottom() {
+                break;
+            }
+            let (x, bar) = row.take_right(40);
+            depth_rows.push((bar, x));
+        }
+        rows_panel = Some(panel);
     }
-    let half = (sbody.w - 8) / 2;
-    let add_lfo = Rect::new(sbody.x, ry + 4, half, 40);
-    let add_follower = Rect::new(sbody.x + half + 8, ry + 4, half, 40);
     Layout {
+        head,
         back,
         strip,
-        title,
-        picture,
-        cancel,
-        picker: picker_l,
-        picks: pick_rects,
         scopes,
         list,
-        effect,
-        side,
+        caption,
         rows,
         add,
         buttons,
-        tabs,
-        tab_arrows,
-        stages,
+        effect,
+        header,
+        title,
+        mode_group,
         modes,
         mode_label,
-        knobs,
+        mode_list,
+        mode_rows,
+        tab_group,
+        tabs,
+        tab_arrows,
+        page,
+        cancel,
+        picker: picker_l,
+        picks: pick_rects,
+        modulate,
+        mod_name,
+        rows_link,
         macros,
         learn,
-        depth_rows,
         add_lfo,
         add_follower,
+        rows_panel,
+        depth_rows,
     }
 }
 
-/// The page tabs in `row`, left to right. When they don't all fit, an
-/// arrow each end steps to the page before and after, and the tabs shown
-/// are a run that holds the page shown (the rest are empty rects).
-fn tab_row(row: Rect, st: &ChainState) -> (Vec<Rect>, Option<(Rect, Rect)>) {
-    let widths: Vec<i32> = st
-        .groups
-        .iter()
-        .map(|g| 24 + 9 * g.chars().count() as i32)
-        .collect();
+/// A header button's width for `name`.
+fn chip_w(name: &str) -> i32 {
+    28 + 9 * name.chars().count() as i32
+}
+
+/// The page tabs at the right of `area`: their group (4 px round them),
+/// a tab each left to right, and when they don't all fit, an arrow each
+/// end that steps to the page before and after, the tabs shown being a
+/// run that holds the page shown (the rest are empty rects).
+fn tab_row(area: Rect, st: &ChainState) -> (Rect, Vec<Rect>, Option<(Rect, Rect)>) {
+    let widths: Vec<i32> = st.groups.iter().map(|g| chip_w(g)).collect();
     let need = |a: usize, b: usize| -> i32 {
-        widths[a..b].iter().sum::<i32>() + 6 * (b - a).saturating_sub(1) as i32
+        widths[a..b].iter().sum::<i32>() + 4 * (b - a).saturating_sub(1) as i32
     };
-    let lay = |area: Rect, first: usize| -> Vec<Rect> {
-        let mut x = area.x;
+    let lay = |x0: i32, end: i32, first: usize| -> Vec<Rect> {
+        let mut x = x0;
         (0..widths.len())
             .map(|i| {
                 if i < first {
                     return Rect::new(0, 0, 0, 0);
                 }
-                if x + widths[i] > area.right() {
+                if x + widths[i] > end {
                     // This one and every one after it are out of view.
-                    x = area.right() + 1;
+                    x = end + 1;
                     return Rect::new(0, 0, 0, 0);
                 }
-                let r = Rect::new(x, area.y, widths[i], area.h);
-                x += widths[i] + 6;
+                let r = Rect::new(x, area.y + 4, widths[i], CHIP_H);
+                x += widths[i] + 4;
                 r
             })
             .collect()
     };
-    if need(0, widths.len()) <= row.w {
-        return (lay(row, 0), None);
+    let all = need(0, widths.len());
+    if all + 8 <= area.w {
+        let g = Rect::new(area.right() - all - 8, area.y, all + 8, area.h);
+        return (g, lay(g.x + 4, g.right() - 4, 0), None);
     }
-    let prev = Rect::new(row.x, row.y, TAB_ARROW_W, row.h);
-    let next = Rect::new(row.right() - TAB_ARROW_W, row.y, TAB_ARROW_W, row.h);
-    let area = Rect::new(prev.right() + 6, row.y, next.x - prev.right() - 12, row.h);
+    let g = area;
+    let prev = Rect::new(g.x + 4, g.y + 4, ARROW_W, CHIP_H);
+    let next = Rect::new(g.right() - 4 - ARROW_W, g.y + 4, ARROW_W, CHIP_H);
+    let (x0, end) = (prev.right() + 4, next.x - 4);
     // The first tab shown: as far left as keeps the page shown in view.
     let sel = st.group.min(widths.len() - 1);
     let mut first = 0;
-    while first < sel && need(first, sel + 1) > area.w {
+    while first < sel && need(first, sel + 1) > end - x0 {
         first += 1;
     }
-    (lay(area, first), Some((prev, next)))
+    (g, lay(x0, end, first), Some((prev, next)))
 }
 
-/// The Mode chooser in `row`: a chip per mode when they fit (as wide as
-/// the group tabs), else an arrow each side of the mode's name, which step
-/// to the mode before and after (none past the ends).
-fn mode_row(row: Rect, mv: &crate::state::ModeView) -> (Vec<(Rect, usize)>, Option<Rect>) {
-    let widths: Vec<i32> = mv.modes.iter().map(|m| 24 + 9 * m.len() as i32).collect();
-    let need: i32 = widths.iter().sum::<i32>() + 6 * (widths.len() as i32 - 1).max(0);
-    if need <= row.w {
-        let mut x = row.x;
+/// The Mode chooser at the right of `row`: its group, a button per mode
+/// when they fit beside the name, else an arrow each side of a chip with
+/// the mode's name (a tap opens the list), the arrows stepping to the mode
+/// before and after (none past the ends).
+fn mode_row(row: Rect, mv: &crate::state::ModeView) -> (Rect, Vec<(Rect, usize)>, Option<Rect>) {
+    let widths: Vec<i32> = mv.modes.iter().map(|m| chip_w(m)).collect();
+    let need: i32 = widths.iter().sum::<i32>() + 4 * (widths.len() as i32 - 1).max(0);
+    if need + 8 <= row.w - 220 {
+        let g = Rect::new(row.right() - need - 8, row.y, need + 8, row.h);
+        let mut x = g.x + 4;
         let chips = widths
             .iter()
             .enumerate()
             .map(|(i, &w)| {
-                let r = Rect::new(x, row.y, w, row.h);
-                x += w + 6;
+                let r = Rect::new(x, g.y + 4, w, CHIP_H);
+                x += w + 4;
                 (r, i)
             })
             .collect();
-        return (chips, None);
+        return (g, chips, None);
     }
-    let prev = Rect::new(row.x, row.y, MODE_ARROW_W, row.h);
-    let next = Rect::new(row.right() - MODE_ARROW_W, row.y, MODE_ARROW_W, row.h);
-    let label = Rect::new(prev.right() + 6, row.y, next.x - prev.right() - 12, row.h);
+    let w = 2 * ARROW_W + MODE_CHIP_W + 16;
+    let g = Rect::new(row.right() - w, row.y, w, row.h);
+    let prev = Rect::new(g.x + 4, g.y + 4, ARROW_W, CHIP_H);
+    let label = Rect::new(prev.right() + 4, g.y + 4, MODE_CHIP_W, CHIP_H);
+    let next = Rect::new(label.right() + 4, g.y + 4, ARROW_W, CHIP_H);
     let mut out = Vec::new();
     match mv.current {
         Some(c) => {
@@ -434,7 +489,7 @@ fn mode_row(row: Rect, mv: &crate::state::ModeView) -> (Vec<(Rect, usize)>, Opti
         // In no mode: either arrow goes to the first.
         None => out.extend([(prev, 0), (next, 0)]),
     }
-    (out, Some(label))
+    (g, out, Some(label))
 }
 
 /// The slot a dragged effect's row lands in with the finger at height
@@ -446,17 +501,7 @@ fn slot_at(l: &Layout, y: i32) -> usize {
     (((y - first.y) / (ROW_H + ROW_GAP)).max(0) as usize).min(n - 1)
 }
 
-/// The effect and Modulate columns together, where the picker goes.
-fn picker_area(effect: Rect, side: Rect) -> Rect {
-    Rect::new(effect.x, effect.y, side.right() - effect.x, effect.h)
-}
-
 enum Drag {
-    Knob {
-        i: usize,
-        y0: i32,
-        pos0: f32,
-    },
     Depth {
         k: usize,
     },
@@ -468,6 +513,11 @@ enum Drag {
         y: i32,
         to: usize,
         moved: bool,
+    },
+    /// A finger on the page: the section widget has it. `turned` is the
+    /// control it set while down (Release goes to the app when it lifts).
+    Page {
+        turned: Option<ParamAddr>,
     },
 }
 
@@ -554,8 +604,12 @@ fn strip_color(t: &mpfree_ui::Theme, s: Strip) -> mpfree_ui::Color {
 /// See the module docs.
 pub struct ChainView {
     state: ChainState,
-    /// The selected effect's drawings ([`crate::state::picture`]).
-    picture: Visuals,
+    /// The selected effect's drawings ([`crate::state::picture`]): each
+    /// section shows the ones its plan names, by title.
+    cards: Vec<Card>,
+    /// The page: the section widget, filled from the state and the
+    /// drawings ([`ChainView::fill_page`]).
+    page: SectionView,
     actions: Vec<ChainAction>,
     drag: Option<(u64, Drag)>,
     /// The picker's section, page, wheel highlight and open presets.
@@ -564,6 +618,8 @@ pub struct ChainView {
     /// the app fills it), and the first tile shown.
     list_open: Option<usize>,
     list_first: usize,
+    /// What is open over the page.
+    open: Open,
 }
 
 impl Default for ChainView {
@@ -576,12 +632,14 @@ impl ChainView {
     pub fn new() -> ChainView {
         ChainView {
             state: ChainState::default(),
-            picture: Visuals::new(),
+            cards: Vec::new(),
+            page: SectionView::new(),
             actions: Vec::new(),
             drag: None,
             picker: PickerView::default(),
             list_open: None,
             list_first: 0,
+            open: Open::default(),
         }
     }
 
@@ -594,13 +652,35 @@ impl ChainView {
         &self.picker
     }
 
+    /// What is open over the page (the mod matrix rows, the list of
+    /// modes).
+    pub fn open(&self) -> Open {
+        self.open
+    }
+
+    /// The page's section widget as it stands (what it draws).
+    pub fn page(&self) -> &SectionView {
+        &self.page
+    }
+
     /// Shows a new state. Of the old one it keeps only an open picker
     /// (the editor opened it; a state from the app with `picking` set
-    /// opens it too).
+    /// opens it too). The mod matrix rows stay open on the same control,
+    /// the list of modes on the same effect.
     pub fn update(&mut self, st: ChainState) {
         let opening = st.picking && !self.state.picking;
         let picking = st.picking || self.state.picking;
         let old = self.state.list.take();
+        let same_slot = |a: &ChainState, b: &ChainState| {
+            let uid = |s: &ChainState| s.selected.and_then(|i| s.slots.get(i)).map(|v| v.uid);
+            uid(a) == uid(b) && a.mode == b.mode
+        };
+        if !same_slot(&self.state, &st) {
+            self.open.modes = false;
+        }
+        if st.focus != self.state.focus || st.focus.is_none() {
+            self.open.rows = false;
+        }
         self.state = st;
         self.state.picking = picking;
         // The strip list stays as the view has it: open on its group (the
@@ -615,6 +695,7 @@ impl ChainView {
         if opening {
             self.open_picker();
         }
+        self.fill_page();
     }
 
     /// The picker opens on the section it showed last (the first time:
@@ -854,15 +935,62 @@ impl ChainView {
         }
     }
 
-    /// Shows the selected effect's drawings ([`crate::state::picture`];
-    /// empty for none).
+    /// Shows the selected effect's drawings ([`crate::state::picture`]:
+    /// every one its effect page draws, page `""`; empty for none). Each
+    /// section shows the ones its plan names.
     pub fn set_picture(&mut self, cards: Vec<Card>) {
-        self.picture.cards = cards;
+        self.cards = cards;
+        self.fill_page();
     }
 
     /// Where everything goes in `r` as the widget stands.
     pub fn layout(&self, r: Rect) -> Layout {
-        layout(r, &self.state, !self.picture.cards.is_empty(), &self.picker)
+        layout(r, &self.state, &self.picker, self.open)
+    }
+
+    /// Where parameter `k`'s control (an index into
+    /// [`ChainState::params`]) is in `r`, as the page draws it.
+    pub fn control_rect(&self, r: Rect, k: usize) -> Option<Rect> {
+        let page = self.layout(r).page;
+        self.page.control_geom(page, k).map(|(_, g)| g.cell)
+    }
+
+    /// Fills the section widget from the state: a box per section, a
+    /// control per parameter (its index in [`ChainState::params`] is what
+    /// its events carry), the drawings its plan names, and the touched
+    /// control selected.
+    fn fill_page(&mut self) {
+        let st = &self.state;
+        let boxes = st
+            .sections
+            .iter()
+            .map(|s| {
+                let mut b = SectionBox::new(&s.key, &s.title, s.job);
+                b.note = s.note.clone();
+                b.link = s.link;
+                b.rows = s.rows;
+                b.cards = s
+                    .drawings
+                    .iter()
+                    .filter_map(|d| self.cards.iter().find(|c| &c.title == d).cloned())
+                    .collect();
+                b.controls = s
+                    .controls
+                    .iter()
+                    .filter_map(|c| control(&st.params, c, s.rows))
+                    .collect();
+                b.switch = s
+                    .switch
+                    .as_ref()
+                    .and_then(|c| control(&st.params, c, false));
+                b
+            })
+            .collect();
+        self.page.spec = st.spec.clone();
+        self.page.sections = boxes;
+        self.page.selected = st
+            .focus
+            .and_then(|f| st.params.iter().position(|p| p.addr == f));
     }
 
     /// The data wheel while the picker is open: through the section's
@@ -1075,16 +1203,14 @@ impl ChainView {
             }
             ChainAction::Group(g) => self.state.group = *g,
             ChainAction::Scope(i) => self.state.scope = *i,
-            ChainAction::Focus(addr) => self.state.focus = Some(*addr),
+            ChainAction::Focus(addr) => {
+                if self.state.focus != Some(*addr) {
+                    self.open.rows = false;
+                }
+                self.state.focus = Some(*addr);
+            }
             ChainAction::Set { addr, value } => {
-                let st = &mut self.state;
-                let stages = st.stages.iter_mut().map(|s| &mut s.switch);
-                for p in st
-                    .params
-                    .iter_mut()
-                    .chain(stages)
-                    .filter(|p| p.addr == *addr)
-                {
+                for p in self.state.params.iter_mut().filter(|p| p.addr == *addr) {
                     p.value = *value;
                     p.pos = p.info.to_unit(*value);
                 }
@@ -1103,6 +1229,7 @@ impl ChainView {
             _ => {}
         }
         self.actions.push(a);
+        self.fill_page();
     }
 
     /// Moves insert `from` to slot `to` (Up, Down, a drag or the wheel):
@@ -1125,9 +1252,12 @@ impl ChainView {
         }
         l.rows
             .iter()
-            .position(|r| r.contains(x, y) && !r.take_right(56).0.contains(x, y))
+            .position(|r| r.contains(x, y) && !r.take_right(POWER_W).0.contains(x, y))
     }
 
+    /// A finger down on the chain column, the header or the Modulate row
+    /// (the page, the strip list and what is open over the page are
+    /// [`ChainView::touch_inner`]'s).
     fn tap(&mut self, l: &Layout, finger: u64, x: i32, y: i32) {
         if l.back.is_some_and(|b| b.contains(x, y)) {
             self.push(ChainAction::Back);
@@ -1148,21 +1278,20 @@ impl ChainView {
                 return;
             }
             if let Some(pl) = &l.picker {
-                if picker_area(l.effect, l.side).contains(x, y) {
+                if l.effect.contains(x, y) {
                     let pl = pl.clone();
                     self.tap_picker(&pl, finger, x, y);
                     return;
                 }
             }
-            if l.effect.contains(x, y) || l.side.contains(x, y) {
+            if l.effect.contains(x, y) {
                 return;
             }
         }
         let st = &self.state;
         for (i, r) in l.rows.iter().enumerate() {
             if r.contains(x, y) {
-                let power = r.take_right(56).0;
-                if power.contains(x, y) {
+                if r.take_right(POWER_W).0.contains(x, y) {
                     let on = !st.slots[i].on;
                     self.push(ChainAction::SetOn { slot: i, on });
                 } else {
@@ -1192,6 +1321,9 @@ impl ChainView {
                 return;
             }
         }
+        if st.picking || st.selected.is_none() {
+            return;
+        }
         if let Some(g) = l.tabs.iter().position(|r| r.contains(x, y)) {
             self.push(ChainAction::Group(g));
             return;
@@ -1211,19 +1343,6 @@ impl ChainView {
                 return;
             }
         }
-        for ((name, switch), stage) in l.stages.iter().zip(&st.stages) {
-            if switch.contains(x, y) {
-                let addr = stage.switch.addr;
-                let value = if stage.on() { 0.0 } else { 1.0 };
-                self.push(ChainAction::Set { addr, value });
-                self.push(ChainAction::Release(addr));
-                return;
-            }
-            if name.contains(x, y) {
-                self.push(ChainAction::Group(stage.page));
-                return;
-            }
-        }
         if let (Some(&(_, mode)), Some(slot)) =
             (l.modes.iter().find(|(r, _)| r.contains(x, y)), st.selected)
         {
@@ -1232,11 +1351,9 @@ impl ChainView {
             }
             return;
         }
-        if let Some(sel) = st.selected.filter(|_| !st.picking) {
-            if l.title.contains(x, y) || l.picture.is_some_and(|p| p.contains(x, y)) {
-                self.push(ChainAction::OpenPage(sel));
-                return;
-            }
+        if l.mode_label.is_some_and(|r| r.contains(x, y)) {
+            self.open.modes = !self.open.modes;
+            return;
         }
         let Some(focus) = st.focus else { return };
         if let Some(m) = l.macros.iter().position(|r| r.contains(x, y)) {
@@ -1251,31 +1368,126 @@ impl ChainView {
             self.push(ChainAction::Learn(focus));
             return;
         }
-        for (k, (_, xr)) in l.depth_rows.iter().enumerate() {
-            if xr.contains(x, y) {
-                let row = self.state.rows[k].index;
-                self.push(ChainAction::RemoveRow(row));
-                return;
-            }
+        if l.rows_link.contains(x, y) && !st.rows.is_empty() {
+            self.open.rows = !self.open.rows;
+            return;
         }
-        if l.add_lfo.contains(x, y) && focused_takes_rows(st) {
+        // A new row opens the rows, to set its depth.
+        let source = if l.add_lfo.contains(x, y) {
+            Source::Lfo(0)
+        } else if l.add_follower.contains(x, y) {
+            Source::Follower(0)
+        } else {
+            return;
+        };
+        if focused_takes_rows(st) {
             self.push(ChainAction::AddRow {
                 target: focus,
-                source: Source::Lfo(0),
+                source,
             });
-        } else if l.add_follower.contains(x, y) && focused_takes_rows(st) {
-            self.push(ChainAction::AddRow {
-                target: focus,
-                source: Source::Follower(0),
-            });
+            self.open.rows = true;
+        }
+    }
+
+    /// What a finger on the page meant: the section widget's event as
+    /// actions. A control touched becomes the one the Modulate row works
+    /// on (a meter doesn't); a drag sets it (`turned`: the app hears
+    /// Release when the finger lifts); a button, an arrow or a switch sets
+    /// it a step at once; a section's link shows that page.
+    fn page_event(&mut self, ev: EventKind, turned: &mut Option<ParamAddr>) {
+        match ev {
+            EventKind::Select(i) => match self.state.params.get(i) {
+                Some(p) if !p.info.readonly => {
+                    if self.state.focus != Some(p.addr) {
+                        let addr = p.addr;
+                        self.push(ChainAction::Focus(addr));
+                    }
+                }
+                _ => self.fill_page(),
+            },
+            EventKind::Value(pos) => {
+                let Some(p) = self.page.selected.and_then(|i| self.state.params.get(i)) else {
+                    return;
+                };
+                let (addr, value) = (p.addr, p.info.from_unit(pos));
+                *turned = Some(addr);
+                if value != p.value {
+                    self.push(ChainAction::Set { addr, value });
+                }
+            }
+            EventKind::Step { index, delta } => {
+                let Some(p) = self.state.params.get(index) else {
+                    return;
+                };
+                let (addr, info, now) = (p.addr, p.info, p.value);
+                let value = match info.curve {
+                    Curve::Toggle if delta > 0 => info.max,
+                    Curve::Toggle => info.min,
+                    _ => (now.round() + delta as f32).clamp(info.min, info.max),
+                };
+                if self.state.focus != Some(addr) {
+                    self.push(ChainAction::Focus(addr));
+                }
+                if value != now {
+                    self.push(ChainAction::Set { addr, value });
+                    self.push(ChainAction::Release(addr));
+                }
+            }
+            EventKind::Tab(n) if n < self.state.groups.len() && n != self.state.group => {
+                self.push(ChainAction::Group(n));
+            }
+            _ => {}
         }
     }
 }
 
-/// The strip button: the strip's colour, its name and which strip it is,
-/// and a chevron (a tap opens the strip list).
+/// Parameter `c.param` as a control of the section widget: drawn as what
+/// it is (a meter for a read-only value, buttons or a chip for a choice, a
+/// pill for a switch, a fader where the plan says, a stepper for a small
+/// whole number, a slider in a section of rows, else a knob), its value and
+/// unit apart.
+fn control(params: &[ParamView], c: &crate::sections::CtlState, rows: bool) -> Option<Control> {
+    let p = params.get(c.param)?;
+    let bipolar = p.info.min < 0.0 && p.info.max > 0.0;
+    let pos = p.pos;
+    let kind = if p.info.readonly {
+        Kind::Meter
+    } else {
+        match p.info.curve {
+            Curve::Choice(names) => Kind::Choice {
+                names: names.iter().map(|s| s.to_string()).collect(),
+                index: p.value.round().max(0.0) as usize,
+            },
+            Curve::Toggle => Kind::Toggle(p.value >= 0.5),
+            _ if c.fader => Kind::Fader { pos, bipolar },
+            Curve::Stepped if p.info.max - p.info.min <= 48.0 => Kind::Stepper,
+            _ if rows => Kind::Slider { pos, bipolar },
+            _ => Kind::Knob { pos, bipolar },
+        }
+    };
+    let text = p.text();
+    let (value, unit) = match text.rsplit_once(' ') {
+        Some((v, u)) if !u.chars().any(|ch| ch.is_ascii_digit()) && !v.is_empty() => {
+            (v.to_string(), u.to_string())
+        }
+        _ => (text, String::new()),
+    };
+    Some(Control {
+        index: c.param,
+        label: c.label.clone(),
+        value,
+        unit,
+        kind,
+        tier: c.tier,
+        qlink: c.qlink,
+        dim: c.dim.is_some(),
+        tint: None,
+    })
+}
+
 /// One effect's row in the chain column: its number, name, summary (or
-/// "bypassed"), macro dots and wave mark, and its ON pill.
+/// "bypassed") with a dot per macro that moves it and a wave mark if the
+/// matrix does, and its ON pill.
 fn paint_slot(
     cx: &mut PaintCx,
     t: &mpfree_ui::Theme,
@@ -1295,13 +1507,13 @@ fn paint_slot(
     );
     if sel {
         cx.canvas
-            .fill_round_rect(Rect::new(row.x, row.y + 8, 3, row.h - 16), 1, t.accent);
+            .fill_round_rect(Rect::new(row.x, row.y + 13, 4, row.h - 26), 2, t.accent);
     }
     let ink = t.button_ink(s.on);
-    let badge = Rect::new(row.x + 12, row.y + (row.h - 28) / 2, 28, 28);
+    let badge = Rect::new(row.x + 10, row.y + (row.h - 24) / 2, 24, 24);
     cx.canvas.fill_round_rect(
         badge,
-        7,
+        6,
         if s.on {
             t.accent.mix(t.surface, 0.55)
         } else {
@@ -1310,39 +1522,48 @@ fn paint_slot(
     );
     cx.text(
         FontId::Bold,
-        t.size_small,
+        t.size_small - 1.0,
         badge,
         Align::Center,
         ink,
         &(i + 1).to_string(),
     );
-    let (power, text) = row.take_right(56);
+    let (power, text) = row.take_right(POWER_W);
     let text = Rect::new(
-        badge.right() + 12,
+        badge.right() + 8,
         row.y,
-        text.right() - badge.right() - 12,
+        text.right() - badge.right() - 10,
         row.h,
     );
-    let (top, bottom) = text.take_top(row.h / 2 + 2);
-    // The name stops short of the macro dots and the wave mark drawn
-    // below (a long "Reverb · Echoes" is cut with "…" rather than run
-    // under them): the dots are 9 px in 12 px steps from the right,
-    // the wave's ink about 5 px into its 20 px box left of them.
-    let dots = text.right() - 4 - 12 * s.macros.len() as i32;
-    let marks = match (s.modulated, s.macros.is_empty()) {
-        (true, _) => dots - 22 + 5 - 4,
-        (false, false) => dots - 4,
-        (false, true) => text.right(),
-    };
-    let name = top.take_bottom(24).0;
+    let (top, bottom) = text.take_top(row.h / 2 + 1);
     cx.text(
         FontId::Bold,
-        t.size_body,
-        Rect::new(name.x, name.y, marks - name.x, name.h),
+        t.size_body - 2.0,
+        top.take_bottom(22).0,
         Align::Left,
         ink,
         &s.name,
     );
+    // The summary stops short of the macro dots and the wave mark at its
+    // right: the dots are 8 px in 11 px steps, the wave's ink about 5 px
+    // into its 16 px box left of them.
+    let mut dx = text.right();
+    for m in s.macros.iter().rev() {
+        dx -= 11;
+        cx.canvas
+            .fill_round_rect(Rect::new(dx, bottom.y + 6, 8, 8), 4, macro_color(t, *m));
+    }
+    if s.modulated {
+        dx -= 16;
+        cx.text(
+            FontId::Bold,
+            t.size_small - 2.0,
+            Rect::new(dx, bottom.y, 16, 20),
+            Align::Center,
+            t.accent,
+            "~",
+        );
+    }
     let sub = if s.on {
         s.summary.clone()
     } else {
@@ -1350,34 +1571,16 @@ fn paint_slot(
     };
     cx.text(
         FontId::Sans,
-        t.size_small,
-        bottom.take_top(22).0,
+        t.size_small - 2.0,
+        Rect::new(bottom.x, bottom.y, dx - 4 - bottom.x, 20),
         Align::Left,
         t.text_dim,
         &sub,
     );
-    // A dot per macro that moves it, and a wave mark if the matrix does.
-    let mut dx = text.right() - 4;
-    for m in s.macros.iter().rev() {
-        dx -= 12;
-        cx.canvas
-            .fill_round_rect(Rect::new(dx, row.y + 14, 9, 9), 5, macro_color(t, *m));
-    }
-    if s.modulated {
-        dx -= 22;
-        cx.text(
-            FontId::Bold,
-            t.size_small - 2.0,
-            Rect::new(dx, row.y + 8, 20, 20),
-            Align::Center,
-            t.accent,
-            "~",
-        );
-    }
-    let pill = Rect::new(power.x + 6, power.y + (power.h - 26) / 2, 44, 26);
+    let pill = Rect::new(power.x + 4, power.y + (power.h - 24) / 2, 40, 24);
     cx.canvas.fill_round_rect(
         pill,
-        13,
+        12,
         if s.on {
             t.good.mix(t.surface, 0.3)
         } else {
@@ -1386,7 +1589,7 @@ fn paint_slot(
     );
     cx.text(
         FontId::Bold,
-        t.size_small - 2.0,
+        t.size_small - 3.0,
         pill,
         Align::Center,
         if s.on { t.on_accent } else { t.text_dim },
@@ -1394,40 +1597,43 @@ fn paint_slot(
     );
 }
 
+/// The strip button: the strip's colour, its name over which strip it is,
+/// and a chevron (a tap opens the strip list).
 fn paint_strip_button(cx: &mut PaintCx, b: Rect, st: &ChainState) {
     let t = cx.theme.clone();
-    cx.canvas.fill_round_rect(b, 9, t.raised);
-    cx.canvas.stroke_round_rect(b, 9, 1, t.outline);
+    cx.canvas.fill_round_rect(b, 10, t.raised);
+    cx.canvas.stroke_round_rect(b, 10, 1, t.outline);
     let dot = Rect::new(b.x + 10, b.y + b.h / 2 - 4, 8, 8);
     cx.canvas.fill_round_rect(dot, 4, strip_color(&t, st.strip));
-    let inner = Rect::new(dot.right() + 8, b.y, b.w - 26 - 28, b.h);
-    let name_w = cx.measure(FontId::Bold, t.size_small, &st.strip_name);
+    let inner = Rect::new(dot.right() + 8, b.y + 3, b.w - 26 - 30, b.h - 6);
+    let (top, bottom) = inner.take_top(inner.h / 2 + 1);
     cx.text(
         FontId::Bold,
         t.size_small,
-        inner,
+        top,
         Align::Left,
         t.text,
         &st.strip_name,
     );
-    if st.strip_kind != st.strip_name && name_w + 8 < inner.w {
-        let kind = Rect::new(inner.x + name_w + 8, inner.y, inner.w - name_w - 8, inner.h);
+    if st.strip_kind != st.strip_name {
         cx.text(
             FontId::Sans,
             t.size_small - 3.0,
-            kind,
+            bottom,
             Align::Left,
             t.text_dim,
             &st.strip_kind,
         );
     }
-    // The chevron: two short diagonals.
-    let (cx0, cy0) = (b.right() - 22, b.y + b.h / 2 - 3);
+    chevron(cx, b.right() - 22, b.y + b.h / 2 - 3, t.text_dim);
+}
+
+/// A small chevron pointing down (something opens a list), its top left
+/// at (x, y): two short diagonals, 11 px wide.
+fn chevron(cx: &mut PaintCx, x: i32, y: i32, c: mpfree_ui::Color) {
     for i in 0..5 {
-        cx.canvas
-            .fill_rect(Rect::new(cx0 + i, cy0 + i, 2, 2), t.text_dim);
-        cx.canvas
-            .fill_rect(Rect::new(cx0 + 9 - i, cy0 + i, 2, 2), t.text_dim);
+        cx.canvas.fill_rect(Rect::new(x + i, y + i, 2, 2), c);
+        cx.canvas.fill_rect(Rect::new(x + 9 - i, y + i, 2, 2), c);
     }
 }
 
@@ -1452,322 +1658,12 @@ impl Widget for ChainView {
         let st = &self.state;
         let l = self.layout(r);
         cx.canvas.fill_rect(r, t.bg);
-        // ---- Chain column.
-        cx.canvas.fill_round_rect(l.list, t.radius, t.surface);
-        let inner = l.list.inset(12);
-        let (head, _) = inner.take_top(HEAD_H);
-        if let Some(b) = l.back {
-            cx.canvas.fill_round_rect(b, 9, t.raised);
-            cx.text(FontId::Bold, t.size_title, b, Align::Center, t.text, "‹");
-        }
-        if let Some(b) = l.strip {
-            paint_strip_button(cx, b, st);
-        }
-        for (i, (r, name)) in l.scopes.iter().zip(&st.scopes).enumerate() {
-            let on = i == st.scope;
-            cx.canvas.fill_round_rect(
-                *r,
-                9,
-                if on {
-                    t.raised
-                } else {
-                    t.surface.mix(t.raised, 0.35)
-                },
-            );
-            if on {
-                cx.canvas.fill_round_rect(
-                    Rect::new(r.x + 16, r.bottom() - 3, r.w - 32, 2),
-                    1,
-                    t.accent,
-                );
-            }
-            cx.text(
-                if on { FontId::Bold } else { FontId::Sans },
-                t.size_small,
-                *r,
-                Align::Center,
-                if on { t.text } else { t.text_dim },
-                name,
-            );
-        }
-        if st.scopes.is_empty() && l.strip.is_none() {
-            let tx = l.back.map_or(head.x, |b| b.right() + 12);
-            let title = Rect::new(tx, head.y, head.right() - tx, 34);
-            let name = st.title.to_uppercase();
-            cx.text(
-                FontId::Bold,
-                t.size_small,
-                title,
-                Align::Left,
-                t.text_dim,
-                &name,
-            );
-            if let Some(c) = st.cost_pct {
-                let cost = format!("{c:.1} %");
-                if cx.measure(FontId::Bold, t.size_small, &name)
-                    + cx.measure(FontId::Sans, t.size_small, &cost)
-                    + 10
-                    <= title.w
-                {
-                    cx.text(
-                        FontId::Sans,
-                        t.size_small,
-                        title,
-                        Align::Right,
-                        t.text_faint,
-                        &cost,
-                    );
-                }
-            }
-        }
-        // A row being dragged: its own place empty but outlined, a line
-        // where it will land, and the row itself under the finger.
-        let lifted = match self.drag {
-            Some((
-                _,
-                Drag::Slot {
-                    from,
-                    y0,
-                    y,
-                    to,
-                    moved: true,
-                },
-            )) => Some((from, y - y0, to)),
-            _ => None,
-        };
-        for (i, (s, row)) in st.slots.iter().zip(&l.rows).enumerate() {
-            if lifted.is_some_and(|(from, ..)| from == i) {
-                cx.canvas.fill_round_rect(*row, 10, t.surface);
-                cx.canvas.stroke_round_rect(*row, 10, 2, t.outline);
-                continue;
-            }
-            paint_slot(cx, &t, *row, i, s, st.selected == Some(i));
-        }
-        if let (Some((from, dy, to)), Some(first), Some(last)) =
-            (lifted, l.rows.first(), l.rows.last())
-        {
-            // The row follows the finger within the list, but stays clear
-            // of the landing line: below it on the way up, above it on the
-            // way down, so the line is never hidden under the row.
-            let (mut lo, mut hi) = (first.y, last.y);
-            if to != from {
-                let at = &l.rows[to];
-                let y = if to < from {
-                    at.y - ROW_GAP / 2 - 2
-                } else {
-                    at.bottom() + ROW_GAP / 2 - 2
-                };
-                cx.canvas
-                    .fill_round_rect(Rect::new(at.x, y, at.w, 4), 2, t.accent);
-                for x in [at.x - 6, at.right() - 6] {
-                    cx.canvas
-                        .fill_round_rect(Rect::new(x, y - 4, 12, 12), 6, t.accent);
-                }
-                if to < from {
-                    lo = y + 14;
-                } else {
-                    hi = y - 10 - ROW_H;
-                }
-            }
-            if let (Some(s), Some(home)) = (st.slots.get(from), l.rows.get(from)) {
-                let y = (home.y + dy).clamp(lo, hi.max(lo));
-                let row = Rect::new(home.x + 8, y, home.w, home.h);
-                paint_slot(cx, &t, row, from, s, true);
-                cx.canvas.stroke_round_rect(row, 10, 2, t.accent);
-            }
-        }
-        if let Some(a) = l.add {
-            cx.canvas.stroke_round_rect(a, 10, 1, t.outline);
-            cx.text(
-                FontId::Sans,
-                t.size_body,
-                a.inset_xy(16, 0),
-                Align::Left,
-                t.text_dim,
-                "+  Add effect",
-            );
-            cx.text(
-                FontId::Sans,
-                t.size_small,
-                a.inset_xy(14, 0),
-                Align::Right,
-                t.text_faint,
-                &match st.cost_pct.filter(|_| l.strip.is_some()) {
-                    // The strip button took the title's place: the cost,
-                    // while profiling, comes here.
-                    Some(c) => format!("{} of {} · {c:.1} %", st.slots.len(), st.room),
-                    None => format!("{} of {}", st.slots.len(), st.room),
-                },
-            );
-        }
-        let live = st.selected.is_some();
-        let sel = st.selected.unwrap_or(0);
-        for (b, (label, ok)) in l.buttons.iter().zip([
-            ("Up", live && sel > 0),
-            ("Down", live && sel + 1 < st.slots.len()),
-            ("Remove", live),
-        ]) {
-            cx.canvas.fill_round_rect(
-                *b,
-                10,
-                if ok {
-                    t.raised
-                } else {
-                    t.surface.mix(t.raised, 0.3)
-                },
-            );
-            cx.text(
-                FontId::Bold,
-                t.size_small,
-                *b,
-                Align::Center,
-                t.button_ink(ok),
-                label,
-            );
-        }
-        // ---- Effect column.
-        cx.canvas.fill_round_rect(l.effect, t.radius, t.surface);
+        self.paint_chain(cx, &l);
         if st.picking {
             paint_picker(cx, &l, st, &self.picker);
-            return;
+        } else {
+            self.paint_effect(cx, &l);
         }
-        match st.selected.and_then(|s| st.slots.get(s)) {
-            None => {
-                cx.text(
-                    FontId::Sans,
-                    t.size_body,
-                    l.effect,
-                    Align::Center,
-                    t.text_dim,
-                    "No effects yet: tap  + Add effect",
-                );
-            }
-            Some(s) => {
-                cx.text(
-                    FontId::Bold,
-                    t.size_title,
-                    l.title,
-                    Align::Left,
-                    t.text,
-                    &format!("{}  ›", s.name),
-                );
-                if let Some(pr) = l.picture {
-                    self.picture.paint(cx, pr);
-                }
-                if let Some(mv) = &st.mode {
-                    paint_modes(cx, &l, mv);
-                }
-                for (g, (tr, name)) in l.tabs.iter().zip(&st.groups).enumerate() {
-                    if tr.is_empty() {
-                        continue;
-                    }
-                    let on = g == st.group;
-                    cx.canvas
-                        .fill_round_rect(*tr, 9, if on { t.accent } else { t.raised });
-                    cx.text(
-                        FontId::Bold,
-                        t.size_small,
-                        *tr,
-                        Align::Center,
-                        if on { t.on_accent } else { t.text_dim },
-                        name,
-                    );
-                }
-                if let Some((prev, next)) = l.tab_arrows {
-                    let ends = [st.group == 0, st.group + 1 >= st.groups.len()];
-                    for ((r, glyph), end) in [(prev, "‹"), (next, "›")].into_iter().zip(ends) {
-                        cx.canvas.fill_round_rect(
-                            r,
-                            9,
-                            if end {
-                                t.surface.mix(t.raised, 0.3)
-                            } else {
-                                t.raised
-                            },
-                        );
-                        cx.text(
-                            FontId::Bold,
-                            t.size_body,
-                            r,
-                            Align::Center,
-                            if end { t.text_faint } else { t.text },
-                            glyph,
-                        );
-                    }
-                }
-                paint_stages(cx, &l, st);
-                for (p, kr) in st.params.iter().zip(&l.knobs) {
-                    let focus = st.focus == Some(p.addr);
-                    if focus {
-                        cx.canvas.fill_round_rect(*kr, 12, t.raised);
-                        cx.canvas.stroke_round_rect(*kr, 12, 2, t.accent);
-                    }
-                    let d = ((kr.w - 24).min(kr.h - 76) as f32).clamp(48.0, 92.0);
-                    let (kx, ky) = (
-                        kr.x as f32 + kr.w as f32 * 0.5,
-                        kr.y as f32 + 14.0 + d * 0.5,
-                    );
-                    let color = p.macro_.map_or(t.accent, |m| macro_color(&t, m));
-                    // The modulation ring: just outside the knob.
-                    if let Some((lo, hi)) = p.mod_range {
-                        let (a0, a1) = (0.75 * PI + 1.5 * PI * lo, 0.75 * PI + 1.5 * PI * hi);
-                        let bbox = Rect::new(
-                            (kx - d) as i32,
-                            (ky - d) as i32,
-                            (2.0 * d) as i32,
-                            (2.0 * d) as i32,
-                        );
-                        let mut m = Mask::new(bbox);
-                        m.arc(kx, ky, d * 0.5 + 5.0, a0, a1.max(a0 + 0.02), 3.0);
-                        m.draw(cx.canvas, t.good);
-                    }
-                    let bipolar = p.info.min < 0.0 && p.info.max > 0.0;
-                    knob(cx, kx, ky, d, p.pos, bipolar, t.outline, color);
-                    let below = Rect::new(kr.x, (ky + d * 0.5) as i32 + 10, kr.w, 24);
-                    cx.text(
-                        FontId::Bold,
-                        t.size_body,
-                        below,
-                        Align::Center,
-                        t.text,
-                        &p.text(),
-                    );
-                    cx.text(
-                        FontId::Sans,
-                        t.size_small,
-                        Rect::new(kr.x, below.bottom() + 2, kr.w, 22),
-                        Align::Center,
-                        t.text_dim,
-                        &p.label,
-                    );
-                    if let Some(m) = p.macro_ {
-                        let b = Rect::new(kr.right() - 40, kr.y + 6, 34, 22);
-                        cx.canvas.fill_round_rect(b, 11, macro_color(&t, m));
-                        cx.text(
-                            FontId::Bold,
-                            t.size_small - 2.0,
-                            b,
-                            Align::Center,
-                            t.on_accent,
-                            &format!("M{}", m + 1),
-                        );
-                    }
-                    if p.locked {
-                        let b = Rect::new(kr.x + 6, kr.y + 6, 34, 22);
-                        cx.canvas.fill_round_rect(b, 11, t.warn);
-                        cx.text(
-                            FontId::Bold,
-                            t.size_small - 2.0,
-                            b,
-                            Align::Center,
-                            t.on_accent,
-                            "LK",
-                        );
-                    }
-                }
-            }
-        }
-        paint_side(cx, &l, st);
         if let Some(list) = &st.list {
             self.paint_list(cx, r, list);
         }
@@ -1827,7 +1723,7 @@ impl Widget for ChainView {
         }
         for (i, rr) in l.rows.iter().enumerate() {
             let name = st.slots.get(i).map_or(String::new(), |v| v.name.clone());
-            let (power, rest) = (rr.take_right(56).0, rr.take_right(56).1);
+            let (power, rest) = rr.take_right(POWER_W);
             out.push(
                 Target::tap("slot", i, name.clone(), rest)
                     .moves_if(st.selected == Some(i) && !st.picking),
@@ -1848,6 +1744,10 @@ impl Widget for ChainView {
                 );
             }
         }
+        if st.picking || st.selected.is_none() {
+            return out;
+        }
+        // The header: the page tabs, the Mode chooser.
         for (g, tr) in l.tabs.iter().enumerate() {
             if tr.is_empty() {
                 continue;
@@ -1860,16 +1760,6 @@ impl Widget for ChainView {
             out.push(Target::tap("group-prev", 0, "‹ pages", prev).disabled_if(st.group == 0));
             out.push(Target::tap("group-next", 0, "pages ›", next).disabled_if(st.group + 1 >= n));
         }
-        for (i, ((name, switch), stage)) in l.stages.iter().zip(&st.stages).enumerate() {
-            out.push(Target::tap("stage", i, format!("{} ›", stage.label), *name));
-            let word = if stage.on() { "on" } else { "off" };
-            out.push(Target::tap(
-                "stage-on",
-                i,
-                format!("{} {word}", stage.label),
-                *switch,
-            ));
-        }
         if let Some(mv) = &st.mode {
             for &(r, m) in &l.modes {
                 let name = mv.modes.get(m).copied().unwrap_or("");
@@ -1878,26 +1768,54 @@ impl Widget for ChainView {
                         .disabled_if(mv.current == Some(m)),
                 );
             }
+            if let Some(chip) = l.mode_label {
+                out.push(Target::tap(
+                    "mode-list",
+                    0,
+                    format!("{} modes", mv.family),
+                    chip,
+                ));
+            }
+            for &(r, m) in &l.mode_rows {
+                let name = mv.modes.get(m).copied().unwrap_or("");
+                out.push(
+                    Target::tap("mode-pick", m, format!("{} mode {name}", mv.family), r)
+                        .disabled_if(mv.current == Some(m)),
+                );
+            }
         }
-        if st.selected.is_some() && !st.picking {
-            out.push(Target::tap("title", 0, "effect page", l.title));
-        }
-        for (i, kr) in l.knobs.iter().enumerate() {
-            let label = st.params.get(i).map_or(String::new(), |p| p.label.clone());
-            out.push(Target::drag("knob", i, label, *kr).towards(0, -40));
+        // The page: the section widget's controls, but for any under what
+        // is open over it.
+        let over = [l.rows_panel, l.mode_list];
+        for tg in self.page.targets(l.page) {
+            if !over
+                .iter()
+                .flatten()
+                .any(|o| !o.intersect(tg.rect).is_empty())
+            {
+                out.push(tg);
+            }
         }
         if st.focus.is_some() {
             for (m, mr) in l.macros.iter().enumerate() {
                 out.push(Target::tap("macro", m, format!("Macro {}", m + 1), *mr));
             }
             out.push(Target::tap("learn", 0, "Learn", l.learn));
+            let takes = focused_takes_rows(st);
+            out.push(Target::tap("add-lfo", 0, "+ LFO", l.add_lfo).disabled_if(!takes));
+            out.push(
+                Target::tap("add-follower", 0, "+ Follower", l.add_follower).disabled_if(!takes),
+            );
+            if !st.rows.is_empty() {
+                out.push(Target::tap("rows", 0, "Mod rows", l.rows_link));
+            }
             for (k, (bar, xr)) in l.depth_rows.iter().enumerate() {
                 out.push(
                     Target::drag(
                         "depth",
                         k,
                         format!("row {} depth", k + 1),
-                        bar.take_left(98).1,
+                        bar.take_left(SOURCE_W).1,
                     )
                     .towards(30, 0),
                 );
@@ -1908,27 +1826,27 @@ impl Widget for ChainView {
                     *xr,
                 ));
             }
-            let takes = focused_takes_rows(st);
-            out.push(Target::tap("add-lfo", 0, "+ LFO", l.add_lfo).disabled_if(!takes));
-            out.push(
-                Target::tap("add-follower", 0, "+ Follower", l.add_follower).disabled_if(!takes),
-            );
         }
         out
     }
 
     fn steps(&self, t: &Target) -> bool {
         match t.id {
-            "knob" => self.state.params.get(t.index).is_some(),
+            "knob" | "fader" | "slider" | "drawbar" => self
+                .state
+                .params
+                .get(t.index)
+                .is_some_and(|p| !p.info.readonly),
             "slot" => t.index < self.state.slots.len() && !self.state.picking,
             _ => false,
         }
     }
 
-    /// The data wheel on a knob: a hundredth of its travel per detent (a
-    /// switch with few places moves one place), as a tap, a turn and a lift
-    /// of a finger would. On a grabbed effect: one place along the chain
-    /// per detent (turned up, later in the chain), as Up and Down do.
+    /// The data wheel on a knob, fader or slider: a hundredth of its
+    /// travel per detent (a switch with few places moves one place), as a
+    /// touch, a turn and a lift of a finger would. On a grabbed effect:
+    /// one place along the chain per detent (turned up, later in the
+    /// chain), as Up and Down do.
     fn step(&mut self, t: &Target, delta: i32, _r: Rect) -> Option<EventKind> {
         if t.id == "slot" {
             let n = self.state.slots.len();
@@ -1963,8 +1881,12 @@ impl Widget for ChainView {
 
     fn touch(&mut self, finger: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
         let before = self.actions.len();
+        let open = self.open;
         self.touch_inner(finger, phase, x, y, r);
-        (self.actions.len() > before).then_some(EventKind::Select(self.actions.len()))
+        // Opening or shutting something over the page is a change to draw
+        // too.
+        (self.actions.len() > before || self.open != open)
+            .then_some(EventKind::Select(self.actions.len()))
     }
 }
 
@@ -1972,44 +1894,54 @@ impl Widget for ChainView {
 const WHEEL_STEP: f32 = 0.01;
 
 impl ChainView {
-    fn touch_inner(
-        &mut self,
-        finger: u64,
-        phase: Touch,
-        x: i32,
-        y: i32,
-        r: Rect,
-    ) -> Option<EventKind> {
+    fn touch_inner(&mut self, finger: u64, phase: Touch, x: i32, y: i32, r: Rect) {
         let l = self.layout(r);
         if self.list_open.is_some() {
             // The strip list takes every touch while it is open.
             if phase == Touch::Down {
                 self.tap_list(r, x, y);
             }
-            return None;
+            return;
         }
         match phase {
             Touch::Down => {
-                if let Some(i) = l.knobs.iter().position(|k| k.contains(x, y)) {
-                    let p = &self.state.params[i];
-                    let (addr, pos0) = (p.addr, p.pos);
-                    if self.state.focus != Some(addr) {
-                        self.push(ChainAction::Focus(addr));
+                // What is open over the page takes a touch on it; one
+                // anywhere else only shuts it, but for the Modulate row's
+                // buttons under the rows (a second + LFO, a macro).
+                if let Some(panel) = l.mode_list {
+                    if panel.contains(x, y) {
+                        let hit = l.mode_rows.iter().find(|(r, _)| r.contains(x, y));
+                        if let (Some(&(_, mode)), Some(slot)) = (hit, self.state.selected) {
+                            self.open.modes = false;
+                            let current = self.state.mode.as_ref().and_then(|m| m.current);
+                            if current != Some(mode) {
+                                self.push(ChainAction::SetMode { slot, mode });
+                            }
+                        }
+                    } else {
+                        self.open.modes = false;
                     }
-                    self.drag = Some((finger, Drag::Knob { i, y0: y, pos0 }));
-                    return None;
+                    return;
                 }
-                if let Some(k) = l
-                    .depth_rows
-                    .iter()
-                    .position(|(bar, _)| bar.take_left(98).1.contains(x, y))
-                {
-                    self.drag = Some((finger, Drag::Depth { k }));
-                    let (bar, _) = l.depth_rows[k];
-                    let depth = depth_of(bar.take_left(98).1.inset_xy(4, 0), x);
-                    let row = self.state.rows[k].index;
-                    self.push(ChainAction::Depth { row, depth });
-                    return None;
+                if let Some(panel) = l.rows_panel {
+                    if panel.contains(x, y) {
+                        self.tap_rows(&l, finger, x, y);
+                        return;
+                    }
+                    if !l.modulate.contains(x, y) || l.rows_link.contains(x, y) {
+                        self.open.rows = false;
+                        return;
+                    }
+                }
+                let on_page =
+                    !self.state.picking && self.state.selected.is_some() && l.page.contains(x, y);
+                if on_page {
+                    let mut turned = None;
+                    if let Some(ev) = self.page.touch(finger, Touch::Down, x, y, l.page) {
+                        self.page_event(ev, &mut turned);
+                    }
+                    self.drag = Some((finger, Drag::Page { turned }));
+                    return;
                 }
                 self.tap(&l, finger, x, y);
                 // A finger on an effect's row (not its ON pill) may drag
@@ -2026,14 +1958,13 @@ impl ChainView {
                         },
                     ));
                 }
-                None
             }
             Touch::Move => {
                 let Some((f, d)) = &self.drag else {
-                    return None;
+                    return;
                 };
                 if *f != finger {
-                    return None;
+                    return;
                 }
                 match *d {
                     Drag::Slot {
@@ -2052,25 +1983,26 @@ impl ChainView {
                             },
                         ));
                     }
-                    Drag::Knob { i, y0, pos0 } => {
-                        let p = self.state.params.get(i)?;
-                        let pos = (pos0 + (y0 - y) as f32 / DRAG_TRAVEL).clamp(0.0, 1.0);
-                        let value = p.info.from_unit(pos);
-                        if value != p.value {
-                            let addr = p.addr;
-                            self.push(ChainAction::Set { addr, value });
+                    Drag::Page { mut turned } => {
+                        if let Some(ev) = self.page.touch(finger, Touch::Move, x, y, l.page) {
+                            self.page_event(ev, &mut turned);
                         }
+                        self.drag = Some((finger, Drag::Page { turned }));
                     }
                     Drag::Depth { k } => {
-                        let (bar, _) = *l.depth_rows.get(k)?;
-                        let depth = depth_of(bar.take_left(98).1.inset_xy(4, 0), x);
-                        let row = self.state.rows.get(k)?.index;
-                        if self.state.rows[k].depth != depth {
+                        let Some(&(bar, _)) = l.depth_rows.get(k) else {
+                            return;
+                        };
+                        let depth = depth_of(bar.take_left(SOURCE_W).1.inset_xy(4, 0), x);
+                        let Some(row) = self.state.rows.get(k) else {
+                            return;
+                        };
+                        if row.depth != depth {
+                            let row = row.index;
                             self.push(ChainAction::Depth { row, depth });
                         }
                     }
                 }
-                None
             }
             Touch::Up | Touch::Cancel => {
                 if let (Touch::Up, Some(pl)) = (phase, &l.picker) {
@@ -2079,203 +2011,585 @@ impl ChainView {
                 } else if self.picker.press.is_some_and(|(f, ..)| f == finger) {
                     self.picker.press = None;
                 }
-                if self.drag.as_ref().is_some_and(|(f, _)| *f == finger) {
-                    match self.drag.take() {
-                        Some((_, Drag::Knob { i, .. })) => {
-                            if let Some(p) = self.state.params.get(i) {
-                                let addr = p.addr;
-                                self.push(ChainAction::Release(addr));
-                            }
-                        }
-                        // Lifted somewhere else in the chain: it moves
-                        // there (a cancelled touch leaves it).
-                        Some((
-                            _,
-                            Drag::Slot {
-                                from,
-                                to,
-                                moved: true,
-                                ..
-                            },
-                        )) if phase == Touch::Up && to != from => self.move_slot(from, to),
-                        _ => {}
-                    }
+                if !self.drag.as_ref().is_some_and(|(f, _)| *f == finger) {
+                    return;
                 }
-                None
+                match self.drag.take() {
+                    Some((_, Drag::Page { mut turned })) => {
+                        if let Some(ev) = self.page.touch(finger, phase, x, y, l.page) {
+                            self.page_event(ev, &mut turned);
+                        }
+                        if let Some(addr) = turned {
+                            self.push(ChainAction::Release(addr));
+                        }
+                    }
+                    // Lifted somewhere else in the chain: it moves there (a
+                    // cancelled touch leaves it).
+                    Some((
+                        _,
+                        Drag::Slot {
+                            from,
+                            to,
+                            moved: true,
+                            ..
+                        },
+                    )) if phase == Touch::Up && to != from => self.move_slot(from, to),
+                    _ => {}
+                }
             }
         }
     }
-}
 
-/// The modulation column.
-fn paint_side(cx: &mut PaintCx, l: &Layout, st: &ChainState) {
-    let t = cx.theme.clone();
-    cx.canvas.fill_round_rect(l.side, t.radius, t.surface);
-    let sinner = l.side.inset(14);
-    let (head, sbody) = sinner.take_top(30);
-    let Some(p) = st.focused() else {
-        cx.text(
-            FontId::Bold,
-            t.size_small,
-            head,
-            Align::Left,
-            t.text_dim,
-            "MODULATE",
-        );
-        cx.text(
-            FontId::Sans,
-            t.size_body,
-            sbody.take_top(60).0,
-            Align::Left,
-            t.text_dim,
-            "Touch a knob to modulate it",
-        );
-        return;
-    };
-    cx.text(
-        FontId::Bold,
-        t.size_small,
-        head,
-        Align::Left,
-        t.text_dim,
-        &format!("MODULATE · {}", p.label.to_uppercase()),
-    );
-    cx.text(
-        FontId::Sans,
-        t.size_small,
-        sbody.take_top(26).0.take_bottom(20).0,
-        Align::Left,
-        t.text_faint,
-        "MACRO",
-    );
-    for (m, mr) in l.macros.iter().enumerate() {
-        let on = p.macro_ == Some(m);
-        let c = macro_color(&t, m);
-        cx.canvas
-            .fill_round_rect(*mr, 10, if on { c } else { t.raised });
-        if !on {
-            cx.canvas
-                .fill_round_rect(Rect::new(mr.x + 8, mr.y + mr.h / 2 - 4, 8, 8), 4, c);
+    /// A finger down on the mod matrix rows: a row's bar starts setting
+    /// its depth, its x removes it.
+    fn tap_rows(&mut self, l: &Layout, finger: u64, x: i32, y: i32) {
+        for (k, (bar, xr)) in l.depth_rows.iter().enumerate() {
+            let Some(row) = self.state.rows.get(k).map(|r| r.index) else {
+                continue;
+            };
+            if xr.contains(x, y) {
+                self.push(ChainAction::RemoveRow(row));
+                return;
+            }
+            let track = bar.take_left(SOURCE_W).1;
+            if track.contains(x, y) {
+                self.drag = Some((finger, Drag::Depth { k }));
+                let depth = depth_of(track.inset_xy(4, 0), x);
+                self.push(ChainAction::Depth { row, depth });
+                return;
+            }
         }
+    }
+
+    /// The chain column: the head card, then the list's card.
+    fn paint_chain(&self, cx: &mut PaintCx, l: &Layout) {
+        let t = cx.theme.clone();
+        let st = &self.state;
+        cx.canvas.fill_round_rect(l.head, t.radius, t.surface);
+        if let Some(b) = l.back {
+            cx.canvas.fill_round_rect(b, 10, t.raised);
+            cx.text(FontId::Bold, t.size_title, b, Align::Center, t.text, "‹");
+        }
+        if let Some(b) = l.strip {
+            paint_strip_button(cx, b, st);
+        }
+        for (i, (r, name)) in l.scopes.iter().zip(&st.scopes).enumerate() {
+            let on = i == st.scope;
+            cx.canvas.fill_round_rect(
+                *r,
+                10,
+                if on {
+                    t.raised
+                } else {
+                    t.surface.mix(t.raised, 0.35)
+                },
+            );
+            if on {
+                cx.canvas.fill_round_rect(
+                    Rect::new(r.x + 12, r.bottom() - 3, r.w - 24, 2),
+                    1,
+                    t.accent,
+                );
+            }
+            cx.text(
+                if on { FontId::Bold } else { FontId::Sans },
+                t.size_small - 1.0,
+                r.inset_xy(4, 0),
+                Align::Center,
+                if on { t.text } else { t.text_dim },
+                name,
+            );
+        }
+        if st.scopes.is_empty() && l.strip.is_none() {
+            let x = l.back.map_or(l.head.x + 14, |b| b.right() + 10);
+            let title = Rect::new(x, l.head.y, l.head.right() - 12 - x, l.head.h);
+            cx.text(
+                FontId::Bold,
+                t.size_small,
+                title,
+                Align::Left,
+                t.text_dim,
+                &st.title.to_uppercase(),
+            );
+        }
+        cx.canvas.fill_round_rect(l.list, t.radius, t.surface);
+        let cap = l.caption.inset_xy(6, 0).take_top(CAPTION_H - 6).0;
         cx.text(
             FontId::Bold,
-            t.size_body,
-            *mr,
-            Align::Center,
-            if on { t.on_accent } else { t.text },
-            &(m + 1).to_string(),
-        );
-    }
-    let named = p
-        .macro_
-        .and_then(|m| st.macro_names.get(m))
-        .map_or("No macro: tap a number".to_string(), |n| format!("On {n}"));
-    cx.text(
-        FontId::Sans,
-        t.size_small,
-        Rect::new(sbody.x, l.macros[4].bottom() + 4, sbody.w, 24),
-        Align::Left,
-        t.text_dim,
-        &named,
-    );
-    cx.canvas
-        .fill_round_rect(l.learn, 10, if st.learning { t.accent } else { t.raised });
-    let learn = if st.learning {
-        // 207 px in Inter Bold at 14 px: fits the 252 px button (M5).
-        "Turn a Q-Link or a MIDI control"
-    } else {
-        "Learn to a Q-Link"
-    };
-    cx.text(
-        FontId::Bold,
-        t.size_small,
-        l.learn,
-        Align::Center,
-        if st.learning { t.on_accent } else { t.text },
-        learn,
-    );
-    let mh = Rect::new(sbody.x, l.learn.bottom() + 18, sbody.w, 24);
-    cx.text(
-        FontId::Sans,
-        t.size_small,
-        mh,
-        Align::Left,
-        t.text_faint,
-        "MOD MATRIX",
-    );
-    if !focused_takes_rows(st) {
-        cx.text(
-            FontId::Sans,
-            t.size_small,
-            Rect::new(mh.x, mh.bottom() + 4, mh.w, 24),
+            t.size_small - 1.0,
+            cap,
             Align::Left,
             t.text_dim,
-            "A switch: macros only",
+            "EFFECTS",
         );
-        return;
-    }
-    for (rv, (bar, xr)) in st.rows.iter().zip(&l.depth_rows) {
-        let (name, track) = bar.take_left(98);
+        let count = match st.cost_pct {
+            Some(c) => format!("{} of {} · {c:.1} %", st.slots.len(), st.room),
+            None => format!("{} of {}", st.slots.len(), st.room),
+        };
         cx.text(
             FontId::Sans,
-            t.size_small,
-            name,
+            t.size_small - 1.0,
+            cap,
+            Align::Right,
+            t.text_dim,
+            &count,
+        );
+        // A row being dragged: its own place empty but outlined, a line
+        // where it will land, and the row itself under the finger.
+        let lifted = match self.drag {
+            Some((
+                _,
+                Drag::Slot {
+                    from,
+                    y0,
+                    y,
+                    to,
+                    moved: true,
+                },
+            )) => Some((from, y - y0, to)),
+            _ => None,
+        };
+        for (i, (s, row)) in st.slots.iter().zip(&l.rows).enumerate() {
+            if lifted.is_some_and(|(from, ..)| from == i) {
+                cx.canvas.fill_round_rect(*row, 10, t.surface);
+                cx.canvas.stroke_round_rect(*row, 10, 2, t.outline);
+                continue;
+            }
+            paint_slot(cx, &t, *row, i, s, st.selected == Some(i));
+        }
+        if let (Some((from, dy, to)), Some(first), Some(last)) =
+            (lifted, l.rows.first(), l.rows.last())
+        {
+            // The row follows the finger within the list, but stays clear
+            // of the landing line: below it on the way up, above it on the
+            // way down, so the line is never hidden under the row.
+            let (mut lo, mut hi) = (first.y, last.y);
+            if to != from {
+                let at = &l.rows[to];
+                let y = if to < from {
+                    at.y - ROW_GAP / 2 - 2
+                } else {
+                    at.bottom() + ROW_GAP / 2 - 2
+                };
+                cx.canvas
+                    .fill_round_rect(Rect::new(at.x, y, at.w, 4), 2, t.accent);
+                for x in [at.x - 6, at.right() - 6] {
+                    cx.canvas
+                        .fill_round_rect(Rect::new(x, y - 4, 12, 12), 6, t.accent);
+                }
+                if to < from {
+                    lo = y + 14;
+                } else {
+                    hi = y - 10 - ROW_H;
+                }
+            }
+            if let (Some(s), Some(home)) = (st.slots.get(from), l.rows.get(from)) {
+                let y = (home.y + dy).clamp(lo, hi.max(lo));
+                let row = Rect::new(home.x + 6, y, home.w, home.h);
+                paint_slot(cx, &t, row, from, s, true);
+                cx.canvas.stroke_round_rect(row, 10, 2, t.accent);
+            }
+        }
+        if let Some(a) = l.add {
+            cx.canvas.stroke_round_rect(a, 10, 1, t.outline);
+            cx.text(
+                FontId::Bold,
+                t.size_small,
+                a,
+                Align::Center,
+                t.text,
+                "+  Add effect",
+            );
+        }
+        let live = st.selected.is_some();
+        let sel = st.selected.unwrap_or(0);
+        for (b, (label, ok)) in l.buttons.iter().zip([
+            ("Up", live && sel > 0),
+            ("Down", live && sel + 1 < st.slots.len()),
+            ("Remove", live),
+        ]) {
+            cx.canvas.fill_round_rect(
+                *b,
+                10,
+                if ok {
+                    t.raised
+                } else {
+                    t.surface.mix(t.raised, 0.3)
+                },
+            );
+            cx.text(
+                FontId::Bold,
+                t.size_small,
+                *b,
+                Align::Center,
+                t.button_ink(ok),
+                label,
+            );
+        }
+    }
+
+    /// The job of the section that holds the touched control (the
+    /// Modulate row's dot), else of the page's first section (the lit
+    /// mode).
+    fn job_of(&self, focus: bool) -> Option<Job> {
+        let st = &self.state;
+        let k = st
+            .focus
+            .and_then(|f| st.params.iter().position(|p| p.addr == f));
+        match (focus, k) {
+            (true, Some(k)) => st
+                .sections
+                .iter()
+                .find(|s| s.controls.iter().chain(&s.switch).any(|c| c.param == k))
+                .map(|s| s.job),
+            (true, None) => None,
+            (false, _) => st.sections.first().map(|s| s.job),
+        }
+    }
+
+    /// The effect column: the header, the page (with its macro badges and
+    /// modulation rings), the Modulate row, and what is open over the page.
+    fn paint_effect(&self, cx: &mut PaintCx, l: &Layout) {
+        let t = cx.theme.clone();
+        let st = &self.state;
+        let Some(s) = st.selected.and_then(|s| st.slots.get(s)) else {
+            cx.canvas.fill_round_rect(l.effect, t.radius, t.surface);
+            cx.text(
+                FontId::Sans,
+                t.size_body,
+                l.effect,
+                Align::Center,
+                t.text_dim,
+                "No effects yet: tap  + Add effect",
+            );
+            return;
+        };
+        cx.canvas.fill_round_rect(l.header, t.radius, t.surface);
+        let name = st.mode.as_ref().map_or(s.name.as_str(), |m| m.family);
+        cx.text(
+            FontId::Bold,
+            t.size_title,
+            l.title,
             Align::Left,
             t.text,
-            &rv.source,
+            name,
         );
-        let track = track.inset_xy(4, 14);
-        cx.canvas.fill_round_rect(track, 4, t.raised);
-        let mid = track.x + track.w / 2;
-        let end = mid + (rv.depth * track.w as f32 * 0.5) as i32;
-        let (a, b) = if end < mid { (end, mid) } else { (mid, end) };
+        let lit = self.job_of(false).map_or(t.accent, |j| j.fill(&t));
+        if let Some(mv) = &st.mode {
+            paint_modes(cx, l, mv, lit);
+        }
+        if let Some(g) = l.tab_group {
+            cx.canvas.fill_round_rect(g, 10, t.bg);
+            for (k, (tr, name)) in l.tabs.iter().zip(&st.groups).enumerate() {
+                if tr.is_empty() {
+                    continue;
+                }
+                let on = k == st.group;
+                if on {
+                    cx.canvas.fill_round_rect(*tr, 8, t.raised);
+                }
+                cx.text(
+                    if on { FontId::Bold } else { FontId::Sans },
+                    t.size_small + 1.0,
+                    *tr,
+                    Align::Center,
+                    if on { t.text } else { t.text_dim },
+                    name,
+                );
+            }
+            if let Some((prev, next)) = l.tab_arrows {
+                let ends = [st.group == 0, st.group + 1 >= st.groups.len()];
+                for ((r, glyph), end) in [(prev, "‹"), (next, "›")].into_iter().zip(ends) {
+                    cx.text(
+                        FontId::Bold,
+                        t.size_title,
+                        r,
+                        Align::Center,
+                        if end { t.text_faint } else { t.text },
+                        glyph,
+                    );
+                }
+            }
+        }
+        self.page.paint(cx, l.page);
+        self.paint_badges(cx, l.page);
+        self.paint_modulate(cx, l);
+        if let Some(panel) = l.rows_panel {
+            self.paint_rows(cx, l, panel);
+        }
+        if let (Some(panel), Some(mv)) = (l.mode_list, &st.mode) {
+            cx.canvas.fill_round_rect(panel, t.radius, t.surface);
+            cx.canvas.stroke_round_rect(panel, t.radius, 1, t.outline);
+            for &(r, m) in &l.mode_rows {
+                let on = mv.current == Some(m);
+                cx.canvas
+                    .fill_round_rect(r, 8, if on { lit } else { t.raised });
+                cx.text(
+                    if on { FontId::Bold } else { FontId::Sans },
+                    t.size_small + 1.0,
+                    r.inset_xy(14, 0),
+                    Align::Left,
+                    if on { t.on_accent } else { t.text },
+                    mv.modes[m],
+                );
+                cx.text(
+                    FontId::Sans,
+                    t.size_small - 1.0,
+                    r.inset_xy(14, 0),
+                    Align::Right,
+                    if on { t.on_accent } else { t.text_dim },
+                    &format!("{} of {}", m + 1, mv.modes.len()),
+                );
+            }
+        }
+    }
+
+    /// Over the page's controls: a ring round a knob for how far the
+    /// matrix moves it, a badge in its macro's colour ("M2") at the knob's
+    /// top left (its Q-Link's is at its top right), and LK for a lock.
+    fn paint_badges(&self, cx: &mut PaintCx, page: Rect) {
+        let t = cx.theme.clone();
+        for (k, p) in self.state.params.iter().enumerate() {
+            if p.mod_range.is_none() && p.macro_.is_none() && !p.locked {
+                continue;
+            }
+            let Some((_, g)) = self.page.control_geom(page, k) else {
+                continue;
+            };
+            if g.cell.w <= 0 {
+                continue;
+            }
+            let (bx, by) = match g.dial {
+                Some((kx, ky, d)) => {
+                    if let Some((lo, hi)) = p.mod_range {
+                        let (a0, a1) = (0.75 * PI + 1.5 * PI * lo, 0.75 * PI + 1.5 * PI * hi);
+                        let bbox = Rect::new(
+                            (kx - d) as i32,
+                            (ky - d) as i32,
+                            (2.0 * d) as i32,
+                            (2.0 * d) as i32,
+                        );
+                        let mut m = Mask::new(bbox);
+                        m.arc(kx, ky, d * 0.5 + 5.0, a0, a1.max(a0 + 0.02), 3.0);
+                        m.draw(cx.canvas, t.good);
+                    }
+                    // Beside a small dial with its name at its right,
+                    // the Q-Link's badge sits over it: this one goes
+                    // under it.
+                    let y = if g.inline {
+                        ky + d * 0.5 - 14.0
+                    } else {
+                        ky - d * 0.5 - 2.0
+                    };
+                    ((kx - d * 0.5) as i32 - 14, y as i32)
+                }
+                None => (g.cell.x - 2, g.cell.y - 10),
+            };
+            let mut y = by;
+            if let Some(m) = p.macro_ {
+                let b = Rect::new(bx, y, 30, 18);
+                cx.canvas.fill_round_rect(b, 6, macro_color(&t, m));
+                cx.text(
+                    FontId::Bold,
+                    12.0,
+                    b,
+                    Align::Center,
+                    t.on_accent,
+                    &format!("M{}", m + 1),
+                );
+                y += 22;
+            }
+            if p.locked {
+                let b = Rect::new(bx, y, 30, 18);
+                cx.canvas.fill_round_rect(b, 6, t.warn);
+                cx.text(FontId::Bold, 12.0, b, Align::Center, t.on_accent, "LK");
+            }
+        }
+    }
+
+    /// The Modulate row: the touched control's name (a dot in its
+    /// section's colour) over a link to its rows, macros 1 to 8, Learn,
+    /// + LFO and + Follower.
+    fn paint_modulate(&self, cx: &mut PaintCx, l: &Layout) {
+        let t = cx.theme.clone();
+        let st = &self.state;
+        cx.canvas.fill_round_rect(l.modulate, t.radius, t.surface);
+        let Some(p) = st.focused() else {
+            cx.text(
+                FontId::Sans,
+                t.size_small,
+                l.modulate.inset_xy(18, 0),
+                Align::Left,
+                t.text_dim,
+                "MODULATE  ·  touch a control, then a macro number, Learn, + LFO or + Follower",
+            );
+            return;
+        };
+        let (name, link) = l.mod_name.take_top(22);
+        let dot = self.job_of(true).map_or(t.accent, |j| j.fill(&t));
         cx.canvas
-            .fill_round_rect(Rect::new(a, track.y, (b - a).max(2), track.h), 4, t.good);
-        cx.canvas
-            .fill_rect(Rect::new(mid, track.y - 3, 1, track.h + 6), t.text_dim);
-        cx.text(
-            FontId::Mono,
-            t.size_small - 2.0,
-            Rect::new(track.x, track.bottom() + 1, track.w, 14),
-            Align::Center,
-            t.text_dim,
-            &format!("{:+.0} %", rv.depth * 100.0),
-        );
+            .fill_round_rect(Rect::new(name.x, name.y + 7, 8, 8), 4, dot);
         cx.text(
             FontId::Bold,
-            t.size_body,
-            *xr,
-            Align::Center,
-            t.text_faint,
-            "x",
+            t.size_small + 1.0,
+            Rect::new(name.x + 14, name.y, name.w - 14, name.h),
+            Align::Left,
+            t.text,
+            &p.label,
         );
-    }
-    for (b, label) in [(l.add_lfo, "+ LFO"), (l.add_follower, "+ Follower")] {
-        cx.canvas.stroke_round_rect(b, 10, 1, t.outline);
+        let takes = focused_takes_rows(st);
+        let summary = match (takes, st.rows.first()) {
+            _ if st.learning => "learning: turn a Q-Link or a MIDI control".to_string(),
+            (false, _) => "a switch: macros only".to_string(),
+            (true, None) => "no LFO or follower".to_string(),
+            (true, Some(r)) => {
+                let more = match st.rows.len() {
+                    1 => String::new(),
+                    n => format!(" +{}", n - 1),
+                };
+                format!("{} · {:+.0} %{more}  ›", r.source, r.depth * 100.0)
+            }
+        };
+        cx.text(
+            FontId::Sans,
+            t.size_small - 1.0,
+            link,
+            Align::Left,
+            if st.learning {
+                t.accent
+            } else if st.rows.is_empty() {
+                t.text_faint
+            } else if self.open.rows {
+                t.accent
+            } else {
+                t.text_dim
+            },
+            &summary,
+        );
+        for (m, mr) in l.macros.iter().enumerate() {
+            let on = p.macro_ == Some(m);
+            let c = macro_color(&t, m);
+            cx.canvas
+                .fill_round_rect(*mr, 10, if on { c } else { t.raised });
+            if !on {
+                cx.canvas
+                    .fill_round_rect(Rect::new(mr.x + 5, mr.y + 5, 6, 6), 3, c);
+            }
+            cx.text(
+                FontId::Bold,
+                t.size_body - 1.0,
+                *mr,
+                Align::Center,
+                if on { t.on_accent } else { t.text },
+                &(m + 1).to_string(),
+            );
+        }
+        cx.canvas
+            .fill_round_rect(l.learn, 10, if st.learning { t.accent } else { t.raised });
         cx.text(
             FontId::Bold,
             t.size_small,
-            b,
+            l.learn,
             Align::Center,
-            t.text_dim,
-            label,
+            if st.learning { t.on_accent } else { t.text },
+            if st.learning {
+                "Turn a Q-Link"
+            } else {
+                "Learn"
+            },
         );
+        for (b, label) in [(l.add_lfo, "+ LFO"), (l.add_follower, "+ Follower")] {
+            cx.canvas.fill_round_rect(
+                b,
+                10,
+                if takes {
+                    t.raised
+                } else {
+                    t.surface.mix(t.raised, 0.3)
+                },
+            );
+            cx.text(
+                FontId::Bold,
+                t.size_small,
+                b,
+                Align::Center,
+                t.button_ink(takes),
+                label,
+            );
+        }
+    }
+
+    /// The touched control's mod matrix rows over the page: each row's
+    /// source, its depth bar (drag it) and its x.
+    fn paint_rows(&self, cx: &mut PaintCx, l: &Layout, panel: Rect) {
+        let t = cx.theme.clone();
+        let st = &self.state;
+        cx.canvas.fill_round_rect(panel, t.radius, t.surface);
+        cx.canvas.stroke_round_rect(panel, t.radius, 1, t.outline);
+        let label = st
+            .focused()
+            .map_or(String::new(), |p| p.label.to_uppercase());
+        cx.text(
+            FontId::Bold,
+            t.size_small - 1.0,
+            Rect::new(panel.x + 14, panel.y + 8, panel.w - 28, 28),
+            Align::Left,
+            t.text_dim,
+            &format!("MOD MATRIX · {label}"),
+        );
+        if st.rows.is_empty() {
+            cx.text(
+                FontId::Sans,
+                t.size_small,
+                Rect::new(panel.x + 14, panel.y + 44, panel.w - 28, DEPTH_ROW_H),
+                Align::Left,
+                t.text_dim,
+                "No rows yet: + LFO or + Follower adds one",
+            );
+        }
+        for (rv, (bar, xr)) in st.rows.iter().zip(&l.depth_rows) {
+            let (name, track) = bar.take_left(SOURCE_W);
+            cx.text(
+                FontId::Sans,
+                t.size_small,
+                name,
+                Align::Left,
+                t.text,
+                &rv.source,
+            );
+            let track = track.inset_xy(4, 14);
+            cx.canvas.fill_round_rect(track, 4, t.raised);
+            let mid = track.x + track.w / 2;
+            let end = mid + (rv.depth * track.w as f32 * 0.5) as i32;
+            let (a, b) = if end < mid { (end, mid) } else { (mid, end) };
+            cx.canvas
+                .fill_round_rect(Rect::new(a, track.y, (b - a).max(2), track.h), 4, t.good);
+            cx.canvas
+                .fill_rect(Rect::new(mid, track.y - 3, 1, track.h + 6), t.text_dim);
+            cx.text(
+                FontId::Mono,
+                t.size_small - 2.0,
+                Rect::new(track.x, track.bottom() + 1, track.w, 14),
+                Align::Center,
+                t.text_dim,
+                &format!("{:+.0} %", rv.depth * 100.0),
+            );
+            cx.text(
+                FontId::Bold,
+                t.size_body,
+                *xr,
+                Align::Center,
+                t.text_faint,
+                "x",
+            );
+        }
     }
 }
 
-/// The effect picker, over the effect and Modulate columns.
+/// The effect picker, over the effect column.
 fn paint_picker(cx: &mut PaintCx, l: &Layout, st: &ChainState, pv: &PickerView) {
     let t = cx.theme.clone();
-    let area = picker_area(l.effect, l.side);
-    cx.canvas.fill_rect(
-        Rect::new(
-            l.effect.right(),
-            area.y,
-            l.side.x - l.effect.right(),
-            area.h,
-        ),
-        t.bg,
-    );
+    let area = l.effect;
     cx.canvas.fill_round_rect(area, t.radius, t.surface);
     let (head, _) = area.inset(14).take_top(52);
     // Where the effect goes (Jay's Mix tab card, 14 Nov): the strip, and
@@ -2330,103 +2644,84 @@ fn paint_picker(cx: &mut PaintCx, l: &Layout, st: &ChainState, pv: &PickerView) 
     }
 }
 
-/// A Main page's stages: each one's name with "›" (its page) and its
-/// switch, the name dim while the stage is off.
-fn paint_stages(cx: &mut PaintCx, l: &Layout, st: &ChainState) {
+/// The Mode chooser in the header: its group, then a button per mode with
+/// the current one lit in the page's colour (`lit`), or the arrows round a
+/// chip with the mode's name, its place and a chevron ("Tube   3 of
+/// 10"; "Drive mode" when in none).
+fn paint_modes(cx: &mut PaintCx, l: &Layout, mv: &crate::state::ModeView, lit: mpfree_ui::Color) {
     let t = cx.theme.clone();
-    for ((name, switch), stage) in l.stages.iter().zip(&st.stages) {
-        let on = stage.on();
-        let chip = Rect::new(name.x, name.y, switch.right() + 6 - name.x, name.h);
-        cx.canvas.fill_round_rect(chip, 9, t.raised);
-        cx.text(
-            FontId::Bold,
-            t.size_small,
-            name.inset_xy(12, 0),
-            Align::Left,
-            if on { t.text } else { t.text_dim },
-            &format!("{}  ›", stage.label.to_uppercase()),
-        );
-        cx.canvas.fill_round_rect(
-            *switch,
-            switch.h / 2,
-            if on {
-                t.good.mix(t.surface, 0.3)
-            } else {
-                t.outline
-            },
-        );
-        cx.text(
-            FontId::Bold,
-            t.size_small - 2.0,
-            *switch,
-            Align::Center,
-            if on { t.on_accent } else { t.text_dim },
-            if on { "ON" } else { "OFF" },
-        );
+    if let Some(g) = l.mode_group {
+        cx.canvas.fill_round_rect(g, 10, t.bg);
     }
-}
-
-/// The Mode chooser: chips with the current mode lit, or the arrows and
-/// the mode's name ("Tube   3 of 10"; "Reverb mode" when in none).
-fn paint_modes(cx: &mut PaintCx, l: &Layout, mv: &crate::state::ModeView) {
-    let t = cx.theme.clone();
     match l.mode_label {
         None => {
             for &(r, m) in &l.modes {
                 let on = mv.current == Some(m);
-                cx.canvas
-                    .fill_round_rect(r, 9, if on { t.accent } else { t.raised });
+                if on {
+                    cx.canvas.fill_round_rect(r, 8, lit);
+                }
                 cx.text(
-                    FontId::Bold,
-                    t.size_small,
+                    if on { FontId::Bold } else { FontId::Sans },
+                    t.size_small + 1.0,
                     r,
                     Align::Center,
-                    if on { t.on_accent } else { t.text },
+                    if on { t.on_accent } else { t.text_dim },
                     mv.modes[m],
                 );
             }
         }
         Some(label) => {
-            let row = Rect::new(
-                label.x - MODE_ARROW_W - 6,
-                label.y,
-                label.w + 2 * (MODE_ARROW_W + 6),
-                label.h,
-            );
-            let prev = Rect::new(row.x, row.y, MODE_ARROW_W, row.h);
-            let next = Rect::new(row.right() - MODE_ARROW_W, row.y, MODE_ARROW_W, row.h);
+            let prev = Rect::new(label.x - 4 - ARROW_W, label.y, ARROW_W, label.h);
+            let next = Rect::new(label.right() + 4, label.y, ARROW_W, label.h);
             for (r, glyph) in [(prev, "‹"), (next, "›")] {
                 let live = l.modes.iter().any(|(m, _)| *m == r);
-                cx.canvas.fill_round_rect(
-                    r,
-                    9,
-                    if live {
-                        t.raised
-                    } else {
-                        t.surface.mix(t.raised, 0.3)
-                    },
-                );
                 cx.text(
                     FontId::Bold,
-                    t.size_body,
+                    t.size_title,
                     r,
                     Align::Center,
                     if live { t.text } else { t.text_faint },
                     glyph,
                 );
             }
-            let text = match mv.current {
-                Some(c) => format!("{}   {} of {}", mv.modes[c], c + 1, mv.modes.len()),
-                None => format!("{} mode", mv.family),
-            };
-            cx.text(
-                FontId::Bold,
-                t.size_small,
-                label,
-                Align::Center,
-                t.text,
-                &text,
+            cx.canvas.fill_round_rect(label, 8, lit);
+            chevron(
+                cx,
+                label.right() - 23,
+                label.y + label.h / 2 - 3,
+                t.on_accent,
             );
+            let inner = Rect::new(label.x + 12, label.y, label.w - 12 - 32, label.h);
+            match mv.current {
+                Some(c) => {
+                    cx.text(
+                        FontId::Bold,
+                        t.size_small + 1.0,
+                        inner,
+                        Align::Left,
+                        t.on_accent,
+                        mv.modes[c],
+                    );
+                    cx.text(
+                        FontId::Sans,
+                        t.size_small - 1.0,
+                        inner,
+                        Align::Right,
+                        t.on_accent,
+                        &format!("{} of {}", c + 1, mv.modes.len()),
+                    );
+                }
+                None => {
+                    cx.text(
+                        FontId::Bold,
+                        t.size_small,
+                        inner,
+                        Align::Left,
+                        t.on_accent,
+                        &format!("{} mode", mv.family),
+                    );
+                }
+            }
         }
     }
 }

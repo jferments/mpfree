@@ -11,6 +11,8 @@ use mpfree_param::{Owner, ParamAddr, Strip};
 use mpfree_synth_ui::widgets::Card;
 use mpfree_ui::{Color, Theme};
 
+use crate::sections::{PageView, SectionState};
+
 /// Knobs on one page of an effect.
 pub const KNOBS_PER_PAGE: usize = 8;
 
@@ -135,18 +137,22 @@ pub struct ChainState {
     /// Inserts the strip can hold.
     pub room: usize,
     pub selected: Option<usize>,
-    /// The selected effect's pages' labels (its tabs: "Main" first when it
-    /// has a Main page, then its groups, [`pages`]) and the one shown.
+    /// The selected effect's pages' names (a tab each when it has two or
+    /// more: the Channel strip's Main and stages, a plugin's groups) and
+    /// the one shown ([`crate::sections::PageView`]).
     pub groups: Vec<String>,
     pub group: usize,
-    /// The knobs of that page.
+    /// Every control, section switch and meter on that page, each once:
+    /// what [`ChainState::sections`] point into.
     pub params: Vec<ParamView>,
-    /// Main's four, when the effect has a Main page: the Q-Links turn them
-    /// on every page ([`ChainState::qlinks`]).
+    /// What Q-Links 1 to 4 turn, the same on every page of the effect
+    /// ([`ChainState::qlinks`]): its plan's four (a synced Time's turns
+    /// Sync), or a plugin page's first four.
     pub main_four: Vec<ParamView>,
-    /// The stages the effect switches, on its Main page (the Channel
-    /// strip's gate, compressor and EQ); empty on its other pages.
-    pub stages: Vec<StageView>,
+    /// The page's sections and their layout spec (`mpfree-ui` syntax over
+    /// their keys), drawn with the Synth tab's section widget.
+    pub sections: Vec<SectionState>,
+    pub spec: String,
     /// The knob last touched: the modulation panel works on it.
     pub focus: Option<ParamAddr>,
     pub rows: Vec<RowView>,
@@ -178,24 +184,6 @@ pub struct ChainState {
     pub mode: Option<ModeView>,
 }
 
-/// A stage on an effect's Main page: its switch and the page of its
-/// controls.
-#[derive(Clone, Debug, PartialEq)]
-pub struct StageView {
-    /// "Gate".
-    pub label: &'static str,
-    /// The switch (a toggle): on when its value is 1.
-    pub switch: ParamView,
-    /// The page (index into `groups`) that holds its controls.
-    pub page: usize,
-}
-
-impl StageView {
-    pub fn on(&self) -> bool {
-        self.switch.value >= 0.5
-    }
-}
-
 /// The selected insert's family and its modes, for the Mode chooser.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ModeView {
@@ -223,7 +211,8 @@ impl Default for ChainState {
             group: 0,
             params: Vec::new(),
             main_four: Vec::new(),
-            stages: Vec::new(),
+            sections: Vec::new(),
+            spec: String::new(),
             focus: None,
             rows: Vec::new(),
             macro_names: default_macro_names(),
@@ -404,8 +393,7 @@ impl ChainState {
         let selected = selected
             .filter(|s| *s < slots.len())
             .or(if slots.is_empty() { None } else { Some(0) });
-        let (mut groups, mut params, mut group_shown) = (Vec::new(), Vec::new(), 0);
-        let (mut main_four, mut stages) = (Vec::new(), Vec::new());
+        let mut page = PageView::default();
         let mut mode = None;
         if let (Some(s), Some(n)) = (selected, selected.and_then(|s| chain.node(s))) {
             let owner = Owner::Insert(strip, slots[s].uid);
@@ -419,37 +407,16 @@ impl ChainState {
                 Some((f, Some(m))) => f.modes[m].fixed,
                 _ => &[],
             };
-            let main = mpfree_fx::main_page::main_page(n.info().id);
-            let ps = pages(n.params(), hide, main);
-            group_shown = group.min(ps.len().saturating_sub(1));
-            let view = |id: u16| param_view(n, owner, engine, id);
-            params = ps
-                .get(group_shown)
-                .map(|pg| pg.ids.iter().filter_map(|&id| view(id)).collect())
-                .unwrap_or_default();
-            if let Some(m) = main {
-                main_four = mpfree_fx::main_page::qlink_ids(m, n.params())
-                    .into_iter()
-                    .flatten()
-                    .filter_map(view)
-                    .collect();
-                if group_shown == 0 {
-                    stages = m
-                        .stages
-                        .iter()
-                        .filter_map(|st| {
-                            let sw = mpfree_fx::main_page::find(n.params(), st.switch)?;
-                            Some(StageView {
-                                label: st.label,
-                                switch: view(sw.id)?,
-                                page: ps.iter().position(|pg| pg.label == st.group)?,
-                            })
-                        })
-                        .collect();
-                }
-            }
-            groups = ps.into_iter().map(|p| p.label).collect();
+            page = crate::sections::page_view(n, owner, engine, hide, group);
         }
+        let PageView {
+            pages: groups,
+            page: group_shown,
+            spec,
+            params,
+            sections,
+            qlinks: main_four,
+        } = page;
         let focus = focus.filter(|f| params.iter().any(|p| p.addr == *f));
         let rows = focus
             .map(|f| {
@@ -478,7 +445,8 @@ impl ChainState {
             group: group_shown,
             params,
             main_four,
-            stages,
+            sections,
+            spec,
             focus,
             rows,
             macro_names: default_macro_names(),
@@ -499,27 +467,25 @@ impl ChainState {
             .and_then(|f| self.params.iter().find(|p| p.addr == f))
     }
 
-    /// The page's own Q-Link knobs for [`mpfree_mod::Bindings::set_page`]:
-    /// Main's four on every page of an effect with a Main page (the
-    /// Channel strip: Comp thresh, Makeup, Low cut, High gain), else the
-    /// first four knobs of the page shown (Drive: Drive, Tone, Bias, since
-    /// its Mode is the Mode chooser); and the effect's name.
+    /// The Q-Link knobs for [`mpfree_mod::Bindings::set_page`]: the
+    /// effect's four ([`ChainState::main_four`]: its plan's, the same on
+    /// every page; a Drive's Drive, Tone, Bias and Mix, its Mode being the
+    /// Mode chooser), or the first four of the page shown when it has none;
+    /// and the effect's name.
     pub fn qlinks(&self) -> (String, [Option<Binding>; KNOBS]) {
         let name = self
             .selected
             .and_then(|s| self.slots.get(s))
             .map(|s| s.name.clone())
             .unwrap_or_default();
+        let four = if self.main_four.is_empty() {
+            &self.params
+        } else {
+            &self.main_four
+        };
         (
             name,
-            std::array::from_fn(|k| {
-                let four = if self.main_four.is_empty() {
-                    &self.params
-                } else {
-                    &self.main_four
-                };
-                four.get(k).map(|p| Binding::new(p.addr, p.info, &p.label))
-            }),
+            std::array::from_fn(|k| four.get(k).map(|p| Binding::new(p.addr, p.info, &p.label))),
         )
     }
 }
@@ -660,9 +626,10 @@ pub fn range_text(info: &ParamInfo, a: f32, b: f32) -> String {
     }
 }
 
-/// The drawings of insert `slot`'s effect for page `page` (its group's
-/// name), from `mpfree-fx-ui`'s effect pages: what goes above the knobs.
-/// Empty for an effect the pages don't draw (a hosted plugin, Perform FX).
+/// The drawings of insert `slot`'s effect for page `page` of its effect
+/// page (`""`: every one, which the chain editor wants: each of its
+/// sections shows the ones its plan names), from `mpfree-fx-ui`. Empty for
+/// an effect the pages don't draw (a hosted plugin, Perform FX).
 pub fn picture(
     chain: &Chain,
     slot: usize,

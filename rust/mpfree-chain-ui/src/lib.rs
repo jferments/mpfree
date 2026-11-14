@@ -19,10 +19,14 @@
 //! - [`state`]: what the panels show ([`ChainState`], [`MacrosState`]),
 //!   built on the control thread; `from_chain` and `from_engine` read a
 //!   chain and an engine directly, for previews and tests.
-//! - [`view`]: the chain editor ([`ChainView`]): the inserts, the effect
-//!   picker, the selected effect's drawings (from `mpfree-fx-ui`'s effect
-//!   pages) and knobs with modulation rings and macro badges, and the
-//!   modulation column (macro, learn to a Q-Link, matrix rows).
+//! - [`sections`]: the selected effect's page as labelled sections, from
+//!   its plan (`mpfree_fx::page_plan`), or by group for a plugin.
+//! - [`view`]: the chain editor ([`ChainView`]): the strip's effects, the
+//!   effect picker, the selected effect's page (its Mode chooser or page
+//!   tabs, its sections drawn by the Synth tab's section widget with the
+//!   effect page's drawings, modulation rings and macro badges) and the
+//!   Modulate row under it (macro, learn to a Q-Link, + LFO, + Follower,
+//!   the matrix rows over the page).
 //! - [`macros`]: the macros and morph panel ([`MacrosView`]), with the
 //!   target editor (range, curve, flip, remove).
 //! - [`sample`]: sample screens for the workstation preview
@@ -31,7 +35,8 @@
 //! For the app: [`add`] puts both widgets and their pages in the [`Ui`];
 //! [`update_chain`] and [`update_macros`] show new states, and
 //! [`set_chain_picture`] the selected effect's drawings
-//! ([`state::picture`]); after a touch, [`take_chain_actions`] and
+//! ([`state::picture`], every one its effect page draws: each section
+//! shows those its plan names); after a touch, [`take_chain_actions`] and
 //! [`take_macro_actions`] give what to do. Parameter changes go to the mod
 //! engine as `ModEvent::hand` gives (a `Set`, or a `Touch` over a move lane
 //! or while recording, with `Untouch` on [`ChainAction::Release`]; it sends
@@ -73,7 +78,7 @@ pub const MACROS_LAYOUT: &str = "col(header:60, row(macros:*, qlinks:168):*, hin
 /// here stays on the chain editor.
 pub const QLINK_PAGE: &str = "chain";
 /// The hint lines: what the buttons do on the page.
-pub const CHAIN_HINT: &str = "Q-Links: the page's first 4 knobs, or Main's on every page  ·  SHIFT + Q-Link: fine  ·  drag an effect: move it  ·  touch a knob: macro, Learn, + LFO  ·  strip button: other strips";
+pub const CHAIN_HINT: &str = "Q-Links: the effect's four, on every page  ·  SHIFT + Q-Link: fine  ·  drag an effect: move it  ·  touch a control: macro, Learn, + LFO  ·  strip button: other strips";
 /// The hint line while the strip list is open.
 pub const STRIPS_HINT: &str =
     "Tap a strip: its chain  ·  Tracks, Pads and the rest: those strips  ·  Back: keep this one";
@@ -97,7 +102,8 @@ pub fn update_chain(ui: &mut Ui, st: ChainState) {
 }
 
 /// Shows the selected effect's drawings in the chain editor
-/// ([`state::picture`]; empty for none).
+/// ([`state::picture`] with page `""`: every one its effect page draws;
+/// empty for none).
 pub fn set_chain_picture(ui: &mut Ui, cards: Vec<mpfree_synth_ui::widgets::Card>) {
     if let Some(v) = ui.get_mut::<ChainView>(CHAIN) {
         v.set_picture(cards);

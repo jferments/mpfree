@@ -16,22 +16,32 @@ Each strip in the mixer has up to eight **inserts**: effects the sound goes thro
 
 1. Open the mixer (the **Mix** tab, or **TRACK MIX**) and find the strip.
 2. Tap the strip's **+ FX** button. It fills the strip's empty insert rows, so on a strip with no effects it is a big button under the strip's name. The **chain editor** opens in the mixer's place, with the list of effects already open.
-3. Pick an effect (see [Choosing an effect](#choosing-an-effect)). It goes at the end of the chain, selected, with its knobs showing.
+3. Pick an effect (see [Choosing an effect](#choosing-an-effect)). It goes at the end of the chain, selected, with its page showing.
 
-Tap an effect already in a strip's insert row to open the chain editor on it. In the chain editor:
+Tap an effect already in a strip's insert row to open the chain editor on it. The strip's effects are down the left, the selected effect's page fills the middle, the Q-Links are at the right, and the **Modulate** row runs under the page.
 
-- **+ Add effect** opens the list again, and **Cancel** closes it.
-- **Up** and **Down** move the selected effect in the chain, the power button on each row bypasses it, and **Remove** takes it out.
+- The line over the effects says how many the chain holds out of how many it can ("3 of 8"), and how much of the MPC's power the chain takes. Each effect's row has its number, its name, a line on how it is set (or "bypassed"), a dot for each macro that moves it, a **~** when an LFO or follower does, and its **ON** switch, which bypasses it.
+- **+ Add effect** opens the list of effects again, and **Cancel** closes it.
+- **Up** and **Down** move the selected effect in the chain, and **Remove** takes it out.
 - To move an effect further, **drag it** up or down the chain: once your finger moves it lifts and follows you, a line shows where it will land, and it moves there when you lift. Lift it where it started to leave it where it was. With the wheel, push on the picked effect to pick it up, turn to move it, and push again to put it down.
-- Drag a knob to turn it. An effect's knobs come in pages of up to eight, with a tab for each page under the effect's name. If there are more tabs than fit, **‹** and **›** at the ends step to the page before or after.
-- An effect with more than eight controls opens on its **Main** page, which holds the eight you reach for most; its other pages hold everything. The Channel strip's Main page also shows its stages (**Gate**, **Comp**, **EQ**): tap a stage's name to open its page, or its switch to turn it on or off.
-- The Q-Links turn the first four knobs of the page shown. An effect with a Main page is different: the Q-Links stay on Main's first four on every page, so you keep the same knobs under your hands while you look through the rest. The data wheel works as Q-Link 1 until you tap a control: then it moves the outline, and a push on a knob lets the wheel turn it (see [The wheel's outline](../getting-started/the-screen.md#the-wheels-outline)).
+- The effect's page is in **sections**, each named and coloured for what it does: the effect's heart (its space, its echoes, its pitch) in cyan, tone and colour in coral, dynamics in lime, movement in pink, and the output in grey. Drag a knob, fader or slider to turn it; tap a choice's name, or step it with its arrows; tap a switch to flip it.
+- A control that does nothing as the effect is set shows dim, and its section says why: a delay's **Time** with **Sync** on, for one.
+- Most effects show all their controls on one page. The few with more have a tab for each page beside the effect's name; if there are more tabs than fit, **‹** and **›** step to the page before or after. The Channel strip's first page shows its stages (**Gate**, **Comp**, **EQ**) as sections, each with its switch: tap a stage's switch to turn it on or off, or **Open ›** for its page.
+- The four controls with a **Q1** to **Q4** badge are the effect's **Q-Links**, the four it is played by. They stay the same on every page, so you keep the same controls under your hands while you look through the rest; when a setting takes a control out of play (a delay's **Time** when **Sync** is on), its Q-Link turns the control in its place. The data wheel works as Q-Link 1 until you tap a control: then it moves the outline, and a push on a knob lets the wheel turn it (see [The wheel's outline](../getting-started/the-screen.md#the-wheels-outline)).
 - **‹** at the top left goes back to where you opened the editor: the Mix tab as you left it, or the Pads tab.
-- Beside **‹**, the **strip button** names the strip whose chain this is (with its colour, and "Track 7" or "Pad 3" beside the name). Tap it for the **strip list**: the strips by group (**Tracks**, **Pads**, **Inputs**, **Returns**, **Submixes**, **Master**), with **< >** to page through a long group. Tap a strip to open its chain instead, on its first effect, or with the list of effects open if it has none. **Back** closes the list and keeps the strip you were on.
+- Beside **‹**, the **strip button** names the strip whose chain this is (with its colour, and "Track 7" or "Pad 3" under the name). Tap it for the **strip list**: the strips by group (**Tracks**, **Pads**, **Inputs**, **Returns**, **Submixes**, **Master**), with **< >** to page through a long group. Tap a strip to open its chain instead, on its first effect, or with the list of effects open if it has none. **Back** closes the list and keeps the strip you were on.
 
-Above the knobs, a drawing shows what the selected effect does, and changes as you turn: an EQ's curve, a delay's repeats, the Ducker's pump over two beats (or after a kick), the Transient shaper on a drum hit (dashed going in, solid coming out), where the Pitch shifter puts the sound, with the steps its feedback climbs, Pitch correct's steps onto the key's notes (with a dot on the note you are singing), how far each Harmonizer voice moves on each note of the key, and the Tuner's needle.
+The drawing of what the effect does sits in the section it belongs to, and changes as you turn: an EQ's curve, a delay's repeats, the Ducker's pump over two beats (or after a kick), the Transient shaper on a drum hit (dashed going in, solid coming out), where the Pitch shifter puts the sound, with the steps its feedback climbs, Pitch correct's steps onto the key's notes (with a dot on the note you are singing), how far each Harmonizer voice moves on each note of the key, and the Tuner's needle.
 
 Adding, removing or reordering an effect while the music plays doesn't click: that strip dips out for a moment and comes back. If the chain is full or the mixer is busy, the hint line says so for a few seconds.
+
+### The Modulate row
+
+Touch a control on the page and the **Modulate** row under the page names it. Then:
+
+- Tap a **macro number** (1 to 8) to have that macro move the control, and tap it again to take it off. The control shows the macro's badge (**M2**) at its corner.
+- Tap **Learn**, then turn a Q-Link, or move a knob or fader on your keyboard, to give the control a control of its own (see [MIDI Learn](midi-and-cv.md#midi-learn)).
+- Tap **+ LFO** or **+ Follower** to have an LFO or an envelope follower move it. A ring round the knob shows how far it moves. The row opens the control's **mod rows** over the page: drag a row's bar to set how far and which way it moves the control, and tap **x** to take it off. The line under the control's name says what moves it ("LFO 1 · +30 %"); tap it to open the rows again. A touch anywhere else closes them. A switch takes macros only.
 
 ### Choosing an effect
 
@@ -46,8 +56,6 @@ Adding, removing or reordering an effect while the music plays doesn't click: th
 **Cancel** closes the list without adding anything.
 
 The Pads tab's **Effects** row opens the chain editor on the pad picked, in the Mix tab, and **‹** comes back to the Pads tab (see [Sampling](sampling.md#the-pads-tab-sounds-onto-pads)). The Sample tab's **FX** page opens the same chain editor on the pad you are editing, with a switch between the pad's own channel and the Drums track (see [Shaping how a pad plays](shaping-a-pad.md#fx-effects-on-one-pad-or-on-the-whole-kit)).
-
-To give a knob a control of its own, touch it and tap **Learn to a Q-Link**, then turn a Q-Link, or move a knob or fader on your keyboard (see [MIDI Learn](midi-and-cv.md#midi-learn)).
 
 ## The effects
 
@@ -104,7 +112,7 @@ The master strip always ends in **Master safety**, a limiter that keeps the outp
 
 **Reverb**, **Delay**, **Drive**, **Filter** and **Tremolo** each show once in the list of effects, and come in several modes. Hold one (or tap its presets line) to see every mode's presets, with the mode under each name; a preset adds the effect in its mode. A tap adds it in its first mode (a Room, a Digital delay, a Soft drive).
 
-In the chain editor the **mode chooser** sits under the effect's name: tap a mode to switch to it. Drive has too many to fit, so step through them with **‹** and **›**. When you switch:
+In the chain editor the **mode chooser** sits beside the effect's name, with the mode it is in lit: tap a mode to switch to it. Drive has too many to fit, so it shows the one it is in, with **‹** and **›** to step to the mode before or after: tap the mode's name for the list of all ten, and tap one. When you switch:
 
 - The knobs the two modes share stay where you set them (as far as the new mode's range goes), so a Room switched to a Plate keeps its Decay, Size and Mix.
 - Switch back and the first mode is as you left it, until you turn the MPC off.
