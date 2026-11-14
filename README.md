@@ -4,6 +4,8 @@ A free, open-source music-production environment for the Akai MPC One.
 
 MPFree aims to be an offline, hardware-first sampler, sequencer and arranger that runs on the MPC One's own Linux system. It keeps the tactile MPC workflow and adds flexible clip and timeline arrangement, polymeter, parameter locks, conditional triggers, better automation and a less menu-heavy UI. One design serves both beatmakers and live performers.
 
+![MPFree's Play page in the middle of a jam: a three-layer loop playing, a beat in the pattern, the Stutter throw held and the master meter moving.](docs/images/play-all-loop.png)
+
 > **There is no installable MPFree yet.** MPFree runs from a test USB stick that boots the MPC One into RAM with its internal storage hidden, so the factory system is never changed. This repository holds the app, its engines, the hardware research and the tools used to gather it.
 
 ## Documentation
@@ -77,7 +79,7 @@ None of this touches the MPC. To work with a device, start with [developer acces
 | `rust/` | Cargo workspace: the app (`mpfree-app`) and its GUI toolkit (`mpfree-ui`); the engines (transport, sequencer, playback, looper, audio tracks, sampler, synths, effects and mixer, modulation, arp, MIDI) and their screens; the library and browser; the CLAP host and plugin sandbox; touch, display and GPU; profiling and the bench; on-device smoke tests and the handoff model |
 | `src/`, `tests/` | C++ reference engine kept for parity, and Python/C++ tests |
 | `tools/mpc-one/` | Workstation scripts that survey or test the MPC over SSH, plus the GPU qualification kit |
-| `docs/` | `user/` the user manual, `dev/` developer docs, `agents/` rules for AI agents, `tools/` the docs checks and manual build; see the [docs index](docs/README.md) |
+| `docs/` | `user/` the user manual, `dev/` developer docs, `agents/` rules for AI agents, `tools/` the docs checks and manual build, `images/` the screenshot above (redrawn by the manual build); see the [docs index](docs/README.md) |
 
 ## Safety
 

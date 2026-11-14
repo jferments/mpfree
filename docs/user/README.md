@@ -26,7 +26,7 @@ python3 docs/tools/build_manual.py              # draws the screens, then builds
 
 The website lands in `docs/user/build/site/index.html` and the PDF in `docs/user/build/mpfree-manual.pdf`. `--no-pdf` and `--no-site` build one of them; `--shots DIR` reuses screens already drawn with `mpfree --preview DIR`.
 
-The build stops if a page asks for a screen that MPFree no longer draws, so a renamed or removed screen can't leave a stale picture behind.
+The build stops if a page asks for a screen that MPFree no longer draws, so a renamed or removed screen can't leave a stale picture behind. The build also refreshes `docs/images/play-all-loop.png`, the same screen shown at the top of the project README; commit it when the build says it changed.
 
 In the PDF every heading's link target is named for its page as well as its title (`page--heading`), so two pages can use the same heading, and a link to a section that doesn't exist stops the PDF build. The website and the PDF come from the same pages, so check both after moving a section.
 
