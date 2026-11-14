@@ -546,11 +546,9 @@ pub fn screen(
     ui.add_page("preview", layout)?;
     ui.show("preview")?;
     if let Some(c) = chain {
-        let cards = match (c.selected, c.groups.get(c.group).map(String::as_str)) {
-            (Some(slot), Some(page)) => {
-                picture(song.chain(c.strip), slot, page, &Theme::dark(), RATE, 92.0)
-            }
-            _ => Vec::new(),
+        let cards = match c.selected {
+            Some(slot) => picture(song.chain(c.strip), slot, "", &Theme::dark(), RATE, 92.0),
+            None => Vec::new(),
         };
         crate::update_chain(&mut ui, c);
         crate::set_chain_picture(&mut ui, cards);
@@ -603,7 +601,7 @@ pub fn samples(fonts: impl Fn() -> Fonts) -> Result<Vec<Sample>, String> {
     let delay = from_mixer(song.chain_state(
         KEYS,
         2,
-        2,
+        0,
         Some(ParamAddr::new(
             Owner::Insert(KEYS, delay_uid),
             ids::delay::MIX,
@@ -688,11 +686,10 @@ pub fn samples(fonts: impl Fn() -> Fonts) -> Result<Vec<Sample>, String> {
     if let Some(h) = strips.get_mut::<Label>("hint") {
         h.text = crate::STRIPS_HINT.to_string();
     }
-    // Layout B: the drum bus EQ on its Band 3 page (a Main page first,
-    // more tabs than fit, so the row scrolls; the Q-Links stay on Main's
-    // four, the bands' gains), and a Channel strip with the Vocal preset
-    // on its Main page (its stages and their switches over the knobs).
-    let mut eq = from_mixer(song.chain_state(DRUMS, 3, 4, None));
+    // A long effect on one page (the drum bus EQ), and an effect of
+    // several pages: a Channel strip with the Vocal preset on its first
+    // (its stages as sections, with their switches).
+    let mut eq = from_mixer(song.chain_state(DRUMS, 3, 0, None));
     eq.slots[3].on = false;
     let mut strip =
         mpfree_fx::registry::make("mpfree.fx.channel_strip").ok_or("no channel strip")?;
@@ -706,19 +703,39 @@ pub fn samples(fonts: impl Fn() -> Fonts) -> Result<Vec<Sample>, String> {
     }
     let strip_slot = song.keys.push(strip);
     let strip_st = from_mixer(song.chain_state(KEYS, strip_slot, 0, None));
+    // Drive's list of modes (its chip tapped), and the delay's Mix with
+    // its mod rows open (the line under its name tapped).
+    let tap_on =
+        |ui: &mut Ui, at: fn(&crate::view::Layout) -> Option<Rect>| -> Result<(), String> {
+            let r = ui.rect_of(crate::CHAIN).ok_or("the chain editor")?;
+            let b = ui
+                .get::<crate::ChainView>(crate::CHAIN)
+                .and_then(|v| at(&v.layout(r)))
+                .ok_or("nothing to tap")?;
+            ui.touch(1, mpfree_ui::Touch::Down, b.x + 5, b.y + 5);
+            ui.touch(1, mpfree_ui::Touch::Up, b.x + 5, b.y + 5);
+            let _ = crate::take_chain_actions(ui);
+            Ok(())
+        };
+    let mut modes = screen(fonts(), &mut song, Place::Mixer, Some(drive.clone()), None)?;
+    tap_on(&mut modes, |l| l.mode_label)?;
+    let mut rows = screen(fonts(), &mut song, Place::Mixer, Some(delay.clone()), None)?;
+    tap_on(&mut rows, |l| Some(l.rows_link))?;
     let m0 = song.macros_state(0);
     let m1 = song.macros_state(1);
     let mut editing = song.macros_state(0);
     editing.editing = Some((0, 3));
     Ok(vec![
-        Sample { name: "chain-mixer-drums-drive", about: "From the mixer (no tab lit, Back to the mixer): the drum bus chain, Drive selected, in its Soft mode (the Mode chooser under its name steps through its ten); Q-Links on the knobs of its first tab (Drive, Tone, Bias: its Mode is the chooser); Tone touched: LFO 1 sweeps it (green ring), Grit (macro 2) moves Drive and Bias (badges); the EQ bypassed", ui: screen(fonts(), &mut song, Place::Mixer, Some(drive), None)? },
-        Sample { name: "chain-mixer-drums-filter", about: "From the mixer: the drum bus filter, cutoff swept by LFO 2 scaled by the mod wheel; resonance on Air (macro 4)", ui: screen(fonts(), &mut song, Place::Mixer, Some(filter), None)? },
-        Sample { name: "chain-mixer-keys-delay", about: "From the mixer: the keys chain, Delay's Mix page (Q-Links on that page's knobs): Mix is on Wash (macro 1) and ducked by follower 1 (a negative row)", ui: screen(fonts(), &mut song, Place::Mixer, Some(delay), None)? },
-        Sample { name: "chain-mixer-drums-eq-band", about: "Layout B on a long effect: the drum bus EQ (bypassed) on its Band 3 page. Its Main page comes first, then Cuts, the four bands and Output: more tabs than fit, so the row shows a run around the page shown with ‹ and › to the pages either side. The Q-Links stay on Main's four (the bands' gains) on every page", ui: screen(fonts(), &mut song, Place::Mixer, Some(eq), None)? },
-        Sample { name: "chain-mixer-keys-strip-main", about: "Layout B: a Channel strip (Vocal preset) on its Main page, the eight controls a player reaches for, with its stages over them: each stage's name opens its page, its switch turns it on or off (the gate off here). The Q-Links are Main's four: Comp thresh, Makeup, Low cut, High gain", ui: screen(fonts(), &mut song, Place::Mixer, Some(strip_st), None)? },
+        Sample { name: "chain-mixer-drums-drive", about: "The effect frame from the mixer (no tab lit, Back to the mixer): the drum bus chain down the left (the EQ bypassed), Drive's page in sections in the middle, its Q-Links (Drive, Tone, Bias, Mix) at the right, the Modulate row under the page. Drive is in its Soft mode: ten modes don't fit as buttons, so the chip beside its name opens the list. Tone touched: LFO 1 sweeps it (green ring, and the Modulate row's line), Grit (macro 2) moves Drive and Bias (M2 badges)", ui: screen(fonts(), &mut song, Place::Mixer, Some(drive), None)? },
+        Sample { name: "chain-mixer-drums-drive-modes", about: "Drive's chip tapped: its ten modes as a list over the page, the one it is in lit; a tap switches, a touch anywhere else closes it", ui: modes },
+        Sample { name: "chain-mixer-drums-filter", about: "From the mixer: the drum bus filter, its response drawn in its section; Cutoff swept by LFO 2 scaled by the mod wheel, Resonance on Air (macro 4)", ui: screen(fonts(), &mut song, Place::Mixer, Some(filter), None)? },
+        Sample { name: "chain-mixer-keys-delay", about: "From the mixer: the keys chain's Delay, all its controls on one page; Mix touched: it is on Wash (macro 1) and ducked by follower 1 (a negative row), which the Modulate row's line says", ui: screen(fonts(), &mut song, Place::Mixer, Some(delay), None)? },
+        Sample { name: "chain-mixer-keys-delay-rows", about: "The line under Mix tapped: its mod rows over the page (drag a bar for the depth, x takes a row off; + LFO and + Follower add one); the Modulate row still works under it", ui: rows },
+        Sample { name: "chain-mixer-drums-eq", about: "A long effect on one page: the drum bus EQ (bypassed), its curve over the cuts, the four bands and the output; the Q-Links are the bands' gains", ui: screen(fonts(), &mut song, Place::Mixer, Some(eq), None)? },
+        Sample { name: "chain-mixer-keys-strip", about: "An effect of several pages: a Channel strip (Vocal preset) on its first page, a tab per page beside its name. Its stages are sections with their switches (the gate off here, so its controls are dim) and Open › to each stage's page. The Q-Links are the strip's four on every page: Comp thresh, Makeup, Low cut, High gain", ui: screen(fonts(), &mut song, Place::Mixer, Some(strip_st), None)? },
         Sample { name: "chain-sample-fx-pad", about: "In the Sample tab's FX sub-tab, under the pad bar: pad 1's own chain, with a switch to the drum track's (to agree with the sampler thread)", ui: screen(fonts(), &mut song, Place::SampleFx, Some(kick), None)? },
         Sample { name: "chain-mixer-empty", about: "From the mixer: a track with no effects yet, + Add effect; the Q-Links have nothing of the page's, so they show free", ui: screen(fonts(), &mut song, Place::Mixer, Some(empty), None)? },
-        Sample { name: "chain-mixer-add-effect", about: "The effect picker, a category browser over the effect and Modulate columns (+ Add effect, or the mixer's + on a strip): Favourites, Recent and the categories with their counts; with no favourites it opens on Dynamics. A tap adds an effect at its defaults, the star keeps it, a hold or its presets line opens its presets", ui: screen(fonts(), &mut song, Place::Mixer, Some(adding), None)? },
+        Sample { name: "chain-mixer-add-effect", about: "The effect picker, a category browser over the page (+ Add effect, or the mixer's + on a strip): Favourites, Recent and the categories with their counts; with no favourites it opens on Dynamics. A tap adds an effect at its defaults, the star keeps it, a hold or its presets line opens its presets", ui: screen(fonts(), &mut song, Place::Mixer, Some(adding), None)? },
         Sample { name: "chain-mixer-add-favourites", about: "The picker opens on Favourites once there are any (starred, in the order they were starred; Recent holds the last 12 added)", ui: screen(fonts(), &mut song, Place::Mixer, Some(starred), None)? },
         Sample { name: "chain-mixer-add-presets", about: "The Reverb's presets, every mode's with its mode under the name, reached with SHIFT + wheel (Delay and reverb), the wheel (Reverb) and a push; the wheel is on Snare plate, and a push or a tap adds the Reverb as a Plate with it (Defaults adds a Room as it starts)", ui: presets },
         Sample { name: "chain-strip-list", about: "The strip button's list over the keys chain: the groups down the left, the tracks as tiles with what each holds (the open one outlined); a tap opens that strip's chain", ui: strips },
@@ -743,7 +760,7 @@ mod tests {
     #[test]
     fn the_samples_read_real_state_and_paint() {
         let s = samples(Fonts::embedded).unwrap();
-        assert_eq!(s.len(), 14);
+        assert_eq!(s.len(), 16);
         for mut sample in s {
             let (w, h) = sample.ui.size();
             let mut c = SoftCanvas::new(w, h);
@@ -774,7 +791,8 @@ mod tests {
         let mut c = mpfree_ui::SoftCanvas::new(1280, 800);
         ui.paint(&mut c);
         let r = ui.rect_of(crate::CHAIN).unwrap();
-        let knobs = ui.get::<ChainView>(crate::CHAIN).unwrap().layout(r).knobs;
+        let v = ui.get::<ChainView>(crate::CHAIN).unwrap();
+        let knobs: Vec<Rect> = (0..2).map(|k| v.control_rect(r, k).unwrap()).collect();
         let param = |ui: &Ui, i: usize| {
             ui.get::<ChainView>(crate::CHAIN).unwrap().state().params[i].clone()
         };
@@ -895,30 +913,40 @@ mod tests {
         let mut st = song.chain_state(DRUMS, 1, 0, None);
         st.back = Some("Mixer".into());
         let mut ui = screen(Fonts::embedded(), &mut song, Place::Mixer, Some(st), None).unwrap();
-        // The Q-Links show the knobs of the drive's first tab (its Mode is
+        // The Q-Links show the drive's four from its plan (its Mode is
         // the Mode chooser).
         let q = ui.get::<QLinkColumn>(QLINKS).unwrap();
         assert_eq!(
             q.cards.iter().map(|c| c.label.as_str()).collect::<Vec<_>>(),
-            ["Drive", "Tone", "Bias", ""]
+            ["Drive", "Tone", "Bias", "Mix"]
         );
         assert_eq!(
             (q.title.as_str(), q.places[0].as_str()),
             ("Q-Links · Drive · Soft", "Drums")
         );
         let r = ui.rect_of(crate::CHAIN).unwrap();
-        let l = ui.get::<ChainView>(crate::CHAIN).unwrap().layout(r);
-        assert!(l.picture.is_some(), "the drive's curve above its knobs");
+        let v = ui.get::<ChainView>(crate::CHAIN).unwrap();
+        let l = v.layout(r);
+        let drawn: Vec<&str> = v.page().sections[0]
+            .cards
+            .iter()
+            .map(|c| c.title.as_str())
+            .collect();
+        assert_eq!(
+            drawn,
+            ["Curve", "A sine through it"],
+            "the drive's drawings"
+        );
+        let k = v.control_rect(r, 0).unwrap();
         // Select the compressor, then bypass it.
         let row = l.rows[2];
         tap(&mut ui, row.x + 80, row.y + 20);
         tap(&mut ui, row.right() - 20, row.y + row.h / 2);
         // Touch the first knob (Drive: the app has not sent the
         // compressor's page yet) and drag it up.
-        let k = l.knobs[0];
-        ui.touch(2, Touch::Down, k.x + k.w / 2, k.y + 40);
-        ui.touch(2, Touch::Move, k.x + k.w / 2, k.y + 10);
-        ui.touch(2, Touch::Up, k.x + k.w / 2, k.y + 10);
+        ui.touch(2, Touch::Down, k.x + k.w / 2, k.y + k.h / 2);
+        ui.touch(2, Touch::Move, k.x + k.w / 2, k.y + k.h / 2 - 30);
+        ui.touch(2, Touch::Up, k.x + k.w / 2, k.y + k.h / 2 - 30);
         let acts = crate::take_chain_actions(&mut ui);
         assert_eq!(acts[0], ChainAction::Select(2));
         assert_eq!(acts[1], ChainAction::SetOn { slot: 2, on: false });
@@ -948,11 +976,16 @@ mod tests {
             matches!(acts[3], ChainAction::AddRow { target, .. } if target == addr),
             "{acts:?}"
         );
-        // The effect's name opens its full page.
+        // + LFO opened the rows over the page, to set the new one's depth;
+        // a touch anywhere else shuts them.
+        let v = ui.get::<ChainView>(crate::CHAIN).unwrap();
+        assert!(v.open().rows);
+        assert!(v.layout(r).rows_panel.is_some());
         tap(&mut ui, l.title.x + 10, l.title.y + 10);
-        assert_eq!(
-            crate::take_chain_actions(&mut ui),
-            [ChainAction::OpenPage(1)]
+        assert!(!ui.get::<ChainView>(crate::CHAIN).unwrap().open().rows);
+        assert!(
+            crate::take_chain_actions(&mut ui).is_empty(),
+            "the name is no button"
         );
         let b = l.back.unwrap();
         tap(&mut ui, b.x + 5, b.y + 5);
@@ -1029,11 +1062,57 @@ mod tests {
                 mode: 1
             }]
         );
-        // Its Main page first, then its groups: Character is on Reverb.
+        // One page, so no tabs: Character is on it.
         let st = song.chain_state(DRUMS, cloud, 1, None);
         assert_eq!(st.mode.as_ref().unwrap().current, None);
-        assert_eq!(st.groups[..2], ["Main", "Reverb"]);
+        assert_eq!(st.groups, ["Main"]);
         assert!(st.params.iter().any(|p| p.info.name == "Character"));
+    }
+
+    /// Drive's ten modes: the chip between the arrows opens the list of
+    /// them over the page; a row switches the mode and shuts it, and a
+    /// touch anywhere else shuts it.
+    #[test]
+    fn the_mode_chip_opens_the_list_of_modes() {
+        let mut song = Song::new();
+        let drive = song.chain_state(DRUMS, 1, 0, None);
+        let mut ui = screen(
+            Fonts::embedded(),
+            &mut song,
+            Place::Mixer,
+            Some(drive),
+            None,
+        )
+        .unwrap();
+        let r = ui.rect_of(crate::CHAIN).unwrap();
+        let l = ui.get::<ChainView>(crate::CHAIN).unwrap().layout(r);
+        let chip = l.mode_label.unwrap();
+        tap(&mut ui, chip.x + 10, chip.y + 10);
+        let v = ui.get::<ChainView>(crate::CHAIN).unwrap();
+        assert!(v.open().modes);
+        let picks = ids_of(v, r, "mode-pick");
+        assert_eq!(picks.len(), 10);
+        assert_eq!(picks[0], (0, "Drive mode Soft".to_string(), false));
+        // Nothing on the page under the list is a target.
+        let list = v.layout(r).mode_list.unwrap();
+        assert!(v
+            .targets(r)
+            .iter()
+            .filter(|t| t.id == "knob")
+            .all(|t| list.intersect(t.rect).is_empty()));
+        let (row, m) = v.layout(r).mode_rows[3];
+        tap(&mut ui, row.x + 10, row.y + 10);
+        assert_eq!(
+            crate::take_chain_actions(&mut ui),
+            [ChainAction::SetMode { slot: 1, mode: m }]
+        );
+        assert!(!ui.get::<ChainView>(crate::CHAIN).unwrap().open().modes);
+        // Open again, then a touch on the chain shuts it and only that.
+        tap(&mut ui, chip.x + 10, chip.y + 10);
+        let b = l.buttons[1];
+        tap(&mut ui, b.x + 5, b.y + 5);
+        assert!(!ui.get::<ChainView>(crate::CHAIN).unwrap().open().modes);
+        assert!(crate::take_chain_actions(&mut ui).is_empty());
     }
 
     fn ids_of(v: &ChainView, r: Rect, id: &str) -> Vec<(usize, String, bool)> {
@@ -1044,115 +1123,104 @@ mod tests {
             .collect()
     }
 
-    /// Layout B on the Channel strip: its Main page first, then its groups;
-    /// the Q-Links stay on Main's four on every page; its stages sit on the
-    /// Main page, a name opening its page and a switch flipping it.
+    /// The Channel strip (the redesign): a Main page with its stages as
+    /// sections, each with its switch in its heading and "Open ›" to its
+    /// own page, then a page per stage; the Q-Links stay on Main's four on
+    /// every page.
     #[test]
-    fn a_main_page_comes_first_with_its_stages_and_the_qlinks_stay_on_its_four() {
+    fn the_channel_strip_keeps_its_stages_as_sections_and_the_qlinks_on_its_four() {
         let mut song = Song::new();
         let strip = mpfree_fx::registry::make("mpfree.fx.channel_strip").unwrap();
         let slot = song.keys.push(strip);
         let main = song.chain_state(KEYS, slot, 0, None);
-        assert_eq!(main.groups, ["Main", "Strip", "Gate", "Compressor", "EQ"]);
+        assert_eq!(main.groups, ["Main", "Gate", "Compressor", "EQ"]);
         let labels = |ps: &[crate::state::ParamView]| -> Vec<String> {
             ps.iter().map(|p| p.label.clone()).collect()
         };
-        assert_eq!(
-            labels(&main.params),
-            [
-                "Gate thresh",
-                "Comp thresh",
-                "Ratio",
-                "Makeup",
-                "Low cut",
-                "Mid gain",
-                "High gain",
-                "Output"
-            ]
-        );
         let four = ["Comp thresh", "Makeup", "Low cut", "High gain"];
         assert_eq!(labels(&main.main_four), four);
-        let stages: Vec<_> = main
-            .stages
-            .iter()
-            .map(|s| (s.label, s.page, s.on()))
-            .collect();
-        assert_eq!(
-            stages,
-            [("Gate", 2, false), ("Comp", 3, true), ("EQ", 4, true)]
-        );
-        // On the Gate's page: its four controls, no stages, the same Q-Links.
-        let gate = song.chain_state(KEYS, slot, 2, None);
-        assert_eq!(
-            labels(&gate.params),
-            ["Gate thresh", "Gate range", "Gate attack", "Gate release"]
-        );
-        assert!(gate.stages.is_empty());
+        let keys: Vec<&str> = main.sections.iter().map(|s| s.key.as_str()).collect();
+        assert_eq!(keys, ["gate", "comp", "eq", "path"]);
+        let gate = song.chain_state(KEYS, slot, 1, None);
+        assert_eq!(gate.group, 1);
         for st in [&main, &gate] {
             let (name, knobs) = st.qlinks();
             assert_eq!(name, "Channel strip");
             let q: Vec<_> = knobs.iter().flatten().map(|b| b.label.clone()).collect();
             assert_eq!(q, four);
         }
-        // A tap on a stage's name opens its page; on its switch, flips it.
-        let gate_switch = main.stages[0].switch.addr;
+        // The tabs fit the header; a stage's switch flips it on the lift,
+        // its "Open ›" shows its page.
+        let gate_switch = main.sections[0].switch.as_ref().unwrap().param;
+        let gate_addr = main.params[gate_switch].addr;
         let mut ui = screen(Fonts::embedded(), &mut song, Place::Mixer, Some(main), None).unwrap();
         let r = ui.rect_of(crate::CHAIN).unwrap();
         let v = ui.get::<ChainView>(crate::CHAIN).unwrap();
         let l = v.layout(r);
-        assert!(l.tab_arrows.is_none(), "five tabs fit");
-        assert_eq!(l.stages.len(), 3);
-        assert_eq!(
-            ids_of(v, r, "stage-on"),
-            [
-                (0, "Gate off".to_string(), true),
-                (1, "Comp on".to_string(), true),
-                (2, "EQ on".to_string(), true)
-            ]
-        );
+        assert!(l.tab_arrows.is_none(), "four tabs fit");
         assert_eq!(ids_of(v, r, "group")[0], (0, "Main".to_string(), false));
-        let (comp, _) = l.stages[1];
-        let (_, gate_on) = l.stages[0];
-        tap(&mut ui, gate_on.x + 4, gate_on.y + 4);
+        let find = |v: &ChainView, id: &str, index: usize| {
+            v.targets(r)
+                .into_iter()
+                .find(|t| t.id == id && t.index == index)
+                .unwrap_or_else(|| panic!("no {id} {index}"))
+        };
+        let (x, y) = find(v, "section-switch", gate_switch).centre();
+        let (lx, ly) = find(v, "section-link", 2).centre();
+        tap(&mut ui, x, y);
         let v = ui.get::<ChainView>(crate::CHAIN).unwrap();
-        assert_eq!(ids_of(v, r, "stage-on")[0].1, "Gate on", "flipped at once");
-        tap(&mut ui, comp.x + 8, comp.y + 8);
+        assert_eq!(
+            v.page().sections[0].switch.as_ref().map(|c| c.kind.clone()),
+            Some(mpfree_synth_ui::section_view::Kind::Toggle(true)),
+            "flipped at once"
+        );
+        tap(&mut ui, lx, ly);
         assert_eq!(
             crate::take_chain_actions(&mut ui),
             [
+                ChainAction::Focus(gate_addr),
                 ChainAction::Set {
-                    addr: gate_switch,
+                    addr: gate_addr,
                     value: 1.0
                 },
-                ChainAction::Release(gate_switch),
-                ChainAction::Group(3)
+                ChainAction::Release(gate_addr),
+                ChainAction::Group(2)
             ]
         );
     }
 
-    /// More tabs than the row holds (the EQ: Main, Cuts, four bands,
-    /// Output): a run around the page shown, with arrows to the pages
-    /// either side; only the tabs in view are targets.
+    /// More tabs than the header holds (a plugin with many groups): a run
+    /// around the page shown, with arrows to the pages either side; only
+    /// the tabs in view are targets.
     #[test]
     fn a_long_tab_row_scrolls_with_the_page_shown() {
         let mut song = Song::new();
-        let st = song.chain_state(DRUMS, 3, 4, None);
-        assert_eq!(
-            st.groups,
-            ["Main", "Cuts", "Band 1", "Band 2", "Band 3", "Band 4", "Output"]
-        );
-        let mut ui = screen(Fonts::embedded(), &mut song, Place::Mixer, Some(st), None).unwrap();
+        let mut st = song.chain_state(KEYS, 1, 0, None);
+        st.groups = (1..=9).map(|k| format!("Oscillator {k}")).collect();
+        st.group = 4;
+        let mut ui = screen(
+            Fonts::embedded(),
+            &mut song,
+            Place::Mixer,
+            Some(st.clone()),
+            None,
+        )
+        .unwrap();
         let r = ui.rect_of(crate::CHAIN).unwrap();
         let v = ui.get::<ChainView>(crate::CHAIN).unwrap();
         let l = v.layout(r);
         let (prev, next) = l.tab_arrows.expect("the tabs don't all fit");
         assert!(l.tabs[4].w > 0, "the page shown is in view");
-        assert!(l.tabs[6].is_empty(), "Output is out of view");
+        assert!(l.tabs[8].is_empty(), "the last is out of view");
         let shown: Vec<usize> = ids_of(v, r, "group").into_iter().map(|t| t.0).collect();
-        assert!(shown.contains(&4) && !shown.contains(&6), "{shown:?}");
+        assert!(shown.contains(&4) && !shown.contains(&8), "{shown:?}");
         for t in l.tabs.iter().filter(|t| !t.is_empty()) {
             assert!(t.x >= prev.right() && t.right() <= next.x, "{t:?}");
         }
+        assert!(
+            l.title.right() <= l.tab_group.unwrap().x,
+            "the name keeps its room"
+        );
         assert_eq!(
             ids_of(v, r, "group-next"),
             [(0, "pages ›".to_string(), true)]
@@ -1165,11 +1233,11 @@ mod tests {
             [ChainAction::Group(5), ChainAction::Group(4)]
         );
         // On the last page the row has moved along to show it.
-        let st = song.chain_state(DRUMS, 3, 6, None);
+        st.group = 8;
         let ui = screen(Fonts::embedded(), &mut song, Place::Mixer, Some(st), None).unwrap();
         let v = ui.get::<ChainView>(crate::CHAIN).unwrap();
         let l = v.layout(r);
-        assert!(l.tabs[6].w > 0 && l.tabs[0].is_empty(), "{:?}", l.tabs);
+        assert!(l.tabs[8].w > 0 && l.tabs[0].is_empty(), "{:?}", l.tabs);
         assert_eq!(
             ids_of(v, r, "group-next"),
             [(0, "pages ›".to_string(), false)]
@@ -1208,10 +1276,11 @@ mod tests {
                 ("Out".to_string(), 1)
             ]
         );
-        // A built-in with eight or fewer: its groups, no Main.
+        // A built-in effect follows its plan instead: one page, its four.
         let drive = Song::new().chain_state(DRUMS, 1, 0, None);
-        assert_eq!(drive.groups, ["Drive", "Output"]);
-        assert!(drive.main_four.is_empty() && drive.stages.is_empty());
+        assert_eq!(drive.groups, ["Main"]);
+        let four: Vec<&str> = drive.main_four.iter().map(|p| p.label.as_str()).collect();
+        assert_eq!(four, ["Drive", "Tone", "Bias", "Mix"]);
     }
 
     #[test]
@@ -1755,7 +1824,13 @@ mod tests {
         );
         let l = ui.get::<ChainView>(crate::CHAIN).unwrap().layout(r);
         assert!(ui.get::<ChainView>(crate::CHAIN).unwrap().state().picking);
-        assert!(l.knobs.is_empty(), "the picker takes the knobs' place");
+        let v = ui.get::<ChainView>(crate::CHAIN).unwrap();
+        assert!(
+            !v.targets(r)
+                .iter()
+                .any(|t| t.id == "knob" || t.id == "macro"),
+            "the picker takes the effect column"
+        );
         // With no favourites it opens on the first category.
         let pl = l.picker.as_ref().unwrap();
         assert_eq!(pl.section, 2);
