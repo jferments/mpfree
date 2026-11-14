@@ -161,9 +161,9 @@ const MODE_CHIP_W: i32 = 180;
 const MODE_ROW_H: i32 = 40;
 /// The Modulate row's buttons.
 const MACRO_W: i32 = 40;
-const LEARN_W: i32 = 120;
-const LFO_W: i32 = 84;
-const FOLLOWER_W: i32 = 112;
+const LEARN_W: i32 = 108;
+const LFO_W: i32 = 76;
+const FOLLOWER_W: i32 = 100;
 /// The mod matrix rows over the page: the panel's width, a row's height,
 /// and its source's name left of its depth bar.
 const ROWS_W: i32 = 440;
@@ -490,6 +490,12 @@ fn mode_row(row: Rect, mv: &crate::state::ModeView) -> (Rect, Vec<(Rect, usize)>
         None => out.extend([(prev, 0), (next, 0)]),
     }
     (g, out, Some(label))
+}
+
+/// A macro button's touch area: its whole pitch, the gaps between the
+/// buttons included (layout spec section 1, packed buttons).
+fn macro_hit(r: Rect) -> Rect {
+    Rect::new(r.x - 1, r.y, r.w + 3, r.h)
 }
 
 /// The slot a dragged effect's row lands in with the finger at height
@@ -1356,7 +1362,7 @@ impl ChainView {
             return;
         }
         let Some(focus) = st.focus else { return };
-        if let Some(m) = l.macros.iter().position(|r| r.contains(x, y)) {
+        if let Some(m) = l.macros.iter().position(|r| macro_hit(*r).contains(x, y)) {
             let now = st.focused().and_then(|p| p.macro_);
             self.push(ChainAction::Macro {
                 target: focus,
@@ -1747,27 +1753,11 @@ impl Widget for ChainView {
         if st.picking || st.selected.is_none() {
             return out;
         }
-        // The header: the page tabs, the Mode chooser.
-        for (g, tr) in l.tabs.iter().enumerate() {
-            if tr.is_empty() {
-                continue;
-            }
-            let label = st.groups.get(g).map_or("", String::as_str);
-            out.push(Target::tap("group", g, label, *tr).disabled_if(g == st.group));
-        }
-        if let Some((prev, next)) = l.tab_arrows {
-            let n = st.groups.len();
-            out.push(Target::tap("group-prev", 0, "‹ pages", prev).disabled_if(st.group == 0));
-            out.push(Target::tap("group-next", 0, "pages ›", next).disabled_if(st.group + 1 >= n));
-        }
-        if let Some(mv) = &st.mode {
-            for &(r, m) in &l.modes {
-                let name = mv.modes.get(m).copied().unwrap_or("");
-                out.push(
-                    Target::tap("mode", m, format!("{} mode {name}", mv.family), r)
-                        .disabled_if(mv.current == Some(m)),
-                );
-            }
+        // What is open over the page answers alone (a touch anywhere else
+        // only shuts it): the mode list and its chip, or the matrix rows
+        // and the Modulate row under them.
+        if let (Some(_), Some(mv)) = (l.mode_list, &st.mode) {
+            out.clear();
             if let Some(chip) = l.mode_label {
                 out.push(Target::tap(
                     "mode-list",
@@ -1783,50 +1773,60 @@ impl Widget for ChainView {
                         .disabled_if(mv.current == Some(m)),
                 );
             }
+            return out;
         }
-        // The page: the section widget's controls, but for any under what
-        // is open over it.
-        let over = [l.rows_panel, l.mode_list];
-        for tg in self.page.targets(l.page) {
-            if !over
-                .iter()
-                .flatten()
-                .any(|o| !o.intersect(tg.rect).is_empty())
-            {
-                out.push(tg);
+        if l.rows_panel.is_some() {
+            out.clear();
+            self.modulate_targets(&l, &mut out);
+            return out;
+        }
+        // The header: the page tabs, the Mode chooser.
+        for (g, tr) in l.tabs.iter().enumerate() {
+            if tr.is_empty() {
+                continue;
+            }
+            let label = st.groups.get(g).map_or("", String::as_str);
+            out.push(Target::tap("group", g, label, *tr).disabled_if(g == st.group));
+        }
+        if let Some((prev, next)) = l.tab_arrows {
+            let n = st.groups.len();
+            out.push(Target::tap("group-prev", 0, "‹ pages", prev).disabled_if(st.group == 0));
+            out.push(Target::tap("group-next", 0, "pages ›", next).disabled_if(st.group + 1 >= n));
+        }
+        if let Some(mv) = &st.mode {
+            match l.mode_label {
+                // A button per mode.
+                None => {
+                    for &(r, m) in &l.modes {
+                        let name = mv.modes.get(m).copied().unwrap_or("");
+                        out.push(
+                            Target::tap("mode", m, format!("{} mode {name}", mv.family), r)
+                                .disabled_if(mv.current == Some(m)),
+                        );
+                    }
+                }
+                // ‹ and › round the chip.
+                Some(chip) => {
+                    for &(r, m) in &l.modes {
+                        let name = mv.modes.get(m).copied().unwrap_or("");
+                        let (id, label) = if r.x < chip.x {
+                            ("mode-prev", format!("‹ {} mode {name}", mv.family))
+                        } else {
+                            ("mode-next", format!("{} mode {name} ›", mv.family))
+                        };
+                        out.push(Target::tap(id, 0, label, r));
+                    }
+                    out.push(Target::tap(
+                        "mode-list",
+                        0,
+                        format!("{} modes", mv.family),
+                        chip,
+                    ));
+                }
             }
         }
-        if st.focus.is_some() {
-            for (m, mr) in l.macros.iter().enumerate() {
-                out.push(Target::tap("macro", m, format!("Macro {}", m + 1), *mr));
-            }
-            out.push(Target::tap("learn", 0, "Learn", l.learn));
-            let takes = focused_takes_rows(st);
-            out.push(Target::tap("add-lfo", 0, "+ LFO", l.add_lfo).disabled_if(!takes));
-            out.push(
-                Target::tap("add-follower", 0, "+ Follower", l.add_follower).disabled_if(!takes),
-            );
-            if !st.rows.is_empty() {
-                out.push(Target::tap("rows", 0, "Mod rows", l.rows_link));
-            }
-            for (k, (bar, xr)) in l.depth_rows.iter().enumerate() {
-                out.push(
-                    Target::drag(
-                        "depth",
-                        k,
-                        format!("row {} depth", k + 1),
-                        bar.take_left(SOURCE_W).1,
-                    )
-                    .towards(30, 0),
-                );
-                out.push(Target::tap(
-                    "remove-row",
-                    k,
-                    format!("row {} ×", k + 1),
-                    *xr,
-                ));
-            }
-        }
+        out.extend(self.page.targets(l.page));
+        self.modulate_targets(&l, &mut out);
         out
     }
 
@@ -1894,6 +1894,48 @@ impl Widget for ChainView {
 const WHEEL_STEP: f32 = 0.01;
 
 impl ChainView {
+    /// The Modulate row's buttons, for the control touched, and its matrix
+    /// rows while they are open.
+    fn modulate_targets(&self, l: &Layout, out: &mut Vec<Target>) {
+        let st = &self.state;
+        if st.focus.is_some() {
+            for (m, mr) in l.macros.iter().enumerate() {
+                out.push(Target::tap(
+                    "macro",
+                    m,
+                    format!("Macro {}", m + 1),
+                    macro_hit(*mr),
+                ));
+            }
+            out.push(Target::tap("learn", 0, "Learn", l.learn));
+            let takes = focused_takes_rows(st);
+            out.push(Target::tap("add-lfo", 0, "+ LFO", l.add_lfo).disabled_if(!takes));
+            out.push(
+                Target::tap("add-follower", 0, "+ Follower", l.add_follower).disabled_if(!takes),
+            );
+            if !st.rows.is_empty() {
+                out.push(Target::tap("rows", 0, "Mod rows", l.rows_link));
+            }
+            for (k, (bar, xr)) in l.depth_rows.iter().enumerate() {
+                out.push(
+                    Target::drag(
+                        "depth",
+                        k,
+                        format!("row {} depth", k + 1),
+                        bar.take_left(SOURCE_W).1,
+                    )
+                    .towards(30, 0),
+                );
+                out.push(Target::tap(
+                    "remove-row",
+                    k,
+                    format!("row {} ×", k + 1),
+                    *xr,
+                ));
+            }
+        }
+    }
+
     fn touch_inner(&mut self, finger: u64, phase: Touch, x: i32, y: i32, r: Rect) {
         let l = self.layout(r);
         if self.list_open.is_some() {
@@ -2439,7 +2481,7 @@ impl ChainView {
         );
         let takes = focused_takes_rows(st);
         let summary = match (takes, st.rows.first()) {
-            _ if st.learning => "learning: turn a Q-Link or a MIDI control".to_string(),
+            _ if st.learning => "learning: Q-Link or MIDI".to_string(),
             (false, _) => "a switch: macros only".to_string(),
             (true, None) => "no LFO or follower".to_string(),
             (true, Some(r)) => {
