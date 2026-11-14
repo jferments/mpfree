@@ -512,6 +512,15 @@ impl TimeHost {
         sent && self.audio.counts().refused == refused
     }
 
+    /// A transport command on frame `at` of the transport's clock (see
+    /// [`TimeHost::next_frame`]), from the coming period on: exact to the
+    /// frame, where [`TimeHost::command`] waits for the next period. The
+    /// export stops the song where its range ends with it. False if the
+    /// transport's queue was full.
+    pub fn command_at(&mut self, at: u64, cmd: Command) -> bool {
+        self.audio.command_at(at, cmd)
+    }
+
     /// Follow the app's tempo (TAP TEMPO, the menu). Does nothing while
     /// a followed clock arrives ([`TimeHost::followed_bpm`]).
     pub fn follow_tempo(&mut self, bpm: f64) {

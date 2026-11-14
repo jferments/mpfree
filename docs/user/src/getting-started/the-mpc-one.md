@@ -1,7 +1,7 @@
 <!--
 status: changing
 covers: rust/mpfree-app/src/app.rs rust/mpfree-controller
-checked: 2026-11-13 dcaefdd
+checked: 2026-11-14 b76c3c7
 -->
 
 # A tour of the MPC One
