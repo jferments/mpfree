@@ -398,7 +398,7 @@ mod tests {
                 assert_ne!(s.time.project(), &before, "{}: the step went in", song.name);
                 // Track 2's fader down on the mixer.
                 let v0 = s.mix.mixer.param(StripId::Track(1), mx::VOLUME);
-                s.press("header", "mixer-icon", "");
+                s.press("header", "tab", "Mix");
                 s.qlink(1, -6);
                 let _ = v0;
                 let edited = s.time.project().clone();

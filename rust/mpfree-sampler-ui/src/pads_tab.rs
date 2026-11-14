@@ -77,7 +77,7 @@ pub fn browse_layout(beside: &str) -> String {
 /// The hint line the app shows under the Pad view.
 pub const HINT: &str =
     "Tap a pad to pick it, again to hear it · Copy, Paste, Clear, Map to keys · pick a sound, then Put it on \
-                        the pad · Q-Links: level, pan, tune, voices";
+                        the pad · Effects: the pad's chain in Mix · Q-Links: level, pan, tune, voices";
 
 /// Gesture ids the tab hands out start here, clear of other screens'.
 const GESTURE_BASE: u64 = 0x5041_4453_0000_0000;
@@ -92,10 +92,13 @@ pub enum Row {
     Level,
     Pan,
     Tune,
+    /// The pad's insert effects on its mixer strip: a button that opens
+    /// its chain in the Mix tab.
+    Effects,
 }
 
 impl Row {
-    pub const ALL: [Row; 7] = [
+    pub const ALL: [Row; 8] = [
         Row::Sound,
         Row::Mode,
         Row::Polyphony,
@@ -103,6 +106,7 @@ impl Row {
         Row::Level,
         Row::Pan,
         Row::Tune,
+        Row::Effects,
     ];
 
     pub fn label(self) -> &'static str {
@@ -114,6 +118,7 @@ impl Row {
             Row::Level => "Level",
             Row::Pan => "Pan",
             Row::Tune => "Tune",
+            Row::Effects => "Effects",
         }
     }
 
@@ -125,7 +130,7 @@ impl Row {
             Row::Level => Some(play_tab::Row::Level),
             Row::Pan => Some(play_tab::Row::Pan),
             Row::Tune => Some(play_tab::Row::Tune),
-            Row::Sound | Row::Mode => None,
+            Row::Sound | Row::Mode | Row::Effects => None,
         }
     }
 
@@ -188,6 +193,10 @@ pub struct PadsState {
     /// The clip each pad of the bank launches, if any (none yet: the time
     /// engine doesn't launch clips from pads).
     pub clips: Vec<Option<String>>,
+    /// The effects on the picked pad's mixer strip, in order; None when the
+    /// pad has no strip of its own (only the first 16 pads have one). The
+    /// app fills it from the mixer.
+    pub effects: Option<Vec<String>>,
 }
 
 impl PadsState {
@@ -215,6 +224,7 @@ impl PadsState {
             pads,
             sounds,
             clips: vec![None; bank.len()],
+            effects: None,
         }
     }
 
@@ -252,6 +262,8 @@ pub enum PadsAction {
     MapToKeys { pads: Vec<usize> },
     /// Show view `i` of [`VIEWS`] (the bar's switch).
     View(usize),
+    /// The Effects row: open pad `pad`'s chain in the Mix tab.
+    Effects(usize),
 }
 
 impl PadsAction {
@@ -505,6 +517,11 @@ impl PadsTab {
             list.title = format!("Pad {here}");
             list.right = format!("clip: {}", clip.as_deref().unwrap_or("none"));
             list.rows = rows;
+            list.buttons = if st.effects.is_some() {
+                vec![Row::Effects.index()]
+            } else {
+                Vec::new()
+            };
         }
         let items = st
             .sounds
@@ -553,6 +570,10 @@ impl PadsTab {
             (BUTTONS, EventKind::Tab(i)) => self.press(ui, st, *Button::ALL.get(*i)?),
             (LIST, EventKind::Step { index, delta }) => {
                 self.step(st, *Row::ALL.get(*index)?, *delta)
+            }
+            (LIST, EventKind::Tab(k)) if Row::ALL.get(*k) == Some(&Row::Effects) => {
+                st.effects.as_ref()?;
+                Some(PadsAction::Effects(st.pad))
             }
             (SOUNDS, EventKind::Select(k)) => {
                 self.sound = *k;
@@ -721,6 +742,23 @@ fn pad_detail(p: &Pad) -> String {
 }
 
 fn row_text(p: Option<&Pad>, st: &PadsState, row: Row) -> String {
+    if row == Row::Effects {
+        // The strip's effects whether or not the pad has a sound: they're
+        // the strip's, not the sound's.
+        return match &st.effects {
+            None => "—".into(),
+            Some(fx) if fx.is_empty() => "+ FX".into(),
+            // As many names as the button holds, then how many more.
+            Some(fx) => {
+                let all = fx.join(", ");
+                if fx.len() == 1 || all.chars().count() <= 22 {
+                    all
+                } else {
+                    format!("{} +{}", fx[0], fx.len() - 1)
+                }
+            }
+        };
+    }
     let Some(p) = p else {
         return if row == Row::Sound {
             "none".into()

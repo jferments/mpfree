@@ -273,6 +273,10 @@ pub struct Target {
     /// nothing to change: the audit reports what it does but does not count
     /// it dead.
     pub enabled: bool,
+    /// A tap control the data wheel can move to another place (an effect
+    /// picked in its chain): the wheel's push grabs it, a turn moves it
+    /// through [`Widget::step`], and a push puts it down. False for most.
+    pub moves: bool,
 }
 
 impl Target {
@@ -285,6 +289,7 @@ impl Target {
             gesture: Gesture::Tap,
             towards: (36, -60),
             enabled: true,
+            moves: false,
         }
     }
 
@@ -316,6 +321,12 @@ impl Target {
             enabled: self.enabled && !off,
             ..self
         }
+    }
+
+    /// The same tap control, one the wheel can move when `on` is true
+    /// (see [`Target::moves`]).
+    pub fn moves_if(self, on: bool) -> Target {
+        Target { moves: on, ..self }
     }
 
     /// The point a test touches: the middle of the control.
@@ -364,8 +375,9 @@ pub trait Widget: Any + Send {
     }
 
     /// True when the data wheel can turn control `t` (one of
-    /// [`Widget::targets`], a drag): the wheel's push then grabs it and
-    /// [`Widget::step`] turns it. False leaves it to a finger.
+    /// [`Widget::targets`], a drag, or a tap that [`Target::moves`]): the
+    /// wheel's push then grabs it and [`Widget::step`] turns or moves it.
+    /// False leaves it to a finger.
     fn steps(&self, _t: &Target) -> bool {
         false
     }
@@ -376,6 +388,13 @@ pub trait Widget: Any + Send {
     /// value is at its end). Only called where [`Widget::steps`] is true.
     fn step(&mut self, _t: &Target, _delta: i32, _r: Rect) -> Option<EventKind> {
         None
+    }
+
+    /// Where control `t` is now listed, after [`Widget::step`] moved it:
+    /// the `index` its target has in the next [`Widget::targets`], so the
+    /// wheel's outline goes with it. Most controls stay where they are.
+    fn focus_index(&self, t: &Target) -> usize {
+        t.index
     }
 
     /// When the widget has changed, the parts of `r` that need drawing again;
@@ -891,7 +910,8 @@ impl Ui {
     }
 
     /// The wheel turned the outlined control by `delta` detents
-    /// ([`Widget::step`]): what it said, as a touch would.
+    /// ([`Widget::step`]): what it said, as a touch would. The outline goes
+    /// with a control the turn moved ([`Widget::focus_index`]).
     pub fn focus_step(&mut self, delta: i32) -> Option<UiEvent> {
         let (wi, t) = self.focus_slot()?;
         let r = self.pages[self.current]
@@ -905,6 +925,10 @@ impl Ui {
         }
         let kind = w.step(&t, delta, r)?;
         *dirty = true;
+        let index = w.focus_index(&t);
+        if let Some(f) = self.focus.as_mut().filter(|f| f.index != index) {
+            f.index = index;
+        }
         Some(UiEvent {
             widget: name.clone(),
             kind,

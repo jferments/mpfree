@@ -15,11 +15,11 @@
 "Debug tab" = "Dev tab"
 "Console tab" = "the Console (hold SHIFT, hold ERASE, press TAP TEMPO)"
 "Prefs tab" = "Prefs (SHIFT + MENU; it is not a tab)"
-"Mix tab" = "the mixer (TRACK MIX)"
+"mixer icon" = "the Mix tab (the sliders icon is gone, 2026-11-14)"
 "MPCFree" = "MPFree"
 
 [names]
-tabs = ["Play", "Arrange", "Synth", "Looper", "Sample", "Dev"]
+tabs = ["Play", "Pads", "Arrange", "Synth", "Looper", "Sample", "Mix", "Dev"]
 play_views = ["All", "Beats", "Loop"]
 sample_pages = ["Pads", "Wave", "Chop", "Play", "Grain", "FX"]
-overlays = ["Prefs", "the mixer", "the Arp panel", "the button guide"]
+overlays = ["Prefs", "the Arp panel", "the button guide", "the browser", "the list of kits"]

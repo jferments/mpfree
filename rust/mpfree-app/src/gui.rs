@@ -524,6 +524,11 @@ pub enum ToUi {
     /// While the mixer is open: Q-Link `0` (or the wheel) turned by `1`
     /// detents, for the selected strip.
     MixerQLink(usize, i32),
+    /// TRACK MIX opened the Mix tab: it shows Faders.
+    MixerFaders,
+    /// The effects on the mixer's pad channels changed, by pad: the Pads
+    /// tab's Effects row names them.
+    PadFx(Vec<Vec<String>>),
     /// While the mixer's I/O view shows: the data wheel, - or +, for the
     /// section showing.
     IoInput(mpfree_mixer_ui::IoInput),
@@ -893,8 +898,6 @@ pub enum FromUi {
     /// meant (`mpfree_mixer_ui::take_actions`, `qlink_turn`), for the mixer
     /// on the audio thread.
     Mixer(mpfree_mixer_ui::MixAction),
-    /// The top bar's mixer icon: open or close the mixer (the app decides).
-    MixerIcon,
     /// The top bar's I/O icon: open the mixer on its I/O view, or close it
     /// (the app decides).
     IoIcon,
@@ -931,6 +934,12 @@ pub enum FromUi {
     SampleFx {
         pad: usize,
     },
+    /// The Pads tab's Effects row on pad `pad`: its chain in the Mix tab,
+    /// with ‹ back to the Pads tab
+    /// ([`crate::modpanels::Panels::open_pad_mix`]).
+    PadEffects {
+        pad: usize,
+    },
     /// A phrase chopped on the Sample page, for the armed track's first
     /// empty slot ([`crate::time::TimeHost::put_clip`]).
     SamplePhrase(Box<mpfree_seq::Clip>),
@@ -961,6 +970,9 @@ pub struct Player {
     sample_live: bool,
     /// The view the mixer last said it shows (its state), if it ever did.
     mix_view: Option<mpfree_mixer_ui::MixView>,
+    /// The effect picked on the mixer's Effects look, as the column last
+    /// heard of it.
+    mix_pick: Option<(mpfree_fx::StripId, usize)>,
     /// The I/O view's sections after Audio, by title, in their order there
     /// (Audio is 0, these 1 on): [`add_io_sections`].
     io_sections: Vec<String>,
@@ -1137,7 +1149,7 @@ impl Player {
         let mut ui = Ui::new(Theme::dark(), fonts, size.0, size.1);
         let names: Vec<&str> = tabs(false).iter().map(|v| v.name()).collect();
         let mut header = Header::new(&names);
-        header.mixer_icon = Some(false);
+        // The Mix tab took the mixer icon's job; the I/O icon stays.
         header.io_icon = Some(false);
         ui.add("header", header);
         let mut loading = Loading::new("MPFree", "Pad player");
@@ -1312,6 +1324,7 @@ impl Player {
             sample_keys: (false, false),
             sample_live: false,
             mix_view: None,
+            mix_pick: None,
             io_sections,
             io_clock: Duration::ZERO,
             ready: false,
@@ -1659,11 +1672,35 @@ impl Player {
         }
     }
 
+    /// The effect picked on the mixer's Effects look, if it changed: the
+    /// Q-Link column turns its knobs on the mixer (once its state comes),
+    /// or the selected strip's again, and the audio thread hears it.
+    fn sync_mix_pick(&mut self) {
+        let pick = (self.view == View::Mixer)
+            .then(|| mpfree_mixer_ui::pick(&self.ui))
+            .flatten();
+        if pick == self.mix_pick {
+            return;
+        }
+        if pick.is_none() && self.view == View::Mixer {
+            self.outbox
+                .push(FromUi::Mixer(mpfree_mixer_ui::MixAction::Unpick));
+        }
+        self.mix_pick = pick;
+        self.chain_page.pick_on_mixer(pick.is_some());
+        self.refresh_qlinks();
+    }
+
     /// Q-Link `k` (a knob, a drag on its card, or the wheel as Q-Link 1)
     /// while the mixer is open: the selected strip's Volume, Pan, Send A or
-    /// Send B moves on the panel at once, and the mixer hears it.
+    /// Send B moves on the panel at once, and the mixer hears it. With an
+    /// effect picked on the Effects look, its knobs instead.
     fn mixer_qlink(&mut self, k: usize, d: i32) {
         if self.view != View::Mixer || d == 0 {
+            return;
+        }
+        if self.chain_page.drives(View::Mixer) {
+            self.chain_qlink(k, d);
             return;
         }
         // An I/O section with its own Q-Link cards takes the turn.
@@ -2307,11 +2344,8 @@ impl Player {
                 View::Prefs | View::Options if self.menu_editing => OPTIONS_EDIT_HINT.to_string(),
                 View::Prefs | View::Options => OPTIONS_HINT.to_string(),
                 View::Mixer => mpfree_mixer_ui::io_hint(&self.ui)
-                    .unwrap_or_else(|| mpfree_mixer_ui::MIXER_HINT.to_string()),
-                View::Chain if mpfree_chain_ui::chain_picking(&self.ui) => {
-                    mpfree_chain_ui::PICKER_HINT.to_string()
-                }
-                View::Chain => mpfree_chain_ui::CHAIN_HINT.to_string(),
+                    .unwrap_or_else(|| mpfree_mixer_ui::hint(&self.ui).to_string()),
+                View::Chain => mpfree_chain_ui::chain_hint(&self.ui).to_string(),
                 View::Macros => mpfree_chain_ui::MACROS_HINT.to_string(),
                 View::Guide => GUIDE_HINT.to_string(),
                 View::Arp => format!("Wheel: {wheel}   ·   - / +: mode   ·   Q-Links: rate, gate, swing, octaves   ·   \
@@ -2725,6 +2759,9 @@ impl Player {
             }
         }
         match n {
+            Nav::Turn(d) | Nav::Step(d) if self.ui.focus_grabbed() && self.wheel_moves() => {
+                self.nav_step(d)
+            }
             Nav::Turn(d) if self.ui.focus_grabbed() && self.wheel_turns() => self.nav_step(d),
             Nav::Step(d) if self.wheel_turns() => self.nav_step(d),
             Nav::Turn(d) | Nav::Step(d) => {
@@ -2751,6 +2788,12 @@ impl Player {
             && self.ui.focus_steps()
     }
 
+    /// The outlined control is one the wheel can move to another place (an
+    /// effect picked in its chain: [`mpfree_ui::Target::moves`]).
+    fn wheel_moves(&self) -> bool {
+        self.ui.focused().is_some_and(|f| f.target.moves) && self.ui.focus_steps()
+    }
+
     fn nav_step(&mut self, d: i32) {
         if let Some(ev) = self.ui.focus_step(d) {
             if let Some(a) = self.on_event(ev) {
@@ -2768,8 +2811,9 @@ impl Player {
 
     /// The wheel's push: a tap on a button, a row or a pad; on a value,
     /// grab it (the wheel turns it) or let it go; on a control that is held
-    /// (a throw), hold it down until the next push. With no outline, show
-    /// it on the first control.
+    /// (a throw), hold it down until the next push; on a control the wheel
+    /// can move (a picked effect), pick it up or put it down. With no
+    /// outline, show it on the first control.
     fn nav_push(&mut self) {
         let Some(f) = self.ui.focused() else {
             self.ui.focus_move(1);
@@ -2778,6 +2822,17 @@ impl Player {
         let t = f.target;
         let grabbed = self.ui.focus_grabbed();
         match t.gesture {
+            Gesture::Tap if t.moves && grabbed => {
+                self.ui.set_focus_grabbed(false);
+                self.tell(&format!("Put {} down · the wheel moves on", t.label));
+            }
+            Gesture::Tap if t.moves && self.ui.focus_steps() => {
+                self.ui.set_focus_grabbed(true);
+                self.tell(&format!(
+                    "The wheel moves {} · push again to put it down",
+                    t.label
+                ));
+            }
             Gesture::Tap => {
                 self.nav_touch(Touch::Down, t.centre());
                 self.nav_touch(Touch::Up, t.centre());
@@ -3273,6 +3328,7 @@ impl Player {
                 let turned = self.mix_view != Some(st.view);
                 self.mix_view = Some(st.view);
                 mpfree_mixer_ui::update(&mut self.ui, *st);
+                self.sync_mix_pick();
                 if self.view == View::Mixer {
                     self.refresh_qlinks();
                     if turned {
@@ -3283,10 +3339,17 @@ impl Player {
                 }
             }
             ToUi::MixerQLink(k, d) => self.mixer_qlink(k, d),
+            ToUi::PadFx(fx) => self.sample.set_pad_fx(&mut self.ui, fx),
+            ToUi::MixerFaders => {
+                mpfree_mixer_ui::set_look(&mut self.ui, mpfree_mixer_ui::Look::Faders);
+                self.sync_mix_pick();
+                self.refresh_hint();
+                self.refresh_qlinks();
+            }
             ToUi::IoInput(ev) => self.io_input(ev),
             ToUi::Chain(st) => {
                 self.chain_page.set_chain(&mut self.ui, *st);
-                if self.view == View::Chain {
+                if self.chain_page.drives(self.view) {
                     self.refresh_qlinks();
                 }
             }
@@ -3720,6 +3783,14 @@ impl Player {
     fn rows(&mut self, k: crate::app::RowKey) {
         use crate::app::RowKey;
         if let RowKey::Editing(on) = k {
+            // A row that is a button (the Pad list's Effects): the push
+            // presses it; the page it opens closes the row again.
+            if on && self.view.sampler() {
+                if let Some(ev) = self.sample.button_row(&self.ui) {
+                    self.on_event(ev);
+                    return;
+                }
+            }
             // Every page with rows keeps it, so the page that shows next
             // agrees with the app (which closes it on a page change).
             self.sample.set_editing(&mut self.ui, on);
@@ -5014,6 +5085,7 @@ impl Player {
         self.switch_page(&page);
         self.view = v;
         self.chain_page.entered(v);
+        self.sync_mix_pick();
         if now && !was {
             self.say("touch-tune-open".to_string());
             self.refresh_tune();
@@ -5059,15 +5131,10 @@ impl Player {
     /// The header highlights the page's tab, or none (Prefs, menus, the guide).
     fn mark_tab(&mut self) {
         let tab = self.view.tab_index(self.settings.debug_mode);
-        // One icon lit: the I/O icon on the I/O view, the mixer's on the
-        // others.
+        // The I/O icon is lit on the I/O view.
         let io = self.io_showing();
-        let mixer = Some(self.view == View::Mixer && !io);
         if let Some(h) = self.ui.get_mut::<Header>("header") {
             h.active = tab.unwrap_or(usize::MAX);
-            if h.mixer_icon != mixer {
-                h.mixer_icon = mixer;
-            }
             if h.io_icon.is_some() && h.io_icon != Some(io) {
                 h.io_icon = Some(io);
             }
@@ -5491,6 +5558,15 @@ impl Player {
                     .map(FromUi::Mixer);
                 let first = acts.next();
                 self.outbox.extend(acts);
+                let looked = first
+                    .iter()
+                    .chain(self.outbox.iter())
+                    .any(|a| matches!(a, FromUi::Mixer(mpfree_mixer_ui::MixAction::Look(_))));
+                if looked {
+                    // Faders or Effects: its hint.
+                    self.refresh_hint();
+                }
+                self.sync_mix_pick();
                 if self.io_showing() {
                     // The I/O view keeps its own wheel: no outline there.
                     self.ui.clear_focus();
@@ -5533,9 +5609,15 @@ impl Player {
                 None
             }
             (mpfree_chain_ui::CHAIN, _) => {
-                let mut acts = mpfree_chain_ui::take_chain_actions(&mut self.ui)
-                    .into_iter()
-                    .map(FromUi::Chain);
+                let acts = mpfree_chain_ui::take_chain_actions(&mut self.ui);
+                if acts
+                    .iter()
+                    .any(|a| matches!(a, ChainAction::Strips(_) | ChainAction::OpenStrip(_)))
+                {
+                    // The strip list opened or shut: its hint.
+                    self.refresh_hint();
+                }
+                let mut acts = acts.into_iter().map(FromUi::Chain);
                 let first = acts.next();
                 self.outbox.extend(acts);
                 first
@@ -5552,9 +5634,6 @@ impl Player {
                 let first = acts.next();
                 self.outbox.extend(acts);
                 first
-            }
-            ("header", EventKind::Select(mpfree_ui::widgets::MIXER_ICON)) => {
-                Some(FromUi::MixerIcon)
             }
             ("header", EventKind::Select(mpfree_ui::widgets::IO_ICON)) => Some(FromUi::IoIcon),
             (play_page::SYNTH_PADS_HEAD, EventKind::Tab(i)) => {
@@ -6961,7 +7040,9 @@ pub fn apply_effects(p: &mut Player, fx: Vec<crate::app::Effect>) {
             | Effect::ProgEdit
             | Effect::Metronome { .. }
             | Effect::Fill(_)
-            | Effect::Mixer(_) => {}
+            | Effect::Mixer(_)
+            | Effect::MixerLast => {}
+            Effect::MixerFaders => p.apply(ToUi::MixerFaders),
             Effect::MixerWheel(d) => p.apply(if p.io_showing() {
                 ToUi::IoInput(mpfree_mixer_ui::IoInput::Wheel(d))
             } else {
@@ -7291,6 +7372,9 @@ fn sample_panels(p: &mut Player, view: View) {
             .map(|uid| ParamAddr::new(Owner::Insert(DRUMS, uid), mpfree_fx::ids::drive::TONE));
         let mut st = song.chain_state(DRUMS, 1, 0, tone);
         st.back = Some("Mixer".into());
+        // The strip button, as the app fills it (`ChainHost::state`).
+        st.strip_name = st.title.trim_end_matches(" FX").to_string();
+        st.strip_kind = "Track 1".into();
         let fx = song
             .chain(DRUMS)
             .node(1)
@@ -7431,9 +7515,23 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
             i.cost_pct = i.cost_pct.map(|_| 1.5);
         }
     }
+    // The Mix tab's Effects look on the same strips (layout spec 3a): a
+    // tap on the toggle.
+    let mut effects = sample_player(fonts());
+    effects.apply(ToUi::Show(View::Mixer));
+    effects.apply(ToUi::Mixer(Box::new(st.clone())));
     mixer.apply(ToUi::Show(View::Mixer));
     mixer.apply(ToUi::Mixer(Box::new(st)));
     out.push(("mixer", mixer));
+    if let Some(t) = effects.ui.targets().into_iter().find(|t| {
+        t.widget == mpfree_mixer_ui::MIXER && t.target.id == "look" && t.target.label == "Effects"
+    }) {
+        let (x, y) = t.target.centre();
+        effects.touch(1, Touch::Down, x, y);
+        effects.touch(1, Touch::Up, x, y);
+        let _ = effects.take_actions();
+    }
+    out.push(("mixer-effects", effects));
     // The mixer's I/O view (the I/O icon lit), while the tempo follows a
     // clock on MIDI In: the tempo chip with its green dot.
     let mut io = sample_player(fonts());
@@ -8023,6 +8121,19 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         widget: mpfree_sampler_ui::pads_tab::MAP.into(),
         kind: EventKind::Select(mpfree_sampler_ui::sample::PAD),
     });
+    // The pad channels' effects as the mixer sends them: a compressor
+    // on A5's.
+    pads.apply(ToUi::PadFx(
+        (0..crate::mixing::PADS)
+            .map(|i| {
+                if i == mpfree_sampler_ui::sample::PAD {
+                    vec!["Compressor".to_string()]
+                } else {
+                    Vec::new()
+                }
+            })
+            .collect(),
+    ));
     pads.take_actions();
     out.push(("pads-pad", pads));
     // The Pads tab's Browse view: the browser beside the pads over a
@@ -9858,7 +9969,7 @@ mod tests {
         let mut p = sample_player(Fonts::embedded());
         let mut app = sample_app();
         app.map.learn(crate::app::mapper::Job::TrackMix, Some(70));
-        // TRACK MIX: the mixer over Play, on Track Mix; the icon lights.
+        // TRACK MIX: the Mix tab, on Track Mix; its tab lights.
         let fx = app.button(70, true, 0.0);
         app.button(70, false, 0.0);
         assert_eq!(
@@ -9868,7 +9979,8 @@ mod tests {
         );
         apply_effects(&mut p, fx);
         assert_eq!(p.page(), MIXER_PAGE);
-        assert_eq!(p.ui.get::<Header>("header").unwrap().mixer_icon, Some(true));
+        let h = p.ui.get::<Header>("header").unwrap();
+        assert_eq!((h.tabs[h.active].as_str(), h.mixer_icon), ("Mix", None));
         assert!(
             p.ui.rect_of(play_page::QLINKS).is_some(),
             "the Q-Link cards stay beside the mixer"
@@ -9898,25 +10010,24 @@ mod tests {
             ),
             "{sent:?}"
         );
-        // TRACK MIX again closes it, back to Play; the icon goes out.
+        // TRACK MIX again goes back to Play.
         let fx = app.button(70, true, 0.0);
         assert_eq!(fx.first(), Some(&crate::app::Effect::Mixer(None)));
         apply_effects(&mut p, fx);
         assert_eq!(p.page(), "Play");
-        assert_eq!(
-            p.ui.get::<Header>("header").unwrap().mixer_icon,
-            Some(false)
-        );
-        // The icon in the bar asks the app.
-        p.ui.paint(&mut SoftCanvas::new(SCREEN.0, SCREEN.1));
-        let r = p.ui.rect_of("header").unwrap();
-        let icon = p.ui.get::<Header>("header").unwrap().icon_rect(r).unwrap();
-        assert_eq!(
-            p.touch(4, Touch::Down, icon.x + 10, icon.y + 10),
-            Some(FromUi::MixerIcon)
-        );
-        // SHIFT + TRACK MIX: Pad Mix; a tab closes the mixer.
+        let h = p.ui.get::<Header>("header").unwrap();
+        assert_eq!(h.tabs[h.active], "Play");
         app.button(70, false, 0.0);
+        // The Mix tab, last in the bar, opens the mixer on the view it
+        // showed last (the audio thread remembers it).
+        let fx = app.tab(6);
+        assert_eq!(fx.first(), Some(&crate::app::Effect::MixerLast), "{fx:?}");
+        apply_effects(&mut p, fx);
+        assert_eq!(p.page(), MIXER_PAGE);
+        // A tab leaves it; SHIFT + TRACK MIX opens it on Pad Mix.
+        let fx = app.tab(2);
+        assert!(fx.contains(&crate::app::Effect::Mixer(None)), "{fx:?}");
+        apply_effects(&mut p, fx);
         app.button(mpfree_controller::mpc_one::button::SHIFT, true, 0.0);
         let fx = app.button(70, true, 0.0);
         assert_eq!(
@@ -9924,8 +10035,13 @@ mod tests {
             Some(&crate::app::Effect::Mixer(Some(MixView::Pads)))
         );
         app.button(mpfree_controller::mpc_one::button::SHIFT, false, 0.0);
-        let fx = app.tab(2);
-        assert!(fx.contains(&crate::app::Effect::Mixer(None)), "{fx:?}");
+        // Pressed there, back to the page it opened from (Arrange).
+        app.button(70, false, 0.0);
+        let fx = app.button(70, true, 0.0);
+        assert!(
+            fx.contains(&crate::app::Effect::Show(View::Arrange)),
+            "{fx:?}"
+        );
     }
 
     #[test]
@@ -9933,12 +10049,14 @@ mod tests {
         use mpfree_mixer_ui::{MixState, MixView, MIXER_HINT_IO, MIXER_PAGE};
         let mut p = sample_player(Fonts::embedded());
         let mut app = sample_app();
-        // The I/O icon sits left of the mixer icon and asks the app.
+        // The I/O icon sits at the bar's right edge (the Mix tab took the
+        // mixer icon's job) and asks the app.
         p.ui.paint(&mut SoftCanvas::new(SCREEN.0, SCREEN.1));
         let r = p.ui.rect_of("header").unwrap();
         let h = p.ui.get::<Header>("header").unwrap();
-        let (io, mixer) = (h.io_icon_rect(r).unwrap(), h.icon_rect(r).unwrap());
-        assert!(io.right() < mixer.x);
+        let io = h.io_icon_rect(r).unwrap();
+        assert!(h.icon_rect(r).is_none());
+        assert_eq!(io.right(), r.right());
         assert_eq!(
             p.touch(1, Touch::Down, io.x + 10, io.y + 10),
             Some(FromUi::IoIcon)
@@ -9954,9 +10072,9 @@ mod tests {
         let mut m = mpfree_mixer_ui::sample::song_mixer();
         let st = MixState::from_mixer(&mut m, MixView::Io, &mpfree_mixer_ui::sample::name);
         p.apply(ToUi::Mixer(Box::new(st)));
-        // One icon lit, the I/O view's hint.
+        // The icon lit, the I/O view's hint.
         let h = p.ui.get::<Header>("header").unwrap();
-        assert_eq!((h.io_icon, h.mixer_icon), (Some(true), Some(false)));
+        assert_eq!((h.io_icon, h.mixer_icon), (Some(true), None));
         assert_eq!(p.ui.get::<Label>("hint").unwrap().text, MIXER_HINT_IO);
         assert!(p.io_showing());
         // The wheel is the I/O view's now, not Q-Link 1's: nothing is sent
@@ -9981,7 +10099,7 @@ mod tests {
         apply_effects(&mut p, fx);
         assert_eq!(p.page(), "Play");
         let h = p.ui.get::<Header>("header").unwrap();
-        assert_eq!((h.io_icon, h.mixer_icon), (Some(false), Some(false)));
+        assert_eq!((h.io_icon, h.mixer_icon), (Some(false), None));
         // While an outside clock sets the tempo, the tempo chip shows; a
         // tap opens the I/O view (at Sync once that section is there).
         p.apply(ToUi::ClockFrom(Some("MIDI In".into())));
@@ -10052,7 +10170,8 @@ mod tests {
         apply_effects(&mut p, fx);
         sample_panels(&mut p, View::Chain);
         assert_eq!(p.page(), mpfree_chain_ui::CHAIN_PAGE);
-        assert_eq!(p.ui.get::<Header>("header").unwrap().active, usize::MAX);
+        // The chain editor is the Mix tab's: its tab stays lit.
+        assert_eq!(p.ui.get::<Header>("header").unwrap().active, 6);
         let q = p.ui.get::<QLinkColumn>(play_page::QLINKS).unwrap();
         assert!(q.title.starts_with("Q-Links · "), "{}", q.title);
         assert!(!q.cards[1].is_free(), "{:?}", q.cards);
@@ -10457,6 +10576,58 @@ mod tests {
         p.apply(ToUi::Nav(Nav::Push));
         let v = p.ui.get::<ChainView>(mpfree_chain_ui::CHAIN).unwrap();
         assert_eq!(v.picker().presets, Some(first), "its presets open");
+    }
+
+    /// Jay, 14 Nov 12:03Z: the wheel moves an effect along its chain too.
+    /// On the picked effect its push picks it up, a turn (or - / +) moves
+    /// it a place a detent with the outline on it, and a push puts it down.
+    #[test]
+    fn the_wheel_moves_the_picked_effect_along_its_chain() {
+        use mpfree_chain_ui::ChainView;
+        let mut p = sample_player(Fonts::embedded());
+        sample_panels(&mut p, View::Chain);
+        p.ui.paint(&mut SoftCanvas::new(SCREEN.0, SCREEN.1));
+        let r = p.ui.rect_of(mpfree_chain_ui::CHAIN).unwrap();
+        let rows =
+            p.ui.get::<ChainView>(mpfree_chain_ui::CHAIN)
+                .unwrap()
+                .layout(r)
+                .rows
+                .clone();
+        let on = |p: &Player| p.ui.focused().map(|f| (f.target.id, f.target.index));
+        let chain = |p: &mut Player| -> Vec<FromUi> {
+            p.take_actions()
+                .into_iter()
+                .filter(|a| matches!(a, FromUi::Chain(_)))
+                .collect()
+        };
+        // A tap on Drive, the picked effect, puts the outline on it.
+        let (x, y) = (rows[1].x + 40, rows[1].y + rows[1].h / 2);
+        let mut got: Vec<FromUi> = p.touch(1, Touch::Down, x, y).into_iter().collect();
+        got.extend(p.touch(1, Touch::Up, x, y));
+        got.extend(chain(&mut p));
+        assert_eq!(got, [FromUi::Chain(ChainAction::Select(1))]);
+        assert_eq!(on(&p), Some(("slot", 1)));
+        p.apply(ToUi::Nav(Nav::Push));
+        assert!(p.ui.focus_grabbed(), "the push picks it up");
+        assert!(chain(&mut p).is_empty());
+        p.apply(ToUi::Nav(Nav::Turn(2)));
+        assert_eq!(
+            chain(&mut p),
+            [FromUi::Chain(ChainAction::Move { from: 1, to: 3 })]
+        );
+        assert_eq!(on(&p), Some(("slot", 3)), "the outline goes with it");
+        p.apply(ToUi::Nav(Nav::Step(-1)));
+        assert_eq!(
+            chain(&mut p),
+            [FromUi::Chain(ChainAction::Move { from: 3, to: 2 })],
+            "- moves it back a place"
+        );
+        p.apply(ToUi::Nav(Nav::Push));
+        assert!(!p.ui.focus_grabbed(), "the push puts it down");
+        p.apply(ToUi::Nav(Nav::Turn(1)));
+        assert!(chain(&mut p).is_empty());
+        assert_ne!(on(&p), Some(("slot", 2)), "put down, the wheel moves on");
     }
 
     /// Q-LINK on Play: Macros 1-4, Macros 5-8, then Play's own knobs; the

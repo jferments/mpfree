@@ -1,12 +1,12 @@
 //! The mixer screen for the MPC One: Track Mix and Pad Mix, built on
 //! `mpfree-ui` over `mpfree-fx`'s [`Mixer`].
 //!
-//! **A proposal to the Hello MPC thread,** which owns the app's layout. The
-//! approved layout spec already places it: TRACK MIX, or the small mixer
-//! icon at the top bar's right edge, opens the mixer over the current page,
-//! under the top bar, as Prefs does; the same button or icon again, or a
-//! tab, closes it; SHIFT + TRACK MIX opens it on the pads. This crate is
-//! what opens: the panel inside that area.
+//! The Mix tab (layout spec section 3a) holds it: TRACK MIX opens the tab
+//! on the tracks and SHIFT + TRACK MIX on the pads, both on Faders; the
+//! same button again goes back to the page before. This crate is the
+//! panel under the top bar, in two looks of the same strips
+//! ([`Look`]): Faders, the strips side by side, and Effects, each strip's
+//! chain as a row of slots.
 //!
 //! - [`state`]: what the screen shows ([`MixState`]), built by the control
 //!   thread from its copy of the settings and the meters
@@ -36,7 +36,7 @@
 //! same way; the widget shows the change at once.
 //!
 //! The I/O view: the app opens the mixer on [`MixView::Io`] from the
-//! [`IoIcon`] beside the mixer icon, and while it shows passes the data
+//! [`IoIcon`] at the top bar's right edge, and while it shows passes the data
 //! wheel, - and + and the page arrows to [`io_input`], Back to [`io_back`],
 //! each frame to [`io_tick`], and the Q-Links to [`io_qlinks`] and
 //! [`io_qlink_turn`] first (when they give nothing, the Q-Links stay on the
@@ -57,7 +57,7 @@ pub use state::{
     default_name, InputView, InsertView, MixState, MixView, SafetyView, SendView, StripView,
     TakeView,
 };
-pub use view::{IoIcon, MixAction, MixerIcon, MixerView, StripMenu};
+pub use view::{IoIcon, Look, MixAction, MixerView, StripMenu, FX_COLS};
 
 use mpfree_fx::Mixer;
 use mpfree_ui::Ui;
@@ -68,13 +68,15 @@ pub const MIXER: &str = "mixer";
 pub const MIXER_PAGE: &str = "mixer";
 /// The page: the app's header, the mixer, the hint line.
 pub const MIXER_LAYOUT: &str = "col(header:60, mixer:*, hint:26)";
-/// The hint line while the mixer is open.
-pub const MIXER_HINT: &str = "Drag a fader, pan or send  ·  tap M, S or an output  ·  a strip's name selects it for the Q-Links  ·  TRACK MIX closes  ·  SHIFT + TRACK MIX: pads";
-/// The hint line once the app offers Freeze, Thaw and Print
+/// The hint line while the mixer is open on Faders.
+pub const MIXER_HINT: &str = "Drag a fader, pan or send  ·  tap M, S or an output  ·  a strip's name: its Q-Links  ·  + FX or an effect: its chain  ·  Effects: every chain  ·  TRACK MIX: back";
+/// The hint line on Faders once the app offers Freeze, Thaw and Print
 /// ([`MixState::takes`]).
-pub const MIXER_HINT_TAKES: &str = "Drag a fader, pan or send  ·  tap M, S or an output  ·  a strip's name selects it (again: Freeze, Print)  ·  TRACK MIX closes  ·  SHIFT + TRACK MIX: pads";
+pub const MIXER_HINT_TAKES: &str = "Drag a fader, pan or send  ·  tap M, S or an output  ·  a strip's name: its Q-Links (again: Freeze, Print)  ·  + FX or an effect: its chain  ·  Effects: every chain  ·  TRACK MIX: back";
+/// The hint line on Effects.
+pub const MIXER_HINT_EFFECTS: &str = "Tap + FX: add an effect  ·  tap an effect: its knobs, again: its chain  ·  drag one along its row: move it  ·  Faders: the levels  ·  TRACK MIX: back";
 /// The hint line while the I/O view shows.
-pub const MIXER_HINT_IO: &str = "Tap a row to select it  ·  tap an output to route it  ·  wheel: select  ·  - and +: step its output  ·  the I/O icon or TRACK MIX closes";
+pub const MIXER_HINT_IO: &str = "Tap a row to select it  ·  tap an output to route it  ·  wheel: select  ·  - and +: step its output  ·  the I/O icon or TRACK MIX: back";
 
 /// Adds the mixer widget and its page. The app's `header` and `hint`
 /// widgets must be there already (the page uses them).
@@ -136,6 +138,44 @@ pub fn qlink_to(ui: &mut Ui, knob: usize, pos: f32) -> Option<MixAction> {
     let a = qlinks::to(v.state(), knob, pos)?;
     v.show(&a);
     Some(a)
+}
+
+/// The look showing: Faders or Effects. The widget keeps it, so the Mix
+/// tab opens on the look used last.
+pub fn look(ui: &Ui) -> Look {
+    ui.get::<MixerView>(MIXER)
+        .map_or(Look::Faders, |v| v.look())
+}
+
+/// The effect picked on the Effects look, (strip, slot): while there is
+/// one the Q-Links turn its first four knobs (the chain editor's, which
+/// the app keeps for it after [`MixAction::PickInsert`]).
+pub fn pick(ui: &Ui) -> Option<(mpfree_fx::StripId, usize)> {
+    ui.get::<MixerView>(MIXER).and_then(|v| v.pick())
+}
+
+/// Shows look `l` (TRACK MIX opens the tab on Faders).
+pub fn set_look(ui: &mut Ui, l: Look) {
+    if let Some(v) = ui.get_mut::<MixerView>(MIXER) {
+        v.set_look(l);
+    }
+}
+
+/// The hint line for the strip views: [`MIXER_HINT_EFFECTS`] on Effects,
+/// [`MIXER_HINT_TAKES`] or [`MIXER_HINT`] on Faders. The I/O view has its
+/// own ([`io_hint`]).
+pub fn hint(ui: &Ui) -> &'static str {
+    ui.get::<MixerView>(MIXER)
+        .map_or(MIXER_HINT, |v| hint_for(v.look(), v.state().takes))
+}
+
+/// The hint line for look `l`; `takes` as [`MixState::takes`].
+pub fn hint_for(l: Look, takes: bool) -> &'static str {
+    match l {
+        Look::Effects => MIXER_HINT_EFFECTS,
+        Look::Faders if takes => MIXER_HINT_TAKES,
+        Look::Faders => MIXER_HINT,
+    }
 }
 
 /// Applies an action to a mixer the caller owns (the preview and tests;

@@ -27,13 +27,13 @@
 use std::f32::consts::PI;
 
 use mpfree_mod::{Source, MACROS};
-use mpfree_param::ParamAddr;
+use mpfree_param::{ParamAddr, Strip};
 use mpfree_synth_ui::draw::Mask;
 use mpfree_synth_ui::widgets::{knob, Card, Visuals};
 use mpfree_ui::{Align, EventKind, FontId, PaintCx, Rect, Target, Touch, Widget};
 
 use crate::picker::{Hit, PickerLayout, PickerView, HOLD};
-use crate::state::{macro_color, ChainState, KNOBS_PER_PAGE};
+use crate::state::{macro_color, ChainState, StripList, KNOBS_PER_PAGE, STRIP_GROUPS};
 
 /// What a touch on the chain editor meant, for the app to apply.
 #[derive(Clone, Debug, PartialEq)]
@@ -102,6 +102,13 @@ pub enum ChainAction {
     Back,
     /// Show chain `i` of `ChainState::scopes` (the pad's or the track's).
     Scope(usize),
+    /// The strip button opened the strip list on group `g` (of
+    /// [`crate::STRIP_GROUPS`]), a group was picked, or the list closed
+    /// (None). The app keeps the list's state, so it must hear each.
+    Strips(Option<usize>),
+    /// A strip in the list: its chain, in the editor's place (its Back
+    /// stays where it was).
+    OpenStrip(Strip),
     /// "+ Add effect" opened the effect picker (`true`), or its Cancel
     /// closed it (`false`). The app keeps the picker's state, so it must
     /// hear both, or the next state it sends undoes the tap.
@@ -140,6 +147,9 @@ const MODE_ARROW_W: i32 = 64;
 /// Where everything goes, from the widget's rectangle.
 pub struct Layout {
     pub back: Option<Rect>,
+    /// The strip button (the strip's name and which it is): a tap opens
+    /// the strip list. None with scopes, or for a chain no strip names.
+    pub strip: Option<Rect>,
     /// The selected effect's name: a tap opens its full page.
     pub title: Rect,
     /// The effect page's drawings, when there are any.
@@ -180,8 +190,10 @@ pub fn layout(r: Rect, st: &ChainState, picture: bool, pv: &PickerView) -> Layou
     // Chain column.
     let inner = list.inset(12);
     let (head, body) = inner.take_top(HEAD_H);
-    let back = st.back.is_some().then(|| Rect::new(head.x, head.y, 96, 34));
+    let back = st.back.is_some().then(|| Rect::new(head.x, head.y, 44, 34));
     let sx = back.map_or(head.x, |b| b.right() + 8);
+    let strip = (st.scopes.is_empty() && !st.strip_name.is_empty())
+        .then(|| Rect::new(sx, head.y, head.right() - sx, 34));
     let n = st.scopes.len() as i32;
     let scopes = (0..n)
         .map(|i| {
@@ -283,6 +295,7 @@ pub fn layout(r: Rect, st: &ChainState, picture: bool, pv: &PickerView) -> Layou
     let add_follower = Rect::new(sbody.x + half + 8, ry + 4, half, 40);
     Layout {
         back,
+        strip,
         title,
         picture,
         cancel,
@@ -345,14 +358,118 @@ fn mode_row(row: Rect, mv: &crate::state::ModeView) -> (Vec<(Rect, usize)>, Opti
     (out, Some(label))
 }
 
+/// The slot a dragged effect's row lands in with the finger at height
+/// `y`: the row under it, or the first or last past the ends.
+fn slot_at(l: &Layout, y: i32) -> usize {
+    let (Some(first), n) = (l.rows.first(), l.rows.len()) else {
+        return 0;
+    };
+    (((y - first.y) / (ROW_H + ROW_GAP)).max(0) as usize).min(n - 1)
+}
+
 /// The effect and Modulate columns together, where the picker goes.
 fn picker_area(effect: Rect, side: Rect) -> Rect {
     Rect::new(effect.x, effect.y, side.right() - effect.x, effect.h)
 }
 
 enum Drag {
-    Knob { i: usize, y0: i32, pos0: f32 },
-    Depth { k: usize },
+    Knob {
+        i: usize,
+        y0: i32,
+        pos0: f32,
+    },
+    Depth {
+        k: usize,
+    },
+    /// An effect's row held: once the finger has moved [`SLOT_SLOP`] it
+    /// lifts and follows (`y` now), and lands at slot `to` on the lift.
+    Slot {
+        from: usize,
+        y0: i32,
+        y: i32,
+        to: usize,
+        moved: bool,
+    },
+}
+
+/// Pixels a finger moves on an effect's row before the row lifts to be
+/// dragged (less is a tap).
+const SLOT_SLOP: i32 = 12;
+
+/// The strip list over the editor: the groups down the left, a page of
+/// strip tiles (four a row), its Back, and arrows when a group has more
+/// strips than a page.
+pub struct ListLayout {
+    pub panel: Rect,
+    pub groups: [Rect; 6],
+    pub title: Rect,
+    pub back: Rect,
+    pub prev: Rect,
+    pub next: Rect,
+    pub tiles: Vec<Rect>,
+}
+
+/// Tiles a row in the strip list.
+const LIST_COLS: i32 = 4;
+const TILE_H: i32 = 72;
+
+/// Where the strip list goes in `r`, with room for `per_page` tiles at
+/// most (see [`list_page`]).
+pub fn list_layout(r: Rect) -> ListLayout {
+    let panel = r.inset_xy(0, 4);
+    let inner = panel.inset(14);
+    let (left, right) = inner.take_left(200);
+    let right = right.take_left(14).1;
+    let groups =
+        std::array::from_fn(|i| Rect::new(left.x, left.y + 36 + i as i32 * 56, left.w, 48));
+    let (head, grid) = right.take_top(36);
+    let back = Rect::new(head.right() - 96, head.y, 96, 36);
+    let next = Rect::new(back.x - 12 - 44, head.y, 44, 36);
+    let prev = Rect::new(next.x - 6 - 44, head.y, 44, 36);
+    let title = Rect::new(head.x, head.y, prev.x - 8 - head.x, 36);
+    let grid = grid.take_top(10).1;
+    let rows = ((grid.h - 30 + 10) / (TILE_H + 10)).max(1);
+    let w = (grid.w - (LIST_COLS - 1) * 10) / LIST_COLS;
+    let tiles = (0..rows * LIST_COLS)
+        .map(|i| {
+            Rect::new(
+                grid.x + (i % LIST_COLS) * (w + 10),
+                grid.y + (i / LIST_COLS) * (TILE_H + 10),
+                w,
+                TILE_H,
+            )
+        })
+        .collect();
+    ListLayout {
+        panel,
+        groups,
+        title,
+        back,
+        prev,
+        next,
+        tiles,
+    }
+}
+
+/// A strip's colour, as the mixer's strips have it.
+fn strip_color(t: &mpfree_ui::Theme, s: Strip) -> mpfree_ui::Color {
+    let palette = [
+        t.accent,
+        t.good,
+        t.warn,
+        t.bad,
+        t.accent.mix(t.bad, 0.5),
+        t.good.mix(t.accent, 0.5),
+        t.warn.mix(t.bad, 0.4),
+        t.accent.mix(t.text, 0.5),
+    ];
+    match s {
+        Strip::Track(i) | Strip::Pad(i) => palette[i as usize % palette.len()],
+        Strip::Input(_) => t.bad.mix(t.warn, 0.5),
+        Strip::Bus(_) => t.text_dim,
+        Strip::Return(_) => t.accent.mix(t.text_dim, 0.6),
+        Strip::Master => t.text,
+    }
 }
 
 /// See the module docs.
@@ -364,6 +481,10 @@ pub struct ChainView {
     drag: Option<(u64, Drag)>,
     /// The picker's section, page, wheel highlight and open presets.
     picker: PickerView,
+    /// The strip list's group while it is open (the view keeps it open;
+    /// the app fills it), and the first tile shown.
+    list_open: Option<usize>,
+    list_first: usize,
 }
 
 impl Default for ChainView {
@@ -380,6 +501,8 @@ impl ChainView {
             actions: Vec::new(),
             drag: None,
             picker: PickerView::default(),
+            list_open: None,
+            list_first: 0,
         }
     }
 
@@ -398,8 +521,18 @@ impl ChainView {
     pub fn update(&mut self, st: ChainState) {
         let opening = st.picking && !self.state.picking;
         let picking = st.picking || self.state.picking;
+        let old = self.state.list.take();
         self.state = st;
         self.state.picking = picking;
+        // The strip list stays as the view has it: open on its group (the
+        // app's strips once they come), or shut.
+        self.state.list = self.list_open.map(|g| match self.state.list.take() {
+            Some(l) if l.group == g => l,
+            _ => old.filter(|l| l.group == g).unwrap_or(StripList {
+                group: g,
+                ..StripList::default()
+            }),
+        });
         if opening {
             self.open_picker();
         }
@@ -413,6 +546,233 @@ impl ChainView {
         self.picker.reopen();
         let (list, at) = self.picker.current(&self.state);
         self.picker.section = Some(list[at]);
+    }
+
+    /// The strip list's group, while it is open.
+    pub fn list_open(&self) -> Option<usize> {
+        self.list_open
+    }
+
+    /// Opens the strip list on group `g`, or shuts it (None), and tells
+    /// the app.
+    fn show_list(&mut self, g: Option<usize>) {
+        if g != self.list_open {
+            self.list_first = 0;
+        }
+        self.list_open = g;
+        self.state.list = g.map(|g| match self.state.list.take() {
+            Some(mut l) => {
+                if l.group != g {
+                    l.strips.clear();
+                }
+                l.group = g;
+                l
+            }
+            None => StripList {
+                group: g,
+                ..StripList::default()
+            },
+        });
+        self.push(ChainAction::Strips(g));
+    }
+
+    /// The strip list over the editor.
+    fn paint_list(&self, cx: &mut PaintCx, r: Rect, list: &StripList) {
+        let t = cx.theme.clone();
+        let ll = list_layout(r);
+        cx.canvas.fill_round_rect(ll.panel, 14, t.surface);
+        cx.canvas.stroke_round_rect(ll.panel, 14, 1, t.outline);
+        let label = Rect::new(ll.groups[0].x, ll.panel.y + 14, ll.groups[0].w, 28);
+        cx.text(
+            FontId::Bold,
+            t.size_small - 2.0,
+            label,
+            Align::Left,
+            t.text_dim,
+            "STRIPS",
+        );
+        for (i, (b, name)) in ll.groups.iter().zip(STRIP_GROUPS).enumerate() {
+            let on = i == list.group;
+            cx.canvas.fill_round_rect(
+                *b,
+                10,
+                if on {
+                    t.raised
+                } else {
+                    t.surface.mix(t.raised, 0.35)
+                },
+            );
+            if on {
+                cx.canvas
+                    .fill_rect(Rect::new(b.x, b.y + 8, 3, b.h - 16), t.accent);
+            }
+            let inner = b.inset_xy(14, 0);
+            cx.text(
+                if on { FontId::Bold } else { FontId::Sans },
+                t.size_body - 2.0,
+                inner,
+                Align::Left,
+                if on { t.text } else { t.text_dim },
+                name,
+            );
+            if i < 5 {
+                cx.text(
+                    FontId::Sans,
+                    t.size_small - 2.0,
+                    inner,
+                    Align::Right,
+                    t.text_faint,
+                    &list.counts[i].to_string(),
+                );
+            }
+        }
+        let group = STRIP_GROUPS[list.group.min(STRIP_GROUPS.len() - 1)];
+        cx.text(
+            FontId::Bold,
+            t.size_small - 2.0,
+            ll.title,
+            Align::Left,
+            t.text_dim,
+            &format!("{} · TAP ONE TO OPEN ITS CHAIN", group.to_uppercase()),
+        );
+        cx.canvas.fill_round_rect(ll.back, 10, t.raised);
+        cx.text(
+            FontId::Bold,
+            t.size_small,
+            ll.back,
+            Align::Center,
+            t.text,
+            "Back",
+        );
+        let n = list.strips.len();
+        let page = ll.tiles.len().max(1);
+        if n > page {
+            for (b, s, live) in [
+                (ll.prev, "<", self.list_first > 0),
+                (ll.next, ">", self.list_first + page < n),
+            ] {
+                cx.canvas
+                    .fill_round_rect(b, 10, if live { t.raised } else { t.surface });
+                cx.text(
+                    FontId::Bold,
+                    t.size_title,
+                    b,
+                    Align::Center,
+                    if live { t.text } else { t.text_faint },
+                    s,
+                );
+            }
+        }
+        let numbered = list.group <= 1;
+        for (i, tile) in self.list_tiles(&ll) {
+            let p = &list.strips[i];
+            cx.canvas.fill_round_rect(tile, 10, t.raised);
+            if p.strip == self.state.strip {
+                cx.canvas.stroke_round_rect(tile, 10, 2, t.accent);
+            }
+            cx.canvas.fill_round_rect(
+                Rect::new(tile.x, tile.y + 12, 4, tile.h - 24),
+                2,
+                strip_color(&t, p.strip),
+            );
+            let inner = Rect::new(tile.x + 18, tile.y + 12, tile.w - 30, tile.h - 24);
+            let (top, bottom) = inner.take_top(inner.h / 2 + 2);
+            let name = if numbered {
+                format!("{}  {}", i + 1, p.name)
+            } else {
+                p.name.clone()
+            };
+            let muted = p.sub.starts_with("muted");
+            cx.text(
+                FontId::Bold,
+                t.size_small,
+                top,
+                Align::Left,
+                if muted { t.text_dim } else { t.text },
+                &name,
+            );
+            cx.text(
+                FontId::Sans,
+                t.size_small - 3.0,
+                bottom,
+                Align::Left,
+                t.text_dim,
+                &p.sub,
+            );
+        }
+        if n == 0 {
+            let area = Rect::new(
+                ll.title.x,
+                ll.title.bottom() + 10,
+                ll.back.right() - ll.title.x,
+                TILE_H,
+            );
+            cx.text(
+                FontId::Sans,
+                t.size_body,
+                area,
+                Align::Left,
+                t.text_dim,
+                "No strips here",
+            );
+        }
+    }
+
+    /// The group the strip button opens the list on: the open strip's.
+    fn group_of(s: Strip) -> usize {
+        match s {
+            Strip::Track(_) => 0,
+            Strip::Pad(_) => 1,
+            Strip::Input(_) => 2,
+            Strip::Return(_) => 3,
+            Strip::Bus(_) => 4,
+            Strip::Master => 5,
+        }
+    }
+
+    /// The tiles shown on the list's page: (strip index, tile).
+    fn list_tiles(&self, ll: &ListLayout) -> Vec<(usize, Rect)> {
+        let n = self.state.list.as_ref().map_or(0, |l| l.strips.len());
+        (self.list_first..n).zip(ll.tiles.iter().copied()).collect()
+    }
+
+    /// A tap while the strip list is open: a group, a strip (its chain),
+    /// the arrows, or Back (anywhere off the panel shuts it too).
+    fn tap_list(&mut self, r: Rect, x: i32, y: i32) {
+        let ll = list_layout(r);
+        if !ll.panel.contains(x, y) || ll.back.contains(x, y) {
+            self.show_list(None);
+            return;
+        }
+        if let Some(g) = ll.groups.iter().position(|b| b.contains(x, y)) {
+            if Some(g) != self.list_open {
+                self.show_list(Some(g));
+            }
+            return;
+        }
+        let n = self.state.list.as_ref().map_or(0, |l| l.strips.len());
+        let page = ll.tiles.len().max(1);
+        if ll.prev.contains(x, y) && n > page {
+            self.list_first = self.list_first.saturating_sub(page);
+            return;
+        }
+        if ll.next.contains(x, y) && n > page {
+            if self.list_first + page < n {
+                self.list_first += page;
+            }
+            return;
+        }
+        let hit = self
+            .list_tiles(&ll)
+            .into_iter()
+            .find(|(_, t)| t.contains(x, y))
+            .map(|(i, _)| i);
+        let strip = hit.and_then(|i| self.state.list.as_ref()?.strips.get(i).map(|p| p.strip));
+        if let Some(s) = strip {
+            self.list_open = None;
+            self.state.list = None;
+            self.push(ChainAction::OpenStrip(s));
+        }
     }
 
     /// Shows the selected effect's drawings ([`crate::state::picture`];
@@ -659,9 +1019,36 @@ impl ChainView {
         self.actions.push(a);
     }
 
+    /// Moves insert `from` to slot `to` (Up, Down, a drag or the wheel):
+    /// asks the app, and shows it moved, picked, at once.
+    fn move_slot(&mut self, from: usize, to: usize) {
+        if from == to || from >= self.state.slots.len() || to >= self.state.slots.len() {
+            return;
+        }
+        self.push(ChainAction::Move { from, to });
+        let s = self.state.slots.remove(from);
+        self.state.slots.insert(to, s);
+        self.state.selected = Some(to);
+    }
+
+    /// The effect whose row (not its ON pill) is under `(x, y)`, when the
+    /// chain can be rearranged (not while the picker is up).
+    fn slot_under(&self, l: &Layout, x: i32, y: i32) -> Option<usize> {
+        if self.state.picking {
+            return None;
+        }
+        l.rows
+            .iter()
+            .position(|r| r.contains(x, y) && !r.take_right(56).0.contains(x, y))
+    }
+
     fn tap(&mut self, l: &Layout, finger: u64, x: i32, y: i32) {
         if l.back.is_some_and(|b| b.contains(x, y)) {
             self.push(ChainAction::Back);
+            return;
+        }
+        if l.strip.is_some_and(|b| b.contains(x, y)) {
+            self.show_list(Some(ChainView::group_of(self.state.strip)));
             return;
         }
         if let Some(i) = l.scopes.iter().position(|r| r.contains(x, y)) {
@@ -707,21 +1094,11 @@ impl ChainView {
         if let Some(sel) = st.selected {
             let n = st.slots.len();
             if l.buttons[0].contains(x, y) && sel > 0 {
-                self.push(ChainAction::Move {
-                    from: sel,
-                    to: sel - 1,
-                });
-                self.state.slots.swap(sel, sel - 1);
-                self.state.selected = Some(sel - 1);
+                self.move_slot(sel, sel - 1);
                 return;
             }
             if l.buttons[1].contains(x, y) && sel + 1 < n {
-                self.push(ChainAction::Move {
-                    from: sel,
-                    to: sel + 1,
-                });
-                self.state.slots.swap(sel, sel + 1);
-                self.state.selected = Some(sel + 1);
+                self.move_slot(sel, sel + 1);
                 return;
             }
             if l.buttons[2].contains(x, y) {
@@ -781,6 +1158,165 @@ impl ChainView {
     }
 }
 
+/// The strip button: the strip's colour, its name and which strip it is,
+/// and a chevron (a tap opens the strip list).
+/// One effect's row in the chain column: its number, name, summary (or
+/// "bypassed"), macro dots and wave mark, and its ON pill.
+fn paint_slot(
+    cx: &mut PaintCx,
+    t: &mpfree_ui::Theme,
+    row: Rect,
+    i: usize,
+    s: &crate::state::SlotView,
+    sel: bool,
+) {
+    cx.canvas.fill_round_rect(
+        row,
+        10,
+        if sel {
+            t.raised
+        } else {
+            t.surface.mix(t.raised, 0.35)
+        },
+    );
+    if sel {
+        cx.canvas
+            .fill_round_rect(Rect::new(row.x, row.y + 8, 3, row.h - 16), 1, t.accent);
+    }
+    let ink = t.button_ink(s.on);
+    let badge = Rect::new(row.x + 12, row.y + (row.h - 28) / 2, 28, 28);
+    cx.canvas.fill_round_rect(
+        badge,
+        7,
+        if s.on {
+            t.accent.mix(t.surface, 0.55)
+        } else {
+            t.outline
+        },
+    );
+    cx.text(
+        FontId::Bold,
+        t.size_small,
+        badge,
+        Align::Center,
+        ink,
+        &(i + 1).to_string(),
+    );
+    let (power, text) = row.take_right(56);
+    let text = Rect::new(
+        badge.right() + 12,
+        row.y,
+        text.right() - badge.right() - 12,
+        row.h,
+    );
+    let (top, bottom) = text.take_top(row.h / 2 + 2);
+    // The name stops short of the macro dots and the wave mark drawn
+    // below (a long "Reverb · Echoes" is cut with "…" rather than run
+    // under them): the dots are 9 px in 12 px steps from the right,
+    // the wave's ink about 5 px into its 20 px box left of them.
+    let dots = text.right() - 4 - 12 * s.macros.len() as i32;
+    let marks = match (s.modulated, s.macros.is_empty()) {
+        (true, _) => dots - 22 + 5 - 4,
+        (false, false) => dots - 4,
+        (false, true) => text.right(),
+    };
+    let name = top.take_bottom(24).0;
+    cx.text(
+        FontId::Bold,
+        t.size_body,
+        Rect::new(name.x, name.y, marks - name.x, name.h),
+        Align::Left,
+        ink,
+        &s.name,
+    );
+    let sub = if s.on {
+        s.summary.clone()
+    } else {
+        "bypassed".to_string()
+    };
+    cx.text(
+        FontId::Sans,
+        t.size_small,
+        bottom.take_top(22).0,
+        Align::Left,
+        t.text_dim,
+        &sub,
+    );
+    // A dot per macro that moves it, and a wave mark if the matrix does.
+    let mut dx = text.right() - 4;
+    for m in s.macros.iter().rev() {
+        dx -= 12;
+        cx.canvas
+            .fill_round_rect(Rect::new(dx, row.y + 14, 9, 9), 5, macro_color(t, *m));
+    }
+    if s.modulated {
+        dx -= 22;
+        cx.text(
+            FontId::Bold,
+            t.size_small - 2.0,
+            Rect::new(dx, row.y + 8, 20, 20),
+            Align::Center,
+            t.accent,
+            "~",
+        );
+    }
+    let pill = Rect::new(power.x + 6, power.y + (power.h - 26) / 2, 44, 26);
+    cx.canvas.fill_round_rect(
+        pill,
+        13,
+        if s.on {
+            t.good.mix(t.surface, 0.3)
+        } else {
+            t.outline
+        },
+    );
+    cx.text(
+        FontId::Bold,
+        t.size_small - 2.0,
+        pill,
+        Align::Center,
+        if s.on { t.on_accent } else { t.text_dim },
+        if s.on { "ON" } else { "OFF" },
+    );
+}
+
+fn paint_strip_button(cx: &mut PaintCx, b: Rect, st: &ChainState) {
+    let t = cx.theme.clone();
+    cx.canvas.fill_round_rect(b, 9, t.raised);
+    cx.canvas.stroke_round_rect(b, 9, 1, t.outline);
+    let dot = Rect::new(b.x + 10, b.y + b.h / 2 - 4, 8, 8);
+    cx.canvas.fill_round_rect(dot, 4, strip_color(&t, st.strip));
+    let inner = Rect::new(dot.right() + 8, b.y, b.w - 26 - 28, b.h);
+    let name_w = cx.measure(FontId::Bold, t.size_small, &st.strip_name);
+    cx.text(
+        FontId::Bold,
+        t.size_small,
+        inner,
+        Align::Left,
+        t.text,
+        &st.strip_name,
+    );
+    if st.strip_kind != st.strip_name && name_w + 8 < inner.w {
+        let kind = Rect::new(inner.x + name_w + 8, inner.y, inner.w - name_w - 8, inner.h);
+        cx.text(
+            FontId::Sans,
+            t.size_small - 3.0,
+            kind,
+            Align::Left,
+            t.text_dim,
+            &st.strip_kind,
+        );
+    }
+    // The chevron: two short diagonals.
+    let (cx0, cy0) = (b.right() - 22, b.y + b.h / 2 - 3);
+    for i in 0..5 {
+        cx.canvas
+            .fill_rect(Rect::new(cx0 + i, cy0 + i, 2, 2), t.text_dim);
+        cx.canvas
+            .fill_rect(Rect::new(cx0 + 9 - i, cy0 + i, 2, 2), t.text_dim);
+    }
+}
+
 /// Switches (toggles and choices) take macros but no matrix rows.
 fn focused_takes_rows(st: &ChainState) -> bool {
     st.focused().is_some_and(|p| {
@@ -806,16 +1342,12 @@ impl Widget for ChainView {
         cx.canvas.fill_round_rect(l.list, t.radius, t.surface);
         let inner = l.list.inset(12);
         let (head, _) = inner.take_top(HEAD_H);
-        if let (Some(b), Some(to)) = (l.back, &st.back) {
+        if let Some(b) = l.back {
             cx.canvas.fill_round_rect(b, 9, t.raised);
-            cx.text(
-                FontId::Bold,
-                t.size_small,
-                b,
-                Align::Center,
-                t.text,
-                &format!("‹  {to}"),
-            );
+            cx.text(FontId::Bold, t.size_title, b, Align::Center, t.text, "‹");
+        }
+        if let Some(b) = l.strip {
+            paint_strip_button(cx, b, st);
         }
         for (i, (r, name)) in l.scopes.iter().zip(&st.scopes).enumerate() {
             let on = i == st.scope;
@@ -844,7 +1376,7 @@ impl Widget for ChainView {
                 name,
             );
         }
-        if st.scopes.is_empty() {
+        if st.scopes.is_empty() && l.strip.is_none() {
             let tx = l.back.map_or(head.x, |b| b.right() + 12);
             let title = Rect::new(tx, head.y, head.right() - tx, 34);
             let name = st.title.to_uppercase();
@@ -874,116 +1406,61 @@ impl Widget for ChainView {
                 }
             }
         }
+        // A row being dragged: its own place empty but outlined, a line
+        // where it will land, and the row itself under the finger.
+        let lifted = match self.drag {
+            Some((
+                _,
+                Drag::Slot {
+                    from,
+                    y0,
+                    y,
+                    to,
+                    moved: true,
+                },
+            )) => Some((from, y - y0, to)),
+            _ => None,
+        };
         for (i, (s, row)) in st.slots.iter().zip(&l.rows).enumerate() {
-            let sel = st.selected == Some(i);
-            cx.canvas.fill_round_rect(
-                *row,
-                10,
-                if sel {
-                    t.raised
+            if lifted.is_some_and(|(from, ..)| from == i) {
+                cx.canvas.fill_round_rect(*row, 10, t.surface);
+                cx.canvas.stroke_round_rect(*row, 10, 2, t.outline);
+                continue;
+            }
+            paint_slot(cx, &t, *row, i, s, st.selected == Some(i));
+        }
+        if let (Some((from, dy, to)), Some(first), Some(last)) =
+            (lifted, l.rows.first(), l.rows.last())
+        {
+            // The row follows the finger within the list, but stays clear
+            // of the landing line: below it on the way up, above it on the
+            // way down, so the line is never hidden under the row.
+            let (mut lo, mut hi) = (first.y, last.y);
+            if to != from {
+                let at = &l.rows[to];
+                let y = if to < from {
+                    at.y - ROW_GAP / 2 - 2
                 } else {
-                    t.surface.mix(t.raised, 0.35)
-                },
-            );
-            if sel {
+                    at.bottom() + ROW_GAP / 2 - 2
+                };
                 cx.canvas
-                    .fill_round_rect(Rect::new(row.x, row.y + 8, 3, row.h - 16), 1, t.accent);
-            }
-            let ink = t.button_ink(s.on);
-            let badge = Rect::new(row.x + 12, row.y + (row.h - 28) / 2, 28, 28);
-            cx.canvas.fill_round_rect(
-                badge,
-                7,
-                if s.on {
-                    t.accent.mix(t.surface, 0.55)
+                    .fill_round_rect(Rect::new(at.x, y, at.w, 4), 2, t.accent);
+                for x in [at.x - 6, at.right() - 6] {
+                    cx.canvas
+                        .fill_round_rect(Rect::new(x, y - 4, 12, 12), 6, t.accent);
+                }
+                if to < from {
+                    lo = y + 14;
                 } else {
-                    t.outline
-                },
-            );
-            cx.text(
-                FontId::Bold,
-                t.size_small,
-                badge,
-                Align::Center,
-                ink,
-                &(i + 1).to_string(),
-            );
-            let (power, text) = row.take_right(56);
-            let text = Rect::new(
-                badge.right() + 12,
-                row.y,
-                text.right() - badge.right() - 12,
-                row.h,
-            );
-            let (top, bottom) = text.take_top(row.h / 2 + 2);
-            // The name stops short of the macro dots and the wave mark drawn
-            // below (a long "Reverb · Echoes" is cut with "…" rather than run
-            // under them): the dots are 9 px in 12 px steps from the right,
-            // the wave's ink about 5 px into its 20 px box left of them.
-            let dots = text.right() - 4 - 12 * s.macros.len() as i32;
-            let marks = match (s.modulated, s.macros.is_empty()) {
-                (true, _) => dots - 22 + 5 - 4,
-                (false, false) => dots - 4,
-                (false, true) => text.right(),
-            };
-            let name = top.take_bottom(24).0;
-            cx.text(
-                FontId::Bold,
-                t.size_body,
-                Rect::new(name.x, name.y, marks - name.x, name.h),
-                Align::Left,
-                ink,
-                &s.name,
-            );
-            let sub = if s.on {
-                s.summary.clone()
-            } else {
-                "bypassed".to_string()
-            };
-            cx.text(
-                FontId::Sans,
-                t.size_small,
-                bottom.take_top(22).0,
-                Align::Left,
-                t.text_dim,
-                &sub,
-            );
-            // A dot per macro that moves it, and a wave mark if the matrix does.
-            let mut dx = text.right() - 4;
-            for m in s.macros.iter().rev() {
-                dx -= 12;
-                cx.canvas
-                    .fill_round_rect(Rect::new(dx, row.y + 14, 9, 9), 5, macro_color(&t, *m));
+                    hi = y - 10 - ROW_H;
+                }
             }
-            if s.modulated {
-                dx -= 22;
-                cx.text(
-                    FontId::Bold,
-                    t.size_small - 2.0,
-                    Rect::new(dx, row.y + 8, 20, 20),
-                    Align::Center,
-                    t.accent,
-                    "~",
-                );
+            if let (Some(s), Some(home)) = (st.slots.get(from), l.rows.get(from)) {
+                let y = (home.y + dy).clamp(lo, hi.max(lo));
+                let row = Rect::new(home.x + 8, y, home.w, home.h);
+                paint_slot(cx, &t, row, from, s, true);
+                cx.canvas.stroke_round_rect(row, 10, 2, t.accent);
             }
-            let pill = Rect::new(power.x + 6, power.y + (power.h - 26) / 2, 44, 26);
-            cx.canvas.fill_round_rect(
-                pill,
-                13,
-                if s.on {
-                    t.good.mix(t.surface, 0.3)
-                } else {
-                    t.outline
-                },
-            );
-            cx.text(
-                FontId::Bold,
-                t.size_small - 2.0,
-                pill,
-                Align::Center,
-                if s.on { t.on_accent } else { t.text_dim },
-                if s.on { "ON" } else { "OFF" },
-            );
         }
         if let Some(a) = l.add {
             cx.canvas.stroke_round_rect(a, 10, 1, t.outline);
@@ -1001,7 +1478,12 @@ impl Widget for ChainView {
                 a.inset_xy(14, 0),
                 Align::Right,
                 t.text_faint,
-                &format!("{} of {}", st.slots.len(), st.room),
+                &match st.cost_pct.filter(|_| l.strip.is_some()) {
+                    // The strip button took the title's place: the cost,
+                    // while profiling, comes here.
+                    Some(c) => format!("{} of {} · {c:.1} %", st.slots.len(), st.room),
+                    None => format!("{} of {}", st.slots.len(), st.room),
+                },
             );
         }
         let live = st.selected.is_some();
@@ -1146,6 +1628,9 @@ impl Widget for ChainView {
             }
         }
         paint_side(cx, &l, st);
+        if let Some(list) = &st.list {
+            self.paint_list(cx, r, list);
+        }
     }
 
     /// Passes the touch on to the app (an event) whenever it made actions,
@@ -1155,8 +1640,38 @@ impl Widget for ChainView {
         let l = self.layout(r);
         let st = &self.state;
         let mut out = Vec::new();
+        if let Some(list) = &st.list {
+            // The strip list takes the editor while it is open.
+            let ll = list_layout(r);
+            for (i, (b, name)) in ll.groups.iter().zip(STRIP_GROUPS).enumerate() {
+                out.push(Target::tap("strips-group", i, name, *b).disabled_if(i == list.group));
+            }
+            let (n, page) = (list.strips.len(), ll.tiles.len().max(1));
+            if n > page {
+                out.push(
+                    Target::tap("strips-prev", 0, "<", ll.prev).disabled_if(self.list_first == 0),
+                );
+                out.push(
+                    Target::tap("strips-next", 0, ">", ll.next)
+                        .disabled_if(self.list_first + page >= n),
+                );
+            }
+            for (i, tile) in self.list_tiles(&ll) {
+                out.push(Target::tap(
+                    "strips-pick",
+                    i,
+                    list.strips[i].name.clone(),
+                    tile,
+                ));
+            }
+            out.push(Target::tap("strips-back", 0, "Back", ll.back));
+            return out;
+        }
         if let Some(b) = l.back {
             out.push(Target::tap("back", 0, "‹ Back", b));
+        }
+        if let Some(b) = l.strip {
+            out.push(Target::tap("strip", 0, st.strip_name.clone(), b));
         }
         for (i, sr) in l.scopes.iter().enumerate() {
             let label = st.scopes.get(i).cloned().unwrap_or_default();
@@ -1173,7 +1688,10 @@ impl Widget for ChainView {
         for (i, rr) in l.rows.iter().enumerate() {
             let name = st.slots.get(i).map_or(String::new(), |v| v.name.clone());
             let (power, rest) = (rr.take_right(56).0, rr.take_right(56).1);
-            out.push(Target::tap("slot", i, name.clone(), rest));
+            out.push(
+                Target::tap("slot", i, name.clone(), rest)
+                    .moves_if(st.selected == Some(i) && !st.picking),
+            );
             out.push(Target::tap("slot-on", i, format!("{name} ON"), power));
         }
         if let Some(a) = l.add {
@@ -1245,13 +1763,28 @@ impl Widget for ChainView {
     }
 
     fn steps(&self, t: &Target) -> bool {
-        t.id == "knob" && self.state.params.get(t.index).is_some()
+        match t.id {
+            "knob" => self.state.params.get(t.index).is_some(),
+            "slot" => t.index < self.state.slots.len() && !self.state.picking,
+            _ => false,
+        }
     }
 
     /// The data wheel on a knob: a hundredth of its travel per detent (a
     /// switch with few places moves one place), as a tap, a turn and a lift
-    /// of a finger would.
+    /// of a finger would. On a grabbed effect: one place along the chain
+    /// per detent (turned up, later in the chain), as Up and Down do.
     fn step(&mut self, t: &Target, delta: i32, _r: Rect) -> Option<EventKind> {
+        if t.id == "slot" {
+            let n = self.state.slots.len();
+            let from = self.state.selected.unwrap_or(t.index);
+            let to = (from as i64 + delta as i64).clamp(0, n.max(1) as i64 - 1) as usize;
+            if to == from || from >= n {
+                return None;
+            }
+            self.move_slot(from, to);
+            return Some(EventKind::Select(self.actions.len()));
+        }
         let p = self.state.params.get(t.index)?;
         let (addr, pos, from) = (p.addr, p.pos, p.value);
         let value = (1..=100)
@@ -1263,6 +1796,14 @@ impl Widget for ChainView {
         self.push(ChainAction::Set { addr, value });
         self.push(ChainAction::Release(addr));
         Some(EventKind::Select(self.actions.len()))
+    }
+
+    /// A grabbed effect the wheel moved is listed at its new place.
+    fn focus_index(&self, t: &Target) -> usize {
+        match (t.id, self.state.selected) {
+            ("slot", Some(sel)) => sel,
+            _ => t.index,
+        }
     }
 
     fn touch(&mut self, finger: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
@@ -1285,6 +1826,13 @@ impl ChainView {
         r: Rect,
     ) -> Option<EventKind> {
         let l = self.layout(r);
+        if self.list_open.is_some() {
+            // The strip list takes every touch while it is open.
+            if phase == Touch::Down {
+                self.tap_list(r, x, y);
+            }
+            return None;
+        }
         match phase {
             Touch::Down => {
                 if let Some(i) = l.knobs.iter().position(|k| k.contains(x, y)) {
@@ -1309,6 +1857,20 @@ impl ChainView {
                     return None;
                 }
                 self.tap(&l, finger, x, y);
+                // A finger on an effect's row (not its ON pill) may drag
+                // it up or down the chain.
+                if let Some(from) = self.slot_under(&l, x, y) {
+                    self.drag = Some((
+                        finger,
+                        Drag::Slot {
+                            from,
+                            y0: y,
+                            y,
+                            to: from,
+                            moved: false,
+                        },
+                    ));
+                }
                 None
             }
             Touch::Move => {
@@ -1319,6 +1881,22 @@ impl ChainView {
                     return None;
                 }
                 match *d {
+                    Drag::Slot {
+                        from, y0, moved, ..
+                    } => {
+                        let moved = moved || (y - y0).abs() >= SLOT_SLOP;
+                        let to = if moved { slot_at(&l, y) } else { from };
+                        self.drag = Some((
+                            finger,
+                            Drag::Slot {
+                                from,
+                                y0,
+                                y,
+                                to,
+                                moved,
+                            },
+                        ));
+                    }
                     Drag::Knob { i, y0, pos0 } => {
                         let p = self.state.params.get(i)?;
                         let pos = (pos0 + (y0 - y) as f32 / DRAG_TRAVEL).clamp(0.0, 1.0);
@@ -1347,11 +1925,25 @@ impl ChainView {
                     self.picker.press = None;
                 }
                 if self.drag.as_ref().is_some_and(|(f, _)| *f == finger) {
-                    if let Some((_, Drag::Knob { i, .. })) = self.drag.take() {
-                        if let Some(p) = self.state.params.get(i) {
-                            let addr = p.addr;
-                            self.push(ChainAction::Release(addr));
+                    match self.drag.take() {
+                        Some((_, Drag::Knob { i, .. })) => {
+                            if let Some(p) = self.state.params.get(i) {
+                                let addr = p.addr;
+                                self.push(ChainAction::Release(addr));
+                            }
                         }
+                        // Lifted somewhere else in the chain: it moves
+                        // there (a cancelled touch leaves it).
+                        Some((
+                            _,
+                            Drag::Slot {
+                                from,
+                                to,
+                                moved: true,
+                                ..
+                            },
+                        )) if phase == Touch::Up && to != from => self.move_slot(from, to),
+                        _ => {}
                     }
                 }
                 None
@@ -1531,13 +2123,23 @@ fn paint_picker(cx: &mut PaintCx, l: &Layout, st: &ChainState, pv: &PickerView) 
     );
     cx.canvas.fill_round_rect(area, t.radius, t.surface);
     let (head, _) = area.inset(14).take_top(52);
-    let title = match (pv.presets, pv.highlight) {
-        (Some(_), _) => "PICK A PRESET · OR DEFAULTS".to_string(),
-        _ => format!(
-            "ADD EFFECT · {} OF {} SLOTS USED · HOLD A TILE FOR ITS PRESETS",
+    // Where the effect goes (Jay's Mix tab card, 14 Nov): the strip, and
+    // the slot it lands in (the end of the chain).
+    let strip = if st.strip_name.is_empty() {
+        st.title.trim_end_matches(" FX").to_string()
+    } else {
+        st.strip_name.clone()
+    }
+    .to_uppercase();
+    let slot = st.slots.len() + 1;
+    let title = match (pv.presets, slot > st.room) {
+        (_, true) => format!(
+            "{strip} IS FULL · {} OF {} SLOTS USED",
             st.slots.len(),
             st.room
         ),
+        (Some(_), _) => format!("PICK A PRESET OR DEFAULTS · IT GOES IN SLOT {slot} OF {strip}"),
+        _ => format!("ADD TO {strip} · IT GOES IN SLOT {slot} OF {}", st.room),
     };
     cx.text(
         FontId::Bold,

@@ -149,6 +149,7 @@ pub fn tabs(dev: bool) -> Vec<View> {
         View::Synth,
         View::Looper,
         View::Sample,
+        View::Mixer,
     ];
     if dev {
         t.push(View::Debug);
@@ -214,12 +215,12 @@ impl View {
             View::Perf | View::Engines | View::Procs | View::Map | View::Touch | View::Console => {
                 Some(View::Debug)
             }
+            // The chain editor is the Mix tab's (Jay's card, 14 Nov 07:15Z).
+            View::Chain => Some(View::Mixer),
             View::Options
             | View::Guide
             | View::Prefs
             | View::System
-            | View::Mixer
-            | View::Chain
             | View::Macros
             | View::Browser => None,
             v => Some(v),
@@ -259,7 +260,7 @@ impl View {
             View::Map => "Map controls",
             View::Touch => "Touch",
             View::System => "System info",
-            View::Mixer => "Mixer",
+            View::Mixer => "Mix",
             View::Chain => "FX chain",
             View::Macros => "Macros",
             View::Browser => "Browser",
@@ -894,6 +895,11 @@ pub enum Effect {
     /// The mixer opened on a view, or closed (`None`): the audio thread
     /// sends the panel its state only while it is open.
     Mixer(Option<mpfree_mixer_ui::MixView>),
+    /// The Mix tab tapped: the mixer opens on the view it showed last.
+    MixerLast,
+    /// TRACK MIX opened the Mix tab: on Faders, whichever look it showed
+    /// last (the screen's to do).
+    MixerFaders,
     /// While the mixer is open: the data wheel turned by `delta`. On a
     /// strips view it is Q-Link 1, the selected strip's volume; on the I/O
     /// view it moves the section's selection.
@@ -1100,6 +1106,8 @@ pub struct App {
     /// it opened on), and the macros panel's.
     chain_back: View,
     macros_back: View,
+    /// The page before the Mix tab, where TRACK MIX goes back to.
+    mix_back: View,
     selected: usize,
     /// The buttons the guide asks for this time, and which one it is on.
     guide_steps: Vec<GuideStep>,
@@ -1294,6 +1302,7 @@ impl App {
             back: View::Play,
             chain_back: View::Mixer,
             macros_back: View::Play,
+            mix_back: View::Play,
             selected: 0,
             guide_steps: Vec::new(),
             guide: 0,
@@ -2347,6 +2356,17 @@ impl App {
         {
             self.back = self.view;
         }
+        if v.tab_view() == Some(View::Mixer) && self.view.tab_view() != Some(View::Mixer) {
+            self.mix_back = match self.view {
+                View::Guide
+                | View::Options
+                | View::Prefs
+                | View::System
+                | View::Macros
+                | View::Browser => self.back,
+                w => w,
+            };
+        }
         let mut fx = Vec::new();
         if was_editing {
             // The row the wheel was changing closes with its page.
@@ -2377,25 +2397,28 @@ impl App {
         fx
     }
 
-    /// Open `v`, or go back if it is open already.
-    /// TRACK MIX, SHIFT + TRACK MIX (PAD MIX) or the bar's mixer icon: the
-    /// mixer opens over the page on Track Mix (or Pad Mix); again, it closes
-    /// back to the page. A tab closes it too.
+    /// TRACK MIX or SHIFT + TRACK MIX (PAD MIX): the Mix tab opens on
+    /// Track Mix (or Pad Mix); pressed on the Mix tab (the mixer or an
+    /// effect chain), back to the page before it (Jay's card, 14 Nov
+    /// 07:15Z).
     pub fn toggle_mixer(&mut self, pads: bool) -> Vec<Effect> {
         use mpfree_mixer_ui::MixView;
         if self.view == View::Guide {
             return Vec::new();
         }
-        if self.view == View::Mixer {
-            let mut fx = vec![Effect::Mixer(None)];
-            fx.extend(self.toggle(View::Mixer));
-            return fx;
+        if self.view.tab_view() == Some(View::Mixer) {
+            let back = match self.mix_back {
+                v if v.tab_view() == Some(View::Mixer) => View::Play,
+                v => v,
+            };
+            return self.show(back);
         }
         let mut fx = self.show(View::Mixer);
         fx.insert(
             0,
             Effect::Mixer(Some(if pads { MixView::Pads } else { MixView::Tracks })),
         );
+        fx.insert(1, Effect::MixerFaders);
         fx
     }
 
@@ -2541,6 +2564,16 @@ impl App {
     pub fn open_tab(&mut self, v: View) -> Vec<Effect> {
         if self.view == View::Guide {
             return Vec::new();
+        }
+        if v == View::Mixer {
+            // The Mix tab: the mixer as it was left (an open chain's
+            // editor goes back to it too).
+            if self.view == View::Mixer {
+                return Vec::new();
+            }
+            let mut fx = self.show(View::Mixer);
+            fx.insert(0, Effect::MixerLast);
+            return fx;
         }
         self.show(v)
     }
@@ -4891,6 +4924,47 @@ mod tests {
         assert_eq!(fx.len(), 2, "the loop's undo, then the button: {fx:?}");
     }
 
+    /// The Mix tab (Jay's card, 14 Nov 07:15Z): its tab opens the mixer as
+    /// it was left, TRACK MIX opens it on Track Mix, and TRACK MIX on the
+    /// tab (the mixer or an effect chain) goes back to the page before it.
+    #[test]
+    fn the_mix_tab_holds_the_mixer_and_its_chains_and_track_mix_goes_back() {
+        use mpfree_mixer_ui::MixView;
+        let mut app = ready();
+        app.map.learn(crate::app::mapper::Job::TrackMix, Some(70));
+        app.open_tab(View::Arrange);
+        assert_eq!(View::Mixer.tab_index(false), Some(6));
+        assert_eq!(View::Chain.tab_view(), Some(View::Mixer));
+        assert_eq!(
+            app.tab(6),
+            vec![Effect::MixerLast, Effect::Show(View::Mixer)]
+        );
+        assert_eq!(app.tab(6), vec![], "a second tap changes nothing");
+        // An effect's chain opened from the mixer is still the Mix tab.
+        app.open_chain();
+        assert_eq!(app.view(), View::Chain);
+        let fx = app.button(70, true, 0.0);
+        app.button(70, false, 0.0);
+        assert!(fx.contains(&Effect::Show(View::Arrange)), "{fx:?}");
+        assert_eq!(app.view(), View::Arrange);
+        // From there TRACK MIX opens it on Track Mix; again, back.
+        let fx = app.button(70, true, 0.0);
+        app.button(70, false, 0.0);
+        assert_eq!(fx.first(), Some(&Effect::Mixer(Some(MixView::Tracks))));
+        let fx = app.button(70, true, 0.0);
+        app.button(70, false, 0.0);
+        assert_eq!(fx.first(), Some(&Effect::Mixer(None)), "{fx:?}");
+        assert_eq!(app.view(), View::Arrange);
+        // From a menu over a page, back goes to the page under it.
+        app.open_tab(View::Synth);
+        app.open_tab(View::Prefs);
+        app.button(70, true, 0.0);
+        app.button(70, false, 0.0);
+        app.button(70, true, 0.0);
+        app.button(70, false, 0.0);
+        assert_eq!(app.view(), View::Synth);
+    }
+
     #[test]
     fn the_sample_tab_comes_after_looper_and_takes_the_wheel_the_pads_and_undo() {
         let mut app = ready();
@@ -4902,7 +4976,8 @@ mod tests {
                 View::Arrange,
                 View::Synth,
                 View::Looper,
-                View::Sample
+                View::Sample,
+                View::Mixer
             ]
         );
         assert_eq!(View::Sample.tab_index(true), Some(5));
@@ -5086,14 +5161,15 @@ mod tests {
                 View::Arrange,
                 View::Synth,
                 View::Looper,
-                View::Sample
+                View::Sample,
+                View::Mixer
             ]
         );
         // The same names, in the same order, as the bar every preview draws.
         let names: Vec<&str> = tabs(true).iter().map(|v| v.name()).collect();
-        assert_eq!(names[..6], mpfree_ui::widgets::APP_TABS[..]);
-        assert_eq!(names[6], mpfree_ui::widgets::DEV_TAB);
-        assert_eq!(app.tab(6), vec![]);
+        assert_eq!(names[..7], mpfree_ui::widgets::APP_TABS[..]);
+        assert_eq!(names[7], mpfree_ui::widgets::DEV_TAB);
+        assert_eq!(app.tab(7), vec![]);
         app.open_tab(View::Prefs);
         let row = app
             .items()
@@ -5163,8 +5239,8 @@ mod tests {
         );
         app.button(button::SHIFT, false, 0.0);
         // Debug mode adds the Debug tab, whose pages SHIFT + wheel steps through.
-        assert_eq!(tabs(true)[6], View::Debug);
-        app.tab(6);
+        assert_eq!(tabs(true)[7], View::Debug);
+        app.tab(7);
         assert_eq!(app.view(), View::Debug);
         app.button(button::SHIFT, true, 0.0);
         app.wheel(1);

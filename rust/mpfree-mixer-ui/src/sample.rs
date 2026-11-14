@@ -12,14 +12,11 @@ use mpfree_ui::widgets::{Chip, Header};
 use mpfree_ui::{Align, Fonts, Theme, Tone, Touch, Ui};
 
 use crate::state::{default_name, MixState, MixView, TakeView};
-use crate::view::{IoIcon, MixerIcon, MixerView};
+use crate::view::{IoIcon, MixerView};
 
-/// The music tabs, as the approved layout spec lists them.
-pub const TABS: [&str; 5] = ["Play", "Arrange", "Synth", "Looper", "Sample"];
-
-/// A preview page: the header with the I/O and mixer icons beside it, the mixer,
-/// the hint line.
-const PREVIEW_LAYOUT: &str = "col(row(header:*, ioicon:56, mixicon:64):60, mixer:*, hint:26)";
+/// A preview page: the header with the I/O icon beside it, the mixer, the
+/// hint line.
+const PREVIEW_LAYOUT: &str = "col(row(header:*, ioicon:56):60, mixer:*, hint:26)";
 
 pub struct Sample {
     pub name: &'static str,
@@ -200,12 +197,11 @@ pub fn play(m: &mut Mixer, blocks: u64) {
     }
 }
 
-/// The app's screen around the mixer: the header (no tab lit while the
-/// mixer is open), the icon, the hint.
+/// The app's screen around the mixer: the header with the Mix tab lit, the
+/// I/O icon, the hint.
 pub fn screen(fonts: Fonts, st: MixState) -> Result<Ui, String> {
     let mut ui = Ui::new(Theme::dark(), fonts, 1280, 800);
-    let mut header = Header::new(&TABS);
-    header.active = usize::MAX;
+    let mut header = Header::app("Mix");
     header.chips = vec![
         Chip::new("92 BPM", Tone::Normal),
         Chip::new("Level -6 dB", Tone::Normal),
@@ -215,7 +211,6 @@ pub fn screen(fonts: Fonts, st: MixState) -> Result<Ui, String> {
     ui.add("header", header);
     let io = st.view == MixView::Io;
     ui.add("ioicon", IoIcon { open: io });
-    ui.add("mixicon", MixerIcon { open: !io });
     ui.add(
         "hint",
         mpfree_ui::widgets::Label::new(
@@ -235,6 +230,15 @@ pub fn screen(fonts: Fonts, st: MixState) -> Result<Ui, String> {
     ui.show(crate::MIXER_PAGE)?;
     crate::update(&mut ui, st);
     Ok(ui)
+}
+
+/// A screen on the Effects look, its hint with it.
+fn effects(mut ui: Ui) -> Ui {
+    crate::set_look(&mut ui, crate::Look::Effects);
+    if let Some(h) = ui.get_mut::<mpfree_ui::widgets::Label>("hint") {
+        h.text = crate::hint_for(crate::Look::Effects, false).to_string();
+    }
+    ui
 }
 
 fn tap(ui: &mut Ui, x: i32, y: i32) {
@@ -266,6 +270,8 @@ pub fn samples(fonts: impl Fn() -> Fonts) -> Result<Vec<Sample>, String> {
         Sample { name: "mixer-inputs", about: "Inputs: the line input armed and heard through a compressor (Auto monitoring); the mic on input 2 into the vocal track, not monitored", ui: screen(fonts(), inputs)? },
         Sample { name: "mixer-submixes", about: "Submixes and returns: the drum bus with glue and drive, the music bus, the reverb and delay returns", ui: screen(fonts(), buses)? },
         Sample { name: "mixer-io", about: "The I/O view, Audio: every strip with an output and where it goes, the inputs with their Source and Monitor (MIDI, Sync and CV join the list from their own crates)", ui: screen(fonts(), io)? },
+        Sample { name: "mixer-effects", about: "The Effects look: each track's chain as a row of eight slots in order, + FX in the first free one, the master's row pinned at the bottom", ui: effects(screen(fonts(), tracks.clone())?) },
+        Sample { name: "mixer-effects-pads", about: "The Effects look on the pads: each pad channel's chain", ui: effects(screen(fonts(), pads.clone())?) },
     ];
     // Solo in place: the bass soloed; what does not reach the master with
     // it is dimmed.
@@ -384,7 +390,7 @@ mod tests {
     #[test]
     fn the_samples_read_a_real_mixer_and_paint() {
         let s = samples(Fonts::embedded).unwrap();
-        assert_eq!(s.len(), 10);
+        assert_eq!(s.len(), 12);
         let mut st = MixState::default();
         for mut sample in s {
             let mut c = SoftCanvas::new(1280, 800);
@@ -417,6 +423,10 @@ mod tests {
                     sample.ui.get::<MixerView>(crate::MIXER).unwrap().menu(),
                     Some(StripId::Track(3))
                 );
+            }
+            if sample.name == "mixer-effects" {
+                let v = sample.ui.get::<MixerView>(crate::MIXER).unwrap();
+                assert_eq!(v.look(), crate::Look::Effects);
             }
             if sample.name == "mixer-tracks-page-2" {
                 assert_eq!(

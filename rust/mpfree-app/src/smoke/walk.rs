@@ -191,8 +191,8 @@ pub fn fx_step(s: &mut Session, rng: &mut Rng) -> Step {
     use crate::app::View;
     if !matches!(s.app.view(), View::Mixer | View::Chain | View::Macros) {
         let c = s
-            .control("header", "mixer-icon", "")
-            .expect("the header's mixer icon");
+            .control("header", "tab", "Mix")
+            .expect("the header's Mix tab");
         let step = Step::Control {
             page: s.page(),
             widget: c.widget.clone(),
