@@ -147,12 +147,36 @@ touchscreen, using the list of controls each widget gives
   the tempo tapped; the master level from both ends; the kit from the
   wheel and from the kit chip; Full level turned off from its chip. A new
   feature a musician uses gets a workflow here.
+- **Song workflows** (`smoke/song_workflows.rs`) do the same with three
+  whole demo songs written in code (`smoke/songs.rs`), saved into a
+  library in a temporary folder and opened from BROWSE as a musician
+  opens them:
+  - *Night Market* (92 BPM, swung): five scenes chained by follow
+    actions, scene mutes, fill-only and first-pass trig conditions, and a
+    44-bar arrangement with markers.
+  - *Glass Garden* (124 BPM): clips of 3, 5, 7, 12 and 16 steps looping
+    against each other, ratchets, per-pass conditions, pan locks, a
+    half-speed lead, and scene values for the morph bar.
+  - *Tidal Suite* (76 BPM): clip and scene follow actions with chances
+    (Next or Again, Next or Previous, Last), neighbour conditions, and no
+    arrangement yet.
+
+  The workflows check each song opens as written; plays its sections by
+  follow actions; FILL; the polymeters, ratchets and conditions step by
+  step; song mode following the arrangement; Scenes → song; TRACK MUTE
+  mid-section; the morph crossfader; a REC overdub and a CAPTURE with
+  their UNDO; and an edit (tempo, a step, a fader) saved with SHIFT +
+  BROWSE, a New project, and the song opened again as edited. The
+  pattern legend for writing more songs is on `hits` in `songs.rs`.
 
 `Session` (`smoke/session.rs`) is the test harness: the screen and every
 engine wired together as `main.rs` wires them, run in simulated time
 (`run_for`), with helpers to press a control by widget, id and label
-(`press`), press a hardware button (`button`, `button_with`), turn the wheel
-or a Q-Link, and hit a pad. The routing from screen to engines is shared
+(`press`), press a hardware button (`button`, `button_with`,
+`hold`), turn the wheel or a Q-Link, and hit a pad. `Session::with_library`
+gives it a library, so saves and opens run as `main.rs` runs them;
+`hits.played` keeps every note played with its track and time, and
+`said()` reads the screen's events log. The routing from screen to engines is shared
 with `main.rs` (`desk.rs`), so the tests drive the real code.
 
 ## Rules for changes

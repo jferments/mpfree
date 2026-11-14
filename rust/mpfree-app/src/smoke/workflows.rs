@@ -197,6 +197,8 @@ mod tests {
             agree(&mut s, "cancelled");
             // "+ Add effect" opens the picker again; Back closes the editor.
             s.press("chain", "add", "+ Add effect");
+            // The picker opens on its first group; the delays are in theirs.
+            s.press("chain", "section", "Delay and reverb");
             assert!(s.control("chain", "pick", "Delay").is_some());
             s.press("chain", "back", "").run_for(0.1);
             assert_eq!(s.view(), View::Mixer);
@@ -307,6 +309,7 @@ mod tests {
             agree(&mut s, "the track's chain");
 
             s.press("chain", "add", "+ Add effect");
+            s.press("chain", "section", "Delay and reverb");
             s.press("chain", "pick", "Delay").run_for(0.1);
             assert_eq!(names(&engine(&mut s)), ["DJ filter", "Delay"]);
             agree(&mut s, "a delay on the track");
