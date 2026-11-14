@@ -15,8 +15,8 @@ use mpfree_node::Node;
 
 use crate::presets as p;
 use crate::{
-    AutoPan, Character, Chorus, Cloud, Comb, Compressor, Crush, DeEsser, Delay, DjFilter, Drive,
-    Ducker, Eq, Flanger, Gate, Limiter, LoFi, MasterSafety, MultiFilter, MultiTap,
+    Amp, AutoPan, Character, Chorus, Cloud, Comb, Compressor, Crush, DeEsser, Delay, DjFilter,
+    Drive, Ducker, Eq, Exciter, Flanger, Gate, Limiter, LoFi, MasterSafety, MultiFilter, MultiTap,
     MultibandCompressor, Perform, Phaser, PitchShifter, Plate, Preset, RingMod, Room, Rotary,
     Spring, TapeDelay, TransientShaper, Tremolo,
 };
@@ -237,6 +237,22 @@ pub static EFFECTS: &[FxEntry] = &[
         DriveColour,
         || Box::new(LoFi::new()),
         crate::lofi::PRESETS,
+    ),
+    e(
+        "mpfree.fx.amp",
+        "Amp",
+        "Guitar and bass amp with cab",
+        DriveColour,
+        || Box::new(Amp::new()),
+        crate::amp::AMP_PRESETS,
+    ),
+    e(
+        "mpfree.fx.exciter",
+        "Exciter",
+        "Adds air and sparkle",
+        DriveColour,
+        || Box::new(Exciter::new()),
+        crate::amp::EXCITER_PRESETS,
     ),
     e(
         "mpfree.fx.chorus",

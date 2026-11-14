@@ -59,6 +59,7 @@
 //! is cut into blocks. The tests in `tests/` check each of these.
 #![forbid(unsafe_code)]
 
+mod amp;
 mod chain;
 mod character;
 mod cloud;
@@ -88,6 +89,7 @@ mod svf;
 mod transient;
 mod xy;
 
+pub use amp::{Amp, Exciter};
 pub use chain::{Chain, ChainStats, Insert, MAX_SLOT_EVENTS};
 pub use character::Character;
 pub use cloud::{Cloud, PRESETS as CLOUD_PRESETS};
@@ -132,6 +134,8 @@ pub use mpfree_node;
 /// Parameter ids, one module per node (`ids::delay::FEEDBACK`). An id is
 /// also the parameter's index in the node's `params()` list.
 pub mod ids {
+    pub use crate::amp::amp;
+    pub use crate::amp::exciter;
     pub use crate::character::ids as character;
     pub use crate::cloud::ids as cloud;
     pub use crate::comb::ids as comb;
