@@ -14,14 +14,18 @@
 //!   down (an instrument is silent, an effect passes its input through)
 //!   until it is made again. A handle whose node was dropped is let go,
 //!   which ends its process.
+//! - **Presets.** [`Rack::presets`] lists a plugin's own presets (by a
+//!   process of their own, once per file; kept after that) and
+//!   [`Rack::load_preset`] loads one into a running plugin, named by the
+//!   instance number [`Rack::make_instance`] gave.
 //! - **Never hidden** (MPFree's fallback rule): each start, crash, restart
 //!   and give-up is a line ([`Rack::take_lines`]), and the totals are in
 //!   [`Rack::summary`].
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use mpfree_node::{Kind, Node};
@@ -82,6 +86,8 @@ impl Summary {
 }
 
 struct Racked {
+    /// The number [`Rack::make_instance`] gave it.
+    instance: u64,
     name: &'static str,
     sandbox: Sandbox,
     snapshot_at: Instant,
@@ -105,6 +111,10 @@ pub struct Rack {
     crashes: AtomicU64,
     restarts: AtomicU64,
     failed: AtomicU64,
+    /// The last instance number given.
+    instances: AtomicU64,
+    /// Each file's presets, once listed (or why they couldn't be).
+    presets: Mutex<HashMap<PathBuf, Arc<Result<mpfree_clap::Found, String>>>>,
 }
 
 impl Default for Rack {
@@ -126,6 +136,8 @@ impl Rack {
             crashes: AtomicU64::new(0),
             restarts: AtomicU64::new(0),
             failed: AtomicU64::new(0),
+            instances: AtomicU64::new(0),
+            presets: Mutex::new(HashMap::new()),
         }
     }
 
@@ -239,6 +251,12 @@ impl Rack {
     /// Starts plugin `node_id`'s process and gives its node, keeping its
     /// handle in the rack. Control thread only: it waits for the process.
     pub fn make(&self, node_id: &str) -> Result<Box<dyn Node>, String> {
+        self.make_instance(node_id).map(|(_, node)| node)
+    }
+
+    /// [`Rack::make`], with the plugin's instance number (never 0, never
+    /// given twice), which [`Rack::load_preset`] takes.
+    pub fn make_instance(&self, node_id: &str) -> Result<(u64, Box<dyn Node>), String> {
         let (Some(program), Some(e)) = (self.program.as_ref(), self.find(node_id)) else {
             return Err(format!("no plugin {node_id}"));
         };
@@ -248,10 +266,12 @@ impl Rack {
                 // The first snapshot: a restart before the first timed one
                 // still gets the plugin's starting state.
                 sandbox.refresh_state();
+                let instance = self.instances.fetch_add(1, Ordering::Relaxed) + 1;
                 self.rack
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
                     .push(Racked {
+                        instance,
                         name: e.name,
                         sandbox,
                         snapshot_at: Instant::now(),
@@ -259,7 +279,7 @@ impl Rack {
                         given_up: false,
                     });
                 self.say(format!("plugins: {} started in its own process", e.name));
-                Ok(Box::new(node))
+                Ok((instance, Box::new(node)))
             }
             Err(err) => {
                 self.failed.fetch_add(1, Ordering::Relaxed);
@@ -331,6 +351,81 @@ impl Rack {
                 }
             }
         }
+    }
+
+    /// Plugin `node_id`'s own presets, in the order its provider gave
+    /// them. The first call for a plugin file lists the file's presets in a
+    /// process of its own ([`crate::presets`]), which can take seconds;
+    /// later calls give what it found. Control thread only. Says how many
+    /// were found and the first error, once per file.
+    pub fn presets(&self, node_id: &str) -> Result<Vec<mpfree_clap::Preset>, String> {
+        let (Some(program), Some(e)) = (self.program.as_ref(), self.find(node_id)) else {
+            return Err(format!("no plugin {node_id}"));
+        };
+        let cached = self
+            .presets
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&e.file)
+            .cloned();
+        let found = match cached {
+            Some(f) => f,
+            None => {
+                let f = Arc::new(crate::presets(program, &e.file).map_err(|err| err.to_string()));
+                let short = e
+                    .file
+                    .file_name()
+                    .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
+                match f.as_ref() {
+                    Ok(found) => {
+                        let mut line =
+                            format!("plugins: {} preset(s) in {short}", found.presets.len());
+                        if found.cut_short {
+                            line.push_str(" (the list was cut short at its limit)");
+                        }
+                        if let Some(first) = found.errors.first() {
+                            let more = found.errors.len() - 1 + found.more_errors;
+                            line.push_str(&format!("; couldn't read some: {first}"));
+                            if more > 0 {
+                                line.push_str(&format!(" (and {more} more)"));
+                            }
+                        }
+                        self.say(line);
+                    }
+                    Err(err) => self.say(format!("plugins: presets in {short} not listed: {err}")),
+                }
+                self.presets
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .insert(e.file.clone(), Arc::clone(&f));
+                f
+            }
+        };
+        match found.as_ref() {
+            Ok(f) => Ok(f
+                .presets
+                .iter()
+                .filter(|p| p.is_for(&e.plugin_id))
+                .cloned()
+                .collect()),
+            Err(err) => Err(err.clone()),
+        }
+    }
+
+    /// Loads `preset` into running plugin `instance` (from
+    /// [`Rack::make_instance`]). Its state snapshot is read again a second
+    /// later (some plugins load in the background), so a restart or a save
+    /// soon after keeps the preset. Control thread only.
+    pub fn load_preset(&self, instance: u64, preset: &mpfree_clap::Preset) -> Result<(), String> {
+        let mut rack = self.rack.lock().unwrap_or_else(|e| e.into_inner());
+        let r = rack
+            .iter_mut()
+            .find(|r| r.instance == instance && !r.given_up)
+            .ok_or_else(|| "that plugin isn't running".to_string())?;
+        r.sandbox.load_preset(preset)?;
+        let soon = SNAPSHOT_EVERY.saturating_sub(Duration::from_secs(1));
+        r.snapshot_at = Instant::now().checked_sub(soon).unwrap_or(r.snapshot_at);
+        Ok(())
     }
 
     /// Reads every running plugin's state now (before a project save).

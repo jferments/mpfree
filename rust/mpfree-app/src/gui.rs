@@ -24,8 +24,8 @@
 //! `app.rs` decides, and touches only report what was touched.
 
 use crate::app::{
-    tabs, ArpView, GuideView, MapView, MenuView, MuteKeys, PadLevel, Settings, Status, View,
-    WorkspaceView,
+    outlined, tabs, ArpView, GuideView, MapView, MenuView, MuteKeys, Nav, PadLevel, Settings,
+    Status, View, WorkspaceView,
 };
 use crate::calibrate_page::CalibrateView;
 use crate::chain_page::{ChainPage, Turned};
@@ -74,7 +74,7 @@ use mpfree_ui::widgets::{
     StatList,
 };
 use mpfree_ui::{
-    Align, Color, EventKind, Fonts, Image, SoftCanvas, Theme, Tone, Touch, Ui, UiEvent,
+    Align, Color, EventKind, Fonts, Gesture, Image, SoftCanvas, Theme, Tone, Touch, Ui, UiEvent,
 };
 use std::collections::VecDeque;
 use std::io::{self, Write};
@@ -191,6 +191,11 @@ const OPTIONS_HINT: &str =
 /// A menu row the wheel's push opened.
 /// The wheel on a page with rows (`app::RowKey`), for the hint lines.
 const ROWS_HINT: &str = "Wheel: pick a row   ·   - / +, or push the wheel and turn: change it";
+/// The finger the wheel's push taps and holds controls with ([`Nav`]): no
+/// real finger has this number.
+const WHEEL_FINGER: u64 = u64::MAX - 1;
+/// What the wheel does on the pages with its outline ([`outlined`]).
+const WHEEL_HINT: &str = "Wheel: control to control   ·   push: press it";
 const OPTIONS_EDIT_HINT: &str = "Wheel: change it   ·   push the wheel: set it   ·   - / + or the arrows: change it   ·   MENU: close";
 const GUIDE_HINT: &str = "STOP: skip this button   ·   The pads still play while the guide is open";
 const LOADING_HINT: &str = "Tap the screen for the console";
@@ -444,6 +449,9 @@ pub enum ToUi {
     ExportFacts(Box<crate::export::Facts>),
     /// An export's pass is over (or never started): the job finishes it.
     ExportOver(Box<crate::export::Run>),
+    /// A print from the mixer's strip menu (takes.rs), named after its
+    /// strip: saved as a new sample in Samples › Prints, on a thread.
+    Printed(String, Box<mpfree_fx::Printed>),
     /// A save: what the audio loop's engines hold, for the screen to write
     /// with its own parts and hand to the library (project.rs).
     ProjectParts(Box<crate::project::Collected>),
@@ -478,6 +486,8 @@ pub enum ToUi {
     },
     /// REC (false) or OVERDUB (true) on the Play page ([`Player::play_rec`]).
     PlayRec(bool),
+    /// The wheel, its push, - or + for the outline ([`Player::nav`]).
+    Nav(Nav),
     /// Whether the Synth tab's and the mixer's turns ([`crate::undo`])
     /// have something to undo, when that changes.
     TurnsReady {
@@ -807,6 +817,10 @@ pub enum FromUi {
     /// open (true) or closed: while open, the wheel, its push and - / +
     /// are its (as [`crate::app::RowKey`]s) on every page.
     Overlay(bool),
+    /// Whether the wheel's outline is on a control, when that changes (the
+    /// mixer's, the chain editor's and the macros panel's wheel then moves
+    /// it: [`crate::app::App::set_outline`]).
+    Outline(bool),
     /// A kit's engine view, built again after an edit on the Sample page,
     /// for the audio thread to swap in (it sends the old one back).
     SampleView(Box<ViewSwap>),
@@ -1030,6 +1044,8 @@ pub struct Player {
     sample_edits: u64,
     /// An opened project's loops being read (the files can be big).
     loops_load: Option<std::sync::mpsc::Receiver<LoopsRead>>,
+    /// Prints being saved: each says where it went, or why not.
+    print_saves: Vec<std::sync::mpsc::Receiver<Result<String, String>>>,
     /// An opened project's audio tracks being read (the takes' files can
     /// be big).
     audio_load: Option<std::sync::mpsc::Receiver<AudioRead>>,
@@ -1125,6 +1141,8 @@ pub struct Player {
     /// counts a tell as a press that did something, even when the same
     /// words were already showing).
     tells: u64,
+    /// What the app was last told about the outline ([`FromUi::Outline`]).
+    outline_told: bool,
 }
 
 impl Player {
@@ -1298,6 +1316,7 @@ impl Player {
             turns_ready: (false, false),
             undo_ready: false,
             tells: 0,
+            outline_told: false,
             ui,
             kits: Vec::new(),
             kit: 0,
@@ -1344,6 +1363,7 @@ impl Player {
             open_actions: 0,
             sample_edits: 0,
             loops_load: None,
+            print_saves: Vec::new(),
             audio_load: None,
             preview_db: crate::preview::LEVEL_DB,
             preview_load: None,
@@ -2226,14 +2246,11 @@ impl Player {
             LEVELS_HINT.to_string()
         } else if self.view == View::Play && self.chain_page.drives(View::Play) {
             format!("Q-Links: {}   ·   Q-LINK: next bank   ·   hold a macro's card: the macros panel   ·   \
-                     Wheel: kit   ·   {stop}", self.chain_page.bind.title())
+                     {WHEEL_HINT}   ·   {stop}", self.chain_page.bind.title())
         } else {
             match self.view {
-                // Play has no kit list to tap since 12 Nov, and Q-Link 1
-                // is Swing: the wheel picks the kit, the master bar is the
-                // level. The Drum view is folded into Beats (13 Nov).
-                View::Play => format!("Tap All, Beats or Loop: the view   ·   Wheel: kit   ·   the master bar: \
-                                       level   ·   NOTE REPEAT: repeat   ·   MENU: options   ·   {stop}"),
+                View::Play => format!("Tap All, Beats or Loop: the view   ·   {WHEEL_HINT}   ·   PAD BANK: kit   ·   \
+                                       NOTE REPEAT: repeat   ·   MENU: options   ·   {stop}"),
                 View::Arrange if self.time.edit.is_some() => {
                     time_view::edit_hint(self.time.edit.as_ref().map_or(Lens::Grid, |e| e.editor.lens))
                         .to_string()
@@ -2726,6 +2743,120 @@ impl Player {
         self.outbox.push(a);
     }
 
+    /// The wheel, its push, - or + for the outline ([`Nav`]): move it from
+    /// control to control, press the control it is on, or grab a value and
+    /// turn it.
+    fn nav(&mut self, n: Nav) {
+        if !self.outline_here() {
+            return;
+        }
+        // The effect picker keeps the wheel and its push for its tiles and
+        // presets, outline or not (layout spec section 6).
+        if self.view == View::Chain && mpfree_chain_ui::chain_picking(&self.ui) {
+            match n {
+                Nav::Turn(d) => return self.apply(ToUi::ChainWheel(d)),
+                Nav::Push => return self.apply(ToUi::ChainPush),
+                Nav::Step(_) => {}
+            }
+        }
+        match n {
+            Nav::Turn(d) if self.ui.focus_grabbed() && self.wheel_turns() => self.nav_step(d),
+            Nav::Step(d) if self.wheel_turns() => self.nav_step(d),
+            Nav::Turn(d) | Nav::Step(d) => {
+                self.nav_let_go();
+                self.ui.focus_move(d);
+            }
+            Nav::Push => self.nav_push(),
+        }
+        self.refresh_hint();
+    }
+
+    /// The page showing has the wheel's outline: the pages
+    /// [`outlined`] names, but not the mixer's I/O view, whose wheel and
+    /// - / + keep moving through its rows.
+    fn outline_here(&self) -> bool {
+        outlined(self.view) && !(self.view == View::Mixer && self.io_showing())
+    }
+
+    /// The outlined control is a value the wheel can turn.
+    fn wheel_turns(&self) -> bool {
+        self.ui
+            .focused()
+            .is_some_and(|f| f.target.gesture == Gesture::Drag)
+            && self.ui.focus_steps()
+    }
+
+    fn nav_step(&mut self, d: i32) {
+        if let Some(ev) = self.ui.focus_step(d) {
+            if let Some(a) = self.on_event(ev) {
+                self.outbox.push(a);
+            }
+        }
+    }
+
+    /// A touch made by the wheel's push, at the outlined control's middle.
+    fn nav_touch(&mut self, phase: Touch, (x, y): (i32, i32)) {
+        if let Some(a) = self.touch_filtered(WHEEL_FINGER, phase, x, y) {
+            self.outbox.push(a);
+        }
+    }
+
+    /// The wheel's push: a tap on a button, a row or a pad; on a value,
+    /// grab it (the wheel turns it) or let it go; on a control that is held
+    /// (a throw), hold it down until the next push. With no outline, show
+    /// it on the first control.
+    fn nav_push(&mut self) {
+        let Some(f) = self.ui.focused() else {
+            self.ui.focus_move(1);
+            return;
+        };
+        let t = f.target;
+        let grabbed = self.ui.focus_grabbed();
+        match t.gesture {
+            Gesture::Tap => {
+                self.nav_touch(Touch::Down, t.centre());
+                self.nav_touch(Touch::Up, t.centre());
+            }
+            Gesture::Hold if grabbed => self.nav_let_go(),
+            Gesture::Hold => {
+                self.nav_touch(Touch::Down, t.centre());
+                self.ui.set_focus_grabbed(true);
+                self.tell(&format!(
+                    "Holding {} · push the wheel again to let go",
+                    t.label
+                ));
+            }
+            Gesture::Drag if grabbed => {
+                self.ui.set_focus_grabbed(false);
+                self.tell(&format!("Let go of {} · the wheel moves on", t.label));
+            }
+            Gesture::Drag if self.ui.focus_steps() => {
+                self.ui.set_focus_grabbed(true);
+                self.tell(&format!(
+                    "The wheel turns {} · push again to let go",
+                    t.label
+                ));
+            }
+            Gesture::Drag => self.tell(&format!(
+                "The wheel can't turn {} yet: drag it with a finger",
+                t.label
+            )),
+        }
+    }
+
+    /// Lift a control the wheel's push holds down, and let go of a grabbed
+    /// value, before the outline moves.
+    fn nav_let_go(&mut self) {
+        if !self.ui.focus_grabbed() {
+            return;
+        }
+        if self.fingers.contains(&WHEEL_FINGER) {
+            let at = self.ui.focused().map_or((0, 0), |f| f.target.centre());
+            self.nav_touch(Touch::Up, at);
+        }
+        self.ui.set_focus_grabbed(false);
+    }
+
     /// Whether UNDO on the page showing has something to take back, as
     /// [`Self::undo`] picks the history (the Looper tab and the Sample and
     /// Pads tabs too, whose UNDO the app sends straight on).
@@ -2907,6 +3038,7 @@ impl Player {
                 }
             }
             ToUi::PlayRec(overdub) => self.play_rec(overdub),
+            ToUi::Nav(n) => self.nav(n),
             ToUi::TurnsReady { synth, mixer } => self.turns_ready = (synth, mixer),
             ToUi::Line(l) | ToUi::Event(l) => {
                 let tone = tone_of(&l);
@@ -3215,10 +3347,14 @@ impl Player {
                     self.chain_qlink(0, d);
                 }
             }
+            ToUi::ChainPush if self.view != View::Chain => {}
             ToUi::ChainPush => {
-                if self.view == View::Chain && mpfree_chain_ui::chain_push(&mut self.ui) {
+                if mpfree_chain_ui::chain_push(&mut self.ui) {
                     let acts = mpfree_chain_ui::take_chain_actions(&mut self.ui);
                     self.outbox.extend(acts.into_iter().map(FromUi::Chain));
+                } else {
+                    // The picker is shut: the push is the outline's.
+                    self.nav(Nav::Push);
                 }
             }
             ToUi::ChainLearn(addr) => {
@@ -3245,6 +3381,7 @@ impl Player {
             ToUi::ProjectParts(c) => self.save_project(c),
             ToUi::ExportFacts(f) => self.export_facts(f),
             ToUi::ExportOver(run) => self.export_over(run),
+            ToUi::Printed(name, p) => self.save_print(name, p),
             ToUi::ProjectDefaults(d) => self.project_defaults = Some(*d),
             ToUi::Plugins(p) => self.project_plugins = p,
             ToUi::TrackSounds(s) => {
@@ -4375,6 +4512,60 @@ impl Player {
         self.step_browser();
     }
 
+    /// A print from the mixer: written as a WAV in Samples › Prints on a
+    /// thread of its own (a take with its tail can be many megabytes),
+    /// named after its strip and the time.
+    fn save_print(&mut self, name: String, p: Box<mpfree_fx::Printed>) {
+        let Some(lib) = self.browser.as_ref().map(|b| b.library().clone()) else {
+            let line = format!("mixer: {name}: print not saved, there's no stick to save it on");
+            self.say(line.clone());
+            self.tell(&line);
+            return;
+        };
+        let (y, mo, d, h, mi) = mpfree_library::project::civil(now_utc());
+        let file = format!(
+            "{} {y:04}-{mo:02}-{d:02} {h:02}.{mi:02}.wav",
+            mpfree_export::safe_name(&name)
+        );
+        let (tx, rx) = std::sync::mpsc::channel();
+        let save = std::thread::Builder::new()
+            .name("print-save".into())
+            .spawn(move || {
+                let r = crate::takes::save_print(&lib, &file, &p)
+                    .map(|loc| format!("mixer: {name}: printed to {}", loc.display()))
+                    .map_err(|e| format!("mixer: {name}: print not saved ({e})"));
+                let _ = tx.send(r);
+            });
+        match save {
+            Ok(_) => self.print_saves.push(rx),
+            Err(e) => self.say(format!("mixer: print not saved ({e})")),
+        }
+    }
+
+    /// Prints saved since the last tick: said, and the browser shows them.
+    fn poll_prints(&mut self) {
+        let mut done = Vec::new();
+        self.print_saves.retain(|rx| match rx.try_recv() {
+            Ok(r) => {
+                done.push(r);
+                false
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => true,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                done.push(Err("mixer: print not saved (its thread stopped)".into()));
+                false
+            }
+        });
+        for r in done {
+            let (Ok(line) | Err(line)) = r;
+            self.say(line.clone());
+            self.tell(&line);
+            if let Some(b) = self.browser.as_mut() {
+                b.refresh();
+            }
+        }
+    }
+
     /// An opened project's loops, once read: to the audio thread.
     fn poll_loops(&mut self) {
         let Some(rx) = &self.loops_load else {
@@ -5220,6 +5411,15 @@ impl Player {
         if matches!(self.view, View::Play | View::Arrange | View::Chain) {
             self.watch_card_press(finger, phase, x, y);
         }
+        if phase == Touch::Down && finger != WHEEL_FINGER {
+            // The outline goes where the finger lands, for the wheel to go
+            // on from (Jay, 13 Nov), on the pages where the wheel moves it.
+            if self.outline_here() {
+                self.ui.focus_at(x, y);
+            } else if self.ui.has_focus() {
+                self.ui.clear_focus();
+            }
+        }
         let action = self
             .ui
             .touch(finger, phase, x, y)
@@ -5509,6 +5709,8 @@ impl Player {
                 let first = acts.next();
                 self.outbox.extend(acts);
                 if self.io_showing() {
+                    // The I/O view keeps its own wheel: no outline there.
+                    self.ui.clear_focus();
                     // A section picked, or a detail opened: its hint.
                     let _ = mpfree_mixer_ui::take_io_changes(&mut self.ui);
                     self.refresh_hint();
@@ -5712,6 +5914,11 @@ impl Player {
             self.undo_ready = ready;
             self.outbox.push(FromUi::UndoReady(ready));
         }
+        let outline = self.ui.has_focus();
+        if outline != self.outline_told {
+            self.outline_told = outline;
+            self.outbox.push(FromUi::Outline(outline));
+        }
         // A told line goes back to the hint once read.
         if let Some((_, left)) = self.told.as_mut() {
             *left -= dt.max(0.0);
@@ -5752,6 +5959,7 @@ impl Player {
             self.step_browser();
         }
         self.poll_export();
+        self.poll_prints();
         self.poll_preview();
         self.poll_loops();
         self.poll_audio();
@@ -6390,6 +6598,7 @@ pub fn sample_player(fonts: Fonts) -> Player {
             synth_max_us: 0.0,
             worst_us: 905.0,
             steals: 0,
+            given_up: 0,
             dropped: 0,
             peak_grains: 0,
         },
@@ -6945,6 +7154,7 @@ pub fn apply_effects(p: &mut Player, fx: Vec<crate::app::Effect>) {
             Effect::Undo { redo } => p.apply(ToUi::Undo(redo)),
             Effect::UndoButton(down) => p.apply(ToUi::UndoButton(down)),
             Effect::PlayRec { overdub } => p.apply(ToUi::PlayRec(overdub)),
+            Effect::Nav(n) => p.apply(ToUi::Nav(n)),
             Effect::ClipsWheel { delta, scroll } => p.apply(ToUi::ClipsWheel { delta, scroll }),
             Effect::Map(m) => p.apply(ToUi::Map(Box::new(m))),
             Effect::SynthPage(d) => p.apply(ToUi::SynthPage(d)),
@@ -6958,7 +7168,6 @@ pub fn apply_effects(p: &mut Player, fx: Vec<crate::app::Effect>) {
             Effect::SaveProject => p.ask_save(),
             Effect::Light(..)
             | Effect::StopSounds
-            | Effect::Kit(_)
             | Effect::Audio(_)
             | Effect::Quit
             | Effect::Time(_)
@@ -7629,6 +7838,7 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
                 synth_max_us: 160.0,
                 worst_us: 1210.0,
                 steals: 2,
+                given_up: 0,
                 dropped: 0,
                 peak_grains: 48,
             },
@@ -7777,7 +7987,11 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
                 (3, "mpfree.poly", "Poly"),
                 (5, "clap:org.example.synth", "Example Synth"),
             ] {
-                s[t] = Some(crate::instruments::Held { id, name });
+                s[t] = Some(crate::instruments::Held {
+                    id,
+                    name,
+                    instance: 0,
+                });
             }
             p.apply(ToUi::TrackSounds(Box::new(s)));
             out.push(("arrange-instruments", p));
@@ -8670,6 +8884,7 @@ mod tests {
         s[2] = Some(crate::instruments::Held {
             id: "mpfree.fm",
             name: "FM",
+            instance: 0,
         });
         p.apply(ToUi::TrackSounds(Box::new(s)));
         assert_eq!(sounds(&p)[..3], ["Kit", "Kit", "FM"]);
@@ -9054,6 +9269,130 @@ mod tests {
         // The hint says what the tab's controls do.
         let hint = &p.ui.get::<Label>("hint").unwrap().text;
         assert!(hint.contains("Tap a loop or a layer"), "{hint}");
+    }
+
+    /// Jay's wheel navigation (13 Nov): a tap puts the outline on a
+    /// control; the wheel moves it; the push does what a finger does (a tap,
+    /// or a hold until the next push), and on a value grabs it so the wheel
+    /// turns it as a drag would.
+    #[test]
+    fn the_wheel_moves_an_outline_and_its_push_does_what_a_finger_does() {
+        let mut p = sample_play(Fonts::embedded(), PlayView::All);
+        let mut c = SoftCanvas::new(SCREEN.0, SCREEN.1);
+        p.ui.paint(&mut c);
+        p.tick(0.0);
+        p.take_actions();
+        let nav = |p: &mut Player, n: Nav| {
+            p.apply(ToUi::Nav(n));
+            p.tick(0.0);
+            p.take_actions()
+                .into_iter()
+                .filter(|a| !matches!(a, FromUi::Outline(_)))
+                .collect::<Vec<_>>()
+        };
+        let finger = |p: &mut Player, phases: &[Touch], (x, y): (i32, i32)| {
+            let mut v: Vec<FromUi> = Vec::new();
+            for ph in phases {
+                v.extend(p.touch(7, *ph, x, y));
+            }
+            p.tick(0.0);
+            v.extend(
+                p.take_actions()
+                    .into_iter()
+                    .filter(|a| !matches!(a, FromUi::Outline(_))),
+            );
+            v
+        };
+        let on = |p: &Player| p.ui.focused().map(|f| (f.target.id, f.target.index));
+        // No outline yet: the first turn shows it on the first control.
+        assert_eq!(on(&p), None);
+        p.apply(ToUi::Nav(Nav::Turn(1)));
+        assert!(on(&p).is_some());
+        p.tick(0.0);
+        assert!(
+            p.take_actions().contains(&FromUi::Outline(true)),
+            "the app hears of it"
+        );
+        // A tap on a lane's name (its mute) puts the outline there; the
+        // wheel's push taps it again.
+        let r = p.ui.rect_of(play_page::STEPS).unwrap();
+        let name =
+            p.ui.get::<StepGrid>(play_page::STEPS)
+                .unwrap()
+                .name_at(r, 0);
+        let mute = |m| vec![FromUi::PlayFx(PlayFx::PadMute { pad: 0, mute: m })];
+        assert_eq!(finger(&mut p, &[Touch::Down, Touch::Up], name), mute(true));
+        let (id, lane) = on(&p).unwrap();
+        assert_eq!(id, "mute");
+        assert_eq!(
+            nav(&mut p, Nav::Push),
+            mute(false),
+            "the push taps it again"
+        );
+        // The wheel moves on to the lane's first step.
+        nav(&mut p, Nav::Turn(1));
+        assert_eq!(on(&p), Some(("step", lane * 16)));
+        nav(&mut p, Nav::Turn(-1));
+        assert_eq!(on(&p), Some(("mute", lane)));
+        // A Q-Link card is a value: the push grabs it and the wheel turns
+        // it, as a drag of as many detents would.
+        // Q-Link 1 is Swing: the transport's, which only changes when the
+        // time engine says, so a drag and a turn ask for the same swing.
+        let q = QLinkColumn::card_rects(p.ui.rect_of(play_page::QLINKS).unwrap())[0];
+        let mid = (q.x + q.w / 2, q.y + q.h / 2);
+        let detent = mpfree_ui::qlink::DRAG_DETENT;
+        let dragged = {
+            let mut v = finger(&mut p, &[Touch::Down], mid);
+            v.extend(finger(&mut p, &[Touch::Move], (mid.0, mid.1 - 2 * detent)));
+            v.extend(finger(&mut p, &[Touch::Up], (mid.0, mid.1 - 2 * detent)));
+            v
+        };
+        let swing = |a: &[FromUi]| match a {
+            [FromUi::Time(TimeAction::Transport(mpfree_transport::Command::SetSwing(s)))] => {
+                s.amount
+            }
+            _ => panic!("{a:?}"),
+        };
+        let from = swing(&dragged);
+        assert_eq!(on(&p), Some(("knob-card", 0)));
+        assert!(nav(&mut p, Nav::Push).is_empty());
+        assert!(p.ui.focus_grabbed());
+        let turned = nav(&mut p, Nav::Turn(2));
+        assert_eq!(
+            swing(&turned),
+            from + 2,
+            "the wheel turns it as the drag did"
+        );
+        assert_eq!(on(&p), Some(("knob-card", 0)), "grabbed, the outline stays");
+        assert_eq!(swing(&nav(&mut p, Nav::Step(-1))), from + 1, "- steps it");
+        nav(&mut p, Nav::Push);
+        assert!(!p.ui.focus_grabbed());
+        nav(&mut p, Nav::Turn(1));
+        assert_eq!(on(&p), Some(("knob-card", 1)), "let go, the wheel moves on");
+        // A throw is held: the push holds it down until the next push.
+        let t =
+            p.ui.targets()
+                .into_iter()
+                .find(|t| t.target.id == "throw")
+                .unwrap()
+                .target;
+        let down = finger(&mut p, &[Touch::Down], t.centre());
+        let up = finger(&mut p, &[Touch::Up], t.centre());
+        assert!(!down.is_empty() && !up.is_empty(), "{down:?} {up:?}");
+        assert_eq!(on(&p), Some(("throw", t.index)));
+        assert_eq!(nav(&mut p, Nav::Push), down, "held");
+        assert!(p.ui.focus_grabbed());
+        assert_eq!(nav(&mut p, Nav::Push), up, "let go");
+        // Moving the outline lets go of a held throw first.
+        assert_eq!(nav(&mut p, Nav::Push), down);
+        let moved = nav(&mut p, Nav::Turn(1));
+        assert_eq!(moved, up, "lifted before the outline moved");
+        assert!(!p.ui.focus_grabbed());
+        // A page without the outline (the Synth tab's rows) takes it away.
+        p.apply(ToUi::Show(View::Synth));
+        p.tick(0.0);
+        assert!(p.take_actions().contains(&FromUi::Outline(false)));
+        assert_eq!(on(&p), None);
     }
 
     /// UNDO follows the page (Jay, 13 Nov 13:53Z): the loop on the Loop
@@ -10009,7 +10348,11 @@ mod tests {
         let (x, y) = (c.x + c.w / 2, c.y + c.h / 2);
         p.touch(5, Touch::Down, x, y);
         p.tick(0.3);
-        assert!(p.take_actions().is_empty());
+        assert_eq!(
+            p.take_actions(),
+            vec![FromUi::Outline(true)],
+            "the wheel's outline is on the card"
+        );
         p.tick(0.3);
         assert_eq!(p.take_actions(), vec![FromUi::OpenMacros(0)]);
         p.touch(5, Touch::Up, x, y);
@@ -10342,6 +10685,38 @@ mod tests {
             [FromUi::Chain(ChainAction::Add(first))],
             "Defaults adds it as it starts"
         );
+    }
+
+    /// With the outline on the chain editor, the picker still takes the
+    /// wheel and its push (layout spec section 6); with the picker shut
+    /// the push is the outline's.
+    #[test]
+    fn the_picker_keeps_the_wheel_over_the_outline() {
+        use mpfree_chain_ui::ChainView;
+        let mut p = sample_player(Fonts::embedded());
+        sample_panels(&mut p, View::Chain);
+        p.ui.paint(&mut SoftCanvas::new(SCREEN.0, SCREEN.1));
+        // The picker shut and no outline: the push shows it.
+        p.apply(ToUi::ChainPush);
+        assert!(p.ui.focused().is_some(), "the push put the outline on");
+        let r = p.ui.rect_of(mpfree_chain_ui::CHAIN).unwrap();
+        let add =
+            p.ui.get::<ChainView>(mpfree_chain_ui::CHAIN)
+                .unwrap()
+                .layout(r)
+                .add
+                .unwrap();
+        p.touch(1, Touch::Down, add.x + 10, add.y + 10);
+        p.touch(1, Touch::Up, add.x + 10, add.y + 10);
+        p.take_actions();
+        // The app sends the outline's turn: the picker's tiles move.
+        p.apply(ToUi::Nav(Nav::Turn(1)));
+        let v = p.ui.get::<ChainView>(mpfree_chain_ui::CHAIN).unwrap();
+        assert_eq!(v.picker().highlight, Some(0));
+        let first = v.picker().picks(v.state())[0].id;
+        p.apply(ToUi::Nav(Nav::Push));
+        let v = p.ui.get::<ChainView>(mpfree_chain_ui::CHAIN).unwrap();
+        assert_eq!(v.picker().presets, Some(first), "its presets open");
     }
 
     /// Q-LINK on Play: Macros 1-4, Macros 5-8, then Play's own knobs; the

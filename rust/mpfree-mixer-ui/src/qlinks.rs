@@ -137,27 +137,40 @@ pub fn turn(st: &MixState, knob: usize, detents: i32, fine: bool) -> Option<MixA
     if detents == 0 {
         return None;
     }
-    let d = detents as f32;
     let value = if k.id == Some(mx::PAN) {
-        let step = if fine { PAN_FINE } else { PAN_STEP };
-        (k.value + d * step).clamp(-100.0, 100.0).round()
-    } else if fine {
-        let db = ((k.value.max(SILENT_DB) + d * LEVEL_FINE_DB) * 10.0).round() / 10.0;
-        if db <= SILENT_DB {
+        pan_turn(k.value, detents, fine)
+    } else {
+        level_turn(k.value, detents, fine)
+    };
+    set(s, k, value)
+}
+
+/// A level (a fader or a send, dB) turned by `detents`, as a Q-Link or the
+/// data wheel turns it; `fine` takes small steps.
+pub fn level_turn(db: f32, detents: i32, fine: bool) -> f32 {
+    let d = detents as f32;
+    if fine {
+        let to = ((db.max(SILENT_DB) + d * LEVEL_FINE_DB) * 10.0).round() / 10.0;
+        if to <= SILENT_DB {
             SILENT_DB
         } else {
-            db.min(MAX_DB)
+            to.min(MAX_DB)
         }
     } else {
         // The detent at 0 dB holds a step that lands near it; a turn always
         // moves, so take more of the travel until the level changes.
-        let p = db_to_pos(k.value);
+        let p = db_to_pos(db);
         (1..=4)
             .map(|n| pos_to_db(p + d * n as f32 * LEVEL_STEP))
-            .find(|v| *v != k.value)
-            .unwrap_or(k.value)
-    };
-    set(s, k, value)
+            .find(|v| *v != db)
+            .unwrap_or(db)
+    }
+}
+
+/// Pan (-100 to 100) turned by `detents`, as [`level_turn`].
+pub fn pan_turn(pan: f32, detents: i32, fine: bool) -> f32 {
+    let step = if fine { PAN_FINE } else { PAN_STEP };
+    (pan + detents as f32 * step).clamp(-100.0, 100.0).round()
 }
 
 /// Q-Link `knob` (0 to 3) put at `pos` (0 to 1, as a knob read as a
