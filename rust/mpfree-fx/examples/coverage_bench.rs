@@ -73,6 +73,14 @@ fn main() {
             &[(ids::amp::MODEL, 2.0), (ids::amp::GAIN, 8.0)],
         ),
         ("Exciter", "mpfree.fx.exciter", &[]),
+        ("XY FX (Filter)", "mpfree.fx.xy", &[]),
+        ("XY FX (Echo)", "mpfree.fx.xy", &[(ids::xyfx::EFFECT, 1.0)]),
+        ("XY FX (Wash)", "mpfree.fx.xy", &[(ids::xyfx::EFFECT, 3.0)]),
+        (
+            "XY FX (closed)",
+            "mpfree.fx.xy",
+            &[(ids::xyfx::ACTIVE, 0.0)],
+        ),
     ];
     println!("Coverage effects, one stereo instance on {BLOCK}-frame blocks at {RATE} Hz:");
     for &(name, id, set) in runs {

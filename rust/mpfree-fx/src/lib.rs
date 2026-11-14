@@ -78,6 +78,7 @@ mod master;
 mod mixer;
 mod modfx;
 mod motion;
+pub mod mpc;
 mod oversample;
 mod perform;
 pub mod picker;
@@ -89,6 +90,7 @@ mod rooms;
 mod svf;
 mod transient;
 mod xy;
+pub mod xyfx;
 
 pub use amp::{Amp, Exciter};
 pub use chain::{Chain, ChainStats, Insert, MAX_SLOT_EVENTS};
@@ -128,6 +130,7 @@ pub use rooms::{Plate, Room, Spring};
 pub use svf::{DjFilter, MultiFilter, Svf, SvfMode};
 pub use transient::TransientShaper;
 pub use xy::{XyAxis, XyPad};
+pub use xyfx::XyFx;
 
 pub use mpfree_lanes;
 pub use mpfree_node;
@@ -170,6 +173,7 @@ pub mod ids {
     pub use crate::svf::dj as dj_filter;
     pub use crate::svf::multi as filter;
     pub use crate::transient::ids as transient;
+    pub use crate::xyfx::ids as xyfx;
 }
 
 /// A factory preset: a name and the parameter values that differ from the
