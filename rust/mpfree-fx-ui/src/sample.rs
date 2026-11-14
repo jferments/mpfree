@@ -6,8 +6,8 @@ use crate::perform::{self, PerformPanel};
 use crate::state::{make, FxState};
 use crate::view::{self, FxPanel};
 use mpfree_fx::ids::{
-    character, chorus, cloud, comb, compressor as comp, crush, delay, dj_filter as dj, drive, eq,
-    filter, flanger, master, perform as pf, phaser,
+    character, chorus, cloud, comb, compressor as comp, crush, delay, dj_filter as dj, drive,
+    ducker, eq, filter, flanger, master, perform as pf, phaser, pitch, transient,
 };
 use mpfree_fx::{perform_state, presets};
 use mpfree_ui::widgets::{Chip, Header, Label};
@@ -53,6 +53,8 @@ struct Scene {
     preset: Option<usize>,
     page: &'static str,
     focus: Option<u16>,
+    /// The host's level meters for the slot (`FxState::levels`).
+    levels: Option<(f32, f32)>,
     meters: &'static [(u16, f32)],
 }
 
@@ -78,6 +80,7 @@ const SCENES: &[Scene] = &[
         preset: None,
         page: "Bands",
         focus: Some(eq::gain(1)),
+        levels: None,
         meters: &[],
     },
     Scene {
@@ -97,6 +100,7 @@ const SCENES: &[Scene] = &[
         preset: None,
         page: "Cuts",
         focus: None,
+        levels: None,
         meters: &[],
     },
     Scene {
@@ -113,6 +117,7 @@ const SCENES: &[Scene] = &[
         preset: None,
         page: "Multi filter",
         focus: Some(filter::CUTOFF),
+        levels: None,
         meters: &[],
     },
     Scene {
@@ -124,6 +129,7 @@ const SCENES: &[Scene] = &[
         preset: None,
         page: "DJ filter",
         focus: None,
+        levels: None,
         meters: &[],
     },
     Scene {
@@ -135,6 +141,7 @@ const SCENES: &[Scene] = &[
         preset: None,
         page: "Drive",
         focus: Some(drive::DRIVE),
+        levels: None,
         meters: &[(drive::LEVEL_CHANGE, 0.4)],
     },
     Scene {
@@ -150,6 +157,7 @@ const SCENES: &[Scene] = &[
         preset: None,
         page: "Comb",
         focus: Some(comb::PITCH),
+        levels: None,
         meters: &[],
     },
     Scene {
@@ -161,6 +169,7 @@ const SCENES: &[Scene] = &[
         preset: None,
         page: "Crush",
         focus: None,
+        levels: None,
         meters: &[],
     },
     Scene {
@@ -177,6 +186,7 @@ const SCENES: &[Scene] = &[
         preset: None,
         page: "Delay",
         focus: Some(delay::FEEDBACK),
+        levels: None,
         meters: &[],
     },
     Scene {
@@ -188,6 +198,7 @@ const SCENES: &[Scene] = &[
         preset: None,
         page: "Chorus",
         focus: None,
+        levels: None,
         meters: &[],
     },
     Scene {
@@ -199,6 +210,7 @@ const SCENES: &[Scene] = &[
         preset: None,
         page: "Flanger",
         focus: None,
+        levels: None,
         meters: &[],
     },
     Scene {
@@ -210,6 +222,7 @@ const SCENES: &[Scene] = &[
         preset: None,
         page: "Phaser",
         focus: None,
+        levels: None,
         meters: &[],
     },
     Scene {
@@ -221,6 +234,7 @@ const SCENES: &[Scene] = &[
         preset: Some(1),
         page: "Lo-fi",
         focus: None,
+        levels: None,
         meters: &[],
     },
     Scene {
@@ -238,6 +252,7 @@ const SCENES: &[Scene] = &[
         preset: None,
         page: "Compressor",
         focus: Some(comp::THRESHOLD),
+        levels: None,
         meters: &[(comp::REDUCTION, -4.5)],
     },
     Scene {
@@ -249,6 +264,7 @@ const SCENES: &[Scene] = &[
         preset: Some(2),
         page: "Reverb",
         focus: Some(cloud::DECAY),
+        levels: None,
         meters: &[],
     },
     Scene {
@@ -260,6 +276,7 @@ const SCENES: &[Scene] = &[
         preset: Some(2),
         page: "Tone",
         focus: None,
+        levels: None,
         meters: &[],
     },
     Scene {
@@ -271,6 +288,7 @@ const SCENES: &[Scene] = &[
         preset: None,
         page: "Master safety",
         focus: None,
+        levels: None,
         meters: &[
             (master::REDUCTION, -2.1),
             (master::OVERS, 37.0),
@@ -290,8 +308,63 @@ const CHARACTER: Scene = Scene {
     preset: Some(3),
     page: "Character",
     focus: Some(character::AMOUNT),
+    levels: None,
     meters: &[],
 };
+
+/// The effects added with the registry, after Character so the earlier
+/// screens keep their numbers.
+const NEW_FX: [Scene; 4] = [
+    Scene {
+        name: "22-ducker-tempo",
+        about: "Ducker, Big pump preset: two quarter-note cycles of the pump at the song's tempo",
+        id: "mpfree.fx.ducker",
+        place: "Pads · insert 1",
+        values: &[],
+        preset: Some(1),
+        page: "Ducker",
+        focus: Some(ducker::RELEASE),
+        levels: Some((-8.5, -19.0)),
+        meters: &[(ducker::GAIN, -11.0)],
+    },
+    Scene {
+        name: "23-ducker-key",
+        about:
+            "Ducker, Kick duck preset: the key over the threshold (dashed) and the duck it makes",
+        id: "mpfree.fx.ducker",
+        place: "Bass · insert 2",
+        values: &[],
+        preset: Some(0),
+        page: "Ducker",
+        focus: Some(ducker::DEPTH),
+        levels: None,
+        meters: &[],
+    },
+    Scene {
+        name: "24-transient",
+        about: "Transient shaper, Punchy kick preset: a hit's level in (dashed) and out",
+        id: "mpfree.fx.transient",
+        place: "Drums · insert 1",
+        values: &[],
+        preset: Some(0),
+        page: "Transient shaper",
+        focus: Some(transient::ATTACK),
+        levels: Some((-14.0, -9.5)),
+        meters: &[],
+    },
+    Scene {
+        name: "25-pitch-stairs",
+        about: "Pitch shifter, Rising stairs preset: each pass through the feedback a step higher",
+        id: "mpfree.fx.pitch",
+        place: "Keys · insert 3",
+        values: &[],
+        preset: Some(3),
+        page: "Pitch shifter",
+        focus: Some(pitch::FEEDBACK),
+        levels: None,
+        meters: &[],
+    },
+];
 
 /// The effect `s` shows, with its values, as a page.
 fn scene(s: &Scene, fonts: Fonts) -> Result<Sample, String> {
@@ -317,6 +390,7 @@ fn scene(s: &Scene, fonts: Fonts) -> Result<Sample, String> {
     );
     st.preset = s.preset;
     st.edited = s.preset.is_some() && !s.values.is_empty();
+    st.levels = s.levels;
     // Meters as the node would report them while music plays.
     for &(id, v) in s.meters {
         if let Some(i) = st.index(id) {
@@ -539,5 +613,8 @@ pub fn samples(fonts: impl Fn() -> Fonts) -> Result<Vec<Sample>, String> {
     out.push(perform_scene(fonts(), false)?);
     out.extend(lock_scenes(&fonts)?);
     out.push(scene(&CHARACTER, fonts())?);
+    for s in &NEW_FX {
+        out.push(scene(s, fonts())?);
+    }
     Ok(out)
 }

@@ -21,12 +21,18 @@
 //! - Waveforms are read a take at a time with [`AudioHost::wave`], at a
 //!   small fixed cost a period; a take that records is read again as it
 //!   grows.
+//! - Projects (`project.rs`, part `audiotracks`): a save reads every take
+//!   over a few periods ([`AudioHost::save`]); opening a project or New
+//!   empties the tracks ([`TrackHost::clear`], once nothing records) and
+//!   the project's part goes in when it has been read
+//!   ([`TrackHost::open`]).
 //!
 //! The memory is set aside when MPFree starts ([`SECONDS`] of stereo). The
 //! takes stay in RAM: streaming them from the stick waits for the stick
 //! speed test (rule zero: it needs Jay's go).
 
 use mpfree_audiotracks::host::{AudioHost, TakeWave, MAX_COLUMNS};
+use mpfree_audiotracks::save::Saved;
 use mpfree_audiotracks::{Command, Input, Monitor, TakeInfo, MAX_TRACKS, PEAK_BLOCK};
 use mpfree_time_ui::song::{audio_blocks, take_lanes, AudioLane, MONITORS};
 use mpfree_time_ui::view::{audio_color, AudioAction, RegionId, TimeState, TransportInfo};
@@ -135,6 +141,12 @@ pub struct TrackHost {
     /// What the lanes showed at the last check, and whether that changed.
     seen: u64,
     changed: bool,
+    /// A project opening: the tracks empty once nothing records, then the
+    /// project's part (if it has come) goes in.
+    clearing: bool,
+    pending: Option<Saved>,
+    /// A line for the log from the open.
+    note: Option<String>,
 }
 
 impl TrackHost {
@@ -167,6 +179,9 @@ impl TrackHost {
             periods: 0,
             seen: 0,
             changed: false,
+            clearing: false,
+            pending: None,
+            note: None,
         }
     }
 
@@ -195,6 +210,7 @@ impl TrackHost {
             out.1[f] = self.out[2 * f + 1];
         }
         self.periods += 1;
+        self.tend_open();
         self.take_wave();
         if self.periods.is_multiple_of(CHECK_EVERY) {
             self.tend_waves();
@@ -228,6 +244,99 @@ impl TrackHost {
             .position(|r| r.start == at)?;
         self.repick = None;
         Some(RegionId { track, index })
+    }
+
+    /// A project opening, or New: every recording ends now, a save under
+    /// way stops, and the tracks are emptied (every take forgotten) as
+    /// soon as nothing records; then the project's part, if one comes
+    /// ([`TrackHost::open`]), goes in. Does not allocate.
+    pub fn clear(&mut self) {
+        self.host.cancel_save();
+        for t in 0..MAX_TRACKS {
+            if self.host.tracks.armed(t) {
+                self.host.command(Command::Arm(t, false));
+            }
+        }
+        if let Some(old) = self.pending.take() {
+            self.host.drop_saved(old);
+        }
+        self.clearing = true;
+        self.tend_open();
+    }
+
+    /// An opened project's audio tracks, read from its files: they go in
+    /// once the tracks are empty ([`TrackHost::clear`] comes first). What
+    /// is left of `saved` is dropped on the host's worker.
+    pub fn open(&mut self, saved: Saved) {
+        if let Some(old) = self.pending.replace(saved) {
+            self.host.drop_saved(old);
+        }
+        self.tend_open();
+    }
+
+    /// True while a project's audio tracks are going in: emptying, waiting
+    /// for the part, or takes copying in. A save waits for it.
+    pub fn opening(&self) -> bool {
+        self.clearing || self.pending.is_some() || self.host.tracks.loading() > 0
+    }
+
+    /// A line for the log from the open, once.
+    pub fn take_note(&mut self) -> Option<String> {
+        self.note.take()
+    }
+
+    /// The open's next step, each period: empty the tracks once nothing
+    /// records, then put the waiting part in.
+    fn tend_open(&mut self) {
+        if self.clearing {
+            if !self.host.tracks.clear() {
+                return;
+            }
+            self.clearing = false;
+            // The waveforms were the old takes'; the ids come back.
+            self.host.cancel_wave();
+            self.reading = None;
+            while let Some(w) = self.waves.pop() {
+                self.host.drop_wave(w);
+            }
+            (self.panel, self.takes_open, self.repick, self.shown) = (None, None, None, 0);
+            self.resync();
+            self.changed = true;
+        }
+        let Some(saved) = self.pending.take() else {
+            return;
+        };
+        let (tracks, takes) = (saved.tracks.len(), saved.takes.len());
+        self.shown = saved.tracks.iter().map(|t| t.index + 1).max().unwrap_or(0);
+        let r = self.host.load(saved);
+        self.resync();
+        self.changed = true;
+        self.note = Some(match r {
+            Ok(()) if tracks == 0 => return,
+            Ok(()) => format!(
+                "project: {tracks} audio track{} and {takes} take{} in",
+                plural(tracks),
+                plural(takes)
+            ),
+            Err(e) => {
+                format!("project: {e} (a take left out may not fit in Prefs > Audio track memory)")
+            }
+        });
+    }
+
+    /// What this side keeps of each track's settings, from the tracks
+    /// themselves (after a clear or a load).
+    fn resync(&mut self) {
+        for t in 0..MAX_TRACKS {
+            if let Some(s) = self.host.tracks.settings(t) {
+                self.inputs[t] = s.input;
+                self.monitor[t] = s.monitor;
+                self.volume[t] = s.level;
+                self.pan[t] = s.pan;
+                self.mute[t] = s.mute;
+                self.solo[t] = s.solo;
+            }
+        }
     }
 
     /// True once after the lanes, the waveforms or the counters changed.
@@ -848,6 +957,15 @@ fn region(
         .get(r.index)
         .copied()
         .ok_or_else(|| "that region is gone; pick it again".to_string())
+}
+
+/// "s" for a count other than one.
+fn plural(n: usize) -> &'static str {
+    if n == 1 {
+        ""
+    } else {
+        "s"
+    }
 }
 
 /// Columns for a take's waveform: one for every block of its peak table,
@@ -1608,6 +1726,102 @@ mod tests {
 
     /// Steady play of a recorded take, with its waveform read, neither
     /// allocates nor frees on the audio thread.
+    #[test]
+    fn a_project_opening_empties_the_tracks_and_puts_its_part_in() {
+        let mut r = Rig::new();
+        let act = |r: &mut Rig, a| {
+            r.h.action(a, &r.info(), true).unwrap();
+            r.periods(2);
+        };
+        // A bar on audio 1, audio 2 muted and set to the right input.
+        act(&mut r, AudioAction::Arm { track: 0, on: true });
+        act(&mut r, AudioAction::Mute { track: 1, on: true });
+        act(
+            &mut r,
+            AudioAction::Input {
+                track: 1,
+                input: Input::Right,
+            },
+        );
+        r.live = true;
+        r.command(T::Record);
+        while r.t.position() < 3840 {
+            r.period();
+        }
+        r.command(T::Stop);
+        r.live = false;
+        act(
+            &mut r,
+            AudioAction::Arm {
+                track: 0,
+                on: false,
+            },
+        );
+        r.periods(20);
+        assert!(r.h.host.save());
+        let t0 = Instant::now();
+        let saved = loop {
+            if let Some(s) = r.h.host.take_saved() {
+                break s;
+            }
+            assert!(t0.elapsed() < Duration::from_secs(20), "no save");
+            r.period();
+            std::thread::sleep(Duration::from_micros(100));
+        };
+        assert_eq!((saved.tracks.len(), saved.takes.len()), (2, 1));
+        let first = r.h.host.tracks.regions(0).to_vec();
+        r.waves();
+
+        // Another take records when the project opens: the recording ends,
+        // the tracks empty once it has, and the part goes in.
+        act(&mut r, AudioAction::Arm { track: 2, on: true });
+        r.live = true;
+        r.command(T::Record);
+        r.periods(40);
+        assert!(r.h.host.tracks.recording(2).is_some());
+        r.h.clear();
+        r.command(T::Stop);
+        r.live = false;
+        assert!(r.h.opening());
+        r.h.open(saved);
+        let t0 = Instant::now();
+        while r.h.opening() {
+            assert!(t0.elapsed() < Duration::from_secs(20), "never opened");
+            r.period();
+            std::thread::sleep(Duration::from_micros(100));
+        }
+        assert_eq!(
+            r.h.take_note().as_deref(),
+            Some("project: 2 audio tracks and 1 take in")
+        );
+        assert_eq!(r.h.host.tracks.takes().count(), 1);
+        assert_eq!(r.h.host.tracks.regions(0), &first[..]);
+        assert!(r.h.host.tracks.regions(2).is_empty());
+        assert!(!r.h.host.tracks.armed(2));
+        let st = r.state();
+        assert_eq!(st.audio.iter().map(|l| l.track).collect::<Vec<_>>(), [0, 1]);
+        assert!(st.audio[1].mute && st.audio[1].input == Input::Right);
+        assert!(!st.audio[0].mute && !st.audio[0].armed);
+        // The waveform is read again for the take that came back.
+        r.waves();
+        assert_eq!(r.state().waves.len(), 1);
+        r.command(T::Locate(0));
+        r.command(T::Play);
+        r.periods(100);
+        assert!(r.heard > 0.3, "plays back: {}", r.heard);
+        r.command(T::Stop);
+        r.periods(4);
+
+        // New project: empty, every setting as at start, no line.
+        r.h.clear();
+        r.periods(2);
+        assert!(!r.h.opening());
+        assert_eq!(r.h.take_note(), None);
+        assert_eq!(r.h.host.tracks.takes().count(), 0);
+        assert!(r.state().audio.is_empty());
+        assert!(!r.h.mute[1] && r.h.inputs[1] == Input::Left);
+    }
+
     #[test]
     fn steady_play_never_allocates() {
         let mut r = Rig::new();
