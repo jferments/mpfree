@@ -76,6 +76,7 @@ mod ducker;
 mod dynamics;
 mod echoes;
 mod eq;
+mod grains;
 mod kit;
 mod lofi;
 mod master;
@@ -91,9 +92,13 @@ mod presets;
 pub mod print;
 pub mod registry;
 mod rooms;
+mod shift;
+mod stereo;
+mod strip;
 mod svf;
 mod transient;
 mod vocal;
+mod wah;
 mod xy;
 pub mod xyfx;
 
@@ -112,6 +117,7 @@ pub use ducker::{
 pub use dynamics::{DeEsser, Gate, Limiter, MultibandCompressor};
 pub use echoes::{MultiTap, TapeDelay};
 pub use eq::Eq;
+pub use grains::Granulator;
 pub use lofi::{LoFi, PRESETS as LOFI_PRESETS};
 pub use master::{MasterSafety, MasterStats};
 pub use mixer::{
@@ -132,12 +138,16 @@ pub use presets::presets;
 pub use print::{wav_f32, Frozen, Print, PrintError, PrintJob, PrintState, Printed, Tail};
 pub use registry::{Category, FxEntry, EFFECTS};
 pub use rooms::{Plate, Room, Spring};
+pub use shift::FreqShifter;
+pub use stereo::{SampleDelay, StereoWidth};
+pub use strip::ChannelStrip;
 pub use svf::{DjFilter, MultiFilter, Svf, SvfMode};
 pub use transient::TransientShaper;
 pub use vocal::{
     interval_semis, nearest_note, Harmonizer, PitchCorrect, INTERVALS as VOCAL_INTERVALS,
     KEYS as VOCAL_KEYS, RANGES as VOCAL_RANGES, SCALES as VOCAL_SCALES,
 };
+pub use wah::{AutoWah, TalkBox};
 pub use xy::{XyAxis, XyPad};
 pub use xyfx::XyFx;
 
@@ -164,6 +174,7 @@ pub mod ids {
     pub use crate::echoes::multitap;
     pub use crate::echoes::tape;
     pub use crate::eq::ids as eq;
+    pub use crate::grains::ids as granulator;
     pub use crate::lofi::ids as lofi;
     pub use crate::master::ids as master;
     pub use crate::mixer::ids as mixer;
@@ -179,11 +190,17 @@ pub mod ids {
     pub use crate::rooms::plate;
     pub use crate::rooms::room;
     pub use crate::rooms::spring;
+    pub use crate::shift::ids as freqshift;
+    pub use crate::stereo::sample_delay_ids as sample_delay;
+    pub use crate::stereo::width_ids as width;
+    pub use crate::strip::ids as channel_strip;
     pub use crate::svf::dj as dj_filter;
     pub use crate::svf::multi as filter;
     pub use crate::transient::ids as transient;
     pub use crate::vocal::harm_ids as harmonizer;
     pub use crate::vocal::tune_ids as pitch_correct;
+    pub use crate::wah::autowah;
+    pub use crate::wah::talkbox;
     pub use crate::xyfx::ids as xyfx;
 }
 

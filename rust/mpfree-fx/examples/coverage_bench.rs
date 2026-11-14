@@ -84,6 +84,46 @@ fn main() {
             "mpfree.fx.xy",
             &[(ids::xyfx::ACTIVE, 0.0)],
         ),
+        ("Auto wah", "mpfree.fx.autowah", &[]),
+        (
+            "Talk box",
+            "mpfree.fx.talkbox",
+            &[(ids::talkbox::LFO_DEPTH, 60.0)],
+        ),
+        ("Freq shifter", "mpfree.fx.freqshift", &[]),
+        (
+            "Freq shifter (Stereo, feedback)",
+            "mpfree.fx.freqshift",
+            &[
+                (ids::freqshift::MODE, 3.0),
+                (ids::freqshift::FEEDBACK, 60.0),
+            ],
+        ),
+        (
+            "Stereo width",
+            "mpfree.fx.width",
+            &[(ids::width::DELAY, 4.0)],
+        ),
+        (
+            "Sample delay",
+            "mpfree.fx.sample_delay",
+            &[(ids::sample_delay::LEFT, 300.0)],
+        ),
+        ("Channel strip", "mpfree.fx.channel_strip", &[]),
+        (
+            "Channel strip (gate on)",
+            "mpfree.fx.channel_strip",
+            &[(ids::channel_strip::GATE, 1.0)],
+        ),
+        ("Granulator", "mpfree.fx.granulator", &[]),
+        (
+            "Granulator (dense)",
+            "mpfree.fx.granulator",
+            &[
+                (ids::granulator::SIZE, 500.0),
+                (ids::granulator::DENSITY, 80.0),
+            ],
+        ),
     ];
     println!("Coverage effects, one stereo instance on {BLOCK}-frame blocks at {RATE} Hz:");
     for &(name, id, set) in runs {
