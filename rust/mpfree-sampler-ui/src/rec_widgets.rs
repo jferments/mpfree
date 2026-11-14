@@ -5,6 +5,7 @@
 //! the last frame, so it costs next to nothing) and puts what to mark in
 //! the fields.
 
+use std::cell::Cell;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::VecDeque;
 use std::hash::{Hash, Hasher};
@@ -172,6 +173,8 @@ pub struct InputView {
     /// A line over the strip, such as why nothing comes in.
     pub note: String,
     pub caption: String,
+    /// The look of the picture last painted ([`InputView::look`]).
+    painted: Cell<Option<u64>>,
 }
 
 const METER_H: i32 = 52;
@@ -194,6 +197,7 @@ impl InputView {
             take: None,
             note: String::new(),
             caption: String::new(),
+            painted: Cell::new(None),
         }
     }
 
@@ -214,11 +218,11 @@ impl InputView {
 
     /// What the picture in `r` depends on, as one number: two states with
     /// the same look paint the same pixels. The Rec tab redraws the view
-    /// only when its look changes, so the strip counts in pixels, not
-    /// frames: a silent input scrolling on, with nothing marked, draws
-    /// nothing new. (The view spans most of the turned panel's rows, so
-    /// each redraw rewrote 904 of its 1280 rows, 30 times a second, until
-    /// 13 Nov.)
+    /// only when its look differs from the one painted
+    /// ([`InputView::painted`]), so the strip counts in pixels, not frames:
+    /// a silent input scrolling on, with nothing marked, draws nothing new.
+    /// (The view spans most of the turned panel's rows, so each redraw
+    /// rewrote 904 of its 1280 rows, 30 times a second, until 13 Nov.)
     pub fn look(&self, r: Rect) -> u64 {
         let mut h = DefaultHasher::new();
         (&self.title, &self.right, &self.note, &self.caption).hash(&mut h);
@@ -255,6 +259,13 @@ impl InputView {
         });
         px.hash(&mut h);
         h.finish()
+    }
+
+    /// The look of the picture last painted, by whatever asked for it (the
+    /// Rec tab, a change of settings, the whole screen redrawn): what the
+    /// screen shows now. None before the first paint.
+    pub fn painted(&self) -> Option<u64> {
+        self.painted.get()
     }
 
     /// The frame on the strip's right edge: `now` back to the last whole
@@ -532,5 +543,6 @@ impl Widget for InputView {
                 &self.caption,
             );
         }
+        self.painted.set(Some(self.look(r)));
     }
 }

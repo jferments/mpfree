@@ -923,6 +923,22 @@ impl Session {
                 self.mix.set_rec_source(src);
             }
             FromUi::SampleGrains(c) => self.cloud = Some(c),
+            // A tap on a track's sound line on Arrange, as main.rs: the
+            // track is armed and the Synth tab's MENU opens on its
+            // Instrument row, showing that track's instrument.
+            FromUi::TrackInstrument(track) if track < self.time.project().tracks.len() => {
+                if self.time.armed() != Some(track) {
+                    let arm = mpfree_time_ui::TimeAction::Arm(Some(track));
+                    self.fx.push(Effect::Time(arm));
+                }
+                let e = self.app.open_track_instrument(track);
+                self.fx.extend(e);
+                let tab = crate::synth_tab(&self.synth, &self.mix.instruments, track, None);
+                self.out.show(ToUi::Synth(tab));
+            }
+            FromUi::TrackInstrument(track) => {
+                self.out.note(&format!("arrange: no track {}", track + 1))
+            }
             FromUi::SaveProject => self.save_asked = true,
             FromUi::OpenProject(o) => self.open_project(o),
             FromUi::OpenLoops(l) => self.looper.open(*l),

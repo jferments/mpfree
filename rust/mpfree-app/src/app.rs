@@ -4543,6 +4543,34 @@ mod tests {
         );
     }
 
+    /// A tap on track 3's sound line on Arrange: the Synth tab's MENU
+    /// opens on the Instrument row, named for track 3, and MENU goes back
+    /// to the Synth tab.
+    #[test]
+    fn a_tracks_sound_line_opens_its_instrument_row_on_the_synth_tab() {
+        let mut app = ready();
+        app.open_tab(View::Arrange);
+        let fx = app.open_track_instrument(2);
+        assert_eq!(app.track(), 2);
+        assert_eq!(app.view(), View::Options);
+        let m = fx
+            .iter()
+            .find_map(|e| match e {
+                Effect::Menu(m) => Some(m),
+                _ => None,
+            })
+            .expect("the menu");
+        assert_eq!(m.title, "Synth options");
+        assert_eq!(m.selected, 0);
+        assert_eq!(
+            m.rows[0],
+            ("Track 3 instrument".to_string(), "Kit".to_string())
+        );
+        assert!(fx.contains(&Effect::Show(View::Synth)), "{fx:?}");
+        press(&mut app, MENU);
+        assert_eq!(app.view(), View::Synth);
+    }
+
     #[test]
     fn the_synth_options_pick_the_engine_the_scale_and_the_pad_layouts() {
         use crate::synth::Engine;
@@ -4590,7 +4618,8 @@ mod tests {
             })
         };
         // Instrument: the selected track's own sound. Kit, then Poly, FM,
-        // Drums, Pluck, Wavetable and the plugin synths; then back to Kit.
+        // Drums, Pluck, Wavetable, Keys and the plugin synths; then back to
+        // Kit.
         let sound = |fx: &[Effect]| {
             fx.iter().find_map(|e| match e {
                 Effect::TrackSound { track, id } => Some((*track, *id)),
@@ -4607,7 +4636,7 @@ mod tests {
         assert_eq!(
             sound(&app.step_item(row(SynthItem::Engine), 1)),
             None,
-            "Wavetable is the last with no plugin synths"
+            "Keys is the last with no plugin synths"
         );
         app.plugin_synths = vec![("clap:org.example.synth", "Example Synth")];
         assert_eq!(
@@ -4623,7 +4652,7 @@ mod tests {
             ("Track 2 instrument", "Kit".to_string())
         );
         app.set_track(0);
-        for _ in 0..6 {
+        for _ in 0..Engine::ALL.len() + 1 {
             app.step_item(row(SynthItem::Engine), -1);
         }
         assert_eq!(app.track_sound(0), None, "back to the kit");

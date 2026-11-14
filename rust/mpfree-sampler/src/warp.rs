@@ -375,8 +375,9 @@ pub struct Worker {
 }
 
 impl Worker {
-    /// Starts the thread (at normal priority: it should never compete
-    /// with the audio thread).
+    /// Starts the thread: off the sound's cores, and at idle priority
+    /// once the program allows it ([`mpfree_lanes::os::idle_job`]), so a
+    /// stretch never competes with the audio thread or slows the screen.
     pub fn spawn() -> std::io::Result<Worker> {
         let (tx, jobs) = channel::<(u64, CopyKey, JobSpec)>();
         let (done, rx) = channel();
@@ -385,8 +386,9 @@ impl Worker {
         let handle = std::thread::Builder::new()
             .name("mpfree-stretch".into())
             .spawn(move || {
-                // Off the sound's cores and priority when started by the audio thread.
-                let _ = mpfree_lanes::os::background();
+                // Off the sound's cores and priority when started by the
+                // audio thread, and after the screen.
+                mpfree_lanes::os::idle_job();
                 for (g, key, spec) in jobs {
                     let stale = || current.load(Ordering::Relaxed) != g;
                     let t = Instant::now();

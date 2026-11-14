@@ -203,6 +203,9 @@ impl ClipInfo {
 #[derive(Clone, Debug, PartialEq)]
 pub struct TrackInfo {
     pub name: String,
+    /// What it plays, under its name ("Kit", "FM · Glass Keys"); empty
+    /// shows only the name.
+    pub sound: String,
     pub mute: bool,
     /// It records pad pressure (`Track::record_touch`).
     pub pressure: bool,
@@ -413,6 +416,7 @@ impl TimeState {
             .iter()
             .map(|t| TrackInfo {
                 name: t.name.clone(),
+                sound: String::new(),
                 mute: t.mute,
                 pressure: t.record_touch,
                 slots: t
@@ -927,6 +931,9 @@ pub fn action(ev: &UiEvent, st: &TimeState) -> Option<TimeAction> {
         (SONG, EventKind::Select(i)) => {
             Some(TimeAction::SelectPlacement((*i != NONE).then_some(*i)))
         }
+        // The sound line (`SOUND_TAP + track`) is the app's: the
+        // track's instrument.
+        (CLIPS, EventKind::Tab(track)) if *track >= crate::widgets::SOUND_TAP => None,
         (CLIPS, EventKind::Tab(track)) => Some(TimeAction::Arm(if st.armed == Some(*track) {
             None
         } else {
@@ -1251,6 +1258,7 @@ pub fn grid_tracks(st: &TimeState) -> Vec<GridTrack> {
         .enumerate()
         .map(|(i, tr)| GridTrack {
             name: tr.name.clone(),
+            sound: tr.sound.clone(),
             color: track_color(i),
             armed: st.armed == Some(i),
             mute: tr.mute,
@@ -1350,6 +1358,7 @@ pub fn song_lanes(st: &TimeState, first_bar: i64) -> SongLanes {
             .enumerate()
             .map(|(i, tr)| (tr.name.clone(), track_color(i)))
             .collect(),
+        sounds: st.tracks.iter().map(|tr| tr.sound.clone()).collect(),
         blocks: st
             .placements
             .iter()

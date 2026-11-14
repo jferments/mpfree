@@ -200,6 +200,15 @@ const PLUCK: &[Curated] = &[
     set("Play", [kp::RELEASE, kp::VEL_TONE, kp::SPREAD, kp::LEVEL]),
 ];
 
+use mpfree_synth::keys_params as ek;
+
+/// Keys: how it is struck, the pickup's tone, and the amp.
+const KEYS: &[Curated] = &[
+    set("Strike", [ek::HARDNESS, ek::BELL, ek::DECAY, ek::RELEASE]),
+    set("Tone", [ek::VOICING, ek::BARK, ek::TONE, ek::VEL_TONE]),
+    set("Amp", [ek::TREMOLO, ek::TREM_RATE, ek::DRIVE, ek::LEVEL]),
+];
+
 use mpfree_synth::drum_params::{field as df, pad_id, PADS, STRIDE};
 
 /// Drums, on pad 1 ([`on_pad`] moves them): the hit, its body, its mix.
@@ -241,6 +250,7 @@ fn curated(id: &str) -> Option<&'static [Curated]> {
         "mpfree.fm" => Some(FM),
         "mpfree.wavetable" => Some(WT),
         "mpfree.pluck" => Some(PLUCK),
+        "mpfree.keys" => Some(KEYS),
         DRUMS_ID => Some(DRUMS),
         _ => None,
     }
@@ -436,10 +446,11 @@ mod tests {
     use super::*;
     use mpfree_mod::Bindings;
     use mpfree_node::{Curve, Kind, Node, Unit};
-    use mpfree_synth::{Drums, Fm, Pluck, Poly, Wavetable};
+    use mpfree_synth::{Drums, Fm, Keys, Pluck, Poly, Wavetable};
 
     fn engines() -> Vec<Box<dyn Node>> {
         vec![
+            Box::new(Keys::new(48_000)),
             Box::new(Poly::new(48_000)),
             Box::new(Fm::new(48_000)),
             Box::new(Wavetable::new(48_000)),
