@@ -16,6 +16,10 @@
 //!   in the middle, the selected item on the right with a quick waveform
 //!   and its buttons; the on-screen keyboard and the yes/no card over
 //!   them.
+//! - [`export`]: the Export panel ([`ExportPanel`]) that Export in the
+//!   Projects place opens over the browser: what to make, the range, how
+//!   it will play, then the time done and the outcome. The app makes and
+//!   runs the export (`mpfree-export`).
 //! - [`sample`]: sample screens over a real library in a scratch folder,
 //!   for the workstation preview (`mpfree-browser-preview`) and the tests.
 //!
@@ -32,10 +36,12 @@
 
 #![forbid(unsafe_code)]
 
+pub mod export;
 pub mod sample;
 pub mod state;
 pub mod view;
 
+pub use export::{ExportChoice, ExportInput, ExportPanel, ExportPhase, ExportRange, ExportSetup};
 pub use state::{BrowseAction, Browser, Button, Filter, Input, Pick, Screen, Sort, Source};
 pub use view::BrowserView;
 
@@ -49,6 +55,9 @@ pub const BROWSER_PAGE: &str = "browser";
 pub const BROWSER_LAYOUT: &str = "col(header:60, browser:*, hint:26)";
 /// The hint line while the browser is open.
 pub const BROWSER_HINT: &str = "Dial: move  ·  push: open or load  ·  - / +: up / into a folder  ·  PLAY: hear it  ·  ERASE: to Trash  ·  BROWSE closes  ·  SHIFT + BROWSE: save project";
+
+/// The hint line while the Export panel shows.
+pub const EXPORT_HINT: &str = "Dial: bars  ·  push: Start (when done, Close)  ·  -: close  ·  BROWSE hides it (an export keeps running)";
 
 /// The hint line while a picker is open ([`Browser::open_picker`]).
 pub const PICKER_HINT: &str = "Dial: move  ·  push: load  ·  - / +: up / into a folder  ·  PLAY: hear it  ·  BROWSE or Cancel: close without loading";

@@ -3,6 +3,7 @@
 //! when one is open. It draws a [`Screen`] and turns touches into
 //! [`Input`]s; it never touches the library itself.
 
+use crate::export::{ExportInput, ExportPanel, ExportPhase, ExportRange};
 use crate::state::{Button, Filter, Input, Key, Modal, Row, Screen, Sort, Source, SOURCES};
 use mpfree_library::{AudioFormat, Kind, Place};
 use mpfree_ui::draw;
@@ -260,6 +261,337 @@ fn confirm_geo(r: Rect) -> Ask {
     }
 }
 
+/// The Export panel's card and its touch areas (each used in the phases
+/// that show it).
+struct ExportGeo {
+    card: Rect,
+    title: Rect,
+    make_label: Rect,
+    mixdown: Rect,
+    stems: Rect,
+    midi: Rect,
+    range_label: Rect,
+    arrangement: Rect,
+    bars: Rect,
+    fewer: Rect,
+    count: Rect,
+    more: Rect,
+    range_words: Rect,
+    plays_label: Rect,
+    plays: Rect,
+    into_label: Rect,
+    into: Rect,
+    /// Running: the time done, and the bar under it.
+    words: Rect,
+    bar: Rect,
+    /// Over: the outcome's lines.
+    outcome: Rect,
+    /// The bottom row: Close / Cancel on the left, Start / Show on the right.
+    left: Rect,
+    right: Rect,
+}
+
+fn export_geo(r: Rect) -> ExportGeo {
+    let w = 780.min(r.w - 40);
+    let h = 480.min(r.h - 24);
+    let card = Rect::new(r.x + (r.w - w) / 2, r.y + (r.h - h) / 2, w, h);
+    let inner = card.inset(24);
+    let (title, rest) = inner.take_top(40);
+    let (_, rest) = rest.take_top(10);
+    let (bottom, body) = rest.take_bottom(BUTTON_H + 4);
+    let bottom = bottom.take_bottom(BUTTON_H).0;
+    let label_w = 120;
+    let (make, rest) = body.take_top(BUTTON_H);
+    let (make_label, make) = make.take_left(label_w);
+    let tw = (make.w - 16) / 3;
+    let mixdown = Rect::new(make.x, make.y, tw, make.h);
+    let stems = Rect::new(make.x + tw + 8, make.y, tw, make.h);
+    let midi = Rect::new(make.x + 2 * (tw + 8), make.y, make.w - 2 * (tw + 8), make.h);
+    let (_, rest) = rest.take_top(14);
+    let (range, rest) = rest.take_top(BUTTON_H);
+    let (range_label, range) = range.take_left(label_w);
+    let (arrangement, range) = range.take_left(200);
+    let (_, range) = range.take_left(8);
+    let (bars, range) = range.take_left(110);
+    let (_, range) = range.take_left(16);
+    let (fewer, range) = range.take_left(BUTTON_H + 8);
+    let (count, range) = range.take_left(80);
+    let (more, _) = range.take_left(BUTTON_H + 8);
+    let (range_words, rest) = rest.take_top(34);
+    let range_words = range_words.take_right(range_words.w - label_w).0;
+    let (_, rest) = rest.take_top(10);
+    let (plays, rest) = rest.take_top(52);
+    let (plays_label, plays) = plays.take_left(label_w);
+    // The label beside the first line.
+    let plays_label = plays_label.take_top(24).0;
+    let (_, rest) = rest.take_top(8);
+    let (into, _) = rest.take_top(30);
+    let (into_label, into) = into.take_left(label_w);
+    let (words, rest) = body.inset_xy(0, 20).take_top(56);
+    let (_, rest) = rest.take_top(12);
+    let (bar, _) = rest.take_top(18);
+    let outcome = body.inset_xy(0, 12);
+    let (left, rest) = bottom.take_left(220);
+    let (right, _) = rest.take_right(260);
+    ExportGeo {
+        card,
+        title,
+        make_label,
+        mixdown,
+        stems,
+        midi,
+        range_label,
+        arrangement,
+        bars,
+        fewer,
+        count,
+        more,
+        range_words,
+        plays_label,
+        plays,
+        into_label,
+        into,
+        words,
+        bar,
+        outcome,
+        left,
+        right,
+    }
+}
+
+/// What a touch on the Export panel at (x, y) means.
+/// The panel's controls as they stand: where, what a tap means, and the
+/// label (for the hit test and the page's targets).
+fn export_controls(p: &ExportPanel, r: Rect) -> Vec<(Rect, ExportInput, &'static str)> {
+    let g = export_geo(r);
+    match p.phase {
+        ExportPhase::Ready => vec![
+            (g.mixdown, ExportInput::Mixdown, "Mixdown"),
+            (g.stems, ExportInput::Stems, "Stems"),
+            (g.midi, ExportInput::Midi, "MIDI file"),
+            (g.arrangement, ExportInput::Arrangement, "Arrangement"),
+            (g.bars, ExportInput::Bars, "Bars"),
+            (g.fewer, ExportInput::Fewer, "-"),
+            (g.more, ExportInput::More, "+"),
+            (g.left, ExportInput::Close, "Close"),
+            (g.right, ExportInput::Start, "Start"),
+        ],
+        ExportPhase::Running { .. } => vec![(g.right, ExportInput::Cancel, "Cancel")],
+        ExportPhase::Done {
+            folder: Some(_), ..
+        } => vec![
+            (g.left, ExportInput::Close, "Close"),
+            (g.right, ExportInput::Show, "Show in BROWSE"),
+        ],
+        ExportPhase::Done { .. } | ExportPhase::Stopped(_) => {
+            vec![(g.left, ExportInput::Close, "Close")]
+        }
+    }
+}
+
+fn export_hit(p: &ExportPanel, r: Rect, x: i32, y: i32) -> Option<ExportInput> {
+    export_controls(p, r)
+        .into_iter()
+        .find(|(rr, _, _)| rr.contains(x, y))
+        .map(|(_, i, _)| i)
+}
+
+/// `text` in lines no wider than `w` (a word wider than `w` gets a line of
+/// its own).
+fn wrap(cx: &mut PaintCx, font: FontId, size: f32, text: &str, w: i32) -> Vec<String> {
+    let mut lines: Vec<String> = Vec::new();
+    for word in text.split(' ') {
+        match lines.last_mut() {
+            Some(l) if cx.measure(font, size, &format!("{l} {word}")) <= w => {
+                l.push(' ');
+                l.push_str(word);
+            }
+            _ => lines.push(word.to_string()),
+        }
+    }
+    lines
+}
+
+/// Draws `text` wrapped into `r`, from its top, `line` pixels a line;
+/// lines past its bottom are left out.
+fn paint_lines(
+    cx: &mut PaintCx,
+    r: Rect,
+    font: FontId,
+    size: f32,
+    line: i32,
+    ink: Color,
+    text: &str,
+) {
+    let lines = wrap(cx, font, size, text, r.w);
+    for (k, l) in lines.iter().enumerate() {
+        let lr = Rect::new(r.x, r.y + k as i32 * line, r.w, line);
+        if lr.bottom() > r.bottom() + 1 {
+            break;
+        }
+        cx.text(font, size, lr, Align::Left, ink, l);
+    }
+}
+
+fn paint_export(cx: &mut PaintCx, r: Rect, p: &ExportPanel) {
+    let t = cx.theme.clone();
+    cx.canvas.fill_rect(r, t.bg.with_alpha(200));
+    let g = export_geo(r);
+    cx.canvas.fill_round_rect(g.card, t.radius, t.surface);
+    cx.canvas.stroke_round_rect(g.card, t.radius, 1, t.outline);
+    let title = match &p.phase {
+        ExportPhase::Ready => "Export",
+        ExportPhase::Running { .. } => "Exporting",
+        ExportPhase::Done { .. } => "Exported",
+        ExportPhase::Stopped(_) => "Export stopped",
+    };
+    cx.text(
+        FontId::Bold,
+        t.size_title + 3.0,
+        g.title,
+        Align::Left,
+        t.text,
+        title,
+    );
+    let label = |cx: &mut PaintCx, rr: Rect, s: &str| {
+        cx.text(FontId::Bold, t.size_body, rr, Align::Left, t.text_dim, s);
+    };
+    match &p.phase {
+        ExportPhase::Ready => {
+            label(cx, g.make_label, "Make");
+            button(cx, g.mixdown, "Mixdown", p.mixdown, false);
+            let stems = format!("Stems ({})", p.setup.stems);
+            button(cx, g.stems, &stems, p.stems, false);
+            button(cx, g.midi, "MIDI file", p.midi, false);
+            label(cx, g.range_label, "Range");
+            if p.setup.arrangement.is_some() {
+                button(
+                    cx,
+                    g.arrangement,
+                    "Arrangement",
+                    p.range == ExportRange::Arrangement,
+                    false,
+                );
+            } else {
+                cx.canvas.stroke_round_rect(g.arrangement, 10, 1, t.outline);
+                cx.text(
+                    FontId::Sans,
+                    t.size_small,
+                    g.arrangement,
+                    Align::Center,
+                    t.text_faint,
+                    "No arrangement",
+                );
+            }
+            let on_bars = matches!(p.range, ExportRange::Bars(_));
+            button(cx, g.bars, "Bars", on_bars, false);
+            button(cx, g.fewer, "-", false, false);
+            cx.text(
+                FontId::Bold,
+                t.size_title,
+                g.count,
+                Align::Center,
+                if on_bars { t.text } else { t.text_dim },
+                &p.bars.to_string(),
+            );
+            button(cx, g.more, "+", false, false);
+            cx.text(
+                FontId::Sans,
+                t.size_small,
+                g.range_words,
+                Align::Left,
+                t.text_dim,
+                &p.range_words(),
+            );
+            label(cx, g.plays_label, "Plays");
+            paint_lines(
+                cx,
+                g.plays,
+                FontId::Sans,
+                t.size_small,
+                24,
+                t.text,
+                &p.setup.mode,
+            );
+            label(cx, g.into_label, "Into");
+            cx.text(
+                FontId::Sans,
+                t.size_small,
+                g.into,
+                Align::Left,
+                t.text,
+                &p.setup.folder,
+            );
+            button(cx, g.left, "Close", false, false);
+            if p.can_start() {
+                button(cx, g.right, "Start", true, false);
+            } else {
+                cx.canvas.stroke_round_rect(g.right, 10, 1, t.outline);
+                cx.text(
+                    FontId::Sans,
+                    t.size_small,
+                    g.right,
+                    Align::Center,
+                    t.text_faint,
+                    "Tick something to make",
+                );
+            }
+        }
+        ExportPhase::Running { words, part } => {
+            cx.text(
+                FontId::Bold,
+                t.size_title + 9.0,
+                g.words,
+                Align::Center,
+                t.text,
+                words,
+            );
+            cx.canvas.fill_round_rect(g.bar, g.bar.h / 2, t.raised);
+            if let Some(f) = part {
+                let w = ((g.bar.w as f32) * f).round() as i32;
+                if w > 0 {
+                    cx.canvas.fill_round_rect(
+                        Rect::new(g.bar.x, g.bar.y, w.max(g.bar.h), g.bar.h),
+                        g.bar.h / 2,
+                        t.accent,
+                    );
+                }
+            }
+            label(cx, g.plays_label, "Plays");
+            paint_lines(
+                cx,
+                g.plays,
+                FontId::Sans,
+                t.size_small,
+                24,
+                t.text,
+                &p.setup.mode,
+            );
+            label(cx, g.into_label, "Into");
+            cx.text(
+                FontId::Sans,
+                t.size_small,
+                g.into,
+                Align::Left,
+                t.text,
+                &p.setup.folder,
+            );
+            button(cx, g.right, "Cancel", false, true);
+        }
+        ExportPhase::Done { text, folder } => {
+            paint_lines(cx, g.outcome, FontId::Sans, t.size_body, 30, t.text, text);
+            button(cx, g.left, "Close", false, false);
+            if folder.is_some() {
+                button(cx, g.right, "Show in BROWSE", true, false);
+            }
+        }
+        ExportPhase::Stopped(text) => {
+            paint_lines(cx, g.outcome, FontId::Sans, t.size_body, 30, t.bad, text);
+            button(cx, g.left, "Close", false, false);
+        }
+    }
+}
+
 /// The widget.
 pub struct BrowserView {
     screen: Screen,
@@ -304,6 +636,9 @@ impl BrowserView {
 
     fn hit(&self, r: Rect, x: i32, y: i32) -> Option<Input> {
         let s = &self.screen;
+        if let Some(p) = &s.export {
+            return export_hit(p, r, x, y).map(Input::Export);
+        }
         match &s.modal {
             Modal::Keyboard { .. } => {
                 let k = keyboard_geo(r);
@@ -602,10 +937,21 @@ impl Widget for BrowserView {
                 button(cx, a.yes, yes, false, true);
             }
         }
+        // The Export panel, over everything.
+        if let Some(p) = &s.export {
+            paint_export(cx, r, p);
+        }
     }
 
     fn targets(&self, r: Rect) -> Vec<Target> {
         let s = &self.screen;
+        if let Some(p) = &s.export {
+            // The panel takes the screen: only its controls.
+            return export_controls(p, r)
+                .into_iter()
+                .map(|(rr, i, label)| Target::tap("export", i as usize, label, rr))
+                .collect();
+        }
         match &s.modal {
             Modal::Keyboard { .. } => {
                 return keyboard_geo(r)
@@ -657,7 +1003,9 @@ impl Widget for BrowserView {
     fn touch(&mut self, finger: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
         let g = Geo::new(r, &self.screen);
         self.visible = g.visible();
-        let on_list = matches!(self.screen.modal, Modal::None) && g.rows.contains(x, y);
+        let on_list = matches!(self.screen.modal, Modal::None)
+            && self.screen.export.is_none()
+            && g.rows.contains(x, y);
         match phase {
             Touch::Down => {
                 self.drag = Some((finger, y, 0, false));

@@ -632,6 +632,9 @@ pub struct Settings {
     /// Prefs "At start": open the last project (true) or start with a new
     /// one (the default). The screen opens it once the sound is going.
     pub open_last: bool,
+    /// Prefs "Export": Fast, quiet (the default) or Listen (Jay, 14 Nov
+    /// 01:32Z). An export that needs outside gear listens anyway.
+    pub export_mode: mpfree_export::Mode,
 }
 
 /// The click levels Play's options step through, dBFS. -24 by default;
@@ -677,6 +680,7 @@ impl Default for Settings {
             timing_strip: true,
             audio_memory: crate::audiotracks::AudioMemory::default(),
             open_last: false,
+            export_mode: mpfree_export::Mode::Fast,
         }
     }
 }
@@ -747,6 +751,8 @@ pub enum Item {
     LoopMemory,
     /// Prefs: what opens at start, a new project or the last one.
     AtStart,
+    /// Prefs: how Export plays the song, Fast, quiet or Listen.
+    Export,
     /// Play's options: the metronome on or off, and its level.
     Metronome,
     MetronomeLevel,
@@ -1260,6 +1266,7 @@ const PREFS_ROWS: &[Item] = &[
     Item::SystemInfo,
     Item::Appearance,
     Item::AtStart,
+    Item::Export,
     Item::TouchSection,
 ];
 /// Prefs' touch screen section.
@@ -3002,6 +3009,7 @@ impl App {
                 }
                 .to_string(),
             ),
+            Item::Export => ("Export", s.export_mode.name().to_string()),
             Item::Arp(a) => self.arp_item_text(a),
             Item::Synth(a) => self.synth_item_text(a),
         }
@@ -3185,6 +3193,15 @@ impl App {
                 "New project: an empty song (the default).",
                 "Last project: the project you last saved",
                 "or opened, once the sound is going.",
+            ],
+            Item::Export => vec![
+                "How Export (BROWSE, Projects) plays the song.",
+                "Fast, quiet: faster than real time, the",
+                "speakers quiet (the default).",
+                "Listen: once in real time, heard as it",
+                "records. A song that plays outside gear",
+                "(MIDI, CV, the line input, plugins) listens",
+                "anyway.",
             ],
             Item::Arp(a) => Self::arp_item_help(a),
             Item::Synth(a) => Self::synth_item_help(a),
@@ -3400,6 +3417,13 @@ impl App {
                 }
             }
             Item::AtStart => s.open_last = d > 0,
+            Item::Export => {
+                s.export_mode = if d > 0 {
+                    mpfree_export::Mode::Listen
+                } else {
+                    mpfree_export::Mode::Fast
+                }
+            }
             Item::LoopMemory => {
                 let next = cycle(&LoopMemory::ALL, s.loop_memory, d);
                 if next != s.loop_memory {

@@ -55,6 +55,8 @@ struct Rig {
     io: mpfree_midi_ui::Shared,
     /// CV out (closed: the jacks are not driven).
     cv: cv_out::CvOut,
+    /// Export's note tap (export.rs), on as if an export ran.
+    tap: crate::export::Tap,
 }
 
 fn tone(frames: usize, f: f32) -> Vec<i16> {
@@ -105,6 +107,7 @@ impl Rig {
             midi: midi_out::MidiOut::new(RATE, std::time::Duration::ZERO),
             io: midi_in::io_model(),
             cv: cv_out::CvOut::new(RATE, std::time::Duration::ZERO),
+            tap: crate::export::Tap::on(),
         }
     }
 
@@ -154,6 +157,7 @@ impl Rig {
             midi,
             io,
             cv,
+            tap,
             ..
         } = self;
         let synth_on = *synth_on;
@@ -237,11 +241,13 @@ impl Rig {
             midi,
             cv,
             own: &mut mix.instruments,
+            tap,
         };
         time.period(PERIOD as u32, &mut seq);
         seq.midi
             .period_end(PERIOD as u32, std::time::Instant::now());
         seq.cv.period_end(PERIOD as u32, std::time::Instant::now());
+        seq.tap.take();
         *clip_hits += seq.hits;
         time.clear_hits();
         // The pads, each into its mixer channel, and on to the Drums track.
@@ -602,6 +608,7 @@ fn live_notes_on_a_midi_out_track_go_out_and_record_as_their_pad() {
         midi: &mut rig.midi,
         cv: &mut rig.cv,
         own: &mut rig.mix.instruments,
+        tap: &mut rig.tap,
     };
     let at = |event| Out {
         offset: 0,
@@ -669,6 +676,7 @@ fn live_pads_on_a_track_with_its_own_instrument_play_it() {
         midi: &mut rig.midi,
         cv: &mut rig.cv,
         own: &mut rig.mix.instruments,
+        tap: &mut rig.tap,
     };
     let at = |track, event| Out {
         offset: 0,
