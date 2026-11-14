@@ -670,6 +670,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "mpfree-mpc-import"
+version = "0.1.0"
+dependencies = [
+ "mpfree-library",
+ "mpfree-sampler",
+]
+
+[[package]]
 name = "mpfree-mpcplug"
 version = "0.1.0"
 dependencies = [
