@@ -177,6 +177,15 @@ Approved by Jay at 22:34Z (the mod thread's card, "Approve as proposed"). The mo
 - **The Song view:** "+ Track" is a lane after the last MIDI lane, above the audio lanes and "+ Audio" (section 4c). The lanes scroll as before, by a drag on the names.
 - **TRACK MUTE:** all 16 pads are tracks, and the PAD BANK buttons pick which 16, as on Akai's MPC: A is tracks 1-16, B 17-32, up to H, 113-128, with SHIFT or a second press for E-H as when picking kits (section 6). The kit playing stays, and the bank is kept for the next TRACK MUTE.
 
+## 4g. The Synth tab
+
+**Picked by Jay on 14 Nov 2026** (13:25Z, the instruments thread's card, "Build it as drawn"; his ask at 12:40Z: the pages looked like "a wall of knobs", and for consistency the list on the left and the Q-Links on the right). Mockups: the "Synth page layouts" canvas (https://claude.ai/artifact/MSNu169wNrkV8Ag9mSRnD4); rules: the doc "Instrument and effect page design rules" (https://claude.ai/artifact/ABwAw3rxAj5Rgi8P1MdL4Q). Built by the instruments thread (`mpfree-synth-ui`, `view::LAYOUT`).
+
+- **The frame,** as the Looper tab's: at the left (220 px), the instrument card (72 px: swatch, engine, the track and Native or Plugin), then the pads heading with the Chromatic | In key switch while the synth has the pads, then the presets; in the middle, the title bar (56 px: the preset and the pages as tabs) over the page; at the right, the shared Q-Link column (168 px); the hint line under them. The bottom Q-Link strip and the strip of pictures are gone; the page gets their room (844 x 598 px).
+- **The page** is labelled sections, each with one job, coloured by it (sources cyan, filter and tone coral, envelopes and dynamics lime, movement pink, voice and output grey) and laid out per page. Pictures sit inside the section they draw. Knobs are sized by importance; choices are buttons or a chip with ‹ ›, whole numbers steppers, toggles pills, envelopes and mixes faders. "Open ›" by a section's name goes to its page. The inside of the page is the Synth tab's own (section 7).
+- **The Q-Link column** names what Q-Links 1 to 4 turn on the page, as their sections name them, with the section as its scope; the controls carry Q1 to Q4 badges in the knobs' colours. A drag on a card turns it.
+- **Hardware** as before: the wheel picks and turns the controls (section 6), SHIFT + wheel steps the pages, Q-Links 1 to 4 turn the badged controls.
+
 ## 5. Prefs (SHIFT + MENU)
 
 - **Main rows, in order:**
