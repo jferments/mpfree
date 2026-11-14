@@ -30,7 +30,7 @@ use mpfree_mod::{Source, MACROS};
 use mpfree_param::ParamAddr;
 use mpfree_synth_ui::draw::Mask;
 use mpfree_synth_ui::widgets::{knob, Card, Visuals};
-use mpfree_ui::{Align, EventKind, FontId, PaintCx, Rect, Touch, Widget};
+use mpfree_ui::{Align, EventKind, FontId, PaintCx, Rect, Target, Touch, Widget};
 
 use crate::picker::{Hit, PickerLayout, PickerView, HOLD};
 use crate::state::{macro_color, ChainState, KNOBS_PER_PAGE};
@@ -1013,6 +1013,90 @@ impl Widget for ChainView {
     /// Passes the touch on to the app (an event) whenever it made actions,
     /// as the mixer does: `Ui::touch` drops a widget's touch that answers
     /// None, and the app takes the actions only when it gets the event.
+    fn targets(&self, r: Rect) -> Vec<Target> {
+        let l = self.layout(r);
+        let st = &self.state;
+        let mut out = Vec::new();
+        if let Some(b) = l.back {
+            out.push(Target::tap("back", 0, "‹ Back", b));
+        }
+        for (i, sr) in l.scopes.iter().enumerate() {
+            let label = st.scopes.get(i).cloned().unwrap_or_default();
+            out.push(Target::tap("scope", i, label, *sr));
+        }
+        if st.picking {
+            if let Some(c) = l.cancel {
+                out.push(Target::tap("cancel", 0, "Cancel", c));
+            }
+            if let Some(pl) = &l.picker {
+                picker_targets(&self.picker, st, pl, &mut out);
+            }
+        }
+        for (i, rr) in l.rows.iter().enumerate() {
+            let name = st.slots.get(i).map_or(String::new(), |v| v.name.clone());
+            let (power, rest) = (rr.take_right(56).0, rr.take_right(56).1);
+            out.push(Target::tap("slot", i, name.clone(), rest));
+            out.push(Target::tap("slot-on", i, format!("{name} ON"), power));
+        }
+        if let Some(a) = l.add {
+            out.push(Target::tap("add", 0, "+ Add effect", a));
+        }
+        if let Some(sel) = st.selected {
+            let n = st.slots.len();
+            let words = ["Move up", "Move down", "Remove"];
+            for (k, b) in l.buttons.iter().enumerate() {
+                let off = (k == 0 && sel == 0) || (k == 1 && sel + 1 >= n);
+                out.push(
+                    Target::tap(["move-up", "move-down", "remove"][k], 0, words[k], *b)
+                        .disabled_if(off),
+                );
+            }
+        }
+        for (g, tr) in l.tabs.iter().enumerate() {
+            let label = st.groups.get(g).copied().unwrap_or("");
+            out.push(Target::tap("group", g, label, *tr));
+        }
+        if st.selected.is_some() && !st.picking {
+            out.push(Target::tap("title", 0, "effect page", l.title));
+        }
+        for (i, kr) in l.knobs.iter().enumerate() {
+            let label = st
+                .params
+                .get(i)
+                .map_or(String::new(), |p| p.info.name.to_string());
+            out.push(Target::drag("knob", i, label, *kr).towards(0, -40));
+        }
+        if st.focus.is_some() {
+            for (m, mr) in l.macros.iter().enumerate() {
+                out.push(Target::tap("macro", m, format!("Macro {}", m + 1), *mr));
+            }
+            out.push(Target::tap("learn", 0, "Learn", l.learn));
+            for (k, (bar, xr)) in l.depth_rows.iter().enumerate() {
+                out.push(
+                    Target::drag(
+                        "depth",
+                        k,
+                        format!("row {} depth", k + 1),
+                        bar.take_left(98).1,
+                    )
+                    .towards(30, 0),
+                );
+                out.push(Target::tap(
+                    "remove-row",
+                    k,
+                    format!("row {} ×", k + 1),
+                    *xr,
+                ));
+            }
+            let takes = focused_takes_rows(st);
+            out.push(Target::tap("add-lfo", 0, "+ LFO", l.add_lfo).disabled_if(!takes));
+            out.push(
+                Target::tap("add-follower", 0, "+ Follower", l.add_follower).disabled_if(!takes),
+            );
+        }
+        out
+    }
+
     fn touch(&mut self, finger: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
         let before = self.actions.len();
         self.touch_inner(finger, phase, x, y, r);
@@ -1332,4 +1416,51 @@ pub(crate) fn wrap(cx: &mut PaintCx, size: f32, text: &str, w: i32) -> Vec<Strin
         }
     }
     lines
+}
+
+/// The effect picker's controls, as it draws them: its sections, then the
+/// section's effect tiles with their stars and presets lines (or the open
+/// presets list with its way back), then the pager.
+fn picker_targets(pv: &PickerView, st: &ChainState, pl: &PickerLayout, out: &mut Vec<Target>) {
+    let (list, _) = pv.current(st);
+    for (i, r) in pl.sections.iter().enumerate() {
+        let name = list.get(i).map_or("", |s| s.name());
+        out.push(Target::tap("section", i, name, *r).disabled_if(i == pl.section));
+    }
+    match pv.presets {
+        Some(id) => {
+            if let Some(b) = pl.back {
+                out.push(Target::tap("presets-back", 0, "‹ Effects", b));
+            }
+            let presets = mpfree_fx::picker::presets(id);
+            for (k, r) in pl.tiles.iter().enumerate() {
+                let item = pl.first + k;
+                let label = match item {
+                    0 => "Defaults",
+                    _ => presets.get(item - 1).map_or("", |p| p.name),
+                };
+                out.push(Target::tap("preset", item, label, *r));
+            }
+        }
+        None => {
+            let picks = pv.picks(st);
+            for (k, r) in pl.tiles.iter().enumerate() {
+                let i = pl.first + k;
+                let name = picks.get(i).map_or("", |p| p.name);
+                out.push(Target::tap("pick", i, name, *r));
+                if let Some(star) = pl.stars.get(k) {
+                    out.push(Target::tap("star", i, format!("{name} favourite"), *star));
+                }
+                if let Some(Some(chip)) = pl.chips.get(k) {
+                    out.push(Target::tap("presets", i, format!("{name} presets"), *chip));
+                }
+            }
+        }
+    }
+    if let Some(r) = pl.prev {
+        out.push(Target::tap("page-prev", 0, "‹", r).disabled_if(pl.page == 0));
+    }
+    if let Some(r) = pl.next {
+        out.push(Target::tap("page-next", 0, "›", r).disabled_if(pl.page + 1 >= pl.pages));
+    }
 }

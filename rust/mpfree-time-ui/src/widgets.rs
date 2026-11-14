@@ -5,7 +5,9 @@
 //! about the transport, the clips or the audio thread.
 
 use mpfree_ui::widgets::Chip;
-use mpfree_ui::{Align, Canvas, Color, EventKind, FontId, PaintCx, Rect, Tone, Touch, Widget};
+use mpfree_ui::{
+    Align, Canvas, Color, EventKind, FontId, PaintCx, Rect, Target, Tone, Touch, Widget,
+};
 use std::cell::RefCell;
 use std::f32::consts::TAU;
 
@@ -380,6 +382,27 @@ impl Widget for TransportBar {
             x += w;
         }
         *self.hits.borrow_mut() = hits;
+    }
+
+    fn targets(&self, _r: Rect) -> Vec<Target> {
+        // What the last paint drew to be touched: the transport buttons,
+        // the mode, the chips and Undo.
+        let names = ["Stop", "Play", "Rec", "Mode", "Undo"];
+        self.hits
+            .borrow()
+            .iter()
+            .map(|(h, k)| match k {
+                EventKind::Tab(i) => {
+                    let id = ["stop", "play", "rec", "mode", "undo"][(*i).min(4)];
+                    Target::tap(id, 0, names[(*i).min(4)], *h)
+                }
+                EventKind::Select(i) => {
+                    let label = self.chips.get(*i).map_or(String::new(), |c| c.text.clone());
+                    Target::tap("chip", *i, label, *h)
+                }
+                _ => Target::tap("other", 0, "", *h),
+            })
+            .collect()
     }
 
     fn touch(&mut self, _f: u64, phase: Touch, x: i32, y: i32, _r: Rect) -> Option<EventKind> {
@@ -800,6 +823,42 @@ impl Widget for ClipGrid {
         }
     }
 
+    fn targets(&self, r: Rect) -> Vec<Target> {
+        let mut out = vec![
+            Target::tap("song", 0, "Song", self.song_rect(r)),
+            Target::tap("rec-song", 0, "Rec song", self.rec_rect(r)),
+            Target::tap("edit", 0, "Edit", self.edit_rect(r)),
+        ];
+        if self.tracks.is_empty() {
+            return out;
+        }
+        out.push(Target::tap(
+            "stop-all",
+            0,
+            "Stop all",
+            self.stop_all_rect(r),
+        ));
+        for slot in self.first_row..self.slots {
+            if let Some(b) = self.scene_rect(r, slot) {
+                out.push(Target::tap("scene", slot, format!("Scene {}", slot + 1), b));
+            }
+        }
+        let tracks = self.first_track..(self.first_track + GRID_COLS).min(self.tracks.len());
+        for track in tracks {
+            let name = &self.tracks[track].name;
+            if let Some(h) = self.head_rect(r, track) {
+                out.push(Target::tap("track", track, name.clone(), h));
+            }
+            for slot in self.first_row..self.slots {
+                if let Some(c) = self.cell_rect(r, track, slot) {
+                    let label = format!("{name} slot {}", slot + 1);
+                    out.push(Target::tap("slot", track * self.slots + slot, label, c));
+                }
+            }
+        }
+        out
+    }
+
     fn touch(&mut self, _f: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
         if phase != Touch::Down {
             return None;
@@ -977,6 +1036,36 @@ impl Widget for MorphBar {
         }
     }
 
+    fn targets(&self, r: Rect) -> Vec<Target> {
+        let (a, fader, b, buttons) = MorphBar::parts(r);
+        let mut out = Vec::new();
+        for (index, chip) in [a, b].iter().enumerate() {
+            let name = ["A", "B"][index];
+            let (down, up) = chip.take_left(chip.w / 2);
+            out.push(Target::tap(
+                "row-down",
+                index,
+                format!("{name} (left half)"),
+                down,
+            ));
+            out.push(Target::tap(
+                "row-up",
+                index,
+                format!("{name} (right half)"),
+                up,
+            ));
+        }
+        out.push(Target::drag("crossfader", 0, "crossfader", fader).towards(fader.w / 3, 0));
+        for (i, br) in buttons.iter().enumerate() {
+            // Snap back and Keep are faint until the crossfader morphs.
+            out.push(
+                Target::tap("button", i, ["Snap back", "Keep", "Save"][i], *br)
+                    .disabled_if(i < 2 && !self.on),
+            );
+        }
+        out
+    }
+
     fn touch(&mut self, _f: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
         let (a, fader, b, buttons) = MorphBar::parts(r);
         let slide = fader.inset_xy(-12, 0);
@@ -1109,7 +1198,8 @@ pub struct TakeItem {
 /// The takes, newest first, with Undo and Redo buttons along the bottom.
 /// The row `current` (the take Undo would take back) is highlighted;
 /// undone takes are dimmed. A tap on Undo gives `Tab(0)`, on Redo `Tab(1)`,
-/// each only while it has something to do.
+/// on Capture `Tab(2)`, faint or not: the page says why a faint one does
+/// nothing.
 pub struct TakeList {
     pub title: String,
     pub right: String,
@@ -1288,13 +1378,28 @@ impl Widget for TakeList {
         }
     }
 
+    fn targets(&self, r: Rect) -> Vec<Target> {
+        let live = [&self.undo, &self.redo, &self.capture];
+        (0..3)
+            .map(|i| {
+                Target::tap(
+                    "button",
+                    i,
+                    ["Undo", "Redo", "Capture"][i],
+                    TakeList::button_rect(r, i),
+                )
+                .disabled_if(live[i].is_none())
+            })
+            .collect()
+    }
+
     fn touch(&mut self, _f: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
         if phase != Touch::Down {
             return None;
         }
-        let i = (0..3).find(|&i| TakeList::button_rect(r, i).contains(x, y))?;
-        let live = [&self.undo, &self.redo, &self.capture][i].is_some();
-        live.then_some(EventKind::Tab(i))
+        (0..3)
+            .find(|&i| TakeList::button_rect(r, i).contains(x, y))
+            .map(EventKind::Tab)
     }
 }
 
@@ -1494,25 +1599,29 @@ mod tests {
         assert!(g.scene_rect(r, 1).is_none());
     }
 
+    /// Faint or not, a take button answers (the page says why a faint one
+    /// does nothing); its target is off while it is faint.
     #[test]
-    fn take_buttons_answer_only_with_something_to_do() {
+    fn take_buttons_answer_and_are_off_while_faint() {
         let mut l = TakeList::new("Takes");
         let r = Rect::new(0, 0, 400, 260);
         let undo = TakeList::button_rect(r, 0);
         let redo = TakeList::button_rect(r, 1);
         assert!(undo.right() < redo.x && redo.right() <= r.right() - 14);
-        assert_eq!(l.touch(1, Touch::Down, undo.x + 2, undo.y + 2, r), None);
-        l.undo = Some("take 1".into());
+        let on = |l: &TakeList| l.targets(r).iter().map(|t| t.enabled).collect::<Vec<_>>();
+        assert_eq!(on(&l), [false, false, false]);
         assert_eq!(
             l.touch(1, Touch::Down, undo.x + 2, undo.y + 2, r),
             Some(EventKind::Tab(0))
         );
-        assert_eq!(l.touch(1, Touch::Down, redo.x + 2, redo.y + 2, r), None);
+        l.undo = Some("take 1".into());
+        assert_eq!(on(&l), [true, false, false]);
         l.redo = Some("take 2".into());
         assert_eq!(
             l.touch(1, Touch::Down, redo.x + 2, redo.y + 2, r),
             Some(EventKind::Tab(1))
         );
+        assert_eq!(on(&l), [true, true, false]);
     }
 
     #[test]

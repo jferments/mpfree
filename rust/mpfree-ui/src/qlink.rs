@@ -22,7 +22,7 @@ use crate::color::Color;
 use crate::draw;
 use crate::geom::Rect;
 use crate::text::{Align, FontId};
-use crate::ui::{EventKind, PaintCx, Touch, Widget};
+use crate::ui::{EventKind, PaintCx, Target, Touch, Widget};
 
 /// The column's width on the Play page, in pixels.
 pub const COLUMN_WIDTH: i32 = 168;
@@ -184,6 +184,19 @@ impl Widget for QLinkColumn {
         }
     }
 
+    fn targets(&self, r: Rect) -> Vec<Target> {
+        QLinkColumn::card_rects(r)
+            .iter()
+            .enumerate()
+            // A card with nothing to move on this page is drawn blank.
+            .map(|(k, c)| {
+                let name = self.cards[k].name.clone();
+                let blank = name.is_empty();
+                Target::drag("knob-card", k, name, *c).disabled_if(blank)
+            })
+            .collect()
+    }
+
     fn touch(&mut self, _f: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
         match phase {
             Touch::Down => {
@@ -334,6 +347,14 @@ impl Widget for MasterBar {
                 &format!("LIM {:.1}", self.limit_db),
             );
         }
+    }
+
+    fn targets(&self, r: Rect) -> Vec<Target> {
+        let tr = MasterBar::track(r);
+        if tr.h <= 0 {
+            return Vec::new();
+        }
+        vec![Target::drag("level", 0, self.text.clone(), r)]
     }
 
     fn touch(&mut self, _f: u64, phase: Touch, _x: i32, y: i32, r: Rect) -> Option<EventKind> {
