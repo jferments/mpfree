@@ -44,6 +44,16 @@ pub enum MixAction {
     OpenInsert { strip: StripId, slot: usize },
     /// The empty slot was tapped: open the list of effects to add.
     AddInsert { strip: StripId },
+    /// An effect was tapped on the Effects look: it is picked, and its
+    /// first four knobs go on the Q-Links (a tap again opens its chain).
+    PickInsert { strip: StripId, slot: usize },
+    /// An effect was dragged along its row on the Effects look: move it
+    /// (`Mixer` `Edit::Move`).
+    MoveInsert {
+        strip: StripId,
+        from: usize,
+        to: usize,
+    },
     /// A view was picked: show its strips.
     View(MixView),
     /// Freeze the strip: take one pass of the loop through its inserts
@@ -56,6 +66,34 @@ pub enum MixAction {
     Print(StripId),
     /// Stop the strip's freeze or print under way; nothing changes.
     CancelTake(StripId),
+    /// The look was switched (Faders or Effects): the app's hint line
+    /// follows. The mixer has nothing to do.
+    Look(Look),
+    /// The app saw the pick go (the look switched, the effect gone, the
+    /// tab left by TRACK MIX): the Q-Links go back to the selected strip.
+    /// The widget never queues this; the app sends it.
+    Unpick,
+}
+
+/// The Mix tab's two looks of the same strips (layout spec section 3a):
+/// Faders, the strips side by side, and Effects, each strip's chain as a
+/// row of slots, the master's pinned under them.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Look {
+    #[default]
+    Faders,
+    Effects,
+}
+
+impl Look {
+    pub const ALL: [Look; 2] = [Look::Faders, Look::Effects];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Look::Faders => "Faders",
+            Look::Effects => "Effects",
+        }
+    }
 }
 
 /// What a strip's menu offers.
@@ -131,6 +169,14 @@ const MIN_CHIP_W: i32 = 124;
 const IO_CHIP_W: i32 = 76;
 const ARROW_W: i32 = 52;
 const PAGE_W: i32 = 120;
+/// The Faders and Effects toggle.
+const LOOK_W: i32 = 170;
+/// The Effects look: a strip's name, then its slots, a row a strip.
+const FX_NAME_W: i32 = 176;
+/// Slots a row shows (the most a strip in the app has).
+pub const FX_COLS: usize = 8;
+const FX_ROW_H: i32 = 52;
+const FX_ROW_GAP: i32 = 6;
 
 /// Fader positions (0 to 1) against levels (dB): +6 at the top, 0 dB four
 /// fifths up, -80 (silent) at the bottom.
@@ -237,7 +283,8 @@ struct Layout {
     prev: Rect,
     next: Rect,
     page: Rect,
-    cost: Rect,
+    /// The Faders and Effects toggle (where the mixer's CPU chip was).
+    look: Rect,
     strips: Rect,
     master: Rect,
     per_page: usize,
@@ -254,10 +301,10 @@ fn layout(r: Rect) -> Layout {
     let next = Rect::new(head.right() - ARROW_W, cy, ARROW_W, ch);
     let page = Rect::new(next.x - PAGE_W, cy, PAGE_W, ch);
     let prev = Rect::new(page.x - ARROW_W, cy, ARROW_W, ch);
-    let cost = Rect::new(prev.x - 12 - 170, cy, 170, ch);
-    // The view chips share what is left of the cost chip: narrower when
-    // the panel is (the Q-Link column beside it), never under MIN_CHIP_W.
-    let room = cost.x - 12 - head.x - 4 * 8 - IO_CHIP_W;
+    let look = Rect::new(prev.x - 14 - LOOK_W, cy, LOOK_W, ch);
+    // The view chips share what is left of the toggle: narrower when the
+    // panel is (the Q-Link column beside it), never under MIN_CHIP_W.
+    let room = look.x - 12 - head.x - 4 * 8 - IO_CHIP_W;
     let chip_w = (room / 4).clamp(MIN_CHIP_W, CHIP_W);
     let chips = std::array::from_fn(|i| {
         let w = if MixView::ALL[i] == MixView::Io {
@@ -272,11 +319,126 @@ fn layout(r: Rect) -> Layout {
         prev,
         next,
         page,
-        cost,
+        look,
         strips,
         master,
         per_page,
     }
+}
+
+/// The toggle's two halves: Faders, then Effects.
+fn look_halves(r: Rect) -> [Rect; 2] {
+    let inner = r.inset(4);
+    let w = (inner.w - 4) / 2;
+    [
+        Rect::new(inner.x, inner.y, w, inner.h),
+        Rect::new(inner.x + w + 4, inner.y, inner.w - w - 4, inner.h),
+    ]
+}
+
+/// The Effects look: the panel over the strips and the master, a title
+/// line, the slot numbers, a row a strip and the master's row pinned at
+/// the bottom.
+struct Grid {
+    panel: Rect,
+    title: Rect,
+    numbers: Rect,
+    /// Where the strips' rows start.
+    top: i32,
+    width: i32,
+    left: i32,
+    master: Rect,
+    rows: usize,
+}
+
+fn grid(l: &Layout) -> Grid {
+    let panel = Rect::new(
+        l.strips.x,
+        l.strips.y,
+        l.master.right() - l.strips.x,
+        l.strips.h,
+    );
+    let inner = panel.inset(14);
+    let (title, rest) = inner.take_top(22);
+    let rest = rest.take_top(8).1;
+    let (numbers, rest) = rest.take_top(20);
+    let rest = rest.take_top(8).1;
+    let (master, rest) = rest.take_bottom(FX_ROW_H);
+    let room = rest.h - 12;
+    let rows = ((room + FX_ROW_GAP) / (FX_ROW_H + FX_ROW_GAP)).max(1) as usize;
+    Grid {
+        panel,
+        title,
+        numbers,
+        top: rest.y,
+        width: inner.w,
+        left: inner.x,
+        master,
+        rows,
+    }
+}
+
+impl Grid {
+    /// Row `i` of the page (0 at the top).
+    fn row(&self, i: usize) -> Rect {
+        Rect::new(
+            self.left,
+            self.top + i as i32 * (FX_ROW_H + FX_ROW_GAP),
+            self.width,
+            FX_ROW_H,
+        )
+    }
+}
+
+/// A row's name cell and its slots' cells.
+fn row_cells(row: Rect) -> (Rect, [Rect; FX_COLS]) {
+    let name = row.take_left(FX_NAME_W).0;
+    let n = FX_COLS as i32;
+    let w = ((row.w - FX_NAME_W - n * 8) / n).max(24);
+    let cells = std::array::from_fn(|k| {
+        Rect::new(row.x + FX_NAME_W + 8 + k as i32 * (w + 8), row.y, w, row.h)
+    });
+    (name, cells)
+}
+
+/// Where slot `s` ends up when the effect in `from` moves to `to`.
+fn moved_slot(s: usize, from: usize, to: usize) -> usize {
+    if s == from {
+        to
+    } else if from < s && s <= to {
+        s - 1
+    } else if to <= s && s < from {
+        s + 1
+    } else {
+        s
+    }
+}
+
+/// What a strip's row says under its name: which strip it is, unless the
+/// name says so, and how full its chain is.
+fn row_sub(s: &StripView) -> String {
+    let id = match s.id {
+        StripId::Master => "Out 1+2".to_string(),
+        StripId::Bus(b) => format!("Submix {}", b + 1),
+        StripId::Input(i) => format!("Input {}", i + 1),
+        id => crate::state::default_name(id),
+    };
+    let fx = if s.frozen {
+        "frozen".to_string()
+    } else if s.inserts.is_empty() {
+        "no effects".to_string()
+    } else {
+        format!("{} of {}", s.inserts.len(), s.slots)
+    };
+    let mut parts = Vec::new();
+    if s.name != id {
+        parts.push(id);
+    }
+    if s.mute {
+        parts.push("muted".to_string());
+    }
+    parts.push(fx);
+    parts.join(" · ")
 }
 
 /// The parts of one strip.
@@ -380,6 +542,14 @@ enum Grab {
         pos0: f32,
         w: f32,
     },
+    /// An effect on the Effects look: a tap picks it (or opens it), a
+    /// drag along its row moves it to slot `to`.
+    Fx {
+        id: StripId,
+        from: usize,
+        x0: i32,
+        to: Option<usize>,
+    },
 }
 
 /// The choices of the output picker: (OUTPUT value, track), in order.
@@ -410,6 +580,10 @@ enum Dirty {
 /// The mixer panel. See the module docs.
 pub struct MixerView {
     state: MixState,
+    /// Faders or Effects.
+    look: Look,
+    /// The effect picked on the Effects look: (strip, slot).
+    pick: Option<(StripId, usize)>,
     /// The first strip shown.
     first: usize,
     /// The strip whose output picker is open.
@@ -444,6 +618,8 @@ impl MixerView {
     pub fn new() -> MixerView {
         MixerView {
             state: MixState::default(),
+            look: Look::Faders,
+            pick: None,
             first: 0,
             picker: None,
             menu: None,
@@ -471,6 +647,7 @@ impl MixerView {
                 Grab::Fader { id, .. } => (id, vec![mx::VOLUME]),
                 Grab::Pan { id, .. } => (id, vec![mx::PAN]),
                 Grab::Send { id, r, .. } => (id, vec![mx::send(r)]),
+                Grab::Fx { .. } => continue,
             };
             if let (Some(old), Some(new)) = (self.state.strip(id).cloned(), st.strip_mut(id)) {
                 for p in ids {
@@ -500,6 +677,12 @@ impl MixerView {
             self.first = 0;
             self.io.top = 0;
             self.picker = None;
+            self.pick = None;
+        }
+        if let Some((id, slot)) = self.pick {
+            if st.strip(id).is_none_or(|s| slot >= s.inserts.len()) {
+                self.pick = None;
+            }
         }
         let follow = st.selected != self.state.selected;
         self.state = st;
@@ -550,6 +733,53 @@ impl MixerView {
         }
     }
 
+    /// The look showing: Faders or Effects.
+    pub fn look(&self) -> Look {
+        self.look
+    }
+
+    /// Shows look `l` (TRACK MIX opens on Faders), as a tap on the toggle
+    /// does but without telling the app. A menu or the output picker
+    /// closes.
+    pub fn set_look(&mut self, l: Look) {
+        if l != self.look {
+            self.look = l;
+            self.menu = None;
+            self.picker = None;
+            self.pick = None;
+            self.grabs.clear();
+            self.mark(Dirty::All);
+        }
+    }
+
+    /// The effect picked on the Effects look, whose knobs the Q-Links
+    /// turn: (strip, slot).
+    pub fn pick(&self) -> Option<(StripId, usize)> {
+        self.pick
+    }
+
+    /// Strips a page shows in the look showing (the selection pages by
+    /// it, and so do < and >).
+    fn page_size(&self, l: &Layout) -> usize {
+        match self.look {
+            Look::Faders => l.per_page,
+            Look::Effects => grid(l).rows.min(l.per_page.max(1)),
+        }
+    }
+
+    /// The Effects look's rows on this page: (strip, row).
+    fn rows(&self, l: &Layout) -> Vec<(usize, Rect)> {
+        if self.state.view == MixView::Io || self.look != Look::Effects {
+            return Vec::new();
+        }
+        let g = grid(l);
+        let n = self.state.strips.len();
+        (self.first..n.min(self.first + self.page_size(l)))
+            .enumerate()
+            .map(|(k, i)| (i, g.row(k)))
+            .collect()
+    }
+
     /// The first strip shown (pages move it by a page of strips).
     pub fn first(&self) -> usize {
         self.first
@@ -584,7 +814,7 @@ impl MixerView {
     /// The strips shown and their rectangles (none in the I/O view, which
     /// shows rows).
     fn shown(&self, l: &Layout) -> Vec<(usize, Rect)> {
-        if self.state.view == MixView::Io {
+        if self.state.view == MixView::Io || self.look != Look::Faders {
             return Vec::new();
         }
         let n = self.state.strips.len();
@@ -705,24 +935,42 @@ impl MixerView {
                 self.state.view = v;
                 self.first = 0;
                 self.io.top = 0;
+                self.pick = None;
                 self.push(MixAction::View(v));
+            }
+            return;
+        }
+        if let Some(look) = look_halves(l.look)
+            .into_iter()
+            .zip(Look::ALL)
+            .find(|(h, _)| h.contains(x, y))
+            .map(|(_, look)| look)
+        {
+            if look != self.look {
+                self.set_look(look);
+                self.push(MixAction::Look(look));
             }
             return;
         }
         let n = self.state.strips.len();
         if l.prev.contains(x, y) || l.next.contains(x, y) {
             let d = if l.prev.contains(x, y) { -1 } else { 1 };
+            let per_page = self.page_size(&l);
             if self.state.view == MixView::Io {
                 self.io_page(d);
             } else if d < 0 {
-                self.first = self.first.saturating_sub(l.per_page);
-            } else if self.first + l.per_page < n {
-                self.first += l.per_page;
+                self.first = self.first.saturating_sub(per_page);
+            } else if self.first + per_page < n {
+                self.first += per_page;
             }
             return;
         }
         if self.state.view == MixView::Io && l.strips.contains(x, y) {
             self.io_down(finger, x, y, &l);
+            return;
+        }
+        if self.look == Look::Effects {
+            self.fx_down(finger, x, y, &l);
             return;
         }
         let mut hits: Vec<(StripId, Rect)> = self
@@ -842,6 +1090,98 @@ impl MixerView {
         }
     }
 
+    /// A finger on the Effects look: a strip's name selects it (again: its
+    /// menu, with takes), + FX opens the effect picker for the strip's
+    /// first free slot, and an effect is held until the finger lifts (a
+    /// tap picks it or opens it, a drag moves it).
+    fn fx_down(&mut self, finger: u64, x: i32, y: i32, l: &Layout) {
+        let mut rows: Vec<(StripId, Rect)> = self
+            .rows(l)
+            .into_iter()
+            .map(|(i, row)| (self.state.strips[i].id, row))
+            .collect();
+        rows.push((StripId::Master, grid(l).master));
+        let Some((id, row)) = rows.into_iter().find(|(_, row)| row.contains(x, y)) else {
+            return;
+        };
+        let Some(s) = self.state.strip(id) else {
+            return;
+        };
+        let (name, cells) = row_cells(row);
+        if name.contains(x, y) {
+            // The Q-Links go back to the strip.
+            self.pick = None;
+            if self.state.selected == Some(id) {
+                if self.state.takes {
+                    self.menu = Some(id);
+                }
+            } else {
+                self.state.selected = Some(id);
+                self.push(MixAction::Select(id));
+            }
+            return;
+        }
+        let (len, slots) = (s.inserts.len(), s.slots.min(FX_COLS));
+        if let Some(k) = cells.iter().position(|c| c.contains(x, y)) {
+            if k < len {
+                self.grabs.push((
+                    finger,
+                    Grab::Fx {
+                        id,
+                        from: k,
+                        x0: x,
+                        to: None,
+                    },
+                ));
+            } else if k == len && len < slots {
+                self.push(MixAction::AddInsert { strip: id });
+            }
+        }
+    }
+
+    /// A tap on effect `slot` of strip `id` on the Effects look: picked,
+    /// or opened when it already was.
+    fn fx_tap(&mut self, id: StripId, slot: usize) {
+        if self.pick == Some((id, slot)) {
+            self.push(MixAction::OpenInsert { strip: id, slot });
+        } else {
+            self.pick = Some((id, slot));
+            self.push(MixAction::PickInsert { strip: id, slot });
+        }
+    }
+
+    /// Effect `from` of strip `id` dragged to slot `to`: it moves on the
+    /// screen at once (the pick with it) and the app moves it in the mixer.
+    fn fx_move(&mut self, id: StripId, from: usize, to: usize) {
+        if let Some(s) = self.state.strip_mut(id) {
+            if from < s.inserts.len() && to < s.inserts.len() {
+                let fx = s.inserts.remove(from);
+                s.inserts.insert(to, fx);
+            }
+        }
+        if let Some((pid, slot)) = self.pick.filter(|(pid, _)| *pid == id) {
+            self.pick = Some((pid, moved_slot(slot, from, to)));
+        }
+        self.push(MixAction::MoveInsert {
+            strip: id,
+            from,
+            to,
+        });
+    }
+
+    /// The slot a finger at `x` is over on strip `id`'s row (one of its
+    /// effects), while it drags one.
+    fn fx_slot_at(&self, id: StripId, x: i32, r: Rect) -> Option<usize> {
+        let len = self.state.strip(id)?.inserts.len();
+        let (_, cells) = row_cells(Rect::new(0, 0, grid(&layout(r)).width, FX_ROW_H));
+        let left = grid(&layout(r)).left;
+        let k = cells
+            .iter()
+            .position(|c| x < left + c.right() + 4)
+            .unwrap_or(FX_COLS - 1);
+        Some(k.min(len.saturating_sub(1)))
+    }
+
     fn drag(&mut self, finger: u64, x: i32, y: i32, r: Rect) {
         if self.io_finger(finger, Touch::Move, x, y, r) {
             return;
@@ -850,6 +1190,18 @@ impl MixerView {
             return;
         };
         match self.grabs[gi].1 {
+            Grab::Fx { id, from, x0, to } => {
+                if to.is_none() && (x - x0).abs() < 12 {
+                    return;
+                }
+                let at = self.fx_slot_at(id, x, r).or(Some(from));
+                self.grabs[gi].1 = Grab::Fx {
+                    id,
+                    from,
+                    x0,
+                    to: at,
+                };
+            }
             Grab::Fader {
                 id,
                 y0,
@@ -914,6 +1266,14 @@ impl MixerView {
         {
             if !cancel {
                 self.set(id, mx::PAN, 0.0);
+            }
+        }
+        if let Grab::Fx { id, from, to, .. } = g {
+            match to {
+                _ if cancel => {}
+                None => self.fx_tap(id, from),
+                Some(to) if to != from => self.fx_move(id, from, to),
+                Some(_) => {}
             }
         }
     }
@@ -994,28 +1354,53 @@ impl MixerView {
             t.text_dim,
             &page,
         );
-        if let Some(c) = self.state.cost_pct {
-            // The whole mixer, inserts included: against the mix and fx
-            // budgets together (1 % and 10 % of a period on the MPC).
-            let tone = if c <= 5.0 {
-                Tone::Good
-            } else if c <= 11.0 {
-                Tone::Warn
-            } else {
-                Tone::Bad
-            };
-            cx.canvas.fill_round_rect(l.cost, l.cost.h / 2, t.surface);
-            let dot = Rect::new(l.cost.x + 14, l.cost.y + l.cost.h / 2 - 4, 8, 8);
-            cx.canvas.fill_round_rect(dot, 4, t.tone(tone));
+        // The two looks, where the mixer's CPU chip was.
+        cx.canvas.fill_round_rect(l.look, 12, t.surface);
+        for (half, look) in look_halves(l.look).into_iter().zip(Look::ALL) {
+            let on = look == self.look;
+            if on {
+                cx.canvas.fill_round_rect(half, 8, t.accent);
+            }
             cx.text(
-                FontId::Sans,
+                if on { FontId::Bold } else { FontId::Sans },
                 t.size_small,
-                l.cost.inset_xy(28, 0),
-                Align::Left,
-                t.text,
-                &format!("Mix + FX {c:.1} %"),
+                half,
+                Align::Center,
+                if on { t.on_accent } else { t.text_dim },
+                look.label(),
             );
         }
+    }
+
+    /// The whole mixer's cost, inserts included, against the mix and fx
+    /// budgets together (1 % and 10 % of a period on the MPC), while
+    /// profiling: on the master's name row (Faders) or the title line
+    /// (Effects).
+    fn paint_cost(&self, cx: &mut PaintCx, r: Rect, long: bool) {
+        let Some(c) = self.state.cost_pct else {
+            return;
+        };
+        let t = cx.theme.clone();
+        let tone = if c <= 5.0 {
+            Tone::Good
+        } else if c <= 11.0 {
+            Tone::Warn
+        } else {
+            Tone::Bad
+        };
+        let text = if long {
+            format!("Mix + FX {c:.1} %")
+        } else {
+            format!("{c:.1} %")
+        };
+        cx.text(
+            FontId::Sans,
+            t.size_small,
+            r,
+            Align::Right,
+            t.tone(tone),
+            &text,
+        );
     }
 
     fn paint_strip(&self, cx: &mut PaintCx, s: &StripView, sr: Rect) {
@@ -1041,6 +1426,9 @@ impl MixerView {
         );
         let label = p.name.take_top(6).1;
         cx.text(FontId::Bold, t.size_small, label, Align::Left, ink, &s.name);
+        if master {
+            self.paint_cost(cx, label, false);
+        }
         // Inserts (an input's last two rows are its Source and Monitor).
         for (i, row) in p.inserts.iter().enumerate() {
             if let Some(inp) = s.input.filter(|_| i >= 2) {
@@ -1321,6 +1709,232 @@ impl MixerView {
                 t.text_faint,
                 to,
             );
+        }
+    }
+
+    /// The Effects look: each strip's chain as a row of slots, in order
+    /// left to right, with the master's row pinned under them.
+    fn paint_effects(&self, cx: &mut PaintCx, l: &Layout) {
+        let t = cx.theme.clone();
+        let g = grid(l);
+        cx.canvas.fill_round_rect(g.panel, 14, t.surface);
+        let rows = self.rows(l);
+        let title = match (rows.first(), rows.last()) {
+            (Some((a, _)), Some((b, _))) => format!(
+                "{} {}-{} · EACH CHAIN IN ORDER, LEFT TO RIGHT",
+                self.state.view.label().to_uppercase(),
+                a + 1,
+                b + 1
+            ),
+            _ => self.state.view.label().to_uppercase(),
+        };
+        cx.text(
+            FontId::Bold,
+            t.size_small - 2.0,
+            g.title,
+            Align::Left,
+            t.text_dim,
+            &title,
+        );
+        let picked = self.pick.and_then(|(id, slot)| {
+            let s = self.state.strip(id)?;
+            Some(format!(
+                "{} · {} picked: its knobs are on the Q-Links",
+                s.name,
+                s.inserts.get(slot)?.name
+            ))
+        });
+        match picked {
+            Some(p) => {
+                cx.text(
+                    FontId::Sans,
+                    t.size_small - 2.0,
+                    g.title,
+                    Align::Right,
+                    t.text_dim,
+                    &p,
+                );
+            }
+            None => self.paint_cost(cx, g.title, true),
+        }
+        let (name, cells) = row_cells(g.numbers);
+        cx.text(
+            FontId::Sans,
+            t.size_small - 2.0,
+            name,
+            Align::Left,
+            t.text_faint,
+            "Strip",
+        );
+        for (k, c) in cells.iter().enumerate() {
+            cx.text(
+                FontId::Sans,
+                t.size_small - 2.0,
+                *c,
+                Align::Center,
+                t.text_faint,
+                &(k + 1).to_string(),
+            );
+        }
+        for (i, row) in rows {
+            self.paint_row(cx, &self.state.strips[i], row);
+        }
+        let line = Rect::new(g.left, g.master.y - 6, g.width, 1);
+        cx.canvas.fill_rect(line, t.raised);
+        self.paint_row(cx, &self.state.master, g.master);
+    }
+
+    /// One strip's row on the Effects look.
+    fn paint_row(&self, cx: &mut PaintCx, s: &StripView, row: Rect) {
+        let t = cx.theme.clone();
+        let (name, cells) = row_cells(row);
+        if self.state.selected == Some(s.id) {
+            cx.canvas.fill_round_rect(name, 10, t.raised);
+            cx.canvas.stroke_round_rect(name, 10, 2, t.accent);
+        }
+        let color = strip_color(&t, s.id);
+        let stripe = Rect::new(name.x + 6, name.y + (name.h - 36) / 2, 4, 36);
+        cx.canvas.fill_round_rect(
+            stripe,
+            2,
+            if s.audible {
+                color
+            } else {
+                color.mix(t.surface, 0.6)
+            },
+        );
+        let text = Rect::new(
+            stripe.right() + 10,
+            name.y + 6,
+            name.right() - stripe.right() - 16,
+            name.h - 12,
+        );
+        let (top, bottom) = text.take_top(text.h / 2 + 2);
+        cx.text(
+            FontId::Bold,
+            t.size_body - 2.0,
+            top,
+            Align::Left,
+            if s.audible { t.text } else { t.text_dim },
+            &s.name,
+        );
+        let sub = match s.take {
+            Some(TakeView { print, done }) => {
+                let what = if print { "printing" } else { "freezing" };
+                match done {
+                    Some(d) => format!("{what} {:.0} %", (d * 100.0).clamp(0.0, 100.0)),
+                    None => format!("{what} next loop"),
+                }
+            }
+            None => row_sub(s),
+        };
+        cx.text(
+            FontId::Sans,
+            t.size_small - 3.0,
+            bottom,
+            Align::Left,
+            if s.take.is_some() || s.frozen {
+                t.accent
+            } else {
+                t.text_dim
+            },
+            &sub,
+        );
+        let slots = s.slots.min(FX_COLS);
+        // An effect dragged along this row: where it would land.
+        let drop = self.grabs.iter().find_map(|(_, g)| match *g {
+            Grab::Fx {
+                id,
+                from,
+                to: Some(to),
+                ..
+            } if id == s.id => Some((from, to)),
+            _ => None,
+        });
+        for (k, c) in cells.into_iter().enumerate() {
+            if k >= slots {
+                break;
+            }
+            if let Some(ins) = s.inserts.get(k) {
+                cx.canvas.fill_round_rect(
+                    c,
+                    10,
+                    if ins.on {
+                        t.raised
+                    } else {
+                        t.surface.mix(t.raised, 0.4)
+                    },
+                );
+                let dot = Rect::new(c.right() - 16, c.y + 9, 8, 8);
+                let tone = if !ins.on {
+                    t.text_faint
+                } else if ins.key.is_some() {
+                    t.accent
+                } else {
+                    t.good
+                };
+                cx.canvas.fill_round_rect(dot, 4, tone);
+                if let Some(cost) = ins.cost_pct {
+                    let w = ((c.w as f32) * (cost / 10.0).clamp(0.0, 1.0)) as i32;
+                    cx.canvas.fill_round_rect(
+                        Rect::new(c.x, c.bottom() - 3, w.max(2), 3),
+                        1,
+                        if cost <= 2.0 {
+                            t.good
+                        } else if cost <= 5.0 {
+                            t.warn
+                        } else {
+                            t.bad
+                        },
+                    );
+                }
+                let inner = Rect::new(c.x + 8, c.y + 6, c.w - 28, c.h - 12);
+                let second = match (&ins.key, ins.on) {
+                    (_, false) => Some("Off".to_string()),
+                    (Some(k), true) => Some(format!("SC from {k}")),
+                    (None, true) => None,
+                };
+                let (a, b) = match second {
+                    Some(_) => inner.take_top(inner.h / 2 + 2),
+                    None => (inner, Rect::default()),
+                };
+                cx.text(
+                    FontId::Bold,
+                    t.size_small - 2.0,
+                    a,
+                    Align::Left,
+                    t.button_ink(ins.on),
+                    &ins.name,
+                );
+                if let Some(line) = second {
+                    cx.text(
+                        FontId::Sans,
+                        t.size_small - 4.0,
+                        Rect::new(b.x, b.y, c.w - 16, b.h),
+                        Align::Left,
+                        t.text_dim,
+                        &line,
+                    );
+                }
+                if self.pick == Some((s.id, k)) && drop.is_none() {
+                    cx.canvas.stroke_round_rect(c, 10, 2, t.accent);
+                }
+                match drop {
+                    Some((from, _)) if from == k => {
+                        cx.canvas.stroke_round_rect(c, 10, 1, t.text_dim);
+                    }
+                    Some((_, to)) if to == k => {
+                        cx.canvas.stroke_round_rect(c, 10, 2, t.accent);
+                    }
+                    _ => {}
+                }
+            } else if k == s.inserts.len() {
+                cx.canvas.fill_round_rect(c, 10, t.raised);
+                cx.text(FontId::Bold, t.size_small, c, Align::Center, t.text, "+ FX");
+            } else {
+                cx.canvas
+                    .stroke_round_rect(c, 10, 1, t.outline.mix(t.surface, 0.5));
+            }
         }
     }
 
@@ -1631,12 +2245,34 @@ impl MixerView {
                 v.extend(p.inserts);
             }
         };
-        for (i, sr) in self.shown(&l) {
-            add(sr, false, &self.state.strips[i]);
-        }
-        add(l.master, true, &self.state.master);
-        if profiling {
-            v.push(l.cost);
+        if self.look == Look::Effects && self.state.view != MixView::Io {
+            // No meters here: a take's progress, and the costs while
+            // profiling.
+            let g = grid(&l);
+            let mut rows: Vec<(&StripView, Rect)> = self
+                .rows(&l)
+                .into_iter()
+                .map(|(i, row)| (&self.state.strips[i], row))
+                .collect();
+            rows.push((&self.state.master, g.master));
+            for (s, row) in rows {
+                if profiling {
+                    v.push(row);
+                } else if s.take.is_some() {
+                    v.push(row_cells(row).0);
+                }
+            }
+            if profiling {
+                v.push(g.title);
+            }
+        } else {
+            for (i, sr) in self.shown(&l) {
+                add(sr, false, &self.state.strips[i]);
+            }
+            add(l.master, true, &self.state.master);
+            if profiling {
+                v.push(parts(l.master).name);
+            }
         }
         if self.picker.is_some() {
             // The picker covers the strips: draw it again over them.
@@ -1831,7 +2467,11 @@ impl MixerView {
     fn span(&self, l: &Layout) -> (usize, usize, usize, bool) {
         let n = self.state.strips.len();
         if self.state.view != MixView::Io {
-            return (self.first, self.shown(l).len(), n, false);
+            let shown = match self.look {
+                Look::Faders => self.shown(l).len(),
+                Look::Effects => self.rows(l).len(),
+            };
+            return (self.first, shown, n, false);
         }
         if self.io.section().is_some() {
             return (0, 0, 0, true);
@@ -2125,7 +2765,7 @@ impl MixerView {
     }
 }
 
-/// The small I/O icon beside the mixer icon (Jay's call, 2026-11-12): two
+/// The small I/O icon at the top bar's right edge (Jay's call, 2026-11-12): two
 /// arrows, in and out. A tap gives `Tab(0)`; the app opens the mixer on
 /// its I/O view, or closes it. Offered to the app thread, which places it.
 #[derive(Clone, Copy, Debug, Default)]
@@ -2163,50 +2803,6 @@ impl Widget for IoIcon {
 
     fn targets(&self, r: Rect) -> Vec<Target> {
         vec![Target::tap("icon", 0, "I/O", r)]
-    }
-
-    fn touch(&mut self, _f: u64, phase: Touch, _x: i32, _y: i32, _r: Rect) -> Option<EventKind> {
-        (phase == Touch::Down).then_some(EventKind::Tab(0))
-    }
-}
-
-/// The small mixer icon for the top bar's right edge (layout spec, section
-/// 2): three sliders. A tap gives `Tab(0)`; the app opens or closes the
-/// mixer. Offered to the Hello thread, which owns the bar.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct MixerIcon {
-    /// The mixer is open (the icon is lit).
-    pub open: bool,
-}
-
-impl Widget for MixerIcon {
-    fn paint(&self, cx: &mut PaintCx, r: Rect) {
-        let t = cx.theme.clone();
-        let side = 44.min(r.h).min(r.w);
-        let b = Rect::new(r.x + (r.w - side) / 2, r.y + (r.h - side) / 2, side, side);
-        cx.canvas
-            .fill_round_rect(b, 10, if self.open { t.raised } else { t.surface });
-        if self.open {
-            cx.canvas.fill_round_rect(
-                Rect::new(b.x + 10, b.bottom() - 4, b.w - 20, 3),
-                1,
-                t.accent,
-            );
-        }
-        let ink = if self.open { t.text } else { t.text_dim };
-        let (top, h) = (b.y + 11, b.h - 22);
-        for (i, knob) in [0.35f32, 0.75, 0.5].iter().enumerate() {
-            let x = b.x + 12 + i as i32 * 9;
-            cx.canvas
-                .fill_rect(Rect::new(x, top, 2, h), ink.mix(t.surface, 0.4));
-            let ky = top + ((h - 6) as f32 * (1.0 - knob)) as i32;
-            cx.canvas
-                .fill_round_rect(Rect::new(x - 3, ky, 8, 6), 2, ink);
-        }
-    }
-
-    fn targets(&self, r: Rect) -> Vec<Target> {
-        vec![Target::tap("icon", 0, "mixer", r)]
     }
 
     fn touch(&mut self, _f: u64, phase: Touch, _x: i32, _y: i32, _r: Rect) -> Option<EventKind> {
@@ -2279,17 +2875,24 @@ impl Widget for MixerView {
     fn paint(&self, cx: &mut PaintCx, r: Rect) {
         self.dirty.set(Dirty::Clean);
         let l = layout(r);
-        self.per_page.set(l.per_page);
+        self.per_page.set(self.page_size(&l));
         let clip = cx.canvas.clip();
         if !clip.intersect(Rect::new(r.x, r.y, r.w, HEAD_H)).is_empty() {
             self.paint_head(cx, &l);
         }
-        for (i, sr) in self.shown(&l) {
-            if !clip.intersect(sr).is_empty() {
-                self.paint_strip(cx, &self.state.strips[i], sr);
+        let effects = self.look == Look::Effects && self.state.view != MixView::Io;
+        if effects {
+            if !clip.intersect(grid(&l).panel).is_empty() {
+                self.paint_effects(cx, &l);
+            }
+        } else {
+            for (i, sr) in self.shown(&l) {
+                if !clip.intersect(sr).is_empty() {
+                    self.paint_strip(cx, &self.state.strips[i], sr);
+                }
             }
         }
-        if !clip.intersect(l.master).is_empty() {
+        if !effects && !clip.intersect(l.master).is_empty() {
             self.paint_strip(cx, &self.state.master, l.master);
         }
         if self.state.view == MixView::Io {
@@ -2303,10 +2906,16 @@ impl Widget for MixerView {
                 MixView::Inputs => "No input strips",
                 _ => "No strips",
             };
+            let area = if effects {
+                let g = grid(&l);
+                Rect::new(g.left, g.top, g.width, g.master.y - 12 - g.top)
+            } else {
+                l.strips
+            };
             cx.text(
                 FontId::Sans,
                 t.size_body,
-                l.strips,
+                area,
                 Align::Center,
                 t.text_dim,
                 msg,
@@ -2355,6 +2964,9 @@ impl Widget for MixerView {
         let (first, shown, n, outside) = self.span(&l);
         out.push(Target::tap("prev", 0, "<", l.prev).disabled_if(!(outside || first > 0)));
         out.push(Target::tap("next", 0, ">", l.next).disabled_if(!(outside || first + shown < n)));
+        for (i, (h, look)) in look_halves(l.look).into_iter().zip(Look::ALL).enumerate() {
+            out.push(Target::tap("look", i, look.label(), h).disabled_if(look == self.look));
+        }
         if self.state.view == MixView::Io {
             let il = io::io_layout(l.strips, self.io.sections.len() + 1);
             for (i, (b, label)) in il.list.iter().zip(self.io.labels()).enumerate() {
@@ -2395,6 +3007,30 @@ impl Widget for MixerView {
                         format!("{} monitor", s.name),
                         p.monitor,
                     ));
+                }
+            }
+            return out;
+        }
+        if self.look == Look::Effects {
+            let mut rows: Vec<(&StripView, Rect)> = self
+                .rows(&l)
+                .into_iter()
+                .map(|(i, row)| (&self.state.strips[i], row))
+                .collect();
+            rows.push((&self.state.master, grid(&l).master));
+            for (k, (s, row)) in rows.into_iter().enumerate() {
+                let (name, cells) = row_cells(row);
+                let picked = self.state.selected == Some(s.id);
+                out.push(
+                    Target::tap("fx-name", k, s.name.clone(), name)
+                        .disabled_if(picked && !self.state.takes),
+                );
+                for (j, c) in cells.into_iter().enumerate().take(s.slots.min(FX_COLS)) {
+                    if let Some(ins) = s.inserts.get(j) {
+                        out.push(Target::tap("fx", k * FX_COLS + j, ins.name.clone(), c));
+                    } else if j == s.inserts.len() {
+                        out.push(Target::tap("fx-add", k, format!("{} + FX", s.name), c));
+                    }
                 }
             }
             return out;
@@ -2893,6 +3529,166 @@ mod tests {
     }
 
     #[test]
+    fn the_effects_look_shows_each_chain_and_opens_it() {
+        fn tap(ui: &mut Ui, (x, y): (i32, i32)) {
+            ui.touch(1, Touch::Down, x, y);
+            ui.touch(1, Touch::Up, x, y);
+        }
+        fn view(ui: &Ui) -> &MixerView {
+            ui.get::<MixerView>(crate::MIXER).unwrap()
+        }
+        let mut ui = ui(state(16));
+        let r = ui.rect_of(crate::MIXER).unwrap();
+        let l = layout(r);
+        let find = |ui: &Ui, id: &str, index: usize| {
+            ui.get::<MixerView>(crate::MIXER)
+                .unwrap()
+                .targets(r)
+                .into_iter()
+                .find(|t| t.id == id && t.index == index)
+                .map(|t| t.rect)
+        };
+        assert!(find(&ui, "fx", 0).is_none(), "Faders first");
+        let [faders, effects] = look_halves(l.look);
+        tap(&mut ui, mid(effects));
+        assert_eq!(
+            crate::take_actions(&mut ui),
+            vec![MixAction::Look(Look::Effects)]
+        );
+        assert_eq!(crate::look(&ui), Look::Effects);
+        assert_eq!(crate::hint(&ui), crate::MIXER_HINT_EFFECTS);
+        assert!(find(&ui, "fader", 0).is_none(), "no faders on Effects");
+        // Track 1's compressor, then its + FX in the next slot; Track 2's
+        // + FX in its first.
+        let at = mid(find(&ui, "fx", 0).expect("track 1's compressor"));
+        tap(&mut ui, at);
+        assert_eq!(
+            crate::take_actions(&mut ui),
+            vec![MixAction::PickInsert {
+                strip: StripId::Track(0),
+                slot: 0
+            }],
+            "a tap picks it for the Q-Links"
+        );
+        assert_eq!(crate::pick(&ui), Some((StripId::Track(0), 0)));
+        tap(&mut ui, at);
+        assert_eq!(
+            crate::take_actions(&mut ui),
+            vec![MixAction::OpenInsert {
+                strip: StripId::Track(0),
+                slot: 0
+            }],
+            "again: its chain"
+        );
+        let add = find(&ui, "fx-add", 0).expect("track 1's + FX");
+        assert_eq!(add, row_cells(grid(&l).row(0)).1[1]);
+        let at = mid(find(&ui, "fx-add", 1).expect("track 2's + FX"));
+        tap(&mut ui, at);
+        assert_eq!(
+            crate::take_actions(&mut ui),
+            vec![MixAction::AddInsert {
+                strip: StripId::Track(1)
+            }]
+        );
+        // An empty slot past + FX does nothing.
+        tap(&mut ui, mid(row_cells(grid(&l).row(0)).1[3]));
+        assert!(crate::take_actions(&mut ui).is_empty());
+        // A name selects, and gives the Q-Links back to the strip; the
+        // master's row is on every page.
+        let at = mid(find(&ui, "fx-name", 2).unwrap());
+        tap(&mut ui, at);
+        assert_eq!(
+            crate::take_actions(&mut ui),
+            vec![MixAction::Select(StripId::Track(2))]
+        );
+        assert_eq!(crate::pick(&ui), None);
+        let rows = grid(&l).rows;
+        assert_eq!(rows, 8, "eight rows on the 800-pixel screen");
+        let master = find(&ui, "fx-add", rows).expect("the master's + FX");
+        assert_eq!(master, row_cells(grid(&l).master).1[0]);
+        tap(&mut ui, mid(l.next));
+        assert_eq!(view(&ui).first(), 8, "a page is the rows shown");
+        assert_eq!(find(&ui, "fx-name", 0).map(|_| ()), Some(()));
+        // Every look paints; the app's TRACK MIX puts Faders back quietly.
+        let mut c = SoftCanvas::new(1280, 800);
+        ui.paint(&mut c);
+        crate::set_look(&mut ui, Look::Faders);
+        assert!(crate::take_actions(&mut ui).is_empty());
+        assert_eq!(view(&ui).look(), Look::Faders);
+        assert_eq!(crate::pick(&ui), None, "the pick goes with the look");
+        assert!(find(&ui, "look", 0).unwrap() == faders);
+        assert_eq!(crate::hint(&ui), crate::MIXER_HINT);
+    }
+
+    #[test]
+    fn an_effect_dragged_along_its_row_moves() {
+        let mut st = state(4);
+        let fx = |name: &str| InsertView {
+            name: name.into(),
+            on: true,
+            key: None,
+            cost_pct: None,
+        };
+        st.strips[1].inserts = vec![fx("Drive"), fx("EQ"), fx("Delay")];
+        let mut ui = ui(st);
+        let r = ui.rect_of(crate::MIXER).unwrap();
+        crate::set_look(&mut ui, Look::Effects);
+        let l = layout(r);
+        let cells = row_cells(grid(&l).row(1)).1;
+        // Picked first: the pick moves with its effect.
+        let (x, y) = mid(cells[0]);
+        ui.touch(1, Touch::Down, x, y);
+        ui.touch(1, Touch::Up, x, y);
+        assert_eq!(crate::pick(&ui), Some((StripId::Track(1), 0)));
+        let _ = crate::take_actions(&mut ui);
+        ui.touch(2, Touch::Down, x, y);
+        let (x2, _) = mid(cells[2]);
+        ui.touch(2, Touch::Move, (x + x2) / 2, y);
+        ui.touch(2, Touch::Move, x2, y);
+        let mut c = SoftCanvas::new(1280, 800);
+        ui.paint(&mut c);
+        ui.touch(2, Touch::Up, x2, y);
+        assert_eq!(
+            crate::take_actions(&mut ui),
+            vec![MixAction::MoveInsert {
+                strip: StripId::Track(1),
+                from: 0,
+                to: 2
+            }]
+        );
+        let names: Vec<String> = view_of(&ui).state().strips[1]
+            .inserts
+            .iter()
+            .map(|i| i.name.clone())
+            .collect();
+        assert_eq!(
+            names,
+            ["EQ", "Delay", "Drive"],
+            "moved on the screen at once"
+        );
+        assert_eq!(crate::pick(&ui), Some((StripId::Track(1), 2)));
+        // Past the last effect it lands last; a short wobble is a tap.
+        let (x, y) = mid(cells[1]);
+        ui.touch(3, Touch::Down, x, y);
+        ui.touch(3, Touch::Move, x + 5, y);
+        ui.touch(3, Touch::Up, x + 5, y);
+        assert_eq!(
+            crate::take_actions(&mut ui),
+            vec![MixAction::PickInsert {
+                strip: StripId::Track(1),
+                slot: 1
+            }]
+        );
+        assert_eq!(moved_slot(1, 0, 2), 0);
+        assert_eq!(moved_slot(0, 2, 0), 1);
+        assert_eq!(moved_slot(3, 0, 2), 3);
+    }
+
+    fn view_of(ui: &Ui) -> &MixerView {
+        ui.get::<MixerView>(crate::MIXER).unwrap()
+    }
+
+    #[test]
     fn a_meter_only_update_redraws_only_the_meters() {
         let mut ui = ui(state(12));
         let mut c = SoftCanvas::new(1280, 800);
@@ -3200,13 +3996,16 @@ mod io_tests {
         let mut ui = ui(MixState::default());
         let l = layout(ui.rect_of(crate::MIXER).unwrap());
         assert!(
-            l.chips[4].right() < l.cost.x,
+            l.chips[4].right() < l.look.x,
             "the chips clear the head's right side"
         );
         // Beside the app's Q-Link column the panel is about 1088 wide.
         for w in [1280, 1088, 1040] {
             let l = layout(Rect::new(0, 60, w, 714));
-            assert!(l.chips[4].right() < l.cost.x, "{w}: clear of the cost chip");
+            assert!(
+                l.chips[4].right() < l.look.x,
+                "{w}: clear of the look toggle"
+            );
             assert!(l.chips[3].right() < l.chips[4].x, "{w}");
         }
         tap(&mut ui, mid(l.chips[4]));

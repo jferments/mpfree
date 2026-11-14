@@ -32,8 +32,11 @@ impl Chip {
 /// The pad player's tabs, in the order Jay approved (docs/dev/design/layout-spec.md).
 /// Every crate's preview draws this bar ([`Header::app`]), never a list of its
 /// own; adding, removing, renaming or reordering a tab needs Jay's approval.
-/// Pads joined between Play and Arrange on 12 Nov 2026 (Jay, 15:46Z).
-pub const APP_TABS: [&str; 6] = ["Play", "Pads", "Arrange", "Synth", "Looper", "Sample"];
+/// Pads joined between Play and Arrange on 12 Nov 2026 (Jay, 15:46Z), and
+/// Mix (the mixer and the effects) last on 14 Nov (Jay's card, 07:15Z).
+pub const APP_TABS: [&str; 7] = [
+    "Play", "Pads", "Arrange", "Synth", "Looper", "Sample", "Mix",
+];
 /// The tab after them while Prefs > "Show developer tools" is on.
 pub const DEV_TAB: &str = "Dev";
 
@@ -1477,8 +1480,9 @@ mod tests {
     fn the_app_bar_is_the_approved_one() {
         assert_eq!(
             APP_TABS,
-            ["Play", "Pads", "Arrange", "Synth", "Looper", "Sample"]
+            ["Play", "Pads", "Arrange", "Synth", "Looper", "Sample", "Mix"]
         );
+        assert_eq!(Header::app("Mix").active, 6);
         assert_eq!(Header::app("Synth").active, 3);
         assert_eq!(Header::app("Prefs").active, usize::MAX);
     }

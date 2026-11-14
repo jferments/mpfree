@@ -504,12 +504,12 @@ pub fn screen(
     macros: Option<MacrosState>,
 ) -> Result<Ui, String> {
     let mut ui = Ui::new(Theme::dark(), fonts, 1280, 800);
-    // The top bar: Sample lit for its FX sub-tab; nothing lit over the
-    // mixer or a page (as the mixer does).
+    // The top bar: Sample lit for its FX sub-tab; Mix for the editor
+    // itself (the chain editor is the Mix tab's).
     let mut header = Header::app(if place == Place::SampleFx {
         APP_TABS[5]
     } else {
-        ""
+        APP_TABS[6]
     });
     header.chips = vec![
         Chip::new("92 BPM", Tone::Normal),
@@ -572,6 +572,13 @@ pub fn samples(fonts: impl Fn() -> Fonts) -> Result<Vec<Sample>, String> {
     let kick_uid = song.kick.uid(0).unwrap();
     let from_mixer = |mut st: ChainState| {
         st.back = Some("Mixer".into());
+        st.strip_name = st.title.trim_end_matches(" FX").to_string();
+        st.strip_kind = match st.strip {
+            Strip::Track(t) => format!("Track {}", t + 1),
+            Strip::Bus(b) => format!("Submix {}", b + 1),
+            Strip::Pad(p) => format!("Pad {}", p + 1),
+            _ => String::new(),
+        };
         st
     };
     let mut drive = from_mixer(song.chain_state(
@@ -612,7 +619,7 @@ pub fn samples(fonts: impl Fn() -> Fonts) -> Result<Vec<Sample>, String> {
         )),
     );
     kick.scopes = vec!["Pad 1 · Kick".into(), "Track · Drums".into()];
-    let mut empty = ChainState::from_chain(
+    let empty = ChainState::from_chain(
         &chain(vec![]),
         Strip::Track(6),
         "Vocal chop FX",
@@ -622,9 +629,8 @@ pub fn samples(fonts: impl Fn() -> Fonts) -> Result<Vec<Sample>, String> {
         0,
         None,
     );
-    empty.back = Some("Mixer".into());
-    let mut adding = song.chain_state(KEYS, 1, 0, None);
-    adding.back = Some("Mixer".into());
+    let empty = from_mixer(empty);
+    let mut adding = from_mixer(song.chain_state(KEYS, 1, 0, None));
     adding.picking = true;
     let mut starred = adding.clone();
     for id in [
@@ -646,6 +652,41 @@ pub fn samples(fonts: impl Fn() -> Fonts) -> Result<Vec<Sample>, String> {
         v.wheel(2, false);
         v.push_wheel();
         v.wheel(6, false);
+    }
+    // The strip button's list over the keys chain: the tracks.
+    let keys = from_mixer(song.chain_state(KEYS, 1, 0, None));
+    let mut listed = keys.clone();
+    let pick = |t: u8, name: &str, sub: &str| crate::StripPick {
+        strip: Strip::Track(t),
+        name: name.into(),
+        sub: sub.into(),
+    };
+    listed.list = Some(crate::StripList {
+        group: 0,
+        counts: [8, 16, 1, 4, 8, 1],
+        strips: vec![
+            pick(0, "Drums", "4 effects"),
+            pick(1, "Synth", "no effects"),
+            pick(2, "Loop", "1 effect"),
+            pick(3, "Audio", "no effects"),
+            pick(4, "Keys", "3 effects"),
+            pick(5, "Bass", "2 effects"),
+            pick(6, "Vocal chop", "muted · no effects"),
+            pick(7, "Pad", "no effects"),
+        ],
+    });
+    let mut strips = screen(fonts(), &mut song, Place::Mixer, Some(keys), None)?;
+    let r = strips.rect_of(crate::CHAIN).ok_or("the chain editor")?;
+    let b = strips
+        .get::<crate::ChainView>(crate::CHAIN)
+        .and_then(|v| v.layout(r).strip)
+        .ok_or("the strip button")?;
+    strips.touch(1, mpfree_ui::Touch::Down, b.x + 5, b.y + 5);
+    strips.touch(1, mpfree_ui::Touch::Up, b.x + 5, b.y + 5);
+    let _ = crate::take_chain_actions(&mut strips);
+    crate::update_chain(&mut strips, listed);
+    if let Some(h) = strips.get_mut::<Label>("hint") {
+        h.text = crate::STRIPS_HINT.to_string();
     }
     // Layout B: the drum bus EQ on its Band 3 page (a Main page first,
     // more tabs than fit, so the row scrolls; the Q-Links stay on Main's
@@ -680,6 +721,7 @@ pub fn samples(fonts: impl Fn() -> Fonts) -> Result<Vec<Sample>, String> {
         Sample { name: "chain-mixer-add-effect", about: "The effect picker, a category browser over the effect and Modulate columns (+ Add effect, or the mixer's + on a strip): Favourites, Recent and the categories with their counts; with no favourites it opens on Dynamics. A tap adds an effect at its defaults, the star keeps it, a hold or its presets line opens its presets", ui: screen(fonts(), &mut song, Place::Mixer, Some(adding), None)? },
         Sample { name: "chain-mixer-add-favourites", about: "The picker opens on Favourites once there are any (starred, in the order they were starred; Recent holds the last 12 added)", ui: screen(fonts(), &mut song, Place::Mixer, Some(starred), None)? },
         Sample { name: "chain-mixer-add-presets", about: "The Reverb's presets, every mode's with its mode under the name, reached with SHIFT + wheel (Delay and reverb), the wheel (Reverb) and a push; the wheel is on Snare plate, and a push or a tap adds the Reverb as a Plate with it (Defaults adds a Room as it starts)", ui: presets },
+        Sample { name: "chain-strip-list", about: "The strip button's list over the keys chain: the groups down the left, the tracks as tiles with what each holds (the open one outlined); a tap opens that strip's chain", ui: strips },
         Sample { name: "macros-1-4", about: "The macros panel over the page (a long press on a macro card; no tab lit, Back closes it): Macros 1-4 with their targets and ranges, the Q-Links on Macros 1-4, the morph 64 % of the way from Dry verse to Wash drop", ui: screen(fonts(), &mut song, Place::Over, None, Some(m0))? },
         Sample { name: "macros-5-8", about: "Macros 5-8, not yet assigned; the Q-Links on Macros 5-8", ui: screen(fonts(), &mut song, Place::Over, None, Some(m1))? },
         Sample { name: "macros-edit-target", about: "A tap on a target opens its editor over the cards: Wash's hold on the delay tone, a falling range (80 → 35 %); drag From and To, pick a curve, Flip, Remove", ui: screen(fonts(), &mut song, Place::Over, None, Some(editing))? },
@@ -701,7 +743,7 @@ mod tests {
     #[test]
     fn the_samples_read_real_state_and_paint() {
         let s = samples(Fonts::embedded).unwrap();
-        assert_eq!(s.len(), 13);
+        assert_eq!(s.len(), 14);
         for mut sample in s {
             let (w, h) = sample.ui.size();
             let mut c = SoftCanvas::new(w, h);
@@ -767,6 +809,84 @@ mod tests {
             panic!("{acts:?}")
         };
         assert!(*value < tone.value, "{} -> {value}", tone.value);
+    }
+
+    /// Jay, 14 Nov 12:03Z: drag an effect up or down its chain. It lifts
+    /// once the finger has moved more than a fingertip, lands where the
+    /// finger lifts, and a cancel or a small wobble only picks it. The
+    /// wheel moves the picked one a place a detent, the outline with it.
+    #[test]
+    fn an_effect_drags_along_its_chain() {
+        let mut song = Song::new();
+        let st = song.chain_state(DRUMS, 1, 0, None);
+        let mut ui = screen(Fonts::embedded(), &mut song, Place::Mixer, Some(st), None).unwrap();
+        let mut c = SoftCanvas::new(1280, 800);
+        ui.paint(&mut c);
+        let r = ui.rect_of(crate::CHAIN).unwrap();
+        let rows = ui
+            .get::<ChainView>(crate::CHAIN)
+            .unwrap()
+            .layout(r)
+            .rows
+            .clone();
+        let names = |ui: &Ui| {
+            let v = ui.get::<ChainView>(crate::CHAIN).unwrap();
+            let names: Vec<String> = v.state().slots.iter().map(|s| s.name.clone()).collect();
+            (names, v.state().selected)
+        };
+        let mid = |i: usize| rows[i].y + rows[i].h / 2;
+        let x = rows[0].x + 60;
+        // Multi filter, carried down past Drive and Compressor.
+        ui.touch(3, Touch::Down, x, mid(0));
+        ui.touch(3, Touch::Move, x, mid(1));
+        ui.touch(3, Touch::Move, x, mid(2));
+        ui.paint(&mut c);
+        ui.touch(3, Touch::Up, x, mid(2));
+        assert_eq!(
+            crate::take_chain_actions(&mut ui),
+            [ChainAction::Select(0), ChainAction::Move { from: 0, to: 2 }]
+        );
+        let want = ["Drive · Soft", "Compressor", "Filter · Multi", "EQ"];
+        assert_eq!(names(&ui), (want.map(String::from).to_vec(), Some(2)));
+        // Under a fingertip: a tap, it only picks.
+        ui.touch(3, Touch::Down, x, mid(3));
+        ui.touch(3, Touch::Move, x, mid(3) + 6);
+        ui.touch(3, Touch::Up, x, mid(3) + 6);
+        assert_eq!(crate::take_chain_actions(&mut ui), [ChainAction::Select(3)]);
+        // Cancelled on the way: nothing moves.
+        ui.touch(3, Touch::Down, x, mid(3));
+        ui.touch(3, Touch::Move, x, mid(0));
+        ui.touch(3, Touch::Cancel, x, mid(0));
+        assert_eq!(crate::take_chain_actions(&mut ui), [ChainAction::Select(3)]);
+        // Lifted where it started: nothing moves either.
+        ui.touch(3, Touch::Down, x, mid(3));
+        ui.touch(3, Touch::Move, x, mid(1));
+        ui.touch(3, Touch::Move, x, mid(3));
+        ui.touch(3, Touch::Up, x, mid(3));
+        assert_eq!(crate::take_chain_actions(&mut ui), [ChainAction::Select(3)]);
+        assert_eq!(names(&ui).0, want.map(String::from).to_vec());
+        // The wheel: the picked effect (EQ) is one it can move.
+        let t = ui.focus_at(x, mid(3)).unwrap();
+        assert_eq!((t.id, t.index, t.moves), ("slot", 3, true));
+        assert!(ui.focus_steps());
+        assert!(ui.focus_step(-2).is_some());
+        assert_eq!(
+            crate::take_chain_actions(&mut ui),
+            [ChainAction::Move { from: 3, to: 1 }]
+        );
+        let want = ["Drive · Soft", "EQ", "Compressor", "Filter · Multi"];
+        assert_eq!(names(&ui), (want.map(String::from).to_vec(), Some(1)));
+        let f = ui.focused().unwrap().target;
+        assert_eq!((f.id, f.index), ("slot", 1), "the outline goes with it");
+        assert!(ui.focus_step(-5).is_some(), "to the top, no further");
+        assert_eq!(
+            crate::take_chain_actions(&mut ui),
+            [ChainAction::Move { from: 1, to: 0 }]
+        );
+        assert!(ui.focus_step(-1).is_none(), "first already");
+        // An effect not picked is a plain tap for the wheel.
+        let t = ui.focus_at(x, mid(2)).unwrap();
+        assert_eq!((t.id, t.index, t.moves), ("slot", 2, false));
     }
 
     #[test]
@@ -1092,6 +1212,124 @@ mod tests {
         let drive = Song::new().chain_state(DRUMS, 1, 0, None);
         assert_eq!(drive.groups, ["Drive", "Output"]);
         assert!(drive.main_four.is_empty() && drive.stages.is_empty());
+    }
+
+    #[test]
+    fn the_strip_button_lists_the_strips_and_opens_one() {
+        let mut song = Song::new();
+        let mut st = song.chain_state(KEYS, 1, 0, None);
+        st.back = Some("Mixer".into());
+        st.strip_name = "Keys".into();
+        st.strip_kind = "Track 5".into();
+        let mut ui = screen(
+            Fonts::embedded(),
+            &mut song,
+            Place::Mixer,
+            Some(st.clone()),
+            None,
+        )
+        .unwrap();
+        let r = ui.rect_of(crate::CHAIN).unwrap();
+        let view = |ui: &Ui| {
+            ui.get::<crate::ChainView>(crate::CHAIN)
+                .unwrap()
+                .state()
+                .clone()
+        };
+        let l = ui.get::<crate::ChainView>(crate::CHAIN).unwrap().layout(r);
+        let b = l.strip.expect("the strip button");
+        assert!(l.back.unwrap().w < 60, "‹ alone");
+        tap(&mut ui, b.x + 5, b.y + 5);
+        assert_eq!(
+            crate::take_chain_actions(&mut ui),
+            [ChainAction::Strips(Some(0))],
+            "on the open strip's group: the tracks"
+        );
+        assert_eq!(crate::chain_hint(&ui), crate::STRIPS_HINT);
+        // A state from the app without the list leaves it open; with it,
+        // its tiles show.
+        crate::update_chain(&mut ui, st.clone());
+        assert_eq!(view(&ui).list.map(|l| l.group), Some(0));
+        let mut listed = st.clone();
+        listed.list = Some(crate::StripList {
+            group: 0,
+            counts: [2, 16, 1, 4, 8, 1],
+            strips: vec![
+                crate::StripPick {
+                    strip: Strip::Track(0),
+                    name: "Drums".into(),
+                    sub: "4 effects".into(),
+                },
+                crate::StripPick {
+                    strip: KEYS,
+                    name: "Keys".into(),
+                    sub: "3 effects".into(),
+                },
+            ],
+        });
+        crate::update_chain(&mut ui, listed);
+        let targets = ui.get::<crate::ChainView>(crate::CHAIN).unwrap().targets(r);
+        assert!(
+            targets.iter().all(|t| t.id.starts_with("strips-")),
+            "the list takes the editor"
+        );
+        let mut c = SoftCanvas::new(1280, 800);
+        ui.paint(&mut c);
+        // Pads: the group changes (its tiles come from the app).
+        let pads = targets
+            .iter()
+            .find(|t| t.id == "strips-group" && t.index == 1)
+            .unwrap();
+        let (x, y) = pads.centre();
+        tap(&mut ui, x, y);
+        assert_eq!(
+            crate::take_chain_actions(&mut ui),
+            [ChainAction::Strips(Some(1))]
+        );
+        assert!(view(&ui).list.unwrap().strips.is_empty());
+        let tracks = targets
+            .iter()
+            .find(|t| t.id == "strips-group" && t.index == 0)
+            .unwrap();
+        let (x, y) = tracks.centre();
+        tap(&mut ui, x, y);
+        let _ = crate::take_chain_actions(&mut ui);
+        let mut listed = st.clone();
+        listed.list = Some(crate::StripList {
+            group: 0,
+            counts: [2, 16, 1, 4, 8, 1],
+            strips: vec![crate::StripPick {
+                strip: Strip::Track(0),
+                name: "Drums".into(),
+                sub: "4 effects".into(),
+            }],
+        });
+        crate::update_chain(&mut ui, listed);
+        let tile = ui
+            .get::<crate::ChainView>(crate::CHAIN)
+            .unwrap()
+            .targets(r)
+            .into_iter()
+            .find(|t| t.id == "strips-pick")
+            .unwrap();
+        let (x, y) = tile.centre();
+        tap(&mut ui, x, y);
+        assert_eq!(
+            crate::take_chain_actions(&mut ui),
+            [ChainAction::OpenStrip(Strip::Track(0))]
+        );
+        assert!(view(&ui).list.is_none(), "shut");
+        assert_eq!(crate::chain_hint(&ui), crate::CHAIN_HINT);
+        // Back on the list shuts it and keeps the strip.
+        tap(&mut ui, b.x + 5, b.y + 5);
+        let _ = crate::take_chain_actions(&mut ui);
+        let back = crate::view::list_layout(r).back;
+        tap(&mut ui, back.x + 5, back.y + 5);
+        assert_eq!(
+            crate::take_chain_actions(&mut ui),
+            [ChainAction::Strips(None)]
+        );
+        assert!(view(&ui).list.is_none());
     }
 
     #[test]

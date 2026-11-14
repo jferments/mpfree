@@ -37,7 +37,8 @@ The data wheel, its push, **–** and **+** move through the browser too; see [B
 - how it plays (**Mode**): **One shot** plays to the end, **Gate** only while you hold the pad, **Toggle** starts and stops with each hit, **Loop** repeats its loop region, and **Granular** plays it as grains;
 - how many notes can ring at once (**Polyphony**);
 - a **mute group**: pads in the same group cut each other off, like an open and a closed hi-hat;
-- its **level**, **pan** and **tune**.
+- its **level**, **pan** and **tune**;
+- **Effects**: the effects on the pad's own mixer channel (**+ FX** when it has none). Tap it, or push the wheel on it, to open the pad's chain in the Mix tab, and **‹** brings you back (see [Effects](effects.md#adding-an-effect-the-chain-editor)). Only the first 16 pads have a channel of their own; the others show a dash.
 
 Q-Links 1 to 4 turn level, pan, tune and voices. **Put on** places the sound picked on the right onto the pad, the whole of it; the hint line says when the pad plays all of it already.
 

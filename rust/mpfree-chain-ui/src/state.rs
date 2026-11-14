@@ -95,12 +95,42 @@ pub struct RowView {
     pub depth: f32,
 }
 
+/// The strip list's groups, in order (the strip button's list, layout
+/// spec section 3a).
+pub const STRIP_GROUPS: [&str; 6] = ["Tracks", "Pads", "Inputs", "Returns", "Submixes", "Master"];
+
+/// A strip the strip list offers: a tap opens its chain.
+#[derive(Clone, Debug, PartialEq)]
+pub struct StripPick {
+    pub strip: Strip,
+    pub name: String,
+    /// What it holds: "no effects", "3 effects", "muted · 1 effect".
+    pub sub: String,
+}
+
+/// The strip list, open over the editor from the strip button.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct StripList {
+    /// The group shown, in [`STRIP_GROUPS`].
+    pub group: usize,
+    /// How many strips each group has.
+    pub counts: [usize; 6],
+    /// The group's strips, in order.
+    pub strips: Vec<StripPick>,
+}
+
 /// The chain editor's state.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ChainState {
     /// "Bass FX".
     pub title: String,
     pub strip: Strip,
+    /// The strip button: the strip's name ("Bass") and which strip it is
+    /// ("Track 4"); no button when the name is empty or there are scopes.
+    pub strip_name: String,
+    pub strip_kind: String,
+    /// The strip list, while it is open ([`crate::ChainAction::Strips`]).
+    pub list: Option<StripList>,
     pub slots: Vec<SlotView>,
     /// Inserts the strip can hold.
     pub room: usize,
@@ -183,6 +213,9 @@ impl Default for ChainState {
         ChainState {
             title: String::new(),
             strip: Strip::Master,
+            strip_name: String::new(),
+            strip_kind: String::new(),
+            list: None,
             slots: Vec::new(),
             room: 0,
             selected: None,
@@ -430,6 +463,9 @@ impl ChainState {
         ChainState {
             title: title.to_string(),
             strip,
+            strip_name: String::new(),
+            strip_kind: String::new(),
+            list: None,
             slots,
             room,
             selected,

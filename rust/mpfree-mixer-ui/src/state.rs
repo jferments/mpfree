@@ -377,7 +377,11 @@ fn read_strip(m: &mut Mixer, s: StripId, name: &dyn Fn(StripId) -> String) -> St
         v.slots = c.capacity();
         v.inserts = (0..c.len())
             .map(|slot| InsertView {
-                name: c.node(slot).map_or("?", |n| n.info().name).to_string(),
+                // As the chain editor names it: "Reverb · Plate" for an
+                // effect in a family's mode.
+                name: c
+                    .node(slot)
+                    .map_or_else(|| "?".to_string(), mpfree_fx::families::insert_name),
                 on: c.is_on(slot),
                 key: keys[slot].map(name),
                 cost_pct: if profiling {
@@ -421,4 +425,30 @@ pub fn default_name(s: StripId) -> String {
 /// A level in dBFS for a meter, from a linear peak (-80 for silence).
 pub fn peak_db(p: f32) -> f32 {
     gain_to_db(p).max(-80.0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mpfree_fx::MixerConfig;
+
+    /// An insert is named as the chain editor names it: a family's mode
+    /// as "Reverb · Plate", any other effect by its engine's name.
+    #[test]
+    fn inserts_are_named_as_the_chain_editor_names_them() {
+        let mut m = Mixer::new(MixerConfig::default(), 44_100, 128);
+        let chain = m.chain_mut(StripId::Track(0)).unwrap();
+        for id in ["mpfree.fx.plate", "mpfree.fx.compressor"] {
+            chain.push(mpfree_fx::registry::make(id).unwrap());
+        }
+        let st = MixState::from_mixer(&mut m, MixView::Tracks, &default_name);
+        let names: Vec<&str> = st
+            .strip(StripId::Track(0))
+            .unwrap()
+            .inserts
+            .iter()
+            .map(|i| i.name.as_str())
+            .collect();
+        assert_eq!(names, ["Reverb · Plate", "Compressor"]);
+    }
 }

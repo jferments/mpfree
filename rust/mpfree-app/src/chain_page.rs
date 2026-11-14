@@ -57,6 +57,9 @@ pub struct ChainPage {
     /// The page shown, and the bank Play showed when it was left.
     at: View,
     play_bank: usize,
+    /// An effect is picked on the mixer's Effects look: the column shows
+    /// its knobs there.
+    mix_pick: bool,
 }
 
 impl Default for ChainPage {
@@ -74,6 +77,7 @@ impl ChainPage {
             press: None,
             at: View::Play,
             play_bank: 0,
+            mix_pick: false,
         }
     }
 
@@ -176,6 +180,20 @@ impl ChainPage {
         }
     }
 
+    /// An effect picked on the mixer's Effects look (`on`), or the pick
+    /// gone: the column shows the picked effect's knobs on the mixer once
+    /// its state comes (until then, none: a turn must not reach the
+    /// effect picked before).
+    pub fn pick_on_mixer(&mut self, on: bool) {
+        self.mix_pick = on;
+        if on {
+            self.chain = None;
+            self.bind
+                .set_page(mpfree_chain_ui::QLINK_PAGE, "", Default::default());
+            self.bind.show(0);
+        }
+    }
+
     /// The macros panel picked its bank (0: Macros 1-4, 1: 5-8): the
     /// column follows while the panel shows.
     pub fn panel_bank(&mut self, bank: usize) {
@@ -208,6 +226,7 @@ impl ChainPage {
     pub fn drives(&self, v: View) -> bool {
         match v {
             View::Chain | View::Macros => true,
+            View::Mixer => self.mix_pick,
             View::Play | View::Arrange => self.at == v && self.macro_bank_shown(),
             _ => false,
         }

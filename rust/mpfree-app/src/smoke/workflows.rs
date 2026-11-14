@@ -99,14 +99,201 @@ mod tests {
     /// the DJ filter, its knobs and its Q-Links set the effect itself, ON
     /// bypasses it, Move up puts it first, Back shows it on the strip, its
     /// row opens it again and Remove takes it out.
+    /// The Mix tab's Effects look (Jay's card, 14 Nov 07:15Z): + FX on a
+    /// row adds an effect in the strip's first free slot, a tap picks one
+    /// for the Q-Links, a drag along the row moves it, a tap again opens
+    /// its chain, and TRACK MIX comes back on Faders.
+    #[test]
+    fn the_effects_look_adds_picks_turns_and_moves_an_effect() {
+        on_big_stack(|| {
+            use mpfree_mixer_ui::Look;
+            use mpfree_ui::Touch;
+            let drums = StripId::Track(0);
+            let mut s = Session::new();
+            s.press("header", "tab", "Mix");
+            s.press("mixer", "look", "Effects");
+            assert_eq!(mpfree_mixer_ui::look(&s.screen.ui), Look::Effects);
+            assert_eq!(s.hint(), mpfree_mixer_ui::MIXER_HINT_EFFECTS);
+            assert_eq!(strip_inserts(&s, "Drums"), ["Filter · DJ"]);
+
+            // + FX: the picker, and the effect lands in slot 2.
+            s.press("mixer", "fx-add", "Drums + FX");
+            assert_eq!(s.view(), View::Chain);
+            s.press("chain", "pick", "Compressor").run_for(0.1);
+            assert_eq!(names(&engine(&mut s)), ["Filter · DJ", "Compressor"]);
+            s.press("chain", "back", "").run_for(0.1);
+            assert_eq!(s.view(), View::Mixer);
+            assert_eq!(
+                mpfree_mixer_ui::look(&s.screen.ui),
+                Look::Effects,
+                "back on the look it came from"
+            );
+            assert_eq!(strip_inserts(&s, "Drums"), ["Filter · DJ", "Compressor"]);
+
+            // A tap picks it: Q-Link 2 is its Ratio.
+            s.press("mixer", "fx", "Compressor").run_for(0.3);
+            assert_eq!(s.view(), View::Mixer, "picked, not opened");
+            assert_eq!(mpfree_mixer_ui::pick(&s.screen.ui), Some((drums, 1)));
+            let before = node_param(&s, drums, 1, "Ratio");
+            let volume = s.mix.mixer.param(drums, mpfree_fx::ids::mixer::VOLUME);
+            s.qlink(1, 4);
+            assert!(
+                node_param(&s, drums, 1, "Ratio") > before,
+                "Q-Link 2 raised the picked compressor's Ratio"
+            );
+            assert_eq!(
+                s.mix.mixer.param(drums, mpfree_fx::ids::mixer::VOLUME),
+                volume,
+                "not the strip's"
+            );
+
+            // Dragged onto slot 1: first in the chain, still picked.
+            let at = |s: &mut Session, label: &str| {
+                s.control("mixer", "fx", label)
+                    .unwrap_or_else(|| panic!("the {label} cell"))
+                    .target
+                    .centre()
+            };
+            let (x, y) = at(&mut s, "Compressor");
+            let (x0, _) = at(&mut s, "Filter · DJ");
+            let mut acts: Vec<crate::gui::FromUi> =
+                s.screen.touch(9, Touch::Down, x, y).into_iter().collect();
+            acts.extend(s.screen.touch(9, Touch::Move, (x + x0) / 2, y));
+            acts.extend(s.screen.touch(9, Touch::Move, x0, y));
+            acts.extend(s.screen.touch(9, Touch::Up, x0, y));
+            acts.extend(s.screen.take_actions());
+            for a in acts {
+                s.route(a);
+            }
+            s.run_for(0.3);
+            let order: Vec<String> = (0..2)
+                .map(|i| {
+                    s.mix
+                        .mixer
+                        .chain(drums)
+                        .unwrap()
+                        .node(i)
+                        .unwrap()
+                        .info()
+                        .name
+                        .to_string()
+                })
+                .collect();
+            assert_eq!(order, ["Compressor", "DJ filter"], "moved in the mixer");
+            assert_eq!(strip_inserts(&s, "Drums"), ["Compressor", "Filter · DJ"]);
+            assert_eq!(mpfree_mixer_ui::pick(&s.screen.ui), Some((drums, 0)));
+            let before = node_param(&s, drums, 0, "Ratio");
+            s.qlink(1, 4);
+            assert!(
+                node_param(&s, drums, 0, "Ratio") > before,
+                "the Q-Links went with it"
+            );
+
+            // Again: its chain, on it.
+            s.press("mixer", "fx", "Compressor");
+            assert_eq!(s.view(), View::Chain);
+            assert_eq!(engine(&mut s).selected, Some(0));
+            s.press("chain", "back", "").run_for(0.1);
+
+            // TRACK MIX: back to Play; again: the Mix tab on Faders, the
+            // Q-Links on the strip again.
+            s.button("TRACK MIX / PAD MIX");
+            assert_eq!(s.view(), View::Play);
+            s.button("TRACK MIX / PAD MIX").run_for(0.1);
+            assert_eq!(s.view(), View::Mixer);
+            assert_eq!(mpfree_mixer_ui::look(&s.screen.ui), Look::Faders);
+            assert_eq!(mpfree_mixer_ui::pick(&s.screen.ui), None);
+            assert!(s.control("mixer", "fader", "Drums fader").is_some());
+        });
+    }
+
+    /// The chain editor's strip button (Jay's card, 14 Nov 07:15Z): the
+    /// strip list over the editor, a tap on a strip opens its chain in
+    /// place, ‹ still going back to the mixer.
+    #[test]
+    fn the_strip_button_opens_another_strips_chain() {
+        on_big_stack(|| {
+            let mut s = Session::new();
+            s.press("header", "tab", "Mix");
+            s.press("mixer", "insert", "Filter · DJ").run_for(0.2);
+            assert_eq!(s.view(), View::Chain);
+            assert_eq!(engine(&mut s).title, "Drums FX");
+            s.press("chain", "strip", "Drums").run_for(0.3);
+            assert_eq!(s.hint(), mpfree_chain_ui::STRIPS_HINT);
+            assert!(
+                s.control("chain", "strips-pick", "Synth").is_some(),
+                "the tracks, from the mixer"
+            );
+            // A strip with effects: its chain on the first.
+            s.press("chain", "strips-pick", "Loop").run_for(0.3);
+            let t = engine(&mut s);
+            assert_eq!((t.title.as_str(), t.selected), ("Loop FX", Some(0)));
+            assert_eq!(t.back.as_deref(), Some("Mixer"));
+            assert!(t.list.is_none(), "the list shut");
+            assert_eq!(screen(&s).title, "Loop FX");
+            // One with none: the picker up.
+            s.press("chain", "strip", "Loop").run_for(0.3);
+            s.press("chain", "strips-pick", "Synth").run_for(0.3);
+            assert!(engine(&mut s).picking, "the picker up on an empty chain");
+            s.press("chain", "cancel", "Cancel");
+            // A group, then Back keeps the strip.
+            s.press("chain", "strip", "Synth").run_for(0.3);
+            s.press("chain", "strips-group", "Returns").run_for(0.3);
+            assert!(
+                s.control("chain", "strips-pick", "").is_some(),
+                "the returns"
+            );
+            s.press("chain", "strips-back", "Back").run_for(0.2);
+            assert_eq!(engine(&mut s).title, "Synth FX");
+            s.press("chain", "back", "").run_for(0.1);
+            assert_eq!(s.view(), View::Mixer);
+        });
+    }
+
+    #[test]
+    fn the_pads_tab_effects_row_opens_the_pads_chain_in_mix() {
+        on_big_stack(|| {
+            let mut s = Session::new();
+            s.press("header", "tab", "Pads");
+            s.press("smp-pads-bar", "tab", "Pad").run_for(0.3);
+            assert_eq!(s.view(), View::Pads);
+            // A pad with no effects: + FX, and the picker up in Mix.
+            s.press("smp-pads-list", "row-button", "+ FX").run_for(0.2);
+            assert_eq!(s.view(), View::Chain);
+            let t = engine(&mut s);
+            assert!(t.picking, "the picker up on the pad's empty chain");
+            assert_eq!(t.back.as_deref(), Some("Pads"));
+            let title = t.title.clone();
+            assert!(title.ends_with(" FX"), "{title}");
+            s.press("chain", "pick", "Compressor").run_for(0.2);
+            assert_eq!(names(&engine(&mut s)), ["Compressor"]);
+            // ‹ back to the Pads tab, whose row names the effect.
+            s.press("chain", "back", "").run_for(0.3);
+            assert_eq!(s.view(), View::Pads);
+            assert!(
+                s.control("smp-pads-list", "row-button", "Compressor")
+                    .is_some(),
+                "the row names the pad's effect"
+            );
+            // Again, with the wheel to the row and a push: the chain on its
+            // first effect this time.
+            s.wheel(8);
+            s.button("DATA DIAL PUSH").run_for(0.2);
+            assert_eq!(s.view(), View::Chain, "the push presses the Effects button");
+            let t = engine(&mut s);
+            assert_eq!((t.title.as_str(), t.selected), (title.as_str(), Some(0)));
+            assert!(!t.picking);
+        });
+    }
+
     #[test]
     fn an_insert_added_on_the_mixer_is_turned_bypassed_moved_and_removed() {
         on_big_stack(|| {
             let drums = StripId::Track(0);
             let mut s = Session::new();
-            s.press("header", "mixer-icon", "");
+            s.press("header", "tab", "Mix");
             assert_eq!(s.view(), View::Mixer);
-            assert_eq!(strip_inserts(&s, "Drums"), ["DJ filter"]);
+            assert_eq!(strip_inserts(&s, "Drums"), ["Filter · DJ"]);
 
             // "+ Insert" opens the editor in the mixer's place, picker up.
             s.press("mixer", "add-insert", "Drums + Insert");
@@ -161,7 +348,7 @@ mod tests {
             s.press("chain", "back", "");
             assert_eq!(s.view(), View::Mixer);
             s.run_for(0.1);
-            assert_eq!(strip_inserts(&s, "Drums"), ["Compressor", "DJ filter"]);
+            assert_eq!(strip_inserts(&s, "Drums"), ["Compressor", "Filter · DJ"]);
 
             // Its row opens the editor on it.
             s.press("mixer", "insert", "Compressor");
@@ -175,7 +362,7 @@ mod tests {
             assert_eq!(s.mix.mixer.chain(drums).unwrap().len(), 1);
             agree(&mut s, "removed");
             s.press("chain", "back", "").run_for(0.1);
-            assert_eq!(strip_inserts(&s, "Drums"), ["DJ filter"]);
+            assert_eq!(strip_inserts(&s, "Drums"), ["Filter · DJ"]);
         });
     }
 
@@ -185,7 +372,7 @@ mod tests {
     fn the_effect_pickers_cancel_adds_nothing() {
         on_big_stack(|| {
             let mut s = Session::new();
-            s.press("header", "mixer-icon", "");
+            s.press("header", "tab", "Mix");
             s.press("mixer", "add-insert", "Loop + Insert");
             s.press("chain", "cancel", "Cancel").run_for(0.1);
             assert_eq!(s.view(), View::Chain);
@@ -202,7 +389,7 @@ mod tests {
             assert!(s.control("chain", "pick", "Delay").is_some());
             s.press("chain", "back", "").run_for(0.1);
             assert_eq!(s.view(), View::Mixer);
-            assert_eq!(strip_inserts(&s, "Loop"), ["DJ filter"]);
+            assert_eq!(strip_inserts(&s, "Loop"), ["Filter · DJ"]);
         });
     }
 
@@ -216,8 +403,8 @@ mod tests {
         on_big_stack(|| {
             let drums = StripId::Track(0);
             let mut s = Session::new();
-            s.press("header", "mixer-icon", "");
-            s.press("mixer", "insert", "DJ filter");
+            s.press("header", "tab", "Mix");
+            s.press("mixer", "insert", "Filter · DJ");
             s.press("chain", "knob", "Position");
             let at = node_param(&s, drums, 0, "Position");
             s.press("chain", "macro", "Macro 1");
@@ -258,8 +445,8 @@ mod tests {
         on_big_stack(|| {
             let drums = StripId::Track(0);
             let mut s = Session::new();
-            s.press("header", "mixer-icon", "");
-            s.press("mixer", "insert", "DJ filter");
+            s.press("header", "tab", "Mix");
+            s.press("mixer", "insert", "Filter · DJ");
             s.press("chain", "knob", "Position");
             s.press("chain", "learn", "Learn");
             let n = s.sent.len();
@@ -326,8 +513,11 @@ mod tests {
                 "the sound editor's bar"
             );
 
-            s.press("header", "mixer-icon", "").run_for(0.1);
-            assert_eq!(strip_inserts(&s, "Drums"), ["DJ filter", "Delay"]);
+            s.press("header", "tab", "Mix").run_for(0.1);
+            assert_eq!(
+                strip_inserts(&s, "Drums"),
+                ["Filter · DJ", "Delay · Digital"]
+            );
         });
     }
 
@@ -356,7 +546,7 @@ mod tests {
         on_big_stack(|| {
             let (drums, synth) = (StripId::Track(0), StripId::Track(1));
             let mut s = Session::new();
-            s.press("header", "mixer-icon", "");
+            s.press("header", "tab", "Mix");
             let p = |s: &Session, id| s.mix.mixer.param(drums, id);
             let shows = |s: &mut Session, when: &str| {
                 s.run_for(0.1);
@@ -484,8 +674,8 @@ mod tests {
     fn an_lfo_on_a_knob_gets_a_row_and_comes_off() {
         on_big_stack(|| {
             let mut s = Session::new();
-            s.press("header", "mixer-icon", "");
-            s.press("mixer", "insert", "DJ filter");
+            s.press("header", "tab", "Mix");
+            s.press("mixer", "insert", "Filter · DJ");
             s.press("chain", "knob", "Resonance");
             assert!(s.control("chain", "depth", "").is_none());
             s.press("chain", "add-lfo", "+ LFO").run_for(0.1);
@@ -565,7 +755,7 @@ mod tests {
                 s.press("steps", "step", &format!("Kick step {k}"));
             }
             s.button("PLAY").run_for(0.1);
-            s.press("header", "mixer-icon", "");
+            s.press("header", "tab", "Mix");
             s.press("mixer", "strip-name", "Drums");
             s.press("mixer", "strip-name", "Drums");
             s.press("mixer", "menu", "Freeze");
@@ -713,7 +903,7 @@ mod tests {
             );
             assert!(lane(&s, "Kick").2, "drawn muted");
 
-            s.press("header", "mixer-icon", "");
+            s.press("header", "tab", "Mix");
             s.press("mixer", "view", "Pads").run_for(0.1);
             assert!(strip(&s, "Pad 1").mute, "the pad mixer shows Pad 1 muted");
             s.press("mixer", "mute", "Pad 1 M").run_for(0.1);
@@ -868,7 +1058,7 @@ mod tests {
                 "the mixer's master is {master}"
             );
 
-            s.press("header", "mixer-icon", "").run_for(0.1);
+            s.press("header", "tab", "Mix").run_for(0.1);
             assert!((strip(&s, "Master").volume_db - s.level_db).abs() < 0.05);
             s.press("mixer", "value", "Master level (to 0 dB)")
                 .run_for(0.1);
@@ -943,7 +1133,7 @@ mod tests {
             );
 
             // Over the mixer: Back keeps the kit and the mixer.
-            s.press("header", "mixer-icon", "").run_for(0.1);
+            s.press("header", "tab", "Mix").run_for(0.1);
             let mixer = s.page();
             let chip = kit_chip(&mut s);
             s.press_target(&chip);

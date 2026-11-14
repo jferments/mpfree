@@ -10,11 +10,11 @@ Effects change a sound: an EQ shapes its tone, a compressor evens it out, a dela
 
 ## Adding an effect: the chain editor
 
-Each strip in the mixer has up to four **inserts**: effects the sound goes through, in order. Together they are the strip's **chain**.
+Each strip in the mixer has up to eight **inserts**: effects the sound goes through, in order. Together they are the strip's **chain**.
 
 {{shot: chain | The chain editor on the drum bus, with Drive selected.}}
 
-1. Open the mixer (**TRACK MIX**) and find the strip.
+1. Open the mixer (the **Mix** tab, or **TRACK MIX**) and find the strip.
 2. Tap the strip's **+ FX** button. It fills the strip's empty insert rows, so on a strip with no effects it is a big button under the strip's name. The **chain editor** opens in the mixer's place, with the list of effects already open.
 3. Pick an effect (see [Choosing an effect](#choosing-an-effect)). It goes at the end of the chain, selected, with its knobs showing.
 
@@ -22,10 +22,12 @@ Tap an effect already in a strip's insert row to open the chain editor on it. In
 
 - **+ Add effect** opens the list again, and **Cancel** closes it.
 - **Up** and **Down** move the selected effect in the chain, the power button on each row bypasses it, and **Remove** takes it out.
+- To move an effect further, **drag it** up or down the chain: once your finger moves it lifts and follows you, a line shows where it will land, and it moves there when you lift. Lift it where it started to leave it where it was. With the wheel, push on the picked effect to pick it up, turn to move it, and push again to put it down.
 - Drag a knob to turn it. An effect's knobs come in pages of up to eight, with a tab for each page under the effect's name. If there are more tabs than fit, **‹** and **›** at the ends step to the page before or after.
 - An effect with more than eight controls opens on its **Main** page, which holds the eight you reach for most; its other pages hold everything. The Channel strip's Main page also shows its stages (**Gate**, **Comp**, **EQ**): tap a stage's name to open its page, or its switch to turn it on or off.
 - The Q-Links turn the first four knobs of the page shown. An effect with a Main page is different: the Q-Links stay on Main's first four on every page, so you keep the same knobs under your hands while you look through the rest. The data wheel works as Q-Link 1 until you tap a control: then it moves the outline, and a push on a knob lets the wheel turn it (see [The wheel's outline](../getting-started/the-screen.md#the-wheels-outline)).
-- **‹ Mixer** goes back to the mixer as you left it.
+- **‹** at the top left goes back to where you opened the editor: the Mix tab as you left it, or the Pads tab.
+- Beside **‹**, the **strip button** names the strip whose chain this is (with its colour, and "Track 7" or "Pad 3" beside the name). Tap it for the **strip list**: the strips by group (**Tracks**, **Pads**, **Inputs**, **Returns**, **Submixes**, **Master**), with **< >** to page through a long group. Tap a strip to open its chain instead, on its first effect, or with the list of effects open if it has none. **Back** closes the list and keeps the strip you were on.
 
 Above the knobs, a drawing shows what the selected effect does, and changes as you turn: an EQ's curve, a delay's repeats, the Ducker's pump over two beats (or after a kick), the Transient shaper on a drum hit (dashed going in, solid coming out), where the Pitch shifter puts the sound, with the steps its feedback climbs, Pitch correct's steps onto the key's notes (with a dot on the note you are singing), how far each Harmonizer voice moves on each note of the key, and the Tuner's needle.
 
@@ -33,7 +35,7 @@ Adding, removing or reordering an effect while the music plays doesn't click: th
 
 ### Choosing an effect
 
-**+ FX** on a strip, or **+ Add effect** in the chain editor, opens the list of effects over the chain editor.
+**+ FX** on a strip, or **+ Add effect** in the chain editor, opens the list of effects over the chain editor. The line at its top says where the effect will go: which strip, and which slot of its chain.
 
 - Down the left are **Favourites**, **Recent** (the last 12 effects you added), then the groups (Dynamics, EQ and filter, Drive and colour, Modulation, Delay and reverb, Pitch and vocal, Performance, Plugins, and Utility), each with how many effects it has. Tap one to see its effects on the right. The list opens where you left it.
 - **Tap an effect** to add it with its usual settings.
@@ -43,7 +45,7 @@ Adding, removing or reordering an effect while the music plays doesn't click: th
 
 **Cancel** closes the list without adding anything.
 
-The Sample tab's **FX** page opens the same chain editor on the pad you are editing, with a switch between the pad's own channel and the Drums track (see [Shaping how a pad plays](shaping-a-pad.md#fx-effects-on-one-pad-or-on-the-whole-kit)).
+The Pads tab's **Effects** row opens the chain editor on the pad picked, in the Mix tab, and **‹** comes back to the Pads tab (see [Sampling](sampling.md#the-pads-tab-sounds-onto-pads)). The Sample tab's **FX** page opens the same chain editor on the pad you are editing, with a switch between the pad's own channel and the Drums track (see [Shaping how a pad plays](shaping-a-pad.md#fx-effects-on-one-pad-or-on-the-whole-kit)).
 
 To give a knob a control of its own, touch it and tap **Learn to a Q-Link**, then turn a Q-Link, or move a knob or fader on your keyboard (see [MIDI Learn](midi-and-cv.md#midi-learn)).
 

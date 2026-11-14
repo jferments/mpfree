@@ -394,6 +394,10 @@ pub struct SamplePage {
     /// The Pads tab, added the first time it shows.
     pads: Option<PadsTab>,
     pads_state: Option<PadsState>,
+    /// The effects on the mixer's pad channels, by pad, for the Pad list's
+    /// Effects row ([`SamplePage::set_pad_fx`]); empty until the mixer
+    /// says.
+    pad_fx: Vec<Vec<String>>,
     /// The Grain tab, added the first time it is opened.
     grain: Option<GrainTab>,
     grain_state: Option<GrainState>,
@@ -548,6 +552,7 @@ impl SamplePage {
             velocity: None,
             pads: None,
             pads_state: None,
+            pad_fx: Vec::new(),
             grain: None,
             grain_state: None,
             cloud: Some(Box::default()),
@@ -1018,6 +1023,17 @@ impl SamplePage {
         })
     }
 
+    /// The picked row is a button (the Pad list's Effects): the wheel's
+    /// push presses it, as a tap would, instead of opening it for the wheel.
+    pub fn button_row(&self, ui: &Ui) -> Option<UiEvent> {
+        let name = self.list()?;
+        let l = ui.get::<SettingList>(name)?;
+        l.buttons.contains(&l.selected).then(|| UiEvent {
+            widget: name.to_string(),
+            kind: EventKind::Tab(l.selected),
+        })
+    }
+
     /// The wheel's push opened (true) or closed the picked row.
     pub fn set_editing(&mut self, ui: &mut Ui, on: bool) {
         self.editing = on;
@@ -1178,7 +1194,8 @@ impl SamplePage {
         let Some(project) = self.projects.get(self.kit) else {
             return;
         };
-        let st = PadsState::from_project(project, self.pad);
+        let mut st = PadsState::from_project(project, self.pad);
+        st.effects = self.pad_fx.get(self.pad).cloned();
         let kit = match self.names.get(self.kit) {
             Some(n) => format!("Kit {} · {n}", self.kit + 1),
             None => format!("Kit {}", self.kit + 1),
@@ -1705,6 +1722,20 @@ impl SamplePage {
     }
 
     /// The Pads tab's view (Browse or Pad, of `pads_tab::VIEWS`).
+    /// The effects on the mixer's pad channels changed (`fx[pad]`, the
+    /// first [`crate::mixing::PADS`] pads): the Pad list's Effects row
+    /// names them.
+    pub fn set_pad_fx(&mut self, ui: &mut Ui, fx: Vec<Vec<String>>) {
+        if fx == self.pad_fx {
+            return;
+        }
+        self.pad_fx = fx;
+        if let (Some(tab), Some(st)) = (self.pads.as_mut(), self.pads_state.as_mut()) {
+            st.effects = self.pad_fx.get(st.pad).cloned();
+            tab.update(ui, st);
+        }
+    }
+
     pub fn set_pads_view(&mut self, ui: &mut Ui, view: usize) {
         self.pads_view = view;
         if let Some(tab) = self.pads.as_mut() {
@@ -1917,6 +1948,8 @@ impl SamplePage {
                 self.map_to_keys(pads);
                 self.refresh(ui);
             }
+            // The Effects row: the pad's chain in the Mix tab.
+            PadsAction::Effects(pad) => out.push(FromUi::PadEffects { pad: *pad }),
             PadsAction::Audition { pad, down } => out.push(FromUi::Pad {
                 pad: *pad,
                 down: *down,

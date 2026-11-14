@@ -2,7 +2,7 @@
 //!
 //! Jay's calls (2026-11-12, the MIDI, sync and CV thread's cards): a
 //! project's routing lives in an I/O view inside the mixer, and its own
-//! icon beside the mixer icon opens it. Here it is [`MixView::Io`], the
+//! icon at the top bar's right edge opens it. Here it is [`MixView::Io`], the
 //! mixer's fifth view: the master strip stays on the right as in every
 //! view, a slim list of sections runs down the left, and the selected
 //! section fills the rest.
