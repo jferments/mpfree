@@ -868,6 +868,9 @@ pub(crate) struct Switches {
     /// Switches made on each track so far, for a view that says how many
     /// it shows ([`Includes::switches`]).
     made: [u32; MAX_TRACKS],
+    /// One past the last track with a switch in `on` (0: none), so a period
+    /// looks at those tracks only, not all 128.
+    hi: usize,
 }
 
 impl Switches {
@@ -875,6 +878,7 @@ impl Switches {
         Switches {
             on: [None; MAX_TRACKS],
             made: [0; MAX_TRACKS],
+            hi: 0,
         }
     }
 
@@ -883,7 +887,8 @@ impl Switches {
     /// the track as were made; any other once its cue is gone (the control
     /// thread applied it, or took it back).
     pub fn follow(&mut self, view: &PlayView) {
-        for (i, s) in self.on.iter_mut().enumerate() {
+        let mut hi = 0;
+        for (i, s) in self.on[..self.hi].iter_mut().enumerate() {
             let Some(sw) = *s else {
                 continue;
             };
@@ -897,8 +902,11 @@ impl Switches {
             };
             if shown {
                 *s = None;
+            } else {
+                hi = i + 1;
             }
         }
+        self.hi = hi;
     }
 
     /// Where the cue on `track` starts in a span playing `ticks`, if it
@@ -932,6 +940,7 @@ impl Switches {
             mute: cue.mute,
         });
         self.made[track] = self.made[track].wrapping_add(1);
+        self.hi = self.hi.max(track + 1);
         Some(Started {
             track,
             slot: cue.slot,

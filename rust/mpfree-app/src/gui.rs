@@ -148,8 +148,14 @@ struct LevelsUi {
     told: Option<(bool, bool)>,
 }
 
-const TRACK_MUTE_HINT: &str = "TRACK MUTE:   pads 1-8 mute and unmute tracks 1-8   ·   green: playing, red: muted   ·   \
-                               SHIFT + TRACK MUTE: the kit's pads   ·   TRACK MUTE: the pads play again";
+/// TRACK MUTE's hint line for bank `bank` of a project of `tracks` tracks.
+fn track_mute_hint(bank: usize, tracks: usize) -> String {
+    format!(
+        "TRACK MUTE · {}   ·   PAD BANK: other tracks   ·   green: playing, red: muted   ·   \
+         SHIFT + TRACK MUTE: the kit's pads   ·   TRACK MUTE: the pads play again",
+        crate::app::mute_bank_words(bank, tracks)
+    )
+}
 const PAD_MUTE_HINT: &str =
     "SHIFT + TRACK MUTE:   a pad mutes and unmutes itself in the kit   ·   red: muted   ·   \
                              TRACK MUTE: tracks   ·   SHIFT + TRACK MUTE: the pads play again";
@@ -1262,6 +1268,7 @@ impl Player {
             rate: "1/16",
             bpm: 120.0,
             mute_keys: MuteKeys::Off,
+            mute_bank: 0,
             erase: false,
         };
         let mut p = Player {
@@ -2185,7 +2192,7 @@ impl Player {
         } else if self.status.erase && self.ready {
             ERASE_HINT.to_string()
         } else if self.status.mute_keys == MuteKeys::Tracks {
-            TRACK_MUTE_HINT.to_string()
+            track_mute_hint(self.status.mute_bank, self.time.tracks.len())
         } else if self.status.mute_keys == MuteKeys::Pads {
             PAD_MUTE_HINT.to_string()
         } else if self.view == View::Play && self.band_showing() && self.status.latched {
@@ -5461,6 +5468,13 @@ impl Player {
                     k - mpfree_time_ui::widgets::SOUND_TAP,
                 ))
             }
+            (time_view::CLIPS, EventKind::Toggle(_))
+                if self.time_page.page_tracks(&ev, &self.time) =>
+            {
+                // The grid's pager: the page's own, nothing for the app.
+                self.time_page.update(&mut self.ui, &self.time);
+                None
+            }
             (
                 time_view::TRANSPORT
                 | time_view::CLIPS
@@ -6187,6 +6201,7 @@ pub fn sample_player(fonts: Fonts) -> Player {
         rate: "1/16",
         bpm: 120.0,
         mute_keys: MuteKeys::Off,
+        mute_bank: 0,
         erase: false,
     }));
     for (pad, v) in [(0usize, 112u8), (5, 87), (10, 64)] {
@@ -6510,6 +6525,7 @@ pub fn sample_play(fonts: Fonts, v: PlayView) -> Player {
         rate: "1/16",
         bpm: 92.0,
         mute_keys: MuteKeys::Off,
+        mute_bank: 0,
         erase: false,
     }));
     sample_loop(&mut p);
@@ -6791,6 +6807,7 @@ pub fn apply_effects(p: &mut Player, fx: Vec<crate::app::Effect>) {
             | Effect::Time(_)
             | Effect::Octave(_)
             | Effect::Bank { .. }
+            | Effect::BankLights
             | Effect::Looper(_)
             | Effect::SavePatterns(_)
             | Effect::SynthPads(_)
@@ -7361,6 +7378,7 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         added: 4 + n as usize,
         erased: usize::from(edited),
         deleted: false,
+        new_track: None,
     };
     st.done = vec![
         take(1, 0, false, false),
@@ -7578,6 +7596,20 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         }
         Err(e) => eprintln!("clips sample: {e}"),
     }
+    // A 24-track project (up to 128, Jay 14 Nov): the grid follows the
+    // armed track to its page, tracks 9-16 with Keys 2... armed, then the
+    // last page.
+    for (name, armed) in [("clips-tracks", 10), ("clips-tracks-end", 19)] {
+        match mpfree_time_ui::sample::big_playing(armed) {
+            Ok(s) => {
+                let mut p = quiet_player(fonts());
+                p.apply(ToUi::Time(Box::new(s.state())));
+                p.apply(ToUi::Show(View::Arrange));
+                out.push((name, p));
+            }
+            Err(e) => eprintln!("{name} sample: {e}"),
+        }
+    }
     // The note editor on the Arrange page: the piano roll, the list, then
     // the tracker on a bar of drums.
     for (name, lens) in [
@@ -7653,6 +7685,22 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         }
         Err(e) => eprintln!("arrange-song-takes sample: {e}"),
     }
+    // The Song view of the 24-track project, scrolled down to the last
+    // tracks and "+ Track".
+    match mpfree_time_ui::sample::big_song_state() {
+        Ok(state) => {
+            let mut p = quiet_player(fonts());
+            p.apply(ToUi::Time(Box::new(state)));
+            p.apply(ToUi::Show(View::Arrange));
+            if let Some(l) =
+                p.ui.get_mut::<mpfree_time_ui::song::SongLanes>(time_view::SONG)
+            {
+                l.first_lane = 1000;
+            }
+            out.push(("arrange-song-tracks", p));
+        }
+        Err(e) => eprintln!("arrange-song-tracks sample: {e}"),
+    }
     match sample_looper(fonts()) {
         Ok(p) => out.push(("looper", p)),
         Err(e) => eprintln!("looper sample: {e}"),
@@ -7677,6 +7725,7 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         rate: "1/16",
         bpm: 120.0,
         mute_keys: MuteKeys::Off,
+        mute_bank: 0,
         erase: false,
     }));
     play_synth.apply(ToUi::Kit(synth_kit));
@@ -7711,6 +7760,7 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         rate: "1/16",
         bpm: 120.0,
         mute_keys: MuteKeys::Off,
+        mute_bank: 0,
         erase: false,
     }));
     chords.apply(ToUi::KitChanged {
@@ -8902,6 +8952,7 @@ mod tests {
             added: 1,
             erased: 0,
             deleted: false,
+            new_track: None,
         };
         let mut st = p.time.clone();
         st.done = vec![take(1), take(2), take(3)];
@@ -9072,6 +9123,7 @@ mod tests {
             added: 1,
             erased: 0,
             deleted: false,
+            new_track: None,
         });
         p.apply(ToUi::Time(Box::new(st.clone())));
         assert_eq!(undo(&mut p, false), takes(TimeAction::Undo));
@@ -14381,6 +14433,7 @@ mod tests {
             rate: "1/8",
             bpm: 96.0,
             mute_keys: MuteKeys::Off,
+            mute_bank: 0,
             erase: false,
         };
         p.apply(ToUi::Status(s.clone()));
@@ -14417,14 +14470,23 @@ mod tests {
             .text
             .contains("NOTE REPEAT: repeat"));
         // TRACK MUTE: the hint says what the pads are now, on any page.
-        for (keys, hint) in [
-            (MuteKeys::Tracks, TRACK_MUTE_HINT),
-            (MuteKeys::Pads, PAD_MUTE_HINT),
+        let tracks = p.time.tracks.len();
+        for (keys, bank, hint) in [
+            (MuteKeys::Tracks, 0, track_mute_hint(0, tracks)),
+            (MuteKeys::Tracks, 1, track_mute_hint(1, tracks)),
+            (MuteKeys::Pads, 0, PAD_MUTE_HINT.to_string()),
         ] {
             s.mute_keys = keys;
+            s.mute_bank = bank;
             p.apply(ToUi::Status(s.clone()));
             assert_eq!(p.ui.get::<Label>("hint").unwrap().text, hint);
         }
+        // With 8 tracks bank A is pads 1-8 and bank B has none.
+        assert!(track_mute_hint(0, 8).starts_with("TRACK MUTE · bank A: pads 1-8 mute tracks 1-8"));
+        assert!(track_mute_hint(1, 8).contains("bank B: no tracks here"));
+        assert!(track_mute_hint(1, 24).contains("bank B: pads 1-8 mute tracks 17-24"));
+        assert!(track_mute_hint(7, 128).contains("bank H: pads 1-16 mute tracks 113-128"));
+        s.mute_bank = 0;
         s.mute_keys = MuteKeys::Off;
         p.apply(ToUi::Status(s));
         p.apply(ToUi::PadFlash {

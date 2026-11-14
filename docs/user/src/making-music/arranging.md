@@ -32,7 +32,7 @@ A knob you turn while morphing changes the scene the crossfader is nearer, and t
 
 ## The song
 
-The song is your clips laid out on a timeline, one lane per track. Tap **Song ›** above the clip grid to see it, and **Clips** to go back to the grid.
+The song is your clips laid out on a timeline, one lane per track. Tap **Song ›** above the clip grid to see it, and **Clips** to go back to the grid. **+ Track**, under the last track's lane, adds a track, as on the grid. With more tracks than fit, drag up or down on the names to scroll.
 
 {{shot: arrange-song | The Song view: five rows made into a song, a drum block selected, and Rec song on.}}
 

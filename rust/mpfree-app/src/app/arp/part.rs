@@ -26,12 +26,16 @@
 //! The pattern is kept as it plays, edits and all, with the name of the
 //! library pattern it came from. Latch is how you play, not the song: an
 //! open lets every arp go. A word not understood is left at its default
-//! and said.
+//! and said. Only the armed track and the tracks whose arp isn't the
+//! default are listed (a project can have 128 tracks); a track left out
+//! opens with the default.
 
 use super::TrackUi;
 use crate::app::{App, Effect};
 use mpfree_arp::scale::{Scale, Snap, NOTE_NAMES};
-use mpfree_arp::{Chord, LatchMode, Mode, Order, Pattern, Rate, SyncStart, Turns, Velocity};
+use mpfree_arp::{
+    Chord, LatchMode, Mode, Order, Pattern, Rate, Settings, SyncStart, Turns, Velocity,
+};
 use mpfree_seq::MAX_TRACKS;
 use std::fmt::Write;
 
@@ -81,7 +85,33 @@ impl Write for Fnv {
     }
 }
 
+impl TrackUi {
+    /// What the project keeps of a track's arp: not Latch, nor where the
+    /// pattern workspace was.
+    #[allow(clippy::type_complexity)]
+    fn kept(&self) -> (Settings, Mode, Rate, u8, usize, bool, usize, Pattern) {
+        (
+            self.arp,
+            self.arp_mode,
+            self.rate,
+            self.scale_root,
+            self.scale_pick,
+            self.swing_from_transport,
+            self.pattern_index,
+            self.pattern,
+        )
+    }
+}
+
 impl App {
+    /// Whether track `t`'s arp (as `u`) is as New leaves it and plays
+    /// Direct while not armed: the part needn't list it.
+    fn arp_is_fresh(&self, t: usize, u: &TrackUi) -> bool {
+        t != self.track
+            && u.kept() == self.arp_fresh.kept()
+            && self.arps.engine_at(t).settings().mode == Mode::Direct
+    }
+
     /// Every track's arp: the armed track's as the panel holds it now, the
     /// others' as they were left.
     pub(in crate::app) fn arp_tracks(&self) -> [TrackUi; MAX_TRACKS] {
@@ -95,10 +125,16 @@ impl App {
     /// nothing.
     pub(in crate::app) fn arp_fingerprint(&self) -> u64 {
         let mut h = Fnv(0xcbf2_9ce4_8422_2325);
-        for u in self.arp_tracks() {
+        let fresh = self.arp_fresh.kept();
+        // Only the tracks off the defaults are written out: comparing is
+        // far cheaper than formatting 128 tracks.
+        for (t, u) in self.arp_tracks().iter().enumerate() {
+            if u.kept() == fresh {
+                continue;
+            }
             let _ = write!(
                 h,
-                "{:?}|{:?}|{:?}|{}|{}|{}|{}|{:?};",
+                "{t}:{:?}|{:?}|{:?}|{}|{}|{}|{}|{:?};",
                 u.arp,
                 u.arp_mode,
                 u.rate,
@@ -112,10 +148,14 @@ impl App {
         h.0
     }
 
-    /// The arp part: every track's arp.
+    /// The arp part: the armed track's arp and every other that isn't the
+    /// default.
     pub fn arp_part(&self) -> String {
         let mut out = format!("{HEADER}\n");
         for (t, u) in self.arp_tracks().iter().enumerate() {
+            if self.arp_is_fresh(t, u) {
+                continue;
+            }
             let s = &u.arp;
             let scale = match s.scale.and(self.scale_entry(u.scale_pick)) {
                 Some((name, ..)) => name.to_string(),
@@ -181,14 +221,7 @@ impl App {
     /// track's arp. Small allocations, once an open.
     pub fn open_arp(&mut self, text: Option<&str>) -> (Vec<String>, Vec<Effect>) {
         let mut notes = Vec::new();
-        let first = super::built_in_patterns()
-            .first()
-            .map(|(_, p)| *p)
-            .unwrap_or_default();
-        let fresh = TrackUi {
-            pattern: first,
-            ..Default::default()
-        };
+        let fresh = self.arp_fresh;
         let mut kept = [fresh; MAX_TRACKS];
         let mut plays = [Mode::Direct; MAX_TRACKS];
         if let Some(text) = text {
@@ -205,22 +238,22 @@ impl App {
                 }
             }
         }
-        // Latch is how you play, not the song.
+        // Latch is how you play, not the song. Settings alone don't start
+        // an engine, so this needn't mark all 128 in use.
         self.latched = false;
-        for t in 0..MAX_TRACKS {
-            let e = self.arps.engine_at_mut(t);
+        for e in self.arps.engines_mut() {
             e.set_latch(LatchMode::Off);
             e.panic();
         }
         self.track_ui = kept;
-        for (t, u) in kept.iter().enumerate() {
-            if t == self.track {
+        let armed = self.track;
+        for (t, (u, e)) in kept.iter().zip(self.arps.engines_mut()).enumerate() {
+            if t == armed {
                 continue;
             }
             let mut s = u.arp;
             s.mode = plays[t];
             s.rate = u.rate;
-            let e = self.arps.engine_at_mut(t);
             e.set_settings(s);
             e.set_pattern(u.pattern);
             e.set_own_swing(!u.swing_from_transport);
@@ -246,7 +279,7 @@ impl App {
         }
         let mut track: Option<usize> = None;
         // The scale is looked up once the track's root is known.
-        let mut scales: [Option<String>; MAX_TRACKS] = Default::default();
+        let mut scales: [Option<String>; MAX_TRACKS] = std::array::from_fn(|_| None);
         for line in lines {
             if let Some(n) = line.strip_prefix("track ") {
                 track = Some(

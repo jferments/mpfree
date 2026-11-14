@@ -31,6 +31,7 @@ A control that can't do anything right now is drawn faint, and a tap on it says 
 - **`play-transport/tempo`**: the tempo. Tap it in time, four times or more, to set the tempo (as TAP TEMPO). *Example:* tap along with a record at 92 BPM: the tempo reads 92. *Tests:* `a_tap_on_plays_tempo_taps_it`, `the_tempo_tapped_on_play_sets_the_transport`.
 - **`steps/step`**: one step of a drum lane (Beats and All views). Tap to turn it on or off, and to pick it for the Q-Links (velocity, length, nudge, chance). *Example:* tap Kick steps 1, 5, 9 and 13 and press PLAY: four on the floor. *Tests:* `steps_tapped_on_beats_play_in_time`, `beats_picks_a_step_for_the_q_links`.
 - **`steps/mute`**: a lane's speaker: mutes and unmutes that pad's lane. It is the same mute as the pad's M in the pad mixer. *Test:* `a_speaker_on_play_and_m_in_the_pad_mixer_are_one_mute`.
+- **`steps/head`**: the pattern's head: ‹ and › turn its pages of 16 steps, - halves the steps (down to 16) and + doubles them (up to 128, the new steps repeating the old). Each length change is one take, so UNDO brings the steps back. Faint when it can't act; a tap then says why. *Test:* `the_patterns_head_turns_pages_and_doubles_or_halves_its_steps`.
 - **`throws/throw`**: the performance throws (Delay throw, Reverb wash, Stutter, Tape stop). Hold one: the effect plays while you hold it and lets go when you lift. *Example:* hold Tape stop on the last beat of a bar for a slow-down into the next. *Test:* `the_pattern_throws_and_xy_pad_reach_the_engines`.
 - **`xy/xy`**: the XY pad (a DJ filter with an echo). Drag across it: across sweeps the filter, up adds echo. *Test:* `the_pattern_throws_and_xy_pad_reach_the_engines`.
 - **`play-loop/button`**: the Loop view's Record, Overdub, Play and Stop for the looper. *Example:* tap Record, play four bars on the pads, tap Overdub to layer on top. *Test:* `the_loop_strips_buttons_carry_their_symbols_and_play_and_stop_the_transport`.
@@ -123,11 +124,14 @@ The Sample tab edits the pad hit last, with an editor per tab (Wave, Warp, Chop,
 - **`clips/scene`**: a row's number: plays the whole row (a scene). *Test:* `the_clips_page_shows_the_engine_and_turns_taps_into_actions`.
 - **`clips/track`**: a track's name: arms it for recording.
 - **`clips/stop-all`**, **`clips/edit`**, **`clips/song`**, **`clips/rec-song`**: Stop all clips; Edit (the note editor on the picked clip); Song (the Song view); Rec song (record what the grid plays into the song).
+- **`clips/add-track`**: + Track: adds a track after the last one, named "Track 9" and so on and armed; UNDO takes it away. Faint at 128 tracks.
+- **`clips/pager`**: ‹ and ›, shown once there are more than 8 tracks: the 8 tracks before or after (a swipe along the names does the same). Faint at either end.
 - **`transport/rec`**, **`transport/mode`**, **`transport/play`**, **`transport/stop`**, **`transport/undo`**: the Arrange page's transport: Rec, the record mode (replace or overdub), Play, Stop, Undo of the last take.
 - **`record/row`**, **`record/row-less`**, **`record/row-more`**: the record settings (Armed, Mode, Count-in, Loop, Tempo, Pressure). A setting at its end, or one that needs an armed track when none is, says why.
 - **`morph/crossfader`**: drag between scene A and B (the morph). **`morph/row-down`**, **`morph/row-up`**: step the A and B scenes. **`morph/button`**: Snap back and Keep (faint unless morphing), Save.
 - **`takes/button`**: Undo, Redo and Capture for takes; faint when there is nothing to undo, redo or capture, and a tap says so.
 - **`song/block`**: a block of the song: tap to pick it. **`song/button`**: Clips, Play song, Scenes → song, Song → scenes (the last two need a pick and say so). **`song/rec-song`**: Rec song.
+- **`song/add-track`**: + Track, under the last track's lane while the project has room: adds a track, as on the grid.
 - **`song/add-audio`**, **`song/arm`**, **`song/audio-header`**, **`song/region`**, **`song/region-button`**: audio tracks in the song: add one, arm it, open its panel (a tap on its name or input chip), pick a region, and Split, Erase, Fades, Gain and Takes on the region.
 - **`song/panel-close`**, **`song/panel-arm`**, **`song/panel-mute`**, **`song/panel-solo`**, **`song/panel-takes`**: the audio track's panel over the lanes: Close, arm the track to record, mute, solo, and its takes. A block under the panel can be tapped only where it shows.
 - **`song/panel-input`**, **`song/panel-monitor`**: what the track records from (L, R, L+R, ST) and when you hear its input (Auto, In, Off); the lit one is chosen.

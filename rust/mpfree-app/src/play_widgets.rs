@@ -993,6 +993,18 @@ impl Widget for StepGrid {
     fn targets(&self, r: Rect) -> Vec<Target> {
         let g = self.geom(r);
         let mut out = Vec::new();
+        // The head: ‹ › turn the pages of 16, - + halve or double the
+        // steps (faint when they can't; a tap then says why).
+        let h = Head::of(r);
+        let (prev, next, shorter, longer) = self.usable();
+        for (k, label, rect, can) in [
+            (HEAD_PREV, "Previous page", h.prev, prev),
+            (HEAD_NEXT, "Next page", h.next, next),
+            (HEAD_SHORTER, "Fewer steps", h.shorter, shorter),
+            (HEAD_LONGER, "More steps", h.longer, longer),
+        ] {
+            out.push(Target::tap("head", k, label, rect).disabled_if(!can));
+        }
         for (k, lane) in self.shown(g.rows).iter().enumerate() {
             // The lane's whole name is its mute button (bigger mutes).
             out.push(Target::tap(

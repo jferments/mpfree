@@ -470,6 +470,21 @@ mod tests {
     }
 
     #[test]
+    fn a_scene_mutes_tracks_past_16_up_to_the_128th() {
+        let mut p = project();
+        while p.tracks.len() < MAX_TRACKS {
+            let t = p.tracks.len();
+            p.tracks.push(mpfree_seq::Track::new("t", t as u16));
+        }
+        p.scene_mut(1).unwrap().mutes = Some(1 << 127 | 1 << 40);
+        let mut perf = Perform::default();
+        let (mut launches, mut cues) = (vec![], vec![]);
+        perf.launch_scene(&mut p, 1, When::Now(BAR), &mut launches, &mut cues);
+        let muted: Vec<usize> = (0..MAX_TRACKS).filter(|&t| p.tracks[t].mute).collect();
+        assert_eq!(muted, vec![40, 127]);
+    }
+
+    #[test]
     fn an_idle_track_with_an_empty_cell_gets_its_mute_at_once() {
         let mut p = project();
         p.scene_mut(2).unwrap().mutes = Some(0b10);
