@@ -1,7 +1,7 @@
 <!--
 status: changing
 covers: rust/mpfree-fx rust/mpfree-mixer-ui rust/mpfree-fx-ui rust/mpfree-chain-ui rust/mpfree-app/src/plugins.rs rust/mpfree-plughost/src/rack.rs rust/mpfree-app/src/chain_page.rs rust/mpfree-app/src/mixing.rs rust/mpfree-fx/src/perform.rs rust/mpfree-fx/src/xyfx.rs rust/mpfree-fx/src/picker.rs rust/mpfree-chain-ui/src/picker.rs
-checked: 2026-11-14 461f67e
+checked: 2026-11-14 6258541
 -->
 
 # Mixing and effects
@@ -152,7 +152,7 @@ To give a knob a control of its own, touch it and tap **Learn to a Q-Link**, the
 
 - Down the left are **Favourites**, **Recent** (the last 12 effects you added), then the groups (Dynamics, EQ and filter, Drive and colour, Modulation, Delay and reverb, Pitch and vocal, Performance, and Plugins), each with how many effects it has. Tap one to see its effects on the right. The list opens where you left it.
 - **Tap an effect** to add it with its usual settings.
-- **Hold an effect** (half a second), or tap its **presets** line, to see its presets: tap one to add the effect already set that way, or **Defaults** for its usual settings. **‹ Effects** goes back.
+- **Hold an effect** (half a second: its presets open while your finger is still down), or tap its **presets** line, to see its presets: tap one to add the effect already set that way, or **Defaults** for its usual settings. **‹ Effects** goes back.
 - **Tap the star** on an effect to add it to Favourites, and again to take it off. Favourites and Recent are kept when you turn the MPC off, for every project.
 - **With the data wheel:** turn it to move through the effects, **SHIFT + turn** to move through the groups, and **press** it to open the effect's presets; press again to add the preset that is lit. The line at the bottom of the screen reminds you.
 
@@ -176,7 +176,7 @@ To give a knob a control of its own, touch it and tap **Learn to a Q-Link**, the
 **Active** switches the effect in and out, fading in over **Attack** and out over **Release**. Switched out, the Filter, Crush, Flanger, Phaser, Ring mod and Gate go back to the dry sound, while the echoes and the wash ring on: switching out an echo is a throw. **Mix** sets how much you hear. Changing the effect crossfades, so it doesn't click.
 
 > [!NOTE]
-> **Not yet:** a touch pad for XY FX on the screen. For now X and Y are its first two knobs and Q-Links 1 and 2. The Play page has an XY pad of its own, for the DJ filter and an echo (see [Playing live](playing-live.md#the-xy-pad)).
+> **Not yet:** the XY FX touch pad on the screen. It comes with the effects' own pages: touch the pad to play the effect where your finger is, lift to let it go (an echo rings out), and turn on **Hold** to keep it playing. For now X and Y are its first two knobs and Q-Links 1 and 2. The Play page has an XY pad of its own, for the DJ filter and an echo (see [Playing live](playing-live.md#the-xy-pad)).
 
 ## Macros
 
