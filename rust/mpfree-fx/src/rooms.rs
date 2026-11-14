@@ -9,7 +9,7 @@
 
 use mpfree_node::{Ctx, Kind, NodeInfo, ParamInfo, Smooth};
 
-use crate::kit::{self, node_impl, param, Hz, Line, Linear, Log, Ms, Percent};
+use crate::kit::{self, node_impl, param, Glide, Hz, Line, Linear, Log, Ms, Percent};
 use crate::svf::{Svf, SvfMode};
 use crate::{defaults, flush, lerp, Preset};
 
@@ -267,11 +267,11 @@ impl Plate {
     fn run(&mut self, _ctx: &Ctx, _from: usize, l: &mut [f32], r: &mut [f32]) {
         let sc = self.scale;
         for i in 0..l.len() {
-            let size = self.size.next();
-            let g = self.decay_g.next();
-            let damping = self.damping.next();
-            let modd = self.modd.next();
-            let pre = self.pre_frames.next();
+            let size = self.size.glide();
+            let g = self.decay_g.glide();
+            let damping = self.damping.glide();
+            let modd = self.modd.glide();
+            let pre = self.pre_frames.glide();
             let s = sc * size;
             let x = 0.5 * (l[i] + r[i]);
             self.pre.push(x);
@@ -324,10 +324,10 @@ impl Plate {
                 }
                 y[side] = self.low_cut.run(side, 0.6 * y[side]);
             }
-            let w = self.width.next();
+            let w = self.width.glide();
             let mid = 0.5 * (y[0] + y[1]);
             let (wl, wr) = (lerp(mid, y[0], w), lerp(mid, y[1], w));
-            let mix = self.mix.next();
+            let mix = self.mix.glide();
             l[i] = lerp(l[i], wl, mix);
             r[i] = lerp(r[i], wr, mix);
         }
@@ -435,6 +435,17 @@ const EARLY: [(f32, f32, f32); 8] = [
     (29.8, 0.33, 0.7),
     (36.5, 0.27, -0.5),
 ];
+/// Each early tap's left and right gains (constant power is not needed:
+/// the taps are summed, not panned one at a time).
+const EARLY_PAN: [[f32; 2]; 8] = {
+    let mut p = [[0.0; 2]; 8];
+    let mut k = 0;
+    while k < 8 {
+        p[k] = [0.5 - 0.5 * EARLY[k].2, 0.5 + 0.5 * EARLY[k].2];
+        k += 1;
+    }
+    p
+};
 /// The smallest Size, as a share of the lengths above.
 const ROOM_MIN: f32 = 0.25;
 const ROOM_MAX: f32 = 1.5;
@@ -512,7 +523,21 @@ pub struct Room {
     a: [f32; LINES],
     state: [f32; LINES],
     phase: [f32; LINES],
-    lfo_inc: f32,
+    /// Each line's LFO step over 16 frames.
+    lfo_step: [f32; LINES],
+    /// Each line's length at the current size, its wobble and the
+    /// wobble's step per frame (the LFO is worked out every 16 frames and
+    /// followed in straight lines between).
+    base: [f32; LINES],
+    wob: [f32; LINES],
+    dwob: [f32; LINES],
+    /// The early taps (gain folded in) and pans for the size `placed`.
+    taps: [kit::Frac; 8],
+    placed: f32,
+    pre_tap: kit::Frac,
+    pre_placed: f32,
+    /// Frames since reset, for the 16-frame LFO grid.
+    n: u32,
     low_cut: Svf,
     size: Smooth,
     pre_frames: Smooth,
@@ -546,7 +571,15 @@ impl Room {
             a: [0.0; LINES],
             state: [0.0; LINES],
             phase: [0.0; LINES],
-            lfo_inc: 0.0,
+            lfo_step: [0.0; LINES],
+            base: [0.0; LINES],
+            wob: [0.0; LINES],
+            dwob: [0.0; LINES],
+            taps: [kit::Frac::default(); 8],
+            placed: f32::NAN,
+            pre_tap: kit::Frac::default(),
+            pre_placed: f32::NAN,
+            n: 0,
             low_cut: Svf::default(),
             size: Smooth::new(1.0),
             pre_frames: Smooth::new(0.0),
@@ -604,39 +637,65 @@ impl Room {
         }
     }
 
+    /// Places the early taps and the lines' lengths for a size (every
+    /// frame while Size glides, once when it settles).
+    fn place(&mut self, size: f32) {
+        let ms = self.rate as f32 * 0.001;
+        for (k, &(t, g, _)) in EARLY.iter().enumerate() {
+            self.taps[k] = self.early.frac(t * ms * size, g);
+        }
+        for k in 0..LINES {
+            self.base[k] = ROOM_MS[k] * ms * size;
+        }
+        self.placed = size;
+    }
+
     fn begin(&mut self, _ctx: &Ctx) {}
     fn run(&mut self, _ctx: &Ctx, _from: usize, l: &mut [f32], r: &mut [f32]) {
         let ms = self.rate as f32 * 0.001;
         let gate_frames = (self.v[room::GATE as usize] * ms) as u32;
         let gate_on = gate_frames > 0;
         for i in 0..l.len() {
-            let size = self.size.next();
-            let pre = self.pre_frames.next();
-            let early_gain = self.early_gain.next();
-            let modd = self.modd.next();
+            let size = self.size.glide();
+            if size != self.placed {
+                self.place(size);
+            }
+            let pre = self.pre_frames.glide();
+            if pre != self.pre_placed {
+                self.pre_tap = self.pre.frac(pre - 1.0, 1.0);
+                self.pre_placed = pre;
+            }
+            let early_gain = self.early_gain.glide();
+            let modd = self.modd.glide();
+            if self.n & 15 == 0 {
+                for k in 0..LINES {
+                    self.phase[k] = kit::wrap(self.phase[k] + self.lfo_step[k]);
+                    let to = modd * 6.0 * kit::sine(self.phase[k]);
+                    self.dwob[k] = (to - self.wob[k]) * (1.0 / 16.0);
+                }
+            }
+            self.n = self.n.wrapping_add(1);
             let x = 0.5 * (l[i] + r[i]);
             self.pre.push(x);
             let d = if pre >= 2.0 {
-                self.pre.read(pre - 1.0)
+                self.pre.read_at(&self.pre_tap)
             } else {
                 x
             };
             // Early reflections, panned.
             self.early.push(d);
             let mut er = [0.0f32; 2];
-            for &(t, g, pan) in &EARLY {
-                let v = self.early.read((t * ms * size).max(1.0)) * g;
-                er[0] += v * (0.5 - 0.5 * pan);
-                er[1] += v * (0.5 + 0.5 * pan);
+            for (tap, pan) in self.taps.iter().zip(EARLY_PAN) {
+                let v = self.early.read_at(tap);
+                er[0] += v * pan[0];
+                er[1] += v * pan[1];
             }
             // The network: read every line, mix, feed back.
             let mut out = [0.0f32; LINES];
             let mut sum = 0.0;
             for k in 0..LINES {
-                self.phase[k] = kit::wrap(self.phase[k] + self.lfo_inc * (1.0 + 0.13 * k as f32));
-                let wobble = modd * 6.0 * kit::sine(self.phase[k]);
-                let len = (ROOM_MS[k] * ms * size + wobble).max(3.0);
-                let z = self.lines[k].read(len - 1.0);
+                self.wob[k] += self.dwob[k];
+                let z = self.lines[k].read(self.base[k] + self.wob[k] - 1.0);
                 // Loss: gain at DC g, less at the top.
                 self.state[k] =
                     flush(self.g[k] * (1.0 - self.a[k]) * z + self.a[k] * self.state[k]);
@@ -675,9 +734,9 @@ impl Room {
                 y[0] *= self.gate_g;
                 y[1] *= self.gate_g;
             }
-            let w = self.width.next();
+            let w = self.width.glide();
             let mid = 0.5 * (y[0] + y[1]);
-            let mix = self.mix.next();
+            let mix = self.mix.glide();
             l[i] = lerp(l[i], lerp(mid, y[0], w), mix);
             r[i] = lerp(r[i], lerp(mid, y[1], w), mix);
         }
@@ -691,7 +750,9 @@ impl Room {
         for k in 0..LINES {
             self.lines[k] = Line::new((ROOM_MS[k] * ROOM_MAX * ms) as usize + 16);
         }
-        self.lfo_inc = 0.37 / rate as f32;
+        for k in 0..LINES {
+            self.lfo_step[k] = 16.0 * 0.37 / rate as f32 * (1.0 + 0.13 * k as f32);
+        }
         self.env_fall = crate::db_to_gain(-60.0 / (0.03 * rate as f32));
         // The gate closes over 4 ms.
         self.gate_step = 1.0 / (4.0 * ms);
@@ -722,6 +783,11 @@ impl Room {
         for (k, p) in self.phase.iter_mut().enumerate() {
             *p = k as f32 / LINES as f32;
         }
+        self.wob = [0.0; LINES];
+        self.dwob = [0.0; LINES];
+        self.n = 0;
+        self.placed = f32::NAN;
+        self.pre_placed = f32::NAN;
         self.low_cut.reset();
         self.env = 0.0;
         self.held = 0;
@@ -807,26 +873,36 @@ pub static SPRING_PRESETS: &[Preset] = &[
 ];
 
 /// One spring: the chirp chain, the round-trip delay and its loss.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 struct OneSpring {
-    /// Each stage's last STRETCH inputs and outputs.
-    xs: Vec<[f32; STRETCH]>,
-    ys: Vec<[f32; STRETCH]>,
+    /// Each stage's last STRETCH inputs and outputs (fixed arrays, so
+    /// the chain's loop has no bounds checks).
+    xs: [[f32; STRETCH]; STAGES],
+    ys: [[f32; STRETCH]; STAGES],
     at: usize,
     line: Line,
     lp: Svf,
     fb: f32,
 }
 
+impl Default for OneSpring {
+    fn default() -> Self {
+        OneSpring {
+            xs: [[0.0; STRETCH]; STAGES],
+            ys: [[0.0; STRETCH]; STAGES],
+            at: 0,
+            line: Line::default(),
+            lp: Svf::default(),
+            fb: 0.0,
+        }
+    }
+}
+
 impl OneSpring {
     fn new(frames: usize) -> OneSpring {
         OneSpring {
-            xs: vec![[0.0; STRETCH]; STAGES],
-            ys: vec![[0.0; STRETCH]; STAGES],
-            at: 0,
             line: Line::new(frames),
-            lp: Svf::default(),
-            fb: 0.0,
+            ..OneSpring::default()
         }
     }
 
@@ -835,23 +911,20 @@ impl OneSpring {
     /// below rate / 2K, the spring's falling "pew".
     #[inline]
     fn chirp(&mut self, mut x: f32, a: f32) -> f32 {
-        let at = self.at;
-        for s in 0..STAGES {
-            let xk = self.xs[s][at];
-            let yk = self.ys[s][at];
-            let y = flush(a * x + xk - a * yk);
-            self.xs[s][at] = x;
-            self.ys[s][at] = y;
+        let at = self.at.min(STRETCH - 1);
+        for (xs, ys) in self.xs.iter_mut().zip(self.ys.iter_mut()) {
+            let y = flush(a * (x - ys[at]) + xs[at]);
+            xs[at] = x;
+            ys[at] = y;
             x = y;
         }
-        self.at = (at + 1) % STRETCH;
+        self.at = if at + 1 == STRETCH { 0 } else { at + 1 };
         x
     }
 
     fn clear(&mut self) {
-        for s in self.xs.iter_mut().chain(&mut self.ys) {
-            *s = [0.0; STRETCH];
-        }
+        self.xs = [[0.0; STRETCH]; STAGES];
+        self.ys = [[0.0; STRETCH]; STAGES];
         self.at = 0;
         self.line.clear();
         self.lp.reset();
@@ -935,8 +1008,8 @@ impl Spring {
     fn run(&mut self, _ctx: &Ctx, _from: usize, l: &mut [f32], r: &mut [f32]) {
         let ms = self.rate as f32 * 0.001;
         for i in 0..l.len() {
-            let len = self.length.next();
-            let drip = self.drip.next();
+            let len = self.length.glide();
+            let drip = self.drip.glide();
             let x = self.in_hp.run(0, 0.5 * (l[i] + r[i]));
             let mut y = [0.0f32; 2];
             for (k, s) in self.springs.iter_mut().enumerate() {
@@ -952,7 +1025,7 @@ impl Spring {
                 s.fb = flush(self.gain * (back + drip * 0.25 * (c - back)));
                 y[k] = back + 0.3 * c;
             }
-            let mix = self.mix.next();
+            let mix = self.mix.glide();
             l[i] = lerp(l[i], y[0], mix);
             r[i] = lerp(r[i], y[1], mix);
         }

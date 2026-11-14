@@ -7,7 +7,7 @@
 
 use mpfree_node::{Ctx, Kind, NodeInfo, ParamInfo, Smooth};
 
-use crate::kit::{self, node_impl, param, Choice, Hz, Line, Linear, Log, Ms, Percent, NONE};
+use crate::kit::{self, node_impl, param, Choice, Glide, Hz, Line, Linear, Log, Ms, Percent, NONE};
 use crate::svf::{Svf, SvfMode};
 use crate::{defaults, fast_tanh, flush, lerp, Preset, Rng};
 
@@ -221,12 +221,12 @@ impl TapeDelay {
         let per_head = 1.0 / heads as f32;
         let top = self.line.max() - 2.0;
         for i in 0..l.len() {
-            let time = self.time.next();
-            let fb = self.feedback.next();
-            let wow = self.wow.next();
-            let flutter = self.flutter.next();
-            let sat = self.sat.next();
-            let spread = self.spread.next();
+            let time = self.time.glide();
+            let fb = self.feedback.glide();
+            let wow = self.wow.glide();
+            let flutter = self.flutter.glide();
+            let sat = self.sat.glide();
+            let spread = self.spread.glide();
             // Wow: a slow sine plus a drift that wanders to a new random
             // target each cycle. Flutter: two fast, small sines.
             self.wow_phase += self.wow_inc;
@@ -274,7 +274,7 @@ impl TapeDelay {
             let w = input + self.fb_sample;
             self.line.push(if w.abs() > 1.0 { fast_tanh(w) } else { w });
 
-            let mix = self.mix.next();
+            let mix = self.mix.glide();
             let s = per_head;
             l[i] = lerp(l[i], side[0] * s, mix);
             r[i] = lerp(r[i], side[1] * s, mix);
@@ -602,9 +602,9 @@ impl MultiTap {
             let mut y = [0.0f32; 2];
             let mut last = 0.0;
             for t in 0..mt::TAPS {
-                let d = self.times[t].next();
-                let level = self.levels[t].next();
-                let pan = self.pans[t].next();
+                let d = self.times[t].glide();
+                let level = self.levels[t].glide();
+                let pan = self.pans[t].glide();
                 let v = self.line.read(d - 1.0);
                 // Constant power across the pan.
                 let a = (pan + 1.0) * 0.125;
@@ -616,9 +616,9 @@ impl MultiTap {
             }
             let mut f = self.tone.run(0, last);
             f = self.low_cut.run(0, f);
-            self.fb_sample = flush(f * self.feedback.next());
+            self.fb_sample = flush(f * self.feedback.glide());
             self.line.push(0.5 * (l[i] + r[i]) + self.fb_sample);
-            let mix = self.mix.next();
+            let mix = self.mix.glide();
             l[i] = lerp(l[i], y[0], mix);
             r[i] = lerp(r[i], y[1], mix);
         }

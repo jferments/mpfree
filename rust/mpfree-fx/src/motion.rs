@@ -9,7 +9,10 @@
 
 use mpfree_node::{Ctx, Kind, NodeInfo, ParamInfo, Smooth};
 
-use crate::kit::{self, node_impl, param, Choice, Hz, Lfo, Line, Linear, Log, Ms, Percent, NONE};
+use crate::kit::{
+    self, node_impl, param, Choice, Glide, Hz, Lfo, Line, Linear, Log, Ms, Percent, NONE,
+};
+use crate::svf::{Svf, SvfMode};
 use crate::{defaults, fast_exp2, fast_tanh, lerp, Preset};
 
 const SQRT2: f32 = std::f32::consts::SQRT_2;
@@ -113,13 +116,17 @@ pub static TREMOLO_PRESETS: &[Preset] = &[
 
 /// Volume moved by the LFO: a soft wobble, a hard square chop, or (with
 /// Width) a stereo shimmer as the two sides move apart. Harmonic mode
-/// splits the sound at 700 Hz and moves the lows and highs in opposite
-/// phase, the swirl of early-1960s amps, with little change in loudness.
+/// splits the sound at 700 Hz (a 12 dB low-pass and what it leaves, gentle
+/// slopes like the amps' own RC filters, summing back to the input) and
+/// moves the lows and highs in opposite phase, the swirl of early-1960s
+/// amps, with little change in loudness.
 pub struct Tremolo {
     v: [f32; 6],
     rate: u32,
     lfo: Lfo,
-    split: kit::Crossover,
+    /// Harmonic mode's low band; the high band is what it leaves, so the
+    /// two always sum back to the input.
+    lows: Svf,
     depth: Smooth,
     width: Smooth,
 }
@@ -137,7 +144,7 @@ impl Tremolo {
             v,
             rate: 48_000,
             lfo: Lfo::default(),
-            split: kit::Crossover::default(),
+            lows: Svf::default(),
             depth: Smooth::new(v[3] / 100.0),
             width: Smooth::new(v[4] / 100.0),
         };
@@ -160,8 +167,8 @@ impl Tremolo {
         let harmonic = self.v[5] >= 0.5;
         for i in 0..l.len() {
             let p = self.lfo.step();
-            let depth = self.depth.next();
-            let off = 0.5 * self.width.next();
+            let depth = self.depth.glide();
+            let off = 0.5 * self.width.glide();
             let ml = self.lfo.shape(shape, p, 0.0);
             let mr = self.lfo.shape(shape, p, off);
             if harmonic {
@@ -169,7 +176,8 @@ impl Tremolo {
                 // is down, so the level stays nearly even.
                 let g = |m: f32| (1.0 - depth * (0.5 - 0.5 * m), 1.0 - depth * (0.5 + 0.5 * m));
                 for (ch, (x, m)) in [(&mut l[i], ml), (&mut r[i], mr)].into_iter().enumerate() {
-                    let (lo, hi) = self.split.split(ch, *x);
+                    let lo = self.lows.run(ch, *x);
+                    let hi = *x - lo;
                     let (gl, gh) = g(m);
                     *x = lo * gl + hi * gh;
                 }
@@ -181,13 +189,14 @@ impl Tremolo {
     }
     fn setup(&mut self, rate: u32) {
         self.rate = rate;
-        self.split.set(HARMONIC_HZ, rate);
+        let q = std::f32::consts::FRAC_1_SQRT_2;
+        self.lows.set(SvfMode::LowPass, HARMONIC_HZ, q, 0.0, rate);
         self.depth.set_time(rate, 20.0);
         self.width.set_time(rate, 20.0);
     }
     fn clear(&mut self) {
         self.lfo.reset();
-        self.split.reset();
+        self.lows.reset();
         self.depth.snap(self.depth.target);
         self.width.snap(self.width.target);
     }
@@ -293,7 +302,7 @@ impl AutoPan {
         let shape = self.v[2] as usize;
         for i in 0..l.len() {
             let p = self.lfo.step();
-            let pos = (self.centre.next() + self.depth.next() * self.lfo.shape(shape, p, 0.0))
+            let pos = (self.centre.glide() + self.depth.glide() * self.lfo.shape(shape, p, 0.0))
                 .clamp(-1.0, 1.0);
             // A quarter cycle from hard left (0) to hard right (0.25):
             // both sides at unity in the middle.
@@ -444,8 +453,8 @@ impl RingMod {
         let top = 0.45 * self.rate as f32;
         for i in 0..l.len() {
             let p = self.lfo.step();
-            let sweep = self.sweep.next() * (0.5 + 0.5 * kit::sine(p));
-            let hz = fast_exp2(self.pitch.next() + sweep).min(top);
+            let sweep = self.sweep.glide() * (0.5 + 0.5 * kit::sine(p));
+            let hz = fast_exp2(self.pitch.glide() + sweep).min(top);
             self.phase = kit::wrap(self.phase + hz * per);
             let dt = hz * per;
             let c = match wave {
@@ -453,7 +462,7 @@ impl RingMod {
                 2 => square(self.phase, dt),
                 _ => kit::sine(self.phase),
             };
-            let mix = self.mix.next();
+            let mix = self.mix.glide();
             l[i] = lerp(l[i], l[i] * c, mix);
             r[i] = lerp(r[i], r[i] * c, mix);
         }
@@ -665,7 +674,7 @@ impl Rotary {
             self.horn_phase = kit::wrap(self.horn_phase + self.horn_hz * per);
             self.drum_phase = kit::wrap(self.drum_phase + self.drum_hz * per);
 
-            let drive = self.drive.next();
+            let drive = self.drive.glide();
             let mut m = 0.5 * (l[i] + r[i]);
             if drive > 0.0 {
                 let g = 1.0 + 15.0 * drive * drive;
@@ -677,7 +686,7 @@ impl Rotary {
 
             // The two microphones sit either side of the cabinet; Width
             // swings them up to 45 degrees apart from the front.
-            let spread = 0.125 * self.width.next();
+            let spread = 0.125 * self.width.glide();
             let mut out = [0.0f32; 2];
             for (k, a) in [-spread, spread].into_iter().enumerate() {
                 let hp = self.horn_phase - a;
@@ -692,8 +701,8 @@ impl Rotary {
                 let (hg, dg) = ((1.0 + bal).min(1.0), (1.0 - bal).min(1.0));
                 out[k] = self.horn.read(hd) * ha * 0.67 * hg + self.drum.read(dd) * da * 0.8 * dg;
             }
-            self.balance.next();
-            let mix = self.mix.next();
+            self.balance.glide();
+            let mix = self.mix.glide();
             l[i] = lerp(l[i], out[0], mix);
             r[i] = lerp(r[i], out[1], mix);
         }

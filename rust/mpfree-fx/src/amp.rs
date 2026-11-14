@@ -7,7 +7,7 @@
 
 use mpfree_node::{Ctx, Kind, NodeInfo, ParamInfo, Smooth};
 
-use crate::kit::{node_impl, param, Choice, Db, Hz, Linear, Percent, NONE};
+use crate::kit::{node_impl, param, Choice, Db, Glide, Hz, Linear, Percent, NONE};
 use crate::oversample::{IirDown2, IirUp2};
 use crate::svf::{Svf, SvfMode};
 use crate::{db_to_gain, defaults, fast_tanh, flush, lerp, soft, Preset};
@@ -518,7 +518,7 @@ impl Amp {
         // the model's range.
         let later = 1.0 + 2.0 * self.v[amp::GAIN as usize] / 10.0;
         for i in 0..l.len() {
-            let g = self.gain.next();
+            let g = self.gain.glide();
             let x = self.tight.run(0, 0.5 * (l[i] + r[i]));
             let mut quad = [0.0f32; 4];
             let [a, b] = self.pre.up[0].run(x);
@@ -549,7 +549,7 @@ impl Amp {
                     y = s.run(0, y);
                 }
             }
-            let out = y * self.level.next() * 0.5;
+            let out = y * self.level.glide() * 0.5;
             l[i] = out;
             r[i] = out;
         }
@@ -704,20 +704,21 @@ impl Exciter {
     fn begin(&mut self, _ctx: &Ctx) {}
     fn run(&mut self, _ctx: &Ctx, _from: usize, l: &mut [f32], r: &mut [f32]) {
         for i in 0..l.len() {
-            let drive = 1.0 + 9.0 * self.drive.next();
-            let colour = self.colour.next();
-            let amount = self.amount.next();
+            let drive = 1.0 + 9.0 * self.drive.glide();
+            let undo = 1.0 / drive;
+            let colour = self.colour.glide();
+            let amount = self.amount.glide();
             for (ch, x) in [&mut l[i], &mut r[i]].into_iter().enumerate() {
                 let band = self.hp_in.run(ch, *x);
                 let two = self.up[ch].run(band * drive);
                 let shaped = two.map(|v| {
                     // Odd: a symmetric curve less its straight part. Even:
-                    // a rectified one (its DC goes in the high-pass after).
-                    let odd = fast_tanh(v) - v * 0.5;
-                    let even = fast_tanh(v.abs());
-                    lerp(odd, even, colour)
+                    // a rectified one (its DC goes in the high-pass after),
+                    // and tanh(|v|) is |tanh(v)|, so one curve serves both.
+                    let t = fast_tanh(v);
+                    lerp(t - v * 0.5, t.abs(), colour)
                 });
-                let h = self.down[ch].run(shaped) / drive;
+                let h = self.down[ch].run(shaped) * undo;
                 let h = self.hp_out.run(ch, h);
                 *x += amount * h;
             }
