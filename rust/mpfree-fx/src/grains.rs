@@ -22,9 +22,7 @@
 
 use mpfree_node::{Ctx, Kind, NodeInfo, ParamInfo, Smooth, Unit};
 
-use crate::kit::{
-    self, node_impl, param, Choice, Glide, Line, Linear, Log, Ms, Percent, Toggle, NONE,
-};
+use crate::kit::{self, node_impl, param, Choice, Glide, Linear, Log, Ms, Percent, Toggle, NONE};
 use crate::{defaults, fast_exp2, fast_tanh, lerp, Preset};
 
 /// [`Granulator`] parameter ids.
@@ -44,7 +42,7 @@ pub mod ids {
 }
 
 /// Grains that can play at once.
-pub const MAX_GRAINS: usize = 12;
+pub const MAX_GRAINS: usize = 8;
 /// The buffer's length in seconds.
 const BUFFER_SECONDS: f32 = 4.0;
 /// The longest Delay, in ms (a synced delay is held to it too).
@@ -137,6 +135,68 @@ pub static PRESETS: &[Preset] = &[
     },
 ];
 
+/// The grains' stereo buffer: both sides of a frame side by side, so a
+/// grain works out its read point once for the two (on the MPC's ARM, the
+/// index and wrap work was half the cost of a read).
+#[derive(Clone, Debug, Default)]
+struct Buffer {
+    buf: Vec<[f32; 2]>,
+    w: usize,
+}
+
+impl Buffer {
+    /// Room for `frames` of history (control thread).
+    fn new(frames: usize) -> Buffer {
+        Buffer {
+            buf: vec![[0.0; 2]; (frames + 4).next_power_of_two()],
+            w: 0,
+        }
+    }
+    /// The longest read back, in frames.
+    fn max(&self) -> f32 {
+        self.buf.len().saturating_sub(4) as f32
+    }
+    #[inline]
+    fn push(&mut self, l: f32, r: f32) {
+        let m = self.buf.len().wrapping_sub(1);
+        if let Some(f) = self.buf.get_mut(self.w & m) {
+            *f = [l, r];
+        }
+        self.w = self.w.wrapping_add(1) & m;
+    }
+    /// Both sides `d` frames back (1 or more, as `kit::Line::read`),
+    /// cubic between frames.
+    #[inline]
+    fn read(&self, d: f32) -> (f32, f32) {
+        let buf = &self.buf[..];
+        if buf.len() < 8 {
+            return (0.0, 0.0);
+        }
+        let d = kit::at_most(kit::at_least(d, 1.0), self.max());
+        let i = d as usize;
+        let t = d - i as f32;
+        let m = buf.len() - 1;
+        let j = self.w.wrapping_sub(i).wrapping_sub(3) & m;
+        let [x3, x2, x1, x0] = if j + 3 <= m {
+            let s = &buf[j..j + 4];
+            [s[0], s[1], s[2], s[3]]
+        } else {
+            [buf[j], buf[(j + 1) & m], buf[(j + 2) & m], buf[(j + 3) & m]]
+        };
+        let cubic = |k: usize| {
+            let c1 = 0.5 * (x2[k] - x0[k]);
+            let c2 = x0[k] - 2.5 * x1[k] + 2.0 * x2[k] - 0.5 * x3[k];
+            let c3 = 0.5 * (x3[k] - x0[k]) + 1.5 * (x1[k] - x2[k]);
+            ((c3 * t + c2) * t + c1) * t + x1[k]
+        };
+        (cubic(0), cubic(1))
+    }
+    fn clear(&mut self) {
+        self.buf.fill([0.0; 2]);
+        self.w = 0;
+    }
+}
+
 /// One playing grain.
 #[derive(Clone, Copy, Debug, Default)]
 struct Grain {
@@ -159,7 +219,7 @@ pub struct Granulator {
     v: [f32; 12],
     rate: u32,
     bpm: f64,
-    lines: [Line; 2],
+    buffer: Buffer,
     grains: [Grain; MAX_GRAINS],
     /// Frames to the next grain.
     wait: f32,
@@ -183,7 +243,7 @@ impl Granulator {
             v,
             rate: 0,
             bpm: 120.0,
-            lines: [Line::default(), Line::default()],
+            buffer: Buffer::default(),
             grains: [Grain::default(); MAX_GRAINS],
             wait: 0.0,
             rng: 1,
@@ -244,7 +304,7 @@ impl Granulator {
         let want = self.delay_frames() + jitter;
         // Keep the read point inside the buffer from the grain's start to
         // its end.
-        let top = self.lines[0].max();
+        let top = self.buffer.max();
         let lo = EDGE + (-drift * len).max(0.0);
         let hi = (top - EDGE - (drift * len).max(0.0)).max(lo);
         let d = want.clamp(lo, hi);
@@ -283,8 +343,9 @@ impl Granulator {
                     continue;
                 }
                 let w = 0.5 - 0.5 * kit::cosine(g.phase);
-                wl += w * g.gl * self.lines[0].read(g.d);
-                wr += w * g.gr * self.lines[1].read(g.d);
+                let (a, b) = self.buffer.read(g.d);
+                wl += w * g.gl * a;
+                wr += w * g.gr * b;
                 g.d += g.drift;
                 g.phase += g.step;
                 if g.phase >= 1.0 {
@@ -295,8 +356,8 @@ impl Granulator {
             wr *= norm;
             let fb = self.feedback.glide();
             if !frozen {
-                self.lines[0].push(l[i] + fb * self.last[0]);
-                self.lines[1].push(r[i] + fb * self.last[1]);
+                self.buffer
+                    .push(l[i] + fb * self.last[0], r[i] + fb * self.last[1]);
             }
             self.last = [fast_tanh(wl), fast_tanh(wr)];
             let mix = self.mix.glide();
@@ -307,16 +368,14 @@ impl Granulator {
     fn setup(&mut self, rate: u32) {
         if rate != self.rate {
             let n = (BUFFER_SECONDS * rate as f32) as usize;
-            self.lines = [Line::new(n), Line::new(n)];
+            self.buffer = Buffer::new(n);
         }
         self.rate = rate;
         self.mix.set_time(rate, 20.0);
         self.feedback.set_time(rate, 20.0);
     }
     fn clear(&mut self) {
-        for l in &mut self.lines {
-            l.clear();
-        }
+        self.buffer.clear();
         self.grains = [Grain::default(); MAX_GRAINS];
         self.wait = 0.0;
         self.rng = 0x9E37_79B9;
