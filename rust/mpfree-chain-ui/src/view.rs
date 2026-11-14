@@ -433,8 +433,10 @@ impl ChainView {
         });
     }
 
-    /// A tap in the open picker (on the finger's way down; a tile waits
-    /// for it to lift, to tell a tap from a hold).
+    /// A touch in the open picker, on the finger's way down. Sections,
+    /// pages, Back and the star act at once; a tile, a preset row and a
+    /// presets line wait for the finger to lift on them, so a slip adds
+    /// nothing (and a tile tells a tap from a hold).
     fn tap_picker(&mut self, pl: &PickerLayout, finger: u64, x: i32, y: i32) {
         let Some(hit) = crate::picker::hit(pl, x, y) else {
             return;
@@ -465,36 +467,78 @@ impl ChainView {
                     self.push(ChainAction::Favourite { id: p.id, on });
                 }
             }
-            Hit::Chip(i) => {
-                if let Some(p) = pv.picks(&self.state).get(i) {
-                    self.open_or_add(p.id);
-                }
+            Hit::Chip(_) | Hit::Tile(_) => {
+                pv.press = Some((finger, hit, std::time::Instant::now()))
             }
-            Hit::Tile(i) => match pv.presets {
-                Some(id) => self.add_preset(id, i),
-                None => pv.press = Some((finger, i, std::time::Instant::now())),
-            },
         }
     }
 
-    /// A finger lifted: a tile pressed and let go on adds its effect, or
-    /// opens its presets if it was held.
+    /// A finger lifted on what it went down on: a tile adds its effect (or
+    /// opens its presets if it was held, or adds an effect that has none);
+    /// a preset row adds the effect with that preset; a presets line opens
+    /// the presets.
     fn lift_picker(&mut self, pl: &PickerLayout, finger: u64, x: i32, y: i32) {
-        let Some((f, i, since)) = self.picker.press.take() else {
+        let Some((f, hit, since)) = self.picker.press.take() else {
             return;
         };
-        if f != finger || crate::picker::hit(pl, x, y) != Some(Hit::Tile(i)) {
+        if f != finger || crate::picker::hit(pl, x, y) != Some(hit) {
             return;
         }
+        let pick = |s: &ChainView, i: usize| s.picker.picks(&s.state).get(i).copied();
+        match (hit, self.picker.presets) {
+            (Hit::Tile(row), Some(id)) => self.add_preset(id, row),
+            (Hit::Tile(i), None) => {
+                let Some(p) = pick(self, i) else {
+                    return;
+                };
+                if since.elapsed() >= HOLD {
+                    self.open_or_add(p.id);
+                } else {
+                    self.state.picking = false;
+                    self.push(ChainAction::Add(p.id));
+                }
+            }
+            (Hit::Chip(i), None) => {
+                if let Some(p) = pick(self, i) {
+                    self.open_or_add(p.id);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// A finger has stayed on an effect's tile past [`HOLD`] and the
+    /// effect has presets: [`ChainView::hold_tick`] opens them now.
+    pub fn hold_due(&self) -> bool {
+        let Some((_, Hit::Tile(i), since)) = self.picker.press else {
+            return false;
+        };
+        self.state.picking
+            && self.picker.presets.is_none()
+            && since.elapsed() >= HOLD
+            && self
+                .picker
+                .picks(&self.state)
+                .get(i)
+                .is_some_and(|p| !mpfree_fx::picker::presets(p.id).is_empty())
+    }
+
+    /// Call every frame while the picker is open: a finger held on a tile
+    /// opens its presets while it is still down, as other holds do, and
+    /// its lift then does nothing more. True when it opened them. (An
+    /// effect with no presets waits for the lift, which adds it.)
+    pub fn hold_tick(&mut self) -> bool {
+        if !self.hold_due() {
+            return false;
+        }
+        let Some((_, Hit::Tile(i), _)) = self.picker.press.take() else {
+            return false;
+        };
         let Some(p) = self.picker.picks(&self.state).get(i).copied() else {
-            return;
+            return false;
         };
-        if since.elapsed() >= HOLD {
-            self.open_or_add(p.id);
-        } else {
-            self.state.picking = false;
-            self.push(ChainAction::Add(p.id));
-        }
+        self.open_or_add(p.id);
+        true
     }
 
     /// Tests: the finger on a tile has been there `secs` longer.
