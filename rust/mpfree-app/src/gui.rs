@@ -444,6 +444,9 @@ pub enum ToUi {
     ExportFacts(Box<crate::export::Facts>),
     /// An export's pass is over (or never started): the job finishes it.
     ExportOver(Box<crate::export::Run>),
+    /// A print from the mixer's strip menu (takes.rs), named after its
+    /// strip: saved as a new sample in Samples › Prints, on a thread.
+    Printed(String, Box<mpfree_fx::Printed>),
     /// A save: what the audio loop's engines hold, for the screen to write
     /// with its own parts and hand to the library (project.rs).
     ProjectParts(Box<crate::project::Collected>),
@@ -1030,6 +1033,8 @@ pub struct Player {
     sample_edits: u64,
     /// An opened project's loops being read (the files can be big).
     loops_load: Option<std::sync::mpsc::Receiver<LoopsRead>>,
+    /// Prints being saved: each says where it went, or why not.
+    print_saves: Vec<std::sync::mpsc::Receiver<Result<String, String>>>,
     /// An opened project's audio tracks being read (the takes' files can
     /// be big).
     audio_load: Option<std::sync::mpsc::Receiver<AudioRead>>,
@@ -1344,6 +1349,7 @@ impl Player {
             open_actions: 0,
             sample_edits: 0,
             loops_load: None,
+            print_saves: Vec::new(),
             audio_load: None,
             preview_db: crate::preview::LEVEL_DB,
             preview_load: None,
@@ -3241,6 +3247,7 @@ impl Player {
             ToUi::ProjectParts(c) => self.save_project(c),
             ToUi::ExportFacts(f) => self.export_facts(f),
             ToUi::ExportOver(run) => self.export_over(run),
+            ToUi::Printed(name, p) => self.save_print(name, p),
             ToUi::ProjectDefaults(d) => self.project_defaults = Some(*d),
             ToUi::Plugins(p) => self.project_plugins = p,
             ToUi::TrackSounds(s) => {
@@ -4362,6 +4369,60 @@ impl Player {
         };
         self.say(line);
         self.step_browser();
+    }
+
+    /// A print from the mixer: written as a WAV in Samples › Prints on a
+    /// thread of its own (a take with its tail can be many megabytes),
+    /// named after its strip and the time.
+    fn save_print(&mut self, name: String, p: Box<mpfree_fx::Printed>) {
+        let Some(lib) = self.browser.as_ref().map(|b| b.library().clone()) else {
+            let line = format!("mixer: {name}: print not saved, there's no stick to save it on");
+            self.say(line.clone());
+            self.tell(&line);
+            return;
+        };
+        let (y, mo, d, h, mi) = mpfree_library::project::civil(now_utc());
+        let file = format!(
+            "{} {y:04}-{mo:02}-{d:02} {h:02}.{mi:02}.wav",
+            mpfree_export::safe_name(&name)
+        );
+        let (tx, rx) = std::sync::mpsc::channel();
+        let save = std::thread::Builder::new()
+            .name("print-save".into())
+            .spawn(move || {
+                let r = crate::takes::save_print(&lib, &file, &p)
+                    .map(|loc| format!("mixer: {name}: printed to {}", loc.display()))
+                    .map_err(|e| format!("mixer: {name}: print not saved ({e})"));
+                let _ = tx.send(r);
+            });
+        match save {
+            Ok(_) => self.print_saves.push(rx),
+            Err(e) => self.say(format!("mixer: print not saved ({e})")),
+        }
+    }
+
+    /// Prints saved since the last tick: said, and the browser shows them.
+    fn poll_prints(&mut self) {
+        let mut done = Vec::new();
+        self.print_saves.retain(|rx| match rx.try_recv() {
+            Ok(r) => {
+                done.push(r);
+                false
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => true,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                done.push(Err("mixer: print not saved (its thread stopped)".into()));
+                false
+            }
+        });
+        for r in done {
+            let (Ok(line) | Err(line)) = r;
+            self.say(line.clone());
+            self.tell(&line);
+            if let Some(b) = self.browser.as_mut() {
+                b.refresh();
+            }
+        }
     }
 
     /// An opened project's loops, once read: to the audio thread.
@@ -5734,6 +5795,7 @@ impl Player {
             self.step_browser();
         }
         self.poll_export();
+        self.poll_prints();
         self.poll_preview();
         self.poll_loops();
         self.poll_audio();

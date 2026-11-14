@@ -46,6 +46,17 @@ fn the_audio_threads_part_never_allocates() {
     host.set_profiling(true);
     let (mut l, mut r) = (vec![0f32; 128], vec![0f32; 128]);
     let mut retired = Vec::with_capacity(16);
+    // Track 1 frozen for a while: a take made beforehand, and the thawed
+    // one kept (the control thread would drop it).
+    let mut take = Some(mpfree_fx::Frozen {
+        left: vec![0.01; 4096],
+        right: vec![0.01; 4096],
+        origin: 0.0,
+        beats: 4.0,
+        bpm: 120.0,
+        rate: RATE,
+    });
+    let mut thawed = Vec::with_capacity(2);
     let before = thread_count();
     let mut frame = 0u64;
     for p in 0..3000usize {
@@ -114,11 +125,24 @@ fn the_audio_threads_part_never_allocates() {
         if p == 2500 {
             host.stop();
         }
+        if p == 1000 {
+            if let Some(t) = take.take() {
+                assert!(mixer.freeze(mpfree_fx::StripId::Track(1), t).is_ok());
+            }
+        }
+        if p == 1800 {
+            assert!(mixer.thaw(mpfree_fx::StripId::Track(1)));
+        }
         let c = Ctx::new(RATE, frame);
         host.render(&c, 128, &mut mixer);
         l.fill(0.0);
         r.fill(0.0);
         mixer.process(&c, &mut l, &mut r);
+        if let Some(t) = mixer.pop_thawed() {
+            if thawed.len() < thawed.capacity() {
+                thawed.push(t);
+            }
+        }
         while let Some(old) = host.pop_retired() {
             // The control thread would drop these; here they wait.
             if retired.len() < retired.capacity() {
@@ -136,4 +160,6 @@ fn the_audio_threads_part_never_allocates() {
     assert_eq!(calls, 0, "allocations or frees on the audio thread's path");
     assert!(host.stats(0).notes + host.stats(1).notes > 300);
     assert!(!retired.is_empty(), "swapped-out instruments came back");
+    assert!(host.stats(1).rested > 500, "track 1's instrument rested");
+    assert_eq!(thawed.len(), 1, "the take came back");
 }

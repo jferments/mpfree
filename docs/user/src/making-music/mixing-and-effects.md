@@ -1,6 +1,6 @@
 <!--
 status: changing
-covers: rust/mpfree-fx rust/mpfree-mixer-ui rust/mpfree-fx-ui rust/mpfree-chain-ui rust/mpfree-app/src/plugins.rs rust/mpfree-plughost/src/rack.rs rust/mpfree-app/src/chain_page.rs rust/mpfree-app/src/mixing.rs rust/mpfree-fx/src/perform.rs rust/mpfree-fx/src/xyfx.rs rust/mpfree-fx/src/picker.rs rust/mpfree-chain-ui/src/picker.rs
+covers: rust/mpfree-fx rust/mpfree-mixer-ui rust/mpfree-fx-ui rust/mpfree-chain-ui rust/mpfree-app/src/plugins.rs rust/mpfree-plughost/src/rack.rs rust/mpfree-app/src/chain_page.rs rust/mpfree-app/src/mixing.rs rust/mpfree-fx/src/perform.rs rust/mpfree-fx/src/xyfx.rs rust/mpfree-fx/src/picker.rs rust/mpfree-chain-ui/src/picker.rs rust/mpfree-app/src/takes.rs
 checked: 2026-11-14 5ace8aa
 -->
 
@@ -63,6 +63,29 @@ A setting for a device that isn't plugged in, or for a part of MPFree that doesn
 ## Using the Q-Links in the mixer
 
 Tap a strip's name to select it. The four Q-Links then turn its **Volume**, **Pan**, **Send A** and **Send B**, and the data wheel turns its volume too.
+
+## Freezing and printing a strip
+
+Tap the selected strip's name again to open its menu:
+
+- **Freeze** records the strip's next pass through its effects and plays that recording in their place. The effects rest, and so does a track's own instrument, which frees the processor for more tracks and effects. The fader, pan, sends, mute and solo still work.
+- **Thaw** brings the live effects (and instrument) back.
+- **Print to a new sample** records the next pass with its effects and lets their tail ring out, then saves it as a WAV in **Samples › Prints** in the browser (for example **Synth 2026-11-14 06.12.wav**), ready to load on a pad.
+- **Cancel** stops a freeze or print under way. Nothing changes.
+
+Both record in real time while the song plays, so the strip shows **Freezing** or **Printing** with how far it has got. A freeze waits for its loop to play through once first, so the reverb and echoes from the end of the loop are already ringing at its start; freezing a 4-bar loop at 120 BPM takes 8 to 16 seconds. A print starts at the loop's next start. Stopping the song or changing the tempo during the recording stops it, and the strip says why.
+
+**What a strip records.** A take is one pass of a loop:
+
+- A track with its own instrument records the clip playing on that track.
+- **Drums**, **Synth** and the pad strips record what the tracks that play on the pads play: the longest clip there. To freeze, every other clip playing there must fit into that one a whole number of times, so a 1-bar and a 4-bar clip freeze as 4 bars, but a 3-bar and a 4-bar clip don't freeze.
+- **Loop** and **Audio** follow no clip, so they can't be frozen, only printed. A print of them, of a submix, a return, the line input or the master records the longest clip playing on any track.
+- A take is at most 64 seconds long.
+
+**When a frozen strip thaws by itself.** A frozen strip plays the loop it recorded. If what it recorded changes, it thaws and says so: another clip launched or stopped, a note or step edited in the clip, an effect put in, taken out or switched on or off, or a different instrument on the track. A clip launched again somewhere else just moves the frozen loop with it. Muting a track with its own instrument silences its frozen strip without thawing it. Turning an effect's knobs on a frozen strip changes nothing until you thaw it, and playing the pads live isn't heard through a frozen pad strip.
+
+> [!NOTE]
+> Frozen strips aren't saved with the project. Opening a project thaws everything.
 
 ## The master and Master safety
 
@@ -225,6 +248,6 @@ Each of these costs almost nothing until you use it.
 - **Perform FX on pads**: effects played from the pads.
 
 > [!MPC]
-> The mixer covers the MPC's routing: pad channels, tracks, submixes, four send returns and the master, with sends before or after the fader and side-chain keys. The differences: the mixer opens over any page instead of being its own mode, solo keeps everything the strip feeds, the master always ends in a safety limiter, and effects with a delay of their own are lined up automatically so nothing drifts out of time.
+> The mixer covers the MPC's routing: pad channels, tracks, submixes, four send returns and the master, with sends before or after the fader and side-chain keys. The differences: the mixer opens over any page instead of being its own mode, solo keeps everything the strip feeds, the master always ends in a safety limiter, and effects with a delay of their own are lined up automatically so nothing drifts out of time. Freeze is the MPC's track freeze, but it records a loop rather than the whole sequence and follows the song's tempo; Print is like the MPC's bounce to sample.
 >
 > Every MPC effect has an MPFree effect or preset in its place: the MPC's many Delay versions (Mono, Sync, Ping Pong, Analog, LP, HP) are the **Delay** and its presets, Delay Tape is the **Delay** in its **Tape** mode, Reverb Small, Medium and In Gate are the **Reverb** in its **Room** mode, Reverb Large and AIR Reverb its **Hall**, AIR Spring Reverb its **Spring**, Distortion Amp the **Amp**, AIR Enhancer the **Exciter**, AIR Maximizer and AIR Limiter the **Limiter**, AIR Noise Gate the **Gate**, AIR Pumper and Mother Ducker the **Ducker**, Decimator and Resampler **Crush**, the AIR Vocal Tuner **Pitch correct**, the AIR Vocal Harmonizer the **Harmonizer**, XYFX is **XY FX**, Auto Wah the **Auto wah**, the Frequency Shifter and AIR Freq Shift the **Freq shifter**, AIR Stereo Width the **Stereo width**, AIR Talkbox the **Talk box**, AIR Channel Strip the **Channel strip**, Granulator the **Granulator**, and Sample Delay the **Sample delay**.

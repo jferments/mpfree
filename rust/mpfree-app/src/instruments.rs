@@ -456,6 +456,7 @@ impl Instruments {
             stray_offs: now.stray_offs - base.stray_offs,
             resets: now.resets - base.resets,
             swaps: now.swaps - base.swaps,
+            rested: now.rested - base.rested,
         }
     }
 

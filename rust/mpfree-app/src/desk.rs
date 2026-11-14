@@ -102,6 +102,21 @@ impl Desk<'_> {
                 fx.extend(panels.macros(app, mix, &a, recording))
             }
             gui::FromUi::OpenMacros(bank) => fx.extend(panels.open_macros(app, mix, bank)),
+            // The strip menu's Freeze, Thaw, Print and Cancel (takes.rs).
+            gui::FromUi::Mixer(
+                a @ (mpfree_mixer_ui::MixAction::Freeze(_)
+                | mpfree_mixer_ui::MixAction::Thaw(_)
+                | mpfree_mixer_ui::MixAction::Print(_)
+                | mpfree_mixer_ui::MixAction::CancelTake(_)),
+            ) => {
+                let tracks = time.project().tracks.len();
+                let bpm = time.info().bpm;
+                if let Some(line) = mix.take_action(&a, tracks, bpm, &|t| time.now_playing(t)) {
+                    let line = format!("mixer: {line}");
+                    out.note(&line);
+                    out.show(gui::ToUi::Tell(line));
+                }
+            }
             // The mixer panel. Its master fader is the Level, so the Play page follows it.
             gui::FromUi::Mixer(a) => {
                 if let Some(db) = mix.action(&a) {

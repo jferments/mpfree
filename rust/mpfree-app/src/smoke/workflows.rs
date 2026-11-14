@@ -552,6 +552,61 @@ mod tests {
         s.hits.on[from..].iter().filter(|h| h.0 == pad).count()
     }
 
+    /// The mixer: the selected strip's name opens its menu; Freeze takes
+    /// the playing loop through the strip's inserts and plays it from
+    /// then on, and the frozen strip's menu offers Thaw and Print.
+    #[test]
+    fn a_strips_menu_freezes_the_playing_loop_and_thaws_it() {
+        use mpfree_fx::FreezeState;
+        on_big_stack(|| {
+            let mut s = Session::new();
+            s.press("play-transport", "view", "Beats");
+            for k in [1, 5, 9, 13] {
+                s.press("steps", "step", &format!("Kick step {k}"));
+            }
+            s.button("PLAY").run_for(0.1);
+            s.press("header", "mixer-icon", "");
+            s.press("mixer", "strip-name", "Drums");
+            s.press("mixer", "strip-name", "Drums");
+            s.press("mixer", "menu", "Freeze");
+            let said = |s: &Session, what: &str| s.lines.iter().any(|l| l.contains(what));
+            assert!(
+                said(&s, "Drums: freezing its 4-beat loop"),
+                "Freeze says what it takes: {:?}",
+                s.lines
+            );
+            // The take waits for its memory (made on the builder thread,
+            // which this session outruns), then for the loop's next start,
+            // then records a bar.
+            let drums = StripId::Track(crate::mixing::DRUMS);
+            let frozen = |s: &Session| {
+                matches!(
+                    s.mix.mixer.freeze_state(drums),
+                    FreezeState::FadingIn | FreezeState::On
+                )
+            };
+            for _ in 0..150 {
+                if frozen(&s) {
+                    break;
+                }
+                s.run_for(0.1);
+            }
+            assert!(frozen(&s), "frozen within 15 s: {:?}", s.lines);
+            assert!(said(&s, "Drums: frozen"), "and says so");
+
+            s.press("mixer", "strip-name", "Drums");
+            assert!(
+                s.control("mixer", "menu", "Print to a new sample")
+                    .is_some(),
+                "Print is offered"
+            );
+            s.press("mixer", "menu", "Thaw");
+            assert!(said(&s, "Drums: thawed"), "Thaw says so");
+            assert!(!frozen(&s), "and the strip plays its live effects");
+            s.button("STOP");
+        });
+    }
+
     /// Play > Beats: four Kick steps tapped make the pattern, PLAY plays
     /// the kick four times a bar, and a step tapped again comes off.
     #[test]
