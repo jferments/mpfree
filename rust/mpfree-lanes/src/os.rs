@@ -6,9 +6,11 @@
 //!
 //! [`background`] is for a program's helper threads: the normal policy,
 //! and the cores [`set_background`] named once the sound has cores of its
-//! own.
+//! own. [`idle_job`] is for the long jobs among them: the same, then
+//! SCHED_IDLE once the program allows it ([`set_idle_jobs`]).
 
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::OnceLock;
 use std::time::Duration;
 
 #[cfg(target_os = "linux")]
@@ -116,6 +118,19 @@ mod imp {
         Ok(())
     }
 
+    /// SCHED_IDLE for the calling thread: it runs only when its core has
+    /// nothing else ready, ordinary threads first (the kernel still gives
+    /// it a sliver, so it is never stopped outright). Lowering the policy
+    /// needs no privilege; threads it starts inherit it.
+    pub fn idle() -> Result<(), String> {
+        let p = libc::sched_param { sched_priority: 0 };
+        // SAFETY: p lives across the call; pid 0 is the calling thread.
+        if unsafe { libc::sched_setscheduler(0, libc::SCHED_IDLE, &p) } != 0 {
+            return Err(io::Error::last_os_error().to_string());
+        }
+        Ok(())
+    }
+
     /// SCHED_FIFO at `priority` for the calling thread.
     pub fn fifo(priority: i32) -> Result<(), String> {
         let p = libc::sched_param {
@@ -183,6 +198,10 @@ mod imp {
         Err("SCHED_FIFO is not supported on this system yet".into())
     }
 
+    pub fn idle() -> Result<(), String> {
+        Err("SCHED_IDLE is not supported on this system yet".into())
+    }
+
     pub fn allowed_cores() -> Vec<usize> {
         (0..std::thread::available_parallelism().map_or(1, |n| n.get())).collect()
     }
@@ -234,4 +253,64 @@ pub fn background() -> Result<(), String> {
         }
     }
     pin_set(&cores[..n])
+}
+
+/// [`set_idle_jobs`]: [`idle_job`] asks for SCHED_IDLE.
+static IDLE_JOBS: AtomicBool = AtomicBool::new(false);
+/// Threads that asked for SCHED_IDLE in [`idle_job`], and the ones refused.
+static IDLE_ASKED: AtomicU64 = AtomicU64::new(0);
+static IDLE_REFUSED: AtomicU64 = AtomicU64::new(0);
+/// Why the first refusal (they all have the same cause).
+static IDLE_WHY: OnceLock<String> = OnceLock::new();
+
+/// Lets [`idle_job`] ask for SCHED_IDLE; off at first. A program turns it
+/// on once, before it starts any long job. Tests leave it off: there every
+/// core is busy with other tests, and a worker at SCHED_IDLE would barely
+/// run.
+pub fn set_idle_jobs(on: bool) {
+    IDLE_JOBS.store(on, Ordering::Relaxed);
+}
+
+/// True once [`set_idle_jobs`] turned it on.
+pub fn idle_jobs() -> bool {
+    IDLE_JOBS.load(Ordering::Relaxed)
+}
+
+/// For a helper thread that does long work nobody waits on frame by frame
+/// (stretching a sound, printing a loop, sampling a synth): [`background`],
+/// then, once [`set_idle_jobs`] turned it on, SCHED_IDLE, so the thread
+/// runs only when its cores have nothing else ready and the screen and the
+/// program's other threads go first. A refusal leaves it at the normal
+/// policy, counted with its reason ([`idle_counts`]). Changes only the
+/// calling thread, in RAM.
+pub fn idle_job() {
+    let _ = background();
+    if !idle_jobs() {
+        return;
+    }
+    IDLE_ASKED.fetch_add(1, Ordering::Relaxed);
+    if let Err(e) = idle() {
+        let _ = IDLE_WHY.set(e);
+        IDLE_REFUSED.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+/// What [`idle_job`] got since the start.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct IdleCounts {
+    /// Threads that asked for SCHED_IDLE.
+    pub asked: u64,
+    /// Of those, the ones left at the normal policy.
+    pub refused: u64,
+    /// Why the first was refused.
+    pub why: Option<&'static str>,
+}
+
+/// [`idle_job`]'s counts so far. Allocates nothing.
+pub fn idle_counts() -> IdleCounts {
+    IdleCounts {
+        asked: IDLE_ASKED.load(Ordering::Relaxed),
+        refused: IDLE_REFUSED.load(Ordering::Relaxed),
+        why: IDLE_WHY.get().map(String::as_str),
+    }
 }
