@@ -161,7 +161,17 @@ fn source(id: &str, total: usize) -> Vec<f32> {
             mix(&d, &pluck(total, beat(), 0, 0.35), 1.0)
         }
         "mpfree.fx.tape_delay" | "mpfree.fx.multitap" => pluck(total, beat() * 2, 0, 0.4),
-        "mpfree.fx.amp" => pluck(total, beat() / 2, -2, 0.5),
+        "mpfree.fx.amp" | "mpfree.fx.autowah" => pluck(total, beat() / 2, -2, 0.5),
+        "mpfree.fx.freqshift" => mix(&drums(total), &pad(total), 0.7),
+        "mpfree.fx.sample_delay" => drums(total),
+        "mpfree.fx.channel_strip" => {
+            let mut n = Noise(11);
+            mix(&drums(total), &voice(total), 0.5)
+                .iter()
+                .map(|v| v + 0.01 * n.next())
+                .collect()
+        }
+        "mpfree.fx.granulator" => pluck(total, beat(), 0, 0.35),
         _ => pad(total),
     }
 }
@@ -193,6 +203,13 @@ fn main() {
         "mpfree.fx.amp",
         "mpfree.fx.exciter",
         "mpfree.fx.xy",
+        "mpfree.fx.autowah",
+        "mpfree.fx.talkbox",
+        "mpfree.fx.freqshift",
+        "mpfree.fx.width",
+        "mpfree.fx.sample_delay",
+        "mpfree.fx.channel_strip",
+        "mpfree.fx.granulator",
     ];
     let mut index = String::from(
         "MPFree coverage effects: listening renders (120 BPM, 2 s a bar).\nEach file: bar 1 dry, then two bars per preset.\n\n",

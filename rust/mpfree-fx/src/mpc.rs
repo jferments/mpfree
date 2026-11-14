@@ -42,6 +42,9 @@ const fn n(
     }
 }
 
+/// A name MPFree has no effect for yet (none since 96 of 96; kept for the
+/// names a new MPC release adds).
+#[allow(dead_code)]
 const fn none(mpc: &'static str, note: &'static str) -> MpcName {
     MpcName {
         mpc,
@@ -163,8 +166,8 @@ pub static MPC_NAMES: &[MpcName] = &[
     n("Decimator", CRUSH, "12-bit classic", ""),
     n("Resampler", CRUSH, "Soft grit", ""),
     // Other.
-    none("Auto Wah", "not yet: no envelope-follower filter"),
-    none("Frequency Shifter", "not yet"),
+    n("Auto Wah", "mpfree.fx.autowah", "Funk quack", ""),
+    n("Frequency Shifter", "mpfree.fx.freqshift", "", ""),
     n("Transient Shaper", "mpfree.fx.transient", "", ""),
     n("XYFX", "mpfree.fx.xy", "", ""),
     // AIR effects, MPC 2.4.
@@ -178,8 +181,8 @@ pub static MPC_NAMES: &[MpcName] = &[
         "Shape Square",
     ),
     n("AIR Flanger", "mpfree.fx.flanger", "Jet sweep", ""),
-    none("AIR Freq Shift", "not yet"),
-    n("AIR Fuzz-Wah", DRIVE, "Fuzz box", "no wah yet"),
+    n("AIR Freq Shift", "mpfree.fx.freqshift", "", ""),
+    n("AIR Fuzz-Wah", DRIVE, "Fuzz box", "an Auto wah after it"),
     n("AIR Kill EQ", EQ, "", "cut bands at -inf; or the DJ filter"),
     n(
         "AIR Lo-Fi",
@@ -192,12 +195,9 @@ pub static MPC_NAMES: &[MpcName] = &[
     n("AIR Phaser", "mpfree.fx.phaser", "Deep phase", ""),
     n("AIR Reverb", CLOUD, "Big hall", ""),
     n("AIR Spring Reverb", "mpfree.fx.spring", "Amp spring", ""),
-    none("AIR Stereo Width", "not yet"),
-    none("AIR Talkbox", "not yet"),
-    none(
-        "AIR Channel Strip",
-        "not as one effect: EQ, Compressor and Gate",
-    ),
+    n("AIR Stereo Width", "mpfree.fx.width", "", ""),
+    n("AIR Talkbox", "mpfree.fx.talkbox", "", ""),
+    n("AIR Channel Strip", "mpfree.fx.channel_strip", "", ""),
     n("AIR Compressor", COMP, "", ""),
     n("AIR Delay", DELAY, "", ""),
     n("AIR Diff Delay", CLOUD, "Echo chamber", ""),
@@ -215,8 +215,8 @@ pub static MPC_NAMES: &[MpcName] = &[
     n("Stutter", "mpfree.fx.perform", "", "the stutter pad"),
     n("Diode Clipper", DRIVE, "Hard clip", ""),
     n("AIR Diffuser Delay", CLOUD, "Echo chamber", ""),
-    none("Granulator", "not as an effect yet"),
-    none("Sample Delay", "not yet"),
+    n("Granulator", "mpfree.fx.granulator", "", ""),
+    n("Sample Delay", "mpfree.fx.sample_delay", "", ""),
     n("AIR Limiter", "mpfree.fx.limiter", "Safe peaks", ""),
     n("AIR Vocal Tuner", "mpfree.fx.pitch_correct", "Natural", ""),
     n("AIR Vocal Doubler", "mpfree.fx.pitch", "Wide doubler", ""),
@@ -289,7 +289,7 @@ mod tests {
     fn the_table_names_real_effects_and_presets() {
         assert_eq!(problems(), Vec::<String>::new());
         let (have, all) = covered();
-        assert!(have * 10 >= all * 8, "{have} of {all} covered");
+        assert_eq!(have, all, "every MPC effect has an MPFree effect");
     }
 
     #[test]

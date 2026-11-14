@@ -120,6 +120,17 @@ pub fn chain_push(ui: &mut Ui) -> bool {
         .is_some_and(|v| v.push_wheel())
 }
 
+/// A finger held on a picker tile past the hold time opens its presets
+/// while it is still down ([`ChainView::hold_tick`]); call it every frame
+/// while the chain editor shows. True when it did (draw again).
+pub fn chain_hold(ui: &mut Ui) -> bool {
+    if !ui.get::<ChainView>(CHAIN).is_some_and(|v| v.hold_due()) {
+        return false;
+    }
+    ui.get_mut::<ChainView>(CHAIN)
+        .is_some_and(|v| v.hold_tick())
+}
+
 /// The effect picker is open.
 pub fn chain_picking(ui: &Ui) -> bool {
     ui.get::<ChainView>(CHAIN)

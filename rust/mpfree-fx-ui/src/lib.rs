@@ -19,6 +19,9 @@
 //! - [`perform`]: the Perform FX page ([`PerformPanel`]): sixteen pads with
 //!   their lights, the XY pad with its trail and Hold, the selected pad's
 //!   settings, and the DJ knob on Q-Link 1.
+//! - [`xyfx`]: the XY FX page ([`XyFxPanel`]): the nine effects, the
+//!   Perform page's XY pad playing the one picked (a touch opens it, the
+//!   lift closes it unless Hold is on), and its tiles.
 //! - [`state`]: what a page shows ([`FxState`]), the effects by id
 //!   ([`make`]) and their presets.
 //! - [`lock`]: lock mode: while a step is held, turns lock parameters on
@@ -45,8 +48,10 @@ pub mod sample;
 pub mod state;
 pub mod view;
 pub mod visual;
+pub mod xyfx;
 
 pub use lock::Locks;
 pub use perform::{PerformAction, PerformPanel};
 pub use state::{make, preset_values, presets, FxState, Scratch};
 pub use view::{FxAction, FxPanel};
+pub use xyfx::XyFxPanel;

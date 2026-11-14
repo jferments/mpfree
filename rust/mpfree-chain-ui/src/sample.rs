@@ -953,6 +953,92 @@ mod tests {
     }
 
     #[test]
+    fn a_hold_opens_presets_with_the_finger_down_and_rows_act_on_the_lift() {
+        let mut song = Song::new();
+        let mut ui = picking(&mut song, Default::default());
+        open_section(&mut ui, Section::Category(mpfree_fx::Category::DelayReverb));
+        let r = ui.rect_of(crate::CHAIN).unwrap();
+        let t = tile_of(&ui, "mpfree.fx.plate").unwrap();
+        ui.touch(1, Touch::Down, t.x + 20, t.y + 20);
+        assert!(!crate::chain_hold(&mut ui), "not held long enough yet");
+        ui.get_mut::<ChainView>(crate::CHAIN)
+            .unwrap()
+            .age_press(0.6);
+        // Past the hold time the presets open while the finger is down.
+        assert!(crate::chain_hold(&mut ui));
+        assert_eq!(
+            ui.get::<ChainView>(crate::CHAIN).unwrap().picker().presets,
+            Some("mpfree.fx.plate")
+        );
+        assert!(!crate::chain_hold(&mut ui), "once per press");
+        // The finger now sits over a preset row: its lift adds nothing.
+        ui.touch(1, Touch::Up, t.x + 20, t.y + 20);
+        assert!(crate::take_chain_actions(&mut ui).is_empty());
+        assert!(ui.get::<ChainView>(crate::CHAIN).unwrap().state().picking);
+        // A preset row acts on the lift, and a slip off it adds nothing.
+        let pl = ui
+            .get::<ChainView>(crate::CHAIN)
+            .unwrap()
+            .layout(r)
+            .picker
+            .unwrap();
+        let row = pl.tiles[1];
+        ui.touch(2, Touch::Down, row.x + 10, row.y + 10);
+        assert!(
+            crate::take_chain_actions(&mut ui).is_empty(),
+            "not on the way down"
+        );
+        ui.touch(2, Touch::Up, row.x + 10, row.bottom() + 40);
+        assert!(crate::take_chain_actions(&mut ui).is_empty());
+        ui.touch(3, Touch::Down, row.x + 10, row.y + 10);
+        ui.touch(3, Touch::Up, row.x + 12, row.y + 12);
+        assert_eq!(
+            crate::take_chain_actions(&mut ui),
+            [ChainAction::AddPreset {
+                id: "mpfree.fx.plate",
+                preset: 0
+            }]
+        );
+        // The presets line is as tall as the star, and acts on the lift.
+        let mut ui = picking(&mut song, Default::default());
+        open_section(&mut ui, Section::Category(mpfree_fx::Category::DelayReverb));
+        let pl = ui
+            .get::<ChainView>(crate::CHAIN)
+            .unwrap()
+            .layout(r)
+            .picker
+            .unwrap();
+        let chip = pl.chips.iter().flatten().next().copied().unwrap();
+        assert_eq!(chip.h, 44);
+        ui.touch(4, Touch::Down, chip.x + 10, chip.y + 10);
+        assert_eq!(
+            ui.get::<ChainView>(crate::CHAIN).unwrap().picker().presets,
+            None
+        );
+        ui.touch(4, Touch::Up, chip.x + 10, chip.y + 10);
+        assert!(ui
+            .get::<ChainView>(crate::CHAIN)
+            .unwrap()
+            .picker()
+            .presets
+            .is_some());
+        // An effect with no presets waits for the lift, which adds it.
+        let mut ui = picking(&mut song, Default::default());
+        open_section(&mut ui, Section::Category(mpfree_fx::Category::Performance));
+        let t = tile_of(&ui, "mpfree.fx.perform").unwrap();
+        ui.touch(5, Touch::Down, t.x + 20, t.y + 20);
+        ui.get_mut::<ChainView>(crate::CHAIN)
+            .unwrap()
+            .age_press(0.6);
+        assert!(!crate::chain_hold(&mut ui));
+        ui.touch(5, Touch::Up, t.x + 20, t.y + 20);
+        assert_eq!(
+            crate::take_chain_actions(&mut ui),
+            [ChainAction::Add("mpfree.fx.perform")]
+        );
+    }
+
+    #[test]
     fn the_wheel_moves_through_tiles_and_shift_through_sections() {
         let mut song = Song::new();
         let mut ui = picking(&mut song, Default::default());
