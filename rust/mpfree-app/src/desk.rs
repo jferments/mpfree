@@ -199,6 +199,7 @@ impl Desk<'_> {
             | gui::FromUi::OpenProject(_)
             | gui::FromUi::OpenLoops(_)
             | gui::FromUi::OpenAudio(_)
+            | gui::FromUi::TrackInstrument(_)
             // The synth's and the mixer's turn histories are the loop's.
             | gui::FromUi::UndoHistory(_)
             | gui::FromUi::UndoOn { .. }) => return Some(a),

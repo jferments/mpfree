@@ -28,7 +28,7 @@ use mpfree_seq::mpfree_param::{OnTrack, RelAddr};
 use mpfree_seq::{Clip, Lock, Note, Project as Song, Quantise, Speed, Track};
 use mpfree_synth::params::{POLYPHONY, UNISON, VOICE_MODE};
 use mpfree_synth::wavetable::params::{self as wt, PRESETS as WT_PRESETS};
-use mpfree_synth::{Drums, Pluck, Poly, Wavetable, PRESETS};
+use mpfree_synth::{Drums, Keys, Pluck, Poly, Wavetable, PRESETS};
 use mpfree_track::{Instrument, Sum, TrackHost};
 use mpfree_transport::time::{Swing, PPQ};
 use mpfree_transport::{Block as TBlock, Command as T, Transport};
@@ -786,6 +786,23 @@ pub fn all(rate: u32) -> Vec<Case> {
         ("Bell", 16),
     ] {
         v.push(measured(|| pluck(name, rate, voices)));
+    }
+    // Keys: a tine and a reed preset, and the tremolo and drive on top.
+    for (name, voices) in [("Init", 8), ("Init", 16), ("Reed", 16), ("Dusty Keys", 16)] {
+        v.push(measured(|| {
+            let p = Keys::presets()
+                .iter()
+                .find(|p| p.name == name)
+                .unwrap_or_else(|| panic!("keys preset {name}"));
+            chords(
+                format!("Keys {name}, {voices} voices"),
+                rate,
+                Box::new(Keys::new(rate)),
+                p.values,
+                mpfree_synth::keys_params::POLYPHONY,
+                voices,
+            )
+        }));
     }
     // Wavetable: the first case also holds the factory tables (built once
     // per process, shared by every instance).
