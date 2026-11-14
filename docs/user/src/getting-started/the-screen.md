@@ -22,6 +22,7 @@ Every page in MPFree is laid out the same way, so once you know one, you know th
 | **Synth** | MPFree's synths and their sounds. |
 | **Looper** | Setting up and editing loops. |
 | **Sample** | Recording, chopping and shaping the sound on one pad. |
+| **Mix** | The mixer and every sound's effects (next build). See [Mixing and effects](../making-music/mixing-and-effects.md). |
 
 **The status chips** on the right show what is going on: the kit's name and pad bank, how much of the processor (**CPU**) and memory (**RAM**) is in use, whether Full Level is on, and anything that needs your attention. Two of them do something when tapped:
 
@@ -30,7 +31,7 @@ Every page in MPFree is laid out the same way, so once you know one, you know th
 
 Tap any other chip and the hint line says what it shows.
 
-The small **mixer icon** at the far right opens the mixer, and the **I/O icon** just left of it opens the mixer's I/O view, where the project's audio, MIDI, sync and CV are routed. While the tempo follows a clock from another device, a tempo chip such as **120.0 from MIDI In** shows it, with a green dot.
+The small **I/O icon** at the far right opens the mixer's I/O view, where the project's audio, MIDI, sync and CV are routed. While the tempo follows a clock from another device, a tempo chip such as **120.0 from MIDI In** shows it, with a green dot.
 
 ## The transport bar
 
@@ -56,7 +57,7 @@ Some things are not tabs. They open over the page you are on, and close the same
 
 - **Options:** press **MENU** for the current page's settings, such as the repeat rate or the tempo on the Play page.
 - **Prefs:** press **SHIFT + MENU** for MPFree's settings. See [Prefs](../reference/prefs.md).
-- **The mixer:** press **TRACK MIX**, or tap the mixer icon. The I/O icon beside it opens the mixer's [I/O view](../making-music/mixing-and-effects.md#the-io-view).
+- **The mixer's I/O view:** tap the I/O icon at the top right. See [the I/O view](../making-music/mixing-and-effects.md#the-io-view). (The mixer itself is the **Mix** tab from the next build; on the current test build it opens over the page with **TRACK MIX** or the sliders icon.)
 - **The Arp panel:** hold **NOTE REPEAT** and press **MENU**.
 - **The list of kits:** tap the kit chip in the top bar.
 
@@ -75,6 +76,7 @@ On the Play page, the Looper tab, the mixer and the FX chain editor, the data wh
 - **Tap a control** and an outline appears on it. **Turn the wheel** and the outline moves to the next control, left to right and top to bottom through that part of the screen, then on into the next part. On Play and the Looper tab you can also just turn the wheel: the outline starts on the first control.
 - **Push the wheel** to press the control the outline is on, as a tap would. On a throw, the push holds it on until you push again.
 - **On a value** (a fader, a pan, a send, a Q-Link card, the master level, an effect's knob), the push grabs it: the outline gets thicker and the wheel turns the value. Push again to let go, and the wheel moves the outline again. **–** and **+** step an outlined value without the push.
+- **In the chain editor**, push on the picked effect to pick it up: the wheel (or **–** and **+**) moves it up or down the chain, and a push puts it down.
 - Some values can't be turned with the wheel yet (the XY pad, the Looper tab's trims); the line at the bottom says to drag them.
 - On the mixer and the chain editor, the wheel keeps its old job (the selected strip's volume, the first knob) until you tap a control. Changing page, or tapping an empty spot, takes the outline away.
 - While the list of effects is open, the wheel moves through the effects and its push opens presets and then adds, as always (see [Adding an effect](../making-music/mixing-and-effects.md#adding-an-effect)).

@@ -73,7 +73,7 @@ pub const PADS: usize = 16;
 /// The line input's strip.
 pub const LINE: StripId = StripId::Input(0);
 /// Insert slots each strip has room for.
-pub const SLOTS: usize = 4;
+pub const SLOTS: usize = 8;
 /// How often the panel gets a new state (meters) while it shows.
 pub const STATE_EVERY: Duration = Duration::from_millis(40);
 /// The Play page's inserts: the DJ filters' slot on the Drums and Loop
@@ -189,6 +189,8 @@ pub struct MixHost {
     overs: u64,
     /// The panel's view while it shows, and the strip selected on it.
     shown: Option<MixView>,
+    /// The view shown last, for the Mix tab.
+    last: MixView,
     selected: Option<StripId>,
     state_at: Option<Instant>,
     /// Pads muted by their speakers or the panel, and by Drop drums.
@@ -302,6 +304,7 @@ impl MixHost {
             line_open: false,
             overs: 0,
             shown: None,
+            last: MixView::Tracks,
             selected: None,
             state_at: None,
             pad_mutes: 0,
@@ -1016,7 +1019,16 @@ impl MixHost {
     /// The mixer panel opened on `view`, or closed (`None`).
     pub fn show(&mut self, view: Option<MixView>) {
         self.shown = view;
+        if let Some(v) = view {
+            self.last = v;
+        }
         self.state_at = None;
+    }
+
+    /// The view the panel showed last (Track Mix at first), where the Mix
+    /// tab opens it again.
+    pub fn last(&self) -> MixView {
+        self.last
     }
 
     /// The mixer view the panel shows, if it is open.
@@ -1063,8 +1075,14 @@ impl MixHost {
                 self.show(Some(v));
                 None
             }
-            // The insert pages come with the FX pages.
-            MixAction::OpenInsert { .. } | MixAction::AddInsert { .. } => None,
+            // The insert pages come with the FX pages; the look is the
+            // screen's.
+            MixAction::OpenInsert { .. }
+            | MixAction::AddInsert { .. }
+            | MixAction::PickInsert { .. }
+            | MixAction::MoveInsert { .. }
+            | MixAction::Unpick
+            | MixAction::Look(_) => None,
             // Freeze, Thaw and Print: the strip menu stays shut until the
             // app sets `MixState::takes` and acts on them here.
             MixAction::Freeze(_)
@@ -1076,6 +1094,16 @@ impl MixHost {
 
     /// The panel's next state, while it shows and [`STATE_EVERY`] has
     /// passed (at once after a change).
+    /// The tracks' strips as the mixer's Tracks view shows them: the
+    /// engines' tracks, then each track's own instrument's while in use.
+    pub fn track_strips(&self) -> Vec<StripId> {
+        let used = self.instruments.in_use();
+        (0..self.mixer.tracks())
+            .filter(|&t| t < TRACKS || used & (1 << (t - TRACKS)) != 0)
+            .map(StripId::Track)
+            .collect()
+    }
+
     pub fn poll_state(&mut self, now: Instant) -> Option<MixState> {
         let view = self.shown?;
         if self

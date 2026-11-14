@@ -51,7 +51,7 @@ pub mod view;
 pub use macros::{MacroAction, MacrosView};
 pub use state::{
     macro_color, picks, picture, strip_id, strip_of, ChainState, MacrosState, ParamView, Pick,
-    SlotView, TargetView,
+    SlotView, StripList, StripPick, TargetView, STRIP_GROUPS,
 };
 pub use view::{ChainAction, ChainView};
 
@@ -72,7 +72,10 @@ pub const MACROS_LAYOUT: &str = "col(header:60, row(macros:*, qlinks:168):*, hin
 /// here stays on the chain editor.
 pub const QLINK_PAGE: &str = "chain";
 /// The hint lines: what the buttons do on the page.
-pub const CHAIN_HINT: &str = "Q-Links: the first 4 knobs shown  ·  SHIFT + Q-Link: fine  ·  touch a knob, then a macro number, Learn or + LFO";
+pub const CHAIN_HINT: &str = "Q-Links: the first 4 knobs shown  ·  SHIFT + Q-Link: fine  ·  drag an effect: move it  ·  touch a knob, then a macro number, Learn or + LFO  ·  the strip button: another strip  ·  ‹ back";
+/// The hint line while the strip list is open.
+pub const STRIPS_HINT: &str =
+    "Tap a strip: its chain  ·  Tracks, Pads and the rest: those strips  ·  Back: keep this one";
 /// The hint while the effect picker is open.
 pub const PICKER_HINT: &str = "Wheel: effect  ·  SHIFT + wheel: category  ·  push: its presets, then add  ·  hold a tile: presets  ·  star: favourite";
 pub const MACROS_HINT: &str = "Q-Links: the 4 macros shown  ·  SHIFT + Q-Link: fine  ·  tap a target to edit its range and curve  ·  Back closes";
@@ -135,6 +138,16 @@ pub fn chain_hold(ui: &mut Ui) -> bool {
 pub fn chain_picking(ui: &Ui) -> bool {
     ui.get::<ChainView>(CHAIN)
         .is_some_and(|v| v.state().picking)
+}
+
+/// The chain editor's hint line: [`PICKER_HINT`] while the effect picker
+/// is open, [`STRIPS_HINT`] while the strip list is, else [`CHAIN_HINT`].
+pub fn chain_hint(ui: &Ui) -> &'static str {
+    match ui.get::<ChainView>(CHAIN) {
+        Some(v) if v.state().picking => PICKER_HINT,
+        Some(v) if v.state().list.is_some() => STRIPS_HINT,
+        _ => CHAIN_HINT,
+    }
 }
 
 pub fn take_chain_actions(ui: &mut Ui) -> Vec<ChainAction> {

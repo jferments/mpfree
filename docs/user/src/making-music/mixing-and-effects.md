@@ -10,7 +10,9 @@ Every sound in MPFree, from the pads, the synth, the loop and the line input, me
 
 ## Opening the mixer
 
-Press **TRACK MIX**, or tap the small mixer icon at the top right of the screen. The mixer opens over the page you are on, so the music and the page carry on underneath. Press TRACK MIX again to close it. **SHIFT + TRACK MIX** opens it straight on the pads.
+Tap the **Mix** tab, or press **TRACK MIX**. TRACK MIX opens it on the tracks' faders, and pressed again it takes you back to the page you were on; **SHIFT + TRACK MIX** opens it straight on the pads. The Mix tab opens the mixer as you left it. The music carries on whatever page you are on. (Next build. On the current test build the mixer opens over the page with TRACK MIX or the small sliders icon at the top right, and closes the same way.)
+
+The tab has two looks of the same strips, switched with **Faders | Effects** at the top right: **Faders**, the strips side by side with their levels, and **Effects**, every strip's chain of effects at once (see [Every chain at once: Effects](#every-chain-at-once-effects)). The tab opens on the look you used last; TRACK MIX always opens it on Faders.
 
 {{shot: mixer | The mixer, shown here with example tracks from the preview: inserts at the top of each strip, sends A to D, pan, the fader and meter, mute and solo, and where the strip goes. The master is on the right, ending in Master safety.}}
 
@@ -26,13 +28,13 @@ Along the top are the mixer's five views:
 
 {{shot: mixer-instruments | The Tracks view with tracks 1 and 2 playing their own instruments (Poly and FM): their strips come after Drums, Synth, Loop and Audio.}}
 
-The **< >** buttons page through the strips when there are more than fit. The chip beside them shows how much of the MPC's processor the mixer and its effects are using.
+The **< >** buttons page through the strips when there are more than fit.
 
 ## A channel strip
 
 From top to bottom, each strip has:
 
-- **Inserts**: up to four effects that the sound goes through, in order.
+- **Inserts**: up to eight effects that the sound goes through, in order.
 - **Sends A to D**: how much of the sound goes to each send return. A return holds a shared effect, so several strips can use one reverb or delay.
 - **Pan**: where the sound sits between left and right.
 - **The fader** (from silent up to +6 dB) and the **meter** beside it.
@@ -41,11 +43,25 @@ From top to bottom, each strip has:
 
 Drag a fader, pan or send with your finger, and tap M, S or the output to change them. With the mixer open, **UNDO** takes back the last change to a strip (one drag of a fader is one UNDO) and **SHIFT + UNDO** puts it back.
 
+## Every chain at once: Effects
+
+{{shot: mixer-effects | The Effects look: each track's effects as a row of eight slots, in the order the sound goes through them, + FX in the first free slot, and the master's row at the bottom.}}
+
+On **Effects** each strip of the view is a row: its name and how many of its eight slots are used, then its effects from left to right, in the order the sound goes through them. The master's row is always at the bottom.
+
+- **+ FX** sits in each strip's first free slot. Tap it to pick an effect; it goes in that slot and opens in the chain editor.
+- **Tap an effect** to pick it (it is outlined): the four Q-Links and the data wheel then turn its first four knobs, as in the chain editor, while the strips stay in view. Tap it again to open it in the chain editor.
+- **Drag an effect along its row** to move it earlier or later in the chain.
+- A green dot means an effect is on; a blue one that it is keyed from another strip (**SC from** says which); a grey one that it is bypassed (**Off**).
+- **Tap a strip's name** to select it, as on Faders. Picking a strip or switching back to Faders gives the Q-Links back to the selected strip's level, pan and sends.
+
+Tracks, Pads, Inputs and Submixes work on Effects as on Faders, and **< >** page through the rows.
+
 ## The I/O view
 
 **I/O** shows the project's routing in one place instead of strip by strip. The master stays on the right; down the left is a list of sections, and the section you pick fills the rest.
 
-To open it, tap the small **I/O icon** (an arrow in over an arrow out) just left of the mixer icon in the top bar, or tap **I/O** among the mixer's views. The I/O icon lights while the view shows; tap it again, press **TRACK MIX** or pick a tab to close the mixer. While the tempo follows a clock from another device, the top bar shows a tempo chip such as **120.0 from MIDI In** with a green dot; tapping it opens this view too, at **Sync** once that section is there.
+To open it, tap the small **I/O icon** (an arrow in over an arrow out) at the right end of the top bar, or tap **I/O** among the mixer's views. The I/O icon lights while the view shows; tap it again, press **TRACK MIX** or pick a tab to close the mixer. While the tempo follows a clock from another device, the top bar shows a tempo chip such as **120.0 from MIDI In** with a green dot; tapping it opens this view too, at **Sync** once that section is there.
 
 - **Audio** has a row for every strip that has an output: the inputs, the tracks, the pad channels and the submixes, each with where it goes. An input's row also has its **Source** and **Monitor**.
 - Tap a row to select that strip (the Q-Links follow it). Tap its output to open the same picker as on the strip. Tap an input's Source or Monitor to step through the choices.
@@ -62,7 +78,7 @@ A setting for a device that isn't plugged in, or for a part of MPFree that doesn
 
 ## Using the Q-Links in the mixer
 
-Tap a strip's name to select it. The four Q-Links then turn its **Volume**, **Pan**, **Send A** and **Send B**. Until you tap the strips, the data wheel turns the selected strip's volume too; after a tap it moves the outline from control to control, and a push on a fader, a pan or a send lets the wheel turn it (see [The wheel's outline](../getting-started/the-screen.md#the-wheels-outline)). The I/O view keeps its wheel for its list.
+Tap a strip's name to select it. The four Q-Links then turn its **Volume**, **Pan**, **Send A** and **Send B** (on Effects, until you pick an effect). Until you tap the strips, the data wheel turns the selected strip's volume too; after a tap it moves the outline from control to control, and a push on a fader, a pan or a send lets the wheel turn it (see [The wheel's outline](../getting-started/the-screen.md#the-wheels-outline)). The I/O view keeps its wheel for its list.
 
 ## The master and Master safety
 
@@ -140,13 +156,15 @@ Some plugins keep files of their own: Surge XT its user folder, Dexed its cartri
 
 ## The chain editor
 
-Tap an effect in a strip's insert row to open the **chain editor** on it, in the mixer's place. Tap the strip's **+ FX** button to add an effect, with the list of effects already open (see [Adding an effect](#adding-an-effect)); a new effect goes at the end of the chain. **+ FX** fills all of the strip's empty insert rows, so on a strip with no effects it is a big button under the strip's name. In the chain editor, **+ Add effect** opens the list again and **Cancel** closes it; you can also reorder (**Up**, **Down**), bypass (the power button on each row) and **Remove** effects, and turn the selected effect's knobs. If the chain is full or the mixer is busy, the line at the bottom of the screen says so for a few seconds.
+Tap an effect in a strip's insert row to open the **chain editor** on it, in the mixer's place. Tap the strip's **+ FX** button to add an effect, with the list of effects already open (see [Adding an effect](#adding-an-effect)); a new effect goes at the end of the chain. **+ FX** fills all of the strip's empty insert rows, so on a strip with no effects it is a big button under the strip's name. In the chain editor, **+ Add effect** opens the list again and **Cancel** closes it; you can also reorder (**Up**, **Down**), bypass (the power button on each row) and **Remove** effects, and turn the selected effect's knobs. To move an effect further, **drag it** up or down the chain: once your finger moves it lifts and follows you, a line shows where it will land, and it moves there when you lift. Lift it where it started to leave it where it was. With the wheel, push on the picked effect to pick it up, turn to move it, and push again to put it down. If the chain is full or the mixer is busy, the line at the bottom of the screen says so for a few seconds.
 
-The Q-Links turn the selected effect's first four knobs, and the data wheel works as Q-Link 1 until you tap a control: then it moves the outline, and a push on a knob lets the wheel turn it (see [The wheel's outline](../getting-started/the-screen.md#the-wheels-outline)). **‹ Mixer** goes back to the mixer as you left it.
+The Q-Links turn the selected effect's first four knobs, and the data wheel works as Q-Link 1 until you tap a control: then it moves the outline, and a push on a knob lets the wheel turn it (see [The wheel's outline](../getting-started/the-screen.md#the-wheels-outline)). **‹** at the top left goes back to where you opened the editor: the Mix tab as you left it, or the Pads tab.
+
+Beside **‹**, the **strip button** names the strip whose chain this is (with its colour, and "Track 7" or "Pad 3" beside the name). Tap it for the **strip list**: the strips by group (**Tracks**, **Pads**, **Inputs**, **Returns**, **Submixes**, **Master**), with **< >** to page through a long group. Tap a strip to open its chain instead, on its first effect, or with the list of effects open if it has none. **Back** closes the list and keeps the strip you were on.
 
 Above the knobs, a drawing shows what the selected effect does, and changes as you turn: an EQ's curve, a delay's repeats, the Ducker's pump over two beats (or after a kick), the Transient shaper on a drum hit (dashed going in, solid coming out), where the Pitch shifter puts the sound, with the steps its feedback climbs, Pitch correct's steps onto the key's notes (with a dot on the note you are singing), how far each Harmonizer voice moves on each note of the key, and the Tuner's needle.
 
-The Sample tab's **FX** opens the chain editor too, on the pad you are editing (its own channel, then the Drums track), and Back goes back to the Sample tab (see [Sampling](sampling.md#fx-effects-on-one-pad-or-on-the-whole-kit)).
+The Pads tab's **Effects** row opens the chain editor on the pad picked, in the Mix tab, and **‹** comes back to the Pads tab (see [Sampling](sampling.md#the-pads-tab-sounds-onto-pads)). The Sample tab's **FX** opens the chain editor too, on the pad you are editing (its own channel, then the Drums track), and Back goes back to the Sample tab (see [Sampling](sampling.md#fx-effects-on-one-pad-or-on-the-whole-kit)).
 
 To give a knob a control of its own, touch it and tap **Learn to a Q-Link**, then turn a Q-Link, or move a knob or fader on your keyboard (see [MIDI Learn](midi-and-cv.md#midi-learn)).
 
@@ -154,7 +172,7 @@ To give a knob a control of its own, touch it and tap **Learn to a Q-Link**, the
 
 ## Adding an effect
 
-**+ FX** on a strip, or **+ Add effect** in the chain editor, opens the list of effects over the chain editor.
+**+ FX** on a strip, or **+ Add effect** in the chain editor, opens the list of effects over the chain editor. The line at its top says where the effect will go: which strip, and which slot of its chain.
 
 - Down the left are **Favourites**, **Recent** (the last 12 effects you added), then the groups (Dynamics, EQ and filter, Drive and colour, Modulation, Delay and reverb, Pitch and vocal, Performance, Plugins, and Utility), each with how many effects it has. Tap one to see its effects on the right. The list opens where you left it.
 - **Tap an effect** to add it with its usual settings.

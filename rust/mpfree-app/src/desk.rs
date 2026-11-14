@@ -80,8 +80,17 @@ impl Desk<'_> {
             gui::FromUi::Mixer(mpfree_mixer_ui::MixAction::AddInsert { strip }) => {
                 fx.extend(panels.open_insert(app, mix, strip, None))
             }
+            // An effect picked on the Effects look: its knobs on the Q-Links.
+            gui::FromUi::Mixer(mpfree_mixer_ui::MixAction::PickInsert { strip, slot }) => {
+                panels.pick_insert(strip, slot)
+            }
+            gui::FromUi::Mixer(mpfree_mixer_ui::MixAction::MoveInsert { strip, from, to }) => {
+                fx.extend(panels.move_insert(mix, strip, from, to))
+            }
+            gui::FromUi::Mixer(mpfree_mixer_ui::MixAction::Unpick) => panels.unpick(),
             // The Sample tab's FX: the chain editor on the pad's channel.
             gui::FromUi::SampleFx { pad } => fx.extend(panels.open_pad(app, pad, mixing::DRUMS)),
+            gui::FromUi::PadEffects { pad } => fx.extend(panels.open_pad_mix(app, mix, pad)),
             gui::FromUi::Chain(a) => {
                 let recording = time.info().state == mpfree_transport::State::Recording;
                 fx.extend(panels.chain(app, mix, &a, recording, &mut |m| {
@@ -109,7 +118,6 @@ impl Desk<'_> {
                     out.show(gui::ToUi::Level { db: **level_db });
                 }
             }
-            gui::FromUi::MixerIcon => fx.extend(app.toggle_mixer(false)),
             gui::FromUi::IoIcon => fx.extend(app.toggle_io(crate::io_shown(mix))),
             gui::FromUi::OpenIo => fx.extend(app.open_io()),
             // The Play page: filters, sends, faders, speakers, throws, XY.
@@ -234,6 +242,8 @@ impl Desk<'_> {
                 out.show(gui::ToUi::Nav(app::Nav::Step(d)))
             }
             app::Effect::Mixer(v) => mix.show(v),
+            app::Effect::MixerLast => mix.show(Some(mix.last())),
+            app::Effect::MixerFaders => out.show(gui::ToUi::MixerFaders),
             // The wheel on the mixer: Q-Link 1 on a strips view, the
             // section's selection on the I/O view.
             app::Effect::MixerWheel(d) => out.show(if crate::io_shown(mix) {
