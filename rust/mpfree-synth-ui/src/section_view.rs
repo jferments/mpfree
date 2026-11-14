@@ -644,6 +644,10 @@ fn dial_lines(s: &SectionBox, dials: &[usize], w: i32, fit: Fit) -> (Vec<Line>, 
 /// A stepper's cell is wide enough for a Q-Link badge beside its name.
 const STEPPER_W: i32 = 132;
 
+/// Room for a meter's "live" tag (12 px Sans) at the right of its name,
+/// when the name sits beside the value rather than over it.
+const LIVE_W: i32 = 28;
+
 /// A knob's diameter beside its name, by tier.
 fn inline_d(tier: Tier) -> f32 {
     match tier {
@@ -666,7 +670,10 @@ fn dial_cell(c: &Control, fit: Fit) -> (i32, i32) {
             (label_w + 64).max(value_w).clamp(STEPPER_W, 180),
             LABEL_H + 4 + vh + 6 + 40,
         ),
-        (Kind::Meter, Fit::Inline) => (text_w.clamp(64, 160), LABEL_H + 2 + vh),
+        (Kind::Meter, Fit::Inline) => (
+            (label_w + 6 + LIVE_W).max(value_w).clamp(64, 200),
+            LABEL_H + 2 + vh,
+        ),
         (Kind::Meter, _) => (text_w.clamp(96, 160), LABEL_H + 4 + vh + 18),
         (_, Fit::Inline) => {
             let d = inline_d(c.tier);
@@ -1433,7 +1440,19 @@ fn paint_control(
             }
         }
         Kind::Meter => {
-            cx.text(FontId::Sans, LABEL_PX, g.label, align, label_c, &c.label);
+            // Inline, "live" sits at the right of the name's line: the
+            // name stops short of it.
+            let label = if g.inline {
+                Rect::new(
+                    g.label.x,
+                    g.label.y,
+                    (g.label.w - LIVE_W - 6).max(0),
+                    g.label.h,
+                )
+            } else {
+                g.label
+            };
+            cx.text(FontId::Sans, LABEL_PX, label, align, label_c, &c.label);
             paint_value(
                 cx,
                 t,
@@ -1759,6 +1778,34 @@ mod tests {
 
     fn centre_of(r: Rect) -> (i32, i32) {
         (r.x + r.w / 2, r.y + r.h / 2)
+    }
+
+    #[test]
+    fn an_inline_meter_has_room_for_its_name_and_the_live_tag() {
+        // The meters' names an effect page shows, and longer.
+        let mut fonts = mpfree_ui::Fonts::embedded();
+        let live = fonts.measure(FontId::Sans, 12.0, "live");
+        for label in [
+            "Reduction",
+            "Gain reduction",
+            "Level change",
+            "Correction",
+            "Gate gain",
+        ] {
+            for tier in [Tier::Trim, Tier::Std, Tier::Main] {
+                let c = Control {
+                    label: label.into(),
+                    value: "-12.5".into(),
+                    unit: "dB".into(),
+                    kind: Kind::Meter,
+                    ..knob_ctl(0, tier)
+                };
+                let (w, _) = dial_cell(&c, Fit::Inline);
+                let name = fonts.measure(FontId::Sans, LABEL_PX, label);
+                assert!(name + 6 + live <= w, "{label}: {name} + 6 + {live} > {w}");
+                assert!(name <= w - LIVE_W - 6, "{label}: the name runs under live");
+            }
+        }
     }
 
     #[test]
