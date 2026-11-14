@@ -94,9 +94,9 @@ static PLATE_PARAMS: [ParamInfo; 9] = [
     param(3, "Damping", "Plate", 0.0, 100.0, 35.0, Percent, Linear),
     param(4, "Tone", "Plate", 1000.0, 20_000.0, 12_000.0, Hz, Log),
     param(5, "Mod", "Plate", 0.0, 100.0, 40.0, Percent, Linear),
-    param(6, "Low cut", "Plate", 20.0, 1000.0, 80.0, Hz, Log),
-    param(7, "Width", "Plate", 0.0, 100.0, 100.0, Percent, Linear),
-    param(8, "Mix", "Plate", 0.0, 100.0, 25.0, Percent, Linear),
+    param(6, "Low cut", "Output", 20.0, 1000.0, 80.0, Hz, Log),
+    param(7, "Width", "Output", 0.0, 100.0, 100.0, Percent, Linear),
+    param(8, "Mix", "Output", 0.0, 100.0, 25.0, Percent, Linear),
 ];
 
 /// Plate factory presets.
@@ -463,9 +463,9 @@ static ROOM_PARAMS: [ParamInfo; 10] = [
     param(4, "Early", "Room", 0.0, 100.0, 60.0, Percent, Linear),
     param(5, "Mod", "Room", 0.0, 100.0, 25.0, Percent, Linear),
     param(6, "Gate", "Room", 0.0, 600.0, 0.0, Ms, Linear),
-    param(7, "Low cut", "Room", 20.0, 1000.0, 60.0, Hz, Log),
-    param(8, "Width", "Room", 0.0, 100.0, 100.0, Percent, Linear),
-    param(9, "Mix", "Room", 0.0, 100.0, 25.0, Percent, Linear),
+    param(7, "Low cut", "Output", 20.0, 1000.0, 60.0, Hz, Log),
+    param(8, "Width", "Output", 0.0, 100.0, 100.0, Percent, Linear),
+    param(9, "Mix", "Output", 0.0, 100.0, 25.0, Percent, Linear),
 ];
 
 /// Room factory presets.
