@@ -514,9 +514,11 @@ pub(crate) const NONE: Unit = Unit::None;
 /// `apply(id, value)` (clamped already), `begin(&Ctx)` once per block,
 /// `run(&Ctx, from, l, r)` per piece between events (`from` is the
 /// piece's first frame in the block, for reading the sidechain), `setup(rate)`, `clear()`,
-/// `tail()` and `lat()`.
+/// `tail()` and `lat()`. A fourth argument names the inherent method that
+/// gives [`mpfree_node::Node::rest_frames`], for an effect that has been
+/// checked to sleep on silence (`chain.rs`); without it, never.
 macro_rules! node_impl {
-    ($t:ty, $info:expr, $params:expr) => {
+    ($t:ty, $info:expr, $params:expr $(, $rest:ident)?) => {
         impl mpfree_node::Node for $t {
             fn info(&self) -> &'static mpfree_node::NodeInfo {
                 &$info
@@ -548,6 +550,11 @@ macro_rules! node_impl {
             fn latency(&self) -> u32 {
                 self.lat()
             }
+            $(
+                fn rest_frames(&self) -> u32 {
+                    self.$rest()
+                }
+            )?
             fn process(
                 &mut self,
                 ctx: &mpfree_node::Ctx,

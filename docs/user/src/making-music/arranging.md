@@ -1,7 +1,7 @@
 <!--
 status: changing
 covers: rust/mpfree-seq/src/scenes.rs rust/mpfree-seq/src/arrange.rs rust/mpfree-perform rust/mpfree-time-ui/src/song.rs rust/mpfree-time-ui/src/widgets.rs
-checked: 2026-11-13 f8cc558
+checked: 2026-11-14 b76c3c7
 -->
 
 # Arranging a song
@@ -49,48 +49,7 @@ A block in the song is linked to its clip, so when you edit the clip, every bloc
 
 ### Audio in the song
 
-Audio you record from the line input goes on **audio tracks**, which have their own lanes under the clip lanes, on the same timeline. A lane shows once its track is armed or has audio on it. Audio tracks play in song mode only: with song mode off they stay silent, though an armed track still lets you hear its input.
-
-{{shot: arrange-song-audio | The Song view with two audio lanes: a vocal recorded twice, its newer part picked, and a guitar armed.}}
-
-To record onto an audio track:
-
-1. Turn on **Prefs > Line input** (SHIFT + MENU). The input stays off until you turn it on.
-2. On Arrange, open the Song view and turn song mode on.
-3. Tap **+ Audio** at the bottom of the lanes to add a track, then tap its **arm dot** so it turns red.
-4. Press **REC**, then **PLAY**, and play. Press **STOP** when you're done. The take shows as a region with its waveform.
-
-- Each recording is a **region**: a block in the track's colour with its waveform. When an older take plays, the block says which one ("take 1"). A fade shows as a slope.
-- While a track records, a red block grows from where it started.
-- On the left of each lane: the **arm dot** (red while armed: tap it to arm or disarm), the track's name, its input (**L** by default: the MPC One's line input records on the left jack) and a thin level bar along the bottom. The bar shows what the track plays, and while it is armed, the input it records, so you can check your level before you press REC. It turns red near full scale.
-- **+ Audio** at the bottom adds the next audio track, up to 8.
-- Tap a track's name (or its input) to open its **track panel** over the lanes. Tap the name again, or **Close**, to shut it.
-  - **Arm**, **Mute** and **Solo**. Solo works among the audio tracks: a soloed track silences the other audio tracks, not the drums or the synth.
-  - **Input**: what the track records from. **L** (the left jack, the default), **R**, **L+R** (both jacks mixed into one) or **ST** (stereo). The input can't change while the track records.
-  - **Monitor**: when you hear the input through the track. **Auto** (the default) plays it while the track is armed, except during playback. **In** always plays it, armed or not. **Off** never does.
-  - **Level** and **Pan**, with a step either way. Q1 and Q2 turn them too while the panel is open, and Q3 and Q4 turn a region's gain and fades once you pick one of the track's regions.
-  - **Takes** opens the track's take lanes (below).
-
-{{shot: arrange-song-panel | The guitar's track panel: armed, soloed and set to stereo, with its level and pan on the Q-Links.}}
-
-- Tap a region to pick it. The buttons along the bottom become **Split**, **Erase**, **Fades**, **Gain**, **Takes** and **Undo** for that region. Tap empty space to go back to the song's own buttons.
-  - **Split** cuts the region at the playhead, so put the playhead inside it first.
-  - **Erase** takes the region out. **Undo** brings it back, and **SHIFT + Undo** redoes what Undo took back.
-  - **Drag** a region sideways to move it. It snaps to sixteenth notes; hold SHIFT to move it freely. It stays picked where it lands, and **Undo** puts it back.
-  - While a region is picked, the four Q-Links on the right turn the track's **Level** (Q1) and **Pan** (Q2), and the region's **Gain** (Q3) and **Fades** (Q4, the fade in and the fade out together). Hold SHIFT for fine steps. **Gain** and **Fades** in the bottom row point you to those knobs.
-- **Takes** (in the track panel, or in the bottom row with a region picked) opens the track's **take lanes**: a thin lane for each recording under the track's lane, newest first. Each take lane shows that take's waveform, brighter where the track plays it now. Tap **Takes** again to close them.
-  - **Swipe** across a take lane to play that stretch of the take on the track, in place of what was there. The swipe snaps to sixteenth notes; hold SHIFT for a free swipe.
-  - **Tap** a take lane to play that take everywhere it has audio.
-  - This is called comping: record a part a few times, then keep the best bits of each. **Undo** takes each swipe back.
-
-{{shot: arrange-song-takes | The vocal's take lanes: take 2 plays over bars 5 to 8 and take 1 everywhere else.}}
-
-- When there are more lanes than fit, drag up or down on the names to scroll them.
-- All the audio tracks play through one **Audio** strip in the mixer (TRACK MIX).
-- Audio tracks make up for the line input's delay with **Line input latency** in [Prefs](../reference/prefs.md), so a take lines up with the beat you played it against. It's the same setting as the Looper's **Latency to make up for** (MENU on the Looper tab): change either and both follow.
-- The audio tracks share one minute of stereo memory; **Audio track memory** in [Prefs](../reference/prefs.md) sets 30 seconds to 10 minutes, from the next start. The Song view's legend says how much is free ("Audio 0:42 of 1:00 free"). A recording that runs out of memory stops there and keeps what it got.
-
-- The audio tracks are saved with the project (**SHIFT + BROWSE**): every take, the regions you comped from them, and each track's input, monitor, level, pan, mute and solo. If a track is recording when you save, the save waits until it stops. Opening a project ends any recording and replaces the audio tracks with the project's; New project empties them.
+Audio you record from the INPUTS goes on **audio tracks**, with lanes of their own under the clip lanes, on the same timeline. They play whenever the song plays. Recording them, editing their regions and picking the best parts of several takes is in [Recording audio tracks](audio-tracks.md).
 
 ## Recording a performance into the song
 

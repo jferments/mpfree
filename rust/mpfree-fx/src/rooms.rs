@@ -398,12 +398,24 @@ impl Plate {
     fn tail(&self) -> u32 {
         ((self.v[plate::DECAY as usize] * 0.0012 + 0.3) * self.rate as f32) as u32
     }
+    fn rest(&self) -> u32 {
+        // Its modulation keeps time across silence (reset, the wobble
+        // would start again elsewhere); without it, what it holds is its
+        // tail, here to 100 dB down (Decay is the time to fall 60).
+        if self.v[plate::MOD as usize] > 0.0 || self.modd.value > 0.0 {
+            return u32::MAX;
+        }
+        let secs = self.v[plate::DECAY as usize] * 0.001 * 100.0 / 60.0
+            + self.v[plate::PREDELAY as usize] * 0.001
+            + 0.3;
+        (secs * self.rate as f32) as u32
+    }
     fn lat(&self) -> u32 {
         0
     }
 }
 
-node_impl!(Plate, PLATE_INFO, PLATE_PARAMS);
+node_impl!(Plate, PLATE_INFO, PLATE_PARAMS, rest);
 
 // ---------------------------------------------------------------- room
 
@@ -807,12 +819,27 @@ impl Room {
     fn tail(&self) -> u32 {
         ((self.v[room::DECAY as usize] * 0.0012 + 0.2) * self.rate as f32) as u32
     }
+    fn rest(&self) -> u32 {
+        // Its modulation keeps time across silence, and its gate shuts
+        // where a reset would open it; without either, what it holds is
+        // its tail, here to 100 dB down (Decay is the time to fall 60).
+        if self.v[room::MOD as usize] > 0.0
+            || self.modd.value > 0.0
+            || self.v[room::GATE as usize] > 0.0
+        {
+            return u32::MAX;
+        }
+        let secs = self.v[room::DECAY as usize] * 0.001 * 100.0 / 60.0
+            + self.v[room::PREDELAY as usize] * 0.001
+            + 0.2;
+        (secs * self.rate as f32) as u32
+    }
     fn lat(&self) -> u32 {
         0
     }
 }
 
-node_impl!(Room, ROOM_INFO, ROOM_PARAMS);
+node_impl!(Room, ROOM_INFO, ROOM_PARAMS, rest);
 
 // ---------------------------------------------------------------- spring
 
@@ -1057,9 +1084,15 @@ impl Spring {
     fn tail(&self) -> u32 {
         ((self.v[spring::DECAY as usize] * 0.0012 + 0.2) * self.rate as f32) as u32
     }
+    fn rest(&self) -> u32 {
+        // What it holds is its tail, here to 100 dB down (Decay is the
+        // time to fall 60).
+        let secs = self.v[spring::DECAY as usize] * 0.001 * 100.0 / 60.0 + 0.2;
+        (secs * self.rate as f32) as u32
+    }
     fn lat(&self) -> u32 {
         0
     }
 }
 
-node_impl!(Spring, SPRING_INFO, SPRING_PARAMS);
+node_impl!(Spring, SPRING_INFO, SPRING_PARAMS, rest);

@@ -1,7 +1,7 @@
 <!--
 status: changing
 covers: rust/mpfree-arp rust/mpfree-arp-ui rust/mpfree-scale rust/mpfree-app/src/app/arp.rs
-checked: 2026-11-12 ae9c39c
+checked: 2026-11-14 b76c3c7
 -->
 
 # Note Repeat, Latch and the arpeggiator
@@ -43,7 +43,7 @@ What a new pad press does while Latch is on is a setting in [Prefs](../reference
 
 Latched pads stay lit on the MPC, and the top bar says so.
 
-For a sound that should simply keep playing after you let go (a loop, a drone, a grain cloud) without repeating, give the pad its own **Latch** in the Sample tab instead: see [Pads that stop, play or hold others](sampling.md#pads-that-stop-play-or-hold-others).
+For a sound that should simply keep playing after you let go (a loop, a drone, a grain cloud) without repeating, give the pad its own **Latch** in the Sample tab instead: see [Pads that stop, play or hold others](shaping-a-pad.md#pads-that-stop-play-or-hold-others).
 
 > [!TIP]
 > Latch a hi-hat at 1/16, then play the kick and snare over it by hand. With the pattern recording, the latched hats record too.

@@ -10,6 +10,7 @@ use mpfree_synth::params::Preset;
 use mpfree_synth::wavetable::params as wtp;
 use mpfree_synth::Wavetable;
 use mpfree_synth::{Analog, Drawbar, Drums, Fm, Keys, Pluck, Poly, Squelch};
+use mpfree_ui::qlink::QLinkColumn;
 use mpfree_ui::widgets::{Chip, Header, Label};
 use mpfree_ui::{Align, Color, Fonts, Theme, Tone, Ui};
 
@@ -35,7 +36,17 @@ pub fn app_ui(fonts: Fonts, hint: &str) -> Ui {
     ];
     ui.add("header", header);
     ui.add("hint", Label::new(hint, Tone::Dim, Align::Center));
+    ui.add(crate::view::QLINK_COLUMN, QLinkColumn::new());
     ui
+}
+
+/// Fills the Q-Link column with what the panel's Q-Links turn, as the app
+/// does.
+pub fn fill_qlinks(ui: &mut Ui, panel: &SynthPanel) {
+    if let Some(q) = ui.get_mut::<QLinkColumn>(crate::view::QLINK_COLUMN) {
+        q.title = "Q-Links · Synth".to_string();
+        q.cards = panel.qlink_cards();
+    }
 }
 
 pub fn poly_presets() -> Vec<String> {
@@ -53,7 +64,7 @@ pub fn poly(preset: usize, edits: &[(u16, f32)]) -> Poly {
 }
 
 const POLY_HINT: &str =
-    "Drag a tile to turn it · tap a tile, then the wheel · SHIFT + wheel: page · pads play the Bass track";
+    "Drag a control to turn it · tap one, then the wheel · SHIFT + wheel: next page · pads play the Bass track";
 
 struct Scene {
     name: &'static str,
@@ -83,17 +94,14 @@ fn poly_scene(s: &Scene, fonts: Fonts) -> Result<Sample, String> {
         .ok_or_else(|| format!("no page {}", s.page))?;
     panel.show_page(&mut ui, page);
     if let Some(id) = s.focus {
-        let k = panel.pages()[page]
-            .params
-            .iter()
-            .position(|&i| panel.state.params[i].id == id)
-            .ok_or("focus not on page")?;
+        let k = panel.state.index(id).ok_or("no such parameter")?;
         let ev = mpfree_ui::UiEvent {
             widget: crate::view::TILES.to_string(),
             kind: mpfree_ui::EventKind::Select(k),
         };
         panel.event(&mut ui, &ev);
     }
+    fill_qlinks(&mut ui, &panel);
     ui.show(PAGE)?;
     Ok(Sample {
         name: s.name,
@@ -154,6 +162,7 @@ fn poly_pressure_scene(fonts: Fonts) -> Result<Sample, String> {
         .position(|p| p.name == "Pressure")
         .ok_or("no Pressure page")?;
     panel.show_page(&mut ui, k);
+    fill_qlinks(&mut ui, &panel);
     ui.show(PAGE)?;
     Ok(Sample { name: "synth-pressure", about: "Poly · Brass, Pressure page: a 9 dB swell and +1.5 oct, a chord held with three pads pressed", ui, panel })
 }
@@ -389,6 +398,7 @@ fn inst_scene(
         .position(|p| p.name == page)
         .ok_or_else(|| format!("no page {page}"))?;
     panel.show_page(&mut ui, k);
+    fill_qlinks(&mut ui, &panel);
     ui.show(PAGE)?;
     Ok(Sample {
         name,
@@ -398,7 +408,7 @@ fn inst_scene(
     })
 }
 
-const WT_HINT: &str = "Drag a tile to turn it · tap a tile, then the wheel · SHIFT + wheel: page · pads play the Lead track";
+const WT_HINT: &str = "Drag a control to turn it · tap one, then the wheel · SHIFT + wheel: next page · pads play the Lead track";
 
 /// The Wavetable synth with a factory preset, on one of its pages.
 fn wt_scene(
@@ -436,6 +446,7 @@ fn wt_scene(
         .position(|p| p.name == page)
         .ok_or_else(|| format!("no page {page}"))?;
     panel.show_page(&mut ui, k);
+    fill_qlinks(&mut ui, &panel);
     ui.show(PAGE)?;
     Ok(Sample {
         name,
@@ -445,7 +456,7 @@ fn wt_scene(
     })
 }
 
-const FM_HINT: &str = "Drag a tile to turn it · tap a tile, then the wheel · SHIFT + wheel: page · pads play the Keys track";
+const FM_HINT: &str = "Drag a control to turn it · tap one, then the wheel · SHIFT + wheel: next page · pads play the Keys track";
 
 /// FM with a factory preset, on one of its pages.
 fn fm_scene(
@@ -483,6 +494,7 @@ fn fm_scene(
         .position(|p| p.name == page)
         .ok_or_else(|| format!("no page {page}"))?;
     panel.show_page(&mut ui, k);
+    fill_qlinks(&mut ui, &panel);
     ui.show(PAGE)?;
     Ok(Sample {
         name,
@@ -492,7 +504,7 @@ fn fm_scene(
     })
 }
 
-const DRUM_HINT: &str = "Drag a tile to turn it · tap a tile, then the wheel · SHIFT + wheel: pad page · pads play the kit";
+const DRUM_HINT: &str = "Drag a control to turn it · tap one, then the wheel · SHIFT + wheel: pad page · pads play the kit";
 
 /// The drum synth with a factory kit, on pad `pad`'s page (16: the Kit page).
 fn drum_scene(
@@ -525,6 +537,7 @@ fn drum_scene(
         16
     };
     panel.show_page(&mut ui, page);
+    fill_qlinks(&mut ui, &panel);
     ui.show(PAGE)?;
     Ok(Sample {
         name,
@@ -559,6 +572,7 @@ fn pluck_scene(
         .position(|p| p.name == page)
         .ok_or_else(|| format!("no page {page}"))?;
     panel.show_page(&mut ui, k);
+    fill_qlinks(&mut ui, &panel);
     ui.show(PAGE)?;
     Ok(Sample {
         name,
@@ -782,6 +796,7 @@ fn generic_scene(fonts: Fonts) -> Result<Sample, String> {
         "Any node gets this page from its parameters alone · a plugin, or an effect",
     );
     let panel = SynthPanel::add(&mut ui, PAGE, st)?;
+    fill_qlinks(&mut ui, &panel);
     ui.show(PAGE)?;
     Ok(Sample {
         name: "generic-node",

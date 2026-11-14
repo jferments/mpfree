@@ -35,31 +35,38 @@
 use crate::fm_visual as fv;
 use crate::format::{amount_text, value_text};
 use crate::kit_visual as kv;
-use crate::pages::{plan, qlink_targets, tile_label, Page};
+use crate::pages::{plan, qlink_targets, Page};
+use crate::section_view::{Control, Kind, SectionBox, SectionView};
+use crate::sections::{arrange, Arrangement, Section};
 use crate::visual;
-use crate::widgets::{
-    Card, CardNode, QCell, QLinkStrip, Tile, TileGrid, TileKind, TitleBar, Trace, Visuals, ON_FILL,
-    QLINK_COLORS, TEXT, TEXT_DIM,
-};
+use crate::widgets::{Card, CardNode, TitleBar, Trace, ON_FILL, QLINK_COLORS, TEXT, TEXT_DIM};
 use mpfree_node::pressure::{field, FIELDS};
 use mpfree_node::{Curve, Node, NodeInfo, ParamInfo};
 use mpfree_synth::params as pp;
 use mpfree_synth::{fm_params as fp, pressure as sp};
+use mpfree_ui::qlink::QLinkCard;
+use mpfree_ui::text::FontId;
 use mpfree_ui::widgets::{ListItem, ListView};
-use mpfree_ui::{Color, EventKind, Ui, UiEvent};
+use mpfree_ui::{Align, Color, EventKind, PaintCx, Rect, Touch, Ui, UiEvent, Widget};
 
-/// Widget names the panel adds. The app's own are `header` and `hint`.
+/// Widget names the panel adds. The app's own are `header` and `hint`,
+/// and the Q-Link column ([`QLINK_COLUMN`]), which the app fills from
+/// [`SynthPanel::qlink_cards`].
 pub const TITLE: &str = "synth-title";
-pub const VISUALS: &str = "synth-visuals";
 pub const TILES: &str = "synth-tiles";
 pub const PRESETS: &str = "synth-presets";
-pub const QLINKS: &str = "synth-qlinks";
+/// The instrument card over the presets: the engine, its track, its kind.
+pub const INST: &str = "synth-inst";
+/// The app's Q-Link column (the Play page's, `play_page::QLINKS`).
+pub const QLINK_COLUMN: &str = "qlinks";
 
-/// An instrument with drawn visuals (Poly): the title, the visual strip and
-/// the tiles beside the preset list, then the Q-Link strip.
-pub const LAYOUT: &str = "col(header:60, row(col(synth-title:64, synth-visuals:150, synth-tiles:*):*, synth-presets:300):*, synth-qlinks:78, hint:26)";
-/// Any other node (a hosted plugin, an effect): the same without visuals.
-pub const PLAIN_LAYOUT: &str = "col(header:60, row(col(synth-title:64, synth-tiles:*):*, synth-presets:300):*, synth-qlinks:78, hint:26)";
+/// The frame Jay approved on 14 Nov: the instrument and its presets on the
+/// left (220), the page in the middle (844), the Q-Link column on the
+/// right (168), the same column as on Play.
+pub const LAYOUT: &str = "col(header:60, row(col(synth-inst:72, synth-presets:*):220, col(synth-title:56, synth-tiles:*):*, qlinks:168):*, hint:26)";
+/// The presets' slot in [`LAYOUT`], for an app that puts a widget over
+/// them (the pad player's pads heading).
+pub const PRESETS_SLOT: &str = "synth-presets:*";
 
 /// Wheel or Q-Link detents for a knob's whole range.
 pub const DETENTS: f32 = 100.0;
@@ -143,15 +150,16 @@ pub struct SynthPanel {
     name: String,
     pages: Vec<Page>,
     page: usize,
-    /// The selected tile, as an index into the node's parameters.
+    /// The page's sections ([`crate::sections`]).
+    arrangement: Arrangement,
+    /// The selected control, as an index into the node's parameters.
     focus: Option<usize>,
-    /// The wheel's push opened the selected tile: the wheel turns it (the
-    /// app's wheel navigation); otherwise the wheel picks tiles.
+    /// The wheel's push opened the selected control: the wheel turns it
+    /// (the app's wheel navigation); otherwise the wheel picks controls.
     editing: bool,
-    visuals: bool,
-    /// The page a tap on each visual card opens, and on each box.
-    card_pages: Vec<String>,
-    node_pages: Vec<String>,
+    /// The page each `Tab(n)` from the sections opens (a section's
+    /// "Open ›", a box of a drawing).
+    links: Vec<String>,
     pub state: SynthState,
     /// Changes the page's layout before it is added, for an app that puts
     /// widgets of its own on the page (the pad player's pads heading).
@@ -179,17 +187,6 @@ impl Strip {
         self.cards.push(card);
         self.pages.push(page.to_string());
     }
-}
-
-/// Whether the panel draws visuals for this node on this page: Poly, FM,
-/// Drums, Pluck, Wavetable, Keys, Drawbar, Squelch and Analog on every
-/// page, any other engine with pressure on its Pressure page.
-fn has_visuals(info: &NodeInfo, page: &str) -> bool {
-    matches!(
-        info.id,
-        "mpfree.poly" | "mpfree.fm" | "mpfree.drums" | "mpfree.pluck" | "mpfree.wavetable"
-    ) || crate::inst_visual::draws(info.id)
-        || (page == "Pressure" && press_base(info).is_some())
 }
 
 /// The first pressure parameter of an engine that has them, and what its
@@ -248,23 +245,24 @@ fn param_line(st: &SynthState, i: usize) -> String {
 }
 
 impl SynthPanel {
-    /// Adds the panel's widgets and its page `name` to `ui` (the app adds
-    /// `header` and `hint` first).
+    /// Adds the panel's widgets and its page `name` to `ui`. The app adds
+    /// `header`, `hint` and the Q-Link column ([`QLINK_COLUMN`]) first.
     pub fn add(ui: &mut Ui, name: &str, state: SynthState) -> Result<SynthPanel, String> {
         ui.add(TITLE, TitleBar::new());
-        ui.add(VISUALS, Visuals::new());
-        ui.add(TILES, TileGrid::new(""));
+        ui.add(INST, InstCard::new());
+        ui.add(TILES, SectionView::new());
         ui.add(PRESETS, ListView::new("Presets"));
-        ui.add(QLINKS, QLinkStrip::new());
         let mut panel = SynthPanel {
             name: name.to_string(),
             pages: Vec::new(),
             page: 0,
+            arrangement: Arrangement {
+                spec: String::new(),
+                sections: Vec::new(),
+            },
             focus: None,
             editing: false,
-            visuals: false,
-            card_pages: Vec::new(),
-            node_pages: Vec::new(),
+            links: Vec::new(),
             state,
             wrap: None,
         };
@@ -296,17 +294,20 @@ impl SynthPanel {
         }
         self.page = self.page.min(self.pages.len().saturating_sub(1));
         self.state = state;
-        self.visuals = self.wants_visuals();
+        self.arrange();
         ui.add_page(&self.name, &self.spec())?;
         self.refresh(ui);
         Ok(())
     }
 
-    fn wants_visuals(&self) -> bool {
-        has_visuals(
-            self.state.info,
-            self.pages.get(self.page).map_or("", |p| p.name.as_str()),
-        )
+    fn arrange(&mut self) {
+        let empty = Page {
+            name: String::new(),
+            params: Vec::new(),
+            qlinks: Vec::new(),
+        };
+        let page = self.pages.get(self.page).unwrap_or(&empty);
+        self.arrangement = arrange(self.state.info, self.state.params, page);
     }
 
     /// Each sounding voice's pressure, 0 to 1, for the Pressure page's live
@@ -314,18 +315,19 @@ impl SynthPanel {
     pub fn set_pressures(&mut self, ui: &mut Ui, values: &[f32]) {
         if self.state.pressures != values {
             self.state.pressures = values.to_vec();
-            if self.visuals {
+            if self
+                .pages
+                .get(self.page)
+                .is_some_and(|p| p.name == "Pressure")
+            {
                 self.refresh(ui);
             }
         }
     }
 
+    /// The page's layout: the same for every node and page.
     pub fn layout(&self) -> &'static str {
-        if self.visuals {
-            LAYOUT
-        } else {
-            PLAIN_LAYOUT
-        }
+        LAYOUT
     }
 
     pub fn pages(&self) -> &[Page] {
@@ -334,6 +336,11 @@ impl SynthPanel {
 
     pub fn page(&self) -> usize {
         self.page
+    }
+
+    /// The page's sections.
+    pub fn arrangement(&self) -> &Arrangement {
+        &self.arrangement
     }
 
     /// The selected parameter's id.
@@ -350,16 +357,20 @@ impl SynthPanel {
         if i != self.page {
             self.page = i;
             self.focus = None;
-        }
-        // A node may show the visual strip on some pages only.
-        let visuals = self.wants_visuals();
-        if visuals != self.visuals {
-            self.visuals = visuals;
-            // Every widget the layouts name is added in `add` (or before
-            // `set_layout_wrap`), so this holds.
-            let _ = ui.add_page(&self.name, &self.spec());
+            self.arrange();
         }
         self.refresh(ui);
+    }
+
+    /// Shows the page called `name`, if there is one.
+    pub fn show_page_named(&mut self, ui: &mut Ui, name: &str) -> bool {
+        match self.pages.iter().position(|p| p.name == name) {
+            Some(i) => {
+                self.show_page(ui, i);
+                true
+            }
+            None => false,
+        }
     }
 
     /// SHIFT + wheel: the next or previous page.
@@ -370,27 +381,34 @@ impl SynthPanel {
         }
     }
 
-    /// The wheel picking tiles: the page's tile `delta` along from the
-    /// selected one (stopping at the ends; from the first or last when
-    /// none is selected), selected as a tap on it would.
+    /// The wheel picking controls: the control `delta` along from the
+    /// selected one in the sections' order (stopping at the ends; from the
+    /// first or last when none is selected), selected as a tap on it would.
     pub fn pick_tile(&mut self, ui: &mut Ui, delta: i32) {
-        let Some(page) = self.pages.get(self.page) else {
-            return;
-        };
-        let n = page.params.len() as i64;
+        let order = self.order();
+        let n = order.len() as i64;
         if n == 0 || delta == 0 {
             return;
         }
         let at = self
             .focus
-            .and_then(|f| page.params.iter().position(|&i| i == f))
+            .and_then(|f| order.iter().position(|&i| i == f))
             .map_or(if delta > 0 { -1 } else { n }, |k| k as i64);
         let k = (at + i64::from(delta)).clamp(0, n - 1) as usize;
-        self.focus = Some(page.params[k]);
+        self.focus = Some(order[k]);
         self.refresh(ui);
     }
 
-    /// The wheel's push opened (true) or closed the selected tile.
+    /// The controls on screen that can be changed, in the sections' order.
+    pub fn order(&self) -> Vec<usize> {
+        self.arrangement
+            .order()
+            .into_iter()
+            .filter(|&i| !self.state.params[i].readonly)
+            .collect()
+    }
+
+    /// The wheel's push opened (true) or closed the selected control.
     pub fn set_editing(&mut self, ui: &mut Ui, on: bool) {
         if self.editing != on {
             self.editing = on;
@@ -405,7 +423,47 @@ impl SynthPanel {
         self.turn(ui, i, ticks)
     }
 
-    /// The data wheel turned by `ticks`: turns the selected tile, or the
+    /// What the four Q-Links turn on this page, for the app's Q-Link
+    /// column: each target's name as its section shows it, the section's
+    /// name, and its value. A Q-Link with nothing here is blank.
+    pub fn qlink_cards(&self) -> [QLinkCard; 4] {
+        let st = &self.state;
+        let mut cards: [QLinkCard; 4] = Default::default();
+        let Some(page) = self.pages.get(self.page) else {
+            return cards;
+        };
+        for (card, &i) in cards.iter_mut().zip(&qlink_targets(page, st.params)) {
+            let p = &st.params[i];
+            let (name, scope) = match self
+                .arrangement
+                .sections
+                .iter()
+                .find(|s| s.params.contains(&i))
+            {
+                Some(s) => (s.label(i, p), s.name.clone()),
+                None => (p.name.to_string(), page.name.clone()),
+            };
+            *card = QLinkCard::new(&name, &scope, &param_line(st, i), p.to_unit(st.values[i]));
+            card.bipolar = p.min < 0.0 && p.max > 0.0;
+        }
+        cards
+    }
+
+    /// The selected control and its value ("Cutoff 420 Hz"), for the
+    /// app's hint line; None when nothing is selected.
+    pub fn wheel_text(&self) -> Option<String> {
+        let i = self.focus?;
+        let p = &self.state.params[i];
+        let name = self
+            .arrangement
+            .sections
+            .iter()
+            .find(|s| s.params.contains(&i))
+            .map_or_else(|| p.name.to_string(), |s| s.label(i, p));
+        Some(format!("{name} {}", param_line(&self.state, i)))
+    }
+
+    /// The data wheel turned by `ticks`: turns the selected control, or the
     /// first Q-Link's when none is selected.
     pub fn wheel(&mut self, ui: &mut Ui, ticks: i32) -> Option<SynthAction> {
         let i = match self.focus {
@@ -440,27 +498,19 @@ impl SynthPanel {
     /// A touch on one of the panel's widgets; None for events that only move
     /// the view (a page tab, a selection) or are not the panel's.
     pub fn event(&mut self, ui: &mut Ui, ev: &UiEvent) -> Option<SynthAction> {
-        let tile_param =
-            |s: &SynthPanel, k: usize| s.pages.get(s.page).and_then(|p| p.params.get(k)).copied();
+        let known = |s: &SynthPanel, i: usize| (i < s.state.params.len()).then_some(i);
         match (ev.widget.as_str(), &ev.kind) {
             (TITLE, EventKind::Tab(i)) => {
                 self.show_page(ui, *i);
                 None
             }
-            (VISUALS, EventKind::Tab(i)) => {
-                let want = self.card_pages.get(*i)?;
-                let page = self.pages.iter().position(|p| &p.name == want)?;
-                self.show_page(ui, page);
+            (TILES, EventKind::Tab(n)) => {
+                let want = self.links.get(*n)?.clone();
+                self.show_page_named(ui, &want);
                 None
             }
-            (VISUALS, EventKind::Select(k)) => {
-                let want = self.node_pages.get(*k)?;
-                let page = self.pages.iter().position(|p| &p.name == want)?;
-                self.show_page(ui, page);
-                None
-            }
-            (TILES, EventKind::Select(k)) => {
-                self.focus = tile_param(self, *k);
+            (TILES, EventKind::Select(i)) => {
+                self.focus = known(self, *i);
                 self.refresh(ui);
                 None
             }
@@ -470,16 +520,10 @@ impl SynthPanel {
                 self.set(ui, i, p.from_unit(*pos))
             }
             (TILES, EventKind::Step { index, delta }) => {
-                let i = tile_param(self, *index)?;
+                let i = known(self, *index)?;
                 self.focus = Some(i);
                 let v = self.state.values[i] + *delta as f32;
                 self.set(ui, i, v)
-            }
-            (QLINKS, EventKind::Select(n)) => {
-                let page = self.pages.get(self.page)?;
-                self.focus = qlink_targets(page, self.state.params).get(*n).copied();
-                self.refresh(ui);
-                None
             }
             (PRESETS, EventKind::Select(i)) if *i < self.state.presets.len() => {
                 self.state.preset = Some(*i);
@@ -491,23 +535,60 @@ impl SynthPanel {
         }
     }
 
+    /// The engine's drawings for the page shown, each with the page it
+    /// belongs to and the page each of its boxes opens.
+    fn drawings(&self, page: &str) -> Vec<(Card, String, Vec<String>)> {
+        let st = &self.state;
+        let strip = match press_base(st.info) {
+            Some(base) if page == "Pressure" => pressure_cards(st, base),
+            _ if st.info.id == "mpfree.poly" => poly_cards(st, page),
+            _ if st.info.id == "mpfree.fm" => fm_cards(st, page),
+            _ if st.info.id == "mpfree.drums" => drum_cards(st, page),
+            _ if st.info.id == "mpfree.pluck" => pluck_cards(st, page),
+            _ if st.info.id == "mpfree.wavetable" => wt_cards(st, page),
+            _ if crate::inst_visual::draws(st.info.id) => inst_cards(st, page),
+            _ => Strip::new(),
+        };
+        let mut first = 0;
+        strip
+            .cards
+            .into_iter()
+            .zip(strip.pages)
+            .map(|(card, home)| {
+                let n = card.nodes.len();
+                let nodes = strip
+                    .node_pages
+                    .get(first..first + n)
+                    .map(|s| s.to_vec())
+                    .unwrap_or_default();
+                first += n;
+                (card, home, nodes)
+            })
+            .collect()
+    }
+
     /// Puts the state into the widgets.
     pub fn refresh(&mut self, ui: &mut Ui) {
-        let st = &self.state;
         let page = self.pages.get(self.page).cloned().unwrap_or(Page {
             name: String::new(),
             params: Vec::new(),
             qlinks: Vec::new(),
         });
+        let drawings = self.drawings(&page.name);
+        let st = &self.state;
         let qtargets = qlink_targets(&page, st.params);
         let preset = st.preset.and_then(|i| st.presets.get(i)).cloned();
         if let Some(w) = ui.get_mut::<TitleBar>(TITLE) {
+            w.show_swatch = false;
             w.swatch = st.color;
-            w.title = match &preset {
-                Some(p) => format!("{} · {}", st.info.name, p),
-                None => st.info.name.to_string(),
+            let edited = if st.edited { " · edited" } else { "" };
+            (w.title, w.subtitle) = match &preset {
+                Some(p) => (p.clone(), format!("{}{edited}", st.info.name)),
+                None => (
+                    st.info.name.to_string(),
+                    format!("{}{edited}", kind_name(st)),
+                ),
             };
-            w.subtitle = subtitle(st);
             // Many pages (the drum synth's one per pad) show short tabs:
             // "Pad 12" becomes "12".
             let many = self.pages.len() > 8;
@@ -521,37 +602,81 @@ impl SynthPanel {
                 .collect();
             w.active = self.page;
         }
-        if self.visuals {
-            let strip = match press_base(st.info) {
-                Some(base) if page.name == "Pressure" => pressure_cards(st, base),
-                _ if st.info.id == "mpfree.fm" => fm_cards(st, &page.name),
-                _ if st.info.id == "mpfree.drums" => drum_cards(st, &page.name),
-                _ if st.info.id == "mpfree.pluck" => pluck_cards(st, &page.name),
-                _ if st.info.id == "mpfree.wavetable" => wt_cards(st, &page.name),
-                _ if crate::inst_visual::draws(st.info.id) => inst_cards(st, &page.name),
-                _ => poly_cards(st, &page.name),
-            };
-            self.card_pages = strip.pages;
-            self.node_pages = strip.node_pages;
-            if let Some(w) = ui.get_mut::<Visuals>(VISUALS) {
-                w.cards = strip.cards;
-            }
+        if let Some(w) = ui.get_mut::<InstCard>(INST) {
+            w.swatch = st.color;
+            w.name = st.info.name.to_string();
+            w.detail = subtitle(st);
         }
-        if let Some(w) = ui.get_mut::<TileGrid>(TILES) {
-            w.title = page.name.clone();
-            w.caption = if qtargets.is_empty() {
-                String::new()
-            } else {
-                "Q-Links turn the marked tiles · drag to turn".to_string()
-            };
-            w.tiles = page
-                .params
-                .iter()
-                .map(|&i| tile(st, &page.name, i, qtargets.iter().position(|&q| q == i)))
-                .collect();
-            w.selected = self
-                .focus
-                .and_then(|f| page.params.iter().position(|&i| i == f));
+        let mut links: Vec<String> = Vec::new();
+        let mut link = |to: &str| match links.iter().position(|l| l == to) {
+            Some(n) => n,
+            None => {
+                links.push(to.to_string());
+                links.len() - 1
+            }
+        };
+        let mut boxes = Vec::new();
+        for sec in &self.arrangement.sections {
+            let mut b = SectionBox::new(&sec.key, &sec.name, sec.job);
+            b.rows = sec.rows;
+            let mut caption = String::new();
+            let mut home = None;
+            if let Some((card, at, nodes)) = sec
+                .drawing
+                .as_ref()
+                .and_then(|t| drawings.iter().find(|(c, _, _)| &c.title == t))
+            {
+                let mut card = card.clone();
+                card.active = false;
+                caption = card.caption.clone();
+                // One curve of a card that draws two (the filter envelope
+                // of "amp, filter"): drawn in the section's colour, and the
+                // card's caption no longer fits it.
+                if let Some(k) = sec.trace {
+                    card.traces = card.traces.get(k).cloned().into_iter().collect();
+                    for tr in &mut card.traces {
+                        tr.color = QLINK_COLORS[0];
+                    }
+                    if k != 0 {
+                        card.dot = None;
+                    }
+                    caption.clear();
+                }
+                b.node_links = nodes.iter().map(|p| link(p)).collect();
+                b.cards.push(card);
+                home = Some(at.clone());
+            }
+            // A section that is only a drawing opens the drawing's page;
+            // one with controls links only where its plan says.
+            let to = sec
+                .link
+                .clone()
+                .or(home.filter(|h| sec.params.is_empty() && *h != page.name && !h.is_empty()));
+            b.link = to
+                .filter(|t| *t != page.name && self.pages.iter().any(|p| &p.name == t))
+                .map(|t| link(&t));
+            let mut why = None;
+            for &i in &sec.params {
+                let reason = inactive(st, i);
+                if why.is_none() {
+                    why = reason.map(|r| format!("{} · {r}", sec.label(i, &st.params[i])));
+                }
+                b.controls.push(control(
+                    st,
+                    sec,
+                    i,
+                    qtargets.iter().position(|&q| q == i),
+                    reason.is_some(),
+                ));
+            }
+            b.note = why.or_else(|| sec.note.clone()).unwrap_or(caption);
+            boxes.push(b);
+        }
+        self.links = links;
+        if let Some(w) = ui.get_mut::<SectionView>(TILES) {
+            w.spec = self.arrangement.spec.clone();
+            w.sections = boxes;
+            w.selected = self.focus;
             w.editing = self.editing;
         }
         if let Some(w) = ui.get_mut::<ListView>(PRESETS) {
@@ -575,31 +700,232 @@ impl SynthPanel {
                 .unwrap_or(0)
                 .min(st.presets.len().saturating_sub(1));
         }
-        if let Some(w) = ui.get_mut::<QLinkStrip>(QLINKS) {
-            w.cells = qtargets
-                .iter()
-                .map(|&i| {
-                    let p = &st.params[i];
-                    QCell {
-                        label: p.name.to_string(),
-                        value: param_line(st, i),
-                        pos: p.to_unit(st.values[i]),
-                        bipolar: p.min < 0.0 && p.max > 0.0,
-                    }
-                })
-                .collect();
-            match self.focus {
-                Some(i) => {
-                    let p = &st.params[i];
-                    w.wheel_label = format!("Wheel · {}", tile_label(&page.name, p));
-                    w.wheel_value = param_line(st, i);
-                }
-                None => {
-                    w.wheel_label = "Wheel".to_string();
-                    w.wheel_value = "Tap a tile to turn it".to_string();
+    }
+}
+
+/// "Native" for the app's own engines, "Plugin" for a hosted one.
+fn kind_name(st: &SynthState) -> &'static str {
+    if st.info.id.starts_with("mpfree.") {
+        "Native"
+    } else {
+        "Plugin"
+    }
+}
+
+/// Parameter `i` as a control of section `sec`.
+fn control(st: &SynthState, sec: &Section, i: usize, qlink: Option<usize>, dim: bool) -> Control {
+    let p = &st.params[i];
+    let v = st.values[i];
+    let (value, unit) = param_text(st, i);
+    let pos = p.to_unit(v);
+    let bipolar = p.min < 0.0 && p.max > 0.0;
+    let fader = sec.faders.contains(&i);
+    let kind = if p.readonly {
+        Kind::Meter
+    } else {
+        match p.curve {
+            Curve::Choice(names) => Kind::Choice {
+                names: names.iter().map(|s| s.to_string()).collect(),
+                index: v as usize,
+            },
+            Curve::Toggle => Kind::Toggle(v >= 0.5),
+            _ if fader && sec.drawbars => Kind::Drawbar { pos },
+            _ if fader => Kind::Fader { pos, bipolar },
+            Curve::Stepped if p.max - p.min <= 48.0 => Kind::Stepper,
+            _ if sec.rows => Kind::Slider { pos, bipolar },
+            _ => Kind::Knob { pos, bipolar },
+        }
+    };
+    // A drawbar's family: the sub-octaves in the section's colour, the
+    // octaves white, the fifths and thirds grey.
+    let tint = if fader && sec.drawbars {
+        let bar = sec.faders.iter().position(|&f| f == i).unwrap_or(0);
+        match crate::inst_visual::drawbar_family(bar) {
+            1 => Some(TEXT),
+            2 => Some(TEXT_DIM),
+            _ => None,
+        }
+    } else {
+        None
+    };
+    Control {
+        index: i,
+        label: sec.label(i, p),
+        value,
+        unit,
+        kind,
+        tier: sec.tier(i, qlink.is_some()),
+        qlink,
+        dim,
+        tint,
+    }
+}
+
+/// Why parameter `i` does nothing as the sound is set (a pulse width with
+/// no pulse wave, a unison detune in poly mode), if it doesn't.
+pub fn inactive(st: &SynthState, i: usize) -> Option<&'static str> {
+    let p = &st.params[i];
+    let v = |id: u16| st.value(id);
+    let id = p.id;
+    if let Some(base) = press_base(st.info) {
+        let off = id.wrapping_sub(base);
+        if off < FIELDS as u16 {
+            if off != field::MODE && v(base + field::MODE).round() as usize == 2 {
+                return Some("pressure is off");
+            }
+            for n in 0..4 {
+                if off == field::depth(n) && v(base + field::target(n)) < 0.5 {
+                    return Some("no target");
                 }
             }
+            return None;
         }
+    }
+    match st.info.id {
+        "mpfree.analog" => {
+            use mpfree_synth::analog_params as an;
+            let pulse = |w: u16| matches!(v(w).round() as i32, 1 | 2);
+            match id {
+                an::OSC1_PW if !pulse(an::OSC1_WAVE) => Some("pulse waves only"),
+                an::OSC2_PW if !pulse(an::OSC2_WAVE) => Some("pulse waves only"),
+                an::LFO_PW | an::PM_PW if !pulse(an::OSC1_WAVE) && !pulse(an::OSC2_WAVE) => {
+                    Some("no pulse wave")
+                }
+                an::UNI_DETUNE if v(an::VOICE_MODE) < 0.5 => Some("Unison only"),
+                an::F_DECAY if v(an::F_SUSTAIN) >= 100.0 => Some("sustain is full"),
+                an::A_DECAY if v(an::A_SUSTAIN) >= 100.0 => Some("sustain is full"),
+                _ => None,
+            }
+        }
+        "mpfree.poly" | "mpfree.wavetable" => {
+            use mpfree_synth::params as pp;
+            use mpfree_synth::wavetable::params as wp;
+            let poly = st.info.id == "mpfree.poly";
+            match id {
+                pp::OSC1_PW if poly && v(pp::OSC1_WAVE).round() != 1.0 => Some("pulse only"),
+                pp::OSC2_PW if poly && v(pp::OSC2_WAVE).round() != 1.0 => Some("pulse only"),
+                pp::UNISON_DETUNE | pp::UNISON_SPREAD if poly && v(pp::UNISON) <= 1.0 => {
+                    Some("one voice")
+                }
+                wp::UNISON_DETUNE | wp::UNISON_SPREAD if !poly && v(wp::UNISON) <= 1.0 => {
+                    Some("one voice")
+                }
+                pp::LFO_RATE if v(pp::LFO_SYNC) >= 0.5 => Some("synced to tempo"),
+                pp::AMP_D if v(pp::AMP_S) >= 100.0 => Some("sustain is full"),
+                pp::FENV_D if poly && v(pp::FENV_S) >= 100.0 => Some("sustain is full"),
+                wp::MENV_D if !poly && v(wp::MENV_S) >= 100.0 => Some("sustain is full"),
+                _ if !poly
+                    && (id == wp::osc_id(0, wp::WARP) && v(wp::osc_id(0, wp::WARP_MODE)) < 0.5
+                        || id == wp::osc_id(1, wp::WARP)
+                            && v(wp::osc_id(1, wp::WARP_MODE)) < 0.5) =>
+                {
+                    Some("warp is off")
+                }
+                _ => None,
+            }
+        }
+        "mpfree.drawbar" => {
+            use mpfree_synth::drawbar_params as db;
+            match id {
+                db::PERC_HARM | db::PERC_DECAY | db::PERC_VOL if v(db::PERC) < 0.5 => {
+                    Some("percussion is off")
+                }
+                db::SCANNER if v(db::VIBRATO) < 0.5 => Some("vibrato is off"),
+                db::SPEED | db::SPREAD if v(db::ROTARY) < 0.5 => Some("rotary is off"),
+                _ => None,
+            }
+        }
+        "mpfree.keys" => {
+            use mpfree_synth::keys_params as ek;
+            match id {
+                ek::TREM_RATE | ek::TREM_MODE if v(ek::TREMOLO) <= 0.0 => Some("tremolo is off"),
+                _ => None,
+            }
+        }
+        "mpfree.pluck" => {
+            use mpfree_synth::pluck_params as kp;
+            let mallet = v(kp::MODEL) >= 0.5;
+            match id {
+                kp::BRIGHTNESS | kp::PICK | kp::POSITION if mallet => Some("for the string"),
+                kp::MATERIAL | kp::HARDNESS | kp::STRIKE | kp::STRETCH | kp::HIGH_DAMP
+                    if !mallet =>
+                {
+                    Some("for the mallet")
+                }
+                _ => None,
+            }
+        }
+        "mpfree.fm" => {
+            let op = (1..=6).find(|&n| {
+                let base = fp::op_id(n, 0);
+                (base..base + 32).contains(&id)
+            })?;
+            (id != fp::op_id(op, fp::op::ON) && v(fp::op_id(op, fp::op::ON)) < 0.5)
+                .then_some("operator is off")
+        }
+        _ => None,
+    }
+}
+
+// ---------------------------------------------------------------- instrument card
+
+/// The instrument over the presets: its swatch, its name and a line about
+/// it ("Keys track · Native · poly").
+pub struct InstCard {
+    pub swatch: Color,
+    pub name: String,
+    pub detail: String,
+}
+
+impl InstCard {
+    pub fn new() -> InstCard {
+        InstCard {
+            swatch: QLINK_COLORS[1],
+            name: String::new(),
+            detail: String::new(),
+        }
+    }
+}
+
+impl Default for InstCard {
+    fn default() -> InstCard {
+        InstCard::new()
+    }
+}
+
+impl Widget for InstCard {
+    fn paint(&self, cx: &mut PaintCx, r: Rect) {
+        let t = cx.theme.clone();
+        cx.panel(r);
+        let inner = r.inset_xy(14, 12);
+        let sw = inner.h.min(40);
+        cx.canvas.fill_round_rect(
+            Rect::new(inner.x, inner.y + (inner.h - sw) / 2, sw, sw),
+            10,
+            t.content(self.swatch),
+        );
+        let text = Rect::new(inner.x + sw + 12, inner.y, inner.w - sw - 12, inner.h);
+        let (top, bottom) = text.take_top(text.h * 11 / 20);
+        cx.text(
+            FontId::Bold,
+            t.size_body,
+            top,
+            Align::Left,
+            t.text,
+            &self.name,
+        );
+        cx.text(
+            FontId::Sans,
+            t.size_small - 1.0,
+            bottom,
+            Align::Left,
+            t.text_dim,
+            &self.detail,
+        );
+    }
+
+    fn touch(&mut self, _f: u64, _phase: Touch, _x: i32, _y: i32, _r: Rect) -> Option<EventKind> {
+        None
     }
 }
 
@@ -634,41 +960,6 @@ fn subtitle(st: &SynthState) -> String {
         }
     }
     parts.join(" · ")
-}
-
-/// Parameter `i` as a tile.
-fn tile(st: &SynthState, page: &str, i: usize, qlink: Option<usize>) -> Tile {
-    let p = &st.params[i];
-    let v = st.values[i];
-    let (value, unit) = param_text(st, i);
-    let kind = if p.readonly {
-        TileKind::Meter
-    } else {
-        match p.curve {
-            Curve::Choice(names) => TileKind::Choice {
-                names: names.iter().map(|s| s.to_string()).collect(),
-                index: v as usize,
-            },
-            Curve::Toggle => TileKind::Toggle(v >= 0.5),
-            _ => TileKind::Knob {
-                pos: p.to_unit(v),
-                bipolar: p.min < 0.0 && p.max > 0.0,
-            },
-        }
-    };
-    let color = match (qlink, &kind) {
-        (Some(q), _) => QLINK_COLORS[q % 4],
-        (None, TileKind::Knob { .. }) => TEXT_DIM,
-        (None, _) => QLINK_COLORS[0],
-    };
-    Tile {
-        label: tile_label(page, p),
-        value,
-        unit,
-        kind,
-        qlink,
-        color,
-    }
 }
 
 /// The Pressure page's two cards: the curve (shaped against raw, with the
