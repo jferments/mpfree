@@ -392,6 +392,28 @@ top bar, 1256 by 60) rewrites 1256 of the panel's 1280 rows, about 4 MB.
 On the build workstation (13 Nov) that strip took 0.07 ms to paint and 1.2
 to 1.8 ms to copy.
 
+**Turning only what changed** (14 Nov). The copy used to turn whole native
+rows from the canvas, so that strip turned the whole screen to change
+1256 × 60 pixels. `FbTarget` now keeps a copy of what the panel shows, in
+the panel's own layout. It turns only the changed rectangles into that copy
+and writes the same whole rows from it, so the kernel gets the same bytes
+as before (`the_screen_gets_the_same_bytes_as_when_whole_rows_were_turned`,
+fb.rs). Measured on the workstation with `turn_speed` (fb.rs, ignored by
+default):
+
+| Changed | Whole rows turned | Only the rectangle |
+| --- | --- | --- |
+| A chip in the top bar, 120 × 40 | 0.12 ms | 0.005 ms |
+| The top bar, 1280 × 48 | 1.6 ms | 0.06 ms |
+| A meter, 24 × 300 | 0.022 ms | 0.007 ms |
+| A panel, 600 × 400 | 0.70 ms | 0.33 ms |
+| The whole screen | 1.7 ms | 0.8 ms |
+
+The whole screen gains too, because the old way cleared its buffer before
+each turn. The write itself is unchanged: whole native rows, as the kernel
+needs, so the strip still sends about 4 MB to the kernel. The MPC's numbers
+will come from the next app round's `status: screen` lines.
+
 **Idle redraws** (fixed 13 Nov). Two things redrew with nothing changing:
 the Pads tab's browser, at every frame (30 a second: 0.5 ms paint and 0.9
 ms copy each on the workstation, so roughly 30 to 40 % of a core on the
