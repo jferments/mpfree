@@ -377,13 +377,6 @@ impl App {
     /// The Instrument row stepped by `d`: the selected track's sound, Kit first,
     /// then the engines and the plugin synths.
     fn step_track_sound(&mut self, d: i32) -> Vec<Effect> {
-        if self.track >= crate::instruments::SLOTS {
-            return vec![Effect::Tell(format!(
-                "Track {} plays the kit: tracks 1 to {} can have their own instrument for now",
-                self.track + 1,
-                crate::instruments::SLOTS
-            ))];
-        }
         let choices = self.sound_choices();
         let now = self.track_sound(self.track).map(|h| h.id);
         let at = choices
@@ -395,6 +388,15 @@ impl App {
             return Vec::new();
         }
         let pick = choices[to];
+        // A track on the kit takes a place only while one is free.
+        let others = self.track_sounds.iter().flatten().count();
+        if now.is_none() && others >= crate::instruments::SLOTS {
+            return vec![Effect::Tell(format!(
+                "Track {} plays the kit: {} tracks already have their own instrument, the most at once. Set one of them to Kit first",
+                self.track + 1,
+                crate::instruments::SLOTS
+            ))];
+        }
         let track = self.track;
         // The project keeps each track's instrument: unsaved work.
         self.project_edit = true;

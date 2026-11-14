@@ -342,7 +342,7 @@ pub struct Timing {
 }
 
 /// What each track plays as its own instrument (None: the kit).
-pub type TrackSounds = [Option<crate::instruments::Held>; crate::instruments::SLOTS];
+pub type TrackSounds = [Option<crate::instruments::Held>; crate::instruments::TRACKS];
 
 /// Writes what each track plays under its name: its own instrument's
 /// name, or "Kit".
@@ -1138,7 +1138,7 @@ impl Player {
             io_model: None,
             project_defaults: None,
             project_plugins: std::sync::Arc::new(crate::plugins::Plugins::none()),
-            track_sounds: [None; crate::instruments::SLOTS],
+            track_sounds: [None; crate::instruments::TRACKS],
             start_checked: false,
             project_rate: 44_100,
             opened_at: None,
@@ -6112,8 +6112,10 @@ fn sample_instrument_mixer(synth: &crate::synth::Synth) -> mpfree_mixer_ui::MixS
         (1, Engine::Fm, [45, 52, 57]),
     ] {
         let (id, values) = synth.sound_of(engine);
-        let made = crate::instruments::make(&plugins, id, &values, 44_100, crate::PERIOD);
-        let _ = mix.instruments.put(track, made, synth.pads_for(engine));
+        if let Some(made) = crate::instruments::make(&plugins, id, &values, 44_100, crate::PERIOD) {
+            let pads = synth.pads_for(engine);
+            let _ = mix.instruments.put(track, made, pads, &synth.tuning_now());
+        }
         for n in notes {
             mix.instruments.note_on(track, n, 100, 0);
         }
@@ -6642,7 +6644,7 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     // Poly and Track 6 a plugin synth; the rest the kit.
     match sample_clips(fonts()) {
         Ok(mut p) => {
-            let mut s: TrackSounds = [None; crate::instruments::SLOTS];
+            let mut s: TrackSounds = [None; crate::instruments::TRACKS];
             for (t, id, name) in [
                 (1, "mpfree.fm", "FM"),
                 (3, "mpfree.poly", "Poly"),
@@ -7498,7 +7500,7 @@ mod tests {
                 .collect::<Vec<_>>()
         };
         assert!(sounds(&p).iter().all(|s| s == "Kit"), "{:?}", sounds(&p));
-        let mut s: TrackSounds = [None; crate::instruments::SLOTS];
+        let mut s: TrackSounds = [None; crate::instruments::TRACKS];
         s[2] = Some(crate::instruments::Held {
             id: "mpfree.fm",
             name: "FM",

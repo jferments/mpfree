@@ -226,6 +226,10 @@ pub enum Landed {
     /// Instrument `id` couldn't be made for track `track`; it keeps what
     /// it had.
     Failed { track: usize, id: &'static str },
+    /// Instrument `name` was made for track `track`, but
+    /// [`instruments::SLOTS`] other tracks already have their own; it keeps
+    /// what it had.
+    Full { track: usize, name: &'static str },
 }
 
 /// A project's mixer going in over a few periods: the old inserts out,
@@ -253,8 +257,9 @@ impl MixHost {
         let cfg = MixerConfig {
             inputs: 1,
             pads: PADS,
-            // The engines' tracks, then one per track's own instrument.
-            tracks: TRACKS + instruments::SLOTS,
+            // The engines' tracks, then one for each sequencer track's own
+            // instrument (unused ones cost a few flag checks).
+            tracks: TRACKS + instruments::TRACKS,
             slots: SLOTS,
             max_latency_ms: 50.0,
         };
@@ -341,19 +346,25 @@ impl MixHost {
                 id: m.id,
             });
         };
-        self.instruments.set_tuning(m.track, &m.tuning);
-        match self.instruments.put(m.track, Some((inst, held)), m.pads) {
+        match self
+            .instruments
+            .put(m.track, (inst, held), m.pads, &m.tuning)
+        {
             Ok(()) => Some(Landed::Playing {
                 track: m.track,
                 name: held.name,
             }),
-            Err(back) => {
+            Err((why, back)) => {
                 if let Some(i) = back {
                     self.drop_instrument(i);
                 }
-                Some(Landed::Failed {
-                    track: m.track,
-                    id: m.id,
+                let track = m.track;
+                Some(match why {
+                    instruments::Refused::Full => Landed::Full {
+                        track,
+                        name: held.name,
+                    },
+                    _ => Landed::Failed { track, id: m.id },
                 })
             }
         }
@@ -469,6 +480,22 @@ impl MixHost {
                     }
                     for &(id, v) in values {
                         self.mixer.set_now(st, id, v);
+                    }
+                }
+                // A track's own channel the project leaves out has nothing
+                // set (`project::untouched_channel`): back to its defaults,
+                // whatever the last project had there.
+                for t in TRACKS..self.mixer.tracks() {
+                    let st = StripId::Track(t);
+                    if load.strips.iter().any(|(s, _)| *s == st) {
+                        continue;
+                    }
+                    for p in mpfree_fx::strip_params() {
+                        if crate::project::saved_control(st, p.id)
+                            && self.mixer.param(st, p.id) != p.default
+                        {
+                            self.mixer.set_now(st, p.id, p.default);
+                        }
                     }
                 }
                 for &(st, slot, k) in &load.keys {
@@ -982,14 +1009,14 @@ impl MixHost {
             return None;
         }
         self.state_at = Some(now);
-        let mut st = MixState::from_mixer(&mut self.mixer, view, &name);
-        // Tracks' own instruments' channels show only while in use.
+        // Tracks' own instruments' channels show only while in use; the
+        // others aren't read.
         let used = self.instruments.in_use();
         let shown = |s: StripId| match s {
             StripId::Track(t) if t >= TRACKS => used & (1 << (t - TRACKS)) != 0,
             _ => true,
         };
-        st.strips.retain(|v| shown(v.id));
+        let mut st = MixState::from_mixer_where(&mut self.mixer, view, &name, &shown);
         st.counts[0] = TRACKS + used.count_ones() as usize;
         st.tracks = TRACKS;
         st.selected = self.selected;

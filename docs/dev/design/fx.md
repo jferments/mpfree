@@ -146,7 +146,7 @@ Each insert is saved in the project's `mixer` part with its slot id, on or off, 
 
 1. **Inputs** (2 by default, up to 8): the line input as a stereo pair or either side as mono (Source), heard through the strip's inserts when Monitor says so (Off, On, or Auto: heard while the track is armed).
 2. **Pad channels** (a pool of 32 by default, up to 128): pads that need their own inserts, sends or output. The sampler renders those apart; every other pad stays in its kit's track.
-3. **Tracks** (16 by default, up to 64): each instrument adds into its track; inputs and pad channels can be routed in.
+3. **Tracks** (16 by default, up to 160): each instrument adds into its track; inputs and pad channels can be routed in.
 4. **Submixes** (8): sum what is routed to them; a submix can go on to a higher-numbered one or the master.
 5. **Returns** (A to D): every strip above has four sends, each before or after its fader.
 6. **Master**: inserts and fader, then Master safety, always last.
