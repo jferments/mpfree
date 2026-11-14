@@ -133,6 +133,21 @@ pub struct ChainState {
     /// The favourite and recent effects (the app keeps them in the store,
     /// `mpfree_fx::picker`).
     pub shelf: mpfree_fx::picker::Shelf,
+    /// The selected effect's modes, when it is one of a family
+    /// (`mpfree_fx::families`): the Mode chooser.
+    pub mode: Option<ModeView>,
+}
+
+/// The selected insert's family and its modes, for the Mode chooser.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ModeView {
+    /// "Reverb".
+    pub family: &'static str,
+    /// The modes' names, in the chooser's order.
+    pub modes: Vec<&'static str>,
+    /// The mode it is in (None: a Cloud reverb set to its own Plate or
+    /// Room, in none of them).
+    pub current: Option<usize>,
 }
 
 impl Default for ChainState {
@@ -157,6 +172,7 @@ impl Default for ChainState {
             picking: false,
             plugins: Vec::new(),
             shelf: mpfree_fx::picker::Shelf::default(),
+            mode: None,
         }
     }
 }
@@ -203,21 +219,33 @@ fn summary(n: &dyn Node) -> String {
 /// and the parameters of group `g` (readonly meters left out), at most
 /// [`KNOBS_PER_PAGE`].
 pub fn page(params: &'static [ParamInfo], g: usize) -> (Vec<&'static str>, Vec<ParamInfo>) {
+    page_hiding(params, &[], g)
+}
+
+/// [`page`] without the parameters in `hide` (a family mode's fixed ones,
+/// which the Mode chooser stands for).
+pub fn page_hiding(
+    params: &'static [ParamInfo],
+    hide: &[(u16, f32)],
+    g: usize,
+) -> (Vec<&'static str>, Vec<ParamInfo>) {
+    let shown = |p: &&ParamInfo| !p.readonly && !hide.iter().any(|&(h, _)| h == p.id);
     let mut groups: Vec<&'static str> = Vec::new();
-    for p in params.iter().filter(|p| !p.readonly) {
+    for p in params.iter().filter(shown) {
         if !groups.contains(&p.group) {
             groups.push(p.group);
         }
     }
-    // Groups too big for one page split into "Name", "Name 2" ...; kept
-    // simple: the page shows the first KNOBS_PER_PAGE of the group.
+    // A group bigger than a page shows its first KNOBS_PER_PAGE: every
+    // built-in effect keeps its groups within that (tests/reach.rs). How
+    // longer groups (hosted plugins) get pages is still open.
     let g = g.min(groups.len().saturating_sub(1));
     let ps = groups
         .get(g)
         .map(|name| {
             params
                 .iter()
-                .filter(|p| !p.readonly && p.group == *name)
+                .filter(|p| shown(p) && p.group == *name)
                 .take(KNOBS_PER_PAGE)
                 .copied()
                 .collect()
@@ -256,7 +284,7 @@ impl ChainState {
             let modulated = engine.rows().any(|r| r.target.owner == owner);
             slots.push(SlotView {
                 uid,
-                name: n.info().name.to_string(),
+                name: mpfree_fx::families::insert_name(n),
                 summary: summary(n),
                 on: chain.is_on(i),
                 macros,
@@ -267,9 +295,20 @@ impl ChainState {
             .filter(|s| *s < slots.len())
             .or(if slots.is_empty() { None } else { Some(0) });
         let (mut groups, mut params, mut group_shown) = (Vec::new(), Vec::new(), 0);
+        let mut mode = None;
         if let (Some(s), Some(n)) = (selected, selected.and_then(|s| chain.node(s))) {
             let owner = Owner::Insert(strip, slots[s].uid);
-            let (gs, ps) = page(n.params(), group);
+            let found = mpfree_fx::families::node_mode(n);
+            mode = found.map(|(f, current)| ModeView {
+                family: f.name,
+                modes: f.modes.iter().map(|m| m.label).collect(),
+                current,
+            });
+            let hide = match found {
+                Some((f, Some(m))) => f.modes[m].fixed,
+                _ => &[],
+            };
+            let (gs, ps) = page_hiding(n.params(), hide, group);
             group_shown = group.min(gs.len().saturating_sub(1));
             groups = gs;
             params = ps
@@ -324,6 +363,7 @@ impl ChainState {
             picking: false,
             plugins: Vec::new(),
             shelf: mpfree_fx::picker::Shelf::default(),
+            mode,
         }
     }
 
@@ -333,8 +373,8 @@ impl ChainState {
     }
 
     /// The page's own Q-Link knobs for [`mpfree_mod::Bindings::set_page`]:
-    /// the first four knobs of the effect page shown (Drive: Mode, Drive,
-    /// Tone, Bias), and the effect's name.
+    /// the first four knobs of the effect page shown (Drive: Drive, Tone,
+    /// Bias, since its Mode is the Mode chooser), and the effect's name.
     pub fn qlinks(&self) -> (String, [Option<Binding>; KNOBS]) {
         let name = self
             .selected
@@ -523,14 +563,17 @@ pub struct Pick {
 }
 
 /// The built-in effects the picker offers on `strip`, in the registry's
-/// order (grouped by category). Master safety only on the master strip.
+/// order (grouped by category), a family of effects with modes as one
+/// tile (`mpfree_fx::families::tiles`). Master safety only on the master
+/// strip.
 pub fn picks(strip: Strip) -> Vec<Pick> {
-    mpfree_fx::registry::offered(strip == Strip::Master)
-        .map(|e| Pick {
-            id: e.id,
-            name: e.name,
-            about: e.about,
-            category: e.category,
+    mpfree_fx::families::tiles(strip == Strip::Master)
+        .into_iter()
+        .map(|t| Pick {
+            id: t.id,
+            name: t.name,
+            about: t.about,
+            category: t.category,
         })
         .collect()
 }

@@ -16,6 +16,8 @@
 //! - an audio lane's header: its arm dot `Toggle(audio track)`, its name
 //!   or input chip `Cell { row: audio track, col: PANEL }` (on the lift,
 //!   unless the finger dragged to scroll);
+//! - "+ Track", the lane after the MIDI lanes while
+//!   [`SongLanes::can_add_track`] holds: `Tab(ADD_TRACK)`;
 //! - "+ Audio", the last lane: `Tab(ADD_AUDIO)`;
 //! - the track panel, while one is open ([`SongLanes::panel`]): Close
 //!   `Tab(PANEL_CLOSE)`, Arm `Toggle(audio track)`, Mute, Solo and Takes
@@ -101,6 +103,9 @@ pub const MONITORS: [(&str, Monitor); 3] = [
 pub fn input_chip(i: Input) -> &'static str {
     INPUTS.iter().find(|x| x.1 == i).map_or("", |x| x.0)
 }
+/// What Tab reports for "+ Track" (after the MIDI lanes): well clear of
+/// the panel's, so a step past the panel's last is still nothing.
+pub const ADD_TRACK: usize = 0x100;
 /// A region drag's `Marker` index is the audio track times this, plus
 /// the region's index (`mpfree_audiotracks::MAX_REGIONS`).
 pub const REGION_SLOTS: usize = mpfree_audiotracks::MAX_REGIONS;
@@ -224,6 +229,9 @@ pub struct SongLanes {
     pub panel: Option<usize>,
     /// The audio track whose take lanes show under its lane.
     pub takes_open: Option<usize>,
+    /// The project has room for another track: "+ Track" follows the
+    /// MIDI lanes.
+    pub can_add_track: bool,
     /// A finger swiping across a take lane: the take, where it went down
     /// and where it is now (x).
     pub(crate) swipe: Option<(u16, i32, i32)>,
@@ -296,6 +304,7 @@ impl Default for SongLanes {
             region: None,
             panel: None,
             takes_open: None,
+            can_add_track: false,
             swipe: None,
             moving: None,
             first_lane: 0,
@@ -320,6 +329,8 @@ enum Lane {
     Audio(usize),
     /// Take lane `k` (an index into its `takes`) of audio lane `a`.
     Take(usize, usize),
+    /// "+ Track", after the MIDI lanes.
+    AddTrack,
     Add,
 }
 
@@ -454,6 +465,7 @@ impl SongLanes {
             region: self.region,
             panel: self.panel,
             takes_open: self.takes_open,
+            can_add_track: self.can_add_track,
             swipe: self.swipe,
             moving: self.moving,
             first_lane: self.first_lane,
@@ -473,20 +485,29 @@ impl SongLanes {
         self.open_takes().map_or(0, |o| o.1)
     }
 
-    /// Lanes in all: the MIDI lanes, the audio lanes (with the open
-    /// track's take lanes under it), then "+ Audio" while there is room
-    /// for another audio track.
+    /// Lanes in all: the MIDI lanes ("+ Track" after them while there is
+    /// room for another), the audio lanes (with the open track's take
+    /// lanes under it), then "+ Audio" while there is room for another
+    /// audio track.
     fn lane_count(&self) -> usize {
-        self.tracks.len()
+        self.midi_lanes()
             + self.audio.len()
             + self.take_count()
             + usize::from(self.audio.len() < MAX_AUDIO)
     }
 
+    /// The MIDI lanes and "+ Track".
+    fn midi_lanes(&self) -> usize {
+        self.tracks.len() + usize::from(self.can_add_track)
+    }
+
     fn lane(&self, k: usize) -> Option<Lane> {
-        let m = self.tracks.len();
-        if k < m {
+        if k < self.tracks.len() {
             return Some(Lane::Midi(k));
+        }
+        let m = self.midi_lanes();
+        if k < m {
+            return Some(Lane::AddTrack);
         }
         let open = self.open_takes();
         let mut j = k - m;
@@ -508,7 +529,7 @@ impl SongLanes {
     /// The lane number of audio lane `a` (an index into `audio`).
     fn audio_k(&self, a: usize) -> usize {
         let before = self.open_takes().filter(|o| o.0 < a).map_or(0, |o| o.1);
-        self.tracks.len() + a + before
+        self.midi_lanes() + a + before
     }
 
     /// Lane `k`'s height: take lanes are thin.
@@ -630,6 +651,17 @@ impl SongLanes {
     /// The audio lane whose arm dot is under (x, y).
     fn arm_hit(&self, r: Rect, x: i32, y: i32) -> Option<usize> {
         (0..self.audio.len()).find(|&a| self.arm_rect(r, a).is_some_and(|d| d.contains(x, y)))
+    }
+
+    /// "+ Track", if it is in view.
+    pub fn add_track_rect(&self, r: Rect) -> Option<Rect> {
+        if !self.can_add_track {
+            return None;
+        }
+        let g = self.geo(r);
+        let row = self.lane_rect(&g, self.tracks.len())?;
+        let h = (row.h - 8).min(30);
+        Some(Rect::new(row.x, row.y + (row.h - h) / 2, NAME_W - 4, h))
     }
 
     /// "+ Audio", if it is in view.
@@ -1155,9 +1187,10 @@ impl Widget for SongLanes {
             cx.canvas
                 .fill_round_rect(Rect::new(g.lanes.x - 9, y, 3, h), 1, t.text_faint);
         }
-        // A thin line between the MIDI lanes and the audio lanes.
-        if let Some(row) = self.lane_rect(&g, self.tracks.len()) {
-            if self.tracks.len() > self.first(&g) {
+        // A thin line between the MIDI lanes (and "+ Track") and the
+        // audio lanes.
+        if let Some(row) = self.lane_rect(&g, self.midi_lanes()) {
+            if self.midi_lanes() > self.first(&g) {
                 cx.canvas
                     .fill_rect(Rect::new(row.x, row.y, row.w, 1), t.outline);
             }
@@ -1227,6 +1260,19 @@ impl Widget for SongLanes {
                         lane.color.mix(t.surface, 0.5),
                     );
                     self.paint_take(cx, &g, a, j, row);
+                }
+                Some(Lane::AddTrack) => {
+                    if let Some(b) = self.add_track_rect(r) {
+                        cx.canvas.stroke_round_rect(b, 8, 1, t.outline);
+                        cx.text(
+                            FontId::Bold,
+                            t.size_small - 1.0,
+                            b,
+                            Align::Center,
+                            t.text_dim,
+                            "+ Track",
+                        );
+                    }
                 }
                 Some(Lane::Add) => {
                     if let Some(b) = self.add_rect(r) {
@@ -1378,6 +1424,9 @@ impl Widget for SongLanes {
             })
             .collect();
         out.push(Target::tap("rec-song", 0, "Rec song", self.rec_rect(r)));
+        if let Some(b) = self.add_track_rect(r) {
+            out.push(Target::tap("add-track", 0, "+ Track", b));
+        }
         if let Some(b) = self.add_rect(r) {
             out.push(Target::tap("add-audio", 0, "+ Audio", b));
         }
@@ -1533,6 +1582,9 @@ impl Widget for SongLanes {
         }
         if self.add_rect(r).is_some_and(|b| b.contains(x, y)) {
             return Some(EventKind::Tab(ADD_AUDIO));
+        }
+        if self.add_track_rect(r).is_some_and(|b| b.contains(x, y)) {
+            return Some(EventKind::Tab(ADD_TRACK));
         }
         if let Some(asked) = self.panel_touch(r, x, y) {
             return asked;
@@ -1881,6 +1933,33 @@ mod tests {
         ui.show("p").unwrap();
         let mut c = mpfree_ui::SoftCanvas::new(1280, 800);
         assert!(!ui.paint(&mut c).is_empty());
+    }
+
+    /// "+ Track" comes after the MIDI lanes (up to 128 tracks, Jay 14
+    /// Nov), before the audio lanes, and asks for a track.
+    #[test]
+    fn plus_track_follows_the_midi_lanes() {
+        let mut s = lanes();
+        s.audio = vec![audio_lane(0, "Vocal", Vec::new())];
+        let r = Rect::new(12, 140, 814, 534);
+        assert_eq!(s.lane(2), Some(Lane::Audio(0)));
+        assert!(s.add_track_rect(r).is_none());
+        s.can_add_track = true;
+        // Drums, Bass, + Track, Vocal, + Audio.
+        assert_eq!(s.lane_count(), 5);
+        assert_eq!(s.lane(2), Some(Lane::AddTrack));
+        assert_eq!(s.lane(3), Some(Lane::Audio(0)));
+        assert_eq!(s.lane(4), Some(Lane::Add));
+        assert_eq!(s.audio_k(0), 3);
+        let b = s.add_track_rect(r).unwrap();
+        assert!(
+            b.bottom() <= s.header_rect(r, 0).unwrap().y,
+            "above the audio lanes"
+        );
+        assert_eq!(
+            s.touch(1, Touch::Down, b.x + 4, b.y + 4, r),
+            Some(EventKind::Tab(ADD_TRACK))
+        );
     }
 
     fn take(id: u16, name: &str, start: Tick, end: Tick, used: Vec<(Tick, Tick)>) -> TakeLane {

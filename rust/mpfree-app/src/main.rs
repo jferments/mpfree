@@ -94,6 +94,7 @@ mod debug_page;
 mod desk;
 mod drawing;
 mod engines;
+mod fxmodes;
 mod gui;
 mod instruments;
 mod kit;
@@ -1987,8 +1988,9 @@ fn kit_pad_colours(kit: &kit::Kit, k: usize) -> [[u8; 3]; 16] {
 }
 
 /// TRACK MUTE's pad colours (control map decision 5: lit = playing).
-/// Tracks: pads 1-8 lit green while their track plays a clip, dim green
-/// with nothing launched, red while muted; the rest dark. The kit's pads:
+/// Tracks: each pad lit green while its track (in the mute bank) plays a
+/// clip, dim green with nothing launched, red while muted, dark with no
+/// track. The kit's pads:
 /// lit in the kit's colour (`kit`) while they play, red while muted, dark
 /// without a sound. `track(t)` is (muted, launched), None past the last
 /// track. Only colours Akai's app was seen sending (a kit's resting
@@ -2014,10 +2016,12 @@ fn mute_colours(
     })
 }
 
-/// TRACK MUTE's key `pad` pressed: its track (pads 1-8), or the pad itself
-/// in the kit, muted or let play. The line for the log.
+/// TRACK MUTE's key `pad` pressed: its track in bank `bank` (A = 0:
+/// tracks 1-16, B 17-32 ...), or the pad itself in the kit, muted or let
+/// play. The line for the log.
 fn mute_key(
     keys: app::MuteKeys,
+    bank: usize,
     pad: usize,
     time: &mut time::TimeHost,
     mix: &mut mixing::MixHost,
@@ -2025,7 +2029,7 @@ fn mute_key(
     match keys {
         app::MuteKeys::Off => String::new(),
         app::MuteKeys::Tracks => time
-            .toggle_mute(pad)
+            .toggle_mute(bank * 16 + pad)
             .unwrap_or_else(|e| format!("track mute: {e}")),
         app::MuteKeys::Pads => {
             let mute = mix.pad_mutes() & (1 << pad) == 0;
@@ -3520,8 +3524,12 @@ fn player_session(
     // CLAP plugins in files/plugins/ (plugins.rs), each listed by its own
     // plugin process so a bad file can't take the app with it. Done here,
     // before the sound starts, since a file may take a while to answer.
-    let (found_plugins, notes) =
-        plugins::scan(plugins::program(&plugins::app_path()), o.data.as_deref());
+    // Each process lives in files/plugin-home/ (made by the store), so what
+    // a plugin keeps for itself goes on the data partition.
+    let (found_plugins, notes) = plugins::scan(
+        plugins::program(&plugins::app_path()).with_home(&plugins::home(&store)),
+        o.data.as_deref(),
+    );
     for line in notes {
         out.say(&line);
     }
@@ -3902,7 +3910,13 @@ fn player_session(
                     if pad < 16 && app.mute_keys() != app::MuteKeys::Off =>
                 {
                     mute_pressed[pad] = true;
-                    out.note(&mute_key(app.mute_keys(), pad, &mut time, &mut mix));
+                    out.note(&mute_key(
+                        app.mute_keys(),
+                        app.mute_bank(),
+                        pad,
+                        &mut time,
+                        &mut mix,
+                    ));
                 }
                 gui::FromUi::Pad { pad, down: false } if pad < 16 && mute_pressed[pad] => {
                     mute_pressed[pad] = false;
@@ -4505,6 +4519,7 @@ fn player_session(
                     mute_pressed[pad as usize] = true;
                     out.note(&mute_key(
                         app.mute_keys(),
+                        app.mute_bank(),
                         pad as usize,
                         &mut time,
                         &mut mix,
@@ -4867,6 +4882,8 @@ fn player_session(
                     later.extend(app.synth_bank(target));
                     bank_lights = true;
                 }
+                // TRACK MUTE came or went, or its bank changed.
+                app::Effect::BankLights => bank_lights = true,
                 app::Effect::Bank { button, shift } => {
                     let now = kit_to.unwrap_or(if synth_on { synth_kit } else { player.kit() });
                     if button < 4 {
@@ -4971,9 +4988,12 @@ fn player_session(
             out.show(gui::ToUi::Kit(k));
             bank_lights = true;
         }
-        // The PAD BANK buttons found so far: the bank playing is lit.
+        // The PAD BANK buttons found so far: the bank playing is lit, or
+        // TRACK MUTE's bank while the pads mute tracks.
         if bank_lights {
-            let bank = Some(if synth_on {
+            let bank = Some(if app.mute_keys() == app::MuteKeys::Tracks {
+                app.mute_bank() % 4
+            } else if synth_on {
                 synth.settings().bank % 4
             } else {
                 player.kit() % 4
@@ -5001,6 +5021,7 @@ fn player_session(
         parts.lap(parts::APP);
         let time_span = Span::start();
         app.set_rolling(time.info().state.rolling());
+        app.set_track_count(time.track_count());
         // The transport buttons' lights follow the transport and the
         // loops (only the ones that changed; next period's effects).
         {
@@ -5232,7 +5253,8 @@ fn player_session(
         let keys = app.mute_keys();
         if keys != app::MuteKeys::Off {
             let kit = player.kit();
-            let track = |t: usize| time.muted(t).map(|m| (m, time.launched(t)));
+            let first = app.mute_bank() * 16;
+            let track = |t: usize| time.muted(first + t).map(|m| (m, time.launched(first + t)));
             let want = mute_colours(
                 keys,
                 sound_colours(player.sounds(kit), kit),
@@ -6488,22 +6510,36 @@ mod tests {
         let mut time = time::TimeHost::new(RATE, 120.0).unwrap();
         let mut mix = mixing::MixHost::new(RATE, -6.0, -6.0);
         assert_eq!(
-            mute_key(MuteKeys::Tracks, 2, &mut time, &mut mix),
+            mute_key(MuteKeys::Tracks, 0, 2, &mut time, &mut mix),
             "track mute: Track 3 muted"
         );
         assert_eq!(time.muted(2), Some(true));
         assert_eq!(
-            mute_key(MuteKeys::Tracks, 9, &mut time, &mut mix),
+            mute_key(MuteKeys::Tracks, 0, 9, &mut time, &mut mix),
             "track mute: no track 10"
         );
+        // Bank B: pad 3 is track 19, once there is one.
         assert_eq!(
-            mute_key(MuteKeys::Pads, 4, &mut time, &mut mix),
+            mute_key(MuteKeys::Tracks, 1, 2, &mut time, &mut mix),
+            "track mute: no track 19"
+        );
+        while time.track_count() < 24 {
+            time.act(TimeAction::AddTrack).unwrap();
+        }
+        assert_eq!(
+            mute_key(MuteKeys::Tracks, 1, 2, &mut time, &mut mix),
+            "track mute: Track 19 muted"
+        );
+        assert_eq!(time.muted(18), Some(true));
+        assert_eq!(time.muted(2), Some(true), "bank A's track 3 is still muted");
+        assert_eq!(
+            mute_key(MuteKeys::Pads, 0, 4, &mut time, &mut mix),
             "pad mute: pad 5 muted"
         );
         assert_eq!(mix.pad_mutes(), 1 << 4);
         assert_eq!(mix.play_levels().pad_mutes, 1 << 4, "the speakers show it");
         assert_eq!(
-            mute_key(MuteKeys::Pads, 4, &mut time, &mut mix),
+            mute_key(MuteKeys::Pads, 0, 4, &mut time, &mut mix),
             "pad mute: pad 5 plays"
         );
         assert_eq!(mix.pad_mutes(), 0);
