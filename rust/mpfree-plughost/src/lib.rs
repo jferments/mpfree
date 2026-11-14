@@ -19,9 +19,12 @@
 //!   [`Sandbox::restart`] starts a new process on the same shared memory,
 //!   prepares it and loads the state the host saved, and the node carries
 //!   on.
-//! - **Main-thread work** (state, a value's text) goes over a socket from
-//!   the control thread. The process answers the plugin's own main-thread
-//!   requests itself.
+//! - **Main-thread work** (state, a value's text, loading a preset) goes
+//!   over a socket from the control thread. The process answers the
+//!   plugin's own main-thread requests itself.
+//! - **A plugin's presets** are listed by a process of their own
+//!   ([`presets`], `--presets`), since finding them runs the plugin's code
+//!   and can take a while.
 //!
 //! The node's id and parameters are the same as `mpfree-clap`'s in-process
 //! node (`clap:` and the plugin id), so a project doesn't care which runs.
@@ -59,6 +62,9 @@ pub const MAX_PENDING: usize = 256;
 /// How long the host waits for the process to start or answer the control
 /// channel.
 pub const CONTROL_TIMEOUT: Duration = Duration::from_secs(10);
+/// How long [`presets`] waits for a plugin file's presets to be listed
+/// (Surge XT reads its whole data folder and every patch's header).
+pub const PRESETS_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// Why the sandbox couldn't start or answer.
 #[derive(Debug)]
@@ -340,10 +346,106 @@ pub fn parse_list_line(line: &str) -> Option<Listed> {
 /// or hangs while loading can't take MPFree with it. Waits at most
 /// [`CONTROL_TIMEOUT`], then kills the process. Control thread only.
 pub fn list(program: &Program, plugin: &Path) -> Result<Vec<Listed>, Error> {
+    let out = run_tool(program, "--list", plugin, "list", CONTROL_TIMEOUT)?;
+    Ok(out.lines().filter_map(parse_list_line).collect())
+}
+
+/// Every preset the `.clap` file `plugin`'s preset providers know of (for
+/// all its plugins: [`mpfree_clap::Preset::is_for`] picks one's), found by
+/// the plugin process with `--presets`, so a provider that crashes or
+/// hangs can't take MPFree with it. Waits at most [`PRESETS_TIMEOUT`].
+/// Control thread only; it can take seconds.
+pub fn presets(program: &Program, plugin: &Path) -> Result<mpfree_clap::Found, Error> {
+    let out = run_tool(
+        program,
+        "--presets",
+        plugin,
+        "list its presets",
+        PRESETS_TIMEOUT,
+    )?;
+    Ok(parse_presets(&out))
+}
+
+/// Reads `--presets` output ([`child::preset_line`] and the lines after).
+/// Other lines (a plugin's own chatter on stdout) are skipped.
+pub fn parse_presets(out: &str) -> mpfree_clap::Found {
+    let mut found = mpfree_clap::Found::default();
+    for line in out.lines() {
+        let f: Vec<&str> = line.split('\t').collect();
+        match f.as_slice() {
+            ["preset", ..] => {
+                if let Some(p) = parse_preset_line(line) {
+                    found.presets.push(p);
+                }
+            }
+            ["error", e] => found.errors.push(unescape(e)),
+            ["more-errors", n] => found.more_errors = n.parse().unwrap_or(0),
+            ["cut-short"] => found.cut_short = true,
+            _ => {}
+        }
+    }
+    found
+}
+
+fn unescape(s: &str) -> String {
+    let mut o = String::with_capacity(s.len());
+    let mut it = s.chars();
+    while let Some(c) = it.next() {
+        if c != '\\' {
+            o.push(c);
+            continue;
+        }
+        match it.next() {
+            Some('t') => o.push('\t'),
+            Some('n') => o.push('\n'),
+            Some('r') => o.push('\r'),
+            Some(other) => o.push(other),
+            None => o.push('\\'),
+        }
+    }
+    o
+}
+
+/// Reads one `preset` line of `--presets` ([`child::preset_line`]).
+pub fn parse_preset_line(line: &str) -> Option<mpfree_clap::Preset> {
+    let f: Vec<String> = line.split('\t').map(unescape).collect();
+    if f.len() < 8 || f[0] != "preset" || f[1].is_empty() {
+        return None;
+    }
+    let place = if f[2] == "plugin" {
+        mpfree_clap::Place::Plugin
+    } else {
+        let path = f[2].strip_prefix("file:")?;
+        if path.is_empty() {
+            return None;
+        }
+        mpfree_clap::Place::File(PathBuf::from(path))
+    };
+    Some(mpfree_clap::Preset {
+        name: f[1].clone(),
+        place,
+        load_key: (!f[3].is_empty()).then(|| f[3].clone()),
+        flags: f[4].parse().ok()?,
+        collection: f[5].clone(),
+        category: f[6].clone(),
+        creator: f[7].clone(),
+        plugins: f[8..].iter().filter(|s| !s.is_empty()).cloned().collect(),
+    })
+}
+
+/// Runs the plugin process as a tool on one plugin file (`--list`,
+/// `--presets`) and gives what it printed. Kills it after `timeout`.
+fn run_tool(
+    program: &Program,
+    mode: &str,
+    plugin: &Path,
+    what: &str,
+    timeout: Duration,
+) -> Result<String, Error> {
     use std::io::Read;
     use std::process::Stdio;
     let mut cmd = program.command();
-    cmd.arg("--list")
+    cmd.arg(mode)
         .arg(plugin)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -375,7 +477,7 @@ pub fn list(program: &Program, plugin: &Path) -> Result<Vec<Listed>, Error> {
         let _ = err.read_to_string(&mut s);
         s
     });
-    let until = Instant::now() + CONTROL_TIMEOUT;
+    let until = Instant::now() + timeout;
     let status = loop {
         match child.try_wait()? {
             Some(st) => break st,
@@ -384,9 +486,9 @@ pub fn list(program: &Program, plugin: &Path) -> Result<Vec<Listed>, Error> {
                 let _ = child.kill();
                 let _ = child.wait();
                 return Err(Error::Plugin(format!(
-                    "{} took longer than {} s to list",
+                    "{} took longer than {} s to {what}",
                     plugin.display(),
-                    CONTROL_TIMEOUT.as_secs()
+                    timeout.as_secs()
                 )));
             }
         }
@@ -401,7 +503,7 @@ pub fn list(program: &Program, plugin: &Path) -> Result<Vec<Listed>, Error> {
         };
         return Err(Error::Plugin(format!("{}: {why}", plugin.display())));
     }
-    Ok(out.lines().filter_map(parse_list_line).collect())
+    Ok(out)
 }
 
 /// Starts `exe` (the `mpfree-plughost` binary) for plugin `id` in the
@@ -894,6 +996,26 @@ impl Sandbox {
             self.shared.ask(&ToChild::LoadState(bytes.to_vec())),
             Ok(ToHost::Loaded(true))
         )
+    }
+
+    /// Loads one of the plugin's presets (as [`presets`] found it). The
+    /// values follow in the next blocks; the snapshot follows at the next
+    /// [`Sandbox::refresh_state`] (some plugins load in the background).
+    /// The error is the plugin's own message when it gave one.
+    pub fn load_preset(&self, p: &mpfree_clap::Preset) -> Result<(), String> {
+        let file = match &p.place {
+            mpfree_clap::Place::File(f) => Some(f.as_os_str().as_encoded_bytes().to_vec()),
+            mpfree_clap::Place::Plugin => None,
+        };
+        let m = ToChild::LoadPreset {
+            file,
+            key: p.load_key.clone(),
+        };
+        match self.shared.ask(&m) {
+            Ok(ToHost::PresetLoaded(r)) => r,
+            Ok(_) => Err("the plugin process answered something else".into()),
+            Err(e) => Err(e.to_string()),
+        }
     }
 
     /// How the plugin shows `value` of parameter `index`.

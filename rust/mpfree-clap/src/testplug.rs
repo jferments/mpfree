@@ -9,8 +9,10 @@
 //!
 //! The synth has presets: three built in ([`BUILT_IN_PRESETS`]), and files
 //! ending `.mptp` (its state bytes) in the folder named by the environment
-//! variable [`PRESETS_ENV`], when set. A preset discovery provider lists
-//! them and the synth's preset-load extension loads them.
+//! variable [`PRESETS_ENV`], or else in [`HOME_PRESETS`] in its home
+//! folder when that is there (as a real plugin keeps its user presets). A
+//! preset discovery provider lists them and the synth's preset-load
+//! extension loads them.
 
 use crate::sys::*;
 use std::ffi::{c_char, c_void, CStr};
@@ -33,6 +35,8 @@ pub const GAIN_ID: &str = "org.mpfree.test-gain";
 
 /// The folder of the synth's preset files, when set.
 pub const PRESETS_ENV: &str = "MPFREE_TESTPLUG_PRESETS";
+/// Without [`PRESETS_ENV`], this folder in `$HOME`, when it is there.
+pub const HOME_PRESETS: &str = "mpfree-testplug-presets";
 /// The synth's built-in presets: load key, name, category, and the gain,
 /// decay and wave they set.
 pub const BUILT_IN_PRESETS: [(&str, &str, &str, f64, f64, f64); 3] = [
@@ -1073,7 +1077,14 @@ unsafe extern "C" fn pv_init(p: *const clap_preset_discovery_provider) -> bool {
     if !filetype(ix, &t) || !location(ix, &built_in) {
         return false;
     }
-    if let Some(dir) = std::env::var_os(PRESETS_ENV).filter(|d| !d.is_empty()) {
+    let home = std::env::var_os("HOME")
+        .map(|h| std::path::PathBuf::from(h).join(HOME_PRESETS))
+        .filter(|d| d.is_dir())
+        .map(|d| d.into_os_string());
+    if let Some(dir) = std::env::var_os(PRESETS_ENV)
+        .filter(|d| !d.is_empty())
+        .or(home)
+    {
         let Ok(dir) = std::ffi::CString::new(dir.as_encoded_bytes()) else {
             return false;
         };
