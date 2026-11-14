@@ -15,7 +15,7 @@ use mpfree_node::{Ctx, Expr, Node, NodeEvent, Timed, Tuning};
 use std::sync::Arc;
 
 use mpfree_synth::wavetable::table::{Table, FRAME};
-use mpfree_synth::{Drums, Fm, Pluck, Poly, Wavetable, PARAMS};
+use mpfree_synth::{Drums, Fm, Keys, Pluck, Poly, Wavetable, PARAMS};
 
 struct Counting;
 thread_local! {
@@ -195,6 +195,22 @@ fn pluck_process_never_allocates() {
         0,
         "Pluck::process (mallet) allocated"
     );
+}
+
+#[test]
+fn keys_process_never_allocates() {
+    for model in [0.0, 1.0] {
+        let mut s = Keys::new(48_000);
+        s.set_param(mpfree_synth::keys_params::MODEL, model);
+        s.set_param(mpfree_synth::keys_params::TREMOLO, 60.0);
+        s.set_param(mpfree_synth::keys_params::DRIVE, 40.0);
+        let params = s.params();
+        assert_eq!(
+            exercise(&mut s, params, 48_000),
+            0,
+            "Keys::process (model {model}) allocated"
+        );
+    }
 }
 
 #[test]

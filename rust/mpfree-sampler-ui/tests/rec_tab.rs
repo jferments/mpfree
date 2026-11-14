@@ -403,9 +403,12 @@ fn the_strip_redraws_only_when_its_picture_changes() {
     let mut fresh = SoftCanvas::new(w, h);
     s.ui.invalidate();
     s.ui.paint(&mut shown);
+    let area = s.ui.rect_of(rec_tab::VIEW).unwrap();
     // `frames` frames of the input at `level`; how many redrew the view.
+    // The screen is never more than a frame behind: whenever the view's
+    // picture is the one painted, the screen matches a full redraw.
     let mut frames = |s: &mut RecSample, n: usize, level: f32, rolling: bool| -> usize {
-        let mut redrawn = 0;
+        let (mut redrawn, mut behind) = (0, 0);
         for _ in 0..n {
             feed_input(&mut s.feed, 0.033, level, rolling);
             s.tab
@@ -414,17 +417,25 @@ fn the_strip_redraws_only_when_its_picture_changes() {
                 redrawn += 1;
                 s.ui.paint(&mut shown);
             }
-            s.ui.invalidate();
-            s.ui.paint(&mut fresh);
-            assert!(
-                shown.px == fresh.px,
-                "the screen differs from a full redraw"
-            );
+            let v = s.ui.get::<InputView>(rec_tab::VIEW).unwrap();
+            if v.painted() == Some(v.look(area)) {
+                behind = 0;
+                s.ui.invalidate();
+                s.ui.paint(&mut fresh);
+                assert!(
+                    shown.px == fresh.px,
+                    "the screen differs from a full redraw"
+                );
+            } else {
+                behind += 1;
+                assert!(behind < 2, "the screen is {behind} frames behind");
+            }
         }
         redrawn
     };
-    // A loud input with the transport playing: the strip moves.
-    assert!(frames(&mut s, 30, 0.4, true) >= 25);
+    // A loud input with the transport playing: the strip moves at every
+    // frame, and is redrawn at every other (rec_tab::LIVE_GAP_S).
+    assert_eq!(frames(&mut s, 30, 0.4, true), 15);
     // Silence, the transport stopped: the drums scroll off, the meters
     // fall; then nothing moves but the "held" caption, once a second.
     feed_input(&mut s.feed, 31.0, 0.0, false);

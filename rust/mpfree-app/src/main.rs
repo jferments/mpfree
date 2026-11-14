@@ -2290,6 +2290,13 @@ fn wait_for<T>(
 /// `app` (from power-on, until the power goes off).
 fn player(o: &Options, timed: bool) -> Result<(), String> {
     let mut out = Out::new(o, if timed { "pad player" } else { "app" }, false);
+    // Long jobs run at idle priority, after the screen and every other
+    // thread (mpfree_lanes::os::idle_job): set before any of them starts.
+    mpfree_lanes::os::set_idle_jobs(true);
+    out.say(
+        "threads: long jobs (stretching, looper prints, sampling a synth) at idle priority, \
+         after the screen",
+    );
     let fonts = load_fonts(o, &mut out);
     let mut fb = None;
     let fb_wait = if timed {
@@ -3169,6 +3176,23 @@ fn synth_pads_note(synth: &synth::Synth) -> String {
     )
 }
 
+/// A star or an add in the effect picker changed its favourites or
+/// recents: both files are saved whole, on the store's writer thread.
+fn save_shelf(mix: &mut mixing::MixHost, store: &mpfree_store::Store, out: &mut Out) {
+    if !std::mem::take(&mut mix.shelf_dirty) {
+        return;
+    }
+    use mpfree_fx::picker as fxp;
+    for (name, text) in [
+        (fxp::FAVOURITES, mix.shelf.favourites_text()),
+        (fxp::RECENT, mix.shelf.recent_text()),
+    ] {
+        if let Err(e) = store.write(fxp::OWNER, name, text.into_bytes()) {
+            out.note(&format!("fx: {name} not saved: {e}"));
+        }
+    }
+}
+
 fn player_session(
     o: &Options,
     out: &mut Out,
@@ -3231,6 +3255,9 @@ fn player_session(
     // page wants turns, so the last position of each is kept.
     let mut qlink_at: [Option<u8>; 4] = [None; 4];
     let mut synth_meters = synth.meters();
+    // What each track plays, as the screen last heard it (the line under
+    // its name on Arrange).
+    let mut sounds_shown: gui::TrackSounds = [None; instruments::SLOTS];
     // Each sounding voice's pressure, for the Synth tab's Pressure page.
     let mut synth_pressures = [0f32; 16];
     let mut shown_pressures = 0usize;
@@ -3453,6 +3480,17 @@ fn player_session(
     // The mixer sums everything; the Level is its master fader (mixing.rs).
     let mut mix = mixing::MixHost::new(RATE, level_db, max_db);
     mix.set_plugins(std::sync::Arc::clone(&found_plugins));
+    // The effect picker's favourites and recents (files/fx/).
+    let shelf_file = |name| {
+        store
+            .read(mpfree_fx::picker::OWNER, name)
+            .map(|b| String::from_utf8_lossy(&b).into_owned())
+            .unwrap_or_default()
+    };
+    mix.shelf = mpfree_fx::picker::Shelf::read(
+        &shelf_file(mpfree_fx::picker::FAVOURITES),
+        &shelf_file(mpfree_fx::picker::RECENT),
+    );
     // The screen opens projects' plugins with the same rack.
     out.show(gui::ToUi::Plugins(std::sync::Arc::clone(&found_plugins)));
     // The plugin synths, for the Synth tab's Instrument row after the engines.
@@ -3577,6 +3615,8 @@ fn player_session(
     let (mut pings, mut last_ping, mut last_reply, mut lost) =
         (0u64, Instant::now(), Instant::now(), false);
     let mut last_timing = Instant::now();
+    // Long jobs refused idle priority, as last logged.
+    let mut idle_noted = 0;
     let mut last_status = Instant::now();
     // The Q-Links' touch sensors chatter: a release counts after 150 ms off.
     let mut touch_hold = qlink_touch::TouchHold::default();
@@ -3705,7 +3745,9 @@ fn player_session(
                 max_db,
                 card: audio,
             };
-            let Some(a) = desk.screen(a, t, out, &mut fx) else {
+            let back = desk.screen(a, t, out, &mut fx);
+            save_shelf(&mut mix, &store, out);
+            let Some(a) = back else {
                 parts.item_named(parts::SCREEN_ACTIONS, t_item, &item);
                 continue;
             };
@@ -3744,6 +3786,24 @@ fn player_session(
                 }
                 gui::FromUi::Pad { .. } => {}
                 gui::FromUi::Kit(k) => kit_to = Some(k.min(n - 1)),
+                // A tap on a track's sound line on Arrange: the track is
+                // selected (armed, as the Record panel's Armed row) and the
+                // Synth tab's MENU opens on its Instrument row.
+                gui::FromUi::TrackInstrument(track) if track < time.project().tracks.len() => {
+                    if time.armed() != Some(track) {
+                        fx.push(app::Effect::Time(TimeAction::Arm(Some(track))));
+                    }
+                    fx.extend(app.open_track_instrument(track));
+                    out.show(gui::ToUi::Synth(synth_tab(
+                        &synth,
+                        &mix.instruments,
+                        track,
+                        track_presets.get(track).copied().flatten(),
+                    )));
+                }
+                gui::FromUi::TrackInstrument(track) => {
+                    out.note(&format!("arrange: no track {}", track + 1));
+                }
                 gui::FromUi::SaveTouch(t) => {
                     let mut settings = mpfree_store::Settings::default();
                     for (k, v) in t.to_pairs() {
@@ -4047,7 +4107,9 @@ fn player_session(
                         (Some(h), Some((name, values))) => {
                             let job = instrument_job(&synth, track, h.id, Some(values));
                             if mix.build_instrument(job) {
-                                track_presets[track.min(instruments::SLOTS - 1)] = Some(k);
+                                if let Some(p) = track_presets.get_mut(track) {
+                                    *p = Some(k);
+                                }
                                 out.note(&format!("track {}: preset {name}", track + 1));
                             }
                         }
@@ -4499,7 +4561,9 @@ fn player_session(
                             }
                         }
                         app.set_track_sound(track, mix.instruments.held(track));
-                        track_presets[track.min(instruments::SLOTS - 1)] = None;
+                        if let Some(p) = track_presets.get_mut(track) {
+                            *p = None;
+                        }
                         out.show(gui::ToUi::Synth(synth_tab(
                             &synth,
                             &mix.instruments,
@@ -5417,6 +5481,13 @@ fn player_session(
             if let Some(line) = cores.late_note(counts, last_timing) {
                 out.note(&line);
             }
+            // A long job refused idle priority: in the log (and the
+            // console) within a second, with the count.
+            let idle = mpfree_lanes::os::idle_counts();
+            if idle.refused != idle_noted {
+                idle_noted = idle.refused;
+                out.note(&cores::idle_note(idle));
+            }
             // Prefs or found buttons changed: the store's thread writes them.
             for (owner, settings) in app.take_saves() {
                 if store.saves() {
@@ -5441,6 +5512,11 @@ fn player_session(
             }
             if !strip_shown(app.view()) {
                 out.show(gui::ToUi::Looper(Box::new(looper.view(app.settings.bpm))));
+            }
+            let sounds: gui::TrackSounds = std::array::from_fn(|t| mix.instruments.held(t));
+            if sounds != sounds_shown {
+                sounds_shown = sounds;
+                out.show(gui::ToUi::TrackSounds(Box::new(sounds)));
             }
             let meters = synth.meters();
             if meters != synth_meters {
