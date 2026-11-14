@@ -688,7 +688,12 @@ mod tests {
             let kick = lane(&s, "Kick").0;
             s.button("PLAY").run_for(0.1);
             s.button("TRACK MUTE");
-            assert!(s.hint().starts_with("TRACK MUTE:"), "{}", s.hint());
+            assert!(
+                s.hint()
+                    .starts_with("TRACK MUTE · bank A: pads 1-8 mute tracks 1-8"),
+                "{}",
+                s.hint()
+            );
             let from = s.hits.on.len();
             s.pad(0, 100, 0.05);
             assert!(s.time.state().tracks[0].mute, "pad 1 muted track 1");
@@ -701,7 +706,7 @@ mod tests {
             assert!(hits_on(&s, kick, from) >= 3, "track 1 plays again");
 
             s.button("TRACK MUTE");
-            assert!(!s.hint().starts_with("TRACK MUTE:"), "{}", s.hint());
+            assert!(!s.hint().starts_with("TRACK MUTE"), "{}", s.hint());
             let from = s.hits.on.len();
             s.button("STOP");
             s.pad(0, 100, 0.05);

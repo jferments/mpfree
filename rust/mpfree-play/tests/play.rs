@@ -397,3 +397,22 @@ fn chance_leaves_notes_out_differently_on_every_pass() {
         32
     );
 }
+
+#[test]
+fn all_128_tracks_play_each_on_its_own_track() {
+    let n = mpfree_seq::MAX_TRACKS;
+    let clips = (0..n)
+        .map(|k| clip(3840, &[note(0, 120, (k % 100) as u8 + 20)]))
+        .collect();
+    let v = view(clips);
+    let log = run(&v, &mut t120(), &[(0, Command::Play)], 4_000, 256);
+    let ons: Vec<(u16, u8)> = short(&log)
+        .into_iter()
+        .filter(|s| s.2 == 1)
+        .map(|s| (s.1, s.3))
+        .collect();
+    assert_eq!(ons.len(), n, "{ons:?}");
+    for (k, &(track, note)) in ons.iter().enumerate() {
+        assert_eq!((track as usize, note), (k, (k % 100) as u8 + 20));
+    }
+}

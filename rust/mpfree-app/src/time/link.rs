@@ -77,15 +77,24 @@ impl<T> Rx<T> {
 }
 
 /// The tracks' settings the audio half follows between views: which
-/// track is armed, and for each track whether its clips play through its
-/// arp, where its arp plays, and whether it records pad pressure.
+/// track is armed, and each track's [`TrackSet`]. Each half keeps one; the
+/// control half sends what changed ([`ToAudio::Tracks`], [`ToAudio::Track`]),
+/// so a message stays small however many tracks there are.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Tracks {
     pub n: usize,
     pub armed: Option<usize>,
-    pub through_arp: [bool; MAX_TRACKS],
-    pub dest: [DestId; MAX_TRACKS],
-    pub record_touch: [bool; MAX_TRACKS],
+    pub set: [TrackSet; MAX_TRACKS],
+}
+
+/// One track's settings for the audio half: whether its clips play
+/// through its arp, where its arp plays, and whether it records pad
+/// pressure.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TrackSet {
+    pub through_arp: bool,
+    pub dest: DestId,
+    pub record_touch: bool,
 }
 
 impl Tracks {
@@ -93,14 +102,14 @@ impl Tracks {
         let mut t = Tracks {
             n: project.tracks.len().min(MAX_TRACKS),
             armed,
-            through_arp: [false; MAX_TRACKS],
-            dest: [0; MAX_TRACKS],
-            record_touch: [false; MAX_TRACKS],
+            set: [TrackSet::default(); MAX_TRACKS],
         };
-        for (i, track) in project.tracks.iter().take(MAX_TRACKS).enumerate() {
-            t.through_arp[i] = track.through_arp;
-            t.dest[i] = track.dest;
-            t.record_touch[i] = track.record_touch;
+        for (s, track) in t.set.iter_mut().zip(&project.tracks) {
+            *s = TrackSet {
+                through_arp: track.through_arp,
+                dest: track.dest,
+                record_touch: track.record_touch,
+            };
         }
         t
     }
@@ -110,14 +119,14 @@ impl Tracks {
     pub fn records_pressed(&self) -> bool {
         self.armed
             .filter(|&t| t < self.n)
-            .is_some_and(|t| self.through_arp[t])
+            .is_some_and(|t| self.set[t].through_arp)
     }
 
     /// Whether the armed track records pad pressure.
     pub fn records_touch(&self) -> bool {
         self.armed
             .filter(|&t| t < self.n)
-            .is_some_and(|t| self.record_touch[t])
+            .is_some_and(|t| self.set[t].record_touch)
     }
 }
 
@@ -127,8 +136,10 @@ pub enum ToAudio {
     View(Box<PlayView>),
     /// A transport command, from the next period on.
     Command(Command),
-    /// The tracks' settings changed.
-    Tracks(Tracks),
+    /// How many tracks there are, and which is armed, changed.
+    Tracks { n: usize, armed: Option<usize> },
+    /// One track's settings changed.
+    Track(usize, TrackSet),
 }
 
 /// The audio half's counts of things lost, with each period.

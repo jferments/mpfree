@@ -63,8 +63,10 @@ use mpfree_transport::time::{Swing, Tick, PPQ};
 
 /// Clip slots per track, one per pad.
 pub const SLOTS: usize = 16;
-/// Tracks in a project, to start (decision 10).
-pub const MAX_TRACKS: usize = 16;
+/// Tracks in a project at most, as on Akai's MPC (Jay, 14 Nov 2026: up to
+/// 128). Engines keep a little state per track in fixed tables of this
+/// size, and do work only for the tracks a project has.
+pub const MAX_TRACKS: usize = 128;
 /// The shortest clip: a 1/32 note.
 pub const MIN_CLIP_TICKS: Tick = (PPQ / 8) as Tick;
 /// The longest clip: 256 bars of 4/4.
