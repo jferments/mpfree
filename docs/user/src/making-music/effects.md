@@ -1,7 +1,7 @@
 <!--
 status: changing
 covers: rust/mpfree-fx rust/mpfree-fx-ui rust/mpfree-chain-ui rust/mpfree-app/src/chain_page.rs rust/mpfree-app/src/plugins.rs rust/mpfree-plughost/src/rack.rs rust/mpfree-mpchost rust/mpfree-fx/src/perform.rs rust/mpfree-fx/src/xyfx.rs rust/mpfree-fx/src/picker.rs rust/mpfree-chain-ui/src/picker.rs
-checked: 2026-11-15 365d0f7
+checked: 2026-11-16 0893b87
 -->
 
 # Effects
@@ -31,7 +31,7 @@ Tap an effect already in a strip's insert row to open the chain editor on it. Th
 - **‹** at the top left goes back to where you opened the editor: the Mix tab as you left it, or the Pads tab.
 - Beside **‹**, the **strip button** names the strip whose chain this is (with its colour, and "Track 7" or "Pad 3" under the name). Tap it for the **strip list**: the strips by group (**Tracks**, **Pads**, **Inputs**, **Returns**, **Submixes**, **Master**), with **< >** to page through a long group. Tap a strip to open its chain instead, on its first effect, or with the list of effects open if it has none. **Back** closes the list and keeps the strip you were on.
 
-The drawing of what the effect does sits in the section it belongs to, and changes as you turn: an EQ's curve, a delay's repeats, the Ducker's pump over two beats (or after a kick), the Transient shaper on a drum hit (dashed going in, solid coming out), where the Pitch shifter puts the sound, with the steps its feedback climbs, Pitch correct's steps onto the key's notes (with a dot on the note you are singing), how far each Harmonizer voice moves on each note of the key, and the Tuner's needle.
+The drawing of what the effect does sits in the section it belongs to, and changes as you turn: an EQ's curve, a delay's repeats, the Ducker's pump over two beats (or after a kick), a reverb's tail falling to silence over its Decay (the Room's early reflections spreading out as it grows, and cut short by its Gate; the Spring's echo coming back every Length), what a reverb's or the Tape delay's tone keeps (on the tape, each time round the loop, and dashed after four), the Tape delay's echoes from each head and round again, the Multi-tap's four taps on the beat, the Channel strip's curve (the gate under its threshold, then the compressor), its EQ and the order of its stages, the Transient shaper on a drum hit (dashed going in, solid coming out), where the Pitch shifter puts the sound, with the steps its feedback climbs, Pitch correct's steps onto the key's notes (with a dot on the note you are singing), how far each Harmonizer voice moves on each note of the key, and the Tuner's needle.
 
 Adding, removing or reordering an effect while the music plays doesn't click: that strip dips out for a moment and comes back. If the chain is full or the mixer is busy, the hint line says so for a few seconds.
 
@@ -70,7 +70,7 @@ The list of effects groups them: Dynamics, EQ and filter, Drive and colour, Modu
 | **Gate** | Silences (or turns down) what falls under the threshold, so drums stop ringing. It can open from another strip's sound, for rhythmic gating. |
 | **De-esser** | Turns down harsh "s" and "t" sounds. **Listen** plays only what it hears, to find the right frequency. |
 | **Multiband comp** | Three compressors, on the lows, mids and highs. |
-| **Channel strip** | A gate, a compressor and an EQ in one, as on a mixing desk. Its first page, **Strip**, switches each one on or off and holds **Order** (the EQ before or after the gate and compressor) and **Output**; then a page each for the gate, the compressor and the EQ. |
+| **Channel strip** | A gate, a compressor and an EQ in one, as on a mixing desk. Its first page, **Main**, shows the three as sections, each with its switch, then the **Signal path** (**Order**: the EQ before or after the gate and compressor) and **Output**; then a page each for the gate, the compressor and the EQ. |
 | **EQ** | Shapes the tone with up to eight bands (each a bell, a shelf or a notch) and low and high cuts: cut mud, add air, take out a ring, thin out a sound. Its page is a graph with a dot for each band (see [The EQ's page](#the-eqs-page)); each band can be on (**ON**), switched off with its settings kept (**OFF**), or removed. Bands 1 to 4 start on and bands 5 to 8 start removed. |
 | **Filter** | **Multi**: low-pass, high-pass, band-pass and more, with resonance. **DJ**: one knob, turn left for a low-pass, right for a high-pass. |
 | **Comb** | Short tuned delays for metallic, resonant tones. |
