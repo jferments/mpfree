@@ -91,9 +91,11 @@ sound starts:
   drops are counted in the report when the session ends, and on the Dev
   tab. One cost: if the program aborts (release builds abort on a panic),
   the lines still queued or buffered are lost, and those are the last
-  lines before the crash. The screen thread prints each line to the
-  system journal (`journalctl`) as soon as it gets it, so read the end of
-  a crashed run there rather than in report.txt.
+  lines before the crash. The panic's own line is not: the panic hook
+  (`crash::note_panics`) writes it to report.txt itself, synced, before
+  the abort. The screen thread prints each line to the system journal
+  (`journalctl`) as soon as it gets it, so read the end of a crashed run
+  there.
 - **Effects** (`control::Builder`, thread `mpfree-build`). Building an
   effect allocates all it will use (the Cloud reverb about 9 MB, every page
   locked under `mlockall`). The chain editor's Add now asks the builder,

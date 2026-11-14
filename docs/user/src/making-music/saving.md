@@ -29,6 +29,7 @@ These are saved on the stick as soon as you change them, and are back the next t
 | Your Prefs: pad velocity curve, how Latch keeps pads, the audio buffer, the loop memory, developer tools, the theme, what opens at start, screen pad velocity | [Prefs](../reference/prefs.md) |
 | The metronome on or off, and its level | **SHIFT + PLAY START**, or the Play page's options (**MENU**) |
 | The Looper's level, and the line input's latency once you have set it by hand | The Looper tab's options (see [Recording loops](looping.md)) |
+| Whether the Play page's Beats view shows the timing strip | The Play page's options (**MENU**) |
 | The buttons MPFree has learned | Prefs > Map controls, or the button guide |
 | Each MIDI port's input (Plays tracks, Learn only or Both) and thru | The mixer's I/O view, MIDI section (see [MIDI, sync and CV](midi-and-cv.md)) |
 | Arpeggiator patterns you save, and your own scales | The pattern workspace's **Save** (see [Note Repeat, Latch and the arpeggiator](note-repeat-and-arp.md#the-pattern-workspace)) |
@@ -73,6 +74,12 @@ A save is all or nothing. The project's new files are written to the side first 
 
 The last ten saves of each project are kept. Pick a project and press **Earlier saves** to see them by when they were saved, and open one to go back. Saving it then makes it the newest, and nothing is lost.
 
+### Autosave
+
+While you have changes you haven't saved, MPFree saves them every 2 minutes into a project of its own, **Autosave** in the Projects place, even while it plays. It never saves over your project: your project changes only when you save it, and your work still counts as unsaved. Autosave keeps only its latest copy, with no earlier saves, and nothing on the screen changes when it saves. If you have a project of your own called Autosave, it uses Autosave 2 instead.
+
+If MPFree stops while you have unsaved changes (a crash, or the MPC switched off without saving), the next start keeps what autosave had as a project of its own, named after when it was autosaved (Unsaved 2026-11-14 21.04), and for a few seconds the hint line at the bottom of the screen says where it is (the Events log keeps it). Open it from **BROWSE** like any project: it opens as unsaved work, and **SHIFT + BROWSE** saves it as a new project. Delete it in the browser once you don't need it. The changes from the last 2 minutes or so before the stop may be missing, so save often all the same.
+
 ### Opening a project
 
 Press **BROWSE**, pick **Projects** on the left, pick a project and push the data wheel (or press **Open**). Playback stops, and the project's clips, kits, synth sounds, tracks' instruments and mixer come in together. A plugin the project used that isn't in `files/plugins/` on this stick is left out, and the Events log names its file so you can put it back: a missing plugin effect leaves its strip without it, and a track whose plugin synth is missing plays the kit. The loops you had fade out, and the project's loops come in a moment later. The same goes for the audio tracks: a recording ends, and the project's takes come in a moment later. If the project's takes don't all fit in **Audio track memory** ([Prefs](../reference/prefs.md)), the Events log says which were left out. A part MPFree can't read (from a newer version, say) is left as it is, and the Events log says which.
@@ -86,6 +93,8 @@ If you have changed anything since you last saved or opened, opening a project o
 ### At start
 
 MPFree starts with a new, empty project. To have it open the project you last saved or opened instead, set **At start** in [Prefs](../reference/prefs.md) to **Last project**: once the sound is going, the project opens as if you had opened it from the browser. If it has been deleted since, the Events log says so and the new project stays.
+
+**After a crash**, MPFree starts again by itself a few seconds later, and this time it opens nothing: the new, empty project stays even if At start says **Last project**, and for a few seconds the hint line at the bottom of the screen says which project wasn't opened, and where your unsaved work is if autosave had any (the Events log keeps it). Open it from **BROWSE** when you're ready. This way a project that makes MPFree crash as it opens can't do it again at every start. Switching the MPC off and on starts as usual.
 
 ## The browser
 

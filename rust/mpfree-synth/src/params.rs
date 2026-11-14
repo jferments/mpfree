@@ -13,7 +13,7 @@ ids! {
     OSC2_WAVE = 10, OSC2_OCT = 11, OSC2_SEMI = 12, OSC2_FINE = 13, OSC2_PW = 14, OSC2_LEVEL = 15,
     SUB_LEVEL = 16, NOISE_LEVEL = 17,
     UNISON = 20, UNISON_DETUNE = 21, UNISON_SPREAD = 22,
-    FILTER_MODE = 30, CUTOFF = 31, RESONANCE = 32, DRIVE = 33, FENV_AMOUNT = 34, KEY_TRACK = 35, VEL_CUTOFF = 36,
+    FILTER_MODE = 30, CUTOFF = 31, RESONANCE = 32, DRIVE = 33, FENV_AMOUNT = 34, KEY_TRACK = 35, VEL_CUTOFF = 36, DIST = 37,
     FENV_A = 40, FENV_D = 41, FENV_S = 42, FENV_R = 43,
     AMP_A = 50, AMP_D = 51, AMP_S = 52, AMP_R = 53, VEL_AMP = 54,
     LFO_SHAPE = 60, LFO_RATE = 61, LFO_SYNC = 62, LFO_PITCH = 63, LFO_CUTOFF = 64, LFO_PW = 65, LFO_AMP = 66, LFO_RETRIG = 67,
@@ -58,6 +58,7 @@ pub mod target {
     pub const WIDTH: u8 = 8;
     pub const SUB: u8 = 9;
     pub const NOISE: u8 = 10;
+    pub const DIST: u8 = 11;
 }
 
 /// The highest id plus one: values live in an array indexed by id.
@@ -285,6 +286,16 @@ const BASE: &[ParamInfo] = &[
         Linear,
     ),
     p(DRIVE, "Drive", "Filter", 0.0, 24.0, 0.0, Unit::Db, Linear),
+    p(
+        DIST,
+        "Distortion",
+        "Filter",
+        0.0,
+        24.0,
+        0.0,
+        Unit::Db,
+        Linear,
+    ),
     p(
         FENV_AMOUNT,
         "Env amount",
@@ -570,7 +581,9 @@ pub static PRESETS: &[Preset] = &[
             (SUB_LEVEL, 70.0),
             (CUTOFF, 260.0),
             (RESONANCE, 35.0),
-            (DRIVE, 18.0),
+            // Its grit after the filter (Jay after live test 3): before
+            // it, the 260 Hz cutoff takes the grit out.
+            (DIST, 18.0),
             (FENV_AMOUNT, 3.2),
             (FENV_D, 220.0),
             (FENV_S, 10.0),
@@ -581,8 +594,8 @@ pub static PRESETS: &[Preset] = &[
             (GLIDE, 40.0),
             (KEY_TRACK, 30.0),
             (LEVEL, 6.0),
-            // Pressure adds grit: 6 dB more drive.
-            (press_target(0), target::DRIVE as f32),
+            // Pressure adds grit: 6 dB more distortion.
+            (press_target(0), target::DIST as f32),
             (press_depth(0), 25.0),
         ],
     },

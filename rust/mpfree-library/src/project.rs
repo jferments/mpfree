@@ -47,6 +47,12 @@ pub const MAX_PART: usize = 4 << 20;
 pub const MAX_PARTS: usize = 64;
 /// Earlier saves kept by default.
 pub const KEEP_VERSIONS: usize = 10;
+/// The project autosave writes to, at the top of Projects (Jay's pick, 14
+/// Nov: one Autosave project). `Autosave 2` ... if a project of the
+/// musician's own has the name ([`Library::autosave_project`]).
+pub const AUTOSAVE: &str = "Autosave";
+/// The project.txt key that marks autosave's project: `autosave = yes`.
+pub const AUTOSAVE_KEY: &str = "autosave";
 
 const PARTS: &str = "parts";
 const NEW_PARTS: &str = ".parts-new";
@@ -184,6 +190,22 @@ impl Default for Meta {
 }
 
 impl Meta {
+    /// Whether this is autosave's project: its project.txt says
+    /// `autosave = yes`.
+    pub fn is_autosave(&self) -> bool {
+        self.extra
+            .iter()
+            .any(|(k, v)| k == AUTOSAVE_KEY && v == "yes")
+    }
+
+    /// Marks this as autosave's project ([`Meta::is_autosave`]).
+    pub fn mark_autosave(&mut self) {
+        if !self.is_autosave() {
+            self.extra
+                .push((AUTOSAVE_KEY.to_string(), "yes".to_string()));
+        }
+    }
+
     pub fn to_text(&self) -> String {
         let mut s = format!(
             "{FORMAT}\nname = {}\ntempo = {}\ncreated = {}\nsaved = {}\napp = {}\n",
@@ -395,6 +417,65 @@ impl Library {
                 .join(n)
                 .is_ok_and(|l| self.exists(&l))
         })
+    }
+
+    /// The project autosave writes to: `Projects/Autosave` when it is not
+    /// there yet or is autosave's own (`autosave = yes`), else `Autosave 2`,
+    /// `Autosave 3` ...: autosave never writes over a project of the
+    /// musician's.
+    pub fn autosave_project(&self) -> io::Result<Loc> {
+        for n in 1..=99 {
+            let name = match n {
+                1 => AUTOSAVE.to_string(),
+                n => format!("{AUTOSAVE} {n}"),
+            };
+            let loc = Loc::top(Place::Projects).join(&name)?;
+            let dir = self.project_dir(&loc)?;
+            if fs::symlink_metadata(&dir).is_err() {
+                return Ok(loc);
+            }
+            let ours = fs::read_to_string(dir.join(PROJECT_FILE))
+                .ok()
+                .and_then(|t| Meta::parse(&t).ok())
+                .is_some_and(|m| m.is_autosave());
+            if ours && real_dir(&dir) {
+                return Ok(loc);
+            }
+        }
+        Err(bad(
+            io::ErrorKind::AlreadyExists,
+            "every name for the autosave is taken",
+        ))
+    }
+
+    /// Autosave's project and its project.txt, if there is one
+    /// ([`Library::autosave_project`]).
+    pub fn autosave_meta(&self) -> Option<(Loc, Meta)> {
+        let loc = self.autosave_project().ok()?;
+        let meta = self.project_meta(&loc).ok()?;
+        meta.is_autosave().then_some((loc, meta))
+    }
+
+    /// Sets autosave's project aside as a project of its own, named for
+    /// when it was written (`Unsaved 2026-11-14 06.50`, or ` 2` ... if
+    /// taken), so that autosave can't write over it. It keeps its mark:
+    /// it opens as unsaved work, as autosave's own does.
+    pub fn keep_autosave(&self, autosave: &Loc, saved: u64) -> io::Result<Loc> {
+        let (y, mo, d, h, mi) = civil(saved);
+        let base = format!("Unsaved {y:04}-{mo:02}-{d:02} {h:02}.{mi:02}");
+        let name = crate::unique_folder_name(&base, |n| {
+            Loc::top(Place::Projects)
+                .join(n)
+                .is_ok_and(|l| self.exists(&l))
+        });
+        self.rename(autosave, &name)
+    }
+
+    /// A project's project.txt (not its parts).
+    pub fn project_meta(&self, project: &Loc) -> io::Result<Meta> {
+        Meta::parse(&fs::read_to_string(
+            self.project_dir(project)?.join(PROJECT_FILE),
+        )?)
     }
 
     /// Saves a project: makes its folder the first time, then saves
@@ -818,6 +899,70 @@ mod tests {
         assert!(back.load_into(&mut [&mut seq2, &mut other]).is_empty());
         assert_eq!(seq2.state, "bpm = 92.5\n");
         assert_eq!(other.state, "kept");
+    }
+
+    /// Autosave writes to `Projects/Autosave`, its own (marked) project,
+    /// and never over a project of the musician's with that name.
+    #[test]
+    fn autosave_has_its_own_project_and_never_takes_the_musicians() {
+        let d = temp();
+        let lib = Library::at(&d).unwrap();
+        let top = Loc::top(Place::Projects);
+        assert_eq!(lib.autosave_project().unwrap(), top.join(AUTOSAVE).unwrap());
+        assert_eq!(lib.autosave_meta(), None, "none yet");
+        // The musician's own project called Autosave stays theirs.
+        let theirs = Snapshot {
+            meta: meta(AUTOSAVE, 3),
+            parts: vec![("transport".into(), "mine".into())],
+        };
+        lib.save_project(&top.join(AUTOSAVE).unwrap(), &theirs, KEEP_VERSIONS)
+            .unwrap();
+        assert_eq!(
+            lib.autosave_project().unwrap(),
+            top.join("Autosave 2").unwrap()
+        );
+        assert_eq!(lib.autosave_meta(), None);
+        // A marked one is autosave's, saved again in place.
+        let mut m = meta("Autosave of Night drive", 7);
+        assert!(!m.is_autosave());
+        m.mark_autosave();
+        m.mark_autosave();
+        assert!(m.is_autosave());
+        assert_eq!(m.extra.iter().filter(|(k, _)| k == AUTOSAVE_KEY).count(), 1);
+        let ours = Snapshot {
+            meta: m.clone(),
+            parts: vec![("transport".into(), "unsaved".into())],
+        };
+        let at = lib.autosave_project().unwrap();
+        lib.save_project(&at, &ours, 0).unwrap();
+        lib.save_project(&at, &ours, 0).unwrap();
+        assert_eq!(lib.autosave_project().unwrap(), at);
+        assert_eq!(lib.autosave_meta(), Some((at.clone(), m)));
+        assert!(
+            lib.versions(&at).unwrap().is_empty(),
+            "no earlier saves kept"
+        );
+        assert_eq!(
+            lib.open_project(&top.join(AUTOSAVE).unwrap())
+                .unwrap()
+                .part("transport"),
+            Some("mine"),
+            "the musician's project is untouched"
+        );
+        // Set aside, it is a project of its own, still marked, and the
+        // next autosave starts a new one in its place.
+        let t = 1_794_637_200; // 2026-11-14 06:20 UTC
+        let kept = lib.keep_autosave(&at, t).unwrap();
+        assert_eq!(kept, top.join("Unsaved 2026-11-14 06.20").unwrap());
+        assert!(lib.open_project(&kept).unwrap().meta.is_autosave());
+        assert_eq!(lib.autosave_meta(), None);
+        assert_eq!(lib.autosave_project().unwrap(), at);
+        lib.save_project(&at, &ours, 0).unwrap();
+        assert_eq!(
+            lib.keep_autosave(&at, t).unwrap(),
+            top.join("Unsaved 2026-11-14 06.20 2").unwrap(),
+            "never over one set aside before"
+        );
     }
 
     #[test]

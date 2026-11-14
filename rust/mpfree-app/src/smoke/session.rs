@@ -20,7 +20,9 @@
 
 use crate::app::{self, App, Effect, View};
 use crate::gui::{self, FromUi, Player, ToUi};
-use crate::{audiotracks, cores, desk, looping, midi_in, mixing, modpanels, synth, time, Out};
+use crate::{
+    audiotracks, cores, desk, looping, midi_in, mixing, modpanels, synth, time, undo, Out,
+};
 use mpfree_ui::{Fonts, PageTarget, Tone};
 use std::sync::mpsc::{sync_channel, Receiver};
 use std::time::{Duration, Instant};
@@ -137,6 +139,11 @@ pub struct Session {
     t0: Instant,
     /// The screen as last drawn (only what changed is drawn again).
     canvas: mpfree_ui::SoftCanvas,
+    /// UNDO on the Synth tab and the mixer: their turns, as the audio loop
+    /// keeps them, and whether each had something to undo when last told.
+    synth_turns: undo::Turns<u16>,
+    mix_turns: undo::Turns<(mpfree_fx::StripId, u16)>,
+    turns_told: (bool, bool),
     /// The library the browser saves projects into (`with_library`).
     pub library: Option<mpfree_library::Library>,
     /// A save asked for (SHIFT + BROWSE, Save in the browser), and the
@@ -225,6 +232,9 @@ impl Session {
             periods: 0,
             t0: Instant::now(),
             canvas: mpfree_ui::SoftCanvas::new(gui::SCREEN.0, gui::SCREEN.1),
+            synth_turns: undo::Turns::default(),
+            mix_turns: undo::Turns::default(),
+            turns_told: (false, false),
             library: None,
             save_asked: false,
             loops_saving: false,
@@ -551,6 +561,7 @@ impl Session {
                 self.route(a);
             }
             self.effects();
+            self.tell_turns();
             self.feed_screen();
             if !busy {
                 break;
@@ -838,12 +849,30 @@ impl Session {
     pub fn route(&mut self, a: FromUi) {
         self.sent.push(super::short(&a));
         let t = self.t();
+        let now = self.now();
+        let mix_turn = match &a {
+            FromUi::Mixer(mpfree_mixer_ui::MixAction::Set { strip, id, value }) => {
+                Some((*strip, *id, self.mix.value(*strip, *id), *value))
+            }
+            _ => None,
+        };
         let mut fx = std::mem::take(&mut self.fx);
         let rest = {
             let (mut d, out) = self.desk();
             d.screen(a, t, out, &mut fx)
         };
         self.fx = fx;
+        // As the audio loop does: a mixer turn, from its value before the
+        // desk set it.
+        if let Some((strip, id, from, value)) = mix_turn {
+            let master = (mpfree_fx::StripId::Master, mpfree_fx::ids::mixer::VOLUME);
+            let to = if (strip, id) == master {
+                self.level_db
+            } else {
+                value
+            };
+            self.mix_turns.turned((strip, id), from, to, now);
+        }
         let Some(a) = rest else { return };
         match a {
             FromUi::Pad { pad, down } if pad < 16 => {
@@ -853,9 +882,13 @@ impl Session {
             FromUi::Pad { .. } => {}
             FromUi::Kit(k) => self.kit_to = Some(k.min(self.kits)),
             FromUi::Synth(mpfree_synth_ui::SynthAction::Set { id, value }) => {
-                self.synth.set(id, value)
+                let from = self.synth.value(id);
+                self.synth.set(id, value);
+                let to = self.synth.value(id);
+                self.synth_turns.turned(id, from, to, now);
             }
             FromUi::Synth(mpfree_synth_ui::SynthAction::Preset(k)) => {
+                self.synth_turns.clear();
                 if let Some(name) = self.synth.load_preset(k).map(str::to_string) {
                     self.out.note(&format!(
                         "synth: preset {} of {}, {name}",
@@ -918,7 +951,78 @@ impl Session {
             | FromUi::SampleKey { .. }
             | FromUi::SamplePadLive { .. }
             | FromUi::SaveBrowserLists(_) => {}
+            FromUi::UndoHistory(on) => {
+                let (rows, now) = match on {
+                    gui::UndoOn::Synth => self
+                        .synth_turns
+                        .rows("Start: the sound before these turns", |t| {
+                            crate::synth_turn_row(&self.synth, t.key, t.to)
+                        }),
+                    gui::UndoOn::Mixer => self
+                        .mix_turns
+                        .rows("Start: the mix before these turns", |t| {
+                            crate::mix_turn_row(t.key.0, t.key.1, t.to)
+                        }),
+                };
+                self.out.show(ToUi::UndoHistory { on, rows, now });
+            }
+            FromUi::UndoOn { on, redo } => {
+                let line = match on {
+                    gui::UndoOn::Synth => {
+                        let turn = if redo {
+                            self.synth_turns.redo()
+                        } else {
+                            self.synth_turns.undo()
+                        };
+                        turn.map(|t| {
+                            self.synth.set(t.key, if redo { t.to } else { t.from });
+                            self.out.show(ToUi::SynthValues(self.synth.values()));
+                            crate::synth_turn_said(&self.synth, t.key, redo)
+                        })
+                    }
+                    gui::UndoOn::Mixer => {
+                        let turn = if redo {
+                            self.mix_turns.redo()
+                        } else {
+                            self.mix_turns.undo()
+                        };
+                        turn.map(|t| {
+                            let (strip, id) = t.key;
+                            let value = if redo { t.to } else { t.from };
+                            let set = mpfree_mixer_ui::MixAction::Set { strip, id, value };
+                            if let Some(db) = self.mix.action(&set) {
+                                self.level_db = db;
+                                self.out.show(ToUi::Level { db });
+                            }
+                            crate::mix_turn_said(strip, id, redo)
+                        })
+                    }
+                };
+                let line = line.unwrap_or_else(|| {
+                    format!(
+                        "Nothing to {} on this page",
+                        if redo { "redo" } else { "undo" }
+                    )
+                });
+                self.fx.push(Effect::Tell(line));
+            }
             other => panic!("the desk handed back {}", super::short(&other)),
+        }
+    }
+
+    /// Whether the Synth tab's and the mixer's turns have something to
+    /// undo, when that changes (as the audio loop tells the screen).
+    fn tell_turns(&mut self) {
+        let ready = (
+            !self.synth_turns.done().is_empty(),
+            !self.mix_turns.done().is_empty(),
+        );
+        if ready != self.turns_told {
+            self.turns_told = ready;
+            self.out.show(ToUi::TurnsReady {
+                synth: ready.0,
+                mixer: ready.1,
+            });
         }
     }
 
