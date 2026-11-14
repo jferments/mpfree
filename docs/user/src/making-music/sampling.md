@@ -120,6 +120,8 @@ The **Warp** page is for a warped sound whose hits don't sit quite on the beat, 
 
 Pins only work while the sound is stretched. With Warp on Repitch, the sound plays straight through.
 
+**Typing a number.** A value with a dotted line under it, such as **Warp tempo**, can be typed: tap the value and a number pad opens. Tap the number and **Enter**; the pad shows the range it takes and the value now, and says so if the number is out of range. **Cancel** leaves the value as it was. The data wheel and **–** / **+** step the number too, and pushing the wheel is Enter. **UNDO** takes a typed value back.
+
 ## Chop: slice across the pads
 
 {{shot: sample-chop | The Chop page: the break cut into 15 slices at its hits, ready to put on pads A2 to A16.}}

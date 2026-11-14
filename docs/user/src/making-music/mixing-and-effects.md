@@ -32,14 +32,14 @@ The **< >** buttons page through the strips when there are more than fit. The ch
 
 From top to bottom, each strip has:
 
-- **Inserts**: up to four effects that the sound goes through, in order. Tap **+ Insert** to add one, or an effect's name to open it (see [Effects](effects.md#adding-an-effect-the-chain-editor)).
+- **Inserts**: up to four effects that the sound goes through, in order. Tap **+ FX** to add one, or an effect's name to open it (see [Effects](effects.md#adding-an-effect-the-chain-editor)).
 - **Sends A to D**: how much of the sound goes to each send return. A return holds a shared effect, so several strips can use one reverb or delay.
 - **Pan**: where the sound sits between left and right.
 - **The fader** (from silent up to +6 dB) and the **meter** beside it.
 - **M** (mute) and **S** (solo). Solo keeps the strip and everything it feeds or is fed by, so soloing the snare's pad still lets you hear it through the Drums track.
 - **The output**: where the strip goes. A pad goes to its track; a track to the master or a submix; a submix to the master or a higher-numbered submix.
 
-Drag a fader, pan or send with your finger, and tap M, S or the output to change them.
+Drag a fader, pan or send with your finger, and tap M, S or the output to change them. With the mixer open, **UNDO** takes back the last change to a strip (one drag of a fader is one UNDO) and **SHIFT + UNDO** puts it back.
 
 ## The I/O view
 

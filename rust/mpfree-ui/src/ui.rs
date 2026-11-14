@@ -105,6 +105,9 @@ pub enum EventKind {
     /// A finger on a two-way pad: 0 to 1 left to right (`x`) and bottom to
     /// top (`y`), `down` until it lifts.
     Xy { x: f32, y: f32, down: bool },
+    /// A number field's value tapped, to type a number into it (row
+    /// `index`; see [`crate::numpad`]).
+    Type(usize),
 }
 
 #[derive(Clone, Debug, PartialEq)]

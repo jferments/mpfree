@@ -15,7 +15,7 @@ Each strip in the mixer has up to four **inserts**: effects the sound goes throu
 {{shot: chain | The chain editor on the drum bus, with Drive selected.}}
 
 1. Open the mixer (**TRACK MIX**) and find the strip.
-2. Tap the strip's **+ Insert**. The **chain editor** opens in the mixer's place, with the list of effects already open.
+2. Tap the strip's **+ FX** button. It fills the strip's empty insert rows, so on a strip with no effects it is a big button under the strip's name. The **chain editor** opens in the mixer's place, with the list of effects already open.
 3. Pick an effect (see [Choosing an effect](#choosing-an-effect)). It goes at the end of the chain, selected, with its knobs showing.
 
 Tap an effect already in a strip's insert row to open the chain editor on it. In the chain editor:
@@ -31,7 +31,7 @@ Adding, removing or reordering an effect while the music plays doesn't click: th
 
 ### Choosing an effect
 
-**+ Insert** on a strip, or **+ Add effect** in the chain editor, opens the list of effects over the chain editor.
+**+ FX** on a strip, or **+ Add effect** in the chain editor, opens the list of effects over the chain editor.
 
 - Down the left are **Favourites**, **Recent** (the last 12 effects you added), then the groups (Dynamics, EQ and filter, Drive and colour, Modulation, Delay and reverb, Pitch and vocal, Performance, Plugins, and Utility), each with how many effects it has. Tap one to see its effects on the right. The list opens where you left it.
 - **Tap an effect** to add it with its usual settings.

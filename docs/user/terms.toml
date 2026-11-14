@@ -20,6 +20,6 @@
 
 [names]
 tabs = ["Play", "Arrange", "Synth", "Looper", "Sample", "Dev"]
-play_views = ["All", "Beats", "Loop", "Drum"]
+play_views = ["All", "Beats", "Loop"]
 sample_pages = ["Pads", "Wave", "Chop", "Play", "Grain", "FX"]
 overlays = ["Prefs", "the mixer", "the Arp panel", "the button guide"]

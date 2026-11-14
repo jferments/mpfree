@@ -764,7 +764,8 @@ impl MixerView {
                 self.push(MixAction::OpenInsert { strip: id, slot: 3 });
             } else if i < s.inserts.len() {
                 self.push(MixAction::OpenInsert { strip: id, slot: i });
-            } else if i == s.inserts.len() && s.inserts.len() < s.slots {
+            } else if s.inserts.len() < s.slots {
+                // Every empty row is one "+ FX" button.
                 self.push(MixAction::AddInsert { strip: id });
             }
             return;
@@ -1113,7 +1114,7 @@ impl MixerView {
                     t.size_small,
                     name_r,
                     Align::Left,
-                    if ins.on { t.text } else { t.text_faint },
+                    t.button_ink(ins.on),
                     &ins.name,
                 );
                 if ins.key.is_some() {
@@ -1128,15 +1129,13 @@ impl MixerView {
                     );
                 }
             } else if i == s.inserts.len() && s.inserts.len() < s.slots {
-                cx.canvas.stroke_round_rect(*row, 6, 1, t.outline);
-                cx.text(
-                    FontId::Sans,
-                    t.size_small,
-                    row.inset_xy(7, 0),
-                    Align::Left,
-                    t.text_faint,
-                    "+ Insert",
-                );
+                // The empty rows as one "+ FX" button (Jay after live
+                // test 3: "+ Insert" was too small and unclear).
+                let last = if s.input.is_some() { 1 } else { 3 };
+                let b = Rect::new(row.x, row.y, row.w, p.inserts[last].bottom() - row.y);
+                cx.canvas.fill_round_rect(b, 6, t.raised);
+                cx.canvas.stroke_round_rect(b, 6, 1, t.outline);
+                cx.text(FontId::Bold, t.size_small, b, Align::Center, t.text, "+ FX");
             }
         }
         self.paint_freeze(cx, s, insert_area(&p, s));
@@ -2642,6 +2641,8 @@ mod tests {
         tap(&mut ui, mid(p.pan));
         tap(&mut ui, mid(p.inserts[0]));
         tap(&mut ui, mid(p.inserts[1]));
+        // Every empty row is part of the one "+ FX" button.
+        tap(&mut ui, mid(p.inserts[3]));
         tap(&mut ui, mid(p.sends[1].take_left(18).0));
         tap(&mut ui, mid(p.name));
         let t0 = StripId::Track(0);
@@ -2669,6 +2670,7 @@ mod tests {
                     value: 0.0
                 },
                 MixAction::OpenInsert { strip: t0, slot: 0 },
+                MixAction::AddInsert { strip: t0 },
                 MixAction::AddInsert { strip: t0 },
                 MixAction::Set {
                     strip: t0,

@@ -332,8 +332,18 @@ impl Widget for LoopStrip {
                 &name,
             );
             let muted = self.muted.get(li).copied().unwrap_or(false);
+            // The name and its speaker are one mute button: outlined, and
+            // answering from the card's top edge to below the heading
+            // (Jay after live test 3: bigger mutes).
+            let button = Rect::new(lx - 6, head.y - 5, sx + 14 - (lx - 6), head.h + 10);
+            cx.canvas.stroke_round_rect(button, 8, 1, t.outline);
             draw::speaker(cx, sx, cy, t.text_dim, muted);
-            speakers.push(draw::speaker_hit(sx, cy));
+            speakers.push(Rect::new(
+                button.x,
+                r.y,
+                button.w,
+                button.bottom() + 12 - r.y,
+            ));
             lx = sx + 12 + 18;
         }
         *self.speakers.borrow_mut() = speakers;
@@ -782,6 +792,16 @@ impl LooperPage {
         let now = self.view.history.done().len();
         let rows = now + self.view.history.redo().len();
         (row != now && row <= rows).then(|| row as i32 - now as i32)
+    }
+
+    /// The picked loop's undo history for the list that holding UNDO
+    /// opens: the loop's name, and its rows as the editor lists them.
+    pub fn history_rows(&self) -> (String, HistoryList) {
+        let v = &self.view;
+        (
+            format!("Loop {}", v.selected + 1),
+            history_list(&v.history, &self.layers, v.rate),
+        )
     }
 
     /// A tap on a layer's row: that layer goes on the Q-Links.

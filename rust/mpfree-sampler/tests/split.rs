@@ -139,6 +139,15 @@ fn engine(p: &Project, voices: usize) -> Engine {
     e
 }
 
+/// How long a test renders parts with a deadline already gone before it
+/// gives up waiting for late ones. A gone deadline doesn't make a part
+/// late: `Lane::join` takes the lane's half if the lane finished it while
+/// the audio thread rendered its own, and a quick lane did that for 50
+/// parts running in about 1 run in 25 (and on CI). So the tests go on
+/// until the parts they need came back late: 50 to about 130 parts of
+/// 128 frames on a 4-core desktop, a fraction of a second.
+const GIVE_UP: Duration = Duration::from_secs(20);
+
 fn split(mut e: Engine, threaded: bool) -> Engine {
     let setup = e
         .split(Config {
@@ -327,18 +336,18 @@ fn a_late_lane_leaves_its_part_out_and_loses_no_event() {
     ch.clear();
     e.render_routed_until(LONG, &mut ch, far());
     assert_eq!(e.active_voices(), 2);
-    // A deadline already gone: the audio thread doesn't wait.
+    // A deadline already gone: the audio thread doesn't wait. That doesn't
+    // make every part late (see `GIVE_UP`), so the parts go on until
+    // one is.
     let late = Instant::now() - Duration::from_millis(1);
+    let give_up = Instant::now() + GIVE_UP;
     let mut lates = 0;
-    for _ in 0..20 {
+    while lates == 0 && Instant::now() < give_up {
         ch.clear();
         e.render_routed_until(LONG, &mut ch, late);
         lates = e.stats().lane_late;
-        if lates > 0 {
-            break;
-        }
     }
-    assert!(lates > 0, "the lane missed a deadline");
+    assert!(lates > 0, "the lane never missed a deadline");
     // Lifts while the lane's half is away wait in the queue, then apply.
     e.schedule(0, Event::NoteOff { pad: 1 });
     e.schedule(0, Event::NoteOff { pad: 3 });
@@ -381,10 +390,12 @@ fn skipped_grains_never_go_back_while_the_lanes_half_is_away() {
     let mut last = e.stats().skipped_grains;
     assert!(last > 0, "the budget filled");
     // Parts the lane is late for: its half stays away until the next part,
-    // and its skipped grains still count as they were when it left.
+    // and its skipped grains still count as they were when it left. At
+    // least 50 parts, and on until a few were late (see `GIVE_UP`).
     let late = Instant::now() - Duration::from_millis(1);
-    let mut seen_late = false;
-    for _ in 0..50 {
+    let give_up = Instant::now() + GIVE_UP;
+    let (mut parts, mut late_parts) = (0u32, 0u64);
+    while (parts < 50 || late_parts < 3) && Instant::now() < give_up {
         ch.clear();
         let was = e.stats().lane_late;
         e.render_routed_until(128, &mut ch, late);
@@ -395,7 +406,11 @@ fn skipped_grains_never_go_back_while_the_lanes_half_is_away() {
             st.skipped_grains
         );
         last = st.skipped_grains;
-        seen_late |= st.lane_late > was;
+        late_parts += st.lane_late - was;
+        parts += 1;
     }
-    assert!(seen_late, "the lane missed a deadline");
+    assert!(
+        late_parts >= 3,
+        "the lane missed a deadline {late_parts} times in {parts} parts"
+    );
 }
