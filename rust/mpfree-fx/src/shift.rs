@@ -178,6 +178,9 @@ impl FreqShifter {
             let p = self.phase as f32;
             let (c, s) = (kit::cosine(p), kit::sine(p));
             let fb = self.feedback.glide();
+            // Each pass round the loop lands on new frequencies, so the
+            // passes add in power: this keeps the level where it was.
+            let comp = (1.0 - fb * fb).sqrt();
             let mix = self.mix.glide();
             for (ch, x) in [&mut l[i], &mut r[i]].into_iter().enumerate() {
                 let dry = *x;
@@ -192,7 +195,7 @@ impl FreqShifter {
                 };
                 // Soft in the loop, so high feedback can't run away.
                 self.last[ch] = fast_tanh(y);
-                *x = lerp(dry, y, mix);
+                *x = lerp(dry, y * comp, mix);
             }
         }
     }

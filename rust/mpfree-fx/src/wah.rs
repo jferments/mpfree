@@ -4,8 +4,9 @@
 //!   frequency, moved by the sound's own level (an envelope follower with
 //!   its attack and release, as the MPC's Auto Wah), by an LFO (free or in
 //!   time with the tempo), or by hand (a pedal on a Q-Link). The sweep is
-//!   even in pitch, and the band-pass is normalised so a sharper peak
-//!   doesn't jump in level.
+//!   even in pitch. Its Wah shape is the band-pass with some low end
+//!   leaking through, as a pedal's does; the plain band-pass is
+//!   normalised so a sharper peak doesn't jump in level.
 //! - The talk box is the MPC's AIR Talk Box idea: three formant filters
 //!   tuned to a vowel (average adult formants from Peterson and Barney,
 //!   1952), so the sound seems to say "ah" or "ee". The envelope and the
@@ -97,7 +98,11 @@ pub mod autowah {
 }
 
 const SOURCES: &[&str] = &["Envelope", "LFO", "Pedal"];
-const FILTERS: &[&str] = &["Band-pass", "Low-pass", "High-pass"];
+/// The filter shapes: Wah is the band-pass with some of the low end
+/// leaking through, as a wah pedal's does, so a bass line keeps its body.
+const FILTERS: &[&str] = &["Wah", "Band-pass", "Low-pass", "High-pass"];
+/// How much low end the Wah shape lets through (about -9 dB).
+const LEAK: f32 = 0.35;
 
 static AUTOWAH_INFO: NodeInfo = NodeInfo {
     id: "mpfree.fx.autowah",
@@ -125,7 +130,7 @@ static AUTOWAH_PARAMS: [ParamInfo; 13] = [
     param(8, "Low", "Filter", 100.0, 1500.0, 300.0, Hz, Log),
     param(9, "High", "Filter", 500.0, 6000.0, 2500.0, Hz, Log),
     param(10, "Resonance", "Filter", 0.0, 100.0, 60.0, Percent, Linear),
-    param(11, "Filter", "Filter", 0.0, 2.0, 0.0, NONE, Choice(FILTERS)),
+    param(11, "Filter", "Filter", 0.0, 3.0, 0.0, NONE, Choice(FILTERS)),
     param(12, "Mix", "Wah", 0.0, 100.0, 100.0, Percent, Linear),
 ];
 
@@ -146,7 +151,7 @@ pub static AUTOWAH_PRESETS: &[Preset] = &[
             (autowah::RELEASE, 600.0),
             (autowah::LOW, 200.0),
             (autowah::HIGH, 1800.0),
-            (autowah::FILTER, 1.0),
+            (autowah::FILTER, 2.0),
         ],
     },
     Preset {
@@ -264,9 +269,10 @@ impl AutoWah {
                 let x = *s;
                 let (low, band) = self.filter.run(ch, x);
                 let y = match mode {
-                    1 => low,
-                    2 => x - self.filter.k * band - low,
-                    _ => self.filter.k * band * bp_gain,
+                    1 => self.filter.k * band * bp_gain,
+                    2 => low,
+                    3 => x - self.filter.k * band - low,
+                    _ => self.filter.k * band * bp_gain + LEAK * low,
                 };
                 *s = lerp(x, y, mix);
             }
@@ -342,7 +348,7 @@ const BANDWIDTH: [f32; 3] = [80.0, 100.0, 140.0];
 const REACH: f32 = 4.0;
 /// Level back for the formant bank (it passes a fraction of a full-band
 /// sound).
-const TALK_GAIN: f32 = 2.5;
+const TALK_GAIN: f32 = 3.0;
 
 static TALKBOX_INFO: NodeInfo = NodeInfo {
     id: "mpfree.fx.talkbox",
@@ -617,6 +623,7 @@ mod tests {
         // pedal up the other way round.
         let mut w = AutoWah::new();
         w.set_param(autowah::SOURCE, 2.0);
+        w.set_param(autowah::FILTER, 1.0);
         w.set_param(autowah::CENTER, 0.0);
         let low = sine_level(&mut w, 300.0, 0.1);
         let high = sine_level(&mut w, 2500.0, 0.1);
@@ -625,6 +632,10 @@ mod tests {
         let low = sine_level(&mut w, 300.0, 0.1);
         let high = sine_level(&mut w, 2500.0, 0.1);
         assert!(high > 0.7 && low < 0.3, "up: {low} {high}");
+        // The Wah shape keeps some of the low end, pedal up.
+        w.set_param(autowah::FILTER, 0.0);
+        let low = sine_level(&mut w, 110.0, 0.1);
+        assert!(low > 0.25 && low < 0.5, "wah leak: {low}");
     }
 
     #[test]
