@@ -91,7 +91,7 @@ Times under qemu say nothing about the MPC. What a plugin costs there is for the
 
 ## Putting it on the stick
 
-Copy the `.clap` files into `files/plugins/` in MPFree's data folder on the test stick, with Surge XT's `SurgeXTData/` folder beside them (Surge XT looks beside its `.clap` file, then in the folders above it) ([storage](../design/storage-spec.md)); the app scans that folder at start ([plugins in the app](../design/plugins.md#in-the-app)). Keep each plugin's `licenses/` and `source/` with the files you give anyone. This writes only to the stick, never to the MPC's eMMC. Trying them on the MPC is a device step and waits for the owner's go.
+Copy the `.clap` files into `files/plugins/` in MPFree's data folder on the test stick, with Surge XT's `SurgeXTData/` folder beside them (Surge XT looks beside its `.clap` file, then in the folders above it) ([storage](../design/storage-spec.md)); the app scans that folder at start ([plugins in the app](../design/plugins.md#in-the-app)). The plugins keep their own files (Surge XT's `.Surge XT` folder, Dexed's cartridges) in `files/plugin-home/` beside it, which MPFree gives them as their home ([plugins in the app](../design/plugins.md#in-the-app)). Keep each plugin's `licenses/` and `source/` with the files you give anyone. This writes only to the stick, never to the MPC's eMMC. Trying them on the MPC is a device step and waits for the owner's go.
 
 ## Not yet
 
