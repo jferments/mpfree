@@ -6,7 +6,7 @@
 use crate::state::{Button, Filter, Input, Key, Modal, Row, Screen, Sort, Source, SOURCES};
 use mpfree_library::{AudioFormat, Kind, Place};
 use mpfree_ui::draw;
-use mpfree_ui::{Align, Color, EventKind, FontId, PaintCx, Rect, Touch, Widget};
+use mpfree_ui::{Align, Color, EventKind, FontId, PaintCx, Rect, Target, Touch, Widget};
 
 /// The places column's width.
 pub const PLACES_W: i32 = 220;
@@ -602,6 +602,56 @@ impl Widget for BrowserView {
                 button(cx, a.yes, yes, false, true);
             }
         }
+    }
+
+    fn targets(&self, r: Rect) -> Vec<Target> {
+        let s = &self.screen;
+        match &s.modal {
+            Modal::Keyboard { .. } => {
+                return keyboard_geo(r)
+                    .keys
+                    .iter()
+                    .enumerate()
+                    .map(|(i, (key, kr))| Target::tap("key", i, format!("{key:?}"), *kr))
+                    .collect();
+            }
+            Modal::Confirm { .. } => {
+                let a = confirm_geo(r);
+                return vec![
+                    Target::tap("confirm-yes", 0, "Yes", a.yes),
+                    Target::tap("confirm-no", 0, "No", a.no),
+                ];
+            }
+            Modal::None => {}
+        }
+        let g = Geo::new(r, s);
+        let mut out = Vec::new();
+        for (k, pr) in g.place_rows.iter().enumerate() {
+            let label = s.sources.get(k).map_or("", |&i| SOURCES[i].label());
+            out.push(Target::tap("place", k, label, *pr));
+        }
+        if s.can_go_back {
+            out.push(Target::tap("back", 0, "‹ Back", g.back));
+        }
+        for (b, br) in g.list_buttons.iter().chain(g.detail_buttons.iter()) {
+            out.push(Target::tap("button", *b as usize, b.label(), *br));
+        }
+        for (f, fr) in &g.filters {
+            out.push(Target::tap("filter", *f as usize, f.label(), *fr));
+        }
+        out.push(Target::tap("search", 0, "Search", g.search));
+        out.push(Target::tap("sort", 0, "Sort", g.sort));
+        let shown = g.visible().min(s.rows.len().saturating_sub(s.top));
+        for k in 0..shown {
+            let rr = Rect::new(g.rows.x, g.rows.y + k as i32 * ROW_H, g.rows.w, ROW_H);
+            out.push(Target::tap(
+                "row",
+                s.top + k,
+                s.rows[s.top + k].name.clone(),
+                rr,
+            ));
+        }
+        out
     }
 
     fn touch(&mut self, finger: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {

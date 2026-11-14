@@ -217,6 +217,13 @@ pub fn io_qlink_turn(ui: &mut Ui, knob: usize, detents: i32, fine: bool) -> IoRe
         .map_or(IoReply::Ignored, |v| v.io_qlink_turn(knob, detents, fine))
 }
 
+/// What the I/O section's last touch, key or Q-Link couldn't do, and why,
+/// once: say it on the hint line ([`IoSection::take_note`]).
+pub fn take_io_note(ui: &mut Ui) -> Option<String> {
+    ui.get_mut::<MixerView>(MIXER)
+        .and_then(|v| v.take_io_note())
+}
+
 /// Sections (by add order) that replied [`IoReply::Redraw`] to a touch, a
 /// key ([`io_input`]) or a Q-Link ([`io_qlink_turn`]) since the last call:
 /// read their state.
