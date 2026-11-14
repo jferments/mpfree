@@ -447,6 +447,10 @@ fn render_and_events_never_allocate() {
         } else {
             e.render(&mut l, &mut r);
         }
+        // Load shedding between blocks.
+        if block % 29 == 0 && e.cull_candidate().is_some() {
+            e.cull();
+        }
         if block % 16 == 0 {
             bars.mark(rec.written());
         }

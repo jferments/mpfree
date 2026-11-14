@@ -124,6 +124,7 @@ mod rt_safety;
 mod sample_page;
 mod sampler;
 mod screen_cost;
+mod shed;
 #[cfg(test)]
 mod smoke;
 mod synth;
@@ -3892,6 +3893,11 @@ fn player_session(
     // The lanes' deadline for this period (cores.rs): when the sound card's
     // queue would run dry, less a period. The buffer starts full.
     let mut lane_until = cores::lane_deadline(Instant::now(), None, periods);
+    // Load shedding (shed.rs): a period behind with the queue running down
+    // gives up the voices nobody hears. Each period's work runs from the
+    // last write to this one.
+    let mut shed = shed::Shed::new(PERIOD, RATE, periods);
+    let mut last_written = Instant::now();
     let mut i = 0u64;
     while i < total_periods {
         let t_read = Instant::now();
@@ -4979,6 +4985,7 @@ fn player_session(
             ));
             play = Playback::start(open_acva(out, p)?, p)?;
             lane_until = cores::lane_deadline(Instant::now(), None, p);
+            last_written = Instant::now();
             pending.clear();
         }
         // Drums' Pad 1 note, a pad's sound or another kit: the pad grid
@@ -5644,6 +5651,7 @@ fn player_session(
         let xruns = play.xruns;
         parts.lap(parts::SCREEN);
         engines.stop(engines::PERIOD, period_span);
+        let work = last_written.elapsed();
         // A fast export runs the periods back to back with the card
         // stopped (the speakers quiet), as fast as its files take them;
         // after it the card fills and plays again (export.rs).
@@ -5664,6 +5672,7 @@ fn player_session(
         // for the lanes, and times the hits of this period. In a fast
         // export the lanes are waited for, never left out.
         let written = Instant::now();
+        last_written = written;
         let delay = play.pcm.delay();
         lane_until = if fast {
             written + export::FAST_LANE_WAIT
@@ -5677,6 +5686,34 @@ fn player_session(
         // A synth left out of this period (late) comes back before anything
         // plays it again.
         synth.settle(lane_until);
+        // A period behind, with the queue running down: give up the voices
+        // nobody hears (shed.rs). An underrun in this write emptied the
+        // queue. A fast export is never behind (the card is stopped and
+        // the loop waits for the files), so its file keeps every voice.
+        shed.set_queued(PERIOD, play.queued);
+        if !fast && work > period_time() {
+            let full = i64::from(play.queued) * PERIOD as i64;
+            let short = match &delay {
+                Ok(d) if play.xruns == xruns => Some(full - i64::from(*d)),
+                Ok(_) => Some(full),
+                Err(_) => None,
+            };
+            let behind = shed::Period {
+                work,
+                short,
+                voices: player.playing() + synth.active_voices() + mix.instruments.voices(),
+                voice_time: (t_synth - t_render) + synth_took + mix.instrument_time,
+            };
+            let n = shed.decide(&behind);
+            if n > 0 {
+                let mut engines: [&mut dyn shed::Voices; 3] =
+                    [&mut player, &mut *synth, &mut mix.instruments];
+                shed.give_up(n, &mut engines);
+            }
+        }
+        if let Some(line) = shed.note(written) {
+            out.note(&line);
+        }
         parts.begin();
         match delay {
             // An underrun in this write dropped the period: no timing for it.
@@ -5772,6 +5809,7 @@ fn player_session(
                 cores.status(cores::Counts::read(&player, &mix.mixer, &synth))
             ));
             out.note(&format!("status: {}", parts.status()));
+            out.note(&format!("status: {}", shed.describe()));
             out.note(&format!("status: {}", touch_hold.describe()));
         }
         if last_timing.elapsed() >= Duration::from_millis(250) {
@@ -5800,6 +5838,7 @@ fn player_session(
                         synth_max_us,
                         worst_us: (render_time.max + synth_time.max).as_secs_f32() * 1e6,
                         steals: c.steals,
+                        given_up: shed.totals().given_up,
                         dropped: c.dropped_events + app.arps.dropped(),
                         peak_grains: c.peak_grains,
                     }

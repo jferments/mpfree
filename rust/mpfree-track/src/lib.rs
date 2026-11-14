@@ -44,7 +44,7 @@
 #![forbid(unsafe_code)]
 
 use mpfree_fx::Mixer;
-use mpfree_node::{Ctx, Node, NodeEvent, ParamInfo, Timed, Tuning};
+use mpfree_node::{Ctx, Cull, Node, NodeEvent, ParamInfo, Timed, Tuning};
 use mpfree_play::{Event, Out, Sink, ALL};
 use mpfree_prof::{Probe, Span};
 
@@ -284,6 +284,40 @@ impl TrackHost {
 
     pub fn instrument(&self, slot: usize) -> Option<&Instrument> {
         self.slots.get(slot)?.inst.as_ref()
+    }
+
+    // ------------------------------------------------------------ load shedding
+
+    /// Voices sounding in every slot's instrument ([`Node::sounding_voices`]; a
+    /// plugin counts none), not counting old ones ringing out.
+    pub fn voices(&self) -> usize {
+        self.slots
+            .iter()
+            .filter_map(|s| s.inst.as_ref())
+            .map(|i| i.node.sounding_voices())
+            .sum()
+    }
+
+    /// The voice to give up first across the slots (the least audible,
+    /// [`Cull::audibility`]), with its slot. Old instruments ringing out
+    /// are left be: they end on their own. No allocation.
+    pub fn cull_candidate(&self) -> Option<(usize, Cull)> {
+        let mut best = None;
+        for (i, s) in self.slots.iter().enumerate() {
+            if let Some(c) = s.inst.as_ref().and_then(|x| x.node.cull_candidate()) {
+                best = Cull::first(best, Some((i, c)));
+            }
+        }
+        best
+    }
+
+    /// Gives up the voice slot `slot`'s instrument names
+    /// ([`Node::cull`]). True if it did. No allocation.
+    pub fn cull(&mut self, slot: usize) -> bool {
+        self.slots
+            .get_mut(slot)
+            .and_then(|s| s.inst.as_mut())
+            .is_some_and(|i| i.node.cull())
     }
 
     /// The instrument's parameters, for the mod matrix and the screens.

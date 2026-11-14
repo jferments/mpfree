@@ -213,7 +213,7 @@ MENU, NOTE REPEAT, TAP TEMPO, − and + were measured in round 5 and are built i
 
 Clips play the current kit's pads. A click plays while counting in and recording. The status line also gives the transport, the takes and any notes or parameter locks lost.
 
-Every 30 s the app writes a status line to the system log: hits, underruns, pad-to-sound timing, and the note engine's dropped events and overflow. A `status: mod: ...` line gives the mod engine's targets (mixer controls a clip has locked), the values it sent, any it had no place for and any events dropped.
+Every 30 s the app writes a status line to the system log: hits, underruns, pad-to-sound timing, and the note engine's dropped events and overflow. A `status: mod: ...` line gives the mod engine's targets (mixer controls a clip has locked), the values it sent, any it had no place for and any events dropped. A `status: load shedding: ...` line counts the voices given up because the periods fell behind, and the periods where giving up voices would not have helped; each time it happens a `load:` line says so within a second ([load shedding](../design/profiling.md#load-shedding-giving-up-voices-nobody-hears)).
 
 **The check** (`MPFREE_APP_STEPS=app`, **read-only**): it copies, starts and stops nothing. It shows what the app wrote since power-on, then seven phases, each started by Enter and ended by Enter when you are done: the button guide; velocity with Full and Half Level; Note Repeat; Latch (two pads latched, let go, a new pad takes over, NOTE REPEAT stops it); the menus; the console, Debug page and touch; STOP. After each it shows the app's log lines from that time (events, pads with their velocities, buttons, wheel) and asks what you saw. Every line goes in the report.
 

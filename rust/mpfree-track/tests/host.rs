@@ -522,3 +522,29 @@ fn a_slots_tuning_reaches_its_instrument_and_the_next_one_swapped_in() {
     assert!(b.abs_diff(q) > 25, "the two tunings differ: {b} vs {q}");
     assert!(a.abs_diff(b) <= 5, "retuned to C5: {a} vs {b} crossings");
 }
+
+#[test]
+fn the_quietest_voice_across_the_slots_is_given_up_first() {
+    let mut host = TrackHost::new(3, RATE, 1024);
+    let mut quiet = Poly::new(RATE);
+    quiet.set_param(mpfree_synth::params::VEL_AMP, 100.0);
+    host.swap(0, Some(poly())).unwrap();
+    host.swap(1, Some(Instrument::new(Box::new(quiet), RATE, 1024)))
+        .unwrap();
+    let mut out = Split::new(3, 128);
+    let mut frame = 0;
+    host.note_on(0, 0, 60, 100);
+    host.note_on(1, 0, 64, 20);
+    run(&mut host, &mut out, &mut frame, 20, 128);
+    assert_eq!(host.voices(), 2);
+    let (slot, c) = host.cull_candidate().unwrap();
+    assert_eq!(slot, 1, "{c:?}");
+    assert!(host.cull(1));
+    let p = run(&mut host, &mut out, &mut frame, 20, 128);
+    assert_eq!(host.voices(), 1);
+    assert_eq!(p[19][1], 0.0, "the quiet track is silent");
+    assert!(p[19][0] > 0.01, "the loud one plays on");
+    // An empty slot has nothing to give up.
+    assert!(!host.cull(2));
+    assert_eq!(host.cull_candidate().map(|(s, _)| s), Some(0));
+}
