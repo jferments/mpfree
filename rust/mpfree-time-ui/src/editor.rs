@@ -38,7 +38,7 @@ use mpfree_seq::steps::{Edit, Euclid, Grid, MAX_EUCLID_STEPS};
 use mpfree_seq::{Clip, Cond, Lock, Note, TouchPoint};
 use mpfree_transport::time::{Tick, PPQ};
 use mpfree_ui::widgets::OptionRow;
-use mpfree_ui::{Align, Color, EventKind, FontId, PaintCx, Rect, Touch, Widget};
+use mpfree_ui::{Align, Color, EventKind, FontId, PaintCx, Rect, Target, Touch, Widget};
 
 /// The buttons along the bottom, left to right. Some show a state in
 /// place of their name (see [`NoteGrid::button_label`]).
@@ -1612,6 +1612,51 @@ impl Widget for NoteGrid {
                 &self.button_label(k),
             );
         }
+    }
+
+    fn targets(&self, r: Rect) -> Vec<Target> {
+        let g = self.geo(r);
+        let mut out: Vec<Target> = self
+            .button_rects(r)
+            .iter()
+            .enumerate()
+            .map(|(k, b)| Target::tap("button", k, self.button_label(k), *b))
+            .collect();
+        if matches!(self.lens, Lens::Tracker | Lens::List) {
+            let id = if self.lens == Lens::Tracker {
+                "tracker-row"
+            } else {
+                "list-row"
+            };
+            for (k, rr) in (1..).map_while(|k| self.list_rect(r, k).map(|rr| (k, rr))) {
+                out.push(Target::tap(
+                    id,
+                    self.first + k - 1,
+                    format!("row {}", self.first + k),
+                    rr,
+                ));
+            }
+            return out;
+        }
+        if !g.vel.is_empty() {
+            out.push(Target::drag("velocity", 0, "velocity lane", g.vel).towards(0, -g.vel.h / 3));
+        }
+        for i in 0..self.notes.len() {
+            if let Some(nr) = self.note_rect(r, i) {
+                out.push(Target::tap("note", i, format!("note {}", i + 1), nr));
+            }
+        }
+        // An empty place on the roll adds a note: its top left corner,
+        // where the sample clips leave room.
+        let spot = Rect::new(g.roll.x + 2, g.roll.y + 2, 12, 12);
+        let free = (0..self.notes.len()).all(|i| {
+            self.note_rect(r, i)
+                .is_none_or(|nr| nr.intersect(spot).is_empty())
+        });
+        if free && !g.roll.is_empty() {
+            out.push(Target::tap("roll", 0, "empty roll", spot));
+        }
+        out
     }
 
     fn touch(&mut self, _f: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {

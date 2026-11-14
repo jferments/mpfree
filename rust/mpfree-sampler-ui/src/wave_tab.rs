@@ -688,6 +688,7 @@ impl WaveTab {
                     }
                     None => card.enabled = false,
                 }
+                card.why = "No loop: set Mode to Loop first".to_string();
                 card.focused = *m == self.focus;
             }
         }

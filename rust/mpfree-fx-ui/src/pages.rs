@@ -87,7 +87,24 @@ fn known(info: &NodeInfo, count: u16) -> Option<Vec<Plan>> {
         ]),
         "mpfree.fx.lofi" => one(&[lofi::AMOUNT, lofi::WOW, lofi::CRACKLE, lofi::MIX]),
         "mpfree.fx.character" => one(&[character::AMOUNT, character::OUTPUT, character::MIX]),
-        "mpfree.fx.compressor" => one(&[comp::THRESHOLD, comp::RATIO, comp::ATTACK, comp::MAKEUP]),
+        // The detector's settings after the curve's, the meter last.
+        "mpfree.fx.compressor" => Some(vec![pg(
+            info.name,
+            &[
+                comp::THRESHOLD,
+                comp::RATIO,
+                comp::ATTACK,
+                comp::RELEASE,
+                comp::KNEE,
+                comp::MAKEUP,
+                comp::MIX,
+                comp::SIDECHAIN,
+                comp::SC_FILTER,
+                comp::DETECT,
+                comp::REDUCTION,
+            ],
+            &[comp::THRESHOLD, comp::RATIO, comp::ATTACK, comp::MAKEUP],
+        )]),
         "mpfree.fx.master_safety" => one(&[master::TRIM, master::CEILING, master::RELEASE]),
         "mpfree.fx.ducker" => one(&[
             ducker::DEPTH,

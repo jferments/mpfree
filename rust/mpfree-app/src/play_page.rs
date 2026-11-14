@@ -306,6 +306,17 @@ impl Widget for PadsBar {
         }
     }
 
+    fn targets(&self, r: Rect) -> Vec<mpfree_ui::Target> {
+        if self.synth.is_none() {
+            return Vec::new();
+        }
+        PadsBar::halves(r)
+            .iter()
+            .enumerate()
+            .map(|(i, h)| mpfree_ui::Target::tap("layout", i, ["Chromatic", "In key"][i], *h))
+            .collect()
+    }
+
     fn touch(&mut self, _f: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
         if phase != Touch::Down || self.synth.is_none() {
             return None;
