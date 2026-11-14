@@ -304,6 +304,13 @@ impl Node for TransientShaper {
         }
         self.times();
     }
+    fn rest_frames(&self) -> u32 {
+        // The hold and the peak's fall to the -60 dB floor, then the
+        // slowest follower (down at 20 x the speed) within 0.01 dB of it:
+        // ten time constants.
+        let ms = 25.0 + 40.0 + 10.0 * 20.0 * self.v[2];
+        (ms * 0.001 * self.rate as f32) as u32
+    }
     fn reset(&mut self) {
         for s in [
             &mut self.attack,

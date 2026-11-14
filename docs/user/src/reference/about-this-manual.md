@@ -1,7 +1,7 @@
 <!--
 status: ready
 covers: docs/user docs/tools/build_manual.py
-checked: 2026-11-11 414faa1
+checked: 2026-11-14 b76c3c7
 -->
 
 # About this manual

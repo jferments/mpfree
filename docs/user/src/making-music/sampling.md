@@ -1,23 +1,21 @@
 <!--
 status: changing
-covers: rust/mpfree-sampler rust/mpfree-sampler-ui rust/mpfree-grain rust/mpfree-app/src/sample_page.rs rust/mpfree-app/src/sampler.rs
-checked: 2026-11-13 9560b32
+covers: rust/mpfree-sampler rust/mpfree-sampler-ui/src/pads_tab.rs rust/mpfree-sampler-ui/src/rec_tab.rs rust/mpfree-sampler-ui/src/wave_tab.rs rust/mpfree-sampler-ui/src/warp_tab.rs rust/mpfree-sampler-ui/src/chop_tab.rs rust/mpfree-sampler-ui/src/auto_tab.rs rust/mpfree-app/src/sample_page.rs rust/mpfree-app/src/sampler.rs
+checked: 2026-11-14 b76c3c7
 -->
 
 # Sampling
 
-**Sampling** means taking a recording (a drum break, a chord from a record, your own voice) and playing it from the pads. The **Sample** tab is where you shape it: trim it, chop it into pieces across the pads, and decide how each pad plays.
+**Sampling** means taking a recording (a drum break, a chord from a record, your own voice) and playing it from the pads. This chapter covers getting sounds onto pads: loading them, recording them, trimming them, fitting them to the tempo and chopping them into slices. [Shaping how a pad plays](shaping-a-pad.md) then covers what each pad does when you hit it.
 
-The Sample tab always works on one pad at a time. **Hit a pad** to pick it; its name and sound are at the top left of the page. The tab has a page for each job, along the top: **Wave**, **Warp**, **Chop**, **Play**, **Grain**, **FX** and **Rec**. Beside them, two buttons work from any page: **Send to pad** and **Chop to pads** (see [below](#send-to-pad-and-chop-to-pads)).
+Two tabs share the work:
 
-Which sound is on which pad is the job of the **Pads** tab, next to Play: it shows the whole bank with the browser beside it.
-
-> [!NOTE]
-> Recording a new sample from the inputs or from MPFree's own sound onto a pad is coming to the Sample tab soon. Until then, loops recorded with the looper and the sounds in your kits are what you sample from.
+- The **Pads** tab, next to Play, shows the whole bank of 16 pads with the browser beside it: which sound is on which pad.
+- The **Sample** tab works on one pad at a time. **Hit a pad** to pick it; its name and sound are at the top left of the page. Along the top are a page for each job: **Wave**, **Warp**, **Chop**, **Play**, **Grain**, **FX** and **Rec**. Beside them, **Send to pad** and **Chop to pads** work from any page (see [below](#send-to-pad-and-chop-to-pads)).
 
 ## The Pads tab: sounds onto pads
 
-The pads are the heart of an MPC, so they have a tab of their own, next to Play. On the left are the 16 pads of the bank, laid out as on the MPC (pad 1 at the bottom left), each with its name and how it plays. Tap a pad to pick it, and tap it again to hear it; a pad you hit lights up. Under the pads, **Copy**, **Paste** and **Clear** move pads around, and **Map to keys** turns the bank into a keyboard instrument (see [Playing a kit on keys](#playing-a-kit-on-keys)).
+On the left of the Pads tab are the 16 pads of the bank, laid out as on the MPC (pad 1 at the bottom left), each with its name and how it plays. Tap a pad to pick it, and tap it again to hear it; a pad you hit lights up. Under the pads, **Copy**, **Paste** and **Clear** move pads around, and **Map to keys** turns the bank into a keyboard instrument (see [Playing a kit on keys](shaping-a-pad.md#playing-a-kit-on-keys)).
 
 The switch at the top right shows **Browse** or **Pad** beside the pads.
 
@@ -29,11 +27,68 @@ The switch at the top right shows **Browse** or **Pad** beside the pads.
 - **Audition**, or **PLAY**, lets you hear it first, at the level Q-Link 3 sets.
 - **Favourite** stars it, so it is in Favourites next time.
 
-The data wheel, its push, **–** and **+** move through the browser too; see [Buttons and controls](../reference/controls.md#pads-tab). Browse needs the test stick's data partition; without it, the view says so and the Pad view still works.
+The data wheel, its push, **–** and **+** move through the browser too; see [Buttons and controls](../reference/controls.md#pads-tab). Browse needs the data partition on MPFree's stick; without it, the view says so and the Pad view still works.
 
 {{shot: pads-pad | The Pads tab's Pad view: the picked pad's settings in the middle, and the sounds in the kit on the right.}}
 
-**Pad** sets up the pad picked: its **sound**, how it plays (**Mode**: **One shot** plays to the end, **Gate** only while you hold the pad, **Toggle** starts and stops with each hit, **Loop** repeats its loop region, **Granular** plays it as grains), how many notes can ring at once (**Polyphony**), a **mute group** (pads in the same group cut each other off, like an open and a closed hi-hat), and its **level**, **pan** and **tune**. **Effects** shows the effects on the pad's own mixer channel (**+ FX** when it has none); tap it, or push the wheel on it, to open the pad's chain in the Mix tab, and **‹** brings you back (see [The chain editor](mixing-and-effects.md#the-chain-editor)). Only the first 16 pads have a channel of their own; the others show a dash. Q-Links 1 to 4 turn level, pan, tune and voices. **Put on** places the sound picked on the right onto the pad, the whole of it; the hint line says when the pad plays all of it already.
+**Pad** sets up the pad picked:
+
+- its **sound**;
+- how it plays (**Mode**): **One shot** plays to the end, **Gate** only while you hold the pad, **Toggle** starts and stops with each hit, **Loop** repeats its loop region, and **Granular** plays it as grains;
+- how many notes can ring at once (**Polyphony**);
+- a **mute group**: pads in the same group cut each other off, like an open and a closed hi-hat;
+- its **level**, **pan** and **tune**;
+- **Effects**: the effects on the pad's own mixer channel (**+ FX** when it has none). Tap it, or push the wheel on it, to open the pad's chain in the Mix tab, and **‹** brings you back (see [Effects](effects.md#adding-an-effect-the-chain-editor)). Only the first 16 pads have a channel of their own; the others show a dash.
+
+Q-Links 1 to 4 turn level, pan, tune and voices. **Put on** places the sound picked on the right onto the pad, the whole of it; the hint line says when the pad plays all of it already.
+
+## Recording a sample
+
+The **Rec** page records onto a pad: from the INPUTS on the back of the MPC, or from MPFree's own sound (resampling).
+
+{{shot: sample-rec | The Rec page recording the line input onto pad A6: a take that started on the bar line is two bars in, and the blue span is what Skip back would keep.}}
+
+1. Pick what to record in the **Source** row. **Line in** is the INPUTS; turn the line input on first (**Prefs > Line input**, or the Looper tab's options), and set **REC VOL** so the meters stay out of the red. The other sources are MPFree's own sound: **Master** (everything you hear), a track (**Drums**, **Synth**, **Loop**), the delay's return, or one pad's channel.
+2. Set how the take starts and ends (below), or leave them: by default it starts when you press **Record** and ends when you press **Stop**.
+3. Tap **Record**, play, and tap **Stop**.
+
+The take goes onto the next pad with no sound, starting from the pad picked, and the Sample tab moves to that pad so you can trim it straight away. The title says which pad it will land on ("Record onto pad A6"). Set **Onto** to **This pad** to replace the picked pad's sound instead. One **UNDO** takes a take off its pad again.
+
+The picture shows the source's level on two meters, and the last 30 seconds of it scrolling past with the bar lines, so you can see what came in.
+
+### Skip back: keep what you just played
+
+The Rec page is always listening while its source is on. **Skip back** keeps what has already come in, without your having pressed Record: the last 10 seconds to begin with, or whatever the **Skip back** row says (5 seconds to a minute, or 1 to 8 whole bars cut on the bar lines). The blue span on the picture shows what it would keep. It is the sampler's version of [Capture](clips.md#capture-keep-what-you-just-played): play something good, then keep it.
+
+### How a take starts and ends
+
+The Record list on the right sets up the take. Pick a row with the data wheel or a tap, and change it with **–** and **+** or the arrows.
+
+| Row | What it does |
+|---|---|
+| **Source** | What it records (above). |
+| **Channels** | **Left + right**, **Left**, **Right** or **Mono mix** (both mixed into one). |
+| **Start** | **Now**: when you tap Record. **Threshold**: when the sound gets louder than the Threshold row, for catching a hit without missing its start. **Next bar**: on the next bar line, in time with the music. |
+| **Threshold** | How loud the sound must be to start a take (and quiet, to end one on silence), from -60 to -6 dB. |
+| **Pre-roll** | With Start on Threshold, how much from just before the sound to keep as well (0 to 500 ms), so the attack isn't cut. |
+| **End** | **Stop**: when you tap Stop. **Silence**: when the sound has been under the threshold for the Silence time. **Length**: after a number of bars. |
+| **Length** | With End on Length: 1 to 32 bars. |
+| **Tail** | What a take of a Length does at its end. **Cut** ends on the bar line. **Ring out** keeps recording until the sound dies away (up to 20 seconds more), for a one-shot with its reverb. **Loop** makes a loop of exactly its bars, with the ringing folded onto its start, so it loops with no seam. |
+| **Silence for** | How long the quiet must last (250 ms to 4 s) to end a take on silence, or a Ring out. |
+| **Skip back** | How far Skip back reaches. |
+| **Onto** | **Next empty** or **This pad** (above). |
+| **Flatten velocity**, **Flatten hold** | How Flatten plays the pad (below). |
+
+A take that starts on the bar line and lasts whole bars lands warped to the project's tempo, so it stays in time if you change the tempo later. A take can be up to three minutes long.
+
+### Flatten: print a pad to a new sound
+
+**Flatten** records the picked pad as it sounds now, with its layers, envelope, filter, warp and pan in one new sound. It plays the pad once at the **Flatten velocity**, lets go after the **Flatten hold**, and records until the sound has been silent for the Silence time. Onto the next empty pad, the pad channel's effects are printed in too; onto the pad itself they are left out, because the channel will play them again.
+
+Use it to free up a busy pad, or to chop a sound you have already shaped.
+
+> [!TIP]
+> Resampling is the classic MPC trick: play the loop, the synth or the whole mix into a pad, then chop it and play it again. Pick **Master** as the Source and use **Skip back** after a jam you liked.
 
 ## Send to pad and Chop to pads
 
@@ -48,7 +103,23 @@ Both buttons are faint while the pad picked has no sound.
 
 {{shot: sample | The Wave page: the whole sample at the top, the zoomed region below, and the region's settings on the right. Send to pad and Chop to pads are at the top right.}}
 
-The **Wave** page shows the sample. Set where it **starts** and **ends**, and where its **loop** starts and ends, with the four Q-Links. Hold **SHIFT** and press **+** to zoom in, **SHIFT + –** to zoom out (the Warp and Chop pages too). Tap the wave to hear it. On the right, set the region's **gain**, **tune**, **crossfade** (smooths a loop's seam), **warp** (play in time with the tempo) and **reverse**.
+The **Wave** page shows the sample. Set where it **starts** and **ends**, and where its **loop** starts and ends, with the four Q-Links. Hold **SHIFT** and press **+** to zoom in, **SHIFT + –** to zoom out (the Warp and Chop pages too). Tap the wave to hear it. On the right, set the region's **gain**, **tune**, **crossfade** (smooths a loop's seam), **warp** and **reverse**.
+
+**Warp** plays the sound in time with the project's tempo: **Stretch** keeps its pitch, **Repitch** speeds it up or slows it down like a record. **Warp tempo** is the tempo it was played at.
+
+## Warp: put the hits on the beat
+
+{{shot: sample-warp | The Warp page: a break at 92 BPM with 14 hits pinned to the 1/16 grid, pin 4 picked.}}
+
+The **Warp** page is for a warped sound whose hits don't sit quite on the beat, such as a loop played by hand. It draws the sound against the bars and beats of its warp tempo, with the hits MPFree finds marked along the bottom.
+
+- **Tap near a hit** to pin it to the nearest grid line. A pin is a numbered flag; the sound between two pins stretches to fit.
+- **Drag a pin's handle** to move it along the grid.
+- **Pin hits** pins every hit near a grid line onto it, which tightens a loose loop in one go. **Remove pin** takes the picked pin off, and **Clear pins** all of them.
+- The list on the right holds **Warp** and **Warp tempo** (as on the Wave page), the **Grid** (1/4 to 1/32), which **Hits** it finds (**Strongest**, **Most** or **All**), and the picked **Pin** and its **Pin beat**.
+- The Q-Links pick a pin, nudge its beat, fine-tune the warp tempo and scroll. Hold **SHIFT** for finer steps.
+
+Pins only work while the sound is stretched. With Warp on Repitch, the sound plays straight through.
 
 **Typing a number.** A value with a dotted line under it, such as **Warp tempo**, can be typed: tap the value and a number pad opens. Tap the number and **Enter**; the pad shows the range it takes and the value now, and says so if the number is out of range. **Cancel** leaves the value as it was. The data wheel and **–** / **+** step the number too, and pushing the wheel is Enter. **UNDO** takes a typed value back.
 
@@ -90,67 +161,13 @@ With **Put on** at **Files**, the button reads **Export** (**Export 15 slices**,
 Load **Break 92.wav** back, on this MPC or another, and the pad comes back exactly as you exported it, slices and all, as long as **Break 92.mpfree** is beside it. Without it, the sound loads on its own.
 
 > [!NOTE]
-> **Files** appears on the Put on row once MPFree can save to its stick, which comes with the browser (see [Saving your work](saving.md)).
-
-## Play: how a pad sounds
-
-{{shot: sample-play | The Play page: velocity layers, the volume envelope drawn over the sound, and the filter.}}
-
-The **Play** page shapes how the picked pad sounds each time you hit it:
-
-- **Layers:** different sounds for soft and hard hits. Drag a layer's edges to set its velocity range.
-- **Envelope:** how the volume rises and falls: **attack**, **hold**, **decay**, **sustain** and **release**. Drag the points on the drawing, or use the Q-Links.
-- **Filter:** darken or thin out the sound. Drag the dot.
-
-### Pads that stop, play or hold others
-
-{{shot: sample-play-links | The Play page's Pad list with Also plays picked: hits on A1 and A3 put them on it, so a hit on A5 plays all three, and A5 latches.}}
-
-Three rows of the Play page's **Pad** list set how a pad works with the others, and with your hands:
-
-- **Stops:** the pads this one cuts off when you hit it. It works one way: the closed hi-hat stops the open one, and the open one leaves the closed one alone. (A **mute group** cuts both ways.)
-- **Also plays:** the pads that play whenever you hit this one, at the same strength, as the MPC's Simultaneous Play does: a kick with its own sub, a stab with a noise burst, a chord from three pads. Each plays as a hit on it would, with its own layers, stops and latch, and lets go when you let go of this pad. The pads it plays don't play their own Also plays pads in turn. While the pads play notes or 16 Levels, Also plays does nothing.
-- **Latch:** at **On**, a hit starts the pad and it plays on after you let go; the next hit stops it. A loop keeps looping and plays its tail when it stops, a grain cloud keeps going, a long pad or a drone holds, and your hands are free for the rest. A latched pad stays lit on the MPC.
-
-To fill in **Stops** or **Also plays**, tap the row, then hit the pads you want: each hit adds a pad, and a second hit takes it out again. Every hit is one step for **UNDO**. Tap another row when you are done, and hits pick the pad to edit again. The arrows and **–** and **+** work too (and the wheel, once you push it): a step up adds the next pad, a step down takes the last one out.
-
-> [!TIP]
-> Note Repeat plays a pad again on every step, so a latched pad would turn on and off with each one. Keep Latch for pads you hold, and Note Repeat for pads you roll.
-
-**FULL LEVEL** and Half Level play every hit at full or at half strength, sampled pads included (see [Buttons and controls](../reference/controls.md)).
-
-### Scenes: mangle, morph and go back
-
-{{shot: sample-play-scenes | The scene strip on the Play page: scenes A and B stored, the crossfader 40 % of the way to B.}}
-
-The strip above the Q-Links on the **Play** page holds two **scenes** of the whole kit, as on the Octatrack:
-
-- **Store A** keeps every pad of the kit as it is now: its sound, trim, level, tune, filter, envelope, everything. **Store B** keeps a second version. Make A, change some pads (tune the snare down, close the hats' filter, push the kick), then make B.
-- The **crossfader** morphs the kit from A to B as it plays: each pad's level, pan, tune, filter and envelope times move between their values in A and in B. Settings that are the same in both scenes stay as they are. Sliding it changes nothing in the kit itself, so you can perform with it freely.
-- **Return to A** puts every pad back exactly as A stored it and sets the crossfader to A. Mangle the kit as much as you like, then return. **UNDO** takes the return back.
-
-The scenes are saved with the kit.
-
-## Grain: stretch and smear
-
-{{shot: sample-grain | The Grain page: tiny grains of the sound play at once, around the position you pick.}}
-
-**Granular** playback plays the sound as a cloud of tiny overlapping pieces (grains). It can freeze a moment, stretch it into a pad, or scatter it into texture. Touch the square to move the **position** in the sound and the **size** of the grains together, and use the Q-Links for **position**, **size**, **density** and **pitch**. **Scan speed** moves through the sound on its own.
-
-Grains play only when the pad's **Mode** is **Granular**. Until then a button over the picture says which mode the pad is in: tap it to play the pad as grains. The **Mode** row steps through every mode to **Granular** too (on the way, **Loop** gets a loop region of its own, as on the Wave page).
-
-## FX: effects on one pad, or on the whole kit
-
-**FX**, in the Sample tab's row of pages, opens the **chain editor** (see [Mixing and effects](mixing-and-effects.md#the-chain-editor)) on the pad you are editing, in the Sample tab's place. **Back** comes back to the Sample tab.
-
-- **The pad's own effects.** The editor opens on the pad's own channel, so an effect added there plays on that pad alone. Add **Perform FX** for stutters, beat repeats, tape stops and reverse on just that pad, in time with the tempo. Each of its 16 slots (**Slot 1** to **Slot 16**) is a page in the editor, with its effect, its length and a **Hold** switch: Hold on plays it, off lets it go.
-- **The whole kit's effects.** The switch at the top goes to **Drums**, the track every pad plays into, so an effect there plays on the whole kit, like a bus effect on the SP-404. To make it a one-knob effect, put its knobs on a macro (see [Macros](mixing-and-effects.md#macros)), and that macro's Q-Link plays them all at once.
-
-The effects belong to the pad's place in the kit, not to its sound: put another sound on the pad and it plays through the same effects. Only bank A's 16 pads have a channel of their own for now. **FX** on a pad past them says so in the log.
+> **Not yet:** the Put on row doesn't offer **Files** in this build. Exporting is built, and arrives once the Sample tab is connected to the stick.
 
 ## Auto-sample: a synth or your gear onto the pads
 
-**Auto-sample** plays an instrument note by note, records every note and makes a playable instrument of it on the kit's pads: one pad a note, each covering the keys around it, with velocity layers and round robins if you ask for them. Open it with the **Auto-sample** button on the Sample tab's **Rec** page, set the notes and layers in the list, and tap **Start**. The bar says how many takes it makes, how long it takes and how much memory, before anything starts. **Cancel** stops and keeps the notes done, and one UNDO takes the whole instrument off.
+{{shot: sample-auto | Auto-sample on the Synth tab's Poly Pluck: a note every 5 semitones from C2 to A5, in three velocity layers, onto pads A6 to A15.}}
+
+**Auto-sample** plays an instrument note by note, records every note and makes a playable instrument of it on the kit's pads: one pad a note, each covering the keys around it, with velocity layers and round robins if you ask for them. Open it with the **Auto-sample** button on the **Rec** page. In the list, set the **Lowest note** and **Highest note**, how far apart the sampled notes are (**Every**), the velocity **Layers**, **Round robins**, how long each note is held (**Hold**) and how long its tail may ring (**Tail**). Then tap **Start**; **Rec** goes back to the Rec page. The bar says how many takes it makes, how long it takes and how much memory, before anything starts. **Cancel** stops and keeps the notes done, and one UNDO takes the whole instrument off.
 
 The **Source** row says what plays:
 
@@ -158,40 +175,7 @@ The **Source** row says what plays:
 - **External gear**, on a MIDI channel from 1 to 16. MPFree plays your synth through **MIDI OUT** and records it from the line input, in real time. Connect the synth's audio out to the line input, set it to the channel you picked and turn the line input on. MPFree first plays the middle note twice to hear how loud the synth is and how late it answers, so no note starts late or cut off. If the line input stops or you switch the Rec page to another source while it runs, it stops, lets go of the note and keeps the notes done.
 
 > [!NOTE]
-> **External gear** appears in the Source row once MIDI OUT is set up for it, which comes with the MIDI setup (see [Playing other gear](midi-and-cv.md)).
-
-## Playing a kit on keys
-
-A kit's pads can play notes instead of their own sounds, so a bank of sampled notes plays like a keyboard instrument. A pad that plays notes is a *keygroup*: it covers a range of keys and plays its sound higher or lower for each key away from its root note.
-
-**Map to keys**, under the pads on the Pads tab, does this for the whole bank at once. MPFree finds each pad's note: from its keygroup if it is one already, else from a note in its name ("Pluck C3", "Bass_F#1"), else from the pitch it hears in the sound. It then spreads the pads over the keyboard, each one reaching halfway to its neighbours, and the pads play notes from the C at or below the lowest. A pad with no note to find is left as it was. One UNDO takes the whole mapping back.
-
-Notes are named with middle C as C4. Some libraries call middle C "C3"; when a name and the pitch MPFree hears are the same note, it uses the octave it hears.
-
-{{shot: sample-keys-mapped | The Play page's keyboard after Map to keys: five keygroups, with pad A5's zone picked.}}
-
-While the pad is a keygroup, or the pads play notes, the Play page shows a keyboard:
-
-- Each keygroup is a bar over the keys it plays, in its pad's colour, with a dot on its root.
-- Tap a bar to pick its pad. Drag the picked pad's ends to set its lowest and highest keys, and its dot to move the root.
-- Press the keys to hear the kit. The line under the keys shows the 16 notes the pads play.
-
-The Keys rows in the Pad list do the same with numbers: Keys makes one pad a keygroup, Low key, High key and Root key set its range, and Pads play switches the pads between their own sounds and notes.
-
-### Crossfades
-
-Where one zone ends and the next begins, the sound can switch at a hard edge or blend from one sample into the other. The same goes for a pad's velocity layers, from soft to hard.
-
-- **Key fade**, a row of the Pad list, sets the blend for the whole kit: every keygroup fades in and out over that many notes, and where two zones meet they are moved to overlap by as much, so one fades out while the next fades in. The level stays even across the blend.
-- **Vel fade** does the same for the picked pad's velocity layers. Round robins keep taking turns while their layers blend.
-- Set either one back to Off and the edges go back to where they met. Each change is one UNDO.
-
-The keyboard and the layer map draw each fade as a curve at the ends of its bar.
-
-{{shot: sample-keys-crossfade | Key fade at 4 notes: the zones that met now overlap and blend over four keys.}}
+> **Not yet:** **External gear** needs MIDI OUT, which is still off in this build (see [Playing other gear](midi-and-cv.md)). Until then the Source row offers the Synth tab's patch only.
 
 > [!MPC]
-> On an MPC a keygroup instrument is a program type of its own. In MPFree keygroups are pads of an ordinary kit, so any kit can become one with Map to keys.
-
-> [!MPC]
-> The MPC's Sampler, Sample Edit and Program Edit modes are all on one tab in MPFree, always on the pad you last hit. **SAMPLER** opens the Sample tab, **SAMPLE EDIT** its Wave page, and **PROG EDIT** the Pads tab's Pad view (in the next build). **UNDO** takes back any edit on the Sample and Pads tabs.
+> The MPC's Sampler, Sample Edit and Program Edit modes are all on one tab in MPFree, always on the pad you last hit. **SAMPLER** opens the Sample tab, **SAMPLE EDIT** its Wave page, and **PROG EDIT** the Pads tab's Pad view. **UNDO** takes back any edit on the Sample and Pads tabs.
