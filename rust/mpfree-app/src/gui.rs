@@ -7591,7 +7591,11 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
                 (3, "mpfree.poly", "Poly"),
                 (5, "clap:org.example.synth", "Example Synth"),
             ] {
-                s[t] = Some(crate::instruments::Held { id, name });
+                s[t] = Some(crate::instruments::Held {
+                    id,
+                    name,
+                    instance: 0,
+                });
             }
             p.apply(ToUi::TrackSounds(Box::new(s)));
             out.push(("arrange-instruments", p));
@@ -8479,6 +8483,7 @@ mod tests {
         s[2] = Some(crate::instruments::Held {
             id: "mpfree.fm",
             name: "FM",
+            instance: 0,
         });
         p.apply(ToUi::TrackSounds(Box::new(s)));
         assert_eq!(sounds(&p)[..3], ["Kit", "Kit", "FM"]);

@@ -1,6 +1,6 @@
 # Plugins: the CLAP host
 
-**Status:** 2026-11-14. Steps P1 (the host) and P2 (the sandbox) of the plugin plan are built and tested on the workstation and on ARMv7 under qemu. The code is [`rust/mpfree-clap`](../../../rust/mpfree-clap) and [`rust/mpfree-plughost`](../../../rust/mpfree-plughost). The app uses them for **plugin effects as mixer inserts** and **plugin synths as track instruments** ([In the app](#in-the-app)); no third-party plugin has been tried on the MPC yet. The plan for plugins is in the synth skill tree (P1 to P6). The first plugin pack (P3) is Airwindows, Surge XT and Dexed (Jay, 13 Nov), CLAP only until P5: [the plugin pack](../guides/plugin-pack.md) builds them (14 Nov).
+**Status:** 2026-11-14. Steps P1 (the host) and P2 (the sandbox) of the plugin plan are built and tested on the workstation and on ARMv7 under qemu. The code is [`rust/mpfree-clap`](../../../rust/mpfree-clap) and [`rust/mpfree-plughost`](../../../rust/mpfree-plughost). The app uses them for **plugin effects as mixer inserts** and **plugin synths as track instruments**, with the plugin's own presets on the Synth tab ([In the app](#in-the-app)). The plugin pack's Surge XT lists and loads its factory presets on ARMv7 under qemu; no third-party plugin has been tried on the MPC yet. The plan for plugins is in the synth skill tree (P1 to P6). The first plugin pack (P3) is Airwindows, Surge XT and Dexed (Jay, 13 Nov), CLAP only until P5: [the plugin pack](../guides/plugin-pack.md) builds them (14 Nov).
 
 MPFree runs native engines first (Poly, FM, the drum, pluck and wavetable synths). Plugins add what we don't build, which means CLAP, LV2 and VST3 plugins built for ARM Linux. Desktop builds can't run on the MPC's ARM chip, and Akai's own plugins aren't a path. CLAP comes first: it is MIT-licensed, plain C, and made for hosts like ours (sample-exact events, per-note expression, a clear threading model).
 
@@ -30,7 +30,13 @@ A CLAP plugin becomes an `mpfree_node::Node`, so anything that holds a node can 
   - `save_state()` and `load_state()` give the plugin's state as bytes for the project file. After a load, the node's values follow.
   - `param_text()` shows a value the way the plugin writes it.
   - `idle()` runs the plugin's `on_main_thread` when it asked for a callback. It also reports what else the plugin asked for: a restart, a parameter rescan, a ports rescan, latency or tail changes, or unsaved state.
-- **What the host offers plugins:** log (counted, never printed, since printing could block the audio thread), thread-check, params, state, latency, tail, audio-ports and note-ports.
+- **A plugin's own presets.** `Library::presets()` asks the file's CLAP preset-discovery factory (`clap.preset-discovery-factory/2`, or the draft id) for its providers, at most 64. Each provider's indexer names its file types and places:
+  - a folder (a FILE location): the host walks it, sorted, skipping dot files and never following a linked folder, at most 8 deep, 16384 files and 4096 presets, and asks the provider for each file's presets;
+  - inside the plugin (a PLUGIN location): the provider names its presets once, each with a load key.
+  - A `Preset` has its name (else the file's name), place, load key, the CLAP plugin ids it is for, collection, creator, flags (factory, user, demo, favourite) and category: the plugin's own, else the folders between the location and the file, joined with " / ".
+  - What can't be read is counted, and the first 16 reasons are kept (`Found::errors`), never hidden. A provider that fails without saying why is reported as "the plugin couldn't read" the file.
+- **Loading one.** `ClapControl::load_preset()` hands it to the plugin's preset-load extension (`clap.preset-load/2`, or the draft id). The plugin's own error comes back as the reason (else "the plugin refused the preset"). The values are read again at once, and again when the plugin says it loaded or asks for a value rescan, because some plugins load in the background: Surge XT fades out, loads on a thread of its own and sends its new values as output events over the next blocks, silent meanwhile.
+- **What the host offers plugins:** log (counted, never printed, since printing could block the audio thread), thread-check, params, state, latency, tail, audio-ports, note-ports and preset-load (a load's error, and "loaded").
 
 ## Threads and real time
 
@@ -61,6 +67,8 @@ Real time: the node's side of a block never allocates or locks. `tests/no_alloc.
 
 - **Listing a file.** `list(program, file)` starts the process with `--list FILE`. It loads the file, prints one tab-separated line per plugin (`plugin`, id, name, vendor, `instrument` or `effect`) and exits. A file that crashes or hangs while loading costs only that process: the host waits at most `CONTROL_TIMEOUT` and kills it. A plugin is an instrument when its CLAP features include `instrument`.
 - **The program.** `Program` is the executable plus any words before the process's own arguments. `spawn(exe, ...)` uses the `mpfree-plughost` binary. `spawn_with(program, ...)` takes any program, such as the app itself as `mpfree plughost` (below).
+- **Listing presets.** `presets(program, file)` starts the process with `--presets FILE`. It prints one tab-separated line per preset (`preset`, name, place as `plugin` or `file:PATH`, load key, flags, collection, category, creator, then the plugin ids; tabs, newlines and backslashes escaped), then an `error` line for each reason kept, `more-errors N` and `cut-short`. Finding presets runs the plugin's code over every file, so it never runs in a playing plugin's process; the host waits at most `PRESETS_TIMEOUT` (120 s). `Sandbox::load_preset()` sends a preset to the running process (`ToChild::LoadPreset`, the file and the load key) and gives back the plugin's answer (`ToHost::PresetLoaded`).
+- **A home of its own.** `Program::with_home(dir)` starts every process with `HOME` and the XDG folders inside `dir` ([In the app](#in-the-app)).
 - **State snapshots.** `Sandbox::refresh_state()` reads the plugin's state (a round trip) and keeps it. `SandboxNode::saved_state()` copies that snapshot without asking the process or waiting, for a project save from any thread but the audio thread's period. `restart_from_snapshot()` restarts with it. `Sandbox::orphaned()` says the node was dropped and only the handle is left.
 
 ### The rack
@@ -74,6 +82,7 @@ Real time: the node's side of a block never allocates or locks. `tests/no_alloc.
   - restarts a crashed process from its last snapshot, at most 3 times a minute. A fourth crash in that minute leaves the plugin down: an effect passes its input through, an instrument is silent. Making it again tries once more;
   - refreshes each running plugin's snapshot every 5 s.
 - `Rack::refresh_states()` reads every snapshot now, before a project save.
+- `Rack::presets(node_id)` lists a plugin's presets with `presets`, once per file: the list is kept and a second call is free. Its line says how many and the first error. `Rack::make_instance(node_id)` is `make` with the process's instance number, and `Rack::load_preset(instance, preset)` loads a preset into that process. Its snapshot is read again a second later, so a crash or a save soon after keeps the preset.
 - Every start, failed start, crash, restart and give-up is a line (`take_lines`). `summary()` counts plugins found, running and down, crashes, restarts and failures. Neither waits: they use `try_lock`.
 
 ## In the app
@@ -87,7 +96,13 @@ Real time: the node's side of a block never allocates or locks. `tests/no_alloc.
 - **The chain editor's picker** lists the plugin effects after the built-in ones, under the Plugins heading (`ChainState::plugins`, `ChainState::picks`, each a `Pick` with `Category::Plugins` from the FX registry). A tap sends `ChainAction::Add("clap:...")` as for any effect.
 - **The builder thread** (`control.rs`, `mpfree-build`) builds a `clap:` id with `Rack::make`, so starting a process never happens on the audio thread. It also calls `Rack::watch` every 250 ms while it waits for jobs. A removed insert is dropped there too, and the next watch ends its process.
 - **Nothing is hidden.** The audio loop passes the rack's lines to the report each period when there are any (no allocation when there are none), and the 30-second status adds `status: plugins: N found · running · down · crashes · restarts · failed`.
-- **Plugin synths as track instruments.** `Rack::instruments` lists the plugins whose features include `instrument`. They follow the five engines on the Synth tab's "Track N instrument" row, and a pick makes the plugin on the builder thread and puts it in that track's slot of the track host ([Track host](track-host.md#in-the-app)). The Synth tab shows its parameters as for any node, with no presets.
+- **Plugin synths as track instruments.** `Rack::instruments` lists the plugins whose features include `instrument`. They follow the five engines on the Synth tab's "Track N instrument" row, and a pick makes the plugin on the builder thread and puts it in that track's slot of the track host ([Track host](track-host.md#in-the-app)). The Synth tab shows its parameters as for any node.
+- **A plugin synth's own presets.** When a track gets a plugin synth, or a project opens with one, `MixHost::ask_presets` has the builder thread list its presets, once per plugin (`Job::Presets`, `Rack::presets`). The first time takes a few seconds: Surge XT's 627 factory presets take about 5 s on ARMv7 under qemu. Effects and instruments asked for meanwhile wait behind it.
+  - The Synth tab lists them as "Category / Name" (`plugin_preset_name` in `main.rs`), in the order the plugin's folders sort.
+  - A tap sends `SynthAction::Preset(k)`. The builder thread loads it into that track's running plugin (`Job::LoadPreset`, by the instance `Rack::make_instance` gave, kept in `Held::instance`). `PresetNews::Loaded` comes back: the log says the preset, and the plugin's reason is said on screen. A preset that lands after the track changed instrument is said and changes nothing.
+  - The Synth tab looks again 1 s and 3 s later, for the values a plugin sends after loading in the background.
+  - A list that can't be read is said in the log, and the tab lists no presets. A plugin without presets (Dexed) lists none.
+  - The project keeps the plugin's state, so the sound is saved, but not which preset it came from: after an open no preset is marked.
 - **Saved with the project.** A plugin effect is kept in the project's `mixer` part and a plugin synth in its `instruments` part ([browser.md](browser.md#the-parts)), each with its id, its file (`file=<name>.clap`, from `SandboxNode::save_extras`), its parameters and its state. `SandboxNode`'s `Node::save_state` is the rack's last snapshot (`saved_state`: taken as the plugin starts and every few seconds), so a save never waits on a process; the parameters, saved apart and applied after the state, keep a knob turned since. An open makes each plugin through the rack on the screen thread (`project::make_node`, which gets the rack through `ToUi::Plugins`) and hands it the state with `Node::load_state` (a round trip, before the node is prepared), which also becomes its snapshot, so a crash after the open restarts with it. A plugin whose file isn't in `files/plugins/` is left out with a line naming the file; a state the plugin refuses is said, and it keeps its own.
 - **Not yet in the app:** the plugin's own Dev page row and an on-screen warning, and the `mpfree-plughost` binary on the stick (not needed: the app serves).
 
@@ -102,7 +117,7 @@ Not yet:
 
 `mpfree_clap::testplug` holds two small CLAP plugins of our own, so the host is tested without anyone else's binary:
 
-- **MPFree Test Synth:** 16 voices; Gain, Decay and Wave (an enum); two read-only meters (voices sounding and the transport's tempo, sent back as output events); a hidden parameter; state, tail and latency; CLAP and MIDI note dialects; pressure and tuning expressions.
+- **MPFree Test Synth:** 16 voices; Gain, Decay and Wave (an enum); two read-only meters (voices sounding and the transport's tempo, sent back as output events); a hidden parameter; state, tail and latency; CLAP and MIDI note dialects; pressure and tuning expressions; presets: three built in (a PLUGIN location, by load key) and the `.mptp` files in `$MPFREE_TESTPLUG_PRESETS`, else `$HOME/mpfree-testplug-presets` (a FILE location), through its own preset-discovery factory, and preset-load.
 - **MPFree Test Gain:** a stereo effect, with a Fail switch that makes `process` return an error. For the sandbox's tests only, a Stall setting makes `process` sleep and a Crash switch makes it abort its process.
 
 `rust/mpfree-clap-testplug` builds the same two as a real shared library, `libmpfree_clap_testplug.so`, which the tests load with `dlopen`.
@@ -122,6 +137,7 @@ Not yet:
 - the gain is an effect, ignores notes, and a failed block leaves the input dry;
 - the `.clap` file loads with `dlopen` and sounds exactly like the linked copy; a missing file and a library without `clap_entry` are refused;
 - a callback request reaches `idle()` once;
+- the test synth's presets are found (built in and from a folder, with names, categories and flags), a file it can't read is said, and a preset loads by load key and from a file, its values following; an unknown one gives the plugin's reason (`tests/presets.rs`);
 - the entry's `init` and `deinit` balance, and the file stays started while a plugin or its control handle lives (`tests/lifecycle.rs`);
 - no allocation on the audio thread's path (`tests/no_alloc.rs`);
 - the test synth as a track host instrument: it plays on its track, takes a parameter from the host, rings out after a swap and comes back to be dropped; the test gain as an insert in a mixer strip's chain (`tests/track.rs`).
@@ -145,9 +161,10 @@ The same tests pass for `armv7-unknown-linux-gnueabihf` under qemu, including th
 - a plugin file is listed from its own process, with the same names as in-process; a missing file and a missing binary fail cleanly; the list lines read back and junk is refused;
 - a crash restarts from the snapshot, the node reads the snapshot, a gone process gives none and the old one stays, and a dropped node leaves the handle orphaned;
 - a project's hooks on the node: `save_state` is the snapshot (none before one is read), `save_extras` names the plugin's file, and `load_state` into a new process before it is prepared brings the values back and becomes its snapshot; a state the plugin refuses changes nothing;
+- `tests/presets.rs`: a plugin's presets are listed from a process of their own, once, with the user presets from the home the program gives; one loads into the running synth by its instance number and its values come back; an unknown preset or instance says why; the preset lines read back and junk is skipped;
 - `tests/rack.rs`: a scan of a real folder finds the test plugins and says why it left out a duplicate and a file that isn't a library (and ignores a text file); a plugin made from the rack is restarted from its snapshot three times, then left off and dry on the fourth crash in a minute, with every step said; a dropped node's process is let go; an empty folder finds and says nothing.
 
-`cargo test --locked -p mpfree-app --test plughost` runs the app as the plugin process: it lists the test plugins' file, refuses to run without the sandbox's arguments, and plays the test gain through a rack whose program is `mpfree plughost`. CI also runs it in the static ARMv7 step under qemu. There the test starts the app as `qemu-arm -L /usr/arm-linux-gnueabihf`, so the plugin's `libc.so.6` and `libgcc_s.so.1` come from the cross toolchain as they would from the MPC's `/lib` (unless `QEMU_LD_PREFIX` is set). Each run uses its own folder, and eight runs at once all passed.
+`cargo test --locked -p mpfree-app --test plughost` runs the app as the plugin process: it lists the test plugins' file, refuses to run without the sandbox's arguments, plays the test gain through a rack whose program is `mpfree plughost`, and lists the test synth's presets (its user preset from the plugin home) and loads one through that rack. CI also runs it in the static ARMv7 step under qemu. There the test starts the app as `qemu-arm -L /usr/arm-linux-gnueabihf`, so the plugin's `libc.so.6` and `libgcc_s.so.1` come from the cross toolchain as they would from the MPC's `/lib` (unless `QEMU_LD_PREFIX` is set). Each run uses its own folder, and eight runs at once all passed.
 
 These pass for `armv7-unknown-linux-gnueabihf` under qemu too. There, `MPFREE_PLUGHOST_TEST_EXE` names a wrapper that starts the ARM build of the process under qemu, because a process started from inside qemu-user runs on the host CPU. Under load (eight runs at once, 80 runs) they passed every time.
 
@@ -155,4 +172,4 @@ These pass for `armv7-unknown-linux-gnueabihf` under qemu too. There, `MPFREE_PL
 
 - **P3, ARM builds:** built on 14 Nov: [the plugin pack](../guides/plugin-pack.md) builds Airwindows (89 effects, through a small wrapper of ours), Dexed and Surge XT for the MPC from pinned commits, with their licenses and sources, and checks each file. Played under qemu; not on the MPC yet.
 - **P4, passports:** automatic tests on the MPC for each plugin: does it load, does it stay free of NaN, does its state round-trip, what it costs per voice, its latency.
-- In the app: plugins in the instrument browser, and the rack's counts on the Dev page.
+- In the app: plugins in the instrument browser, the rack's counts on the Dev page, and a plugin's presets in the Browse overlay with a search (627 in one list is long).

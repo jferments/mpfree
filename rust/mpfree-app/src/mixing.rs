@@ -210,6 +210,12 @@ pub struct MixHost {
     pub instruments: Instruments,
     /// Instruments made without a builder (the tests), waiting to go in.
     made: Vec<crate::control::MadeInstrument>,
+    /// Each plugin synth's own presets, once listed (or why not), by its
+    /// node id; and the ones asked for and not back yet.
+    plugin_presets: Vec<(&'static str, Result<Vec<mpfree_plughost::Preset>, String>)>,
+    presets_asked: Vec<&'static str>,
+    /// Preset news made without a builder (the tests).
+    preset_news: Vec<crate::control::PresetNews>,
     /// The effect picker's favourites and recents (`files/fx/`), and
     /// whether they changed since they were last saved.
     pub shelf: mpfree_fx::picker::Shelf,
@@ -312,6 +318,9 @@ impl MixHost {
             opening: None,
             instruments: Instruments::new(rate, PERIOD),
             made: Vec::new(),
+            plugin_presets: Vec::new(),
+            presets_asked: Vec::new(),
+            preset_news: Vec::new(),
             shelf: mpfree_fx::picker::Shelf::default(),
             shelf_dirty: false,
             modes: crate::fxmodes::Modes::default(),
@@ -370,6 +379,85 @@ impl MixHost {
                 })
             }
         }
+    }
+
+    /// Plugin synth `id`'s own presets, once listed (None until then, or if
+    /// they couldn't be).
+    pub fn plugin_presets(&self, id: &str) -> Option<&[mpfree_plughost::Preset]> {
+        self.plugin_presets
+            .iter()
+            .find(|(i, _)| *i == id)
+            .and_then(|(_, l)| l.as_deref().ok())
+    }
+
+    /// Asks for plugin synth `id`'s presets, once: listed on the builder
+    /// thread (the first time in a process of their own, which can take
+    /// seconds) and kept when [`MixHost::poll_presets`] hands them back.
+    pub fn ask_presets(&mut self, id: &'static str) {
+        if !Plugins::is_plugin(id)
+            || self.presets_asked.contains(&id)
+            || self.plugin_presets.iter().any(|(i, _)| *i == id)
+        {
+            return;
+        }
+        let asked = match self.builder.as_mut() {
+            Some(b) => b.presets(id),
+            None => {
+                let list = self.plugins.presets(id);
+                self.preset_news
+                    .push(crate::control::PresetNews::Listed { id, list });
+                true
+            }
+        };
+        if asked {
+            self.presets_asked.push(id);
+        }
+    }
+
+    /// Asks for preset `index` of track `track`'s plugin synth to be
+    /// loaded (on the builder thread); [`MixHost::poll_presets`] says how
+    /// it went. False if the track has no plugin, its presets aren't
+    /// listed, there's no such preset, or the builder is busy.
+    pub fn load_plugin_preset(&mut self, track: usize, index: usize) -> bool {
+        let Some(held) = self.instruments.held(track) else {
+            return false;
+        };
+        let Some(preset) = self
+            .plugin_presets(held.id)
+            .and_then(|l| l.get(index))
+            .cloned()
+        else {
+            return false;
+        };
+        let job = Box::new(crate::control::PresetJob {
+            track,
+            instance: held.instance,
+            index,
+            preset,
+        });
+        match self.builder.as_mut() {
+            Some(b) => b.load_preset(job),
+            None => {
+                let news = job.run(&self.plugins);
+                self.preset_news.push(news);
+                true
+            }
+        }
+    }
+
+    /// Once a period: presets listed or loaded on the builder thread, if
+    /// any are back (a listed plugin's are kept for
+    /// [`MixHost::plugin_presets`]). Never waits.
+    pub fn poll_presets(&mut self) -> Option<crate::control::PresetNews> {
+        let news = match self.builder.as_mut() {
+            Some(b) => b.take_preset_news(),
+            None => (!self.preset_news.is_empty()).then(|| self.preset_news.remove(0)),
+        }?;
+        if let crate::control::PresetNews::Listed { id, list } = &news {
+            self.presets_asked.retain(|i| i != id);
+            self.plugin_presets.push((id, list.clone()));
+        }
+        Some(news)
     }
 
     fn drop_instrument(&mut self, inst: mpfree_track::Instrument) {
@@ -1513,6 +1601,33 @@ mod tests {
         // after 32 removes. poll_built takes them back every period.
         let mut h = MixHost::new(RATE, 0.0, 0.0);
         add_and_remove(&mut h, 40);
+    }
+
+    #[test]
+    fn a_plugins_presets_are_asked_for_once_and_why_not_comes_back() {
+        use crate::control::PresetNews;
+        let mut h = MixHost::new(RATE, 0.0, 0.0);
+        // An engine has its presets built in: nothing is asked.
+        h.ask_presets("mpfree.poly");
+        assert!(h.poll_presets().is_none());
+        // A plugin not in the folder: asked once, and why not comes back.
+        h.ask_presets("clap:org.nope");
+        h.ask_presets("clap:org.nope");
+        match h.poll_presets() {
+            Some(PresetNews::Listed { id, list: Err(e) }) => {
+                assert_eq!(id, "clap:org.nope");
+                assert!(!e.is_empty());
+            }
+            _ => panic!("expected the listing's error"),
+        }
+        assert!(h.poll_presets().is_none(), "asked once");
+        assert!(h.plugin_presets("clap:org.nope").is_none());
+        // Kept: not asked again.
+        h.ask_presets("clap:org.nope");
+        assert!(h.poll_presets().is_none());
+        // A track without a plugin loads none.
+        assert!(!h.load_plugin_preset(0, 0));
+        assert!(h.poll_presets().is_none());
     }
 
     #[test]

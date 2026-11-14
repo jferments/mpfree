@@ -938,7 +938,7 @@ impl Session {
                 }
                 let e = self.app.open_track_instrument(track);
                 self.fx.extend(e);
-                let tab = crate::synth_tab(&self.synth, &self.mix.instruments, track, None);
+                let tab = crate::synth_tab(&self.synth, &self.mix, track, None);
                 self.out.show(ToUi::Synth(tab));
             }
             FromUi::TrackInstrument(track) => {
