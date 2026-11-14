@@ -363,6 +363,10 @@ impl Node for Comb {
             self.run(&mut left[from..to], &mut right[from..to]);
         }
     }
+    fn rest_frames(&self) -> u32 {
+        // What it holds is its tail: once rung out it is as good as reset.
+        self.tail_frames()
+    }
     fn tail_frames(&self) -> u32 {
         // The ring falls by |g| (and the damping) every period: to -80 dB.
         let g = self.fb.target.abs().clamp(0.01, 0.99);
