@@ -338,6 +338,32 @@ pub fn pages(
     out
 }
 
+/// Parameter `id` of node `n` (an insert of `owner`) as a knob: its value
+/// after the engine's macros and modulation, and its label ("Band 1 gain"
+/// where its name repeats in the effect).
+pub fn param_view(n: &dyn Node, owner: Owner, engine: &ModEngine, id: u16) -> Option<ParamView> {
+    let info = *n.params().iter().find(|p| p.id == id)?;
+    let addr = ParamAddr::new(owner, info.id);
+    let value = engine.value(addr).unwrap_or_else(|| n.param(info.id));
+    let twins = n.params().iter().filter(|p| p.name == info.name).count();
+    Some(ParamView {
+        addr,
+        info,
+        label: if twins > 1 && info.name.len() > 2 {
+            format!("{} {}", info.group, info.name.to_lowercase())
+        } else if twins > 1 {
+            format!("{} {}", info.group, info.name)
+        } else {
+            info.name.to_string()
+        },
+        value,
+        pos: info.to_unit(value),
+        mod_range: engine.mod_range(addr),
+        macro_: engine.macro_of(addr),
+        locked: engine.is_locked(addr),
+    })
+}
+
 impl ChainState {
     /// Reads a chain (on `strip`) and the engine that modulates it.
     /// `selected`, `group` and `focus` are what the screen had.
@@ -396,28 +422,7 @@ impl ChainState {
             let main = mpfree_fx::main_page::main_page(n.info().id);
             let ps = pages(n.params(), hide, main);
             group_shown = group.min(ps.len().saturating_sub(1));
-            let view = |id: u16| -> Option<ParamView> {
-                let info = *n.params().iter().find(|p| p.id == id)?;
-                let addr = ParamAddr::new(owner, info.id);
-                let value = engine.value(addr).unwrap_or_else(|| n.param(info.id));
-                let twins = n.params().iter().filter(|p| p.name == info.name).count();
-                Some(ParamView {
-                    addr,
-                    info,
-                    label: if twins > 1 && info.name.len() > 2 {
-                        format!("{} {}", info.group, info.name.to_lowercase())
-                    } else if twins > 1 {
-                        format!("{} {}", info.group, info.name)
-                    } else {
-                        info.name.to_string()
-                    },
-                    value,
-                    pos: info.to_unit(value),
-                    mod_range: engine.mod_range(addr),
-                    macro_: engine.macro_of(addr),
-                    locked: engine.is_locked(addr),
-                })
-            };
+            let view = |id: u16| param_view(n, owner, engine, id);
             params = ps
                 .get(group_shown)
                 .map(|pg| pg.ids.iter().filter_map(|&id| view(id)).collect())

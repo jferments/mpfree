@@ -45,6 +45,7 @@
 pub mod macros;
 pub mod picker;
 pub mod sample;
+pub mod sections;
 pub mod state;
 pub mod view;
 
