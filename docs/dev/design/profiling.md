@@ -402,7 +402,9 @@ data side is here:
   what the rows count, where a leak would show, and the app in all against
   the system's memory. Live test 3's resident size peaked at 195.8 MB of
   2016.7 MB, most of it the looper's 110 MB set aside. There is no memory
-  budget per engine yet: these rows are what one would be judged by.
+  budget per engine yet: these rows are what one would be judged by. The
+  last row, "Free for loads (keeps 256 MB spare)", is the system's
+  `MemAvailable`, red under the floor below.
   **First device numbers (live test 2, 13 Nov, main 7b2cae9, sound cores
   shared, about 11 minutes of free play, at most 10 sounds):** no slow
   period. Each part's worst in any 30 s window stayed between 0.03 and
@@ -414,6 +416,39 @@ data side is here:
   control thread for now (see [concurrency.md](concurrency.md)). A busier
   run (a full song, the lanes on) should be read the same way. The lines
   are in the project files, `hello-mpc/live-test-2-0623/control-lines.txt`.
+
+## Memory floor: refuse a load rather than be killed
+
+The MPC has 2 GB and no swap, so when memory runs out the kernel kills the
+app mid-song. The caps per file (64 MB a prepared sample, 128 samples a
+sampler) don't bound a whole project: samples, stretched copies and
+auto-samples could outgrow it (review item 6, 14 Nov). `memory.rs` keeps a
+floor, `FLOOR` = 256 MB of `MemAvailable` (what the kernel can give
+without swapping; live test 3 had 1706 to 1718 MB of it with MPFree
+running):
+
+- `room_in(free, need)` refuses a load that would leave less than the
+  floor, with the reason: `not enough memory: needs about 120 MB, 300 MB
+  free, 256 MB kept spare`. Where /proc/meminfo can't be read (not Linux)
+  everything is let through.
+- What a load needs is estimated before it allocates: a sound file's
+  length times 3 (the file and its 16-bit samples as `f32`), times 5 for
+  FLAC (`decode_need`); a stretched copy's frames and the source part the
+  stretch thread is handed; an auto-sample's `Plan::estimate().bytes_most`.
+- The pad player checks at each load: the browser's Load and preview
+  (`read_one`, on their threads), each sound as a project's kits open (one
+  that doesn't fit is left out, named in the log, and the hint says how
+  many), each stretched copy (refused once per copy and tempo; the pad
+  repitches, as it does until any copy is ready) and Auto-sample's Start.
+  A test gives the page its own free memory (`SamplePage::set_mem_free`).
+- The looper and the audio tracks set their memory aside at start (Prefs'
+  Loop memory and Audio track memory), and the Rec tab's input buffer is a
+  fixed 26 MB, so they aren't checked.
+- The screen thread already reads /proc/meminfo every 2 s for the RAM
+  chip; `Watch` logs one line, and says it in place of the hint, when free
+  memory falls under the floor (`memory: 200 MB free, under the 256 MB
+  MPFree keeps spare; ...`) and one when it is 32 MB above it again (with
+  how long and how low).
 
 ## The screen's cost
 

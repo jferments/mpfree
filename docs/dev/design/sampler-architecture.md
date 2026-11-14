@@ -89,6 +89,7 @@ A playing voice keeps its own handle to its sample buffer, so replacing or delet
 | Pool | One `mlock`ed arena reserved at start-up (size from settings, default 1 GiB, measured on the device), carved into buffers by a simple allocator on the control thread. No allocation from the system heap per sample, so memory use is predictable and never pages |
 | Handles | `SampleRef` = index + generation into the arena, reference-counted; the audio thread only increments and decrements counts, and frees go back through a ring |
 | Long sources | First version: everything in RAM. Later (S8): sources over a size limit stream from disk with the first second resident |
+| Floor (as built, 14 Nov) | There is no arena yet: sounds come from the system heap. So the pad player refuses a load that would leave less than 256 MB free (`MemAvailable`; `mpfree-app` `memory.rs`): a Load or preview from the browser, each of a project's sounds as it opens, a stretched copy (the pad repitches instead) and an auto-sample (its `Plan::estimate`). The refusal says what it needed and what was free, in the log and in place of the hint. See [profiling.md](profiling.md#memory-floor-refuse-a-load-rather-than-be-killed) |
 
 On a 32-bit process the address space is about 3 GB. A 1 GiB arena, the rolling buffers (about 85 MB), the UI (under 64 MB) and the engine (under 64 MB) fit with room to spare.
 

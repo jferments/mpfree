@@ -384,13 +384,14 @@ pub fn check(s: &mut Session) -> Vec<String> {
                     && t.group == v.group
                     && t.params.len() == v.params.len()
                 {
-                    // A knob the matrix moves (an LFO) moves between the
-                    // screen's updates; the rest must agree.
+                    // A knob the matrix moves (an LFO) and a meter (a
+                    // compressor's reduction) move between the screen's
+                    // updates; the rest must agree.
                     for (a, b) in t
                         .params
                         .iter()
                         .zip(&v.params)
-                        .filter(|(a, _)| a.mod_range.is_none())
+                        .filter(|(a, _)| a.mod_range.is_none() && !a.info.readonly)
                     {
                         if a.addr == b.addr
                             && (a.value - b.value).abs() > 1e-3 * a.value.abs().max(1.0)
