@@ -755,6 +755,7 @@ impl Session {
             modu: self.mix.modu.save(),
             synth: crate::project::synth_text(&self.app.synth_settings(), &self.synth.sounds()),
             arp: self.app.arp_part(),
+            instruments: crate::project::instruments_text(&self.mix.instruments),
             loops,
             audio,
         };
