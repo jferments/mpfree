@@ -1,7 +1,7 @@
 <!--
 status: changing
 covers: rust/mpfree-fx rust/mpfree-mixer-ui rust/mpfree-fx-ui rust/mpfree-chain-ui rust/mpfree-app/src/plugins.rs rust/mpfree-plughost/src/rack.rs rust/mpfree-app/src/chain_page.rs rust/mpfree-app/src/mixing.rs rust/mpfree-fx/src/perform.rs rust/mpfree-fx/src/xyfx.rs rust/mpfree-fx/src/picker.rs rust/mpfree-chain-ui/src/picker.rs
-checked: 2026-11-14 6258541
+checked: 2026-11-14 5ace8aa
 -->
 
 # Mixing and effects
@@ -107,6 +107,13 @@ These effects can go on any strip. The list of effects groups them: Dynamics, EQ
 | **Tape delay** | Echoes from a tape loop with up to three heads, wow and flutter, that darken and thicken as they repeat. |
 | **Multi-tap delay** | Four echoes on the beat, each with its own level and pan. |
 | **Room reverb**, **Plate reverb**, **Spring reverb** | Smaller, classic reverbs. The room's **Gate** cuts its tail short, for the 1980s gated snare. |
+| **Auto wah** | A wah that follows your playing: louder notes open it further. It can also sweep in time (**Source** LFO) or stay where you put it (**Source** Pedal: turn **Center** with a Q-Link, like rocking a pedal). |
+| **Talk box** | Makes a sound say vowels, from "oo" to "ee". The vowel moves with how loud you play or in time with the music; **Formant** makes the mouth smaller or bigger. Best on rich sounds: synth chords, organs, guitars. |
+| **Freq shifter** | Moves every frequency up or down by the same number of hertz, so a sound stops being in tune with itself: a few hertz is a slow, endless swirl, more makes drums metallic and voices robotic. **Feedback** sends it round again, climbing or falling. |
+| **Stereo width** | Makes the sound narrower or wider, with the lows, mids and highs set apart: put the bass in the middle and open up the top. **Delay** widens a mono sound and still sounds right when the mix is played in mono. |
+| **Sample delay** | Delays the left or the right side by a few samples, and flips either side's polarity: for lining up two microphones, or a quick stereo spread. |
+| **Channel strip** | A gate, a compressor and an EQ in one, as on a mixing desk, each switched on or off on its own page. **Order** puts the EQ before or after the gate and compressor. |
+| **Granulator** | Cuts the sound into tiny grains and plays them back as a cloud: higher or lower, scattered, backwards, spread wide. **Freeze** holds what's in it, so a moment hangs in the air while you play over it. |
 | **XY FX** | One effect at a time played from two controls at once, X and Y: see [XY FX](#xy-fx). |
 
 Pitch correct and the Harmonizer listen for one voice: a singer, or a solo instrument such as a whistle or a sax, not chords. Set **Range** to fit it: **Low** for bass and baritone voices, **Mid** for most singing, **High** for high voices. They hold the sound back a little while they listen (about 40 ms on Low, 28 on Mid and 17 on High), and the mixer holds everything else back to match, so the mix stays in time. When you sing live through one, High has the shortest delay.
@@ -150,7 +157,7 @@ To give a knob a control of its own, touch it and tap **Learn to a Q-Link**, the
 
 **+ Insert** on a strip, or **+ Add effect** in the chain editor, opens the list of effects over the chain editor.
 
-- Down the left are **Favourites**, **Recent** (the last 12 effects you added), then the groups (Dynamics, EQ and filter, Drive and colour, Modulation, Delay and reverb, Pitch and vocal, Performance, and Plugins), each with how many effects it has. Tap one to see its effects on the right. The list opens where you left it.
+- Down the left are **Favourites**, **Recent** (the last 12 effects you added), then the groups (Dynamics, EQ and filter, Drive and colour, Modulation, Delay and reverb, Pitch and vocal, Performance, Plugins, and Utility), each with how many effects it has. Tap one to see its effects on the right. The list opens where you left it.
 - **Tap an effect** to add it with its usual settings.
 - **Hold an effect** (half a second: its presets open while your finger is still down), or tap its **presets** line, to see its presets: tap one to add the effect already set that way, or **Defaults** for its usual settings. **‹ Effects** goes back.
 - **Tap the star** on an effect to add it to Favourites, and again to take it off. Favourites and Recent are kept when you turn the MPC off, for every project.
@@ -205,4 +212,4 @@ Each of these costs almost nothing until you use it.
 > [!MPC]
 > The mixer covers the MPC's routing: pad channels, tracks, submixes, four send returns and the master, with sends before or after the fader and side-chain keys. The differences: the mixer opens over any page instead of being its own mode, solo keeps everything the strip feeds, the master always ends in a safety limiter, and effects with a delay of their own are lined up automatically so nothing drifts out of time.
 >
-> Most MPC effects have an MPFree effect or preset in their place: the MPC's many Delay versions (Mono, Sync, Ping Pong, Analog, LP, HP) are the **Delay** and its presets, Delay Tape is the **Tape delay**, Reverb Small, Medium and In Gate are the **Room reverb**, Reverb Large and AIR Reverb the **Cloud reverb**, AIR Spring Reverb the **Spring reverb**, Distortion Amp the **Amp**, AIR Enhancer the **Exciter**, AIR Maximizer and AIR Limiter the **Limiter**, AIR Noise Gate the **Gate**, AIR Pumper and Mother Ducker the **Ducker**, Decimator and Resampler **Crush**, the AIR Vocal Tuner **Pitch correct**, the AIR Vocal Harmonizer the **Harmonizer**, and XYFX is **XY FX**. Not here yet: Auto Wah, the frequency shifters, AIR Stereo Width, AIR Talkbox and Granulator.
+> Every MPC effect has an MPFree effect or preset in its place: the MPC's many Delay versions (Mono, Sync, Ping Pong, Analog, LP, HP) are the **Delay** and its presets, Delay Tape is the **Tape delay**, Reverb Small, Medium and In Gate are the **Room reverb**, Reverb Large and AIR Reverb the **Cloud reverb**, AIR Spring Reverb the **Spring reverb**, Distortion Amp the **Amp**, AIR Enhancer the **Exciter**, AIR Maximizer and AIR Limiter the **Limiter**, AIR Noise Gate the **Gate**, AIR Pumper and Mother Ducker the **Ducker**, Decimator and Resampler **Crush**, the AIR Vocal Tuner **Pitch correct**, the AIR Vocal Harmonizer the **Harmonizer**, XYFX is **XY FX**, Auto Wah the **Auto wah**, the Frequency Shifter and AIR Freq Shift the **Freq shifter**, AIR Stereo Width the **Stereo width**, AIR Talkbox the **Talk box**, AIR Channel Strip the **Channel strip**, Granulator the **Granulator**, and Sample Delay the **Sample delay**.
