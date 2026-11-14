@@ -796,6 +796,8 @@ pub fn samples(fonts: impl Fn() -> Fonts) -> Result<Vec<Sample>, String> {
     let room = drawn("mpfree.fx.room", None, 0)?;
     let spring = drawn("mpfree.fx.spring", Some("Dub splash"), 0)?;
     let tape = drawn("mpfree.fx.tape_delay", Some("Space heads"), 0)?;
+    let mut tape_presets = drawn("mpfree.fx.tape_delay", Some("Space heads"), 0)?;
+    tap_on(&mut tape_presets, |l| l.preset_chip)?;
     let multitap = drawn("mpfree.fx.multitap", None, 0)?;
     let strip_comp = drawn("mpfree.fx.channel_strip", Some("Vocal"), 2)?;
     let m0 = song.macros_state(0);
@@ -820,6 +822,7 @@ pub fn samples(fonts: impl Fn() -> Fonts) -> Result<Vec<Sample>, String> {
         Sample { name: "chain-mixer-keys-room", about: "The Room: the pre-delay, its early reflections (green) and the tail to -60 dB; its tone, the low cut and how much sooner the highs die over 100 ms (dashed)", ui: room },
         Sample { name: "chain-mixer-keys-spring", about: "The Spring (Dub splash preset): its decay, with the spring's echo coming back each Length", ui: spring },
         Sample { name: "chain-mixer-keys-tape", about: "The Tape delay (Space heads preset, three heads): each head's first echo and the loop's repeats from all three; the tone one pass keeps, and four passes' (dashed)", ui: tape },
+        Sample { name: "chain-mixer-keys-tape-presets", about: "The preset's name in the header tapped: the Tape delay's presets over the page (Defaults, then its own), the one it plays lit; a tap loads one (its Mix stays), a touch anywhere else closes the list", ui: tape_presets },
         Sample { name: "chain-mixer-keys-multitap", about: "The Multi-tap delay: its four taps on the beat grid (left in the accent, right in green) and the pattern again from the last, as loud as Feedback", ui: multitap },
         Sample { name: "chain-mixer-keys-strip-comp", about: "The Channel strip (Vocal) on its Compressor page: the dynamics curve, the gate's drop under its threshold and the compressor over its own, with makeup", ui: strip_comp },
         Sample { name: "chain-strip-list", about: "The strip button's list over the keys chain: the groups down the left, the tracks as tiles with what each holds (the open one outlined); a tap opens that strip's chain", ui: strips },
@@ -885,7 +888,7 @@ mod tests {
     #[test]
     fn the_samples_read_real_state_and_paint() {
         let s = samples(Fonts::embedded).unwrap();
-        assert_eq!(s.len(), 23);
+        assert_eq!(s.len(), 24);
         for mut sample in s {
             let (w, h) = sample.ui.size();
             let mut c = SoftCanvas::new(w, h);
@@ -1272,6 +1275,96 @@ mod tests {
         tap(&mut ui, b.x + 5, b.y + 5);
         assert!(!ui.get::<ChainView>(crate::CHAIN).unwrap().open().modes);
         assert!(crate::take_chain_actions(&mut ui).is_empty());
+    }
+
+    /// The effect's name in the header opens its presets: "Defaults",
+    /// then its own (a family's, the mode's). The header names the preset
+    /// its settings are; a row loads one (all but Mix and Quality) and
+    /// shuts the list, and a touch anywhere else only shuts it.
+    #[test]
+    fn the_effects_name_opens_its_presets() {
+        use mpfree_fx::ids::{drive, plate};
+        let mut song = Song::new();
+        let mut n = mpfree_fx::registry::make("mpfree.fx.plate").unwrap();
+        let vocal = mpfree_fx::picker::presets("mpfree.fx.plate")
+            .iter()
+            .find(|p| p.name == "Vocal plate")
+            .unwrap();
+        for &(id, v) in vocal.values {
+            n.set_param(id, v);
+        }
+        n.set_param(plate::MIX, 40.0);
+        let slot = song.keys.push(n);
+        let st = song.chain_state(KEYS, slot, 0, None);
+        assert_eq!(st.presets[0].name, "Defaults");
+        let k = st
+            .presets
+            .iter()
+            .position(|p| p.name == "Vocal plate")
+            .unwrap();
+        assert_eq!(st.preset, Some(k), "its Mix is its own, not the preset's");
+        assert!(st
+            .presets
+            .iter()
+            .all(|p| p.values.iter().all(|&(id, _)| id != plate::MIX)));
+        let mut ui = screen(
+            Fonts::embedded(),
+            &mut song,
+            Place::Mixer,
+            Some(st.clone()),
+            None,
+        )
+        .unwrap();
+        let r = ui.rect_of(crate::CHAIN).unwrap();
+        let v = ui.get::<ChainView>(crate::CHAIN).unwrap();
+        let chip = v.layout(r).preset_chip.unwrap();
+        assert_eq!(
+            ids_of(v, r, "presets-open"),
+            [(0, "Reverb presets".to_string(), true)]
+        );
+        tap(&mut ui, chip.x + 10, chip.y + 10);
+        let v = ui.get::<ChainView>(crate::CHAIN).unwrap();
+        assert!(v.open().presets);
+        let rows = ids_of(v, r, "preset-load");
+        assert_eq!(rows.len(), st.presets.len());
+        assert_eq!(
+            rows[k],
+            (k, "Vocal plate".to_string(), false),
+            "the one it plays"
+        );
+        assert!(v
+            .targets(r)
+            .iter()
+            .all(|t| t.id == "preset-load" || t.id == "presets-open"));
+        let (row, _) = v.layout(r).preset_rows[0];
+        tap(&mut ui, row.x + 10, row.y + 10);
+        assert_eq!(
+            crate::take_chain_actions(&mut ui),
+            [ChainAction::Preset {
+                slot,
+                id: "mpfree.fx.plate",
+                values: st.presets[0].values.clone()
+            }]
+        );
+        assert!(!ui.get::<ChainView>(crate::CHAIN).unwrap().open().presets);
+        // Open again: a touch on the chain only shuts it.
+        tap(&mut ui, chip.x + 10, chip.y + 10);
+        let b = ui.get::<ChainView>(crate::CHAIN).unwrap().layout(r).buttons[1];
+        tap(&mut ui, b.x + 5, b.y + 5);
+        assert!(!ui.get::<ChainView>(crate::CHAIN).unwrap().open().presets);
+        assert!(crate::take_chain_actions(&mut ui).is_empty());
+        // Turned away from it: no preset, and the header names the effect.
+        let mut n = mpfree_fx::registry::make("mpfree.fx.plate").unwrap();
+        n.set_param(plate::DECAY, 1234.0);
+        let slot = song.keys.push(n);
+        assert_eq!(song.chain_state(KEYS, slot, 0, None).preset, None);
+        // A Drive in Soft: the Soft presets only, each keeping it in Soft.
+        let soft = song.chain_state(DRUMS, 1, 0, None);
+        assert!(soft.presets.len() > 1);
+        assert!(soft
+            .presets
+            .iter()
+            .all(|p| p.values.contains(&(drive::MODE, 0.0))));
     }
 
     fn ids_of(v: &ChainView, r: Rect, id: &str) -> Vec<(usize, String, bool)> {
