@@ -4642,6 +4642,11 @@ impl Player {
             self.outbox.push(FromUi::PlayFx(fx));
             self.refresh_play();
         }
+        // A finger held on an effect in the picker opens its presets.
+        if self.view == View::Chain && mpfree_chain_ui::chain_hold(&mut self.ui) {
+            let acts = mpfree_chain_ui::take_chain_actions(&mut self.ui);
+            self.outbox.extend(acts.into_iter().map(FromUi::Chain));
+        }
         // A finger held still on a macro card opens the macros panel.
         if self.chain_page.drives(self.view) && !self.band_showing() {
             if let Some(bank) = self.chain_page.held(dt) {
