@@ -75,6 +75,8 @@ pub enum ChainOut {
     Learn(ParamAddr),
     /// Back to the screen the editor took the place of.
     Back,
+    /// The strip list's pick: that strip's chain in the editor's place.
+    OpenStrip(StripId),
     /// The action couldn't be done; the reason, for the hint line.
     Refused(&'static str),
 }
@@ -86,6 +88,8 @@ pub struct ChainHost {
     /// The chains it can switch between (one from the mixer; the pad's and
     /// the track's in Sample > FX), and the one shown.
     scopes: Vec<(Strip, String)>,
+    /// The strip list's group while it is open (the strip button).
+    listing: Option<usize>,
     scope: usize,
     selected: Option<usize>,
     group: usize,
@@ -102,6 +106,7 @@ impl ChainHost {
     fn new(scopes: Vec<(Strip, String)>, back: Option<String>) -> ChainHost {
         ChainHost {
             scopes,
+            listing: None,
             scope: 0,
             selected: None,
             group: 0,
@@ -186,6 +191,11 @@ impl ChainHost {
         }
         st.picking = self.picking;
         st.shelf = h.shelf.clone();
+        if self.scopes.len() == 1 {
+            st.strip_name = mixing::name(sid);
+            st.strip_kind = kind(sid);
+        }
+        st.list = self.listing.map(|g| strip_list(h, g));
         st
     }
 
@@ -349,6 +359,13 @@ impl ChainHost {
                     };
                 }
             }
+            ChainAction::Strips(g) => {
+                self.listing = g.filter(|&g| g < mpfree_chain_ui::STRIP_GROUPS.len());
+            }
+            ChainAction::OpenStrip(s) => {
+                self.listing = None;
+                return ChainOut::OpenStrip(strip_id(s));
+            }
         }
         ChainOut::Shown
     }
@@ -393,6 +410,56 @@ impl ChainHost {
 }
 
 /// Where slot `s` is after a move from `from` to `to`.
+/// Which strip `s` is, for the strip button ("Track 4", "Submix 2").
+fn kind(s: StripId) -> String {
+    match s {
+        StripId::Track(t) => format!("Track {}", t + 1),
+        StripId::Pad(p) => format!("Pad {}", p + 1),
+        StripId::Input(i) => format!("Input {}", i + 1),
+        StripId::Bus(b) => format!("Submix {}", b + 1),
+        StripId::Return(r) => format!("Return {}", (b'A' + r as u8) as char),
+        StripId::Master => "Master".to_string(),
+    }
+}
+
+/// The strip list on group `g` (of `mpfree_chain_ui::STRIP_GROUPS`): the
+/// strips each group has (the tracks as the mixer shows them) and the
+/// group's, with what each holds.
+fn strip_list(h: &MixHost, g: usize) -> mpfree_chain_ui::StripList {
+    let groups: [Vec<StripId>; 6] = [
+        h.track_strips(),
+        (0..mixing::PADS).map(StripId::Pad).collect(),
+        (0..h.mixer.inputs()).map(StripId::Input).collect(),
+        (0..mpfree_fx::RETURNS).map(StripId::Return).collect(),
+        (0..mpfree_fx::BUSES).map(StripId::Bus).collect(),
+        vec![StripId::Master],
+    ];
+    let counts = std::array::from_fn(|i| groups[i].len());
+    let strips = groups[g.min(5)]
+        .iter()
+        .filter_map(|&id| {
+            let n = h.mixer.chain(id).map_or(0, |c| c.len());
+            let fx = match n {
+                0 => "no effects".to_string(),
+                1 => "1 effect".to_string(),
+                n => format!("{n} effects"),
+            };
+            let muted =
+                id != StripId::Master && h.mixer.param(id, mpfree_fx::ids::mixer::MUTE) >= 0.5;
+            Some(mpfree_chain_ui::StripPick {
+                strip: strip_of(id)?,
+                name: mixing::name(id),
+                sub: if muted { format!("muted · {fx}") } else { fx },
+            })
+        })
+        .collect();
+    mpfree_chain_ui::StripList {
+        group: g.min(5),
+        counts,
+        strips,
+    }
+}
+
 fn moved(s: usize, from: usize, to: usize) -> usize {
     if s == from {
         to
@@ -564,6 +631,13 @@ pub struct Panels {
     macros: MacrosHost,
     over_mix: MixView,
     sent_at: Option<Instant>,
+    /// The chain is an effect picked on the mixer's Effects look, not the
+    /// editor: its state goes to the screen while the mixer shows, for
+    /// the Q-Links.
+    picked: bool,
+    /// The pad channels' effects as last sent for the Pads tab's Effects
+    /// row.
+    pad_fx: Option<Vec<Vec<String>>>,
 }
 
 impl Default for Panels {
@@ -579,6 +653,8 @@ impl Panels {
             macros: MacrosHost::new(0),
             over_mix: MixView::Tracks,
             sent_at: None,
+            picked: false,
+            pad_fx: None,
         }
     }
 
@@ -624,7 +700,60 @@ impl Panels {
         self.over_mix = mix.shown().unwrap_or(MixView::Tracks);
         self.chain = Some(h);
         self.sent_at = None;
+        self.picked = false;
         app.open_chain()
+    }
+
+    /// An effect picked on the mixer's Effects look (`MixAction::PickInsert`):
+    /// its chain is kept as the editor's would be, without the editor, so
+    /// the Q-Links turn its first four knobs ([`Panels::poll`] sends its
+    /// state while the mixer shows).
+    pub fn pick_insert(&mut self, strip: StripId, slot: usize) {
+        let Some(h) = ChainHost::from_mixer(strip, Some(slot)) else {
+            return;
+        };
+        self.chain = Some(h);
+        self.picked = true;
+        self.sent_at = None;
+    }
+
+    /// The pick went (`MixAction::Unpick`): its state stops going to the
+    /// screen.
+    pub fn unpick(&mut self) {
+        if self.picked {
+            self.picked = false;
+            self.chain = None;
+        }
+    }
+
+    /// An effect dragged along its row on the Effects look
+    /// (`MixAction::MoveInsert`): moved as the chain editor moves one.
+    pub fn move_insert(
+        &mut self,
+        mix: &mut MixHost,
+        strip: StripId,
+        from: usize,
+        to: usize,
+    ) -> Vec<Effect> {
+        let same = self
+            .chain
+            .as_ref()
+            .is_some_and(|h| strip_of(strip) == Some(h.strip()));
+        let mut own;
+        let h = if same {
+            self.chain.as_mut().expect("checked")
+        } else {
+            let Some(h) = ChainHost::from_mixer(strip, Some(from)) else {
+                return Vec::new();
+            };
+            own = h;
+            &mut own
+        };
+        self.sent_at = None;
+        match h.action(mix, &ChainAction::Move { from, to }, false) {
+            ChainOut::Refused(why) => vec![Effect::Tell(format!("mixer: {why}"))],
+            _ => Vec::new(),
+        }
     }
 
     /// The Sample tab's FX sub-tab: the chain editor on the playing kit's
@@ -636,6 +765,7 @@ impl Panels {
         let host = (pad < mixing::PADS)
             .then(|| ChainHost::for_pad(pad, track))
             .flatten();
+        self.picked = false;
         let Some(h) = host else {
             return vec![Effect::Tell(format!(
                 "chain: pad {} has no channel of its own in the mixer (only the first {} do)",
@@ -643,6 +773,29 @@ impl Panels {
                 mixing::PADS
             ))];
         };
+        self.chain = Some(h);
+        self.sent_at = None;
+        app.open_chain()
+    }
+
+    /// The Pads tab's Effects row: pad `pad`'s chain in the Mix tab, on its
+    /// first effect, or the picker when it has none (Jay's Mix tab card,
+    /// 14 Nov). ‹ comes back to the Pads tab.
+    pub fn open_pad_mix(&mut self, app: &mut App, mix: &MixHost, pad: usize) -> Vec<Effect> {
+        let sid = StripId::Pad(pad);
+        let first = mix.mixer.chain(sid).filter(|c| !c.is_empty()).map(|_| 0);
+        let host = (pad < mixing::PADS)
+            .then(|| ChainHost::from_mixer(sid, first))
+            .flatten();
+        self.picked = false;
+        let Some(mut h) = host else {
+            return vec![Effect::Tell(format!(
+                "chain: pad {} has no channel of its own in the mixer (only the first {} do)",
+                pad + 1,
+                mixing::PADS
+            ))];
+        };
+        h.back = Some("Pads".into());
         self.chain = Some(h);
         self.sent_at = None;
         app.open_chain()
@@ -684,6 +837,17 @@ impl Panels {
                 Vec::new()
             }
             ChainOut::Back => app.close_chain(self.over_mix),
+            ChainOut::OpenStrip(sid) => {
+                // The strip's chain on its first effect (the picker up on
+                // one with none), Back still going where it went.
+                let first = mix.mixer.chain(sid).is_some_and(|c| !c.is_empty());
+                let back = h.back.clone();
+                if let Some(mut nh) = ChainHost::from_mixer(sid, first.then_some(0)) {
+                    nh.back = back;
+                    self.chain = Some(nh);
+                }
+                Vec::new()
+            }
             ChainOut::Refused(why) => vec![Effect::Tell(format!("chain: {why}"))],
         }
     }
@@ -728,7 +892,25 @@ impl Panels {
         now: Instant,
         show: &mut impl FnMut(ToUi),
     ) {
-        if !matches!(view, View::Chain | View::Macros)
+        let picked = view == View::Mixer && self.picked && self.chain.is_some();
+        if view == View::Pads {
+            if self
+                .sent_at
+                .is_some_and(|t| now.duration_since(t) < PANELS_EVERY)
+            {
+                return;
+            }
+            self.sent_at = Some(now);
+            // The Pad list's Effects row: sent when an effect comes, goes
+            // or moves.
+            let fx = pad_fx(mix);
+            if self.pad_fx.as_ref() != Some(&fx) {
+                show(ToUi::PadFx(fx.clone()));
+                self.pad_fx = Some(fx);
+            }
+            return;
+        }
+        if !(matches!(view, View::Chain | View::Macros) || picked)
             || self
                 .sent_at
                 .is_some_and(|t| now.duration_since(t) < PANELS_EVERY)
@@ -736,6 +918,14 @@ impl Panels {
             return;
         }
         self.sent_at = Some(now);
+        if picked {
+            // The picked effect's knobs for the Q-Links; no drawings.
+            if let Some(h) = self.chain.as_mut() {
+                show(ToUi::Chain(Box::new(h.state(mix))));
+            }
+            show(ToUi::Macros(Box::new(self.macros.state(mix))));
+            return;
+        }
         if view == View::Chain {
             if let Some(h) = self.chain.as_mut() {
                 let st = h.state(mix);
@@ -746,6 +936,23 @@ impl Panels {
         }
         show(ToUi::Macros(Box::new(self.macros.state(mix))));
     }
+}
+
+/// The effects on each of the mixer's pad channels, in order, named as the
+/// chain editor names them ("Reverb · Plate").
+fn pad_fx(mix: &MixHost) -> Vec<Vec<String>> {
+    (0..mixing::PADS)
+        .map(|p| {
+            mix.mixer.chain(StripId::Pad(p)).map_or_else(Vec::new, |c| {
+                (0..c.len())
+                    .map(|i| {
+                        c.node(i)
+                            .map_or_else(|| "?".to_string(), mpfree_fx::families::insert_name)
+                    })
+                    .collect()
+            })
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -981,7 +1188,7 @@ mod tests {
         assert_eq!(st.selected, Some(1), "the added effect is selected");
         assert!(!st.params.is_empty());
         // Fill the strip: the next one is refused.
-        for _ in 0..2 {
+        for _ in 0..SLOTS - 2 {
             c.action(&mut r.h, &ChainAction::Add("mpfree.fx.crush"), false);
         }
         assert_eq!(

@@ -309,6 +309,10 @@ pub struct SettingList {
     pub editing: bool,
     /// The rows whose value can be typed (Jay after live test 3).
     pub typed: Vec<usize>,
+    /// The rows whose value is a button that opens something, such as the
+    /// Pad list's Effects: no arrows, and a tap on it is a
+    /// [`EventKind::Tab`] with the row's index.
+    pub buttons: Vec<usize>,
 }
 
 const SET_ROW_H: i32 = 44;
@@ -324,6 +328,7 @@ impl SettingList {
             selected: 0,
             editing: false,
             typed: Vec::new(),
+            buttons: Vec::new(),
         }
     }
 
@@ -386,6 +391,25 @@ impl Widget for SettingList {
                 if on { t.text } else { t.text_dim },
                 &self.rows[k].name,
             );
+            if self.buttons.contains(&k) {
+                // A button: raised, with a rim, and no arrows.
+                cx.canvas.fill_round_rect(value, 8, t.raised);
+                cx.canvas.stroke_round_rect(
+                    value,
+                    8,
+                    if on { 2 } else { 1 },
+                    if on { t.accent } else { t.text_dim },
+                );
+                cx.text(
+                    FontId::Bold,
+                    t.size_body - 1.0,
+                    value.inset_xy(10, 0),
+                    Align::Center,
+                    if on { t.accent } else { t.text },
+                    &self.rows[k].value,
+                );
+                continue;
+            }
             cx.canvas
                 .fill_round_rect(value, 8, if on { t.surface } else { t.raised });
             let open = on && self.editing;
@@ -441,6 +465,15 @@ impl Widget for SettingList {
                 )
                 .disabled_if(k == self.selected),
             );
+            if self.buttons.contains(&k) {
+                out.push(Target::tap(
+                    "row-button",
+                    k,
+                    self.rows[k].value.clone(),
+                    value,
+                ));
+                continue;
+            }
             out.push(Target::tap(
                 "row-less",
                 k,
@@ -467,7 +500,9 @@ impl Widget for SettingList {
         })?;
         let (_, value) = self.row_rects(r, k)?;
         self.selected = k;
-        if value.contains(x, y) && x < value.x + SET_ARROW_W {
+        if value.contains(x, y) && self.buttons.contains(&k) {
+            Some(EventKind::Tab(k))
+        } else if value.contains(x, y) && x < value.x + SET_ARROW_W {
             Some(EventKind::Step {
                 index: k,
                 delta: -1,

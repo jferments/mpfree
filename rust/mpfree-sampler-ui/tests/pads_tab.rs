@@ -348,3 +348,41 @@ fn map_to_keys_names_the_banks_pads_with_a_sound() {
     apply(&mut s, &PadsAction::MapToKeys { pads: vec![0] });
     assert_eq!(s.project.revision(), rev);
 }
+
+#[test]
+fn the_effects_row_names_the_pads_effects_and_opens_its_chain() {
+    let mut s = pads(PAD);
+    assert_eq!(row_value(&s, Row::Effects), "Compressor");
+    let index = Row::ALL.iter().position(|r| *r == Row::Effects).unwrap();
+    let list = s.ui.get::<SettingList>(pads_tab::LIST).unwrap();
+    assert_eq!(list.buttons, [index], "a button, not a setting to step");
+    assert_eq!(
+        act(&mut s, pads_tab::LIST, EventKind::Tab(index)),
+        Some(PadsAction::Effects(PAD))
+    );
+    assert_eq!(step(&mut s, Row::Effects, 1), None, "nothing to step");
+    // A long chain: the first name and how many more.
+    s.state.effects = Some(vec!["Compressor".into(), "EQ".into()]);
+    let st = s.state.clone();
+    s.tab.update(&mut s.ui, &st);
+    assert_eq!(row_value(&s, Row::Effects), "Compressor, EQ");
+    s.state.effects = Some(vec!["Compressor".into(), "Delay".into(), "Reverb".into()]);
+    let st = s.state.clone();
+    s.tab.update(&mut s.ui, &st);
+    assert_eq!(row_value(&s, Row::Effects), "Compressor +2");
+    // No effects yet: + FX.
+    let mut e = pads(10);
+    assert_eq!(row_value(&e, Row::Effects), "+ FX");
+    // No channel of its own (the app leaves it None): a dash, no button.
+    e.state.effects = None;
+    let st = e.state.clone();
+    e.tab.update(&mut e.ui, &st);
+    assert_eq!(row_value(&e, Row::Effects), "—");
+    assert!(e
+        .ui
+        .get::<SettingList>(pads_tab::LIST)
+        .unwrap()
+        .buttons
+        .is_empty());
+    assert_eq!(act(&mut e, pads_tab::LIST, EventKind::Tab(index)), None);
+}
