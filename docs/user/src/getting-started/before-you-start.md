@@ -1,7 +1,7 @@
 <!--
 status: changing
 covers: rust/mpfree-app/src/main.rs tools/mpc-one/offline-kexec-stick.py
-checked: 2026-11-13 e4af35b
+checked: 2026-11-14 debed5c
 -->
 
 # Before you start
