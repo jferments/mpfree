@@ -89,6 +89,7 @@ mod modfx;
 mod motion;
 pub mod mpc;
 mod oversample;
+pub mod page_plan;
 mod perform;
 pub mod picker;
 mod pitch;
