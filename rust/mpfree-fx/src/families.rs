@@ -267,19 +267,89 @@ pub fn switch_values(
         if mode.fixed.iter().any(|&(p, _)| p == t.id) {
             continue;
         }
-        let Some(f) = from.iter().find(|f| {
-            !f.readonly
-                && f.name == t.name
-                && f.unit == t.unit
-                && same_kind(f.curve, t.curve)
-                && !from_fixed.iter().any(|&(p, _)| p == f.id)
-        }) else {
+        let Some(f) = from
+            .iter()
+            .find(|f| carries(f, t) && !from_fixed.iter().any(|&(p, _)| p == f.id))
+        else {
             continue;
         };
         out.push((t.id, t.clamp(value(f.id))));
     }
     out.extend_from_slice(mode.fixed);
     out
+}
+
+/// The parameter of `to` that a switch carries `from`'s parameter `id`
+/// into, by [`switch_values`]' rule: where a macro or a mod row on it goes.
+pub fn carried_id(from: &[ParamInfo], id: u16, to: &[ParamInfo]) -> Option<u16> {
+    let f = from.iter().find(|f| f.id == id)?;
+    to.iter().find(|t| carries(f, t)).map(|t| t.id)
+}
+
+fn carries(f: &ParamInfo, t: &ParamInfo) -> bool {
+    !f.readonly
+        && !t.readonly
+        && f.name == t.name
+        && f.unit == t.unit
+        && same_kind(f.curve, t.curve)
+}
+
+/// A switch across engines, as the app hands it to whatever builds the
+/// new engine (off the audio thread): what it switches from, and the
+/// values the new engine had when this insert last left it, if it did.
+#[derive(Clone, Debug)]
+pub struct Switch {
+    pub from: &'static [ParamInfo],
+    /// The old engine's values, every parameter.
+    pub values: Vec<(u16, f32)>,
+    pub from_fixed: &'static [(u16, f32)],
+    pub mode: &'static Mode,
+    /// The new engine's values from before (switching back restores
+    /// them); its mode's fixed values still win.
+    pub remembered: Option<Vec<(u16, f32)>>,
+}
+
+impl Switch {
+    /// Leaving `n` (in its family's mode `from_fixed` is the fixed values
+    /// of) for `mode`.
+    pub fn new(n: &dyn Node, from_fixed: &'static [(u16, f32)], mode: &'static Mode) -> Switch {
+        Switch {
+            from: n.params(),
+            values: values(n),
+            from_fixed,
+            mode,
+            remembered: None,
+        }
+    }
+
+    /// Sets the new engine up: the remembered values, or the controls it
+    /// shares with the old one, then the mode's fixed values.
+    pub fn apply(&self, to: &mut dyn Node) {
+        let set: Vec<(u16, f32)> = match &self.remembered {
+            Some(r) => r.iter().chain(self.mode.fixed).copied().collect(),
+            None => {
+                let value = |p: u16| {
+                    self.values
+                        .iter()
+                        .find(|(q, _)| *q == p)
+                        .map_or(0.0, |v| v.1)
+                };
+                switch_values(self.from, value, self.from_fixed, to.params(), self.mode)
+            }
+        };
+        for (p, v) in set {
+            to.set_param(p, v);
+        }
+    }
+}
+
+/// Every settable parameter's value, to remember or carry.
+pub fn values(n: &dyn Node) -> Vec<(u16, f32)> {
+    n.params()
+        .iter()
+        .filter(|p| !p.readonly)
+        .map(|p| (p.id, n.param(p.id)))
+        .collect()
 }
 
 fn same_kind(a: Curve, b: Curve) -> bool {
@@ -422,6 +492,41 @@ mod tests {
             !names.contains(&"Small room"),
             "the Cloud's own Room is left out"
         );
+    }
+
+    #[test]
+    fn a_switch_sets_up_the_new_engine_and_switching_back_restores() {
+        let ids = |n: &dyn Node, name: &str| n.params().iter().find(|p| p.name == name).unwrap().id;
+        let mut room = defaults(ROOM);
+        let mix = ids(room.as_ref(), "Mix");
+        room.set_param(mix, 40.0);
+        room.set_param(ids(room.as_ref(), "Early"), 90.0);
+        let plate_mode = &FAMILIES[0].modes[1];
+        let mut plate = defaults(PLATE);
+        Switch::new(room.as_ref(), &[], plate_mode).apply(plate.as_mut());
+        assert_eq!(plate.param(ids(plate.as_ref(), "Mix")), 40.0);
+        assert_eq!(
+            carried_id(room.params(), mix, plate.params()),
+            Some(ids(plate.as_ref(), "Mix"))
+        );
+        assert_eq!(carried_id(room.params(), ids(room.as_ref(), "Early"), plate.params()), None);
+        // Back to the room with what it had: Early comes back too.
+        let mut back = defaults(ROOM);
+        let mut sw = Switch::new(plate.as_ref(), &[], &FAMILIES[0].modes[0]);
+        sw.remembered = Some(values(room.as_ref()));
+        sw.apply(back.as_mut());
+        assert_eq!(values(back.as_ref()), values(room.as_ref()));
+        // Remembered Drive values, back in Fuzz: the mode's value wins.
+        let mut d = defaults(DRIVE);
+        d.set_param(drive::DRIVE, 20.0);
+        let fuzz = &FAMILIES[2].modes[4];
+        let mut again = defaults(DRIVE);
+        let c = defaults(CHARACTER);
+        let mut sw = Switch::new(c.as_ref(), FAMILIES[2].modes[6].fixed, fuzz);
+        sw.remembered = Some(values(d.as_ref()));
+        sw.apply(again.as_mut());
+        assert_eq!(again.param(drive::DRIVE), 20.0);
+        assert_eq!(node_mode(again.as_ref()).unwrap().1, Some(4));
     }
 
     #[test]

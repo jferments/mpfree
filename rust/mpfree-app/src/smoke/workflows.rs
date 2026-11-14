@@ -115,7 +115,7 @@ mod tests {
             s.press("chain", "pick", "Compressor").run_for(0.1);
             let t = engine(&mut s);
             assert_eq!(t.title, "Drums FX");
-            assert_eq!(names(&t), ["DJ filter", "Compressor"]);
+            assert_eq!(names(&t), ["Filter · DJ", "Compressor"]);
             assert_eq!(t.selected, Some(1), "the new insert is picked");
             assert!(s.control("chain", "cancel", "Cancel").is_none());
             agree(&mut s, "added");
@@ -149,7 +149,7 @@ mod tests {
             // Move up: first in the chain, still picked.
             s.press("chain", "move-up", "Move up").run_for(0.1);
             let t = engine(&mut s);
-            assert_eq!(names(&t), ["Compressor", "DJ filter"]);
+            assert_eq!(names(&t), ["Compressor", "Filter · DJ"]);
             assert_eq!(t.selected, Some(0));
             assert!(
                 (node_param(&s, drums, 0, "Threshold") - now).abs() < 1e-3,
@@ -171,7 +171,7 @@ mod tests {
 
             // Remove takes it out of the sound and off the strip.
             s.press("chain", "remove", "Remove").run_for(0.1);
-            assert_eq!(names(&engine(&mut s)), ["DJ filter"]);
+            assert_eq!(names(&engine(&mut s)), ["Filter · DJ"]);
             assert_eq!(s.mix.mixer.chain(drums).unwrap().len(), 1);
             agree(&mut s, "removed");
             s.press("chain", "back", "").run_for(0.1);
@@ -193,7 +193,7 @@ mod tests {
                 s.control("chain", "pick", "").is_none(),
                 "the picker closed"
             );
-            assert_eq!(names(&engine(&mut s)), ["DJ filter"]);
+            assert_eq!(names(&engine(&mut s)), ["Filter · DJ"]);
             agree(&mut s, "cancelled");
             // "+ Add effect" opens the picker again; Back closes the editor.
             s.press("chain", "add", "+ Add effect");
@@ -305,13 +305,13 @@ mod tests {
             s.press("chain", "scope", "Drums");
             let t = engine(&mut s);
             assert_eq!(t.title, "Drums FX");
-            assert_eq!(names(&t), ["DJ filter"]);
+            assert_eq!(names(&t), ["Filter · DJ"]);
             agree(&mut s, "the track's chain");
 
             s.press("chain", "add", "+ Add effect");
             s.press("chain", "section", "Delay and reverb");
             s.press("chain", "pick", "Delay").run_for(0.1);
-            assert_eq!(names(&engine(&mut s)), ["DJ filter", "Delay"]);
+            assert_eq!(names(&engine(&mut s)), ["Filter · DJ", "Delay · Digital"]);
             agree(&mut s, "a delay on the track");
 
             // Back to the pad's chain: still empty.

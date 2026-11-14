@@ -638,28 +638,28 @@ pub fn samples(fonts: impl Fn() -> Fonts) -> Result<Vec<Sample>, String> {
     for id in ["mpfree.fx.room", "mpfree.fx.cloud", "mpfree.fx.limiter"] {
         starred.shelf.used(id);
     }
-    // Plate reverb's presets, opened with the wheel: SHIFT + wheel down
-    // to Delay and reverb, the wheel to Plate reverb, a push.
+    // The Reverb's presets, opened with the wheel: SHIFT + wheel down to
+    // Delay and reverb, the wheel to Reverb, a push.
     let mut presets = screen(fonts(), &mut song, Place::Mixer, Some(adding.clone()), None)?;
     if let Some(v) = presets.get_mut::<ChainView>(crate::CHAIN) {
         v.wheel(4, true);
-        v.wheel(6, false);
-        v.push_wheel();
         v.wheel(2, false);
+        v.push_wheel();
+        v.wheel(6, false);
     }
     let m0 = song.macros_state(0);
     let m1 = song.macros_state(1);
     let mut editing = song.macros_state(0);
     editing.editing = Some((0, 3));
     Ok(vec![
-        Sample { name: "chain-mixer-drums-drive", about: "From the mixer (no tab lit, Back to the mixer): the drum bus chain, Drive selected; Q-Links on its first four knobs (Mode, Drive, Tone, Bias); Tone touched: LFO 1 sweeps it (green ring), Grit (macro 2) moves Drive and Bias (badges); the EQ bypassed", ui: screen(fonts(), &mut song, Place::Mixer, Some(drive), None)? },
+        Sample { name: "chain-mixer-drums-drive", about: "From the mixer (no tab lit, Back to the mixer): the drum bus chain, Drive selected, in its Soft mode (the Mode chooser under its name steps through its ten); Q-Links on the knobs of its first tab (Drive, Tone, Bias: its Mode is the chooser); Tone touched: LFO 1 sweeps it (green ring), Grit (macro 2) moves Drive and Bias (badges); the EQ bypassed", ui: screen(fonts(), &mut song, Place::Mixer, Some(drive), None)? },
         Sample { name: "chain-mixer-drums-filter", about: "From the mixer: the drum bus filter, cutoff swept by LFO 2 scaled by the mod wheel; resonance on Air (macro 4)", ui: screen(fonts(), &mut song, Place::Mixer, Some(filter), None)? },
         Sample { name: "chain-mixer-keys-delay", about: "From the mixer: the keys chain, Delay's Mix page (Q-Links on that page's knobs): Mix is on Wash (macro 1) and ducked by follower 1 (a negative row)", ui: screen(fonts(), &mut song, Place::Mixer, Some(delay), None)? },
         Sample { name: "chain-sample-fx-pad", about: "In the Sample tab's FX sub-tab, under the pad bar: pad 1's own chain, with a switch to the drum track's (to agree with the sampler thread)", ui: screen(fonts(), &mut song, Place::SampleFx, Some(kick), None)? },
         Sample { name: "chain-mixer-empty", about: "From the mixer: a track with no effects yet, + Add effect; the Q-Links have nothing of the page's, so they show free", ui: screen(fonts(), &mut song, Place::Mixer, Some(empty), None)? },
         Sample { name: "chain-mixer-add-effect", about: "The effect picker, a category browser over the effect and Modulate columns (+ Add effect, or the mixer's + on a strip): Favourites, Recent and the categories with their counts; with no favourites it opens on Dynamics. A tap adds an effect at its defaults, the star keeps it, a hold or its presets line opens its presets", ui: screen(fonts(), &mut song, Place::Mixer, Some(adding), None)? },
         Sample { name: "chain-mixer-add-favourites", about: "The picker opens on Favourites once there are any (starred, in the order they were starred; Recent holds the last 12 added)", ui: screen(fonts(), &mut song, Place::Mixer, Some(starred), None)? },
-        Sample { name: "chain-mixer-add-presets", about: "Plate reverb's presets, reached with SHIFT + wheel (Delay and reverb), the wheel (Plate reverb) and a push; the wheel is on Snare plate, and a push or a tap adds the plate with it (Defaults adds it as it starts)", ui: presets },
+        Sample { name: "chain-mixer-add-presets", about: "The Reverb's presets, every mode's with its mode under the name, reached with SHIFT + wheel (Delay and reverb), the wheel (Reverb) and a push; the wheel is on Snare plate, and a push or a tap adds the Reverb as a Plate with it (Defaults adds a Room as it starts)", ui: presets },
         Sample { name: "macros-1-4", about: "The macros panel over the page (a long press on a macro card; no tab lit, Back closes it): Macros 1-4 with their targets and ranges, the Q-Links on Macros 1-4, the morph 64 % of the way from Dry verse to Wash drop", ui: screen(fonts(), &mut song, Place::Over, None, Some(m0))? },
         Sample { name: "macros-5-8", about: "Macros 5-8, not yet assigned; the Q-Links on Macros 5-8", ui: screen(fonts(), &mut song, Place::Over, None, Some(m1))? },
         Sample { name: "macros-edit-target", about: "A tap on a target opens its editor over the cards: Wash's hold on the delay tone, a falling range (80 → 35 %); drag From and To, pick a curve, Flip, Remove", ui: screen(fonts(), &mut song, Place::Over, None, Some(editing))? },
@@ -691,7 +691,7 @@ mod tests {
         let st = song.chain_state(DRUMS, 1, 0, None);
         assert_eq!(
             st.slots.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(),
-            ["Multi filter", "Drive", "Compressor", "EQ"]
+            ["Filter · Multi", "Drive · Soft", "Compressor", "EQ"]
         );
         assert!(st.slots[1].macros.contains(&1), "Grit moves the drive");
         assert!(st.slots[1].modulated, "LFO 1 on its tone");
@@ -710,15 +710,16 @@ mod tests {
         let mut st = song.chain_state(DRUMS, 1, 0, None);
         st.back = Some("Mixer".into());
         let mut ui = screen(Fonts::embedded(), &mut song, Place::Mixer, Some(st), None).unwrap();
-        // The Q-Links show the drive's first four knobs.
+        // The Q-Links show the knobs of the drive's first tab (its Mode is
+        // the Mode chooser).
         let q = ui.get::<QLinkColumn>(QLINKS).unwrap();
         assert_eq!(
             q.cards.iter().map(|c| c.label.as_str()).collect::<Vec<_>>(),
-            ["Mode", "Drive", "Tone", "Bias"]
+            ["Drive", "Tone", "Bias", ""]
         );
         assert_eq!(
             (q.title.as_str(), q.places[0].as_str()),
-            ("Q-Links · Drive", "Drums")
+            ("Q-Links · Drive · Soft", "Drums")
         );
         let r = ui.rect_of(crate::CHAIN).unwrap();
         let l = ui.get::<ChainView>(crate::CHAIN).unwrap().layout(r);
@@ -727,9 +728,9 @@ mod tests {
         let row = l.rows[2];
         tap(&mut ui, row.x + 80, row.y + 20);
         tap(&mut ui, row.right() - 20, row.y + row.h / 2);
-        // Touch the second knob (Drive: the app has not sent the
+        // Touch the first knob (Drive: the app has not sent the
         // compressor's page yet) and drag it up.
-        let k = l.knobs[1];
+        let k = l.knobs[0];
         ui.touch(2, Touch::Down, k.x + k.w / 2, k.y + 40);
         ui.touch(2, Touch::Move, k.x + k.w / 2, k.y + 10);
         ui.touch(2, Touch::Up, k.x + k.w / 2, k.y + 10);
@@ -771,6 +772,71 @@ mod tests {
         let b = l.back.unwrap();
         tap(&mut ui, b.x + 5, b.y + 5);
         assert_eq!(crate::take_chain_actions(&mut ui), [ChainAction::Back]);
+    }
+
+    /// The Mode chooser under an effect's name: a chip per mode when they
+    /// fit (Reverb's six), else an arrow each side of the mode's name
+    /// (Drive's ten). A tap on another mode switches; the lit one does
+    /// nothing. Drive's Mode is the chooser, not a knob; a Cloud reverb
+    /// set to its own Plate is in none of the modes and keeps its
+    /// Character knob.
+    #[test]
+    fn the_mode_chooser_switches_an_effect_with_modes() {
+        let modes = |v: &ChainView, r: Rect| -> Vec<(usize, String, bool)> {
+            v.targets(r)
+                .into_iter()
+                .filter(|t| t.id == "mode")
+                .map(|t| (t.index, t.label, t.enabled))
+                .collect()
+        };
+        let mut song = Song::new();
+        let drive = song.chain_state(DRUMS, 1, 0, None);
+        let mv = drive.mode.clone().unwrap();
+        assert_eq!(
+            (mv.family, mv.modes.len(), mv.current),
+            ("Drive", 10, Some(0))
+        );
+        assert!(!drive.params.iter().any(|p| p.info.name == "Mode"));
+        let mut ui = screen(Fonts::embedded(), &mut song, Place::Mixer, Some(drive), None).unwrap();
+        let r = ui.rect_of(crate::CHAIN).unwrap();
+        let v = ui.get::<ChainView>(crate::CHAIN).unwrap();
+        let l = v.layout(r);
+        assert!(l.mode_label.is_some(), "ten modes don't fit as chips");
+        // Soft is the first: only the arrow to Hard.
+        assert_eq!(modes(v, r), [(1, "Drive mode Hard".to_string(), true)]);
+        let (next, _) = l.modes[0];
+        tap(&mut ui, next.x + 5, next.y + 5);
+        assert_eq!(
+            crate::take_chain_actions(&mut ui),
+            [ChainAction::SetMode { slot: 1, mode: 1 }]
+        );
+
+        // A Room, then a Cloud reverb set to its own Plate.
+        let make = |id| mpfree_fx::registry::make(id).unwrap();
+        let room = song.drums.push(make("mpfree.fx.room"));
+        let mut cloud = make("mpfree.fx.cloud");
+        cloud.set_param(ids::cloud::CHARACTER, 0.0);
+        let cloud = song.drums.push(cloud);
+        let st = song.chain_state(DRUMS, room, 0, None);
+        assert_eq!(st.slots[room].name, "Reverb · Room");
+        assert_eq!(st.slots[cloud].name, "Cloud reverb");
+        let mut ui = screen(Fonts::embedded(), &mut song, Place::Mixer, Some(st), None).unwrap();
+        let v = ui.get::<ChainView>(crate::CHAIN).unwrap();
+        let l = v.layout(r);
+        assert!(l.mode_label.is_none(), "six fit as chips");
+        let lit: Vec<bool> = modes(v, r).into_iter().map(|m| m.2).collect();
+        assert_eq!(lit, [false, true, true, true, true, true]);
+        for m in [0, 1] {
+            let (c, _) = l.modes[m];
+            tap(&mut ui, c.x + 5, c.y + 5);
+        }
+        assert_eq!(
+            crate::take_chain_actions(&mut ui),
+            [ChainAction::SetMode { slot: room, mode: 1 }]
+        );
+        let st = song.chain_state(DRUMS, cloud, 0, None);
+        assert_eq!(st.mode.as_ref().unwrap().current, None);
+        assert!(st.params.iter().any(|p| p.info.name == "Character"));
     }
 
     #[test]
