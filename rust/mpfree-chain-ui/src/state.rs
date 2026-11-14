@@ -51,6 +51,9 @@ pub fn strip_id(s: Strip) -> StripId {
 pub struct ParamView {
     pub addr: ParamAddr,
     pub info: ParamInfo,
+    /// What the knob and its Q-Link are called: its name, or its group's
+    /// and its own where the name repeats in the effect ("Band 1 gain").
+    pub label: String,
     /// The value it is at now (after macros, the morph and modulation).
     pub value: f32,
     /// Where the knob points, 0 to 1.
@@ -132,11 +135,18 @@ pub struct ChainState {
     /// Inserts the strip can hold.
     pub room: usize,
     pub selected: Option<usize>,
-    /// The selected effect's parameter groups (its pages) and the one shown.
-    pub groups: Vec<&'static str>,
+    /// The selected effect's pages' labels (its tabs: "Main" first when it
+    /// has a Main page, then its groups, [`pages`]) and the one shown.
+    pub groups: Vec<String>,
     pub group: usize,
     /// The knobs of that page.
     pub params: Vec<ParamView>,
+    /// Main's four, when the effect has a Main page: the Q-Links turn them
+    /// on every page ([`ChainState::qlinks`]).
+    pub main_four: Vec<ParamView>,
+    /// The stages the effect switches, on its Main page (the Channel
+    /// strip's gate, compressor and EQ); empty on its other pages.
+    pub stages: Vec<StageView>,
     /// The knob last touched: the modulation panel works on it.
     pub focus: Option<ParamAddr>,
     pub rows: Vec<RowView>,
@@ -168,6 +178,24 @@ pub struct ChainState {
     pub mode: Option<ModeView>,
 }
 
+/// A stage on an effect's Main page: its switch and the page of its
+/// controls.
+#[derive(Clone, Debug, PartialEq)]
+pub struct StageView {
+    /// "Gate".
+    pub label: &'static str,
+    /// The switch (a toggle): on when its value is 1.
+    pub switch: ParamView,
+    /// The page (index into `groups`) that holds its controls.
+    pub page: usize,
+}
+
+impl StageView {
+    pub fn on(&self) -> bool {
+        self.switch.value >= 0.5
+    }
+}
+
 /// The selected insert's family and its modes, for the Mode chooser.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ModeView {
@@ -194,6 +222,8 @@ impl Default for ChainState {
             groups: Vec::new(),
             group: 0,
             params: Vec::new(),
+            main_four: Vec::new(),
+            stages: Vec::new(),
             focus: None,
             rows: Vec::new(),
             macro_names: default_macro_names(),
@@ -248,43 +278,64 @@ fn summary(n: &dyn Node) -> String {
     parts.join(" · ")
 }
 
-/// The groups a node's parameters fall in, in order of first appearance,
-/// and the parameters of group `g` (readonly meters left out), at most
-/// [`KNOBS_PER_PAGE`].
-pub fn page(params: &'static [ParamInfo], g: usize) -> (Vec<&'static str>, Vec<ParamInfo>) {
-    page_hiding(params, &[], g)
+/// One page of an effect in the chain editor: its tab's label and its
+/// knobs (parameter ids, at most [`KNOBS_PER_PAGE`]).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Page {
+    pub label: String,
+    pub ids: Vec<u16>,
 }
 
-/// [`page`] without the parameters in `hide` (a family mode's fixed ones,
-/// which the Mode chooser stands for).
-pub fn page_hiding(
+/// An effect's pages (layout B, Jay 14 Nov 2026): its Main page first when
+/// it has one (`mpfree_fx::main_page`), then its groups in order of first
+/// appearance, a group over [`KNOBS_PER_PAGE`] split into pages of that
+/// many ("EQ", "EQ 2"). Read-only meters and the parameters in `hide` (a
+/// family mode's fixed ones, which the Mode chooser stands for) are left
+/// out.
+pub fn pages(
     params: &'static [ParamInfo],
     hide: &[(u16, f32)],
-    g: usize,
-) -> (Vec<&'static str>, Vec<ParamInfo>) {
-    let shown = |p: &&ParamInfo| !p.readonly && !hide.iter().any(|&(h, _)| h == p.id);
+    main: Option<&mpfree_fx::main_page::MainPage>,
+) -> Vec<Page> {
+    let shown = |p: &ParamInfo| !p.readonly && !hide.iter().any(|&(h, _)| h == p.id);
+    let mut out = Vec::new();
+    if let Some(m) = main {
+        let ids: Vec<u16> = mpfree_fx::main_page::knob_ids(m, params)
+            .into_iter()
+            .filter(|id| params.iter().any(|p| p.id == *id && shown(p)))
+            .take(KNOBS_PER_PAGE)
+            .collect();
+        if !ids.is_empty() {
+            out.push(Page {
+                label: "Main".into(),
+                ids,
+            });
+        }
+    }
     let mut groups: Vec<&'static str> = Vec::new();
-    for p in params.iter().filter(shown) {
+    for p in params.iter().filter(|p| shown(p)) {
         if !groups.contains(&p.group) {
             groups.push(p.group);
         }
     }
-    // A group bigger than a page shows its first KNOBS_PER_PAGE: every
-    // built-in effect keeps its groups within that (tests/reach.rs). How
-    // longer groups (hosted plugins) get pages is still open.
-    let g = g.min(groups.len().saturating_sub(1));
-    let ps = groups
-        .get(g)
-        .map(|name| {
-            params
-                .iter()
-                .filter(|p| shown(p) && p.group == *name)
-                .take(KNOBS_PER_PAGE)
-                .copied()
-                .collect()
-        })
-        .unwrap_or_default();
-    (groups, ps)
+    for g in groups {
+        let ids: Vec<u16> = params
+            .iter()
+            .filter(|p| shown(p) && p.group == g)
+            .map(|p| p.id)
+            .collect();
+        for (k, chunk) in ids.chunks(KNOBS_PER_PAGE).enumerate() {
+            out.push(Page {
+                label: if k == 0 {
+                    g.to_string()
+                } else {
+                    format!("{g} {}", k + 1)
+                },
+                ids: chunk.to_vec(),
+            });
+        }
+    }
+    out
 }
 
 impl ChainState {
@@ -328,6 +379,7 @@ impl ChainState {
             .filter(|s| *s < slots.len())
             .or(if slots.is_empty() { None } else { Some(0) });
         let (mut groups, mut params, mut group_shown) = (Vec::new(), Vec::new(), 0);
+        let (mut main_four, mut stages) = (Vec::new(), Vec::new());
         let mut mode = None;
         if let (Some(s), Some(n)) = (selected, selected.and_then(|s| chain.node(s))) {
             let owner = Owner::Insert(strip, slots[s].uid);
@@ -341,25 +393,57 @@ impl ChainState {
                 Some((f, Some(m))) => f.modes[m].fixed,
                 _ => &[],
             };
-            let (gs, ps) = page_hiding(n.params(), hide, group);
-            group_shown = group.min(gs.len().saturating_sub(1));
-            groups = gs;
-            params = ps
-                .into_iter()
-                .map(|info| {
-                    let addr = ParamAddr::new(owner, info.id);
-                    let value = engine.value(addr).unwrap_or_else(|| n.param(info.id));
-                    ParamView {
-                        addr,
-                        info,
-                        value,
-                        pos: info.to_unit(value),
-                        mod_range: engine.mod_range(addr),
-                        macro_: engine.macro_of(addr),
-                        locked: engine.is_locked(addr),
-                    }
+            let main = mpfree_fx::main_page::main_page(n.info().id);
+            let ps = pages(n.params(), hide, main);
+            group_shown = group.min(ps.len().saturating_sub(1));
+            let view = |id: u16| -> Option<ParamView> {
+                let info = *n.params().iter().find(|p| p.id == id)?;
+                let addr = ParamAddr::new(owner, info.id);
+                let value = engine.value(addr).unwrap_or_else(|| n.param(info.id));
+                let twins = n.params().iter().filter(|p| p.name == info.name).count();
+                Some(ParamView {
+                    addr,
+                    info,
+                    label: if twins > 1 && info.name.len() > 2 {
+                        format!("{} {}", info.group, info.name.to_lowercase())
+                    } else if twins > 1 {
+                        format!("{} {}", info.group, info.name)
+                    } else {
+                        info.name.to_string()
+                    },
+                    value,
+                    pos: info.to_unit(value),
+                    mod_range: engine.mod_range(addr),
+                    macro_: engine.macro_of(addr),
+                    locked: engine.is_locked(addr),
                 })
-                .collect();
+            };
+            params = ps
+                .get(group_shown)
+                .map(|pg| pg.ids.iter().filter_map(|&id| view(id)).collect())
+                .unwrap_or_default();
+            if let Some(m) = main {
+                main_four = mpfree_fx::main_page::qlink_ids(m, n.params())
+                    .into_iter()
+                    .flatten()
+                    .filter_map(view)
+                    .collect();
+                if group_shown == 0 {
+                    stages = m
+                        .stages
+                        .iter()
+                        .filter_map(|st| {
+                            let sw = mpfree_fx::main_page::find(n.params(), st.switch)?;
+                            Some(StageView {
+                                label: st.label,
+                                switch: view(sw.id)?,
+                                page: ps.iter().position(|pg| pg.label == st.group)?,
+                            })
+                        })
+                        .collect();
+                }
+            }
+            groups = ps.into_iter().map(|p| p.label).collect();
         }
         let focus = focus.filter(|f| params.iter().any(|p| p.addr == *f));
         let rows = focus
@@ -388,6 +472,8 @@ impl ChainState {
             groups,
             group: group_shown,
             params,
+            main_four,
+            stages,
             focus,
             rows,
             macro_names: default_macro_names(),
@@ -409,8 +495,10 @@ impl ChainState {
     }
 
     /// The page's own Q-Link knobs for [`mpfree_mod::Bindings::set_page`]:
-    /// the first four knobs of the effect page shown (Drive: Drive, Tone,
-    /// Bias, since its Mode is the Mode chooser), and the effect's name.
+    /// Main's four on every page of an effect with a Main page (the
+    /// Channel strip: Comp thresh, Makeup, Low cut, High gain), else the
+    /// first four knobs of the page shown (Drive: Drive, Tone, Bias, since
+    /// its Mode is the Mode chooser); and the effect's name.
     pub fn qlinks(&self) -> (String, [Option<Binding>; KNOBS]) {
         let name = self
             .selected
@@ -420,9 +508,12 @@ impl ChainState {
         (
             name,
             std::array::from_fn(|k| {
-                self.params
-                    .get(k)
-                    .map(|p| Binding::new(p.addr, p.info, p.info.name))
+                let four = if self.main_four.is_empty() {
+                    &self.params
+                } else {
+                    &self.main_four
+                };
+                four.get(k).map(|p| Binding::new(p.addr, p.info, &p.label))
             }),
         )
     }

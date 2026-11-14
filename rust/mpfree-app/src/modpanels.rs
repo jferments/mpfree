@@ -404,7 +404,7 @@ impl ChainHost {
         let (Some(c), Some(slot)) = (h.mixer.chain(self.sid()), st.selected) else {
             return Vec::new();
         };
-        let page = st.groups.get(st.group).copied().unwrap_or("");
+        let page = st.groups.get(st.group).map_or("", String::as_str);
         mpfree_chain_ui::picture(c, slot, page, t, h.mixer.rate(), bpm)
     }
 }

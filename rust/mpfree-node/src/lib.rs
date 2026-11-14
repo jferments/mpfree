@@ -413,6 +413,68 @@ pub trait Node: Send {
     fn save_extras(&self) -> Vec<(String, String)> {
         Vec::new()
     }
+    /// Voices sounding or fading now, for the host's counts and its load
+    /// shedding. Effects and anything without voices keep the default, 0.
+    fn sounding_voices(&self) -> usize {
+        0
+    }
+    /// Load shedding: the voice this instrument would give up first if the
+    /// host runs out of time ([`Cull`]), or None when it has none to give
+    /// up (or can't, as a plugin in its own process). Real-time safe; the
+    /// host asks only when a period ran over.
+    fn cull_candidate(&self) -> Option<Cull> {
+        None
+    }
+    /// Gives up the voice [`Node::cull_candidate`] names, with the short
+    /// fade a stolen voice gets, so nothing clicks. True if it did.
+    /// Real-time safe.
+    fn cull(&mut self) -> bool {
+        false
+    }
+}
+
+/// A voice an instrument could give up when the host runs out of time:
+/// how loud it is now and whether its note has ended. The host gives up
+/// the voices with the lowest [`Cull::audibility`] first, across every
+/// instrument, as the Deluge does.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Cull {
+    /// The voice's level now, linear: about 1 for a full-scale note (its
+    /// envelope times its velocity and level gains).
+    pub level: f32,
+    /// Its note has ended (the release, or a one-shot's own decay is all
+    /// that is left).
+    pub releasing: bool,
+}
+
+impl Cull {
+    /// How much giving the voice up would be heard: its level, a releasing
+    /// voice counted 12 dB quieter, since it is ending anyway. Lower goes
+    /// first. NaN counts as silent.
+    pub fn audibility(&self) -> f32 {
+        let level = if self.level.is_nan() {
+            0.0
+        } else {
+            self.level.abs()
+        };
+        if self.releasing {
+            level * 0.25
+        } else {
+            level
+        }
+    }
+
+    /// The one of `a` and `b` to give up first (`a` on a tie).
+    pub fn first<T>(a: Option<(T, Cull)>, b: Option<(T, Cull)>) -> Option<(T, Cull)> {
+        match (a, b) {
+            (Some(a), Some(b)) => Some(if b.1.audibility() < a.1.audibility() {
+                b
+            } else {
+                a
+            }),
+            (a, b) => a.or(b),
+        }
+    }
 }
 
 /// A one-pole smoother for a continuous parameter, stepped once per frame.
@@ -592,6 +654,70 @@ mod tests {
                 "AllOff",
                 "7..10"
             ]
+        );
+    }
+
+    #[test]
+    fn the_least_audible_voice_goes_first() {
+        let held = |level| Cull {
+            level,
+            releasing: false,
+        };
+        let rel = |level| Cull {
+            level,
+            releasing: true,
+        };
+        // A releasing voice counts 12 dB quieter: at 0.8 it goes before a
+        // held one at 0.3, not before one at 0.1.
+        assert_eq!(rel(0.8).audibility(), 0.2);
+        assert_eq!(
+            Cull::first(Some((0, held(0.3))), Some((1, rel(0.8))))
+                .unwrap()
+                .0,
+            1
+        );
+        assert_eq!(
+            Cull::first(Some((0, held(0.1))), Some((1, rel(0.8))))
+                .unwrap()
+                .0,
+            0
+        );
+        // Ties keep the first; None gives way; NaN counts as silent.
+        assert_eq!(
+            Cull::first(Some((0, held(0.5))), Some((1, held(0.5))))
+                .unwrap()
+                .0,
+            0
+        );
+        assert_eq!(Cull::first(None, Some((1, held(0.5)))).unwrap().0, 1);
+        assert_eq!(Cull::first::<u8>(None, None), None);
+        assert_eq!(held(f32::NAN).audibility(), 0.0);
+        // The default node has nothing to give up.
+        struct Plain;
+        impl Node for Plain {
+            fn info(&self) -> &'static NodeInfo {
+                static I: NodeInfo = NodeInfo {
+                    id: "t.plain",
+                    name: "Plain",
+                    kind: Kind::Instrument,
+                };
+                &I
+            }
+            fn params(&self) -> &'static [ParamInfo] {
+                &[]
+            }
+            fn set_param(&mut self, _: u16, _: f32) {}
+            fn param(&self, _: u16) -> f32 {
+                f32::NAN
+            }
+            fn prepare(&mut self, _: u32, _: usize) {}
+            fn reset(&mut self) {}
+            fn process(&mut self, _: &Ctx, _: &[Timed], _: &mut [f32], _: &mut [f32]) {}
+        }
+        let mut p = Plain;
+        assert_eq!(
+            (p.sounding_voices(), p.cull_candidate(), p.cull()),
+            (0, None, false)
         );
     }
 

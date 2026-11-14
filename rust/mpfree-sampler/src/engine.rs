@@ -51,6 +51,7 @@ pub use mpfree_grain::{GrainView, MAX_GRAINS};
 /// dependency of their own on `mpfree-lanes`.
 pub use mpfree_lanes::{Config as LaneConfig, Setup as LaneSetup, Stats as LaneStats};
 use mpfree_lanes::{Lane, Setup};
+use mpfree_node::Cull;
 
 use crate::dsp::{
     db_to_gain, equal_power, hermite, pan_gains, Ahdsr, Envelope, Filter, FilterKind, Rng, Svf,
@@ -762,6 +763,11 @@ struct Voice {
     tail_r: f32,
     last_l: f32,
     last_r: f32,
+    /// About how loud it is now, for load shedding: the louder of its last
+    /// two output samples at the end of each render, held and falling a
+    /// little each render (so a peak, not a zero crossing). Starts at its
+    /// gain.
+    heard: f32,
     /// Plays through the engine's grain voice in the same slot.
     granular: bool,
     src_rate: u32,
@@ -1217,6 +1223,8 @@ pub struct Stats {
     /// that part, and events wait until they are back).
     pub lane_parts: u64,
     pub lane_late: u64,
+    /// Voices given up under load ([`Engine::cull`]).
+    pub culls: u64,
 }
 
 pub struct Engine {
@@ -1411,6 +1419,43 @@ impl Engine {
     }
     pub fn active_voices(&self) -> usize {
         self.pool.iter().filter(|(v, _)| v.active).count()
+    }
+
+    /// Load shedding: the voice here this engine would give up first, the
+    /// least audible one ([`Cull::audibility`]) by how loud it has been
+    /// lately. Voices already fading and auditions are left be, and so are
+    /// the lane's while it has them (they are not here). No allocation.
+    pub fn cull_candidate(&self) -> Option<Cull> {
+        self.cull_pick().map(|(_, c)| c)
+    }
+
+    /// Gives up the voice [`Engine::cull_candidate`] names, with the
+    /// steal's short fade. True if it did. No allocation.
+    pub fn cull(&mut self) -> bool {
+        let Some((slot, _)) = self.cull_pick() else {
+            return false;
+        };
+        let Some(v) = self.pool.voice_mut(slot) else {
+            return false;
+        };
+        Self::kill(v);
+        self.stats.culls += 1;
+        true
+    }
+
+    fn cull_pick(&self) -> Option<(usize, Cull)> {
+        let mut best = None;
+        for (i, (v, _)) in self.pool.iter().enumerate() {
+            if !v.active || v.kill_left > 0 || v.audition {
+                continue;
+            }
+            let c = Cull {
+                level: v.heard,
+                releasing: v.amp.as_ref().is_some_and(|a| a.is_releasing()),
+            };
+            best = Cull::first(best, Some((i, c)));
+        }
+        best
     }
     /// (pad, layer, source frame) of every playing voice, for playheads on screen.
     /// A granular voice reports its reading position (before spray); a
@@ -2227,6 +2272,7 @@ impl Engine {
             tail_r,
             last_l: 0.0,
             last_r: 0.0,
+            heard: gain_l.abs().max(gain_r.abs()),
             granular,
             src_rate: l.src_rate,
             grain_base: grain,
@@ -2954,7 +3000,12 @@ fn render_voice(v: &mut Voice, rate: f32, left: &mut [f32], right: &mut [f32]) {
     } else {
         render_voice_as::<false>(v, rate, left, right);
     }
+    v.heard = (v.heard * HEARD_FALL).max(v.last_l.abs().max(v.last_r.abs()));
 }
+
+/// How much a voice's [`Voice::heard`] level falls each render it is not
+/// held up by its output (about 3 dB in four renders).
+const HEARD_FALL: f32 = 0.84;
 
 fn render_voice_as<const FOLLOW: bool>(
     v: &mut Voice,

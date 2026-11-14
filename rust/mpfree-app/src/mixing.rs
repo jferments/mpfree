@@ -210,8 +210,17 @@ pub struct MixHost {
     /// Each track's own instrument (instruments.rs), rendered into its
     /// mixer track before the mixer runs.
     pub instruments: Instruments,
+    /// How long the tracks' own instruments took in the last period (0
+    /// when no track has one), for load shedding's cost a voice (shed.rs).
+    pub instrument_time: Duration,
     /// Instruments made without a builder (the tests), waiting to go in.
     made: Vec<crate::control::MadeInstrument>,
+    /// Each plugin synth's own presets, once listed (or why not), by its
+    /// node id; and the ones asked for and not back yet.
+    plugin_presets: Vec<(&'static str, Result<Vec<mpfree_plughost::Preset>, String>)>,
+    presets_asked: Vec<&'static str>,
+    /// Preset news made without a builder (the tests).
+    preset_news: Vec<crate::control::PresetNews>,
     /// The effect picker's favourites and recents (`files/fx/`), and
     /// whether they changed since they were last saved.
     pub shelf: mpfree_fx::picker::Shelf,
@@ -219,6 +228,42 @@ pub struct MixHost {
     /// Effects' modes (fxmodes.rs): the values each insert had in the
     /// engines it left, and the switches across engines on their way.
     pub modes: crate::fxmodes::Modes,
+    /// Freeze and Print (takes.rs).
+    pub takes: crate::takes::Takes,
+    /// A take's memory made without a builder (the tests).
+    here: crate::takes::Here,
+}
+
+/// The take host's memory: made and dropped on the builder thread, or
+/// here without one (the tests).
+struct TakeMem<'a> {
+    builder: Option<&'a mut crate::control::Builder>,
+    here: &'a mut crate::takes::Here,
+}
+
+impl crate::takes::Memory for TakeMem<'_> {
+    fn ask(&mut self, rate: u32, seconds: f32) -> bool {
+        match self.builder.as_deref_mut() {
+            Some(b) => b.print(rate, seconds),
+            None => self.here.ask(rate, seconds),
+        }
+    }
+    fn made(&mut self) -> Option<mpfree_fx::Print> {
+        match self.builder.as_deref_mut() {
+            Some(b) => b.take_print(),
+            None => self.here.made(),
+        }
+    }
+    fn drop_frozen(&mut self, f: mpfree_fx::Frozen) {
+        if let Some(b) = self.builder.as_deref_mut() {
+            b.drop_frozen_later(f);
+        }
+    }
+    fn drop_print(&mut self, p: mpfree_fx::Print) {
+        if let Some(b) = self.builder.as_deref_mut() {
+            b.drop_print_later(p);
+        }
+    }
 }
 
 /// What [`MixHost::poll_instruments`] put in (or couldn't) for the log.
@@ -314,10 +359,16 @@ impl MixHost {
             plugins: Arc::new(Plugins::none()),
             opening: None,
             instruments: Instruments::new(rate, PERIOD),
+            instrument_time: Duration::ZERO,
             made: Vec::new(),
+            plugin_presets: Vec::new(),
+            presets_asked: Vec::new(),
+            preset_news: Vec::new(),
             shelf: mpfree_fx::picker::Shelf::default(),
             shelf_dirty: false,
             modes: crate::fxmodes::Modes::default(),
+            takes: crate::takes::Takes::new(rate),
+            here: crate::takes::Here::default(),
         }
     }
 
@@ -375,6 +426,85 @@ impl MixHost {
         }
     }
 
+    /// Plugin synth `id`'s own presets, once listed (None until then, or if
+    /// they couldn't be).
+    pub fn plugin_presets(&self, id: &str) -> Option<&[mpfree_plughost::Preset]> {
+        self.plugin_presets
+            .iter()
+            .find(|(i, _)| *i == id)
+            .and_then(|(_, l)| l.as_deref().ok())
+    }
+
+    /// Asks for plugin synth `id`'s presets, once: listed on the builder
+    /// thread (the first time in a process of their own, which can take
+    /// seconds) and kept when [`MixHost::poll_presets`] hands them back.
+    pub fn ask_presets(&mut self, id: &'static str) {
+        if !Plugins::is_plugin(id)
+            || self.presets_asked.contains(&id)
+            || self.plugin_presets.iter().any(|(i, _)| *i == id)
+        {
+            return;
+        }
+        let asked = match self.builder.as_mut() {
+            Some(b) => b.presets(id),
+            None => {
+                let list = self.plugins.presets(id);
+                self.preset_news
+                    .push(crate::control::PresetNews::Listed { id, list });
+                true
+            }
+        };
+        if asked {
+            self.presets_asked.push(id);
+        }
+    }
+
+    /// Asks for preset `index` of track `track`'s plugin synth to be
+    /// loaded (on the builder thread); [`MixHost::poll_presets`] says how
+    /// it went. False if the track has no plugin, its presets aren't
+    /// listed, there's no such preset, or the builder is busy.
+    pub fn load_plugin_preset(&mut self, track: usize, index: usize) -> bool {
+        let Some(held) = self.instruments.held(track) else {
+            return false;
+        };
+        let Some(preset) = self
+            .plugin_presets(held.id)
+            .and_then(|l| l.get(index))
+            .cloned()
+        else {
+            return false;
+        };
+        let job = Box::new(crate::control::PresetJob {
+            track,
+            instance: held.instance,
+            index,
+            preset,
+        });
+        match self.builder.as_mut() {
+            Some(b) => b.load_preset(job),
+            None => {
+                let news = job.run(&self.plugins);
+                self.preset_news.push(news);
+                true
+            }
+        }
+    }
+
+    /// Once a period: presets listed or loaded on the builder thread, if
+    /// any are back (a listed plugin's are kept for
+    /// [`MixHost::plugin_presets`]). Never waits.
+    pub fn poll_presets(&mut self) -> Option<crate::control::PresetNews> {
+        let news = match self.builder.as_mut() {
+            Some(b) => b.take_preset_news(),
+            None => (!self.preset_news.is_empty()).then(|| self.preset_news.remove(0)),
+        }?;
+        if let crate::control::PresetNews::Listed { id, list } = &news {
+            self.presets_asked.retain(|i| i != id);
+            self.plugin_presets.push((id, list.clone()));
+        }
+        Some(news)
+    }
+
     fn drop_instrument(&mut self, inst: mpfree_track::Instrument) {
         match self.builder.as_mut() {
             Some(b) => {
@@ -389,6 +519,12 @@ impl MixHost {
     /// a period; until then the old mixer plays on. A second open replaces
     /// one under way (its effects are dropped off this thread).
     pub fn open(&mut self, load: Box<crate::project::MixLoad>) {
+        // Frozen strips are not saved: everything thaws.
+        let mut mem = TakeMem {
+            builder: self.builder.as_mut(),
+            here: &mut self.here,
+        };
+        self.takes.clear(&mut self.mixer, &mut mem);
         if let Some(mut old) = self.opening.take() {
             self.drop_load(&mut old.load);
         }
@@ -997,8 +1133,16 @@ impl MixHost {
                 dr[..PERIOD].copy_from_slice(r);
             }
         }
-        // Each track's own instrument into its mixer track.
-        self.instruments.render(ctx, PERIOD, &mut self.mixer);
+        // Each track's own instrument into its mixer track, timed while
+        // any track has one.
+        if self.instruments.in_use() != 0 {
+            let t = Instant::now();
+            self.instruments.render(ctx, PERIOD, &mut self.mixer);
+            self.instrument_time = t.elapsed();
+        } else {
+            self.instruments.render(ctx, PERIOD, &mut self.mixer);
+            self.instrument_time = Duration::ZERO;
+        }
         if self.line_open {
             let (hl, hr) = self.mixer.hw_input();
             hl[..PERIOD].copy_from_slice(line.0);
@@ -1083,8 +1227,7 @@ impl MixHost {
             | MixAction::MoveInsert { .. }
             | MixAction::Unpick
             | MixAction::Look(_) => None,
-            // Freeze, Thaw and Print: the strip menu stays shut until the
-            // app sets `MixState::takes` and acts on them here.
+            // Freeze, Thaw and Print need the song: `MixHost::take_action`.
             MixAction::Freeze(_)
             | MixAction::Thaw(_)
             | MixAction::Print(_)
@@ -1124,7 +1267,100 @@ impl MixHost {
         st.counts[0] = TRACKS + used.count_ones() as usize;
         st.tracks = TRACKS;
         st.selected = self.selected;
+        st.takes = true;
+        for v in st.strips.iter_mut().chain(std::iter::once(&mut st.master)) {
+            v.freezable = crate::takes::freezable(v.id);
+            v.take = self.takes.view(v.id).map(|t| mpfree_mixer_ui::TakeView {
+                print: t.print,
+                done: t.done,
+            });
+        }
         Some(st)
+    }
+
+    /// The song as a take sees it: `tracks` in the project, at `bpm`, each
+    /// playing what `now` says.
+    fn song<'a>(
+        instruments: &'a Instruments,
+        tracks: usize,
+        bpm: f64,
+        now: &'a dyn Fn(usize) -> Option<mpfree_play::NowPlaying>,
+        instrument: &'a dyn Fn(usize) -> u64,
+    ) -> crate::takes::Song<'a> {
+        crate::takes::Song {
+            tracks,
+            own: instruments.in_use(),
+            bpm,
+            now,
+            instrument,
+        }
+    }
+
+    /// The strip menu's Freeze, Thaw, Print and Cancel, with the song's
+    /// `tracks` at `bpm` playing what `now` says. Returns the line for
+    /// the screen (None for any other action).
+    pub fn take_action(
+        &mut self,
+        a: &MixAction,
+        tracks: usize,
+        bpm: f64,
+        now: &dyn Fn(usize) -> Option<mpfree_play::NowPlaying>,
+    ) -> Option<String> {
+        let inst = &self.instruments;
+        let instrument = |k: usize| {
+            inst.node(k)
+                .map_or(0, |n| crate::takes::id_number(n.info().id))
+        };
+        let song = Self::song(inst, tracks, bpm, now, &instrument);
+        let mut mem = TakeMem {
+            builder: self.builder.as_mut(),
+            here: &mut self.here,
+        };
+        let (kind, s) = match *a {
+            MixAction::Freeze(s) => (crate::takes::Kind::Freeze, s),
+            MixAction::Print(s) => (crate::takes::Kind::Print, s),
+            MixAction::Thaw(s) => return Some(self.takes.thaw(s, &name(s), &mut self.mixer)),
+            MixAction::CancelTake(s) => return self.takes.cancel(s, &mut self.mixer, &mut mem),
+            _ => return None,
+        };
+        self.state_at = None;
+        Some(
+            self.takes
+                .ask(kind, s, &name(s), &song, &self.mixer, &mut mem),
+        )
+    }
+
+    /// A print the screen couldn't take, dropped off the audio thread.
+    pub fn drop_printed(&mut self, p: Box<mpfree_fx::Printed>) {
+        if let Some(b) = self.builder.as_mut() {
+            b.drop_printed_later(p);
+        }
+    }
+
+    /// Once a period, after [`MixHost::period`] with the same `ctx`: the
+    /// take under way and the frozen strips (takes.rs), with the song's
+    /// `tracks` playing what `now` says.
+    pub fn takes_period(
+        &mut self,
+        ctx: &Ctx,
+        tracks: usize,
+        now: &dyn Fn(usize) -> Option<mpfree_play::NowPlaying>,
+    ) -> Option<crate::takes::Said> {
+        let inst = &self.instruments;
+        let instrument = |k: usize| {
+            inst.node(k)
+                .map_or(0, |n| crate::takes::id_number(n.info().id))
+        };
+        let song = Self::song(inst, tracks, ctx.bpm, now, &instrument);
+        let mut mem = TakeMem {
+            builder: self.builder.as_mut(),
+            here: &mut self.here,
+        };
+        let said = self.takes.period(ctx, &song, &mut self.mixer, &mut mem);
+        if said.is_some() {
+            self.state_at = None;
+        }
+        said
     }
 }
 
@@ -1541,6 +1777,33 @@ mod tests {
         // after 32 removes. poll_built takes them back every period.
         let mut h = MixHost::new(RATE, 0.0, 0.0);
         add_and_remove(&mut h, 40);
+    }
+
+    #[test]
+    fn a_plugins_presets_are_asked_for_once_and_why_not_comes_back() {
+        use crate::control::PresetNews;
+        let mut h = MixHost::new(RATE, 0.0, 0.0);
+        // An engine has its presets built in: nothing is asked.
+        h.ask_presets("mpfree.poly");
+        assert!(h.poll_presets().is_none());
+        // A plugin not in the folder: asked once, and why not comes back.
+        h.ask_presets("clap:org.nope");
+        h.ask_presets("clap:org.nope");
+        match h.poll_presets() {
+            Some(PresetNews::Listed { id, list: Err(e) }) => {
+                assert_eq!(id, "clap:org.nope");
+                assert!(!e.is_empty());
+            }
+            _ => panic!("expected the listing's error"),
+        }
+        assert!(h.poll_presets().is_none(), "asked once");
+        assert!(h.plugin_presets("clap:org.nope").is_none());
+        // Kept: not asked again.
+        h.ask_presets("clap:org.nope");
+        assert!(h.poll_presets().is_none());
+        // A track without a plugin loads none.
+        assert!(!h.load_plugin_preset(0, 0));
+        assert!(h.poll_presets().is_none());
     }
 
     #[test]

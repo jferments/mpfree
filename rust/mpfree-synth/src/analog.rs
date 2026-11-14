@@ -42,7 +42,7 @@
 
 use std::f32::consts::PI;
 
-use mpfree_node::{Ctx, Kind, Node, NodeEvent, NodeInfo, ParamInfo, Smooth, Timed, Tuning};
+use mpfree_node::{Ctx, Cull, Kind, Node, NodeEvent, NodeInfo, ParamInfo, Smooth, Timed, Tuning};
 
 use crate::analog_params::*;
 use crate::dsp::{lfo_value, LfoShape, Rng};
@@ -365,6 +365,10 @@ impl Env {
     }
 }
 
+/// A card given up under load (`Node::cull`) falls 40 dB in this time,
+/// and goes at -60 dB.
+const CULL_MS: f32 = 10.0;
+
 const FREE: u8 = 0;
 const HELD_KEY: u8 = 1;
 const RELEASED: u8 = 2;
@@ -418,6 +422,8 @@ struct Voice {
     aenv: Env,
     vca: f32,
     dvca: f32,
+    /// Given up under load: its amp envelope falls 40 dB in [`CULL_MS`].
+    cut: bool,
 }
 
 impl Voice {
@@ -433,6 +439,7 @@ impl Voice {
         self.vca = 0.0;
         self.dvca = 0.0;
         self.vca_to = 0.0;
+        self.cut = false;
         self.o1.held = 0.0;
         self.o2.held = 0.0;
         self.sub.held = 0.0;
@@ -771,6 +778,8 @@ pub struct Analog {
     /// offset.
     fco: [EnvCoefs; CARDS],
     aco: [EnvCoefs; CARDS],
+    /// A cut card's amp envelope: 40 dB down in [`CULL_MS`].
+    cut_co: EnvCoefs,
     fr: Frame,
     lfo_phase: f32,
     lfo_held: f32,
@@ -826,6 +835,7 @@ impl Analog {
             drift_rng: Rng::new(0xD21F_7001),
             fco: [EnvCoefs::default(); CARDS],
             aco: [EnvCoefs::default(); CARDS],
+            cut_co: EnvCoefs::default(),
             fr: Frame::default(),
             lfo_phase: 0.0,
             lfo_held: 0.0,
@@ -975,6 +985,10 @@ impl Analog {
                 release: fall(self.v(A_RELEASE) * k),
             };
         }
+        self.cut_co = EnvCoefs {
+            release: fall(CULL_MS),
+            ..EnvCoefs::default()
+        };
     }
 
     fn push(&mut self, note: u8) {
@@ -1020,8 +1034,27 @@ impl Analog {
             v.gliding = false;
         }
         v.played = true;
+        v.cut = false;
         v.fenv.gate_on();
         v.aenv.gate_on();
+    }
+
+    /// The card load shedding gives up first: the least audible one
+    /// sounding ([`Cull::audibility`]), by its amp envelope and velocity
+    /// (about 1 for a full-velocity note at the sustain's top). Cards
+    /// already cut are left be.
+    fn cull_pick(&self) -> Option<(usize, Cull)> {
+        let va = self.v(VEL_AMP) / 100.0;
+        let mut best = None;
+        for (c, v) in self.voices.iter().enumerate() {
+            if v.state == FREE || v.cut {
+                continue;
+            }
+            let level = v.aenv.level * (1.0 - va + va * v.vel);
+            let releasing = v.state == RELEASED;
+            best = Cull::first(best, Some((c, Cull { level, releasing })));
+        }
+        best
     }
 
     /// The card for a new note: the same note still sounding keeps its
@@ -1301,8 +1334,13 @@ impl Analog {
             v.g = v.g_to;
             v.vca = v.vca_to;
             let fe = v.fenv.step(&self.fco[c]);
-            let ae = v.aenv.step(&self.aco[c]);
-            if v.state == RELEASED && v.aenv.stage == IDLE {
+            let ae = if v.cut {
+                v.aenv.step(&self.cut_co)
+            } else {
+                v.aenv.step(&self.aco[c])
+            };
+            // A cut card goes at -60 dB, 15 ms into its fall.
+            if v.state == RELEASED && (v.aenv.stage == IDLE || (v.cut && ae < 1e-3)) {
                 v.silence();
                 continue;
             }
@@ -1587,5 +1625,27 @@ impl Node for Analog {
         for v in self.voices.iter_mut() {
             v.hz_key = f32::NAN;
         }
+    }
+
+    /// The cards sounding (the chorus ringing on after them costs the
+    /// same with or without them, so it doesn't count here).
+    fn sounding_voices(&self) -> usize {
+        self.voices.iter().filter(|v| v.state != FREE).count()
+    }
+
+    fn cull_candidate(&self) -> Option<Cull> {
+        self.cull_pick().map(|(_, c)| c)
+    }
+
+    fn cull(&mut self) -> bool {
+        let Some((c, _)) = self.cull_pick() else {
+            return false;
+        };
+        let v = &mut self.voices[c];
+        v.state = RELEASED;
+        v.cut = true;
+        v.fenv.gate_off();
+        v.aenv.gate_off();
+        true
     }
 }

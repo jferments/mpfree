@@ -51,15 +51,19 @@ pub fn make(
     rate: u32,
     max_block: usize,
 ) -> Option<(Instrument, Held)> {
-    let (node, name) = if crate::plugins::Plugins::is_plugin(id) {
+    let (node, name, instance) = if crate::plugins::Plugins::is_plugin(id) {
         let name = plugins.find(id)?.name;
-        (plugins.make(id).ok()?, name)
+        let (instance, node) = plugins.make_instance(id).ok()?;
+        (node, name, instance)
     } else {
         let node = crate::synth::fresh_node(id, values, rate)?;
         let name = node.info().name;
-        (node, name)
+        (node, name, 0)
     };
-    Some((Instrument::new(node, rate, max_block), Held { id, name }))
+    Some((
+        Instrument::new(node, rate, max_block),
+        Held { id, name, instance },
+    ))
 }
 
 /// The tracks that can play their own instrument: every sequencer track.
@@ -96,6 +100,9 @@ pub struct Held {
     pub id: &'static str,
     /// Its name for the screen ("Poly", a plugin's name).
     pub name: &'static str,
+    /// A plugin's instance in the rack (`Rack::make_instance`), which its
+    /// presets load into; 0 for an engine (and in the app's own copy).
+    pub instance: u64,
 }
 
 /// Why [`Instruments::put`] handed an instrument back.
@@ -219,6 +226,22 @@ impl Instruments {
     /// tracks have one.
     pub fn has_room(&self, track: usize) -> bool {
         track < TRACKS && (self.holds(track) || self.count() < SLOTS)
+    }
+
+    /// Voices sounding in the tracks' own instruments (a plugin counts
+    /// none).
+    pub fn voices(&self) -> usize {
+        self.host.voices()
+    }
+
+    /// Load shedding (`shed.rs`): the voice to give up first across the
+    /// tracks' instruments, with its slot, and giving it up. No allocation.
+    pub fn cull_candidate(&self) -> Option<(usize, mpfree_node::Cull)> {
+        self.host.cull_candidate()
+    }
+
+    pub fn cull(&mut self, slot: usize) -> bool {
+        self.host.cull(slot)
     }
 
     /// The tracks whose mixer channels are in use, one bit each: playing
@@ -456,6 +479,7 @@ impl Instruments {
             stray_offs: now.stray_offs - base.stray_offs,
             resets: now.resets - base.resets,
             swaps: now.swaps - base.swaps,
+            rested: now.rested - base.rested,
         }
     }
 
@@ -553,6 +577,7 @@ mod tests {
             Held {
                 id: "test.hum",
                 name: "Hum",
+                instance: 0,
             },
         )
     }
