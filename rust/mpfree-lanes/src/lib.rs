@@ -798,6 +798,41 @@ mod tests {
         assert_eq!(got, Ok(all));
     }
 
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_long_job_runs_at_idle_priority_once_the_program_allows_it() {
+        // The calling thread's policy, from its stat line (field 41).
+        fn policy() -> u64 {
+            let stat = std::fs::read_to_string("/proc/thread-self/stat").unwrap();
+            let fields = &stat[stat.rfind(')').unwrap() + 1..];
+            fields
+                .split_whitespace()
+                .nth(41 - 3)
+                .unwrap()
+                .parse()
+                .unwrap()
+        }
+        let job = || {
+            std::thread::spawn(|| {
+                os::idle_job();
+                policy()
+            })
+            .join()
+            .unwrap()
+        };
+        // Off, as in tests and until a program turns it on: normal.
+        assert_eq!(job(), 0, "SCHED_OTHER");
+        let before = os::idle_counts();
+        os::set_idle_jobs(true);
+        let got = job();
+        os::set_idle_jobs(false);
+        assert_eq!(got, 5, "SCHED_IDLE");
+        let after = os::idle_counts();
+        assert_eq!((after.asked, after.refused), (before.asked + 1, 0));
+        // Only the thread that asked changed.
+        assert_eq!(policy(), 0);
+    }
+
     #[test]
     fn a_strict_lane_without_its_core_runs_its_jobs_here() {
         let me = std::thread::current().id();
