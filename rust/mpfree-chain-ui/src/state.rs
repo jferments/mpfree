@@ -130,6 +130,9 @@ pub struct ChainState {
     /// Plugin effects the picker offers after the built-in ones (the app's
     /// plugin rack); empty when there are none.
     pub plugins: Vec<Pick>,
+    /// The favourite and recent effects (the app keeps them in the store,
+    /// `mpfree_fx::picker`).
+    pub shelf: mpfree_fx::picker::Shelf,
 }
 
 impl Default for ChainState {
@@ -153,6 +156,7 @@ impl Default for ChainState {
             scope: 0,
             picking: false,
             plugins: Vec::new(),
+            shelf: mpfree_fx::picker::Shelf::default(),
         }
     }
 }
@@ -319,6 +323,7 @@ impl ChainState {
             scope: 0,
             picking: false,
             plugins: Vec::new(),
+            shelf: mpfree_fx::picker::Shelf::default(),
         }
     }
 
