@@ -33,7 +33,7 @@ python3 tools/plugin-pack/build.py --work ~/pack-work --out ~/pack --play
 python3 tools/plugin-pack/build.py --work ~/pack-work --out ~/pack airwindows   # one plugin
 ```
 
-`--work` holds the sources, the builds and the logs (`logs/<plugin>.log`); `--out` gets the pack. Both must be outside the repository. On the 4-core cloud workstation Airwindows takes about 3 minutes, Dexed about 10 and Surge XT about 40; the sources take about 2 GB and the builds about 4 GB.
+`--work` holds the sources, the builds and the logs (`logs/<plugin>.log`); `--out` gets the pack. Both must be outside the repository. On the 4-core cloud workstation the whole pack takes about 20 minutes (Airwindows 3, Dexed 6, Surge XT 9, and the source tarballs); the sources take about 2 GB and the builds about 4 GB. Two builds of Airwindows and of Dexed from the same commits gave the same bytes.
 
 It needs Ubuntu 24.04 (noble) with:
 
