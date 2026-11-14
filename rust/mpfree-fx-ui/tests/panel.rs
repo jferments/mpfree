@@ -44,7 +44,7 @@ fn ev(widget: &str, kind: EventKind) -> UiEvent {
 #[test]
 fn every_sample_screen_draws() {
     let list = samples(Fonts::embedded).unwrap();
-    assert_eq!(list.len(), 27);
+    assert_eq!(list.len(), 29);
     for mut s in list {
         let (w, h) = s.ui.size();
         let mut c = SoftCanvas::new(w, h);

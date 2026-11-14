@@ -31,6 +31,8 @@ const PRESET_H: i32 = 64;
 const PAGER_H: i32 = 44;
 /// The star's square in a tile's bottom right corner.
 const STAR: i32 = 44;
+/// The presets line's height along a tile's bottom, as tall as the star.
+const CHIP_H: i32 = 44;
 /// How long a finger stays on a tile to open its presets.
 pub const HOLD: Duration = Duration::from_millis(500);
 
@@ -46,8 +48,11 @@ pub struct PickerView {
     pub highlight: Option<usize>,
     /// The effect whose presets show.
     pub presets: Option<&'static str>,
-    /// A finger down on a tile: the finger, the tile's effect, since when.
-    pub press: Option<(u64, usize, Instant)>,
+    /// A finger down on a tile, a preset row or a presets line: the
+    /// finger, what it is on, since when. It acts when the finger lifts
+    /// on it (or, on a tile held past [`HOLD`], opens the presets while
+    /// the finger is still down).
+    pub press: Option<(u64, Hit, Instant)>,
 }
 
 impl PickerView {
@@ -190,7 +195,7 @@ pub fn layout(body: Rect, st: &ChainState, pv: &PickerView) -> PickerLayout {
             stars.push(Rect::new(t.right() - STAR, t.bottom() - STAR, STAR, STAR));
             let has = !picker::presets(picks[first + k].id).is_empty();
             let w = (t.w - STAR).min(150);
-            chips.push(has.then(|| Rect::new(t.x, t.bottom() - 36, w, 36)));
+            chips.push(has.then(|| Rect::new(t.x, t.bottom() - CHIP_H, w, CHIP_H)));
         }
     }
     let (prev, next) = if pager {

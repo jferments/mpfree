@@ -5,10 +5,11 @@ use crate::lock::Locks;
 use crate::perform::{self, PerformPanel};
 use crate::state::{make, FxState};
 use crate::view::{self, FxPanel};
+use crate::xyfx::{self, XyFxPanel};
 use mpfree_fx::ids::{
     character, chorus, cloud, comb, compressor as comp, crush, delay, dj_filter as dj, drive,
     ducker, eq, filter, flanger, harmonizer as harm, master, perform as pf, phaser, pitch,
-    pitch_correct as tune, transient,
+    pitch_correct as tune, transient, xyfx as xy,
 };
 use mpfree_fx::{perform_state, presets};
 use mpfree_ui::widgets::{Chip, Header, Label};
@@ -552,6 +553,86 @@ fn perform_scene(fonts: Fonts, held: bool) -> Result<Sample, String> {
     })
 }
 
+const XYFX_HINT: &str =
+    "Touch the pad to play · lift to let it ring out · Hold keeps it open · tap an effect to change";
+
+/// The XY FX page: the Echo with a finger moving up and across the pad
+/// (its time columns named along the bottom), or the Filter left open
+/// with Hold.
+fn xyfx_scene(fonts: Fonts, echo: bool) -> Result<Sample, String> {
+    let mut node = make("mpfree.fx.xy").ok_or("no XY FX")?;
+    node.prepare(RATE, 512);
+    // Closed until the finger comes, as a player leaves it.
+    node.set_param(xy::ACTIVE, 0.0);
+    node.set_param(xy::EFFECT, if echo { 1.0 } else { 0.0 });
+    let st = FxState::from_node(
+        node.as_ref(),
+        "Master · insert 2",
+        mpfree_ui::Color::rgb(0x6EA8FE),
+        BPM,
+        RATE,
+    );
+    let mut ui = app_ui(fonts, XYFX_HINT);
+    let mut panel = XyFxPanel::add(&mut ui, PAGE, st)?;
+    ui.show(PAGE)?;
+    let a = crate::perform::XyView::area(ui.rect_of(xyfx::PAD).ok_or("no pad")?);
+    let at = |x: f32, y: f32| {
+        (
+            a.x + (x * a.w as f32) as i32,
+            a.bottom() - (y * a.h as f32) as i32,
+        )
+    };
+    let path: &[(f32, f32)] = if echo {
+        &[
+            (0.18, 0.2),
+            (0.24, 0.27),
+            (0.31, 0.34),
+            (0.39, 0.42),
+            (0.47, 0.5),
+            (0.55, 0.56),
+            (0.62, 0.6),
+        ]
+    } else {
+        &[(0.5, 0.3), (0.4, 0.38), (0.3, 0.48), (0.24, 0.56)]
+    };
+    if !echo {
+        // Hold first, then a sweep towards the low-pass, let go.
+        let h = crate::perform::XyView::hold_rect(ui.rect_of(xyfx::PAD).ok_or("no pad")?);
+        if let Some(ev) = ui.touch(1, mpfree_ui::Touch::Down, h.x + 10, h.y + 10) {
+            panel.event(&mut ui, &ev);
+        }
+        ui.touch(1, mpfree_ui::Touch::Up, h.x + 10, h.y + 10);
+    }
+    for (k, &(x, y)) in path.iter().enumerate() {
+        let (px, py) = at(x, y);
+        let phase = if k == 0 {
+            mpfree_ui::Touch::Down
+        } else {
+            mpfree_ui::Touch::Move
+        };
+        if let Some(ev) = ui.touch(2, phase, px, py) {
+            panel.event(&mut ui, &ev);
+        }
+    }
+    if !echo {
+        let &(x, y) = path.last().ok_or("no path")?;
+        let (px, py) = at(x, y);
+        if let Some(ev) = ui.touch(2, mpfree_ui::Touch::Up, px, py) {
+            panel.event(&mut ui, &ev);
+        }
+    }
+    ui.show(PAGE)?;
+    Ok(Sample {
+        name: if echo { "28-xyfx-echo" } else { "29-xyfx-hold" },
+        about: if echo {
+            "XY FX on the Echo: a finger moving up and across, the time columns named along the bottom (1/8D lit)"
+        } else {
+            "XY FX on the Filter with Hold on: the finger has lifted and the low-pass stays open"
+        },
+        ui,
+    })
+}
+
 const LOCK_HINT: &str =
     "Step held: a turn locks it on the step · ERASE: the selected lock off · let go of the step to finish";
 
@@ -643,5 +724,7 @@ pub fn samples(fonts: impl Fn() -> Fonts) -> Result<Vec<Sample>, String> {
     for s in &NEW_FX {
         out.push(scene(s, fonts())?);
     }
+    out.push(xyfx_scene(fonts(), true)?);
+    out.push(xyfx_scene(fonts(), false)?);
     Ok(out)
 }
