@@ -1,0 +1,108 @@
+# The plugin pack: free plugins built for the MPC One as CLAP files.
+#
+# tools/plugin-pack/build.py reads this file. The guide is
+# docs/dev/guides/plugin-pack.md. Each source is fetched at its commit (the
+# tag is for people) and checked against it. Sources and built files never go
+# in this repository: they go in the work and output folders build.py is given.
+
+# ------------------------------------------------------------------ sources
+
+[[source]]
+name = "airwin2rack"
+url = "https://github.com/baconpaul/airwin2rack.git"
+tag = "v2.12.0"
+commit = "e4dcdf547139ef5e94ed7b3a72ce5bd81148aba9"
+# The airwindows submodule is the original plugins (600 MB) and isn't built:
+# Airwindows Consolidated's own converted copies are in src/autogen_airwin.
+submodules = false
+
+[[source]]
+name = "clap"
+url = "https://github.com/free-audio/clap.git"
+tag = "1.2.2"
+commit = "27f20f81dec40b930d79ef429fd35dcc2d45db5b"
+submodules = false
+
+[[source]]
+name = "dexed"
+url = "https://github.com/asb2m10/dexed.git"
+tag = "v1.1.0"
+commit = "fea2f0f0f2c397799f59b27eb11c038cd34b22c5"
+submodules = true
+
+[[source]]
+name = "surge"
+url = "https://github.com/surge-synthesizer/surge.git"
+tag = "release_xt_1.3.4"
+commit = "f7b97c682ade0b87da85ca5968b63d5c7c98e68d"
+submodules = true
+
+# Single files, checked by their SHA-256.
+
+[[file]]
+# Chris Johnson's license for the Airwindows plugins, from the commit
+# airwin2rack v2.12.0 names for its airwindows submodule.
+name = "LICENSE-airwindows.txt"
+url = "https://raw.githubusercontent.com/airwindows/airwindows/a4ea106859f44b0748da55f49e22184769b47df1/LICENSE"
+sha256 = "b4f5719b00ba3fecf8c0ce651e843651bd80f08a10cf4cf1f00e673a5bcaf23b"
+
+# ------------------------------------------------------------------ plugins
+#
+# project: a folder in this directory ("airwindows"), or "src:<source>" for a
+#   source's own CMake project.
+# cmake: extra configure arguments; {src:<name>} is that source's checkout,
+#   {recipe} this folder.
+# cflags: extra C and C++ flags, after the toolchain's.
+# outputs: built file (a glob under the build folder) = name in the pack.
+# licenses: "<source>/<path>" or "file:<name>" = name in the pack's licenses/.
+
+[[plugin]]
+name = "airwindows"
+title = "Airwindows: the 89 effects of the Recommended collection"
+license = "MIT"
+sources = ["airwin2rack", "clap"]
+project = "airwindows"
+cmake = ["-DAIRWIN_SRC={src:airwin2rack}", "-DCLAP_SRC={src:clap}", "-DAW_VERSION=2.12.0"]
+targets = ["airwindows"]
+outputs = { "airwindows.clap" = "airwindows.clap" }
+licenses = { "file:LICENSE-airwindows.txt" = "airwindows.txt", "airwin2rack/LICENSE.md" = "airwindows-consolidated.txt", "clap/LICENSE" = "clap.txt" }
+
+[[plugin]]
+name = "dexed"
+title = "Dexed: a DX7-style FM synth"
+# Dexed is GPL-3.0; JUCE 8, which it is built with, is AGPL-3.0.
+license = "GPL-3.0-or-later AND AGPL-3.0-only"
+sources = ["dexed"]
+project = "src:dexed"
+# No ALSA (Dexed's MIDI out to a real DX7, from its editor), and FreeType and
+# fontconfig linked in (static-deps.cmake).
+cmake = ["-DDEXED_NO_ALSA=ON", "-DCMAKE_PROJECT_INCLUDE={recipe}/static-deps.cmake"]
+# JUCE 8's zlib doesn't compile with 64-bit file offsets on 32-bit ARM, which
+# Ubuntu's armhf compiler turns on by default (with 64-bit time). Dexed is
+# built with 32-bit ones, as the app itself is (Rust's armv7 target).
+cflags = "-U_TIME_BITS -U_FILE_OFFSET_BITS"
+targets = ["Dexed_CLAP"]
+outputs = { "**/CLAP/Dexed.clap" = "dexed.clap" }
+licenses = { "dexed/LICENSE" = "dexed.txt", "dexed/libs/JUCE/LICENSE.md" = "juce.txt", "dexed/libs/clap-juce-extensions/LICENSE.md" = "clap-juce-extensions.txt" }
+
+[[plugin]]
+name = "surge-xt"
+title = "Surge XT: the synth, and its effects as a plugin of their own"
+# Surge XT is GPL-3.0; JUCE 7, which it is built with, is GPL-3.0 too.
+license = "GPL-3.0-or-later"
+sources = ["surge"]
+project = "src:surge"
+# Surge says 32-bit Linux builds are untested; build.py's checks and
+# clap_check are what this pack relies on.
+# No standalone app (and so no ALSA or JACK), and FreeType linked in
+# (static-deps.cmake).
+cmake = [
+  "-DSURGE_BUILD_32BIT_LINUX=ON",
+  "-DSURGE_SKIP_STANDALONE=ON",
+  "-DSURGE_BUILD_TESTRUNNER=OFF",
+  "-DSURGE_BUILD_LV2=OFF",
+  "-DCMAKE_PROJECT_INCLUDE={recipe}/static-deps.cmake",
+]
+targets = ["surge-xt_CLAP", "surge-fx_CLAP"]
+outputs = { "**/CLAP/Surge XT.clap" = "surge-xt.clap", "**/CLAP/Surge XT Effects.clap" = "surge-xt-effects.clap" }
+licenses = { "surge/LICENSE" = "surge-xt.txt", "surge/libs/JUCE/LICENSE.md" = "juce.txt" }
