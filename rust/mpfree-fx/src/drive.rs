@@ -502,6 +502,10 @@ impl Node for Drive {
     fn latency(&self) -> u32 {
         LATENCY as u32
     }
+    fn rest_frames(&self) -> u32 {
+        // What it holds is its tail: once rung out it is as good as reset.
+        self.tail_frames()
+    }
     fn tail_frames(&self) -> u32 {
         LATENCY as u32 + self.rate / 20
     }

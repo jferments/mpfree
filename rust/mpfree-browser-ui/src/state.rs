@@ -11,6 +11,8 @@ use mpfree_library::{
 };
 use std::path::PathBuf;
 
+use crate::export::{ExportChoice, ExportInput, ExportPanel, ExportPhase, ExportSetup};
+
 /// The rows of the places column.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Source {
@@ -233,6 +235,8 @@ pub enum Button {
     SaveAs,
     /// Starts a new, empty project (asks first over unsaved work).
     NewProject,
+    /// Opens the Export panel: the song to WAV files and a MIDI file.
+    Export,
 }
 
 impl Button {
@@ -256,6 +260,7 @@ impl Button {
             Button::Save => "Save",
             Button::SaveAs => "Save as",
             Button::NewProject => "New project",
+            Button::Export => "Export",
         }
     }
 }
@@ -289,6 +294,8 @@ pub enum Input {
     Search,
     /// The order chip: by name or newest first.
     Sort,
+    /// A touch on the Export panel.
+    Export(ExportInput),
 }
 
 /// The order of a list.
@@ -394,6 +401,15 @@ pub enum BrowseAction {
     /// [`Browser::open_last`]'s project couldn't be opened (why); the
     /// work in progress stays as it was.
     LastNotOpened(String),
+    /// Export was pressed: call [`Browser::open_export`] with what the
+    /// panel needs to know about the song.
+    ExportAsked,
+    /// Start was pressed on the Export panel: make the plan and start the
+    /// pass; say how far it has got with [`Browser::export_running`] and
+    /// how it ended with [`Browser::export_over`].
+    ExportStart(ExportChoice),
+    /// Cancel was pressed while the export runs.
+    ExportCancel,
 }
 
 /// What waits for a yes.
@@ -480,6 +496,9 @@ pub struct Screen {
     pub pick: Option<Pick>,
     /// The list's order.
     pub sort: Sort,
+    /// The Export panel, over everything, while it is open (hidden while
+    /// a picker is open).
+    pub export: Option<ExportPanel>,
 }
 
 impl Screen {
@@ -505,6 +524,7 @@ impl Screen {
             filters: FILTERS.to_vec(),
             pick: None,
             sort: Sort::Name,
+            export: None,
         }
     }
 }
@@ -590,6 +610,11 @@ pub struct Browser {
     recovering: bool,
     mode: Mode,
     sort: Sort,
+    /// The Export panel while it is open (it stays through a picker and
+    /// the overlay closing, so a running export comes back with it).
+    export: Option<ExportPanel>,
+    /// What the last export asked for, ticked again next time.
+    export_last: Option<ExportChoice>,
 }
 
 impl Browser {
@@ -641,6 +666,8 @@ impl Browser {
             recovering: false,
             mode: Mode::Folder,
             sort: Sort::Name,
+            export: None,
+            export_last: None,
         };
         b.refresh();
         b
@@ -1173,6 +1200,9 @@ impl Browser {
 
     /// Up one folder (the - button, Back).
     pub fn back(&mut self) {
+        if self.export_shown().is_some() {
+            return self.export_input(ExportInput::Close);
+        }
         if let Mode::Versions(l, _) = &self.mode {
             self.select_name = Some(l.name().to_string());
         }
@@ -1207,6 +1237,15 @@ impl Browser {
 
     /// The data dial: moves the selection.
     pub fn dial(&mut self, delta: i32) {
+        if self.pick.is_none() {
+            if let Some(p) = self.export.as_mut() {
+                // The panel's bar count, while it is ready.
+                if p.phase == ExportPhase::Ready {
+                    p.step_bars(delta);
+                }
+                return;
+            }
+        }
         if !matches!(self.modal, Modal::None) || self.rows.is_empty() {
             return;
         }
@@ -1305,6 +1344,14 @@ impl Browser {
     /// The dial's push: open a folder or project, load anything else, or
     /// answer the question on screen.
     pub fn push(&mut self) {
+        if let Some(p) = self.export_shown() {
+            let i = match p.phase {
+                ExportPhase::Ready => ExportInput::Start,
+                ExportPhase::Running { .. } => return,
+                ExportPhase::Done { .. } | ExportPhase::Stopped(_) => ExportInput::Close,
+            };
+            return self.export_input(i);
+        }
         match &self.modal {
             Modal::Confirm { .. } => return self.input(Input::ConfirmYes),
             Modal::Keyboard { .. } => return self.input(Input::Key(Key::Done)),
@@ -1350,6 +1397,12 @@ impl Browser {
     // ------------------------------------------------------------ input
 
     pub fn input(&mut self, i: Input) {
+        // The Export panel, over everything, takes only its own touches.
+        match (self.export_shown().is_some(), &i) {
+            (true, Input::Export(e)) => return self.export_input(*e),
+            (true, _) | (false, Input::Export(_)) => return,
+            (false, _) => {}
+        }
         if !matches!(self.modal, Modal::None)
             && !matches!(i, Input::Key(_) | Input::ConfirmYes | Input::ConfirmNo)
         {
@@ -1398,6 +1451,7 @@ impl Browser {
                 };
                 self.rebuild();
             }
+            Input::Export(_) => {}
         }
     }
 
@@ -1438,6 +1492,7 @@ impl Browser {
         match b {
             Button::Cancel => self.cancel_picker(),
             Button::Save => self.actions.push(BrowseAction::SaveRequested),
+            Button::Export => self.actions.push(BrowseAction::ExportAsked),
             Button::SaveAs => self.save_as(now_utc()),
             Button::NewProject => {
                 if self.unsaved {
@@ -1908,6 +1963,108 @@ impl Browser {
         self.pending > 0
     }
 
+    // ------------------------------------------------------------ export
+
+    /// Opens the Export panel (after [`BrowseAction::ExportAsked`]), with
+    /// what it needs to know about the song. A panel already open (an
+    /// export running, say) stays as it is.
+    pub fn open_export(&mut self, setup: ExportSetup) {
+        if self.export.as_ref().is_some_and(ExportPanel::running) {
+            return;
+        }
+        self.export = Some(ExportPanel::new(setup, self.export_last));
+    }
+
+    /// The panel, if it is open.
+    pub fn export_panel(&self) -> Option<&ExportPanel> {
+        self.export.as_ref()
+    }
+
+    /// The panel as the screen shows it (not while a picker is open).
+    fn export_shown(&self) -> Option<&ExportPanel> {
+        self.export.as_ref().filter(|_| self.pick.is_none())
+    }
+
+    /// Whether an export runs (Start was pressed, and it isn't over).
+    pub fn exporting(&self) -> bool {
+        self.export.as_ref().is_some_and(ExportPanel::running)
+    }
+
+    /// How far the export has got: "1:12 of 3:50", and the part done when
+    /// the length is known.
+    pub fn export_running(&mut self, words: String, part: Option<f32>) {
+        if let Some(p) = self.export.as_mut().filter(|p| p.running()) {
+            p.phase = ExportPhase::Running {
+                words,
+                part: part.map(|f| f.clamp(0.0, 1.0)),
+            };
+        }
+    }
+
+    /// The export is over: `folder` is where its files are when it made
+    /// them (Show in BROWSE goes there), None when it stopped or failed;
+    /// `text` says what happened. The status line says it too.
+    pub fn export_over(&mut self, text: String, folder: Option<Loc>) {
+        let ok = folder.is_some();
+        self.status = Some((text.clone(), !ok));
+        let phase = match folder {
+            Some(f) => ExportPhase::Done {
+                text,
+                folder: Some(f),
+            },
+            None => ExportPhase::Stopped(text),
+        };
+        match self.export.as_mut() {
+            Some(p) => p.phase = phase,
+            None => {
+                // Closed in the meantime: the status line has it.
+            }
+        }
+    }
+
+    fn export_input(&mut self, i: ExportInput) {
+        let Some(p) = self.export.as_mut() else {
+            return;
+        };
+        match i {
+            ExportInput::Start => {
+                if p.can_start() {
+                    let c = p.choice();
+                    self.export_last = Some(c);
+                    p.phase = ExportPhase::Running {
+                        words: "Starting".into(),
+                        part: None,
+                    };
+                    self.actions.push(BrowseAction::ExportStart(c));
+                }
+            }
+            ExportInput::Cancel if p.running() => {
+                self.actions.push(BrowseAction::ExportCancel);
+                p.phase = ExportPhase::Running {
+                    words: "Stopping".into(),
+                    part: None,
+                };
+            }
+            ExportInput::Cancel | ExportInput::Close => {
+                if !p.running() {
+                    self.export = None;
+                }
+            }
+            ExportInput::Show => {
+                if let ExportPhase::Done {
+                    folder: Some(f), ..
+                } = &p.phase
+                {
+                    let f = f.clone();
+                    self.export = None;
+                    self.mode = Mode::Folder;
+                    self.go_folder(f);
+                }
+            }
+            other => p.pick(other),
+        }
+    }
+
     // ------------------------------------------------------------ out
 
     /// What the app must do since the last call.
@@ -1948,7 +2105,12 @@ impl Browser {
                     // Projects are made by saving, so no New folder there:
                     // New project, Save and Save as instead.
                     let mut v = if p == Place::Projects {
-                        vec![Button::NewProject, Button::SaveAs, Button::Save]
+                        vec![
+                            Button::NewProject,
+                            Button::SaveAs,
+                            Button::Save,
+                            Button::Export,
+                        ]
                     } else {
                         vec![Button::NewFolder]
                     };
@@ -1979,6 +2141,7 @@ impl Browser {
             },
             pick: self.pick.clone(),
             sort: self.sort,
+            export: self.export.clone().filter(|_| self.pick.is_none()),
         }
     }
 

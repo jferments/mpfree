@@ -352,12 +352,22 @@ impl Limiter {
     fn tail(&self) -> u32 {
         self.lat()
     }
+    fn rest(&self) -> u32 {
+        // The gain lets go over ten of its slowest release (three times
+        // Release with Auto on), and the look-ahead window and true-peak
+        // history fill with silence.
+        let mut ms = self.v[limiter::RELEASE as usize];
+        if self.v[limiter::AUTO as usize] >= 0.5 {
+            ms *= 3.0;
+        }
+        (10.0 * ms * 0.001 * self.rate as f32) as u32 + self.lat()
+    }
     fn lat(&self) -> u32 {
         (self.w + TP_LAG - 1) as u32
     }
 }
 
-node_impl!(Limiter, LIMITER_INFO, LIMITER_PARAMS);
+node_impl!(Limiter, LIMITER_INFO, LIMITER_PARAMS, rest);
 
 // ---------------------------------------------------------------- gate
 
@@ -618,12 +628,23 @@ impl Gate {
     fn tail(&self) -> u32 {
         self.ahead as u32
     }
+    fn rest(&self) -> u32 {
+        // Keyed, it follows the key through silence.
+        if self.v[gate::KEY as usize] >= 0.5 {
+            return u32::MAX;
+        }
+        // The detector falls under any threshold within 100 ms (60 dB in
+        // 20), then Hold and Release take the gain down to Range, where a
+        // reset puts it.
+        let ms = self.v[gate::HOLD as usize] + self.v[gate::RELEASE as usize] + 100.0;
+        (ms * 0.001 * self.rate as f32) as u32
+    }
     fn lat(&self) -> u32 {
         self.ahead as u32
     }
 }
 
-node_impl!(Gate, GATE_INFO, GATE_PARAMS);
+node_impl!(Gate, GATE_INFO, GATE_PARAMS, rest);
 
 // ---------------------------------------------------------------- de-esser
 
@@ -755,13 +776,18 @@ impl DeEsser {
         let absolute = self.v[deesser::DETECT as usize] >= 0.5;
         let listen = self.v[deesser::LISTEN as usize] >= 0.5;
         for i in 0..l.len() {
-            // The filters follow a gliding Freq every 16 frames.
-            if self.tick == 0 && self.freq.value != self.freq.target {
+            // The filters follow a gliding Freq every 16 frames, and land
+            // on it the frame the glide ends (as a reset would put them).
+            let gliding = self.freq.value != self.freq.target;
+            if gliding && self.tick == 0 {
                 let hz = crate::fast_exp2(self.freq.value);
                 self.set_filters(hz);
             }
             self.tick = (self.tick + 1) & 15;
             self.freq.glide();
+            if gliding && self.freq.value == self.freq.target {
+                self.set_filters(self.v[deesser::FREQ as usize]);
+            }
             let key = 0.5 * (l[i] + r[i]);
             let band = self.detect.run(0, key);
             let b = fast_level_db(self.band_env.run(band));
@@ -811,12 +837,16 @@ impl DeEsser {
     fn tail(&self) -> u32 {
         0
     }
+    fn rest(&self) -> u32 {
+        // Ten of the followers' 60 ms release, and the filters settling.
+        (0.65 * self.rate as f32) as u32
+    }
     fn lat(&self) -> u32 {
         0
     }
 }
 
-node_impl!(DeEsser, DEESSER_INFO, DEESSER_PARAMS);
+node_impl!(DeEsser, DEESSER_INFO, DEESSER_PARAMS, rest);
 
 // ---------------------------------------------------------------- multiband
 
@@ -1018,14 +1048,21 @@ impl MultibandCompressor {
         let thr = [0, 1, 2].map(|b| self.v[mb::threshold(b) as usize]);
         let ratio = [0, 1, 2].map(|b| self.v[mb::ratio(b) as usize]);
         for i in 0..l.len() {
-            if self.tick == 0
-                && (self.x_lo.value != self.x_lo.target || self.x_hi.value != self.x_hi.target)
-            {
+            // The crossovers follow gliding frequencies every 16 frames,
+            // and land on them the frame the glides end (as a reset would
+            // put them).
+            let gliding =
+                self.x_lo.value != self.x_lo.target || self.x_hi.value != self.x_hi.target;
+            if gliding && self.tick == 0 {
                 self.set_crossovers();
             }
             self.tick = (self.tick + 1) & 15;
             self.x_lo.glide();
             self.x_hi.glide();
+            if gliding && self.x_lo.value == self.x_lo.target && self.x_hi.value == self.x_hi.target
+            {
+                self.set_crossovers();
+            }
             let x = [l[i], r[i]];
             let mut bands = [[0.0f32; 2]; 3];
             for ch in 0..2 {
@@ -1098,9 +1135,14 @@ impl MultibandCompressor {
     fn tail(&self) -> u32 {
         0
     }
+    fn rest(&self) -> u32 {
+        // Ten of the bands' release, and the crossovers settling.
+        let ms = 10.0 * self.v[mb::RELEASE as usize] + 100.0;
+        (ms * 0.001 * self.rate as f32) as u32
+    }
     fn lat(&self) -> u32 {
         0
     }
 }
 
-node_impl!(MultibandCompressor, MULTIBAND_INFO, MULTIBAND_PARAMS);
+node_impl!(MultibandCompressor, MULTIBAND_INFO, MULTIBAND_PARAMS, rest);

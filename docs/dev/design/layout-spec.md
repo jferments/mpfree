@@ -49,7 +49,7 @@ The music tabs, in this order:
   - **Each page's options.** MENU opens them.
   - **The Arp panel.** NOTE REPEAT + MENU opens it; it belongs to Play.
   - **The mixer.** TRACK MIX or the mixer icon opens it over the current page, under the top bar, as Prefs does. The same button or icon again, or a tab, closes it (Jay, 09:17Z: the button or a small sliders icon in a corner; the FX thread builds it).
-  - **The browser.** BROWSE opens it over the current page, under the top bar, as the mixer does; BROWSE again or a tab closes it (controls decision 13; Jay after live test 3, 13 Nov 11:46Z; built by the project thread). Its Projects place has New project, Save as and Save. The Pads tab's Browse view stays the narrow picker of section 4e.
+  - **The browser.** BROWSE opens it over the current page, under the top bar, as the mixer does; BROWSE again or a tab closes it (controls decision 13; Jay after live test 3, 13 Nov 11:46Z; built by the project thread). Its Projects place has New project, Save as, Save and Export. **Export** (Jay's pick on the missing-features thread's card, 14 Nov 01:39Z: "Yes, in BROWSE") opens the Export panel over the browser: Mixdown, Stems and MIDI file to tick, the range (Arrangement, or a number of bars with - / +), how it will play and the folder, then Start; while it runs, the time done and Cancel; when it is over, what it made and Show in BROWSE. While the panel shows, the wheel sets the bars, its push is Start (Close once it is over) and - closes it. BROWSE still closes the browser, and an export keeps running behind it. The Pads tab's Browse view stays the narrow picker of section 4e.
   - **The pattern workspace.**
   - **The button guide.**
   - **System info, Touch lab and Calibrate touch.** These open from Prefs.
@@ -177,6 +177,15 @@ Approved by Jay at 22:34Z (the mod thread's card, "Approve as proposed"). The mo
 - **The Song view:** "+ Track" is a lane after the last MIDI lane, above the audio lanes and "+ Audio" (section 4c). The lanes scroll as before, by a drag on the names.
 - **TRACK MUTE:** all 16 pads are tracks, and the PAD BANK buttons pick which 16, as on Akai's MPC: A is tracks 1-16, B 17-32, up to H, 113-128, with SHIFT or a second press for E-H as when picking kits (section 6). The kit playing stays, and the bank is kept for the next TRACK MUTE.
 
+## 4g. The Synth tab
+
+**Picked by Jay on 14 Nov 2026** (13:25Z, the instruments thread's card, "Build it as drawn"; his ask at 12:40Z: the pages looked like "a wall of knobs", and for consistency the list on the left and the Q-Links on the right). Mockups: the "Synth page layouts" canvas (https://claude.ai/artifact/MSNu169wNrkV8Ag9mSRnD4); rules: the doc "Instrument and effect page design rules" (https://claude.ai/artifact/ABwAw3rxAj5Rgi8P1MdL4Q). Built by the instruments thread (`mpfree-synth-ui`, `view::LAYOUT`).
+
+- **The frame,** as the Looper tab's: at the left (220 px), the instrument card (72 px: swatch, engine, the track and Native or Plugin), then the pads heading with the Chromatic | In key switch while the synth has the pads, then the presets; in the middle, the title bar (56 px: the preset and the pages as tabs) over the page; at the right, the shared Q-Link column (168 px); the hint line under them. The bottom Q-Link strip and the strip of pictures are gone; the page gets their room (844 x 598 px).
+- **The page** is labelled sections, each with one job, coloured by it (sources cyan, filter and tone coral, envelopes and dynamics lime, movement pink, voice and output grey) and laid out per page. Pictures sit inside the section they draw. Knobs are sized by importance; choices are buttons or a chip with ‹ ›, whole numbers steppers, toggles pills, envelopes and mixes faders. "Open ›" by a section's name goes to its page. The inside of the page is the Synth tab's own (section 7).
+- **The Q-Link column** names what Q-Links 1 to 4 turn on the page, as their sections name them, with the section as its scope; the controls carry Q1 to Q4 badges in the knobs' colours. A drag on a card turns it.
+- **Hardware** as before: the wheel picks and turns the controls (section 6), SHIFT + wheel steps the pages, Q-Links 1 to 4 turn the badged controls.
+
 ## 5. Prefs (SHIFT + MENU)
 
 - **Main rows, in order:**
@@ -190,7 +199,8 @@ Approved by Jay at 22:34Z (the mod thread's card, "Approve as proposed"). The mo
   8. Line input
   9. System info
   10. At start (New project, the default, or Last project: what opens when MPFree starts, once the sound is going; Jay's pick on the project thread's settings card, 13 Nov 14:09Z)
-  11. Touch screen (opens its own rows)
+  11. Export (Fast, quiet, the default, or Listen: how an export plays; a song that needs outside gear listens anyway; Jay, 14 Nov 01:32Z, on the missing-features thread)
+  12. Touch screen (opens its own rows)
 - **The Touch screen rows** ("Prefs · Touch screen", approved in the touch thread at 08:13Z, #69):
   1. Back
   2. Screen pad velocity

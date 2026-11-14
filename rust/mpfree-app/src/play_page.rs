@@ -194,10 +194,13 @@ pub fn framed(layout: &str) -> String {
 /// The Synth tab's layout with the pads heading, and its switch, over the
 /// presets (Jay, 12:22Z: the switch on Play and on the Synth tab).
 pub fn synth_with_pads(layout: &str) -> String {
-    let presets = mpfree_synth_ui::view::PRESETS;
+    let (slot, presets) = (
+        mpfree_synth_ui::view::PRESETS_SLOT,
+        mpfree_synth_ui::view::PRESETS,
+    );
     layout.replacen(
-        &format!("{presets}:300"),
-        &format!("col({SYNTH_PADS_HEAD}:30, {presets}:*):300"),
+        slot,
+        &format!("col({SYNTH_PADS_HEAD}:30, {presets}:*):*"),
         1,
     )
 }
@@ -262,14 +265,17 @@ impl Widget for PadsBar {
         };
         let halves = PadsBar::halves(r);
         let title = Rect::new(line.x, line.y, (halves[0].x - 8 - line.x).max(0), line.h);
-        cx.text(
-            FontId::Bold,
-            t.size_small,
-            title,
-            Align::Left,
-            t.text_dim,
-            &self.title.to_uppercase(),
-        );
+        // Over the Synth tab's narrow presets column the switch alone says it.
+        if title.w >= 56 {
+            cx.text(
+                FontId::Bold,
+                t.size_small,
+                title,
+                Align::Left,
+                t.text_dim,
+                &self.title.to_uppercase(),
+            );
+        }
         let pill = Rect::new(
             halves[0].x,
             halves[0].y,
@@ -1424,13 +1430,16 @@ mod tests {
 
     #[test]
     fn the_synth_tab_gets_the_pads_heading_over_its_presets() {
-        use mpfree_synth_ui::view::{LAYOUT, PLAIN_LAYOUT, PRESETS};
-        for l in [LAYOUT, PLAIN_LAYOUT] {
-            let spec = synth_with_pads(l);
-            let (head, presets) = (rect(&spec, SYNTH_PADS_HEAD), rect(&spec, PRESETS));
-            assert_eq!((head.x, head.w, head.h), (presets.x, 300, 30), "{spec}");
-            assert_eq!(presets.y, head.bottom() + 12);
-        }
+        use mpfree_synth_ui::view::{INST, LAYOUT, PRESETS};
+        let spec = synth_with_pads(LAYOUT);
+        let (head, presets) = (rect(&spec, SYNTH_PADS_HEAD), rect(&spec, PRESETS));
+        assert_eq!((head.x, head.w, head.h), (presets.x, 220, 30), "{spec}");
+        assert_eq!(
+            head.y,
+            rect(&spec, INST).bottom() + 12,
+            "under the instrument"
+        );
+        assert_eq!(presets.y, head.bottom() + 12);
     }
 
     #[test]

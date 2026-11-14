@@ -450,6 +450,10 @@ impl Node for MultiFilter {
             self.run(&mut left[from..to], &mut right[from..to]);
         }
     }
+    fn rest_frames(&self) -> u32 {
+        // What it holds is its tail: once rung out it is as good as reset.
+        self.tail_frames()
+    }
     fn tail_frames(&self) -> u32 {
         // A high-Q ring: about Q / (pi * f) seconds to fall 27 dB; allow 4x.
         let q = res_to_q(self.res.target);
@@ -716,6 +720,10 @@ impl Node for DjFilter {
         }) {
             self.run(&mut left[from..to], &mut right[from..to]);
         }
+    }
+    fn rest_frames(&self) -> u32 {
+        // What it holds is its tail: once rung out it is as good as reset.
+        self.tail_frames()
     }
     fn tail_frames(&self) -> u32 {
         self.rate / 10
