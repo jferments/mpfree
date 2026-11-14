@@ -73,6 +73,10 @@ use mpfree_seq::{
 };
 use mpfree_transport::time::Tick;
 
+mod drops;
+
+pub use drops::{Cell, ClipDrop};
+
 use crate::recorded::Rec;
 use crate::{Erased, ErasedLock, Taken, TakenLock, TakenMove};
 
@@ -146,6 +150,10 @@ pub struct Take {
     /// the track). Undo takes it off the end, kept as it is then; redo
     /// puts it back if the project is that long again.
     pub track_added: Option<(usize, Track)>,
+    /// A drop on the Clips grid ([`Takes::drop_clip`], [`Takes::drop_row`]):
+    /// its clips are in `removed` and `made`, and undo and redo move the
+    /// song's linked blocks, the scenes and the morph's rows with them.
+    pub dropped: Option<ClipDrop>,
 }
 
 /// The takes that can be undone, oldest first, and the ones that can be
@@ -666,6 +674,9 @@ impl Takes {
                 *s = Some(gone.clone());
             }
         }
+        if let Some(d) = take.dropped {
+            drops::follow(project, d, true);
+        }
         if let Some((index, kept)) = &mut take.track_added {
             // Kept as it is now (its name, its clips), for redo.
             if project.tracks.len() == *index + 1 {
@@ -698,6 +709,9 @@ impl Takes {
             if let Some(s) = slot_mut(project, *track, *slot).filter(|s| s.is_none()) {
                 *s = Some(made.clone());
             }
+        }
+        if let Some(d) = take.dropped {
+            drops::follow(project, d, false);
         }
         for (track, slot, note) in &take.erased {
             if let Some(c) = clip(project, *track, *slot) {
@@ -745,6 +759,12 @@ impl Takes {
         let n = take.number;
         self.done.push(take);
         Some(n)
+    }
+
+    /// Forget the take undo just took back, so redo can't bring it again
+    /// (an edit that could not go in).
+    pub fn forget_undone(&mut self) -> Option<Take> {
+        self.undone.pop()
     }
 
     /// The takes that can be undone, oldest first.

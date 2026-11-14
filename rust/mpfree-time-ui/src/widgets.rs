@@ -10,6 +10,7 @@ use mpfree_ui::{
 };
 use std::cell::RefCell;
 use std::f32::consts::TAU;
+use std::time::{Duration, Instant};
 
 // ---------------------------------------------------------------- drawing
 
@@ -496,7 +497,43 @@ pub struct ClipGrid {
     /// near where it went down it arms the track; swiped along the names
     /// it pages.
     press: Option<(i32, usize)>,
+    /// A finger on a clip or a row's number, and where it has dragged it.
+    grip: Option<Grip>,
 }
+
+/// What a finger holds on the grid.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Held {
+    /// The clip in (track, slot).
+    Clip(usize, usize),
+    /// A row, by its number.
+    Row(usize),
+}
+
+/// A finger on a clip or a row's number (Jay, 14 Nov: drag and drop).
+/// Lifted once it has moved more than a fingertip ([`LIFT_PX`]): it
+/// follows the finger and drops where the finger lifts. Not lifted, the
+/// lift is a tap.
+#[derive(Clone, Copy, Debug)]
+struct Grip {
+    held: Held,
+    from: (i32, i32),
+    at: (i32, i32),
+    lifted: bool,
+    /// The edge the finger is held at, and when it last paged there.
+    edge: Option<(usize, Instant)>,
+}
+
+/// A finger moves this far before what it holds lifts.
+const LIFT_PX: i32 = 12;
+/// Held this close to the grid's edge, a dragged clip pages the tracks or
+/// scrolls the rows, again every [`EDGE_REPEAT`] while it stays there.
+const EDGE_PX: i32 = 28;
+const EDGE_REPEAT: Duration = Duration::from_millis(600);
+/// `Drop { from: ROW_DROP + row, to: gap }`: row `row` dragged to the
+/// gap before row `gap` (0 to the slots). A clip's drop is `Drop { from:
+/// track * slots + slot, to: track * slots + slot }`.
+pub const ROW_DROP: usize = 1 << 20;
 
 struct Drawn {
     at: Rect,
@@ -507,6 +544,8 @@ struct Drawn {
     scenes: (Option<usize>, Option<usize>),
     song_rec: bool,
     can_add: bool,
+    /// Where a dragged clip or row was drawn.
+    dragged: Option<(Held, (i32, i32))>,
 }
 
 /// `Toggle(slots + ADD_TRACK)`: "+ Track".
@@ -516,6 +555,10 @@ pub const ADD_TRACK: usize = 4;
 pub const PAGE_BACK: usize = 5;
 /// `Toggle(slots + PAGE_ON)`: the tracks after (›, or a swipe to the left).
 pub const PAGE_ON: usize = 6;
+/// `Toggle(slots + ROWS_BACK)` and `Toggle(slots + ROWS_ON)`: a dragged
+/// clip or row held at the top or bottom edge scrolls the rows one.
+pub const ROWS_BACK: usize = 7;
+pub const ROWS_ON: usize = 8;
 /// Pixels a finger travels along the track names to page.
 const SWIPE_PX: i32 = 48;
 /// "+ Track"'s width, the pager's arrows' and its label's.
@@ -583,6 +626,179 @@ impl ClipGrid {
             can_add: false,
             drawn: RefCell::new(None),
             press: None,
+            grip: None,
+        }
+    }
+
+    /// The place a clip dragged to (`x`, `y`) lands in, if it is over a
+    /// cell in view.
+    fn cell_at(&self, r: Rect, x: i32, y: i32) -> Option<(usize, usize)> {
+        let g = self.geo(r);
+        if x < g.x0 || y < g.cells_y || x >= g.body.right() || y >= g.body.bottom() {
+            return None;
+        }
+        let c = ((x - g.x0) / (g.col_w + CELL_GAP)) as usize;
+        let row = ((y - g.cells_y) / (g.row_h + CELL_GAP)) as usize;
+        let (track, slot) = (self.first_track + c, self.first_row + row);
+        (c < GRID_COLS && track < self.tracks.len() && row < g.rows && slot < self.slots)
+            .then_some((track, slot))
+    }
+
+    /// The gap between rows a row dragged to height `y` goes in: before
+    /// row `gap`, from the first row in view to just after the last.
+    fn gap_at(&self, r: Rect, y: i32) -> usize {
+        let g = self.geo(r);
+        let pitch = g.row_h + CELL_GAP;
+        let k = ((y - g.cells_y + pitch / 2).max(0) / pitch) as usize;
+        let last = (self.first_row + g.rows).min(self.slots);
+        (self.first_row + k).min(last)
+    }
+
+    /// Where a dragged clip lands now, if it would change anything.
+    fn clip_target(&self, r: Rect, g: &Grip) -> Option<(usize, usize)> {
+        match g.held {
+            Held::Clip(t, s) => self
+                .cell_at(r, g.at.0, g.at.1)
+                .filter(|c| *c != (t, s) && g.lifted),
+            Held::Row(_) => None,
+        }
+    }
+
+    /// The gap a dragged row goes in now, if it would move.
+    fn row_target(&self, r: Rect, g: &Grip) -> Option<usize> {
+        match g.held {
+            Held::Row(row) if g.lifted => {
+                Some(self.gap_at(r, g.at.1)).filter(|&k| k != row && k != row + 1)
+            }
+            _ => None,
+        }
+    }
+
+    /// A dragged clip or row held at an edge of the grid: which way to
+    /// page or scroll (`PAGE_BACK`, `PAGE_ON`, `ROWS_BACK`, `ROWS_ON`).
+    fn edge_at(&self, r: Rect, held: Held, x: i32, y: i32) -> Option<usize> {
+        let g = self.geo(r);
+        let clip = matches!(held, Held::Clip(..));
+        let n = self.tracks.len();
+        if clip && x < g.x0 + EDGE_PX && self.first_track > 0 {
+            Some(PAGE_BACK)
+        } else if clip && x > g.body.right() - EDGE_PX && self.first_track + GRID_COLS < n {
+            Some(PAGE_ON)
+        } else if y < g.cells_y + EDGE_PX && y >= g.cells_y - 40 && self.first_row > 0 {
+            Some(ROWS_BACK)
+        } else if y > g.body.bottom() - EDGE_PX && self.first_row + g.rows < self.slots {
+            Some(ROWS_ON)
+        } else {
+            None
+        }
+    }
+
+    /// Whether a drag is under way (something lifted).
+    pub fn dragging(&self) -> bool {
+        self.grip.is_some_and(|g| g.lifted)
+    }
+
+    fn dragged_now(&self) -> Option<(Held, (i32, i32))> {
+        self.grip.filter(|g| g.lifted).map(|g| (g.held, g.at))
+    }
+
+    /// A track's colour as its column draws it (faded while muted).
+    fn base(&self, cx: &PaintCx, track: usize) -> Color {
+        let tr = &self.tracks[track];
+        if tr.mute {
+            tr.color.mix(cx.theme.surface, 0.6)
+        } else {
+            tr.color
+        }
+    }
+
+    /// A clip or a row being dragged: its own place empty but outlined,
+    /// where it lands outlined (a clip) or a line (a row), and the clip
+    /// or the row under the finger.
+    fn paint_drag(&self, cx: &mut PaintCx, r: Rect, gr: &Grip) {
+        let t = cx.theme.clone();
+        let g = self.geo(r);
+        let (dx, dy) = (gr.at.0 - gr.from.0, gr.at.1 - gr.from.1);
+        match gr.held {
+            Held::Clip(track, slot) => {
+                let home = self.cell_rect(r, track, slot);
+                if let Some(h) = home {
+                    cx.canvas.fill_round_rect(h, 8, t.surface);
+                    cx.canvas.stroke_round_rect(h, 8, 2, t.outline);
+                }
+                let to = self.clip_target(r, gr);
+                if let Some(c) = to.and_then(|(t2, s2)| self.cell_rect(r, t2, s2)) {
+                    cx.canvas.stroke_round_rect(c.inset(-3), 10, 3, t.accent);
+                }
+                let card = match home {
+                    Some(h) => Rect::new(h.x + dx, h.y + dy, h.w, h.h),
+                    None => Rect::new(
+                        gr.at.0 - g.col_w / 2,
+                        gr.at.1 - g.row_h / 2,
+                        g.col_w,
+                        g.row_h,
+                    ),
+                };
+                if let Some(cell) = self.tracks.get(track).and_then(|tr| tr.cells.get(slot)) {
+                    paint_cell(cx, card, cell, self.base(cx, track));
+                }
+                cx.canvas.stroke_round_rect(card, 8, 2, t.accent);
+            }
+            Held::Row(row) => {
+                let strip = |b: Rect| Rect::new(b.x, b.y, g.body.right() - b.x, b.h);
+                let home = self.scene_rect(r, row);
+                if let Some(b) = home {
+                    cx.canvas.fill_round_rect(strip(b), 8, t.surface);
+                    cx.canvas.stroke_round_rect(strip(b), 8, 2, t.outline);
+                }
+                // The row under the finger follows it, but stays clear of
+                // the line: below it on the way up, above it on the way
+                // down.
+                let (mut lo, mut hi) = (g.cells_y - g.row_h / 2, g.body.bottom() - g.row_h / 2);
+                if let Some(gap) = self.row_target(r, gr) {
+                    let pitch = g.row_h + CELL_GAP;
+                    let y = g.cells_y + (gap - self.first_row) as i32 * pitch - CELL_GAP / 2 - 2;
+                    let w = g.body.right() - g.body.x;
+                    cx.canvas
+                        .fill_round_rect(Rect::new(g.body.x, y, w, 4), 2, t.accent);
+                    for x in [g.body.x - 4, g.body.right() - 8] {
+                        cx.canvas
+                            .fill_round_rect(Rect::new(x, y - 4, 12, 12), 6, t.accent);
+                    }
+                    if gap <= row {
+                        lo = y + 14;
+                    } else {
+                        hi = y - 10 - g.row_h;
+                    }
+                }
+                let y0 = match home {
+                    Some(b) => b.y + dy,
+                    None => gr.at.1 - g.row_h / 2,
+                };
+                let y0 = y0.clamp(lo, hi.max(lo));
+                let b = Rect::new(g.body.x + 8, y0, LABEL_W, g.row_h);
+                cx.canvas.fill_round_rect(strip(b), 8, t.raised);
+                cx.text(
+                    FontId::Bold,
+                    t.size_small,
+                    b,
+                    Align::Center,
+                    t.text,
+                    &format!("{}", row + 1),
+                );
+                let tracks =
+                    self.first_track..(self.first_track + GRID_COLS).min(self.tracks.len());
+                for track in tracks {
+                    let Some(c) = self.head_rect(r, track) else {
+                        continue;
+                    };
+                    if let Some(cell) = self.tracks[track].cells.get(row) {
+                        let cr = Rect::new(c.x + 8, y0, c.w, g.row_h);
+                        paint_cell(cx, cr, cell, self.base(cx, track));
+                    }
+                }
+                cx.canvas.stroke_round_rect(strip(b), 8, 2, t.accent);
+            }
         }
     }
 
@@ -741,6 +957,8 @@ impl Widget for ClipGrid {
             || d.scenes != (self.scene_playing, self.scene_cued)
             || d.song_rec != self.song_rec
             || d.can_add != self.can_add
+            || d.dragged.is_some()
+            || self.dragged_now().is_some()
         {
             return None;
         }
@@ -771,6 +989,7 @@ impl Widget for ClipGrid {
             scenes: (self.scene_playing, self.scene_cued),
             song_rec: self.song_rec,
             can_add: self.can_add,
+            dragged: self.dragged_now(),
         });
         cx.titled_panel(r, &self.title, "");
         // The legend (or the pager), "+ Track", Edit, Rec song and the
@@ -952,6 +1171,9 @@ impl Widget for ClipGrid {
                 paint_cell(cx, cr, cell, base);
             }
         }
+        if let Some(gr) = self.grip.filter(|g| g.lifted) {
+            self.paint_drag(cx, r, &gr);
+        }
     }
 
     fn targets(&self, r: Rect) -> Vec<Target> {
@@ -999,6 +1221,63 @@ impl Widget for ClipGrid {
     }
 
     fn touch(&mut self, _f: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
+        // A finger on a clip or a row's number: a tap on the lift, or
+        // dragged, a drop where it lifts.
+        if let Some(mut g) = self.grip {
+            match phase {
+                Touch::Move => {
+                    g.at = (x, y);
+                    let (dx, dy) = (x - g.from.0, y - g.from.1);
+                    g.lifted |= dx * dx + dy * dy >= LIFT_PX * LIFT_PX;
+                    let mut page = None;
+                    let edge = g.lifted.then(|| self.edge_at(r, g.held, x, y)).flatten();
+                    g.edge = match (edge, g.edge) {
+                        (Some(e), Some((was, at))) if e == was && at.elapsed() < EDGE_REPEAT => {
+                            Some((was, at))
+                        }
+                        (Some(e), _) => {
+                            page = Some(EventKind::Toggle(self.slots + e));
+                            Some((e, Instant::now()))
+                        }
+                        (None, _) => None,
+                    };
+                    self.grip = Some(g);
+                    return page;
+                }
+                Touch::Up => {
+                    self.grip = None;
+                    g.at = (x, y);
+                    if !g.lifted {
+                        return Some(match g.held {
+                            Held::Clip(t, s) => EventKind::Select(t * self.slots + s),
+                            Held::Row(row) => EventKind::Toggle(row),
+                        });
+                    }
+                    if let Some((t, s)) = self.clip_target(r, &g) {
+                        let Held::Clip(t0, s0) = g.held else {
+                            return None;
+                        };
+                        return Some(EventKind::Drop {
+                            from: t0 * self.slots + s0,
+                            to: t * self.slots + s,
+                        });
+                    }
+                    if let (Some(gap), Held::Row(row)) = (self.row_target(r, &g), g.held) {
+                        return Some(EventKind::Drop {
+                            from: ROW_DROP + row,
+                            to: gap,
+                        });
+                    }
+                    // Lifted where it started, or off the grid: nothing.
+                    return None;
+                }
+                Touch::Cancel => {
+                    self.grip = None;
+                    return None;
+                }
+                Touch::Down => self.grip = None,
+            }
+        }
         // A finger on a track's name: let go where it went down it arms
         // the track; swiped along the names it pages.
         match phase {
@@ -1053,7 +1332,15 @@ impl Widget for ClipGrid {
         }
         for slot in self.first_row..self.slots {
             if self.scene_rect(r, slot).is_some_and(|b| b.contains(x, y)) {
-                return Some(EventKind::Toggle(slot));
+                // Launched on the lift, unless it is dragged.
+                self.grip = Some(Grip {
+                    held: Held::Row(slot),
+                    from: (x, y),
+                    at: (x, y),
+                    lifted: false,
+                    edge: None,
+                });
+                return None;
             }
         }
         let tracks = self.first_track..(self.first_track + GRID_COLS).min(self.tracks.len());
@@ -1070,7 +1357,22 @@ impl Widget for ClipGrid {
                     .cell_rect(r, track, slot)
                     .is_some_and(|c| c.contains(x, y))
                 {
-                    return Some(EventKind::Select(track * self.slots + slot));
+                    let filled = self.tracks[track]
+                        .cells
+                        .get(slot)
+                        .is_some_and(|c| c.state != CellState::Empty);
+                    if !filled {
+                        return Some(EventKind::Select(track * self.slots + slot));
+                    }
+                    // A clip launches on the lift, unless it is dragged.
+                    self.grip = Some(Grip {
+                        held: Held::Clip(track, slot),
+                        from: (x, y),
+                        at: (x, y),
+                        lifted: false,
+                        edge: None,
+                    });
+                    return None;
                 }
             }
         }
@@ -1808,6 +2110,92 @@ mod tests {
         assert_eq!(m.save_row(), 1);
     }
 
+    /// Jay, 14 Nov: drag and drop on the Clips grid. A clip lifts once
+    /// the finger moves a fingertip and drops on the cell under the lift;
+    /// not lifted, it is a tap (on the lift); a row's number drags the
+    /// row to a gap; at an edge the tracks page.
+    #[test]
+    fn clips_and_rows_drag_and_drop_and_a_still_finger_taps() {
+        let mut g = grid(10);
+        let r = Rect::new(12, 128, 814, 610);
+        let mid = |c: Rect| (c.x + c.w / 2, c.y + c.h / 2);
+        let beat = mid(g.cell_rect(r, 2, 0).unwrap());
+        let there = mid(g.cell_rect(r, 4, 3).unwrap());
+        assert_eq!(g.touch(1, Touch::Down, beat.0, beat.1, r), None);
+        assert_eq!(g.touch(1, Touch::Move, beat.0 + 30, beat.1 + 40, r), None);
+        assert!(g.dragging());
+        assert_eq!(g.touch(1, Touch::Move, there.0, there.1, r), None);
+        let (theme, mut fonts) = (Theme::dark(), Fonts::embedded());
+        let mut c = SoftCanvas::new(1280, 800);
+        let mut paint = |g: &ClipGrid| {
+            g.paint(
+                &mut PaintCx {
+                    canvas: &mut c,
+                    theme: &theme,
+                    fonts: &mut fonts,
+                },
+                r,
+            )
+        };
+        paint(&g);
+        assert_eq!(
+            g.touch(1, Touch::Up, there.0, there.1, r),
+            Some(EventKind::Drop {
+                from: 2 * 16,
+                to: 4 * 16 + 3
+            })
+        );
+        assert!(!g.dragging());
+        // A wobble under a fingertip: a tap, which launches it.
+        g.touch(1, Touch::Down, beat.0, beat.1, r);
+        g.touch(1, Touch::Move, beat.0 + 5, beat.1 + 5, r);
+        assert_eq!(
+            g.touch(1, Touch::Up, beat.0 + 5, beat.1 + 5, r),
+            Some(EventKind::Select(2 * 16))
+        );
+        // Lifted where it started, or cancelled: nothing.
+        g.touch(1, Touch::Down, beat.0, beat.1, r);
+        g.touch(1, Touch::Move, beat.0, beat.1 + 60, r);
+        assert_eq!(g.touch(1, Touch::Up, beat.0, beat.1, r), None);
+        g.touch(1, Touch::Down, beat.0, beat.1, r);
+        g.touch(1, Touch::Move, there.0, there.1, r);
+        assert_eq!(g.touch(1, Touch::Cancel, there.0, there.1, r), None);
+        // An empty slot is not dragged: a touch makes a clip there, as
+        // before.
+        assert_eq!(
+            g.touch(1, Touch::Down, there.0, there.1, r),
+            Some(EventKind::Select(4 * 16 + 3))
+        );
+        g.touch(1, Touch::Up, there.0, there.1, r);
+        // At the right edge the tracks after show.
+        g.touch(1, Touch::Down, beat.0, beat.1, r);
+        g.touch(1, Touch::Move, beat.0, beat.1 + 40, r);
+        let edge = (r.right() - 18, beat.1 + 40);
+        assert_eq!(
+            g.touch(1, Touch::Move, edge.0, edge.1, r),
+            Some(EventKind::Toggle(16 + PAGE_ON))
+        );
+        assert_eq!(g.touch(1, Touch::Move, edge.0, edge.1 + 1, r), None, "once");
+        g.touch(1, Touch::Cancel, edge.0, edge.1, r);
+        // Row 4's number, dragged up between rows 1 and 2.
+        let four = mid(g.scene_rect(r, 3).unwrap());
+        let gap = g.scene_rect(r, 1).unwrap().y - 2;
+        g.touch(1, Touch::Down, four.0, four.1, r);
+        g.touch(1, Touch::Move, four.0, gap, r);
+        paint(&g);
+        assert_eq!(
+            g.touch(1, Touch::Up, four.0, gap, r),
+            Some(EventKind::Drop {
+                from: ROW_DROP + 3,
+                to: 1
+            })
+        );
+        // Lifted next to where it was: it would land where it is.
+        g.touch(1, Touch::Down, four.0, four.1, r);
+        g.touch(1, Touch::Move, four.0, four.1 + 20, r);
+        assert_eq!(g.touch(1, Touch::Up, four.0, four.1 + 20, r), None);
+    }
+
     #[test]
     fn row_numbers_launch_scenes_and_the_corner_stops_all() {
         let mut g = grid(3);
@@ -1816,8 +2204,10 @@ mod tests {
         let c = g.cell_rect(r, 0, 2).unwrap();
         assert_eq!((b.y, b.h), (c.y, c.h), "beside its row");
         assert!(b.right() < c.x && b.w >= 44, "{b:?} {c:?}");
+        // On the lift, as a row's number can be dragged.
+        assert_eq!(g.touch(1, Touch::Down, b.x + 4, b.y + 4, r), None);
         assert_eq!(
-            g.touch(1, Touch::Down, b.x + 4, b.y + 4, r),
+            g.touch(1, Touch::Up, b.x + 4, b.y + 4, r),
             Some(EventKind::Toggle(2))
         );
         let s = g.stop_all_rect(r);

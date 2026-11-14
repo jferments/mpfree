@@ -226,6 +226,10 @@ pub enum EventKind {
     /// A number field's value tapped, to type a number into it (row
     /// `index`; see [`crate::numpad`]).
     Type(usize),
+    /// Something dragged and let go (Jay, 14 Nov: drag and drop): item
+    /// `from` dropped on place `to`, in the widget's own numbering (a
+    /// clip grid's cells, the gaps between its rows).
+    Drop { from: usize, to: usize },
 }
 
 #[derive(Clone, Debug, PartialEq)]

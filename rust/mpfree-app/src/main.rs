@@ -3150,9 +3150,13 @@ fn time_action(
             return Vec::new();
         }
     }
-    // ERASE + a clip, UNDO and REDO: said in place of the hint.
+    // ERASE + a clip, a drop on the Clips grid, UNDO and REDO: said in
+    // place of the hint.
     let undo = matches!(a, TimeAction::Undo | TimeAction::Redo);
-    let erase = matches!(a, TimeAction::DeleteClip { .. });
+    let erase = matches!(
+        a,
+        TimeAction::DeleteClip { .. } | TimeAction::DropClip { .. } | TimeAction::DropRow { .. }
+    );
     let r = match a {
         // The scene morph runs on the mixer's mod engine.
         TimeAction::MorphRows { .. }

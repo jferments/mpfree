@@ -5732,6 +5732,17 @@ impl Player {
                         TimeAction::Audio(AudioAction::Move { region, to, .. }) => {
                             TimeAction::Audio(AudioAction::Move { region, to, fine })
                         }
+                        // SHIFT held as the finger lifts: a copy, not a move.
+                        TimeAction::DropClip { from, to, .. } => TimeAction::DropClip {
+                            from,
+                            to,
+                            copy: fine,
+                        },
+                        TimeAction::DropRow { from, to, .. } => TimeAction::DropRow {
+                            from,
+                            to,
+                            copy: fine,
+                        },
                         a => a,
                     };
                     FromUi::Time(a)
@@ -7625,6 +7636,7 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         erased: usize::from(edited),
         deleted: false,
         new_track: None,
+        dropped: None,
     };
     st.done = vec![
         take(1, 0, false, false),
@@ -9336,6 +9348,7 @@ mod tests {
             erased: 0,
             deleted: false,
             new_track: None,
+            dropped: None,
         };
         let mut st = p.time.clone();
         st.done = vec![take(1), take(2), take(3)];
@@ -9507,6 +9520,7 @@ mod tests {
             erased: 0,
             deleted: false,
             new_track: None,
+            dropped: None,
         });
         p.apply(ToUi::Time(Box::new(st.clone())));
         assert_eq!(undo(&mut p, false), takes(TimeAction::Undo));
