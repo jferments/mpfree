@@ -300,8 +300,9 @@ where it pays. Before any of it runs in the app, `mpfree-gpu-bench`
   page change costs), the redraw a tick later, reading the frame back, the
   software path's times for the same lists and its copy to the panel, and how
   far the GPU's picture is from the software one. A summary line gives the
-  draw calls per page and how often the glyph atlas was cleared or a mask
-  was too big for it (both fallbacks, so both are counted).
+  draw calls per page, how often the glyph atlas was cleared or a mask
+  was too big for it (both fallbacks, so both are counted), the vector
+  shapes the GPU worked out and how often their atlas was cleared.
 - `panel`: the GPU's pictures on the panel. Each page is drawn on the GPU,
   read back and written to `/dev/fb0` (as the app's screen writes, through
   `FbTarget`; no display setting changes) and held 1.5 s; then the busiest
