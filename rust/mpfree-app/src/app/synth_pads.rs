@@ -377,6 +377,13 @@ impl App {
     /// The Instrument row stepped by `d`: the selected track's sound, Kit first,
     /// then the engines and the plugin synths.
     fn step_track_sound(&mut self, d: i32) -> Vec<Effect> {
+        if self.track >= crate::instruments::SLOTS {
+            return vec![Effect::Tell(format!(
+                "Track {} plays the kit: tracks 1 to {} can have their own instrument for now",
+                self.track + 1,
+                crate::instruments::SLOTS
+            ))];
+        }
         let choices = self.sound_choices();
         let now = self.track_sound(self.track).map(|h| h.id);
         let at = choices

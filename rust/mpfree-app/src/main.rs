@@ -3750,9 +3750,7 @@ fn player_session(
                 // A tap on a track's sound line on Arrange: the track is
                 // selected (armed, as the Record panel's Armed row) and the
                 // Synth tab's MENU opens on its Instrument row.
-                gui::FromUi::TrackInstrument(track)
-                    if track < time.project().tracks.len().min(instruments::SLOTS) =>
-                {
+                gui::FromUi::TrackInstrument(track) if track < time.project().tracks.len() => {
                     if time.armed() != Some(track) {
                         fx.push(app::Effect::Time(TimeAction::Arm(Some(track))));
                     }
@@ -3761,7 +3759,7 @@ fn player_session(
                         &synth,
                         &mix.instruments,
                         track,
-                        track_presets[track],
+                        track_presets.get(track).copied().flatten(),
                     )));
                 }
                 gui::FromUi::TrackInstrument(track) => {
@@ -4070,7 +4068,9 @@ fn player_session(
                         (Some(h), Some((name, values))) => {
                             let job = instrument_job(&synth, track, h.id, Some(values));
                             if mix.build_instrument(job) {
-                                track_presets[track.min(instruments::SLOTS - 1)] = Some(k);
+                                if let Some(p) = track_presets.get_mut(track) {
+                                    *p = Some(k);
+                                }
                                 out.note(&format!("track {}: preset {name}", track + 1));
                             }
                         }
@@ -4522,7 +4522,9 @@ fn player_session(
                             }
                         }
                         app.set_track_sound(track, mix.instruments.held(track));
-                        track_presets[track.min(instruments::SLOTS - 1)] = None;
+                        if let Some(p) = track_presets.get_mut(track) {
+                            *p = None;
+                        }
                         out.show(gui::ToUi::Synth(synth_tab(
                             &synth,
                             &mix.instruments,
