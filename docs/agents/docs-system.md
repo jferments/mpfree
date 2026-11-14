@@ -75,6 +75,7 @@ The PDF is typeset by Typst from the same pages, so a page never needs PDF-only 
 
 - `docs/user/pdf/manual.typ`: the cover, the inside cover (how the manual shows things, and the colophon), the page frame (A4, running heads, page numbers on the outer edge), chapter openers with their "In this chapter" list, the contents, and screens numbered per chapter and floated to the top or bottom of a page.
 - `docs/user/pdf/lib.typ`: colours, part pages, the callout boxes and status banners, tables, and the **buttons drawn as keys**. A bold run of words is drawn as keys only when every name in it (split on ` + `) is in the `buttons` list there, so `**SHIFT + MENU**` becomes two keys while `**INPUTS**` (a jack) stays bold text. Add a new hardware button to that list when a page starts naming it.
+- `docs/tools/build_manual.py` gives every section in the PDF an id made of its page and its anchor, so the same heading on two pages (Pad pressure, Coming next) is two places, and a link to `page.md#section` lands on that section. A link to a section that doesn't exist stops the PDF build, which makes the build the check for section links.
 - `docs/user/pdf/filter.lua`: turns boxes, banners, screenshots and tables into calls to `lib.typ`. A table's column widths follow the length of its text; a first column of short labels gets the width it needs.
 - `docs/user/pdf/fonts/`: Inter (with italic and the Display cuts) and JetBrains Mono. Typst sees only this folder, so the PDF is the same on every machine.
 

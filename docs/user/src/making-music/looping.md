@@ -1,7 +1,7 @@
 <!--
 status: changing
 covers: rust/mpfree-looper rust/mpfree-app/src/looper_page.rs rust/mpfree-app/src/looper_tab.rs rust/mpfree-app/src/looping.rs
-checked: 2026-11-12 15df706
+checked: 2026-11-14 b76c3c7
 -->
 
 # Recording loops

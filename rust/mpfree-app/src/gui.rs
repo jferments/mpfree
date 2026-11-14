@@ -6220,6 +6220,35 @@ fn pads_browse(fonts: Fonts) -> Result<Player, String> {
     built
 }
 
+/// The whole browser over the page (BROWSE), in Projects with a saved
+/// project picked, over a library filled in a scratch folder (removed
+/// again once the browser has read what it shows). For the manual's
+/// Saving chapter.
+fn browser_projects(fonts: Fonts) -> Result<Player, String> {
+    use mpfree_browser_ui::sample::{fill, select, source};
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let dir = std::env::temp_dir().join(format!("mpfree-browser-{}-{nanos}", std::process::id()));
+    let built = (|| {
+        std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        let lib = fill(&dir)?;
+        let mut p = sample_sampler(fonts);
+        p.set_browser(mpfree_browser_ui::Browser::inline(lib), "");
+        p.take_actions();
+        p.apply(ToUi::Show(View::Browser));
+        let b = p.browser.as_mut().ok_or("no browser")?;
+        b.go_source(source("Projects"));
+        select(b, "Night drive");
+        p.step_browser();
+        p.take_actions();
+        Ok(p)
+    })();
+    let _ = std::fs::remove_dir_all(&dir);
+    built
+}
+
 /// The I/O view's Sync section's title.
 const IO_SYNC: &str = mpfree_midi_ui::SYNC;
 
@@ -6831,6 +6860,11 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     match pads_browse(fonts()) {
         Ok(browse) => out.push(("pads-browse", browse)),
         Err(e) => eprintln!("pads-browse: not drawn ({e})"),
+    }
+    // The whole browser (BROWSE) in Projects, Night drive picked.
+    match browser_projects(fonts()) {
+        Ok(browser) => out.push(("browser", browser)),
+        Err(e) => eprintln!("browser: not drawn ({e})"),
     }
     // The Chop tab on the same pad: chopped at its hits, slice 3 picked.
     let mut chop = sample_sampler(fonts());
