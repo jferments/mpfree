@@ -50,7 +50,7 @@ started by you pressing Enter:
      so that the drums play in the pad mode round 2 already saw working.
  11. play: the pad player, MPFree's first GUI (you type SEND first): the same
      session and setup as step 10, then up to 120 s with every kit: the pads
-     or the screen play, the wheel or a tap picks the kit, Q-Link 1 or the
+     or the screen play, PAD BANK or SHIFT + wheel picks the kit, Q-Link 1 or the
      slider sets the level, STOP ends it. If the session is not accepted
      within 20 s it plays without Akai's setup. Turn the volume knob down first.
  12. click: plays a 120 BPM click on the ACVA output for 10 s, quietly, and
@@ -512,8 +512,8 @@ APP_PHASES = (
      ["Tap the Play tab. Hit pad 1 softly, medium and hard. Press FULL LEVEL (it lights) and hit pad 1 softly",
       "twice: both loud. SHIFT + FULL LEVEL is Half Level: soft hits come out medium. Press FULL LEVEL until its",
       "light goes out. Press PAD BANK A to D: the kit chip shows the bank. Press the same bank button again (or",
-      "SHIFT + it) for E-H. Go back to bank A. Hold a long sound, turn the wheel to the next kit: the sound",
-      "finishes rather than cutting off. Hit a few pads and press STOP while they ring: a quick fade, no click."],
+      "SHIFT + it) for E-H. Go back to bank A. Hold a long sound, hold SHIFT and turn the wheel to the next kit: the",
+      "sound finishes rather than cutting off. Hit a few pads and press STOP while they ring: a quick fade, no click."],
      "Did the banks, Full and Half Level work? Did the bank buttons light? Did kit switching and STOP sound clean?"),
     ("Play page: the three views and the mode buttons",
      ["On Play, tap All, Beats and Loop at the right of the transport bar. There are no pads on the screen and",
@@ -535,8 +535,13 @@ APP_PHASES = (
       "finger on the XY pad: left is a low-pass, right a high-pass, up adds echo; its label reads the filter and",
       "the echo. Lift the finger: it glides back to the middle. Then FILL: while it plays, hold PLAY for a fill",
       "and let go. Press PLAY twice",
-      "quickly: the fill stays on; press PLAY again to end it. STOP."],
-     "Did every throw and the XY pad sound right, start in time and stop cleanly? Did FILL hold and latch?"),
+      "quickly: the fill stays on; press PLAY again to end it. STOP.",
+      "The wheel (new): on All, tap a lane's name and turn the data wheel: an outline moves from control to",
+      "control, through the pattern and on into the next part of the screen. Push the wheel on a lane's name: it",
+      "mutes, as a tap does. Turn to a throw and push: it holds until you push again. Tap a Q-Link card, push",
+      "the wheel (the outline gets thicker) and turn: the card changes; push again to let go. - and + step it too."],
+     "Did every throw and the XY pad sound right, start in time and stop cleanly? Did FILL hold and latch? Did the "
+     "wheel's outline move, press, hold and turn as described?"),
     ("Arrange: clips, takes, Capture, the song and the morph",
      ["Uses the buttons found in phase 1. Tap the Arrange tab: the Q-Link column is at its right edge, as on Play.",
       "Press PLAY, then REC, play a short beat for a bar or two, and REC again: the take loops. OVERDUB switches",
@@ -561,13 +566,13 @@ APP_PHASES = (
       "colour while it plays, red while muted). Press SHIFT + TRACK MUTE again: the pads play notes. STOP."],
      "Did the pads mute and unmute the tracks and the kit's pads at once, with the right colours?"),
     ("Grains",
-     ["Turn the wheel to the kit called \"Grains: ...\". Hold a pad: a cloud of grains. Press harder:",
+     ["Hold SHIFT and turn the wheel to the kit called \"Grains: ...\". Hold a pad: a cloud of grains. Press harder:",
       "pads 1-4 get denser, 5-8 longer grains, 9-12 move where they read, 13-16 rise up to an octave.",
       "Let go: it fades out. Then hold NOTE REPEAT and 8 pads together for about 10 s, and let go."],
      "Did the grains respond to pressure and fade out? Any crackles or dropouts in the 8-pad test?"),
     ("Synth: the five engines",
-     ["Turn the wheel to the last entry, \"Synth: Poly\", then tap the Synth tab. Q-Links 1-4 turn the marked",
-      "knobs. New: the wheel picks a tile and - / + change it; push the wheel and the wheel changes the tile (it",
+     ["Hold SHIFT and turn the wheel to the last entry, \"Synth: Poly\", then tap the Synth tab. Q-Links 1-4 turn",
+      "the marked knobs. New: the wheel picks a tile and - / + change it; push the wheel and the wheel changes the tile (it",
       "looks raised) until you push again. SHIFT + wheel changes pages; a preset in the list loads it. MENU opens",
       "the engine and scale options: try each engine (Poly, FM, Drums, Pluck, Wavetable) and a preset or two",
       "of each. The pads heading switches Chromatic and In key. In the options, set Tuning to 24-TET quarter",

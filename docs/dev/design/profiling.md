@@ -54,6 +54,58 @@ worst 20 to 24 %, so the worst is a spike such as voice starts, a page fault
 or preemption, not steady cost), and new engines must come with device
 numbers before they are turned on by default.
 
+## Load shedding: giving up voices nobody hears
+
+When the periods fall behind, the pad player gives up the quietest voices
+rather than let the sound card's queue run dry and click, as the
+[Deluge](https://seangoodvibes.github.io/DelugeDocs/documentation/getting-started/device-overview/performance)
+does (`rust/mpfree-app/src/shed.rs`; item 3 of the 14 Nov performance
+review). It is a safety net for a busy bar, not a budget: a song that needs
+it every bar is too big, and the log says so.
+
+- **When.** Right after each write the audio loop hands `Shed::decide` the
+  period just made: its work, from the last write to this one (the write's
+  own wait left out), and how far the card's queue is below full
+  (`PCM delay`). A period that took longer than it plays is falling behind.
+  While the queue is still within a quarter of its spare periods of full
+  (64 frames with 3 periods queued), the queue takes it and nothing is
+  given up, so a lone slow period costs nothing. A fast export (the card
+  stopped, the loop waiting for the files) is never behind and gives up
+  nothing, so the file has every voice; a Listen export plays in real time
+  and sheds as playing does, so its file is what was heard.
+- **How many.** Enough voices to bring the period back to 90 % of its
+  length, at the period's own cost a voice (the sampler's, the synth's and
+  the tracks' instruments' time over their voices), at most 8 at once. When
+  giving up every voice would still not bring it back (the time went to the
+  mixer or the effects), none is: the music is not thinned for nothing, and
+  the period is counted as one voices would not have helped.
+- **Which.** The least audible voice across the sampler, the pad synth and
+  the tracks' own instruments, one at a time. Each instrument offers its
+  candidate through `Node::cull_candidate` (a `Cull`: its level now and
+  whether its note has ended) and gives it up with `Node::cull`;
+  `Cull::audibility` counts a releasing voice 12 dB quieter, since it is
+  ending anyway. Levels are relative to a full-velocity note: an envelope
+  times the velocity and level gains in the synths, and in the sampler what
+  the voice has played lately (`Voice::heard`, its last output sample at the
+  end of each render, held and falling 16 % a render), so a quiet sample
+  reads quiet. A voice already fading is never offered again, and a plugin
+  offers none (its process doesn't say what it plays). A voice given up gets
+  the fade a stolen one gets (3 ms in the synths, 64 frames in the sampler).
+- **Said.** Each voice given up is counted. The log has one line a second at
+  most (`load: gave up 3 voices to keep the sound going (2 of them
+  releasing); the slowest period took 112 % of its time`), the 30 s status
+  line the totals (`load shedding: ...`), and the Dev tab's Debug page the
+  count next to the voices stolen ("Voices stolen · given up").
+- **Cost.** Nothing in a period on time but one clock read. Behind, a scan
+  of the voices per voice given up. No allocation but the log line.
+- **Tests.** `shed.rs` runs a simulated song through a 3-period queue: 24
+  voices at 119 % lose 8 (down to what fits) and never run dry; a sudden
+  jump to 155 % is caught before the queue empties; lone slow periods give
+  up nothing; an overloaded mixer keeps its voices. Each engine's own
+  candidate, fade and count: `mpfree-synth/tests/cull.rs`,
+  `mpfree-sampler/tests/cull.rs`, the track host's `tests/host.rs`; the
+  no-allocation tests give up voices too.
+
 ## Using it in an engine or a host
 
 In a host's audio loop:
@@ -534,3 +586,26 @@ when the baseline came from another one. The whole run takes about a minute
 under callgrind. After an intended change in cost, bless with
 `python3 tools/ci/instr_gate.py --bless` and say why in the PR. The runner needs
 `valgrind`; without it the job warns and skips.
+
+### ARMv7 counts for the instrument engines
+
+```text
+python3 tools/inst_arm_cost.py [--blocks N] [--jobs J] [--no-build] [CASE ...]
+```
+
+The x86 counts above miss what is slow on the MPC's ARMv7 build: no hardware
+divide, `floor` and 64-bit conversions as library calls. So Keys, Drawbar,
+Squelch and Analog are also counted as ARMv7 code, the way the effects are
+(fx.md). `rust/mpfree-synth/examples/inst_cost.rs` plays the bench's cases
+for the four engines, plus Poly Init with 8 voices for scale, with the same
+notes from the same seeds. The script builds it for
+`armv7-unknown-linux-gnueabihf` and runs each case under
+`qemu-arm -one-insn-per-tb -d exec,nochain` with N blocks (200 by default)
+and with none. Every instruction run prints one trace line, so the
+difference over N is the instructions per block. It also prints each case's
+output hash, which matches the native build's: the engines sound the same to
+the bit on ARMv7. The trace runs about 300k instructions a second, so all 16
+cases take about 20 minutes, four at a time. These are instructions, not
+cycles: cache misses and VFP stalls come on top, so the device still decides
+voice counts. The counts of 14 Nov are in synths.md, beside each engine's
+x86 count.

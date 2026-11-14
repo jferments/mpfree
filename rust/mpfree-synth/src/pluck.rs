@@ -23,7 +23,7 @@
 //! depend on how the host cuts blocks. The delay lines are allocated in
 //! `prepare`; nothing in `process` allocates.
 
-use mpfree_node::{Ctx, Kind, Node, NodeEvent, NodeInfo, ParamInfo, Smooth, Timed, Tuning};
+use mpfree_node::{Ctx, Cull, Kind, Node, NodeEvent, NodeInfo, ParamInfo, Smooth, Timed, Tuning};
 
 use crate::dsp::{note_hz, Rng};
 use crate::expr::{expr_coef, NoteExprs, VoiceExpr};
@@ -661,6 +661,29 @@ impl Pluck {
         }
     }
 
+    /// The voice load shedding gives up first: the least audible one
+    /// ringing ([`Cull::audibility`]), by its level follower. Voices
+    /// already fading are left be.
+    fn cull_pick(&self) -> Option<(usize, Cull)> {
+        let mut best = None;
+        for (i, v) in self.voices.iter().enumerate() {
+            let releasing = match v.state {
+                State::On => false,
+                State::Release => true,
+                State::Free | State::Kill => continue,
+            };
+            // A mallet still in its pulse has not rung up yet: count it
+            // as loud as it will be.
+            let level = if v.pulse_at < v.pulse_len {
+                v.pulse_amp.max(v.follow).max(1.0)
+            } else {
+                v.follow
+            };
+            best = Cull::first(best, Some((i, Cull { level, releasing })));
+        }
+        best
+    }
+
     fn apply(&mut self, ev: &NodeEvent) {
         match *ev {
             NodeEvent::NoteOn { note, velocity } => self.note_on(note, velocity),
@@ -908,5 +931,21 @@ impl Node for Pluck {
         for v in self.voices.iter_mut() {
             v.tuned = f32::NAN;
         }
+    }
+
+    fn sounding_voices(&self) -> usize {
+        self.active_voices()
+    }
+
+    fn cull_candidate(&self) -> Option<Cull> {
+        self.cull_pick().map(|(_, c)| c)
+    }
+
+    fn cull(&mut self) -> bool {
+        let Some((i, _)) = self.cull_pick() else {
+            return false;
+        };
+        self.kill(i);
+        true
     }
 }

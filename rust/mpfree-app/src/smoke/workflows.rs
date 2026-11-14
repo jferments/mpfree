@@ -552,6 +552,61 @@ mod tests {
         s.hits.on[from..].iter().filter(|h| h.0 == pad).count()
     }
 
+    /// The mixer: the selected strip's name opens its menu; Freeze takes
+    /// the playing loop through the strip's inserts and plays it from
+    /// then on, and the frozen strip's menu offers Thaw and Print.
+    #[test]
+    fn a_strips_menu_freezes_the_playing_loop_and_thaws_it() {
+        use mpfree_fx::FreezeState;
+        on_big_stack(|| {
+            let mut s = Session::new();
+            s.press("play-transport", "view", "Beats");
+            for k in [1, 5, 9, 13] {
+                s.press("steps", "step", &format!("Kick step {k}"));
+            }
+            s.button("PLAY").run_for(0.1);
+            s.press("header", "mixer-icon", "");
+            s.press("mixer", "strip-name", "Drums");
+            s.press("mixer", "strip-name", "Drums");
+            s.press("mixer", "menu", "Freeze");
+            let said = |s: &Session, what: &str| s.lines.iter().any(|l| l.contains(what));
+            assert!(
+                said(&s, "Drums: freezing its 4-beat loop"),
+                "Freeze says what it takes: {:?}",
+                s.lines
+            );
+            // The take waits for its memory (made on the builder thread,
+            // which this session outruns), then for the loop's next start,
+            // then records a bar.
+            let drums = StripId::Track(crate::mixing::DRUMS);
+            let frozen = |s: &Session| {
+                matches!(
+                    s.mix.mixer.freeze_state(drums),
+                    FreezeState::FadingIn | FreezeState::On
+                )
+            };
+            for _ in 0..150 {
+                if frozen(&s) {
+                    break;
+                }
+                s.run_for(0.1);
+            }
+            assert!(frozen(&s), "frozen within 15 s: {:?}", s.lines);
+            assert!(said(&s, "Drums: frozen"), "and says so");
+
+            s.press("mixer", "strip-name", "Drums");
+            assert!(
+                s.control("mixer", "menu", "Print to a new sample")
+                    .is_some(),
+                "Print is offered"
+            );
+            s.press("mixer", "menu", "Thaw");
+            assert!(said(&s, "Drums: thawed"), "Thaw says so");
+            assert!(!frozen(&s), "and the strip plays its live effects");
+            s.button("STOP");
+        });
+    }
+
     /// Play > Beats: four Kick steps tapped make the pattern, PLAY plays
     /// the kick four times a bar, and a step tapped again comes off.
     #[test]
@@ -715,7 +770,8 @@ mod tests {
     }
 
     /// The Synth tab puts the synth on the pads, and it stays there after
-    /// leaving (the header says so) until the wheel on Play picks a kit.
+    /// leaving (the header says so) until a kit is picked from the chip's
+    /// list. The wheel alone moves the outline and keeps the synth.
     #[test]
     fn the_synth_stays_on_the_pads_until_a_kit_is_picked() {
         on_big_stack(|| {
@@ -729,7 +785,16 @@ mod tests {
             assert!(s.synth_on, "and still on Play");
             assert!(chip(&mut s).starts_with("Poly"), "{}", chip(&mut s));
             s.wheel(-1).run_for(0.2);
-            assert!(!s.synth_on, "the wheel picked a kit");
+            assert!(s.synth_on, "the wheel alone moves the outline");
+            let c = s.control("header", "chip", "").unwrap().target;
+            s.press_target(&c);
+            let rows: Vec<_> = s
+                .controls()
+                .into_iter()
+                .filter(|c| c.widget == "kits" && c.target.id == "row")
+                .collect();
+            s.press_target(&rows[s.kits() - 1].target).run_for(0.2);
+            assert!(!s.synth_on, "the chip's list picked a kit");
             assert_eq!(s.kit, s.kits() - 1, "the last kit, just before the synth");
             assert!(chip(&mut s).contains("· Bank"), "{}", chip(&mut s));
         });
@@ -815,20 +880,24 @@ mod tests {
         });
     }
 
-    /// The wheel on Play changes the kit: the header names it, and the
-    /// pads play it.
+    /// SHIFT + the wheel on Play changes the kit: the header names it,
+    /// and the pads play it. The wheel alone moves the outline and leaves
+    /// the kit alone.
     #[test]
-    fn the_wheel_on_play_changes_the_kit() {
+    fn shift_and_the_wheel_on_play_change_the_kit() {
         on_big_stack(|| {
             let mut s = Session::new();
             let chip = |s: &mut Session| s.control("header", "chip", "").unwrap().target.label;
             let first = chip(&mut s);
             assert_eq!(s.kit, 0);
             s.wheel(1).run_for(0.2);
+            assert_eq!(s.kit, 0, "the wheel alone keeps the kit");
+            assert_eq!(chip(&mut s), first);
+            s.wheel_with("SHIFT", 1).run_for(0.2);
             assert_eq!(s.kit, 1, "the next kit plays");
             assert_ne!(chip(&mut s), first, "the header names it");
             assert!(chip(&mut s).ends_with("Bank B"), "{}", chip(&mut s));
-            s.wheel(-1).run_for(0.2);
+            s.wheel_with("SHIFT", -1).run_for(0.2);
             assert_eq!(s.kit, 0);
             assert_eq!(chip(&mut s), first);
         });

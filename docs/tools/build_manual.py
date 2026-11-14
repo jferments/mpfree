@@ -47,6 +47,9 @@ def draw_shots(out):
 # The screen on the PDF cover: the busiest Play page the preview draws
 # (a loop, a pattern and a throw playing, the master meter moving).
 COVER = "play-all-loop"
+# The README shows the same screen, committed so GitHub can show it. Every
+# build refreshes it; commit it when it changes.
+README_SHOT = os.path.join(mp.ROOT, "docs", "images", COVER + ".png")
 
 
 def shrink_shots(raw, dest, wanted):
@@ -243,6 +246,21 @@ def build_pdf(out, src_pdf, shots, toc):
     return pdf
 
 
+def refresh_readme_shot(src):
+    """Keep the README's screenshot the same as the manual's cover screen."""
+    with open(src, "rb") as f:
+        new = f.read()
+    old = None
+    if os.path.exists(README_SHOT):
+        with open(README_SHOT, "rb") as f:
+            old = f.read()
+    if new != old:
+        os.makedirs(os.path.dirname(README_SHOT), exist_ok=True)
+        with open(README_SHOT, "wb") as f:
+            f.write(new)
+        print(f"README screenshot updated: {os.path.relpath(README_SHOT, mp.ROOT)} (commit it)")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--out", default=OUT_DEFAULT)
@@ -268,6 +286,7 @@ def main():
         sys.exit("STOP: these screens are asked for but mpfree --preview no longer draws "
                  f"them: {', '.join(missing)}. Fix the page or add the screen "
                  "(rust/mpfree-app/src/gui.rs, sample_screens).")
+    refresh_readme_shot(os.path.join(shots, COVER + ".png"))
     if not a.no_site:
         site = build_site(out, prepare(out, "html", pages, notes), shots)
         print(f"website: {os.path.join(site, 'index.html')}")

@@ -197,6 +197,18 @@ impl Widget for QLinkColumn {
             .collect()
     }
 
+    fn steps(&self, t: &Target) -> bool {
+        t.id == "knob-card"
+    }
+
+    /// As the knob turned: a drag's detents, by the wheel's.
+    fn step(&mut self, t: &Target, delta: i32, _r: Rect) -> Option<EventKind> {
+        (delta != 0).then_some(EventKind::Step {
+            index: t.index,
+            delta,
+        })
+    }
+
     fn touch(&mut self, _f: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
         match phase {
             Touch::Down => {
@@ -253,6 +265,8 @@ impl Default for MasterBar {
 const HOLD_FALL_DB: f32 = 0.6;
 /// The limiter's scale: this many dB of gain reduction fill its bar.
 const LIMIT_SCALE_DB: f32 = 12.0;
+/// The master fader's step per detent of the data wheel, dB.
+const MASTER_STEP_DB: f32 = 0.5;
 
 impl MasterBar {
     pub fn new() -> MasterBar {
@@ -357,6 +371,19 @@ impl Widget for MasterBar {
         vec![Target::drag("level", 0, self.text.clone(), r)]
     }
 
+    fn steps(&self, _t: &Target) -> bool {
+        true
+    }
+
+    /// Half a dB per detent, on the meter's scale as a drag gives it.
+    fn step(&mut self, _t: &Target, delta: i32, _r: Rect) -> Option<EventKind> {
+        let db = (self.fader_db + delta as f32 * MASTER_STEP_DB).clamp(-48.0, 6.0);
+        (db != self.fader_db).then(|| {
+            self.fader_db = db;
+            EventKind::Value(draw::meter_frac(db))
+        })
+    }
+
     fn touch(&mut self, _f: u64, phase: Touch, _x: i32, y: i32, r: Rect) -> Option<EventKind> {
         if !matches!(phase, Touch::Down | Touch::Move) {
             return None;
@@ -376,6 +403,32 @@ mod tests {
 
     fn column() -> Rect {
         Rect::new(1100, 84, COLUMN_WIDTH, 666)
+    }
+
+    #[test]
+    fn the_data_wheel_turns_a_card_or_the_master_level() {
+        let mut q = QLinkColumn::new();
+        let t = &q.targets(column())[2];
+        assert!(q.steps(t));
+        assert_eq!(
+            q.step(t, -2, column()),
+            Some(EventKind::Step {
+                index: 2,
+                delta: -2
+            }),
+            "as a drag of two detents down"
+        );
+        let mut m = MasterBar::new();
+        let r = Rect::new(0, 0, 90, 600);
+        let t = &m.targets(r)[0];
+        assert!(m.steps(t));
+        assert_eq!(
+            m.step(t, 2, r),
+            Some(EventKind::Value(draw::meter_frac(1.0)))
+        );
+        assert_eq!(m.fader_db, 1.0);
+        m.fader_db = 6.0;
+        assert_eq!(m.step(t, 1, r), None, "at the top");
     }
 
     #[test]

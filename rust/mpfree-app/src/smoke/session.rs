@@ -596,6 +596,20 @@ impl Session {
         self.run_periods(4)
     }
 
+    /// Hold `held` (SHIFT, say) while turning the data wheel.
+    pub fn wheel_with(&mut self, held: &str, delta: i32) -> &mut Session {
+        let h = self.button_note(held);
+        let t = self.t();
+        let fx = self.app.button(h, true, t);
+        self.fx.extend(fx);
+        self.run_periods(1);
+        self.wheel(delta);
+        let t = self.t();
+        let fx = self.app.button(h, false, t);
+        self.fx.extend(fx);
+        self.run_periods(4)
+    }
+
     /// Hit a pad on the controller (down, then up after `hold` seconds).
     pub fn pad(&mut self, pad: usize, velocity: u8, hold: f64) -> &mut Session {
         self.pad_edge(pad, velocity, true);
@@ -815,6 +829,21 @@ impl Session {
         }
         if self.export.fast() {
             self.export.wait_for_room(self.periods);
+        }
+        // Freeze and Print, as player_session runs them.
+        let n_tracks = self.time.project().tracks.len();
+        let time = &self.time;
+        match self
+            .mix
+            .takes_period(&ctx, n_tracks, &|t| time.now_playing(t))
+        {
+            Some(crate::takes::Said::Note(l)) => {
+                let l = format!("mixer: {l}");
+                self.out.note(&l);
+                self.out.show(ToUi::Tell(l));
+            }
+            Some(crate::takes::Said::Printed(name, p)) => self.out.show(ToUi::Printed(name, p)),
+            None => {}
         }
         let now = self.now();
         if let Some(st) = self.mix.poll_state(now) {
@@ -1072,7 +1101,7 @@ impl Session {
                 }
                 let e = self.app.open_track_instrument(track);
                 self.fx.extend(e);
-                let tab = crate::synth_tab(&self.synth, &self.mix.instruments, track, None);
+                let tab = crate::synth_tab(&self.synth, &self.mix, track, None);
                 self.out.show(ToUi::Synth(tab));
             }
             FromUi::TrackInstrument(track) => {
@@ -1194,13 +1223,6 @@ impl Session {
                 let Some(e) = rest else { continue };
                 match e {
                     Effect::Light(note, value) => self.lights[usize::from(note & 0x7F)] = value,
-                    Effect::Kit(d) => {
-                        // From the synth, when it has the pads (as main.rs).
-                        let playing = if self.synth_on { self.kits } else { self.kit };
-                        let now = self.kit_to.unwrap_or(playing) as i64;
-                        self.kit_to =
-                            Some((now + d as i64).rem_euclid(self.kits as i64 + 1) as usize);
-                    }
                     Effect::Octave(d) if self.synth_on => {
                         if self.synth.shift_octave(d) {
                             self.app.set_pad_layout(Some(self.synth.pad_layout()));

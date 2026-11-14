@@ -295,6 +295,10 @@ impl Rig {
             left,
             right,
         );
+        // Freeze and Print's check of the frozen strips, each period.
+        let n_tracks = time.project().tracks.len();
+        let said = mix.takes_period(&ctx, n_tracks, &|t| time.now_playing(t));
+        assert!(said.is_none(), "period {i}: a take said something");
         let p = p.max(time.mix_click(left, right));
         self.peak = self.peak.max(p);
         // After the write, in the loop.

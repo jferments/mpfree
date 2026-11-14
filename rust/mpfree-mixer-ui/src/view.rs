@@ -2474,6 +2474,47 @@ impl Widget for MixerView {
         out
     }
 
+    fn steps(&self, t: &Target) -> bool {
+        matches!(t.id, "fader" | "pan" | "send")
+    }
+
+    /// The data wheel on a strip's fader, pan or send: as Q-Links 1 to 4
+    /// turn them ([`crate::qlinks::level_turn`], [`crate::qlinks::pan_turn`]).
+    fn step(&mut self, t: &Target, delta: i32, r: Rect) -> Option<EventKind> {
+        let l = layout(r);
+        let mut strips: Vec<StripId> = self
+            .shown(&l)
+            .into_iter()
+            .map(|(i, _)| self.state.strips[i].id)
+            .collect();
+        strips.push(self.state.master.id);
+        let (k, j) = match t.id {
+            "send" => (t.index / 4, t.index % 4),
+            _ => (t.index, 0),
+        };
+        let strip = *strips.get(k)?;
+        let s = self.state.strip(strip)?;
+        let (id, from, to) = match t.id {
+            "fader" => (
+                mx::VOLUME,
+                s.volume_db,
+                crate::qlinks::level_turn(s.volume_db, delta, false),
+            ),
+            "pan" => (mx::PAN, s.pan, crate::qlinks::pan_turn(s.pan, delta, false)),
+            "send" => {
+                let db = s.sends?.get(j)?.db;
+                (mx::send(j), db, crate::qlinks::level_turn(db, delta, false))
+            }
+            _ => return None,
+        };
+        if to == from {
+            return None;
+        }
+        self.set(strip, id, to);
+        self.mark(Dirty::All);
+        Some(EventKind::Select(self.actions.len()))
+    }
+
     fn touch(&mut self, finger: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
         let before = self.actions.len();
         let changed_before = self.io_changed.len();
@@ -2624,6 +2665,63 @@ mod tests {
             value,
             "the screen follows at once"
         );
+    }
+
+    #[test]
+    fn the_data_wheel_turns_a_fader_pan_or_send_as_the_q_links_do() {
+        let mut ui = ui(state(12));
+        let mut c = mpfree_ui::SoftCanvas::new(1280, 800);
+        ui.paint(&mut c);
+        let p = strip_parts(&ui, 2);
+        let (x, y) = mid(p.fader);
+        assert_eq!(ui.focus_at(x, y).unwrap().id, "fader");
+        assert!(ui.focus_steps());
+        let ev = ui.focus_step(1).unwrap();
+        assert_eq!(ev.widget, crate::MIXER);
+        let a = crate::take_actions(&mut ui);
+        let want = crate::qlinks::level_turn(0.0, 1, false);
+        assert_eq!(
+            a,
+            vec![MixAction::Set {
+                strip: StripId::Track(2),
+                id: mx::VOLUME,
+                value: want
+            }]
+        );
+        assert_eq!(
+            ui.get::<MixerView>(crate::MIXER).unwrap().state().strips[2].volume_db,
+            want,
+            "the screen follows at once"
+        );
+        let (x, y) = mid(p.pan);
+        ui.focus_at(x, y);
+        ui.focus_step(-3);
+        assert_eq!(
+            crate::take_actions(&mut ui),
+            vec![MixAction::Set {
+                strip: StripId::Track(2),
+                id: mx::PAN,
+                value: -6.0
+            }]
+        );
+        // Strip 1's send B sits at -12 dB.
+        let p = strip_parts(&ui, 0);
+        let (x, y) = mid(p.sends[1].take_left(18).1);
+        assert_eq!(ui.focus_at(x, y).unwrap().id, "send");
+        ui.focus_step(1);
+        let a = crate::take_actions(&mut ui);
+        assert_eq!(
+            a,
+            vec![MixAction::Set {
+                strip: StripId::Track(0),
+                id: mx::send(1),
+                value: crate::qlinks::level_turn(-12.0, 1, false)
+            }]
+        );
+        // A mute is a tap: the wheel does not turn it.
+        let (x, y) = mid(buttons(p.buttons, 2)[0]);
+        assert_eq!(ui.focus_at(x, y).unwrap().id, "mute");
+        assert!(!ui.focus_steps());
     }
 
     #[test]

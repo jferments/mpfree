@@ -72,7 +72,7 @@ pub const MACROS_LAYOUT: &str = "col(header:60, row(macros:*, qlinks:168):*, hin
 /// here stays on the chain editor.
 pub const QLINK_PAGE: &str = "chain";
 /// The hint lines: what the buttons do on the page.
-pub const CHAIN_HINT: &str = "Q-Links: the first 4 knobs shown  ·  SHIFT + Q-Link: fine  ·  touch a knob, then a macro number, Learn or + LFO";
+pub const CHAIN_HINT: &str = "Q-Links: the page's first 4 knobs, or Main's on every page  ·  SHIFT + Q-Link: fine  ·  touch a knob, then a macro number, Learn or + LFO";
 /// The hint while the effect picker is open.
 pub const PICKER_HINT: &str = "Wheel: effect  ·  SHIFT + wheel: category  ·  push: its presets, then add  ·  hold a tile: presets  ·  star: favourite";
 pub const MACROS_HINT: &str = "Q-Links: the 4 macros shown  ·  SHIFT + Q-Link: fine  ·  tap a target to edit its range and curve  ·  Back closes";

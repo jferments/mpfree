@@ -88,7 +88,8 @@ impl ChainPage {
         let (name, knobs) = st.qlinks();
         self.bind
             .set_page(mpfree_chain_ui::QLINK_PAGE, &name, knobs);
-        for p in &st.params {
+        // Main's four turn on every page, so their values come along.
+        for p in st.params.iter().chain(&st.main_four) {
             self.bind.observe(p.addr, p.value);
         }
         mpfree_chain_ui::update_chain(ui, st.clone());
@@ -124,7 +125,7 @@ impl ChainPage {
         let page = self
             .chain
             .as_ref()
-            .and_then(|c| c.groups.get(c.group).copied())
+            .and_then(|c| c.groups.get(c.group).map(String::as_str))
             .unwrap_or("");
         let cards = match fx {
             Some(mut st) if visual::has_visuals(st.info.id) => {
@@ -369,6 +370,31 @@ mod tests {
             p.released(0),
             Some(Turned::Chain(ChainAction::Release(first.addr)))
         );
+    }
+
+    /// Layout B: on any page of an effect with a Main page (the drum bus
+    /// EQ's Band 3 here) the Q-Links turn Main's four, the bands' gains,
+    /// and their cards show their values.
+    #[test]
+    fn the_q_links_stay_on_main_four_on_every_page() {
+        let mut p = ChainPage::new();
+        let mut ui = Ui::new(Theme::dark(), Fonts::embedded(), 1280, 800);
+        let st = Song::new().chain_state(DRUMS, 3, 4, None);
+        assert_eq!(st.groups[st.group], "Band 3");
+        let four = st.main_four.clone();
+        assert_eq!(four.len(), 4);
+        p.set_chain(&mut ui, st);
+        p.entered(View::Chain);
+        let (_, cards) = p.cards(&Theme::dark());
+        let names: Vec<&str> = cards.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(
+            names,
+            ["Band 1 gain", "Band 2 gain", "Band 3 gain", "Band 4 gain"]
+        );
+        match p.turn(3, 1, false) {
+            Some(Turned::Chain(ChainAction::Set { addr, .. })) => assert_eq!(addr, four[3].addr),
+            other => panic!("{other:?}"),
+        }
     }
 
     #[test]
