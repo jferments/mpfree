@@ -509,6 +509,68 @@ pub(crate) use Curve::{Choice, Linear, Log, Toggle};
 pub(crate) use Unit::{Db, Hz, Ms, Percent};
 pub(crate) const NONE: Unit = Unit::None;
 
+/// The `Node` methods every newer effect writes the same way. The type
+/// gives `v` (the values by id, meters included) and inherent methods:
+/// `apply(id, value)` (clamped already), `begin(&Ctx)` once per block,
+/// `run(&Ctx, from, l, r)` per piece between events (`from` is the
+/// piece's first frame in the block, for reading the sidechain), `setup(rate)`, `clear()`,
+/// `tail()` and `lat()`.
+macro_rules! node_impl {
+    ($t:ty, $info:expr, $params:expr) => {
+        impl mpfree_node::Node for $t {
+            fn info(&self) -> &'static mpfree_node::NodeInfo {
+                &$info
+            }
+            fn params(&self) -> &'static [mpfree_node::ParamInfo] {
+                &$params
+            }
+            fn set_param(&mut self, id: u16, value: f32) {
+                if let Some(p) = $params.get(id as usize) {
+                    if !p.readonly {
+                        let v = p.clamp(value);
+                        self.v[id as usize] = v;
+                        self.apply(id, v);
+                    }
+                }
+            }
+            fn param(&self, id: u16) -> f32 {
+                self.v.get(id as usize).copied().unwrap_or(f32::NAN)
+            }
+            fn prepare(&mut self, rate: u32, _max_block: usize) {
+                self.setup(rate.max(1));
+            }
+            fn reset(&mut self) {
+                self.clear();
+            }
+            fn tail_frames(&self) -> u32 {
+                self.tail()
+            }
+            fn latency(&self) -> u32 {
+                self.lat()
+            }
+            fn process(
+                &mut self,
+                ctx: &mpfree_node::Ctx,
+                events: &[mpfree_node::Timed],
+                left: &mut [f32],
+                right: &mut [f32],
+            ) {
+                let len = left.len().min(right.len());
+                self.begin(ctx);
+                let mut segs = crate::svf::Segs::new(events);
+                while let Some((from, to)) = segs.next(len, |ev| {
+                    if let mpfree_node::NodeEvent::Param { id, value } = *ev {
+                        mpfree_node::Node::set_param(self, id, value);
+                    }
+                }) {
+                    self.run(ctx, from, &mut left[from..to], &mut right[from..to]);
+                }
+            }
+        }
+    };
+}
+pub(crate) use node_impl;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -601,65 +663,3 @@ mod tests {
         (s >> 9) as f32 / (1u32 << 23) as f32 - 1.0
     }
 }
-
-/// The `Node` methods every newer effect writes the same way. The type
-/// gives `v` (the values by id, meters included) and inherent methods:
-/// `apply(id, value)` (clamped already), `begin(&Ctx)` once per block,
-/// `run(&Ctx, from, l, r)` per piece between events (`from` is the
-/// piece's first frame in the block, for reading the sidechain), `setup(rate)`, `clear()`,
-/// `tail()` and `lat()`.
-macro_rules! node_impl {
-    ($t:ty, $info:expr, $params:expr) => {
-        impl mpfree_node::Node for $t {
-            fn info(&self) -> &'static mpfree_node::NodeInfo {
-                &$info
-            }
-            fn params(&self) -> &'static [mpfree_node::ParamInfo] {
-                &$params
-            }
-            fn set_param(&mut self, id: u16, value: f32) {
-                if let Some(p) = $params.get(id as usize) {
-                    if !p.readonly {
-                        let v = p.clamp(value);
-                        self.v[id as usize] = v;
-                        self.apply(id, v);
-                    }
-                }
-            }
-            fn param(&self, id: u16) -> f32 {
-                self.v.get(id as usize).copied().unwrap_or(f32::NAN)
-            }
-            fn prepare(&mut self, rate: u32, _max_block: usize) {
-                self.setup(rate.max(1));
-            }
-            fn reset(&mut self) {
-                self.clear();
-            }
-            fn tail_frames(&self) -> u32 {
-                self.tail()
-            }
-            fn latency(&self) -> u32 {
-                self.lat()
-            }
-            fn process(
-                &mut self,
-                ctx: &mpfree_node::Ctx,
-                events: &[mpfree_node::Timed],
-                left: &mut [f32],
-                right: &mut [f32],
-            ) {
-                let len = left.len().min(right.len());
-                self.begin(ctx);
-                let mut segs = crate::svf::Segs::new(events);
-                while let Some((from, to)) = segs.next(len, |ev| {
-                    if let mpfree_node::NodeEvent::Param { id, value } = *ev {
-                        mpfree_node::Node::set_param(self, id, value);
-                    }
-                }) {
-                    self.run(ctx, from, &mut left[from..to], &mut right[from..to]);
-                }
-            }
-        }
-    };
-}
-pub(crate) use node_impl;

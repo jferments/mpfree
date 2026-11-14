@@ -17,13 +17,16 @@ use mpfree_fx::{ids, registry};
 const RATE: u32 = 48_000;
 const BLOCK: usize = 128;
 
+/// A run: its name, the effect's id and the settings that differ.
+type Run = (&'static str, &'static str, &'static [(u16, f32)]);
+
 fn main() {
     let only = std::env::var("FX_BENCH_ONLY").ok();
     let blocks: usize = std::env::var("FX_BENCH_BLOCKS")
         .ok()
         .and_then(|b| b.parse().ok())
         .unwrap_or(20 * RATE as usize / BLOCK);
-    let runs: &[(&str, &str, &[(u16, f32)])] = &[
+    let runs: &[Run] = &[
         ("Tremolo", "mpfree.fx.tremolo", &[]),
         (
             "Tremolo (Harmonic)",

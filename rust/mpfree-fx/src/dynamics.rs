@@ -513,7 +513,7 @@ impl Gate {
         // Release: an even fade in dB from open to Range (to -80 dB when
         // Range is all the way down).
         let nr = (self.v[gate::RELEASE as usize] * 0.001 * fs).max(1.0);
-        let depth = self.v[gate::RANGE as usize].max(-80.0).min(-0.01);
+        let depth = self.v[gate::RANGE as usize].clamp(-80.0, -0.01);
         self.rel_mult = db_to_gain(depth / nr);
         self.hold_frames = (self.v[gate::HOLD as usize] * 0.001 * fs) as u32;
         self.key_hp.set(
