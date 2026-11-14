@@ -9,11 +9,15 @@ script itself (AUTORUN below) only writes one line to the MPC's kernel log
 and one file, mpfree-autorun-result.txt, next to itself on the drive (or in
 /run, the MPC's RAM, if the drive is read-only). It changes nothing else.
 
-It never contacts the MPC and never asks you to type a device name: it looks
-for the one partition that is
-  - on a USB disk (/dev/sd*), mounted on this workstation, FAT32 or exFAT,
+It never contacts the MPC, never formats or mounts anything and never asks you
+to type a device name: it looks for the one filesystem that is
+  - on a USB disk (/dev/sd*, a partition or the whole disk), mounted on this
+    workstation, FAT32 or exFAT,
   - not on the MPFree test stick (no partition named mpfree-test-*),
-and it stops if there is none or more than one. It shows the drive and adds
+and it stops if there is none or more than one. When there is none, it lists
+the USB disks it sees with nothing mounted and what is on them (from udev's
+records), and says what to do: open a FAT32 stick in the file manager so it
+is mounted, or format a blank stick as FAT first. It shows the drive and adds
 the files only after you type WRITE. It writes autorun.sh (and removes an
 mpfree-autorun-result.txt from an earlier run of this script); it stops
 without writing if the drive holds an autorun.sh or result file that this
@@ -33,7 +37,7 @@ import re
 import sys
 
 TEST_ROOT = os.environ.get("MPFREE_TEST_ROOT", "")
-NAME = re.compile(r"^sd[a-z]+[0-9]+$")
+NAME = re.compile(r"^sd[a-z]+[0-9]*$")
 FILESYSTEMS = ("vfat", "exfat")
 SCRIPT = "autorun.sh"
 RESULT = "mpfree-autorun-result.txt"
@@ -97,8 +101,19 @@ def partname(node):
     return ""
 
 
+def udev_props(node):
+    """udev's record of a block device (ID_FS_TYPE, ID_FS_LABEL, ...), read without root."""
+    props = {}
+    dev = read(f"/sys/class/block/{node}/dev")
+    for line in read(f"/run/udev/data/b{dev}").splitlines() if dev else []:
+        if line.startswith("E:") and "=" in line:
+            key, _, value = line[2:].partition("=")
+            props[key] = value
+    return props
+
+
 def drives():
-    """Every mounted /dev/sd* partition: (facts, reasons it is not used)."""
+    """Every mounted /dev/sd* partition or whole disk: (facts, reasons it is not used)."""
     found = []
     with open(p("/proc/self/mountinfo")) as fh:
         lines = fh.read().splitlines()
@@ -131,6 +146,56 @@ def drives():
     return found
 
 
+def unmounted_usb_disks(found):
+    """USB disks (/dev/sd*) with nothing of them mounted: [(name, description, [what is on them])]."""
+    mounted = {re.sub(r"[0-9]+$", "", info["name"]) for info, _ in found}
+    disks = []
+    names = sorted(os.listdir(p("/sys/block"))) if os.path.isdir(p("/sys/block")) else []
+    for disk in names:
+        base = f"/sys/block/{disk}"
+        if not re.match(r"^sd[a-z]+$", disk) or disk in mounted or "/usb" not in os.path.realpath(p(base)):
+            continue
+        size = int(read(base + "/size", "0") or 0) * 512
+        if size == 0:
+            continue  # a card reader slot with no card
+        desc = f"{read(base + '/device/vendor', '?')} {read(base + '/device/model', '?')}, {size / 1e9:.1f} GB"
+        parts = sorted((d for d in os.listdir(p(base)) if re.match(rf"^{disk}[0-9]+$", d)),
+                       key=lambda d: int(d[len(disk):]))
+        if any(partname(d).startswith("mpfree-test") for d in parts):
+            disks.append((disk, desc + " (the MPFree test stick: never used)", None))
+            continue
+        held = []
+        for node in [disk] + parts:
+            props = udev_props(node)
+            fs = props.get("ID_FS_TYPE", "")
+            if node == disk and (parts or not fs):
+                continue  # the whole disk counts only when it holds a filesystem itself
+            label = props.get("ID_FS_LABEL", "")
+            held.append((node, fs, label))
+        disks.append((disk, desc, held))
+    return disks
+
+
+def no_drive_hint(disks):
+    """Why none of the unmounted USB disks can be used yet, and what to do."""
+    disks = [d for d in disks if d[2] is not None]  # never the test stick
+    if not disks:
+        return ("no spare drive to use: plug in one FAT32 or exFAT USB drive and let the desktop mount it "
+                "(it then shows in the file manager)")
+    fat = [d for d in disks if any(fs in FILESYSTEMS for _, fs, _ in d[2])]
+    blank = [d for d in disks if not any(fs for _, fs, _ in d[2])]
+    if fat:
+        return ("a USB drive with FAT32 or exFAT is plugged in but not mounted: open it in the file manager "
+                "(click it in the side bar) so the desktop mounts it, then run this again")
+    if blank:
+        return ("the USB drive has no filesystem yet, so the desktop cannot mount it. Format it as "
+                "FAT first (this erases it): in the Disks app, pick that drive on the left, then the drive "
+                "menu (top right) > Format Disk > MBR / DOS > Format; then the + under Volumes > Type: FAT > "
+                "Create, and the play button to mount it. Then run this again")
+    return ("the USB drive holds no FAT32 or exFAT filesystem: use a FAT32 or exFAT drive instead, "
+            "then run this again")
+
+
 def own_file(path, mark):
     with open(path, errors="replace") as fh:
         return mark in fh.read(4096).splitlines()[:2]
@@ -150,7 +215,7 @@ def ask(prompt):
 
 def main():
     print("Harmless autorun.sh for the 3.10.1 developer mode test (workstation only, no MPC contact)")
-    print("Mounted USB drives seen:")
+    print("Mounted drives seen (/dev/sd*):")
     candidates = []
     found = drives()
     for info, reasons in found:
@@ -162,7 +227,17 @@ def main():
     if not found:
         print("  (none)")
     if not candidates:
-        raise Stop("no spare drive to use: plug in one FAT32 or exFAT USB drive and let the desktop mount it")
+        disks = unmounted_usb_disks(found)
+        print("USB disks with nothing mounted (what udev says is on them):")
+        for disk, desc, held in disks:
+            print(f"  /dev/{disk}: {desc}")
+            for node, fs, label in held or ():
+                print(f"      /dev/{node}: {fs or 'no filesystem'}" + (f", label {label}" if label else ""))
+            if held == []:
+                print("      no partitions and no filesystem (blank)")
+        if not disks:
+            print("  (none)")
+        raise Stop(no_drive_hint(disks))
     if len(candidates) > 1:
         raise Stop("more than one drive could be used: unplug all but the spare one, then run this again")
     info = candidates[0]

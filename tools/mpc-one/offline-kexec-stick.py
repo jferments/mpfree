@@ -810,6 +810,8 @@ def firewall_lines(img, scratch):
                 continue
             lines.append(f"  --- {path}")
             data = img.read(path, scratch)
+            if not data:
+                lines.append("    (empty: 0 bytes, so it loads no rules)")
             lines.extend("    " + ln for ln in data[:RULES_MAX].decode("utf-8", "replace").splitlines())
             if len(data) > RULES_MAX:
                 lines.append(f"    (cut at {RULES_MAX} bytes of {len(data)})")

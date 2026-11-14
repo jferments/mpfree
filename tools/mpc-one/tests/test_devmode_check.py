@@ -63,6 +63,9 @@ with open(os.environ["FAKE_LOG"], "a") as fh:
     fh.write(f"ssh[{port}@{stage}] key={'yes' if ident and o.get('PubkeyAuthentication') == 'yes' else 'no'}: "
              f"{command.splitlines()[0]}\n")
 if port == "2222":
+    if stage == "off":
+        print("Connection reset by 10.42.0.141 port 2222", file=sys.stderr)
+        sys.exit(255)
     if o.get("HostKeyAlias") != "mpfree-kexec-test" or stage != "310":
         print("Host key verification failed.", file=sys.stderr)
         sys.exit(255)
@@ -328,6 +331,11 @@ class DevmodeCheckTests(unittest.TestCase):
         self.assertIn("STOP:", read(self.report))
         self.build()
         write(self.stage, "36\n")
+        res = self.run_helper()
+        self.assertEqual(res.returncode, 1, res.stdout)
+        self.assertIn("port 2222 answered with another host key, so the MPC is not running this test build", res.stdout)
+        self.assertNotRegex(self.commands(), r"ssh\[22@")
+        write(self.stage, "off\n")
         res = self.run_helper()
         self.assertEqual(res.returncode, 1, res.stdout)
         self.assertIn("the test build did not answer on port 2222", res.stdout)
