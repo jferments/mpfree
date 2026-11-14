@@ -248,10 +248,15 @@ fn start(program: &Program, plugin: &Path, id: &str, map: &Mapping) -> Result<(C
 /// before the process's own. The `mpfree-plughost` binary takes none; a
 /// program that serves as the plugin process behind a subcommand (the app
 /// does, `mpfree plughost ...`) takes that word.
+///
+/// [`Program::with_home`] gives every process it starts a home folder of
+/// its own.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Program {
     pub exe: PathBuf,
     pub lead: Vec<std::ffi::OsString>,
+    /// The processes' home folder, if not the one they'd inherit.
+    pub home: Option<PathBuf>,
 }
 
 impl Program {
@@ -260,6 +265,7 @@ impl Program {
         Program {
             exe: exe.to_path_buf(),
             lead: Vec::new(),
+            home: None,
         }
     }
 
@@ -268,12 +274,31 @@ impl Program {
         Program {
             exe: exe.to_path_buf(),
             lead: lead.iter().map(Into::into).collect(),
+            home: None,
         }
+    }
+
+    /// The same program, with each process it starts living in `dir`:
+    /// `HOME` and the XDG config, data, cache and state folders are set
+    /// inside it, so whatever a plugin keeps for itself (Surge XT makes
+    /// `~/.Surge XT`, Dexed writes its cartridges under
+    /// `~/.local/share`) goes there and never into the inherited home. The
+    /// folder isn't made here: the caller makes it, or the plugin does.
+    pub fn with_home(mut self, dir: &Path) -> Program {
+        self.home = Some(dir.to_path_buf());
+        self
     }
 
     fn command(&self) -> Command {
         let mut c = Command::new(&self.exe);
         c.args(&self.lead);
+        if let Some(h) = &self.home {
+            c.env("HOME", h)
+                .env("XDG_CONFIG_HOME", h.join(".config"))
+                .env("XDG_DATA_HOME", h.join(".local").join("share"))
+                .env("XDG_CACHE_HOME", h.join(".cache"))
+                .env("XDG_STATE_HOME", h.join(".local").join("state"));
+        }
         c
     }
 }
@@ -938,5 +963,56 @@ impl Sandbox {
             .unwrap_or_else(|e| e.into_inner())
             .as_ref()
             .map(|c| c.child.id())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_home_folder_goes_to_every_process() {
+        let env = |p: &Program| -> Vec<(String, Option<String>)> {
+            p.command()
+                .get_envs()
+                .map(|(k, v)| {
+                    (
+                        k.to_string_lossy().into_owned(),
+                        v.map(|v| v.to_string_lossy().into_owned()),
+                    )
+                })
+                .collect()
+        };
+        let plain = Program::new(Path::new("/bin/true"));
+        assert!(env(&plain).is_empty(), "inherited as it is");
+        let homed = plain
+            .clone()
+            .with_home(Path::new("/data/files/plugin-home"));
+        let mut got = env(&homed);
+        got.sort();
+        let some = |s: &str| Some(s.to_string());
+        assert_eq!(
+            got,
+            [
+                ("HOME".into(), some("/data/files/plugin-home")),
+                (
+                    "XDG_CACHE_HOME".into(),
+                    some("/data/files/plugin-home/.cache")
+                ),
+                (
+                    "XDG_CONFIG_HOME".into(),
+                    some("/data/files/plugin-home/.config")
+                ),
+                (
+                    "XDG_DATA_HOME".into(),
+                    some("/data/files/plugin-home/.local/share")
+                ),
+                (
+                    "XDG_STATE_HOME".into(),
+                    some("/data/files/plugin-home/.local/state")
+                ),
+            ]
+        );
+        assert_ne!(plain, homed);
     }
 }

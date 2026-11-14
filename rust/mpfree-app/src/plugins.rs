@@ -10,6 +10,11 @@
 //!   there (or `MPFREE_PLUGHOST`), else the app itself as `mpfree plughost
 //!   ...` ([`program`], [`serve`]), so a stick with only the app on it still
 //!   hosts plugins.
+//! - **Their own files.** Each plugin process runs with its home (and its
+//!   XDG folders) in `files/plugin-home/`, which the store makes
+//!   ([`home`]), so what a plugin keeps for itself lands on the data
+//!   partition and nowhere else. Without a data folder, a fresh folder in
+//!   the system's temp folder, never the real home.
 //! - **Finding them.** At start, `files/plugins/*.clap` in the data folder
 //!   ([`scan`]). Effects go in the chain editor's picker after the built-in
 //!   ones ([`picks`]); instruments wait for the track host.
@@ -36,6 +41,18 @@ pub const PLUGINS_FOLDER: &str = "plugins";
 pub const PLUGHOST: &str = "mpfree-plughost";
 /// The app's subcommand that serves as the plugin process.
 pub const SUBCOMMAND: &str = "plughost";
+/// The plugin processes' home folder, under `files/` (storage-spec.md).
+pub const HOME_FOLDER: &str = "plugin-home";
+
+/// The plugin processes' home folder: `files/plugin-home/` in the data
+/// folder, made by the store, or without one (or if it can't be made) a
+/// folder of this run's own in the system's temp folder, which nothing
+/// makes until a plugin does.
+pub fn home(store: &mpfree_store::Store) -> PathBuf {
+    store.dir(HOME_FOLDER).unwrap_or_else(|| {
+        std::env::temp_dir().join(format!("mpfree-plugin-home-{}", std::process::id()))
+    })
+}
 
 /// The plugin process to start: `MPFREE_PLUGHOST`, else `mpfree-plughost`
 /// beside `app`, else `app plughost`.
@@ -103,6 +120,26 @@ mod tests {
         assert_eq!(program(&app), Program::with_lead(&app, &["plughost"]));
         std::fs::write(d.join(PLUGHOST), b"").unwrap();
         assert_eq!(program(&app), Program::new(&d.join(PLUGHOST)));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn plugins_live_in_the_data_folder_or_else_a_temp_folder_never_the_real_home() {
+        let d =
+            std::env::temp_dir().join(format!("mpfree-plugin-home-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let store = mpfree_store::Store::at(&d, |_| {});
+        let h = home(&store);
+        assert_eq!(h, d.join("files").join(HOME_FOLDER));
+        assert!(h.is_dir(), "the store made it");
+        let none = home(&mpfree_store::Store::none());
+        assert!(none.starts_with(std::env::temp_dir()), "{}", none.display());
+        assert!(!none.exists(), "nothing made");
+        assert_eq!(
+            program(&d.join("mpfree")).with_home(&h).home.as_deref(),
+            Some(h.as_path())
+        );
         let _ = std::fs::remove_dir_all(&d);
     }
 

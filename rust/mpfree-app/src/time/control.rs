@@ -24,7 +24,7 @@ use mpfree_play::{MOVE_POINTS, TOUCH_POINTS};
 use mpfree_seq::arrange::{scene_length, scenes_to_song, song_to_scenes};
 use mpfree_seq::mpfree_moves::{Kind, MoveLog};
 use mpfree_seq::steps::Grid;
-use mpfree_seq::{Clip, ModelError, Project, TouchPoint, SLOTS};
+use mpfree_seq::{Clip, ModelError, Project, TouchPoint, MAX_TRACKS, SLOTS};
 use mpfree_time_ui::editor::{EditAction, Editor};
 use mpfree_time_ui::view::{
     bars_label, clips_after, AudioAction, EditInfo, MorphInfo, RegionId, TakeRow, TimeAction,
@@ -198,8 +198,24 @@ impl TimeControl {
     /// Send the tracks' settings if they changed.
     fn sync_tracks(&mut self) {
         let now = Tracks::of(&self.project, self.armed);
-        if now != self.tracks_sent && self.tx.send(ToAudio::Tracks(now)).is_ok() {
-            self.tracks_sent = now;
+        let sent = &mut self.tracks_sent;
+        if (now.n, now.armed) != (sent.n, sent.armed)
+            && self
+                .tx
+                .send(ToAudio::Tracks {
+                    n: now.n,
+                    armed: now.armed,
+                })
+                .is_ok()
+        {
+            (sent.n, sent.armed) = (now.n, now.armed);
+        }
+        // Only what changed, one track a message: one that finds the
+        // queue full goes at the next poll.
+        for (t, (s, was)) in now.set.iter().zip(sent.set.iter_mut()).enumerate() {
+            if s != was && self.tx.send(ToAudio::Track(t, *s)).is_ok() {
+                *was = *s;
+            }
         }
     }
 
@@ -344,14 +360,20 @@ impl TimeControl {
     }
 
     pub(super) fn compile(&mut self) -> Result<(), String> {
-        // An undone capture takes its clip, and so its launch, away.
+        // An undone capture takes its clip, and so its launch, away; an
+        // undone + Track takes its track.
         let project = &self.project;
+        let n = project.tracks.len();
         self.launches
             .retain(|l| project.clip(l.track, l.slot).is_some());
         self.cues.retain(|c| {
-            c.slot
-                .is_none_or(|slot| project.clip(c.track, slot).is_some())
+            c.track < n
+                && c.slot
+                    .is_none_or(|slot| project.clip(c.track, slot).is_some())
         });
+        if self.armed.is_some_and(|t| t >= n) {
+            self.armed = n.checked_sub(1);
+        }
         let v = self.view()?;
         // Room to record into the armed track's clips without allocating.
         if let Some(t) = self.armed {
@@ -846,6 +868,16 @@ impl TimeControl {
                     track + 1
                 ))
             }
+            TimeAction::AddTrack => {
+                let name = format!("Track {}", self.project.tracks.len() + 1);
+                let (_, index) = self
+                    .takes
+                    .add_track(&mut self.project, &name)
+                    .map_err(|_| format!("{MAX_TRACKS} tracks is the most a project holds"))?;
+                self.armed = Some(index);
+                self.compile()?;
+                Ok(format!("{name} added and armed (UNDO takes it away)"))
+            }
             TimeAction::Chip(_) => Ok(String::new()),
             TimeAction::MorphRows { a, b } => {
                 self.morph.a = a.min(SLOTS - 1);
@@ -1272,6 +1304,11 @@ impl TimeControl {
     /// pad lights.
     pub fn muted(&self, t: usize) -> Option<bool> {
         self.project.tracks.get(t).map(|tr| tr.mute)
+    }
+
+    /// The project's tracks, for TRACK MUTE's banks.
+    pub fn track_count(&self) -> usize {
+        self.project.tracks.len()
     }
 
     /// Whether track `t` has a clip launched (playing, or waiting for the

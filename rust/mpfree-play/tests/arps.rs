@@ -445,3 +445,43 @@ fn finish_with_marks_what_the_arps_played() {
     assert!(seen.contains(&(3, 7, true)));
     assert_eq!(seen.iter().filter(|s| !s.2).count(), 1, "{seen:?}");
 }
+
+#[test]
+fn only_the_tracks_in_use_are_visited_and_the_128th_track_plays() {
+    let mut arps = TrackArps::new(44_100, 120.0);
+    assert_eq!(arps.used(), 0);
+    // A setting on every engine (the tempo, a project's arps) wakes none.
+    for e in arps.engines_mut() {
+        e.set_tempo(100.0);
+    }
+    assert_eq!(arps.used(), 0);
+    // The last of 128 tracks, latched in Repeat, plays from a pad.
+    let last = mpfree_seq::MAX_TRACKS - 1;
+    arps.engine(last).unwrap().set_settings(Settings {
+        mode: Mode::Repeat,
+        ..up_sixteenths()
+    });
+    arps.engine(last).unwrap().set_latch(LatchMode::Replace);
+    assert_eq!(arps.used(), 128);
+    assert!(arps.engine(128).is_none(), "no 129th track");
+    let log = run(
+        &mut arps,
+        22_050,
+        || 128,
+        |a, start| {
+            if start == 0 {
+                a.pad(
+                    last,
+                    0,
+                    Event::NoteOn {
+                        note: 50,
+                        velocity: 90,
+                    },
+                );
+                a.pad(last, 10, Event::NoteOff { note: 50 });
+            }
+        },
+    );
+    assert!(ons(&log, last).len() >= 3, "{:?}", ons(&log, last));
+    assert_eq!(CALLS.load(Ordering::Relaxed), 0, "no allocation");
+}
