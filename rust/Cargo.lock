@@ -375,6 +375,7 @@ dependencies = [
  "mpfree-clap-testplug",
  "mpfree-controller",
  "mpfree-core",
+ "mpfree-export",
  "mpfree-fx",
  "mpfree-fx-ui",
  "mpfree-instruments",
@@ -522,6 +523,14 @@ dependencies = [
 [[package]]
 name = "mpfree-display"
 version = "0.1.0"
+
+[[package]]
+name = "mpfree-export"
+version = "0.1.0"
+dependencies = [
+ "mpfree-fx",
+ "mpfree-midi",
+]
 
 [[package]]
 name = "mpfree-flac"

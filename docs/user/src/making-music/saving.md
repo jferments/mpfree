@@ -1,15 +1,14 @@
 <!--
 status: changing
 covers: rust/mpfree-store rust/mpfree-library rust/mpfree-browser-ui rust/mpfree-app/src/app/saved.rs rust/mpfree-app/src/project.rs rust/mpfree-app/src/app/arp/part.rs
-checked: 2026-11-13 7ba56df
+checked: 2026-11-14 b76c3c7
 -->
 
 # Saving your work
 
 MPFree keeps everything you save on its own USB stick. The MPC's internal storage and its SD card are never written, so the factory software and your MPC projects are exactly as you left them.
 
-> [!IMPORTANT]
-> Saving projects arrives in the next build. Until then your music lasts until you switch off; settings and arpeggiator patterns are already kept.
+To save the song you're working on, press **SHIFT + BROWSE** on any page. The rest of this chapter says what is kept where, and how to open, name and go back to your projects.
 
 ## Your song, and your setup
 
@@ -26,7 +25,7 @@ These are saved on the stick as soon as you change them, and are back the next t
 
 | What | Where you set it |
 |---|---|
-| Your Prefs: pad velocity curve, how Latch keeps pads, the audio buffer, the loop memory, developer tools, the theme, what opens at start, screen pad velocity | [Prefs](../reference/prefs.md) |
+| Your Prefs: pad velocity curve, how Latch keeps pads, the audio buffer, the loop memory, developer tools, the theme, what opens at start, how exports play, screen pad velocity | [Prefs](../reference/prefs.md) |
 | The metronome on or off, and its level | **SHIFT + PLAY START**, or the Play page's options (**MENU**) |
 | The Looper's level, and the line input's latency once you have set it by hand | The Looper tab's options (see [Recording loops](looping.md)) |
 | Whether the Play page's Beats view shows the timing strip | The Play page's options (**MENU**) |
@@ -68,7 +67,8 @@ In the browser's **Projects** place you also have:
 
 - **Save**, the same as SHIFT + BROWSE;
 - **Save as**, which asks for a name and saves the work as a new project;
-- **New project**, below.
+- **New project**, below;
+- **Export**, which makes a mixdown, stems and a MIDI file of the song (see [Exporting your music](exporting.md)).
 
 A save is all or nothing. The project's new files are written to the side first and only then swapped in, so if the power goes off during a save, the project opens as it was at the save before. A save that can't finish (a full stick, say) says so and leaves the last save as it was.
 
@@ -97,6 +97,8 @@ MPFree starts with a new, empty project. To have it open the project you last sa
 **After a crash**, MPFree starts again by itself a few seconds later, and this time it opens nothing: the new, empty project stays even if At start says **Last project**, and for a few seconds the hint line at the bottom of the screen says which project wasn't opened, and where your unsaved work is if autosave had any (the Events log keeps it). Open it from **BROWSE** when you're ready. This way a project that makes MPFree crash as it opens can't do it again at every start. Switching the MPC off and on starts as usual.
 
 ## The browser
+
+{{shot: browser | The browser in Projects, with Night drive picked: its tempo and when it was saved on the right, with Open and Earlier saves.}}
 
 **BROWSE** opens the browser over the page you are on, and pressing it again goes back to that page. It is a full file manager for MPFree's stick:
 

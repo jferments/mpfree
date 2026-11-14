@@ -444,6 +444,11 @@ fn fill_sounds(st: &mut TimeState, sounds: &TrackSounds) {
 pub enum ToUi {
     /// A line for the terminal and the Events log.
     Line(String),
+    /// What Export needs to know about the song (export.rs), after
+    /// [`FromUi::ExportAsk`].
+    ExportFacts(Box<crate::export::Facts>),
+    /// An export's pass is over (or never started): the job finishes it.
+    ExportOver(Box<crate::export::Run>),
     /// A save: what the audio loop's engines hold, for the screen to write
     /// with its own parts and hand to the library (project.rs).
     ProjectParts(Box<crate::project::Collected>),
@@ -726,6 +731,12 @@ pub enum FromUi {
     /// Save the project: the audio loop sends its engines' parts back
     /// (`ToUi::ProjectParts`).
     SaveProject,
+    /// Export was pressed: the audio loop sends the song's facts
+    /// (`ToUi::ExportFacts`).
+    ExportAsk,
+    /// Start an export: the pass plays the range into its files
+    /// (export.rs); it comes back as `ToUi::ExportOver`.
+    Export(Box<crate::export::Run>),
     /// Open a project (or a new one): the pieces built here, swapped in
     /// between two periods (project.rs).
     OpenProject(Box<crate::project::Opening>),
@@ -1012,6 +1023,10 @@ pub struct Player {
     /// Autosave is off this run: the last run's unsaved work couldn't be
     /// set aside, and autosave would write over it.
     autosave_off: bool,
+    /// Export: the song's facts while the panel is open, and the job of
+    /// the export running with its folder in the library (export.rs).
+    export_facts: Option<Box<crate::export::Facts>>,
+    export_job: Option<(mpfree_export::Job, Option<mpfree_library::Loc>)>,
     /// The sound's rate, for an opened project's engines.
     project_rate: u32,
     /// When the last open landed ([`OPEN_SETTLE`]).
@@ -1336,6 +1351,8 @@ impl Player {
             autosaving: false,
             autosave_dirty: false,
             autosave_off: false,
+            export_facts: None,
+            export_job: None,
             project_rate: 44_100,
             opened_at: None,
             open_actions: 0,
@@ -1545,6 +1562,10 @@ impl Player {
                 },
                 cards,
             )
+        } else if let Some(p) = self.synth.as_ref().filter(|_| self.view == View::Synth) {
+            // The Synth tab: what the page's Q-Links turn, named as their
+            // sections show them (the badges Q1 to Q4 on the page).
+            ("Q-Links · Synth", p.qlink_cards())
         } else if let Some((title, knobs)) = &audio {
             // An audio region picked on Arrange's Song view, or a track
             // panel open (layout spec 4c): the track's level and pan, the
@@ -2318,6 +2339,14 @@ impl Player {
                                       MENU: options   ·   NOTE REPEAT + MENU: close"),
                 View::Pattern => self.workspace.hint().to_string(),
                 View::Browser if self.browser.is_none() => NO_LIBRARY_HINT.to_string(),
+                View::Browser
+                    if self
+                        .browser
+                        .as_ref()
+                        .is_some_and(|b| b.export_panel().is_some() && b.picking().is_none()) =>
+                {
+                    mpfree_browser_ui::EXPORT_HINT.to_string()
+                }
                 View::Browser => mpfree_browser_ui::BROWSER_HINT.to_string(),
             }
         };
@@ -3344,6 +3373,8 @@ impl Player {
                 self.io_model = Some(model);
             }
             ToUi::ProjectParts(c) => self.save_project(c),
+            ToUi::ExportFacts(f) => self.export_facts(f),
+            ToUi::ExportOver(run) => self.export_over(run),
             ToUi::ProjectDefaults(d) => self.project_defaults = Some(*d),
             ToUi::Plugins(p) => self.project_plugins = p,
             ToUi::TrackSounds(s) => {
@@ -3446,18 +3477,21 @@ impl Player {
                     .add("syslog", LogPanel::new("Console", true, CONSOLE_BACKLOG));
                 self.console_backlog.clear();
             }
-            ToUi::Synth(state) => match self.synth.as_mut() {
-                Some(p) => {
-                    let _ = p.load(&mut self.ui, state);
-                }
-                None => match SynthPanel::add(&mut self.ui, "Synth", state) {
-                    Ok(mut p) => {
-                        let _ = p.set_layout_wrap(&mut self.ui, play_page::synth_with_pads);
-                        self.synth = Some(p);
+            ToUi::Synth(state) => {
+                match self.synth.as_mut() {
+                    Some(p) => {
+                        let _ = p.load(&mut self.ui, state);
                     }
-                    Err(e) => println!("screen: no Synth page ({e})"),
-                },
-            },
+                    None => match SynthPanel::add(&mut self.ui, "Synth", state) {
+                        Ok(mut p) => {
+                            let _ = p.set_layout_wrap(&mut self.ui, play_page::synth_with_pads);
+                            self.synth = Some(p);
+                        }
+                        Err(e) => println!("screen: no Synth page ({e})"),
+                    },
+                }
+                self.refresh_qlinks();
+            }
             ToUi::SynthValues(values) => {
                 if let Some(p) = self
                     .synth
@@ -3467,6 +3501,7 @@ impl Player {
                     p.state.values = values;
                     p.refresh(&mut self.ui);
                 }
+                self.refresh_qlinks();
             }
             ToUi::SynthMeters(meters) => {
                 if let Some(p) = self.synth.as_mut() {
@@ -3495,6 +3530,7 @@ impl Player {
                 {
                     self.outbox.push(FromUi::Synth(a));
                 }
+                self.refresh_qlinks();
             }
             ToUi::SynthWheel(ticks) => {
                 if let Some(a) = self
@@ -3504,11 +3540,13 @@ impl Player {
                 {
                     self.outbox.push(FromUi::Synth(a));
                 }
+                self.refresh_qlinks();
             }
             ToUi::SynthPage(delta) => {
                 if let Some(p) = self.synth.as_mut() {
                     p.step_page(&mut self.ui, delta);
                 }
+                self.refresh_qlinks();
             }
             ToUi::SampleKits { projects, rate } => {
                 self.project_rate = rate;
@@ -3978,6 +4016,14 @@ impl Player {
             A::LastNotOpened(e) => self.say(format!(
                 "project: the last project wasn't opened ({e}); the new one stays"
             )),
+            // Export (export.rs): the song's facts first, then the panel.
+            A::ExportAsked => self.outbox.push(FromUi::ExportAsk),
+            A::ExportStart(c) => self.start_export(c),
+            A::ExportCancel => {
+                if let Some((job, _)) = &self.export_job {
+                    job.cancel();
+                }
+            }
             // The Pads tab's browser offers sounds only; anything else
             // is said, never dropped quietly.
             other => self.say(format!(
@@ -4009,6 +4055,109 @@ impl Player {
             }
             Err(e) => self.say(format!("preview: not heard ({e})")),
         }
+    }
+
+    // ------------------------------------------------------------ export
+
+    /// The song's facts came: the Export panel opens with them.
+    fn export_facts(&mut self, f: Box<crate::export::Facts>) {
+        let Some(b) = self.browser.as_mut() else {
+            return;
+        };
+        let song = crate::export::song_name(b.project().map(|l| l.name()));
+        let recordings = b
+            .library()
+            .root()
+            .join(mpfree_library::Place::Recordings.folder());
+        let folder = crate::export::new_folder_name(&recordings, &song, now_utc());
+        let (setup, _, _) = f.setup(self.settings.export_mode, &folder);
+        b.open_export(setup);
+        self.export_facts = Some(f);
+        self.step_browser();
+    }
+
+    /// Start on the Export panel: the plan, the job and its files, and
+    /// the pass to the audio loop.
+    fn start_export(&mut self, c: mpfree_browser_ui::ExportChoice) {
+        let (Some(b), Some(f)) = (self.browser.as_mut(), self.export_facts.as_ref()) else {
+            return;
+        };
+        let song = crate::export::song_name(b.project().map(|l| l.name()));
+        let recordings = b
+            .library()
+            .root()
+            .join(mpfree_library::Place::Recordings.folder());
+        let name = crate::export::new_folder_name(&recordings, &song, now_utc());
+        let (mode, _) = mpfree_export::choose(self.settings.export_mode, &f.rig);
+        let (plan, range) = f.plan(&c, &recordings.join(&name), &song, mode);
+        let loc = mpfree_library::Loc::top(mpfree_library::Place::Recordings)
+            .join(&name)
+            .ok();
+        match mpfree_export::start(plan) {
+            Ok((pass, job)) => {
+                self.say(format!(
+                    "export: {} into Recordings/{name}, {}",
+                    match c.range {
+                        mpfree_browser_ui::ExportRange::Arrangement =>
+                            "the arrangement".to_string(),
+                        mpfree_browser_ui::ExportRange::Bars(n) => format!("{n} bars"),
+                    },
+                    mode.name()
+                ));
+                self.export_job = Some((job, loc));
+                self.outbox
+                    .push(FromUi::Export(Box::new(crate::export::Run {
+                        pass,
+                        range,
+                        said: None,
+                    })));
+            }
+            Err(e) => {
+                let line = format!("Export didn't start: {e}");
+                b.export_over(line.clone(), None);
+                self.say(format!("export: {line}"));
+            }
+        }
+    }
+
+    /// While an export runs: how far it has got, on the panel.
+    fn poll_export(&mut self) {
+        let (Some((job, _)), Some(b)) = (self.export_job.as_ref(), self.browser.as_mut()) else {
+            return;
+        };
+        let p = job.progress();
+        let part = p
+            .length
+            .filter(|&n| n > 0 && !p.tail)
+            .map(|n| p.played as f32 / n as f32);
+        b.export_running(p.words(), part.or(p.tail.then_some(1.0)));
+    }
+
+    /// The pass came back: the job finishes the files and says how it
+    /// went.
+    fn export_over(&mut self, run: Box<crate::export::Run>) {
+        let Some((job, loc)) = self.export_job.take() else {
+            return;
+        };
+        let crate::export::Run { pass, said, .. } = *run;
+        let outcome = job.finish(pass);
+        let (text, folder) = match (&outcome, said) {
+            (mpfree_export::Outcome::Done(_), _) => (outcome.words(), loc),
+            (_, Some(why)) if why.starts_with("Export") => (why, None),
+            (mpfree_export::Outcome::Cancelled, Some(why)) => (
+                format!("Export cancelled: {why}. Its files were removed."),
+                None,
+            ),
+            _ => (outcome.words(), None),
+        };
+        self.say(format!("export: {text}"));
+        self.export_facts = None;
+        if let Some(b) = self.browser.as_mut() {
+            b.export_over(text, folder);
+            // The new folder shows when Recordings is next listed.
+            b.refresh();
+        }
+        self.step_browser();
     }
 
     // ------------------------------------------------------------ projects
@@ -5278,15 +5427,17 @@ impl Player {
     pub fn on_event(&mut self, ev: UiEvent) -> Option<FromUi> {
         let synth_widget = [
             synth_view::TITLE,
-            synth_view::VISUALS,
+            synth_view::INST,
             synth_view::TILES,
             synth_view::PRESETS,
-            synth_view::QLINKS,
         ]
         .contains(&ev.widget.as_str());
         if synth_widget {
             let p = self.synth.as_mut()?;
-            return p.event(&mut self.ui, &ev).map(FromUi::Synth);
+            let a = p.event(&mut self.ui, &ev).map(FromUi::Synth);
+            // The page or a value changed: the Q-Link column follows.
+            self.refresh_qlinks();
+            return a;
         }
         if ev.widget.starts_with(sample_page::PREFIX) {
             let before = self.sample.page();
@@ -5401,6 +5552,11 @@ impl Player {
             (play_page::QLINKS, EventKind::Step { index, delta }) if self.view == View::Mixer => {
                 self.mixer_qlink(index, delta);
                 None
+            }
+            (play_page::QLINKS, EventKind::Step { index, delta }) if self.view == View::Synth => {
+                let a = self.synth.as_mut()?.qlink(&mut self.ui, index, delta);
+                self.refresh_qlinks();
+                a.map(FromUi::Synth)
             }
             (play_page::QLINKS, EventKind::Step { index, delta })
                 if self.chain_page.drives(self.view) && !self.band_showing() =>
@@ -5741,6 +5897,7 @@ impl Player {
         if self.browsing() || self.browser.as_ref().is_some_and(|b| b.busy()) {
             self.step_browser();
         }
+        self.poll_export();
         self.poll_preview();
         self.poll_loops();
         self.poll_audio();
@@ -7332,6 +7489,35 @@ fn pads_browse(fonts: Fonts) -> Result<Player, String> {
     built
 }
 
+/// The whole browser over the page (BROWSE), in Projects with a saved
+/// project picked, over a library filled in a scratch folder (removed
+/// again once the browser has read what it shows). For the manual's
+/// Saving chapter.
+fn browser_projects(fonts: Fonts) -> Result<Player, String> {
+    use mpfree_browser_ui::sample::{fill, select, source};
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let dir = std::env::temp_dir().join(format!("mpfree-browser-{}-{nanos}", std::process::id()));
+    let built = (|| {
+        std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        let lib = fill(&dir)?;
+        let mut p = sample_sampler(fonts);
+        p.set_browser(mpfree_browser_ui::Browser::inline(lib), "");
+        p.take_actions();
+        p.apply(ToUi::Show(View::Browser));
+        let b = p.browser.as_mut().ok_or("no browser")?;
+        b.go_source(source("Projects"));
+        select(b, "Night drive");
+        p.step_browser();
+        p.take_actions();
+        Ok(p)
+    })();
+    let _ = std::fs::remove_dir_all(&dir);
+    built
+}
+
 /// The I/O view's Sync section's title.
 const IO_SYNC: &str = mpfree_midi_ui::SYNC;
 
@@ -8030,6 +8216,11 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     match pads_browse(fonts()) {
         Ok(browse) => out.push(("pads-browse", browse)),
         Err(e) => eprintln!("pads-browse: not drawn ({e})"),
+    }
+    // The whole browser (BROWSE) in Projects, Night drive picked.
+    match browser_projects(fonts()) {
+        Ok(browser) => out.push(("browser", browser)),
+        Err(e) => eprintln!("browser: not drawn ({e})"),
     }
     // The Chop tab on the same pad: chopped at its hits, slice 3 picked.
     let mut chop = sample_sampler(fonts());
@@ -14610,6 +14801,15 @@ mod tests {
             .unwrap()
             .text
             .contains("Q-Links 1-4"));
+        // The shared Q-Link column shows what the page's Q-Links turn.
+        let column = |p: &Player| {
+            let q = p.ui.get::<QLinkColumn>(play_page::QLINKS).unwrap();
+            (q.title.clone(), q.cards.clone())
+        };
+        assert!(p.ui.rect_of(play_page::QLINKS).is_some_and(|r| r.w == 168));
+        assert_eq!(column(&p).0, "Q-Links · Synth");
+        assert_eq!(column(&p).1, p.synth.as_ref().unwrap().qlink_cards());
+        let before = column(&p).1[0].value.clone();
         // A Q-Link turns its knob on screen at once and sends the change.
         assert!(p.take_actions().is_empty());
         p.apply(ToUi::SynthQLink(0, 5));
@@ -14618,16 +14818,33 @@ mod tests {
             matches!(acts.as_slice(), [FromUi::Synth(SynthAction::Set { .. })]),
             "{acts:?}"
         );
+        assert_ne!(column(&p).1[0].value, before, "the card follows");
+        // A drag on a card does the same.
+        let ev = UiEvent {
+            widget: play_page::QLINKS.to_string(),
+            kind: EventKind::Step {
+                index: 0,
+                delta: -5,
+            },
+        };
+        assert!(matches!(
+            p.on_event(ev),
+            Some(FromUi::Synth(SynthAction::Set { .. }))
+        ));
+        assert_eq!(column(&p).1[0].value, before);
         p.apply(ToUi::SynthWheel(-3));
         assert_eq!(p.take_actions().len(), 1);
         // The wheel navigation (app::RowKey): the wheel picks tiles, - / +
         // and an opened tile's wheel turn the tile picked.
         use crate::app::RowKey;
+        // The control picked, as a place in the page's order of controls.
         let tiles = |p: &Player| {
-            let g =
-                p.ui.get::<mpfree_synth_ui::widgets::TileGrid>(synth_view::TILES)
+            let v =
+                p.ui.get::<mpfree_synth_ui::section_view::SectionView>(synth_view::TILES)
                     .unwrap();
-            (g.selected, g.editing, g.tiles.len())
+            let order = p.synth.as_ref().unwrap().order();
+            let at = v.selected.and_then(|i| order.iter().position(|&o| o == i));
+            (at, v.editing, order.len())
         };
         let (at, _, n) = tiles(&p);
         let at = at.unwrap();

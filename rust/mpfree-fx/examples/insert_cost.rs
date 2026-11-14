@@ -5,8 +5,10 @@
 //! profiling on and prints every insert's mean and p99 per 128-frame block,
 //! dearest first, with its share of a period. Run with `--release`; the
 //! reverb runs at Full (as the bench case), or `-- light` / `-- eco` at
-//! its Light or Eco (default) quality. Desktop numbers;
-//! `mpfree-bench` has the MPC model.
+//! its Light or Eco (default) quality. `-- gaps` plays each track and pad
+//! a quarter of the time, in turns, as a song does, so silent inserts
+//! sleep (chain.rs); `-- awake` keeps every insert awake, to compare.
+//! Desktop numbers; `mpfree-bench` has the MPC model.
 
 use mpfree_fx::ids::mixer::{self as mx, output};
 use mpfree_fx::mpfree_node::Ctx;
@@ -66,6 +68,17 @@ fn main() {
         .unwrap()
         .set_param(1, ids::compressor::SIDECHAIN, 1.0);
     m.set_key(StripId::Track(1), 1, Some(StripId::Track(0)));
+    let gaps = std::env::args().any(|a| a == "gaps");
+    if std::env::args().any(|a| a == "awake") {
+        let strips: Vec<StripId> = m.strips().collect();
+        for s in strips {
+            if let Some(c) = m.chain_mut(s) {
+                c.set_sleep(false);
+            }
+        }
+    }
+    // With gaps, strip `k` sounds in one turn (about 3 s) of every four.
+    let sounds = |k: usize, b: u64| !gaps || (b / 1000 + k as u64).is_multiple_of(4);
     m.set_profiling(true);
     let (mut l, mut r) = (vec![0.0f32; BLOCK], vec![0.0f32; BLOCK]);
     let mut seed = 1u32;
@@ -75,6 +88,9 @@ fn main() {
     };
     for b in 0..BLOCKS {
         for t in 0..tracks {
+            if !sounds(t, b) {
+                continue;
+            }
             let (il, ir) = m.track_input(t).unwrap();
             for i in 0..BLOCK {
                 il[i] = noise();
@@ -82,6 +98,9 @@ fn main() {
             }
         }
         for p in 0..pads {
+            if !sounds(p, b) {
+                continue;
+            }
             let (il, ir) = m.pad_input(p).unwrap();
             for i in 0..BLOCK {
                 il[i] = noise();
