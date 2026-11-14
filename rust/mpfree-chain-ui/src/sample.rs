@@ -773,6 +773,31 @@ pub fn samples(fonts: impl Fn() -> Fonts) -> Result<Vec<Sample>, String> {
     tap_on(&mut modes, |l| l.mode_label)?;
     let mut rows = screen(fonts(), &mut song, Place::Mixer, Some(delay.clone()), None)?;
     tap_on(&mut rows, |l| Some(l.rows_link))?;
+    // The drawings the new pages brought, each on a song of its own so
+    // the screens above keep their chains: a Plate, a three-head Tape
+    // delay, the Multi-tap delay and the Channel strip's Compressor page.
+    let drawn = |id: &str, preset: Option<&str>, group: usize| -> Result<Ui, String> {
+        let mut other = Song::new();
+        let mut n = mpfree_fx::registry::make(id).ok_or("no such effect")?;
+        if let Some(p) = preset.and_then(|name| {
+            mpfree_fx::picker::presets(id)
+                .iter()
+                .find(|p| p.name == name)
+        }) {
+            for &(pid, v) in p.values {
+                n.set_param(pid, v);
+            }
+        }
+        let slot = other.keys.push(n);
+        let st = from_mixer(other.chain_state(KEYS, slot, group, None));
+        screen(fonts(), &mut other, Place::Mixer, Some(st), None)
+    };
+    let plate = drawn("mpfree.fx.plate", Some("Vocal plate"), 0)?;
+    let room = drawn("mpfree.fx.room", None, 0)?;
+    let spring = drawn("mpfree.fx.spring", Some("Dub splash"), 0)?;
+    let tape = drawn("mpfree.fx.tape_delay", Some("Space heads"), 0)?;
+    let multitap = drawn("mpfree.fx.multitap", None, 0)?;
+    let strip_comp = drawn("mpfree.fx.channel_strip", Some("Vocal"), 2)?;
     let m0 = song.macros_state(0);
     let m1 = song.macros_state(1);
     let mut editing = song.macros_state(0);
@@ -791,6 +816,12 @@ pub fn samples(fonts: impl Fn() -> Fonts) -> Result<Vec<Sample>, String> {
         Sample { name: "chain-mixer-add-effect", about: "The effect picker, a category browser over the page (+ Add effect, or the mixer's + on a strip): Favourites, Recent and the categories with their counts; with no favourites it opens on Dynamics. A tap adds an effect at its defaults, the star keeps it, a hold or its presets line opens its presets", ui: screen(fonts(), &mut song, Place::Mixer, Some(adding), None)? },
         Sample { name: "chain-mixer-add-favourites", about: "The picker opens on Favourites once there are any (starred, in the order they were starred; Recent holds the last 12 added)", ui: screen(fonts(), &mut song, Place::Mixer, Some(starred), None)? },
         Sample { name: "chain-mixer-add-presets", about: "The Reverb's presets, every mode's with its mode under the name, reached with SHIFT + wheel (Delay and reverb), the wheel (Reverb) and a push; the wheel is on Snare plate, and a push or a tap adds the Reverb as a Plate with it (Defaults adds a Room as it starts)", ui: presets },
+        Sample { name: "chain-mixer-keys-plate", about: "The Plate (Vocal plate preset): its decay to -60 dB after the pre-delay, and its tone (the low cut and Tone, with the damping's loss each time round, dashed)", ui: plate },
+        Sample { name: "chain-mixer-keys-room", about: "The Room: the pre-delay, its early reflections (green) and the tail to -60 dB; its tone, the low cut and how much sooner the highs die over 100 ms (dashed)", ui: room },
+        Sample { name: "chain-mixer-keys-spring", about: "The Spring (Dub splash preset): its decay, with the spring's echo coming back each Length", ui: spring },
+        Sample { name: "chain-mixer-keys-tape", about: "The Tape delay (Space heads preset, three heads): each head's first echo and the loop's repeats from all three; the tone one pass keeps, and four passes' (dashed)", ui: tape },
+        Sample { name: "chain-mixer-keys-multitap", about: "The Multi-tap delay: its four taps on the beat grid (left in the accent, right in green) and the pattern again from the last, as loud as Feedback", ui: multitap },
+        Sample { name: "chain-mixer-keys-strip-comp", about: "The Channel strip (Vocal) on its Compressor page: the dynamics curve, the gate's drop under its threshold and the compressor over its own, with makeup", ui: strip_comp },
         Sample { name: "chain-strip-list", about: "The strip button's list over the keys chain: the groups down the left, the tracks as tiles with what each holds (the open one outlined); a tap opens that strip's chain", ui: strips },
         Sample { name: "macros-1-4", about: "The macros panel over the page (a long press on a macro card; no tab lit, Back closes it): Macros 1-4 with their targets and ranges, the Q-Links on Macros 1-4, the morph 64 % of the way from Dry verse to Wash drop", ui: screen(fonts(), &mut song, Place::Over, None, Some(m0))? },
         Sample { name: "macros-5-8", about: "Macros 5-8, not yet assigned; the Q-Links on Macros 5-8", ui: screen(fonts(), &mut song, Place::Over, None, Some(m1))? },
@@ -810,10 +841,51 @@ mod tests {
         ui.touch(1, Touch::Up, x, y);
     }
 
+    /// On every page of every effect, each section holds its controls
+    /// inside its box, and each section whose plan names a drawing has
+    /// room to draw it (a section too full for its controls and a drawing
+    /// drops the drawing).
+    #[test]
+    fn every_section_holds_its_controls_and_drawings() {
+        let mut bad = Vec::new();
+        for plan in mpfree_fx::page_plan::PLANS {
+            for (group, page) in plan.pages.iter().enumerate() {
+                let mut song = Song::new();
+                let n = mpfree_fx::registry::make(plan.id).unwrap();
+                let slot = song.keys.push(n);
+                let st = song.chain_state(KEYS, slot, group, None);
+                let ui =
+                    screen(Fonts::embedded(), &mut song, Place::Mixer, Some(st), None).unwrap();
+                let r = ui.rect_of(crate::CHAIN).unwrap();
+                let v = ui.get::<ChainView>(crate::CHAIN).unwrap();
+                let at = v.layout(r).page;
+                let sv = v.page();
+                for (s, g) in sv.sections.iter().zip(sv.geometry(at)) {
+                    if !s.cards.is_empty() && g.drawing.is_none() {
+                        bad.push(format!(
+                            "{} {}: no room to draw in {}",
+                            plan.id, page.name, s.title
+                        ));
+                    }
+                    for (c, cg) in s.controls.iter().zip(&g.controls) {
+                        let r = cg.cell;
+                        if r.w > 0 && g.rect.union(r) != g.rect {
+                            bad.push(format!(
+                                "{} {}: {} spills out of {}",
+                                plan.id, page.name, c.label, s.title
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+        assert!(bad.is_empty(), "{}", bad.join("\n"));
+    }
+
     #[test]
     fn the_samples_read_real_state_and_paint() {
         let s = samples(Fonts::embedded).unwrap();
-        assert_eq!(s.len(), 17);
+        assert_eq!(s.len(), 23);
         for mut sample in s {
             let (w, h) = sample.ui.size();
             let mut c = SoftCanvas::new(w, h);
@@ -1227,7 +1299,7 @@ mod tests {
         let four = ["Comp thresh", "Makeup", "Low cut", "High gain"];
         assert_eq!(labels(&main.main_four), four);
         let keys: Vec<&str> = main.sections.iter().map(|s| s.key.as_str()).collect();
-        assert_eq!(keys, ["gate", "comp", "eq", "path"]);
+        assert_eq!(keys, ["gate", "comp", "eq", "path", "output"]);
         let gate = song.chain_state(KEYS, slot, 1, None);
         assert_eq!(gate.group, 1);
         for st in [&main, &gate] {

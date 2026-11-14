@@ -398,7 +398,14 @@ pub fn place(s: &SectionBox, r: Rect) -> Geom {
     let bar_lines = bar_lines(s, &bars, body.w);
     let bars_h = lines_h(&bar_lines);
     let fader_min = if faders.is_empty() { 0 } else { 150 };
-    let (_, dial_min) = dial_lines(s, &dials, body.w, Fit::Inline);
+    // The least room the dials take: beside their names, or stacked at
+    // their least, whichever is shorter (in a narrow section, knobs beside
+    // their names wrap onto more lines than stacked ones).
+    let dial_min = [Fit::Inline, Fit::Stacked(0.0)]
+        .into_iter()
+        .map(|fit| dial_lines(s, &dials, body.w, fit).1)
+        .min()
+        .unwrap_or(0);
     let (_, dial_pref) = dial_lines(s, &dials, body.w, Fit::Stacked(1.0));
     let regions = [bars_h > 0, !faders.is_empty(), !dials.is_empty()]
         .iter()
