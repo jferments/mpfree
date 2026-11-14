@@ -102,6 +102,13 @@ fn the_audio_threads_part_never_allocates() {
             let k = 2 + (p / 600) % 6;
             let _ = host.swap(p / 600 % 2, spare[k].take());
         }
+        if p % 23 == 0 {
+            // Load shedding: the quietest voice across the slots.
+            if let Some((slot, _)) = host.cull_candidate() {
+                host.cull(slot);
+            }
+            let _ = host.voices();
+        }
         if p == 2000 {
             host.send(Out {
                 offset: 0,

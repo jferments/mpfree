@@ -16,8 +16,8 @@
 //! blocks. Each voice's gain is ramped across a control step.
 
 use mpfree_node::{
-    Ctx, Expr, Kind, Node, NodeEvent, NodeInfo, ParamInfo, Pressure, PressureChord, PressureCoefs,
-    PressureMode, PressureShape, Smooth, Timed, Tuning,
+    Ctx, Cull, Expr, Kind, Node, NodeEvent, NodeInfo, ParamInfo, Pressure, PressureChord,
+    PressureCoefs, PressureMode, PressureShape, Smooth, Timed, Tuning,
 };
 
 use crate::dsp::*;
@@ -610,12 +610,36 @@ impl Poly {
                 .min_by_key(|&i| self.voices[i].age)
         });
         if let Some(i) = victim {
-            let n = (KILL_MS * 0.001 * self.rate as f32).max(1.0);
-            let v = &mut self.voices[i];
-            v.state = State::Kill;
-            v.kill_gain = 1.0;
-            v.kill_step = 1.0 / n;
+            self.fade_out(i);
         }
+    }
+
+    /// Fades voice `i` out over [`KILL_MS`], then frees it: a steal, or
+    /// a voice given up under load.
+    fn fade_out(&mut self, i: usize) {
+        let n = (KILL_MS * 0.001 * self.rate as f32).max(1.0);
+        let v = &mut self.voices[i];
+        v.state = State::Kill;
+        v.kill_gain = 1.0;
+        v.kill_step = 1.0 / n;
+    }
+
+    /// The voice load shedding gives up first: the least audible one
+    /// sounding ([`Cull::audibility`]). Voices already fading are left be.
+    fn cull_pick(&self) -> Option<(usize, Cull)> {
+        let unison = (self.v(UNISON) as usize).clamp(1, UNISON_MAX);
+        let norm = VOICE_GAIN / (unison as f32).sqrt();
+        let mut best = None;
+        for i in 0..POOL {
+            let releasing = match self.voices[i].state {
+                State::On => false,
+                State::Release => true,
+                State::Free | State::Kill => continue,
+            };
+            let level = self.voices[i].amp.level * self.voices[i].gain / norm;
+            best = Cull::first(best, Some((i, Cull { level, releasing })));
+        }
+        best
     }
 
     fn stack_remove(&mut self, note: u8) {
@@ -1241,5 +1265,21 @@ impl Node for Poly {
         for v in &mut self.voices {
             v.pitch_key = [NO_KEY; 6];
         }
+    }
+
+    fn sounding_voices(&self) -> usize {
+        self.active_voices()
+    }
+
+    fn cull_candidate(&self) -> Option<Cull> {
+        self.cull_pick().map(|(_, c)| c)
+    }
+
+    fn cull(&mut self) -> bool {
+        let Some((i, _)) = self.cull_pick() else {
+            return false;
+        };
+        self.fade_out(i);
+        true
     }
 }

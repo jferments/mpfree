@@ -208,6 +208,9 @@ pub struct MixHost {
     /// Each track's own instrument (instruments.rs), rendered into its
     /// mixer track before the mixer runs.
     pub instruments: Instruments,
+    /// How long the tracks' own instruments took in the last period (0
+    /// when no track has one), for load shedding's cost a voice (shed.rs).
+    pub instrument_time: Duration,
     /// Instruments made without a builder (the tests), waiting to go in.
     made: Vec<crate::control::MadeInstrument>,
     /// The effect picker's favourites and recents (`files/fx/`), and
@@ -311,6 +314,7 @@ impl MixHost {
             plugins: Arc::new(Plugins::none()),
             opening: None,
             instruments: Instruments::new(rate, PERIOD),
+            instrument_time: Duration::ZERO,
             made: Vec::new(),
             shelf: mpfree_fx::picker::Shelf::default(),
             shelf_dirty: false,
@@ -994,8 +998,16 @@ impl MixHost {
                 dr[..PERIOD].copy_from_slice(r);
             }
         }
-        // Each track's own instrument into its mixer track.
-        self.instruments.render(ctx, PERIOD, &mut self.mixer);
+        // Each track's own instrument into its mixer track, timed while
+        // any track has one.
+        if self.instruments.in_use() != 0 {
+            let t = Instant::now();
+            self.instruments.render(ctx, PERIOD, &mut self.mixer);
+            self.instrument_time = t.elapsed();
+        } else {
+            self.instruments.render(ctx, PERIOD, &mut self.mixer);
+            self.instrument_time = Duration::ZERO;
+        }
         if self.line_open {
             let (hl, hr) = self.mixer.hw_input();
             hl[..PERIOD].copy_from_slice(line.0);

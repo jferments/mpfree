@@ -221,6 +221,22 @@ impl Instruments {
         track < TRACKS && (self.holds(track) || self.count() < SLOTS)
     }
 
+    /// Voices sounding in the tracks' own instruments (a plugin counts
+    /// none).
+    pub fn voices(&self) -> usize {
+        self.host.voices()
+    }
+
+    /// Load shedding (`shed.rs`): the voice to give up first across the
+    /// tracks' instruments, with its slot, and giving it up. No allocation.
+    pub fn cull_candidate(&self) -> Option<(usize, mpfree_node::Cull)> {
+        self.host.cull_candidate()
+    }
+
+    pub fn cull(&mut self, slot: usize) -> bool {
+        self.host.cull(slot)
+    }
+
     /// The tracks whose mixer channels are in use, one bit each: playing
     /// their own instrument or still ringing out an old one.
     pub fn in_use(&self) -> u128 {
