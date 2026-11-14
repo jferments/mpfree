@@ -137,6 +137,8 @@ Each plugin runs on its own, apart from the rest of MPFree, so a plugin that cra
 
 Every one of these is written in MPFree's report, so nothing goes wrong without you hearing about it.
 
+Some plugins keep files of their own: Surge XT its user folder, Dexed its cartridges. MPFree gives them the folder `files/plugin-home/` on the stick, so they never write anywhere else. To reset every plugin's own files, delete that folder from a computer.
+
 > [!NOTE]
 > A plugin's settings are saved with your project. If you open the project on a stick without that plugin, the effect is left out and the Events log names the plugin's file. Plugin synths play as a track's own instrument (see [Synths](synths.md#a-synth-for-each-track)). **Not yet:** MPFree doesn't come with any plugins yet. A pack of free plugins built for the MPC (Airwindows, Surge XT and Dexed) is coming.
 
