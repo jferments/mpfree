@@ -389,6 +389,8 @@ impl App {
         }
         let pick = choices[to];
         let track = self.track;
+        // The project keeps each track's instrument: unsaved work.
+        self.project_edit = true;
         self.set_track_sound(
             track,
             pick.map(|(id, name)| crate::instruments::Held { id, name }),

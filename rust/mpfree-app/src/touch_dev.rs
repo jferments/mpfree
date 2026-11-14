@@ -27,7 +27,7 @@ use mpfree_touch::mt::{ContactId, Phase};
 use mpfree_touch::pointer::PointerEvent;
 use mpfree_touch::profile::MPC_ONE;
 use mpfree_touch::tuning::{suggest, Measure, Param, Reason, Sample, Tuning};
-use mpfree_ui::{Align, Color, EventKind, FontId, PaintCx, Rect, Tone, Touch, Widget};
+use mpfree_ui::{Align, Color, EventKind, FontId, PaintCx, Rect, Target, Tone, Touch, Widget};
 use std::collections::VecDeque;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -192,6 +192,28 @@ impl TouchTest {
     /// True while Targets mode wants the whole page.
     pub fn wants_whole_page(&self) -> bool {
         self.mode == Mode::Targets && self.next_target().is_some()
+    }
+
+    /// Whether a tap on the bar's cell `i` would change anything: the
+    /// mode already on does nothing again, except Targets, which starts its
+    /// round over once a target has been tapped; Clear needs something to
+    /// clear.
+    fn mode_does_something(&self, i: usize) -> bool {
+        let m = &self.measure;
+        let results = !(m.taps.is_empty()
+            && m.holds.is_empty()
+            && m.strokes.is_empty()
+            && m.rates.is_empty()
+            && m.targets.is_empty()
+            && self.gestures.is_empty()
+            && self.last_sample.is_empty()
+            && self.target_note.is_none());
+        match i {
+            0 => self.mode != Mode::Free,
+            1 => self.mode != Mode::Targets || !m.targets.is_empty() || self.target_note.is_some(),
+            2 => self.mode != Mode::Swipes,
+            _ => results,
+        }
     }
 
     fn set_mode(&mut self, m: Mode) {
@@ -391,14 +413,15 @@ impl Widget for TouchTest {
             let on = i == active;
             cx.canvas
                 .fill_round_rect(cell, t.radius, if on { t.accent } else { t.raised });
-            cx.text(
-                FontId::Bold,
-                t.size_body,
-                cell,
-                Align::Center,
-                if on { t.on_accent } else { t.text },
-                name,
-            );
+            // Clear is faint while there is nothing to clear.
+            let ink = if on {
+                t.on_accent
+            } else if i == 3 && !self.mode_does_something(3) {
+                t.text_faint
+            } else {
+                t.text
+            };
+            cx.text(FontId::Bold, t.size_body, cell, Align::Center, ink, name);
         }
         cx.canvas.fill_round_rect(area, 8, t.bg);
         // A faint grid every 80 px.
@@ -528,14 +551,33 @@ impl Widget for TouchTest {
         }
     }
 
+    fn targets(&self, r: Rect) -> Vec<Target> {
+        let (bar, area) = Self::body(r);
+        let mut out: Vec<Target> = Self::bar_cells(bar)
+            .into_iter()
+            .enumerate()
+            .map(|(i, c)| {
+                Target::tap("mode", i, MODES[i], c).disabled_if(!self.mode_does_something(i))
+            })
+            .collect();
+        // A finger anywhere in the area leaves its trail.
+        out.push(Target::drag("area", 0, "test area", area));
+        out
+    }
+
     fn touch(&mut self, finger: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
         let t = self.stamp();
         self.event_time = None;
         let (bar, area) = Self::body(r);
         self.area = area;
+        // A finger that went down on the bar presses a button: it is not
+        // a touch to test, so the gestures leave it out (Clear's own tap
+        // would come back as the one gesture left).
+        let mut on_bar = false;
         match phase {
             Touch::Down => {
                 let cell = Self::bar_cells(bar).iter().position(|c| c.contains(x, y));
+                on_bar = cell.is_some();
                 self.fingers.retain(|f| f.id != finger);
                 self.fingers.push(Finger {
                     id: finger,
@@ -546,6 +588,7 @@ impl Widget for TouchTest {
             }
             Touch::Move => {
                 if let Some(f) = self.fingers.iter_mut().find(|f| f.id == finger) {
+                    on_bar = f.bar.is_some();
                     if f.trail.len() >= TRAIL {
                         f.trail.pop_front();
                     }
@@ -555,6 +598,7 @@ impl Widget for TouchTest {
             Touch::Up | Touch::Cancel => {
                 let i = self.fingers.iter().position(|f| f.id == finger);
                 let f = i.map(|i| self.fingers.remove(i));
+                on_bar = f.as_ref().is_some_and(|f| f.bar.is_some());
                 let bar_hit = f
                     .and_then(|f| f.bar)
                     .filter(|&c| phase == Touch::Up && Self::bar_cells(bar)[c].contains(x, y));
@@ -572,6 +616,9 @@ impl Widget for TouchTest {
                     None => {}
                 }
             }
+        }
+        if on_bar {
+            return None;
         }
         let ev = PointerEvent {
             id: ContactId(finger),
@@ -749,6 +796,28 @@ impl Widget for TuneList {
                 &s,
             );
         }
+    }
+
+    fn targets(&self, r: Rect) -> Vec<Target> {
+        let body = Self::body(r);
+        let mut out = Vec::new();
+        for i in 0..self.rows.len() {
+            let rr = Self::row_rect(body, i);
+            let (minus, plus) = Self::steppers(rr);
+            let label = self.rows[i].label;
+            out.push(Target::tap(
+                "row",
+                i,
+                label,
+                Rect::new(rr.x, rr.y, minus.x - rr.x, rr.h),
+            ));
+            out.push(Target::tap("row-minus", i, format!("{label} -"), minus));
+            out.push(Target::tap("row-plus", i, format!("{label} +"), plus));
+        }
+        for (i, b) in self.action_rects(body).into_iter().enumerate() {
+            out.push(Target::tap("action", i, ACTIONS[i], b));
+        }
+        out
     }
 
     fn touch(&mut self, _f: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
