@@ -25,9 +25,9 @@ On the current test build, some buttons (REC, OVERDUB, UNDO, PLAY START, TRACK M
 | **PLAY** | Starts playback from where it stopped. | Works |
 | **PLAY** while playing | Hold for a fill; press twice to keep the fill on, and again (or STOP) to end it. See [Playing live](../making-music/playing-live.md#fills). | Next build |
 | **PLAY START** | Starts playback from the beginning. | Works |
-| **REC** | On the Looper tab, records a loop. Everywhere else, records a clip. | Works |
-| **OVERDUB** | Records on top of what is already there (a clip or a loop). | Works |
-| **UNDO** | Undoes the last recording or edit on the page you are on (the Looper tab: the last loop layer; the Sample tab: the last edit; elsewhere: the last clip take). **SHIFT + UNDO** redoes it. | Works |
+| **REC** | On the Looper tab and on the Play page's All and Loop views, records a loop (as the loop's own Record button). On the Play page's Beats view and everywhere else, records a clip. | Next build |
+| **OVERDUB** | Records on top of what is already there: the loop where REC records a loop, otherwise the clip. | Next build |
+| **UNDO** | Undoes the last recording or edit on the page you are on, and the line at the bottom of the screen says what it took back. The Looper tab and the Play page's Loop view: the last loop layer. The Play page's Beats view and the Arrange tab: the last take (a recording, a step edit or a deleted clip). The Play page's All view: whichever of the two changed last. The Sample and Pads tabs: the last edit. The Synth tab: the last knob you turned. The mixer: the last fader, knob or button you changed on a strip. A run of turns of the same knob or fader is one UNDO. Other pages say they have nothing to undo (the FX chain editor and the macros panel get theirs with the effects overhaul). **SHIFT + UNDO** redoes it. **Hold UNDO** for a moment to see the page's history as a list: tap a step (or turn the wheel to it and push) to go straight back, or forward, to just after it. | Next build |
 | **SHIFT + REC** | Capture: keeps what you just played as a clip, even if you weren't recording. | Next build |
 | **SHIFT + PLAY START** | Metronome on or off (it starts off; MPFree remembers your choice). The click plays while counting in and recording. Its level is in the Play page's options (**MENU**). | Next build |
 | **TAP TEMPO** | Tap four times in time to set the tempo. Tapping the tempo on the Play page does the same. | Works |
@@ -40,7 +40,7 @@ On the current test build, some buttons (REC, OVERDUB, UNDO, PLAY START, TRACK M
 | **–** and **+** | Step the picked row's value down or up. | Works (pages: next build) |
 | **The data wheel's push** | Opens the picked row: its value is outlined and the wheel changes it. Push again to go back to picking rows. On a row that opens something, opens it. | Works in menus (pages: next build) |
 
-**The transport lights** (next build) light as Akai's own software lights them: **PLAY** stays lit while playing. **REC** and **OVERDUB** blink while they wait for PLAY, with PLAY blinking alongside, and keep blinking while recording or overdubbing. **UNDO** blinks while you record. **TAP TEMPO** blinks on the beat. The MPC One's STOP button has no light of its own. REC, OVERDUB and UNDO light once **Map controls** knows them.
+**The transport lights** (next build) light as Akai's own software lights them: **PLAY** stays lit while playing. **REC** and **OVERDUB** blink while they wait for PLAY, with PLAY blinking alongside, and keep blinking while recording or overdubbing. **UNDO** blinks while you record, and otherwise is bright when the page you are on has something to undo and dim when it has nothing. **TAP TEMPO** blinks on the beat. The MPC One's STOP button has no light of its own. REC, OVERDUB and UNDO light once **Map controls** knows them.
 
 ## Repeat and arpeggiator
 
@@ -103,7 +103,7 @@ The mode buttons along the top of the MPC go to the MPFree page that does the sa
 
 | Button | Goes to | When |
 |---|---|---|
-| **MAIN** | The Play page. Pressed on the Play page, the next view (All, Beats, Loop, Drum). | Next build |
+| **MAIN** | The Play page. Pressed on the Play page, the next view (All, Beats, Loop). | Next build |
 | **STEP SEQ** | The Play page's Beats view. | Next build |
 | **NEXT SEQ** | The Arrange tab. | Next build |
 | **SAMPLER** | The Sample tab. **SHIFT + SAMPLER** goes to the Looper tab. | Next build |
@@ -111,7 +111,7 @@ The mode buttons along the top of the MPC go to the MPFree page that does the sa
 | **PROG EDIT** | The sound the pads play: the Synth tab while the synth is on the pads, otherwise the Pads tab's Pad view. | Next build |
 | **TRACK MUTE** | The pads become mute keys over any page: pads 1-8 mute and unmute tracks 1-8. **SHIFT + TRACK MUTE**: each pad mutes and unmutes itself in the kit. Press the same button again to play the pads. See [Playing live](../making-music/playing-live.md#muting-tracks-and-pads). | Next build |
 | **Q-LINK** | Steps the Q-Links through Macros 1-4, Macros 5-8 and the page's own knobs (the Play page, Arrange and the chain editor). See [Mixing and effects](../making-music/mixing-and-effects.md#macros). | Next build |
-| **ERASE** | Live erase while recording. | Planned |
+| **ERASE** | Hold **ERASE** and tap something on the screen to delete it: a clip on the Arrange tab, a pattern row's name on the Play page (that sound's steps), or a layer on the Looper tab. **UNDO** brings it back. The hint line says what you can tap while you hold it. A clip used in the song, a whole loop, effects and macros can't be deleted this way yet. In the browser, **ERASE** moves the item picked to the Trash (asking first). Works once Map controls has found ERASE. Live erase while recording is planned. | Next build |
 | **BROWSE** | Opens the browser over the page, and goes back to the page. **SHIFT + BROWSE** saves the project, on any page. See [Saving your work](../making-music/saving.md). Works once Map controls has found it. | Next build |
 | **The data wheel's push** | See [Everywhere](#everywhere). Works once Map controls has found it. | Next build |
 | **COPY**, **TC** | Not assigned yet. | Planned |
