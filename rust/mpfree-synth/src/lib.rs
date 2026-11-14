@@ -31,6 +31,10 @@
 //! - [`Squelch`]: a mono acid bass, a sawtooth or its shaped square into a
 //!   four-pole diode ladder solved with zero-delay feedback, accent (louder,
 //!   and a filter sweep that builds up) and slide, with factory presets.
+//! - [`Analog`]: a vintage analog poly, sixteen voice cards that differ and
+//!   drift (Age), two oscillators with sync and poly-mod, a four-pole OTA
+//!   or two-pole state-variable filter, the CEM3310's envelope curve and a
+//!   bucket-brigade chorus, with factory presets.
 //!
 //! - [`pressure`]: what pad pressure drives in each engine. Both run it
 //!   through the shared shaper in [`mpfree_node::pressure`].
@@ -40,6 +44,8 @@
 //! output for any block size (`tests/` checks both).
 #![forbid(unsafe_code)]
 
+pub mod analog;
+pub mod analog_params;
 pub mod drawbar;
 pub mod drawbar_params;
 pub mod drum;
@@ -60,6 +66,7 @@ pub mod squelch;
 pub mod squelch_params;
 pub mod wavetable;
 
+pub use analog::Analog;
 pub use drawbar::Drawbar;
 pub use drum::Drums;
 pub use fm::Fm;

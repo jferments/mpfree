@@ -122,6 +122,7 @@ M4 was host-only safety tooling and the [handoff state-machine simulator](../../
 - [Electric pianos: what the research says, and open source to learn from](research/electric-piano.md): tine and reed piano physics from papers and measurements, what the Keys engine takes from it, and open-source pianos (2026-11-14).
 - [Tonewheel organs and rotary speakers: what the research says](research/tonewheel-organ.md): tonewheel generator, drawbars, click, percussion, scanner vibrato and the rotating speaker from papers, measurements and service documentation, and what the Drawbar engine takes from them (2026-11-14).
 - [Acid bass: what the circuit analyses say](research/acid-bass.md): the mono acid bass's oscillator, diode ladder filter, envelopes, accent and slide from circuit analyses, service notes and theses, what the Squelch engine takes from them, and open-source emulations to learn from (2026-11-14).
+- [Vintage analog polysynths: what the research says](research/vintage-poly.md): voice cards that differ and drift, the oscillator and envelope chips, poly-mod, the OTA four-pole and two-pole filters and the bucket-brigade chorus from datasheets, papers and makers' notes, and what the Analog engine takes from them (2026-11-14).
 
 - [RK3288 BootROM, p1 ID block and reset modes](research/bootrom.md): offline reverse engineering of the boot ROM and the first eMMC stage (2026-11-10).
 
