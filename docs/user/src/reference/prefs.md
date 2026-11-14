@@ -1,7 +1,7 @@
 <!--
 status: changing
 covers: rust/mpfree-app/src/app.rs rust/mpfree-app/src/gui.rs rust/mpfree-app/src/app/saved.rs
-checked: 2026-11-13 7ba56df
+checked: 2026-11-14 b76c3c7
 -->
 
 # Prefs
@@ -16,7 +16,7 @@ checked: 2026-11-13 7ba56df
 | **Latch keeps pads** | With Latch on, pads keep repeating after you let go. **Replace:** a fresh press starts a new set. **Toggle:** each press adds or removes that pad. |
 | **Audio buffer** | How much sound is queued ahead of the speakers. 3 periods is what the factory software uses; 2 plays about 3 ms sooner after a hit, with more risk of clicks. Changing it restarts the sound. |
 | **Find the buttons again** | Runs the button guide, which asks you to press MENU, NOTE REPEAT, TAP TEMPO, – and +, REC, OVERDUB, UNDO and PLAY START one at a time, so MPFree learns them. |
-| **Show developer tools** | Adds the Dev tab, for people building MPFree. |
+| **Show developer tools** | Adds the Dev tab, for people building MPFree, with pages showing what MPFree is doing inside, such as the MIDI coming in, the processor's load and the Console. |
 | **Sound cores** | Which of the MPC's cores make the sound, from the next start (the row says "(next start)" until then). **Shared:** as MPFree always ran. **Core 3:** the sound on a core of its own. **Cores 3 and 2:** some of the drums and the mixer's effects on a second core too, and a reverb on a return there as well when it has a pre-delay and is all wet (it still sounds on time). **Cores 3, 2 and 1:** a test that also puts the synth on a third core. Core 0 is always left for the MPC's own work and the screen. The Dev tab's CPU by engine page shows how it runs. Shared is the default until the device tests pick one. |
 | **Loop memory** | How much sound the looper can hold, all loops and layers together: 1, 2, 5, 10 or 20 minutes of stereo, with the megabytes it takes (5 minutes, about 110 MB, is the default). The memory is set aside and kept in RAM when MPFree starts, so a new size applies from the next start; the row says "(next start)" until then. The Looper tab's Loop memory gauge shows how much is used. See [Recording loops](../making-music/looping.md#layers). |
 | **Audio track memory** | How much sound the audio tracks on the Song view can hold, every take together: 30 seconds, 1, 2, 5 or 10 minutes of stereo, with the megabytes it takes (1 minute, about 22 MB, is the default). Like Loop memory, it is set aside when MPFree starts, so a new size applies from the next start; the row says "(next start)" until then. The Song view's legend shows how much is free. See [Arranging a song](../making-music/arranging.md#audio-in-the-song). |
@@ -24,6 +24,7 @@ checked: 2026-11-13 7ba56df
 | **Line input** | Turns the INPUTS on the back on or off. It is off every time MPFree starts. |
 | **Line input latency** | How late what you play into the INPUTS reaches MPFree, in frames, so the looper and the audio tracks can line a recording up with the beat you played it against. It is estimated from the audio buffer until you set it ("(estimated)"); to measure it, run a cable from an output to the input. It's the same setting as the Looper's **Latency to make up for** (MENU on the Looper tab): change either and both follow. |
 | **System info** | MPFree's version, and details of the MPC it runs on. **MENU** goes back to Prefs. |
+| **Appearance** | The theme: MPFree's colours and the style of its panels. **Default**, **Console**, **Synthwave** or **Spaceship**; the screen changes at once, and the layout and the font stay the same. |
 | **At start** | What MPFree opens when it starts. **New project** (the default): an empty song. **Last project:** the project you last saved or opened, once the sound is going. See [Saving your work](../making-music/saving.md#at-start). |
 | **Touch screen** | Opens the touchscreen's own rows: **Screen pad velocity** (the velocity of pads played on the screen, which can't sense how hard you tap), **Calibrate touch** (tap a target in each corner to check touches land where you touch; this version only reports the result) and **Touch lab** (a test page for touches). |
 

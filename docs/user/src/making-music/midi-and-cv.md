@@ -1,7 +1,7 @@
 <!--
 status: changing
 covers: rust/mpfree-midi rust/mpfree-midi-ui/src/learn.rs rust/mpfree-app/src/midi_in.rs rust/mpfree-app/src/cv_out.rs
-checked: 2026-11-12 870b4ce
+checked: 2026-11-14 b76c3c7
 -->
 
 # Playing other gear: MIDI, sync and CV
@@ -45,7 +45,7 @@ MPFree can also send its own clock from **MIDI OUT**, so a drum machine or an ar
 
 MIDI Learn lets a knob, fader, button, key or pedal on your keyboard or controller turn an effect's knob.
 
-1. Open the effect in the [chain editor](mixing-and-effects.md#the-chain-editor) and touch the knob.
+1. Open the effect in the [chain editor](effects.md#adding-an-effect-the-chain-editor) and touch the knob.
 2. Tap **Learn to a Q-Link**. It now reads **Turn a Q-Link or a MIDI control**.
 3. Move the control on your keyboard. From now on it turns that knob, as far up and down as the knob goes. (Turn a Q-Link instead, and the Q-Link learns it, as before.)
 
