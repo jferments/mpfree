@@ -51,8 +51,9 @@ Every track can play its own instrument: Poly on one, FM on another, a plugin sy
 
 {{shot: synth-track | The Synth tab editing track 2's own FM, with the Glass Keys preset.}}
 
+- **Saved with the project.** Each track's instrument, with its sound (or a plugin synth's settings), is part of the project. Opening a project puts every track's instrument back, and **New project** puts every track on the kit (see [Saving your work](saving.md#projects)).
+
 Coming:
-- A track's instrument isn't saved with the project yet: when MPFree starts, and when you open a project or start a new one, every track plays the kit again.
 - The instrument's name beside each track on the Play and Arrange pages, and changing it there.
 - The voices and meters on the Synth tab's Output page show the pads' synth, not a track's own.
 

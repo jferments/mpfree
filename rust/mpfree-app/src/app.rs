@@ -1534,6 +1534,28 @@ impl App {
         }
     }
 
+    /// FULL LEVEL (or SHIFT + FULL LEVEL) and the header's level chip: the
+    /// level the pads play at, its light, and a line saying it.
+    fn set_pad_level(&mut self, level: PadLevel) -> Vec<Effect> {
+        self.pad_level = level;
+        let on = level != PadLevel::Off;
+        vec![
+            Effect::Light(button::FULL_LEVEL, if on { LIGHT_ON } else { LIGHT_OFF }),
+            self.status(),
+            Effect::Note(match level {
+                PadLevel::Off => "pad level: as played".to_string(),
+                PadLevel::Full => "pad level: Full Level (every hit 127)".to_string(),
+                PadLevel::Half => "pad level: Half Level (every hit 64)".to_string(),
+            }),
+        ]
+    }
+
+    /// A tap on the header's Full level or Half level chip: the pads play
+    /// as hit again (Jay's card, 13 Nov 14:57Z).
+    pub fn pad_level_off(&mut self) -> Vec<Effect> {
+        self.set_pad_level(PadLevel::Off)
+    }
+
     fn status(&self) -> Effect {
         Effect::Status(Status {
             shift: self.shift,
@@ -1612,22 +1634,12 @@ impl App {
             } else {
                 PadLevel::Full
             };
-            self.pad_level = if self.pad_level == want {
+            let level = if self.pad_level == want {
                 PadLevel::Off
             } else {
                 want
             };
-            let on = self.pad_level != PadLevel::Off;
-            fx.push(Effect::Light(
-                button::FULL_LEVEL,
-                if on { LIGHT_ON } else { LIGHT_OFF },
-            ));
-            fx.push(self.status());
-            fx.push(Effect::Note(match self.pad_level {
-                PadLevel::Off => "pad level: as played".to_string(),
-                PadLevel::Full => "pad level: Full Level (every hit 127)".to_string(),
-                PadLevel::Half => "pad level: Half Level (every hit 64)".to_string(),
-            }));
+            fx.extend(self.set_pad_level(level));
         } else if note == button::STOP {
             fx.extend(self.fill_off());
             if self.timed {
@@ -4493,10 +4505,12 @@ mod tests {
                 _ => None,
             })
         };
+        let _ = app.take_project_edit();
         for want in Engine::ALL {
             let fx = app.step_item(row(SynthItem::Engine), 1);
             assert_eq!(sound(&fx), Some((0, Some(want.node_id()))));
             assert_eq!(pads(&fx), None, "the shared synth is left alone");
+            assert!(app.take_project_edit(), "the project keeps it");
         }
         assert_eq!(
             sound(&app.step_item(row(SynthItem::Engine), 1)),

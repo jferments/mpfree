@@ -1360,6 +1360,15 @@ impl Browser {
         }
     }
 
+    /// A button that works on the selected row, with none selected: say so
+    /// in place rather than do nothing (Jay, 13 Nov).
+    fn pick_first(&mut self, b: Button) {
+        self.status = Some((
+            format!("Pick something in the list first, then {}", b.label()),
+            false,
+        ));
+    }
+
     fn button(&mut self, b: Button) {
         if self.pick.as_ref().is_some_and(|p| !p.allows(b)) {
             return;
@@ -1400,7 +1409,9 @@ impl Browser {
                 }
             }
             Button::Versions => {
-                let Some(r) = row else { return };
+                let Some(r) = row else {
+                    return self.pick_first(b);
+                };
                 let Some(loc) = loc.filter(|_| r.kind == Kind::Project) else {
                     return;
                 };
@@ -1412,7 +1423,9 @@ impl Browser {
             }
             Button::Load | Button::LoadToPad => {
                 let to_pad = b == Button::LoadToPad;
-                let Some(r) = row else { return };
+                let Some(r) = row else {
+                    return self.pick_first(b);
+                };
                 if let Some(index) = r.factory {
                     self.actions
                         .push(BrowseAction::LoadFactoryKit { index, to_pad });
@@ -1424,7 +1437,10 @@ impl Browser {
                     Kind::Project | Kind::Folder => self.button(Button::Open),
                     Kind::Audio(_) | Kind::Kit | Kind::Preset => {
                         let Ok(path) = self.library().file_path(&loc) else {
-                            self.status = Some((format!("{} is not there", r.name), true));
+                            // Which button asked, so Load to pad after Load
+                            // says something new.
+                            self.status =
+                                Some((format!("{}: {} is not there", b.label(), r.name), true));
                             return;
                         };
                         self.actions.push(match (r.kind, to_pad) {
@@ -1463,7 +1479,9 @@ impl Browser {
                 }
             }
             Button::Open => {
-                let Some(r) = row else { return };
+                let Some(r) = row else {
+                    return self.pick_first(b);
+                };
                 let Some(loc) = loc else { return };
                 match r.kind {
                     Kind::Folder => self.go_folder(loc),
@@ -1566,7 +1584,9 @@ impl Browser {
                 }
             }
             Button::Delete => {
-                let Some(r) = row else { return };
+                let Some(r) = row else {
+                    return self.pick_first(b);
+                };
                 let Some(loc) = loc else { return };
                 if r.factory.is_some() || r.trash_id.is_some() {
                     return;

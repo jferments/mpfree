@@ -352,6 +352,8 @@ pub struct PadsTab {
     shown_pad: Option<usize>,
     gesture: Option<(Key, u64)>,
     next_gesture: u64,
+    /// What the last touch did or why it did nothing, for the hint line.
+    note: Option<String>,
 }
 
 impl PadsTab {
@@ -367,7 +369,10 @@ impl PadsTab {
             ButtonRow::new(&["Copy", "Paste", "Clear", "Map to keys"]),
         );
         ui.add(LIST, SettingList::new("Pad"));
-        ui.add(SOUNDS, ListView::new("Sounds in the kit"));
+        let mut sounds = ListView::new("Sounds in the kit");
+        // A tap picks the sound for Put on; it loads nothing itself.
+        sounds.picks_only = true;
+        ui.add(SOUNDS, sounds);
         let mut put = ButtonRow::new(&["Put on pad"]);
         put.primary = Some(0);
         ui.add(PUT, put);
@@ -382,6 +387,7 @@ impl PadsTab {
             shown_pad: None,
             gesture: None,
             next_gesture: GESTURE_BASE,
+            note: None,
         };
         tab.update(ui, st);
         Ok(tab)
@@ -479,6 +485,13 @@ impl PadsTab {
                 picked.is_some(),
                 sounds,
             ];
+            let here = pad_text(self.bank, st.pad);
+            b.why = vec![
+                format!("{here} has no sound to copy"),
+                "Copy a pad first".to_string(),
+                format!("{here} has no sound to clear"),
+                "No pad in this bank has a sound".to_string(),
+            ];
         }
         let rows = Row::ALL
             .iter()
@@ -517,6 +530,7 @@ impl PadsTab {
         if let Some(b) = ui.get_mut::<ButtonRow>(PUT) {
             b.labels[0] = format!("Put on {here}");
             b.enabled = vec![!st.sounds.is_empty()];
+            b.why = vec!["The kit has no sounds yet: load one in Browse".to_string()];
         }
     }
 
@@ -547,7 +561,22 @@ impl PadsTab {
             (PUT, EventKind::Tab(0)) => {
                 let sound = st.sounds.get(self.sound)?;
                 let after = with_sound(st.picked(), sound);
+                if st.picked() == Some(&after) {
+                    // Say so rather than do nothing (Jay, 13 Nov).
+                    self.note = Some(format!(
+                        "{} plays all of {} already",
+                        pad_text(self.bank, st.pad),
+                        sound.name
+                    ));
+                    return None;
+                }
                 self.lift();
+                // Nothing else on the tab shows it: the rows stay the same.
+                self.note = Some(format!(
+                    "{} plays all of {} now",
+                    pad_text(self.bank, st.pad),
+                    sound.name
+                ));
                 Some(PadsAction::Set {
                     pad: st.pad,
                     after: Some(Box::new(after)),
@@ -556,6 +585,12 @@ impl PadsTab {
             }
             _ => None,
         }
+    }
+
+    /// What the last touch did, or why it did nothing, when nothing else
+    /// on the tab shows it; once.
+    pub fn take_note(&mut self) -> Option<String> {
+        self.note.take()
     }
 
     /// A button pressed (as a tap on it would).
@@ -631,6 +666,17 @@ impl PadsTab {
                     None if delta > 0 => 0,
                     None => n - 1,
                 };
+                if st.sound_of_picked() == Some(k as usize) {
+                    // The kit's only sound: stepping round to it again
+                    // would put it on whole, quietly dropping the pad's
+                    // trim and loop. Say so instead (Jay, 13 Nov).
+                    self.note = Some(format!(
+                        "{} plays {}, the kit's only sound: load more on Browse",
+                        pad_text(self.bank, st.pad),
+                        st.sounds[k as usize].name
+                    ));
+                    return None;
+                }
                 self.sound = k as usize;
                 with_sound(picked, &st.sounds[k as usize])
             }

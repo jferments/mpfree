@@ -443,6 +443,8 @@ pub struct ChopTab {
     /// Live chop was stopped by a change here: the app hears of it with
     /// the next action.
     stop_due: bool,
+    /// Why the last touch changed nothing, once ([`ChopTab::take_note`]).
+    note: Option<String>,
     /// Snap cuts made by hand, and by Beat and Grid, to zero crossings.
     snap: bool,
     /// Slice starts strictly inside the region, sorted.
@@ -504,6 +506,7 @@ impl ChopTab {
             hit_window: 3,
             live: None,
             stop_due: false,
+            note: None,
             snap: true,
             cuts: Vec::new(),
             selected: 0,
@@ -821,6 +824,16 @@ impl ChopTab {
                 n > 1,
                 pads.is_some() || files,
             ];
+            b.why = vec![
+                if n >= MAX_CUT_SLICES {
+                    format!("{MAX_CUT_SLICES} slices is the most")
+                } else {
+                    "This slice is too short to split".to_string()
+                },
+                "One slice: nothing to merge".to_string(),
+                "The slices don't fit on the pads from the first pad: fewer slices, or an earlier First pad"
+                    .to_string(),
+            ];
             b.labels[0] = match (live, self.live.is_some()) {
                 (false, _) => "Split",
                 (true, false) => "Start",
@@ -956,11 +969,13 @@ impl ChopTab {
             (c.value, c.sub, c.pos) = (value, sub, (f as f64 / st.frames.max(1) as f64) as f32);
             // The first slice starts where the pad does: Start on the Wave tab.
             c.enabled = self.selected > 0;
+            c.why = "The first slice starts where the pad does: Start on the Wave tab".to_string();
         }
         if let Some(c) = ui.get_mut::<KnobCard>(QLINKS[2]) {
             c.label = format!("Q-Link 3 · {amount}");
             (c.value, c.sub, c.pos) = (value, String::new(), pos);
             c.enabled = self.method != Method::Manual;
+            c.why = "Manual chops have no setting: pick another Method".to_string();
         }
         if let Some(c) = ui.get_mut::<KnobCard>(QLINKS[3]) {
             match &pads {
@@ -981,6 +996,7 @@ impl ChopTab {
                 }
                 None => c.enabled = false,
             }
+            c.why = "The slices don't fit on the pads: fewer slices".to_string();
         }
         self.update_wheel(ui, st);
     }
@@ -1002,6 +1018,12 @@ impl ChopTab {
         }
     }
 
+    /// Why the last touch changed nothing, once (a drag on a marker that
+    /// stays put).
+    pub fn take_note(&mut self) -> Option<String> {
+        self.note.take()
+    }
+
     /// What a touch on one of the tab's widgets asks for; None for touches
     /// that only change the chop or what the tab shows.
     pub fn action(&mut self, ui: &mut Ui, ev: &UiEvent, st: &ChopState) -> Option<ChopAction> {
@@ -1015,6 +1037,16 @@ impl ChopTab {
                     let to = self.snapped(st, *frame, 0, Some(ui));
                     self.move_cut(st, k - 1, to);
                     self.selected = k;
+                } else {
+                    // Say so rather than do nothing (Jay, 13 Nov).
+                    self.note = Some(
+                        if k == 0 {
+                            "Slice 1 starts at the pad's Start: move it on the Wave tab"
+                        } else {
+                            "END is the pad's End: move it on the Wave tab"
+                        }
+                        .to_string(),
+                    );
                 }
                 let at = self.bounds(st).get(k).copied();
                 if let (Some(w), Some(f)) = (ui.get_mut::<Waveform>(WAVE), at) {
@@ -1322,7 +1354,13 @@ fn markers(bounds: &[u64], selected: usize) -> Vec<Marker> {
                 k if k == selected => ((k + 1).to_string(), MarkerKind::Cue),
                 k => ((k + 1).to_string(), MarkerKind::Slice),
             };
-            Marker::new(f, &label, kind)
+            let m = Marker::new(f, &label, kind);
+            // The first and END are the pad's Start and End.
+            if kind == MarkerKind::Edge {
+                m.fixed()
+            } else {
+                m
+            }
         })
         .collect()
 }

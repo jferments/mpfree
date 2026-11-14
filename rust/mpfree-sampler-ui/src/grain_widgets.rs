@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use mpfree_sampler::engine::GrainView;
 use mpfree_ui::wave::Peaks;
-use mpfree_ui::{Align, Color, EventKind, FontId, PaintCx, Rect, Touch, Widget};
+use mpfree_ui::{Align, Color, EventKind, FontId, PaintCx, Rect, Target, Touch, Widget};
 
 /// The granular colour (violet), shared by the tab's pictures and cards.
 pub const GRAIN_COLOR: u32 = 0xC77DFF;
@@ -223,6 +223,18 @@ impl Widget for GrainCloud {
         );
     }
 
+    fn targets(&self, r: Rect) -> Vec<Target> {
+        if !self.granular && !self.note.is_empty() {
+            return vec![Target::tap(
+                "play-as-grains",
+                0,
+                self.note.clone(),
+                GrainCloud::note_button(r),
+            )];
+        }
+        vec![Target::drag("position", 0, "grain position", GrainCloud::plot(r)).towards(40, 0)]
+    }
+
     fn touch(&mut self, finger: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
         match phase {
             Touch::Down => {
@@ -362,6 +374,11 @@ impl Widget for XyPad {
         );
         cx.canvas
             .fill_round_rect(Rect::new(x - DOT / 2, y - DOT / 2, DOT, DOT), DOT / 2, c);
+    }
+
+    fn targets(&self, r: Rect) -> Vec<Target> {
+        let label = format!("{} / {}", self.x_label, self.y_label);
+        vec![Target::drag("xy", 0, label, XyPad::plot(r)).disabled_if(!self.enabled)]
     }
 
     fn touch(&mut self, finger: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {

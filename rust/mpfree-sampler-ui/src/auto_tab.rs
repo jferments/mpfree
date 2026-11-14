@@ -628,6 +628,13 @@ impl AutoTab {
                 "Rec".to_string(),
             ];
             b.enabled = vec![self.running || can, !self.running];
+            let start = match (&source, &fault) {
+                (None, _) if s.gear.is_some() => "External gear needs a MIDI out".to_string(),
+                (None, _) => "Nothing to sample until the synth is up".to_string(),
+                (_, Some(e)) => e.to_string(),
+                _ => no_room(&s, st).0,
+            };
+            b.why = vec![start, "Cancel the auto-sample first".to_string()];
         }
         self.show_wheel(ui);
     }

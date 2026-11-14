@@ -391,6 +391,16 @@ impl WarpTab {
         let has_pins = !w.pins.is_empty();
         if let Some(b) = ui.get_mut::<ButtonRow>(BUTTONS) {
             b.enabled = vec![warped && !hits.is_empty(), selected.is_some(), has_pins];
+            b.why = vec![
+                if warped {
+                    "No hits found to pin"
+                } else {
+                    "Turn Warp on first"
+                }
+                .to_string(),
+                "Tap a pin first".to_string(),
+                "No pins to clear".to_string(),
+            ];
         }
         let cards = [
             match selected {
@@ -436,6 +446,13 @@ impl WarpTab {
                 card.sub = sub;
                 card.pos = pos.clamp(0.0, 1.0);
                 card.enabled = enabled[k];
+                card.why = [
+                    "No pins yet: tap a hit, or Pin hits",
+                    "Tap a pin first",
+                    "Turn Warp on first",
+                    "Zoom in to scroll",
+                ][k]
+                    .to_string();
             }
         }
         let wheel = match ui.get::<WarpView>(VIEW).map(WarpView::shown) {

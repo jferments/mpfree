@@ -66,7 +66,7 @@ Tap a strip's name to select it. The four Q-Links then turn its **Volume**, **Pa
 
 ## The master and Master safety
 
-The **Master** strip on the right is everything you hear. Its fader is the same level as the master bar on the Play page and Q-Link 1 there.
+The **Master** strip on the right is everything you hear. Its fader is the same level as the master bar on the Play page.
 
 The last thing on the master is **Master safety**, a limiter that keeps the output from going past -0.3 dB, so a loud moment never distorts harshly or hurts your ears. It shows how many times it has caught a peak. If it is catching all the time, turn something down.
 
@@ -126,7 +126,7 @@ Each plugin runs on its own, apart from the rest of MPFree, so a plugin that cra
 Every one of these is written in MPFree's report, so nothing goes wrong without you hearing about it.
 
 > [!NOTE]
-> **Not yet:** a plugin's settings aren't saved with your project, plugin instruments (synths) can't go on a track, and MPFree doesn't come with any plugins yet. A pack of free plugins built for the MPC (Airwindows, Surge XT and Dexed) is coming.
+> A plugin's settings are saved with your project. If you open the project on a stick without that plugin, the effect is left out and the Events log names the plugin's file. Plugin synths play as a track's own instrument (see [Synths](synths.md#a-synth-for-each-track)). **Not yet:** MPFree doesn't come with any plugins yet. A pack of free plugins built for the MPC (Airwindows, Surge XT and Dexed) is coming.
 
 ## The chain editor
 
@@ -194,7 +194,7 @@ Each of these costs almost nothing until you use it.
 
 ## Coming next
 
-- **Plugins**: settings saved with the project, and the plugin pack. Plugin synths already play as a track's own instrument.
+- **Plugins**: the plugin pack.
 - **Automation**: knob moves recorded into clips.
 - **Perform FX on pads**: effects played from the pads.
 
