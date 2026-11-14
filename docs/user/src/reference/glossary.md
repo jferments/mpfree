@@ -92,4 +92,4 @@ checked: 2026-11-12 ae9c39c
 
 **Velocity** — How hard a pad is hit, from 1 (softest) to 127 (hardest).
 
-**View** — One of the Play page's four layouts: All, Beats, Loop and Drum.
+**View** — One of the Play page's three layouts: All, Beats and Loop.

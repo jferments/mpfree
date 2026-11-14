@@ -114,11 +114,27 @@ impl Desk<'_> {
             gui::FromUi::OpenIo => fx.extend(app.open_io()),
             // The Play page: filters, sends, faders, speakers, throws, XY.
             gui::FromUi::PlayFx(p) => mix.play(p),
-            gui::FromUi::Steps(a) => match time.step_action(a) {
-                Ok(line) if !line.is_empty() => out.note(&line),
-                Ok(_) => {}
-                Err(e) => out.note(&format!("steps: {e}")),
-            },
+            gui::FromUi::Steps(a) => {
+                // ERASE + a lane's name: said in place of the hint.
+                let erase = matches!(a, time::StepAction::ClearPad { .. });
+                // The pattern's length: said in place of the hint too.
+                let length = matches!(a, time::StepAction::Length { .. });
+                match time.step_action(a) {
+                    Ok(line) if length && !line.is_empty() => fx.push(app::Effect::Tell(line)),
+                    Err(e) if length => fx.push(app::Effect::Tell(format!("steps: {e}"))),
+                    Ok(line) if erase => fx.push(app::Effect::Tell(if line.is_empty() {
+                        "steps: that lane has no steps to erase".to_string()
+                    } else {
+                        format!("{line} (UNDO brings them back)")
+                    })),
+                    Ok(line) if !line.is_empty() => out.note(&line),
+                    Ok(_) => {}
+                    Err(e) if erase => fx.push(app::Effect::Tell(format!("steps: {e}"))),
+                    Err(e) => out.note(&format!("steps: {e}")),
+                }
+            }
+            gui::FromUi::UndoReady(ready) => app.set_undo_ready(ready),
+            gui::FromUi::Overlay(on) => app.set_overlay(on),
             gui::FromUi::Tab(k) => fx.extend(app.tab(k)),
             gui::FromUi::MenuSelect(k) => fx.extend(app.select(k)),
             gui::FromUi::MenuStep(k, d) => fx.extend(app.step_item(k, d)),
@@ -183,7 +199,10 @@ impl Desk<'_> {
             | gui::FromUi::OpenProject(_)
             | gui::FromUi::OpenLoops(_)
             | gui::FromUi::OpenAudio(_)
-            | gui::FromUi::TrackInstrument(_)) => return Some(a),
+            | gui::FromUi::TrackInstrument(_)
+            // The synth's and the mixer's turn histories are the loop's.
+            | gui::FromUi::UndoHistory(_)
+            | gui::FromUi::UndoOn { .. }) => return Some(a),
         }
         None
     }
@@ -236,6 +255,9 @@ impl Desk<'_> {
                 out.note(&s);
                 out.show(gui::ToUi::Tell(s));
             }
+            app::Effect::Undo { redo } => out.show(gui::ToUi::Undo(redo)),
+            app::Effect::UndoButton(down) => out.show(gui::ToUi::UndoButton(down)),
+            app::Effect::PlayRec { overdub } => out.show(gui::ToUi::PlayRec(overdub)),
             app::Effect::Menu(m) => out.show(gui::ToUi::Menu(m)),
             app::Effect::Guide(g) => out.show(gui::ToUi::Guide(g)),
             app::Effect::Status(s) => out.show(gui::ToUi::Status(s)),
