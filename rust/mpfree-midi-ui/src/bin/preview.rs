@@ -45,6 +45,7 @@ fn shots() -> Vec<Shot> {
         clock_in: true,
         clock_out: true,
         cv_outs: 4,
+        monitor: true,
     };
     built.live.cv_volts = [2.0, 5.0, 0.0, 0.0, 5.0, 0.0, 0.0, 0.0];
     // Four learned controls: a knob, an endless encoder, a key, and one on
@@ -125,9 +126,26 @@ fn shots() -> Vec<Shot> {
             name: "io-cv-built",
             about: "CV once CV out is built: each output's volts now",
             section: 3,
-            model: built,
+            model: built.clone(),
             wheel: 0,
             taps: vec![],
+        },
+        Shot {
+            name: "io-monitor",
+            about: "Monitor: a keyboard's chord and mod wheel coming in, the Bass track playing out of the 5-pin jacks, clock arriving with its tempo; lights per port and channel, in on top and out below",
+            section: 4,
+            model: sample::monitored(built.clone()),
+            wheel: 0,
+            taps: vec![],
+        },
+        Shot {
+            name: "io-monitor-channel",
+            about: "Monitor after a tap on the keyboard's channel 1 light: only what came in on it",
+            section: 4,
+            model: sample::monitored(built),
+            wheel: 0,
+            // y -1: the keyboard's channel 1 light, in.
+            taps: vec![(0, -1)],
         },
     ]
 }
@@ -161,11 +179,12 @@ fn render(shot: &Shot) -> Result<SoftCanvas, String> {
     set_hint(&mut ui);
     ui.paint(&mut canvas);
     for &(x, y) in &shot.taps {
-        // y 0: the Plays on field of the fourth track row.
-        let y = if y == 0 {
-            lead_row_y(&ui, &shot.model)
-        } else {
-            y
+        // y 0: the Plays on field of the fourth track row; y -1: the
+        // Monitor's second port's channel 1 light, in.
+        let (x, y) = match y {
+            0 => (x, lead_row_y(&ui, &shot.model)),
+            -1 => monitor_light(&ui),
+            _ => (x, y),
         };
         tap(&mut ui, x, y);
         set_hint(&mut ui);
@@ -183,6 +202,16 @@ fn lead_row_y(ui: &Ui, m: &IoModel) -> i32 {
     let ports = 3;
     let top = panel_y + banner + 42 + ports * (56 + 8) + 42;
     top + 3 * (56 + 8) + 28
+}
+
+/// The middle of the Monitor's channel 1 light, in, on its second port
+/// (the rows' layout is fixed: chips, the channel numbers, then a row of
+/// 40 px and a gap of 6 per port).
+fn monitor_light(ui: &Ui) -> (i32, i32) {
+    let mixer = ui.rect_of(mpfree_mixer_ui::MIXER).expect("the mixer");
+    let x = mixer.x + mpfree_mixer_ui::io::LIST_W + 12;
+    let y = mixer.y + mpfree_mixer_ui::view::HEAD_H + 8;
+    (x + 170 + 16, y + 44 + 12 + 22 + 46 + 9)
 }
 
 fn utc_stamp() -> String {

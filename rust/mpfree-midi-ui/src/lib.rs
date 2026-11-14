@@ -1,9 +1,9 @@
-//! The MIDI, Sync and CV sections of the mixer's I/O view.
+//! The MIDI, Sync, CV and Monitor sections of the mixer's I/O view.
 //!
 //! The owner's calls (2026-11-12): a project's routing lives in an I/O view
 //! inside the mixer, opened by the I/O icon beside the mixer icon. The
 //! mixer (`mpfree-mixer-ui`) owns the view and its Audio section; this crate
-//! gives it three more through [`mpfree_mixer_ui::IoSection`]:
+//! gives it four more through [`mpfree_mixer_ui::IoSection`]:
 //!
 //! - **MIDI**: each port's input (Plays tracks, Learn only, Both) and thru,
 //!   and each track's one output setting, "Plays on", the port and the
@@ -12,6 +12,10 @@
 //!   arriving now, and each port's clock out (Off, While playing, Always).
 //! - **CV**: the eight CV/gate outputs: each one's job, track and main
 //!   setting, with the volts it gives now.
+//! - **Monitor**: every message in and out of the ports as it happens, a
+//!   light per port and channel each way, and the tempo of any clock
+//!   ([`IoModel::monitor`], fed by the app through
+//!   [`mpfree_midi::monitor::Feed`]). It sets nothing.
 //!
 //! The sections edit a [`Shared`] [`IoModel`]: the project's
 //! [`MidiSetup`] (saved with the project) and [`Live`] facts the app fills
@@ -32,13 +36,16 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 pub use learn::control_text;
+pub use monitor::words as monitor_words;
 use mpfree_midi::cv::CV_OUTS;
+pub use mpfree_midi::monitor::Monitor;
 pub use mpfree_midi::setup::MidiSetup;
 
 mod cv;
 mod form;
 mod learn;
 mod midi;
+mod monitor;
 mod sync;
 
 pub mod sample;
@@ -71,6 +78,8 @@ pub struct Built {
     pub clock_out: bool,
     /// The CV/gate outputs driven, counted from CV 1 (0: CV out is off).
     pub cv_outs: u8,
+    /// The app feeds the Monitor ([`IoModel::monitor`]).
+    pub monitor: bool,
 }
 
 /// What the app tells the sections about the world now.
@@ -128,6 +137,11 @@ pub struct IoModel {
     /// Goes up each time the setup changes (a section, or a project
     /// opened), so the app copies the setup only when it has changed.
     pub gen: u64,
+    /// What the Monitor section lists and lights: the app drains its
+    /// [`mpfree_midi::monitor::Feed`] into it while holding the lock, and
+    /// copies its port table in when ports come and go
+    /// ([`Monitor::set_ports`]). Not part of the setup: `gen` doesn't move.
+    pub monitor: Monitor,
 }
 
 /// The project's `midi` part (`parts/midi.txt`): the song's share of the
@@ -174,14 +188,16 @@ pub type Shared = Arc<Mutex<IoModel>>;
 pub const MIDI: &str = "MIDI";
 pub const SYNC: &str = "Sync";
 pub const CV: &str = "CV";
+pub const MONITOR: &str = "Monitor";
 
-/// The three sections, in the order the I/O view lists them, all on one
+/// The four sections, in the order the I/O view lists them, all on one
 /// model. Hand each to `mpfree_mixer_ui::add_io_section`.
 pub fn sections(model: &Shared) -> Vec<Box<dyn mpfree_mixer_ui::IoSection>> {
     vec![
         Box::new(form::FormSection::new(midi::Midi, model.clone())),
         Box::new(form::FormSection::new(sync::Sync, model.clone())),
         Box::new(form::FormSection::new(cv::Cv, model.clone())),
+        Box::new(monitor::MonitorSection::new(model.clone())),
     ]
 }
 

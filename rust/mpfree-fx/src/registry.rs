@@ -19,7 +19,7 @@ use crate::{
     DeEsser, Delay, DjFilter, Drive, Ducker, Eq, Exciter, Flanger, FreqShifter, Gate, Granulator,
     Harmonizer, Limiter, LoFi, MasterSafety, MultiFilter, MultiTap, MultibandCompressor, Perform,
     Phaser, PitchCorrect, PitchShifter, Plate, Preset, RingMod, Room, Rotary, SampleDelay, Spring,
-    StereoWidth, TalkBox, TapeDelay, TransientShaper, Tremolo, XyFx,
+    StereoWidth, TalkBox, TapeDelay, TransientShaper, Tremolo, Tuner, XyFx,
 };
 
 /// Where an effect sits in the picker.
@@ -446,6 +446,14 @@ pub static EFFECTS: &[FxEntry] = &[
         Performance,
         || Box::new(XyFx::new()),
         crate::xyfx::PRESETS,
+    ),
+    e(
+        "mpfree.fx.tuner",
+        "Tuner",
+        "Tune a guitar, a bass or a voice",
+        Utility,
+        || Box::new(Tuner::new()),
+        &[],
     ),
     e(
         "mpfree.fx.width",
