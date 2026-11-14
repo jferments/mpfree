@@ -1,6 +1,6 @@
 # Importing MPC projects
 
-**Status:** feasibility done; Stage 0 tools built, waiting on the owner's own OS 3.6 projects (2026-11-12). Full assessment: [Importing MPC projects: feasibility](https://claude.ai/artifact/1CzE52mppbCaNWMYsVLVm8).
+**Status:** feasibility done; Stage 0 tools built, waiting on the owner's own OS 3.6 projects (2026-11-12). Stage 1 started: keygroup programs to MPFree kits (`rust/mpfree-mpc-import`, 2026-11-14), tested on made-up programs, not yet on a real one. Full assessment: [Importing MPC projects: feasibility](https://claude.ai/artifact/1CzE52mppbCaNWMYsVLVm8).
 
 MPFree will open a project saved by Akai's MPC software (OS 3.x, and later 2.x) and turn it into an MPFree project. The importer only ever reads MPC files and writes a new MPFree project; it never writes to the MPC.
 
@@ -27,6 +27,24 @@ High: samples, tempo and meter, notes. Medium-high: drum programs, mixer levels 
 5. **In the app:** import from the Browser page, reading a USB stick.
 
 Every import writes a report of what came across exactly, what was approximated and what was dropped. The importer writes an MPFree project folder as the browser saves one ([The browser and projects](browser.md): `project.txt` plus one `parts/<owner>.txt` per engine through `mpfree_library::Part`, and `samples/`), so each stage writes the parts of the engines it fills.
+
+## Stage 1: keygroup programs
+
+`rust/mpfree-mpc-import` reads a keygroup program (`.xpm`) and the samples beside it, as the MPC saves a program folder, and writes a new MPFree project holding one kit. It runs on a computer:
+
+```sh
+cargo run --release -p mpfree-mpc-import -- keygroup "Grand/Grand.xpm" --data /media/stick/data [--name NAME] [--release-ms 400] [--dry-run]
+```
+
+`--data` is the folder the app is given with `--data`; the project goes into its `library/Projects/`. The tool only reads the program folder and never replaces a project. It prints a report: how the program was read, the pads made, and each thing approximated or left out.
+
+- **What it reads.** Each `<Instrument>` with a sample is a keygroup: `LowNote` and `HighNote`, and its active `<Layer>`s with `VelStart`, `VelEnd`, `SampleName` (or `SampleFile`), `RootNote`, `TuneCoarse`, `TuneFine`, `Pitch`, `Volume`, `Pan`, `SampleStart`, `SampleEnd` and the loop points. A small XML reader of our own (`xml.rs`, bounded in size and depth) does the parsing.
+- **Root notes.** Programs seen in community notes write `RootNote` either as the MIDI note or one above it. The tool compares each `RootNote` with the note in its sample's name (by pitch class, since libraries number octaves from C3 or from C4) and takes 0, +1 or -1, whichever most layers agree with, and says which. With no names to check, it takes `RootNote` as the note.
+- **The kit.** Each keygroup becomes a pad with keys (its notes and root) and its samples as velocity layers, and the pads play notes, as an auto-sampled instrument does (`Project::put_instrument`). Layers play while held (Gate) and release over `--release-ms`, since the scale of the program's own envelope values isn't known; they are in the report. Levels are relative to the program's most common layer volume.
+- **Approximated, and said.** A keygroup whose layers have different roots gets the first layer's root, and each other layer is tuned to make up the difference. A layer that doesn't follow the keys on the MPC follows them here. More than 16 layers keep the first 16 by velocity. A sample that isn't beside the program, or doesn't read, is left out, and the rest of the kit is made.
+- **The project** has only the sampler's part, so opening it puts the kit on the pads and the other engines keep what they had.
+
+To check against a real program: the field meanings above are inferred, so the first real keygroup program (the owner's own, or one from the factory library copied out for local use) should be imported with `--dry-run` and its report compared with how it plays on the MPC.
 
 ## Inspecting projects
 

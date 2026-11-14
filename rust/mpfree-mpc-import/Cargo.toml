@@ -1,0 +1,15 @@
+[package]
+name = "mpfree-mpc-import"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "MIT"
+description = "Reads MPC programs (.xpm) and turns them into MPFree kits: stage 1 of MPC import, keygroup programs first"
+
+[dependencies]
+mpfree-sampler = { path = "../mpfree-sampler" }
+mpfree-library = { path = "../mpfree-library" }
+
+[[bin]]
+name = "mpfree-mpc-import"
+path = "src/main.rs"
