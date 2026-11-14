@@ -534,3 +534,26 @@ when the baseline came from another one. The whole run takes about a minute
 under callgrind. After an intended change in cost, bless with
 `python3 tools/ci/instr_gate.py --bless` and say why in the PR. The runner needs
 `valgrind`; without it the job warns and skips.
+
+### ARMv7 counts for the instrument engines
+
+```text
+python3 tools/inst_arm_cost.py [--blocks N] [--jobs J] [--no-build] [CASE ...]
+```
+
+The x86 counts above miss what is slow on the MPC's ARMv7 build: no hardware
+divide, `floor` and 64-bit conversions as library calls. So Keys, Drawbar,
+Squelch and Analog are also counted as ARMv7 code, the way the effects are
+(fx.md). `rust/mpfree-synth/examples/inst_cost.rs` plays the bench's cases
+for the four engines, plus Poly Init with 8 voices for scale, with the same
+notes from the same seeds. The script builds it for
+`armv7-unknown-linux-gnueabihf` and runs each case under
+`qemu-arm -one-insn-per-tb -d exec,nochain` with N blocks (200 by default)
+and with none. Every instruction run prints one trace line, so the
+difference over N is the instructions per block. It also prints each case's
+output hash, which matches the native build's: the engines sound the same to
+the bit on ARMv7. The trace runs about 300k instructions a second, so all 16
+cases take about 20 minutes, four at a time. These are instructions, not
+cycles: cache misses and VFP stalls come on top, so the device still decides
+voice counts. The counts of 14 Nov are in synths.md, beside each engine's
+x86 count.
