@@ -6,7 +6,7 @@ checked: 2026-11-13 9560b32
 
 # Synths
 
-MPFree has five synths built in. Put one on the pads and they become a keyboard: bass lines, chords, leads and pads, played by hand, through the arpeggiator or into a pattern.
+MPFree has six synths built in. Put one on the pads and they become a keyboard: bass lines, chords, leads and pads, played by hand, through the arpeggiator or into a pattern.
 
 ## Put a synth on the pads
 
@@ -18,9 +18,9 @@ There are three ways:
 
 To go back to drums, pick a kit with the data wheel on the Play page, or set the track's instrument back to **Kit**.
 
-## The five synths
+## The six synths
 
-Any of the five can be a track's own instrument (see [A synth for each track](#a-synth-for-each-track)), and any track can have a different one.
+Any of the six can be a track's own instrument (see [A synth for each track](#a-synth-for-each-track)), and any track can have a different one.
 
 | Synth | What it is | Good for | Presets |
 |---|---|---|---|
@@ -29,6 +29,7 @@ Any of the five can be a track's own instrument (see [A synth for each track](#a
 | **Drums** | A drum synth: a different synthesised drum on each pad | Electronic kits built from scratch | Boom Kit, Tight Kit, Grit Kit, Electro Kit |
 | **Pluck** | Physically modelled strings and mallets | Guitars, harps, marimbas, bells | Nylon, Steel String, Harp, Koto, Muted Bass, Marimba, Vibes, Bell, Glass, Kalimba, Steel Drum |
 | **Wavetable** | Two oscillators that sweep through stacks of waveforms | Evolving pads, vocal leads, growling basses | Morph Pad, Vowel Lead, Sync Sweep, Digital Bell, Growl Bass, Organ, Harmonic Pluck, FM Keys |
+| **Keys** | A physically modelled electric piano: struck steel tines or reeds in front of their pickups | Soul and jazz chords, ballads, barking stabs, tremolo keys | Soft Tines, Bright Tines, Barking Tines, Bell Keys, Hollow Tines, Pan Tines, Ballad, Dusty Keys, Reed, Reed Bite, Trem Reed |
 
 Each synth also has an **Init** preset (Init Kit on Drums): a plain starting point to build your own sound.
 
@@ -38,7 +39,7 @@ Every track can play its own instrument: Poly on one, FM on another, a plugin sy
 
 1. Select the track.
 2. Press **MENU** on the Synth tab. The top row is named after the track: **Track 2 instrument**.
-3. Change it. It steps through **Kit** (the pads' kit, as every track starts), **Poly**, **FM**, **Drums**, **Pluck** and **Wavetable**, then any plugin synths you have put in `files/plugins/` on the stick.
+3. Change it. It steps through **Kit** (the pads' kit, as every track starts), **Poly**, **FM**, **Drums**, **Pluck**, **Wavetable** and **Keys**, then any plugin synths you have put in `files/plugins/` on the stick.
 
 {{shot: synth-instrument | Track 2's instrument set to a plugin synth, with the row's help on the right.}}
 
@@ -69,6 +70,13 @@ Coming:
 **Drive**, on the Filter page of Poly and Wavetable, saturates the sound before the filter. It keeps the sound at about the same level as you turn it up (within about 2 dB on every preset), so it adds grit and thickness, not volume; turn up the synth's level for that.
 
 Each synth has its own pages. FM has Algo, Mod and Pressure, a page for each of its six operators and three keyboard-scaling pages; Drums has a page for each of its 16 pads plus a Kit page.
+
+**Keys** has four pages:
+
+- **Strike:** **Model** (Tine or Reed), **Hardness** (a harder hammer is brighter), **Bell** (the ring of the attack), **Decay** (how long a held middle C rings; higher notes ring shorter) and **Release** (how fast the damper stops a note you let go).
+- **Tone:** **Voicing** is where the tine or reed sits against its pickup, as a technician sets it. Low values are hollow, with the octave above the note strong; high values are pure and round; the classic sound is in between. **Bark** is how much a hard hit growls (low notes growl first, as on the real instrument). **Tone** tilts the sound darker or brighter, and **Vel > tone** makes soft notes softer in tone, not only in level.
+- **Amp:** **Tremolo** and **Trem rate**, with **Trem mode** **Pan** (the sound moves between the speakers) or **Amp** (its level pulses; on the reed it also moves the tone, as on the original). **Drive** pushes the amplifier, and **Key noise** is the thump of the hammers and dampers.
+- **Voice:** transpose, fine tuning, voices, bend range, level and pan.
 
 The Synth tab takes its colours from the theme picked in **Prefs > Appearance**, like the rest of MPFree: the Q-Link colours, the curves and the boxes in the pictures all change with it.
 
