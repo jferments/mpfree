@@ -3678,7 +3678,7 @@ impl Player {
 
     /// The Pads tab's browser is `b`, with its Recent and Favourites from
     /// `lists`.
-    fn set_browser(&mut self, mut b: mpfree_browser_ui::Browser, lists: &str) {
+    pub(crate) fn set_browser(&mut self, mut b: mpfree_browser_ui::Browser, lists: &str) {
         b.load_lists(lists);
         b.open_picker(mpfree_browser_ui::Pick::Pads);
         self.browser = Some(b);
@@ -3718,7 +3718,7 @@ impl Player {
 
     /// Touches on the browser, the worker's answers and what they ask of
     /// the app (once a frame while it shows, and after a control).
-    fn step_browser(&mut self) {
+    pub(crate) fn step_browser(&mut self) {
         let Some(b) = self.browser.as_mut() else {
             return;
         };

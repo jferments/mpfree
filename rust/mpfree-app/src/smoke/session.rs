@@ -39,6 +39,35 @@ const MAX_DB: f32 = -12.0;
 pub struct Hits {
     /// (pad, velocity) for every note the clips and the arps started.
     pub on: Vec<(usize, u8)>,
+    /// Every note started, with the track it came from and when.
+    pub played: Vec<Played>,
+    /// The session's time at the period's start (seconds).
+    base: f64,
+}
+
+/// A note the time engine started, with its track: what a test of a whole
+/// song reads to see which tracks played in which section.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Played {
+    pub track: usize,
+    /// The pad (or note) it played.
+    pub note: u8,
+    pub velocity: u8,
+    /// Seconds into the session.
+    pub at: f64,
+}
+
+impl Hits {
+    fn note(&mut self, o: &mpfree_play::Out) {
+        if let mpfree_play::Event::NoteOn { note, velocity } = o.event {
+            self.played.push(Played {
+                track: usize::from(o.track),
+                note,
+                velocity,
+                at: self.base + f64::from(o.offset) / f64::from(RATE),
+            });
+        }
+    }
 }
 
 impl time::Pads for Hits {
@@ -49,6 +78,22 @@ impl time::Pads for Hits {
     fn release_at(&mut self, _pad: usize, _offset: u32) {}
     fn stop_all(&mut self) {}
     fn pressure_at(&mut self, _pad: usize, _value: u8, _offset: u32) {}
+    // Every event goes on as usual; the notes are written down first.
+    fn out(&mut self, o: &mpfree_play::Out) -> bool {
+        self.note(o);
+        false
+    }
+    fn live(&mut self, o: &mpfree_play::Out) -> Option<mpfree_play::Event> {
+        self.note(o);
+        match o.event {
+            mpfree_play::Event::NoteOn { note, velocity } => {
+                self.on.push((usize::from(note), velocity));
+                Some(o.event)
+            }
+            mpfree_play::Event::NoteOff { .. } => Some(o.event),
+            _ => None,
+        }
+    }
 }
 
 /// The screen and the control side, as on the MPC.
@@ -99,6 +144,16 @@ pub struct Session {
     synth_turns: undo::Turns<u16>,
     mix_turns: undo::Turns<(mpfree_fx::StripId, u16)>,
     turns_told: (bool, bool),
+    /// The library the browser saves projects into (`with_library`).
+    pub library: Option<mpfree_library::Library>,
+    /// A save asked for (SHIFT + BROWSE, Save in the browser), and the
+    /// Looper's loops being read for it, as `player_session` keeps them.
+    save_asked: bool,
+    loops_saving: bool,
+    audio_saving: bool,
+    collect_now: bool,
+    loops_held: Option<mpfree_looper::save::Saved>,
+    audio_held: Option<mpfree_audiotracks::save::Saved>,
 }
 
 /// Every hardware button with a job, on a number of its own: the measured
@@ -180,6 +235,13 @@ impl Session {
             synth_turns: undo::Turns::default(),
             mix_turns: undo::Turns::default(),
             turns_told: (false, false),
+            library: None,
+            save_asked: false,
+            loops_saving: false,
+            audio_saving: false,
+            collect_now: false,
+            loops_held: None,
+            audio_held: None,
         };
         // What player_session shows before the sound starts.
         s.out.show(ToUi::Kits(kits));
@@ -206,6 +268,35 @@ impl Session {
         // the screen.
         s.run_for(0.2);
         s
+    }
+
+    /// A session with a library in `dir`, as `--data` gives the app one:
+    /// BROWSE, Save, Open and New project work, as on the MPC. The
+    /// browser's jobs run at once (no worker thread), so a test needs no
+    /// waiting.
+    pub fn with_library(dir: &std::path::Path) -> Session {
+        let mut s = Session::new();
+        let lib = mpfree_library::Library::at(dir).expect("a library in the scratch folder");
+        s.screen
+            .set_browser(mpfree_browser_ui::Browser::inline(lib.clone()), "");
+        s.library = Some(lib);
+        // What New project goes back to, as player_session sends it once
+        // the mixer's own inserts are in.
+        let d = s.defaults();
+        s.out.show(ToUi::ProjectDefaults(Box::new(d)));
+        s.settle();
+        s
+    }
+
+    /// The engines' parts as they are now, as `player_session` makes New
+    /// project's (call it on a fresh session for those).
+    pub fn defaults(&self) -> crate::project::Defaults {
+        crate::project::Defaults {
+            tempo: self.app.settings.bpm,
+            mixer: crate::project::mixer_text(&self.mix.mixer, self.mix.pad_mutes()),
+            modu: self.mix.modu.save(),
+            synth: crate::project::synth_text(&self.app.synth_settings(), &self.synth.sounds()),
+        }
     }
 
     /// How many drum kits there are (the synth comes after them).
@@ -327,6 +418,32 @@ impl Session {
         self.run_periods(4)
     }
 
+    /// What the screen said in its events log (the project's saves and
+    /// opens, as a musician reads them), oldest first.
+    pub fn said(&self) -> Vec<String> {
+        self.screen
+            .ui
+            .get::<mpfree_ui::widgets::LogPanel>("events")
+            .map(|e| e.lines().map(|(l, _)| l.clone()).collect())
+            .unwrap_or_default()
+    }
+
+    /// Runs the session until the screen says `line`, for at most
+    /// `seconds` of the session's time and of the wall clock both (the
+    /// library writes on its own thread, in real time); true if it did.
+    pub fn until_said(&mut self, line: &str, seconds: f64) -> bool {
+        let end = self.t() + seconds;
+        let wall = std::time::Instant::now() + Duration::from_secs_f64(seconds);
+        while self.t() < end || std::time::Instant::now() < wall {
+            if self.said().iter().any(|l| l == line) {
+                return true;
+            }
+            self.run_periods(8);
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        self.said().iter().any(|l| l == line)
+    }
+
     /// Hold `held` (SHIFT, say) while pressing `name`.
     pub fn button_with(&mut self, held: &str, name: &str) -> &mut Session {
         let h = self.button_note(held);
@@ -337,6 +454,20 @@ impl Session {
         self.button(name);
         let t = self.t();
         let fx = self.app.button(h, false, t);
+        self.fx.extend(fx);
+        self.run_periods(4)
+    }
+
+    /// Hold a hardware button down for `seconds` (FILL through a bar, say),
+    /// the session running meanwhile.
+    pub fn hold(&mut self, name: &str, seconds: f64) -> &mut Session {
+        let note = self.button_note(name);
+        let t = self.t();
+        let fx = self.app.button(note, true, t);
+        self.fx.extend(fx);
+        self.run_for(seconds);
+        let t = self.t();
+        let fx = self.app.button(note, false, t);
         self.fx.extend(fx);
         self.run_periods(4)
     }
@@ -474,6 +605,7 @@ impl Session {
         if let Some(Effect::Arp(v)) = self.app.arp_poll() {
             self.out.show(ToUi::Arp(Box::new(v)));
         }
+        self.hits.base = t;
         self.time
             .period_arps(PERIOD as u32, &mut self.hits, &mut self.app.arps);
         for &(offset, addr, value) in self.time.locks() {
@@ -505,6 +637,15 @@ impl Session {
         if let Some(c) = self.cloud.take() {
             self.out.show(ToUi::SampleGrains(c));
         }
+        // The looper's period (silence in), as main.rs runs it: it reads
+        // the loops for a save and lets an open's clears land.
+        let z0 = [0f32; PERIOD];
+        self.looper.take_pads(&z0, &z0);
+        let (mut ll, mut lr) = ([0f32; PERIOD], [0f32; PERIOD]);
+        if let Some(line) = self.looper.run(self.time.block(), &mut ll, &mut lr) {
+            self.out.note(&line);
+        }
+        self.save_period();
         // The mixer's period (silence in): edits to its chains land here,
         // as they do in player_session's.
         if let Some(line) = self.mix.poll_built() {
@@ -549,7 +690,158 @@ impl Session {
         self.periods += 1;
         self.feed_screen();
         self.screen.tick(PERIOD_S as f32);
+        // The library here runs inline (no worker thread), so the browser
+        // is never busy and the screen's tick doesn't step it: a save's
+        // answer (ProjectSaved) waits for it, as the worker's would.
+        self.screen.step_browser();
         self.settle();
+    }
+
+    /// A save, as `player_session` makes one: the Looper's loops are read
+    /// first (as they play), then what every engine holds is copied for
+    /// the screen, which writes the parts into the library.
+    fn save_period(&mut self) {
+        // An open going in: the mixer's swap and the loops, a few edits a
+        // period, as player_session tends them.
+        if self.mix.opening() {
+            if let Some(line) = self.mix.tend_open() {
+                self.out.note(&line);
+            }
+        }
+        if self.looper.opening() {
+            if let Some(line) = self.looper.tend_open() {
+                self.out.note(&line);
+            }
+        }
+        if let Some(line) = self.tracks.take_note() {
+            self.out.note(&line);
+        }
+        if std::mem::take(&mut self.save_asked) {
+            if self.mix.opening() || self.looper.opening() || self.tracks.opening() {
+                self.out
+                    .note("project: not saved, a project is still opening (try again in a moment)");
+            } else if self.collect_now {
+                self.out.note("project: already saving");
+            } else {
+                let line = self.looper.save();
+                self.loops_saving = self.looper.saving().is_some();
+                if !self.loops_saving {
+                    self.out
+                        .note(&format!("project: saving without the loops ({line})"));
+                }
+                self.audio_saving = self.tracks.host.save();
+                if !self.audio_saving {
+                    self.out.note(
+                        "project: saving without the audio tracks (their worker did not start)",
+                    );
+                }
+                self.collect_now = true;
+            }
+        }
+        if self.loops_saving {
+            self.loops_held = self.looper.take_saved();
+            self.loops_saving = self.loops_held.is_none();
+        }
+        if self.audio_saving {
+            self.audio_held = self.tracks.host.take_saved();
+            self.audio_saving = self.audio_held.is_none();
+        }
+        if self.collect_now && !self.loops_saving && !self.audio_saving {
+            self.collect_now = false;
+            let (loops, audio) = (self.loops_held.take(), self.audio_held.take());
+            self.collect(loops, audio);
+        }
+    }
+
+    fn collect(
+        &mut self,
+        loops: Option<mpfree_looper::save::Saved>,
+        audio: Option<mpfree_audiotracks::save::Saved>,
+    ) {
+        let c = crate::project::Collected {
+            tempo: self.app.settings.bpm,
+            swing: self.time.info().swing,
+            clips: self.time.project().clone(),
+            mixer: crate::project::mixer_text(&self.mix.mixer, self.mix.pad_mutes()),
+            modu: self.mix.modu.save(),
+            synth: crate::project::synth_text(&self.app.synth_settings(), &self.synth.sounds()),
+            arp: self.app.arp_part(),
+            instruments: crate::project::instruments_text(&self.mix.instruments),
+            loops,
+            audio,
+        };
+        self.out.show(ToUi::ProjectParts(Box::new(c)));
+    }
+
+    /// An opened project (or New) swapped in between two periods, as
+    /// `player_session` swaps it.
+    fn open_project(&mut self, mut o: Box<crate::project::Opening>) {
+        use mpfree_time_ui::TimeAction;
+        use mpfree_transport::Command;
+        self.fx
+            .push(Effect::Time(TimeAction::Transport(Command::Stop)));
+        self.fx.push(Effect::StopSounds);
+        // A save under way stops: the project changes under it.
+        if self.collect_now {
+            self.looper.cancel_save();
+            self.tracks.host.cancel_save();
+            if let Some(l) = self.loops_held.take() {
+                self.looper.drop_saved(l);
+            }
+            if let Some(a) = self.audio_held.take() {
+                self.tracks.host.drop_saved(a);
+            }
+            (self.loops_saving, self.audio_saving, self.collect_now) = (false, false, false);
+            self.out
+                .note("project: the save stopped, a project is opening");
+        }
+        if let Some(bpm) = o.tempo {
+            let fx = self.app.set_tempo(bpm);
+            self.fx.extend(fx);
+        }
+        if let Some(mut t) = o.time.take() {
+            (t.metronome, t.click_gain) = (self.time.metronome, self.time.click_gain);
+            std::mem::swap(&mut self.time, &mut *t);
+            o.time = Some(t);
+            self.out.show(ToUi::Time(Box::new(self.time.state())));
+        }
+        if let Some(sw) = o.swing {
+            self.fx
+                .push(Effect::Time(TimeAction::Transport(Command::SetSwing(sw))));
+        }
+        if let Some(m) = o.mix.take() {
+            self.mix.open(m);
+        }
+        if let Some((options, sounds)) = o.synth.take() {
+            for line in self.synth.set_sounds(&sounds) {
+                self.out.note(&line);
+            }
+            let (notes, fx) = self.app.open_synth(&options);
+            for line in notes {
+                self.out.note(&format!("project: {line}"));
+            }
+            self.fx.extend(fx);
+            self.out.show(ToUi::Synth(self.synth.state()));
+            o.synth = Some((options, sounds));
+        }
+        let (notes, fx) = self.app.open_arp(o.arp.as_deref());
+        for line in notes {
+            self.out.note(&line);
+        }
+        self.fx.extend(fx);
+        if o.clear_loops {
+            let line = self.looper.clear_all();
+            self.out.note(&line);
+        }
+        if o.clear_audio {
+            // Recordings end; the tracks empty once they have.
+            self.tracks.clear();
+        }
+        for line in o.notes.drain(..) {
+            self.out.note(&line);
+        }
+        self.out.note(&format!("project: {} is in", o.what));
+        self.out.show(ToUi::ProjectBack(o));
     }
 
     /// An action from the screen: the control side's through the desk, the
@@ -631,6 +923,10 @@ impl Session {
                 self.mix.set_rec_source(src);
             }
             FromUi::SampleGrains(c) => self.cloud = Some(c),
+            FromUi::SaveProject => self.save_asked = true,
+            FromUi::OpenProject(o) => self.open_project(o),
+            FromUi::OpenLoops(l) => self.looper.open(*l),
+            FromUi::OpenAudio(a) => self.tracks.open(*a),
             // The sampler's and the store's: nothing to check here.
             FromUi::SaveTouch(_)
             | FromUi::Slice { .. }
@@ -801,6 +1097,7 @@ impl Session {
                     Effect::Audio(p) => self.out.note(&format!("audio buffer: {p} periods")),
                     Effect::Quit => self.quit = true,
                     Effect::SavePatterns(_) => {}
+                    Effect::SaveProject => self.save_asked = true,
                     // 16 LEVEL, as main.rs: the synth's pads have none.
                     Effect::SixteenLevels if self.synth_on || self.kit_to == Some(self.kits) => {
                         self.out.note(
