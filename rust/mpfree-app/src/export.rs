@@ -396,6 +396,9 @@ struct Running {
     rolled: bool,
     /// The range has played (the tail plays from here).
     ended: bool,
+    /// The transport is told to stop on the range's last frame, so the
+    /// clips don't play on into the tail.
+    stopping: bool,
     waited: u32,
 }
 
@@ -481,6 +484,7 @@ impl Host {
             before,
             rolled: false,
             ended: false,
+            stopping: false,
             waited: 0,
         });
         Ok(())
@@ -529,8 +533,29 @@ impl Host {
                 Some("the transport didn't start (does it follow another device's clock?)".into());
         }
         let info = time.info();
-        if r.rolled && !r.ended && info.position >= r.run.range.end {
+        if r.rolled
+            && !r.ended
+            && (info.position >= r.run.range.end || (r.stopping && !info.state.rolling()))
+        {
             r.ended = true;
+            // The range is over: the song stops (if the stop below didn't
+            // already), and what still sounds rings out as the tail.
+            if info.state.rolling() {
+                time.command(Command::Stop);
+            }
+        }
+        if r.rolled && !r.ended && !r.stopping && info.state.rolling() {
+            // The range ends within the coming period: the song stops on
+            // that frame, so nothing after the range is played or logged.
+            let next = time.next_frame();
+            let end = time
+                .block()
+                .spans()
+                .last()
+                .map(|s| s.frame_of(r.run.range.end as f64));
+            if let Some(at) = end.filter(|&at| at < next + PERIOD as u64) {
+                r.stopping = time.command_at(at, Command::Stop);
+            }
         }
         if r.rolled && !r.ended && !info.state.rolling() && r.run.said.is_none() {
             // STOP while the range plays: the export is cancelled.
@@ -925,6 +950,7 @@ mod tests {
             (p0 + 99, 0, Event::NoteOff { note: 60 }),
         ];
         let mut n = 0;
+        let mut stopped_at = None;
         let run = loop {
             n += 1;
             assert!(n < 2000, "the pass ends");
@@ -940,7 +966,24 @@ mod tests {
             if let Some(run) = l.period(in_range) {
                 break run;
             }
+            // The song stops on the range's last frame, so the clips don't
+            // play on into the tail.
+            let info = l.time.info();
+            if n > 2 && !info.state.rolling() && stopped_at.is_none() {
+                stopped_at = Some(info.position);
+                // (Unless the stop fell on this period's first frame.)
+                let rolled = l.time.block().spans().iter().find(|s| s.state.rolling());
+                if let Some(s) = rolled {
+                    let last = s.tick_at(s.frame + u64::from(s.len) - 1);
+                    let end = range.end as f64;
+                    assert!(
+                        last < end && last > end - 1.0,
+                        "the last frame played: {last}"
+                    );
+                }
+            }
         };
+        assert_eq!(stopped_at, Some(range.end), "stopped where the range ends");
         assert_eq!(run.said, None);
         // The transport is back where it was, stopped, its loop on again.
         let after = l.time.info();

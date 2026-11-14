@@ -54,7 +54,7 @@ The files go in a new folder in **Recordings**, named after the project and the 
 | One WAV per stem | Each part of the mixer on its own. Every stem starts and ends with the mixdown, so they line up when you drop them into a computer. A part that made no sound at all in the export is left out, and the panel says so. |
 | *Night drive.mid* | The notes and controls each track played, as they came out (with quantise, swing, chance and ratchets applied), with the tempo and the meter. It is made only when notes played. |
 
-After the end of the range, the export keeps going until the sound has died away (a delay's last echo, a reverb's tail), for up to 10 seconds. The silence after that is cut off. The range itself is never cut short.
+At the end of the range the song stops, so nothing after it is played, and the export keeps going until the sound has died away (a note's release, a delay's last echo, a reverb's tail), for up to 10 seconds. The silence after that is cut off. The range itself is never cut short.
 
 File names work on any computer: a character that Windows or a FAT stick refuses (such as / or ?) becomes a -, and two tracks with the same name become *Drums* and *Drums 2*.
 
