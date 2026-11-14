@@ -12679,13 +12679,14 @@ mod tests {
     }
 
     fn idle_pages_stay_still() {
-        // Pages whose live parts redraw on their own, and why.
-        const LIVE: [&str; 3] = [
-            // The I/O view's lights and the clock's tempo, a small part.
-            "mixer-io",
+        // Pages whose live parts redraw on their own, and why. (The I/O
+        // view redraws only when it changes, since 13 Nov, and here
+        // nothing does.)
+        const LIVE: [&str; 2] = [
             // The touch test's trails fade.
             "debug-touch",
-            // The Rec tab's input meter and waveform follow the input.
+            // The Rec tab's meters fall back after the input stops (the
+            // view redraws only when its picture changes, since 13 Nov).
             "sample-rec",
         ];
         let mut busy = Vec::new();
