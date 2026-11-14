@@ -93,6 +93,7 @@ mod debug_page;
 mod desk;
 mod drawing;
 mod engines;
+mod fxmodes;
 mod gui;
 mod instruments;
 mod kit;

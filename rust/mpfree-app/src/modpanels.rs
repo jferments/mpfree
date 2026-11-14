@@ -51,6 +51,7 @@ use std::time::{Duration, Instant};
 use mpfree_mixer_ui::MixView;
 
 use crate::app::{App, Effect, View};
+use crate::fxmodes::Switched;
 use crate::gui::ToUi;
 use crate::mixing::{self, MixHost, SLOTS};
 use crate::modmix::{strip_id, strip_of};
@@ -268,6 +269,27 @@ impl ChainHost {
                         .chain(sid)
                         .map(|c| (0..c.len()).filter_map(|i| c.uid(i)).collect());
                 }
+            }
+            ChainAction::SetMode { slot, mode } => {
+                let owner = h
+                    .mixer
+                    .chain(sid)
+                    .and_then(|c| c.uid(slot))
+                    .map(|u| Owner::Insert(self.strip(), u));
+                let set = |h: &mut MixHost, addr, v| set(h, addr, v, recording);
+                match crate::fxmodes::switch(h, self.strip(), slot, mode, set) {
+                    Err(why) => return ChainOut::Refused(why),
+                    // A new engine has its own controls and tabs; it keeps
+                    // the slot id, so it stays selected.
+                    Ok(Switched::Across) => {
+                        self.group = 0;
+                        if self.focus.is_some_and(|f| Some(f.owner) == owner) {
+                            self.focus = None;
+                        }
+                    }
+                    Ok(_) => {}
+                }
+                self.selected = Some(slot);
             }
             ChainAction::OpenPage(slot) => return ChainOut::OpenPage { strip: sid, slot },
             ChainAction::Group(g) => {
@@ -955,7 +977,7 @@ mod tests {
         let st = c.state(&r.h);
         assert!(!st.picking);
         assert_eq!(st.slots.len(), 2);
-        assert_eq!(st.slots[1].name, "Drive");
+        assert_eq!(st.slots[1].name, "Drive · Soft");
         assert_eq!(st.selected, Some(1), "the added effect is selected");
         assert!(!st.params.is_empty());
         // Fill the strip: the next one is refused.
@@ -997,8 +1019,9 @@ mod tests {
         for &(p, v) in preset.values {
             assert_eq!(node.param(p), v, "built with {}", preset.name);
         }
-        // The add went to the front of Recent; a star keeps a favourite.
-        assert_eq!(r.h.shelf.recent, ["mpfree.fx.plate"]);
+        // The add went to the front of Recent, as its family (Reverb's
+        // tile); a star keeps a favourite.
+        assert_eq!(r.h.shelf.recent, ["mpfree.fx.room"]);
         assert!(std::mem::take(&mut r.h.shelf_dirty));
         let star = ChainAction::Favourite {
             id: "mpfree.fx.gate",
@@ -1019,7 +1042,7 @@ mod tests {
             c.action(&mut r.h, &ChainAction::Add("mpfree.fx.nothing"), false),
             ChainOut::Refused("No such effect")
         );
-        assert_eq!(r.h.shelf.recent, ["mpfree.fx.plate"]);
+        assert_eq!(r.h.shelf.recent, ["mpfree.fx.room"]);
         assert!(!r.h.shelf_dirty);
     }
 
@@ -1072,7 +1095,7 @@ mod tests {
         r.run(20);
         let st = c.state(&r.h);
         assert_eq!(st.selected, Some(0));
-        assert_eq!(st.slots[0].name, "Drive");
+        assert_eq!(st.slots[0].name, "Drive · Soft");
         m.action(&mut r.h, &MacroAction::Macro { m: 1, value: 0.0 }, false);
         r.run(20);
         assert!((r.param(addr) - v).abs() < 1e-3);
@@ -1249,6 +1272,173 @@ mod tests {
         assert_eq!(ms.macros[2].name, "Sweep");
         assert_eq!(ms.macros[2].targets[0].label, label(&fresh.h, addr));
         fresh.run(2);
+    }
+
+    /// Periods with the app's once-a-period tending: built effects in,
+    /// retired ones out, a switch's macros and rows after it.
+    fn settle(r: &mut Rig) {
+        for _ in 0..20 {
+            r.run(1);
+            assert_eq!(r.h.poll_built(), None);
+        }
+    }
+
+    /// Adds `id` at the end of the drums' chain and selects it.
+    fn added(r: &mut Rig, id: &'static str) -> (ChainHost, usize, u16) {
+        let mut c = ChainHost::from_mixer(drums(), Some(0)).unwrap();
+        c.action(&mut r.h, &ChainAction::Add(id), false);
+        settle(r);
+        let chain = r.h.mixer.chain(drums()).unwrap();
+        let slot = chain.len() - 1;
+        let uid = chain.uid(slot).unwrap();
+        c.action(&mut r.h, &ChainAction::Select(slot), false);
+        (c, slot, uid)
+    }
+
+    fn knob(st: &ChainState, name: &str) -> ParamAddr {
+        st.params
+            .iter()
+            .find(|p| p.info.name == name)
+            .unwrap_or_else(|| panic!("no {name} on the page"))
+            .addr
+    }
+
+    /// Room to Plate on the Mode chooser: the Plate takes the Room's place
+    /// and slot id (still selected, still bypassed), keeps the controls the
+    /// two share, and takes over the Room's macro and matrix rows on them;
+    /// back to Room puts back what the Room had.
+    #[test]
+    fn a_mode_across_engines_swaps_in_place_and_switching_back_restores() {
+        let mut r = Rig::new();
+        let (mut c, slot, uid) = added(&mut r, "mpfree.fx.room");
+        let st = c.state(&r.h);
+        let mv = st.mode.clone().expect("a Reverb has modes");
+        assert_eq!(mv.family, "Reverb");
+        assert_eq!(mv.current, Some(0));
+        assert_eq!(st.slots[slot].name, "Reverb · Room");
+        // Room's Decay to 1.5 s and Size to 80 %; Mix on macro 1, a row on
+        // Decay, another on Early (a Plate has no Early).
+        c.action(&mut r.h, &ChainAction::Group(0), false);
+        let st = c.state(&r.h);
+        let (decay, size, early) = (knob(&st, "Decay"), knob(&st, "Size"), knob(&st, "Early"));
+        for (addr, v) in [(decay, 1500.0), (size, 80.0)] {
+            c.action(&mut r.h, &ChainAction::Set { addr, value: v }, false);
+        }
+        r.run(2);
+        let mix = ParamAddr::new(Owner::Insert(Strip::Track(DRUMS as u8), uid), 9);
+        let on_macro = ChainAction::Macro {
+            target: mix,
+            macro_: Some(0),
+        };
+        assert_eq!(c.action(&mut r.h, &on_macro, false), ChainOut::Shown);
+        for target in [decay, early] {
+            let row = ChainAction::AddRow {
+                target,
+                source: Source::Lfo(0),
+            };
+            assert_eq!(c.action(&mut r.h, &row, false), ChainOut::Shown);
+        }
+        c.action(&mut r.h, &ChainAction::SetOn { slot, on: false }, false);
+        settle(&mut r);
+        let to_plate = ChainAction::SetMode { slot, mode: 1 };
+        assert_eq!(c.action(&mut r.h, &to_plate, false), ChainOut::Shown);
+        // A second switch before the first is in is refused.
+        assert_eq!(
+            c.action(&mut r.h, &ChainAction::SetMode { slot, mode: 2 }, false),
+            ChainOut::Refused("The mixer is busy")
+        );
+        settle(&mut r);
+        let chain = r.h.mixer.chain(drums()).unwrap();
+        let plate = chain.node(slot).unwrap();
+        assert_eq!(plate.info().id, "mpfree.fx.plate");
+        assert_eq!(chain.uid(slot), Some(uid), "the same slot id");
+        assert!(!chain.is_on(slot), "still bypassed");
+        assert!((plate.param(1) - 80.0).abs() < 1e-3, "Size carried");
+        // Decay's row came along, so the engine has its own value.
+        let owner = Owner::Insert(Strip::Track(DRUMS as u8), uid);
+        let base = |r: &Rig, p| r.h.modu.engine().base(ParamAddr::new(owner, p));
+        assert_eq!(base(&r, 2), Some(1500.0), "Decay carried");
+        let st = c.state(&r.h);
+        assert_eq!(st.selected, Some(slot));
+        assert_eq!(st.slots[slot].name, "Reverb · Plate");
+        assert_eq!(st.mode.as_ref().unwrap().current, Some(1));
+        // Mix is 8 on a Plate, 9 on a Room; Decay is 2 on both.
+        let e = r.h.modu.engine();
+        let maps: Vec<u16> = e.macro_maps(0).map(|m| m.target.param).collect();
+        assert_eq!(maps, [8]);
+        let rows: Vec<ParamAddr> = e.rows().map(|r| r.target).collect();
+        assert_eq!(rows, [ParamAddr::new(owner, 2)], "Early's row dropped");
+        // A different Decay on the Plate; back to Room puts back the Room's.
+        let plate_decay = ParamAddr::new(owner, 2);
+        c.action(
+            &mut r.h,
+            &ChainAction::Set {
+                addr: plate_decay,
+                value: 4000.0,
+            },
+            false,
+        );
+        settle(&mut r);
+        c.action(&mut r.h, &ChainAction::SetMode { slot, mode: 0 }, false);
+        settle(&mut r);
+        let chain = r.h.mixer.chain(drums()).unwrap();
+        let room = chain.node(slot).unwrap();
+        assert_eq!(room.info().id, "mpfree.fx.room");
+        assert!((room.param(1) - 80.0).abs() < 1e-3);
+        assert_eq!(base(&r, 2), Some(1500.0), "the Room's Decay");
+        let maps: Vec<u16> = r.h.modu.engine().macro_maps(0).map(|m| m.target.param).collect();
+        assert_eq!(maps, [9], "the macro back on the Room's Mix");
+        // Nothing drives a control that isn't there.
+        r.run(4);
+        assert_eq!(r.h.modu.unrouted(), 0);
+    }
+
+    /// Two modes of one engine (Drive's Soft and Tube) only set its Mode,
+    /// which the editor hides; a mode of another engine (Console) and back
+    /// (Fuzz) keeps what the Drive had.
+    #[test]
+    fn a_mode_of_the_same_engine_sets_its_value_and_one_of_another_comes_back() {
+        use mpfree_fx::ids::drive;
+        let mut r = Rig::new();
+        let (mut c, slot, uid) = added(&mut r, "mpfree.fx.drive");
+        let st = c.state(&r.h);
+        assert_eq!(st.slots[slot].name, "Drive · Soft");
+        assert!(
+            !st.params.iter().any(|p| p.addr.param == drive::MODE),
+            "the chooser stands for Mode"
+        );
+        let amount = knob(&st, "Drive");
+        let v = st.params.iter().find(|p| p.addr == amount).unwrap().info.from_unit(0.7);
+        c.action(&mut r.h, &ChainAction::Set { addr: amount, value: v }, false);
+        c.action(&mut r.h, &ChainAction::SetMode { slot, mode: 2 }, false);
+        r.run(2);
+        let node = |r: &Rig| {
+            let c = r.h.mixer.chain(drums()).unwrap();
+            (c.uid(slot), c.node(slot).unwrap().info().id)
+        };
+        assert_eq!(node(&r), (Some(uid), "mpfree.fx.drive"));
+        let st = c.state(&r.h);
+        assert_eq!(st.slots[slot].name, "Drive · Tube");
+        assert_eq!(st.mode.as_ref().unwrap().current, Some(2));
+        assert_eq!(
+            c.action(&mut r.h, &ChainAction::SetMode { slot, mode: 2 }, false),
+            ChainOut::Shown,
+            "already Tube: nothing to do"
+        );
+        c.action(&mut r.h, &ChainAction::SetMode { slot, mode: 6 }, false);
+        settle(&mut r);
+        assert_eq!(node(&r), (Some(uid), "mpfree.fx.character"));
+        assert_eq!(c.state(&r.h).slots[slot].name, "Drive · Console");
+        c.action(&mut r.h, &ChainAction::SetMode { slot, mode: 4 }, false);
+        settle(&mut r);
+        assert_eq!(node(&r), (Some(uid), "mpfree.fx.drive"));
+        let chain = r.h.mixer.chain(drums()).unwrap();
+        let n = chain.node(slot).unwrap();
+        assert_eq!(n.param(drive::MODE), 4.0, "Fuzz");
+        assert!((n.param(amount.param) - v).abs() < 1e-3, "the Drive's amount");
+        let st = c.state(&r.h);
+        assert_eq!(st.slots[slot].name, "Drive · Fuzz");
+        assert_eq!(st.selected, Some(slot));
     }
 
     #[test]

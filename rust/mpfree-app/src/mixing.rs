@@ -216,6 +216,9 @@ pub struct MixHost {
     /// whether they changed since they were last saved.
     pub shelf: mpfree_fx::picker::Shelf,
     pub shelf_dirty: bool,
+    /// Effects' modes (fxmodes.rs): the values each insert had in the
+    /// engines it left, and the switches across engines on their way.
+    pub modes: crate::fxmodes::Modes,
 }
 
 /// What [`MixHost::poll_instruments`] put in (or couldn't) for the log.
@@ -308,6 +311,7 @@ impl MixHost {
             made: Vec::new(),
             shelf: mpfree_fx::picker::Shelf::default(),
             shelf_dirty: false,
+            modes: crate::fxmodes::Modes::default(),
         }
     }
 
@@ -376,6 +380,8 @@ impl MixHost {
         if let Some(mut old) = self.opening.take() {
             self.drop_load(&mut old.load);
         }
+        // Its inserts may reuse the old ones' slot ids.
+        self.modes = crate::fxmodes::Modes::default();
         self.opening = Some(Box::new(Open {
             load,
             stage: OpenStage::Clear,
@@ -580,15 +586,60 @@ impl MixHost {
             .map_err(|_| "The mixer is busy")
     }
 
+    /// Switches insert `uid` on `strip` to engine `id` across engines (a
+    /// family's mode, `mpfree_fx::families`): built like an added effect,
+    /// set up by `switch`, and swapped in place with the same slot id
+    /// ([`MixHost::poll_built`]). Err: the mixer is busy, or no effect has
+    /// that id.
+    pub fn replace_insert(
+        &mut self,
+        strip: StripId,
+        uid: u16,
+        id: &'static str,
+        switch: mpfree_fx::families::Switch,
+    ) -> Result<(), &'static str> {
+        let rate = self.mixer.rate();
+        if let Some(b) = self.builder.as_mut() {
+            return if b.build_switch(strip, uid, id, switch, rate, PERIOD) {
+                Ok(())
+            } else {
+                Err("The mixer is busy")
+            };
+        }
+        let mut node = mpfree_fx_ui::make(id).ok_or("No such effect")?;
+        switch.apply(node.as_mut());
+        let at = self
+            .mixer
+            .chain(strip)
+            .and_then(|c| c.slot_of(uid))
+            .ok_or("That effect has gone")?;
+        let insert = self.keep_bypass(strip, at, Insert::new(node, rate, PERIOD).with_uid(uid));
+        self.mixer
+            .edit(Edit::Replace { strip, at, insert })
+            .map_err(|_| "The mixer is busy")
+    }
+
+    /// An insert taking the place of slot `at` of `strip`, bypassed if the
+    /// one there is.
+    fn keep_bypass(&self, strip: StripId, at: usize, insert: Insert) -> Insert {
+        match self.mixer.chain(strip) {
+            Some(c) if !c.is_on(at) => insert.off(),
+            _ => insert,
+        }
+    }
+
     /// Effects asked for and not in the mixer's edits yet.
     pub fn inserts_building(&self) -> usize {
         self.builder.as_ref().map_or(0, |b| b.pending()) + usize::from(self.landing.is_some())
     }
 
     /// Once a period: puts the effects the builder made into their chains
-    /// (at the end), and hands the ones edits took out back to be dropped
-    /// off the audio thread. Returns a line for the log when an effect
-    /// could not be made. No allocation; never waits.
+    /// (at the end, or in the place of the insert a switch of mode
+    /// replaces), and hands the ones edits took out back to be dropped
+    /// off the audio thread; then a switch's macros and rows follow it
+    /// (`fxmodes::land`). Returns a line for the log when an effect
+    /// could not be made. No allocation while nothing is edited; never
+    /// waits.
     pub fn poll_built(&mut self) -> Option<&'static str> {
         let mut said = None;
         loop {
@@ -603,23 +654,43 @@ impl MixHost {
                 said = Some("mixer: the chain editor asked for an effect that has no maker");
                 continue;
             };
-            let Some(at) = self.mixer.chain(built.strip).map(|c| c.len()) else {
-                said = Some("mixer: an effect was built for a strip the mixer does not have");
+            // A switch of mode takes its insert's slot, and its slot id;
+            // an added effect goes at the end.
+            let at = self.mixer.chain(built.strip).and_then(|c| match built.replace {
+                Some(uid) => c.slot_of(uid),
+                None => Some(c.len()),
+            });
+            let Some(at) = at else {
+                said = Some(match built.replace {
+                    Some(_) => "mixer: an effect was switched after it was taken out",
+                    None => "mixer: an effect was built for a strip the mixer does not have",
+                });
                 if !self.drop_off_thread(insert) {
                     said = Some(DROPPED_HERE);
                 }
                 continue;
             };
-            if let Err(Edit::Insert { insert, .. }) = self.mixer.edit(Edit::Insert {
-                strip: built.strip,
-                at,
-                insert,
-            }) {
+            let edit = match built.replace {
+                Some(uid) => Edit::Replace {
+                    strip: built.strip,
+                    at,
+                    insert: self.keep_bypass(built.strip, at, insert.with_uid(uid)),
+                },
+                None => Edit::Insert {
+                    strip: built.strip,
+                    at,
+                    insert,
+                },
+            };
+            if let Err(Edit::Insert { insert, .. } | Edit::Replace { insert, .. }) =
+                self.mixer.edit(edit)
+            {
                 // The mixer's edits are full: it goes in on a later period.
                 self.landing = Some(crate::control::Built {
                     strip: built.strip,
                     id: built.id,
                     insert: Some(insert),
+                    replace: built.replace,
                 });
                 break;
             }
@@ -629,6 +700,7 @@ impl MixHost {
                 said = Some(DROPPED_HERE);
             }
         }
+        crate::fxmodes::land(self);
         said
     }
 
