@@ -82,6 +82,7 @@ pub mod families;
 mod grains;
 mod kit;
 mod lofi;
+pub mod main_page;
 mod master;
 mod mixer;
 mod modfx;
