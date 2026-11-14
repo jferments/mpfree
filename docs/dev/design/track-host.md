@@ -14,7 +14,7 @@ mod matrix, automation ───────┘               slot 1: FM   ─> 
 ## Slots and routing
 
 - A host has a fixed number of **slots**, set when it is made. The sequencer's tracks name their instrument by a destination number (`mpfree_seq::DestId`, "the host owns the list"); slot `d` is destination `d`.
-- A slot holds one **instrument**: any `mpfree_node::Node` that adds its sound into the buffers (Poly, FM, Wavetable, Pluck, Keys, Drums, the sampler as `mpfree_sampler::node::SamplerNode` (see [Sampler architecture](sampler-architecture.md#as-an-instrument-node-noders)), or a sandboxed plugin). `Instrument::new(node, rate, max_block)` prepares the node and gives it a timing probe. It allocates, so it runs on the control thread.
+- A slot holds one **instrument**: any `mpfree_node::Node` that adds its sound into the buffers (Poly, FM, Wavetable, Pluck, Keys, Drawbar, Drums, the sampler as `mpfree_sampler::node::SamplerNode` (see [Sampler architecture](sampler-architecture.md#as-an-instrument-node-noders)), or a sandboxed plugin). `Instrument::new(node, rate, max_block)` prepares the node and gives it a timing probe. It allocates, so it runs on the control thread.
 - Slot `i` feeds mixer track `i` until `route(slot, Some(track))` moves it; `route(slot, None)` keeps it playing into nothing. Two slots may feed one track (a layer). `track_of(slot)` and `slot_of_track(track)` look the routing up both ways; `slot_of_track` skips empty slots.
 
 ## Notes and parameters in

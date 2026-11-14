@@ -28,7 +28,7 @@ use mpfree_seq::mpfree_param::{OnTrack, RelAddr};
 use mpfree_seq::{Clip, Lock, Note, Project as Song, Quantise, Speed, Track};
 use mpfree_synth::params::{POLYPHONY, UNISON, VOICE_MODE};
 use mpfree_synth::wavetable::params::{self as wt, PRESETS as WT_PRESETS};
-use mpfree_synth::{Drums, Keys, Pluck, Poly, Wavetable, PRESETS};
+use mpfree_synth::{Drawbar, Drums, Keys, Pluck, Poly, Wavetable, PRESETS};
 use mpfree_track::{Instrument, Sum, TrackHost};
 use mpfree_transport::time::{Swing, PPQ};
 use mpfree_transport::{Block as TBlock, Command as T, Transport};
@@ -221,19 +221,19 @@ fn synth(name: String, rate: u32, values: &[(u16, f32)], voices: usize) -> Case 
         rate,
         Box::new(Poly::new(rate)),
         values,
-        POLYPHONY,
+        Some(POLYPHONY),
         voices,
     )
 }
 
 /// Any instrument node playing [`synth`]'s chords; `polyphony` is its voice
-/// count parameter.
+/// count parameter (None for an organ, which plays every key).
 fn chords(
     name: String,
     rate: u32,
     s: Box<dyn Node>,
     values: &[(u16, f32)],
-    polyphony: u16,
+    polyphony: Option<u16>,
     voices: usize,
 ) -> Case {
     let mut c = Chords::new(rate, s, values, polyphony, voices);
@@ -262,14 +262,16 @@ impl Chords {
         rate: u32,
         mut s: Box<dyn Node>,
         values: &[(u16, f32)],
-        polyphony: u16,
+        polyphony: Option<u16>,
         voices: usize,
     ) -> Self {
         s.prepare(rate, MAX_BLOCK);
         for &(id, v) in values {
             s.set_param(id, v);
         }
-        s.set_param(polyphony, voices as f32);
+        if let Some(id) = polyphony {
+            s.set_param(id, voices as f32);
+        }
         Self {
             rate,
             s,
@@ -799,8 +801,31 @@ pub fn all(rate: u32) -> Vec<Case> {
                 rate,
                 Box::new(Keys::new(rate)),
                 p.values,
-                mpfree_synth::keys_params::POLYPHONY,
+                Some(mpfree_synth::keys_params::POLYPHONY),
                 voices,
+            )
+        }));
+    }
+    // Drawbar: the default three drawbars, all nine with leakage, chorus
+    // and the fast rotary, and the rotary off.
+    for (name, keys) in [
+        ("Init", 8),
+        ("Full Organ", 8),
+        ("Gospel", 16),
+        ("Church", 8),
+    ] {
+        v.push(measured(|| {
+            let p = Drawbar::presets()
+                .iter()
+                .find(|p| p.name == name)
+                .unwrap_or_else(|| panic!("drawbar preset {name}"));
+            chords(
+                format!("Drawbar {name}, {keys} keys"),
+                rate,
+                Box::new(Drawbar::new(rate)),
+                p.values,
+                None,
+                keys,
             )
         }));
     }
@@ -813,7 +838,7 @@ pub fn all(rate: u32) -> Vec<Case> {
                 rate,
                 Box::new(Wavetable::new(rate)),
                 preset.values,
-                wt::POLYPHONY,
+                Some(wt::POLYPHONY),
                 8,
             )
         }));
@@ -824,7 +849,7 @@ pub fn all(rate: u32) -> Vec<Case> {
             rate,
             Box::new(Wavetable::new(rate)),
             &[(wt::osc_id(1, wt::OSC_LEVEL), 60.0), (wt::UNISON, 4.0)],
-            wt::POLYPHONY,
+            Some(wt::POLYPHONY),
             8,
         )
     }));
@@ -834,7 +859,7 @@ pub fn all(rate: u32) -> Vec<Case> {
             rate,
             Box::new(Wavetable::new(rate)),
             &[(wt::osc_id(1, wt::OSC_LEVEL), 60.0), (wt::UNISON, 8.0)],
-            wt::POLYPHONY,
+            Some(wt::POLYPHONY),
             16,
         )
     }));
@@ -2580,7 +2605,7 @@ fn beside(name: &str, rate: u32, lane: Option<LaneConfig>, wait: Duration) -> Ca
         rate,
         Box::new(Poly::new(rate)),
         PRESETS[0].values,
-        POLYPHONY,
+        Some(POLYPHONY),
         8,
     ));
     let mut lane = match lane {

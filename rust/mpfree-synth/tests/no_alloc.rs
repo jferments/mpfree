@@ -15,7 +15,7 @@ use mpfree_node::{Ctx, Expr, Node, NodeEvent, Timed, Tuning};
 use std::sync::Arc;
 
 use mpfree_synth::wavetable::table::{Table, FRAME};
-use mpfree_synth::{Drums, Fm, Keys, Pluck, Poly, Wavetable, PARAMS};
+use mpfree_synth::{Drawbar, Drums, Fm, Keys, Pluck, Poly, Wavetable, PARAMS};
 
 struct Counting;
 thread_local! {
@@ -209,6 +209,24 @@ fn keys_process_never_allocates() {
             exercise(&mut s, params, 48_000),
             0,
             "Keys::process (model {model}) allocated"
+        );
+    }
+}
+
+#[test]
+fn drawbar_process_never_allocates() {
+    use mpfree_synth::drawbar_params::*;
+    for wheels in [0.0, 1.0] {
+        let mut s = Drawbar::new(48_000);
+        s.set_param(WHEELS, wheels);
+        s.set_param(PERC, 1.0);
+        s.set_param(VIBRATO, C3);
+        s.set_param(LEAKAGE, 100.0);
+        let params = s.params();
+        assert_eq!(
+            exercise(&mut s, params, 48_000),
+            0,
+            "Drawbar::process (wheels {wheels}) allocated"
         );
     }
 }

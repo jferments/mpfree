@@ -31,6 +31,10 @@
 10346	Crush
 13406	DJ filter
 77742	Delay
+129473	Drawbar Church, 8 keys
+173856	Drawbar Full Organ, 8 keys
+167152	Drawbar Gospel, 16 keys
+133926	Drawbar Init, 8 keys
 154587	Drive (Eco 2x)
 272347	Drive (HQ 4x)
 572112	Drums Boom Kit, a hit every block
