@@ -21,7 +21,7 @@ From the bottom up:
 | Fonts | Three faces (sans, bold, mono), rasterised by `fontdue` and cached per size. Built in: Inter and JetBrains Mono (SIL OFL 1.1), cut down to Latin, about 4.5 MB in RAM once parsed. A copy of the fonts (`Fonts::clone`) shares the parsed faces and keeps its own glyph cache. Any TTF or OTF file can replace them (`--font`, `--bold-font`, `--mono-font`). | [`text.rs`](../../../rust/mpfree-ui/src/text.rs), [`fonts/`](../../../rust/mpfree-ui/fonts/README.md) |
 | Widgets | Draw themselves into the rectangle they are given and turn touches into events. They never talk to hardware or the audio engine. | [`widgets.rs`](../../../rust/mpfree-ui/src/widgets.rs) |
 | Layouts | A page is a one-line text spec naming widget slots in rows and columns. | [`layout.rs`](../../../rust/mpfree-ui/src/layout.rs) |
-| Ui | Holds the widgets by name, the pages, the current page, what changed, and which widget owns each finger. | [`ui.rs`](../../../rust/mpfree-ui/src/ui.rs) |
+| Ui | Holds the widgets by name, the pages, the current page, what changed, and which widget owns each finger. Paints each pixel about once: a whole-page paint fills only the gaps between the widgets with the background, and each widget's part is cleared only where its first drawing (usually its opaque panel) will not cover it, its panel's corners (`Cleared`). The picture is the same as clearing everything first. | [`ui.rs`](../../../rust/mpfree-ui/src/ui.rs) |
 
 ### Layouts
 
