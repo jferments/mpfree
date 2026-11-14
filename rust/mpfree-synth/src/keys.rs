@@ -315,7 +315,7 @@ impl Keys {
             values,
             voices: [Voice::default(); POOL],
             clock: 0,
-            rng: Rng::new(0x6E7_5),
+            rng: Rng::new(0x6E75),
             bend: Smooth::new(0.0),
             bend_value: 0.0,
             out_l: Smooth::new(0.0),
@@ -689,6 +689,19 @@ impl Keys {
                 let mut v = self.voices[i];
                 self.tune(&mut v, p);
                 self.voices[i] = v;
+            }
+        }
+        // The bus filters' tails: flushed once inaudible, so a silent
+        // Keys puts out exact zeros (and never runs on denormals).
+        for x in [
+            &mut self.hp_x,
+            &mut self.hp_y,
+            &mut self.tone_lp,
+            &mut self.thump_lp1,
+            &mut self.thump_lp2,
+        ] {
+            if x.abs() < 1e-12 {
+                *x = 0.0;
             }
         }
         self.trem_phase += self.v(TREM_RATE) * CTRL as f32 / self.rate as f32;
