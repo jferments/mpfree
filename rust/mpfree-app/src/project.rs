@@ -485,7 +485,7 @@ pub fn parse_strip(w: &str) -> Option<StripId> {
 /// input's source, monitoring and arming (they follow Prefs and the
 /// looper), not a pad channel's mute (the pad mutes are kept on their
 /// own, `padmutes`).
-fn saved_control(s: StripId, id: u16) -> bool {
+pub(crate) fn saved_control(s: StripId, id: u16) -> bool {
     if !mpfree_fx::mixer_param_applies(s, id) {
         return false;
     }
@@ -497,8 +497,23 @@ fn saved_control(s: StripId, id: u16) -> bool {
     }
 }
 
-/// The mixer part: every strip's controls, then each insert with its
-/// parameters (and a plugin's state, base64), and the pad mutes.
+/// Whether `st` is a track's own instrument channel with nothing set:
+/// every control at its default and no effects. The mixer part leaves these
+/// out (a mixer has one for every sequencer track, up to 128), and an open
+/// sets the ones a project leaves out back to their defaults
+/// ([`crate::mixing::MixHost::tend_open`]).
+pub fn untouched_channel(mixer: &Mixer, st: StripId) -> bool {
+    matches!(st, StripId::Track(t) if t >= crate::mixing::TRACKS)
+        && mixer.chain(st).is_none_or(|c| c.is_empty())
+        && mpfree_fx::strip_params()
+            .iter()
+            .filter(|p| saved_control(st, p.id))
+            .all(|p| mixer.param(st, p.id) == p.default)
+}
+
+/// The mixer part: every strip's controls (but [`untouched_channel`]s),
+/// then each insert with its parameters (and a plugin's state, base64), and
+/// the pad mutes.
 ///
 /// ```text
 /// mpfree-mixer 1
@@ -514,7 +529,10 @@ pub fn mixer_text(mixer: &Mixer, pad_mutes: u16) -> String {
     s.push_str(MIXER_FORMAT);
     s.push('\n');
     let _ = writeln!(s, "padmutes {pad_mutes}");
-    let strips: Vec<StripId> = mixer.strips().collect();
+    let strips: Vec<StripId> = mixer
+        .strips()
+        .filter(|&st| !untouched_channel(mixer, st))
+        .collect();
     for &st in &strips {
         let _ = write!(s, "strip {}", strip_text(st));
         for p in mpfree_fx::strip_params() {
@@ -781,7 +799,7 @@ pub fn instruments_text(inst: &crate::instruments::Instruments) -> String {
     let mut s = String::with_capacity(1024);
     s.push_str(INSTRUMENTS_FORMAT);
     s.push('\n');
-    for t in 0..crate::instruments::SLOTS {
+    for t in 0..crate::instruments::TRACKS {
         let Some(node) = inst.node(t) else {
             continue;
         };
@@ -845,11 +863,19 @@ pub fn instruments_load(
                 }
                 let track = n
                     .checked_sub(1)
-                    .filter(|t| *t < crate::instruments::SLOTS && !made.iter().any(|m| m.0 == *t));
+                    .filter(|t| *t < crate::instruments::TRACKS && !made.iter().any(|m| m.0 == *t));
                 open = Some(match track {
                     None => {
                         notes.push(format!(
                             "project: track {n}'s instrument is left out (no such track, or named twice)"
+                        ));
+                        None
+                    }
+                    // Not even made: the most at once already are.
+                    Some(_) if made.len() >= crate::instruments::SLOTS => {
+                        notes.push(format!(
+                            "project: track {n}'s instrument {id} is left out: {} tracks already have their own, the most at once; the track plays the kit",
+                            crate::instruments::SLOTS
                         ));
                         None
                     }
@@ -1148,6 +1174,44 @@ mod tests {
     }
 
     #[test]
+    fn a_tracks_own_channel_is_saved_only_once_something_is_set_on_it() {
+        let own = |t: usize| StripId::Track(crate::instruments::first_track() + t);
+        let mut a = MixHost::new(44_100, -6.0, 0.0);
+        let text = mixer_text(&a.mixer, 0);
+        assert!(
+            text.contains("strip t0 "),
+            "the engines' tracks are always saved"
+        );
+        assert!(
+            !text.contains(&format!("strip {} ", strip_text(own(0)))),
+            "{text}"
+        );
+        a.mixer.set_now(own(2), mx::VOLUME, -9.0);
+        let text = mixer_text(&a.mixer, 0);
+        assert!(
+            text.contains(&format!("strip {} 0=-9", strip_text(own(2)))),
+            "{text}"
+        );
+        assert!(!text.contains(&format!("strip {} ", strip_text(own(1)))));
+        // A project that leaves a channel out opens with it at its
+        // defaults, whatever the last project had there.
+        let mut b = MixHost::new(44_100, -6.0, 0.0);
+        b.mixer.set_now(own(5), mx::PAN, -40.0);
+        b.mixer.set_now(own(5), mx::MUTE, 1.0);
+        let load = mixer_load(&text, None, 44_100, &crate::plugins::Plugins::none()).unwrap();
+        b.open(Box::new(load));
+        for _ in 0..400 {
+            b.tend_open();
+            b.run_silent_period();
+        }
+        assert!(!b.opening());
+        assert_eq!(b.mixer.param(own(2), mx::VOLUME), -9.0);
+        assert_eq!(b.mixer.param(own(5), mx::PAN), 0.0);
+        assert_eq!(b.mixer.param(own(5), mx::MUTE), 0.0);
+        assert!(untouched_channel(&b.mixer, own(5)));
+    }
+
+    #[test]
     fn an_effect_this_build_cannot_make_is_left_out_and_said() {
         let text = format!(
             "{MIXER_FORMAT}\ninsert t0 3 1 clap:com.example.nothing file=x.clap\nparam 0 1\nstate AAEC\ninsert t1 4 0 mpfree.fx.drive\nparam 0 3\nsparkle 9\n"
@@ -1286,11 +1350,15 @@ mod tests {
             params[k].max
         };
         let made = make(&plugins, fm, &values, rate, PERIOD).unwrap();
-        inst.put(1, Some(made), synth.pads_for(Engine::Fm)).unwrap();
+        let tuning = synth.tuning_now();
+        assert!(inst
+            .put(1, made, synth.pads_for(Engine::Fm), &tuning)
+            .is_ok());
         let (poly, pv) = synth.sound_of(Engine::Poly);
         let made = make(&plugins, poly, &pv, rate, PERIOD).unwrap();
-        inst.put(3, Some(made), synth.pads_for(Engine::Poly))
-            .unwrap();
+        assert!(inst
+            .put(3, made, synth.pads_for(Engine::Poly), &tuning)
+            .is_ok());
         let text = instruments_text(&inst);
         assert!(text.contains("\ntrack 2 mpfree.fm\n"), "{text}");
         assert!(text.contains("\ntrack 4 mpfree.poly\n"), "{text}");

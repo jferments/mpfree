@@ -28,6 +28,22 @@ compute" tab). It is the renderer behind
   atlas is drawn alone. Both are counted in `DrawStats` (`atlas_cleared`,
   `masks_alone`) and the benchmark prints them; neither happened on the
   sample pages.
+- Vector shapes (the synth and FX curves, knob rings, graphs:
+  `mpfree_ui::Shape`) come as their parts (segments, discs, arcs, areas
+  under a line), not as pixels. The first time a list names one, the GPU
+  works out its coverage itself into a second atlas (1024 x 1024 RGBA, 4
+  MiB: an atlas the GPU can draw into), all of a frame's new shapes in one
+  draw call, with MAX blending (`GL_EXT_blend_minmax`) so overlapping parts
+  take the larger coverage as software does. After that a shape draws like
+  a mask, in the same call as everything else. On the sample pages this cut
+  a synth page's first list from 488 KB to 46 KB (the FX chain's from 220
+  KB to 52 KB, all 73 pages from 5.8 MB to 4.3 MB), the app no longer
+  rasterises curves on the screen thread while the GPU draws, and moving a
+  curve with a knob uploads nothing. Shapes come out within one level of
+  software's on Mesa's software GPU. Without MAX blending, or for a shape
+  bigger than its atlas, the renderer takes software's coverage and draws
+  it as a mask. `DrawStats` counts `shapes_drawn` and `shapes_cleared`, and
+  the benchmark prints the shapes worked out on the GPU.
 - Most pixels are plain: a fill, or the inside of a rounded rectangle or an
   outline. A quad marked plain skips the shader's coverage maths and writes
   its colour. A rounded rectangle is drawn as three plain bands and four

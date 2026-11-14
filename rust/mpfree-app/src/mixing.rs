@@ -130,8 +130,6 @@ pub enum PlayFx {
     /// The XY pad: where the finger is (0 to 1 each way), and whether it
     /// is down.
     Xy { x: f32, y: f32, down: bool },
-    /// The XY pad's effects' mix, 0 to 1.
-    FxMix(f32),
 }
 
 /// The performance effects a throw holds.
@@ -229,6 +227,10 @@ pub enum Landed {
     /// Instrument `id` couldn't be made for track `track`; it keeps what
     /// it had.
     Failed { track: usize, id: &'static str },
+    /// Instrument `name` was made for track `track`, but
+    /// [`instruments::SLOTS`] other tracks already have their own; it keeps
+    /// what it had.
+    Full { track: usize, name: &'static str },
 }
 
 /// A project's mixer going in over a few periods: the old inserts out,
@@ -256,8 +258,9 @@ impl MixHost {
         let cfg = MixerConfig {
             inputs: 1,
             pads: PADS,
-            // The engines' tracks, then one per track's own instrument.
-            tracks: TRACKS + instruments::SLOTS,
+            // The engines' tracks, then one for each sequencer track's own
+            // instrument (unused ones cost a few flag checks).
+            tracks: TRACKS + instruments::TRACKS,
             slots: SLOTS,
             max_latency_ms: 50.0,
         };
@@ -345,19 +348,25 @@ impl MixHost {
                 id: m.id,
             });
         };
-        self.instruments.set_tuning(m.track, &m.tuning);
-        match self.instruments.put(m.track, Some((inst, held)), m.pads) {
+        match self
+            .instruments
+            .put(m.track, (inst, held), m.pads, &m.tuning)
+        {
             Ok(()) => Some(Landed::Playing {
                 track: m.track,
                 name: held.name,
             }),
-            Err(back) => {
+            Err((why, back)) => {
                 if let Some(i) = back {
                     self.drop_instrument(i);
                 }
-                Some(Landed::Failed {
-                    track: m.track,
-                    id: m.id,
+                let track = m.track;
+                Some(match why {
+                    instruments::Refused::Full => Landed::Full {
+                        track,
+                        name: held.name,
+                    },
+                    _ => Landed::Failed { track, id: m.id },
                 })
             }
         }
@@ -475,6 +484,22 @@ impl MixHost {
                     }
                     for &(id, v) in values {
                         self.mixer.set_now(st, id, v);
+                    }
+                }
+                // A track's own channel the project leaves out has nothing
+                // set (`project::untouched_channel`): back to its defaults,
+                // whatever the last project had there.
+                for t in TRACKS..self.mixer.tracks() {
+                    let st = StripId::Track(t);
+                    if load.strips.iter().any(|(s, _)| *s == st) {
+                        continue;
+                    }
+                    for p in mpfree_fx::strip_params() {
+                        if crate::project::saved_control(st, p.id)
+                            && self.mixer.param(st, p.id) != p.default
+                        {
+                            self.mixer.set_now(st, p.id, p.default);
+                        }
                     }
                 }
                 for &(st, slot, k) in &load.keys {
@@ -744,14 +769,6 @@ impl MixHost {
                     self.insert(StripId::Master, PERFORM_SLOT, axis.param, axis.value(pos));
                 }
             }
-            PlayFx::FxMix(mix) => {
-                self.insert(
-                    StripId::Master,
-                    PERFORM_SLOT,
-                    perf::MIX,
-                    100.0 * mix.clamp(0.0, 1.0),
-                );
-            }
             PlayFx::PadMute { pad, mute } if pad < PADS => {
                 if mute {
                     self.pad_mutes |= 1 << pad;
@@ -778,6 +795,17 @@ impl MixHost {
         }
         self.mixer
             .queue_insert(strip, slot, Timed::new(0, NodeEvent::Param { id, value }));
+    }
+
+    /// A strip control as the mixer panel set it, for UNDO: a pad's mute
+    /// is its own, not Drop drums' held over it.
+    pub fn value(&self, strip: StripId, id: u16) -> f32 {
+        match strip {
+            StripId::Pad(p) if id == mx::MUTE && p < PADS => {
+                f32::from(u8::from(self.pad_mutes & (1 << p) != 0))
+            }
+            _ => self.mixer.param(strip, id),
+        }
     }
 
     /// Sets a strip control from the start of the next period: through the
@@ -1057,14 +1085,14 @@ impl MixHost {
             return None;
         }
         self.state_at = Some(now);
-        let mut st = MixState::from_mixer(&mut self.mixer, view, &name);
-        // Tracks' own instruments' channels show only while in use.
+        // Tracks' own instruments' channels show only while in use; the
+        // others aren't read.
         let used = self.instruments.in_use();
         let shown = |s: StripId| match s {
             StripId::Track(t) if t >= TRACKS => used & (1 << (t - TRACKS)) != 0,
             _ => true,
         };
-        st.strips.retain(|v| shown(v.id));
+        let mut st = MixState::from_mixer_where(&mut self.mixer, view, &name, &shown);
         st.counts[0] = TRACKS + used.count_ones() as usize;
         st.tracks = TRACKS;
         st.selected = self.selected;
@@ -1145,6 +1173,21 @@ mod tests {
             caught |= c;
         }
         (peak, caught)
+    }
+
+    /// UNDO on the mixer sets a pad's mute back to the pad's own, not to
+    /// Drop drums' held over it.
+    #[test]
+    fn a_pads_mute_reads_as_its_own_under_drop_drums() {
+        let mut h = MixHost::new(RATE, -6.0, -6.0);
+        h.play(PlayFx::PadMute { pad: 2, mute: true });
+        h.play(PlayFx::Drop(0b11));
+        assert_eq!(h.value(StripId::Pad(2), mx::MUTE), 1.0);
+        assert_eq!(
+            h.value(StripId::Pad(0), mx::MUTE),
+            0.0,
+            "dropped, not muted"
+        );
     }
 
     #[test]
@@ -1371,7 +1414,6 @@ mod tests {
             y: 1.0,
             down: true,
         });
-        h.play(PlayFx::FxMix(0.5));
         run(&mut h, 2, 0.0, 0.0);
         assert_eq!(
             perform(&h, perf::hold(9)),
@@ -1380,7 +1422,6 @@ mod tests {
         );
         assert_eq!(perform(&h, perf::DJ_FILTER), Some(-100.0), "low-pass");
         assert_eq!(perform(&h, perf::ECHO), Some(100.0));
-        assert_eq!(h.play_levels().fx_mix, 0.5);
         h.play(PlayFx::Throw {
             fx: ThrowFx::Delay,
             down: false,
@@ -1407,6 +1448,33 @@ mod tests {
         pads.sort_unstable();
         pads.dedup();
         assert_eq!(pads.len(), all.len());
+    }
+
+    /// Jay after live test 3: several throws at once, a finger on each.
+    #[test]
+    fn two_throws_held_at_once_each_hold_their_pad() {
+        let mut h = MixHost::new(RATE, 0.0, 0.0);
+        let held = |h: &MixHost, fx: ThrowFx| {
+            h.mixer
+                .chain(StripId::Master)
+                .and_then(|c| c.node(PERFORM_SLOT))
+                .map(|n| n.param(perf::hold(fx.pad())))
+        };
+        run(&mut h, 10, 0.0, 0.0);
+        for fx in [ThrowFx::Delay, ThrowFx::Reverb] {
+            h.play(PlayFx::Throw { fx, down: true });
+        }
+        run(&mut h, 2, 0.0, 0.0);
+        assert_eq!(held(&h, ThrowFx::Delay), Some(1.0));
+        assert_eq!(held(&h, ThrowFx::Reverb), Some(1.0));
+        // The first finger lifts: the other throw keeps playing.
+        h.play(PlayFx::Throw {
+            fx: ThrowFx::Delay,
+            down: false,
+        });
+        run(&mut h, 2, 0.0, 0.0);
+        assert_eq!(held(&h, ThrowFx::Delay), Some(0.0));
+        assert_eq!(held(&h, ThrowFx::Reverb), Some(1.0));
     }
 
     /// Runs periods (polling as the app does) until track 2's chain has

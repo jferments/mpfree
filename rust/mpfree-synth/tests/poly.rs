@@ -303,10 +303,12 @@ fn extreme_settings_stay_finite() {
             );
         }
     }
-    // Everything at the top at once: resonance, drive, unison, LFO depths.
+    // Everything at the top at once: resonance, drive, distortion, unison,
+    // LFO depths.
     for id in [
         RESONANCE,
         DRIVE,
+        DIST,
         UNISON,
         LFO_PITCH,
         LFO_CUTOFF,
@@ -403,29 +405,79 @@ fn tempo_synced_lfo_follows_the_beat() {
 /// on any preset, one note or a chord, keeps it within 2 dB of its level
 /// with no drive (the most is Acid's resonant filter, about -1.7 dB).
 /// Before the fix, 24 dB of drive took up to 14 dB off.
+/// The distortion after the filter keeps the level the same way (Jay
+/// after live test 3: both kinds).
 #[test]
 fn turning_the_drive_up_keeps_every_preset_about_as_loud() {
     let rms = |x: &[f32]| (x.iter().map(|v| v * v).sum::<f32>() / x.len() as f32).sqrt();
-    let level = |preset: &mpfree_synth::Preset, drive: f32, notes: &[u8]| {
+    let level = |preset: &mpfree_synth::Preset, id: u16, drive: f32, notes: &[u8]| {
         let mut s = Poly::new(RATE);
         s.load_preset(preset);
-        s.set_param(DRIVE, drive);
+        s.set_param(id, drive);
         let ev: Vec<(u64, NodeEvent)> = notes.iter().map(|&n| (0, on(n, 110))).collect();
         let (l, r) = render(&mut s, 36_000, &ev, |_| 128);
         // The sustain, after every attack.
         20.0 * (rms(&l[12_000..]) + rms(&r[12_000..])).log10()
     };
     for preset in Poly::presets() {
-        for notes in [&[60u8][..], &[48, 55, 60, 64]] {
-            let dry = level(preset, 0.0, notes);
-            for drive in [3.0, 6.0, 12.0, 18.0, 24.0] {
-                let change = level(preset, drive, notes) - dry;
-                assert!(
-                    (-2.0..=2.0).contains(&change),
-                    "{} {notes:?}: {drive} dB of drive changes the level by {change:+.1} dB",
-                    preset.name
-                );
+        for (id, what) in [(DRIVE, "drive"), (DIST, "distortion")] {
+            for notes in [&[60u8][..], &[48, 55, 60, 64]] {
+                let dry = level(preset, id, 0.0, notes);
+                for drive in [3.0, 6.0, 12.0, 18.0, 24.0] {
+                    let change = level(preset, id, drive, notes) - dry;
+                    assert!(
+                        (-2.0..=2.0).contains(&change),
+                        "{} {notes:?}: {drive} dB of {what} changes the level by {change:+.1} dB",
+                        preset.name
+                    );
+                }
             }
         }
     }
+}
+
+/// Live test 3: "Drive has almost no effect". Grit Bass's grit is its
+/// distortion, after the filter, so its low cutoff (260 Hz) doesn't take
+/// the grit out: at its own 18 dB, the harmonics from the 5th up carry
+/// several times the share of the power they carry with none (about 2 %
+/// to 21 % on E2), and the level stays put. The same 18 dB of drive,
+/// before the filter, gives far less (about 5 %): why there are both
+/// (Jay: "add both types of drive and distortion").
+#[test]
+fn grit_bass_distortion_is_heard_through_its_low_cutoff() {
+    let grit = Poly::presets()
+        .iter()
+        .find(|p| p.name == "Grit Bass")
+        .unwrap();
+    let (note, f0) = (40u8, 82.407f32);
+    let play = |drive: f32, dist: f32| {
+        let mut s = Poly::new(RATE);
+        s.load_preset(grit);
+        s.set_param(DRIVE, drive);
+        s.set_param(DIST, dist);
+        let (l, _) = render(&mut s, 72_000, &[(0, on(note, 100))], |_| 128);
+        l[24_000..].to_vec()
+    };
+    // Power at harmonic `k` (Goertzel), and the share from the 5th up.
+    let upper = |x: &[f32]| {
+        let power = |hz: f32| {
+            let c = 2.0 * (2.0 * std::f32::consts::PI * hz / RATE as f32).cos();
+            let (mut s1, mut s2) = (0.0f32, 0.0f32);
+            for &v in x {
+                let s0 = v + c * s1 - s2;
+                s2 = s1;
+                s1 = s0;
+            }
+            s1 * s1 + s2 * s2 - c * s1 * s2
+        };
+        let h: Vec<f32> = (1..=60).map(|k| power(f0 * k as f32)).collect();
+        h[4..].iter().sum::<f32>() / h.iter().sum::<f32>()
+    };
+    let rms = |x: &[f32]| (x.iter().map(|v| v * v).sum::<f32>() / x.len() as f32).sqrt();
+    let (dry, wet, driven) = (play(0.0, 0.0), play(0.0, 18.0), play(18.0, 0.0));
+    let (a, b, c) = (upper(&dry), upper(&wet), upper(&driven));
+    assert!(b > 4.0 * a, "harmonics 5-60: {a:.3} dry, {b:.3} at 18 dB");
+    assert!(b > 2.0 * c, "distortion {b:.3}, drive {c:.3}");
+    let change = 20.0 * (rms(&wet) / rms(&dry)).log10();
+    assert!(change.abs() < 1.0, "level {change:+.1} dB");
 }

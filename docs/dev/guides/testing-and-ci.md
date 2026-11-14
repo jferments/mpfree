@@ -10,7 +10,7 @@ meant to grow. Status as of 2026-11-11.
 | Unit and crate tests | Each crate's logic: engines, DSP, parsers, UI layout and drawing | `cargo test` in `rust/`; CI on every PR | Anyone, CI |
 | GUI smoke | Every control on every screen does something; random and scripted sequences of controls keep the screen and the engines together (below) | `cargo test -p mpfree-app` (`smoke`); CI on every PR | Anyone, CI |
 | Host integration | Whole programs with no hardware: headless engine with null audio, session offline check, groove and sampler WAV renders, display previews, C++/Rust WAV parity | CI's `core` and `rust` jobs | CI |
-| ARMv7 under qemu | The device build: static ARM binaries, ABI layouts against the kernel's headers, the app and UI tests as 32-bit ARM, preview screens | CI's `rust` job | CI |
+| ARMv7 under qemu | The device build: static ARM binaries, ABI layouts against the kernel's headers, the app and UI tests as 32-bit ARM (the control sweep and song workflows only by hand), preview screens | CI's `rust` job | CI |
 | Device tools offline | Survey, backup, kexec and update tools against fake MPCs, fake images and BusyBox | CI's `syntax` job | CI |
 | On the MPC | Real audio, pads, touch, screen | The reference MPC One, round by round with `tools/mpc-one/results.py` | Jay only |
 
@@ -30,7 +30,7 @@ filters, so the check always reports.
 | `syntax` | Shell syntax; static no-write checks on the read-only scripts; about 20 Python test files for the device tools against fakes (BusyBox, offline images, DTBs, the RK3288 ROM tools); `python3 -m unittest discover -s tests` (12 more) | ~1 min |
 | `core` | C++ reference engine build, `ctest`, WAV format and size | ~10 s |
 | `lint` | `cargo clippy --workspace --all-targets` with warnings as errors, and `cargo fmt --check`, on a pinned toolchain | ~1 min |
-| `rust` | All workspace tests in debug and release; the `mpfree-bench` no-allocation check; host self-tests and fixed-output renders; C++/Rust WAV parity; the ARMv7 hard-float cross-build, ELF checks, and ARM tests and previews under qemu | ~2-3 min warm |
+| `rust` | All workspace tests, natively in debug; the `mpfree-bench` no-allocation check; host self-tests and fixed-output renders; C++/Rust WAV parity; the ARMv7 hard-float cross-build, ELF checks, the app's and UI's tests as ARM and previews under qemu. Under qemu it leaves out the app's smoke module (the control sweep, workflows and song workflows, about 32 minutes there; they run natively every time): **Run workflow** with the `full_arm` box ticked runs them as ARM too | ~15 min (57 before 14 Nov) |
 | `splash-gl` | SDL3/GLES startup screen built from source and rendered headless with Mesa | ~1 min warm |
 | `gpu` | The GPU renderer (`rust/mpfree-gpu`, OpenGL ES through EGL) with Mesa's software GPU: clippy, then its frames against the software path's for the MPC's screen and every panel turn, and a compute round trip against the CPU; then `mpfree-gpu-bench` built for the MPC (ARMv7) and checked as `host_gpu_mpc.py` checks it | ~2 min warm |
 | `instructions` | Instructions per 128-frame block for every `mpfree-bench` case under callgrind, against `rust/mpfree-bench/instructions.txt`; fails when a case rises more than 5 % (see [profiling](../design/profiling.md#instruction-counts-the-instructions-ci-job)) | ~2 min warm |

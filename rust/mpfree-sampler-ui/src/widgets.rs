@@ -296,6 +296,8 @@ pub struct Setting {
 /// A titled list of settings, each with its value between arrows, compact
 /// enough to sit beside a waveform. A tap on a row selects it
 /// ([`EventKind::Select`]); a tap on an arrow steps it ([`EventKind::Step`]).
+/// A tap on the value of a row that takes a typed number ([`Self::typed`])
+/// asks for the number pad ([`EventKind::Type`]); its value is underlined.
 /// The list scrolls to keep the selected row in view.
 pub struct SettingList {
     pub title: String,
@@ -305,6 +307,8 @@ pub struct SettingList {
     /// The wheel's push opened the selected row: its value box is outlined
     /// and its arrows lit, as in the menus, while the wheel changes it.
     pub editing: bool,
+    /// The rows whose value can be typed (Jay after live test 3).
+    pub typed: Vec<usize>,
 }
 
 const SET_ROW_H: i32 = 44;
@@ -319,6 +323,7 @@ impl SettingList {
             rows: Vec::new(),
             selected: 0,
             editing: false,
+            typed: Vec::new(),
         }
     }
 
@@ -407,6 +412,15 @@ impl Widget for SettingList {
                 if on { t.accent } else { t.text },
                 &self.rows[k].value,
             );
+            if self.typed.contains(&k) {
+                // A dotted line under the value: it can be typed.
+                let y = mid.bottom() - 7;
+                let mut x = mid.x + 18;
+                while x + 4 <= mid.right() - 18 {
+                    cx.canvas.fill_rect(Rect::new(x, y, 4, 2), t.text_dim);
+                    x += 8;
+                }
+            }
         }
     }
 
@@ -460,6 +474,8 @@ impl Widget for SettingList {
             })
         } else if value.contains(x, y) && x >= value.right() - SET_ARROW_W {
             Some(EventKind::Step { index: k, delta: 1 })
+        } else if value.contains(x, y) && self.typed.contains(&k) {
+            Some(EventKind::Type(k))
         } else {
             Some(EventKind::Select(k))
         }

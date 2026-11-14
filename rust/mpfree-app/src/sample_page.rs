@@ -483,6 +483,9 @@ pub struct SamplePage {
     auto_synth: Option<String>,
     /// A plan Start asked for: the app makes the patch's copy for it.
     auto_request: Option<Plan>,
+    /// A number to be typed, asked for by a tab (the Warp tempo): the
+    /// screen opens the number pad ([`SamplePage::take_number_ask`]).
+    number_ask: Option<mpfree_ui::numpad::NumberAsk>,
     auto_job: Option<AutoJob>,
     /// The last instrument made, or why not, in a line.
     auto_last: String,
@@ -591,6 +594,7 @@ impl SamplePage {
             auto_state: None,
             auto_synth: None,
             auto_request: None,
+            number_ask: None,
             auto_job: None,
             auto_last: String::new(),
             fx_open: None,
@@ -2410,6 +2414,29 @@ impl SamplePage {
             }
             WaveAction::Audition { pad } => self.audition(pad, out),
             WaveAction::Tab(i) => self.open(ui, i),
+            WaveAction::Ask(ask) => self.number_ask = Some(ask),
+        }
+    }
+
+    /// A number a tab asked to be typed (Jay after live test 3: the Warp
+    /// tempo), for the screen's number pad.
+    pub fn take_number_ask(&mut self) -> Option<mpfree_ui::numpad::NumberAsk> {
+        self.number_ask.take()
+    }
+
+    /// The number typed for `key`: the tab showing makes the change, an
+    /// undo step of its own.
+    pub fn typed(&mut self, ui: &mut Ui, key: &str, value: f64, out: &mut Vec<FromUi>) {
+        let Some(st) = self.state.as_ref() else {
+            return;
+        };
+        let a = match self.editor {
+            Editor::Warp => self.warp.as_mut().and_then(|t| t.typed(st, key, value)),
+            _ => self.tab.as_mut().and_then(|t| t.typed(st, key, value)),
+        };
+        if let Some(a) = a {
+            self.act(ui, a, out);
+            self.lift();
         }
     }
 
@@ -2539,6 +2566,12 @@ impl SamplePage {
                 .is_some_and(|t| t.method() == mpfree_sampler_ui::chop_tab::Method::Live)
     }
 
+    /// Whether UNDO has something to take back in the playing kit (for
+    /// the UNDO light).
+    pub fn can_undo(&self) -> bool {
+        self.projects.get(self.kit).is_some_and(Project::can_undo)
+    }
+
     /// UNDO (or redo) in the playing kit.
     pub fn undo(&mut self, ui: &mut Ui, redo: bool) {
         self.lift();
@@ -2561,6 +2594,57 @@ impl SamplePage {
         } else {
             self.lines
                 .push(format!("sample: nothing to {what} in {}", self.kit_text()));
+        }
+    }
+
+    /// The playing kit's undo history as the list shows it (hold UNDO):
+    /// "Start", each step undo takes back, oldest first, then redo's, and
+    /// the row that is now. None while the synth has the pads.
+    pub fn history_rows(&self) -> Option<(String, Vec<String>, usize)> {
+        let kit = self.kit;
+        let p = self.projects.get(kit)?;
+        let (done, redo) = p.history();
+        let mut rows = vec!["Start: before these edits".to_string()];
+        rows.extend(done.iter().map(|&i| self.step_name(kit, i)));
+        let now = rows.len() - 1;
+        rows.extend(redo.iter().map(|&i| self.step_name(kit, i)));
+        let mut title = self.kit_text();
+        if let Some(c) = title.get_mut(0..1) {
+            c.make_ascii_uppercase();
+        }
+        Some((title, rows, now))
+    }
+
+    /// An undo step as the history names it: "Pad A3", "Chop to 8 pads
+    /// from A5", "New sample on pad A1".
+    fn step_name(&self, kit: usize, i: mpfree_sampler::model::StepInfo) -> String {
+        let first = i
+            .first_pad
+            .map(|p| self.pad_text(kit, p))
+            .unwrap_or_default();
+        let pads = |n: usize| {
+            if n == 1 {
+                format!("pad {first}")
+            } else {
+                format!("{n} pads from {first}")
+            }
+        };
+        match i {
+            _ if i.chop && i.pads > 0 => format!("Chop to {}", pads(i.pads)),
+            _ if i.pads_play && i.pads > 0 => format!("Keys on {}", pads(i.pads)),
+            _ if i.pads_play => "What the pads play".to_string(),
+            _ if i.sources > 0 && i.pads > 0 => format!("New sample on {}", pads(i.pads)),
+            _ if i.sources > 0 => "New sample".to_string(),
+            _ if i.chop => "New chop".to_string(),
+            _ if i.master => "Master effect".to_string(),
+            _ if i.pads > 0 => {
+                let p = pads(i.pads);
+                let mut c = p.chars();
+                c.next()
+                    .map(|f| f.to_uppercase().collect::<String>() + c.as_str())
+                    .unwrap_or(p)
+            }
+            _ => "Edit".to_string(),
         }
     }
 

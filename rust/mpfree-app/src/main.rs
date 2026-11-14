@@ -88,6 +88,7 @@ mod calibrate_page;
 mod chain_page;
 mod control;
 mod cores;
+mod crash;
 mod cv_out;
 mod debug_page;
 mod desk;
@@ -131,6 +132,7 @@ mod time;
 mod touch_bell;
 mod touch_dev;
 mod touchlab_page;
+mod undo;
 
 use mpfree_controller::midi::{Message, Parser};
 use mpfree_controller::mpc_one::{self, ControlEvent, OBSERVED_KEEPALIVE_TOKEN};
@@ -2291,6 +2293,21 @@ fn wait_for<T>(
 /// `app` (from power-on, until the power goes off).
 fn player(o: &Options, timed: bool) -> Result<(), String> {
     let mut out = Out::new(o, if timed { "pad player" } else { "app" }, false);
+    // Did the last run in this boot crash? Then this is a safe start
+    // (crash.rs). `_running` is this run's mark, removed when it ends well.
+    let (last_run, _running) = match crash::start(Path::new(REPORT_DIR)) {
+        (last, Ok(r)) => (last, Some(r)),
+        (last, Err(e)) => {
+            out.say(&format!(
+                "safe start: off for the next start (no {REPORT_DIR}/{}: {e})",
+                crash::RUNNING
+            ));
+            (last, None)
+        }
+    };
+    if let Some(line) = crash::report_line(&last_run) {
+        out.say(&line);
+    }
     // Long jobs run at idle priority, after the screen and every other
     // thread (mpfree_lanes::os::idle_job): set before any of them starts.
     mpfree_lanes::os::set_idle_jobs(true);
@@ -2321,14 +2338,18 @@ fn player(o: &Options, timed: bool) -> Result<(), String> {
     }
     let size = fb.as_ref().map(|f| f.logical_size()).unwrap_or(gui::SCREEN);
     // The startup screen's last frame stays on the panel; carry on from it.
+    // After a crash the panel holds the crashed run's last frame instead,
+    // so the built-in backdrop is used.
     let backdrop = match (&fb, o.keep_screen) {
-        (Some(f), true) => match mpfree_ui::fb::capture(&o.fb, &f.layout) {
-            Ok(img) => Some(std::sync::Arc::new(img)),
-            Err(e) => {
-                out.say(&format!("screen: could not read the startup screen back ({e}); using the built-in backdrop"));
-                None
+        (Some(f), true) if last_run == crash::LastRun::Fine => {
+            match mpfree_ui::fb::capture(&o.fb, &f.layout) {
+                Ok(img) => Some(std::sync::Arc::new(img)),
+                Err(e) => {
+                    out.say(&format!("screen: could not read the startup screen back ({e}); using the built-in backdrop"));
+                    None
+                }
             }
-        },
+        }
         _ => None,
     };
     // The screen thread opens the touchscreen, and keeps trying every second
@@ -2340,6 +2361,9 @@ fn player(o: &Options, timed: bool) -> Result<(), String> {
         Ok(t)
     });
     let mut player = gui::Player::new(fonts, size, timed, backdrop);
+    if last_run != crash::LastRun::Fine {
+        player.safe_start();
+    }
     match load_theme(o) {
         Ok(t) => player.ui.set_theme(t),
         Err(e) => out.say(&format!("{e}; using the default theme")),
@@ -2641,13 +2665,32 @@ fn synth_tab(
 /// tuning (Drums keeps its kit notes).
 fn own_follow_synth(synth: &synth::Synth, own: &mut instruments::Instruments) {
     let tuning = synth.tuning_now();
-    for t in 0..instruments::SLOTS {
+    for t in 0..instruments::TRACKS {
         if let Some(h) = own.held(t) {
             let e = synth::Engine::from_node_id(h.id).unwrap_or(synth::Engine::Poly);
             own.set_pads(t, synth.pads_for(e));
             own.set_tuning(t, &tuning);
         }
     }
+}
+
+/// What the screen says when track `track` can't have the instrument
+/// `name` because [`instruments::SLOTS`] other tracks already have their
+/// own.
+fn full_note(track: usize, name: &str) -> String {
+    format!(
+        "Track {} plays the kit: {} tracks already have their own instrument, the most at once. Set one of them to Kit to give {name} its place",
+        track + 1,
+        instruments::SLOTS
+    )
+}
+
+/// Instrument `id`'s name for the screen: an engine's or a plugin's.
+fn instrument_name(plugins: &plugins::Plugins, id: &'static str) -> &'static str {
+    synth::Engine::from_node_id(id)
+        .map(|e| e.name())
+        .or_else(|| plugins.find(id).map(|e| e.name))
+        .unwrap_or(id)
 }
 
 /// A job for track `track`'s own instrument `id`: an engine's copy of the
@@ -3009,6 +3052,12 @@ fn looper_action(
     a: looping::LoopAction,
 ) -> Vec<app::Effect> {
     match a {
+        // UNDO and REDO say what they did in place of the hint.
+        looping::LoopAction::Command(
+            c @ (mpfree_looper::Command::Undo | mpfree_looper::Command::Redo),
+        ) => {
+            vec![app::Effect::Tell(looper.command(c))]
+        }
         looping::LoopAction::Command(c) => {
             out.note(&looper.command(c));
             Vec::new()
@@ -3098,6 +3147,9 @@ fn time_action(
             return Vec::new();
         }
     }
+    // ERASE + a clip, UNDO and REDO: said in place of the hint.
+    let undo = matches!(a, TimeAction::Undo | TimeAction::Redo);
+    let erase = matches!(a, TimeAction::DeleteClip { .. });
     let r = match a {
         // The scene morph runs on the mixer's mod engine.
         TimeAction::MorphRows { .. }
@@ -3108,11 +3160,83 @@ fn time_action(
         _ => time.act(a),
     };
     match r {
+        Ok(line) | Err(line) if erase => return vec![app::Effect::Tell(line)],
+        Ok(line) | Err(line) if undo => return vec![app::Effect::Tell(undo_said(&line))],
         Ok(line) if !line.is_empty() => out.note(&format!("time: {line}")),
         Ok(_) => {}
         Err(e) => out.note(&format!("time: {e}")),
     }
     Vec::new()
+}
+
+/// The time engine's "undo: take 3 · Drums / 1" as the screen says it:
+/// "Undid take 3 · Drums / 1", or that there is nothing to undo.
+fn undo_said(line: &str) -> String {
+    match line.split_once(": ") {
+        Some(("undo", "nothing to undo")) => "Nothing to undo in the takes".into(),
+        Some(("redo", "nothing to redo")) => "Nothing to redo in the takes".into(),
+        Some(("undo", what)) => format!("Undid {what}"),
+        Some(("redo", what)) => format!("Redid {what}"),
+        _ => line.to_string(),
+    }
+}
+
+/// What UNDO (or REDO) of a synth knob says: "Undid Filter Cutoff (now
+/// 1.2 kHz)".
+fn synth_turn_said(synth: &synth::Synth, id: u16, redo: bool) -> String {
+    let done = if redo { "Redid" } else { "Undid" };
+    match synth.param_info(id) {
+        Some(p) => {
+            let name = if p.group == p.name {
+                p.name.to_string()
+            } else {
+                format!("{} {}", p.group, p.name)
+            };
+            let now = mpfree_synth_ui::format::value_line(p, synth.value(id));
+            format!("{done} {name} (now {now})")
+        }
+        None => format!("{done} a synth knob"),
+    }
+}
+
+/// A synth knob's turn as the undo history lists it: "Filter Cutoff to
+/// 1.2 kHz".
+fn synth_turn_row(synth: &synth::Synth, id: u16, to: f32) -> String {
+    match synth.param_info(id) {
+        Some(p) => {
+            let name = if p.group == p.name {
+                p.name.to_string()
+            } else {
+                format!("{} {}", p.group, p.name)
+            };
+            format!("{name} to {}", mpfree_synth_ui::format::value_line(p, to))
+        }
+        None => "A synth knob".to_string(),
+    }
+}
+
+/// A mixer control's turn as the undo history lists it: "Drums Volume to
+/// -6.0 dB".
+fn mix_turn_row(strip: mpfree_fx::StripId, id: u16, to: f32) -> String {
+    match mpfree_fx::strip_params().iter().find(|p| p.id == id) {
+        Some(p) => format!(
+            "{} {} to {}",
+            mixing::name(strip),
+            p.name,
+            mpfree_synth_ui::format::value_line(p, to)
+        ),
+        None => format!("{} control", mixing::name(strip)),
+    }
+}
+
+/// What UNDO (or REDO) of a mixer control says: "Undid Drums Volume".
+fn mix_turn_said(strip: mpfree_fx::StripId, id: u16, redo: bool) -> String {
+    let done = if redo { "Redid" } else { "Undid" };
+    let name = mpfree_fx::strip_params()
+        .iter()
+        .find(|p| p.id == id)
+        .map_or("a control", |p| p.name);
+    format!("{done} {} {name}", mixing::name(strip))
 }
 
 /// Everything the time pages show, with the audio tracks' lanes.
@@ -3249,8 +3373,13 @@ fn player_session(
     let n = drum_kits + 1;
     let mut synth_on = false;
     // Each track's own instrument's preset, as last picked (instruments.rs).
-    let mut track_presets: [Option<usize>; instruments::SLOTS] = [None; instruments::SLOTS];
+    let mut track_presets: [Option<usize>; instruments::TRACKS] = [None; instruments::TRACKS];
     let mut param_log = synth::ParamLog::default();
+    // UNDO on the Synth tab and the mixer: their knob and fader turns.
+    let mut synth_turns: undo::Turns<u16> = undo::Turns::default();
+    let mut mix_turns: undo::Turns<(mpfree_fx::StripId, u16)> = undo::Turns::default();
+    // What the screen was last told about them, for the UNDO light.
+    let mut turns_told = (false, false);
     let mut synth_time = RenderTime::default();
     // Q-Links on the Public port (no Akai session) send positions; the Synth
     // page wants turns, so the last position of each is kept.
@@ -3258,7 +3387,7 @@ fn player_session(
     let mut synth_meters = synth.meters();
     // What each track plays, as the screen last heard it (the line under
     // its name on Arrange).
-    let mut sounds_shown: gui::TrackSounds = [None; instruments::SLOTS];
+    let mut sounds_shown: gui::TrackSounds = [None; instruments::TRACKS];
     // Each sounding voice's pressure, for the Synth tab's Pressure page.
     let mut synth_pressures = [0f32; 16];
     let mut shown_pressures = 0usize;
@@ -3732,6 +3861,12 @@ fn player_session(
         let direct = !app.generating();
         while let Ok(a) = from_ui.try_recv() {
             let (t_item, item) = (Instant::now(), parts::Name::of(&a));
+            let mix_turn = match &a {
+                gui::FromUi::Mixer(mpfree_mixer_ui::MixAction::Set { strip, id, value }) => {
+                    Some((*strip, *id, mix.value(*strip, *id), *value))
+                }
+                _ => None,
+            };
             // The app, the mixer, the time engine, the looper and the chain
             // editor take theirs (desk.rs); the rest is this loop's.
             let mut desk = desk::Desk {
@@ -3746,9 +3881,20 @@ fn player_session(
                 max_db,
                 card: audio,
             };
-            let back = desk.screen(a, t, out, &mut fx);
+            let a = desk.screen(a, t, out, &mut fx);
             save_shelf(&mut mix, &store, out);
-            let Some(a) = back else {
+            // UNDO on the mixer: a strip control's turn, from its value
+            // before the desk set it.
+            if let Some((strip, id, from, value)) = mix_turn {
+                let to =
+                    if (strip, id) == (mpfree_fx::StripId::Master, mpfree_fx::ids::mixer::VOLUME) {
+                        level_db
+                    } else {
+                        value
+                    };
+                mix_turns.turned((strip, id), from, to, t_read);
+            }
+            let Some(a) = a else {
                 parts.item_named(parts::SCREEN_ACTIONS, t_item, &item);
                 continue;
             };
@@ -3787,6 +3933,64 @@ fn player_session(
                 }
                 gui::FromUi::Pad { .. } => {}
                 gui::FromUi::Kit(k) => kit_to = Some(k.min(n - 1)),
+                // UNDO on the Synth tab and the mixer: their turns' history.
+                gui::FromUi::UndoHistory(on) => {
+                    let (rows, now) = match on {
+                        gui::UndoOn::Synth => synth_turns
+                            .rows("Start: the sound before these turns", |t| {
+                                synth_turn_row(&synth, t.key, t.to)
+                            }),
+                        gui::UndoOn::Mixer => mix_turns
+                            .rows("Start: the mix before these turns", |t| {
+                                mix_turn_row(t.key.0, t.key.1, t.to)
+                            }),
+                    };
+                    out.show(gui::ToUi::UndoHistory { on, rows, now });
+                }
+                gui::FromUi::UndoOn { on, redo } => {
+                    let line = match on {
+                        gui::UndoOn::Synth => {
+                            let turn = if redo {
+                                synth_turns.redo()
+                            } else {
+                                synth_turns.undo()
+                            };
+                            turn.map(|t| {
+                                let v = if redo { t.to } else { t.from };
+                                synth.set(t.key, v);
+                                out.show(gui::ToUi::SynthValues(synth.values()));
+                                synth_turn_said(&synth, t.key, redo)
+                            })
+                        }
+                        gui::UndoOn::Mixer => {
+                            let turn = if redo {
+                                mix_turns.redo()
+                            } else {
+                                mix_turns.undo()
+                            };
+                            turn.map(|t| {
+                                let (strip, id) = t.key;
+                                let value = if redo { t.to } else { t.from };
+                                if let Some(db) = mix.action(&mpfree_mixer_ui::MixAction::Set {
+                                    strip,
+                                    id,
+                                    value,
+                                }) {
+                                    level_db = db;
+                                    out.show(gui::ToUi::Level { db: level_db });
+                                }
+                                mix_turn_said(strip, id, redo)
+                            })
+                        }
+                    };
+                    let line = line.unwrap_or_else(|| {
+                        format!(
+                            "Nothing to {} on this page",
+                            if redo { "redo" } else { "undo" }
+                        )
+                    });
+                    fx.push(app::Effect::Tell(line));
+                }
                 // A tap on a track's sound line on Arrange: the track is
                 // selected (armed, as the Record panel's Armed row) and the
                 // Synth tab's MENU opens on its Instrument row.
@@ -3824,7 +4028,9 @@ fn player_session(
                     mix.instruments.param(app.track(), id, value);
                 }
                 gui::FromUi::Synth(SynthAction::Set { id, value }) => {
+                    let from = synth.value(id);
                     synth.set(id, value);
+                    synth_turns.turned(id, from, synth.value(id), t_read);
                     if let Some(line) = param_log.set(&synth, id, value, t_read) {
                         out.note(&line);
                     }
@@ -3937,53 +4143,65 @@ fn player_session(
                     }
                     // Each track's own instrument: the project's (made on
                     // the screen thread), or none, so the track plays the
-                    // kit. The old ones ring out. One the host can't take
-                    // goes back in the box, to be freed on the screen thread.
+                    // kit. The old ones ring out. First the ones the
+                    // project hasn't got come out, so their places are free
+                    // for the project's. One the host can't take goes back
+                    // in the box, to be freed on the screen thread.
                     let mut changed = 0;
                     let mut playing = 0;
-                    for track in 0..instruments::SLOTS {
-                        track_presets[track] = None;
-                        let at = o
-                            .instruments
+                    let loaded_for = |o: &project::Opening, track: usize| {
+                        o.instruments
                             .iter()
-                            .position(|l| l.as_ref().is_some_and(|l| l.track == track));
-                        let loaded = at.and_then(|k| o.instruments[k].take());
-                        if loaded.is_none() && !mix.instruments.holds(track) {
+                            .position(|l| l.as_ref().is_some_and(|l| l.track == track))
+                    };
+                    for track in 0..instruments::TRACKS {
+                        track_presets[track] = None;
+                        if loaded_for(&o, track).is_some() || !mix.instruments.holds(track) {
                             continue;
                         }
                         changed += 1;
-                        match loaded {
-                            Some(l) => {
-                                let engine = synth::Engine::from_node_id(l.held.id);
-                                let pads = synth.pads_for(engine.unwrap_or(synth::Engine::Poly));
-                                mix.instruments.set_tuning(track, &synth.tuning_now());
-                                let held = l.held;
-                                match mix.instruments.put(track, Some((l.instrument, held)), pads) {
-                                    Ok(()) => playing += 1,
-                                    Err(back) => {
-                                        if let (Some(instrument), Some(k)) = (back, at) {
-                                            o.instruments[k] = Some(project::Loaded {
-                                                track,
-                                                instrument,
-                                                held,
-                                            });
-                                        }
-                                        out.note(&format!(
-                                            "project: track {}: {} not put in (its last sound is still ringing out); it keeps what it had",
-                                            track + 1,
-                                            held.name
-                                        ));
-                                    }
+                        if !mix.instruments.take_out(track) {
+                            out.note(&format!(
+                                "project: track {} keeps its instrument (its last sound is still ringing out)",
+                                track + 1
+                            ));
+                        }
+                        app.set_track_sound(track, mix.instruments.held(track));
+                    }
+                    for track in 0..instruments::TRACKS {
+                        let Some(k) = loaded_for(&o, track) else {
+                            continue;
+                        };
+                        let Some(l) = o.instruments[k].take() else {
+                            continue;
+                        };
+                        changed += 1;
+                        let engine = synth::Engine::from_node_id(l.held.id);
+                        let pads = synth.pads_for(engine.unwrap_or(synth::Engine::Poly));
+                        let held = l.held;
+                        let put = (l.instrument, held);
+                        match mix.instruments.put(track, put, pads, &synth.tuning_now()) {
+                            Ok(()) => playing += 1,
+                            Err((why, back)) => {
+                                if let Some(instrument) = back {
+                                    o.instruments[k] = Some(project::Loaded {
+                                        track,
+                                        instrument,
+                                        held,
+                                    });
                                 }
-                            }
-                            None => {
-                                let pads = synth.pads_for(synth.engine());
-                                if mix.instruments.put(track, None, pads).is_err() {
-                                    out.note(&format!(
-                                        "project: track {} keeps its instrument (its last sound is still ringing out)",
-                                        track + 1
-                                    ));
-                                }
+                                let why = match why {
+                                    instruments::Refused::Full => format!(
+                                        "{} tracks already play their own",
+                                        instruments::SLOTS
+                                    ),
+                                    _ => "its last sound is still ringing out".to_string(),
+                                };
+                                out.note(&format!(
+                                    "project: track {}: {} not put in ({why}); it keeps what it had",
+                                    track + 1,
+                                    held.name
+                                ));
                             }
                         }
                         app.set_track_sound(track, mix.instruments.held(track));
@@ -4121,6 +4339,8 @@ fn player_session(
                     if let Some(line) = param_log.flush(&synth) {
                         out.note(&line);
                     }
+                    // The turns were of the old sound.
+                    synth_turns.clear();
                     if let Some(name) = synth.load_preset(k).map(str::to_string) {
                         out.note(&format!(
                             "synth: preset {} of {}, {name}",
@@ -4142,6 +4362,14 @@ fn player_session(
         }
         if let Some(line) = param_log.poll(&synth, t_read) {
             out.note(&line);
+        }
+        let turns_ready = (!synth_turns.done().is_empty(), !mix_turns.done().is_empty());
+        if turns_ready != turns_told {
+            turns_told = turns_ready;
+            out.show(gui::ToUi::TurnsReady {
+                synth: turns_ready.0,
+                mixer: turns_ready.1,
+            });
         }
         if let Some(b) = preview_back.take() {
             if let Err(gui::ToUi::PreviewBack(b)) = out.try_show(gui::ToUi::PreviewBack(b)) {
@@ -4549,10 +4777,9 @@ fn player_session(
                 // the kit again.
                 app::Effect::TrackSound { track, id } => match id {
                     None => {
-                        let pads = synth.pads_for(synth.engine());
-                        match mix.instruments.put(track, None, pads) {
-                            Ok(()) => out.note(&format!("track {}: plays the kit", track + 1)),
-                            Err(_) => {
+                        match mix.instruments.take_out(track) {
+                            true => out.note(&format!("track {}: plays the kit", track + 1)),
+                            false => {
                                 let s = format!(
                                     "Track {}: its last sound is still ringing out; try again in a moment",
                                     track + 1
@@ -4571,6 +4798,13 @@ fn player_session(
                             track,
                             None,
                         )));
+                    }
+                    // Not made at all while every place is taken.
+                    Some(id) if !mix.instruments.has_room(track) => {
+                        let s = full_note(track, instrument_name(mix.plugins(), id));
+                        out.note(&s);
+                        out.show(gui::ToUi::Tell(s));
+                        app.set_track_sound(track, mix.instruments.held(track));
                     }
                     Some(id) => {
                         let job = instrument_job(&synth, track, id, None);
@@ -4869,9 +5103,15 @@ fn player_session(
                     out.note(&s);
                     out.show(gui::ToUi::Tell(s));
                 }
+                mixing::Landed::Full { track, name } => {
+                    let s = full_note(track, name);
+                    out.note(&s);
+                    out.show(gui::ToUi::Tell(s));
+                }
             }
-            let (mixing::Landed::Playing { track, .. } | mixing::Landed::Failed { track, .. }) =
-                landed;
+            let (mixing::Landed::Playing { track, .. }
+            | mixing::Landed::Failed { track, .. }
+            | mixing::Landed::Full { track, .. }) = landed;
             app.set_track_sound(track, mix.instruments.held(track));
         }
         // The clips and every track's arp (the pads go through the armed
@@ -4925,7 +5165,7 @@ fn player_session(
             mix.lane(offset, addr, value);
         }
         time.clear_locks();
-        // The Play page: where the hits fell (Drum view), and the pattern.
+        // The Play page: where the hits fell (Beats' timing strip), and the pattern.
         for h in time.hits() {
             out.show(gui::ToUi::Hit(*h));
         }
@@ -6107,6 +6347,12 @@ fn main() {
     if raw.next().is_some_and(|a| a == plugins::SUBCOMMAND) {
         std::process::exit(plugins::serve(raw));
     }
+    // A panic says where and why in the report before the program ends
+    // (crash.rs): from here on, for every command.
+    crash::note_panics(
+        Path::new(REPORT_DIR).join("report.txt"),
+        Path::new(REPORT_DIR).join(crash::RUNNING),
+    );
     let args: Vec<String> = std::env::args().skip(1).collect();
     let result = parse_args(&args).and_then(|o| {
         if o.preview.is_some() {
@@ -6148,6 +6394,90 @@ mod tests {
 
     fn args(s: &str) -> Vec<String> {
         s.split_whitespace().map(String::from).collect()
+    }
+
+    /// UNDO on the Synth tab and the mixer names the knob or fader.
+    #[test]
+    fn undo_of_a_turn_names_it() {
+        assert_eq!(
+            mix_turn_said(
+                mpfree_fx::StripId::Track(mixing::DRUMS),
+                mpfree_fx::ids::mixer::VOLUME,
+                false
+            ),
+            "Undid Drums Volume"
+        );
+        let synth = synth::Synth::new(RATE);
+        let p = (0..256u16).find_map(|id| synth.param_info(id)).unwrap();
+        let said = synth_turn_said(&synth, p.id, true);
+        assert!(
+            said.starts_with("Redid ") && said.contains(p.name) && said.contains("(now "),
+            "{said}"
+        );
+    }
+
+    /// UNDO on the takes says what it took back, in place of the hint.
+    #[test]
+    fn undo_and_redo_say_what_they_did() {
+        assert_eq!(
+            undo_said("undo: take 3 · Drums / 1"),
+            "Undid take 3 · Drums / 1"
+        );
+        assert_eq!(
+            undo_said("redo: delete 6 · Bass / 2"),
+            "Redid delete 6 · Bass / 2"
+        );
+        assert_eq!(
+            undo_said("undo: nothing to undo"),
+            "Nothing to undo in the takes"
+        );
+        assert_eq!(
+            undo_said("redo: nothing to redo"),
+            "Nothing to redo in the takes"
+        );
+        // ERASE + a clip, then UNDO: the clip is back, and the line says so.
+        let mut out = Out {
+            console: None,
+            sink: None,
+            dropped: 0,
+            report: None,
+            queued: None,
+            last_draw: Instant::now(),
+        };
+        let mut time = time::TimeHost::new(RATE, 120.0).unwrap();
+        let mut app = app::App::new(RATE, false);
+        let mut mix = mixing::MixHost::new(RATE, -6.0, -6.0);
+        let mut tracks = audiotracks::TrackHost::new(RATE, 1);
+        let looper = looping::LoopHost::new(RATE, 1);
+        time.put_clip(mpfree_seq::Clip::new("beat", 3840)).unwrap();
+        let fx = time_action(
+            &mut out,
+            &mut time,
+            &mut tracks,
+            &looper,
+            &mut app,
+            &mut mix,
+            TimeAction::DeleteClip { track: 0, slot: 0 },
+        );
+        assert!(
+            matches!(fx.as_slice(), [app::Effect::Tell(l)] if l.contains("deleted")),
+            "{fx:?}"
+        );
+        let fx = time_action(
+            &mut out,
+            &mut time,
+            &mut tracks,
+            &looper,
+            &mut app,
+            &mut mix,
+            TimeAction::Undo,
+        );
+        assert!(
+            matches!(fx.as_slice(), [app::Effect::Tell(l)]
+                if l.starts_with("Undid delete ") && l.ends_with("Track 1 / 1")),
+            "{fx:?}"
+        );
+        assert!(time.state().clip(0, 0).is_some());
     }
 
     /// TRACK MUTE's keys mute a track, or a pad in the kit, and the pads

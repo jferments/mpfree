@@ -24,7 +24,7 @@ pub const fn osc_id(o: usize, id: u16) -> u16 {
 ids! {
     SUB_LEVEL = 20, NOISE_LEVEL = 21,
     UNISON = 25, UNISON_DETUNE = 26, UNISON_SPREAD = 27,
-    FILTER_MODE = 30, CUTOFF = 31, RESONANCE = 32, DRIVE = 33, MENV_CUTOFF = 34, KEY_TRACK = 35, VEL_CUTOFF = 36,
+    FILTER_MODE = 30, CUTOFF = 31, RESONANCE = 32, DRIVE = 33, MENV_CUTOFF = 34, KEY_TRACK = 35, VEL_CUTOFF = 36, DIST = 37,
     MENV_A = 40, MENV_D = 41, MENV_S = 42, MENV_R = 43, MENV_POS_A = 44, MENV_POS_B = 45, VEL_POS = 46, MENV_WARP = 47,
     AMP_A = 50, AMP_D = 51, AMP_S = 52, AMP_R = 53, VEL_AMP = 54,
     LFO_SHAPE = 60, LFO_RATE = 61, LFO_SYNC = 62, LFO_PITCH = 63, LFO_CUTOFF = 64, LFO_POS_A = 65, LFO_POS_B = 66, LFO_RETRIG = 67, LFO_AMP = 68,
@@ -322,6 +322,16 @@ const BASE: &[ParamInfo] = &[
         Linear,
     ),
     p(DRIVE, "Drive", "Filter", 0.0, 24.0, 0.0, Unit::Db, Linear),
+    p(
+        DIST,
+        "Distortion",
+        "Filter",
+        0.0,
+        24.0,
+        0.0,
+        Unit::Db,
+        Linear,
+    ),
     p(
         MENV_CUTOFF,
         "Env amount",

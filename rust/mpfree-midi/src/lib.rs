@@ -14,6 +14,9 @@
 //!   I/O view edits), saved as the project's `midi` part.
 //! - [`cv_wire`]: the bytes Akai's app sends to the controller to set the
 //!   CV jacks (channel 16 CC pairs on cable 1), as captured.
+//! - [`monitor`]: the MIDI monitor's model: every message in and out of
+//!   the ports as values (a lock-free feed where the bytes are, the list
+//!   and the channel lights the screen shows).
 //!
 //! MIDI clock bytes are `mpfree-midi-clock`'s; how the transport follows
 //! another device's clock is the time engine's. Which ALSA device each
@@ -27,6 +30,7 @@ pub mod cv;
 pub mod cv_wire;
 pub mod input;
 pub mod learn;
+pub mod monitor;
 pub mod msg;
 pub mod output;
 pub mod port;
