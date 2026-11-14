@@ -3786,6 +3786,10 @@ impl Loop {
         waiting: bool,
         ys: &mut [[f32; 2]],
     ) {
+        // A layer copying in or out between loops: only then are its
+        // frames looked for, so an overdub, which goes a frame at a time,
+        // doesn't pay for them.
+        let copying = self.adding || self.lend.is_some();
         let mut j = 0;
         while j < ys.len() {
             if self.phase == Phase::Empty {
@@ -3814,11 +3818,13 @@ impl Loop {
             if self.merging && f >= self.mg_at {
                 self.finish_merge(store, me);
             }
-            if self.adding && f >= self.ad_at && self.ad_done == self.ad_frames {
-                self.finish_add();
-            }
-            if self.lend.is_some_and(|l| f >= l.at) {
-                self.end_lend();
+            if copying {
+                if self.adding && f >= self.ad_at && self.ad_done == self.ad_frames {
+                    self.finish_add();
+                }
+                if self.lend.is_some_and(|l| f >= l.at) {
+                    self.end_lend();
+                }
             }
             let live = print.is_some_and(|p| self.print_live(p, waiting));
             if self.fitting && f >= self.fit_at && self.jump == 0 && self.xf == 0 {
@@ -3835,11 +3841,13 @@ impl Loop {
                 if self.fitting {
                     end = end.min(self.fit_at.saturating_sub(r.f) as usize).max(j + 1);
                 }
-                if self.adding {
-                    end = end.min(self.ad_at.saturating_sub(r.f) as usize).max(j + 1);
-                }
-                if let Some(l) = self.lend {
-                    end = end.min(l.at.saturating_sub(r.f) as usize).max(j + 1);
+                if copying {
+                    if self.adding {
+                        end = end.min(self.ad_at.saturating_sub(r.f) as usize).max(j + 1);
+                    }
+                    if let Some(l) = self.lend {
+                        end = end.min(l.at.saturating_sub(r.f) as usize).max(j + 1);
+                    }
                 }
                 self.still_run(store, me, print, &r.ticks[j..end], &mut ys[j..end]);
                 j = end;
