@@ -118,6 +118,7 @@ M4 was host-only safety tooling and the [handoff state-machine simulator](../../
 - [ARMv7 userspace compatibility](research/armv7-userspace-compat.md): matching the device's glibc, loader and ABI.
 - [Auxiliary compute over Ethernet and USB](research/auxiliary-compute.md): offloading synths and effects to another computer.
 - [Samplers: what people like, what they don't, and what to borrow](research/sampler-landscape.md): MPC owners' praise and complaints, other samplers, granular synthesis, and MIT-compatible libraries (2026-11-10).
+- [Electric pianos: what the research says, and open source to learn from](research/electric-piano.md): tine and reed piano physics from papers and measurements, what the Keys engine takes from it, and open-source pianos (2026-11-14).
 
 - [RK3288 BootROM, p1 ID block and reset modes](research/bootrom.md): offline reverse engineering of the boot ROM and the first eMMC stage (2026-11-10).
 
