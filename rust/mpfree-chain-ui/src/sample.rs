@@ -626,6 +626,27 @@ pub fn samples(fonts: impl Fn() -> Fonts) -> Result<Vec<Sample>, String> {
     let mut adding = song.chain_state(KEYS, 1, 0, None);
     adding.back = Some("Mixer".into());
     adding.picking = true;
+    let mut starred = adding.clone();
+    for id in [
+        "mpfree.fx.plate",
+        "mpfree.fx.tape_delay",
+        "mpfree.fx.cloud",
+        "mpfree.fx.amp",
+    ] {
+        starred.shelf.set_favourite(id, true);
+    }
+    for id in ["mpfree.fx.room", "mpfree.fx.cloud", "mpfree.fx.limiter"] {
+        starred.shelf.used(id);
+    }
+    // Plate reverb's presets, opened with the wheel: SHIFT + wheel down
+    // to Delay and reverb, the wheel to Plate reverb, a push.
+    let mut presets = screen(fonts(), &mut song, Place::Mixer, Some(adding.clone()), None)?;
+    if let Some(v) = presets.get_mut::<ChainView>(crate::CHAIN) {
+        v.wheel(4, true);
+        v.wheel(6, false);
+        v.push_wheel();
+        v.wheel(2, false);
+    }
     let m0 = song.macros_state(0);
     let m1 = song.macros_state(1);
     let mut editing = song.macros_state(0);
@@ -636,7 +657,9 @@ pub fn samples(fonts: impl Fn() -> Fonts) -> Result<Vec<Sample>, String> {
         Sample { name: "chain-mixer-keys-delay", about: "From the mixer: the keys chain, Delay's Mix page (Q-Links on that page's knobs): Mix is on Wash (macro 1) and ducked by follower 1 (a negative row)", ui: screen(fonts(), &mut song, Place::Mixer, Some(delay), None)? },
         Sample { name: "chain-sample-fx-pad", about: "In the Sample tab's FX sub-tab, under the pad bar: pad 1's own chain, with a switch to the drum track's (to agree with the sampler thread)", ui: screen(fonts(), &mut song, Place::SampleFx, Some(kick), None)? },
         Sample { name: "chain-mixer-empty", about: "From the mixer: a track with no effects yet, + Add effect; the Q-Links have nothing of the page's, so they show free", ui: screen(fonts(), &mut song, Place::Mixer, Some(empty), None)? },
-        Sample { name: "chain-mixer-add-effect", about: "The effect picker over the effect column (+ Add effect, or the mixer's + on a strip): every effect the strip can take with a line about it; a tap adds it at the end", ui: screen(fonts(), &mut song, Place::Mixer, Some(adding), None)? },
+        Sample { name: "chain-mixer-add-effect", about: "The effect picker, a category browser over the effect and Modulate columns (+ Add effect, or the mixer's + on a strip): Favourites, Recent and the categories with their counts; with no favourites it opens on Dynamics. A tap adds an effect at its defaults, the star keeps it, a hold or its presets line opens its presets", ui: screen(fonts(), &mut song, Place::Mixer, Some(adding), None)? },
+        Sample { name: "chain-mixer-add-favourites", about: "The picker opens on Favourites once there are any (starred, in the order they were starred; Recent holds the last 12 added)", ui: screen(fonts(), &mut song, Place::Mixer, Some(starred), None)? },
+        Sample { name: "chain-mixer-add-presets", about: "Plate reverb's presets, reached with SHIFT + wheel (Delay and reverb), the wheel (Plate reverb) and a push; the wheel is on Snare plate, and a push or a tap adds the plate with it (Defaults adds it as it starts)", ui: presets },
         Sample { name: "macros-1-4", about: "The macros panel over the page (a long press on a macro card; no tab lit, Back closes it): Macros 1-4 with their targets and ranges, the Q-Links on Macros 1-4, the morph 64 % of the way from Dry verse to Wash drop", ui: screen(fonts(), &mut song, Place::Over, None, Some(m0))? },
         Sample { name: "macros-5-8", about: "Macros 5-8, not yet assigned; the Q-Links on Macros 5-8", ui: screen(fonts(), &mut song, Place::Over, None, Some(m1))? },
         Sample { name: "macros-edit-target", about: "A tap on a target opens its editor over the cards: Wash's hold on the delay tone, a falling range (80 → 35 %); drag From and To, pick a curve, Flip, Remove", ui: screen(fonts(), &mut song, Place::Over, None, Some(editing))? },
@@ -647,6 +670,7 @@ pub fn samples(fonts: impl Fn() -> Fonts) -> Result<Vec<Sample>, String> {
 mod tests {
     use super::*;
     use crate::{ChainAction, MacroAction};
+    use mpfree_fx::picker::Section;
     use mpfree_ui::{SoftCanvas, Touch};
 
     fn tap(ui: &mut Ui, x: i32, y: i32) {
@@ -657,7 +681,7 @@ mod tests {
     #[test]
     fn the_samples_read_real_state_and_paint() {
         let s = samples(Fonts::embedded).unwrap();
-        assert_eq!(s.len(), 9);
+        assert_eq!(s.len(), 11);
         for mut sample in s {
             let (w, h) = sample.ui.size();
             let mut c = SoftCanvas::new(w, h);
@@ -785,15 +809,257 @@ mod tests {
             crate::take_chain_actions(&mut ui),
             [ChainAction::Picker(true)]
         );
+        // The plugins have their own section, after the built-in ones.
         let l = ui.get::<ChainView>(crate::CHAIN).unwrap().layout(r);
-        assert_eq!(l.picks.len(), all.len(), "a card for the plugin too");
-        let t = *l.picks.last().unwrap();
+        let pl = l.picker.as_ref().unwrap();
+        let (list, _) = ui
+            .get::<ChainView>(crate::CHAIN)
+            .unwrap()
+            .picker()
+            .current(&st);
+        let at = list
+            .iter()
+            .position(|s| *s == Section::Category(mpfree_fx::Category::Plugins))
+            .expect("a Plugins section");
+        let row = pl.sections[at];
+        tap(&mut ui, row.x + 10, row.y + 10);
+        let l = ui.get::<ChainView>(crate::CHAIN).unwrap().layout(r);
+        assert_eq!(l.picks.len(), 1, "a card for the plugin");
+        let t = l.picks[0];
         assert!(t.h >= 48, "the cards still take a finger: {t:?}");
         tap(&mut ui, t.x + 10, t.y + 10);
         assert_eq!(
             crate::take_chain_actions(&mut ui),
             [ChainAction::Add("clap:org.example.verb")]
         );
+    }
+
+    /// A chain editor for the keys strip with the picker open.
+    fn picking(song: &mut Song, shelf: mpfree_fx::picker::Shelf) -> Ui {
+        let mut st = song.chain_state(KEYS, 0, 0, None);
+        st.picking = true;
+        st.shelf = shelf;
+        screen(Fonts::embedded(), song, Place::Mixer, Some(st), None).unwrap()
+    }
+
+    #[test]
+    fn stars_keep_favourites_and_favourites_open_first() {
+        let mut song = Song::new();
+        let mut ui = picking(&mut song, Default::default());
+        let r = ui.rect_of(crate::CHAIN).unwrap();
+        let l = ui.get::<ChainView>(crate::CHAIN).unwrap().layout(r);
+        let star = l.picker.as_ref().unwrap().stars[1];
+        let id = ui
+            .get::<ChainView>(crate::CHAIN)
+            .unwrap()
+            .picker()
+            .picks(ui.get::<ChainView>(crate::CHAIN).unwrap().state())[1]
+            .id;
+        tap(&mut ui, star.x + star.w / 2, star.y + star.h / 2);
+        assert_eq!(
+            crate::take_chain_actions(&mut ui),
+            [ChainAction::Favourite { id, on: true }]
+        );
+        let v = ui.get::<ChainView>(crate::CHAIN).unwrap();
+        assert!(v.state().shelf.is_favourite(id), "shown at once");
+        assert!(v.state().picking, "a star doesn't add");
+        tap(&mut ui, star.x + star.w / 2, star.y + star.h / 2);
+        assert_eq!(
+            crate::take_chain_actions(&mut ui),
+            [ChainAction::Favourite { id, on: false }]
+        );
+        // A picker opened with favourites starts on them, in their order.
+        let mut shelf = mpfree_fx::picker::Shelf::default();
+        shelf.set_favourite("mpfree.fx.spring", true);
+        shelf.set_favourite("mpfree.fx.gate", true);
+        shelf.set_favourite("clap:not.here", true);
+        let ui = picking(&mut song, shelf);
+        let v = ui.get::<ChainView>(crate::CHAIN).unwrap();
+        let ids: Vec<_> = v.picker().picks(v.state()).iter().map(|p| p.id).collect();
+        assert_eq!(ids, ["mpfree.fx.spring", "mpfree.fx.gate"]);
+    }
+
+    #[test]
+    fn a_hold_or_the_presets_line_opens_presets_and_a_tap_adds_one() {
+        let mut song = Song::new();
+        let mut ui = picking(&mut song, Default::default());
+        open_section(&mut ui, Section::Category(mpfree_fx::Category::DelayReverb));
+        let t = tile_of(&ui, "mpfree.fx.plate").unwrap();
+        // Held for half a second: the presets open instead of an add.
+        ui.touch(1, Touch::Down, t.x + 20, t.y + 20);
+        ui.get_mut::<ChainView>(crate::CHAIN)
+            .unwrap()
+            .age_press(0.6);
+        ui.touch(1, Touch::Up, t.x + 20, t.y + 20);
+        assert!(crate::take_chain_actions(&mut ui).is_empty());
+        let r = ui.rect_of(crate::CHAIN).unwrap();
+        let v = ui.get::<ChainView>(crate::CHAIN).unwrap();
+        assert_eq!(v.picker().presets, Some("mpfree.fx.plate"));
+        let pl = v.layout(r).picker.unwrap();
+        let n = mpfree_fx::picker::presets("mpfree.fx.plate").len();
+        assert_eq!(pl.tiles.len(), n + 1, "Defaults and every preset");
+        assert!(v.layout(r).picks.is_empty());
+        // A preset row adds the plate with that preset.
+        let row = pl.tiles[2];
+        tap(&mut ui, row.x + 10, row.y + 10);
+        assert_eq!(
+            crate::take_chain_actions(&mut ui),
+            [ChainAction::AddPreset {
+                id: "mpfree.fx.plate",
+                preset: 1
+            }]
+        );
+        assert!(!ui.get::<ChainView>(crate::CHAIN).unwrap().state().picking);
+        // The presets line opens them too; Back goes back; Defaults adds
+        // at defaults.
+        let mut ui = picking(&mut song, Default::default());
+        open_section(&mut ui, Section::Category(mpfree_fx::Category::DelayReverb));
+        let l = ui.get::<ChainView>(crate::CHAIN).unwrap().layout(r);
+        let pl = l.picker.unwrap();
+        let k = {
+            let v = ui.get::<ChainView>(crate::CHAIN).unwrap();
+            let picks = v.picker().picks(v.state());
+            picks.iter().position(|p| p.id == "mpfree.fx.room").unwrap()
+        };
+        let chip = pl.chips[k].expect("the room has presets");
+        tap(&mut ui, chip.x + 10, chip.y + chip.h / 2);
+        let v = ui.get::<ChainView>(crate::CHAIN).unwrap();
+        assert_eq!(v.picker().presets, Some("mpfree.fx.room"));
+        let pl = v.layout(r).picker.unwrap();
+        let back = pl.back.unwrap();
+        tap(&mut ui, back.x + 5, back.y + 5);
+        assert_eq!(
+            ui.get::<ChainView>(crate::CHAIN).unwrap().picker().presets,
+            None
+        );
+        tap(&mut ui, chip.x + 10, chip.y + chip.h / 2);
+        let pl = ui
+            .get::<ChainView>(crate::CHAIN)
+            .unwrap()
+            .layout(r)
+            .picker
+            .unwrap();
+        tap(&mut ui, pl.tiles[0].x + 10, pl.tiles[0].y + 10);
+        assert_eq!(
+            crate::take_chain_actions(&mut ui),
+            [ChainAction::Add("mpfree.fx.room")]
+        );
+        // A finger that slides off the tile adds nothing.
+        let mut ui = picking(&mut song, Default::default());
+        let t = ui.get::<ChainView>(crate::CHAIN).unwrap().layout(r).picks[0];
+        ui.touch(1, Touch::Down, t.x + 20, t.y + 20);
+        ui.touch(1, Touch::Up, t.x - 30, t.y + 20);
+        assert!(crate::take_chain_actions(&mut ui).is_empty());
+    }
+
+    #[test]
+    fn the_wheel_moves_through_tiles_and_shift_through_sections() {
+        let mut song = Song::new();
+        let mut ui = picking(&mut song, Default::default());
+        let v = ui.get_mut::<ChainView>(crate::CHAIN).unwrap();
+        assert!(v.wheel(1, true), "the picker takes the wheel");
+        let st = v.state().clone();
+        let (list, at) = v.picker().current(&st);
+        assert_eq!(list[at], Section::Category(mpfree_fx::Category::EqFilter));
+        v.wheel(-9, true);
+        assert_eq!(v.picker().current(&st).1, 0, "stops at the first");
+        v.wheel(4, true);
+        v.wheel(2, true);
+        assert_eq!(
+            v.picker().current(&st).0[v.picker().current(&st).1],
+            Section::Category(mpfree_fx::Category::DelayReverb)
+        );
+        // The first push lights the first tile; the wheel moves it.
+        assert!(v.push_wheel());
+        assert_eq!(v.picker().highlight, Some(0));
+        v.wheel(100, false);
+        let n = v.picker().picks(&st).len();
+        assert_eq!(v.picker().highlight, Some(n - 1), "stops at the last");
+        let plate = v
+            .picker()
+            .picks(&st)
+            .iter()
+            .position(|p| p.id == "mpfree.fx.plate")
+            .unwrap();
+        v.wheel(plate as i32 - (n as i32 - 1), false);
+        // A push opens the plate's presets on Defaults; the wheel and a
+        // push add the plate with the second preset.
+        v.push_wheel();
+        assert_eq!(v.picker().presets, Some("mpfree.fx.plate"));
+        assert_eq!(v.picker().highlight, Some(0));
+        v.wheel(2, false);
+        v.push_wheel();
+        assert_eq!(
+            v.take_actions(),
+            [ChainAction::AddPreset {
+                id: "mpfree.fx.plate",
+                preset: 1
+            }]
+        );
+        assert!(!v.wheel(1, false), "a shut picker gives the wheel back");
+        assert!(!v.push_wheel());
+    }
+
+    #[test]
+    fn a_long_section_pages() {
+        let mut song = Song::new();
+        let mut shelf = mpfree_fx::picker::Shelf::default();
+        for p in crate::state::picks(KEYS) {
+            shelf.set_favourite(p.id, true);
+        }
+        let mut ui = picking(&mut song, shelf);
+        let r = ui.rect_of(crate::CHAIN).unwrap();
+        let pl = ui
+            .get::<ChainView>(crate::CHAIN)
+            .unwrap()
+            .layout(r)
+            .picker
+            .unwrap();
+        assert!(
+            pl.pages > 1,
+            "{} favourites",
+            crate::state::picks(KEYS).len()
+        );
+        assert_eq!(pl.page, 0);
+        let per = pl.tiles.len();
+        let next = pl.next.unwrap();
+        tap(&mut ui, next.x + 10, next.y + 10);
+        let pl = ui
+            .get::<ChainView>(crate::CHAIN)
+            .unwrap()
+            .layout(r)
+            .picker
+            .unwrap();
+        assert_eq!((pl.page, pl.first), (1, per));
+        // The wheel's highlight brings its page.
+        let v = ui.get_mut::<ChainView>(crate::CHAIN).unwrap();
+        v.wheel(1, false);
+        assert_eq!(v.layout(r).picker.unwrap().page, 0);
+        // Every tile, on every page, still takes a finger.
+        for t in &pl.tiles {
+            assert!(t.h >= crate::picker::TILE_H && t.w >= 150, "{t:?}");
+        }
+    }
+
+    /// The picker's tile for `id` in the section shown, if it is on this
+    /// page.
+    fn tile_of(ui: &Ui, id: &str) -> Option<Rect> {
+        let v = ui.get::<ChainView>(crate::CHAIN).unwrap();
+        let l = v.layout(ui.rect_of(crate::CHAIN).unwrap());
+        let pl = l.picker?;
+        let picks = v.picker().picks(v.state());
+        let i = picks.iter().position(|p| p.id == id)?;
+        pl.tiles.get(i.checked_sub(pl.first)?).copied()
+    }
+
+    /// Taps section `s` in the open picker.
+    fn open_section(ui: &mut Ui, s: Section) {
+        let v = ui.get::<ChainView>(crate::CHAIN).unwrap();
+        let l = v.layout(ui.rect_of(crate::CHAIN).unwrap());
+        let (list, _) = v.picker().current(v.state());
+        let i = list.iter().position(|x| *x == s).unwrap();
+        let row = l.picker.unwrap().sections[i];
+        tap(ui, row.x + 10, row.y + 10);
     }
 
     #[test]
@@ -812,18 +1078,21 @@ mod tests {
         );
         let l = ui.get::<ChainView>(crate::CHAIN).unwrap().layout(r);
         assert!(ui.get::<ChainView>(crate::CHAIN).unwrap().state().picking);
-        let picks = crate::state::picks(KEYS);
-        assert_eq!(l.picks.len(), picks.len());
-        assert!(!picks.iter().any(|p| p.id == "mpfree.fx.master_safety"));
         assert!(l.knobs.is_empty(), "the picker takes the knobs' place");
+        // With no favourites it opens on the first category.
+        let pl = l.picker.as_ref().unwrap();
+        assert_eq!(pl.section, 2);
+        let dynamics = crate::picker::section_picks(
+            ui.get::<ChainView>(crate::CHAIN).unwrap().state(),
+            Section::Category(mpfree_fx::Category::Dynamics),
+        );
+        assert_eq!(l.picks.len(), dynamics.len());
+        assert!(!dynamics.iter().any(|p| p.id == "mpfree.fx.master_safety"));
         // The state the app sends while the picker is open keeps it open.
         crate::update_chain(&mut ui, song.chain_state(KEYS, 0, 0, None));
         assert!(ui.get::<ChainView>(crate::CHAIN).unwrap().state().picking);
-        let cloud = picks
-            .iter()
-            .position(|p| p.id == "mpfree.fx.cloud")
-            .unwrap();
-        let t = l.picks[cloud];
+        open_section(&mut ui, Section::Category(mpfree_fx::Category::DelayReverb));
+        let t = tile_of(&ui, "mpfree.fx.cloud").unwrap();
         tap(&mut ui, t.x + 10, t.y + 10);
         assert_eq!(
             crate::take_chain_actions(&mut ui),
@@ -831,8 +1100,9 @@ mod tests {
         );
         assert!(!ui.get::<ChainView>(crate::CHAIN).unwrap().state().picking);
         assert!(mpfree_fx_ui::make("mpfree.fx.cloud").is_some());
-        // Open again and cancel: the app hears both.
+        // Open again (on the section left) and cancel: the app hears both.
         tap(&mut ui, add.x + 10, add.y + 10);
+        assert!(tile_of(&ui, "mpfree.fx.cloud").is_some(), "same section");
         let c = ui
             .get::<ChainView>(crate::CHAIN)
             .unwrap()

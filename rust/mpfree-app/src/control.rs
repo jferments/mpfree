@@ -437,6 +437,8 @@ enum Job {
     Build {
         strip: StripId,
         id: &'static str,
+        /// Parameter values set before it goes in (a factory preset).
+        preset: &'static [(u16, f32)],
         rate: u32,
         block: usize,
     },
@@ -485,10 +487,11 @@ impl Builder {
                         Job::Build {
                             strip,
                             id,
+                            preset,
                             rate,
                             block,
                         } => {
-                            let node = if Plugins::is_plugin(id) {
+                            let mut node = if Plugins::is_plugin(id) {
                                 // Its own process; a refusal is said by
                                 // the plugins' lines, and the chain
                                 // editor hears "no maker".
@@ -496,6 +499,11 @@ impl Builder {
                             } else {
                                 mpfree_fx_ui::make(id)
                             };
+                            if let Some(n) = node.as_mut() {
+                                for &(p, v) in preset {
+                                    n.set_param(p, v);
+                                }
+                            }
                             let insert = node.map(|node| Insert::new(node, rate, block));
                             // Room for every request (`pending` is checked
                             // against the queue), so this waits only if the
@@ -524,15 +532,31 @@ impl Builder {
         })
     }
 
-    /// Asks for effect `id` for `strip`, built for `rate` and blocks of
-    /// `block` frames. False if too many are under way. Never waits.
+    /// [`Builder::build_with`] at the effect's defaults (the tests).
+    #[cfg(test)]
     pub fn build(&mut self, strip: StripId, id: &'static str, rate: u32, block: usize) -> bool {
+        self.build_with(strip, id, &[], rate, block)
+    }
+
+    /// Asks for effect `id` for `strip`, built for `rate` and blocks of
+    /// `block` frames, with the values in `preset` set before it goes in
+    /// (a factory preset from the picker; empty for its defaults). False
+    /// if too many are under way. Never waits.
+    pub fn build_with(
+        &mut self,
+        strip: StripId,
+        id: &'static str,
+        preset: &'static [(u16, f32)],
+        rate: u32,
+        block: usize,
+    ) -> bool {
         if self.pending >= BUILD_QUEUE {
             return false;
         }
         let job = Job::Build {
             strip,
             id,
+            preset,
             rate,
             block,
         };

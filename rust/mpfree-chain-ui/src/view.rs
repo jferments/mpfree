@@ -32,6 +32,7 @@ use mpfree_synth_ui::draw::Mask;
 use mpfree_synth_ui::widgets::{knob, Card, Visuals};
 use mpfree_ui::{Align, EventKind, FontId, PaintCx, Rect, Touch, Widget};
 
+use crate::picker::{Hit, PickerLayout, PickerView, HOLD};
 use crate::state::{macro_color, ChainState, KNOBS_PER_PAGE};
 
 /// What a touch on the chain editor meant, for the app to apply.
@@ -97,6 +98,18 @@ pub enum ChainAction {
     /// closed it (`false`). The app keeps the picker's state, so it must
     /// hear both, or the next state it sends undoes the tap.
     Picker(bool),
+    /// Add effect `id` at the end of the chain with its factory preset
+    /// `preset` (`mpfree_fx::picker::presets(id)[preset]`) applied.
+    AddPreset {
+        id: &'static str,
+        preset: usize,
+    },
+    /// The picker's star: make `id` a favourite (`on`) or not. The app
+    /// keeps them ([`ChainState::shelf`], `files/fx/favourites.txt`).
+    Favourite {
+        id: &'static str,
+        on: bool,
+    },
 }
 
 /// The columns' widths (the effect column takes the rest).
@@ -111,8 +124,6 @@ const BUTTON_H: i32 = 44;
 const DRAG_TRAVEL: f32 = 300.0;
 /// The effect page's drawings, between the tabs and the knobs.
 const PICTURE_H: i32 = 140;
-/// The effect picker's tiles.
-const PICK_GAP: i32 = 8;
 
 /// Where everything goes, from the widget's rectangle.
 pub struct Layout {
@@ -121,9 +132,11 @@ pub struct Layout {
     pub title: Rect,
     /// The effect page's drawings, when there are any.
     pub picture: Option<Rect>,
-    /// The picker's Cancel and its tiles, in [`ChainState::picks`] order (none when the
-    /// picker is shut or the chain is full).
+    /// The picker's Cancel, its parts ([`crate::picker`]), and the effect
+    /// tiles on show (the current section's page; none when the picker is
+    /// shut, shows presets, or the chain is full).
     pub cancel: Option<Rect>,
+    pub picker: Option<PickerLayout>,
     pub picks: Vec<Rect>,
     pub scopes: Vec<Rect>,
     pub list: Rect,
@@ -142,8 +155,8 @@ pub struct Layout {
 }
 
 /// Where everything goes. `picture`: whether there are drawings to show
-/// (see [`ChainView::layout`]).
-pub fn layout(r: Rect, st: &ChainState, picture: bool) -> Layout {
+/// (see [`ChainView::layout`]); `pv`: the picker's own state.
+pub fn layout(r: Rect, st: &ChainState, picture: bool, pv: &PickerView) -> Layout {
     let (list, rest) = r.take_left(LIST_W);
     let (side, effect) = rest.take_right(SIDE_W);
     let effect = effect.inset_xy(GAP, 0);
@@ -191,26 +204,18 @@ pub fn layout(r: Rect, st: &ChainState, picture: bool) -> Layout {
         (None, grid)
     };
     let grid = grid.inset_xy(0, 8);
-    let (mut cancel, mut pick_rects) = (None, Vec::new());
+    let (mut cancel, mut picker_l, mut pick_rects) = (None, None, Vec::new());
     if st.picking {
+        // The picker takes the effect and Modulate columns.
         tabs.clear();
-        cancel = Some(Rect::new(head.right() - 104, head.y + 4, 104, 36));
+        let (phead, body) = picker_area(effect, side).inset(14).take_top(52);
+        cancel = Some(Rect::new(phead.right() - 104, phead.y + 4, 104, 36));
         if st.slots.len() < st.room {
-            let n = st.picks().len() as i32;
-            let cols = if grid.w >= 420 { 3 } else { 2 };
-            let rows_n = (n + cols - 1) / cols;
-            let w = (grid.w - (cols - 1) * PICK_GAP) / cols;
-            let h = ((grid.h - (rows_n - 1) * PICK_GAP) / rows_n.max(1)).min(120);
-            pick_rects = (0..n)
-                .map(|i| {
-                    Rect::new(
-                        grid.x + (i % cols) * (w + PICK_GAP),
-                        grid.y + (i / cols) * (h + PICK_GAP),
-                        w,
-                        h,
-                    )
-                })
-                .collect();
+            let pl = crate::picker::layout(body.inset_xy(0, 4), st, pv);
+            if pv.presets.is_none() {
+                pick_rects = pl.tiles.clone();
+            }
+            picker_l = Some(pl);
         }
     }
     // Four knobs a row where they fit, else three.
@@ -254,6 +259,7 @@ pub fn layout(r: Rect, st: &ChainState, picture: bool) -> Layout {
         title,
         picture,
         cancel,
+        picker: picker_l,
         picks: pick_rects,
         scopes,
         list,
@@ -272,6 +278,11 @@ pub fn layout(r: Rect, st: &ChainState, picture: bool) -> Layout {
     }
 }
 
+/// The effect and Modulate columns together, where the picker goes.
+fn picker_area(effect: Rect, side: Rect) -> Rect {
+    Rect::new(effect.x, effect.y, side.right() - effect.x, effect.h)
+}
+
 enum Drag {
     Knob { i: usize, y0: i32, pos0: f32 },
     Depth { k: usize },
@@ -284,6 +295,8 @@ pub struct ChainView {
     picture: Visuals,
     actions: Vec<ChainAction>,
     drag: Option<(u64, Drag)>,
+    /// The picker's section, page, wheel highlight and open presets.
+    picker: PickerView,
 }
 
 impl Default for ChainView {
@@ -299,6 +312,7 @@ impl ChainView {
             picture: Visuals::new(),
             actions: Vec::new(),
             drag: None,
+            picker: PickerView::default(),
         }
     }
 
@@ -306,13 +320,32 @@ impl ChainView {
         &self.state
     }
 
+    /// The picker's own state (its section, page, highlight, presets).
+    pub fn picker(&self) -> &PickerView {
+        &self.picker
+    }
+
     /// Shows a new state. Of the old one it keeps only an open picker
     /// (the editor opened it; a state from the app with `picking` set
     /// opens it too).
     pub fn update(&mut self, st: ChainState) {
+        let opening = st.picking && !self.state.picking;
         let picking = st.picking || self.state.picking;
         self.state = st;
         self.state.picking = picking;
+        if opening {
+            self.open_picker();
+        }
+    }
+
+    /// The picker opens on the section it showed last (the first time:
+    /// Favourites if there are any, else the first category), on its first
+    /// page, nothing highlighted. The section is kept from here, so a star
+    /// doesn't move the picker to Favourites under the finger.
+    fn open_picker(&mut self) {
+        self.picker.reopen();
+        let (list, at) = self.picker.current(&self.state);
+        self.picker.section = Some(list[at]);
     }
 
     /// Shows the selected effect's drawings ([`crate::state::picture`];
@@ -323,7 +356,153 @@ impl ChainView {
 
     /// Where everything goes in `r` as the widget stands.
     pub fn layout(&self, r: Rect) -> Layout {
-        layout(r, &self.state, !self.picture.cards.is_empty())
+        layout(r, &self.state, !self.picture.cards.is_empty(), &self.picker)
+    }
+
+    /// The data wheel while the picker is open: through the section's
+    /// tiles (or the presets list), or with SHIFT through the sections.
+    /// False when the picker is shut, so the wheel keeps its other job.
+    pub fn wheel(&mut self, delta: i32, shift: bool) -> bool {
+        if !self.state.picking || delta == 0 {
+            return false;
+        }
+        let pv = &mut self.picker;
+        if shift {
+            let (list, at) = pv.current(&self.state);
+            let to = (at as i32 + delta).clamp(0, list.len() as i32 - 1) as usize;
+            pv.section = Some(list[to]);
+            pv.page = 0;
+            pv.presets = None;
+            pv.highlight = None;
+            return true;
+        }
+        let n = match pv.presets {
+            Some(id) => 1 + mpfree_fx::picker::presets(id).len(),
+            None => pv.picks(&self.state).len(),
+        };
+        if n > 0 {
+            let at = pv.highlight.map_or(-1, |h| h as i32);
+            pv.highlight = Some((at + delta).clamp(0, n as i32 - 1) as usize);
+        }
+        true
+    }
+
+    /// The data wheel's push while the picker is open: on an effect, open
+    /// its presets (or add it, when it has none); on the presets list, add
+    /// the effect with the one highlighted ("Defaults" first). False when
+    /// the picker is shut.
+    pub fn push_wheel(&mut self) -> bool {
+        if !self.state.picking {
+            return false;
+        }
+        let Some(h) = self.picker.highlight else {
+            // The first push lights the first tile.
+            self.picker.highlight = Some(0);
+            return true;
+        };
+        match self.picker.presets {
+            Some(id) => self.add_preset(id, h),
+            None => {
+                if let Some(p) = self.picker.picks(&self.state).get(h) {
+                    self.open_or_add(p.id);
+                }
+            }
+        }
+        true
+    }
+
+    /// Opens an effect's presets, or adds it when it has none.
+    fn open_or_add(&mut self, id: &'static str) {
+        if mpfree_fx::picker::presets(id).is_empty() {
+            self.state.picking = false;
+            self.push(ChainAction::Add(id));
+        } else {
+            self.picker.presets = Some(id);
+            self.picker.highlight = Some(0);
+            self.picker.page = 0;
+        }
+    }
+
+    /// Adds `id` with presets list row `row` (0 is "Defaults").
+    fn add_preset(&mut self, id: &'static str, row: usize) {
+        self.state.picking = false;
+        self.picker.presets = None;
+        self.push(match row {
+            0 => ChainAction::Add(id),
+            r => ChainAction::AddPreset { id, preset: r - 1 },
+        });
+    }
+
+    /// A tap in the open picker (on the finger's way down; a tile waits
+    /// for it to lift, to tell a tap from a hold).
+    fn tap_picker(&mut self, pl: &PickerLayout, finger: u64, x: i32, y: i32) {
+        let Some(hit) = crate::picker::hit(pl, x, y) else {
+            return;
+        };
+        let pv = &mut self.picker;
+        match hit {
+            Hit::Section(i) => {
+                let (list, _) = pv.current(&self.state);
+                pv.section = list.get(i).copied();
+                pv.page = 0;
+                pv.highlight = None;
+                pv.presets = None;
+            }
+            Hit::Prev | Hit::Next => {
+                let step = if hit == Hit::Next { 1 } else { -1 };
+                pv.page = (pl.page as i32 + step).clamp(0, pl.pages as i32 - 1) as usize;
+                pv.highlight = None;
+            }
+            Hit::Back => {
+                pv.presets = None;
+                pv.highlight = None;
+                pv.page = 0;
+            }
+            Hit::Star(i) => {
+                if let Some(p) = pv.picks(&self.state).get(i) {
+                    let on = !self.state.shelf.is_favourite(p.id);
+                    self.state.shelf.set_favourite(p.id, on);
+                    self.push(ChainAction::Favourite { id: p.id, on });
+                }
+            }
+            Hit::Chip(i) => {
+                if let Some(p) = pv.picks(&self.state).get(i) {
+                    self.open_or_add(p.id);
+                }
+            }
+            Hit::Tile(i) => match pv.presets {
+                Some(id) => self.add_preset(id, i),
+                None => pv.press = Some((finger, i, std::time::Instant::now())),
+            },
+        }
+    }
+
+    /// A finger lifted: a tile pressed and let go on adds its effect, or
+    /// opens its presets if it was held.
+    fn lift_picker(&mut self, pl: &PickerLayout, finger: u64, x: i32, y: i32) {
+        let Some((f, i, since)) = self.picker.press.take() else {
+            return;
+        };
+        if f != finger || crate::picker::hit(pl, x, y) != Some(Hit::Tile(i)) {
+            return;
+        }
+        let Some(p) = self.picker.picks(&self.state).get(i).copied() else {
+            return;
+        };
+        if since.elapsed() >= HOLD {
+            self.open_or_add(p.id);
+        } else {
+            self.state.picking = false;
+            self.push(ChainAction::Add(p.id));
+        }
+    }
+
+    /// Tests: the finger on a tile has been there `secs` longer.
+    #[cfg(test)]
+    pub(crate) fn age_press(&mut self, secs: f32) {
+        if let Some((_, _, since)) = &mut self.picker.press {
+            *since -= std::time::Duration::from_secs_f32(secs);
+        }
     }
 
     pub fn take_actions(&mut self) -> Vec<ChainAction> {
@@ -364,7 +543,7 @@ impl ChainView {
         self.actions.push(a);
     }
 
-    fn tap(&mut self, l: &Layout, x: i32, y: i32) {
+    fn tap(&mut self, l: &Layout, finger: u64, x: i32, y: i32) {
         if l.back.is_some_and(|b| b.contains(x, y)) {
             self.push(ChainAction::Back);
             return;
@@ -379,14 +558,14 @@ impl ChainView {
                 self.push(ChainAction::Picker(false));
                 return;
             }
-            if let Some(i) = l.picks.iter().position(|r| r.contains(x, y)) {
-                if let Some(p) = self.state.picks().get(i) {
-                    self.state.picking = false;
-                    self.push(ChainAction::Add(p.id));
+            if let Some(pl) = &l.picker {
+                if picker_area(l.effect, l.side).contains(x, y) {
+                    let pl = pl.clone();
+                    self.tap_picker(&pl, finger, x, y);
+                    return;
                 }
-                return;
             }
-            if l.effect.contains(x, y) {
+            if l.effect.contains(x, y) || l.side.contains(x, y) {
                 return;
             }
         }
@@ -405,6 +584,7 @@ impl ChainView {
         }
         if l.add.is_some_and(|r| r.contains(x, y)) {
             self.state.picking = true;
+            self.open_picker();
             self.push(ChainAction::Picker(true));
             return;
         }
@@ -716,11 +896,8 @@ impl Widget for ChainView {
         }
         // ---- Effect column.
         cx.canvas.fill_round_rect(l.effect, t.radius, t.surface);
-        let einner = l.effect.inset(14);
-        let (head, _) = einner.take_top(52);
         if st.picking {
-            paint_picker(cx, &l, st, head);
-            paint_side(cx, &l, st);
+            paint_picker(cx, &l, st, &self.picker);
             return;
         }
         match st.selected.and_then(|s| st.slots.get(s)) {
@@ -876,7 +1053,7 @@ impl ChainView {
                     self.push(ChainAction::Depth { row, depth });
                     return None;
                 }
-                self.tap(&l, x, y);
+                self.tap(&l, finger, x, y);
                 None
             }
             Touch::Move => {
@@ -908,6 +1085,12 @@ impl ChainView {
                 None
             }
             Touch::Up | Touch::Cancel => {
+                if let (Touch::Up, Some(pl)) = (phase, &l.picker) {
+                    let pl = pl.clone();
+                    self.lift_picker(&pl, finger, x, y);
+                } else if self.picker.press.is_some_and(|(f, ..)| f == finger) {
+                    self.picker.press = None;
+                }
                 if self.drag.as_ref().is_some_and(|(f, _)| *f == finger) {
                     if let Some((_, Drag::Knob { i, .. })) = self.drag.take() {
                         if let Some(p) = self.state.params.get(i) {
@@ -1078,16 +1261,36 @@ fn paint_side(cx: &mut PaintCx, l: &Layout, st: &ChainState) {
     }
 }
 
-/// The effect picker, over the effect column.
-fn paint_picker(cx: &mut PaintCx, l: &Layout, st: &ChainState, head: Rect) {
+/// The effect picker, over the effect and Modulate columns.
+fn paint_picker(cx: &mut PaintCx, l: &Layout, st: &ChainState, pv: &PickerView) {
     let t = cx.theme.clone();
+    let area = picker_area(l.effect, l.side);
+    cx.canvas.fill_rect(
+        Rect::new(
+            l.effect.right(),
+            area.y,
+            l.side.x - l.effect.right(),
+            area.h,
+        ),
+        t.bg,
+    );
+    cx.canvas.fill_round_rect(area, t.radius, t.surface);
+    let (head, _) = area.inset(14).take_top(52);
+    let title = match (pv.presets, pv.highlight) {
+        (Some(_), _) => "PICK A PRESET · OR DEFAULTS".to_string(),
+        _ => format!(
+            "ADD EFFECT · {} OF {} SLOTS USED · HOLD A TILE FOR ITS PRESETS",
+            st.slots.len(),
+            st.room
+        ),
+    };
     cx.text(
         FontId::Bold,
         t.size_small,
         head.take_top(42).0,
         Align::Left,
         t.text_dim,
-        &format!("ADD EFFECT · {} OF {} SLOTS USED", st.slots.len(), st.room),
+        &title,
     );
     if let Some(c) = l.cancel {
         cx.canvas.fill_round_rect(c, 9, t.raised);
@@ -1100,31 +1303,16 @@ fn paint_picker(cx: &mut PaintCx, l: &Layout, st: &ChainState, head: Rect) {
             "Cancel",
         );
     }
-    if l.picks.is_empty() {
-        cx.text(
-            FontId::Sans,
-            t.size_body,
-            l.effect,
-            Align::Center,
-            t.text_dim,
-            "This chain is full: remove an effect first",
-        );
-        return;
-    }
-    for (p, r) in st.picks().iter().zip(&l.picks) {
-        cx.canvas.fill_round_rect(*r, 10, t.raised);
-        let inner = r.inset_xy(12, 10);
-        let (name, about) = inner.take_top(26);
-        cx.text(FontId::Bold, t.size_body, name, Align::Left, t.text, p.name);
-        let size = t.size_small - 1.0;
-        for (k, line) in wrap(cx, size, p.about, about.w).iter().take(2).enumerate() {
+    match &l.picker {
+        Some(pl) => crate::picker::paint(cx, pl, st, pv),
+        None => {
             cx.text(
                 FontId::Sans,
-                size,
-                Rect::new(about.x, about.y + 4 + k as i32 * 19, about.w, 19),
-                Align::Left,
+                t.size_body,
+                area,
+                Align::Center,
                 t.text_dim,
-                line,
+                "This chain is full: remove an effect first",
             );
         }
     }
@@ -1132,7 +1320,7 @@ fn paint_picker(cx: &mut PaintCx, l: &Layout, st: &ChainState, head: Rect) {
 
 /// `text` in lines no wider than `w` (a word wider than `w` gets a line of
 /// its own).
-fn wrap(cx: &mut PaintCx, size: f32, text: &str, w: i32) -> Vec<String> {
+pub(crate) fn wrap(cx: &mut PaintCx, size: f32, text: &str, w: i32) -> Vec<String> {
     let mut lines: Vec<String> = Vec::new();
     for word in text.split(' ') {
         match lines.last_mut() {
