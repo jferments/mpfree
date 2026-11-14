@@ -128,6 +128,8 @@ fn plan(folder: &Path, mode: Mode, song: Song) -> Plan {
             Stream::mixdown(),
             Stream::stem("Drums", StripId::Track(0)),
             Stream::stem("Synth", StripId::Track(1)),
+            // A return nothing is sent to: silent, so left out.
+            Stream::stem("Delay", StripId::Return(0)),
         ],
         midi: Some(MidiPlan {
             tracks: vec!["Drums".into(), "Synth".into()],
@@ -170,6 +172,9 @@ fn run(folder: &Path, mode: Mode, song: Song, sizes: &[usize], cancel_at: Option
     assert_eq!(pass.mode(), mode);
     assert!(pass.attach(&mut m));
     let most = m.capture_latency(3).unwrap();
+    for s in 1..4 {
+        assert!(m.capture_latency(3 + s).unwrap() <= most);
+    }
     let mut out = Vec::new();
     let mut at = 0usize;
     let mut ended_at = None;
@@ -286,6 +291,11 @@ fn the_mixdown_is_the_output_and_ends_where_the_sound_does() {
         .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
         .collect();
     assert_eq!(names, ["Mixdown.wav", "Drums.wav", "Synth.wav"]);
+    assert_eq!(d.silent, ["Delay"]);
+    assert!(
+        !folder.join("Delay.wav").exists(),
+        "a silent stem is left out"
+    );
     // The files reach past the range, into the tail, and stop where it
     // has died away (below -90 dBFS), not 2 s of silence later.
     let frames = d.frames as usize;
@@ -320,7 +330,10 @@ fn the_mixdown_is_the_output_and_ends_where_the_sound_does() {
         .outcome
         .words()
         .starts_with("Exported 0:00 to mpfree-export-test-mixdown"));
-    assert!(r.outcome.words().ends_with(": 3 WAV files and a MIDI file"));
+    assert!(r
+        .outcome
+        .words()
+        .ends_with(": 3 WAV files and a MIDI file (Delay was silent, so left out)"));
     std::fs::remove_dir_all(&folder).unwrap();
 }
 
@@ -450,6 +463,74 @@ fn a_mixer_without_the_strips_fails_at_once() {
     assert_eq!(pass.period(&m, 64, false), Step::Failed(Failure::Capture));
     let o = job.finish(pass);
     assert!(matches!(o, Outcome::Failed(_)), "{o:?}");
+    assert!(!folder.exists());
+}
+
+/// A two-track mixer that has played a block, as the app's always has.
+fn played_mixer() -> Mixer {
+    let mut m = Mixer::new(
+        MixerConfig {
+            inputs: 0,
+            pads: 0,
+            tracks: 2,
+            slots: 2,
+            max_latency_ms: 50.0,
+        },
+        RATE,
+        64,
+    );
+    let mut z = (vec![0.0f32; 64], vec![0.0f32; 64]);
+    m.process(&Ctx::new(RATE, 0), &mut z.0, &mut z.1);
+    m
+}
+
+#[test]
+fn look_ahead_put_in_during_the_pass_fails_it() {
+    let folder = scratch("latency");
+    let mut m = played_mixer();
+    let song = Song {
+        range: 48_000,
+        sound: 48_000,
+        tail: 0,
+        endless: false,
+    };
+    let (mut pass, job) = start(plan(&folder, Mode::Listen, song)).unwrap();
+    assert!(pass.attach(&mut m));
+    let mut z = (vec![0.0f32; 64], vec![0.0f32; 64]);
+    m.process(&Ctx::new(RATE, 0), &mut z.0, &mut z.1);
+    assert_eq!(pass.period(&m, 64, false), Step::Go);
+    m.chain_mut(StripId::Track(1)).unwrap().push(Box::new(Lag {
+        n: 300,
+        buf: [vec![0.0; 301], vec![0.0; 301]],
+        w: 0,
+    }));
+    m.process(&Ctx::new(RATE, 64), &mut z.0, &mut z.1);
+    assert_eq!(pass.period(&m, 64, false), Step::Failed(Failure::Latency));
+    pass.detach(&mut m);
+    let o = job.finish(pass);
+    assert!(o.words().contains("would no longer line up"), "{o:?}");
+    assert!(!folder.exists());
+}
+
+#[test]
+fn stop_on_the_sound_thread_cancels() {
+    let folder = scratch("stop");
+    let mut m = played_mixer();
+    let song = Song {
+        range: 48_000,
+        sound: 48_000,
+        tail: 0,
+        endless: false,
+    };
+    let (mut pass, job) = start(plan(&folder, Mode::Listen, song)).unwrap();
+    assert!(pass.attach(&mut m));
+    let mut z = (vec![0.0f32; 64], vec![0.0f32; 64]);
+    m.process(&Ctx::new(RATE, 0), &mut z.0, &mut z.1);
+    assert_eq!(pass.period(&m, 64, false), Step::Go);
+    pass.cancel();
+    assert_eq!(pass.period(&m, 64, false), Step::Cancelled);
+    pass.detach(&mut m);
+    assert_eq!(job.finish(pass), Outcome::Cancelled);
     assert!(!folder.exists());
 }
 

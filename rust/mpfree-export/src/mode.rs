@@ -71,6 +71,8 @@ pub struct Rig {
     pub cv: bool,
     /// MIDI clock or start and stop sent out, to gear that follows it.
     pub clock_out: bool,
+    /// The tempo follows MIDI clock coming in on this port (its name).
+    pub clock_in: Option<String>,
     /// A part of the sound made on another computer (offload).
     pub offload: bool,
     /// Plugins in the song, by name.
@@ -87,6 +89,8 @@ pub enum Why {
     LineInput,
     Cv,
     ClockOut,
+    /// The port the tempo's clock comes in on.
+    ClockIn(String),
     Offload,
     /// The first plugin's name.
     Plugins(String),
@@ -114,6 +118,11 @@ impl Why {
             Why::ClockOut => {
                 "Listening: MIDI clock goes out to gear that follows it in real time".into()
             }
+            Why::ClockIn(p) => {
+                format!(
+                    "Listening: the tempo follows MIDI clock from {p}, which comes in real time"
+                )
+            }
             Why::Offload => {
                 "Listening: part of the sound is made on another computer, in real time".into()
             }
@@ -138,6 +147,8 @@ pub fn choose(pref: Mode, rig: &Rig) -> (Mode, Why) {
         Why::Cv
     } else if rig.clock_out {
         Why::ClockOut
+    } else if let Some(p) = &rig.clock_in {
+        Why::ClockIn(p.clone())
     } else if rig.offload {
         Why::Offload
     } else if let Some(p) = rig.plugins.first() {
@@ -173,6 +184,10 @@ mod tests {
             },
             Rig {
                 clock_out: true,
+                ..Rig::default()
+            },
+            Rig {
+                clock_in: Some("MIDI In".into()),
                 ..Rig::default()
             },
             Rig {

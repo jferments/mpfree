@@ -52,6 +52,10 @@ pub enum Failure {
     /// The mixer refused a capture point (too few free, or a strip it
     /// doesn't have), or the pass wasn't attached.
     Capture,
+    /// A capture point's latency changed during the pass (an effect with
+    /// look-ahead was put in or taken out): the files would no longer
+    /// line up.
+    Latency,
 }
 
 /// What [`Pass::period`] says.
@@ -163,7 +167,11 @@ impl Pass {
             return self.end(Step::Cancelled);
         }
         for i in 0..self.points.len() {
-            if let Some((l, r)) = mixer.capture(self.first_slot + i) {
+            let slot = self.first_slot + i;
+            if mixer.capture_latency(slot).unwrap_or(0) != self.lat[i] {
+                return self.end(Step::Failed(Failure::Latency));
+            }
+            if let Some((l, r)) = mixer.capture(slot) {
                 self.bin.push(i, l, r);
             }
         }
@@ -195,6 +203,12 @@ impl Pass {
         self.bin.finish();
         self.over = Some(s);
         s
+    }
+
+    /// Stops the pass from the sound thread (STOP pressed while it plays,
+    /// say): its next period says Cancelled, and the files are removed.
+    pub fn cancel(&self) {
+        self.shared.cancel.store(true, Ordering::Relaxed);
     }
 
     /// Frames every file's ring has room for now. A fast pass waits for a

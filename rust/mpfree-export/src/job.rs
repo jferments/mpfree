@@ -11,7 +11,7 @@ use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::Duration;
 
-use mpfree_fx::{bounce, wav_header, BounceOut, Pumped};
+use mpfree_fx::{bounce, wav_header, BounceOut, Pumped, StripId};
 use mpfree_midi::smf::NoteLog;
 
 use crate::mode::Mode;
@@ -24,7 +24,9 @@ pub const RING_S: f64 = 2.0;
 /// How often the writer thread empties the rings.
 pub const PUMP_EVERY: Duration = Duration::from_millis(20);
 
-type Written = Result<(u64, u64), String>;
+/// The writer's frames, where the sound ends, and whether each file
+/// sounded; or why it stopped.
+type Written = Result<(u64, u64, Vec<bool>), String>;
 
 /// The screen's half (see the module docs).
 pub struct Job {
@@ -34,6 +36,9 @@ pub struct Job {
     /// Whether [`start`] made the folder (so a cancel takes it away).
     made: bool,
     wavs: Vec<PathBuf>,
+    /// Which files are stems (left out if they never sounded); the
+    /// mixdown always stays.
+    stems: Vec<bool>,
     song: String,
     midi: Option<MidiPlan>,
     rate: u32,
@@ -79,6 +84,8 @@ pub fn clock(frames: u64, rate: u32) -> String {
 pub struct Done {
     pub folder: PathBuf,
     pub wavs: Vec<PathBuf>,
+    /// Stems left out because their track never sounded (their names).
+    pub silent: Vec<String>,
     /// None when no notes played (or no MIDI file was asked for).
     pub midi: Option<PathBuf>,
     /// Each WAV file's frames.
@@ -120,6 +127,11 @@ impl Outcome {
                     (true, false) => "nothing: no notes played".into(),
                 };
                 let mut line = format!("Exported {} to {name}: {what}", clock(d.frames, d.rate));
+                match d.silent.len() {
+                    0 => {}
+                    1 => line += &format!(" ({} was silent, so left out)", d.silent[0]),
+                    n => line += &format!(" ({n} silent tracks left out)"),
+                }
                 if d.notes_dropped > 0 {
                     line += &format!(
                         " ({} notes past the MIDI file's room were left out)",
@@ -189,6 +201,11 @@ pub fn start(plan: Plan) -> io::Result<(Pass, Job)> {
         }
     };
     let notes = plan.midi.as_ref().map(|m| NoteLog::with_capacity(m.room));
+    let stems = plan
+        .streams
+        .iter()
+        .map(|s| s.strip != StripId::Master)
+        .collect();
     let points = plan.streams.iter().map(|s| (s.strip, s.point)).collect();
     let pass = Pass::new(
         bin,
@@ -205,6 +222,7 @@ pub fn start(plan: Plan) -> io::Result<(Pass, Job)> {
         folder: plan.folder,
         made,
         wavs,
+        stems,
         song: plan.song,
         midi: plan.midi,
         rate: plan.rate,
@@ -235,7 +253,7 @@ fn write(mut bout: BounceOut, mut files: Vec<BufWriter<File>>, shared: &Shared) 
                         .sync_all()
                         .map_err(|e| format!("writing the files: {e}"))?;
                 }
-                return Ok((n, bout.loud()));
+                return Ok((n, bout.loud(), bout.heard().to_vec()));
             }
             Ok(Pumped::Overrun(k)) => {
                 return Err(format!(
@@ -315,12 +333,28 @@ impl Job {
             Some(Err(_)) => Err("the writer thread stopped".into()),
             None => Err("no writer thread".into()),
         };
-        let failed = |why: String| {
-            remove(&self.folder, self.made, &self.wavs, None);
+        let (folder, made) = (self.folder.clone(), self.made);
+        let failed = |wavs: &[PathBuf], why: String| {
+            remove(&folder, made, wavs, None);
             Outcome::Failed(why)
         };
         match (over, written) {
-            (Step::Done, Ok((frames, loud))) => {
+            (Step::Done, Ok((frames, loud, heard))) => {
+                // A stem whose track never sounded is left out.
+                let mut wavs = Vec::with_capacity(self.wavs.len());
+                let mut silent = Vec::new();
+                for (i, p) in self.wavs.iter().enumerate() {
+                    if self.stems[i] && !heard.get(i).copied().unwrap_or(true) {
+                        let _ = fs::remove_file(p);
+                        silent.push(
+                            p.file_stem()
+                                .map(|n| n.to_string_lossy().into_owned())
+                                .unwrap_or_default(),
+                        );
+                    } else {
+                        wavs.push(p.clone());
+                    }
+                }
                 let ended = self.shared.ended_at.load(Ordering::Relaxed);
                 let keep = if ended == NOT_ENDED {
                     frames
@@ -328,8 +362,8 @@ impl Job {
                     ended.max(loud).min(frames)
                 };
                 if keep < frames {
-                    if let Err(e) = trim(&self.wavs, self.rate, keep) {
-                        return failed(format!("ending the files: {e}"));
+                    if let Err(e) = trim(&wavs, self.rate, keep) {
+                        return failed(&wavs, format!("ending the files: {e}"));
                     }
                 }
                 let mut midi = None;
@@ -344,7 +378,7 @@ impl Job {
                             f.sync_all()
                         });
                         if let Err(e) = wrote {
-                            remove(&self.folder, self.made, &self.wavs, Some(&p));
+                            remove(&self.folder, self.made, &wavs, Some(&p));
                             return Outcome::Failed(format!("writing the MIDI file: {e}"));
                         }
                         midi = Some(p);
@@ -352,26 +386,35 @@ impl Job {
                 }
                 Outcome::Done(Done {
                     folder: self.folder.clone(),
-                    wavs: self.wavs.clone(),
+                    wavs,
+                    silent,
                     midi,
                     frames: keep,
                     rate: self.rate,
                     notes_dropped,
                 })
             }
-            (Step::Done, Err(why)) => failed(why),
+            (Step::Done, Err(why)) => failed(&self.wavs, why),
             // A pass is never over on Go; taken as a cancel all the same.
             (Step::Cancelled | Step::Go, _) => {
                 remove(&self.folder, self.made, &self.wavs, None);
                 Outcome::Cancelled
             }
-            (Step::Failed(Failure::Overrun(_)), Err(why)) => failed(why),
-            (Step::Failed(Failure::Overrun(k)), Ok(_)) => failed(format!(
-                "the stick couldn't keep up, and {k} blocks of sound were lost"
-            )),
-            (Step::Failed(Failure::Capture), _) => {
-                failed("the mixer had no free capture point for every file".into())
-            }
+            (Step::Failed(Failure::Overrun(_)), Err(why)) => failed(&self.wavs, why),
+            (Step::Failed(Failure::Overrun(k)), Ok(_)) => failed(
+                &self.wavs,
+                format!("the stick couldn't keep up, and {k} blocks of sound were lost"),
+            ),
+            (Step::Failed(Failure::Capture), _) => failed(
+                &self.wavs,
+                "the mixer had no free capture point for every file".into(),
+            ),
+            (Step::Failed(Failure::Latency), _) => failed(
+                &self.wavs,
+                "an effect that delays the sound (look-ahead) was put in or taken out, \
+                 so the files would no longer line up"
+                    .into(),
+            ),
         }
     }
 }
