@@ -643,3 +643,42 @@ fn a_crash_restarts_from_the_snapshot_and_the_node_reads_it() {
     drop(n);
     assert!(sb.orphaned(), "only the handle is left");
 }
+
+/// A project keeps a plugin through the node's own hooks: its state (the
+/// last snapshot, never a round trip), and its file so a missing one can
+/// be named. Opening hands the state to a new process, which keeps it as
+/// its snapshot; a state the plugin refuses changes nothing.
+#[test]
+fn a_project_saves_and_opens_the_node_with_its_state_and_file() {
+    let here = local(SYNTH_ID, 256);
+    let decay = here.param_index(synth_params::DECAY).unwrap();
+    let (mut n, sb) = sandboxed(SYNTH_ID, 256);
+    assert_eq!(Node::save_state(&n), None, "nothing read yet");
+    let file = plugin_file();
+    let name = file.file_name().unwrap().to_string_lossy().into_owned();
+    assert_eq!(n.save_extras(), [("file".to_string(), name)]);
+    n.set_param(decay, 777.0);
+    let _ = block(&mut n, 0);
+    assert!(sb.refresh_state());
+    let state = Node::save_state(&n).expect("the snapshot");
+
+    // As a project opens: the state goes in before the node is prepared.
+    let (mut m, _sb2) = spawn(&exe(), &plugin_file(), SYNTH_ID).expect("spawn");
+    m.set_deadline(PATIENT);
+    assert_eq!(m.param(decay), 300.0);
+    Node::load_state(&mut m, &state).expect("taken");
+    m.prepare(RATE, 256);
+    assert_eq!(
+        Node::save_state(&m).as_ref(),
+        Some(&state),
+        "kept as its snapshot"
+    );
+    let _ = block(&mut m, 0);
+    assert_eq!(m.param(decay), 777.0);
+    assert!(Node::load_state(&mut m, b"not a state").is_err());
+    assert_eq!(
+        Node::save_state(&m),
+        Some(state),
+        "a refused state changes nothing"
+    );
+}

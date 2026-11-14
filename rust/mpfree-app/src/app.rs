@@ -4484,10 +4484,12 @@ mod tests {
                 _ => None,
             })
         };
+        let _ = app.take_project_edit();
         for want in Engine::ALL {
             let fx = app.step_item(row(SynthItem::Engine), 1);
             assert_eq!(sound(&fx), Some((0, Some(want.node_id()))));
             assert_eq!(pads(&fx), None, "the shared synth is left alone");
+            assert!(app.take_project_edit(), "the project keeps it");
         }
         assert_eq!(
             sound(&app.step_item(row(SynthItem::Engine), 1)),
