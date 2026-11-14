@@ -19,6 +19,7 @@ use crate::state::{FxState, Scratch};
 use mpfree_fx::ids::{
     character, chorus, cloud, comb, compressor as comp, crush, delay, drive, ducker, eq, filter,
     flanger, harmonizer as harm, lofi, master, phaser, pitch, pitch_correct as tune, transient,
+    tuner,
 };
 use mpfree_fx::{
     interval_semis, nearest_note, Cloud, Ducker, TransientShaper, DUCKER_RATE_BEATS, VOCAL_KEYS,
@@ -68,6 +69,7 @@ pub fn has_visuals(id: &str) -> bool {
             | "mpfree.fx.pitch"
             | "mpfree.fx.pitch_correct"
             | "mpfree.fx.harmonizer"
+            | "mpfree.fx.tuner"
     )
 }
 
@@ -540,6 +542,7 @@ pub fn strip(
             "mpfree.fx.pitch" => pitch_card(&mut s, st, page, t),
             "mpfree.fx.pitch_correct" => tune_card(&mut s, st, page, t),
             "mpfree.fx.harmonizer" => harmony_card(&mut s, st, page, t),
+            "mpfree.fx.tuner" => tuner_card(&mut s, st, page, t),
             _ => {}
         },
     }
@@ -1479,6 +1482,58 @@ fn harmony_card(s: &mut Strip, st: &FxState, page: &str, t: &Theme) {
             traces,
             grid: scale_grid(key, scale),
             dot: sung_x(st, harm::NOTE, key),
+            active: true,
+            ..Card::default()
+        },
+        page,
+    );
+}
+
+/// The Tuner: a needle across -50 to +50 cents, green within 3 cents of
+/// the note, amber within 15 and red past that, over the in-tune middle
+/// (dashed); no needle while nothing is heard.
+fn tuner_card(s: &mut Strip, st: &FxState, page: &str, t: &Theme) {
+    let v = |id: u16| st.value(id);
+    let x = |cents: f32| (0.5 + cents / 100.0).clamp(0.0, 1.0);
+    let mut traces = vec![dashed(vec![(0.5, 0.0), (0.5, 1.0)], t.text_faint)];
+    let reference = format!("A = {}", trim_num(v(tuner::REFERENCE)));
+    let caption = if v(tuner::NOTE) >= 1.0 {
+        let cents = v(tuner::CENTS);
+        let color = match cents.abs() {
+            c if c < 3.0 => t.good,
+            c if c < 15.0 => t.warn,
+            _ => t.bad,
+        };
+        traces.push(Trace {
+            width: 5.0,
+            ..line(vec![(x(cents), 0.12), (x(cents), 0.88)], color)
+        });
+        format!(
+            "{} · {:+.1} c · {:.2} Hz · {reference}",
+            text(st, tuner::NOTE),
+            cents,
+            v(tuner::HZ)
+        )
+    } else {
+        format!("Play a note · {reference}")
+    };
+    let grid = [-40.0, -20.0, 0.0, 20.0, 40.0]
+        .iter()
+        .map(|&c| {
+            let label = if c == 0.0 {
+                "0".to_string()
+            } else {
+                format!("{c:+.0}")
+            };
+            (x(c), label)
+        })
+        .collect();
+    s.push(
+        Card {
+            title: "Tuner".into(),
+            caption,
+            traces,
+            grid,
             active: true,
             ..Card::default()
         },

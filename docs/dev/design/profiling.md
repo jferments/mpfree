@@ -480,6 +480,26 @@ view's width, cost about as much as the whole view; going lower needs a
 different picture (the meters upright at one side, the strip wiping
 across instead of scrolling), which is the owner's call.
 
+**Painting each pixel once** (14 Nov). A whole-page paint filled the
+screen with the background, then every widget filled its own rectangle
+with it again, and then most widgets covered it with an opaque panel: on
+the 73 sample pages, 3.1 times the screen's pixels written opaque per
+page. `Ui::paint` now fills only the gaps between the widgets
+(`Rect::uncovered`), and clears a widget's part only where its first call
+leaves it: nothing under an opaque fill that covers it, only the corners
+under an opaque rounded panel (`Cleared`, in ui.rs). That is 1.5 times the
+screen's pixels a page, and the same for each panel's part redrawn.
+Measured on the workstation by replaying the 73 pages' lists in software:
+plain opaque fills from 161 to 43 million pixels in all, and about 82 ms to 62 ms
+for the pages together (instructions down 10 %; the rest is memory traffic,
+which costs the MPC more). The picture is the same: every preview screen in
+all four themes is byte for byte as before, and two tests check it against
+painting the old way over a screen of noise, with random widgets and two
+themes whose background or backdrop lets through what is under it (there a
+background fill no longer hides it, so the whole screen is filled as
+before): `clearing_less_draws_the_same_picture` and
+`pages_paint_the_same_picture_as_before` (ui.rs).
+
 ## CI
 
 - `cargo run --release -p mpfree-bench -- --quick --check-allocs` is a gate

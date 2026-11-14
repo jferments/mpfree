@@ -20,6 +20,7 @@
 use crate::canvas::{Canvas, Image};
 use crate::color::Color;
 use crate::geom::Rect;
+use crate::shape::Shape;
 use crate::theme::{Backdrop, Corners, Theme};
 
 pub struct Styled<'a> {
@@ -258,6 +259,21 @@ impl Canvas for Styled<'_> {
     fn draw_image(&mut self, x: i32, y: i32, img: &Image) {
         self.inner.draw_image(x, y, img)
     }
+
+    fn blend_shape(&mut self, shape: &Shape, c: Color) {
+        let r = shape.r;
+        if r.is_empty() {
+            return;
+        }
+        if self.theme.text_glow > 0 {
+            // The glow is worked out from the pixels, so it goes the way
+            // masks go (as these shapes did when they were masks).
+            let cov = shape.coverage();
+            self.blend_mask(r.x, r.y, r.w as usize, r.h as usize, &cov, c);
+        } else {
+            self.inner.blend_shape(shape, c)
+        }
+    }
 }
 
 #[cfg(test)]
@@ -324,5 +340,28 @@ mod tests {
         Styled::new(&mut c, &t).stroke_round_rect(Rect::new(10, 10, 40, 40), 6, 1, t.accent);
         assert_ne!(c.pixel(30, 8), Color::rgb(0));
         assert_eq!(c.pixel(30, 4), Color::rgb(0));
+    }
+
+    #[test]
+    fn shapes_glow_as_masks_and_otherwise_stay_shapes() {
+        use crate::record::{Op, Recorder};
+        let mut shape = Shape::new(Rect::new(2, 2, 30, 20));
+        shape.polyline(&[(3.0, 18.0), (16.0, 4.0), (30.0, 18.0)], 2.0);
+        for theme in [Theme::dark(), Theme::console()] {
+            // Through a shape and through its coverage as a mask: the same
+            // pixels, glow included.
+            let mut a = SoftCanvas::new(40, 30);
+            shape.draw(&mut Styled::new(&mut a, &theme), theme.text);
+            let mut b = SoftCanvas::new(40, 30);
+            let cov = shape.coverage();
+            Styled::new(&mut b, &theme).blend_mask(2, 2, 30, 20, &cov, theme.text);
+            assert_eq!(a.px, b.px, "glow {}", theme.text_glow);
+            // A recorded list keeps the parts unless the glow needs pixels.
+            let mut rec = Recorder::new(40, 30);
+            rec.begin_frame();
+            shape.draw(&mut Styled::new(&mut rec, &theme), theme.text);
+            let kept = rec.ops().iter().any(|op| matches!(op, Op::Shape { .. }));
+            assert_eq!(kept, theme.text_glow == 0, "glow {}", theme.text_glow);
+        }
     }
 }
