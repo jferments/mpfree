@@ -1,7 +1,7 @@
 <!--
 status: changing
 covers: docs/user/src
-checked: 2026-11-11 414faa1
+checked: 2026-11-14 b76c3c7
 -->
 
 # Coming from an MPC
