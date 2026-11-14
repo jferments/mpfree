@@ -719,3 +719,87 @@ fn projects_offer_new_save_and_save_as_and_new_asks_over_unsaved_work() {
     b.input(Input::Button(Button::NewProject));
     assert!(b.take_actions().is_empty());
 }
+
+/// Autosave writes the unsaved work into its own project, quietly. At the
+/// next start, work newer than the last save is set aside as a project of
+/// its own, which opens as unsaved work and saves as a new project.
+#[test]
+fn autosaved_work_is_set_aside_at_the_next_start_and_opens_unsaved() {
+    let (mut b, lib) = browser();
+    let snap = |bpm: f64| Snapshot {
+        meta: Meta {
+            tempo: bpm,
+            ..Meta::default()
+        },
+        parts: vec![("transport".into(), format!("bpm = {bpm}\n"))],
+    };
+    let t = 1_794_431_040; // 2026-11-11 21:04 UTC
+    b.save(snap(90.0), t);
+    let mine = b.project().cloned().unwrap();
+    let autosave = Loc::new(Place::Projects, &["Autosave"]).unwrap();
+    b.take_actions();
+    b.set_unsaved(true);
+    let status = b.screen().status;
+    b.autosave_with(snap(95.0), Vec::new(), t + 120);
+    assert_eq!(
+        b.take_actions(),
+        [BrowseAction::Autosaved {
+            loc: autosave.clone()
+        }]
+    );
+    assert_eq!(b.project(), Some(&mine), "the project stays");
+    assert!(b.unsaved(), "still unsaved");
+    assert_eq!(b.screen().status, status, "quietly");
+    let back = lib.open_project(&autosave).unwrap();
+    assert!(back.meta.is_autosave());
+    assert_eq!(back.meta.name, format!("Autosave of {}", mine.name()));
+    assert_eq!(back.part("transport"), Some("bpm = 95\n"));
+    // Saved since: the next start leaves autosave's project in place.
+    b.save(snap(96.0), t + 180);
+    let next_start = |b: &Browser| {
+        let mut n = Browser::inline(lib.clone());
+        n.load_lists(&b.lists_text());
+        n
+    };
+    assert_eq!(next_start(&b).keep_newer_autosave(), None);
+    // Unsaved work autosaved after the last save (then a crash or the
+    // power switch): set aside, named for when it was written, once.
+    b.set_unsaved(true);
+    b.autosave_with(snap(97.0), Vec::new(), t + 240);
+    let mut n = next_start(&b);
+    let kept = Loc::new(Place::Projects, &["Unsaved 2026-11-11 21.08"]).unwrap();
+    assert_eq!(n.keep_newer_autosave(), Some(Ok(kept.clone())));
+    assert_eq!(n.keep_newer_autosave(), None);
+    assert!(lib.open_project(&autosave).is_err(), "autosave starts anew");
+    // It opens as unsaved work, and SHIFT + BROWSE keeps it as a new
+    // project, never over the one set aside.
+    n.go_source(src("Projects"));
+    select(&mut n, kept.name());
+    n.push();
+    assert!(n
+        .take_actions()
+        .iter()
+        .any(|a| matches!(a, BrowseAction::ProjectOpened { snap, .. } if snap.part("transport") == Some("bpm = 97\n"))));
+    assert_eq!(n.project(), None);
+    assert!(n.unsaved());
+    let said = n.screen().status.unwrap().0;
+    assert!(
+        said.contains("autosaved") && said.contains("SHIFT + BROWSE"),
+        "{said}"
+    );
+    n.open_landed();
+    assert!(n.unsaved(), "still unsaved once the engines hold it");
+    n.save(snap(97.0), t + 360);
+    assert_eq!(
+        n.project().map(|l| l.name().to_string()).as_deref(),
+        Some("Project 2026-11-11 21.10")
+    );
+    assert!(!n.unsaved());
+    assert!(lib.open_project(&kept).unwrap().meta.is_autosave());
+    // Another project opened lands with nothing unsaved.
+    select(&mut n, "Night drive");
+    n.push();
+    n.take_actions();
+    n.open_landed();
+    assert!(!n.unsaved());
+}

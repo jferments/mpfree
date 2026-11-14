@@ -39,7 +39,7 @@ From top to bottom, each strip has:
 - **M** (mute) and **S** (solo). Solo keeps the strip and everything it feeds or is fed by, so soloing the snare's pad still lets you hear it through the Drums track.
 - **The output**: where the strip goes. A pad goes to its track; a track to the master or a submix; a submix to the master or a higher-numbered submix.
 
-Drag a fader, pan or send with your finger, and tap M, S or the output to change them.
+Drag a fader, pan or send with your finger, and tap M, S or the output to change them. With the mixer open, **UNDO** takes back the last change to a strip (one drag of a fader is one UNDO) and **SHIFT + UNDO** puts it back.
 
 ## The I/O view
 
@@ -141,7 +141,7 @@ Every one of these is written in MPFree's report, so nothing goes wrong without 
 
 ## The chain editor
 
-Tap an effect in a strip's insert row to open the **chain editor** on it, in the mixer's place. Tap the strip's **+ Insert** to add an effect, with the list of effects already open (see [Adding an effect](#adding-an-effect)); a new effect goes at the end of the chain. In the chain editor, **+ Add effect** opens the list again and **Cancel** closes it; you can also reorder (**Up**, **Down**), bypass (the power button on each row) and **Remove** effects, and turn the selected effect's knobs. If the chain is full or the mixer is busy, the line at the bottom of the screen says so for a few seconds.
+Tap an effect in a strip's insert row to open the **chain editor** on it, in the mixer's place. Tap the strip's **+ FX** button to add an effect, with the list of effects already open (see [Adding an effect](#adding-an-effect)); a new effect goes at the end of the chain. **+ FX** fills all of the strip's empty insert rows, so on a strip with no effects it is a big button under the strip's name. In the chain editor, **+ Add effect** opens the list again and **Cancel** closes it; you can also reorder (**Up**, **Down**), bypass (the power button on each row) and **Remove** effects, and turn the selected effect's knobs. If the chain is full or the mixer is busy, the line at the bottom of the screen says so for a few seconds.
 
 The Q-Links turn the selected effect's first four knobs, and the data wheel works as Q-Link 1. **‹ Mixer** goes back to the mixer as you left it.
 
@@ -155,7 +155,7 @@ To give a knob a control of its own, touch it and tap **Learn to a Q-Link**, the
 
 ## Adding an effect
 
-**+ Insert** on a strip, or **+ Add effect** in the chain editor, opens the list of effects over the chain editor.
+**+ FX** on a strip, or **+ Add effect** in the chain editor, opens the list of effects over the chain editor.
 
 - Down the left are **Favourites**, **Recent** (the last 12 effects you added), then the groups (Dynamics, EQ and filter, Drive and colour, Modulation, Delay and reverb, Pitch and vocal, Performance, Plugins, and Utility), each with how many effects it has. Tap one to see its effects on the right. The list opens where you left it.
 - **Tap an effect** to add it with its usual settings.

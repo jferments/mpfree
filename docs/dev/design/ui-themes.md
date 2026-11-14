@@ -56,7 +56,7 @@ corners       = chamfer
 - Colours are `#RRGGBB` or `#RRGGBBAA` (a translucent `surface` lets the backdrop show through panels).
 - `#` starts a comment when it begins the line or is followed by a space.
 - Mistakes are errors that name the line: `theme line 3: accent: expected #RRGGBB, got "blue"`.
-- `Theme::check()` warns when text is hard to read (WCAG contrast under 4.5:1 for text, 3:1 for dim text and accents). The built-in themes pass; a test keeps it that way.
+- `Theme::check()` warns when text is hard to read (WCAG contrast under 4.5:1 for text, 3:1 for dim text and accents), and when a button label's inks are under 4.5:1 on `raised`: both `text` and `text_dim`, because a label on a `raised` fill uses `Theme::button_ink(usable)` (text, or text_dim when the button can't be used) and never `text_faint` (Jay after live test 3: "light gray on a medium gray button is no bueno"). The built-in themes pass; a test keeps it that way.
 - Every built-in theme is written out in full in [`rust/mpfree-ui/themes/`](../../../rust/mpfree-ui/themes) as a starting point, and `cargo run -p mpfree-ui --example theme_file -- NAME` prints one. A test keeps those files in step with the code.
 
 The pad player's Prefs has one **Appearance** row whose value is the theme in use. Its arrows (or - / +, or SHIFT + wheel) step through Default, Console, Synthwave and Spaceship. Each step switches the screen at once (`Ui::set_theme`) and keeps it in the store's "app" settings as `theme`, so it comes back at the next start. `mpfree --theme NAME|FILE` still picks the theme for one run (for `--preview` and on the device) and wins over the saved one.

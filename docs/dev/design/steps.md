@@ -25,6 +25,7 @@ There is no fixed number of steps. A clip has as many steps as its length holds,
 - **`remove_page(clip)`** takes the last 16 steps off, with their notes. A clip keeps at least one page.
 - **`resize(clip, steps, copy)`** sets any number of steps, such as 13 against a 16-step track for polymeter.
 - **`copy_page(clip, from, to)`** copies one page over another, step for step.
+- **On the Play page's pattern** (`mpfree-app`, `play_widgets::StepGrid`), the head's ‹ and › turn the pages shown, and its + and – send `StepAction::Length { steps, copy }`: + doubles the steps up to 128 (`MAX_STEPS`) with `copy`, – halves them down to 16 (`MIN_STEPS`) without. `TimeControl` makes it `resize`, one take, so UNDO brings back the steps and notes – took off.
 
 A note that plays early on step 0 (just before the clip comes round) stays just before the end when the clip grows or shrinks.
 
@@ -64,6 +65,8 @@ The control thread applies an edit with `Takes::edit(project, track, slot, &edit
 Turning a Q-Link through many values must not leave dozens of undo steps. `join` names what is being turned, such as `Change::Velocity(v).key(sound, i)` (or `key_all(i)` for a whole chord). An edit with the same key on the same clip joins the latest edit, as long as nothing has been undone since. One UNDO then takes the whole turn back. A note put in and taken out again within a turn leaves no trace.
 
 Adding, taking off or copying a page is one edit, so one UNDO takes the page back, notes and length. A length change never joins a turn.
+
+`Grid::clear_row(clip, sound)` is ERASE + a lane's name on the Play page: one edit that takes out every note and lock of that sound, so one UNDO brings the lane back.
 
 ## Chance
 

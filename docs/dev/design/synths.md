@@ -28,15 +28,15 @@ A subtractive synth:
 
 - **Oscillators:** two per voice (saw and pulse band-limited with PolyBLEP, triangle, sine), octave, semitone and fine tune, pulse width; a square sub one octave down; white noise.
 - **Unison:** 1 to 4 stacks per voice, detuned symmetrically and spread across the stereo field. Each voice has a left and a right filter, so the spread stays stereo.
-- **Drive and filter:** a `tanh` drive (0 dB is fully clean) into a zero-delay-feedback ladder (LP 24) or a trapezoidal state-variable filter (LP 12, BP 12, HP 12). The drive keeps the voice's level (live test 2: "Drive seems to make synths quieter"; the old stage divided by the gain's square root and took up to 14 dB off a full voice at 24 dB). It drives the mix as if one full oscillator fed it (`dsp::mix_level` from the unison stacks, oscillator, sub and noise levels; `dsp::drive_scales`), clipping at that oscillator's peak (`DRIVE_REF`), and `dsp::DriveLevel` sums the power into and out of the drive and, once a control step, folds `sqrt(in / out)` (smoothed over about 40 ms, at most 18 dB either way) into the voice's ramped gain, so the correction costs two multiply-adds a frame and never clicks. Every Poly and Wavetable preset stays within 2 dB of its undriven level from 3 to 24 dB of drive (`turning_the_drive_up_keeps_every_preset_about_as_loud`); a drive of 0 is bit-identical to before. The drum voices keep the old stage (`drive_sq`): a hit reaches it well under full level, where it lifts the hit. Cutoff follows the filter envelope, key tracking, velocity, the LFO and pad pressure (see [Pad pressure](#pad-pressure-poly-aftertouch)).
+- **Drive, filter and distortion:** a `tanh` **Drive** into a zero-delay-feedback ladder (LP 24) or a trapezoidal state-variable filter (LP 12, BP 12, HP 12), then a **Distortion** after it, the same `tanh` stage with its own amount (0 dB of either is fully clean). Both are there since live test 3 ("Drive has almost no effect"; Jay, 13 Nov 17:58Z: "add both types of drive and distortion"): the drive before the filter is the classic analog filter overdrive, warmth the filter then shapes, but a low cutoff takes out what it adds, so on Grit Bass (260 Hz) the harmonics from the 5th up go only from about 2 % to 5 % of the power at 18 dB; the distortion after the filter keeps its grit whatever the cutoff (21 %; `grit_bass_distortion_is_heard_through_its_low_cutoff`). Grit Bass's grit is its distortion (18 dB, pressure +6 dB); the other presets keep the drive they were made with. Pressure can push either (Poly's targets Drive and Distortion). Each stage keeps the level the same way, with its own `DriveLevel`, and the two corrections multiply into the voice's gain. Each keeps the voice's level (live test 2: "Drive seems to make synths quieter"; the old stage divided by the gain's square root and took up to 14 dB off a full voice at 24 dB). It drives the mix as if one full oscillator fed it (`dsp::mix_level` from the unison stacks, oscillator, sub and noise levels; `dsp::drive_scales`), clipping at that oscillator's peak (`DRIVE_REF`), and `dsp::DriveLevel` sums the power into and out of the drive and, once a control step, folds `sqrt(in / out)` (smoothed over about 40 ms, at most 18 dB either way) into the voice's ramped gain, so the correction costs two multiply-adds a frame and never clicks. Every Poly and Wavetable preset stays within 2 dB of its undriven level from 3 to 24 dB of drive, and of distortion (`turning_the_drive_up_keeps_every_preset_about_as_loud`); a drive or distortion of 0 is bit-identical to none. The drum voices keep the old stage (`drive_sq`): a hit reaches it well under full level, where it lifts the hit. Cutoff follows the filter envelope, key tracking, velocity, the LFO and pad pressure (see [Pad pressure](#pad-pressure-poly-aftertouch)).
 - **Envelopes:** filter and amp ADSR with exponential segments; a retrigger starts from the current level, so it never clicks.
 - **LFO:** sine, triangle, saw, square or sample-and-hold, free (0.05 to 30 Hz) or synced to the transport (4 bars to 1/16 triplets, phase-locked to `Ctx::beats` while playing), to pitch, cutoff, pulse width and level.
 - **Voices:** poly (1 to 16), mono or legato, glide, bend range. A stolen voice fades out over 3 ms in one of 4 spare slots. Stealing takes the quietest releasing voice, then the oldest held one. Mono and legato keep a note stack.
 - **Presets:** Init, Grit Bass, Acid, Supersaw, Dust Pad, Pluck, Brass, Sub Bass and Lead.
 
-Timing: oscillators, drive, filters, the amp envelope and the steal fade run every frame. Smoothing, the LFO, the filter envelope, pressure, glide, pitch and the filter coefficients run once every 16 frames, on frames divisible by 16. Each voice's gain is ramped across a step, so a pressure swell has no zipper.
+Timing: oscillators, drive, filters, distortion, the amp envelope and the steal fade run every frame. Smoothing, the LFO, the filter envelope, pressure, glide, pitch and the filter coefficients run once every 16 frames, on frames divisible by 16. Each voice's gain is ramped across a step, so a pressure swell has no zipper.
 
-Cost (after round 7's device bench): each voice renders a control step in passes (gains, each unison stack, sub and noise, drive, filter, out), so the choice of wave, filter type and drive is made once per step, not once a frame. A centred voice (one stack, or no spread) works out one side and uses it for both, since its left and right are the same to the bit. Pitch, pan and filter coefficients are only worked out again when their inputs move. The output is the same to the bit as before; `cargo run --release -p mpfree-synth --example poly_cost` prints a hash per preset to check that after any change. Under qemu, the ARMv7 build runs 12 to 37 % fewer instructions per preset (Init 30 %, Supersaw 20 %, Dust Pad 12 %).
+Cost (after round 7's device bench): each voice renders a control step in passes (gains, each unison stack, sub and noise, drive, filter, distortion, out), so the choice of wave, filter type and drive is made once per step, not once a frame. A centred voice (one stack, or no spread) works out one side and uses it for both, since its left and right are the same to the bit. Pitch, pan and filter coefficients are only worked out again when their inputs move. The output is the same to the bit as before; `cargo run --release -p mpfree-synth --example poly_cost` prints a hash per preset to check that after any change. Under qemu, the ARMv7 build runs 12 to 37 % fewer instructions per preset (Init 30 %, Supersaw 20 %, Dust Pad 12 %).
 
 ## FM (`mpfree-synth`, `Fm`)
 
@@ -153,14 +153,14 @@ The MPC One's pads send pressure for each pad while it's held. Players who have 
 | Vibrato | 1 semitone (Poly: its own sine at Vib rate, 5.5 Hz; FM: its LFO, without the LFO delay) | yes | yes |
 | LFO rate | 2 octaves faster; the LFO is shared, so it follows the highest pressure | yes | yes |
 | Pitch | 12 semitones | yes | yes |
-| Drive | 24 dB more | yes | |
+| Drive, Distortion | 24 dB more | yes | |
 | Width (pulse) | 45 % | yes | |
 | Sub, Noise | 100 % of their level | yes | |
 | Brightness | 24 output-level steps (18 dB) on every modulator | | yes |
 | Tremolo | a 100 % dip, at the LFO's rate | | yes |
 | Feedback | 7 steps | | yes |
 
-**Level is a swell, never a boost.** A positive depth lowers the voice by the depth at zero pressure and plays it at the preset's level at full pressure; a negative depth ducks it as you press. Pressure on level never pushes a patch past the level it was designed at, so it causes no unintended clipping. Deliberate grit goes through Drive.
+**Level is a swell, never a boost.** A positive depth lowers the voice by the depth at zero pressure and plays it at the preset's level at full pressure; a negative depth ducks it as you press. Pressure on level never pushes a patch past the level it was designed at, so it causes no unintended clipping. Deliberate grit goes through Drive or Distortion.
 
 **Presets.**
 
@@ -171,7 +171,8 @@ The MPC One's pads send pressure for each pad while it's held. Players who have 
 | Lead (Poly) | 0.5 semitones of vibrato; +1 oct cutoff |
 | Acid (Poly) | +2 oct cutoff; +20 % resonance |
 | Init, Supersaw (Poly) | +1 oct cutoff (the old fixed setting) |
-| Grit Bass, Sub Bass (Poly) | +6 dB drive |
+| Grit Bass (Poly) | +6 dB distortion |
+| Sub Bass (Poly) | +6 dB drive |
 | Rubber Bass (FM) | +8 steps brightness (FM has no drive) |
 | Drawbars (FM) | LFO rate twice as fast, like a rotary speaker speeding up |
 | Init, Glass Keys, Bell Tower (FM) | vibrato, 0.18, 0.2 and 0.2 semitones |

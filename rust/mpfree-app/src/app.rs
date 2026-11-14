@@ -600,6 +600,9 @@ pub struct Settings {
     pub metronome: bool,
     /// The click's level, dBFS: [`METRONOME_DBS`].
     pub metronome_db: i8,
+    /// Play's options "Timing strip": the Beats view shows Your timing
+    /// under the pattern (Jay 13 Nov folded the Drum view into Beats).
+    pub timing_strip: bool,
     /// Prefs "Audio track memory": the audio tracks' size from the next
     /// start.
     pub audio_memory: crate::audiotracks::AudioMemory,
@@ -648,6 +651,7 @@ impl Default for Settings {
             loop_memory: LoopMemory::default(),
             metronome: false,
             metronome_db: crate::time::CLICK_DB as i8,
+            timing_strip: true,
             audio_memory: crate::audiotracks::AudioMemory::default(),
             open_last: false,
         }
@@ -723,6 +727,8 @@ pub enum Item {
     /// Play's options: the metronome on or off, and its level.
     Metronome,
     MetronomeLevel,
+    /// Play's options: the Beats view's Your timing strip on or off.
+    TimingStrip,
     /// Prefs: the audio tracks' size from the next start.
     AudioMemory,
     /// The arp's own settings (the Options menu opened from the Arp panel).
@@ -780,6 +786,9 @@ pub struct Status {
     pub bpm: f64,
     /// TRACK MUTE: what the pads are, the hint line says.
     pub mute_keys: MuteKeys,
+    /// ERASE held: the next tap on the screen deletes what it lands on
+    /// (Jay after live test 3).
+    pub erase: bool,
 }
 
 /// Jay's wheel navigation (live test 2, 13 Nov) on a page with rows: the
@@ -883,6 +892,21 @@ pub enum Effect {
     /// to read ([`crate::gui::TELL_SECONDS`]): why something did nothing,
     /// or was refused (Jay, 12 Nov: say in place when it would do nothing).
     Tell(String),
+    /// UNDO (or SHIFT + UNDO, `redo`) on a page without its own in the
+    /// app: the screen knows what the page shows, so it picks the history
+    /// (Jay, 13 Nov 13:53Z: UNDO follows the page you're on).
+    Undo {
+        redo: bool,
+    },
+    /// The UNDO button went down (true) or up, on every page: held, the
+    /// screen opens the page's undo history (Jay after live test 3).
+    UndoButton(bool),
+    /// REC (or OVERDUB) on the Play page: the screen knows the view, so it
+    /// picks (Jay, 13 Nov 14:37Z): the looper on All and Loop, the takes
+    /// on Beats.
+    PlayRec {
+        overdub: bool,
+    },
     /// What the arp screens show: the panel, the quick band and the chip.
     Arp(ArpView),
     /// The arp's pattern list (names and patterns), when it changes.
@@ -1100,6 +1124,12 @@ pub struct App {
     /// What the transport buttons' lights last showed, by note
     /// ([`App::transport_lights`]); `None` until first sent.
     lights_shown: [Option<u8>; 128],
+    /// The page showing has something to undo (the screen says): UNDO's
+    /// light is bright while idle.
+    undo_ready: bool,
+    /// A list or pad over the page is open (the number pad, the undo
+    /// history): the wheel, its push and - / + go to it.
+    overlay: bool,
     /// The synth's pad layout while the synth is on the pads
     /// ([`App::set_pad_layout`]): the pads then feed the arp the layout's
     /// notes, and its events carry notes rather than pad slots.
@@ -1230,6 +1260,8 @@ impl App {
             arp_dirty: true,
             rolling: false,
             lights_shown: Self::startup_transport_lights(),
+            undo_ready: false,
+            overlay: false,
             pad_layout: None,
             pad_pressed: [PadNotes::default(); 16],
             note_holds: [0; 128],
@@ -1286,12 +1318,27 @@ impl App {
     ///   OVERDUB waits for PLAY it blinks bright/dark with them.
     /// - REC blinks bright/dark while armed and while recording; OVERDUB
     ///   the same while armed and overdubbing. Dark otherwise.
-    /// - UNDO blinks bright/dim while recording or overdubbing.
+    /// - UNDO blinks bright/dim while recording or overdubbing; otherwise
+    ///   bright while the page has something to undo, dim when not. (That
+    ///   idle light is inferred: an earlier capture saw Akai's app take
+    ///   UNDO from dim to bright during Q-Link edits. Not confirmed.)
     /// - STOP dim while rolling, bright when stopped (the MPC One's STOP
     ///   has no LED; harmless).
     ///
     /// Only the lights that changed, as [`Effect::Light`]. REC, OVERDUB and
     /// UNDO only once Map controls (or the defaults) know their buttons.
+    /// The screen says whether the page showing has something to undo;
+    /// the UNDO light follows at the next [`Self::transport_lights`].
+    pub fn set_undo_ready(&mut self, ready: bool) {
+        self.undo_ready = ready;
+    }
+
+    /// The screen opened (true) or closed a list or pad over the page
+    /// ([`crate::gui::FromUi::Overlay`]).
+    pub fn set_overlay(&mut self, on: bool) {
+        self.overlay = on;
+    }
+
     pub fn transport_lights(&mut self, now: TransportLights, t: f64) -> Vec<Effect> {
         let blink_on = (t / BLINK_HALF_SECONDS).floor().rem_euclid(2.0) < 1.0;
         let blink = |on: bool, low: u8| match (on, blink_on) {
@@ -1323,8 +1370,9 @@ impl App {
         }
         if let Some(undo) = self.map.undo {
             let on = now.rolling && (now.recording || now.overdub);
-            if on || self.lights_shown[undo as usize & 0x7F].is_some() {
-                want.push((undo, blink(on, LIGHT_OFF)));
+            let idle = if self.undo_ready { LIGHT_ON } else { LIGHT_OFF };
+            if on || self.undo_ready || self.lights_shown[undo as usize & 0x7F].is_some() {
+                want.push((undo, blink(on, idle)));
             }
         }
         let mut fx = Vec::new();
@@ -1565,6 +1613,7 @@ impl App {
             rate: self.settings.rate.label(),
             bpm: self.settings.bpm,
             mute_keys: self.mute_keys,
+            erase: self.erase_held,
         })
     }
 
@@ -1611,8 +1660,12 @@ impl App {
             return fx;
         }
         if !pressed {
-            if Some(note) == self.map.erase {
+            if Some(note) == self.map.undo {
+                fx.push(Effect::UndoButton(false));
+            }
+            if Some(note) == self.map.erase && self.erase_held {
                 self.erase_held = false;
+                fx.push(self.status());
             }
             if Some(note) == self.map.note_repeat && self.repeat_held {
                 self.repeat_held = false;
@@ -1721,18 +1774,24 @@ impl App {
             } else {
                 crate::looper_page::B_UNDO
             }));
+            fx.push(Effect::UndoButton(true));
+        } else if self.view == View::Play
+            && (Some(note) == self.map.rec || Some(note) == self.map.overdub)
+        {
+            fx.push(Effect::PlayRec {
+                overdub: Some(note) == self.map.overdub,
+            });
         } else if Some(note) == self.map.rec {
             fx.push(Effect::Time(TimeAction::Transport(Command::Record)));
         } else if Some(note) == self.map.overdub {
             fx.push(Effect::Time(TimeAction::Transport(Command::ToggleOverdub)));
         } else if Some(note) == self.map.undo && self.view.sampler() {
             fx.push(Effect::SampleUndo { redo: shift });
+            fx.push(Effect::UndoButton(true));
         } else if Some(note) == self.map.undo {
-            fx.push(Effect::Time(if shift {
-                TimeAction::Redo
-            } else {
-                TimeAction::Undo
-            }));
+            // The Play page's view, Arrange and the rest: the screen picks.
+            fx.push(Effect::Undo { redo: shift });
+            fx.push(Effect::UndoButton(true));
         } else if Some(note) == self.map.note_repeat {
             let double = self
                 .repeat_pressed_at
@@ -1779,7 +1838,10 @@ impl App {
             fx.extend(self.wheel_push());
         } else if Some(note) == self.map.minus || Some(note) == self.map.plus {
             let d = if Some(note) == self.map.plus { 1 } else { -1 };
-            if self.in_menu() {
+            if self.overlay {
+                // A list or pad over the page: - / + step in it.
+                fx.push(Effect::Rows(RowKey::Step(d)));
+            } else if self.in_menu() {
                 fx.extend(self.step_item(self.selected, d));
             } else if self.view == View::Touch && !shift {
                 // The value picked on the Touch page, one step.
@@ -1835,17 +1897,19 @@ impl App {
         let m = self.map;
         let is = |b: Option<u8>| b == Some(note);
         let fx = if is(m.erase) {
-            // ERASE and SHIFT + ERASE wait for live erase and the FX lock
-            // mode (with a step held); alone they do nothing. Held with
-            // SHIFT, TAP TEMPO opens the Console. In the browser, ERASE
-            // moves the item picked to the Trash (asking first).
+            // Held, ERASE makes the next tap on the screen delete what it
+            // lands on (Jay after live test 3); the screen knows from the
+            // status. In the browser, ERASE moves the item picked to the
+            // Trash (asking first). Live erase (ERASE + a pad while
+            // recording) and the FX lock mode come later. Held with SHIFT,
+            // TAP TEMPO opens the Console.
             self.erase_held = true;
             if self.view == View::Browser && !shift {
                 return Some(vec![Effect::Browse(BrowseKey::Erase)]);
             }
-            return Some(Vec::new());
+            return Some(vec![self.status()]);
         } else if is(m.main) {
-            // MAIN: Play; on Play, the next view (All, Beats, Loop, Drum).
+            // MAIN: Play; on Play, the next view (All, Beats, Loop).
             if self.view == View::Play {
                 vec![Effect::PlayView(None)]
             } else {
@@ -2051,6 +2115,8 @@ impl App {
     pub fn wheel(&mut self, delta: i32) -> Vec<Effect> {
         match self.view {
             View::Guide | View::System => Vec::new(),
+            // A list or pad over the page: the wheel moves in it.
+            _ if self.overlay => vec![Effect::Rows(RowKey::Pick(delta))],
             // In a menu the wheel moves between rows and - / + change the
             // value, so menus work without touch; SHIFT + wheel also changes
             // the value, in case - and + are not known yet.
@@ -2129,6 +2195,9 @@ impl App {
     /// a menu, the guide or the workspace (whose Back goes to the panel).
     fn show(&mut self, v: View) -> Vec<Effect> {
         self.menu_editing = false;
+        // The screen closes a list or pad over the page when the page
+        // changes.
+        self.overlay = false;
         let was_editing = std::mem::take(&mut self.page_editing);
         if self.view != v
             && matches!(
@@ -2610,6 +2679,7 @@ impl App {
                 Item::Tempo,
                 Item::Metronome,
                 Item::MetronomeLevel,
+                Item::TimingStrip,
                 Item::PadLevel,
                 Item::Latch,
             ],
@@ -2687,6 +2757,10 @@ impl App {
                 if s.metronome { "On" } else { "Off" }.to_string(),
             ),
             Item::MetronomeLevel => ("Metronome level", format!("{} dB", s.metronome_db)),
+            Item::TimingStrip => (
+                "Timing strip",
+                if s.timing_strip { "On" } else { "Off" }.to_string(),
+            ),
             Item::PadLevel => (
                 "Pad level",
                 match self.pad_level {
@@ -2872,6 +2946,12 @@ impl App {
                 "SHIFT + PLAY START turns it on or off too.",
             ],
             Item::MetronomeLevel => vec!["How loud the click is, -36 to -6 dB."],
+            Item::TimingStrip => vec![
+                "Your timing under the pattern in Beats:",
+                "how early or late your hits land, the",
+                "spread and the velocity. Off gives the",
+                "pattern more lanes.",
+            ],
             Item::PadLevel => vec![
                 "FULL LEVEL plays every hit at 127,",
                 "SHIFT + FULL LEVEL (Half Level) at 64.",
@@ -3023,6 +3103,10 @@ impl App {
     /// 12 Nov 08:11Z). On a page with rows, the same for the row
     /// highlighted ([`RowKey`]). Elsewhere it does nothing yet.
     pub fn wheel_push(&mut self) -> Vec<Effect> {
+        if self.overlay {
+            // A list or pad over the page: the push is its Enter.
+            return vec![Effect::Rows(RowKey::Editing(true))];
+        }
         if !self.in_menu() && self.view == View::Chain {
             return vec![Effect::ChainPush];
         }
@@ -3197,6 +3281,7 @@ impl App {
                 s.metronome_db = cycle(&METRONOME_DBS, s.metronome_db, d);
                 fx.push(self.metronome());
             }
+            Item::TimingStrip => s.timing_strip = !s.timing_strip,
             Item::PadLevel => {
                 self.pad_level = cycle(
                     &[PadLevel::Off, PadLevel::Full, PadLevel::Half],
@@ -3697,7 +3782,11 @@ mod tests {
         app.map.learn(mapper::Job::Erase, Some(ERASE));
         let tap = app.map.tap_tempo.unwrap();
         app.button(button::SHIFT, true, 0.0);
-        assert!(app.button(ERASE, true, 0.0).is_empty());
+        // ERASE held tells the screen (ERASE + a tap deletes), nothing more.
+        assert!(matches!(
+            app.button(ERASE, true, 0.0).as_slice(),
+            [Effect::Status(s)] if s.erase
+        ));
         assert_eq!(press(&mut app, tap), vec![Effect::Show(View::Console)]);
         assert!(app.taps.is_empty(), "no tempo tap");
         assert_eq!(press(&mut app, tap), vec![Effect::Show(View::Play)]);
@@ -3706,7 +3795,10 @@ mod tests {
         press(&mut app, tap);
         assert_eq!(app.taps.len(), 1);
         app.button(button::SHIFT, true, 0.0);
-        app.button(ERASE, false, 0.0);
+        assert!(matches!(
+            app.button(ERASE, false, 0.0).as_slice(),
+            [Effect::Status(s)] if !s.erase
+        ));
         assert!(!press(&mut app, tap)
             .iter()
             .any(|e| matches!(e, Effect::Show(View::Console))));
@@ -4636,6 +4728,38 @@ mod tests {
         assert_eq!(p.scale, None);
     }
 
+    /// A list or pad over the page (the number pad, the undo history)
+    /// takes the wheel, its push and - / + on every page, Play's too;
+    /// UNDO says when it goes down and up, so the screen can tell it is
+    /// held (Jay after live test 3: hold UNDO for the page's history).
+    #[test]
+    fn an_overlay_takes_the_wheel_and_undo_says_when_it_goes_down_and_up() {
+        let mut app = ready();
+        app.open_tab(View::Play);
+        app.map.minus = Some(40);
+        app.map.plus = Some(41);
+        assert_eq!(app.wheel(1), vec![Effect::Kit(1)]);
+        app.set_overlay(true);
+        assert_eq!(app.wheel(2), vec![Effect::Rows(RowKey::Pick(2))]);
+        assert_eq!(app.wheel_push(), vec![Effect::Rows(RowKey::Editing(true))]);
+        assert_eq!(press(&mut app, 41), vec![Effect::Rows(RowKey::Step(1))]);
+        assert_eq!(press(&mut app, 40), vec![Effect::Rows(RowKey::Step(-1))]);
+        // Another page: the screen closes it, so the wheel is the page's.
+        app.open_tab(View::Arrange);
+        app.open_tab(View::Play);
+        assert_eq!(app.wheel(1), vec![Effect::Kit(1)]);
+        // UNDO down and up, here and on the Looper tab.
+        assert_eq!(
+            app.button(92, true, 0.0),
+            vec![Effect::Undo { redo: false }, Effect::UndoButton(true)]
+        );
+        assert_eq!(app.button(92, false, 0.7), vec![Effect::UndoButton(false)]);
+        app.open_tab(View::Looper);
+        let fx = app.button(92, true, 1.0);
+        assert_eq!(fx.last(), Some(&Effect::UndoButton(true)));
+        assert_eq!(fx.len(), 2, "the loop's undo, then the button: {fx:?}");
+    }
+
     #[test]
     fn the_sample_tab_comes_after_looper_and_takes_the_wheel_the_pads_and_undo() {
         let mut app = ready();
@@ -4659,11 +4783,14 @@ mod tests {
         assert_eq!(app.wheel(-3), vec![Effect::SamplePad(-1)]);
         // UNDO undoes the Sample page's edits there (SHIFT: redo), and the
         // time engine's takes elsewhere.
-        assert_eq!(press(&mut app, 92), vec![Effect::SampleUndo { redo: true }]);
+        assert_eq!(
+            press(&mut app, 92),
+            vec![Effect::SampleUndo { redo: true }, Effect::UndoButton(true)]
+        );
         app.button(button::SHIFT, false, 0.0);
         assert_eq!(
             press(&mut app, 92),
-            vec![Effect::SampleUndo { redo: false }]
+            vec![Effect::SampleUndo { redo: false }, Effect::UndoButton(true)]
         );
         // - / + step the row picked.
         app.map.minus = Some(40);
@@ -4676,7 +4803,11 @@ mod tests {
         press(&mut app, MENU);
         assert_eq!(app.view(), View::Sample);
         app.tab(0);
-        assert_eq!(press(&mut app, 92), vec![Effect::Time(TimeAction::Undo)]);
+        // Back on Play, the screen picks the history (the Play view's).
+        assert_eq!(
+            press(&mut app, 92),
+            vec![Effect::Undo { redo: false }, Effect::UndoButton(true)]
+        );
     }
 
     #[test]
@@ -4703,7 +4834,7 @@ mod tests {
         // UNDO undoes the pads' edits, as on Sample.
         assert_eq!(
             press(&mut app, 92),
-            vec![Effect::SampleUndo { redo: false }]
+            vec![Effect::SampleUndo { redo: false }, Effect::UndoButton(true)]
         );
         // The Pad view: the Sample tab's controls.
         app.set_pads_browse(false);
@@ -4878,9 +5009,10 @@ mod tests {
         let fx = app.open_tab(View::Play);
         assert!(fx.iter().any(|e| matches!(e, Effect::Note(n) if n.starts_with("map summary: ")
                                              && n.contains("REC button 73") && n.contains("PAD BANK A/E button 35"))));
+        // On Play, the screen picks what REC records (the Play view's).
         assert_eq!(
             press(&mut app, 73),
-            vec![Effect::Time(TimeAction::Transport(Command::Record))]
+            vec![Effect::PlayRec { overdub: false }]
         );
         assert_eq!(
             press(&mut app, 35),
@@ -5377,7 +5509,7 @@ mod tests {
         app.toggle_panel();
         press(&mut app, MENU);
         assert!(
-            matches!(app.menu_view(), Effect::Menu(m) if m.title == "Play options" && m.rows.len() == 6)
+            matches!(app.menu_view(), Effect::Menu(m) if m.title == "Play options" && m.rows.len() == 7)
         );
     }
 
@@ -5997,6 +6129,19 @@ mod tests {
             fx.contains(&Effect::Light(button::PLAY, LIGHT_ON)),
             "{fx:?}"
         );
+        // Idle, UNDO is bright while the page has something to undo
+        // (inferred from Akai's), and dim again when it has not.
+        app.transport_lights(lights(false, false, false), 10.0);
+        app.set_undo_ready(true);
+        assert_eq!(
+            app.transport_lights(lights(false, false, false), 10.1),
+            vec![Effect::Light(UNDO, LIGHT_ON)]
+        );
+        app.set_undo_ready(false);
+        assert_eq!(
+            app.transport_lights(lights(false, false, false), 10.2),
+            vec![Effect::Light(UNDO, LIGHT_OFF)]
+        );
     }
 
     /// TRACK MUTE (control map decision 5), once Map controls has found
@@ -6042,6 +6187,14 @@ mod tests {
             press(&mut app, 93),
             vec![time(TimeAction::Transport(Command::PlayStart))]
         );
+        // REC and OVERDUB on Play: the screen picks by the view (the loop
+        // on All and Loop, takes on Beats); on Arrange, the takes.
+        assert_eq!(
+            press(&mut app, 90),
+            vec![Effect::PlayRec { overdub: false }]
+        );
+        assert_eq!(press(&mut app, 91), vec![Effect::PlayRec { overdub: true }]);
+        app.open_tab(View::Arrange);
         assert_eq!(
             press(&mut app, 90),
             vec![time(TimeAction::Transport(Command::Record))]
@@ -6050,10 +6203,15 @@ mod tests {
             press(&mut app, 91),
             vec![time(TimeAction::Transport(Command::ToggleOverdub))]
         );
-        assert_eq!(press(&mut app, 92), vec![time(TimeAction::Undo)]);
+        app.open_tab(View::Play);
+        // UNDO follows the page: the screen knows the Play view, so it picks.
+        assert_eq!(
+            press(&mut app, 92),
+            vec![Effect::Undo { redo: false }, Effect::UndoButton(true)]
+        );
         assert_eq!(
             held(&mut app, button::SHIFT, |a| press(a, 92)),
-            vec![time(TimeAction::Redo)]
+            vec![Effect::Undo { redo: true }, Effect::UndoButton(true)]
         );
         // Rolling, STOP stops the transport and leaves the sounds alone.
         app.set_rolling(true);
@@ -6150,9 +6308,12 @@ mod tests {
         assert_eq!(fx[0], Effect::SampleEditor(Editor::Wave));
         assert!(fx.contains(&Effect::Show(View::Sample)));
         assert_eq!(press(&mut app, 67), [Effect::ProgEdit]);
-        // ERASE and SHIFT + ERASE do nothing yet (Jay, 22:12Z).
-        assert!(press(&mut app, 60).is_empty());
-        assert!(shifted(&mut app, 60).is_empty());
+        // ERASE and SHIFT + ERASE only tell the screen while they are held
+        // (ERASE + a tap deletes); they go to no page.
+        let only_status = |fx: Vec<Effect>| fx.iter().all(|e| matches!(e, Effect::Status(_)));
+        assert!(only_status(press(&mut app, 60)));
+        assert!(only_status(shifted(&mut app, 60)));
+        assert!(!app.erase_held, "let go");
         // 16 LEVEL: Play, and 16 Levels on or off (the screen holds the
         // kit and says back what it did: the light and the wheel follow).
         let fx = press(&mut app, 62);

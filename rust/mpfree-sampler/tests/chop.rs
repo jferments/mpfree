@@ -163,6 +163,36 @@ fn chopping_and_assigning_undo_in_one_step_each() {
     assert_eq!(p.revision(), before);
 }
 
+/// Hold UNDO lists the history (Jay after live test 3): each step says
+/// what it changed, and redo's steps come next one first.
+#[test]
+fn the_history_says_what_each_step_changed() {
+    let (audio, _) = beat(110.0, 1, 0);
+    let s = Source::new("b", RATE, 1, audio).unwrap();
+    let mut p = Project::new();
+    p.add_source(s.clone());
+    p.clear_history();
+    p.set_pad(
+        2,
+        Some(Pad::new("keep", Layer::new(Region::whole(&s)))),
+        None,
+    )
+    .unwrap();
+    let chop = p.add_chop_set(ChopSet::grid("g", &s, 8).unwrap()).unwrap();
+    p.slices_to_pads(chop, 0, 8, 4).unwrap();
+    let (done, redo) = p.history();
+    assert!(redo.is_empty());
+    assert_eq!(done.len(), 3);
+    assert_eq!((done[0].pads, done[0].first_pad), (1, Some(2)));
+    assert!(done[1].chop && done[1].pads == 0);
+    assert_eq!((done[2].pads, done[2].first_pad), (8, Some(4)));
+    assert!(p.undo() && p.undo());
+    let (done, redo) = p.history();
+    assert_eq!(done.len(), 1);
+    assert!(redo[0].chop, "the next redo first: the chop set");
+    assert_eq!(redo[1].pads, 8);
+}
+
 #[test]
 fn markers_from_any_list_are_cleaned() {
     let s = Source::new("s", RATE, 1, vec![0.1; 1_000]).unwrap();

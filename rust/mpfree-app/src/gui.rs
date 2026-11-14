@@ -36,7 +36,7 @@ use crate::mixing::{PlayFx, PlayLevels};
 use crate::pace::{Pace, TOUCH_POLL};
 use crate::perf::ProcView;
 use crate::play_page::{self, Knob, PadInfo, PadsBar, PlayPage, PlayView, SynthPads, Turn};
-use crate::play_widgets::{MiniPads, PlayTransport, StepGrid, Throws, XyPad, YourTiming};
+use crate::play_widgets::{self, MiniPads, PlayTransport, StepGrid, Throws, XyPad, YourTiming};
 use crate::sample_page::{self, SamplePage};
 use crate::sampler::{Cloud, Playheads, ViewSwap};
 use crate::time::{HitInfo, StepAction, StepsData};
@@ -90,6 +90,27 @@ pub const SYSLOG_LAYOUT: &str = "col(header:60, syslog:*, hint:26)";
 /// Prefs > System info: the software on the left, the hardware on the right.
 pub const SYSTEM_LAYOUT: &str = "col(header:60, row(syssw:*, syshw:*):*, hint:26)";
 pub const OPTIONS_LAYOUT: &str = "col(header:60, row(options:*, help:470):*, hint:26)";
+/// The number pad (Jay after live test 3: type a number for a field with a
+/// wide range), over the page it was asked from.
+pub const NUMPAD: &str = "numpad";
+pub const NUMPAD_PAGE: &str = "Type a number";
+const NUMPAD_LAYOUT: &str = "col(header:60, numpad:*, hint:26)";
+const NUMPAD_HINT: &str = "Tap the number, then Enter   ·   wheel or - / +: step it   ·   push the wheel: Enter   ·   Cancel: leave it as it was";
+/// How long a finger stays on Play's BPM to type the tempo, seconds.
+const TEMPO_HOLD: f32 = 0.6;
+/// The undo history (Jay after live test 3: hold UNDO to see the page's
+/// history and jump back several steps at once), over the page it was
+/// opened from.
+pub const HISTORY: &str = "history";
+pub const HISTORY_PAGE: &str = "Undo history";
+const HISTORY_LAYOUT: &str = "col(header:60, history:*, hint:26)";
+const HISTORY_HINT: &str = "Tap a step to go back or forward to it   ·   wheel or - / +: pick a step   ·   push the wheel: go there   ·   \
+                            UNDO: one step back (SHIFT: forward)   ·   Close: done";
+/// How long UNDO is held to open the page's undo history, seconds.
+pub const UNDO_HOLD: f32 = 0.6;
+/// How often the Synth tab's or the mixer's history is asked for again
+/// while its list is open, seconds.
+const HISTORY_ASK: f32 = 0.5;
 pub const GUIDE_LAYOUT: &str = "col(header:60, row(guide:*, found:400):*, hint:26)";
 /// The list of kits, over whatever page showed: a tap on the header's kit
 /// chip opens it (Jay's card, 13 Nov 14:57Z).
@@ -100,6 +121,10 @@ const KITS_HINT: &str =
 
 const CONSOLE_HINT: &str =
     "Switch the MPC off with its power switch to return to the stock firmware";
+/// The hint line while ERASE is held (Jay after live test 3: ERASE + a
+/// tap deletes what is tapped).
+pub const ERASE_HINT: &str = "ERASE held: tap a clip (Arrange), a lane's name (Play) or a layer (Looper) to delete it   ·   \
+                              UNDO brings it back";
 const SHIFT_HINT: &str =
     "SHIFT +   wheel: synth octave   ·   FULL LEVEL: Half Level   ·   NOTE REPEAT: Latch   ·   MENU: Prefs   ·   STOP: back to bar 1";
 /// TRACK MUTE's keys, over whatever page shows (control map decision 5).
@@ -263,8 +288,20 @@ pub fn chip_kit_name(name: &str, kit: usize) -> String {
     }
 }
 
+/// The pages whose UNDO takes back knob and fader turns ([`crate::undo`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UndoOn {
+    /// The Synth tab's sound.
+    Synth,
+    /// The mixer's strips.
+    Mixer,
+}
+
 /// How long a told line ([`ToUi::Tell`]) stays in place of the hint.
 pub const TELL_SECONDS: f32 = 4.0;
+/// Autosave's period while there is unsaved work (Jay's pick, 14 Nov:
+/// every 2 minutes, into one Autosave project).
+pub const AUTOSAVE_S: f32 = 120.0;
 
 /// A log line as the screen says it: without the log's `area:` tag, a
 /// model's refusal in words, starting with a capital.
@@ -302,6 +339,44 @@ pub fn tone_of(line: &str) -> Tone {
 }
 
 // ---------------------------------------------------------------- pad player
+
+/// Whose history UNDO and the undo history list follow on the page
+/// showing (Jay, 13 Nov 13:53Z: UNDO follows the page you're on).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HistoryOf {
+    /// The picked loop's.
+    Loop,
+    /// The sequencer's takes.
+    Takes,
+    /// The playing kit's sample edits.
+    Sample,
+    /// The Synth tab's or the mixer's turns, which the app keeps.
+    Turns(UndoOn),
+}
+
+/// The undo history open over a page: whose, the page to go back to, and
+/// (for the app's histories) when to ask for it again.
+#[derive(Clone, Debug)]
+struct HistoryOpen {
+    of: HistoryOf,
+    back: String,
+    ask_in: f32,
+}
+
+/// Where a typed number goes, and the page the number pad was opened over.
+#[derive(Clone, Debug)]
+struct Typing {
+    to: TypeTo,
+    back: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum TypeTo {
+    /// The Sample tab's field that asked ([`sample_page::SamplePage::typed`]).
+    Sample,
+    /// The tempo (a long press on Play's BPM).
+    Tempo,
+}
 
 /// What the pad player shows about one kit.
 #[derive(Clone, Debug)]
@@ -377,6 +452,27 @@ pub enum ToUi {
     /// A line shown in place of the hint for [`TELL_SECONDS`] (it was
     /// logged as a `Line` too): why something did nothing.
     Tell(String),
+    /// UNDO (true: SHIFT + UNDO, redo) on a page whose history the screen
+    /// picks ([`Player::undo`]).
+    Undo(bool),
+    /// The UNDO button went down (true) or up, on any page: held for
+    /// [`UNDO_HOLD`], it opens the page's undo history.
+    UndoButton(bool),
+    /// The Synth tab's or the mixer's undo history, as asked for with
+    /// [`FromUi::UndoHistory`]: its rows and the row that is now.
+    UndoHistory {
+        on: UndoOn,
+        rows: Vec<String>,
+        now: usize,
+    },
+    /// REC (false) or OVERDUB (true) on the Play page ([`Player::play_rec`]).
+    PlayRec(bool),
+    /// Whether the Synth tab's and the mixer's turns ([`crate::undo`])
+    /// have something to undo, when that changes.
+    TurnsReady {
+        synth: bool,
+        mixer: bool,
+    },
     /// A line for the Events log only (not printed).
     Event(String),
     /// A MIDI message in or out, as one line (also printed).
@@ -678,6 +774,22 @@ pub enum FromUi {
     Time(TimeAction),
     /// A change on the Synth page, for the synth on the audio thread.
     Synth(SynthAction),
+    /// UNDO (or SHIFT + UNDO, `redo`) on a page whose turns the audio
+    /// thread keeps ([`crate::undo`]).
+    UndoOn {
+        on: UndoOn,
+        redo: bool,
+    },
+    /// Whether the page showing has something to undo, when that changes
+    /// (for the UNDO light).
+    UndoReady(bool),
+    /// The Synth tab's or the mixer's undo history, for the list that
+    /// holding UNDO opens: the app answers with [`ToUi::UndoHistory`].
+    UndoHistory(UndoOn),
+    /// A list or pad over the page (the number pad, the undo history) is
+    /// open (true) or closed: while open, the wheel, its push and - / +
+    /// are its (as [`crate::app::RowKey`]s) on every page.
+    Overlay(bool),
     /// A kit's engine view, built again after an edit on the Sample page,
     /// for the audio thread to swap in (it sends the old one back).
     SampleView(Box<ViewSwap>),
@@ -869,6 +981,20 @@ pub struct Player {
     track_sounds: TrackSounds,
     /// Prefs > At start was looked at (once, when the sound is going).
     start_checked: bool,
+    /// The last run crashed: Prefs > At start opens nothing this time
+    /// (crash.rs, the safe start).
+    crashed: bool,
+    /// Seconds of unsaved work until the next autosave, or, while one is
+    /// asked for, until it is given up as lost.
+    autosave_in: f32,
+    /// The parts asked for are for autosave, not for a save.
+    autosaving: bool,
+    /// An edit since autosave last asked for the parts: idle unsaved work
+    /// is autosaved once, not every 2 minutes.
+    autosave_dirty: bool,
+    /// Autosave is off this run: the last run's unsaved work couldn't be
+    /// set aside, and autosave would write over it.
+    autosave_off: bool,
     /// The sound's rate, for an opened project's engines.
     project_rate: u32,
     /// When the last open landed ([`OPEN_SETTLE`]).
@@ -951,6 +1077,25 @@ pub struct Player {
     /// A line said in place of the hint ([`ToUi::Tell`]) and the seconds
     /// it has left.
     told: Option<(String, f32)>,
+    /// Which of the Play page's histories changed last, for UNDO on the
+    /// All view: the loop's (true) or the takes' (false); and the counts
+    /// each was last seen at.
+    undo_loop: bool,
+    seen_takes: (usize, usize),
+    /// The number pad is open: where the number goes, and the page to go
+    /// back to.
+    typing: Option<Typing>,
+    /// A finger on Play's BPM: which, how long (s) and where it landed.
+    tempo_press: Option<(u64, f32, i32, i32)>,
+    /// The undo history is open over a page.
+    history: Option<HistoryOpen>,
+    /// UNDO is held, and for how long (s).
+    undo_held: Option<f32>,
+    seen_loop: (usize, usize, usize),
+    /// The Synth tab's and the mixer's turns can be undone (the audio
+    /// thread keeps them), and what the UNDO light was last told.
+    turns_ready: (bool, bool),
+    undo_ready: bool,
     /// How many times something was said in place (the control audit
     /// counts a tell as a press that did something, even when the same
     /// words were already showing).
@@ -1008,6 +1153,8 @@ impl Player {
         ui.add("syslog", LogPanel::new("Console", true, CONSOLE_BACKLOG));
         ui.add("options", OptionList::new("Options"));
         ui.add("help", Card::new("About this setting"));
+        ui.add(NUMPAD, mpfree_ui::numpad::NumPad::default());
+        ui.add(HISTORY, mpfree_ui::history::HistoryPanel::default());
         ui.add("guide", Card::new("Button guide"));
         ui.add("found", StatList::new("Buttons"));
         // The hint line starts where the panels do (the mockups).
@@ -1022,6 +1169,11 @@ impl Player {
         for v in PlayView::ALL {
             ui.add_page(v.page(), &v.layout()).expect("play layout");
         }
+        ui.add_page(
+            play_page::BEATS_TIMING_PAGE,
+            &PlayView::Beats.layout_for(true),
+        )
+        .expect("beats with timing layout");
         let debug = DebugPages::add(&mut ui).expect("debug layouts");
         ui.add_page("Console", SYSLOG_LAYOUT)
             .expect("console layout");
@@ -1029,6 +1181,10 @@ impl Player {
         ui.add_page("Options", OPTIONS_LAYOUT)
             .expect("options layout");
         ui.add_page("Guide", GUIDE_LAYOUT).expect("guide layout");
+        ui.add_page(NUMPAD_PAGE, NUMPAD_LAYOUT)
+            .expect("number pad layout");
+        ui.add_page(HISTORY_PAGE, HISTORY_LAYOUT)
+            .expect("undo history layout");
         ui.add_page(KITS_PAGE, KITS_LAYOUT).expect("kits layout");
         ui.add_page("System info", SYSTEM_LAYOUT)
             .expect("system info layout");
@@ -1102,9 +1258,19 @@ impl Player {
             rate: "1/16",
             bpm: 120.0,
             mute_keys: MuteKeys::Off,
+            erase: false,
         };
         let mut p = Player {
             told: None,
+            undo_loop: false,
+            seen_takes: (0, 0),
+            typing: None,
+            tempo_press: None,
+            history: None,
+            undo_held: None,
+            seen_loop: (0, 0, 0),
+            turns_ready: (false, false),
+            undo_ready: false,
             tells: 0,
             ui,
             kits: Vec::new(),
@@ -1140,6 +1306,11 @@ impl Player {
             project_plugins: std::sync::Arc::new(crate::plugins::Plugins::none()),
             track_sounds: [None; crate::instruments::SLOTS],
             start_checked: false,
+            crashed: false,
+            autosave_in: AUTOSAVE_S,
+            autosaving: false,
+            autosave_dirty: false,
+            autosave_off: false,
             project_rate: 44_100,
             opened_at: None,
             open_actions: 0,
@@ -1249,18 +1420,6 @@ impl Player {
                     format!("Synth · Bank {}", crate::app::bank_letter(s.bank)),
                     kit.name.clone(),
                     switch(Some(s)),
-                ),
-                // The Drum view says how hits are played (the mockups);
-                // the others name the kit.
-                None if self.play.view == PlayView::Drum => (
-                    format!("Pads · Bank {}", crate::app::bank_letter(self.kit)),
-                    match self.status.pad_level {
-                        PadLevel::Off => "velocity on",
-                        PadLevel::Full => "full level",
-                        PadLevel::Half => "half level",
-                    }
-                    .to_string(),
-                    None,
                 ),
                 None => (
                     format!("Pads · Bank {}", crate::app::bank_letter(self.kit)),
@@ -1537,12 +1696,19 @@ impl Player {
         self.refresh_pads_bar();
         self.refresh_play();
         self.refresh_qlinks();
+        let timing = self.settings.timing_strip;
         let _ = self
             .arp_panel
-            .set_quick_layout(&mut self.ui, &v.quick_layout());
+            .set_quick_layout(&mut self.ui, &v.quick_layout_for(timing));
         if self.ready && self.view == View::Play {
             self.show_view(View::Play);
         }
+    }
+
+    /// Whether Your timing is on screen: Play's Beats view with the
+    /// timing strip on.
+    fn timing_shown(&self) -> bool {
+        self.view == View::Play && self.play.view == PlayView::Beats && self.settings.timing_strip
     }
 
     /// The Play view showing (for tests and the app check's log).
@@ -1573,6 +1739,7 @@ impl Player {
             g.steps = old.steps;
             g.play = old.play;
             g.selected = old.selected;
+            (g.page, g.pages, g.length) = (old.page, old.pages, old.length);
         }
         self.play.fill_steps(&mut g);
         let same = self
@@ -1585,6 +1752,7 @@ impl Player {
                     && old.steps == g.steps
                     && old.play == g.play
                     && old.selected == g.selected
+                    && (old.page, old.pages, old.length) == (g.page, g.pages, g.length)
             });
         if !same {
             if let Some(w) = self.ui.get_mut::<StepGrid>(play_page::STEPS) {
@@ -1594,6 +1762,7 @@ impl Player {
                 w.steps = g.steps;
                 w.play = g.play;
                 w.selected = g.selected;
+                (w.page, w.pages, w.length) = (g.page, g.pages, g.length);
             }
         }
         let mut th = Throws::default();
@@ -1623,9 +1792,17 @@ impl Player {
                 }
             }
         }
-        if self.view == View::Play && self.play.view == PlayView::Drum {
-            if let Some(t) = self.ui.get_mut::<YourTiming>(play_page::TIMING) {
-                self.play.fill_timing(t);
+        if self.timing_shown() {
+            // Compare first: reaching the widget mutably redraws it, and
+            // with the transport stopped nothing changes.
+            let fresh = self.ui.get::<YourTiming>(play_page::TIMING).and_then(|t| {
+                let mut new = t.clone();
+                self.play.fill_timing(&mut new);
+                (new != *t).then_some(new)
+            });
+            if let (Some(new), Some(t)) = (fresh, self.ui.get_mut::<YourTiming>(play_page::TIMING))
+            {
+                *t = new;
             }
         }
     }
@@ -1664,12 +1841,60 @@ impl Player {
         }
     }
 
+    /// ERASE held (Jay after live test 3): a tap on something whose delete
+    /// UNDO takes back deletes it. `Some` is the answer to the touch; `None`
+    /// lets the tap do what it always does. Only deletes with an undo are
+    /// here: an Arrange clip (the takes' undo), a Play lane's steps (the
+    /// same), and a Looper tab layer (the looper's undo). Song blocks,
+    /// whole loops, effects and macros have no undo yet, so ERASE leaves
+    /// them alone.
+    fn erase_tap(&mut self, ev: &UiEvent) -> Option<Option<FromUi>> {
+        match (ev.widget.as_str(), &ev.kind) {
+            (play_page::STEPS, EventKind::Toggle(pad)) if *pad < 16 => {
+                Some(Some(FromUi::Steps(StepAction::ClearPad {
+                    pad: *pad as u8,
+                })))
+            }
+            (time_view::CLIPS, EventKind::Select(i)) => {
+                let slots = mpfree_seq::SLOTS;
+                let (track, slot) = (i / slots, i % slots);
+                if self.time.clip(track, slot).is_some() {
+                    Some(Some(FromUi::Time(TimeAction::DeleteClip { track, slot })))
+                } else {
+                    self.tell("ERASE: that slot is empty, nothing to delete");
+                    Some(None)
+                }
+            }
+            _ => None,
+        }
+    }
+
     /// What the Looper tab's panels asked for: the first as the answer to
-    /// the touch, the rest after it.
+    /// the touch, the rest after it. With ERASE held, a layer tapped is
+    /// deleted (the looper's UNDO brings it back).
     fn looper_acts(&mut self) -> Option<FromUi> {
         use crate::looper_tab::LoopAct;
         let mut out = Vec::new();
+        let erase = self.status.erase;
+        // A tap on a layer's speaker also picks the row: one delete.
+        let mut erased = Vec::new();
         for a in crate::looper_tab::take_actions(&mut self.ui) {
+            let a = match a {
+                LoopAct::Layer(k) | LoopAct::LayerCmd(k, _) if erase => {
+                    if erased.contains(&k) {
+                        continue;
+                    }
+                    erased.push(k);
+                    LoopAct::LayerCmd(k, mpfree_looper::LayerCommand::Delete)
+                }
+                LoopAct::Pick(_) | LoopAct::Clear if erase => {
+                    self.tell(
+                        "ERASE: a whole loop has no undo yet, so ERASE leaves it; Clear removes it",
+                    );
+                    continue;
+                }
+                a => a,
+            };
             match a {
                 LoopAct::Pick(n) => out.push(FromUi::LoopPick(n)),
                 LoopAct::NewLoop => {
@@ -1935,7 +2160,11 @@ impl Player {
             Mode::Pattern => "pattern",
             Mode::Direct | Mode::Repeat => "rate",
         };
-        let text = if self.kit_list {
+        let text = if self.typing.is_some() {
+            NUMPAD_HINT.to_string()
+        } else if self.history.is_some() {
+            HISTORY_HINT.to_string()
+        } else if self.kit_list {
             KITS_HINT.to_string()
         } else if self.status.shift
             && self.ready
@@ -1948,6 +2177,8 @@ impl Player {
             SHIFT_SAMPLE_HINT.to_string()
         } else if self.status.shift && self.ready {
             SHIFT_HINT.to_string()
+        } else if self.status.erase && self.ready {
+            ERASE_HINT.to_string()
         } else if self.status.mute_keys == MuteKeys::Tracks {
             TRACK_MUTE_HINT.to_string()
         } else if self.status.mute_keys == MuteKeys::Pads {
@@ -1967,8 +2198,8 @@ impl Player {
             match self.view {
                 // Play has no kit list to tap since 12 Nov, and Q-Link 1
                 // is Swing: the wheel picks the kit, the master bar is the
-                // level.
-                View::Play => format!("Tap All, Beats, Loop or Drum: the view   ·   Wheel: kit   ·   the master bar: \
+                // level. The Drum view is folded into Beats (13 Nov).
+                View::Play => format!("Tap All, Beats or Loop: the view   ·   Wheel: kit   ·   the master bar: \
                                        level   ·   NOTE REPEAT: repeat   ·   MENU: options   ·   {stop}"),
                 View::Arrange if self.time.edit.is_some() => {
                     time_view::edit_hint(self.time.edit.as_ref().map_or(Lens::Grid, |e| e.editor.lens))
@@ -2171,7 +2402,21 @@ impl Player {
                 self.ui.set_theme(t);
             }
         }
+        let timing = self.settings.timing_strip != s.timing_strip;
         self.settings = s;
+        if timing {
+            // Play's options turned the Beats view's timing strip on or
+            // off: its page changes.
+            let v = self.play.view;
+            let _ = self.arp_panel.set_quick_layout(
+                &mut self.ui,
+                &v.quick_layout_for(self.settings.timing_strip),
+            );
+            self.refresh_play();
+            if self.ready && self.view == View::Play {
+                self.show_view(View::Play);
+            }
+        }
         // The sampler keeps the line input only while it is on.
         let line = self.settings.line_input;
         self.sample.set_line_input(&mut self.ui, line);
@@ -2204,11 +2449,331 @@ impl Player {
         }
     }
 
+    /// The last run crashed: Prefs > At start opens nothing this time, and
+    /// once the sound is going the screen says why (crash.rs).
+    pub fn safe_start(&mut self) {
+        self.crashed = true;
+    }
+
     /// Shows `line` in place of the hint for [`TELL_SECONDS`].
+    /// UNDO, or SHIFT + UNDO (`redo`), on a page whose history the screen
+    /// picks (the Looper tab and the Sample and Pads tabs have theirs in
+    /// the app). It follows what the page shows (Jay, 13 Nov 13:53Z): the
+    /// loop on Play's Loop view, the takes on Beats, on Arrange and on the
+    /// Arp and pattern screens, and on All whichever of the two changed
+    /// last. Other pages say they have nothing to undo.
+    fn undo(&mut self, redo: bool) {
+        use mpfree_looper::Command;
+        let to = match self.undo_source() {
+            Some(HistoryOf::Loop) => {
+                FromUi::LoopCommand(if redo { Command::Redo } else { Command::Undo })
+            }
+            Some(HistoryOf::Takes) => FromUi::Time(if redo {
+                TimeAction::Redo
+            } else {
+                TimeAction::Undo
+            }),
+            Some(HistoryOf::Turns(on)) => FromUi::UndoOn { on, redo },
+            Some(HistoryOf::Sample) => {
+                let before = self.sample.page();
+                self.sample.undo(&mut self.ui, redo);
+                self.sample_after(before);
+                return;
+            }
+            None => {
+                self.tell(if redo {
+                    "Nothing to redo on this page"
+                } else {
+                    "Nothing to undo on this page"
+                });
+                return;
+            }
+        };
+        self.outbox.push(to);
+        // The app's histories: the list, when open, asks again at once.
+        if let Some(h) = self.history.as_mut() {
+            h.ask_in = 0.0;
+        }
+    }
+
+    /// Whose history UNDO follows on the page showing: the loop on Play's
+    /// Loop view and the Looper tab, the takes on Beats, Arrange and the
+    /// Arp and pattern screens, on All whichever of the two changed last,
+    /// the kit's edits on the Sample and Pads tabs, and the turns on the
+    /// Synth tab and the mixer. None elsewhere.
+    fn undo_source(&self) -> Option<HistoryOf> {
+        Some(match self.view {
+            View::Play => match self.play.view {
+                PlayView::Loop => HistoryOf::Loop,
+                PlayView::Beats => HistoryOf::Takes,
+                PlayView::All if self.undo_loop => HistoryOf::Loop,
+                PlayView::All => HistoryOf::Takes,
+            },
+            View::Arrange | View::Arp | View::Pattern => HistoryOf::Takes,
+            View::Looper => HistoryOf::Loop,
+            View::Sample | View::Pads => HistoryOf::Sample,
+            View::Synth => HistoryOf::Turns(UndoOn::Synth),
+            View::Mixer => HistoryOf::Turns(UndoOn::Mixer),
+            _ => return None,
+        })
+    }
+
+    /// Opens the undo history of the page showing (UNDO held for
+    /// [`UNDO_HOLD`]); on a page without one it says so.
+    fn open_history(&mut self) {
+        let Some(of) = self.undo_source() else {
+            self.tell("Nothing to undo on this page");
+            return;
+        };
+        if self.history.is_some() {
+            return;
+        }
+        self.close_numpad();
+        let back = self.ui.page().to_string();
+        if let Some(p) = self.ui.get_mut::<mpfree_ui::history::HistoryPanel>(HISTORY) {
+            p.clear();
+        }
+        if self.ui.show(HISTORY_PAGE).is_ok() {
+            self.history = Some(HistoryOpen {
+                of,
+                back,
+                ask_in: 0.0,
+            });
+            self.outbox.push(FromUi::Overlay(true));
+            self.refresh_history();
+            self.refresh_hint();
+        }
+    }
+
+    /// Closes the undo history and shows the page it was opened over.
+    fn close_history(&mut self) {
+        let Some(h) = self.history.take() else {
+            return;
+        };
+        if let Some(p) = self.ui.get_mut::<mpfree_ui::history::HistoryPanel>(HISTORY) {
+            p.clear();
+        }
+        let _ = self.ui.show(&h.back);
+        self.outbox.push(FromUi::Overlay(false));
+        self.refresh_hint();
+    }
+
+    /// The open list follows its history: the screen's own (the loop, the
+    /// takes, the kit's edits) as they stand, the app's (the turns) asked
+    /// for every [`HISTORY_ASK`] and on each change made here.
+    fn refresh_history(&mut self) {
+        let Some(h) = self.history.as_mut() else {
+            return;
+        };
+        let of = h.of;
+        if let HistoryOf::Turns(on) = of {
+            if h.ask_in <= 0.0 {
+                h.ask_in = HISTORY_ASK;
+                self.outbox.push(FromUi::UndoHistory(on));
+            }
+            return;
+        }
+        let Some((title, rows, now)) = self.history_rows(of) else {
+            return;
+        };
+        self.show_history(&title, rows, now);
+    }
+
+    /// Puts `rows` in the list when they are not what it shows.
+    fn show_history(&mut self, title: &str, rows: Vec<String>, now: usize) {
+        let Some(p) = self.ui.get::<mpfree_ui::history::HistoryPanel>(HISTORY) else {
+            return;
+        };
+        if p.title == title && p.rows == rows && p.now == now {
+            return;
+        }
+        if let Some(p) = self.ui.get_mut::<mpfree_ui::history::HistoryPanel>(HISTORY) {
+            p.set(title, rows, now);
+        }
+    }
+
+    /// The screen's own histories as the list shows them: its title, its
+    /// rows ("Start", the steps UNDO takes back, oldest first, then REDO's)
+    /// and the row that is now.
+    fn history_rows(&self, of: HistoryOf) -> Option<(String, Vec<String>, usize)> {
+        let title = |what: &str| format!("Undo history · {what}");
+        match of {
+            HistoryOf::Loop => {
+                let (name, h) = self.looper_page.history_rows();
+                Some((title(&name), h.rows, h.now))
+            }
+            HistoryOf::Takes => {
+                let st = &self.time;
+                let name =
+                    |r: &mpfree_time_ui::view::TakeRow| mpfree_time_ui::view::take_title(st, r);
+                let mut rows = vec!["Start: before these takes".to_string()];
+                rows.extend(st.done.iter().map(name));
+                let now = rows.len() - 1;
+                rows.extend(st.undone.iter().rev().map(name));
+                Some((title("Takes"), rows, now))
+            }
+            HistoryOf::Sample => {
+                let (kit, rows, now) = self.sample.history_rows()?;
+                Some((title(&kit), rows, now))
+            }
+            HistoryOf::Turns(_) => None,
+        }
+    }
+
+    /// A row of the undo history picked (a tap, or the wheel's push): back
+    /// or forward to just after that step, as many steps as it takes.
+    fn history_jump(&mut self, row: usize) {
+        let Some(h) = self.history.as_ref() else {
+            return;
+        };
+        let of = h.of;
+        let Some(p) = self.ui.get::<mpfree_ui::history::HistoryPanel>(HISTORY) else {
+            return;
+        };
+        if row >= p.rows.len() {
+            return;
+        }
+        let steps = row as i32 - p.now as i32;
+        if steps == 0 {
+            return;
+        }
+        let redo = steps > 0;
+        let n = steps.unsigned_abs() as usize;
+        match of {
+            HistoryOf::Loop => self.outbox.push(FromUi::LoopSteps(steps)),
+            HistoryOf::Takes => {
+                let a = if redo {
+                    TimeAction::Redo
+                } else {
+                    TimeAction::Undo
+                };
+                self.outbox.extend((0..n).map(|_| FromUi::Time(a)));
+            }
+            HistoryOf::Sample => {
+                let before = self.sample.page();
+                for _ in 0..n {
+                    self.sample.undo(&mut self.ui, redo);
+                }
+                self.sample_after(before);
+                self.print_sample_lines();
+            }
+            HistoryOf::Turns(on) => {
+                self.outbox
+                    .extend((0..n).map(|_| FromUi::UndoOn { on, redo }));
+                if let Some(h) = self.history.as_mut() {
+                    h.ask_in = 0.0;
+                }
+            }
+        }
+        self.refresh_history();
+    }
+
+    /// REC (or OVERDUB, `overdub`) on the Play page (Jay, 13 Nov 14:37Z):
+    /// the looper on the All and Loop views, as the loop strip's own
+    /// Record and Overdub; the takes on Beats.
+    fn play_rec(&mut self, overdub: bool) {
+        use crate::looper_page::{B_OVERDUB, B_RECORD};
+        let a = if self.view == View::Play && self.play.view != PlayView::Beats {
+            FromUi::Looper(if overdub { B_OVERDUB } else { B_RECORD })
+        } else {
+            FromUi::Time(TimeAction::Transport(if overdub {
+                mpfree_transport::Command::ToggleOverdub
+            } else {
+                mpfree_transport::Command::Record
+            }))
+        };
+        self.outbox.push(a);
+    }
+
+    /// Whether UNDO on the page showing has something to take back, as
+    /// [`Self::undo`] picks the history (the Looper tab and the Sample and
+    /// Pads tabs too, whose UNDO the app sends straight on).
+    fn undo_ready(&self) -> bool {
+        match self.undo_source() {
+            Some(HistoryOf::Loop) => !self.looper.history.done().is_empty(),
+            Some(HistoryOf::Takes) => !self.time.done.is_empty(),
+            Some(HistoryOf::Sample) => self.sample.can_undo(),
+            Some(HistoryOf::Turns(UndoOn::Synth)) => self.turns_ready.0,
+            Some(HistoryOf::Turns(UndoOn::Mixer)) => self.turns_ready.1,
+            None => false,
+        }
+    }
+
     pub fn tell(&mut self, line: &str) {
         self.told = Some((tell_text(line), TELL_SECONDS));
         self.tells += 1;
         self.refresh_hint();
+    }
+
+    /// Opens the number pad for `ask` over the page showing.
+    fn open_numpad(&mut self, ask: mpfree_ui::numpad::NumberAsk, to: TypeTo) {
+        let back = self.ui.page().to_string();
+        if let Some(p) = self.ui.get_mut::<mpfree_ui::numpad::NumPad>(NUMPAD) {
+            p.open(ask);
+        }
+        if self.ui.show(NUMPAD_PAGE).is_ok() {
+            self.typing = Some(Typing { to, back });
+            self.outbox.push(FromUi::Overlay(true));
+            self.refresh_hint();
+        }
+    }
+
+    /// Closes the number pad (nothing typed goes anywhere) and shows the
+    /// page it was opened over.
+    fn close_numpad(&mut self) {
+        let Some(t) = self.typing.take() else {
+            return;
+        };
+        if let Some(p) = self.ui.get_mut::<mpfree_ui::numpad::NumPad>(NUMPAD) {
+            p.close();
+        }
+        let _ = self.ui.show(&t.back);
+        self.outbox.push(FromUi::Overlay(false));
+        self.refresh_hint();
+    }
+
+    /// Enter on the number pad: the number goes to its field and the pad
+    /// closes; out of range, the pad stays and says the range; with
+    /// nothing typed, it closes.
+    fn numpad_enter(&mut self) -> Option<FromUi> {
+        let p = self.ui.get_mut::<mpfree_ui::numpad::NumPad>(NUMPAD)?;
+        let value = p.entered();
+        if value.is_none() && !p.warning.is_empty() {
+            return None;
+        }
+        let key = p.ask.as_ref().map(|a| a.key.clone()).unwrap_or_default();
+        let to = self.typing.as_ref().map(|t| t.to);
+        self.close_numpad();
+        let v = value?;
+        match to? {
+            TypeTo::Sample => {
+                self.sample.typed(&mut self.ui, &key, v, &mut self.outbox);
+                self.print_sample_lines();
+                None
+            }
+            TypeTo::Tempo => {
+                self.tell(&format!("Tempo: {v:.1} BPM"));
+                Some(FromUi::Time(TimeAction::Transport(
+                    mpfree_transport::Command::SetTempo(v),
+                )))
+            }
+        }
+    }
+
+    /// The number pad for the tempo (a long press on Play's BPM).
+    fn type_tempo(&mut self) {
+        self.open_numpad(
+            mpfree_ui::numpad::NumberAsk {
+                key: "tempo".to_string(),
+                title: "Tempo".to_string(),
+                unit: "BPM".to_string(),
+                value: (self.play.transport.bpm * 10.0).round() / 10.0,
+                min: mpfree_transport::time::MIN_BPM,
+                max: mpfree_transport::time::MAX_BPM,
+                decimals: 1,
+            },
+            TypeTo::Tempo,
+        );
     }
 
     /// How many times [`Player::tell`] has said something (the smoke tests
@@ -2219,6 +2784,55 @@ impl Player {
     }
 
     pub fn apply(&mut self, msg: ToUi) {
+        // The number pad takes the wheel, - / + and the push while open;
+        // a change of page closes it.
+        if self.typing.is_some() {
+            use crate::app::RowKey;
+            let nudge = match &msg {
+                ToUi::SampleWheel(d) | ToUi::Rows(RowKey::Pick(d) | RowKey::Step(d)) => Some(*d),
+                _ => None,
+            };
+            if let Some(d) = nudge {
+                if let Some(p) = self.ui.get_mut::<mpfree_ui::numpad::NumPad>(NUMPAD) {
+                    p.nudge(d);
+                }
+                return;
+            }
+            if matches!(msg, ToUi::Rows(RowKey::Editing(_))) {
+                if let Some(a) = self.numpad_enter() {
+                    self.outbox.push(a);
+                }
+                return;
+            }
+            if matches!(msg, ToUi::Show(_) | ToUi::PlayView(_)) {
+                self.close_numpad();
+            }
+        }
+        // The undo history takes them too: the wheel and - / + move its
+        // outline, the push goes to the step outlined.
+        if self.history.is_some() {
+            use crate::app::RowKey;
+            match &msg {
+                ToUi::SampleWheel(d) | ToUi::Rows(RowKey::Pick(d) | RowKey::Step(d)) => {
+                    if let Some(p) = self.ui.get_mut::<mpfree_ui::history::HistoryPanel>(HISTORY) {
+                        p.wheel(*d);
+                    }
+                    return;
+                }
+                ToUi::Rows(RowKey::Editing(_)) => {
+                    let picked = self
+                        .ui
+                        .get::<mpfree_ui::history::HistoryPanel>(HISTORY)
+                        .map(|p| p.picked);
+                    if let Some(row) = picked {
+                        self.history_jump(row);
+                    }
+                    return;
+                }
+                ToUi::Show(_) | ToUi::PlayView(_) => self.close_history(),
+                _ => {}
+            }
+        }
         // The engines' news of an edit made with the controls (a clip
         // recorded, a knob turned): the work is unsaved.
         if matches!(
@@ -2234,6 +2848,25 @@ impl Player {
         }
         match msg {
             ToUi::Tell(l) => self.tell(&l),
+            ToUi::Undo(redo) => self.undo(redo),
+            ToUi::UndoButton(down) => {
+                self.undo_held = (down && self.typing.is_none()).then_some(0.0);
+            }
+            ToUi::UndoHistory { on, rows, now } => {
+                if self
+                    .history
+                    .as_ref()
+                    .is_some_and(|h| h.of == HistoryOf::Turns(on))
+                {
+                    let title = match on {
+                        UndoOn::Synth => "Undo history · Synth sound",
+                        UndoOn::Mixer => "Undo history · Mixer",
+                    };
+                    self.show_history(title, rows, now);
+                }
+            }
+            ToUi::PlayRec(overdub) => self.play_rec(overdub),
+            ToUi::TurnsReady { synth, mixer } => self.turns_ready = (synth, mixer),
             ToUi::Line(l) | ToUi::Event(l) => {
                 let tone = tone_of(&l);
                 if let Some(e) = self.ui.get_mut::<LogPanel>("events") {
@@ -2400,7 +3033,7 @@ impl Player {
             }
             ToUi::Hit(h) => {
                 self.play.hit(h);
-                if self.view == View::Play && self.play.view == PlayView::Drum {
+                if self.timing_shown() {
                     self.refresh_play();
                 }
             }
@@ -2481,6 +3114,13 @@ impl Player {
             ToUi::Map(m) => DebugPages::set_map(&mut self.ui, &m),
             ToUi::Engines(shared) => self.engines = Some(shared),
             ToUi::Looper(v) => {
+                // The picked loop's history moved: UNDO on All takes it.
+                let h = &v.history;
+                let seen = (v.selected, h.done().len(), h.redo().len());
+                if seen.0 == self.seen_loop.0 && seen != self.seen_loop {
+                    self.undo_loop = true;
+                }
+                self.seen_loop = seen;
                 self.looper = *v;
                 if matches!(self.view, View::Looper | View::Play) {
                     self.refresh_looper();
@@ -2577,7 +3217,7 @@ impl Player {
                 drop(old);
                 self.opened_at = Some(Instant::now());
                 if let Some(b) = self.browser.as_mut() {
-                    b.set_unsaved(false);
+                    b.open_landed();
                 }
             }
             ToUi::Show(v) => {
@@ -2857,6 +3497,12 @@ impl Player {
                 // The lens the note editor shows, if it is open.
                 let lens = |t: &TimeState| t.edit.as_ref().map(|e| e.editor.lens);
                 let swapped = st.song_view != self.time.song_view || lens(&st) != lens(&self.time);
+                // A take made, undone or redone: UNDO on All takes the takes.
+                let seen = (st.done.len(), st.undone.len());
+                if seen != self.seen_takes {
+                    self.undo_loop = false;
+                    self.seen_takes = seen;
+                }
                 fill_sounds(&mut st, &self.track_sounds);
                 self.time = *st;
                 self.sample.set_tempo(self.time.transport.bpm);
@@ -3177,10 +3823,16 @@ impl Player {
             A::SaveLists(text) => self.outbox.push(FromUi::SaveBrowserLists(text)),
             A::PickerClosed { .. } => {}
             // Projects (project.rs).
-            A::SaveRequested => self.outbox.push(FromUi::SaveProject),
+            A::SaveRequested => self.ask_save(),
             A::NewProject => self.new_project(),
             A::ProjectOpened { loc, snap } => self.open_project(&loc, &snap),
             A::ProjectSaved { loc } => self.say(format!("project: saved {}", loc.name())),
+            // Every 2 minutes while editing: the terminal and the system
+            // log only, not the Events log.
+            A::Autosaved { loc } => {
+                println!("project: autosaved into {}", loc.name());
+                let _ = io::stdout().flush();
+            }
             A::LastNotOpened(e) => self.say(format!(
                 "project: the last project wasn't opened ({e}); the new one stays"
             )),
@@ -3219,29 +3871,89 @@ impl Player {
 
     // ------------------------------------------------------------ projects
 
+    /// SHIFT + BROWSE or Save: the audio loop is asked for its parts. A
+    /// save the musician asks for wins over an autosave asked for at the
+    /// same moment (the parts that come serve the save).
+    fn ask_save(&mut self) {
+        self.autosaving = false;
+        self.autosave_dirty = false;
+        self.autosave_in = AUTOSAVE_S;
+        self.outbox.push(FromUi::SaveProject);
+    }
+
+    /// Autosave (Jay's pick, 14 Nov): once there has been unsaved work,
+    /// edited since the last autosave, for [`AUTOSAVE_S`], the audio loop
+    /// is asked for its parts as for a save,
+    /// and [`Player::save_project`] hands them to autosave's own project
+    /// (`Browser::autosave_with`). It waits while a project opens; parts
+    /// asked for that never come (an open stopped the save) are given up
+    /// after the same time, and asked for again.
+    fn autosave_tick(&mut self, dt: f32) {
+        let unsaved = self.browser.as_ref().is_some_and(|b| b.unsaved());
+        if self.autosaving {
+            self.autosave_in -= dt.max(0.0);
+            if self.autosave_in <= 0.0 {
+                self.autosaving = false;
+                self.autosave_dirty = true;
+                self.autosave_in = AUTOSAVE_S;
+                println!("project: autosave's parts never came; asking again later");
+            }
+            return;
+        }
+        let opening = !self.start_checked
+            || self.loops_load.is_some()
+            || self.audio_load.is_some()
+            || self.project_defaults.is_none()
+            || self.opened_at.is_some_and(|t| t.elapsed() < OPEN_SETTLE);
+        if !unsaved || !self.autosave_dirty || opening || self.autosave_off {
+            self.autosave_in = AUTOSAVE_S;
+            return;
+        }
+        self.autosave_in -= dt.max(0.0);
+        if self.autosave_in <= 0.0 {
+            self.autosaving = true;
+            self.autosave_dirty = false;
+            self.autosave_in = AUTOSAVE_S;
+            self.outbox.push(FromUi::SaveProject);
+        }
+    }
+
     /// The audio loop's parts of a save came: the screen's own (the kits
     /// with their sounds, the I/O setup) join them, and the browser's
     /// worker saves the lot, whole or not at all (mpfree-library).
     fn save_project(&mut self, mut c: Box<crate::project::Collected>) {
         use mpfree_library::Part as _;
+        // Autosave's parts go to autosave's project, quietly; a reason not
+        // to save is said only for a save the musician asked for.
+        let auto = std::mem::take(&mut self.autosaving);
+        if auto {
+            self.autosave_in = AUTOSAVE_S;
+        }
         if self.browser.is_none() {
-            self.say(
-                "project: not saved, there is no library (the app was started without --data)"
-                    .to_string(),
-            );
+            if !auto {
+                self.say(
+                    "project: not saved, there is no library (the app was started without --data)"
+                        .to_string(),
+                );
+            }
             return;
         }
         if self.loops_load.is_some() {
-            self.say(
-                "project: not saved, the loops are still opening (try again in a moment)".into(),
-            );
+            if !auto {
+                self.say(
+                    "project: not saved, the loops are still opening (try again in a moment)"
+                        .into(),
+                );
+            }
             return;
         }
         if self.audio_load.is_some() {
-            self.say(
-                "project: not saved, the audio tracks are still opening (try again in a moment)"
-                    .into(),
-            );
+            if !auto {
+                self.say(
+                    "project: not saved, the audio tracks are still opening (try again in a moment)"
+                        .into(),
+                );
+            }
             return;
         }
         let mut extra = Vec::new();
@@ -3297,6 +4009,10 @@ impl Player {
         let Some(b) = self.browser.as_mut() else {
             return;
         };
+        if auto {
+            b.autosave_with(snap, samples, now_utc());
+            return;
+        }
         b.save_with(snap, samples, now_utc());
         mpfree_browser_ui::show(&mut self.ui, b);
         let line = match b.project() {
@@ -3444,6 +4160,41 @@ impl Player {
             return;
         }
         self.start_checked = true;
+        // The last run's unsaved work, autosaved after its last save (it
+        // ended with a crash or the power switch), is set aside first, so
+        // that this run's autosave can't write over it.
+        let kept = match self.browser.as_mut().and_then(|b| b.keep_newer_autosave()) {
+            Some(Ok(l)) => Some(l.name().to_string()),
+            Some(Err(e)) => {
+                self.autosave_off = true;
+                self.say(format!(
+                    "project: autosave is off this run, so as not to write over the last \
+                     run's unsaved work, which couldn't be set aside ({e})"
+                ));
+                None
+            }
+            None => None,
+        };
+        if self.crashed {
+            // A safe start: the new project stays, and the screen says why.
+            let last = match (&self.browser, self.settings.open_last) {
+                (Some(b), true) => b.last_project().map(|l| l.name().to_string()),
+                _ => None,
+            };
+            let words = crate::crash::screen_line(
+                self.settings.open_last,
+                last.as_deref(),
+                kept.as_deref(),
+            );
+            self.say(format!("project: safe start: {words}"));
+            self.tell(&words);
+            return;
+        }
+        if let Some(k) = &kept {
+            let words = format!("Unsaved work from the last run is in Projects > {k}.");
+            self.say(format!("project: {words}"));
+            self.tell(&words);
+        }
         if !self.settings.open_last {
             return;
         }
@@ -4026,6 +4777,7 @@ impl Player {
         }
         if let Some(b) = self.browser.as_mut() {
             b.set_unsaved(true);
+            self.autosave_dirty = true;
         }
     }
 
@@ -4036,7 +4788,11 @@ impl Player {
         let page = match v {
             View::Play if self.band_showing() && self.ready => QUICK_PAGE.to_string(),
             View::Play if self.levels.open && self.ready => LEVELS_PAGE.to_string(),
-            View::Play => self.play.view.page().to_string(),
+            View::Play => self
+                .play
+                .view
+                .page_for(self.settings.timing_strip)
+                .to_string(),
             View::Arrange => CLIPS_PAGE.to_string(),
             View::Synth => "Synth".to_string(),
             View::Looper => LOOPER_PAGE.to_string(),
@@ -4296,6 +5052,7 @@ impl Player {
             .ui
             .touch(finger, phase, x, y)
             .and_then(|ev| self.on_event(ev));
+        self.watch_tempo_press(finger, phase, x, y, &action);
         if matches!(phase, Touch::Up | Touch::Cancel) && self.view.sampler() {
             // A drag on the Sample page ends with its finger: one undo step.
             self.sample.lift();
@@ -4326,6 +5083,35 @@ impl Player {
         }
     }
 
+    /// A finger on Play's BPM (its tap taps the tempo): held still for
+    /// [`TEMPO_HOLD`], it opens the number pad for the tempo
+    /// ([`Self::tick`]). A slide or a lift lets it go.
+    fn watch_tempo_press(
+        &mut self,
+        finger: u64,
+        phase: Touch,
+        x: i32,
+        y: i32,
+        action: &Option<FromUi>,
+    ) {
+        match phase {
+            Touch::Down if matches!(action, Some(FromUi::TapTempo)) => {
+                self.tempo_press = Some((finger, 0.0, x, y));
+            }
+            Touch::Move => {
+                if let Some((f, _, x0, y0)) = self.tempo_press {
+                    if f == finger && ((x - x0).pow(2) + (y - y0).pow(2)) > 20 * 20 {
+                        self.tempo_press = None;
+                    }
+                }
+            }
+            Touch::Up | Touch::Cancel if self.tempo_press.is_some_and(|p| p.0 == finger) => {
+                self.tempo_press = None;
+            }
+            _ => {}
+        }
+    }
+
     /// A touch meant something: hand it to the audio thread, which decides.
     pub fn on_event(&mut self, ev: UiEvent) -> Option<FromUi> {
         let synth_widget = [
@@ -4345,6 +5131,9 @@ impl Player {
             let name = self.auto_synth_name();
             self.sample.set_auto_synth(&mut self.ui, name);
             self.sample.event(&mut self.ui, &ev, &mut self.outbox);
+            if let Some(ask) = self.sample.take_number_ask() {
+                self.open_numpad(ask, TypeTo::Sample);
+            }
             if let Some(plan) = self.sample.take_auto_request() {
                 // A copy of the patch, made here: the audio thread keeps
                 // playing its own and is never asked for anything.
@@ -4356,6 +5145,11 @@ impl Player {
             self.sample_after(before);
             self.print_sample_lines();
             return None;
+        }
+        if self.status.erase {
+            if let Some(answer) = self.erase_tap(&ev) {
+                return answer;
+            }
         }
         match (ev.widget.as_str(), ev.kind.clone()) {
             ("header", EventKind::Tab(i)) => {
@@ -4414,6 +5208,21 @@ impl Player {
             (play_page::TRANSPORT, EventKind::Select(crate::play_widgets::TAP_BPM)) => {
                 Some(FromUi::TapTempo)
             }
+            (NUMPAD, EventKind::Tab(mpfree_ui::numpad::KEY_ENTER)) => self.numpad_enter(),
+            (NUMPAD, EventKind::Tab(mpfree_ui::numpad::KEY_CANCEL)) => {
+                self.close_numpad();
+                None
+            }
+            (NUMPAD, _) => None,
+            (HISTORY, EventKind::Select(row)) => {
+                self.history_jump(row);
+                None
+            }
+            (HISTORY, EventKind::Tab(mpfree_ui::history::TAB_CLOSE)) => {
+                self.close_history();
+                None
+            }
+            (HISTORY, _) => None,
             (play_page::TRANSPORT, EventKind::Tab(i)) => {
                 self.show_play_view(PlayView::from_index(i));
                 None
@@ -4450,6 +5259,31 @@ impl Player {
                 self.refresh_play();
                 self.refresh_qlinks();
                 a.map(FromUi::Steps)
+            }
+            // The pattern head: the page, and the length (32, 64, 128 steps).
+            (play_page::STEPS, EventKind::Tab(k))
+                if k == play_widgets::HEAD_PREV || k == play_widgets::HEAD_NEXT =>
+            {
+                let d = if k == play_widgets::HEAD_PREV { -1 } else { 1 };
+                if !self.play.turn_page(d) {
+                    self.tell(if d < 0 {
+                        "steps: this is the first page"
+                    } else {
+                        "steps: this is the last page (+ adds steps)"
+                    });
+                }
+                self.refresh_play();
+                self.refresh_qlinks();
+                None
+            }
+            (play_page::STEPS, EventKind::Tab(k)) => {
+                match self.play.length_action(k == play_widgets::HEAD_LONGER) {
+                    Ok(a) => Some(FromUi::Steps(a)),
+                    Err(why) => {
+                        self.tell(&why);
+                        None
+                    }
+                }
             }
             (play_page::STEPS, EventKind::Toggle(pad)) if pad < 16 => {
                 let mute = self.play.levels.pad_mutes & (1 << pad) == 0;
@@ -4659,6 +5493,39 @@ impl Player {
 
     /// Advance animations by `dt` seconds.
     pub fn tick(&mut self, dt: f32) {
+        // UNDO held: the page's undo history.
+        if let Some(held) = self.undo_held {
+            let held = held + dt.max(0.0);
+            if held >= UNDO_HOLD {
+                self.undo_held = None;
+                self.open_history();
+            } else {
+                self.undo_held = Some(held);
+            }
+        }
+        // The undo history open: it follows its history.
+        if let Some(h) = self.history.as_mut() {
+            h.ask_in -= dt.max(0.0);
+            self.refresh_history();
+        }
+        // A finger held on Play's BPM: type the tempo.
+        if let Some((f, held, x, y)) = self.tempo_press {
+            let held = held + dt.max(0.0);
+            if held >= TEMPO_HOLD {
+                self.tempo_press = None;
+                if self.view == View::Play && self.typing.is_none() {
+                    self.type_tempo();
+                }
+            } else {
+                self.tempo_press = Some((f, held, x, y));
+            }
+        }
+        // The UNDO light follows whether the page has something to undo.
+        let ready = self.undo_ready();
+        if ready != self.undo_ready {
+            self.undo_ready = ready;
+            self.outbox.push(FromUi::UndoReady(ready));
+        }
         // A told line goes back to the hint once read.
         if let Some((_, left)) = self.told.as_mut() {
             *left -= dt.max(0.0);
@@ -4702,6 +5569,7 @@ impl Player {
         self.poll_loops();
         self.poll_audio();
         self.open_at_start();
+        self.autosave_tick(dt);
         if let Some(k) = self.sample.take_wanted_kit() {
             // An opened project's kit: the audio thread switches and says so.
             self.outbox.push(FromUi::Kit(k));
@@ -5303,6 +6171,7 @@ pub fn sample_player(fonts: Fonts) -> Player {
         rate: "1/16",
         bpm: 120.0,
         mute_keys: MuteKeys::Off,
+        erase: false,
     }));
     for (pad, v) in [(0usize, 112u8), (5, 87), (10, 64)] {
         p.apply(ToUi::PadDown { pad, velocity: v });
@@ -5552,7 +6421,7 @@ pub fn sample_pattern(p: &mut Player, sixteenths: i64) {
 }
 
 /// Hits played on the pads over the last two bars, a little off the grid
-/// as hands are (mostly early, as mockup I), for the Drum view's timing.
+/// as hands are (mostly early, as mockup I), for Beats' timing strip.
 pub fn sample_hits(p: &mut Player) {
     let t = p.play.transport;
     let bar = t.meter.bar_ticks() as f64;
@@ -5625,6 +6494,7 @@ pub fn sample_play(fonts: Fonts, v: PlayView) -> Player {
         rate: "1/16",
         bpm: 92.0,
         mute_keys: MuteKeys::Off,
+        erase: false,
     }));
     sample_loop(&mut p);
     if v == PlayView::Loop {
@@ -5640,8 +6510,6 @@ pub fn sample_play(fonts: Fonts, v: PlayView) -> Player {
         PlayView::All => 1,
         PlayView::Beats => 6,
         PlayView::Loop => 8,
-        // Bar 10: late in the timing view's two bars, as mockup I.
-        PlayView::Drum => 26,
     };
     sample_pattern(&mut p, at);
     // The kits' projects (Boom Bap's pads with sounds behind them), so the
@@ -5650,7 +6518,7 @@ pub fn sample_play(fonts: Fonts, v: PlayView) -> Player {
         projects: vec![mpfree_sampler::model::Project::new(), boom_bap_project()],
         rate: 44_100,
     });
-    p.play.last_pad = if v == PlayView::Drum { 4 } else { 0 };
+    p.play.last_pad = 0;
     p.apply(ToUi::Level { db: -1.5 });
     for _ in 0..3 {
         p.apply(ToUi::Meter {
@@ -5680,18 +6548,14 @@ pub fn sample_play(fonts: Fonts, v: PlayView) -> Player {
             p.play.xy.touch(0.68, 0.62);
         }
         PlayView::Beats => {
+            // Your timing's strip, from two bars of hits.
+            sample_hits(&mut p);
             p.play.selected = Some((0, 6));
             p.play.throw(2, true);
             p.apply(ToUi::QLinkTouch(0, true));
         }
         PlayView::Loop => {
             p.play.throw(2, true);
-            p.play.xy.touch(0.68, 0.62);
-        }
-        PlayView::Drum => {
-            sample_hits(&mut p);
-            p.play.throw(2, true);
-            p.apply(ToUi::QLinkTouch(2, true));
             p.play.xy.touch(0.68, 0.62);
         }
     }
@@ -5889,6 +6753,9 @@ pub fn apply_effects(p: &mut Player, fx: Vec<crate::app::Effect>) {
                 p.apply(ToUi::Line(l.clone()));
                 p.apply(ToUi::Tell(l));
             }
+            Effect::Undo { redo } => p.apply(ToUi::Undo(redo)),
+            Effect::UndoButton(down) => p.apply(ToUi::UndoButton(down)),
+            Effect::PlayRec { overdub } => p.apply(ToUi::PlayRec(overdub)),
             Effect::ClipsWheel { delta, scroll } => p.apply(ToUi::ClipsWheel { delta, scroll }),
             Effect::Map(m) => p.apply(ToUi::Map(Box::new(m))),
             Effect::SynthPage(d) => p.apply(ToUi::SynthPage(d)),
@@ -5899,7 +6766,7 @@ pub fn apply_effects(p: &mut Player, fx: Vec<crate::app::Effect>) {
             Effect::PlayView(v) => p.apply(ToUi::PlayView(v)),
             Effect::SampleEditor(e) => p.apply(ToUi::SampleEditor(e)),
             Effect::Browse(k) => p.apply(ToUi::Browse(k)),
-            Effect::SaveProject => p.outbox.push(FromUi::SaveProject),
+            Effect::SaveProject => p.ask_save(),
             Effect::Light(..)
             | Effect::StopSounds
             | Effect::Kit(_)
@@ -6327,7 +7194,6 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         ("play-all-loop", PlayView::All),
         ("play-beats", PlayView::Beats),
         ("play-loop", PlayView::Loop),
-        ("play-drum", PlayView::Drum),
     ] {
         out.push((name, sample_play(fonts(), v)));
     }
@@ -6456,6 +7322,42 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         }
     }
     out.push(("prefs-touch", touch));
+    // The number pad, typing Play's tempo (a long press on its BPM).
+    let mut typing = sample_player(fonts());
+    typing.apply(ToUi::Show(View::Play));
+    typing.type_tempo();
+    if let Some(n) = typing.ui.get_mut::<mpfree_ui::numpad::NumPad>(NUMPAD) {
+        n.typed = "98.5".to_string();
+    }
+    out.push(("numpad-tempo", typing));
+    // UNDO held on Play's Beats view: the takes' history, two undone, the
+    // wheel's outline one step back from now.
+    let mut undo = sample_player(fonts());
+    undo.apply(ToUi::Show(View::Play));
+    undo.apply(ToUi::PlayView(Some(PlayView::Beats)));
+    let mut st = undo.time.clone();
+    let take = |n: u32, track: usize, captured: bool, edited: bool| mpfree_time_ui::view::TakeRow {
+        number: n,
+        captured,
+        edited,
+        made: n == 1,
+        at: Some((track, 0)),
+        added: 4 + n as usize,
+        erased: usize::from(edited),
+        deleted: false,
+    };
+    st.done = vec![
+        take(1, 0, false, false),
+        take(2, 0, false, true),
+        take(3, 1, true, false),
+        take(4, 0, false, true),
+    ];
+    st.undone = vec![take(6, 1, false, false), take(5, 0, false, true)];
+    undo.apply(ToUi::Time(Box::new(st)));
+    undo.apply(ToUi::UndoButton(true));
+    undo.tick(UNDO_HOLD);
+    undo.apply(ToUi::Rows(crate::app::RowKey::Pick(-1)));
+    out.push(("undo-history", undo));
     // Prefs with the Appearance row selected, stepped to Synthwave.
     let mut look = sample_player(fonts());
     let mut l = crate::app::App::new(44_100, false);
@@ -6759,6 +7661,7 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         rate: "1/16",
         bpm: 120.0,
         mute_keys: MuteKeys::Off,
+        erase: false,
     }));
     play_synth.apply(ToUi::Kit(synth_kit));
     for (pad, v) in [(0usize, 96u8), (4, 90), (7, 101)] {
@@ -6792,6 +7695,7 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         rate: "1/16",
         bpm: 120.0,
         mute_keys: MuteKeys::Off,
+        erase: false,
     }));
     chords.apply(ToUi::KitChanged {
         kit: synth_kit,
@@ -7795,9 +8699,10 @@ mod tests {
         assert_eq!(p.play_view(), PlayView::All);
         p.apply(ToUi::PlayView(None));
         assert_eq!(p.play_view(), PlayView::Beats);
-        p.apply(ToUi::PlayView(Some(PlayView::Drum)));
         p.apply(ToUi::PlayView(None));
-        assert_eq!(p.play_view(), PlayView::All, "after Drum comes All again");
+        assert_eq!(p.play_view(), PlayView::Loop);
+        p.apply(ToUi::PlayView(None));
+        assert_eq!(p.play_view(), PlayView::All, "after Loop comes All again");
         let mut p = sample_sampler(Fonts::embedded());
         assert_eq!(p.page(), sample_page::PAGE);
         p.apply(ToUi::SampleEditor(sample_page::Editor::Chop));
@@ -7892,6 +8797,429 @@ mod tests {
         assert!(hint.contains("Tap a loop or a layer"), "{hint}");
     }
 
+    /// UNDO follows the page (Jay, 13 Nov 13:53Z): the loop on the Loop
+    /// view, the takes on Beats, and on All whichever changed last.
+    /// Jay after live test 3: 32, 64 and 128 steps, with a clear way to
+    /// get them. The pattern's head has ‹ › for the page and - + for the
+    /// length.
+    #[test]
+    fn the_patterns_head_turns_pages_and_doubles_or_halves_its_steps() {
+        use play_widgets::{HEAD_LONGER, HEAD_NEXT, HEAD_PREV, HEAD_SHORTER};
+        let mut p = sample_play(Fonts::embedded(), PlayView::Beats);
+        p.take_actions();
+        let r = p.ui.rect_of(play_page::STEPS).unwrap();
+        let tap = |p: &mut Player, k: usize| {
+            let (x, y) = StepGrid::head_at(r, k);
+            let a = p.touch(3, Touch::Down, x, y);
+            p.touch(3, Touch::Up, x, y);
+            a
+        };
+        let grid = |p: &Player| {
+            let g = p.ui.get::<StepGrid>(play_page::STEPS).unwrap();
+            (g.page, g.pages, g.length)
+        };
+        assert_eq!(grid(&p), (0, 1, 16));
+        // + asks for twice the steps, repeating the ones there are.
+        assert_eq!(
+            tap(&mut p, HEAD_LONGER),
+            Some(FromUi::Steps(StepAction::Length {
+                steps: 32,
+                copy: true
+            }))
+        );
+        // One page: › says so in place of the hint.
+        assert_eq!(tap(&mut p, HEAD_NEXT), None);
+        let hint = |p: &Player| p.ui.get::<Label>("hint").unwrap().text.clone();
+        assert!(hint(&p).contains("last page"), "{}", hint(&p));
+        // The time engine made it 32 steps: › shows the second page.
+        let mut st = p.play.steps.clone();
+        let c = st.clip.as_mut().unwrap();
+        c.steps = 32;
+        for (_, row) in &mut c.rows {
+            let first = row.clone();
+            row.extend(first);
+        }
+        p.apply(ToUi::Steps(Box::new(st)));
+        assert_eq!(grid(&p), (0, 2, 32));
+        assert_eq!(tap(&mut p, HEAD_NEXT), None);
+        assert_eq!(grid(&p), (1, 2, 32));
+        // A tap on the first step there is step 17 (an empty lane's).
+        assert_eq!(
+            p.play.tap_step(15, 0),
+            Some(StepAction::Tap {
+                pad: 15,
+                step: 16,
+                velocity: play_page::TAP_VELOCITY
+            })
+        );
+        assert_eq!(tap(&mut p, HEAD_PREV), None);
+        assert_eq!(grid(&p).0, 0);
+        // - halves it, down to 16; at 16 it says why not.
+        assert_eq!(
+            tap(&mut p, HEAD_SHORTER),
+            Some(FromUi::Steps(StepAction::Length {
+                steps: 16,
+                copy: false
+            }))
+        );
+        let mut st = p.play.steps.clone();
+        st.clip.as_mut().unwrap().steps = 16;
+        p.apply(ToUi::Steps(Box::new(st)));
+        assert_eq!(tap(&mut p, HEAD_SHORTER), None);
+        assert!(hint(&p).contains("16 steps is the fewest"), "{}", hint(&p));
+    }
+
+    /// Jay after live test 3: hold UNDO to see the page's history and
+    /// jump back several steps at once.
+    #[test]
+    fn holding_undo_opens_the_pages_history_and_a_tap_jumps_several_steps() {
+        use crate::app::RowKey;
+        use mpfree_time_ui::view::TakeRow;
+        use mpfree_ui::history::HistoryPanel;
+        let mut p = sample_play(Fonts::embedded(), PlayView::Beats);
+        let take = |n: u32| TakeRow {
+            number: n,
+            captured: false,
+            edited: true,
+            made: false,
+            at: Some((0, 0)),
+            added: 1,
+            erased: 0,
+            deleted: false,
+        };
+        let mut st = p.time.clone();
+        st.done = vec![take(1), take(2), take(3)];
+        st.undone = vec![take(5), take(4)];
+        p.apply(ToUi::Time(Box::new(st)));
+        p.take_actions();
+        // A quick press only undoes (the app sent that already).
+        p.apply(ToUi::UndoButton(true));
+        p.tick(0.3);
+        p.apply(ToUi::UndoButton(false));
+        p.tick(1.0);
+        assert_ne!(p.page(), HISTORY_PAGE);
+        // Held: the takes' history, now after take 3, redo's next first.
+        let beats = p.page().to_string();
+        p.apply(ToUi::UndoButton(true));
+        p.tick(0.3);
+        p.tick(0.4);
+        assert_eq!(p.page(), HISTORY_PAGE);
+        assert!(p.take_actions().contains(&FromUi::Overlay(true)));
+        assert!(p
+            .ui
+            .get::<Label>("hint")
+            .unwrap()
+            .text
+            .starts_with("Tap a step"));
+        p.apply(ToUi::UndoButton(false));
+        let panel = |p: &Player| {
+            let h = p.ui.get::<HistoryPanel>(HISTORY).unwrap();
+            (h.title.clone(), h.rows.len(), h.now)
+        };
+        assert_eq!(panel(&p), ("Undo history · Takes".to_string(), 6, 3));
+        let rows = p.ui.get::<HistoryPanel>(HISTORY).unwrap().rows.clone();
+        assert_eq!(rows[0], "Start: before these takes");
+        assert!(rows[3].starts_with("Edit 3") && rows[4].starts_with("Edit 4"));
+        // A tap on take 1: two takes undone at once.
+        p.ui.paint(&mut SoftCanvas::new(SCREEN.0, SCREEN.1));
+        let r = p.ui.rect_of(HISTORY).unwrap();
+        let tap = |p: &mut Player, (x, y): (i32, i32)| {
+            p.touch(5, Touch::Down, x, y);
+            p.touch(5, Touch::Up, x, y);
+            p.take_actions()
+        };
+        let at = |p: &Player, k: usize| {
+            let (_, rr) =
+                p.ui.get::<HistoryPanel>(HISTORY)
+                    .unwrap()
+                    .row_rects(r)
+                    .into_iter()
+                    .find(|(i, _)| *i == k)
+                    .unwrap();
+            (rr.x + rr.w / 2, rr.y + rr.h / 2)
+        };
+        let undo = || FromUi::Time(TimeAction::Undo);
+        let redo = || FromUi::Time(TimeAction::Redo);
+        let at1 = at(&p, 1);
+        let acts = tap(&mut p, at1);
+        assert_eq!(acts, [undo(), undo()]);
+        // The wheel outlines a row and its push goes there: forward to 5.
+        p.apply(ToUi::Rows(RowKey::Pick(2)));
+        p.apply(ToUi::Rows(RowKey::Step(-1)));
+        p.apply(ToUi::Rows(RowKey::Pick(3)));
+        p.apply(ToUi::Rows(RowKey::Editing(true)));
+        assert_eq!(p.take_actions(), [redo(), redo()]);
+        // Close goes back to the page it was opened over.
+        let c = HistoryPanel::close_rect(r);
+        tap(&mut p, (c.x + 10, c.y + 10));
+        assert_eq!(p.page(), beats);
+        // The mixer: the app keeps its turns, so the list asks for them.
+        p.apply(ToUi::Show(View::Mixer));
+        p.take_actions();
+        p.apply(ToUi::UndoButton(true));
+        p.tick(0.7);
+        assert!(p
+            .take_actions()
+            .contains(&FromUi::UndoHistory(UndoOn::Mixer)));
+        p.apply(ToUi::UndoHistory {
+            on: UndoOn::Mixer,
+            rows: vec![
+                "Start".into(),
+                "Drums Volume to -6.0 dB".into(),
+                "Bass Pan to L 20".into(),
+            ],
+            now: 2,
+        });
+        assert_eq!(panel(&p), ("Undo history · Mixer".to_string(), 3, 2));
+        let at0 = at(&p, 0);
+        let acts = tap(&mut p, at0);
+        let back = || FromUi::UndoOn {
+            on: UndoOn::Mixer,
+            redo: false,
+        };
+        assert_eq!(acts, [back(), back(), FromUi::UndoHistory(UndoOn::Mixer)]);
+        // Another page closes the list.
+        p.apply(ToUi::Show(View::Play));
+        assert_ne!(p.page(), HISTORY_PAGE);
+        assert!(p.take_actions().contains(&FromUi::Overlay(false)));
+        // A page with no history says so and opens nothing.
+        p.apply(ToUi::Show(View::Prefs));
+        p.apply(ToUi::UndoButton(true));
+        p.tick(0.7);
+        assert_ne!(p.page(), HISTORY_PAGE);
+        assert_eq!(
+            p.ui.get::<Label>("hint").unwrap().text,
+            "Nothing to undo on this page"
+        );
+    }
+
+    /// The Sample tab's list: the kit's edits, named by their pads; a tap
+    /// on Start takes them all back.
+    #[test]
+    fn the_sample_tabs_history_lists_the_kits_edits() {
+        use mpfree_sampler_ui::wave_tab::{Row, REGION};
+        use mpfree_ui::history::HistoryPanel;
+        let mut p = sample_sampler(Fonts::embedded());
+        let row = |r: Row| Row::ALL.iter().position(|k| *k == r).unwrap();
+        let warp = |p: &mut Player, delta: i32| {
+            p.on_event(UiEvent {
+                widget: REGION.into(),
+                kind: EventKind::Step {
+                    index: row(Row::Warp),
+                    delta,
+                },
+            });
+            p.apply(ToUi::SampleLift);
+        };
+        let warped = |p: &Player| p.sample.state().unwrap().region.warp.is_some();
+        assert!(!warped(&p));
+        warp(&mut p, 1);
+        assert!(warped(&p));
+        p.apply(ToUi::UndoButton(true));
+        p.tick(0.7);
+        assert_eq!(p.page(), HISTORY_PAGE);
+        let h = p.ui.get::<HistoryPanel>(HISTORY).unwrap();
+        assert!(h.title.starts_with("Undo history · Kit 1"), "{}", h.title);
+        assert_eq!(h.rows.len(), 2);
+        assert!(h.rows[1].starts_with("Pad A"), "{:?}", h.rows);
+        assert_eq!(h.now, 1);
+        // The wheel's push on Start: the edit is taken back, the list
+        // follows (now on Start, the edit to redo).
+        p.apply(ToUi::Rows(crate::app::RowKey::Pick(-5)));
+        p.apply(ToUi::Rows(crate::app::RowKey::Editing(true)));
+        assert!(!warped(&p));
+        p.tick(0.0);
+        let h = p.ui.get::<HistoryPanel>(HISTORY).unwrap();
+        assert_eq!((h.rows.len(), h.now), (2, 0));
+    }
+
+    #[test]
+    fn undo_follows_the_page_and_the_play_view() {
+        use mpfree_time_ui::view::TakeRow;
+        let mut p = sample_play(Fonts::embedded(), PlayView::All);
+        p.take_actions();
+        let undo = |p: &mut Player, redo: bool| {
+            p.apply(ToUi::Undo(redo));
+            p.take_actions()
+        };
+        let looper = |c| vec![FromUi::LoopCommand(c)];
+        let takes = |a| vec![FromUi::Time(a)];
+        use mpfree_looper::Command as L;
+        // All: a take was made last, so the takes.
+        let mut st = p.time.clone();
+        st.done.push(TakeRow {
+            number: 9,
+            captured: false,
+            edited: true,
+            made: false,
+            at: Some((0, 0)),
+            added: 1,
+            erased: 0,
+            deleted: false,
+        });
+        p.apply(ToUi::Time(Box::new(st.clone())));
+        assert_eq!(undo(&mut p, false), takes(TimeAction::Undo));
+        // The loop's history moved since: the loop, both ways.
+        p.apply(ToUi::Looper(Box::default()));
+        assert_eq!(undo(&mut p, false), looper(L::Undo));
+        assert_eq!(undo(&mut p, true), looper(L::Redo));
+        // The same takes again change nothing; a new take does.
+        p.apply(ToUi::Time(Box::new(st.clone())));
+        assert_eq!(undo(&mut p, false), looper(L::Undo));
+        st.undone.push(st.done.pop().unwrap());
+        p.apply(ToUi::Time(Box::new(st)));
+        assert_eq!(undo(&mut p, true), takes(TimeAction::Redo));
+        // The Loop view: the loop; Beats: the takes; Arrange: the takes.
+        p.apply(ToUi::PlayView(Some(PlayView::Loop)));
+        assert_eq!(undo(&mut p, false), looper(L::Undo));
+        p.apply(ToUi::PlayView(Some(PlayView::Beats)));
+        assert_eq!(undo(&mut p, false), takes(TimeAction::Undo));
+        p.apply(ToUi::Show(View::Arrange));
+        assert_eq!(undo(&mut p, false), takes(TimeAction::Undo));
+        // REC and OVERDUB on Play: the loop on All and Loop, takes on Beats.
+        let rec = |p: &mut Player, overdub: bool| {
+            p.apply(ToUi::PlayRec(overdub));
+            p.take_actions()
+        };
+        use crate::looper_page::{B_OVERDUB, B_RECORD};
+        p.apply(ToUi::Show(View::Play));
+        p.apply(ToUi::PlayView(Some(PlayView::All)));
+        assert_eq!(rec(&mut p, false), [FromUi::Looper(B_RECORD)]);
+        p.apply(ToUi::PlayView(Some(PlayView::Loop)));
+        assert_eq!(rec(&mut p, true), [FromUi::Looper(B_OVERDUB)]);
+        p.apply(ToUi::PlayView(Some(PlayView::Beats)));
+        assert_eq!(
+            rec(&mut p, false),
+            takes(TimeAction::Transport(mpfree_transport::Command::Record))
+        );
+        // The Synth tab and the mixer: their own turns.
+        p.apply(ToUi::Show(View::Synth));
+        assert_eq!(
+            undo(&mut p, true),
+            [FromUi::UndoOn {
+                on: UndoOn::Synth,
+                redo: true
+            }]
+        );
+        p.apply(ToUi::Show(View::Mixer));
+        assert_eq!(
+            undo(&mut p, false),
+            [FromUi::UndoOn {
+                on: UndoOn::Mixer,
+                redo: false
+            }]
+        );
+        // The UNDO light: the mixer's turns, as the audio thread says.
+        let light = |p: &mut Player| {
+            p.tick(0.0);
+            p.take_actions()
+                .into_iter()
+                .filter_map(|a| match a {
+                    FromUi::UndoReady(r) => Some(r),
+                    _ => None,
+                })
+                .next_back()
+        };
+        light(&mut p);
+        p.apply(ToUi::TurnsReady {
+            synth: false,
+            mixer: true,
+        });
+        assert_eq!(light(&mut p), Some(true));
+        assert_eq!(light(&mut p), None, "said once");
+        p.apply(ToUi::Show(View::Prefs));
+        assert_eq!(light(&mut p), Some(false), "Prefs has none");
+        // A page with no history of its own says so and does nothing.
+        p.apply(ToUi::Show(View::Prefs));
+        assert!(undo(&mut p, false).is_empty());
+        assert_eq!(
+            p.told.as_ref().map(|t| t.0.as_str()),
+            Some("Nothing to undo on this page")
+        );
+    }
+
+    /// ERASE held (Jay after live test 3): the tap deletes what it lands
+    /// on, where UNDO brings it back; elsewhere a tap does what it does.
+    #[test]
+    fn erase_held_deletes_a_clip_a_lanes_steps_or_a_layer() {
+        let tap = |p: &mut Player, (x, y): (i32, i32)| {
+            let down = p.touch(1, Touch::Down, x, y);
+            down.or(p.touch(1, Touch::Up, x, y))
+        };
+        let erase = |p: &mut Player, on: bool| {
+            let mut s = p.status.clone();
+            s.erase = on;
+            p.apply(ToUi::Status(s));
+        };
+        let hint = |p: &Player| p.ui.get::<Label>("hint").unwrap().text.clone();
+        // Play: a lane's name clears its steps; its mute stays as it was.
+        let mut p = sample_play(Fonts::embedded(), PlayView::All);
+        p.ui.paint(&mut SoftCanvas::new(SCREEN.0, SCREEN.1));
+        erase(&mut p, true);
+        assert!(hint(&p).starts_with("ERASE held"), "{}", hint(&p));
+        let r = p.ui.rect_of(play_page::STEPS).unwrap();
+        let g = p.ui.get::<StepGrid>(play_page::STEPS).unwrap();
+        let (lane1, name1) = (g.lanes_shown(r)[1], g.name_at(r, 1));
+        let mutes = p.play.levels.pad_mutes;
+        assert_eq!(
+            tap(&mut p, name1),
+            Some(FromUi::Steps(StepAction::ClearPad { pad: lane1 as u8 }))
+        );
+        assert_eq!(p.play.levels.pad_mutes, mutes, "no mute while erasing");
+        // Let go of ERASE: the name mutes again.
+        erase(&mut p, false);
+        assert!(!hint(&p).starts_with("ERASE held"));
+        assert!(matches!(
+            tap(&mut p, name1),
+            Some(FromUi::PlayFx(PlayFx::PadMute { .. }))
+        ));
+        // Arrange: a clip is deleted; an empty slot says so and makes none.
+        use mpfree_time_ui::widgets::ClipGrid;
+        let mut p = sample_clips(Fonts::embedded()).unwrap();
+        erase(&mut p, true);
+        let grid = p.ui.rect_of(time_view::CLIPS).unwrap();
+        let cell = |p: &Player, track, slot| {
+            let r =
+                p.ui.get::<ClipGrid>(time_view::CLIPS)
+                    .unwrap()
+                    .cell_rect(grid, track, slot)
+                    .unwrap();
+            (r.x + r.w / 2, r.y + r.h / 2)
+        };
+        let playing = cell(&p, 0, 0);
+        assert_eq!(
+            tap(&mut p, playing),
+            Some(FromUi::Time(TimeAction::DeleteClip { track: 0, slot: 0 }))
+        );
+        let empty = cell(&p, 1, 0);
+        assert_eq!(tap(&mut p, empty), None, "no new clip while erasing");
+        assert!(hint(&p).contains("empty"), "{}", hint(&p));
+        // Looper tab: a layer's row or its speaker deletes it; a loop is
+        // left alone (Clear loop has no undo).
+        use crate::looper_tab::{LoopEditor, LoopList, EDITOR, LOOPS};
+        let mut p = sample_looper(Fonts::embedded()).unwrap();
+        p.ui.paint(&mut SoftCanvas::new(SCREEN.0, SCREEN.1));
+        erase(&mut p, true);
+        let (_, view) = recorded_loop();
+        let chop = view.layers[2].unwrap().id;
+        let r = p.ui.rect_of(EDITOR).unwrap();
+        let e = p.ui.get::<LoopEditor>(EDITOR).unwrap();
+        let (_, rr) = e.row_rects(LoopEditor::parts(r).2)[2];
+        let parts = LoopEditor::row_parts(rr);
+        assert_eq!(
+            tap(&mut p, parts.speaker),
+            Some(FromUi::LoopLayer {
+                id: chop,
+                command: mpfree_looper::LayerCommand::Delete,
+            })
+        );
+        let r = p.ui.rect_of(LOOPS).unwrap();
+        let row = p.ui.get::<LoopList>(LOOPS).unwrap().parts(r).rows[1];
+        assert_eq!(tap(&mut p, (row.x + 10, row.y + 10)), None);
+        assert!(hint(&p).contains("Clear"), "{}", hint(&p));
+        assert_eq!(p.take_actions(), vec![]);
+    }
+
     #[test]
     fn one_tap_switches_the_play_view_and_the_q_links_follow_it() {
         let mut p = sample_player(Fonts::embedded());
@@ -7925,14 +9253,23 @@ mod tests {
                 .view,
             2
         );
-        assert_eq!(tap(&mut p, seg(3)), None);
-        assert_eq!(p.page(), "Play · Drum");
+        // Beats, with Your timing as a strip under the pattern (Jay 13
+        // Nov: the Drum view folded into Beats).
+        assert_eq!(segs.len(), 3, "All, Beats, Loop: no Drum view");
+        assert_eq!(tap(&mut p, seg(1)), None);
+        assert_eq!(p.page(), play_page::BEATS_TIMING_PAGE);
         assert!(p.ui.rect_of(play_page::TIMING).is_some());
-        assert_eq!(names(&p), ["Tune", "Decay", "Swing", "FX mix"]);
+        assert_eq!(names(&p), ["Swing", "Tune", "Filter", "Delay send"]);
         // Another tab and back: the view is kept.
         p.apply(ToUi::Show(View::Synth));
         p.apply(ToUi::Show(View::Play));
-        assert_eq!(p.page(), "Play · Drum");
+        assert_eq!(p.page(), play_page::BEATS_TIMING_PAGE);
+        // Play's options turn the strip off: the pattern has the room.
+        let mut s = p.settings.clone();
+        s.timing_strip = false;
+        p.apply(ToUi::Settings(s));
+        assert_eq!(p.page(), "Play · Beats");
+        assert!(p.ui.rect_of(play_page::TIMING).is_none());
         // Each view fits under the transport card, left of the master.
         for v in PlayView::ALL {
             tap(&mut p, seg(v.index()));
@@ -7994,6 +9331,44 @@ mod tests {
         p.apply(ToUi::Level { db: -6.0 });
         let m = p.ui.get::<MasterBar>(play_page::MASTER).unwrap();
         assert_eq!((m.text.as_str(), m.fader_db), ("-6.0", -6.0));
+    }
+
+    /// Jay after live test 3: several throws at once, a finger on each.
+    /// Each finger holds its own throw, and lifting one leaves the others.
+    #[test]
+    fn two_fingers_hold_two_throws_at_once() {
+        let mut p = sample_play(Fonts::embedded(), PlayView::All);
+        p.play.throw(2, false);
+        p.ui.paint(&mut SoftCanvas::new(SCREEN.0, SCREEN.1));
+        let r = p.ui.rect_of(play_page::THROWS).unwrap();
+        let cells = p.ui.get::<Throws>(play_page::THROWS).unwrap().cells(r);
+        let (a, b) = (cells[0], cells[1]);
+        let on = |p: &Player| -> Vec<bool> {
+            let t = p.ui.get::<Throws>(play_page::THROWS).unwrap();
+            t.items.iter().take(2).map(|i| i.on).collect()
+        };
+        let throw = |a: Option<FromUi>| match a {
+            Some(FromUi::PlayFx(PlayFx::Throw { fx, down })) => Some((fx, down)),
+            _ => None,
+        };
+        use crate::mixing::ThrowFx::{Delay, Reverb};
+        let first = p.touch(11, Touch::Down, a.x + 8, a.y + 8);
+        assert_eq!(throw(first), Some((Delay, true)));
+        let second = p.touch(12, Touch::Down, b.x + 8, b.y + 8);
+        assert_eq!(throw(second), Some((Reverb, true)));
+        assert_eq!(on(&p), [true, true]);
+        // The first finger slides a little and lifts; the second holds on.
+        assert_eq!(throw(p.touch(11, Touch::Move, a.x + 14, a.y + 10)), None);
+        assert_eq!(
+            throw(p.touch(11, Touch::Up, a.x + 14, a.y + 10)),
+            Some((Delay, false))
+        );
+        assert_eq!(on(&p), [false, true]);
+        assert_eq!(
+            throw(p.touch(12, Touch::Up, b.x + 8, b.y + 8)),
+            Some((Reverb, false))
+        );
+        assert_eq!(on(&p), [false, false]);
     }
 
     #[test]
@@ -8116,8 +9491,9 @@ mod tests {
     }
 
     #[test]
-    fn the_drum_view_shows_your_timing() {
-        let p = sample_play(Fonts::embedded(), PlayView::Drum);
+    fn the_beats_view_shows_your_timing() {
+        let p = sample_play(Fonts::embedded(), PlayView::Beats);
+        assert_eq!(p.page(), play_page::BEATS_TIMING_PAGE);
         let t = p.ui.get::<YourTiming>(play_page::TIMING).unwrap();
         assert_eq!(
             t.lanes.iter().map(|l| l.1.as_str()).collect::<Vec<_>>(),
@@ -8431,6 +9807,130 @@ mod tests {
             crate::perf::ram_used_pct("MemTotal: 2000 kB\nMemAvailable: 1500 kB\n"),
             Some(25.0)
         );
+    }
+
+    /// Jay after live test 3: the Warp tempo can be typed. A tap on its
+    /// value opens the number pad; Enter sets it (one undo step), a number
+    /// out of range keeps the pad open and says why, Cancel changes
+    /// nothing, and the wheel steps the number with its push as Enter.
+    #[test]
+    fn the_warp_tempo_can_be_typed_on_the_number_pad() {
+        use crate::app::RowKey;
+        use mpfree_sampler_ui::wave_tab::{Row, REGION};
+        use mpfree_sampler_ui::widgets::SettingList;
+        use mpfree_ui::numpad::{NumPad, KEY_CANCEL, KEY_ENTER, KEY_POINT};
+        let mut p = sample_sampler(Fonts::embedded());
+        let row = |r: Row| Row::ALL.iter().position(|k| *k == r).unwrap();
+        p.on_event(UiEvent {
+            widget: REGION.into(),
+            kind: EventKind::Step {
+                index: row(Row::Warp),
+                delta: 1,
+            },
+        });
+        p.apply(ToUi::SampleLift);
+        let bpm = |p: &Player| p.sample.state().unwrap().region.warp.as_ref().unwrap().bpm;
+        let before = bpm(&p);
+        let tap = |p: &mut Player, (x, y): (i32, i32)| {
+            let a = p.touch(4, Touch::Down, x, y);
+            p.touch(4, Touch::Up, x, y);
+            a
+        };
+        let open = |p: &mut Player| {
+            p.ui.paint(&mut SoftCanvas::new(SCREEN.0, SCREEN.1));
+            let r = p.ui.rect_of(REGION).unwrap();
+            let list = p.ui.get::<SettingList>(REGION).unwrap();
+            assert_eq!(list.typed, [row(Row::WarpTempo)], "warped: it can be typed");
+            let (_, value) = list.row_rects(r, row(Row::WarpTempo)).expect("in view");
+            tap(p, (value.x + value.w / 2, value.y + value.h / 2));
+            assert_eq!(p.page(), NUMPAD_PAGE);
+        };
+        let key = |p: &mut Player, k: usize| {
+            let r = p.ui.rect_of(NUMPAD).unwrap();
+            tap(p, NumPad::key_at(r, k))
+        };
+        open(&mut p);
+        assert!(p
+            .ui
+            .get::<Label>("hint")
+            .unwrap()
+            .text
+            .starts_with("Tap the number"));
+        for k in [1, 2, 8, KEY_POINT, 5] {
+            key(&mut p, k);
+        }
+        assert_eq!(key(&mut p, KEY_ENTER), None);
+        assert_eq!(p.page(), sample_page::PAGE);
+        assert_eq!(bpm(&p), 128.5);
+        // One undo step takes it back.
+        p.apply(ToUi::SampleUndo(false));
+        assert_eq!(bpm(&p), before);
+        // Out of range: the pad stays and says the range.
+        open(&mut p);
+        for k in [1, 5, 0, 0] {
+            key(&mut p, k);
+        }
+        key(&mut p, KEY_ENTER);
+        assert_eq!(p.page(), NUMPAD_PAGE);
+        assert_eq!(
+            p.ui.get::<NumPad>(NUMPAD).unwrap().warning,
+            "Warp tempo: type 20 to 999 BPM"
+        );
+        key(&mut p, KEY_CANCEL);
+        assert_eq!((p.page(), bpm(&p)), (sample_page::PAGE, before));
+        // The wheel steps from the tempo now (a tenth a detent here) and
+        // its push is Enter.
+        open(&mut p);
+        p.apply(ToUi::SampleWheel(3));
+        p.apply(ToUi::Rows(RowKey::Editing(true)));
+        assert_eq!(p.page(), sample_page::PAGE);
+        assert!((bpm(&p) - (before + 0.3)).abs() < 0.001, "{}", bpm(&p));
+    }
+
+    /// Jay after live test 3: a finger held on Play's BPM types the tempo.
+    #[test]
+    fn a_long_press_on_plays_tempo_types_it() {
+        use mpfree_ui::numpad::{NumPad, KEY_ENTER};
+        let mut p = sample_player(Fonts::embedded());
+        p.apply(ToUi::Show(View::Play));
+        p.ui.paint(&mut SoftCanvas::new(SCREEN.0, SCREEN.1));
+        let b =
+            p.ui.get::<PlayTransport>(play_page::TRANSPORT)
+                .unwrap()
+                .bpm_area()
+                .unwrap();
+        let (x, y) = (b.x + b.w / 2, b.y + b.h / 2);
+        // A quick tap only taps.
+        p.touch(1, Touch::Down, x, y);
+        p.tick(0.2);
+        p.touch(1, Touch::Up, x, y);
+        p.tick(1.0);
+        assert_ne!(p.page(), NUMPAD_PAGE);
+        // Held: the number pad, for the tempo.
+        assert_eq!(p.touch(2, Touch::Down, x, y), Some(FromUi::TapTempo));
+        p.tick(0.4);
+        p.tick(0.3);
+        assert_eq!(p.page(), NUMPAD_PAGE);
+        // The app hands it the wheel and - / + (on Play they pick kits).
+        assert!(p.take_actions().contains(&FromUi::Overlay(true)));
+        p.touch(2, Touch::Up, x, y);
+        let r = p.ui.rect_of(NUMPAD).unwrap();
+        let tap = |p: &mut Player, k: usize| {
+            let (x, y) = NumPad::key_at(r, k);
+            let a = p.touch(3, Touch::Down, x, y);
+            p.touch(3, Touch::Up, x, y);
+            a
+        };
+        for k in [9, 5] {
+            tap(&mut p, k);
+        }
+        assert_eq!(
+            tap(&mut p, KEY_ENTER),
+            Some(FromUi::Time(TimeAction::Transport(
+                mpfree_transport::Command::SetTempo(95.0)
+            )))
+        );
+        assert_eq!(p.page(), "Play");
     }
 
     /// Live test 3: a tap on Play's tempo is a tap of the tempo.
@@ -9772,6 +11272,30 @@ mod tests {
         n.take_actions();
         n.apply(ToUi::ProjectDefaults(defaults()));
         assert!(opens(&mut n).is_none());
+        // After a crash (a safe start, crash.rs) the last project does
+        // not open, and the screen says so.
+        let mut c = sample_sampler(Fonts::embedded());
+        c.set_browser(mpfree_browser_ui::Browser::inline(lib.clone()), &lists);
+        c.take_actions();
+        c.safe_start();
+        c.apply(ToUi::Settings(last.clone()));
+        c.apply(ToUi::ProjectDefaults(defaults()));
+        assert!(opens(&mut c).is_none(), "a safe start opens nothing");
+        let said = crate::crash::screen_line(true, Some(loc.name()), None);
+        assert!(said.contains(loc.name()), "{said}");
+        assert!(
+            events_log(&c)
+                .iter()
+                .any(|l| *l == format!("project: safe start: {said}")),
+            "{:?}",
+            events_log(&c)
+        );
+        assert_eq!(
+            c.told.as_ref().map(|t| t.0.clone()),
+            Some(tell_text(&said)),
+            "on the hint line"
+        );
+        assert!(opens(&mut c).is_none(), "nor later");
         // A last project gone since is said; the new one stays.
         let mut r = sample_sampler(Fonts::embedded());
         r.set_browser(
@@ -9789,6 +11313,203 @@ mod tests {
             "{:?}",
             events_log(&r)
         );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Autosave (Jay's pick, 14 Nov): unsaved work edited since the last
+    /// autosave goes, every 2 minutes, into autosave's own project; a save
+    /// the musician asks for wins. At the next start, work autosaved after
+    /// the last save is set aside and the screen says where.
+    #[test]
+    fn unsaved_work_is_autosaved_and_set_aside_at_the_next_start() {
+        use crate::project::{self, Collected, Defaults};
+        use mpfree_library::project::AUTOSAVE;
+        use mpfree_library::{Loc, Meta, Place, Snapshot};
+        let dir = std::env::temp_dir().join(format!("mpfree-autosave-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let lib = mpfree_library::Library::at(&dir).unwrap();
+        let synth = crate::synth::Synth::new(44_100);
+        let mixer = project::mixer_text(&crate::mixing::MixHost::new(44_100, -6.0, 0.0).mixer, 0);
+        let synth_text = project::synth_text(&Default::default(), &synth.sounds());
+        let defaults = || {
+            Box::new(Defaults {
+                tempo: 120.0,
+                mixer: mixer.clone(),
+                modu: String::new(),
+                synth: synth_text.clone(),
+            })
+        };
+        let parts = |tempo: f64| {
+            Box::new(Collected {
+                tempo,
+                swing: Default::default(),
+                clips: crate::time::TimeHost::new(44_100, tempo)
+                    .unwrap()
+                    .project()
+                    .clone(),
+                mixer: mixer.clone(),
+                modu: String::new(),
+                synth: synth_text.clone(),
+                arp: String::new(),
+                instruments: String::new(),
+                loops: None,
+                audio: None,
+            })
+        };
+        // Seconds of ticks, one a second: whether the parts were asked for.
+        let asks = |p: &mut Player, secs: usize| {
+            let mut asked = false;
+            for _ in 0..secs {
+                p.tick(1.0);
+                asked |= p
+                    .take_actions()
+                    .iter()
+                    .any(|a| matches!(a, FromUi::SaveProject));
+            }
+            asked
+        };
+        let edit = |p: &mut Player| {
+            p.opened_at = None;
+            p.saw_action(&FromUi::Time(TimeAction::NewClip { track: 0, slot: 1 }));
+            assert!(p.browser.as_ref().unwrap().unsaved());
+        };
+        let autosave = Loc::top(Place::Projects).join(AUTOSAVE).unwrap();
+        let mut p = sample_sampler(Fonts::embedded());
+        p.set_browser(mpfree_browser_ui::Browser::inline(lib.clone()), "");
+        p.take_actions();
+        p.apply(ToUi::ProjectDefaults(defaults()));
+        // Nothing unsaved, nothing autosaved.
+        assert!(!asks(&mut p, 130));
+        // Two minutes after an edit, the parts are asked for, and go to
+        // autosave's project, quietly: the work stays unsaved and new.
+        edit(&mut p);
+        assert!(!asks(&mut p, 119));
+        assert!(asks(&mut p, 2));
+        let log = events_log(&p).len();
+        p.apply(ToUi::ProjectParts(parts(101.0)));
+        p.step_browser();
+        let back = lib.open_project(&autosave).unwrap();
+        assert!(back.meta.is_autosave());
+        assert_eq!(back.meta.tempo, 101.0);
+        assert_eq!(back.meta.name, "Autosave of a new project");
+        assert_eq!(events_log(&p).len(), log, "not in the Events log");
+        let b = p.browser.as_ref().unwrap();
+        assert!(b.unsaved() && b.project().is_none());
+        // No edit since: nothing more.
+        assert!(!asks(&mut p, 130));
+        // Parts asked for that never come are asked for again later; a
+        // save the musician asks for meanwhile wins.
+        edit(&mut p);
+        assert!(asks(&mut p, 121));
+        assert!(!asks(&mut p, 237));
+        assert!(asks(&mut p, 4));
+        p.ask_save();
+        assert!(p
+            .take_actions()
+            .iter()
+            .any(|a| matches!(a, FromUi::SaveProject)));
+        p.apply(ToUi::ProjectParts(parts(102.0)));
+        p.step_browser();
+        let saved = p
+            .browser
+            .as_ref()
+            .unwrap()
+            .project()
+            .cloned()
+            .expect("saved");
+        assert!(saved.name().starts_with("Project "), "{}", saved.name());
+        assert_eq!(lib.open_project(&saved).unwrap().meta.tempo, 102.0);
+        assert_eq!(lib.open_project(&autosave).unwrap().meta.tempo, 101.0);
+        assert!(!p.browser.as_ref().unwrap().unsaved());
+        assert!(!asks(&mut p, 130), "saved: nothing to autosave");
+
+        // The next start, after a crash: the work autosaved after the last
+        // save is set aside before anything autosaves, and the safe start
+        // says where.
+        let at = |secs: u64, tempo: f64| Snapshot {
+            meta: Meta {
+                tempo,
+                saved: secs,
+                ..Meta::default()
+            },
+            parts: vec![("transport".into(), format!("bpm = {tempo}\n"))],
+        };
+        let old = Loc::top(Place::Projects).join("Old").unwrap();
+        lib.save_project(&old, &at(1_000, 90.0), 0).unwrap();
+        let autosaved = |secs: u64| {
+            let mut s = at(secs, 95.0);
+            s.meta.mark_autosave();
+            lib.save_project(&lib.autosave_project().unwrap(), &s, 0)
+                .unwrap();
+        };
+        autosaved(2_000); // 1970-01-01 00:33
+        let lists = "project = Projects/Old\n";
+        let last = Settings {
+            open_last: true,
+            ..Default::default()
+        };
+        let opens = |q: &mut Player| {
+            q.tick(0.033);
+            q.take_actions().into_iter().find_map(|a| match a {
+                FromUi::OpenProject(o) => Some(o),
+                _ => None,
+            })
+        };
+        let mut c = sample_sampler(Fonts::embedded());
+        c.set_browser(mpfree_browser_ui::Browser::inline(lib.clone()), lists);
+        c.take_actions();
+        c.safe_start();
+        c.apply(ToUi::Settings(last.clone()));
+        c.apply(ToUi::ProjectDefaults(defaults()));
+        assert!(opens(&mut c).is_none());
+        let kept = Loc::top(Place::Projects)
+            .join("Unsaved 1970-01-01 00.33")
+            .unwrap();
+        assert_eq!(lib.open_project(&kept).unwrap().meta.tempo, 95.0);
+        assert!(lib.open_project(&autosave).is_err());
+        let said = crate::crash::screen_line(true, Some("Old"), Some(kept.name()));
+        assert!(
+            events_log(&c)
+                .iter()
+                .any(|l| *l == format!("project: safe start: {said}")),
+            "{:?}",
+            events_log(&c)
+        );
+        assert_eq!(c.told.as_ref().map(|t| t.0.clone()), Some(tell_text(&said)));
+        // After the power switch (a normal start): set aside too, said,
+        // and the last project opens as Prefs > At start says.
+        autosaved(3_000); // 00:50
+        let mut n = sample_sampler(Fonts::embedded());
+        n.set_browser(mpfree_browser_ui::Browser::inline(lib.clone()), lists);
+        n.take_actions();
+        n.apply(ToUi::Settings(last));
+        n.apply(ToUi::ProjectDefaults(defaults()));
+        assert_eq!(opens(&mut n).expect("the last project").what, "Old");
+        let words = "Unsaved work from the last run is in Projects > Unsaved 1970-01-01 00.50.";
+        assert!(
+            events_log(&n)
+                .iter()
+                .any(|l| *l == format!("project: {words}")),
+            "{:?}",
+            events_log(&n)
+        );
+        assert!(lib
+            .open_project(
+                &Loc::top(Place::Projects)
+                    .join("Unsaved 1970-01-01 00.50")
+                    .unwrap()
+            )
+            .is_ok());
+        // Autosaved before the last save: nothing to set aside or say.
+        autosaved(500);
+        let mut s = sample_sampler(Fonts::embedded());
+        s.set_browser(mpfree_browser_ui::Browser::inline(lib.clone()), lists);
+        s.take_actions();
+        s.apply(ToUi::ProjectDefaults(defaults()));
+        assert!(opens(&mut s).is_none());
+        assert!(!events_log(&s).iter().any(|l| l.contains("Unsaved work")));
+        assert!(lib.open_project(&autosave).is_ok(), "left in place");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -12629,6 +14350,7 @@ mod tests {
             rate: "1/8",
             bpm: 96.0,
             mute_keys: MuteKeys::Off,
+            erase: false,
         };
         p.apply(ToUi::Status(s.clone()));
         assert_eq!(p.ui.get::<Label>("hint").unwrap().text, SHIFT_HINT);

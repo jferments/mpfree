@@ -43,6 +43,14 @@ pub enum Job {
         samples: Vec<NewSample>,
     },
     OpenProject(Loc),
+    /// The unsaved work, into autosave's project
+    /// ([`Library::autosave_project`]), keeping no earlier saves. The
+    /// snapshot's meta is marked as autosave's here.
+    Autosave {
+        snap: Snapshot,
+        /// Sounds the parts name, written first where they aren't yet.
+        samples: Vec<NewSample>,
+    },
     /// A project's earlier saves, newest first.
     Versions(Loc),
     /// One earlier save of a project, by its id.
@@ -70,6 +78,8 @@ pub enum Outcome {
     Trash(Vec<TrashItem>),
     Read(Loc, Vec<u8>),
     Saved(Loc),
+    /// The unsaved work saved into autosave's project, here.
+    Autosaved(Loc),
     Project(Loc, Snapshot),
     Versions(Loc, Vec<Version>),
     /// An earlier save, read: the project, the version's id, its parts.
@@ -159,6 +169,13 @@ pub fn run(lib: &Library, job: Job) -> std::io::Result<Outcome> {
             lib.save_project_with(&project, &snap, keep, &samples)?;
             Outcome::Saved(project)
         }
+        Job::Autosave { mut snap, samples } => {
+            snap.meta.mark_autosave();
+            let loc = lib.autosave_project()?;
+            lib.save_project_with(&loc, &snap, 0, &samples)
+                .map_err(|e| std::io::Error::new(e.kind(), format!("autosave: {e}")))?;
+            Outcome::Autosaved(loc)
+        }
         Job::OpenProject(l) => Outcome::Project(l.clone(), lib.open_project(&l)?),
         Job::Versions(l) => Outcome::Versions(l.clone(), lib.versions(&l)?),
         Job::OpenVersion(l, id) => {
@@ -180,6 +197,37 @@ pub fn run(lib: &Library, job: Job) -> std::io::Result<Outcome> {
 mod tests {
     use super::*;
     use crate::{tests::temp, Place};
+
+    /// An autosave job writes the unsaved work into autosave's project,
+    /// marked as autosave's, and says where.
+    #[test]
+    fn an_autosave_goes_to_autosaves_own_project() {
+        let d = temp();
+        let lib = Library::at(&d).unwrap();
+        let snap = Snapshot {
+            meta: crate::Meta {
+                name: "Autosave of a new project".into(),
+                saved: 9,
+                ..Default::default()
+            },
+            parts: vec![("transport".into(), "bpm = 100\n".into())],
+        };
+        let at = Loc::top(Place::Projects)
+            .join(crate::project::AUTOSAVE)
+            .unwrap();
+        let out = run(
+            &lib,
+            Job::Autosave {
+                snap,
+                samples: Vec::new(),
+            },
+        )
+        .unwrap();
+        assert_eq!(out, Outcome::Autosaved(at.clone()));
+        let back = lib.open_project(&at).unwrap();
+        assert!(back.meta.is_autosave());
+        assert_eq!(back.part("transport"), Some("bpm = 100\n"));
+    }
 
     #[test]
     fn jobs_come_back_in_order_with_their_numbers() {

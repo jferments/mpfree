@@ -578,6 +578,18 @@ impl Theme {
         s
     }
 
+    /// The ink for a button's label on a `raised` fill: `text` when the
+    /// button can be used, `text_dim` when it can't. Never `text_faint`,
+    /// which is too close to `raised` to read ([`Theme::check`] holds
+    /// both at 4.5:1 or better).
+    pub fn button_ink(&self, usable: bool) -> Color {
+        if usable {
+            self.text
+        } else {
+            self.text_dim
+        }
+    }
+
     /// Readability problems: text that is too close to what it sits on
     /// (WCAG contrast below 4.5:1 for text, 3:1 for dim text and accents).
     /// A user theme can still be used; the picker shows these as warnings.
@@ -603,6 +615,17 @@ impl Theme {
                         "{what} on {bgname}: contrast {r:.1}:1, below {min}:1"
                     ));
                 }
+            }
+        }
+        // Button labels sit on `raised`: both inks a label may use need
+        // 4.5:1 there (Jay after live test 3: "light gray on a medium
+        // gray button is no bueno"). `text_faint` is not for labels.
+        for (what, fg) in [("text", self.text), ("text_dim", self.text_dim)] {
+            let r = contrast(fg, self.raised);
+            if r < 4.5 {
+                out.push(format!(
+                    "{what} on raised (button labels): contrast {r:.1}:1, below 4.5:1"
+                ));
             }
         }
         let r = contrast(self.on_accent, self.accent);

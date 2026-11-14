@@ -1,7 +1,8 @@
 //! Poly: a subtractive synth. Two band-limited oscillators per voice with
-//! up to four unison stacks, a sub oscillator and noise, a drive stage into
-//! a ladder or state-variable filter, two ADSR envelopes, a tempo-syncable
-//! LFO, poly, mono and legato modes with glide.
+//! up to four unison stacks, a sub oscillator and noise, a drive stage
+//! into a ladder or state-variable filter and a distortion stage after it,
+//! two ADSR envelopes, a tempo-syncable LFO, poly, mono and legato modes
+//! with glide.
 //!
 //! Pad pressure goes through the shared shaper ([`mpfree_node::pressure`])
 //! into four slots ([`crate::pressure::POLY_TARGETS`]): cutoff, resonance,
@@ -87,6 +88,11 @@ struct Voice {
     drive_amt: f32,
     /// Keeps the driven voice at its undriven level (dsp::DriveLevel).
     drive_level: DriveLevel,
+    /// The distortion after the filter, as the drive (pressure can move
+    /// it too), with its own level keeper.
+    dist_gain: f32,
+    dist_amt: f32,
+    dist_level: DriveLevel,
     sub: f32,
     noise: f32,
     press: Pressure,
@@ -134,6 +140,9 @@ impl Voice {
             drive_gain: 1.0,
             drive_amt: 0.0,
             drive_level: DriveLevel::new(),
+            dist_gain: 1.0,
+            dist_amt: 0.0,
+            dist_level: DriveLevel::new(),
             sub: 0.0,
             noise: 0.0,
             press: Pressure::new(),
@@ -164,6 +173,7 @@ struct Smoothed {
     cutoff: Smooth,
     res: Smooth,
     drive: Smooth,
+    dist: Smooth,
     out_l: Smooth,
     out_r: Smooth,
     bend: Smooth,
@@ -180,6 +190,8 @@ struct Shared {
     noise: f32,
     drive_gain: f32,
     drive_amt: f32,
+    dist_gain: f32,
+    dist_amt: f32,
     out_l: f32,
     out_r: f32,
     wave1: u8,
@@ -258,6 +270,7 @@ impl Poly {
             cutoff: Smooth::new(v(CUTOFF).log2()),
             res: Smooth::new(v(RESONANCE) / 100.0),
             drive: Smooth::new(v(DRIVE)),
+            dist: Smooth::new(v(DIST)),
             out_l: Smooth::new(1.0),
             out_r: Smooth::new(1.0),
             bend: Smooth::new(0.0),
@@ -379,6 +392,7 @@ impl Poly {
         self.sm.cutoff.target = self.v(CUTOFF).log2();
         self.sm.res.target = self.v(RESONANCE) / 100.0;
         self.sm.drive.target = self.v(DRIVE);
+        self.sm.dist.target = self.v(DIST);
         self.sm.out_l.target = lvl * (1.0 - pan).sqrt();
         self.sm.out_r.target = lvl * (1.0 + pan).sqrt();
     }
@@ -417,6 +431,7 @@ impl Poly {
             &mut sm.pw2,
             &mut sm.res,
             &mut sm.drive,
+            &mut sm.dist,
             &mut sm.out_l,
             &mut sm.out_r,
             &mut sm.cutoff,
@@ -575,6 +590,7 @@ impl Poly {
         v.pv = 0.0;
         v.kill_gain = 1.0;
         v.drive_level.clear();
+        v.dist_level.clear();
     }
 
     /// Fades out one sounding voice: the quietest releasing one, else the
@@ -711,11 +727,18 @@ impl Poly {
         sm.cutoff.next();
         sm.res.next();
         let drive = sm.drive.next();
+        let dist = sm.dist.next();
         s.out_l = sm.out_l.next();
         s.out_r = sm.out_r.next();
         sm.bend.next();
         s.drive_gain = 10f32.powf(drive / 20.0);
         s.drive_amt = (drive / 3.0).min(1.0);
+        // Most sounds have none: no power worked out each step for it.
+        (s.dist_gain, s.dist_amt) = if dist > 0.0 {
+            (10f32.powf(dist / 20.0), (dist / 3.0).min(1.0))
+        } else {
+            (1.0, 0.0)
+        };
         s.mode = self.values[FILTER_MODE as usize] as u8;
         s.wave1 = self.values[OSC1_WAVE as usize] as u8;
         s.wave2 = self.values[OSC2_WAVE as usize] as u8;
@@ -807,12 +830,14 @@ impl Poly {
         let d = self.depths;
         let vib_p = self.vib;
         let drive_db = self.sm.drive.value;
+        let dist_db = self.sm.dist.value;
         let (sh_drive_gain, sh_drive_amt, sh_sub, sh_noise) = (
             self.sh.drive_gain,
             self.sh.drive_amt,
             self.sh.sub,
             self.sh.noise,
         );
+        let (sh_dist_gain, sh_dist_amt) = (self.sh.dist_gain, self.sh.dist_amt);
         let vel_amp = self.v(VEL_AMP) / 100.0;
         let trem = 1.0 - self.v(LFO_AMP) / 100.0 * (0.5 - 0.5 * lfo);
         let cutoff = self.sm.cutoff.value;
@@ -902,17 +927,34 @@ impl Poly {
             v.drive_gain = exp2(db * (1.0 / 6.020_6));
             v.drive_amt = (db / 3.0).min(1.0);
         }
+        let de = d.get(target::DIST);
+        let dist_was = v.dist_amt;
+        if de == 0.0 {
+            v.dist_gain = sh_dist_gain;
+            v.dist_amt = sh_dist_amt;
+        } else {
+            let db = (dist_db + p * de * 24.0).clamp(0.0, 48.0);
+            v.dist_gain = exp2(db * (1.0 / 6.020_6));
+            v.dist_amt = (db / 3.0).min(1.0);
+        }
         v.sub = (sh_sub + p * d.get(target::SUB)).clamp(0.0, 1.0);
         v.noise = (sh_noise + p * d.get(target::NOISE)).clamp(0.0, 1.0);
         let vg = (1.0 - vel_amp) + vel_amp * v.vel * v.vel;
         let swell = swell_gain(d.get(target::LEVEL).clamp(-1.0, 1.0), p);
-        // The drive's level correction, from the step just rendered.
-        let level = if v.drive_amt > 0.0 {
+        // The drive's and the distortion's level corrections, from the
+        // step just rendered.
+        let mut level = if v.drive_amt > 0.0 {
             v.drive_level.step(CTRL, rate_bits)
         } else {
             v.drive_level.clear();
             1.0
         };
+        if v.dist_amt > 0.0 {
+            level *= v.dist_level.step(CTRL, rate_bits);
+        } else if dist_was > 0.0 {
+            // Off: nothing more is summed, so one clear does.
+            v.dist_level.clear();
+        }
         let gain = norm * vg * trem * swell * level;
         v.gain_inc = (gain - v.gain) / CTRL as f32;
     }
@@ -922,7 +964,7 @@ impl Poly {
     /// Renders frames `from..to` (at most one control step) of every voice.
     /// Each voice works in passes over the frames: gains (which also find
     /// the frame where a voice that ends here stops), oscillators, sub and
-    /// noise, drive, filter, out. Every frame gets the same arithmetic as a
+    /// noise, drive, filter, distortion, out. Every frame gets the same arithmetic as a
     /// frame-at-a-time loop, so the output is the same to the bit; the
     /// passes just make each choice once per step instead of once a frame.
     fn render(&mut self, from: usize, to: usize, left: &mut [f32], right: &mut [f32]) {
@@ -1029,7 +1071,11 @@ impl Poly {
                 }
             }
             // The drive sees the mix as one full oscillator, however many
-            // stacks and sources feed it (dsp::drive_scales).
+            // stacks and sources feed it (dsp::drive_scales), and so does
+            // the distortion. The drive goes into the filter, as on an
+            // analog synth; the distortion comes after it, so a low cutoff
+            // can't take its grit out (Jay after live test 3: "add both").
+            // Most sounds have no distortion: one test a step skips it.
             let (dk, dn) = if v.drive_amt > 0.0 {
                 let lv = mix_level(s.unison, [s.lvl1, s.lvl2], v.sub, v.noise);
                 drive_scales(v.drive_gain, lv)
@@ -1038,6 +1084,14 @@ impl Poly {
             };
             drive_run_level(l, dk, dn, v.drive_amt, &mut v.drive_level);
             v.filt[0].run(mode, &v.coefs, l);
+            let dist = if v.dist_amt > 0.0 {
+                let lv = mix_level(s.unison, [s.lvl1, s.lvl2], v.sub, v.noise);
+                let (ek, en) = drive_scales(v.dist_gain, lv);
+                drive_run_level(l, ek, en, v.dist_amt, &mut v.dist_level);
+                Some((ek, en))
+            } else {
+                None
+            };
             if mono {
                 v.filt[1] = v.filt[0];
                 for j in 0..end {
@@ -1052,6 +1106,9 @@ impl Poly {
                 }
                 drive_run_n(r, dk, dn, v.drive_amt);
                 v.filt[1].run(mode, &v.coefs, r);
+                if let Some((ek, en)) = dist {
+                    drive_run_n(r, ek, en, v.dist_amt);
+                }
                 for j in 0..end {
                     left[from + j] += l[j] * g[j] * s.out_l;
                     right[from + j] += r[j] * g[j] * s.out_r;

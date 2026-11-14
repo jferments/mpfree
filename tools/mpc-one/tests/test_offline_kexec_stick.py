@@ -440,7 +440,9 @@ class KexecStickTests(unittest.TestCase):
         unit = self.dfs(root_img, "cat /etc/systemd/system/mpfree-test-app.service")
         for line in ("DefaultDependencies=no", "IgnoreOnIsolate=yes", "WantedBy=sysinit.target",
                      "After=systemd-journald.service systemd-udevd.service mpfree-test-splash.service",
-                     "OnFailure=mpfree-test-screen.service", "ExecStart=/bin/sh /etc/mpfree-test/start-app.sh"):
+                     "OnFailure=mpfree-test-screen.service", "ExecStart=/bin/sh /etc/mpfree-test/start-app.sh",
+                     # A crash restarts the app (a safe start), at most four times a minute.
+                     "Restart=on-failure", "RestartSec=2", "StartLimitIntervalSec=60", "StartLimitBurst=4"):
             self.assertIn(line + "\n", unit)
         self.assertIn('Fast link dest: "/etc/systemd/system/mpfree-test-app.service"',
                       self.dfs(root_img, "stat /etc/systemd/system/sysinit.target.wants/mpfree-test-app.service"))

@@ -466,6 +466,27 @@ impl Grid {
         }
     }
 
+    /// Clear sound `pitch`'s row: every note of it and its locks come out
+    /// (ERASE + a lane's name on the Play page). An empty row gives an
+    /// empty edit.
+    pub fn clear_row(self, clip: &Clip, pitch: u8) -> Edit {
+        Edit {
+            erase: clip
+                .notes
+                .iter()
+                .filter(|n| n.note == pitch)
+                .copied()
+                .collect(),
+            erase_locks: clip
+                .locks
+                .iter()
+                .filter(|l| l.sound == Some(pitch))
+                .copied()
+                .collect(),
+            ..Edit::default()
+        }
+    }
+
     /// Change step `i` of sound `pitch`. Values are kept in range; an
     /// empty step, or one already so, gives an empty edit.
     pub fn change(self, clip: &Clip, pitch: u8, i: usize, change: Change) -> Edit {
@@ -1002,6 +1023,24 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn clearing_a_row_takes_only_that_sounds_notes() {
+        let g = Grid::new(240).unwrap();
+        let mut c = clip(BAR, &[(0, 36), (960, 38), (1920, 36), (2880, 42)]);
+        let e = g.clear_row(&c, 36);
+        assert_eq!(e.erase.len(), 2);
+        assert!(e.erase.iter().all(|n| n.note == 36));
+        c.apply(&e).unwrap();
+        assert_eq!(
+            c.notes.iter().map(|n| n.note).collect::<Vec<_>>(),
+            [38, 42],
+            "the other rows stay"
+        );
+        assert!(g.clear_row(&c, 36).is_empty(), "nothing left to clear");
+        c.apply(&e.inverse()).unwrap();
+        assert_eq!(c.notes.len(), 4, "and it undoes");
     }
 
     #[test]
