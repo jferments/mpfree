@@ -673,6 +673,11 @@ impl TimeHost {
         self.control.muted(t)
     }
 
+    /// The project's tracks, for TRACK MUTE's banks.
+    pub fn track_count(&self) -> usize {
+        self.control.track_count()
+    }
+
     /// Whether track `t` has a clip launched (playing, or waiting for the
     /// transport), for TRACK MUTE's pad lights.
     pub fn launched(&self, t: usize) -> bool {
@@ -1049,6 +1054,48 @@ mod tests {
             .unwrap_err()
             .contains("in the song"));
         assert!(h.control.project.clip(0, 1).is_some());
+    }
+
+    #[test]
+    fn plus_track_adds_an_armed_track_up_to_128_and_undo_takes_it_away() {
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        assert_eq!(h.control.project.tracks.len(), TRACKS);
+        h.act(TimeAction::Arm(Some(2))).unwrap();
+        let said = h.act(TimeAction::AddTrack).unwrap();
+        assert!(said.contains("Track 9 added"), "{said}");
+        assert_eq!(h.control.project.tracks.len(), TRACKS + 1);
+        assert_eq!(h.control.project.tracks[TRACKS].name, "Track 9");
+        assert_eq!(h.control.armed, Some(TRACKS));
+        // A clip made on it and launched, then both undone: the clip, then
+        // the track; the armed track comes back inside the project.
+        h.act(TimeAction::NewClip {
+            track: TRACKS,
+            slot: 0,
+        })
+        .unwrap();
+        h.act(TimeAction::DeleteClip {
+            track: TRACKS,
+            slot: 0,
+        })
+        .unwrap();
+        h.act(TimeAction::Undo).unwrap();
+        assert!(h.control.project.clip(TRACKS, 0).is_some());
+        let said = h.act(TimeAction::Undo).unwrap();
+        assert!(said.contains("new track 9"), "{said}");
+        assert_eq!(h.control.project.tracks.len(), TRACKS);
+        assert_eq!(h.control.armed, Some(TRACKS - 1));
+        assert!(h.control.launches.iter().all(|l| l.track < TRACKS));
+        h.act(TimeAction::Redo).unwrap();
+        assert_eq!(h.control.project.tracks.len(), TRACKS + 1);
+        // Up to 128, then it says why not.
+        while h.control.project.tracks.len() < mpfree_seq::MAX_TRACKS {
+            h.act(TimeAction::AddTrack).unwrap();
+        }
+        assert_eq!(h.control.armed, Some(127));
+        assert!(h
+            .act(TimeAction::AddTrack)
+            .unwrap_err()
+            .contains("128 tracks"));
     }
 
     const RATE: u32 = 44_100;

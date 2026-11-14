@@ -38,12 +38,12 @@ use crate::song::{
 };
 use crate::widgets::{
     BarButton, BarItem, CellState, ClipGrid, GridCell, GridTrack, MorphBar, Run, TakeItem,
-    TakeList, TransportBar, GRID_COLS,
+    TakeList, TransportBar, ADD_TRACK, GRID_COLS, PAGE_BACK, PAGE_ON,
 };
 use mpfree_audiotracks::host::TakeWave;
 use mpfree_audiotracks::{Input, Monitor};
 use mpfree_play::{anchored, Cue, Launch, Take, Takes};
-use mpfree_seq::{Clip, Project, Source, Speed, SLOTS};
+use mpfree_seq::{Clip, Project, Source, Speed, MAX_TRACKS, SLOTS};
 use mpfree_transport::time::{Meter, Swing, Tick, MAX_BPM, MIN_BPM, PPQ};
 use mpfree_transport::transport::MAX_COUNT_IN;
 use mpfree_transport::{Command, State, Transport};
@@ -228,6 +228,8 @@ pub struct TakeRow {
     pub erased: usize,
     /// It took a clip out of its slot (ERASE + a clip).
     pub deleted: bool,
+    /// It added this track (+ Track).
+    pub new_track: Option<usize>,
 }
 
 impl TakeRow {
@@ -250,6 +252,7 @@ impl TakeRow {
             added,
             erased: t.erased.len(),
             deleted: removed.is_some(),
+            new_track: t.track_added.as_ref().map(|(i, _)| *i),
         }
     }
 
@@ -266,9 +269,13 @@ impl TakeRow {
         }
     }
 
-    /// What Undo and Redo name it: "take 3", "capture 2", "edit 5".
+    /// What Undo and Redo name it: "take 3", "capture 2", "edit 5", or
+    /// "new track 9".
     pub fn short(&self) -> String {
-        format!("{} {}", self.word(), self.number)
+        match self.new_track {
+            Some(t) => format!("new track {}", t + 1),
+            None => format!("{} {}", self.word(), self.number),
+        }
     }
 }
 
@@ -547,6 +554,9 @@ pub enum TimeAction {
         track: usize,
         slot: usize,
     },
+    /// "+ Track": a new empty track at the end (up to 128), armed, as a
+    /// take that UNDO takes away again (Jay, 14 Nov: up to 128 tracks).
+    AddTrack,
     /// Chip `i` on the bar was tapped.
     Chip(usize),
     /// Keep what was just played (CAPTURE): into the armed track's playing
@@ -814,9 +824,12 @@ pub fn action(ev: &UiEvent, st: &TimeState) -> Option<TimeAction> {
         (CLIPS, EventKind::Toggle(row)) => Some(match *row {
             r if r < SLOTS => TimeAction::LaunchScene(r),
             SLOTS => TimeAction::StopAll,
+            r if r == SLOTS + 1 => TimeAction::SongView(true),
             r if r == SLOTS + 2 => TimeAction::RecSong(!st.song_rec),
             r if r == SLOTS + 3 => TimeAction::Edit(EditAction::Open),
-            _ => TimeAction::SongView(true),
+            r if r == SLOTS + ADD_TRACK => TimeAction::AddTrack,
+            // The pager is the page's own: TimePage::page_tracks.
+            _ => return None,
         }),
         (NOTES, kind) => Some(TimeAction::Edit(match *kind {
             EventKind::Tab(k) => EditAction::Button(k),
@@ -852,6 +865,7 @@ pub fn action(ev: &UiEvent, st: &TimeState) -> Option<TimeAction> {
             }))
         }
         (SONG, EventKind::Tab(ADD_AUDIO)) => Some(TimeAction::Audio(AudioAction::Add)),
+        (SONG, EventKind::Tab(crate::song::ADD_TRACK)) => Some(TimeAction::AddTrack),
         (SONG, EventKind::Tab(k)) if *k >= PANEL_CLOSE => {
             let track = st.audio_panel?;
             let lane = st.audio.iter().find(|l| l.track == track);
@@ -1384,6 +1398,7 @@ pub fn song_lanes(st: &TimeState, first_bar: i64) -> SongLanes {
         region: st.region.map(|r| (r.track, r.index)),
         panel: st.audio_panel,
         takes_open: st.audio_takes,
+        can_add_track: st.tracks.len() < MAX_TRACKS,
         ..SongLanes::default()
     }
 }
@@ -1465,10 +1480,14 @@ pub fn note_grid(e: &EditInfo, st: &TimeState) -> NoteGrid {
 pub struct TimePage {
     /// The first slot shown (the wheel scrolls it).
     pub first_row: usize,
-    /// The first track shown.
+    /// The first track shown: a multiple of [`GRID_COLS`], paged by the
+    /// pager and following the armed track.
     pub first_track: usize,
     /// The first bar the Song view shows (0-based).
     pub first_bar: i64,
+    /// The armed track last shown, so a newly armed track off the page
+    /// brings its page.
+    armed_seen: Option<usize>,
 }
 
 impl TimePage {
@@ -1501,6 +1520,21 @@ impl TimePage {
         }
     }
 
+    /// A touch the page handles itself: the grid's pager (‹ and ›, or a
+    /// swipe along the track names) shows the 8 tracks before or after.
+    /// True when `ev` was one; call [`TimePage::update`] after.
+    pub fn page_tracks(&mut self, ev: &UiEvent, st: &TimeState) -> bool {
+        let step = match (ev.widget.as_str(), &ev.kind) {
+            (CLIPS, EventKind::Toggle(k)) if *k == SLOTS + PAGE_BACK => -1,
+            (CLIPS, EventKind::Toggle(k)) if *k == SLOTS + PAGE_ON => 1,
+            _ => return false,
+        };
+        let last = st.tracks.len().saturating_sub(1) / GRID_COLS * GRID_COLS;
+        self.first_track =
+            (self.first_track as i64 + step * GRID_COLS as i64).clamp(0, last as i64) as usize;
+        true
+    }
+
     /// Scroll the grid `delta` rows down (up if negative), or on the Song
     /// view the timeline `delta` bars on. In the note editor the editor
     /// scrolls: the action for the app.
@@ -1529,8 +1563,19 @@ impl TimePage {
     }
 
     /// Show `st`. Widgets whose contents did not change are left alone, so
-    /// they are not redrawn.
-    pub fn update(&self, ui: &mut Ui, st: &TimeState) {
+    /// they are not redrawn. A track newly armed off the grid's page
+    /// brings its page, and the page stays within the tracks there are.
+    pub fn update(&mut self, ui: &mut Ui, st: &TimeState) {
+        if st.armed != self.armed_seen {
+            self.armed_seen = st.armed;
+            if let Some(a) = st.armed {
+                if !(self.first_track..self.first_track + GRID_COLS).contains(&a) {
+                    self.first_track = a / GRID_COLS * GRID_COLS;
+                }
+            }
+        }
+        let last = st.tracks.len().saturating_sub(1) / GRID_COLS * GRID_COLS;
+        self.first_track = self.first_track.min(last);
         let bar = bar_of(st);
         let same_bar = ui.get::<TransportBar>(TRANSPORT).is_some_and(|b| {
             b.run == bar.run
@@ -1557,16 +1602,9 @@ impl TimePage {
             self.first_row + 1,
             (self.first_row + rows).min(SLOTS)
         );
-        let legend = if st.tracks.len() > GRID_COLS {
-            format!(
-                "tracks {}–{} of {}",
-                self.first_track + 1,
-                (self.first_track + GRID_COLS).min(st.tracks.len()),
-                st.tracks.len()
-            )
-        } else {
-            "ring: one pass   ·   amber: next bar   ·   red: recording".to_string()
-        };
+        // Past 8 tracks the grid's pager takes the legend's place.
+        let legend = "ring: one pass   ·   amber: next bar   ·   red: recording".to_string();
+        let can_add = st.tracks.len() < MAX_TRACKS;
         let same_grid = ui.get::<ClipGrid>(CLIPS).is_some_and(|g| {
             g.tracks == tracks
                 && g.title == title
@@ -1575,6 +1613,7 @@ impl TimePage {
                 && g.first_track == self.first_track
                 && (g.scene_playing, g.scene_cued) == (st.scene_playing, st.scene_cued)
                 && g.song_rec == st.song_rec
+                && g.can_add == can_add
         });
         if !same_grid {
             if let Some(g) = ui.get_mut::<ClipGrid>(CLIPS) {
@@ -1586,6 +1625,7 @@ impl TimePage {
                 g.scene_playing = st.scene_playing;
                 g.scene_cued = st.scene_cued;
                 g.song_rec = st.song_rec;
+                g.can_add = can_add;
             }
         }
         // The grid, the song or the note editor, as the app has it.
@@ -1945,6 +1985,65 @@ mod tests {
             action(&ev(CLIPS, EventKind::Toggle(SLOTS)), &st),
             Some(TimeAction::StopAll)
         );
+    }
+
+    /// More than 8 tracks (up to 128, Jay 14 Nov): the grid follows the
+    /// armed track to its page, the pager steps 8 at a time within the
+    /// tracks there are, and "+ Track" on the grid and the Song view adds
+    /// one.
+    #[test]
+    fn the_grid_pages_through_24_tracks_and_plus_track_adds_one() {
+        let mut ui = Ui::new(Theme::dark(), Fonts::embedded(), 1280, 800);
+        ui.add("header", Header::new(&["Play", "Clips"]));
+        ui.add("hint", Label::new("", Tone::Dim, Align::Center));
+        let mut page = TimePage::add_to(&mut ui).unwrap();
+        ui.show(CLIPS_PAGE).unwrap();
+        let mut st = crate::sample::big_playing(10).unwrap().state();
+        assert_eq!(st.tracks.len(), 24);
+        page.update(&mut ui, &st);
+        assert_eq!(page.first_track, 8, "Vox chop's page");
+        let g = ui.get::<ClipGrid>(CLIPS).unwrap();
+        assert_eq!((g.first_track, g.can_add), (8, true));
+        let on = ev(CLIPS, EventKind::Toggle(SLOTS + PAGE_ON));
+        let back = ev(CLIPS, EventKind::Toggle(SLOTS + PAGE_BACK));
+        assert_eq!(action(&on, &st), None, "the page's own");
+        assert!(page.page_tracks(&on, &st));
+        assert_eq!(page.first_track, 16);
+        assert!(page.page_tracks(&on, &st));
+        assert_eq!(page.first_track, 16, "the last page");
+        page.update(&mut ui, &st);
+        assert_eq!(
+            page.first_track, 16,
+            "paging away from the armed track stays"
+        );
+        assert!(page.page_tracks(&back, &st));
+        assert!(page.page_tracks(&back, &st));
+        assert!(page.page_tracks(&back, &st));
+        assert_eq!(page.first_track, 0);
+        assert!(!page.page_tracks(&ev(CLIPS, EventKind::Toggle(SLOTS)), &st));
+        // Arming a track off the page brings its page.
+        st.armed = Some(21);
+        page.update(&mut ui, &st);
+        assert_eq!(page.first_track, 16);
+        // Fewer tracks (an undone + Track, a new project): the page stays
+        // within them.
+        st.tracks.truncate(8);
+        st.armed = Some(2);
+        page.update(&mut ui, &st);
+        assert_eq!(page.first_track, 0);
+        assert_eq!(
+            action(&ev(CLIPS, EventKind::Toggle(SLOTS + ADD_TRACK)), &st),
+            Some(TimeAction::AddTrack)
+        );
+        assert_eq!(
+            action(&ev(CLIPS, EventKind::Toggle(SLOTS + 1)), &st),
+            Some(TimeAction::SongView(true))
+        );
+        assert_eq!(
+            action(&ev(SONG, EventKind::Tab(crate::song::ADD_TRACK)), &st),
+            Some(TimeAction::AddTrack)
+        );
+        assert!(song_lanes(&st, 0).can_add_track);
     }
 
     #[test]
@@ -2310,7 +2409,7 @@ mod tests {
         let mut ui = Ui::new(Theme::dark(), Fonts::embedded(), 1280, 800);
         ui.add("header", Header::new(&["Play", "Arrange"]));
         ui.add("hint", Label::new("", Tone::Dim, Align::Center));
-        let page = TimePage::add_to(&mut ui).unwrap();
+        let mut page = TimePage::add_to(&mut ui).unwrap();
         ui.show(CLIPS_PAGE).unwrap();
         let mut st = state();
         st.song_view = true;
@@ -2423,6 +2522,7 @@ mod tests {
             added: 4,
             erased: 0,
             deleted: false,
+            new_track: None,
         };
         let mut st = st;
         st.done = vec![take];
@@ -2757,6 +2857,7 @@ mod tests {
             added: n as usize,
             erased: 0,
             deleted: false,
+            new_track: None,
         };
         st.done = vec![row(1), row(2)];
         st.undone = vec![row(4), row(3)];
@@ -2786,6 +2887,7 @@ mod tests {
             added: 9,
             erased: 0,
             deleted: false,
+            new_track: None,
         };
         let (items, _) = take_items(&st);
         assert_eq!(
@@ -2805,6 +2907,7 @@ mod tests {
             added: 1,
             erased: 1,
             deleted: false,
+            new_track: None,
         };
         assert_eq!(take_items(&st).0[2].title, "Edit 5 · Bass / 1");
         assert_eq!(st.done[1].short(), "edit 5");
@@ -2812,6 +2915,7 @@ mod tests {
         st.done[1] = TakeRow {
             number: 6,
             deleted: true,
+            new_track: None,
             at: Some((1, 0)),
             ..st.done[1]
         };
@@ -2849,7 +2953,7 @@ mod tests {
         let mut ui = Ui::new(Theme::dark(), Fonts::embedded(), 1280, 800);
         ui.add("header", Header::new(&["Play", "Clips"]));
         ui.add("hint", Label::new("", Tone::Dim, Align::Center));
-        let page = TimePage::add_to(&mut ui).unwrap();
+        let mut page = TimePage::add_to(&mut ui).unwrap();
         ui.show(CLIPS_PAGE).unwrap();
         let mut c = mpfree_ui::SoftCanvas::new(1280, 800);
         let mut st = state();

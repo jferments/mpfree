@@ -464,9 +464,15 @@ pub struct GridTrack {
 /// clip launch and in Ableton's session view. A playing clip shows a ring
 /// that goes round once per pass; a queued one an amber outline; the one
 /// being recorded a red outline. A tap on a track's name gives
-/// `Tab(track)`, on the sound line under it `Tab(SOUND_TAP + track)`; a
-/// tap on a cell gives `Select(track * slots + slot)`.
-/// The app scrolls it with `first_track` and `first_row`.
+/// `Tab(track)` (on the lift), on the sound line under it
+/// `Tab(SOUND_TAP + track)`; a tap on a cell gives `Select(track * slots
+/// + slot)`. The app scrolls it with `first_track` and `first_row`.
+///
+/// With more than [`GRID_COLS`] tracks a pager takes the legend's place,
+/// "‹ 9–16 of 24 ›": its arrows, or a swipe along the track names, give
+/// `Toggle(slots + `[`PAGE_BACK`]`)` and `Toggle(slots + `[`PAGE_ON`]`)`.
+/// "+ Track", left of Edit, gives `Toggle(slots + `[`ADD_TRACK`]`)` while
+/// [`ClipGrid::can_add`] holds.
 pub struct ClipGrid {
     pub title: String,
     /// On the right of the title line.
@@ -482,8 +488,14 @@ pub struct ClipGrid {
     pub scene_cued: Option<usize>,
     /// Live to song armed: what the grid plays is recorded into the song.
     pub song_rec: bool,
+    /// The project has room for another track: "+ Track" is lit.
+    pub can_add: bool,
     /// What was drawn last, so a change redraws only the cells that changed.
     drawn: RefCell<Option<Drawn>>,
+    /// A finger down on a track's name: where (x) and which track. Let go
+    /// near where it went down it arms the track; swiped along the names
+    /// it pages.
+    press: Option<(i32, usize)>,
 }
 
 struct Drawn {
@@ -494,7 +506,22 @@ struct Drawn {
     tracks: Vec<GridTrack>,
     scenes: (Option<usize>, Option<usize>),
     song_rec: bool,
+    can_add: bool,
 }
+
+/// `Toggle(slots + ADD_TRACK)`: "+ Track".
+pub const ADD_TRACK: usize = 4;
+/// `Toggle(slots + PAGE_BACK)`: the tracks before (the pager's ‹, or a
+/// swipe to the right along the names).
+pub const PAGE_BACK: usize = 5;
+/// `Toggle(slots + PAGE_ON)`: the tracks after (›, or a swipe to the left).
+pub const PAGE_ON: usize = 6;
+/// Pixels a finger travels along the track names to page.
+const SWIPE_PX: i32 = 48;
+/// "+ Track"'s width, the pager's arrows' and its label's.
+const ADD_W: i32 = 88;
+const ARROW_W: i32 = 34;
+const PAGER_LABEL_W: i32 = 104;
 
 /// Tracks shown at once.
 pub const GRID_COLS: usize = 8;
@@ -553,8 +580,15 @@ impl ClipGrid {
             scene_playing: None,
             scene_cued: None,
             song_rec: false,
+            can_add: false,
             drawn: RefCell::new(None),
+            press: None,
         }
+    }
+
+    /// More tracks than fit across: the pager shows.
+    pub fn paged(&self) -> bool {
+        self.tracks.len() > GRID_COLS
     }
 
     /// Where row `slot`'s scene button is, if it is in view.
@@ -588,6 +622,24 @@ impl ClipGrid {
     pub fn edit_rect(&self, r: Rect) -> Rect {
         let rec = self.rec_rect(r);
         Rect::new(rec.x - 8 - 72, rec.y, 72, rec.h)
+    }
+
+    /// Where "+ Track" is: left of Edit.
+    pub fn add_rect(&self, r: Rect) -> Rect {
+        let edit = self.edit_rect(r);
+        Rect::new(edit.x - 8 - ADD_W, edit.y, ADD_W, edit.h)
+    }
+
+    /// Where the pager's ‹ and › are, left of "+ Track" with its label
+    /// between them, while it shows.
+    pub fn pager_rects(&self, r: Rect) -> Option<(Rect, Rect)> {
+        if !self.paged() {
+            return None;
+        }
+        let add = self.add_rect(r);
+        let on = Rect::new(add.x - 8 - ARROW_W, add.y, ARROW_W, add.h);
+        let back = Rect::new(on.x - PAGER_LABEL_W - ARROW_W, add.y, ARROW_W, add.h);
+        Some((back, on))
     }
 
     /// Where the Stop all button is: over the scene buttons.
@@ -688,6 +740,7 @@ impl Widget for ClipGrid {
             || d.tracks.len() != self.tracks.len()
             || d.scenes != (self.scene_playing, self.scene_cued)
             || d.song_rec != self.song_rec
+            || d.can_add != self.can_add
         {
             return None;
         }
@@ -717,29 +770,65 @@ impl Widget for ClipGrid {
             tracks: self.tracks.clone(),
             scenes: (self.scene_playing, self.scene_cued),
             song_rec: self.song_rec,
+            can_add: self.can_add,
         });
         cx.titled_panel(r, &self.title, "");
-        // The legend, then Rec song and the Song button (the Song view of
-        // the page).
+        // The legend (or the pager), "+ Track", Edit, Rec song and the
+        // Song button (the Song view of the page).
         let song = self.song_rect(r);
         let rec = self.rec_rect(r);
         let edit = self.edit_rect(r);
+        let add = self.add_rect(r);
         let head = r.inset(14).take_top(26).0;
-        // The legend's parts that fit between the title and the buttons,
-        // dropping the first ones when it is too wide.
-        let title_w = cx.measure(FontId::Bold, t.size_small, &self.title.to_uppercase());
-        let room = edit.x - 12 - (head.x + title_w + 16);
-        let mut legend = self.legend.as_str();
-        while !legend.is_empty() && cx.measure(FontId::Sans, t.size_small, legend) > room {
-            legend = legend.split_once(" · ").map_or("", |(_, rest)| rest);
+        if let Some((back, on)) = self.pager_rects(r) {
+            // The pager: the tracks shown, with a step either way, dim at
+            // either end.
+            let n = self.tracks.len();
+            let last = (self.first_track + GRID_COLS).min(n);
+            for (b, glyph, live) in [(back, "‹", self.first_track > 0), (on, "›", last < n)] {
+                cx.canvas.fill_round_rect(b, 10, t.raised);
+                let ink = if live { t.text } else { t.text_faint };
+                cx.text(FontId::Bold, t.size_body, b, Align::Center, ink, glyph);
+            }
+            let label = Rect::new(back.right(), back.y, on.x - back.right(), back.h);
+            let mut words = format!("tracks {}–{last} of {n}", self.first_track + 1);
+            if cx.measure(FontId::Sans, t.size_small, &words) > label.w - 8 {
+                words = format!("{}–{last} of {n}", self.first_track + 1);
+            }
+            cx.text(
+                FontId::Sans,
+                t.size_small,
+                label,
+                Align::Center,
+                t.text_dim,
+                &words,
+            );
+        } else {
+            // The legend's parts that fit between the title and the
+            // buttons, dropping the first ones when it is too wide.
+            let title_w = cx.measure(FontId::Bold, t.size_small, &self.title.to_uppercase());
+            let room = add.x - 12 - (head.x + title_w + 16);
+            let mut legend = self.legend.as_str();
+            while !legend.is_empty() && cx.measure(FontId::Sans, t.size_small, legend) > room {
+                legend = legend.split_once(" · ").map_or("", |(_, rest)| rest);
+            }
+            cx.text(
+                FontId::Sans,
+                t.size_small,
+                Rect::new(head.x, head.y, add.x - head.x - 12, head.h),
+                Align::Right,
+                t.text_dim,
+                legend,
+            );
         }
+        cx.canvas.fill_round_rect(add, 10, t.raised);
         cx.text(
-            FontId::Sans,
+            FontId::Bold,
             t.size_small,
-            Rect::new(head.x, head.y, edit.x - head.x - 12, head.h),
-            Align::Right,
-            t.text_dim,
-            legend,
+            add,
+            Align::Center,
+            if self.can_add { t.text } else { t.text_faint },
+            "+ Track",
         );
         rec_song_pill(cx, rec, self.song_rec);
         cx.canvas.fill_round_rect(edit, 10, t.raised);
@@ -870,7 +959,15 @@ impl Widget for ClipGrid {
             Target::tap("song", 0, "Song", self.song_rect(r)),
             Target::tap("rec-song", 0, "Rec song", self.rec_rect(r)),
             Target::tap("edit", 0, "Edit", self.edit_rect(r)),
+            Target::tap("add-track", 0, "+ Track", self.add_rect(r)).disabled_if(!self.can_add),
         ];
+        if let Some((back, on)) = self.pager_rects(r) {
+            let last = self.first_track + GRID_COLS >= self.tracks.len();
+            out.push(
+                Target::tap("pager", 0, "Tracks before", back).disabled_if(self.first_track == 0),
+            );
+            out.push(Target::tap("pager", 1, "Tracks after", on).disabled_if(last));
+        }
         if self.tracks.is_empty() {
             return out;
         }
@@ -902,12 +999,30 @@ impl Widget for ClipGrid {
     }
 
     fn touch(&mut self, _f: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
-        if phase != Touch::Down {
-            return None;
+        // A finger on a track's name: let go where it went down it arms
+        // the track; swiped along the names it pages.
+        match phase {
+            Touch::Down => self.press = None,
+            Touch::Move => return None,
+            Touch::Cancel => {
+                self.press = None;
+                return None;
+            }
+            Touch::Up => {
+                let (x0, track) = self.press.take()?;
+                let dx = x - x0;
+                return Some(if dx.abs() < SWIPE_PX {
+                    EventKind::Tab(track)
+                } else if dx < 0 {
+                    EventKind::Toggle(self.slots + PAGE_ON)
+                } else {
+                    EventKind::Toggle(self.slots + PAGE_BACK)
+                });
+            }
         }
         // A row's scene button is Toggle(row); Stop all is Toggle(slots);
         // the Song button Toggle(slots + 1); Rec song Toggle(slots + 2);
-        // Edit Toggle(slots + 3).
+        // Edit Toggle(slots + 3); "+ Track" and the pager as above.
         if self.song_rect(r).contains(x, y) {
             return Some(EventKind::Toggle(self.slots + 1));
         }
@@ -916,6 +1031,19 @@ impl Widget for ClipGrid {
         }
         if self.edit_rect(r).contains(x, y) {
             return Some(EventKind::Toggle(self.slots + 3));
+        }
+        if self.add_rect(r).contains(x, y) {
+            return self
+                .can_add
+                .then_some(EventKind::Toggle(self.slots + ADD_TRACK));
+        }
+        if let Some((back, on)) = self.pager_rects(r) {
+            if back.contains(x, y) {
+                return Some(EventKind::Toggle(self.slots + PAGE_BACK));
+            }
+            if on.contains(x, y) {
+                return Some(EventKind::Toggle(self.slots + PAGE_ON));
+            }
         }
         if self.tracks.is_empty() {
             return None;
@@ -934,7 +1062,8 @@ impl Widget for ClipGrid {
                 return Some(EventKind::Tab(SOUND_TAP + track));
             }
             if self.head_rect(r, track).is_some_and(|h| h.contains(x, y)) {
-                return Some(EventKind::Tab(track));
+                self.press = Some((x, track));
+                return None;
             }
             for slot in self.first_row..self.slots {
                 if self
@@ -1546,9 +1675,11 @@ mod tests {
             g.touch(1, Touch::Down, c.x + 2, c.y + 2, r),
             Some(EventKind::Select(2 * 16 + 3))
         );
+        // A track's name arms it on the lift.
         let h = g.head_rect(r, 5).unwrap();
+        assert_eq!(g.touch(1, Touch::Down, h.x + 2, h.y + 2, r), None);
         assert_eq!(
-            g.touch(1, Touch::Down, h.x + 2, h.y + 2, r),
+            g.touch(1, Touch::Up, h.x + 6, h.y + 2, r),
             Some(EventKind::Tab(5))
         );
         // Scrolled: slot 3 is the first row, track 2 the first column.
@@ -1589,12 +1720,54 @@ mod tests {
             g.touch(1, Touch::Down, s.x + 4, s.bottom() - 2, r),
             Some(EventKind::Tab(SOUND_TAP + 3))
         );
+        // The name arms on the lift (a swipe along the names pages).
+        assert_eq!(g.touch(1, Touch::Down, h.x + 4, h.y + 2, r), None);
         assert_eq!(
-            g.touch(1, Touch::Down, h.x + 4, h.y + 2, r),
+            g.touch(1, Touch::Up, h.x + 4, h.y + 2, r),
             Some(EventKind::Tab(3))
         );
         // Off to the right: no sound line in view.
         assert_eq!(g.sound_rect(r, 9), None);
+    }
+
+    /// Past 8 tracks the pager takes the legend's place: ‹ and ›, or a
+    /// swipe along the names, page; "+ Track" is lit while there is room.
+    #[test]
+    fn the_pager_and_plus_track_and_a_swipe_on_the_names() {
+        let mut g = grid(24);
+        let r = Rect::new(12, 128, 814, 610);
+        let add = g.add_rect(r);
+        let edit = g.edit_rect(r);
+        assert!(add.right() < edit.x, "{add:?} {edit:?}");
+        let (back, on) = g.pager_rects(r).unwrap();
+        assert!(back.right() < on.x && on.right() < add.x);
+        assert!(back.x > r.x + 240, "clear of the title: {back:?}");
+        let tap = |g: &mut ClipGrid, b: Rect| g.touch(1, Touch::Down, b.x + 3, b.y + 3, r);
+        assert_eq!(tap(&mut g, add), None, "no room: dim");
+        g.can_add = true;
+        assert_eq!(tap(&mut g, add), Some(EventKind::Toggle(16 + ADD_TRACK)));
+        assert_eq!(tap(&mut g, back), Some(EventKind::Toggle(16 + PAGE_BACK)));
+        assert_eq!(tap(&mut g, on), Some(EventKind::Toggle(16 + PAGE_ON)));
+        // A swipe to the left along the names: the next 8; to the right:
+        // the 8 before. Neither arms a track.
+        let h = g.head_rect(r, 3).unwrap();
+        g.touch(1, Touch::Down, h.x + 60, h.y + 4, r);
+        g.touch(1, Touch::Move, h.x + 20, h.y + 4, r);
+        assert_eq!(
+            g.touch(1, Touch::Up, h.x - 40, h.y + 4, r),
+            Some(EventKind::Toggle(16 + PAGE_ON))
+        );
+        g.touch(1, Touch::Down, h.x + 2, h.y + 4, r);
+        assert_eq!(
+            g.touch(1, Touch::Up, h.x + 90, h.y + 4, r),
+            Some(EventKind::Toggle(16 + PAGE_BACK))
+        );
+        // A lost touch does nothing.
+        g.touch(1, Touch::Down, h.x + 2, h.y + 4, r);
+        assert_eq!(g.touch(1, Touch::Cancel, h.x + 2, h.y + 4, r), None);
+        assert_eq!(g.touch(1, Touch::Up, h.x + 2, h.y + 4, r), None);
+        // Eight tracks: no pager.
+        assert!(grid(8).pager_rects(r).is_none());
     }
 
     #[test]

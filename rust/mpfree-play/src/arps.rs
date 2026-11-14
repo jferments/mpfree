@@ -25,10 +25,15 @@
 //! through track's parameter locks skip its arp and reach the sink as the
 //! player sent them, before the arp's notes on the same frame.
 //!
-//! [`TrackArps::new`] allocates (16 engines) and belongs on the control
-//! thread at start; nothing else allocates. An arp given nothing in a
-//! period whose engine is idle (`Engine::idle`) skips that period
-//! (`Engine::skip`), so idle tracks cost next to nothing.
+//! [`TrackArps::new`] allocates (an engine for each of the 128 tracks a
+//! project can have, about 1.5 MB) and belongs on the control thread at
+//! start; nothing else allocates. Each period only visits the tracks up to
+//! the highest one anything has asked for (its settings, a note, its
+//! switch or destination), so a project of 8 tracks pays for 8. An arp
+//! given nothing in a period whose engine is idle (`Engine::idle`) skips
+//! that period (`Engine::skip`), so idle tracks cost next to nothing. An
+//! engine a period doesn't visit has never been given anything, so it is
+//! as a new one: its first sync lines it up with the transport.
 
 use mpfree_arp::{Engine, EventKind};
 use mpfree_seq::{DestId, MAX_TRACKS};
@@ -49,6 +54,8 @@ pub struct TrackArps {
     /// with none and an idle engine skips its period, which keeps 15 idle
     /// arps nearly free.
     fed: [bool; MAX_TRACKS],
+    /// Tracks up to the highest one asked for: what a period visits.
+    used: usize,
     /// This period's notes for the sink, until [`TrackArps::finish`].
     out: [Out; MAX_OUT],
     /// Which of `out` an arp played (rather than the player passing it on).
@@ -76,6 +83,7 @@ impl TrackArps {
             through: [false; MAX_TRACKS],
             dest: core::array::from_fn(|t| t as DestId),
             fed: [false; MAX_TRACKS],
+            used: 0,
             out: [blank; MAX_OUT],
             from_arp: [false; MAX_OUT],
             n_out: 0,
@@ -86,12 +94,33 @@ impl TrackArps {
     /// Track `track`'s arp (settings, latch, pattern; change them between
     /// periods). None past the last track.
     pub fn arp(&mut self, track: usize) -> Option<&mut ArpHost> {
+        self.ask(track);
         self.arps.get_mut(track)
     }
 
     /// The engine of track `track`'s arp.
     pub fn engine(&mut self, track: usize) -> Option<&mut Engine> {
+        self.ask(track);
         self.arps.get_mut(track).map(|a| &mut a.engine)
+    }
+
+    /// Every track's engine, to change a setting on all of them (the
+    /// tempo, a project's arps) without marking them in use: settings
+    /// alone never start an engine (it runs only with notes held).
+    pub fn engines_mut(&mut self) -> impl Iterator<Item = &mut Engine> {
+        self.arps.iter_mut().map(|a| &mut a.engine)
+    }
+
+    /// Track `track` is in use: periods visit it from now on.
+    fn ask(&mut self, track: usize) {
+        if track < self.arps.len() {
+            self.used = self.used.max(track + 1);
+        }
+    }
+
+    /// Tracks a period visits: up to the highest one asked for.
+    pub fn used(&self) -> usize {
+        self.used
     }
 
     /// Track `track`'s engine to read (the last track's past the end).
@@ -101,7 +130,9 @@ impl TrackArps {
 
     /// Track `track`'s engine to change (the last track's past the end).
     pub fn engine_at_mut(&mut self, track: usize) -> &mut Engine {
-        &mut self.arps[track.min(MAX_TRACKS - 1)].engine
+        let t = track.min(MAX_TRACKS - 1);
+        self.ask(t);
+        &mut self.arps[t].engine
     }
 
     /// Notes no engine could queue, over every track, since the start.
@@ -114,6 +145,7 @@ impl TrackArps {
     /// sound), at the start of the next period, so no note the clip held in it, or that should now reach
     /// it, is left hanging.
     pub fn set_through(&mut self, track: usize, on: bool) {
+        self.ask(track);
         if let Some(t) = self.through.get_mut(track) {
             if *t != on {
                 *t = on;
@@ -139,6 +171,7 @@ impl TrackArps {
     /// Where `track`'s arp plays: the track's destination (the track
     /// host's slot, the sampler's kit ...).
     pub fn set_dest(&mut self, track: usize, dest: DestId) {
+        self.ask(track);
         if let Some(d) = self.dest.get_mut(track) {
             *d = dest;
         }
@@ -147,6 +180,7 @@ impl TrackArps {
     /// A live pad note for `track`, `offset` frames into the coming period.
     /// The pads always play through their track's arp.
     pub fn pad(&mut self, track: usize, offset: u32, event: Event) {
+        self.ask(track);
         if let Some(a) = self.arps.get_mut(track) {
             a.input(offset, event);
             self.fed[track] = true;
@@ -177,7 +211,7 @@ impl TrackArps {
     pub fn finish_with(&mut self, block: &Block, mut f: impl FnMut(&Out, bool)) {
         let player_notes = self.n_out;
         self.from_arp[..player_notes].fill(false);
-        for t in 0..self.arps.len() {
+        for t in 0..self.used {
             if !std::mem::take(&mut self.fed[t]) && self.arps[t].engine.idle() {
                 self.arps[t].engine.skip(block.frames);
                 continue;
@@ -254,10 +288,12 @@ impl Sink for Through<'_> {
         let a = &mut *self.arps;
         let t = usize::from(o.track);
         if o.track == ALL || matches!(o.event, Event::AllOff) {
-            for arp in a.arps.iter_mut() {
+            // Only the tracks in use hold anything to clear.
+            let used = a.used;
+            for arp in a.arps[..used].iter_mut() {
                 arp.input(o.offset, Event::AllOff);
             }
-            a.fed = [true; MAX_TRACKS];
+            a.fed[..used].fill(true);
         } else if a.through(t) && matches!(o.event, Event::NoteOn { .. } | Event::NoteOff { .. }) {
             a.arps[t].input(o.offset, o.event);
             a.fed[t] = true;

@@ -102,6 +102,93 @@ const DRIVE_BIAS: f32 = 0.25;
 const HB_EVEN: [f32; 3] = [0.060_297_39, 0.412_590_7, 0.772_715_6];
 const HB_ODD: [f32; 3] = [0.215_971_44, 0.604_358_6, 0.923_886_1];
 
+/// The square: the saw (-1 to 1) through the limited-gain shaper. For the
+/// Synth tab's picture of one cycle.
+pub fn square_of(saw: f32) -> f32 {
+    SQ_LEVEL * tanh_pade(SQ_GAIN * (saw - SQ_THRESHOLD))
+}
+
+/// The filter's small-signal gain at `hz`, with the amplifier's make-up,
+/// for **Cutoff** `cutoff` (Hz) and **Resonance** `resonance` (0 to 100):
+/// Stinchcombe's transfer function for the ladder, `cutoff` 2^¼ above its
+/// normalised frequency, with the feedback through the loop's high-pass.
+/// For the Synth tab's picture.
+pub fn response(cutoff: f32, resonance: f32, hz: f32) -> f32 {
+    // Complex numbers as (re, im).
+    let mul = |a: (f32, f32), b: (f32, f32)| (a.0 * b.0 - a.1 * b.1, a.0 * b.1 + a.1 * b.0);
+    let div = |a: (f32, f32), b: (f32, f32)| {
+        let d = b.0 * b.0 + b.1 * b.1;
+        ((a.0 * b.0 + a.1 * b.1) / d, (a.1 * b.0 - a.0 * b.1) / d)
+    };
+    let w = hz.max(0.0) * 2f32.powf(0.25) / cutoff.max(1.0);
+    let s = (0.0, w);
+    // s^4 + 6.727 s^3 + 14.142 s^2 + 9.514 s + 1
+    let s2 = mul(s, s);
+    let s3 = mul(s2, s);
+    let s4 = mul(s2, s2);
+    let den = (
+        s4.0 + 6.727 * s3.0 + 14.142 * s2.0 + 9.514 * s.0 + 1.0,
+        s4.1 + 6.727 * s3.1 + 14.142 * s2.1 + 9.514 * s.1,
+    );
+    let h = div((1.0, 0.0), den);
+    let k = K_MAX * (resonance / 100.0).clamp(0.0, 1.0);
+    let q = hz.max(0.0) / LOOP_HP_HZ;
+    let hp = div((0.0, q), (1.0, q));
+    let loop_ = mul(mul(h, hp), (k, 0.0));
+    let y = div(h, (1.0 + loop_.0, loop_.1));
+    (y.0 * y.0 + y.1 * y.1).sqrt() * (1.0 + k).sqrt()
+}
+
+/// Where the filter envelope takes the cutoff (Hz), at `n` times spread
+/// evenly over `secs`, for notes starting at `starts` (seconds, in order;
+/// each restarts the envelope), all accented or none, for the values `v`,
+/// with no key tracking and no earlier accents. The accent's sweep
+/// capacitor carries over from note to note, as in [`Squelch`]'s own
+/// loop. For the Synth tab's picture.
+pub fn cutoff_sweep(
+    v: impl Fn(u16) -> f32,
+    accent: bool,
+    starts: &[f32],
+    secs: f32,
+    n: usize,
+) -> Vec<f32> {
+    let r = v(RESONANCE) / 100.0;
+    let depth = v(ENV_MOD) / 100.0 * ENV_OCT;
+    let a = if accent { v(ACCENT) / 100.0 } else { 0.0 };
+    let decay = (0.001 * if accent { v(ACCENT_DECAY) } else { v(DECAY) }).max(1e-3);
+    let base = v(CUTOFF).max(1.0).log2() - ENV_BASE_SHARE * depth;
+    let dt = 0.0005f32;
+    let charge = 1.0 - (-dt / SWEEP_CHARGE_S).exp();
+    let empty = (-dt / SWEEP_EMPTY_S).exp();
+    // The envelope at `t`: 0 before the first note.
+    let meg = |t: f32| -> f32 {
+        match starts.iter().rev().find(|&&s| s <= t) {
+            Some(&s) => 0.1f32.powf((t - s) / decay),
+            None => 0.0,
+        }
+    };
+    let mut sweep = 0.0f32;
+    let mut t = 0.0f32;
+    let mut out = Vec::with_capacity(n);
+    for i in 0..n {
+        let at = secs * i as f32 / (n.max(2) - 1) as f32;
+        while t < at {
+            let acc = if accent { meg(t) } else { 0.0 };
+            if acc > sweep {
+                sweep += (acc - sweep) * charge;
+            } else {
+                sweep *= empty;
+            }
+            t += dt;
+        }
+        let m = meg(at);
+        let acc = if accent { m } else { 0.0 };
+        let oct = base + depth * m + a * ACCENT_OCT * ((1.0 - r) * acc + r * SWEEP_WEIGHT * sweep);
+        out.push(oct.exp2());
+    }
+    out
+}
+
 /// `tanh` by its [3/2] Padé form, exact at 0 and reaching 1 at ±3.
 #[inline(always)]
 fn tanh_pade(x: f32) -> f32 {
