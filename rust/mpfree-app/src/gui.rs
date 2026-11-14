@@ -878,6 +878,15 @@ pub enum FromUi {
     },
     /// The Looper tab: pick loop `n` for the controls.
     LoopPick(usize),
+    /// The Looper tab: layer `id` of loop `from` dragged onto loop `to`
+    /// (empty: a loop of its own); `keep` (SHIFT held): a copy, else it
+    /// moves.
+    LoopCopy {
+        from: usize,
+        id: u8,
+        to: usize,
+        keep: bool,
+    },
     /// Loop `n`'s mute turned over without picking it (the picked loop's
     /// with None).
     LoopMute(Option<usize>),
@@ -2021,8 +2030,31 @@ impl Player {
                 LoopAct::FaintUse(i) => {
                     self.tell(crate::looper_page::why_no_use(i, &self.looper));
                 }
+                // A layer dragged onto a loop (SHIFT held as it lifts: a
+                // copy); the loop it went to is picked, to show it there.
+                LoopAct::DropLayer(k, to) => {
+                    let to = match to {
+                        crate::looper_tab::DropTo::Loop(n) => Some(n),
+                        crate::looper_tab::DropTo::NewLoop => self.looper_page.first_empty(),
+                    };
+                    if let (Some(to), Some(l)) = (to, self.looper_page.layer_info(k)) {
+                        out.push(FromUi::LoopCopy {
+                            from: self.looper.selected,
+                            id: l.id,
+                            to,
+                            keep: self.status.shift,
+                        });
+                        out.push(FromUi::LoopPick(to));
+                    }
+                }
+                LoopAct::NoDrop(to) => {
+                    let why = self.looper_page.why_no_drop(&self.ui, to);
+                    self.tell(&why);
+                }
             }
         }
+        // The list and the card follow a layer dragged out of the editor.
+        self.looper_page.sync_drag(&mut self.ui, self.status.shift);
         let mut it = out.into_iter();
         let first = it.next();
         self.outbox.extend(it);
@@ -2272,9 +2304,8 @@ impl Player {
                 View::Arrange => CLIPS_HINT.to_string(),
                 View::Looper if self.looper_page.history_open() => format!("Tap a step: back or forward to it   ·   \
                                          drag: scroll   ·   Undo history: close   ·   UNDO: undo (SHIFT: redo)   ·   {stop}"),
-                View::Looper => format!("Tap a loop or a layer: pick it   ·   Q-Links: layer level and pan, Fade old, \
-                                         seam fade   ·   REC: record   ·   OVERDUB: overdub   ·   UNDO: undo (SHIFT: redo)   ·   \
-                                         {stop}"),
+                View::Looper => format!("Tap: pick   ·   drag a layer to a loop (SHIFT: copy)   ·   REC: record   ·   \
+                                         OVERDUB: overdub   ·   UNDO: undo (SHIFT: redo)   ·   {stop}"),
                 View::Synth => format!("Pads play {}   ·   Q-Links 1-4: the marked knobs   ·   Wheel: pick a knob   ·   \
                                         - / +, or push the wheel and turn: change it   ·   SHIFT + wheel: page   ·   {stop}",
                                        self.synth.as_ref().map_or("the synth", |p| p.state.info.name)),
@@ -2594,6 +2625,7 @@ impl Player {
             p.clear();
         }
         if self.ui.show(HISTORY_PAGE).is_ok() {
+            self.looper_page.sync_drag(&mut self.ui, self.status.shift);
             self.history = Some(HistoryOpen {
                 of,
                 back,
@@ -2825,6 +2857,39 @@ impl Player {
         let t = f.target;
         let grabbed = self.ui.focus_grabbed();
         match t.gesture {
+            // A loop's layer: the wheel points it at the loops that can
+            // take it, and the second push lets it go there.
+            Gesture::Tap if t.moves && grabbed && f.widget == crate::looper_tab::EDITOR => {
+                self.ui.set_focus_grabbed(false);
+                let dropped = self
+                    .ui
+                    .get_mut::<crate::looper_tab::LoopEditor>(crate::looper_tab::EDITOR)
+                    .and_then(|e| e.wheel_drop());
+                if dropped.is_none() {
+                    self.tell(&format!("Put {} back · the wheel moves on", t.label));
+                }
+                // The first answer goes before the ones it queued.
+                let at = self.outbox.len();
+                if let Some(a) = self.looper_acts() {
+                    self.outbox.insert(at, a);
+                }
+            }
+            Gesture::Tap
+                if t.moves && self.ui.focus_steps() && f.widget == crate::looper_tab::EDITOR =>
+            {
+                self.ui.set_focus_grabbed(true);
+                if let Some(e) = self
+                    .ui
+                    .get_mut::<crate::looper_tab::LoopEditor>(crate::looper_tab::EDITOR)
+                {
+                    e.wheel_grab(t.index);
+                }
+                self.looper_page.sync_drag(&mut self.ui, self.status.shift);
+                self.tell(&format!(
+                    "The wheel points {} at a loop · push again to drop it there",
+                    t.label
+                ));
+            }
             Gesture::Tap if t.moves && grabbed => {
                 self.ui.set_focus_grabbed(false);
                 self.tell(&format!("Put {} down · the wheel moves on", t.label));
@@ -2873,6 +2938,14 @@ impl Player {
         if !self.ui.focus_grabbed() {
             return;
         }
+        // A loop's layer the wheel picked up goes back to its place.
+        if let Some(e) = self
+            .ui
+            .get_mut::<crate::looper_tab::LoopEditor>(crate::looper_tab::EDITOR)
+        {
+            e.wheel_cancel();
+        }
+        self.looper_page.sync_drag(&mut self.ui, self.status.shift);
         if self.fingers.contains(&WHEEL_FINGER) {
             let at = self.ui.focused().map_or((0, 0), |f| f.target.centre());
             self.nav_touch(Touch::Up, at);
@@ -2907,6 +2980,7 @@ impl Player {
             p.open(ask);
         }
         if self.ui.show(NUMPAD_PAGE).is_ok() {
+            self.looper_page.sync_drag(&mut self.ui, self.status.shift);
             self.typing = Some(Typing { to, back });
             self.outbox.push(FromUi::Overlay(true));
             self.refresh_hint();
@@ -4993,6 +5067,8 @@ impl Player {
             }
         }
         let _ = self.ui.show(page);
+        // A layer the wheel picked up on the Looper tab goes back.
+        self.looper_page.sync_drag(&mut self.ui, self.status.shift);
     }
 
     /// Actions that did not come from a touch, for the audio thread.
@@ -9224,6 +9300,129 @@ mod tests {
         assert_eq!(p.page(), sample_page::PADS_PAGE);
     }
 
+    /// Drag and drop on the Looper tab (approved as drawn, 14 Nov): a
+    /// layer lifted out of the editor lights the loops that take it and
+    /// the New loop button; let go on a loop of another length, the
+    /// screen says why; on New loop it moves into the first empty loop,
+    /// which is picked; with SHIFT held, onto a loop of its length, it
+    /// goes as a copy. The wheel does the same with its push and turns.
+    #[test]
+    fn a_layer_dragged_onto_a_loop_moves_or_copies_and_another_length_says_why() {
+        use crate::looper_tab::{DropTo, LoopEditor, LoopList, EDITOR, LOOPS};
+        let mut p = sample_looper(Fonts::embedded()).unwrap();
+        p.ui.paint(&mut SoftCanvas::new(SCREEN.0, SCREEN.1));
+        let (_, view) = recorded_loop();
+        let chop = view.layers[2].unwrap().id;
+        let r = p.ui.rect_of(EDITOR).unwrap();
+        let e = p.ui.get::<LoopEditor>(EDITOR).unwrap();
+        let (_, rr) = e.row_rects(LoopEditor::parts(r).2)[2];
+        let at = (LoopEditor::row_parts(rr).wave.x + 30, rr.y + rr.h / 2);
+        let lr = p.ui.rect_of(LOOPS).unwrap();
+        let parts = p.ui.get::<LoopList>(LOOPS).unwrap().parts(lr);
+        let (two, new) = (parts.rows[1], parts.new.unwrap());
+        let drag = |p: &mut Player, to: mpfree_ui::Rect| {
+            p.touch(1, Touch::Down, at.0, at.1);
+            p.touch(1, Touch::Move, at.0 - 40, at.1);
+            p.touch(1, Touch::Move, to.x + 20, to.y + 20)
+        };
+        // Loop 2 is 2 bars and loop 1 is 4: lifted over it, the list
+        // shows it refusing and only + New loop lit; let go, it says why.
+        drag(&mut p, two);
+        let d = p.ui.get::<LoopList>(LOOPS).unwrap().drag.clone().unwrap();
+        assert_eq!(d.lit, [DropTo::NewLoop]);
+        assert_eq!(d.landing, Some((DropTo::Loop(1), false)));
+        assert!(
+            d.says.contains("Loop 2 is 2 bars and this layer 4"),
+            "{}",
+            d.says
+        );
+        p.ui.paint(&mut SoftCanvas::new(SCREEN.0, SCREEN.1));
+        assert_eq!(p.touch(1, Touch::Up, two.x + 20, two.y + 20), None);
+        assert!(p.ui.get::<LoopList>(LOOPS).unwrap().drag.is_none());
+        let told = p.told.as_ref().map(|t| t.0.clone()).unwrap_or_default();
+        assert!(
+            told.contains("a layer goes only onto a loop of its length"),
+            "{told}"
+        );
+        // On + New loop: the chop moves into loop 3, which is picked.
+        drag(&mut p, new);
+        let d = p.ui.get::<LoopList>(LOOPS).unwrap().drag.clone().unwrap();
+        assert_eq!(d.says, "Move into Loop 3: a loop of its own");
+        assert_eq!(
+            p.touch(1, Touch::Up, new.x + 20, new.y + 20),
+            Some(FromUi::LoopCopy {
+                from: 0,
+                id: chop,
+                to: 2,
+                keep: false
+            })
+        );
+        assert_eq!(p.take_actions(), [FromUi::LoopPick(2)]);
+        // Loop 2 at loop 1's length takes it: with SHIFT held, a copy.
+        let mut v = view.clone();
+        let second = p.looper.loops[1];
+        v.loops[1] = mpfree_looper::Status {
+            ticks: view.status.ticks,
+            ..second
+        };
+        p.apply(ToUi::Looper(Box::new(v.clone())));
+        p.status.shift = true;
+        drag(&mut p, two);
+        let d = p.ui.get::<LoopList>(LOOPS).unwrap().drag.clone().unwrap();
+        assert_eq!(d.lit, [DropTo::Loop(1), DropTo::NewLoop]);
+        assert_eq!(d.says, "Copy to Loop 2");
+        assert_eq!(
+            p.touch(1, Touch::Up, two.x + 20, two.y + 20),
+            Some(FromUi::LoopCopy {
+                from: 0,
+                id: chop,
+                to: 1,
+                keep: true
+            })
+        );
+        assert_eq!(p.take_actions(), [FromUi::LoopPick(1)]);
+        p.status.shift = false;
+        // The wheel: push on the chop picks it up, a turn points it at
+        // loop 2, the push drops it there (a move now).
+        p.apply(ToUi::Looper(Box::new(v)));
+        let t =
+            p.ui.targets()
+                .into_iter()
+                .find(|t| t.widget == EDITOR && t.target.id == "layer" && t.target.index == 2)
+                .unwrap();
+        let (cx, cy) = t.target.centre();
+        assert!(p.ui.focus_at(cx, cy).is_some());
+        p.nav(Nav::Push);
+        assert!(p.ui.focus_grabbed(), "the push picks it up");
+        p.nav(Nav::Turn(1));
+        let d = p.ui.get::<LoopList>(LOOPS).unwrap().drag.clone().unwrap();
+        assert_eq!(d.landing, Some((DropTo::Loop(1), true)));
+        p.nav(Nav::Push);
+        assert!(!p.ui.focus_grabbed());
+        assert_eq!(
+            p.take_actions(),
+            [
+                FromUi::LoopCopy {
+                    from: 0,
+                    id: chop,
+                    to: 1,
+                    keep: false
+                },
+                FromUi::LoopPick(1)
+            ]
+        );
+        assert!(p.ui.get::<LoopList>(LOOPS).unwrap().drag.is_none());
+        // Picked up by the wheel, it goes back when the page changes.
+        assert!(p.ui.focus_at(cx, cy).is_some());
+        p.nav(Nav::Push);
+        assert!(p.ui.get::<LoopEditor>(EDITOR).unwrap().wheel_held());
+        p.show_view(View::Play);
+        p.show_view(View::Looper);
+        assert!(!p.ui.get::<LoopEditor>(EDITOR).unwrap().wheel_held());
+        assert!(p.ui.get::<LoopList>(LOOPS).unwrap().drag.is_none());
+        assert!(p.take_actions().is_empty());
+    }
+
     /// The Looper tab (mockup J): a loop tapped is picked, a layer's
     /// speaker works it by its id, a Q-Link turns the picked layer, and a
     /// setting steps the looper's option.
@@ -9303,7 +9502,10 @@ mod tests {
         );
         // The hint says what the tab's controls do.
         let hint = &p.ui.get::<Label>("hint").unwrap().text;
-        assert!(hint.contains("Tap a loop or a layer"), "{hint}");
+        assert!(
+            hint.contains("Tap: pick") && hint.contains("drag a layer to a loop"),
+            "{hint}"
+        );
     }
 
     /// Jay's wheel navigation (13 Nov): a tap puts the outline on a

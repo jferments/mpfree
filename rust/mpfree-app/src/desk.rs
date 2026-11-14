@@ -169,6 +169,9 @@ impl Desk<'_> {
             gui::FromUi::LoopPick(n) => {
                 fx.push(app::Effect::Looper(looping::LoopAction::Select(n)))
             }
+            gui::FromUi::LoopCopy { from, id, to, keep } => fx.push(app::Effect::Looper(
+                looping::LoopAction::CopyLayer { from, id, to, keep },
+            )),
             gui::FromUi::LoopMute(n) => {
                 fx.push(app::Effect::Looper(looping::LoopAction::ToggleMute(n)))
             }
