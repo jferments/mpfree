@@ -1000,7 +1000,10 @@ mod tests {
             s.run_for(0.5);
             s.button("STOP").run_for(0.2);
             let (line, dir) = export(s, &["Stems"], 120.0);
-            assert!(line.contains("1 WAV file and a MIDI file"), "{line}");
+            assert!(
+                line.contains("1 WAV file (24-bit, 44.1 kHz) and a MIDI file"),
+                "{line}"
+            );
             let names: BTreeSet<String> = std::fs::read_dir(&dir)
                 .unwrap()
                 .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())

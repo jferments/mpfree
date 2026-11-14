@@ -49,7 +49,7 @@ The music tabs, in this order:
   - **Each page's options.** MENU opens them.
   - **The Arp panel.** NOTE REPEAT + MENU opens it; it belongs to Play.
   - **The mixer.** TRACK MIX or the mixer icon opens it over the current page, under the top bar, as Prefs does. The same button or icon again, or a tab, closes it (Jay, 09:17Z: the button or a small sliders icon in a corner; the FX thread builds it).
-  - **The browser.** BROWSE opens it over the current page, under the top bar, as the mixer does; BROWSE again or a tab closes it (controls decision 13; Jay after live test 3, 13 Nov 11:46Z; built by the project thread). Its Projects place has New project, Save as, Save and Export. **Export** (Jay's pick on the missing-features thread's card, 14 Nov 01:39Z: "Yes, in BROWSE") opens the Export panel over the browser: Mixdown, Stems and MIDI file to tick, the range (Arrangement, or a number of bars with - / +), how it will play and the folder, then Start; while it runs, the time done and Cancel; when it is over, what it made and Show in BROWSE. While the panel shows, the wheel sets the bars, its push is Start (Close once it is over) and - closes it. BROWSE still closes the browser, and an export keeps running behind it. The Pads tab's Browse view stays the narrow picker of section 4e.
+  - **The browser.** BROWSE opens it over the current page, under the top bar, as the mixer does; BROWSE again or a tab closes it (controls decision 13; Jay after live test 3, 13 Nov 11:46Z; built by the project thread). Its Projects place has New project, Save as, Save and Export. **Export** (Jay's pick on the missing-features thread's card, 14 Nov 01:39Z: "Yes, in BROWSE") opens the Export panel over the browser: Mixdown, Stems and MIDI file to tick, the range (Arrangement, or a number of bars with - / +), the File row (24-bit, 16-bit or 32-bit float, and 44.1 or 48 kHz; it starts as Prefs > Export file and Export rate have it and changes the format for that export only, Jay's pick "Both" on the missing-features thread's card, 14 Nov 07:51Z), how it will play and the folder, then Start; while it runs, the time done and Cancel; when it is over, what it made and Show in BROWSE. While the panel shows, the wheel sets the bars, its push is Start (Close once it is over) and - closes it. BROWSE still closes the browser, and an export keeps running behind it. The Pads tab's Browse view stays the narrow picker of section 4e.
   - **The pattern workspace.**
   - **The button guide.**
   - **System info, Touch lab and Calibrate touch.** These open from Prefs.
@@ -200,7 +200,8 @@ Approved by Jay at 22:34Z (the mod thread's card, "Approve as proposed"). The mo
   9. System info
   10. At start (New project, the default, or Last project: what opens when MPFree starts, once the sound is going; Jay's pick on the project thread's settings card, 13 Nov 14:09Z)
   11. Export (Fast, quiet, the default, or Listen: how an export plays; a song that needs outside gear listens anyway; Jay, 14 Nov 01:32Z, on the missing-features thread)
-  12. Touch screen (opens its own rows)
+  12. Export file (24-bit, the default, 16-bit with dither, or 32-bit float) and 13. Export rate (44.1 kHz, the default, or 48 kHz): the format each export starts from; the Export panel's File row changes it for one export (Jay's pick "Both", 14 Nov 07:51Z, on the missing-features thread)
+  14. Touch screen (opens its own rows)
 - **The Touch screen rows** ("Prefs · Touch screen", approved in the touch thread at 08:13Z, #69):
   1. Back
   2. Screen pad velocity

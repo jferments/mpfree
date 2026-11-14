@@ -129,7 +129,12 @@ impl Facts {
     }
 
     /// The panel's setup, and how the export would play now.
-    pub fn setup(&self, pref: Mode, folder: &str) -> (mpfree_browser_ui::ExportSetup, Mode, Why) {
+    pub fn setup(
+        &self,
+        pref: Mode,
+        format: mpfree_browser_ui::ExportFormat,
+        folder: &str,
+    ) -> (mpfree_browser_ui::ExportSetup, Mode, Why) {
         let (mode, why) = choose(pref, &self.rig);
         let arrangement = (self.arrangement_end > 0).then(|| {
             let frames = self.frames(0, self.arrangement_end);
@@ -146,6 +151,7 @@ impl Facts {
             mode: mode_words(mode, &why),
             stems: self.stems.len().min(MAX_STREAMS - 1),
             folder: format!("Recordings / {folder}"),
+            format,
         };
         (setup, mode, why)
     }
@@ -244,10 +250,37 @@ impl Facts {
             midi,
             mode,
             rate: self.rate,
+            format: wav_format(choice.format),
             length: Some(self.frames(range.start, range.end)),
             first_slot: 0,
         };
         (plan, range)
+    }
+}
+
+/// Prefs' Export file and rate, as the Export panel starts from them.
+pub fn panel_format(bits: mpfree_fx::Bits, rate: u32) -> mpfree_browser_ui::ExportFormat {
+    use mpfree_browser_ui::ExportBits as B;
+    mpfree_browser_ui::ExportFormat {
+        bits: match bits {
+            mpfree_fx::Bits::I24 => B::I24,
+            mpfree_fx::Bits::I16 => B::I16,
+            mpfree_fx::Bits::F32 => B::F32,
+        },
+        rate,
+    }
+}
+
+/// The panel's format, as the export writes it.
+pub fn wav_format(f: mpfree_browser_ui::ExportFormat) -> mpfree_fx::WavFormat {
+    use mpfree_browser_ui::ExportBits as B;
+    mpfree_fx::WavFormat {
+        bits: match f.bits {
+            B::I24 => mpfree_fx::Bits::I24,
+            B::I16 => mpfree_fx::Bits::I16,
+            B::F32 => mpfree_fx::Bits::F32,
+        },
+        rate: f.rate,
     }
 }
 
@@ -688,7 +721,8 @@ mod tests {
         // Bars: from the bar the playhead is in.
         let r = f.range(ExportRange::Bars(8));
         assert_eq!((r.start, r.end, r.song), (3840 * 5, 3840 * 13, None));
-        let (setup, mode, why) = f.setup(Mode::Fast, "Song 2026-11-14 01.32");
+        let fmt = panel_format(mpfree_fx::Bits::I24, crate::RATE);
+        let (setup, mode, why) = f.setup(Mode::Fast, fmt, "Song 2026-11-14 01.32");
         assert_eq!(setup.arrangement.as_deref(), Some("4:48, 96 bars"));
         assert_eq!(setup.from_bar, 6);
         assert_eq!(setup.stems, 3);
@@ -700,7 +734,7 @@ mod tests {
             arrangement_end: 0,
             ..facts()
         };
-        assert_eq!(none.setup(Mode::Fast, "x").0.arrangement, None);
+        assert_eq!(none.setup(Mode::Fast, fmt, "x").0.arrangement, None);
         assert_eq!(none.range(ExportRange::Arrangement).song, None);
     }
 
@@ -712,6 +746,7 @@ mod tests {
             stems: true,
             midi: true,
             range: ExportRange::Bars(50),
+            format: panel_format(mpfree_fx::Bits::I16, 48_000),
         };
         let (p, r) = f.plan(&c, Path::new("/x/y"), "Night drive", Mode::Listen);
         let names: Vec<&str> = p.streams.iter().map(|s| s.name.as_str()).collect();
@@ -724,6 +759,14 @@ mod tests {
         assert_eq!(r.start, 5 * 3840);
         assert_eq!(p.length, Some(f.frames(r.start, r.end)));
         assert_eq!(p.mode, Mode::Listen);
+        assert_eq!(
+            p.format,
+            mpfree_fx::WavFormat {
+                bits: mpfree_fx::Bits::I16,
+                rate: 48_000
+            },
+            "the panel's format"
+        );
         let c = ExportChoice {
             stems: false,
             midi: false,
@@ -925,6 +968,7 @@ mod tests {
             stems: true,
             midi: true,
             range: ExportRange::Bars(1),
+            format: panel_format(mpfree_fx::Bits::I24, crate::RATE),
         };
         let folder = scratch("range");
         let (plan, range) = f.plan(&c, &folder, "Night drive", Mode::Listen);
@@ -1037,6 +1081,7 @@ mod tests {
             stems: false,
             midi: false,
             range: ExportRange::Bars(4),
+            format: panel_format(mpfree_fx::Bits::I24, crate::RATE),
         };
         let folder = scratch("stop");
         let (plan, range) = f.plan(&c, &folder, "Night drive", Mode::Fast);
