@@ -90,7 +90,7 @@ pub(crate) const SYNCS: &[&str] = &[
     "2 bars", "4 bars",
 ];
 /// Beats per LFO cycle for each sync choice (0 is free).
-const SYNC_BEATS: [f64; 14] = [
+pub(crate) const SYNC_BEATS: [f64; 14] = [
     0.0,
     0.125,
     1.0 / 6.0,

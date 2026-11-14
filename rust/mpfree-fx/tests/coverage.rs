@@ -28,6 +28,13 @@ const COVERED: &[&str] = &[
     "mpfree.fx.amp",
     "mpfree.fx.exciter",
     "mpfree.fx.xy",
+    "mpfree.fx.autowah",
+    "mpfree.fx.talkbox",
+    "mpfree.fx.freqshift",
+    "mpfree.fx.width",
+    "mpfree.fx.sample_delay",
+    "mpfree.fx.channel_strip",
+    "mpfree.fx.granulator",
 ];
 
 fn make(id: &str) -> Box<dyn Node> {
@@ -179,7 +186,7 @@ fn every_extreme_stays_finite_and_bounded() {
                 // Make-up and output gains stay at unity or under: a
                 // boost the user asks for is not a runaway.
                 let mut v = p.from_unit(t);
-                if p.unit == Unit::Db && p.min < 0.0 && p.max > 0.0 {
+                if p.unit == Unit::Db && (p.min < 0.0 || p.name == "Makeup") && p.max > 0.0 {
                     v = v.min(0.0);
                 }
                 n.set_param(p.id, v);
