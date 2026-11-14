@@ -1106,3 +1106,41 @@ fn drive_eco_blends_with_the_dry_side_at_any_mix() {
         );
     }
 }
+
+#[test]
+fn a_watched_slot_reports_its_levels_and_follows_its_effect() {
+    let mut c = Chain::new();
+    c.prepare(48_000, 128);
+    c.push(Box::new(Eq::new()));
+    c.set_param(0, ids::eq::OUTPUT, -6.0);
+    assert_eq!(c.levels(), None, "nothing watched");
+    c.watch(Some(0));
+    let run = |c: &mut Chain, amp: f32, blocks: usize| {
+        for b in 0..blocks {
+            let mut l: Vec<f32> = (0..128)
+                .map(|i| amp * (2.0 * PI * 1000.0 * (b * 128 + i) as f32 / 48_000.0).sin())
+                .collect();
+            let mut r = l.clone();
+            c.process(&Ctx::new(48_000, (b * 128) as u64), &mut l, &mut r);
+        }
+    };
+    // A -6 dBFS sine in, 6 dB less out.
+    run(&mut c, 0.5, 200);
+    let (i, o) = c.levels().unwrap();
+    assert!((i + 6.0).abs() < 0.1 && (o + 12.0).abs() < 0.2, "{i} {o}");
+    // Silence: both fall 20 dB a second.
+    run(&mut c, 0.0, 375);
+    let (i2, o2) = c.levels().unwrap();
+    assert!(
+        (i2 - (i - 20.0)).abs() < 0.3 && (o2 - (o - 20.0)).abs() < 0.3,
+        "{i2} {o2}"
+    );
+    // An effect put in before it: the meters stay on the EQ.
+    let ins = Insert::new(Box::new(Drive::new()), 48_000, 128);
+    assert!(c.insert(0, ins).is_ok());
+    assert_eq!(c.watched(), Some(1));
+    run(&mut c, 0.5, 200);
+    assert!((c.levels().unwrap().1 - c.levels().unwrap().0 + 6.0).abs() < 0.5);
+    c.watch(None);
+    assert_eq!(c.levels(), None);
+}
