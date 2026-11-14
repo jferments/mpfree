@@ -341,6 +341,20 @@ pub struct Timing {
     pub audio: AudioNumbers,
 }
 
+/// What each track plays as its own instrument (None: the kit).
+pub type TrackSounds = [Option<crate::instruments::Held>; crate::instruments::SLOTS];
+
+/// Writes what each track plays under its name: its own instrument's
+/// name, or "Kit".
+fn fill_sounds(st: &mut TimeState, sounds: &TrackSounds) {
+    for (i, t) in st.tracks.iter_mut().enumerate() {
+        let name = sounds.get(i).copied().flatten().map_or("Kit", |h| h.name);
+        if t.sound != name {
+            t.sound = name.to_string();
+        }
+    }
+}
+
 pub enum ToUi {
     /// A line for the terminal and the Events log.
     Line(String),
@@ -352,6 +366,9 @@ pub enum ToUi {
     /// The CLAP plugins found at start (sent once, early): an open makes a
     /// project's plugins with them, here on the screen thread.
     Plugins(std::sync::Arc<crate::plugins::Plugins>),
+    /// What each track plays as its own instrument (None: the kit), for
+    /// the line under its name on Arrange. Sent when it changes.
+    TrackSounds(Box<TrackSounds>),
     /// An open done: the engines it replaced, to free here.
     ProjectBack(Box<crate::project::Opening>),
     /// Something the project keeps changed with the controls (a Synth tab
@@ -603,6 +620,9 @@ pub enum FromUi {
     /// Open a project (or a new one): the pieces built here, swapped in
     /// between two periods (project.rs).
     OpenProject(Box<crate::project::Opening>),
+    /// A tap on track `n`'s sound line on Arrange: the track is selected
+    /// (armed) and the Synth tab's MENU opens on its Instrument row.
+    TrackInstrument(usize),
     /// An opened project's loops, read on their own thread: they go in
     /// once the old ones have faded out.
     OpenLoops(Box<mpfree_looper::save::Saved>),
@@ -844,6 +864,9 @@ pub struct Player {
     /// The plugins an open makes a project's plugin effects and synths
     /// with ([`ToUi::Plugins`]; none until then).
     project_plugins: std::sync::Arc<crate::plugins::Plugins>,
+    /// What each track plays ([`ToUi::TrackSounds`]), written under its
+    /// name on Arrange.
+    track_sounds: TrackSounds,
     /// Prefs > At start was looked at (once, when the sound is going).
     start_checked: bool,
     /// The sound's rate, for an opened project's engines.
@@ -1115,6 +1138,7 @@ impl Player {
             io_model: None,
             project_defaults: None,
             project_plugins: std::sync::Arc::new(crate::plugins::Plugins::none()),
+            track_sounds: [None; crate::instruments::SLOTS],
             start_checked: false,
             project_rate: 44_100,
             opened_at: None,
@@ -2540,6 +2564,11 @@ impl Player {
             ToUi::ProjectParts(c) => self.save_project(c),
             ToUi::ProjectDefaults(d) => self.project_defaults = Some(*d),
             ToUi::Plugins(p) => self.project_plugins = p,
+            ToUi::TrackSounds(s) => {
+                self.track_sounds = *s;
+                fill_sounds(&mut self.time, &self.track_sounds);
+                self.time_page.update(&mut self.ui, &self.time);
+            }
             ToUi::Edited => {}
             // The engines an open replaced: freed here. The open is in:
             // nothing is unsaved (its own news in the next moments isn't
@@ -2824,10 +2853,11 @@ impl Player {
                 }
                 self.refresh_arp();
             }
-            ToUi::Time(st) => {
+            ToUi::Time(mut st) => {
                 // The lens the note editor shows, if it is open.
                 let lens = |t: &TimeState| t.edit.as_ref().map(|e| e.editor.lens);
                 let swapped = st.song_view != self.time.song_view || lens(&st) != lens(&self.time);
+                fill_sounds(&mut st, &self.track_sounds);
                 self.time = *st;
                 self.sample.set_tempo(self.time.transport.bpm);
                 self.time_page.update(&mut self.ui, &self.time);
@@ -4574,6 +4604,12 @@ impl Player {
                     }
                 }
                 a.map(FromUi::Arp)
+            }
+            // A track's sound line: its instrument on the Synth tab.
+            (time_view::CLIPS, EventKind::Tab(k)) if k >= mpfree_time_ui::widgets::SOUND_TAP => {
+                Some(FromUi::TrackInstrument(
+                    k - mpfree_time_ui::widgets::SOUND_TAP,
+                ))
             }
             (
                 time_view::TRANSPORT
@@ -6602,6 +6638,23 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         Ok(p) => out.push(("clips", p)),
         Err(e) => eprintln!("clips sample: {e}"),
     }
+    // Each track's instrument under its name: Track 2 plays FM, Track 4
+    // Poly and Track 6 a plugin synth; the rest the kit.
+    match sample_clips(fonts()) {
+        Ok(mut p) => {
+            let mut s: TrackSounds = [None; crate::instruments::SLOTS];
+            for (t, id, name) in [
+                (1, "mpfree.fm", "FM"),
+                (3, "mpfree.poly", "Poly"),
+                (5, "clap:org.example.synth", "Example Synth"),
+            ] {
+                s[t] = Some(crate::instruments::Held { id, name });
+            }
+            p.apply(ToUi::TrackSounds(Box::new(s)));
+            out.push(("arrange-instruments", p));
+        }
+        Err(e) => eprintln!("clips sample: {e}"),
+    }
     // The note editor on the Arrange page: the piano roll, the list, then
     // the tracker on a bar of drums.
     for (name, lens) in [
@@ -7428,6 +7481,50 @@ mod tests {
     use super::*;
     use mpfree_touch::mt::InputEvent;
     use std::io::ErrorKind;
+
+    /// Under each track's name on Arrange: what it plays ("Kit" until it
+    /// has its own instrument), kept as the time engine's news comes in;
+    /// a tap on that line asks for the track's instrument.
+    #[test]
+    fn each_track_says_what_it_plays_and_a_tap_on_it_opens_its_instrument() {
+        use mpfree_time_ui::widgets::ClipGrid;
+        let mut p = sample_clips(Fonts::embedded()).unwrap();
+        let sounds = |p: &Player| {
+            p.ui.get::<ClipGrid>(time_view::CLIPS)
+                .unwrap()
+                .tracks
+                .iter()
+                .map(|t| t.sound.clone())
+                .collect::<Vec<_>>()
+        };
+        assert!(sounds(&p).iter().all(|s| s == "Kit"), "{:?}", sounds(&p));
+        let mut s: TrackSounds = [None; crate::instruments::SLOTS];
+        s[2] = Some(crate::instruments::Held {
+            id: "mpfree.fm",
+            name: "FM",
+        });
+        p.apply(ToUi::TrackSounds(Box::new(s)));
+        assert_eq!(sounds(&p)[..3], ["Kit", "Kit", "FM"]);
+        // The time engine's next state keeps them.
+        let mut st = p.time.clone();
+        for t in &mut st.tracks {
+            t.sound.clear();
+        }
+        p.apply(ToUi::Time(Box::new(st)));
+        assert_eq!(sounds(&p)[..3], ["Kit", "Kit", "FM"]);
+        let grid = p.ui.rect_of(time_view::CLIPS).unwrap();
+        let line =
+            p.ui.get::<ClipGrid>(time_view::CLIPS)
+                .unwrap()
+                .sound_rect(grid, 2)
+                .unwrap();
+        let (x, y) = (line.x + line.w / 2, line.y + line.h / 2);
+        let down = p.touch(1, Touch::Down, x, y);
+        assert_eq!(
+            down.or(p.touch(1, Touch::Up, x, y)),
+            Some(FromUi::TrackInstrument(2))
+        );
+    }
 
     #[test]
     fn the_clips_page_shows_the_engine_and_turns_taps_into_actions() {
