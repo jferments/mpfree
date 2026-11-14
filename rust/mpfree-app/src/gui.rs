@@ -4077,7 +4077,9 @@ impl Player {
             .root()
             .join(mpfree_library::Place::Recordings.folder());
         let folder = crate::export::new_folder_name(&recordings, &song, now_utc());
-        let (setup, _, _) = f.setup(self.settings.export_mode, &folder);
+        let format =
+            crate::export::panel_format(self.settings.export_bits, self.settings.export_rate);
+        let (setup, _, _) = f.setup(self.settings.export_mode, format, &folder);
         b.open_export(setup);
         self.export_facts = Some(f);
         self.step_browser();

@@ -11,7 +11,7 @@ use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::Duration;
 
-use mpfree_fx::{bounce, wav_header, BounceOut, Pumped, StripId};
+use mpfree_fx::{bounce, BounceOut, Pumped, StripId, WavFormat};
 use mpfree_midi::smf::NoteLog;
 
 use crate::mode::Mode;
@@ -42,6 +42,7 @@ pub struct Job {
     song: String,
     midi: Option<MidiPlan>,
     rate: u32,
+    format: WavFormat,
     length: Option<u64>,
     mode: Mode,
 }
@@ -88,9 +89,11 @@ pub struct Done {
     pub silent: Vec<String>,
     /// None when no notes played (or no MIDI file was asked for).
     pub midi: Option<PathBuf>,
-    /// Each WAV file's frames.
+    /// Each WAV file's frames, at the mixer's rate (`rate`).
     pub frames: u64,
     pub rate: u32,
+    /// The WAV files' format.
+    pub format: WavFormat,
     /// Notes past the MIDI file's room, left out.
     pub notes_dropped: u64,
 }
@@ -117,8 +120,8 @@ impl Outcome {
                     .unwrap_or_default();
                 let wavs = match d.wavs.len() {
                     0 => String::new(),
-                    1 => "1 WAV file".into(),
-                    n => format!("{n} WAV files"),
+                    1 => format!("1 WAV file ({})", d.format.words()),
+                    n => format!("{n} WAV files ({})", d.format.words()),
                 };
                 let what = match (wavs.is_empty(), d.midi.is_some()) {
                     (false, true) => format!("{wavs} and a MIDI file"),
@@ -188,6 +191,7 @@ pub fn start(plan: Plan) -> io::Result<(Pass, Job)> {
     }
     let ring = (RING_S * f64::from(plan.rate)) as usize;
     let (bin, bout) = bounce(plan.streams.len(), ring, plan.rate);
+    let bout = bout.with_format(plan.format);
     let shared = Arc::new(Shared::new());
     let theirs = shared.clone();
     let writer = std::thread::Builder::new()
@@ -226,6 +230,7 @@ pub fn start(plan: Plan) -> io::Result<(Pass, Job)> {
         song: plan.song,
         midi: plan.midi,
         rate: plan.rate,
+        format: plan.format,
         length: plan.length,
         mode: plan.mode,
     };
@@ -275,13 +280,14 @@ fn remove(folder: &Path, made: bool, wavs: &[PathBuf], midi: Option<&Path>) {
     }
 }
 
-/// Cuts each file to `frames` and writes its header again.
-fn trim(wavs: &[PathBuf], rate: u32, frames: u64) -> io::Result<()> {
+/// Cuts each file to `frames` (at the file's rate) and writes its header
+/// again.
+fn trim(wavs: &[PathBuf], format: WavFormat, frames: u64) -> io::Result<()> {
     for p in wavs {
         let mut f = OpenOptions::new().write(true).open(p)?;
-        f.set_len(mpfree_fx::bounce::WAV_HEADER as u64 + frames * 6)?;
+        f.set_len(format.header_len() as u64 + frames * format.bits.frame_bytes())?;
         f.seek(SeekFrom::Start(0))?;
-        f.write_all(&wav_header(rate, frames))?;
+        f.write_all(&format.header(frames))?;
         f.sync_all()?;
     }
     Ok(())
@@ -362,7 +368,8 @@ impl Job {
                     ended.max(loud).min(frames)
                 };
                 if keep < frames {
-                    if let Err(e) = trim(&wavs, self.rate, keep) {
+                    let at = self.format.frames_for(keep, self.rate);
+                    if let Err(e) = trim(&wavs, self.format, at) {
                         return failed(&wavs, format!("ending the files: {e}"));
                     }
                 }
@@ -391,6 +398,7 @@ impl Job {
                     midi,
                     frames: keep,
                     rate: self.rate,
+                    format: self.format,
                     notes_dropped,
                 })
             }
