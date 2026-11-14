@@ -154,7 +154,7 @@ impl Tremolo {
     fn begin(&mut self, ctx: &Ctx) {
         self.lfo.begin(ctx, self.v[1] as usize);
     }
-    fn run(&mut self, l: &mut [f32], r: &mut [f32]) {
+    fn run(&mut self, _ctx: &Ctx, _from: usize, l: &mut [f32], r: &mut [f32]) {
         self.lfo.set(self.v[0], self.v[1] as usize, self.rate);
         let shape = self.v[2] as usize;
         let harmonic = self.v[5] >= 0.5;
@@ -288,7 +288,7 @@ impl AutoPan {
     fn begin(&mut self, ctx: &Ctx) {
         self.lfo.begin(ctx, self.v[1] as usize);
     }
-    fn run(&mut self, l: &mut [f32], r: &mut [f32]) {
+    fn run(&mut self, _ctx: &Ctx, _from: usize, l: &mut [f32], r: &mut [f32]) {
         self.lfo.set(self.v[0], self.v[1] as usize, self.rate);
         let shape = self.v[2] as usize;
         for i in 0..l.len() {
@@ -437,7 +437,7 @@ impl RingMod {
     fn begin(&mut self, ctx: &Ctx) {
         self.lfo.begin(ctx, self.v[4] as usize);
     }
-    fn run(&mut self, l: &mut [f32], r: &mut [f32]) {
+    fn run(&mut self, _ctx: &Ctx, _from: usize, l: &mut [f32], r: &mut [f32]) {
         self.lfo.set(self.v[3], self.v[4] as usize, self.rate);
         let wave = self.v[1] as usize;
         let per = 1.0 / self.rate as f32;
@@ -654,7 +654,7 @@ impl Rotary {
         self.horn_k = kit::coef(ms * HORN_RAMP / 3.0, self.rate);
     }
     fn begin(&mut self, _ctx: &Ctx) {}
-    fn run(&mut self, l: &mut [f32], r: &mut [f32]) {
+    fn run(&mut self, _ctx: &Ctx, _from: usize, l: &mut [f32], r: &mut [f32]) {
         let s = (self.v[0] as usize).min(2);
         let (horn_to, drum_to) = (HORN_HZ[s], DRUM_HZ[s]);
         let ms = self.rate as f32 * 0.001;

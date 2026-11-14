@@ -15,9 +15,9 @@ use mpfree_node::Node;
 
 use crate::presets as p;
 use crate::{
-    AutoPan, Character, Chorus, Cloud, Comb, Compressor, Crush, Delay, DjFilter, Drive, Ducker, Eq,
-    Flanger, LoFi, MasterSafety, MultiFilter, Perform, Phaser, PitchShifter, Preset, RingMod,
-    Rotary, TransientShaper, Tremolo,
+    AutoPan, Character, Chorus, Cloud, Comb, Compressor, Crush, DeEsser, Delay, DjFilter, Drive,
+    Ducker, Eq, Flanger, Gate, Limiter, LoFi, MasterSafety, MultiFilter, MultibandCompressor,
+    Perform, Phaser, PitchShifter, Preset, RingMod, Rotary, TransientShaper, Tremolo,
 };
 
 /// Where an effect sits in the picker.
@@ -140,6 +140,38 @@ pub static EFFECTS: &[FxEntry] = &[
         Dynamics,
         || Box::new(TransientShaper::new()),
         p::TRANSIENT,
+    ),
+    e(
+        "mpfree.fx.limiter",
+        "Limiter",
+        "Loud, with nothing over",
+        Dynamics,
+        || Box::new(Limiter::new()),
+        crate::dynamics::LIMITER_PRESETS,
+    ),
+    e(
+        "mpfree.fx.gate",
+        "Gate",
+        "Silence between the hits",
+        Dynamics,
+        || Box::new(Gate::new()),
+        crate::dynamics::GATE_PRESETS,
+    ),
+    e(
+        "mpfree.fx.deesser",
+        "De-esser",
+        "Tames harsh S sounds",
+        Dynamics,
+        || Box::new(DeEsser::new()),
+        crate::dynamics::DEESSER_PRESETS,
+    ),
+    e(
+        "mpfree.fx.multiband",
+        "Multiband comp",
+        "Low, mid and high apart",
+        Dynamics,
+        || Box::new(MultibandCompressor::new()),
+        crate::dynamics::MULTIBAND_PRESETS,
     ),
     e(
         "mpfree.fx.eq",
