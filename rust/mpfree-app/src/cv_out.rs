@@ -179,6 +179,13 @@ impl CvOut {
         self.writer.is_some()
     }
 
+    /// Whether a CV or gate jack plays something (open, and an output has
+    /// a job): an export then plays in real time.
+    pub fn in_use(&self) -> bool {
+        self.writer.is_some()
+            && (0..CV_OUTS).any(|o| self.engine.assign(o) != mpfree_midi::cv::CvAssign::Off)
+    }
+
     /// Once a period: takes the outputs' jobs when they changed, tells the
     /// I/O view which outputs are sent, and shows each output's volts.
     /// Never waits for the screen.

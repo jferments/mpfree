@@ -639,6 +639,10 @@ impl Node for LoFi {
     fn latency(&self) -> u32 {
         self.latency
     }
+    fn rest_frames(&self) -> u32 {
+        // What it holds is its tail: once rung out it is as good as reset.
+        self.tail_frames()
+    }
     fn tail_frames(&self) -> u32 {
         let fs = self.rate as f32;
         // The tape delay and the filters' settling; while crackle or hiss

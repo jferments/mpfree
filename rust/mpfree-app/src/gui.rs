@@ -439,6 +439,11 @@ fn fill_sounds(st: &mut TimeState, sounds: &TrackSounds) {
 pub enum ToUi {
     /// A line for the terminal and the Events log.
     Line(String),
+    /// What Export needs to know about the song (export.rs), after
+    /// [`FromUi::ExportAsk`].
+    ExportFacts(Box<crate::export::Facts>),
+    /// An export's pass is over (or never started): the job finishes it.
+    ExportOver(Box<crate::export::Run>),
     /// A save: what the audio loop's engines hold, for the screen to write
     /// with its own parts and hand to the library (project.rs).
     ProjectParts(Box<crate::project::Collected>),
@@ -719,6 +724,12 @@ pub enum FromUi {
     /// Save the project: the audio loop sends its engines' parts back
     /// (`ToUi::ProjectParts`).
     SaveProject,
+    /// Export was pressed: the audio loop sends the song's facts
+    /// (`ToUi::ExportFacts`).
+    ExportAsk,
+    /// Start an export: the pass plays the range into its files
+    /// (export.rs); it comes back as `ToUi::ExportOver`.
+    Export(Box<crate::export::Run>),
     /// Open a project (or a new one): the pieces built here, swapped in
     /// between two periods (project.rs).
     OpenProject(Box<crate::project::Opening>),
@@ -1001,6 +1012,10 @@ pub struct Player {
     /// Autosave is off this run: the last run's unsaved work couldn't be
     /// set aside, and autosave would write over it.
     autosave_off: bool,
+    /// Export: the song's facts while the panel is open, and the job of
+    /// the export running with its folder in the library (export.rs).
+    export_facts: Option<Box<crate::export::Facts>>,
+    export_job: Option<(mpfree_export::Job, Option<mpfree_library::Loc>)>,
     /// The sound's rate, for an opened project's engines.
     project_rate: u32,
     /// When the last open landed ([`OPEN_SETTLE`]).
@@ -1322,6 +1337,8 @@ impl Player {
             autosaving: false,
             autosave_dirty: false,
             autosave_off: false,
+            export_facts: None,
+            export_job: None,
             project_rate: 44_100,
             opened_at: None,
             open_actions: 0,
@@ -2307,6 +2324,14 @@ impl Player {
                                       MENU: options   ·   NOTE REPEAT + MENU: close"),
                 View::Pattern => self.workspace.hint().to_string(),
                 View::Browser if self.browser.is_none() => NO_LIBRARY_HINT.to_string(),
+                View::Browser
+                    if self
+                        .browser
+                        .as_ref()
+                        .is_some_and(|b| b.export_panel().is_some() && b.picking().is_none()) =>
+                {
+                    mpfree_browser_ui::EXPORT_HINT.to_string()
+                }
                 View::Browser => mpfree_browser_ui::BROWSER_HINT.to_string(),
             }
         };
@@ -3214,6 +3239,8 @@ impl Player {
                 self.io_model = Some(model);
             }
             ToUi::ProjectParts(c) => self.save_project(c),
+            ToUi::ExportFacts(f) => self.export_facts(f),
+            ToUi::ExportOver(run) => self.export_over(run),
             ToUi::ProjectDefaults(d) => self.project_defaults = Some(*d),
             ToUi::Plugins(p) => self.project_plugins = p,
             ToUi::TrackSounds(s) => {
@@ -3848,6 +3875,14 @@ impl Player {
             A::LastNotOpened(e) => self.say(format!(
                 "project: the last project wasn't opened ({e}); the new one stays"
             )),
+            // Export (export.rs): the song's facts first, then the panel.
+            A::ExportAsked => self.outbox.push(FromUi::ExportAsk),
+            A::ExportStart(c) => self.start_export(c),
+            A::ExportCancel => {
+                if let Some((job, _)) = &self.export_job {
+                    job.cancel();
+                }
+            }
             // The Pads tab's browser offers sounds only; anything else
             // is said, never dropped quietly.
             other => self.say(format!(
@@ -3879,6 +3914,109 @@ impl Player {
             }
             Err(e) => self.say(format!("preview: not heard ({e})")),
         }
+    }
+
+    // ------------------------------------------------------------ export
+
+    /// The song's facts came: the Export panel opens with them.
+    fn export_facts(&mut self, f: Box<crate::export::Facts>) {
+        let Some(b) = self.browser.as_mut() else {
+            return;
+        };
+        let song = crate::export::song_name(b.project().map(|l| l.name()));
+        let recordings = b
+            .library()
+            .root()
+            .join(mpfree_library::Place::Recordings.folder());
+        let folder = crate::export::new_folder_name(&recordings, &song, now_utc());
+        let (setup, _, _) = f.setup(self.settings.export_mode, &folder);
+        b.open_export(setup);
+        self.export_facts = Some(f);
+        self.step_browser();
+    }
+
+    /// Start on the Export panel: the plan, the job and its files, and
+    /// the pass to the audio loop.
+    fn start_export(&mut self, c: mpfree_browser_ui::ExportChoice) {
+        let (Some(b), Some(f)) = (self.browser.as_mut(), self.export_facts.as_ref()) else {
+            return;
+        };
+        let song = crate::export::song_name(b.project().map(|l| l.name()));
+        let recordings = b
+            .library()
+            .root()
+            .join(mpfree_library::Place::Recordings.folder());
+        let name = crate::export::new_folder_name(&recordings, &song, now_utc());
+        let (mode, _) = mpfree_export::choose(self.settings.export_mode, &f.rig);
+        let (plan, range) = f.plan(&c, &recordings.join(&name), &song, mode);
+        let loc = mpfree_library::Loc::top(mpfree_library::Place::Recordings)
+            .join(&name)
+            .ok();
+        match mpfree_export::start(plan) {
+            Ok((pass, job)) => {
+                self.say(format!(
+                    "export: {} into Recordings/{name}, {}",
+                    match c.range {
+                        mpfree_browser_ui::ExportRange::Arrangement =>
+                            "the arrangement".to_string(),
+                        mpfree_browser_ui::ExportRange::Bars(n) => format!("{n} bars"),
+                    },
+                    mode.name()
+                ));
+                self.export_job = Some((job, loc));
+                self.outbox
+                    .push(FromUi::Export(Box::new(crate::export::Run {
+                        pass,
+                        range,
+                        said: None,
+                    })));
+            }
+            Err(e) => {
+                let line = format!("Export didn't start: {e}");
+                b.export_over(line.clone(), None);
+                self.say(format!("export: {line}"));
+            }
+        }
+    }
+
+    /// While an export runs: how far it has got, on the panel.
+    fn poll_export(&mut self) {
+        let (Some((job, _)), Some(b)) = (self.export_job.as_ref(), self.browser.as_mut()) else {
+            return;
+        };
+        let p = job.progress();
+        let part = p
+            .length
+            .filter(|&n| n > 0 && !p.tail)
+            .map(|n| p.played as f32 / n as f32);
+        b.export_running(p.words(), part.or(p.tail.then_some(1.0)));
+    }
+
+    /// The pass came back: the job finishes the files and says how it
+    /// went.
+    fn export_over(&mut self, run: Box<crate::export::Run>) {
+        let Some((job, loc)) = self.export_job.take() else {
+            return;
+        };
+        let crate::export::Run { pass, said, .. } = *run;
+        let outcome = job.finish(pass);
+        let (text, folder) = match (&outcome, said) {
+            (mpfree_export::Outcome::Done(_), _) => (outcome.words(), loc),
+            (_, Some(why)) if why.starts_with("Export") => (why, None),
+            (mpfree_export::Outcome::Cancelled, Some(why)) => (
+                format!("Export cancelled: {why}. Its files were removed."),
+                None,
+            ),
+            _ => (outcome.words(), None),
+        };
+        self.say(format!("export: {text}"));
+        self.export_facts = None;
+        if let Some(b) = self.browser.as_mut() {
+            b.export_over(text, folder);
+            // The new folder shows when Recordings is next listed.
+            b.refresh();
+        }
+        self.step_browser();
     }
 
     // ------------------------------------------------------------ projects
@@ -5595,6 +5733,7 @@ impl Player {
         if self.browsing() || self.browser.as_ref().is_some_and(|b| b.busy()) {
             self.step_browser();
         }
+        self.poll_export();
         self.poll_preview();
         self.poll_loops();
         self.poll_audio();

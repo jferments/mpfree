@@ -161,8 +161,10 @@ pub const MAX_PADS: usize = 128;
 pub const MAX_TRACKS: usize = 160;
 /// The most insert slots a strip can be built with.
 pub const MAX_SLOTS: usize = 16;
-/// Capture points every mixer has.
-pub const CAPTURES: usize = 8;
+/// Capture points every mixer has: enough for a stem of every strip at
+/// once (the export), with the sampler's and the looper's to spare. Each is
+/// a block of memory; only those in use cost anything per block.
+pub const CAPTURES: usize = 64;
 /// Events that can be queued for one strip per block.
 pub const MAX_STRIP_EVENTS: usize = 256;
 /// A volume or send level at or below this is silent.
@@ -984,6 +986,9 @@ impl Route {
 }
 
 struct Capture {
+    /// Its slot number ([`Mixer::set_capture`]); the list keeps those in
+    /// use first, so a block looks only at them.
+    slot: u8,
     src: Option<(u16, CapturePoint)>,
     buf: [Vec<f32>; 2],
 }
@@ -1302,6 +1307,8 @@ pub struct Mixer {
     scratch: Scratch,
     hw: [Vec<f32>; 2],
     caps: Vec<Capture>,
+    /// How many of `caps` (the first) are in use.
+    caps_used: usize,
     line_len: usize,
     tap_step: f32,
     duck_step: f32,
@@ -1371,11 +1378,13 @@ impl Mixer {
             },
             hw: block(),
             caps: (0..CAPTURES)
-                .map(|_| Capture {
+                .map(|slot| Capture {
+                    slot: slot as u8,
                     src: None,
                     buf: block(),
                 })
                 .collect(),
+            caps_used: 0,
             line_len,
             tap_step: 1.0 / (TAP_FADE_MS * 0.001 * rate as f32),
             duck_step: 1.0 / (DUCK_MS * 0.001 * rate as f32),
@@ -1752,17 +1761,35 @@ impl Mixer {
                 _ => return false,
             },
         };
-        let Some(c) = self.caps.get_mut(slot) else {
+        let Some(i) = self.caps.iter().position(|c| usize::from(c.slot) == slot) else {
             return false;
         };
-        c.src = src;
+        let was = self.caps[i].src.is_some();
+        self.caps[i].src = src;
+        // Those in use stay first.
+        match (was, src.is_some()) {
+            (false, true) => {
+                self.caps.swap(i, self.caps_used);
+                self.caps_used += 1;
+            }
+            (true, false) => {
+                self.caps_used -= 1;
+                self.caps.swap(i, self.caps_used);
+            }
+            _ => {}
+        }
         true
+    }
+
+    fn cap(&self, slot: usize) -> Option<&Capture> {
+        self.caps[..self.caps_used]
+            .iter()
+            .find(|c| usize::from(c.slot) == slot)
     }
 
     /// The last block a capture point took, or `None` when it is free.
     pub fn capture(&self, slot: usize) -> Option<(&[f32], &[f32])> {
-        let c = self.caps.get(slot)?;
-        c.src?;
+        let c = self.cap(slot)?;
         Some((&c.buf[0][..self.last_len], &c.buf[1][..self.last_len]))
     }
 
@@ -1770,7 +1797,7 @@ impl Mixer {
     /// capture point (for an input strip, between the line input and the
     /// point), so a recorder can line a take up with the transport.
     pub fn capture_latency(&self, slot: usize) -> Option<u32> {
-        let (k, p) = self.caps.get(slot)?.src?;
+        let (k, p) = self.cap(slot)?.src?;
         let k = k as usize;
         Some(match p {
             CapturePoint::BeforeInserts => self.plan.arrive[k],
@@ -2276,6 +2303,7 @@ impl Mixer {
             scratch,
             stats,
             caps,
+            caps_used,
             hw,
             safety,
             tap_step,
@@ -2329,12 +2357,8 @@ impl Mixer {
             }
             None => {}
         }
-        // With no capture point in use, nothing needs to look for one.
-        let caps: &mut [Capture] = if caps.iter().any(|c| c.src.is_some()) {
-            caps
-        } else {
-            &mut []
-        };
+        // Only the capture points in use (kept first) are looked at.
+        let caps: &mut [Capture] = &mut caps[..*caps_used];
         let base = Ctx {
             sidechain: None,
             ..*ctx

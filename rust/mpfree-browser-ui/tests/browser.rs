@@ -4,7 +4,8 @@
 use mpfree_browser_ui::sample::{fill, samples, FACTORY};
 use mpfree_browser_ui::state::{when, Key, Modal, SOURCES};
 use mpfree_browser_ui::{
-    step, BrowseAction, Browser, BrowserView, Button, Filter, Input, Pick, Sort, BROWSER,
+    step, BrowseAction, Browser, BrowserView, Button, ExportChoice, ExportInput, ExportPhase,
+    ExportRange, ExportSetup, Filter, Input, Pick, Sort, BROWSER,
 };
 use mpfree_library::{Library, Loc, Meta, Place, Snapshot};
 use mpfree_ui::{Fonts, SoftCanvas, Touch};
@@ -679,7 +680,12 @@ fn projects_offer_new_save_and_save_as_and_new_asks_over_unsaved_work() {
     b.go_source(src("Projects"));
     assert_eq!(
         b.screen().list_buttons,
-        [Button::NewProject, Button::SaveAs, Button::Save]
+        [
+            Button::NewProject,
+            Button::SaveAs,
+            Button::Save,
+            Button::Export
+        ]
     );
     // Other places keep their own buttons.
     b.go_source(src("Samples"));
@@ -802,4 +808,162 @@ fn autosaved_work_is_set_aside_at_the_next_start_and_opens_unsaved() {
     n.take_actions();
     n.open_landed();
     assert!(!n.unsaved());
+}
+
+fn export_setup(arrangement: bool) -> ExportSetup {
+    ExportSetup {
+        arrangement: arrangement.then(|| "3:50, 96 bars".to_string()),
+        from_bar: 3,
+        mode: "Fast, quiet".into(),
+        stems: 5,
+        folder: "Recordings / Night drive 2026-11-14 01.32".into(),
+    }
+}
+
+#[test]
+fn export_asks_the_app_and_its_panel_takes_the_screen() {
+    let (mut b, lib) = browser();
+    b.go_source(src("Projects"));
+    b.input(Input::Button(Button::Export));
+    assert_eq!(b.take_actions(), [BrowseAction::ExportAsked]);
+    assert!(b.screen().export.is_none(), "the app opens it");
+    b.open_export(export_setup(false));
+    let p = b.screen().export.unwrap();
+    assert_eq!(p.range, ExportRange::Bars(8));
+    assert!(p.mixdown && p.stems && p.midi);
+    // While it shows, the browser under it takes nothing.
+    let before = b.screen().selected;
+    b.dial(2);
+    b.input(Input::Row(1));
+    b.input(Input::Button(Button::NewProject));
+    assert!(b.take_actions().is_empty());
+    assert_eq!(b.screen().selected, before);
+    assert_eq!(
+        b.screen().export.unwrap().range,
+        ExportRange::Bars(10),
+        "the wheel sets the bars"
+    );
+    // Ticks, then Start (the push).
+    b.input(Input::Export(ExportInput::Midi));
+    b.input(Input::Export(ExportInput::Fewer));
+    b.push();
+    let want = ExportChoice {
+        mixdown: true,
+        stems: true,
+        midi: false,
+        range: ExportRange::Bars(9),
+    };
+    assert_eq!(b.take_actions(), [BrowseAction::ExportStart(want)]);
+    assert!(b.exporting());
+    // Running: only Cancel; - does not close it; it stays through a
+    // picker (hidden there) and comes back after.
+    b.back();
+    b.input(Input::Export(ExportInput::Close));
+    assert!(b.exporting());
+    b.export_running("0:04 of 0:19".into(), Some(0.25));
+    b.open_picker(Pick::Sample);
+    assert!(b.screen().export.is_none());
+    b.cancel_picker();
+    b.take_actions();
+    assert_eq!(
+        b.screen().export.unwrap().phase,
+        ExportPhase::Running {
+            words: "0:04 of 0:19".into(),
+            part: Some(0.25)
+        }
+    );
+    // Asking again while it runs changes nothing.
+    b.open_export(export_setup(true));
+    assert!(b.exporting());
+    b.input(Input::Export(ExportInput::Cancel));
+    assert_eq!(b.take_actions(), [BrowseAction::ExportCancel]);
+    b.export_over("Export cancelled, and its files removed".into(), None);
+    assert!(!b.exporting());
+    assert!(matches!(
+        b.screen().export.unwrap().phase,
+        ExportPhase::Stopped(_)
+    ));
+    b.push();
+    assert!(b.screen().export.is_none(), "the push closes it");
+    // Next time, the last choice is ticked again.
+    b.open_export(export_setup(true));
+    assert_eq!(b.screen().export.unwrap().choice(), want);
+    b.input(Input::Export(ExportInput::Arrangement));
+    b.input(Input::Export(ExportInput::Start));
+    b.take_actions();
+    // Done: Show in BROWSE goes to its folder in Recordings.
+    let rec = Loc::top(Place::Recordings);
+    let folder = lib
+        .new_folder(&rec, "Night drive 2026-11-14 01.32")
+        .unwrap();
+    b.export_over("Exported 3:52".into(), Some(folder.clone()));
+    assert_eq!(b.screen().status, Some(("Exported 3:52".into(), false)));
+    b.input(Input::Export(ExportInput::Show));
+    assert!(b.screen().export.is_none());
+    assert_eq!(b.screen().path, folder.display());
+}
+
+#[test]
+fn the_export_panel_answers_taps() {
+    let lib = fill(&temp()).unwrap();
+    let mut b = Browser::inline(lib);
+    let mut ui = mpfree_ui::Ui::new(mpfree_ui::Theme::dark(), Fonts::embedded(), 1280, 800);
+    ui.add("header", mpfree_ui::widgets::Header::app("Play"));
+    mpfree_browser_ui::add(&mut ui, &b).unwrap();
+    ui.show(mpfree_browser_ui::BROWSER_PAGE).unwrap();
+    b.go_source(src("Projects"));
+    b.open_export(export_setup(true));
+    step(&mut ui, &mut b);
+    // The panel's controls replace the browser's on the page.
+    let mut c = SoftCanvas::new(1280, 800);
+    ui.paint(&mut c);
+    let labels: Vec<String> = ui
+        .targets()
+        .into_iter()
+        .filter(|t| t.widget == BROWSER)
+        .map(|t| format!("{}/{}", t.target.id, t.target.label))
+        .collect();
+    assert_eq!(
+        labels,
+        [
+            "export/Mixdown",
+            "export/Stems",
+            "export/MIDI file",
+            "export/Arrangement",
+            "export/Bars",
+            "export/-",
+            "export/+",
+            "export/Close",
+            "export/Start"
+        ]
+    );
+    let tap = |ui: &mut mpfree_ui::Ui, x: i32, y: i32| {
+        ui.touch(1, Touch::Down, x, y);
+        ui.touch(1, Touch::Up, x, y);
+    };
+    // The card is centred in the browser: Make's buttons are its first
+    // row, Start is at the bottom right.
+    let r = ui.rect_of(BROWSER).unwrap();
+    let (w, h) = (780.min(r.w - 40), 480.min(r.h - 24));
+    let card = (r.x + (r.w - w) / 2, r.y + (r.h - h) / 2);
+    let (stems_x, make_y) = (
+        card.0 + 24 + 120 + (w - 48 - 120) / 2,
+        card.1 + 24 + 50 + 28,
+    );
+    tap(&mut ui, stems_x, make_y);
+    step(&mut ui, &mut b);
+    assert!(!b.screen().export.unwrap().stems);
+    // A tap outside the card does nothing, and the list under it can't be
+    // tapped.
+    tap(&mut ui, r.x + 30, r.y + 30);
+    step(&mut ui, &mut b);
+    assert!(b.screen().export.is_some());
+    tap(&mut ui, card.0 + w - 24 - 100, card.1 + h - 24 - 28);
+    let acts = step(&mut ui, &mut b);
+    assert!(
+        matches!(acts.as_slice(), [BrowseAction::ExportStart(c)] if !c.stems && c.range == ExportRange::Arrangement),
+        "{acts:?}"
+    );
+    let mut c = SoftCanvas::new(1280, 800);
+    ui.paint(&mut c);
 }

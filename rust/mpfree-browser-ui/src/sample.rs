@@ -4,6 +4,7 @@
 //! projects saved twice (so they have versions), a kit, a recording and
 //! an item in the Trash.
 
+use crate::export::{ExportInput, ExportSetup};
 use crate::state::{Browser, Button, Filter, Input, Key, Pick, SOURCES};
 use crate::view::BrowserView;
 use crate::{BROWSER, BROWSER_HINT, BROWSER_PAGE, PICKER_HINT};
@@ -354,5 +355,55 @@ pub fn samples(fonts: impl Fn() -> Fonts, data: &Path) -> Result<Vec<Sample>, St
             select(b, "Vocal chop.aif");
         },
     )?;
+    shot(
+        "18-export-ready",
+        "Export (Projects place, beside Save): the mixdown, the stems and the MIDI file ticked, the arrangement as the range, how it plays and where the files go",
+        Theme::dark(),
+        &|b| {
+            b.go_source(source("Projects"));
+            select(b, "Night drive");
+            b.input(Input::Button(Button::Export));
+            b.open_export(export_setup(true));
+        },
+    )?;
+    shot(
+        "19-export-running",
+        "Exporting 8 bars of the clips playing, in listening mode because a track plays a synth over MIDI: the time done and left, Cancel",
+        Theme::dark(),
+        &|b| {
+            b.go_source(source("Projects"));
+            b.open_export(ExportSetup {
+                mode: "Listen: it plays once in real time and you hear it, because track 3 plays Juno over MIDI, which can only be recorded as it plays".into(),
+                ..export_setup(false)
+            });
+            b.input(Input::Export(ExportInput::Start));
+            b.export_running("0:09 of 0:16".into(), Some(0.56));
+        },
+    )?;
+    shot(
+        "20-export-done",
+        "The export is done: what it made, and Show in BROWSE to go to its folder in Recordings",
+        Theme::dark(),
+        &|b| {
+            b.go_source(source("Projects"));
+            b.open_export(export_setup(true));
+            b.input(Input::Export(ExportInput::Start));
+            b.export_over(
+                "Exported 3:52 to Night drive 2026-11-14 01.32: 7 WAV files and a MIDI file (Return D was silent, so left out)".into(),
+                Loc::top(Place::Recordings).join("Night drive 2026-11-14 01.32").ok(),
+            );
+        },
+    )?;
     Ok(out)
+}
+
+/// What the app tells the Export panel in the samples.
+fn export_setup(arrangement: bool) -> ExportSetup {
+    ExportSetup {
+        arrangement: arrangement.then(|| "3:50, 96 bars".to_string()),
+        from_bar: 9,
+        mode: "Fast, quiet: faster than real time, the speakers quiet (Prefs > Export)".into(),
+        stems: 8,
+        folder: "Recordings / Night drive 2026-11-14 01.32".into(),
+    }
 }

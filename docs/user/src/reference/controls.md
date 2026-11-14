@@ -87,6 +87,8 @@ While the browser shows (**BROWSE**), the controls work it. See [Saving your wor
 | **ERASE** | Moves the item picked to the Trash (asks first). | Works |
 | **Q-Link knobs 1–4** | 1: moves through the list. 2: the filter. 3: the level you hear sounds at. 4: the places. | Works |
 
+While the Export panel shows, the data wheel sets the number of bars, its push presses **Start** (and **Close** once the export is over), and **–** closes the panel. See [Exporting your music](../making-music/exporting.md).
+
 ## Sample and Synth tabs
 
 | Control | What it does | When |

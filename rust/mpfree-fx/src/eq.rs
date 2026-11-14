@@ -722,6 +722,10 @@ impl Node for Eq {
             self.run(&mut left[from..to], &mut right[from..to]);
         }
     }
+    fn rest_frames(&self) -> u32 {
+        // What it holds is its tail: once rung out it is as good as reset.
+        self.tail_frames()
+    }
     fn tail_frames(&self) -> u32 {
         // A resonance rings for about Q / (pi f) seconds per 27 dB; allow 4x.
         let ring = |q: f32, hz: f32| 4.0 * q / (std::f32::consts::PI * hz.max(20.0));
