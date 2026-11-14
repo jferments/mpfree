@@ -100,7 +100,7 @@ pub fn safe_name(name: &str) -> String {
 }
 
 /// The folder's name: the project's and the time (as the app writes it,
-/// for example "2026-11-14 0132").
+/// for example "Night drive 2026-11-14 01.32").
 pub fn folder_name(project: &str, stamp: &str) -> String {
     safe_name(&format!("{} {}", project.trim(), stamp.trim()))
 }

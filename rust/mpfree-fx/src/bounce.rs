@@ -70,6 +70,8 @@ pub struct BounceOut {
     out: Vec<u64>,
     /// Frames up to the last one above [`SILENT`] in any file.
     loud: u64,
+    /// Whether each file has had a frame above [`SILENT`].
+    heard: Vec<bool>,
     started: bool,
     finished: bool,
     rate: u32,
@@ -117,6 +119,7 @@ pub fn bounce(streams: usize, ring_frames: usize, rate: u32) -> (BounceIn, Bounc
             hold: vec![0; streams],
             out: vec![0; streams],
             loud: 0,
+            heard: vec![false; streams],
             started: false,
             finished: false,
             rate,
@@ -248,6 +251,12 @@ impl BounceOut {
         self.loud
     }
 
+    /// Whether each file (in stream order) has had a frame above about
+    /// -90 dBFS so far: a stem that never sounded can be left out.
+    pub fn heard(&self) -> &[bool] {
+        &self.heard
+    }
+
     /// Moves what the rings hold into `files` (one per stream, in order,
     /// each empty at the start), and finishes them once the pass is over.
     pub fn pump<W: Write + Seek>(&mut self, files: &mut [W]) -> io::Result<Pumped> {
@@ -299,6 +308,7 @@ impl BounceOut {
                 let r = f32::from_bits(ring.data[at + 1].load(Ordering::Relaxed));
                 if l.abs() > SILENT || r.abs() > SILENT {
                     self.loud = self.loud.max(self.out[s] + i as u64 + 1);
+                    self.heard[s] = true;
                 }
                 self.bytes.extend_from_slice(&s24(l));
                 self.bytes.extend_from_slice(&s24(r));
@@ -393,6 +403,7 @@ mod tests {
         bin.finish();
         assert_eq!(bout.pump(&mut files).unwrap(), Pumped::Done(3700));
         assert_eq!(bout.loud(), 3700);
+        assert_eq!(bout.heard(), [true, true, true]);
         assert_eq!(bout.pump(&mut files).unwrap(), Pumped::Done(3700));
         for s in 0..3 {
             let (l, r) = read24(files[s].get_ref(), 48_000);
@@ -443,6 +454,7 @@ mod tests {
         bin.finish();
         assert_eq!(bout.pump(&mut files).unwrap(), Pumped::Done(0));
         assert_eq!(bout.loud(), 0);
+        assert_eq!(bout.heard(), [false, false]);
         for f in &files {
             assert_eq!(read24(f.get_ref(), 48_000).0.len(), 0);
         }
