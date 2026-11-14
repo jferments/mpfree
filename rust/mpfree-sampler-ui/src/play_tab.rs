@@ -725,6 +725,7 @@ impl PlayTab {
                 "Return to A".into(),
             ];
             b.enabled = vec![true, true, st.scenes[0]];
+            b.why = vec![String::new(), String::new(), "Store A first".to_string()];
         }
         if let Some(f) = ui.get_mut::<Fader>(FADER) {
             f.value = self.fade;
@@ -951,11 +952,13 @@ impl PlayTab {
                     (c.value, c.sub) = split_unit(&hz_text(p.filter.cutoff_hz));
                     c.pos = (p.filter.cutoff_hz / lo).ln() / (hi / lo).ln();
                     c.enabled = filter_on;
+                    c.why = "The filter is off: pick one in the Filter row".to_string();
                 }
                 _ => {
                     (c.value, c.sub) = (percent(p.filter.resonance).to_string(), "%".into());
                     c.pos = p.filter.resonance;
                     c.enabled = filter_on;
+                    c.why = "The filter is off: pick one in the Filter row".to_string();
                 }
             }
         }

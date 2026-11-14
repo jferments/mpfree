@@ -187,8 +187,15 @@ pub fn io_input(ui: &mut Ui, ev: IoInput) -> IoReply {
 /// Each frame, with the time since the app started: the section showing
 /// updates its live values. True when the screen needs drawing.
 pub fn io_tick(ui: &mut Ui, now: std::time::Duration) -> bool {
-    ui.get_mut::<MixerView>(MIXER)
-        .is_some_and(|v| v.io_tick(now) == IoReply::Redraw)
+    // Marked for drawing only when something changed: called every frame,
+    // `get_mut` alone had the screen paint (nothing) at every frame.
+    let redraw = ui
+        .get_mut_quiet::<MixerView>(MIXER)
+        .is_some_and(|v| v.io_tick(now) == IoReply::Redraw);
+    if redraw {
+        ui.get_mut::<MixerView>(MIXER);
+    }
+    redraw
 }
 
 /// The app's Back while the I/O view shows: true if it closed something
@@ -208,6 +215,13 @@ pub fn io_qlinks(ui: &Ui) -> Option<[IoKnob; 4]> {
 pub fn io_qlink_turn(ui: &mut Ui, knob: usize, detents: i32, fine: bool) -> IoReply {
     ui.get_mut::<MixerView>(MIXER)
         .map_or(IoReply::Ignored, |v| v.io_qlink_turn(knob, detents, fine))
+}
+
+/// What the I/O section's last touch, key or Q-Link couldn't do, and why,
+/// once: say it on the hint line ([`IoSection::take_note`]).
+pub fn take_io_note(ui: &mut Ui) -> Option<String> {
+    ui.get_mut::<MixerView>(MIXER)
+        .and_then(|v| v.take_io_note())
 }
 
 /// Sections (by add order) that replied [`IoReply::Redraw`] to a touch, a

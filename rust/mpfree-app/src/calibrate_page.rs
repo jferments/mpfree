@@ -266,6 +266,24 @@ impl Widget for CalibrateView {
         }
     }
 
+    fn targets(&self, r: Rect) -> Vec<mpfree_ui::Target> {
+        use mpfree_ui::Target;
+        let mut out: Vec<Target> = self
+            .buttons(r)
+            .into_iter()
+            .enumerate()
+            .map(|(i, (b, br))| Target::tap("button", i, b.label(), br))
+            .collect();
+        // A tap anywhere else is the tap on the mark the page asks for.
+        out.push(Target::tap(
+            "mark",
+            0,
+            "the mark",
+            Rect::new(r.x + 40, r.y + 40, 80, 80),
+        ));
+        out
+    }
+
     fn touch(
         &mut self,
         finger: u64,

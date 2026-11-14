@@ -10,7 +10,7 @@
 use crate::looping::LoopWave;
 use mpfree_looper::LayerCommand;
 use mpfree_ui::draw::{self, card, card_head, dot, speaker, speaker_hit};
-use mpfree_ui::{Align, Color, EventKind, FontId, PaintCx, Rect, Tone, Touch, Ui, Widget};
+use mpfree_ui::{Align, Color, EventKind, FontId, PaintCx, Rect, Target, Tone, Touch, Ui, Widget};
 use std::cell::RefCell;
 use std::sync::Arc;
 
@@ -53,6 +53,9 @@ pub enum LoopAct {
     Setting(usize, i32),
     /// One of the editor's tools ([`LoopEditor::tools`]).
     Tool(usize),
+    /// A tool drawn faint (it can't work now) was tapped: the screen says
+    /// why in place.
+    FaintTool(usize),
     /// Go to row `r` of the undo history ([`HistoryList::rows`]): back or
     /// forward to just after that step.
     Step(usize),
@@ -60,6 +63,9 @@ pub enum LoopAct {
     Trim(i64, i64),
     /// One of Use the loop's rows.
     Use(usize),
+    /// A row drawn faint (it can't work now) was tapped: the screen says
+    /// why in place.
+    FaintUse(usize),
 }
 
 /// Every [`LoopAct`] the Looper tab's panels have kept since the last call.
@@ -267,6 +273,37 @@ impl Widget for LoopList {
             cx.canvas
                 .fill_round_rect(Rect::new(track.x, track.y, w, track.h), 4, c);
         }
+    }
+
+    fn targets(&self, r: Rect) -> Vec<Target> {
+        let ListParts {
+            rows, new, clear, ..
+        } = self.parts(r);
+        let mut out = Vec::new();
+        for (i, rr) in rows.iter().enumerate() {
+            let name = &self.rows[i].name;
+            if self.rows[i].speaker.is_some() {
+                let (sx, sy) = LoopList::speaker_at(*rr);
+                let hit = speaker_hit(sx, sy);
+                out.push(Target::tap("loop-mute", i, format!("{name} speaker"), hit));
+                // The row less its speaker picks the loop.
+                out.push(Target::tap(
+                    "loop",
+                    i,
+                    name.clone(),
+                    Rect::new(rr.x, rr.y, hit.x - rr.x, rr.h),
+                ));
+            } else {
+                out.push(Target::tap("loop", i, name.clone(), *rr));
+            }
+        }
+        if let Some(b) = new {
+            out.push(Target::tap("new-loop", 0, "+ New loop", b));
+        }
+        if let Some(b) = clear {
+            out.push(Target::tap("clear", 0, "Clear", b));
+        }
+        out
     }
 
     fn touch(&mut self, _f: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
@@ -820,6 +857,61 @@ impl Widget for LoopEditor {
         )])
     }
 
+    fn targets(&self, r: Rect) -> Vec<Target> {
+        let (tool_row, wave_r, rows) = LoopEditor::parts(r);
+        let mut out: Vec<Target> = self
+            .tool_rects(tool_row)
+            .into_iter()
+            .enumerate()
+            .map(|(i, b)| {
+                let (label, on) = self
+                    .tools
+                    .get(i)
+                    .map_or((String::new(), false), |t| (t.0.clone(), t.1));
+                Target::tap("tool", i, label, b).disabled_if(!on)
+            })
+            .collect();
+        if self.trim_ticks.is_some_and(|t| t > 0) {
+            let (start, end) = LoopEditor::trim_grips(wave_r.inset_xy(10, 6));
+            out.push(Target::drag("trim-start", 0, "trim start", start));
+            // The end grip moves left: a drag right would leave it whole.
+            out.push(Target::drag("trim-end", 0, "trim end", end).towards(-60, 0));
+        }
+        if let Some(h) = &self.history {
+            for (k, sr) in self.step_rects(rows) {
+                if k != h.now {
+                    out.push(Target::tap("history-step", k, h.rows[k].clone(), sr));
+                }
+            }
+            return out;
+        }
+        for (k, rr) in self.row_rects(rows) {
+            let p = LoopEditor::row_parts(rr);
+            let name = &self.layers[k].name;
+            out.push(Target::tap(
+                "layer-mute",
+                k,
+                format!("{name} speaker"),
+                speaker_hit(p.speaker.0, p.speaker.1),
+            ));
+            out.push(Target::tap("layer-solo", k, format!("{name} S"), p.solo));
+            out.push(Target::tap(
+                "layer-delete",
+                k,
+                format!("{name} delete"),
+                p.delete,
+            ));
+            out.push(Target::drag(
+                "layer-level",
+                k,
+                format!("{name} level"),
+                p.level,
+            ));
+            out.push(Target::tap("layer", k, name.clone(), p.wave));
+        }
+        out
+    }
+
     fn touch(&mut self, finger: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
         let (tool_row, _, rows) = LoopEditor::parts(r);
         match phase {
@@ -833,7 +925,8 @@ impl Widget for LoopEditor {
                         self.acts.push(LoopAct::Tool(i));
                         return Some(EventKind::Tab(i));
                     }
-                    return None;
+                    self.acts.push(LoopAct::FaintTool(i));
+                    return Some(EventKind::Tab(i));
                 }
                 let (_, wave_r, _) = LoopEditor::parts(r);
                 let w = wave_r.inset_xy(10, 6);
@@ -1177,6 +1270,31 @@ impl Widget for LoopSettings {
         }
     }
 
+    fn targets(&self, r: Rect) -> Vec<Target> {
+        let mut out = Vec::new();
+        for (i, rr) in self.row_rects(r).into_iter().enumerate() {
+            // Rows that only show a value (the input's peak) are no controls.
+            if !self.rows[i].steps {
+                continue;
+            }
+            let label = &self.rows[i].label;
+            let (less, more) = rr.take_left(rr.w / 2);
+            out.push(Target::tap(
+                "setting-less",
+                i,
+                format!("{label} (left half)"),
+                less,
+            ));
+            out.push(Target::tap(
+                "setting-more",
+                i,
+                format!("{label} (right half)"),
+                more,
+            ));
+        }
+        out
+    }
+
     fn touch(&mut self, _f: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
         if phase != Touch::Down {
             return None;
@@ -1199,7 +1317,7 @@ impl Widget for LoopSettings {
 // ------------------------------------------------------------- use
 
 /// What to do with the loop: each row a title and what it does; rows that
-/// cannot work yet are drawn faint and do nothing.
+/// cannot work yet are drawn faint, and a tap on one says why.
 #[derive(Default)]
 pub struct UseLoop {
     pub rows: Vec<(String, String, bool)>,
@@ -1238,13 +1356,24 @@ impl Widget for UseLoop {
         }
     }
 
+    fn targets(&self, r: Rect) -> Vec<Target> {
+        self.row_rects(r)
+            .into_iter()
+            .enumerate()
+            .map(|(i, rr)| {
+                Target::tap("use", i, self.rows[i].0.clone(), rr).disabled_if(!self.rows[i].2)
+            })
+            .collect()
+    }
+
     fn touch(&mut self, _f: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
         if phase != Touch::Down {
             return None;
         }
         let i = self.row_rects(r).iter().position(|rr| rr.contains(x, y))?;
         if !self.rows[i].2 {
-            return None;
+            self.acts.push(LoopAct::FaintUse(i));
+            return Some(EventKind::Select(i));
         }
         self.acts.push(LoopAct::Use(i));
         Some(EventKind::Select(i))
@@ -1389,8 +1518,9 @@ mod tests {
         );
     }
 
+    /// A working tool acts; a faint one asks the screen to say why.
     #[test]
-    fn only_working_tools_answer_a_tap() {
+    fn working_tools_act_and_faint_ones_say_why() {
         let mut ui = page_of(EDITOR, editor(1));
         let r = ui.rect_of(EDITOR).unwrap();
         let tools = ui
@@ -1398,7 +1528,8 @@ mod tests {
             .unwrap()
             .tool_rects(LoopEditor::parts(r).0);
         assert_eq!(tools.len(), TOOLS.len(), "every tool fits");
-        assert_eq!(tap(&mut ui, tools[0].x + 4, tools[0].y + 4), None);
+        tap(&mut ui, tools[0].x + 4, tools[0].y + 4);
+        assert_eq!(take_actions(&mut ui), [LoopAct::FaintTool(0)]);
         assert_eq!(
             tap(&mut ui, tools[2].x + 4, tools[2].y + 4),
             Some(EventKind::Tab(2))
@@ -1602,7 +1733,8 @@ mod tests {
         let mut ui = page_of(USE, use_loop);
         let r = ui.rect_of(USE).unwrap();
         let rects = ui.get::<UseLoop>(USE).unwrap().row_rects(r);
-        assert_eq!(tap(&mut ui, rects[0].x + 5, rects[0].y + 5), None);
+        tap(&mut ui, rects[0].x + 5, rects[0].y + 5);
+        assert_eq!(take_actions(&mut ui), [LoopAct::FaintUse(0)]);
         tap(&mut ui, rects[1].x + 5, rects[1].y + 5);
         assert_eq!(take_actions(&mut ui), [LoopAct::Use(1)]);
     }

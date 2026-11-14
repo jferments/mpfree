@@ -672,6 +672,17 @@ impl ArpPanel {
             _ => None,
         }
     }
+
+    /// Why a touch that [`ArpPanel::action`] answers with nothing changes
+    /// nothing, for the hint line (Jay, 13 Nov: say so in place).
+    pub fn why_not(&self, ev: &UiEvent, st: &ArpState) -> Option<&'static str> {
+        match (ev.widget.as_str(), &ev.kind) {
+            (STEPS, EventKind::Select(_)) if st.settings.mode != Mode::Pattern => {
+                Some("The steps show the notes as they play: pick Pattern to edit them")
+            }
+            _ => None,
+        }
+    }
 }
 
 fn rate_detail(r: Rate) -> &'static str {

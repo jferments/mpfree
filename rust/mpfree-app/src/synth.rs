@@ -436,15 +436,7 @@ fn static_presets(engine: Engine) -> &'static [Preset] {
 /// its own. The meters are left alone. None for an engine it doesn't know
 /// or values that aren't its.
 pub fn fresh_node(id: &str, values: &[f32], rate: u32) -> Option<Box<dyn Node>> {
-    let mut node: Box<dyn Node> = match id {
-        "mpfree.poly" => Box::new(Poly::new(rate)),
-        "mpfree.fm" => Box::new(Fm::new(rate)),
-        "mpfree.drums" => Box::new(Drums::new(rate)),
-        "mpfree.pluck" => Box::new(Pluck::new(rate)),
-        "mpfree.wavetable" => Box::new(Wavetable::new(rate)),
-        "mpfree.keys" => Box::new(Keys::new(rate)),
-        _ => return None,
-    };
+    let mut node = engine_node(id, rate)?;
     let params = node.params();
     if params.len() != values.len() {
         return None;
@@ -455,6 +447,20 @@ pub fn fresh_node(id: &str, values: &[f32], rate: u32) -> Option<Box<dyn Node>> 
         }
     }
     Some(node)
+}
+
+/// A new instrument of the engine `id` at `rate`, at its defaults (Init).
+/// None for an id that isn't one of the engines.
+pub fn engine_node(id: &str, rate: u32) -> Option<Box<dyn Node>> {
+    Some(match id {
+        "mpfree.poly" => Box::new(Poly::new(rate)),
+        "mpfree.fm" => Box::new(Fm::new(rate)),
+        "mpfree.drums" => Box::new(Drums::new(rate)),
+        "mpfree.pluck" => Box::new(Pluck::new(rate)),
+        "mpfree.wavetable" => Box::new(Wavetable::new(rate)),
+        "mpfree.keys" => Box::new(Keys::new(rate)),
+        _ => return None,
+    })
 }
 
 /// The index of the preset called `name`, or 0.

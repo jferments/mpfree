@@ -16,7 +16,8 @@ use mpfree_fx::ids;
 use mpfree_fx::mpfree_node::{Ctx, Node, MAX_BLOCK};
 use mpfree_fx::{
     Chain, Character, Chorus, Cloud, Compressor, Crush, Delay, DjFilter, Drive, Ducker, Eq,
-    Flanger, LoFi, MasterSafety, MultiFilter, Phaser, PitchShifter, TransientShaper,
+    Flanger, Harmonizer, LoFi, MasterSafety, MultiFilter, Phaser, PitchCorrect, PitchShifter,
+    TransientShaper,
 };
 
 const RATE: u32 = 48_000;
@@ -127,6 +128,13 @@ fn main() {
     );
     node("Transient shaper", || Box::new(TransientShaper::new()), &[]);
     node("Pitch shifter", || Box::new(PitchShifter::new()), &[]);
+    node("Pitch correct", || Box::new(PitchCorrect::new()), &[]);
+    node(
+        "Pitch correct (Low range)",
+        || Box::new(PitchCorrect::new()),
+        &[(ids::pitch_correct::RANGE, 0.0)],
+    );
+    node("Harmonizer (2 voices)", || Box::new(Harmonizer::new()), &[]);
     node(
         "EQ (4 bands and both cuts)",
         || Box::new(Eq::new()),

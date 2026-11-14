@@ -7,7 +7,7 @@ use std::cell::RefCell;
 
 use mpfree_sampler::model::{BeatLine, Warp};
 use mpfree_ui::wave::Peaks;
-use mpfree_ui::{Align, Color, EventKind, FontId, PaintCx, Rect, Touch, Widget};
+use mpfree_ui::{Align, Color, EventKind, FontId, PaintCx, Rect, Target, Touch, Widget};
 
 /// A pin's beat in a [`EventKind::Marker`] from the picture, in these
 /// parts of a beat.
@@ -397,6 +397,21 @@ impl Widget for WarpView {
                 .map(|x| Rect::new(x - 1, wave.y, 4, wave.h))
                 .collect(),
         )
+    }
+
+    fn targets(&self, r: Rect) -> Vec<Target> {
+        let (ruler, wave, _) = WarpView::areas(r);
+        // A tap on the wave plays from there; a pin's handle in the ruler
+        // picks it (a drag moves it).
+        let mut out = vec![Target::tap("wave", 0, "warped wave", wave)];
+        for (i, p) in self.warp.pins.iter().enumerate() {
+            let x = self.x_of(p.beat, wave);
+            if x >= wave.x && x < wave.right() {
+                let h = Rect::new(x - 6, ruler.y, 12, (wave.y - ruler.y).max(8));
+                out.push(Target::tap("pin", i, format!("pin {}", i + 1), h));
+            }
+        }
+        out
     }
 
     fn touch(&mut self, _f: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {

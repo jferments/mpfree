@@ -738,6 +738,44 @@ impl Node for SandboxNode {
     fn latency(&self) -> u32 {
         self.latency
     }
+
+    /// The last snapshot ([`SandboxNode::saved_state`]): never asks the
+    /// process or waits, so a project save may call it between periods.
+    /// The rack refreshes it every few seconds; its parameters are saved
+    /// apart, so a knob turned since then is still kept.
+    fn save_state(&self) -> Option<Vec<u8>> {
+        self.saved_state()
+    }
+
+    /// Hands the plugin a project's state (a round trip to the process,
+    /// off the audio thread) and keeps it as the snapshot, so a restart
+    /// after a crash comes back with it.
+    fn load_state(&mut self, state: &[u8]) -> Result<(), String> {
+        let ok = matches!(
+            self.shared.ask(&ToChild::LoadState(state.to_vec())),
+            Ok(ToHost::Loaded(true))
+        );
+        if !ok {
+            return Err("the plugin refused it".to_string());
+        }
+        *self
+            .shared
+            .snapshot
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(state.to_vec());
+        Ok(())
+    }
+
+    /// The `.clap` file it came from (`file=verb.clap`), so a project
+    /// whose plugin is missing can say which file to put back.
+    fn save_extras(&self) -> Vec<(String, String)> {
+        self.shared
+            .plugin
+            .file_name()
+            .and_then(|n| n.to_str())
+            .map(|n| vec![("file".to_string(), n.to_string())])
+            .unwrap_or_default()
+    }
 }
 
 /// The control-thread side of a sandboxed plugin.

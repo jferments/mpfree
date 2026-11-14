@@ -6,7 +6,8 @@
 use mpfree_fx::mpfree_node::{Ctx, Node, MAX_BLOCK};
 use mpfree_fx::{
     presets, Character, Chorus, Cloud, Comb, Compressor, Crush, Delay, DjFilter, Drive, Ducker, Eq,
-    Flanger, LoFi, MasterSafety, MultiFilter, Perform, Phaser, PitchShifter, TransientShaper,
+    Flanger, Harmonizer, LoFi, MasterSafety, MultiFilter, Perform, Phaser, PitchCorrect,
+    PitchShifter, TransientShaper,
 };
 
 const RATE: u32 = 48_000;
@@ -32,6 +33,8 @@ fn nodes() -> Vec<Box<dyn Node>> {
         Box::new(Ducker::new()),
         Box::new(TransientShaper::new()),
         Box::new(PitchShifter::new()),
+        Box::new(PitchCorrect::new()),
+        Box::new(Harmonizer::new()),
     ]
 }
 

@@ -6,6 +6,7 @@ use crate::color::Color;
 use crate::geom::Rect;
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::Arc;
 
 pub const INTER_REGULAR: &[u8] = include_bytes!("../fonts/Inter-Regular-Latin.ttf");
 pub const INTER_SEMIBOLD: &[u8] = include_bytes!("../fonts/Inter-SemiBold-Latin.ttf");
@@ -39,8 +40,21 @@ struct Glyph {
 }
 
 pub struct Face {
-    font: fontdue::Font,
+    /// The parsed font, about 1.5 MB a face: shared by a face's copies.
+    font: Arc<fontdue::Font>,
     cache: HashMap<(char, u32), Glyph>,
+}
+
+/// A copy shares the parsed font and starts its own glyph cache: a screen
+/// built from a copy of the fonts costs no more memory for them (the GUI
+/// smoke test keeps dozens of spare screens).
+impl Clone for Face {
+    fn clone(&self) -> Face {
+        Face {
+            font: Arc::clone(&self.font),
+            cache: HashMap::new(),
+        }
+    }
 }
 
 fn key(px: f32) -> u32 {
@@ -52,7 +66,7 @@ impl Face {
         let font = fontdue::Font::from_bytes(bytes, fontdue::FontSettings::default())
             .map_err(|e| e.to_string())?;
         Ok(Face {
-            font,
+            font: Arc::new(font),
             cache: HashMap::new(),
         })
     }
@@ -150,6 +164,8 @@ impl Face {
     }
 }
 
+/// The three faces. A clone shares their parsed fonts (see [`Face`]).
+#[derive(Clone)]
 pub struct Fonts {
     pub sans: Face,
     pub bold: Face,
@@ -261,6 +277,21 @@ mod tests {
             f.measure(FontId::Mono, 14.0, "WWWW")
         );
         assert!(f.sans.cap_height(20.0) >= 13 && f.sans.cap_height(20.0) <= 16);
+    }
+
+    #[test]
+    fn a_copy_of_the_fonts_shares_them_and_measures_the_same() {
+        let mut f = Fonts::embedded();
+        f.set_roles(FontId::Mono, FontId::Bold);
+        let w = f.measure(FontId::Sans, 20.0, "MPFree");
+        let mut copy = f.clone();
+        assert!(Arc::ptr_eq(&f.sans.font, &copy.sans.font));
+        assert!(copy.sans.cache.is_empty(), "a copy starts its own cache");
+        assert_eq!(copy.measure(FontId::Sans, 20.0, "MPFree"), w);
+        assert_eq!(
+            copy.measure(FontId::Bold, 20.0, "Kit"),
+            f.measure(FontId::Bold, 20.0, "Kit")
+        );
     }
 
     #[test]
