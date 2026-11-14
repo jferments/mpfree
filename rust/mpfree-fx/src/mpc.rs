@@ -218,9 +218,14 @@ pub static MPC_NAMES: &[MpcName] = &[
     none("Granulator", "not as an effect yet"),
     none("Sample Delay", "not yet"),
     n("AIR Limiter", "mpfree.fx.limiter", "Safe peaks", ""),
-    none("AIR Vocal Tuner", "coming with Pitch correct"),
+    n("AIR Vocal Tuner", "mpfree.fx.pitch_correct", "Natural", ""),
     n("AIR Vocal Doubler", "mpfree.fx.pitch", "Wide doubler", ""),
-    none("AIR Vocal Harmonizer", "coming with the Harmonizer"),
+    n(
+        "AIR Vocal Harmonizer",
+        "mpfree.fx.harmonizer",
+        "Third above",
+        "",
+    ),
 ];
 
 /// The entry for an MPC effect name (any case, spaces trimmed).

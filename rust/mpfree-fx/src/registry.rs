@@ -16,9 +16,9 @@ use mpfree_node::Node;
 use crate::presets as p;
 use crate::{
     Amp, AutoPan, Character, Chorus, Cloud, Comb, Compressor, Crush, DeEsser, Delay, DjFilter,
-    Drive, Ducker, Eq, Exciter, Flanger, Gate, Limiter, LoFi, MasterSafety, MultiFilter, MultiTap,
-    MultibandCompressor, Perform, Phaser, PitchShifter, Plate, Preset, RingMod, Room, Rotary,
-    Spring, TapeDelay, TransientShaper, Tremolo, XyFx,
+    Drive, Ducker, Eq, Exciter, Flanger, Gate, Harmonizer, Limiter, LoFi, MasterSafety,
+    MultiFilter, MultiTap, MultibandCompressor, Perform, Phaser, PitchCorrect, PitchShifter, Plate,
+    Preset, RingMod, Room, Rotary, Spring, TapeDelay, TransientShaper, Tremolo, XyFx,
 };
 
 /// Where an effect sits in the picker.
@@ -373,6 +373,22 @@ pub static EFFECTS: &[FxEntry] = &[
         PitchVocal,
         || Box::new(PitchShifter::new()),
         p::PITCH,
+    ),
+    e(
+        "mpfree.fx.pitch_correct",
+        "Pitch correct",
+        "Tunes a voice to the key",
+        PitchVocal,
+        || Box::new(PitchCorrect::new()),
+        p::PITCH_CORRECT,
+    ),
+    e(
+        "mpfree.fx.harmonizer",
+        "Harmonizer",
+        "Harmonies that follow the key",
+        PitchVocal,
+        || Box::new(Harmonizer::new()),
+        p::HARMONIZER,
     ),
     e(
         "mpfree.fx.perform",

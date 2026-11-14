@@ -92,6 +92,8 @@ These effects can go on any strip. The list of effects groups them: Dynamics, EQ
 | **Ducker** | The pump: turns the sound down on each kick (keyed from another strip) or on every 1/16, 1/8, 1/4, 1/2 or bar of the tempo, and brings it back on a curve you shape. |
 | **Transient shaper** | More or less punch at the start of each hit and more or less ring after it, at any level, with no threshold to set. |
 | **Pitch shifter** | Moves the sound up to two octaves up or down without changing its speed. Spread detunes left and right for a wide double; feedback makes rising or falling stairs. |
+| **Pitch correct** | Tunes a voice to the notes of a key. Pick the **Key** and **Scale**; **Speed** sets how quickly it pulls a note in (0 snaps straight to it, for the hard, stepped sound; 50 ms or more keeps slides and vibrato natural) and **Amount** how far. The **Note** and **Correction** readouts show the note it hears and how far it is moving it. |
+| **Harmonizer** | Sings along with you: up to two extra voices a 3rd, 4th, 5th, 6th or octave above or below each note you sing, that stay in the key (a 3rd is major or minor as the key has it), each with its own level and pan. **Glide** smooths a voice into its next note, and **Dry** is your own voice. |
 | **Cloud reverb** | A large, lush reverb. |
 | **Limiter** | A brick wall: nothing gets past the ceiling. **True peak** also catches peaks between samples; **Auto release** keeps a loud mix from pumping. |
 | **Gate** | Silences (or turns down) what falls under the threshold, so drums stop ringing. It can open from another strip's sound, for rhythmic gating. |
@@ -106,6 +108,8 @@ These effects can go on any strip. The list of effects groups them: Dynamics, EQ
 | **Multi-tap delay** | Four echoes on the beat, each with its own level and pan. |
 | **Room reverb**, **Plate reverb**, **Spring reverb** | Smaller, classic reverbs. The room's **Gate** cuts its tail short, for the 1980s gated snare. |
 | **XY FX** | One effect at a time played from two controls at once, X and Y: see [XY FX](#xy-fx). |
+
+Pitch correct and the Harmonizer listen for one voice: a singer, or a solo instrument such as a whistle or a sax, not chords. Set **Range** to fit it: **Low** for bass and baritone voices, **Mid** for most singing, **High** for high voices. They hold the sound back a little while they listen (about 40 ms on Low, 28 on Mid and 17 on High), and the mixer holds everything else back to match, so the mix stays in time. When you sing live through one, High has the shortest delay.
 
 Adding, removing or reordering an effect while the music plays doesn't click: that strip dips out for a moment and comes back.
 
@@ -134,7 +138,7 @@ Tap an effect in a strip's insert row to open the **chain editor** on it, in the
 
 The Q-Links turn the selected effect's first four knobs, and the data wheel works as Q-Link 1. **‹ Mixer** goes back to the mixer as you left it.
 
-Above the knobs, a drawing shows what the selected effect does, and changes as you turn: an EQ's curve, a delay's repeats, the Ducker's pump over two beats (or after a kick), the Transient shaper on a drum hit (dashed going in, solid coming out), and where the Pitch shifter puts the sound, with the steps its feedback climbs.
+Above the knobs, a drawing shows what the selected effect does, and changes as you turn: an EQ's curve, a delay's repeats, the Ducker's pump over two beats (or after a kick), the Transient shaper on a drum hit (dashed going in, solid coming out), where the Pitch shifter puts the sound, with the steps its feedback climbs, Pitch correct's steps onto the key's notes (with a dot on the note you are singing), and how far each Harmonizer voice moves on each note of the key.
 
 The Sample tab's **FX** opens the chain editor too, on the pad you are editing (its own channel, then the Drums track), and Back goes back to the Sample tab (see [Sampling](sampling.md#fx-effects-on-one-pad-or-on-the-whole-kit)).
 
@@ -201,4 +205,4 @@ Each of these costs almost nothing until you use it.
 > [!MPC]
 > The mixer covers the MPC's routing: pad channels, tracks, submixes, four send returns and the master, with sends before or after the fader and side-chain keys. The differences: the mixer opens over any page instead of being its own mode, solo keeps everything the strip feeds, the master always ends in a safety limiter, and effects with a delay of their own are lined up automatically so nothing drifts out of time.
 >
-> Most MPC effects have an MPFree effect or preset in their place: the MPC's many Delay versions (Mono, Sync, Ping Pong, Analog, LP, HP) are the **Delay** and its presets, Delay Tape is the **Tape delay**, Reverb Small, Medium and In Gate are the **Room reverb**, Reverb Large and AIR Reverb the **Cloud reverb**, AIR Spring Reverb the **Spring reverb**, Distortion Amp the **Amp**, AIR Enhancer the **Exciter**, AIR Maximizer and AIR Limiter the **Limiter**, AIR Noise Gate the **Gate**, AIR Pumper and Mother Ducker the **Ducker**, Decimator and Resampler **Crush**, and XYFX is **XY FX**. Not here yet: Auto Wah, the frequency shifters, AIR Stereo Width, AIR Talkbox and Granulator.
+> Most MPC effects have an MPFree effect or preset in their place: the MPC's many Delay versions (Mono, Sync, Ping Pong, Analog, LP, HP) are the **Delay** and its presets, Delay Tape is the **Tape delay**, Reverb Small, Medium and In Gate are the **Room reverb**, Reverb Large and AIR Reverb the **Cloud reverb**, AIR Spring Reverb the **Spring reverb**, Distortion Amp the **Amp**, AIR Enhancer the **Exciter**, AIR Maximizer and AIR Limiter the **Limiter**, AIR Noise Gate the **Gate**, AIR Pumper and Mother Ducker the **Ducker**, Decimator and Resampler **Crush**, the AIR Vocal Tuner **Pitch correct**, the AIR Vocal Harmonizer the **Harmonizer**, and XYFX is **XY FX**. Not here yet: Auto Wah, the frequency shifters, AIR Stereo Width, AIR Talkbox and Granulator.
