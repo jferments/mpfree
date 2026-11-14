@@ -48,11 +48,11 @@ static PARAMS: [ParamInfo; 4] = [
 pub static PRESETS: &[Preset] = &[
     Preset {
         name: "Barber pole",
-        values: &[(ids::SHIFT, 0.3), (ids::FEEDBACK, 60.0), (ids::MIX, 50.0)],
+        values: &[(ids::SHIFT, 0.3), (ids::FEEDBACK, 60.0)],
     },
     Preset {
         name: "Metal drums",
-        values: &[(ids::SHIFT, 180.0), (ids::MIX, 70.0)],
+        values: &[(ids::SHIFT, 180.0)],
     },
     Preset {
         name: "Falling spiral",
@@ -60,7 +60,7 @@ pub static PRESETS: &[Preset] = &[
     },
     Preset {
         name: "Wide shimmer",
-        values: &[(ids::SHIFT, 2.0), (ids::MODE, 3.0), (ids::MIX, 50.0)],
+        values: &[(ids::SHIFT, 2.0), (ids::MODE, 3.0)],
     },
     Preset {
         name: "Robot",
