@@ -25,6 +25,8 @@ const COVERED: &[&str] = &[
     "mpfree.fx.room",
     "mpfree.fx.plate",
     "mpfree.fx.spring",
+    "mpfree.fx.amp",
+    "mpfree.fx.exciter",
 ];
 
 fn make(id: &str) -> Box<dyn Node> {
@@ -322,6 +324,16 @@ fn auto_pan_keeps_constant_power() {
 /// How much of a signal's energy (Hann window) lies away from the odd
 /// harmonics of `hz` below Nyquist, in dB: the aliasing a naive wave makes.
 fn aliasing_db(x: &[f32], hz: f32) -> f32 {
+    aliasing_db_by(x, hz, 2.0)
+}
+
+/// As [`aliasing_db`], counting every harmonic (odd and even) as wanted.
+fn aliasing_db_all(x: &[f32], hz: f32) -> f32 {
+    aliasing_db_by(x, hz, 1.0)
+}
+
+/// Energy away from the harmonics `hz`, `hz + step hz`, ... in dB.
+fn aliasing_db_by(x: &[f32], hz: f32, every: f32) -> f32 {
     let n = x.len();
     let w: Vec<f64> = (0..n)
         .map(|i| {
@@ -349,7 +361,7 @@ fn aliasing_db(x: &[f32], hz: f32) -> f32 {
         let mut near = f < 20.0;
         while k * hz < RATE as f32 / 2.0 {
             near |= (f - k * hz).abs() <= 40.0;
-            k += 2.0;
+            k += every;
         }
         if !near {
             away += e;
@@ -740,4 +752,85 @@ fn tape_and_multitap_echo_at_their_times() {
         let near = |y: &[f32]| peak(&y[want - 8..want + 8]);
         assert!(near(&l).max(near(&r)) > 0.2, "tap {tap} at {want}");
     }
+}
+
+// ------------------------------------------------------------ amp
+
+#[test]
+fn amp_distorts_without_much_aliasing() {
+    // A 1.1 kHz tone (a high guitar note) through the Lead model at gain
+    // 8, cab off: plenty of harmonics, little energy between them (the
+    // clipping runs at 4x behind a 12 kHz guard filter). At gain 10 with a
+    // hot input this rises to about -31 dB: the stages then make a near
+    // square wave whose harmonics fold inside the 4x rate.
+    let x = sine(1100.0, 4800);
+    let mut a = make("mpfree.fx.amp");
+    a.set_param(ids::amp::MODEL, 2.0);
+    a.set_param(ids::amp::GAIN, 8.0);
+    a.set_param(ids::amp::CAB, 0.0);
+    a.reset();
+    let (warm, _) = render(&mut *a, &(x.clone(), x.clone()), &[], 128);
+    let (l, _) = render(&mut *a, &(x.clone(), x), &[], 128);
+    assert!(rms(&warm) > 0.01);
+    // Harmonics of 1.1 kHz are odd and even here (the stages are biased).
+    let al = aliasing_db_all(&l, 1100.0);
+    assert!(al < -42.0, "{al} dB between the harmonics");
+}
+
+#[test]
+fn amp_gain_adds_harmonics_and_the_cab_cuts_fizz() {
+    let x: Vec<f32> = sine(220.0, 24_000).iter().map(|v| v * 0.2).collect();
+    let thd = |gain: f32| {
+        let mut a = make("mpfree.fx.amp");
+        a.set_param(ids::amp::MODEL, 1.0);
+        a.set_param(ids::amp::GAIN, gain);
+        a.set_param(ids::amp::CAB, 0.0);
+        a.reset();
+        let (l, _) = render(&mut *a, &(x.clone(), x.clone()), &[], 128);
+        // Remove the fundamental by projection, what is left is distortion.
+        let seg = &l[12_000..];
+        let (mut c, mut s) = (0.0f64, 0.0f64);
+        for (i, v) in seg.iter().enumerate() {
+            let ph = std::f64::consts::TAU * 220.0 * (12_000 + i) as f64 / f64::from(RATE);
+            c += f64::from(*v) * ph.cos();
+            s += f64::from(*v) * ph.sin();
+        }
+        let n = seg.len() as f64;
+        let fund = 2.0 * (c * c + s * s).sqrt() / n / std::f64::consts::SQRT_2;
+        let total = f64::from(rms(seg));
+        ((total * total - fund * fund).max(0.0).sqrt() / fund) as f32
+    };
+    let (low, high) = (thd(1.0), thd(9.0));
+    assert!(high > 3.0 * low && high > 0.1, "THD {low} to {high}");
+
+    // The 4x12 cab is far quieter at 10 kHz than at 1 kHz.
+    let level = |hz: f32| {
+        let mut a = make("mpfree.fx.amp");
+        a.set_param(ids::amp::MODEL, 0.0);
+        a.set_param(ids::amp::GAIN, 0.0);
+        a.set_param(ids::amp::CAB, 3.0);
+        a.reset();
+        let y = sine(hz, 24_000)
+            .iter()
+            .map(|v| v * 0.05)
+            .collect::<Vec<_>>();
+        let (l, _) = render(&mut *a, &(y.clone(), y), &[], 128);
+        db(rms(&l[12_000..]))
+    };
+    assert!(level(10_000.0) < level(1000.0) - 20.0);
+}
+
+#[test]
+fn exciter_adds_only_top_end() {
+    let lo = sine(200.0, 24_000);
+    let mut e = make("mpfree.fx.exciter");
+    e.set_param(ids::exciter::AMOUNT, 100.0);
+    e.reset();
+    let (l, _) = render(&mut *e, &(lo.clone(), lo.clone()), &[], 128);
+    let change = db(rms(&l[12_000..])) - db(rms(&lo[12_000..]));
+    assert!(change.abs() < 0.05, "a low tone passes: {change} dB");
+    let hi = sine(5000.0, 24_000);
+    let (h, _) = render(&mut *e, &(hi.clone(), hi.clone()), &[], 128);
+    let diff: Vec<f32> = h.iter().zip(&hi).map(|(a, b)| a - b).collect();
+    assert!(rms(&diff[12_000..]) > 0.01, "harmonics added up top");
 }
