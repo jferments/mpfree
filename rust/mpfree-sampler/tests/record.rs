@@ -66,11 +66,24 @@ fn mono_buffers_average_the_engine_output() {
 #[test]
 fn a_reader_racing_the_writer_never_gets_torn_audio() {
     // The writer laps a small buffer as fast as it can on another thread;
-    // every copy either fails or holds exactly consecutive frames.
+    // every copy either fails or holds exactly consecutive frames. It
+    // keeps going until the reader has made a good copy while it ran (or
+    // 16M frames, where f32 still holds every frame number exactly), so a
+    // busy machine that starts the reader late can't let the writer
+    // finish before any copy was tried.
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
     let (mut w, r) = rolling(2, 512);
+    let copied = Arc::new(AtomicBool::new(false));
+    let seen = Arc::clone(&copied);
     let writer = std::thread::spawn(move || {
-        for p in 0..20_000u64 {
+        let mut p = 0u64;
+        while p < 20_000 || (!seen.load(Ordering::Relaxed) && p < 250_000) {
             w.push(&frame_audio(p * 64, 64));
+            p += 1;
+            if p.is_multiple_of(256) {
+                std::thread::yield_now();
+            }
         }
     });
     let (mut ok, mut lost) = (0, 0);
@@ -82,6 +95,7 @@ fn a_reader_racing_the_writer_never_gets_torn_audio() {
         match r.copy(start, end, &mut out) {
             Ok(()) => {
                 ok += 1;
+                copied.store(true, Ordering::Relaxed);
                 for (i, f) in out.chunks_exact(2).enumerate() {
                     assert_eq!(f[0], (start + i as u64) as f32, "torn copy");
                     assert_eq!(f[1], -f[0]);

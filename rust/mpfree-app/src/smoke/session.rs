@@ -43,6 +43,14 @@ pub struct Hits {
     pub played: Vec<Played>,
     /// The session's time at the period's start (seconds).
     base: f64,
+    /// This period's events as MIDI Out would read them, for an export's
+    /// MIDI file: handed to the export's tap after the period, as
+    /// main.rs's pads hand them over (export.rs).
+    tapped: Vec<(mpfree_play::Out, crate::midi_out::NoteIs<'static>)>,
+    /// This period's hits and releases (pad, velocity, offset), for the
+    /// sounding kit when the session has one ([`Session::make_sounds`]).
+    queued: Vec<(usize, u8, u32)>,
+    released: Vec<(usize, u32)>,
 }
 
 /// A note the time engine started, with its track: what a test of a whole
@@ -71,26 +79,52 @@ impl Hits {
 }
 
 impl time::Pads for Hits {
-    fn hit_at(&mut self, pad: usize, velocity: u8, _offset: u32) -> bool {
+    fn hit_at(&mut self, pad: usize, velocity: u8, offset: u32) -> bool {
         self.on.push((pad, velocity));
+        self.queued.push((pad, velocity, offset));
         true
     }
-    fn release_at(&mut self, _pad: usize, _offset: u32) {}
+    fn release_at(&mut self, pad: usize, offset: u32) {
+        self.released.push((pad, offset));
+    }
     fn stop_all(&mut self) {}
     fn pressure_at(&mut self, _pad: usize, _value: u8, _offset: u32) {}
     // Every event goes on as usual; the notes are written down first.
     fn out(&mut self, o: &mpfree_play::Out) -> bool {
+        use mpfree_play::Event;
         self.note(o);
+        let pad = match o.event {
+            Event::NoteOn { note, .. } | Event::NoteOff { note } | Event::Pressure { note, .. } => {
+                usize::from(note)
+            }
+            _ => 0,
+        };
+        self.tapped.push((
+            *o,
+            crate::midi_out::NoteIs::Pad(crate::midi_out::kit_notes(pad)),
+        ));
         false
     }
     fn live(&mut self, o: &mpfree_play::Out) -> Option<mpfree_play::Event> {
+        use crate::midi_out::{kit_notes, NoteIs};
+        use mpfree_play::Event;
         self.note(o);
+        // As main.rs's pads: the MIDI file gets what MIDI Out would.
+        let is = match o.event {
+            Event::NoteOn { note, .. } if note < 16 => NoteIs::Pad(kit_notes(usize::from(note))),
+            _ => NoteIs::Pad(&[]),
+        };
+        self.tapped.push((*o, is));
         match o.event {
-            mpfree_play::Event::NoteOn { note, velocity } => {
+            Event::NoteOn { note, velocity } => {
                 self.on.push((usize::from(note), velocity));
+                self.queued.push((usize::from(note), velocity, o.offset));
                 Some(o.event)
             }
-            mpfree_play::Event::NoteOff { .. } => Some(o.event),
+            Event::NoteOff { note } => {
+                self.released.push((usize::from(note), o.offset));
+                Some(o.event)
+            }
             _ => None,
         }
     }
@@ -118,6 +152,13 @@ pub struct Session {
     pub lights: [u8; 128],
     /// The notes the time engine played.
     pub hits: Hits,
+    /// A kit that sounds, when a test asks for one ([`Session::make_sounds`]):
+    /// the pads then play into the mixer, as main.rs's sampler plays them.
+    pub sounds: Option<crate::sampler::Player>,
+    /// The sound loop's side of an export (export.rs).
+    pub export: crate::export::Host,
+    /// Every period's master output, while a test asks for it.
+    pub heard: Option<Vec<f32>>,
     /// Controls a walk pressed that did nothing (see `walk.rs`).
     pub dead: Vec<String>,
     /// The kit the pads play (the synth is the last).
@@ -217,6 +258,9 @@ impl Session {
             sent: Vec::new(),
             lights: [0; 128],
             hits: Hits::default(),
+            sounds: None,
+            export: crate::export::Host::new(),
+            heard: None,
             dead: Vec::new(),
             kit: 0,
             synth_on: false,
@@ -418,6 +462,58 @@ impl Session {
         self.run_periods(4)
     }
 
+    /// A kit that sounds on the pads: pad `p` a short decaying tone of
+    /// its own pitch (220 Hz times 2^(p/12)), so the mixer, the mixdown
+    /// and the stems carry what the clips play.
+    pub fn make_sounds(&mut self) -> &mut Session {
+        let notes = mpfree_controller::mpc_one::PAD_NOTES;
+        let tones: Vec<Vec<i16>> = (0..16)
+            .map(|p| {
+                let hz = 220.0 * 2f64.powf(f64::from(p) / 12.0);
+                let n = (RATE / 10) as usize;
+                (0..n)
+                    .flat_map(|i| {
+                        let t = i as f64 / f64::from(RATE);
+                        let x = (t * hz * std::f64::consts::TAU).sin() * (-t * 30.0).exp();
+                        let v = (x * 12000.0) as i16;
+                        [v, v]
+                    })
+                    .collect()
+            })
+            .collect();
+        let names: Vec<String> = (0..16).map(|p| format!("Tone {}", p + 1)).collect();
+        let sounds: Vec<(u8, &str, &[i16])> = (0..16)
+            .map(|p| (notes[p], names[p].as_str(), &tones[p][..]))
+            .collect();
+        let file = crate::kit::build_kits(&[("Tones", crate::kit::build(&sounds))]);
+        let mut kits = crate::kit::parse_kits(&file).expect("the tones kit");
+        self.sounds = Some(crate::sampler::Player::new(&mut kits, &notes, RATE).expect("a player"));
+        self
+    }
+
+    /// Runs the session until the screen says a line starting with
+    /// `prefix` (after now), for at most `seconds` of the session's time
+    /// and of the wall clock both; the line if it did.
+    pub fn until_said_like(&mut self, prefix: &str, seconds: f64) -> Option<String> {
+        let from = self.said().len();
+        let end = self.t() + seconds;
+        let wall = std::time::Instant::now() + Duration::from_secs_f64(seconds);
+        loop {
+            if let Some(l) = self
+                .said()
+                .into_iter()
+                .skip(from)
+                .find(|l| l.starts_with(prefix))
+            {
+                return Some(l);
+            }
+            if self.t() >= end && std::time::Instant::now() >= wall {
+                return None;
+            }
+            self.run_periods(8);
+        }
+    }
+
     /// What the screen said in its events log (the project's saves and
     /// opens, as a musician reads them), oldest first.
     pub fn said(&self) -> Vec<String> {
@@ -613,6 +709,22 @@ impl Session {
         self.hits.base = t;
         self.time
             .period_arps(PERIOD as u32, &mut self.hits, &mut self.app.arps);
+        for (o, is) in std::mem::take(&mut self.hits.tapped) {
+            self.export.tap.send(&o, is);
+        }
+        // The pads' hits into the sounding kit, when there is one.
+        let (queued, released) = (
+            std::mem::take(&mut self.hits.queued),
+            std::mem::take(&mut self.hits.released),
+        );
+        if let Some(p) = self.sounds.as_mut() {
+            for (pad, velocity, offset) in queued {
+                p.hit_at(pad, velocity, offset);
+            }
+            for (pad, offset) in released {
+                p.release_at(pad, offset);
+            }
+        }
         for &(offset, addr, value) in self.time.locks() {
             self.mix.lock(offset, addr, value);
         }
@@ -672,7 +784,14 @@ impl Session {
             (&z, &z),
             (&mut al, &mut ar),
         );
-        self.mix.drums(0, &mut l, &mut r);
+        let mut played = 0;
+        if let Some(p) = self.sounds.as_mut() {
+            p.set_tempo(self.time.info().bpm);
+            let mut pads = self.mix.pads();
+            p.render_routed(PERIOD, &mut pads);
+            played = pads.played();
+        }
+        self.mix.drums(played, &mut l, &mut r);
         self.mix.period(
             &ctx,
             (&z, &z),
@@ -682,6 +801,21 @@ impl Session {
             &mut l,
             &mut r,
         );
+        if let Some(h) = self.heard.as_mut() {
+            h.extend(l.iter().zip(&r).flat_map(|(a, b)| [*a, *b]));
+        }
+        // An export takes this period's capture points and notes, as in
+        // main.rs; a fast one waits for its files' room in place of the
+        // card's write.
+        if self.export.running() {
+            self.export.notes(self.time.block());
+            if let Some(run) = self.export.period(&mut self.mix.mixer, &mut self.time) {
+                self.out.show(ToUi::ExportOver(run));
+            }
+        }
+        if self.export.fast() {
+            self.export.wait_for_room(self.periods);
+        }
         let now = self.now();
         if let Some(st) = self.mix.poll_state(now) {
             self.out.show(ToUi::Mixer(Box::new(st)));
@@ -948,6 +1082,19 @@ impl Session {
             FromUi::OpenProject(o) => self.open_project(o),
             FromUi::OpenLoops(l) => self.looper.open(*l),
             FromUi::OpenAudio(a) => self.tracks.open(*a),
+            FromUi::ExportAsk => {
+                let f = crate::export::Facts::gather(
+                    &self.time,
+                    &self.mix,
+                    mpfree_export::Rig::default(),
+                );
+                self.out.show(ToUi::ExportFacts(Box::new(f)));
+            }
+            FromUi::Export(run) => {
+                if let Err(run) = self.export.begin(run, &mut self.mix.mixer, &mut self.time) {
+                    self.out.show(ToUi::ExportOver(run));
+                }
+            }
             // The sampler's and the store's: nothing to check here.
             FromUi::SaveTouch(_)
             | FromUi::Slice { .. }
