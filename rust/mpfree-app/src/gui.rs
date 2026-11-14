@@ -265,6 +265,9 @@ pub fn chip_kit_name(name: &str, kit: usize) -> String {
 
 /// How long a told line ([`ToUi::Tell`]) stays in place of the hint.
 pub const TELL_SECONDS: f32 = 4.0;
+/// Autosave's period while there is unsaved work (Jay's pick, 14 Nov:
+/// every 2 minutes, into one Autosave project).
+pub const AUTOSAVE_S: f32 = 120.0;
 
 /// A log line as the screen says it: without the log's `area:` tag, a
 /// model's refusal in words, starting with a capital.
@@ -872,6 +875,17 @@ pub struct Player {
     /// The last run crashed: Prefs > At start opens nothing this time
     /// (crash.rs, the safe start).
     crashed: bool,
+    /// Seconds of unsaved work until the next autosave, or, while one is
+    /// asked for, until it is given up as lost.
+    autosave_in: f32,
+    /// The parts asked for are for autosave, not for a save.
+    autosaving: bool,
+    /// An edit since autosave last asked for the parts: idle unsaved work
+    /// is autosaved once, not every 2 minutes.
+    autosave_dirty: bool,
+    /// Autosave is off this run: the last run's unsaved work couldn't be
+    /// set aside, and autosave would write over it.
+    autosave_off: bool,
     /// The sound's rate, for an opened project's engines.
     project_rate: u32,
     /// When the last open landed ([`OPEN_SETTLE`]).
@@ -1144,6 +1158,10 @@ impl Player {
             track_sounds: [None; crate::instruments::SLOTS],
             start_checked: false,
             crashed: false,
+            autosave_in: AUTOSAVE_S,
+            autosaving: false,
+            autosave_dirty: false,
+            autosave_off: false,
             project_rate: 44_100,
             opened_at: None,
             open_actions: 0,
@@ -2587,7 +2605,7 @@ impl Player {
                 drop(old);
                 self.opened_at = Some(Instant::now());
                 if let Some(b) = self.browser.as_mut() {
-                    b.set_unsaved(false);
+                    b.open_landed();
                 }
             }
             ToUi::Show(v) => {
@@ -3187,10 +3205,16 @@ impl Player {
             A::SaveLists(text) => self.outbox.push(FromUi::SaveBrowserLists(text)),
             A::PickerClosed { .. } => {}
             // Projects (project.rs).
-            A::SaveRequested => self.outbox.push(FromUi::SaveProject),
+            A::SaveRequested => self.ask_save(),
             A::NewProject => self.new_project(),
             A::ProjectOpened { loc, snap } => self.open_project(&loc, &snap),
             A::ProjectSaved { loc } => self.say(format!("project: saved {}", loc.name())),
+            // Every 2 minutes while editing: the terminal and the system
+            // log only, not the Events log.
+            A::Autosaved { loc } => {
+                println!("project: autosaved into {}", loc.name());
+                let _ = io::stdout().flush();
+            }
             A::LastNotOpened(e) => self.say(format!(
                 "project: the last project wasn't opened ({e}); the new one stays"
             )),
@@ -3229,29 +3253,89 @@ impl Player {
 
     // ------------------------------------------------------------ projects
 
+    /// SHIFT + BROWSE or Save: the audio loop is asked for its parts. A
+    /// save the musician asks for wins over an autosave asked for at the
+    /// same moment (the parts that come serve the save).
+    fn ask_save(&mut self) {
+        self.autosaving = false;
+        self.autosave_dirty = false;
+        self.autosave_in = AUTOSAVE_S;
+        self.outbox.push(FromUi::SaveProject);
+    }
+
+    /// Autosave (Jay's pick, 14 Nov): once there has been unsaved work,
+    /// edited since the last autosave, for [`AUTOSAVE_S`], the audio loop
+    /// is asked for its parts as for a save,
+    /// and [`Player::save_project`] hands them to autosave's own project
+    /// (`Browser::autosave_with`). It waits while a project opens; parts
+    /// asked for that never come (an open stopped the save) are given up
+    /// after the same time, and asked for again.
+    fn autosave_tick(&mut self, dt: f32) {
+        let unsaved = self.browser.as_ref().is_some_and(|b| b.unsaved());
+        if self.autosaving {
+            self.autosave_in -= dt.max(0.0);
+            if self.autosave_in <= 0.0 {
+                self.autosaving = false;
+                self.autosave_dirty = true;
+                self.autosave_in = AUTOSAVE_S;
+                println!("project: autosave's parts never came; asking again later");
+            }
+            return;
+        }
+        let opening = !self.start_checked
+            || self.loops_load.is_some()
+            || self.audio_load.is_some()
+            || self.project_defaults.is_none()
+            || self.opened_at.is_some_and(|t| t.elapsed() < OPEN_SETTLE);
+        if !unsaved || !self.autosave_dirty || opening || self.autosave_off {
+            self.autosave_in = AUTOSAVE_S;
+            return;
+        }
+        self.autosave_in -= dt.max(0.0);
+        if self.autosave_in <= 0.0 {
+            self.autosaving = true;
+            self.autosave_dirty = false;
+            self.autosave_in = AUTOSAVE_S;
+            self.outbox.push(FromUi::SaveProject);
+        }
+    }
+
     /// The audio loop's parts of a save came: the screen's own (the kits
     /// with their sounds, the I/O setup) join them, and the browser's
     /// worker saves the lot, whole or not at all (mpfree-library).
     fn save_project(&mut self, mut c: Box<crate::project::Collected>) {
         use mpfree_library::Part as _;
+        // Autosave's parts go to autosave's project, quietly; a reason not
+        // to save is said only for a save the musician asked for.
+        let auto = std::mem::take(&mut self.autosaving);
+        if auto {
+            self.autosave_in = AUTOSAVE_S;
+        }
         if self.browser.is_none() {
-            self.say(
-                "project: not saved, there is no library (the app was started without --data)"
-                    .to_string(),
-            );
+            if !auto {
+                self.say(
+                    "project: not saved, there is no library (the app was started without --data)"
+                        .to_string(),
+                );
+            }
             return;
         }
         if self.loops_load.is_some() {
-            self.say(
-                "project: not saved, the loops are still opening (try again in a moment)".into(),
-            );
+            if !auto {
+                self.say(
+                    "project: not saved, the loops are still opening (try again in a moment)"
+                        .into(),
+                );
+            }
             return;
         }
         if self.audio_load.is_some() {
-            self.say(
-                "project: not saved, the audio tracks are still opening (try again in a moment)"
-                    .into(),
-            );
+            if !auto {
+                self.say(
+                    "project: not saved, the audio tracks are still opening (try again in a moment)"
+                        .into(),
+                );
+            }
             return;
         }
         let mut extra = Vec::new();
@@ -3307,6 +3391,10 @@ impl Player {
         let Some(b) = self.browser.as_mut() else {
             return;
         };
+        if auto {
+            b.autosave_with(snap, samples, now_utc());
+            return;
+        }
         b.save_with(snap, samples, now_utc());
         mpfree_browser_ui::show(&mut self.ui, b);
         let line = match b.project() {
@@ -3454,16 +3542,40 @@ impl Player {
             return;
         }
         self.start_checked = true;
+        // The last run's unsaved work, autosaved after its last save (it
+        // ended with a crash or the power switch), is set aside first, so
+        // that this run's autosave can't write over it.
+        let kept = match self.browser.as_mut().and_then(|b| b.keep_newer_autosave()) {
+            Some(Ok(l)) => Some(l.name().to_string()),
+            Some(Err(e)) => {
+                self.autosave_off = true;
+                self.say(format!(
+                    "project: autosave is off this run, so as not to write over the last \
+                     run's unsaved work, which couldn't be set aside ({e})"
+                ));
+                None
+            }
+            None => None,
+        };
         if self.crashed {
             // A safe start: the new project stays, and the screen says why.
             let last = match (&self.browser, self.settings.open_last) {
                 (Some(b), true) => b.last_project().map(|l| l.name().to_string()),
                 _ => None,
             };
-            let words = crate::crash::screen_line(self.settings.open_last, last.as_deref());
+            let words = crate::crash::screen_line(
+                self.settings.open_last,
+                last.as_deref(),
+                kept.as_deref(),
+            );
             self.say(format!("project: safe start: {words}"));
             self.tell(&words);
             return;
+        }
+        if let Some(k) = &kept {
+            let words = format!("Unsaved work from the last run is in Projects > {k}.");
+            self.say(format!("project: {words}"));
+            self.tell(&words);
         }
         if !self.settings.open_last {
             return;
@@ -4047,6 +4159,7 @@ impl Player {
         }
         if let Some(b) = self.browser.as_mut() {
             b.set_unsaved(true);
+            self.autosave_dirty = true;
         }
     }
 
@@ -4718,6 +4831,7 @@ impl Player {
         self.poll_loops();
         self.poll_audio();
         self.open_at_start();
+        self.autosave_tick(dt);
         if let Some(k) = self.sample.take_wanted_kit() {
             // An opened project's kit: the audio thread switches and says so.
             self.outbox.push(FromUi::Kit(k));
@@ -5915,7 +6029,7 @@ pub fn apply_effects(p: &mut Player, fx: Vec<crate::app::Effect>) {
             Effect::PlayView(v) => p.apply(ToUi::PlayView(v)),
             Effect::SampleEditor(e) => p.apply(ToUi::SampleEditor(e)),
             Effect::Browse(k) => p.apply(ToUi::Browse(k)),
-            Effect::SaveProject => p.outbox.push(FromUi::SaveProject),
+            Effect::SaveProject => p.ask_save(),
             Effect::Light(..)
             | Effect::StopSounds
             | Effect::Kit(_)
@@ -9797,7 +9911,7 @@ mod tests {
         c.apply(ToUi::Settings(last.clone()));
         c.apply(ToUi::ProjectDefaults(defaults()));
         assert!(opens(&mut c).is_none(), "a safe start opens nothing");
-        let said = crate::crash::screen_line(true, Some(loc.name()));
+        let said = crate::crash::screen_line(true, Some(loc.name()), None);
         assert!(said.contains(loc.name()), "{said}");
         assert!(
             events_log(&c)
@@ -9829,6 +9943,203 @@ mod tests {
             "{:?}",
             events_log(&r)
         );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Autosave (Jay's pick, 14 Nov): unsaved work edited since the last
+    /// autosave goes, every 2 minutes, into autosave's own project; a save
+    /// the musician asks for wins. At the next start, work autosaved after
+    /// the last save is set aside and the screen says where.
+    #[test]
+    fn unsaved_work_is_autosaved_and_set_aside_at_the_next_start() {
+        use crate::project::{self, Collected, Defaults};
+        use mpfree_library::project::AUTOSAVE;
+        use mpfree_library::{Loc, Meta, Place, Snapshot};
+        let dir = std::env::temp_dir().join(format!("mpfree-autosave-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let lib = mpfree_library::Library::at(&dir).unwrap();
+        let synth = crate::synth::Synth::new(44_100);
+        let mixer = project::mixer_text(&crate::mixing::MixHost::new(44_100, -6.0, 0.0).mixer, 0);
+        let synth_text = project::synth_text(&Default::default(), &synth.sounds());
+        let defaults = || {
+            Box::new(Defaults {
+                tempo: 120.0,
+                mixer: mixer.clone(),
+                modu: String::new(),
+                synth: synth_text.clone(),
+            })
+        };
+        let parts = |tempo: f64| {
+            Box::new(Collected {
+                tempo,
+                swing: Default::default(),
+                clips: crate::time::TimeHost::new(44_100, tempo)
+                    .unwrap()
+                    .project()
+                    .clone(),
+                mixer: mixer.clone(),
+                modu: String::new(),
+                synth: synth_text.clone(),
+                arp: String::new(),
+                instruments: String::new(),
+                loops: None,
+                audio: None,
+            })
+        };
+        // Seconds of ticks, one a second: whether the parts were asked for.
+        let asks = |p: &mut Player, secs: usize| {
+            let mut asked = false;
+            for _ in 0..secs {
+                p.tick(1.0);
+                asked |= p
+                    .take_actions()
+                    .iter()
+                    .any(|a| matches!(a, FromUi::SaveProject));
+            }
+            asked
+        };
+        let edit = |p: &mut Player| {
+            p.opened_at = None;
+            p.saw_action(&FromUi::Time(TimeAction::NewClip { track: 0, slot: 1 }));
+            assert!(p.browser.as_ref().unwrap().unsaved());
+        };
+        let autosave = Loc::top(Place::Projects).join(AUTOSAVE).unwrap();
+        let mut p = sample_sampler(Fonts::embedded());
+        p.set_browser(mpfree_browser_ui::Browser::inline(lib.clone()), "");
+        p.take_actions();
+        p.apply(ToUi::ProjectDefaults(defaults()));
+        // Nothing unsaved, nothing autosaved.
+        assert!(!asks(&mut p, 130));
+        // Two minutes after an edit, the parts are asked for, and go to
+        // autosave's project, quietly: the work stays unsaved and new.
+        edit(&mut p);
+        assert!(!asks(&mut p, 119));
+        assert!(asks(&mut p, 2));
+        let log = events_log(&p).len();
+        p.apply(ToUi::ProjectParts(parts(101.0)));
+        p.step_browser();
+        let back = lib.open_project(&autosave).unwrap();
+        assert!(back.meta.is_autosave());
+        assert_eq!(back.meta.tempo, 101.0);
+        assert_eq!(back.meta.name, "Autosave of a new project");
+        assert_eq!(events_log(&p).len(), log, "not in the Events log");
+        let b = p.browser.as_ref().unwrap();
+        assert!(b.unsaved() && b.project().is_none());
+        // No edit since: nothing more.
+        assert!(!asks(&mut p, 130));
+        // Parts asked for that never come are asked for again later; a
+        // save the musician asks for meanwhile wins.
+        edit(&mut p);
+        assert!(asks(&mut p, 121));
+        assert!(!asks(&mut p, 237));
+        assert!(asks(&mut p, 4));
+        p.ask_save();
+        assert!(p
+            .take_actions()
+            .iter()
+            .any(|a| matches!(a, FromUi::SaveProject)));
+        p.apply(ToUi::ProjectParts(parts(102.0)));
+        p.step_browser();
+        let saved = p
+            .browser
+            .as_ref()
+            .unwrap()
+            .project()
+            .cloned()
+            .expect("saved");
+        assert!(saved.name().starts_with("Project "), "{}", saved.name());
+        assert_eq!(lib.open_project(&saved).unwrap().meta.tempo, 102.0);
+        assert_eq!(lib.open_project(&autosave).unwrap().meta.tempo, 101.0);
+        assert!(!p.browser.as_ref().unwrap().unsaved());
+        assert!(!asks(&mut p, 130), "saved: nothing to autosave");
+
+        // The next start, after a crash: the work autosaved after the last
+        // save is set aside before anything autosaves, and the safe start
+        // says where.
+        let at = |secs: u64, tempo: f64| Snapshot {
+            meta: Meta {
+                tempo,
+                saved: secs,
+                ..Meta::default()
+            },
+            parts: vec![("transport".into(), format!("bpm = {tempo}\n"))],
+        };
+        let old = Loc::top(Place::Projects).join("Old").unwrap();
+        lib.save_project(&old, &at(1_000, 90.0), 0).unwrap();
+        let autosaved = |secs: u64| {
+            let mut s = at(secs, 95.0);
+            s.meta.mark_autosave();
+            lib.save_project(&lib.autosave_project().unwrap(), &s, 0)
+                .unwrap();
+        };
+        autosaved(2_000); // 1970-01-01 00:33
+        let lists = "project = Projects/Old\n";
+        let last = Settings {
+            open_last: true,
+            ..Default::default()
+        };
+        let opens = |q: &mut Player| {
+            q.tick(0.033);
+            q.take_actions().into_iter().find_map(|a| match a {
+                FromUi::OpenProject(o) => Some(o),
+                _ => None,
+            })
+        };
+        let mut c = sample_sampler(Fonts::embedded());
+        c.set_browser(mpfree_browser_ui::Browser::inline(lib.clone()), lists);
+        c.take_actions();
+        c.safe_start();
+        c.apply(ToUi::Settings(last.clone()));
+        c.apply(ToUi::ProjectDefaults(defaults()));
+        assert!(opens(&mut c).is_none());
+        let kept = Loc::top(Place::Projects)
+            .join("Unsaved 1970-01-01 00.33")
+            .unwrap();
+        assert_eq!(lib.open_project(&kept).unwrap().meta.tempo, 95.0);
+        assert!(lib.open_project(&autosave).is_err());
+        let said = crate::crash::screen_line(true, Some("Old"), Some(kept.name()));
+        assert!(
+            events_log(&c)
+                .iter()
+                .any(|l| *l == format!("project: safe start: {said}")),
+            "{:?}",
+            events_log(&c)
+        );
+        assert_eq!(c.told.as_ref().map(|t| t.0.clone()), Some(tell_text(&said)));
+        // After the power switch (a normal start): set aside too, said,
+        // and the last project opens as Prefs > At start says.
+        autosaved(3_000); // 00:50
+        let mut n = sample_sampler(Fonts::embedded());
+        n.set_browser(mpfree_browser_ui::Browser::inline(lib.clone()), lists);
+        n.take_actions();
+        n.apply(ToUi::Settings(last));
+        n.apply(ToUi::ProjectDefaults(defaults()));
+        assert_eq!(opens(&mut n).expect("the last project").what, "Old");
+        let words = "Unsaved work from the last run is in Projects > Unsaved 1970-01-01 00.50.";
+        assert!(
+            events_log(&n)
+                .iter()
+                .any(|l| *l == format!("project: {words}")),
+            "{:?}",
+            events_log(&n)
+        );
+        assert!(lib
+            .open_project(
+                &Loc::top(Place::Projects)
+                    .join("Unsaved 1970-01-01 00.50")
+                    .unwrap()
+            )
+            .is_ok());
+        // Autosaved before the last save: nothing to set aside or say.
+        autosaved(500);
+        let mut s = sample_sampler(Fonts::embedded());
+        s.set_browser(mpfree_browser_ui::Browser::inline(lib.clone()), lists);
+        s.take_actions();
+        s.apply(ToUi::ProjectDefaults(defaults()));
+        assert!(opens(&mut s).is_none());
+        assert!(!events_log(&s).iter().any(|l| l.contains("Unsaved work")));
+        assert!(lib.open_project(&autosave).is_ok(), "left in place");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

@@ -377,6 +377,10 @@ pub enum BrowseAction {
     ProjectSaved {
         loc: Loc,
     },
+    /// The unsaved work was autosaved, into autosave's project here.
+    Autosaved {
+        loc: Loc,
+    },
     /// Save (or Save as, once given a name) was pressed: call
     /// [`Browser::save`] with the engines' parts now.
     SaveRequested,
@@ -581,6 +585,9 @@ pub struct Browser {
     tried: bool,
     /// The work in progress changed since it was last saved or opened.
     unsaved: bool,
+    /// An open of autosave's project is under way: still unsaved once it
+    /// lands ([`Browser::open_landed`]).
+    recovering: bool,
     mode: Mode,
     sort: Sort,
 }
@@ -631,6 +638,7 @@ impl Browser {
             before_pick: None,
             tried: false,
             unsaved: false,
+            recovering: false,
             mode: Mode::Folder,
             sort: Sort::Name,
         };
@@ -733,6 +741,12 @@ impl Browser {
                 self.status = Some((format!("Trash emptied: {} freed", size(bytes)), false));
                 self.refresh();
             }
+            Ok(Outcome::Autosaved(loc)) => {
+                self.actions.push(BrowseAction::Autosaved { loc });
+                if self.folder == Loc::top(Place::Projects) {
+                    self.refresh();
+                }
+            }
             Ok(Outcome::Saved(loc)) => {
                 self.status = Some((format!("Saved {}", loc.name()), false));
                 self.unsaved = false;
@@ -741,6 +755,26 @@ impl Browser {
                 self.remember(loc.clone());
                 self.actions.push(BrowseAction::ProjectSaved { loc });
                 self.refresh();
+            }
+            Ok(Outcome::Project(loc, snap)) if snap.meta.is_autosave() => {
+                // Autosave's project opens as a new, unsaved one: SHIFT +
+                // BROWSE keeps it as a project of the musician's (named for
+                // the time), never as autosave's again.
+                self.status = Some((
+                    format!(
+                        "Opened the work autosaved {}. SHIFT + BROWSE saves it as a new project",
+                        when(snap.meta.saved)
+                    ),
+                    false,
+                ));
+                self.project = None;
+                self.created = 0;
+                self.unsaved = true;
+                self.recovering = true;
+                self.actions.push(BrowseAction::ProjectOpened { loc, snap });
+                if self.pick.is_some() && !std::mem::take(&mut self.opening_last) {
+                    self.close_pick(true);
+                }
             }
             Ok(Outcome::Project(loc, snap)) => {
                 self.status = Some((format!("Opened {}", loc.name()), false));
@@ -1261,6 +1295,13 @@ impl Browser {
         self.unsaved = unsaved;
     }
 
+    /// The app says an open has landed (the engines hold the project):
+    /// nothing is unsaved then, unless it was autosave's project, whose
+    /// work is still to be saved as a project of the musician's.
+    pub fn open_landed(&mut self) {
+        self.unsaved = std::mem::take(&mut self.recovering);
+    }
+
     /// The dial's push: open a folder or project, load anything else, or
     /// answer the question on screen.
     pub fn push(&mut self) {
@@ -1772,6 +1813,55 @@ impl Browser {
             keep: KEEP_VERSIONS,
             samples,
         });
+    }
+
+    /// Autosave (every 2 minutes while there is unsaved work, the app's
+    /// clock): `snap` and its sounds go to autosave's own project
+    /// (`mpfree_library::Library::autosave_project`), keeping no earlier
+    /// saves. The current project, the unsaved mark and the status line
+    /// stay as they are; a failed autosave says so on the status line.
+    pub fn autosave_with(&mut self, mut snap: Snapshot, samples: Vec<NewSample>, now: u64) {
+        snap.meta.name = match &self.project {
+            Some(l) => format!("Autosave of {}", l.name()),
+            None => "Autosave of a new project".to_string(),
+        };
+        if snap.meta.created == 0 {
+            snap.meta.created = now;
+        }
+        snap.meta.saved = now;
+        self.send(Job::Autosave { snap, samples });
+    }
+
+    /// At the start, before anything autosaves: autosave's project, if it
+    /// holds work newer than the last project's save (the last run ended,
+    /// by a crash or the power switch, with unsaved work), is set aside as
+    /// a project of its own (`mpfree_library::Library::keep_autosave`), so
+    /// that this run's autosave can't write over it. Its new place, or why
+    /// it stayed. A rename in Projects, on the caller's thread.
+    pub fn keep_newer_autosave(&mut self) -> Option<Result<Loc, String>> {
+        let (loc, saved) = self.newer_autosave()?;
+        let kept = self
+            .library()
+            .keep_autosave(&loc, saved)
+            .map_err(|e| e.to_string());
+        if kept.is_ok() && self.folder == Loc::top(Place::Projects) {
+            self.refresh();
+        }
+        Some(kept)
+    }
+
+    /// Autosave's project and when it was last written, if there is one
+    /// and it holds work newer than the last project's save (the work a
+    /// crash or the power switch would otherwise lose). Reads two
+    /// project.txt files.
+    fn newer_autosave(&self) -> Option<(Loc, u64)> {
+        let (loc, meta) = self.library().autosave_meta()?;
+        let last = self
+            .last
+            .as_ref()
+            .and_then(|l| self.library().project_meta(l).ok())
+            .map_or(0, |m| m.saved);
+        (meta.saved > last).then_some((loc, meta.saved))
     }
 
     /// Save as: asks for a name (the time-stamped one ready to keep).
