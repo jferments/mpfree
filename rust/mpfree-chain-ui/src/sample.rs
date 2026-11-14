@@ -981,6 +981,28 @@ mod tests {
         let v = ui.get::<ChainView>(crate::CHAIN).unwrap();
         assert!(v.open().rows);
         assert!(v.layout(r).rows_panel.is_some());
+        // Only what answers is a target: the rows and the Modulate row.
+        let modulate = [
+            "macro",
+            "learn",
+            "add-lfo",
+            "add-follower",
+            "rows",
+            "depth",
+            "remove-row",
+        ];
+        assert!(v.targets(r).iter().all(|t| modulate.contains(&t.id)));
+        // A macro answers over its whole pitch, the gap after it included:
+        // macro 3 again takes it off.
+        let gap = l.macros[2].right() + 1;
+        tap(&mut ui, gap, l.macros[2].y + 5);
+        assert_eq!(
+            crate::take_chain_actions(&mut ui),
+            [ChainAction::Macro {
+                target: addr,
+                macro_: None
+            }]
+        );
         tap(&mut ui, l.title.x + 10, l.title.y + 10);
         assert!(!ui.get::<ChainView>(crate::CHAIN).unwrap().open().rows);
         assert!(
@@ -1027,8 +1049,21 @@ mod tests {
         let v = ui.get::<ChainView>(crate::CHAIN).unwrap();
         let l = v.layout(r);
         assert!(l.mode_label.is_some(), "ten modes don't fit as chips");
-        // Soft is the first: only the arrow to Hard.
-        assert_eq!(modes(v, r), [(1, "Drive mode Hard".to_string(), true)]);
+        // Soft is the first: only the arrow to Hard, an arrow of its own.
+        assert!(modes(v, r).is_empty());
+        let arrows: Vec<_> = v
+            .targets(r)
+            .into_iter()
+            .filter(|t| t.id.starts_with("mode-"))
+            .map(|t| (t.id, t.label))
+            .collect();
+        assert_eq!(
+            arrows,
+            [
+                ("mode-next", "Drive mode Hard ›".to_string()),
+                ("mode-list", "Drive modes".to_string())
+            ]
+        );
         let (next, _) = l.modes[0];
         tap(&mut ui, next.x + 5, next.y + 5);
         assert_eq!(
@@ -1093,13 +1128,12 @@ mod tests {
         let picks = ids_of(v, r, "mode-pick");
         assert_eq!(picks.len(), 10);
         assert_eq!(picks[0], (0, "Drive mode Soft".to_string(), false));
-        // Nothing on the page under the list is a target.
-        let list = v.layout(r).mode_list.unwrap();
+        // Only the list and its chip are targets: a touch anywhere else
+        // only shuts it.
         assert!(v
             .targets(r)
             .iter()
-            .filter(|t| t.id == "knob")
-            .all(|t| list.intersect(t.rect).is_empty()));
+            .all(|t| t.id == "mode-pick" || t.id == "mode-list"));
         let (row, m) = v.layout(r).mode_rows[3];
         tap(&mut ui, row.x + 10, row.y + 10);
         assert_eq!(
