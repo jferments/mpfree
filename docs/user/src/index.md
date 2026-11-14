@@ -1,7 +1,7 @@
 <!--
 status: changing
 covers: README.md
-checked: 2026-11-12 ae9c39c
+checked: 2026-11-14 b76c3c7
 -->
 
 # Welcome
@@ -18,7 +18,7 @@ This manual is for musicians and producers. It assumes you have never used an MP
 ## How this manual is organised
 
 - **Getting started** walks you from switching on to your first beat and your first loop.
-- **Making music** covers each part of MPFree in depth: playing live, looping, sampling, synths, clips, arranging, mixing and saving.
+- **Making music** covers each part of MPFree in depth: playing live, looping, sampling, synths, clips, arranging, audio tracks, mixing, effects and saving.
 - **Reference** lists every button, every setting and every term.
 
 ## Which version this describes

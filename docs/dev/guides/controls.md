@@ -144,11 +144,15 @@ The Sample tab edits the pad hit last, with an editor per tab (Wave, Warp, Chop,
 ## Synth tab
 
 - **`synth-title/tab`**: the synth's pages (Osc, Filter, Env, LFO, ...). The lit one is showing. *Test:* `the_synth_page_shows_poly_and_sends_its_changes`.
-- **`synth-tiles/knob`**: a parameter tile: drag up or down to turn it; tap it, then the wheel. **`synth-tiles/choice`**, **`synth-tiles/choice-less`**, **`synth-tiles/choice-more`**: a choice tile (a wave, a mode): tap or step it. **`synth-tiles/toggle`**: an on or off tile.
+- **`synth-tiles/knob`**: a knob in a section (a level, a time, a cutoff): drag up or down to turn it (320 px is the whole range); tap it, then the wheel. The big ones matter most on the page. *Test:* `dragging_a_knob_up_turns_it_up_on_the_node`.
+- **`synth-tiles/fader`**, **`synth-tiles/drawbar`**, **`synth-tiles/slider`**: an envelope's or mixer's fader (drag up), an organ drawbar (drag down to add it, as on an organ), a routing row's slider (drag sideways). Each drags over its own track. *Test:* `a_fader_drags_over_its_own_track`.
+- **`synth-tiles/choice`**, **`synth-tiles/choice-less`**, **`synth-tiles/choice-more`**: a choice (a wave, a mode): its buttons when they fit (tap one), else a chip with ‹ ›. **`synth-tiles/step-less`**, **`synth-tiles/step-more`**: a whole number (voices, octave, coarse) one step down or up. **`synth-tiles/toggle`**: an on or off pill. *Test:* `choices_and_switches_change_on_a_tap`, `a_stepper_steps_by_one_and_stops_at_its_ends`.
+- **`synth-tiles/section-link`**: a section's name with "Open ›": tap to go to the page that section is about (the filter envelope's knob on Filter opens Envelopes). *Test:* `a_section_opens_the_page_it_links_to`.
+- **`synth-tiles/node`**: a box in a section's drawing (an FM operator, a drum pad): tap to go to its page. *Test:* `fm_draws_its_algorithm_and_a_tap_on_a_box_opens_that_operator`.
+- **`synth-tiles/section-switch`**: an on or off switch in a section's heading (effect pages: a stage of the channel strip); while it is off the section's controls are dim.
 - **`synth-presets/row`**: a preset: tap to load it.
 - **`synth-pads-head/layout`**: Chromatic or In key for the pads. *Test:* `the_pads_heading_switches_the_synth_to_in_key`.
-- **`synth-qlinks/cell`**: what the Q-Links turn on this page; tap a cell to point the wheel at that parameter.
-- **`synth-visuals/card`**: the pictures (pressure, voices, envelope, LFO): tap one to go to its page of the synth (the lit one is the page showing). **`synth-visuals/node`**: an FM operator in the algorithm picture: tap to go to that operator's page.
+- The Q-Link column on the Synth tab is the shared one (**`qlinks/knob-card`**, under Play tab): it names what the page's Q-Links turn, as their sections name them (Q1 to Q4 badges on the page); drag a card to turn it.
 
 ## Looper tab
 
