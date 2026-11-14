@@ -1255,17 +1255,30 @@ impl LoopHost {
         self.saved.take()
     }
 
-    /// An open or New project: a save under way stops, and every loop
-    /// fades out and is forgotten (as Clear does), from the next periods.
-    /// The project's loops, if it has any, come with [`LoopHost::open`]
-    /// and go in once every loop is empty ([`LoopHost::tend_open`]).
-    pub fn clear_all(&mut self) -> String {
+    /// A save under way stops, and one done but not taken is dropped (a
+    /// project opening while the save of another goes on). Does not
+    /// allocate.
+    pub fn cancel_save(&mut self) {
         if let Some(s) = self.saved.take() {
             self.printer.send(ToPrinter::DropSaved(s));
         }
         if let Some(Saving::Reading { saved, .. }) = self.saving.take() {
             self.printer.send(ToPrinter::DropSaved(saved));
         }
+    }
+
+    /// Loops taken from a save that is not going ahead, dropped on the
+    /// worker rather than here.
+    pub fn drop_saved(&self, s: Saved) {
+        self.printer.send(ToPrinter::DropSaved(s));
+    }
+
+    /// An open or New project: a save under way stops, and every loop
+    /// fades out and is forgotten (as Clear does), from the next periods.
+    /// The project's loops, if it has any, come with [`LoopHost::open`]
+    /// and go in once every loop is empty ([`LoopHost::tend_open`]).
+    pub fn clear_all(&mut self) -> String {
+        self.cancel_save();
         if let Some(s) = self.incoming.take() {
             self.printer.send(ToPrinter::DropSaved(s));
         }
