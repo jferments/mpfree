@@ -110,7 +110,7 @@ mod xy;
 pub mod xyfx;
 
 pub use amp::{Amp, Exciter};
-pub use bounce::{bounce, BounceIn, BounceOut, Pumped};
+pub use bounce::{bounce, wav_header, BounceIn, BounceOut, Pumped};
 pub use chain::{Chain, ChainStats, Insert, MAX_SLOT_EVENTS};
 pub use character::Character;
 pub use cloud::{Cloud, PRESETS as CLOUD_PRESETS};

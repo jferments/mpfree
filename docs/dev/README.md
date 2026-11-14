@@ -51,6 +51,7 @@ Every design page opens with a **Status** line (proposal, approved, built, on ma
 - [Track host](design/track-host.md): each track's instrument fed by the sequencer, the pads and the arp and rendered into its mixer track: slots, routing, notes counted per source, sample-exact parameters, swaps that ring out, STOP, and no allocation on the audio thread (`rust/mpfree-track`, 2026-11-11).
 - [Plugins: the CLAP host](design/plugins.md): CLAP instruments and effects as nodes on a track or in an insert chain: loading `.clap` files, parameters, sample-exact events, state, the main and audio threads, and our own test plugins (`rust/mpfree-clap`), and the sandbox that runs each plugin in its own process with a deadline each block and a restart after a crash (`rust/mpfree-plughost`, 2026-11-11).
 - [FX and the mixer](design/fx.md): the effects, the insert chain, the mixer and its routing (`rust/mpfree-fx`).
+- [Export](design/export.md): the mixdown, stems and MIDI file from one pass over the song, Fast (quiet, the default) or Listen (real time), when an export has to listen, and the app's part (`rust/mpfree-export`).
 - [Modulation](design/modulation.md): parameter addresses, macros, the mod matrix, morph and Q-Link bindings (`rust/mpfree-param`, `rust/mpfree-mod`).
 
 ### The sampler

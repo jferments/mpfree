@@ -704,8 +704,8 @@ fn bouncing_never_allocates_on_the_sound_thread() {
     for (slot, p) in points.iter().enumerate() {
         assert!(m.set_capture(slot, Some(*p)));
     }
-    let lat: Vec<u32> = (0..3).map(|s| m.capture_latency(s).unwrap()).collect();
-    let (mut bin, mut bout) = bounce(&lat, 1 << 16, rate);
+    let mut lat = [0u32; 3];
+    let (mut bin, mut bout) = bounce(3, 1 << 16, rate);
     let writer = std::thread::spawn(move || {
         let mut files: Vec<std::io::Cursor<Vec<u8>>> =
             (0..3).map(|_| std::io::Cursor::new(Vec::new())).collect();
@@ -721,6 +721,10 @@ fn bouncing_never_allocates_on_the_sound_thread() {
     let mut r = vec![0.0f32; MAX_BLOCK];
     let mut frame = 0u64;
     watch(true);
+    for (s, l) in lat.iter_mut().enumerate() {
+        *l = m.capture_latency(s).unwrap();
+    }
+    bin.begin(&lat);
     for _ in 0..2000 {
         let len = 1 + (rng.next() as usize) % 300;
         for t in 0..2 {
@@ -735,7 +739,7 @@ fn bouncing_never_allocates_on_the_sound_thread() {
             let (cl, cr) = m.capture(s).unwrap();
             bin.push(s, cl, cr);
         }
-        let _ = bin.quiet(0);
+        let _ = (bin.quiet(0), bin.room());
         frame += len as u64;
     }
     bin.finish();

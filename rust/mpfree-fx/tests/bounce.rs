@@ -148,7 +148,9 @@ fn bounce_song(frames: usize, sizes: &[usize]) -> Bounced {
                 .iter()
                 .map(|&s| m.capture_latency(s).unwrap())
                 .collect();
-            bounce(&lat, 4096, RATE)
+            let (mut bin, bout) = bounce(lat.len(), 4096, RATE);
+            bin.begin(&lat);
+            (bin, bout)
         });
         for (s, &slot) in slots.iter().enumerate() {
             let (l, r) = m.capture(slot).unwrap();
