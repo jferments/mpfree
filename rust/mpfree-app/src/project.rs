@@ -8,7 +8,8 @@
 //! | Part | Owner | Made by | Taken back by |
 //! |---|---|---|---|
 //! | `clips` | the time engine | [`mpfree_seq::save`]: tracks, clips, scenes, the song | a new [`TimeHost`] built on the screen thread and swapped in |
-//! | `mixer` | the mixer | [`mixer_text`]: every strip's controls, each insert with its parameters | [`mixer_load`] builds the effects on the screen thread; [`MixHost::open`] swaps them in over a few periods |
+//! | `mixer` | the mixer | [`mixer_text`]: every strip's controls, each insert with its parameters (and a plugin's state) | [`mixer_load`] builds the effects on the screen thread (a plugin through the rack, in its own process); [`MixHost::open`] swaps them in over a few periods |
+//! | `instruments` | each track's own instrument (`instruments.rs`) | [`instruments_text`]: each track's instrument with its parameters (and a plugin's state) | [`instruments_load`] makes them on the screen thread; the audio loop puts them in |
 //! | `mod` | the mod engine | `ModMix::save` | `ModMix::load`, once the inserts are in |
 //! | `synth` | the synth | [`synth_text`]: the Synth tab's options and every engine's sound | the options go through the app (as at start), the sounds onto the engines |
 //! | `sampler` | the Sample tab | `SamplePage::save_part`, with its sounds in `samples/` | `SamplePage::open_part` |
@@ -55,6 +56,8 @@ pub const MIDI: &str = "midi";
 pub const LOOPER: &str = "looper";
 /// Each track's arp and its Note Repeat rate (`App::arp_part`).
 pub const ARP: &str = "arp";
+/// Each track's own instrument ([`instruments_text`]).
+pub const INSTRUMENTS: &str = "instruments";
 /// The Song view's audio tracks and their takes ([`audio_part`]).
 pub const AUDIOTRACKS: &str = "audiotracks";
 
@@ -62,6 +65,8 @@ pub const AUDIOTRACKS: &str = "audiotracks";
 pub const MIXER_FORMAT: &str = "mpfree-mixer 1";
 /// The synth part's first line.
 pub const SYNTH_FORMAT: &str = "mpfree-synth 1";
+/// The first line of the instruments part.
+pub const INSTRUMENTS_FORMAT: &str = "mpfree-instruments 1";
 
 // ------------------------------------------------------------ the loop's side
 
@@ -77,6 +82,8 @@ pub struct Collected {
     pub synth: String,
     /// The arps ([`crate::app::App::arp_part`]).
     pub arp: String,
+    /// Each track's own instrument ([`instruments_text`]).
+    pub instruments: String,
     /// The Looper's loops with their layers' audio (read as they play:
     /// [`crate::looping::LoopHost::save`]); None when the looper couldn't
     /// save. Freed on the screen thread.
@@ -111,6 +118,10 @@ pub struct Opening {
     /// The arp part's text; None (New, or a project saved before it had
     /// one) puts every arp back to its default.
     pub arp: Option<String>,
+    /// Each track's own instrument, made here. Every track not in it
+    /// (all of them for New, or a project saved before the part) plays
+    /// the kit.
+    pub instruments: Vec<Option<Loaded>>,
     /// Lines for the log: parts that didn't read.
     pub notes: Vec<String>,
     /// What it is, for the log ("Night drive", "a new project").
@@ -178,6 +189,9 @@ pub fn snapshot(c: &Collected, extra: Vec<(String, String)>) -> Snapshot {
         (SYNTH.to_string(), c.synth.clone()),
         (ARP.to_string(), c.arp.clone()),
     ];
+    if c.instruments.lines().count() > 1 {
+        parts.push((INSTRUMENTS.to_string(), c.instruments.clone()));
+    }
     parts.extend(extra);
     Snapshot {
         meta: mpfree_library::Meta {
@@ -194,7 +208,12 @@ pub fn snapshot(c: &Collected, extra: Vec<(String, String)>) -> Snapshot {
 /// time engine, the mixer's effects): an [`Opening`] for the audio loop.
 /// `rate` is the sound's. A part that doesn't read is left out, with a
 /// line saying so: its engine keeps what it has.
-pub fn opening(snap: &Snapshot, rate: u32, what: &str) -> Opening {
+pub fn opening(
+    snap: &Snapshot,
+    rate: u32,
+    what: &str,
+    plugins: &crate::plugins::Plugins,
+) -> Opening {
     let mut notes = Vec::new();
     let tempo = Some(snap.meta.tempo).filter(|t| t.is_finite() && *t >= 20.0 && *t <= 300.0);
     let swing = snap
@@ -213,7 +232,7 @@ pub fn opening(snap: &Snapshot, rate: u32, what: &str) -> Opening {
             .map(Box::new)
     });
     let mix = snap.part(MIXER).and_then(|text| {
-        mixer_load(text, snap.part(MOD), rate)
+        mixer_load(text, snap.part(MOD), rate, plugins)
             .map_err(|e| notes.push(format!("project: the mixer wasn't opened ({e})")))
             .ok()
             .map(Box::new)
@@ -226,6 +245,21 @@ pub fn opening(snap: &Snapshot, rate: u32, what: &str) -> Opening {
     if let Some(m) = &mix {
         notes.extend(m.notes.iter().cloned());
     }
+    let instruments = match snap.part(INSTRUMENTS) {
+        None => Vec::new(),
+        Some(text) => match instruments_load(text, rate, plugins) {
+            Ok((slots, more)) => {
+                notes.extend(more);
+                slots
+            }
+            Err(e) => {
+                notes.push(format!(
+                    "project: the tracks' instruments weren't opened ({e}); they play the kit"
+                ));
+                Vec::new()
+            }
+        },
+    };
     Opening {
         tempo,
         swing,
@@ -233,6 +267,7 @@ pub fn opening(snap: &Snapshot, rate: u32, what: &str) -> Opening {
         mix,
         synth,
         arp: snap.part(ARP).map(str::to_string),
+        instruments,
         notes,
         what: what.to_string(),
         clear_loops: snap.part(LOOPER).is_some(),
@@ -552,17 +587,49 @@ pub struct MixLoad {
     pub keys: Vec<(StripId, usize, StripId)>,
 }
 
-/// Makes the effect a project names. The CLAP host adds its `clap:` ids
-/// here; today it is the built-in effects (`mpfree_fx_ui::make`).
-pub fn make_node(id: &str, extras: &[(String, String)]) -> Option<Box<dyn Node>> {
-    let _ = extras;
-    mpfree_fx_ui::make(id)
+/// Makes the effect a project names: a built-in one (`mpfree_fx_ui::make`)
+/// or a plugin (`clap:...`), started in its own process by the rack
+/// (which waits for it: the screen thread's job). Err says why not, with
+/// the plugin's file (`file=` in `extras`) when it isn't there.
+pub fn make_node(
+    id: &str,
+    extras: &[(String, String)],
+    plugins: &crate::plugins::Plugins,
+) -> Result<Box<dyn Node>, String> {
+    if crate::plugins::Plugins::is_plugin(id) {
+        return make_plugin(id, extras, plugins);
+    }
+    mpfree_fx_ui::make(id).ok_or_else(|| "this build can't make it".to_string())
+}
+
+/// A plugin a project names, started by the rack; Err names its file
+/// (`file=` in `extras`) when this stick hasn't got it.
+fn make_plugin(
+    id: &str,
+    extras: &[(String, String)],
+    plugins: &crate::plugins::Plugins,
+) -> Result<Box<dyn Node>, String> {
+    if plugins.find(id).is_none() {
+        let file = extras
+            .iter()
+            .find(|(k, _)| k == "file")
+            .map_or(String::new(), |(_, f)| format!(" ({f})"));
+        return Err(format!(
+            "the plugin{file} isn't in files/plugins/ on this stick"
+        ));
+    }
+    plugins.make(id)
 }
 
 /// Reads the mixer part and builds its effects (allocates: not on the
 /// audio thread). An effect this build can't make is left out, with a
 /// line saying so; a strip the mixer hasn't got is skipped.
-pub fn mixer_load(text: &str, modu: Option<&str>, rate: u32) -> Result<MixLoad, String> {
+pub fn mixer_load(
+    text: &str,
+    modu: Option<&str>,
+    rate: u32,
+    plugins: &crate::plugins::Plugins,
+) -> Result<MixLoad, String> {
     let mut lines = text.lines().enumerate();
     match lines.next() {
         Some((_, l)) if l.trim() == MIXER_FORMAT => {}
@@ -637,11 +704,11 @@ pub fn mixer_load(text: &str, modu: Option<&str>, rate: u32) -> Result<MixLoad, 
                         extras.push((k.to_string(), v.to_string()));
                     }
                 }
-                open = Some(match make_node(id, &extras) {
-                    Some(n) => Some((st, uid, on, n, key)),
-                    None => {
+                open = Some(match make_node(id, &extras, plugins) {
+                    Ok(n) => Some((st, uid, on, n, key)),
+                    Err(e) => {
                         out.notes.push(format!(
-                            "project: the effect {id} on {} can't be made by this build; left out",
+                            "project: the effect {id} on {} is left out: {e}",
                             strip_text(st)
                         ));
                         None
@@ -682,6 +749,184 @@ pub fn mixer_load(text: &str, modu: Option<&str>, rate: u32) -> Result<MixLoad, 
     }
     finish(&mut open, &mut out);
     Ok(out)
+}
+
+// ------------------------------------------------------------ the tracks' instruments
+
+/// A track's own instrument as a project had it, made on the screen
+/// thread, for the audio loop to put in (`Instruments::put`).
+pub struct Loaded {
+    /// The track, from 0.
+    pub track: usize,
+    pub instrument: mpfree_track::Instrument,
+    pub held: crate::instruments::Held,
+}
+
+/// The instruments part: a `track` line for each track that has its own
+/// instrument (numbered from 1, as the screen shows them) with its node
+/// id and `key=value` extras, then its parameters and a plugin's state.
+/// Called on the audio thread when a project is saved (a few small
+/// allocations, once): a plugin's state is its last snapshot, never a
+/// round trip.
+///
+/// ```text
+/// mpfree-instruments 1
+/// track 2 mpfree.fm
+/// param 0 5
+/// track 4 clap:org.example.synth file=synth.clap
+/// param 0 0.5
+/// state AAECAw==
+/// ```
+pub fn instruments_text(inst: &crate::instruments::Instruments) -> String {
+    let mut s = String::with_capacity(1024);
+    s.push_str(INSTRUMENTS_FORMAT);
+    s.push('\n');
+    for t in 0..crate::instruments::SLOTS {
+        let Some(node) = inst.node(t) else {
+            continue;
+        };
+        let _ = write!(s, "track {} {}", t + 1, node.info().id);
+        for (k, v) in node.save_extras() {
+            if word_ok(&k) && word_ok(&v) {
+                let _ = write!(s, " {k}={v}");
+            }
+        }
+        s.push('\n');
+        for p in node.params() {
+            if !p.readonly {
+                let _ = writeln!(s, "param {} {}", p.id, node.param(p.id));
+            }
+        }
+        if let Some(state) = node.save_state() {
+            let _ = writeln!(s, "state {}", base64(&state));
+        }
+    }
+    s
+}
+
+/// Reads the instruments part and makes each track's instrument (an
+/// engine, or a plugin through the rack in its own process), ready to go
+/// in: allocates and waits, so not on the audio thread. An instrument that
+/// can't be made is left out with a line saying so, and its track plays
+/// the kit. Gives the instruments and the lines.
+pub fn instruments_load(
+    text: &str,
+    rate: u32,
+    plugins: &crate::plugins::Plugins,
+) -> Result<(Vec<Option<Loaded>>, Vec<String>), String> {
+    let mut lines = text.lines().enumerate();
+    match lines.next() {
+        Some((_, l)) if l.trim() == INSTRUMENTS_FORMAT => {}
+        _ => return Err(format!("not an {INSTRUMENTS_FORMAT} part")),
+    }
+    let mut notes = Vec::new();
+    let mut made: Vec<(usize, Box<dyn Node>)> = Vec::new();
+    // The track being read: Some(None) while it is left out (its params
+    // and state are skipped too).
+    let mut open: Option<Option<(usize, Box<dyn Node>)>> = None;
+    for (i, raw) in lines {
+        let line = raw.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let bad = || format!("line {}: {line}", i + 1);
+        let mut w = line.split_whitespace();
+        match w.next() {
+            Some("track") => {
+                if let Some(Some(m)) = open.take() {
+                    made.push(m);
+                }
+                let n: usize = w.next().and_then(|x| x.parse().ok()).ok_or_else(bad)?;
+                let id = w.next().ok_or_else(bad)?;
+                let mut extras = Vec::new();
+                for kv in w {
+                    let (k, v) = kv.split_once('=').ok_or_else(bad)?;
+                    extras.push((k.to_string(), v.to_string()));
+                }
+                let track = n
+                    .checked_sub(1)
+                    .filter(|t| *t < crate::instruments::SLOTS && !made.iter().any(|m| m.0 == *t));
+                open = Some(match track {
+                    None => {
+                        notes.push(format!(
+                            "project: track {n}'s instrument is left out (no such track, or named twice)"
+                        ));
+                        None
+                    }
+                    Some(t) => match make_instrument_node(id, &extras, rate, plugins) {
+                        Ok(node) => Some((t, node)),
+                        Err(e) => {
+                            notes.push(format!(
+                                "project: track {n}'s instrument {id} is left out: {e}; the track plays the kit"
+                            ));
+                            None
+                        }
+                    },
+                });
+            }
+            Some("param") => {
+                let Some(o) = open.as_mut() else {
+                    return Err(bad());
+                };
+                let id: u16 = w.next().and_then(|x| x.parse().ok()).ok_or_else(bad)?;
+                let v: f32 = w.next().and_then(|x| x.parse().ok()).ok_or_else(bad)?;
+                if let Some((_, node)) = o.as_mut() {
+                    if v.is_finite() && node.params().iter().any(|p| p.id == id && !p.readonly) {
+                        node.set_param(id, v);
+                    }
+                }
+            }
+            Some("state") => {
+                let Some(o) = open.as_mut() else {
+                    return Err(bad());
+                };
+                let bytes = unbase64(w.next().unwrap_or("")).ok_or_else(bad)?;
+                if let Some((t, node)) = o.as_mut() {
+                    if let Err(e) = node.load_state(&bytes) {
+                        notes.push(format!(
+                            "project: track {}'s instrument {} didn't take its state ({e})",
+                            *t + 1,
+                            node.info().id
+                        ));
+                    }
+                }
+            }
+            // A newer build's line.
+            _ => {}
+        }
+    }
+    if let Some(Some(m)) = open.take() {
+        made.push(m);
+    }
+    let slots = made
+        .into_iter()
+        .map(|(track, node)| {
+            let held = crate::instruments::Held {
+                id: node.info().id,
+                name: node.info().name,
+            };
+            Some(Loaded {
+                track,
+                instrument: mpfree_track::Instrument::new(node, rate, PERIOD),
+                held,
+            })
+        })
+        .collect();
+    Ok((slots, notes))
+}
+
+/// A track's instrument a project names: an engine at its defaults (the
+/// part's params follow) or a plugin through the rack.
+fn make_instrument_node(
+    id: &str,
+    extras: &[(String, String)],
+    rate: u32,
+    plugins: &crate::plugins::Plugins,
+) -> Result<Box<dyn Node>, String> {
+    if crate::plugins::Plugins::is_plugin(id) {
+        return make_plugin(id, extras, plugins);
+    }
+    crate::synth::engine_node(id, rate).ok_or_else(|| "this build can't make it".to_string())
 }
 
 const B64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -842,7 +1087,13 @@ mod tests {
             a.run_silent_period();
         }
         let text = mixer_text(&a.mixer, 0b101);
-        let load = mixer_load(&text, Some("x = 1\n"), 44_100).unwrap();
+        let load = mixer_load(
+            &text,
+            Some("x = 1\n"),
+            44_100,
+            &crate::plugins::Plugins::none(),
+        )
+        .unwrap();
         assert_eq!(load.pad_mutes, 0b101);
         assert!(load.notes.is_empty(), "{:?}", load.notes);
         assert_eq!(load.modu.as_deref(), Some("x = 1\n"));
@@ -901,7 +1152,7 @@ mod tests {
         let text = format!(
             "{MIXER_FORMAT}\ninsert t0 3 1 clap:com.example.nothing file=x.clap\nparam 0 1\nstate AAEC\ninsert t1 4 0 mpfree.fx.drive\nparam 0 3\nsparkle 9\n"
         );
-        let load = mixer_load(&text, None, 44_100).unwrap();
+        let load = mixer_load(&text, None, 44_100, &crate::plugins::Plugins::none()).unwrap();
         assert_eq!(load.notes.len(), 1);
         assert!(load.notes[0].contains("clap:com.example.nothing"));
         assert_eq!(load.chains.len(), 1);
@@ -909,9 +1160,27 @@ mod tests {
         assert_eq!(*s, StripId::Track(1));
         assert!(!v[0].0.is_on());
         assert_eq!(v[0].0.uid(), Some(4));
-        assert!(mixer_load("mpfree-mixer 9\n", None, 44_100).is_err());
-        assert!(mixer_load(&format!("{MIXER_FORMAT}\nparam 0 1\n"), None, 44_100).is_err());
-        assert!(mixer_load(&format!("{MIXER_FORMAT}\nstrip zz 0=1\n"), None, 44_100).is_err());
+        assert!(mixer_load(
+            "mpfree-mixer 9\n",
+            None,
+            44_100,
+            &crate::plugins::Plugins::none()
+        )
+        .is_err());
+        assert!(mixer_load(
+            &format!("{MIXER_FORMAT}\nparam 0 1\n"),
+            None,
+            44_100,
+            &crate::plugins::Plugins::none()
+        )
+        .is_err());
+        assert!(mixer_load(
+            &format!("{MIXER_FORMAT}\nstrip zz 0=1\n"),
+            None,
+            44_100,
+            &crate::plugins::Plugins::none()
+        )
+        .is_err());
     }
 
     #[test]
@@ -992,6 +1261,122 @@ mod tests {
             "{notes:?}"
         );
         assert!(loops_open("nope", read).is_err());
+    }
+
+    /// Two tracks with their own instruments, one with a sound of its
+    /// own, written and read back: the same tracks, engines and sounds.
+    #[test]
+    fn the_tracks_instruments_read_back() {
+        use crate::instruments::{make, Instruments};
+        use crate::synth::Engine;
+        let rate = 44_100;
+        let plugins = crate::plugins::Plugins::none();
+        let synth = crate::synth::Synth::new(rate);
+        let mut inst = Instruments::new(rate, PERIOD);
+        assert_eq!(instruments_text(&inst), format!("{INSTRUMENTS_FORMAT}\n"));
+        let (fm, mut values) = synth.sound_of(Engine::Fm);
+        let params = crate::synth::engine_node(fm, rate).unwrap().params();
+        let k = params
+            .iter()
+            .position(|p| !p.readonly && p.max > p.min)
+            .unwrap();
+        values[k] = if values[k] == params[k].max {
+            params[k].min
+        } else {
+            params[k].max
+        };
+        let made = make(&plugins, fm, &values, rate, PERIOD).unwrap();
+        inst.put(1, Some(made), synth.pads_for(Engine::Fm)).unwrap();
+        let (poly, pv) = synth.sound_of(Engine::Poly);
+        let made = make(&plugins, poly, &pv, rate, PERIOD).unwrap();
+        inst.put(3, Some(made), synth.pads_for(Engine::Poly))
+            .unwrap();
+        let text = instruments_text(&inst);
+        assert!(text.contains("\ntrack 2 mpfree.fm\n"), "{text}");
+        assert!(text.contains("\ntrack 4 mpfree.poly\n"), "{text}");
+
+        let (slots, notes) = instruments_load(&text, rate, &plugins).unwrap();
+        assert!(notes.is_empty(), "{notes:?}");
+        let back: Vec<&Loaded> = slots.iter().flatten().collect();
+        assert_eq!(back.iter().map(|l| l.track).collect::<Vec<_>>(), [1, 3]);
+        for l in back {
+            assert_eq!(Some(l.held), inst.held(l.track));
+            let (was, now) = (inst.node(l.track).unwrap(), l.instrument.node());
+            for p in now.params().iter().filter(|p| !p.readonly) {
+                assert_eq!(now.param(p.id), was.param(p.id), "{}", p.name);
+            }
+        }
+        let fm_back = slots[0].as_ref().unwrap().instrument.node();
+        assert_eq!(fm_back.param(params[k].id), values[k], "its own sound");
+    }
+
+    /// A missing plugin, a track that isn't there or is named twice, and
+    /// an engine this build hasn't got are each left out and said; the
+    /// rest still open.
+    #[test]
+    fn a_tracks_instrument_that_cannot_be_made_is_left_out_and_said() {
+        let plugins = crate::plugins::Plugins::none();
+        let text = format!(
+            "{INSTRUMENTS_FORMAT}\n\
+             track 1 clap:com.example.synth file=synth.clap\nparam 0 1\nstate AAEC\n\
+             track 99 mpfree.poly\nparam 0 1\n\
+             track 2 mpfree.poly\nparam 9999 1\nsparkle 3\n\
+             track 2 mpfree.fm\n\
+             track 3 mpfree.theremin\n"
+        );
+        let (slots, notes) = instruments_load(&text, 44_100, &plugins).unwrap();
+        let back: Vec<usize> = slots.iter().flatten().map(|l| l.track).collect();
+        assert_eq!(back, [1], "only track 2's Poly");
+        assert_eq!(slots[0].as_ref().unwrap().held.id, "mpfree.poly");
+        assert_eq!(notes.len(), 4, "{notes:?}");
+        assert!(
+            notes[0].contains("clap:com.example.synth")
+                && notes[0].contains("(synth.clap) isn't in files/plugins/")
+                && notes[0].ends_with("the track plays the kit"),
+            "{notes:?}"
+        );
+        assert!(notes[1].contains("track 99"), "{notes:?}");
+        assert!(notes[2].contains("track 2") && notes[2].contains("named twice"));
+        assert!(notes[3].contains("mpfree.theremin") && notes[3].contains("can't make it"));
+
+        assert!(instruments_load("mpfree-instruments 9\n", 44_100, &plugins).is_err());
+        assert!(
+            instruments_load(
+                &format!("{INSTRUMENTS_FORMAT}\nparam 0 1\n"),
+                44_100,
+                &plugins
+            )
+            .is_err(),
+            "a param before any track"
+        );
+        assert!(instruments_load(
+            &format!("{INSTRUMENTS_FORMAT}\ntrack 1 mpfree.fm\nstate !!\n"),
+            44_100,
+            &plugins
+        )
+        .is_err());
+    }
+
+    /// A project saved before the instruments part, or with no track's
+    /// own instrument, has none: every track plays the kit.
+    #[test]
+    fn no_instruments_part_means_every_track_plays_the_kit() {
+        let c = Collected {
+            tempo: 120.0,
+            swing: mpfree_transport::time::Swing::new(240, 50).unwrap(),
+            clips: mpfree_seq::Project::default(),
+            mixer: String::new(),
+            modu: String::new(),
+            synth: String::new(),
+            arp: String::new(),
+            instruments: format!("{INSTRUMENTS_FORMAT}\n"),
+            loops: None,
+            audio: None,
+        };
+        let snap = snapshot(&c, Vec::new());
+        assert!(snap.part(INSTRUMENTS).is_none(), "not written while empty");
+        let o = opening(&snap, 44_100, "a test", &crate::plugins::Plugins::none());
+        assert!(o.instruments.is_empty());
     }
 
     #[test]
