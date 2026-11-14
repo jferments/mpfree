@@ -4,7 +4,7 @@ MPFree's documentation is split by who it is for. Pick the one that fits you.
 
 | You are | Read | What it holds |
 |---|---|---|
-| A musician or producer using MPFree | [User manual](user/README.md) | Getting started, playing, looping, sampling, clips, arranging, and how MPFree differs from the factory MPC software. Built as a website and a printable PDF. |
+| A musician or producer using MPFree | [User manual](user/README.md) | Getting started from zero, then playing live, looping, sampling, synths, clips and the note editor, arranging, audio tracks, mixing and effects, MIDI and CV, saving projects, and how MPFree differs from the factory MPC software. Built as a website and a printable PDF. |
 | Someone building MPFree | [Developer docs](dev/README.md) | Architecture, design pages for every engine, decisions, building and testing, device guides, milestones, hardware research. |
 | An AI agent working in this repository | [Agent docs](agents/README.md) | Safety rules, how work is split and reviewed, the commands to run before a pull request, and how to keep the docs current. |
 

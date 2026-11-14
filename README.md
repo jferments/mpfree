@@ -16,7 +16,17 @@ MPFree aims to be an offline, hardware-first sampler, sequencer and arranger tha
 
 Development happens on one MPC One running firmware 3.6.0, reached over a direct Ethernet link with root SSH.
 
-**The app.** The pad player (`mpfree-app`, the program `mpfree`) is MPFree's first app and runs on the MPC from the test stick: its own touchscreen GUI (tabs Play, Arrange, Synth, Looper, Sample), the pads and their lights, audio out and the line input through ALSA, a drum kit player with Note Repeat, Latch and an arpeggiator, the transport and clip recorder, an audio looper, the sampler, and native synths and effects. Round 7 of on-device testing (2026-11-11) ran the looper from the pads and the line input with no underruns, about 8.7 ms from pad to sound, and left the eMMC unchanged. Engines that are built and tested on the workstation but not yet tried on the device are listed in the [developer docs](docs/dev/README.md), each with its status.
+**The app.** The pad player (`mpfree-app`, the program `mpfree`) is MPFree's first app. It runs on the MPC from the test stick with its own touchscreen GUI, the pads and their lights, the hardware buttons, and audio in and out through ALSA. Its tabs are Play, Pads, Arrange, Synth, Looper and Sample, with the mixer, the browser and Prefs opening over any page. On `main` today:
+
+- **Playing:** drum kits on the pads with Full and 16 Levels, Note Repeat, Latch and an arpeggiator, the Play page's pattern, throws and XY pad (Perform FX), FILL and TRACK MUTE.
+- **Time:** the transport (tap tempo, swing, following another device's MIDI clock), clips of any length, the launch grid with scenes and follow actions, the step sequencer and note editor (piano roll, list, tracker, Timing Correct), Capture, and the Song view with Rec song.
+- **Audio:** an eight-loop audio looper with layers, undo history and time stretch; audio tracks on the Song view's lanes, with take lanes for comping.
+- **The sampler:** the Rec page (thresholds, Skip back, resampling the master or any channel), Wave, Warp, Chop, live chop, Play, Grain and FX pages, and the Pads tab's browser for loading sounds onto pads.
+- **Sound:** five native synths (Poly, FM, Drums, Pluck, Wavetable) as the Synth tab or as any track's own instrument; native effects in per-channel insert chains, macros and the mixer with its I/O view; CLAP plugin effects and instruments, each run in its own sandboxed process.
+- **MIDI:** keyboards on the 5-pin MIDI IN, MIDI Learn, clock in and out, MIDI tracks and CV/gate out (MIDI out and CV out are behind flags until their device round).
+- **Projects:** New, Save and Open from the browser (BROWSE, SHIFT + BROWSE to save), with every engine's state, the samples and the audio takes saved in the project folder and the last ten saves kept.
+
+The main runs on the device so far are round 7 (2026-11-11: the looper from the pads and the line input with no underruns, about 8.7 ms from pad to sound) and live test 3 (2026-11-13: the app check's first five phases and the benchmarks, with 0 sectors written to the boot partitions). Most of the list above is built and tested on the workstation and in CI (unit tests, golden screens and GUI smoke tests) but not yet tried on the MPC; the [guide to the app on the test build](docs/dev/guides/mpfree-app.md) says what has run where, and each [design page](docs/dev/README.md#design) carries its own status.
 
 **The foundations** (earlier milestones):
 
@@ -64,7 +74,7 @@ None of this touches the MPC. To work with a device, start with [developer acces
 
 | Path | Contents |
 |---|---|
-| `rust/` | Cargo workspace: the app (`mpfree-app`) and its GUI toolkit (`mpfree-ui`), the engines (transport, sequencer, looper, sampler, synths, effects, mixer, modulation, arp) and their screens, touch and display, profiling, on-device smoke tests and the handoff model |
+| `rust/` | Cargo workspace: the app (`mpfree-app`) and its GUI toolkit (`mpfree-ui`); the engines (transport, sequencer, playback, looper, audio tracks, sampler, synths, effects and mixer, modulation, arp, MIDI) and their screens; the library and browser; the CLAP host and plugin sandbox; touch, display and GPU; profiling and the bench; on-device smoke tests and the handoff model |
 | `src/`, `tests/` | C++ reference engine kept for parity, and Python/C++ tests |
 | `tools/mpc-one/` | Workstation scripts that survey or test the MPC over SSH, plus the GPU qualification kit |
 | `docs/` | `user/` the user manual, `dev/` developer docs, `agents/` rules for AI agents, `tools/` the docs checks and manual build; see the [docs index](docs/README.md) |
