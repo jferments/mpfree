@@ -69,10 +69,12 @@ mod delay;
 mod drive;
 mod ducker;
 mod eq;
+mod kit;
 mod lofi;
 mod master;
 mod mixer;
 mod modfx;
+mod motion;
 mod oversample;
 mod perform;
 mod pitch;
@@ -103,6 +105,7 @@ pub use mixer::{
     MAX_SLOTS, MAX_TRACKS, RETURNS, SILENT_DB,
 };
 pub use modfx::{Chorus, Flanger, Phaser};
+pub use motion::{AutoPan, RingMod, Rotary, Tremolo};
 pub use oversample::{Down2, IirDown2, IirPhase, IirUp2, Up2};
 pub use perform::{
     state as perform_state, Perform, AMOUNT_MEANS as PERFORM_AMOUNTS, EFFECTS as PERFORM_EFFECTS,
@@ -138,6 +141,10 @@ pub mod ids {
     pub use crate::modfx::chorus;
     pub use crate::modfx::flanger;
     pub use crate::modfx::phaser;
+    pub use crate::motion::autopan;
+    pub use crate::motion::ringmod;
+    pub use crate::motion::rotary;
+    pub use crate::motion::tremolo;
     pub use crate::perform::ids as perform;
     pub use crate::pitch::ids as pitch;
     pub use crate::svf::dj as dj_filter;

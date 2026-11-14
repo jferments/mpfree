@@ -15,8 +15,9 @@ use mpfree_node::Node;
 
 use crate::presets as p;
 use crate::{
-    Character, Chorus, Cloud, Comb, Compressor, Crush, Delay, DjFilter, Drive, Ducker, Eq, Flanger,
-    LoFi, MasterSafety, MultiFilter, Perform, Phaser, PitchShifter, Preset, TransientShaper,
+    AutoPan, Character, Chorus, Cloud, Comb, Compressor, Crush, Delay, DjFilter, Drive, Ducker, Eq,
+    Flanger, LoFi, MasterSafety, MultiFilter, Perform, Phaser, PitchShifter, Preset, RingMod,
+    Rotary, TransientShaper, Tremolo,
 };
 
 /// Where an effect sits in the picker.
@@ -227,6 +228,38 @@ pub static EFFECTS: &[FxEntry] = &[
         Modulation,
         || Box::new(Phaser::new()),
         p::PHASER,
+    ),
+    e(
+        "mpfree.fx.tremolo",
+        "Tremolo",
+        "Wobble, chop or swirl",
+        Modulation,
+        || Box::new(Tremolo::new()),
+        crate::motion::TREMOLO_PRESETS,
+    ),
+    e(
+        "mpfree.fx.autopan",
+        "Auto-pan",
+        "Moves the sound side to side",
+        Modulation,
+        || Box::new(AutoPan::new()),
+        crate::motion::AUTOPAN_PRESETS,
+    ),
+    e(
+        "mpfree.fx.ringmod",
+        "Ring mod",
+        "Bells, clang and robots",
+        Modulation,
+        || Box::new(RingMod::new()),
+        crate::motion::RINGMOD_PRESETS,
+    ),
+    e(
+        "mpfree.fx.rotary",
+        "Rotary",
+        "Spinning organ speaker",
+        Modulation,
+        || Box::new(Rotary::new()),
+        crate::motion::ROTARY_PRESETS,
     ),
     e(
         "mpfree.fx.delay",
