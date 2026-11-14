@@ -13,6 +13,20 @@
 //! slot is on or off, so the chain's latency never changes when a slot is
 //! bypassed and nothing moves in time.
 //!
+//! **Sleep on silence.** A slot that is fully on also rests once its input
+//! has been silent (every sample within [`SILENT`], -140 dB) for the
+//! node's [`Node::rest_frames`] and its output has fallen under
+//! [`QUIET_OUT`] (-100 dB): the node is reset and not called, and the slot
+//! puts out silence, until a block with sound (or with an event other than
+//! a parameter change) comes. Parameter changes meanwhile apply at once,
+//! and the node is reset again as it wakes so its smoothing starts
+//! settled. Its dry path keeps running, so nothing moves in time. A node
+//! that makes sound from silence or keeps time across it says so with
+//! `u32::MAX` (the default) and never sleeps; nor does a slot holding a
+//! lead ([`Chain::lead_slot`]). Each slot after a sleeping one then sees
+//! exact silence, so a quiet chain falls asleep a slot at a time.
+//! [`Chain::set_sleep`] turns it off (for comparisons).
+//!
 //! If a node ever puts out a non-finite sample, the chain resets it, plays
 //! the slot's dry signal for that block, and counts it; nothing else in the
 //! chain is touched.
@@ -51,6 +65,10 @@ use crate::FixedDelay;
 /// Events that can be queued for one slot per block.
 pub const MAX_SLOT_EVENTS: usize = 256;
 const FADE_MS: f32 = 20.0;
+/// A sample this close to 0 is silence, for sleep (-140 dB).
+pub const SILENT: f32 = 1e-7;
+/// A slot falls asleep only once its own output is under this (-100 dB).
+pub const QUIET_OUT: f32 = 1e-5;
 /// `tail_left` for a node whose tail never ends (`tail_frames` of
 /// `u32::MAX`, such as a frozen delay): it keeps playing while bypassed.
 const FOREVER: u64 = u64::MAX;
@@ -81,6 +99,22 @@ struct Slot {
     probe: Box<Probe>,
     /// The slot id (see the module docs); 0 until the chain gives one.
     uid: u16,
+    /// Its sleep on silence (module docs).
+    z: Sleep,
+}
+
+/// A slot's sleep on silence (module docs), kept apart from its node.
+#[derive(Default)]
+struct Sleep {
+    /// The node is reset and not called; the slot puts out silence.
+    asleep: bool,
+    /// A parameter changed while asleep: the node is reset again as it
+    /// wakes, so its smoothing starts settled.
+    stale: bool,
+    /// Frames in a row of silent input to the node.
+    in_quiet: u64,
+    /// Frames in a row of quiet output from it.
+    out_quiet: u64,
 }
 
 impl Slot {
@@ -98,6 +132,7 @@ impl Slot {
             key: None,
             probe: Box::new(Probe::new(u64::MAX)),
             uid: 0,
+            z: Sleep::default(),
         }
     }
 }
@@ -187,11 +222,15 @@ pub struct Chain {
     rate: u32,
     max_block: usize,
     step: f32,
-    scratch: [Vec<f32>; 4],
+    /// The dry path, the fade and its delayed copy, and a slot's input
+    /// kept while its node runs (sleep), each `max_block` long.
+    scratch: [Vec<f32>; 6],
     /// Events of a part of a block, re-timed (capacity `MAX_SLOT_EVENTS`).
     part: Vec<Timed>,
     stats: ChainStats,
     profiling: bool,
+    /// Slots may sleep on silence (module docs); on by default.
+    sleep: bool,
     /// Where the search for a free slot id starts.
     next_uid: u16,
     /// The watched slot's id, and its input and output peaks (linear).
@@ -216,6 +255,7 @@ impl Chain {
             part: Vec::with_capacity(MAX_SLOT_EVENTS),
             stats: ChainStats::default(),
             profiling: false,
+            sleep: true,
             next_uid: 1,
             watch: None,
             levels: [0.0; 2],
@@ -398,12 +438,7 @@ impl Chain {
         self.rate = rate.max(1);
         self.max_block = max_block.max(1);
         self.step = 1.0 / (FADE_MS * 0.001 * self.rate as f32);
-        self.scratch = [
-            vec![0.0; self.max_block],
-            vec![0.0; self.max_block],
-            vec![0.0; self.max_block],
-            vec![0.0; self.max_block],
-        ];
+        self.scratch = std::array::from_fn(|_| vec![0.0; self.max_block]);
         for s in &mut self.slots {
             s.node.prepare(self.rate, self.max_block);
             let lat = s.node.latency() as usize;
@@ -440,6 +475,22 @@ impl Chain {
     /// per block), for the Dev pages and the bench. Off by default.
     pub fn set_profiling(&mut self, on: bool) {
         self.profiling = on;
+    }
+
+    /// Lets fully-on slots sleep on silence (the default) or not (module
+    /// docs). Off wakes every sleeping slot; their nodes are already reset.
+    pub fn set_sleep(&mut self, on: bool) {
+        self.sleep = on;
+        if !on {
+            for s in &mut self.slots {
+                s.z.wake(s.node.as_mut());
+            }
+        }
+    }
+
+    /// How many slots are asleep now.
+    pub fn sleeping(&self) -> usize {
+        self.slots.iter().filter(|s| s.z.asleep).count()
     }
     pub fn profiling(&self) -> bool {
         self.profiling
@@ -592,6 +643,7 @@ impl Chain {
             return;
         };
         let (left, right) = (&mut left[..len], &mut right[..len]);
+        s.z.wake(s.node.as_mut());
         s.node.lead_in(ctx, &s.events, left, right);
         s.events.clear();
         if !finite(left) || !finite(right) {
@@ -643,15 +695,17 @@ impl Chain {
         }
         let (left, right) = (&mut left[..len], &mut right[..len]);
         let step = self.step;
-        let [da, db, fa, fb] = &mut self.scratch;
+        let [da, db, fa, fb, ka, kb] = &mut self.scratch;
         let (da, db, fa, fb) = (
             &mut da[..len],
             &mut db[..len],
             &mut fa[..len],
             &mut fb[..len],
         );
+        let mut kept = [&mut ka[..len], &mut kb[..len]];
         let part = &mut self.part;
         let profiling = self.profiling;
+        let sleep = self.sleep;
         let none: Vec<Timed> = Vec::new();
         let (watch, levels) = (self.watch, &mut self.levels);
         // The meters fall 20 dB a second: a factor of 10.
@@ -660,6 +714,8 @@ impl Chain {
         } else {
             1.0
         };
+        // The block is all zeros: a sleeping slot before put it out.
+        let mut zeros = false;
         for s in &mut self.slots[range] {
             let events = if no_events { &none } else { &s.events };
             let span = profiling.then(Span::start);
@@ -675,22 +731,57 @@ impl Chain {
             // The dry path, delayed by the slot's latency, and the fade ramp
             // with its own delayed copy for the dry side.
             let target = if s.on { 1.0 } else { 0.0 };
+            // Asleep, settled on with no latency, no events and silence in:
+            // silence out, and nothing else to do (module docs).
+            let resting_on = sleep
+                && s.z.asleep
+                && events.is_empty()
+                && s.fade == 1.0
+                && target == 1.0
+                && s.dry[0].is_empty();
+            if resting_on && (zeros || silent_block(left, right)) {
+                if !zeros {
+                    left.fill(0.0);
+                    right.fill(0.0);
+                    zeros = true;
+                }
+                if watched {
+                    levels[1] *= fall;
+                }
+                if let Some(span) = span {
+                    s.probe.stop(span, len as u32);
+                }
+                continue;
+            }
+            zeros = false;
             let mut hit_zero_at = None;
             let mut all_on = true;
-            for i in 0..len {
-                da[i] = s.dry[0].run(left[i]);
-                db[i] = s.dry[1].run(right[i]);
-                if s.fade < target {
-                    s.fade = (s.fade + step).min(1.0);
-                } else if s.fade > target {
-                    s.fade = (s.fade - step).max(0.0);
-                    if s.fade == 0.0 {
-                        hit_zero_at = Some(i);
-                    }
+            if s.fade == target && s.dry[0].is_empty() {
+                // Settled, with no latency: the dry path is the input and
+                // the fade stands still (the ramps are only read when off).
+                da.copy_from_slice(left);
+                db.copy_from_slice(right);
+                all_on = s.fade == 1.0;
+                if !all_on {
+                    fa.fill(s.fade);
+                    fb.fill(s.fade);
                 }
-                fa[i] = s.fade;
-                fb[i] = s.fade_delay.run(s.fade);
-                all_on &= fa[i] == 1.0 && fb[i] == 1.0;
+            } else {
+                for i in 0..len {
+                    da[i] = s.dry[0].run(left[i]);
+                    db[i] = s.dry[1].run(right[i]);
+                    if s.fade < target {
+                        s.fade = (s.fade + step).min(1.0);
+                    } else if s.fade > target {
+                        s.fade = (s.fade - step).max(0.0);
+                        if s.fade == 0.0 {
+                            hit_zero_at = Some(i);
+                        }
+                    }
+                    fa[i] = s.fade;
+                    fb[i] = s.fade_delay.run(s.fade);
+                    all_on &= fa[i] == 1.0 && fb[i] == 1.0;
+                }
             }
             // The fade only moves one way inside a block, so the input side
             // is silent throughout when it starts and ends at 0.
@@ -708,7 +799,16 @@ impl Chain {
                 left.fill(0.0);
                 right.fill(0.0);
                 if n > 0 {
-                    run_part(s.node.as_mut(), ctx, events, 0, n, left, right, part);
+                    if s.z.asleep {
+                        // Asleep, it would put out silence.
+                        apply_params(
+                            s.node.as_mut(),
+                            &events[..events.partition_point(|e| (e.offset as usize) < n)],
+                        );
+                        s.z.stale = true;
+                    } else {
+                        run_part(s.node.as_mut(), ctx, events, 0, n, left, right, part);
+                    }
                     if s.tail_left != FOREVER {
                         s.tail_left -= n as u64;
                     }
@@ -733,12 +833,22 @@ impl Chain {
                 let k = events.partition_point(|e| (e.offset as usize) < n);
                 if !no_events {
                     apply_params(s.node.as_mut(), &events[k..]);
+                    s.z.stale |= s.z.asleep && k < events.len();
                 }
                 for i in 0..len {
                     left[i] += da[i] * (1.0 - fb[i]);
                     right[i] += db[i] * (1.0 - fb[i]);
                 }
             } else {
+                // The node runs through its sleep (module docs).
+                let mut run =
+                    |node: &mut dyn Node, from, to, left: &mut [f32], right: &mut [f32]| {
+                        if sleep {
+                            s.z.run(node, ctx, events, (from, to), left, right, part, &mut kept);
+                        } else {
+                            run_part(node, ctx, events, from, to, left, right, part);
+                        }
+                    };
                 if !all_on {
                     for i in 0..len {
                         left[i] *= fa[i];
@@ -747,7 +857,7 @@ impl Chain {
                 }
                 let end = match hit_zero_at {
                     None => {
-                        run_part(s.node.as_mut(), ctx, events, 0, len, left, right, part);
+                        run(s.node.as_mut(), 0, len, left, right);
                         len
                     }
                     Some(i) => {
@@ -755,7 +865,7 @@ impl Chain {
                         // silent, as the node stands at that frame, and ends
                         // on its exact frame, so the block size cannot move
                         // either.
-                        run_part(s.node.as_mut(), ctx, events, 0, i + 1, left, right, part);
+                        run(s.node.as_mut(), 0, i + 1, left, right);
                         let tail = s.node.tail_frames();
                         s.tail_left = if tail == u32::MAX {
                             FOREVER
@@ -763,7 +873,7 @@ impl Chain {
                             tail as u64 + s.node.latency() as u64
                         };
                         let end = i + 1 + s.tail_left.min((len - i - 1) as u64) as usize;
-                        run_part(s.node.as_mut(), ctx, events, i + 1, end, left, right, part);
+                        run(s.node.as_mut(), i + 1, end, left, right);
                         if s.tail_left != FOREVER {
                             s.tail_left -= (end - i - 1) as u64;
                         }
@@ -862,6 +972,183 @@ fn finite(x: &[f32]) -> bool {
 
 /// Applies the parameter changes among `events` now (a node that is not
 /// being run, or events past the end of the block).
+/// Frames in a row of quiet output a slot needs before it sleeps, so a
+/// tone passing through 0 is not taken for silence.
+const QUIET_RUN: u64 = 64;
+
+/// A node's rest for sleep: `u32::MAX` while it holds a lead or could
+/// (sleeping would put the late returns out of step with on-time ones).
+fn rest_of(node: &dyn Node) -> u32 {
+    if node.lead() > 0 || node.can_lead(1) {
+        u32::MAX
+    } else {
+        node.rest_frames()
+    }
+}
+
+fn quiet(x: f32, limit: f32) -> bool {
+    x.abs() <= limit
+}
+
+impl Sleep {
+    /// Wakes the slot: its node is as it was reset, and is reset again if
+    /// a parameter changed meanwhile.
+    fn wake(&mut self, node: &mut dyn Node) {
+        if std::mem::take(&mut self.asleep) && std::mem::take(&mut self.stale) {
+            node.reset();
+        }
+        self.in_quiet = 0;
+        self.out_quiet = 0;
+    }
+
+    /// [`run_part`] through the sleep, frames `from..to` (module docs).
+    /// Every decision falls on a frame, never on a block's edge, so the
+    /// output is the same for any block size: it wakes on the first frame
+    /// with sound (or an event other than a parameter change), and falls
+    /// asleep on the first frame its input has been silent for the node's
+    /// rest (worked out again after each event) and its output quiet for
+    /// [`QUIET_RUN`]. A part too short to reach the rest only has its last
+    /// frames looked at, from the end; otherwise `kept` holds its input
+    /// while the node runs, to be gone through frame by frame.
+    #[allow(clippy::too_many_arguments)]
+    fn run(
+        &mut self,
+        node: &mut dyn Node,
+        ctx: &Ctx,
+        events: &[Timed],
+        (from, to): (usize, usize),
+        left: &mut [f32],
+        right: &mut [f32],
+        part: &mut Vec<Timed>,
+        kept: &mut [&mut [f32]; 2],
+    ) {
+        let at = |e: &Timed| e.offset as usize;
+        let mut i = from;
+        while i < to {
+            if self.asleep {
+                // Asleep until a frame with sound, or an event that is not a
+                // parameter change, or a parameter that keeps it awake.
+                let mut k = (i..to)
+                    .find(|&f| !quiet(left[f], SILENT) || !quiet(right[f], SILENT))
+                    .unwrap_or(to);
+                let lo = events.partition_point(|e| at(e) < i);
+                for e in &events[lo..] {
+                    if at(e) >= k {
+                        break;
+                    }
+                    let NodeEvent::Param { id, value } = e.ev else {
+                        k = at(e);
+                        break;
+                    };
+                    node.set_param(id, value);
+                    self.stale = true;
+                    if rest_of(node) == u32::MAX {
+                        k = at(e);
+                        break;
+                    }
+                }
+                left[i..k].fill(0.0);
+                right[i..k].fill(0.0);
+                if k >= to {
+                    return;
+                }
+                self.wake(node);
+                i = k;
+                continue;
+            }
+            // Awake: up to the next event, so the rest holds throughout.
+            let b = events
+                .iter()
+                .map(at)
+                .find(|&o| o > i && o < to)
+                .unwrap_or(to);
+            let n = b - i;
+            // Whether it could fall asleep in this part: its input silent
+            // for long enough. An event at the start may change the rest.
+            let short =
+                !events.iter().any(|e| at(e) == i) && self.in_quiet + (n as u64) < need_of(node);
+            let still = if short {
+                trailing(&left[i..b], &right[i..b], SILENT)
+            } else {
+                kept[0][i..b].copy_from_slice(&left[i..b]);
+                kept[1][i..b].copy_from_slice(&right[i..b]);
+                0
+            };
+            run_part(node, ctx, events, i, b, left, right, part);
+            let need = need_of(node);
+            if need == u64::MAX {
+                self.in_quiet = 0;
+                self.out_quiet = 0;
+                i = b;
+                continue;
+            }
+            if short {
+                // Too short to sleep in: the counts at its end.
+                self.in_quiet = if still == n {
+                    self.in_quiet + n as u64
+                } else {
+                    still as u64
+                };
+                let hushed = trailing(&left[i..b], &right[i..b], QUIET_OUT);
+                self.out_quiet = if hushed == n {
+                    self.out_quiet + n as u64
+                } else {
+                    hushed as u64
+                };
+                i = b;
+                continue;
+            }
+            let mut slept = None;
+            for f in i..b {
+                let silent = quiet(kept[0][f], SILENT) && quiet(kept[1][f], SILENT);
+                self.in_quiet = if silent { self.in_quiet + 1 } else { 0 };
+                let hushed = quiet(left[f], QUIET_OUT) && quiet(right[f], QUIET_OUT);
+                self.out_quiet = if hushed { self.out_quiet + 1 } else { 0 };
+                if self.in_quiet >= need && self.out_quiet >= QUIET_RUN {
+                    slept = Some(f);
+                    break;
+                }
+            }
+            match slept {
+                Some(f) => {
+                    // From the next frame on: the node reset, its input back
+                    // to be watched for sound.
+                    node.reset();
+                    self.asleep = true;
+                    self.stale = false;
+                    left[f + 1..b].copy_from_slice(&kept[0][f + 1..b]);
+                    right[f + 1..b].copy_from_slice(&kept[1][f + 1..b]);
+                    i = f + 1;
+                }
+                None => i = b,
+            }
+        }
+    }
+}
+
+/// The frames of silent input a node needs before it sleeps: its rest and
+/// its latency; `u64::MAX` for never.
+fn need_of(node: &dyn Node) -> u64 {
+    match rest_of(node) {
+        u32::MAX => u64::MAX,
+        rest => (u64::from(rest) + u64::from(node.latency())).max(1),
+    }
+}
+
+/// Whether a whole block is silence ([`SILENT`]).
+fn silent_block(left: &[f32], right: &[f32]) -> bool {
+    left.iter().chain(right).all(|x| quiet(*x, SILENT))
+}
+
+/// How many frames at the end of a part are all within `limit` of 0.
+fn trailing(left: &[f32], right: &[f32], limit: f32) -> usize {
+    left.iter()
+        .zip(right)
+        .rev()
+        .take_while(|(l, r)| quiet(**l, limit) && quiet(**r, limit))
+        .count()
+}
+
 fn apply_params(node: &mut dyn Node, events: &[Timed]) {
     for e in events {
         if let NodeEvent::Param { id, value } = e.ev {

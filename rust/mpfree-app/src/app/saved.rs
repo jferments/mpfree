@@ -95,6 +95,7 @@ impl App {
         out.set_bool("timing-strip", s.timing_strip);
         out.set_i64("audio-memory", i64::from(s.audio_memory.seconds()));
         out.set_str("at-start", if s.open_last { "last" } else { "new" });
+        out.set_str("export", s.export_mode.key());
         // The Looper's level, and the line input's latency once it was set
         // by hand (measured with a cable). The line input itself, and so
         // what the Looper records from, is off at every start.
@@ -190,6 +191,9 @@ impl App {
                 }
                 .map(|b| s.open_last = b)
                 .is_some(),
+                "export" => mpfree_export::Mode::from_key(v)
+                    .map(|m| s.export_mode = m)
+                    .is_some(),
                 "loop-level" => app
                     .get_i64(k)
                     .filter(|n| (-24..=6).contains(n))
@@ -218,7 +222,7 @@ impl App {
             notes.push(format!(
                 "saved settings: pad curve {}, screen velocity {}, latch {}, audio buffer {} periods, \
                  developer tools {}, theme {}, sound cores {}, loop memory {} min, metronome {} at {} dB, \
-                 loop level {:+.0} dB, line input latency {}, at start {}",
+                 loop level {:+.0} dB, line input latency {}, at start {}, export {}",
                 s.curve.label(),
                 s.screen_velocity,
                 if s.latch_mode == LatchMode::Toggle { "toggle" } else { "replace" },
@@ -236,6 +240,7 @@ impl App {
                     "estimated".to_string()
                 },
                 if s.open_last { "the last project" } else { "a new project" },
+                s.export_mode.name(),
             ));
         }
         let (mut found, mut gone) = (0, 0);
@@ -356,6 +361,8 @@ mod tests {
         a.settings.metronome = true;
         let r = row(&a, Item::AtStart);
         a.step_item(r, 1);
+        let r = row(&a, Item::Export);
+        a.step_item(r, 1);
         a.looper_setting(Item::LoopLevel, -1);
         a.looper_setting(Item::LoopLevel, -1);
         a.looper_setting(Item::LoopLatency, 1);
@@ -376,6 +383,7 @@ mod tests {
         assert_eq!(app.get_bool("developer-tools"), Some(true));
         assert_eq!(app.get_bool("metronome"), Some(true));
         assert_eq!(app.get_str("at-start"), Some("last"));
+        assert_eq!(app.get_str("export"), Some("listen"));
         assert_eq!(app.get_str("loop-level"), Some("-2"));
         let latency = a.settings.loop_latency;
         assert_eq!(app.get_i64("loop-latency"), Some(i64::from(latency)));
@@ -415,6 +423,7 @@ mod tests {
             (b.settings.loop_latency, b.settings.loop_latency_set),
             (latency, true)
         );
+        assert_eq!(b.settings.export_mode, mpfree_export::Mode::Listen);
         assert!(
             b.start().contains(&crate::app::Effect::Looper(
                 crate::looping::LoopAction::Command(mpfree_looper::Command::SetLevel(

@@ -1,0 +1,14 @@
+[package]
+name = "mpfree-export"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "MPFree's export: one pass over the song makes the mixdown, a stem per track and a MIDI file, fast and quiet or in real time, with the rule for when it has to listen"
+
+[lib]
+name = "mpfree_export"
+path = "src/lib.rs"
+
+[dependencies]
+mpfree-fx = { path = "../mpfree-fx" }
+mpfree-midi = { path = "../mpfree-midi" }

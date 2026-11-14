@@ -1,7 +1,7 @@
 <!--
 status: changing
 covers: rust/mpfree-app/src/app.rs rust/mpfree-app/src/gui.rs rust/mpfree-app/src/app/saved.rs
-checked: 2026-11-13 7ba56df
+checked: 2026-11-14 97a6b00
 -->
 
 # Prefs
@@ -25,6 +25,7 @@ checked: 2026-11-13 7ba56df
 | **Line input latency** | How late what you play into the INPUTS reaches MPFree, in frames, so the looper and the audio tracks can line a recording up with the beat you played it against. It is estimated from the audio buffer until you set it ("(estimated)"); to measure it, run a cable from an output to the input. It's the same setting as the Looper's **Latency to make up for** (MENU on the Looper tab): change either and both follow. |
 | **System info** | MPFree's version, and details of the MPC it runs on. **MENU** goes back to Prefs. |
 | **At start** | What MPFree opens when it starts. **New project** (the default): an empty song. **Last project:** the project you last saved or opened, once the sound is going. After a crash MPFree opens nothing, so a project that crashes it can't do it again. See [Saving your work](../making-music/saving.md#at-start). |
+| **Export** | How an export (BROWSE, Projects, **Export**) plays the song. **Fast, quiet** (the default): faster than real time, with the speakers quiet. **Listen:** once in real time, and you hear it as it records. A song that plays outside gear (over MIDI, CV or clock, through the line input, or with plugins) listens anyway. See [Exporting your music](../making-music/exporting.md#fast-or-listen). |
 | **Touch screen** | Opens the touchscreen's own rows: **Screen pad velocity** (the velocity of pads played on the screen, which can't sense how hard you tap), **Calibrate touch** (tap a target in each corner to check touches land where you touch; this version only reports the result) and **Touch lab** (a test page for touches). |
 
 Prefs are yours, not the song's: they are kept on the stick and stay the same whichever project you open (see [Saving your work](../making-music/saving.md#your-song-and-your-setup)). The line input is the exception: it is off every time MPFree starts.
