@@ -253,12 +253,13 @@ impl ChainHost {
                         .map_or(&[][..], |p| p.values),
                     _ => &[],
                 };
-                h.shelf_dirty |= h.shelf.used(id);
                 // Built off the audio thread in the app (control.rs), then
                 // put in at the end of the chain.
                 if let Err(why) = h.add_insert_with(sid, id, preset) {
                     return ChainOut::Refused(why);
                 }
+                // Only an effect that is on its way goes into Recent.
+                h.shelf_dirty |= h.shelf.used(id);
                 // It lands once it is built and its strip ducks (about 10
                 // ms); until then the old selection stays.
                 if self.landing.is_none() {
@@ -1013,6 +1014,13 @@ mod tests {
             st.shelf.is_favourite("mpfree.fx.gate"),
             "the picker shows it"
         );
+        // An add that is refused stays out of Recent, with nothing to save.
+        assert_eq!(
+            c.action(&mut r.h, &ChainAction::Add("mpfree.fx.nothing"), false),
+            ChainOut::Refused("No such effect")
+        );
+        assert_eq!(r.h.shelf.recent, ["mpfree.fx.plate"]);
+        assert!(!r.h.shelf_dirty);
     }
 
     #[test]
