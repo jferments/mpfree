@@ -744,8 +744,9 @@ fn screens(dir: &Path, frames: usize) -> Result<(), String> {
     let started = Instant::now();
     let mut pages = Vec::new();
     let mut worst_diff = 0u32;
-    // The atlas's fallbacks over every page: clears, and masks drawn alone.
-    let (mut cleared, mut alone) = (0usize, 0usize);
+    // The atlas's fallbacks over every page: clears, and masks drawn alone;
+    // and the vector shapes the GPU worked out itself.
+    let (mut cleared, mut alone, mut shapes) = (0usize, 0usize, 0usize);
     for path in &files {
         let name = path
             .file_stem()
@@ -791,6 +792,7 @@ fn screens(dir: &Path, frames: usize) -> Result<(), String> {
         worst_diff = worst_diff.max(d.max);
         cleared += drawn.atlas_cleared;
         alone += drawn.masks_alone;
+        shapes += drawn.shapes_drawn;
         store.apply(tick);
         r.play(&gpu, &tick.ops, &store, &tick.dropped);
         r.finish(&gpu);
@@ -873,7 +875,7 @@ fn screens(dir: &Path, frames: usize) -> Result<(), String> {
     let mut draws: Vec<usize> = pages.iter().map(|p| p.draws).collect();
     draws.sort_unstable();
     println!(
-        "summary: gpu draw calls per whole page median {} worst {}; atlas cleared {cleared} times, {alone} masks drawn alone",
+        "summary: gpu draw calls per whole page median {} worst {}; atlas cleared {cleared} times, {alone} masks drawn alone; {shapes} shapes worked out on the GPU",
         draws[draws.len() / 2],
         draws.last().copied().unwrap_or(0)
     );

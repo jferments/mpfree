@@ -6,7 +6,7 @@ use crate::geom::Rect;
 use crate::layout;
 use crate::style::Styled;
 use crate::text::{Align, FontId, Fonts};
-use crate::theme::Theme;
+use crate::theme::{Backdrop, Theme};
 use crate::Color;
 use std::any::Any;
 
@@ -64,6 +64,124 @@ impl PaintCx<'_> {
     }
 }
 
+/// The canvas a widget paints a part of itself through: it clears the part
+/// to the background, but only where the widget's own first drawing will
+/// not cover it anyway.
+///
+/// Most widgets start with an opaque panel over their whole rectangle, so
+/// clearing first wrote most pixels twice. If the first call is an opaque
+/// fill (or a background fill, or a picture) that covers the part inside
+/// the current clip, nothing is cleared; if it is an opaque rounded box that covers
+/// the part, only the box's corners are cleared, one pixel deeper than its
+/// radius (the theme's corners, round or cut, stay inside that). Anything
+/// else first clears the whole part, as before. The picture is the same
+/// either way.
+struct Cleared<'a> {
+    inner: &'a mut dyn Canvas,
+    /// The part still to clear, until the first drawing call.
+    pending: Option<Rect>,
+    bg: Color,
+    /// Whether a fill in `bg` covers what was under it: the theme's
+    /// backdrop (which such a fill becomes) is opaque.
+    bg_covers: bool,
+}
+
+impl Cleared<'_> {
+    /// Clears what is still to clear, less what `covers` (a box and its
+    /// corner radius about to be filled opaque) will draw over.
+    fn settle(&mut self, covers: Option<(Rect, i32)>) {
+        let Some(part) = self.pending.take() else {
+            return;
+        };
+        let clip = self.inner.clip();
+        let holds = |outer: Rect| part.intersect(outer) == part;
+        let left: Vec<Rect> = match covers {
+            Some((r, radius)) if holds(clip) && holds(r) => {
+                // Each corner at most half the box, so no pixel is cleared
+                // twice (a see-through backdrop would show it), and where
+                // the corners meet they still cover the whole box.
+                let k = radius.max(0) + 1;
+                let (left, right) = (k.min(r.w / 2), k.min(r.w - r.w / 2));
+                let (top, bottom) = (k.min(r.h / 2), k.min(r.h - r.h / 2));
+                [
+                    Rect::new(r.x, r.y, left, top),
+                    Rect::new(r.right() - right, r.y, right, top),
+                    Rect::new(r.x, r.bottom() - bottom, left, bottom),
+                    Rect::new(r.right() - right, r.bottom() - bottom, right, bottom),
+                ]
+                .into_iter()
+                .map(|c| c.intersect(part))
+                .filter(|c| !c.is_empty())
+                .collect()
+            }
+            _ => vec![part],
+        };
+        if left.is_empty() {
+            return;
+        }
+        if clip != part {
+            self.inner.set_clip(part);
+        }
+        for c in left {
+            self.inner.fill_rect(c, self.bg);
+        }
+        if clip != part {
+            self.inner.set_clip(clip);
+        }
+    }
+}
+
+impl Canvas for Cleared<'_> {
+    fn size(&self) -> (i32, i32) {
+        self.inner.size()
+    }
+
+    fn clip(&self) -> Rect {
+        self.inner.clip()
+    }
+
+    fn set_clip(&mut self, r: Rect) {
+        self.inner.set_clip(r)
+    }
+
+    fn fill_rect(&mut self, r: Rect, c: Color) {
+        // A box with no corners (radius -1): nothing under it to clear.
+        let covers = if c == self.bg {
+            self.bg_covers
+        } else {
+            c.a == 255
+        };
+        self.settle(covers.then_some((r, -1)));
+        self.inner.fill_rect(r, c)
+    }
+
+    fn fill_round_rect(&mut self, r: Rect, radius: i32, c: Color) {
+        self.settle((c.a == 255).then_some((r, radius)));
+        self.inner.fill_round_rect(r, radius, c)
+    }
+
+    fn stroke_round_rect(&mut self, r: Rect, radius: i32, width: i32, c: Color) {
+        self.settle(None);
+        self.inner.stroke_round_rect(r, radius, width, c)
+    }
+
+    fn blend_mask(&mut self, x: i32, y: i32, w: usize, h: usize, mask: &[u8], c: Color) {
+        self.settle(None);
+        self.inner.blend_mask(x, y, w, h, mask, c)
+    }
+
+    fn draw_image(&mut self, x: i32, y: i32, img: &crate::canvas::Image) {
+        // A picture is copied opaque: nothing under it to clear.
+        self.settle(Some((Rect::new(x, y, img.w, img.h), -1)));
+        self.inner.draw_image(x, y, img)
+    }
+
+    fn blend_shape(&mut self, shape: &crate::shape::Shape, c: Color) {
+        self.settle(None);
+        self.inner.blend_shape(shape, c)
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Touch {
     Down,
@@ -105,6 +223,9 @@ pub enum EventKind {
     /// A finger on a two-way pad: 0 to 1 left to right (`x`) and bottom to
     /// top (`y`), `down` until it lifts.
     Xy { x: f32, y: f32, down: bool },
+    /// A number field's value tapped, to type a number into it (row
+    /// `index`; see [`crate::numpad`]).
+    Type(usize),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -600,12 +721,25 @@ impl Ui {
         let screen = Rect::new(0, 0, self.size.0, self.size.1);
         let mut styled = Styled::new(canvas, &self.theme);
         let canvas: &mut dyn Canvas = &mut styled;
+        let theme = &self.theme;
+        // Whether a fill in the background hides what was under it (the
+        // theme's backdrop is opaque); a theme file can make it see-through.
+        let bg_covers =
+            theme.bg.a == 255 && (theme.backdrop == Backdrop::Solid || theme.backdrop_to.a == 255);
         if self.full {
             canvas.set_clip(screen);
-            canvas.fill_rect(screen, self.theme.bg);
+            if bg_covers {
+                // Only between the widgets: each widget clears its own
+                // rectangle below, and only where its drawing leaves it.
+                let slots: Vec<Rect> = page.slots.iter().map(|&(_, r)| r).collect();
+                for gap in screen.uncovered(&slots) {
+                    canvas.fill_rect(gap, theme.bg);
+                }
+            } else {
+                canvas.fill_rect(screen, theme.bg);
+            }
             damage.push(screen);
         }
-        let theme = &self.theme;
         let (fonts, widgets, full) = (&mut self.fonts, &mut self.widgets, &mut self.full);
         for &(wi, r) in &page.slots {
             let (_, w, dirty) = &mut widgets[wi];
@@ -623,15 +757,21 @@ impl Ui {
                     continue;
                 }
                 canvas.set_clip(part);
-                canvas.fill_rect(part, theme.bg);
+                let mut cleared = Cleared {
+                    inner: &mut *canvas,
+                    pending: Some(part),
+                    bg: theme.bg,
+                    bg_covers,
+                };
                 w.paint(
                     &mut PaintCx {
-                        canvas: &mut *canvas,
+                        canvas: &mut cleared,
                         theme,
                         fonts,
                     },
                     r,
                 );
+                cleared.settle(None);
                 if !*full {
                     damage.push(part);
                 }
@@ -742,6 +882,361 @@ mod tests {
             1,
             "a is not on page two"
         );
+    }
+
+    /// One drawing call, for `clearing_less_draws_the_same_picture`.
+    #[derive(Clone, Copy, Debug)]
+    enum Draw {
+        Clip(Rect),
+        Fill(Rect, Color),
+        Round(Rect, i32, Color),
+        Stroke(Rect, i32, i32, Color),
+        Text(i32, i32, Color),
+        /// A picture of noise in the rectangle.
+        Picture(Rect, u32),
+    }
+
+    fn draw(c: &mut dyn Canvas, ops: &[Draw]) {
+        let glyph: Vec<u8> = (0..48).map(|i| (i * 37 % 256) as u8).collect();
+        for op in ops {
+            match *op {
+                Draw::Clip(r) => c.set_clip(r),
+                Draw::Fill(r, col) => c.fill_rect(r, col),
+                Draw::Round(r, radius, col) => c.fill_round_rect(r, radius, col),
+                Draw::Stroke(r, radius, w, col) => c.stroke_round_rect(r, radius, w, col),
+                Draw::Text(x, y, col) => c.blend_mask(x, y, 8, 6, &glyph, col),
+                Draw::Picture(r, seed) => {
+                    if r.is_empty() {
+                        continue;
+                    }
+                    let mut img = crate::canvas::Image::new(r.w, r.h);
+                    for (i, p) in img.px.iter_mut().enumerate() {
+                        *p = (i as u32).wrapping_mul(2_654_435_761) ^ seed;
+                    }
+                    c.draw_image(r.x, r.y, &img);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn clearing_less_draws_the_same_picture() {
+        // Random widgets drawing a random part over a screen full of noise,
+        // in every theme: clearing the whole part first, as before, and
+        // clearing only what the first fill leaves give the same pixels.
+        let mut seed = 0x9E37_79B9_7F4A_7C15u64;
+        let mut next = |n: i32| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed % n.max(1) as u64) as i32
+        };
+        let (mut corners_only, mut none) = (0, 0);
+        let mut themes: Vec<(&str, Theme)> = crate::theme::BUILTIN
+            .iter()
+            .map(|&n| (n, Theme::builtin(n).unwrap()))
+            .collect();
+        // A theme file may give the backdrop or the background some
+        // transparency: a background fill then no longer hides what was
+        // under it.
+        let mut see_through = Theme::console();
+        see_through.backdrop_to = see_through.backdrop_to.with_alpha(120);
+        themes.push(("see-through backdrop", see_through));
+        let mut faint = Theme::dark();
+        faint.bg = faint.bg.with_alpha(200);
+        themes.push(("see-through background", faint));
+        for (name, theme) in themes {
+            for case in 0..400 {
+                let r = Rect::new(next(30), next(20), 20 + next(70), 15 + next(55));
+                let part = if next(2) == 0 {
+                    r
+                } else {
+                    let (x, y) = (r.x + next(r.w), r.y + next(r.h));
+                    Rect::new(x, y, 1 + next(r.right() - x), 1 + next(r.bottom() - y))
+                };
+                let colour = |next: &mut dyn FnMut(i32) -> i32| match next(5) {
+                    0 => theme.bg,
+                    1 => theme.surface,
+                    2 => Color::rgb(next(0xFFFFFF) as u32).with_alpha(next(255) as u8),
+                    _ => Color::rgb(next(0xFFFFFF) as u32),
+                };
+                let grown = |next: &mut dyn FnMut(i32) -> i32| match next(3) {
+                    0 => r,
+                    1 => Rect::new(r.x - next(4), r.y - next(4), r.w + next(9), r.h + next(9)),
+                    _ => Rect::new(r.x + next(4), r.y + next(4), r.w - next(9), r.h - next(9)),
+                };
+                let mut ops = Vec::new();
+                match next(7) {
+                    0 => ops.push(Draw::Fill(grown(&mut next), colour(&mut next))),
+                    3 => ops.push(Draw::Picture(grown(&mut next), next(1 << 30) as u32)),
+                    1 => ops.push(Draw::Clip(grown(&mut next))),
+                    2 => ops.push(Draw::Text(
+                        r.x + next(r.w),
+                        r.y + next(r.h),
+                        colour(&mut next),
+                    )),
+                    _ => {}
+                }
+                ops.push(Draw::Round(
+                    grown(&mut next),
+                    next(30) - 2,
+                    colour(&mut next),
+                ));
+                for _ in 0..next(4) {
+                    ops.push(match next(4) {
+                        0 => Draw::Fill(grown(&mut next), colour(&mut next)),
+                        1 => {
+                            Draw::Stroke(grown(&mut next), next(20), 1 + next(4), colour(&mut next))
+                        }
+                        2 => Draw::Text(r.x + next(r.w), r.y + next(r.h), colour(&mut next)),
+                        _ => Draw::Round(grown(&mut next), next(30), colour(&mut next)),
+                    });
+                }
+                let mut noise = SoftCanvas::new(120, 90);
+                for p in noise.px.iter_mut() {
+                    *p = next(0xFFFFFF) as u32;
+                }
+                let mut before = SoftCanvas::new(120, 90);
+                before.px.clone_from(&noise.px);
+                {
+                    let mut c = Styled::new(&mut before, &theme);
+                    c.set_clip(part);
+                    c.fill_rect(part, theme.bg);
+                    draw(&mut c, &ops);
+                }
+                let mut now = noise;
+                {
+                    let mut styled = Styled::new(&mut now, &theme);
+                    styled.set_clip(part);
+                    let mut c = Cleared {
+                        inner: &mut styled,
+                        pending: Some(part),
+                        bg: theme.bg,
+                        bg_covers: theme.bg.a == 255
+                            && (theme.backdrop == Backdrop::Solid || theme.backdrop_to.a == 255),
+                    };
+                    draw(&mut c, &ops);
+                    c.settle(None);
+                }
+                assert!(
+                    before.px == now.px,
+                    "theme {name}, case {case}: part {part:?}, {ops:?}"
+                );
+                // How often the clear shrank, so the test is known to try it.
+                let first_covers = match ops[0] {
+                    Draw::Fill(f, col) => col.a == 255 && part.intersect(f) == part,
+                    Draw::Round(f, _, col) => col.a == 255 && part.intersect(f) == part,
+                    _ => false,
+                };
+                if first_covers {
+                    match ops[0] {
+                        Draw::Fill(..) => none += 1,
+                        _ => corners_only += 1,
+                    }
+                }
+            }
+        }
+        assert!(corners_only > 200 && none > 50, "{corners_only} {none}");
+    }
+
+    struct Rng(u64);
+
+    impl Rng {
+        fn n(&mut self, n: i32) -> i32 {
+            self.0 ^= self.0 << 13;
+            self.0 ^= self.0 >> 7;
+            self.0 ^= self.0 << 17;
+            (self.0 % n.max(1) as u64) as i32
+        }
+
+        fn colour(&mut self, t: &Theme) -> Color {
+            match self.n(5) {
+                0 => t.bg,
+                1 => t.surface,
+                2 => Color::rgb(self.n(0xFFFFFF) as u32).with_alpha(self.n(255) as u8),
+                _ => Color::rgb(self.n(0xFFFFFF) as u32),
+            }
+        }
+
+        /// `r`, or a little bigger or smaller.
+        fn near(&mut self, r: Rect) -> Rect {
+            match self.n(3) {
+                0 => r,
+                1 => Rect::new(
+                    r.x - self.n(4),
+                    r.y - self.n(4),
+                    r.w + self.n(9),
+                    r.h + self.n(9),
+                ),
+                _ => Rect::new(
+                    r.x + self.n(4),
+                    r.y + self.n(4),
+                    r.w - self.n(9),
+                    r.h - self.n(9),
+                ),
+            }
+        }
+
+        /// A rectangle inside `r`.
+        fn inside(&mut self, r: Rect) -> Rect {
+            let (x, y) = (r.x + self.n(r.w), r.y + self.n(r.h));
+            Rect::new(x, y, 1 + self.n(r.right() - x), 1 + self.n(r.bottom() - y))
+        }
+    }
+
+    /// A widget that makes the calls it is given, and says which parts of
+    /// it changed.
+    struct Scripted {
+        ops: Vec<Draw>,
+        parts: Option<Vec<Rect>>,
+    }
+
+    impl Widget for Scripted {
+        fn paint(&self, cx: &mut PaintCx, _r: Rect) {
+            draw(cx.canvas, &self.ops);
+        }
+
+        fn changed_parts(&self, _r: Rect) -> Option<Vec<Rect>> {
+            self.parts.clone()
+        }
+    }
+
+    /// The page painted the way `Ui::paint` did before 14 Nov: the whole
+    /// screen cleared first on a full paint, and each part before its
+    /// widget paints it.
+    fn paint_as_before(ui: &mut Ui, canvas: &mut dyn Canvas, full: bool) {
+        let Ui {
+            pages,
+            widgets,
+            theme,
+            fonts,
+            current,
+            size,
+            ..
+        } = ui;
+        let screen = Rect::new(0, 0, size.0, size.1);
+        let mut c = Styled::new(canvas, theme);
+        if full {
+            c.set_clip(screen);
+            c.fill_rect(screen, theme.bg);
+        }
+        for &(wi, r) in &pages[*current].slots {
+            let w = &widgets[wi].1;
+            let parts = match full {
+                true => vec![r],
+                false => w.changed_parts(r).unwrap_or_else(|| vec![r]),
+            };
+            for part in parts {
+                let part = part.intersect(r);
+                if part.is_empty() {
+                    continue;
+                }
+                c.set_clip(part);
+                c.fill_rect(part, theme.bg);
+                let mut cx = PaintCx {
+                    canvas: &mut c,
+                    theme,
+                    fonts,
+                };
+                w.paint(&mut cx, r);
+            }
+        }
+        c.set_clip(screen);
+    }
+
+    #[test]
+    fn pages_paint_the_same_picture_as_before() {
+        // Random pages of random widgets, over a screen full of noise, in
+        // every theme and two see-through ones: painting the page whole,
+        // then the parts that changed, gives what clearing everything first
+        // gave.
+        let mut rng = Rng(0xD1B5_4A32_D192_ED03);
+        let mut themes: Vec<Theme> = crate::theme::BUILTIN
+            .iter()
+            .map(|&n| Theme::builtin(n).unwrap())
+            .collect();
+        let mut see_through = Theme::console();
+        see_through.backdrop_to = see_through.backdrop_to.with_alpha(120);
+        themes.push(see_through);
+        let mut faint = Theme::dark();
+        faint.bg = faint.bg.with_alpha(200);
+        themes.push(faint);
+        for theme in themes {
+            for case in 0..60 {
+                let mut ui = Ui::new(theme.clone(), Fonts::embedded(), 160, 100);
+                for k in 0..4 {
+                    ui.add(&format!("w{k}"), probe());
+                }
+                if case % 2 == 0 {
+                    ui.add_page("p", "col(w0:20, row(w1, col(w2, w3):*):*)")
+                        .unwrap();
+                } else {
+                    // Slots anywhere, overlapping or not.
+                    let slots = (0..4)
+                        .map(|k| {
+                            (
+                                k,
+                                Rect::new(rng.n(120), rng.n(70), 10 + rng.n(60), 10 + rng.n(40)),
+                            )
+                        })
+                        .collect();
+                    ui.pages.push(Page {
+                        name: "p".into(),
+                        spec: String::new(),
+                        margin: true,
+                        slots,
+                    });
+                    ui.show("p").unwrap();
+                }
+                let slots = ui.pages[ui.current].slots.clone();
+                for (k, &(_, r)) in slots.iter().enumerate() {
+                    let mut ops = Vec::new();
+                    match rng.n(6) {
+                        0 => ops.push(Draw::Fill(rng.near(r), rng.colour(&theme))),
+                        2 => ops.push(Draw::Picture(rng.near(r), rng.n(1 << 30) as u32)),
+                        1 => ops.push(Draw::Text(
+                            r.x + rng.n(r.w),
+                            r.y + rng.n(r.h),
+                            rng.colour(&theme),
+                        )),
+                        _ => {}
+                    }
+                    ops.push(Draw::Round(rng.near(r), rng.n(20) - 2, rng.colour(&theme)));
+                    for _ in 0..rng.n(4) {
+                        ops.push(match rng.n(3) {
+                            0 => Draw::Stroke(
+                                rng.near(r),
+                                rng.n(12),
+                                1 + rng.n(3),
+                                rng.colour(&theme),
+                            ),
+                            1 => Draw::Text(r.x + rng.n(r.w), r.y + rng.n(r.h), rng.colour(&theme)),
+                            _ => Draw::Round(rng.inside(r), rng.n(8), rng.colour(&theme)),
+                        });
+                    }
+                    let parts = match rng.n(3) {
+                        0 => None,
+                        _ => Some((0..1 + rng.n(2)).map(|_| rng.inside(r)).collect()),
+                    };
+                    ui.add(&format!("w{k}"), Scripted { ops, parts });
+                }
+                let mut before = SoftCanvas::new(160, 100);
+                for p in before.px.iter_mut() {
+                    *p = rng.n(0xFFFFFF) as u32;
+                }
+                let mut now = SoftCanvas::new(160, 100);
+                now.px.clone_from(&before.px);
+                ui.paint(&mut now);
+                paint_as_before(&mut ui, &mut before, true);
+                assert!(before.px == now.px, "whole page, case {case}");
+                for w in ui.widgets.iter_mut() {
+                    w.2 = true;
+                }
+                ui.paint(&mut now);
+                paint_as_before(&mut ui, &mut before, false);
+                assert!(before.px == now.px, "changed parts, case {case}");
+            }
+        }
     }
 
     #[test]

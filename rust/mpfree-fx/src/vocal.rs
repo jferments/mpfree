@@ -56,7 +56,6 @@ const SCALE_BITS: [u16; 7] = [
 /// The voice ranges the tracker listens for, as the Range parameter's
 /// choices, and their lowest and highest pitch in Hz.
 pub const RANGES: &[&str] = &["Low", "Mid", "High"];
-const RANGE_HZ: [(f32, f32); 3] = [(60.0, 600.0), (90.0, 900.0), (150.0, 1500.0)];
 /// The detected note, as a meter's choices: "-" for none, then MIDI notes
 /// 1 to 127 by name (C4 is middle C).
 pub const NOTE_NAMES: &[&str] = &[
@@ -166,14 +165,50 @@ pub fn interval_semis(k: usize, n: i32, key: usize, scale: usize) -> Option<i32>
 const YIN_THRESHOLD: f32 = 0.15;
 const YIN_WEAK: f32 = 0.25;
 /// Under this level (-50 dBFS) the input is unvoiced.
-const GATE_RMS: f32 = 0.003_16;
-/// The tracker's rate for each range, about: ten times the range's
-/// highest note, so the search costs about the same in each (its cost
-/// goes as the square of the rate).
-const TRACK_HZ: [f32; 3] = [6_000.0, 8_000.0, 12_000.0];
+pub(crate) const GATE_RMS: f32 = 0.003_16;
+
+/// What a [`Tracker`] listens for: the lowest and highest pitch, the rate
+/// its search runs at (about), its low-pass as a fraction of that rate,
+/// and how often it looks, in seconds.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Band {
+    pub lo: f32,
+    pub hi: f32,
+    pub rate: f32,
+    pub cut: f32,
+    pub every: f32,
+}
+
+/// The vocal effects' ranges (Low, Mid, High). Each searches at about ten
+/// times its highest note, so each costs about the same (the search goes
+/// as the square of the rate).
+pub(crate) const VOICE_BANDS: [Band; 3] = [
+    Band {
+        lo: 60.0,
+        hi: 600.0,
+        rate: 6_000.0,
+        cut: 0.2,
+        every: 0.005,
+    },
+    Band {
+        lo: 90.0,
+        hi: 900.0,
+        rate: 8_000.0,
+        cut: 0.2,
+        every: 0.005,
+    },
+    Band {
+        lo: 150.0,
+        hi: 1500.0,
+        rate: 12_000.0,
+        cut: 0.2,
+        every: 0.005,
+    },
+];
 
 /// The voice's pitch (see the module docs).
 pub(crate) struct Tracker {
+    bands: &'static [Band],
     rate: u32,
     range: usize,
     /// Take one sample in `dec`.
@@ -198,13 +233,14 @@ pub(crate) struct Tracker {
 }
 
 impl Tracker {
-    pub(crate) fn new() -> Tracker {
+    pub(crate) fn new(bands: &'static [Band]) -> Tracker {
         Tracker {
+            bands,
             rate: 48_000,
-            range: 1,
+            range: 0,
             dec: 1,
             phase: 0,
-            rate_dec: TRACK_HZ[1],
+            rate_dec: bands[0].rate,
             aa: Svf::default(),
             buf: Vec::new(),
             mask: 0,
@@ -220,18 +256,20 @@ impl Tracker {
         }
     }
 
-    /// The decimation for `range` at `rate`.
-    fn dec_for(rate: u32, range: usize) -> usize {
-        ((rate as f32 / TRACK_HZ[range]).round() as usize).clamp(1, 16)
+    /// The decimation for `band` at `rate`.
+    fn dec_for(rate: u32, band: &Band) -> usize {
+        ((rate as f32 / band.rate).round() as usize).clamp(1, 16)
     }
 
     /// Sizes everything for `rate` (allocates), with room for every range.
     pub(crate) fn prepare(&mut self, rate: u32, range: usize) {
         self.rate = rate;
-        let most = (0..RANGE_HZ.len())
-            .map(|r| {
-                let rate_dec = rate as f32 / Self::dec_for(rate, r) as f32;
-                (rate_dec / RANGE_HZ[r].0).ceil() as usize + 2
+        let most = self
+            .bands
+            .iter()
+            .map(|b| {
+                let rate_dec = rate as f32 / Self::dec_for(rate, b) as f32;
+                (rate_dec / b.lo).ceil() as usize + 2
             })
             .max()
             .unwrap_or(2);
@@ -247,22 +285,23 @@ impl Tracker {
     /// Listens for `range` (its rate, filter and lags); starts afresh when
     /// that changes. No allocation.
     pub(crate) fn set_range(&mut self, range: usize) {
-        let range = range.min(RANGE_HZ.len() - 1);
+        let range = range.min(self.bands.len() - 1);
         if range == self.range {
             return;
         }
         self.range = range;
-        self.dec = Self::dec_for(self.rate, range);
+        let band = self.bands[range];
+        self.dec = Self::dec_for(self.rate, &band);
         self.rate_dec = self.rate as f32 / self.dec as f32;
         self.aa.set(
             SvfMode::LowPass,
-            0.2 * self.rate_dec,
+            band.cut * self.rate_dec,
             std::f32::consts::FRAC_1_SQRT_2,
             0.0,
             self.rate,
         );
-        self.hop = ((self.rate_dec * 0.005) as usize).max(1);
-        let (lo, hi) = RANGE_HZ[range];
+        self.hop = ((self.rate_dec * band.every) as usize).max(1);
+        let (lo, hi) = (band.lo, band.hi);
         self.min_lag = ((self.rate_dec / hi) as usize).max(2);
         self.max_lag = ((self.rate_dec / lo).ceil() as usize).min(self.d.len().saturating_sub(2));
         self.reset();
@@ -342,7 +381,21 @@ impl Tracker {
                 // `prev` is the candidate (lo to hi - 1), `v` the one after.
                 let prev = tau - 1;
                 let pv = self.d[prev];
-                if pv < YIN_THRESHOLD {
+                // A dip between two lags (a short period on the coarse
+                // grid) can sit above the threshold at both: a local
+                // minimum counts by the bottom of the parabola through it.
+                let a = self.d[prev - 1];
+                let low = if pv <= a && pv <= v {
+                    let den = a - 2.0 * pv + v;
+                    if den > 1e-9 {
+                        pv - (a - v) * (a - v) / (8.0 * den)
+                    } else {
+                        pv
+                    }
+                } else {
+                    pv
+                };
+                if low < YIN_THRESHOLD {
                     dip = true;
                 }
                 if dip {
@@ -387,7 +440,7 @@ impl Tracker {
 /// The sum of squared differences of `a` and `b`, four at a time (the
 /// difference function's inner loop: most of the tracker's cost).
 #[inline]
-fn diff(a: &[f32], b: &[f32]) -> f32 {
+pub(crate) fn diff(a: &[f32], b: &[f32]) -> f32 {
     let mut acc = [0.0f32; 4];
     let (ca, cb) = (a.chunks_exact(4), b.chunks_exact(4));
     let (ra, rb) = (ca.remainder(), cb.remainder());
@@ -856,13 +909,13 @@ impl FastRound for f32 {
 /// periods (a grain reaches a period either side of a mark that can be
 /// half a period past its target time) and a little.
 fn latency_for(rate: u32, range: usize) -> usize {
-    let lo = RANGE_HZ[range.min(RANGE_HZ.len() - 1)].0;
+    let lo = VOICE_BANDS[range.min(VOICE_BANDS.len() - 1)].lo;
     (2.5 * rate as f32 / lo).ceil() as usize + 2
 }
 
 /// The longest period any range listens for at `rate`, in frames.
 fn longest(rate: u32) -> usize {
-    (rate as f32 / RANGE_HZ[0].0).ceil() as usize + 2
+    (rate as f32 / VOICE_BANDS[0].lo).ceil() as usize + 2
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1029,7 +1082,7 @@ impl PitchCorrect {
         let mut n = PitchCorrect {
             v,
             rate: 48_000,
-            tracker: Tracker::new(),
+            tracker: Tracker::new(&VOICE_BANDS),
             grains: Grains::new(),
             voice: Voice::new(true),
             latency: 0,
@@ -1360,7 +1413,7 @@ impl Harmonizer {
         let mut n = Harmonizer {
             v,
             rate: 48_000,
-            tracker: Tracker::new(),
+            tracker: Tracker::new(&VOICE_BANDS),
             grains: Grains::new(),
             parts: [part(), part()],
             latency: 0,

@@ -2,15 +2,15 @@
 //! list), and plays the list back onto any other canvas.
 //!
 //! This is the seam between the screens and whatever puts their pixels on
-//! the panel. Every widget draws through [`Canvas`]'s six calls; the
+//! the panel. Every widget draws through [`Canvas`]'s calls; the
 //! recorder keeps them as [`Op`]s, and [`Recorder::replay`] makes the same
 //! calls on another canvas: [`crate::SoftCanvas`] today, a GPU renderer
 //! next (the performance plan's "GPU drawing and compute"). Played back on
 //! a `SoftCanvas` the picture is the same, bit for bit, as drawing straight
 //! into it.
 //!
-//! Masks (text and strokes) and images are kept once each, by content, in
-//! a [`Store`]: a frame's list names them by id, so a renderer in another
+//! Masks (text), shapes (curves and knobs: [`Shape`], kept as their parts)
+//! and images are kept once each, by content, in a [`Store`]: a frame's list names them by id, so a renderer in another
 //! process receives each glyph once, not every frame. Entries no frame has
 //! used for a while are dropped once the store passes its byte budget.
 
@@ -21,6 +21,7 @@ use std::hash::{Hash, Hasher};
 use crate::canvas::{Canvas, Image};
 use crate::color::Color;
 use crate::geom::Rect;
+use crate::shape::{Part, Shape};
 
 /// One drawing call.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -52,6 +53,12 @@ pub enum Op {
         y: i32,
         id: u32,
     },
+    /// [`Canvas::blend_shape`] with the stored shape `id` (it carries its
+    /// own rectangle).
+    Shape {
+        id: u32,
+        c: Color,
+    },
 }
 
 /// A coverage mask: one byte per pixel, `w` x `h`, rows top to bottom.
@@ -75,6 +82,7 @@ struct Entry<T> {
 pub struct Store {
     masks: HashMap<u32, Entry<Mask>>,
     images: HashMap<u32, Entry<Image>>,
+    shapes: HashMap<u32, Entry<Shape>>,
     by_hash: HashMap<u64, Vec<u32>>,
     next: u32,
     bytes: usize,
@@ -90,9 +98,10 @@ pub struct Store {
 pub struct FrameStats {
     /// Drawing calls in the list.
     pub ops: usize,
-    /// Mask and image calls, of those.
+    /// Mask, image and shape calls, of those.
     pub masks: usize,
     pub images: usize,
+    pub shapes: usize,
     /// Masks and images the store had not seen before, and their bytes.
     pub new_items: usize,
     pub new_bytes: usize,
@@ -121,11 +130,36 @@ fn content_hash(kind: u8, w: usize, h: usize, bytes: impl Hash) -> u64 {
     s.finish()
 }
 
+/// A shape's hash: its rectangle and every number of its parts, bit for bit.
+fn shape_hash(shape: &Shape) -> u64 {
+    let mut s = DefaultHasher::new();
+    (2u8, shape.r.x, shape.r.y, shape.r.w, shape.r.h).hash(&mut s);
+    for p in &shape.parts {
+        let (tag, v) = p.numbers();
+        tag.hash(&mut s);
+        for x in v {
+            x.to_bits().hash(&mut s);
+        }
+    }
+    s.finish()
+}
+
+/// What a shape costs the store: its parts, as the wire carries them.
+fn shape_bytes(shape: &Shape) -> usize {
+    shape
+        .parts
+        .iter()
+        .map(|p| 1 + 4 * p.numbers().1.len())
+        .sum::<usize>()
+        + 24
+}
+
 impl Store {
     pub fn new(budget: usize) -> Store {
         Store {
             masks: HashMap::new(),
             images: HashMap::new(),
+            shapes: HashMap::new(),
             by_hash: HashMap::new(),
             next: 0,
             bytes: 0,
@@ -143,13 +177,17 @@ impl Store {
         self.images.get(&id).map(|e| &e.item)
     }
 
+    pub fn shape(&self, id: u32) -> Option<&Shape> {
+        self.shapes.get(&id).map(|e| &e.item)
+    }
+
     /// Bytes held now.
     pub fn bytes(&self) -> usize {
         self.bytes
     }
 
     pub fn len(&self) -> usize {
-        self.masks.len() + self.images.len()
+        self.masks.len() + self.images.len() + self.shapes.len()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -223,6 +261,33 @@ impl Store {
         (id, true)
     }
 
+    fn intern_shape(&mut self, shape: &Shape, frame: u64) -> (u32, bool) {
+        let hash = shape_hash(shape);
+        if let Some(ids) = self.by_hash.get(&hash) {
+            for id in ids {
+                if let Some(e) = self.shapes.get_mut(id) {
+                    if e.item == *shape {
+                        e.used = frame;
+                        return (*id, false);
+                    }
+                }
+            }
+        }
+        let id = self.fresh_id(hash);
+        let bytes = shape_bytes(shape);
+        self.bytes += bytes;
+        self.shapes.insert(
+            id,
+            Entry {
+                item: shape.clone(),
+                hash,
+                bytes,
+                used: frame,
+            },
+        );
+        (id, true)
+    }
+
     fn fresh_id(&mut self, hash: u64) -> u32 {
         let id = self.next;
         self.next = self.next.wrapping_add(1);
@@ -242,6 +307,7 @@ impl Store {
             .iter()
             .map(|(id, e)| (e.used, *id))
             .chain(self.images.iter().map(|(id, e)| (e.used, *id)))
+            .chain(self.shapes.iter().map(|(id, e)| (e.used, *id)))
             .filter(|(used, _)| used + KEEP_FRAMES <= frame)
             .collect();
         old.sort_unstable();
@@ -249,10 +315,14 @@ impl Store {
             if self.bytes <= self.budget {
                 break;
             }
-            let (hash, bytes) = match (self.masks.remove(&id), self.images.remove(&id)) {
-                (Some(e), _) => (e.hash, e.bytes),
-                (_, Some(e)) => (e.hash, e.bytes),
-                _ => continue,
+            let (hash, bytes) = if let Some(e) = self.masks.remove(&id) {
+                (e.hash, e.bytes)
+            } else if let Some(e) = self.images.remove(&id) {
+                (e.hash, e.bytes)
+            } else if let Some(e) = self.shapes.remove(&id) {
+                (e.hash, e.bytes)
+            } else {
+                continue;
             };
             self.bytes -= bytes;
             if let Some(ids) = self.by_hash.get_mut(&hash) {
@@ -361,6 +431,11 @@ pub fn replay(ops: &[Op], store: &Store, canvas: &mut dyn Canvas) {
                     canvas.draw_image(x, y, img);
                 }
             }
+            Op::Shape { id, c } => {
+                if let Some(shape) = store.shape(id) {
+                    canvas.blend_shape(shape, c);
+                }
+            }
         }
     }
 }
@@ -417,24 +492,39 @@ impl Canvas for Recorder {
         }
         self.push(Op::Image { x, y, id });
     }
+
+    fn blend_shape(&mut self, shape: &Shape, c: Color) {
+        if shape.r.is_empty() {
+            return;
+        }
+        let (id, new) = self.store.intern_shape(shape, self.frame);
+        self.stats.shapes += 1;
+        if new {
+            self.stats.new_items += 1;
+            self.stats.new_bytes += shape_bytes(shape);
+        }
+        self.push(Op::Shape { id, c });
+    }
 }
 
 // ------------------------------------------------------------ the wire format
 
 /// The first bytes of every encoded frame.
 const WIRE_MAGIC: [u8; 4] = *b"MPDL";
-const WIRE_VERSION: u16 = 1;
+/// 2: shapes (item kind 2, call 6).
+const WIRE_VERSION: u16 = 2;
 /// Header: magic, version, 2 spare bytes, w, h, the frame's length.
 const WIRE_HEADER: usize = 4 + 2 + 2 + 4 + 4 + 4;
 /// The most pixels one mask or image may have (a 4096 x 4096 picture), so
 /// junk cannot ask for gigabytes.
 const WIRE_MAX_PIXELS: usize = 4096 * 4096;
 
-/// A mask or an image as a frame carries it.
+/// A mask, an image or a shape as a frame carries it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Item {
     Mask(Mask),
     Image(Image),
+    Shape(Shape),
 }
 
 /// One frame as a renderer in another process receives it: the store's
@@ -447,7 +537,7 @@ pub struct Frame {
     pub h: i32,
     /// Ids the sender's store let go.
     pub dropped: Vec<u32>,
-    /// New masks and images, with their ids.
+    /// New masks, images and shapes, with their ids.
     pub added: Vec<(u32, Item)>,
     pub ops: Vec<Op>,
 }
@@ -487,6 +577,17 @@ fn put_color(out: &mut Vec<u8>, c: Color) {
     out.extend_from_slice(&[c.r, c.g, c.b, c.a]);
 }
 
+fn put_f32(out: &mut Vec<u8>, v: f32) {
+    out.extend_from_slice(&v.to_le_bytes());
+}
+
+/// An item of the store, as `encode_frame` finds it.
+enum ItemRef<'a> {
+    Mask(&'a Mask),
+    Image(&'a Image),
+    Shape(&'a Shape),
+}
+
 /// Appends one frame to `out`, all numbers little-endian. An id in `added`
 /// that `store` no longer holds (added and dropped since the last frame) is
 /// left out; it is in `dropped` too.
@@ -510,30 +611,52 @@ pub fn encode_frame(
     for id in dropped {
         put_u32(out, *id);
     }
-    let items: Vec<(u32, Result<&Mask, &Image>)> = added
+    let items: Vec<(u32, ItemRef)> = added
         .iter()
-        .filter_map(|id| match (store.mask(*id), store.image(*id)) {
-            (Some(m), _) => Some((*id, Ok(m))),
-            (_, Some(i)) => Some((*id, Err(i))),
-            _ => None,
+        .filter_map(|id| {
+            let item = if let Some(m) = store.mask(*id) {
+                ItemRef::Mask(m)
+            } else if let Some(i) = store.image(*id) {
+                ItemRef::Image(i)
+            } else {
+                ItemRef::Shape(store.shape(*id)?)
+            };
+            Some((*id, item))
         })
         .collect();
     put_u32(out, items.len() as u32);
     for (id, item) in items {
         put_u32(out, id);
         match item {
-            Ok(m) => {
+            ItemRef::Mask(m) => {
                 out.push(0);
                 put_u32(out, m.w as u32);
                 put_u32(out, m.h as u32);
                 out.extend_from_slice(&m.data);
             }
-            Err(img) => {
+            ItemRef::Image(img) => {
                 out.push(1);
                 put_u32(out, img.w as u32);
                 put_u32(out, img.h as u32);
                 for p in &img.px {
                     put_u32(out, *p);
+                }
+            }
+            ItemRef::Shape(sh) => {
+                // Its size first, like the others, then where it is and
+                // its parts: a tag and the part's numbers each.
+                out.push(2);
+                put_u32(out, sh.r.w as u32);
+                put_u32(out, sh.r.h as u32);
+                put_i32(out, sh.r.x);
+                put_i32(out, sh.r.y);
+                put_u32(out, sh.parts.len() as u32);
+                for p in &sh.parts {
+                    let (tag, v) = p.numbers();
+                    out.push(tag);
+                    for x in v {
+                        put_f32(out, x);
+                    }
                 }
             }
         }
@@ -581,6 +704,11 @@ pub fn encode_frame(
                 put_i32(out, y);
                 put_u32(out, id);
             }
+            Op::Shape { id, c } => {
+                out.push(6);
+                put_u32(out, id);
+                put_color(out, c);
+            }
         }
     }
     let len = (out.len() - start) as u32;
@@ -617,6 +745,10 @@ impl<'a> Reader<'a> {
 
     fn i32(&mut self) -> Result<i32, String> {
         Ok(self.u32()? as i32)
+    }
+
+    fn f32(&mut self) -> Result<f32, String> {
+        Ok(f32::from_bits(self.u32()?))
     }
 
     fn rect(&mut self) -> Result<Rect, String> {
@@ -715,6 +847,23 @@ impl Frame {
                         px,
                     })
                 }
+                2 => {
+                    let (x, y) = (r.i32()?, r.i32()?);
+                    let mut shape = Shape::new(Rect::new(x, y, w as i32, h as i32));
+                    for _ in 0..r.count(13)? {
+                        let tag = r.u8()?;
+                        let n = Part::count_for(tag)
+                            .ok_or_else(|| format!("unknown shape part {tag}"))?;
+                        let mut v = [0f32; 6];
+                        for x in v.iter_mut().take(n) {
+                            *x = r.f32()?;
+                        }
+                        shape
+                            .parts
+                            .push(Part::from_numbers(tag, &v[..n]).expect("counted above"));
+                    }
+                    Item::Shape(shape)
+                }
                 k => return Err(format!("unknown item kind {k}")),
             };
             f.added.push((id, item));
@@ -744,6 +893,10 @@ impl Frame {
                     x: r.i32()?,
                     y: r.i32()?,
                     id: r.u32()?,
+                },
+                6 => Op::Shape {
+                    id: r.u32()?,
+                    c: r.color()?,
                 },
                 t => return Err(format!("unknown drawing call {t}")),
             };
@@ -779,6 +932,9 @@ impl Store {
             if let Some(e) = self.images.remove(id) {
                 self.bytes -= e.bytes;
             }
+            if let Some(e) = self.shapes.remove(id) {
+                self.bytes -= e.bytes;
+            }
         }
         for (id, item) in &frame.added {
             self.next = self.next.max(id.wrapping_add(1));
@@ -805,6 +961,21 @@ impl Store {
                         *id,
                         Entry {
                             item: img.clone(),
+                            hash: 0,
+                            bytes,
+                            used: 0,
+                        },
+                    ) {
+                        self.bytes -= old.bytes;
+                    }
+                }
+                Item::Shape(sh) => {
+                    let bytes = shape_bytes(sh);
+                    self.bytes += bytes;
+                    if let Some(old) = self.shapes.insert(
+                        *id,
+                        Entry {
+                            item: sh.clone(),
                             hash: 0,
                             bytes,
                             used: 0,
@@ -949,6 +1120,94 @@ mod tests {
             all.iter().any(|f| !f.dropped.is_empty()),
             "something dropped"
         );
+    }
+
+    /// Shapes: a curve with the area under it, a knob ring, a dot and a
+    /// dashed line, one cut by the clip.
+    fn draw_shapes(c: &mut dyn Canvas, k: u8) {
+        c.fill_rect(Rect::new(0, 0, W, H), Color::rgb(0x0A0C14));
+        let mut s = Shape::new(Rect::new(2, 2, 40, 30));
+        let pts: Vec<(f32, f32)> = (0..=20)
+            .map(|i| {
+                (
+                    2.0 + i as f32 * 2.0,
+                    16.0 + ((i as f32 + k as f32) * 0.7).sin() * 10.0,
+                )
+            })
+            .collect();
+        s.fill_under(&pts, 30.0, 0.4);
+        s.polyline(&pts, 1.5);
+        s.disc(20.5, 16.0, 3.0);
+        s.draw(c, Color::rgb(0x40C0FF));
+        c.set_clip(Rect::new(30, 0, 30, 40));
+        let mut ring = Shape::new(Rect::new(28, 4, 34, 34));
+        ring.arc(45.0, 21.0, 12.0, 2.4, 6.0 + k as f32 * 0.1, 3.0);
+        ring.dashed(&[(30.0, 36.0), (60.0, 6.0)], 1.0, 4.0);
+        ring.draw(c, Color::rgb(0xF0A040).with_alpha(200));
+    }
+
+    #[test]
+    fn shapes_play_back_and_travel_as_their_parts() {
+        let mut direct = SoftCanvas::new(W, H);
+        draw_shapes(&mut direct, 1);
+        let mut rec = Recorder::new(W, H);
+        rec.begin_frame();
+        draw_shapes(&mut rec, 1);
+        let st = rec.stats();
+        assert_eq!((st.shapes, st.masks, st.new_items), (2, 0, 2));
+        assert!(
+            st.new_bytes < 2000,
+            "parts, not pixels: {} bytes",
+            st.new_bytes
+        );
+        let mut played = SoftCanvas::new(W, H);
+        rec.replay(&mut played);
+        assert_eq!(direct.px, played.px, "the same picture, bit for bit");
+        // Sent and played from the copy, frame after frame; a shape that
+        // did not change is not sent again.
+        let mut copy = Store::new(usize::MAX);
+        let mut wire = Vec::new();
+        rec.encode_frame(&mut wire);
+        let (frame, _) = Frame::decode(&wire).unwrap();
+        assert_eq!(
+            frame
+                .added
+                .iter()
+                .filter(|(_, it)| matches!(it, Item::Shape(_)))
+                .count(),
+            2
+        );
+        copy.apply(&frame);
+        for k in [1u8, 2] {
+            rec.begin_frame();
+            draw_shapes(&mut rec, k);
+            let mut w = Vec::new();
+            rec.encode_frame(&mut w);
+            let (f, _) = Frame::decode(&w).unwrap();
+            // k 1: nothing new; k 2: both shapes moved.
+            assert_eq!(f.added.len(), if k == 1 { 0 } else { 2 }, "k {k}");
+            copy.apply(&f);
+            let mut d = SoftCanvas::new(W, H);
+            draw_shapes(&mut d, k);
+            let mut p = SoftCanvas::new(W, H);
+            replay(&f.ops, &copy, &mut p);
+            assert_eq!(d.px, p.px, "k {k}");
+            wire.extend_from_slice(&w);
+        }
+        assert_eq!(copy.bytes(), rec.store().bytes());
+        // Junk in a frame with shapes is refused, never panicked on.
+        for n in 0..wire.len().min(400) {
+            let _ = Frame::decode(&wire[..n]);
+        }
+        for i in 0..wire.len().min(400) {
+            let mut bad = wire.clone();
+            bad[i] ^= 0xA5;
+            if let Ok((f, _)) = Frame::decode(&bad) {
+                let mut st = Store::new(usize::MAX);
+                st.apply(&f);
+                replay(&f.ops, &st, &mut SoftCanvas::new(W, H));
+            }
+        }
     }
 
     #[test]

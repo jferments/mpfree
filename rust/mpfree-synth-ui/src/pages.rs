@@ -294,6 +294,87 @@ const KEYS: &[PlanPage] = &[
     ),
 ];
 
+use mpfree_synth::drawbar_params as db;
+
+/// Drawbar: the drawbars, percussion with the scanner, the rotary speaker
+/// with the tone, and the voice. The Q-Links pull the upper drawbars (the
+/// 16', 5 1/3' and 8' usually stay out); the switches stay on the screen.
+const DRAWBAR: &[PlanPage] = &[
+    pg(
+        "Drawbars",
+        &["Drawbars"],
+        &[db::DB_4, db::DB_2_23, db::DB_2, db::DB_1],
+    ),
+    pg("Percussion", &["Percussion", "Vibrato"], &[]),
+    pg(
+        "Rotary",
+        &["Rotary", "Tone"],
+        &[db::DRIVE, db::TONE, db::CLICK, db::SPREAD],
+    ),
+    pg(
+        "Voice",
+        &["Voice", "Output"],
+        &[db::TRANSPOSE, db::FINE, db::LEVEL, db::PAN],
+    ),
+];
+
+use mpfree_synth::squelch_params as sq;
+
+/// Squelch: the original's six controls, then how it is played (slide,
+/// accent, the envelopes' times, key tracking and drive), then the voice.
+const SQUELCH: &[PlanPage] = &[
+    pg(
+        "Synth",
+        &["Synth"],
+        &[sq::CUTOFF, sq::RESONANCE, sq::ENV_MOD, sq::DECAY],
+    ),
+    pg(
+        "Play",
+        &["Play"],
+        &[sq::SLIDE, sq::ACCENT_DECAY, sq::AMP_DECAY, sq::DRIVE],
+    ),
+    pg(
+        "Voice",
+        &["Voice", "Output"],
+        &[sq::TRANSPOSE, sq::FINE, sq::LEVEL, sq::PAN],
+    ),
+];
+
+use mpfree_synth::analog_params as an;
+
+/// Analog: the oscillators and their mix, the filter, both envelopes, the
+/// LFO and poly-mod, then the voice (Age and the chorus) with the output.
+/// The Q-Links take what players turn while a chord holds: the pulse
+/// widths and the detune, the filter's four knobs, the envelopes' times,
+/// the vibrato and poly-mod depths, and how worn the cards are.
+const ANALOG: &[PlanPage] = &[
+    pg(
+        "Osc",
+        &["Osc"],
+        &[an::OSC1_PW, an::OSC2_PW, an::OSC2_FINE, an::OSC2_LEVEL],
+    ),
+    pg(
+        "Filter",
+        &["Filter"],
+        &[an::CUTOFF, an::RESONANCE, an::ENV_AMT, an::DRIVE],
+    ),
+    pg(
+        "Envelopes",
+        &["Envelopes"],
+        &[an::F_ATTACK, an::F_DECAY, an::A_ATTACK, an::A_RELEASE],
+    ),
+    pg(
+        "Mod",
+        &["Mod"],
+        &[an::LFO_RATE, an::LFO_PITCH, an::PM_ENV, an::PM_OSC2],
+    ),
+    pg(
+        "Voice",
+        &["Voice", "Output"],
+        &[an::AGE, an::GLIDE, an::UNI_DETUNE, an::LEVEL],
+    ),
+];
+
 fn known(id: &str) -> Option<&'static [PlanPage]> {
     match id {
         "mpfree.poly" => Some(POLY),
@@ -302,6 +383,9 @@ fn known(id: &str) -> Option<&'static [PlanPage]> {
         "mpfree.drums" => Some(DRUMS),
         "mpfree.pluck" => Some(PLUCK),
         "mpfree.keys" => Some(KEYS),
+        "mpfree.drawbar" => Some(DRAWBAR),
+        "mpfree.squelch" => Some(SQUELCH),
+        "mpfree.analog" => Some(ANALOG),
         _ => None,
     }
 }
@@ -485,12 +569,13 @@ mod tests {
             .map(|&i| PARAMS[i].name)
             .collect();
         assert_eq!(q, ["Threshold", "Full at", "Depth 1", "Depth 2"]);
-        // The Q-Links turn the filter page's first four knobs, not its Type.
+        // The Q-Links turn the filter page's first four knobs, not its Type:
+        // both kinds of grit side by side (Jay after live test 3).
         let q: Vec<&str> = qlink_targets(&pages[1], PARAMS)
             .iter()
             .map(|&i| PARAMS[i].name)
             .collect();
-        assert_eq!(q, ["Cutoff", "Resonance", "Drive", "Env amount"]);
+        assert_eq!(q, ["Cutoff", "Resonance", "Drive", "Distortion"]);
         // A page of choices still gets four.
         let lfo = qlink_targets(&pages[3], PARAMS);
         assert_eq!(lfo.len(), 4);
@@ -602,6 +687,79 @@ mod tests {
             .map(|&i| params[i].name)
             .collect();
         assert_eq!(q, ["Voicing", "Bark", "Tone", "Vel > tone"]);
+        for p in &pages {
+            for &i in &p.params {
+                assert!(tile_label(&p.name, &params[i]).len() <= 20);
+            }
+        }
+    }
+
+    #[test]
+    fn squelch_has_its_own_pages() {
+        use mpfree_node::Node;
+        let s = mpfree_synth::Squelch::new(48_000);
+        let params = s.params();
+        let pages = plan(s.info(), params);
+        let names: Vec<&str> = pages.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, ["Synth", "Play", "Voice"]);
+        every_param_once(&pages, params.len());
+        let q: Vec<&str> = qlink_targets(&pages[0], params)
+            .iter()
+            .map(|&i| params[i].name)
+            .collect();
+        assert_eq!(q, ["Cutoff", "Resonance", "Env mod", "Decay"]);
+        for p in &pages {
+            for &i in &p.params {
+                assert!(tile_label(&p.name, &params[i]).len() <= 20);
+            }
+        }
+    }
+
+    #[test]
+    fn analog_has_its_own_pages() {
+        use mpfree_node::Node;
+        let s = mpfree_synth::Analog::new(48_000);
+        let params = s.params();
+        let pages = plan(s.info(), params);
+        let names: Vec<&str> = pages.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, ["Osc", "Filter", "Envelopes", "Mod", "Voice"]);
+        every_param_once(&pages, params.len());
+        let q = |page: usize| -> Vec<&str> {
+            qlink_targets(&pages[page], params)
+                .iter()
+                .map(|&i| params[i].name)
+                .collect()
+        };
+        assert_eq!(q(1), ["Cutoff", "Resonance", "Env amount", "Drive"]);
+        assert_eq!(q(3), ["LFO rate", "Vibrato", "PMod env", "PMod osc 2"]);
+        assert_eq!(q(4), ["Age", "Glide", "Detune", "Level"]);
+        for p in &pages {
+            assert!(p.params.len() <= MAX_TILES, "{}", p.name);
+            for &i in &p.params {
+                assert!(tile_label(&p.name, &params[i]).len() <= 20);
+            }
+        }
+    }
+
+    #[test]
+    fn drawbar_has_its_own_pages() {
+        use mpfree_node::Node;
+        let s = mpfree_synth::Drawbar::new(48_000);
+        let params = s.params();
+        let pages = plan(s.info(), params);
+        let names: Vec<&str> = pages.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, ["Drawbars", "Percussion", "Rotary", "Voice"]);
+        every_param_once(&pages, params.len());
+        let q: Vec<&str> = qlink_targets(&pages[0], params)
+            .iter()
+            .map(|&i| params[i].name)
+            .collect();
+        assert_eq!(q, ["4'", "2 2/3'", "2'", "1'"]);
+        let q: Vec<&str> = qlink_targets(&pages[2], params)
+            .iter()
+            .map(|&i| params[i].name)
+            .collect();
+        assert_eq!(q, ["Drive", "Tone", "Click", "Spread"]);
         for p in &pages {
             for &i in &p.params {
                 assert!(tile_label(&p.name, &params[i]).len() <= 20);

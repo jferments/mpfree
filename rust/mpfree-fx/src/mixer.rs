@@ -158,7 +158,7 @@ pub const MAX_INPUTS: usize = 8;
 /// The largest pad channel pool a mixer can be built with.
 pub const MAX_PADS: usize = 128;
 /// The most tracks a mixer can be built with.
-pub const MAX_TRACKS: usize = 64;
+pub const MAX_TRACKS: usize = 160;
 /// The most insert slots a strip can be built with.
 pub const MAX_SLOTS: usize = 16;
 /// Capture points every mixer has.
