@@ -15,7 +15,7 @@ use mpfree_node::{Ctx, Expr, Node, NodeEvent, Timed, Tuning};
 use std::sync::Arc;
 
 use mpfree_synth::wavetable::table::{Table, FRAME};
-use mpfree_synth::{Drums, Fm, Keys, Pluck, Poly, Wavetable, PARAMS};
+use mpfree_synth::{Analog, Drawbar, Drums, Fm, Keys, Pluck, Poly, Squelch, Wavetable, PARAMS};
 
 struct Counting;
 thread_local! {
@@ -209,6 +209,61 @@ fn keys_process_never_allocates() {
             exercise(&mut s, params, 48_000),
             0,
             "Keys::process (model {model}) allocated"
+        );
+    }
+}
+
+#[test]
+fn drawbar_process_never_allocates() {
+    use mpfree_synth::drawbar_params::*;
+    for wheels in [0.0, 1.0] {
+        let mut s = Drawbar::new(48_000);
+        s.set_param(WHEELS, wheels);
+        s.set_param(PERC, 1.0);
+        s.set_param(VIBRATO, C3);
+        s.set_param(LEAKAGE, 100.0);
+        let params = s.params();
+        assert_eq!(
+            exercise(&mut s, params, 48_000),
+            0,
+            "Drawbar::process (wheels {wheels}) allocated"
+        );
+    }
+}
+
+#[test]
+fn squelch_process_never_allocates() {
+    use mpfree_synth::squelch_params::*;
+    for (wave, drive) in [(SAW, 0.0), (SQUARE, 80.0)] {
+        let mut s = Squelch::new(48_000);
+        s.set_param(WAVE, wave);
+        s.set_param(DRIVE, drive);
+        s.set_param(RESONANCE, 100.0);
+        let params = s.params();
+        assert_eq!(
+            exercise(&mut s, params, 48_000),
+            0,
+            "Squelch::process (wave {wave}) allocated"
+        );
+    }
+}
+
+#[test]
+fn analog_process_never_allocates() {
+    use mpfree_synth::analog_params::*;
+    for (filter, chorus, mode) in [(LP24, 1.0, POLY), (BP12, 3.0, UNISON)] {
+        let mut s = Analog::new(48_000);
+        s.set_param(FILTER_TYPE, filter);
+        s.set_param(CHORUS, chorus);
+        s.set_param(VOICE_MODE, mode);
+        s.set_param(RESONANCE, 100.0);
+        s.set_param(AGE, 100.0);
+        s.set_param(PM_OSC2, 50.0);
+        let params = s.params();
+        assert_eq!(
+            exercise(&mut s, params, 48_000),
+            0,
+            "Analog::process (filter {filter}) allocated"
         );
     }
 }
