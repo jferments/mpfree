@@ -3169,6 +3169,23 @@ fn synth_pads_note(synth: &synth::Synth) -> String {
     )
 }
 
+/// A star or an add in the effect picker changed its favourites or
+/// recents: both files are saved whole, on the store's writer thread.
+fn save_shelf(mix: &mut mixing::MixHost, store: &mpfree_store::Store, out: &mut Out) {
+    if !std::mem::take(&mut mix.shelf_dirty) {
+        return;
+    }
+    use mpfree_fx::picker as fxp;
+    for (name, text) in [
+        (fxp::FAVOURITES, mix.shelf.favourites_text()),
+        (fxp::RECENT, mix.shelf.recent_text()),
+    ] {
+        if let Err(e) = store.write(fxp::OWNER, name, text.into_bytes()) {
+            out.note(&format!("fx: {name} not saved: {e}"));
+        }
+    }
+}
+
 fn player_session(
     o: &Options,
     out: &mut Out,
@@ -3453,6 +3470,17 @@ fn player_session(
     // The mixer sums everything; the Level is its master fader (mixing.rs).
     let mut mix = mixing::MixHost::new(RATE, level_db, max_db);
     mix.set_plugins(std::sync::Arc::clone(&found_plugins));
+    // The effect picker's favourites and recents (files/fx/).
+    let shelf_file = |name| {
+        store
+            .read(mpfree_fx::picker::OWNER, name)
+            .map(|b| String::from_utf8_lossy(&b).into_owned())
+            .unwrap_or_default()
+    };
+    mix.shelf = mpfree_fx::picker::Shelf::read(
+        &shelf_file(mpfree_fx::picker::FAVOURITES),
+        &shelf_file(mpfree_fx::picker::RECENT),
+    );
     // The screen opens projects' plugins with the same rack.
     out.show(gui::ToUi::Plugins(std::sync::Arc::clone(&found_plugins)));
     // The plugin synths, for the Synth tab's Instrument row after the engines.
@@ -3705,7 +3733,9 @@ fn player_session(
                 max_db,
                 card: audio,
             };
-            let Some(a) = desk.screen(a, t, out, &mut fx) else {
+            let back = desk.screen(a, t, out, &mut fx);
+            save_shelf(&mut mix, &store, out);
+            let Some(a) = back else {
                 parts.item_named(parts::SCREEN_ACTIONS, t_item, &item);
                 continue;
             };
