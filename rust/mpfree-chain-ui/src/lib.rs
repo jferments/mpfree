@@ -43,6 +43,7 @@
 #![forbid(unsafe_code)]
 
 pub mod macros;
+pub mod picker;
 pub mod sample;
 pub mod state;
 pub mod view;
@@ -72,6 +73,8 @@ pub const MACROS_LAYOUT: &str = "col(header:60, row(macros:*, qlinks:168):*, hin
 pub const QLINK_PAGE: &str = "chain";
 /// The hint lines: what the buttons do on the page.
 pub const CHAIN_HINT: &str = "Q-Links: the first 4 knobs shown  ·  SHIFT + Q-Link: fine  ·  touch a knob, then a macro number, Learn or + LFO";
+/// The hint while the effect picker is open.
+pub const PICKER_HINT: &str = "Wheel: effect  ·  SHIFT + wheel: category  ·  push: its presets, then add  ·  hold a tile: presets  ·  star: favourite";
 pub const MACROS_HINT: &str = "Q-Links: the 4 macros shown  ·  SHIFT + Q-Link: fine  ·  tap a target to edit its range and curve  ·  Back closes";
 
 /// Adds both widgets and their pages. The app's `header`, `qlinks` and
@@ -101,6 +104,26 @@ pub fn update_macros(ui: &mut Ui, st: MacrosState) {
     if let Some(v) = ui.get_mut::<MacrosView>(MACROS_W) {
         v.update(st);
     }
+}
+
+/// The data wheel on the chain editor: the picker takes it while it is
+/// open ([`ChainView::wheel`]); false means it didn't.
+pub fn chain_wheel(ui: &mut Ui, delta: i32, shift: bool) -> bool {
+    ui.get_mut::<ChainView>(CHAIN)
+        .is_some_and(|v| v.wheel(delta, shift))
+}
+
+/// The data wheel's push on the chain editor ([`ChainView::push_wheel`]);
+/// false when the picker is shut.
+pub fn chain_push(ui: &mut Ui) -> bool {
+    ui.get_mut::<ChainView>(CHAIN)
+        .is_some_and(|v| v.push_wheel())
+}
+
+/// The effect picker is open.
+pub fn chain_picking(ui: &Ui) -> bool {
+    ui.get::<ChainView>(CHAIN)
+        .is_some_and(|v| v.state().picking)
 }
 
 pub fn take_chain_actions(ui: &mut Ui) -> Vec<ChainAction> {
