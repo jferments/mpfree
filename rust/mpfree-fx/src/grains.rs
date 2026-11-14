@@ -113,7 +113,6 @@ pub static PRESETS: &[Preset] = &[
             (ids::PITCH, -12.0),
             (ids::DETUNE, 15.0),
             (ids::JITTER, 40.0),
-            (ids::MIX, 60.0),
         ],
     },
     Preset {
@@ -134,7 +133,6 @@ pub static PRESETS: &[Preset] = &[
             (ids::JITTER, 100.0),
             (ids::DETUNE, 10.0),
             (ids::FREEZE, 1.0),
-            (ids::MIX, 100.0),
         ],
     },
 ];
