@@ -209,8 +209,9 @@ pub fn page(params: &'static [ParamInfo], g: usize) -> (Vec<&'static str>, Vec<P
             groups.push(p.group);
         }
     }
-    // Groups too big for one page split into "Name", "Name 2" ...; kept
-    // simple: the page shows the first KNOBS_PER_PAGE of the group.
+    // A group bigger than a page shows its first KNOBS_PER_PAGE: every
+    // built-in effect keeps its groups within that (tests/reach.rs). How
+    // longer groups (hosted plugins) get pages is still open.
     let g = g.min(groups.len().saturating_sub(1));
     let ps = groups
         .get(g)
