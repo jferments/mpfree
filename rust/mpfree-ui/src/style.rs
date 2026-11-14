@@ -23,6 +23,10 @@ use crate::geom::Rect;
 use crate::shape::Shape;
 use crate::theme::{Backdrop, Corners, Theme};
 
+/// How far a glowing theme's halo reaches outside a stroked outline, in
+/// pixels ([`Styled`]'s `stroke_round_rect`).
+pub(crate) const GLOW_REACH: i32 = 3;
+
 pub struct Styled<'a> {
     pub inner: &'a mut dyn Canvas,
     pub theme: &'a Theme,
@@ -195,8 +199,9 @@ impl Canvas for Styled<'_> {
     fn stroke_round_rect(&mut self, r: Rect, radius: i32, width: i32, c: Color) {
         let g = self.theme.glow as u32;
         if g > 0 && c.a > 0 {
-            // A halo: three outlines outside the line, fading out.
-            for (i, k) in [(1, 90u32), (2, 50), (3, 24)] {
+            // A halo: three outlines outside the line, fading out, reaching
+            // GLOW_REACH pixels.
+            for (i, k) in [(1, 90u32), (2, 50), (GLOW_REACH, 24)] {
                 let a = (c.a as u32 * g * k / (255 * 100)) as u8;
                 if a > 0 {
                     let rr = r.inset(-i);
