@@ -1,7 +1,9 @@
 //! The audio tracks in their host: a save made across periods while the
 //! worker makes room, opened in a fresh host, plays back the same; a save
 //! asked for while recording waits for the recording to end; a fit to a
-//! new tempo is read, stretched on the worker, loaded and swapped in.
+//! new tempo is read, stretched on the worker, loaded and swapped in; a
+//! cancelled save or waveform never comes; cleared tracks take a part
+//! back under its own take ids (a project opening).
 
 use std::time::{Duration, Instant};
 
@@ -245,4 +247,115 @@ fn a_waveform_read_through_the_host_matches_the_take() {
         std::thread::sleep(Duration::from_micros(200));
         assert!(r.h.take_wave().is_none());
     }
+}
+
+#[test]
+fn a_cancelled_save_leaves_nothing_behind_and_the_next_save_works() {
+    let mut r = Rig::new();
+    r.record_bar();
+    // Cancelled while sizing or reading, and again with one finished but
+    // not taken: nothing comes from it.
+    for wait in [0, 3, 400] {
+        assert!(r.h.save());
+        for _ in 0..wait {
+            r.period(P);
+            std::thread::sleep(Duration::from_micros(200));
+        }
+        r.h.cancel_save();
+        assert!(r.h.saving().is_none());
+        for _ in 0..50 {
+            r.period(P);
+            std::thread::sleep(Duration::from_micros(200));
+            assert!(r.h.take_saved().is_none());
+        }
+    }
+    assert!(r.h.save());
+    let mut saved = None;
+    r.run_until(|r| {
+        saved = r.h.take_saved();
+        saved.is_some()
+    });
+    let saved = saved.unwrap();
+    assert_eq!(saved.takes.len(), 1);
+    assert_eq!(saved.takes[0].audio.len(), saved.takes[0].frames);
+}
+
+#[test]
+fn clear_empties_the_tracks_and_a_part_loads_over_them() {
+    let mut r = Rig::new();
+    r.record_bar();
+    r.h.command(A::SetLevel(0, 0.7));
+    r.h.command(A::Mute(1, true));
+    r.run_to(r.frame + 10);
+    assert!(r.h.save());
+    let mut saved = None;
+    r.run_until(|r| {
+        saved = r.h.take_saved();
+        saved.is_some()
+    });
+    let saved = saved.unwrap();
+    let before = r.play(BAR + 1000);
+    assert_eq!(r.h.tracks.settings(0).unwrap().level, 0.7);
+
+    // Refused while a track records.
+    r.live = true;
+    r.h.command(A::Arm(2, true));
+    r.t.command(r.frame + 10, T::Record);
+    r.run_to(r.frame + 2000);
+    assert!(r.h.tracks.recording(2).is_some());
+    assert!(!r.h.tracks.clear());
+    r.t.command(r.frame, T::Stop);
+    r.h.command(A::Arm(2, false));
+    r.live = false;
+    r.run_until(|r| r.h.tracks.clear());
+
+    assert_eq!(r.h.tracks.takes().count(), 0);
+    assert_eq!(r.h.tracks.memory().used, 0);
+    assert_eq!(r.h.tracks.history(), (0, 0));
+    for t in 0..mpfree_audiotracks::MAX_TRACKS {
+        assert!(r.h.tracks.regions(t).is_empty());
+        assert!(!r.h.tracks.armed(t));
+        let s = r.h.tracks.settings(t).unwrap();
+        assert_eq!((s.level, s.pan, s.mute, s.solo), (1.0, 0.0, false, false));
+    }
+    assert!(r
+        .h
+        .tracks
+        .settings(mpfree_audiotracks::MAX_TRACKS)
+        .is_none());
+    let silent = r.play(BAR + 1000);
+    assert!(rms(&silent, 0, BAR) < 1e-6);
+
+    // The saved part goes back in under its own take ids.
+    assert!(r.h.load(saved).is_ok());
+    r.run_until(|r| r.h.tracks.loading() == 0);
+    assert_eq!(r.h.tracks.settings(0).unwrap().level, 0.7);
+    assert!(r.h.tracks.settings(1).unwrap().mute);
+    assert_eq!(r.play(BAR + 1000), before);
+}
+
+#[test]
+fn a_cancelled_waveform_never_comes() {
+    let mut r = Rig::new();
+    r.record_bar();
+    for wait in [0, 2, 400] {
+        assert!(r.h.wave(0, 100));
+        for _ in 0..wait {
+            r.period(P);
+            std::thread::sleep(Duration::from_micros(200));
+        }
+        r.h.cancel_wave();
+        for _ in 0..50 {
+            r.period(P);
+            std::thread::sleep(Duration::from_micros(200));
+            assert!(r.h.take_wave().is_none(), "after waiting {wait}");
+        }
+    }
+    assert!(r.h.wave(0, 100));
+    let mut w = None;
+    r.run_until(|r| {
+        w = r.h.take_wave();
+        w.is_some()
+    });
+    assert_eq!(w.unwrap().id, 0);
 }

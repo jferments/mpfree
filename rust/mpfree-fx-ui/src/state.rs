@@ -27,6 +27,10 @@ pub struct FxState {
     pub bpm: f64,
     /// The sample rate the effect runs at.
     pub rate: u32,
+    /// The effect's input and output peak levels in dBFS, when the host
+    /// watches its slot (`mpfree_fx::Chain::watch` and `levels`): the page
+    /// then shows a Levels card.
+    pub levels: Option<(f32, f32)>,
 }
 
 impl FxState {
@@ -48,6 +52,7 @@ impl FxState {
             edited: false,
             bpm,
             rate,
+            levels: None,
         }
     }
 
