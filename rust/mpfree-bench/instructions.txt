@@ -38,10 +38,10 @@
 102872	EQ (4 bands and both cuts)
 55126	Flanger
 434564	Grains FX (dense)
-190074	Keys Dusty Keys, 16 voices
-171638	Keys Init, 16 voices
-118318	Keys Init, 8 voices
-221085	Keys Reed, 16 voices
+188538	Keys Dusty Keys, 16 voices
+169967	Keys Init, 16 voices
+117314	Keys Init, 8 voices
+219542	Keys Reed, 16 voices
 116998	Lo-fi
 294259	Looper (60 s), 8 loops of 3 layers playing
 417853	Looper (60 s), 8 loops of 3 layers playing, half edited
