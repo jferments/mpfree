@@ -12,6 +12,7 @@ Every design page opens with a **Status** line (proposal, approved, built, on ma
 - [Architecture](project/architecture.md): the proposed system design.
 - [Roadmap](project/roadmap.md): milestones, phase gates and open decisions.
 - [Testing and CI](guides/testing-and-ci.md): the test tiers, what each CI job checks, the self-hosted runners, rules for tests, coverage by crate, and the plan for the regression suite.
+- [Controls catalogue](guides/controls.md): every control on the screen by its `widget/id`: what it is for, how to use it, an example and the test that runs it; the GUI smoke tests fail on a control it doesn't list (2026-11-13).
 - [Development log](project/development-log.md): dated history of how the project got here.
 - [Factory content policy](project/factory-content-policy.md): what MPFree will and won't do with Akai/AIR content and plugins.
 

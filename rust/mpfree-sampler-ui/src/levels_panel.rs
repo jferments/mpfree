@@ -21,7 +21,7 @@
 //! the app changes the kit (`PadsPlay::Levels`) and hands the model back.
 
 use mpfree_sampler::model::Levels;
-use mpfree_ui::{Align, Color, EventKind, FontId, PaintCx, Rect, Touch, Widget};
+use mpfree_ui::{Align, Color, EventKind, FontId, PaintCx, Rect, Target, Touch, Widget};
 
 /// The panel's widget name.
 pub const PANEL: &str = "levels-panel";
@@ -355,6 +355,24 @@ impl Widget for LevelsPanel {
                 );
             }
         }
+    }
+
+    /// Pick pad, Close and Off, then the kinds (the one picked is lit).
+    fn targets(&self, r: Rect) -> Vec<Target> {
+        let p = parts(r);
+        let mut v: Vec<Target> = p
+            .buttons
+            .iter()
+            .zip(BUTTONS)
+            .enumerate()
+            .map(|(i, (b, label))| Target::tap("button", i, label, *b))
+            .collect();
+        if p.kinds_panel.w > 0 {
+            for (i, (row, by)) in p.kinds.iter().zip(Levels::ALL).enumerate() {
+                v.push(Target::tap("kind", i, by.label(), *row).disabled_if(by == self.model.by));
+            }
+        }
+        v
     }
 
     fn touch(&mut self, _f: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
