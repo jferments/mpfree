@@ -104,11 +104,23 @@ impl Instrument {
 /// at least as long as the block; the host adds into its start.
 pub trait Outputs {
     fn track(&mut self, track: usize) -> Option<(&mut [f32], &mut [f32])>;
+
+    /// Whether `track` wants its instrument's sound this block. False while
+    /// the mixer plays a frozen take of the track in its place
+    /// ([`Mixer::needs_input`]): the instrument then rests (see
+    /// [`TrackHost::render`]).
+    fn wants(&self, _track: usize) -> bool {
+        true
+    }
 }
 
 impl Outputs for Mixer {
     fn track(&mut self, track: usize) -> Option<(&mut [f32], &mut [f32])> {
         self.track_input(track)
+    }
+
+    fn wants(&self, track: usize) -> bool {
+        self.needs_input(mpfree_fx::StripId::Track(track))
     }
 }
 
@@ -137,6 +149,8 @@ pub struct SlotStats {
     pub resets: u64,
     /// Instruments swapped out and rung out on this slot.
     pub swaps: u64,
+    /// Blocks the slot's instrument rested through, its track frozen.
+    pub rested: u64,
 }
 
 /// What [`TrackHost::swap`] gives back when it cannot take the instrument.
@@ -171,6 +185,9 @@ struct Slot {
     left: Vec<f32>,
     right: Vec<f32>,
     stats: SlotStats,
+    /// Its track wanted nothing last block (frozen): the instrument
+    /// rested, and gets an AllOff before it plays again.
+    resting: bool,
 }
 
 /// The track host. See the crate docs.
@@ -202,6 +219,7 @@ impl TrackHost {
                 left: vec![0.0; max_block],
                 right: vec![0.0; max_block],
                 stats: SlotStats::default(),
+                resting: false,
             })
             .collect::<Vec<_>>();
         let retired = Vec::with_capacity(2 * slots.len() + 2);
@@ -469,6 +487,30 @@ impl TrackHost {
             if n == 0 {
                 events.clear();
                 continue;
+            }
+            // A frozen track: the mixer plays its take, so the instrument
+            // rests. Its notes are dropped and nothing counts as held; an
+            // old instrument ringing out is retired at once (its sound is
+            // in the take).
+            if !s.track.is_none_or(|t| out.wants(t)) {
+                events.clear();
+                s.held = [0; 128];
+                s.resting = true;
+                s.stats.rested += 1;
+                if self.retired.len() < self.retired.capacity() {
+                    if let Some(r) = s.ringing.take() {
+                        self.retired.push(r.inst);
+                    }
+                }
+                continue;
+            }
+            // Thawed: whatever it held when it went to rest ends first.
+            if std::mem::take(&mut s.resting) {
+                if events.len() < events.capacity() {
+                    events.insert(0, Timed::new(0, NodeEvent::AllOff));
+                } else if let Some(e) = events.first_mut() {
+                    *e = Timed::new(0, NodeEvent::AllOff);
+                }
             }
             let (sl, sr) = (&mut s.left[..n], &mut s.right[..n]);
             let mut wrote = false;

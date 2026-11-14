@@ -129,6 +129,7 @@ mod smoke;
 mod synth;
 mod sys;
 mod sysinfo;
+mod takes;
 mod time;
 mod touch_bell;
 mod touch_dev;
@@ -3695,6 +3696,9 @@ fn player_session(
     let mut audio_held: Option<mpfree_audiotracks::save::Saved> = None;
     let mut collect_now = false;
     let mut parts_out: Option<gui::ToUi> = None;
+    // A print for the screen to save, kept until the screen has room (its
+    // audio is never freed on this thread).
+    let mut print_out: Option<gui::ToUi> = None;
     // MIDI Learn: values for parameters a control can't set yet, and the
     // I/O view's names taken at this generation of the model.
     let mut learn_misses = 0u64;
@@ -5561,6 +5565,31 @@ fn player_session(
             if let Some(run) = export.period(&mut mix.mixer, &mut time) {
                 out.show(gui::ToUi::ExportOver(run));
             }
+        }
+        // Freeze and Print: the take under way and the frozen strips
+        // (takes.rs). A print goes to the screen to be saved.
+        let n_tracks = time.project().tracks.len();
+        match mix.takes_period(&ctx, n_tracks, &|t| time.now_playing(t)) {
+            Some(takes::Said::Note(l)) => {
+                let l = format!("mixer: {l}");
+                out.note(&l);
+                out.show(gui::ToUi::Tell(l));
+            }
+            Some(takes::Said::Printed(name, p)) if print_out.is_none() => {
+                print_out = Some(gui::ToUi::Printed(name, p));
+            }
+            Some(takes::Said::Printed(name, p)) => {
+                // One waits already (the screen is that busy): this one
+                // is dropped off this thread with the builder's next job.
+                out.note(&format!(
+                    "mixer: {name}: print not saved, the screen was busy"
+                ));
+                mix.drop_printed(p);
+            }
+            None => {}
+        }
+        if let Some(m) = print_out.take() {
+            print_out = out.try_show(m).err();
         }
         // Resampling: the point in the mix the Rec tab records (before the
         // metronome), with the bar lines as late as that point hears them.

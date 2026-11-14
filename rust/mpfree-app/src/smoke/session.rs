@@ -816,6 +816,21 @@ impl Session {
         if self.export.fast() {
             self.export.wait_for_room(self.periods);
         }
+        // Freeze and Print, as player_session runs them.
+        let n_tracks = self.time.project().tracks.len();
+        let time = &self.time;
+        match self
+            .mix
+            .takes_period(&ctx, n_tracks, &|t| time.now_playing(t))
+        {
+            Some(crate::takes::Said::Note(l)) => {
+                let l = format!("mixer: {l}");
+                self.out.note(&l);
+                self.out.show(ToUi::Tell(l));
+            }
+            Some(crate::takes::Said::Printed(name, p)) => self.out.show(ToUi::Printed(name, p)),
+            None => {}
+        }
         let now = self.now();
         if let Some(st) = self.mix.poll_state(now) {
             self.out.show(ToUi::Mixer(Box::new(st)));
