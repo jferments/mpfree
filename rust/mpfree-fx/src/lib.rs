@@ -68,6 +68,7 @@ mod crush;
 mod delay;
 mod drive;
 mod ducker;
+mod dynamics;
 mod eq;
 mod kit;
 mod lofi;
@@ -96,6 +97,7 @@ pub use drive::Drive;
 pub use ducker::{
     Ducker, RATES as DUCKER_RATES, RATE_BEATS as DUCKER_RATE_BEATS, SOURCES as DUCKER_SOURCES,
 };
+pub use dynamics::{DeEsser, Gate, Limiter, MultibandCompressor};
 pub use eq::Eq;
 pub use lofi::{LoFi, PRESETS as LOFI_PRESETS};
 pub use master::{MasterSafety, MasterStats};
@@ -134,6 +136,10 @@ pub mod ids {
     pub use crate::delay::ids as delay;
     pub use crate::drive::ids as drive;
     pub use crate::ducker::ids as ducker;
+    pub use crate::dynamics::deesser;
+    pub use crate::dynamics::gate;
+    pub use crate::dynamics::limiter;
+    pub use crate::dynamics::multiband;
     pub use crate::eq::ids as eq;
     pub use crate::lofi::ids as lofi;
     pub use crate::master::ids as master;

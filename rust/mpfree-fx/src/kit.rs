@@ -266,7 +266,7 @@ impl Line {
         let c3 = 0.5 * (x3 - x0) + 1.5 * (x1 - x2);
         ((c3 * t + c2) * t + c1) * t + x1
     }
-    /// The signal exactly `d` whole frames back (at least 1).
+    /// The frame `d - 1` frames before the newest (`tap(1)` is the newest).
     #[inline]
     pub(crate) fn tap(&self, d: usize) -> f32 {
         if self.buf.is_empty() {
@@ -387,15 +387,17 @@ mod tests {
         // A sine well inside each band comes back at the same level.
         for hz in [100.0f32, 1000.0, 8000.0] {
             x.reset();
-            let mut peak = 0.0f32;
+            let mut sum = 0.0f64;
             for n in 0..48_000 {
                 let s = (n as f32 * hz / 48_000.0 * std::f32::consts::TAU).sin();
                 let (l, h) = x.split(0, s);
-                if n > 24_000 {
-                    peak = peak.max((l + h).abs());
+                if n >= 24_000 {
+                    sum += f64::from((l + h) * (l + h));
                 }
             }
-            assert!((peak - 1.0).abs() < 0.01, "{hz}: {peak}");
+            // A unit sine's RMS is 1 / root 2.
+            let level = (sum / 24_000.0).sqrt() * std::f64::consts::SQRT_2;
+            assert!((level - 1.0).abs() < 0.005, "{hz}: {level}");
         }
     }
 
@@ -405,16 +407,19 @@ mod tests {
         for i in 0..10 {
             l.push(i as f32);
         }
+        // tap(1) is the newest frame; read(d) is d frames before it.
         assert_eq!(l.tap(1), 9.0);
-        assert_eq!(l.read(3.0), 7.0);
-        assert!((l.read(2.5) - 7.5).abs() < 1e-5);
+        assert_eq!(l.tap(3), 7.0);
+        assert_eq!(l.read(3.0), 6.0);
+        assert!((l.read(2.5) - 6.5).abs() < 1e-5);
     }
 }
 
 /// The `Node` methods every newer effect writes the same way. The type
 /// gives `v` (the values by id, meters included) and inherent methods:
 /// `apply(id, value)` (clamped already), `begin(&Ctx)` once per block,
-/// `run(l, r)` per piece between events, `setup(rate)`, `clear()`,
+/// `run(&Ctx, from, l, r)` per piece between events (`from` is the
+/// piece's first frame in the block, for reading the sidechain), `setup(rate)`, `clear()`,
 /// `tail()` and `lat()`.
 macro_rules! node_impl {
     ($t:ty, $info:expr, $params:expr) => {
@@ -464,7 +469,7 @@ macro_rules! node_impl {
                         mpfree_node::Node::set_param(self, id, value);
                     }
                 }) {
-                    self.run(&mut left[from..to], &mut right[from..to]);
+                    self.run(ctx, from, &mut left[from..to], &mut right[from..to]);
                 }
             }
         }

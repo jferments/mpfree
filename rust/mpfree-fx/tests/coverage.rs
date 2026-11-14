@@ -5,7 +5,7 @@
 //! its parameters, and its presets name its own parameters. Then each
 //! effect's own behaviour.
 
-use mpfree_fx::mpfree_node::{Ctx, Node, NodeEvent, Timed, MAX_BLOCK};
+use mpfree_fx::mpfree_node::{Ctx, Node, NodeEvent, Timed, Unit, MAX_BLOCK};
 use mpfree_fx::{ids, registry};
 
 const RATE: u32 = 48_000;
@@ -16,6 +16,10 @@ const COVERED: &[&str] = &[
     "mpfree.fx.autopan",
     "mpfree.fx.ringmod",
     "mpfree.fx.rotary",
+    "mpfree.fx.limiter",
+    "mpfree.fx.gate",
+    "mpfree.fx.deesser",
+    "mpfree.fx.multiband",
 ];
 
 fn make(id: &str) -> Box<dyn Node> {
@@ -164,7 +168,13 @@ fn every_extreme_stays_finite_and_bounded() {
                     1 => 1.0,
                     _ => (k % 2) as f32,
                 };
-                n.set_param(p.id, p.from_unit(t));
+                // Make-up and output gains stay at unity or under: a
+                // boost the user asks for is not a runaway.
+                let mut v = p.from_unit(t);
+                if p.unit == Unit::Db && p.min < 0.0 && p.max > 0.0 {
+                    v = v.min(0.0);
+                }
+                n.set_param(p.id, v);
             }
             let (l, r) = render(&mut *n, &input, &[], MAX_BLOCK);
             assert!(
@@ -199,7 +209,9 @@ fn reset_gives_a_fresh_start_and_latency_never_moves() {
         let a = render(&mut *n, &input, &[], 128);
         let b = render(&mut *fresh, &input, &[], 128);
         assert!(
-            a.0.iter().zip(&b.0).all(|(x, y)| x.to_bits() == y.to_bits()),
+            a.0.iter()
+                .zip(&b.0)
+                .all(|(x, y)| x.to_bits() == y.to_bits()),
             "{id}: reset is not a fresh start"
         );
     }
@@ -373,4 +385,203 @@ fn rotary_ramps_its_rotors_up_and_spreads_the_sound() {
     assert!(hi / lo > 1.5, "the horn's sweep moves the level: {hi} {lo}");
     let diff: Vec<f32> = l.iter().zip(&rr).map(|(a, b)| a - b).collect();
     assert!(rms(&diff[48_000..]) > 0.05 * rms(&l[48_000..]), "stereo");
+}
+
+// ------------------------------------------------------------ dynamics
+
+fn db(x: f32) -> f32 {
+    20.0 * x.max(1e-9).log10()
+}
+
+#[test]
+fn limiter_never_passes_its_ceiling_and_leaves_quiet_audio_alone() {
+    let mut lim = make("mpfree.fx.limiter");
+    lim.set_param(ids::limiter::GAIN, 18.0);
+    lim.set_param(ids::limiter::CEILING, -1.0);
+    lim.reset();
+    let input = program(48_000);
+    let (l, r) = render(&mut *lim, &input, &[], 128);
+    let ceiling = 10f32.powf(-1.0 / 20.0);
+    let p = peak(&l).max(peak(&r));
+    assert!(p <= ceiling * 1.000_01, "peak {p} over {ceiling}");
+    assert!(lim.param(ids::limiter::REDUCTION) > 3.0);
+
+    // Under the ceiling, the output is the input, late by the latency.
+    let mut lim = make("mpfree.fx.limiter");
+    let quiet = sine(300.0, 9600);
+    let (l, _) = render(&mut *lim, &(quiet.clone(), quiet.clone()), &[], 64);
+    let d = lim.latency() as usize;
+    assert_eq!(d, 77, "1.5 ms at 48 kHz plus the true-peak filter's half");
+    for i in d..l.len() {
+        assert!((l[i] - quiet[i - d]).abs() < 1e-6, "frame {i}");
+    }
+}
+
+#[test]
+fn limiter_true_peak_catches_peaks_between_samples() {
+    // A sine at a quarter of the rate, 45 degrees off: its samples peak at
+    // 0.707 but the wave itself reaches 1.0.
+    let x: Vec<f32> = (0..24_000)
+        .map(|i| (std::f32::consts::FRAC_PI_2 * i as f32 + std::f32::consts::FRAC_PI_4).sin())
+        .collect();
+    let level = |tp: f32| {
+        let mut lim = make("mpfree.fx.limiter");
+        lim.set_param(ids::limiter::CEILING, -1.0);
+        lim.set_param(ids::limiter::TRUE_PEAK, tp);
+        lim.reset();
+        let (l, _) = render(&mut *lim, &(x.clone(), x.clone()), &[], 128);
+        // A sine's true peak is its RMS times root 2.
+        db(rms(&l[12_000..]) * std::f32::consts::SQRT_2)
+    };
+    let (sample, truep) = (level(0.0), level(1.0));
+    assert!(sample > -0.2, "sample peaks pass: {sample}");
+    assert!(truep < -0.8, "true peak held to the ceiling: {truep}");
+}
+
+#[test]
+fn limiter_auto_release_recovers_fast_after_a_click() {
+    // A 1 ms spike then quiet: with Auto, the gain is back within half a
+    // dB in under 100 ms; held down far longer with a 1 s fixed release.
+    let mut x = vec![0.1f32; 48_000];
+    for v in &mut x[4800..4848] {
+        *v = 4.0;
+    }
+    let back = |auto: f32| {
+        let mut lim = make("mpfree.fx.limiter");
+        lim.set_param(
+            ids::limiter::RELEASE,
+            if auto > 0.5 { 100.0 } else { 1000.0 },
+        );
+        lim.set_param(ids::limiter::AUTO, auto);
+        lim.reset();
+        let (l, _) = render(&mut *lim, &(x.clone(), x.clone()), &[], 128);
+        (5000..48_000).find(|&i| l[i] > 0.095).unwrap_or(48_000)
+    };
+    let (fast, slow) = (back(1.0), back(0.0));
+    assert!(fast < 5000 + 4800, "auto is back in {fast}");
+    assert!(slow > fast + 9600, "fixed 1 s is slower: {slow}");
+}
+
+#[test]
+fn gate_shuts_on_quiet_noise_and_opens_without_chatter() {
+    let mut rng = Lcg(9);
+    let mut x: Vec<f32> = (0..48_000).map(|_| 0.002 * (rng.unit() - 0.5)).collect();
+    for v in &mut x[24_000..30_000] {
+        *v *= 200.0;
+    }
+    let mut g = make("mpfree.fx.gate");
+    g.set_param(ids::gate::THRESHOLD, -40.0);
+    g.reset();
+    let (l, _) = render(&mut *g, &(x.clone(), x.clone()), &[], 128);
+    assert!(peak(&l[8_000..23_000]) < 1e-6, "quiet noise is shut out");
+    let d = g.latency() as usize;
+    assert!(rms(&l[24_000 + d..30_000]) > 0.9 * rms(&x[24_000..30_000 - d]));
+
+    // A level that wavers 1 dB over and 2 dB under the threshold keeps the
+    // gate open (it shuts 4 dB under).
+    let wav: Vec<f32> = (0..48_000)
+        .map(|i| {
+            let a = if (i / 2400) % 2 == 0 { -39.0 } else { -42.0 };
+            10f32.powf(a / 20.0) * (i as f32 * 0.07).sin().signum()
+        })
+        .collect();
+    let mut g = make("mpfree.fx.gate");
+    g.set_param(ids::gate::THRESHOLD, -40.0);
+    g.set_param(ids::gate::HOLD, 0.0);
+    g.reset();
+    let (l, _) = render(&mut *g, &(wav.clone(), wav.clone()), &[], 128);
+    let shut = l[4800..]
+        .iter()
+        .zip(&wav[4800 - d..])
+        .filter(|(a, b)| a.abs() < 0.5 * b.abs())
+        .count();
+    assert_eq!(shut, 0, "no chatter");
+}
+
+#[test]
+fn gate_opens_from_the_sidechain_key() {
+    let n = 24_000;
+    let pad = vec![0.3f32; n];
+    let key: Vec<f32> = (0..n)
+        .map(|i| if (i / 6000) % 2 == 1 { 0.5 } else { 0.0 })
+        .collect();
+    let mut g = make("mpfree.fx.gate");
+    g.set_param(ids::gate::KEY, 1.0);
+    g.set_param(ids::gate::HOLD, 0.0);
+    g.set_param(ids::gate::RELEASE, 10.0);
+    g.reset();
+    let (mut l, mut r) = (pad.clone(), pad.clone());
+    for start in (0..n).step_by(128) {
+        let end = (start + 128).min(n);
+        let mut ctx = Ctx::new(RATE, start as u64);
+        ctx.sidechain = Some((&key[start..end], &key[start..end]));
+        g.process(&ctx, &[], &mut l[start..end], &mut r[start..end]);
+    }
+    assert!(peak(&l[2000..5900]) < 1e-3, "shut while the key is quiet");
+    assert!(rms(&l[7000..11_900]) > 0.29, "open while the key plays");
+}
+
+#[test]
+fn de_esser_turns_down_sibilance_and_leaves_the_rest() {
+    let mut rng = Lcg(21);
+    // A vocal-ish low tone with bursts of bright noise.
+    let low = sine(200.0, 48_000);
+    let mut hiss = vec![0.0f32; 48_000];
+    let mut hp = 0.0f32;
+    for (i, v) in hiss.iter_mut().enumerate() {
+        let n = rng.unit() - 0.5;
+        let y = n - hp; // first difference: a bright noise
+        hp = n;
+        if (i / 6000) % 2 == 1 {
+            *v = 0.4 * y;
+        }
+    }
+    let x: Vec<f32> = low.iter().zip(&hiss).map(|(a, b)| a + b).collect();
+    let mut d = make("mpfree.fx.deesser");
+    d.reset();
+    let (l, _) = render(&mut *d, &(x.clone(), x.clone()), &[], 128);
+    // What the de-esser did to the hiss: the output less the low tone
+    // (which split mode passes untouched).
+    let hiss_out: Vec<f32> = l.iter().zip(&low).map(|(a, b)| a - b).collect();
+    let burst = |y: &[f32]| rms(&y[6500..11_900]);
+    let quiet = |y: &[f32]| rms(&y[1000..5900]);
+    assert!(
+        db(burst(&hiss_out)) < db(burst(&hiss)) - 3.0,
+        "sibilance down: {} to {}, reduction {}",
+        db(burst(&hiss)),
+        db(burst(&hiss_out)),
+        d.param(ids::deesser::REDUCTION)
+    );
+    assert!(
+        (db(quiet(&l)) - db(quiet(&x))).abs() < 0.05,
+        "the low tone untouched"
+    );
+    assert!(d.param(ids::deesser::REDUCTION) >= 0.0);
+}
+
+#[test]
+fn multiband_sums_flat_and_squashes_only_the_loud_band() {
+    let mut m = make("mpfree.fx.multiband");
+    for b in 0..3 {
+        m.set_param(ids::multiband::ratio(b), 1.0);
+    }
+    for hz in [60.0f32, 200.0, 900.0, 2500.0, 9000.0] {
+        m.reset();
+        let x = sine(hz, 24_000);
+        let (l, _) = render(&mut *m, &(x.clone(), x.clone()), &[], 128);
+        let change = db(rms(&l[12_000..])) - db(rms(&x[12_000..]));
+        assert!(change.abs() < 0.1, "{hz} Hz: {change} dB");
+    }
+    // A loud low tone and a quiet high one: only the low band comes down.
+    let mut m = make("mpfree.fx.multiband");
+    m.set_param(ids::multiband::threshold(0), -30.0);
+    m.set_param(ids::multiband::ratio(0), 10.0);
+    m.reset();
+    let lo = sine(80.0, 48_000);
+    let hi: Vec<f32> = sine(8000.0, 48_000).iter().map(|v| v * 0.05).collect();
+    let both: Vec<f32> = lo.iter().zip(&hi).map(|(a, b)| a + b).collect();
+    let (l, _) = render(&mut *m, &(both.clone(), both), &[], 128);
+    assert!(m.param(ids::multiband::reduction(0)) > 10.0);
+    assert!(m.param(ids::multiband::reduction(2)) < 0.1);
+    assert!(db(rms(&l[24_000..])) < db(rms(&lo[24_000..])) - 10.0);
 }
