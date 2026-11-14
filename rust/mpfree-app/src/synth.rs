@@ -1,16 +1,19 @@
-//! The pad player's synth: MPFree's Poly, FM, Drums, Pluck, Wavetable or
-//! Keys (`mpfree-synth`) on the pads, edited on the Synth tab (`mpfree-synth-ui`).
+//! The pad player's synth: MPFree's Poly, FM, Drums, Pluck, Wavetable,
+//! Keys, Drawbar, Squelch or Analog (`mpfree-synth`) on the pads, edited on the
+//! Synth tab
+//! (`mpfree-synth-ui`).
 //!
 //! - The kit list ends with one more entry, "Synth: Poly" (or FM, Drums,
-//!   Pluck, Wavetable, Keys). Picking it, or opening the Synth tab, makes the pads play the
+//!   Pluck, Wavetable, Keys, Drawbar, Squelch, Analog). Picking it, or opening the Synth tab, makes the pads play the
 //!   synth. The Synth tab's options (MENU) pick the engine; a note still
 //!   ringing on another engine finishes its release.
 //! - Drums is a kit, not a keyboard: pad 1 plays the kit's Pad 1 note (a
 //!   Kit page knob, C2 by default) and each pad after it a semitone higher,
 //!   whatever the scale, layout, bank or octave. The pads are named by the
 //!   sound on them ("Kick", "Closed hat"), and the Synth tab shows the page
-//!   of the pad hit last. Pluck, Wavetable and Keys play the pad layouts as
-//!   Poly and FM do.
+//!   of the pad hit last. Pluck, Wavetable, Keys, Drawbar, Squelch and
+//!   Analog play the pad layouts as Poly and FM do (Squelch one note at a
+//!   time).
 //! - The pads are laid out by `mpfree_scale::pads` (owner, 2026-11-11):
 //!   with no scale, pad 1 plays C3 and each pad after it a semitone higher
 //!   (C3 to D#4), as in round 6. With a scale, each bank has its own
@@ -43,7 +46,7 @@ use mpfree_instruments::preset::{engine_of, Error as PresetError, Preset as Soun
 use mpfree_node::{Ctx, Node, NodeEvent, ParamInfo, Timed};
 use mpfree_synth::drum_params;
 use mpfree_synth::fm_params::FmPreset;
-use mpfree_synth::{Drums, Fm, Keys, Pluck, Poly, Preset, Wavetable};
+use mpfree_synth::{Analog, Drawbar, Drums, Fm, Keys, Pluck, Poly, Preset, Squelch, Wavetable};
 use mpfree_synth_ui::format::value_line;
 use mpfree_synth_ui::SynthState;
 pub use mpfree_tuning::Builtin;
@@ -61,6 +64,12 @@ pub const PLUCK_START_PRESET: &str = "Steel String";
 pub const WT_START_PRESET: &str = "Harmonic Pluck";
 /// The electric piano's preset at the start.
 pub const KEYS_START_PRESET: &str = "Init";
+/// The tonewheel organ's preset at the start.
+pub const DRAWBAR_START_PRESET: &str = "Init";
+/// The acid bass's preset at the start.
+pub const SQUELCH_START_PRESET: &str = "Acid Line";
+/// The vintage poly's preset at the start.
+pub const ANALOG_START_PRESET: &str = "Init";
 /// How far SHIFT + wheel moves the pads: pad 1 from C0 to C6.
 pub const MIN_OCTAVE: i32 = -3;
 pub const MAX_OCTAVE: i32 = 3;
@@ -93,7 +102,7 @@ fn black(note: u8) -> bool {
 }
 
 /// How many engines there are.
-const ENGINES: usize = 6;
+const ENGINES: usize = 9;
 
 /// The synth engines the pads can play.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -111,6 +120,12 @@ pub enum Engine {
     Wavetable,
     /// The electric piano: struck tines and reeds.
     Keys,
+    /// The tonewheel organ and its rotary speaker.
+    Drawbar,
+    /// The mono acid bass: diode ladder, accent and slide.
+    Squelch,
+    /// The vintage analog poly: voice cards that differ, poly-mod, chorus.
+    Analog,
 }
 
 impl Engine {
@@ -121,6 +136,9 @@ impl Engine {
         Engine::Pluck,
         Engine::Wavetable,
         Engine::Keys,
+        Engine::Drawbar,
+        Engine::Squelch,
+        Engine::Analog,
     ];
 
     pub fn name(self) -> &'static str {
@@ -131,6 +149,9 @@ impl Engine {
             Engine::Pluck => "Pluck",
             Engine::Wavetable => "Wavetable",
             Engine::Keys => "Keys",
+            Engine::Drawbar => "Drawbar",
+            Engine::Squelch => "Squelch",
+            Engine::Analog => "Analog",
         }
     }
 
@@ -148,6 +169,9 @@ impl Engine {
             Engine::Pluck => "mpfree.pluck",
             Engine::Wavetable => "mpfree.wavetable",
             Engine::Keys => "mpfree.keys",
+            Engine::Drawbar => "mpfree.drawbar",
+            Engine::Squelch => "mpfree.squelch",
+            Engine::Analog => "mpfree.analog",
         }
     }
 
@@ -380,6 +404,9 @@ pub struct Synth {
     pluck: Pluck,
     wt: Wavetable,
     keys: Keys,
+    drawbar: Drawbar,
+    squelch: Squelch,
+    analog: Analog,
     fm_presets: Vec<FmPreset>,
     rate: u32,
     /// Note events for each engine (in [`Engine::ALL`]'s order) this period.
@@ -425,6 +452,9 @@ fn static_presets(engine: Engine) -> &'static [Preset] {
         Engine::Pluck => Pluck::presets(),
         Engine::Wavetable => Wavetable::presets(),
         Engine::Keys => Keys::presets(),
+        Engine::Drawbar => Drawbar::presets(),
+        Engine::Squelch => Squelch::presets(),
+        Engine::Analog => Analog::presets(),
         Engine::Poly | Engine::Fm => Poly::presets(),
     }
 }
@@ -459,6 +489,9 @@ pub fn engine_node(id: &str, rate: u32) -> Option<Box<dyn Node>> {
         "mpfree.pluck" => Box::new(Pluck::new(rate)),
         "mpfree.wavetable" => Box::new(Wavetable::new(rate)),
         "mpfree.keys" => Box::new(Keys::new(rate)),
+        "mpfree.drawbar" => Box::new(Drawbar::new(rate)),
+        "mpfree.squelch" => Box::new(Squelch::new(rate)),
+        "mpfree.analog" => Box::new(Analog::new(rate)),
         _ => return None,
     })
 }
@@ -514,6 +547,21 @@ impl Synth {
         if let Some(p) = Keys::presets().get(keys_preset) {
             keys.load_preset(p);
         }
+        let mut drawbar = Drawbar::new(rate);
+        let drawbar_preset = start_preset(Drawbar::presets(), DRAWBAR_START_PRESET);
+        if let Some(p) = Drawbar::presets().get(drawbar_preset) {
+            drawbar.load_preset(p);
+        }
+        let mut squelch = Squelch::new(rate);
+        let squelch_preset = start_preset(Squelch::presets(), SQUELCH_START_PRESET);
+        if let Some(p) = Squelch::presets().get(squelch_preset) {
+            squelch.load_preset(p);
+        }
+        let mut analog = Analog::new(rate);
+        let analog_preset = start_preset(Analog::presets(), ANALOG_START_PRESET);
+        if let Some(p) = Analog::presets().get(analog_preset) {
+            analog.load_preset(p);
+        }
         let mut fm = Fm::new(rate);
         let fm_presets = Fm::presets();
         let fm_preset = fm_presets
@@ -530,6 +578,9 @@ impl Synth {
             meters_of(&pluck),
             meters_of(&wt),
             meters_of(&keys),
+            meters_of(&drawbar),
+            meters_of(&squelch),
+            meters_of(&analog),
         ];
         let settings = PadSettings::default();
         Synth {
@@ -539,6 +590,9 @@ impl Synth {
             pluck,
             wt,
             keys,
+            drawbar,
+            squelch,
+            analog,
             fm_presets,
             rate,
             events: [[Timed::new(0, NodeEvent::AllOff); MAX_EVENTS]; ENGINES],
@@ -559,6 +613,9 @@ impl Synth {
                 pluck_preset,
                 wt_preset,
                 keys_preset,
+                drawbar_preset,
+                squelch_preset,
+                analog_preset,
             ],
             pads_changed: false,
             fade: 0,
@@ -584,6 +641,9 @@ impl Synth {
             Engine::Pluck => &self.pluck,
             Engine::Wavetable => &self.wt,
             Engine::Keys => &self.keys,
+            Engine::Drawbar => &self.drawbar,
+            Engine::Squelch => &self.squelch,
+            Engine::Analog => &self.analog,
         }
     }
 
@@ -622,6 +682,9 @@ impl Synth {
             Engine::Pluck => &mut self.pluck,
             Engine::Wavetable => &mut self.wt,
             Engine::Keys => &mut self.keys,
+            Engine::Drawbar => &mut self.drawbar,
+            Engine::Squelch => &mut self.squelch,
+            Engine::Analog => &mut self.analog,
         }
     }
 
@@ -633,6 +696,9 @@ impl Synth {
             Engine::Pluck => &self.pluck,
             Engine::Wavetable => &self.wt,
             Engine::Keys => &self.keys,
+            Engine::Drawbar => &self.drawbar,
+            Engine::Squelch => &self.squelch,
+            Engine::Analog => &self.analog,
         }
     }
 
@@ -644,6 +710,9 @@ impl Synth {
             Engine::Pluck => &mut self.pluck,
             Engine::Wavetable => &mut self.wt,
             Engine::Keys => &mut self.keys,
+            Engine::Drawbar => &mut self.drawbar,
+            Engine::Squelch => &mut self.squelch,
+            Engine::Analog => &mut self.analog,
         }
     }
 
@@ -720,6 +789,9 @@ impl Synth {
             Engine::Pluck => self.pluck.active_voices(),
             Engine::Wavetable => self.wt.active_voices(),
             Engine::Keys => self.keys.active_voices(),
+            Engine::Drawbar => self.drawbar.active_voices(),
+            Engine::Squelch => self.squelch.active_voices(),
+            Engine::Analog => self.analog.active_voices(),
         }
     }
 
@@ -796,6 +868,9 @@ impl Synth {
         self.drums.set_tuning(&t);
         self.pluck.set_tuning(&t);
         self.keys.set_tuning(&t);
+        self.drawbar.set_tuning(&t);
+        self.squelch.set_tuning(&t);
+        self.analog.set_tuning(&t);
         self.wt.set_tuning(&t);
     }
 
@@ -1177,6 +1252,9 @@ impl Synth {
                     Engine::Pluck => &mut self.pluck,
                     Engine::Wavetable => &mut self.wt,
                     Engine::Keys => &mut self.keys,
+                    Engine::Drawbar => &mut self.drawbar,
+                    Engine::Squelch => &mut self.squelch,
+                    Engine::Analog => &mut self.analog,
                 };
                 node.process(&ctx, &self.events[k][first..e[k]], sl, sr);
                 if !sl.iter().chain(sr.iter()).all(|s| s.is_finite()) {
@@ -1211,6 +1289,9 @@ impl Synth {
                     self.pluck.reset();
                     self.wt.reset();
                     self.keys.reset();
+                    self.drawbar.reset();
+                    self.squelch.reset();
+                    self.analog.reset();
                     self.playing = [Held::default(); PADS];
                     self.holders = [0; 128];
                     self.fading = false;
@@ -1245,6 +1326,11 @@ impl Synth {
             Engine::Pluck => self.pluck.param(mpfree_synth::pluck_params::POLYPHONY),
             Engine::Wavetable => self.wt.param(mpfree_synth::wavetable::params::POLYPHONY),
             Engine::Keys => self.keys.param(mpfree_synth::keys_params::POLYPHONY),
+            // Every key plays, as on the organ.
+            Engine::Drawbar => mpfree_synth::drawbar::MAX_KEYS as f32,
+            // One note at a time.
+            Engine::Squelch => 1.0,
+            Engine::Analog => self.analog.param(mpfree_synth::analog_params::POLYPHONY),
         }
     }
 
@@ -1256,7 +1342,12 @@ impl Synth {
             Engine::Poly => self.poly.pressures(out),
             Engine::Fm => self.fm.pressures(out),
             Engine::Wavetable => self.wt.pressures(out),
-            Engine::Drums | Engine::Pluck | Engine::Keys => 0,
+            Engine::Drums
+            | Engine::Pluck
+            | Engine::Keys
+            | Engine::Drawbar
+            | Engine::Squelch
+            | Engine::Analog => 0,
         }
     }
 
@@ -1316,6 +1407,9 @@ impl Synth {
             Engine::Pluck => self.pluck.load_preset(p),
             Engine::Wavetable => self.wt.load_preset(p),
             Engine::Keys => self.keys.load_preset(p),
+            Engine::Drawbar => self.drawbar.load_preset(p),
+            Engine::Squelch => self.squelch.load_preset(p),
+            Engine::Analog => self.analog.load_preset(p),
             Engine::Poly | Engine::Fm => self.poly.load_preset(p),
         }
         self.presets[e.index()] = i;
@@ -1514,6 +1608,21 @@ impl Synth {
                 n.load_preset(p);
                 values(&n)
             }
+            Engine::Drawbar => {
+                let mut n = Drawbar::new(rate);
+                n.load_preset(p);
+                values(&n)
+            }
+            Engine::Squelch => {
+                let mut n = Squelch::new(rate);
+                n.load_preset(p);
+                values(&n)
+            }
+            Engine::Analog => {
+                let mut n = Analog::new(rate);
+                n.load_preset(p);
+                values(&n)
+            }
             Engine::Poly | Engine::Fm => {
                 let mut n = Poly::new(rate);
                 n.load_preset(p);
@@ -1672,6 +1781,9 @@ mod tests {
             Engine::Pluck,
             Engine::Wavetable,
             Engine::Keys,
+            Engine::Drawbar,
+            Engine::Squelch,
+            Engine::Analog,
         ] {
             with(&mut s, |p| p.engine = engine);
             // A preset other than the first, with a value changed after.

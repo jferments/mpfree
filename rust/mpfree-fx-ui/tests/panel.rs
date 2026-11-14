@@ -44,7 +44,7 @@ fn ev(widget: &str, kind: EventKind) -> UiEvent {
 #[test]
 fn every_sample_screen_draws() {
     let list = samples(Fonts::embedded).unwrap();
-    assert_eq!(list.len(), 29);
+    assert_eq!(list.len(), 30);
     for mut s in list {
         let (w, h) = s.ui.size();
         let mut c = SoftCanvas::new(w, h);
@@ -707,4 +707,40 @@ fn the_vocal_effects_draw_their_key() {
     let thirds: Vec<i32> = [0, 2, 4, 5, 7, 9, 11].iter().map(|&n| step(n)).collect();
     assert_eq!(thirds, [4, 3, 3, 4, 4, 3, 3]);
     assert!(h.caption.contains("3rd up"), "{}", h.caption);
+}
+
+#[test]
+fn the_tuner_needle_sits_on_the_cents() {
+    use mpfree_fx::ids::tuner;
+    let theme = mpfree_ui::Theme::dark();
+    let card = |st: &FxState| {
+        let scratch = mpfree_fx_ui::Scratch::new(st);
+        mpfree_fx_ui::visual::strip(st, "Tuner", None, &scratch, &theme)
+            .cards
+            .remove(0)
+    };
+    // Nothing heard: no needle, and the card says to play.
+    let quiet = card(&state("mpfree.fx.tuner", &[]));
+    assert_eq!(quiet.title, "Tuner");
+    assert_eq!(quiet.traces.len(), 1);
+    assert!(
+        quiet.caption.starts_with("Play a note"),
+        "{}",
+        quiet.caption
+    );
+    // A2, 7 cents flat: the needle a fourteenth left of the middle, amber.
+    let mut st = state("mpfree.fx.tuner", &[]);
+    for (id, v) in [
+        (tuner::NOTE, 45.0),
+        (tuner::CENTS, -7.0),
+        (tuner::HZ, 109.56),
+    ] {
+        let i = st.index(id).unwrap();
+        st.values[i] = v;
+    }
+    let c = card(&st);
+    let needle = &c.traces[1];
+    assert!((needle.pts[0].0 - 0.43).abs() < 1e-5);
+    assert_eq!(needle.color, theme.warn);
+    assert!(c.caption.starts_with("A2 · -7.0 c"), "{}", c.caption);
 }

@@ -1,7 +1,8 @@
 //! The parts that can run on the audio thread (or the MIDI reader thread)
 //! must not allocate or free once made: routing input, routing output,
-//! writing and pacing a period's bytes, and the CV engine. MIDI Learn is
-//! control-thread code and is left out.
+//! writing and pacing a period's bytes, the CV engine, and the monitor's
+//! feed and its drain into the list. MIDI Learn is control-thread code and
+//! is left out.
 //!
 //! This test file is its own program, so its global allocator (a
 //! pass-through to the system allocator) does not affect the library.
@@ -12,6 +13,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use mpfree_midi::cv::{CvAssign, CvEngine, Priority, Scale};
 use mpfree_midi::input::{In, InputMode, InputRouter, Listen};
+use mpfree_midi::monitor::{Dir, Feed, Monitor, KEEP};
 use mpfree_midi::output::{DinPacer, OutQueue, OutRoute, OutputRouter, Timed};
 use mpfree_midi::{Msg, PortId, DIN, MAX_PORTS};
 
@@ -172,4 +174,31 @@ fn routing_pacing_and_cv_never_allocate() {
     );
     assert!(seen > 1000);
     assert!(pacer.stats.messages > 0);
+}
+
+#[test]
+fn the_monitor_never_allocates_once_made() {
+    let mut feed = Feed::new();
+    let mut m = Monitor::new();
+    let usb = PortId(1);
+    watch(true);
+    let mut t = 0.0;
+    // Past the list's length, so the oldest are dropped too.
+    for i in 0..(KEEP / 4 + 50) {
+        t = i as f64 * 0.005;
+        feed.bytes(usb, Dir::In, t, &[0x90, 60, 100, 0xF8, 0x80, 60, 0]);
+        feed.bytes(DIN, Dir::Out, t, &[0xB1, 74, (i % 128) as u8, 0xF8]);
+        feed.bytes(DIN, Dir::In, t, &[0xF0, 0x47, 0x00, 0x01, 0xF7, 0xFE]);
+        if i % 8 == 0 {
+            feed.drain_into(&mut m, t);
+        }
+    }
+    feed.drain_into(&mut m, t + 2.0);
+    m.clear();
+    feed.bytes(usb, Dir::In, t + 3.0, &[0xC0, 1]);
+    feed.drain_into(&mut m, t + 3.0);
+    watch(false);
+    assert_eq!(CALLS.load(Ordering::Relaxed), 0, "the monitor allocated");
+    assert_eq!(m.len(), 1);
+    assert!(m.total() > KEEP as u64);
 }

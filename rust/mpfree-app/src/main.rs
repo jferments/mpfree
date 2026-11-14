@@ -2667,13 +2667,32 @@ fn synth_tab(
 /// tuning (Drums keeps its kit notes).
 fn own_follow_synth(synth: &synth::Synth, own: &mut instruments::Instruments) {
     let tuning = synth.tuning_now();
-    for t in 0..instruments::SLOTS {
+    for t in 0..instruments::TRACKS {
         if let Some(h) = own.held(t) {
             let e = synth::Engine::from_node_id(h.id).unwrap_or(synth::Engine::Poly);
             own.set_pads(t, synth.pads_for(e));
             own.set_tuning(t, &tuning);
         }
     }
+}
+
+/// What the screen says when track `track` can't have the instrument
+/// `name` because [`instruments::SLOTS`] other tracks already have their
+/// own.
+fn full_note(track: usize, name: &str) -> String {
+    format!(
+        "Track {} plays the kit: {} tracks already have their own instrument, the most at once. Set one of them to Kit to give {name} its place",
+        track + 1,
+        instruments::SLOTS
+    )
+}
+
+/// Instrument `id`'s name for the screen: an engine's or a plugin's.
+fn instrument_name(plugins: &plugins::Plugins, id: &'static str) -> &'static str {
+    synth::Engine::from_node_id(id)
+        .map(|e| e.name())
+        .or_else(|| plugins.find(id).map(|e| e.name))
+        .unwrap_or(id)
 }
 
 /// A job for track `track`'s own instrument `id`: an engine's copy of the
@@ -3356,7 +3375,7 @@ fn player_session(
     let n = drum_kits + 1;
     let mut synth_on = false;
     // Each track's own instrument's preset, as last picked (instruments.rs).
-    let mut track_presets: [Option<usize>; instruments::SLOTS] = [None; instruments::SLOTS];
+    let mut track_presets: [Option<usize>; instruments::TRACKS] = [None; instruments::TRACKS];
     let mut param_log = synth::ParamLog::default();
     // UNDO on the Synth tab and the mixer: their knob and fader turns.
     let mut synth_turns: undo::Turns<u16> = undo::Turns::default();
@@ -3370,7 +3389,7 @@ fn player_session(
     let mut synth_meters = synth.meters();
     // What each track plays, as the screen last heard it (the line under
     // its name on Arrange).
-    let mut sounds_shown: gui::TrackSounds = [None; instruments::SLOTS];
+    let mut sounds_shown: gui::TrackSounds = [None; instruments::TRACKS];
     // Each sounding voice's pressure, for the Synth tab's Pressure page.
     let mut synth_pressures = [0f32; 16];
     let mut shown_pressures = 0usize;
@@ -4132,53 +4151,65 @@ fn player_session(
                     }
                     // Each track's own instrument: the project's (made on
                     // the screen thread), or none, so the track plays the
-                    // kit. The old ones ring out. One the host can't take
-                    // goes back in the box, to be freed on the screen thread.
+                    // kit. The old ones ring out. First the ones the
+                    // project hasn't got come out, so their places are free
+                    // for the project's. One the host can't take goes back
+                    // in the box, to be freed on the screen thread.
                     let mut changed = 0;
                     let mut playing = 0;
-                    for track in 0..instruments::SLOTS {
-                        track_presets[track] = None;
-                        let at = o
-                            .instruments
+                    let loaded_for = |o: &project::Opening, track: usize| {
+                        o.instruments
                             .iter()
-                            .position(|l| l.as_ref().is_some_and(|l| l.track == track));
-                        let loaded = at.and_then(|k| o.instruments[k].take());
-                        if loaded.is_none() && !mix.instruments.holds(track) {
+                            .position(|l| l.as_ref().is_some_and(|l| l.track == track))
+                    };
+                    for track in 0..instruments::TRACKS {
+                        track_presets[track] = None;
+                        if loaded_for(&o, track).is_some() || !mix.instruments.holds(track) {
                             continue;
                         }
                         changed += 1;
-                        match loaded {
-                            Some(l) => {
-                                let engine = synth::Engine::from_node_id(l.held.id);
-                                let pads = synth.pads_for(engine.unwrap_or(synth::Engine::Poly));
-                                mix.instruments.set_tuning(track, &synth.tuning_now());
-                                let held = l.held;
-                                match mix.instruments.put(track, Some((l.instrument, held)), pads) {
-                                    Ok(()) => playing += 1,
-                                    Err(back) => {
-                                        if let (Some(instrument), Some(k)) = (back, at) {
-                                            o.instruments[k] = Some(project::Loaded {
-                                                track,
-                                                instrument,
-                                                held,
-                                            });
-                                        }
-                                        out.note(&format!(
-                                            "project: track {}: {} not put in (its last sound is still ringing out); it keeps what it had",
-                                            track + 1,
-                                            held.name
-                                        ));
-                                    }
+                        if !mix.instruments.take_out(track) {
+                            out.note(&format!(
+                                "project: track {} keeps its instrument (its last sound is still ringing out)",
+                                track + 1
+                            ));
+                        }
+                        app.set_track_sound(track, mix.instruments.held(track));
+                    }
+                    for track in 0..instruments::TRACKS {
+                        let Some(k) = loaded_for(&o, track) else {
+                            continue;
+                        };
+                        let Some(l) = o.instruments[k].take() else {
+                            continue;
+                        };
+                        changed += 1;
+                        let engine = synth::Engine::from_node_id(l.held.id);
+                        let pads = synth.pads_for(engine.unwrap_or(synth::Engine::Poly));
+                        let held = l.held;
+                        let put = (l.instrument, held);
+                        match mix.instruments.put(track, put, pads, &synth.tuning_now()) {
+                            Ok(()) => playing += 1,
+                            Err((why, back)) => {
+                                if let Some(instrument) = back {
+                                    o.instruments[k] = Some(project::Loaded {
+                                        track,
+                                        instrument,
+                                        held,
+                                    });
                                 }
-                            }
-                            None => {
-                                let pads = synth.pads_for(synth.engine());
-                                if mix.instruments.put(track, None, pads).is_err() {
-                                    out.note(&format!(
-                                        "project: track {} keeps its instrument (its last sound is still ringing out)",
-                                        track + 1
-                                    ));
-                                }
+                                let why = match why {
+                                    instruments::Refused::Full => format!(
+                                        "{} tracks already play their own",
+                                        instruments::SLOTS
+                                    ),
+                                    _ => "its last sound is still ringing out".to_string(),
+                                };
+                                out.note(&format!(
+                                    "project: track {}: {} not put in ({why}); it keeps what it had",
+                                    track + 1,
+                                    held.name
+                                ));
                             }
                         }
                         app.set_track_sound(track, mix.instruments.held(track));
@@ -4755,10 +4786,9 @@ fn player_session(
                 // the kit again.
                 app::Effect::TrackSound { track, id } => match id {
                     None => {
-                        let pads = synth.pads_for(synth.engine());
-                        match mix.instruments.put(track, None, pads) {
-                            Ok(()) => out.note(&format!("track {}: plays the kit", track + 1)),
-                            Err(_) => {
+                        match mix.instruments.take_out(track) {
+                            true => out.note(&format!("track {}: plays the kit", track + 1)),
+                            false => {
                                 let s = format!(
                                     "Track {}: its last sound is still ringing out; try again in a moment",
                                     track + 1
@@ -4777,6 +4807,13 @@ fn player_session(
                             track,
                             None,
                         )));
+                    }
+                    // Not made at all while every place is taken.
+                    Some(id) if !mix.instruments.has_room(track) => {
+                        let s = full_note(track, instrument_name(mix.plugins(), id));
+                        out.note(&s);
+                        out.show(gui::ToUi::Tell(s));
+                        app.set_track_sound(track, mix.instruments.held(track));
                     }
                     Some(id) => {
                         let job = instrument_job(&synth, track, id, None);
@@ -5081,9 +5118,15 @@ fn player_session(
                     out.note(&s);
                     out.show(gui::ToUi::Tell(s));
                 }
+                mixing::Landed::Full { track, name } => {
+                    let s = full_note(track, name);
+                    out.note(&s);
+                    out.show(gui::ToUi::Tell(s));
+                }
             }
-            let (mixing::Landed::Playing { track, .. } | mixing::Landed::Failed { track, .. }) =
-                landed;
+            let (mixing::Landed::Playing { track, .. }
+            | mixing::Landed::Failed { track, .. }
+            | mixing::Landed::Full { track, .. }) = landed;
             app.set_track_sound(track, mix.instruments.held(track));
         }
         // The clips and every track's arp (the pads go through the armed
