@@ -6,9 +6,10 @@ use crate::view::{SynthPanel, SynthState};
 use mpfree_node::{Ctx, Curve, Kind, Node, NodeEvent, NodeInfo, ParamInfo, Timed, Unit};
 use mpfree_synth::fm_params::{self as fp, op};
 use mpfree_synth::params as pp;
+use mpfree_synth::params::Preset;
 use mpfree_synth::wavetable::params as wtp;
 use mpfree_synth::Wavetable;
-use mpfree_synth::{Drums, Fm, Pluck, Poly};
+use mpfree_synth::{Analog, Drawbar, Drums, Fm, Keys, Pluck, Poly, Squelch};
 use mpfree_ui::widgets::{Chip, Header, Label};
 use mpfree_ui::{Align, Color, Fonts, Theme, Tone, Ui};
 
@@ -302,8 +303,99 @@ pub fn samples(fonts: impl Fn() -> Fonts) -> Result<Vec<Sample>, String> {
         "Mallet",
         fonts(),
     )?);
+    for (name, about, engine, preset, page) in [
+        ("synth-keys-strike", "Keys · Bright Tines, Strike page: the hammer at velocity 40 and 127, and C2, C4 and C6 ringing out",
+         "keys", "Bright Tines", "Strike"),
+        ("synth-keys-tone", "Keys · Reed Bite, Tone page: the reed's pickup curve with the stretch a hit swings across",
+         "keys", "Reed Bite", "Tone"),
+        ("synth-drawbar", "Drawbar · Jazz Perc, Drawbars page: the registration as bars, the wave it adds up to, third percussion",
+         "drawbar", "Jazz Perc", "Drawbars"),
+        ("synth-drawbar-rotary", "Drawbar · Gospel, Rotary page: the horn and the drum spinning up to Fast",
+         "drawbar", "Gospel", "Rotary"),
+        ("synth-squelch", "Squelch · Acid Line, Synth page: the saw, the filter at rest and at the envelope's peak",
+         "squelch", "Acid Line", "Synth"),
+        ("synth-squelch-play", "Squelch · Acid Line, Play page: the cutoff's sweep for a plain note and an accented one",
+         "squelch", "Acid Line", "Play"),
+        ("synth-analog-filter", "Analog · Poly Brass, Filter page: the four-pole filter and where its envelope takes it",
+         "analog", "Poly Brass", "Filter"),
+        ("synth-analog-voice", "Analog · Worn Cards, Voice page: each voice card's own tuning at its Age",
+         "analog", "Worn Cards", "Voice"),
+    ] {
+        out.push(inst_scene(name, about, engine, preset, page, fonts())?);
+    }
     out.push(generic_scene(fonts())?);
     Ok(out)
+}
+
+/// A node with a preset loaded, the preset names and the preset's index.
+type Loaded = (Box<dyn Node>, Vec<String>, usize);
+
+/// A node with the preset of this name loaded, the preset names and its
+/// index.
+fn loaded<N: Node + 'static>(
+    mut node: N,
+    presets: &'static [Preset],
+    load: fn(&mut N, &Preset),
+    preset: &str,
+) -> Result<Loaded, String> {
+    let i = presets
+        .iter()
+        .position(|p| p.name == preset)
+        .ok_or_else(|| format!("no preset {preset}"))?;
+    load(&mut node, &presets[i]);
+    let names = presets.iter().map(|p| p.name.to_string()).collect();
+    Ok((Box::new(node), names, i))
+}
+
+/// Keys, Drawbar, Squelch or Analog with a factory preset, on one of its
+/// pages.
+fn inst_scene(
+    name: &'static str,
+    about: &'static str,
+    engine: &str,
+    preset: &str,
+    page: &str,
+    fonts: Fonts,
+) -> Result<Sample, String> {
+    const RATE: u32 = 48_000;
+    let (node, names, i) = match engine {
+        "keys" => loaded(Keys::new(RATE), Keys::presets(), Keys::load_preset, preset)?,
+        "drawbar" => loaded(
+            Drawbar::new(RATE),
+            Drawbar::presets(),
+            Drawbar::load_preset,
+            preset,
+        )?,
+        "squelch" => loaded(
+            Squelch::new(RATE),
+            Squelch::presets(),
+            Squelch::load_preset,
+            preset,
+        )?,
+        "analog" => loaded(
+            Analog::new(RATE),
+            Analog::presets(),
+            Analog::load_preset,
+            preset,
+        )?,
+        _ => return Err(format!("no engine {engine}")),
+    };
+    let st = SynthState::from_node(node.as_ref(), "Keys", Color::rgb(0x3DDC97), names, Some(i));
+    let mut ui = app_ui(fonts, POLY_HINT);
+    let mut panel = SynthPanel::add(&mut ui, PAGE, st)?;
+    let k = panel
+        .pages()
+        .iter()
+        .position(|p| p.name == page)
+        .ok_or_else(|| format!("no page {page}"))?;
+    panel.show_page(&mut ui, k);
+    ui.show(PAGE)?;
+    Ok(Sample {
+        name,
+        about,
+        ui,
+        panel,
+    })
 }
 
 const WT_HINT: &str = "Drag a tile to turn it · tap a tile, then the wheel · SHIFT + wheel: page · pads play the Lead track";

@@ -67,12 +67,12 @@ static INFO: NodeInfo = NodeInfo {
     kind: Kind::Effect,
 };
 static PARAMS: [ParamInfo; 24] = [
-    param(0, "Gate", "Gate", 0.0, 1.0, 0.0, NONE, Toggle),
+    param(0, "Gate", "Strip", 0.0, 1.0, 0.0, NONE, Toggle),
     param(1, "Gate thresh", "Gate", -80.0, 0.0, -50.0, Db, Linear),
     param(2, "Gate range", "Gate", -80.0, 0.0, -30.0, Db, Linear),
     param(3, "Gate attack", "Gate", 0.1, 50.0, 0.5, Ms, Log),
     param(4, "Gate release", "Gate", 5.0, 2000.0, 120.0, Ms, Log),
-    param(5, "Comp", "Compressor", 0.0, 1.0, 1.0, NONE, Toggle),
+    param(5, "Comp", "Strip", 0.0, 1.0, 1.0, NONE, Toggle),
     param(
         6,
         "Comp thresh",
@@ -96,7 +96,7 @@ static PARAMS: [ParamInfo; 24] = [
         Log,
     ),
     param(10, "Makeup", "Compressor", 0.0, 24.0, 0.0, Db, Linear),
-    param(11, "EQ", "EQ", 0.0, 1.0, 1.0, NONE, Toggle),
+    param(11, "EQ", "Strip", 0.0, 1.0, 1.0, NONE, Toggle),
     param(
         12,
         "Low cut",
@@ -114,8 +114,8 @@ static PARAMS: [ParamInfo; 24] = [
     param(17, "Mid Q", "EQ", 0.4, 10.0, 1.0, NONE, Log),
     param(18, "High freq", "EQ", 1200.0, 20_000.0, 8000.0, Hz, Log),
     param(19, "High gain", "EQ", -12.0, 12.0, 0.0, Db, Linear),
-    param(20, "Order", "Output", 0.0, 1.0, 0.0, NONE, Choice(ORDERS)),
-    param(21, "Output", "Output", -24.0, 12.0, 0.0, Db, Linear),
+    param(20, "Order", "Strip", 0.0, 1.0, 0.0, NONE, Choice(ORDERS)),
+    param(21, "Output", "Strip", -24.0, 12.0, 0.0, Db, Linear),
     meter(22, "Gate gain", "Gate", -80.0, 0.0, Db),
     meter(23, "Reduction", "Compressor", -60.0, 0.0, Db),
 ];

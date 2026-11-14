@@ -28,6 +28,8 @@ pub struct Page {
 struct PlanPage {
     name: &'static str,
     groups: &'static [&'static str],
+    /// Parameters of other groups, after the groups' own.
+    params: &'static [u16],
     qlinks: &'static [u16],
 }
 
@@ -36,9 +38,22 @@ const fn pg(
     groups: &'static [&'static str],
     qlinks: &'static [u16],
 ) -> PlanPage {
+    pg_with(name, groups, &[], qlinks)
+}
+
+/// A page that also takes some parameters of other groups. Their groups
+/// stay as they are, since a saved preset names each parameter by its
+/// group.
+const fn pg_with(
+    name: &'static str,
+    groups: &'static [&'static str],
+    params: &'static [u16],
+    qlinks: &'static [u16],
+) -> PlanPage {
     PlanPage {
         name,
         groups,
+        params,
         qlinks,
     }
 }
@@ -272,9 +287,10 @@ use mpfree_synth::keys_params as ek;
 /// Keys: the model and the strike, the pickup's tone, the amp (tremolo,
 /// drive, key noise), and the voice.
 const KEYS: &[PlanPage] = &[
-    pg(
+    pg_with(
         "Strike",
         &["Model"],
+        &[ek::HARDNESS, ek::BELL],
         &[ek::HARDNESS, ek::BELL, ek::DECAY, ek::RELEASE],
     ),
     pg(
@@ -399,14 +415,22 @@ pub fn plan(info: &NodeInfo, params: &[ParamInfo]) -> Vec<Page> {
         for PlanPage {
             name,
             groups,
+            params: more,
             qlinks,
         } in plan
         {
-            let idx: Vec<usize> = groups
+            let mut idx: Vec<usize> = Vec::new();
+            let own = groups
                 .iter()
-                .flat_map(|g| (0..params.len()).filter(move |&i| params[i].group == *g))
-                .filter(|&i| !placed[i])
-                .collect();
+                .flat_map(|g| (0..params.len()).filter(move |&i| params[i].group == *g));
+            let other = more
+                .iter()
+                .filter_map(|id| params.iter().position(|p| p.id == *id));
+            for i in own.chain(other) {
+                if !placed[i] && !idx.contains(&i) {
+                    idx.push(i);
+                }
+            }
             for &i in &idx {
                 placed[i] = true;
             }
@@ -682,6 +706,17 @@ mod tests {
         let names: Vec<&str> = pages.iter().map(|p| p.name.as_str()).collect();
         assert_eq!(names, ["Strike", "Tone", "Amp", "Voice"]);
         every_param_once(&pages, params.len());
+        let names =
+            |page: &Page| -> Vec<&str> { page.params.iter().map(|&i| params[i].name).collect() };
+        assert_eq!(
+            names(&pages[0]),
+            ["Model", "Decay", "Release", "Hardness", "Bell"]
+        );
+        let q: Vec<&str> = qlink_targets(&pages[0], params)
+            .iter()
+            .map(|&i| params[i].name)
+            .collect();
+        assert_eq!(q, ["Hardness", "Bell", "Decay", "Release"]);
         let q: Vec<&str> = qlink_targets(&pages[1], params)
             .iter()
             .map(|&i| params[i].name)

@@ -10,6 +10,7 @@
 //! is still a favourite when it comes back; a picker simply doesn't show
 //! them.
 
+use crate::families::{self, tile_id};
 use crate::registry::{self, Category};
 use crate::Preset;
 
@@ -61,10 +62,19 @@ pub fn sections(categories: impl IntoIterator<Item = Category>) -> Vec<Section> 
 /// that order, Favourites and Recent in the shelf's order, leaving out
 /// what the strip doesn't offer.
 pub fn members(section: Section, offered: &[(&str, Category)], shelf: &Shelf) -> Vec<usize> {
+    // A family's engines all show as its one tile (an older list may name
+    // a Plate or a Tape delay), once.
     let from = |ids: &[String]| -> Vec<usize> {
-        ids.iter()
-            .filter_map(|id| offered.iter().position(|(o, _)| o == id))
-            .collect()
+        let mut out: Vec<usize> = Vec::new();
+        for id in ids {
+            let id = tile_id(id);
+            if let Some(i) = offered.iter().position(|(o, _)| *o == id) {
+                if !out.contains(&i) {
+                    out.push(i);
+                }
+            }
+        }
+        out
     };
     match section {
         Section::Favourites => from(&shelf.favourites),
@@ -95,10 +105,52 @@ pub fn first_section(sections: &[Section], offered: &[(&str, Category)], shelf: 
         .unwrap_or(Section::Favourites)
 }
 
-/// An effect's factory presets, for the picker's presets list (none for a
-/// plugin or an id the registry doesn't know).
+/// An effect's factory presets (none for a plugin or an id the registry
+/// doesn't know): what `preset` in a [`PresetRow`] indexes.
 pub fn presets(id: &str) -> &'static [Preset] {
     registry::entry(id).map_or(&[], |e| e.presets)
+}
+
+/// One row of a tile's presets list (after "Defaults", which adds the
+/// tile's effect as it starts): the engine it adds and the index of the
+/// preset in that engine's [`presets`], its name, and the mode it plays
+/// in for a family ("Plate"; empty for an effect in none).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PresetRow {
+    pub id: &'static str,
+    pub preset: usize,
+    pub name: &'static str,
+    pub mode: &'static str,
+}
+
+/// The presets list of the tile `id`: a family's presets across its
+/// modes, in mode order ([`families::presets`]), or the effect's own.
+pub fn preset_rows(id: &str) -> Vec<PresetRow> {
+    if let Some(f) = families::family(id) {
+        return families::presets(f)
+            .into_iter()
+            .map(|p| PresetRow {
+                id: p.id,
+                preset: p.index,
+                name: p.preset.name,
+                mode: f.modes[p.mode].label,
+            })
+            .collect();
+    }
+    match registry::entry(id) {
+        Some(e) => e
+            .presets
+            .iter()
+            .enumerate()
+            .map(|(i, p)| PresetRow {
+                id: e.id,
+                preset: i,
+                name: p.name,
+                mode: "",
+            })
+            .collect(),
+        None => Vec::new(),
+    }
 }
 
 /// The favourite and recent effects.
@@ -125,8 +177,10 @@ impl Shelf {
         text(&self.recent)
     }
 
+    /// A family's engines share its one star.
     pub fn is_favourite(&self, id: &str) -> bool {
-        self.favourites.iter().any(|f| f == id)
+        let id = tile_id(id);
+        self.favourites.iter().any(|f| tile_id(f) == id)
     }
 
     /// Stars or unstars `id`; true if that changed anything. A new
@@ -136,27 +190,32 @@ impl Shelf {
         if !valid(id) {
             return false;
         }
-        let at = self.favourites.iter().position(|f| f == id);
-        match (on, at) {
-            (true, None) if self.favourites.len() < MAX_FAVOURITES => {
+        let id = tile_id(id);
+        let starred = self.is_favourite(id);
+        match (on, starred) {
+            (true, false) if self.favourites.len() < MAX_FAVOURITES => {
                 self.favourites.push(id.to_string());
                 true
             }
-            (false, Some(i)) => {
-                self.favourites.remove(i);
+            (false, true) => {
+                self.favourites.retain(|f| tile_id(f) != id);
                 true
             }
             _ => false,
         }
     }
 
-    /// `id` was just added to a chain: it goes to the front of Recent.
-    /// True if the list changed.
+    /// `id` was just added to a chain: it (its family's tile, for one in a
+    /// family) goes to the front of Recent. True if the list changed.
     pub fn used(&mut self, id: &str) -> bool {
-        if !valid(id) || self.recent.first().is_some_and(|r| r == id) {
+        if !valid(id) {
             return false;
         }
-        self.recent.retain(|r| r != id);
+        let id = tile_id(id);
+        if self.recent.first().is_some_and(|r| r == id) {
+            return false;
+        }
+        self.recent.retain(|r| tile_id(r) != id);
         self.recent.insert(0, id.to_string());
         self.recent.truncate(MAX_RECENT);
         true
@@ -282,6 +341,46 @@ mod tests {
         }
         assert_eq!(r.recent.len(), MAX_RECENT);
         assert_eq!(r.recent[0], "mpfree.fx.e19");
+    }
+
+    #[test]
+    fn a_family_shows_and_stars_as_one_tile() {
+        let mut s = Shelf::default();
+        s.used("mpfree.fx.plate");
+        s.used("mpfree.fx.gate");
+        s.used("mpfree.fx.room");
+        assert_eq!(s.recent, ["mpfree.fx.room", "mpfree.fx.gate"]);
+        assert!(s.set_favourite("mpfree.fx.cloud", true));
+        assert!(s.is_favourite("mpfree.fx.spring"));
+        assert!(!s.set_favourite("mpfree.fx.plate", true));
+        // An older list naming two reverbs shows the one tile once.
+        let old = Shelf::read("mpfree.fx.plate\nmpfree.fx.cloud\n", "");
+        let offered = [
+            ("mpfree.fx.room", Category::DelayReverb),
+            ("mpfree.fx.gate", Category::Dynamics),
+        ];
+        assert_eq!(members(Section::Favourites, &offered, &old), vec![0]);
+        let mut old = old;
+        assert!(old.set_favourite("mpfree.fx.room", false));
+        assert!(old.favourites.is_empty());
+    }
+
+    #[test]
+    fn preset_rows_cover_a_family_or_an_effect() {
+        let rows = preset_rows("mpfree.fx.room");
+        assert!(rows
+            .iter()
+            .any(|r| r.name == "Vocal plate" && r.mode == "Plate"));
+        assert!(rows
+            .iter()
+            .any(|r| r.name == "Big hall" && r.mode == "Hall"));
+        for r in &rows {
+            assert_eq!(presets(r.id)[r.preset].name, r.name);
+        }
+        let gate = preset_rows("mpfree.fx.gate");
+        assert_eq!(gate.len(), presets("mpfree.fx.gate").len());
+        assert!(gate.iter().all(|r| r.mode.is_empty()));
+        assert!(preset_rows("clap:com.example.verb").is_empty());
     }
 
     #[test]

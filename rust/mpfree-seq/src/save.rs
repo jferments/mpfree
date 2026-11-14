@@ -755,6 +755,27 @@ mod tests {
     }
 
     #[test]
+    fn a_project_of_128_tracks_reads_back_and_one_more_is_refused() {
+        let mut p = Project::new();
+        for i in 0..MAX_TRACKS {
+            p.tracks
+                .push(Track::new(&format!("Track {}", i + 1), i as u16));
+        }
+        p.tracks[127].slots[3] = Some(Clip::new("Last", 480));
+        // Scene mutes reach the last track; the text is a plain number,
+        // as before 128 tracks, so older projects read the same.
+        p.scene_mut(1).unwrap().mutes = Some(1 << 127 | 0b101);
+        p.check().unwrap();
+        let text = to_text(&p);
+        assert_eq!(from_text(&text).unwrap(), p);
+        let old = to_text(&full());
+        assert!(old.contains("mutes 5\n"));
+        assert_eq!(from_text(&old).unwrap().scenes[2].mutes, Some(5));
+        let more = text.replace("scene 0", "track Track 129\ndest 128\nscene 0");
+        assert!(from_text(&more).is_err(), "129 tracks");
+    }
+
+    #[test]
     fn unknown_lines_are_skipped_and_bad_ones_refuse_the_part() {
         let text = to_text(&full());
         let newer = text.replace("dest 0\n", "dest 0\nsparkle 7 9\n");
