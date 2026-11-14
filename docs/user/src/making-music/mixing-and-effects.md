@@ -1,7 +1,7 @@
 <!--
 status: changing
-covers: rust/mpfree-fx rust/mpfree-mixer-ui rust/mpfree-fx-ui rust/mpfree-chain-ui rust/mpfree-app/src/plugins.rs rust/mpfree-plughost/src/rack.rs rust/mpfree-app/src/chain_page.rs rust/mpfree-app/src/mixing.rs rust/mpfree-fx/src/perform.rs
-checked: 2026-11-13 9560b32
+covers: rust/mpfree-fx rust/mpfree-mixer-ui rust/mpfree-fx-ui rust/mpfree-chain-ui rust/mpfree-app/src/plugins.rs rust/mpfree-plughost/src/rack.rs rust/mpfree-app/src/chain_page.rs rust/mpfree-app/src/mixing.rs rust/mpfree-fx/src/perform.rs rust/mpfree-fx/src/xyfx.rs rust/mpfree-fx/src/picker.rs rust/mpfree-chain-ui/src/picker.rs
+checked: 2026-11-14 461f67e
 -->
 
 # Mixing and effects
@@ -93,6 +93,19 @@ These effects can go on any strip. The list of effects groups them: Dynamics, EQ
 | **Transient shaper** | More or less punch at the start of each hit and more or less ring after it, at any level, with no threshold to set. |
 | **Pitch shifter** | Moves the sound up to two octaves up or down without changing its speed. Spread detunes left and right for a wide double; feedback makes rising or falling stairs. |
 | **Cloud reverb** | A large, lush reverb. |
+| **Limiter** | A brick wall: nothing gets past the ceiling. **True peak** also catches peaks between samples; **Auto release** keeps a loud mix from pumping. |
+| **Gate** | Silences (or turns down) what falls under the threshold, so drums stop ringing. It can open from another strip's sound, for rhythmic gating. |
+| **De-esser** | Turns down harsh "s" and "t" sounds. **Listen** plays only what it hears, to find the right frequency. |
+| **Multiband comp** | Three compressors, on the lows, mids and highs. |
+| **Amp** | A guitar or bass amp (Clean, Crunch, Lead, Bass) with its tone controls and a speaker cabinet. |
+| **Exciter** | Adds sparkle and air to the top end. |
+| **Tremolo**, **Auto-pan** | Volume or position moved in time with the music. Tremolo's **Harmonic** mode is the swirl of 1960s amps. |
+| **Ring mod** | Bells, clangs and robot voices. |
+| **Rotary** | A spinning organ speaker: switch **Speed** between Slow and Fast and it ramps up or down like the real one. |
+| **Tape delay** | Echoes from a tape loop with up to three heads, wow and flutter, that darken and thicken as they repeat. |
+| **Multi-tap delay** | Four echoes on the beat, each with its own level and pan. |
+| **Room reverb**, **Plate reverb**, **Spring reverb** | Smaller, classic reverbs. The room's **Gate** cuts its tail short, for the 1980s gated snare. |
+| **XY FX** | One effect at a time played from two controls at once, X and Y: see [XY FX](#xy-fx). |
 
 Adding, removing or reordering an effect while the music plays doesn't click: that strip dips out for a moment and comes back.
 
@@ -117,7 +130,7 @@ Every one of these is written in MPFree's report, so nothing goes wrong without 
 
 ## The chain editor
 
-Tap an effect in a strip's insert row to open the **chain editor** on it, in the mixer's place. Tap the strip's **+ Insert** to add an effect, with the list of effects already open; a new effect goes at the end of the chain. In the chain editor, **+ Add effect** opens the list again and **Cancel** closes it; you can also reorder (**Up**, **Down**), bypass (the power button on each row) and **Remove** effects, and turn the selected effect's knobs. If the chain is full or the mixer is busy, the line at the bottom of the screen says so for a few seconds.
+Tap an effect in a strip's insert row to open the **chain editor** on it, in the mixer's place. Tap the strip's **+ Insert** to add an effect, with the list of effects already open (see [Adding an effect](#adding-an-effect)); a new effect goes at the end of the chain. In the chain editor, **+ Add effect** opens the list again and **Cancel** closes it; you can also reorder (**Up**, **Down**), bypass (the power button on each row) and **Remove** effects, and turn the selected effect's knobs. If the chain is full or the mixer is busy, the line at the bottom of the screen says so for a few seconds.
 
 The Q-Links turn the selected effect's first four knobs, and the data wheel works as Q-Link 1. **‹ Mixer** goes back to the mixer as you left it.
 
@@ -128,6 +141,38 @@ The Sample tab's **FX** opens the chain editor too, on the pad you are editing (
 To give a knob a control of its own, touch it and tap **Learn to a Q-Link**, then turn a Q-Link, or move a knob or fader on your keyboard (see [MIDI Learn](midi-and-cv.md#midi-learn)).
 
 {{shot: chain | The chain editor on the drum bus, with Drive selected.}}
+
+## Adding an effect
+
+**+ Insert** on a strip, or **+ Add effect** in the chain editor, opens the list of effects over the chain editor.
+
+- Down the left are **Favourites**, **Recent** (the last 12 effects you added), then the groups (Dynamics, EQ and filter, Drive and colour, Modulation, Delay and reverb, Pitch and vocal, Performance, and Plugins), each with how many effects it has. Tap one to see its effects on the right. The list opens where you left it.
+- **Tap an effect** to add it with its usual settings.
+- **Hold an effect** (half a second), or tap its **presets** line, to see its presets: tap one to add the effect already set that way, or **Defaults** for its usual settings. **‹ Effects** goes back.
+- **Tap the star** on an effect to add it to Favourites, and again to take it off. Favourites and Recent are kept when you turn the MPC off, for every project.
+- **With the data wheel:** turn it to move through the effects, **SHIFT + turn** to move through the groups, and **press** it to open the effect's presets; press again to add the preset that is lit. The line at the bottom of the screen reminds you.
+
+**Cancel** closes the list without adding anything.
+
+## XY FX
+
+**XY FX** plays one effect from two controls at once, **X** and **Y**: Q-Links 1 and 2 turn them, and you can automate or lock them on steps like any knob. Pick the effect with **Effect**:
+
+| Effect | X | Y |
+|---|---|---|
+| **Filter** | Low-pass to the left, high-pass to the right, off in the middle | Resonance |
+| **Echo** | The echo's time, in steps from 1/32 to 1/2 | Feedback |
+| **Dub echo** | A tape echo's time; moving it bends the pitch | Feedback, up to a howl |
+| **Wash** | How long the reverb lasts | How bright it is |
+| **Crush** | Sample rate, lower to the right | Fewer bits towards the top |
+| **Flanger**, **Phaser** | The sweep, moved by hand | Feedback |
+| **Ring mod** | The tone it rings at | How much |
+| **Gate** | How fast it chops, from 1/32 to 1/4 | How deep |
+
+**Active** switches the effect in and out, fading in over **Attack** and out over **Release**. Switched out, the Filter, Crush, Flanger, Phaser, Ring mod and Gate go back to the dry sound, while the echoes and the wash ring on: switching out an echo is a throw. **Mix** sets how much you hear. Changing the effect crossfades, so it doesn't click.
+
+> [!NOTE]
+> **Not yet:** a touch pad for XY FX on the screen. For now X and Y are its first two knobs and Q-Links 1 and 2. The Play page has an XY pad of its own, for the DJ filter and an echo (see [Playing live](playing-live.md#the-xy-pad)).
 
 ## Macros
 
@@ -155,3 +200,5 @@ Each of these costs almost nothing until you use it.
 
 > [!MPC]
 > The mixer covers the MPC's routing: pad channels, tracks, submixes, four send returns and the master, with sends before or after the fader and side-chain keys. The differences: the mixer opens over any page instead of being its own mode, solo keeps everything the strip feeds, the master always ends in a safety limiter, and effects with a delay of their own are lined up automatically so nothing drifts out of time.
+>
+> Most MPC effects have an MPFree effect or preset in their place: the MPC's many Delay versions (Mono, Sync, Ping Pong, Analog, LP, HP) are the **Delay** and its presets, Delay Tape is the **Tape delay**, Reverb Small, Medium and In Gate are the **Room reverb**, Reverb Large and AIR Reverb the **Cloud reverb**, AIR Spring Reverb the **Spring reverb**, Distortion Amp the **Amp**, AIR Enhancer the **Exciter**, AIR Maximizer and AIR Limiter the **Limiter**, AIR Noise Gate the **Gate**, AIR Pumper and Mother Ducker the **Ducker**, Decimator and Resampler **Crush**, and XYFX is **XY FX**. Not here yet: Auto Wah, the frequency shifters, AIR Stereo Width, AIR Talkbox and Granulator.
