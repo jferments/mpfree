@@ -397,6 +397,10 @@ impl Node for Delay {
             self.run(&mut left[from..to], &mut right[from..to]);
         }
     }
+    fn rest_frames(&self) -> u32 {
+        // What it holds is its tail: once rung out it is as good as reset.
+        self.tail_frames()
+    }
     fn tail_frames(&self) -> u32 {
         if self.v[7] >= 0.5 {
             return u32::MAX;

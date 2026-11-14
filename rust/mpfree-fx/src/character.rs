@@ -437,6 +437,10 @@ impl Node for Character {
         self.grid = 0;
         self.coefs(self.amount.value);
     }
+    fn rest_frames(&self) -> u32 {
+        // What it holds is its tail: once rung out it is as good as reset.
+        self.tail_frames()
+    }
     fn tail_frames(&self) -> u32 {
         // Tape's head bump and Iron's DC blocker ring for a few tens of ms.
         self.rate / 10

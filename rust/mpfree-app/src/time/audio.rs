@@ -249,6 +249,14 @@ impl TimeAudio {
         self.transport.command(at, cmd)
     }
 
+    /// A transport command on frame `at` of the transport's clock, or at
+    /// the next period's start if that is later. False if the queue is
+    /// full.
+    pub fn command_at(&mut self, at: u64, cmd: Command) -> bool {
+        let at = at.max(self.transport.frame());
+        self.transport.command(at, cmd)
+    }
+
     /// The app's tempo, unless the transport follows another device's
     /// clock that is arriving.
     pub fn follow_tempo(&mut self, bpm: f64) {

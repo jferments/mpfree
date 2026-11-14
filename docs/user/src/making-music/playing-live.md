@@ -1,7 +1,7 @@
 <!--
 status: changing
 covers: rust/mpfree-sampler-ui/src/levels_panel.rs rust/mpfree-app/src/play_page.rs rust/mpfree-app/src/play_widgets.rs rust/mpfree-app/src/mixing.rs rust/mpfree-fx/src/perform.rs
-checked: 2026-11-13 dcaefdd
+checked: 2026-11-14 b76c3c7
 -->
 
 # Playing live

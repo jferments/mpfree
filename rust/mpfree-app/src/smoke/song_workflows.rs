@@ -751,4 +751,288 @@ mod tests {
             assert_eq!(s.time.project().arrangement, arr, "the song came back");
         });
     }
+
+    // ------------------------------------------------------- exporting
+
+    /// A WAV file the export wrote (24-bit PCM): its frames, interleaved
+    /// stereo, and its rate.
+    fn wav(path: &std::path::Path) -> (Vec<f32>, u32) {
+        let b = std::fs::read(path).expect("the WAV file");
+        assert_eq!(&b[..4], b"RIFF");
+        assert_eq!(&b[8..12], b"WAVE");
+        let (mut at, mut rate, mut bits, mut data) = (12, 0, 0, None);
+        while at + 8 <= b.len() {
+            let len = u32::from_le_bytes([b[at + 4], b[at + 5], b[at + 6], b[at + 7]]) as usize;
+            let body = &b[at + 8..(at + 8 + len).min(b.len())];
+            match &b[at..at + 4] {
+                b"fmt " => {
+                    assert_eq!(u16::from_le_bytes([body[2], body[3]]), 2, "stereo");
+                    rate = u32::from_le_bytes([body[4], body[5], body[6], body[7]]);
+                    bits = u16::from_le_bytes([body[14], body[15]]);
+                }
+                b"data" => data = Some(body),
+                _ => {}
+            }
+            at += 8 + len + (len & 1);
+        }
+        assert_eq!(bits, 24, "24-bit");
+        let audio = data
+            .expect("a data chunk")
+            .chunks_exact(3)
+            .map(|x| (i32::from_le_bytes([0, x[0], x[1], x[2]]) >> 8) as f32 / 8_388_608.0)
+            .collect();
+        (audio, rate)
+    }
+
+    /// The loudest sample between `a` and `b` seconds of interleaved
+    /// stereo at `rate`.
+    fn peak(audio: &[f32], rate: u32, a: f64, b: f64) -> f32 {
+        let at = |t: f64| ((t * f64::from(rate)) as usize * 2).min(audio.len());
+        audio[at(a)..at(b)].iter().fold(0f32, |m, x| m.max(x.abs()))
+    }
+
+    /// A type 1 MIDI file's tracks after the conductor: each one's name
+    /// and its note-ons' ticks.
+    fn midi(path: &std::path::Path) -> Vec<(String, Vec<u64>)> {
+        let b = std::fs::read(path).expect("the MIDI file");
+        assert_eq!(&b[..4], b"MThd");
+        assert_eq!(u16::from_be_bytes([b[8], b[9]]), 1, "type 1");
+        assert_eq!(
+            u16::from_be_bytes([b[12], b[13]]),
+            960,
+            "960 ticks a quarter"
+        );
+        let mut at = 14;
+        let mut tracks = Vec::new();
+        while at + 8 <= b.len() {
+            assert_eq!(&b[at..at + 4], b"MTrk");
+            let len = u32::from_be_bytes([b[at + 4], b[at + 5], b[at + 6], b[at + 7]]) as usize;
+            let t = &b[at + 8..at + 8 + len];
+            let (mut i, mut tick, mut name, mut ons) = (0, 0u64, String::new(), Vec::new());
+            let var = |i: &mut usize| {
+                let mut v = 0u64;
+                loop {
+                    let c = t[*i];
+                    *i += 1;
+                    v = (v << 7) | u64::from(c & 0x7f);
+                    if c & 0x80 == 0 {
+                        return v;
+                    }
+                }
+            };
+            while i < t.len() {
+                tick += var(&mut i);
+                let status = t[i];
+                i += 1;
+                match status {
+                    0xff => {
+                        let kind = t[i];
+                        i += 1;
+                        let n = var(&mut i) as usize;
+                        if kind == 0x03 {
+                            name = String::from_utf8_lossy(&t[i..i + n]).into_owned();
+                        }
+                        i += n;
+                    }
+                    0xf0 | 0xf7 => {
+                        let n = var(&mut i) as usize;
+                        i += n;
+                    }
+                    _ => {
+                        let n = if matches!(status & 0xf0, 0xc0 | 0xd0) {
+                            1
+                        } else {
+                            2
+                        };
+                        if status & 0xf0 == 0x90 && t[i + 1] > 0 {
+                            ons.push(tick);
+                        }
+                        i += n;
+                    }
+                }
+            }
+            tracks.push((name, ons));
+            at += 8 + len;
+        }
+        tracks.remove(0); // the conductor
+        tracks
+    }
+
+    /// BROWSE > Projects > Export, then Start on its panel (with
+    /// `untick`'s boxes unticked first): the export runs in fast mode and
+    /// says how it went. Returns that line and the folder in Recordings.
+    fn export(s: &mut Session, untick: &[&str], within: f64) -> (String, std::path::PathBuf) {
+        if s.app.view() != crate::app::View::Browser {
+            s.button("BROWSE");
+        }
+        s.press("browser", "place", "Projects");
+        s.press("browser", "button", "Export");
+        for label in untick {
+            s.press("browser", "export", label);
+        }
+        let before = s.said().len();
+        s.press("browser", "export", "Start");
+        let line = s
+            .until_said_like("export: Export", within)
+            .unwrap_or_else(|| panic!("the export ended: {:?}", &s.said()[before..]));
+        // "Exported 1:55 to <folder>: ..."
+        let name = line
+            .split_once(" to ")
+            .and_then(|(_, r)| r.split_once(": "))
+            .map(|(n, _)| n.to_string())
+            .expect("the export said its folder");
+        let dir = s
+            .library
+            .as_ref()
+            .unwrap()
+            .root()
+            .join(mpfree_library::Place::Recordings.folder())
+            .join(&name);
+        (line, dir)
+    }
+
+    /// Night Market's whole arrangement exported in fast mode: a mixdown,
+    /// a stem for each mixer strip that sounded (every track here plays
+    /// the pads, so the Drums strip, and the return its reverb sends to)
+    /// and a MIDI file, in a new folder in Recordings. The mixdown runs the
+    /// song's 44 bars (and a short tail); in the MIDI file each track has
+    /// its notes as they played, only in the sections it is placed in; and
+    /// afterwards the transport is back as it was, song mode off.
+    #[test]
+    fn night_market_exports_its_arrangement_as_mixdown_stems_and_midi() {
+        on_big_stack(|| {
+            let song = songs::night_market();
+            let mut l = lab("night-export");
+            let s = &mut l.s;
+            s.make_sounds();
+            open(s, song.name);
+            assert!(!s.time.song_on());
+            let played_from = s.hits.played.len();
+            let (line, dir) = export(s, &[], 400.0);
+            assert!(
+                line.starts_with("export: Exported ") && line.contains("a MIDI file"),
+                "{line}"
+            );
+            let names: BTreeSet<String> = std::fs::read_dir(&dir)
+                .expect("the export's folder")
+                .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+                .collect();
+            let want: BTreeSet<String> = [
+                "Mixdown.wav",
+                "Drums.wav",
+                "Return A.wav",
+                "Night Market.mid",
+            ]
+            .into_iter()
+            .map(String::from)
+            .collect();
+            assert_eq!(names, want);
+
+            // The mixdown: 44 bars, then a short tail (the tones die in a
+            // tenth of a second; the reverb a little later).
+            let b = bar(&song);
+            let (mix, rate) = wav(&dir.join("Mixdown.wav"));
+            assert_eq!(rate, crate::RATE);
+            let secs = mix.len() as f64 / 2.0 / f64::from(rate);
+            assert!(secs >= 44.0 * b - 0.01 && secs < 44.0 * b + 5.0, "{secs} s");
+            for k in 0..44 {
+                let k = f64::from(k);
+                assert!(
+                    peak(&mix, rate, k * b, (k + 1.0) * b) > 0.02,
+                    "bar {} sounds",
+                    k + 1.0
+                );
+            }
+            let (drums, _) = wav(&dir.join("Drums.wav"));
+            assert_eq!(
+                drums.len(),
+                mix.len(),
+                "the stems are as long as the mixdown"
+            );
+            assert!(
+                peak(&drums, rate, 0.0, 44.0 * b) > 0.02,
+                "the Drums stem sounds"
+            );
+
+            // The MIDI file: a track per track, each with as many notes as
+            // played in the pass, only in the sections it is placed in.
+            let tracks = midi(&dir.join("Night Market.mid"));
+            let in_file: BTreeSet<&str> = tracks.iter().map(|(n, _)| n.as_str()).collect();
+            assert_eq!(in_file, set(&["Drums", "Perc", "Bass", "Keys", "Chops"]));
+            let arr = &song.clips.arrangement;
+            for (name, ons) in &tracks {
+                let t = song.track(name);
+                let played = s.hits.played[played_from..]
+                    .iter()
+                    .filter(|p| p.track == t)
+                    .count();
+                assert_eq!(ons.len(), played, "{name}'s notes");
+                for &k in ons {
+                    let k = k as i64;
+                    assert!(
+                        arr.placements
+                            .iter()
+                            .any(|p| p.track == t && p.start <= k && k < p.start + p.length),
+                        "{name}'s note at tick {k} is inside one of its placements"
+                    );
+                }
+            }
+
+            // The transport as it was.
+            assert!(!s.time.song_on(), "song mode off again");
+            assert!(!s.time.info().state.rolling(), "stopped");
+        });
+    }
+
+    /// Tidal Suite has no arrangement, so the panel offers bars of what
+    /// plays now: with the Ebb launched, 8 bars exported with Stems
+    /// unticked make only the mixdown and the MIDI file, 8 bars long and
+    /// a short tail, with no note after the 8 bars.
+    #[test]
+    fn tidal_suite_exports_eight_bars_of_the_ebb_without_stems() {
+        on_big_stack(|| {
+            let song = songs::tidal_suite();
+            let mut l = lab("tidal-export");
+            let s = &mut l.s;
+            s.make_sounds();
+            open(s, song.name);
+            launch(s, song.scene("Ebb"));
+            s.run_for(0.5);
+            s.button("STOP").run_for(0.2);
+            let (line, dir) = export(s, &["Stems"], 120.0);
+            assert!(line.contains("1 WAV file and a MIDI file"), "{line}");
+            let names: BTreeSet<String> = std::fs::read_dir(&dir)
+                .unwrap()
+                .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+                .collect();
+            assert_eq!(names.len(), 2, "{names:?}");
+            assert!(names.contains("Mixdown.wav"));
+            let (mix, rate) = wav(&dir.join("Mixdown.wav"));
+            let b = bar(&song);
+            let secs = mix.len() as f64 / 2.0 / f64::from(rate);
+            assert!(secs >= 8.0 * b - 0.01 && secs < 8.0 * b + 5.0, "{secs} s");
+            assert!(peak(&mix, rate, 0.0, 8.0 * b) > 0.05, "it sounds");
+            let mid = names.iter().find(|n| n.ends_with(".mid")).unwrap();
+            let tracks = midi(&dir.join(mid));
+            assert!(
+                tracks
+                    .iter()
+                    .any(|(n, ons)| n == "Drums" && !ons.is_empty()),
+                "the Ebb's drums in the MIDI file: {tracks:?}"
+            );
+            // The 8 bars and nothing after: no note past the range, and
+            // the tail only rings out (the tones die in a tenth of a
+            // second).
+            assert!(
+                tracks
+                    .iter()
+                    .all(|(_, ons)| ons.iter().all(|&k| k < 8 * songs::BAR as u64)),
+                "no note past the 8 bars"
+            );
+            assert!(
+                peak(&mix, rate, 8.0 * b + 1.0, secs) < 0.01,
+                "the tail rings out"
+            );
+        });
+    }
 }
