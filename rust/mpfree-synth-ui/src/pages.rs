@@ -267,6 +267,33 @@ const PLUCK: &[PlanPage] = &[
     ),
 ];
 
+use mpfree_synth::keys_params as ek;
+
+/// Keys: the model and the strike, the pickup's tone, the amp (tremolo,
+/// drive, key noise), and the voice.
+const KEYS: &[PlanPage] = &[
+    pg(
+        "Strike",
+        &["Model"],
+        &[ek::HARDNESS, ek::BELL, ek::DECAY, ek::RELEASE],
+    ),
+    pg(
+        "Tone",
+        &["Tone"],
+        &[ek::VOICING, ek::BARK, ek::TONE, ek::VEL_TONE],
+    ),
+    pg(
+        "Amp",
+        &["Amp"],
+        &[ek::TREMOLO, ek::TREM_RATE, ek::DRIVE, ek::KEY_NOISE],
+    ),
+    pg(
+        "Voice",
+        &["Voice", "Output"],
+        &[ek::TRANSPOSE, ek::BEND_RANGE, ek::LEVEL, ek::PAN],
+    ),
+];
+
 fn known(id: &str) -> Option<&'static [PlanPage]> {
     match id {
         "mpfree.poly" => Some(POLY),
@@ -274,6 +301,7 @@ fn known(id: &str) -> Option<&'static [PlanPage]> {
         "mpfree.wavetable" => Some(WT),
         "mpfree.drums" => Some(DRUMS),
         "mpfree.pluck" => Some(PLUCK),
+        "mpfree.keys" => Some(KEYS),
         _ => None,
     }
 }
@@ -554,6 +582,27 @@ mod tests {
                 .collect();
             assert_eq!(q, ["Tune", "Decay", "Tone", "Snap"], "{}", p.name);
             assert_eq!(drum_page(n), n);
+            for &i in &p.params {
+                assert!(tile_label(&p.name, &params[i]).len() <= 20);
+            }
+        }
+    }
+
+    #[test]
+    fn keys_has_its_own_pages() {
+        use mpfree_node::Node;
+        let s = mpfree_synth::Keys::new(48_000);
+        let params = s.params();
+        let pages = plan(s.info(), params);
+        let names: Vec<&str> = pages.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, ["Strike", "Tone", "Amp", "Voice"]);
+        every_param_once(&pages, params.len());
+        let q: Vec<&str> = qlink_targets(&pages[1], params)
+            .iter()
+            .map(|&i| params[i].name)
+            .collect();
+        assert_eq!(q, ["Voicing", "Bark", "Tone", "Vel > tone"]);
+        for p in &pages {
             for &i in &p.params {
                 assert!(tile_label(&p.name, &params[i]).len() <= 20);
             }

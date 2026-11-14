@@ -76,6 +76,7 @@ use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use mpfree_fx::Mixer;
+use mpfree_lanes::os::IdleCounts;
 use mpfree_lanes::{Config as LaneConfig, Job, Lane, Setup as LaneSetup};
 use mpfree_ui::Tone;
 
@@ -754,6 +755,20 @@ impl Cores {
     }
 }
 
+/// The log's line when a long job (stretching, looper prints, sampling a
+/// synth; [`mpfree_lanes::os::idle_job`]) was refused idle priority and
+/// runs at normal priority: a fallback, so never silent. It shows in the
+/// console too, with the count since the start.
+pub fn idle_note(c: IdleCounts) -> String {
+    format!(
+        "threads: a long job runs at normal priority, idle priority refused ({}); {} of {} \
+         since the start",
+        c.why.unwrap_or("no reason given"),
+        c.refused,
+        c.asked
+    )
+}
+
 /// How a lane started: its core and priority, or why not.
 fn lane_text(s: &LaneSetup, what: &str) -> (String, Tone) {
     if let Err(e) = &s.threaded {
@@ -897,6 +912,20 @@ mod tests {
     }
     fn slot() -> SynthSlot {
         SynthSlot::new(Synth::new(44_100))
+    }
+
+    #[test]
+    fn a_long_job_refused_idle_priority_is_logged_with_the_count() {
+        let c = IdleCounts {
+            asked: 3,
+            refused: 1,
+            why: Some("Operation not permitted (os error 1)"),
+        };
+        assert_eq!(
+            idle_note(c),
+            "threads: a long job runs at normal priority, idle priority refused (Operation not \
+             permitted (os error 1)); 1 of 3 since the start"
+        );
     }
 
     #[test]
