@@ -25,6 +25,10 @@
 //!   no threshold.
 //! - [`PitchShifter`]: two octaves down to two up without changing speed,
 //!   with fine tune, stereo spread and feedback.
+//! - [`PitchCorrect`]: tunes a voice to the nearest note of a key and
+//!   scale, from a gentle pull to the hard robot snap, formants kept.
+//! - [`Harmonizer`]: two extra voices a third, fourth, fifth, sixth or
+//!   octave away that follow the key, panned either side.
 //! - [`Cloud`]: a lush algorithmic reverb ported from Cloud Seed, with
 //!   five characters (plate, room, hall, cloud, echoes) and freeze.
 //! - [`MasterSafety`]: the last stage of every output: DC block, trim, a
@@ -89,6 +93,7 @@ pub mod registry;
 mod rooms;
 mod svf;
 mod transient;
+mod vocal;
 mod xy;
 pub mod xyfx;
 
@@ -129,6 +134,10 @@ pub use registry::{Category, FxEntry, EFFECTS};
 pub use rooms::{Plate, Room, Spring};
 pub use svf::{DjFilter, MultiFilter, Svf, SvfMode};
 pub use transient::TransientShaper;
+pub use vocal::{
+    interval_semis, nearest_note, Harmonizer, PitchCorrect, INTERVALS as VOCAL_INTERVALS,
+    KEYS as VOCAL_KEYS, RANGES as VOCAL_RANGES, SCALES as VOCAL_SCALES,
+};
 pub use xy::{XyAxis, XyPad};
 pub use xyfx::XyFx;
 
@@ -173,6 +182,8 @@ pub mod ids {
     pub use crate::svf::dj as dj_filter;
     pub use crate::svf::multi as filter;
     pub use crate::transient::ids as transient;
+    pub use crate::vocal::harm_ids as harmonizer;
+    pub use crate::vocal::tune_ids as pitch_correct;
     pub use crate::xyfx::ids as xyfx;
 }
 
