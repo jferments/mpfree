@@ -199,7 +199,7 @@ impl ToneStack {
 // ---------------------------------------------------------------- amp
 
 /// [`Amp`] parameter ids.
-pub mod amp {
+pub mod amp_ids {
     pub const MODEL: u16 = 0;
     pub const GAIN: u16 = 1;
     pub const BASS: u16 = 2;
@@ -209,6 +209,7 @@ pub mod amp {
     pub const CAB: u16 = 6;
     pub const LEVEL: u16 = 7;
 }
+use amp_ids as amp;
 
 const MODELS: &[&str] = &["Clean", "Crunch", "Lead", "Bass"];
 const CABS: &[&str] = &["Off", "1x12 open", "2x12", "4x12", "1x15 bass"];
@@ -222,6 +223,11 @@ struct Model {
     stages: usize,
     bias: f32,
     stack: Stack,
+    /// The output trim in dB at Gain 0, 2.5, 5, 7.5 and 10 (straight
+    /// lines between), measured with a picked note at about -18 dBFS so
+    /// the amp comes out about 2 dB above what went in: Gain changes the
+    /// grit far more than the loudness, as Drive's Auto-gain does.
+    trim_db: [f32; 5],
 }
 
 const MODEL_DATA: [Model; 4] = [
@@ -231,6 +237,7 @@ const MODEL_DATA: [Model; 4] = [
         stages: 1,
         bias: 0.15,
         stack: STACK_TWEED,
+        trim_db: [1.0, -4.5, -9.0, -12.5, -14.5],
     },
     Model {
         tight_hz: 100.0,
@@ -238,6 +245,7 @@ const MODEL_DATA: [Model; 4] = [
         stages: 2,
         bias: 0.25,
         stack: STACK_BRIT,
+        trim_db: [0.5, -10.0, -15.0, -16.5, -16.5],
     },
     Model {
         tight_hz: 300.0,
@@ -245,6 +253,7 @@ const MODEL_DATA: [Model; 4] = [
         stages: 3,
         bias: 0.3,
         stack: STACK_CAL,
+        trim_db: [6.0, 1.5, -3.5, -6.5, -8.0],
     },
     Model {
         tight_hz: 30.0,
@@ -252,6 +261,7 @@ const MODEL_DATA: [Model; 4] = [
         stages: 2,
         bias: 0.2,
         stack: STACK_TWEED,
+        trim_db: [1.5, -8.0, -13.5, -15.5, -16.5],
     },
 ];
 
@@ -351,6 +361,7 @@ pub static AMP_PRESETS: &[Preset] = &[
             (amp::BASS, 0.0),
             (amp::TREBLE, 3.0),
             (amp::CAB, 1.0),
+            (amp::LEVEL, 4.0),
         ],
     },
 ];
@@ -448,6 +459,16 @@ impl Amp {
         &MODEL_DATA[(self.v[amp::MODEL as usize] as usize).min(3)]
     }
 
+    /// The level the output is scaled by: Level plus the model's trim at
+    /// this Gain.
+    fn level_target(&self) -> f32 {
+        let t = &self.model().trim_db;
+        let at = (self.v[amp::GAIN as usize] / 2.5).clamp(0.0, 4.0);
+        let i = (at as usize).min(3);
+        let trim = t[i] + (t[i + 1] - t[i]) * (at - i as f32);
+        db_to_gain(self.v[amp::LEVEL as usize] + trim)
+    }
+
     fn gain_target(&self) -> f32 {
         let g = self.v[amp::GAIN as usize] / 10.0;
         db_to_gain(self.model().max_gain_db * g)
@@ -481,15 +502,19 @@ impl Amp {
                 self.tight
                     .set(SvfMode::HighPass, m.tight_hz, 0.707, 0.0, self.rate);
                 self.gain.target = self.gain_target();
+                self.level.target = self.level_target();
                 self.set_stack();
             }
-            amp::GAIN => self.gain.target = self.gain_target(),
+            amp::GAIN => {
+                self.gain.target = self.gain_target();
+                self.level.target = self.level_target();
+            }
             amp::BASS | amp::MID | amp::TREBLE => self.set_stack(),
             amp::PRESENCE => self
                 .presence
                 .set(SvfMode::HighShelf, 3500.0, 0.7, 0.8 * v, self.rate),
             amp::CAB => self.set_cab(),
-            amp::LEVEL => self.level.target = db_to_gain(v),
+            amp::LEVEL => self.level.target = self.level_target(),
             _ => {}
         }
     }

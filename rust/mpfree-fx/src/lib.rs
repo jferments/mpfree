@@ -138,7 +138,7 @@ pub use mpfree_node;
 /// Parameter ids, one module per node (`ids::delay::FEEDBACK`). An id is
 /// also the parameter's index in the node's `params()` list.
 pub mod ids {
-    pub use crate::amp::amp;
+    pub use crate::amp::amp_ids as amp;
     pub use crate::amp::exciter;
     pub use crate::character::ids as character;
     pub use crate::cloud::ids as cloud;
