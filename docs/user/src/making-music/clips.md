@@ -12,15 +12,25 @@ A **clip** is a piece of music you recorded or programmed: a drum pattern, a bas
 
 ## Tracks and slots
 
-The grid has a column per **track** (up to 16) and a row per **slot**. Each track plays one clip at a time, so a column might hold four different drum patterns, and you pick which one plays.
+The grid has a column per **track** and a row per **slot**. Each track plays one clip at a time, so a column might hold four different drum patterns, and you pick which one plays.
 
 - **Tap a clip** to launch it. It starts on the next bar line, so it always lands in time. Tap a playing clip to stop it at the next bar.
 - **Tap +** in an empty slot to record a new clip there.
-- **Tap a track's name** to **arm** it: the pads record into that track.
+- **Tap a track's name** to **arm** it: the pads record into that track. The track arms when you lift your finger.
 - **Hold ERASE and tap a clip** to delete it. **UNDO** brings it back. A clip the song uses stays until you delete its blocks in the song.
 - **Under each name** is what the track plays: **Kit**, or its own instrument (FM, Poly, a plugin synth). Tap that line to change it: the track is armed, and the Synth tab opens its MENU on the track's instrument row (see [A synth for each track](synths.md#a-synth-for-each-track)).
 
 {{shot: arrange-instruments | Each track's instrument under its name: Track 2 plays FM, Track 4 Poly and Track 6 a plugin synth, and the rest play the kit.}}
+
+### More tracks
+
+A new project has 8 tracks, and a project can have up to 128, as on Akai's MPC. **+ Track**, on the grid's title line, adds one: it is named "Track 9" and so on, armed, ready to record. **UNDO** takes it away again.
+
+The grid shows 8 tracks at a time. With more than 8, the title line shows which ones, such as "9–16 of 24": tap **‹** or **›**, or swipe along the track names, to see the 8 before or after. When you arm a track that's out of view, from the Record panel's **Armed** row for example, the grid moves to it.
+
+{{shot: clips-tracks | A project of 24 tracks: the grid shows tracks 9 to 16 because Vox chop is armed, and the pager says so.}}
+
+Tracks past 16 play the kit for now. They have no MIDI out of their own and can't have an instrument of their own yet.
 
 A clip's border tells you what it's doing: a ring going round as it plays one pass, amber while it waits for the next bar, red while recording.
 

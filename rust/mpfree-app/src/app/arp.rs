@@ -1184,6 +1184,17 @@ pub struct TrackUi {
     mutations: u32,
 }
 
+impl TrackUi {
+    /// A track's arp as New leaves it: the defaults on `pattern` (the
+    /// first built-in one).
+    pub(super) fn fresh(pattern: Pattern) -> TrackUi {
+        TrackUi {
+            pattern,
+            ..Default::default()
+        }
+    }
+}
+
 impl Default for TrackUi {
     fn default() -> Self {
         TrackUi {

@@ -638,3 +638,219 @@ fn every_sample_takes_its_colours_from_the_theme() {
         }
     }
 }
+
+#[test]
+fn keys_drawbar_squelch_and_analog_draw_cards_that_open_their_pages() {
+    let titles = |s: &sample::Sample| -> Vec<String> {
+        s.ui.get::<Visuals>(VISUALS)
+            .unwrap()
+            .cards
+            .iter()
+            .map(|c| c.title.clone())
+            .collect()
+    };
+    let active = |s: &sample::Sample| -> Vec<String> {
+        s.ui.get::<Visuals>(VISUALS)
+            .unwrap()
+            .cards
+            .iter()
+            .filter(|c| c.active)
+            .map(|c| c.title.clone())
+            .collect()
+    };
+    // Each engine's cards, and the page each opens.
+    let engines: [(&str, &[(&str, &str)]); 4] = [
+        (
+            "synth-keys-strike",
+            &[
+                ("Hammer", "Strike"),
+                ("Decay", "Strike"),
+                ("Pickup", "Tone"),
+                ("Tremolo", "Amp"),
+            ],
+        ),
+        (
+            "synth-drawbar",
+            &[
+                ("Drawbars", "Drawbars"),
+                ("Wave", "Drawbars"),
+                ("Percussion", "Percussion"),
+                ("Rotor", "Rotary"),
+            ],
+        ),
+        (
+            "synth-squelch",
+            &[("Wave", "Synth"), ("Filter", "Synth"), ("Sweep", "Play")],
+        ),
+        (
+            "synth-analog-filter",
+            &[
+                ("Osc", "Osc"),
+                ("Filter", "Filter"),
+                ("Env", "Envelopes"),
+                ("LFO", "Mod"),
+                ("Voices", "Voice"),
+            ],
+        ),
+    ];
+    for (name, cards) in engines {
+        let mut s = sample::samples(Fonts::embedded)
+            .unwrap()
+            .into_iter()
+            .find(|s| s.name == name)
+            .unwrap();
+        assert_eq!(s.panel.layout(), LAYOUT, "{name}");
+        let want: Vec<&str> = cards.iter().map(|c| c.0).collect();
+        assert_eq!(titles(&s), want, "{name}");
+        for (k, &(title, page)) in cards.iter().enumerate() {
+            let strip = s.ui.rect_of(VISUALS).unwrap();
+            let card = s.ui.get::<Visuals>(VISUALS).unwrap().card_rect(strip, k);
+            let (x, y) = centre(card);
+            if let Some(ev) = s.ui.touch(1, Touch::Down, x, y) {
+                s.panel.event(&mut s.ui, &ev);
+            }
+            s.ui.touch(1, Touch::Up, x, y);
+            assert_eq!(
+                s.panel.pages()[s.panel.page()].name,
+                page,
+                "{name}: {title}"
+            );
+            assert!(active(&s).iter().any(|t| t == title), "{name}: {title}");
+            let on_page: Vec<&str> = cards.iter().filter(|c| c.1 == page).map(|c| c.0).collect();
+            assert_eq!(active(&s), on_page, "{name}: {page}");
+        }
+        // The Voice page of Keys, Drawbar and Squelch has no card of its
+        // own: the strip stays, none of it lit.
+        let voice = s.panel.pages().iter().position(|p| p.name == "Voice");
+        if let Some(v) = voice.filter(|_| !name.contains("analog")) {
+            s.panel.show_page(&mut s.ui, v);
+            assert_eq!(s.panel.layout(), LAYOUT, "{name}");
+            assert!(active(&s).is_empty(), "{name}");
+        }
+    }
+}
+
+#[test]
+fn keys_drawbar_squelch_and_analog_captions_fit_their_cards() {
+    use mpfree_synth::{Analog, Drawbar, Keys, Preset, Squelch};
+    use mpfree_ui::text::FontId;
+    use mpfree_ui::Theme;
+    /// Every factory preset, then every parameter on its own at its
+    /// minimum and maximum (each choice at each of its values).
+    fn each<N: Node>(
+        mut make: impl FnMut() -> N,
+        presets: &[Preset],
+        load: fn(&mut N, &Preset),
+        check: &mut dyn FnMut(&dyn Node, &str),
+    ) {
+        for p in presets {
+            let mut n = make();
+            load(&mut n, p);
+            check(&n, p.name);
+        }
+        let params = make().params().to_vec();
+        for p in &params {
+            let values: Vec<f32> = match p.curve {
+                Curve::Choice(names) => (0..names.len()).map(|i| i as f32).collect(),
+                _ => vec![p.min, p.max],
+            };
+            for v in values {
+                let mut n = make();
+                n.set_param(p.id, v);
+                check(&n, &format!("{} at {v}", p.name));
+            }
+        }
+    }
+    let t = Theme::default();
+    let mut ui = app_ui(Fonts::embedded(), "");
+    let node = Keys::new(48_000);
+    let st = SynthState::from_node(&node, "Keys", Color::rgb(0x3DDC97), Vec::new(), None);
+    let mut panel = SynthPanel::add(&mut ui, PAGE, st).unwrap();
+    ui.show(PAGE).unwrap();
+    let mut check = |n: &dyn Node, preset: &str| {
+        let st = SynthState::from_node(n, "Keys", Color::rgb(0x3DDC97), Vec::new(), None);
+        panel.load(&mut ui, st).unwrap();
+        let strip = ui.rect_of(VISUALS).unwrap();
+        let cards = ui.get::<Visuals>(VISUALS).unwrap().cards.clone();
+        assert!(!cards.is_empty());
+        for (i, c) in cards.iter().enumerate() {
+            let card = ui.get::<Visuals>(VISUALS).unwrap().card_rect(strip, i);
+            let room = card.w
+                - 24
+                - ui.fonts
+                    .measure(FontId::Bold, t.size_small, &c.title.to_uppercase())
+                - 12;
+            let w = ui
+                .fonts
+                .measure(FontId::Sans, t.size_small - 1.0, &c.caption);
+            assert!(
+                w <= room,
+                "{} {preset}, {}: \"{}\" is {w} px in {room}",
+                n.info().name,
+                c.title,
+                c.caption
+            );
+        }
+    };
+    each(
+        || Keys::new(48_000),
+        Keys::presets(),
+        Keys::load_preset,
+        &mut check,
+    );
+    each(
+        || Drawbar::new(48_000),
+        Drawbar::presets(),
+        Drawbar::load_preset,
+        &mut check,
+    );
+    each(
+        || Squelch::new(48_000),
+        Squelch::presets(),
+        Squelch::load_preset,
+        &mut check,
+    );
+    each(
+        || Analog::new(48_000),
+        Analog::presets(),
+        Analog::load_preset,
+        &mut check,
+    );
+    // The longest captions each card can have.
+    use mpfree_synth::{analog_params as an, drawbar_params as db, keys_params as kp};
+    let mut keys = Keys::new(48_000);
+    for (id, v) in [
+        (kp::TREMOLO, 50.0),
+        (kp::TREM_RATE, 11.9),
+        (kp::HARDNESS, 0.0),
+    ] {
+        keys.set_param(id, v);
+    }
+    check(&keys, "longest");
+    let mut organ = Drawbar::new(48_000);
+    for (id, v) in [
+        (db::PERC, 1.0),
+        (db::PERC_HARM, 0.0),
+        (db::PERC_DECAY, 1.0),
+        (db::PERC_VOL, 1.0),
+        (db::ROTARY, 1.0),
+        (db::SPEED, 2.0),
+    ] {
+        organ.set_param(id, v);
+    }
+    check(&organ, "longest");
+    let mut poly = Analog::new(48_000);
+    for (id, v) in [
+        (an::OSC1_WAVE, 2.0),
+        (an::OSC2_WAVE, 1.0),
+        (an::OSC1_LEVEL, 100.0),
+        (an::OSC2_LEVEL, 100.0),
+        (an::SYNC, 0.0),
+        (an::LFO_WAVE, 1.0),
+        (an::LFO_RATE, 0.15),
+        (an::AGE, 100.0),
+    ] {
+        poly.set_param(id, v);
+    }
+    check(&poly, "longest");
+}

@@ -513,8 +513,13 @@ impl Session {
     pub fn pad_edge(&mut self, pad: usize, velocity: u8, down: bool) {
         if self.app.mute_keys() != app::MuteKeys::Off {
             if down {
-                let line =
-                    crate::mute_key(self.app.mute_keys(), pad, &mut self.time, &mut self.mix);
+                let line = crate::mute_key(
+                    self.app.mute_keys(),
+                    self.app.mute_bank(),
+                    pad,
+                    &mut self.time,
+                    &mut self.mix,
+                );
                 self.out.note(&line);
             } else {
                 self.out.show(ToUi::PadUp(pad));
@@ -1110,6 +1115,9 @@ impl Session {
                         }
                     }
                     Effect::Bank { .. } => {}
+                    // The bank buttons' lights (TRACK MUTE's bank): the
+                    // session keeps no bank lights of its own.
+                    Effect::BankLights => {}
                     Effect::Audio(p) => self.out.note(&format!("audio buffer: {p} periods")),
                     Effect::Quit => self.quit = true,
                     Effect::SavePatterns(_) => {}

@@ -62,7 +62,7 @@ static INFO: NodeInfo = NodeInfo {
 };
 
 /// The filter envelope's reach at Env amount 100, in octaves.
-const ENV_OCT: f32 = 5.0;
+pub const ENV_OCT: f32 = 5.0;
 /// The LFO's reach on the cutoff at 100, in octaves.
 const LFO_CUT_OCT: f32 = 2.0;
 /// How far a pulse width swings at 100 (LFO or poly-mod).
@@ -680,6 +680,68 @@ fn normal(rng: &mut Rng) -> f32 {
     (rng.unit() + rng.unit() + rng.unit() - 1.5) * 2.0
 }
 
+/// One unit-normal draw per card, clamped to ±2.5.
+fn draw_cards(rng: &mut Rng) -> [f32; CARDS] {
+    let mut a = [0.0; CARDS];
+    for v in &mut a {
+        *v = normal(rng).clamp(-2.5, 2.5);
+    }
+    a
+}
+
+/// The cards' fixed offsets (unit normals: osc 1 and osc 2 tuning, cutoff,
+/// times, pulse width, level), the same in every instance, and the
+/// generator after them (for the drift's start).
+fn spread_and_rng() -> ([[f32; CARDS]; 6], Rng) {
+    let mut rng = Rng::new(0xA1A1_0C4D);
+    let spread = std::array::from_fn(|_| draw_cards(&mut rng));
+    (spread, rng)
+}
+
+/// Each card's fixed detune in cents, oscillator 1 and 2, at **Age** `age`
+/// (0 to 100), drift left out. For the Synth tab's picture.
+pub fn card_cents(age: f32) -> [(f32, f32); CARDS] {
+    let ([t1, t2, ..], _) = spread_and_rng();
+    let a = AGE_TUNE_CENTS * (age / 100.0).clamp(0.0, 1.0);
+    std::array::from_fn(|c| (a * t1[c], a * t2[c]))
+}
+
+/// The envelope's attack at `t` (0 to 1 of the attack time): an RC charge
+/// toward 1.3 times the peak, stopped at the peak.
+pub fn attack_shape(t: f32) -> f32 {
+    let t = t.clamp(0.0, 1.0);
+    ATTACK_TARGET * (1.0 - (1.0 - 1.0 / ATTACK_TARGET).powf(t))
+}
+
+/// The filter's small-signal gain at `hz` with the amplifier's make-up,
+/// for **Filter** `mode` (LP 24, LP 12, BP 12, HP 12), **Cutoff** `cutoff`
+/// (Hz) and **Resonance** `resonance` (0 to 100): four equal one-poles
+/// with feedback, or the state-variable filter at its small-signal
+/// damping. For the Synth tab's picture.
+pub fn filter_gain(mode: f32, cutoff: f32, resonance: f32, hz: f32) -> f32 {
+    let w = hz.max(0.0) / cutoff.max(1.0);
+    let r = (resonance / 100.0).clamp(0.0, 1.0);
+    match (mode.round() as i32).clamp(0, 3) {
+        0 => {
+            // 1 / ((1 + s)^4 + k), s = jw, with sqrt(1 + k) made up.
+            let k = K_MAX * r;
+            let re = 1.0 - 6.0 * w * w + w.powi(4) + k;
+            let im = 4.0 * w - 4.0 * w.powi(3);
+            (1.0 + k).sqrt() / (re * re + im * im).sqrt()
+        }
+        m => {
+            let d = SVF_DAMP_MAX * (SVF_DAMP_MIN / SVF_DAMP_MAX).powf(r);
+            let den = ((1.0 - w * w).powi(2) + (d * w).powi(2)).sqrt();
+            let num = match m {
+                1 => 1.0,
+                2 => w * d.sqrt(),
+                _ => w * w,
+            };
+            num / den
+        }
+    }
+}
+
 pub struct Analog {
     rate: u32,
     values: [f32; ID_SPACE],
@@ -738,22 +800,10 @@ impl Analog {
         for p in PARAMS {
             values[p.id as usize] = p.default;
         }
-        let mut rng = Rng::new(0xA1A1_0C4D);
-        let mut draw = || {
-            let mut a = [0.0; CARDS];
-            for v in &mut a {
-                *v = normal(&mut rng).clamp(-2.5, 2.5);
-            }
-            a
-        };
-        let off_tune1 = draw();
-        let off_tune2 = draw();
-        let off_cut = draw();
-        let off_time = draw();
-        let off_pw = draw();
-        let off_level = draw();
-        let drift1 = draw();
-        let drift2 = draw();
+        let (spread, mut rng) = spread_and_rng();
+        let [off_tune1, off_tune2, off_cut, off_time, off_pw, off_level] = spread;
+        let drift1 = draw_cards(&mut rng);
+        let drift2 = draw_cards(&mut rng);
         let mut s = Analog {
             rate: rate.max(1),
             values,

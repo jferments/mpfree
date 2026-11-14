@@ -15,7 +15,7 @@
 use mpfree_play::{Event, Out, PlayView, Player, Rec, Recent, Recorder, TrackArps};
 use mpfree_play::{MOVE_POINTS, TOUCH_POINTS};
 use mpfree_seq::mpfree_moves::{Input, Kind};
-use mpfree_seq::TouchPoint;
+use mpfree_seq::{TouchPoint, MAX_TRACKS};
 use mpfree_time_ui::view::TransportInfo;
 use mpfree_transport::{Block, Command, Mark, State, Transport};
 
@@ -143,7 +143,15 @@ impl TimeAudio {
                         self.refused += 1;
                     }
                 }
-                ToAudio::Tracks(t) => self.tracks = t,
+                ToAudio::Tracks { n, armed } => {
+                    self.tracks.n = n.min(MAX_TRACKS);
+                    self.tracks.armed = armed;
+                }
+                ToAudio::Track(t, s) => {
+                    if let Some(set) = self.tracks.set.get_mut(t) {
+                        *set = s;
+                    }
+                }
             }
         }
     }
@@ -414,8 +422,8 @@ impl TimeAudio {
     /// The per-track arps take each track's switch and destination.
     pub fn dress_arps(&self, arps: &mut TrackArps) {
         for t in 0..self.tracks.n {
-            arps.set_through(t, self.tracks.through_arp[t]);
-            arps.set_dest(t, self.tracks.dest[t]);
+            arps.set_through(t, self.tracks.set[t].through_arp);
+            arps.set_dest(t, self.tracks.set[t].dest);
         }
     }
 

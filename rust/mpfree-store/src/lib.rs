@@ -21,6 +21,9 @@
 //!   the old one, and its folder synced, so a save that is cut off leaves
 //!   the old file. Saves of one file queued together are written once (the
 //!   latest). The writer reports every save, or why it failed, as one line.
+//! - [`Store::dir`] makes `files/<owner>/` (on the writer thread) and
+//!   gives its path, for a program that keeps its own files there: the
+//!   plugins' home folder (each plugin process runs with its home there).
 //! - [`Store::none`] reads nothing and saves nothing, for tests and previews.
 
 #![forbid(unsafe_code)]
@@ -185,6 +188,9 @@ enum Job {
     Save(Save),
     /// Answered once every job before it is done.
     Flush(Sender<()>),
+    /// Makes these folders under the store's (the ones missing) and
+    /// answers with the last one's path, or why not.
+    Dir(Vec<String>, Sender<Result<PathBuf, String>>),
 }
 
 impl Store {
@@ -302,6 +308,21 @@ impl Store {
             return Err(format!("bad name {owner:?}/{name:?}"));
         }
         self.queue(vec!["files".into(), owner.into()], name.into(), bytes)
+    }
+
+    /// `owner`'s folder under `files/`, made (on the writer thread) if it
+    /// is missing, for a program that keeps its own files in it. Waits for
+    /// the writer. None without a store that saves, or if the folder
+    /// couldn't be made (the writer reports why).
+    pub fn dir(&self, owner: &str) -> Option<PathBuf> {
+        if !valid_name(owner) {
+            return None;
+        }
+        let tx = self.inner.as_ref()?.writer.as_ref()?;
+        let (done, wait) = mpsc::channel();
+        tx.send(Job::Dir(vec!["files".into(), owner.into()], done))
+            .ok()?;
+        wait.recv().ok()?.ok()
     }
 
     /// Waits until every save queued before it is done (or failed).
@@ -432,18 +453,28 @@ fn writer(dir: &Path, rx: Receiver<Job>, report: impl Fn(String)) {
                 Job::Flush(done) => {
                     let _ = done.send(());
                 }
+                Job::Dir(folders, done) => {
+                    let label = format!("{}/", folders.join("/"));
+                    let made = folders_in(dir, &folders).map_err(|e| e.to_string());
+                    match &made {
+                        Ok((_, true)) => report(format!("made: {label}")),
+                        Ok((_, false)) => {}
+                        Err(e) => report(format!("not made: {label}: {e}")),
+                    }
+                    let _ = done.send(made.map(|(path, _)| path));
+                }
             }
         }
     }
 }
 
-/// Writes `s` whole beside its file as NAME.part, syncs it, renames it over
-/// the file and syncs the folder. On failure the .part is removed and the
-/// old file is as it was. Never follows a link: folders and the file must be
-/// real ones, and the .part is created new.
-fn save(dir: &Path, s: &Save) -> io::Result<()> {
+/// Makes `folders` under `dir`, one inside the next, where missing (never
+/// through a link), syncing each parent. Gives the last one's path and
+/// whether any was made.
+fn folders_in(dir: &Path, folders: &[String]) -> io::Result<(PathBuf, bool)> {
     let mut folder = dir.to_path_buf();
-    for name in &s.folders {
+    let mut made = false;
+    for name in folders {
         let parent = folder.clone();
         folder.push(name);
         match fs::symlink_metadata(&folder) {
@@ -452,10 +483,20 @@ fn save(dir: &Path, s: &Save) -> io::Result<()> {
             Err(e) if e.kind() == io::ErrorKind::NotFound => {
                 DirBuilder::new().mode(0o755).create(&folder)?;
                 File::open(&parent)?.sync_all()?;
+                made = true;
             }
             Err(e) => return Err(e),
         }
     }
+    Ok((folder, made))
+}
+
+/// Writes `s` whole beside its file as NAME.part, syncs it, renames it over
+/// the file and syncs the folder. On failure the .part is removed and the
+/// old file is as it was. Never follows a link: folders and the file must be
+/// real ones, and the .part is created new.
+fn save(dir: &Path, s: &Save) -> io::Result<()> {
+    let (folder, _) = folders_in(dir, &s.folders)?;
     let path = folder.join(&s.file);
     match fs::symlink_metadata(&path) {
         Ok(m) if !m.is_file() => {
@@ -511,6 +552,38 @@ mod tests {
         let lines = Arc::new(Mutex::new(Vec::new()));
         let l = lines.clone();
         (Store::at(dir, move |s| l.lock().unwrap().push(s)), lines)
+    }
+
+    #[test]
+    fn dir_makes_an_owners_folder_once_and_never_through_a_link() {
+        let d = temp();
+        let (s, lines) = store(&d);
+        let home = s.dir("plugin-home").expect("made");
+        assert_eq!(home, d.join("files").join("plugin-home"));
+        assert!(home.is_dir());
+        assert_eq!(s.dir("plugin-home"), Some(home.clone()), "already there");
+        s.flush();
+        let made: Vec<String> = lines
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|l| l.starts_with("made"))
+            .cloned()
+            .collect();
+        assert_eq!(made, ["made: files/plugin-home/"], "said once");
+        assert_eq!(s.dir("../up"), None);
+        assert_eq!(s.dir("a/b"), None);
+        assert_eq!(Store::none().dir("plugin-home"), None);
+        // A link in its place is refused.
+        std::os::unix::fs::symlink(&d, d.join("files").join("linked")).unwrap();
+        assert_eq!(s.dir("linked"), None);
+        s.flush();
+        assert!(lines
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|l| l.starts_with("not made: files/linked/")));
+        let _ = fs::remove_dir_all(&d);
     }
 
     #[test]
