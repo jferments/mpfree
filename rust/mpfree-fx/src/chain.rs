@@ -37,6 +37,11 @@
 //! [`Chain::process_keyed`]), and, while profiling is on
 //! ([`Chain::set_profiling`]), times its block into an `mpfree_prof`
 //! probe that moves with it.
+//!
+//! One slot at a time can be watched ([`Chain::watch`]): the chain keeps
+//! its input and output peak levels, falling 20 dB a second, for the
+//! level meters on the effect's page ([`Chain::levels`]). It follows the
+//! slot id, so the meters stay on the effect when it moves.
 
 use mpfree_node::{Ctx, Node, NodeEvent, Timed};
 use mpfree_prof::{Probe, Span};
@@ -189,6 +194,9 @@ pub struct Chain {
     profiling: bool,
     /// Where the search for a free slot id starts.
     next_uid: u16,
+    /// The watched slot's id, and its input and output peaks (linear).
+    watch: Option<u16>,
+    levels: [f32; 2],
 }
 
 impl Default for Chain {
@@ -209,6 +217,8 @@ impl Chain {
             stats: ChainStats::default(),
             profiling: false,
             next_uid: 1,
+            watch: None,
+            levels: [0.0; 2],
         };
         c.prepare(48_000, mpfree_node::MAX_BLOCK);
         c
@@ -360,6 +370,27 @@ impl Chain {
         slot.uid = self.claim_uid(None, None).unwrap_or(0);
         self.slots.push(slot);
         self.slots.len() - 1
+    }
+
+    /// Watches slot `slot`'s levels for its page's meters, or none. The
+    /// meters start from silence. Real-time safe.
+    pub fn watch(&mut self, slot: Option<usize>) {
+        self.watch = slot.and_then(|i| self.uid(i)).filter(|&u| u != 0);
+        self.levels = [0.0; 2];
+    }
+
+    /// The watched slot (see [`Chain::watch`]), where it is now.
+    pub fn watched(&self) -> Option<usize> {
+        self.slot_of(self.watch?)
+    }
+
+    /// The watched slot's input and output peak levels in dBFS, falling
+    /// 20 dB a second (-120 for silence); None when no slot is watched or
+    /// it has left the chain.
+    pub fn levels(&self) -> Option<(f32, f32)> {
+        self.watched()?;
+        let db = |x: f32| crate::fast_level_db(x).max(-120.0);
+        Some((db(self.levels[0]), db(self.levels[1])))
     }
 
     /// Prepares every node and the chain's buffers (control thread).
@@ -622,9 +653,20 @@ impl Chain {
         let part = &mut self.part;
         let profiling = self.profiling;
         let none: Vec<Timed> = Vec::new();
+        let (watch, levels) = (self.watch, &mut self.levels);
+        // The meters fall 20 dB a second: a factor of 10.
+        let fall = if watch.is_some() {
+            (-std::f32::consts::LN_10 * len as f32 / self.rate.max(1) as f32).exp()
+        } else {
+            1.0
+        };
         for s in &mut self.slots[range] {
             let events = if no_events { &none } else { &s.events };
             let span = profiling.then(Span::start);
+            let watched = watch == Some(s.uid);
+            if watched {
+                levels[0] = peak(left, right).max(levels[0] * fall);
+            }
             let keyed = Ctx {
                 sidechain: s.key.and_then(&key).or(ctx.sidechain),
                 ..*ctx
@@ -750,6 +792,9 @@ impl Chain {
                     }
                 }
             }
+            if watched {
+                levels[1] = peak(left, right).max(levels[1] * fall);
+            }
             if !no_events {
                 s.events.clear();
             }
@@ -758,6 +803,11 @@ impl Chain {
             }
         }
     }
+}
+
+/// The highest absolute sample on either side.
+fn peak(left: &[f32], right: &[f32]) -> f32 {
+    left.iter().chain(right).fold(0.0f32, |m, v| m.max(v.abs()))
 }
 
 /// Runs `node` on frames `from..to` of the block, with the events that fall

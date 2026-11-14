@@ -219,6 +219,14 @@ fn commands_and_periods_never_allocate() {
         assert!(matches!(held, Some(Ok(()))), "period {period}");
         assert!(a.take_returned().is_some(), "period {period}");
         assert!(a.takes().count() > 3, "period {period}");
+        // A project opening empties the tracks on the audio thread too.
+        watch(true);
+        let _ = a.settings(0);
+        let cleared = a.clear();
+        watch(false);
+        assert_eq!(CALLS.load(Ordering::Relaxed), 0, "clear, period {period}");
+        assert!(cleared, "period {period}");
+        assert_eq!(a.takes().count(), 0, "period {period}");
     }
 }
 
