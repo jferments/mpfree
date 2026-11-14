@@ -1,6 +1,6 @@
 # Plugins: the CLAP host
 
-**Status:** 2026-11-13. Steps P1 (the host) and P2 (the sandbox) of the plugin plan are built and tested on the workstation and on ARMv7 under qemu. The code is [`rust/mpfree-clap`](../../../rust/mpfree-clap) and [`rust/mpfree-plughost`](../../../rust/mpfree-plughost). The app uses them for **plugin effects as mixer inserts** ([In the app](#in-the-app)); plugin instruments wait for the [track host](track-host.md) in the app, and no third-party plugin has been tried on the MPC yet. The plan for plugins is in the synth skill tree (P1 to P6). The first plugin pack (P3) is Airwindows, Surge XT and Dexed (Jay, 13 Nov), CLAP only until P5.
+**Status:** 2026-11-13. Steps P1 (the host) and P2 (the sandbox) of the plugin plan are built and tested on the workstation and on ARMv7 under qemu. The code is [`rust/mpfree-clap`](../../../rust/mpfree-clap) and [`rust/mpfree-plughost`](../../../rust/mpfree-plughost). The app uses them for **plugin effects as mixer inserts** ([In the app](#in-the-app)); plugin instruments wait for the [track host](track-host.md) in the app, and no third-party plugin has been tried on the MPC yet. The plan for plugins is in the synth skill tree (P1 to P6). The first plugin pack (P3) is Airwindows, Surge XT and Dexed (Jay, 13 Nov), CLAP only until P5: [the plugin pack](../guides/plugin-pack.md) builds them (14 Nov).
 
 MPFree runs native engines first (Poly, FM, the drum, pluck and wavetable synths). Plugins add what we don't build, which means CLAP, LV2 and VST3 plugins built for ARM Linux. Desktop builds can't run on the MPC's ARM chip, and Akai's own plugins aren't a path. CLAP comes first: it is MIT-licensed, plain C, and made for hosts like ours (sample-exact events, per-note expression, a clear threading model).
 
@@ -152,6 +152,6 @@ These pass for `armv7-unknown-linux-gnueabihf` under qemu too. There, `MPFREE_PL
 
 ## Next
 
-- **P3, ARM builds:** reproducible armv7 build recipes for free plugins (Surge XT, Dexed, Airwindows first), with their licenses and sources.
+- **P3, ARM builds:** built on 14 Nov: [the plugin pack](../guides/plugin-pack.md) builds Airwindows (89 effects, through a small wrapper of ours), Dexed and Surge XT for the MPC from pinned commits, with their licenses and sources, and checks each file. Played under qemu; not on the MPC yet.
 - **P4, passports:** automatic tests on the MPC for each plugin: does it load, does it stay free of NaN, does its state round-trip, what it costs per voice, its latency.
 - In the app: plugins in the instrument browser, and the rack's counts on the Dev page.
