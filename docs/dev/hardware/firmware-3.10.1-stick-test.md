@@ -93,6 +93,17 @@ From the owner's zip `mpfree-results-20261113T135046Z` (owner-local). **Passed.*
 
 So 3.10.1's userspace runs MPFree's test build as 3.10.0's did. What it cannot show is developer mode, which needs Akai's app: that is phase 3.
 
+### Phase 2 again (2026-11-14, clone 423a6ef)
+
+From the owner's zip `mpfree-results-20261114T230841Z` (owner-local). It repeats phase 2's steps at phase 3's commit: the stick was built with `--splash … --app …`, not `--akai-app`, and there is no developer mode check. **Passed again**, so phase 3's changes leave the pad player's stick working as before.
+
+- **The boot:** after `BOOT 3.10` the test build answered SSH in 34 s and printed the same `RESULT` line. This time `eth0` failed its first start (`Failed to reset the dma`, the [known failure after a kexec jump](archive/2026-11/kexec-test-boot.md)). The test build's retry at 20 s brought the link up at 22 s; phase 2's first run needed no retry.
+- **Nothing failed or was blocked:** 0 failed units, no masked Akai unit active, no `mpfree-test: blocked` line. 3.10.1's new units behaved as in phase 2.
+- **The pad player** was playing about 15 s after the jump, with its saved settings from partition 4. The logs on the stick cover its first 3.5 minutes: 311 hits, up to 16 sounds at once, 0 underruns in 72,355 periods, pad to sound 8.65 ms on average (8.55 to 8.69).
+- **The eMMC:** the same 8 boot-area hashes before and after, with 0 sectors written to p1 to p6 and boot0/1.
+
+Phase 3 (developer mode) has not been run yet.
+
 ## Phase 3: developer mode on the stick
 
 Developer mode is switched on from inside Akai's app (Akai's [release notes](https://cdn.inmusicbrands.com/Software/MPC/MOPN4PCOPEN/MPC%203.10.1%20-%20Release%20Notes.pdf)), so this phase runs Akai's app on the test build for the first time. Earlier sticks mask it and stub its launcher, because it can flash the pad and button controller ([updater findings](archive/2026-11/akai-updater-offline.md)).
