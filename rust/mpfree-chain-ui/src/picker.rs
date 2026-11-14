@@ -438,6 +438,9 @@ fn star(cx: &mut PaintCx, c: (f32, f32), radius: f32, filled: bool, col: mpfree_
     let b = radius.ceil() as i32 + 2;
     let mut m = Mask::new(Rect::new(c.0 as i32 - b, c.1 as i32 - b, 2 * b, 2 * b));
     if filled {
+        // A filled shape has no part for this, so its coverage goes as a
+        // mask of its own.
+        let mut cov = vec![0u8; (m.r.w * m.r.h) as usize];
         // Four by four samples a pixel, inside by the crossing rule.
         let inside = |x: f32, y: f32| {
             let mut odd = false;
@@ -459,13 +462,15 @@ fn star(cx: &mut PaintCx, c: (f32, f32), radius: f32, filled: bool, col: mpfree_
                         n += inside(x, y) as u32;
                     }
                 }
-                m.px[(py * m.r.w + px) as usize] = (n * 255 / 16) as u8;
+                cov[(py * m.r.w + px) as usize] = (n * 255 / 16) as u8;
             }
         }
+        let (w, h) = (m.r.w as usize, m.r.h as usize);
+        cx.canvas.blend_mask(m.r.x, m.r.y, w, h, &cov, col);
     } else {
         let mut ring = pts.clone();
         ring.push(pts[0]);
         m.polyline(&ring, 1.6);
+        m.draw(cx.canvas, col);
     }
-    m.draw(cx.canvas, col);
 }
