@@ -241,6 +241,8 @@ impl Desk<'_> {
                 out.show(gui::ToUi::IoInput(mpfree_mixer_ui::IoInput::Step(d)))
             }
             app::Effect::ChainTurn { knob, delta } => out.show(gui::ToUi::ChainQLink(knob, delta)),
+            app::Effect::ChainWheel(d) => out.show(gui::ToUi::ChainWheel(d)),
+            app::Effect::ChainPush => out.show(gui::ToUi::ChainPush),
             app::Effect::QLinkBank => out.show(gui::ToUi::QLinkBank),
             app::Effect::SynthPage(d) => out.show(gui::ToUi::SynthPage(d)),
             app::Effect::SampleWheel(d) => out.show(gui::ToUi::SampleWheel(d)),

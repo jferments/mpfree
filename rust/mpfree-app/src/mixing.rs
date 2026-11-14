@@ -210,6 +210,10 @@ pub struct MixHost {
     pub instruments: Instruments,
     /// Instruments made without a builder (the tests), waiting to go in.
     made: Vec<crate::control::MadeInstrument>,
+    /// The effect picker's favourites and recents (`files/fx/`), and
+    /// whether they changed since they were last saved.
+    pub shelf: mpfree_fx::picker::Shelf,
+    pub shelf_dirty: bool,
 }
 
 /// What [`MixHost::poll_instruments`] put in (or couldn't) for the log.
@@ -300,6 +304,8 @@ impl MixHost {
             opening: None,
             instruments: Instruments::new(rate, PERIOD),
             made: Vec::new(),
+            shelf: mpfree_fx::picker::Shelf::default(),
+            shelf_dirty: false,
         }
     }
 
@@ -526,26 +532,42 @@ impl MixHost {
         Ok(())
     }
 
-    /// Adds effect `id` at the end of `strip`'s chain. With a builder it
-    /// is built there and goes in a few periods later
-    /// ([`MixHost::poll_built`]); without one, here. Err: the mixer is busy
-    /// (too many edits or builds under way), or no effect has that id.
+    /// [`MixHost::add_insert_with`] at the effect's defaults (the tests).
+    #[cfg(test)]
     pub fn add_insert(&mut self, strip: StripId, id: &'static str) -> Result<(), &'static str> {
+        self.add_insert_with(strip, id, &[])
+    }
+
+    /// Adds effect `id` at the end of `strip`'s chain, with the values in
+    /// `preset` set before it goes in (a factory preset from the picker;
+    /// empty for its defaults). With a builder it is built there and goes
+    /// in a few periods later ([`MixHost::poll_built`]); without one, here.
+    /// Err: the mixer is busy (too many edits or builds under way), or no
+    /// effect has that id.
+    pub fn add_insert_with(
+        &mut self,
+        strip: StripId,
+        id: &'static str,
+        preset: &'static [(u16, f32)],
+    ) -> Result<(), &'static str> {
         let rate = self.mixer.rate();
         if let Some(b) = self.builder.as_mut() {
-            return if b.build(strip, id, rate, PERIOD) {
+            return if b.build_with(strip, id, preset, rate, PERIOD) {
                 Ok(())
             } else {
                 Err("The mixer is busy")
             };
         }
-        let node = if Plugins::is_plugin(id) {
+        let mut node = if Plugins::is_plugin(id) {
             self.plugins
                 .make(id)
                 .map_err(|_| "The plugin would not start")?
         } else {
             mpfree_fx_ui::make(id).ok_or("No such effect")?
         };
+        for &(p, v) in preset {
+            node.set_param(p, v);
+        }
         let at = self.mixer.chain(strip).map_or(0, |c| c.len());
         self.mixer
             .edit(Edit::Insert {

@@ -506,6 +506,11 @@ pub enum ToUi {
     /// On the chain editor or the macros panel: Q-Link `0` (or the wheel)
     /// turned by `1` detents.
     ChainQLink(usize, i32),
+    /// The wheel on the chain editor: the effect picker's while it is open
+    /// (SHIFT: its sections), else Q-Link 1.
+    ChainWheel(i32),
+    /// The wheel's push on the chain editor (the picker's presets, an add).
+    ChainPush,
     /// Learn armed on the chain editor: the next Q-Link turned takes this
     /// knob.
     ChainLearn(ParamAddr),
@@ -2234,6 +2239,9 @@ impl Player {
                 View::Prefs | View::Options => OPTIONS_HINT.to_string(),
                 View::Mixer => mpfree_mixer_ui::io_hint(&self.ui)
                     .unwrap_or_else(|| mpfree_mixer_ui::MIXER_HINT.to_string()),
+                View::Chain if mpfree_chain_ui::chain_picking(&self.ui) => {
+                    mpfree_chain_ui::PICKER_HINT.to_string()
+                }
                 View::Chain => mpfree_chain_ui::CHAIN_HINT.to_string(),
                 View::Macros => mpfree_chain_ui::MACROS_HINT.to_string(),
                 View::Guide => GUIDE_HINT.to_string(),
@@ -3105,6 +3113,19 @@ impl Player {
             ToUi::ChainQLink(k, d) => {
                 if matches!(self.view, View::Chain | View::Macros) {
                     self.chain_qlink(k, d);
+                }
+            }
+            ToUi::ChainWheel(d) => {
+                if self.view == View::Chain
+                    && !mpfree_chain_ui::chain_wheel(&mut self.ui, d, self.status.shift)
+                {
+                    self.chain_qlink(0, d);
+                }
+            }
+            ToUi::ChainPush => {
+                if self.view == View::Chain && mpfree_chain_ui::chain_push(&mut self.ui) {
+                    let acts = mpfree_chain_ui::take_chain_actions(&mut self.ui);
+                    self.outbox.extend(acts.into_iter().map(FromUi::Chain));
                 }
             }
             ToUi::ChainLearn(addr) => {
@@ -6597,6 +6618,8 @@ pub fn apply_effects(p: &mut Player, fx: Vec<crate::app::Effect>) {
                 }
             }
             Effect::ChainTurn { knob, delta } => p.apply(ToUi::ChainQLink(knob, delta)),
+            Effect::ChainWheel(d) => p.apply(ToUi::ChainWheel(d)),
+            Effect::ChainPush => p.apply(ToUi::ChainPush),
             Effect::QLinkBank => p.apply(ToUi::QLinkBank),
         }
     }
@@ -9779,6 +9802,47 @@ mod tests {
         let b = mpfree_chain_ui::macros::layout(r).back;
         let got = tap(&mut p, b.x + 5, b.y + 5);
         assert_eq!(got, vec![FromUi::Macros(MacroAction::Back)]);
+    }
+
+    /// The wheel on the chain editor: Q-Link 1 while the picker is shut;
+    /// while it is open, the picker's tiles, and its push opens the
+    /// presets and then adds.
+    #[test]
+    fn the_wheel_works_the_effect_picker_while_it_is_open() {
+        use mpfree_chain_ui::ChainView;
+        let mut p = sample_player(Fonts::embedded());
+        sample_panels(&mut p, View::Chain);
+        p.ui.paint(&mut SoftCanvas::new(SCREEN.0, SCREEN.1));
+        p.apply(ToUi::ChainWheel(1));
+        let got = p.take_actions();
+        assert!(
+            matches!(got.as_slice(), [FromUi::Chain(ChainAction::Set { .. })]),
+            "Q-Link 1 while the picker is shut: {got:?}"
+        );
+        let r = p.ui.rect_of(mpfree_chain_ui::CHAIN).unwrap();
+        let add =
+            p.ui.get::<ChainView>(mpfree_chain_ui::CHAIN)
+                .unwrap()
+                .layout(r)
+                .add
+                .unwrap();
+        p.touch(1, Touch::Down, add.x + 10, add.y + 10);
+        p.touch(1, Touch::Up, add.x + 10, add.y + 10);
+        p.take_actions();
+        p.apply(ToUi::ChainWheel(1));
+        assert!(p.take_actions().is_empty(), "the picker took the wheel");
+        let v = p.ui.get::<ChainView>(mpfree_chain_ui::CHAIN).unwrap();
+        assert_eq!(v.picker().highlight, Some(0));
+        let first = v.picker().picks(v.state())[0].id;
+        p.apply(ToUi::ChainPush);
+        let v = p.ui.get::<ChainView>(mpfree_chain_ui::CHAIN).unwrap();
+        assert_eq!(v.picker().presets, Some(first), "its presets open");
+        p.apply(ToUi::ChainPush);
+        assert_eq!(
+            p.take_actions(),
+            [FromUi::Chain(ChainAction::Add(first))],
+            "Defaults adds it as it starts"
+        );
     }
 
     /// Q-LINK on Play: Macros 1-4, Macros 5-8, then Play's own knobs; the
