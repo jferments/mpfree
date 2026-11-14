@@ -1003,6 +1003,10 @@ pub struct Player {
     /// there (with any before them): the open's own, never an edit,
     /// however long its own work (the kits, say) took on a slow machine.
     open_actions: usize,
+    /// The Sample page's edit count when last seen: a kit's view built
+    /// again is an edit only when that count moved (an open's kits and a
+    /// new tempo's stretched copies are their own news).
+    sample_edits: u64,
     /// An opened project's loops being read (the files can be big).
     loops_load: Option<std::sync::mpsc::Receiver<LoopsRead>>,
     /// An opened project's audio tracks being read (the takes' files can
@@ -1314,6 +1318,7 @@ impl Player {
             project_rate: 44_100,
             opened_at: None,
             open_actions: 0,
+            sample_edits: 0,
             loops_load: None,
             audio_load: None,
             preview_db: crate::preview::LEVEL_DB,
@@ -4737,12 +4742,20 @@ impl Player {
 
     /// The work changed since it was saved or opened when the screen sent
     /// an edit (not a pad played, a page or kit picked, the Level, the
-    /// transport, a preview), so opening another project or New asks
-    /// first.
+    /// transport, a preview, the UNDO light or list, a kit's view built
+    /// again with no Sample page edit), so opening another project or New
+    /// asks first.
     pub fn saw_action(&mut self, a: &FromUi) {
         // The swing is the project's; play, stop and the rest aren't.
         if let FromUi::Time(TimeAction::Transport(c)) = a {
             if matches!(c, mpfree_transport::Command::SetSwing(_)) {
+                self.mark_unsaved();
+            }
+            return;
+        }
+        if let FromUi::SampleView(_) = a {
+            if self.sample.edits != self.sample_edits {
+                self.sample_edits = self.sample.edits;
                 self.mark_unsaved();
             }
             return;
@@ -4763,6 +4776,9 @@ impl Player {
                 | FromUi::Tab(_)
                 | FromUi::MenuSelect(_)
                 | FromUi::GuideButton(_)
+                | FromUi::UndoReady(_)
+                | FromUi::UndoHistory(_)
+                | FromUi::Overlay(_)
         );
         if edit {
             self.mark_unsaved();
@@ -11174,6 +11190,21 @@ mod tests {
         p.saw_action(&FromUi::Time(TimeAction::Transport(
             mpfree_transport::Command::Play,
         )));
+        // Nor the UNDO light, the undo list or a list over the page, nor
+        // a kit's view still on its way after the settle time (the open's,
+        // on a slow machine: the Sample page made no edit).
+        let view = || FromUi::SampleView(Box::new(ViewSwap { kit: 0, view: None }));
+        p.saw_action(&FromUi::UndoReady(true));
+        p.saw_action(&FromUi::UndoHistory(UndoOn::Mixer));
+        p.saw_action(&FromUi::Overlay(true));
+        p.saw_action(&view());
+        assert!(!p.browser.as_ref().unwrap().unsaved());
+        // A view after a Sample page edit is one.
+        p.sample.edits += 1;
+        p.saw_action(&view());
+        assert!(p.browser.as_ref().unwrap().unsaved());
+        p.browser.as_mut().unwrap().set_unsaved(false);
+        p.saw_action(&view());
         assert!(!p.browser.as_ref().unwrap().unsaved());
         p.saw_action(&FromUi::Time(TimeAction::NewClip { track: 0, slot: 1 }));
         assert!(p.browser.as_ref().unwrap().unsaved());
