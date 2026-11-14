@@ -3,7 +3,9 @@
 //! when one is open. It draws a [`Screen`] and turns touches into
 //! [`Input`]s; it never touches the library itself.
 
-use crate::export::{ExportBits, ExportInput, ExportPanel, ExportPhase, ExportRange, EXPORT_RATES};
+use crate::export::{
+    ExportBits, ExportInput, ExportPanel, ExportPhase, ExportRange, StemsBy, EXPORT_RATES,
+};
 use crate::state::{Button, Filter, Input, Key, Modal, Row, Screen, Sort, Source, SOURCES};
 use mpfree_library::{AudioFormat, Kind, Place};
 use mpfree_ui::draw;
@@ -270,6 +272,10 @@ struct ExportGeo {
     mixdown: Rect,
     stems: Rect,
     midi: Rect,
+    by_label: Rect,
+    by_track: Rect,
+    by_channel: Rect,
+    by_words: Rect,
     range_label: Rect,
     arrangement: Rect,
     bars: Rect,
@@ -311,6 +317,13 @@ fn export_geo(r: Rect) -> ExportGeo {
     let mixdown = Rect::new(make.x, make.y, tw, make.h);
     let stems = Rect::new(make.x + tw + 8, make.y, tw, make.h);
     let midi = Rect::new(make.x + 2 * (tw + 8), make.y, make.w - 2 * (tw + 8), make.h);
+    let (_, rest) = rest.take_top(8);
+    let (by, rest) = rest.take_top(BUTTON_H);
+    let (by_label, by) = by.take_left(label_w);
+    let (by_track, by) = by.take_left(140);
+    let (_, by) = by.take_left(8);
+    let (by_channel, by) = by.take_left(140);
+    let (_, by_words) = by.take_left(16);
     let (_, rest) = rest.take_top(14);
     let (range, rest) = rest.take_top(BUTTON_H);
     let (range_label, range) = range.take_left(label_w);
@@ -355,6 +368,10 @@ fn export_geo(r: Rect) -> ExportGeo {
         mixdown,
         stems,
         midi,
+        by_label,
+        by_track,
+        by_channel,
+        by_words,
         range_label,
         arrangement,
         bars,
@@ -387,6 +404,8 @@ fn export_controls(p: &ExportPanel, r: Rect) -> Vec<(Rect, ExportInput, &'static
             (g.mixdown, ExportInput::Mixdown, "Mixdown"),
             (g.stems, ExportInput::Stems, "Stems"),
             (g.midi, ExportInput::Midi, "MIDI file"),
+            (g.by_track, ExportInput::ByTrack, "Track"),
+            (g.by_channel, ExportInput::ByChannel, "Channel"),
             (g.arrangement, ExportInput::Arrangement, "Arrangement"),
             (g.bars, ExportInput::Bars, "Bars"),
             (g.fewer, ExportInput::Fewer, "-"),
@@ -483,9 +502,21 @@ fn paint_export(cx: &mut PaintCx, r: Rect, p: &ExportPanel) {
         ExportPhase::Ready => {
             label(cx, g.make_label, "Make");
             button(cx, g.mixdown, "Mixdown", p.mixdown, false);
-            let stems = format!("Stems ({})", p.setup.stems);
+            let stems = format!("Stems ({})", p.stem_count().0);
             button(cx, g.stems, &stems, p.stems, false);
             button(cx, g.midi, "MIDI file", p.midi, false);
+            label(cx, g.by_label, "Stems by");
+            button(cx, g.by_track, "Track", p.by == StemsBy::Track, false);
+            button(cx, g.by_channel, "Channel", p.by == StemsBy::Channel, false);
+            paint_lines(
+                cx,
+                g.by_words.inset_xy(0, 4),
+                FontId::Sans,
+                t.size_small,
+                24,
+                if p.stems { t.text_dim } else { t.text_faint },
+                &p.by_words(),
+            );
             label(cx, g.range_label, "Range");
             if p.setup.arrangement.is_some() {
                 button(
