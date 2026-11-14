@@ -155,6 +155,8 @@ def build(plugin, srcs, work, jobs, log):
 
     def subst(arg):
         arg = arg.replace("{recipe}", str(HERE))
+        if "{hostcc32}" in arg:
+            arg = arg.replace("{hostcc32}", str(host_cc32(work)))
         return re.sub(r"\{src:([a-z0-9-]+)\}", lambda m: str(srcs[m.group(1)]), arg)
 
     env = dict(os.environ)
@@ -186,6 +188,24 @@ def build(plugin, srcs, work, jobs, log):
     say(f"  building {', '.join(plugin['targets'])} (this takes a while)")
     run(["cmake", "--build", b, "-j", str(jobs), "--target", *plugin["targets"]], env=env, log=log)
     return b
+
+
+def host_cc32(work):
+    """A 32-bit x86 C compiler for build tools that must match the target's
+    pointer size (Surge XT's LuaJIT): gcc -m32, given the kernel's asm headers,
+    which only gcc-multilib would link in (and it removes the ARM cross
+    compiler), and libm."""
+    d = work / "hostcc"
+    inc = d / "include"
+    inc.mkdir(parents=True, exist_ok=True)
+    asm = inc / "asm"
+    if not asm.exists():
+        asm.symlink_to("/usr/include/x86_64-linux-gnu/asm")
+    cc = d / "gcc-m32"
+    # -lm last: LuaJIT's tools use libm, and Surge doesn't ask for it.
+    cc.write_text(f'#!/bin/sh\nexec gcc -m32 -isystem "{inc}" "$@" -lm\n')
+    cc.chmod(0o755)
+    return cc
 
 
 def find_output(b, pattern):

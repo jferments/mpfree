@@ -51,7 +51,7 @@ sha256 = "b4f5719b00ba3fecf8c0ce651e843651bd80f08a10cf4cf1f00e673a5bcaf23b"
 # project: a folder in this directory ("airwindows"), or "src:<source>" for a
 #   source's own CMake project.
 # cmake: extra configure arguments; {src:<name>} is that source's checkout,
-#   {recipe} this folder.
+#   {recipe} this folder, {hostcc32} a 32-bit x86 C compiler (build.py's host_cc32).
 # cflags: extra C and C++ flags, after the toolchain's.
 # outputs: built file (a glob under the build folder) = name in the pack.
 # licenses: "<source>/<path>" or "file:<name>" = name in the pack's licenses/.
@@ -102,6 +102,8 @@ cmake = [
   "-DSURGE_BUILD_TESTRUNNER=OFF",
   "-DSURGE_BUILD_LV2=OFF",
   "-DCMAKE_PROJECT_INCLUDE={recipe}/static-deps.cmake",
+  # LuaJIT's build tools run here but must be 32-bit like the MPC.
+  "-DLUAJIT_HOSTCC={hostcc32}",
 ]
 targets = ["surge-xt_CLAP", "surge-fx_CLAP"]
 outputs = { "**/CLAP/Surge XT.clap" = "surge-xt.clap", "**/CLAP/Surge XT Effects.clap" = "surge-xt-effects.clap" }
