@@ -641,6 +641,9 @@ pub enum AudioAction {
     /// show.
     Takes(usize),
     Undo,
+    /// SHIFT + Undo on the audio row (the app sets it): bring back what
+    /// Undo took.
+    Redo,
     /// A swipe across a take lane: play take `take` from `from` to `to`
     /// on its track, over what was there (`Command::Comp`), snapped to the
     /// grid unless `fine` (SHIFT held: the app sets it).

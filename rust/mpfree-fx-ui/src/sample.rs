@@ -7,7 +7,8 @@ use crate::state::{make, FxState};
 use crate::view::{self, FxPanel};
 use mpfree_fx::ids::{
     character, chorus, cloud, comb, compressor as comp, crush, delay, dj_filter as dj, drive,
-    ducker, eq, filter, flanger, master, perform as pf, phaser, pitch, transient,
+    ducker, eq, filter, flanger, harmonizer as harm, master, perform as pf, phaser, pitch,
+    pitch_correct as tune, transient,
 };
 use mpfree_fx::{perform_state, presets};
 use mpfree_ui::widgets::{Chip, Header, Label};
@@ -314,7 +315,7 @@ const CHARACTER: Scene = Scene {
 
 /// The effects added with the registry, after Character so the earlier
 /// screens keep their numbers.
-const NEW_FX: [Scene; 4] = [
+const NEW_FX: [Scene; 6] = [
     Scene {
         name: "22-ducker-tempo",
         about: "Ducker, Big pump preset: two quarter-note cycles of the pump at the song's tempo",
@@ -363,6 +364,32 @@ const NEW_FX: [Scene; 4] = [
         focus: Some(pitch::FEEDBACK),
         levels: None,
         meters: &[],
+    },
+    Scene {
+        name: "26-pitch-correct",
+        about: "Pitch correct, A minor snap preset: the stairs onto the key's notes, \
+                a voice on A3 pulled 12 cents up",
+        id: "mpfree.fx.pitch_correct",
+        place: "Vocal · insert 1",
+        values: &[],
+        preset: Some(2),
+        page: "Pitch correct",
+        focus: Some(tune::SPEED),
+        levels: Some((-16.0, -16.5)),
+        meters: &[(tune::NOTE, 57.0), (tune::CORRECTION, 12.0)],
+    },
+    Scene {
+        name: "27-harmonizer",
+        about: "Harmonizer, Close harmony preset: a 3rd above and a 3rd below, \
+                major or minor as C major has them",
+        id: "mpfree.fx.harmonizer",
+        place: "Vocal · insert 2",
+        values: &[],
+        preset: Some(1),
+        page: "Harmonizer",
+        focus: Some(harm::VOICE1),
+        levels: None,
+        meters: &[(harm::NOTE, 64.0)],
     },
 ];
 

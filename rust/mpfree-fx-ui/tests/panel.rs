@@ -44,7 +44,7 @@ fn ev(widget: &str, kind: EventKind) -> UiEvent {
 #[test]
 fn every_sample_screen_draws() {
     let list = samples(Fonts::embedded).unwrap();
-    assert_eq!(list.len(), 25);
+    assert_eq!(list.len(), 27);
     for mut s in list {
         let (w, h) = s.ui.size();
         let mut c = SoftCanvas::new(w, h);
@@ -658,4 +658,53 @@ fn the_new_effects_draw_what_they_play() {
         .iter()
         .any(|t| t.pts.iter().all(|p| (p.1 - y7).abs() < 1e-5)));
     assert!(fb.traces.len() >= dry.traces.len() + 2);
+}
+
+#[test]
+fn the_vocal_effects_draw_their_key() {
+    use mpfree_fx::ids::{harmonizer as harm, pitch_correct as tune};
+    let theme = mpfree_ui::Theme::dark();
+    let card = |st: &FxState, page: &str| {
+        let scratch = mpfree_fx_ui::Scratch::new(st);
+        mpfree_fx_ui::visual::strip(st, page, None, &scratch, &theme)
+            .cards
+            .remove(0)
+    };
+    // Pitch correct in C major at full Amount: stairs, one flat step per
+    // note of the scale; the grid names its seven notes.
+    let full = card(
+        &state(
+            "mpfree.fx.pitch_correct",
+            &[(tune::SCALE, 1.0), (tune::AMOUNT, 100.0)],
+        ),
+        "Pitch correct",
+    );
+    assert_eq!(full.title, "Tune");
+    let mut levels: Vec<f32> = full.traces[0].pts.iter().map(|p| p.1).collect();
+    levels.dedup_by(|a, b| (*a - *b).abs() < 1e-5);
+    assert_eq!(levels.len(), 8, "C to C: {levels:?}");
+    let names: Vec<&str> = full.grid.iter().map(|g| g.1.as_str()).collect();
+    assert_eq!(names, ["C", "D", "E", "F", "G", "A", "B"]);
+    // At zero Amount the line is the dashed one: nothing changes.
+    let none = card(
+        &state("mpfree.fx.pitch_correct", &[(tune::AMOUNT, 0.0)]),
+        "Pitch correct",
+    );
+    let (a, b) = (&none.traces[0].pts, &none.traces[1].pts);
+    assert!((a[0].1 - b[0].1).abs() < 1e-4 && (a[a.len() - 1].1 - b[1].1).abs() < 1e-4);
+
+    // The Harmonizer, a 3rd up in C major: four semitones on C, F and G,
+    // three on D, E, A and B.
+    let h = card(
+        &state(
+            "mpfree.fx.harmonizer",
+            &[(harm::SCALE, 1.0), (harm::VOICE1, 7.0), (harm::VOICE2, 0.0)],
+        ),
+        "Harmonizer",
+    );
+    assert_eq!(h.title, "Voices");
+    let step = |n: usize| ((h.traces[0].pts[2 * n].1 - 0.5) * 26.0).round() as i32;
+    let thirds: Vec<i32> = [0, 2, 4, 5, 7, 9, 11].iter().map(|&n| step(n)).collect();
+    assert_eq!(thirds, [4, 3, 3, 4, 4, 3, 3]);
+    assert!(h.caption.contains("3rd up"), "{}", h.caption);
 }
