@@ -29,6 +29,8 @@ The switch at the top right shows **Browse** or **Pad** beside the pads.
 
 The data wheel, its push, **–** and **+** move through the browser too; see [Buttons and controls](../reference/controls.md#pads-tab). Browse needs the data partition on MPFree's stick; without it, the view says so and the Pad view still works.
 
+**When memory runs short.** The MPC has 2 GB of memory, and running out would stop the sound, so MPFree always keeps 256 MB free. A sound that would leave less isn't loaded, and the hint line says so with how much it needed. The same goes for the sounds of a project you open (it opens without the ones that don't fit, and the Console lists them), for Auto-sample (it doesn't start), and for a warped pad's stretched copy (the pad speeds up or slows down with the tempo, like a record, instead of stretching). To make room, open a smaller project or a new one, or lower **Loop memory** or **Audio track memory** in [Prefs](../reference/prefs.md) for the next start.
+
 {{shot: pads-pad | The Pads tab's Pad view: the picked pad's settings in the middle, and the sounds in the kit on the right.}}
 
 **Pad** sets up the pad picked:
