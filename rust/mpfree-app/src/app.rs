@@ -119,8 +119,8 @@ pub enum View {
     /// Prefs > System info: the program's version, the system and the
     /// hardware (on the Prefs tab).
     System,
-    /// The mixer (mpfree-mixer-ui), over the page under the top bar: TRACK
-    /// MIX or the bar's mixer icon (Jay, 09:17Z). Not a tab.
+    /// The mixer (mpfree-mixer-ui): the Mix tab, or TRACK MIX (layout
+    /// spec 3a; Jay's card, 14 Nov 07:15Z).
     Mixer,
     /// The FX chain editor (mpfree-chain-ui) in the mixer's place: a strip's
     /// insert row or its "+" opens it, and its Back goes back to the mixer
@@ -2431,7 +2431,7 @@ impl App {
 
     /// The bar's I/O icon (layout spec, section 2): the mixer opens on its
     /// I/O view; on a strips view the mixer turns to I/O; on the I/O view
-    /// (`io_showing`) it closes back to the page, as the mixer icon does.
+    /// (`io_showing`) it closes back to the page, as TRACK MIX does.
     pub fn toggle_io(&mut self, io_showing: bool) -> Vec<Effect> {
         if self.view == View::Mixer && io_showing {
             return self.toggle_mixer(false);
