@@ -408,6 +408,9 @@ pub struct Built {
     pub id: &'static str,
     /// None: no effect has that id.
     pub insert: Option<Insert>,
+    /// The insert (its slot id) it takes the place of, for a switch of
+    /// mode across engines; None: it goes at the end of the chain.
+    pub replace: Option<u16>,
 }
 
 /// A track's own instrument asked for on the Synth tab, made on the
@@ -441,6 +444,8 @@ enum Job {
         preset: &'static [(u16, f32)],
         rate: u32,
         block: usize,
+        /// A switch of mode: what sets it up, and the insert it replaces.
+        switch: Option<Box<(mpfree_fx::families::Switch, u16)>>,
     },
     Instrument(Box<InstrumentJob>, u32, usize),
     Drop(Insert),
@@ -490,6 +495,7 @@ impl Builder {
                             preset,
                             rate,
                             block,
+                            switch,
                         } => {
                             let mut node = if Plugins::is_plugin(id) {
                                 // Its own process; a refusal is said by
@@ -503,12 +509,22 @@ impl Builder {
                                 for &(p, v) in preset {
                                     n.set_param(p, v);
                                 }
+                                if let Some(sw) = &switch {
+                                    sw.0.apply(n.as_mut());
+                                }
                             }
+                            let replace = switch.map(|sw| sw.1);
                             let insert = node.map(|node| Insert::new(node, rate, block));
                             // Room for every request (`pending` is checked
                             // against the queue), so this waits only if the
                             // audio thread stopped taking them.
-                            if built_tx.send(Built { strip, id, insert }).is_err() {
+                            let built = Built {
+                                strip,
+                                id,
+                                insert,
+                                replace,
+                            };
+                            if built_tx.send(built).is_err() {
                                 return;
                             }
                         }
@@ -550,16 +566,42 @@ impl Builder {
         rate: u32,
         block: usize,
     ) -> bool {
-        if self.pending >= BUILD_QUEUE {
-            return false;
-        }
-        let job = Job::Build {
+        self.send_build(Job::Build {
             strip,
             id,
             preset,
             rate,
             block,
-        };
+            switch: None,
+        })
+    }
+
+    /// Asks for engine `id` to take the place of insert `uid` on `strip`
+    /// (a switch of mode, `mpfree_fx::families`), set up by `switch`. False
+    /// if too many are under way. Never waits.
+    pub fn build_switch(
+        &mut self,
+        strip: StripId,
+        uid: u16,
+        id: &'static str,
+        switch: mpfree_fx::families::Switch,
+        rate: u32,
+        block: usize,
+    ) -> bool {
+        self.send_build(Job::Build {
+            strip,
+            id,
+            preset: &[],
+            rate,
+            block,
+            switch: Some(Box::new((switch, uid))),
+        })
+    }
+
+    fn send_build(&mut self, job: Job) -> bool {
+        if self.pending >= BUILD_QUEUE {
+            return false;
+        }
         if self.tx.try_send(job).is_err() {
             return false;
         }

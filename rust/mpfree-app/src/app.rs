@@ -168,6 +168,27 @@ pub fn bank_target(current: usize, button: u8, shift: bool) -> usize {
     }
 }
 
+/// What TRACK MUTE's pads are in bank `bank` (A = 0) of a project of
+/// `tracks` tracks: "bank B: pads 1-8 mute tracks 17-24".
+pub fn mute_bank_words(bank: usize, tracks: usize) -> String {
+    let first = bank * 16;
+    let n = tracks.saturating_sub(first).min(16);
+    let letter = bank_letter(bank);
+    match n {
+        0 => format!(
+            "bank {letter}: no tracks here (it is tracks {}-{})",
+            first + 1,
+            first + 16
+        ),
+        1 => format!("bank {letter}: pad 1 mutes track {}", first + 1),
+        n => format!(
+            "bank {letter}: pads 1-{n} mute tracks {}-{}",
+            first + 1,
+            first + n
+        ),
+    }
+}
+
 /// A kit's bank letter (kits 1-8 are banks A-H, then again from kit 9).
 pub fn bank_letter(kit: usize) -> char {
     (b'A' + (kit % 8) as u8) as char
@@ -295,7 +316,8 @@ pub enum MuteKeys {
     /// The pads play.
     #[default]
     Off,
-    /// TRACK MUTE: pads 1-8 mute and unmute tracks 1-8.
+    /// TRACK MUTE: the pads mute and unmute 16 tracks, the bank's
+    /// ([`App::mute_bank`]: A is tracks 1-16, B 17-32, up to H, 113-128).
     Tracks,
     /// SHIFT + TRACK MUTE: each pad mutes and unmutes itself in the
     /// playing kit (the speakers on Play).
@@ -786,6 +808,8 @@ pub struct Status {
     pub bpm: f64,
     /// TRACK MUTE: what the pads are, the hint line says.
     pub mute_keys: MuteKeys,
+    /// TRACK MUTE's bank (A = 0: tracks 1-16).
+    pub mute_bank: usize,
     /// ERASE held: the next tap on the screen deletes what it lands on
     /// (Jay after live test 3).
     pub erase: bool,
@@ -942,6 +966,9 @@ pub enum Effect {
     Time(TimeAction),
     /// What the Map controls page shows.
     Map(MapView),
+    /// TRACK MUTE came or went, or picked another bank: the PAD BANK
+    /// buttons' lights again.
+    BankLights,
     /// A PAD BANK button pressed: 0 = A/E to 3 = D/H, and whether SHIFT
     /// was held (E-H). The audio loop knows the bank playing, so it picks.
     Bank {
@@ -1009,6 +1036,9 @@ pub struct App {
     /// Each track's arp panel state while another track is armed
     /// ([`App::set_track`] swaps it in and out).
     track_ui: [arp::TrackUi; mpfree_seq::MAX_TRACKS],
+    /// A track's arp as New leaves it (on the first built-in pattern), to
+    /// tell which tracks the project's arp part needs to list.
+    arp_fresh: arp::TrackUi,
     /// The `play` step: STOP ends it. The app: STOP stops the sounds.
     timed: bool,
     shift: bool,
@@ -1030,6 +1060,10 @@ pub struct App {
     play_pressed_at: Option<f64>,
     /// TRACK MUTE: the pads play, or mute tracks or the kit's pads.
     mute_keys: MuteKeys,
+    /// TRACK MUTE's bank: pads 1-16 are tracks 16 * bank + 1 on.
+    mute_bank: usize,
+    /// The project's tracks (the audio loop tells it).
+    track_count: usize,
     /// The 16 Levels panel shows on Play: the wheel picks its kind.
     levels_open: bool,
     view: View,
@@ -1212,6 +1246,7 @@ impl App {
             arps,
             track: 0,
             track_ui: [arp::TrackUi::default(); mpfree_seq::MAX_TRACKS],
+            arp_fresh: arp::TrackUi::fresh(pattern),
             timed,
             shift: false,
             repeat_held: false,
@@ -1223,6 +1258,8 @@ impl App {
             fill: Fill::Off,
             play_pressed_at: None,
             mute_keys: MuteKeys::Off,
+            mute_bank: 0,
+            track_count: 0,
             levels_open: false,
             view: View::Play,
             back: View::Play,
@@ -1283,9 +1320,11 @@ impl App {
             arp_seen: 0,
         };
         // Every track's arp starts on the first pattern, as the panel does.
-        for t in 0..mpfree_seq::MAX_TRACKS {
-            app.arps.engine_at_mut(t).set_pattern(pattern);
-            app.track_ui[t].pattern = pattern;
+        // Settings alone don't start an engine, so this needn't mark all
+        // 128 in use.
+        for (e, u) in app.arps.engines_mut().zip(app.track_ui.iter_mut()) {
+            e.set_pattern(pattern);
+            u.pattern = pattern;
         }
         app.update_engine();
         app.arp_seen = app.arp_fingerprint();
@@ -1300,6 +1339,26 @@ impl App {
     /// tells it each period).
     pub fn set_rolling(&mut self, rolling: bool) {
         self.rolling = rolling;
+    }
+
+    /// The project's tracks, for TRACK MUTE's hint line (the audio loop
+    /// tells it each period).
+    pub fn set_track_count(&mut self, n: usize) {
+        self.track_count = n;
+    }
+
+    /// TRACK MUTE's bank: pads 1-16 are tracks `16 * bank + 1` to
+    /// `16 * bank + 16`.
+    pub fn mute_bank(&self) -> usize {
+        self.mute_bank
+    }
+
+    /// What TRACK MUTE's pads are in the bank picked, for the log.
+    fn mute_bank_line(&self) -> String {
+        format!(
+            "TRACK MUTE · {}",
+            mute_bank_words(self.mute_bank, self.track_count)
+        )
     }
 
     /// The transport lights as Akai's startup leaves them: STOP bright,
@@ -1568,8 +1627,8 @@ impl App {
             .engine_at_mut(self.track)
             .set_own_swing(!self.swing_from_transport);
         // Every track's arp free-runs at the app's tempo while stopped.
-        for t in 0..mpfree_seq::MAX_TRACKS {
-            self.arps.engine_at_mut(t).set_tempo(self.settings.bpm);
+        for e in self.arps.engines_mut() {
+            e.set_tempo(self.settings.bpm);
         }
         self.arp_dirty = true;
     }
@@ -1613,6 +1672,7 @@ impl App {
             rate: self.settings.rate.label(),
             bpm: self.settings.bpm,
             mute_keys: self.mute_keys,
+            mute_bank: self.mute_bank,
             erase: self.erase_held,
         })
     }
@@ -1830,6 +1890,17 @@ impl App {
             fx.extend(self.toggle(View::Console));
         } else if Some(note) == self.map.tap_tempo {
             fx.extend(self.tap(t));
+        } else if let Some(k) = self
+            .map
+            .bank_of(note)
+            .filter(|_| self.mute_keys == MuteKeys::Tracks)
+        {
+            // TRACK MUTE: PAD BANK picks which 16 tracks the pads mute (as
+            // it picks kits: SHIFT or a second press for E-H); the kit
+            // playing stays.
+            self.mute_bank = bank_target(self.mute_bank, k, shift);
+            fx.push(Effect::Note(self.mute_bank_line()));
+            fx.push(Effect::BankLights);
         } else if let Some(k) = self.map.bank_of(note) {
             fx.push(Effect::Bank { button: k, shift });
         } else if Some(note) == self.map.data_push && self.browsing() {
@@ -1958,14 +2029,15 @@ impl App {
             vec![
                 Effect::Light(note, if on { LIGHT_ON } else { LIGHT_OFF }),
                 self.status(),
-                Effect::Note(
-                    match self.mute_keys {
-                        MuteKeys::Off => "TRACK MUTE: the pads play again",
-                        MuteKeys::Tracks => "TRACK MUTE: pads 1-8 mute tracks 1-8",
-                        MuteKeys::Pads => "SHIFT + TRACK MUTE: each pad mutes itself in the kit",
+                Effect::Note(match self.mute_keys {
+                    MuteKeys::Off => "TRACK MUTE: the pads play again".to_string(),
+                    MuteKeys::Tracks => self.mute_bank_line(),
+                    MuteKeys::Pads => {
+                        "SHIFT + TRACK MUTE: each pad mutes itself in the kit".to_string()
                     }
-                    .to_string(),
-                ),
+                }),
+                // The PAD BANK lights show the mute bank, or the kit's again.
+                Effect::BankLights,
             ]
         } else if is(m.sixteen_level) {
             // SHIFT + 16 LEVEL: the synth pads' Chromatic | In key switch.
@@ -5606,9 +5678,14 @@ mod tests {
             "root = D",
             "swing-from = arp",
             "rate = 1/16T",
-            "track 16",
+            "track 3",
         ] {
             assert!(part.lines().any(|l| l == line), "{line}: {part}");
+        }
+        // Tracks left at the default aren't listed (a project can have
+        // 128); an open gives them the default.
+        for line in ["track 2", "track 16", "track 128"] {
+            assert!(!part.lines().any(|l| l == line), "{line}: {part}");
         }
 
         // Another start opens it: every track's arp as it was, Latch off.
@@ -6173,6 +6250,59 @@ mod tests {
         press(&mut app, TRACK_MUTE);
         press(&mut app, TRACK_MUTE);
         assert_eq!(app.mute_keys(), MuteKeys::Off);
+    }
+
+    /// TRACK MUTE with more than 16 tracks (up to 128, Jay 14 Nov): PAD
+    /// BANK picks which 16 tracks the pads mute, as it picks kits (SHIFT or
+    /// a second press for E-H), and the kit playing stays. Out of TRACK
+    /// MUTE the buttons pick kits again.
+    #[test]
+    fn track_mute_banks_pick_which_16_tracks_the_pads_mute() {
+        const TRACK_MUTE: u8 = 68;
+        const BANK_B: u8 = 36;
+        let mut app = ready();
+        app.map.learn(mapper::Job::TrackMute, Some(TRACK_MUTE));
+        app.map.learn(mapper::Job::Bank(1), Some(BANK_B));
+        app.set_track_count(24);
+        let fx = press(&mut app, TRACK_MUTE);
+        assert!(
+            fx.contains(&Effect::Note(
+                "TRACK MUTE · bank A: pads 1-16 mute tracks 1-16".into()
+            )),
+            "{fx:?}"
+        );
+        assert!(fx.contains(&Effect::BankLights));
+        let fx = press(&mut app, BANK_B);
+        assert_eq!(app.mute_bank(), 1);
+        assert_eq!(app.status_now().mute_bank, 1);
+        assert_eq!(
+            fx,
+            vec![
+                Effect::Note("TRACK MUTE · bank B: pads 1-8 mute tracks 17-24".into()),
+                Effect::BankLights
+            ],
+            "no kit change"
+        );
+        // A second press: bank F, tracks 81-96, none in this project.
+        let fx = press(&mut app, BANK_B);
+        assert_eq!(app.mute_bank(), 5);
+        assert!(fx.contains(&Effect::Note(
+            "TRACK MUTE · bank F: no tracks here (it is tracks 81-96)".into()
+        )));
+        press(&mut app, TRACK_MUTE);
+        assert_eq!(app.mute_keys(), MuteKeys::Off);
+        assert_eq!(
+            press(&mut app, BANK_B),
+            vec![Effect::Bank {
+                button: 1,
+                shift: false
+            }]
+        );
+        // The bank is kept for the next TRACK MUTE.
+        let fx = press(&mut app, TRACK_MUTE);
+        assert!(fx
+            .iter()
+            .any(|e| matches!(e, Effect::Note(n) if n.contains("bank F"))));
     }
 
     #[test]

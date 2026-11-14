@@ -28,6 +28,12 @@
 //! locks (a lock set on a step, a step's locks going with it) undo and
 //! redo with its notes.
 //!
+//! A track added at the end of the project ([`Takes::add_track`]) is a
+//! take too, so UNDO takes it away again (with whatever it holds then,
+//! which redo puts back). Takes are undone last first, so the takes made
+//! on the new track are undone before it goes, and no take ever names a
+//! track that moved.
+//!
 //! A recorded note's pad pressure goes in with it ([`Takes::add_touched`]):
 //! into the clip's pressure first, which only ever grows, so undo and
 //! redo of the note need not touch it.
@@ -62,7 +68,9 @@
 
 use mpfree_seq::mpfree_moves::{Kind, Map, Point, Target};
 use mpfree_seq::steps::{Edit, MovesEdit};
-use mpfree_seq::{touch_room, Clip, Lock, ModelError, Note, Project, Touch, TouchPoint};
+use mpfree_seq::{
+    touch_room, Clip, DestId, Lock, ModelError, Note, Project, Touch, TouchPoint, Track, MAX_TRACKS,
+};
 use mpfree_transport::time::Tick;
 
 use crate::recorded::Rec;
@@ -134,6 +142,10 @@ pub struct Take {
     pub moves: Vec<MovePut>,
     /// Lanes an edit moved, as (track, slot, before and after).
     pub moves_edited: Vec<(usize, usize, MovesEdit)>,
+    /// A track the take added at the end of the project, as (its index,
+    /// the track). Undo takes it off the end, kept as it is then; redo
+    /// puts it back if the project is that long again.
+    pub track_added: Option<(usize, Track)>,
 }
 
 /// The takes that can be undone, oldest first, and the ones that can be
@@ -408,6 +420,35 @@ impl Takes {
         Ok(number)
     }
 
+    /// A new empty track named `name` at the end of the project, as an
+    /// edit of its own. Its destination is the lowest one no track uses
+    /// (a new project's tracks use their own numbers). Its edit number and
+    /// index, or `TooManyTracks` at [`MAX_TRACKS`].
+    pub fn add_track(
+        &mut self,
+        project: &mut Project,
+        name: &str,
+    ) -> Result<(u32, usize), ModelError> {
+        if project.tracks.len() >= MAX_TRACKS {
+            return Err(ModelError::TooManyTracks);
+        }
+        let dest = (0..=MAX_TRACKS as DestId)
+            .find(|d| project.tracks.iter().all(|t| t.dest != *d))
+            .unwrap_or(project.tracks.len() as DestId);
+        let index = project.tracks.len();
+        let track = Track::new(name, dest);
+        project.tracks.push(track.clone());
+        self.edits += 1;
+        let number = self.edits;
+        self.push(Take {
+            number,
+            edited: true,
+            track_added: Some((index, track)),
+            ..Take::default()
+        });
+        Ok((number, index))
+    }
+
     /// CAPTURE into a clip that holds notes already (the one that was
     /// playing): add `notes` to clip `slot` of `track`, as a take of its
     /// own, with their pressure: each note's `touch` names its run in
@@ -625,6 +666,14 @@ impl Takes {
                 *s = Some(gone.clone());
             }
         }
+        if let Some((index, kept)) = &mut take.track_added {
+            // Kept as it is now (its name, its clips), for redo.
+            if project.tracks.len() == *index + 1 {
+                if let Some(t) = project.tracks.pop() {
+                    *kept = t;
+                }
+            }
+        }
         let n = take.number;
         self.undone.push(take);
         Some(n)
@@ -633,6 +682,11 @@ impl Takes {
     /// Redo the latest undone take. Its number, or None.
     pub fn redo(&mut self, project: &mut Project) -> Option<u32> {
         let mut take = self.undone.pop()?;
+        if let Some((index, t)) = &take.track_added {
+            if project.tracks.len() == *index {
+                project.tracks.push(t.clone());
+            }
+        }
         for (track, slot, gone) in &mut take.removed {
             // Kept as it is now, for the next undo.
             if let Some(c) = slot_mut(project, *track, *slot).and_then(Option::take) {
@@ -847,6 +901,41 @@ mod tests {
             .iter()
             .map(|n| n.tick)
             .collect()
+    }
+
+    #[test]
+    fn an_added_track_undoes_after_its_own_takes_and_redoes_with_them() {
+        let mut p = project();
+        p.tracks.push(Track::new("t2", 1));
+        let mut t = Takes::default();
+        assert_eq!(t.add_track(&mut p, "Track 3"), Ok((1, 2)));
+        assert_eq!((p.tracks.len(), p.tracks[2].dest), (3, 2));
+        // A clip recorded on it, then its name changed (not a take).
+        let mut c = Clip::new("new", 3840);
+        c.notes.push(taken(0, 9).note);
+        p.tracks[2].slots[4] = Some(c);
+        p.tracks[2].name = "Keys".into();
+        t.remove_clip(&mut p, 2, 4).unwrap();
+        assert_eq!(t.undo(&mut p), Some(2), "the clip first");
+        assert!(p.tracks[2].slots[4].is_some());
+        assert_eq!(t.undo(&mut p), Some(1), "then the track");
+        assert_eq!(p.tracks.len(), 2);
+        assert_eq!(t.redo(&mut p), Some(1));
+        assert_eq!(p.tracks[2].name, "Keys", "back as it went");
+        assert!(p.tracks[2].slots[4].is_some());
+        // A destination no track uses: a gap is filled first.
+        p.tracks[0].dest = 7;
+        assert_eq!(t.add_track(&mut p, "Track 4").map(|r| r.1), Ok(3));
+        assert_eq!(p.tracks[3].dest, 0);
+        // 128 at most.
+        while p.tracks.len() < MAX_TRACKS {
+            t.add_track(&mut p, "more").unwrap();
+        }
+        assert_eq!(
+            t.add_track(&mut p, "one too many"),
+            Err(ModelError::TooManyTracks)
+        );
+        p.check().unwrap();
     }
 
     #[test]

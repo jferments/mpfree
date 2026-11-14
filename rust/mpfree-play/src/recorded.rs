@@ -73,12 +73,21 @@ impl Rec {
 /// cues started on each track that it shows as launches. Unset, a view
 /// follows the old rule (a started cue shows once the view's cue is gone),
 /// which suits a host that compiles in the same period.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Includes {
     /// The number of the last [`Rec`] made to the project (0: none).
     pub recorded: u64,
     /// Cues started on each track and applied (`Started::apply`).
     pub switches: [u32; mpfree_seq::MAX_TRACKS],
+}
+
+impl Default for Includes {
+    fn default() -> Includes {
+        Includes {
+            recorded: 0,
+            switches: [0; mpfree_seq::MAX_TRACKS],
+        }
+    }
 }
 
 /// Why a view could not catch up.
