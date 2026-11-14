@@ -61,7 +61,7 @@ To record onto an audio track:
 
 - Each recording is a **region**: a block in the track's colour with its waveform. When an older take plays, the block says which one ("take 1"). A fade shows as a slope.
 - While a track records, a red block grows from where it started.
-- On the left of each lane: the **arm dot** (red while armed: tap it to arm or disarm), the track's name, its input (**L** by default: the MPC One's line input records on the left jack) and a thin level bar along the bottom.
+- On the left of each lane: the **arm dot** (red while armed: tap it to arm or disarm), the track's name, its input (**L** by default: the MPC One's line input records on the left jack) and a thin level bar along the bottom. The bar shows what the track plays, and while it is armed, the input it records, so you can check your level before you press REC. It turns red near full scale.
 - **+ Audio** at the bottom adds the next audio track, up to 8.
 - Tap a track's name (or its input) to open its **track panel** over the lanes. Tap the name again, or **Close**, to shut it.
   - **Arm**, **Mute** and **Solo**. Solo works among the audio tracks: a soloed track silences the other audio tracks, not the drums or the synth.
@@ -74,7 +74,7 @@ To record onto an audio track:
 
 - Tap a region to pick it. The buttons along the bottom become **Split**, **Erase**, **Fades**, **Gain**, **Takes** and **Undo** for that region. Tap empty space to go back to the song's own buttons.
   - **Split** cuts the region at the playhead, so put the playhead inside it first.
-  - **Erase** takes the region out. **Undo** brings it back.
+  - **Erase** takes the region out. **Undo** brings it back, and **SHIFT + Undo** redoes what Undo took back.
   - **Drag** a region sideways to move it. It snaps to sixteenth notes; hold SHIFT to move it freely. It stays picked where it lands, and **Undo** puts it back.
   - While a region is picked, the four Q-Links on the right turn the track's **Level** (Q1) and **Pan** (Q2), and the region's **Gain** (Q3) and **Fades** (Q4, the fade in and the fade out together). Hold SHIFT for fine steps. **Gain** and **Fades** in the bottom row point you to those knobs.
 - **Takes** (in the track panel, or in the bottom row with a region picked) opens the track's **take lanes**: a thin lane for each recording under the track's lane, newest first. Each take lane shows that take's waveform, brighter where the track plays it now. Tap **Takes** again to close them.

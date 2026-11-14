@@ -7,7 +7,7 @@
 
 use crate::ids::{
     character, chorus, comb, compressor as comp, crush, delay, drive, ducker, eq, filter, flanger,
-    phaser, pitch, transient,
+    harmonizer as harm, phaser, pitch, pitch_correct as tune, transient,
 };
 use crate::Preset;
 
@@ -789,5 +789,91 @@ pub static PITCH: &[Preset] = &[
     Preset {
         name: "Chipmunk",
         values: &[(pitch::PITCH, 19.0), (pitch::WINDOW, 25.0)],
+    },
+];
+
+// Pitch correct and Harmonizer scales and intervals (by their place in
+// `VOCAL_SCALES` and `VOCAL_INTERVALS`).
+const MAJOR: f32 = 1.0;
+const MINOR: f32 = 2.0;
+const MAJOR_PENTA: f32 = 4.0;
+const KEY_A: f32 = 9.0;
+const OFF: f32 = 0.0;
+const OCT_DOWN: f32 = 1.0;
+const FOURTH_DOWN: f32 = 4.0;
+const THIRD_DOWN: f32 = 5.0;
+const THIRD_UP: f32 = 7.0;
+const FIFTH_UP: f32 = 9.0;
+const OCT_UP: f32 = 11.0;
+
+/// Pitch correct: from a gentle nudge to the hard, stepped snap.
+pub static PITCH_CORRECT: &[Preset] = &[
+    Preset {
+        name: "Natural",
+        values: &[(tune::SPEED, 60.0), (tune::AMOUNT, 80.0)],
+    },
+    Preset {
+        name: "Hard tune",
+        values: &[(tune::SCALE, MAJOR), (tune::SPEED, 0.0)],
+    },
+    Preset {
+        name: "A minor snap",
+        values: &[(tune::KEY, KEY_A), (tune::SCALE, MINOR), (tune::SPEED, 5.0)],
+    },
+    Preset {
+        name: "Pentatonic glide",
+        values: &[(tune::SCALE, MAJOR_PENTA), (tune::SPEED, 120.0)],
+    },
+    Preset {
+        name: "Low voice",
+        values: &[(tune::RANGE, 0.0), (tune::SPEED, 40.0)],
+    },
+];
+
+/// Harmonizer: stacks that follow the key.
+pub static HARMONIZER: &[Preset] = &[
+    Preset {
+        name: "Third above",
+        values: &[
+            (harm::VOICE1, THIRD_UP),
+            (harm::LEVEL1, 80.0),
+            (harm::PAN1, 0.0),
+            (harm::VOICE2, OFF),
+        ],
+    },
+    Preset {
+        name: "Close harmony",
+        values: &[
+            (harm::VOICE1, THIRD_UP),
+            (harm::VOICE2, THIRD_DOWN),
+            (harm::GLIDE, 60.0),
+        ],
+    },
+    Preset {
+        name: "Octave stack",
+        values: &[
+            (harm::VOICE1, OCT_UP),
+            (harm::LEVEL1, 45.0),
+            (harm::PAN1, -20.0),
+            (harm::VOICE2, OCT_DOWN),
+            (harm::PAN2, 20.0),
+        ],
+    },
+    Preset {
+        name: "Wide fifths",
+        values: &[
+            (harm::VOICE1, FIFTH_UP),
+            (harm::PAN1, -80.0),
+            (harm::VOICE2, FOURTH_DOWN),
+            (harm::PAN2, 80.0),
+        ],
+    },
+    Preset {
+        name: "A minor thirds",
+        values: &[
+            (harm::KEY, KEY_A),
+            (harm::SCALE, MINOR),
+            (harm::VOICE2, OFF),
+        ],
     },
 ];

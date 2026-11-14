@@ -18,9 +18,11 @@
 use crate::state::{FxState, Scratch};
 use mpfree_fx::ids::{
     character, chorus, cloud, comb, compressor as comp, crush, delay, drive, ducker, eq, filter,
-    flanger, lofi, master, phaser, pitch, transient,
+    flanger, harmonizer as harm, lofi, master, phaser, pitch, pitch_correct as tune, transient,
 };
-use mpfree_fx::{Cloud, Ducker, TransientShaper, DUCKER_RATE_BEATS};
+use mpfree_fx::{
+    interval_semis, nearest_note, Cloud, Ducker, TransientShaper, DUCKER_RATE_BEATS, VOCAL_KEYS,
+};
 use mpfree_node::{Ctx, Node, MAX_BLOCK};
 use mpfree_synth_ui::format::value_text;
 use mpfree_synth_ui::widgets::{Card, CardNode, Trace, QLINK_COLORS};
@@ -64,6 +66,8 @@ pub fn has_visuals(id: &str) -> bool {
             | "mpfree.fx.ducker"
             | "mpfree.fx.transient"
             | "mpfree.fx.pitch"
+            | "mpfree.fx.pitch_correct"
+            | "mpfree.fx.harmonizer"
     )
 }
 
@@ -534,6 +538,8 @@ pub fn strip(
             "mpfree.fx.ducker" => ducker_card(&mut s, st, page, t),
             "mpfree.fx.transient" => transient_card(&mut s, st, page, t),
             "mpfree.fx.pitch" => pitch_card(&mut s, st, page, t),
+            "mpfree.fx.pitch_correct" => tune_card(&mut s, st, page, t),
+            "mpfree.fx.harmonizer" => harmony_card(&mut s, st, page, t),
             _ => {}
         },
     }
@@ -1332,6 +1338,147 @@ fn pitch_card(s: &mut Strip, st: &FxState, page: &str, t: &Theme) {
             title: "Shift".into(),
             caption,
             traces,
+            active: true,
+            ..Card::default()
+        },
+        page,
+    );
+}
+
+/// The key's notes across one octave from its tonic, as grid lines: each
+/// note of the scale, named when the scale has seven or fewer (else the
+/// tonic alone), so a page shows which notes it will sing.
+fn scale_grid(key: usize, scale: usize) -> Vec<(f32, String)> {
+    let notes: Vec<i32> = (0..12)
+        .filter(|&k| nearest_note((60 + key as i32 + k) as f32, key, scale) == 60 + key as i32 + k)
+        .collect();
+    let named = notes.len() <= 7;
+    notes
+        .iter()
+        .map(|&k| {
+            let name = if named || k == 0 {
+                VOCAL_KEYS[(key + k as usize) % 12].to_string()
+            } else {
+                String::new()
+            };
+            ((k as f32 + 0.5) / 12.0, name)
+        })
+        .collect()
+}
+
+/// The note sung, as an x across the octave from the key (None while
+/// unvoiced), from the effect's Note meter.
+fn sung_x(st: &FxState, note_id: u16, key: usize) -> Option<f32> {
+    let note = st.value(note_id);
+    (note >= 1.0).then(|| (((note as i32 - key as i32).rem_euclid(12)) as f32 + 0.5) / 12.0)
+}
+
+/// Pitch correct: the note sung (across, one octave from the key) against
+/// the note heard (up): stairs on the scale's notes at full Amount, a
+/// slope part way to them below it, and the dashed line where nothing
+/// would change. The dot is the note being sung now.
+fn tune_card(s: &mut Strip, st: &FxState, page: &str, t: &Theme) {
+    let v = |id: u16| st.value(id);
+    let (key, scale) = (v(tune::KEY) as usize, v(tune::SCALE) as usize);
+    let amount = v(tune::AMOUNT) / 100.0;
+    let base = 60.0 + key as f32;
+    // Up the card: half a semitone under the tonic to half over the octave.
+    let y = |midi: f32| ((midi - base + 0.5) / 13.0).clamp(0.0, 1.0);
+    let pts: Vec<(f32, f32)> = (0..=N)
+        .map(|k| {
+            let x = k as f32 / N as f32;
+            let sung = base - 0.5 + 12.0 * x;
+            let to = nearest_note(sung, key, scale) as f32;
+            (x, y(sung + amount * (to - sung)))
+        })
+        .collect();
+    let even = vec![(0.0, y(base - 0.5)), (1.0, y(base + 11.5))];
+    let mut caption = format!(
+        "{} {} · {} · {}",
+        text(st, tune::KEY),
+        text(st, tune::SCALE),
+        if v(tune::SPEED) < 0.5 {
+            "snap".to_string()
+        } else {
+            ms_text(v(tune::SPEED))
+        },
+        text(st, tune::AMOUNT)
+    );
+    if v(tune::NOTE) >= 1.0 {
+        caption += &format!(" · {} {:+.0} c", text(st, tune::NOTE), v(tune::CORRECTION));
+    }
+    s.push(
+        Card {
+            title: "Tune".into(),
+            caption,
+            traces: vec![line(pts, t.accent), dashed(even, t.text_faint)],
+            grid: scale_grid(key, scale),
+            dot: sung_x(st, tune::NOTE, key),
+            active: true,
+            ..Card::default()
+        },
+        page,
+    );
+}
+
+/// The Harmonizer: for each note sung across the octave from the key, how
+/// far up or down each voice sings (an octave either way, unison in the
+/// middle, dashed), in its Q-Link's colour, faint while its level is
+/// down. A 3rd up steps between major and minor as the key has it. The
+/// dot is the note being sung now.
+fn harmony_card(s: &mut Strip, st: &FxState, page: &str, t: &Theme) {
+    let v = |id: u16| st.value(id);
+    let (key, scale) = (v(harm::KEY) as usize, v(harm::SCALE) as usize);
+    let y = |semis: f32| 0.5 + semis / 26.0;
+    let mut traces = Vec::new();
+    let mut names = Vec::new();
+    let voices = [
+        (harm::VOICE1, harm::LEVEL1, QLINK_COLORS[0]),
+        (harm::VOICE2, harm::LEVEL2, QLINK_COLORS[2]),
+    ];
+    for (pick, level, color) in voices {
+        let k = v(pick) as usize;
+        let mut pts = Vec::new();
+        for n in 0..12 {
+            let sung = 60 + key as i32 + n;
+            // The shift the voice makes on this note (from the note of the
+            // scale nearest it), flat across its twelfth of the card.
+            let Some(semis) = interval_semis(k, nearest_note(sung as f32, key, scale), key, scale)
+            else {
+                break;
+            };
+            pts.push((n as f32 / 12.0, y(semis as f32)));
+            pts.push(((n + 1) as f32 / 12.0, y(semis as f32)));
+        }
+        if pts.is_empty() {
+            continue;
+        }
+        let color = if v(level) < 0.5 { t.text_faint } else { color };
+        traces.push(line(pts, color));
+        names.push(text(st, pick));
+    }
+    traces.push(dashed(vec![(0.0, y(0.0)), (1.0, y(0.0))], t.text_faint));
+    traces.extend(
+        [-12.0, 12.0]
+            .iter()
+            .map(|&o| dashed(vec![(0.0, y(o)), (1.0, y(o))], t.text_faint)),
+    );
+    let mut caption = format!("{} {}", text(st, harm::KEY), text(st, harm::SCALE));
+    if names.is_empty() {
+        caption += " · no voices";
+    } else {
+        caption += &format!(" · {}", names.join(" · "));
+    }
+    if v(harm::NOTE) >= 1.0 {
+        caption += &format!(" · {}", text(st, harm::NOTE));
+    }
+    s.push(
+        Card {
+            title: "Voices".into(),
+            caption,
+            traces,
+            grid: scale_grid(key, scale),
+            dot: sung_x(st, harm::NOTE, key),
             active: true,
             ..Card::default()
         },
