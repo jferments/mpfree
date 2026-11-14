@@ -727,6 +727,12 @@ fn bouncing_never_allocates_on_the_sound_thread() {
     bin.begin(&lat);
     for _ in 0..2000 {
         let len = 1 + (rng.next() as usize) % 300;
+        // This loop outruns any sound card: wait for the writer, or a
+        // busy machine starves it and the rings overrun (the pass's own
+        // pacing does this job in the app).
+        while bin.room() < len {
+            std::thread::yield_now();
+        }
         for t in 0..2 {
             let (il, ir) = m.strip_input(StripId::Track(t)).unwrap();
             for i in 0..len {
