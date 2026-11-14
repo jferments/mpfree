@@ -656,10 +656,13 @@ impl MixHost {
             };
             // A switch of mode takes its insert's slot, and its slot id;
             // an added effect goes at the end.
-            let at = self.mixer.chain(built.strip).and_then(|c| match built.replace {
-                Some(uid) => c.slot_of(uid),
-                None => Some(c.len()),
-            });
+            let at = self
+                .mixer
+                .chain(built.strip)
+                .and_then(|c| match built.replace {
+                    Some(uid) => c.slot_of(uid),
+                    None => Some(c.len()),
+                });
             let Some(at) = at else {
                 said = Some(match built.replace {
                     Some(_) => "mixer: an effect was switched after it was taken out",

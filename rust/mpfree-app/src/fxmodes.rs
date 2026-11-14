@@ -122,7 +122,10 @@ pub fn switch(
         .zip(c.node(slot))
         .ok_or("That effect has gone")?;
     let (family, now) = families::node_mode(n).ok_or("That effect has no modes")?;
-    let to: &'static Mode = family.modes.get(mode).ok_or("That effect has no such mode")?;
+    let to: &'static Mode = family
+        .modes
+        .get(mode)
+        .ok_or("That effect has no such mode")?;
     if now == Some(mode) {
         return Ok(Switched::Already);
     }
@@ -159,9 +162,11 @@ pub fn switch(
     // drive them by id while it comes in.
     h.modu.forget(owner);
     let mixer = &h.mixer;
-    h.modes
-        .kept
-        .retain(|k| mixer.chain(k.strip).is_some_and(|c| c.slot_of(k.uid).is_some()));
+    h.modes.kept.retain(|k| {
+        mixer
+            .chain(k.strip)
+            .is_some_and(|c| c.slot_of(k.uid).is_some())
+    });
     h.modes.keep(sid, uid, old, values);
     h.modes.waiting.push(Waiting {
         strip,

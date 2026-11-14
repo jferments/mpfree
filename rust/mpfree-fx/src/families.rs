@@ -509,7 +509,10 @@ mod tests {
             carried_id(room.params(), mix, plate.params()),
             Some(ids(plate.as_ref(), "Mix"))
         );
-        assert_eq!(carried_id(room.params(), ids(room.as_ref(), "Early"), plate.params()), None);
+        assert_eq!(
+            carried_id(room.params(), ids(room.as_ref(), "Early"), plate.params()),
+            None
+        );
         // Back to the room with what it had: Early comes back too.
         let mut back = defaults(ROOM);
         let mut sw = Switch::new(plate.as_ref(), &[], &FAMILIES[0].modes[0]);

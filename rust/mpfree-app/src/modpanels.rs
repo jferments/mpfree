@@ -1386,7 +1386,12 @@ mod tests {
         assert_eq!(room.info().id, "mpfree.fx.room");
         assert!((room.param(1) - 80.0).abs() < 1e-3);
         assert_eq!(base(&r, 2), Some(1500.0), "the Room's Decay");
-        let maps: Vec<u16> = r.h.modu.engine().macro_maps(0).map(|m| m.target.param).collect();
+        let maps: Vec<u16> =
+            r.h.modu
+                .engine()
+                .macro_maps(0)
+                .map(|m| m.target.param)
+                .collect();
         assert_eq!(maps, [9], "the macro back on the Room's Mix");
         // Nothing drives a control that isn't there.
         r.run(4);
@@ -1408,8 +1413,21 @@ mod tests {
             "the chooser stands for Mode"
         );
         let amount = knob(&st, "Drive");
-        let v = st.params.iter().find(|p| p.addr == amount).unwrap().info.from_unit(0.7);
-        c.action(&mut r.h, &ChainAction::Set { addr: amount, value: v }, false);
+        let v = st
+            .params
+            .iter()
+            .find(|p| p.addr == amount)
+            .unwrap()
+            .info
+            .from_unit(0.7);
+        c.action(
+            &mut r.h,
+            &ChainAction::Set {
+                addr: amount,
+                value: v,
+            },
+            false,
+        );
         c.action(&mut r.h, &ChainAction::SetMode { slot, mode: 2 }, false);
         r.run(2);
         let node = |r: &Rig| {
@@ -1435,7 +1453,10 @@ mod tests {
         let chain = r.h.mixer.chain(drums()).unwrap();
         let n = chain.node(slot).unwrap();
         assert_eq!(n.param(drive::MODE), 4.0, "Fuzz");
-        assert!((n.param(amount.param) - v).abs() < 1e-3, "the Drive's amount");
+        assert!(
+            (n.param(amount.param) - v).abs() < 1e-3,
+            "the Drive's amount"
+        );
         let st = c.state(&r.h);
         assert_eq!(st.slots[slot].name, "Drive · Fuzz");
         assert_eq!(st.selected, Some(slot));
