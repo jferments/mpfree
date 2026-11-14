@@ -242,6 +242,7 @@ impl Rig {
             cv,
             own: &mut mix.instruments,
             tap,
+            only: None,
         };
         time.period(PERIOD as u32, &mut seq);
         seq.midi
@@ -613,6 +614,7 @@ fn live_notes_on_a_midi_out_track_go_out_and_record_as_their_pad() {
         cv: &mut rig.cv,
         own: &mut rig.mix.instruments,
         tap: &mut rig.tap,
+        only: None,
     };
     let at = |event| Out {
         offset: 0,
@@ -681,6 +683,7 @@ fn live_pads_on_a_track_with_its_own_instrument_play_it() {
         cv: &mut rig.cv,
         own: &mut rig.mix.instruments,
         tap: &mut rig.tap,
+        only: None,
     };
     let at = |track, event| Out {
         offset: 0,
