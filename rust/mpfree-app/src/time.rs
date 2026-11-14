@@ -1107,6 +1107,81 @@ mod tests {
         assert_eq!(playing(&h), [(0, 3)], "redo: it moves again, playing");
     }
 
+    /// Jay, 14 Nov: drag and drop on the Song view. A block moves along
+    /// and across lanes, gets longer, a section moves; each is an edit
+    /// UNDO takes back, and a refusal changes nothing.
+    #[test]
+    fn song_drags_move_blocks_and_sections_and_undo_takes_them_back() {
+        use mpfree_seq::arrange::Placement;
+        const BAR: i64 = 3840;
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        for (t, name) in [(0, "Beat"), (1, "Bass")] {
+            h.control.project.tracks[t].slots[0] = Some(Clip::new(name, BAR));
+        }
+        let song = &mut h.control.project.arrangement;
+        song.place(Placement::linked(0, 0, 0, 2 * BAR)).unwrap();
+        song.place(Placement::linked(1, 0, 2 * BAR, 2 * BAR))
+            .unwrap();
+        song.mark(0, "Intro").unwrap();
+        song.mark(2 * BAR, "Verse").unwrap();
+        let start = h.control.project.arrangement.clone();
+        let mv = |index, track, start, copy| TimeAction::MovePlacement {
+            index,
+            track,
+            start,
+            copy,
+        };
+        let said = h.act(mv(0, 0, 4 * BAR, false)).unwrap();
+        assert!(said.contains("Beat moved to bar 5"), "{said}");
+        assert_eq!(h.control.state().selected, Some(0), "it stays picked");
+        // Onto the bass's block: refused, nothing changes.
+        let before = h.control.project.arrangement.clone();
+        let said = h.act(mv(0, 1, 2 * BAR, false)).unwrap_err();
+        assert!(said.contains("would run into another block"), "{said}");
+        assert_eq!(h.control.project.arrangement, before);
+        // A copy onto the bass's lane is its own copy of the clip.
+        let said = h.act(mv(0, 1, 6 * BAR, true)).unwrap();
+        assert!(
+            said.contains("a copy of Beat at Track 2, bar 7, as its own copy"),
+            "{said}"
+        );
+        let said = h
+            .act(TimeAction::StretchPlacement {
+                index: 0,
+                length: 3 * BAR,
+            })
+            .unwrap();
+        assert!(said.contains("Beat is 3 bars long now"), "{said}");
+        // A beat on (the wheel).
+        let said = h.act(mv(0, 0, 4 * BAR + 960, false)).unwrap();
+        assert!(said.contains("bar 5 beat 2"), "{said}");
+        let said = h
+            .act(TimeAction::MoveSection {
+                marker: 1,
+                gap: 0,
+                copy: false,
+            })
+            .unwrap();
+        assert!(said.contains("Verse moved to bar 1"), "{said}");
+        let st = h.control.state();
+        assert_eq!(st.section, Some(0), "the section stays picked");
+        assert_eq!(st.markers[0].1, "Verse");
+        let said = h.act(TimeAction::Undo).unwrap();
+        assert!(said.contains("move 5 · a section of the song"), "{said}");
+        assert_eq!(h.control.state().markers[0].1, "Intro");
+        for _ in 0..4 {
+            h.act(TimeAction::Undo).unwrap();
+        }
+        assert_eq!(h.control.project.arrangement, start, "every edit undone");
+        h.act(TimeAction::Redo).unwrap();
+        assert_eq!(h.control.project.arrangement.placements[0].start, 4 * BAR);
+        // Deleting a block is an edit too.
+        let said = h.act(TimeAction::DeletePlacement(0)).unwrap();
+        assert!(said.contains("UNDO puts it back"), "{said}");
+        h.act(TimeAction::Undo).unwrap();
+        assert_eq!(h.control.project.arrangement.placements.len(), 2);
+    }
+
     #[test]
     fn plus_track_adds_an_armed_track_up_to_128_and_undo_takes_it_away() {
         let mut h = TimeHost::new(RATE, 120.0).unwrap();

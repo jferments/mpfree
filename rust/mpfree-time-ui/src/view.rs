@@ -32,9 +32,9 @@ use crate::editor::{
     PEN, STEP_FALLBACK,
 };
 use crate::song::{
-    AudioLane, SongBlock, SongLanes, ADD_AUDIO, AUDIO_BUTTONS, INPUTS, MONITORS, NONE, PANEL,
-    PANEL_CLOSE, PANEL_INPUT, PANEL_MONITOR, PANEL_MUTE, PANEL_SOLO, PANEL_TAKES, REC,
-    REGION_SLOTS,
+    AudioLane, SongBlock, SongLanes, ADD_AUDIO, AUDIO_BUTTONS, BARS_BACK, BARS_ON, INPUTS,
+    MONITORS, NONE, PANEL, PANEL_CLOSE, PANEL_INPUT, PANEL_MONITOR, PANEL_MUTE, PANEL_SOLO,
+    PANEL_TAKES, REC, REGION_SLOTS, SECTION_TAP,
 };
 use crate::widgets::{
     BarButton, BarItem, CellState, ClipGrid, GridCell, GridTrack, MorphBar, Run, TakeItem,
@@ -42,7 +42,7 @@ use crate::widgets::{
 };
 use mpfree_audiotracks::host::TakeWave;
 use mpfree_audiotracks::{Input, Monitor};
-use mpfree_play::{anchored, ClipDrop, Cue, Launch, Take, Takes};
+use mpfree_play::{anchored, ClipDrop, Cue, Launch, SongChange, Take, Takes};
 use mpfree_seq::{Clip, Project, Source, Speed, MAX_TRACKS, SLOTS};
 use mpfree_transport::time::{Meter, Swing, Tick, MAX_BPM, MIN_BPM, PPQ};
 use mpfree_transport::transport::MAX_COUNT_IN;
@@ -84,7 +84,24 @@ pub const CLIPS_HINT: &str =
     "Tap a clip: it plays from the next bar, or stops   ·   drag it: move it (SHIFT as you lift: copy)   ·   a row's number plays the row   ·   + records   ·   a track's name arms it";
 /// The hint line under the Song view.
 pub const SONG_HINT: &str =
-    "Tap a block to pick it   ·   Song on: the song plays where no clip is launched   ·   Scenes → song adds the rows at its end   ·   SHIFT + wheel: bars";
+    "Tap a block to pick it   ·   drag a block or a section's name: move it (SHIFT as you lift: copy)   ·   Song on: the song plays where no clip is launched   ·   SHIFT + wheel: bars";
+/// The hint line under the Song view with a block picked.
+pub const SONG_BLOCK_HINT: &str =
+    "Drag the block: move it a bar at a time (SHIFT as you lift: copy)   ·   drag its end: longer or shorter   ·   push the wheel: move it a beat at a time   ·   SHIFT + wheel: bars";
+/// The hint line under the Song view with a section picked.
+pub const SONG_SECTION_HINT: &str =
+    "Drag the section's name: move it, the others close up (SHIFT as you lift: copy)   ·   push the wheel: move it a section at a time   ·   SHIFT + wheel: bars";
+
+/// The hint line under the Song view for what is picked.
+pub fn song_hint(st: &TimeState) -> &'static str {
+    if st.selected.is_some() {
+        SONG_BLOCK_HINT
+    } else if st.section.is_some() {
+        SONG_SECTION_HINT
+    } else {
+        SONG_HINT
+    }
+}
 /// The same page with the note editor (a piano roll or a list) in place
 /// of the grid, and the Edit options in place of the record settings.
 pub const EDIT_LAYOUT: &str =
@@ -232,6 +249,9 @@ pub struct TakeRow {
     pub new_track: Option<usize>,
     /// A drop on the Clips grid: a clip or a row moved, swapped or copied.
     pub dropped: Option<ClipDrop>,
+    /// A Song view edit: a block moved, copied, made longer or deleted, a
+    /// section moved.
+    pub song: Option<SongChange>,
 }
 
 impl TakeRow {
@@ -263,12 +283,24 @@ impl TakeRow {
             deleted: removed.is_some(),
             new_track: t.track_added.as_ref().map(|(i, _)| *i),
             dropped: t.dropped,
+            song: t.song.as_ref().map(|e| e.change),
         }
     }
 
-    /// What it is: "take", "capture", "edit", "delete", or for a drop
-    /// "move", "swap" or "copy".
+    /// What it is: "take", "capture", "edit", "delete", for a drop "move",
+    /// "swap" or "copy", and for a Song view edit "move", "copy",
+    /// "length", "delete", "unique" or "scenes".
     pub fn word(&self) -> &'static str {
+        if let Some(c) = self.song {
+            return match c {
+                SongChange::Moved { .. } | SongChange::SectionMoved { .. } => "move",
+                SongChange::Copied { .. } | SongChange::SectionCopied { .. } => "copy",
+                SongChange::Resized { .. } => "length",
+                SongChange::Deleted { .. } => "delete",
+                SongChange::Unique { .. } => "unique",
+                SongChange::Scenes { .. } => "scenes",
+            };
+        }
         if let Some(d) = self.dropped {
             return match d {
                 ClipDrop::Moved(..) | ClipDrop::RowMoved { .. } => "move",
@@ -335,6 +367,9 @@ pub struct TimeState {
     pub markers: Vec<(Tick, String)>,
     /// The placement selected on the Song view. The app sets it.
     pub selected: Option<usize>,
+    /// The section picked on the Song view (by its marker), for the
+    /// wheel. The app sets it.
+    pub section: Option<usize>,
     /// Live to song armed: what the grid plays goes into the song. The app
     /// sets it.
     pub song_rec: bool,
@@ -497,6 +532,7 @@ impl TimeState {
                 .map(|m| (m.at, m.name.clone()))
                 .collect(),
             selected: None,
+            section: None,
             song_rec: false,
             edit: None,
             audio: Vec::new(),
@@ -633,6 +669,33 @@ pub enum TimeAction {
     SongToScenes,
     /// Select a placement on the Song view, or none.
     SelectPlacement(Option<usize>),
+    /// A block dragged on the Song view (Jay, 14 Nov: drag and drop), or
+    /// moved a beat by the wheel: placement `index` to `track` from
+    /// `start`, or with `copy` (SHIFT held as the finger lifts) a copy of
+    /// it there.
+    MovePlacement {
+        index: usize,
+        track: usize,
+        start: Tick,
+        copy: bool,
+    },
+    /// The picked block's end dragged: placement `index` made `length`
+    /// song ticks long.
+    StretchPlacement {
+        index: usize,
+        length: Tick,
+    },
+    /// A section's name dragged along the ruler, or moved by the wheel:
+    /// section `marker` to before section `gap` (after the last for the
+    /// markers' count), or with `copy` a copy of it there
+    /// (`Arrangement::move_section`).
+    MoveSection {
+        marker: usize,
+        gap: usize,
+        copy: bool,
+    },
+    /// A section's name tapped: pick it (the wheel's push then grabs it).
+    PickSection(Option<usize>),
     /// Give a placement its own copy of its clip.
     MakeUnique(usize),
     DeletePlacement(usize),
@@ -917,6 +980,27 @@ pub fn action(ev: &UiEvent, st: &TimeState) -> Option<TimeAction> {
                 _ => AudioAction::Undo,
             }))
         }
+        (SONG, EventKind::Tab(k)) if (SECTION_TAP..BARS_BACK).contains(k) => {
+            let k = k - SECTION_TAP;
+            Some(TimeAction::PickSection(
+                (st.section != Some(k)).then_some(k),
+            ))
+        }
+        (SONG, EventKind::Place { index, row, at }) => Some(TimeAction::MovePlacement {
+            index: *index,
+            track: *row,
+            start: *at,
+            copy: false,
+        }),
+        (SONG, EventKind::Stretch { index, to }) => Some(TimeAction::StretchPlacement {
+            index: *index,
+            length: *to,
+        }),
+        (SONG, EventKind::Drop { from, to }) => Some(TimeAction::MoveSection {
+            marker: *from,
+            gap: *to,
+            copy: false,
+        }),
         (SONG, EventKind::Tab(ADD_AUDIO)) => Some(TimeAction::Audio(AudioAction::Add)),
         (SONG, EventKind::Tab(crate::song::ADD_TRACK)) => Some(TimeAction::AddTrack),
         (SONG, EventKind::Tab(k)) if *k >= PANEL_CLOSE => {
@@ -1192,6 +1276,24 @@ pub fn bars_label(bars: i64) -> String {
 pub fn take_title(st: &TimeState, row: &TakeRow) -> String {
     let mut word = row.word().to_string();
     word[..1].make_ascii_uppercase();
+    match row.song {
+        Some(
+            SongChange::Moved { track, .. }
+            | SongChange::Copied { track, .. }
+            | SongChange::Resized { track, .. }
+            | SongChange::Deleted { track, .. }
+            | SongChange::Unique { track, .. },
+        ) => return format!("{word} {} · {}", row.number, st.track_name(track)),
+        Some(SongChange::SectionMoved { at } | SongChange::SectionCopied { at }) => {
+            let name = st
+                .markers
+                .iter()
+                .find(|m| m.0 == at)
+                .map_or("section", |m| m.1.as_str());
+            return format!("{word} {} · {name}", row.number);
+        }
+        Some(SongChange::Scenes { .. }) | None => {}
+    }
     match (row.at, row.dropped) {
         (Some((track, slot)), _) => format!(
             "{word} {} · {} / {}",
@@ -1208,6 +1310,27 @@ pub fn take_title(st: &TimeState, row: &TakeRow) -> String {
 
 fn take_detail(st: &TimeState, row: &TakeRow) -> String {
     let cell = |(t, s): (usize, usize)| format!("{} / {}", st.track_name(t), s + 1);
+    let bar = st.transport.meter.bar_ticks().max(1);
+    let bar_of = |t: Tick| t.div_euclid(bar) + 1;
+    match row.song {
+        Some(
+            SongChange::Moved { start, .. }
+            | SongChange::Copied { start, .. }
+            | SongChange::SectionMoved { at: start }
+            | SongChange::SectionCopied { at: start },
+        ) => return format!("to bar {}", bar_of(start)),
+        Some(SongChange::Deleted { start, .. } | SongChange::Unique { start, .. }) => {
+            return format!("at bar {}", bar_of(start))
+        }
+        Some(SongChange::Resized { length, .. }) if length % bar == 0 => {
+            return format!("{} bars", length / bar)
+        }
+        Some(SongChange::Resized { length, .. }) => {
+            return format!("{:.1} bars", length as f64 / bar as f64)
+        }
+        Some(SongChange::Scenes { rows }) => return format!("{rows} rows"),
+        None => {}
+    }
     match row.dropped {
         Some(ClipDrop::Moved(_, b) | ClipDrop::Copied(_, b)) => return format!("to {}", cell(b)),
         Some(ClipDrop::Swapped(_, b)) => return format!("with {}", cell(b)),
@@ -1458,6 +1581,7 @@ pub fn song_lanes(st: &TimeState, first_bar: i64) -> SongLanes {
         bars: 16,
         playhead: Some(t.position),
         selected: st.selected,
+        section: st.section,
         on: st.song_on,
         rec: st.song_rec,
         audio: st.audio.clone(),
@@ -1589,10 +1713,18 @@ impl TimePage {
     }
 
     /// A touch the page handles itself: the grid's pager (‹ and ›, or a
-    /// swipe along the track names) shows the 8 tracks before or after.
+    /// swipe along the track names) shows the 8 tracks before or after; a
+    /// dragged clip, row, block or section held at an edge scrolls.
     /// True when `ev` was one; call [`TimePage::update`] after.
     pub fn page_tracks(&mut self, ev: &UiEvent, st: &TimeState) -> bool {
         let step = match (ev.widget.as_str(), &ev.kind) {
+            (SONG, EventKind::Tab(k)) if *k == BARS_BACK || *k == BARS_ON => {
+                // A dragged block or section held at the left or right
+                // edge.
+                let d = if *k == BARS_ON { 1 } else { -1 };
+                self.first_bar = (self.first_bar + d).max(0);
+                return true;
+            }
             (CLIPS, EventKind::Toggle(k)) if *k == SLOTS + PAGE_BACK => -1,
             (CLIPS, EventKind::Toggle(k)) if *k == SLOTS + PAGE_ON => 1,
             (CLIPS, EventKind::Toggle(k)) if *k == SLOTS + ROWS_BACK || *k == SLOTS + ROWS_ON => {
@@ -2199,6 +2331,114 @@ mod tests {
         );
     }
 
+    /// Jay, 14 Nov: drag and drop on the Song view. Blocks, their ends
+    /// and sections ask to move; a section's name picks it; held at an
+    /// edge the bars scroll; the hint follows what is picked.
+    #[test]
+    fn song_drags_ask_to_move_and_the_hint_follows_the_pick() {
+        let mut ui = Ui::new(Theme::dark(), Fonts::embedded(), 1280, 800);
+        ui.add("header", Header::new(&["Play", "Clips"]));
+        ui.add("hint", Label::new("", Tone::Dim, Align::Center));
+        let mut page = TimePage::add_to(&mut ui).unwrap();
+        ui.show(CLIPS_PAGE).unwrap();
+        let mut st = state();
+        st.song_view = true;
+        st.markers = vec![(0, "Intro".into()), (4 * 3840, "Verse".into())];
+        page.update(&mut ui, &st);
+        let song = |k: EventKind, st: &TimeState| action(&ev(SONG, k), st);
+        assert_eq!(
+            song(
+                EventKind::Place {
+                    index: 2,
+                    row: 1,
+                    at: 7680
+                },
+                &st
+            ),
+            Some(TimeAction::MovePlacement {
+                index: 2,
+                track: 1,
+                start: 7680,
+                copy: false
+            })
+        );
+        assert_eq!(
+            song(EventKind::Stretch { index: 2, to: 3840 }, &st),
+            Some(TimeAction::StretchPlacement {
+                index: 2,
+                length: 3840
+            })
+        );
+        assert_eq!(
+            song(EventKind::Drop { from: 1, to: 0 }, &st),
+            Some(TimeAction::MoveSection {
+                marker: 1,
+                gap: 0,
+                copy: false
+            })
+        );
+        assert_eq!(
+            song(EventKind::Tab(SECTION_TAP + 1), &st),
+            Some(TimeAction::PickSection(Some(1)))
+        );
+        assert_eq!(song_hint(&st), SONG_HINT);
+        st.section = Some(1);
+        assert_eq!(
+            song(EventKind::Tab(SECTION_TAP + 1), &st),
+            Some(TimeAction::PickSection(None)),
+            "a second tap lets it go"
+        );
+        assert_eq!(song_hint(&st), SONG_SECTION_HINT);
+        page.update(&mut ui, &st);
+        assert_eq!(ui.get::<SongLanes>(SONG).unwrap().section, Some(1));
+        st.section = None;
+        st.selected = Some(0);
+        assert_eq!(song_hint(&st), SONG_BLOCK_HINT);
+        // A drag held at an edge scrolls the bars, never before bar 1.
+        let edge = |k| UiEvent {
+            widget: SONG.into(),
+            kind: EventKind::Tab(k),
+        };
+        assert!(page.page_tracks(&edge(BARS_ON), &st));
+        assert!(page.page_tracks(&edge(BARS_ON), &st));
+        assert_eq!(page.first_bar, 2);
+        assert!(page.page_tracks(&edge(BARS_BACK), &st));
+        assert!(page.page_tracks(&edge(BARS_BACK), &st));
+        assert!(page.page_tracks(&edge(BARS_BACK), &st));
+        assert_eq!(page.first_bar, 0);
+        // The undo list names a song edit by its track and bar.
+        let mut takes = Takes::default();
+        for _ in 0..6 {
+            takes.song_edit(
+                &mpfree_seq::Project::new(),
+                SongChange::Scenes { rows: 1 },
+                Default::default(),
+            );
+        }
+        let edit = |change| {
+            let mut t = takes.clone();
+            t.song_edit(&mpfree_seq::Project::new(), change, Default::default());
+            t.done().last().unwrap().clone()
+        };
+        let moved = TakeRow::of(&edit(SongChange::Moved {
+            track: 0,
+            start: 8 * 3840,
+        }));
+        assert_eq!(moved.short(), "move 7");
+        assert_eq!(
+            take_title(&st, &moved),
+            format!("Move 7 · {}", st.track_name(0))
+        );
+        assert_eq!(take_detail(&st, &moved), "to bar 9");
+        let verse = TakeRow::of(&edit(SongChange::SectionCopied { at: 4 * 3840 }));
+        assert_eq!(take_title(&st, &verse), "Copy 7 · Verse");
+        let longer = TakeRow::of(&edit(SongChange::Resized {
+            track: 0,
+            length: 6 * 3840,
+        }));
+        assert_eq!(take_detail(&st, &longer), "6 bars");
+    }
+
     /// Layout spec 4c: the audio lanes' taps, the selection's kind, and
     /// the bottom row with a region picked.
     #[test]
@@ -2601,6 +2841,7 @@ mod tests {
             deleted: false,
             new_track: None,
             dropped: None,
+            song: None,
         };
         let mut st = st;
         st.done = vec![take];
@@ -2937,6 +3178,7 @@ mod tests {
             deleted: false,
             new_track: None,
             dropped: None,
+            song: None,
         };
         st.done = vec![row(1), row(2)];
         st.undone = vec![row(4), row(3)];
@@ -2968,6 +3210,7 @@ mod tests {
             deleted: false,
             new_track: None,
             dropped: None,
+            song: None,
         };
         let (items, _) = take_items(&st);
         assert_eq!(
@@ -2989,6 +3232,7 @@ mod tests {
             deleted: false,
             new_track: None,
             dropped: None,
+            song: None,
         };
         assert_eq!(take_items(&st).0[2].title, "Edit 5 · Bass / 1");
         assert_eq!(st.done[1].short(), "edit 5");
@@ -2998,6 +3242,7 @@ mod tests {
             deleted: true,
             new_track: None,
             dropped: None,
+            song: None,
             at: Some((1, 0)),
             ..st.done[1]
         };

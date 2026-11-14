@@ -58,7 +58,6 @@ use mpfree_synth_ui::{SynthAction, SynthPanel, SynthState};
 use mpfree_time_ui::editor::Lens;
 use mpfree_time_ui::view::{
     self as time_view, AudioAction, TimePage, TimeState, TransportInfo, CLIPS_HINT, CLIPS_PAGE,
-    SONG_HINT,
 };
 use mpfree_time_ui::TimeAction;
 use mpfree_touch::mt::Phase;
@@ -1115,6 +1114,9 @@ pub struct Player {
     /// each was last seen at.
     undo_loop: bool,
     seen_takes: (usize, usize),
+    /// The Song view's picked block or section is grabbed by the wheel's
+    /// push: turns move it (Jay, 14 Nov: drag and drop).
+    song_grab: bool,
     /// The number pad is open: where the number goes, and the page to go
     /// back to.
     typing: Option<Typing>,
@@ -1299,6 +1301,7 @@ impl Player {
         let mut p = Player {
             told: None,
             undo_loop: false,
+            song_grab: false,
             seen_takes: (0, 0),
             typing: None,
             tempo_press: None,
@@ -2265,7 +2268,7 @@ impl Player {
                     time_view::edit_hint(self.time.edit.as_ref().map_or(Lens::Grid, |e| e.editor.lens))
                         .to_string()
                 }
-                View::Arrange if self.time.song_view => SONG_HINT.to_string(),
+                View::Arrange if self.time.song_view => time_view::song_hint(&self.time).to_string(),
                 View::Arrange => CLIPS_HINT.to_string(),
                 View::Looper if self.looper_page.history_open() => format!("Tap a step: back or forward to it   ·   \
                                          drag: scroll   ·   Undo history: close   ·   UNDO: undo (SHIFT: redo)   ·   {stop}"),
@@ -3783,6 +3786,26 @@ impl Player {
     fn rows(&mut self, k: crate::app::RowKey) {
         use crate::app::RowKey;
         if let RowKey::Editing(on) = k {
+            // The Song view with a block or a section picked: the push
+            // grabs it for the wheel, and lets go again.
+            let picked = self.time.selected.is_some() || self.time.section.is_some();
+            let song = self.view == View::Arrange && self.time.song_view;
+            if song && ((on && picked) || (!on && self.song_grab)) {
+                self.song_grab = on;
+                let name = self.song_picked_name();
+                let each = if self.time.selected.is_some() {
+                    "a beat"
+                } else {
+                    "a section"
+                };
+                self.tell(&if on {
+                    format!("The wheel moves {name} {each} at a time · push again to put it down")
+                } else {
+                    format!("Put {name} down · the wheel picks a row again")
+                });
+                return;
+            }
+            self.song_grab = false;
             // A row that is a button (the Pad list's Effects): the push
             // presses it; the page it opens closes the row again.
             if on && self.view.sampler() {
@@ -3828,6 +3851,7 @@ impl Player {
                     self.outbox.push(FromUi::Time(a));
                 }
             }
+            (View::Arrange, RowKey::Step(d)) if self.song_grab && self.song_wheel(d) => {}
             (View::Arrange, RowKey::Step(d)) => self.apply(ToUi::ClipsWheel {
                 delta: d,
                 scroll: false,
@@ -3855,6 +3879,55 @@ impl Player {
             }
             _ => {}
         }
+    }
+
+    /// The Song view's picked block or section by name, for what the wheel
+    /// says.
+    fn song_picked_name(&self) -> String {
+        let st = &self.time;
+        if let Some(p) = st.selected.and_then(|i| st.placements.get(i)) {
+            return p.name.clone();
+        }
+        st.section
+            .and_then(|k| st.markers.get(k))
+            .map_or_else(|| "it".to_string(), |m| m.1.clone())
+    }
+
+    /// The wheel turned with the Song view's picked block grabbed: it
+    /// moves `d` beats; with a section grabbed, the section moves one
+    /// place. False when nothing is picked any more (the grab ends and
+    /// the wheel steps the row as before).
+    fn song_wheel(&mut self, d: i32) -> bool {
+        let st = &self.time;
+        let a = if let Some(p) = st
+            .selected
+            .and_then(|i| st.placements.get(i).map(|p| (i, p)))
+        {
+            let (index, p) = p;
+            let beat = st.transport.meter.beat_ticks();
+            let start = (p.start + i64::from(d) * beat).max(0);
+            (start != p.start).then_some(TimeAction::MovePlacement {
+                index,
+                track: p.track,
+                start,
+                copy: false,
+            })
+        } else if let Some(k) = st.section.filter(|&k| k < st.markers.len()) {
+            let gap = if d > 0 { Some(k + 2) } else { k.checked_sub(1) };
+            gap.filter(|&g| g <= st.markers.len())
+                .map(|gap| TimeAction::MoveSection {
+                    marker: k,
+                    gap,
+                    copy: false,
+                })
+        } else {
+            self.song_grab = false;
+            return false;
+        };
+        if let Some(a) = a {
+            self.outbox.push(FromUi::Time(a));
+        }
+        true
     }
 
     /// The Sample page's kit, pad or project changed: show it again if it
@@ -5741,6 +5814,22 @@ impl Player {
                         TimeAction::DropRow { from, to, .. } => TimeAction::DropRow {
                             from,
                             to,
+                            copy: fine,
+                        },
+                        TimeAction::MovePlacement {
+                            index,
+                            track,
+                            start,
+                            ..
+                        } => TimeAction::MovePlacement {
+                            index,
+                            track,
+                            start,
+                            copy: fine,
+                        },
+                        TimeAction::MoveSection { marker, gap, .. } => TimeAction::MoveSection {
+                            marker,
+                            gap,
                             copy: fine,
                         },
                         a => a,
@@ -7637,6 +7726,7 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         deleted: false,
         new_track: None,
         dropped: None,
+        song: None,
     };
     st.done = vec![
         take(1, 0, false, false),
@@ -8772,6 +8862,88 @@ mod tests {
         );
     }
 
+    /// Jay, 14 Nov: drag and drop on the Song view. SHIFT held as a block
+    /// lifts copies it; the wheel's push grabs the picked block and a turn
+    /// moves it a beat; a picked section moves a section at a time.
+    #[test]
+    fn song_drags_copy_with_shift_and_the_wheel_moves_the_pick() {
+        use crate::app::RowKey;
+        use mpfree_time_ui::song::SongLanes;
+        let mut p = sample_clips(Fonts::embedded()).unwrap();
+        p.time.song_view = true;
+        p.time.placements = vec![time_view::PlacementInfo {
+            track: 0,
+            start: 0,
+            length: 7680,
+            name: "Beat".into(),
+            unique: false,
+        }];
+        p.time.markers = vec![(0, "Intro".into()), (7680, "Verse".into())];
+        p.time_page.update(&mut p.ui, &p.time);
+        p.ui.paint(&mut SoftCanvas::new(1280, 800));
+        let area = p.ui.rect_of(time_view::SONG).unwrap();
+        let lanes = p.ui.get::<SongLanes>(time_view::SONG).unwrap().clone();
+        let b = lanes.block_rect(area, &lanes.blocks[0]).unwrap();
+        let (x, y) = (b.x + 8, b.y + b.h / 2);
+        p.status.shift = true;
+        assert_eq!(p.touch(1, Touch::Down, x, y), None);
+        assert_eq!(p.touch(1, Touch::Move, x + 200, y), None);
+        let a = p.touch(1, Touch::Up, x + 200, y);
+        assert!(
+            matches!(
+                a,
+                Some(FromUi::Time(TimeAction::MovePlacement {
+                    index: 0,
+                    track: 0,
+                    copy: true,
+                    ..
+                }))
+            ),
+            "{a:?}"
+        );
+        p.status.shift = false;
+        // Picked, the wheel's push grabs it and a turn moves it a beat.
+        p.time.selected = Some(0);
+        p.take_actions();
+        p.apply(ToUi::Rows(RowKey::Editing(true)));
+        p.apply(ToUi::Rows(RowKey::Step(2)));
+        assert_eq!(
+            p.take_actions(),
+            vec![FromUi::Time(TimeAction::MovePlacement {
+                index: 0,
+                track: 0,
+                start: 1920,
+                copy: false
+            })]
+        );
+        let told = p.ui.get::<Label>("hint").unwrap().text.clone();
+        assert!(
+            told.contains("The wheel moves Beat a beat at a time"),
+            "{told}"
+        );
+        // Let go, the wheel steps the record settings again.
+        p.apply(ToUi::Rows(RowKey::Editing(false)));
+        p.apply(ToUi::Rows(RowKey::Step(1)));
+        assert!(!p
+            .take_actions()
+            .iter()
+            .any(|a| matches!(a, FromUi::Time(TimeAction::MovePlacement { .. }))));
+        // A section picked: a turn back moves it before the one before.
+        p.time.selected = None;
+        p.time.section = Some(1);
+        p.apply(ToUi::Rows(RowKey::Editing(true)));
+        p.apply(ToUi::Rows(RowKey::Step(-1)));
+        assert_eq!(
+            p.take_actions(),
+            vec![FromUi::Time(TimeAction::MoveSection {
+                marker: 1,
+                gap: 0,
+                copy: false
+            })]
+        );
+        p.apply(ToUi::Rows(RowKey::Editing(false)));
+    }
+
     #[test]
     fn the_clips_page_shows_the_engine_and_turns_taps_into_actions() {
         use mpfree_time_ui::widgets::{BarButton, ClipGrid, TransportBar};
@@ -9349,6 +9521,7 @@ mod tests {
             deleted: false,
             new_track: None,
             dropped: None,
+            song: None,
         };
         let mut st = p.time.clone();
         st.done = vec![take(1), take(2), take(3)];
@@ -9521,6 +9694,7 @@ mod tests {
             deleted: false,
             new_track: None,
             dropped: None,
+            song: None,
         });
         p.apply(ToUi::Time(Box::new(st.clone())));
         assert_eq!(undo(&mut p, false), takes(TimeAction::Undo));
