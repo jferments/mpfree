@@ -98,7 +98,7 @@ fn the_tab_shows_the_input_the_bar_lines_and_what_skip_back_keeps() {
     assert_eq!(skip.end - skip.start, 10 * u64::from(RATE));
     assert_eq!(skip.label, "Skip back 10 s");
     assert!(v.note.is_empty() && v.threshold.is_none());
-    assert_eq!(v.caption, "40.00 s held");
+    assert_eq!(v.caption, "40 s held");
     let (labels, enabled) = buttons(&s);
     assert_eq!(
         labels,
@@ -389,4 +389,49 @@ fn flatten_says_what_it_resamples_and_records_the_pad_until_it_is_silent() {
     let list = s.ui.get::<SettingList>(rec_tab::LIST).unwrap();
     let hold = Row::ALL.iter().position(|r| *r == Row::FlattenHold);
     assert_eq!(list.rows[hold.unwrap()].value, "100 ms");
+}
+
+/// The strip redraws only when its picture changes. It spans most of the
+/// turned panel's rows (904 of 1280), and until 13 Nov it was redrawn at
+/// every frame, input or not. Whatever it skips, the screen still shows
+/// exactly what a full redraw would.
+#[test]
+fn the_strip_redraws_only_when_its_picture_changes() {
+    let mut s = screen("rec");
+    let (w, h) = sample::SCREEN;
+    let mut shown = SoftCanvas::new(w, h);
+    let mut fresh = SoftCanvas::new(w, h);
+    s.ui.invalidate();
+    s.ui.paint(&mut shown);
+    // `frames` frames of the input at `level`; how many redrew the view.
+    let mut frames = |s: &mut RecSample, n: usize, level: f32, rolling: bool| -> usize {
+        let mut redrawn = 0;
+        for _ in 0..n {
+            feed_input(&mut s.feed, 0.033, level, rolling);
+            s.tab
+                .feed(&mut s.ui, &s.input, s.recording.as_ref(), true, 0.033);
+            if s.ui.needs_paint() {
+                redrawn += 1;
+                s.ui.paint(&mut shown);
+            }
+            s.ui.invalidate();
+            s.ui.paint(&mut fresh);
+            assert!(
+                shown.px == fresh.px,
+                "the screen differs from a full redraw"
+            );
+        }
+        redrawn
+    };
+    // A loud input with the transport playing: the strip moves.
+    assert!(frames(&mut s, 30, 0.4, true) >= 25);
+    // Silence, the transport stopped: the drums scroll off, the meters
+    // fall; then nothing moves but the "held" caption, once a second.
+    feed_input(&mut s.feed, 31.0, 0.0, false);
+    frames(&mut s, 120, 0.0, false);
+    let still = frames(&mut s, 90, 0.0, false);
+    assert!(
+        still <= 4,
+        "{still} of 90 frames redrawn with nothing moving"
+    );
 }

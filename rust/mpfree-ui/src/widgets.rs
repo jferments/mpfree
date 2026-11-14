@@ -6,7 +6,7 @@ use crate::color::Color;
 use crate::geom::Rect;
 use crate::text::{Align, FontId};
 use crate::theme::Tone;
-use crate::ui::{EventKind, PaintCx, Touch, Widget};
+use crate::ui::{EventKind, PaintCx, Target, Touch, Widget};
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -233,6 +233,23 @@ impl Widget for Header {
         }
     }
 
+    fn targets(&self, r: Rect) -> Vec<Target> {
+        let mut out: Vec<Target> = (0..self.tabs.len())
+            .map(|i| Target::tap("tab", i, self.tabs[i].clone(), self.tab_rect(r, i)))
+            .collect();
+        if let Some(b) = self.icon_rect(r) {
+            out.push(Target::tap("mixer-icon", 0, "mixer", b));
+        }
+        if let Some(b) = self.io_icon_rect(r) {
+            out.push(Target::tap("io-icon", 0, "I/O", b));
+        }
+        for (i, cr) in self.drawn_chips.borrow().iter() {
+            let label = self.chips.get(*i).map_or("", |c| c.text.as_str());
+            out.push(Target::tap("chip", *i, label, *cr));
+        }
+        out
+    }
+
     fn touch(&mut self, _f: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
         if phase != Touch::Down {
             return None;
@@ -424,6 +441,12 @@ impl Widget for PadGrid {
         }
     }
 
+    fn targets(&self, r: Rect) -> Vec<Target> {
+        (0..self.pads.len())
+            .map(|i| Target::tap("pad", i, self.pads[i].label.clone(), self.cell(r, i)))
+            .collect()
+    }
+
     fn touch(&mut self, finger: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
         match phase {
             Touch::Down => {
@@ -461,6 +484,10 @@ pub struct ListView {
     pub title: String,
     pub items: Vec<ListItem>,
     pub selected: usize,
+    /// A tap only picks a row (the kit's sounds), so the row picked already
+    /// changes nothing when tapped. Off for lists whose tap loads (kits,
+    /// presets): a tap on the row playing loads it again.
+    pub picks_only: bool,
 }
 
 const ROW_H: i32 = 46;
@@ -471,6 +498,7 @@ impl ListView {
             title: title.to_string(),
             items: Vec::new(),
             selected: 0,
+            picks_only: false,
         }
     }
 
@@ -553,6 +581,19 @@ impl Widget for ListView {
         }
     }
 
+    fn targets(&self, r: Rect) -> Vec<Target> {
+        let body = ListView::body(r);
+        let visible = (body.h / ROW_H).max(0) as usize;
+        let first = self.first(visible);
+        (first..self.items.len().min(first + visible))
+            .map(|k| {
+                let row = Rect::new(body.x, body.y + (k - first) as i32 * ROW_H, body.w, ROW_H);
+                Target::tap("row", k, self.items[k].text.clone(), row)
+                    .disabled_if(self.picks_only && k == self.selected)
+            })
+            .collect()
+    }
+
     fn touch(&mut self, _f: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
         if phase != Touch::Down {
             return None;
@@ -629,6 +670,10 @@ impl Widget for Fader {
         let kx = tr.x + fill.w;
         cx.canvas
             .fill_round_rect(Rect::new(kx - 11, tr.y - 6, 22, 22), 11, t.text);
+    }
+
+    fn targets(&self, r: Rect) -> Vec<Target> {
+        vec![Target::drag("slider", 0, self.label.clone(), r)]
     }
 
     fn touch(&mut self, _f: u64, phase: Touch, x: i32, _y: i32, r: Rect) -> Option<EventKind> {
@@ -1067,6 +1112,12 @@ impl Widget for Card {
         }
     }
 
+    fn targets(&self, r: Rect) -> Vec<Target> {
+        (0..self.buttons.len())
+            .map(|i| Target::tap("button", i, self.buttons[i].clone(), self.button_rect(r, i)))
+            .collect()
+    }
+
     fn touch(&mut self, _f: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
         if phase != Touch::Down {
             return None;
@@ -1252,6 +1303,25 @@ impl Widget for OptionList {
                 "nothing here",
             );
         }
+    }
+
+    fn targets(&self, r: Rect) -> Vec<Target> {
+        let mut out = Vec::new();
+        for k in 0..self.rows.len() {
+            let Some((row, value)) = self.row_rects(r, k) else {
+                continue;
+            };
+            let reach = OptionList::arrow_reach(row, value);
+            let name = &self.rows[k].name;
+            let pick = Rect::new(row.x, row.y, value.x - row.x, row.h);
+            // The row picked already: a tap picks nothing new.
+            out.push(Target::tap("row", k, name.clone(), pick).disabled_if(k == self.selected));
+            let (less, rest) = value.take_left(reach);
+            let more = rest.take_right(reach).0;
+            out.push(Target::tap("row-less", k, format!("{name} ‹"), less));
+            out.push(Target::tap("row-more", k, format!("{name} ›"), more));
+        }
+        out
     }
 
     fn touch(&mut self, _f: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {

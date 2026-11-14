@@ -18,6 +18,11 @@
 //!   and the counters into the time engine's [`TimeState`], for the Song
 //!   view. [`TrackHost::take_changed`] says when they changed, checked a
 //!   few times a second without allocating.
+//! - Each track's level bar (layout spec 4c: 3 px along the header's
+//!   bottom edge) follows its sound, and the line input while it is
+//!   armed, measured each period without allocating
+//!   ([`TrackHost::take_levels`]); the screen gets the eight numbers on
+//!   their own, not a whole song state.
 //! - Waveforms are read a take at a time with [`AudioHost::wave`], at a
 //!   small fixed cost a period; a take that records is read again as it
 //!   grows.
@@ -147,6 +152,10 @@ pub struct TrackHost {
     pending: Option<Saved>,
     /// A line for the log from the open.
     note: Option<String>,
+    /// Each track's level bar, 0 to 1 (see [`meter`]), and the bars last
+    /// given to the screen.
+    meter: [f32; MAX_TRACKS],
+    meter_shown: [f32; MAX_TRACKS],
 }
 
 impl TrackHost {
@@ -182,6 +191,8 @@ impl TrackHost {
             clearing: false,
             pending: None,
             note: None,
+            meter: [0.0; MAX_TRACKS],
+            meter_shown: [0.0; MAX_TRACKS],
         }
     }
 
@@ -209,6 +220,7 @@ impl TrackHost {
             out.0[f] = self.out[2 * f];
             out.1[f] = self.out[2 * f + 1];
         }
+        self.measure();
         self.periods += 1;
         self.tend_open();
         self.take_wave();
@@ -220,6 +232,48 @@ impl TrackHost {
                 self.changed = true;
             }
         }
+    }
+
+    /// The level bars: each track's peak this period (its sound after its
+    /// level, pan, mute and solo, and while it is armed the input it
+    /// records), falling back at [`METER_FALL`] of the bar a second.
+    fn measure(&mut self) {
+        let fall = METER_FALL * PERIOD as f32 / self.rate as f32;
+        let peak = |s: &[f32]| s.iter().fold(0.0f32, |m, x| m.max(x.abs()));
+        for t in 0..MAX_TRACKS {
+            let mut p = peak(self.host.tracks.track_out(t, PERIOD));
+            if self.host.tracks.armed(t) {
+                let (l, r) = match self.inputs[t] {
+                    Input::Left => (true, false),
+                    Input::Right => (false, true),
+                    Input::Stereo | Input::Sum => (true, true),
+                };
+                for f in 0..PERIOD {
+                    if l {
+                        p = p.max(self.input[2 * f].abs());
+                    }
+                    if r {
+                        p = p.max(self.input[2 * f + 1].abs());
+                    }
+                }
+            }
+            self.meter[t] = meter(p).max(self.meter[t] - fall);
+        }
+    }
+
+    /// The level bars, when one has moved by a step since they were last
+    /// taken (a still song sends nothing). Cheap: call it a few times a
+    /// second while the Song view shows.
+    pub fn take_levels(&mut self) -> Option<[f32; MAX_TRACKS]> {
+        let moved = self
+            .meter
+            .iter()
+            .zip(&self.meter_shown)
+            .any(|(a, b)| (a - b).abs() >= METER_STEP);
+        moved.then(|| {
+            self.meter_shown = self.meter;
+            self.meter
+        })
     }
 
     /// The line input's latency, in frames: the looper's "Latency to make
@@ -462,7 +516,7 @@ impl TrackHost {
                 color: audio_color(t),
                 armed: tr.armed(t),
                 input: self.inputs[t],
-                level: 0.0,
+                level: self.meter[t],
                 volume: self.volume[t],
                 pan: self.pan[t],
                 monitor: self.monitor[t],
@@ -562,7 +616,17 @@ impl TrackHost {
                     return Err("nothing to undo".into());
                 }
                 self.send(Command::Undo)?;
-                "audio tracks: undone".into()
+                "audio tracks: undone (SHIFT + Undo redoes)".into()
+            }
+            AudioAction::Redo => {
+                if (0..MAX_TRACKS).any(|t| tr.recording(t).is_some()) {
+                    return Err("redo waits until the recording stops".into());
+                }
+                if tr.history().1 == 0 {
+                    return Err("nothing to redo".into());
+                }
+                self.send(Command::Redo)?;
+                "audio tracks: redone".into()
             }
             AudioAction::Gain(r) => {
                 region(tr, r)?;
@@ -959,6 +1023,22 @@ fn region(
         .ok_or_else(|| "that region is gone; pick it again".to_string())
 }
 
+/// How fast a level bar falls back: the whole bar in 1.5 s.
+const METER_FALL: f32 = 1.0 / 1.5;
+/// The smallest move of a bar worth sending: a pixel of a 96 px header.
+const METER_STEP: f32 = 0.01;
+/// The bottom of a level bar, in dB: -48 dB and below show nothing.
+const METER_FLOOR_DB: f32 = -48.0;
+
+/// A peak (0 to 1 is full scale) as a level bar, 0 to 1: dB from
+/// [`METER_FLOOR_DB`] to 0 dB.
+fn meter(peak: f32) -> f32 {
+    if peak <= 0.0 {
+        return 0.0;
+    }
+    ((20.0 * peak.log10() - METER_FLOOR_DB) / -METER_FLOOR_DB).clamp(0.0, 1.0)
+}
+
 /// "s" for a count other than one.
 fn plural(n: usize) -> &'static str {
     if n == 1 {
@@ -1249,8 +1329,22 @@ mod tests {
         assert_eq!(r.h.host.tracks.regions(0).len(), 1);
         assert_eq!(
             r.h.action(AudioAction::Undo, &r.info(), true).unwrap(),
-            "audio tracks: undone"
+            "audio tracks: undone (SHIFT + Undo redoes)"
         );
+        r.periods(2);
+        assert_eq!(r.h.host.tracks.regions(0).len(), 2);
+        // SHIFT + Undo brings the erase back, once.
+        assert_eq!(
+            r.h.action(AudioAction::Redo, &r.info(), true).unwrap(),
+            "audio tracks: redone"
+        );
+        r.periods(2);
+        assert_eq!(r.h.host.tracks.regions(0).len(), 1);
+        assert_eq!(
+            r.h.action(AudioAction::Redo, &r.info(), true).unwrap_err(),
+            "nothing to redo"
+        );
+        r.h.action(AudioAction::Undo, &r.info(), true).unwrap();
         r.periods(2);
         assert_eq!(r.h.host.tracks.regions(0).len(), 2);
         // A region that is not there, a track past the last, and what is not
@@ -1820,6 +1914,80 @@ mod tests {
         assert_eq!(r.h.host.tracks.takes().count(), 0);
         assert!(r.state().audio.is_empty());
         assert!(!r.h.mute[1] && r.h.inputs[1] == Input::Left);
+    }
+
+    #[test]
+    fn the_level_bars_follow_the_input_while_armed_and_the_sound_and_fall_back() {
+        let mut r = Rig::new();
+        r.periods(4);
+        assert_eq!(r.h.take_levels(), None, "silence sends nothing");
+        // Armed, the bar shows the input it records: a tone at 0.5 is
+        // -6 dB, 7/8 of the bar.
+        r.h.action(AudioAction::Arm { track: 0, on: true }, &r.info(), true)
+            .unwrap();
+        r.live = true;
+        r.periods(4);
+        let l = r.h.take_levels().expect("the bar moved");
+        assert!((l[0] - meter(0.5)).abs() < 0.01, "{}", l[0]);
+        assert!((meter(0.5) - 0.875).abs() < 0.01);
+        assert_eq!(&l[1..], &[0.0; MAX_TRACKS - 1]);
+        r.periods(4);
+        assert_eq!(r.h.take_levels(), None, "a steady tone sends nothing");
+        let mut st = r.state();
+        assert!((st.audio[0].level - l[0]).abs() < 0.01);
+        // Another input hears nothing: the tone is on the left only.
+        r.h.action(
+            AudioAction::Input {
+                track: 0,
+                input: Input::Right,
+            },
+            &r.info(),
+            true,
+        )
+        .unwrap();
+        r.periods(8);
+        // It falls back over about 1.5 s, not at once.
+        let after = r.h.take_levels().expect("falling");
+        assert!(after[0] > 0.5 && after[0] < l[0], "{}", after[0]);
+        let t = (1.6 * RATE as f32 / PERIOD as f32) as usize;
+        r.periods(t);
+        assert_eq!(r.h.take_levels().unwrap()[0], 0.0);
+        st = r.state();
+        assert_eq!(st.audio[0].level, 0.0);
+        // Unarmed and silent, a recorded take playing shows on its bar.
+        r.h.action(
+            AudioAction::Input {
+                track: 0,
+                input: Input::Left,
+            },
+            &r.info(),
+            true,
+        )
+        .unwrap();
+        r.command(T::Record);
+        while r.t.position() < 3840 {
+            r.period();
+        }
+        r.command(T::Stop);
+        r.live = false;
+        r.h.action(
+            AudioAction::Arm {
+                track: 0,
+                on: false,
+            },
+            &r.info(),
+            true,
+        )
+        .unwrap();
+        r.periods(t);
+        let _ = r.h.take_levels();
+        r.command(T::Locate(0));
+        r.command(T::Play);
+        r.periods(100);
+        let l = r.h.take_levels().expect("playing");
+        assert!(l[0] > 0.8, "{}", l[0]);
+        r.command(T::Stop);
+        r.periods(4);
     }
 
     #[test]

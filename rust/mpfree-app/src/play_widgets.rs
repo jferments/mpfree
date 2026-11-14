@@ -19,7 +19,7 @@ use crate::play_page::{SynthPads, LAYOUT_SWITCH, VIEWS};
 use mpfree_arp::scale::pads::PadLayout;
 use mpfree_ui::draw::{self, card, card_head, dot, pill, speaker, speaker_hit, KNOB};
 use mpfree_ui::widgets::{Pad, PadGrid};
-use mpfree_ui::{Align, Color, EventKind, FontId, PaintCx, Rect, Tone, Touch, Widget};
+use mpfree_ui::{Align, Color, EventKind, FontId, PaintCx, Rect, Target, Tone, Touch, Widget};
 use std::cell::RefCell;
 use std::collections::VecDeque;
 
@@ -274,6 +274,26 @@ impl Widget for PlayTransport {
             Some((r, self.look.clone(), TransportAreas { pos, dots, bpm }));
     }
 
+    fn targets(&self, r: Rect) -> Vec<Target> {
+        let (_, segs) = PlayTransport::switch(r);
+        let mut out: Vec<Target> = segs
+            .iter()
+            .enumerate()
+            .map(|(i, s)| Target::tap("view", i, VIEWS[i], *s).disabled_if(i == self.look.view))
+            .collect();
+        if let Some((pr, _, a)) = self.painted.borrow().as_ref() {
+            if *pr == r && !a.bpm.is_empty() {
+                out.push(Target::tap(
+                    "tempo",
+                    0,
+                    format!("{} BPM", self.look.bpm),
+                    a.bpm,
+                ));
+            }
+        }
+        out
+    }
+
     fn touch(&mut self, _f: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
         if phase != Touch::Down {
             return None;
@@ -519,6 +539,25 @@ impl Widget for MiniPads {
             self.right.clone(),
             self.synth,
         ));
+    }
+
+    fn targets(&self, r: Rect) -> Vec<Target> {
+        let (_, switch, body) = self.parts(r);
+        let mut out = Vec::new();
+        if let Some(hv) = switch {
+            for (i, h) in hv.iter().enumerate() {
+                out.push(Target::tap("layout", i, ["Chromatic", "In key"][i], *h));
+            }
+        }
+        for i in 0..16 {
+            let label = self
+                .grid
+                .pads
+                .get(i)
+                .map_or(String::new(), |p| p.label.clone());
+            out.push(Target::tap("pad", i, label, MiniPads::cell(body, i)));
+        }
+        out
     }
 
     fn touch(&mut self, finger: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
@@ -769,6 +808,29 @@ impl Widget for StepGrid {
         *self.painted.borrow_mut() = Some((r, self.look()));
     }
 
+    fn targets(&self, r: Rect) -> Vec<Target> {
+        let g = self.geom(r);
+        let mut out = Vec::new();
+        for (k, lane) in self.shown(g.rows).iter().enumerate() {
+            let (sx, sy) = g.speaker(k);
+            out.push(Target::tap(
+                "mute",
+                lane.pad,
+                format!("{} speaker", lane.name),
+                speaker_hit(sx + 6, sy),
+            ));
+            for st in 0..self.steps.min(16) {
+                out.push(Target::tap(
+                    "step",
+                    lane.pad * 16 + st,
+                    format!("{} step {}", lane.name, st + 1),
+                    g.cell(k, st),
+                ));
+            }
+        }
+        out
+    }
+
     fn touch(&mut self, _f: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
         if phase != Touch::Down {
             return None;
@@ -912,6 +974,14 @@ impl Widget for Throws {
                 );
             }
         }
+    }
+
+    fn targets(&self, r: Rect) -> Vec<Target> {
+        self.cells(r)
+            .into_iter()
+            .enumerate()
+            .map(|(i, c)| Target::hold("throw", i, self.items[i].name.clone(), c))
+            .collect()
     }
 
     fn touch(&mut self, finger: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
@@ -1069,6 +1139,14 @@ impl Widget for XyPad {
                 &self.label,
             );
         }
+    }
+
+    fn targets(&self, r: Rect) -> Vec<Target> {
+        let pad = XyPad::pad(r);
+        if pad.w <= 0 || pad.h <= 0 {
+            return Vec::new();
+        }
+        vec![Target::drag("xy", 0, self.title.clone(), pad)]
     }
 
     fn touch(&mut self, finger: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {

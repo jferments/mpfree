@@ -588,6 +588,21 @@ impl Widget for TouchLabView {
         }
     }
 
+    fn targets(&self, r: Rect) -> Vec<mpfree_ui::Target> {
+        use mpfree_ui::Target;
+        let mut out: Vec<Target> = self
+            .buttons(r)
+            .into_iter()
+            .enumerate()
+            .map(|(i, (b, br))| Target::tap("button", i, b.label(), br))
+            .collect();
+        if matches!(self.stage, Stage::Window(_)) {
+            let (_, _, area, _) = Self::regions(r);
+            out.push(Target::drag("area", 0, "touch area", area));
+        }
+        out
+    }
+
     fn touch(
         &mut self,
         finger: u64,
