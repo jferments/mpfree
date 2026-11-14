@@ -3520,8 +3520,12 @@ fn player_session(
     // CLAP plugins in files/plugins/ (plugins.rs), each listed by its own
     // plugin process so a bad file can't take the app with it. Done here,
     // before the sound starts, since a file may take a while to answer.
-    let (found_plugins, notes) =
-        plugins::scan(plugins::program(&plugins::app_path()), o.data.as_deref());
+    // Each process lives in files/plugin-home/ (made by the store), so what
+    // a plugin keeps for itself goes on the data partition.
+    let (found_plugins, notes) = plugins::scan(
+        plugins::program(&plugins::app_path()).with_home(&plugins::home(&store)),
+        o.data.as_deref(),
+    );
     for line in notes {
         out.say(&line);
     }
