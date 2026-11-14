@@ -183,6 +183,28 @@ pub fn contact_secs(hardness: f32, vel: f32, hz: f32) -> f32 {
         .min(0.5 / hz.max(1.0))
 }
 
+/// The tremolo's left and right gains for **Tremolo** `depth` (0 to 100)
+/// at `phase` (0 to 1) of its cycle. Pan follows a rounded square, as the
+/// tine pianos' stereo vibrato did (a square tremolo that went stereo);
+/// Amp (`amp`) a sine.
+pub fn tremolo_gains(depth: f32, amp: bool, phase: f32) -> (f32, f32) {
+    let d = depth / 100.0;
+    if d <= 0.0 {
+        return (1.0, 1.0);
+    }
+    let s = (std::f32::consts::TAU * phase).sin();
+    if amp {
+        let g = 1.0 - d * 0.5 * (1.0 + s);
+        (g, g)
+    } else {
+        let sq = s * 2.5 / (1.0 + 1.5 * s.abs());
+        let p = d * sq;
+        // Equal power, never louder on one side than the dry sound.
+        let n = 1.0 / (1.0 + d).sqrt();
+        ((1.0 - p).max(0.0).sqrt() * n, (1.0 + p).max(0.0).sqrt() * n)
+    }
+}
+
 /// The level a velocity (0 to 1) strikes at.
 #[inline]
 pub fn strike_amp(vel: f32) -> f32 {
@@ -651,21 +673,7 @@ impl Keys {
     /// rounded square, as the tine pianos' stereo vibrato did (a square
     /// tremolo that went stereo); Amp a sine.
     fn trem_gains(&self) -> (f32, f32) {
-        let d = self.v(TREMOLO) / 100.0;
-        if d <= 0.0 {
-            return (1.0, 1.0);
-        }
-        let s = (std::f32::consts::TAU * self.trem_phase).sin();
-        if self.v(TREM_MODE) >= 0.5 {
-            let g = 1.0 - d * 0.5 * (1.0 + s);
-            (g, g)
-        } else {
-            let sq = s * 2.5 / (1.0 + 1.5 * s.abs());
-            let p = d * sq;
-            // Equal power, never louder on one side than the dry sound.
-            let n = 1.0 / (1.0 + d).sqrt();
-            ((1.0 - p).max(0.0).sqrt() * n, (1.0 + p).max(0.0).sqrt() * n)
-        }
+        tremolo_gains(self.v(TREMOLO), self.v(TREM_MODE) >= 0.5, self.trem_phase)
     }
 
     /// One control step: smooth the bend, retune voices whose pitch moved,
