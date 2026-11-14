@@ -377,7 +377,7 @@ impl ChainView {
             return true;
         }
         let n = match pv.presets {
-            Some(id) => 1 + mpfree_fx::picker::presets(id).len(),
+            Some(id) => 1 + mpfree_fx::picker::preset_rows(id).len(),
             None => pv.picks(&self.state).len(),
         };
         if n > 0 {
@@ -413,7 +413,7 @@ impl ChainView {
 
     /// Opens an effect's presets, or adds it when it has none.
     fn open_or_add(&mut self, id: &'static str) {
-        if mpfree_fx::picker::presets(id).is_empty() {
+        if mpfree_fx::picker::preset_rows(id).is_empty() {
             self.state.picking = false;
             self.push(ChainAction::Add(id));
         } else {
@@ -423,13 +423,18 @@ impl ChainView {
         }
     }
 
-    /// Adds `id` with presets list row `row` (0 is "Defaults").
+    /// Adds `id` with presets list row `row` (0 is "Defaults"). A row of a
+    /// family's list adds the engine of its mode.
     fn add_preset(&mut self, id: &'static str, row: usize) {
         self.state.picking = false;
         self.picker.presets = None;
-        self.push(match row {
-            0 => ChainAction::Add(id),
-            r => ChainAction::AddPreset { id, preset: r - 1 },
+        let rows = mpfree_fx::picker::preset_rows(id);
+        self.push(match row.checked_sub(1).and_then(|r| rows.get(r)) {
+            Some(r) => ChainAction::AddPreset {
+                id: r.id,
+                preset: r.preset,
+            },
+            None => ChainAction::Add(id),
         });
     }
 
@@ -520,7 +525,7 @@ impl ChainView {
                 .picker
                 .picks(&self.state)
                 .get(i)
-                .is_some_and(|p| !mpfree_fx::picker::presets(p.id).is_empty())
+                .is_some_and(|p| !mpfree_fx::picker::preset_rows(p.id).is_empty())
     }
 
     /// Call every frame while the picker is open: a finger held on a tile
@@ -1476,7 +1481,7 @@ fn picker_targets(pv: &PickerView, st: &ChainState, pl: &PickerLayout, out: &mut
             if let Some(b) = pl.back {
                 out.push(Target::tap("presets-back", 0, "‹ Effects", b));
             }
-            let presets = mpfree_fx::picker::presets(id);
+            let presets = mpfree_fx::picker::preset_rows(id);
             for (k, r) in pl.tiles.iter().enumerate() {
                 let item = pl.first + k;
                 let label = match item {

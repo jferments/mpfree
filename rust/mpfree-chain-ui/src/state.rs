@@ -524,14 +524,17 @@ pub struct Pick {
 }
 
 /// The built-in effects the picker offers on `strip`, in the registry's
-/// order (grouped by category). Master safety only on the master strip.
+/// order (grouped by category), a family of effects with modes as one
+/// tile (`mpfree_fx::families::tiles`). Master safety only on the master
+/// strip.
 pub fn picks(strip: Strip) -> Vec<Pick> {
-    mpfree_fx::registry::offered(strip == Strip::Master)
-        .map(|e| Pick {
-            id: e.id,
-            name: e.name,
-            about: e.about,
-            category: e.category,
+    mpfree_fx::families::tiles(strip == Strip::Master)
+        .into_iter()
+        .map(|t| Pick {
+            id: t.id,
+            name: t.name,
+            about: t.about,
+            category: t.category,
         })
         .collect()
 }

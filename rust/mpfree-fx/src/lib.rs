@@ -76,6 +76,7 @@ mod ducker;
 mod dynamics;
 mod echoes;
 mod eq;
+pub mod families;
 mod grains;
 mod kit;
 mod lofi;
