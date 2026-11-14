@@ -87,6 +87,9 @@
 722153	Sampler, the 16 sample pads alone
 235626	Sampler, the 4 granular pads alone
 3317675	Song: sampler, 2 synths, mixer+FX, time, looper
+59214	Squelch Acid Line, a line
+61774	Squelch Distorted, a line
+64328	Squelch Square Acid, a line
 8130	Time with trig conditions and ratchets, 8 clips, arp
 8528	Time: transport, 8 clips, arp
 53727	Track host alone, 16 tracks, 8 events each per block

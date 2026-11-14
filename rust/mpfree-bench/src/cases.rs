@@ -28,7 +28,7 @@ use mpfree_seq::mpfree_param::{OnTrack, RelAddr};
 use mpfree_seq::{Clip, Lock, Note, Project as Song, Quantise, Speed, Track};
 use mpfree_synth::params::{POLYPHONY, UNISON, VOICE_MODE};
 use mpfree_synth::wavetable::params::{self as wt, PRESETS as WT_PRESETS};
-use mpfree_synth::{Drawbar, Drums, Keys, Pluck, Poly, Wavetable, PRESETS};
+use mpfree_synth::{Drawbar, Drums, Keys, Pluck, Poly, Squelch, Wavetable, PRESETS};
 use mpfree_track::{Instrument, Sum, TrackHost};
 use mpfree_transport::time::{Swing, PPQ};
 use mpfree_transport::{Block as TBlock, Command as T, Transport};
@@ -310,6 +310,95 @@ impl Chords {
                         velocity: 64 + (self.seed.next() >> 26) as u8,
                     },
                 ));
+            }
+        }
+        l.fill(0.0);
+        r.fill(0.0);
+        self.s.process(&Ctx::new(self.rate, f0), &self.events, l, r);
+    }
+}
+
+/// A mono synth playing a sixteenth-note line at 125 BPM, every fourth
+/// note accented (velocity 127) and every third sliding into the next, so
+/// note starts, accents, slides and gate ends are all in the numbers.
+fn line(name: String, rate: u32, s: Box<dyn Node>, values: &[(u16, f32)]) -> Case {
+    let mut c = Line::new(rate, s, values);
+    Case {
+        name,
+        module: "synth",
+        what: "a sixteenth-note line with accents and slides",
+        block: Box::new(move |b, l, r| c.block(b, l, r)),
+        mem_bytes: 0,
+    }
+}
+
+/// A mono instrument and the line it plays (see [`line`]).
+struct Line {
+    rate: u32,
+    s: Box<dyn Node>,
+    events: Vec<Timed>,
+    held: Option<u8>,
+    slide: bool,
+    seed: Lcg,
+}
+
+impl Line {
+    fn new(rate: u32, mut s: Box<dyn Node>, values: &[(u16, f32)]) -> Self {
+        s.prepare(rate, MAX_BLOCK);
+        for &(id, v) in values {
+            s.set_param(id, v);
+        }
+        Self {
+            rate,
+            s,
+            events: Vec::with_capacity(4),
+            held: None,
+            slide: false,
+            seed: Lcg(5),
+        }
+    }
+
+    fn block(&mut self, b: u64, l: &mut [f32], r: &mut [f32]) {
+        let len = l.len() as u64;
+        let f0 = b * len;
+        // A sixteenth at 125 BPM, and a gate 3.5 of its 6 ticks long.
+        let step = u64::from(self.rate) * 3 / 25;
+        let gate = step * 7 / 12;
+        self.events.clear();
+        let k = f0.div_ceil(step);
+        let start = k * step;
+        let j = if f0 >= gate {
+            (f0 - gate).div_ceil(step)
+        } else {
+            0
+        };
+        let end = j * step + gate;
+        if end < f0 + len && end < start && !self.slide {
+            if let Some(note) = self.held.take() {
+                self.events
+                    .push(Timed::new((end - f0) as u32, NodeEvent::NoteOff { note }));
+            }
+        }
+        if start < f0 + len {
+            let at = (start - f0) as u32;
+            let note = 36 + (self.seed.next() >> 28) as u8;
+            let velocity = if k % 4 == 0 { 127 } else { 90 };
+            self.events
+                .push(Timed::new(at, NodeEvent::NoteOn { note, velocity }));
+            // The note before slides into this one: let go after.
+            if let Some(prev) = self.held.take() {
+                if prev != note {
+                    self.events
+                        .push(Timed::new(at, NodeEvent::NoteOff { note: prev }));
+                }
+            }
+            self.held = Some(note);
+            self.slide = k % 3 == 2;
+        }
+        if end < f0 + len && end >= start && !self.slide {
+            if let Some(note) = self.held.take() {
+                self.events
+                    .push(Timed::new((end - f0) as u32, NodeEvent::NoteOff { note }));
             }
         }
         l.fill(0.0);
@@ -826,6 +915,21 @@ pub fn all(rate: u32) -> Vec<Case> {
                 p.values,
                 None,
                 keys,
+            )
+        }));
+    }
+    // Squelch: the classic line, the square, and the drive on top.
+    for name in ["Acid Line", "Square Acid", "Distorted"] {
+        v.push(measured(|| {
+            let p = Squelch::presets()
+                .iter()
+                .find(|p| p.name == name)
+                .unwrap_or_else(|| panic!("squelch preset {name}"));
+            line(
+                format!("Squelch {name}, a line"),
+                rate,
+                Box::new(Squelch::new(rate)),
+                p.values,
             )
         }));
     }

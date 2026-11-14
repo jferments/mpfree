@@ -6,7 +6,7 @@ checked: 2026-11-14 cf10b79
 
 # Synths
 
-MPFree has seven synths built in. Put one on the pads and they become a keyboard: bass lines, chords, leads and pads, played by hand, through the arpeggiator or into a pattern.
+MPFree has eight synths built in. Put one on the pads and they become a keyboard: bass lines, chords, leads and pads, played by hand, through the arpeggiator or into a pattern.
 
 ## Put a synth on the pads
 
@@ -18,9 +18,9 @@ There are three ways:
 
 To go back to drums, pick a kit with the data wheel on the Play page, or set the track's instrument back to **Kit**.
 
-## The seven synths
+## The eight synths
 
-Any of the seven can be a track's own instrument (see [A synth for each track](#a-synth-for-each-track)), and any track can have a different one.
+Any of the eight can be a track's own instrument (see [A synth for each track](#a-synth-for-each-track)), and any track can have a different one.
 
 | Synth | What it is | Good for | Presets |
 |---|---|---|---|
@@ -31,6 +31,7 @@ Any of the seven can be a track's own instrument (see [A synth for each track](#
 | **Wavetable** | Two oscillators that sweep through stacks of waveforms | Evolving pads, vocal leads, growling basses | Morph Pad, Vowel Lead, Sync Sweep, Digital Bell, Growl Bass, Organ, Harmonic Pluck, FM Keys |
 | **Keys** | A physically modelled electric piano: struck steel tines or reeds in front of their pickups | Soul and jazz chords, ballads, barking stabs, tremolo keys | Soft Tines, Bright Tines, Barking Tines, Bell Keys, Hollow Tines, Pan Tines, Ballad, Dusty Keys, Reed, Reed Bite, Trem Reed |
 | **Drawbar** | A tonewheel organ with drawbars, percussion, scanner vibrato and a rotating speaker | Jazz and gospel comping, rock riffs, church chords, soft pads | Jazz Perc, Gospel, Full Organ, Rock Drive, Ballad, Flute, Church, Reedy, Bright Perc, Hollow, Soft Bass |
+| **Squelch** | A mono acid bass: one oscillator into a squelchy resonant filter, with accent and slide | Acid lines, rubbery basses, screaming leads | Acid Line, Deep Bass, Square Acid, Distorted, Rubber, Plucky, Acid Lead, Screamer |
 
 Each synth also has an **Init** preset (Init Kit on Drums): a plain starting point to build your own sound.
 
@@ -40,7 +41,7 @@ Every track can play its own instrument: Poly on one, FM on another, a plugin sy
 
 1. Select the track.
 2. Press **MENU** on the Synth tab. The top row is named after the track: **Track 2 instrument**.
-3. Change it. It steps through **Kit** (the pads' kit, as every track starts), **Poly**, **FM**, **Drums**, **Pluck**, **Wavetable**, **Keys** and **Drawbar**, then any plugin synths you have put in `files/plugins/` on the stick.
+3. Change it. It steps through **Kit** (the pads' kit, as every track starts), **Poly**, **FM**, **Drums**, **Pluck**, **Wavetable**, **Keys**, **Drawbar** and **Squelch**, then any plugin synths you have put in `files/plugins/` on the stick.
 
 {{shot: synth-instrument | Track 2's instrument set to a plugin synth, with the row's help on the right.}}
 
@@ -88,6 +89,17 @@ Each synth has its own pages. FM has Algo, Mod and Pressure, a page for each of 
 - **Percussion:** **Percussion** adds a short "ping" of the 4' (**Perc harm** Second) or the 2 2/3' (Third) at the start of a note, **Fast** or **Slow**, **Normal** or **Soft**. As on the organ, it only fires when no other key is held, so play detached to hear it on every chord and legato to leave it out; while it is on, the 1' drawbar is silent and Normal makes the drawbars a little quieter. **Vibrato** is **V1** to **V3** (pitch wobble, deeper with each) or **C1** to **C3** (chorus: the same mixed with the plain sound), at the speed **Scanner** sets.
 - **Rotary:** the rotating speaker. **Speed** is **Slow** (a gentle swirl), **Fast** (a quick tremolo) or **Stop**; switching it is part of playing, and the treble horn speeds up and slows down quickly while the bass drum takes a few seconds. **Spread** is how wide the speaker sounds (0 is mono), and **Rotary** Off takes the speaker out. The tone controls are here too: **Click** is the spit of the key contacts at the start of each note, **Leakage** the faint bleed of other tonewheels, **Drive** the growl of a pushed amplifier, **Tone** darker or brighter, and **Wheels** **Gears** (the organ's own slightly uneven tuning) or **Exact**.
 - **Voice:** transpose, fine tuning, level and pan, and how many keys are held.
+
+**Squelch** is a mono acid bass: it plays one note at a time, and a new pad takes over from the last. Two things in how you play shape it, as on the bass line machines it learns from:
+
+- **Accent:** hit a pad at or above **Accent at** (velocity 100 by default) and the note is accented: louder, with a sharper jump of the filter. With Resonance high, accents close together build on each other, each brighter than the last.
+- **Slide:** press a new pad before you let go of the last and the pitch glides there without starting the note again. Let go of it and it glides back to the pad still held. Play detached for separate notes.
+
+The classic move is to turn **Cutoff** and **Resonance** while a line plays; the Synth page's Q-Links are set up for it. It has three pages:
+
+- **Synth:** **Wave** (**Saw** or **Square**), **Cutoff** (where the filter rests between notes), **Resonance** (the squelch; at 100 the filter is on the edge of whistling and screams on high notes), **Env mod** (how far each note opens the filter), **Decay** (how fast it closes again) and **Accent** (how far accented notes jump out).
+- **Play:** **Slide** (how long a glide takes), **Accent at**, **Acc decay** (how fast the filter closes on accented notes), **Amp decay** (how long a held note takes to fade; short for plucked notes), **Key track** (how far the filter follows the note; at 0, as on the original, high notes come out darker) and **Drive** (distortion after the filter, as from a pedal).
+- **Voice:** transpose, fine tuning, bend range, level and pan.
 
 The Synth tab takes its colours from the theme picked in **Prefs > Appearance**, like the rest of MPFree: the Q-Link colours, the curves and the boxes in the pictures all change with it.
 
