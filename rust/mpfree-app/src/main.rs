@@ -5321,6 +5321,13 @@ fn player_session(
                 shown_levels = levels;
                 out.show(gui::ToUi::PlayLevels(levels));
             }
+            // The audio tracks' level bars on Arrange: eight numbers, not a
+            // whole song state.
+            if app.view() == app::View::Arrange {
+                if let Some(l) = tracks.take_levels() {
+                    out.show(gui::ToUi::AudioLevels(l));
+                }
+            }
         }
         if let Some(note) = line_note {
             out.note(&note);
