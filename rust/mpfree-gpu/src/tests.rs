@@ -8,7 +8,8 @@ use mpfree_ui::fb::FbLayout;
 use mpfree_ui::record::{replay, Recorder};
 use mpfree_ui::{Canvas, FontId, Fonts, Image, SoftCanvas};
 
-/// Everything the six calls can do: opaque and see-through fills, round
+/// Everything the calls but shapes can do (`shapes_page` has those):
+/// opaque and see-through fills, round
 /// rectangles big and small, outlines, text in three faces, an image, and
 /// clips that cut through all of them.
 fn scene(c: &mut dyn Canvas, fonts: &mut Fonts, k: u32) {
@@ -575,5 +576,135 @@ fn the_gpu_says_whether_it_can_draw_into_screen_buffers() {
     match scanout::import_support(&gpu) {
         Ok(()) => eprintln!("dma-buf import: yes"),
         Err(e) => eprintln!("dma-buf import: no ({e})"),
+    }
+}
+
+/// Curves, knob rings, dots, dashed lines and soft areas under curves,
+/// some crossing, some see-through, some cut by a clip or the screen's
+/// edge: everything a shape can be.
+fn shapes_page(c: &mut dyn Canvas, _fonts: &mut Fonts) {
+    use mpfree_ui::Shape;
+    let (w, h) = c.size();
+    c.fill_rect(Rect::new(0, 0, w, h), Color::rgb(0x12161E));
+    for k in 0..24 {
+        let (x, y) = (20 + (k % 8) * 150, 20 + (k / 8) * 250);
+        let r = Rect::new(x, y, 140, 120);
+        let mut s = Shape::new(r);
+        let pts: Vec<(f32, f32)> = (0..=60)
+            .map(|i| {
+                let t = i as f32 / 60.0;
+                (
+                    x as f32 + 4.0 + t * 132.0,
+                    y as f32 + 60.0 + (t * (3.0 + k as f32) * 2.1).sin() * 40.0,
+                )
+            })
+            .collect();
+        s.fill_under(&pts, (y + 110) as f32, 0.35);
+        s.polyline(&pts, 1.0 + (k % 4) as f32 * 0.75);
+        s.disc(pts[30].0, pts[30].1, 4.5);
+        let ink = Color::rgb(0x40C0FF ^ (k as u32 * 0x0A1B2C)).with_alpha(255 - (k as u8 % 3) * 60);
+        s.draw(c, ink);
+        let mut ring = Shape::new(Rect::new(x, y + 125, 110, 110));
+        let (cx, cy) = (x as f32 + 55.3, y as f32 + 180.1);
+        ring.arc(cx, cy, 40.0, 2.2, 2.2 + 0.2 * k as f32 + 0.3, 6.0);
+        ring.arc(cx, cy, 30.0, -1.0, 4.5, 1.5);
+        ring.dashed(&[(cx - 45.0, cy + 46.0), (cx + 45.0, cy - 44.0)], 2.0, 5.0);
+        ring.segment((cx, cy), (cx, cy), 9.0);
+        ring.draw(c, Color::rgb(0xF0A040));
+    }
+    // A clip through a curve, and one that hangs off the screen.
+    c.set_clip(Rect::new(300, 300, 200, 30));
+    let mut s = Shape::new(Rect::new(250, 280, 400, 100));
+    s.polyline(&[(250.0, 280.0), (650.0, 380.0), (260.0, 379.0)], 3.0);
+    s.draw(c, Color::rgb(0xFFFFFF));
+    c.set_clip(Rect::new(0, 0, w, h));
+    let mut s = Shape::new(Rect::new(w - 40, h - 30, 120, 90));
+    s.disc((w - 10) as f32, (h - 5) as f32, 30.0);
+    s.draw(c, Color::rgb(0x66FF99).with_alpha(128));
+}
+
+#[test]
+fn the_gpu_works_out_shapes_as_software_does() {
+    let gpu = gpu();
+    let (want, rec) = software_of(800, 1280, Rotation::Deg270, &shapes_page);
+    let shapes = rec
+        .ops()
+        .iter()
+        .filter(|op| matches!(op, Op::Shape { .. }))
+        .count();
+    let mut r = Renderer::new(&gpu, 800, 1280, Rotation::Deg270).unwrap();
+    assert!(r.minmax, "this GPU has no MAX blending: {}", gpu.describe());
+    let s = r.play(&gpu, rec.ops(), rec.store(), &[]);
+    let d = compare(&want, &r.read_native(&gpu));
+    eprintln!(
+        "{shapes} shapes: {} drawn on the GPU, {} draws, {} uploads; {} pixels differ, {} by more than 1, at most {}",
+        s.shapes_drawn, s.draws, s.uploads, d.differ, d.over_1, d.max
+    );
+    assert_eq!(shapes, 50);
+    assert_eq!((s.shapes_drawn, s.uploads, s.masks_alone), (50, 0, 0));
+    assert!(d.max <= 3 && d.over_1 * 1000 < want.len(), "{d:?}");
+    // Again: every shape is in the atlas, nothing is worked out, one draw.
+    let again = r.play(&gpu, rec.ops(), rec.store(), &[]);
+    assert_eq!((again.shapes_drawn, again.draws), (0, 1), "{again:?}");
+    assert!(r.read_native(&gpu) == r.read_native(&gpu));
+}
+
+#[test]
+fn a_full_shape_atlas_is_cleared_and_draws_the_same_picture() {
+    let gpu = gpu();
+    let (want, rec) = software_of(800, 1280, Rotation::Deg270, &shapes_page);
+    let mut big = Renderer::new(&gpu, 800, 1280, Rotation::Deg270).unwrap();
+    big.play(&gpu, rec.ops(), rec.store(), &[]);
+    let roomy = big.read_native(&gpu);
+    // Room for about three shapes, and too small for the biggest.
+    let mut small =
+        Renderer::with_atlases(&gpu, 800, 1280, Rotation::Deg270, ATLAS_SIZE, (390, 130)).unwrap();
+    let s = small.play(&gpu, rec.ops(), rec.store(), &[]);
+    eprintln!("small shapes' atlas: {s:?}");
+    assert!(s.shapes_cleared > 0, "{s:?}");
+    assert!(s.uploads > 0, "the biggest shape goes as a mask: {s:?}");
+    assert!(
+        small.read_native(&gpu) == roomy,
+        "a small shapes' atlas changed the picture"
+    );
+    let d = compare(&want, &roomy);
+    assert!(d.max <= 3 && d.over_1 * 1000 < want.len(), "{d:?}");
+}
+
+#[test]
+fn without_max_blending_shapes_go_as_software_masks() {
+    let gpu = gpu();
+    let (want, rec) = software_of(800, 1280, Rotation::Deg270, &shapes_page);
+    let mut r = Renderer::new(&gpu, 800, 1280, Rotation::Deg270).unwrap();
+    r.minmax = false;
+    let s = r.play(&gpu, rec.ops(), rec.store(), &[]);
+    assert_eq!((s.shapes_drawn, s.uploads), (0, 50), "{s:?}");
+    let d = compare(&want, &r.read_native(&gpu));
+    assert!(d.max <= 3 && d.over_1 * 1000 < want.len(), "{d:?}");
+    let again = r.play(&gpu, rec.ops(), rec.store(), &[]);
+    assert_eq!(again.uploads, 0, "{again:?}");
+}
+
+#[test]
+fn every_turn_draws_shapes_where_software_puts_them() {
+    let gpu = gpu();
+    for rotation in [
+        Rotation::Deg0,
+        Rotation::Deg90,
+        Rotation::Deg180,
+        Rotation::Deg270,
+    ] {
+        let (nw, nh) = match rotation {
+            Rotation::Deg0 | Rotation::Deg180 => (1280, 800),
+            _ => (800, 1280),
+        };
+        let (want, rec) = software_of(nw, nh, rotation, &shapes_page);
+        let mut r = Renderer::new(&gpu, nw as i32, nh as i32, rotation).unwrap();
+        r.play(&gpu, rec.ops(), rec.store(), &[]);
+        let d = compare(&want, &r.read_native(&gpu));
+        assert!(
+            d.max <= 3 && d.over_1 * 1000 < want.len(),
+            "{rotation:?}: {d:?}"
+        );
     }
 }

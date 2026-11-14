@@ -4,6 +4,10 @@
 # After an intended change, bless with CI's pinned toolchain:
 #   cargo build --manifest-path rust/Cargo.toml --release --locked -p mpfree-bench
 #   python3 tools/ci/instr_gate.py --bless
+265396	Analog Init, 8 voices
+202601	Analog Poly Brass, 8 voices
+320632	Analog Warm Pad, 8 voices
+465556	Analog Worn Cards, 16 voices
 9187	Arps: 16 latched arps at 32nds
 3435	Arps: 4 latched arps at 32nds
 44291	Audio tracks: 6 playing comped takes, 2 recording
@@ -31,6 +35,10 @@
 10346	Crush
 13406	DJ filter
 77742	Delay
+129473	Drawbar Church, 8 keys
+173856	Drawbar Full Organ, 8 keys
+167152	Drawbar Gospel, 16 keys
+133926	Drawbar Init, 8 keys
 154587	Drive (Eco 2x)
 272347	Drive (HQ 4x)
 572112	Drums Boom Kit, a hit every block
@@ -83,6 +91,9 @@
 722153	Sampler, the 16 sample pads alone
 235626	Sampler, the 4 granular pads alone
 3317675	Song: sampler, 2 synths, mixer+FX, time, looper
+59214	Squelch Acid Line, a line
+61774	Squelch Distorted, a line
+64328	Squelch Square Acid, a line
 8130	Time with trig conditions and ratchets, 8 clips, arp
 8528	Time: transport, 8 clips, arp
 53727	Track host alone, 16 tracks, 8 events each per block

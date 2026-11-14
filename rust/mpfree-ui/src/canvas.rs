@@ -2,6 +2,7 @@
 
 use crate::color::{blend, Color};
 use crate::geom::Rect;
+use crate::shape::Shape;
 
 /// Everything a widget may draw. Coordinates are logical pixels; drawing is
 /// cut to the current clip rectangle. A GPU backend implements the same calls.
@@ -20,6 +21,18 @@ pub trait Canvas {
     fn blend_mask(&mut self, x: i32, y: i32, w: usize, h: usize, mask: &[u8], c: Color);
     /// Copy a picture, opaque, with its top left corner at (x, y).
     fn draw_image(&mut self, x: i32, y: i32, img: &Image);
+    /// Blend `c` through a vector shape's coverage, inside its rectangle.
+    /// By default it rasterises the shape into a coverage mask and blends
+    /// that; a canvas that can draw the parts itself (the GPU's, through a
+    /// recorded list) keeps them instead.
+    fn blend_shape(&mut self, shape: &Shape, c: Color) {
+        let r = shape.r;
+        if r.is_empty() {
+            return;
+        }
+        let cov = shape.coverage();
+        self.blend_mask(r.x, r.y, r.w as usize, r.h as usize, &cov, c);
+    }
 }
 
 /// A picture in memory: one XRGB8888 word per pixel, rows top to bottom.
