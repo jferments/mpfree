@@ -40,25 +40,30 @@ fn known(info: &NodeInfo, count: u16) -> Option<Vec<Plan>> {
     let one = |q: &[u16]| Some(vec![pg(info.name, &all(count), q)]);
     match info.id {
         "mpfree.fx.eq" => {
-            let bands = |f: fn(usize) -> u16| (0..eq::BANDS).map(f).collect::<Vec<_>>();
-            // Four columns, one per band: frequency, gain, Q, then type.
-            let mut p = bands(eq::freq);
-            p.extend(bands(eq::gain));
-            p.extend(bands(eq::q));
-            p.extend(bands(eq::band_type));
+            // Four columns a page, one per band: frequency, gain, Q, then
+            // type; bands 1 to 4, then 5 to 8.
+            let page = |first: usize| {
+                let bands = |f: fn(usize) -> u16| (first..first + 4).map(f).collect::<Vec<_>>();
+                let mut p = bands(eq::freq);
+                p.extend(bands(eq::gain));
+                p.extend(bands(eq::q));
+                p.extend(bands(eq::band_type));
+                (p, bands(eq::gain))
+            };
+            let (one, one_q) = page(0);
+            let (two, two_q) = page(4);
+            let mut cuts = vec![
+                eq::LOW_CUT,
+                eq::LOW_SLOPE,
+                eq::HIGH_CUT,
+                eq::HIGH_SLOPE,
+                eq::OUTPUT,
+            ];
+            cuts.extend((0..eq::BANDS).map(eq::band_use));
             Some(vec![
-                pg("Bands", &p, &bands(eq::gain)),
-                pg(
-                    "Cuts",
-                    &[
-                        eq::LOW_CUT,
-                        eq::LOW_SLOPE,
-                        eq::HIGH_CUT,
-                        eq::HIGH_SLOPE,
-                        eq::OUTPUT,
-                    ],
-                    &[eq::LOW_CUT, eq::HIGH_CUT, eq::OUTPUT],
-                ),
+                pg("Bands", &one, &one_q),
+                pg("Bands 5-8", &two, &two_q),
+                pg("Cuts", &cuts, &[eq::LOW_CUT, eq::HIGH_CUT, eq::OUTPUT]),
             ])
         }
         "mpfree.fx.filter" => one(&[

@@ -322,7 +322,7 @@ macro_rules! slot_dim {
     };
 }
 
-/// An EQ band: its type, gain (a Q-Link), frequency and Q.
+/// An EQ band: its type, gain (a Q-Link), frequency and Q, and its Use.
 macro_rules! band {
     ($n:literal) => {
         Section {
@@ -332,12 +332,31 @@ macro_rules! band {
                 concat!("Band ", $n),
                 Tone,
                 &[
+                    concat!("Band ", $n, "/Use"),
                     concat!("Band ", $n, "/Type"),
                     concat!("Band ", $n, "/Gain"),
                     concat!("Band ", $n, "/Freq"),
                     concat!("Band ", $n, "/Q"),
                 ],
             )
+        }
+    };
+}
+
+/// An EQ band's controls dim while it isn't On.
+macro_rules! band_dim {
+    ($n:literal) => {
+        Dim {
+            controls: &[
+                concat!("Band ", $n, "/Type"),
+                concat!("Band ", $n, "/Gain"),
+                concat!("Band ", $n, "/Freq"),
+                concat!("Band ", $n, "/Q"),
+            ],
+            by: concat!("Band ", $n, "/Use"),
+            when: When::Not(&[1.0]),
+            reason: "the band is off",
+            swap: false,
         }
     };
 }
@@ -694,30 +713,45 @@ pub static PLANS: &[Plan] = &[
     Plan {
         id: "mpfree.fx.eq",
         qlinks: &["Band 1/Gain", "Band 2/Gain", "Band 3/Gain", "Band 4/Gain"],
-        pages: &[page(
-            "col(row(curve:540, cuts):220, row(b1:172, b2:172, b3:172, b4:172, output):*)",
-            &[
-                Section {
-                    drawings: &["Response · ±18 dB"],
-                    ..s("curve", "Curve", Tone, &[])
-                },
-                Section {
-                    rows: &["Low cut", "Low slope", "High cut", "High slope"],
-                    ..s(
-                        "cuts",
-                        "Cuts",
-                        Tone,
-                        &["Low cut", "Low slope", "High cut", "High slope"],
-                    )
-                },
-                band!(1),
-                band!(2),
-                band!(3),
-                band!(4),
-                s("output", "Output", Voice, &["Output"]),
-            ],
-        )],
+        pages: &[
+            page(
+                "col(row(curve:540, cuts):220, row(b1:172, b2:172, b3:172, b4:172, output):*)",
+                &[
+                    Section {
+                        drawings: &["Response · ±18 dB"],
+                        ..s("curve", "Curve", Tone, &[])
+                    },
+                    Section {
+                        rows: &["Low cut", "Low slope", "High cut", "High slope"],
+                        ..s(
+                            "cuts",
+                            "Cuts",
+                            Tone,
+                            &["Low cut", "Low slope", "High cut", "High slope"],
+                        )
+                    },
+                    band!(1),
+                    band!(2),
+                    band!(3),
+                    band!(4),
+                    s("output", "Output", Voice, &["Output"]),
+                ],
+            ),
+            Page {
+                name: "Bands 5-8",
+                spec: "row(b5:200, b6:200, b7:200, b8:200)",
+                sections: &[band!(5), band!(6), band!(7), band!(8)],
+            },
+        ],
         dims: &[
+            band_dim!(1),
+            band_dim!(2),
+            band_dim!(3),
+            band_dim!(4),
+            band_dim!(5),
+            band_dim!(6),
+            band_dim!(7),
+            band_dim!(8),
             Dim {
                 controls: &["Low cut"],
                 by: "Low slope",
