@@ -47,6 +47,9 @@ def draw_shots(out):
 # The screen on the PDF cover: the busiest Play page the preview draws
 # (a loop, a pattern and a throw playing, the master meter moving).
 COVER = "play-all-loop"
+# The README shows the same screen, committed so GitHub can show it. Every
+# build refreshes it; commit it when it changes.
+README_SHOT = os.path.join(mp.ROOT, "docs", "images", COVER + ".png")
 
 
 def shrink_shots(raw, dest, wanted):
@@ -122,19 +125,50 @@ def render(path, text, target, notes, labels):
         body = pdf_links(body, path, labels)
         body = re.sub(r"^# (.+)$", lambda m: f"# {m.group(1)} {{#{mp.page_label(path)}}}",
                       body, count=1, flags=re.M)
+        body = pdf_section_ids(body, mp.page_label(path))
     return body
+
+
+def slug(title):
+    """A heading's anchor as GitHub and mdBook make it: lower case, spaces to
+    hyphens, other punctuation dropped."""
+    t = re.sub(r"[*_`]", "", title).strip().lower()
+    t = re.sub(r"[^\w\- ]", "", t)
+    return t.replace(" ", "-")
+
+
+def pdf_section_ids(body, page):
+    """Every section gets an id of its own page's label and its anchor, so the
+    same heading on two pages (Pad pressure, Coming next) is two places in the
+    PDF, and a link to page.md#section lands on that section."""
+    seen = {}
+
+    def fix(m):
+        if "{#" in m.group(2):
+            return m.group(0)
+        s = slug(m.group(2))
+        n = seen.get(s, 0)
+        seen[s] = n + 1
+        if n:
+            s = f"{s}-{n}"
+        return f"{m.group(1)} {m.group(2)} {{#{page}--{s}}}"
+    return re.sub(r"^(#{2,6}) (.+?)\s*$", fix, body, flags=re.M)
 
 
 def pdf_links(body, path, labels):
     """Links to other pages become links inside the PDF; outside links stay."""
     def fix(m):
         t = m.group(2)
-        if re.match(r"^[a-z]+:", t) or t.startswith("#") or t.startswith("shots/"):
+        if re.match(r"^[a-z]+:", t) or t.startswith("shots/"):
             return m.group(0)
-        p = t.split("#")[0]
+        if t.startswith("#"):
+            # A section on this page (pdf_section_ids gives it its id).
+            return m.group(1) + "#" + labels[path] + "--" + t[1:] + m.group(3)
+        p, _, section = t.partition("#")
         full = os.path.normpath(os.path.join(os.path.dirname(path), p))
         if full in labels:
-            return m.group(1) + "#" + labels[full] + m.group(3)
+            to = labels[full] + ("--" + section if section else "")
+            return m.group(1) + "#" + to + m.group(3)
         # A link out of the manual (a developer page): point at GitHub.
         repo = os.path.normpath(os.path.join("docs/user/src", os.path.dirname(path), t))
         return m.group(1) + "https://github.com/jferments/mpfree/blob/main/" + repo + m.group(3)
@@ -212,6 +246,21 @@ def build_pdf(out, src_pdf, shots, toc):
     return pdf
 
 
+def refresh_readme_shot(src):
+    """Keep the README's screenshot the same as the manual's cover screen."""
+    with open(src, "rb") as f:
+        new = f.read()
+    old = None
+    if os.path.exists(README_SHOT):
+        with open(README_SHOT, "rb") as f:
+            old = f.read()
+    if new != old:
+        os.makedirs(os.path.dirname(README_SHOT), exist_ok=True)
+        with open(README_SHOT, "wb") as f:
+            f.write(new)
+        print(f"README screenshot updated: {os.path.relpath(README_SHOT, mp.ROOT)} (commit it)")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--out", default=OUT_DEFAULT)
@@ -237,6 +286,7 @@ def main():
         sys.exit("STOP: these screens are asked for but mpfree --preview no longer draws "
                  f"them: {', '.join(missing)}. Fix the page or add the screen "
                  "(rust/mpfree-app/src/gui.rs, sample_screens).")
+    refresh_readme_shot(os.path.join(shots, COVER + ".png"))
     if not a.no_site:
         site = build_site(out, prepare(out, "html", pages, notes), shots)
         print(f"website: {os.path.join(site, 'index.html')}")

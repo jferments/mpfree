@@ -4,8 +4,9 @@
 //! - The playing kit's 16 pads each have a pad channel (Pad Mix), and all
 //!   16 go to Track 1 "Drums" (the sampler renders each pad into its own
 //!   channel: `render_routed`; the clips play the kit too). Track 2
-//!   "Synth" is Poly, Track 3 "Loop" is the audio looper's playback. The
-//!   tracks go to the master.
+//!   "Synth" is Poly, Track 3 "Loop" is the audio looper's playback, and
+//!   Track 4 "Audio" is the audio tracks on the Song view
+//!   (`audiotracks.rs`). The tracks go to the master.
 //! - Input 1 "Line in" is the line input, as the stereo pair, going to the
 //!   master. It is heard while the looper's Monitor is on (the strip's
 //!   Monitor follows it), and it is off while the line input is closed. The
@@ -42,6 +43,7 @@
 //! of CPU by engine; the state for the screen allocates, a few times a
 //! second while the panel shows, as the other pages' states do.
 
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use mpfree_fx::ids::mixer::output;
@@ -53,6 +55,8 @@ use mpfree_node::{Ctx, Node, NodeEvent, Timed};
 use mpfree_play::mpfree_param::{Owner, ParamAddr};
 use mpfree_sampler::engine::PadOut;
 
+use crate::instruments::{self, Instruments};
+use crate::plugins::Plugins;
 use crate::PERIOD;
 use mpfree_fx::ids::perform as perf;
 
@@ -60,13 +64,16 @@ use mpfree_fx::ids::perform as perf;
 pub const DRUMS: usize = 0;
 pub const SYNTH: usize = 1;
 pub const LOOP: usize = 2;
-pub const TRACKS: usize = 3;
+/// The audio tracks (`audiotracks.rs`), summed after each track's own
+/// level, pan, mute and solo.
+pub const AUDIO: usize = 3;
+pub const TRACKS: usize = 4;
 /// Pad channels: the playing kit's pads.
 pub const PADS: usize = 16;
 /// The line input's strip.
 pub const LINE: StripId = StripId::Input(0);
 /// Insert slots each strip has room for.
-pub const SLOTS: usize = 4;
+pub const SLOTS: usize = 8;
 /// How often the panel gets a new state (meters) while it shows.
 pub const STATE_EVERY: Duration = Duration::from_millis(40);
 /// The Play page's inserts: the DJ filters' slot on the Drums and Loop
@@ -123,8 +130,6 @@ pub enum PlayFx {
     /// The XY pad: where the finger is (0 to 1 each way), and whether it
     /// is down.
     Xy { x: f32, y: f32, down: bool },
-    /// The XY pad's effects' mix, 0 to 1.
-    FxMix(f32),
 }
 
 /// The performance effects a throw holds.
@@ -165,6 +170,8 @@ pub fn name(s: StripId) -> String {
         StripId::Track(DRUMS) => "Drums".into(),
         StripId::Track(SYNTH) => "Synth".into(),
         StripId::Track(LOOP) => "Loop".into(),
+        StripId::Track(AUDIO) => "Audio".into(),
+        StripId::Track(t) if t >= TRACKS => format!("Track {}", t - TRACKS + 1),
         LINE => "Line in".into(),
         s => default_name(s),
     }
@@ -182,6 +189,8 @@ pub struct MixHost {
     overs: u64,
     /// The panel's view while it shows, and the strip selected on it.
     shown: Option<MixView>,
+    /// The view shown last, for the Mix tab.
+    last: MixView,
     selected: Option<StripId>,
     state_at: Option<Instant>,
     /// Pads muted by their speakers or the panel, and by Drop drums.
@@ -193,6 +202,100 @@ pub struct MixHost {
     /// A built effect the mixer had no room for yet (its edits were full),
     /// put in on a later period.
     landing: Option<crate::control::Built>,
+    /// The CLAP plugins found (plugins.rs): the picker's plugin cards and
+    /// what the builder makes `clap:` effects with.
+    plugins: Arc<Plugins>,
+    /// A project's mixer being swapped in ([`MixHost::open`]).
+    opening: Option<Box<Open>>,
+    /// Each track's own instrument (instruments.rs), rendered into its
+    /// mixer track before the mixer runs.
+    pub instruments: Instruments,
+    /// How long the tracks' own instruments took in the last period (0
+    /// when no track has one), for load shedding's cost a voice (shed.rs).
+    pub instrument_time: Duration,
+    /// Instruments made without a builder (the tests), waiting to go in.
+    made: Vec<crate::control::MadeInstrument>,
+    /// Each plugin synth's own presets, once listed (or why not), by its
+    /// node id; and the ones asked for and not back yet.
+    plugin_presets: Vec<(&'static str, Result<Vec<mpfree_plughost::Preset>, String>)>,
+    presets_asked: Vec<&'static str>,
+    /// Preset news made without a builder (the tests).
+    preset_news: Vec<crate::control::PresetNews>,
+    /// The effect picker's favourites and recents (`files/fx/`), and
+    /// whether they changed since they were last saved.
+    pub shelf: mpfree_fx::picker::Shelf,
+    pub shelf_dirty: bool,
+    /// Effects' modes (fxmodes.rs): the values each insert had in the
+    /// engines it left, and the switches across engines on their way.
+    pub modes: crate::fxmodes::Modes,
+    /// Freeze and Print (takes.rs).
+    pub takes: crate::takes::Takes,
+    /// A take's memory made without a builder (the tests).
+    here: crate::takes::Here,
+}
+
+/// The take host's memory: made and dropped on the builder thread, or
+/// here without one (the tests).
+struct TakeMem<'a> {
+    builder: Option<&'a mut crate::control::Builder>,
+    here: &'a mut crate::takes::Here,
+}
+
+impl crate::takes::Memory for TakeMem<'_> {
+    fn ask(&mut self, rate: u32, seconds: f32) -> bool {
+        match self.builder.as_deref_mut() {
+            Some(b) => b.print(rate, seconds),
+            None => self.here.ask(rate, seconds),
+        }
+    }
+    fn made(&mut self) -> Option<mpfree_fx::Print> {
+        match self.builder.as_deref_mut() {
+            Some(b) => b.take_print(),
+            None => self.here.made(),
+        }
+    }
+    fn drop_frozen(&mut self, f: mpfree_fx::Frozen) {
+        if let Some(b) = self.builder.as_deref_mut() {
+            b.drop_frozen_later(f);
+        }
+    }
+    fn drop_print(&mut self, p: mpfree_fx::Print) {
+        if let Some(b) = self.builder.as_deref_mut() {
+            b.drop_print_later(p);
+        }
+    }
+}
+
+/// What [`MixHost::poll_instruments`] put in (or couldn't) for the log.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Landed {
+    /// Track `track` now plays `name`.
+    Playing { track: usize, name: &'static str },
+    /// Instrument `id` couldn't be made for track `track`; it keeps what
+    /// it had.
+    Failed { track: usize, id: &'static str },
+    /// Instrument `name` was made for track `track`, but
+    /// [`instruments::SLOTS`] other tracks already have their own; it keeps
+    /// what it had.
+    Full { track: usize, name: &'static str },
+}
+
+/// A project's mixer going in over a few periods: the old inserts out,
+/// then the new ones in, each as an edit the mixer makes while the strip
+/// has ducked out; then the keys, the strips' controls and the mod engine.
+pub struct Open {
+    load: Box<crate::project::MixLoad>,
+    stage: OpenStage,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum OpenStage {
+    /// Taking every strip's inserts out.
+    Clear,
+    /// Putting the project's in.
+    Fill,
+    /// Waiting for the last edits, then the rest.
+    Finish,
 }
 
 impl MixHost {
@@ -202,7 +305,9 @@ impl MixHost {
         let cfg = MixerConfig {
             inputs: 1,
             pads: PADS,
-            tracks: TRACKS,
+            // The engines' tracks, then one for each sequencer track's own
+            // instrument (unused ones cost a few flag checks).
+            tracks: TRACKS + instruments::TRACKS,
             slots: SLOTS,
             max_latency_ms: 50.0,
         };
@@ -244,13 +349,350 @@ impl MixHost {
             line_open: false,
             overs: 0,
             shown: None,
+            last: MixView::Tracks,
             selected: None,
             state_at: None,
             pad_mutes: 0,
             dropped: 0,
             builder: None,
             landing: None,
+            plugins: Arc::new(Plugins::none()),
+            opening: None,
+            instruments: Instruments::new(rate, PERIOD),
+            instrument_time: Duration::ZERO,
+            made: Vec::new(),
+            plugin_presets: Vec::new(),
+            presets_asked: Vec::new(),
+            preset_news: Vec::new(),
+            shelf: mpfree_fx::picker::Shelf::default(),
+            shelf_dirty: false,
+            modes: crate::fxmodes::Modes::default(),
+            takes: crate::takes::Takes::new(rate),
+            here: crate::takes::Here::default(),
         }
+    }
+
+    /// Asks for a track's own instrument (`job`): made on the builder
+    /// thread and put in by [`MixHost::poll_instruments`]; without a
+    /// builder (the tests), made here. False if the builder is busy.
+    pub fn build_instrument(&mut self, job: crate::control::InstrumentJob) -> bool {
+        let rate = self.mixer.rate();
+        if let Some(b) = self.builder.as_mut() {
+            return b.instrument(Box::new(job), rate, PERIOD);
+        }
+        let made = crate::control::make_instrument(job, &self.plugins, rate, PERIOD);
+        self.made.push(made);
+        true
+    }
+
+    /// Once a period: puts in an instrument the builder made, if one is
+    /// ready (the old one rings out), and drops retired ones off the audio
+    /// thread. Never waits or allocates.
+    pub fn poll_instruments(&mut self) -> Option<Landed> {
+        while let Some(old) = self.instruments.pop_retired() {
+            self.drop_instrument(old);
+        }
+        let m = match self.builder.as_mut() {
+            Some(b) => b.take_instrument()?,
+            None => self.made.pop()?,
+        };
+        let Some((inst, held)) = m.made else {
+            return Some(Landed::Failed {
+                track: m.track,
+                id: m.id,
+            });
+        };
+        match self
+            .instruments
+            .put(m.track, (inst, held), m.pads, &m.tuning)
+        {
+            Ok(()) => Some(Landed::Playing {
+                track: m.track,
+                name: held.name,
+            }),
+            Err((why, back)) => {
+                if let Some(i) = back {
+                    self.drop_instrument(i);
+                }
+                let track = m.track;
+                Some(match why {
+                    instruments::Refused::Full => Landed::Full {
+                        track,
+                        name: held.name,
+                    },
+                    _ => Landed::Failed { track, id: m.id },
+                })
+            }
+        }
+    }
+
+    /// Plugin synth `id`'s own presets, once listed (None until then, or if
+    /// they couldn't be).
+    pub fn plugin_presets(&self, id: &str) -> Option<&[mpfree_plughost::Preset]> {
+        self.plugin_presets
+            .iter()
+            .find(|(i, _)| *i == id)
+            .and_then(|(_, l)| l.as_deref().ok())
+    }
+
+    /// Asks for plugin synth `id`'s presets, once: listed on the builder
+    /// thread (the first time in a process of their own, which can take
+    /// seconds) and kept when [`MixHost::poll_presets`] hands them back.
+    pub fn ask_presets(&mut self, id: &'static str) {
+        if !Plugins::is_plugin(id)
+            || self.presets_asked.contains(&id)
+            || self.plugin_presets.iter().any(|(i, _)| *i == id)
+        {
+            return;
+        }
+        let asked = match self.builder.as_mut() {
+            Some(b) => b.presets(id),
+            None => {
+                let list = self.plugins.presets(id);
+                self.preset_news
+                    .push(crate::control::PresetNews::Listed { id, list });
+                true
+            }
+        };
+        if asked {
+            self.presets_asked.push(id);
+        }
+    }
+
+    /// Asks for preset `index` of track `track`'s plugin synth to be
+    /// loaded (on the builder thread); [`MixHost::poll_presets`] says how
+    /// it went. False if the track has no plugin, its presets aren't
+    /// listed, there's no such preset, or the builder is busy.
+    pub fn load_plugin_preset(&mut self, track: usize, index: usize) -> bool {
+        let Some(held) = self.instruments.held(track) else {
+            return false;
+        };
+        let Some(preset) = self
+            .plugin_presets(held.id)
+            .and_then(|l| l.get(index))
+            .cloned()
+        else {
+            return false;
+        };
+        let job = Box::new(crate::control::PresetJob {
+            track,
+            instance: held.instance,
+            index,
+            preset,
+        });
+        match self.builder.as_mut() {
+            Some(b) => b.load_preset(job),
+            None => {
+                let news = job.run(&self.plugins);
+                self.preset_news.push(news);
+                true
+            }
+        }
+    }
+
+    /// Once a period: presets listed or loaded on the builder thread, if
+    /// any are back (a listed plugin's are kept for
+    /// [`MixHost::plugin_presets`]). Never waits.
+    pub fn poll_presets(&mut self) -> Option<crate::control::PresetNews> {
+        let news = match self.builder.as_mut() {
+            Some(b) => b.take_preset_news(),
+            None => (!self.preset_news.is_empty()).then(|| self.preset_news.remove(0)),
+        }?;
+        if let crate::control::PresetNews::Listed { id, list } = &news {
+            self.presets_asked.retain(|i| i != id);
+            self.plugin_presets.push((id, list.clone()));
+        }
+        Some(news)
+    }
+
+    fn drop_instrument(&mut self, inst: mpfree_track::Instrument) {
+        match self.builder.as_mut() {
+            Some(b) => {
+                b.drop_instrument_later(inst);
+            }
+            None => drop(inst),
+        }
+    }
+
+    /// Starts swapping in a project's mixer (built on the screen thread:
+    /// `project::mixer_load`). [`MixHost::tend_open`] does it, a few edits
+    /// a period; until then the old mixer plays on. A second open replaces
+    /// one under way (its effects are dropped off this thread).
+    pub fn open(&mut self, load: Box<crate::project::MixLoad>) {
+        // Frozen strips are not saved: everything thaws.
+        let mut mem = TakeMem {
+            builder: self.builder.as_mut(),
+            here: &mut self.here,
+        };
+        self.takes.clear(&mut self.mixer, &mut mem);
+        if let Some(mut old) = self.opening.take() {
+            self.drop_load(&mut old.load);
+        }
+        // Its inserts may reuse the old ones' slot ids.
+        self.modes = crate::fxmodes::Modes::default();
+        self.opening = Some(Box::new(Open {
+            load,
+            stage: OpenStage::Clear,
+        }));
+    }
+
+    /// Whether a project's mixer is still going in.
+    pub fn opening(&self) -> bool {
+        self.opening.is_some()
+    }
+
+    /// The effects of a load not used, dropped off the audio thread.
+    fn drop_load(&mut self, load: &mut crate::project::MixLoad) {
+        for (_, chain) in load.chains.drain(..) {
+            for (ins, _) in chain {
+                let _ = self.drop_off_thread(ins);
+            }
+        }
+        // The rest is small (a few vectors): dropped here.
+    }
+
+    /// Once a period while [`MixHost::opening`]: the next edits of the
+    /// swap. Returns a line for the log when it is done. Edits never wait:
+    /// one the mixer has no room for is made on a later period. Allocates
+    /// only at the end, when the mod engine reads its part.
+    pub fn tend_open(&mut self) -> Option<String> {
+        let mut open = self.opening.take()?;
+        if self.mixer.edits_pending() > 0 {
+            self.opening = Some(open);
+            return None;
+        }
+        let strips: [StripId; 32] = std::array::from_fn(|k| self.strip_at(k));
+        match open.stage {
+            OpenStage::Clear => {
+                let mut left = false;
+                for &st in strips.iter().take(self.strip_count()) {
+                    let n = self.mixer.chain(st).map_or(0, |c| c.len());
+                    for _ in 0..n {
+                        if self.mixer.edit(Edit::Remove { strip: st, at: 0 }).is_err() {
+                            left = true;
+                            break;
+                        }
+                    }
+                }
+                if !left {
+                    open.stage = OpenStage::Fill;
+                }
+            }
+            OpenStage::Fill => {
+                let mut left = false;
+                let load = &mut *open.load;
+                for (st, chain) in load.chains.iter_mut() {
+                    while !chain.is_empty() {
+                        let at = self.mixer.chain(*st).map_or(0, |c| c.len());
+                        let (ins, key) = chain.remove(0);
+                        match self.mixer.edit(Edit::Insert {
+                            strip: *st,
+                            at,
+                            insert: ins,
+                        }) {
+                            Ok(()) => {
+                                // Its key once it is in (Finish).
+                                if let Some(k) = key {
+                                    load.keys.push((*st, at, k));
+                                }
+                            }
+                            Err(Edit::Insert { insert, .. }) => {
+                                chain.insert(0, (insert, key));
+                                left = true;
+                                break;
+                            }
+                            Err(_) => {}
+                        }
+                    }
+                    if left {
+                        break;
+                    }
+                }
+                if !left {
+                    open.stage = OpenStage::Finish;
+                }
+            }
+            OpenStage::Finish => {
+                let load = &open.load;
+                for &(st, ref values) in &load.strips {
+                    if self.mixer.chain(st).is_none() && !matches!(st, StripId::Master) {
+                        // A strip this mixer hasn't got.
+                        if self.mixer.strips().all(|s| s != st) {
+                            continue;
+                        }
+                    }
+                    for &(id, v) in values {
+                        self.mixer.set_now(st, id, v);
+                    }
+                }
+                // A track's own channel the project leaves out has nothing
+                // set (`project::untouched_channel`): back to its defaults,
+                // whatever the last project had there.
+                for t in TRACKS..self.mixer.tracks() {
+                    let st = StripId::Track(t);
+                    if load.strips.iter().any(|(s, _)| *s == st) {
+                        continue;
+                    }
+                    for p in mpfree_fx::strip_params() {
+                        if crate::project::saved_control(st, p.id)
+                            && self.mixer.param(st, p.id) != p.default
+                        {
+                            self.mixer.set_now(st, p.id, p.default);
+                        }
+                    }
+                }
+                for &(st, slot, k) in &load.keys {
+                    self.mixer.set_key(st, slot, Some(k));
+                }
+                self.pad_mutes = load.pad_mutes;
+                self.apply_mutes();
+                let effects: usize = self
+                    .mixer
+                    .strips()
+                    .map(|s| self.mixer.chain(s).map_or(0, |c| c.len()))
+                    .sum();
+                let skipped = match &load.modu {
+                    Some(text) => self.modu.load(&self.mixer, text),
+                    None => 0,
+                };
+                let mut line = format!("mixer: the project's mixer is in ({effects} effects)");
+                if skipped > 0 {
+                    line += &format!("; {skipped} mod lines skipped");
+                }
+                return Some(line);
+            }
+        }
+        self.opening = Some(open);
+        None
+    }
+
+    fn strip_count(&self) -> usize {
+        self.mixer.strips().count().min(32)
+    }
+
+    fn strip_at(&self, k: usize) -> StripId {
+        self.mixer.strips().nth(k).unwrap_or(StripId::Master)
+    }
+
+    /// One period of silence through the mixer (tests: edits land).
+    #[cfg(test)]
+    pub fn run_silent_period(&mut self) {
+        let (mut l, mut r) = ([0f32; PERIOD], [0f32; PERIOD]);
+        let ctx = Ctx::new(self.mixer.rate(), 0);
+        self.mixer.process(&ctx, &mut l, &mut r);
+        while let Some(old) = self.mixer.pop_retired() {
+            drop(old);
+        }
+    }
+
+    /// The plugins the chain editor offers and the builder makes. Before
+    /// [`MixHost::build_off_thread`], which hands them to the builder.
+    pub fn set_plugins(&mut self, plugins: Arc<Plugins>) {
+        self.plugins = plugins;
+    }
+
+    pub fn plugins(&self) -> &Arc<Plugins> {
+        &self.plugins
     }
 
     /// From now on effects added in the chain editor are built on the
@@ -258,24 +700,46 @@ impl MixHost {
     /// there (control.rs). Allocates and starts the thread: call it before
     /// the loop.
     pub fn build_off_thread(&mut self) -> std::io::Result<()> {
-        self.builder = Some(crate::control::Builder::start()?);
+        self.builder = Some(crate::control::Builder::start(Arc::clone(&self.plugins))?);
         Ok(())
     }
 
-    /// Adds effect `id` at the end of `strip`'s chain. With a builder it
-    /// is built there and goes in a few periods later
-    /// ([`MixHost::poll_built`]); without one, here. Err: the mixer is busy
-    /// (too many edits or builds under way), or no effect has that id.
+    /// [`MixHost::add_insert_with`] at the effect's defaults (the tests).
+    #[cfg(test)]
     pub fn add_insert(&mut self, strip: StripId, id: &'static str) -> Result<(), &'static str> {
+        self.add_insert_with(strip, id, &[])
+    }
+
+    /// Adds effect `id` at the end of `strip`'s chain, with the values in
+    /// `preset` set before it goes in (a factory preset from the picker;
+    /// empty for its defaults). With a builder it is built there and goes
+    /// in a few periods later ([`MixHost::poll_built`]); without one, here.
+    /// Err: the mixer is busy (too many edits or builds under way), or no
+    /// effect has that id.
+    pub fn add_insert_with(
+        &mut self,
+        strip: StripId,
+        id: &'static str,
+        preset: &'static [(u16, f32)],
+    ) -> Result<(), &'static str> {
         let rate = self.mixer.rate();
         if let Some(b) = self.builder.as_mut() {
-            return if b.build(strip, id, rate, PERIOD) {
+            return if b.build_with(strip, id, preset, rate, PERIOD) {
                 Ok(())
             } else {
                 Err("The mixer is busy")
             };
         }
-        let node = mpfree_fx_ui::make(id).ok_or("No such effect")?;
+        let mut node = if Plugins::is_plugin(id) {
+            self.plugins
+                .make(id)
+                .map_err(|_| "The plugin would not start")?
+        } else {
+            mpfree_fx_ui::make(id).ok_or("No such effect")?
+        };
+        for &(p, v) in preset {
+            node.set_param(p, v);
+        }
         let at = self.mixer.chain(strip).map_or(0, |c| c.len());
         self.mixer
             .edit(Edit::Insert {
@@ -286,15 +750,60 @@ impl MixHost {
             .map_err(|_| "The mixer is busy")
     }
 
+    /// Switches insert `uid` on `strip` to engine `id` across engines (a
+    /// family's mode, `mpfree_fx::families`): built like an added effect,
+    /// set up by `switch`, and swapped in place with the same slot id
+    /// ([`MixHost::poll_built`]). Err: the mixer is busy, or no effect has
+    /// that id.
+    pub fn replace_insert(
+        &mut self,
+        strip: StripId,
+        uid: u16,
+        id: &'static str,
+        switch: mpfree_fx::families::Switch,
+    ) -> Result<(), &'static str> {
+        let rate = self.mixer.rate();
+        if let Some(b) = self.builder.as_mut() {
+            return if b.build_switch(strip, uid, id, switch, rate, PERIOD) {
+                Ok(())
+            } else {
+                Err("The mixer is busy")
+            };
+        }
+        let mut node = mpfree_fx_ui::make(id).ok_or("No such effect")?;
+        switch.apply(node.as_mut());
+        let at = self
+            .mixer
+            .chain(strip)
+            .and_then(|c| c.slot_of(uid))
+            .ok_or("That effect has gone")?;
+        let insert = self.keep_bypass(strip, at, Insert::new(node, rate, PERIOD).with_uid(uid));
+        self.mixer
+            .edit(Edit::Replace { strip, at, insert })
+            .map_err(|_| "The mixer is busy")
+    }
+
+    /// An insert taking the place of slot `at` of `strip`, bypassed if the
+    /// one there is.
+    fn keep_bypass(&self, strip: StripId, at: usize, insert: Insert) -> Insert {
+        match self.mixer.chain(strip) {
+            Some(c) if !c.is_on(at) => insert.off(),
+            _ => insert,
+        }
+    }
+
     /// Effects asked for and not in the mixer's edits yet.
     pub fn inserts_building(&self) -> usize {
         self.builder.as_ref().map_or(0, |b| b.pending()) + usize::from(self.landing.is_some())
     }
 
     /// Once a period: puts the effects the builder made into their chains
-    /// (at the end), and hands the ones edits took out back to be dropped
-    /// off the audio thread. Returns a line for the log when an effect
-    /// could not be made. No allocation; never waits.
+    /// (at the end, or in the place of the insert a switch of mode
+    /// replaces), and hands the ones edits took out back to be dropped
+    /// off the audio thread; then a switch's macros and rows follow it
+    /// (`fxmodes::land`). Returns a line for the log when an effect
+    /// could not be made. No allocation while nothing is edited; never
+    /// waits.
     pub fn poll_built(&mut self) -> Option<&'static str> {
         let mut said = None;
         loop {
@@ -309,23 +818,46 @@ impl MixHost {
                 said = Some("mixer: the chain editor asked for an effect that has no maker");
                 continue;
             };
-            let Some(at) = self.mixer.chain(built.strip).map(|c| c.len()) else {
-                said = Some("mixer: an effect was built for a strip the mixer does not have");
+            // A switch of mode takes its insert's slot, and its slot id;
+            // an added effect goes at the end.
+            let at = self
+                .mixer
+                .chain(built.strip)
+                .and_then(|c| match built.replace {
+                    Some(uid) => c.slot_of(uid),
+                    None => Some(c.len()),
+                });
+            let Some(at) = at else {
+                said = Some(match built.replace {
+                    Some(_) => "mixer: an effect was switched after it was taken out",
+                    None => "mixer: an effect was built for a strip the mixer does not have",
+                });
                 if !self.drop_off_thread(insert) {
                     said = Some(DROPPED_HERE);
                 }
                 continue;
             };
-            if let Err(Edit::Insert { insert, .. }) = self.mixer.edit(Edit::Insert {
-                strip: built.strip,
-                at,
-                insert,
-            }) {
+            let edit = match built.replace {
+                Some(uid) => Edit::Replace {
+                    strip: built.strip,
+                    at,
+                    insert: self.keep_bypass(built.strip, at, insert.with_uid(uid)),
+                },
+                None => Edit::Insert {
+                    strip: built.strip,
+                    at,
+                    insert,
+                },
+            };
+            if let Err(Edit::Insert { insert, .. } | Edit::Replace { insert, .. }) =
+                self.mixer.edit(edit)
+            {
                 // The mixer's edits are full: it goes in on a later period.
                 self.landing = Some(crate::control::Built {
                     strip: built.strip,
                     id: built.id,
                     insert: Some(insert),
+                    replace: built.replace,
                 });
                 break;
             }
@@ -335,6 +867,7 @@ impl MixHost {
                 said = Some(DROPPED_HERE);
             }
         }
+        crate::fxmodes::land(self);
         said
     }
 
@@ -375,14 +908,6 @@ impl MixHost {
                     self.insert(StripId::Master, PERFORM_SLOT, axis.param, axis.value(pos));
                 }
             }
-            PlayFx::FxMix(mix) => {
-                self.insert(
-                    StripId::Master,
-                    PERFORM_SLOT,
-                    perf::MIX,
-                    100.0 * mix.clamp(0.0, 1.0),
-                );
-            }
             PlayFx::PadMute { pad, mute } if pad < PADS => {
                 if mute {
                     self.pad_mutes |= 1 << pad;
@@ -409,6 +934,17 @@ impl MixHost {
         }
         self.mixer
             .queue_insert(strip, slot, Timed::new(0, NodeEvent::Param { id, value }));
+    }
+
+    /// A strip control as the mixer panel set it, for UNDO: a pad's mute
+    /// is its own, not Drop drums' held over it.
+    pub fn value(&self, strip: StripId, id: u16) -> f32 {
+        match strip {
+            StripId::Pad(p) if id == mx::MUTE && p < PADS => {
+                f32::from(u8::from(self.pad_mutes & (1 << p) != 0))
+            }
+            _ => self.mixer.param(strip, id),
+        }
     }
 
     /// Sets a strip control from the start of the next period: through the
@@ -578,20 +1114,34 @@ impl MixHost {
     /// into the input (the pads are in already: [`MixHost::pads`]), the
     /// master out into `left` and `right`. Returns the output's peak and
     /// whether master safety caught anything.
+    // The sounds come in as they are made; a struct of them would only be
+    // taken apart again here.
+    #[allow(clippy::too_many_arguments)]
     pub fn period(
         &mut self,
         ctx: &Ctx,
         synth: Stereo,
         looped: Stereo,
+        audio: Stereo,
         line: Stereo,
         left: &mut [f32; PERIOD],
         right: &mut [f32; PERIOD],
     ) -> (f32, bool) {
-        for (t, (l, r)) in [(SYNTH, synth), (LOOP, looped)] {
+        for (t, (l, r)) in [(SYNTH, synth), (LOOP, looped), (AUDIO, audio)] {
             if let Some((dl, dr)) = self.mixer.track_input(t) {
                 dl[..PERIOD].copy_from_slice(l);
                 dr[..PERIOD].copy_from_slice(r);
             }
+        }
+        // Each track's own instrument into its mixer track, timed while
+        // any track has one.
+        if self.instruments.in_use() != 0 {
+            let t = Instant::now();
+            self.instruments.render(ctx, PERIOD, &mut self.mixer);
+            self.instrument_time = t.elapsed();
+        } else {
+            self.instruments.render(ctx, PERIOD, &mut self.mixer);
+            self.instrument_time = Duration::ZERO;
         }
         if self.line_open {
             let (hl, hr) = self.mixer.hw_input();
@@ -613,7 +1163,16 @@ impl MixHost {
     /// The mixer panel opened on `view`, or closed (`None`).
     pub fn show(&mut self, view: Option<MixView>) {
         self.shown = view;
+        if let Some(v) = view {
+            self.last = v;
+        }
         self.state_at = None;
+    }
+
+    /// The view the panel showed last (Track Mix at first), where the Mix
+    /// tab opens it again.
+    pub fn last(&self) -> MixView {
+        self.last
     }
 
     /// The mixer view the panel shows, if it is open.
@@ -660,10 +1219,15 @@ impl MixHost {
                 self.show(Some(v));
                 None
             }
-            // The insert pages come with the FX pages.
-            MixAction::OpenInsert { .. } | MixAction::AddInsert { .. } => None,
-            // Freeze, Thaw and Print: the strip menu stays shut until the
-            // app sets `MixState::takes` and acts on them here.
+            // The insert pages come with the FX pages; the look is the
+            // screen's.
+            MixAction::OpenInsert { .. }
+            | MixAction::AddInsert { .. }
+            | MixAction::PickInsert { .. }
+            | MixAction::MoveInsert { .. }
+            | MixAction::Unpick
+            | MixAction::Look(_) => None,
+            // Freeze, Thaw and Print need the song: `MixHost::take_action`.
             MixAction::Freeze(_)
             | MixAction::Thaw(_)
             | MixAction::Print(_)
@@ -673,6 +1237,16 @@ impl MixHost {
 
     /// The panel's next state, while it shows and [`STATE_EVERY`] has
     /// passed (at once after a change).
+    /// The tracks' strips as the mixer's Tracks view shows them: the
+    /// engines' tracks, then each track's own instrument's while in use.
+    pub fn track_strips(&self) -> Vec<StripId> {
+        let used = self.instruments.in_use();
+        (0..self.mixer.tracks())
+            .filter(|&t| t < TRACKS || used & (1 << (t - TRACKS)) != 0)
+            .map(StripId::Track)
+            .collect()
+    }
+
     pub fn poll_state(&mut self, now: Instant) -> Option<MixState> {
         let view = self.shown?;
         if self
@@ -682,9 +1256,111 @@ impl MixHost {
             return None;
         }
         self.state_at = Some(now);
-        let mut st = MixState::from_mixer(&mut self.mixer, view, &name);
+        // Tracks' own instruments' channels show only while in use; the
+        // others aren't read.
+        let used = self.instruments.in_use();
+        let shown = |s: StripId| match s {
+            StripId::Track(t) if t >= TRACKS => used & (1 << (t - TRACKS)) != 0,
+            _ => true,
+        };
+        let mut st = MixState::from_mixer_where(&mut self.mixer, view, &name, &shown);
+        st.counts[0] = TRACKS + used.count_ones() as usize;
+        st.tracks = TRACKS;
         st.selected = self.selected;
+        st.takes = true;
+        for v in st.strips.iter_mut().chain(std::iter::once(&mut st.master)) {
+            v.freezable = crate::takes::freezable(v.id);
+            v.take = self.takes.view(v.id).map(|t| mpfree_mixer_ui::TakeView {
+                print: t.print,
+                done: t.done,
+            });
+        }
         Some(st)
+    }
+
+    /// The song as a take sees it: `tracks` in the project, at `bpm`, each
+    /// playing what `now` says.
+    fn song<'a>(
+        instruments: &'a Instruments,
+        tracks: usize,
+        bpm: f64,
+        now: &'a dyn Fn(usize) -> Option<mpfree_play::NowPlaying>,
+        instrument: &'a dyn Fn(usize) -> u64,
+    ) -> crate::takes::Song<'a> {
+        crate::takes::Song {
+            tracks,
+            own: instruments.in_use(),
+            bpm,
+            now,
+            instrument,
+        }
+    }
+
+    /// The strip menu's Freeze, Thaw, Print and Cancel, with the song's
+    /// `tracks` at `bpm` playing what `now` says. Returns the line for
+    /// the screen (None for any other action).
+    pub fn take_action(
+        &mut self,
+        a: &MixAction,
+        tracks: usize,
+        bpm: f64,
+        now: &dyn Fn(usize) -> Option<mpfree_play::NowPlaying>,
+    ) -> Option<String> {
+        let inst = &self.instruments;
+        let instrument = |k: usize| {
+            inst.node(k)
+                .map_or(0, |n| crate::takes::id_number(n.info().id))
+        };
+        let song = Self::song(inst, tracks, bpm, now, &instrument);
+        let mut mem = TakeMem {
+            builder: self.builder.as_mut(),
+            here: &mut self.here,
+        };
+        let (kind, s) = match *a {
+            MixAction::Freeze(s) => (crate::takes::Kind::Freeze, s),
+            MixAction::Print(s) => (crate::takes::Kind::Print, s),
+            MixAction::Thaw(s) => return Some(self.takes.thaw(s, &name(s), &mut self.mixer)),
+            MixAction::CancelTake(s) => return self.takes.cancel(s, &mut self.mixer, &mut mem),
+            _ => return None,
+        };
+        self.state_at = None;
+        Some(
+            self.takes
+                .ask(kind, s, &name(s), &song, &self.mixer, &mut mem),
+        )
+    }
+
+    /// A print the screen couldn't take, dropped off the audio thread.
+    pub fn drop_printed(&mut self, p: Box<mpfree_fx::Printed>) {
+        if let Some(b) = self.builder.as_mut() {
+            b.drop_printed_later(p);
+        }
+    }
+
+    /// Once a period, after [`MixHost::period`] with the same `ctx`: the
+    /// take under way and the frozen strips (takes.rs), with the song's
+    /// `tracks` playing what `now` says.
+    pub fn takes_period(
+        &mut self,
+        ctx: &Ctx,
+        tracks: usize,
+        now: &dyn Fn(usize) -> Option<mpfree_play::NowPlaying>,
+    ) -> Option<crate::takes::Said> {
+        let inst = &self.instruments;
+        let instrument = |k: usize| {
+            inst.node(k)
+                .map_or(0, |n| crate::takes::id_number(n.info().id))
+        };
+        let song = Self::song(inst, tracks, ctx.bpm, now, &instrument);
+        let mut mem = TakeMem {
+            builder: self.builder.as_mut(),
+            here: &mut self.here,
+        };
+        let said = self.takes.period(ctx, &song, &mut self.mixer, &mut mem);
+        if said.is_some() {
+            self.state_at = None;
+        }
+        said
     }
 }
 
@@ -753,7 +1429,7 @@ mod tests {
                 pr[..PERIOD].iter_mut().zip(&d).for_each(|(o, x)| *o += x);
             }
             let ctx = Ctx::new(RATE, (p * PERIOD) as u64);
-            let (pk, c) = h.period(&ctx, (&z, &z), (&z, &z), (&i, &i), &mut l, &mut r);
+            let (pk, c) = h.period(&ctx, (&z, &z), (&z, &z), (&z, &z), (&i, &i), &mut l, &mut r);
             // The loudest of the last half: after the glides.
             if p >= periods / 2 {
                 peak = peak.max(pk);
@@ -761,6 +1437,21 @@ mod tests {
             caught |= c;
         }
         (peak, caught)
+    }
+
+    /// UNDO on the mixer sets a pad's mute back to the pad's own, not to
+    /// Drop drums' held over it.
+    #[test]
+    fn a_pads_mute_reads_as_its_own_under_drop_drums() {
+        let mut h = MixHost::new(RATE, -6.0, -6.0);
+        h.play(PlayFx::PadMute { pad: 2, mute: true });
+        h.play(PlayFx::Drop(0b11));
+        assert_eq!(h.value(StripId::Pad(2), mx::MUTE), 1.0);
+        assert_eq!(
+            h.value(StripId::Pad(0), mx::MUTE),
+            0.0,
+            "dropped, not muted"
+        );
     }
 
     #[test]
@@ -801,7 +1492,7 @@ mod tests {
             }
             let ctx = Ctx::new(RATE, at as u64);
             let (mut l, mut r) = ([0f32; PERIOD], [0f32; PERIOD]);
-            h.period(&ctx, (&z, &z), (&z, &z), (&z, &z), &mut l, &mut r);
+            h.period(&ctx, (&z, &z), (&z, &z), (&z, &z), (&z, &z), &mut l, &mut r);
             at += PERIOD;
             let peak = |x: &[f32]| x.iter().fold(0f32, |m, v| m.max(v.abs()));
             let cap = h.rec_capture().map(|(cl, cr, lat)| {
@@ -871,7 +1562,7 @@ mod tests {
                 .iter()
                 .map(|s| s.name.as_str())
                 .collect::<Vec<_>>(),
-            ["Drums", "Synth", "Loop"]
+            ["Drums", "Synth", "Loop", "Audio"]
         );
         assert!(st.strips[0].peak[0] > 0.1);
         assert_eq!(st.master.volume_db, -6.0);
@@ -987,7 +1678,6 @@ mod tests {
             y: 1.0,
             down: true,
         });
-        h.play(PlayFx::FxMix(0.5));
         run(&mut h, 2, 0.0, 0.0);
         assert_eq!(
             perform(&h, perf::hold(9)),
@@ -996,7 +1686,6 @@ mod tests {
         );
         assert_eq!(perform(&h, perf::DJ_FILTER), Some(-100.0), "low-pass");
         assert_eq!(perform(&h, perf::ECHO), Some(100.0));
-        assert_eq!(h.play_levels().fx_mix, 0.5);
         h.play(PlayFx::Throw {
             fx: ThrowFx::Delay,
             down: false,
@@ -1023,6 +1712,33 @@ mod tests {
         pads.sort_unstable();
         pads.dedup();
         assert_eq!(pads.len(), all.len());
+    }
+
+    /// Jay after live test 3: several throws at once, a finger on each.
+    #[test]
+    fn two_throws_held_at_once_each_hold_their_pad() {
+        let mut h = MixHost::new(RATE, 0.0, 0.0);
+        let held = |h: &MixHost, fx: ThrowFx| {
+            h.mixer
+                .chain(StripId::Master)
+                .and_then(|c| c.node(PERFORM_SLOT))
+                .map(|n| n.param(perf::hold(fx.pad())))
+        };
+        run(&mut h, 10, 0.0, 0.0);
+        for fx in [ThrowFx::Delay, ThrowFx::Reverb] {
+            h.play(PlayFx::Throw { fx, down: true });
+        }
+        run(&mut h, 2, 0.0, 0.0);
+        assert_eq!(held(&h, ThrowFx::Delay), Some(1.0));
+        assert_eq!(held(&h, ThrowFx::Reverb), Some(1.0));
+        // The first finger lifts: the other throw keeps playing.
+        h.play(PlayFx::Throw {
+            fx: ThrowFx::Delay,
+            down: false,
+        });
+        run(&mut h, 2, 0.0, 0.0);
+        assert_eq!(held(&h, ThrowFx::Delay), Some(0.0));
+        assert_eq!(held(&h, ThrowFx::Reverb), Some(1.0));
     }
 
     /// Runs periods (polling as the app does) until track 2's chain has
@@ -1061,6 +1777,33 @@ mod tests {
         // after 32 removes. poll_built takes them back every period.
         let mut h = MixHost::new(RATE, 0.0, 0.0);
         add_and_remove(&mut h, 40);
+    }
+
+    #[test]
+    fn a_plugins_presets_are_asked_for_once_and_why_not_comes_back() {
+        use crate::control::PresetNews;
+        let mut h = MixHost::new(RATE, 0.0, 0.0);
+        // An engine has its presets built in: nothing is asked.
+        h.ask_presets("mpfree.poly");
+        assert!(h.poll_presets().is_none());
+        // A plugin not in the folder: asked once, and why not comes back.
+        h.ask_presets("clap:org.nope");
+        h.ask_presets("clap:org.nope");
+        match h.poll_presets() {
+            Some(PresetNews::Listed { id, list: Err(e) }) => {
+                assert_eq!(id, "clap:org.nope");
+                assert!(!e.is_empty());
+            }
+            _ => panic!("expected the listing's error"),
+        }
+        assert!(h.poll_presets().is_none(), "asked once");
+        assert!(h.plugin_presets("clap:org.nope").is_none());
+        // Kept: not asked again.
+        h.ask_presets("clap:org.nope");
+        assert!(h.poll_presets().is_none());
+        // A track without a plugin loads none.
+        assert!(!h.load_plugin_preset(0, 0));
+        assert!(h.poll_presets().is_none());
     }
 
     #[test]

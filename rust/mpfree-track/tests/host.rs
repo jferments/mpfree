@@ -21,12 +21,15 @@ fn fm() -> Instrument {
 /// Each track into its own pair, to see where the sound went.
 struct Split {
     tracks: Vec<(Vec<f32>, Vec<f32>)>,
+    /// Tracks that want nothing (frozen), a bit each.
+    resting: u32,
 }
 
 impl Split {
     fn new(tracks: usize, block: usize) -> Split {
         Split {
             tracks: vec![(vec![0.0; block], vec![0.0; block]); tracks],
+            resting: 0,
         }
     }
     fn clear(&mut self) {
@@ -46,6 +49,10 @@ impl Outputs for Split {
         self.tracks
             .get_mut(track)
             .map(|(l, r)| (l.as_mut_slice(), r.as_mut_slice()))
+    }
+
+    fn wants(&self, track: usize) -> bool {
+        self.resting & (1 << track) == 0
     }
 }
 
@@ -153,6 +160,50 @@ fn a_note_two_sources_hold_ends_with_the_last_of_them() {
     });
     let p = run(&mut host, &mut out, &mut frame, 600, 128);
     assert_eq!(p[599][0], 0.0);
+}
+
+#[test]
+fn a_frozen_track_rests_its_instrument_and_wakes_with_its_notes_ended() {
+    let mut host = TrackHost::new(2, RATE, 1024);
+    host.swap(0, Some(poly())).unwrap();
+    host.swap(1, Some(poly())).unwrap();
+    let mut out = Split::new(2, 128);
+    let mut frame = 0;
+    // E3 held on track 0 (no note-off yet), C4 on track 1.
+    host.note_on(0, 0, 52, 100);
+    host.note_on(1, 0, 60, 100);
+    let p = run(&mut host, &mut out, &mut frame, 10, 128);
+    assert!(p[9][0] > 0.01 && p[9][1] > 0.01);
+    // Track 0 frozen: its instrument rests and adds nothing, and a note
+    // sent to it meanwhile is dropped; track 1 plays on.
+    out.resting = 1;
+    host.note_on(0, 0, 55, 100);
+    let p = run(&mut host, &mut out, &mut frame, 5, 128);
+    assert!(p.iter().all(|b| b[0] == 0.0));
+    assert!(p[4][1] > 0.01);
+    assert_eq!(host.stats(0).rested, 5);
+    assert_eq!(host.stats(1).rested, 0);
+    // Thawed: E3, held when it went to rest, ends (its release, then
+    // silence), and its late note-off holds nothing.
+    out.resting = 0;
+    let p = run(&mut host, &mut out, &mut frame, 600, 128);
+    assert!(p[0][0] > 0.0, "it plays again");
+    assert_eq!(p[599][0], 0.0, "E3 ended");
+    host.note_off(0, 0, 52);
+    assert_eq!(host.stats(0).stray_offs, 1);
+    // An old instrument ringing out when its track freezes is retired at
+    // once rather than wait to fall quiet.
+    host.note_on(0, 0, 48, 120);
+    run(&mut host, &mut out, &mut frame, 5, 128);
+    host.swap(0, Some(fm())).unwrap();
+    assert!(host.ringing(0));
+    out.resting = 1;
+    run(&mut host, &mut out, &mut frame, 1, 128);
+    assert!(!host.ringing(0));
+    assert_eq!(
+        host.pop_retired().map(|i| i.node().info().id),
+        Some("mpfree.poly")
+    );
 }
 
 #[test]
@@ -521,4 +572,30 @@ fn a_slots_tuning_reaches_its_instrument_and_the_next_one_swapped_in() {
     // A quarter-tone C5 is an eighth of an octave lower, about 8 % fewer.
     assert!(b.abs_diff(q) > 25, "the two tunings differ: {b} vs {q}");
     assert!(a.abs_diff(b) <= 5, "retuned to C5: {a} vs {b} crossings");
+}
+
+#[test]
+fn the_quietest_voice_across_the_slots_is_given_up_first() {
+    let mut host = TrackHost::new(3, RATE, 1024);
+    let mut quiet = Poly::new(RATE);
+    quiet.set_param(mpfree_synth::params::VEL_AMP, 100.0);
+    host.swap(0, Some(poly())).unwrap();
+    host.swap(1, Some(Instrument::new(Box::new(quiet), RATE, 1024)))
+        .unwrap();
+    let mut out = Split::new(3, 128);
+    let mut frame = 0;
+    host.note_on(0, 0, 60, 100);
+    host.note_on(1, 0, 64, 20);
+    run(&mut host, &mut out, &mut frame, 20, 128);
+    assert_eq!(host.voices(), 2);
+    let (slot, c) = host.cull_candidate().unwrap();
+    assert_eq!(slot, 1, "{c:?}");
+    assert!(host.cull(1));
+    let p = run(&mut host, &mut out, &mut frame, 20, 128);
+    assert_eq!(host.voices(), 1);
+    assert_eq!(p[19][1], 0.0, "the quiet track is silent");
+    assert!(p[19][0] > 0.01, "the loud one plays on");
+    // An empty slot has nothing to give up.
+    assert!(!host.cull(2));
+    assert_eq!(host.cull_candidate().map(|(s, _)| s), Some(0));
 }

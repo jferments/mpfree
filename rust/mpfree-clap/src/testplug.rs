@@ -6,6 +6,13 @@
 //! They keep the CLAP rules a host relies on: no allocation in `process`,
 //! events on their exact frame, parameters readable from the main thread
 //! while the audio thread runs (values are atomics), state as plain bytes.
+//!
+//! The synth has presets: three built in ([`BUILT_IN_PRESETS`]), and files
+//! ending `.mptp` (its state bytes) in the folder named by the environment
+//! variable [`PRESETS_ENV`], or else in [`HOME_PRESETS`] in its home
+//! folder when that is there (as a real plugin keeps its user presets). A
+//! preset discovery provider lists them and the synth's preset-load
+//! extension loads them.
 
 use crate::sys::*;
 use std::ffi::{c_char, c_void, CStr};
@@ -25,6 +32,18 @@ pub static LIVE_INITS: AtomicU32 = AtomicU32::new(0);
 
 pub const SYNTH_ID: &str = "org.mpfree.test-synth";
 pub const GAIN_ID: &str = "org.mpfree.test-gain";
+
+/// The folder of the synth's preset files, when set.
+pub const PRESETS_ENV: &str = "MPFREE_TESTPLUG_PRESETS";
+/// Without [`PRESETS_ENV`], this folder in `$HOME`, when it is there.
+pub const HOME_PRESETS: &str = "mpfree-testplug-presets";
+/// The synth's built-in presets: load key, name, category, and the gain,
+/// decay and wave they set.
+pub const BUILT_IN_PRESETS: [(&str, &str, &str, f64, f64, f64); 3] = [
+    ("soft", "Soft Sine", "Keys", -12.0, 800.0, 0.0),
+    ("bright", "Bright Saw", "Leads", -6.0, 300.0, 1.0),
+    ("short", "Short Square", "Plucks", -9.0, 60.0, 2.0),
+];
 
 /// Test synth parameter ids (deliberately not 0, 1, 2).
 pub mod synth_params {
@@ -107,8 +126,14 @@ static GAIN_DESC: SyncPtr<clap_plugin_descriptor> = SyncPtr(clap_plugin_descript
 });
 
 unsafe extern "C" fn entry_get_factory(id: *const c_char) -> *const c_void {
-    if !id.is_null() && CStr::from_ptr(id).to_bytes_with_nul() == CLAP_PLUGIN_FACTORY_ID {
+    if id.is_null() {
+        return ptr::null();
+    }
+    let id = CStr::from_ptr(id).to_bytes_with_nul();
+    if id == CLAP_PLUGIN_FACTORY_ID {
         &FACTORY as *const clap_plugin_factory as *const c_void
+    } else if id == CLAP_PRESET_DISCOVERY_FACTORY_ID {
+        &PRESET_FACTORY as *const clap_preset_discovery_factory as *const c_void
     } else {
         ptr::null()
     }
@@ -383,12 +408,14 @@ unsafe extern "C" fn p_on_main_thread(p: *const clap_plugin) {
     plug(p).main_calls.fetch_add(1, Ordering::Relaxed);
 }
 
-unsafe extern "C" fn p_get_extension(_p: *const clap_plugin, id: *const c_char) -> *const c_void {
+unsafe extern "C" fn p_get_extension(p: *const clap_plugin, id: *const c_char) -> *const c_void {
     if id.is_null() {
         return ptr::null();
     }
     let id = CStr::from_ptr(id).to_bytes_with_nul();
-    if id == CLAP_EXT_PARAMS {
+    if id == CLAP_EXT_PRESET_LOAD && plug(p).which == Which::Synth {
+        &PRESET_LOAD as *const clap_plugin_preset_load as *const c_void
+    } else if id == CLAP_EXT_PARAMS {
         &PARAMS as *const clap_plugin_params as *const c_void
     } else if id == CLAP_EXT_AUDIO_PORTS {
         &AUDIO_PORTS as *const clap_plugin_audio_ports as *const c_void
@@ -963,4 +990,282 @@ unsafe extern "C" fn latency_get(_p: *const clap_plugin) -> u32 {
 /// `p` must be a live plugin created by this module's factory.
 pub unsafe fn main_thread_calls(p: *const clap_plugin) -> u32 {
     plug(p).main_calls.load(Ordering::Relaxed)
+}
+
+// ------------------------------------------------------------------ presets
+
+static PRESET_FACTORY: clap_preset_discovery_factory = clap_preset_discovery_factory {
+    count: Some(pf_count),
+    get_descriptor: Some(pf_descriptor),
+    create: Some(pf_create),
+};
+
+pub const PRESET_PROVIDER_ID: &str = "org.mpfree.test-presets";
+
+static PROVIDER_DESC: SyncPtr<clap_preset_discovery_provider_descriptor> =
+    SyncPtr(clap_preset_discovery_provider_descriptor {
+        clap_version: CLAP_VERSION,
+        id: c"org.mpfree.test-presets".as_ptr(),
+        name: c"Test synth presets".as_ptr(),
+        vendor: c"MPFree".as_ptr(),
+    });
+
+unsafe extern "C" fn pf_count(_f: *const clap_preset_discovery_factory) -> u32 {
+    1
+}
+
+unsafe extern "C" fn pf_descriptor(
+    _f: *const clap_preset_discovery_factory,
+    index: u32,
+) -> *const clap_preset_discovery_provider_descriptor {
+    if index == 0 {
+        &PROVIDER_DESC.0
+    } else {
+        ptr::null()
+    }
+}
+
+#[repr(C)]
+struct Provider {
+    clap: clap_preset_discovery_provider,
+    indexer: *const clap_preset_discovery_indexer,
+}
+
+unsafe extern "C" fn pf_create(
+    _f: *const clap_preset_discovery_factory,
+    indexer: *const clap_preset_discovery_indexer,
+    id: *const c_char,
+) -> *const clap_preset_discovery_provider {
+    if id.is_null() || indexer.is_null() || CStr::from_ptr(id).to_str() != Ok(PRESET_PROVIDER_ID) {
+        return ptr::null();
+    }
+    let p = Box::into_raw(Box::new(Provider {
+        clap: clap_preset_discovery_provider {
+            desc: &PROVIDER_DESC.0,
+            provider_data: ptr::null_mut(),
+            init: Some(pv_init),
+            destroy: Some(pv_destroy),
+            get_metadata: Some(pv_metadata),
+            get_extension: Some(pv_extension),
+        },
+        indexer,
+    }));
+    (*p).clap.provider_data = p as *mut c_void;
+    &(*p).clap
+}
+
+unsafe fn provider<'a>(p: *const clap_preset_discovery_provider) -> &'a Provider {
+    &*((*p).provider_data as *const Provider)
+}
+
+unsafe extern "C" fn pv_init(p: *const clap_preset_discovery_provider) -> bool {
+    let ix = provider(p).indexer;
+    let (Some(filetype), Some(location)) = ((*ix).declare_filetype, (*ix).declare_location) else {
+        return false;
+    };
+    let t = clap_preset_discovery_filetype {
+        name: c"Test synth preset".as_ptr(),
+        description: ptr::null(),
+        file_extension: c"mptp".as_ptr(),
+    };
+    let built_in = clap_preset_discovery_location {
+        flags: CLAP_PRESET_DISCOVERY_IS_FACTORY_CONTENT,
+        name: c"Built in".as_ptr(),
+        kind: CLAP_PRESET_DISCOVERY_LOCATION_PLUGIN,
+        location: ptr::null(),
+    };
+    if !filetype(ix, &t) || !location(ix, &built_in) {
+        return false;
+    }
+    let home = std::env::var_os("HOME")
+        .map(|h| std::path::PathBuf::from(h).join(HOME_PRESETS))
+        .filter(|d| d.is_dir())
+        .map(|d| d.into_os_string());
+    if let Some(dir) = std::env::var_os(PRESETS_ENV)
+        .filter(|d| !d.is_empty())
+        .or(home)
+    {
+        let Ok(dir) = std::ffi::CString::new(dir.as_encoded_bytes()) else {
+            return false;
+        };
+        let files = clap_preset_discovery_location {
+            flags: CLAP_PRESET_DISCOVERY_IS_USER_CONTENT,
+            name: c"Your presets".as_ptr(),
+            kind: CLAP_PRESET_DISCOVERY_LOCATION_FILE,
+            location: dir.as_ptr(),
+        };
+        if !location(ix, &files) {
+            return false;
+        }
+    }
+    true
+}
+
+unsafe extern "C" fn pv_destroy(p: *const clap_preset_discovery_provider) {
+    drop(Box::from_raw((*p).provider_data as *mut Provider));
+}
+
+unsafe extern "C" fn pv_extension(
+    _p: *const clap_preset_discovery_provider,
+    _id: *const c_char,
+) -> *const c_void {
+    ptr::null()
+}
+
+/// A preset file's parameter values, if it is one (the state format).
+fn read_preset_file(path: &CStr) -> Option<Vec<f64>> {
+    use std::os::unix::ffi::OsStrExt;
+    let path = std::path::Path::new(std::ffi::OsStr::from_bytes(path.to_bytes()));
+    let bytes = std::fs::read(path).ok()?;
+    let n = SYNTH_PARAMS.len();
+    if bytes.len() != 4 + 8 * n || &bytes[..4] != MAGIC {
+        return None;
+    }
+    Some(
+        bytes[4..]
+            .chunks_exact(8)
+            .map(|c| f64::from_bits(u64::from_le_bytes(c.try_into().unwrap_or([0; 8]))))
+            .collect(),
+    )
+}
+
+/// The bytes of a preset file setting the synth's gain, decay and wave
+/// (the rest at their defaults), for tests.
+pub fn preset_file(gain: f64, decay: f64, wave: f64) -> Vec<u8> {
+    let mut b = MAGIC.to_vec();
+    for p in &SYNTH_PARAMS {
+        let v = match p.0 {
+            synth_params::GAIN => gain,
+            synth_params::DECAY => decay,
+            synth_params::WAVE => wave,
+            _ => p.3,
+        };
+        b.extend_from_slice(&v.to_bits().to_le_bytes());
+    }
+    b
+}
+
+unsafe extern "C" fn pv_metadata(
+    _p: *const clap_preset_discovery_provider,
+    kind: u32,
+    location: *const c_char,
+    r: *const clap_preset_discovery_metadata_receiver,
+) -> bool {
+    let rc = &*r;
+    let (Some(begin), Some(add_id)) = (rc.begin_preset, rc.add_plugin_id) else {
+        return false;
+    };
+    let synth = clap_universal_plugin_id {
+        abi: c"clap".as_ptr(),
+        id: c"org.mpfree.test-synth".as_ptr(),
+    };
+    match kind {
+        CLAP_PRESET_DISCOVERY_LOCATION_PLUGIN => {
+            for (key, name, category, ..) in BUILT_IN_PRESETS {
+                let (Ok(key), Ok(name), Ok(category)) = (
+                    std::ffi::CString::new(key),
+                    std::ffi::CString::new(name),
+                    std::ffi::CString::new(category),
+                ) else {
+                    return false;
+                };
+                if !begin(r, name.as_ptr(), key.as_ptr()) {
+                    return true;
+                }
+                add_id(r, &synth);
+                if let Some(f) = rc.add_creator {
+                    f(r, c"MPFree".as_ptr());
+                }
+                if let Some(f) = rc.add_extra_info {
+                    f(r, c"category".as_ptr(), category.as_ptr());
+                }
+            }
+            true
+        }
+        CLAP_PRESET_DISCOVERY_LOCATION_FILE if !location.is_null() => {
+            if read_preset_file(CStr::from_ptr(location)).is_none() {
+                if let Some(f) = rc.on_error {
+                    f(r, 0, c"not a test synth preset".as_ptr());
+                }
+                return false;
+            }
+            // A file holds one preset: no name (the host uses the file's)
+            // and no load key.
+            if begin(r, ptr::null(), ptr::null()) {
+                add_id(r, &synth);
+            }
+            true
+        }
+        _ => false,
+    }
+}
+
+static PRESET_LOAD: clap_plugin_preset_load = clap_plugin_preset_load {
+    from_location: Some(preset_from_location),
+};
+
+unsafe extern "C" fn preset_from_location(
+    p: *const clap_plugin,
+    kind: u32,
+    location: *const c_char,
+    load_key: *const c_char,
+) -> bool {
+    let me = plug(p);
+    let values: Option<Vec<(u32, f64)>> = match kind {
+        CLAP_PRESET_DISCOVERY_LOCATION_PLUGIN if !load_key.is_null() => {
+            let key = CStr::from_ptr(load_key).to_str().unwrap_or("");
+            BUILT_IN_PRESETS.iter().find(|b| b.0 == key).map(|b| {
+                vec![
+                    (synth_params::GAIN, b.3),
+                    (synth_params::DECAY, b.4),
+                    (synth_params::WAVE, b.5),
+                ]
+            })
+        }
+        CLAP_PRESET_DISCOVERY_LOCATION_FILE if !location.is_null() => {
+            read_preset_file(CStr::from_ptr(location)).map(|v| {
+                SYNTH_PARAMS
+                    .iter()
+                    .zip(v)
+                    .filter(|(d, _)| d.6 & CLAP_PARAM_IS_READONLY == 0)
+                    .map(|(d, v)| (d.0, v))
+                    .collect()
+            })
+        }
+        _ => None,
+    };
+    let host = me.host;
+    let get = (*host).get_extension;
+    let ext = |id: &[u8]| get.map_or(ptr::null(), |g| g(host, id.as_ptr() as *const c_char));
+    let pl = ext(CLAP_EXT_PRESET_LOAD) as *const clap_host_preset_load;
+    let Some(values) = values else {
+        if !pl.is_null() {
+            if let Some(f) = (*pl).on_error {
+                f(
+                    host,
+                    kind,
+                    location,
+                    load_key,
+                    0,
+                    c"no such preset".as_ptr(),
+                );
+            }
+        }
+        return false;
+    };
+    for (id, v) in values {
+        me.set(id, v);
+    }
+    if !pl.is_null() {
+        if let Some(f) = (*pl).loaded {
+            f(host, kind, location, load_key);
+        }
+    }
+    let params = ext(CLAP_EXT_PARAMS) as *const clap_host_params;
+    if !params.is_null() {
+        if let Some(f) = (*params).rescan {
+            f(host, CLAP_PARAM_RESCAN_VALUES);
+        }
+    }
+    true
 }

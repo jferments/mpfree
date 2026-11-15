@@ -2,7 +2,7 @@
 
 This is a proposal, not a promise of parity or a timeline.
 
-**Status (2026-11-11):** the milestone list below was last brought up to date at M12 (2026-11-10). Since then the pad player app has run on the MPC from the test stick through round 7 (touch GUI, pads, ALSA audio out, line input, looper, sampler, synths); the [README](../../../README.md#status) has the current summary and each [design page](../README.md#design) has its own status. The gates below (recovery tiers, no eMMC writes) still apply.
+**Status (2026-11-14):** the milestone list below was last brought up to date at M17. Since then the pad player app has run on the MPC from the test stick through round 7 (touch GUI, pads, ALSA audio out, line input, looper, sampler, synths) and parts of live test 3 (2026-11-13), and much more is built and tested on the workstation: projects, audio tracks, per-track instruments, CLAP plugins and MIDI among them. The [README](../../../README.md#status) has the current summary, the phases below note what is built against each item, and each [design page](../README.md#design) has its own status. No item is checked until it has passed on the MPC. The gates below (recovery tiers, no eMMC writes) still apply.
 
 ## Incremental host-only progress (not Phase 1/2 MPC acceptance)
 
@@ -73,8 +73,8 @@ These engineering milestones deliberately do **not** mark the Phase 1 or Phase 2
 - [ ] Sample loading and pad mapping.
 - [ ] Velocity response and choke groups.
 - [ ] Transport and tempo. (The transport, `mpfree-transport` (#46), runs in the app and ran on the MPC in round 7; TAP TEMPO, swing and following another device's MIDI clock (#239) are built. Tempo ramps are next. See [Transport](../design/transport.md).)
-- [ ] MIDI input/output and sync. (Built, 2026-11-12: keyboards in, MIDI tracks and clock out, following another device's clock, MIDI Learn from the chain editor, and CV 1 to 4 out. MIDI out and CV out stay behind `--midi-out` and `--cv-out`. Each part waits on its device round with the owner's go. The settings are in the mixer's I/O view; saving them with the project waits on the project's `midi` part. See [MIDI I/O](../design/midi-io.md#whats-left).)
-- [ ] Project save/load, undo, and crash recovery.
+- [ ] MIDI input/output and sync. (Built, 2026-11-12: keyboards in, MIDI tracks and clock out, following another device's clock, MIDI Learn from the chain editor, and CV 1 to 4 out. MIDI out and CV out stay behind `--midi-out` and `--cv-out`. Each part waits on its device round with the owner's go. The settings are in the mixer's I/O view and are saved with the project (#277, #292). See [MIDI I/O](../design/midi-io.md#whats-left).)
+- [ ] Project save/load, undo, and crash recovery. (Built on the workstation, 2026-11-13: New, Save, Save as and Open from the browser, every engine's part, the samples and audio takes in the project folder, the last ten saves kept, and a save cut off finished or undone at the next open (#282, #302, #303). Undo is per page (clip takes, loop layers, sample edits). Not yet tried on the MPC. See [the browser and projects](../design/browser.md).)
 
 **Gate:** Record, save, reload, and perform a basic beat without a computer.
 
@@ -88,11 +88,11 @@ These engineering milestones deliberately do **not** mark the Phase 1 or Phase 2
 **Gate:** Produce a multi-section composition that would be awkward in a conventional MPC workflow.
 
 ## Phase 4 — Production workstation
-- [ ] Audio tracks, overdubbing, resampling, and slicing.
+- [ ] Audio tracks, overdubbing, resampling, and slicing. (Built on the workstation: audio tracks with take lanes (#281, #289, #299, #303), the looper's overdub and resample, the sampler's Rec page with resampling and its Chop page. See [Audio tracks](../design/audio-tracks.md).)
 - [ ] Flexible buses, sends, effects chains, sidechain routing.
-- [ ] Instrument/effect plugin architecture.
-- [ ] Browser with tags, auditioning, and content provenance.
-- [ ] Export stems, MIDI, and project archive.
+- [ ] Instrument/effect plugin architecture. (Built on the workstation: the node interface, per-track instruments (#298) and the CLAP host with each plugin in its own sandboxed process, as instruments and mixer inserts (#279). See [Plugins](../design/plugins.md).)
+- [ ] Browser with tags, auditioning, and content provenance. (Partly built: the browser with Recent, Favourites, Audition and projects (#282); tags and provenance are not. See [the browser and projects](../design/browser.md).)
+- [ ] Export stems, MIDI, and project archive. (Built on the workstation, 2026-11-14: the mixdown, stems and a MIDI file from one pass over the song (#335, #337). A project archive is not built. See [Export](../design/export.md).)
 
 ## Phase 5 — Compatibility and distribution
 - [ ] Optional local import of supported user-owned content.
@@ -116,5 +116,5 @@ Prioritize low menu depth, immediate physical control, reliable audio, reversibl
 - Engine language: **DECIDED — Rust-first**, retaining C/C++ compatibility adapters for established instruments, DSP and plugin hosting; see [ADR-0001](../decisions/adr-0001-rust-first.md). Hardware real-time performance remains unqualified.
 - UI: **DECIDED (owner, 2026-11-09)**: SDL3 and a custom Rust retained-mode UI on OpenGL ES 3. The custom UI is [`mpfree-ui`](../../../rust/mpfree-ui), drawing in software to the framebuffer until a GLES canvas is qualified; see [UI architecture](../design/ui-architecture.md).
 - Audio: **DECIDED — direct ALSA on the device**, with JACK/PipeWire/CPAL as desktop backends behind an `AudioDevice` trait; see [ADR-0002](../decisions/adr-0002-direct-alsa-audio.md). On-device xrun and latency qualification still pending.
-- Licensing: GPL-3.0-or-later, MPL-2.0, or other approved FOSS license.
-- Plugin API: LV2, CLAP, custom internal graph, or combination; hardware and licensing constraints apply.
+- Licensing: **DECIDED (2026-11-09)**: MIT ([LICENSE](../../../LICENSE)).
+- Plugin API: CLAP is built, hosted out of process, with MPFree's own node interface inside ([Plugins](../design/plugins.md)). LV2 has not been looked at.

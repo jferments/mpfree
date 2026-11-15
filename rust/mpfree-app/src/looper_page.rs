@@ -332,8 +332,18 @@ impl Widget for LoopStrip {
                 &name,
             );
             let muted = self.muted.get(li).copied().unwrap_or(false);
+            // The name and its speaker are one mute button: outlined, and
+            // answering from the card's top edge to below the heading
+            // (Jay after live test 3: bigger mutes).
+            let button = Rect::new(lx - 6, head.y - 5, sx + 14 - (lx - 6), head.h + 10);
+            cx.canvas.stroke_round_rect(button, 8, 1, t.outline);
             draw::speaker(cx, sx, cy, t.text_dim, muted);
-            speakers.push(draw::speaker_hit(sx, cy));
+            speakers.push(Rect::new(
+                button.x,
+                r.y,
+                button.w,
+                button.bottom() + 12 - r.y,
+            ));
             lx = sx + 12 + 18;
         }
         *self.speakers.borrow_mut() = speakers;
@@ -393,6 +403,27 @@ impl Widget for LoopStrip {
             new_x - old_x + 8,
             panel.h,
         )])
+    }
+
+    fn targets(&self, r: Rect) -> Vec<mpfree_ui::Target> {
+        use mpfree_ui::Target;
+        let mut out: Vec<Target> = self
+            .speakers
+            .borrow()
+            .iter()
+            .enumerate()
+            .map(|(k, h)| {
+                let name = self.names.get(k).cloned().unwrap_or_default();
+                Target::tap("layer-mute", k, format!("{name} speaker"), *h)
+            })
+            .collect();
+        if let Some(row) = LoopStrip::parts(r).1 {
+            for (i, b) in self.button_rects(row).into_iter().enumerate() {
+                let label = self.buttons.get(i).map_or(String::new(), |b| b.0.clone());
+                out.push(Target::tap("button", i, label, b));
+            }
+        }
+        out
     }
 
     fn touch(&mut self, _f: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
@@ -587,6 +618,33 @@ pub fn tool_command(i: usize, s: &Status, rate: u32) -> Option<Command> {
     })
 }
 
+/// Why the editor's tool `i` can't be used now, for the screen to say in
+/// place when its faint button is tapped.
+pub fn why_no_tool(i: usize, s: &Status) -> &'static str {
+    match s.phase {
+        Phase::Empty => "Record a loop first: the tools edit the loop that plays",
+        Phase::Armed | Phase::Recording => {
+            "The tools work once the first pass is recorded and plays"
+        }
+        Phase::Overdubbing => "The tools work while the loop plays, not while it overdubs",
+        Phase::Playing if s.merging.is_some() => "Wait for the merge to finish",
+        Phase::Playing if i == 6 => "Merge needs two layers or more: overdub one first",
+        Phase::Playing => "That tool can't change this loop now",
+    }
+}
+
+/// Why Use the loop's row `i` can't be used now, for the screen to say in
+/// place when its faint row is tapped.
+pub fn why_no_use(i: usize, v: &LooperView) -> &'static str {
+    if i != USE_RESAMPLE {
+        return "Not built yet: Resample works now (the bounce to a pad, a clip or a file comes next)";
+    }
+    if !v.loops.iter().any(|l| l.phase == Phase::Empty) {
+        return "Every loop is in use: clear one to resample into it";
+    }
+    "Resample needs a loop that plays and isn't muted"
+}
+
 /// The tools as the editor shows them: each one's name (the seam fade's
 /// with its length, the merge's progress) and whether it works now.
 pub fn tools(s: &Status, rate: u32) -> Vec<(String, bool)> {
@@ -734,6 +792,16 @@ impl LooperPage {
         let now = self.view.history.done().len();
         let rows = now + self.view.history.redo().len();
         (row != now && row <= rows).then(|| row as i32 - now as i32)
+    }
+
+    /// The picked loop's undo history for the list that holding UNDO
+    /// opens: the loop's name, and its rows as the editor lists them.
+    pub fn history_rows(&self) -> (String, HistoryList) {
+        let v = &self.view;
+        (
+            format!("Loop {}", v.selected + 1),
+            history_list(&v.history, &self.layers, v.rate),
+        )
     }
 
     /// A tap on a layer's row: that layer goes on the Q-Links.

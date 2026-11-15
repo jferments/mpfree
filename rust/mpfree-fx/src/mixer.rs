@@ -158,11 +158,13 @@ pub const MAX_INPUTS: usize = 8;
 /// The largest pad channel pool a mixer can be built with.
 pub const MAX_PADS: usize = 128;
 /// The most tracks a mixer can be built with.
-pub const MAX_TRACKS: usize = 64;
+pub const MAX_TRACKS: usize = 160;
 /// The most insert slots a strip can be built with.
 pub const MAX_SLOTS: usize = 16;
-/// Capture points every mixer has.
-pub const CAPTURES: usize = 8;
+/// Capture points every mixer has: enough for a stem of every strip at
+/// once (the export), with the sampler's and the looper's to spare. Each is
+/// a block of memory; only those in use cost anything per block.
+pub const CAPTURES: usize = 64;
 /// Events that can be queued for one strip per block.
 pub const MAX_STRIP_EVENTS: usize = 256;
 /// A volume or send level at or below this is silent.
@@ -984,6 +986,9 @@ impl Route {
 }
 
 struct Capture {
+    /// Its slot number ([`Mixer::set_capture`]); the list keeps those in
+    /// use first, so a block looks only at them.
+    slot: u8,
     src: Option<(u16, CapturePoint)>,
     buf: [Vec<f32>; 2],
 }
@@ -1045,6 +1050,8 @@ struct Strip {
     fz: Fz,
     /// 1 while the transport rolls, 0 when stopped (frozen audio only).
     fz_gate: Smooth,
+    /// The frozen audio is held quiet ([`Mixer::set_frozen_quiet`]).
+    fz_quiet: bool,
 }
 
 impl Strip {
@@ -1102,6 +1109,7 @@ impl Strip {
                 g.set_time(rate, FREEZE_GATE_MS);
                 g
             },
+            fz_quiet: false,
         }
     }
 
@@ -1302,6 +1310,8 @@ pub struct Mixer {
     scratch: Scratch,
     hw: [Vec<f32>; 2],
     caps: Vec<Capture>,
+    /// How many of `caps` (the first) are in use.
+    caps_used: usize,
     line_len: usize,
     tap_step: f32,
     duck_step: f32,
@@ -1371,11 +1381,13 @@ impl Mixer {
             },
             hw: block(),
             caps: (0..CAPTURES)
-                .map(|_| Capture {
+                .map(|slot| Capture {
+                    slot: slot as u8,
                     src: None,
                     buf: block(),
                 })
                 .collect(),
+            caps_used: 0,
             line_len,
             tap_step: 1.0 / (TAP_FADE_MS * 0.001 * rate as f32),
             duck_step: 1.0 / (DUCK_MS * 0.001 * rate as f32),
@@ -1648,6 +1660,7 @@ impl Mixer {
         }
         st.frozen = Some(audio);
         st.fz = Fz::In(0.0);
+        st.fz_quiet = false;
         st.fz_gate.snap(if self.rolling { 1.0 } else { 0.0 });
         Ok(())
     }
@@ -1708,6 +1721,22 @@ impl Mixer {
         }
     }
 
+    /// Holds strip `s`'s frozen audio quiet, or lets it play again: it
+    /// fades out and in as at a stop and a start of the transport (the
+    /// track it took was muted, say). A thaw ends it. False when not
+    /// frozen.
+    pub fn set_frozen_quiet(&mut self, s: StripId, quiet: bool) -> bool {
+        let Some(k) = self.plan.topo.order(s) else {
+            return false;
+        };
+        let st = &mut self.strips[k];
+        if st.frozen.is_none() {
+            return false;
+        }
+        st.fz_quiet = quiet;
+        true
+    }
+
     /// Frozen audio a thaw is done with, to drop off the audio thread.
     pub fn pop_thawed(&mut self) -> Option<Frozen> {
         self.thawed.pop()
@@ -1752,17 +1781,35 @@ impl Mixer {
                 _ => return false,
             },
         };
-        let Some(c) = self.caps.get_mut(slot) else {
+        let Some(i) = self.caps.iter().position(|c| usize::from(c.slot) == slot) else {
             return false;
         };
-        c.src = src;
+        let was = self.caps[i].src.is_some();
+        self.caps[i].src = src;
+        // Those in use stay first.
+        match (was, src.is_some()) {
+            (false, true) => {
+                self.caps.swap(i, self.caps_used);
+                self.caps_used += 1;
+            }
+            (true, false) => {
+                self.caps_used -= 1;
+                self.caps.swap(i, self.caps_used);
+            }
+            _ => {}
+        }
         true
+    }
+
+    fn cap(&self, slot: usize) -> Option<&Capture> {
+        self.caps[..self.caps_used]
+            .iter()
+            .find(|c| usize::from(c.slot) == slot)
     }
 
     /// The last block a capture point took, or `None` when it is free.
     pub fn capture(&self, slot: usize) -> Option<(&[f32], &[f32])> {
-        let c = self.caps.get(slot)?;
-        c.src?;
+        let c = self.cap(slot)?;
         Some((&c.buf[0][..self.last_len], &c.buf[1][..self.last_len]))
     }
 
@@ -1770,7 +1817,7 @@ impl Mixer {
     /// capture point (for an input strip, between the line input and the
     /// point), so a recorder can line a take up with the transport.
     pub fn capture_latency(&self, slot: usize) -> Option<u32> {
-        let (k, p) = self.caps.get(slot)?.src?;
+        let (k, p) = self.cap(slot)?.src?;
         let k = k as usize;
         Some(match p {
             CapturePoint::BeforeInserts => self.plan.arrive[k],
@@ -2276,6 +2323,7 @@ impl Mixer {
             scratch,
             stats,
             caps,
+            caps_used,
             hw,
             safety,
             tap_step,
@@ -2329,12 +2377,8 @@ impl Mixer {
             }
             None => {}
         }
-        // With no capture point in use, nothing needs to look for one.
-        let caps: &mut [Capture] = if caps.iter().any(|c| c.src.is_some()) {
-            caps
-        } else {
-            &mut []
-        };
+        // Only the capture points in use (kept first) are looked at.
+        let caps: &mut [Capture] = &mut caps[..*caps_used];
         let base = Ctx {
             sidechain: None,
             ..*ctx
@@ -2421,7 +2465,7 @@ impl Mixer {
                             st.chain.flush_events();
                         }
                         if let Some(f) = &st.frozen {
-                            play_frozen(f, &base, &mut st.fz_gate, bl, br);
+                            play_frozen(f, &base, &mut st.fz_gate, st.fz_quiet, bl, br);
                         }
                     }
                     Fz::In(w) | Fz::Out(w) => {
@@ -2430,7 +2474,7 @@ impl Mixer {
                         let [fl, fr] = fz_buf;
                         let (fl, fr) = (&mut fl[..len], &mut fr[..len]);
                         match &st.frozen {
-                            Some(f) => play_frozen(f, &base, &mut st.fz_gate, fl, fr),
+                            Some(f) => play_frozen(f, &base, &mut st.fz_gate, st.fz_quiet, fl, fr),
                             None => {
                                 fl.fill(0.0);
                                 fr.fill(0.0);
@@ -2454,6 +2498,7 @@ impl Mixer {
                             },
                             Fz::In(_) => Fz::In(g),
                             _ if g <= 0.0 => {
+                                st.fz_quiet = false;
                                 if let Some(f) = st.frozen.take() {
                                     if thawed.len() < thawed.capacity() {
                                         thawed.push(f);
@@ -3169,8 +3214,15 @@ fn scan(l: &[f32], r: &[f32]) -> (bool, bool) {
 #[inline]
 /// Plays frozen audio into a block, faded out while the transport is
 /// stopped.
-fn play_frozen(f: &Frozen, ctx: &Ctx, gate: &mut Smooth, l: &mut [f32], r: &mut [f32]) {
-    gate.target = if ctx.playing { 1.0 } else { 0.0 };
+fn play_frozen(
+    f: &Frozen,
+    ctx: &Ctx,
+    gate: &mut Smooth,
+    quiet: bool,
+    l: &mut [f32],
+    r: &mut [f32],
+) {
+    gate.target = if ctx.playing && !quiet { 1.0 } else { 0.0 };
     if gate.settled() && gate.value == 0.0 {
         l.fill(0.0);
         r.fill(0.0);

@@ -1,0 +1,6 @@
+/* A plugin pack .clap file exports its CLAP entry and nothing else, so the
+   C++ library linked into it can't clash with the host's. */
+{
+  global: clap_entry;
+  local: *;
+};

@@ -14,8 +14,8 @@
 //! ALSA.
 
 use crate::{
-    app, cores, cv_out, kit, looping, midi_in, midi_out, mixing, sampler, synth, time, SeqPads,
-    MAX_LIVE_HITS, PERIOD, RATE,
+    app, audiotracks, cores, cv_out, kit, looping, midi_in, midi_out, mixing, sampler, synth, time,
+    SeqPads, MAX_LIVE_HITS, PERIOD, RATE,
 };
 use mpfree_arp::{EventKind, Events, Mode};
 use mpfree_arp_ui::view::ArpAction;
@@ -31,6 +31,9 @@ struct Rig {
     player: sampler::Player,
     synth: cores::SynthSlot,
     looper: looping::LoopHost,
+    /// The audio tracks, track 1 armed (song mode is off, so it only
+    /// monitors).
+    tracks: audiotracks::TrackHost,
     mix: mixing::MixHost,
     events: Events,
     synth_on: bool,
@@ -40,6 +43,7 @@ struct Rig {
     drums: [[f32; PERIOD]; 2],
     synth_out: [[f32; PERIOD]; 2],
     loop_out: [[f32; PERIOD]; 2],
+    audio_out: [[f32; PERIOD]; 2],
     pads_out: [[f32; PERIOD]; 2],
     peak: f32,
     /// Notes the arp started, and hits the clip played.
@@ -51,6 +55,8 @@ struct Rig {
     io: mpfree_midi_ui::Shared,
     /// CV out (closed: the jacks are not driven).
     cv: cv_out::CvOut,
+    /// Export's note tap (export.rs), on as if an export ran.
+    tap: crate::export::Tap,
 }
 
 fn tone(frames: usize, f: f32) -> Vec<i16> {
@@ -77,6 +83,11 @@ impl Rig {
             player: sampler::Player::new(&mut kits, &PAD_NOTES, RATE).unwrap(),
             synth: cores::SynthSlot::new(synth::Synth::new(RATE)),
             looper: looping::LoopHost::new(RATE, 20),
+            tracks: {
+                let mut t = audiotracks::TrackHost::new(RATE, 20);
+                t.host.command(mpfree_audiotracks::Command::Arm(0, true));
+                t
+            },
             // The device's default: 6 dB under a -12 dB maximum.
             mix: mixing::MixHost::new(RATE, -18.0, -12.0),
             time: time::TimeHost::new(RATE, 120.0).unwrap(),
@@ -88,6 +99,7 @@ impl Rig {
             drums: [[0.0; PERIOD]; 2],
             synth_out: [[0.0; PERIOD]; 2],
             loop_out: [[0.0; PERIOD]; 2],
+            audio_out: [[0.0; PERIOD]; 2],
             pads_out: [[0.0; PERIOD]; 2],
             peak: 0.0,
             arp_notes: 0,
@@ -95,6 +107,7 @@ impl Rig {
             midi: midi_out::MidiOut::new(RATE, std::time::Duration::ZERO),
             io: midi_in::io_model(),
             cv: cv_out::CvOut::new(RATE, std::time::Duration::ZERO),
+            tap: crate::export::Tap::on(),
         }
     }
 
@@ -128,6 +141,7 @@ impl Rig {
             player,
             synth,
             looper,
+            tracks,
             mix,
             events,
             synth_on,
@@ -136,12 +150,14 @@ impl Rig {
             drums,
             synth_out,
             loop_out,
+            audio_out,
             pads_out,
             arp_notes,
             clip_hits,
             midi,
             io,
             cv,
+            tap,
             ..
         } = self;
         let synth_on = *synth_on;
@@ -210,6 +226,9 @@ impl Rig {
                 player.hit_at(pad, v, ev.offset);
             }
         }
+        // A track's own instrument goes in, and retired ones go back, as
+        // the loop does before the notes.
+        let _ = mix.poll_instruments();
         let mut seq = SeqPads {
             player,
             synth: synth_on.then_some(&mut **synth),
@@ -221,11 +240,14 @@ impl Rig {
             silent: 0,
             midi,
             cv,
+            own: &mut mix.instruments,
+            tap,
         };
         time.period(PERIOD as u32, &mut seq);
         seq.midi
             .period_end(PERIOD as u32, std::time::Instant::now());
         seq.cv.period_end(PERIOD as u32, std::time::Instant::now());
+        seq.tap.take();
         *clip_hits += seq.hits;
         time.clear_hits();
         // The pads, each into its mixer channel, and on to the Drums track.
@@ -252,6 +274,15 @@ impl Rig {
         let [loop_l, loop_r] = loop_out;
         let note = looper.run(time.block(), loop_l, loop_r);
         assert!(note.is_none(), "period {i}: {note:?}");
+        let [audio_l, audio_r] = audio_out;
+        tracks.follow_latency(app.settings.loop_latency);
+        tracks.period(
+            time.block(),
+            time.tempo_map(),
+            time.song_on(),
+            looper.input(),
+            (audio_l, audio_r),
+        );
         mix.follow(looper.line.is_open(), looper.monitor);
         let ctx = mixing::ctx(RATE, i * PERIOD as u64, app.settings.bpm, time.block());
         mix.mixer.set_lane_deadline(Some(until));
@@ -259,10 +290,15 @@ impl Rig {
             &ctx,
             (synth_l, synth_r),
             (loop_l, loop_r),
+            (audio_l, audio_r),
             looper.input(),
             left,
             right,
         );
+        // Freeze and Print's check of the frozen strips, each period.
+        let n_tracks = time.project().tracks.len();
+        let said = mix.takes_period(&ctx, n_tracks, &|t| time.now_playing(t));
+        assert!(said.is_none(), "period {i}: a take said something");
         let p = p.max(time.mix_click(left, right));
         self.peak = self.peak.max(p);
         // After the write, in the loop.
@@ -354,6 +390,63 @@ fn steady_play_never_allocates(synth_on: bool, sound_cores: cores::SoundCores) {
         cores::SoundCores::Three => assert_eq!(n.synth_periods, i, "{n:?}"),
         _ => assert_eq!(n, cores::Counts::default()),
     }
+}
+
+/// Track 1 with its own Poly (instruments.rs): the pads (through its arp)
+/// and its clip play the Poly into its own mixer channel, not the kit, and
+/// half a minute of it allocates and frees nothing on the sound path.
+#[test]
+fn a_track_with_its_own_instrument_plays_it_and_never_allocates() {
+    use crate::instruments::first_track;
+    let mut rig = Rig::new(false);
+    // Setup, which may allocate: Poly made for track 1 (no builder here,
+    // so made at once) and put in on the next period.
+    let job = crate::instrument_job(&rig.synth, 0, "mpfree.poly", None);
+    assert!(rig.mix.build_instrument(job));
+    rig.time
+        .act(TimeAction::NewClip { track: 0, slot: 0 })
+        .unwrap();
+    let mut i = 0u64;
+    while i < 1_500 {
+        rig.pads(i);
+        rig.period(i);
+        i += 1;
+    }
+    assert_eq!(rig.mix.instruments.held(0).map(|h| h.name), Some("Poly"));
+    rig.time.command(Command::Record);
+    for _ in 0..200 {
+        rig.pads(i);
+        rig.period(i);
+        i += 1;
+    }
+    let (notes_before, sampler_before) = (rig.mix.instruments.stats(0).notes, rig.player.hits());
+    let ((), calls) = crate::sys::alloc_count::calls(|| {
+        for _ in 0..12_000 {
+            rig.pads(i);
+            rig.period(i);
+            i += 1;
+        }
+    });
+    assert_eq!(calls, 0, "allocations or frees on the sound path");
+    // The clip's notes played the Poly. (This rig plays the live pads on
+    // the kit itself, as the loop did before the per-track arps, so only
+    // the clip reaches the track's instrument here; the live path is
+    // `live_pads_on_a_track_with_its_own_instrument_play_it`.)
+    let notes = rig.mix.instruments.stats(0).notes - notes_before;
+    assert!(notes > 100, "the Poly played {notes} notes");
+    assert_eq!(rig.mix.instruments.stats(0).dropped, 0);
+    assert!(
+        rig.player.hits() > sampler_before,
+        "the live pads played the kit"
+    );
+    assert!(rig.peak > 0.01, "silent: peak {}", rig.peak);
+    // Its own mixer channel shows on the panel; the others don't.
+    rig.mix.show(Some(mpfree_mixer_ui::MixView::Tracks));
+    let st = rig.mix.poll_state(std::time::Instant::now()).unwrap();
+    let names: Vec<&str> = st.strips.iter().map(|v| v.name.as_str()).collect();
+    assert_eq!(names, vec!["Drums", "Synth", "Loop", "Audio", "Track 1"]);
+    assert_eq!(st.strips[4].id, mpfree_fx::StripId::Track(first_track()));
+    assert!(st.strips[4].peak[0] > 0.0, "{:?}", st.strips[4].peak);
 }
 
 /// A send reverb that goes a block late on the returns lane (cores.rs):
@@ -518,6 +611,8 @@ fn live_notes_on_a_midi_out_track_go_out_and_record_as_their_pad() {
         silent: 0,
         midi: &mut rig.midi,
         cv: &mut rig.cv,
+        own: &mut rig.mix.instruments,
+        tap: &mut rig.tap,
     };
     let at = |event| Out {
         offset: 0,
@@ -551,6 +646,76 @@ fn live_notes_on_a_midi_out_track_go_out_and_record_as_their_pad() {
     assert_eq!(
         *sink.0.lock().unwrap(),
         [0x90, PAD_NOTES[2], v, 0x80, PAD_NOTES[2], 64]
+    );
+}
+
+/// The pads played live (through track 1's arp) on track 1 with its own
+/// instrument: they play it, not the kit, record as their pad, and
+/// another track's clip still plays the kit.
+#[test]
+fn live_pads_on_a_track_with_its_own_instrument_play_it() {
+    use mpfree_play::{Event, Out};
+    let mut rig = Rig::new(false);
+    let job = crate::instrument_job(&rig.synth, 0, "mpfree.poly", None);
+    assert!(rig.mix.build_instrument(job));
+    assert!(matches!(
+        rig.mix.poll_instruments(),
+        Some(mixing::Landed::Playing {
+            track: 0,
+            name: "Poly"
+        })
+    ));
+    let live = rig.app.live_map();
+    let v = live.velocity(100);
+    let before = rig.player.hits();
+    let mut seq = SeqPads {
+        player: &mut rig.player,
+        synth: None,
+        flashes: [0; 16],
+        hits: 0,
+        live,
+        live_hits: [(0, 0); MAX_LIVE_HITS],
+        n_live: 0,
+        silent: 0,
+        midi: &mut rig.midi,
+        cv: &mut rig.cv,
+        own: &mut rig.mix.instruments,
+        tap: &mut rig.tap,
+    };
+    let at = |track, event| Out {
+        offset: 0,
+        frame: 0,
+        track,
+        dest: track,
+        event,
+    };
+    let on = Event::NoteOn {
+        note: 2,
+        velocity: 100,
+    };
+    assert_eq!(
+        time::Pads::live(&mut seq, &at(0, on)),
+        Some(Event::NoteOn {
+            note: 2,
+            velocity: v
+        })
+    );
+    assert_eq!(&seq.live_hits[..seq.n_live], [(2, v)]);
+    let off = Event::NoteOff { note: 2 };
+    assert_eq!(time::Pads::live(&mut seq, &at(0, off)), Some(off));
+    // A clip on track 1 is taken by its instrument; one on track 2 isn't,
+    // and goes on to the kit.
+    assert!(time::Pads::out(&mut seq, &at(0, on)));
+    assert!(!time::Pads::out(&mut seq, &at(1, on)));
+    assert!(time::Pads::hit_at(&mut seq, 2, 100, 0));
+    assert_eq!(seq.hits, 3);
+    assert_eq!(rig.mix.instruments.stats(0).notes, 2);
+    let (mut l, mut r) = ([0.0f32; PERIOD], [0.0f32; PERIOD]);
+    rig.player.render_dry(&mut l, &mut r);
+    assert_eq!(
+        rig.player.hits(),
+        before + 1,
+        "the kit played only track 2's"
     );
 }
 

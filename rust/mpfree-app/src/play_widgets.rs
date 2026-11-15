@@ -17,9 +17,9 @@
 
 use crate::play_page::{SynthPads, LAYOUT_SWITCH, VIEWS};
 use mpfree_arp::scale::pads::PadLayout;
-use mpfree_ui::draw::{self, card, card_head, dot, pill, speaker, speaker_hit, KNOB};
+use mpfree_ui::draw::{self, card, card_head, dot, pill, speaker, KNOB};
 use mpfree_ui::widgets::{Pad, PadGrid};
-use mpfree_ui::{Align, Color, EventKind, FontId, PaintCx, Rect, Tone, Touch, Widget};
+use mpfree_ui::{Align, Color, EventKind, FontId, PaintCx, Rect, Target, Tone, Touch, Widget};
 use std::cell::RefCell;
 use std::collections::VecDeque;
 
@@ -95,7 +95,7 @@ impl PlayTransport {
     }
 
     /// The view switch's box and its segments.
-    pub fn switch(r: Rect) -> (Rect, [Rect; 4]) {
+    pub fn switch(r: Rect) -> (Rect, [Rect; VIEWS.len()]) {
         let inner = PlayTransport::inner(r);
         let w = VIEWS.len() as i32 * SWITCH_SEG_W + 8;
         let b = Rect::new(
@@ -272,6 +272,26 @@ impl Widget for PlayTransport {
         let bpm = Rect::new(x - 8, r.y, (bw + 52).max(64), r.h);
         *self.painted.borrow_mut() =
             Some((r, self.look.clone(), TransportAreas { pos, dots, bpm }));
+    }
+
+    fn targets(&self, r: Rect) -> Vec<Target> {
+        let (_, segs) = PlayTransport::switch(r);
+        let mut out: Vec<Target> = segs
+            .iter()
+            .enumerate()
+            .map(|(i, s)| Target::tap("view", i, VIEWS[i], *s).disabled_if(i == self.look.view))
+            .collect();
+        if let Some((pr, _, a)) = self.painted.borrow().as_ref() {
+            if *pr == r && !a.bpm.is_empty() {
+                out.push(Target::tap(
+                    "tempo",
+                    0,
+                    format!("{} BPM", self.look.bpm),
+                    a.bpm,
+                ));
+            }
+        }
+        out
     }
 
     fn touch(&mut self, _f: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
@@ -521,6 +541,25 @@ impl Widget for MiniPads {
         ));
     }
 
+    fn targets(&self, r: Rect) -> Vec<Target> {
+        let (_, switch, body) = self.parts(r);
+        let mut out = Vec::new();
+        if let Some(hv) = switch {
+            for (i, h) in hv.iter().enumerate() {
+                out.push(Target::tap("layout", i, ["Chromatic", "In key"][i], *h));
+            }
+        }
+        for i in 0..16 {
+            let label = self
+                .grid
+                .pads
+                .get(i)
+                .map_or(String::new(), |p| p.label.clone());
+            out.push(Target::tap("pad", i, label, MiniPads::cell(body, i)));
+        }
+        out
+    }
+
     fn touch(&mut self, finger: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
         match phase {
             Touch::Down => {
@@ -566,7 +605,10 @@ pub struct Lane {
 /// The pattern: a lane per sound (as many as fit, the ones that play
 /// first, in pad order), 16 steps a page in groups of four, the playhead's
 /// column lit, the step picked outlined. A tap on a step gives
-/// `Cell { row: pad, col: step }`, on a lane's speaker `Toggle(pad)`.
+/// `Cell { row: pad, col: step }`, on a lane's speaker `Toggle(pad)`. The
+/// head's controls (Jay after live test 3: 32, 64 and 128 steps) give
+/// `Tab(HEAD_PREV)` and `Tab(HEAD_NEXT)` for the page, `Tab(HEAD_SHORTER)`
+/// and `Tab(HEAD_LONGER)` for the length.
 #[derive(Default)]
 pub struct StepGrid {
     /// "Pattern 1 · Drums".
@@ -582,8 +624,22 @@ pub struct StepGrid {
     pub play: Option<usize>,
     /// The step picked: (pad, step on the page).
     pub selected: Option<(usize, usize)>,
+    /// The page shown (from 0) and how many there are.
+    pub page: usize,
+    pub pages: usize,
+    /// The clip's length in steps; 0 with no clip yet.
+    pub length: usize,
     painted: RefCell<Option<(Rect, StepLook)>>,
 }
+
+/// The head's controls, as `Tab` indices.
+pub const HEAD_PREV: usize = 0;
+pub const HEAD_NEXT: usize = 1;
+pub const HEAD_SHORTER: usize = 2;
+pub const HEAD_LONGER: usize = 3;
+/// The most steps the pattern's + makes, and the fewest its - leaves.
+pub const MAX_STEPS: usize = 128;
+pub const MIN_STEPS: usize = 16;
 
 /// What a paint drew, to find what changed.
 #[derive(Clone, Debug, PartialEq)]
@@ -594,13 +650,71 @@ struct StepLook {
     steps: usize,
     play: Option<usize>,
     selected: Option<(usize, usize)>,
+    page: (usize, usize, usize),
+}
+
+/// The pattern head's controls, right to left: + and - round the length,
+/// then › and ‹ round the page number. Each answers over the head's whole
+/// height.
+struct Head {
+    title: Rect,
+    prev: Rect,
+    page: Rect,
+    next: Rect,
+    shorter: Rect,
+    length: Rect,
+    longer: Rect,
+}
+
+/// A head button's width.
+const HEAD_BTN: i32 = 56;
+
+impl Head {
+    fn of(r: Rect) -> Head {
+        let (h, body) = card_head(r);
+        let band = Rect::new(h.x, r.y, h.w, body.y - 2 - r.y);
+        let mut x = h.right();
+        let mut take = |w: i32| {
+            x -= w;
+            Rect::new(x, band.y, w, band.h)
+        };
+        let longer = take(HEAD_BTN);
+        let length = take(78);
+        let shorter = take(HEAD_BTN);
+        take(14);
+        let next = take(HEAD_BTN);
+        let page = take(52);
+        let prev = take(HEAD_BTN);
+        Head {
+            title: Rect::new(h.x, h.y, (prev.x - 12 - h.x).max(0), h.h),
+            prev,
+            page,
+            next,
+            shorter,
+            length,
+            longer,
+        }
+    }
+
+    /// The control under (`x`, `y`), as its `Tab` index.
+    fn at(&self, x: i32, y: i32) -> Option<usize> {
+        [
+            (self.prev, HEAD_PREV),
+            (self.next, HEAD_NEXT),
+            (self.shorter, HEAD_SHORTER),
+            (self.longer, HEAD_LONGER),
+        ]
+        .into_iter()
+        .find(|(b, _)| b.contains(x, y))
+        .map(|(_, i)| i)
+    }
 }
 
 /// Lanes are about this tall at least.
 const LANE_MIN_H: i32 = 34;
 const LANE_MAX_H: i32 = 44;
 const LANE_GAP: i32 = 5;
-const NAMES_W: i32 = 118;
+const NAMES_W: i32 = 132;
 
 /// Where a pattern's parts sit in its rectangle.
 struct GridGeom {
@@ -625,8 +739,23 @@ impl GridGeom {
         Rect::new(self.col_x(s), self.row_y(k), self.cw, self.rh)
     }
 
-    fn speaker(&self, k: usize) -> (i32, i32) {
-        (self.names.right() - 20, self.row_y(k) + self.rh / 2)
+    /// Lane `k`'s mute button as drawn: a box with the speaker in it at
+    /// the right of the names.
+    fn mute_button(&self, k: usize) -> Rect {
+        Rect::new(self.names.right() - 50, self.row_y(k), 40, self.rh)
+    }
+
+    /// Where lane `k` answers a tap to mute: its whole name and button,
+    /// the lane's full height with half the gap above and below (Jay
+    /// after live test 3: bigger mutes).
+    fn mute_hit(&self, k: usize) -> Rect {
+        let half = LANE_GAP / 2;
+        Rect::new(
+            self.names.x,
+            self.row_y(k) - half,
+            self.names.w - 4,
+            self.rh + LANE_GAP,
+        )
     }
 }
 
@@ -662,7 +791,83 @@ impl StepGrid {
             steps: self.steps,
             play: self.play,
             selected: self.selected,
+            page: (self.page, self.pages, self.length),
         }
+    }
+
+    /// The middle of head control `k` (`HEAD_PREV` ...), for the app's
+    /// tests.
+    #[cfg(test)]
+    pub fn head_at(r: Rect, k: usize) -> (i32, i32) {
+        let h = Head::of(r);
+        let b = [h.prev, h.next, h.shorter, h.longer][k];
+        (b.x + b.w / 2, b.y + b.h / 2)
+    }
+
+    /// Which head controls can be used now: (‹, ›, -, +).
+    fn usable(&self) -> (bool, bool, bool, bool) {
+        let clip = self.length > 0;
+        (
+            self.page > 0,
+            self.page + 1 < self.pages,
+            clip && self.length > MIN_STEPS,
+            clip && self.length < MAX_STEPS,
+        )
+    }
+
+    /// The head: the title on the left, then the details, the page with
+    /// ‹ and ›, and the length with - and +.
+    fn paint_head(&self, cx: &mut PaintCx, r: Rect) {
+        let t = cx.theme.clone();
+        let hd = Head::of(r);
+        let (h, _) = card_head(r);
+        if !self.right.is_empty() {
+            cx.text(
+                FontId::Sans,
+                draw::HEAD_PX,
+                hd.title,
+                Align::Right,
+                t.text_faint,
+                &self.right,
+            );
+        }
+        let (prev, next, shorter, longer) = self.usable();
+        let mid = h.y + h.h / 2;
+        let button = |cx: &mut PaintCx, b: Rect, label: &str, usable: bool| {
+            let face = Rect::new(b.x + 4, mid - 13, b.w - 8, 26);
+            cx.canvas.fill_round_rect(face, 8, t.raised);
+            cx.text(
+                FontId::Bold,
+                16.0,
+                face,
+                Align::Center,
+                t.button_ink(usable),
+                label,
+            );
+        };
+        button(cx, hd.prev, "‹", prev);
+        button(cx, hd.next, "›", next);
+        button(cx, hd.shorter, "−", shorter);
+        button(cx, hd.longer, "+", longer);
+        let row = |b: Rect| Rect::new(b.x, h.y, b.w, h.h);
+        let page = format!("{}/{}", self.page + 1, self.pages.max(1));
+        cx.text(
+            FontId::Bold,
+            draw::HEAD_PX,
+            row(hd.page),
+            Align::Center,
+            t.text_dim,
+            &page,
+        );
+        let length = format!("{} steps", self.length.max(MIN_STEPS));
+        cx.text(
+            FontId::Bold,
+            draw::HEAD_PX,
+            row(hd.length),
+            Align::Center,
+            t.text_dim,
+            &length,
+        );
     }
 
     /// The lanes shown on a page this tall (for the app's tests).
@@ -670,6 +875,13 @@ impl StepGrid {
     pub fn lanes_shown(&self, r: Rect) -> Vec<usize> {
         let g = self.geom(r);
         self.shown(g.rows).iter().map(|l| l.pad).collect()
+    }
+
+    /// The middle of row `k`'s name, left of its mute (for the app's tests).
+    #[cfg(test)]
+    pub fn name_at(&self, r: Rect, k: usize) -> (i32, i32) {
+        let g = self.geom(r);
+        (g.names.x + 20, g.row_y(k) + g.rh / 2)
     }
 }
 
@@ -702,7 +914,8 @@ impl Widget for StepGrid {
     fn paint(&self, cx: &mut PaintCx, r: Rect) {
         let t = cx.theme.clone();
         cx.canvas.fill_rect(r, t.bg);
-        card(cx, r, &self.title, &self.right);
+        card(cx, r, &self.title, "");
+        self.paint_head(cx, r);
         let g = self.geom(r);
         let lanes = self.shown(g.rows);
         if let Some(p) = self.play.filter(|&p| p < self.steps) {
@@ -716,7 +929,8 @@ impl Widget for StepGrid {
         }
         for (k, lane) in lanes.iter().enumerate() {
             let y = g.row_y(k);
-            let nr = Rect::new(g.names.x, y, g.names.w - 10, g.rh);
+            let mb = g.mute_button(k);
+            let nr = Rect::new(g.names.x, y, mb.x - 4 - g.names.x, g.rh);
             let c = lane.color;
             cx.canvas
                 .fill_round_rect(Rect::new(nr.x, y + g.rh / 2 - 5, 10, 10), 3, c);
@@ -724,13 +938,20 @@ impl Widget for StepGrid {
             cx.text(
                 FontId::Sans,
                 14.0,
-                nr.take_left(18).1.take_right(30).1,
+                nr.take_left(18).1,
                 Align::Left,
                 ink,
                 &lane.name,
             );
-            let (sx, sy) = g.speaker(k);
-            speaker(cx, sx + 10, sy, t.text_dim, lane.muted);
+            // The mute button: a box round the speaker, red-tinted while
+            // muted.
+            if lane.muted {
+                cx.canvas.fill_round_rect(mb, 6, t.raised.mix(t.bad, 0.3));
+            } else {
+                cx.canvas.fill_round_rect(mb, 6, t.raised);
+            }
+            cx.canvas.stroke_round_rect(mb, 6, 1, t.outline);
+            speaker(cx, mb.x + mb.w / 2 + 1, mb.y + mb.h / 2, t.text, lane.muted);
             for s in 0..16 {
                 let sr = g.cell(k, s);
                 if s >= self.steps {
@@ -769,15 +990,52 @@ impl Widget for StepGrid {
         *self.painted.borrow_mut() = Some((r, self.look()));
     }
 
+    fn targets(&self, r: Rect) -> Vec<Target> {
+        let g = self.geom(r);
+        let mut out = Vec::new();
+        // The head: ‹ › turn the pages of 16, - + halve or double the
+        // steps (faint when they can't; a tap then says why).
+        let h = Head::of(r);
+        let (prev, next, shorter, longer) = self.usable();
+        for (k, label, rect, can) in [
+            (HEAD_PREV, "Previous page", h.prev, prev),
+            (HEAD_NEXT, "Next page", h.next, next),
+            (HEAD_SHORTER, "Fewer steps", h.shorter, shorter),
+            (HEAD_LONGER, "More steps", h.longer, longer),
+        ] {
+            out.push(Target::tap("head", k, label, rect).disabled_if(!can));
+        }
+        for (k, lane) in self.shown(g.rows).iter().enumerate() {
+            // The lane's whole name is its mute button (bigger mutes).
+            out.push(Target::tap(
+                "mute",
+                lane.pad,
+                format!("{} speaker", lane.name),
+                g.mute_hit(k),
+            ));
+            for st in 0..self.steps.min(16) {
+                out.push(Target::tap(
+                    "step",
+                    lane.pad * 16 + st,
+                    format!("{} step {}", lane.name, st + 1),
+                    g.cell(k, st),
+                ));
+            }
+        }
+        out
+    }
+
     fn touch(&mut self, _f: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
         if phase != Touch::Down {
             return None;
         }
+        if let Some(i) = Head::of(r).at(x, y) {
+            return Some(EventKind::Tab(i));
+        }
         let g = self.geom(r);
         let lanes = self.shown(g.rows);
         for (k, lane) in lanes.iter().enumerate() {
-            let (sx, sy) = g.speaker(k);
-            if speaker_hit(sx + 6, sy).contains(x, y) {
+            if g.mute_hit(k).contains(x, y) {
                 return Some(EventKind::Toggle(lane.pad));
             }
             for s in 0..self.steps.min(16) {
@@ -912,6 +1170,14 @@ impl Widget for Throws {
                 );
             }
         }
+    }
+
+    fn targets(&self, r: Rect) -> Vec<Target> {
+        self.cells(r)
+            .into_iter()
+            .enumerate()
+            .map(|(i, c)| Target::hold("throw", i, self.items[i].name.clone(), c))
+            .collect()
     }
 
     fn touch(&mut self, finger: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
@@ -1071,6 +1337,14 @@ impl Widget for XyPad {
         }
     }
 
+    fn targets(&self, r: Rect) -> Vec<Target> {
+        let pad = XyPad::pad(r);
+        if pad.w <= 0 || pad.h <= 0 {
+            return Vec::new();
+        }
+        vec![Target::drag("xy", 0, self.title.clone(), pad)]
+    }
+
     fn touch(&mut self, finger: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
         let pad = XyPad::pad(r);
         if pad.w <= 0 || pad.h <= 0 {
@@ -1141,6 +1415,7 @@ pub struct TimedHit {
 /// Your timing: the last two bars of your hits against the 1/16 grid, a
 /// lane for each of the four sounds you hit most, then the average
 /// offset, the spread, the velocity and how the offsets spread.
+#[derive(Clone, Debug, PartialEq)]
 pub struct YourTiming {
     pub right: String,
     /// (pad, name, colour, hits in the window).
@@ -1181,6 +1456,10 @@ impl Widget for YourTiming {
     fn paint(&self, cx: &mut PaintCx, r: Rect) {
         let t = cx.theme.clone();
         cx.canvas.fill_rect(r, t.bg);
+        if r.h < YourTiming::FULL_H {
+            self.paint_strip(cx, r);
+            return;
+        }
         let body = card(cx, r, "Your timing", &self.right);
         let (stats, lanes) = body.take_bottom(92);
         let lanes = lanes.take_bottom(10).1;
@@ -1236,8 +1515,48 @@ impl Widget for YourTiming {
             cx.canvas
                 .fill_rect(Rect::new(sx(now), grid.y - 2, 2, grid.h + 4), t.text);
         }
-        // The numbers, then how the offsets spread.
         let (nums, hist) = stats.take_left(360);
+        self.paint_numbers(cx, nums.take_top(14).1, false);
+        self.paint_spread(cx, hist.inset_xy(0, 10), false);
+    }
+}
+
+impl YourTiming {
+    /// Shorter than this, it draws as the Beats view's strip: no lanes,
+    /// only the numbers and how the offsets spread.
+    pub const FULL_H: i32 = 150;
+
+    /// The strip in Beats (Jay 13 Nov: fold the Drum view's timing into
+    /// Beats): the title, the three numbers, then the spread of offsets.
+    fn paint_strip(&self, cx: &mut PaintCx, r: Rect) {
+        let t = cx.theme.clone();
+        cx.panel(r);
+        let inner = r.inset_xy(12, 8);
+        let (title, rest) = inner.take_left(180);
+        let (a, b) = title.take_top(title.h / 2);
+        cx.text(
+            FontId::Bold,
+            draw::HEAD_PX,
+            a,
+            Align::Left,
+            t.text_dim,
+            "YOUR TIMING",
+        );
+        // The strip has no lanes, so the offsets' magnifying is moot.
+        let caption = self.right.split(" · offsets").next().unwrap_or("");
+        cx.text(FontId::Sans, 12.0, b, Align::Left, t.text_faint, caption);
+        let (nums, hist) = rest.take_left(390);
+        self.paint_numbers(cx, nums, true);
+        self.paint_spread(cx, hist, true);
+        if self.lanes.is_empty() && !self.note.is_empty() {
+            let note = "Play the pads to see your timing";
+            cx.text(FontId::Sans, 13.0, hist, Align::Center, t.text_dim, note);
+        }
+    }
+
+    /// AVERAGE, SPREAD and VELOCITY side by side in `nums`.
+    fn paint_numbers(&self, cx: &mut PaintCx, nums: Rect, strip: bool) {
+        let t = cx.theme.clone();
         let avg = match self.average_ms {
             Some(a) if a < -0.5 => format!("{:.0} ms early", -a),
             Some(a) if a > 0.5 => format!("{a:.0} ms late"),
@@ -1256,16 +1575,25 @@ impl Widget for YourTiming {
             ("VELOCITY", vel, t.text),
         ];
         let iw = nums.w / 3;
+        let (label_h, value_px) = if strip { (20, 18.0) } else { (22, 20.0) };
         for (i, (k, v, c)) in items.iter().enumerate() {
-            let ir = Rect::new(nums.x + i as i32 * iw, nums.y + 14, iw, nums.h - 14);
-            let (a, b) = ir.take_top(22);
+            let ir = Rect::new(nums.x + i as i32 * iw, nums.y, iw, nums.h);
+            let (a, b) = ir.take_top(label_h);
             cx.text(FontId::Sans, 12.0, a, Align::Left, t.text_faint, k);
-            cx.text(FontId::Bold, 20.0, b.take_top(34).0, Align::Left, *c, v);
+            cx.text(FontId::Bold, value_px, b.take_top(34).0, Align::Left, *c, v);
         }
-        let hist = hist.inset_xy(0, 10);
+    }
+
+    /// How the offsets spread, 30 ms early to 30 ms late, in `hist`.
+    fn paint_spread(&self, cx: &mut PaintCx, hist: Rect, strip: bool) {
+        let t = cx.theme.clone();
         cx.canvas.fill_round_rect(hist, 8, t.bg.mix(t.surface, 0.4));
-        let hb = hist.inset_xy(12, 10);
-        let (axis, bars_r) = hb.take_bottom(16);
+        let hb = if strip {
+            hist.inset_xy(10, 5)
+        } else {
+            hist.inset_xy(12, 10)
+        };
+        let (axis, bars_r) = hb.take_bottom(if strip { 14 } else { 16 });
         let n = self.histogram.len() as i32;
         let top = self.histogram.iter().copied().max().unwrap_or(0).max(1);
         let bw = (bars_r.w - (n - 1) * 3) / n;
@@ -1329,7 +1657,8 @@ mod tests {
                 Some(EventKind::Tab(i))
             );
         }
-        assert!(segs[3].right() <= r.right() - 16);
+        assert_eq!(segs.len(), 3, "All, Beats, Loop");
+        assert!(segs[2].right() <= r.right() - 16);
     }
 
     #[test]
@@ -1385,11 +1714,21 @@ mod tests {
             g.touch(1, Touch::Down, c.x + 3, c.y + 3, r),
             Some(EventKind::Cell { row: 10, col: 5 })
         );
-        let (sx, sy) = geom.speaker(0);
-        assert_eq!(
-            g.touch(1, Touch::Down, sx + 6, sy, r),
-            Some(EventKind::Toggle(8))
-        );
+        // The mute answers anywhere on the lane's name, its full height
+        // and gaps: far more than the old 32 px square.
+        let m = geom.mute_hit(0);
+        assert!(m.w >= 110 && m.h >= geom.rh + LANE_GAP, "{m:?}");
+        for (x, y) in [(m.x + 2, m.y + 1), (m.right() - 1, m.bottom() - 1)] {
+            assert_eq!(
+                g.touch(1, Touch::Down, x, y, r),
+                Some(EventKind::Toggle(8)),
+                "({x}, {y})"
+            );
+        }
+        // The lanes' mute areas meet with no gap and don't overlap.
+        assert_eq!(geom.mute_hit(0).bottom(), geom.mute_hit(1).y);
+        let b = geom.mute_button(0);
+        assert!(m.contains(b.x, b.y) && m.contains(b.right() - 1, b.bottom() - 1));
     }
 
     #[test]

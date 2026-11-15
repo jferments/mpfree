@@ -57,6 +57,9 @@ pub struct ChainPage {
     /// The page shown, and the bank Play showed when it was left.
     at: View,
     play_bank: usize,
+    /// An effect is picked on the mixer's Effects look: the column shows
+    /// its knobs there.
+    mix_pick: bool,
 }
 
 impl Default for ChainPage {
@@ -74,6 +77,7 @@ impl ChainPage {
             press: None,
             at: View::Play,
             play_bank: 0,
+            mix_pick: false,
         }
     }
 
@@ -88,7 +92,8 @@ impl ChainPage {
         let (name, knobs) = st.qlinks();
         self.bind
             .set_page(mpfree_chain_ui::QLINK_PAGE, &name, knobs);
-        for p in &st.params {
+        // Main's four turn on every page, so their values come along.
+        for p in st.params.iter().chain(&st.main_four) {
             self.bind.observe(p.addr, p.value);
         }
         mpfree_chain_ui::update_chain(ui, st.clone());
@@ -119,18 +124,15 @@ impl ChainPage {
     }
 
     /// The selected effect's drawings, from its values (none for an effect
-    /// the pages don't draw, or none selected), in theme `t`.
+    /// the pages don't draw, or none selected), in theme `t`: every one its
+    /// effect page draws (page `""`), each section of the chain editor
+    /// showing those its plan names.
     pub fn set_fx(&self, ui: &mut Ui, fx: Option<FxState>, t: &Theme) {
-        let page = self
-            .chain
-            .as_ref()
-            .and_then(|c| c.groups.get(c.group).copied())
-            .unwrap_or("");
         let cards = match fx {
             Some(mut st) if visual::has_visuals(st.info.id) => {
                 st.color = t.accent;
                 let scratch = Scratch::new(&st);
-                visual::strip(&st, page, None, &scratch, t).cards
+                visual::strip(&st, "", None, &scratch, t).cards
             }
             _ => Vec::new(),
         };
@@ -175,6 +177,20 @@ impl ChainPage {
         }
     }
 
+    /// An effect picked on the mixer's Effects look (`on`), or the pick
+    /// gone: the column shows the picked effect's knobs on the mixer once
+    /// its state comes (until then, none: a turn must not reach the
+    /// effect picked before).
+    pub fn pick_on_mixer(&mut self, on: bool) {
+        self.mix_pick = on;
+        if on {
+            self.chain = None;
+            self.bind
+                .set_page(mpfree_chain_ui::QLINK_PAGE, "", Default::default());
+            self.bind.show(0);
+        }
+    }
+
     /// The macros panel picked its bank (0: Macros 1-4, 1: 5-8): the
     /// column follows while the panel shows.
     pub fn panel_bank(&mut self, bank: usize) {
@@ -207,6 +223,7 @@ impl ChainPage {
     pub fn drives(&self, v: View) -> bool {
         match v {
             View::Chain | View::Macros => true,
+            View::Mixer => self.mix_pick,
             View::Play | View::Arrange => self.at == v && self.macro_bank_shown(),
             _ => false,
         }
@@ -369,6 +386,31 @@ mod tests {
             p.released(0),
             Some(Turned::Chain(ChainAction::Release(first.addr)))
         );
+    }
+
+    /// On any page of an effect with more than one (the Channel strip's
+    /// Gate page here) the Q-Links turn the four its plan picks, from its
+    /// Main page, and their cards show their values.
+    #[test]
+    fn the_q_links_stay_on_main_four_on_every_page() {
+        let mut p = ChainPage::new();
+        let mut ui = Ui::new(Theme::dark(), Fonts::embedded(), 1280, 800);
+        let mut song = Song::new();
+        let strip = mpfree_fx::registry::make("mpfree.fx.channel_strip").unwrap();
+        let slot = song.keys.push(strip);
+        let st = song.chain_state(mpfree_chain_ui::sample::KEYS, slot, 1, None);
+        assert_eq!(st.groups[st.group], "Gate");
+        let four = st.main_four.clone();
+        assert_eq!(four.len(), 4);
+        p.set_chain(&mut ui, st);
+        p.entered(View::Chain);
+        let (_, cards) = p.cards(&Theme::dark());
+        let names: Vec<&str> = cards.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(names, ["Comp thresh", "Makeup", "Low cut", "High gain"]);
+        match p.turn(3, 1, false) {
+            Some(Turned::Chain(ChainAction::Set { addr, .. })) => assert_eq!(addr, four[3].addr),
+            other => panic!("{other:?}"),
+        }
     }
 
     #[test]

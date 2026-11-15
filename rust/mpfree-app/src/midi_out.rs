@@ -287,6 +287,12 @@ impl MidiOut {
         self.writer.is_some()
     }
 
+    /// Whether MIDI clock (or start and stop) goes out on the jacks, to
+    /// gear that follows it: an export then plays in real time.
+    pub fn sends_clock(&self) -> bool {
+        self.writer.is_some() && self.clock_mode != ClockOut::Off
+    }
+
     /// Whether `track`'s events go to MIDI Out (and not to the pads).
     pub fn takes(&self, track: u16) -> bool {
         self.writer.is_some()

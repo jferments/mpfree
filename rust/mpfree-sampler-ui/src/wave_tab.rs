@@ -34,6 +34,7 @@ use mpfree_sampler::model::{
     WarpMethod, WARP_BPM,
 };
 use mpfree_ui::layout;
+use mpfree_ui::numpad::NumberAsk;
 use mpfree_ui::wave::{Beats, Marker, MarkerKind, WaveOverview, WaveView, Waveform};
 use mpfree_ui::{Color, EventKind, Rect, Ui, UiEvent};
 
@@ -227,6 +228,38 @@ pub enum WaveAction {
     Audition { pad: usize },
     /// Open the editor's tab `i` of [`TABS`].
     Tab(usize),
+    /// Ask for a number to be typed (the Warp tempo's value tapped); the
+    /// number comes back through the tab's `typed`.
+    Ask(NumberAsk),
+}
+
+/// The key a typed Warp tempo comes back with ([`NumberAsk::key`]).
+pub const TYPED_WARP_TEMPO: &str = "warp-tempo";
+
+/// The Warp tempo, to be typed: 20 to 999 BPM, to a hundredth.
+pub fn warp_tempo_ask(r: &Region) -> Option<NumberAsk> {
+    let w = r.warp.as_ref()?;
+    Some(NumberAsk {
+        key: TYPED_WARP_TEMPO.to_string(),
+        title: "Warp tempo".to_string(),
+        unit: "BPM".to_string(),
+        value: f64::from(w.bpm),
+        min: f64::from(*WARP_BPM.start()),
+        max: f64::from(*WARP_BPM.end()),
+        decimals: 2,
+    })
+}
+
+/// `r` with its Warp tempo typed as `bpm` (pins fitted to it), if it is
+/// warped.
+pub fn with_warp_tempo(st: &WaveState, r: &Region, bpm: f64) -> Option<Region> {
+    let mut w = r.warp.clone()?;
+    w.bpm = (bpm as f32).clamp(*WARP_BPM.start(), *WARP_BPM.end());
+    w.fit(r.start, r.end, st.rate);
+    Some(Region {
+        warp: Some(w),
+        ..r.clone()
+    })
 }
 
 impl WaveAction {
@@ -538,6 +571,19 @@ impl WaveTab {
         self.gesture = None;
     }
 
+    /// A number typed for the field `key` asked for ([`WaveAction::Ask`]):
+    /// the change, as an undo step of its own.
+    pub fn typed(&mut self, st: &WaveState, key: &str, value: f64) -> Option<WaveAction> {
+        let r = match key {
+            TYPED_WARP_TEMPO => with_warp_tempo(st, &st.region, value)?,
+            _ => return None,
+        };
+        self.lift();
+        let out = self.edit(st, Key::Row(Row::WarpTempo), r);
+        self.lift();
+        out
+    }
+
     /// Where the pad's voices are playing, in source frames. Only their
     /// strips are redrawn.
     pub fn set_playheads(&self, ui: &mut Ui, frames: &[u64]) {
@@ -620,6 +666,15 @@ impl WaveTab {
         if let Some(list) = ui.get_mut::<SettingList>(REGION) {
             list.right = mode_label(r.mode).to_string();
             list.rows = rows;
+            list.typed = if r.warp.is_some() {
+                Row::ALL
+                    .iter()
+                    .position(|k| *k == Row::WarpTempo)
+                    .into_iter()
+                    .collect()
+            } else {
+                Vec::new()
+            };
         }
         for (k, m) in Mark::ALL.iter().enumerate() {
             if let Some(card) = ui.get_mut::<KnobCard>(QLINKS[k]) {
@@ -633,6 +688,7 @@ impl WaveTab {
                     }
                     None => card.enabled = false,
                 }
+                card.why = "No loop: set Mode to Loop first".to_string();
                 card.focused = *m == self.focus;
             }
         }
@@ -745,6 +801,9 @@ impl WaveTab {
             }
             (REGION, EventKind::Step { index, delta }) => {
                 self.step(ui, st, *Row::ALL.get(*index)?, *delta)
+            }
+            (REGION, EventKind::Type(index)) if Row::ALL.get(*index) == Some(&Row::WarpTempo) => {
+                warp_tempo_ask(&st.region).map(WaveAction::Ask)
             }
             (name, EventKind::Select(_)) if QLINKS.contains(&name) => {
                 let k = QLINKS.iter().position(|q| *q == name)?;

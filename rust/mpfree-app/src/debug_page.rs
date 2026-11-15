@@ -61,6 +61,8 @@ pub struct AudioNumbers {
     /// The largest render time (sampler and synth) since the start, µs.
     pub worst_us: f32,
     pub steals: u64,
+    /// Voices given up under load (shed.rs).
+    pub given_up: u64,
     pub dropped: u64,
     pub peak_grains: usize,
 }
@@ -227,7 +229,12 @@ impl DebugPages {
         };
         d.show_audio(ui);
         d.show_proc(ui);
-        DebugPages::set_engines(ui, &[(None, None); engines::STAGES.len()], Vec::new());
+        DebugPages::set_engines(
+            ui,
+            &[(None, None); engines::STAGES.len()],
+            Vec::new(),
+            Vec::new(),
+        );
         DebugPages::set_procs(ui, &procs::ProcView::default());
         Ok(d)
     }
@@ -310,9 +317,13 @@ impl DebugPages {
                 tone(a.worst_us),
             ),
             (
-                "Voices stolen".to_string(),
-                a.steals.to_string(),
-                Tone::Normal,
+                "Voices stolen · given up".to_string(),
+                format!("{} · {}", a.steals, a.given_up),
+                if a.given_up == 0 {
+                    Tone::Normal
+                } else {
+                    Tone::Bad
+                },
             ),
             (
                 "Events dropped".to_string(),
@@ -337,6 +348,17 @@ impl DebugPages {
             g.values = self.history.clone();
             g.right = format!("now {now:.0} %");
         }
+    }
+
+    /// The app's resident memory, the system's total and what is free
+    /// for new loads, from the last /proc sample (debug mode: every 2 s),
+    /// in kB.
+    pub fn memory_kb(&self) -> (Option<u64>, Option<u64>, Option<u64>) {
+        (
+            self.proc_view.rss_kb,
+            self.proc_view.mem_total_kb,
+            self.proc_view.mem_available_kb,
+        )
     }
 
     pub fn set_proc(&mut self, ui: &mut Ui, v: ProcView) {
@@ -393,9 +415,16 @@ impl DebugPages {
     /// The CPU by engine page, from the audio loop's published numbers.
     /// `cores`: where the sound runs and its lanes' counts (cores.rs), under
     /// the budgets.
-    pub fn set_engines(ui: &mut Ui, s: &engines::Snapshot, cores: Vec<crate::cores::Row>) {
+    pub fn set_engines(
+        ui: &mut Ui,
+        s: &engines::Snapshot,
+        memory: Vec<crate::cores::Row>,
+        cores: Vec<crate::cores::Row>,
+    ) {
         if let Some(l) = ui.get_mut::<StatList>("engnow") {
-            l.set(engines::now_rows(s));
+            let mut rows = engines::now_rows(s);
+            rows.extend(memory);
+            l.set(rows);
         }
         if let Some(l) = ui.get_mut::<StatList>("engsession") {
             let mut rows = engines::session_rows(s);

@@ -54,6 +54,58 @@ worst 20 to 24 %, so the worst is a spike such as voice starts, a page fault
 or preemption, not steady cost), and new engines must come with device
 numbers before they are turned on by default.
 
+## Load shedding: giving up voices nobody hears
+
+When the periods fall behind, the pad player gives up the quietest voices
+rather than let the sound card's queue run dry and click, as the
+[Deluge](https://seangoodvibes.github.io/DelugeDocs/documentation/getting-started/device-overview/performance)
+does (`rust/mpfree-app/src/shed.rs`; item 3 of the 14 Nov performance
+review). It is a safety net for a busy bar, not a budget: a song that needs
+it every bar is too big, and the log says so.
+
+- **When.** Right after each write the audio loop hands `Shed::decide` the
+  period just made: its work, from the last write to this one (the write's
+  own wait left out), and how far the card's queue is below full
+  (`PCM delay`). A period that took longer than it plays is falling behind.
+  While the queue is still within a quarter of its spare periods of full
+  (64 frames with 3 periods queued), the queue takes it and nothing is
+  given up, so a lone slow period costs nothing. A fast export (the card
+  stopped, the loop waiting for the files) is never behind and gives up
+  nothing, so the file has every voice; a Listen export plays in real time
+  and sheds as playing does, so its file is what was heard.
+- **How many.** Enough voices to bring the period back to 90 % of its
+  length, at the period's own cost a voice (the sampler's, the synth's and
+  the tracks' instruments' time over their voices), at most 8 at once. When
+  giving up every voice would still not bring it back (the time went to the
+  mixer or the effects), none is: the music is not thinned for nothing, and
+  the period is counted as one voices would not have helped.
+- **Which.** The least audible voice across the sampler, the pad synth and
+  the tracks' own instruments, one at a time. Each instrument offers its
+  candidate through `Node::cull_candidate` (a `Cull`: its level now and
+  whether its note has ended) and gives it up with `Node::cull`;
+  `Cull::audibility` counts a releasing voice 12 dB quieter, since it is
+  ending anyway. Levels are relative to a full-velocity note: an envelope
+  times the velocity and level gains in the synths, and in the sampler what
+  the voice has played lately (`Voice::heard`, its last output sample at the
+  end of each render, held and falling 16 % a render), so a quiet sample
+  reads quiet. A voice already fading is never offered again, and a plugin
+  offers none (its process doesn't say what it plays). A voice given up gets
+  the fade a stolen one gets (3 ms in the synths, 64 frames in the sampler).
+- **Said.** Each voice given up is counted. The log has one line a second at
+  most (`load: gave up 3 voices to keep the sound going (2 of them
+  releasing); the slowest period took 112 % of its time`), the 30 s status
+  line the totals (`load shedding: ...`), and the Dev tab's Debug page the
+  count next to the voices stolen ("Voices stolen · given up").
+- **Cost.** Nothing in a period on time but one clock read. Behind, a scan
+  of the voices per voice given up. No allocation but the log line.
+- **Tests.** `shed.rs` runs a simulated song through a 3-period queue: 24
+  voices at 119 % lose 8 (down to what fits) and never run dry; a sudden
+  jump to 155 % is caught before the queue empties; lone slow periods give
+  up nothing; an overloaded mixer keeps its voices. Each engine's own
+  candidate, fade and count: `mpfree-synth/tests/cull.rs`,
+  `mpfree-sampler/tests/cull.rs`, the track host's `tests/host.rs`; the
+  no-allocation tests give up voices too.
+
 ## Using it in an engine or a host
 
 In a host's audio loop:
@@ -255,7 +307,15 @@ where it pays. Before any of it runs in the app, `mpfree-gpu-bench`
   `FbTarget`; no display setting changes) and held 1.5 s; then the busiest
   page is drawn and copied to the panel 60 times each way, GPU and software,
   timed. It answers what a whole frame costs to reach the panel from the
-  GPU today, before page flips (G5) remove the read back.
+  GPU with a read back (live test 3: 63 ms a frame, against software's 32).
+- `flip`: the GPU drawing straight into buffers the panel shows (DRM/KMS
+  page flips; no read back, no copy). With the screen untouched it checks
+  the first page in a screen buffer's own memory and against software;
+  then it takes the display, points the screen at its buffers in the mode
+  it already runs, shows each page 1.5 s and times 60 frames each way: the
+  GPU's (draw into the next buffer, flip) and software's (draw, turn and
+  copy into a buffer that is never shown), with the CPU each takes. It puts
+  the screen back as it found it before it exits.
 - `compute`: an FIR filter over a stereo block as an OpenGL ES 3.1 compute
   shader, uploaded, run and read back, against the same job on one CPU core:
   one period with 64 and with 1024 taps, and 32 periods with 1024 taps. It
@@ -272,12 +332,13 @@ of the app, checks on the MPC (read-only) that the GPU's render node and
 the program and the pages to `/run/mpfree-gpu`, stops our pad player and log
 display for a clean run (started again at the end, whatever happens), and
 runs `describe`, `compute --iterations 500`, `screens pages --frames 30` and
-`panel pages --hold-ms 1500 --frames 60`. The program draws through Mesa's
+`panel pages --hold-ms 1500 --frames 60`, and, only with `--flip`, step 7:
+`flip pages --hold-ms 1500 --frames 60`. The program draws through Mesa's
 surfaceless EGL on the render node, as the 9 Nov offscreen tests did: no
 display, no DRM master, no display setting changed. Only the last step
 writes anything: the screen's picture, as the app does (the log display,
 stopped for the run, redraws when it starts again; if it was not running,
-the last page stays until something draws over it). It stops after `describe` if Mesa answers with its software renderer
+the last page stays until something draws over it). **Step 7 is state-changing, in RAM:** it first checks (read-only) that `/dev/dri/card0` is there and no program has a display node open (so the kernel can take the screen back if the program were killed), then waits for Enter; the program takes the display (DRM master) and points the lit CRTC at its own buffers, changing no mode, timing or panel setting, and puts the CRTC back before it exits, also on Ctrl-C, a closed session or a failure. If it ends without saying "the screen is back as it was", the tool says to switch the MPC off and on; nothing is stored. It stops after `describe` if Mesa answers with its software renderer
 instead of the Mali, since the numbers would not be the GPU's. It needs
 `MPFREE_ACCEPT_GPU_BENCH=YES` and a terminal; each step waits for Enter. Its
 tests (`tests/test_host_gpu_mpc.py`) run it against a fake test build under
@@ -331,6 +392,19 @@ data side is here:
   that build; #223 has since spread it over periods inside the probe). The
   same rows show the controller output's refused, dropped and stalled
   messages and the report lines dropped (control.rs).
+- **Memory by engine** (`memory.rs`, 13 Nov; Jay asked for RAM beside
+  CPU): under the audio loop's rows on CPU by engine, what each part holds,
+  from what it knows of its own buffers: every kit's sounds (those undo
+  keeps included, a sound two kits share counted once), the stretched
+  copies, the Rec tab's input buffer while it is held, the looper's sound
+  used and set aside, and the synth's wavetables. Then "Everything else",
+  the app's resident memory (from the developer tools' /proc sample) less
+  what the rows count, where a leak would show, and the app in all against
+  the system's memory. Live test 3's resident size peaked at 195.8 MB of
+  2016.7 MB, most of it the looper's 110 MB set aside. There is no memory
+  budget per engine yet: these rows are what one would be judged by. The
+  last row, "Free for loads (keeps 256 MB spare)", is the system's
+  `MemAvailable`, red under the floor below.
   **First device numbers (live test 2, 13 Nov, main 7b2cae9, sound cores
   shared, about 11 minutes of free play, at most 10 sounds):** no slow
   period. Each part's worst in any 30 s window stayed between 0.03 and
@@ -343,6 +417,39 @@ data side is here:
   run (a full song, the lanes on) should be read the same way. The lines
   are in the project files, `hello-mpc/live-test-2-0623/control-lines.txt`.
 
+## Memory floor: refuse a load rather than be killed
+
+The MPC has 2 GB and no swap, so when memory runs out the kernel kills the
+app mid-song. The caps per file (64 MB a prepared sample, 128 samples a
+sampler) don't bound a whole project: samples, stretched copies and
+auto-samples could outgrow it (review item 6, 14 Nov). `memory.rs` keeps a
+floor, `FLOOR` = 256 MB of `MemAvailable` (what the kernel can give
+without swapping; live test 3 had 1706 to 1718 MB of it with MPFree
+running):
+
+- `room_in(free, need)` refuses a load that would leave less than the
+  floor, with the reason: `not enough memory: needs about 120 MB, 300 MB
+  free, 256 MB kept spare`. Where /proc/meminfo can't be read (not Linux)
+  everything is let through.
+- What a load needs is estimated before it allocates: a sound file's
+  length times 3 (the file and its 16-bit samples as `f32`), times 5 for
+  FLAC (`decode_need`); a stretched copy's frames and the source part the
+  stretch thread is handed; an auto-sample's `Plan::estimate().bytes_most`.
+- The pad player checks at each load: the browser's Load and preview
+  (`read_one`, on their threads), each sound as a project's kits open (one
+  that doesn't fit is left out, named in the log, and the hint says how
+  many), each stretched copy (refused once per copy and tempo; the pad
+  repitches, as it does until any copy is ready) and Auto-sample's Start.
+  A test gives the page its own free memory (`SamplePage::set_mem_free`).
+- The looper and the audio tracks set their memory aside at start (Prefs'
+  Loop memory and Audio track memory), and the Rec tab's input buffer is a
+  fixed 26 MB, so they aren't checked.
+- The screen thread already reads /proc/meminfo every 2 s for the RAM
+  chip; `Watch` logs one line, and says it in place of the hint, when free
+  memory falls under the floor (`memory: 200 MB free, under the 256 MB
+  MPFree keeps spare; ...`) and one when it is 32 MB above it again (with
+  how long and how low).
+
 ## The screen's cost
 
 The software screen thread (`mpfree-screen`) took 18 to 40 % of a core in
@@ -353,7 +460,13 @@ frame leaves the thread, where a GPU drawing process would take it), with
 the native rows the copy wrote and the loop's wakeups.
 
 - **Dev > Performance, "Screen" row**, every second: `N fps · paint X ms ·
-  copy Y ms · slowest Z ms`.
+  copy Y ms · slowest Z ms`. While the GPU draws (`--gpu-screen`,
+  drawing.rs): `GPU · N fps · paint X · send Y · GPU Z ms`, where painting
+  records the frame's list, sending hands it to the GPU process, and Z is
+  that process's slowest frame in the second (building and drawing it).
+  After a fallback to software, in the warning colour: `software, GPU off
+  1× · N fps · slowest Z ms`. In the 30 s line the copy is the send while
+  the GPU draws, and it writes no native rows.
 - **`status: screen (30 s): ...`** every 30 s in the log: frames, the share
   of a core spent drawing, paint and copy mean and worst, native rows a
   frame, wakeups a second, and the page that cost the most. The app check
@@ -366,6 +479,28 @@ top bar, 1256 by 60) rewrites 1256 of the panel's 1280 rows, about 4 MB.
 On the build workstation (13 Nov) that strip took 0.07 ms to paint and 1.2
 to 1.8 ms to copy.
 
+**Turning only what changed** (14 Nov). The copy used to turn whole native
+rows from the canvas, so that strip turned the whole screen to change
+1256 × 60 pixels. `FbTarget` now keeps a copy of what the panel shows, in
+the panel's own layout. It turns only the changed rectangles into that copy
+and writes the same whole rows from it, so the kernel gets the same bytes
+as before (`the_screen_gets_the_same_bytes_as_when_whole_rows_were_turned`,
+fb.rs). Measured on the workstation with `turn_speed` (fb.rs, ignored by
+default):
+
+| Changed | Whole rows turned | Only the rectangle |
+| --- | --- | --- |
+| A chip in the top bar, 120 × 40 | 0.12 ms | 0.005 ms |
+| The top bar, 1280 × 48 | 1.6 ms | 0.06 ms |
+| A meter, 24 × 300 | 0.022 ms | 0.007 ms |
+| A panel, 600 × 400 | 0.70 ms | 0.33 ms |
+| The whole screen | 1.7 ms | 0.8 ms |
+
+The whole screen gains too, because the old way cleared its buffer before
+each turn. The write itself is unchanged: whole native rows, as the kernel
+needs, so the strip still sends about 4 MB to the kernel. The MPC's numbers
+will come from the next app round's `status: screen` lines.
+
 **Idle redraws** (fixed 13 Nov). Two things redrew with nothing changing:
 the Pads tab's browser, at every frame (30 a second: 0.5 ms paint and 0.9
 ms copy each on the workstation, so roughly 30 to 40 % of a core on the
@@ -374,11 +509,83 @@ its inputs marked it changed (`Ui::get_mut`; `Ui::get_mut_quiet` is for
 state a widget does not draw); and the top bar, every second, whether or
 not a chip changed. The test `no_page_redraws_while_idle` (gui.rs) ticks
 every sample screen for three idle seconds and fails if any page draws,
-except the ones that show something live (the I/O view's lights, the touch
-test, the Rec tab's input).
+except the ones that show something live (the touch test's fading trails,
+and the Rec tab's meters falling back after the input stops).
 
-Still to do: wait on touch rather than waking every 4 ms (the status line
-counts the wakeups), and redraw live parts at the rate they need.
+**The pages' clock and the loop's sleep** (fixed 13 Nov, `pace.rs`,
+`touch_bell.rs`). The screen loop woke every 4 ms to look at the
+touchscreen, and while nothing redrew it ticked the pages on each of those
+passes by the time since the last frame drawn (up to 0.1 s a tick). The
+pages' clocks ran about 23 times fast: one idle second on the workstation
+was 241 wakeups and 233 ticks that moved the clocks 22.8 s, so a told line
+(4 s) went in about 0.2 s, holding a macro card opened the macros panel in
+well under the half second the manual gives, and the top bar looked at its
+chips many times a second. Now the pages tick every 33 ms, drawn or not,
+each by the time since the last tick, and the next tick waits a frame after
+a frame finishes drawing, as before. Between ticks the thread sleeps until a
+message, the next tick or the touchscreen's doorbell: a thread of its own
+(`mpfree-touch-bell`) sleeps in read(2) on a second read-only handle on the
+panel (each evdev reader gets its own copy of every event, and nothing is
+grabbed) and wakes the screen thread when a report comes, once until the
+screen thread reads. Idle: 32 wakeups and 32 ticks a second, 0.998 s of
+clock. If the doorbell cannot open or stops, the thread reads the panel
+every 4 ms as before; that is logged (`touch: no doorbell` or `touch:
+doorbell stopped`), counted, and shown after the reader's line in the Touch
+lab. Tests: `the_idle_screen_thread_keeps_time_and_sleeps` and
+`without_the_doorbell_the_screen_thread_reads_the_panel_every_4_ms` (gui.rs),
+`pace.rs` and `touch_bell.rs`.
+
+**Live parts** (fixed 13 Nov). The Rec tab's input view (meters and the
+input strip, 904 by 494) redrew whole at every frame, input or not: on the
+workstation 0.42 ms to paint and 1.11 ms to copy its 904 native rows, so
+roughly 30 to 45 % of an MPC core while the tab shows (round 7's 6.6 to 10
+times, an estimate). Now it works out its picture in pixels
+(`InputView::look`: the meters' lengths and texts, each pixel column of the
+strip, the marks' places) and the tab redraws it only when that changes.
+The strip moves a whole column at a time (the newest column's edge used to
+creep and jump back between columns), marks a fixed time back such as Skip
+back stay put, and "held" counts whole seconds (in hundredths it changed at
+every frame until the buffer was full). A still input now redraws 3 of 90
+frames (the caption, once a second). With no input at all the tab no longer
+redraws at every frame either. While input comes in, the picture moves at
+every frame, so the tab redraws it at most every other frame
+(`rec_tab::LIVE_GAP_S`, about 15 a second; meters included, since they
+share its rows): a loud input redraws 45 of 90 frames (was 90), 13,560
+native rows a second instead of 27,120 (14 Nov). The tab compares with the
+picture last painted (`InputView::painted`), whatever painted it, so the
+screen is never more than a frame behind; a change of settings still shows
+at the next frame. The test `the_strip_redraws_only_when_its_picture_changes`
+(mpfree-sampler-ui) checks both, and that the screen matches a full redraw
+whenever the picture is up to date. The I/O view asked for a
+frame at every tick and painted nothing (`io_tick` reached for its widget
+with `Ui::get_mut`); it now asks only when a section changed. The touch
+test (a developer page) still redraws its area at every frame.
+
+Still to do: a loud input still copies 904 native rows 15 times a second.
+The panel takes whole native rows, so the meters, which run across the
+view's width, cost about as much as the whole view; going lower needs a
+different picture (the meters upright at one side, the strip wiping
+across instead of scrolling), which is the owner's call.
+
+**Painting each pixel once** (14 Nov). A whole-page paint filled the
+screen with the background, then every widget filled its own rectangle
+with it again, and then most widgets covered it with an opaque panel: on
+the 73 sample pages, 3.1 times the screen's pixels written opaque per
+page. `Ui::paint` now fills only the gaps between the widgets
+(`Rect::uncovered`), and clears a widget's part only where its first call
+leaves it: nothing under an opaque fill that covers it, only the corners
+under an opaque rounded panel (`Cleared`, in ui.rs). That is 1.5 times the
+screen's pixels a page, and the same for each panel's part redrawn.
+Measured on the workstation by replaying the 73 pages' lists in software:
+plain opaque fills from 161 to 43 million pixels in all, and about 82 ms to 62 ms
+for the pages together (instructions down 10 %; the rest is memory traffic,
+which costs the MPC more). The picture is the same: every preview screen in
+all four themes is byte for byte as before, and two tests check it against
+painting the old way over a screen of noise, with random widgets and two
+themes whose background or backdrop lets through what is under it (there a
+background fill no longer hides it, so the whole screen is filled as
+before): `clearing_less_draws_the_same_picture` and
+`pages_paint_the_same_picture_as_before` (ui.rs).
 
 ## CI
 
@@ -414,3 +621,26 @@ when the baseline came from another one. The whole run takes about a minute
 under callgrind. After an intended change in cost, bless with
 `python3 tools/ci/instr_gate.py --bless` and say why in the PR. The runner needs
 `valgrind`; without it the job warns and skips.
+
+### ARMv7 counts for the instrument engines
+
+```text
+python3 tools/inst_arm_cost.py [--blocks N] [--jobs J] [--no-build] [CASE ...]
+```
+
+The x86 counts above miss what is slow on the MPC's ARMv7 build: no hardware
+divide, `floor` and 64-bit conversions as library calls. So Keys, Drawbar,
+Squelch and Analog are also counted as ARMv7 code, the way the effects are
+(fx.md). `rust/mpfree-synth/examples/inst_cost.rs` plays the bench's cases
+for the four engines, plus Poly Init with 8 voices for scale, with the same
+notes from the same seeds. The script builds it for
+`armv7-unknown-linux-gnueabihf` and runs each case under
+`qemu-arm -one-insn-per-tb -d exec,nochain` with N blocks (200 by default)
+and with none. Every instruction run prints one trace line, so the
+difference over N is the instructions per block. It also prints each case's
+output hash, which matches the native build's: the engines sound the same to
+the bit on ARMv7. The trace runs about 300k instructions a second, so all 16
+cases take about 20 minutes, four at a time. These are instructions, not
+cycles: cache misses and VFP stalls come on top, so the device still decides
+voice counts. The counts of 14 Nov are in synths.md, beside each engine's
+x86 count.

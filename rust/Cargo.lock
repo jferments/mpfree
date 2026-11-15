@@ -367,11 +367,15 @@ version = "0.1.0"
 dependencies = [
  "mpfree-arp",
  "mpfree-arp-ui",
+ "mpfree-audiotracks",
  "mpfree-browser-ui",
  "mpfree-capture",
  "mpfree-chain-ui",
+ "mpfree-clap",
+ "mpfree-clap-testplug",
  "mpfree-controller",
  "mpfree-core",
+ "mpfree-export",
  "mpfree-fx",
  "mpfree-fx-ui",
  "mpfree-instruments",
@@ -386,6 +390,7 @@ dependencies = [
  "mpfree-node",
  "mpfree-perform",
  "mpfree-play",
+ "mpfree-plughost",
  "mpfree-prof",
  "mpfree-sampler",
  "mpfree-sampler-ui",
@@ -397,6 +402,7 @@ dependencies = [
  "mpfree-time-ui",
  "mpfree-touch",
  "mpfree-touch-evdev",
+ "mpfree-track",
  "mpfree-transport",
  "mpfree-tuning",
  "mpfree-ui",
@@ -517,6 +523,14 @@ dependencies = [
 [[package]]
 name = "mpfree-display"
 version = "0.1.0"
+
+[[package]]
+name = "mpfree-export"
+version = "0.1.0"
+dependencies = [
+ "mpfree-fx",
+ "mpfree-midi",
+]
 
 [[package]]
 name = "mpfree-flac"

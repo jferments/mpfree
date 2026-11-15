@@ -4,7 +4,8 @@
 use mpfree_browser_ui::sample::{fill, samples, FACTORY};
 use mpfree_browser_ui::state::{when, Key, Modal, SOURCES};
 use mpfree_browser_ui::{
-    step, BrowseAction, Browser, BrowserView, Button, Filter, Input, Pick, Sort, BROWSER,
+    step, BrowseAction, Browser, BrowserView, Button, ExportChoice, ExportInput, ExportPhase,
+    ExportRange, ExportSetup, Filter, Input, Pick, Sort, BROWSER,
 };
 use mpfree_library::{Library, Loc, Meta, Place, Snapshot};
 use mpfree_ui::{Fonts, SoftCanvas, Touch};
@@ -246,8 +247,9 @@ fn filters_keep_folders_and_the_right_files() {
     assert_eq!(names(&b), ["Drums", "Field recordings", "Loops", "Vox"]);
     b.go_source(src("Projects"));
     assert_eq!(names(&b), ["Live set", "Night drive", "Sunday chops"]);
-    // No New folder in Projects: projects are made by saving.
-    assert!(b.screen().list_buttons.is_empty());
+    // No New folder in Projects: projects are made by saving (New
+    // project, Save as and Save instead).
+    assert!(!b.screen().list_buttons.contains(&Button::NewFolder));
 }
 
 #[test]
@@ -670,4 +672,298 @@ fn newest_first_puts_the_last_changed_first_after_folders() {
     assert_eq!(names(&b)[..2], ["Clap.wav", "Rim.wav"]);
     b.input(Input::Sort);
     assert_eq!(names(&b), by_name);
+}
+
+#[test]
+fn projects_offer_new_save_and_save_as_and_new_asks_over_unsaved_work() {
+    let (mut b, _) = browser();
+    b.go_source(src("Projects"));
+    assert_eq!(
+        b.screen().list_buttons,
+        [
+            Button::NewProject,
+            Button::SaveAs,
+            Button::Save,
+            Button::Export
+        ]
+    );
+    // Other places keep their own buttons.
+    b.go_source(src("Samples"));
+    assert!(!b.screen().list_buttons.contains(&Button::Save));
+    b.go_source(src("Projects"));
+    // Save asks the app for the parts.
+    b.input(Input::Button(Button::Save));
+    assert_eq!(b.take_actions(), [BrowseAction::SaveRequested]);
+    // Save as opens the keyboard with a name ready.
+    b.input(Input::Button(Button::SaveAs));
+    assert!(
+        matches!(&b.screen().modal, Modal::Keyboard { text, .. } if text.starts_with("Project "))
+    );
+    b.input(Input::Key(Key::Cancel));
+    // New project with nothing unsaved: at once.
+    select(&mut b, "Night drive");
+    b.push();
+    b.take_actions();
+    assert!(b.project().is_some());
+    b.input(Input::Button(Button::NewProject));
+    assert_eq!(b.take_actions(), [BrowseAction::NewProject]);
+    assert_eq!(b.project(), None);
+    // Over unsaved work it asks first; No keeps everything.
+    b.set_unsaved(true);
+    b.input(Input::Button(Button::NewProject));
+    assert!(matches!(&b.screen().modal, Modal::Confirm { text, .. } if text.contains("Unsaved")));
+    b.input(Input::ConfirmNo);
+    assert!(b.take_actions().is_empty());
+    assert!(b.unsaved());
+    b.input(Input::Button(Button::NewProject));
+    b.input(Input::ConfirmYes);
+    assert_eq!(b.take_actions(), [BrowseAction::NewProject]);
+    assert!(!b.unsaved());
+    // A picker offers none of them.
+    b.open_picker(Pick::Project);
+    assert_eq!(b.screen().list_buttons, [Button::Cancel]);
+    b.input(Input::Button(Button::NewProject));
+    assert!(b.take_actions().is_empty());
+}
+
+/// Autosave writes the unsaved work into its own project, quietly. At the
+/// next start, work newer than the last save is set aside as a project of
+/// its own, which opens as unsaved work and saves as a new project.
+#[test]
+fn autosaved_work_is_set_aside_at_the_next_start_and_opens_unsaved() {
+    let (mut b, lib) = browser();
+    let snap = |bpm: f64| Snapshot {
+        meta: Meta {
+            tempo: bpm,
+            ..Meta::default()
+        },
+        parts: vec![("transport".into(), format!("bpm = {bpm}\n"))],
+    };
+    let t = 1_794_431_040; // 2026-11-11 21:04 UTC
+    b.save(snap(90.0), t);
+    let mine = b.project().cloned().unwrap();
+    let autosave = Loc::new(Place::Projects, &["Autosave"]).unwrap();
+    b.take_actions();
+    b.set_unsaved(true);
+    let status = b.screen().status;
+    b.autosave_with(snap(95.0), Vec::new(), t + 120);
+    assert_eq!(
+        b.take_actions(),
+        [BrowseAction::Autosaved {
+            loc: autosave.clone()
+        }]
+    );
+    assert_eq!(b.project(), Some(&mine), "the project stays");
+    assert!(b.unsaved(), "still unsaved");
+    assert_eq!(b.screen().status, status, "quietly");
+    let back = lib.open_project(&autosave).unwrap();
+    assert!(back.meta.is_autosave());
+    assert_eq!(back.meta.name, format!("Autosave of {}", mine.name()));
+    assert_eq!(back.part("transport"), Some("bpm = 95\n"));
+    // Saved since: the next start leaves autosave's project in place.
+    b.save(snap(96.0), t + 180);
+    let next_start = |b: &Browser| {
+        let mut n = Browser::inline(lib.clone());
+        n.load_lists(&b.lists_text());
+        n
+    };
+    assert_eq!(next_start(&b).keep_newer_autosave(), None);
+    // Unsaved work autosaved after the last save (then a crash or the
+    // power switch): set aside, named for when it was written, once.
+    b.set_unsaved(true);
+    b.autosave_with(snap(97.0), Vec::new(), t + 240);
+    let mut n = next_start(&b);
+    let kept = Loc::new(Place::Projects, &["Unsaved 2026-11-11 21.08"]).unwrap();
+    assert_eq!(n.keep_newer_autosave(), Some(Ok(kept.clone())));
+    assert_eq!(n.keep_newer_autosave(), None);
+    assert!(lib.open_project(&autosave).is_err(), "autosave starts anew");
+    // It opens as unsaved work, and SHIFT + BROWSE keeps it as a new
+    // project, never over the one set aside.
+    n.go_source(src("Projects"));
+    select(&mut n, kept.name());
+    n.push();
+    assert!(n
+        .take_actions()
+        .iter()
+        .any(|a| matches!(a, BrowseAction::ProjectOpened { snap, .. } if snap.part("transport") == Some("bpm = 97\n"))));
+    assert_eq!(n.project(), None);
+    assert!(n.unsaved());
+    let said = n.screen().status.unwrap().0;
+    assert!(
+        said.contains("autosaved") && said.contains("SHIFT + BROWSE"),
+        "{said}"
+    );
+    n.open_landed();
+    assert!(n.unsaved(), "still unsaved once the engines hold it");
+    n.save(snap(97.0), t + 360);
+    assert_eq!(
+        n.project().map(|l| l.name().to_string()).as_deref(),
+        Some("Project 2026-11-11 21.10")
+    );
+    assert!(!n.unsaved());
+    assert!(lib.open_project(&kept).unwrap().meta.is_autosave());
+    // Another project opened lands with nothing unsaved.
+    select(&mut n, "Night drive");
+    n.push();
+    n.take_actions();
+    n.open_landed();
+    assert!(!n.unsaved());
+}
+
+fn export_setup(arrangement: bool) -> ExportSetup {
+    ExportSetup {
+        arrangement: arrangement.then(|| "3:50, 96 bars".to_string()),
+        from_bar: 3,
+        mode: "Fast, quiet".into(),
+        stems: 5,
+        folder: "Recordings / Night drive 2026-11-14 01.32".into(),
+    }
+}
+
+#[test]
+fn export_asks_the_app_and_its_panel_takes_the_screen() {
+    let (mut b, lib) = browser();
+    b.go_source(src("Projects"));
+    b.input(Input::Button(Button::Export));
+    assert_eq!(b.take_actions(), [BrowseAction::ExportAsked]);
+    assert!(b.screen().export.is_none(), "the app opens it");
+    b.open_export(export_setup(false));
+    let p = b.screen().export.unwrap();
+    assert_eq!(p.range, ExportRange::Bars(8));
+    assert!(p.mixdown && p.stems && p.midi);
+    // While it shows, the browser under it takes nothing.
+    let before = b.screen().selected;
+    b.dial(2);
+    b.input(Input::Row(1));
+    b.input(Input::Button(Button::NewProject));
+    assert!(b.take_actions().is_empty());
+    assert_eq!(b.screen().selected, before);
+    assert_eq!(
+        b.screen().export.unwrap().range,
+        ExportRange::Bars(10),
+        "the wheel sets the bars"
+    );
+    // Ticks, then Start (the push).
+    b.input(Input::Export(ExportInput::Midi));
+    b.input(Input::Export(ExportInput::Fewer));
+    b.push();
+    let want = ExportChoice {
+        mixdown: true,
+        stems: true,
+        midi: false,
+        range: ExportRange::Bars(9),
+    };
+    assert_eq!(b.take_actions(), [BrowseAction::ExportStart(want)]);
+    assert!(b.exporting());
+    // Running: only Cancel; - does not close it; it stays through a
+    // picker (hidden there) and comes back after.
+    b.back();
+    b.input(Input::Export(ExportInput::Close));
+    assert!(b.exporting());
+    b.export_running("0:04 of 0:19".into(), Some(0.25));
+    b.open_picker(Pick::Sample);
+    assert!(b.screen().export.is_none());
+    b.cancel_picker();
+    b.take_actions();
+    assert_eq!(
+        b.screen().export.unwrap().phase,
+        ExportPhase::Running {
+            words: "0:04 of 0:19".into(),
+            part: Some(0.25)
+        }
+    );
+    // Asking again while it runs changes nothing.
+    b.open_export(export_setup(true));
+    assert!(b.exporting());
+    b.input(Input::Export(ExportInput::Cancel));
+    assert_eq!(b.take_actions(), [BrowseAction::ExportCancel]);
+    b.export_over("Export cancelled, and its files removed".into(), None);
+    assert!(!b.exporting());
+    assert!(matches!(
+        b.screen().export.unwrap().phase,
+        ExportPhase::Stopped(_)
+    ));
+    b.push();
+    assert!(b.screen().export.is_none(), "the push closes it");
+    // Next time, the last choice is ticked again.
+    b.open_export(export_setup(true));
+    assert_eq!(b.screen().export.unwrap().choice(), want);
+    b.input(Input::Export(ExportInput::Arrangement));
+    b.input(Input::Export(ExportInput::Start));
+    b.take_actions();
+    // Done: Show in BROWSE goes to its folder in Recordings.
+    let rec = Loc::top(Place::Recordings);
+    let folder = lib
+        .new_folder(&rec, "Night drive 2026-11-14 01.32")
+        .unwrap();
+    b.export_over("Exported 3:52".into(), Some(folder.clone()));
+    assert_eq!(b.screen().status, Some(("Exported 3:52".into(), false)));
+    b.input(Input::Export(ExportInput::Show));
+    assert!(b.screen().export.is_none());
+    assert_eq!(b.screen().path, folder.display());
+}
+
+#[test]
+fn the_export_panel_answers_taps() {
+    let lib = fill(&temp()).unwrap();
+    let mut b = Browser::inline(lib);
+    let mut ui = mpfree_ui::Ui::new(mpfree_ui::Theme::dark(), Fonts::embedded(), 1280, 800);
+    ui.add("header", mpfree_ui::widgets::Header::app("Play"));
+    mpfree_browser_ui::add(&mut ui, &b).unwrap();
+    ui.show(mpfree_browser_ui::BROWSER_PAGE).unwrap();
+    b.go_source(src("Projects"));
+    b.open_export(export_setup(true));
+    step(&mut ui, &mut b);
+    // The panel's controls replace the browser's on the page.
+    let mut c = SoftCanvas::new(1280, 800);
+    ui.paint(&mut c);
+    let labels: Vec<String> = ui
+        .targets()
+        .into_iter()
+        .filter(|t| t.widget == BROWSER)
+        .map(|t| format!("{}/{}", t.target.id, t.target.label))
+        .collect();
+    assert_eq!(
+        labels,
+        [
+            "export/Mixdown",
+            "export/Stems",
+            "export/MIDI file",
+            "export/Arrangement",
+            "export/Bars",
+            "export/-",
+            "export/+",
+            "export/Close",
+            "export/Start"
+        ]
+    );
+    let tap = |ui: &mut mpfree_ui::Ui, x: i32, y: i32| {
+        ui.touch(1, Touch::Down, x, y);
+        ui.touch(1, Touch::Up, x, y);
+    };
+    // The card is centred in the browser: Make's buttons are its first
+    // row, Start is at the bottom right.
+    let r = ui.rect_of(BROWSER).unwrap();
+    let (w, h) = (780.min(r.w - 40), 480.min(r.h - 24));
+    let card = (r.x + (r.w - w) / 2, r.y + (r.h - h) / 2);
+    let (stems_x, make_y) = (
+        card.0 + 24 + 120 + (w - 48 - 120) / 2,
+        card.1 + 24 + 50 + 28,
+    );
+    tap(&mut ui, stems_x, make_y);
+    step(&mut ui, &mut b);
+    assert!(!b.screen().export.unwrap().stems);
+    // A tap outside the card does nothing, and the list under it can't be
+    // tapped.
+    tap(&mut ui, r.x + 30, r.y + 30);
+    step(&mut ui, &mut b);
+    assert!(b.screen().export.is_some());
+    tap(&mut ui, card.0 + w - 24 - 100, card.1 + h - 24 - 28);
+    let acts = step(&mut ui, &mut b);
+    assert!(
+        matches!(acts.as_slice(), [BrowseAction::ExportStart(c)] if !c.stems && c.range == ExportRange::Arrangement),
+        "{acts:?}"
+    );
+    let mut c = SoftCanvas::new(1280, 800);
+    ui.paint(&mut c);
 }

@@ -870,7 +870,14 @@ pub fn kit_project() -> (Project, Arc<SourceView>) {
 /// The Pads tab's Pad view on the kit, pad `pad` picked.
 pub fn pads_sample(fonts: Fonts, pad: usize) -> Result<PadsSample, String> {
     let (project, _) = kit_project();
-    let state = PadsState::from_project(&project, pad);
+    let mut state = PadsState::from_project(&project, pad);
+    // The pad's mixer channel, as the app gives it: a compressor on the
+    // loop's pad, none on the others.
+    state.effects = Some(if pad == PAD {
+        vec!["Compressor".into()]
+    } else {
+        Vec::new()
+    });
     let mut ui = app_ui_with(fonts, &project, pads_tab::HINT);
     if let Some(h) = ui.get_mut::<Header>("header") {
         h.active = Header::app("Pads").active;

@@ -1,7 +1,7 @@
 <!--
 status: changing
 covers: rust/mpfree-seq/src/scenes.rs rust/mpfree-seq/src/arrange.rs rust/mpfree-perform rust/mpfree-time-ui/src/song.rs rust/mpfree-time-ui/src/widgets.rs
-checked: 2026-11-13 f8cc558
+checked: 2026-11-14 b76c3c7
 -->
 
 # Arranging a song
@@ -32,7 +32,7 @@ A knob you turn while morphing changes the scene the crossfader is nearer, and t
 
 ## The song
 
-The song is your clips laid out on a timeline, one lane per track. Tap **Song ›** above the clip grid to see it, and **Clips** to go back to the grid.
+The song is your clips laid out on a timeline, one lane per track. Tap **Song ›** above the clip grid to see it, and **Clips** to go back to the grid. **+ Track**, under the last track's lane, adds a track, as on the grid. With more tracks than fit, drag up or down on the names to scroll.
 
 {{shot: arrange-song | The Song view: five rows made into a song, a drum block selected, and Rec song on.}}
 
@@ -40,6 +40,7 @@ The song is your clips laid out on a timeline, one lane per track. Tap **Song �
 - **Song on** plays the song. A track plays the song wherever you have not launched a clip on it. Launch a clip and it takes that track over. Stop it and the track goes back to the song.
 - **Song → scenes** goes the other way. It cuts the song into its parts and puts each part into empty rows, set to play one after another. It never writes over a row that has clips.
 - Hold **SHIFT** and turn the wheel to scroll through the bars. Tap a block to select it.
+- Under each track's name is what it plays: **Kit**, or its own instrument (see [A synth for each track](synths.md#a-synth-for-each-track)).
 
 A block in the song is linked to its clip, so when you edit the clip, every block that uses it changes too. **Make unique** gives the selected block its own copy, so you can change it without touching the others. A unique block has a small dot in its corner. **Delete** removes the selected block.
 
@@ -48,21 +49,7 @@ A block in the song is linked to its clip, so when you edit the clip, every bloc
 
 ### Audio in the song
 
-Audio you record from the line input goes on **audio tracks**, which have their own lanes under the clip lanes, on the same timeline. A lane shows once its track is armed or has audio on it.
-
-> [!NOTE]
-> Coming: the Song view can show audio lanes, but the audio tracks aren't connected to it in this build, so no lanes appear yet. This section describes how they will work.
-
-{{shot: arrange-song-audio | The Song view with two audio lanes: a vocal recorded twice, its newer part picked, and a guitar armed.}}
-
-- Each recording is a **region**: a block in the track's colour with its waveform. When an older take plays, the block says which one ("take 1"). A fade shows as a slope.
-- While a track records, a red block grows from where it started.
-- On the left of each lane: the **arm dot** (red while armed: tap it to arm or disarm), the track's name, its input (**L**, **R**, **L+R** or **ST**) and a thin level bar along the bottom.
-- **+ Audio** at the bottom adds the next audio track, up to 8.
-- Tap a region to pick it. The buttons along the bottom become **Split**, **Erase**, **Fades**, **Gain**, **Takes** and **Undo** for that region. Tap empty space to go back to the song's own buttons.
-- When there are more lanes than fit, drag up or down on the names to scroll them.
-
-Also coming: tapping a track's name for its settings (input, monitoring, level, pan, mute, solo), swiping across takes to keep the best parts of each, and dragging a region to move it.
+Audio you record from the INPUTS goes on **audio tracks**, with lanes of their own under the clip lanes, on the same timeline. They play whenever the song plays. Recording them, editing their regions and picking the best parts of several takes is in [Recording audio tracks](audio-tracks.md).
 
 ## Recording a performance into the song
 

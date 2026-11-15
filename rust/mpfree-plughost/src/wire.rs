@@ -11,11 +11,23 @@ use std::io::{self, Read, Write};
 /// Messages the host sends.
 #[derive(Clone, Debug, PartialEq)]
 pub enum ToChild {
-    Prepare { rate: u32, max_block: u32 },
+    Prepare {
+        rate: u32,
+        max_block: u32,
+    },
     SaveState,
     LoadState(Vec<u8>),
-    ParamText { index: u16, value: f32 },
+    ParamText {
+        index: u16,
+        value: f32,
+    },
     Quit,
+    /// Load one of the plugin's presets: a file (its path's bytes) or one
+    /// inside the plugin (None), and its load key.
+    LoadPreset {
+        file: Option<Vec<u8>>,
+        key: Option<String>,
+    },
 }
 
 /// What the plugin process says about its plugin, once, at the start.
@@ -39,6 +51,8 @@ pub enum ToHost {
     State(Option<Vec<u8>>),
     Loaded(bool),
     Text(Option<String>),
+    /// The answer to `LoadPreset`: done, or the plugin's reason.
+    PresetLoaded(Result<(), String>),
     /// The plugin couldn't be loaded or made; the process exits after this.
     Failed(String),
 }
@@ -155,6 +169,13 @@ pub fn send_to_child(w: &mut impl Write, m: &ToChild) -> io::Result<()> {
         ToChild::Quit => {
             e.u8(5);
         }
+        ToChild::LoadPreset { file, key } => {
+            e.u8(6)
+                .u8(u8::from(file.is_some()))
+                .bytes(file.as_deref().unwrap_or(&[]))
+                .u8(u8::from(key.is_some()))
+                .str(key.as_deref().unwrap_or(""));
+        }
     }
     frame(w, &e.0)
 }
@@ -174,6 +195,16 @@ pub fn read_to_child(r: &mut impl Read) -> io::Result<ToChild> {
             value: d.f32()?,
         },
         5 => ToChild::Quit,
+        6 => {
+            let some = d.u8()? != 0;
+            let file = d.bytes()?;
+            let has_key = d.u8()? != 0;
+            let key = d.str()?;
+            ToChild::LoadPreset {
+                file: some.then_some(file),
+                key: has_key.then_some(key),
+            }
+        }
         _ => return Err(bad()),
     })
 }
@@ -261,6 +292,11 @@ pub fn send_to_host(w: &mut impl Write, m: &ToHost) -> io::Result<()> {
                 .u8(u8::from(t.is_some()))
                 .str(t.as_deref().unwrap_or(""));
         }
+        ToHost::PresetLoaded(r) => {
+            e.u8(106)
+                .u8(u8::from(r.is_ok()))
+                .str(r.as_ref().err().map_or("", String::as_str));
+        }
         ToHost::Failed(msg) => {
             e.u8(199).str(msg);
         }
@@ -309,6 +345,11 @@ pub fn read_to_host(r: &mut impl Read) -> io::Result<ToHost> {
             let s = d.str()?;
             ToHost::Text(some.then_some(s))
         }
+        106 => {
+            let ok = d.u8()? != 0;
+            let why = d.str()?;
+            ToHost::PresetLoaded(if ok { Ok(()) } else { Err(why) })
+        }
         199 => ToHost::Failed(d.str()?),
         _ => return Err(bad()),
     })
@@ -332,6 +373,14 @@ mod tests {
                 value: -3.5,
             },
             ToChild::Quit,
+            ToChild::LoadPreset {
+                file: Some(b"/data/Pads/Warm.fxp".to_vec()),
+                key: None,
+            },
+            ToChild::LoadPreset {
+                file: None,
+                key: Some("bright".into()),
+            },
         ];
         for m in &to_child {
             let mut buf = Vec::new();
@@ -375,6 +424,8 @@ mod tests {
             ToHost::Loaded(false),
             ToHost::Text(Some("Saw".into())),
             ToHost::Text(None),
+            ToHost::PresetLoaded(Ok(())),
+            ToHost::PresetLoaded(Err("no such preset".into())),
             ToHost::Failed("no".into()),
         ];
         for m in &to_host {

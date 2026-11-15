@@ -8,8 +8,9 @@ meant to grow. Status as of 2026-11-11.
 | Tier | What it proves | Where it runs | Who starts it |
 | --- | --- | --- | --- |
 | Unit and crate tests | Each crate's logic: engines, DSP, parsers, UI layout and drawing | `cargo test` in `rust/`; CI on every PR | Anyone, CI |
+| GUI smoke | Every control on every screen does something; random and scripted sequences of controls keep the screen and the engines together (below) | `cargo test -p mpfree-app` (`smoke`); CI on every PR | Anyone, CI |
 | Host integration | Whole programs with no hardware: headless engine with null audio, session offline check, groove and sampler WAV renders, display previews, C++/Rust WAV parity | CI's `core` and `rust` jobs | CI |
-| ARMv7 under qemu | The device build: static ARM binaries, ABI layouts against the kernel's headers, the app and UI tests as 32-bit ARM, preview screens | CI's `rust` job | CI |
+| ARMv7 under qemu | The device build: static ARM binaries, ABI layouts against the kernel's headers, the app and UI tests as 32-bit ARM (the control sweep and song workflows only by hand), preview screens | CI's `rust` job | CI |
 | Device tools offline | Survey, backup, kexec and update tools against fake MPCs, fake images and BusyBox | CI's `syntax` job | CI |
 | On the MPC | Real audio, pads, touch, screen | The reference MPC One, round by round with `tools/mpc-one/results.py` | Jay only |
 
@@ -29,7 +30,7 @@ filters, so the check always reports.
 | `syntax` | Shell syntax; static no-write checks on the read-only scripts; about 20 Python test files for the device tools against fakes (BusyBox, offline images, DTBs, the RK3288 ROM tools); `python3 -m unittest discover -s tests` (12 more) | ~1 min |
 | `core` | C++ reference engine build, `ctest`, WAV format and size | ~10 s |
 | `lint` | `cargo clippy --workspace --all-targets` with warnings as errors, and `cargo fmt --check`, on a pinned toolchain | ~1 min |
-| `rust` | All workspace tests in debug and release; the `mpfree-bench` no-allocation check; host self-tests and fixed-output renders; C++/Rust WAV parity; the ARMv7 hard-float cross-build, ELF checks, and ARM tests and previews under qemu | ~2-3 min warm |
+| `rust` | All workspace tests, natively in debug; the `mpfree-bench` no-allocation check; host self-tests and fixed-output renders; C++/Rust WAV parity; the ARMv7 hard-float cross-build, ELF checks, the app's and UI's tests as ARM and previews under qemu. Under qemu it leaves out the app's smoke module (the control sweep, workflows and song workflows, about 32 minutes there; they run natively every time): **Run workflow** with the `full_arm` box ticked runs them as ARM too | ~15 min (57 before 14 Nov) |
 | `splash-gl` | SDL3/GLES startup screen built from source and rendered headless with Mesa | ~1 min warm |
 | `gpu` | The GPU renderer (`rust/mpfree-gpu`, OpenGL ES through EGL) with Mesa's software GPU: clippy, then its frames against the software path's for the MPC's screen and every panel turn, and a compute round trip against the CPU; then `mpfree-gpu-bench` built for the MPC (ARMv7) and checked as `host_gpu_mpc.py` checks it | ~2 min warm |
 | `instructions` | Instructions per 128-frame block for every `mpfree-bench` case under callgrind, against `rust/mpfree-bench/instructions.txt`; fails when a case rises more than 5 % (see [profiling](../design/profiling.md#instruction-counts-the-instructions-ci-job)) | ~2 min warm |
@@ -93,6 +94,94 @@ cd rust && cargo llvm-cov --workspace --all-targets --locked --no-report
 cargo llvm-cov report --json --summary-only --output-path /tmp/cov.json
 python3 ../tools/ci/coverage_summary.py /tmp/cov.json
 ~~~
+
+## GUI smoke tests
+
+Jay asked on 13 Nov 2026 for every button to do something when touched,
+and for the sequences and combinations of controls musicians use to be
+tested, not only single presses. Three kinds of test in
+`rust/mpfree-app/src/smoke/` do that, all without a device. They press
+controls as a finger would, through the same touch path as the
+touchscreen, using the list of controls each widget gives
+(`Widget::targets`, see [UI architecture](../design/ui-architecture.md#controls-and-the-smoke-tests)).
+
+- **The sweep** (`smoke.rs`, `every_control_on_every_screen_does_something`)
+  opens every sample screen and presses every control on it: a tap, a
+  drag or a long press, as the control says. A press passes when it sends
+  an action to the app or the audio thread, changes the screen, or says
+  something on the hint line. A drag that does nothing is tried the other
+  way (a slider at its end), and a press that does nothing after the ones
+  before it is tried again on the screen as it first was. A control drawn
+  faint, or already lit (the tab or row picked), may do nothing; any other
+  that does nothing fails the test by name. `catalogue::KNOWN_DEAD` lists
+  controls that may do nothing for now, each with who builds it; it is
+  empty. `MPFREE_AUDIT_OUT=<file>` writes the whole report, one row per
+  control. The sweep paints each screen before listing its controls,
+  because some widgets (the top bar's chips) measure them when they draw.
+  A press it cannot bring the page back from gets a fresh copy of the
+  screen from a spare set. The spares share one copy of the fonts, and at
+  most three sets' worth are kept, the screens swept soonest first, so
+  the sweep fits in the 32-bit ARM test's memory (it peaks at about
+  1.3 GB on x86-64, and takes about 3.5 minutes in a debug build).
+- **The catalogue check** (`every_swept_control_is_in_the_catalogue`)
+  reads the same sweep (it runs once for both tests) and fails on any
+  `widget/id` the [controls catalogue](controls.md) doesn't explain. A new
+  kind of control needs its entry there in the same pull request.
+- **Random walks** (`smoke/walk.rs`) start a whole session (the screen,
+  the app, the mixer, the time engine, the looper, the chain editor) and
+  take seeded random steps: a control on the page, a hardware button
+  (alone or with SHIFT), the wheel, a pad, or time passing. After each step
+  the checks in `walk::check` must hold: the page the screen shows is the
+  app's, the transport and tempo on screen are the time engine's, the
+  master bar shows the Level, the step grid shows the clip and the mutes,
+  the chain editor shows the mixer's chain, and more. A failure names the
+  seed and every step. `MPFREE_WALK_SEED=<n>` walks one seed again,
+  `MPFREE_WALKS` and `MPFREE_WALK_STEPS` walk more or longer, and
+  `MPFREE_WALK_OUT=<file>` writes the presses that did nothing. One walk
+  covers every page; the other stays on the mixer's FX pages.
+- **Workflows** (`smoke/workflows.rs`) script what a musician does, step by
+  step, and check each step against the engine, not only the screen: an
+  insert added on the mixer, bypassed, moved and removed; a knob given to a
+  macro; steps tapped on Beats playing in time; REC and Undo; mutes from
+  the Play page, the pad mixer and TRACK MUTE; the synth staying on the pads;
+  the tempo tapped; the master level from both ends; the kit from the
+  wheel and from the kit chip; Full level turned off from its chip. A new
+  feature a musician uses gets a workflow here.
+- **Song workflows** (`smoke/song_workflows.rs`) do the same with three
+  whole demo songs written in code (`smoke/songs.rs`), saved into a
+  library in a temporary folder and opened from BROWSE as a musician
+  opens them:
+  - *Night Market* (92 BPM, swung): five scenes chained by follow
+    actions, scene mutes, fill-only and first-pass trig conditions, and a
+    44-bar arrangement with markers.
+  - *Glass Garden* (124 BPM): clips of 3, 5, 7, 12 and 16 steps looping
+    against each other, ratchets, per-pass conditions, pan locks, a
+    half-speed lead, and scene values for the morph bar.
+  - *Tidal Suite* (76 BPM): clip and scene follow actions with chances
+    (Next or Again, Next or Previous, Last), neighbour conditions, and no
+    arrangement yet.
+
+  The workflows check each song opens as written; plays its sections by
+  follow actions; FILL; the polymeters, ratchets and conditions step by
+  step; song mode following the arrangement; Scenes → song; TRACK MUTE
+  mid-section; the morph crossfader; a REC overdub and a CAPTURE with
+  their UNDO; and an edit (tempo, a step, a fader) saved with SHIFT +
+  BROWSE, a New project, and the song opened again as edited.
+  Exporting: Night Market's arrangement and 8 bars of Tidal Suite are
+  exported from BROWSE in fast mode (`Session::make_sounds` gives the
+  pads a kit of tones, so the files carry sound), and the mixdown,
+  stems and MIDI file are read back and checked against the song. The
+  pattern legend for writing more songs is on `hits` in `songs.rs`.
+
+`Session` (`smoke/session.rs`) is the test harness: the screen and every
+engine wired together as `main.rs` wires them, run in simulated time
+(`run_for`), with helpers to press a control by widget, id and label
+(`press`), press a hardware button (`button`, `button_with`,
+`hold`), turn the wheel or a Q-Link, and hit a pad. `Session::with_library`
+gives it a library, so saves and opens run as `main.rs` runs them;
+`hits.played` keeps every note played with its track and time, and
+`said()` reads the screen's events log. The routing from screen to engines is shared
+with `main.rs` (`desk.rs`), so the tests drive the real code.
 
 ## Rules for changes
 

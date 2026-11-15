@@ -1,6 +1,14 @@
 //! Copy a `SoftCanvas` to the Linux framebuffer (/dev/fb0), turned to match
 //! how the panel is mounted, rewriting only the native rows that changed.
 //!
+//! [`FbTarget`] keeps its own copy of what the panel shows, in the panel's
+//! layout, and turns only the changed rectangles into it; the rows it
+//! writes then come straight from that copy. Turned 90 or 270 degrees, a
+//! changed rectangle's width is a count of whole native rows, so turning
+//! whole rows from the canvas would turn a whole column of the screen for
+//! every changed pixel column (a chip in the top bar: 120 rows of 800
+//! pixels, to change 120 x 40).
+//!
 //! It opens the framebuffer write-only, never creates or truncates anything,
 //! and writes only inside the visible frame. The panel's mounting comes from
 //! the caller (the MPC One's device tree says 270 degrees).
@@ -19,7 +27,7 @@ use mpfree_screen_log::{Geometry, PixelFormat, Rotation};
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::os::unix::fs::FileExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 fn read_trimmed(path: &Path) -> Result<String, String> {
     fs::read_to_string(path)
@@ -60,8 +68,9 @@ impl FbLayout {
         (w as i32, h as i32)
     }
 
-    /// The native rows [first, end) that the logical rectangle `r` touches.
-    pub fn native_rows(&self, r: Rect) -> Option<(usize, usize)> {
+    /// The native columns [x0, x1) and rows [y0, y1) that the logical
+    /// rectangle `r` covers, cut to the screen.
+    pub fn native_rect(&self, r: Rect) -> Option<NativeRect> {
         let (lw, lh) = self.logical_size();
         let r = r.intersect(Rect::new(0, 0, lw, lh));
         if r.is_empty() {
@@ -74,7 +83,17 @@ impl FbLayout {
             (r.right() - 1) as usize,
             (r.bottom() - 1) as usize,
         );
-        Some((a.1.min(b.1), a.1.max(b.1) + 1))
+        Some(NativeRect {
+            x0: a.0.min(b.0),
+            x1: a.0.max(b.0) + 1,
+            y0: a.1.min(b.1),
+            y1: a.1.max(b.1) + 1,
+        })
+    }
+
+    /// The native rows [first, end) that the logical rectangle `r` touches.
+    pub fn native_rows(&self, r: Rect) -> Option<(usize, usize)> {
+        self.native_rect(r).map(|n| (n.y0, n.y1))
     }
 
     /// The native row spans to rewrite for `damage`, in order: overlapping or
@@ -104,12 +123,41 @@ impl FbLayout {
 
     /// The bytes of whole native rows [first, end): `stride` bytes per row,
     /// the visible pixels from `canvas` and zeros in any padding after them.
+    pub fn rows(&self, canvas: &SoftCanvas, first: usize, end: usize, out: &mut Vec<u8>) {
+        let g = &self.geometry;
+        out.clear();
+        out.resize((end - first) * g.stride, 0);
+        let all = NativeRect {
+            x0: 0,
+            x1: g.width,
+            y0: first,
+            y1: end,
+        };
+        self.turn_into(canvas, all, out, first);
+    }
+
+    /// Turns the logical rectangle `r` of `canvas` into `frame`, a whole
+    /// native frame (every row, `stride` bytes each), leaving the rest of
+    /// `frame` as it was.
+    pub fn turn_rect(&self, canvas: &SoftCanvas, r: Rect, frame: &mut [u8]) {
+        assert_eq!(
+            frame.len(),
+            self.geometry.frame_len(),
+            "not a whole native frame"
+        );
+        if let Some(n) = self.native_rect(r) {
+            self.turn_into(canvas, n, frame, 0);
+        }
+    }
+
+    /// Turns the native rectangle `n` of the picture in `canvas` into `out`,
+    /// whose first row is native row `out_row`.
     ///
     /// Turned 90 or 270 degrees, a native row is a column of the canvas, so
     /// it reads the canvas in bands of [`BAND`] native rows: for each native
     /// column, the band's pixels sit side by side in one canvas row, which
     /// the cache serves in one or two lines instead of one line per pixel.
-    pub fn rows(&self, canvas: &SoftCanvas, first: usize, end: usize, out: &mut Vec<u8>) {
+    fn turn_into(&self, canvas: &SoftCanvas, n: NativeRect, out: &mut [u8], out_row: usize) {
         let (lw, lh) = self.logical_size();
         assert_eq!(
             (canvas.width(), canvas.height()),
@@ -119,33 +167,31 @@ impl FbLayout {
         let g = &self.geometry;
         let (bpp, stride, format) = (g.bytes_per_pixel(), g.stride, g.format);
         let lw = lw as usize;
-        out.clear();
-        out.resize((end - first) * stride, 0);
         let px = &canvas.px;
         match self.rotation {
             Rotation::Deg0 | Rotation::Deg180 => {
-                for (k, ny) in (first..end).enumerate() {
-                    let row = &mut out[k * stride..k * stride + g.width * bpp];
+                for ny in n.y0..n.y1 {
+                    let base = (ny - out_row) * stride;
                     let (_, ly) = logical(g, self.rotation, 0, ny);
-                    let src = &px[ly * lw..ly * lw + lw];
+                    let row = &px[ly * lw..ly * lw + lw];
                     if self.rotation == Rotation::Deg0 {
-                        for (nx, &p) in src.iter().enumerate() {
-                            put(row, nx * bpp, p, format);
+                        for nx in n.x0..n.x1 {
+                            put(out, base + nx * bpp, row[nx], format);
                         }
                     } else {
-                        for (nx, &p) in src.iter().rev().enumerate() {
-                            put(row, nx * bpp, p, format);
+                        for nx in n.x0..n.x1 {
+                            put(out, base + nx * bpp, row[g.width - 1 - nx], format);
                         }
                     }
                 }
             }
             Rotation::Deg90 | Rotation::Deg270 => {
                 let up = self.rotation == Rotation::Deg90;
-                let mut ny0 = first;
-                while ny0 < end {
-                    let band = BAND.min(end - ny0);
-                    let base = (ny0 - first) * stride;
-                    for nx in 0..g.width {
+                let mut ny0 = n.y0;
+                while ny0 < n.y1 {
+                    let band = BAND.min(n.y1 - ny0);
+                    let base = (ny0 - out_row) * stride;
+                    for nx in n.x0..n.x1 {
                         // Deg90: lx = ny, rising down the band; Deg270:
                         // lx = h - 1 - ny, falling.
                         let (lx0, ly) = logical(g, self.rotation, nx, ny0);
@@ -164,6 +210,16 @@ impl FbLayout {
             }
         }
     }
+}
+
+/// A rectangle of the panel in its own layout: columns [x0, x1), rows
+/// [y0, y1).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NativeRect {
+    pub x0: usize,
+    pub x1: usize,
+    pub y0: usize,
+    pub y1: usize,
 }
 
 /// Native rows read together when the picture is turned 90 or 270 degrees.
@@ -246,7 +302,11 @@ fn logical(g: &Geometry, rot: Rotation, nx: usize, ny: usize) -> (usize, usize) 
 pub struct FbTarget {
     file: File,
     pub layout: FbLayout,
-    buf: Vec<u8>,
+    /// What the panel shows, in its own layout (a whole native frame), as
+    /// this target last wrote it; empty until the first frame. Rows are
+    /// written from here, so only the changed rectangles need turning.
+    shown: Vec<u8>,
+    pan: PathBuf,
 }
 
 impl FbTarget {
@@ -258,15 +318,25 @@ impl FbTarget {
             .write(true)
             .open(fb)
             .map_err(|e| format!("{}: {e}", fb.display()))?;
-        let _ = OpenOptions::new()
-            .write(true)
-            .open(sysfs.join("pan"))
-            .and_then(|mut f| f.write_all(b"0,0\n"));
-        Ok(FbTarget {
+        let t = FbTarget {
             file,
             layout: FbLayout { geometry, rotation },
-            buf: Vec::new(),
-        })
+            shown: Vec::new(),
+            pan: sysfs.join("pan"),
+        };
+        t.show();
+        Ok(t)
+    }
+
+    /// Ask the kernel to show the framebuffer again (`pan` 0,0: a mode set
+    /// in RAM, nothing stored), as after the GPU's process has had the
+    /// screen. The kernel does nothing while another program holds the
+    /// display (DRM master); best effort.
+    pub fn show(&self) {
+        let _ = OpenOptions::new()
+            .write(true)
+            .open(&self.pan)
+            .and_then(|mut f| f.write_all(b"0,0\n"));
     }
 
     pub fn logical_size(&self) -> (i32, i32) {
@@ -284,6 +354,8 @@ impl FbTarget {
                 frame.len()
             ));
         }
+        // The next `present` turns the whole canvas again.
+        self.shown.clear();
         self.file
             .write_all_at(frame, 0)
             .map_err(|e| format!("writing the screen: {e}"))
@@ -291,13 +363,32 @@ impl FbTarget {
 
     /// Copy the given rectangles of `canvas` to the screen, as whole native
     /// rows, two or more per write. Says how many native rows it wrote.
+    ///
+    /// Only the rectangles are turned, into the copy of what the panel
+    /// shows; the first frame turns the whole canvas, so every row written
+    /// is whole. Everything outside the rectangles must still be as the
+    /// last frame left it, which painting through `Ui` keeps true.
     pub fn present(&mut self, canvas: &SoftCanvas, damage: &[Rect]) -> Result<usize, String> {
-        let stride = self.layout.geometry.stride;
+        let spans = self.layout.row_spans(damage);
+        if spans.is_empty() {
+            return Ok(0);
+        }
+        let g = &self.layout.geometry;
+        let (stride, height) = (g.stride, g.height);
+        if self.shown.len() != g.frame_len() {
+            self.layout.rows(canvas, 0, height, &mut self.shown);
+        } else {
+            for r in damage {
+                self.layout.turn_rect(canvas, *r, &mut self.shown);
+            }
+        }
         let mut rows = 0;
-        for (first, end) in self.layout.row_spans(damage) {
-            self.layout.rows(canvas, first, end, &mut self.buf);
+        for (first, end) in spans {
             self.file
-                .write_all_at(&self.buf, (first * stride) as u64)
+                .write_all_at(
+                    &self.shown[first * stride..end * stride],
+                    (first * stride) as u64,
+                )
                 .map_err(|e| format!("writing the screen: {e}"))?;
             rows += end - first;
         }
@@ -407,6 +498,182 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+
+    /// A tiny xorshift for test pictures and rectangles.
+    struct Rng(u32);
+
+    impl Rng {
+        fn next(&mut self) -> u32 {
+            self.0 ^= self.0 << 13;
+            self.0 ^= self.0 >> 17;
+            self.0 ^= self.0 << 5;
+            self.0
+        }
+
+        fn below(&mut self, n: i32) -> i32 {
+            (self.next() % n as u32) as i32
+        }
+
+        /// A rectangle that may hang off any edge, or be empty.
+        fn rect(&mut self, w: i32, h: i32) -> Rect {
+            Rect::new(
+                self.below(w + 10) - 5,
+                self.below(h + 10) - 5,
+                self.below(w / 2 + 2),
+                self.below(h / 2 + 2),
+            )
+        }
+    }
+
+    #[test]
+    fn turning_only_the_changed_rectangles_keeps_the_whole_frame() {
+        for rot in [
+            Rotation::Deg0,
+            Rotation::Deg90,
+            Rotation::Deg180,
+            Rotation::Deg270,
+        ] {
+            for bpp in [32, 16] {
+                // Sizes that are not a multiple of the band, with padding.
+                let (nw, nh) = (37usize, 53usize);
+                let g = Geometry::new(nw, nh, nw * bpp as usize / 8 + 12, bpp).unwrap();
+                let layout = FbLayout {
+                    geometry: g,
+                    rotation: rot,
+                };
+                let (w, h) = layout.logical_size();
+                let mut c = noise_canvas(w, h);
+                let mut shown = Vec::new();
+                layout.rows(&c, 0, nh, &mut shown);
+                let mut rng = Rng(0x9E37_79B9);
+                let mut whole = Vec::new();
+                for step in 0..60 {
+                    let r = rng.rect(w, h);
+                    let v = rng.next() & 0xFF_FFFF;
+                    c.fill_rect(r, Color::from_xrgb(v));
+                    layout.turn_rect(&c, r, &mut shown);
+                    layout.rows(&c, 0, nh, &mut whole);
+                    assert!(shown == whole, "{rot:?} {bpp} bpp, step {step}, {r:?}");
+                }
+            }
+        }
+    }
+
+    /// A framebuffer file and its sysfs folder for `FbTarget`.
+    fn fake_fb(name: &str, g: &Geometry) -> (PathBuf, PathBuf) {
+        let dir = std::env::temp_dir().join(format!("mpfree-ui-fb-{name}-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("modes"),
+            format!("U:{}x{}p-0\n", g.width, g.height),
+        )
+        .unwrap();
+        fs::write(dir.join("stride"), format!("{}\n", g.stride)).unwrap();
+        fs::write(
+            dir.join("bits_per_pixel"),
+            format!("{}\n", g.bytes_per_pixel() * 8),
+        )
+        .unwrap();
+        fs::write(dir.join("pan"), "").unwrap();
+        let fb = dir.join("fb");
+        fs::write(&fb, vec![0u8; g.frame_len()]).unwrap();
+        (dir, fb)
+    }
+
+    #[test]
+    fn the_screen_gets_the_same_bytes_as_when_whole_rows_were_turned() {
+        // What `present` wrote before it kept a copy of the panel: each span
+        // of whole rows turned from the canvas.
+        let g = Geometry::new(37, 53, 37 * 4 + 12, 32).unwrap();
+        let (dir, fb) = fake_fb("same", &g);
+        let mut t = FbTarget::open(&fb, &dir, Rotation::Deg270).unwrap();
+        let (w, h) = t.logical_size();
+        let mut c = noise_canvas(w, h);
+        let mut expected = vec![0u8; g.frame_len()];
+        let mut rng = Rng(0x2545_F491);
+        let mut buf = Vec::new();
+        for step in 0..40 {
+            let damage: Vec<Rect> = match step {
+                // Nothing at first but a little: the first frame still
+                // writes whole rows of the canvas.
+                0 => vec![Rect::new(3, 4, 5, 6)],
+                _ => (0..1 + rng.below(3)).map(|_| rng.rect(w, h)).collect(),
+            };
+            for r in &damage {
+                let v = rng.next() & 0xFF_FFFF;
+                c.fill_rect(*r, Color::from_xrgb(v));
+            }
+            let mut rows = 0;
+            for (first, end) in t.layout.row_spans(&damage) {
+                t.layout.rows(&c, first, end, &mut buf);
+                expected[first * g.stride..end * g.stride].copy_from_slice(&buf);
+                rows += end - first;
+            }
+            assert_eq!(t.present(&c, &damage).unwrap(), rows, "step {step}");
+            assert!(
+                fs::read(&fb).unwrap() == expected,
+                "step {step}: {damage:?}"
+            );
+        }
+        // A whole frame from elsewhere: the next frame turns the whole
+        // canvas again, as before.
+        t.present_frame(&vec![7u8; g.frame_len()]).unwrap();
+        let r = Rect::new(10, 10, 4, 4);
+        t.present(&c, &[r]).unwrap();
+        let (first, end) = t.layout.native_rows(r).unwrap();
+        t.layout.rows(&c, first, end, &mut buf);
+        let now = fs::read(&fb).unwrap();
+        assert!(now[first * g.stride..end * g.stride] == buf[..]);
+        assert!(t.present(&c, &[]).unwrap() == 0);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// The panel's own layout and the turn's cost for damage a frame
+    /// commonly has, turning whole rows (before) and only the rectangles
+    /// (now). `cargo test --release -p mpfree-ui turn_speed -- --ignored
+    /// --nocapture`
+    #[test]
+    #[ignore]
+    fn turn_speed() {
+        let g = Geometry::new(800, 1280, 3200, 32).unwrap();
+        let layout = FbLayout {
+            geometry: g,
+            rotation: Rotation::Deg270,
+        };
+        let (w, h) = layout.logical_size();
+        let c = noise_canvas(w, h);
+        let mut shown = Vec::new();
+        layout.rows(&c, 0, g.height, &mut shown);
+        let mut buf = Vec::new();
+        let cases = [
+            ("a top-bar chip 120x40", vec![Rect::new(600, 0, 120, 40)]),
+            ("the top bar 1280x48", vec![Rect::new(0, 0, 1280, 48)]),
+            ("a meter 24x300", vec![Rect::new(1200, 300, 24, 300)]),
+            ("a playhead 3x400", vec![Rect::new(640, 200, 3, 400)]),
+            ("a panel 600x400", vec![Rect::new(340, 200, 600, 400)]),
+            ("the whole screen", vec![Rect::new(0, 0, w, h)]),
+        ];
+        let n = 50;
+        for (what, damage) in cases {
+            let t = std::time::Instant::now();
+            for _ in 0..n {
+                for (first, end) in layout.row_spans(&damage) {
+                    layout.rows(&c, first, end, &mut buf);
+                    std::hint::black_box(&buf);
+                }
+            }
+            let before = t.elapsed() / n;
+            let t = std::time::Instant::now();
+            for _ in 0..n {
+                for r in &damage {
+                    layout.turn_rect(&c, *r, &mut shown);
+                }
+                std::hint::black_box(&shown);
+            }
+            let now = t.elapsed() / n;
+            eprintln!("{what}: whole rows {before:?}, the rectangle only {now:?}");
         }
     }
 

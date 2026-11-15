@@ -7,9 +7,11 @@
 //! Any other node (a hosted plugin, the sampler's grains) gets the Synth
 //! tab's pages from its parameter groups.
 
+use mpfree_fx::ids::{autowah, channel_strip as strip, granulator as grains, talkbox, width};
 use mpfree_fx::ids::{
-    character, chorus, cloud, comb, compressor as comp, crush, delay, dj_filter as dj, drive, eq,
-    filter, flanger, lofi, master, perform, phaser,
+    character, chorus, cloud, comb, compressor as comp, crush, delay, dj_filter as dj, drive,
+    ducker, eq, filter, flanger, harmonizer as harm, lofi, master, perform, phaser, pitch,
+    pitch_correct as tune, transient, tuner,
 };
 use mpfree_node::{NodeInfo, ParamInfo};
 pub use mpfree_synth_ui::pages::Page;
@@ -87,8 +89,41 @@ fn known(info: &NodeInfo, count: u16) -> Option<Vec<Plan>> {
         ]),
         "mpfree.fx.lofi" => one(&[lofi::AMOUNT, lofi::WOW, lofi::CRACKLE, lofi::MIX]),
         "mpfree.fx.character" => one(&[character::AMOUNT, character::OUTPUT, character::MIX]),
-        "mpfree.fx.compressor" => one(&[comp::THRESHOLD, comp::RATIO, comp::ATTACK, comp::MAKEUP]),
+        // The detector's settings after the curve's, the meter last.
+        "mpfree.fx.compressor" => Some(vec![pg(
+            info.name,
+            &[
+                comp::THRESHOLD,
+                comp::RATIO,
+                comp::ATTACK,
+                comp::RELEASE,
+                comp::KNEE,
+                comp::MAKEUP,
+                comp::MIX,
+                comp::SIDECHAIN,
+                comp::SC_FILTER,
+                comp::DETECT,
+                comp::REDUCTION,
+            ],
+            &[comp::THRESHOLD, comp::RATIO, comp::ATTACK, comp::MAKEUP],
+        )]),
         "mpfree.fx.master_safety" => one(&[master::TRIM, master::CEILING, master::RELEASE]),
+        "mpfree.fx.ducker" => one(&[
+            ducker::DEPTH,
+            ducker::THRESHOLD,
+            ducker::RELEASE,
+            ducker::SHAPE,
+        ]),
+        "mpfree.fx.transient" => one(&[
+            transient::ATTACK,
+            transient::SUSTAIN,
+            transient::SPEED,
+            transient::OUTPUT,
+        ]),
+        "mpfree.fx.pitch" => one(&[pitch::PITCH, pitch::FINE, pitch::FEEDBACK, pitch::MIX]),
+        "mpfree.fx.pitch_correct" => one(&[tune::KEY, tune::SCALE, tune::SPEED, tune::AMOUNT]),
+        "mpfree.fx.harmonizer" => one(&[harm::VOICE1, harm::LEVEL1, harm::VOICE2, harm::LEVEL2]),
+        "mpfree.fx.tuner" => one(&[tuner::REFERENCE, tuner::MUTE]),
         "mpfree.fx.cloud" => Some(vec![
             pg(
                 "Reverb",
@@ -153,6 +188,79 @@ fn known(info: &NodeInfo, count: u16) -> Option<Vec<Plan>> {
             }
             Some(pages)
         }
+        "mpfree.fx.autowah" => one(&[
+            autowah::CENTER,
+            autowah::DEPTH,
+            autowah::RESONANCE,
+            autowah::MIX,
+        ]),
+        "mpfree.fx.talkbox" => one(&[
+            talkbox::VOWEL,
+            talkbox::ENV_DEPTH,
+            talkbox::LFO_DEPTH,
+            talkbox::MIX,
+        ]),
+        "mpfree.fx.width" => one(&[width::WIDTH, width::LOW, width::HIGH, width::DELAY]),
+        "mpfree.fx.granulator" => one(&[grains::SIZE, grains::DENSITY, grains::PITCH, grains::MIX]),
+        "mpfree.fx.channel_strip" => Some(vec![
+            pg(
+                "Gate",
+                &[
+                    strip::GATE,
+                    strip::GATE_THRESHOLD,
+                    strip::GATE_RANGE,
+                    strip::GATE_GAIN,
+                    strip::GATE_ATTACK,
+                    strip::GATE_RELEASE,
+                ],
+                &[
+                    strip::GATE_THRESHOLD,
+                    strip::GATE_RANGE,
+                    strip::GATE_ATTACK,
+                    strip::GATE_RELEASE,
+                ],
+            ),
+            pg(
+                "Compressor",
+                &[
+                    strip::COMP,
+                    strip::COMP_THRESHOLD,
+                    strip::RATIO,
+                    strip::REDUCTION,
+                    strip::COMP_ATTACK,
+                    strip::COMP_RELEASE,
+                    strip::MAKEUP,
+                ],
+                &[
+                    strip::COMP_THRESHOLD,
+                    strip::RATIO,
+                    strip::COMP_ATTACK,
+                    strip::MAKEUP,
+                ],
+            ),
+            pg(
+                "EQ",
+                &[
+                    strip::EQ,
+                    strip::LOW_CUT,
+                    strip::ORDER,
+                    strip::OUTPUT,
+                    strip::LOW_FREQ,
+                    strip::MID_FREQ,
+                    strip::MID_Q,
+                    strip::HIGH_FREQ,
+                    strip::LOW_GAIN,
+                    strip::MID_GAIN,
+                    strip::HIGH_GAIN,
+                ],
+                &[
+                    strip::LOW_GAIN,
+                    strip::MID_FREQ,
+                    strip::MID_GAIN,
+                    strip::HIGH_GAIN,
+                ],
+            ),
+        ]),
         _ => None,
     }
 }

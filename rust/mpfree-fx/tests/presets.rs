@@ -5,8 +5,9 @@
 
 use mpfree_fx::mpfree_node::{Ctx, Node, MAX_BLOCK};
 use mpfree_fx::{
-    presets, Character, Chorus, Cloud, Comb, Compressor, Crush, Delay, DjFilter, Drive, Eq,
-    Flanger, LoFi, MasterSafety, MultiFilter, Perform, Phaser,
+    presets, Character, Chorus, Cloud, Comb, Compressor, Crush, Delay, DjFilter, Drive, Ducker, Eq,
+    Flanger, Harmonizer, LoFi, MasterSafety, MultiFilter, Perform, Phaser, PitchCorrect,
+    PitchShifter, TransientShaper, Tuner,
 };
 
 const RATE: u32 = 48_000;
@@ -29,6 +30,12 @@ fn nodes() -> Vec<Box<dyn Node>> {
         Box::new(MasterSafety::new()),
         Box::new(Perform::new()),
         Box::new(Character::new()),
+        Box::new(Ducker::new()),
+        Box::new(TransientShaper::new()),
+        Box::new(PitchShifter::new()),
+        Box::new(PitchCorrect::new()),
+        Box::new(Harmonizer::new()),
+        Box::new(Tuner::new()),
     ]
 }
 
@@ -54,7 +61,10 @@ fn every_effect_with_a_sound_to_pick_has_presets() {
         let id = n.info().id;
         let none = matches!(
             id,
-            "mpfree.fx.dj_filter" | "mpfree.fx.master_safety" | "mpfree.fx.perform"
+            "mpfree.fx.dj_filter"
+                | "mpfree.fx.master_safety"
+                | "mpfree.fx.perform"
+                | "mpfree.fx.tuner"
         );
         assert_eq!(presets(id).is_empty(), none, "{id}");
         if !none {

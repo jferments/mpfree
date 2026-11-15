@@ -19,16 +19,24 @@
 //!   [`Sandbox::restart`] starts a new process on the same shared memory,
 //!   prepares it and loads the state the host saved, and the node carries
 //!   on.
-//! - **Main-thread work** (state, a value's text) goes over a socket from
-//!   the control thread. The process answers the plugin's own main-thread
-//!   requests itself.
+//! - **Main-thread work** (state, a value's text, loading a preset) goes
+//!   over a socket from the control thread. The process answers the
+//!   plugin's own main-thread requests itself.
+//! - **A plugin's presets** are listed by a process of their own
+//!   ([`presets`], `--presets`), since finding them runs the plugin's code
+//!   and can take a while.
 //!
 //! The node's id and parameters are the same as `mpfree-clap`'s in-process
 //! node (`clap:` and the plugin id), so a project doesn't care which runs.
 
 pub mod child;
+pub mod rack;
 pub mod shm;
 pub mod wire;
+
+/// A plugin's presets, as [`presets`] lists them and
+/// [`Sandbox::load_preset`] loads them.
+pub use mpfree_clap::{Place, Preset};
 
 use mpfree_clap::{intern_info, intern_params};
 use mpfree_node::{Ctx, Expr, Kind, Node, NodeEvent, NodeInfo, ParamInfo, Timed};
@@ -58,6 +66,9 @@ pub const MAX_PENDING: usize = 256;
 /// How long the host waits for the process to start or answer the control
 /// channel.
 pub const CONTROL_TIMEOUT: Duration = Duration::from_secs(10);
+/// How long [`presets`] waits for a plugin file's presets to be listed
+/// (Surge XT reads its whole data folder and every patch's header).
+pub const PRESETS_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// Why the sandbox couldn't start or answer.
 #[derive(Debug)]
@@ -114,7 +125,7 @@ struct Ctl {
 /// What the node and the control handle share.
 struct Shared {
     map: Mapping,
-    exe: PathBuf,
+    program: Program,
     plugin: PathBuf,
     id: String,
     ctl: Mutex<Option<Ctl>>,
@@ -127,6 +138,9 @@ struct Shared {
     prepared: AtomicU64,
     crashes: AtomicU64,
     restarts: AtomicU64,
+    /// The plugin's state as [`Sandbox::refresh_state`] last read it: what
+    /// a project save and a restart use, read without asking the process.
+    snapshot: Mutex<Option<Vec<u8>>>,
 }
 
 impl Shared {
@@ -171,7 +185,7 @@ impl Drop for Shared {
 }
 
 /// Starts a process on the shared block and reads its hello.
-fn start(exe: &Path, plugin: &Path, id: &str, map: &Mapping) -> Result<(Ctl, Hello), Error> {
+fn start(program: &Program, plugin: &Path, id: &str, map: &Mapping) -> Result<(Ctl, Hello), Error> {
     let (ours, theirs) = UnixStream::pair()?;
     ours.set_read_timeout(Some(CONTROL_TIMEOUT))?;
     // Copies at 10 and up, so the dup2 calls in the child can't clobber
@@ -186,7 +200,7 @@ fn start(exe: &Path, plugin: &Path, id: &str, map: &Mapping) -> Result<(Ctl, Hel
     if shm_fd < 0 || ctl_fd < 0 {
         return Err(Error::Io(io::Error::last_os_error()));
     }
-    let mut cmd = Command::new(exe);
+    let mut cmd = program.command();
     cmd.arg("--plugin")
         .arg(plugin)
         .arg("--id")
@@ -240,11 +254,277 @@ fn start(exe: &Path, plugin: &Path, id: &str, map: &Mapping) -> Result<(Ctl, Hel
     }
 }
 
+/// How to start the plugin process: a program and the arguments that go
+/// before the process's own. The `mpfree-plughost` binary takes none; a
+/// program that serves as the plugin process behind a subcommand (the app
+/// does, `mpfree plughost ...`) takes that word.
+///
+/// [`Program::with_home`] gives every process it starts a home folder of
+/// its own.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Program {
+    pub exe: PathBuf,
+    pub lead: Vec<std::ffi::OsString>,
+    /// The processes' home folder, if not the one they'd inherit.
+    pub home: Option<PathBuf>,
+}
+
+impl Program {
+    /// The `mpfree-plughost` binary at `exe`.
+    pub fn new(exe: &Path) -> Program {
+        Program {
+            exe: exe.to_path_buf(),
+            lead: Vec::new(),
+            home: None,
+        }
+    }
+
+    /// `exe` with `lead` before the process's arguments.
+    pub fn with_lead(exe: &Path, lead: &[&str]) -> Program {
+        Program {
+            exe: exe.to_path_buf(),
+            lead: lead.iter().map(Into::into).collect(),
+            home: None,
+        }
+    }
+
+    /// The same program, with each process it starts living in `dir`:
+    /// `HOME` and the XDG config, data, cache and state folders are set
+    /// inside it, so whatever a plugin keeps for itself (Surge XT makes
+    /// `~/.Surge XT`, Dexed writes its cartridges under
+    /// `~/.local/share`) goes there and never into the inherited home. The
+    /// folder isn't made here: the caller makes it, or the plugin does.
+    pub fn with_home(mut self, dir: &Path) -> Program {
+        self.home = Some(dir.to_path_buf());
+        self
+    }
+
+    fn command(&self) -> Command {
+        let mut c = Command::new(&self.exe);
+        c.args(&self.lead);
+        if let Some(h) = &self.home {
+            c.env("HOME", h)
+                .env("XDG_CONFIG_HOME", h.join(".config"))
+                .env("XDG_DATA_HOME", h.join(".local").join("share"))
+                .env("XDG_CACHE_HOME", h.join(".cache"))
+                .env("XDG_STATE_HOME", h.join(".local").join("state"));
+        }
+        c
+    }
+}
+
+/// One plugin in a `.clap` file, as [`list`] read it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Listed {
+    pub id: String,
+    pub name: String,
+    pub vendor: String,
+    pub kind: Kind,
+}
+
+/// Reads one line of `mpfree-plughost --list` ([`child::list_line`]).
+pub fn parse_list_line(line: &str) -> Option<Listed> {
+    let mut f = line.split('\t');
+    if f.next()? != "plugin" {
+        return None;
+    }
+    let (id, name, vendor) = (f.next()?, f.next()?, f.next()?);
+    let kind = match f.next()? {
+        "instrument" => Kind::Instrument,
+        "effect" => Kind::Effect,
+        _ => return None,
+    };
+    if f.next().is_some() || id.is_empty() {
+        return None;
+    }
+    Some(Listed {
+        id: id.to_string(),
+        name: name.to_string(),
+        vendor: vendor.to_string(),
+        kind,
+    })
+}
+
+/// Lists the plugins in the `.clap` file `plugin` by starting the plugin
+/// process with `--list`, so a plugin file that crashes
+/// or hangs while loading can't take MPFree with it. Waits at most
+/// [`CONTROL_TIMEOUT`], then kills the process. Control thread only.
+pub fn list(program: &Program, plugin: &Path) -> Result<Vec<Listed>, Error> {
+    let out = run_tool(program, "--list", plugin, "list", CONTROL_TIMEOUT)?;
+    Ok(out.lines().filter_map(parse_list_line).collect())
+}
+
+/// Every preset the `.clap` file `plugin`'s preset providers know of (for
+/// all its plugins: [`mpfree_clap::Preset::is_for`] picks one's), found by
+/// the plugin process with `--presets`, so a provider that crashes or
+/// hangs can't take MPFree with it. Waits at most [`PRESETS_TIMEOUT`].
+/// Control thread only; it can take seconds.
+pub fn presets(program: &Program, plugin: &Path) -> Result<mpfree_clap::Found, Error> {
+    let out = run_tool(
+        program,
+        "--presets",
+        plugin,
+        "list its presets",
+        PRESETS_TIMEOUT,
+    )?;
+    Ok(parse_presets(&out))
+}
+
+/// Reads `--presets` output ([`child::preset_line`] and the lines after).
+/// Other lines (a plugin's own chatter on stdout) are skipped.
+pub fn parse_presets(out: &str) -> mpfree_clap::Found {
+    let mut found = mpfree_clap::Found::default();
+    for line in out.lines() {
+        let f: Vec<&str> = line.split('\t').collect();
+        match f.as_slice() {
+            ["preset", ..] => {
+                if let Some(p) = parse_preset_line(line) {
+                    found.presets.push(p);
+                }
+            }
+            ["error", e] => found.errors.push(unescape(e)),
+            ["more-errors", n] => found.more_errors = n.parse().unwrap_or(0),
+            ["cut-short"] => found.cut_short = true,
+            _ => {}
+        }
+    }
+    found
+}
+
+fn unescape(s: &str) -> String {
+    let mut o = String::with_capacity(s.len());
+    let mut it = s.chars();
+    while let Some(c) = it.next() {
+        if c != '\\' {
+            o.push(c);
+            continue;
+        }
+        match it.next() {
+            Some('t') => o.push('\t'),
+            Some('n') => o.push('\n'),
+            Some('r') => o.push('\r'),
+            Some(other) => o.push(other),
+            None => o.push('\\'),
+        }
+    }
+    o
+}
+
+/// Reads one `preset` line of `--presets` ([`child::preset_line`]).
+pub fn parse_preset_line(line: &str) -> Option<mpfree_clap::Preset> {
+    let f: Vec<String> = line.split('\t').map(unescape).collect();
+    if f.len() < 8 || f[0] != "preset" || f[1].is_empty() {
+        return None;
+    }
+    let place = if f[2] == "plugin" {
+        mpfree_clap::Place::Plugin
+    } else {
+        let path = f[2].strip_prefix("file:")?;
+        if path.is_empty() {
+            return None;
+        }
+        mpfree_clap::Place::File(PathBuf::from(path))
+    };
+    Some(mpfree_clap::Preset {
+        name: f[1].clone(),
+        place,
+        load_key: (!f[3].is_empty()).then(|| f[3].clone()),
+        flags: f[4].parse().ok()?,
+        collection: f[5].clone(),
+        category: f[6].clone(),
+        creator: f[7].clone(),
+        plugins: f[8..].iter().filter(|s| !s.is_empty()).cloned().collect(),
+    })
+}
+
+/// Runs the plugin process as a tool on one plugin file (`--list`,
+/// `--presets`) and gives what it printed. Kills it after `timeout`.
+fn run_tool(
+    program: &Program,
+    mode: &str,
+    plugin: &Path,
+    what: &str,
+    timeout: Duration,
+) -> Result<String, Error> {
+    use std::io::Read;
+    use std::process::Stdio;
+    let mut cmd = program.command();
+    cmd.arg(mode)
+        .arg(plugin)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    // SAFETY: only async-signal-safe calls between fork and exec.
+    unsafe {
+        cmd.pre_exec(|| {
+            libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL);
+            let none = libc::rlimit {
+                rlim_cur: 0,
+                rlim_max: 0,
+            };
+            libc::setrlimit(libc::RLIMIT_CORE, &none);
+            Ok(())
+        });
+    }
+    let mut child = cmd.spawn()?;
+    // Read both pipes on their own threads so a chatty plugin can't fill
+    // one and stall while we wait.
+    let mut out = child.stdout.take().expect("piped");
+    let mut err = child.stderr.take().expect("piped");
+    let out = std::thread::spawn(move || {
+        let mut s = String::new();
+        let _ = out.read_to_string(&mut s);
+        s
+    });
+    let err = std::thread::spawn(move || {
+        let mut s = String::new();
+        let _ = err.read_to_string(&mut s);
+        s
+    });
+    let until = Instant::now() + timeout;
+    let status = loop {
+        match child.try_wait()? {
+            Some(st) => break st,
+            None if Instant::now() < until => std::thread::sleep(Duration::from_millis(5)),
+            None => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(Error::Plugin(format!(
+                    "{} took longer than {} s to {what}",
+                    plugin.display(),
+                    timeout.as_secs()
+                )));
+            }
+        }
+    };
+    let out = out.join().unwrap_or_default();
+    let err = err.join().unwrap_or_default();
+    if !status.success() {
+        use std::os::unix::process::ExitStatusExt;
+        let why = match (status.code(), status.signal()) {
+            (_, Some(sig)) => format!("crashed while loading (signal {sig})"),
+            _ => err.lines().next().unwrap_or("would not load").to_string(),
+        };
+        return Err(Error::Plugin(format!("{}: {why}", plugin.display())));
+    }
+    Ok(out)
+}
+
 /// Starts `exe` (the `mpfree-plughost` binary) for plugin `id` in the
 /// `.clap` file `plugin`. Control thread only.
 pub fn spawn(exe: &Path, plugin: &Path, id: &str) -> Result<(SandboxNode, Sandbox), Error> {
+    spawn_with(&Program::new(exe), plugin, id)
+}
+
+/// [`spawn`] with any [`Program`] (the app itself, say, with `plughost`
+/// in front of the arguments).
+pub fn spawn_with(
+    program: &Program,
+    plugin: &Path,
+    id: &str,
+) -> Result<(SandboxNode, Sandbox), Error> {
     let map = Mapping::create()?;
-    let (ctl, hello) = start(exe, plugin, id, &map)?;
+    let (ctl, hello) = start(program, plugin, id, &map)?;
     let info = intern_info(&hello.id, &hello.name, hello.kind);
     let params = intern_params(&hello.id, hello.params.clone());
     let values: Box<[AtomicU32]> = params
@@ -253,7 +533,7 @@ pub fn spawn(exe: &Path, plugin: &Path, id: &str) -> Result<(SandboxNode, Sandbo
         .collect();
     let shared = Arc::new(Shared {
         map,
-        exe: exe.to_path_buf(),
+        program: program.clone(),
         plugin: plugin.to_path_buf(),
         id: id.to_string(),
         ctl: Mutex::new(Some(ctl)),
@@ -263,6 +543,7 @@ pub fn spawn(exe: &Path, plugin: &Path, id: &str) -> Result<(SandboxNode, Sandbo
         prepared: AtomicU64::new(0),
         crashes: AtomicU64::new(0),
         restarts: AtomicU64::new(0),
+        snapshot: Mutex::new(None),
     });
     let node = SandboxNode {
         shared: Arc::clone(&shared),
@@ -296,6 +577,20 @@ pub struct SandboxNode {
 }
 
 impl SandboxNode {
+    /// The plugin's state as the control thread last read it
+    /// ([`Sandbox::refresh_state`]), for a project file. Never asks the
+    /// process and never waits: None if no state was read yet, or the
+    /// control thread is storing a new one this moment. It copies the
+    /// bytes (an allocation), so not on the audio thread's period.
+    pub fn saved_state(&self) -> Option<Vec<u8>> {
+        self.shared.snapshot.try_lock().ok()?.clone()
+    }
+
+    /// The `.clap` file the plugin came from.
+    pub fn plugin_file(&self) -> &Path {
+        &self.shared.plugin
+    }
+
     pub fn set_deadline(&mut self, d: Deadline) {
         self.deadline = d;
     }
@@ -574,6 +869,44 @@ impl Node for SandboxNode {
     fn latency(&self) -> u32 {
         self.latency
     }
+
+    /// The last snapshot ([`SandboxNode::saved_state`]): never asks the
+    /// process or waits, so a project save may call it between periods.
+    /// The rack refreshes it every few seconds; its parameters are saved
+    /// apart, so a knob turned since then is still kept.
+    fn save_state(&self) -> Option<Vec<u8>> {
+        self.saved_state()
+    }
+
+    /// Hands the plugin a project's state (a round trip to the process,
+    /// off the audio thread) and keeps it as the snapshot, so a restart
+    /// after a crash comes back with it.
+    fn load_state(&mut self, state: &[u8]) -> Result<(), String> {
+        let ok = matches!(
+            self.shared.ask(&ToChild::LoadState(state.to_vec())),
+            Ok(ToHost::Loaded(true))
+        );
+        if !ok {
+            return Err("the plugin refused it".to_string());
+        }
+        *self
+            .shared
+            .snapshot
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(state.to_vec());
+        Ok(())
+    }
+
+    /// The `.clap` file it came from (`file=verb.clap`), so a project
+    /// whose plugin is missing can say which file to put back.
+    fn save_extras(&self) -> Vec<(String, String)> {
+        self.shared
+            .plugin
+            .file_name()
+            .and_then(|n| n.to_str())
+            .map(|n| vec![("file".to_string(), n.to_string())])
+            .unwrap_or_default()
+    }
 }
 
 /// The control-thread side of a sandboxed plugin.
@@ -629,7 +962,7 @@ impl Sandbox {
             (*p).done.store(req, Ordering::Release);
         }
         let (ctl, _hello) = start(
-            &self.shared.exe,
+            &self.shared.program,
             &self.shared.plugin,
             &self.shared.id,
             &self.shared.map,
@@ -669,12 +1002,83 @@ impl Sandbox {
         )
     }
 
+    /// Loads one of the plugin's presets (as [`presets`] found it). The
+    /// values follow in the next blocks; the snapshot follows at the next
+    /// [`Sandbox::refresh_state`] (some plugins load in the background).
+    /// The error is the plugin's own message when it gave one.
+    pub fn load_preset(&self, p: &mpfree_clap::Preset) -> Result<(), String> {
+        let file = match &p.place {
+            mpfree_clap::Place::File(f) => Some(f.as_os_str().as_encoded_bytes().to_vec()),
+            mpfree_clap::Place::Plugin => None,
+        };
+        let m = ToChild::LoadPreset {
+            file,
+            key: p.load_key.clone(),
+        };
+        match self.shared.ask(&m) {
+            Ok(ToHost::PresetLoaded(r)) => r,
+            Ok(_) => Err("the plugin process answered something else".into()),
+            Err(e) => Err(e.to_string()),
+        }
+    }
+
     /// How the plugin shows `value` of parameter `index`.
     pub fn param_text(&self, index: u16, value: f32) -> Option<String> {
         match self.shared.ask(&ToChild::ParamText { index, value }) {
             Ok(ToHost::Text(t)) => t,
             _ => None,
         }
+    }
+
+    /// Reads the plugin's state from the process and keeps it as the
+    /// snapshot that [`SandboxNode::saved_state`] and
+    /// [`Sandbox::restart_from_snapshot`] use. A round trip to the process:
+    /// control thread only. False if the process didn't answer with a
+    /// state (the old snapshot stays).
+    pub fn refresh_state(&self) -> bool {
+        match self.save_state() {
+            Some(s) => {
+                *self
+                    .shared
+                    .snapshot
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner()) = Some(s);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Sets the snapshot (a state loaded from a project, before the
+    /// process has been asked).
+    pub fn set_snapshot(&self, state: Option<Vec<u8>>) {
+        *self
+            .shared
+            .snapshot
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = state;
+    }
+
+    /// [`Sandbox::restart`] with the last snapshot.
+    pub fn restart_from_snapshot(&self) -> Result<(), Error> {
+        let state = self
+            .shared
+            .snapshot
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        self.restart(state.as_deref())
+    }
+
+    /// The node has been dropped: only this handle is left, and the
+    /// process can be ended by dropping it.
+    pub fn orphaned(&self) -> bool {
+        Arc::strong_count(&self.shared) == 1
+    }
+
+    /// The plugin's CLAP id (the node's id is `clap:` and this).
+    pub fn plugin_id(&self) -> &str {
+        &self.shared.id
     }
 
     /// The process's id, while it runs.
@@ -685,5 +1089,56 @@ impl Sandbox {
             .unwrap_or_else(|e| e.into_inner())
             .as_ref()
             .map(|c| c.child.id())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_home_folder_goes_to_every_process() {
+        let env = |p: &Program| -> Vec<(String, Option<String>)> {
+            p.command()
+                .get_envs()
+                .map(|(k, v)| {
+                    (
+                        k.to_string_lossy().into_owned(),
+                        v.map(|v| v.to_string_lossy().into_owned()),
+                    )
+                })
+                .collect()
+        };
+        let plain = Program::new(Path::new("/bin/true"));
+        assert!(env(&plain).is_empty(), "inherited as it is");
+        let homed = plain
+            .clone()
+            .with_home(Path::new("/data/files/plugin-home"));
+        let mut got = env(&homed);
+        got.sort();
+        let some = |s: &str| Some(s.to_string());
+        assert_eq!(
+            got,
+            [
+                ("HOME".into(), some("/data/files/plugin-home")),
+                (
+                    "XDG_CACHE_HOME".into(),
+                    some("/data/files/plugin-home/.cache")
+                ),
+                (
+                    "XDG_CONFIG_HOME".into(),
+                    some("/data/files/plugin-home/.config")
+                ),
+                (
+                    "XDG_DATA_HOME".into(),
+                    some("/data/files/plugin-home/.local/share")
+                ),
+                (
+                    "XDG_STATE_HOME".into(),
+                    some("/data/files/plugin-home/.local/state")
+                ),
+            ]
+        );
+        assert_ne!(plain, homed);
     }
 }

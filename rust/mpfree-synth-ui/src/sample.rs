@@ -6,9 +6,11 @@ use crate::view::{SynthPanel, SynthState};
 use mpfree_node::{Ctx, Curve, Kind, Node, NodeEvent, NodeInfo, ParamInfo, Timed, Unit};
 use mpfree_synth::fm_params::{self as fp, op};
 use mpfree_synth::params as pp;
+use mpfree_synth::params::Preset;
 use mpfree_synth::wavetable::params as wtp;
 use mpfree_synth::Wavetable;
-use mpfree_synth::{Drums, Fm, Pluck, Poly};
+use mpfree_synth::{Analog, Drawbar, Drums, Fm, Keys, Pluck, Poly, Squelch};
+use mpfree_ui::qlink::QLinkColumn;
 use mpfree_ui::widgets::{Chip, Header, Label};
 use mpfree_ui::{Align, Color, Fonts, Theme, Tone, Ui};
 
@@ -34,7 +36,17 @@ pub fn app_ui(fonts: Fonts, hint: &str) -> Ui {
     ];
     ui.add("header", header);
     ui.add("hint", Label::new(hint, Tone::Dim, Align::Center));
+    ui.add(crate::view::QLINK_COLUMN, QLinkColumn::new());
     ui
+}
+
+/// Fills the Q-Link column with what the panel's Q-Links turn, as the app
+/// does.
+pub fn fill_qlinks(ui: &mut Ui, panel: &SynthPanel) {
+    if let Some(q) = ui.get_mut::<QLinkColumn>(crate::view::QLINK_COLUMN) {
+        q.title = "Q-Links · Synth".to_string();
+        q.cards = panel.qlink_cards();
+    }
 }
 
 pub fn poly_presets() -> Vec<String> {
@@ -52,7 +64,7 @@ pub fn poly(preset: usize, edits: &[(u16, f32)]) -> Poly {
 }
 
 const POLY_HINT: &str =
-    "Drag a tile to turn it · tap a tile, then the wheel · SHIFT + wheel: page · pads play the Bass track";
+    "Drag a control to turn it · tap one, then the wheel · SHIFT + wheel: next page · pads play the Bass track";
 
 struct Scene {
     name: &'static str,
@@ -82,17 +94,14 @@ fn poly_scene(s: &Scene, fonts: Fonts) -> Result<Sample, String> {
         .ok_or_else(|| format!("no page {}", s.page))?;
     panel.show_page(&mut ui, page);
     if let Some(id) = s.focus {
-        let k = panel.pages()[page]
-            .params
-            .iter()
-            .position(|&i| panel.state.params[i].id == id)
-            .ok_or("focus not on page")?;
+        let k = panel.state.index(id).ok_or("no such parameter")?;
         let ev = mpfree_ui::UiEvent {
             widget: crate::view::TILES.to_string(),
             kind: mpfree_ui::EventKind::Select(k),
         };
         panel.event(&mut ui, &ev);
     }
+    fill_qlinks(&mut ui, &panel);
     ui.show(PAGE)?;
     Ok(Sample {
         name: s.name,
@@ -153,6 +162,7 @@ fn poly_pressure_scene(fonts: Fonts) -> Result<Sample, String> {
         .position(|p| p.name == "Pressure")
         .ok_or("no Pressure page")?;
     panel.show_page(&mut ui, k);
+    fill_qlinks(&mut ui, &panel);
     ui.show(PAGE)?;
     Ok(Sample { name: "synth-pressure", about: "Poly · Brass, Pressure page: a 9 dB swell and +1.5 oct, a chord held with three pads pressed", ui, panel })
 }
@@ -302,11 +312,103 @@ pub fn samples(fonts: impl Fn() -> Fonts) -> Result<Vec<Sample>, String> {
         "Mallet",
         fonts(),
     )?);
+    for (name, about, engine, preset, page) in [
+        ("synth-keys-strike", "Keys · Bright Tines, Strike page: the hammer at velocity 40 and 127, and C2, C4 and C6 ringing out",
+         "keys", "Bright Tines", "Strike"),
+        ("synth-keys-tone", "Keys · Reed Bite, Tone page: the reed's pickup curve with the stretch a hit swings across",
+         "keys", "Reed Bite", "Tone"),
+        ("synth-drawbar", "Drawbar · Jazz Perc, Drawbars page: the registration as bars, the wave it adds up to, third percussion",
+         "drawbar", "Jazz Perc", "Drawbars"),
+        ("synth-drawbar-rotary", "Drawbar · Gospel, Rotary page: the horn and the drum spinning up to Fast",
+         "drawbar", "Gospel", "Rotary"),
+        ("synth-squelch", "Squelch · Acid Line, Synth page: the saw, the filter at rest and at the envelope's peak",
+         "squelch", "Acid Line", "Synth"),
+        ("synth-squelch-play", "Squelch · Acid Line, Play page: the cutoff's sweep for a plain note and an accented one",
+         "squelch", "Acid Line", "Play"),
+        ("synth-analog-filter", "Analog · Poly Brass, Filter page: the four-pole filter and where its envelope takes it",
+         "analog", "Poly Brass", "Filter"),
+        ("synth-analog-voice", "Analog · Worn Cards, Voice page: each voice card's own tuning at its Age",
+         "analog", "Worn Cards", "Voice"),
+    ] {
+        out.push(inst_scene(name, about, engine, preset, page, fonts())?);
+    }
     out.push(generic_scene(fonts())?);
     Ok(out)
 }
 
-const WT_HINT: &str = "Drag a tile to turn it · tap a tile, then the wheel · SHIFT + wheel: page · pads play the Lead track";
+/// A node with a preset loaded, the preset names and the preset's index.
+type Loaded = (Box<dyn Node>, Vec<String>, usize);
+
+/// A node with the preset of this name loaded, the preset names and its
+/// index.
+fn loaded<N: Node + 'static>(
+    mut node: N,
+    presets: &'static [Preset],
+    load: fn(&mut N, &Preset),
+    preset: &str,
+) -> Result<Loaded, String> {
+    let i = presets
+        .iter()
+        .position(|p| p.name == preset)
+        .ok_or_else(|| format!("no preset {preset}"))?;
+    load(&mut node, &presets[i]);
+    let names = presets.iter().map(|p| p.name.to_string()).collect();
+    Ok((Box::new(node), names, i))
+}
+
+/// Keys, Drawbar, Squelch or Analog with a factory preset, on one of its
+/// pages.
+fn inst_scene(
+    name: &'static str,
+    about: &'static str,
+    engine: &str,
+    preset: &str,
+    page: &str,
+    fonts: Fonts,
+) -> Result<Sample, String> {
+    const RATE: u32 = 48_000;
+    let (node, names, i) = match engine {
+        "keys" => loaded(Keys::new(RATE), Keys::presets(), Keys::load_preset, preset)?,
+        "drawbar" => loaded(
+            Drawbar::new(RATE),
+            Drawbar::presets(),
+            Drawbar::load_preset,
+            preset,
+        )?,
+        "squelch" => loaded(
+            Squelch::new(RATE),
+            Squelch::presets(),
+            Squelch::load_preset,
+            preset,
+        )?,
+        "analog" => loaded(
+            Analog::new(RATE),
+            Analog::presets(),
+            Analog::load_preset,
+            preset,
+        )?,
+        _ => return Err(format!("no engine {engine}")),
+    };
+    let st = SynthState::from_node(node.as_ref(), "Keys", Color::rgb(0x3DDC97), names, Some(i));
+    let mut ui = app_ui(fonts, POLY_HINT);
+    let mut panel = SynthPanel::add(&mut ui, PAGE, st)?;
+    let k = panel
+        .pages()
+        .iter()
+        .position(|p| p.name == page)
+        .ok_or_else(|| format!("no page {page}"))?;
+    panel.show_page(&mut ui, k);
+    fill_qlinks(&mut ui, &panel);
+    ui.show(PAGE)?;
+    Ok(Sample {
+        name,
+        about,
+        ui,
+        panel,
+    })
+}
+
+const WT_HINT: &str = "Drag a control to turn it · tap one, then the wheel · SHIFT + wheel: next page · pads play the Lead track";
 
 /// The Wavetable synth with a factory preset, on one of its pages.
 fn wt_scene(
@@ -344,6 +446,7 @@ fn wt_scene(
         .position(|p| p.name == page)
         .ok_or_else(|| format!("no page {page}"))?;
     panel.show_page(&mut ui, k);
+    fill_qlinks(&mut ui, &panel);
     ui.show(PAGE)?;
     Ok(Sample {
         name,
@@ -353,7 +456,7 @@ fn wt_scene(
     })
 }
 
-const FM_HINT: &str = "Drag a tile to turn it · tap a tile, then the wheel · SHIFT + wheel: page · pads play the Keys track";
+const FM_HINT: &str = "Drag a control to turn it · tap one, then the wheel · SHIFT + wheel: next page · pads play the Keys track";
 
 /// FM with a factory preset, on one of its pages.
 fn fm_scene(
@@ -391,6 +494,7 @@ fn fm_scene(
         .position(|p| p.name == page)
         .ok_or_else(|| format!("no page {page}"))?;
     panel.show_page(&mut ui, k);
+    fill_qlinks(&mut ui, &panel);
     ui.show(PAGE)?;
     Ok(Sample {
         name,
@@ -400,7 +504,7 @@ fn fm_scene(
     })
 }
 
-const DRUM_HINT: &str = "Drag a tile to turn it · tap a tile, then the wheel · SHIFT + wheel: pad page · pads play the kit";
+const DRUM_HINT: &str = "Drag a control to turn it · tap one, then the wheel · SHIFT + wheel: pad page · pads play the kit";
 
 /// The drum synth with a factory kit, on pad `pad`'s page (16: the Kit page).
 fn drum_scene(
@@ -433,6 +537,7 @@ fn drum_scene(
         16
     };
     panel.show_page(&mut ui, page);
+    fill_qlinks(&mut ui, &panel);
     ui.show(PAGE)?;
     Ok(Sample {
         name,
@@ -467,6 +572,7 @@ fn pluck_scene(
         .position(|p| p.name == page)
         .ok_or_else(|| format!("no page {page}"))?;
     panel.show_page(&mut ui, k);
+    fill_qlinks(&mut ui, &panel);
     ui.show(PAGE)?;
     Ok(Sample {
         name,
@@ -690,6 +796,7 @@ fn generic_scene(fonts: Fonts) -> Result<Sample, String> {
         "Any node gets this page from its parameters alone · a plugin, or an effect",
     );
     let panel = SynthPanel::add(&mut ui, PAGE, st)?;
+    fill_qlinks(&mut ui, &panel);
     ui.show(PAGE)?;
     Ok(Sample {
         name: "generic-node",

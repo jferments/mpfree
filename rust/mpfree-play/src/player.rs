@@ -102,7 +102,7 @@ use mpfree_seq::{Cond, DestId, Lock, Note, Speed, Touch, MAX_TRACKS};
 use mpfree_transport::time::{Swing, Tick};
 use mpfree_transport::{Block, Mark, Marker, Span, State};
 
-use crate::view::{ClipView, PlayView, Started, Switches, TrackView};
+use crate::view::{ClipView, NowPlaying, PlayView, Started, Switches, TrackView};
 
 /// Notes sounding at once, across all tracks.
 pub const MAX_ACTIVE: usize = 256;
@@ -627,6 +627,29 @@ impl Player {
     /// Parameter locks held now (sent, not yet unlocked).
     pub fn locked(&self) -> usize {
         self.n_held
+    }
+
+    /// What `track` plays at song tick `tick` as this player sees it: its
+    /// clip (launched, or cued and started), else in song mode the
+    /// placement at `tick`. None when it plays nothing. For a host that
+    /// follows a track's loop, such as a frozen mixer strip. Never
+    /// allocates.
+    pub fn now_playing(&self, view: &PlayView, track: usize, tick: Tick) -> Option<NowPlaying> {
+        let (clip, origin) = match self.switches.playing(view, track) {
+            Some(p) => p,
+            None if view.song => {
+                let r = view.tracks.get(track)?.region_at(tick)?;
+                (&r.clip, r.clip.origin)
+            }
+            None => return None,
+        };
+        Some(NowPlaying {
+            slot: clip.slot,
+            origin,
+            song_len: clip.song_len,
+            stamp: clip.stamp,
+            muted: self.switches.muted(view, track),
+        })
     }
 
     /// Play one period: the transport's `block` for it, the clips in `view`.

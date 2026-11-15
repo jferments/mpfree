@@ -1,16 +1,19 @@
-//! The pad player's synth: MPFree's Poly, FM, Drums, Pluck or Wavetable
-//! (`mpfree-synth`) on the pads, edited on the Synth tab (`mpfree-synth-ui`).
+//! The pad player's synth: MPFree's Poly, FM, Drums, Pluck, Wavetable,
+//! Keys, Drawbar, Squelch or Analog (`mpfree-synth`) on the pads, edited on the
+//! Synth tab
+//! (`mpfree-synth-ui`).
 //!
 //! - The kit list ends with one more entry, "Synth: Poly" (or FM, Drums,
-//!   Pluck, Wavetable). Picking it, or opening the Synth tab, makes the pads play the
+//!   Pluck, Wavetable, Keys, Drawbar, Squelch, Analog). Picking it, or opening the Synth tab, makes the pads play the
 //!   synth. The Synth tab's options (MENU) pick the engine; a note still
 //!   ringing on another engine finishes its release.
 //! - Drums is a kit, not a keyboard: pad 1 plays the kit's Pad 1 note (a
 //!   Kit page knob, C2 by default) and each pad after it a semitone higher,
 //!   whatever the scale, layout, bank or octave. The pads are named by the
 //!   sound on them ("Kick", "Closed hat"), and the Synth tab shows the page
-//!   of the pad hit last. Pluck and Wavetable play the pad layouts as Poly
-//!   and FM do.
+//!   of the pad hit last. Pluck, Wavetable, Keys, Drawbar, Squelch and
+//!   Analog play the pad layouts as Poly and FM do (Squelch one note at a
+//!   time).
 //! - The pads are laid out by `mpfree_scale::pads` (owner, 2026-11-11):
 //!   with no scale, pad 1 plays C3 and each pad after it a semitone higher
 //!   (C3 to D#4), as in round 6. With a scale, each bank has its own
@@ -40,10 +43,10 @@ use mpfree_arp::scale::pads::{
 };
 use mpfree_arp::scale::{Scale, NOTE_NAMES};
 use mpfree_instruments::preset::{engine_of, Error as PresetError, Preset as SoundPreset};
-use mpfree_node::{Ctx, Node, NodeEvent, ParamInfo, Timed};
+use mpfree_node::{Ctx, Cull, Node, NodeEvent, ParamInfo, Timed};
 use mpfree_synth::drum_params;
 use mpfree_synth::fm_params::FmPreset;
-use mpfree_synth::{Drums, Fm, Pluck, Poly, Preset, Wavetable};
+use mpfree_synth::{Analog, Drawbar, Drums, Fm, Keys, Pluck, Poly, Preset, Squelch, Wavetable};
 use mpfree_synth_ui::format::value_line;
 use mpfree_synth_ui::SynthState;
 pub use mpfree_tuning::Builtin;
@@ -59,6 +62,14 @@ pub const FM_START_PRESET: &str = "Glass Keys";
 pub const DRUMS_START_PRESET: &str = "Init Kit";
 pub const PLUCK_START_PRESET: &str = "Steel String";
 pub const WT_START_PRESET: &str = "Harmonic Pluck";
+/// The electric piano's preset at the start.
+pub const KEYS_START_PRESET: &str = "Init";
+/// The tonewheel organ's preset at the start.
+pub const DRAWBAR_START_PRESET: &str = "Init";
+/// The acid bass's preset at the start.
+pub const SQUELCH_START_PRESET: &str = "Acid Line";
+/// The vintage poly's preset at the start.
+pub const ANALOG_START_PRESET: &str = "Init";
 /// How far SHIFT + wheel moves the pads: pad 1 from C0 to C6.
 pub const MIN_OCTAVE: i32 = -3;
 pub const MAX_OCTAVE: i32 = 3;
@@ -91,7 +102,7 @@ fn black(note: u8) -> bool {
 }
 
 /// How many engines there are.
-const ENGINES: usize = 5;
+const ENGINES: usize = 9;
 
 /// The synth engines the pads can play.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -107,6 +118,14 @@ pub enum Engine {
     Pluck,
     /// The wavetable synth: two oscillators scanning frame stacks.
     Wavetable,
+    /// The electric piano: struck tines and reeds.
+    Keys,
+    /// The tonewheel organ and its rotary speaker.
+    Drawbar,
+    /// The mono acid bass: diode ladder, accent and slide.
+    Squelch,
+    /// The vintage analog poly: voice cards that differ, poly-mod, chorus.
+    Analog,
 }
 
 impl Engine {
@@ -116,6 +135,10 @@ impl Engine {
         Engine::Drums,
         Engine::Pluck,
         Engine::Wavetable,
+        Engine::Keys,
+        Engine::Drawbar,
+        Engine::Squelch,
+        Engine::Analog,
     ];
 
     pub fn name(self) -> &'static str {
@@ -125,11 +148,36 @@ impl Engine {
             Engine::Drums => "Drums",
             Engine::Pluck => "Pluck",
             Engine::Wavetable => "Wavetable",
+            Engine::Keys => "Keys",
+            Engine::Drawbar => "Drawbar",
+            Engine::Squelch => "Squelch",
+            Engine::Analog => "Analog",
         }
     }
 
     fn index(self) -> usize {
         self as usize
+    }
+
+    /// The engine's node id (`mpfree.poly` ...), as a track's own
+    /// instrument and the project name it.
+    pub fn node_id(self) -> &'static str {
+        match self {
+            Engine::Poly => "mpfree.poly",
+            Engine::Fm => "mpfree.fm",
+            Engine::Drums => "mpfree.drums",
+            Engine::Pluck => "mpfree.pluck",
+            Engine::Wavetable => "mpfree.wavetable",
+            Engine::Keys => "mpfree.keys",
+            Engine::Drawbar => "mpfree.drawbar",
+            Engine::Squelch => "mpfree.squelch",
+            Engine::Analog => "mpfree.analog",
+        }
+    }
+
+    /// The engine whose node id is `id`.
+    pub fn from_node_id(id: &str) -> Option<Engine> {
+        Engine::ALL.into_iter().find(|e| e.node_id() == id)
     }
 
     /// The engine whose user presets live in `folder` under the library's
@@ -355,6 +403,10 @@ pub struct Synth {
     drums: Drums,
     pluck: Pluck,
     wt: Wavetable,
+    keys: Keys,
+    drawbar: Drawbar,
+    squelch: Squelch,
+    analog: Analog,
     fm_presets: Vec<FmPreset>,
     rate: u32,
     /// Note events for each engine (in [`Engine::ALL`]'s order) this period.
@@ -399,6 +451,10 @@ fn static_presets(engine: Engine) -> &'static [Preset] {
         Engine::Drums => Drums::presets(),
         Engine::Pluck => Pluck::presets(),
         Engine::Wavetable => Wavetable::presets(),
+        Engine::Keys => Keys::presets(),
+        Engine::Drawbar => Drawbar::presets(),
+        Engine::Squelch => Squelch::presets(),
+        Engine::Analog => Analog::presets(),
         Engine::Poly | Engine::Fm => Poly::presets(),
     }
 }
@@ -410,14 +466,7 @@ fn static_presets(engine: Engine) -> &'static [Preset] {
 /// its own. The meters are left alone. None for an engine it doesn't know
 /// or values that aren't its.
 pub fn fresh_node(id: &str, values: &[f32], rate: u32) -> Option<Box<dyn Node>> {
-    let mut node: Box<dyn Node> = match id {
-        "mpfree.poly" => Box::new(Poly::new(rate)),
-        "mpfree.fm" => Box::new(Fm::new(rate)),
-        "mpfree.drums" => Box::new(Drums::new(rate)),
-        "mpfree.pluck" => Box::new(Pluck::new(rate)),
-        "mpfree.wavetable" => Box::new(Wavetable::new(rate)),
-        _ => return None,
-    };
+    let mut node = engine_node(id, rate)?;
     let params = node.params();
     if params.len() != values.len() {
         return None;
@@ -428,6 +477,23 @@ pub fn fresh_node(id: &str, values: &[f32], rate: u32) -> Option<Box<dyn Node>> 
         }
     }
     Some(node)
+}
+
+/// A new instrument of the engine `id` at `rate`, at its defaults (Init).
+/// None for an id that isn't one of the engines.
+pub fn engine_node(id: &str, rate: u32) -> Option<Box<dyn Node>> {
+    Some(match id {
+        "mpfree.poly" => Box::new(Poly::new(rate)),
+        "mpfree.fm" => Box::new(Fm::new(rate)),
+        "mpfree.drums" => Box::new(Drums::new(rate)),
+        "mpfree.pluck" => Box::new(Pluck::new(rate)),
+        "mpfree.wavetable" => Box::new(Wavetable::new(rate)),
+        "mpfree.keys" => Box::new(Keys::new(rate)),
+        "mpfree.drawbar" => Box::new(Drawbar::new(rate)),
+        "mpfree.squelch" => Box::new(Squelch::new(rate)),
+        "mpfree.analog" => Box::new(Analog::new(rate)),
+        _ => return None,
+    })
 }
 
 /// The index of the preset called `name`, or 0.
@@ -476,6 +542,26 @@ impl Synth {
         if let Some(p) = Wavetable::presets().get(wt_preset) {
             wt.load_preset(p);
         }
+        let mut keys = Keys::new(rate);
+        let keys_preset = start_preset(Keys::presets(), KEYS_START_PRESET);
+        if let Some(p) = Keys::presets().get(keys_preset) {
+            keys.load_preset(p);
+        }
+        let mut drawbar = Drawbar::new(rate);
+        let drawbar_preset = start_preset(Drawbar::presets(), DRAWBAR_START_PRESET);
+        if let Some(p) = Drawbar::presets().get(drawbar_preset) {
+            drawbar.load_preset(p);
+        }
+        let mut squelch = Squelch::new(rate);
+        let squelch_preset = start_preset(Squelch::presets(), SQUELCH_START_PRESET);
+        if let Some(p) = Squelch::presets().get(squelch_preset) {
+            squelch.load_preset(p);
+        }
+        let mut analog = Analog::new(rate);
+        let analog_preset = start_preset(Analog::presets(), ANALOG_START_PRESET);
+        if let Some(p) = Analog::presets().get(analog_preset) {
+            analog.load_preset(p);
+        }
         let mut fm = Fm::new(rate);
         let fm_presets = Fm::presets();
         let fm_preset = fm_presets
@@ -491,6 +577,10 @@ impl Synth {
             meters_of(&drums),
             meters_of(&pluck),
             meters_of(&wt),
+            meters_of(&keys),
+            meters_of(&drawbar),
+            meters_of(&squelch),
+            meters_of(&analog),
         ];
         let settings = PadSettings::default();
         Synth {
@@ -499,6 +589,10 @@ impl Synth {
             drums,
             pluck,
             wt,
+            keys,
+            drawbar,
+            squelch,
+            analog,
             fm_presets,
             rate,
             events: [[Timed::new(0, NodeEvent::AllOff); MAX_EVENTS]; ENGINES],
@@ -512,7 +606,17 @@ impl Synth {
             playing: [Held::default(); PADS],
             holders: [0; 128],
             press: [0; PADS],
-            presets: [preset, fm_preset, drums_preset, pluck_preset, wt_preset],
+            presets: [
+                preset,
+                fm_preset,
+                drums_preset,
+                pluck_preset,
+                wt_preset,
+                keys_preset,
+                drawbar_preset,
+                squelch_preset,
+                analog_preset,
+            ],
             pads_changed: false,
             fade: 0,
             fading: false,
@@ -526,13 +630,48 @@ impl Synth {
     }
 
     fn node(&self) -> &dyn Node {
-        match self.settings.engine {
+        self.node_of(self.settings.engine)
+    }
+
+    fn node_of(&self, engine: Engine) -> &dyn Node {
+        match engine {
             Engine::Poly => &self.poly,
             Engine::Fm => &self.fm,
             Engine::Drums => &self.drums,
             Engine::Pluck => &self.pluck,
             Engine::Wavetable => &self.wt,
+            Engine::Keys => &self.keys,
+            Engine::Drawbar => &self.drawbar,
+            Engine::Squelch => &self.squelch,
+            Engine::Analog => &self.analog,
         }
+    }
+
+    /// Engine `engine`'s sound as it is now, for a copy a track plays as
+    /// its own instrument ([`fresh_node`], `instruments.rs`): the node's id
+    /// and every value in its parameter order. Allocates.
+    pub fn sound_of(&self, engine: Engine) -> (&'static str, Vec<f32>) {
+        let node = self.node_of(engine);
+        let values = node.params().iter().map(|p| node.param(p.id)).collect();
+        (node.info().id, values)
+    }
+
+    /// The pads' notes for engine `engine` with the settings now: Drums'
+    /// kit notes, or the layout. Never allocates.
+    pub fn pads_for(&self, engine: Engine) -> [Pad; PADS] {
+        match engine {
+            Engine::Drums => {
+                let base = self.drums.param(drum_params::BASE_NOTE).round() as i16;
+                std::array::from_fn(|p| Pad::single(base + p as i16))
+            }
+            _ => pads::layout(&self.setup()),
+        }
+    }
+
+    /// The tuning the engines play in now (the Synth tab's), for the
+    /// tracks' own instruments.
+    pub fn tuning_now(&self) -> Tuning {
+        self.settings.tuning.tuning(&self.tuning_files)
     }
 
     fn node_mut(&mut self) -> &mut dyn Node {
@@ -542,7 +681,103 @@ impl Synth {
             Engine::Drums => &mut self.drums,
             Engine::Pluck => &mut self.pluck,
             Engine::Wavetable => &mut self.wt,
+            Engine::Keys => &mut self.keys,
+            Engine::Drawbar => &mut self.drawbar,
+            Engine::Squelch => &mut self.squelch,
+            Engine::Analog => &mut self.analog,
         }
+    }
+
+    fn engine_node(&self, e: Engine) -> &dyn Node {
+        match e {
+            Engine::Poly => &self.poly,
+            Engine::Fm => &self.fm,
+            Engine::Drums => &self.drums,
+            Engine::Pluck => &self.pluck,
+            Engine::Wavetable => &self.wt,
+            Engine::Keys => &self.keys,
+            Engine::Drawbar => &self.drawbar,
+            Engine::Squelch => &self.squelch,
+            Engine::Analog => &self.analog,
+        }
+    }
+
+    fn engine_node_mut(&mut self, e: Engine) -> &mut dyn Node {
+        match e {
+            Engine::Poly => &mut self.poly,
+            Engine::Fm => &mut self.fm,
+            Engine::Drums => &mut self.drums,
+            Engine::Pluck => &mut self.pluck,
+            Engine::Wavetable => &mut self.wt,
+            Engine::Keys => &mut self.keys,
+            Engine::Drawbar => &mut self.drawbar,
+            Engine::Squelch => &mut self.squelch,
+            Engine::Analog => &mut self.analog,
+        }
+    }
+
+    /// Every engine's sound now, as preset text, for a project's `synth`
+    /// part (`project.rs`). Small: a few hundred values.
+    pub fn sounds(&self) -> Vec<(Engine, String)> {
+        Engine::ALL
+            .iter()
+            .map(|&e| {
+                let node = self.engine_node(e);
+                let name = match e {
+                    Engine::Fm => self
+                        .fm_presets
+                        .get(self.presets[e.index()])
+                        .map_or("", |p| p.name.as_str()),
+                    _ => static_presets(e)
+                        .get(self.presets[e.index()])
+                        .map_or("", |p| p.name),
+                };
+                (
+                    e,
+                    SoundPreset::capture(node, name, &[]).to_text(node.params()),
+                )
+            })
+            .collect()
+    }
+
+    /// Puts back the sounds [`Synth::sounds`] saved (notes keep sounding,
+    /// values glide, as with a preset). One that doesn't read leaves that
+    /// engine as it is; returns a line for each.
+    pub fn set_sounds(&mut self, sounds: &[(Engine, String)]) -> Vec<String> {
+        let mut notes = Vec::new();
+        for (e, text) in sounds {
+            let node = self.engine_node(*e);
+            let p = match SoundPreset::parse(text, node.info(), node.params()) {
+                Ok(p) => p,
+                Err(err) => {
+                    notes.push(format!(
+                        "synth: the project's {} sound didn't read ({err:?})",
+                        e.name()
+                    ));
+                    continue;
+                }
+            };
+            let names = self.drum_names();
+            if let Err(err) = p.apply(self.engine_node_mut(*e)) {
+                notes.push(format!(
+                    "synth: the project's {} sound didn't fit ({err:?})",
+                    e.name()
+                ));
+                continue;
+            }
+            if *e == Engine::Drums {
+                self.drums_moved(names);
+            }
+            // The preset list shows the saved name when it is a factory one.
+            let at = match e {
+                Engine::Fm => self.fm_presets.iter().position(|x| x.name == p.name),
+                _ => static_presets(*e).iter().position(|x| x.name == p.name),
+            };
+            if let Some(i) = at {
+                self.presets[e.index()] = i;
+            }
+        }
+        notes
     }
 
     /// Voices one engine has sounding or fading.
@@ -553,6 +788,10 @@ impl Synth {
             Engine::Drums => self.drums.active_voices(),
             Engine::Pluck => self.pluck.active_voices(),
             Engine::Wavetable => self.wt.active_voices(),
+            Engine::Keys => self.keys.active_voices(),
+            Engine::Drawbar => self.drawbar.active_voices(),
+            Engine::Squelch => self.squelch.active_voices(),
+            Engine::Analog => self.analog.active_voices(),
         }
     }
 
@@ -628,18 +867,16 @@ impl Synth {
         self.fm.set_tuning(&t);
         self.drums.set_tuning(&t);
         self.pluck.set_tuning(&t);
+        self.keys.set_tuning(&t);
+        self.drawbar.set_tuning(&t);
+        self.squelch.set_tuning(&t);
+        self.analog.set_tuning(&t);
         self.wt.set_tuning(&t);
     }
 
     /// Works the pads' notes out again: Drums' kit notes, or the layout.
     fn relayout(&mut self) {
-        self.pads = match self.settings.engine {
-            Engine::Drums => {
-                let base = self.drums.param(drum_params::BASE_NOTE).round() as i16;
-                std::array::from_fn(|p| Pad::single(base + p as i16))
-            }
-            _ => pads::layout(&self.setup()),
-        };
+        self.pads = self.pads_for(self.settings.engine);
     }
 
     /// The sound on each of Drums' pads.
@@ -1014,6 +1251,10 @@ impl Synth {
                     Engine::Drums => &mut self.drums,
                     Engine::Pluck => &mut self.pluck,
                     Engine::Wavetable => &mut self.wt,
+                    Engine::Keys => &mut self.keys,
+                    Engine::Drawbar => &mut self.drawbar,
+                    Engine::Squelch => &mut self.squelch,
+                    Engine::Analog => &mut self.analog,
                 };
                 node.process(&ctx, &self.events[k][first..e[k]], sl, sr);
                 if !sl.iter().chain(sr.iter()).all(|s| s.is_finite()) {
@@ -1047,6 +1288,10 @@ impl Synth {
                     self.drums.reset();
                     self.pluck.reset();
                     self.wt.reset();
+                    self.keys.reset();
+                    self.drawbar.reset();
+                    self.squelch.reset();
+                    self.analog.reset();
                     self.playing = [Held::default(); PADS];
                     self.holders = [0; 128];
                     self.fading = false;
@@ -1060,6 +1305,33 @@ impl Synth {
     /// Voices sounding or fading, on every engine.
     pub fn active_voices(&self) -> usize {
         Engine::ALL.iter().map(|&e| self.voices_of(e)).sum()
+    }
+
+    /// Load shedding (`shed.rs`): the voice to give up first across the
+    /// engines (the least audible, [`Cull::audibility`]), with its engine.
+    /// No allocation.
+    pub fn cull_candidate(&self) -> Option<(Engine, Cull)> {
+        Engine::ALL.into_iter().fold(None, |best, e| {
+            Cull::first(best, self.node_of(e).cull_candidate().map(|c| (e, c)))
+        })
+    }
+
+    /// Gives up the voice engine `e` names, with its steal's short fade.
+    /// True if it did. No allocation.
+    pub fn cull(&mut self, e: Engine) -> bool {
+        match e {
+            Engine::Poly => self.poly.cull(),
+            Engine::Fm => self.fm.cull(),
+            Engine::Drums => self.drums.cull(),
+            Engine::Pluck => self.pluck.cull(),
+            Engine::Wavetable => self.wt.cull(),
+            Engine::Keys => self.keys.cull(),
+            // The organ's wheels turn whatever the keys do, so a key given
+            // up saves little; Squelch is one voice. Neither offers one.
+            Engine::Drawbar => self.drawbar.cull(),
+            Engine::Squelch => self.squelch.cull(),
+            Engine::Analog => self.analog.cull(),
+        }
     }
 
     pub fn counters(&self) -> Counters {
@@ -1080,6 +1352,12 @@ impl Synth {
             Engine::Drums => mpfree_synth::drum::POOL as f32,
             Engine::Pluck => self.pluck.param(mpfree_synth::pluck_params::POLYPHONY),
             Engine::Wavetable => self.wt.param(mpfree_synth::wavetable::params::POLYPHONY),
+            Engine::Keys => self.keys.param(mpfree_synth::keys_params::POLYPHONY),
+            // Every key plays, as on the organ.
+            Engine::Drawbar => mpfree_synth::drawbar::MAX_KEYS as f32,
+            // One note at a time.
+            Engine::Squelch => 1.0,
+            Engine::Analog => self.analog.param(mpfree_synth::analog_params::POLYPHONY),
         }
     }
 
@@ -1091,7 +1369,12 @@ impl Synth {
             Engine::Poly => self.poly.pressures(out),
             Engine::Fm => self.fm.pressures(out),
             Engine::Wavetable => self.wt.pressures(out),
-            Engine::Drums | Engine::Pluck => 0,
+            Engine::Drums
+            | Engine::Pluck
+            | Engine::Keys
+            | Engine::Drawbar
+            | Engine::Squelch
+            | Engine::Analog => 0,
         }
     }
 
@@ -1150,6 +1433,10 @@ impl Synth {
             }
             Engine::Pluck => self.pluck.load_preset(p),
             Engine::Wavetable => self.wt.load_preset(p),
+            Engine::Keys => self.keys.load_preset(p),
+            Engine::Drawbar => self.drawbar.load_preset(p),
+            Engine::Squelch => self.squelch.load_preset(p),
+            Engine::Analog => self.analog.load_preset(p),
             Engine::Poly | Engine::Fm => self.poly.load_preset(p),
         }
         self.presets[e.index()] = i;
@@ -1300,6 +1587,90 @@ impl Synth {
     pub fn param_info(&self, id: u16) -> Option<&'static ParamInfo> {
         self.node().params().iter().find(|p| p.id == id)
     }
+
+    /// Engine `engine`'s factory presets' names.
+    pub fn preset_names(&self, engine: Engine) -> Vec<String> {
+        match engine {
+            Engine::Fm => self.fm_presets.iter().map(|p| p.name.clone()).collect(),
+            e => static_presets(e)
+                .iter()
+                .map(|p| p.name.to_string())
+                .collect(),
+        }
+    }
+
+    /// Preset `i` of engine `engine` as every value in the node's order
+    /// (and its name), for a track's own copy of the engine: loaded into a
+    /// scratch engine, so this synth's sound is left alone. Allocates.
+    pub fn preset_values(&self, engine: Engine, i: usize) -> Option<(String, Vec<f32>)> {
+        fn values(n: &dyn Node) -> Vec<f32> {
+            n.params().iter().map(|p| n.param(p.id)).collect()
+        }
+        let rate = self.rate;
+        if engine == Engine::Fm {
+            let p = self.fm_presets.get(i)?;
+            let mut n = Fm::new(rate);
+            n.load_preset(p);
+            return Some((p.name.clone(), values(&n)));
+        }
+        let p = static_presets(engine).get(i)?;
+        let v = match engine {
+            Engine::Drums => {
+                let mut n = Drums::new(rate);
+                n.load_preset(p);
+                values(&n)
+            }
+            Engine::Pluck => {
+                let mut n = Pluck::new(rate);
+                n.load_preset(p);
+                values(&n)
+            }
+            Engine::Wavetable => {
+                let mut n = Wavetable::new(rate);
+                n.load_preset(p);
+                values(&n)
+            }
+            Engine::Keys => {
+                let mut n = Keys::new(rate);
+                n.load_preset(p);
+                values(&n)
+            }
+            Engine::Drawbar => {
+                let mut n = Drawbar::new(rate);
+                n.load_preset(p);
+                values(&n)
+            }
+            Engine::Squelch => {
+                let mut n = Squelch::new(rate);
+                n.load_preset(p);
+                values(&n)
+            }
+            Engine::Analog => {
+                let mut n = Analog::new(rate);
+                n.load_preset(p);
+                values(&n)
+            }
+            Engine::Poly | Engine::Fm => {
+                let mut n = Poly::new(rate);
+                n.load_preset(p);
+                values(&n)
+            }
+        };
+        Some((p.name.to_string(), v))
+    }
+
+    /// What the Synth tab shows for a track's own instrument `node`
+    /// (`engine`'s, or a plugin's with no presets), labelled `track`.
+    pub fn state_of(
+        &self,
+        node: &dyn Node,
+        engine: Option<Engine>,
+        track: &str,
+        preset: Option<usize>,
+    ) -> SynthState {
+        let presets = engine.map(|e| self.preset_names(e)).unwrap_or_default();
+        SynthState::from_node(node, track, Color::from_pad(PAD_WHITE), presets, preset)
+    }
 }
 
 /// A scale's name for the chip and the log: "D Dorian", or its notes'
@@ -1358,6 +1729,15 @@ impl ParamLog {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn every_engines_node_id_is_its_nodes() {
+        let synth = super::Synth::new(44_100);
+        for e in super::Engine::ALL {
+            assert_eq!(synth.sound_of(e).0, e.node_id());
+            assert_eq!(super::Engine::from_node_id(e.node_id()), Some(e));
+        }
+    }
+
     use super::*;
     use mpfree_arp::scale::by_name;
     use mpfree_synth::params as pp;
@@ -1427,6 +1807,10 @@ mod tests {
             Engine::Drums,
             Engine::Pluck,
             Engine::Wavetable,
+            Engine::Keys,
+            Engine::Drawbar,
+            Engine::Squelch,
+            Engine::Analog,
         ] {
             with(&mut s, |p| p.engine = engine);
             // A preset other than the first, with a value changed after.

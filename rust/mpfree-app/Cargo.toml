@@ -20,6 +20,8 @@ mpfree-ui = { path = "../mpfree-ui" }
 mpfree-sampler = { path = "../mpfree-sampler" }
 mpfree-transport = { path = "../mpfree-transport" }
 mpfree-seq = { path = "../mpfree-seq" }
+# Each track's own instrument (instruments.rs).
+mpfree-track = { path = "../mpfree-track" }
 mpfree-play = { path = "../mpfree-play" }
 mpfree-time-ui = { path = "../mpfree-time-ui" }
 mpfree-capture = { path = "../mpfree-capture" }
@@ -31,6 +33,8 @@ mpfree-synth-ui = { path = "../mpfree-synth-ui" }
 mpfree-instruments = { path = "../mpfree-instruments" }
 mpfree-sampler-ui = { path = "../mpfree-sampler-ui" }
 mpfree-looper = { path = "../mpfree-looper" }
+# Audio tracks on the Song view (audiotracks.rs).
+mpfree-audiotracks = { path = "../mpfree-audiotracks" }
 mpfree-store = { path = "../mpfree-store" }
 # The mixer (every sound is summed in it) and its screen.
 mpfree-fx = { path = "../mpfree-fx" }
@@ -52,4 +56,15 @@ mpfree-midi-ui = { path = "../mpfree-midi-ui" }
 # The library in the data folder and its browser (the Pads tab's Browse
 # view): places, folders, Load, Load to pad and the preview.
 mpfree-library = { path = "../mpfree-library" }
+# CLAP plugins (plugins.rs): each in its own mpfree-plughost process, as
+# mixer inserts from the chain editor.
+mpfree-plughost = { path = "../mpfree-plughost" }
 mpfree-browser-ui = { path = "../mpfree-browser-ui" }
+# Export: the mixdown, the stems and the MIDI file (export.rs).
+mpfree-export = { path = "../mpfree-export" }
+
+[dev-dependencies]
+# The test plugins as a real .clap file, for the plugin tests
+# (tests/plughost.rs: the app serving as the plugin process).
+mpfree-clap-testplug = { path = "../mpfree-clap-testplug" }
+mpfree-clap = { path = "../mpfree-clap" }

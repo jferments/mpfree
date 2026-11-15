@@ -43,8 +43,12 @@ LIBRARY_NEEDLES = (
     # names checked by valid_name (Library::path), or a .part / temp / trash slot beside one; links are refused
     # (symlink_metadata, O_NOFOLLOW). The Pads tab's browser reaches none of these: its picker refuses every
     # button but Load, Load to pad, Open, Audition and Favourite (Pick::allows), which read; Recent and
-    # Favourites are saved through mpfree-store. At start, Library::at makes library/ and its place folders
-    # when they are missing (mkdir, the DirBuilder check below), on the --data folder only.
+    # Favourites are saved through mpfree-store. The full browser (BROWSE, 13 Nov 2026) reaches them all:
+    # New folder, Rename, Copy and Paste, Delete into the Trash (asks first; Put back undoes it), Empty
+    # Trash (asks first; for good, the Trash only) and the project save (SHIFT + BROWSE, Save, Save as),
+    # each inside library/ under --data and nowhere else. At start, Library::at makes library/ and its
+    # place folders when they are missing, and work_dir makes library/.work/<owner> (mkdir, the DirBuilder
+    # check below), on the --data folder only.
     ("mpfree-library/lib.rs", "fs::rename(&part, fp.join(&name))?;"),                  # write_new: .part renamed in
     ("mpfree-library/lib.rs", "let _ = fs::remove_file(&part);"),                       # write_new, copy: a cut-off .part
     ("mpfree-library/lib.rs", "fs::rename(&p, &tp)?;"),                                 # rename in place
@@ -57,8 +61,9 @@ LIBRARY_NEEDLES = (
     ("mpfree-library/lib.rs", "fs::rename(slot.join(&item.name), dst_dir.join(&name))?;"),  # restore from the Trash
     ("mpfree-library/lib.rs", "let _ = fs::remove_file(slot.join(\"origin.txt\"));"),   # restore: the slot's note
     ("mpfree-library/lib.rs", "let _ = fs::remove_dir(&slot);"),                        # restore: the empty slot
-    ("mpfree-library/lib.rs", "fs::remove_dir_all(&p)?;"),                              # empty_trash (Prefs), Trash only
-    ("mpfree-library/lib.rs", "fs::remove_file(&p)?;"),                                 # empty_trash (Prefs), Trash only
+    ("mpfree-library/lib.rs", "fs::remove_dir_all(&p)?;"),                              # empty_trash (Prefs, browser), Trash only
+    ("mpfree-library/lib.rs", "fs::remove_file(&p)?;"),                                 # empty_trash (Prefs, browser), Trash only;
+                                                                                        # clear_work: files (not links) in .work/<owner>
     ("mpfree-library/project.rs", "fs::remove_dir_all(&new)?;"),                        # project save: a stale parts.new
     ("mpfree-library/project.rs", "fs::rename(&parts, v.join(PARTS))?;"),               # project save: old parts kept
     ("mpfree-library/project.rs", "fs::rename(&new, &parts)?;"),                        # project save: new parts in
@@ -523,7 +528,7 @@ class AppTests(unittest.TestCase):
                      "Phase 2 of 19: Developer pages: Performance, CPU by engine, Processes", "pads hit (pad:velocity as played): 1:18 1:124",
                      "buttons pressed (note numbers): 39", "pad level: Full Level (every hit 127)",
                      "data wheel: +1", "session pings and replies: 1", "your answer: soft and hard differ",
-                     "Phase 4 of 19: Play page: the four views and the mode buttons", "repeat: 16 hits in the last second on pads 1 2; latched: 1 2; "
+                     "Phase 4 of 19: Play page: the three views and the mode buttons", "repeat: 16 hits in the last second on pads 1 2; latched: 1 2; "
                      "engine dropped 0 events, overflow 0", "STOP: stopped by you"):
             self.assertIn(text, out)
         # Phase 1's lines are not shown again in phase 2.
@@ -973,7 +978,12 @@ class StaticTests(unittest.TestCase):
                     ("mpfree-store/lib.rs", "let _ = fs::remove_file(&part);"),
                     # The host-only Pads tab picture (--preview and --display-lists, never on the MPC): the scratch
                     # library pads_browse made a moment before in the workstation's temp folder, removed again.
-                    ("mpfree-app/gui.rs", "let _ = std::fs::remove_dir_all(&dir);")} | set(LIBRARY_NEEDLES)
+                    ("mpfree-app/gui.rs", "let _ = std::fs::remove_dir_all(&dir);"),
+                    # The safe start (crash.rs): /run/mpfree-app/running, in RAM beside the report, holds the pid
+                    # while the app runs and says "ended" when the run ends well; a stop's handler unlinks it
+                    # (sys.rs, below).
+                    ("mpfree-app/crash.rs", "fs::write(path, format!(\"pid {}\\n\", std::process::id()))?;"),
+                    ("mpfree-app/crash.rs", "let _ = fs::write(&self.path, ENDED);")} | set(LIBRARY_NEEDLES)
         for name, code in self.program_sources():
             for line in code.splitlines():
                 if re.search(r"\.(write|append|create|create_new|truncate)\(true\)", line):
@@ -993,9 +1003,14 @@ class StaticTests(unittest.TestCase):
             # the program's own report in /run/mpfree-app (Out::new and the STOP line in main)
             "OpenOptions::new().create(true).append(true).mode(0o644).open(Path::new(REPORT_DIR).join(\"report.txt\")).ok()",
             "if let Ok(mut f) = OpenOptions::new().create(true).append(true).open(Path::new(REPORT_DIR).join(\"report.txt\")) {",
+            # a panic's line, appended to the report and to the safe start's file, both in /run/mpfree-app
+            # (crash.rs: note_panics, called with those two paths only)
+            "let to_report = OpenOptions::new().create(true).append(true).open(&report);",
+            "let to_running = OpenOptions::new().append(true).open(&running);",
             # the framebuffer and its sysfs pan file (mpfree-ui's FbTarget)
             "let file = OpenOptions::new().write(true).open(fb).map_err(|e| format!(\"{}: {e}\", fb.display()))?;",
-            "let _ = OpenOptions::new().write(true).open(sysfs.join(\"pan\")).and_then(|mut f| f.write_all(b\"0,0\\n\"));",
+            # (FbTarget::show, at open and again after the GPU's process has had the screen)
+            "let _ = OpenOptions::new().write(true).open(&self.pan).and_then(|mut f| f.write_all(b\"0,0\\n\"));",
             # the host-only preview pictures (never on the MPC)
             "OpenOptions::new().write(true).create_new(true).open(path).and_then(|mut f| f.write_all(&png))"
             ".map_err(|e| format!(\"{}: {e}\", path.display()))?;",
@@ -1014,7 +1029,8 @@ class StaticTests(unittest.TestCase):
         expected += LIBRARY_OPENS
         self.assertEqual(sorted(texts), sorted(expected), "\n".join(texts))
         files = {name for name, _ in found}
-        self.assertEqual(files, {"mpfree-app/main.rs", "mpfree-app/alsa.rs", "mpfree-ui/fb.rs", "mpfree-store/lib.rs",
+        self.assertEqual(files, {"mpfree-app/main.rs", "mpfree-app/crash.rs", "mpfree-app/alsa.rs", "mpfree-ui/fb.rs",
+                                 "mpfree-store/lib.rs",
                                  "mpfree-library/lib.rs", "mpfree-library/project.rs"}, files)
         # Folders are made only by the store and the library, and only start-app.sh names the folder they are given.
         for name, code in self.program_sources():
@@ -1024,10 +1040,16 @@ class StaticTests(unittest.TestCase):
                 if not line.lstrip().startswith("//"):
                     self.assertNotIn("/run/mpfree-data", line, name)
 
-    def test_the_only_program_it_starts_is_a_read_only_journalctl(self):
+    def test_it_starts_only_a_read_only_journalctl_and_the_gpu_process_it_is_given(self):
         code = "".join(c for _, c in self.program_sources())
-        self.assertEqual(code.count("Command::new("), 1)
+        self.assertEqual(code.count("Command::new("), 2)
         self.assertIn('Command::new("journalctl")', code)
+        # The GPU drawing process (mpfree_ui::gpu_screen), only with --gpu-screen PROGRAM: that program, with
+        # the app's frames on its stdin and its answers on its stdout.
+        gpu = dict(self.program_sources())["mpfree-ui/gpu_screen.rs"]
+        self.assertIn("Command::new(program)", gpu)
+        main = dict(self.program_sources())["mpfree-app/main.rs"]
+        self.assertIn('"--gpu-screen" => o.gpu_screen = Some(PathBuf::from(value()?)),', main)
         self.assertIn('.args(["-b", "-f", "-n", "300", "--no-pager", "-o", "short-monotonic", "--no-hostname"])', code)
         for needle in ("systemctl", "std::net", "kexec"):
             self.assertNotIn(needle, "\n".join(l for l in code.splitlines() if not l.lstrip().startswith("//")))
@@ -1046,7 +1068,8 @@ class StaticTests(unittest.TestCase):
             self.assertNotIn("--save-patterns", start)
 
     def test_unsafe_code_only_in_sys(self):
-        """The C calls (ioctl, fcntl, sched_setscheduler, mlockall) are the only unsafe code in MPFree's own source."""
+        """The C calls (ioctl, fcntl, sched_setscheduler, mlockall, and signal, raise and unlink for the safe
+        start's stop handler) are the only unsafe code in MPFree's own source."""
         for name, code in self.program_sources():
             if name == "mpfree-app/main.rs":
                 self.assertIn("#![deny(unsafe_code)]", code)
@@ -1059,7 +1082,19 @@ class StaticTests(unittest.TestCase):
         with open(os.path.join(APP_SRC, "sys.rs")) as fh:
             sys_rs = fh.read()
         self.assertEqual(sorted(set(re.findall(r"\bfn (\w+)\(", sys_rs.split("extern \"C\" {")[1].split("}")[0]))),
-                         ["fcntl", "ioctl", "mlockall", "sched_setscheduler"])
+                         ["fcntl", "ioctl", "mlockall", "raise", "sched_setscheduler", "signal", "unlink"])
+        # The stop handler unlinks only the file crash.rs gives it: /run/mpfree-app/running.
+        main = dict(self.program_sources())["mpfree-app/main.rs"]
+        crash = dict(self.program_sources())["mpfree-app/crash.rs"]
+        self.assertEqual(crash.count("sys::remove_on_stop("), 1)
+        self.assertIn("let path = dir.join(RUNNING);", crash)
+        self.assertEqual(crash.count("mark(dir, &path)"), 1)
+        self.assertIn('pub const RUNNING: &str = "running";', crash)
+        self.assertEqual(main.count("crash::start("), 1)
+        self.assertIn("crash::start(Path::new(REPORT_DIR))", main)
+        self.assertEqual(main.count("crash::note_panics("), 1)
+        self.assertEqual(crash.count("panic::set_hook("), 1)
+        self.assertIn('Path::new(REPORT_DIR).join("report.txt"), Path::new(REPORT_DIR).join(crash::RUNNING)', main)
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
