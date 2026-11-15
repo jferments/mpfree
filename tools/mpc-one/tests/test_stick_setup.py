@@ -700,6 +700,13 @@ class AutorunTests(HookFixture):
         self.assertIn("RESULT: MPFree's startup hook is removed. Restarting the MPC in 5 s.", out)
         self.assertEqual(self.tree(), self.before)
         self.assertEqual(len(self.calls("systemctl: reboot")), 2)
+        # After the restart the MPC may ask again: a second Yes does nothing and does not restart.
+        self.assertEqual(read_text(os.path.join(self.drive, "mode.txt")), "removed\n")
+        os.unlink(os.path.join(self.drive, "setup-log.txt"))
+        out = self.autorun(0)
+        self.assertIn("DONE: nothing to do. MPFree's startup hook was already removed with this stick", out)
+        self.assertEqual(self.tree(), self.before)
+        self.assertEqual(len(self.calls("systemctl: reboot")), 2)
 
     def test_stops_without_changing_anything(self):
         def other_board():

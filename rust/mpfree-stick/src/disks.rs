@@ -104,6 +104,34 @@ pub fn open_write(id: &str) -> io::Result<OpenDisk> {
     imp::open(info, true)
 }
 
+/// The one USB disk holding an MPFree stick (a partition named
+/// `mpfree-test-root`, or `mpfree-test-root-off`), for the commands that take `--device mpfree`.
+/// Reading the partition tables needs the rights to read disks.
+pub fn find_mpfree() -> io::Result<String> {
+    let mut found = Vec::new();
+    for d in list()? {
+        let Ok(disk) = imp::open(d.clone(), false) else {
+            continue;
+        };
+        if mpfree_diskimage::gpt::read(&disk).is_ok_and(|t| crate::stick::root_part(&t).is_some()) {
+            found.push(d);
+        }
+    }
+    match found.as_slice() {
+        [one] => Ok(one.id.clone()),
+        [] => Err(bad(
+            "no MPFree stick found among the USB disks (put it in, or name it with --device)",
+        )),
+        many => Err(bad(format!(
+            "more than one MPFree stick is in ({}); name one with --device",
+            many.iter()
+                .map(|d| d.id.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ))),
+    }
+}
+
 fn find(id: &str) -> io::Result<DiskInfo> {
     list()?.into_iter().find(|d| d.id == id).ok_or_else(|| {
         bad(format!(

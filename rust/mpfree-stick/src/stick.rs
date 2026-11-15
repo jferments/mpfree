@@ -31,6 +31,11 @@ pub const SECTOR: u64 = 512;
 /// Partitions start on 1 MiB.
 pub const ALIGN: u64 = 2048;
 pub const ROOT_NAME: &str = "mpfree-test-root";
+/// Partition 1's name while the stick is set to remove MPFree: the MPC's
+/// startup hook looks for a partition named [`ROOT_NAME`], so at power-on
+/// it passes over this stick and Akai's system starts, where the setup
+/// script can take the hook off.
+pub const ROOT_OFF_NAME: &str = "mpfree-test-root-off";
 pub const LOG_NAME: &str = "mpfree-test-log";
 pub const KITS_NAME: &str = "mpfree-test-kits";
 pub const SETUP_NAME: &str = "mpfree-setup";
@@ -1290,11 +1295,35 @@ pub fn read_setup<R: ReadAt + ?Sized>(disk: &R) -> io::Result<(Part, Vec<u8>)> {
     Ok((p.clone(), img))
 }
 
-/// Sets mode.txt on a stick's setup partition ("install" or "remove"),
-/// writing back only the parts that changed.
-pub fn set_mode<D: Disk + ?Sized>(disk: &D, mode: &str) -> io::Result<()> {
-    if mode != "install" && mode != "remove" {
-        return Err(bad("the mode is install or remove"));
+/// Partition 1 of an MPFree stick, under either of its names, with its
+/// number (from 1).
+pub fn root_part(table: &Table) -> Option<(usize, &Part)> {
+    table
+        .by_name(ROOT_NAME)
+        .or_else(|| table.by_name(ROOT_OFF_NAME))
+}
+
+/// Sets what the stick's setup script does on the MPC, on a disk of
+/// `disk_bytes`: "install" or "remove" in mode.txt (writing back only the
+/// parts that changed), and partition 1 named [`ROOT_NAME`] for install or
+/// [`ROOT_OFF_NAME`] for remove, so that with the hook on the MPC the stick
+/// can be in at power-on and Akai's system still starts. Only the partition
+/// table's name field and mode.txt change; "install" undoes "remove".
+pub fn set_mode<D: Disk + ?Sized>(disk: &D, disk_bytes: u64, mode: &str) -> io::Result<()> {
+    let name = match mode {
+        "install" => ROOT_NAME,
+        "remove" => ROOT_OFF_NAME,
+        _ => return Err(bad("the mode is install or remove")),
+    };
+    let mut table = gpt::read(disk)?;
+    let n = root_part(&table)
+        .ok_or_else(|| bad("this is not an MPFree stick (no partition 1 named mpfree-test-root)"))?
+        .0;
+    if let Some(Some(p)) = table.parts.get_mut(n - 1) {
+        if p.name != name {
+            p.name = name.to_string();
+            gpt::write(disk, disk_bytes / SECTOR, &table)?;
+        }
     }
     let (p, before) = read_setup(disk)?;
     let mut after = before.clone();

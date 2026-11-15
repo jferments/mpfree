@@ -104,8 +104,11 @@ To start a stick's MPFree data afresh (erasing its settings, work and backups), 
 To use the factory software, just switch on without the stick. To take MPFree's start-up helper off the MPC as well:
 
 1. In the creator, choose **More > Remove MPFree from my MPC**, choose the stick, and click **Prepare the stick to remove MPFree**.
-2. Switch on the MPC with the stick in, switch developer mode on as in step 3, and tap **Yes** when the MPC asks to run the script.
-3. The MPC restarts into the factory software. The helper is gone; nothing else on the MPC changed.
+2. Switch on the MPC with the stick in. The factory software starts, because a stick prepared this way doesn't start MPFree.
+3. Switch developer mode on as in step 3 above, and tap **Yes** when the MPC asks to run the script.
+4. The MPC restarts into the factory software. The helper is gone; nothing else on the MPC changed. If the MPC asks to run the script again, tapping **Yes** does nothing, and **No** is fine too.
+
+Then switch developer mode off as in step 5.
 
 To use the stick for MPFree again afterwards, choose **Set it back to install** on the same page and do step 3 again.
 

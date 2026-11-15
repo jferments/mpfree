@@ -368,6 +368,63 @@ pub fn unpack_rootfs(
     })
 }
 
+/// The update to use in a folder (such as Downloads): the supported MPC One
+/// update in it (the newest, if there are copies). With `any_update`, the
+/// newest MPC One update when none is supported. Only the folder itself is
+/// looked in, and only each file's header is read.
+pub fn find_in_dir(dir: &Path, any_update: bool) -> io::Result<std::path::PathBuf> {
+    let mut found: Vec<(bool, std::time::SystemTime, std::path::PathBuf, String)> = Vec::new();
+    for e in std::fs::read_dir(dir)? {
+        let e = e?;
+        let p = e.path();
+        let Ok(md) = e.metadata() else { continue };
+        if !md.is_file() || md.len() < 1024 {
+            continue;
+        }
+        let mut head = [0u8; 4];
+        if File::open(&p)
+            .and_then(|mut f| f.read_exact(&mut head))
+            .is_err()
+            || &head != MAGIC
+        {
+            continue;
+        }
+        if let Ok(u) = Update::open(&p) {
+            if u.for_mpc_one() {
+                found.push((
+                    u.supported().is_some(),
+                    md.modified().unwrap_or(std::time::UNIX_EPOCH),
+                    p,
+                    u.build,
+                ));
+            }
+        }
+    }
+    found.sort();
+    match found.last() {
+        Some((true, _, p, _)) => Ok(p.clone()),
+        Some((false, _, p, _)) if any_update => Ok(p.clone()),
+        Some(_) => Err(bad(format!(
+            "{} holds MPC One updates ({}), but none MPFree supports; MPFree needs {}",
+            dir.display(),
+            found
+                .iter()
+                .map(|f| f.3.as_str())
+                .collect::<Vec<_>>()
+                .join(", "),
+            SUPPORTED
+                .iter()
+                .map(|s| s.firmware)
+                .collect::<Vec<_>>()
+                .join(" or ")
+        ))),
+        None => Err(bad(format!(
+            "{} holds no Akai update file for the MPC One",
+            dir.display()
+        ))),
+    }
+}
+
 /// A whole file's SHA-256.
 pub fn file_sha256(path: &Path) -> io::Result<[u8; 32]> {
     let mut f = File::open(path)?;
@@ -453,6 +510,51 @@ mod tests {
             std::env::temp_dir().join(format!("mpfree-stick-update-{tag}-{}", std::process::id()));
         std::fs::write(&p, data).unwrap();
         p
+    }
+
+    #[test]
+    fn finds_the_supported_update_in_a_folder() {
+        let dir = std::env::temp_dir().join(format!("mpfree-stick-find-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        assert!(find_in_dir(&dir, true).is_err(), "an empty folder");
+        std::fs::write(dir.join("notes.txt"), vec![b'x'; 4096]).unwrap();
+        let rootfs = vec![0u8; 4096];
+        std::fs::write(
+            dir.join("old.img"),
+            testfile::make("SNAPSHOT-OLD", &["ACVA"], &rootfs, false),
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("other-board.img"),
+            testfile::make(SUPPORTED[0].build, &["ACVB"], &rootfs, false),
+        )
+        .unwrap();
+        let e = find_in_dir(&dir, false).unwrap_err().to_string();
+        assert!(
+            e.contains("SNAPSHOT-OLD") && e.contains("none MPFree supports"),
+            "{e}"
+        );
+        assert_eq!(
+            find_in_dir(&dir, true).unwrap(),
+            dir.join("old.img"),
+            "a developer may take it"
+        );
+        std::fs::write(
+            dir.join("MPC-3.10.1.img"),
+            testfile::make(SUPPORTED[0].build, &["ACVA", "ACVB"], &rootfs, false),
+        )
+        .unwrap();
+        assert_eq!(
+            find_in_dir(&dir, false).unwrap(),
+            dir.join("MPC-3.10.1.img")
+        );
+        assert_eq!(
+            find_in_dir(&dir, true).unwrap(),
+            dir.join("MPC-3.10.1.img"),
+            "the supported one first"
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
