@@ -402,6 +402,7 @@ cd /home/jesse/code/mpfree-hardware-survey && python3 tools/mpc-one/results.py r
 
 **Block 6.3: boot map before, then install the hook with the stick in the MPC** (the boot map is **read-only**; the install is **state-changing, the data partition only**: it rewrites the three hook files, then checks the stick read-only, and for this stick also loads Akai's kernel into RAM and unloads it again, never starting it). Put the stick in the MPC while Akai's system runs first.
 - Undo: `cd /home/jesse/code/mpfree-hardware-survey && MPC_PORT=22 bash tools/mpc-one/collect-over-ssh.sh --hook-remove`.
+- First, if developer mode's host key is not in `~/.ssh/known_hosts` yet, run [Block Q1](firmware-3.10.1-qualification.md) once (`--devmode-trust`, read-only on the MPC; one line in `known_hosts` after you type `TRUST`). Without it, the boot map stops with `Host key verification failed` before anything runs on the MPC, and the install does not start. Seen on 2026-11-15, the first port 22 run after the move to `~/.ssh/known_hosts`.
 
 ```bash
 cd /home/jesse/code/mpfree-hardware-survey && python3 tools/mpc-one/results.py run boot-map-before -- env MPC_PORT=22 bash tools/mpc-one/collect-over-ssh.sh --boot-map && python3 tools/mpc-one/results.py run hook-install -- env MPC_PORT=22 MPFREE_ACCEPT_HOOK=YES bash tools/mpc-one/collect-over-ssh.sh --hook-install
