@@ -534,7 +534,7 @@ If any check, the load or `kexec.target` fails, `chain.sh` notes `…; MPFree st
 ### What cannot change
 
 - Without `--chain`, a stick is as before: the same command line, the stub at `/usr/sbin/kexec`, and no chain files. The tests check this, including that the same image builds without them.
-- A soft-reboot stick, and a step 6 stick, take the same paths in the new hook. The hook needs `--hook-install` once for the new word (block 7.3); until then, the old hook refuses a `--chain` stick (`mpfree.chain=1, which the hook does not allow`) and Akai's system starts.
+- A soft-reboot stick, and a step 6 stick, take the same paths in the new hook. The hook needs `--hook-install` once for the new word (block 7.3); until then, step 6's hook (installed in block 6.3) refuses a `--chain` stick (`mpfree.chain=1, which the hook does not allow`) and Akai's system starts. #370's hook, as on `main`, soft-reboots it, and the chain's service does not run there because Akai's command line lacks `mpfree.chain=1` (both shown in the simulator).
 - The second kernel's command line keeps kexec off, so no third restart is possible from the stick's system.
 - Keeping Akai's `kexec` does not reopen the path Akai's updater uses to reach the eMMC (it kexecs its own kernel). The updater and the other flashers stay stubs, with their units masked. On the first kernel, kexec is on only until `systemd-sysctl` runs, which waits for the chain's service; nothing else of the stick's starts before it. On the second kernel kexec is off from the command line.
 - `chain.sh` writes nothing of the MPC's. It writes the kernel log, `/run` and its notes on the stick's own log partition.
