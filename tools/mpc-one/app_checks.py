@@ -27,8 +27,8 @@ A round names its checks in MPFREE_APP_CHECKS (comma-separated, in the order
 they run) for `collect-over-ssh.sh --app` with MPFREE_APP_STEPS=app. With no
 checks named, the app step asks nothing: it reports the start-up and the
 session from the log. The checks' smoke tests run on the workstation with
-`app_checks.py smoke`, which runs the app's whole test suite and reports it
-by area.
+`app_checks.py smoke`, which runs the app's whole test suite (about 6
+minutes) and reports it by check and by area.
 
   python3 tools/mpc-one/app_checks.py list               every check and area
   python3 tools/mpc-one/app_checks.py show NAME[,NAME]   a check's steps, log lines and tests
@@ -619,7 +619,8 @@ def cmd_smoke():
     print("The app's tests on this workstation (read-only: it builds into rust/target)")
     head = subprocess.run(["git", "-C", REPO_ROOT, "rev-parse", "HEAD"], capture_output=True, text=True)
     print(f"commit: {head.stdout.strip() or '(not a git checkout)'}")
-    cmd = ["cargo", "test", "-p", "mpfree-app", "--locked"]
+    # Release: it builds for longer but runs the smoke workflows several times faster (about 6 minutes in all).
+    cmd = ["cargo", "test", "-p", "mpfree-app", "--release", "--locked"]
     print(f"running: (cd rust && {' '.join(cmd)})", flush=True)
     env = dict(os.environ, CARGO_INCREMENTAL="0")
     proc = subprocess.run(cmd, cwd=RUST_DIR, env=env, capture_output=True, text=True)

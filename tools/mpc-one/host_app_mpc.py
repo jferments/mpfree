@@ -445,7 +445,7 @@ def ask(prompt):
     try:
         answer = input(prompt).strip().lower()
     except EOFError:
-        return "q"
+        return "quit"  # the input ended: stop, as q does
     return {"": "go", "s": "skip", "q": "quit"}.get(answer, "again")
 
 
@@ -769,15 +769,17 @@ def app_check(mpc, out, n, total):
         return
     if not chosen:
         out.say("  No checks named (MPFREE_APP_CHECKS), so nothing is asked: the session summary follows.")
-    else:
-        out.say(f"  Checks: {', '.join(c.name for c in chosen)}")
     app_text, map_text = settings_text(mpc)
     missing = checks.not_found(chosen, map_text)
     if missing:
-        out.say("  Map controls has not found these buttons yet, so the steps that use them will show NOT SEEN:")
+        out.say("  Map controls has not found these buttons yet, and a step uses them:")
         for name, control in missing:
             out.say(f"    {control} (check {name})")
-        out.say("  Add map-controls before those checks to find them first.")
+        if checks.BY_NAME["map-controls"] not in chosen:
+            chosen = [checks.BY_NAME["map-controls"]] + chosen
+            out.say("  So map-controls runs first, to find them. If you skip it (s), those steps show NOT SEEN.")
+    if chosen:
+        out.say(f"  Checks: {', '.join(c.name for c in chosen)}")
     results = [run_check(mpc, out, k, len(chosen), c, app_text) for k, c in enumerate(chosen, start=1)]
     if results:
         out.say("\n  The checks:")

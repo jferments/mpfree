@@ -1,6 +1,6 @@
 # The 3.10.1 device round: qualification, GPU flips, performance and FX tools
 
-**Status:** runbook, 2026-11-15, revised the same day for MPFree's boot hook (#370, [how MPFree boots from the stick](soft-reboot-boot.md)), and again for the pad player without root (#372) and the opt-in boot routes (#374, [boot routes](boot-routes.md)). This round keeps to the default: a soft-reboot stick, the pad player as root. Revised once more for the whole round the owner asked for on 2026-11-15: round 8's benchmark (Q8b) and second boot (the S blocks), the GPU page flips (Q9), the app's targeted run (Q9b), and the FX thread's FXProbe (the F blocks), which the stick now carries as developer tools for Akai's system (`--dev-tools`). Not run yet: every block that touches the MPC waits for the owner's go. **Scope:** the reference MPC One (Gen 1). The owner installed MPC OS 3.10.1 on it with Akai's updater on 2026-11-15 and switched developer mode on. Before that it ran 3.6.0 with [MOD-001 and MOD-002](archive/2026-11/device-modifications.md).
+**Status:** runbook, 2026-11-15, revised the same day for MPFree's boot hook (#370, [how MPFree boots from the stick](soft-reboot-boot.md)), and again for the pad player without root (#372) and the opt-in boot routes (#374, [boot routes](boot-routes.md)). This round keeps to the default: a soft-reboot stick, the pad player as root. Revised once more for the whole round the owner asked for on 2026-11-15: round 8's benchmark (Q8b) and second boot (the S blocks), the GPU page flips (Q9), the app's targeted run, and the FX thread's FXProbe (the F blocks), which the stick now carries as developer tools for Akai's system (`--dev-tools`). Revised again that night for [targeted device checks](device-checks.md): the app step asks only about this round's checks, confirms each step from the app's log, and leaves to the app's own tests (Q0d) everything they already check. Not run yet: every block that touches the MPC waits for the owner's go. **Scope:** the reference MPC One (Gen 1). The owner installed MPC OS 3.10.1 on it with Akai's updater on 2026-11-15 and switched developer mode on. Before that it ran 3.6.0 with [MOD-001 and MOD-002](archive/2026-11/device-modifications.md).
 
 The owner wants to know that main still does everything MPFree needs on the installed 3.10.1: log in, survey, back up, start MPFree from the USB stick at power-on with the boot hook (the soft-boot USB), run the pad player on it, and come back. The [stick test](firmware-3.10.1-stick-test.md) answered most of it before the install, with 3.6.0 doing a kexec jump, and the [boot hook's runs](stick-autoboot.md#second-power-on-2026-11-15-zip-092220z-mpfree-started) showed the power-on start once. This round does all of it from main on the installed 3.10.1, with every step's undo below. Since then the owner asked for more in the same round: the GPU page flips, the performance plan's round 8, the app's targeted run, and the FX measuring tools on the same stick, run from inside Akai's system.
 
@@ -8,16 +8,37 @@ The owner wants to know that main still does everything MPFree needs on the inst
 
 | Part | Blocks | Where | About |
 |---|---|---|---|
-| Builds | Q0, Q0b, Q0c | Workstation | 25 min |
+| Builds, and the app's tests | Q0, Q0b, Q0c, Q0d | Workstation | 30 min |
 | Akai's system, the stick out | Q1 to Q5: trust, lock, survey, backup, device tree | MPC on 3.10.1 | 20 min |
 | The stick | Q6, Q6-write | Workstation | 5 min |
 | Akai's system, then the stick in | Q7a restart, Q7b the boot hook | MPC on 3.10.1 | 10 min |
-| MPFree, first boot | Q7c power-on, Q7d REC, OVERDUB and PLAY, Q8 app check, Q8b benchmark; Q9 GPU flips and Q9b app run (optional) | MPC on the stick | 60 to 90 min |
-| MPFree, second boot (optional) | S1 to S4: Sound cores on cores 3 and 2, an hour-long song | MPC on the stick | 80 min |
+| MPFree, first boot | Q7c power-on, Q8 this round's checks, Q8b benchmark; Q9 GPU flips (optional) | MPC on the stick | 60 to 90 min |
+| MPFree, second boot (optional) | S1 to S4: Sound cores on cores 3 and 2, the load again, an hour of play | MPC on the stick | 80 min |
 | Akai's system, the stick out, then in | Q10 back to 3.10.1; F1 to F8 FXProbe (optional) | MPC on 3.10.1 | 10 min, F 30 min |
 | Logs and the zip | Q11 | Workstation | 5 min |
 
 The optional parts can be left out, and the round can stop after any block that leaves Akai's system or MPFree running: Q10 and then Q11 end it from anywhere. Q1 to Q5 have to come first, because Q4's backup is the way back for everything after it.
+
+## This round's checks
+
+The app step asks only about these ([device checks](device-checks.md); `python3 tools/mpc-one/app_checks.py show NAME` prints one in full). For each, it shows a few steps, reads the app's log while you do them, says what it saw, and asks at most one question, about what only you can see or hear.
+
+| Check | Block | Why it's in this round | You do | About |
+|---|---|---|---|---|
+| `transport` | Q8, first | #387: REC, OVERDUB, UNDO and PLAY START work and light from the start, with no Map controls | Eight presses on Play and the Looper tab | 2 min |
+| `basics` | Q8 | The first MPFree boot on the installed 3.10.1: pads, PAD BANK, FULL LEVEL, the wheel, the Q-Links (also on the Mix tab and in the chain editor) and touch | Play and turn things | 3 min |
+| `load` | Q8, S2 | Round 8: the worst case for the cores, on Shared in Q8 and on cores 3 and 2 in S2 | Supersaw and the Grains kit with 8 pads | 2 min |
+| `track-mute` | Q8 | #332: pad colours as track mutes, and PAD BANK past 16 tracks | TRACK MUTE and the pads | 3 min |
+| `wheel` | Q8 | #339 and #355: the outline and the push on the real wheel, and a Song block moved by wheel | Turn and push | 3 min |
+| `touch` | Q8 | The real panel: Touch lab, Calibrate touch, two fingers, and a drag past the 12 px lift | Follow the Touch lab, drag two clips | 6 min |
+| `note-repeat` | Q8 | Never reached on the MPC in live test 3 | NOTE REPEAT, Latch, the Arp panel | 2 min |
+| `looper` | Q8 | Live test 3's loop that kept playing after STOP | Record 2 bars, STOP | 2 min |
+| `console` | Q8 | Button chords on the real panel, and STOP's silence | The console chord, TAP TEMPO, STOP | 1 min |
+| `midi-in` | Q8, last | The MPC's real MIDI IN and its port in the I/O view; `s` skips it without a keyboard and a 5-pin cable | Play the keyboard | 3 min |
+| `kept` | S2 | Sound cores, set in S1, comes back at the next start and runs | Nothing: it reads the log and partition 4 | 0 |
+| `hour` | S3 | #273's underruns at 25 and 51 minutes | Nothing: it reads the status lines | 0 |
+
+**Checked by the app's tests instead (Q0d), not on the MPC:** Arrange (clips, drag and drop, Capture, the Song view, the morph), Play's views, steps, throws, XY pad and FILL, the Mix tab with its chains, effect modes, Learn and macros, the Looper tab's layers, tools and drags, the Pads and Sample tabs, the Synth, Grains and Prefs, and the sweeps over every control and the demo songs. Q0d runs the app's whole test suite and reports it by check and by area.
 
 ## What the update changed for the tools
 
@@ -48,11 +69,13 @@ The optional parts can be left out, and the round can stop after any block that 
 | Do developer mode, the lock and the SSH host key survive a restart? | Q7a, compared with Q3 |
 | Does main's boot hook install, and does it accept the stick main builds? | Q7b |
 | Does a power-on with the stick in start MPFree with no tap, with the eMMC and SD card switched off before anything reads them? | Q7c and the stick logs |
-| Do REC, OVERDUB, UNDO and PLAY work and light as soon as MPFree starts, with no Map controls (#387)? | Q7d |
-| Does the stick's system answer on port 2222 after the soft-reboot, and does the hardware work in it (Ethernet, screen, touch, pads, sound, partition 4)? | Q8 |
+| Does the app, at this round's commit, pass its own tests, the UI smoke workflows among them? | Q0d |
+| Do REC, OVERDUB, UNDO and PLAY work and light as soon as MPFree starts, with no Map controls (#387)? | Q8: `transport` |
+| Does the stick's system answer on port 2222 after the soft-reboot, and does the hardware work in it (Ethernet, screen, touch, pads, buttons, sound, partition 4)? | Q8: its checks, then `basics` and `touch` |
 | What does each engine cost on the MPC, and how many voices fit in each budget (round 8 of the performance plan)? | Q8b |
-| Does what has merged in the app since live test 3 work on the MPC (drag and drop, 128 tracks on TRACK MUTE, the Mix tab, effect modes)? | Q9b |
-| Does Prefs > Sound cores > Cores 3 and 2 put the audio thread on core 3 and its lanes on core 2, and does a song play for an hour with no underrun? | S2, S3 |
+| Does what has merged in the app since live test 3 work on the MPC? The app's tests check it in Q0d; on the MPC, what only the MPC shows: 128 tracks on TRACK MUTE's pads, the real wheel, a real drag | Q0d; Q8: `track-mute`, `wheel`, `touch` |
+| How do the heaviest sounds run on the MPC's cores, on Shared and on cores 3 and 2? | Q8 and S2: `load` |
+| Does Prefs > Sound cores > Cores 3 and 2 come back at the next start and put the audio thread on core 3 and its lanes on core 2, and does a song play for an hour with no underrun? | S2: `kept`; S3: `hour` |
 | Does the MPC come back to 3.10.1 with the eMMC's boot areas unchanged? | Q10 |
 | Does Akai's app load the FXProbe plugins from the internal drive, and do they capture AIR effects at 0 and -12 dB? | F1 to F8 |
 
@@ -72,7 +95,7 @@ Every block runs in a terminal on the workstation, from the clone at `/home/jess
 **Block Q0: update, check, build** (workstation only):
 
 ```bash
-cd /home/jesse/code/mpfree-hardware-survey && git fetch origin main:refs/remotes/origin/main && git switch --no-track -C qual-3101 origin/main && git log --oneline -1 && python3 tools/mpc-one/results.py status && python3 tools/mpc-one/results.py run local-checks -- bash -c 'MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_devmode_login.py && MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_kexec_preflight.py && MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_host_emmc_backup.py && MPFREE_REQUIRE_OFFLINE_TOOLS=1 python3 tools/mpc-one/tests/test_offline_kexec_stick.py && python3 tools/mpc-one/tests/test_write_test_stick.py && MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_boot_hook.py && MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_app_mpc.py && MPFREE_REQUIRE_OFFLINE_TOOLS=1 python3 tools/mpc-one/tests/test_read_stick_logs.py && python3 tools/mpc-one/tests/test_results.py && echo LOCAL-CHECKS-OK' && python3 tools/mpc-one/results.py run build-arm -- bash -c 'export CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER=arm-linux-gnueabihf-gcc RUSTFLAGS="-C target-feature=+crt-static -C relocation-model=static" && cargo build --manifest-path rust/Cargo.toml --release --locked --target armv7-unknown-linux-gnueabihf -p mpfree-screen-log -p mpfree-startup -p mpfree-app && cd rust/target/armv7-unknown-linux-gnueabihf/release && sha256sum mpfree-screen-log mpfree-startup mpfree'
+cd /home/jesse/code/mpfree-hardware-survey && git fetch origin main:refs/remotes/origin/main && git switch --no-track -C qual-3101 origin/main && git log --oneline -1 && python3 tools/mpc-one/results.py status && python3 tools/mpc-one/results.py run local-checks -- bash -c 'MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_devmode_login.py && MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_kexec_preflight.py && MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_host_emmc_backup.py && MPFREE_REQUIRE_OFFLINE_TOOLS=1 python3 tools/mpc-one/tests/test_offline_kexec_stick.py && python3 tools/mpc-one/tests/test_write_test_stick.py && MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_boot_hook.py && MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_app_mpc.py && python3 tools/mpc-one/tests/test_app_checks.py && MPFREE_REQUIRE_OFFLINE_TOOLS=1 python3 tools/mpc-one/tests/test_read_stick_logs.py && python3 tools/mpc-one/tests/test_results.py && echo LOCAL-CHECKS-OK' && python3 tools/mpc-one/results.py run build-arm -- bash -c 'export CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER=arm-linux-gnueabihf-gcc RUSTFLAGS="-C target-feature=+crt-static -C relocation-model=static" && cargo build --manifest-path rust/Cargo.toml --release --locked --target armv7-unknown-linux-gnueabihf -p mpfree-screen-log -p mpfree-startup -p mpfree-app && cd rust/target/armv7-unknown-linux-gnueabihf/release && sha256sum mpfree-screen-log mpfree-startup mpfree'
 ```
 
 It ends with three hashes. `results.py status` lists what is already in the results folder: if an earlier round left files there, run `python3 tools/mpc-one/results.py zip` first, so this round gets its own zip.
@@ -91,7 +114,15 @@ It ends with two hashes.
 cd /home/jesse/code/mpfree-hardware-survey && python3 tools/mpc-one/results.py run build-fxprobe -- bash -c 'set -e; sdk=/home/jesse/code/mpc-plugin-builder-sdk; [ -d "$sdk" ] || git clone https://github.com/inmusic-software/mpc-plugin-builder-sdk "$sdk"; git -C "$sdk" checkout --detach febd2ca5; (cd rust && cargo build --release --locked -p mpfree-fxlab); kit=/home/jesse/mpfree-work/dev-tools-$(git rev-parse --short=12 HEAD); mkdir -p "$kit"; python3 tools/fxprobe/stage.py --sdk "$sdk" --out "$kit/fxprobe"'
 ```
 
-It ends with the kit's 20 files, about 23 MB in all, and `STAGE-OK`. The kit's folder is named after Q0's commit. If it stops with `… exists; give a new folder`, an earlier Q0c at the same commit made it already: go on to Q1.
+It ends with the kit's 20 files, about 23 MB in all, and `STAGE-OK`. The kit's folder is named after Q0's commit. If it stops with `… exists; give a new folder`, an earlier Q0c at the same commit made it already: go on to Q0d.
+
+**Block Q0d: the app's own tests** (workstation only, read-only: it builds into `rust/target`; about 6 minutes). This is what the device rounds used to ask you to tap through on the MPC. The app's whole test suite runs at Q0's commit, the UI smoke workflows among them, which drive the screen and the engines as a finger, the buttons and the wheel would:
+
+```bash
+cd /home/jesse/code/mpfree-hardware-survey && python3 tools/mpc-one/results.py run app-tests -- python3 tools/mpc-one/app_checks.py smoke
+```
+
+It prints how many tests ran and passed, then the software side of each device check and each area that is no longer checked on the MPC, and ends `RESULT: every test passed.` If a test fails, it names it: go on with the round, and say so with the zip.
 
 **Block Q1: record developer mode's host key** (read-only on the MPC; one line in `~/.ssh/known_hosts` after you type `TRUST`):
 
@@ -221,44 +252,23 @@ cd /home/jesse/code/mpfree-hardware-survey && python3 tools/mpc-one/results.py r
 
 It shows what the hook decided at this power-on and why it stopped.
 
-**Step Q7d: REC, OVERDUB and PLAY, first thing** (on the MPC only, about 2 minutes, no SSH; read-only on the MPC: you only press buttons and pads, the loop stays in RAM, and anything MPFree saves goes to the stick's partition 4, as in Q8). This checks the transport fix (#387): REC, OVERDUB, UNDO and PLAY work and light as soon as MPFree starts, without Map controls, so it comes before Q8's phase 1 maps anything. A mapping saved on the stick in an earlier round still applies, and wins over the built-in button numbers. Stay on the **Play** page, **All** view, where MPFree starts. Turn the volume down a little.
-
-1. Press **REC** once. Expect **REC and PLAY both blink**, about three times a second, and the loop strip shows the loop armed.
-2. Press **PLAY**. Expect **PLAY to stay lit** and **REC to keep blinking** while the first pass records. Play a few pads.
-3. Wait about 4 seconds, two bars at 120 BPM. Expect **REC to go dark** and the loop to play back what you played.
-4. Press **OVERDUB**. Expect **OVERDUB to blink**. Play a few more pads.
-5. Press **OVERDUB** again. Expect **OVERDUB to go dark**, and the loop to play both layers.
-6. Press **UNDO**. Expect the second layer to go away.
-7. Press **STOP**. Expect **PLAY to go dark** and the transport to stop.
-8. Press **SHIFT + SAMPLER** for the Looper tab, and press **REC**. Expect REC to blink with PLAY. Press **STOP** twice to finish.
-
-- **If a step goes wrong,** write down its number and what the lights did, and go on.
-- **If REC does nothing at all,** open Prefs > Map controls and read the REC row. It should say `button 73`. Another number means Map controls saved that one on the stick in an earlier round, and the saved number wins. Tap the row and press REC to set it again, and say so in your notes.
-- **If OVERDUB, UNDO or PLAY START does nothing while REC works,** read that button's row in Map controls and write down the number it shows. OVERDUB 80, UNDO 67 and PLAY START 83 are inferred from Akai's light messages, so the number you see corrects the default.
-- Q8's session summary, which reads everything since power-on, carries the app's `looper: …` lines from these steps.
-- **Undo:** none needed. The loop is in RAM, and the power-off in Q10 clears it.
-
-**Block Q8: the pad player on the test build** (read-only: the check starts, copies and stops nothing; each phase starts and ends with Enter):
+**Block Q8: this round's checks** (read-only on the MPC: the tool starts, copies and stops nothing and only reads the app's log; you press buttons and pads, the loops stay in RAM, and anything MPFree saves goes to the stick's partition 4; about 30 minutes). These are the first boot's checks in [this round's checks](#this-rounds-checks), in that order. `transport` comes first, so REC, OVERDUB, UNDO and PLAY are tried before anything else uses them (#387). Turn the volume down a little before you start.
 
 ```bash
-cd /home/jesse/code/mpfree-hardware-survey && python3 tools/mpc-one/results.py run app-check -- env MPFREE_ACCEPT_APP=YES MPFREE_APP_STEPS=app MPFREE_APP_PHASES=1-3,9,16,19 bash tools/mpc-one/collect-over-ssh.sh --app
+cd /home/jesse/code/mpfree-hardware-survey && python3 tools/mpc-one/results.py run app-checks -- env MPFREE_ACCEPT_APP=YES MPFREE_APP_STEPS=app MPFREE_APP_CHECKS=transport,basics,load,track-mute,wheel,touch,note-repeat,looper,console,midi-in bash tools/mpc-one/collect-over-ssh.sh --app
 ```
 
-Six of the app check's nineteen phases ([the app guide](../guides/mpfree-app.md#the-live-test)), by their numbers there:
-
-- 1: Map controls.
-- 2: the Dev pages (Performance, CPU by engine, Processes), which show the audio loop's render time against its 2.9 ms period.
-- 3: kits, pad banks, Full and Half Level.
-- 9: the Synth tab's five engines.
-- 16: Prefs, System info and saving.
-- 19: menus, the console and STOP.
-
-They show the screen, touch, pads, buttons, sound and partition 4 working after the soft-reboot from the installed 3.10.1. The check also prints when the pad player started playing, and the GPU facts it always reads.
-
-- **This is the first login on port 2222 after a soft-reboot.** Before it reads anything, the check prints `started by: the boot hook's soft-reboot (asked at … s after power-on)`, `no MMC block device`, `kexec_load_disabled: 1` and `/: read-only`, and ends `CHECKS-OK`. The release is Akai's own kernel now, so the stick's host key and the missing MMC devices are what tell the stick's system from Akai's.
-- **It also prints `privileges:` lines** (#372): on this stick, built without `--app-user`, the pad player runs as root (`Uid: 0`), as before. That is expected here.
-- **Our reading, which the check shows:** after the soft-reboot `/` stays the stick's read-only partition 1, `/run` is Akai's tmpfs carried over and allows programs, and the stick's own sysctl file turns kexec off. If any of these is wrong, the check prints a `PROBLEM` line and stops before it reads anything else.
+- **This is the first login on port 2222 after a soft-reboot.** Before it reads anything, the tool prints `started by: the boot hook's soft-reboot (asked at … s after power-on)`, `no MMC block device`, `kexec_load_disabled: 1` and `/: read-only`, and ends `CHECKS-OK`. The release is Akai's own kernel now, so the stick's host key and the missing MMC devices are what tell the stick's system from Akai's.
+- **Our reading, which the tool shows:** after the soft-reboot `/` stays the stick's read-only partition 1, `/run` is Akai's tmpfs carried over and allows programs, and the stick's own sysctl file turns kexec off. If any of these is wrong, it prints a `PROBLEM` line and stops before it reads anything else.
+- **Then the start-up, from the log, with no question:** `start-up: playing … s after power-on; startup screen: …`, the saved settings and buttons the pad player started with, and `no PANIC or safe start lines`. Its `privileges:` lines show `Uid: 0`: on this stick, built without `--app-user`, the pad player runs as root, as expected (#372).
+- **If it lists buttons that Map controls has not found yet** (this round's checks use PAD BANK A/E and B/F, TRACK MIX, MAIN, TRACK MUTE, the wheel's push, SAMPLER and ERASE), it runs `map-controls` first. Find only the buttons it lists, then press MENU. REC, OVERDUB, UNDO and PLAY START already have numbers, and `transport` checks those. Partition 4 keeps what you find, so a later round doesn't ask again. If you skip it with `s`, the steps that use those buttons show `NOT SEEN`.
+- **Each check** shows its steps. Press Enter to start (`s` skips the check, `q` stops here), do the steps, and press Enter when you are done. It then prints `what the log showed:`, with `seen`, `NOT SEEN` or `unclear` for each thing it looked for, and asks at most one question, about what only you can see or hear. Answer in a few words, with the step's number if one went wrong.
+- **`transport`:** a mapping saved on the stick in an earlier round still applies, and wins over the built-in numbers. If REC does nothing at all (`button 73 never reached the app`), open Prefs > Map controls after the check and read the REC row: a number other than `button 73` is the saved one. Tap the row and press REC to set it again, and say so in your answer. If OVERDUB, UNDO or PLAY START does nothing while REC works, write down the number its Map controls row shows: 80, 67 and 83 are inferred from Akai's light messages, so that number corrects the default.
+- **`load`** waits up to 40 s after your Enter for the app's next status line, so it can say whether the worst case underran, then prints the cores, the clock and the threads.
+- **`midi-in`** is last: type `s` at its prompt if no keyboard and 5-pin cable are at hand.
+- **At the end** it lists each check with how many of its lines were seen and your answer, then the session summary since power-on and the app's latest status.
 - **If it says `the test build did not answer on port 2222`,** note what the screen shows. The pad player can still be played by hand. Go to Q10: the stick logs show the network state.
+- **Undo:** none needed. The loops are in RAM, and the power-off in Q10 clears them. Buttons that Map controls finds stay in `settings/map.conf` on partition 4, where they are meant to be.
 
 **Block Q8b: what each engine costs on the MPC** (**RAM only**: it copies the two benchmark builds into `/run/mpfree-bench` and stops the pad player while it runs; press Enter at each of steps 2 to 5; about 30 minutes). This is round 8's first ask in the [performance plan](../design/profiling.md#mpfree-bench): real voice counts for every engine, Analog at 8 and 16 voices among them, and the sampler after its 31 % pass.
 
@@ -344,71 +354,56 @@ RESULT: the GPU benchmark ran (numbers above).
 
 **The numbers this is for** (live test 3, 13 Nov): the GPU's way to the panel took 63 ms a frame and software's 32 ms. Step 7's GPU `whole p50` is the number the page flips are meant to bring below software's. Its software line times the turn into the panel's layout and the copy apart: if the turn is most of software's time, drawing software in the panel's own layout is worth building.
 
-**Block Q9b: the app phases live test 3 missed, and what has merged since** (read-only, like Q8: the check starts, copies and stops nothing; each phase starts and ends with Enter; about 20 minutes). This is the app thread's [targeted run](app-targeted-run.md#in-the-same-boot-as-another-round), shortened because Q8 already covered phases 9, 16 and 19:
-
-```bash
-cd /home/jesse/code/mpfree-hardware-survey && python3 tools/mpc-one/results.py run app-targeted -- env MPFREE_ACCEPT_APP=YES MPFREE_APP_STEPS=app MPFREE_APP_PHASES=6,7,10-12,17,18 bash tools/mpc-one/collect-over-ssh.sh --app
-```
-
-- 6: Arrange, with drag and drop on the clip grid and the Song view (#355).
-- 7: TRACK MUTE, pads 1 to 16 for tracks 1 to 16, with PAD BANK paging up to 128 (#332).
-- 10: Note Repeat and the arp.
-- 11: the Looper tab, with dragging layers between loops (#355).
-- 12: the Mix tab (#353), the chain editor's drag, the Reverb's modes (#329), and a learned Q-Link that follows a Room-to-Plate switch (#360).
-- 17: a MIDI keyboard on MIDI IN. Type `s` to skip it if no keyboard and 5-pin cable are at hand.
-- 18: Touch: the Touch lab, Calibrate touch and the Dev Touch page. Its Save writes only to the stick's partition 4; leave it out if unsure.
-
-It prints the same checks as Q8 first (`started by: the boot hook's soft-reboot …`, `CHECKS-OK`). If a phase doesn't do what its text says, type what it did instead. Skip Q9b if you'd rather keep the round short: nothing after it depends on it.
-
-**S (optional): a second boot, with the sound on cores 3 and 2, playing a song for an hour** (about 80 minutes). Round 8 of the [performance plan](../design/profiling.md#mpfree-bench) asks two things that need a boot of their own. Does Prefs > Sound cores > Cores 3 and 2 start the audio thread on core 3 and its lanes on core 2? And does a song play for an hour with no underrun? In live test 3 (#273) the pad player had two underruns, at periods 524,292 and 1,048,580 (25.4 and 50.7 minutes). Q8b and Q9 stopped the pad player in this boot, so the hour needs a fresh start. Nothing after the S blocks depends on them. To skip them, do S4's steps 3 to 5 now, in this boot, to put back what Q8's phase 16 changed, and go to Q10. These steps are the app thread's, checked against main's code and manual.
+**S (optional): a second boot, with the sound on cores 3 and 2, playing a song for an hour** (about 80 minutes). Round 8 of the [performance plan](../design/profiling.md#mpfree-bench) asks three things that need a boot of their own. Does Prefs > Sound cores > Cores 3 and 2 come back at the next start and put the audio thread on core 3 and its lanes on core 2? How does the worst case run there? And does a song play for an hour with no underrun? In live test 3 (#273) the pad player had two underruns, at periods 524,292 and 1,048,580 (25.4 and 50.7 minutes). Q8b and Q9 stopped the pad player in this boot, so the hour needs a fresh start. Nothing after the S blocks depends on them: to skip them, go to Q10. The song's steps are the app thread's, checked against main's code and manual.
 
 **Block S1: Sound cores to Cores 3 and 2** (**state-changing, on the stick only**: one key, `sound-cores`, in `settings/app.conf` on partition 4; the MPC isn't touched; it takes effect at the next start). Still in this boot, on the MPC:
 
 1. Press **SHIFT + MENU** to open Prefs.
 2. Turn the data wheel to **Sound cores**, the sixth row, just below Show developer tools. You can also tap it.
-3. Press **+** twice. The row goes Shared, then Core 3 (next start), then **Cores 3 and 2 (next start)**. It stops there, so an extra press does nothing.
+3. Press **+** twice. The row goes Shared, then Core 3 (next start), then **Cores 3 and 2 (next start)**. Stop there: a third press gives Cores 3, 2 and 1, a test setting, and **–** comes back from it.
 4. Wait two seconds, then press **MENU** to close. The setting is written within about a second of the press.
 
 - **Undo:** block S4 sets it back to Shared. If the round stops before S4, do S4 in the next MPFree boot: until then each start runs on cores 3 and 2, because partition 4 is kept.
 
-**Block S2: the second boot, the song, and the first look** (**state-changing, on the stick only**: autosave writes the new song to `Projects/Autosave` on partition 4; then a read-only check). Switch the MPC off, **leave the stick in**, wait 10 s and switch it on. The boot hook starts MPFree again, as in Q7c. This is also the second boot that Q8's phase 16 asks for. Then build a song on the Play page; it takes about three minutes and needs only built-in buttons:
+**Block S2: the second boot: Sound cores kept, the load, then the song** (a read-only check first; then **state-changing, on the stick only**: autosave writes the song to `Projects/Autosave` on partition 4). Switch the MPC off, **leave the stick in**, wait 10 s and switch it on. The boot hook starts MPFree again, as in Q7c. Before you play anything:
 
-1. MPFree starts on the **Play** page with Kit 1 on the pads. Tap **Beats** in the view switch, on the right of the transport bar. If the pattern isn't empty (an earlier round may have set At start to Last project, so a project opened), skip steps 2 and 3, press PLAY on what's there, and say so in your answer.
+```bash
+cd /home/jesse/code/mpfree-hardware-survey && python3 tools/mpc-one/results.py run app-cores-32 -- env MPFREE_ACCEPT_APP=YES MPFREE_APP_STEPS=app MPFREE_APP_CHECKS=kept,load bash tools/mpc-one/collect-over-ssh.sh --app
+```
+
+- It prints the same checks as Q8 (`started by: the boot hook's soft-reboot …`, `CHECKS-OK`).
+- **`kept`** asks nothing. It reads `settings/app.conf` on partition 4, read-only, and compares it with the settings the app started with and the cores it runs on. Expect `seen` with `sound cores two`. `NOT SEEN` with `it runs as …` means the setting came back but the sound didn't move.
+- **`load`** is Q8's worst case again, now on cores 3 and 2; its numbers compare with Q8's, which ran on Shared. It comes before the song because it changes kits.
+- Its session summary at the end has `sound cores: two: the audio thread on core 3, lanes on core 2`. In Prefs the row reads **Cores 3 and 2**, with no "(next start)".
+
+Then build a song on the Play page. It takes about three minutes and needs only built-in buttons:
+
+1. Tap the **Play** tab. Kit 1 is on the pads (`load` put it back). Tap **Beats** in the view switch, on the right of the transport bar. If the pattern isn't empty (an earlier round may have set At start to Last project, so a project opened), skip steps 2 and 3, press PLAY on what's there, and say so in your notes.
 2. Tap squares to light them. Each row is named after its sound. Light the kick on steps 1, 5, 9 and 13, the snare on 5 and 13, and a hi-hat on every odd step.
 3. Tap **All** in the view switch. Turn the fourth Q-Link, whose card says **Delay send**, to about half. The drums now also play through the delay on Return A.
 4. Press **PLAY**. The pattern plays round and round until STOP is pressed.
 5. Turn the **MASTER VOL** knob on the back down if you don't want to hear it for an hour. The test doesn't need it loud.
 
-Don't use REC or the Arrange tab's song. Note the time you pressed PLAY. Press **SHIFT + MENU** and check what Q8's phase 16 left: **Loop memory** reads **10 min**, with no "(next start)", and **Pad velocity curve** is the value you left. This closes phase 16's check that settings come back. Change nothing, and press **MENU**. Then, with the song playing (read-only, like Q8; phase 2 only):
+Don't use REC or the Arrange tab's song, and from here on don't play the pads or change the kit: a kit change swaps the song's sound and load partway through the hour. Note the time you pressed PLAY.
+
+**Block S3: after an hour** (read-only). Leave the song playing. Nothing in MPFree stops it: there is no screen sleep or dimming, the pad player has no time limit, and autosave never stops play. When the song has played for about **65 minutes**:
 
 ```bash
-cd /home/jesse/code/mpfree-hardware-survey && python3 tools/mpc-one/results.py run app-cores-32 -- env MPFREE_ACCEPT_APP=YES MPFREE_APP_STEPS=app MPFREE_APP_PHASES=2 bash tools/mpc-one/collect-over-ssh.sh --app
+cd /home/jesse/code/mpfree-hardware-survey && python3 tools/mpc-one/results.py run app-hour -- env MPFREE_ACCEPT_APP=YES MPFREE_APP_STEPS=app MPFREE_APP_CHECKS=hour bash tools/mpc-one/collect-over-ssh.sh --app
 ```
 
-- It prints the same checks as Q8 (`started by: the boot hook's soft-reboot …`, `CHECKS-OK`).
-- Phase 2 is the Dev pages, as in Q8. Its text asks you to play pads and the Grains kit: here, **only watch the pages**. Don't play the pads and don't change the kit: a kit change swaps the song's sound and load partway through the hour, and counts as an edit, so autosave writes again.
-- Its numbers are compared with Q8's, which ran on Shared. Memory reads higher than in Q8 because this boot sets aside and locks about 220 MB for 10 minutes of loop memory instead of 110 MB, not because of Sound cores.
-- Its session summary at the end has `sound cores: two: the audio thread on core 3, lanes on core 2` and `sound cores: audio thread core 3 only`. In Prefs the row reads **Cores 3 and 2**, with no "(next start)".
+- **`hour`** asks nothing. It reads the app's status lines since the start. An hour is 1,240,312 periods, counted from the pad player's start, not from PLAY. It shows `seen` with more than that, `0 underruns`, no `underrun at period` line and no restart.
+- **`unclear` with `NOT YET an hour: run this check again in N min`** means the hour isn't up: wait that long and run the block again. The name can repeat; each run gets its own log.
+- **A crash shows as** `NOT SEEN` with `the period count went back, so the pad player restarted`, with play stopped and an empty project; the hint line says so. That is a fail worth reporting. Every status line and every `underrun at period N` line of the boot is also in the stick logs that Q11 reads.
+- An underrun in S2's `load` counts here too. Its `underrun at period N` has a small N, from before PLAY, and S2's `load` result shows it.
 
-**Block S3: after an hour** (read-only). Leave the song playing. Nothing in MPFree stops it: there is no screen sleep or dimming, the pad player has no time limit, and autosave never stops play. When the song has played for **70 minutes**, run the same check again, under a new name:
-
-```bash
-cd /home/jesse/code/mpfree-hardware-survey && python3 tools/mpc-one/results.py run app-hour -- env MPFREE_ACCEPT_APP=YES MPFREE_APP_STEPS=app MPFREE_APP_PHASES=2 bash tools/mpc-one/collect-over-ssh.sh --app
-```
-
-- At the end it prints the app's latest status. Its first line reads `status: N hits …, U underruns in P periods, …`. The periods count from the pad player's start, not from PLAY. An hour is 1,240,312 periods: if P is lower, wait five minutes and run the block again (the name can repeat; each run gets its own log).
-- Phase 2 again shows the Dev pages after the hour, the temperature among them. Again, only watch: no pads, no kit change.
-- **A crash shows as** P dropping back, with play stopped and an empty project; the hint line says so. Note it: that is a fail worth reporting. Every status line and every `underrun at period N` line of the boot is also in the stick logs that Q11 reads.
-
-**Block S4: Sound cores, Loop memory and the velocity curve back** (**state-changing, on the stick only**: three settings in `settings/app.conf` on partition 4, back to where they were before the round). This is the undo of S1 and of Q8's phase 16:
+**Block S4: Sound cores back** (**state-changing, on the stick only**: one key, `sound-cores`, in `settings/app.conf` on partition 4, back to Shared). This is the undo of S1:
 
 1. Press **STOP**. Press **SHIFT + MENU**, then go to **Sound cores**.
 2. Press **–** twice. The row goes Core 3 (next start), then **Shared (next start)**. It stops at Shared.
-3. Turn the wheel to **Loop memory** and press **–** once: 10 min to 5 min, the default. It reads **5 min (next start)**.
-4. Turn the wheel to **Pad velocity curve**, push the wheel, turn it to the value you read before phase 16 changed it (Soft, Linear or Hard), and push again.
-5. Wait two seconds, then press **MENU**.
+3. Wait two seconds, then press **MENU**.
 
-This boot keeps running on cores 3 and 2, with 10 minutes of loop memory, until it ends; the next start runs Shared with 5 minutes. Nothing else needs undoing: Cores 3 and 2 changes no other setting, project or file. If the S blocks were skipped and steps 3 and 4 weren't done in the first boot, do them in the next MPFree boot: until then, Loop memory and the curve stay as phase 16 left them, because partition 4 is kept. At the next MPFree start, the autosave of the song is kept as a project named `Unsaved 2026-11-15 HH.MM` in BROWSE > Projects, and the hint line says so for a few seconds. It is harmless; delete it in the browser whenever you like.
+This boot keeps running on cores 3 and 2 until it ends; the next start runs Shared. Nothing else needs undoing: Cores 3 and 2 changes no other setting, project or file. At the next MPFree start, the autosave of the song is kept as a project named `Unsaved 2026-11-15 HH.MM` in BROWSE > Projects, and the hint line says so for a few seconds. It is harmless; delete it in the browser whenever you like.
 
 **Block Q10: back to 3.10.1.** Switch the MPC off, take out the stick, wait 10 s and switch it on. The stick must be out: with the hook installed, a power-on with the stick in starts MPFree again. Wait for Akai's app, and switch developer mode on again if it is off. Then (read-only):
 
@@ -494,16 +489,15 @@ Upload the zip, with your notes from the MPC's screen. The reports quote Akai's 
 
 ## Passes when
 
+- Q0d ends `RESULT: every test passed.`
 - Q1 records the host key; Q2 ends `LOCKED`; Q3, Q7a and Q10 end `LOCKED: only your key gets in`.
 - Q4's backup is verified, and its baseline mismatch names only `mmcblk0p6`.
 - Q6's report has the soft-reboot line, `route: soft-reboot only (no --kexec-file)` and `pad player user: root (no --app-user)`, `no-reserved-blocks@…` is `masked on the stick`, and no unit starting `az0` is `NOT masked`.
 - Q7b ends `RESULT: the hook is installed, and the stick checks out.`
 - In Q7c the MPC went from the logo to MPFree's pad player with no tap, and Akai's app never drew.
-- In Q7d each step's lights do what the step says.
-- Q8 ends its checks with `started by: the boot hook's soft-reboot` and `CHECKS-OK`, and its phases work as in the stick test's phase 2.
+- Q8 ends its checks with `started by: the boot hook's soft-reboot` and `CHECKS-OK`, and each of its checks has every line `seen` and an answer that says it looked and sounded right. A `NOT SEEN` line, or an answer that says otherwise, is a finding: the report has the app's log for that check's time.
 - Q8b ends `RESULT: both builds ran (numbers above).` with the pad player started again.
-- Q9b ends its checks with `CHECKS-OK`, and each phase does what its text says, or your answer says what it did instead.
-- In S2, Prefs shows Loop memory at 10 min with no "(next start)" and the curve as phase 16 left it, and the session summary has `sound cores: two: the audio thread on core 3, lanes on core 2`. S3's latest status shows more than 1,240,312 periods and `0 underruns`, or at least no new underrun near periods 524,292 and 1,048,580, and the stick logs of the second boot have no `underrun at period` line.
+- In S2, `kept` and `load` have every line `seen`, and the session summary has `sound cores: two: the audio thread on core 3, lanes on core 2`. S3's `hour` is `seen`: more than 1,240,312 periods, `0 underruns` and no restart, or at least no new underrun near periods 524,292 and 1,048,580. The stick logs of the second boot have no `underrun at period` line.
 - F1 ends `CHECK-OK`, F2 `INSTALL-OK`, F4 `SETUP-OK`; F6 lists three Sources and three Taps, `idle`; F7 ends `CAPTURE-OK` with three slots at each gain; F8 writes `fxprobe-round1.tar.gz` into the results.
 - The stick's `dmesg.txt` shows `mpfree-internal-off: switched off ff0f0000...` before any `sd` or `mmc` mount. Nothing reads the eMMC or SD card before `mpfree-internal-off: done`: no `no-reserved-blocks` unit and no `Buffer I/O error` on `mmcblk`.
 - The boot maps from Q7a and Q10 have the same boot-area hashes, with 0 sectors written to p1 to p6 and boot0/1 since the power-on in Q10.
@@ -513,16 +507,16 @@ Upload the zip, with your notes from the MPC's screen. The reports quote Akai's 
 
 | Block | Changes | Undo |
 |---|---|---|
-| Q0, Q0b, Q0c, Q6 | New folders under `~/mpfree-work` and `~/mpfree-results`, build output in the clone, and (Q0c) the SDK's clone at `~/code/mpc-plugin-builder-sdk` with its build folders | Delete them |
+| Q0, Q0b, Q0c, Q0d, Q6 | New folders under `~/mpfree-work` and `~/mpfree-results`, build output in the clone, and (Q0c) the SDK's clone at `~/code/mpc-plugin-builder-sdk` with its build folders | Delete them |
 | Q1 | One line for `10.42.0.141` in `~/.ssh/known_hosts` | `ssh-keygen -R 10.42.0.141 -f ~/.ssh/known_hosts` |
 | Q2 | `/data/ssh` on the MPC | Block Q2-undo |
 | Q4 | A new folder under `~/mpfree-backups` | Keep it: it is the return point for 3.10.1 |
 | Q5 | A private folder under `~/mpfree-work` (it holds the serial number and MAC) | Delete it |
 | Q6-write | The stick's partitions 1 to 3 | Rebuild and write an earlier stick; partition 4 stays |
 | Q7b | The boot hook's three files on `/data`, in place of an earlier version | The hook stays installed after the round: it is how MPFree starts. To take it off the MPC, block Q7b-undo |
-| Q7c, Q7d, Q8, Q8b, Q9, Q9b | RAM on the MPC; the stick's log partition and partition 4 | Switch off, take out the stick, wait 10 s, switch on |
-| Q8 (phase 16) | Loop memory (10 min) and the pad velocity curve, in `settings/app.conf` on the stick's partition 4 | Block S4, steps 3 and 4 (in the first boot if the S blocks are skipped) |
-| S1 | `sound-cores` in `settings/app.conf` on the stick's partition 4 | Block S4, steps 1 and 2 |
+| Q7c, Q8, Q8b, Q9 | RAM on the MPC; the stick's log partition and partition 4 | Switch off, take out the stick, wait 10 s, switch on |
+| Q8 (`map-controls`, if it ran) | The buttons found, in `settings/map.conf` on the stick's partition 4 | Keep them: they are this MPC's own numbers. To start again from the built-in numbers, delete `settings/map.conf` on partition 4 with the stick in the workstation |
+| S1 | `sound-cores` in `settings/app.conf` on the stick's partition 4 | Block S4 |
 | S2 | `Projects/Autosave` on partition 4, kept as an `Unsaved …` project at the next start | Delete it in BROWSE > Projects, if you like |
 | F2 | Two plugin folders in `/media/az01-internal/VST2 Plugins` on the MPC's internal drive | Block F-undo's `remove` (they can stay) |
 | F4, F7 | `FXProbe/` on the stick's partition 4, the captures in it | Block F-undo's `clean` (copy the captures off first) |
