@@ -46,7 +46,7 @@ done
 
 section 'Kernel config symbols that matter for kexec'
 if [ -r /proc/config.gz ] && command -v zcat >/dev/null 2>&1; then
-  zcat /proc/config.gz | grep -E '^(# )?CONFIG_(KEXEC[A-Z_]*|SMP|NR_CPUS|HOTPLUG_CPU|HIGHMEM|VMSPLIT_[0-9A-Z_]+|ARM_ATAG_DTB_COMPAT|ARM_APPENDED_DTB|CMDLINE[A-Z_]*|SECURITY_LOADPIN[A-Z_]*|LSM|MODULE_SIG[A-Z_]*|STRICT_DEVMEM|IO_STRICT_DEVMEM|PROC_SYSCTL|BLK_DEV_INITRD|RD_[A-Z0-9]+|USB_STORAGE|BLK_DEV_SD|EXT4_FS)(=| is not set)' || :
+  zcat /proc/config.gz | grep -E '^(# )?CONFIG_(KEXEC[A-Z_]*|SMP|NR_CPUS|HOTPLUG_CPU|HIGHMEM|VMSPLIT_[0-9A-Z_]+|ARM_ATAG_DTB_COMPAT|ARM_APPENDED_DTB|CMDLINE[A-Z_]*|SECURITY_LOADPIN[A-Z_]*|SECURITY_LOCKDOWN[A-Z_]*|SECURITY_IPE[A-Z_]*|LSM|MODULE_SIG[A-Z_]*|STRICT_DEVMEM|IO_STRICT_DEVMEM|PROC_SYSCTL|BLK_DEV_INITRD|RD_[A-Z0-9]+|USB_STORAGE|BLK_DEV_SD|EXT4_FS)(=| is not set)' || :
 else
   printf '/proc/config.gz unavailable\n'
 fi
@@ -113,5 +113,27 @@ done
 section 'LoadPin'
 if [ -d /sys/kernel/security/loadpin ]; then ls /sys/kernel/security/loadpin; else printf 'no /sys/kernel/security/loadpin\n'; fi
 show /proc/sys/kernel/loadpin/enabled
+
+# What can refuse loading a kernel at runtime (so the owner knows before any install whether an unsigned
+# kexec will be accepted). A kexec_load that returns "Operation not permitted" with kexec_load_disabled=0
+# and root means one of these refused it, not the tool. Reads only: small sysfs files and the kernel log.
+section 'Kexec gate (what can refuse loading a kernel)'
+show /sys/kernel/security/lockdown
+if [ -d /sys/kernel/security/ipe ]; then
+  printf 'IPE (Integrity Policy Enforcement) is present\n'
+  show /sys/kernel/security/ipe/active_policy
+  show /sys/kernel/security/ipe/enforce
+  if [ -d /sys/kernel/security/ipe/policies ]; then
+    for p in /sys/kernel/security/ipe/policies/*; do
+      [ -d "$p" ] || continue
+      printf 'policy %s: active=%s enforce=%s version=%s\n' "${p##*/}" \
+        "$(cat "$p/active" 2>/dev/null)" "$(cat "$p/enforce" 2>/dev/null)" "$(cat "$p/version" 2>/dev/null)"
+    done
+  fi
+else
+  printf 'no /sys/kernel/security/ipe\n'
+fi
+printf 'kernel log, kexec/lockdown/ipe lines:\n'
+dmesg 2>/dev/null | grep -iE 'ipe:|lockdown|kexec' | tail -n 20 || printf '(none)\n'
 
 printf '\nEND OF KEXEC PREFLIGHT\n'
