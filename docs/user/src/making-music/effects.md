@@ -1,7 +1,7 @@
 <!--
 status: changing
 covers: rust/mpfree-fx rust/mpfree-fx-ui rust/mpfree-chain-ui rust/mpfree-app/src/chain_page.rs rust/mpfree-app/src/plugins.rs rust/mpfree-plughost/src/rack.rs rust/mpfree-fx/src/perform.rs rust/mpfree-fx/src/xyfx.rs rust/mpfree-fx/src/picker.rs rust/mpfree-chain-ui/src/picker.rs
-checked: 2026-11-14 5c1d2e7
+checked: 2026-11-15 365d0f7
 -->
 
 # Effects
@@ -71,7 +71,7 @@ The list of effects groups them: Dynamics, EQ and filter, Drive and colour, Modu
 | **De-esser** | Turns down harsh "s" and "t" sounds. **Listen** plays only what it hears, to find the right frequency. |
 | **Multiband comp** | Three compressors, on the lows, mids and highs. |
 | **Channel strip** | A gate, a compressor and an EQ in one, as on a mixing desk. Its first page, **Strip**, switches each one on or off and holds **Order** (the EQ before or after the gate and compressor) and **Output**; then a page each for the gate, the compressor and the EQ. |
-| **EQ** | Shapes the tone with shelves and bands: cut mud, add air, thin out a sound. |
+| **EQ** | Shapes the tone with up to eight bands (each a bell, a shelf or a notch) and low and high cuts: cut mud, add air, take out a ring, thin out a sound. Bands 1 to 4 are on the first page and bands 5 to 8 on **Bands 5-8**; each band's **Use** puts it on (**On**), switches it off but keeps its settings (**Bypassed**), or leaves it out (**Unused**, how bands 5 to 8 start). |
 | **Filter** | **Multi**: low-pass, high-pass, band-pass and more, with resonance. **DJ**: one knob, turn left for a low-pass, right for a high-pass. |
 | **Comb** | Short tuned delays for metallic, resonant tones. |
 | **Auto wah** | A wah that follows your playing: louder notes open it further. It can also sweep in time (**Source** LFO) or stay where you put it (**Source** Pedal: turn **Center** with a Q-Link, like rocking a pedal). |
