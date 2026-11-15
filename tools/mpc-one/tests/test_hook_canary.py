@@ -74,14 +74,13 @@ if known:
         with open(known, "a") as fh:
             fh.write(f"{host} {key}\n")
         print(f"Warning: Permanently added '{host}' (ED25519) to the list of known hosts.", file=sys.stderr)
-if command.split()[:2] == ["sh", "-s"]:
-    extra = command.split()[2:]   # a fixed word some streamed scripts take as $1 (e.g. check|try)
+if command == "sh -s":
     script = sys.stdin.read()
     first, _, rest = script.partition("\n")
     if first == "R=''":
         script = "R='" + os.environ["FAKE_ROOT"] + "'\n" + rest
     env = dict(os.environ, PATH=os.environ["FAKE_REMOTE_PATH"])
-    sys.exit(subprocess.run([os.path.join(os.environ["FAKE_REMOTE_PATH"], "sh"), "-s", *extra], input=script.encode(),
+    sys.exit(subprocess.run([os.path.join(os.environ["FAKE_REMOTE_PATH"], "sh"), "-s"], input=script.encode(),
                             env=env).returncode)
 if command == "uname -r":
     print(os.environ["FAKE_RELEASE"])
