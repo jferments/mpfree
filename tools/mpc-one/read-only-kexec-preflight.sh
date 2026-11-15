@@ -144,4 +144,27 @@ fi
 printf 'kernel log, kexec/lockdown/ipe lines:\n'
 dmesg 2>/dev/null | grep -iE 'ipe:|lockdown|kexec' | tail -n 20 || printf '(none)\n'
 
+# LoadPin pins kernel-file loads to one trusted filesystem (plus any dm-verity volume whose root digest is
+# in the trusted list). The old kexec_load (buffer) has no file, so LoadPin denies it outright
+# ("old-api-denied"); the file-based syscall (kexec -s) reads from a file and is allowed only when that file
+# is on a trusted filesystem. So a file-based kexec could work with a kernel that already lives on the
+# system's own trusted filesystem. This lists candidate kernel-image files and the filesystem each is on, so
+# a trusted one can be found. Reads only: stats files, never opens or loads them.
+section 'LoadPin pinned root and kernel-image files (for a file-based kexec)'
+show /proc/sys/kernel/loadpin/enabled
+[ -e /usr/lib/az0x/trusted-verity-digests ] && printf 'trusted-verity-digests file present: /usr/lib/az0x/trusted-verity-digests\n'
+printf 'root (/) filesystem: %s\n' "$(awk '$2=="/"{print $1, $3; exit}' /proc/mounts 2>/dev/null)"
+rel=$(uname -r)
+for d in /boot / /lib/modules/"$rel" /usr/lib/modules/"$rel"; do
+  [ -d "$d" ] || continue
+  for f in "$d"/zImage* "$d"/Image* "$d"/vmlinuz* "$d"/vmlinux-* "$d"/kernel.img "$d"/kernel "$d"/*.fit "$d"/uImage* "$d"/fitImage*; do
+    [ -f "$f" ] && [ ! -L "$f" ] || continue
+    mp=$(df -P "$f" 2>/dev/null | awk 'NR==2{print $6}')
+    dev=$(df -P "$f" 2>/dev/null | awk 'NR==2{print $1}')
+    fstype=$(awk -v m="$mp" '$2==m{print $3; exit}' /proc/mounts 2>/dev/null)
+    printf '  %s  (%s bytes, on %s = %s %s)\n' "$f" "$(wc -c < "$f" 2>/dev/null | tr -cd 0-9)" "$mp" "$dev" "$fstype"
+  done
+done
+printf '(a kernel image on the same filesystem as the pinned root above is one LoadPin would accept via kexec -s)\n'
+
 printf '\nEND OF KEXEC PREFLIGHT\n'
