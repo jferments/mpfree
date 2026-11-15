@@ -11,7 +11,7 @@ Since the update, the way in is Akai's own developer mode. Switch on the develop
 - **Our own SSH is gone.** The update rewrote the root filesystem, which removed MOD-001 below. MOD-002's `/data/mpfree/ssh` is left on `/data`, unused.
 - **After a restart** developer mode stays on ([compatibility page](../hardware/firmware-3.10.1-compatibility.md#on-the-installed-3101-2026-11-15)). Not yet seen on this unit: whether the lock and the host key survive one. The qualification runbook checks it.
 
-The test build on the USB stick keeps its own key-only SSH on port 2222 (`MPC_TEST_PORT`), as before. On the installed 3.10.1 the boot hook starts it at power-on with the stick in ([starting MPFree from the stick](../hardware/stick-autoboot.md)); on 3.6.0, `--kexec-boot` did.
+The test build on the USB stick keeps its own key-only SSH on port 2222 (`MPC_TEST_PORT`), as before. On the installed 3.10.1 the boot hook starts it at power-on with the stick in ([how MPFree boots from the stick](../hardware/soft-reboot-boot.md)); on 3.6.0, `--kexec-boot` did.
 
 The sections below record how access worked on 3.6.0.
 
