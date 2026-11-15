@@ -172,12 +172,13 @@ elif [[ "${1:-}" == "--midi-activity" ]]; then
   [[ -t 0 ]] || die '--midi-activity is interactive: run it from a terminal'
 elif [[ "${1:-}" == "--midi-capture" ]]; then
   # Which guided phases: controller (default), midi-cv (the DIN MIDI jacks and the CV/Gate jacks)
-  # cv-scale (known keyboard notes into the CV track, and MIDI Out again), midi-out (MIDI Out only)
-  # or transport (the lights Akai's app sends for REC, OVERDUB, PLAY, PLAY START and STOP).
+  # cv-scale (known keyboard notes into the CV track, and MIDI Out again), midi-out (MIDI Out only),
+  # cv-ports (a CV track on CV ports 5 to 8) or transport (the lights Akai's app sends for REC,
+  # OVERDUB, PLAY, PLAY START and STOP).
   MIDI_CAPTURE_PHASES="${MPFREE_CAPTURE_PHASES:-controller}"
   case "$MIDI_CAPTURE_PHASES" in
-    controller|midi-cv|cv-scale|midi-out|transport) ;;
-    *) die "MPFREE_CAPTURE_PHASES must be controller, midi-cv, cv-scale, midi-out or transport, not: $MIDI_CAPTURE_PHASES" ;;
+    controller|midi-cv|cv-scale|midi-out|cv-ports|transport) ;;
+    *) die "MPFREE_CAPTURE_PHASES must be controller, midi-cv, cv-scale, midi-out, cv-ports or transport, not: $MIDI_CAPTURE_PHASES" ;;
   esac
   command -v python3 >/dev/null 2>&1 || die 'python3 is required for --midi-capture on workstation'
   [[ -r "$SCRIPT_DIR/host_midi_capture.py" ]] || die 'Missing host_midi_capture.py'
