@@ -174,6 +174,45 @@ touchscreen, using the list of controls each widget gives
   stems and MIDI file are read back and checked against the song. The
   pattern legend for writing more songs is on `hits` in `songs.rs`.
 
+- **Device phases** (`smoke/phases.rs`) check, without the MPC, what the
+  device run used to ask Jay to try by hand (his rule of 15 Nov: automate
+  every check the smoke tests can do, and ask only about what a round
+  tests). One module per area, so a round can run one area alone
+  (`cargo test -p mpfree-app --bins smoke::phases::looper`):
+  - `looper`: REC records two bars from the bar line; OVERDUB adds a
+    layer; STOP stops the loop and its playhead at once (live test 3 found
+    it playing on for minutes; the test fails on that build); every tool
+    while it plays, UNDO and SHIFT + UNDO, the undo history back and
+    forward, trim; a layer row's speaker, S, level and Q-Links; a layer
+    dragged onto another loop and onto + New loop, with one UNDO taking a
+    move back out of both loops; a loop's speaker through STOP and PLAY;
+    Clear; x down to the last layer.
+  - `mixer`: TRACK MIX to the Mix tab and back to the page it came from,
+    SHIFT + TRACK MIX on the pads; UNDO and SHIFT + UNDO on strip changes;
+    a Room reverb with Damping and Early learned on Q-Links 2 and 3,
+    switched to Plate (shared knobs kept, as far as the Plate's range
+    goes: its Size runs 50 to 150 %), Q-Link 2 still on Damping and
+    Early's Q-Link freed, and back to Room as it was left.
+  - `track_mute`: with 24 tracks, TRACK MUTE's pads past track 16 by PAD
+    BANK, the pads staying mute keys on another tab, and SHIFT + TRACK
+    MUTE silencing a pad in the kit.
+  - `device_log`: the log lines the device checks are judged on
+    (`tools/mpc-one/app_checks.py`): a step done here as on the MPC must
+    write its line in the shape the check matches, so a changed line fails
+    here before a round.
+
+  The rest of what those phases asked is in tests that already ran on
+  every PR: Arrange in `time.rs`, `mpfree-play` and the song workflows
+  (recording, takes, Capture, clip and row drops, the note editor, the
+  Song view and its drags, the morph, Rec song); the Synth tab in
+  `app.rs`, `synth.rs`, `mpfree-synth` and `mpfree-synth-ui` (engines,
+  presets, the wheel on its tiles, tuning and A4, Drive at a level);
+  Note Repeat and the arp in `app.rs` and `gui.rs` (the strip, - and +
+  while held, Latch, the Arp panel); the Mix tab's Effects look, chain
+  drag, I/O view and macros in `smoke/workflows.rs`. What the device
+  still has to show is that the buttons, pads, Q-Links and touch reach
+  the app, the lights, the sound, and how it holds up under load.
+
 `Session` (`smoke/session.rs`) is the test harness: the screen and every
 engine wired together as `main.rs` wires them, run in simulated time
 (`run_for`), with helpers to press a control by widget, id and label
@@ -182,7 +221,10 @@ engine wired together as `main.rs` wires them, run in simulated time
 gives it a library, so saves and opens run as `main.rs` runs them;
 `hits.played` keeps every note played with its track and time, and
 `said()` reads the screen's events log. The routing from screen to engines is shared
-with `main.rs` (`desk.rs`), so the tests drive the real code.
+with `main.rs` (`desk.rs`), so the tests drive the real code. Each period it
+also does what `main.rs` does around the engines: it shows the Looper tab
+the loop and its wave, tells the app the track count, and tells the screen
+when an effect's mode switch moved the controls a Q-Link had learned.
 
 ## Rules for changes
 
