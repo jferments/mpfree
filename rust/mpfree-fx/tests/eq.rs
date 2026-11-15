@@ -234,7 +234,7 @@ fn the_four_band_ids_and_sound_are_kept() {
     );
     let e = Eq::new();
     let p = e.params();
-    assert_eq!(p.len(), 45);
+    assert_eq!(p.len(), 46);
     for (i, info) in p.iter().enumerate() {
         assert_eq!(info.id as usize, i);
         if let Some((b, what)) = band_of(info.id) {
@@ -348,4 +348,36 @@ fn bypass_glides_and_is_flat() {
     let mut want = [0.0f32];
     off.response_db(&[1000.0], &mut want);
     assert!(want[0].abs() < 1e-6);
+}
+
+/// Listen plays the band alone: its frequency comes through, frequencies
+/// far from it fade away, and Off brings back the full EQ.
+#[test]
+fn listen_plays_the_band_alone() {
+    let rate = 48_000;
+    let mut e = eq(
+        rate,
+        &[
+            (freq(1), 1000.0),
+            (gain(1), 6.0),
+            (q(1), 4.0),
+            (LISTEN, 2.0),
+        ],
+    );
+    assert!(
+        measure(&mut e, rate, 1000.0).abs() < 0.5,
+        "the band's own frequency"
+    );
+    assert!(measure(&mut e, rate, 100.0) < -20.0, "far below the band");
+    assert!(
+        measure(&mut e, rate, 10_000.0) < -20.0,
+        "far above the band"
+    );
+    e.set_param(LISTEN, 0.0);
+    e.reset();
+    assert!(
+        measure(&mut e, rate, 100.0).abs() < 0.5,
+        "Off: the EQ again"
+    );
+    assert!((measure(&mut e, rate, 1000.0) - 6.0).abs() < 0.5);
 }
