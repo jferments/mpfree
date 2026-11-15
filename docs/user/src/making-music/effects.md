@@ -116,13 +116,13 @@ In the chain editor the **mode chooser** sits beside the effect's name, with the
 
 - The knobs the two modes share stay where you set them (as far as the new mode's range goes), so a Room switched to a Plate keeps its Decay, Size and Mix.
 - Switch back and the first mode is as you left it, until you turn the MPC off.
-- A macro or an LFO on a knob moves to the new mode's knob of the same name. One on a knob the new mode doesn't have comes off, as do the effect's step locks.
+- A macro or an LFO on a knob moves to the new mode's knob of the same name, and so does a Q-Link or a MIDI control you learned to it. One on a knob the new mode doesn't have comes off (learn it again on another knob), as do the effect's step locks.
 - The effect keeps its place in the chain, and stays bypassed if it was.
 
 To have two at once, add the effect twice and pick each one's mode: a Room, then a Plate, one after the other in the chain.
 
 > [!NOTE]
-> A Q-Link you learned to one of its knobs doesn't follow a switch to another mode: it turns whichever control the new mode has in that knob's place, so learn it again. Projects made before modes open as they were: a Cloud reverb set to its own Plate or Room shows as the **Cloud reverb**, in none of the modes.
+> Projects made before modes open as they were: a Cloud reverb set to its own Plate or Room shows as the **Cloud reverb**, in none of the modes.
 
 ## XY FX
 

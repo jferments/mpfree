@@ -14,10 +14,13 @@
 //!   comes (no maker, the chain had no room for its latency), they go back
 //!   on the old one.
 //!
+//! A Q-Link or a MIDI control learned on one of the insert's controls
+//! follows it the same way ([`Landed`]: the app hands it to the Q-Link
+//! bindings and to MIDI Learn), and is unlearned when it has no match.
+//!
 //! Left behind by a switch across engines: step locks and move lanes on
 //! the insert's controls (the engine forgets them, as for a removed
-//! insert), the morph scenes' values for them, and a Q-Link learned on one
-//! of them, which stays on the old control's id.
+//! insert), and the morph scenes' values for them.
 //!
 //! The values an insert had in each engine are kept for the session, not
 //! saved with the project, and dropped when a project is opened (its
@@ -25,7 +28,7 @@
 
 use mpfree_fx::families::{self, Mode, Switch};
 use mpfree_fx::StripId;
-use mpfree_mod::{Change, MacroMap, Row, MACROS};
+use mpfree_mod::{Change, MacroMap, Moved, Row, MACROS};
 use mpfree_node::ParamInfo;
 use mpfree_play::mpfree_param::{Owner, ParamAddr, Strip};
 
@@ -37,6 +40,32 @@ use crate::modmix::strip_id;
 pub struct Modes {
     kept: Vec<Kept>,
     waiting: Vec<Waiting>,
+    landed: Vec<Landed>,
+}
+
+/// A switch across engines that is in: where each of the old engine's
+/// controls went, for what names them outside the mod engine (a learned
+/// Q-Link, a learned MIDI control). Its macro maps and rows moved already.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Landed {
+    pub owner: Owner,
+    /// Each old control's id, and the new engine's control it went to
+    /// (`None`: nothing matches it, or the new mode fixes it).
+    pub moves: Vec<(u16, Option<ParamInfo>)>,
+}
+
+impl Landed {
+    /// Where `addr` went.
+    pub fn target(&self, addr: ParamAddr) -> Moved {
+        if addr.owner != self.owner {
+            return Moved::Stays;
+        }
+        match self.moves.iter().find(|(id, _)| *id == addr.param) {
+            None => Moved::Stays,
+            Some((_, None)) => Moved::Gone,
+            Some((_, Some(info))) => Moved::To(ParamAddr::new(self.owner, info.id), *info),
+        }
+    }
 }
 
 /// What an insert had in an engine it left.
@@ -73,6 +102,12 @@ pub enum Switched {
 }
 
 impl Modes {
+    /// The switches that came in since the last call (none: no
+    /// allocation).
+    pub fn take_landed(&mut self) -> Vec<Landed> {
+        std::mem::take(&mut self.landed)
+    }
+
     /// Whether a switch across engines is on its way for this insert.
     fn switching(&self, strip: Strip, uid: u16) -> bool {
         self.waiting
@@ -233,6 +268,18 @@ pub fn land(h: &mut MixHost) {
                 let row = Row { target: t, ..*row };
                 let _ = h.modu.change(&h.mixer, Change::AddRow(row));
             }
+        }
+        if let Some(to) = to {
+            let moves = w
+                .from
+                .iter()
+                .map(|f| {
+                    let new = target(ParamAddr::new(owner, f.id))
+                        .and_then(|a| to.iter().find(|t| t.id == a.param).copied());
+                    (f.id, new)
+                })
+                .collect();
+            h.modes.landed.push(Landed { owner, moves });
         }
     }
 }
