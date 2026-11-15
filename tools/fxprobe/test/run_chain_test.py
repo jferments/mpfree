@@ -181,7 +181,7 @@ def stick_test(bins, tmp, rate):
                  and read_status(work, "tap-s1.txt").get("state") == "idle", 10,
                  "the installed plugins to find the work folder through their pointer")
         out = fxprobe_sh(root, kit, "capture", "wire-stick", "--gains", "0,-12", "--tail", "1")
-        if "CAPTURE-OK" not in out:
+        if "CAPTURE-OK" not in out or "loaded short.wav in every Source" not in out:
             fail("fxprobe.sh capture: " + out)
         for dirpath, _, files in os.walk(work):
             for name in [""] + files:

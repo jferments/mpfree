@@ -69,6 +69,7 @@ class Instances:
 
     def __init__(self, work, slots=(1, 2), overrun_slot=None, delay=0.3):
         self.work, self.slots, self.overrun_slot, self.delay = work, slots, overrun_slot, delay
+        self.load_error = None
         self.stop = threading.Event()
         self.seen = None
         self.thread = threading.Thread(target=self.run, daemon=True)
@@ -103,6 +104,14 @@ class Instances:
                 continue
             self.seen = c.get("seq")
             want = [int(x) for x in c["slots"].split(",")] if "slots" in c else list(self.slots)
+            if c.get("action") == "load":   # Sources load, slowly; Taps ignore it
+                time.sleep(self.delay)
+                for s in want:
+                    fields = [("state", "idle"), ("seq", "-1"), ("programme", c["programme"])]
+                    if self.load_error:
+                        fields = [("state", "idle"), ("seq", "-1"), ("programme", ""), ("error", self.load_error)]
+                    self.status("source", s, fields)
+                continue
             for s in want:
                 self.status("source", s, [("state", "playing"), ("seq", c["seq"]), ("programme", c["programme"])])
                 self.status("tap", s, [("state", "recording"), ("capture", c["capture"]), ("seq", c["seq"])])
@@ -338,12 +347,12 @@ class FxprobeShTests(unittest.TestCase):
         self.assertIn("tap-s2         state idle", res.stdout)
         res = self.sh("capture", "flanger", "--gains", "0,-12", "--tail", "0")
         self.ok(res, "CAPTURE-OK")
-        self.assertIn("slots: 1 2; 2 capture(s) of 1.450 s each", res.stdout)
+        self.assertIn("slots: 1 2; 2 capture(s) of 1.450 s each\nloaded short.wav in every Source\n", res.stdout)
         self.assertIn("captured flanger-g0 from 2 slot(s)", res.stdout)
         self.assertIn("captured flanger-gm12 from 2 slot(s)", res.stdout)
         self.assertEqual(os.stat(f"{self.work}/control.txt").st_mode & 0o777, 0o644)
         with open(f"{self.work}/control.txt") as fh:
-            self.assertEqual(fh.read(), "seq 2\naction run\nprogramme short.wav\ngain -12\npreroll 0.5\n"
+            self.assertEqual(fh.read(), "seq 3\naction run\nprogramme short.wav\ngain -12\npreroll 0.5\n"
                                         "capture flanger-gm12\nseconds 1.450\n")
         # The same name again, one slot, the standard programme, timing log: a
         # done status left from before does not end the wait (its seq is old).
@@ -352,7 +361,7 @@ class FxprobeShTests(unittest.TestCase):
         self.ok(res, "CAPTURE-OK")
         self.assertIn("slots: 2; 1 capture(s) of 3.450 s each", res.stdout)
         with open(f"{self.work}/control.txt") as fh:
-            self.assertEqual(fh.read(), "seq 3\naction run\nprogramme standard.wav\ngain 0\npreroll 0.5\n"
+            self.assertEqual(fh.read(), "seq 5\naction run\nprogramme standard.wav\ngain 0\npreroll 0.5\n"
                                         "capture flanger-gm12\nseconds 3.450\ntiming 1\nslots 2\n")
         self.instances.delay = 0.3
         self.instances.overrun_slot = 2
@@ -360,12 +369,16 @@ class FxprobeShTests(unittest.TestCase):
         self.assertEqual(res.returncode, 1, res.stdout)
         self.assertIn("captured bad from 2 slot(s); PROBLEMS: s2: written 63433 of 63945, overrun 512", res.stdout)
         self.assertNotIn("CAPTURE-OK", res.stdout)
+        res = self.sh("capture", "again", "--tail", "0")   # short.wav is loaded everywhere now: no load step
+        self.assertNotIn("loaded", res.stdout)
+        self.instances.load_error = "cannot read programmes/standard.wav"
+        self.stopped(self.sh("capture", "x", "--programme", "standard"), "source-s1: cannot read programmes/standard.wav;")
         self.stopped(self.sh("capture", "../x"), "capture names are letters")
         self.stopped(self.sh("capture", "x", "--programme", "long"), "--programme is short or standard")
         kit = self.tree(self.kit)
         res = self.sh("clean")
         self.ok(res, "CLEAN-OK")
-        self.assertIn("(6 capture(s))", res.stdout)
+        self.assertIn("(8 capture(s))", res.stdout)
         self.assertFalse(os.path.exists(self.work))
         self.assertEqual(sorted(os.listdir(self.data)), ["FORMAT"])
         self.assertEqual(self.tree(self.kit), kit)

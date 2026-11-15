@@ -315,6 +315,19 @@ cmd_status() {
   [ "$found" = 1 ] || echo "no instance has reported (are FXProbe Source and Tap on tracks, with the stick in?)"
 }
 
+# The next command number: one more than control.txt's.
+next_seq() {
+  last=$(val "$WORK/control.txt" seq)
+  case "$last" in ''|*[!0-9]*) echo 1 ;; *) echo $((last + 1)) ;; esac
+}
+
+# Writes control.txt, one argument per line, through a temporary file and a
+# rename, so the plugins never read half a command.
+write_control() {
+  printf '%s\n' "$@" > "$WORK/control.txt.tmp" && mv "$WORK/control.txt.tmp" "$WORK/control.txt" ||
+    stop "cannot write control.txt"
+}
+
 # Seconds of a programme, from its schedule: the end of its last segment.
 programme_seconds() {
   awk -F '\t' 'NR == 1 { rate = $2; next } { e = $3 + $4 + $5; if (e > m) m = e } END { if (rate > 0) printf "%.3f", m / rate }' "$1"
@@ -339,19 +352,39 @@ cmd_capture() {
   [ "$ntaps" -gt 0 ] && [ -n "$sources" ] || stop "no Source and Tap instances reporting (status:$(ls "$WORK/status" 2>/dev/null | tr '\n' ' '))"
   ngains=$(echo "$GAINS" | awk -F, '{ print NF }')
   echo "slots:$slotlist; $ngains capture(s) of $seconds s each"
+  # Each Source loads the programme first, so a slow read from the stick
+  # can't start it late into a Tap's fixed-length recording.
+  need=0
+  for t in $sources; do [ "$(val "$WORK/status/$t.txt" programme)" = "$prog.wav" ] || need=1; done
+  if [ "$need" = 1 ]; then
+    seq=$(next_seq)
+    write_control "seq $seq" "action load" "programme $prog.wav" ${SLOTS:+"slots $SLOTS"}
+    deadline=$(( $(date +%s) + 60 ))
+    while :; do
+      sleep 1
+      loaded=1 errs=""
+      for t in $sources; do
+        f="$WORK/status/$t.txt"
+        e=$(val "$f" error)
+        [ -n "$e" ] && errs="$errs $t: $e;"
+        [ "$(val "$f" programme)" = "$prog.wav" ] || loaded=0
+      done
+      [ -z "$errs" ] || stop "${errs# }"
+      [ "$loaded" = 1 ] && break
+      [ "$(date +%s)" -gt "$deadline" ] && { cmd_status; stop "the Sources did not load $prog.wav within 60 s"; }
+    done
+    echo "loaded $prog.wav in every Source"
+  fi
   rc=0
   for gain in $(echo "$GAINS" | tr ',' ' '); do
     g=$(awk -v g="$gain" 'BEGIN { printf "%g", g + 0 }')
     case "$g" in -*) tag="m${g#-}" ;; *) tag=$g ;; esac
     if [ "$ngains" -gt 1 ]; then name="$NAME-g$tag"; else name=$NAME; fi
-    last=$(val "$WORK/control.txt" seq)
-    case "$last" in ''|*[!0-9]*) seq=1 ;; *) seq=$((last + 1)) ;; esac
-    {
-      echo "seq $seq"; echo "action run"; echo "programme $prog.wav"; echo "gain $g"; echo "preroll 0.5"
-      echo "capture $name"; echo "seconds $seconds"
-      if [ "$TIMING" = 1 ]; then echo "timing 1"; fi
-      if [ -n "$SLOTS" ]; then echo "slots $SLOTS"; fi
-    } > "$WORK/control.txt.tmp" && mv "$WORK/control.txt.tmp" "$WORK/control.txt" || stop "cannot write control.txt"
+    seq=$(next_seq)
+    timing=""
+    [ "$TIMING" = 1 ] && timing="timing 1"
+    write_control "seq $seq" "action run" "programme $prog.wav" "gain $g" "preroll 0.5" "capture $name" \
+      "seconds $seconds" ${timing:+"$timing"} ${SLOTS:+"slots $SLOTS"}
     deadline=$(( $(date +%s) + $(awk -v s="$seconds" 'BEGIN { printf "%d", 3 * s + 15 }') ))
     while :; do
       sleep 1
@@ -360,7 +393,7 @@ cmd_capture() {
         e=$(val "$WORK/status/$t.txt" error)
         [ -n "$e" ] && errs="$errs $t: $e;"
       done
-      [ -z "$errs" ] || stop "$errs"
+      [ -z "$errs" ] || stop "${errs# }"
       for t in $taps; do
         f="$WORK/status/$t.txt"
         [ "$(val "$f" capture)" = "$name" ] && [ "$(val "$f" seq)" = "$seq" ] || continue
