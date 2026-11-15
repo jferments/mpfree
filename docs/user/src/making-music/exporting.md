@@ -1,6 +1,6 @@
 <!--
 status: changing
-covers: rust/mpfree-export rust/mpfree-browser-ui/src/export.rs rust/mpfree-app/src/export.rs
+covers: rust/mpfree-export rust/mpfree-browser-ui/src/export.rs rust/mpfree-app/src/export.rs rust/mpfree-fx/src/bounce.rs rust/mpfree-fx/src/resample.rs
 checked: 2026-11-14 97a6b00
 -->
 
@@ -18,7 +18,8 @@ checked: 2026-11-14 97a6b00
 3. Pick the **Range**:
    - **Arrangement**: the song on Arrange, from its start to its end. It is picked for you when the song has one.
    - **Bars**: the clips playing now, from the start of the bar the playhead is in, for the number of bars you set (8 to start with). Turn the data wheel, or tap **–** and **+** on the panel, to change it.
-4. Press **Start**, or push the data wheel.
+4. Check the **File** row: the WAV files' format (see [File formats](#file-formats)). It starts as Prefs has it, and what you pick here is for this export only.
+5. Press **Start**, or push the data wheel.
 
 While it runs, the panel shows how far it has got ("1:12 of 3:50"). **Cancel** stops it. When it is done, the panel says what it made, and **Show in BROWSE** opens the folder.
 
@@ -50,7 +51,7 @@ The files go in a new folder in **Recordings**, named after the project and the 
 
 | File | What it is |
 |---|---|
-| *Mixdown.wav* | The master, after the master's safety limiter: what the speakers get. Stereo, 24-bit, at 44.1 kHz (the rate MPFree runs at). It isn't normalised or dithered, so the levels are exactly as you mixed them. |
+| *Mixdown.wav* | The master, after the master's safety limiter: what the speakers get. Stereo, in the format you picked (24-bit at 44.1 kHz unless you change it). It isn't normalised, so the levels are exactly as you mixed them. |
 | One WAV per stem | Each part of the mixer on its own. Every stem starts and ends with the mixdown, so they line up when you drop them into a computer. A part that made no sound at all in the export is left out, and the panel says so. |
 | *Night drive.mid* | The notes and controls each track played, as they came out (with quantise, swing, chance and ratchets applied), with the tempo and the meter. It is made only when notes played. |
 
@@ -58,9 +59,21 @@ At the end of the range the song stops, so nothing after it is played, and the e
 
 File names work on any computer: a character that Windows or a FAT stick refuses (such as / or ?) becomes a -, and two tracks with the same name become *Drums* and *Drums 2*.
 
+## File formats
+
+The **File** row on the Export panel picks how the WAV files hold the sound. **Prefs > Export file** and **Prefs > Export rate** set what it starts as each time, so set those once for the computer or label you send to, and change the panel only for an odd one out.
+
+- **24-bit** (the default): keeps everything the mixer makes, far below anything you can hear. Right for nearly everything: a computer, a mastering engineer, a streaming service.
+- **16-bit**: for a CD, or older gear and software that only takes 16-bit. The quietest parts would break up at 16 bits, so a very faint hiss (dither) is added, far below anything you'd hear at a normal level, which keeps fades and reverb tails smooth.
+- **32-bit float**: exactly what the mixer made, number for number. A stem whose level goes over full scale (a loud track before the master's limiter) keeps that level instead of clipping, so you can turn it down in a computer later. The files are a third bigger than 24-bit.
+- **44.1 kHz** (the default): the rate MPFree plays at, written as it is.
+- **48 kHz**: the rate for video. The sound is converted as the files are written; nothing you can hear changes and every file still starts on the song's first moment, lined up with the others and the MIDI file. An export at 48 kHz takes a little longer.
+
+Each choice is said with the result, for example "3 WAV files (16-bit, 48 kHz)".
+
 ## When an export stops
 
 If you cancel, or the export can't finish (the stick is full or too slow, or an effect that delays the sound, such as a limiter with look-ahead, is added or taken out while it runs), the export stops and removes the files it had started. The panel says why.
 
 > [!MPC]
-> On the MPC, Export as audio makes a mixdown or stems from a sequence or song in real time or faster. MPFree makes the mixdown, the stems and a MIDI file in one go, and listens on its own when the song plays outside gear.
+> On the MPC, Export as audio makes a mixdown or stems from a sequence or song in real time or faster, and lets you pick the bit depth and rate. MPFree makes the mixdown, the stems and a MIDI file in one go, listens on its own when the song plays outside gear, and keeps your usual format in Prefs.

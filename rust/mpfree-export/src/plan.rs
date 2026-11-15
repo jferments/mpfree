@@ -3,7 +3,7 @@
 
 use std::path::PathBuf;
 
-use mpfree_fx::{CapturePoint, StripId};
+use mpfree_fx::{CapturePoint, StripId, WavFormat};
 
 use crate::mode::Mode;
 
@@ -69,7 +69,10 @@ pub struct Plan {
     pub streams: Vec<Stream>,
     pub midi: Option<MidiPlan>,
     pub mode: Mode,
+    /// The mixer's rate.
     pub rate: u32,
+    /// How the WAV files hold the sound (24-bit at `rate` unless picked).
+    pub format: WavFormat,
     /// The range's length in frames, when known: for the time left.
     pub length: Option<u64>,
     /// The first of the mixer's capture slots the export may use; it uses

@@ -68,6 +68,15 @@
 //!   back into an empty loop with [`Looper::load`]: the audio copies in at
 //!   [`LOAD_SPEED`] while the loop stays silent, then the loop fades in,
 //!   in time with the song.
+//! - **Layers between loops.** [`Looper::copy_layer`] copies a layer, as
+//!   it plays, onto another loop of the same length in bars (in time with
+//!   the song, at that loop's length in frames), or into an empty loop,
+//!   which takes the layer's loop's length and start. It copies at
+//!   [`COPY_SPEED`] while both loops play on, then the layer fades in. A
+//!   move then fades it out of its own loop as a delete (a loop's last
+//!   layer stays). Undo in either loop takes a move back in both while
+//!   each is the other's last step; undoing a layer that made a loop of
+//!   its own clears that loop.
 //!
 //! The memory is allocated once, in [`Looper::new`]. [`Looper::command`]
 //! and [`Looper::process`] never allocate, lock or panic, and give the same
@@ -126,6 +135,9 @@ pub const FIT_SPEED: usize = 64;
 /// A loaded loop ([`Looper::load`]) copies in at this many frames (of all
 /// its layers together) for each frame that plays.
 pub const LOAD_SPEED: usize = 64;
+/// A layer copied from another loop ([`Looper::copy_layer`]) copies in at
+/// this many frames for each frame that plays.
+pub const COPY_SPEED: usize = 64;
 const STEP: f32 = 1.0 / FADE as f32;
 /// The fade-in of an overdub that starts where the first pass ends: the
 /// input runs on without a break there, so a short fade is enough, and the
@@ -341,6 +353,10 @@ pub enum Step {
     Merge(u8),
     /// The loop was fitted to another tempo: its print became this layer.
     Fit(u8),
+    /// This layer came from that loop ([`Looper::copy_layer`]).
+    Added(u8, usize),
+    /// This layer moved to that loop: a delete here.
+    Moved(u8, usize),
 }
 
 /// A loop's history: the steps Undo takes back and the ones Redo brings
@@ -479,6 +495,9 @@ pub struct Status {
     /// A saved loop copying in ([`Looper::load`]): how much is done, 0 to
     /// 1. The loop is empty and silent until it is all in.
     pub loading: Option<f32>,
+    /// A layer of another loop copying in ([`Looper::copy_layer`]): how
+    /// much is done, 0 to 1.
+    pub copying: Option<f32>,
     /// Frames of the first pass recorded so far, while it records (0
     /// otherwise): what [`Looper::first_pass`] reads.
     pub recorded: usize,
@@ -620,6 +639,13 @@ enum Queued {
     Loop(Command),
     Layer(u8, LayerCommand),
     Select(usize),
+    /// A layer of loop `from` onto loop `to` ([`Looper::copy_layer`]).
+    Copy {
+        from: usize,
+        id: u8,
+        to: usize,
+        keep: bool,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -629,6 +655,18 @@ enum Kind {
     Edit,
     Merge,
     Fit,
+    /// A layer copied in from another loop.
+    Added,
+}
+
+/// The other loop's side of a layer copied between loops: the loop and
+/// the layer's slot there, and whether the two steps undo together (a
+/// move).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Link {
+    lp: u8,
+    slot: u8,
+    tied: bool,
 }
 
 /// An overdub added, a layer deleted, an edit or a merge, for Undo and
@@ -646,6 +684,8 @@ struct Act {
     /// An overdub's: every layer's Fade old turn-down from the other side
     /// of it (before it while done, after it while undone).
     ages: [f32; MAX_LAYERS],
+    /// A layer copied in from, or moved to, another loop.
+    link: Option<Link>,
 }
 
 const NO_ACT: Act = Act {
@@ -654,13 +694,18 @@ const NO_ACT: Act = Act {
     index: 0,
     edit: None,
     ages: [1.0; MAX_LAYERS],
+    link: None,
 };
 
 impl Act {
     fn step(&self) -> Step {
         match self.kind {
             Kind::Overdub => Step::Overdub(self.slot),
-            Kind::Delete => Step::Delete(self.slot),
+            Kind::Delete => match self.link {
+                Some(l) => Step::Moved(self.slot, l.lp as usize),
+                None => Step::Delete(self.slot),
+            },
+            Kind::Added => Step::Added(self.slot, self.link.map_or(0, |l| l.lp as usize)),
             Kind::Edit => Step::Edit(self.edit.unwrap_or(Edit::Half)),
             Kind::Merge => Step::Merge(self.slot),
             Kind::Fit => Step::Fit(self.slot),
@@ -672,7 +717,7 @@ impl Act {
         match self.kind {
             Kind::Edit => Some(self.slot as usize),
             Kind::Merge | Kind::Fit => Some(self.index as usize),
-            Kind::Overdub | Kind::Delete => None,
+            Kind::Overdub | Kind::Delete | Kind::Added => None,
         }
     }
 }
@@ -1117,6 +1162,40 @@ struct Loop {
     ld_done: usize,
     ld_from: u64,
     ld_at: u64,
+    /// A layer of another loop copying in ([`Looper::copy_layer`]): from
+    /// which loop and slot, into which slot, frames copied of
+    /// `ad_frames`, the period it started in and the frame it joins on
+    /// (as a load's), where the other loop's audio is read for this
+    /// loop's frame 0 and how many of its frames go by for each frame
+    /// here, and whether it then leaves the other loop (a move). Into an
+    /// empty loop, the loop's length in ticks and start once it joins.
+    adding: bool,
+    ad_from: usize,
+    ad_src: usize,
+    ad_slot: usize,
+    ad_frames: usize,
+    ad_done: usize,
+    ad_start: u64,
+    ad_at: u64,
+    ad_shift: f64,
+    ad_rate: f64,
+    ad_move: bool,
+    ad_ticks: Tick,
+    ad_origin: Tick,
+    /// Another loop is copying one of this loop's layers.
+    lend: Option<Lend>,
+}
+
+/// One of a loop's layers being copied into another loop: its slot, the
+/// loop and the slot it goes to, the frame the copy joins that loop on,
+/// and whether it leaves this loop then (a move).
+#[derive(Clone, Copy, Debug)]
+struct Lend {
+    slot: u8,
+    to: u8,
+    to_slot: u8,
+    at: u64,
+    drop: bool,
 }
 
 impl Loop {
@@ -1201,6 +1280,20 @@ impl Loop {
         ld_done: 0,
         ld_from: 0,
         ld_at: 0,
+        adding: false,
+        ad_from: 0,
+        ad_src: 0,
+        ad_slot: 0,
+        ad_frames: 0,
+        ad_done: 0,
+        ad_start: 0,
+        ad_at: 0,
+        ad_shift: 0.0,
+        ad_rate: 1.0,
+        ad_move: false,
+        ad_ticks: 0,
+        ad_origin: 0,
+        lend: None,
     };
 
     /// Recording or about to: armed, the first pass, or an overdub.
@@ -1269,6 +1362,24 @@ impl Looper {
         self.push(Queued::Select(n))
     }
 
+    /// Copy layer `id` ([`LayerInfo::id`]) of loop `from` onto loop `to`
+    /// for the next period; `keep` false moves it: once the copy plays it
+    /// leaves `from` as a delete, unless it is that loop's last layer.
+    /// The layer goes as it plays, through `from`'s edits, at its level,
+    /// pan, mute and Fade old turn-down (not its solo). Loop `to` must be
+    /// empty, and then takes `from`'s length and start, or play a loop
+    /// of the same length in ticks: the layer goes in time with the song,
+    /// made to that loop's length in frames. Both loops must be playing
+    /// with nothing changing their layers, and `to` needs a layer slot
+    /// and the memory. It copies at [`COPY_SPEED`] while both play on;
+    /// meanwhile the commands that would change either loop's layers
+    /// wait, except Undo on `to` and Clear on either, which call it off.
+    /// Refused (counted) otherwise. False (and counted) if the queue is
+    /// full.
+    pub fn copy_layer(&mut self, from: usize, id: u8, to: usize, keep: bool) -> bool {
+        self.push(Queued::Copy { from, id, to, keep })
+    }
+
     /// The loop the commands act on (as of the last period).
     pub fn selected(&self) -> usize {
         self.selected
@@ -1335,6 +1446,9 @@ impl Looper {
             loading: l
                 .loading
                 .then(|| l.ld_done as f32 / (l.ld_frames * l.ld_layers).max(1) as f32),
+            copying: l
+                .adding
+                .then(|| l.ad_done as f32 / l.ad_frames.max(1) as f32),
             recorded: if l.phase == Phase::Recording {
                 l.written
             } else {
@@ -1443,6 +1557,7 @@ impl Looper {
         let ok = l.phase == Phase::Empty
             && !l.clearing
             && !l.loading
+            && !l.adding
             && self.loads[n].is_none()
             && f.frames > 0
             && f.ticks > 0
@@ -1687,6 +1802,12 @@ impl Looper {
             .min(out.len() / 2);
         self.now = block.start_frame;
         self.apply_commands();
+        let end = block.start_frame + n as u64;
+        for k in 0..self.loops.len() {
+            if self.loops[k].adding {
+                self.render_copy(k, end);
+            }
+        }
         let Looper {
             store,
             loops,
@@ -1865,7 +1986,8 @@ impl Looper {
                 }
                 let p = self.prints[s].now.as_ref();
                 let live = p.filter(|p| l.print_live(p, self.prints[s].next.is_some()));
-                if let Some(frames) = live.filter(|_| l.print_on > 0.0).map(|p| p.frames) {
+                let lent = l.adding || l.lend.is_some();
+                if let Some(frames) = live.filter(|_| l.print_on > 0.0 && !lent).map(|p| p.frames) {
                     let l = &mut self.loops[s];
                     l.start_fit(&mut self.store, &mut self.stats, s, frames, self.now);
                     if l.fitting {
@@ -1885,10 +2007,18 @@ impl Looper {
                         | Command::Merge
                         | Command::Resample
                 ) | Queued::Layer(_, LayerCommand::Delete)
+                    | Queued::Copy { .. }
             ) || (self.loops[self.selected].busy()
                 && matches!(q, Queued::Layer(..)));
+            let held = match q {
+                // A copy waits for both of its loops.
+                Queued::Copy { from, to, .. } => [from, to]
+                    .iter()
+                    .any(|&k| self.loops.get(k).is_some_and(|l| l.must_wait(q))),
+                _ => self.loops[self.selected].must_wait(q),
+            };
             let wait = hold_all
-                || (deferrable && (waiting || self.loops[self.selected].must_wait(q)))
+                || (deferrable && (waiting || held))
                 || (waiting && matches!(q, Queued::Select(_)));
             if wait {
                 self.queue[kept] = q;
@@ -1912,9 +2042,36 @@ impl Looper {
                     lp.latency = l;
                 }
             }
+            Queued::Copy { from, id, to, keep } => self.start_copy(from, id, to, keep),
             Queued::Loop(Command::Clear) if self.loops[s].loading => {
                 // Called off: the memory goes back (below).
                 self.loops[s].loading = false;
+            }
+            // A copy in or out of the loop is called off, then it clears.
+            Queued::Loop(Command::Clear)
+                if self.loops[s].adding || self.loops[s].lend.is_some() =>
+            {
+                self.call_off_copy(s);
+                if let Some(t) = self.loops[s].lend.map(|l| l.to as usize) {
+                    self.call_off_copy(t);
+                }
+                self.apply(q);
+                return;
+            }
+            // Undo calls a copy in off.
+            Queued::Loop(Command::Undo) if self.loops[s].adding => self.call_off_copy(s),
+            Queued::Loop(c @ (Command::Undo | Command::Redo)) if self.tied(s, c).is_some() => {
+                let o = self.tied(s, c).expect("tied above");
+                self.loops[s].apply(&mut self.store, &mut self.stats, s, c);
+                self.loops[o].apply(&mut self.store, &mut self.stats, o, c);
+                // A layer that made a loop of its own took that loop with
+                // it: the other loop's step can't come back either.
+                if c == Command::Undo && self.loops[s].clearing {
+                    self.loops[o].n_undone -= 1;
+                } else if c == Command::Undo && self.loops[o].clearing {
+                    self.loops[s].n_undone -= 1;
+                }
+                self.loops[o].reclaim(&mut self.store, o);
             }
             Queued::Loop(Command::Merge) => {
                 self.loops[s].merge(&mut self.store, &mut self.stats, s, self.now)
@@ -1952,6 +2109,178 @@ impl Looper {
             }
         }
         self.loops[s].reclaim(&mut self.store, s);
+    }
+
+    /// Start a layer's copy between loops ([`Looper::copy_layer`]).
+    fn start_copy(&mut self, from: usize, id: u8, to: usize, keep: bool) {
+        let slot = id as usize;
+        let listed = |l: &Loop| {
+            slot < MAX_LAYERS && l.order[..l.in_order].contains(&id) && !l.slots[slot].leaving
+        };
+        if from >= MAX_LOOPS || to >= MAX_LOOPS || !listed(&self.loops[from]) {
+            self.stats.no_layer += 1;
+            return;
+        }
+        // Nothing changing the layers, nothing fading.
+        let free = |l: &Loop| l.savable() && !l.busy() && !l.fading() && l.xf == 0;
+        let (src, dst) = (&self.loops[from], &self.loops[to]);
+        let empty = dst.phase == Phase::Empty
+            && !dst.clearing
+            && !dst.loading
+            && !dst.adding
+            && self.loads[to].is_none();
+        let onto = free(dst) && dst.len_ticks == src.len_ticks && dst.in_order < MAX_LAYERS - 1;
+        if from == to || !free(src) || !(empty || onto) {
+            self.stats.refused += 1;
+            return;
+        }
+        let s = src.slots[slot];
+        let (len, ticks, origin, layers) = (src.len, src.len_ticks, src.origin, src.layers());
+        let l = &mut self.loops[to];
+        let k = if empty {
+            l.reclaim(&mut self.store, to);
+            let need = blocks_for(len);
+            (self.store.n_free >= need && self.store.grow(to, 0, need)).then_some(0)
+        } else {
+            l.free_slot(&mut self.store, to)
+        };
+        let Some(k) = k else {
+            l.reclaim(&mut self.store, to);
+            self.stats.refused += 1;
+            return;
+        };
+        let frames = if empty { len } else { l.len };
+        let mut new = Slot {
+            valid: (0, frames),
+            level: s.level,
+            pan: s.pan,
+            mute: s.mute,
+            age: s.age,
+            // Into a loop that plays, it fades in; an empty loop fades in
+            // as a whole.
+            presence: if empty { 1.0 } else { 0.0 },
+            ..Slot::NEW
+        };
+        (new.gl, new.gr) = new.target(!empty && l.any_solo());
+        l.slots[k] = new;
+        // In time with the song: this loop's frame 0 is where `from` is
+        // at this loop's start.
+        l.ad_shift = if empty {
+            0.0
+        } else {
+            rem_ticks((l.origin - origin) as f64, ticks as f64) * len as f64 / ticks as f64
+        };
+        l.ad_rate = len as f64 / frames as f64;
+        l.adding = true;
+        l.ad_from = from;
+        l.ad_src = slot;
+        l.ad_slot = k;
+        l.ad_frames = frames;
+        l.ad_done = 0;
+        l.ad_start = self.now;
+        l.ad_at = self.now + frames.div_ceil(COPY_SPEED) as u64;
+        l.ad_move = !keep && layers > 1;
+        l.ad_ticks = ticks;
+        l.ad_origin = origin;
+        let lend = Lend {
+            slot: id,
+            to: to as u8,
+            to_slot: k as u8,
+            at: l.ad_at,
+            drop: l.ad_move,
+        };
+        self.loops[from].lend = Some(lend);
+    }
+
+    /// Copy loop `k`'s layer in as far as the period ending before frame
+    /// `end` is due: [`COPY_SPEED`] frames for each frame since it
+    /// started. It reads the other loop's layer as it plays, between its
+    /// frames when the lengths differ.
+    fn render_copy(&mut self, k: usize, end: u64) {
+        let l = &self.loops[k];
+        let (from, src_slot, slot) = (l.ad_from, l.ad_src, l.ad_slot);
+        let (shift, rate, frames) = (l.ad_shift, l.ad_rate, l.ad_frames);
+        let due = (end - l.ad_start).saturating_mul(COPY_SPEED as u64);
+        let target = frames.min(due.min(usize::MAX as u64) as usize);
+        let mut done = l.ad_done;
+        let src = &self.loops[from];
+        let (valid, view, seam, len) = (
+            src.slots[src_slot].valid,
+            src.views[src_slot],
+            src.seam,
+            src.len,
+        );
+        if len == 0 {
+            return;
+        }
+        while done < target {
+            let n = RUN.min(target - done);
+            let mut buf = [[0.0f32; 2]; RUN];
+            let blocks = self.store.blocks_of(from, src_slot);
+            for (j, y) in buf[..n].iter_mut().enumerate() {
+                let x = ((done + j) as f64 * rate + shift).rem_euclid(len as f64);
+                let i = (x as usize).min(len - 1);
+                let frac = (x - i as f64) as f32;
+                let a = layer_frame(&self.store, blocks, valid, &view, seam, i);
+                *y = if frac == 0.0 {
+                    a
+                } else {
+                    let b = layer_frame(&self.store, blocks, valid, &view, seam, (i + 1) % len);
+                    [a[0] + (b[0] - a[0]) * frac, a[1] + (b[1] - a[1]) * frac]
+                };
+            }
+            for (j, y) in buf[..n].iter().enumerate() {
+                self.store.set(k, slot, done + j, *y);
+            }
+            done += n;
+        }
+        self.loops[k].ad_done = done;
+    }
+
+    /// Call off the layer copying into loop `t`, if any: its memory goes
+    /// back, and the layer stays in its own loop.
+    fn call_off_copy(&mut self, t: usize) {
+        let l = &mut self.loops[t];
+        if !l.adding {
+            return;
+        }
+        l.adding = false;
+        let from = l.ad_from;
+        if self.loops[from].lend.is_some_and(|x| x.to as usize == t) {
+            self.loops[from].lend = None;
+        }
+        self.loops[t].reclaim(&mut self.store, t);
+    }
+
+    /// The loop whose step Undo (or Redo) takes back (or brings back)
+    /// with loop `s`'s: the two sides of a layer moved between them, each
+    /// the last step of its loop, with both loops playing and free.
+    fn tied(&self, s: usize, c: Command) -> Option<usize> {
+        let top = |l: &Loop| -> Option<Act> {
+            match c {
+                Command::Undo => l.done[..l.n_done].last().copied(),
+                _ => l.undone[..l.n_undone].last().copied(),
+            }
+        };
+        let ready = |l: &Loop| {
+            l.phase == Phase::Playing
+                && !l.od_open
+                && !l.busy()
+                && !l.must_wait(Queued::Loop(Command::Undo))
+        };
+        let a = top(&self.loops[s])?;
+        let link = a.link.filter(|k| k.tied)?;
+        let o = link.lp as usize;
+        let b = top(self.loops.get(o)?)?;
+        let back = b
+            .link
+            .filter(|k| k.tied && k.lp as usize == s && k.slot == a.slot);
+        (o != s
+            && back.is_some()
+            && b.slot == link.slot
+            && ready(&self.loops[s])
+            && ready(&self.loops[o]))
+        .then_some(o)
     }
 
     /// One input, one recording: loop `s` starts recording, so the others
@@ -2023,7 +2352,7 @@ impl Loop {
     fn brings_back(&self, a: &Act, slot: usize) -> bool {
         match a.kind {
             Kind::Edit => false,
-            Kind::Overdub | Kind::Delete => a.slot as usize == slot,
+            Kind::Overdub | Kind::Delete | Kind::Added => a.slot as usize == slot,
             Kind::Merge | Kind::Fit => {
                 let kept = &self.shapes[a.index as usize];
                 a.slot as usize == slot
@@ -2047,7 +2376,8 @@ impl Loop {
                 || (self.od_open && self.od_layer == k)
                 || (self.merging && self.mg_slot == k)
                 || (self.fitting && self.fit_slot == k)
-                || (self.loading && k < self.ld_layers);
+                || (self.loading && k < self.ld_layers)
+                || (self.adding && self.ad_slot == k);
             if !in_use && store.held[me][k] > 0 {
                 store.release(me, k);
             }
@@ -2059,6 +2389,10 @@ impl Loop {
             // Everything waits for a bounce (Clear stops it) and a load
             // (Clear calls it off).
             _ if self.bouncing || self.loading => true,
+            // A layer copying in: Undo calls it off; the rest waits, as it
+            // does while one of the loop's layers is copied out.
+            Queued::Loop(Command::Undo) if self.adding => false,
+            _ if self.adding || self.lend.is_some() => true,
             Queued::Loop(Command::Undo) => {
                 self.leaving() || self.clearing || self.xf > 0 || self.swapping
             }
@@ -2074,9 +2408,15 @@ impl Loop {
         }
     }
 
-    /// Merging, fitting or being bounced out: the layers must not change.
+    /// Merging, fitting, being bounced out or copying a layer in or out:
+    /// the layers must not change.
     fn busy(&self) -> bool {
-        self.merging || self.bouncing || self.fitting || self.swapping
+        self.merging
+            || self.bouncing
+            || self.fitting
+            || self.swapping
+            || self.adding
+            || self.lend.is_some()
     }
 
     /// A layer is fading out of the play order.
@@ -2211,6 +2551,7 @@ impl Loop {
                     index: at as u8,
                     edit: None,
                     ages: [1.0; MAX_LAYERS],
+                    link: None,
                 });
                 self.slots[slot].leaving = true;
             }
@@ -2373,6 +2714,7 @@ impl Loop {
             index: 0,
             edit: Some(e),
             ages: [1.0; MAX_LAYERS],
+            link: None,
         });
         self.crossfade_from(i);
     }
@@ -2600,6 +2942,7 @@ impl Loop {
             && !self.swapping
             && !self.clearing
             && !self.loading
+            && !self.adding
     }
 
     /// Copy a saved loop's layers in as far as the period ending before
@@ -2641,6 +2984,77 @@ impl Loop {
         self.touch();
     }
 
+    /// The layer copied in joins the loop, fading in, as a step Undo
+    /// takes back. Into an empty loop it is the loop: it plays from now on
+    /// (fading in), in time with the song.
+    fn finish_add(&mut self) {
+        self.adding = false;
+        if self.phase == Phase::Empty {
+            self.len = self.ad_frames;
+            self.len_ticks = self.ad_ticks;
+            self.origin = self.ad_origin;
+            self.in_order = 0;
+            self.seam = FADE;
+            self.n_done = 0;
+            self.n_undone = 0;
+            self.gain = 0.0;
+            self.pos = 0.0;
+            self.jump = 0;
+            self.xf = 0;
+            self.phase = Phase::Playing;
+        }
+        let k = self.ad_slot;
+        self.views[k] = View::whole(self.len);
+        self.order[self.in_order] = k as u8;
+        self.push_done(Act {
+            kind: Kind::Added,
+            slot: k as u8,
+            index: self.in_order as u8,
+            edit: None,
+            ages: [1.0; MAX_LAYERS],
+            link: Some(Link {
+                lp: self.ad_from as u8,
+                slot: self.ad_src as u8,
+                tied: self.ad_move,
+            }),
+        });
+        self.in_order += 1;
+        self.mixing = true;
+        self.touch();
+    }
+
+    /// The copy of one of the loop's layers has joined the other loop: a
+    /// move takes the layer out of this one, as a delete Undo takes back
+    /// (with the other loop's step while each is its loop's last).
+    fn end_lend(&mut self) {
+        let Some(l) = self.lend.take() else {
+            return;
+        };
+        let at = self.order[..self.in_order]
+            .iter()
+            .position(|&k| k == l.slot)
+            .filter(|_| !self.slots[l.slot as usize].leaving);
+        let Some(at) = at.filter(|_| l.drop && self.layers() > 1) else {
+            return;
+        };
+        self.n_undone = 0;
+        self.push_done(Act {
+            kind: Kind::Delete,
+            slot: l.slot,
+            index: at as u8,
+            edit: None,
+            ages: [1.0; MAX_LAYERS],
+            link: Some(Link {
+                lp: l.to,
+                slot: l.to_slot,
+                tied: true,
+            }),
+        });
+        self.slots[l.slot as usize].leaving = true;
+        self.mixing = true;
+        self.touch();
+    }
+
     fn cancel_fit(&mut self, stats: &mut Stats) {
         self.fitting = false;
         self.fit_overdub = false;
@@ -2675,6 +3089,7 @@ impl Loop {
             index: i as u8,
             edit: None,
             ages: [1.0; MAX_LAYERS],
+            link: None,
         });
         if std::mem::take(&mut self.fit_overdub) {
             self.open_overdub(store, stats, me, FADE);
@@ -2837,6 +3252,7 @@ impl Loop {
             index: i as u8,
             edit: None,
             ages: [1.0; MAX_LAYERS],
+            link: None,
         });
     }
 
@@ -2874,6 +3290,7 @@ impl Loop {
             index: n as u8,
             edit: None,
             ages: [1.0; MAX_LAYERS],
+            link: None,
         });
     }
 
@@ -2888,6 +3305,12 @@ impl Loop {
         match a.kind {
             Kind::Delete => self.restore(a),
             Kind::Overdub => self.slots[a.slot as usize].leaving = true,
+            // The last layer: it made the loop, which goes with it.
+            Kind::Added if self.layers() <= 1 => {
+                self.od_open = false;
+                self.clearing = true;
+            }
+            Kind::Added => self.slots[a.slot as usize].leaving = true,
             Kind::Edit => self.swap_shape(a.slot as usize),
             Kind::Merge => self.unmerge(a),
             Kind::Fit => self.start_swap(a.index as usize),
@@ -2902,7 +3325,7 @@ impl Loop {
         self.push_done(a);
         match a.kind {
             Kind::Delete => self.slots[a.slot as usize].leaving = true,
-            Kind::Overdub => self.restore(a),
+            Kind::Overdub | Kind::Added => self.restore(a),
             Kind::Edit => self.swap_shape(a.slot as usize),
             Kind::Merge => self.remerge(a),
             Kind::Fit => self.start_swap(a.index as usize),
@@ -3015,6 +3438,8 @@ impl Loop {
         self.bouncing = false;
         self.resample = false;
         self.loading = false;
+        self.adding = false;
+        self.lend = None;
     }
 
     fn abort(&mut self, stats: &mut Stats) {
@@ -3227,6 +3652,7 @@ impl Loop {
             index: self.in_order as u8,
             edit: None,
             ages,
+            link: None,
         });
 
         self.in_order += 1;
@@ -3360,23 +3786,45 @@ impl Loop {
         waiting: bool,
         ys: &mut [[f32; 2]],
     ) {
+        // A layer copying in or out between loops: only then are its
+        // frames looked for, so an overdub, which goes a frame at a time,
+        // doesn't pay for them.
+        let copying = self.adding || self.lend.is_some();
         let mut j = 0;
         while j < ys.len() {
             if self.phase == Phase::Empty {
-                // A load starts playing on its frame (whatever the period
-                // size), once all of it is in.
-                let at = self.ld_at.saturating_sub(r.f) as usize;
-                if !self.loading || at >= ys.len() || self.ld_done < self.ld_layers * self.ld_frames
-                {
+                // A load, or a layer copied in, starts playing on its frame
+                // (whatever the period size), once all of it is in.
+                let (at, ready) = if self.loading {
+                    (self.ld_at, self.ld_done == self.ld_layers * self.ld_frames)
+                } else if self.adding {
+                    (self.ad_at, self.ad_done == self.ad_frames)
+                } else {
+                    return;
+                };
+                let at = at.saturating_sub(r.f) as usize;
+                if !ready || at >= ys.len() {
                     return;
                 }
                 j = j.max(at);
-                self.finish_load();
+                if self.loading {
+                    self.finish_load();
+                } else {
+                    self.finish_add();
+                }
                 continue;
             }
             let f = r.f + j as u64;
             if self.merging && f >= self.mg_at {
                 self.finish_merge(store, me);
+            }
+            if copying {
+                if self.adding && f >= self.ad_at && self.ad_done == self.ad_frames {
+                    self.finish_add();
+                }
+                if self.lend.is_some_and(|l| f >= l.at) {
+                    self.end_lend();
+                }
             }
             let live = print.is_some_and(|p| self.print_live(p, waiting));
             if self.fitting && f >= self.fit_at && self.jump == 0 && self.xf == 0 {
@@ -3392,6 +3840,14 @@ impl Loop {
                 }
                 if self.fitting {
                     end = end.min(self.fit_at.saturating_sub(r.f) as usize).max(j + 1);
+                }
+                if copying {
+                    if self.adding {
+                        end = end.min(self.ad_at.saturating_sub(r.f) as usize).max(j + 1);
+                    }
+                    if let Some(l) = self.lend {
+                        end = end.min(l.at.saturating_sub(r.f) as usize).max(j + 1);
+                    }
                 }
                 self.still_run(store, me, print, &r.ticks[j..end], &mut ys[j..end]);
                 j = end;

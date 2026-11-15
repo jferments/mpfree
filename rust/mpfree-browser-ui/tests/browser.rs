@@ -4,8 +4,8 @@
 use mpfree_browser_ui::sample::{fill, samples, FACTORY};
 use mpfree_browser_ui::state::{when, Key, Modal, SOURCES};
 use mpfree_browser_ui::{
-    step, BrowseAction, Browser, BrowserView, Button, ExportChoice, ExportInput, ExportPhase,
-    ExportRange, ExportSetup, Filter, Input, Pick, Sort, BROWSER,
+    step, BrowseAction, Browser, BrowserView, Button, ExportBits, ExportChoice, ExportFormat,
+    ExportInput, ExportPhase, ExportRange, ExportSetup, Filter, Input, Pick, Sort, BROWSER,
 };
 use mpfree_library::{Library, Loc, Meta, Place, Snapshot};
 use mpfree_ui::{Fonts, SoftCanvas, Touch};
@@ -817,6 +817,10 @@ fn export_setup(arrangement: bool) -> ExportSetup {
         mode: "Fast, quiet".into(),
         stems: 5,
         folder: "Recordings / Night drive 2026-11-14 01.32".into(),
+        format: ExportFormat {
+            bits: ExportBits::I24,
+            rate: 44_100,
+        },
     }
 }
 
@@ -843,15 +847,21 @@ fn export_asks_the_app_and_its_panel_takes_the_screen() {
         ExportRange::Bars(10),
         "the wheel sets the bars"
     );
-    // Ticks, then Start (the push).
+    // Ticks and a format, then Start (the push).
     b.input(Input::Export(ExportInput::Midi));
     b.input(Input::Export(ExportInput::Fewer));
+    b.input(Input::Export(ExportInput::Bits16));
+    b.input(Input::Export(ExportInput::Rate48));
     b.push();
     let want = ExportChoice {
         mixdown: true,
         stems: true,
         midi: false,
         range: ExportRange::Bars(9),
+        format: ExportFormat {
+            bits: ExportBits::I16,
+            rate: 48_000,
+        },
     };
     assert_eq!(b.take_actions(), [BrowseAction::ExportStart(want)]);
     assert!(b.exporting());
@@ -885,9 +895,14 @@ fn export_asks_the_app_and_its_panel_takes_the_screen() {
     ));
     b.push();
     assert!(b.screen().export.is_none(), "the push closes it");
-    // Next time, the last choice is ticked again.
+    // Next time, the last choice is ticked again, in Prefs' format (the
+    // panel's format was for that export).
     b.open_export(export_setup(true));
-    assert_eq!(b.screen().export.unwrap().choice(), want);
+    let again = ExportChoice {
+        format: export_setup(true).format,
+        ..want
+    };
+    assert_eq!(b.screen().export.unwrap().choice(), again);
     b.input(Input::Export(ExportInput::Arrangement));
     b.input(Input::Export(ExportInput::Start));
     b.take_actions();
@@ -933,6 +948,11 @@ fn the_export_panel_answers_taps() {
             "export/Bars",
             "export/-",
             "export/+",
+            "export/24-bit",
+            "export/16-bit",
+            "export/32-bit float",
+            "export/44.1 kHz",
+            "export/48 kHz",
             "export/Close",
             "export/Start"
         ]
@@ -944,7 +964,7 @@ fn the_export_panel_answers_taps() {
     // The card is centred in the browser: Make's buttons are its first
     // row, Start is at the bottom right.
     let r = ui.rect_of(BROWSER).unwrap();
-    let (w, h) = (780.min(r.w - 40), 480.min(r.h - 24));
+    let (w, h) = (780.min(r.w - 40), 550.min(r.h - 24));
     let card = (r.x + (r.w - w) / 2, r.y + (r.h - h) / 2);
     let (stems_x, make_y) = (
         card.0 + 24 + 120 + (w - 48 - 120) / 2,

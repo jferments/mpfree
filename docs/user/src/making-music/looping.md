@@ -79,6 +79,23 @@ Tap a lane to pick that layer for the Q-Links:
 | 3 | **Fade old**: turns older layers down a little each time the loop goes round, from 50 % to 100 % kept per pass, so a loop can evolve as you keep overdubbing. A faded layer says how far it has gone ("faded to 77 %"). |
 | 4 | The seam fade (see below) |
 
+### Moving a layer to another loop
+
+Drag a layer out of the editor to give it to another loop. Put your finger on the layer's lane and move it: a card with the layer's name follows your finger, the layer's own lane is outlined, and the loops in the list that can take it light up, with **+ New loop**. The line at the bottom says what will happen if you let go there.
+
+- **Onto a loop:** the layer moves there. It keeps its level, pan and mute, and it plays in time with that loop's bars.
+- **Hold SHIFT as you let go** to copy it instead: the layer stays in this loop too.
+- **Onto + New loop:** the layer becomes a loop of its own, the same length as the loop it came from.
+- **Let go where you started** (or anywhere that isn't lit) and nothing changes.
+
+The layer comes in a moment later (about a sixteenth of a second for a 2-bar loop at 120 BPM), fading in where the loop has got to, and fades out of its own loop at the same moment, so you hear no gap and no doubling. Afterwards the loop that took it is picked, so the editor shows it there.
+
+**UNDO** takes a move back in both loops at once, from either loop, as long as it was the last thing you did in each. Undoing a layer that made a loop of its own empties that loop again.
+
+A layer only goes onto a loop of the same length in bars. A loop of another length isn't lit, and dropping on it tells you why ("Loop 2 is 2 bars and this layer 1 bar"). A loop that is recording or busy (merging, for instance) says so too, and so does a loop that already has as many layers as it can hold. A loop's last layer can't leave it, so dragging it copies it.
+
+With the **data wheel**: pick a layer, push the wheel to pick it up, turn it to point at a loop, and push again to drop it there (hold SHIFT for a copy). Change page and it is put back.
+
 ### Recording and input
 
 The panel at the bottom left holds how the looper records. The Play page's looper uses the same settings. Tap the right half of a row to step it up and the left half to step it down.
@@ -136,8 +153,8 @@ Recording MPFree's own pads needs nothing made up: they are already in time. For
 
 ## Coming next
 
-- **To a pad**: send a loop to a pad as a sample on the Sample tab.
-- **To a clip**: send it to the Arrange tab as an audio clip.
+- **To a pad**: send a loop to a pad as a sample on the Sample tab. You will also be able to drag a single layer onto it.
+- **To a clip**: send it to the Arrange tab as an audio clip, or drag a single layer onto it.
 - **Save loop**: keep it on the stick with its layers. Your loops are also saved with your project, every layer with its mix (see [Saving your work](saving.md)).
 
 > [!MPC]
