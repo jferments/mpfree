@@ -5,8 +5,9 @@ R=''
 #
 # On Akai's system, after a power-on: is MPFree's boot hook (hook-install.sh) installed, did it run at
 # this power-on and what did it decide (the stick was not in; or it stopped, and why), from its lines in
-# the kernel log and /run, and this boot's timeline from the journal. After a jump that worked, MPFree is
-# running instead, so this report is for the power-ons that ended in Akai's system. It only reads.
+# the kernel log and /run, and this boot's timeline from the journal. After a soft-reboot that worked, MPFree
+# is running instead, so this report is for the power-ons that ended in Akai's system (a soft-reboot keeps
+# the kernel and /run, so its lines stay readable if Akai's system came back). It only reads.
 set -u
 section() { printf '\n=== %s ===\n' "$1"; }
 printf 'MPFREE BOOT HOOK REPORT - READ ONLY\n'
@@ -18,7 +19,12 @@ section 'This boot'
 printf 'release: %s\n' "$(cat "$R/proc/sys/kernel/osrelease" 2>/dev/null)"
 printf 'uptime (s): %s\n' "$(cut -d' ' -f1 "$R/proc/uptime" 2>/dev/null)"
 printf 'acvs.service (Akai app): %s\n' "$(systemctl is-active acvs.service 2>/dev/null)"
-printf 'kexec kernel loaded now: %s\n' "$(cat "$R/sys/kernel/kexec_loaded" 2>/dev/null)"
+if [ -e "$R/run/nextroot" ]; then
+  printf '/run/nextroot: %s\n' "$(ls -A "$R/run/nextroot" 2>/dev/null | head -n 5 | tr '\n' ' ')"
+else
+  printf '/run/nextroot: none (nothing staged for a soft-reboot)\n'
+fi
+[ -e "$R/run/mpfree-hook/soft-reboot" ] && printf 'the hook asked for a soft-reboot at %s s\n' "$(cat "$R/run/mpfree-hook/soft-reboot")"
 if [ -e "$R/dev/disk/by-partlabel/mpfree-test-root" ]; then
   printf "MPFree's stick in now: yes (%s)\n" "$(readlink -f "$R/dev/disk/by-partlabel/mpfree-test-root" | sed "s|^$R||")"
 else
@@ -65,12 +71,12 @@ dmesg 2>/dev/null | grep 'mpfree-hook' || printf '(none)\n'
 
 section 'Timeline of this boot from the journal (seconds since power-on)'
 journalctl -b --no-pager -o short-monotonic 2>/dev/null |
-  grep -E 'mpfree-hook|mpfree-jump|MPFree|Mounted .*/data|Writable /etc|Attached SCSI|cfg80211|Connection service|MPC Application|touch-fw|xmos|usbsata|kexec|edisksd.*( 8:[0-9]+ at |add device)' |
+  grep -E 'mpfree-hook|mpfree-jump|MPFree|Mounted .*/data|Writable /etc|Attached SCSI|cfg80211|Connection service|MPC Application|touch-fw|xmos|usbsata|soft-reboot|Reboot System Userspace|nextroot|LoadPin|edisksd.*( 8:[0-9]+ at |add device)' |
   head -n 120
 
 section 'The boot before this one, if the journal keeps it (seconds since that power-on)'
 prev=$(journalctl -b -1 --no-pager -o short-monotonic 2>/dev/null |
-  grep -E 'mpfree-hook|mpfree-jump|MPFree|kexec|Connection service|MPC Application' | head -n 60)
+  grep -E 'mpfree-hook|mpfree-jump|MPFree|soft-reboot|Reboot System Userspace|Connection service|MPC Application' | head -n 60)
 if [ -n "$prev" ]; then printf '%s\n' "$prev"; else printf '(none: the journal keeps no earlier boot here, or nothing in it matched)\n'; fi
 
 section 'Rule and modprobe folders'

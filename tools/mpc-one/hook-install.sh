@@ -1,33 +1,36 @@
 R=''
-# MPFree boot hook: INSTALL. STATE-CHANGING on the MPC's data partition only, then a check that changes
-# only RAM. Streamed over SSH stdin by `collect-over-ssh.sh --hook-install` (developer mode, port 22, an
+# MPFree boot hook: INSTALL. STATE-CHANGING on the MPC's data partition only, then a read-only check of the
+# stick. Streamed over SSH stdin by `collect-over-ssh.sh --hook-install` (developer mode, port 22, an
 # installed Akai 3.10.1 or later). The R='' line above is an empty root prefix; only tests change it.
 #
 # What the hook does, from the next power-on: with MPFree's stick in (a USB disk partition named
 # mpfree-test-root, written by write-test-stick.py from a build of offline-kexec-stick.py), the MPC starts
 # MPFree from the stick before Akai's app starts. When the Wi-Fi module cfg80211 loads, about 6 s after
 # power-on, a modprobe line runs the hook; it starts a short service that Akai's app and its firmware
-# updaters wait for. The service mounts the stick's partition 1 read-only, copies its /boot/mpfree-kexec
-# files (kernel, device tree, command line) to /run, checks them against their SHA256SUMS and the stick,
-# loads them with kexec and has systemd restart into them. A udev rule is the backup trigger. Without the
-# stick, or on any problem, it does nothing and Akai's system starts as usual. This was tried first with a
-# harmless canary (hook-canary-install.sh): the modprobe line ran at 5.96 s, its service at 6.09 s, and
-# Akai's app started at 6.36 s.
+# updaters wait for. The service mounts the stick's partition 1 read-only at /run/nextroot, checks that it
+# is a system for the running kernel that switches the MPC's eMMC and SD card off before anything can
+# touch them, and asks systemd for a soft-reboot: systemd stops Akai's programs, unmounts /data and starts
+# the stick's system on the kernel that is already running. No kernel is loaded, so LoadPin (which refuses
+# kexec on 3.10.1) has nothing to refuse. A udev rule is the backup trigger. Without the stick, or on any
+# problem, it does nothing and Akai's system starts as usual. The trigger was tried first with a harmless
+# canary (hook-canary-install.sh): the modprobe line ran at 5.96 s, its service at 6.09 s, and Akai's app
+# started at 6.36 s.
 #
 # It writes exactly three files, and the folders they need:
 #   /data/mpfree-hook/hook.sh            (and /data/mpfree-hook/created-folders.txt, for the undo)
 #   /data/system/etc/overlay/udev/rules.d/99-mpfree-hook.rules
 #   /data/system/etc/overlay/modprobe.d/99-mpfree-hook.conf
 # and deletes the canary's three files, if they are there (only files carrying the canary's marker line).
-# It never writes the root filesystem, the boot partitions, the U-Boot environment or anything else in
-# /etc. A rule udev cannot parse is skipped with a log message, and a modprobe line it cannot parse is
-# skipped with a warning; neither can stop the MPC from booting. If hook.sh were missing, the modprobe line
-# still loads cfg80211 (its parts are separated by ";").
+# An earlier hook (the kexec version) in the same places is replaced. It never writes the root filesystem,
+# the boot partitions, the U-Boot environment or anything else in /etc. A rule udev cannot parse is skipped
+# with a log message, and a modprobe line it cannot parse is skipped with a warning; neither can stop the
+# MPC from booting. If hook.sh were missing, the modprobe line still loads cfg80211 (its parts are
+# separated by ";").
 #
-# Then, with the stick in the MPC now, it runs the hook's own check (`hook.sh check`): the same steps as at
-# power-on, with the kernel loaded into memory and unloaded again (kexec --load, kexec --unload) instead
-# of the restart. That changes only RAM; the stick's partition is mounted read-only, or read where Akai's
-# system has already mounted it.
+# Then, with the stick in the MPC now, it runs the hook's own check (`hook.sh check`): the same checks on
+# the stick as at power-on, without the soft-reboot. It changes nothing: the stick's partition is mounted
+# read-only in /run and unmounted again, or read where Akai's system has already mounted it, and modules the
+# stick names are only looked up (modprobe --dry-run).
 # Undo: `collect-over-ssh.sh --hook-remove`, which deletes the three files and the folders this made (by
 # hand: rm /data/system/etc/overlay/udev/rules.d/99-mpfree-hook.rules
 # /data/system/etc/overlay/modprobe.d/99-mpfree-hook.conf; rm -r /data/mpfree-hook). Without the stick
@@ -53,7 +56,7 @@ CANARY_MARK='# MPFree boot-hook canary (test only), written by tools/mpc-one/hoo
 CANARY="$MODS/99-mpfree-canary.conf $MODS/.99-mpfree-canary.conf.new $RULES/99-mpfree-canary.rules \
 $RULES/.99-mpfree-canary.rules.new $HOOK/canary.sh $HOOK/.canary.sh.new"
 
-say "MPFREE BOOT HOOK - INSTALL (changes the data partition only: three small files; then a check, RAM only)"
+say "MPFREE BOOT HOOK - INSTALL (changes the data partition only: three small files; then a read-only check of the stick)"
 rel=$(cat "$R/proc/sys/kernel/osrelease" 2>/dev/null)
 say "running release: $rel"
 case "$rel" in
@@ -65,8 +68,10 @@ grep -q " /etc overlay .*upperdir=/data/system/etc/overlay," "$R/proc/mounts" ||
 grep -q ' /data ext4 rw' "$R/proc/mounts" || stop "/data is not mounted read-write"
 [ -d "$UPPER" ] || stop "$UPPER is missing"
 [ -w "$R/data" ] || stop "cannot write /data (not root?)"
-[ -x "$R/usr/sbin/kexec" ] || stop "no /usr/sbin/kexec on this system"
-[ "$(cat "$R/proc/sys/kernel/kexec_load_disabled" 2>/dev/null)" = 0 ] || stop "kexec is turned off on this system"
+# soft-reboot came with systemd 254; 3.10.1 has 255. Its two units are what `systemctl soft-reboot` starts.
+for u in soft-reboot.target systemd-soft-reboot.service; do
+  [ -f "$R/usr/lib/systemd/system/$u" ] || stop "this system's systemd has no $u (soft-reboot needs systemd 254 or later)"
+done
 # The modprobe line needs kmod's modprobe (BusyBox's ignores "install" lines and has no --ignore-install).
 # It names the kernel's own module loader by its full path, so that a shell that prefers its BusyBox
 # applets still runs kmod's.
@@ -85,20 +90,26 @@ SCRIPT_TEXT=$(cat <<'MPFREE_EOF'
 R=''
 # MPFree boot hook, written by tools/mpc-one/hook-install.sh.
 # With MPFree's stick in at power-on (a USB disk partition named mpfree-test-root), it starts MPFree from
-# the stick before Akai's app starts: it loads the stick's kernel and device tree with kexec, and systemd
-# restarts into them. Without that stick it does nothing. It is run:
+# the stick before Akai's app starts: it mounts the stick's system read-only at /run/nextroot and asks
+# systemd for a soft-reboot, which stops Akai's programs and starts the stick's system on the kernel that
+# is already running. No kernel is loaded. Without that stick it does nothing. It is run:
 #   modprobe  by the module loader, when the Wi-Fi module cfg80211 loads (about 6 s after power-on);
 #   udev      by udev, for a device event (the backup, if cfg80211 does not load);
 #   jump      by systemd, as the service the first of those started (Akai's app and its firmware
 #             updaters wait for it to finish);
-#   check     by hook-install.sh: the same checks, and the kernel loaded and unloaded, without restarting.
-# It writes only to /run (RAM) and the kernel log, mounts the stick's partition 1 read-only for a moment,
-# and loads a kernel into memory. On any problem it stops, cleans up and leaves Akai's system to start as
-# usual. Undo: collect-over-ssh.sh --hook-remove, or take the stick out.
+#   check     by hook-install.sh: the same checks on the stick, without the soft-reboot.
+# It writes only to /run (RAM) and the kernel log, mounts the stick's partition 1 read-only, and may load
+# kernel modules the stick names, from Akai's own system. On any problem it stops, cleans up and leaves
+# Akai's system to start as usual. Undo: collect-over-ssh.sh --hook-remove, or take the stick out.
 [ -n "$R" ] || PATH=/usr/sbin:/usr/bin:/sbin:/bin   # udev and modprobe give no useful PATH (tests set R and theirs)
 export PATH
 LABEL=mpfree-test-root
-KDIR=boot/mpfree-kexec
+SDIR=boot/mpfree-softreboot
+PROTOCOL=mpfree-softreboot-1
+# What the stick's system must carry: the service that switches the MPC's eMMC and SD card off before
+# anything can touch them (offline-kexec-stick.py writes these and lists them in its SHA256SUMS).
+NEED='/etc/mpfree-test/internal-off.sh /etc/systemd/system/mpfree-test-internal-off.service /etc/udev/rules.d/00-mpfree-internal-off.rules'
+WANTS=etc/systemd/system/sysinit.target.wants/mpfree-test-internal-off.service
 HOLD='acvs.service touch-fw-update.service xmos-update.service az01-usbsata-fixer.service'
 UPDATERS='touch-fw-update.service xmos-update.service az01-usbsata-fixer.service'
 FLASHERS='dfu-util touch-fw-upd xmosdfu midifirmup az01-update az01-usbsata-fixer'
@@ -137,21 +148,17 @@ trigger() {   # no call to systemd here but the service start: systemd may itsel
 
 # --- jump, check ------------------------------------------------------------------------------------------
 say() { if [ "$kind" = check ]; then echo "$1"; else kmsg "$1"; fi; }
-W=''; K=''; mnt=''; ours=''; loaded=''
+M=''; ours=''; W=''
 cleanup() {
-  if [ "$loaded" = yes ] && [ "$(cat "$R/sys/kernel/kexec_loaded" 2>/dev/null)" != 0 ]; then
-    "$R/usr/sbin/kexec" --unload --kexec-syscall && say "kernel unloaded (kexec --unload)"
+  if [ "$ours" = yes ]; then
+    umount "$M" 2>/dev/null || say "could not unmount the stick's partition 1 from ${M#$R}"
   fi
-  loaded=''
-  if [ "$ours" = yes ]; then umount "$mnt" 2>/dev/null || say "could not unmount the stick's partition 1"; fi
   ours=''
-  [ -n "$K" ] && rm -f "$K/zImage" "$K/kexec.dtb" "$K/cmdline.txt" "$K/SHA256SUMS" && rmdir "$K" 2>/dev/null
-  [ -n "$W" ] && rmdir "$W/stick" 2>/dev/null
-  [ "$kind" = check ] && [ -n "$W" ] && rmdir "$W" 2>/dev/null
+  [ "$kind" = jump ] && rmdir "$R/run/nextroot" 2>/dev/null
+  [ -n "$W" ] && { rmdir "$W/stick" 2>/dev/null; rmdir "$W" 2>/dev/null; }
   return 0
 }
 fail() { say "STOP: $1"; cleanup; say "nothing was started: Akai's system starts as usual"; exit 1; }
-size() { wc -c < "$1" 2>/dev/null | tr -cd 0-9; }
 busy() {   # prints what may be writing firmware right now
   for u in $UPDATERS; do
     case "$(systemctl is-active "$u" 2>/dev/null)" in activating|deactivating|reloading) echo "$u"; return 0 ;; esac
@@ -160,94 +167,104 @@ busy() {   # prints what may be writing firmware right now
   grep -qs 'SME0/Firmware/update.sh' "$R"/proc/[0-9]*/cmdline && { echo "Akai's controller update.sh"; return 0; }
   return 1
 }
+mounted_at() {   # $1 = mount point (with $R): is something mounted there?
+  while read -r d m rest; do [ "$R$m" = "$1" ] && return 0; done < "$R/proc/mounts"
+  return 1
+}
+regular() { [ -f "$1" ] && [ ! -L "$1" ]; }
+helper=''
+modules() {   # $1 = load or try: the stick's preload list, from Akai's own system (the stick's are refused)
+  list="$M/$SDIR/preload-modules.txt"
+  [ -e "$list" ] || { say "modules to load first: none listed"; return 0; }
+  regular "$list" || fail "/$SDIR/preload-modules.txt is not a plain file"
+  [ "$(wc -l < "$list" | tr -cd 0-9)" -le 64 ] || fail "/$SDIR/preload-modules.txt has more than 64 lines"
+  names=''
+  while read -r m rest; do
+    [ -z "$m$rest" ] && continue
+    [ -z "$rest" ] || fail "/$SDIR/preload-modules.txt has a line with more than one word"
+    case "$m" in *[!A-Za-z0-9_-]*) fail "/$SDIR/preload-modules.txt names an unusual module" ;; esac
+    names="$names $m"
+  done < "$list"
+  [ -n "$names" ] || { say "modules to load first: none listed"; return 0; }
+  helper=$(cat "$R/proc/sys/kernel/modprobe" 2>/dev/null)
+  case "$helper" in /*) ;; *) fail "the kernel's module loader is not set" ;; esac
+  for m in $names; do
+    if [ "$1" = try ]; then
+      "$R$helper" --dry-run --quiet "$m" > /dev/null 2>&1 || fail "Akai's system has no module $m (the stick needs it)"
+    else
+      "$R$helper" --quiet "$m" > /dev/null 2>&1 || fail "could not load the module $m from Akai's system"
+    fi
+  done
+  if [ "$1" = try ]; then say "modules to load first, all found in Akai's system:$names"
+  else say "modules loaded from Akai's system:$names"; fi
+}
 
-prepare() {   # $1 = work folder in /run. Finds the stick, copies and checks its kexec files.
-  W=$1; K="$W/kexec"
+prepare() {   # Finds the stick, mounts its partition 1 read-only and checks it is a system to start.
   dev=$(readlink -f "$R/dev/disk/by-partlabel/$LABEL" 2>/dev/null)
   [ -n "$dev" ] && [ -e "$dev" ] || fail "MPFree's stick is not in (no partition named $LABEL)"
   name=${dev##*/}
   case "$name" in sd[a-z]1) ;; *) fail "the partition named $LABEL is $name, not partition 1 of a USB disk" ;; esac
   case "$(readlink -f "$R/sys/class/block/$name")" in */usb*) ;; *) fail "/dev/$name is not on USB" ;; esac
-  uuid=''
-  for l in "$R"/dev/disk/by-partuuid/*; do
-    [ "$(readlink -f "$l")" = "$dev" ] && uuid=${l##*/}
-  done
-  case "$uuid" in
-    [0-9a-f]*-*-*-*-*) ;;
-    *) fail "/dev/$name has no partition UUID link" ;;
-  esac
   say "stick: /dev/$name (partition 1 of a USB disk), at $up s"
-  mkdir -p "$W" && mkdir -p "$K" || fail "could not make $K"
-  avail=$(df -k "$R/run" 2>/dev/null | tail -n 1 | while read -r a b c d rest; do echo "$d"; done)
-  [ "${avail:-0}" -ge 65536 ] 2>/dev/null || fail "less than 64 MiB free in /run"
-  mnt=''
+  where=''
   while read -r d m rest; do
-    [ "$d" = "/dev/$name" ] && [ -z "$mnt" ] && mnt=$m
+    [ "$d" = "/dev/$name" ] && [ -z "$where" ] && where=$m
   done < "$R/proc/mounts"
-  if [ -n "$mnt" ]; then
-    case "$mnt" in *[!A-Za-z0-9/._-]*) fail "/dev/$name is mounted at an unusual path" ;; esac
-    mnt="$R$mnt"
-    say "partition 1 is mounted already at ${mnt#$R}; read from there"
+  if [ "$kind" = jump ]; then
+    # The stick's system is mounted at /run/nextroot for the soft-reboot: read-only, no journal replay (so
+    # nothing is written to the stick), with its programs allowed to run.
+    [ -z "$where" ] || fail "/dev/$name is mounted already (at $where); not this boot"
+    M="$R/run/nextroot"
+    if [ -e "$M" ]; then
+      mounted_at "$M" && fail "something is mounted at /run/nextroot already"
+      [ -d "$M" ] && [ ! -L "$M" ] && [ -z "$(ls -A "$M")" ] || fail "/run/nextroot exists and is not an empty folder"
+    fi
+    mkdir -p "$M" || fail "could not make /run/nextroot"
+    mount -t ext4 -o ro,noload "$dev" "$M" || fail "could not mount /dev/$name read-only"
+    ours=yes
+  elif [ -n "$where" ]; then
+    case "$where" in *[!A-Za-z0-9/._-]*) fail "/dev/$name is mounted at an unusual path" ;; esac
+    M="$R$where"
+    say "partition 1 is mounted already at $where; read from there"
   else
-    mkdir -p "$W/stick" || fail "could not make $W/stick"
-    mnt="$W/stick"
-    mount -t ext4 -o ro,noload,nodev,nosuid,noexec "$dev" "$mnt" || fail "could not mount /dev/$name read-only"
+    W="$R/run/mpfree-hook-check"
+    M="$W/stick"
+    mkdir -p "$M" || fail "could not make ${M#$R}"
+    mount -t ext4 -o ro,noload,nodev,nosuid,noexec "$dev" "$M" || fail "could not mount /dev/$name read-only"
     ours=yes
   fi
-  B="$mnt/$KDIR"
-  [ -f "$B/SHA256SUMS" ] || fail "the stick has no /$KDIR (it was made before offline-kexec-stick.py added it)"
-  link=$(readlink "$B/zImage")
-  rel=${link#../zImage-}
-  case "$link" in ../zImage-*) ;; *) fail "/$KDIR/zImage is not a link to ../zImage-<release>" ;; esac
-  case "$rel" in ''|*[!A-Za-z0-9._+-]*) fail "/$KDIR/zImage links to an unusual name" ;; esac
-  [ -f "$mnt/boot/zImage-$rel" ] && [ ! -L "$mnt/boot/zImage-$rel" ] || fail "the stick has no /boot/zImage-$rel"
-  # The kernel is read from the link's target, never through the link: Akai's system mounts USB disks with
-  # nosymfollow, where following a link fails ("Too many levels of symbolic links").
-  for n in zImage:33554432 kexec.dtb:1048576 cmdline.txt:1024 SHA256SUMS:1024; do
-    f=${n%%:*}; max=${n#*:}
-    src="$B/$f"; shown="/$KDIR/$f"
-    [ "$f" = zImage ] && { src="$mnt/boot/zImage-$rel"; shown="/boot/zImage-$rel"; }
-    [ -f "$src" ] && [ ! -L "$src" ] || fail "the stick has no $shown"
-    bytes=$(size "$src")
-    [ -n "$bytes" ] && [ "$bytes" -gt 0 ] && [ "$bytes" -le "$max" ] || fail "$shown has an unusual size (${bytes:-?} bytes)"
-    cp "$src" "$K/$f" || fail "could not copy $shown"
+  B="$M/$SDIR"
+  regular "$B/PROTOCOL" || fail "the stick has no /$SDIR (it was made before offline-kexec-stick.py added it)"
+  [ "$(cat "$B/PROTOCOL")" = "$PROTOCOL" ] || fail "/$SDIR/PROTOCOL is not $PROTOCOL (stick and hook from different versions)"
+  rel=$(cat "$R/proc/sys/kernel/osrelease" 2>/dev/null)
+  regular "$B/release" && [ "$(cat "$B/release")" = "$rel" ] ||
+    fail "the stick's system is not for the running kernel $rel (rebuild it for this firmware)"
+  regular "$B/SHA256SUMS" || fail "the stick has no /$SDIR/SHA256SUMS"
+  [ "$(wc -l < "$B/SHA256SUMS" | tr -cd 0-9)" -le 32 ] || fail "/$SDIR/SHA256SUMS is unusually long"
+  listed=' '
+  while read -r sum file rest; do
+    [ -z "$rest" ] || fail "/$SDIR/SHA256SUMS has an unusual line"
+    case "$sum" in *[!0-9a-f]*|'') fail "/$SDIR/SHA256SUMS has an unusual line" ;; esac
+    case "$file" in /*) ;; *) fail "/$SDIR/SHA256SUMS names a file that is not a full path" ;; esac
+    case "$file" in *[!A-Za-z0-9/._-]*|*..*) fail "/$SDIR/SHA256SUMS names an unusual path" ;; esac
+    regular "$M$file" || fail "the stick has no $file (named in /$SDIR/SHA256SUMS)"
+    [ "$(sha256sum < "$M$file" | cut -d' ' -f1)" = "$sum" ] ||
+      fail "$file on the stick does not match its SHA256SUMS (damaged? write the stick again)"
+    listed="$listed$file "
+  done < "$B/SHA256SUMS"
+  for f in $NEED; do
+    case "$listed" in *" $f "*) ;; *) fail "the stick's system does not carry $f (it must switch the MPC's eMMC and SD card off)" ;; esac
   done
-  if [ "$ours" = yes ]; then
-    ours=''
-    umount "$mnt" || fail "could not unmount the stick's partition 1"
-  fi
-  for f in zImage kexec.dtb cmdline.txt; do
-    want=''; count=0
-    while read -r sum file rest; do
-      [ "$file" = "$f" ] && [ -z "$rest" ] && { want=$sum; count=$((count + 1)); }
-    done < "$K/SHA256SUMS"
-    [ "$count" = 1 ] || fail "SHA256SUMS on the stick has no single line for $f"
-    got=$(sha256sum < "$K/$f" | cut -d' ' -f1)
-    [ "$got" = "$want" ] || fail "$f on the stick does not match its SHA256SUMS (damaged? write the stick again)"
-  done
-  say "kexec files: kernel $rel, checked against SHA256SUMS"
-  [ "$(wc -l < "$K/cmdline.txt" | tr -cd 0-9)" = 1 ] || fail "cmdline.txt is not one line"
-  cmdline=$(cat "$K/cmdline.txt")
-  [ -z "$(printf '%s' "$cmdline" | tr -d 'A-Za-z0-9=._,:/ -')" ] || fail "cmdline.txt has unusual characters"
-  case " $cmdline " in
-    *" root=PARTUUID=$uuid "*) ;;
-    *) fail "cmdline.txt does not start the system on this stick's partition 1" ;;
-  esac
-  for a in ro rootwait=60 panic=10 sysctl.kernel.kexec_load_disabled=1; do
-    case " $cmdline " in *" $a "*) ;; *) fail "cmdline.txt lacks $a" ;; esac
-  done
-  say "command line: $(printf '%s' "$cmdline" | sed 's/PARTUUID=[^ ]*/PARTUUID=(this stick)/')"
-}
-
-load() {
-  [ -x "$R/usr/sbin/kexec" ] || fail "no /usr/sbin/kexec"
-  [ "$(cat "$R/proc/sys/kernel/kexec_load_disabled" 2>/dev/null)" = 0 ] || fail "kexec is turned off on this system"
-  [ "$(cat "$R/sys/kernel/kexec_loaded" 2>/dev/null)" = 0 ] || fail "a kexec kernel is already loaded"
-  loaded=yes
-  "$R/usr/sbin/kexec" --load --kexec-syscall --dtb="$K/kexec.dtb" --command-line="$cmdline" "$K/zImage" ||
-    fail "kexec --load refused the stick's kernel"
-  [ "$(cat "$R/sys/kernel/kexec_loaded" 2>/dev/null)" = 1 ] || fail "kexec_loaded is not 1 after kexec --load"
-  say "kernel loaded (kexec --load) at $(cut -d' ' -f1 "$R/proc/uptime") s"
+  [ "$(readlink "$M/$WANTS")" = /etc/systemd/system/mpfree-test-internal-off.service ] ||
+    fail "the stick's system does not start mpfree-test-internal-off.service first (/$WANTS)"
+  say "the stick's system switches the MPC's eMMC and SD card off first: its files check out against SHA256SUMS"
+  # Its mode bits, not [ -x ]: the check's mount is noexec, where [ -x ] is false even for root.
+  case "$(ls -ln "$M/usr/lib/systemd/systemd" 2>/dev/null)" in -??x*) ;; *) false ;; esac &&
+    regular "$M/usr/lib/systemd/systemd" || fail "the stick has no /usr/lib/systemd/systemd to start"
+  # systemd switches to /run/nextroot only if it holds an os-release file; otherwise it would restart
+  # Akai's own system instead.
+  regular "$M/usr/lib/os-release" || regular "$M/etc/os-release" || fail "the stick has no os-release file"
+  say "kernel $rel; the stick's system is for it"
 }
 
 case "$kind" in
@@ -255,25 +272,30 @@ case "$kind" in
   jump)
     [ -d "$R/run/mpfree-hook" ] || exit 0   # only as started by a trigger
     say "jump service started at $up s; Akai's app: $(systemctl is-active acvs.service 2>/dev/null)"
-    prepare "$R/run/mpfree-hook"
+    prepare
     n=0
     while what=$(busy); do
       [ "$n" -ge 20 ] && fail "$what is still running after 20 s; no restart while firmware may be written"
       [ "$n" = 0 ] && say "waiting for $what to finish"
       sleep 1; n=$((n + 1))
     done
-    load
+    modules load
     what=$(busy) && fail "$what started; no restart while firmware may be written"
-    say "restarting into MPFree (kexec.target) at $(cut -d' ' -f1 "$R/proc/uptime") s"
-    systemctl --no-block --job-mode=replace-irreversibly start kexec.target ||
-      fail "systemctl could not start kexec.target" ;;
+    echo "$up" > "$R/run/mpfree-hook/soft-reboot" 2>/dev/null   # tells the stick's system how it was started
+    say "soft-reboot into MPFree (soft-reboot.target) at $(cut -d' ' -f1 "$R/proc/uptime") s"
+    systemctl --no-block --job-mode=replace-irreversibly start soft-reboot.target || {
+      rm -f "$R/run/mpfree-hook/soft-reboot"
+      fail "systemctl could not start soft-reboot.target"
+    } ;;
   check)
-    prepare "$R/run/mpfree-hook-check"
+    prepare
+    modules try
     what=$(busy) && say "note: $what is running now (at power-on the jump waits for it)"
-    load
+    for w in $(cat "$R/proc/cmdline" 2>/dev/null); do
+      case "$w" in init=*|systemd.*) say "note: the kernel command line has $w, which the stick's system also reads" ;; esac
+    done
     cleanup
-    [ "$(cat "$R/sys/kernel/kexec_loaded" 2>/dev/null)" = 0 ] || { say "STOP: kexec_loaded is still not 0"; exit 1; }
-    say "CHECK-OK: at power-on with this stick in, the MPC would restart into it" ;;
+    say "CHECK-OK: at power-on with this stick in, the MPC would soft-reboot into it" ;;
   *) exit 0 ;;
 esac
 exit 0
@@ -354,7 +376,7 @@ sha256sum "$SCRIPT" "$RULE" "$CONF" | sed "s|$R/|/|"
 [ "$wrote" = yes ] && [ -n "$new" ] && { say "folders made (the undo removes them again):"; printf '%s' "$new" | sed 's/^/  /'; }
 
 say ""
-say "=== Check with MPFree's stick (RAM only: the kernel is loaded and unloaded again) ==="
+say "=== Check with MPFree's stick (read-only: mounted read-only, looked at, unmounted) ==="
 if [ ! -e "$R/dev/disk/by-partlabel/mpfree-test-root" ]; then
   say "MPFree's stick is not in the MPC (no partition named mpfree-test-root), so it was not checked."
   say "RESULT: the hook is installed; with no stick checked. NEXT: put MPFree's stick in the MPC and run this again (it writes nothing more)."
