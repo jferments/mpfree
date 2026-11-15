@@ -86,6 +86,7 @@ jobs:
           python3 tools/mpc-one/tests/test_offline_update_extract.py
           python3 tools/mpc-one/tests/test_offline_rk3288_rom.py
           MPFREE_REQUIRE_OFFLINE_TOOLS=1 python3 tools/mpc-one/tests/test_offline_rootfs_survey.py
+          MPFREE_REQUIRE_OFFLINE_TOOLS=1 python3 tools/mpc-one/tests/test_offline_firmware_compare.py
           MPFREE_REQUIRE_DTC=1 python3 tools/mpc-one/tests/test_offline_dtb.py
           python3 tools/mpc-one/tests/test_offline_kexec_details.py
           MPFREE_REQUIRE_COMPRESSORS=1 python3 tools/mpc-one/tests/test_offline_kernel_config.py
@@ -95,6 +96,8 @@ jobs:
           python3 tools/mpc-one/tests/test_write_test_stick.py
           python3 tools/mpc-one/tests/test_results.py
           MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_kexec_boot.py
+          MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_devmode_check.py
+          python3 tools/mpc-one/tests/test_write_autorun_drive.py
           MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_app_mpc.py
           MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_host_bench_mpc.py
           MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_host_gpu_mpc.py

@@ -112,6 +112,9 @@ def build_rootfs(base, shadow_root="!", extra=None, merged=True):
         "usr/bin/dfu-util": "#!/bin/sh\n# FAKE-DFU\n",
         "usr/bin/fw_printenv": "#!/bin/sh\n# FAKE-FW-PRINTENV\n",
         "usr/bin/az01-launch-MPC": "#!/bin/sh\n# FAKE-LAUNCHER\n",
+        f"{UNITS}/iptables.service": "[Service]\nType=oneshot\nExecStart=/usr/sbin/iptables-restore "
+                                     "/etc/iptables/iptables.rules\n",
+        "etc/iptables/iptables.rules": "*filter\n:INPUT DROP [0:0]\n-A INPUT -p tcp --dport 2222 -j ACCEPT\nCOMMIT\n",
     }
     files.update(extra or {})
     for path, data in files.items():
@@ -489,6 +492,85 @@ class KexecStickTests(unittest.TestCase):
             res = self.build(*args)
             self.assertEqual(res.returncode, 1, res.stdout)
             self.assertIn(problem, res.stdout)
+
+    def test_akai_app_for_developer_mode(self):
+        kits = self.kits_file("factory-kit-20260102T000000Z-new")
+        res = self.build("--akai-app")
+        self.assertEqual(res.returncode, 0, res.stdout)
+        self.assertIn("\nakai app: on (--akai-app)\n", res.stdout, "host_kexec_boot.py reads this line")
+        self.assertIn(f"drum kits (only to keep the layout; nothing reads them): {os.path.realpath(kits)}", res.stdout)
+        self.assertIn("startup screen: none (no --splash)", res.stdout)
+        self.assertIn("Akai's firewall: masked on the stick", res.stdout)
+        self.assertIn("  /usr/lib/systemd/system/iptables.service: ExecStart=/usr/sbin/iptables-restore "
+                      "/etc/iptables/iptables.rules\n  --- /etc/iptables/iptables.rules\n    *filter\n"
+                      "    :INPUT DROP [0:0]\n    -A INPUT -p tcp --dport 2222 -j ACCEPT\n    COMMIT\n", res.stdout)
+        self.assertIn("  /usr/lib/systemd/system/ip6tables.service: not in this version", res.stdout)
+        [folder] = self.outputs()
+        out = os.path.join(self.work, folder)
+        with open(os.path.join(out, "report.txt")) as fh:
+            self.assertIn("\nakai app: on (--akai-app)\n", fh.read())
+        stick = os.path.join(out, "stick.img")
+        table = json.loads(run(["sfdisk", "--json", stick]).stdout)["partitiontable"]["partitions"]
+        self.assertEqual([p.get("name") for p in table],
+                         ["mpfree-test-root", "mpfree-test-log", "mpfree-test-kits", "mpfree-test-data"])
+        self.assertEqual(table[3]["start"], (1 << 30) // 512, "partition 4 stays where write-test-stick.py keeps it")
+        root_img = os.path.join(self.tmp, "p1.img")
+        self.partition(stick, 1, root_img)
+        self.assertEqual(run(["e2fsck", "-fn", root_img]).returncode, 0)
+        # Akai's app: not masked, its launcher not stubbed.
+        self.assertIn("File not found", self.dfs(root_img, "stat /etc/systemd/system/acvs.service"))
+        self.assertEqual(self.dfs(root_img, "cat /usr/bin/az01-launch-MPC"), "#!/bin/sh\n# FAKE-LAUNCHER\n")
+        self.assertIn("written  /usr/bin/dfu-util  (stub)", res.stdout)
+        self.assertNotIn("az01-launch-MPC  (stub)", res.stdout)
+        # Every other mask and stub stays.
+        for unit in ("touch-fw-update.service", "xmos-update.service", "az01-script-runner.service",
+                     "az0x-webserver.service", "az0x-data-mkfs.service", "acvs-content-resize.service"):
+            self.assertIn('Fast link dest: "/dev/null"', self.dfs(root_img, f"stat /etc/systemd/system/{unit}"), unit)
+        self.assertIn("mpfree-test: blocked", self.dfs(root_img, "cat /usr/bin/dfu-util"))
+        self.assertIn("mpfree-test: blocked", self.dfs(root_img, "cat /usr/sbin/az01-update"))
+        self.assertIn("kexec_load_disabled = 1", self.dfs(root_img, "cat /etc/sysctl.d/90-mpfree-test.conf"))
+        self.assertIn("What=tmpfs", self.dfs(root_img, "cat /etc/systemd/system/data.mount"))
+        # No pad player, and the log display is installed but does not start (Akai's app draws the screen).
+        self.assertIn("File not found", self.dfs(root_img, "stat /etc/systemd/system/mpfree-test-app.service"))
+        self.assertIn("File not found", self.dfs(root_img, "stat /etc/mpfree-test/mpfree"))
+        self.assertIn("File not found",
+                      self.dfs(root_img, "stat /etc/systemd/system/sysinit.target.wants/mpfree-test-screen.service"))
+        self.assertIn("mpfree-screen-log", self.dfs(root_img, "cat /etc/systemd/system/mpfree-test-screen.service"))
+        self.assertIn('Fast link dest: "/etc/systemd/system/mpfree-test-sshd.service"',
+                      self.dfs(root_img, "stat /etc/systemd/system/multi-user.target.wants/mpfree-test-sshd.service"))
+        self.assertIn('Fast link dest: "/etc/systemd/system/mpfree-test-logs.service"',
+                      self.dfs(root_img, "stat /etc/systemd/system/sysinit.target.wants/mpfree-test-logs.service"))
+        # 3.10.1 ships its rules files empty (0 bytes): the report says so rather than showing nothing.
+        build_rootfs(os.path.dirname(self.image), extra={
+            f"{UNITS}/ip6tables.service": "[Service]\nExecStart=/usr/sbin/ip6tables-restore "
+                                          "/etc/iptables/ip6tables.rules\n",
+            "etc/iptables/ip6tables.rules": ""})
+        self.image_sha = sha(self.image)
+        res = self.build("--akai-app")
+        self.assertEqual(res.returncode, 0, res.stdout)
+        self.assertIn("  /usr/lib/systemd/system/ip6tables.service: ExecStart=/usr/sbin/ip6tables-restore "
+                      "/etc/iptables/ip6tables.rules\n  --- /etc/iptables/ip6tables.rules\n"
+                      "    (empty: 0 bytes, so it loads no rules)\n", res.stdout)
+
+    def test_akai_app_refuses_our_own_programs(self):
+        self.kits_file("factory-kit-20260102T000000Z-new")
+        app = os.path.join(self.tmp, "mpfree")
+        write(app, fake_elf(), 0o755)
+        font = os.path.join(self.tmp, "f.ttf")
+        write(font, b"\x00\x01\x00\x00" + b"\0" * 100)
+        for args, problem in ((("--akai-app", "--app", app), "--akai-app and --app cannot go together"),
+                              (("--akai-app", "--splash", app), "--akai-app and --splash cannot go together"),
+                              (("--akai-app", "--splash", app, "--splash-font", font),
+                               "--akai-app and --splash cannot go together"),
+                              (("--akai-app", "--splash-font", font), "--splash-font needs --splash")):
+            res = self.build(*args)
+            self.assertEqual(res.returncode, 1, res.stdout)
+            self.assertIn(problem, res.stdout)
+        self.assertEqual(self.outputs(), [], "nothing is built")
+        shutil.rmtree(os.path.join(self.work, "factory-kit-20260102T000000Z-new"))
+        res = self.build("--akai-app")
+        self.assertEqual(res.returncode, 1, res.stdout)
+        self.assertIn("no drum kits under", res.stdout)
 
     def test_unlocked_root_is_left_alone(self):
         os.unlink(self.image)
