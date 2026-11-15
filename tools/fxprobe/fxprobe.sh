@@ -23,7 +23,10 @@
 #                        plugin folders (and VST2 Plugins if install made it
 #                        and it is empty). The undo of install
 #   setup                CHANGES the stick only: makes FXProbe/ on the data
-#                        partition and copies the programmes into it. Undo: clean
+#                        partition and copies the programmes into it. Undo: clean.
+#                        Needs MPFree's FORMAT file there (MPFree has started
+#                        from the stick once): MPFree's store refuses a data
+#                        partition that holds other files and no FORMAT
 #   status               read-only: what every instance reports
 #   capture NAME [--programme short|standard] [--gains 0,-12] [--slots 1,2]
 #                [--tail SECONDS] [--timing]
@@ -261,7 +264,15 @@ cmd_remove() {
 # ---- the work folder ------------------------------------------------------
 
 cmd_setup() {
-  work_folder
+  if [ -z "$WORK" ]; then
+    work_folder
+    # MPFree's store refuses a data partition that holds other files and no
+    # FORMAT, so FXProbe/ goes only where MPFree has made its FORMAT.
+    case "$(head -n 1 "$DATA_MNT/FORMAT" 2>/dev/null)" in
+      "mpfree-data "*) ;;
+      *) stop "$DATA_MNT has no MPFree FORMAT file: start MPFree from this stick once first (MPFree would not use a data partition holding FXProbe/ and no FORMAT), or give --work DIR" ;;
+    esac
+  fi
   parent=${WORK%/*}
   [ -d "$parent" ] || stop "$parent does not exist"
   for p in short standard; do

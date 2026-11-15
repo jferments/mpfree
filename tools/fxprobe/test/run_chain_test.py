@@ -149,6 +149,8 @@ def stick_test(bins, tmp, rate):
     for d in ("az01-internal", "MPFREE-KITS", "4c1e9a52-data"):
         os.makedirs(os.path.join(media, d))
     os.makedirs(os.path.join(root, "proc"))
+    with open(os.path.join(media, "4c1e9a52-data", "FORMAT"), "w") as f:
+        f.write("mpfree-data 1\n")   # MPFree has used the data partition (setup needs it)
 
     def mounts(data_name):
         with open(os.path.join(root, "proc", "mounts"), "w") as f:

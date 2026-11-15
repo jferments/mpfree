@@ -356,6 +356,15 @@ class FxprobeShTests(unittest.TestCase):
         self.assertEqual(sorted(os.listdir(self.data)), ["FORMAT"])
         self.assertEqual(self.tree(self.kit), kit)
 
+    def test_setup_needs_mpfree_format_on_the_data_partition(self):
+        os.remove(f"{self.data}/FORMAT")
+        self.stopped(self.sh("setup"), f"{self.data} has no MPFree FORMAT file")
+        self.assertEqual(os.listdir(self.data), [])
+        write(f"{self.data}/FORMAT", "something else\n")
+        self.stopped(self.sh("setup"), f"{self.data} has no MPFree FORMAT file")
+        write(f"{self.data}/FORMAT", "mpfree-data 1\n")
+        self.ok(self.sh("setup"), "SETUP-OK")
+
     def test_work_folder_needs_the_stick_data_partition(self):
         with open(f"{self.root}/proc/mounts") as fh:
             mounts = fh.read()
