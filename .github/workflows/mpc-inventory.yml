@@ -53,6 +53,7 @@ jobs:
           sh -n tools/mpc-one/hook-canary-remove.sh
           sh -n tools/mpc-one/hook-install.sh
           sh -n tools/mpc-one/hook-remove.sh
+          sh -n tools/mpc-one/kexec-file-probe.sh
           sh -n tools/mpc-one/read-only-hook-report.sh
           sh -n tools/mpc-one/read-only-inventory.sh
           sh -n tools/mpc-one/read-only-detail.sh
@@ -99,6 +100,7 @@ jobs:
           MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_kexec_preflight.py
           MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_hook_canary.py
           MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_boot_hook.py
+          MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_kexec_file_probe.py
           MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_read_only_ethernet.py
           MPFREE_REQUIRE_OFFLINE_TOOLS=1 python3 tools/mpc-one/tests/test_offline_kexec_stick.py
           python3 tools/mpc-one/tests/test_write_test_stick.py
@@ -183,6 +185,12 @@ jobs:
           assert '"--kexec-preflight")' in wrapper
           assert '"--ethernet")' in wrapper
           assert '"--hook-canary")' in wrapper and 'MPFREE_ACCEPT_HOOK_CANARY' in wrapper
+          assert '"--hook-kexec-probe")' in wrapper and 'MPFREE_ACCEPT_KEXEC_PROBE' in wrapper
+          # The kexec probe loads a kernel but must never execute or boot one.
+          probe_lines = [line for line in Path("tools/mpc-one/kexec-file-probe.sh").read_text().splitlines()
+                         if not line.lstrip().startswith("#")]
+          for bad in (" -e ", "--exec", "kexec.target", "reboot", "shutdown", "systemctl"):
+              assert not any(bad in line for line in probe_lines), f"kexec probe must not contain {bad!r}"
           # The kexec preflight may ask kexec only for its version and help text.
           kexec_exec = [line for line in Path("tools/mpc-one/read-only-kexec-preflight.sh").read_text().splitlines()
                         if not line.lstrip().startswith("#")]

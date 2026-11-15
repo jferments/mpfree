@@ -40,6 +40,7 @@ case "${1:-}" in
   "--hook-install") REMOTE_SCRIPT="$SCRIPT_DIR/hook-install.sh"; REPORT_KIND="mpc-one-hook-install" ;;
   "--hook-remove") REMOTE_SCRIPT="$SCRIPT_DIR/hook-remove.sh"; REPORT_KIND="mpc-one-hook-remove" ;;
   "--hook-report") REMOTE_SCRIPT="$SCRIPT_DIR/read-only-hook-report.sh"; REPORT_KIND="mpc-one-hook-report" ;;
+  "--hook-kexec-probe") REMOTE_SCRIPT="$SCRIPT_DIR/kexec-file-probe.sh"; REPORT_KIND="mpc-one-kexec-file-probe" ;;
   "--kexec-boot") REMOTE_SCRIPT=""; REPORT_KIND="mpc-one-kexec-boot" ;;
   "--app") REMOTE_SCRIPT=""; REPORT_KIND="mpc-one-app" ;;
   "--devmode-check") REMOTE_SCRIPT=""; REPORT_KIND="mpc-one-devmode-check" ;;
@@ -230,6 +231,9 @@ fi
 if [[ "${1:-}" == "--hook-install" && "${MPFREE_ACCEPT_HOOK:-}" != 'YES' ]]; then
   die "Opt-in required (writes MPFree's boot hook, three small files, to the MPC's data partition; undo: --hook-remove): MPC_PORT=22 MPFREE_ACCEPT_HOOK=YES bash tools/mpc-one/collect-over-ssh.sh --hook-install"
 fi
+if [[ "${1:-}" == "--hook-kexec-probe" && "${MPFREE_ACCEPT_KEXEC_PROBE:-}" != 'YES' ]]; then
+  die "Opt-in required (RAM only: loads a kernel into memory and unloads it to test which load LoadPin accepts; never restarts the MPC, writes no disk): MPC_PORT=22 MPFREE_ACCEPT_KEXEC_PROBE=YES bash tools/mpc-one/collect-over-ssh.sh --hook-kexec-probe"
+fi
 if [[ "$MPC_PORT" == 22 ]]; then
   DEVMODE=1
   [[ -n "$REMOTE_SCRIPT" ]] ||
@@ -358,6 +362,8 @@ elif [[ "${1:-}" == "--hook-install" ]]; then
   echo "OWNER OPT-IN, STATE-CHANGING on the data partition only: MPFree's boot hook (three small files), then a check with the stick (RAM only). Log: $REPORT"
 elif [[ "${1:-}" == "--hook-remove" ]]; then
   echo "STATE-CHANGING on the data partition only: removing MPFree's boot hook. Log: $REPORT"
+elif [[ "${1:-}" == "--hook-kexec-probe" ]]; then
+  echo "OWNER OPT-IN, RAM ONLY: probe which kexec load LoadPin accepts (loads then unloads a kernel; never restarts). Log: $REPORT"
 elif [[ "${1:-}" == "--devmode-check" ]]; then
   echo "Developer mode check on the test build (read-only; RAM only after a typed LOCK). Log: $REPORT"
 elif [[ "${1:-}" == "--app-start-capture" ]]; then
