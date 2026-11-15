@@ -1,0 +1,21 @@
+[package]
+name = "mpfree-mpcplug"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Wraps an mpfree-node Node as an MPC OS 3.10.1 plugin (the VST 2.4 binary interface the MPC's plugin host speaks), so MPFree's effects and instruments can load inside Akai's app"
+
+[dependencies]
+mpfree-node = { path = "../mpfree-node" }
+
+[dev-dependencies]
+mpfree-fx = { path = "../mpfree-fx" }
+mpfree-synth = { path = "../mpfree-synth" }
+
+[[example]]
+name = "mpfree_delay"
+crate-type = ["cdylib"]
+
+[[example]]
+name = "mpfree_squelch"
+crate-type = ["cdylib"]

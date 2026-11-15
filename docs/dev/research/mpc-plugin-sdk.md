@@ -22,9 +22,9 @@ From the SDK's `docs/host-contract.md` and `docs/plugin-folder-format.md`:
 ## Ideas, ranked
 
 1. Use 3.10.1's developer SSH for our device tools (now done by the update; the tools are being ported).
-2. A host probe: a timing-log mode of the FX quality work's capture plugin (FXProbe Tap) that records how Akai's audio thread calls plugins.
+2. A host probe: the timing log in the FX quality work's capture plugin (FXProbe Tap, `tools/fxprobe/`) records each process call's time, frames and CPU, the audio thread's scheduling, and every host call in order.
 3. A "Switch to MPFree" plugin that asks the handoff supervisor to start as its own systemd unit. Only after the Tier 1 rehearsal in [reversible handoff](reversible-handoff.md), and after checking inMusic's terms.
-4. MPFree's engines as MPC plugins, through a Rust VST2-ABI shim, so Akai projects that use them import into MPFree with every setting.
+4. MPFree's engines as MPC plugins, through a Rust VST2-ABI shim, so Akai projects that use them import into MPFree with every setting. Started: [MPFree engines as MPC plugins](../guides/mpc-plugins.md).
 5. Bridge plugins that pass audio, notes and transport over shared memory between Akai's app and an MPFree process.
 6. Drawing MPC plugin skins in MPFree when it hosts MPC plugins.
 7. What 3.10.1's remote screen and audio enhancement speaks.

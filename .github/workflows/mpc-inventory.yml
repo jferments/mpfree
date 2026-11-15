@@ -1109,6 +1109,12 @@ jobs:
           assert any(data), "nothing was drawn"
           print("PASS: static ARMv7 screen log program draws on a fake framebuffer under qemu")
           PY
+      - name: Build and check the example MPC plugins for 32-bit ARM (do not deploy)
+        # rust/mpfree-mpcplug: MPFree nodes as MPC OS 3.10.1 plugins. Checks each
+        # .so against the SDK's rules (ELF32 hard-float, only VSTPluginMain,
+        # libc/libm/loader only, glibc <= 2.39). The host-contract tests run
+        # natively with the workspace tests above.
+        run: bash tools/mpc-plugins/build-arm32.sh
       - name: Build and check the static mpfree program for the kexec test boot (do not deploy)
         env:
           CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER: arm-linux-gnueabihf-gcc
