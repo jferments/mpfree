@@ -330,7 +330,9 @@ class AppTests(unittest.TestCase):
         res = self.run_helper()
         self.assertEqual(res.returncode, 0, res.stdout)
         out = res.stdout
-        for text in ("static ARM EABI5 hard-float", f"release: {NEW}", "no MMC block device", "/: read-only",
+        for text in ("static ARM EABI5 hard-float", f"release: {NEW}",
+                     "started by: no soft-reboot marker: a kexec (the boot hook's opt-in kexec_file route or its chain, "
+                     "or --kexec-boot on 3.6.0), or a direct boot", "no MMC block device", "/: read-only",
                      "/run: tmpfs rw,nosuid,nodev,mode=755", "Akai's app (acvs.service): inactive",
                      "/dev/fb0: pid 321 (mpfree-screen-l)", "CHECKS-OK", "its hash on the MPC matches",
                      "inventory done", "pad player: was inactive, now inactive",
@@ -355,6 +357,14 @@ class AppTests(unittest.TestCase):
         self.assertFalse(os.path.exists(f"{self.root}/run/mpfree-app/mpfree.part"))
         with open(self.report) as fh:
             self.assertIn("RESULT: all steps ran", fh.read())
+
+    def test_says_when_the_boot_hook_started_the_test_build(self):
+        # After a soft-reboot the kernel and release are Akai's; the hook's marker in /run says how it started.
+        write(f"{self.root}/run/mpfree-hook/soft-reboot", "6.05\n")
+        res = self.run_helper()
+        self.assertEqual(res.returncode, 0, res.stdout)
+        self.assertIn("started by: the boot hook's soft-reboot (asked at 6.05 s after power-on)", res.stdout)
+        self.assertIn("CHECKS-OK", res.stdout)
 
     def test_keepalive_only_without_pad_hits(self):
         # Enter and an answer for: inventory, screen, touch, pads, the keep-alive try, click.
@@ -916,6 +926,7 @@ class AppTests(unittest.TestCase):
         res = self.run_helper()
         self.assertEqual(res.returncode, 1, res.stdout)
         self.assertIn("the test build did not answer", res.stdout)
+        self.assertIn("switch it on with the stick in", res.stdout)
         self.assertFalse(os.path.exists(f"{self.root}/run/mpfree-app"))
         self.assertEqual(self.log_lines("program: "), [])
 

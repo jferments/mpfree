@@ -282,6 +282,9 @@ impl App {
             };
             let job = CONTROLS[i].job;
             match (v, parse_code(v)) {
+                // A known button (REC, MENU...) is on every MPC One: a skip
+                // kept from before it was known must not turn it off.
+                ("skipped", _) if super::ButtonMap::measured().of(job).is_some() => {}
                 ("skipped", _) => {
                     self.mapper.marks[i] = Mark::Skipped;
                     gone += 1;
@@ -481,6 +484,39 @@ mod tests {
         assert!(b.take_saves().is_empty());
     }
 
+    /// REC, OVERDUB, UNDO and PLAY START work on a fresh MPFree with
+    /// nothing saved, and an old "skipped" kept for one of them doesn't
+    /// turn it off. A number found with Map controls still wins.
+    #[test]
+    fn the_transport_buttons_work_with_no_saved_map_and_through_old_skips() {
+        let fresh = App::new(44_100, false);
+        assert_eq!(
+            (
+                fresh.map.rec,
+                fresh.map.overdub,
+                fresh.map.undo,
+                fresh.map.play_start
+            ),
+            (
+                Some(button::REC),
+                Some(button::OVERDUB),
+                Some(button::UNDO),
+                Some(button::PLAY_START)
+            )
+        );
+        let mut a = App::new(44_100, false);
+        a.restore(
+            &Settings::default(),
+            &Settings::parse("rec = skipped\noverdub = skipped\nundo = button 99\ntc = skipped\n"),
+        );
+        assert_eq!(a.map.rec, Some(button::REC));
+        assert_eq!(a.map.overdub, Some(button::OVERDUB));
+        assert_eq!(a.map.undo, Some(99), "Map controls' own number wins");
+        let map = a.map_settings();
+        assert_eq!(map.get_str("rec"), Some("button 73"));
+        assert_eq!(map.get_str("tc"), Some("skipped"), "other skips are kept");
+    }
+
     #[test]
     fn what_is_not_understood_is_left_out() {
         let mut a = App::new(44_100, false);
@@ -490,7 +526,7 @@ mod tests {
         );
         assert_eq!(a.settings.periods, 3);
         assert!(!a.settings.line_input);
-        assert_eq!(a.map.rec, None);
+        assert_eq!(a.map.rec, Some(button::REC), "REC keeps its known button");
         let last = notes.last().unwrap();
         for bad in [
             "audio-buffer = 9",
