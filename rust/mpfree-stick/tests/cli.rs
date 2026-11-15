@@ -27,6 +27,7 @@ fn programs_dir(dir: &Path) -> String {
     let p = programs();
     std::fs::write(d.join("mpfree"), p.pad_player).unwrap();
     std::fs::write(d.join("mpfree-screen-log"), p.screen_log).unwrap();
+    std::fs::write(d.join("mpfree-startup"), p.startup).unwrap();
     d.display().to_string()
 }
 

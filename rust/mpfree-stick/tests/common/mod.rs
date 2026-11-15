@@ -168,6 +168,7 @@ pub fn programs() -> Programs {
     Programs {
         pad_player: arm_program(b"pad player"),
         screen_log: arm_program(b"screen log"),
+        startup: arm_program(b"startup screen"),
     }
 }
 

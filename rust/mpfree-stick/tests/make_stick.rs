@@ -113,6 +113,23 @@ fn makes_a_stick_the_hook_takes() {
         read(&root, "/etc/mpfree-test/mpfree-screen-log"),
         progs.screen_log
     );
+    assert_eq!(read(&root, "/etc/mpfree-test/mpfree-splash"), progs.startup);
+    let splash = String::from_utf8(read(
+        &root,
+        "/etc/systemd/system/mpfree-test-splash.service",
+    ))
+    .unwrap();
+    assert!(splash.contains("--framebuffer --rotation 270 --seconds 6\n"));
+    assert!(
+        splash.contains("RemainAfterExit=yes\n"),
+        "it plays once per power-on"
+    );
+    assert!(root
+        .lookup("/etc/systemd/system/sysinit.target.wants/mpfree-test-splash.service")
+        .unwrap()
+        .is_some());
+    let start = String::from_utf8(read(&root, "/etc/mpfree-test/start-app.sh")).unwrap();
+    assert!(start.contains(" --keep-screen --data /run/mpfree-data\n"));
     assert_eq!(read(&root, "/usr/bin/tool-too"), b"tool");
     let tool = root.lookup("/usr/bin/tool").unwrap().unwrap();
     assert_eq!(tool.links, 2, "the hard link stays one file");

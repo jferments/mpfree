@@ -2,11 +2,12 @@
 """OFFLINE, workstation only: write the MPFree USB creator's recipe, rust/mpfree-stick/src/recipe.json.
 
 The creator (rust/mpfree-stick) makes the same changes to a copy of Akai's root filesystem as
-offline-kexec-stick.py does for the soft-reboot boot with the pad player as the mpfree user (--app
---app-user, no --splash, no --akai-app, no kexec files). To keep the two from drifting, this tool doesn't
-restate those changes: it RUNS the builder's own build_rootfs on a tiny fake root filesystem, with
-placeholders such as @LOG_UUID@ for every value that differs from stick to stick, and records what
-build_rootfs wrote (paths, modes, contents and links). The creator fills in the placeholders.
+offline-kexec-stick.py does for the soft-reboot boot with the pad player as the mpfree user and MPFree's
+startup screen (--app --app-user --splash mpfree-startup, no --akai-app, no kexec files). To keep the two
+from drifting, this tool doesn't restate those changes: it RUNS the builder's own build_rootfs on a tiny
+fake root filesystem, with placeholders such as @LOG_UUID@ for every value that differs from stick to
+stick, and records what build_rootfs wrote (paths, modes, contents and links). The creator fills in the
+placeholders.
 
 What build_rootfs decides from the image itself is not recorded as content but as rules the creator
 applies to the real image: which of STUB_PROGRAMS exist (they become the stub), /etc/shadow (root's
@@ -42,6 +43,7 @@ PUBKEY = "@AUTHORIZED_KEYS@\n"
 HOSTKEY = b"@HOST_KEY@\n"
 APP = b"@PAD_PLAYER@"
 SCREEN_LOG = b"@SCREEN_LOG@"
+STARTUP = b"@STARTUP@"
 
 
 def builder():
@@ -106,7 +108,7 @@ def recipe():
         b.OUT.lines = []
         _, stubbed, absent, links, written = b.build_rootfs(
             img, scratch, PUBKEY, host_key, LOG_UUID, SCREEN_LOG, ROTATION, app=APP, kits_uuid=KITS_UUID,
-            data_uuid=DATA_UUID, softreboot=(RELEASE, (), None), app_user=True)
+            data_uuid=DATA_UUID, softreboot=(RELEASE, (), None), app_user=True, splash=(STARTUP, None, None))
         if absent:
             raise SystemExit(f"the fake root lacks stub programs: {absent}")
         from_image = {"/etc/shadow", "/etc/passwd", "/etc/group", *stubbed}
@@ -119,7 +121,7 @@ def recipe():
             if owner != (0, 0):
                 raise SystemExit(f"{path} is not root's")
             entry = {"mode": mode}
-            if data in (APP, SCREEN_LOG, HOSTKEY):
+            if data in (APP, SCREEN_LOG, STARTUP, HOSTKEY):
                 entry["placeholder"] = data.decode().strip()
             else:
                 entry["text"] = data.decode("utf-8", "strict")
@@ -131,11 +133,11 @@ def recipe():
         mkdirs = ["/etc/mpfree-test", b.SOFTREBOOT_DIR]
         return {
             "about": "Written by tools/mpc-one/creator-recipe.py from offline-kexec-stick.py's build_rootfs "
-                     "(--app --app-user, soft-reboot); do not edit by hand.",
+                     "(--app --app-user --splash, soft-reboot); do not edit by hand.",
             "placeholders": {"log_uuid": LOG_UUID, "kits_uuid": KITS_UUID, "data_uuid": DATA_UUID,
                              "release": RELEASE, "rotation": ROTATION, "authorized_keys": PUBKEY.strip(),
                              "host_key": HOSTKEY.decode().strip(), "pad_player": APP.decode(),
-                             "screen_log": SCREEN_LOG.decode()},
+                             "screen_log": SCREEN_LOG.decode(), "startup": STARTUP.decode()},
             "files": files,
             "links": link_targets,
             "mkdirs": mkdirs,
