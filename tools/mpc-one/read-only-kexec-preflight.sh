@@ -152,14 +152,13 @@ fi
 printf 'kernel log, kexec/lockdown/ipe/loadpin lines:\n'
 dmesg 2>/dev/null | grep -iE 'ipe:|lockdown|kexec|loadpin' | tail -n 30 || printf '(none)\n'
 
-# A route that loads no kernel: systemd's soft-reboot (systemd 254 and later) stops all of userspace and,
-# when /run/nextroot holds an OS tree, starts that tree's init on the same running kernel. Whether this
-# systemd has it, and whether /run/nextroot exists now (it should not). Asks for help text only.
-section 'Userspace restart without a new kernel (soft-reboot)'
-if systemctl --help 2>/dev/null | grep -q 'soft-reboot'; then printf 'systemctl knows soft-reboot\n'
-else printf 'systemctl does not list soft-reboot\n'; fi
-[ -e /usr/lib/systemd/system/soft-reboot.target ] && printf 'soft-reboot.target: present\n' || printf 'soft-reboot.target: absent\n'
-[ -e /usr/lib/systemd/system/systemd-soft-reboot.service ] && printf 'systemd-soft-reboot.service: present\n' || printf 'systemd-soft-reboot.service: absent\n'
-[ -e /run/nextroot ] && printf '/run/nextroot: exists\n' || printf '/run/nextroot: absent\n'
+# systemd 254 and later can restart all of userspace into another root on the SAME running kernel,
+# loading no kernel at all (so the LoadPin refusal above does not apply to it). The systemd version is
+# reported in the systemd section above; 254 and later provide it. Here we only read whether a next root
+# is staged right now (it should not be). This reads one path and runs nothing; the feature's own name is
+# a word the static no-write scanner forbids on an executable line, so it is written only in these
+# comments, not built up or hidden in code.
+section 'Next root staged for a userspace-only restart (should be none)'
+[ -e /run/nextroot ] && printf '/run/nextroot: exists (a next root is staged)\n' || printf '/run/nextroot: absent (nothing staged)\n'
 
 printf '\nEND OF KEXEC PREFLIGHT\n'
