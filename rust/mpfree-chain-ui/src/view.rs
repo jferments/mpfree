@@ -681,6 +681,17 @@ impl ChainView {
     }
 
     /// The EQ's page is up: the EQ is selected and the picker shut.
+    /// Turns the EQ's Listen off when the EQ page shows with it on (the
+    /// app calls this when the editor goes away by a button). The actions
+    /// are for the app to send; none when Listen is off.
+    pub fn stop_listening(&mut self) -> Vec<ChainAction> {
+        if self.eq_shown() {
+            self.eq.stop_listening()
+        } else {
+            Vec::new()
+        }
+    }
+
     fn eq_shown(&self) -> bool {
         self.state.eq && self.state.selected.is_some() && !self.state.picking
     }

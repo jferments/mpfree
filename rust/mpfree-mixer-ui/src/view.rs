@@ -20,7 +20,7 @@
 //! at once; what the touches mean goes into a queue of [`MixAction`]s
 //! (see [`crate::take_actions`]) for the app to send to the mixer.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 
 use mpfree_fx::ids::mixer::{self as mx, output};
 use mpfree_fx::{StripId, BUSES, SILENT_DB};
@@ -28,6 +28,7 @@ use mpfree_ui::{
     Align, Color, EventKind, FontId, PaintCx, Rect, Target, Theme, Tone, Touch, Widget,
 };
 
+use crate::eq_look::{self, Dot};
 use crate::io::{self, IoFrame, IoInput, IoKnob, IoReply, IoSection};
 use crate::state::{choice, output_label, peak_db, MixState, MixView, StripView, TakeView};
 
@@ -73,25 +74,53 @@ pub enum MixAction {
     /// tab left by TRACK MIX): the Q-Links go back to the selected strip.
     /// The widget never queues this; the app sends it.
     Unpick,
+    /// "+ EQ" on the EQ look: add a parametric EQ in the strip's first
+    /// free slot.
+    AddEq { strip: StripId },
+    /// A band picked on the EQ look (its dot tapped or dragged): the
+    /// picked EQ's Q-Links follow parameter `id`'s band, as the chain
+    /// editor's focus does.
+    FocusInsert {
+        strip: StripId,
+        slot: usize,
+        id: u16,
+    },
+    /// A dot dragged on the EQ look: set parameter `id` of insert `slot`,
+    /// as the chain editor's knobs set one.
+    SetInsert {
+        strip: StripId,
+        slot: usize,
+        id: u16,
+        value: f32,
+    },
+    /// The finger left the dot: the drag ends (one UNDO step).
+    ReleaseInsert {
+        strip: StripId,
+        slot: usize,
+        id: u16,
+    },
 }
 
-/// The Mix tab's two looks of the same strips (layout spec section 3a):
-/// Faders, the strips side by side, and Effects, each strip's chain as a
-/// row of slots, the master's pinned under them.
+/// The Mix tab's three looks of the same strips (layout spec section
+/// 3a): Faders, the strips side by side; Effects, each strip's chain as a
+/// row of slots; and EQ, each strip's EQ as a curve. On Effects and EQ the
+/// master's row is pinned under the strips'.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Look {
     #[default]
     Faders,
     Effects,
+    Eq,
 }
 
 impl Look {
-    pub const ALL: [Look; 2] = [Look::Faders, Look::Effects];
+    pub const ALL: [Look; 3] = [Look::Faders, Look::Effects, Look::Eq];
 
     pub fn label(self) -> &'static str {
         match self {
             Look::Faders => "Faders",
             Look::Effects => "Effects",
+            Look::Eq => "EQ",
         }
     }
 }
@@ -169,8 +198,12 @@ const MIN_CHIP_W: i32 = 124;
 const IO_CHIP_W: i32 = 76;
 const ARROW_W: i32 = 52;
 const PAGE_W: i32 = 120;
-/// The Faders and Effects toggle.
-const LOOK_W: i32 = 170;
+/// The Faders, Effects and EQ toggle.
+const LOOK_W: i32 = 246;
+/// The view chips without their counts, when the full ones don't fit
+/// beside the toggle (the Mix tab beside the Q-Link column): Tracks,
+/// Pads, Inputs, Submixes.
+const COMPACT_CHIP_W: [i32; 4] = [110, 90, 96, 120];
 /// The Effects look: a strip's name, then its slots, a row a strip.
 const FX_NAME_W: i32 = 176;
 /// Slots a row shows (the most a strip in the app has).
@@ -283,11 +316,14 @@ struct Layout {
     prev: Rect,
     next: Rect,
     page: Rect,
-    /// The Faders and Effects toggle (where the mixer's CPU chip was).
+    /// The Faders, Effects and EQ toggle (where the mixer's CPU chip
+    /// was).
     look: Rect,
     strips: Rect,
     master: Rect,
     per_page: usize,
+    /// The view chips are the narrow ones, without counts.
+    compact: bool,
 }
 
 fn layout(r: Rect) -> Layout {
@@ -305,14 +341,20 @@ fn layout(r: Rect) -> Layout {
     // The view chips share what is left of the toggle: narrower when the
     // panel is (the Q-Link column beside it), never under MIN_CHIP_W.
     let room = look.x - 12 - head.x - 4 * 8 - IO_CHIP_W;
+    let compact = room / 4 < MIN_CHIP_W;
     let chip_w = (room / 4).clamp(MIN_CHIP_W, CHIP_W);
+    let mut x = head.x;
     let chips = std::array::from_fn(|i| {
         let w = if MixView::ALL[i] == MixView::Io {
             IO_CHIP_W
+        } else if compact {
+            COMPACT_CHIP_W[i.min(3)]
         } else {
             chip_w
         };
-        Rect::new(head.x + i as i32 * (chip_w + 8), cy, w, ch)
+        let c = Rect::new(x, cy, w, ch);
+        x += w + 8;
+        c
     });
     Layout {
         chips,
@@ -323,16 +365,23 @@ fn layout(r: Rect) -> Layout {
         strips,
         master,
         per_page,
+        compact,
     }
 }
 
-/// The toggle's two halves: Faders, then Effects.
-fn look_halves(r: Rect) -> [Rect; 2] {
+/// The toggle's parts: Faders, Effects, EQ.
+fn look_halves(r: Rect) -> [Rect; 3] {
     let inner = r.inset(4);
-    let w = (inner.w - 4) / 2;
+    let w = (inner.w - 8) / 3;
     [
         Rect::new(inner.x, inner.y, w, inner.h),
-        Rect::new(inner.x + w + 4, inner.y, inner.w - w - 4, inner.h),
+        Rect::new(inner.x + w + 4, inner.y, w, inner.h),
+        Rect::new(
+            inner.x + 2 * (w + 4),
+            inner.y,
+            inner.w - 2 * (w + 4),
+            inner.h,
+        ),
     ]
 }
 
@@ -550,6 +599,17 @@ enum Grab {
         x0: i32,
         to: Option<usize>,
     },
+    /// A curve on the EQ look, the dot under the finger if any: a tap
+    /// picks the EQ (and the band), a tap again opens it; a dot that moves
+    /// past the lift follows the finger.
+    Eq {
+        id: StripId,
+        slot: usize,
+        dot: Option<Dot>,
+        x0: i32,
+        y0: i32,
+        moved: bool,
+    },
 }
 
 /// The choices of the output picker: (OUTPUT value, track), in order.
@@ -582,8 +642,13 @@ pub struct MixerView {
     state: MixState,
     /// Faders or Effects.
     look: Look,
-    /// The effect picked on the Effects look: (strip, slot).
+    /// The effect picked on the Effects look, or the EQ on the EQ look:
+    /// (strip, slot).
     pick: Option<(StripId, usize)>,
+    /// The band picked on the EQ look.
+    eq_dot: Option<Dot>,
+    /// The EQ look's curves as last worked out: (values, curve).
+    eq_curves: RefCell<Vec<(Vec<f32>, Vec<f32>)>>,
     /// The first strip shown.
     first: usize,
     /// The strip whose output picker is open.
@@ -620,6 +685,8 @@ impl MixerView {
             state: MixState::default(),
             look: Look::Faders,
             pick: None,
+            eq_dot: None,
+            eq_curves: RefCell::new(Vec::new()),
             first: 0,
             picker: None,
             menu: None,
@@ -648,6 +715,26 @@ impl MixerView {
                 Grab::Pan { id, .. } => (id, vec![mx::PAN]),
                 Grab::Send { id, r, .. } => (id, vec![mx::send(r)]),
                 Grab::Fx { .. } => continue,
+                Grab::Eq {
+                    id,
+                    slot,
+                    moved: true,
+                    ..
+                } => {
+                    // The dot under the finger stays where the finger has it.
+                    let old = self
+                        .state
+                        .strip(id)
+                        .and_then(|s| s.inserts.get(slot))
+                        .and_then(|i| i.eq.clone());
+                    if let Some(ins) = st.strip_mut(id).and_then(|s| s.inserts.get_mut(slot)) {
+                        if ins.eq.is_some() && old.is_some() {
+                            ins.eq = old;
+                        }
+                    }
+                    continue;
+                }
+                Grab::Eq { .. } => continue,
             };
             if let (Some(old), Some(new)) = (self.state.strip(id).cloned(), st.strip_mut(id)) {
                 for p in ids {
@@ -680,8 +767,14 @@ impl MixerView {
             self.pick = None;
         }
         if let Some((id, slot)) = self.pick {
-            if st.strip(id).is_none_or(|s| slot >= s.inserts.len()) {
+            let gone = st.strip(id).is_none_or(|s| slot >= s.inserts.len());
+            let not_eq = self.look == Look::Eq
+                && st
+                    .strip(id)
+                    .is_none_or(|s| s.inserts.get(slot).is_none_or(|i| i.eq.is_none()));
+            if gone || not_eq {
                 self.pick = None;
+                self.eq_dot = None;
             }
         }
         let follow = st.selected != self.state.selected;
@@ -747,9 +840,15 @@ impl MixerView {
             self.menu = None;
             self.picker = None;
             self.pick = None;
+            self.eq_dot = None;
             self.grabs.clear();
             self.mark(Dirty::All);
         }
+    }
+
+    /// The band picked on the EQ look, with its EQ ([`MixerView::pick`]).
+    pub fn eq_dot(&self) -> Option<Dot> {
+        self.eq_dot.filter(|_| self.pick.is_some())
     }
 
     /// The effect picked on the Effects look, whose knobs the Q-Links
@@ -763,13 +862,13 @@ impl MixerView {
     fn page_size(&self, l: &Layout) -> usize {
         match self.look {
             Look::Faders => l.per_page,
-            Look::Effects => grid(l).rows.min(l.per_page.max(1)),
+            Look::Effects | Look::Eq => grid(l).rows.min(l.per_page.max(1)),
         }
     }
 
     /// The Effects look's rows on this page: (strip, row).
     fn rows(&self, l: &Layout) -> Vec<(usize, Rect)> {
-        if self.state.view == MixView::Io || self.look != Look::Effects {
+        if self.state.view == MixView::Io || self.look == Look::Faders {
             return Vec::new();
         }
         let g = grid(l);
@@ -802,6 +901,22 @@ impl MixerView {
         if let MixAction::Set { strip, id, value } = a {
             if let Some(s) = self.state.strip_mut(strip) {
                 apply(s, id, value);
+            }
+        }
+        if let MixAction::SetInsert {
+            strip,
+            slot,
+            id,
+            value,
+        } = a
+        {
+            let vals = self
+                .state
+                .strip_mut(strip)
+                .and_then(|s| s.inserts.get_mut(slot))
+                .and_then(|i| i.eq.as_mut());
+            if let Some(v) = vals.and_then(|v| v.get_mut(id as usize)) {
+                *v = value;
             }
         }
         self.actions.push(a);
@@ -936,6 +1051,7 @@ impl MixerView {
                 self.first = 0;
                 self.io.top = 0;
                 self.pick = None;
+                self.eq_dot = None;
                 self.push(MixAction::View(v));
             }
             return;
@@ -971,6 +1087,10 @@ impl MixerView {
         }
         if self.look == Look::Effects {
             self.fx_down(finger, x, y, &l);
+            return;
+        }
+        if self.look == Look::Eq {
+            self.eq_down(finger, x, y, &l);
             return;
         }
         let mut hits: Vec<(StripId, Rect)> = self
@@ -1182,6 +1302,153 @@ impl MixerView {
         Some(k.min(len.saturating_sub(1)))
     }
 
+    /// A finger on the EQ look: a strip's name selects it (as on
+    /// Effects), "+ EQ" adds one, and a curve is held until the finger
+    /// lifts or its dot moves.
+    fn eq_down(&mut self, finger: u64, x: i32, y: i32, l: &Layout) {
+        let mut rows: Vec<(StripId, Rect)> = self
+            .rows(l)
+            .into_iter()
+            .map(|(i, row)| (self.state.strips[i].id, row))
+            .collect();
+        rows.push((StripId::Master, grid(l).master));
+        let Some((id, row)) = rows.into_iter().find(|(_, row)| row.contains(x, y)) else {
+            return;
+        };
+        let Some(s) = self.state.strip(id) else {
+            return;
+        };
+        let (name, graph, _) = eq_look::row_parts(row, FX_NAME_W);
+        if name.contains(x, y) {
+            self.pick = None;
+            self.eq_dot = None;
+            if self.state.selected == Some(id) {
+                if self.state.takes {
+                    self.menu = Some(id);
+                }
+            } else {
+                self.state.selected = Some(id);
+                self.push(MixAction::Select(id));
+            }
+            return;
+        }
+        if !graph.contains(x, y) {
+            return;
+        }
+        let Some(slot) = s.eq_slot() else {
+            if s.inserts.len() < s.slots {
+                self.push(MixAction::AddEq { strip: id });
+            }
+            return;
+        };
+        let vals = s.inserts[slot].eq.clone().unwrap_or_default();
+        let curve = self.eq_curve(&vals);
+        let dot = eq_look::hit(&vals, &curve, eq_look::plot(graph), x, y);
+        self.grabs.push((
+            finger,
+            Grab::Eq {
+                id,
+                slot,
+                dot,
+                x0: x,
+                y0: y,
+                moved: false,
+            },
+        ));
+    }
+
+    /// Picks strip `id`'s EQ in `slot` and band `dot` for the Q-Links.
+    fn eq_pick(&mut self, id: StripId, slot: usize, dot: Option<Dot>) {
+        if self.pick != Some((id, slot)) {
+            self.pick = Some((id, slot));
+            self.eq_dot = None;
+            self.push(MixAction::PickInsert { strip: id, slot });
+        }
+        if let Some(d) = dot.filter(|d| self.eq_dot != Some(*d)) {
+            self.eq_dot = Some(d);
+            self.push(MixAction::FocusInsert {
+                strip: id,
+                slot,
+                id: d.main_id(),
+            });
+        }
+    }
+
+    /// A tap on a curve: its EQ (and the band tapped) picked, or opened
+    /// when the tap lands on what is already picked.
+    fn eq_tap(&mut self, id: StripId, slot: usize, dot: Option<Dot>) {
+        let same = self.pick == Some((id, slot)) && (dot.is_none() || dot == self.eq_dot);
+        if same {
+            self.push(MixAction::OpenInsert { strip: id, slot });
+        } else {
+            self.eq_pick(id, slot, dot);
+        }
+    }
+
+    /// Dot `dot` of strip `id`'s EQ under a finger at `(x, y)`.
+    fn eq_drag(&mut self, id: StripId, slot: usize, dot: Dot, x: i32, y: i32, r: Rect) {
+        let l = layout(r);
+        let row = self
+            .rows(&l)
+            .into_iter()
+            .find(|(i, _)| self.state.strips[*i].id == id)
+            .map(|(_, row)| row)
+            .or((id == StripId::Master).then(|| grid(&l).master));
+        let Some(row) = row else {
+            return;
+        };
+        let Some(vals) = self
+            .state
+            .strip(id)
+            .and_then(|s| s.inserts.get(slot))
+            .and_then(|i| i.eq.clone())
+        else {
+            return;
+        };
+        let (_, graph, _) = eq_look::row_parts(row, FX_NAME_W);
+        for (p, value) in eq_look::drag(&vals, eq_look::plot(graph), dot, x, y) {
+            if vals.get(p as usize) != Some(&value) {
+                self.push(MixAction::SetInsert {
+                    strip: id,
+                    slot,
+                    id: p,
+                    value,
+                });
+            }
+        }
+    }
+
+    /// Where dot `dot` of strip `id`'s EQ is drawn on the EQ look, in the
+    /// widget's rectangle `r` (None off the page or without an EQ).
+    pub fn eq_dot_at(&self, r: Rect, id: StripId, dot: Dot) -> Option<(i32, i32)> {
+        let l = layout(r);
+        let row = self
+            .rows(&l)
+            .into_iter()
+            .find(|(i, _)| self.state.strips[*i].id == id)
+            .map(|(_, row)| row)
+            .or((id == StripId::Master).then(|| grid(&l).master))?;
+        let s = self.state.strip(id)?;
+        let vals = s.inserts.get(s.eq_slot()?)?.eq.clone()?;
+        let (_, graph, _) = eq_look::row_parts(row, FX_NAME_W);
+        let (x, y) = eq_look::dot_at(&vals, &self.eq_curve(&vals), eq_look::plot(graph), dot);
+        Some((x.round() as i32, y.round() as i32))
+    }
+
+    /// An EQ's curve, worked out again only when its values change.
+    fn eq_curve(&self, vals: &[f32]) -> Vec<f32> {
+        let mut cache = self.eq_curves.borrow_mut();
+        if let Some((_, c)) = cache.iter().find(|(v, _)| v.as_slice() == vals) {
+            return c.clone();
+        }
+        let c = eq_look::curve(vals);
+        if cache.len() >= 24 {
+            cache.remove(0);
+        }
+        cache.push((vals.to_vec(), c.clone()));
+        c
+    }
+
     fn drag(&mut self, finger: u64, x: i32, y: i32, r: Rect) {
         if self.io_finger(finger, Touch::Move, x, y, r) {
             return;
@@ -1190,6 +1457,31 @@ impl MixerView {
             return;
         };
         match self.grabs[gi].1 {
+            Grab::Eq {
+                id,
+                slot,
+                dot: Some(dot),
+                x0,
+                y0,
+                moved,
+            } => {
+                if !moved && (x - x0).abs().max((y - y0).abs()) < eq_look::LIFT {
+                    return;
+                }
+                if !moved {
+                    self.grabs[gi].1 = Grab::Eq {
+                        id,
+                        slot,
+                        dot: Some(dot),
+                        x0,
+                        y0,
+                        moved: true,
+                    };
+                    self.eq_pick(id, slot, Some(dot));
+                }
+                self.eq_drag(id, slot, dot, x, y, r);
+            }
+            Grab::Eq { .. } => {}
             Grab::Fx { id, from, x0, to } => {
                 if to.is_none() && (x - x0).abs() < 12 {
                     return;
@@ -1268,6 +1560,33 @@ impl MixerView {
                 self.set(id, mx::PAN, 0.0);
             }
         }
+        if let Grab::Eq {
+            id,
+            slot,
+            dot,
+            moved,
+            ..
+        } = g
+        {
+            match (moved, dot) {
+                (true, Some(d)) => {
+                    let ids: &[u16] = match d {
+                        Dot::Band(b) => &[mpfree_fx::ids::eq::freq(b), mpfree_fx::ids::eq::gain(b)],
+                        Dot::Low => &[mpfree_fx::ids::eq::LOW_CUT],
+                        Dot::High => &[mpfree_fx::ids::eq::HIGH_CUT],
+                    };
+                    for &p in ids {
+                        self.push(MixAction::ReleaseInsert {
+                            strip: id,
+                            slot,
+                            id: p,
+                        });
+                    }
+                }
+                _ if cancel => {}
+                _ => self.eq_tap(id, slot, dot),
+            }
+        }
         if let Grab::Fx { id, from, to, .. } = g {
             match to {
                 _ if cancel => {}
@@ -1294,8 +1613,9 @@ impl MixerView {
                     t.accent,
                 );
             }
-            let Some(&count) = self.state.counts.get(i) else {
-                // The I/O view: no count.
+            let count = self.state.counts.get(i).filter(|_| !l.compact);
+            let Some(&count) = count else {
+                // The I/O view, or a narrow chip: no count.
                 cx.text(
                     if on { FontId::Bold } else { FontId::Sans },
                     t.size_body,
@@ -1354,7 +1674,7 @@ impl MixerView {
             t.text_dim,
             &page,
         );
-        // The two looks, where the mixer's CPU chip was.
+        // The three looks, where the mixer's CPU chip was.
         cx.canvas.fill_round_rect(l.look, 12, t.surface);
         for (half, look) in look_halves(l.look).into_iter().zip(Look::ALL) {
             let on = look == self.look;
@@ -1788,60 +2108,8 @@ impl MixerView {
     fn paint_row(&self, cx: &mut PaintCx, s: &StripView, row: Rect) {
         let t = cx.theme.clone();
         let (name, cells) = row_cells(row);
-        if self.state.selected == Some(s.id) {
-            cx.canvas.fill_round_rect(name, 10, t.raised);
-            cx.canvas.stroke_round_rect(name, 10, 2, t.accent);
-        }
-        let color = strip_color(&t, s.id);
-        let stripe = Rect::new(name.x + 6, name.y + (name.h - 36) / 2, 4, 36);
-        cx.canvas.fill_round_rect(
-            stripe,
-            2,
-            if s.audible {
-                color
-            } else {
-                color.mix(t.surface, 0.6)
-            },
-        );
-        let text = Rect::new(
-            stripe.right() + 10,
-            name.y + 6,
-            name.right() - stripe.right() - 16,
-            name.h - 12,
-        );
-        let (top, bottom) = text.take_top(text.h / 2 + 2);
-        cx.text(
-            FontId::Bold,
-            t.size_body - 2.0,
-            top,
-            Align::Left,
-            if s.audible { t.text } else { t.text_dim },
-            &s.name,
-        );
-        let sub = match s.take {
-            Some(TakeView { print, done }) => {
-                let what = if print { "printing" } else { "freezing" };
-                match done {
-                    Some(d) => format!("{what} {:.0} %", (d * 100.0).clamp(0.0, 100.0)),
-                    None => format!("{what} next loop"),
-                }
-            }
-            None => row_sub(s),
-        };
-        cx.text(
-            FontId::Sans,
-            t.size_small - 3.0,
-            bottom,
-            Align::Left,
-            if s.take.is_some() || s.frozen {
-                t.accent
-            } else {
-                t.text_dim
-            },
-            &sub,
-        );
+        self.paint_row_name(cx, s, name);
         let slots = s.slots.min(FX_COLS);
-        // An effect dragged along this row: where it would land.
         let drop = self.grabs.iter().find_map(|(_, g)| match *g {
             Grab::Fx {
                 id,
@@ -1936,6 +2204,264 @@ impl MixerView {
                     .stroke_round_rect(c, 10, 1, t.outline.mix(t.surface, 0.5));
             }
         }
+    }
+
+    /// The EQ look: the panel, its title line, the frequencies over the
+    /// curves, a row a strip and the master's row.
+    fn paint_eq(&self, cx: &mut PaintCx, l: &Layout) {
+        let t = cx.theme.clone();
+        let g = grid(l);
+        cx.canvas.fill_round_rect(g.panel, 14, t.surface);
+        let rows = self.rows(l);
+        let title = match (rows.first(), rows.last()) {
+            (Some((a, _)), Some((b, _))) => format!(
+                "{} {}-{} · EACH STRIP'S EQ · TAP A CURVE TO SHAPE IT",
+                self.state.view.label().to_uppercase(),
+                a + 1,
+                b + 1
+            ),
+            _ => self.state.view.label().to_uppercase(),
+        };
+        cx.text(
+            FontId::Bold,
+            t.size_small - 2.0,
+            g.title,
+            Align::Left,
+            t.text_dim,
+            &title,
+        );
+        let picked = self.pick.and_then(|(id, _)| {
+            let s = self.state.strip(id)?;
+            Some(match self.eq_dot() {
+                Some(d) => format!("{} · EQ · {} picked", s.name.to_uppercase(), d.name()),
+                None => format!("{} · EQ picked", s.name.to_uppercase()),
+            })
+        });
+        match picked {
+            Some(p) => {
+                cx.text(
+                    FontId::Sans,
+                    t.size_small - 2.0,
+                    g.title,
+                    Align::Right,
+                    t.text_dim,
+                    &p,
+                );
+            }
+            None => self.paint_cost(cx, g.title, true),
+        }
+        let (name, graph, summary) = eq_look::row_parts(g.numbers, FX_NAME_W);
+        let faint = |cx: &mut PaintCx, r: Rect, a: Align, s: &str| {
+            cx.text(FontId::Sans, t.size_small - 2.0, r, a, t.text_faint, s);
+        };
+        faint(cx, name, Align::Left, "Strip");
+        for (hz, label) in [
+            (20.0, "20 Hz"),
+            (100.0, "100"),
+            (1_000.0, "1k"),
+            (10_000.0, "10k"),
+            (20_000.0, "20 kHz"),
+        ] {
+            let x = graph.x + (eq_look::freq_x(hz) * graph.w as f32) as i32;
+            let (r, a) = match label {
+                "20 Hz" => (Rect::new(x, graph.y, 60, graph.h), Align::Left),
+                "20 kHz" => (Rect::new(x - 60, graph.y, 60, graph.h), Align::Right),
+                _ => (Rect::new(x - 30, graph.y, 60, graph.h), Align::Center),
+            };
+            faint(cx, r, a, label);
+        }
+        faint(cx, summary, Align::Left, "Where it sits");
+        for (i, row) in rows {
+            self.paint_eq_row(cx, &self.state.strips[i], row);
+        }
+        let line = Rect::new(g.left, g.master.y - 6, g.width, 1);
+        cx.canvas.fill_rect(line, t.raised);
+        self.paint_eq_row(cx, &self.state.master, g.master);
+    }
+
+    /// One strip's row on the EQ look: its name, its EQ's curve and dots
+    /// (or "+ EQ"), and where the EQ sits.
+    fn paint_eq_row(&self, cx: &mut PaintCx, s: &StripView, row: Rect) {
+        let t = cx.theme.clone();
+        let (name, graph, summary) = eq_look::row_parts(row, FX_NAME_W);
+        self.paint_row_name(cx, s, name);
+        let Some(slot) = s.eq_slot() else {
+            cx.canvas
+                .stroke_round_rect(graph, 8, 1, t.outline.mix(t.surface, 0.3));
+            let full = s.inserts.len() >= s.slots;
+            let note = if full {
+                "the chain is full".to_string()
+            } else if s.inserts.is_empty() {
+                "it goes in slot 1".to_string()
+            } else {
+                format!(
+                    "it goes in slot {}, the first free slot",
+                    s.inserts.len() + 1
+                )
+            };
+            let bw = 76;
+            let nw = cx.measure(FontId::Sans, t.size_small - 3.0, &note);
+            let x0 = graph.x + (graph.w - bw - 10 - nw) / 2;
+            if !full {
+                let b = Rect::new(x0, graph.y + (graph.h - 32) / 2, bw, 32);
+                cx.canvas.fill_round_rect(b, 8, t.raised);
+                cx.text(
+                    FontId::Bold,
+                    t.size_small - 2.0,
+                    b,
+                    Align::Center,
+                    t.text,
+                    "+ EQ",
+                );
+            }
+            let nr = Rect::new(x0 + bw + 10, graph.y, nw + 4, graph.h);
+            cx.text(
+                FontId::Sans,
+                t.size_small - 3.0,
+                nr,
+                Align::Left,
+                t.text_dim,
+                &note,
+            );
+            return;
+        };
+        let ins = &s.inserts[slot];
+        let vals = ins.eq.clone().unwrap_or_default();
+        let picked = self.pick == Some((s.id, slot));
+        let on = ins.on && s.audible;
+        cx.canvas
+            .fill_round_rect(graph, 8, t.bg.mix(t.surface, 0.4));
+        let p = eq_look::plot(graph);
+        let mid = eq_look::db_y(p, 0.0);
+        cx.canvas
+            .fill_rect(Rect::new(p.x, mid as i32, p.w, 1), t.outline);
+        for hz in [100.0, 1_000.0, 10_000.0] {
+            let x = p.x + (eq_look::freq_x(hz) * p.w as f32) as i32;
+            cx.canvas
+                .fill_rect(Rect::new(x, graph.y, 1, graph.h), t.outline.mix(t.bg, 0.6));
+        }
+        let color = if on {
+            strip_color(&t, s.id)
+        } else {
+            t.text_faint
+        };
+        let curve = self.eq_curve(&vals);
+        let pts: Vec<(f32, f32)> = curve
+            .iter()
+            .enumerate()
+            .map(|(k, &d)| {
+                (
+                    p.x as f32 + k as f32 / (curve.len() - 1) as f32 * p.w as f32,
+                    eq_look::db_y(p, d),
+                )
+            })
+            .collect();
+        let clip = cx.canvas.clip();
+        cx.canvas.set_clip(clip.intersect(graph));
+        let mut fill = mpfree_ui::Shape::new(graph);
+        fill.fill_under(&pts, mid, if picked { 0.26 } else { 0.16 });
+        fill.draw(cx.canvas, color);
+        let mut line = mpfree_ui::Shape::new(graph);
+        line.polyline(&pts, 2.0);
+        line.draw(cx.canvas, color);
+        for d in eq_look::dots(&vals) {
+            let (x, y) = eq_look::dot_at(&vals, &curve, p, d);
+            let sel = picked && self.eq_dot == Some(d);
+            let rad = if sel { 7.0 } else { 5.0 };
+            if sel {
+                let mut ring = mpfree_ui::Shape::new(graph);
+                ring.disc(x, y, rad + 2.0);
+                ring.draw(cx.canvas, t.text);
+            }
+            let mut m = mpfree_ui::Shape::new(graph);
+            m.disc(x, y, rad);
+            let ink = if on && eq_look::heard(&vals, d) {
+                d.color()
+            } else {
+                t.text_faint
+            };
+            m.draw(cx.canvas, ink);
+        }
+        cx.canvas.set_clip(clip);
+        if picked {
+            cx.canvas.stroke_round_rect(graph, 8, 2, t.accent);
+        }
+        let (a, b) = eq_look::summary(&vals, slot, ins.on);
+        let (top, bottom) = summary.inset_xy(0, 6).take_top(20);
+        cx.text(
+            FontId::Sans,
+            t.size_small - 2.0,
+            top,
+            Align::Left,
+            if on { t.text } else { t.text_dim },
+            &a,
+        );
+        cx.text(
+            FontId::Sans,
+            t.size_small - 3.0,
+            bottom,
+            Align::Left,
+            t.text_dim,
+            &b,
+        );
+    }
+
+    /// A row's name cell on Effects and EQ: the strip's colour, its name
+    /// and the line under it.
+    fn paint_row_name(&self, cx: &mut PaintCx, s: &StripView, name: Rect) {
+        let t = cx.theme.clone();
+        if self.state.selected == Some(s.id) {
+            cx.canvas.fill_round_rect(name, 10, t.raised);
+            cx.canvas.stroke_round_rect(name, 10, 2, t.accent);
+        }
+        let color = strip_color(&t, s.id);
+        let stripe = Rect::new(name.x + 6, name.y + (name.h - 36) / 2, 4, 36);
+        cx.canvas.fill_round_rect(
+            stripe,
+            2,
+            if s.audible {
+                color
+            } else {
+                color.mix(t.surface, 0.6)
+            },
+        );
+        let text = Rect::new(
+            stripe.right() + 10,
+            name.y + 6,
+            name.right() - stripe.right() - 16,
+            name.h - 12,
+        );
+        let (top, bottom) = text.take_top(text.h / 2 + 2);
+        cx.text(
+            FontId::Bold,
+            t.size_body - 2.0,
+            top,
+            Align::Left,
+            if s.audible { t.text } else { t.text_dim },
+            &s.name,
+        );
+        let sub = match s.take {
+            Some(TakeView { print, done }) => {
+                let what = if print { "printing" } else { "freezing" };
+                match done {
+                    Some(d) => format!("{what} {:.0} %", (d * 100.0).clamp(0.0, 100.0)),
+                    None => format!("{what} next loop"),
+                }
+            }
+            None => row_sub(s),
+        };
+        cx.text(
+            FontId::Sans,
+            t.size_small - 3.0,
+            bottom,
+            Align::Left,
+            if s.take.is_some() || s.frozen {
+                t.accent
+            } else {
+                t.text_dim
+            },
+            &sub,
+        );
     }
 
     fn paint_safety(&self, cx: &mut PaintCx, area: Rect) {
@@ -2469,7 +2995,7 @@ impl MixerView {
         if self.state.view != MixView::Io {
             let shown = match self.look {
                 Look::Faders => self.shown(l).len(),
-                Look::Effects => self.rows(l).len(),
+                Look::Effects | Look::Eq => self.rows(l).len(),
             };
             return (self.first, shown, n, false);
         }
@@ -2880,10 +3406,14 @@ impl Widget for MixerView {
         if !clip.intersect(Rect::new(r.x, r.y, r.w, HEAD_H)).is_empty() {
             self.paint_head(cx, &l);
         }
-        let effects = self.look == Look::Effects && self.state.view != MixView::Io;
+        let effects = self.look != Look::Faders && self.state.view != MixView::Io;
         if effects {
             if !clip.intersect(grid(&l).panel).is_empty() {
-                self.paint_effects(cx, &l);
+                if self.look == Look::Eq {
+                    self.paint_eq(cx, &l);
+                } else {
+                    self.paint_effects(cx, &l);
+                }
             }
         } else {
             for (i, sr) in self.shown(&l) {
@@ -3007,6 +3537,28 @@ impl Widget for MixerView {
                         format!("{} monitor", s.name),
                         p.monitor,
                     ));
+                }
+            }
+            return out;
+        }
+        if self.look == Look::Eq {
+            let mut rows: Vec<(&StripView, Rect)> = self
+                .rows(&l)
+                .into_iter()
+                .map(|(i, row)| (&self.state.strips[i], row))
+                .collect();
+            rows.push((&self.state.master, grid(&l).master));
+            for (k, (s, row)) in rows.into_iter().enumerate() {
+                let (name, graph, _) = eq_look::row_parts(row, FX_NAME_W);
+                let picked = self.state.selected == Some(s.id);
+                out.push(
+                    Target::tap("eq-name", k, s.name.clone(), name)
+                        .disabled_if(picked && !self.state.takes),
+                );
+                if s.eq_slot().is_some() {
+                    out.push(Target::tap("eq", k, format!("{} EQ", s.name), graph));
+                } else if s.inserts.len() < s.slots {
+                    out.push(Target::tap("eq-add", k, format!("{} + EQ", s.name), graph));
                 }
             }
             return out;
@@ -3209,6 +3761,7 @@ mod tests {
             on: true,
             key: Some("Track 2".into()),
             cost_pct: None,
+            eq: None,
         }];
         st.strips[0].sends.as_mut().unwrap()[1] = SendView {
             db: -12.0,
@@ -3549,7 +4102,7 @@ mod tests {
                 .map(|t| t.rect)
         };
         assert!(find(&ui, "fx", 0).is_none(), "Faders first");
-        let [faders, effects] = look_halves(l.look);
+        let [faders, effects, _] = look_halves(l.look);
         tap(&mut ui, mid(effects));
         assert_eq!(
             crate::take_actions(&mut ui),
@@ -3628,6 +4181,7 @@ mod tests {
             on: true,
             key: None,
             cost_pct: None,
+            eq: None,
         };
         st.strips[1].inserts = vec![fx("Drive"), fx("EQ"), fx("Delay")];
         let mut ui = ui(st);
@@ -3850,6 +4404,7 @@ mod tests {
             on: i % 2 == 0,
             key: None,
             cost_pct: Some(i as f32),
+            eq: None,
         }));
         let mut ui = ui(st);
         let mut c = SoftCanvas::new(1280, 800);
