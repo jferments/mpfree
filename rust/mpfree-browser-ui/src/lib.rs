@@ -43,7 +43,7 @@ pub mod view;
 
 pub use export::{
     ExportBits, ExportChoice, ExportFormat, ExportInput, ExportPanel, ExportPhase, ExportRange,
-    ExportSetup, EXPORT_RATES,
+    ExportSetup, StemsBy, EXPORT_RATES,
 };
 pub use state::{BrowseAction, Browser, Button, Filter, Input, Pick, Screen, Sort, Source};
 pub use view::BrowserView;

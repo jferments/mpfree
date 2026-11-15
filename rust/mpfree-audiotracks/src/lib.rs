@@ -630,6 +630,8 @@ fn fade_table() -> [f32; FADE + 1] {
 /// The audio tracks: see the module notes.
 pub struct AudioTracks {
     rate: u32,
+    /// [`AudioTracks::set_only`]: the one track heard (an export's replay).
+    only: Option<usize>,
     pool: Pool,
     takes: Vec<Take>,
     tracks: Vec<Track>,
@@ -681,6 +683,7 @@ impl AudioTracks {
         }
         AudioTracks {
             rate,
+            only: None,
             pool: Pool::new(samples),
             takes: vec![NO_TAKE; MAX_TAKES],
             tracks: (0..MAX_TRACKS).map(|_| Track::new()).collect(),
@@ -710,6 +713,24 @@ impl AudioTracks {
             loop_range: None,
             plan_wait: 0,
             replan: false,
+        }
+    }
+
+    /// Only track `only` is heard (None: every track, as their mutes and
+    /// solos say): an export's replay of one audio track. The others go
+    /// quiet at once, with no fade, so none of them is in the replay's
+    /// first frames; they fade back in when it ends. Real-time safe.
+    pub fn set_only(&mut self, only: Option<usize>) {
+        if only == self.only {
+            return;
+        }
+        self.only = only;
+        if let Some(o) = only {
+            for (k, tr) in self.tracks.iter_mut().enumerate() {
+                if k != o {
+                    tr.gains = [0.0; 2];
+                }
+            }
         }
     }
 
@@ -2170,8 +2191,9 @@ impl AudioTracks {
     /// the sum into `out`.
     fn mix(&mut self, n: usize, out: &mut [f32]) {
         let any_solo = self.tracks.iter().any(|t| t.solo);
-        for tr in &mut self.tracks {
-            let audible = !tr.mute && (!any_solo || tr.solo);
+        let only = self.only;
+        for (k, tr) in self.tracks.iter_mut().enumerate() {
+            let audible = !tr.mute && (!any_solo || tr.solo) && only.is_none_or(|o| o == k);
             let lv = if audible { tr.level } else { 0.0 };
             let target = [lv * (1.0 - tr.pan).min(1.0), lv * (1.0 + tr.pan).min(1.0)];
             let from = tr.gains;

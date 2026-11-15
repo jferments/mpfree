@@ -4363,20 +4363,38 @@ impl Player {
             return;
         };
         let p = job.progress();
-        let part = p
-            .length
-            .filter(|&n| n > 0 && !p.tail)
-            .map(|n| p.played as f32 / n as f32);
-        b.export_running(p.words(), part.or(p.tail.then_some(1.0)));
+        b.export_running(p.words(), p.part());
     }
 
-    /// The pass came back: the job finishes the files and says how it
-    /// went.
+    /// A pass came back: the next replay's pass goes to the audio loop if
+    /// the export has one; otherwise the job finishes the files and says
+    /// how it went.
     fn export_over(&mut self, run: Box<crate::export::Run>) {
-        let Some((job, loc)) = self.export_job.take() else {
+        let Some((mut job, loc)) = self.export_job.take() else {
             return;
         };
-        let crate::export::Run { pass, said, .. } = *run;
+        let crate::export::Run { pass, said, range } = *run;
+        let pass = match said {
+            Some(_) => pass,
+            None => match job.next(pass) {
+                mpfree_export::Next::Play(next) => {
+                    self.say(format!(
+                        "export: pass {} of {}",
+                        next.index() + 1,
+                        next.passes()
+                    ));
+                    self.export_job = Some((job, loc));
+                    self.outbox
+                        .push(FromUi::Export(Box::new(crate::export::Run {
+                            pass: next,
+                            range,
+                            said: None,
+                        })));
+                    return;
+                }
+                mpfree_export::Next::Finish(pass) => pass,
+            },
+        };
         let outcome = job.finish(pass);
         let (text, folder) = match (&outcome, said) {
             (mpfree_export::Outcome::Done(_), _) => (outcome.words(), loc),
