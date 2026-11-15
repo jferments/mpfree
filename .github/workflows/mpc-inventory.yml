@@ -1171,7 +1171,7 @@ jobs:
         # .so against the SDK's rules (ELF32 hard-float, only VSTPluginMain,
         # libc/libm/loader only, glibc <= 2.39). The host-contract tests run
         # natively with the workspace tests above.
-        run: bash tools/mpc-plugins/build-arm32.sh
+        run: bash tools/mpc-plugins/build.sh arm32
       - name: Build and check the static mpfree program for the kexec test boot (do not deploy)
         env:
           CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER: arm-linux-gnueabihf-gcc

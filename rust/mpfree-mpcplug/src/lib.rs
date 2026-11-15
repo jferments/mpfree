@@ -33,6 +33,9 @@
 //! are answered with 0.
 
 pub mod abi;
+pub mod skin;
+
+pub use skin::{host_names, host_params, ui_json};
 
 use std::cell::UnsafeCell;
 use std::ffi::{c_void, CStr};
@@ -77,6 +80,8 @@ struct Instance {
     host: Option<HostCallback>,
     /// The node's writable parameters, in host index order.
     params: Vec<&'static ParamInfo>,
+    /// The names the host shows, unique within the plugin ([`host_names`]).
+    names: Vec<String>,
     /// Each parameter's value (not the 0-1 position), as f32 bits.
     values: Vec<AtomicU32>,
     dirty: Vec<AtomicBool>,
@@ -103,7 +108,7 @@ struct Audio {
 /// `host` must be the host's callback, valid for the instance's life.
 pub unsafe fn plugin_main(spec: &'static Spec, host: Option<HostCallback>) -> *mut AEffect {
     let node = (spec.make)();
-    let params: Vec<&'static ParamInfo> = node.params().iter().filter(|p| !p.readonly).collect();
+    let params = host_params(node.as_ref());
     let values = params
         .iter()
         .map(|p| AtomicU32::new(p.default.to_bits()))
@@ -141,6 +146,7 @@ pub unsafe fn plugin_main(spec: &'static Spec, host: Option<HostCallback>) -> *m
         },
         spec,
         host,
+        names: host_names(&params),
         params,
         values,
         dirty,
@@ -332,7 +338,7 @@ unsafe extern "C" fn dispatcher(
         }
         EFF_GET_PARAM_NAME => {
             match param(index) {
-                Some(i) => put_str(ptr, PARAM_STR_BYTES, inst.params[i].name),
+                Some(i) => put_str(ptr, PARAM_STR_BYTES, &inst.names[i]),
                 None => put_str(ptr, PARAM_STR_BYTES, ""),
             }
             0
