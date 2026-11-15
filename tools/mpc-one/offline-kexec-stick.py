@@ -67,6 +67,17 @@ What changes in the COPY of the root filesystem (the image itself is only read):
     and writes only /run/mpfree-test-eth, which the log service copies
   - root's password field, only if it marks the account locked ("!"), is set
     to "*" so OpenSSH accepts key logins; no password works either way
+  - only with --akai-app (phase 3 of the 3.10.1 stick test, for developer
+    mode): Akai's app is NOT masked and its launcher is NOT stubbed, so it
+    starts at power-on and draws the screen; the log display is installed but
+    not started, and there is no pad player or startup screen. Everything else
+    above stays: every other mask, every other stub (dfu-util among them, so
+    the launcher's `dfu-util -l` finds nothing and it never runs
+    SME0/Firmware/update.sh), the hidden eMMC and SD card, /data in RAM,
+    kexec off. Partitions 3 and 4 are made as with --app, so
+    write-test-stick.py keeps the stick's saved settings in place. Akai's app
+    may mount the stick's partitions and write to them; it cannot mount
+    partition 1 writable, since it is already mounted read-only as /
 
 Inputs, found automatically:
   the rootfs        the single *rootfs*.img in the newest akai-unpacked-*/
@@ -92,9 +103,11 @@ Optional inputs:
   --splash-font FILE  only for mpfree-splash: a TrueType or OpenType font for
                       its title (only with --splash); mpfree-startup has none
   --app FILE          the pad player (mpfree), built like the screen log
-  --kits FILE         its drum kits (only with --app); default: kits.bin in
-                      the newest ~/mpfree-work/factory-kit-*/ folder. They are
-                      Akai's sounds: the stick stays private
+  --kits FILE         its drum kits (only with --app or --akai-app); default:
+                      kits.bin in the newest ~/mpfree-work/factory-kit-*/
+                      folder. They are Akai's sounds: the stick stays private
+  --akai-app          start Akai's app at power-on instead (see above); not
+                      with --app, --splash or --splash-font
 
 The device tree also gets the Ethernet PHY's ID (Realtek RTL8211E, as 3.6.0
 reads it on the reference unit). 3.6.0 holds the PHY in reset when it shuts
@@ -161,6 +174,16 @@ MASK_UNITS = (
     "ip6tables.service",
 )
 MASK_GENERATORS = ("acva-emmc-content-generator",)
+# With --akai-app these two stay as Akai ships them: the app's unit and its launcher, which runs
+# `dfu-util -l` (a stub that finds nothing) and then the app.
+AKAI_APP_UNIT = "acvs.service"
+AKAI_APP_LAUNCHER = "/usr/bin/az01-launch-MPC"
+# The build report's line that host_kexec_boot.py reads to expect Akai's app on the test build.
+AKAI_APP_MARK = "akai app: on (--akai-app)"
+# Akai's firewall units. The stick masks them; an --akai-app build quotes what they would load on an
+# installed system, since that decides whether developer mode's SSH port can be reached there.
+FIREWALL_UNITS = ("/usr/lib/systemd/system/iptables.service", "/usr/lib/systemd/system/ip6tables.service")
+RULES_MAX = 64 << 10
 # Programs replaced by the stub, where present. Paths under /usr only: /bin, /sbin
 # and /lib are links into /usr on these images (checked below).
 STUB_PROGRAMS = (
@@ -584,15 +607,27 @@ def splash_inputs(args):
 
 
 def app_inputs(args, work):
-    """The pad player and its kits, if asked for. Returns (program path, bytes, kits path, kits bytes)."""
+    """The pad player and its kits, if asked for. Returns (program path, bytes, kits path, kits bytes).
+    With --akai-app there is no program, but the kits still make partition 3, so the layout (and the
+    stick's partition 4) stays as with --app."""
+    if args.akai_app:
+        for name, given in (("--app", args.app), ("--splash", args.splash), ("--splash-font", args.splash_font)):
+            if given:
+                raise Stop(f"--akai-app and {name} cannot go together: Akai's app draws the screen itself")
+        return (None, None) + kits_input(args, work)
     if args.kits and not args.app:
-        raise Stop("--kits needs --app")
+        raise Stop("--kits needs --app or --akai-app")
     if not args.app:
         return None, None, None, None
     path = os.path.realpath(args.app)
     if not os.path.isfile(path):
         raise Stop(f"missing {path}: build the pad player (mpfree) first")
     program = static_arm_program(path)
+    return (path, program) + kits_input(args, work)
+
+
+def kits_input(args, work):
+    """The drum kits file: --kits, or the newest factory-kit-* folder's. Returns (path, bytes)."""
     kits = args.kits
     if not kits:
         folders = sorted(glob.glob(os.path.join(work, "factory-kit-[0-9]*", "kits.bin")))
@@ -604,7 +639,7 @@ def app_inputs(args, work):
         data = fh.read(KITS_MAX + 1)
     if len(data) > KITS_MAX or len(data) < 12 or data[:8] != KITS_MAGIC:
         raise Stop(f"{kits} is not a kits file made by offline-factory-kit.py, or is over {KITS_MAX} bytes")
-    return path, program, kits, data
+    return kits, data
 
 
 def make_kits_fs(kits, scratch):
@@ -766,14 +801,46 @@ def running_release(pre, work, target_release):
     return release, how
 
 
+def firewall_lines(img, scratch):
+    """Akai's firewall units and the rules files they load, quoted from the image for the report."""
+    lines = []
+    for unit in FIREWALL_UNITS:
+        if img.kind(unit) != "regular":
+            lines.append(f"  {unit}: not in this version")
+            continue
+        text = img.read(unit, scratch)[:RULES_MAX].decode("utf-8", "replace")
+        execs = [ln.strip() for ln in text.splitlines() if ln.strip().startswith(("ExecStart=", "ExecReload="))]
+        lines.append(f"  {unit}: " + ("; ".join(execs) or "no ExecStart line"))
+        for path in sorted(set(re.findall(r"(/etc/[^\s;'\"]+)", " ".join(execs)))):
+            kind = img.kind(path)
+            if kind != "regular":
+                lines.append(f"  {path}: {kind or 'not in the image'}")
+                continue
+            lines.append(f"  --- {path}")
+            data = img.read(path, scratch)
+            if not data:
+                lines.append("    (empty: 0 bytes, so it loads no rules)")
+            lines.extend("    " + ln for ln in data[:RULES_MAX].decode("utf-8", "replace").splitlines())
+            if len(data) > RULES_MAX:
+                lines.append(f"    (cut at {RULES_MAX} bytes of {len(data)})")
+    return lines
+
+
 def build_rootfs(img, scratch, pubkey, host_key, log_uuid, screen_log, rotation, splash=(None, None, None),
-                 app=None, kits_uuid=None, data_uuid=None):
+                 app=None, kits_uuid=None, data_uuid=None, akai_app=False):
     """Change the copy with debugfs -w, then read every change back. Returns the root-account note.
 
     With `app` (the pad player's bytes), `kits_uuid` (partition 3) and `data_uuid` (partition 4), the
-    pad player starts at power-on in place of the log display, which stays installed for when the app fails."""
-    if not ((app is None) == (kits_uuid is None) == (data_uuid is None)):
+    pad player starts at power-on in place of the log display, which stays installed for when the app fails.
+    With `akai_app`, Akai's app is neither masked nor its launcher stubbed, and the log display is
+    installed but not started; partitions 3 and 4 are made all the same."""
+    if akai_app:
+        if app is not None or splash[0] is not None or kits_uuid is None or data_uuid is None:
+            raise Stop("--akai-app takes no pad player or startup screen, and needs partitions 3 and 4")
+    elif not ((app is None) == (kits_uuid is None) == (data_uuid is None)):
         raise Stop("the pad player needs its kits and data partitions, and the other way round")
+    mask_units = tuple(u for u in MASK_UNITS if not (akai_app and u == AKAI_APP_UNIT))
+    stub_programs = tuple(p for p in STUB_PROGRAMS if not (akai_app and p == AKAI_APP_LAUNCHER))
     for top in ("/bin", "/sbin", "/lib"):
         kind = img.kind(top)
         if kind not in ("symlink", None) or (kind == "symlink" and img.link(top) not in (f"usr{top}", f"/usr{top}")):
@@ -787,7 +854,7 @@ def build_rootfs(img, scratch, pubkey, host_key, log_uuid, screen_log, rotation,
     free_bytes, free_inodes = img.free()
     if free_bytes < len(screen_log) + extra + (4 << 20) or free_inodes < 64:
         raise Stop(f"the image has too little room for the changes ({free_bytes} bytes, {free_inodes} inodes free)")
-    new_paths = (["/etc/systemd/system/" + u for u in MASK_UNITS] +
+    new_paths = (["/etc/systemd/system/" + u for u in mask_units] +
                  ["/etc/systemd/system/data.mount", "/etc/systemd/system/mpfree-test-sshd.service",
                   "/etc/systemd/system/mpfree-test-logs.service", "/etc/mpfree-test",
                   "/etc/systemd/system/mpfree-test-screen.service",
@@ -844,7 +911,7 @@ def build_rootfs(img, scratch, pubkey, host_key, log_uuid, screen_log, rotation,
     add("/etc/mpfree-test/ethernet-retry.sh", ETHERNET_SCRIPT, 0o755)
     add("/etc/systemd/system/mpfree-test-ethernet.service", ETHERNET_UNIT, 0o644)
     stubbed, absent = [], []
-    for prog in STUB_PROGRAMS:
+    for prog in stub_programs:
         kind = img.kind(prog)
         if kind is None:
             absent.append(prog)
@@ -871,13 +938,15 @@ def build_rootfs(img, scratch, pubkey, host_key, log_uuid, screen_log, rotation,
     else:
         root_note = "root account is not marked locked; /etc/shadow unchanged"
 
-    links = {"/etc/systemd/system/" + u: "/dev/null" for u in MASK_UNITS}
+    links = {"/etc/systemd/system/" + u: "/dev/null" for u in mask_units}
     links.update({"/etc/systemd/system-generators/" + g: "/dev/null" for g in MASK_GENERATORS})
     links["/etc/systemd/system/multi-user.target.wants/mpfree-test-sshd.service"] = \
         "/etc/systemd/system/mpfree-test-sshd.service"
     links["/etc/systemd/system/sysinit.target.wants/mpfree-test-logs.service"] = \
         "/etc/systemd/system/mpfree-test-logs.service"
-    if app is None:
+    if akai_app:
+        pass  # Akai's app draws the screen; the log display stays installed for `systemctl start` over SSH
+    elif app is None:
         links["/etc/systemd/system/sysinit.target.wants/mpfree-test-screen.service"] = \
             "/etc/systemd/system/mpfree-test-screen.service"
     else:
@@ -1006,6 +1075,8 @@ def main(argv):
     ap.add_argument("--splash-font", help="only for mpfree-splash: a .ttf or .otf font for its title (with --splash)")
     ap.add_argument("--app", help="the pad player (mpfree, static ARM), started at power-on")
     ap.add_argument("--kits", help="its drum kits (kits.bin; default: the newest factory-kit-* folder's)")
+    ap.add_argument("--akai-app", action="store_true",
+                    help="start Akai's app at power-on (for developer mode); every flasher stays a stub")
     args = ap.parse_args(argv)
     for tool in ("debugfs", "e2fsck", "mke2fs", "sfdisk", "ssh-keygen"):
         if not shutil.which(tool):
@@ -1034,6 +1105,7 @@ def main(argv):
         OUT.say("MPFree kexec test-boot builder (workstation only, no MPC contact, no device writes)")
         OUT.say(f"output folder: {outdir}")
         need = 2 * os.path.getsize(image) + 3 * len(kits or b"") + (256 << 20)
+        parts34 = app is not None or args.akai_app
         if shutil.disk_usage(outdir).free < need:
             raise Stop(f"not enough free space in {work}: {need >> 20} MiB needed")
         source_sha = sha256(image)
@@ -1111,9 +1183,20 @@ def main(argv):
                         "in built-in letters)")
         else:
             OUT.say("startup screen: none (no --splash)")
-        kits_uuid = str(uuid.uuid4()) if app else None
-        data_uuid = str(uuid.uuid4()) if app else None
-        if app:
+        kits_uuid = str(uuid.uuid4()) if parts34 else None
+        data_uuid = str(uuid.uuid4()) if parts34 else None
+        if args.akai_app:
+            OUT.say(AKAI_APP_MARK)
+            OUT.say(f"  {AKAI_APP_UNIT} and {AKAI_APP_LAUNCHER} are left as Akai ships them: Akai's app starts at "
+                    "power-on and draws the screen. The log display is installed but not started. Every other mask "
+                    "and stub stays; dfu-util is a stub, so the launcher's `dfu-util -l` finds nothing and it never "
+                    "runs SME0/Firmware/update.sh")
+            OUT.say(f"drum kits (only to keep the layout; nothing reads them): {kits_path} "
+                    f"({struct.unpack_from('<I', kits, 8)[0]} kits, {len(kits)} bytes), on partition 3")
+            OUT.say(f"partition 4: as with --app ({DATA_START * SECTOR >> 20} MiB in, {DATA_SIZE >> 20} MiB and empty "
+                    "here); write-test-stick.py leaves the stick's saved settings in place. Akai's app may mount "
+                    "partitions 2 to 4 and write to them")
+        elif app:
             OUT.say(f"pad player: {app_path} ({len(app)} bytes, sha256 {hashlib.sha256(app).hexdigest()}, "
                     "static ARM EABI5 hard-float), started at power-on in place of the log display"
                     + (", over the startup screen" if splash[0] else ""))
@@ -1126,7 +1209,7 @@ def main(argv):
             OUT.say("pad player: none (no --app); the log display starts at power-on")
         root_note, stubbed, absent, links, written = build_rootfs(img, scratch, pubkey, host_key, log_uuid,
                                                                   screen_log, rotation, splash, app, kits_uuid,
-                                                                  data_uuid)
+                                                                  data_uuid, args.akai_app)
         if app:
             if img.kind(GROW_PROGRAM) in ("regular", "symlink"):
                 OUT.say(f"partition 4: {GROW_PROGRAM} is in this version, so its filesystem grows at boot to fill "
@@ -1141,14 +1224,19 @@ def main(argv):
         for path in absent:
             OUT.say(f"absent   {path} (nothing to stub)")
         OUT.say(root_note)
+        if args.akai_app:
+            OUT.say("Akai's firewall: masked on the stick, so developer mode's SSH port can be reached here. On an "
+                    "installed 3.10.1 these units start at boot and load these rules:")
+            for line in firewall_lines(img, scratch):
+                OUT.say(line)
         OUT.say("e2fsck -fn: clean")
         OUT.say(f"changed rootfs sha256 {sha256(copy)}")
         OUT.say()
 
         OUT.say("=== Stick image ===")
         stick = os.path.join(outdir, "stick.img")
-        kits_image = make_kits_fs(kits, scratch) if app else None
-        data_image = make_data_fs(scratch) if app else None
+        kits_image = make_kits_fs(kits, scratch) if parts34 else None
+        data_image = make_data_fs(scratch) if parts34 else None
         size = make_stick(copy, stick, root_uuid, log_uuid, scratch, kits_image, kits_uuid, data_image, data_uuid)
         OUT.say(f"stick.img: {size} bytes ({-(-size // (1 << 20))} MiB); partition 1 root PARTUUID {root_uuid}, "
                 f"partition 2 logs PARTUUID {log_uuid}")
@@ -1176,7 +1264,7 @@ def main(argv):
         OUT.say()
         OUT.say(f"DONE. Files in {outdir}")
         OUT.say("Nothing was written to any device. The stick image holds a test SSH host key and")
-        OUT.say("your public key, and the folder quotes Akai's files" + (" and holds Akai's sounds" if app else "")
+        OUT.say("your public key, and the folder quotes Akai's files" + (" and holds Akai's sounds" if parts34 else "")
                 + ": keep it private, never commit it.")
         ok = True
         return 0

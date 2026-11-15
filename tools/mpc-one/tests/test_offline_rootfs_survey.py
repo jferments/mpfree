@@ -25,6 +25,8 @@ UNITS = "usr/lib/systemd/system"
 SME0_BLOB = bytes(range(256)) * 8
 SIG_MARKER = b"\0FAKE-SIG verify /dev/mmcblk0p3 with key FAKE-KEY\0harmless-unmatched-text\0"
 ILITEK = b"\x00" * 3000
+XMOS_MID = b"FAKE-XMOS-FIRMWARE" * 10
+SYSEX = b"\xf0\x47\x7f\x00\xf7"
 LONG = "x" * 70 + "-update.service"  # too long for a fast symlink
 ZIMAGE = zimage("gzip")
 
@@ -71,6 +73,23 @@ def build_image(base, name="rootfs.img"):
         "usr/share/Akai/SME0/Firmware/update.sh": "#!/bin/sh\ndfu-util -a 0 -D fw.bin FAKE-SME0\n",
         "usr/share/Akai/SME0/Firmware/fw.bin": SME0_BLOB,
         "usr/share/Akai/SME0/Docs/readme.txt": "not a firmware folder\n",
+        # Developer mode (section 9) and firmware deeper in the tree (section 10).
+        f"{UNITS}/az01-script-runner.service": "[Service]\nExecStart=/usr/bin/az01-script-runner FAKE-RUNNER-UNIT\n",
+        f"{UNITS}/sshd.service": "[Service]\nExecStart=/usr/sbin/sshd -D FAKE-SSHD-UNIT\n",
+        "etc/ssh/sshd_config": "PermitRootLogin yes\nPermitEmptyPasswords yes\n# FAKE-SSHD-CONFIG\n",
+        "etc/ssh/sshd_config.d/10-dev.conf": "Port 22 # FAKE-DROPIN\n",
+        "etc/shadow": "root::19000:0:99999:7:::\nnobody:*:19000:0:99999:7:::\n",
+        "usr/bin/az01-script-runner": "#!/bin/sh\n# FAKE-RUNNER\nfor d in /media/*; do sh \"$d/autorun.sh\"; done\n",
+        "usr/lib/firmware/xmos/a/mid.bin": XMOS_MID,
+        "usr/lib/firmware/xmos/a/b/deep.bin": b"too deep",
+        "usr/lib/firmware/xmos/odd name.bin": b"odd",
+        "usr/share/Akai/SME0/Firmware/ACVA/SysEx/enter-dfu.syx": SYSEX,
+        "usr/share/Akai/SME0/Firmware/ACVA/update.dfu": b"FAKE-DFU",
+        "usr/lib/az0x/user-access/data-skel/ssh/sshd_config.d/allow-access.conf":
+            "PermitRootLogin yes\nPermitEmptyPasswords yes # FAKE-ALLOW-ACCESS\n",
+        "usr/lib/az0x/user-access/enable.sh": "#!/bin/sh\ncp -r data-skel/ssh /data/ # FAKE-ENABLE\n",
+        "usr/bin/MPC": b"\x7fELF-not-really\0Developer mode: starting shell FAKE-MPC-DEV\0"
+                       b"/usr/lib/az0x/user-access/enable.sh\0unrelated-mpc-text\0run autorun.sh FAKE-MPC-RUN\0",
     }
     for path, data in files.items():
         write(os.path.join(root, path), data)
@@ -171,6 +190,8 @@ class OfflineRootfsSurveyTests(unittest.TestCase):
         self.assertIn("xmosdfu: /usr/bin (a file name in this folder)", out)
         self.assertIn("ramfs-update: no match", out)
         self.check_kernel_section(out)
+        self.check_developer_mode_section(out)
+        self.check_firmware_section(out)
         self.assertIn("DONE. Report:", out)
         [folder] = self.folders()
         with open(os.path.join(self.work, folder, "report.txt")) as fh:
@@ -200,6 +221,61 @@ class OfflineRootfsSurveyTests(unittest.TestCase):
                                                     "rk3288-az05-acva2.dtb", "zImage-9.9"])
         with open(os.path.join(copy, "zImage-9.9"), "rb") as fh:
             self.assertEqual(fh.read(), ZIMAGE)
+
+    def check_developer_mode_section(self, out):
+        section = out[out.index("=== 9. Developer mode"):out.index("=== 10. Peripheral firmware")]
+        self.assertIn("--- /usr/lib/systemd/system/az01-script-runner.service\n[Service]\n"
+                      "ExecStart=/usr/bin/az01-script-runner FAKE-RUNNER-UNIT", section)
+        self.assertIn("ExecStart=/usr/sbin/sshd -D FAKE-SSHD-UNIT", section)
+        self.assertNotIn("FAKE-XMOS", section, "units that don't match the pattern stay out")
+        self.assertIn("--- /etc/ssh/sshd_config\nPermitRootLogin yes\nPermitEmptyPasswords yes", section)
+        self.assertIn("--- /etc/ssh/sshd_config.d/10-dev.conf\nPort 22 # FAKE-DROPIN", section)
+        self.assertIn("(/etc/default/dropbear: not in the image)", section)
+        self.assertIn("root: empty (no password asked)", section)
+        self.assertNotIn("19000", section, "the shadow file itself is never printed")
+        self.assertIn("autorun.sh: /usr/bin/az01-script-runner", section)
+        self.assertIn("PermitEmptyPasswords: /etc/ssh/sshd_config", section)
+        self.assertIn("dropbear: no match", section)
+        self.assertIn("--- everything in /usr/lib/az0x/user-access\n", section)
+        self.assertIn("--- /usr/lib/az0x/user-access/data-skel/ssh/sshd_config.d/allow-access.conf\n"
+                      "PermitRootLogin yes\nPermitEmptyPasswords yes # FAKE-ALLOW-ACCESS", section)
+        self.assertIn("cp -r data-skel/ssh /data/ # FAKE-ENABLE", section)
+        self.assertIn("(/etc/ssh/sshd_config_readonly: not in the image)", section)
+        self.assertIn("    Developer mode: starting shell FAKE-MPC-DEV\n", section)
+        self.assertIn("    /usr/lib/az0x/user-access/enable.sh\n", section)
+        self.assertIn("    run autorun.sh FAKE-MPC-RUN\n", section)
+        self.assertNotIn("unrelated-mpc-text", section)
+        self.assertIn("user-access: /usr/bin/MPC", section)
+
+    def check_firmware_section(self, out):
+        section = out[out.index("=== 10. Peripheral firmware"):out.index("DONE. Report:")]
+        sha = lambda data: hashlib.sha256(data).hexdigest()  # noqa: E731
+        self.assertIn(f"fw {sha(ILITEK)} /usr/lib/firmware/ilitek/fw.bin\n", section)
+        self.assertIn(f"fw {sha(bytes([1, 2]))} /usr/lib/firmware/top.bin\n", section)
+        self.assertIn(f"fw {sha(XMOS_MID)} /usr/lib/firmware/xmos/a/mid.bin\n", section)
+        self.assertIn("fw-skipped /usr/lib/firmware/xmos/a/b/ (too deep)", section)
+        self.assertIn("fw-skipped /usr/lib/firmware/xmos/ (a file whose name has spaces or other characters)", section)
+        self.assertIn(f"fw {sha(SME0_BLOB)} /usr/share/Akai/SME0/Firmware/fw.bin\n", section)
+        self.assertIn("/usr/share/Akai/SME0/Firmware/update.sh\n", section)
+        self.assertIn(f"fw {sha(SYSEX)} /usr/share/Akai/SME0/Firmware/ACVA/SysEx/enter-dfu.syx\n", section)
+        self.assertIn(f"fw {sha(b'FAKE-DFU')} /usr/share/Akai/SME0/Firmware/ACVA/update.dfu\n", section)
+        self.assertNotIn("readme.txt", section)
+        self.assertEqual(section.count("/usr/lib/firmware/ilitek/fw.bin"), 1, "/lib is a link: list it once")
+
+    def test_root_password_kinds(self):
+        for field, expected in (("!", "root: locked for password logins (starts with !)"),
+                                ("*", "root: locked for password logins (starts with *)"),
+                                ("$6$FAKE-SALT$FAKE-HASH", "root: a password hash is set")):
+            root = os.path.join(self.base, "shadow-" + str(len(field)))
+            write(os.path.join(root, "etc/shadow"), f"root:{field}:19000:0:99999:7:::\n")
+            image = os.path.join(self.base, f"shadow-{len(field)}.img")
+            with open(image, "wb") as fh:
+                fh.truncate(4 << 20)
+            run(["mkfs.ext4", "-q", "-F", "-b", "1024", "-O", "^has_journal", "-d", root, image])
+            res = self.survey("--image", image)
+            self.assertEqual(res.returncode, 0, res.stdout)
+            self.assertIn(expected, res.stdout)
+            self.assertNotIn("FAKE-HASH", res.stdout)
 
     def test_boot_files_are_never_overwritten(self):
         res = self.survey("--image", self.image)
