@@ -380,3 +380,141 @@ fn the_tool_runs() {
     assert!(String::from_utf8_lossy(&bad.stderr).contains("--data DIR is needed"));
     fs::remove_dir_all(&dir).unwrap();
 }
+
+/// A WAV with a header and an empty data chunk, as some factory sample files are.
+fn write_empty_wav(path: &Path) {
+    let mut b = Vec::new();
+    b.extend_from_slice(b"RIFF");
+    b.extend_from_slice(&36u32.to_le_bytes());
+    b.extend_from_slice(b"WAVEfmt ");
+    b.extend_from_slice(&16u32.to_le_bytes());
+    b.extend_from_slice(&1u16.to_le_bytes()); // PCM
+    b.extend_from_slice(&1u16.to_le_bytes()); // mono
+    b.extend_from_slice(&44_100u32.to_le_bytes());
+    b.extend_from_slice(&88_200u32.to_le_bytes());
+    b.extend_from_slice(&2u16.to_le_bytes());
+    b.extend_from_slice(&16u16.to_le_bytes());
+    b.extend_from_slice(b"data");
+    b.extend_from_slice(&0u32.to_le_bytes());
+    fs::write(path, b).unwrap();
+}
+
+/// A program laid out as the MPC writes one (made-up names, no MPC
+/// content): velocity sensitivity, volume, tuning, envelope and filter on
+/// each `<Instrument>`, effects on the program, roots as the MIDI note + 1
+/// with names that count middle C as C3.
+fn factory_style() -> String {
+    let layer = |n: u32, lo: u8, hi: u8, name: &str| {
+        format!(
+            "<Layer number=\"{n}\"><Active>True</Active><Volume>1.000000</Volume><Pan>0.500000</Pan>\
+             <Pitch>0.000000</Pitch><TuneCoarse>0</TuneCoarse><TuneFine>0</TuneFine>\
+             <VelStart>{lo}</VelStart><VelEnd>{hi}</VelEnd><SampleStart>0</SampleStart><SampleEnd>0</SampleEnd>\
+             <Loop>False</Loop><SampleName>{name}</SampleName><SampleFile></SampleFile>\
+             <RootNote>37</RootNote><KeyTrack>True</KeyTrack></Layer>"
+        )
+    };
+    let layers = [
+        layer(1, 0, 69, "EP-036 C1 069"),
+        layer(2, 70, 86, "EP-036 C1 086"),
+        layer(3, 87, 116, "EP-036 C1 116"),
+        layer(4, 117, 127, "EP-036 C1 128"),
+    ]
+    .concat();
+    format!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<MPCVObject><Version><File_Version>2.1</File_Version>\
+         <Application>MPC-V</Application></Version><Program type=\"Keygroup\">\
+         <ProgramName>Test EP</ProgramName>\
+         <Insert1><Name>Test Chorus</Name></Insert1><InsertEnable1>True</InsertEnable1>\
+         <Insert2><Name>Test Room</Name></Insert2><InsertEnable2>True</InsertEnable2>\
+         <Insert3><Name>Test Strip</Name></Insert3><InsertEnable3>False</InsertEnable3>\
+         <Volume>0.707946</Volume><Pan>0.500000</Pan>\
+         <Instruments><Instrument number=\"1\"><Volume>0.707946</Volume><Pan>0.500000</Pan>\
+         <TuneCoarse>0</TuneCoarse><TuneFine>5</TuneFine><LowNote>0</LowNote><HighNote>38</HighNote>\
+         <ZonePlay>1</ZonePlay><FilterType>3</FilterType><Cutoff>0.480000</Cutoff>\
+         <Resonance>0.000000</Resonance><VelocityToFilter>0.409449</VelocityToFilter>\
+         <VolumeHold>0.000000</VolumeHold><VolumeAttack>0.000000</VolumeAttack>\
+         <VolumeDecay>1.000000</VolumeDecay><VolumeSustain>0.015748</VolumeSustain>\
+         <VolumeRelease>0.377953</VolumeRelease><VelocitySensitivity>0.803150</VelocitySensitivity>\
+         <Layers>{layers}</Layers></Instrument></Instruments></Program></MPCVObject>\n"
+    )
+}
+
+#[test]
+fn a_program_as_the_mpc_writes_it_reads_its_keygroup_fields() {
+    let p = read_keygroup(factory_style().as_bytes()).unwrap();
+    let k = &p.keygroups[0];
+    assert_eq!(p.vel_to_level, None, "not on the program");
+    assert!((k.vel_to_level.unwrap() - 0.80315).abs() < 1e-5);
+    assert!((k.volume - 0.707946).abs() < 1e-6);
+    assert_eq!((k.coarse, k.fine), (0, 5));
+    assert_eq!(
+        p.inserts,
+        ["Test Chorus", "Test Room"],
+        "the switched-off one isn't"
+    );
+    assert_eq!(k.filter[0], ("FilterType".to_string(), "3".to_string()));
+    let (off, why) = root_offset(&p);
+    assert_eq!(off, 1, "{why}");
+    assert_eq!(mpfree_mpc_import::xpm::knob_text("0.377953"), "48 of 127");
+    assert_eq!(mpfree_mpc_import::xpm::knob_text("1"), "1");
+    assert_eq!(mpfree_mpc_import::xpm::knob_text("True"), "True");
+}
+
+#[test]
+fn empty_layers_are_left_out_and_the_others_cover_their_velocities() {
+    let dir = temp("factory");
+    fs::write(dir.join("Test EP.xpm"), factory_style()).unwrap();
+    write_empty_wav(&dir.join("EP-036 C1 069.WAV"));
+    write_wav(&dir.join("EP-036 C1 086.WAV"), 44_100, 0.2);
+    write_wav(&dir.join("EP-036 C1 116.WAV"), 4_410, 0.3);
+    write_empty_wav(&dir.join("EP-036 C1 128.WAV"));
+    let data = dir.join("data");
+    fs::create_dir_all(&data).unwrap();
+    let r = import_keygroup(
+        &dir.join("Test EP.xpm"),
+        &data,
+        None,
+        &Options::default(),
+        false,
+    )
+    .unwrap();
+    let text = r.lines.join("\n");
+    assert!(
+        text.contains("RootNote reads as the MIDI note + 1"),
+        "{text}"
+    );
+    assert!(text.contains("EP-036 C1 069"), "{text}");
+    assert!(text.contains("kit: 1 pads, 2 layers"), "{text}");
+    assert!(
+        text.contains("EP-036 C1 086 now plays velocities 0-86 (was 70-86)"),
+        "{text}"
+    );
+    assert!(
+        text.contains("EP-036 C1 116 now plays velocities 87-127 (was 87-116)"),
+        "{text}"
+    );
+    assert!(
+        text.contains("EP-036 C1 116 is 0.1 s and the longest layer 1.0 s; it may be cut short"),
+        "{text}"
+    );
+    assert!(
+        text.contains("VolumeRelease 48 of 127") && text.contains("ZonePlay 1"),
+        "{text}"
+    );
+    assert!(
+        text.contains("1 of 1 keygroups have a filter (FilterType 3, Cutoff 61 of 127"),
+        "{text}"
+    );
+    assert!(text.contains("effects (Test Chorus, Test Room)"), "{text}");
+    assert!(!text.contains("no velocity sensitivity"), "{text}");
+
+    let (kits, _, _) = open(&data, "Test EP");
+    let pad = kits[0].1.pad(0).unwrap();
+    assert_eq!(pad.keys.unwrap().root, 36, "RootNote 37 is C2, named C1");
+    assert!((pad.vel_to_level - 0.80315).abs() < 1e-5);
+    let v: Vec<_> = pad.layers.iter().map(|l| (l.vel_lo, l.vel_hi)).collect();
+    assert_eq!(v, [(0, 86), (87, 127)], "no velocity falls silent");
+    assert_eq!(pad.layers[0].level_db, 0.0);
+    assert_eq!(pad.layers[0].tune_cents, 5, "the keygroup's fine tune");
+    fs::remove_dir_all(&dir).unwrap();
+}
