@@ -17,6 +17,7 @@ A mistake can brick an MPC One. For anything that touches a device:
 - Label each step **read-only** or **state-changing**. For a state-changing step, give the exact change, how to undo it, and what happens if it fails halfway, and wait for the owner's go.
 - No writes to the eMMC's boot partitions (p1 to p6, boot0/1), the U-Boot environment or the root filesystem until MaskROM recovery is proven on the unit ([recovery tiers](../dev/research/recovery-and-os-strategy.md)). Don't stop factory services without an approved gate.
 - Never guess at Akai or Rockchip internals; mark assumptions as assumptions.
+- **The power-on boot** (stick in at power-on starts MPFree) is explained in [How MPFree boots from the stick](../dev/hardware/soft-reboot-boot.md). Read it before changing the boot hook or the stick builder. Its invariants: the stick switches the eMMC and SD card off before udev or any mount, and powers off if it can't; every Akai unit that can touch a disk stays masked on the stick (check the build report's udev list); the hook falls back to Akai's system on any doubt and never restarts during a firmware update.
 - Never commit an eMMC backup, raw device reports, serial numbers or MAC addresses, Akai firmware, plugins, presets or sample content ([factory content policy](../dev/project/factory-content-policy.md)).
 
 ## 2. How work is split
