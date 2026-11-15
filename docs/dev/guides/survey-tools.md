@@ -6,9 +6,14 @@ All device surveys run from the **workstation**, through one wrapper: [`tools/mp
 
 - the expected address on the expected network interface, and that the route to the MPC goes through it;
 - that the MPC answers a direct ping and has the expected MAC address;
-- the SSH host key (strict checking, batch mode, no agent forwarding).
+- the SSH host key (strict checking, batch mode, no agent forwarding). On an installed MPC OS 3.10.1, record developer mode's host key once with `--devmode-trust` (below).
 
-The defaults match the tested reference lab (`eno1np0`, `10.42.0.1/24` → `10.42.0.141:2222`, the dedicated developer key). Anyone else must set their own verified values through the environment variables at the top of the script: `MPC_IP`, `MPC_IFACE`, `MPC_HOST_IP_CIDR`, `MPC_EXPECT_MAC`, `MPC_PORT`, `MPC_USER` and `MPC_KEY`.
+The defaults match the tested reference lab (`eno1np0`, `10.42.0.1/24` → `10.42.0.141`, the dedicated developer key). Two SSH servers answer there, on two ports:
+
+- **Akai's system on `MPC_PORT`, default 22:** the SSH server developer mode starts on an installed MPC OS 3.10.1 (since 2026-11-15). A unit still on 3.6.0 with our own SSH ([MOD-001](../hardware/archive/2026-11/device-modifications.md)) answers on 2222: set `MPC_PORT=2222`.
+- **The kexec test build on the USB stick on `MPC_TEST_PORT`, default 2222:** `--kexec-boot` (after the jump), `--app` and `--devmode-check`, with the host key the stick was made with.
+
+Anyone else must set their own verified values through the environment variables at the top of the script: `MPC_IP`, `MPC_IFACE`, `MPC_HOST_IP_CIDR`, `MPC_EXPECT_MAC`, `MPC_PORT`, `MPC_TEST_PORT`, `MPC_USER` and `MPC_KEY`.
 
 ## Modes
 
@@ -32,6 +37,7 @@ bash tools/mpc-one/collect-over-ssh.sh --detail   # any mode from the tables bel
 | `--process-map` | [`read-only-process-map.sh`](../../../tools/mpc-one/read-only-process-map.sh) | Process/unit tree and device ownership |
 | `--touchscreen` | [`read-only-touchscreen.sh`](../../../tools/mpc-one/read-only-touchscreen.sh) | ILI2117, DRM and input metadata |
 | `--rtthreads` | [`read-only-rtthreads.sh`](../../../tools/mpc-one/read-only-rtthreads.sh) | Per-task RT policy, priority and affinity |
+| `--plugin-host` | [`read-only-plugin-host.sh`](../../../tools/mpc-one/read-only-plugin-host.sh) | For the [MPC plugin SDK work](../research/mpc-plugin-sdk.md), on MPC OS 3.10.1: firmware, SSH servers and listening ports, active `sshd_config` lines, whether `mpfree-sshd` survived; `acvs.service` user, limits and sandbox properties; the app process's user, capabilities, `NoNewPrivs`, seccomp, memory limits, threads (CPU, policy, RT priority) and plugin `.so` names it has loaded; names in each drive's `VST2 Plugins` and `Synths` folders; settings lines that mention plugins or enhancements; security modules, signed-filesystem units and mounts; free memory, `/dev/shm`; the last app log lines about plugins |
 | `--capacity` | [`read-only-capacity.sh`](../../../tools/mpc-one/read-only-capacity.sh) | Two-second CPU and memory sample |
 | `--boot-map` | [`read-only-boot-map.sh`](../../../tools/mpc-one/read-only-boot-map.sh) | Boot chain, U-Boot environment (identifiers redacted), boot-partition SHA-256 hashes, eMMC write counters, kexec support, update-path metadata |
 | `--boot-menu-survey` | [`read-only-boot-menu.sh`](../../../tools/mpc-one/read-only-boot-menu.sh) | What the boot menu (`rust/mpfree-splash --menu`) needs: framebuffer sysfs, the controller's ALSA card and RawMIDI subdevices, which processes hold the display, MIDI and input devices (`readlink` of `/proc/*/fd` only), `acvs.service` and `az01-script-runner.service` properties, unit text and start times, how sticks are mounted, kexec state and free `/run` space |
@@ -40,6 +46,7 @@ bash tools/mpc-one/collect-over-ssh.sh --detail   # any mode from the tables bel
 | `--audio-midi` | [`read-only-audio-midi.sh`](../../../tools/mpc-one/read-only-audio-midi.sh) | ALSA, device-tree audio nodes, IRQs, RT limits, cpufreq and USB MIDI descriptors |
 | `--midi-activity` | [`read-only-midi-counters.sh`](../../../tools/mpc-one/read-only-midi-counters.sh) | Interactive: RawMIDI counter changes while you press pads, knobs and buttons |
 | `--ram-smoke-env` | [`read-only-ram-smoke-env.sh`](../../../tools/mpc-one/read-only-ram-smoke-env.sh) | Utilities available for RAM-only tests |
+| `--system-survey` | [`read-only-system-310.sh`](../../../tools/mpc-one/read-only-system-310.sh) | Facts about an installed MPC OS 3.10.1: versions, CPU clocks and idle states, memory, kexec and kernel security (lockdown, LoadPin), network interfaces and listening ports, sound and MIDI (cards, sequencer clients, `aconnect -l`, `amidi -l`), input devices, drives and their top-level names, screen and GPU devices, controller scripts, and the thread count of Akai's app. The CPU serial number is left out |
 
 **Milestone preflights and RAM-only runs.** Each `-check` mode is read-only. The matching run mode copies a checksummed binary to `/run` (RAM), runs it under a watchdog and removes it. Run modes require explicit opt-in environment variables; the wrapper prints the exact command if they are missing. See each milestone's doc for the procedure.
 
@@ -53,6 +60,21 @@ bash tools/mpc-one/collect-over-ssh.sh --detail   # any mode from the tables bel
 **Test boot of another firmware version.** `--kexec-boot` boots the test build on the USB stick once by kexec. It changes only RAM on the MPC, jumps only after you type `BOOT 3.10`, and requires `MPFREE_ACCEPT_KEXEC_BOOT=YES`. After it, [`read-stick-logs.py`](../../../tools/mpc-one/read-stick-logs.py) copies the test build's logs off the stick, read-only, on the workstation, and [`offline-kexec-details.py`](../../../tools/mpc-one/offline-kexec-details.py) prints the device-tree nodes and kernel configs behind the build when something fails in it. See [the kexec test boot](../hardware/archive/2026-11/kexec-test-boot.md).
 
 **mpfree on the test build.** `--app` runs Phase 1 on the running test build: our own program draws on the screen, reads touches and pads, lights the pads, replays Akai's controller setup, plays drums from the pads, runs the pad player (MPFree's first GUI: factory kits picked with the wheel, level on Q-Link 1, a Debug page for MIDI) and a quiet click, one step per Enter. It connects only to the test build (by its host key), copies the program to `/run`, changes RAM only, and requires `MPFREE_ACCEPT_APP=YES`. `MPFREE_APP_STEPS` picks the steps. The drum kits come from [`offline-factory-kit.py`](../../../tools/mpc-one/offline-factory-kit.py), which runs on the workstation only: it reads the content partition of the eMMC backup with `debugfs`, read-only, and writes up to 8 kits (`--kits N`) into one `kits.bin` under `~/mpfree-work` (Akai's content: never commit or share it). See [mpfree](mpfree-app.md).
+
+**Akai's developer mode on an installed MPC OS 3.10.1.** [`host_devmode_login.py`](../../../tools/mpc-one/host_devmode_login.py) runs these four modes, on `MPC_PORT` (22). As Akai ships developer mode, its SSH server lets root in with no key and no password, so anyone on the MPC's network can get a root shell while it is on.
+
+- `--devmode-trust`, **read-only on the MPC:** reads the server's ed25519 host key and prints its fingerprint. Only after a typed `TRUST`, it adds that one line to `~/.ssh/known_hosts`, the file every other mode checks against. It never replaces a different key already recorded: it prints the `ssh-keygen -R` line for that instead.
+- `--devmode-status`, **read-only:**
+    - where `/` and `/data` come from, the `/etc` overlay, and the server's settings as it reads them (`sshd -T`);
+    - `allow-access.conf`, how many keys `authorized_keys` holds, the kind of root's password field (never its value) and the listening TCP ports;
+    - the host key's fingerprint and date, and the time since the MPC started;
+    - then a login with no key and one with your key, each running only `id -u`.
+- `--devmode-lock`, **state-changing on `/data`, after a typed `LOCK`:** Akai's own lock-down.
+    - It copies both files to `/data/ssh/mpfree-lock-backup`, adds your public key to `/data/ssh/authorized_keys`, empties `allow-access.conf` and reloads the server.
+    - It keeps one connection open throughout. If the login with no key is not refused afterwards, or your key does not get in, or the server still accepts empty passwords, it puts both files back over that connection.
+- `--devmode-unlock`, **state-changing on `/data`, after a typed `UNLOCK`:** the undo of the lock.
+
+See [the 3.10.1 qualification runbook](../hardware/firmware-3.10.1-qualification.md) for when to run them and the undo by hand from the developer panel's terminal.
 
 **Akai's developer mode on the test build.** `--devmode-check` runs on a 3.10.1 test build made with `offline-kexec-stick.py --akai-app`, after developer mode has been switched on in Akai's app. It is read-only: over port 2222 it reads what developer mode changed (the `/etc` overlay, `/data/ssh`, `sshd -T`, the host key, listening ports, the kind of root's password field, the journal), then logs in on port 22 from the workstation with no key and with your key and runs only `id -u`, accepting only the host key it read over port 2222. Only after a typed `LOCK` it does Akai's own lock-down to your key, in RAM only. [`write-autorun-drive.py`](../../../tools/mpc-one/write-autorun-drive.py) puts the harmless `autorun.sh` for the same test on a spare USB drive, on the workstation; when it finds no usable drive, it lists the USB drives it sees with nothing mounted and says what to do (it never formats or mounts anything itself). See [the 3.10.1 stick test](../hardware/firmware-3.10.1-stick-test.md#phase-3-developer-mode-on-the-stick).
 
