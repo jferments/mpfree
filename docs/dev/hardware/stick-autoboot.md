@@ -273,6 +273,8 @@ Added on 2026-11-15 at the owner's request, as an option to explore beside the s
 
 ### What it is
 
+How this route compares with the soft-reboot, a chain to our own kernel and U-Boot, and what each means for external hardware, is in [Boot routes](boot-routes.md).
+
 A file-based kexec (`kexec_file_load`, `kexec --load --kexec-file-syscall`) asks the kernel to read the new kernel from a file itself. LoadPin vets that file: it accepts one on the pinned dm-verity root, which Akai's own `/boot/zImage-<release>` is, and refuses one from the stick. The stick's kernel is a byte-for-byte copy of Akai's, so loading Akai's file starts the same kernel the stick test booted. The load takes a command line, which points `root=` at the stick. It takes no device tree: kexec-tools 2.0.28 on 32-bit ARM refuses one in file mode (`DTB file cannot be specified in file mode`), so the new kernel keeps the running device tree, with the eMMC and SD controllers on, exactly as after a soft-reboot.
 
 A load-and-unload probe on the installed 3.10.1 was reported to come back loaded on 2026-11-15, by work on another branch (PR #364's, commit 5568f9cd, `kexec-file-probe.sh`). Its log is not in this repo. Block 5.3's install check repeats that probe with the stick's own command line, so the first device step settles it.

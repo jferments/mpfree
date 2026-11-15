@@ -36,6 +36,8 @@ A systemd 255 soft-reboot loads no kernel. It stops all units, pivots into a new
 | MPFree under Akai's init (chroot or namespace) | Fallback | Akai's systemd stays PID 1 and its units can still write `/data`. |
 | **systemd soft-reboot** | **Chosen, works** | No kernel load, Akai's userspace fully stopped, MPFree's systemd as PID 1. |
 
+How the routes compare, including a chain to our own kernel and what each means for external hardware drivers, is in [Boot routes](boot-routes.md).
+
 The price is that the internal storage is no longer hidden by a device tree, so the stick must switch it off itself, and that LoadPin refuses every module and firmware load after the switch ([below](#what-survives-the-soft-reboot)).
 
 ## The boot, end to end
