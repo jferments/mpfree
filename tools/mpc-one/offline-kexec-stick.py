@@ -27,8 +27,9 @@ from ~/mpfree-work and writes one new private folder there:
 What changes in the COPY of the root filesystem (the image itself is only read):
   - masks (links to /dev/null in /etc/systemd/system) for the MPC app, the
     touch, XMOS and USB-SATA firmware updaters, the network update server,
-    the USB script runner, the /data and content formatters and the firewall,
-    and for the generator that mounts the eMMC content partition
+    the USB script runner, the /data and content formatters, the firewall and
+    the tool that zeroes ext4 reserved blocks (tune2fs), and for the generator
+    that mounts the eMMC content partition
   - /data becomes a RAM disk, so the /etc and /var overlays live in RAM
   - Akai's update, flashing and U-Boot-environment programs and kexec are
     replaced by a stub that refuses and notes the call in the kernel log
@@ -192,6 +193,10 @@ MASK_UNITS = (
     "acvs-content-resize.service",   # resizes the content partition
     "iptables.service",              # Akai's firewall rules, unknown here: they might block port 2222
     "ip6tables.service",
+    # Runs tune2fs (set-no-ext4-reserved-blocks) on each partition as it appears, which writes an ext4
+    # superblock. After the soft-reboot (2026-11-15) one started on the MPC's SD card while it was being switched
+    # off and read it. The mask covers every instance.
+    "no-reserved-blocks@.service",
 )
 MASK_GENERATORS = ("acva-emmc-content-generator",)
 # With --akai-app these two stay as Akai ships them: the app's unit and its launcher, which runs
@@ -204,6 +209,8 @@ AKAI_APP_MARK = "akai app: on (--akai-app)"
 # installed system, since that decides whether developer mode's SSH port can be reached there.
 FIREWALL_UNITS = ("/usr/lib/systemd/system/iptables.service", "/usr/lib/systemd/system/ip6tables.service")
 RULES_MAX = 64 << 10
+# Where the image's udev rules live (/lib is a link into /usr); the report lists the units they start.
+UDEV_RULE_DIRS = ("/usr/lib/udev/rules.d", "/etc/udev/rules.d")
 # Programs replaced by the stub, where present. Paths under /usr only: /bin, /sbin
 # and /lib are links into /usr on these images (checked below).
 STUB_PROGRAMS = (
@@ -989,6 +996,45 @@ def firewall_lines(img, scratch):
     return lines
 
 
+def udev_wants_lines(img, scratch, masked):
+    """Every rule in the image's udev rules that starts a unit when a device appears (SYSTEMD_WANTS), for the report.
+
+    After the soft-reboot the stick's systemd takes over Akai's devices, and these wants with them, before the eMMC
+    and SD card are switched off. A unit named here that is not masked can start in that gap."""
+    lines = []
+    for folder in UDEV_RULE_DIRS:
+        if img.kind(folder) != "directory":
+            continue
+        for name in sorted(img.names(folder)):
+            path = f"{folder}/{name}"
+            if not name.endswith(".rules") or img.kind(path) != "regular":
+                continue
+            text = img.read(path, scratch)[:RULES_MAX].decode("utf-8", "replace")
+            for line in text.splitlines():
+                if "SYSTEMD_WANTS" not in line or line.lstrip().startswith("#"):
+                    continue
+                lines.append(f"  {path}: {line.strip()[:300]}")
+                for value in re.findall(r'SYSTEMD_WANTS\}\s*\+?=\s*"([^"]*)"', line):
+                    for unit in value.split():
+                        placeholder = "%" in unit or "$" in unit
+                        if "@" not in unit:
+                            if placeholder:
+                                lines.append(f"    {unit}: named only when the device appears; this tool cannot "
+                                             "tell which unit")
+                            else:
+                                lines.append(f"    {unit}: " + ("masked on the stick" if unit in masked else
+                                                                "NOT masked"))
+                            continue
+                        # An instance (or one filled in when the device appears) is masked with its template.
+                        at, dot = unit.index("@"), unit.rfind(".")
+                        template = unit[:at + 1] + (unit[dot:] if dot > at else ".service")
+                        if unit in masked or template in masked:
+                            lines.append(f"    {unit}: masked on the stick")
+                        else:
+                            lines.append(f"    {unit}: NOT masked")
+    return lines or ["  none"]
+
+
 def build_rootfs(img, scratch, pubkey, host_key, log_uuid, screen_log, rotation, splash=(None, None, None),
                  app=None, kits_uuid=None, data_uuid=None, akai_app=False, kexec_files=None, softreboot=None):
     """Change the copy with debugfs -w, then read every change back. Returns the root-account note.
@@ -1447,6 +1493,10 @@ def main(argv):
         for path in absent:
             OUT.say(f"absent   {path} (nothing to stub)")
         OUT.say(root_note)
+        OUT.say("units Akai's udev rules start when a device appears (after the soft-reboot these can start before "
+                "the eMMC and SD card are off, so any that can touch a disk must be masked):")
+        for line in udev_wants_lines(img, scratch, set(MASK_UNITS) - ({AKAI_APP_UNIT} if args.akai_app else set())):
+            OUT.say(line)
         if args.akai_app:
             OUT.say("Akai's firewall: masked on the stick, so developer mode's SSH port can be reached here. On an "
                     "installed 3.10.1 these units start at boot and load these rules:")

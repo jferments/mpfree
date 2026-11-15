@@ -172,7 +172,8 @@ busy() {   # prints what may be writing firmware right now
       grep -qx 152d "$v" 2>/dev/null && { echo "az01-usbsata-fixer (a JMicron USB-SATA bridge is attached)"; return 0; }
     done
   fi
-  grep -qs 'SME0/Firmware/update.sh' "$R"/proc/[0-9]*/cmdline && { echo "Akai's controller update.sh"; return 0; }
+  # [.] so that this line's own text (check mode runs as `sh -c "<this script>"`) does not match itself.
+  grep -qs 'SME0/Firmware/update[.]sh' "$R"/proc/[0-9]*/cmdline && { echo "Akai's controller update.sh"; return 0; }
   return 1
 }
 mounted_at() {   # $1 = mount point (with $R): is something mounted there?
