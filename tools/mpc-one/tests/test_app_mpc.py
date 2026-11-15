@@ -1054,7 +1054,7 @@ class StaticTests(unittest.TestCase):
                     # The first start on a creator stick (setup.rs): the backup's copy of the eMMC's user area is a
                     # FILE on partition 4 (backup/<folder>/mmcblk0.img, made by the stick's root service), opened
                     # read-only with File::open; the pad player never names an eMMC device.
-                    ("mpfree-app/setup.rs", 'let image = folder.join("mmcblk0.img");')} | set(LIBRARY_NEEDLES)
+                    ("mpfree-app/setup.rs", 'folder.join("mmcblk0.img")')} | set(LIBRARY_NEEDLES)
         for name, code in self.program_sources():
             for line in code.splitlines():
                 if re.search(r"\.(write|append|create|create_new|truncate)\(true\)", line):
