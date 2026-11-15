@@ -871,7 +871,7 @@ pub fn stem_strips(mixer: &Mixer, in_use: u128, tracks: &[String]) -> Vec<(Strin
     out
 }
 
-/// The plugins in the song: every `clap:` effect on the mixer and
+/// The plugins in the song: every plugin (`clap:` or `mpc:`) effect on the mixer and
 /// instrument on a track, by name, each once.
 pub fn plugins_in(mixer: &Mixer, instruments: &crate::instruments::Instruments) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
@@ -884,7 +884,7 @@ pub fn plugins_in(mixer: &Mixer, instruments: &crate::instruments::Instruments) 
         if let Some(c) = mixer.chain(s) {
             for k in 0..c.len() {
                 if let Some(n) = c.node(k) {
-                    if n.info().id.starts_with("clap:") {
+                    if crate::plugins::Plugins::is_plugin(n.info().id) {
                         add(n.info().name);
                     }
                 }
@@ -893,7 +893,7 @@ pub fn plugins_in(mixer: &Mixer, instruments: &crate::instruments::Instruments) 
     }
     for t in 0..crate::instruments::SLOTS {
         if let Some(h) = instruments.held(t) {
-            if h.id.starts_with("clap:") {
+            if crate::plugins::Plugins::is_plugin(h.id) {
                 add(h.name);
             }
         }
