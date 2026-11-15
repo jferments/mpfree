@@ -21,6 +21,13 @@
 //!   the section's bars; the last one stops), so launching the first row
 //!   plays the song.
 //!
+//! The Song view's drags (Jay, 14 Nov: drag and drop) edit it in place:
+//! [`Arrangement::move_placement`] moves or copies a placement along its
+//! lane or onto another track's (it takes its own copy of a linked clip
+//! there), [`Arrangement::set_length`] makes one longer or shorter, and
+//! [`Arrangement::move_section`] moves or copies a section (marker to
+//! marker) on every track, the others closing up or making room.
+//!
 //! The song has lanes of its own too ([`Arrangement::lanes`]), for what
 //! is not on a track: the morph crossfader's moves, with the rows it
 //! morphs between from each tick on ([`Arrangement::morphs`]). Live to song
@@ -104,6 +111,20 @@ impl Placement {
             .speed
             .to_song(self.offset.rem_euclid(clip.length.max(1)) as f64);
         self.start - back.round() as Tick
+    }
+
+    /// What plays of it from song tick `at` on (inside it), from where the
+    /// clip has got to there: the part after a cut at `at`.
+    pub fn from(&self, tracks: &[Track], at: Tick) -> Placement {
+        let speed = self.clip(tracks).map_or(crate::Speed::NORMAL, |c| c.speed);
+        let length = self.clip(tracks).map_or(1, |c| c.length.max(1));
+        let moved = speed.to_clip((at - self.start) as f64).round() as Tick;
+        Placement {
+            offset: (self.offset + moved).rem_euclid(length),
+            start: at,
+            length: self.end() - at,
+            ..self.clone()
+        }
     }
 
     /// The slot it is linked to.
@@ -227,7 +248,7 @@ impl Arrangement {
                 continue;
             }
             let (start, end) = (p.start, p.end());
-            let mut rest = p.clone();
+            let rest = p.clone();
             if start < from {
                 self.placements[i].length = from - start;
                 i += 1;
@@ -235,13 +256,7 @@ impl Arrangement {
                 self.placements.remove(i);
             }
             if end > to {
-                // What plays from `to` on, from where the clip has got to.
-                let speed = rest.clip(tracks).map_or(crate::Speed::NORMAL, |c| c.speed);
-                let length = rest.clip(tracks).map_or(1, |c| c.length.max(1));
-                let moved = speed.to_clip((to - start) as f64).round() as Tick;
-                rest.offset = (rest.offset + moved).rem_euclid(length);
-                rest.start = to;
-                rest.length = end - to;
+                let rest = rest.from(tracks, to);
                 if self.placements.len() >= MAX_PLACEMENTS {
                     return Err(ModelError::BadPlacement);
                 }
@@ -373,6 +388,163 @@ impl Arrangement {
                 name: name.to_string(),
             },
         );
+        Ok(())
+    }
+
+    /// Placement `i` moved to `track` from `start`, or with `copy` a copy
+    /// of it put there and the placement left as it is (Jay, 14 Nov: drag
+    /// and drop on the Song view). Onto another track a placement linked
+    /// to a slot takes its own copy of the clip, as the slot would name
+    /// that track's clip. Refused (`BadPlacement`), changing nothing, when
+    /// it would overlap a placement there or start before 0, or goes to
+    /// another track linked to an empty slot. Its index now.
+    pub fn move_placement(
+        &mut self,
+        tracks: &[Track],
+        i: usize,
+        track: usize,
+        start: Tick,
+        copy: bool,
+    ) -> Result<usize, ModelError> {
+        let p = self.placements.get(i).ok_or(ModelError::BadPlacement)?;
+        if track >= tracks.len() || start < 0 {
+            return Err(ModelError::BadPlacement);
+        }
+        let mut moved = p.clone();
+        if track != p.track && p.slot().is_some() {
+            let clip = p.clip(tracks).ok_or(ModelError::BadPlacement)?;
+            moved.source = Source::Own(Box::new(clip.clone()));
+        }
+        moved.track = track;
+        moved.start = start;
+        if copy {
+            return self.place(moved);
+        }
+        let old = self.placements.remove(i);
+        self.place(moved)
+            .inspect_err(|_| self.placements.insert(i, old))
+    }
+
+    /// Placement `i` made `length` song ticks long: past its clip's end
+    /// the clip plays again from its top. Refused (`BadPlacement`),
+    /// changing nothing, when it is not above 0 or would run into the next
+    /// placement on its track.
+    pub fn set_length(&mut self, i: usize, length: Tick) -> Result<(), ModelError> {
+        let p = self.placements.get(i).ok_or(ModelError::BadPlacement)?;
+        let next = self.placements.get(i + 1).filter(|q| q.track == p.track);
+        if length <= 0 || next.is_some_and(|q| q.start < p.start + length) {
+            return Err(ModelError::BadPlacement);
+        }
+        self.placements[i].length = length;
+        Ok(())
+    }
+
+    /// Section `k`: from marker `k` to the next, the last one to the end
+    /// of the song in whole bars of `bar` ticks from its marker (a bar at
+    /// least). None past the markers.
+    pub fn section(&self, k: usize, bar: Tick) -> Option<(Tick, Tick)> {
+        let m = self.markers.get(k)?;
+        let end = match self.markers.get(k + 1) {
+            Some(n) => n.at,
+            None => {
+                let bar = bar.max(1);
+                let span = (self.end() - m.at).max(1);
+                m.at + (span + bar - 1) / bar * bar
+            }
+        };
+        Some((m.at, end))
+    }
+
+    /// Section `k` ([`Arrangement::section`]) moved, on every track, to
+    /// before section `gap` (after the last for `gap` = the markers'
+    /// count), or with `copy` a copy of it put there (a second verse).
+    /// The sections close up behind it and make room for it, so nothing is
+    /// written over; what comes before the first marker stays. A placement
+    /// across a section's edge is cut there first, each part playing as
+    /// before (as [`Arrangement::clear`] cuts). Moved to where it is, it
+    /// stays. Refused, changing nothing: `BadPlacement` for no such
+    /// section or gap or past [`MAX_PLACEMENTS`] or [`MAX_MARKERS`];
+    /// `BadMoves` while the song has morph moves, which would not move
+    /// with it.
+    pub fn move_section(
+        &mut self,
+        tracks: &[Track],
+        k: usize,
+        gap: usize,
+        copy: bool,
+        bar: Tick,
+    ) -> Result<(), ModelError> {
+        let n = self.markers.len();
+        if k >= n || gap > n {
+            return Err(ModelError::BadPlacement);
+        }
+        if !self.lanes.is_empty() || !self.morphs.is_empty() {
+            return Err(ModelError::BadMoves);
+        }
+        let mut order: Vec<usize> = (0..n).collect();
+        if copy {
+            order.insert(gap, k);
+        } else if gap == k || gap == k + 1 {
+            return Ok(());
+        } else {
+            order.remove(k);
+            order.insert(if gap > k { gap - 1 } else { gap }, k);
+        }
+        let spans: Vec<(Tick, Tick)> = (0..n)
+            .map(|s| self.section(s, bar))
+            .collect::<Option<_>>()
+            .ok_or(ModelError::BadPlacement)?;
+        let mut cut = self.placements.clone();
+        for &(at, _) in &spans {
+            cut = cut
+                .into_iter()
+                .flat_map(|p| {
+                    if p.start < at && at < p.end() {
+                        let rest = p.from(tracks, at);
+                        vec![
+                            Placement {
+                                length: at - p.start,
+                                ..p
+                            },
+                            rest,
+                        ]
+                    } else {
+                        vec![p]
+                    }
+                })
+                .collect();
+        }
+        let first = spans[0].0;
+        let mut song = Arrangement {
+            lanes: self.lanes.clone(),
+            morphs: self.morphs.clone(),
+            ..Arrangement::default()
+        };
+        song.placements = cut.iter().filter(|p| p.start < first).cloned().collect();
+        let mut t = first;
+        for &s in &order {
+            let (a, b) = spans[s];
+            song.placements
+                .extend(
+                    cut.iter()
+                        .filter(|p| (a..b).contains(&p.start))
+                        .map(|p| Placement {
+                            start: p.start - a + t,
+                            ..p.clone()
+                        }),
+                );
+            if song.markers.len() >= MAX_MARKERS {
+                return Err(ModelError::BadPlacement);
+            }
+            song.markers.push(Marker {
+                at: t,
+                name: self.markers[s].name.clone(),
+            });
+            t += b - a;
+        }
+        song.placements.sort_by_key(|p| (p.track, p.start));
+        song.check(tracks)?;
+        *self = song;
         Ok(())
     }
 }
@@ -718,5 +890,183 @@ mod tests {
         );
         p.arrangement.mark(BAR, "B").unwrap();
         assert_eq!(sections(&p).len(), 4);
+    }
+
+    #[test]
+    fn a_placement_moves_or_copies_along_and_across_lanes() {
+        let p = project();
+        let mut s = Arrangement::default();
+        s.place(Placement::linked(0, 0, 0, BAR)).unwrap();
+        s.place(Placement::linked(0, 1, 4 * BAR, 2 * BAR)).unwrap();
+        s.place(Placement::linked(1, 0, 0, BAR)).unwrap();
+        // Along its lane, past nothing: its index stays.
+        assert_eq!(s.move_placement(&p.tracks, 0, 0, 2 * BAR, false), Ok(0));
+        assert_eq!(s.placements[0].start, 2 * BAR);
+        // Onto the next block: refused, nothing changes.
+        let before = s.clone();
+        assert_eq!(
+            s.move_placement(&p.tracks, 0, 0, 5 * BAR, false),
+            Err(ModelError::BadPlacement)
+        );
+        assert_eq!(s, before);
+        // Over its own old place is fine.
+        assert_eq!(
+            s.move_placement(&p.tracks, 0, 0, 2 * BAR + 100, false),
+            Ok(0)
+        );
+        // Across to the bass: its own copy of the drums' clip.
+        let j = s.move_placement(&p.tracks, 1, 1, 4 * BAR, false).unwrap();
+        assert_eq!((s.placements[j].track, s.placements[j].start), (1, 4 * BAR));
+        assert_eq!(s.placements[j].slot(), None);
+        assert_eq!(s.placements[j].clip(&p.tracks).unwrap().name, "b");
+        // A copy along the lane stays linked; the first stays where it is.
+        let n = s.placements.len();
+        let c = s.move_placement(&p.tracks, 0, 0, 8 * BAR, true).unwrap();
+        assert_eq!(s.placements.len(), n + 1);
+        assert_eq!(s.placements[c].slot(), Some(0));
+        assert_eq!(s.placements[0].start, 2 * BAR + 100);
+        assert_eq!(s.check(&p.tracks), Ok(()));
+        // A copy onto itself overlaps.
+        assert_eq!(
+            s.move_placement(&p.tracks, 0, 0, 2 * BAR + 100, true),
+            Err(ModelError::BadPlacement)
+        );
+    }
+
+    #[test]
+    fn a_placement_gets_longer_up_to_the_next_one() {
+        let mut s = Arrangement::default();
+        s.place(Placement::linked(0, 0, 0, BAR)).unwrap();
+        s.place(Placement::linked(0, 0, 4 * BAR, BAR)).unwrap();
+        s.place(Placement::linked(1, 0, BAR, BAR)).unwrap();
+        assert_eq!(s.set_length(0, 4 * BAR), Ok(()));
+        assert_eq!(s.set_length(0, 4 * BAR + 1), Err(ModelError::BadPlacement));
+        assert_eq!(s.set_length(0, 0), Err(ModelError::BadPlacement));
+        // The last on its track: as long as it likes.
+        assert_eq!(s.set_length(1, 64 * BAR), Ok(()));
+        assert_eq!(s.placements[0].length, 4 * BAR);
+    }
+
+    /// The song for the section tests: A (bars 1-2), B (3-4), C (5-8),
+    /// drums all along in one block, bass a block in each.
+    fn sections_song() -> Project {
+        let mut p = project();
+        let s = &mut p.arrangement;
+        s.place(Placement::linked(0, 0, 0, 8 * BAR)).unwrap();
+        s.place(Placement::linked(1, 0, 0, 2 * BAR)).unwrap();
+        s.place(Placement::linked(1, 1, 2 * BAR, 2 * BAR)).unwrap();
+        s.place(Placement::linked(1, 0, 4 * BAR, 3 * BAR)).unwrap();
+        for (at, name) in [(0, "A"), (2 * BAR, "B"), (4 * BAR, "C")] {
+            s.mark(at, name).unwrap();
+        }
+        p
+    }
+
+    fn names(s: &Arrangement) -> Vec<(Tick, &str)> {
+        s.markers.iter().map(|m| (m.at, m.name.as_str())).collect()
+    }
+
+    fn lane(s: &Arrangement, track: usize) -> Vec<(Tick, Tick, Tick)> {
+        s.on_track(track)
+            .iter()
+            .map(|p| (p.start, p.length, p.offset))
+            .collect()
+    }
+
+    #[test]
+    fn a_section_moves_and_the_others_close_up() {
+        let mut p = sections_song();
+        assert_eq!(p.arrangement.section(1, BAR), Some((2 * BAR, 4 * BAR)));
+        // C ends at the song's end in whole bars: 3 bars of bass, 4 of drums.
+        assert_eq!(p.arrangement.section(2, BAR), Some((4 * BAR, 8 * BAR)));
+        assert_eq!(p.arrangement.section(3, BAR), None);
+        // B before A.
+        p.arrangement
+            .move_section(&p.tracks, 1, 0, false, BAR)
+            .unwrap();
+        let s = &p.arrangement;
+        assert_eq!(names(s), [(0, "B"), (2 * BAR, "A"), (4 * BAR, "C")]);
+        // The bass: B's two-bar clip first, then A's.
+        assert_eq!(
+            lane(s, 1),
+            [
+                (0, 2 * BAR, 0),
+                (2 * BAR, 2 * BAR, 0),
+                (4 * BAR, 3 * BAR, 0)
+            ]
+        );
+        assert_eq!(s.on_track(1)[0].slot(), Some(1));
+        // The drums' long block is cut at the edges, each part in phase
+        // (its clip is one bar, so every part starts at its top).
+        assert_eq!(
+            lane(s, 0),
+            [
+                (0, 2 * BAR, 0),
+                (2 * BAR, 2 * BAR, 0),
+                (4 * BAR, 4 * BAR, 0)
+            ]
+        );
+        assert_eq!(s.check(&p.tracks), Ok(()));
+        // Moved to where it is: nothing changes.
+        let before = p.arrangement.clone();
+        p.arrangement
+            .move_section(&p.tracks, 1, 2, false, BAR)
+            .unwrap();
+        assert_eq!(p.arrangement, before);
+        // The first after the last.
+        p.arrangement
+            .move_section(&p.tracks, 0, 3, false, BAR)
+            .unwrap();
+        assert_eq!(
+            names(&p.arrangement),
+            [(0, "A"), (2 * BAR, "C"), (6 * BAR, "B")]
+        );
+    }
+
+    #[test]
+    fn a_copied_section_makes_room_and_what_comes_first_stays() {
+        let mut p = sections_song();
+        // Something before the first marker stays where it is.
+        p.arrangement.markers[0].at = BAR;
+        p.arrangement.markers[0].name = "A".into();
+        p.arrangement
+            .move_section(&p.tracks, 1, 3, true, BAR)
+            .unwrap();
+        let s = &p.arrangement;
+        assert_eq!(
+            names(s),
+            [(BAR, "A"), (2 * BAR, "B"), (4 * BAR, "C"), (8 * BAR, "B")]
+        );
+        // The bass: bar 1 (before A), A's last bar, B, C, and B again.
+        assert_eq!(
+            lane(s, 1),
+            [
+                (0, BAR, 0),
+                (BAR, BAR, 0),
+                (2 * BAR, 2 * BAR, 0),
+                (4 * BAR, 3 * BAR, 0),
+                (8 * BAR, 2 * BAR, 0)
+            ]
+        );
+        assert_eq!(s.on_track(1)[4].slot(), Some(1), "linked like the first");
+        assert_eq!(s.check(&p.tracks), Ok(()));
+    }
+
+    #[test]
+    fn sections_with_morph_moves_stay_put() {
+        let mut p = sections_song();
+        p.arrangement
+            .put_morph(&[(0.0, 0.5, Kind::Step)], &[], 0, BAR)
+            .unwrap();
+        let before = p.arrangement.clone();
+        assert_eq!(
+            p.arrangement.move_section(&p.tracks, 1, 0, false, BAR),
+            Err(ModelError::BadMoves)
+        );
+        assert_eq!(p.arrangement, before);
+        assert_eq!(
+            p.arrangement.move_section(&p.tracks, 5, 0, false, BAR),
+            Err(ModelError::BadPlacement)
+        );
     }
 }

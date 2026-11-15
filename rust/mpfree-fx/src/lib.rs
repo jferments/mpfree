@@ -100,6 +100,7 @@ mod pitch;
 mod presets;
 pub mod print;
 pub mod registry;
+pub mod resample;
 mod rooms;
 mod shift;
 mod stereo;
@@ -113,7 +114,7 @@ mod xy;
 pub mod xyfx;
 
 pub use amp::{Amp, Exciter};
-pub use bounce::{bounce, wav_header, BounceIn, BounceOut, Pumped};
+pub use bounce::{bounce, wav_header, Bits, BounceIn, BounceOut, Pumped, WavFormat};
 pub use chain::{Chain, ChainStats, Insert, MAX_SLOT_EVENTS};
 pub use character::Character;
 pub use cloud::{Cloud, PRESETS as CLOUD_PRESETS};

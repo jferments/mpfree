@@ -9,6 +9,7 @@
 //! mpfree-bench --afford [--quick] [--calibration FILE]
 //! mpfree-bench --lanes [--lane-cores A,B] [--quick] [--json FILE]
 //! mpfree-bench --count [--blocks N] [--filter TEXT]
+//! mpfree-bench --soak [--blocks N] [--filter TEXT]
 //! ```
 //!
 //! - On the desktop it prints each case's mean, p99 and worst block. With
@@ -40,6 +41,13 @@
 //!   runs it and fails CI when a case costs more than 5 % above the
 //!   baseline in `rust/mpfree-bench/instructions.txt`. Instruction counts
 //!   don't drift with the machine's load, as times on a shared VM do.
+//! - `--soak` runs each whole-period case (the song) for N blocks, 2^21 by
+//!   default (about 101 minutes of sound), with the counting allocator
+//!   watching every block, and exits with status 2 if any block allocated.
+//!   It says which blocks did, and how many blocks were slower than the
+//!   period. A long run finds what 20 s can't: a buffer that grows only
+//!   when a count passes a power of two (#273: the write's gaps grew after
+//!   51 minutes on the MPC). The nightly workflow runs it.
 //!
 //! It only reads and computes: it opens no device, writes no file unless
 //! `--json` names one, and runs on one thread at normal priority. The one
@@ -77,6 +85,7 @@ struct Options {
     lanes: bool,
     lane_cores: Option<(usize, usize)>,
     count: bool,
+    soak: bool,
     blocks: Option<u64>,
 }
 
@@ -94,6 +103,7 @@ fn options() -> Result<Options, String> {
         lanes: false,
         lane_cores: None,
         count: false,
+        soak: false,
         blocks: None,
     };
     let mut args = std::env::args().skip(1);
@@ -110,6 +120,7 @@ fn options() -> Result<Options, String> {
             "--afford" => o.afford = true,
             "--lanes" => o.lanes = true,
             "--count" => o.count = true,
+            "--soak" => o.soak = true,
             "--blocks" => {
                 let v = value("--blocks")?;
                 o.blocks = Some(v.parse().ok().filter(|&n| n > 0).ok_or(format!(
@@ -171,6 +182,146 @@ fn count(o: &Options) {
 
 /// What each `--count` dump's trigger starts with, before the case's name.
 const COUNT_TAG: &str = "mpfree-bench case: ";
+
+/// Blocks per case for `--soak`: 2^21, past the 2^20 periods where a
+/// doubling buffer would grow a 21st time, about 101 minutes of sound.
+const SOAK_BLOCKS: u64 = 1 << 21;
+
+/// A progress line every 2^18 blocks (about 12.7 minutes of sound).
+const SOAK_PROGRESS: u64 = 1 << 18;
+
+/// What a soak saw of one case.
+#[derive(Debug, Default)]
+struct Soak {
+    blocks: u64,
+    /// The worst block, ns, and which block it was.
+    worst_ns: u64,
+    worst_at: u64,
+    /// Blocks slower than the period.
+    slow: u64,
+    /// Blocks that allocated or freed, their calls, and the first few
+    /// (block, calls).
+    alloc_blocks: u64,
+    alloc_calls: u64,
+    first_allocs: Vec<(u64, u64)>,
+}
+
+impl Soak {
+    /// Block `b` took `ns` and made `calls` allocator calls.
+    fn add(&mut self, b: u64, ns: u64, calls: u64, period_ns: u64) {
+        self.blocks += 1;
+        if ns > self.worst_ns {
+            self.worst_ns = ns;
+            self.worst_at = b;
+        }
+        if ns > period_ns {
+            self.slow += 1;
+        }
+        if calls > 0 {
+            self.alloc_blocks += 1;
+            self.alloc_calls += calls;
+            if self.first_allocs.len() < 8 {
+                self.first_allocs.push((b, calls));
+            }
+        }
+    }
+
+    /// One line for the log.
+    fn line(&self, name: &str, period_ns: u64) -> String {
+        let minutes = self.blocks as f64 * MPC.frames as f64 / MPC.rate as f64 / 60.0;
+        let allocs = if self.alloc_blocks == 0 {
+            "no block allocated".to_string()
+        } else {
+            let first: Vec<String> = self
+                .first_allocs
+                .iter()
+                .map(|(b, c)| format!("block {b} ({c} calls)"))
+                .collect();
+            format!(
+                "{} blocks ALLOCATED, {} calls; first: {}",
+                self.alloc_blocks,
+                self.alloc_calls,
+                first.join(", ")
+            )
+        };
+        format!(
+            "{name}: {} blocks ({minutes:.1} min of sound), worst {:.0} us ({:.0} % of the period) at block {}, \
+             {} slower than the period; {allocs}",
+            self.blocks,
+            self.worst_ns as f64 / 1e3,
+            100.0 * self.worst_ns as f64 / period_ns as f64,
+            self.worst_at,
+            self.slow
+        )
+    }
+}
+
+/// `--soak`: see the module docs. The cases are those of the whole period
+/// (the song), or those `--filter` names.
+fn soak(o: &Options) -> ExitCode {
+    let blocks = o.blocks.unwrap_or(SOAK_BLOCKS);
+    let period_ns = MPC.ns();
+    println!("mpfree-bench --soak on {}, build {}", machine(), build());
+    if !alloc::installed() {
+        eprintln!("mpfree-bench: --soak needs the counting allocator");
+        return ExitCode::from(1);
+    }
+    let (mut l, mut r) = (
+        vec![0.0f32; MPC.frames as usize],
+        vec![0.0f32; MPC.frames as usize],
+    );
+    let mut allocated = Vec::new();
+    for mut c in cases::all(MPC.rate) {
+        let wanted = match &o.filter {
+            Some(f) => c.name.to_lowercase().contains(f) || c.module.contains(f.as_str()),
+            None => c.module == "period",
+        };
+        if !wanted {
+            continue;
+        }
+        println!("{}: {blocks} blocks", c.name);
+        for b in 0..50 {
+            (c.block)(b, &mut l, &mut r);
+        }
+        let mut s = Soak::default();
+        let started = std::time::Instant::now();
+        for b in 50..50 + blocks {
+            let calls = alloc::thread_count();
+            let span = Span::start();
+            (c.block)(b, &mut l, &mut r);
+            let ns = span.elapsed_ns();
+            s.add(b, ns, alloc::thread_count() - calls, period_ns);
+            if s.blocks % SOAK_PROGRESS == 0 && s.blocks < blocks {
+                println!(
+                    "  {} blocks in {:.0} s: worst {:.0} us, {} slow, {} allocated",
+                    s.blocks,
+                    started.elapsed().as_secs_f64(),
+                    s.worst_ns as f64 / 1e3,
+                    s.slow,
+                    s.alloc_blocks
+                );
+            }
+        }
+        std::hint::black_box((&l, &r));
+        println!(
+            "{} (in {:.0} s)",
+            s.line(&c.name, period_ns),
+            started.elapsed().as_secs_f64()
+        );
+        if s.alloc_blocks > 0 {
+            allocated.push(c.name);
+        }
+    }
+    if allocated.is_empty() {
+        ExitCode::SUCCESS
+    } else {
+        eprintln!(
+            "mpfree-bench: allocated on the audio path in a long run: {}",
+            allocated.join(", ")
+        );
+        ExitCode::from(2)
+    }
+}
 
 /// `A,B`: this thread's core and the lanes' worker core.
 fn lane_cores(text: &str) -> Result<(usize, usize), String> {
@@ -502,7 +653,8 @@ fn main() -> ExitCode {
                        mpfree-bench --compare A.json B.json\n       \
                        mpfree-bench --afford [--quick] [--calibration FILE]\n       \
                        mpfree-bench --lanes [--lane-cores A,B] [--quick] [--json FILE]\n       \
-                       mpfree-bench --count [--blocks N] [--filter TEXT]");
+                       mpfree-bench --count [--blocks N] [--filter TEXT]\n       \
+                       mpfree-bench --soak [--blocks N] [--filter TEXT]");
             return ExitCode::from(if e.is_empty() { 0 } else { 1 });
         }
     };
@@ -521,6 +673,9 @@ fn main() -> ExitCode {
     if o.count {
         count(&o);
         return ExitCode::SUCCESS;
+    }
+    if o.soak {
+        return soak(&o);
     }
     let (calls, rounds) = if o.quick { (200, 5) } else { (2000, 15) };
 
@@ -723,6 +878,29 @@ fn main() -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_soak_counts_slow_blocks_and_the_first_that_allocate() {
+        let period = MPC.ns();
+        let mut s = Soak::default();
+        s.add(50, 100_000, 0, period);
+        s.add(51, period + 1, 0, period);
+        for b in 52..62 {
+            s.add(b, 1_000, 2, period);
+        }
+        assert_eq!((s.blocks, s.slow, s.worst_at), (12, 1, 51));
+        assert_eq!((s.alloc_blocks, s.alloc_calls), (10, 20));
+        assert_eq!(s.first_allocs.len(), 8);
+        assert_eq!(s.first_allocs[0], (52, 2));
+        let line = s.line("Song", period);
+        assert!(line.starts_with("Song: 12 blocks (0.0 min of sound), worst 2902 us (100 % of the period) at block 51, 1 slower than the period; 10 blocks ALLOCATED, 20 calls; first: block 52 (2 calls), "), "{line}");
+        let quiet = Soak {
+            blocks: 1 << 21,
+            ..Soak::default()
+        };
+        assert!(quiet.line("Song", period).contains("(101.4 min of sound)"));
+        assert!(quiet.line("Song", period).ends_with("no block allocated"));
+    }
 
     #[test]
     fn lane_cores_read_two_different_cores() {

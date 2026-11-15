@@ -14,8 +14,12 @@ A **clip** is a piece of music you recorded or programmed: a drum pattern, a bas
 
 The grid has a column per **track** and a row per **slot**. Each track plays one clip at a time, so a column might hold four different drum patterns, and you pick which one plays.
 
-- **Tap a clip** to launch it. It starts on the next bar line, so it always lands in time. Tap a playing clip to stop it at the next bar.
+- **Tap a clip** to launch it. It starts on the next bar line, so it always lands in time. Tap a playing clip to stop it at the next bar. A clip launches when you lift your finger, because you can also drag it.
 - **Tap +** in an empty slot to record a new clip there.
+- **Drag a clip** to move it: once your finger moves, it lifts and follows you, and the slot it will land in is outlined. Lift your finger to drop it. In an empty slot it moves there; onto another clip, the two change places, so nothing is lost. In another track's column it plays that track's sound. A clip that is playing keeps playing where it lands, and the song's blocks that use it go with it. Hold **SHIFT** as you lift to drop a copy instead (into an empty slot). Lift it where it started to leave it be.
+- **Drag a row's number** to move the whole row, every track's clip in it: a line shows where it will go, and the rows in between move up or down one, so nothing is written over. With **SHIFT** held as you lift, a copy of the row goes in at the line and the rows under it move down one (the last row has to be empty). A tap on the number still plays the row.
+- Dragged to the grid's edge, a clip or a row turns the page: the tracks before or after, or the slots above or below.
+- **UNDO** takes back any drop, and the Takes list names it ("Move 7 · Drums / 2, to Bass / 4").
 - **Tap a track's name** to **arm** it: the pads record into that track. The track arms when you lift your finger.
 - **Hold ERASE and tap a clip** to delete it. **UNDO** brings it back. A clip the song uses stays until you delete its blocks in the song.
 - **Under each name** is what the track plays: **Kit**, or its own instrument (FM, Poly, a plugin synth). Tap that line to change it: the track is armed, and the Synth tab opens its MENU on the track's instrument row (see [A synth for each track](synths.md#a-synth-for-each-track)).

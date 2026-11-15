@@ -85,6 +85,12 @@ fn the_pass_never_allocates_on_the_sound_thread() {
         }),
         mode: Mode::Fast,
         rate,
+        // The writer converts on its own thread; the sound thread's part
+        // is the same.
+        format: mpfree_export::mpfree_fx::WavFormat {
+            bits: mpfree_export::mpfree_fx::Bits::I16,
+            rate: 44_100,
+        },
         length: None,
         first_slot: 0,
     };

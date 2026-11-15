@@ -3181,6 +3181,11 @@ fn looper_action(
             out.note(&looper.toggle_mute(n));
             Vec::new()
         }
+        // A dragged layer says what it did (or why not) in place of the
+        // hint.
+        looping::LoopAction::CopyLayer { from, id, to, keep } => {
+            vec![app::Effect::Tell(looper.copy_layer(from, id, to, keep))]
+        }
     }
 }
 
@@ -3215,9 +3220,19 @@ fn time_action(
             return Vec::new();
         }
     }
-    // ERASE + a clip, UNDO and REDO: said in place of the hint.
+    // ERASE + a clip, a drop on the Clips grid or the Song view, a block
+    // deleted, UNDO and REDO: said in place of the hint.
     let undo = matches!(a, TimeAction::Undo | TimeAction::Redo);
-    let erase = matches!(a, TimeAction::DeleteClip { .. });
+    let erase = matches!(
+        a,
+        TimeAction::DeleteClip { .. }
+            | TimeAction::DropClip { .. }
+            | TimeAction::DropRow { .. }
+            | TimeAction::MovePlacement { .. }
+            | TimeAction::StretchPlacement { .. }
+            | TimeAction::MoveSection { .. }
+            | TimeAction::DeletePlacement(_)
+    );
     let r = match a {
         // The scene morph runs on the mixer's mod engine.
         TimeAction::MorphRows { .. }
