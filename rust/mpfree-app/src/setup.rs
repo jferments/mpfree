@@ -515,6 +515,13 @@ pub fn combine<T>(akai: Vec<T>, own: Vec<T>, max: usize) -> Vec<T> {
 mod tests {
     use super::*;
 
+    /// Moves a file out of the way, as the stick's root service does with
+    /// the request (the pad player's code, tests included, never deletes
+    /// files: a static check in CI holds it to that).
+    fn take_away(path: &Path) {
+        std::fs::rename(path, path.with_extension("taken")).unwrap();
+    }
+
     struct Tmp(PathBuf);
     impl Drop for Tmp {
         fn drop(&mut self) {
@@ -584,7 +591,7 @@ mod tests {
         assert!(!needed(&p, &s));
         s.set_str("done", "backup,kits");
         assert!(needed(&p, &s), "a step not done yet");
-        std::fs::remove_file(&p.service).unwrap();
+        take_away(&p.service);
         assert!(
             !needed(&p, &Settings::default()),
             "only on the creator's sticks"
@@ -654,8 +661,8 @@ mod tests {
         let mut older = o.saved.clone();
         older.set_str("done", "backup,kits");
         assert!(needed(&p, &older));
-        std::fs::remove_file(&p.request).unwrap();
-        std::fs::remove_file(&p.status).unwrap();
+        take_away(&p.request);
+        take_away(&p.status);
         let (o, _, said) = run_it(&p, &older);
         assert_eq!(o.failed, None, "{said:?}");
         assert!(!p.request.exists(), "no new backup");
