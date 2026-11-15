@@ -108,6 +108,21 @@ class JudgeTests(unittest.TestCase):
         self.assertFalse(ok)
         self.assertIn("no line like '^looper: Record' followed", detail)
 
+    def test_power_reads_the_start_and_counts_the_card(self):
+        start = (5.0, "power button: /dev/input/event1; read-only, not grabbed; a short press opens the power card")
+        window = [(100.0, "power: the power card is open"), (110.0, "power: the power card is open")]
+        got = checks.judge(checks.BY_NAME["power"], checks.Window(window, [start] + window, 100.0, 120.0))
+        self.assertEqual([ok for ok, _, _ in got], [True, True])
+        self.assertEqual(got[1][2], "2 times")
+        # Not found at the start: it says the line the app wrote instead; one press is not two.
+        start = (5.0, "power button: not found yet (no gpio-keys device with KEY_POWER)")
+        got = checks.judge(checks.BY_NAME["power"], checks.Window(window[:1], [start] + window[:1], 100.0, 120.0))
+        self.assertEqual([ok for ok, _, _ in got], [False, False])
+        self.assertEqual(got[0][2], "power button: not found yet (no gpio-keys device with KEY_POWER)")
+        self.assertEqual(got[1][2], "1 time, 2 expected")
+        got = checks.judge(checks.BY_NAME["power"], checks.Window([], [], 100.0, 120.0))
+        self.assertEqual(got[0][2], "no line like '^power button: ' since power-on")
+
     def test_load_counts_underruns_between_status_lines(self):
         session = [(90.0, "status: 1 hits (0 from the screen), 0 repeats, 3 underruns in 1000 periods, x"),
                    (130.0, "status: 9 hits (0 from the screen), 0 repeats, 3 underruns in 11000 periods, x")]

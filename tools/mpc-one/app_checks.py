@@ -85,6 +85,28 @@ def seen(*patterns):
     return test
 
 
+def seen_times(pattern, least):
+    """Passes when at least `least` lines of the check's time match `pattern`."""
+    regex = re.compile(pattern)
+
+    def test(w):
+        n = sum(1 for m in w.messages() if regex.search(m))
+        return n >= least, f"{n} time{'s' if n != 1 else ''}" + ("" if n >= least else f", {least} expected")
+    return test
+
+
+def at_start(pattern, about):
+    """Passes when a line since power-on matches `pattern`; if not, says the last line that matches `about`."""
+    regex, near = re.compile(pattern), re.compile(about)
+
+    def test(w):
+        if any(regex.search(m) for _, m in w.session):
+            return True, ""
+        last = [m for _, m in w.session if near.search(m)]
+        return False, last[-1] if last else f"no line like {about!r} since power-on"
+    return test
+
+
 def pressed(number, then=None):
     """Button `number` reached the app, and (if given) a line matching `then` came after it."""
     after = re.compile(then) if then else None
@@ -439,6 +461,22 @@ CHECKS = (
         None,
         ["the_warp_tab_pins_the_hits_and_the_copy_goes_through_them",
          "a_warped_pad_follows_the_tempo_and_plays_its_stretched_copy_when_ready"]),
+    Check(
+        "power", "The power button opens the power card",
+        "#389: a short press opens the card; Shut down and Restart end the boot, so the stick logs judge them",
+        "hands",
+        ["1. Press the power button briefly (don't hold it): \"Shut down the MPC?\" opens over the page.",
+         "   Tap Cancel: back on the page.",
+         "2. Press it briefly again, then briefly once more: the second press closes the card."],
+        [("the app reads the power button",
+          at_start(r"^power button: .*read-only, not grabbed; a short press opens the power card", r"^power button: ")),
+         ("the card opened twice", seen_times(r"^power: the power card is open", 2))],
+        "Did the card open over the page each time, and close with Cancel and with the second press?",
+        ["a_short_press_of_the_power_button_opens_the_power_card",
+         "a_press_is_short_only_when_the_button_comes_back_up_in_time",
+         "the_power_key_is_found_by_name_and_key_not_by_number",
+         "shut_down_and_restart_go_to_the_systems_file",
+         "a_request_is_one_word_in_a_whole_file"]),
     Check(
         "kept", "The settings partition 4 kept came back at this start",
         "Prefs saved in one boot and used in the next (Sound cores, Loop memory)", "auto",
