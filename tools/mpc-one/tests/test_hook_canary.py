@@ -3,8 +3,9 @@
 --hook-canary-report) and the wrapper's developer mode port 22 handling. No device, no network.
 
 ip, ping and ssh are stand-ins (the network identity is the same test-only one as in
-test_kexec_preflight.py). The fake ssh keeps a known_hosts file the way OpenSSH does for the options
-it is given (accept-new saves an unknown key, yes refuses one), and runs the streamed scripts under
+test_kexec_preflight.py). The fake ssh keeps a known_hosts file (~/.ssh/known_hosts unless it is told
+another) the way OpenSSH does for the options it is given (accept-new saves an unknown key, yes refuses
+one), and runs the streamed scripts under
 BusyBox applets (as on the MPC) against a fake root folder: their first line R='' becomes that folder.
 
 Set MPFREE_REQUIRE_BUSYBOX=1 (CI does) to fail instead of skip without BusyBox.
@@ -58,7 +59,8 @@ host = target.split("@")[-1]
 with open(os.environ["FAKE_LOG"], "a") as fh:
     fh.write(f"ssh: port={opts.get('-p')} F={opts.get('-F')} strict={opts.get('StrictHostKeyChecking')} "
              f"known={opts.get('UserKnownHostsFile')} {command}\n")
-known = opts.get("UserKnownHostsFile")
+# Without a UserKnownHostsFile option OpenSSH uses ~/.ssh/known_hosts (where --devmode-trust records the key).
+known = opts.get("UserKnownHostsFile") or os.path.join(os.environ["HOME"], ".ssh", "known_hosts")
 if known:
     key = os.environ["FAKE_HOSTKEY"]
     lines = open(known).read().splitlines() if os.path.exists(known) else []
@@ -175,7 +177,9 @@ class HookCanaryTests(unittest.TestCase):
         self.before = self.tree()
         self.key = os.path.join(self.tmp, "key")
         write(self.key, "not a real key\n", 0o600)
-        self.known = os.path.join(self.home, "mpfree-work", "mpc-devmode-known_hosts")
+        # Developer mode's host key, as --devmode-trust records it after a typed TRUST.
+        self.known = os.path.join(self.home, ".ssh", "known_hosts")
+        write(self.known, f"{TEST_IP} {self.pub('host')}\n")
         self.env = {
             "HOME": self.home, "LC_ALL": "C", "PATH": fakebin + os.pathsep + "/usr/bin:/bin",
             "MPC_KEY": self.key, "MPC_REPORT_DIR": self.reports, "MPC_PORT": "22",
@@ -226,15 +230,13 @@ class HookCanaryTests(unittest.TestCase):
         self.assertEqual(self.calls(), [], "nothing may reach the MPC")
         self.assertEqual(self.tree(), self.before)
 
-    def test_install_writes_three_files_and_pins_the_host_key(self):
+    def test_install_writes_three_files_and_checks_the_recorded_host_key(self):
         res = self.install()
-        self.assertIn("first contact: its host key will be saved in " + self.known, res.stdout)
         self.assertIn("RESULT: the canary is installed", res.stdout)
-        self.assertIn("Developer mode SSH host key: ", res.stdout)
         [call] = self.calls()
-        self.assertEqual(call, f"ssh: port=22 F=/dev/null strict=accept-new known={self.known} sh -s")
+        self.assertEqual(call, "ssh: port=22 F=None strict=yes known=None sh -s")
         with open(self.known) as fh:
-            self.assertEqual(fh.read(), f"{TEST_IP} {self.pub('host')}\n")
+            self.assertEqual(fh.read(), f"{TEST_IP} {self.pub('host')}\n", "the recorded key is left as it was")
         self.assertIn("modprobe: kmod's (/sbin/modprobe)", res.stdout)
         rule = self.read(RULE)
         self.assertIn('RUN+="/bin/sh /data/mpfree-hook/canary.sh udev $kernel"', rule)
@@ -265,18 +267,24 @@ class HookCanaryTests(unittest.TestCase):
         self.install()
         installed = self.tree()
         res = self.install()
-        self.assertIn("must match the one saved in", res.stdout)
         self.assertIn("already in place, unchanged", res.stdout)
-        self.assertEqual(self.calls()[-1], f"ssh: port=22 F=/dev/null strict=yes known={self.known} sh -s")
+        self.assertEqual(self.calls()[-1], "ssh: port=22 F=None strict=yes known=None sh -s")
         self.assertEqual(self.tree(), installed)
 
     def test_another_host_key_is_refused_before_anything_runs(self):
-        os.makedirs(os.path.dirname(self.known))
         write(self.known, f"{TEST_IP} {self.pub('other')}\n")
         res = self.run_wrapper("--hook-canary", MPFREE_ACCEPT_HOOK_CANARY="YES")
         self.assertEqual(res.returncode, 1, res.stdout)
-        self.assertIn("another host key than the one saved in", res.stdout)
-        self.assertIn(f"ssh-keygen -R {TEST_IP} -f {self.known}", res.stdout)
+        self.assertIn("The MPC's host key is not the one recorded: on 3.10.1 run the --devmode-trust block first.",
+                      res.stdout)
+        self.assertEqual(self.tree(), self.before)
+
+    def test_a_host_key_not_recorded_yet_is_refused_before_anything_runs(self):
+        os.unlink(self.known)
+        res = self.run_wrapper("--hook-canary", MPFREE_ACCEPT_HOOK_CANARY="YES")
+        self.assertEqual(res.returncode, 1, res.stdout)
+        self.assertIn("run the --devmode-trust block first", res.stdout)
+        self.assertFalse(os.path.exists(self.known), "nothing is recorded without --devmode-trust")
         self.assertEqual(self.tree(), self.before)
 
     def test_install_stops_on_another_release_or_layout(self):
@@ -494,9 +502,9 @@ class HookCanaryTests(unittest.TestCase):
         res = self.run_wrapper("--kexec-preflight")
         self.assertEqual(res.returncode, 0, res.stdout)
         self.assertEqual(self.calls(), [
-            f"ssh: port=22 F=/dev/null strict=accept-new known={self.known} sh -s",
-            f"ssh: port=22 F=/dev/null strict=yes known={self.known} uname -r",
-            f"ssh: port=22 F=/dev/null strict=yes known={self.known} cat /sys/firmware/fdt"])
+            "ssh: port=22 F=None strict=yes known=None sh -s",
+            "ssh: port=22 F=None strict=yes known=None uname -r",
+            "ssh: port=22 F=None strict=yes known=None cat /sys/firmware/fdt"])
         [copy] = glob.glob(os.path.join(self.home, "mpfree-work", "kexec-preflight-*", "release.txt"))
         with open(copy) as fh:
             self.assertEqual(fh.read(), RELEASE + "\n")

@@ -161,6 +161,8 @@ class BootHookTests(unittest.TestCase):
         self.make_stick()
         self.key = os.path.join(self.tmp, "key")
         write(self.key, "not a real key\n", 0o600)
+        # Developer mode's host key, as --devmode-trust records it after a typed TRUST.
+        write(os.path.join(self.home, ".ssh", "known_hosts"), f"{TEST_IP} {self.hostkey}\n")
         self.env = {
             "HOME": self.home, "LC_ALL": "C", "PATH": fakebin + os.pathsep + "/usr/bin:/bin",
             "MPC_KEY": self.key, "MPC_REPORT_DIR": self.reports, "MPC_PORT": "22",

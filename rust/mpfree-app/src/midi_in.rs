@@ -111,6 +111,19 @@ struct LearnedSet {
 }
 
 /// Notes what a learned control set, in room made at the start.
+/// A learned control after a switch of mode (`landed`): on the new
+/// engine's matching parameter, keeping its range, or false to unlearn it.
+fn follow(s: &mut Saved, landed: &crate::fxmodes::Landed) -> bool {
+    match landed.target(s.target) {
+        mpfree_mod::Moved::Stays => true,
+        mpfree_mod::Moved::To(to, _) => {
+            s.target = to;
+            true
+        }
+        mpfree_mod::Moved::Gone => false,
+    }
+}
+
 fn note_set(sets: &mut Vec<LearnedSet>, target: ParamAddr, unit: f32, at: f64) {
     let room = sets.len() < sets.capacity();
     match sets.iter_mut().find(|s| s.target == target) {
@@ -161,6 +174,9 @@ pub struct MusicIn {
     learning: Vec<Learning>,
     /// Controls learned but not yet in the project (the screen held it).
     unsaved: Vec<Saved>,
+    /// Switches of mode whose learned controls follow their parameters,
+    /// not yet in the project (the screen held it).
+    moved: Vec<crate::fxmodes::Landed>,
     /// Learned controls the project couldn't keep (past its limit).
     unkept: u64,
     /// What learned controls last set (room for every learned control,
@@ -211,6 +227,7 @@ impl MusicIn {
             learn: LearnMap::new(),
             learning: Vec::new(),
             unsaved: Vec::new(),
+            moved: Vec::new(),
             unkept: 0,
             learn_sets: Vec::with_capacity(mpfree_midi::setup::MAX_LEARNED),
             next_look: 0.0,
@@ -289,6 +306,23 @@ impl MusicIn {
 
     pub fn armed(&self) -> Option<ParamAddr> {
         self.learn.armed()
+    }
+
+    /// An insert switched to another engine with its mode: each control
+    /// learned on one of its parameters follows it to the new engine's
+    /// matching one, or is unlearned when there is none
+    /// (`fxmodes::Landed`); an armed learn follows too. The project's list
+    /// takes it at the next [`MusicIn::sync`].
+    pub fn retarget(&mut self, landed: &crate::fxmodes::Landed) {
+        use mpfree_mod::Moved;
+        if let Some(a) = self.learn.armed() {
+            match landed.target(a) {
+                Moved::Stays => {}
+                Moved::To(to, _) => self.learn.arm(to),
+                Moved::Gone => self.learn.disarm(),
+            }
+        }
+        self.moved.push(landed.clone());
     }
 
     /// What Learn did since the last call, in order.
@@ -376,6 +410,13 @@ impl MusicIn {
                     self.unkept += 1;
                 }
             }
+            m.gen += 1;
+        }
+        if !self.moved.is_empty() {
+            for landed in self.moved.drain(..) {
+                m.setup.learn.retain_mut(|s| follow(s, &landed));
+            }
+            // The learn map is built again from the list.
             m.gen += 1;
         }
         if self.applied != Some(m.gen) {
@@ -1100,6 +1141,58 @@ mod tests {
         let (keys, _) = run(&mut m, usb, &[0xB2, 75, 1, 0x92, 60, 90]);
         assert_eq!(keys.len(), 1);
         assert_eq!(m.learning().count(), 0);
+    }
+
+    /// A switch of mode moves a control learned on the insert to the new
+    /// engine's matching parameter, in the project's list and the learn
+    /// map, and unlearns one with no match; an armed learn follows too.
+    #[test]
+    fn a_learned_control_follows_its_parameter_to_a_new_engine() {
+        use crate::fxmodes::Landed;
+        use mpfree_node::{Curve, ParamInfo, Unit};
+        let mut m = MusicIn::new();
+        let usb = m.plugged("Keystep 37").unwrap();
+        let s = model();
+        m.sync(&s, 0.0);
+        let other = ParamAddr::new(cutoff().owner, 13);
+        for (target, cc) in [(cutoff(), 74), (other, 75)] {
+            m.arm(target);
+            run(&mut m, usb, &[0xB2, cc, 10]);
+        }
+        assert_eq!(m.learning().count(), 2);
+        m.sync(&s, 0.1);
+        m.arm(cutoff());
+        let info = ParamInfo {
+            id: 7,
+            name: "Cutoff",
+            group: "Filter",
+            min: 0.0,
+            max: 1.0,
+            default: 0.5,
+            unit: Unit::None,
+            curve: Curve::Linear,
+            readonly: false,
+        };
+        m.retarget(&Landed {
+            owner: cutoff().owner,
+            moves: vec![(12, Some(info)), (13, None)],
+        });
+        let moved = ParamAddr::new(cutoff().owner, 7);
+        assert_eq!(m.armed(), Some(moved), "the armed learn follows");
+        m.disarm();
+        m.sync(&s, 0.2);
+        let kept: Vec<ParamAddr> = s
+            .lock()
+            .unwrap()
+            .setup
+            .learn
+            .iter()
+            .map(|l| l.target)
+            .collect();
+        assert_eq!(kept, [moved], "CC 75's parameter went nowhere");
+        run(&mut m, usb, &[0xB2, 74, 127, 0xB2, 75, 127]);
+        let set: Vec<_> = m.learning().collect();
+        assert!(matches!(set[..], [Learning::Set(w)] if w.target == moved && w.value == 1.0));
     }
 
     /// The project's tempo from the 5-pin jacks, following start, stop

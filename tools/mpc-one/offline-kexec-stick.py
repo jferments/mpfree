@@ -955,6 +955,9 @@ def running_release(pre, work, target_release):
         release, how = others[0], "the only other boot-files release; the preflight predates release.txt"
     if not SAFE.match(release):
         raise Stop(f"unusable running release {release!r}")
+    if release == target_release:
+        # An installed 3.10.1 runs the same kernel the test build boots: its board file is the reference too.
+        how += "; the same kernel as the test build's"
     return release, how
 
 
