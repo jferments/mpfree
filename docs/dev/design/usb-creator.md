@@ -12,7 +12,7 @@ Out of scope: updating the MPC to 3.10.1. The musician does that first with Akai
 
 1. Switching developer mode on once and tapping **Yes** is acceptable as the one step on the MPC.
 2. **One stick**, with the setup partition on it. No separate setup stick.
-3. Drum kits for creator-made sticks: being explained to the owner; still open ([below](#what-ships-in-the-app)).
+3. Drum kits for creator-made sticks: **both** kits rendered from MPFree's Drums synth (the default) and a few CC0 sample kits with their sources recorded ([below](#what-ships-in-the-app)).
 4. GUI: **egui**, or whatever is simplest; the UI is a small wizard. Bundling e2fsprogs is fine.
 5. Signing: the owner would rather not pay for an Apple Developer ID or a Windows certificate. The free route is in [Releases](#releases); still open.
 6. **MPC One (Gen 1) only** for the first release. The app and the manual say plainly that it has only been tested on the MPC One (Gen 1). The setup script and the hook still refuse other boards, because the switch-off service names the MPC One's controller addresses.
@@ -118,10 +118,10 @@ Raspberry Pi Imager (Apache-2.0) has solved these on all three systems and is th
 
 - MPFree's own programs for the stick (pad player, startup screen, screen log), built for ARM by CI and pinned by hash. Bundling them means one app version is one tested set and works offline.
 - A table of supported Akai update files by SHA-256 and kernel release, deny by default. A hash is not Akai's content.
-- **MPFree's own drum kits**, with a provenance list. The pad player can't start without `kits.bin` today, and the kits on the reference stick are Akai's factory sounds, copied out of the owner's eMMC backup by `offline-factory-kit.py`. A musician has no such backup, and Akai's sounds can't ship. The choices (still open):
+- **MPFree's own drum kits**, with a provenance list. The pad player can't start without `kits.bin` today, and the kits on the reference stick are Akai's factory sounds, copied out of the owner's eMMC backup by `offline-factory-kit.py`. A musician has no such backup, and Akai's sounds can't ship. The choices (the owner chose **both**, 2026-11-15):
   - **Rendered from MPFree's Drums synth.** CI plays each pad of a few Drums kits once and writes the hits into `kits.bin` (the format in `rust/mpfree-app/src/kit.rs` is plain 44.1 kHz audio, so nothing in the pad player changes). Entirely MPFree's own, nothing to license, but synthetic in character (808/909-style).
   - **CC0 samples.** Public-domain recordings of real drums. More realistic, but each file needs its source and licence recorded, and someone has to choose them.
-  - **Both** (recommended): synthetic kits as the default, plus a few CC0 kits.
+  - **Both** (chosen): synthetic kits as the default, plus a few CC0 kits.
   - Later, and only if the owner's legal check allows it: an optional "use my MPC's own sounds" step that copies the owner's factory kits from their MPC to their own stick during setup, never leaving their hands.
 
 ### Developer SSH
@@ -172,6 +172,5 @@ The owner handles the legal review; this section only records the technical fact
 
 ## Still open
 
-1. Drum kits: rendered from the Drums synth, CC0 samples, or both ([choices](#what-ships-in-the-app))?
-2. Signing: launch free as in [Releases](#releases), or pay for an Apple Developer ID?
-3. The board check in the hook (a hook change) needs the owner's go before stage 1.
+1. Signing: launch free as in [Releases](#releases), or pay for an Apple Developer ID?
+2. The board check in the hook (a hook change) needs the owner's go before stage 1.
