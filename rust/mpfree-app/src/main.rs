@@ -5560,6 +5560,12 @@ fn player_session(
         if let Some(line) = mix.poll_built() {
             out.note(line);
         }
+        // A switch of mode that came in: Q-Links and MIDI controls learned
+        // on the insert's controls follow them.
+        for landed in mix.modes.take_landed() {
+            music.retarget(&landed);
+            out.show(gui::ToUi::ParamsMoved(Box::new(landed)));
+        }
         // What the plugin rack said (a plugin started, crashed, restarted
         // or was left off): never hidden. No allocation when quiet.
         if let Some(lines) = found_plugins.take_lines() {
