@@ -131,7 +131,7 @@ def run_chain(bins, work, middle, seconds, control, extra=()):
 
 def fxprobe_sh(root, kit, *args):
     r = subprocess.run(["sh", os.path.join(kit, "fxprobe.sh")] + list(args), env=dict(os.environ, FXPROBE_TEST_ROOT=root),
-                       capture_output=True, text=True, timeout=300)
+                       capture_output=True, text=True, timeout=300, preexec_fn=lambda: os.umask(0o077))
     if r.returncode != 0:
         fail("fxprobe.sh %s: %s %s" % (" ".join(args), r.stdout, r.stderr))
     return r.stdout
@@ -169,7 +169,8 @@ def stick_test(bins, tmp, rate):
     env = {k: v for k, v in os.environ.items() if k != "FXPROBE_DIR"}
     p = subprocess.Popen([os.path.join(bins, "chain_sim"), "--seconds", "600", "--speed", "4",
                           os.path.join(installed, "MPFree - VST - FXProbe Source", "VST", "fxprobe-source.so"),
-                          os.path.join(installed, "MPFree - VST - FXProbe Tap", "VST", "fxprobe-tap.so")], env=env)
+                          os.path.join(installed, "MPFree - VST - FXProbe Tap", "VST", "fxprobe-tap.so")], env=env,
+                         preexec_fn=lambda: os.umask(0o077))   # a strict umask: what the plugins write stays readable
     try:
         time.sleep(1.5)
         if any(os.path.exists(os.path.join(media, d, "FXProbe")) for d in os.listdir(media)):
@@ -182,7 +183,13 @@ def stick_test(bins, tmp, rate):
         out = fxprobe_sh(root, kit, "capture", "wire-stick", "--gains", "0,-12", "--tail", "1")
         if "CAPTURE-OK" not in out:
             fail("fxprobe.sh capture: " + out)
+        for dirpath, _, files in os.walk(work):
+            for name in [""] + files:
+                mode = os.stat(os.path.join(dirpath, name)).st_mode & 0o777
+                if mode != (0o644 if name else 0o755):
+                    fail("%s is %o under umask 077; the stick must read without root" % (os.path.join(dirpath, name), mode))
         print("ok   stage.py kit, fxprobe.sh install/setup/capture: installed plugins find the stick's work folder")
+        print("ok   everything in the work folder is 0755/0644 under umask 077")
         # The stick out and back in under another mount name.
         mounts("MPFREE-DATA")
         os.rename(os.path.join(media, "4c1e9a52-data"), os.path.join(media, "MPFREE-DATA"))

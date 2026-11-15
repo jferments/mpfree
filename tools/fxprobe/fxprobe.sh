@@ -46,6 +46,9 @@
 # SPDX-License-Identifier: MIT
 
 R=${FXPROBE_TEST_ROOT:-}
+# Everything this makes is readable by everyone (the shell's umask on the MPC
+# is unknown), so a workstation reads the stick without root.
+umask 022
 SOURCE_DIR="MPFree - VST - FXProbe Source"
 TAP_DIR="MPFree - VST - FXProbe Tap"
 MARKER=.fxprobe-work
@@ -279,6 +282,7 @@ cmd_setup() {
     [ -f "$KIT/programmes/$p.wav" ] && [ -f "$KIT/programmes/$p.tsv" ] || stop "the kit has no programmes/$p.wav and $p.tsv"
   done
   mkdir -p "$WORK/programmes" "$WORK/captures" "$WORK/status" || stop "cannot make $WORK"
+  chmod 755 "$WORK" "$WORK/programmes" "$WORK/captures" "$WORK/status"
   for f in short.wav short.tsv standard.wav standard.tsv; do
     if [ -f "$WORK/programmes/$f" ] && same_file "$KIT/programmes/$f" "$WORK/programmes/$f"; then continue; fi
     cp "$KIT/programmes/$f" "$WORK/programmes/$f.tmp" && mv "$WORK/programmes/$f.tmp" "$WORK/programmes/$f" ||

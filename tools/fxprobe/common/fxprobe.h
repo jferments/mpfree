@@ -125,10 +125,25 @@ inline std::string workFolder()
     return drive + "/FXProbe";
 }
 
+// Folders and files the plugins make are readable by everyone (0755, 0644)
+// whatever the host's umask, which on the MPC is Akai's app's and unknown, so
+// a workstation reads the stick without root.
 inline bool ensureDir(const std::string& p)
 {
     if (isDir(p)) return true;
-    return ::mkdir(p.c_str(), 0755) == 0 || errno == EEXIST;
+    if (::mkdir(p.c_str(), 0755) == 0)
+    {
+        ::chmod(p.c_str(), 0755);
+        return true;
+    }
+    return errno == EEXIST;
+}
+
+inline std::FILE* createFile(const std::string& path)
+{
+    std::FILE* f = std::fopen(path.c_str(), "wb");
+    if (f) ::fchmod(::fileno(f), 0644);
+    return f;
 }
 
 // A file name the controller gave us: no folders, no "..", printable.
@@ -145,7 +160,7 @@ inline bool safeName(const std::string& s)
 inline bool writeAtomically(const std::string& path, const std::string& text)
 {
     std::string tmp = path + ".tmp";
-    std::FILE* f = std::fopen(tmp.c_str(), "wb");
+    std::FILE* f = createFile(tmp);
     if (!f) return false;
     bool ok = std::fwrite(text.data(), 1, text.size(), f) == text.size();
     ok = (std::fclose(f) == 0) && ok;
@@ -413,7 +428,7 @@ public:
     bool open(const std::string& path, int rate)
     {
         close();
-        f_ = std::fopen(path.c_str(), "wb");
+        f_ = createFile(path);
         if (!f_) return false;
         rate_ = rate;
         frames_ = 0;

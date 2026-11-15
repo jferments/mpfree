@@ -64,7 +64,7 @@ Rules the plugins keep:
 
 - **Real time:** the audio thread copies samples into a lock-free ring and reads and writes atomics, nothing else. A worker thread per instance does every file operation. A programme is loaded into the buffer the audio thread is not using and handed over between blocks.
 - **Quiet by default:** with no work folder they do nothing at all, and they never create it. A command already in `control.txt` when an instance starts, or when the work folder appears, is ignored, so loading a project or putting a stick back never fires an old command. Names from the control file must be plain file names.
-- **Where they write:** only inside the work folder. The plugins write nothing else; `fxprobe.sh install` puts the plugin folders themselves on the internal drive, and `remove` takes them off.
+- **Where they write:** only inside the work folder. The plugins write nothing else; `fxprobe.sh install` puts the plugin folders themselves on the internal drive, and `remove` takes them off. Folders they and `fxprobe.sh` make are 0755 and files 0644 whatever the umask (Akai's app's is unknown), so a workstation reads the stick without root.
 - **Risk:** a plugin runs inside the MPC app with no sandbox; a crash in it stops the app until it restarts. Both pass the SDK's host simulator (MPC load order, block sizes 32 to 512, random parameters, state round trip, in-place processing) and its validator for 32- and 64-bit ARM.
 
 ### Setting the AIR knobs
