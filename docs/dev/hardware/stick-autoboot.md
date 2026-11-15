@@ -1,6 +1,6 @@
 # Starting MPFree from the stick at power-on
 
-**As of 2026-11-15 (soft-reboot hook, merged in #370; `--app-user` passed its first power-on)** · **Device:** the reference MPC One, Akai MPC OS 3.10.1 installed on the eMMC (kernel `6.18.44-az01-2026-08-10-rt6`), developer mode on.
+**As of 2026-11-15 (soft-reboot hook, merged in #370; `--app-user` merged in #372 after its first power-on passed)** · **Device:** the reference MPC One, Akai MPC OS 3.10.1 installed on the eMMC (kernel `6.18.44-az01-2026-08-10-rt6`), developer mode on.
 
 This page is the record: what was tried, in order, and what each run showed. For how the boot system works today, read [How MPFree boots from the stick on MPC OS 3.10.1](soft-reboot-boot.md) first.
 
@@ -269,7 +269,7 @@ cd /home/jesse/code/mpfree-hardware-survey && python3 tools/mpc-one/results.py r
 
 ## The pad player without root (`--app-user`, opt-in)
 
-Until now the stick ran the pad player as root, with every capability. That matters after a soft-reboot, because the switch-off service unbinds the eMMC and SD controllers but cannot stop a root program from binding them again (one write to the driver's `bind` file), and the pad player runs code and files from elsewhere: CLAP plugins (`mpfree-clap`) and the samples, kits and projects musicians share. `offline-kexec-stick.py --app-user` (with `--app`) runs it as an ordinary user instead. **It is opt-in: a build without it is the same stick as before**, and going back is a rebuild without the flag.
+Until now the stick ran the pad player as root, with every capability. That matters after a soft-reboot, because the switch-off service unbinds the eMMC and SD controllers but cannot stop a root program from binding them again (one write to the driver's `bind` file), and the pad player runs code and files from elsewhere: CLAP plugins (`mpfree-clap`) and the samples, kits and projects musicians share. `offline-kexec-stick.py --app-user` (with `--app`) runs it as an ordinary user instead. **It is opt-in (merged in #372): a build without it is the same stick as before**, and going back is a rebuild without the flag.
 
 What `--app-user` changes on the stick, and nothing else:
 - `mpfree` (uid and gid 960, fixed so partition 4's files keep their owner from build to build) is added to `/etc/passwd` and `/etc/group`. It has no password (no shadow line) and no shell. It joins `audio`, `video` and `input`, the groups the standard udev rules give `/dev/snd/*`, `/dev/fb0` and `/dev/input/event*`, and `systemd-journal` where the image has it, for the Console page. The build stops if the image lacks any of the first three, or already uses the name or the id.
@@ -297,7 +297,7 @@ The owner built the stick at 5ed11d59 with `--app-user` (report: `pad player use
 **Block 5.1: who owns the devices today** (**read-only**; on the MPC running MPFree from the current stick, built without `--app-user`). It reads the state at power-on and then waits at the first phase: press `q` there.
 
 ```bash
-cd /home/jesse/code/mpfree-hardware-survey && git fetch origin claude/project-thread-ggg3tr:refs/remotes/origin/claude/project-thread-ggg3tr && git switch --no-track -C app-user origin/claude/project-thread-ggg3tr && git log --oneline -1 && python3 tools/mpc-one/results.py run privileges-before -- env MPFREE_ACCEPT_APP=YES MPFREE_APP_STEPS=app bash tools/mpc-one/collect-over-ssh.sh --app ; python3 tools/mpc-one/results.py zip
+cd /home/jesse/code/mpfree-hardware-survey && git fetch origin main:refs/remotes/origin/main && git switch --no-track -C softreboot origin/main && git log --oneline -1 && python3 tools/mpc-one/results.py run privileges-before -- env MPFREE_ACCEPT_APP=YES MPFREE_APP_STEPS=app bash tools/mpc-one/collect-over-ssh.sh --app ; python3 tools/mpc-one/results.py zip
 ```
 
 Expected: `privileges: pid … Uid:	0 …` (root, as built today), and `/dev/fb0`, `/dev/snd/*` and `/dev/input/event*` with the gids of `video`, `audio` and `input` in the `privileges: group …` lines. If a node belongs to another group, or to root alone, stop here and send the zip: the pad player as `mpfree` could not open it.
@@ -321,5 +321,5 @@ cd /home/jesse/code/mpfree-hardware-survey && python3 tools/mpc-one/results.py r
 2. The owner chose soft-reboot. Step 4 works: the second power-on went from the MPC logo to MPFree with no tap (zip 092220Z), and the hook, the stick builder and the owner tooling were merged into `main` on 2026-11-15 (#370). #364 and #369, the earlier stack, are superseded. Next: rebuild and rewrite the stick with the `no-reserved-blocks@` mask (blocks 4.1 and 4.2), install the hook again (block 4.3, for the corrected check), and power on with the SD card in (4.4 and 4.5). That run passes when nothing reads the card before the switch-off is done, and the build report lists no other unit that is NOT masked and could touch a disk.
 3. The **bootloader-level** route (U-Boot booting MPFree directly, or a kernel command-line word that lifts LoadPin) stays behind the [safety rule](../../agents/README.md): proven MaskROM recovery and the owner's go. Not started.
 4. The hook needs installing once on each MPC. Whether a one-time tap at install is acceptable is the owner's decision; the owner rejected a tap at every power-on.
-5. The pad player without root (`--app-user`, opt-in) passed its first power-on (zip 183259Z): uid 960, no capabilities, real-time 70, no underruns. Left: a second power-on to show saved settings come back.
+5. The pad player without root (`--app-user`, opt-in) passed its first power-on (zip 183259Z: uid 960, no capabilities, real-time 70, no underruns) and was merged into `main` on 2026-11-15 (#372). Left: a second power-on with an `--app-user` stick to show saved settings come back, planned for the next hardware round. Passes when a setting changed before power-off is back and the second boot's `privileges:` lines are the same. If it fails, look first at the owners on partition 4 (`ls -ln /run/mpfree-data`) and at `mpfree-test-storage:` lines in the stick's `dmesg.txt`. Whether `--app-user` becomes the default is the owner's decision after that.
 6. After any Akai update, rebuild the stick from a fresh `--kexec-preflight`. Its `release` must match the running kernel, or the hook refuses the stick and Akai's system starts.
