@@ -380,6 +380,27 @@ fn two_tracks_record_at_once_into_one_memory() {
     r.run_to(p + BAR);
     assert_eq!(r.l(p + 3000), -sig(START + 3000));
     assert_eq!(r.r(p + 3000), -sig(START + 3000));
+    r.cmd(A::Solo(1, false));
+    r.at(r.frame + 1, T::Stop);
+    r.run_to(r.frame + 2);
+    // An export's replay of track 0 alone: track 1 is out at once (past
+    // the region's own fade-in, track 0 alone plays), whatever the solos
+    // say.
+    r.a.set_only(Some(0));
+    let p = r.frame + 1;
+    r.at(p, T::PlayStart);
+    r.run_to(p + BAR);
+    for k in [2000u64, 3000, 5000] {
+        assert_eq!(r.l(p + k), sig(START + k), "frame {k}");
+    }
+    // And back: both again.
+    r.a.set_only(None);
+    r.at(r.frame + 1, T::Stop);
+    r.run_to(r.frame + 2);
+    let p = r.frame + 1;
+    r.at(p, T::PlayStart);
+    r.run_to(p + BAR);
+    assert_eq!(r.l(p + 3000), 0.0, "left and right inputs cancel");
 }
 
 #[test]

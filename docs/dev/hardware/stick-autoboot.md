@@ -1,12 +1,14 @@
 # Starting MPFree from the stick at power-on
 
-**As of 2026-11-15 (soft-reboot hook)** · **Device:** the reference MPC One, Akai MPC OS 3.10.1 installed on the eMMC (kernel `6.18.44-az01-2026-08-10-rt6`), developer mode on.
+**As of 2026-11-15 (soft-reboot hook, merged in #370; `--app-user` merged in #372 after its first power-on passed; opt-in kexec-file route: its first round restarted on Akai's kernel with LoadPin off, Ethernet did not come up; the chain to the stick's own device tree passed its first round, with Ethernet)** · **Device:** the reference MPC One, Akai MPC OS 3.10.1 installed on the eMMC (kernel `6.18.44-az01-2026-08-10-rt6`), developer mode on.
+
+This page is the record: what was tried, in order, and what each run showed. For how the boot system works today, read [How MPFree boots from the stick on MPC OS 3.10.1](soft-reboot-boot.md) first.
 
 ## The goal
 
 The owner's goal for the first release (2026-11-14, sharpened 2026-11-15): with the MPFree stick in, switching the MPC on starts MPFree with no computer and no tap. The MPC logo may show for a moment, but Akai's app must not load first; MPFree's startup screen is the first thing after the logo. With the stick out, the MPC starts the factory system as before.
 
-The jump was first the kexec that [the stick test](firmware-3.10.1-stick-test.md) uses: Akai's Linux loads the kernel from the stick with `kexec --load` and `systemctl kexec` starts it, with a device tree that hides the eMMC and SD controllers. On the installed 3.10.1, LoadPin refuses that load (below), so the hook now does a **systemd soft-reboot** into the stick's system instead, on Akai's running kernel ([the soft-reboot hook](#the-soft-reboot-hook-step-4)). Either way, the trigger that starts the jump at power-on, early enough, is the same.
+The jump was first the kexec that [the stick test](firmware-3.10.1-stick-test.md) uses: Akai's Linux loads the kernel from the stick with `kexec --load` and `systemctl kexec` starts it, with a device tree that hides the eMMC and SD controllers. On the installed 3.10.1, LoadPin refuses that load (below), so the hook now does a **systemd soft-reboot** into the stick's system instead, on Akai's running kernel ([the soft-reboot hook](#the-soft-reboot-hook-step-4)). Either way, the trigger that starts the jump at power-on, early enough, is the same. A stick built with `--kexec-file` asks for an opt-in second route: a restart into Akai's own kernel, loaded with the file-based kexec, falling back to the soft-reboot ([step 6](#the-kexec-file-route-step-6-opt-in)).
 
 ## What can start it, and what is ruled out
 
@@ -108,7 +110,7 @@ Second install (2026-11-15, zip 075320Z): the check reached `kexec --load` and t
 
 The preflight (zip 082152Z) names the refuser exactly, and it is **LoadPin**, not IPE. The kernel log line is `LoadPin: kexec-image old-api-denied ... cmdline="/usr/sbin/kexec --load --kexec-syscall ..."`. LoadPin runs with `enforce` on (`/proc/sys/kernel/loadpin/enforce` is 1, `CONFIG_SECURITY_LOADPIN_ENFORCE=y`) and has pinned the dm-verity root (`az0x-loadpin-trustpoints` sets its trusted digests). Its `kernel_load_data` hook then refuses every raw `kexec_load` (the `--kexec-syscall` path, which passes a NULL file), and on a read-only pinned root the `enforce` sysctl cannot be lowered at runtime, only from the kernel command line. The earlier **IPE** theory does not hold on this unit: the preflight found `no /sys/kernel/security/ipe`, so although `ipe` is listed in `CONFIG_LSM` it is not active here. Lockdown is not the cause either (`CONFIG_SECURITY_LOCKDOWN_LSM is not set`). `CONFIG_KEXEC_FILE=y`, so `kexec_file_load` (`-s`) exists, but LoadPin accepts a file-based load only from the pinned or a trusted verity filesystem, which a plain stick is not. The hook's check caught the refusal and left Akai's system untouched; `--hook-report` confirms nothing started. (An earlier preflight read `/proc/sys/kernel/loadpin/enabled`, which does not exist; the file is `enforce`, now read.)
 
-This closes the runtime-kexec route on 3.10.1: the boot hook depends on Akai's running kernel accepting `kexec_load` from the stick, and LoadPin on 3.10.1 does not. The only way to lift LoadPin is a kernel command-line word (`loadpin.enforce=0` or `loadpin.exclude=kexec-image`), which lives in U-Boot; the [safety rule](../../agents/README.md) puts a U-Boot-environment change behind proven MaskROM recovery and the owner's decision, so it is not done here.
+This closes the runtime-kexec route on 3.10.1: the boot hook depends on Akai's running kernel accepting `kexec_load` from the stick, and LoadPin on 3.10.1 does not. The only way to lift LoadPin is a kernel command-line word (`loadpin.enforce=0` or `loadpin.exclude=kexec-image`), which lives in U-Boot; the [safety rule](../../agents/README.md) puts a U-Boot-environment change behind proven MaskROM recovery and the owner's decision, so it is not done here. A file-based kexec of Akai's own kernel is the exception: it sets the next kernel's command line without U-Boot. That is [step 6](#the-kexec-file-route-step-6-opt-in).
 
 What is still unknown, if the gate is ever cleared: whether `systemd-run` queues the service before Akai's app starts (the canary's service was queued about 0.3 s before it), how long the restart takes, and what the screen shows between the MPC logo and MPFree's startup screen.
 
@@ -158,7 +160,7 @@ LoadPin stays on across the soft-reboot. It is pinned to the superblock of Akai'
 
 ### Rehearsed in the simulator
 
-- [`test_boot_hook.py`](../../../tools/mpc-one/tests/test_boot_hook.py) (18 tests) runs the wrapper, the installer, the undo and the report against the fake MPC. The fake stick is made from the builder's own constants, so the two agree.
+- [`test_boot_hook.py`](../../../tools/mpc-one/tests/test_boot_hook.py) (18 tests at this step, 23 with step 6's) runs the wrapper, the installer, the undo and the report against the fake MPC. The fake stick is made from the builder's own constants, so the two agree.
   - The installer replaces the canary and the kexec version installed on the MPC now, checks the stick read-only (also through a real `nosymfollow` mount, as Akai's `edisksd` makes one) and leaves nothing in `/run`.
   - The jump mounts `/run/nextroot` `ro,noload`, loads the listed modules, writes the marker and asks for `soft-reboot.target` exactly once.
   - It stops and cleans up on every check above: a damaged or missing switch-off file, a stick for another kernel, another protocol, an older stick, a path out of the stick in `SHA256SUMS`, no systemd, no `os-release`, a missing module, the partition already mounted, something at `/run/nextroot` already, firmware updaters, and systemd refusing the soft-reboot.
@@ -265,10 +267,404 @@ cd /home/jesse/code/mpfree-hardware-survey && python3 tools/mpc-one/results.py r
 
 **Passes when** the MPC went from the logo to MPFree with no tap and Akai's app never drew, and the stick's `dmesg.txt` shows `mpfree-internal-off: switched off ff0f0000...` before any `sd`/`mmc` mount. Nothing else may read the eMMC or SD card before `mpfree-internal-off: done`: no `no-reserved-blocks` unit and no `Buffer I/O error` on `mmcblk`. The boot maps before and after must have the same boot-area hashes, with 0 sectors written to p1 to p6 and boot0/1.
 
+## The pad player without root (`--app-user`, opt-in)
+
+Until now the stick ran the pad player as root, with every capability. That matters after a soft-reboot, because the switch-off service unbinds the eMMC and SD controllers but cannot stop a root program from binding them again (one write to the driver's `bind` file), and the pad player runs code and files from elsewhere: CLAP plugins (`mpfree-clap`) and the samples, kits and projects musicians share. `offline-kexec-stick.py --app-user` (with `--app`) runs it as an ordinary user instead. **It is opt-in (merged in #372): a build without it is the same stick as before**, and going back is a rebuild without the flag.
+
+What `--app-user` changes on the stick, and nothing else:
+- `mpfree` (uid and gid 960, fixed so partition 4's files keep their owner from build to build) is added to `/etc/passwd` and `/etc/group`. It has no password (no shadow line) and no shell. It joins `audio`, `video` and `input`, the groups the standard udev rules give `/dev/snd/*`, `/dev/fb0` and `/dev/input/event*`, and `systemd-journal` where the image has it, for the Console page. The build stops if the image lacks any of the first three, or already uses the name or the id.
+- `mpfree-test-storage.service` runs `/etc/mpfree-test/storage.sh` once, as root, before the pad player: the mounts `start-app.sh` used to make (partition 3 read-only, partition 4 read-write, the online grow), then `find /run/mpfree-data -xdev ! -user 960 -exec chown -h 960:960 {} \;` so partition 4's files become `mpfree`'s, and `chgrp`/`chmod g+w` on the framebuffer's sysfs `pan` file (RAM only), which the pad player writes to show the screen. It runs before the pad player and not on its restarts, so no `mpfree` process can change those folders while they are walked. A step that fails is noted in the kernel log and the pad player starts without it, as before; it never fails the boot.
+- `mpfree-test-app.service` keeps its name, its crash restarts and its fall-back to the log display. It now has `User=mpfree`, an empty `CapabilityBoundingSet=` and `AmbientCapabilities=`, `NoNewPrivileges=yes`, `LimitRTPRIO=70` and `LimitMEMLOCK=infinity` (the pad player's only privileged calls are `SCHED_FIFO` up to 70 and `mlockall`, which these limits allow without root), and `RuntimeDirectory=mpfree-app` kept after it stops, so the log service still copies its report. `start-app.sh` only starts the program.
+
+Not changed: the switch-off service and its files (so `/boot/mpfree-softreboot/SHA256SUMS`, which the hook checks, lists the same files), the hook on the MPC, every mask and stub, SSH on port 2222 (still root, for recovery), the startup screen and log display (still root). Partition 4 works with both builds: root reads and writes `mpfree`'s files, and the next `--app-user` boot hands back anything root made.
+
+The `--app` step's read-only check (`MPFREE_APP_STEPS=app`) now prints `privileges:` lines for either build: the pad player's `Uid`, `Groups`, `CapEff`, `CapBnd`, `NoNewPrivs` and its real-time and locked-memory limits; the owner and mode of `/dev/fb0`, `/dev/snd/*`, `/dev/input/event*`, the `pan` file and the eMMC driver's `bind` file; and the `audio`, `video`, `input`, `systemd-journal` and `mpfree` lines of `/etc/group`.
+
+The groups the device nodes get come from the udev rules in Akai's image; block 5.1 reads them first. Sandbox options that need kernel features (`ProtectSystem=`, `PrivateDevices=`, `DevicePolicy=`) are left for a later round, each checked against Akai's kernel configuration first.
+
+### First power-on with `--app-user` (2026-11-15, zip 183259Z): passed
+
+The owner built the stick at 5ed11d59 with `--app-user` (report: `pad player user: mpfree (--app-user)`, `mpfree is in the groups: audio video input systemd-journal`), wrote it (partition 4 kept) and powered on with the hook unchanged. Block 5.1 was skipped; the after-check below shows what it would have.
+
+- The soft-reboot ran as before: the hook at 7.05 s, the eMMC off at 10.27 s and the SD card at 13.50 s, `done` at 14.02 s. The only failed unit is Akai's `az0x-loadpin-trustpoints`, as on every soft-reboot. `mpfree-test-storage.service` ended `active (exited)` with no `mpfree-test-storage:` warning in the kernel log, and `mpfree-test-app.service` ran.
+- **Privileges** (`privileges-after`): `Uid 960`, `Gid 960`, `Groups 19 29 44 960 996` (input, audio, video, mpfree, systemd-journal), `CapEff` and `CapBnd` all zero, `NoNewPrivs 1`, `Max realtime priority 70`, `Max locked memory unlimited`.
+- **Device nodes**: `/dev/fb0` `crw-rw----` gid 44 (video), every `/dev/snd/*` node gid 29 (audio), `/dev/input/event0` and `event1` gid 19 (input), all as the standard udev rules give. The `pan` file is `-rw-rw-r--` gid 960 (storage.sh's change). `dwmmc_rockchip/bind` stays `--w-------` root, which `mpfree` cannot write.
+- **The pad player's own report**: `memory locked (mlockall)`, `SCHED_FIFO priority 70`, `saving: settings and found buttons are kept in /run/mpfree-data`. **0 underruns in 82,683 periods**, and pad to sound 8.68 ms (9 hits, 8.67 to 8.68 ms), the same as the 8.7 ms of the root runs.
+- Not shown in this zip: that saved settings come back on a second power-on with `--app-user`. Writing the stick erased the log partition, so this zip holds one boot. Step 6's round showed it (zip 192320Z: the Timing strip stayed Off).
+
+### Blocks for the owner
+
+**Block 5.1: who owns the devices today** (**read-only**; on the MPC running MPFree from the current stick, built without `--app-user`). It reads the state at power-on and then waits at the first phase: press `q` there.
+
+```bash
+cd /home/jesse/code/mpfree-hardware-survey && git fetch origin main:refs/remotes/origin/main && git switch --no-track -C softreboot origin/main && git log --oneline -1 && python3 tools/mpc-one/results.py run privileges-before -- env MPFREE_ACCEPT_APP=YES MPFREE_APP_STEPS=app bash tools/mpc-one/collect-over-ssh.sh --app ; python3 tools/mpc-one/results.py zip
+```
+
+Expected: `privileges: pid … Uid:	0 …` (root, as built today), and `/dev/fb0`, `/dev/snd/*` and `/dev/input/event*` with the gids of `video`, `audio` and `input` in the `privileges: group …` lines. If a node belongs to another group, or to root alone, stop here and send the zip: the pad player as `mpfree` could not open it.
+
+**Block 5.2: build the `--app-user` stick** (workstation only; nothing contacts the MPC). The same as block 4.1 with `--app-user` added. The report must say `pad player user: mpfree (--app-user)` and `mpfree is in the groups: audio video input systemd-journal`.
+
+```bash
+cd /home/jesse/code/mpfree-hardware-survey && python3 tools/mpc-one/results.py run local-checks -- bash -c 'MPFREE_REQUIRE_OFFLINE_TOOLS=1 python3 tools/mpc-one/tests/test_offline_kexec_stick.py && MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_app_mpc.py && echo LOCAL-CHECKS-OK' && python3 tools/mpc-one/results.py run build-arm -- bash -c 'export CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER=arm-linux-gnueabihf-gcc RUSTFLAGS="-C target-feature=+crt-static -C relocation-model=static" && cargo build --manifest-path rust/Cargo.toml --release --locked --target armv7-unknown-linux-gnueabihf -p mpfree-screen-log -p mpfree-startup -p mpfree-app' && python3 tools/mpc-one/results.py run build-stick-app-user -- python3 tools/mpc-one/offline-kexec-stick.py --splash rust/target/armv7-unknown-linux-gnueabihf/release/mpfree-startup --app rust/target/armv7-unknown-linux-gnueabihf/release/mpfree --app-user
+```
+
+**Block 5.3: write the stick** (**state-changing, the stick only**): block 4.2 as it is; it writes the newest build, this one. Partition 4 stays.
+
+**Step 5.4: the power-on** (**state-changing**, as step 4.4; the hook on the MPC is the same and is not reinstalled). Expected: the same as step 4.4, the logo, the startup screen, the pad player, and pads that play. Then run block 5.1's command again, as `privileges-after` instead of `privileges-before`. **Passes when** the pad player plays and the lines say `Uid:	960`, `CapEff:	0000000000000000`, `NoNewPrivs:	1`, `Max realtime priority 70` and `Max locked memory unlimited`. The pad player's own report (`/run/mpfree-app/report.txt`, which the stick's logs copy) must say `SCHED_FIFO priority 70` and `memory locked (mlockall)`, not `failed`. Saved settings must come back after a second power-on. Then the pad-to-sound latency and underrun counts should match the round before (8.7 ms average, no underruns).
+- If the screen shows the log display instead of the pad player, it could not start as `mpfree`: the log display shows why. SSH on port 2222 works as before.
+
+**Undo, always** (the stick only): build without `--app-user` (block 4.1's command) and write the stick (block 4.2). Partition 4 stays and works as before. The MPC itself is never changed by this round.
+
+## The kexec-file route (step 6, opt-in)
+
+Added on 2026-11-15 at the owner's request, as an option to explore beside the soft-reboot, on the condition that it cannot change the working soft-reboot. **First round on 2026-11-15 (zip 192320Z): the jump worked on both power-ons and `loadpin.enforce=0` took; Ethernet did not come up** ([record](#first-round-2026-11-15-zip-192320z-the-jump-worked-loadpin-off-no-ethernet)).
+
+### What it is
+
+How this route compares with the soft-reboot, a chain to our own kernel and U-Boot, and what each means for external hardware, is in [Boot routes](boot-routes.md).
+
+A file-based kexec (`kexec_file_load`, `kexec --load --kexec-file-syscall`) asks the kernel to read the new kernel from a file itself. LoadPin vets that file: it accepts one on the pinned dm-verity root, which Akai's own `/boot/zImage-<release>` is, and refuses one from the stick. The stick's kernel is a byte-for-byte copy of Akai's, so loading Akai's file starts the same kernel the stick test booted. The load takes a command line, which points `root=` at the stick. It takes no device tree: kexec-tools 2.0.28 on 32-bit ARM refuses one in file mode (`DTB file cannot be specified in file mode`), so the new kernel keeps the running device tree, with the eMMC and SD controllers on, exactly as after a soft-reboot.
+
+A load-and-unload probe on the installed 3.10.1 was reported to come back loaded on 2026-11-15, by work on another branch (PR #364's, commit 5568f9cd, `kexec-file-probe.sh`). Its log is not in this repo. Block 6.3's install check repeats that probe with the stick's own command line, so the first device step settles it.
+
+Against the soft-reboot it may gain:
+- **A fresh kernel and an empty `/run`.** Nothing from Akai's boot carries over: no udev database, so none of Akai's device units (such as the `no-reserved-blocks@` instance that read the SD card) are taken over, and no driver state from Akai's app.
+- **LoadPin from scratch.** The new kernel's LoadPin pins the first filesystem it loads a module or firmware from, which is expected to be the stick's root. Modules and firmware from the stick would then load, which a soft-reboot cannot do at all. This is upstream LoadPin's behaviour; Akai's build may differ.
+- **Our own command line.** With `--loadpin-off` the stick adds `loadpin.enforce=0`, which upstream LoadPin reads at boot. Whether Akai's kernel takes it is the experiment: its boot log says `LoadPin: ready to pin (currently enforcing)` or `(currently not enforcing)`. If it takes it, a later step could load MPFree's own kernel and device tree from the stick, without U-Boot. That later step is not built: the command line keeps `sysctl.kernel.kexec_load_disabled=1`, so no further kexec is possible from the stick's system.
+
+It costs a second kernel start (a few seconds, not measured), and it works only while the MPC's kernel file is the one the stick was built with.
+
+### How the stick asks for it, and what the hook does
+
+`offline-kexec-stick.py --kexec-file` adds three files to `/boot/mpfree-softreboot/`, each listed in its `SHA256SUMS`:
+- `jump`: `kexec-file`;
+- `cmdline`: the command line, the same words as `/boot/mpfree-kexec/cmdline.txt` (`root=PARTUUID=<partition 1> rootwait=60 ro panic=10 rfkill.default_state=0 sysctl.kernel.kexec_load_disabled=1`), plus `loadpin.enforce=0` with `--loadpin-off`;
+- `kernel.sha256`: the hash of the image's `/boot/zImage-<release>`.
+
+Everything else on the stick is as before, the switch-off service included. Without `--kexec-file` none of the three is made.
+
+The hook does everything of step 4 up to the firmware-updater wait. Then, only if the stick has `jump`:
+1. At the check of the stick: all three files must be listed in `SHA256SUMS`, `jump` must say `kexec-file`, and every word of `cmdline` must be one the hook allows. `root=PARTUUID=` must name this stick's partition 1 (from `/dev/disk/by-partuuid`). `ro`, `rootwait=60`, `panic=10` and `sysctl.kernel.kexec_load_disabled=1` must be there. The only other words allowed are `rfkill.default_state=0` and `loadpin.enforce=0`, each at most once. `kernel.sha256` must name `/boot/zImage-<the running release>`. Any of these wrong is a STOP, as for any damaged stick.
+2. At the jump, it hashes the MPC's `/boot/zImage-<release>` and compares. It checks that `/usr/sbin/kexec` is there, `kexec_load_disabled` is 0 and nothing is loaded yet. Then it loads that kernel with `--kexec-file-syscall` and the stick's command line, and checks `kexec_loaded` is 1. It skips `preload-modules.txt`, which only matters for a soft-reboot.
+3. If a firmware updater started meanwhile, it unloads the kernel and stops (Akai's app starts). Otherwise it starts `kexec.target` (`systemctl --no-block --job-mode=replace-irreversibly start kexec.target`). systemd stops Akai's programs, unmounts what it can and starts the loaded kernel.
+
+It falls back to the soft-reboot of step 4, in the same power-on, when:
+- the MPC has no `/boot/zImage-<release>`, or it is not the kernel the stick was built with (an Akai update that kept the release name);
+- kexec is turned off on the MPC, or another kexec kernel is loaded already (that one is left alone);
+- the kernel refuses the load;
+- systemd will not start `kexec.target` (the hook unloads the kernel first).
+
+If a kernel the hook loaded will not unload again, at any of these points or at a firmware updater, the hook stops instead: no soft-reboot while that kernel is in RAM, because a later restart could start it. It tries the unload once. Akai's app starts, and switching the MPC off clears the kernel. A load that reports a failure but leaves the kernel loaded counts as loaded.
+
+At the install check (`hook.sh check`), a kexec-file stick also gets the load and an unload again (RAM only, never started), so `--hook-install` shows whether the kernel accepts the load with this command line. The check passes either way, and says which route a power-on would take. Only a failed unload stops it.
+
+### What cannot change for the soft-reboot
+
+- A stick built without `--kexec-file` has none of the three files, and the hook takes step 4's path unchanged. It never runs `kexec`. The tests check this for the jump and for the check.
+- A `--kexec-file` stick on a hook from before this step still soft-reboots: the old hook checks the extra files against `SHA256SUMS` and ignores them.
+- The new hook needs `--hook-install` once (block 6.3). Until then the MPC runs step 4's hook. Going back is rewriting the stick with a build without `--kexec-file`; the hook can stay.
+- `kexec` is only ever called with `--kexec-file-syscall`, on `$R/boot/zImage-$rel`, never with a device tree and never to execute; a static test checks it.
+
+### Risks before its first power-on
+
+- **The jump itself is unproven.** Only load and unload have been reported. Whether Akai's 3.10.1 kernel shuts its secondary CPUs, display, USB and audio down cleanly for a kexec, and whether the new kernel comes up on the reused device tree, is unknown. The stick test's kexecs started from 3.6.0's kernel with our device tree.
+- **Ethernet may not come up.** The stick test's device tree gives the Ethernet PHY its ID because the kernel resets the PHY's line when it lets go of it; without the ID the new kernel found no PHY (`MDIO device at address 1 is missing`). Akai's device tree has no ID. The stick's Ethernet retry service runs, but SSH on port 2222 may be unreachable; the stick's log partition still records the boot.
+- **A boot loop until the stick is pulled.** If the new kernel panics, `panic=10` restarts the MPC, the hook sees the stick and tries again. The hook writes nothing that lasts, so it cannot count tries. The way out is the usual undo: switch off, take the stick out, switch on.
+- **The eMMC and SD card are visible to the new kernel** until the switch-off service runs, as after a soft-reboot. The kernel's own probe only reads. With an empty udev database, the service runs before udev's start-up pass, which is earlier relative to udev than after a soft-reboot.
+- **What else of Akai's boot is in the running device tree** (for example `/chosen` entries U-Boot added) comes along. U-Boot's `boot.scr` loads no initramfs, so no stale initramfs range is expected.
+
+### First round (2026-11-15, zip 192320Z): the jump worked, LoadPin off, no Ethernet
+
+The owner ran blocks 6.1 to 6.6 at f7bfea75, with a stick built with `--app-user --kexec-file --loadpin-off`. Block 6.3 first stopped at the host-key check (`No ED25519 host key is known`), before anything ran on the MPC: developer mode's key was not in `~/.ssh/known_hosts` yet. Block Q1 recorded it, and block 6.3 now says to run Q1 first. The install check then loaded Akai's kernel with the stick's command line and unloaded it again (`CHECK-OK: … restart into it on Akai's own kernel`).
+
+Both power-ons went from the MPC logo to the pad player with no tap. The stick's log partition holds two boots, both after a kexec. From the first boot's `journal.txt`, in the new kernel's uptime (the time before it, Akai's boot up to the hook plus the kexec handover, was not recorded: the hook's notes were in Akai's RAM):
+
+| Time | What happened |
+| --- | --- |
+| 0 s | Akai's kernel starts again, with the command line `root=PARTUUID=<stick> rootwait=60 ro panic=10 rfkill.default_state=0 sysctl.kernel.kexec_load_disabled=1 loadpin.enforce=0` (plus its built-in `isolcpus=2-3`) |
+| 0.0008 s | `LoadPin: ready to pin (currently not enforcing)` |
+| 0.35 s | the Ethernet driver finds no PHY: `mdio_bus stmmac-0: MDIO device at address 1 is missing.` |
+| 0.90 to 1.26 s | the kernel probes the eMMC (`mmcblk0: p1 … p8`) and the SD card (`mmcblk1: p1`), reading their partition tables |
+| 2.46 s | the stick's partition 1 is mounted read-only as the root; systemd starts |
+| 3.78 s | Akai's `az0x-loadpin-trustpoints` reads its policy file from the stick's root: `LoadPin: sda1 (8:1): writable`, then `security-policy pinned` |
+| 3.92 s | `mpfree-internal-off: started at 3.92 s (after kexec)` |
+| 4.02 s | `switched off ff0f0000.dwmmc` (the eMMC) |
+| 7.33 s | `switched off ff0c0000.dwmmc` (the SD card); `done at 7.34 s` |
+| 7.97 to 9.70 s | `mpfree-test-storage.service` mounts partitions 3 and 4 |
+| 10.57 s | `cfg80211` loads. It is a module on Akai's system (the hook's own trigger), so this is a module load from the stick's root |
+| 10.77 s | the pad player starts, as the `mpfree` user |
+
+Against the pass rules:
+- **Route: passed.** Both boots' `cmdline.txt` is the stick's, ending in `loadpin.enforce=0`, and `dmesg.txt` starts again from 0 s with `(after kexec)`.
+- **LoadPin: Akai's kernel takes `loadpin.enforce=0`.** Both boots say `currently not enforcing`. It still pinned the stick's root once something read a file there, and a module loaded from that root. Neither boot has a LoadPin refusal. A load from anywhere else was not tried, and no firmware was asked for.
+- **Storage stayed safe: passed.** No eMMC or SD card filesystem was mounted; the only reads are the kernel's own partition-table probe. The eMMC was visible for the first 4.0 s of the new kernel's boot and the SD card for 7.3 s. The boot-area hashes (p1 to p6, boot0, boot1) are the same before and after, and the boot map after shows 0 sectors written to them (p7 and p8 show only Akai's own boot after the round). With an empty udev database, none of Akai's device units were taken over; `/sdcard` and its check were skipped by their own conditions.
+- **Without root: partly shown.** The pad player's report says `SCHED_FIFO priority 70`, `memory locked (mlockall)` and `saving: settings and found buttons are kept in /run/mpfree-data`. `mpfree-test-storage.service` ended `active (exited)` with no `mpfree-test-storage:` line. The `privileges:` lines could not be read: without Ethernet, both privilege steps stopped at `MPC does not answer direct-interface ICMP`.
+- **Settings kept: passed.** The Timing strip was still Off after the second power-on, and that boot's report shows `saved settings: …` loaded from partition 4. That boot first replayed the journals of the log and data partitions (`recovery complete`), because the first boot was switched off without a clean unmount; the setting survived.
+- **Ethernet: did not come up,** the risk predicted above. `eth0` stayed down through the retries at 15, 20, 45 and 90 s.
+- **Sound:** pad to sound 8.62 ms (14 hits, 8.41 to 8.68 ms), as on the soft-reboot. Each boot had one underrun, at +0.017 s in the first light update (`pads and lights 3.33 ms`), and none after it (20,671 and 31,007 periods). The `--app-user` soft-reboot run had none.
+- **Failed units:** none on either boot. Akai's `az0x-loadpin-trustpoints`, which fails after every soft-reboot, ran (`empty list of trusted verity digests: Protocol error`, but it exited 0).
+- **Akai's next boot** without the stick (block 6.6) was as usual: LoadPin enforcing, Akai's app active, and the hook noted `MPFree's stick is not in`.
+
+What the round settles about the risks above: the kexec from 3.10.1's kernel works, on Akai's own device tree. Ethernet fails as predicted. No boot loop happened. The eMMC and SD card were visible to the new kernel but only probed. Because LoadPin follows the command line, LoadPin no longer blocks the chain to MPFree's own kernel and device tree ([route 3](boot-routes.md#3-our-own-kernel-by-a-chain-first-step-built-our-device-tree)). The owner chose that as the next step, starting with the stick's own device tree, which gives the PHY its ID and disables the eMMC and SD controllers in the tree.
+
+### Blocks for the owner (step 6)
+
+One round tests three things at once, all opt-in and all on the stick:
+- the kexec-file route, with `--loadpin-off` (does Akai's kernel take `loadpin.enforce=0`?);
+- the pad player without root, `--app-user`, under this route;
+- that settings saved on partition 4 come back after a power-off.
+
+Each block was rehearsed in the simulator as far as a simulator can. The MPC runs Akai's 3.10.1 with developer mode on, on the direct Ethernet cable, with developer mode's host key recorded (block Q1). The stick's partition 4 is kept by every write.
+
+**Block 6.1: update, check, build** (workstation only; nothing contacts the MPC). It takes PR #374's branch, which includes `main` with #372.
+
+```bash
+cd /home/jesse/code/mpfree-hardware-survey && git fetch origin claude/project-thread-g153eb:refs/remotes/origin/claude/project-thread-g153eb && git switch --no-track -C kexec-file origin/claude/project-thread-g153eb && git log --oneline -1 && python3 tools/mpc-one/results.py run local-checks -- bash -c 'MPFREE_REQUIRE_OFFLINE_TOOLS=1 python3 tools/mpc-one/tests/test_offline_kexec_stick.py && MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_boot_hook.py && python3 tools/mpc-one/tests/test_write_test_stick.py && MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_app_mpc.py && echo LOCAL-CHECKS-OK' && python3 tools/mpc-one/results.py run build-arm -- bash -c 'export CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER=arm-linux-gnueabihf-gcc RUSTFLAGS="-C target-feature=+crt-static -C relocation-model=static" && cargo build --manifest-path rust/Cargo.toml --release --locked --target armv7-unknown-linux-gnueabihf -p mpfree-screen-log -p mpfree-startup -p mpfree-app' && python3 tools/mpc-one/results.py run build-stick -- python3 tools/mpc-one/offline-kexec-stick.py --splash rust/target/armv7-unknown-linux-gnueabihf/release/mpfree-startup --app rust/target/armv7-unknown-linux-gnueabihf/release/mpfree --app-user --kexec-file --loadpin-off
+```
+
+The build report must say:
+- `LOCAL-CHECKS-OK`;
+- `pad player user: mpfree (--app-user)` and `mpfree is in the groups: audio video input systemd-journal`;
+- `--kexec-file: /boot/mpfree-softreboot/jump asks the hook to restart into Akai's own kernel`;
+- `its command line: root=PARTUUID=… rootwait=60 ro panic=10 rfkill.default_state=0 sysctl.kernel.kexec_load_disabled=1 loadpin.enforce=0`.
+
+**Block 6.2: write the stick** (**state-changing, the stick only**: erases partitions 1 to 3, keeps partition 4; asks for `WRITE`). Undo: write an older build the same way.
+
+```bash
+cd /home/jesse/code/mpfree-hardware-survey && python3 tools/mpc-one/results.py run write-stick -- python3 tools/mpc-one/write-test-stick.py
+```
+
+**Block 6.3: boot map before, then install the hook with the stick in the MPC** (the boot map is **read-only**; the install is **state-changing, the data partition only**: it rewrites the three hook files, then checks the stick read-only, and for this stick also loads Akai's kernel into RAM and unloads it again, never starting it). Put the stick in the MPC while Akai's system runs first.
+- Undo: `cd /home/jesse/code/mpfree-hardware-survey && MPC_PORT=22 bash tools/mpc-one/collect-over-ssh.sh --hook-remove`.
+- First, if developer mode's host key is not in `~/.ssh/known_hosts` yet, run [Block Q1](firmware-3.10.1-qualification.md) once (`--devmode-trust`, read-only on the MPC; one line in `known_hosts` after you type `TRUST`). Without it, the boot map stops with `Host key verification failed` before anything runs on the MPC, and the install does not start. Seen on 2026-11-15, the first port 22 run after the move to `~/.ssh/known_hosts`.
+
+```bash
+cd /home/jesse/code/mpfree-hardware-survey && python3 tools/mpc-one/results.py run boot-map-before -- env MPC_PORT=22 bash tools/mpc-one/collect-over-ssh.sh --boot-map && python3 tools/mpc-one/results.py run hook-install -- env MPC_PORT=22 MPFREE_ACCEPT_HOOK=YES bash tools/mpc-one/collect-over-ssh.sh --hook-install
+```
+
+It ends with one of these:
+- `CHECK-OK: at power-on with this stick in, the MPC would restart into it on Akai's own kernel (kexec_file; the test load and unload passed) …` and `RESULT: the hook is installed, and the stick checks out.` Go on to 6.4.
+- `CHECK-OK: … would soft-reboot into it (the kexec_file route it asks for is not available, above)`: the `kexec_file:` line above it says why. Stop and send the zip (`python3 tools/mpc-one/results.py zip`). A power-on would only soft-reboot.
+- `STOP: …`: take the stick out before the next power-on and send the zip.
+
+**Block 6.4: first power-on, then change one setting** (**state-changing**: Akai's programs are stopped at about 6 s and the MPC restarts into Akai's kernel with the stick as root; the eMMC and SD card are switched off in software, and nothing is written to them).
+1. Switch the MPC off, wait 10 s, and switch it on with the stick in. Expected: the MPC logo, possibly a few seconds of dark screen while the kernel starts again, then MPFree's startup screen and the pad player. Akai's app never draws. Play a few pads.
+2. Change one setting that is kept: on the **Play** page, tap **Beats**, press **MENU**, and set **Timing strip** to **Off**. The strip under the pattern goes away. Wait 10 s, so the store has written it to partition 4.
+3. Read the privileges (**read-only**, over SSH on port 2222). It reads the state and waits at the first phase: press `q` there.
+
+   ```bash
+   cd /home/jesse/code/mpfree-hardware-survey && python3 tools/mpc-one/results.py run privileges-boot1 -- env MPFREE_ACCEPT_APP=YES MPFREE_APP_STEPS=app bash tools/mpc-one/collect-over-ssh.sh --app
+   ```
+
+   If it cannot connect, Ethernet probably did not find its PHY after the kexec (a known risk). Skip this step; the stick's logs still record the boot.
+
+What else can happen:
+- **Akai's app comes up instead:** leave the stick in and the MPC on, and run this read-only block first. The hook's notes are in RAM and only last until the power-off:
+
+  ```bash
+  cd /home/jesse/code/mpfree-hardware-survey && python3 tools/mpc-one/results.py run hook-report-stick-in -- env MPC_PORT=22 bash tools/mpc-one/collect-over-ssh.sh --hook-report
+  ```
+
+- **The MPC restarts by itself more than once, or stays on the logo for more than a minute:** hold the power button to switch off and take the stick out. The new kernel did not come up, and with the stick in the hook would try again at every power-on.
+- **The MPC switches itself off:** the switch-off service refused to go on, and its notes are on the stick.
+- Don't touch the MPC's power while it shows an update screen.
+
+**Block 6.5: second power-on with the stick in** (**state-changing**, the same as 6.4).
+1. Switch off, wait 10 s, switch on with the stick in.
+2. On **Play**, tap **Beats**: **Timing strip** must still be **Off** (no strip under the pattern, and **MENU** shows it Off). Set it back to **On** if you like.
+3. Read the privileges again, as `privileges-boot2`:
+
+   ```bash
+   cd /home/jesse/code/mpfree-hardware-survey && python3 tools/mpc-one/results.py run privileges-boot2 -- env MPFREE_ACCEPT_APP=YES MPFREE_APP_STEPS=app bash tools/mpc-one/collect-over-ssh.sh --app
+   ```
+
+**Block 6.6: what happened** (read-only). Switch off, take the stick out, wait 10 s and switch on into Akai's system. Then:
+
+```bash
+cd /home/jesse/code/mpfree-hardware-survey && python3 tools/mpc-one/results.py run hook-report -- env MPC_PORT=22 bash tools/mpc-one/collect-over-ssh.sh --hook-report ; python3 tools/mpc-one/results.py run boot-map-after -- env MPC_PORT=22 bash tools/mpc-one/collect-over-ssh.sh --boot-map
+```
+
+Then put the stick in the workstation:
+
+```bash
+cd /home/jesse/code/mpfree-hardware-survey && python3 tools/mpc-one/results.py run stick-logs -- python3 tools/mpc-one/read-stick-logs.py ; python3 tools/mpc-one/results.py zip
+```
+
+**Passes when**, for both power-ons:
+- **Route:** the MPC went from the logo to MPFree with no tap and Akai's app never drew. The stick's logs show the kexec: `cmdline.txt` is the stick's command line, ending in `loadpin.enforce=0`, not Akai's. `dmesg.txt` starts again from 0 s, with `mpfree-internal-off: started at … (after kexec)`. If it says `(after soft-reboot)`, the hook fell back, which is safe but not this test.
+- **Storage stayed safe:** `switched off ff0f0000…` comes before any `sd` or `mmc` mount, and nothing reads the eMMC or SD card before `mpfree-internal-off: done`. The boot maps before and after have the same boot-area hashes, with 0 sectors written to p1 to p6 and boot0/1.
+- **Without root:** the `privileges:` lines (where SSH answered) show `Uid: 960`, `CapEff: 0000000000000000`, `NoNewPrivs: 1`, `Max realtime priority 70` and `Max locked memory unlimited`. The pad player's report (`/run/mpfree-app/report.txt`, copied with the stick's logs) says `SCHED_FIFO priority 70`, `memory locked (mlockall)` and `saving: settings and found buttons are kept in /run/mpfree-data`. There is no `mpfree-test-storage:` line in `dmesg.txt`.
+- **Settings kept:** Timing strip was still Off after the second power-on.
+
+Record from each boot's `dmesg.txt`: the `LoadPin: ready to pin (currently …)` line (`not enforcing` means `loadpin.enforce=0` took), any LoadPin refusal of a module or firmware, and whether Ethernet found its PHY. If the setting did not come back, look first at the owners on partition 4 and at any `mpfree-test-storage:` lines.
+
+**Undo, always:** switch off, take the stick out, switch on: Akai's system starts as before. To go back to the soft-reboot stick, run block 4.1's build (with or without `--app-user`) and block 4.2. The hook can stay, since it soft-reboots any stick without `--kexec-file`; `--hook-remove` takes it off.
+
+## The chain to the stick's own device tree (step 7, opt-in)
+
+Added on 2026-11-15 after step 6's first round, by the owner's choice of next step. **Its first round on the MPC passed (zip 201107Z, [below](#first-round-2026-11-15-zip-201107z-passed-ethernet-up)): Ethernet up, the eMMC and SD card never probed by the second kernel.** The route is described with the others in [Boot routes, route 3](boot-routes.md#3-our-own-kernel-by-a-chain-first-step-built-our-device-tree).
+
+### What it is
+
+Step 6 showed that Akai's kernel takes `loadpin.enforce=0`. With LoadPin not enforcing, the ordinary kexec (`kexec_load`, which can take a device tree) is no longer refused. So the stick's system, once started on that kernel, can restart once more into a kernel and device tree of the stick's own. This step uses the files every stick already carries in `/boot/mpfree-kexec`, made for the old kexec route (step 3) and the 3.6.0 stick test:
+- `zImage`: a link to the stick's copy of Akai's kernel, byte for byte;
+- `kexec.dtb`: the stick's device tree. It gives the Ethernet PHY its ID, which step 6 lacked, and disables the eMMC and SD controllers, so the second kernel never probes them;
+- `cmdline.txt`: `root=PARTUUID=<partition 1> rootwait=60 ro panic=10 rfkill.default_state=0 sysctl.kernel.kexec_load_disabled=1`. LoadPin is left enforcing there, as in the stick test, where it pinned the stick's root.
+
+Our own kernel would later replace `zImage`; nothing else in the chain changes for that.
+
+### How it works
+
+`offline-kexec-stick.py --kexec-file --loadpin-off --chain` makes three changes, and only with `--chain`:
+- The kexec-file command line has `mpfree.chain=1` in place of `sysctl.kernel.kexec_load_disabled=1`, with `loadpin.enforce=0`.
+- It adds `mpfree-test-chain.service` and `/etc/mpfree-test/chain.sh`, listed in `/boot/mpfree-softreboot/SHA256SUMS` with `kexec.dtb`, `cmdline.txt` and `/boot/mpfree-kexec/SHA256SUMS`.
+- It keeps Akai's `/usr/sbin/kexec` instead of the stub, because `systemd-shutdown` runs it to start a loaded kernel. The build stops if `systemd-shutdown` names any other kexec program, or the image has no `/usr/sbin/kexec`.
+
+At power-on:
+1. **Akai's system, about 6 s:** the hook checks the stick as in step 6. The command line must hold `mpfree.chain=1` with `loadpin.enforce=0` and without `sysctl.kernel.kexec_load_disabled=1`. The stick must carry the chain's files, all matching `SHA256SUMS`, and start the chain's service. The hook then loads Akai's kernel with the file-based kexec and starts `kexec.target`, as in step 6.
+2. **First kernel (Akai's, Akai's device tree):** `mpfree-test-internal-off.service` switches the eMMC and SD card off as in step 6. Then `mpfree-test-chain.service` runs. It runs only with `mpfree.chain=1` on the command line, and before `systemd-sysctl` (whose file turns kexec off), the log service, the storage service, the pad player and SSH.
+   - It checks `zImage`, `kexec.dtb` and `cmdline.txt` against `/boot/mpfree-kexec/SHA256SUMS`.
+   - It checks that `cmdline.txt` has this kernel's `root=` and no other, has `sysctl.kernel.kexec_load_disabled=1`, and has no `mpfree.chain=1`.
+   - It loads `zImage` with `kexec.dtb` and `cmdline.txt` (`kexec --load --kexec-syscall --dtb=…`, the same call the stick test used from 3.6.0).
+   - It writes its notes and the kernel log to the stick's log partition (`boot-<id>/chain.txt`), then starts `kexec.target`.
+3. **Second kernel (Akai's, the stick's device tree):** the eMMC and SD controllers are disabled in the tree, so `mpfree-internal-off` finds nothing to do (`after kexec`). Ethernet should find its PHY. Kexec is off, and `mpfree.chain=1` is not on the command line, so the chain's service does not run again. The stick's system starts as in step 6.
+
+If any check, the load or `kexec.target` fails, `chain.sh` notes `…; MPFree starts on this kernel, with Akai's device tree` and exits. The first kernel then carries on exactly as step 6's round did, without Ethernet. A kernel it loaded is unloaded again first.
+
+### What cannot change
+
+- Without `--chain`, a stick is as before: the same command line, the stub at `/usr/sbin/kexec`, and no chain files. The tests check this, including that the same image builds without them.
+- A soft-reboot stick, and a step 6 stick, take the same paths in the new hook. The hook needs `--hook-install` once for the new word (block 7.3); until then, step 6's hook (installed in block 6.3) refuses a `--chain` stick (`mpfree.chain=1, which the hook does not allow`) and Akai's system starts. #370's hook, as on `main`, soft-reboots it, and the chain's service does not run there because Akai's command line lacks `mpfree.chain=1` (both shown in the simulator).
+- The second kernel's command line keeps kexec off, so no third restart is possible from the stick's system.
+- Keeping Akai's `kexec` does not reopen the path Akai's updater uses to reach the eMMC (it kexecs its own kernel). The updater and the other flashers stay stubs, with their units masked. On the first kernel, kexec is on only until `systemd-sysctl` runs, which waits for the chain's service; nothing else of the stick's starts before it. On the second kernel kexec is off from the command line.
+- `chain.sh` writes nothing of the MPC's. It writes the kernel log, `/run` and its notes on the stick's own log partition.
+
+### Risks before its first power-on
+
+- **The second jump is new from 3.10.1's kernel.** The stick test made this kind of jump (Akai's kernel, the stick's device tree) from 3.6.0's kernel, and step 6 made a jump from 3.10.1's kernel on Akai's tree. Not this combination.
+- **`systemd-shutdown` must run the kept kexec.** If it fell back to a normal restart instead, the MPC would go through U-Boot and Akai's boot again, and the hook would start the chain again: a loop until the stick is pulled. The build checks which program it names, and the tests check that the program is not stubbed.
+- **The first kernel still probes the eMMC and SD card,** as in step 6, until the switch-off service runs, about 4 and 7 s in. The second kernel never does.
+- **Boot time grows** by a third kernel start, roughly 10 s more than step 6 (not measured).
+- **A panic loops, as in step 6:** `panic=10` restarts the MPC, and the hook tries again. The undo is the same: switch off, take the stick out, switch on.
+
+### First round (2026-11-15, zip 201107Z): passed, Ethernet up
+
+The owner ran blocks 7.1 to 7.5 at 8eed1f7f, with a stick built with `--app-user --kexec-file --loadpin-off --chain`. The build report had the expected lines (`--chain: /usr/lib/systemd/systemd-shutdown runs /usr/sbin/kexec for kexec.target; /usr/sbin/kexec stays Akai's`, no kexec stub). The install check gave all three expected lines and `CHECK-OK`. The owner powered on twice; both went from the MPC logo to the pad player with no tap.
+
+The stick's log partition holds four boots: on each power-on, a first-kernel boot with only `chain.txt`, then a second-kernel boot with the full logs. From the second power-on, in each kernel's own uptime (Akai's boot up to the hook, about 6 s, and the two handovers were not recorded):
+
+| Kernel | Time | What happened |
+| --- | --- | --- |
+| First (Akai's tree) | 0 s | command line `… loadpin.enforce=0 mpfree.chain=1`; `LoadPin: ready to pin (currently not enforcing)` |
+| | 0.35 s | `MDIO device at address 1 is missing`, as in step 6 |
+| | about 1 s | the kernel probes the eMMC and SD card (partition tables only), as in step 6 |
+| | 4.04 to 7.07 s | `mpfree-internal-off` switches off the eMMC, then the SD card |
+| | 7.16 s | `mpfree-chain: started` |
+| | 7.52 s | `LoadPin: kexec-image old-api-pinning-ignored` for the chain's `kexec --load --kexec-syscall --dtb=…`, then `the stick's kernel and device tree are loaded at 7.52 s; restart into them (kexec.target)` |
+| Second (the stick's tree) | 0 s | command line `… sysctl.kernel.kexec_load_disabled=1` (the build's `cmdline.txt`); `LoadPin: ready to pin (currently enforcing)` |
+| | | no `mmcblk` line at all: the eMMC and SD controllers are disabled in the tree |
+| | 3.97 s | `LoadPin: sda1 (8:1): writable`, then `security-policy pinned`: LoadPin pins the stick's root |
+| | 4.11 s | `mpfree-internal-off: started at 4.11 s (after kexec)`, `done at 4.12 s: no eMMC or SD card block device is left` (nothing to switch off) |
+| | 4.40 s | the chain's service is skipped (`ConditionKernelCommandLine=mpfree.chain=1`) |
+| | 6.74 s | `mpfree-test-storage.service` has mounted partitions 3 and 4 |
+| | 7.67 s | `cfg80211` loads from the stick's root with LoadPin enforcing, with no refusal |
+| | 9.12 s | SSH listens on port 2222 |
+| | 10.50 s | the pad player starts, as the `mpfree` user |
+| | 11.94 s | `eth0: PHY [stmmac-0:01] driver [RTL8211E Gigabit Ethernet]`, `Link is Up - 1Gbps/Full` |
+
+Against the pass rules:
+- **The chain ran: passed, on both power-ons.** Each first-kernel boot holds only `chain.txt`, ending with `restart into them (kexec.target)` (at 7.60 s and 7.52 s), with `currently not enforcing` in its kernel log. Neither fell back.
+- **The second kernel came up on the stick's tree: passed.** Both second boots' `cmdline.txt` is the build's `cmdline.txt` (plus Akai's built-in `isolcpus=2-3`), with no `loadpin` or `mpfree.chain` word. Their `dmesg.txt` has no `mmcblk` line, and the switch-off service found nothing to do.
+- **Ethernet: passed.** The PHY is found on both. On the first power-on the first open failed (`Failed to reset the dma`), and the Ethernet service's retry at 20 s brought it up, as on the 3.6.0 and 3.10.0 kexec test boots. On the second it came up first time.
+- **Without root: passed.** The `privileges:` lines (both power-ons, pids 524 and 532) show `Uid 960`, `Groups 19 29 44 960 996`, `CapEff` and `CapBnd` all zero, `NoNewPrivs 1`, `Max realtime priority 70` and `Max locked memory unlimited`. The device nodes and the `pan` file are as in the `--app-user` soft-reboot run, and `dwmmc_rockchip/bind` stays root's. Each privileges step ended `stopped early`, because of the `q` at the first phase.
+- **Storage stayed safe: passed.** The boot-area hashes (p1 to p6, boot0, boot1) are the same before and after. The boot map after shows 0 sectors written to them; p7 and p8 show only Akai's own boot.
+- **LoadPin on the second kernel:** enforcing, with the stick's root pinned, and a module load from it allowed. No LoadPin refusal on any of the four boots. No firmware was asked for.
+- **Sound** (first power-on): pad to sound 8.70 ms (25 hits, 8.62 to 8.73 ms), and 0 underruns in 20,558 periods. Settings were loaded from partition 4 on both. The second power-on's logs end at 43 s, before the first sound status.
+- **Failed units:** none on either second boot. **Akai's next boot** without the stick was as usual: LoadPin enforcing, Akai's app active, and the hook noted `MPFree's stick is not in`.
+- The first power-on's `journal.txt` stops at 5.4 s (68 KiB). It was probably still being copied when the MPC was switched off (a guess). That boot's `dmesg.txt` and report are whole.
+
+What the round settles: the chain from 3.10.1's kernel into a device tree of the stick's own works, Ethernet works, and the eMMC and SD card are never probed by the kernel MPFree runs on. LoadPin, enforcing on that kernel, pins the stick's root, so modules load from the stick. The first kernel still probes the eMMC and SD card for about 4 to 7 s until the switch-off, as in step 6. The next step on this route is MPFree's own kernel in place of `zImage`.
+
+### Blocks for the owner (step 7)
+
+One power-on tests the chain, with `--app-user` as in step 6. The settings check passed in step 6 and is not repeated. The MPC runs Akai's 3.10.1 with developer mode on, on the direct Ethernet cable, with developer mode's host key recorded (block Q1, done on 2026-11-15).
+
+**Block 7.1: update, check, build** (workstation only; nothing contacts the MPC).
+
+```bash
+cd /home/jesse/code/mpfree-hardware-survey && git fetch origin claude/project-thread-g153eb:refs/remotes/origin/claude/project-thread-g153eb && git switch --no-track -C kexec-file origin/claude/project-thread-g153eb && git log --oneline -1 && python3 tools/mpc-one/results.py run local-checks -- bash -c 'MPFREE_REQUIRE_OFFLINE_TOOLS=1 MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_offline_kexec_stick.py && MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_boot_hook.py && python3 tools/mpc-one/tests/test_write_test_stick.py && MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_app_mpc.py && echo LOCAL-CHECKS-OK' && python3 tools/mpc-one/results.py run build-arm -- bash -c 'export CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER=arm-linux-gnueabihf-gcc RUSTFLAGS="-C target-feature=+crt-static -C relocation-model=static" && cargo build --manifest-path rust/Cargo.toml --release --locked --target armv7-unknown-linux-gnueabihf -p mpfree-screen-log -p mpfree-startup -p mpfree-app' && python3 tools/mpc-one/results.py run build-stick -- python3 tools/mpc-one/offline-kexec-stick.py --splash rust/target/armv7-unknown-linux-gnueabihf/release/mpfree-startup --app rust/target/armv7-unknown-linux-gnueabihf/release/mpfree --app-user --kexec-file --loadpin-off --chain
+```
+
+The build report must say:
+- `LOCAL-CHECKS-OK` and `pad player user: mpfree (--app-user)`;
+- `its command line: root=PARTUUID=… rootwait=60 ro panic=10 rfkill.default_state=0 loadpin.enforce=0 mpfree.chain=1`;
+- `--chain: /usr/lib/systemd/systemd-shutdown runs /usr/sbin/kexec … for kexec.target; /usr/sbin/kexec stays Akai's` (or `runs no kexec program`);
+- no `written  /usr/sbin/kexec  (stub)` line.
+
+**Block 7.2: write the stick** (**state-changing, the stick only**: erases partitions 1 to 3, keeps partition 4; asks for `WRITE`). Undo: write an older build the same way.
+
+```bash
+cd /home/jesse/code/mpfree-hardware-survey && python3 tools/mpc-one/results.py run write-stick -- python3 tools/mpc-one/write-test-stick.py
+```
+
+**Block 7.3: boot map before, then install the hook again with the stick in the MPC** (the boot map is **read-only**; the install is **state-changing, the data partition only**: it rewrites the three hook files, then checks the stick read-only, loading Akai's kernel into RAM and unloading it again, never starting it). The hook changed in this step, so this install is needed. Put the stick in the MPC while Akai's system runs first.
+- Undo: `cd /home/jesse/code/mpfree-hardware-survey && MPC_PORT=22 bash tools/mpc-one/collect-over-ssh.sh --hook-remove`.
+
+```bash
+cd /home/jesse/code/mpfree-hardware-survey && python3 tools/mpc-one/results.py run boot-map-before -- env MPC_PORT=22 bash tools/mpc-one/collect-over-ssh.sh --boot-map && python3 tools/mpc-one/results.py run hook-install -- env MPC_PORT=22 MPFREE_ACCEPT_HOOK=YES bash tools/mpc-one/collect-over-ssh.sh --hook-install
+```
+
+Go on to 7.4 only with these three lines:
+- `this stick asks to start on Akai's own kernel (kexec_file), command line: … loadpin.enforce=0 mpfree.chain=1`;
+- `on that kernel its system restarts once more, into the stick's own kernel and device tree (mpfree.chain=1; its files check out against SHA256SUMS)`;
+- `CHECK-OK: … restart into it on Akai's own kernel (kexec_file; the test load and unload passed) …`.
+
+On `STOP: …`, or a `CHECK-OK` that says it would soft-reboot, take the stick out and send the zip (`python3 tools/mpc-one/results.py zip`).
+
+**Block 7.4: power on with the stick in** (**state-changing**: Akai's programs are stopped at about 6 s, and the MPC restarts twice: into Akai's kernel, then into the stick's device tree. Nothing is written to the eMMC or SD card).
+1. Switch the MPC off, wait 10 s, and switch it on with the stick in. Expect the MPC logo, then dark screens and possibly MPFree's startup screen twice, then the pad player, about half a minute after power-on. Play a few pads.
+2. Read the privileges (**read-only**, over SSH on port 2222). Ethernet should answer now. Press `q` at the first phase.
+
+   ```bash
+   cd /home/jesse/code/mpfree-hardware-survey && python3 tools/mpc-one/results.py run privileges-chain -- env MPFREE_ACCEPT_APP=YES MPFREE_APP_STEPS=app bash tools/mpc-one/collect-over-ssh.sh --app
+   ```
+
+   If it says `MPC does not answer direct-interface ICMP`, the chain probably fell back to the first kernel. Go on to 7.5; the stick's logs say why.
+
+What else can happen:
+- **Akai's app comes up instead:** leave the stick in and the MPC on, and run `--hook-report` first (as `hook-report-stick-in`, as in block 6.4).
+- **The MPC restarts by itself more than twice, or stays dark or on the logo for more than a minute:** hold the power button to switch off, and take the stick out.
+- Don't touch the MPC's power while it shows an update screen.
+
+**Block 7.5: what happened** (read-only). Switch off, take the stick out, wait 10 s and switch on into Akai's system. Then:
+
+```bash
+cd /home/jesse/code/mpfree-hardware-survey && python3 tools/mpc-one/results.py run hook-report -- env MPC_PORT=22 bash tools/mpc-one/collect-over-ssh.sh --hook-report ; python3 tools/mpc-one/results.py run boot-map-after -- env MPC_PORT=22 bash tools/mpc-one/collect-over-ssh.sh --boot-map
+```
+
+Then put the stick in the workstation:
+
+```bash
+cd /home/jesse/code/mpfree-hardware-survey && python3 tools/mpc-one/results.py run stick-logs -- python3 tools/mpc-one/read-stick-logs.py ; python3 tools/mpc-one/results.py zip
+```
+
+**Passes when:**
+- **The chain ran:** one boot folder holds only `chain.txt`, with `mpfree-chain: the stick's kernel and device tree are loaded at … s; restart into them (kexec.target)`. Its kernel log has `LoadPin: ready to pin (currently not enforcing)`.
+- **The second kernel came up on the stick's tree:** the other boot's `cmdline.txt` is the build's `cmdline.txt`, ending in `sysctl.kernel.kexec_load_disabled=1`, with no `loadpin` or `mpfree.chain` word. Its `dmesg.txt` has no `mmcblk` line at all, and `mpfree-internal-off: started at … (after kexec)` with nothing switched off.
+- **Ethernet:** no `MDIO device at address 1 is missing`; SSH on port 2222 answered.
+- **Without root:** the `privileges:` lines show `Uid: 960`, `CapEff: 0000000000000000`, `NoNewPrivs: 1`, `Max realtime priority 70` and `Max locked memory unlimited`.
+- **Storage stayed safe:** the boot maps before and after have the same boot-area hashes, with 0 sectors written to p1 to p6 and boot0/1.
+
+Record from the second boot's `dmesg.txt`: the LoadPin lines (expected: `currently enforcing`, then the stick's root pinned) and any module or firmware load. If `chain.txt` ends with `MPFree starts on this kernel, with Akai's device tree`, the chain fell back safely; its reason is on that line.
+
+**Undo, always:** switch off, take the stick out, switch on: Akai's system starts as before. To go back to step 6's stick, run block 6.1's build (without `--chain`) and block 6.2; the new hook takes it as before. `--hook-remove` takes the hook off.
+
 ## Next steps
 
 1. The runtime-kexec route is closed on 3.10.1: LoadPin, enforcing and pinned to the dm-verity root, refuses the stick's `kexec_load` (`kexec-image old-api-denied`; preflight zip 082152Z). IPE is absent and lockdown is off.
-2. The owner chose soft-reboot. Step 4 works: the second power-on went from the MPC logo to MPFree with no tap (zip 092220Z). Next: rebuild and rewrite the stick with the `no-reserved-blocks@` mask (blocks 4.1 and 4.2), install the hook again (block 4.3, for the corrected check), and power on with the SD card in (4.4 and 4.5). That run passes when nothing reads the card before the switch-off is done, and the build report lists no other unit that is NOT masked and could touch a disk.
+2. The owner chose soft-reboot. Step 4 works: the second power-on went from the MPC logo to MPFree with no tap (zip 092220Z), and the hook, the stick builder and the owner tooling were merged into `main` on 2026-11-15 (#370). #364 and #369, the earlier stack, are superseded. Next: rebuild and rewrite the stick with the `no-reserved-blocks@` mask (blocks 4.1 and 4.2), install the hook again (block 4.3, for the corrected check), and power on with the SD card in (4.4 and 4.5). That run passes when nothing reads the card before the switch-off is done, and the build report lists no other unit that is NOT masked and could touch a disk.
 3. The **bootloader-level** route (U-Boot booting MPFree directly, or a kernel command-line word that lifts LoadPin) stays behind the [safety rule](../../agents/README.md): proven MaskROM recovery and the owner's go. Not started.
 4. The hook needs installing once on each MPC. Whether a one-time tap at install is acceptable is the owner's decision; the owner rejected a tap at every power-on.
-5. After any Akai update, rebuild the stick from a fresh `--kexec-preflight`. Its `release` must match the running kernel, or the hook refuses the stick and Akai's system starts.
+5. The pad player without root (`--app-user`, opt-in) passed its first power-on (zip 183259Z: uid 960, no capabilities, real-time 70, no underruns) and was merged into `main` on 2026-11-15 (#372). Saved settings came back on the second power-on of step 6's round (zip 192320Z, an `--app-user` stick on the kexec-file route: the Timing strip stayed Off, and that boot's report shows `saved settings: …` loaded from partition 4). Its `privileges:` lines could not be read there, without Ethernet; step 7's round read them on both power-ons, the same as the first run's (zip 201107Z). Whether `--app-user` becomes the default is the owner's decision.
+6. Step 6, the opt-in kexec-file route: its first round (zip 192320Z) restarted on Akai's kernel on both power-ons, `loadpin.enforce=0` took, the eMMC stayed untouched and the saved setting came back; Ethernet did not come up. Next, by the owner's choice: the chain to the stick's own device tree (step 7). Its first round (zip 201107Z) passed: the second kernel came up on the stick's tree on both power-ons, with Ethernet, without root and with the boot areas unchanged. Next on this route: our own kernel in place of `zImage`. The soft-reboot stays the default; a stick without `--kexec-file` is unchanged.
+7. After any Akai update, rebuild the stick from a fresh `--kexec-preflight`. Its `release` must match the running kernel, or the hook refuses the stick and Akai's system starts.

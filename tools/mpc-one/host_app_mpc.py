@@ -255,6 +255,35 @@ else
   echo "partition 4 grow: no /run/mpfree-data-grow.txt"
 fi
 """
+# Read-only: who the pad player runs as and what it may do (its uid, groups, capabilities, NoNewPrivs, and its
+# real-time and locked-memory limits), who owns the device nodes it opens, the framebuffer's `pan` file and the
+# eMMC driver's `bind` file (the one write that would undo the switch-off), and the groups it needs. Root on a
+# build without --app-user; the mpfree user, with no capabilities, on one with it (offline-kexec-stick.py).
+PRIVS_STATE = r"""R=''
+n=0
+for p in "$R"/proc/[0-9]*; do
+  [ "$(cat "$p/comm" 2>/dev/null)" = mpfree ] || continue
+  n=$((n + 1))
+  while IFS= read -r l; do
+    case "$l" in Uid:*|Gid:*|Groups:*|CapEff:*|CapBnd:*|NoNewPrivs:*) echo "privileges: pid ${p##*/} $l" ;; esac
+  done < "$p/status"
+  while IFS= read -r l; do
+    case "$l" in "Max realtime priority"*|"Max locked memory"*) echo "privileges: pid ${p##*/} $l" ;; esac
+  done < "$p/limits"
+done
+[ "$n" -gt 0 ] || echo "privileges: no mpfree process"
+for f in "$R"/dev/fb0 "$R"/dev/snd/* "$R"/dev/input/event* "$R"/sys/class/graphics/fb0/pan \
+    "$R"/sys/bus/platform/drivers/*dwmmc*/bind; do
+  [ -e "$f" ] || continue
+  set -- $(ls -lnd "$f")
+  echo "privileges: ${f#"$R"} $1 uid $3 gid $4"
+done
+if [ -f "$R/etc/group" ]; then
+  grep -E '^(audio|video|input|systemd-journal|mpfree):' "$R/etc/group" | while IFS= read -r l; do
+    echo "privileges: group $l"
+  done
+fi
+"""
 # Read-only (the profiling thread's GPU asks, /mnt/project-files/hello-mpc/gpu-inventory-asks.md): the GPU's
 # libraries, the release, the display nodes and the panel's mode, which programs hold /dev/dri, whether the
 # Panfrost driver is bound, and the display state from debugfs only where it is already mounted (nothing is
@@ -796,6 +825,9 @@ def app_check(mpc, out, n, total):
     out.say(f"  {text.strip() or f'(no answer, exit code {rc})'}")
     rc, data = mpc.run(DATA_STATE, test=True)
     for line in (data.strip() or f"partition 4: no answer, exit code {rc}").splitlines():
+        out.say(f"  {line}")
+    rc, data = mpc.run(PRIVS_STATE, test=True)
+    for line in (data.strip() or f"privileges: no answer, exit code {rc}").splitlines():
         out.say(f"  {line}")
     rc, data = mpc.run(GPU_STATE, test=True)
     lines = (data.strip() or f"gpu: no answer, exit code {rc}").splitlines()

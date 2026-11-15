@@ -1,0 +1,17 @@
+{
+  "name": "FXProbe Tap",
+  "manufacturer": "MPFree",
+  "version": "1.0.0",
+  "format": "vst2",
+  "kind": "effect",
+  "uid": "MFpt",
+  "numInputs": 2,
+  "numOutputs": 2,
+  "category": "Effect",
+  "file32": "VST/fxprobe-tap-arm32.so",
+  "file64": "VST/fxprobe-tap-arm64.so",
+  "description": "Measurement tool: records what reaches it to a float WAV on command, for measuring the effect before it.",
+  "author": "MPFree",
+  "url": "https://github.com/jferments/mpfree",
+  "license": "MIT"
+}

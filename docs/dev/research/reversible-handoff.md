@@ -2,6 +2,8 @@
 
 **STATUS: READ-ONLY INVESTIGATION. No tested factory handoff, no verified independent boot recovery, and NO authorization to stop stock services in this phase.**
 
+**2026-11-15:** this design (Akai's systemd stays PID 1, MPFree runs sandboxed under it) is the fallback to the boot that works today, [the soft-reboot into the stick's system](../hardware/soft-reboot-boot.md), which stops all of Akai's programs and so every write to `/data`. Its split between a root boot manager and an unprivileged app was built for the stick as `--app-user` (#372).
+
 The factory user-facing unit `acvs.service` (launches `/usr/bin/az01-launch-MPC`) owns ACVA ALSA playback/capture, mixer and MIDI, DRM/KMS, touch and GPIO event device fds. Previous observations found both PCM subdevices unavailable while the factory app runs, and `Restart=always`. Network MIDI and script runner units also run. Read [factory resource map](../hardware/resource-ownership.md) and [44.1 kHz PCM survey](../hardware/audio-runtime.md).
 
 ## Read-only preflight (implemented)

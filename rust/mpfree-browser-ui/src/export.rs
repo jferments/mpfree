@@ -1,6 +1,8 @@
 //! The Export panel: Export in the Projects place opens it over the
 //! browser (layout spec section 3; Jay's pick, 14 Nov 01:39Z). It picks
-//! what to make (the mixdown, the stems, the MIDI file), the range and
+//! what to make (the mixdown, the stems, the MIDI file), the stems by
+//! track or by mixer channel (Jay's pick, 14 Nov 15:20Z: by track, the
+//! default, with by channel kept), the range and
 //! the files' format (Prefs' for each new export; Jay's pick, 14 Nov
 //! 07:51Z: both in Prefs and on the panel),
 //! says how the export will play (Fast, quiet or Listen, and why), shows
@@ -26,6 +28,19 @@ pub enum ExportRange {
     /// The clips playing now, for this many bars from the bar the
     /// playhead is in.
     Bars(u32),
+}
+
+/// What a stem is.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum StemsBy {
+    /// One per track, as the MPC makes them: a track that shares its
+    /// mixer strip (the drum kit's tracks) needs the range played again
+    /// with only that track.
+    #[default]
+    Track,
+    /// One per mixer channel (each engine's strip, each track instrument,
+    /// each return), from the one pass: they add up to the mix.
+    Channel,
 }
 
 /// How the WAV files hold each sample (the app's `mpfree_fx::Bits`).
@@ -70,8 +85,13 @@ pub struct ExportSetup {
     /// How it will play, in words: "Fast, quiet: faster than real time,
     /// the speakers quiet", or "Listen, because ...".
     pub mode: String,
-    /// The tracks and returns that may get a stem.
+    /// The mixer channels that may get a stem (Stems by Channel).
     pub stems: usize,
+    /// Stems by Track, for the arrangement and for bars of the clips
+    /// playing: how many, and how many of them need the range played
+    /// again (the audio tracks play only in song mode).
+    pub tracks_arrangement: (usize, usize),
+    pub tracks_bars: (usize, usize),
     /// Where the files go, as shown ("Recordings / My song 2026-11-14
     /// 01.32").
     pub folder: String,
@@ -100,6 +120,7 @@ pub struct ExportPanel {
     pub mixdown: bool,
     pub stems: bool,
     pub midi: bool,
+    pub by: StemsBy,
     pub range: ExportRange,
     /// The bar count Bars uses, kept while the arrangement is picked.
     pub bars: u32,
@@ -114,6 +135,9 @@ pub enum ExportInput {
     Mixdown,
     Stems,
     Midi,
+    /// Stems by track, or by mixer channel.
+    ByTrack,
+    ByChannel,
     Arrangement,
     Bars,
     /// One bar fewer or more.
@@ -138,6 +162,7 @@ pub struct ExportChoice {
     pub mixdown: bool,
     pub stems: bool,
     pub midi: bool,
+    pub by: StemsBy,
     pub range: ExportRange,
     pub format: ExportFormat,
 }
@@ -147,17 +172,18 @@ impl ExportPanel {
     /// arrangement when there is one, otherwise 8 bars, and Prefs' format
     /// (a format changed on the panel was for that export only).
     pub fn new(setup: ExportSetup, last: Option<ExportChoice>) -> ExportPanel {
-        let (mixdown, stems, midi, bars) = match last {
+        let (mixdown, stems, midi, by, bars) = match last {
             Some(c) => (
                 c.mixdown,
                 c.stems,
                 c.midi,
+                c.by,
                 match c.range {
                     ExportRange::Bars(n) => n,
                     ExportRange::Arrangement => DEFAULT_BARS,
                 },
             ),
-            None => (true, true, true, DEFAULT_BARS),
+            None => (true, true, true, StemsBy::Track, DEFAULT_BARS),
         };
         let range = match (&setup.arrangement, last.map(|c| c.range)) {
             (Some(_), Some(ExportRange::Bars(n))) => ExportRange::Bars(n),
@@ -170,6 +196,7 @@ impl ExportPanel {
             mixdown,
             stems,
             midi,
+            by,
             range,
             bars,
             format,
@@ -183,8 +210,33 @@ impl ExportPanel {
             mixdown: self.mixdown,
             stems: self.stems,
             midi: self.midi,
+            by: self.by,
             range: self.range,
             format: self.format,
+        }
+    }
+
+    /// The stems the export would make, and the times it plays the range
+    /// again for them.
+    pub fn stem_count(&self) -> (usize, usize) {
+        match (self.by, self.range) {
+            (StemsBy::Channel, _) => (self.setup.stems, 0),
+            (StemsBy::Track, ExportRange::Arrangement) => self.setup.tracks_arrangement,
+            (StemsBy::Track, ExportRange::Bars(_)) => self.setup.tracks_bars,
+        }
+    }
+
+    /// The Stems by row's words: how many passes it takes.
+    pub fn by_words(&self) -> String {
+        match (self.by, self.stem_count().1) {
+            (StemsBy::Channel, _) => "One pass; they add up to the mix".into(),
+            (StemsBy::Track, 0) => "One pass".into(),
+            (StemsBy::Track, n) => format!(
+                "Plays the range {} times: {n} track{} share{} a channel",
+                n + 1,
+                if n == 1 { "" } else { "s" },
+                if n == 1 { "s" } else { "" }
+            ),
         }
     }
 
@@ -233,6 +285,8 @@ impl ExportPanel {
             ExportInput::Mixdown => self.mixdown = !self.mixdown,
             ExportInput::Stems => self.stems = !self.stems,
             ExportInput::Midi => self.midi = !self.midi,
+            ExportInput::ByTrack => self.by = StemsBy::Track,
+            ExportInput::ByChannel => self.by = StemsBy::Channel,
             ExportInput::Arrangement if self.setup.arrangement.is_some() => {
                 self.range = ExportRange::Arrangement
             }
@@ -259,6 +313,8 @@ mod tests {
             from_bar: 5,
             mode: "Fast, quiet".into(),
             stems: 4,
+            tracks_arrangement: (7, 4),
+            tracks_bars: (5, 2),
             folder: "Recordings / Song 2026-11-14 01.32".into(),
             format: ExportFormat {
                 bits: ExportBits::I24,
@@ -298,6 +354,38 @@ mod tests {
     }
 
     #[test]
+    fn stems_by_track_or_channel_say_how_many_passes() {
+        let mut p = ExportPanel::new(setup(true), None);
+        assert_eq!(p.by, StemsBy::Track, "by track unless picked");
+        assert_eq!(p.stem_count(), (7, 4));
+        assert_eq!(
+            p.by_words(),
+            "Plays the range 5 times: 4 tracks share a channel"
+        );
+        // Bars: the audio tracks play only in song mode.
+        p.pick(ExportInput::Bars);
+        assert_eq!(p.stem_count(), (5, 2));
+        p.pick(ExportInput::ByChannel);
+        assert_eq!(p.stem_count(), (4, 0));
+        assert_eq!(p.by_words(), "One pass; they add up to the mix");
+        assert_eq!(p.choice().by, StemsBy::Channel);
+        // Kept for the next export.
+        let p = ExportPanel::new(setup(true), Some(p.choice()));
+        assert_eq!(p.by, StemsBy::Channel);
+        let one = ExportSetup {
+            tracks_arrangement: (3, 1),
+            ..setup(true)
+        };
+        let mut p = ExportPanel::new(one.clone(), None);
+        assert_eq!(
+            p.by_words(),
+            "Plays the range 2 times: 1 track shares a channel"
+        );
+        p.setup.tracks_arrangement = (3, 0);
+        assert_eq!(p.by_words(), "One pass");
+    }
+
+    #[test]
     fn the_format_starts_as_prefs_has_it_and_changes_for_one_export() {
         let mut p = ExportPanel::new(setup(true), None);
         assert_eq!(p.format.words(), "24-bit, 44.1 kHz");
@@ -319,6 +407,7 @@ mod tests {
             mixdown: true,
             stems: false,
             midi: false,
+            by: StemsBy::Channel,
             range: ExportRange::Bars(16),
             format: setup(false).format,
         };
