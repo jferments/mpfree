@@ -7,6 +7,15 @@
 //! The layout comes from community notes and program files, not from
 //! Akai, so what a field means is inferred: the raw values are kept and
 //! [`root_offset`] checks the root notes against the sample names.
+//!
+//! Checked on a factory keygroup program (MPC 2.9, File_Version 2.1):
+//! `LowNote`/`HighNote` and `VelStart`/`VelEnd` are as read here;
+//! `RootNote` is the MIDI note + 1; `Volume` is a linear gain (0.707946 is
+//! -3 dB) and `Pan` 0.5 is the centre, on the program, each keygroup and
+//! each layer; `VelocitySensitivity`, the tuning and the envelope sit on
+//! each keygroup (`<Instrument>`), the envelope as 0 to 1 for the MPC's 0
+//! to 127 knob positions (`VolumeRelease` 0.377953 is 48), so its times
+//! are still unknown.
 
 use crate::xml::{self, Element};
 
@@ -47,6 +56,16 @@ pub struct Keygroup {
     pub layers: Vec<XpmLayer>,
     /// Envelope and play-mode fields as written (`VolumeRelease` and the like).
     pub raw: Vec<(String, String)>,
+    /// The keygroup's own `Volume`, a linear gain on its layers.
+    pub volume: f32,
+    /// The keygroup's own `TuneCoarse` (semitones) and `TuneFine` (cents).
+    pub coarse: i32,
+    pub fine: i32,
+    /// The keygroup's `VelocitySensitivity`, when written: 0 to 1.
+    pub vel_to_level: Option<f32>,
+    /// The keygroup's filter as written when `FilterType` isn't 0 (off):
+    /// the type, then `Cutoff`, `Resonance` and `VelocityToFilter`.
+    pub filter: Vec<(String, String)>,
 }
 
 /// A keygroup program: its name and the keygroups that have a sample.
@@ -56,8 +75,12 @@ pub struct KeygroupProgram {
     /// `KeygroupNumKeygroups`, when written.
     pub declared: Option<u32>,
     pub keygroups: Vec<Keygroup>,
-    /// `VelocitySensitivity` or the like, when written: 0 to 1.
+    /// `VelocitySensitivity` or the like on the program, when written: 0
+    /// to 1. Programs from the MPC write it on each keygroup instead
+    /// ([`Keygroup::vel_to_level`]).
     pub vel_to_level: Option<f32>,
+    /// The program's switched-on effects (`InsertN` with `InsertEnableN`), by name.
+    pub inserts: Vec<String>,
 }
 
 /// The type a program file says it is (`Keygroup`, `Drum`, ...), if it is one.
@@ -119,11 +142,13 @@ pub fn read_keygroup(bytes: &[u8]) -> Result<KeygroupProgram, String> {
         .unwrap_or("")
         .to_string();
     let declared = text(prog, "KeygroupNumKeygroups").parse().ok();
-    let vel_to_level = ["VelocitySensitivity", "VelocityToAmpAmount"]
-        .into_iter()
-        .find_map(|t| prog.child_text(t).and_then(|v| v.parse::<f32>().ok()))
-        .filter(|v| v.is_finite())
-        .map(|v| v.clamp(0.0, 1.0));
+    let vel_to_level = sensitivity(prog);
+    let inserts = (1..=8)
+        .filter(|n| flag(prog, &format!("InsertEnable{n}"), false))
+        .filter_map(|n| prog.child(&format!("Insert{n}")))
+        .map(|i| text(i, "Name").trim().to_string())
+        .filter(|n| !n.is_empty())
+        .collect();
     let mut keygroups = Vec::new();
     for inst in prog
         .descendants()
@@ -180,12 +205,27 @@ pub fn read_keygroup(bytes: &[u8]) -> Result<KeygroupProgram, String> {
             })
             .map(|c| (c.name.clone(), c.text.clone()))
             .collect();
+        let filter = match num(inst, "FilterType", 0.0).round() as i32 {
+            0 => Vec::new(),
+            t => std::iter::once(("FilterType".to_string(), t.to_string()))
+                .chain(
+                    ["Cutoff", "Resonance", "VelocityToFilter"]
+                        .into_iter()
+                        .filter_map(|f| inst.child_text(f).map(|v| (f.to_string(), v.to_string()))),
+                )
+                .collect(),
+        };
         keygroups.push(Keygroup {
             number,
             lo: a.min(b),
             hi: a.max(b),
             layers,
             raw,
+            volume: num(inst, "Volume", 1.0).clamp(0.0, 16.0) as f32,
+            coarse: num(inst, "TuneCoarse", 0.0).round().clamp(-48.0, 48.0) as i32,
+            fine: num(inst, "TuneFine", 0.0).round().clamp(-100.0, 100.0) as i32,
+            vel_to_level: sensitivity(inst),
+            filter,
         });
     }
     Ok(KeygroupProgram {
@@ -193,7 +233,29 @@ pub fn read_keygroup(bytes: &[u8]) -> Result<KeygroupProgram, String> {
         declared,
         keygroups,
         vel_to_level,
+        inserts,
     })
+}
+
+/// `VelocitySensitivity` (or `VelocityToAmpAmount`) on `e` itself, 0 to 1.
+fn sensitivity(e: &Element) -> Option<f32> {
+    ["VelocitySensitivity", "VelocityToAmpAmount"]
+        .into_iter()
+        .find_map(|t| e.child_text(t).and_then(|v| v.parse::<f32>().ok()))
+        .filter(|v| v.is_finite())
+        .map(|v| v.clamp(0.0, 1.0))
+}
+
+/// A field's value as the MPC shows it: a fraction from 0 to 1 written
+/// with a decimal point is a 0 to 127 knob position, so 0.377953 reads
+/// "48 of 127"; anything else as written.
+pub fn knob_text(v: &str) -> String {
+    match v.trim().parse::<f64>() {
+        Ok(x) if v.contains('.') && (0.0..=1.0).contains(&x) => {
+            format!("{} of 127", (x * 127.0).round() as i32)
+        }
+        _ => v.trim().to_string(),
+    }
 }
 
 /// How `RootNote` relates to the MIDI note, and why: the MIDI note is

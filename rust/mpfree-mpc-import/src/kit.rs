@@ -7,7 +7,11 @@
 //! a keygroup whose layers have different roots gets one root and each
 //! other layer tuned to make up the difference; a layer that doesn't
 //! follow the keys on the MPC follows them here; more than
-//! [`MAX_LAYERS`] layers keep the first ones.
+//! [`MAX_LAYERS`] layers keep the first ones; when a layer is left out
+//! (no file, no audio), the layer below it, or failing that above it,
+//! takes its velocities, so no hit falls silent. The envelope, the
+//! keygroups' filters and the program's effects are reported, not
+//! carried over.
 
 use std::collections::HashMap;
 
@@ -17,7 +21,7 @@ use mpfree_sampler::model::{
     KEYGROUP_POLYPHONY, MAX_LAYERS, PADS,
 };
 
-use crate::xpm::{root_offset, KeygroupProgram, XpmLayer};
+use crate::xpm::{knob_text, root_offset, KeygroupProgram, XpmLayer};
 
 /// Choices the program doesn't make.
 #[derive(Clone, Debug)]
@@ -80,21 +84,29 @@ pub fn keygroup_kit(
             prog.keygroups.len()
         ));
     }
-    // Levels are relative to the most common layer volume, so the usual one is 0 dB.
+    // Levels are relative to the most common layer volume (times its
+    // keygroup's), so the usual one is 0 dB.
     let mut counts: HashMap<u32, usize> = HashMap::new();
-    for l in prog.keygroups.iter().flat_map(|k| &k.layers) {
-        if l.volume > 0.0 {
-            *counts.entry(l.volume.to_bits()).or_default() += 1;
+    for k in &prog.keygroups {
+        for l in &k.layers {
+            let v = l.volume * k.volume;
+            if v > 0.0 {
+                *counts.entry(v.to_bits()).or_default() += 1;
+            }
         }
     }
     let reference = counts
         .iter()
         .max_by_key(|&(bits, n)| (*n, std::cmp::Reverse(*bits)))
         .map_or(1.0, |(bits, _)| f32::from_bits(*bits));
-    let vel_to_level = prog.vel_to_level.unwrap_or(1.0);
-    if prog.vel_to_level.is_none() {
+    if prog
+        .keygroups
+        .iter()
+        .all(|k| k.vel_to_level.or(prog.vel_to_level).is_none())
+    {
         notes.push("no velocity sensitivity in the program: level follows velocity fully".into());
     }
+    notes.extend(reported(prog, opts));
 
     let mut keygroups: Vec<_> = prog.keygroups.iter().collect();
     keygroups.sort_by_key(|k| (k.lo, k.hi, k.number));
@@ -116,6 +128,12 @@ pub fn keygroup_kit(
         }
         let mut pad_root = None;
         let mut layers = Vec::new();
+        let mut labels = Vec::new();
+        let span = (
+            list.iter().map(|l| l.vel_lo).min().unwrap_or(0),
+            list.iter().map(|l| l.vel_hi).max().unwrap_or(127),
+        );
+        let mut left_out = false;
         for l in list {
             let label = if l.sample.is_empty() {
                 &l.file
@@ -133,6 +151,7 @@ pub fn keygroup_kit(
                 Ok(s) => s,
                 Err(e) => {
                     notes.push(format!("keygroup {}: {label}: {e}; left out", kg.number));
+                    left_out = true;
                     continue;
                 }
             };
@@ -141,6 +160,7 @@ pub fn keygroup_kit(
                     "keygroup {}: {label} holds no audio; left out",
                     kg.number
                 ));
+                left_out = true;
                 continue;
             }
             let root = if l.root_raw > 0 {
@@ -188,17 +208,34 @@ pub fn keygroup_kit(
             let mut layer = Layer::new(region);
             layer.vel_lo = l.vel_lo;
             layer.vel_hi = l.vel_hi;
-            layer.level_db = 20.0 * (l.volume / reference).log10();
+            layer.level_db = 20.0 * (l.volume * kg.volume / reference).log10();
             layer.pan = (l.pan - 0.5) * 2.0;
-            layer.tune_cents = l.coarse * 100
+            layer.tune_cents = (kg.coarse + l.coarse) * 100
+                + kg.fine
                 + l.fine
                 + (l.pitch * 100.0).round() as i32
                 + (i32::from(pad_root) - i32::from(root)) * 100;
+            labels.push((
+                label.clone(),
+                s.frames() as f64 / f64::from(s.rate().max(1)),
+            ));
             if !have.contains(&s.id()) {
                 have.push(s.id());
                 sources.push(s);
             }
             layers.push(layer);
+        }
+        if left_out {
+            notes.extend(cover(kg.number, &mut layers, &labels, span));
+        }
+        let longest = labels.iter().map(|l| l.1).fold(0.0, f64::max);
+        for (label, secs) in &labels {
+            if *secs < longest * 0.5 {
+                notes.push(format!(
+                    "keygroup {}: {label} is {secs:.1} s and the longest layer {longest:.1} s; it may be cut short",
+                    kg.number
+                ));
+            }
         }
         let Some(root) = pad_root else {
             notes.push(format!(
@@ -225,7 +262,7 @@ pub fn keygroup_kit(
             root,
         });
         pad.amp.release_ms = opts.release_ms;
-        pad.vel_to_level = vel_to_level;
+        pad.vel_to_level = kg.vel_to_level.or(prog.vel_to_level).unwrap_or(1.0);
         pads.push(pad);
     }
     if unkeyed > 0 {
@@ -254,4 +291,89 @@ pub fn keygroup_kit(
         pads: n,
         layers: placed,
     })
+}
+
+/// Gives the velocities of left-out layers to the ones kept: each kept
+/// layer reaches up to the next one, the softest down to the keygroup's
+/// softest and the loudest up to its loudest. `layers` are sorted by
+/// velocity; `labels` name them. One note for each layer that grew.
+fn cover(kg: u32, layers: &mut [Layer], labels: &[(String, f64)], span: (u8, u8)) -> Vec<String> {
+    let mut notes = Vec::new();
+    let n = layers.len();
+    for i in 0..n {
+        let was = (layers[i].vel_lo, layers[i].vel_hi);
+        if i == 0 {
+            layers[i].vel_lo = layers[i].vel_lo.min(span.0);
+        }
+        layers[i].vel_hi = if i + 1 < n {
+            layers[i + 1].vel_lo.saturating_sub(1).max(layers[i].vel_hi)
+        } else {
+            layers[i].vel_hi.max(span.1)
+        };
+        let now = (layers[i].vel_lo, layers[i].vel_hi);
+        if now != was {
+            notes.push(format!(
+                "keygroup {kg}: {} now plays velocities {}-{} (was {}-{}), in place of the layers left out",
+                labels[i].0, now.0, now.1, was.0, was.1
+            ));
+        }
+    }
+    notes
+}
+
+/// What the program sets that the kit doesn't carry over: the envelope
+/// and play mode (as 0 to 127 knob positions), the keygroups' filters and
+/// the program's effects. Fields the keygroups share are said once.
+fn reported(prog: &KeygroupProgram, opts: &Options) -> Vec<String> {
+    let mut out = Vec::new();
+    let line = |fields: &[(String, String)]| {
+        fields
+            .iter()
+            .map(|(k, v)| format!("{k} {}", knob_text(v)))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let mut seen: Vec<&Vec<(String, String)>> = Vec::new();
+    for k in &prog.keygroups {
+        if !k.raw.is_empty() && !seen.contains(&&k.raw) {
+            seen.push(&k.raw);
+        }
+    }
+    if let Some(first) = seen.first() {
+        out.push(format!(
+            "envelope and play mode as written{}: {}; not read (their times aren't known), the release here is {} ms",
+            if seen.len() > 1 {
+                format!(" (keygroup {}; {} sets differ)", prog.keygroups[0].number, seen.len())
+            } else {
+                " in every keygroup".to_string()
+            },
+            line(first),
+            opts.release_ms
+        ));
+    }
+    let filters: Vec<_> = prog
+        .keygroups
+        .iter()
+        .filter(|k| !k.filter.is_empty())
+        .collect();
+    if let Some(k) = filters.first() {
+        out.push(format!(
+            "{} of {} keygroups have a filter ({}{}); not carried over, so the kit may sound brighter",
+            filters.len(),
+            prog.keygroups.len(),
+            line(&k.filter),
+            if filters.iter().any(|o| o.filter != k.filter) {
+                format!(" in keygroup {}, others differ", k.number)
+            } else {
+                String::new()
+            }
+        ));
+    }
+    if !prog.inserts.is_empty() {
+        out.push(format!(
+            "the program's effects ({}) are not carried over",
+            prog.inserts.join(", ")
+        ));
+    }
+    out
 }
