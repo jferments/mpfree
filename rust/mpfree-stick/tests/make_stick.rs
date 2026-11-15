@@ -244,6 +244,29 @@ fn makes_a_stick_the_hook_takes() {
 }
 
 #[test]
+fn refuses_a_system_without_a_program_the_setup_needs() {
+    let t = tmp("no-programs");
+    let upd = update_file_with(&t.0, &fake_rootfs_without(&["stat", "udevadm"]));
+    let src = stick::open_update(&upd, &t.0, true, &mut |_| {}).unwrap();
+    let progs = programs();
+    let b = Build {
+        source: &src,
+        programs: &progs,
+        kits: b"MPFK test kits",
+        ssh: None,
+        creator: "test creator",
+    };
+    let out = t.0.join("stick.img");
+    let Err(e) = stick::build_image(&b, &out, &mut |_| {}) else {
+        panic!("made a stick from a system without stat and udevadm");
+    };
+    assert_eq!(
+        e.to_string(),
+        "Akai's root filesystem has no stat, udevadm in /usr/bin or /usr/sbin, which the stick's first-start setup needs"
+    );
+}
+
+#[test]
 fn developer_ssh_when_asked() {
     let t = tmp("ssh");
     let upd = update_file(&t.0);

@@ -8,11 +8,13 @@ R=''
 # read-only window on the eMMC only, copies it to the stick's partition 4 and closes the window again:
 #   1. checks: partition 4 mounted read-write with room for the copy, no eMMC or SD block device present,
 #      the eMMC controller (ff0f0000) unbound, the startup switch-off finished;
-#   2. opens the window: a udev rule in /run (RAM) marks each eMMC block device read-only as it appears,
-#      then only the eMMC controller is bound again (/sys/bus/platform/drivers_probe; the SD card's stays
-#      off). Every eMMC block device is marked read-only again here and checked (ro = 1, and force_ro = 1
-#      on boot0 and boot1); the partition table must match the MPC One's (names, starts and sizes);
-#      nothing may be mounted from it. The block layer's write and discard counters are recorded;
+#   2. opens the window: a udev rule in /run (RAM) marks each eMMC disk read-only as it appears, then
+#      only the eMMC controller is bound again (/sys/bus/platform/drivers_probe; the SD card's stays off).
+#      Read-only is the kernel's own switch, each disk's force_ro file (the MMC driver marks the whole disk
+#      read-only, every partition with it): Akai's system has no blockdev program. Every eMMC disk is
+#      marked again here and checked (ro = 1 on the disk and each partition, force_ro = 1 on every disk);
+#      the partition table must match the MPC One's (names, starts and sizes); nothing may be mounted
+#      from it. The block layer's write and discard counters are recorded;
 #   3. copies the user area (mmcblk0) and the two boot areas (mmcblk0boot0, mmcblk0boot1) with dd, each
 #      hashed (SHA-256) as it is read, into partition 4's backup/mpc-one-emmc-<UTC>.part/;
 #   4. checks the counters did not move, then closes the window: unbinds the controller, waits until no
@@ -22,8 +24,10 @@ R=''
 #      Then MANIFEST.txt is written and the folder renamed to backup/mpc-one-emmc-<UTC>/, owned by root
 #      and readable by the pad player's group (it reads the factory kits and samples from it).
 # Nothing is ever written to the eMMC: no mount, no fsck, no write. The only writes are partition 4's
-# backup folder, /run (RAM: the status, the udev rule, and the request, removed), the kernel log and the
-# controller's sysfs bind and unbind files.
+# backup folder, /run (RAM: the status, the udev rule, and the request, removed), the kernel log, the
+# controller's sysfs bind and unbind files and the eMMC disks' force_ro files (which only switch read-only on).
+# Every program it runs is in NEEDS: it stops before anything else when one is missing, and the USB creator
+# will not make a stick from an update whose system lacks one.
 # Progress and the result: /run/mpfree-setup/status (key=value lines), read by the pad player.
 # Any failure before step 4 closes the window first; a failed backup is deleted and the status says why.
 [ -n "$R" ] || PATH=/usr/sbin:/usr/bin:/sbin:/bin
@@ -46,6 +50,7 @@ LAYOUT='1 uboot-spl 64 128
 # Room needed on partition 4, in KiB: the 7.8 GB user area, the two 4 MiB boot areas and 256 MiB to spare.
 NEED_KB=7900000
 DISKS='mmcblk0 mmcblk0boot0 mmcblk0boot1'
+NEEDS='awk cat chmod chown cut date dd df grep head mkdir mv readlink rm sed sha256sum sleep stat sync systemctl tee tr udevadm'
 opened=''
 name=''
 dir=''
@@ -60,11 +65,9 @@ status() {   # state step done total message
 }
 say() { { echo "mpfree-setup-backup: $*" > "$R/dev/kmsg"; } 2>/dev/null; echo "$*" >> "$S/backup-log.txt"; }
 devices() { for b in "$R"/sys/block/mmcblk*; do [ -e "$b" ] && echo "${b##*/}"; done; }
-setro() {   # every eMMC block device, read-only
+setro() {   # every eMMC disk, read-only (its partitions with it)
   for b in $(devices); do
-    for d in "$R/dev/$b" "$R/dev/$b"p*; do
-      [ -b "$d" ] && blockdev --setro "$d" 2>/dev/null
-    done
+    [ -e "$R/sys/block/$b/force_ro" ] && echo 1 > "$R/sys/block/$b/force_ro" 2>/dev/null
   done
 }
 close_window() {
@@ -103,6 +106,9 @@ if [ -e "$S/started" ]; then
 fi
 : > "$S/started"
 : > "$S/backup-log.txt"
+missing=''
+for p in $NEEDS; do command -v "$p" > /dev/null 2>&1 || missing="$missing $p"; done
+[ -z "$missing" ] || fail "this system lacks programs the backup needs:$missing"
 status running checking 0 0 "Checking the stick"
 say "started at $(cut -d' ' -f1 "$R/proc/uptime") s"
 
@@ -125,10 +131,8 @@ case "$free" in ''|*[!0-9]*) fail "could not read the free space on partition 4"
   fail "partition 4 has $((free / 1024)) MiB free; the backup needs $((NEED_KB / 1024)) MiB (use a stick of 16 GB or more)"
 
 # 2. The read-only window.
-bd=$(command -v blockdev)
-case "$bd" in /*) ;; *) fail "this system has no blockdev program" ;; esac
 mkdir -p "${RULE%/*}"
-echo "SUBSYSTEM==\"block\", KERNEL==\"mmcblk*\", ACTION==\"add\", RUN+=\"$bd --setro /dev/%k\"" > "$RULE" ||
+echo 'SUBSYSTEM=="block", KERNEL=="mmcblk*", ENV{DEVTYPE}=="disk", ACTION=="add", ATTR{force_ro}="1"' > "$RULE" ||
   fail "could not write the read-only udev rule in /run"
 udevadm control --reload > /dev/null 2>&1
 say "opening the read-only window: binding $name"
@@ -146,14 +150,13 @@ for b in $(devices); do
   case "$b" in mmcblk0|mmcblk0boot0|mmcblk0boot1) ;; *) fail "an unexpected block device appeared: $b" ;; esac
 done
 grep -q '^/dev/mmcblk' "$R/proc/mounts" && fail "something mounted the eMMC"
-[ "$(cat "$R/sys/block/mmcblk0/ro")" = 1 ] || fail "mmcblk0 is not read-only"
+for b in $DISKS; do
+  [ "$(cat "$R/sys/block/$b/ro")" = 1 ] || fail "$b is not read-only"
+  [ "$(cat "$R/sys/block/$b/force_ro" 2>/dev/null)" = 1 ] || fail "$b's force_ro is not 1"
+done
 for p in "$R"/sys/block/mmcblk0/mmcblk0p*; do
   [ -e "$p" ] || continue
   [ "$(cat "$p/ro")" = 1 ] || fail "${p##*/} is not read-only"
-done
-for b in mmcblk0boot0 mmcblk0boot1; do
-  [ "$(cat "$R/sys/block/$b/force_ro")" = 1 ] || fail "$b's force_ro is not 1"
-  [ "$(cat "$R/sys/block/$b/ro")" = 1 ] || fail "$b is not read-only"
 done
 size=$(cat "$R/sys/block/mmcblk0/size")
 count=0

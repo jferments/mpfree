@@ -112,8 +112,8 @@ On its first start, MPFree runs a setup wizard before the pad player, with a pro
 **1. "Backing up your MPC": a read-only eMMC window.** Every start of MPFree switches the eMMC and SD card off before udev or any mount ([the switch-off](../hardware/soft-reboot-boot.md#switching-off-the-internal-storage)); that stays exactly as it is. The wizard then asks a small root service, `mpfree-setup-backup.service`, to open a short window. The pad player never does it itself: with `--app-user` it isn't root, and anything that needs root goes in its own unit ([safety rules](../../agents/README.md)). The service:
 
 1. checks that no `mmcblk*` device exists, that every Akai unit that can touch a disk is still masked, and that partition 4 has room;
-2. binds **only the eMMC controller** (`ff0f0000`) again; the SD card stays off. The stick's udev rule for `mmcblk*` devices already sets `SYSTEMD_READY=0` and `UDISKS_IGNORE=1`, and also runs `blockdev --setro` on each one as it appears;
-3. checks that the whole disk and every partition read as read-only (`ro` 1), and `boot0` and `boot1` too (`force_ro` 1), or switches it off and stops;
+2. binds **only the eMMC controller** (`ff0f0000`) again; the SD card stays off. The stick's udev rule for `mmcblk*` devices already sets `SYSTEMD_READY=0` and `UDISKS_IGNORE=1`. A second rule, in `/run` for the window only, writes `1` to each eMMC disk's `force_ro` file as it appears (the user area, `boot0` and `boot1`), and the script writes it again itself: the MMC driver then marks the whole disk read-only, every partition with it. Akai's system has no `blockdev` (BusyBox without that applet), so the window uses the kernel's own switch; the first creator stick stopped here on 2026-11-15;
+3. checks that the whole disk and every partition read as read-only (`ro` 1), and every disk's `force_ro` is 1, or switches it off and stops;
 4. reads every write and discard counter of the disk and its partitions;
 5. copies the user area (7.28 GiB), `boot0` and `boot1` (4 MiB each) with `dd` to `backup/mpc-one-emmc-<UTC>.part/` on partition 4, hashing while it streams, after checking the disk layout and eMMC model as `host_emmc_backup.py` does (renamed to `backup/mpc-one-emmc-<UTC>/` when verified; root's, readable by the pad player's group);
 6. reads the counters again: **no write or discard on any partition**, p7 and p8 included. This is stricter than today's backup, where Akai's system has p7 and p8 mounted read-write; here nothing has them mounted, so the backup is a clean, quiet copy;
@@ -127,6 +127,8 @@ The eMMC is reachable only during step 5's copy, which is limited by the stick's
 - copies Akai's factory samples into an "Akai factory" folder in MPFree's library on partition 4, so they show up in BROWSE.
 
 This is `mpfree-factory`'s import (`Content::from_disk`), a Rust port of `offline-factory-kit.py`. The Python tool stays the reference: the same backup must give the same kits. The kits are saved as `library/Kits/Akai factory kits.mpfkits` and loaded at every start before MPFree's own (16 in all); the samples go to `library/Samples/Akai factory/`, all through `mpfree-library`.
+
+**Akai's programs only.** The stick's scripts run on Akai's system, whose BusyBox lacks some applets (`blockdev`) and options (`od -t`). Each script names every program it runs in a `NEEDS='...'` line and stops, touching nothing, if one is missing; the creator reads those lines and makes no stick from an update whose system lacks one (`stick::apply`). The tests run each script with only those programs on `PATH`, and an `od` that refuses `-A` and `-t` as the MPC's does.
 
 The pad player asks for the backup by creating `/run/mpfree-app/setup-backup.request`; `mpfree-setup-backup.path` starts the root service, which removes the request and reports in `/run/mpfree-setup/status` (`key=value` lines) for the progress bar.
 

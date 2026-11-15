@@ -36,6 +36,12 @@ fn file(t: &mut Tree, path: &str, text: &[u8], perm: u16) {
 
 /// Akai's root filesystem, as small as the recipe allows.
 pub fn fake_rootfs() -> Vec<u8> {
+    fake_rootfs_without(&[])
+}
+
+/// The fake root filesystem without some of the programs the stick's setup
+/// scripts need.
+pub fn fake_rootfs_without(left_out: &[&str]) -> Vec<u8> {
     let r = Recipe::load();
     let m = |perm| Meta::new(perm, 0, 0, 1_700_000_000);
     let mut t = Tree::new(m(0o755));
@@ -68,6 +74,16 @@ pub fn fake_rootfs() -> Vec<u8> {
         "/usr/sbin/mke2fs",
     ] {
         file(&mut t, p, b"#!/bin/sh\n# Akai's program\n", 0o755);
+    }
+    // BusyBox's applets are links to it.
+    file(&mut t, "/usr/bin/busybox", b"#!/bin/sh\n# BusyBox\n", 0o755);
+    for p in mpfree_stick::recipe::setup_programs() {
+        if !left_out.contains(&p)
+            && t.lookup(&format!("/usr/bin/{p}")).is_none()
+            && t.lookup(&format!("/usr/sbin/{p}")).is_none()
+        {
+            file_link(&mut t, &format!("/usr/bin/{p}"), "busybox");
+        }
     }
     file(
         &mut t,
@@ -156,10 +172,14 @@ pub fn programs() -> Programs {
 }
 
 pub fn update_file(dir: &Path) -> PathBuf {
+    update_file_with(dir, &fake_rootfs())
+}
+
+pub fn update_file_with(dir: &Path, rootfs: &[u8]) -> PathBuf {
     let p = dir.join("akai-update.img");
     std::fs::write(
         &p,
-        update::testfile::make("TEST-BUILD", &["ACVA"], &fake_rootfs(), false),
+        update::testfile::make("TEST-BUILD", &["ACVA"], rootfs, false),
     )
     .unwrap();
     p

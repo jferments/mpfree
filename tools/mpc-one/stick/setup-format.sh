@@ -13,10 +13,16 @@ R=''
 # A stick whose partition 4 was kept by the creator (an MPFree data partition was there) has no mark, so
 # its settings and files are never touched. If the power is cut before the mark is cleared, the next boot
 # makes the (still empty) filesystem again.
+# Every program it runs is in NEEDS (Akai's BusyBox has no od -t, so od -b): it touches nothing when one is
+# missing, and the USB creator will not make a stick from an update whose system lacks one.
 [ -n "$R" ] || PATH=/usr/sbin:/usr/bin:/sbin:/bin
 export PATH
 DEV=/dev/disk/by-partuuid/@DATA_UUID@
+NEEDS='awk cat dd grep mke2fs od readlink sleep sync'
 say() { { echo "mpfree-setup-format: $*" > "$R/dev/kmsg"; } 2>/dev/null; echo "$*" >> "$R/run/mpfree-setup-format.txt"; }
+missing=''
+for p in $NEEDS; do command -v "$p" > /dev/null 2>&1 || missing="$missing $p"; done
+[ -z "$missing" ] || { say "this system lacks programs this needs:$missing; partition 4 not touched"; exit 1; }
 i=0
 while [ ! -e "$R$DEV" ] && [ "$i" -lt 30 ]; do sleep 1; i=$((i + 1)); done
 [ -e "$R$DEV" ] || { say "partition 4 not found; nothing to do"; exit 0; }
@@ -29,8 +35,8 @@ case "$token" in ''|*[!0-9a-f]*) say "no format token in this system; partition 
 mark=$(dd if="$dev" bs=49 count=1 2>/dev/null)
 [ "$mark" = "MPFREE-FORMAT-ME $token" ] || exit 0
 grep -q "^$dev " "$R/proc/mounts" && { say "/dev/$name is mounted; not touched"; exit 0; }
-magic=$(dd if="$dev" bs=1 skip=1080 count=2 2>/dev/null | od -An -tx1 | tr -d ' \n')
-if [ "$magic" = 53ef ]; then
+magic=$(dd if="$dev" bs=1 skip=1080 count=2 2>/dev/null | od -b | awk 'NR == 1 { print $2 $3 }')
+if [ "$magic" = 123357 ]; then   # ext2/3/4's magic number, 0xef53, in octal bytes
   say "partition 4 holds a filesystem already; only its format mark is cleared"
 else
   say "making partition 4's filesystem (ext4, MPFREE-DATA) on /dev/$name"

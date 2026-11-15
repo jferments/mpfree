@@ -158,6 +158,21 @@ pub const SETUP_FILES: &[(&str, u16, &str)] = &[
     ),
 ];
 
+/// The programs the stick's own scripts run, from each one's `NEEDS='...'`
+/// line, sorted: the creator makes no stick from a system that lacks one
+/// (Akai's has no `blockdev`, for one).
+pub fn setup_programs() -> Vec<&'static str> {
+    let mut out: Vec<&'static str> = SETUP_FILES
+        .iter()
+        .flat_map(|(_, _, text)| text.lines())
+        .filter_map(|l| l.strip_prefix("NEEDS='")?.strip_suffix('\''))
+        .flat_map(str::split_whitespace)
+        .collect();
+    out.sort_unstable();
+    out.dedup();
+    out
+}
+
 /// Links that start them at boot.
 pub const SETUP_LINKS: &[(&str, &str)] = &[
     (
@@ -224,5 +239,15 @@ mod tests {
             );
         }
         assert_eq!(SETUP_DRIVE[0].1.matches("@RELEASE@").count(), 1);
+    }
+
+    #[test]
+    fn setup_programs_come_from_both_scripts() {
+        let p = setup_programs();
+        for name in ["udevadm", "sha256sum", "dd", "mke2fs", "od"] {
+            assert!(p.contains(&name), "{name}");
+        }
+        assert!(!p.contains(&"blockdev"), "Akai's system has none");
+        assert!(p.windows(2).all(|w| w[0] < w[1]), "sorted, once each");
     }
 }
