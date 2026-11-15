@@ -644,3 +644,37 @@ cases take about 20 minutes, four at a time. These are instructions, not
 cycles: cache misses and VFP stalls come on top, so the device still decides
 voice counts. The counts of 14 Nov are in synths.md, beside each engine's
 x86 count.
+
+### The soak (the `soak` CI job)
+
+```text
+cargo run --release -p mpfree-bench -- --soak [--blocks N] [--filter TEXT]
+```
+
+The instructions gate runs each case for 2 s. A buffer that grows only when a
+count passes a power of two shows much later: on live test 3, #273's write
+gaps reallocated after 51 minutes. `--soak` runs each whole-period case
+(the song: sampler, two synths, the mixer with its effects, the time host
+and the looper) for 2^21 blocks, about 101 minutes of sound, with the
+counting allocator read around every block, after the usual 50-block
+warm-up. It prints a progress line every 2^18 blocks and one line a case.
+The first run (14 Nov, the build host, busy with a test run at the same
+time, 822 s):
+
+```text
+Song: sampler, 2 synths, mixer+FX, time, looper: 2097152 blocks (101.4 min of sound), worst 38542 us (1328 % of the period) at block 193926, 321 slower than the period; no block allocated
+```
+
+The slow blocks there are the busy host taking the CPU away, not the song.
+
+Any block that allocates or frees fails it (exit 2), naming the first eight
+blocks and their calls, so a doubling shows at the block where it happened.
+The times are for reading. The `soak` job runs it only by hand: on GitHub,
+Actions, "MPC read-only inventory checks", **Run workflow** on `main` with
+the Soak box ticked (before a long device test, say). A quarter of an hour
+of a runner is too much for every PR or every merge, and the runners' job
+guard (jferments/ci-infrastructure `docs/runner-job-guard.md`) admits push,
+pull request and by-hand runs but no schedule, so it can't be nightly
+without a change there. It covers the engines' audio path, not the
+pad player's own loop (the sound card's writes, the report): that loop
+runs only on a sound card, so a long device run still checks it.

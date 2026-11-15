@@ -15,10 +15,14 @@
 //!   A pass that isn't held to real time (the export's fast mode) asks
 //!   [`BounceIn::room`] first and waits for the writer instead.
 //! - [`BounceOut`] is a writer thread's. [`BounceOut::pump`] moves what the
-//!   rings hold into the files as stereo 24-bit WAV, holding back each
-//!   stream's last frames (the longest latency less its own), so every
-//!   file ends on the same frame. Once [`BounceIn::finish`] is called and
-//!   the rings are empty, it writes each file's lengths into its header.
+//!   rings hold into the files as stereo WAV, holding back each stream's
+//!   last frames (the longest latency less its own), so every file ends on
+//!   the same frame. Once [`BounceIn::finish`] is called and the rings are
+//!   empty, it writes each file's lengths into its header.
+//! - [`WavFormat`] is how the files hold the sound
+//!   ([`BounceOut::with_format`]): 24-bit (the default), 16-bit with
+//!   triangular dither, or 32-bit float, at the mixer's rate or converted
+//!   to another ([`crate::resample`], on the writer thread).
 //!
 //! The pass itself (where it starts, when the tail is done) is the host's;
 //! [`BounceIn::quiet`] says how long a stream has been silent, for a tail
@@ -32,6 +36,119 @@ use crate::print::SILENT;
 
 /// The bytes before a 24-bit stereo WAV file's samples.
 pub const WAV_HEADER: usize = 44;
+
+/// How each sample is stored.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Bits {
+    /// 16-bit, with triangular (TPDF) dither of one step each way, so
+    /// quiet sound fades into a little noise instead of breaking up.
+    I16,
+    /// 24-bit, rounded: what the mixer makes, kept to far below hearing.
+    I24,
+    /// 32-bit float: exactly what the mixer made, levels over full scale
+    /// kept.
+    F32,
+}
+
+impl Bits {
+    pub const ALL: [Bits; 3] = [Bits::I24, Bits::I16, Bits::F32];
+
+    /// Bytes a stereo frame takes.
+    pub fn frame_bytes(self) -> u64 {
+        match self {
+            Bits::I16 => 4,
+            Bits::I24 => 6,
+            Bits::F32 => 8,
+        }
+    }
+
+    /// "24-bit", "16-bit", "32-bit float".
+    pub fn words(self) -> &'static str {
+        match self {
+            Bits::I16 => "16-bit",
+            Bits::I24 => "24-bit",
+            Bits::F32 => "32-bit float",
+        }
+    }
+}
+
+/// A stereo WAV file's format: the samples and the rate.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct WavFormat {
+    pub bits: Bits,
+    pub rate: u32,
+}
+
+impl WavFormat {
+    /// 24-bit at `rate`.
+    pub fn i24(rate: u32) -> WavFormat {
+        WavFormat {
+            bits: Bits::I24,
+            rate,
+        }
+    }
+
+    /// The bytes before the samples: 44, or 58 for float (its `fmt `
+    /// chunk is longer and a `fact` chunk follows, as the format asks).
+    pub fn header_len(self) -> usize {
+        match self.bits {
+            Bits::F32 => 58,
+            _ => WAV_HEADER,
+        }
+    }
+
+    /// The header for `frames` frames.
+    pub fn header(self, frames: u64) -> Vec<u8> {
+        let fb = self.bits.frame_bytes();
+        let hl = self.header_len() as u64;
+        let data = (frames * fb).min(u64::from(u32::MAX) - hl) as u32;
+        let (tag, bits, fmt_len): (u16, u16, u32) = match self.bits {
+            Bits::I16 => (1, 16, 16),
+            Bits::I24 => (1, 24, 16),
+            Bits::F32 => (3, 32, 18),
+        };
+        let mut h = Vec::with_capacity(hl as usize);
+        h.extend_from_slice(b"RIFF");
+        h.extend_from_slice(&(hl as u32 - 8 + data).to_le_bytes());
+        h.extend_from_slice(b"WAVEfmt ");
+        h.extend_from_slice(&fmt_len.to_le_bytes());
+        h.extend_from_slice(&tag.to_le_bytes());
+        h.extend_from_slice(&2u16.to_le_bytes());
+        h.extend_from_slice(&self.rate.to_le_bytes());
+        h.extend_from_slice(&(self.rate * fb as u32).to_le_bytes());
+        h.extend_from_slice(&(fb as u16).to_le_bytes());
+        h.extend_from_slice(&bits.to_le_bytes());
+        if self.bits == Bits::F32 {
+            h.extend_from_slice(&0u16.to_le_bytes());
+            h.extend_from_slice(b"fact");
+            h.extend_from_slice(&4u32.to_le_bytes());
+            h.extend_from_slice(&(frames.min(u64::from(u32::MAX)) as u32).to_le_bytes());
+        }
+        h.extend_from_slice(b"data");
+        h.extend_from_slice(&data.to_le_bytes());
+        h
+    }
+
+    /// The file's frames for `frames` frames at the mixer's `rate`.
+    pub fn frames_for(self, frames: u64, rate: u32) -> u64 {
+        crate::resample::frames_out(frames, rate, self.rate)
+    }
+
+    /// "24-bit, 44.1 kHz".
+    pub fn words(self) -> String {
+        let khz = f64::from(self.rate) / 1000.0;
+        format!("{}, {} kHz", self.bits.words(), khz)
+    }
+}
+
+/// One file's encoder: its dither and, at another rate, its converter.
+struct Encoder {
+    /// The dither's random state (a different one for each file).
+    seed: u32,
+    resample: Option<crate::resample::Resampler>,
+    /// Frames written.
+    frames: u64,
+}
 
 /// One stream's ring of interleaved stereo frames, as `f32` bits.
 struct Ring {
@@ -75,6 +192,12 @@ pub struct BounceOut {
     started: bool,
     finished: bool,
     rate: u32,
+    format: WavFormat,
+    enc: Vec<Encoder>,
+    /// One block's frames, before and after conversion.
+    left: Vec<f32>,
+    right: Vec<f32>,
+    conv: [Vec<f32>; 2],
     bytes: Vec<u8>,
 }
 
@@ -123,6 +246,11 @@ pub fn bounce(streams: usize, ring_frames: usize, rate: u32) -> (BounceIn, Bounc
             started: false,
             finished: false,
             rate,
+            format: WavFormat::i24(rate),
+            enc: Vec::new(),
+            left: Vec::new(),
+            right: Vec::new(),
+            conv: [Vec::new(), Vec::new()],
             bytes: Vec::new(),
         },
     )
@@ -244,7 +372,67 @@ fn s24(x: f32) -> [u8; 3] {
     [b[0], b[1], b[2]]
 }
 
+/// A random number from -0.5 to 0.5 (an xorshift step).
+fn uniform(seed: &mut u32) -> f64 {
+    let mut x = *seed;
+    x ^= x << 13;
+    x ^= x >> 17;
+    x ^= x << 5;
+    *seed = x;
+    f64::from(x) / 4_294_967_296.0 - 0.5
+}
+
+/// A sample as 16 bits: triangular dither of up to one step each way
+/// (two uniform numbers added), then rounded and clipped at full scale.
+fn s16(x: f32, seed: &mut u32) -> [u8; 2] {
+    let d = uniform(seed) + uniform(seed);
+    let v = (f64::from(x) * 32_767.0 + d)
+        .round()
+        .clamp(-32_768.0, 32_767.0) as i16;
+    v.to_le_bytes()
+}
+
+impl Encoder {
+    /// Appends `l` and `r` to `bytes` as `bits`.
+    fn encode(&mut self, bits: Bits, l: &[f32], r: &[f32], bytes: &mut Vec<u8>) {
+        for (&a, &b) in l.iter().zip(r) {
+            match bits {
+                Bits::I16 => {
+                    bytes.extend_from_slice(&s16(a, &mut self.seed));
+                    bytes.extend_from_slice(&s16(b, &mut self.seed));
+                }
+                Bits::I24 => {
+                    bytes.extend_from_slice(&s24(a));
+                    bytes.extend_from_slice(&s24(b));
+                }
+                Bits::F32 => {
+                    bytes.extend_from_slice(&a.to_le_bytes());
+                    bytes.extend_from_slice(&b.to_le_bytes());
+                }
+            }
+        }
+        self.frames += l.len().min(r.len()) as u64;
+    }
+}
+
 impl BounceOut {
+    /// The files in `format` (24-bit at the mixer's rate unless told).
+    /// Set it before the first pump.
+    pub fn with_format(mut self, format: WavFormat) -> BounceOut {
+        debug_assert!(!self.started, "the format is set before the files start");
+        self.format = format;
+        self
+    }
+
+    pub fn format(&self) -> WavFormat {
+        self.format
+    }
+
+    /// Each file's frames so far, at the file's rate.
+    pub fn file_frames(&self) -> Vec<u64> {
+        self.enc.iter().map(|e| e.frames).collect()
+    }
+
     /// Frames from the start to the last one above about -90 dBFS in any
     /// file so far: where the sound ends, for trimming a tail's silence.
     pub fn loud(&self) -> u64 {
@@ -289,11 +477,21 @@ impl BounceOut {
             for (h, l) in self.hold.iter_mut().zip(&lat) {
                 *h = (most - l) as usize;
             }
+            let to = self.format.rate;
+            self.enc = (0..files.len())
+                .map(|s| Encoder {
+                    seed: (0x9E37_79B9 ^ (s as u32).wrapping_mul(0x85EB_CA6B)) | 1,
+                    resample: (to != self.rate && to > 0)
+                        .then(|| crate::resample::Resampler::new(self.rate, to, 2)),
+                    frames: 0,
+                })
+                .collect();
             for f in files.iter_mut() {
-                f.write_all(&wav_header(self.rate, 0))?;
+                f.write_all(&self.format.header(0))?;
             }
             self.started = true;
         }
+        let bits = self.format.bits;
         for (s, f) in files.iter_mut().enumerate() {
             let ring = &self.shared.rings[s];
             let w = ring.written.load(Ordering::Acquire);
@@ -302,6 +500,8 @@ impl BounceOut {
             let hold = self.hold[s];
             let keep = have.saturating_sub(hold);
             self.bytes.clear();
+            self.left.clear();
+            self.right.clear();
             for i in 0..keep {
                 let at = (rd.wrapping_add(i) % ring.frames) * 2;
                 let l = f32::from_bits(ring.data[at].load(Ordering::Relaxed));
@@ -310,8 +510,22 @@ impl BounceOut {
                     self.loud = self.loud.max(self.out[s] + i as u64 + 1);
                     self.heard[s] = true;
                 }
-                self.bytes.extend_from_slice(&s24(l));
-                self.bytes.extend_from_slice(&s24(r));
+                self.left.push(l);
+                self.right.push(r);
+            }
+            let enc = &mut self.enc[s];
+            match enc.resample.as_mut() {
+                Some(rs) => {
+                    for c in &mut self.conv {
+                        c.clear();
+                    }
+                    rs.push(&[&self.left, &self.right], &mut self.conv);
+                    if done {
+                        rs.finish(&mut self.conv);
+                    }
+                    enc.encode(bits, &self.conv[0], &self.conv[1], &mut self.bytes);
+                }
+                None => enc.encode(bits, &self.left, &self.right, &mut self.bytes),
             }
             f.write_all(&self.bytes)?;
             self.out[s] += keep as u64;
@@ -324,7 +538,7 @@ impl BounceOut {
         }
         for (s, f) in files.iter_mut().enumerate() {
             f.seek(SeekFrom::Start(0))?;
-            f.write_all(&wav_header(self.rate, self.out[s]))?;
+            f.write_all(&self.format.header(self.enc[s].frames))?;
             f.seek(SeekFrom::End(0))?;
             f.flush()?;
         }
@@ -445,6 +659,187 @@ mod tests {
         bin.push(0, &[0.0; 9], &[0.01; 9]);
         assert_eq!(bin.quiet(0), 0);
         assert_eq!(wav_header(48_000, 10)[40..44], 60u32.to_le_bytes());
+    }
+
+    /// Any WAV file this module writes: its format and frames, checking
+    /// the header.
+    pub(crate) fn read_wav(b: &[u8]) -> (WavFormat, Vec<f32>, Vec<f32>) {
+        let u16_at = |i: usize| u16::from_le_bytes([b[i], b[i + 1]]);
+        let u32_at = |i: usize| u32::from_le_bytes(b[i..i + 4].try_into().unwrap());
+        assert_eq!(&b[0..4], b"RIFF");
+        assert_eq!(u32_at(4) as usize, b.len() - 8, "the RIFF length");
+        assert_eq!(&b[8..16], b"WAVEfmt ");
+        let fmt_len = u32_at(16) as usize;
+        let (tag, rate, bits) = (u16_at(20), u32_at(24), u16_at(34));
+        assert_eq!(u16_at(22), 2, "stereo");
+        let fb = u32::from(bits / 8) * 2;
+        assert_eq!(u32_at(28), rate * fb, "bytes a second");
+        assert_eq!(u32::from(u16_at(32)), fb, "bytes a frame");
+        let mut at = 20 + fmt_len;
+        let format = match (tag, bits) {
+            (1, 16) => Bits::I16,
+            (1, 24) => Bits::I24,
+            (3, 32) => {
+                assert_eq!(fmt_len, 18);
+                assert_eq!(&b[at..at + 4], b"fact");
+                at += 12;
+                Bits::F32
+            }
+            other => panic!("not a format this writes: {other:?}"),
+        };
+        assert_eq!(&b[at..at + 4], b"data");
+        let data = u32_at(at + 4) as usize;
+        at += 8;
+        assert_eq!(at + data, b.len(), "the data's length");
+        let n = data / fb as usize;
+        if format == Bits::F32 {
+            assert_eq!(u32_at(at - 12) as usize, n, "the fact chunk's frames");
+        }
+        let sample = |i: usize| match format {
+            Bits::I16 => f32::from(i16::from_le_bytes([b[i], b[i + 1]])) / 32_767.0,
+            Bits::I24 => {
+                (i32::from_le_bytes([0, b[i], b[i + 1], b[i + 2]]) >> 8) as f32 / 8_388_607.0
+            }
+            Bits::F32 => f32::from_le_bytes(b[i..i + 4].try_into().unwrap()),
+        };
+        let half = fb as usize / 2;
+        let fmt = WavFormat { bits: format, rate };
+        (
+            fmt,
+            (0..n).map(|k| sample(at + fb as usize * k)).collect(),
+            (0..n)
+                .map(|k| sample(at + fb as usize * k + half))
+                .collect(),
+        )
+    }
+
+    /// `l` and `r` bounced as one stream in `format` from `rate`, in blocks
+    /// of 100.
+    fn bounce_as(format: WavFormat, rate: u32, l: &[f32], r: &[f32]) -> Vec<u8> {
+        let (mut bin, bout) = bounce(1, 1 << 16, rate);
+        let mut bout = bout.with_format(format);
+        let mut files = vec![Cursor::new(Vec::new())];
+        bin.begin(&[0]);
+        for (a, b) in l.chunks(100).zip(r.chunks(100)) {
+            bin.push(0, a, b);
+            bout.pump(&mut files).unwrap();
+        }
+        bin.finish();
+        let n = l.len() as u64;
+        assert_eq!(bout.pump(&mut files).unwrap(), Pumped::Done(n));
+        assert_eq!(bout.file_frames(), [format.frames_for(n, rate)]);
+        files.pop().unwrap().into_inner()
+    }
+
+    #[test]
+    fn float_keeps_every_sample_exactly_even_over_full_scale() {
+        let l: Vec<f32> = (0..1000).map(|i| (i as f32 * 0.37).sin() * 1.5).collect();
+        let r: Vec<f32> = l.iter().map(|v| -v * 0.5).collect();
+        let b = bounce_as(
+            WavFormat {
+                bits: Bits::F32,
+                rate: 44_100,
+            },
+            44_100,
+            &l,
+            &r,
+        );
+        assert_eq!(b.len(), 58 + 8 * 1000);
+        let (f, gl, gr) = read_wav(&b);
+        assert_eq!(
+            f,
+            WavFormat {
+                bits: Bits::F32,
+                rate: 44_100
+            }
+        );
+        assert_eq!((gl, gr), (l, r));
+    }
+
+    #[test]
+    fn sixteen_bit_is_dithered_so_quiet_sound_survives() {
+        // A third of a 16-bit step: rounding alone would make it silence.
+        let step = 1.0 / 32_767.0;
+        let n = 48_000;
+        let quiet = vec![0.3 * step; n];
+        let b = bounce_as(
+            WavFormat {
+                bits: Bits::I16,
+                rate: 48_000,
+            },
+            48_000,
+            &quiet,
+            &quiet,
+        );
+        let (f, l, _) = read_wav(&b);
+        assert_eq!(f.bits, Bits::I16);
+        assert_eq!(l.len(), n);
+        let mean = l.iter().map(|v| f64::from(*v)).sum::<f64>() / n as f64;
+        assert!(
+            (mean / f64::from(step) - 0.3).abs() < 0.02,
+            "on average it is still there: {}",
+            mean / f64::from(step)
+        );
+        // Dither is at most one step each way: silence stays within one
+        // step, and the two sides get different noise.
+        let silent = vec![0.0; n];
+        let (_, l, r) = read_wav(&bounce_as(
+            WavFormat {
+                bits: Bits::I16,
+                rate: 48_000,
+            },
+            48_000,
+            &silent,
+            &silent,
+        ));
+        assert!(l.iter().chain(&r).all(|v| v.abs() <= step * 1.0001));
+        assert_ne!(l, r);
+        // Full scale clips; loud sound is within a step of where it was.
+        let loud: Vec<f32> = (0..n).map(|i| 1.2 * (i as f32 * 0.01).sin()).collect();
+        let (_, l, _) = read_wav(&bounce_as(
+            WavFormat {
+                bits: Bits::I16,
+                rate: 48_000,
+            },
+            48_000,
+            &loud,
+            &loud,
+        ));
+        for (got, want) in l.iter().zip(&loud) {
+            let want = want.clamp(-32_768.0 / 32_767.0, 1.0);
+            assert!((got - want).abs() <= 1.5 * step, "{got} for {want}");
+        }
+    }
+
+    #[test]
+    fn another_rate_converts_on_the_writer_and_keeps_the_frames_lined_up() {
+        let x = song(44_100);
+        let format = WavFormat {
+            bits: Bits::F32,
+            rate: 48_000,
+        };
+        let (f, l, r) = read_wav(&bounce_as(format, 44_100, &x, &x));
+        assert_eq!(f, format);
+        assert_eq!(l.len(), 48_000);
+        assert_eq!(l, r);
+        let mut rs = crate::resample::Resampler::new(44_100, 48_000, 1);
+        let mut want = vec![Vec::new()];
+        rs.push(&[&x], &mut want);
+        rs.finish(&mut want);
+        assert_eq!(l, want[0], "the same as converting the whole song at once");
+        // 24-bit at 48 kHz too.
+        let (f, l, _) = read_wav(&bounce_as(
+            WavFormat {
+                bits: Bits::I24,
+                rate: 48_000,
+            },
+            44_100,
+            &x,
+            &x,
+        ));
+        assert_eq!((f.bits, f.rate, l.len()), (Bits::I24, 48_000, 48_000));
+        assert_eq!(WavFormat::i24(44_100).words(), "24-bit, 44.1 kHz");
+        assert_eq!(format.words(), "32-bit float, 48 kHz");
     }
 
     #[test]

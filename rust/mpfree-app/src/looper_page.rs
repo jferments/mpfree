@@ -9,8 +9,9 @@
 
 use crate::app::{Item, Settings};
 use crate::looper_tab::{
-    level_frac, level_text, HistoryList, LayerRow, LoopEditor, LoopList, LoopRow, LoopSettings,
-    SettingRow, UseLoop, EDITOR, LOOPS, LOOP_COLOURS, QLINKS, RECORDING, TOOLS, USE,
+    level_frac, level_text, DropSpot, DropTo, HistoryList, LayerDrag, LayerRow, LoopEditor,
+    LoopList, LoopRow, LoopSettings, SettingRow, UseLoop, EDITOR, LOOPS, LOOP_COLOURS, QLINKS,
+    RECORDING, TOOLS, USE,
 };
 use crate::looping::{LoopSource, LoopWave, LooperView};
 use mpfree_looper::{
@@ -564,6 +565,12 @@ fn step_text(s: Step, layers: &[Option<LayerInfo>], rate: u32) -> String {
         Step::Merge(_) => "Merge layers".to_string(),
         // Overdub or Record over a print fits the loop to the tempo.
         Step::Fit(_) => "Fit to the tempo".to_string(),
+        // Dragged here from another loop, or from here to another.
+        Step::Added(id, from) => name(id).map_or_else(
+            || format!("From loop {}", from + 1),
+            |n| format!("From loop {} · {n}", from + 1),
+        ),
+        Step::Moved(_, to) => format!("Moved to loop {}", to + 1),
     }
 }
 
@@ -772,6 +779,151 @@ impl LooperPage {
     /// The first empty loop, for New loop.
     pub fn first_empty(&self) -> Option<usize> {
         self.view.loops.iter().position(|l| l.phase == Phase::Empty)
+    }
+
+    /// Where a layer dragged out of the editor can be let go: the loops
+    /// in the list that play a loop of its length (another length, or a
+    /// loop recording, says why not), and + New loop while a loop is
+    /// empty. Empty loops are not places of their own (as drawn): + New
+    /// loop fills the first one.
+    fn drop_spots(&self, ui: &Ui, v: &LooperView) -> Vec<DropSpot> {
+        let (Some(lr), Some(list)) = (ui.rect_on(LOOPER_PAGE, LOOPS), ui.get::<LoopList>(LOOPS))
+        else {
+            return Vec::new();
+        };
+        let parts = list.parts(lr);
+        let src = v.selected;
+        let s = &v.status;
+        let len = |l: &Status| {
+            let b = bars_of(l.ticks, v.beats_per_bar);
+            format!("{b} bar{}", if b == 1 { "" } else { "s" })
+        };
+        let busy = |l: &Status| l.merging.is_some() || l.copying.is_some() || l.fitting.is_some();
+        // The picked loop's layers drag while it plays with nothing busy.
+        let held = match s.phase {
+            Phase::Playing if !busy(s) => None,
+            Phase::Playing => Some(format!(
+                "Loop {} is busy: drag its layers once it is done",
+                src + 1
+            )),
+            _ => Some(format!(
+                "Loop {} is recording: drag its layers once it plays",
+                src + 1
+            )),
+        };
+        let mut out = Vec::new();
+        for (n, rr) in parts.rows.iter().enumerate() {
+            let Some(l) = v
+                .loops
+                .get(n)
+                .filter(|l| n != src && l.phase != Phase::Empty)
+            else {
+                continue;
+            };
+            let refused = held.clone().or_else(|| match l.phase {
+                Phase::Playing if l.ticks != s.ticks => Some(format!(
+                    "Loop {} is {} and this layer {}: a layer goes only onto a loop of its length",
+                    n + 1,
+                    len(l),
+                    len(s)
+                )),
+                Phase::Playing if l.layers >= MAX_LAYERS - 1 => {
+                    Some(format!("Loop {} has all the layers it can take", n + 1))
+                }
+                Phase::Playing if busy(l) => {
+                    Some(format!("Loop {} is busy: try again in a moment", n + 1))
+                }
+                Phase::Playing => None,
+                _ => Some(format!("Loop {} is recording", n + 1)),
+            });
+            out.push(DropSpot {
+                to: DropTo::Loop(n),
+                rect: *rr,
+                refused,
+            });
+        }
+        let empty = v.loops.iter().any(|l| l.phase == Phase::Empty);
+        if let Some(b) = parts.new.filter(|_| empty) {
+            out.push(DropSpot {
+                to: DropTo::NewLoop,
+                rect: b,
+                refused: held,
+            });
+        }
+        out
+    }
+
+    /// Why a dragged layer can't go to `to`, as the screen says it.
+    pub fn why_no_drop(&self, ui: &Ui, to: DropTo) -> String {
+        ui.get::<LoopEditor>(EDITOR)
+            .and_then(|e| e.drops.iter().find(|d| d.to == to))
+            .and_then(|d| d.refused.clone())
+            .unwrap_or_else(|| "That loop can't take the layer".to_string())
+    }
+
+    /// What letting a dragged layer go on `to` does, as its card says it
+    /// (`copy`: SHIFT is held).
+    fn drop_words(&self, to: Option<&DropSpot>, copy: bool) -> String {
+        let only = self.view.status.layers <= 1;
+        match to {
+            None => "Let go here: it stays where it is".to_string(),
+            Some(DropSpot {
+                refused: Some(why), ..
+            }) => why.clone(),
+            Some(d) => {
+                let way = if copy || only { "Copy" } else { "Move" };
+                match d.to {
+                    DropTo::Loop(n) => format!("{way} to Loop {}", n + 1),
+                    DropTo::NewLoop => format!(
+                        "{way} into Loop {}: a loop of its own",
+                        self.first_empty().map_or(0, |n| n + 1)
+                    ),
+                }
+            }
+        }
+    }
+
+    /// Keep the list and the card in step with the editor's drag: called
+    /// after every touch on the Looper tab and every turn of the wheel
+    /// (`shift`: SHIFT is held, so letting go copies).
+    pub fn sync_drag(&mut self, ui: &mut Ui, shift: bool) {
+        // A layer the wheel picked up goes back once nothing holds it: the
+        // page changed, or an overlay took the wheel.
+        if !ui.focus_grabbed() && ui.get::<LoopEditor>(EDITOR).is_some_and(|e| e.wheel_held()) {
+            if let Some(e) = ui.get_mut::<LoopEditor>(EDITOR) {
+                e.wheel_cancel();
+            }
+        }
+        let Some(e) = ui.get::<LoopEditor>(EDITOR) else {
+            return;
+        };
+        let drag = e.drag().and_then(|(k, card)| {
+            let landing = e.landing();
+            Some(LayerDrag {
+                row: e.layers.get(k).cloned()?,
+                card,
+                at: e.finger()?,
+                says: self.drop_words(landing, shift),
+                landing: landing.map(|d| (d.to, d.refused.is_none())),
+                lit: e
+                    .drops
+                    .iter()
+                    .filter(|d| d.refused.is_none())
+                    .map(|d| d.to)
+                    .collect(),
+            })
+        });
+        let says = drag.as_ref().map(|d| d.says.clone()).unwrap_or_default();
+        if e.says != says {
+            if let Some(e) = ui.get_mut::<LoopEditor>(EDITOR) {
+                e.says = says;
+            }
+        }
+        if ui.get::<LoopList>(LOOPS).is_some_and(|l| l.drag != drag) {
+            if let Some(l) = ui.get_mut::<LoopList>(LOOPS) {
+                l.drag = drag;
+            }
+        }
     }
 
     /// The Undo history tool: open the history in the layers' place, or
@@ -1033,7 +1185,19 @@ impl LooperPage {
         let layers: Vec<LayerRow> = (0..s.layers)
             .map(|k| {
                 let info = self.layers.get(k).copied().flatten();
-                let what = if k == 0 { "first pass" } else { "overdub" };
+                // A layer dragged in from another loop says where from.
+                let from = info.and_then(|l| {
+                    v.history.done().iter().find_map(|s| match *s {
+                        Step::Added(id, o) if id == l.id => Some(o),
+                        _ => None,
+                    })
+                });
+                let from_text = from.map(|o| format!("from loop {}", o + 1));
+                let what = match &from_text {
+                    Some(t) => t.as_str(),
+                    None if k == 0 => "first pass",
+                    None => "overdub",
+                };
                 let mut detail = match names.get(k).filter(|n| !n.is_empty()) {
                     Some(name) => format!("{what} · {}", name.to_lowercase()),
                     None => what.to_string(),
@@ -1189,9 +1353,18 @@ impl LooperPage {
                 l.clear = clear;
             }
         }
-        // The editor and the Q-Links.
+        // The editor and the Q-Links, and where a dragged layer can go.
         self.refresh_editor(ui, v);
         self.refresh_qlinks(ui, v);
+        let drops = self.drop_spots(ui, v);
+        if ui
+            .get::<LoopEditor>(EDITOR)
+            .is_some_and(|e| e.drops != drops)
+        {
+            if let Some(e) = ui.get_mut::<LoopEditor>(EDITOR) {
+                e.drops = drops;
+            }
+        }
         // How it records.
         let ready = v.source == LoopSource::Pads || v.line_on;
         let set_rows: Vec<SettingRow> = SET_ROWS

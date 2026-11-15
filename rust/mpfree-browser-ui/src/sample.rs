@@ -405,5 +405,9 @@ fn export_setup(arrangement: bool) -> ExportSetup {
         mode: "Fast, quiet: faster than real time, the speakers quiet (Prefs > Export)".into(),
         stems: 8,
         folder: "Recordings / Night drive 2026-11-14 01.32".into(),
+        format: crate::export::ExportFormat {
+            bits: crate::export::ExportBits::I24,
+            rate: 44_100,
+        },
     }
 }
