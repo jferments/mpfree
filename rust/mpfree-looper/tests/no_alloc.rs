@@ -1,7 +1,8 @@
 //! The looper's real-time calls (`command`, `process`, `status`, `stats`,
 //! `layer`) must not allocate or free. A counting global allocator checks
 //! that across a busy session: the first pass, overdubs, undo and redo,
-//! edits, merges, bounces and a resample, clear, mute, level and latency
+//! edits, merges, bounces, a resample and layers copied and moved between
+//! loops, clear, mute, level and latency
 //! changes, a full memory, locates, a transport loop, tempo changes, stop
 //! and count-in, at period sizes from 1 to 4096 frames.
 //!
@@ -125,6 +126,8 @@ fn commands_and_periods_never_allocate() {
     let mut t2 = Transport::new(RATE, 120.0).unwrap();
     let mut l2 = Looper::new(RATE, 12);
     let mut bounced2 = 0;
+    let mut copied2 = false;
+    let mut played2 = false;
     watch(true);
     t.command(0, T::Play);
     l.command(L::Record);
@@ -165,6 +168,16 @@ fn commands_and_periods_never_allocate() {
         if i >= 4000 && i % 211 == 0 {
             let _ = l.select_loop([0, 3, 7, MAX_LOOPS][(i / 211) as usize % 4]);
             let _ = l.command(L::Record);
+        }
+        // And copies or moves layers between them.
+        if i >= 4000 && i.is_multiple_of(263) {
+            let j = (i / 263) as usize;
+            let _ = l.copy_layer(
+                [0, 3, 7][j % 3],
+                (j % 3) as u8,
+                [3, 7, 1, 0][j % 4],
+                j.is_multiple_of(2),
+            );
         }
         // Each layer's controls; deletes only in the second half, so the
         // first half fills the memory and overdubs are refused.
@@ -232,6 +245,22 @@ fn commands_and_periods_never_allocate() {
             let _ = l2.command(L::SetBars(Some(1)));
             let _ = l2.command(L::Resample);
         }
+        // A layer of loop 0 onto loop 1, loop 1's first pass moved into
+        // loop 2, and Undo on loop 1, which takes the move back.
+        match i {
+            1500 => {
+                let _ = l2.copy_layer(0, 0, 1, true);
+            }
+            1900 => {
+                let _ = l2.copy_layer(1, 0, 2, false);
+            }
+            2300 => {
+                let _ = l2.command(L::Undo);
+            }
+            _ => {}
+        }
+        copied2 |= (0..3).any(|k| l2.loop_status(k).unwrap().copying.is_some());
+        played2 |= l2.loop_status(2).unwrap().phase == Phase::Playing;
         want |= i % 151 == 0;
         bounce(&mut l2, i, &mut want, &mut spare, &mut bounced2);
         let n = sizes[(i % sizes.len() as u64) as usize];
@@ -255,7 +284,10 @@ fn commands_and_periods_never_allocate() {
     assert!(bounced >= 1, "{bounced} bounces in the busy session");
     assert!(bounced2 > 10, "{bounced2} bounces in the calm session");
     assert_eq!(l2.loop_status(1).unwrap().phase, Phase::Playing);
-    assert!(l2.loop_status(1).unwrap().layers == 1);
+    assert!(copied2 && played2, "no layer copied in the calm session");
+    // The move into loop 2 was taken back: loop 1 has both layers again.
+    assert_eq!(l2.loop_status(2).unwrap().phase, Phase::Empty);
+    assert_eq!(l2.loop_status(1).unwrap().layers, 2);
     assert!(loops_used.count_ones() >= 3, "loops used: {loops_used:b}");
 }
 

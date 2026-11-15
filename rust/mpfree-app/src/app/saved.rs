@@ -96,6 +96,15 @@ impl App {
         out.set_i64("audio-memory", i64::from(s.audio_memory.seconds()));
         out.set_str("at-start", if s.open_last { "last" } else { "new" });
         out.set_str("export", s.export_mode.key());
+        out.set_str(
+            "export-file",
+            match s.export_bits {
+                mpfree_fx::Bits::I24 => "24",
+                mpfree_fx::Bits::I16 => "16",
+                mpfree_fx::Bits::F32 => "float",
+            },
+        );
+        out.set_i64("export-rate", i64::from(s.export_rate));
         // The Looper's level, and the line input's latency once it was set
         // by hand (measured with a cable). The line input itself, and so
         // what the Looper records from, is off at every start.
@@ -194,6 +203,23 @@ impl App {
                 "export" => mpfree_export::Mode::from_key(v)
                     .map(|m| s.export_mode = m)
                     .is_some(),
+                "export-file" => match v {
+                    "24" => Some(mpfree_fx::Bits::I24),
+                    "16" => Some(mpfree_fx::Bits::I16),
+                    "float" => Some(mpfree_fx::Bits::F32),
+                    _ => None,
+                }
+                .map(|b| s.export_bits = b)
+                .is_some(),
+                "export-rate" => app
+                    .get_i64(k)
+                    .and_then(|n| {
+                        crate::app::EXPORT_RATES
+                            .into_iter()
+                            .find(|&r| i64::from(r) == n)
+                    })
+                    .map(|r| s.export_rate = r)
+                    .is_some(),
                 "loop-level" => app
                     .get_i64(k)
                     .filter(|n| (-24..=6).contains(n))
@@ -222,7 +248,7 @@ impl App {
             notes.push(format!(
                 "saved settings: pad curve {}, screen velocity {}, latch {}, audio buffer {} periods, \
                  developer tools {}, theme {}, sound cores {}, loop memory {} min, metronome {} at {} dB, \
-                 loop level {:+.0} dB, line input latency {}, at start {}, export {}",
+                 loop level {:+.0} dB, line input latency {}, at start {}, export {} ({}, {} Hz)",
                 s.curve.label(),
                 s.screen_velocity,
                 if s.latch_mode == LatchMode::Toggle { "toggle" } else { "replace" },
@@ -241,6 +267,8 @@ impl App {
                 },
                 if s.open_last { "the last project" } else { "a new project" },
                 s.export_mode.name(),
+                s.export_bits.words(),
+                s.export_rate,
             ));
         }
         let (mut found, mut gone) = (0, 0);
@@ -363,6 +391,10 @@ mod tests {
         a.step_item(r, 1);
         let r = row(&a, Item::Export);
         a.step_item(r, 1);
+        let r = row(&a, Item::ExportFile);
+        a.step_item(r, 1);
+        let r = row(&a, Item::ExportRate);
+        a.step_item(r, 1);
         a.looper_setting(Item::LoopLevel, -1);
         a.looper_setting(Item::LoopLevel, -1);
         a.looper_setting(Item::LoopLatency, 1);
@@ -384,6 +416,8 @@ mod tests {
         assert_eq!(app.get_bool("metronome"), Some(true));
         assert_eq!(app.get_str("at-start"), Some("last"));
         assert_eq!(app.get_str("export"), Some("listen"));
+        assert_eq!(app.get_str("export-file"), Some("16"));
+        assert_eq!(app.get_i64("export-rate"), Some(48_000));
         assert_eq!(app.get_str("loop-level"), Some("-2"));
         let latency = a.settings.loop_latency;
         assert_eq!(app.get_i64("loop-latency"), Some(i64::from(latency)));
@@ -424,6 +458,10 @@ mod tests {
             (latency, true)
         );
         assert_eq!(b.settings.export_mode, mpfree_export::Mode::Listen);
+        assert_eq!(
+            (b.settings.export_bits, b.settings.export_rate),
+            (mpfree_fx::Bits::I16, 48_000)
+        );
         assert!(
             b.start().contains(&crate::app::Effect::Looper(
                 crate::looping::LoopAction::Command(mpfree_looper::Command::SetLevel(

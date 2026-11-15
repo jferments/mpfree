@@ -1,6 +1,8 @@
 //! The Export panel: Export in the Projects place opens it over the
 //! browser (layout spec section 3; Jay's pick, 14 Nov 01:39Z). It picks
-//! what to make (the mixdown, the stems, the MIDI file) and the range,
+//! what to make (the mixdown, the stems, the MIDI file), the range and
+//! the files' format (Prefs' for each new export; Jay's pick, 14 Nov
+//! 07:51Z: both in Prefs and on the panel),
 //! says how the export will play (Fast, quiet or Listen, and why), shows
 //! the time done while it runs with Cancel, and when it is over the
 //! outcome with Show in BROWSE.
@@ -26,6 +28,37 @@ pub enum ExportRange {
     Bars(u32),
 }
 
+/// How the WAV files hold each sample (the app's `mpfree_fx::Bits`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExportBits {
+    I24,
+    /// 16-bit, dithered.
+    I16,
+    F32,
+}
+
+/// The rates the panel offers.
+pub const EXPORT_RATES: [u32; 2] = [44_100, 48_000];
+
+/// The WAV files' format.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ExportFormat {
+    pub bits: ExportBits,
+    pub rate: u32,
+}
+
+impl ExportFormat {
+    /// "24-bit, 44.1 kHz"
+    pub fn words(self) -> String {
+        let bits = match self.bits {
+            ExportBits::I24 => "24-bit",
+            ExportBits::I16 => "16-bit",
+            ExportBits::F32 => "32-bit float",
+        };
+        format!("{bits}, {} kHz", f64::from(self.rate) / 1000.0)
+    }
+}
+
 /// What the app tells the panel as it opens.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ExportSetup {
@@ -42,6 +75,8 @@ pub struct ExportSetup {
     /// Where the files go, as shown ("Recordings / My song 2026-11-14
     /// 01.32").
     pub folder: String,
+    /// The files' format to start from: Prefs > Export file and rate.
+    pub format: ExportFormat,
 }
 
 /// Where the panel is.
@@ -68,6 +103,8 @@ pub struct ExportPanel {
     pub range: ExportRange,
     /// The bar count Bars uses, kept while the arrangement is picked.
     pub bars: u32,
+    /// This export's format (Prefs' until changed here).
+    pub format: ExportFormat,
     pub phase: ExportPhase,
 }
 
@@ -87,6 +124,12 @@ pub enum ExportInput {
     Close,
     /// The finished export's folder, in the browser.
     Show,
+    /// The files' format: 24-bit, 16-bit, 32-bit float, 44.1 or 48 kHz.
+    Bits24,
+    Bits16,
+    Float32,
+    Rate44,
+    Rate48,
 }
 
 /// What Start asks the app for.
@@ -96,11 +139,13 @@ pub struct ExportChoice {
     pub stems: bool,
     pub midi: bool,
     pub range: ExportRange,
+    pub format: ExportFormat,
 }
 
 impl ExportPanel {
     /// A panel ready to start: everything ticked (or as `last` had it), the
-    /// arrangement when there is one, otherwise 8 bars.
+    /// arrangement when there is one, otherwise 8 bars, and Prefs' format
+    /// (a format changed on the panel was for that export only).
     pub fn new(setup: ExportSetup, last: Option<ExportChoice>) -> ExportPanel {
         let (mixdown, stems, midi, bars) = match last {
             Some(c) => (
@@ -119,6 +164,7 @@ impl ExportPanel {
             (Some(_), _) => ExportRange::Arrangement,
             (None, _) => ExportRange::Bars(bars),
         };
+        let format = setup.format;
         ExportPanel {
             setup,
             mixdown,
@@ -126,6 +172,7 @@ impl ExportPanel {
             midi,
             range,
             bars,
+            format,
             phase: ExportPhase::Ready,
         }
     }
@@ -137,6 +184,7 @@ impl ExportPanel {
             stems: self.stems,
             midi: self.midi,
             range: self.range,
+            format: self.format,
         }
     }
 
@@ -191,6 +239,11 @@ impl ExportPanel {
             ExportInput::Bars => self.range = ExportRange::Bars(self.bars),
             ExportInput::Fewer => self.step_bars(-1),
             ExportInput::More => self.step_bars(1),
+            ExportInput::Bits24 => self.format.bits = ExportBits::I24,
+            ExportInput::Bits16 => self.format.bits = ExportBits::I16,
+            ExportInput::Float32 => self.format.bits = ExportBits::F32,
+            ExportInput::Rate44 => self.format.rate = EXPORT_RATES[0],
+            ExportInput::Rate48 => self.format.rate = EXPORT_RATES[1],
             _ => {}
         }
     }
@@ -207,6 +260,10 @@ mod tests {
             mode: "Fast, quiet".into(),
             stems: 4,
             folder: "Recordings / Song 2026-11-14 01.32".into(),
+            format: ExportFormat {
+                bits: ExportBits::I24,
+                rate: 44_100,
+            },
         }
     }
 
@@ -241,12 +298,29 @@ mod tests {
     }
 
     #[test]
+    fn the_format_starts_as_prefs_has_it_and_changes_for_one_export() {
+        let mut p = ExportPanel::new(setup(true), None);
+        assert_eq!(p.format.words(), "24-bit, 44.1 kHz");
+        p.pick(ExportInput::Bits16);
+        p.pick(ExportInput::Rate48);
+        assert_eq!(p.choice().format.words(), "16-bit, 48 kHz");
+        p.pick(ExportInput::Float32);
+        assert_eq!(p.choice().format.words(), "32-bit float, 48 kHz");
+        // The next export starts from Prefs again.
+        let last = p.choice();
+        let p = ExportPanel::new(setup(true), Some(last));
+        assert_eq!(p.format, setup(true).format);
+        assert_eq!(p.choice().format.bits, ExportBits::I24);
+    }
+
+    #[test]
     fn the_last_choice_is_kept() {
         let last = ExportChoice {
             mixdown: true,
             stems: false,
             midi: false,
             range: ExportRange::Bars(16),
+            format: setup(false).format,
         };
         let p = ExportPanel::new(setup(false), Some(last));
         assert_eq!(p.choice(), last);
