@@ -1,12 +1,23 @@
 # The MPFree USB creator: a boot stick with no terminal
 
-**Status:** proposal, 2026-11-15, waiting for the owner's review. Nothing here is built. It plans a desktop app for Linux, macOS and Windows that turns a musician's own copy of Akai's 3.10.1 update into an MPFree boot stick, and a one-time, terminal-free way to set up the MPC for it. The boot itself is the merged soft-reboot route in [How MPFree boots from the stick](../hardware/soft-reboot-boot.md); this page changes nothing about it.
+**Status:** proposal, 2026-11-15; the owner answered most open questions the same day ([decisions](#the-owners-decisions-2026-11-15)). Nothing here is built. It plans a desktop app for Linux, macOS and Windows that turns a musician's own copy of Akai's 3.10.1 update into an MPFree boot stick, and a one-time, terminal-free way to set up the MPC for it. The boot itself is the merged soft-reboot route in [How MPFree boots from the stick](../hardware/soft-reboot-boot.md); this page changes nothing about it.
 
 ## The goal
 
 An average musician who wants to try MPFree should get from "my MPC runs 3.10.1 and I have Akai's update file" to "MPFree starts when the stick is in" without a terminal, SSH, keys, scripts or a network cable. The project never hosts or bundles any Akai file.
 
 Out of scope: updating the MPC to 3.10.1. The musician does that first with Akai's own instructions and keeps the update file Akai gave them. The creator starts from there.
+
+## The owner's decisions (2026-11-15)
+
+1. Switching developer mode on once and tapping **Yes** is acceptable as the one step on the MPC.
+2. **One stick**, with the setup partition on it. No separate setup stick.
+3. Drum kits for creator-made sticks: being explained to the owner; still open ([below](#what-ships-in-the-app)).
+4. GUI: **egui**, or whatever is simplest; the UI is a small wizard. Bundling e2fsprogs is fine.
+5. Signing: the owner would rather not pay for an Apple Developer ID or a Windows certificate. The free route is in [Releases](#releases); still open.
+6. **MPC One (Gen 1) only** for the first release. The app and the manual say plainly that it has only been tested on the MPC One (Gen 1). The setup script and the hook still refuse other boards, because the switch-off service names the MPC One's controller addresses.
+7. Legal review of Akai's terms is the owner's to handle; this plan doesn't track it.
+8. **Developer SSH stays available**, off by default, behind one checkbox in the app's Preferences under Developer options ([below](#developer-ssh)). The user manual gets clear step-by-step instructions for setting it up.
 
 ## What the musician does (recommended flow)
 
@@ -30,7 +41,7 @@ Today's owner sequence is blocks 4.1 to 4.5 of [the stick auto-boot record](../h
 | Copy `/boot` from the image (`offline-rootfs-survey.sh`) | No | Yes: from the same file | The app does it |
 | `collect-over-ssh.sh --kexec-preflight` for `live.dtb` | **Yes** | No | **Not needed.** `offline-kexec-stick.py` stops without it, but it only feeds `kexec.dtb`, which the soft-reboot route never uses. The soft-reboot check needs only the kernel release, and on an installed 3.10.1 that is the image's own. Needs a soft-reboot-only build mode |
 | Drum kits (`offline-factory-kit.py`) | **Yes**: it reads the owner's eMMC backup, made over SSH | Yes: Akai's factory sounds | **Not possible** for a musician, and Akai's sounds can't ship. MPFree needs its own kits (below) |
-| Your SSH key for port 2222 (`MPC_KEY`) | Only to use it | No | Off by default; a developer checkbox adds it |
+| Your SSH key for port 2222 (`MPC_KEY`) | Only to use it | No | Off by default; one checkbox in Preferences > Developer options adds it ([below](#developer-ssh)) |
 | Build tools: `debugfs`, `mke2fs`, `e2fsck`, `sfdisk`, `ssh-keygen` | No | No | Linux tools today; the app must bring them or replace them on all three systems |
 | `write-test-stick.py` (Linux, `lsblk`, sudo) | No | No | A writer per operating system, inside the app |
 | `--devmode-trust` (host key, [Block Q1](../hardware/firmware-3.10.1-qualification.md)) and `--hook-install` over port 22 | **Yes** | No | **Replaced** by the setup script on the stick, run by Akai's script runner. No SSH at all, so no host key to trust |
@@ -83,11 +94,11 @@ While developer mode is on, the MPC runs root SSH with no password on any networ
 
 ### Technology
 
-A Rust app (ADR-0001), split into a core crate (call it `mpfree-stick`: unpack the update, check its hash, copy and change the root filesystem, lay out the GPT image, verify) with a command-line front end for tests and CI, and a small wizard GUI. The project's own `mpfree-ui` draws to a framebuffer, so the desktop GUI would use a desktop toolkit; `egui`/`eframe` keeps it pure Rust, and Tauri is the alternative if a web-style UI is wanted.
+A Rust app (ADR-0001), split into a core crate (call it `mpfree-stick`: unpack the update, check its hash, copy and change the root filesystem, lay out the GPT image, verify) with a command-line front end for tests and CI, and a small wizard GUI in `egui`/`eframe` (the owner's choice: pure Rust, one binary per system, no web stack). The project's own `mpfree-ui` draws to a framebuffer, so it isn't used here.
 
 **Editing ext4 on macOS and Windows** is the hardest part, because the builder changes a copy of Akai's ext4 root filesystem with `debugfs -w`. Options:
 
-1. **Bundle e2fsprogs** (`debugfs`, `mke2fs`, `e2fsck`) built for each system and run them as separate programs, keeping the builder's tested command list. They are GPL-2; shipping them as separate programs next to an MIT app is fine with their source offered. **Recommended first.**
+1. **Bundle e2fsprogs** (`debugfs`, `mke2fs`, `e2fsck`) built for each system and run them as separate programs, keeping the builder's tested command list. They are GPL-2; shipping them as separate programs next to an MIT app is fine with their source offered. **Chosen first** (owner, 2026-11-15).
 2. Write the narrow set of ext4 edits the builder needs (add files and links, replace files, change modes) in Rust. No outside programs, but a filesystem writer is a lot to get right.
 3. Make partition 1 squashfs or erofs, which are simple to write from code. That changes how the hook mounts the stick (`ro,noload` is an ext4 option) and needs Akai's kernel to support it: a hook change, so the owner's call.
 
@@ -107,19 +118,39 @@ Raspberry Pi Imager (Apache-2.0) has solved these on all three systems and is th
 
 - MPFree's own programs for the stick (pad player, startup screen, screen log), built for ARM by CI and pinned by hash. Bundling them means one app version is one tested set and works offline.
 - A table of supported Akai update files by SHA-256 and kernel release, deny by default. A hash is not Akai's content.
-- **MPFree's own drum kits**, with a provenance list (made with MPFree's Drums synth or from CC0 samples). The pad player can't start without `kits.bin` today, and the current kits are Akai's sounds from the owner's backup.
+- **MPFree's own drum kits**, with a provenance list. The pad player can't start without `kits.bin` today, and the kits on the reference stick are Akai's factory sounds, copied out of the owner's eMMC backup by `offline-factory-kit.py`. A musician has no such backup, and Akai's sounds can't ship. The choices (still open):
+  - **Rendered from MPFree's Drums synth.** CI plays each pad of a few Drums kits once and writes the hits into `kits.bin` (the format in `rust/mpfree-app/src/kit.rs` is plain 44.1 kHz audio, so nothing in the pad player changes). Entirely MPFree's own, nothing to license, but synthetic in character (808/909-style).
+  - **CC0 samples.** Public-domain recordings of real drums. More realistic, but each file needs its source and licence recorded, and someone has to choose them.
+  - **Both** (recommended): synthetic kits as the default, plus a few CC0 kits.
+  - Later, and only if the owner's legal check allows it: an optional "use my MPC's own sounds" step that copies the owner's factory kits from their MPC to their own stick during setup, never leaving their hands.
+
+### Developer SSH
+
+The app's **Preferences > Developer options** has one checkbox, **Developer SSH on the stick** (off by default). When ticked, the app asks for the user's SSH public key file, or makes a key pair for them and saves it where they choose, and the stick gets today's key-only root SSH on port 2222 with a host key made for that stick. The app then shows the exact `ssh` line to connect. Without the checkbox the stick has no SSH server at all. The user manual's page on it gives step-by-step instructions for Linux, macOS and Windows (all three ship `ssh`), including how to connect the MPC by cable.
 
 ### Releases
 
-GitHub Releases with: a signed and notarized macOS app (needs an Apple Developer ID, US$99 a year; without it macOS refuses to open the app), a signed Windows installer (without a code-signing certificate SmartScreen warns on every download), and a Linux AppImage (a Flatpak later). A user manual page, "Installing MPFree", is written when the app exists.
+GitHub Releases, built by GitHub Actions: a Linux AppImage, a Windows installer and a macOS app, each with a SHA-256 and a GitHub build attestation (free; proves the file was built from this repository). A user manual page, "Installing MPFree", is written when the app exists.
+
+Signing, by system, if nothing is paid for:
+
+| System | Without paying | What the musician sees | Paid option |
+|---|---|---|---|
+| Linux | Nothing needed | Nothing; the AppImage runs after marking it executable (most file managers do it with one click) | None needed |
+| Windows | Unsigned at first; apply to **SignPath Foundation**, which signs open-source projects for free | Unsigned: a blue "Windows protected your PC" box on first run; **More info**, then **Run anyway**. Signed: that box fades out as downloads build up reputation | A certificate or Azure Trusted Signing, roughly US$10 a month and up |
+| macOS | Unsigned (ad-hoc signed, so it runs on Apple Silicon) | macOS refuses the first open. Since macOS 15 the right-click > Open trick is gone: the user opens **System Settings > Privacy & Security**, clicks **Open Anyway** and enters their password, once | Apple Developer ID, US$99 a year: no warning at all |
+
+The creator is opened once per MPFree update, so a one-time click-through is tolerable if the manual shows it with pictures. Recommendation: launch free (Linux as is, Windows through SignPath once accepted, macOS unsigned with the Open Anyway steps), and pay for the Apple ID only if beta testers stumble on macOS.
 
 ## Akai firmware and legal limits
+
+The owner handles the legal review; this section only records the technical facts that bear on it.
 
 - **Nothing of Akai's is distributed.** The app reads the update file the musician already downloaded from Akai, on their own computer. It links to Akai's download page and never downloads or hosts the file itself, so the musician accepts Akai's terms directly. This matches the [factory content policy](../project/factory-content-policy.md).
 - **The finished stick holds a changed copy of Akai's root filesystem.** It is the musician's personal copy, and the app says so: don't share stick images. The project never publishes a prebuilt image.
 - **No factory sounds** on a creator-made stick. A later, optional importer of the owner's own content stays local and needs the legal review the policy already asks for.
 - **Nothing is circumvented.** The route uses Akai's documented developer mode and script runner and Akai's own running kernel. It doesn't touch the eMMC boot partitions, the verified root filesystem, LoadPin, or any licensing or activation.
-- **Needs real legal review before a public release** (not decided here): what Akai's terms say about changing a copy of the firmware for personal use and about studying its format; using Akai's product names (plain "for the Akai MPC One" wording, no logos, a "not affiliated with Akai or inMusic" notice); and the GPL source offer for anything we bundle.
+- Points for the owner's review: Akai's terms on changing a copy of the firmware for personal use and on studying its format; using Akai's product names (plain "for the Akai MPC One" wording, no logos, a "not affiliated with Akai or inMusic" notice); and the GPL source offer for the bundled e2fsprogs.
 
 ## Safety work before anyone else runs it
 
@@ -130,22 +161,17 @@ GitHub Releases with: a signed and notarized macOS app (needs an Apple Developer
 | Does the script runner offer `autorun.sh` from a FAT32 partition that is partition 5 of a GPT stick with ext4 partitions? | Test with a harmless script | The one-stick design depends on it. If not: a second small setup stick |
 | What Akai's system does with the stick's partitions while it sits in during setup (mounts, `no-reserved-blocks@` tune2fs, writes to partition 4) | Read-only, from a stock-boot journal | During setup the stick stays in under Akai's app for a minute or more |
 | Does `/data/system/etc/overlay` survive an Akai update? | Watch on the next Akai update | Either way the hook refuses the stick (release check) and Akai's MPC starts; the app then needs a new supported image |
-| A soft-reboot-only build mode (no `live.dtb`), no SSH by default, MPFree's own kits, the setup partition | Builder changes, workstation only | The creator's build |
+| A soft-reboot-only build mode (no `live.dtb`), SSH only when asked for, MPFree's own kits, the setup partition | Builder changes, workstation only | The creator's build |
 
 ## Plan in stages
 
-1. **Prove the flow by hand on the reference MPC, no app yet.** Builder changes (soft-reboot-only mode, no SSH by default, own kits, setup partition and script), the board check (on the owner's go), then: build, write, developer mode on, tap Yes, developer mode off, power on.
+1. **Prove the flow by hand on the reference MPC, no app yet.** Builder changes (soft-reboot-only mode, SSH only when asked for, own kits, setup partition and script), the board check (on the owner's go), then: build, write, developer mode on, tap Yes, developer mode off, power on.
 2. **The Rust core and command line**, checked against the Python builder.
 3. **The GUI and the writers**: Linux first, then Windows and macOS.
 4. **Signing, notarization, the manual page, and a small beta** with a few musicians.
 
-## Open questions for the owner
+## Still open
 
-1. Is switching developer mode on once (and tapping Yes) acceptable as the one MPC-side step?
-2. One stick with a setup partition (recommended), or a separate small setup stick?
-3. Kits for creator-made sticks: made with MPFree's Drums synth, CC0 samples, or both?
-4. GUI toolkit: `egui` (pure Rust, recommended) or Tauri? Is bundling e2fsprogs acceptable?
-5. Signing costs: an Apple Developer ID and a Windows code-signing certificate?
-6. MPC One only for the first release?
-7. Who does the legal review of Akai's terms, and does it gate the first public release?
-8. Developer SSH on the stick: off by default with a checkbox, or left out of creator builds?
+1. Drum kits: rendered from the Drums synth, CC0 samples, or both ([choices](#what-ships-in-the-app))?
+2. Signing: launch free as in [Releases](#releases), or pay for an Apple Developer ID?
+3. The board check in the hook (a hook change) needs the owner's go before stage 1.
