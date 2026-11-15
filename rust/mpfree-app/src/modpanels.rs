@@ -960,7 +960,7 @@ mod tests {
     use super::*;
     use crate::mixing::{DRUMS, LOOP};
     use mpfree_fx::ids::mixer as mx;
-    use mpfree_mod::Source;
+    use mpfree_mod::{Moved, Source};
     use mpfree_node::Ctx;
 
     const RATE: u32 = 44_100;
@@ -1575,6 +1575,18 @@ mod tests {
         assert_eq!(maps, [8]);
         let rows: Vec<ParamAddr> = e.rows().map(|r| r.target).collect();
         assert_eq!(rows, [ParamAddr::new(owner, 2)], "Early's row dropped");
+        // A learned Q-Link or MIDI control is told the same: Mix to 8,
+        // Decay stays 2, Early nowhere.
+        let landed = r.h.modes.take_landed();
+        assert_eq!(landed.len(), 1);
+        let to = |p| match landed[0].target(ParamAddr::new(owner, p)) {
+            Moved::To(a, info) => Some((a.param, info.name)),
+            Moved::Gone => None,
+            Moved::Stays => panic!("{p} is the Room's"),
+        };
+        assert_eq!((to(9), to(2)), (Some((8, "Mix")), Some((2, "Decay"))));
+        assert_eq!(to(early.param), None);
+        assert!(r.h.modes.take_landed().is_empty(), "told once");
         // A different Decay on the Plate; back to Room puts back the Room's.
         let plate_decay = ParamAddr::new(owner, 2);
         c.action(

@@ -16,8 +16,8 @@ MPC's network identity. It uses the newest ~/mpfree-work/kexec-stick-* folder
      hashes there. Undo: they are deleted on any later stop, and /run is RAM.
   4. MPC kernel memory: `kexec --load`, then checks kexec_loaded. Undo: kexec --unload.
   5. Asks you to type BOOT 3.10. Anything else unloads the kernel and stops.
-  6. `systemctl kexec`: 3.6 shuts down cleanly and jumps to the loaded kernel.
-     If the jump fails, systemd reboots normally into 3.6.
+  6. `systemctl kexec`: Akai's system shuts down cleanly and jumps to the
+     loaded kernel. If the jump fails, systemd reboots normally into it.
   7. Waits for SSH from the test build (only the build's own host key is
      accepted), then runs read-only checks there: the release, that no MMC
      device exists, that kexec is off, that / is the stick, that /data is RAM.
@@ -28,7 +28,13 @@ MPC's network identity. It uses the newest ~/mpfree-work/kexec-stick-* folder
 Nothing here writes to the eMMC, the U-Boot environment or the SD card, and
 the test build cannot see either controller. To go back: switch the MPC off
 with its power switch, take out the stick, wait 10 s, switch it on. U-Boot
-boots 3.6 from the eMMC as before.
+boots Akai's system from the eMMC as before.
+
+Two SSH servers, two ports. Akai's system (3.6.0 with MOD-001 answered on
+2222; an installed 3.10.1 answers through developer mode on 22) is reached on
+--stock-port with your own known_hosts, which `collect-over-ssh.sh
+--devmode-trust` fills for 3.10.1. The test build always answers on --port
+(2222) with the host key the stick was made with.
 """
 import argparse
 import hashlib
@@ -44,6 +50,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 BOARD = "inmusic,acva"
 ALIAS = "mpfree-kexec-test"
 CONFIRM = "BOOT 3.10"
+STOCK_PORT = 22    # Akai's system: 3.10.1's developer mode SSH
+TEST_PORT = 2222   # the test build's own key-only SSH
 BUILD_FILES = ("zImage", "kexec.dtb", "cmdline.txt", "known_hosts")
 UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 RELEASE = re.compile(r"^[A-Za-z0-9._+-]+$")
@@ -78,7 +86,7 @@ class Out:
 
 
 # Every remote script starts with R='' (an empty root prefix). Only the tests' fake ssh changes it.
-CHECK_36 = r"""R=''
+CHECK_STOCK = r"""R=''
 set -u
 fail=0
 say() { printf '%s\n' "$*"; }
@@ -112,7 +120,7 @@ if [ -e "$link" ]; then
     *) bad "/dev/$name is not on USB" ;;
   esac
   if grep -q "^/dev/$disk" "$R/proc/mounts"; then
-    say "  mounted by 3.6 (it unmounts them when it shuts down):"
+    say "  mounted by the running system (it unmounts them when it shuts down):"
     grep "^/dev/$disk" "$R/proc/mounts" | while read -r d m t o rest; do say "    $d on $m ($t, $o)"; done
   else
     say "  not mounted"
@@ -337,9 +345,12 @@ class Mpc:
     def __init__(self, args, known_hosts):
         self.args = args
         base = ["-T", "-o", "BatchMode=yes", "-o", "IdentitiesOnly=yes", "-o", "StrictHostKeyChecking=yes",
-                "-o", "ForwardAgent=no", "-o", "ClearAllForwardings=yes", "-i", args.key, "-p", str(args.port)]
-        self.stock = ["ssh", *base, "-o", "ConnectTimeout=8"]
-        self.test = ["ssh", *base, "-o", "ConnectTimeout=5", "-o", f"UserKnownHostsFile={known_hosts}",
+                "-o", "ForwardAgent=no", "-o", "ClearAllForwardings=yes", "-i", args.key]
+        # Akai's system and the test build listen on different ports (see the module's notes).
+        stock_port = getattr(args, "stock_port", None) or STOCK_PORT
+        self.stock = ["ssh", *base, "-p", str(stock_port), "-o", "ConnectTimeout=8"]
+        self.test = ["ssh", *base, "-p", str(args.port), "-o", "ConnectTimeout=5",
+                     "-o", f"UserKnownHostsFile={known_hosts}",
                      "-o", "GlobalKnownHostsFile=/dev/null", "-o", f"HostKeyAlias={ALIAS}",
                      "-o", "CheckHostIP=no", "-o", "UpdateHostKeys=no"]
         self.target = f"{args.user}@{args.ip}"
@@ -408,11 +419,12 @@ def wait_for_test_build(mpc, out, args):
         if rc == 0 and found:
             uptime = float(found.group(1))
             if uptime < elapsed + 30:
-                out.say(f"  3.6 is running again (up {int(uptime)} s): the MPC was switched off and on, the jump failed,"
+                out.say(f"  Akai's system is running again (up {int(uptime)} s): the MPC was switched off and on, "
+                        "the jump failed,"
                         " or the test build restarted.")
                 return "stock-back"
             if state and state.group(1) in ("running", "degraded") and elapsed > args.still_up_after:
-                out.say(f"  3.6 is still {state.group(1)} (up {int(uptime)} s): the jump never started.")
+                out.say(f"  Akai's system is still {state.group(1)} (up {int(uptime)} s): the jump never started.")
                 return "stock-still-up"
         if time.time() - last_note >= 15:
             out.say(f"  waiting ... {int(elapsed)} s")
@@ -424,7 +436,9 @@ def wait_for_test_build(mpc, out, args):
 def main(argv):
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument("--ip", required=True)
-    p.add_argument("--port", type=int, default=2222)
+    p.add_argument("--port", type=int, default=TEST_PORT, help="the test build's SSH port")
+    p.add_argument("--stock-port", type=int, default=STOCK_PORT,
+                   help="Akai's system's SSH port: 22 (3.10.1 developer mode), or 2222 for 3.6.0 with MOD-001")
     p.add_argument("--user", default="root")
     p.add_argument("--key", required=True)
     p.add_argument("--iface", required=True)
@@ -434,7 +448,7 @@ def main(argv):
     p.add_argument("--wait", type=float, default=300)
     p.add_argument("--poll", type=float, default=5)
     p.add_argument("--still-up-after", type=float, default=60,
-                   help="seconds after which a 3.6 that is still running means the jump never started")
+                   help="seconds after which Akai's system still running means the jump never started")
     p.add_argument("--arp", default="/proc/net/arp")
     args = p.parse_args(argv)
     out = Out(args.report)
@@ -447,7 +461,7 @@ def main(argv):
     mpc = Mpc(args, os.path.join(folder, "known_hosts"))
 
     out.say("\n[2/7] Checks on the running MPC (read-only)")
-    rc, text = mpc.run(fill(CHECK_36, RUNNING=build["running"], P1=build["p1"]))
+    rc, text = mpc.run(fill(CHECK_STOCK, RUNNING=build["running"], P1=build["p1"]))
     for line in text.splitlines():
         out.say(f"  {line}")
     if rc != 0 or text.strip().splitlines()[-1:] != ["CHECKS-OK"]:
@@ -483,7 +497,7 @@ def main(argv):
             raise Stop("kexec --load did not load the kernel")
 
         out.say("\n[5/7] Your go")
-        out.say("  Typing BOOT 3.10 shuts 3.6 down and starts the test build from the stick.")
+        out.say("  Typing BOOT 3.10 shuts Akai's system down and starts the test build from the stick.")
         if build.get("akai"):
             out.say("  The screen should show Akai's app starting within about a minute of the jump (this build runs it).")
         else:
@@ -515,17 +529,17 @@ def jump_and_check(mpc, out, args, build):
     rc, text = mpc.run(JUMP, timeout=60)
     for line in text.splitlines():
         out.say(f"  {line}")
-    out.say(f"  systemctl kexec returned {rc} (the connection may drop as 3.6 shuts down)")
+    out.say(f"  systemctl kexec returned {rc} (the connection may drop as Akai's system shuts down)")
 
     out.say(f"\n[7/7] Wait for the test build (up to {int(args.wait)} s), then check it (read-only)")
     state = wait_for_test_build(mpc, out, args)
     if state == "stock-still-up":
         out.say("Undoing the changes in RAM:")
         undo(mpc, out)
-        out.say("\nRESULT: the jump did not start. 3.6 is running as before. Send the zip.")
+        out.say("\nRESULT: the jump did not start. Akai's system is running as before. Send the zip.")
         return 1
     if state == "stock-back":
-        out.say("\nRESULT: the MPC is on 3.6 again. If you did not switch it off, the jump failed or the test")
+        out.say("\nRESULT: the MPC is on Akai's system again. If you did not switch it off, the jump failed or the test")
         out.say("build restarted by itself. Either way there is nothing to switch off now.")
         out.say("Take out the stick, then send the zip; the stick's log partition says what happened.")
         return 1
@@ -534,7 +548,8 @@ def jump_and_check(mpc, out, args, build):
         out.say("wait 10 s and switch it on. Then send the zip; the stick's log partition says what happened.")
         return 1
     mac = arp_mac(args.arp, args.ip, args.iface)
-    note = "" if mac == args.expect_mac.lower() else " (not 3.6's; the host key still proves it is the test build)"
+    note = "" if mac == args.expect_mac.lower() else (" (not Akai's system's; the host key still proves it is "
+                                                       "the test build)")
     out.say(f"  network identity: {mac or 'not in the ARP table'}{note}")
     rc, text = mpc.run(check_310(build), test=True)
     for line in text.splitlines():
@@ -546,7 +561,8 @@ def jump_and_check(mpc, out, args, build):
         out.say("\nRESULT: the test build is running, but some checks failed (see PROBLEM lines).")
     out.say("NEXT: leave it running and do this round's steps on the test build (such as the --app block).")
     out.say("When they are done, switch the MPC off with its power switch, take out the stick, wait 10 s,")
-    out.say("switch it on and wait for 3.6. Then run the boot-map block to confirm nothing on the eMMC changed.")
+    out.say("switch it on and wait for Akai's system. Then run the boot-map block to confirm nothing on the eMMC "
+            "changed.")
     return 0 if ok else 1
 
 

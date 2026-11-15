@@ -43,7 +43,17 @@ compute" tab). It is the renderer behind
   software's on Mesa's software GPU. Without MAX blending, or for a shape
   bigger than its atlas, the renderer takes software's coverage and draws
   it as a mask. `DrawStats` counts `shapes_drawn` and `shapes_cleared`, and
-  the benchmark prints the shapes worked out on the GPU.
+  the benchmark prints both.
+- Both atlases pack onto shelves of about the same height, so text of one
+  size shares a shelf. When no shelf of about its height has room and there
+  is no room left for a new shelf, a mask or shape goes on the lowest taller
+  shelf that has room before the atlas counts as full. Since the synth page
+  redesign (train 47), the FM and Track pages draw seven 388 x 191 layers of
+  one graph and then three small knob rings; the knobs found no shelf, so
+  the shapes' atlas was cleared halfway through each of those pages (four
+  draw calls instead of two, and every layer worked out again whenever it
+  was drawn after a knob). Now all 79 sample pages take at most two calls,
+  and the shapes' atlas is never cleared.
 - Most pixels are plain: a fill, or the inside of a rounded rectangle or an
   outline. A quad marked plain skips the shader's coverage maths and writes
   its colour. A rounded rectangle is drawn as three plain bands and four

@@ -125,7 +125,7 @@ Developer mode is switched on from inside Akai's app (Akai's [release notes](htt
     - After a typed `LOCK` it does Akai's own lock-down. This is **state-changing, RAM only**. It copies both files to `/run/mpfree-devmode`, empties `/data/ssh/sshd_config.d/allow-access.conf`, adds your public key to `/data/ssh/authorized_keys` and reloads Akai's SSH server. Then the login with no key must be refused and your key must get in.
     - It checks that `/data` is RAM before it changes anything. A power-cycle undoes it, and our port 2222 is never affected.
     - The login with no key and the lock-down were rehearsed against a real OpenSSH 9.6 server set up with Akai's files: the no-key login got in before the lock-down and was refused after it, and the key got in.
-- [`write-autorun-drive.py`](../../../tools/mpc-one/write-autorun-drive.py), on the workstation only. It adds a harmless `autorun.sh` to the one mounted FAT32 or exFAT USB drive that is not the test stick, after a typed `WRITE`.
+- [`write-autorun-drive.py`](../../../tools/mpc-one/write-autorun-drive.py), on the workstation only. It adds a harmless `autorun.sh` to the one FAT32 or exFAT USB drive that is not the test stick, after a typed `WRITE`. If the desktop has not mounted that drive, the tool mounts it the way the file manager does (`udisksctl mount`, as you, no password); after writing it unmounts the drive, so it can be pulled straight out.
     - On the MPC the script writes one kernel log line and `mpfree-autorun-result.txt` next to itself (or in `/run` if the drive is read-only). It records the time, user, script path, parent process and cgroup, and changes nothing else.
     - The tool refuses a drive that already holds an `autorun.sh` or result file it did not write.
     - Undo: delete the two files from the drive.
@@ -133,7 +133,7 @@ Developer mode is switched on from inside Akai's app (Akai's [release notes](htt
 **You need:**
 
 - The MPC on the direct Ethernet cable only: while developer mode is on, anyone on its network can get a root shell with no password.
-- For the autorun test (optional), a spare USB drive that your desktop mounts as FAT32 or exFAT, and a USB hub (a powered one is best). A blank drive has nothing the desktop can mount, so format it as FAT first; block 3.2 says how when it finds no usable drive.
+- For the autorun test (optional), a spare FAT32 or exFAT USB drive, and a USB hub (a powered one is best). A blank drive has nothing to mount, so format it as FAT first; block 3.2 says how when it finds no usable drive.
 - **The test stick stays in the MPC until you switch off.** The test build runs entirely from it: its system and its logs are on the stick. The MPC has one USB-A port (the USB-B port is for a computer), so for the autorun test plug the hub into the USB-A port and the test stick into the hub **before you switch on**, and plug the spare drive into the hub's free port later (step 4 below). Without a hub, skip the autorun test.
 - 3.6.0 has its own script runner, and whether it would run this script has not been checked. So the spare drive goes into the MPC only while the test build runs.
 
@@ -145,15 +145,15 @@ cd /home/jesse/code/mpfree-hardware-survey && git fetch origin main:refs/remotes
 
 The build report says `akai app: on (--akai-app)`, lists `dfu-util` among the stubs and no stub for `az01-launch-MPC`, and quotes Akai's firewall rules.
 
-**Block 3.2 (optional): the autorun drive** (workstation only; plug in the spare drive and let the desktop mount it first; asks for `WRITE`):
+**Block 3.2 (optional): the autorun drive** (workstation only; plug in the spare drive first; asks for `WRITE`):
 
 ```bash
 cd /home/jesse/code/mpfree-hardware-survey && python3 tools/mpc-one/results.py run autorun-drive -- python3 tools/mpc-one/write-autorun-drive.py
 ```
 
-If it finds no usable drive, it lists the USB drives it sees with nothing mounted, and what udev says is on them, and says what to do: open a FAT32 drive in the file manager so it is mounted, or format a blank one as FAT in the Disks app. It never formats or mounts anything itself, and never suggests erasing the test stick or a drive that holds files.
+If no usable drive is mounted, it mounts the one FAT32 or exFAT filesystem on a USB drive with nothing mounted (never the test stick, and nothing when there are two). If it finds none, it lists the USB drives it sees with nothing mounted, and what udev says is on them, and says what to do, such as format a blank one as FAT in the Disks app. It never formats anything itself, and never suggests erasing the test stick or a drive that holds files.
 
-Eject the drive afterwards and keep it out of the MPC for now.
+It unmounts the drive when it is done. Pull it out and keep it out of the MPC for now.
 
 **Block 3.3: write the stick** (**erases the stick's partitions 1 to 3**, keeps partition 4, asks for `WRITE`):
 
@@ -243,4 +243,4 @@ Still to run: blocks 3.5 and 3.6 again with the check while the test build runs,
 
 ## After the test
 
-If 3.10.1 passes, installing it is a separate decision with its own gate: a fresh full eMMC backup, Akai's updater on mains power, then deleting MOD-002 by hand (the update removes MOD-001). The host tools then get a developer-mode login in place of port 2222, and the kexec jump stays as it is. A later step can start MPFree at power-on without Akai's app: a start-up unit in Akai's Linux that, before the app starts, checks the stick and jumps to it. That is a lasting change to Akai's files, like MOD-001, and needs its own go.
+If 3.10.1 passes, installing it is a separate decision with its own gate: a fresh full eMMC backup, Akai's updater on mains power, then deleting MOD-002 by hand (the update removes MOD-001). The host tools then get a developer-mode login in place of port 2222, and the kexec jump stays as it is. **The owner installed 3.10.1 on 2026-11-15.** The host tools now log in through developer mode, and the [qualification runbook](firmware-3.10.1-qualification.md) checks main against the installed system. A later step can start MPFree at power-on without Akai's app: a start-up unit in Akai's Linux that, before the app starts, checks the stick and jumps to it. That is a lasting change to Akai's files, like MOD-001, and needs its own go.
