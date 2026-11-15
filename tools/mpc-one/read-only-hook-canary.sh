@@ -18,6 +18,25 @@ printf 'uptime (s): %s\n' "$(cut -d' ' -f1 "$R/proc/uptime" 2>/dev/null)"
 printf 'acvs.service (Akai app): %s\n' "$(systemctl is-active acvs.service 2>/dev/null)"
 printf "kernel's module loader: %s\n" "$(cat "$R/proc/sys/kernel/modprobe" 2>/dev/null)"
 printf 'cfg80211 loaded: %s\n' "$(grep -q '^cfg80211 ' "$R/proc/modules" 2>/dev/null && echo yes || echo no)"
+# Was the canary there when this boot started? (Its files' change times against the time of power-on.)
+up=$(cut -d' ' -f1 "$R/proc/uptime" 2>/dev/null | cut -d. -f1)
+now=$(date +%s 2>/dev/null)
+newest=0
+for f in /data/mpfree-hook/canary.sh /data/system/etc/overlay/udev/rules.d/99-mpfree-canary.rules \
+         /data/system/etc/overlay/modprobe.d/99-mpfree-canary.conf; do
+  t=$(stat -c %Y "$R$f" 2>/dev/null) || continue
+  [ "${t:-0}" -gt "$newest" ] && newest=$t
+done
+command -v stat >/dev/null 2>&1 || now=''
+case "$up$now" in
+  *[!0-9]*|'') printf 'canary installed before this boot: cannot tell\n' ;;
+  *) if [ "$newest" -gt $((now - up)) ]; then
+       printf 'canary installed before this boot: NO, %s s after power-on.\n' "$((newest - now + up))"
+       printf 'NEXT: switch the MPC off and on (stick in), wait for the main screen, then run this report again.\n'
+     else
+       printf 'canary installed before this boot: yes\n'
+     fi ;;
+esac
 
 section 'Canary files'
 for f in /data/system/etc/overlay/udev/rules.d/99-mpfree-canary.rules \

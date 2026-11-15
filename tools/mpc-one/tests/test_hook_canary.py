@@ -29,7 +29,7 @@ REMOVE = os.path.join(TOOLS, "hook-canary-remove.sh")
 REPORT = os.path.join(TOOLS, "read-only-hook-canary.sh")
 RELEASE = "6.18.44-az01-2026-08-10-rt6"
 APPLETS = ("sh", "cat", "grep", "sed", "tr", "wc", "ls", "uname", "head", "cut", "mkdir", "chmod", "mv",
-           "rm", "rmdir", "sync", "sha256sum", "df", "zcat", "basename")
+           "rm", "rmdir", "sync", "sha256sum", "df", "zcat", "basename", "stat", "date")
 RULE = "data/system/etc/overlay/udev/rules.d/99-mpfree-canary.rules"
 CONF = "data/system/etc/overlay/modprobe.d/99-mpfree-canary.conf"
 SCRIPT = "data/mpfree-hook/canary.sh"
@@ -475,6 +475,18 @@ class HookCanaryTests(unittest.TestCase):
         self.assertIn("  /data/mpfree-hook/canary.sh", text)
         self.assertIn("  /data/system/etc/overlay/modprobe.d/99-mpfree-canary.conf", text)
         self.assertIn("kernel's module loader: /sbin/modprobe\ncfg80211 loaded: yes\n", text)
+        # Installed just now, and the fake MPC has been up 4 s: the report says to restart it first.
+        self.assertIn("canary installed before this boot: NO, ", text)
+        self.assertIn("NEXT: switch the MPC off and on (stick in)", text)
+        # Installed a day ago, and up for an hour: installed before this boot.
+        for rel in (SCRIPT, RULE, CONF):
+            old = time.time() - 86400
+            os.utime(os.path.join(self.root, rel), (old, old))
+        write(os.path.join(self.root, "proc/uptime"), "3600.50 9.10\n")
+        res = self.run_wrapper("--hook-canary-report")
+        self.assertEqual(res.returncode, 0, res.stdout)
+        self.assertIn("canary installed before this boot: yes\n", res.stdout)
+        self.assertNotIn("NEXT: switch", res.stdout)
         self.assertIn("END OF BOOT-HOOK CANARY REPORT", text)
         self.assertEqual(self.tree(), installed)
 
