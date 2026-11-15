@@ -1,8 +1,12 @@
 #!/usr/bin/env python3
-"""mpfree, the app, on the kexec test build. RAM ONLY on the MPC.
+"""mpfree, the app, on the test build: the USB stick's own system. RAM ONLY on the MPC.
 
-Run it through `collect-over-ssh.sh --app`, after `--kexec-boot` has started
-the test build from the USB stick. It talks only to the test build: it uses
+Run it through `collect-over-ssh.sh --app` while the test build runs. On the
+installed MPC OS 3.10.1 the boot hook starts it: with the hook installed
+(`--hook-install`), switch the MPC on with the stick in, and the hook
+soft-reboots into the stick's system on Akai's kernel
+(docs/dev/hardware/stick-autoboot.md). On 3.6.0, `--kexec-boot` starts it.
+It talks only to the test build: it uses
 the newest ~/mpfree-work/kexec-stick-* folder's known_hosts, so Akai's system (a
 different host key) is refused before anything runs. Step by step, each
 started by you pressing Enter:
@@ -11,7 +15,8 @@ started by you pressing Enter:
      (rust/target/armv7-unknown-linux-gnueabihf/release/mpfree) is a
      static ARM EABI5 hard-float executable, and finds the test build's folder.
   2. Test build, read-only: checks it is the test build (release, no MMC
-     device, kexec off, / read-only), that /run has room and allows programs,
+     device, kexec off, / read-only; it also says whether the boot hook
+     started it), that /run has room and allows programs,
      that Akai's app is not running, and lists who holds the sound, MIDI,
      touch and screen devices.
   3. Test build RAM: copies the program to /run/mpfree-app and checks its
@@ -124,6 +129,10 @@ PHASES = {
 }
 
 Stop = kexec.Stop
+# What to do when port 2222 does not answer (the other tools on the test build reuse it).
+NOT_RUNNING = ("the test build did not answer on port 2222. Start it first: with the boot hook installed "
+               "(--hook-install), switch the MPC off, wait 10 s and switch it on with the stick in (on 3.6.0, "
+               "the --kexec-boot block). On Akai's system this tool runs nothing")
 
 
 def arm_static_problem(data):
@@ -153,6 +162,11 @@ bad() { printf 'PROBLEM: %s\n' "$*"; fail=1; }
 rel=$(cat "$R/proc/sys/kernel/osrelease")
 say "release: $rel"
 [ "$rel" = '@@NEW@@' ] || bad "running $rel, not the test build's @@NEW@@"
+if [ -e "$R/run/mpfree-hook/soft-reboot" ]; then
+  say "started by: the boot hook's soft-reboot (asked at $(cat "$R/run/mpfree-hook/soft-reboot") s after power-on)"
+else
+  say "started by: no soft-reboot marker: a kexec (the boot hook's opt-in kexec_file route or its chain, or --kexec-boot on 3.6.0), or a direct boot"
+fi
 if ls "$R/sys/block" | grep -q '^mmcblk'; then bad "an MMC block device exists"; else say "no MMC block device"; fi
 v=$(cat "$R/proc/sys/kernel/kexec_load_disabled" 2>/dev/null)
 say "kexec_load_disabled: $v"
@@ -574,25 +588,32 @@ APP_PHASES = (
     ("Arrange: clips, takes, Capture, the song and the morph",
      ["Uses the buttons found in phase 1. Tap the Arrange tab: the Q-Link column is at its right edge, as on Play.",
       "Press PLAY, then REC, play a short beat for a bar or two, and REC again: the take loops. OVERDUB switches",
-      "Overdub and Replace; REC adds on the next pass. UNDO takes the last take back, SHIFT + UNDO puts it back. +",
-      "in an empty slot records a 2-bar clip on that track; make clips on two or three tracks. A tap on a clip",
-      "launches or stops it on the next bar, and a row's number plays the whole row. Capture: with REC off, play a",
-      "phrase, then SHIFT + REC (or the Takes panel's Capture). Tap Edit > above the clip grid for the note editor:",
-      "pick notes, drag one, slide along the velocity lane, tap the view button through Grid, List and Tracker, try",
-      "TC (Timing Correct), and set the Euclid rows at the end of the Edit options (Hits, Steps, Rotate): the wheel",
-      "picks a row, - / + change it, and a push on the wheel lets the wheel change it until you push again. UNDO the",
-      "edits and tap < Clips. Then tap Song in the clips heading: Scenes -> song makes a song from the rows, Song on",
-      "plays it, a tap picks a block, Clips goes back. The morph bar under the grid: tap Save A; press TRACK MIX,",
-      "move a fader or two, TRACK MIX again; drag the crossfader to B and tap Save B; drag it slowly between A and",
-      "B (the levels glide) and tap Snap back. STOP. Last, Rec song: tap Rec song (it goes red), press PLAY, launch",
-      "a row, stop a track, launch another row, move the crossfader, and press STOP. Song on and PLAY plays it back."],
-     "Did recording, undo, the clips, Capture, the note editor, the Song view, the morph and Rec song work in time?"),
+      "Overdub and Replace; REC adds on the next pass. UNDO takes the last take back, SHIFT + UNDO puts it back. + in",
+      "an empty slot records a 2-bar clip on that track; make clips on two or three tracks. A tap on a clip launches",
+      "or stops it on the next bar (when you lift your finger), and a row's number plays the whole row. New, drag and",
+      "drop: drag a clip to an empty slot (it moves there) and onto another clip (the two swap); hold SHIFT as you",
+      "lift to drop a copy in an empty slot. Drag a row's number between two rows: the whole row moves. UNDO takes",
+      "each drop back, SHIFT + UNDO puts it back. Capture: with REC off, play a phrase, then SHIFT + REC (or the Takes",
+      "panel's Capture). Tap Edit > above the clip grid for the note editor: pick notes, drag one, slide along the",
+      "velocity lane, tap the view button through Grid, List and Tracker, try TC (Timing Correct), and set the Euclid",
+      "rows at the end of the Edit options (Hits, Steps, Rotate): the wheel picks a row, - / + change it, and a push",
+      "on the wheel lets the wheel change it until you push again. UNDO the edits and tap < Clips. Then tap Song in",
+      "the clips heading: Scenes -> song makes a song from the rows, Song on plays it, a tap picks a block. New: drag",
+      "a block along its lane (it snaps to the bar) and onto another track's lane; drag the picked block's end grip to",
+      "make it longer or shorter; drag a section's name on the ruler to move the whole section; with a block picked,",
+      "push the wheel, turn it and push again. UNDO takes each back. Clips goes back. The morph bar under the grid:",
+      "tap Save A; press TRACK MIX, move a fader or two, TRACK MIX again; drag the crossfader to B and tap Save B;",
+      "drag it slowly between A and B (the levels glide) and tap Snap back. STOP. Last, Rec song: tap Rec song (it",
+      "goes red), press PLAY, launch a row, stop a track, launch another row, move the crossfader, and press STOP.",
+      "Song on and PLAY plays it back."],
+     "Did recording, undo, the clips, dragging clips, rows, blocks and sections, Capture, the note editor, the Song view, the morph and Rec song work in time?"),
     ("TRACK MUTE and SHIFT + TRACK MUTE",
-     ["Launch the clips from the last phase and press PLAY. Press TRACK MUTE: it lights and the hint line says",
-      "what the pads do. Pads 1-8 are tracks 1-8: green plays a clip, dim green has nothing launched, red is",
-      "muted. Hit pads 1 and 2 to mute and unmute those tracks: the clips keep their place. Go to another tab:",
-      "the pads stay mute keys. Press SHIFT + TRACK MUTE: now each pad mutes itself in the kit (lit in the kit's",
-      "colour while it plays, red while muted). Press SHIFT + TRACK MUTE again: the pads play notes. STOP."],
+     ["Launch the clips from the last phase and press PLAY. Press TRACK MUTE: it lights and the hint line says what",
+      "the pads do. Pads 1-16 are tracks 1-16: green plays a clip, dim green has nothing launched, red is muted, dark",
+      "has no track. Hit pads 1 and 2 to mute and unmute those tracks: the clips keep their place. With more than 16",
+      "tracks, PAD BANK B shows tracks 17-32 (up to H: 113-128). Go to another tab: the pads stay mute keys. Press",
+      "SHIFT + TRACK MUTE: now each pad mutes itself in the kit (lit in the kit's colour while it plays, red while",
+      "muted). Press SHIFT + TRACK MUTE again: the pads play notes. STOP."],
      "Did the pads mute and unmute the tracks and the kit's pads at once, with the right colours?"),
     ("Grains",
      ["Hold SHIFT and turn the wheel to the kit called \"Grains: ...\". Hold a pad: a cloud of grains. Press harder:",
@@ -618,31 +639,39 @@ APP_PHASES = (
       "Direct, Repeat, Arp and Pattern, and the pads play through it. NOTE REPEAT + MENU again closes it."],
      "Did the strip and the Arp panel show up and change what the pads played?"),
     ("Looper tab: record, layers, tools, undo history, trim",
-     ["Tap the Looper tab. Press PLAY, then REC: recording starts on the next bar line and lasts 2 bars, so",
-      "play a beat on the pads. The wave should draw as you play, not after. OVERDUB (or REC) adds a layer from the",
-      "next pass, REC ends it; add two layers. Press STOP while the loop plays: the loop and its playhead stop at",
-      "once (last round it kept playing for minutes); PLAY starts it again. On a layer row: the speaker mutes, S",
-      "solos, drag the level bar, tap the row to put it on Q-Links 1-2. Q3 is Fade old, Q4 the seam fade. With the",
-      "loop playing, tap each tool: half length, double, Reverse, the two nudges, seam fade, Merge layers. Open",
-      "Undo history: tap an older step, then the newest again. Drag the trim handle at one end of the wave in a few",
-      "steps and let go. Tap After recording once. Tap + New loop and record a second loop; then Use the loop >",
-      "Resample, and REC to end it. Tap Play's Loop view: its Play and Stop buttons start and stop the loop.",
-      "UNDO / SHIFT + UNDO on the Looper tab. New: tap the speaker on a loop's card in the list: that loop goes",
-      "silent but stays (press STOP, then PLAY: it stays out); tap it again to bring it back. Pick the second loop",
-      "and tap Clear loop (red, under + New loop): the whole loop goes, first pass too. Delete layers with x down to",
-      "the last one, and x on that clears the loop as well. The gauge at the bottom reads \"... of 5 min\". STOP."],
-     "Did recording, STOP, the layers, every tool, the undo history, trim, Resample, the loop speakers and Clear loop work?"),
+     ["Tap the Looper tab. Press PLAY, then REC: recording starts on the next bar line and lasts 2 bars, so play a",
+      "beat on the pads. The wave should draw as you play, not after. OVERDUB (or REC) adds a layer from the next",
+      "pass, REC ends it; add two layers. Press STOP while the loop plays: the loop and its playhead stop at once",
+      "(last round it kept playing for minutes); PLAY starts it again. On a layer row: the speaker mutes, S solos,",
+      "drag the level bar, tap the row to put it on Q-Links 1-2. Q3 is Fade old, Q4 the seam fade. With the loop",
+      "playing, tap each tool: half length, double, Reverse, the two nudges, seam fade, Merge layers. Open Undo",
+      "history: tap an older step, then the newest again. Drag the trim handle at one end of the wave in a few steps",
+      "and let go. Tap After recording once. Tap + New loop and record a second loop of 2 bars. New, drag and drop:",
+      "pick the first loop and drag a layer's lane onto the second loop in the list (the loops that can take it light",
+      "up): it moves there in time. Drag another with SHIFT held as you let go: a copy. Drag one onto + New loop: a",
+      "loop of its own. UNDO takes a move back. Then Use the loop > Resample, and REC to end it. Tap Play's Loop view:",
+      "its Play and Stop buttons start and stop the loop. UNDO / SHIFT + UNDO on the Looper tab. New: tap the speaker",
+      "on a loop's card in the list: that loop goes silent but stays (press STOP, then PLAY: it stays out); tap it",
+      "again to bring it back. Pick the second loop and tap Clear loop (red, under + New loop): the whole loop goes,",
+      "first pass too. Delete layers with x down to the last one, and x on that clears the loop as well. The gauge at",
+      "the bottom reads \"... of 5 min\". STOP."],
+     "Did recording, STOP, the layers, every tool, the undo history, trim, dragging layers between loops, Resample, the loop speakers and Clear loop work?"),
     ("Mixer, effect chains, macros and the I/O view",
-     ["Press TRACK MIX: the mixer opens over the page. Move a few faders and pans, mute and solo a strip.",
-      "SHIFT + TRACK MIX opens the pad mixer. Tap a strip's insert row: the chain editor opens on that",
-      "effect; + Add effect adds one, its knobs turn, on/off, up and down move it; Back returns to the mixer.",
-      "TRACK MIX closes it. Tap the I/O icon (an arrow in over an arrow out, just left of the mixer icon at the top",
-      "right): the mixer opens on I/O, with Audio, MIDI, Sync and CV on the left. Tap each; the wheel moves down a",
-      "section's rows. MIDI's track rows say they send nothing, because MIDI out is off in this build; that is",
-      "expected. Change nothing there. The I/O icon again closes it. On Play, press Q-LINK: the cards step to",
-      "Macros 1-4, Macros 5-8, and back. Turn a macro while the pads play. Hold a finger on a macro card for half a",
-      "second: the macros panel opens; Back closes it."],
-     "Did the mixer, the chain editor, the I/O view and the macro banks and panel open and change the sound?"),
+     ["Tap the Mix tab (or press TRACK MIX): the mixer fills the page; TRACK MIX again goes back to the page you were",
+      "on. Move a few faders and pans, mute and solo a strip: UNDO takes back the last strip change, SHIFT + UNDO puts",
+      "it back. SHIFT + TRACK MIX opens it on the pads. Tap Effects at the top right: each strip's chain is a row. Tap",
+      "+ FX on the Drums row and pick Reverb (in Delay and reverb): the chain editor opens on a Room reverb, its page",
+      "in coloured sections. Turn a few knobs. Touch Damping, tap Learn in the Modulate row and turn Q-Link 2: it now",
+      "turns Damping. Do the same with Early on Q-Link 3. Tap Plate in the mode chooser beside the effect's name:",
+      "Decay, Size and Mix stay where they were, Q-Link 2 still turns Damping, and Early's Q-Link comes off (a Plate",
+      "has no Early). Tap Room: it is as you left it. + Add effect, add a Delay, and drag it up above the Reverb (a",
+      "line shows where it lands). The < at the top left goes back to the Mix tab; on Effects drag an effect along its",
+      "row, then tap Faders. Tap I/O among the mixer's views: Audio, MIDI, Sync and CV are on the left. Tap each; the",
+      "wheel moves down a section's rows. MIDI's track rows say they send nothing, because MIDI out is off in this",
+      "build; that is expected. Change nothing there. Tap the Play tab and press Q-LINK: the cards step to Macros 1-4,",
+      "Macros 5-8, and back. Turn a macro while the pads play. Hold a finger on a macro card for half a second: the",
+      "macros panel opens; Back closes it."],
+     "Did the Mix tab, strip UNDO, the Effects look, the chain editor and its drag, the Reverb's modes with the learned Q-Links, the I/O view and the macros work?"),
     ("Pads tab: the pads, Browse and Pad",
      ["Tap the Pads tab, between Play and Arrange: the bank's 16 pads on the left, pad 1 at the bottom left. Tap a",
       "pad to pick it and again to hear it; pads you hit on the MPC light up. The switch at the top right shows",
@@ -1105,8 +1134,7 @@ def main(argv):
     for line in text.splitlines():
         out.say(f"  {line}")
     if rc == 255 and "CHECKS-" not in text:
-        raise Stop("the test build did not answer. Start it first with the --kexec-boot block; "
-                   "on Akai's system this tool runs nothing")
+        raise Stop(NOT_RUNNING)
     if rc != 0 or text.strip().splitlines()[-1:] != ["CHECKS-OK"]:
         raise Stop("the test build is not ready; nothing was changed on it")
 

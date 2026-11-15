@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
-"""mpfree-gpu-bench on the kexec test build: what drawing on the MPC One's GPU costs. RAM ONLY on the MPC
+"""mpfree-gpu-bench on the test build (MPFree's system on the USB stick): what drawing on the MPC One's GPU costs. RAM ONLY on the MPC
 (and, in step 6, the screen's picture; with --flip, step 7 points the screen at the GPU's buffers, in RAM).
 
-The performance plan's step G2 ("GPU drawing and compute"). Run it after
-`collect-over-ssh.sh --kexec-boot` has started the test build from the USB
-stick. Like host_bench_mpc.py it talks only to the test build: it uses the
-newest ~/mpfree-work/kexec-stick-* folder's known_hosts, so Akai's system (a
-different host key) is refused before anything runs. Each step after the
-first waits for you to press Enter:
+The performance plan's step G2 ("GPU drawing and compute"). Run it while
+MPFree's system runs from the USB stick. On MPC OS 3.10.1 the boot hook
+starts it at power-on with the stick in: by default by a soft-reboot on
+Akai's kernel, or, on a stick built for it, by restarting Akai's kernel with
+kexec_file (docs/dev/hardware/boot-routes.md); from 3.6.0 it was
+`collect-over-ssh.sh --kexec-boot`. Like host_bench_mpc.py it talks only to
+the test build: it uses the newest ~/mpfree-work/kexec-stick-* folder's
+known_hosts, so Akai's system (a different host key) is refused before
+anything runs. Each step after the first waits for you to press Enter:
 
   1. Workstation, read-only: checks that the benchmark
      (rust/mpfree-gpu/target/armv7-unknown-linux-gnueabihf/release/mpfree-gpu-bench)
@@ -22,7 +25,10 @@ first waits for you to press Enter:
      release, no MMC device, kexec off, / read-only, /run has room and allows
      programs, Akai's app is not running, who holds the sound, MIDI, touch
      and screen devices), then that the GPU's render node and the libraries
-     the benchmark needs are there, and who holds /dev/dri.
+     the benchmark needs are there, and who holds /dev/dri. After the boot
+     hook's soft-reboot (it leaves /run/mpfree-hook/soft-reboot) no module
+     can load (LoadPin), so without the render node it also says how to
+     have the hook load the GPU's driver first.
   3. Test build RAM: copies the benchmark and the pages to /run/mpfree-gpu
      and checks their hashes there. Nothing else is written; a power-cycle
      clears it. For a clean run it then stops our own pad player and log
@@ -63,7 +69,8 @@ first waits for you to press Enter:
      failure, and says "the screen is back as it was". If it were killed
      outright, the kernel takes the screen back for the framebuffer when the
      display's last file closes (why nothing else may have it open). Undo for
-     anything left: switch the MPC off and on. Nothing is stored.
+     anything left: switch the MPC off and on (with the stick out, Akai's
+     system starts). Nothing is stored.
 
 The benchmark draws through Mesa's surfaceless EGL on the GPU's render
 node, as the offscreen GPU tests of 9 Nov did: it opens no display, takes no
@@ -75,7 +82,8 @@ output goes into this report.
 
 Nothing here writes to the eMMC (the test build cannot see it), the U-Boot
 environment, the SD card or the stick. To go back: switch the MPC off with its
-power switch, take out the stick, wait 10 s, switch it on.
+power switch, take out the stick, wait 10 s, switch it on. (With the boot hook
+installed, the stick left in starts MPFree again.)
 """
 import argparse
 import datetime
@@ -125,9 +133,13 @@ DEFAULT_SSH = {
 GPU_CHECK = r"""R=''
 ok=1
 say() { printf '%s\n' "$*"; }
+soft=0; [ -e "$R/run/mpfree-hook/soft-reboot" ] && soft=1   # the boot hook's soft-reboot leaves it
 node=''
 for f in "$R"/dev/dri/renderD*; do [ -e "$f" ] && node=${f#"$R"} && break; done
-if [ -n "$node" ]; then say "render node: $node"; else say "PROBLEM: no /dev/dri/renderD* (the GPU's render node)"; ok=0; fi
+if [ -n "$node" ]; then say "render node: $node"; else
+  say "PROBLEM: no /dev/dri/renderD* (the GPU's render node)"; ok=0
+  [ "$soft" = 1 ] && say "  after a soft-reboot no module can load: if the GPU's driver (panfrost) is a module that Akai's boot had not loaded, build the stick with --preload-module panfrost, so that the hook loads it from Akai's system first"
+fi
 if [ -e "$R/lib/ld-linux-armhf.so.3" ]; then say "found: /lib/ld-linux-armhf.so.3"; else say "PROBLEM: missing /lib/ld-linux-armhf.so.3"; ok=0; fi
 for n in libc.so.6 libgcc_s.so.1 libEGL.so.1 libGLESv2.so.2; do
   p=''
@@ -360,7 +372,8 @@ def main(argv):
     for line in text.splitlines():
         out.say(f"  {line}")
     if rc == 255 and "CHECKS-" not in text:
-        raise Stop("the test build did not answer. Start it first with the --kexec-boot block; "
+        raise Stop("the test build did not answer. Start MPFree from the stick first (on 3.10.1: with the "
+                   "boot hook installed, switch the MPC on with the stick in; stick-autoboot.md); "
                    "on Akai's system this tool runs nothing")
     if rc != 0 or text.strip().splitlines()[-1:] != ["CHECKS-OK"]:
         raise Stop("the test build is not ready; nothing was changed on it")

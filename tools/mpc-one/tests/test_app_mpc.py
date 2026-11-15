@@ -330,7 +330,9 @@ class AppTests(unittest.TestCase):
         res = self.run_helper()
         self.assertEqual(res.returncode, 0, res.stdout)
         out = res.stdout
-        for text in ("static ARM EABI5 hard-float", f"release: {NEW}", "no MMC block device", "/: read-only",
+        for text in ("static ARM EABI5 hard-float", f"release: {NEW}",
+                     "started by: no soft-reboot marker: a kexec (the boot hook's opt-in kexec_file route or its chain, "
+                     "or --kexec-boot on 3.6.0), or a direct boot", "no MMC block device", "/: read-only",
                      "/run: tmpfs rw,nosuid,nodev,mode=755", "Akai's app (acvs.service): inactive",
                      "/dev/fb0: pid 321 (mpfree-screen-l)", "CHECKS-OK", "its hash on the MPC matches",
                      "inventory done", "pad player: was inactive, now inactive",
@@ -355,6 +357,14 @@ class AppTests(unittest.TestCase):
         self.assertFalse(os.path.exists(f"{self.root}/run/mpfree-app/mpfree.part"))
         with open(self.report) as fh:
             self.assertIn("RESULT: all steps ran", fh.read())
+
+    def test_says_when_the_boot_hook_started_the_test_build(self):
+        # After a soft-reboot the kernel and release are Akai's; the hook's marker in /run says how it started.
+        write(f"{self.root}/run/mpfree-hook/soft-reboot", "6.05\n")
+        res = self.run_helper()
+        self.assertEqual(res.returncode, 0, res.stdout)
+        self.assertIn("started by: the boot hook's soft-reboot (asked at 6.05 s after power-on)", res.stdout)
+        self.assertIn("CHECKS-OK", res.stdout)
 
     def test_keepalive_only_without_pad_hits(self):
         # Enter and an answer for: inventory, screen, touch, pads, the keep-alive try, click.
@@ -608,6 +618,34 @@ class AppTests(unittest.TestCase):
             self.assertNotEqual(res.returncode, 0, res.stdout)
             self.assertIn("MPFREE_APP_PHASES:", res.stdout)
             self.assertNotIn("Phase 1 of 19", res.stdout)
+
+    def test_targeted_run_on_a_soft_booted_stick(self):
+        """The targeted app run's block (app-targeted-run.md) on the stick's system after the boot hook's
+        soft-reboot: / is the stick's partition mounted ro,noload, /run is Akai's tmpfs carried over, and
+        kexec_load_disabled comes from the stick's sysctl.d. The checks pass and only the run's phases ask."""
+        self.make_root(run_opts="rw,nosuid,nodev,size=404268k,nr_inodes=819200,mode=755")
+        with open(os.path.join(self.root, "proc/mounts"), "w") as fh:
+            fh.write("/dev/sda1 / ext4 ro,relatime,noload 0 0\n"
+                     "tmpfs /run tmpfs rw,nosuid,nodev,size=404268k,nr_inodes=819200,mode=755 0 0\n"
+                     "tmpfs /data tmpfs rw,size=262144k,mode=755 0 0\n")
+        write(self.app, "active\n")
+        chosen = (6, 7, 9, 10, 11, 12, 16, 17, 18, 19)
+        answers = "\nok\n" + "\n\nfine\n" * len(chosen)
+        res = self.run_helper(answers, MPFREE_APP_STEPS="app", MPFREE_APP_PHASES="6,7,9-12,16-19")
+        self.assertEqual(res.returncode, 0, res.stdout)
+        out = res.stdout
+        for text in ("/: read-only", "kexec_load_disabled: 1", "no MMC block device", "CHECKS-OK",
+                     "MPFREE_APP_PHASES: only phases 6, 7, 9, 10, 11, 12, 16, 17, 18, 19"):
+            self.assertIn(text, out)
+        for k in range(1, 20):
+            (self.assertIn if k in chosen else self.assertNotIn)(f"Phase {k} of 19:", out)
+        for text in ("drag a clip to an empty slot", "Pads 1-16 are tracks 1-16",
+                     "drag a layer's lane onto the second loop", "Tap Plate in the mode chooser"):
+            self.assertIn(text, out)
+        self.assertEqual(out.count("your answer: fine"), len(chosen))
+        self.assertIn("RESULT: all steps ran", out)
+        # The app step copies, starts and stops nothing.
+        self.assertEqual(self.log_lines("program: "), [])
 
     def test_app_step_reads_partition_4_and_its_grow(self):
         """Read-only: partition 4's size and free space, and what the online grow at power-on said."""
@@ -888,6 +926,7 @@ class AppTests(unittest.TestCase):
         res = self.run_helper()
         self.assertEqual(res.returncode, 1, res.stdout)
         self.assertIn("the test build did not answer", res.stdout)
+        self.assertIn("switch it on with the stick in", res.stdout)
         self.assertFalse(os.path.exists(f"{self.root}/run/mpfree-app"))
         self.assertEqual(self.log_lines("program: "), [])
 

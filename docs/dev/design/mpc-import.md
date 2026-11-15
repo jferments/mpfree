@@ -1,6 +1,6 @@
 # Importing MPC projects
 
-**Status:** feasibility done; Stage 0 tools built, waiting on the owner's own OS 3.6 projects (2026-11-12). Full assessment: [Importing MPC projects: feasibility](https://claude.ai/artifact/1CzE52mppbCaNWMYsVLVm8).
+**Status:** feasibility done; Stage 0 tools built, waiting on the owner's own OS 3.6 projects (2026-11-12). Stage 1 started: keygroup programs to MPFree kits (`rust/mpfree-mpc-import`, 2026-11-14); its field readings checked against a real factory keygroup program's report on 2026-11-15, not yet played side by side with the MPC. Full assessment: [Importing MPC projects: feasibility](https://claude.ai/artifact/1CzE52mppbCaNWMYsVLVm8).
 
 MPFree will open a project saved by Akai's MPC software (OS 3.x, and later 2.x) and turn it into an MPFree project. The importer only ever reads MPC files and writes a new MPFree project; it never writes to the MPC.
 
@@ -27,6 +27,30 @@ High: samples, tempo and meter, notes. Medium-high: drum programs, mixer levels 
 5. **In the app:** import from the Browser page, reading a USB stick.
 
 Every import writes a report of what came across exactly, what was approximated and what was dropped. The importer writes an MPFree project folder as the browser saves one ([The browser and projects](browser.md): `project.txt` plus one `parts/<owner>.txt` per engine through `mpfree_library::Part`, and `samples/`), so each stage writes the parts of the engines it fills.
+
+## Stage 1: keygroup programs
+
+`rust/mpfree-mpc-import` reads a keygroup program (`.xpm`) and the samples beside it, as the MPC saves a program folder, and writes a new MPFree project holding one kit. It runs on a computer:
+
+```sh
+cargo run --release -p mpfree-mpc-import -- keygroup "Grand/Grand.xpm" --data /media/stick/data [--name NAME] [--release-ms 400] [--dry-run]
+```
+
+`--data` is the folder the app is given with `--data`; the project goes into its `library/Projects/`. The tool only reads the program folder and never replaces a project. It prints a report: how the program was read, the pads made, and each thing approximated or left out.
+
+- **What it reads.** Each `<Instrument>` with a sample is a keygroup: `LowNote` and `HighNote`, its own `Volume`, `TuneCoarse`, `TuneFine` and `VelocitySensitivity`, and its active `<Layer>`s with `VelStart`, `VelEnd`, `SampleName` (or `SampleFile`), `RootNote`, `TuneCoarse`, `TuneFine`, `Pitch`, `Volume`, `Pan`, `SampleStart`, `SampleEnd` and the loop points. A small XML reader of our own (`xml.rs`, bounded in size and depth) does the parsing.
+- **Checked on a real program (2026-11-15).** The report of a factory keygroup program (MPC 2.9, `File_Version` 2.1; 21 keygroups, 4 velocity layers) confirmed the readings above:
+  - `RootNote` is the MIDI note + 1 (84 of 84 layers agree with their sample names).
+  - `Volume` is a linear gain (0.707946 is -3 dB) and `Pan` 0.5 is the centre, on the program, each keygroup and each layer.
+  - `VelocitySensitivity`, the tuning, the envelope and the filter sit on each keygroup, not the program.
+  - The envelope and filter values are the MPC's 0 to 127 knob positions over 127 (`VolumeRelease` 0.377953 is 48), so their times and frequencies are still unknown. The report shows them as knob positions.
+- **Root notes.** Programs seen in community notes write `RootNote` either as the MIDI note or one above it. The tool compares each `RootNote` with the note in its sample's name (by pitch class, since libraries number octaves from C3 or from C4) and takes 0, +1 or -1, whichever most layers agree with, and says which. With no names to check, it takes `RootNote` as the note.
+- **The kit.** Each keygroup becomes a pad with keys (its notes and root) and its samples as velocity layers, and the pads play notes, as an auto-sampled instrument does (`Project::put_instrument`). Layers play while held (Gate) and release over `--release-ms`, since the times behind the program's envelope knob positions aren't known; they are in the report. Levels are relative to the program's most common layer volume (times its keygroup's). Velocity sensitivity is each keygroup's.
+- **Approximated, and said.** A keygroup whose layers have different roots gets the first layer's root, and each other layer is tuned to make up the difference. A layer that doesn't follow the keys on the MPC follows them here. More than 16 layers keep the first 16 by velocity. A sample that isn't beside the program, doesn't read or holds no audio is left out, and the rest of the kit is made. The layer below it, or failing that the one above, then takes its velocities, so no hit falls silent (the factory program above has 10 empty sample files). A layer under half as long as its keygroup's longest is reported as possibly cut short.
+- **Reported, not carried over.** The envelope, each keygroup's filter (a darker sound on the MPC) and the program's effects, by name.
+- **The project** has only the sampler's part, so opening it puts the kit on the pads and the other engines keep what they had.
+
+To check against a real program: the field meanings above are inferred, so the first real keygroup program (the owner's own, or one from the factory library copied out for local use) should be imported with `--dry-run` and its report compared with how it plays on the MPC.
 
 ## Inspecting projects
 

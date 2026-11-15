@@ -101,7 +101,7 @@ Tests: `cargo test -p mpfree-midi`. They cover:
 
 | Step | What | Touches the MPC | Waits on |
 |---|---|---|---|
-| M0 | The read-only `midi-cv`, `cv-scale` and `midi-out` captures above (all done 2026-11-12) | read-only (passive usbmon, stock 3.6) | done |
+| M0 | The read-only `midi-cv`, `cv-scale` and `midi-out` captures above (all done 2026-11-12), and `cv-ports` for CV ports 5 to 8 (added 2026-11-14) | read-only (passive usbmon; stock 3.6, and `cv-ports` on 3.6 or 3.10.1) | done, except `cv-ports`, which waits for the owner's run |
 | M1 | `mpfree-midi`, host only | no | done: PR #177, merged 2026-11-12 (train 14, main `7ecb7e4`) |
 | M2 | App wiring for input. The app reads the DIN In cable (from M0) and USB keyboards **for reading**, plays them on the armed track and logs them on the Dev tab's MIDI page (built, see [M2: keyboards in](#m2-keyboards-in)). The settings (ports, input mode, clock source) are in the mixer's I/O view (on screen since #252) | a device round on the test boot: opens MIDI inputs for reading | input and the I/O view built; the device round to come |
 | M3 | MIDI tracks out. A seq destination for MIDI out, and cable 2 out written with paced bytes from a writer thread that sleeps to each message's frame (sub-period timing; to be measured on the unit, aiming under Akai's 5 to 8 ms) | **state-changing, RAM only**: sends note bytes on cable 2 to the MIDI Out jack. Undo: power-cycle. No SysEx is ever sent there | built on the host behind `mpfree app --midi-out` (see [M3: tracks out](#m3-tracks-out)); the device round waits on the owner's go |
@@ -264,7 +264,8 @@ At the thread's handoff (2026-11-12), M1 to M6 are built on the host, and nothin
   - M2, read-only: keyboards in. MIDI Learn and clock in only read, so they ride on it.
   - M3 and M4: notes and clock out of the MIDI Out jack (cable 2), with `--midi-out`.
   - M6: a meter on the CV jacks, with `--cv-out`, to learn which jack is which output and the volts at full scale.
-- **After the meter round.** CV 5 to 8 (CC 8 to 15 by the pattern, never seen), the measured full scale in `cv_wire::counts`, and a tuning page for each output.
+- **CV 5 to 8.** First the read-only `cv-ports` capture (`MPFREE_CAPTURE_PHASES=cv-ports`, [the diagnostics guide](../guides/audio-midi-diagnostics.md)): Akai's app drives a CV track on ports 5 and 6, then 7 and 8, and the report names the control changes each port got. If they are CC 8 to 15, as the pattern says, `CHECKED_OUTS` becomes 8 and the meter round covers all eight outputs.
+- **After the meter round.** The measured full scale in `cv_wire::counts`, which jack is which output, and a tuning page for each output.
 - **Not built yet.**
   - Thru, and USB devices as outputs.
   - MIDI Learn from any value on the screen (SHIFT + a touch, in the layout spec), and from synth parameters, which are counted as misses for now.
