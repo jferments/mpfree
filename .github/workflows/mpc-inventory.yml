@@ -1189,7 +1189,10 @@ jobs:
         # runs each in its own plugin process with rack_check. About a minute.
         run: |
           [ "$RUNNER_ENVIRONMENT" = self-hosted ] || sudo apt-get install -y --no-install-recommends unzip qemu-user
-          bash tools/mpc-plugins/catalog-check.sh
+          # Kept between runs beside the cargo targets (the runner's home
+          # isn't writable on the self-hosted runner).
+          MPFREE_CATALOG_CACHE="${RUNNER_WORKSPACE:-$RUNNER_TEMP}/mpfree-catalog" \
+            bash tools/mpc-plugins/catalog-check.sh
       - name: Build and check the static mpfree program for the kexec test boot (do not deploy)
         env:
           CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER: arm-linux-gnueabihf-gcc

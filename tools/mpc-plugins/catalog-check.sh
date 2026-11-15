@@ -10,7 +10,8 @@
 # Builds and runs on the workstation or in CI only. Copies nothing to an MPC.
 # Needs curl, unzip, qemu-arm, the armhf cross compiler and its libc, and the
 # armv7-unknown-linux-gnueabihf Rust target. Downloads are kept in
-# $MPFREE_CATALOG_CACHE (default ~/.cache/mpfree-catalog) by their SHA-256.
+# $MPFREE_CATALOG_CACHE (default ~/.cache/mpfree-catalog) by their SHA-256;
+# if that folder can't be made, in this run's own temporary folder.
 #
 # Usage: catalog-check.sh [LIST]   (default: catalog-check.txt beside this script)
 set -Eeuo pipefail
@@ -21,7 +22,12 @@ target=armv7-unknown-linux-gnueabihf
 sysroot=/usr/arm-linux-gnueabihf
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
-mkdir -p "$cache" "$work/plugins"
+mkdir -p "$work/plugins"
+if ! mkdir -p "$cache" 2>/dev/null; then
+  echo "note: can't make $cache; downloading into this run's temporary folder" >&2
+  cache="$work/cache"
+  mkdir -p "$cache"
+fi
 
 n=0
 while read -r id kind sha url; do
