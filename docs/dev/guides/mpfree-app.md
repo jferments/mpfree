@@ -343,13 +343,13 @@ The app check (`MPFREE_APP_STEPS=app` with `collect-over-ssh.sh --app`, read-onl
 3. Kits, banks, Full and Half Level.
 4. The Play page's three views without pads (the Drum view folded into Beats as the timing strip, 13 Nov), the Timing strip option, the loop strip's symbols, the Q-Link cards (no flicker), the pattern and its mute buttons (a lane's whole name), the master bar and the mode buttons (PROG EDIT opens the Pads tab), and the PLAY, REC and OVERDUB lights.
 5. Throws, the XY pad on Perform FX, and FILL.
-6. Arrange: clips, takes, Capture, the note editor (Grid, List, Tracker, Timing Correct, the Euclid rows set with the wheel, - / + and the push), the Song view, the morph bar and Rec song.
-7. TRACK MUTE and SHIFT + TRACK MUTE.
+6. Arrange: clips, takes, Capture, the note editor (Grid, List, Tracker, Timing Correct, the Euclid rows set with the wheel, - / + and the push), the Song view, the morph bar and Rec song; drag and drop of clips and rows on the grid and of blocks, block ends and sections on the Song view, each undone by UNDO.
+7. TRACK MUTE and SHIFT + TRACK MUTE: pads 1-16 are tracks 1-16, and PAD BANK pages through up to 128.
 8. Grains.
 9. The Synth tab's five engines (Poly, FM, Drums, Pluck, Wavetable), the wheel picking tiles, Drive turned up on Grit Bass (grittier, not quieter), and Tuning and A4 in its options.
 10. Note Repeat and the arp.
-11. The Looper tab: the live wave, STOP stopping the loop, layers, the tools, the undo history, trim, several loops, Resample, a loop card's speaker (mute), Clear loop, and × on the last layer.
-12. The mixer, the chain editor, the I/O view (Audio, MIDI, Sync, CV; MIDI out is off in this build), the Q-LINK banks and the macros panel.
+11. The Looper tab: the live wave, STOP stopping the loop, layers, the tools, the undo history, trim, several loops, Resample, a loop card's speaker (mute), Clear loop, × on the last layer, and dragging a layer to another loop (SHIFT copies, + New loop makes it a loop of its own).
+12. The Mix tab (strip UNDO, the Effects look and dragging along a row), the chain editor (dragging an effect, the page's sections), a Reverb switched from Room to Plate with a Q-Link learned to a shared knob (it follows) and one to Early (it comes off), the I/O view (Audio, MIDI, Sync, CV; MIDI out is off in this build), the Q-LINK banks and the macros panel.
 13. The Pads tab: the pads, Browse, Pad (the wheel picks a row), Copy, Paste, Clear, and Map to keys.
 14. The Sample tab: the wheel on its rows and SHIFT + - / + zoom, the Warp retest on a very short sound (the 13 Nov crash), Wave, Chop, live chop, Stops, Also plays, Latch and Send to pad.
 15. The Sample tab's scenes (Store A, Store B, the crossfader, Return to A) and FX (the chain editor on the pad's channel and on Drums).
@@ -357,6 +357,8 @@ The app check (`MPFREE_APP_STEPS=app` with `collect-over-ssh.sh --app`, read-onl
 17. A MIDI keyboard on the 5-pin MIDI IN, if there is one: kit pads and the synth from the keys. Never a USB keyboard while the stick holds the running system.
 18. Touch: the Touch lab, Calibrate touch, and Dev > Touch (Save writes only the stick's partition 4); then two throws held at once with two fingers.
 19. Menus, the Console chord, TAP TEMPO and STOP.
+
+The [targeted app run](../hardware/app-targeted-run.md) runs 6, 7, 9 to 12 and 16 to 19 on a stick that the boot hook starts at power-on: the phases live test 3 skipped, and the ones whose text describes what has merged since.
 
 At the start the tool also reads, read-only, partition 4's size and free space and the first lines of `/run/mpfree-data-grow.txt` (`partition 4: …` and `partition 4 grow: …`), which shows whether 3.10's `resize2fs` grew it to fill the stick. Then it reads, read-only, what the GPU work needs (`gpu: …` lines, for the profiling thread's GPU plan): the EGL, GLES, GBM and DRM libraries and `/usr/lib/dri`, the release from `/etc/os-release`, the `/dev/dri` nodes, each display connector's status and modes, which programs hold `/dev/dri` open, whether the Panfrost driver is bound, and the display state from debugfs only where debugfs is already mounted. It opens no device node, mounts nothing, and puts the debugfs lines in the report only. The interrupt table comes from the core probe after phases 2 and 11. It prints `start-up: the app was playing N s after power-on`, read from the log line that starts with `playing ` (Perform FX and the wavetables allocate about 18 MB at startup). The line input step (state-changing, its own go) now checks the left and the right jack one at a time; round 7 checked only the left.
 

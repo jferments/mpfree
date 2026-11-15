@@ -609,6 +609,34 @@ class AppTests(unittest.TestCase):
             self.assertIn("MPFREE_APP_PHASES:", res.stdout)
             self.assertNotIn("Phase 1 of 19", res.stdout)
 
+    def test_targeted_run_on_a_soft_booted_stick(self):
+        """The targeted app run's block (app-targeted-run.md) on the stick's system after the boot hook's
+        soft-reboot: / is the stick's partition mounted ro,noload, /run is Akai's tmpfs carried over, and
+        kexec_load_disabled comes from the stick's sysctl.d. The checks pass and only the run's phases ask."""
+        self.make_root(run_opts="rw,nosuid,nodev,size=404268k,nr_inodes=819200,mode=755")
+        with open(os.path.join(self.root, "proc/mounts"), "w") as fh:
+            fh.write("/dev/sda1 / ext4 ro,relatime,noload 0 0\n"
+                     "tmpfs /run tmpfs rw,nosuid,nodev,size=404268k,nr_inodes=819200,mode=755 0 0\n"
+                     "tmpfs /data tmpfs rw,size=262144k,mode=755 0 0\n")
+        write(self.app, "active\n")
+        chosen = (6, 7, 9, 10, 11, 12, 16, 17, 18, 19)
+        answers = "\nok\n" + "\n\nfine\n" * len(chosen)
+        res = self.run_helper(answers, MPFREE_APP_STEPS="app", MPFREE_APP_PHASES="6,7,9-12,16-19")
+        self.assertEqual(res.returncode, 0, res.stdout)
+        out = res.stdout
+        for text in ("/: read-only", "kexec_load_disabled: 1", "no MMC block device", "CHECKS-OK",
+                     "MPFREE_APP_PHASES: only phases 6, 7, 9, 10, 11, 12, 16, 17, 18, 19"):
+            self.assertIn(text, out)
+        for k in range(1, 20):
+            (self.assertIn if k in chosen else self.assertNotIn)(f"Phase {k} of 19:", out)
+        for text in ("drag a clip to an empty slot", "Pads 1-16 are tracks 1-16",
+                     "drag a layer's lane onto the second loop", "Tap Plate in the mode chooser"):
+            self.assertIn(text, out)
+        self.assertEqual(out.count("your answer: fine"), len(chosen))
+        self.assertIn("RESULT: all steps ran", out)
+        # The app step copies, starts and stops nothing.
+        self.assertEqual(self.log_lines("program: "), [])
+
     def test_app_step_reads_partition_4_and_its_grow(self):
         """Read-only: partition 4's size and free space, and what the online grow at power-on said."""
         write(self.app, "active\n")
