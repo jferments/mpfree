@@ -990,6 +990,117 @@ mod tests {
         });
     }
 
+    /// Every value a button's light took on the controller while the
+    /// session ran for `seconds` (`Session::sent_lights`, as main.rs sends).
+    fn lights_over(s: &mut Session, note: u8, seconds: f64) -> Vec<u8> {
+        let mut seen = Vec::new();
+        let steps = (seconds / 0.05).ceil() as usize;
+        for _ in 0..steps {
+            s.run_for(0.05);
+            let v = s.sent_lights[usize::from(note)];
+            if !seen.contains(&v) {
+                seen.push(v);
+            }
+        }
+        seen
+    }
+
+    /// REC, PLAY and OVERDUB on the MPC as it starts from a fresh stick
+    /// (no saved map, Map controls never run): the buttons are the real
+    /// ones (73, 82, 80), they record and overdub the loop on Play, and
+    /// their lights reach the controller: REC and PLAY blink while REC
+    /// waits for PLAY, PLAY stays lit while playing, REC blinks while the
+    /// first pass records, OVERDUB blinks while it overdubs, and STOP puts
+    /// them out. Jay found these dead and dark on the MPC three times while
+    /// tests passed, because the tests made up REC's and OVERDUB's numbers.
+    #[test]
+    fn rec_play_and_overdub_record_the_loop_and_light_on_a_fresh_mpc() {
+        use crate::app::{LIGHT_DARK, LIGHT_ON};
+        use mpfree_controller::mpc_one::button;
+        use mpfree_looper::Phase;
+        on_big_stack(|| {
+            let mut s = Session::new();
+            assert_eq!(s.button_note("REC"), button::REC, "REC's real number");
+            assert_eq!(s.button_note("OVERDUB"), button::OVERDUB);
+            assert_eq!(s.button_note("PLAY"), button::PLAY);
+            assert_eq!(s.view(), View::Play);
+            // REC on Play's All view arms the loop; REC and PLAY blink.
+            s.button("REC");
+            s.run_for(0.1);
+            assert_eq!(s.looper.phase(), Phase::Armed, "REC armed the loop");
+            let rec = lights_over(&mut s, button::REC, 1.0);
+            assert!(
+                rec.contains(&LIGHT_ON) && rec.contains(&LIGHT_DARK),
+                "REC blinks while armed: {rec:?}"
+            );
+            let play = lights_over(&mut s, button::PLAY, 1.0);
+            assert!(
+                play.contains(&LIGHT_ON) && play.contains(&LIGHT_DARK),
+                "PLAY blinks while REC waits for it: {play:?}"
+            );
+            // PLAY: the first pass records; PLAY lit, REC still blinking.
+            s.button("PLAY");
+            s.run_for(0.3);
+            assert!(s.time.info().state.rolling(), "PLAY rolls the transport");
+            assert_eq!(s.looper.phase(), Phase::Recording, "the first pass records");
+            assert_eq!(lights_over(&mut s, button::PLAY, 1.0), vec![LIGHT_ON]);
+            let rec = lights_over(&mut s, button::REC, 1.0);
+            assert!(
+                rec.contains(&LIGHT_ON) && rec.contains(&LIGHT_DARK),
+                "REC blinks while recording: {rec:?}"
+            );
+            // Two bars at 120 BPM: the loop then plays, REC goes dark.
+            for _ in 0..100 {
+                if s.looper.phase() == Phase::Playing {
+                    break;
+                }
+                s.run_for(0.1);
+            }
+            assert_eq!(s.looper.phase(), Phase::Playing, "the loop plays");
+            assert_eq!(lights_over(&mut s, button::REC, 0.7), vec![LIGHT_DARK]);
+            // OVERDUB: a layer goes on while OVERDUB blinks; again: off.
+            s.button("OVERDUB");
+            s.run_for(0.2);
+            assert_eq!(s.looper.phase(), Phase::Overdubbing, "OVERDUB overdubs");
+            let dub = lights_over(&mut s, button::OVERDUB, 1.0);
+            assert!(
+                dub.contains(&LIGHT_ON) && dub.contains(&LIGHT_DARK),
+                "OVERDUB blinks while overdubbing: {dub:?}"
+            );
+            s.button("OVERDUB");
+            s.run_for(0.2);
+            assert_eq!(s.looper.phase(), Phase::Playing, "OVERDUB again: off");
+            assert_eq!(lights_over(&mut s, button::OVERDUB, 0.7), vec![LIGHT_DARK]);
+            // STOP: the transport stops and PLAY goes dark.
+            s.button("STOP");
+            s.run_for(0.2);
+            assert!(!s.time.info().state.rolling());
+            assert_eq!(s.sent_lights[usize::from(button::PLAY)], LIGHT_DARK);
+            assert_eq!(s.sent_lights[usize::from(button::REC)], LIGHT_DARK);
+        });
+    }
+
+    /// REC and OVERDUB on the Looper tab, on a fresh MPC: REC arms the
+    /// picked loop and lights; REC again disarms it.
+    #[test]
+    fn rec_on_the_looper_tab_arms_the_loop_on_a_fresh_mpc() {
+        use crate::app::LIGHT_ON;
+        use mpfree_controller::mpc_one::button;
+        use mpfree_looper::Phase;
+        on_big_stack(|| {
+            let mut s = Session::new();
+            s.press("header", "tab", "Looper");
+            assert_eq!(s.view(), View::Looper);
+            s.button("REC");
+            s.run_for(0.1);
+            assert_eq!(s.looper.phase(), Phase::Armed);
+            assert!(lights_over(&mut s, button::REC, 1.0).contains(&LIGHT_ON));
+            s.button("PLAY");
+            s.run_for(0.3);
+            assert_eq!(s.looper.phase(), Phase::Recording);
+        });
+    }
+
     /// The Looper with no loop yet: its faint tools and uses say why on
     /// the hint line instead of doing nothing.
     #[test]

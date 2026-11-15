@@ -49,6 +49,18 @@ pub mod button {
     /// The - and + buttons beside the data wheel.
     pub const MINUS: u8 = 55;
     pub const PLUS: u8 = 54;
+    /// REC. Its note was heard on its own in Hello MPC round 2 (2026-11-10,
+    /// "button 73"), it was named REC on 2026-11-13, and Akai's app lights
+    /// it with CC 73 while it records (live test 3's transport capture).
+    pub const REC: u8 = 73;
+    /// OVERDUB, PLAY START and UNDO: Akai's app lights them with CC 80, 83
+    /// and 67 as each is pressed or records (live test 3's transport capture,
+    /// 2026-11-13, `docs/dev/hardware/controller-protocol.md`, "Akai's
+    /// transport lights"), and every button measured so far sends the same
+    /// number as its light's CC. Map controls can still give them another.
+    pub const OVERDUB: u8 = 80;
+    pub const PLAY_START: u8 = 83;
+    pub const UNDO: u8 = 67;
 }
 
 const PAD_CHANNEL: u8 = 9; // MIDI channel 10, zero-based
