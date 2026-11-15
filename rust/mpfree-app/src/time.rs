@@ -1070,6 +1070,132 @@ mod tests {
         assert!(h.control.project.clip(0, 1).is_some());
     }
 
+    /// Jay, 14 Nov: drag and drop on the Clips grid. A playing clip
+    /// dropped elsewhere keeps playing where it lands; onto another clip
+    /// the two change places; a row moves; UNDO takes each back, the
+    /// launch with it.
+    #[test]
+    fn a_dropped_clip_keeps_playing_where_it_lands_and_undo_takes_it_back() {
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        for (t, s, name) in [(0, 0, "Beat"), (0, 1, "Fill"), (1, 0, "Bass")] {
+            h.control.project.tracks[t].slots[s] = Some(Clip::new(name, 1920));
+        }
+        h.act(TimeAction::Launch { track: 0, slot: 0 }).unwrap();
+        let playing = |h: &TimeHost| {
+            h.control
+                .launches
+                .iter()
+                .map(|l| (l.track, l.slot))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(playing(&h), [(0, 0)]);
+        let drop = |from, to, copy| TimeAction::DropClip { from, to, copy };
+        let said = h.act(drop((0, 0), (0, 3), false)).unwrap();
+        assert!(said.contains("Beat moved to Track 1 / 4"), "{said}");
+        assert_eq!(playing(&h), [(0, 3)], "it plays on where it landed");
+        let said = h.act(drop((0, 3), (0, 1), false)).unwrap();
+        assert!(said.contains("Beat and Fill changed places"), "{said}");
+        assert_eq!(playing(&h), [(0, 1)]);
+        let said = h.act(drop((1, 0), (0, 1), true)).unwrap_err();
+        assert!(said.contains("a copy goes in an empty slot"), "{said}");
+        let said = h
+            .act(TimeAction::DropRow {
+                from: 1,
+                to: 0,
+                copy: false,
+            })
+            .unwrap();
+        assert!(said.contains("row 2 moved to row 1"), "{said}");
+        assert_eq!(h.control.project.clip(0, 0).unwrap().name, "Beat");
+        assert_eq!(playing(&h), [(0, 0)]);
+        let said = h.act(TimeAction::Undo).unwrap();
+        assert!(said.contains("move 3 · row 2"), "{said}");
+        assert_eq!(playing(&h), [(0, 1)]);
+        h.act(TimeAction::Undo).unwrap();
+        assert_eq!(playing(&h), [(0, 3)]);
+        let said = h.act(TimeAction::Undo).unwrap();
+        assert!(said.contains("move 1 · Track 1 / 1"), "{said}");
+        assert_eq!(playing(&h), [(0, 0)]);
+        assert_eq!(h.control.project.clip(0, 1).unwrap().name, "Fill");
+        h.act(TimeAction::Redo).unwrap();
+        assert_eq!(playing(&h), [(0, 3)], "redo: it moves again, playing");
+    }
+
+    /// Jay, 14 Nov: drag and drop on the Song view. A block moves along
+    /// and across lanes, gets longer, a section moves; each is an edit
+    /// UNDO takes back, and a refusal changes nothing.
+    #[test]
+    fn song_drags_move_blocks_and_sections_and_undo_takes_them_back() {
+        use mpfree_seq::arrange::Placement;
+        const BAR: i64 = 3840;
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        for (t, name) in [(0, "Beat"), (1, "Bass")] {
+            h.control.project.tracks[t].slots[0] = Some(Clip::new(name, BAR));
+        }
+        let song = &mut h.control.project.arrangement;
+        song.place(Placement::linked(0, 0, 0, 2 * BAR)).unwrap();
+        song.place(Placement::linked(1, 0, 2 * BAR, 2 * BAR))
+            .unwrap();
+        song.mark(0, "Intro").unwrap();
+        song.mark(2 * BAR, "Verse").unwrap();
+        let start = h.control.project.arrangement.clone();
+        let mv = |index, track, start, copy| TimeAction::MovePlacement {
+            index,
+            track,
+            start,
+            copy,
+        };
+        let said = h.act(mv(0, 0, 4 * BAR, false)).unwrap();
+        assert!(said.contains("Beat moved to bar 5"), "{said}");
+        assert_eq!(h.control.state().selected, Some(0), "it stays picked");
+        // Onto the bass's block: refused, nothing changes.
+        let before = h.control.project.arrangement.clone();
+        let said = h.act(mv(0, 1, 2 * BAR, false)).unwrap_err();
+        assert!(said.contains("would run into another block"), "{said}");
+        assert_eq!(h.control.project.arrangement, before);
+        // A copy onto the bass's lane is its own copy of the clip.
+        let said = h.act(mv(0, 1, 6 * BAR, true)).unwrap();
+        assert!(
+            said.contains("a copy of Beat at Track 2, bar 7, as its own copy"),
+            "{said}"
+        );
+        let said = h
+            .act(TimeAction::StretchPlacement {
+                index: 0,
+                length: 3 * BAR,
+            })
+            .unwrap();
+        assert!(said.contains("Beat is 3 bars long now"), "{said}");
+        // A beat on (the wheel).
+        let said = h.act(mv(0, 0, 4 * BAR + 960, false)).unwrap();
+        assert!(said.contains("bar 5 beat 2"), "{said}");
+        let said = h
+            .act(TimeAction::MoveSection {
+                marker: 1,
+                gap: 0,
+                copy: false,
+            })
+            .unwrap();
+        assert!(said.contains("Verse moved to bar 1"), "{said}");
+        let st = h.control.state();
+        assert_eq!(st.section, Some(0), "the section stays picked");
+        assert_eq!(st.markers[0].1, "Verse");
+        let said = h.act(TimeAction::Undo).unwrap();
+        assert!(said.contains("move 5 · a section of the song"), "{said}");
+        assert_eq!(h.control.state().markers[0].1, "Intro");
+        for _ in 0..4 {
+            h.act(TimeAction::Undo).unwrap();
+        }
+        assert_eq!(h.control.project.arrangement, start, "every edit undone");
+        h.act(TimeAction::Redo).unwrap();
+        assert_eq!(h.control.project.arrangement.placements[0].start, 4 * BAR);
+        // Deleting a block is an edit too.
+        let said = h.act(TimeAction::DeletePlacement(0)).unwrap();
+        assert!(said.contains("UNDO puts it back"), "{said}");
+        h.act(TimeAction::Undo).unwrap();
+        assert_eq!(h.control.project.arrangement.placements.len(), 2);
+    }
+
     #[test]
     fn plus_track_adds_an_armed_track_up_to_128_and_undo_takes_it_away() {
         let mut h = TimeHost::new(RATE, 120.0).unwrap();

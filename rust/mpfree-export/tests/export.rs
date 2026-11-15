@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use mpfree_export::mpfree_fx::mpfree_node::{Ctx, Kind, Node, NodeInfo, ParamInfo, Timed};
-use mpfree_export::mpfree_fx::{Mixer, MixerConfig, StripId};
+use mpfree_export::mpfree_fx::{Bits, Mixer, MixerConfig, StripId, WavFormat};
 use mpfree_export::mpfree_midi::msg::Msg;
 use mpfree_export::*;
 
@@ -85,6 +85,41 @@ fn read24(b: &[u8]) -> Vec<f32> {
         .collect()
 }
 
+/// Any stereo WAV the export writes: its format and left channel (its
+/// header checked).
+fn read_any(b: &[u8]) -> (WavFormat, Vec<f32>) {
+    let u16_at = |i: usize| u16::from_le_bytes([b[i], b[i + 1]]);
+    let u32_at = |i: usize| u32::from_le_bytes(b[i..i + 4].try_into().unwrap());
+    assert_eq!(&b[0..4], b"RIFF");
+    assert_eq!(u32_at(4) as usize, b.len() - 8);
+    let (tag, rate, bits) = (u16_at(20), u32_at(24), u16_at(34));
+    let bits = match (tag, bits) {
+        (1, 16) => Bits::I16,
+        (1, 24) => Bits::I24,
+        (3, 32) => Bits::F32,
+        other => panic!("{other:?}"),
+    };
+    let format = WavFormat { bits, rate };
+    let at = format.header_len();
+    assert_eq!(&b[at - 8..at - 4], b"data");
+    let data = u32_at(at - 4) as usize;
+    assert_eq!(at + data, b.len(), "the header's length");
+    let fb = bits.frame_bytes() as usize;
+    let left = (0..data / fb)
+        .map(|k| {
+            let i = at + fb * k;
+            match bits {
+                Bits::I16 => f32::from(i16::from_le_bytes([b[i], b[i + 1]])) / 32_767.0,
+                Bits::I24 => {
+                    (i32::from_le_bytes([0, b[i], b[i + 1], b[i + 2]]) >> 8) as f32 / 8_388_607.0
+                }
+                Bits::F32 => f32::from_le_bytes(b[i..i + 4].try_into().unwrap()),
+            }
+        })
+        .collect();
+    (format, left)
+}
+
 /// The song: Track 1 plays a tone for `sound` frames then dies away over
 /// `tail` frames (a reverb, say); Track 2 a tone through 300 frames of
 /// look-ahead, `sound` frames only. The range is `range` frames.
@@ -120,7 +155,7 @@ struct Run {
     played: u64,
 }
 
-fn plan(folder: &Path, mode: Mode, song: Song) -> Plan {
+fn plan(folder: &Path, mode: Mode, song: Song, format: WavFormat) -> Plan {
     Plan {
         folder: folder.to_path_buf(),
         song: "Night drive".into(),
@@ -140,6 +175,7 @@ fn plan(folder: &Path, mode: Mode, song: Song) -> Plan {
         }),
         mode,
         rate: RATE,
+        format,
         length: Some(song.range as u64),
         first_slot: 3,
     }
@@ -150,6 +186,18 @@ fn plan(folder: &Path, mode: Mode, song: Song) -> Plan {
 /// real time is paced by the sound card and never waits; this test runs
 /// far faster than real time in both modes, so it waits in both.)
 fn run(folder: &Path, mode: Mode, song: Song, sizes: &[usize], cancel_at: Option<u64>) -> Run {
+    run_as(folder, mode, song, sizes, cancel_at, WavFormat::i24(RATE))
+}
+
+/// [`run`], with the files in `format`.
+fn run_as(
+    folder: &Path,
+    mode: Mode,
+    song: Song,
+    sizes: &[usize],
+    cancel_at: Option<u64>,
+    format: WavFormat,
+) -> Run {
     let cfg = MixerConfig {
         inputs: 0,
         pads: 0,
@@ -168,7 +216,7 @@ fn run(folder: &Path, mode: Mode, song: Song, sizes: &[usize], cancel_at: Option
     let mut z = (vec![0.0f32; 64], vec![0.0f32; 64]);
     m.process(&Ctx::new(RATE, 0), &mut z.0, &mut z.1);
 
-    let (mut pass, job) = start(plan(folder, mode, song)).unwrap();
+    let (mut pass, job) = start(plan(folder, mode, song, format)).unwrap();
     assert_eq!(pass.mode(), mode);
     assert!(pass.attach(&mut m));
     let most = m.capture_latency(3).unwrap();
@@ -330,10 +378,81 @@ fn the_mixdown_is_the_output_and_ends_where_the_sound_does() {
         .outcome
         .words()
         .starts_with("Exported 0:00 to mpfree-export-test-mixdown"));
+    assert!(r.outcome.words().ends_with(
+        ": 3 WAV files (24-bit, 48 kHz) and a MIDI file (Delay was silent, so left out)"
+    ));
+    std::fs::remove_dir_all(&folder).unwrap();
+}
+
+#[test]
+fn float_sixteen_bit_and_another_rate_hold_the_same_song() {
+    let song = Song {
+        range: 24_000,
+        sound: 24_000,
+        tail: 14_400,
+        endless: false,
+    };
+    let sizes = [256, 97, 512, 1, 333];
+    // Float at the mixer's rate: the output exactly.
+    let folder = scratch("float");
+    let f32_48 = WavFormat {
+        bits: Bits::F32,
+        rate: RATE,
+    };
+    let r = run_as(&folder, Mode::Fast, song, &sizes, None, f32_48);
+    let d = done(&r);
+    assert_eq!(d.format, f32_48);
+    let (f, mix) = read_any(&std::fs::read(&d.wavs[0]).unwrap());
+    assert_eq!(f, f32_48);
+    assert_eq!(mix.len(), d.frames as usize);
+    let most = r.most as usize;
+    assert_eq!(mix[..], r.out[most..most + mix.len()]);
     assert!(r
         .outcome
         .words()
-        .ends_with(": 3 WAV files and a MIDI file (Delay was silent, so left out)"));
+        .contains("3 WAV files (32-bit float, 48 kHz)"));
+    std::fs::remove_dir_all(&folder).unwrap();
+
+    // 16-bit: within a step and a half of the output (the dither).
+    let folder = scratch("sixteen");
+    let i16_48 = WavFormat {
+        bits: Bits::I16,
+        rate: RATE,
+    };
+    let r = run_as(&folder, Mode::Fast, song, &sizes, None, i16_48);
+    let d = done(&r);
+    let (f, mix) = read_any(&std::fs::read(&d.wavs[0]).unwrap());
+    assert_eq!((f, mix.len()), (i16_48, d.frames as usize));
+    for (i, v) in mix.iter().enumerate() {
+        assert!((v - r.out[most + i]).abs() <= 1.5 / 32_767.0, "frame {i}");
+    }
+    std::fs::remove_dir_all(&folder).unwrap();
+
+    // 44.1 kHz from the mixer's 48: as many frames as the same time
+    // takes, the tail cut at the same moment, every file the same length.
+    let folder = scratch("rate");
+    let f32_44 = WavFormat {
+        bits: Bits::F32,
+        rate: 44_100,
+    };
+    let r = run_as(&folder, Mode::Fast, song, &sizes, None, f32_44);
+    let d = done(&r);
+    let want = f32_44.frames_for(d.frames, RATE) as usize;
+    for p in &d.wavs {
+        let (f, x) = read_any(&std::fs::read(p).unwrap());
+        assert_eq!((f, x.len()), (f32_44, want), "{p:?}");
+    }
+    // The stem's tone is the same tone, on the same time.
+    let (_, synth) = read_any(&std::fs::read(&d.wavs[2]).unwrap());
+    for i in [500usize, 11_025, 20_000] {
+        let t = i as f32 / 44_100.0;
+        let tone = 0.2 * (std::f32::consts::TAU * 330.0 * t).sin();
+        assert!(
+            (synth[i] - tone).abs() < 1e-4,
+            "frame {i}: {} {tone}",
+            synth[i]
+        );
+    }
     std::fs::remove_dir_all(&folder).unwrap();
 }
 
@@ -426,10 +545,12 @@ fn a_folder_with_files_in_it_is_refused() {
         tail: 0,
         endless: false,
     };
-    let e = start(plan(&folder, Mode::Fast, song)).err().unwrap();
+    let e = start(plan(&folder, Mode::Fast, song, WavFormat::i24(RATE)))
+        .err()
+        .unwrap();
     assert_eq!(e.kind(), std::io::ErrorKind::AlreadyExists);
     assert_eq!(std::fs::read(folder.join("keep.txt")).unwrap(), b"mine");
-    let mut nothing = plan(&scratch("nothing"), Mode::Fast, song);
+    let mut nothing = plan(&scratch("nothing"), Mode::Fast, song, WavFormat::i24(RATE));
     nothing.streams.clear();
     nothing.midi = None;
     assert!(start(nothing).is_err());
@@ -457,7 +578,7 @@ fn a_mixer_without_the_strips_fails_at_once() {
         endless: false,
     };
     // The plan asks for a second track this mixer doesn't have.
-    let (mut pass, job) = start(plan(&folder, Mode::Fast, song)).unwrap();
+    let (mut pass, job) = start(plan(&folder, Mode::Fast, song, WavFormat::i24(RATE))).unwrap();
     assert!(!pass.attach(&mut m));
     assert!(m.capture(3).is_none() && m.capture(4).is_none());
     assert_eq!(pass.period(&m, 64, false), Step::Failed(Failure::Capture));
@@ -494,7 +615,7 @@ fn look_ahead_put_in_during_the_pass_fails_it() {
         tail: 0,
         endless: false,
     };
-    let (mut pass, job) = start(plan(&folder, Mode::Listen, song)).unwrap();
+    let (mut pass, job) = start(plan(&folder, Mode::Listen, song, WavFormat::i24(RATE))).unwrap();
     assert!(pass.attach(&mut m));
     let mut z = (vec![0.0f32; 64], vec![0.0f32; 64]);
     m.process(&Ctx::new(RATE, 0), &mut z.0, &mut z.1);
@@ -522,7 +643,7 @@ fn stop_on_the_sound_thread_cancels() {
         tail: 0,
         endless: false,
     };
-    let (mut pass, job) = start(plan(&folder, Mode::Listen, song)).unwrap();
+    let (mut pass, job) = start(plan(&folder, Mode::Listen, song, WavFormat::i24(RATE))).unwrap();
     assert!(pass.attach(&mut m));
     let mut z = (vec![0.0f32; 64], vec![0.0f32; 64]);
     m.process(&Ctx::new(RATE, 0), &mut z.0, &mut z.1);

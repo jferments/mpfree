@@ -35,7 +35,7 @@ use mpfree_looper::print::{frames_at, PrintJob};
 use mpfree_looper::save::Saved;
 use mpfree_looper::{
     Bounce, Command, History, LayerCommand, LayerInfo, LoopFile, Looper, Memory, Phase, Print,
-    Stats, Status, MAX_LAYERS, MAX_LOOPS,
+    Stats, Status, Step, MAX_LAYERS, MAX_LOOPS,
 };
 use mpfree_transport::Block;
 use mpfree_ui::wave::{Peaks, WaveColumn};
@@ -173,6 +173,15 @@ pub enum LoopAction {
     /// Loop `n`'s mute turned over without picking it, or the picked
     /// loop's (None): a muted loop stays silent when PLAY starts.
     ToggleMute(Option<usize>),
+    /// Layer `id` of loop `from` dragged onto loop `to` (an empty one: a
+    /// loop of its own); `keep`: a copy, else it moves
+    /// ([`Looper::copy_layer`]).
+    CopyLayer {
+        from: usize,
+        id: u8,
+        to: usize,
+        keep: bool,
+    },
 }
 
 /// What the line input counted since it was opened.
@@ -1477,7 +1486,11 @@ impl LoopHost {
     pub fn command(&mut self, c: Command) -> String {
         self.steps_left = 0;
         let s = self.looper.status();
+        let moved = self.moved_text(c, &s);
         let what = match (c, s.phase) {
+            (Command::Undo | Command::Redo, Phase::Playing) if moved.is_some() => {
+                moved.unwrap_or_default()
+            }
             (Command::Record, Phase::Empty) => format!(
                 "Record: armed, the first pass starts on the next bar line ({})",
                 bars_text(s.bars)
@@ -1559,6 +1572,48 @@ impl LoopHost {
             return format!("looper: {what}: NOT done, the command queue is full");
         }
         format!("looper: {what}")
+    }
+
+    /// What Undo or Redo does when the step it takes back (or brings
+    /// back) is a layer dragged between loops: with the other loop's step
+    /// too while each is its loop's last ([`Looper::copy_layer`]).
+    fn moved_text(&self, c: Command, s: &Status) -> Option<String> {
+        let me = self.picked;
+        let top = |h: History| match c {
+            Command::Undo => h.done().last().copied(),
+            _ => h.redo().first().copied(),
+        };
+        let other = |o: usize| self.looper.loop_history(o).and_then(top);
+        let undo = c == Command::Undo;
+        match top(self.looper.history())? {
+            Step::Added(_, o) => {
+                let tied = matches!(other(o), Some(Step::Moved(_, t)) if t == me);
+                let o = o + 1;
+                Some(match (undo, tied) {
+                    (true, true) if s.layers <= 1 => {
+                        format!("Undo: the layer goes back to loop {o}, and this loop clears")
+                    }
+                    (true, true) => format!("Undo: the layer goes back to loop {o}"),
+                    (true, false) if s.layers <= 1 => {
+                        format!("Undo: the layer from loop {o} goes, and this loop clears")
+                    }
+                    (true, false) => format!("Undo: the layer from loop {o} fades out"),
+                    (false, true) => format!("Redo: the layer moves here from loop {o} again"),
+                    (false, false) => format!("Redo: the layer from loop {o} fades back in"),
+                })
+            }
+            Step::Moved(_, o) => {
+                let tied = matches!(other(o), Some(Step::Added(_, f)) if f == me);
+                let o = o + 1;
+                Some(match (undo, tied) {
+                    (true, true) => format!("Undo: the layer comes back from loop {o}"),
+                    (true, false) => format!("Undo: the layer moved to loop {o} comes back here"),
+                    (false, true) => format!("Redo: the layer moves to loop {o} again"),
+                    (false, false) => format!("Redo: the layer moved to loop {o} fades out here"),
+                })
+            }
+            _ => None,
+        }
     }
 
     /// The undo history: go back `n` steps (below 0) or forward (above 0),
@@ -1692,6 +1747,60 @@ impl LoopHost {
                 "unmuted: it plays with the others"
             }
         )
+    }
+
+    /// A layer dragged onto another loop ([`Looper::copy_layer`]): what
+    /// it does, as the screen says it, and why not when it can't. A loop's
+    /// only layer goes as a copy (the loop keeps it).
+    pub fn copy_layer(&mut self, from: usize, id: u8, to: usize, keep: bool) -> String {
+        self.steps_left = 0;
+        let (Some(a), Some(b)) = (self.looper.loop_status(from), self.looper.loop_status(to))
+        else {
+            return "looper: no such loop".to_string();
+        };
+        let k = (0..MAX_LAYERS).find(|&k| {
+            self.looper
+                .loop_layer_info(from, k)
+                .is_some_and(|l| l.id == id)
+        });
+        let Some(k) = k else {
+            return format!("looper: loop {} has no such layer now", from + 1);
+        };
+        let bars = |s: &Status| {
+            let b = (s.ticks as f64 / (960.0 * f64::from(self.beats_per_bar.max(1)))).round();
+            format!("{b} bar{}", if b == 1.0 { "" } else { "s" })
+        };
+        let (layer, there, here) = (k + 1, to + 1, from + 1);
+        if from == to {
+            return format!("looper: Layer {layer} is in loop {there} already");
+        }
+        if b.phase != Phase::Empty && b.ticks != a.ticks {
+            return format!(
+                "looper: loop {there} is {} and Layer {layer} {}: a layer goes only onto a loop of its length",
+                bars(&b),
+                bars(&a)
+            );
+        }
+        if !matches!(b.phase, Phase::Empty | Phase::Playing) || a.phase != Phase::Playing {
+            return format!("looper: Layer {layer} can't go now: a loop is recording");
+        }
+        let copy = keep || a.layers <= 1;
+        if !self.looper.copy_layer(from, id, to, keep) {
+            return "looper: the drop is NOT done, the command queue is full".to_string();
+        }
+        let undo = "UNDO takes it back";
+        match (b.phase == Phase::Empty, copy) {
+            (true, false) => format!("looper: Layer {layer} moves into loop {there}, a loop of its own ({undo})"),
+            (true, true) if a.layers <= 1 => format!(
+                "looper: a copy of loop {here} goes into loop {there} (it has one layer, so loop {here} keeps it)"
+            ),
+            (true, true) => format!("looper: a copy of Layer {layer} goes into loop {there}, a loop of its own"),
+            (false, false) => format!("looper: Layer {layer} moves to loop {there} ({undo})"),
+            (false, true) if a.layers <= 1 => format!(
+                "looper: a copy of Layer {layer} goes onto loop {there} (loop {here} keeps its only layer)"
+            ),
+            (false, true) => format!("looper: a copy of Layer {layer} goes onto loop {there} ({undo})"),
+        }
     }
 
     /// A layer's control, by the layer's id, with its `looper:` line for
@@ -2614,6 +2723,61 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_micros(100));
             assert!(start.elapsed().as_secs() < 60, "the save did not finish");
         }
+    }
+
+    /// A layer dragged onto another loop: moved into an empty loop, a
+    /// loop of its own, and Undo there takes it back to where it came
+    /// from, saying so; a loop of another length says why it can't take
+    /// it; a loop's only layer goes as a copy.
+    #[test]
+    fn a_dragged_layer_moves_between_loops_and_undo_says_so() {
+        let (mut h, mut t, mut b) = saving_host();
+        run_host(&mut h, &mut t, &mut b, 20);
+        let over = h.looper.layer_info(1).unwrap().id;
+        assert!(h
+            .copy_layer(0, over, 0, false)
+            .contains("is in loop 1 already"));
+        let said = h.copy_layer(0, over, 2, false);
+        assert_eq!(
+            said,
+            "looper: Layer 2 moves into loop 3, a loop of its own (UNDO takes it back)"
+        );
+        run_host(&mut h, &mut t, &mut b, 400);
+        let (a, c) = (
+            h.looper.loop_status(0).unwrap(),
+            h.looper.loop_status(2).unwrap(),
+        );
+        assert_eq!((a.layers, c.phase, c.layers), (1, Phase::Playing, 1));
+        assert_eq!(c.ticks, a.ticks);
+        // Undo on loop 3 puts it back in loop 1, and loop 3 clears.
+        h.select(2);
+        run_host(&mut h, &mut t, &mut b, 2);
+        assert_eq!(
+            h.command(Command::Undo),
+            "looper: Undo: the layer goes back to loop 1, and this loop clears"
+        );
+        run_host(&mut h, &mut t, &mut b, 40);
+        assert_eq!(h.looper.loop_status(2).unwrap().phase, Phase::Empty);
+        assert_eq!(h.looper.loop_status(0).unwrap().layers, 2);
+        // Loop 2: two bars. Loop 1's layer can't go onto it.
+        h.select(1);
+        h.command(Command::SetBars(Some(2)));
+        h.command(Command::Record);
+        while h.looper.loop_status(1).unwrap().phase != Phase::Playing {
+            run_host(&mut h, &mut t, &mut b, 10);
+        }
+        assert_eq!(
+            h.copy_layer(0, over, 1, true),
+            "looper: loop 2 is 2 bars and Layer 2 1 bar: a layer goes only onto a loop of its length"
+        );
+        // Its only layer goes into loop 3 as a copy: loop 2 keeps it.
+        let first = h.looper.loop_layer_info(1, 0).unwrap().id;
+        assert!(h
+            .copy_layer(1, first, 2, false)
+            .contains("it has one layer, so loop 2 keeps it"));
+        run_host(&mut h, &mut t, &mut b, 800);
+        assert_eq!(h.looper.loop_status(1).unwrap().layers, 1);
+        assert_eq!(h.looper.loop_status(2).unwrap().layers, 1);
     }
 
     #[test]

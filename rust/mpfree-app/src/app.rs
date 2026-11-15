@@ -635,7 +635,15 @@ pub struct Settings {
     /// Prefs "Export": Fast, quiet (the default) or Listen (Jay, 14 Nov
     /// 01:32Z). An export that needs outside gear listens anyway.
     pub export_mode: mpfree_export::Mode,
+    /// Prefs "Export file" and "Export rate": the WAV files' format each
+    /// export starts from (the Export panel can change it for one export;
+    /// Jay, 14 Nov 07:51Z).
+    pub export_bits: mpfree_fx::Bits,
+    pub export_rate: u32,
 }
+
+/// The rates Prefs > Export rate steps through.
+pub const EXPORT_RATES: [u32; 2] = [44_100, 48_000];
 
 /// The click levels Play's options step through, dBFS. -24 by default;
 /// -12 was the old fixed level ("far too loud", live test 3).
@@ -681,6 +689,8 @@ impl Default for Settings {
             audio_memory: crate::audiotracks::AudioMemory::default(),
             open_last: false,
             export_mode: mpfree_export::Mode::Fast,
+            export_bits: mpfree_fx::Bits::I24,
+            export_rate: EXPORT_RATES[0],
         }
     }
 }
@@ -753,6 +763,10 @@ pub enum Item {
     AtStart,
     /// Prefs: how Export plays the song, Fast, quiet or Listen.
     Export,
+    /// Prefs: the export's WAV files: 24-bit, 16-bit or 32-bit float.
+    ExportFile,
+    /// Prefs: the export's rate: 44.1 or 48 kHz.
+    ExportRate,
     /// Play's options: the metronome on or off, and its level.
     Metronome,
     MetronomeLevel,
@@ -1267,6 +1281,8 @@ const PREFS_ROWS: &[Item] = &[
     Item::Appearance,
     Item::AtStart,
     Item::Export,
+    Item::ExportFile,
+    Item::ExportRate,
     Item::TouchSection,
 ];
 /// Prefs' touch screen section.
@@ -3010,6 +3026,19 @@ impl App {
                 .to_string(),
             ),
             Item::Export => ("Export", s.export_mode.name().to_string()),
+            Item::ExportFile => (
+                "Export file",
+                match s.export_bits {
+                    mpfree_fx::Bits::I24 => "24-bit",
+                    mpfree_fx::Bits::I16 => "16-bit, dithered",
+                    mpfree_fx::Bits::F32 => "32-bit float",
+                }
+                .to_string(),
+            ),
+            Item::ExportRate => (
+                "Export rate",
+                format!("{} kHz", f64::from(s.export_rate) / 1000.0),
+            ),
             Item::Arp(a) => self.arp_item_text(a),
             Item::Synth(a) => self.synth_item_text(a),
         }
@@ -3202,6 +3231,22 @@ impl App {
                 "records. A song that plays outside gear",
                 "(MIDI, CV, the line input, plugins) listens",
                 "anyway.",
+            ],
+            Item::ExportFile => vec![
+                "The WAV files an export makes. 24-bit (the",
+                "default) keeps everything the mixer makes.",
+                "16-bit is for CDs and older gear, with a",
+                "little noise (dither) so quiet parts stay",
+                "smooth. 32-bit float keeps levels over full",
+                "scale. The Export panel can change it for",
+                "one export.",
+            ],
+            Item::ExportRate => vec![
+                "The export's sample rate. 44.1 kHz is what",
+                "MPFree plays at; 48 kHz (for video) is",
+                "converted as the files are written, a",
+                "little slower. The Export panel can change",
+                "it for one export.",
             ],
             Item::Arp(a) => Self::arp_item_help(a),
             Item::Synth(a) => Self::synth_item_help(a),
@@ -3424,6 +3469,8 @@ impl App {
                     mpfree_export::Mode::Fast
                 }
             }
+            Item::ExportFile => s.export_bits = cycle(&mpfree_fx::Bits::ALL, s.export_bits, d),
+            Item::ExportRate => s.export_rate = cycle(&EXPORT_RATES, s.export_rate, d),
             Item::LoopMemory => {
                 let next = cycle(&LoopMemory::ALL, s.loop_memory, d);
                 if next != s.loop_memory {

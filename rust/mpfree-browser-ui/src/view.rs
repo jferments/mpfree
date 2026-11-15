@@ -3,7 +3,7 @@
 //! when one is open. It draws a [`Screen`] and turns touches into
 //! [`Input`]s; it never touches the library itself.
 
-use crate::export::{ExportInput, ExportPanel, ExportPhase, ExportRange};
+use crate::export::{ExportBits, ExportInput, ExportPanel, ExportPhase, ExportRange, EXPORT_RATES};
 use crate::state::{Button, Filter, Input, Key, Modal, Row, Screen, Sort, Source, SOURCES};
 use mpfree_library::{AudioFormat, Kind, Place};
 use mpfree_ui::draw;
@@ -277,6 +277,10 @@ struct ExportGeo {
     count: Rect,
     more: Rect,
     range_words: Rect,
+    file_label: Rect,
+    /// 24-bit, 16-bit, 32-bit float, then 44.1 and 48 kHz.
+    bits: [Rect; 3],
+    rates: [Rect; 2],
     plays_label: Rect,
     plays: Rect,
     into_label: Rect,
@@ -293,7 +297,7 @@ struct ExportGeo {
 
 fn export_geo(r: Rect) -> ExportGeo {
     let w = 780.min(r.w - 40);
-    let h = 480.min(r.h - 24);
+    let h = 550.min(r.h - 24);
     let card = Rect::new(r.x + (r.w - w) / 2, r.y + (r.h - h) / 2, w, h);
     let inner = card.inset(24);
     let (title, rest) = inner.take_top(40);
@@ -319,7 +323,18 @@ fn export_geo(r: Rect) -> ExportGeo {
     let (more, _) = range.take_left(BUTTON_H + 8);
     let (range_words, rest) = rest.take_top(34);
     let range_words = range_words.take_right(range_words.w - label_w).0;
-    let (_, rest) = rest.take_top(10);
+    let (file, rest) = rest.take_top(BUTTON_H);
+    let (file_label, file) = file.take_left(label_w);
+    let (b24, file) = file.take_left(110);
+    let (_, file) = file.take_left(8);
+    let (b16, file) = file.take_left(110);
+    let (_, file) = file.take_left(8);
+    let (f32r, file) = file.take_left(150);
+    let (_, file) = file.take_left(24);
+    let (r44, file) = file.take_left(104);
+    let (_, file) = file.take_left(8);
+    let (r48, _) = file.take_left(104);
+    let (_, rest) = rest.take_top(14);
     let (plays, rest) = rest.take_top(52);
     let (plays_label, plays) = plays.take_left(label_w);
     // The label beside the first line.
@@ -347,6 +362,9 @@ fn export_geo(r: Rect) -> ExportGeo {
         count,
         more,
         range_words,
+        file_label,
+        bits: [b24, b16, f32r],
+        rates: [r44, r48],
         plays_label,
         plays,
         into_label,
@@ -373,6 +391,11 @@ fn export_controls(p: &ExportPanel, r: Rect) -> Vec<(Rect, ExportInput, &'static
             (g.bars, ExportInput::Bars, "Bars"),
             (g.fewer, ExportInput::Fewer, "-"),
             (g.more, ExportInput::More, "+"),
+            (g.bits[0], ExportInput::Bits24, "24-bit"),
+            (g.bits[1], ExportInput::Bits16, "16-bit"),
+            (g.bits[2], ExportInput::Float32, "32-bit float"),
+            (g.rates[0], ExportInput::Rate44, "44.1 kHz"),
+            (g.rates[1], ExportInput::Rate48, "48 kHz"),
             (g.left, ExportInput::Close, "Close"),
             (g.right, ExportInput::Start, "Start"),
         ],
@@ -503,6 +526,19 @@ fn paint_export(cx: &mut PaintCx, r: Rect, p: &ExportPanel) {
                 t.text_dim,
                 &p.range_words(),
             );
+            label(cx, g.file_label, "File");
+            let bits = [
+                (ExportBits::I24, "24-bit"),
+                (ExportBits::I16, "16-bit"),
+                (ExportBits::F32, "32-bit float"),
+            ];
+            for (rr, (b, name)) in g.bits.iter().zip(bits) {
+                button(cx, *rr, name, p.format.bits == b, false);
+            }
+            let rates = EXPORT_RATES.iter().zip(["44.1 kHz", "48 kHz"]);
+            for (rr, (rate, name)) in g.rates.iter().zip(rates) {
+                button(cx, *rr, name, p.format.rate == *rate, false);
+            }
             label(cx, g.plays_label, "Plays");
             paint_lines(
                 cx,
