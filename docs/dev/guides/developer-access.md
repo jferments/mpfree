@@ -9,9 +9,9 @@ Since the update, the way in is Akai's own developer mode. Switch on the develop
 - **As Akai ships it, the server asks for no key and no password** (`AuthenticationMethods none`). Anyone on any network the MPC is on can get a root shell while developer mode is on. Keep the MPC on the direct cable and lock it to your key at once.
 - **The tools do both steps.** `collect-over-ssh.sh --devmode-trust` records the host key after a typed `TRUST`. `--devmode-lock` does Akai's own lock-down after a typed `LOCK`: it empties `/data/ssh/sshd_config.d/allow-access.conf` and adds your key to `/data/ssh/authorized_keys`. `--devmode-status` shows the state, and `--devmode-unlock` is the undo. See [survey tools](survey-tools.md#modes) and the [qualification runbook](../hardware/firmware-3.10.1-qualification.md), which also gives the undo by hand from the developer panel's terminal.
 - **Our own SSH is gone.** The update rewrote the root filesystem, which removed MOD-001 below. MOD-002's `/data/mpfree/ssh` is left on `/data`, unused.
-- **Not yet seen on this unit:** whether developer mode, the lock and the host key survive a restart. The qualification runbook checks it.
+- **After a restart** developer mode stays on ([compatibility page](../hardware/firmware-3.10.1-compatibility.md#on-the-installed-3101-2026-11-15)). Not yet seen on this unit: whether the lock and the host key survive one. The qualification runbook checks it.
 
-The kexec test build on the USB stick keeps its own key-only SSH on port 2222 (`MPC_TEST_PORT`), as before.
+The test build on the USB stick keeps its own key-only SSH on port 2222 (`MPC_TEST_PORT`), as before. On the installed 3.10.1 the boot hook starts it at power-on with the stick in ([how MPFree boots from the stick](../hardware/soft-reboot-boot.md)); on 3.6.0, `--kexec-boot` did.
 
 The sections below record how access worked on 3.6.0.
 
@@ -54,7 +54,7 @@ USB autorun is no longer needed after each reboot. An early-boot `mpfree-sshd.se
 | Workstation IPv4 | `10.42.0.1/24` |
 | MPC IPv4 | `10.42.0.141/24` |
 | MPC NIC | `end0` |
-| SSH port | `22` on the installed 3.10.1 (developer mode); `2222` on 3.6.0 with MOD-001 and on the kexec test build |
+| SSH port | `22` on the installed 3.10.1 (developer mode); `2222` on 3.6.0 with MOD-001 and on the test build on the stick |
 | SSH login | `root` |
 | Workstation private key | `/home/jesse/.ssh/mpc_one_autorun_ed25519` |
 

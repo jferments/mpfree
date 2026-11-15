@@ -10,7 +10,7 @@ This is the one place the manual lists exactly what every button and combination
 
 "SHIFT + MENU" means hold SHIFT, then press MENU.
 
-On the current test build, some buttons (REC, OVERDUB, UNDO, PLAY START, TRACK MIX, the PAD BANK buttons) work once **Map controls** in [Prefs](prefs.md) has learned them; the button guide walks you through it. The **When** column says whether a control works in the build this manual describes (see [Which version this describes](../index.md#which-version-this-describes)) or is planned.
+**REC**, **OVERDUB**, **UNDO** and **PLAY START** work and light as soon as MPFree starts. On the current test build, some other buttons (TRACK MIX, the PAD BANK buttons) work once **Map controls** in [Prefs](prefs.md) has learned them; the button guide walks you through it. The **When** column says whether a control works in the build this manual describes (see [Which version this describes](../index.md#which-version-this-describes)) or is planned.
 
 {{shot: guide | The button guide shows what the buttons do on the page you are on.}}
 
@@ -40,7 +40,7 @@ On the current test build, some buttons (REC, OVERDUB, UNDO, PLAY START, TRACK M
 | **–** and **+** | Step the picked row's value down or up. With the outline on a value, step it; on anything else, move the outline. | Works (the outline: next build) |
 | **The data wheel's push** | Opens the picked row: its value is outlined and the wheel changes it. Push again to go back to picking rows. On a row that opens something, opens it. With the outline on a control, does what a tap does; on a value, lets the wheel turn it until you push again. | Works (the outline: next build) |
 
-**The transport lights** light as Akai's own software lights them: **PLAY** stays lit while playing. **REC** and **OVERDUB** blink while they wait for PLAY, with PLAY blinking alongside, and keep blinking while recording or overdubbing. **UNDO** blinks while you record, and otherwise is bright when the page you are on has something to undo and dim when it has nothing. **TAP TEMPO** blinks on the beat. The MPC One's STOP button has no light of its own. REC, OVERDUB and UNDO light once **Map controls** knows them.
+**The transport lights** light as Akai's own software lights them: **PLAY** stays lit while playing. **REC** and **OVERDUB** blink while they wait for PLAY, with PLAY blinking alongside, and keep blinking while recording or overdubbing. **UNDO** blinks while you record, and otherwise is bright when the page you are on has something to undo and dim when it has nothing. **TAP TEMPO** blinks on the beat. The MPC One's STOP button has no light of its own.
 
 ## Repeat and arpeggiator
 
