@@ -5,7 +5,7 @@ checked: 2026-11-15 d58eb51
 
 # MPC plugins in MPFree
 
-**Status:** 2026-11-15. Built and tested on the workstation and on ARMv7 under qemu: MPFree's plugin sandbox loads MPC-format plugins next to CLAP ones, and CI runs five MIT-licensed plugins from the Open MPC catalog as their real 32-bit ARM releases. Nothing has run on an MPC yet. Skins are not drawn yet (generic parameter pages instead), and a plugin's MIDI output is dropped.
+**Status:** 2026-11-15. Built and tested on the workstation and on ARMv7 under qemu: MPFree's plugin sandbox loads MPC-format plugins next to CLAP ones, and CI runs five MIT-licensed plugins from the Open MPC catalog as their real 32-bit ARM releases. Nothing has run on an MPC yet. An instrument's skin shows on the Synth tab ([MPC plugin skins](mpc-plugin-skins.md)); effects in the chain editor still get the generic list, and a plugin's MIDI output is dropped.
 
 MPC OS 3.10.1 loads third-party instruments and effects: Linux shared libraries that speak the VST 2.4 binary interface and export one symbol, `VSTPluginMain`, each in a plugin folder with its skins. The [Open MPC catalog](https://open-mpc.github.io) lists a few hundred of them, most with source. [`rust/mpfree-mpchost`](../../../rust/mpfree-mpchost) loads them as `mpfree_node::Node`s, and the [sandbox](plugins.md#p2-the-sandbox) runs each in its own process, as it runs CLAP plugins. Nothing is ported or rebuilt: the same `.so` an MPC loads is what MPFree loads. This is the other direction from [MPFree engines as MPC plugins](../guides/mpc-plugins.md) (`rust/mpfree-mpcplug`), and both use the same clean-room description of the interface (`mpfree_mpcplug::abi`, written from the inMusic SDK's MIT `mpc_vst2_abi.h`; no Steinberg header).
 
@@ -38,7 +38,7 @@ An MPC plugin's id in MPFree is its four-character unique id (as letters when it
 - **Prepare.** Sample rate and block size again (at least 128 announced, as on the MPC), resume, start. Scratch buffers are made here, never on the audio thread.
 - **Process.** The transport goes in the time info every block (tempo, position, playing, a 4/4 bar: MPFree has no time signature yet). An instrument gets its MIDI list every block, even an empty one: note on and off, poly pressure, pitch bend (14 bits), and all notes off plus all sound off for `AllOff`. Effects get no MIDI, as on the MPC. Parameter events are set just before the block. An effect is processed in place (the same buffers in and out, as the MPC does); an instrument renders into scratch buffers and adds them into the track's. A mono output goes to both sides; outputs past two are rendered and not used yet. No allocation, lock or system call on the audio thread (a test checks with the counting allocator).
 - **Reset.** Suspend and resume, plus all notes off for an instrument.
-- **Parameters.** Every parameter is 0 to 1, as the host sees it on the MPC. Names come from the plugin; text comes from its display text for the current value (a VST 2 plugin can't write text for any other value).
+- **Parameters.** Every parameter is 0 to 1, as the host sees it on the MPC. Names come from the plugin; text comes from its display text for the current value (a VST 2 plugin can't write text for any other value). For a skin, the GUI asks for every value and its text in one round trip (`ToChild::Values`, answered by `ToHost::Values`; `Rack::values`), a few times a second while the skin shows; a CLAP plugin answers nothing.
 - **Programs.** The plugin's built-in programs are its presets, listed by number (`--presets`) and loaded with `effSetProgram`, as the MPC's preset list does.
 - **State.** `MPCS`, a version byte, the program number, then the plugin's own chunk (bank chunk, if it keeps one) or every parameter's value: what the MPC saves.
 
@@ -56,7 +56,7 @@ From the catalog review of 15 Nov (255 entries): 187 need only this loader; 36 n
 
 ## Next
 
-1. **Skins.** Draw `Plugin Skins/TUI.json` and follow `Q-Links.json` on the Synth tab and in the chain editor, instead of the generic list. The second-biggest job after the loader.
+1. **Skins in the chain editor.** The Synth tab draws an instrument's `Plugin Skins/TUI.json` and follows its `Q-Links.json` ([MPC plugin skins](mpc-plugin-skins.md)); effects need the insert to know its plugin instance first.
 2. **MIDI out.** Route what a plugin sends (`audioMasterProcessEvents`) to MPFree's tracks or an ALSA port, for the sequencer plugins.
 3. **Extra outputs** as stereo pairs on the mixer.
 4. **On the MPC.** The sandbox already runs ARM; a device test is a labelled run on the soft-boot stick, on Jay's go.

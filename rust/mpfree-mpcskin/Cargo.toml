@@ -1,0 +1,10 @@
+[package]
+name = "mpfree-mpcskin"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "MIT"
+description = "Draws MPC plugin skins (Plugin Skins/TUI.json and Q-Links.json, the MPC's scripted touch UI) and turns touches on them into parameter edits"
+
+[dependencies]
+mpfree-ui = { path = "../mpfree-ui" }

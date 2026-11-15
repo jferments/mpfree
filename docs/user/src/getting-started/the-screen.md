@@ -19,7 +19,7 @@ Every page in MPFree is laid out the same way, so once you know one, you know th
 | **Play** | The home page: finger drumming, beats and live looping. |
 | **Pads** | The kit's 16 pads beside the browser: put sounds on pads and set each pad up. |
 | **Arrange** | Clips: recording them, keeping takes and launching them. |
-| **Synth** | MPFree's synths and their sounds. |
+| **Synth** | MPFree's synths and their sounds, or an MPC plugin's own screen ([The plugin's own screen](../making-music/synths.md#the-plugins-own-screen)). |
 | **Looper** | Setting up and editing loops. |
 | **Sample** | Recording, chopping and shaping the sound on one pad. |
 | **Mix** | The mixer and every sound's effects (next build). See [Mixing and effects](../making-music/mixing-and-effects.md). |

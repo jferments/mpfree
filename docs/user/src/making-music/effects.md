@@ -185,7 +185,7 @@ Each of these is written in the Events log, so nothing goes wrong without your b
 
 Some plugins keep files of their own: Surge XT its user folder, Dexed its cartridges. MPFree gives them the folder `files/plugin-home/` on the stick, so they never write anywhere else. To reset every plugin's own files, delete that folder from a computer.
 
-An MPC plugin's own screen and Q-Link layout (its skin) isn't drawn yet: its knobs show as a plain list of controls, in the order the plugin gives them. A few kinds of MPC plugin can't work in MPFree: ones made only for the newer 64-bit MPCs, add-ins that change Akai's own app, and ones that rely on parts of Akai's app. A sequencer plugin that sends notes out to other tracks loads, but its notes don't go anywhere yet.
+An MPC plugin effect's own screen (its skin) isn't drawn in the chain editor yet: its knobs show as a plain list of controls, in the order the plugin gives them. An MPC plugin instrument's skin shows on the Synth tab (see [Synths](synths.md#the-plugins-own-screen)). A few kinds of MPC plugin can't work in MPFree: ones made only for the newer 64-bit MPCs, add-ins that change Akai's own app, and ones that rely on parts of Akai's app. A sequencer plugin that sends notes out to other tracks loads, but its notes don't go anywhere yet.
 
 A plugin's settings are saved with your project. If you open the project on a stick without that plugin, the effect is left out and the Events log names the plugin's file. Plugin synths play as a track's own instrument (see [Synths](synths.md#a-synth-for-each-track)).
 

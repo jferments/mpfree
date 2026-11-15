@@ -1052,6 +1052,16 @@ impl Sandbox {
         }
     }
 
+    /// Every parameter's value (0 to 1) and text as an MPC plugin holds
+    /// them now, for its skin; None from a CLAP plugin or a process that
+    /// didn't answer. A round trip to the process: control thread only.
+    pub fn values(&self) -> Option<(Vec<f32>, Vec<String>)> {
+        match self.shared.ask(&ToChild::Values) {
+            Ok(ToHost::Values(v)) => v,
+            _ => None,
+        }
+    }
+
     /// Reads the plugin's state from the process and keeps it as the
     /// snapshot that [`SandboxNode::saved_state`] and
     /// [`Sandbox::restart_from_snapshot`] use. A round trip to the process:

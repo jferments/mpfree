@@ -432,6 +432,17 @@ impl Rack {
         Ok(())
     }
 
+    /// Plugin instance `instance`'s parameter values and texts now
+    /// ([`crate::Sandbox::values`]), for an MPC plugin's skin. Waits for
+    /// the process: not on the audio thread.
+    pub fn values(&self, instance: u64) -> Option<(Vec<f32>, Vec<String>)> {
+        let rack = self.rack.lock().unwrap_or_else(|e| e.into_inner());
+        let r = rack
+            .iter()
+            .find(|r| r.instance == instance && !r.given_up)?;
+        r.sandbox.values()
+    }
+
     /// Reads every running plugin's state now (before a project save).
     /// Waits for each process: not on the audio thread.
     pub fn refresh_states(&self) {

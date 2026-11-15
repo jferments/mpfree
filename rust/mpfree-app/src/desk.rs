@@ -210,6 +210,7 @@ impl Desk<'_> {
             | gui::FromUi::Kit(_)
             | gui::FromUi::SaveTouch(_)
             | gui::FromUi::Synth(_)
+            | gui::FromUi::SkinValues
             | gui::FromUi::Slice { .. }
             | gui::FromUi::SampleLiveChop { .. }
             | gui::FromUi::SampleHit { .. }

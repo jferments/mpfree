@@ -151,6 +151,12 @@ fn an_mpc_effect_and_instrument_sound_the_same_in_their_own_process() {
         let _ = render(&mut sb, &[], 1);
         let v = sb.param(1);
         assert!(ctl.param_text(1, v).is_some_and(|t| !t.is_empty()));
+        // Every value and text at once, as the plugin holds them (a skin's).
+        let (values, texts) = ctl.values().expect("values");
+        assert_eq!(values.len(), sb.params().len());
+        assert_eq!(texts.len(), values.len());
+        assert!((values[1] - v).abs() < 1e-6);
+        assert_eq!(Some(texts[1].clone()), ctl.param_text(1, v));
         let state = ctl.save_state().expect("state");
         let (mut other, ctl2) = spawn(&exe(), &d, id).expect("spawn");
         other.set_deadline(PATIENT);
@@ -225,5 +231,7 @@ fn the_rack_finds_mpc_plugins_where_people_unpack_them() {
     let presets = rack.presets("mpc:MTsq.test-squelch").expect("presets");
     assert_eq!(presets.len(), 1);
     rack.load_preset(inst, &presets[0]).expect("program");
+    let (values, texts) = rack.values(inst).expect("values");
+    assert!(!values.is_empty() && texts.len() == values.len());
     let _ = std::fs::remove_dir_all(&r);
 }

@@ -33,6 +33,8 @@ col(header:60, row(pads:*, col(kits:*, level:96, timing:206):460):*, hint:26)
 
 `row(...)` places its children left to right and `col(...)` top to bottom, with the theme's gap between them. Any other name is a slot, filled by the widget added under that name. After a child, `:N` gives it N pixels, `:N*` a weighted share of what is left, and `:*` (or nothing) a share of weight 1. The same widget can sit on several pages: the timing panel is on both Play and Debug. Moving a panel, swapping two, or making a new page for a new workflow is a change to these strings, not to any widget.
 
+A page whose widgets must sit at exact pixels (an MPC plugin's skin, which is 1280 × 628 under the top bar as on the MPC) is added with `Ui::add_page_slots(name, &[(slot, Rect)])` instead: no spec, no margin and no gap, each rectangle cut to the screen ([MPC plugin skins](mpc-plugin-skins.md)).
+
 ### Widgets so far
 
 - **Header:** the brand, tabs (one per page) and status chips on the right.
